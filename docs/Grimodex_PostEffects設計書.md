@@ -259,6 +259,12 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 - DB → doc 復元: 初回ロード時に `applyInitialMarks` と同じ `programmaticInsert` meta 付きでマークを貼る。
 - 絶対にやらないこと: 開いているドキュメントに対してDBの `range_start/end` を直接描画する。off-by-N のドリフトを呼ぶ。
 
+**現状の実装で注意すべき range の意味論の差**: `range_start/end` の単位はソースによってブレる。
+- Rust の consistency runner (`src-tauri/src/commands/post_effect.rs` の `find_text_position`) は **正規化済みプレーンテキストへの byte offset** を書き込む。
+- JS の `saveAnnotationAnchors` (`src/features/post-effect/syncAnnotations.ts`) は **PM position** を書き込む。
+
+このため hydration 時は `range_*` をヒントとしてのみ扱い、`text_snapshot` から真の PM 位置を再解決する。実装は `src/features/post-effect/resolveAnnotationRange.ts`（`applyAnnotationsToEditor` から呼ばれる）。同一 snapshot が複数箇所にマッチする場合は `range_start` を近傍ヒントとして最寄りの出現を選ぶ。
+
 ### 4. スレッド返信の run_id
 
 **方針:** 疑似コメントへの返信（ユーザー→AI 応答など）は**親の `run_id` を継承する**。返信ごとに新 run を作らない。
@@ -282,6 +288,8 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 ### 8. プロンプトバージョン
 
 **方針:** コード内の semver 定数（例: `REVIEW_PROMPT_VERSION = 'review_v1.0'`）で管理し、プロンプトに本質的な変更を入れたら minor/major を上げる。git SHA には紐付けない（プロンプト改版と無関係なコミットでも SHA が変わってしまうため）。
+
+**現状の実装**: `src/features/post-effect/consistencyPayloadBuilder.ts` に `CONSISTENCY_PROMPT_VERSION = 'consistency_v1.1'` / `INTRA_CONSISTENCY_PROMPT_VERSION = 'intra_scene_consistency_v1.0'` を定義済み。レビュー・疑似コメント・メタ構造レビューは未実装のためバージョン定数も未追加。
 
 ### 9. Outline オーバーレイの鮮度表示
 
@@ -312,9 +320,10 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 | doc → DB 同期 | `src/features/attribution/api.ts::saveAuthorshipSpans` の descendants 走査パターン | `savePostEffectAnnotations` |
 | DB → doc 復元 | `src/features/attribution/applyInitialMarks.ts`（`programmaticInsert` meta） | `applyInitialPostEffectAnnotations` |
 | 保存フック | `EditorPane.tsx:256`（`saveSceneContent` 直後） | 同位置に注釈保存フックを追加 |
-| LLM ストリーミング | `src-tauri/src/lib.rs::send_chat_message_stream` + `listen("chat:stream-*")` | `run_post_effect` + `post_effect:progress` / `:done` / `:error` イベント |
+| LLM ストリーミング | `src-tauri/src/lib.rs::send_chat_message_stream` + `listen("chat:stream-*")` | `run_post_effect` + `post_effect:progress` / `:partial` / `:done` / `:error` イベント |
 | 中断 | `StreamAbortFlag` (AtomicBool tauri state) | `PostEffectAbortFlag` を run ごとに用意 |
 | Tauri コマンド命名 | snake_case（例: `send_chat_message`） | `start_post_effect_run` / `abort_post_effect_run` / `list_post_effect_runs` / `resolve_annotation` / `dismiss_annotation` |
+| 整合性チェック本体（非ストリーミング構造化 JSON）| （新規） | `src-tauri/src/ai.rs::call_post_effect_api`（プロンプトキャッシュ対応、AiNovelist 非対応）|
 | 整合性チェックの Codex payload 構築 | `src/features/chat/contextBuilder.ts` の選定ロジック（pinned/auto-detected/always-mode）と `codex_match_text` の言及検出 | `src/features/post-effect/consistencyPayloadBuilder.ts`（chat builder と別実装、全エントリで full content + DetailValues） |
 | `input_hash` と prompt cache 用の正規化 | （新規） | `src/features/post-effect/canonicalize.ts`（`stableStringify` + `normalize` ヘルパー、~20 行）|
 
@@ -472,8 +481,11 @@ metadata.codex_ref = {
   llm_reason: string
   dismiss_key: string
   dismiss_source?: 'manual' | 'run_completed' | 'cascade'
+  detected_by_model?: string           // 検出 run の model 識別子（モデル切替時に UI で "by X" バッジ表示）
 }
 ```
+
+`IntraAnnotationMeta` 側も `detected_by_model?: string` を持つ（`src/features/post-effect/types.ts`）。
 
 ### intra_scene_consistency (Codex 不使用)
 
@@ -655,6 +667,8 @@ MVP: 明示ボタンのみ。`[整合性チェック]` と `[自己整合性チ�
 
 自動実行（シーン保存後 debounce）は post-MVP、設定で opt-in。
 
+**現状の実装**: 校閲（Kouetsu）パネルの `Issues` タブ配下に統合済み。エントリポイントは `src/features/kouetsu/views/CurrentSceneAnnotationsView.tsx`（現在シーン）と `ProjectAnnotationsView.tsx`（全シーン一括 = folder/project scope 用）。`DismissedAnnotationsView.tsx` で dismissed の一覧／復帰も可能。各 view で `consistency` / `intra` / `both` の 3 モード起動が選べる（ドロップダウン）。エディタツールバーには `consistencyMarks` トグル（`Cs` ボタン）があり、`useAnnotationStore.showAnnotations` を切り替えて `AnnotationPlugin` の Decoration を一括 ON/OFF できる。
+
 ### 異常系
 
 - **Codex 単独で budget/2 超**: fallback（mention 上位 K）、`run.metadata.skipped_entries[]` 記録、UI で「Pin/Always が多すぎます」hint
@@ -694,21 +708,25 @@ MVP: 明示ボタンのみ。`[整合性チェック]` と `[自己整合性チ�
 
 エフェクトごとに約5本 × 5種 = 25本前後。命名は snake_case。
 
-| コマンド | 引数 | 返り値 |
-|---|---|---|
-| `start_post_effect_run` | `{ project_id, effect_type, scope_type, scope_target_id?, model, prompt_version }` | `run_id` |
-| `abort_post_effect_run` | `{ run_id }` | `()` |
-| `list_post_effect_runs` | `{ project_id, effect_type?, limit?, offset? }` | `Run[]` |
-| `get_post_effect_run` | `{ run_id }` | `Run & { annotations, lens_data, relations }` |
-| `list_annotations_for_scene` | `{ project_id, scene_id, status? }` | `{ annotations: Annotation[], relations: Relation[] }`（`relations` は両端の少なくとも一方が `annotations` に含まれるもの。intra_scene_consistency / 伏線・テーマの hydration に必須）|
-| `update_annotation_status` | `{ annotation_id, status }` | `Annotation`（relation 経由なら端点もまとめて更新）|
-| `update_relation_status` | `{ relation_id, status }` | `Relation`（両端 annotation にカスケード）|
-| `reply_to_annotation` | `{ parent_id, content, author_role }` | 新 `Annotation` |
-| `save_post_effect_annotations` | `{ scene_id, annotations[] }` | scene 保存時の同期用（`saveAuthorshipSpans` と同タイミングで呼ぶ）|
+| コマンド | 引数 | 返り値 | 実装状況 |
+|---|---|---|---|
+| `start_post_effect_run` | `{ project_id, effect_type, scope_type, scope_target_id?, model, prompt_version, input_hash, codex_payload_json, scene_text }` | `{ run_id, from_cache }` | ✓ (`consistency` / `intra_scene_consistency` のみ) |
+| `start_post_effect_run_multi` | `{ ..., scenes: [{ scene_id, codex_payload_json, scene_text }] }` | `{ run_id, from_cache }` | ✓ (folder / project scope の per-scene iteration ランナー) |
+| `abort_post_effect_run` | `{ run_id }` | `()` | ✓ |
+| `list_post_effect_runs` | `{ project_id, effect_type?, limit?, offset? }` | `Run[]` | ✓ |
+| `get_post_effect_run` | `{ run_id }` | `Run & { annotations, lens_data, relations }` | ✓ |
+| `list_annotations_for_scene` | `{ project_id, scene_id, status? }` | `{ annotations: Annotation[], relations: Relation[] }`（`relations` は両端の少なくとも一方が `annotations` に含まれるもの。intra_scene_consistency / 伏線・テーマの hydration に必須）| ✓ |
+| `list_annotations_for_project` | `{ project_id, status? }` | `{ annotations: Annotation[] }`（全シーン横断ビュー用）| ✓ |
+| `update_annotation_status` | `{ annotation_id, status }` | `Annotation`（relation 経由なら端点もまとめて更新）| ✓ |
+| `update_relation_status` | `{ relation_id, status }` | `Relation`（両端 annotation にカスケード）| ✓ |
+| `reply_to_annotation` | `{ parent_id, content, author_role }` | 新 `Annotation` | ※ 現状未実装（疑似コメント機能と一緒に post-MVP） |
+| `save_post_effect_annotations` | `{ scene_id, annotations[] }` | scene 保存時の同期用（`saveAuthorshipSpans` と同タイミングで呼ぶ）| ✓ |
+
+**キャッシュ短絡（`from_cache`）:** §10「`input_hash` の扱い」に基づき、同 `input_hash` の `completed` run があれば `start_post_effect_run` / `start_post_effect_run_multi` は新 run を起動せず既存 `run_id` を `from_cache: true` で即返す。フロント (`runPostEffect` in `src/features/post-effect/api.ts`) は実 `post_effect:done` が届かないため合成 `onDone` を発火して spinner を確実に解除する。
 
 **ストリームイベント:**
 
 - `post_effect:progress` — `{ run_id, stage, progress: 0..1, message? }`
-- `post_effect:partial` — `{ run_id, annotation | lens_data }`（逐次結果）
-- `post_effect:done` — `{ run_id, summary }`
+- `post_effect:partial` — `{ run_id, annotation_id }`（逐次保存された annotation の ID。実装は `annotation` / `lens_data` の完全 payload ではなく ID のみを emit する）
+- `post_effect:done` — `{ run_id, annotation_count, summary?, from_cache? }`
 - `post_effect:error` — `{ run_id, error }`

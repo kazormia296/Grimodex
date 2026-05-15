@@ -2,7 +2,9 @@
 
 ## 1. 概要
 
-ゴミ箱パネル（内部名: Trash Bin、メタファ名: 文屑箱）は、エディタで削除された **文字屑** に加えて Scene / Codex エントリ / Snippet / Map Sticky / Foreshadow / Pin / Grid 専用構造などの **削除物全般** を物理的に「落下して溜まる」視覚で保持し、偶然の再発見と再利用を促すパネル。
+ゴミ箱パネル（内部名: Trash Bin、メタファ名: 文屑箱）は、エディタで削除された **文字屑** に加えて Scene / Codex エントリ / Snippet / Map Sticky / Foreshadow / Grid 専用構造などの **削除物全般** を物理的に「落下して溜まる」視覚で保持し、偶然の再発見と再利用を促すパネル。
+
+> **現状の実装**: Pin の trash 連携は未着手 (`PinPayload` 型・`pinStore` フック・`pin-panel` drop target いずれも未実装)。本書中の Pin への言及は **将来拡張**として残している。 Scenes パネル設計書（`docs/Grimodex_Scenesパネル設計書.md`）からの link 関係はそのまま。
 
 良い表現や付箋は光り輝き、ユーザーは **ドラッグ&ドロップ** で拾い出して、好きなパネル（本文エディタ・Scenes・Map など）に置き直す。執筆ツールならではの「削除＝物理的に捨てる」体験を視覚化する。
 
@@ -12,7 +14,7 @@
 ### v2 (文字屑限定) からの拡張ポイント
 
 - データモデルを `kind: "text-fragment" | "structure-item"` の二系統に
-- 構造アイテムキャプチャは各 store の delete アクション内で `trashBinStore.addItem` を直接呼ぶ
+- 構造アイテムキャプチャは各 feature の delete 経路内で `captureHooks.ts` の `capture*Deletion` を呼ぶ（実装は `trashBinStore.enqueuePending` を内部で叩く）
 - 再挿入は **D&D 一本化**（Popover はプレビュー専用）。元の位置に戻すロジックは無し、ユーザーがドロップ先を選ぶ
 - 各構造アイテムは subKind 固有の見た目（付箋・カード・ピン）で物理フィールドに混在
 - Global Undo（Scenes/Codex/Snippets/Pins 統合済）と並走。短期 undo = Global Undo、60日保管 = ゴミ箱
@@ -70,7 +72,7 @@ aria-label: 「ゴミ箱。削除物 {n} 件」
 | `id`           | TEXT PRIMARY KEY | `nanoid`                                                                   |
 | `projectId`    | TEXT NOT NULL    | 外部キー                                                                   |
 | `kind`         | TEXT NOT NULL    | `"text-fragment"` / `"structure-item"`                                     |
-| `subKind`      | TEXT NOT NULL    | `"text-fragment"` / `"scene"` / `"codex-entry"` / `"snippet"` / `"map-sticky"` / `"foreshadow"` / `"pin"` / `"grid-chapter"` |
+| `subKind`      | TEXT NOT NULL    | `"text-fragment"` / `"scene"` / `"codex-entry"` / `"snippet"` / `"map-sticky"` / `"foreshadow"` / `"grid-chapter"`（`"pin"` は将来拡張、※ 現状未実装） |
 | `originSceneId`| TEXT             | 文字屑のとき、削除元 Scene の id（参照のみ。Scene 削除時は CASCADE） |
 | `originCodexId`| TEXT             | 文字屑のとき、削除元 Codex の id                                            |
 | `previewText`  | TEXT NOT NULL    | 物理 body のラベル表示用。500 文字で truncate                              |
@@ -152,10 +154,10 @@ subKind ごとの payload インターフェイス定義は本書末尾 §16 に
 ### 3.5 プライバシー / オプトアウト
 
 - **デフォルト ON**（全プロジェクトで記録開始）
-- プロジェクト設定（`projectSettings` テーブル + `ProjectCategory.tsx`）に「ゴミ箱を有効化」トグル
-- v2 で保持期間の選択肢を設定 UI に追加予定（7 / 30 / 60 / 90 / 無期限）。今は 60 日固定
+- プロジェクト設定（`projectSettings` テーブル + `ProjectCategory.tsx`）に「ゴミ箱を有効化」トグル（key: `trashBin.enabled`）
+- **現状の実装**: 保持期間の選択肢 UI（key: `trashBin.retentionDays`）も `ProjectCategory.tsx` に実装済み（無期限 sentinel = `-1` を含む）。`TrashBinPanel.tsx` がこの値を読んで `pruneTrashItems` に渡す
 - **一時停止**: パネルの ● 記録インジケータから即座にトグル可
-- **エクスポート時**: `ExportSettings.includeTrashBin: boolean`（デフォルト `false`）。`ExportDialog.tsx` にチェックボックス追加
+- **エクスポート時**: `ExportSettings.includeTrashBin: boolean`（デフォルト `false`）。`ExportDialog.tsx` にチェックボックス追加済み
 
 ### 3.6 Drizzle / Rust マイグレーション
 
@@ -236,45 +238,42 @@ Codex / Scene / Snippet は同じ `EditorPane.tsx` の `useEditor()` インス�
 
 ### 4-B. 構造アイテム経路（store フック）
 
-各 feature store の delete アクション内で `trashBinStore.addItem` を直接呼ぶ（**advisor の A 案: 明示的フック**）。
+**現状の実装**: 各 feature の delete 経路で `src/features/trash-bin/captureHooks.ts` の `capture*Deletion` ヘルパを直接呼ぶ。ヘルパは内部で `useTrashBinStore.getState().enqueuePending(data, { tempId })` を呼ぶ。`tempId` は呼び出し側が生成し、Global Undo の undo callback 内で `cancelPending({ tempId })` を呼ぶことで 1500ms 以内 Ctrl+Z を吸収する（text-fragment と構造アイテムで undo 協調パスを統一）。
 
 ```typescript
-// 例: sceneStore.ts
-deleteScene(sceneId: string) {
-  const scene = get().scenes.find((s) => s.id === sceneId);
-  if (!scene) return;
-  if (get().isTrashBinEnabled) {
-    trashBinStore.getState().addItem({
-      kind: "structure-item",
-      subKind: "scene",
-      payload: serializeScene(scene),
-      previewText: scene.title || scene.bodyPreview,
-      previewMeta: { folderHint: scene.folderName },
-    });
-  }
-  // 既存の削除処理
-}
+// 実装例: treeStore.ts (Scene 削除経路)
+captureSceneDeletion({
+  projectId,
+  node,
+  content,
+  beats,
+  folderHintName,
+  tempId,
+});
 ```
+
+ヘルパ側は「無題かつ本文が空」のキャプチャを `allBlank` で弾く（デフォルト名の Scene/Snippet がノイズとして大量に積まれないため）。
 
 #### 対象 store と subKind マッピング
 
-| 削除元 | subKind | キャプチャ条件 |
+| 削除元（実装） | subKind | キャプチャ条件 |
 |---|---|---|
-| `sceneStore.deleteScene` | `scene` | 常時 |
-| `codexStore.deleteEntry` | `codex-entry` | 常時 |
-| `snippetStore.deleteSnippet` | `snippet` | 常時 |
-| `mapStore.deleteNode` | `map-sticky` | ノード種別が **Sticky のみ** |
-| `foreshadowStore.deleteEntry` | `foreshadow` | 常時 |
-| `pinStore.deletePin` | `pin` | 常時 |
-| `gridStore.deleteChapter` | `grid-chapter` | Grid 固有 chapter のみ（後述） |
+| `treeStore.deleteNode`（nodeType=`scene`）→ `captureSceneDeletion` | `scene` | 本文が空でない |
+| `codexStore.deleteEntry` → `captureCodexDeletion` | `codex-entry` | summary+本文のいずれかが空でない |
+| `snippetStore.deleteSnippet` → `captureSnippetDeletion` | `snippet` | 本文が空でない |
+| `MapCanvas` の sticky 削除 → `captureMapStickyDeletion` | `map-sticky` | 本文 or previewText が空でない |
+| `foreshadowStore.remove` → `captureForeshadowDeletion` | `foreshadow` | intent+notes のいずれかが空でない |
+| `treeStore.deleteNode`（nodeType=`folder`）→ `captureGridChapterDeletion` | `grid-chapter` | **ヘルパ／restorer／dispatch（`scenes-panel`）は実装済みだが、treeStore からの呼び出しが未配線**（※ Folder 削除は現状 trash に積まれない） |
+| `pinStore.deletePin` → `capturePinDeletion` | `pin` | ※ 現状未実装（将来拡張） |
+
+> **将来拡張 / 設計書との差分**: 元設計は「`sceneStore.deleteScene` で呼ぶ」想定だったが、現状の Grimodex は Scene/Grid chapter を `treeStore`（treeNodes テーブル）で一元管理しているため、Scene/Grid 両方の trash キャプチャは `treeStore.deleteNode` に集約されている。Map sticky のキャプチャは `mapStore` ではなく `MapCanvas.tsx` の削除ハンドラで呼ばれる（座標を `MapNodePosition` から渡すため、UI 層が起点になっている）。
 
 #### 4-C. Grid ↔ Scene 表裏処理
 
 Grid カード（`GridSceneCard`）のほとんどは Scene の表示上の表現に過ぎない。**同一 Scene の削除は trash に 1 件のみ入れる**。
 
-- `gridStore` 経由で削除されたカードが Scene と紐づく（`grid_card.scene_id` 非 null）→ `sceneStore.deleteScene` 経路に委譲、subKind = `scene`
-- `gridStore` 固有の構造削除（chapter ヘッダ・ループ列など Scene と紐づかないもの）のみ subKind = `grid-chapter`
-- これにより二重キャプチャを防ぐ
+- **現状の実装**: Scene / Grid chapter (= folder) はいずれも treeNodes 上のノードで、`treeStore.deleteNode` 内で `nodeType` を見て `captureSceneDeletion`（scene）か `captureGridChapterDeletion`（folder）に分岐する。一つの削除で一方しか呼ばれないため二重キャプチャは構造的に発生しない。
+- 設計書段階で想定していた `gridStore.deleteChapter` は存在せず、Grid 側に独立した削除経路は無い。
 
 #### Map のノード種別
 
@@ -300,22 +299,32 @@ Grid カード（`GridSceneCard`）のほとんどは Scene の表示上の表�
 共有 store `src/store/dropTargetRegistry.ts`:
 
 ```typescript
+type DropTargetKind =
+  | "scene-editor" | "codex-editor" | "snippet-editor"
+  | "scenes-panel" | "codex-panel" | "map-panel"
+  | "snippets-panel" | "foreshadow-panel"; // ※ "pin-panel" は現状未実装
+
 interface DropTarget {
-  id: string;                                  // パネル種別 + 識別子
-  kind: "scene-editor" | "codex-editor" | "snippet-editor"
-      | "scenes-panel" | "codex-panel" | "map-panel"
-      | "snippets-panel" | "foreshadow-panel" | "pin-panel";
-  rect: () => DOMRect;                         // 動的に取得（スクロール追従）
-  accepts: (item: TrashItemData) => boolean;   // 受入可否判定
-  onDrop: (item: TrashItemData, point: { x: number; y: number }) => void;
+  id: string;                                  // 通常 kind と同値
+  kind: DropTargetKind;
+  rect: () => DOMRect | null;                  // null 可、動的取得（スクロール追従）
+  accepts: (subKind: TrashSubKind) => boolean; // subKind 単位で判定
+  onDrop: (item: TrashItemData, point: DropPoint) => Promise<void>;
+  /** primary/secondary group ずれ対応で「ドロップされたペインのエディタ」を返す。
+   *  pickupHandlers は target.getEditor を優先、無ければ focusedContentEditorStore に fallback。 */
+  getEditor?: () => Editor | null;
 }
 
 interface DropTargetRegistry {
   targets: Map<string, DropTarget>;
-  register(target: DropTarget): () => void;    // unregister 関数を返す
-  hitTest(clientPoint: { x: number; y: number }): DropTarget | null;
+  register(target: DropTarget): () => void;
+  hitTest(clientPoint: DropPoint): DropTarget | null;
+  /** キーボード代替用: ある subKind を受け入れる target を列挙 */
+  findAccepting(subKind: TrashSubKind): DropTarget[];
 }
 ```
+
+実際のドロップ処理は `src/features/trash-bin/pickupHandlers.ts` の `dispatchDrop` / `pickupAndDispatch` / `acceptsMatrix` に集約され、§5-C のマトリクスを一箇所で表現する（個々の panel onDrop からこれを呼び、`useTrashBinStore.pickup(itemId, onRestore)` に流す）。パネル側は `src/features/trash-bin/useDropTarget.ts` の `useDropTarget(kind, options)` フックで簡潔に register/unregister できる。
 
 - 各パネルが mount 時に `register` し、cleanup で unregister
 - ドラッグ中は `hitTest` で現在のマウス位置からドロップ先を判定し、該当パネルをハイライト
@@ -323,19 +332,19 @@ interface DropTargetRegistry {
 
 ### 5-C. ドロップ先 × アイテム種別マトリクス
 
-| ドロップ先 → / アイテム ↓ | エディタ本文（Scene/Codex/Snippet） | Scenes パネル | Codex パネル | Snippets パネル | Map ペイン | Foreshadow パネル | Pin パネル |
-|---|---|---|---|---|---|---|---|
-| **text-fragment** | カーソル/ドロップ位置に挿入（authorship 復元） | ❌ | ❌ | 新規 Snippet 化 | 新規 Sticky 化（ドロップ点 x,y） | ❌ | ❌ |
-| **scene** | タイトル + 本文をテキスト化して挿入 | Scene 復元（フォルダはドロップ先 or ルート） | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **codex-entry** | 名前 + 本文をテキスト化して挿入 | ❌ | Codex 復元 | ❌ | 新規 Sticky 化（簡易テキスト化） | ❌ | ❌ |
-| **snippet** | 本文を挿入（authorship 保持） | ❌ | ❌ | Snippet 復元 | ❌ | ❌ | ❌ |
-| **map-sticky** | テキストとして挿入 | ❌ | ❌ | ❌ | Sticky 復元（ドロップ点 x,y） | ❌ | ❌ |
-| **foreshadow** | setup 文をテキスト化して挿入 | ❌ | ❌ | ❌ | ❌ | Foreshadow 復元 | ❌ |
-| **pin** | アンカー文をテキスト化して挿入 | ❌ | ❌ | ❌ | ❌ | ❌ | Pin 復元 |
-| **grid-chapter** | タイトルをテキスト化して挿入 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌（Grid パネル復元のみ） |
+| ドロップ先 → / アイテム ↓ | エディタ本文（Scene/Codex/Snippet） | Scenes パネル | Codex パネル | Snippets パネル | Map ペイン | Foreshadow パネル |
+|---|---|---|---|---|---|---|
+| **text-fragment** | カーソル/ドロップ位置に挿入（authorship 復元） | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **scene** | タイトル + 本文をテキスト化して挿入 | Scene 復元（フォルダはドロップ先 or ルート） | ❌ | ❌ | ❌ | ❌ |
+| **codex-entry** | 名前 + 本文をテキスト化して挿入 | ❌ | Codex 復元 | ❌ | ❌ | ❌ |
+| **snippet** | 本文を挿入（authorship 保持） | ❌ | ❌ | Snippet 復元 | ❌ | ❌ |
+| **map-sticky** | テキストとして挿入 | ❌ | ❌ | ❌ | Sticky 復元（ドロップ点 x,y） | ❌ |
+| **foreshadow** | setup 文をテキスト化して挿入 | ❌ | ❌ | ❌ | ❌ | Foreshadow 復元 |
+| **grid-chapter** | タイトルをテキスト化して挿入 | Grid chapter 復元（folder ノード） | ❌ | ❌ | ❌ | ❌ |
 
 - ❌ ドロップは「拒否」、視覚的にカーソル変化なし＋ハプティック振動的な軽いフィードバック
-- 文字屑 → Snippet/Sticky 化の cross-kind 変換は新規アイテム生成
+- **現状の実装**: text-fragment → Snippet/Sticky 化の cross-kind 変換は **採用していない**（`pickupHandlers.ts` のコメント: 文脈の切れた孤児 snippet/sticky を勝手に作ると元の出所が辿れなくなるため）。text-fragment はエディタへの挿入専用、または Popover からのクリップボードコピーで取り出す。
+- Pin の trash 連携が未実装のため Pin パネル列は表から除去している。実装時に再追加する。
 
 ### 5-D. キーボード代替アクセシビリティ
 
@@ -570,39 +579,44 @@ rAF ↔ DOM 接続部の **integration test**（jsdom + fake rAF）を Phase 3 �
 
 ## 11. `trashBinStore`（Zustand）
 
-```typescript
-interface TrashItemData {
-  id: string;
-  projectId: string;
-  kind: "text-fragment" | "structure-item";
-  subKind: TrashSubKind;
-  originSceneId: string | null;
-  originCodexId: string | null;
-  previewText: string;
-  previewMeta: Record<string, unknown> | null;
-  payload: TextFragmentPayload | StructureItemPayload;
-  charCount: number;
-  isInteresting: boolean;
-  deletedAt: string;
-}
+実装は `src/features/trash-bin/trashBinStore.ts` / 型は `types.ts`。
 
+```typescript
 interface TrashBinStore {
   items: Map<string, TrashItemData>;
   selectedItemId: string | null;
   isCapturing: boolean;
+  isLoading: boolean;
+  pendingQueue: PendingTrashItem[];
+
   loadItems(projectId: string): Promise<void>;
-  addItem(raw: AddItemInput): Promise<void>;
+  /** 1500ms 以内に cancelPending が来なければ DB に書き込む保留キュー投入。
+   *  text-fragment / 構造アイテムどちらも同じ経路を通る。 */
+  enqueuePending(data: TrashItemInput, options: { tempId: string }): void;
+  /** Undo 1500ms 内吸収。tempId / originSceneId / originCodexId のいずれかで filter。 */
+  cancelPending(filter: {
+    tempId?: string;
+    originSceneId?: string | null;
+    originCodexId?: string | null;
+  }): void;
   removeItem(id: string): Promise<void>;
   clearAll(projectId: string): Promise<void>;
-  pickup(id: string, target: DropTarget, point: { x: number; y: number }): Promise<PickupResult>;
   setSelectedItem(id: string | null): void;
   setCapturing(value: boolean): void;
+  /** 拾い上げ。restorer 呼び出しは onRestore に委譲し、成功時のみ trash から item を削除する。 */
+  pickup(itemId: string, onRestore: () => Promise<PickupResult>): Promise<PickupResult>;
 }
 
 type PickupResult =
-  | { ok: true; targetKind: DropTarget["kind"]; targetId: string }
-  | { ok: false; reason: "rejected" | "no-target" };
+  | { ok: true; newId: string; brokenLinks: string[] }
+  | {
+      ok: false;
+      reason: "rejected" | "no-target" | "internal-error" | "duplicate";
+      message?: string;
+    };
 ```
+
+> **設計書からの差分**: 元の `addItem(raw)` は **採用していない**。文字屑と構造アイテムを問わず常に `enqueuePending` → 1500ms タイマー → `flushPending` で DB 書き込みする統一フローに変更した（§4-A の undo 協調を store レイヤに引き上げ、capture プラグイン側に保留キューを置かない設計）。`pickup` も `(itemId, onRestore)` に変わり、復元先の判定（drop target × subKind）は `pickupHandlers.dispatchDrop` 側の責務になっている（§5-B 末尾参照）。
 
 ### 設計判断
 
@@ -694,30 +708,35 @@ interface FocusedContentEditorStore {
 
 | ファイル | 内容 |
 |---|---|
-| `src/features/trash-bin/api.ts` | DB CRUD（`trashItems` 一括対応） |
-| `src/features/trash-bin/trashBinStore.ts` | Zustand ストア |
-| `src/features/trash-bin/TrashBinPanel.tsx` | パネル本体（rAF ループ） |
-| `src/features/trash-bin/TrashBinItem.tsx` | 個別アイテム（subKind 別レンダリング） |
+| `src/features/trash-bin/api.ts` | DB CRUD + `pruneTrashItems`（`trashItems` 一括対応） |
+| `src/features/trash-bin/trashBinStore.ts` | Zustand ストア（enqueuePending + cancelPending + pickup） |
+| `src/features/trash-bin/types.ts` | TrashItem 系の型・`UNDO_ABSORB_WINDOW_MS` 定数 |
+| `src/features/trash-bin/TrashBinPanel.tsx` | パネル本体（header + prune + view 切替） |
+| `src/features/trash-bin/TrashBinPhysicsView.tsx` | 物理ビュー（rAF ループ + drag/drop） |
+| `src/features/trash-bin/TrashBinListView.tsx` | reduced-motion fallback リスト |
+| `src/features/trash-bin/items/*.tsx` | 個別アイテム（subKind 別レンダリングを Scene/Codex/Snippet/MapSticky/Foreshadow/GridChapter ごとに分割） |
+| `src/features/trash-bin/displayHelpers.ts` | body size 等の共通ヘルパ |
 | `src/features/trash-bin/TrashBinPopover.tsx` | プレビュー Popover + 復元先セレクタ |
 | `src/features/trash-bin/TrashBinStirButton.tsx` | かき混ぜるボタン |
-| `src/features/trash-bin/physics.ts` | 物理エンジン |
-| `src/features/trash-bin/physics.test.ts` | 物理テスト |
-| `src/features/trash-bin/interestingness.ts` | 光る判定 |
-| `src/features/trash-bin/interestingness.test.ts` | 判定テスト |
-| `src/features/trash-bin/captureHooks.ts` | 各 store から呼ぶ薄い API（`captureSceneDeletion(scene)` など） |
+| `src/features/trash-bin/ConfirmDialog.tsx` | clearAll/removeItem 用の確認モーダル |
+| `src/features/trash-bin/physics.ts` / `physics.test.ts` | 物理エンジン |
+| `src/features/trash-bin/interestingness.ts` / `interestingness.test.ts` | 光る判定 |
+| `src/features/trash-bin/captureHooks.ts` | 各 feature から呼ぶ薄い API（`captureSceneDeletion` 等） |
+| `src/features/trash-bin/pickupHandlers.ts` | drop target × subKind ディスパッチ（`acceptsMatrix` / `dispatchDrop` / `pickupAndDispatch`） |
+| `src/features/trash-bin/editorInsert.ts` | text-fragment 等のエディタ挿入処理 |
+| `src/features/trash-bin/useDropTarget.ts` | パネル側 register/unregister 用フック |
 | `src/features/trash-bin/restorers/scene.ts` | Scene 復元ロジック |
 | `src/features/trash-bin/restorers/codex.ts` | Codex 復元 |
 | `src/features/trash-bin/restorers/snippet.ts` | Snippet 復元 |
 | `src/features/trash-bin/restorers/mapSticky.ts` | Sticky 復元 |
 | `src/features/trash-bin/restorers/foreshadow.ts` | Foreshadow 復元 |
-| `src/features/trash-bin/restorers/pin.ts` | Pin 復元 |
 | `src/features/trash-bin/restorers/gridChapter.ts` | Grid chapter 復元 |
-| `src/features/editor/TrashBinCapturePlugin.ts` | 削除キャプチャ PM プラグイン（文字屑） |
-| `src/features/editor/TrashBinCapturePlugin.test.ts` | キャプチャテスト |
+| `src/features/trash-bin/restorers/pin.ts` | Pin 復元（※ 現状未実装） |
+| `src/features/editor/TrashBinCapturePlugin.ts` / `.test.ts` | 削除キャプチャ PM プラグイン（文字屑） |
 | `src/features/editor/useTrashBinCapture.ts` | プラグイン登録フック |
 | `src/store/dropTargetRegistry.ts` | Drop target レジストリ |
 | `src/store/focusedContentEditorStore.ts` | フォーカス中エディタ共有 store |
-| `src/features/trash-bin/dragLayer.tsx` | ドラッグ中の body 描画レイヤ（document root） |
+| `src/features/trash-bin/dragLayer.tsx` | ドラッグ中の body 描画レイヤ（※ 現状未実装、PhysicsView 内に detach 描画があるのみ） |
 
 ### 変更
 
@@ -728,19 +747,18 @@ interface FocusedContentEditorStore {
 | `docs/Grimodex_統合DBスキーマ.md` | `trashItems` を追記 |
 | `src/features/editor/EditorPane.tsx` | `useTrashBinCapture` 呼び出し + `trashBin.origin` meta + `focusedContentEditorStore.setCurrent` + Drop target register |
 | `src/features/codex/components/CodexContentEditor.tsx` | 同上（副次経路）+ `trashBin.paused` |
-| `src/features/scenes/sceneStore.ts` | `deleteScene` 内で `captureSceneDeletion` 呼び出し |
+| `src/features/tree/treeStore.ts` | `deleteNode` 内で nodeType=scene → `captureSceneDeletion`、nodeType=folder → `captureGridChapterDeletion`（Scene/Grid chapter 統合経路） |
 | `src/features/codex/codexStore.ts` | `deleteEntry` 内で `captureCodexDeletion` 呼び出し |
 | `src/features/snippets/snippetStore.ts` | `deleteSnippet` 内で `captureSnippetDeletion` 呼び出し |
-| `src/features/map/mapStore.ts` | `deleteNode`（Sticky のみ）で `captureMapStickyDeletion` 呼び出し |
-| `src/features/foreshadow/foreshadowStore.ts` | `deleteEntry` 内で `captureForeshadowDeletion` 呼び出し |
-| `src/features/pins/pinStore.ts` | `deletePin` 内で `capturePinDeletion` 呼び出し |
-| `src/features/grid/gridStore.ts` | `deleteChapter`（Scene 紐づき以外）で `captureGridChapterDeletion` 呼び出し |
+| `src/features/map/MapCanvas.tsx` | sticky 削除ハンドラで `captureMapStickyDeletion` 呼び出し（座標を MapNodePosition から渡すため UI 起点） |
+| `src/features/foreshadow/foreshadowStore.ts` | `remove` 内で `captureForeshadowDeletion` 呼び出し |
+| `src/features/pins/pinStore.ts` | `deletePin` 内で `capturePinDeletion` 呼び出し（※ 現状未実装） |
 | `src/features/scenes/ScenesPanel.tsx` | Drop target register（`scenes-panel`） |
 | `src/features/codex/components/CodexPanel.tsx` | 同上（`codex-panel`） |
 | `src/features/snippets/SnippetsPanel.tsx` | 同上 |
 | `src/features/map/MapPanel.tsx` | 同上（`map-panel`） |
 | `src/features/foreshadow/ForeshadowPanel.tsx` | 同上 |
-| `src/features/pins/PinsPanel.tsx` | 同上 |
+| `src/features/pins/PinsPanel.tsx` | 同上（※ 現状未実装） |
 | `src/features/layout/layoutStore.ts` | `PanelId` / `PANEL_INSERT_REGISTRY` / `addPanelWithDefaults` |
 | `src/features/layout/panelRegions.ts` | region/shortcut（`Ctrl+Alt+B`）/toggle |
 | `src/App.tsx` | `TrashBinContent` 登録 |
@@ -814,12 +832,14 @@ IME、undo 協調、reduced-motion、保持ポリシー、Replace 扱い、メ�
 - 検証: Scene/Codex/Snippet/Map/Foreshadow/Pin/Grid 全経路で正常動作
 
 ### Phase 8（将来検討）
+- Pin の trash 統合（subKind `pin` / `PinPayload` / restorer / `pin-panel` drop target / `capturePinDeletion`）
 - `useGlobalHistoryStore` への trash 操作統合（`pickup` を atomic に扱える設計が組めれば）
 - 物理スタッキング本格化（matter.js 導入）
-- 保持期間の設定 UI（7 / 30 / 60 / 90 / 無期限）
+- ~~保持期間の設定 UI（7 / 30 / 60 / 90 / 無期限）~~ → **実装済み**（`ProjectCategory.tsx`、§3.5 参照）
 - ChatInput 削除のキャプチャ（subKind = `chat-input` 拡張）
 - `focusedContentEditorStore` を foreshadow / pin / snippet の挿入経路にも展開
 - DockView floating panel 越え D&D が現状壁になる場合の代替策
+- `dragLayer.tsx` の document root portal 化（現状は PhysicsView 内で完結）
 
 ---
 
@@ -908,7 +928,7 @@ type ForeshadowPayload = {
 };
 ```
 
-### 16.7 `pin`
+### 16.7 `pin` (※ 現状未実装)
 
 ```typescript
 type PinPayload = {
@@ -919,6 +939,8 @@ type PinPayload = {
   color: string;
 };
 ```
+
+Pin の trash 連携は将来拡張。subKind / restorer / drop target / capture hook いずれも未実装。
 
 ### 16.8 `grid-chapter`
 

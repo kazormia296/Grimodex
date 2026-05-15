@@ -60,9 +60,15 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 | Map | マインドマップ用ボード（複数ボード対応）。Sticky で発散し、Codex/Scene/Note/Snippet を手動キュレーションで配置。Free / Theme の 2 モード。AI Branch で種からアイデアを撒く |
 | Matrix | シーン × Codex のクロス表。登場分布の俯瞰、不在検出、Beat 追加プロッティング起点。デフォルトBottom Dock（非表示） |
 | Grid | Chapter ごとに Scene カードを縦に積む作業ビュー。Synopsis インライン編集、D&Dで章間移動。デフォルトBottom Dock（非表示） |
-| Settings | プロジェクト/AI/エディタ/表示/キーバインド/データ管理。常にフローティング |
+| Timeline | プロジェクト全体の時系列ビュー。デフォルトBottom Dock（非表示） |
+| Kouetsu（校閲） | 校閲モード（Issues / Editorial / Comments タブ） |
+| Foreshadow（伏線） | 伏線の張り・回収トラッキング |
+| Trash Bin | ソフト削除されたノードのゴミ箱 |
+| Settings | プロジェクト/AI/エディタ/表示/キーバインド/データ管理 |
 
-すべてのパネル（Settings以外）は任意のドックゾーンに移動可能。SettingsはEditorとは性質が異なるため、常にフローティング専用とする。各プリセットでの配置は `layoutPresets.ts` のビルダー関数を参照。
+**現状の実装**: `PanelId`（`layoutStore.ts`）には `editor` を除く 14 個のトグル可能パネルが定義されている（`TOGGLEABLE_PANELS` in `panelRegions.ts`）。Settings は dockview パネルではなく、モーダルダイアログ（`SettingsDialog`）として実装されている。各プリセットでの配置は `layoutPresets.ts` のビルダー関数を参照。
+
+※ 現状未実装: Settings 専用のフローティングウィンドウ化（モーダルダイアログで代替）。
 
 ---
 
@@ -125,7 +131,7 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 ```
 ヘッダー: [メニュー] [タイトル] ... [レイアウト▼] [パネル▼] [⚙設定]
 
-ドロップダウン展開時:
+ドロップダウン展開時（現状の実装。表示は左→右→下部の順、各リージョン毎にセパレータ）:
 ┌──────────────────────────────┐
 │ 左                           │
 │ [✓] シーン        Ctrl+Alt+S │
@@ -134,16 +140,24 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 ├──────────────────────────────┤
 │ 右                           │
 │ [✓] チャット      Ctrl+Alt+C │
-│ [ ] 履歴          Ctrl+Alt+H │
+│ [ ] チャット履歴   Ctrl+Alt+H │
 ├──────────────────────────────┤
 │ 下部                         │
 │ [ ] Snippets      Ctrl+Alt+N │
 │ [ ] 帰属          Ctrl+Alt+A │
-│ [ ] Map           Ctrl+Alt+M │
-│ [ ] Matrix        Ctrl+Alt+T │
-│ [ ] Grid          Ctrl+Alt+G │
+│ [ ] タイムライン   Ctrl+Alt+L │
+│ [ ] マップ        Ctrl+Alt+M │
+│ [ ] 校閲          Ctrl+Alt+T │
+│ [ ] 伏線          Ctrl+Alt+F │
+│ [ ] グリッド      Ctrl+Alt+G │
+│ [ ] マトリクス     Ctrl+Alt+R │
+│ [ ] ゴミ箱        Ctrl+Alt+B │
+├──────────────────────────────┤
+│ [🔒] レイアウトをロック        │
 └──────────────────────────────┘
 ```
+
+ショートカット表記の正本は `KEYBOARD_SHORTCUT_MAP`（`panelRegions.ts`）。実装での発火は `App.tsx` の `handleKeyDown` 内 keyMap を参照（一部のショートカットはまだキーマップに未接続）。
 
 ### クリック挙動
 
@@ -151,11 +165,20 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 - チェックオン（Docked/アクティブ）→ クリックでClosed。
 - ドロップダウンはクリックしても閉じない（マルチセレクト）。click-outside / Escape で閉じる。
 
+### ドラッグによる追加（現状の実装）
+
+非表示パネル行はドラッグ可能で、`PANEL_DRAG_TYPE`（`application/grimodex-panel-id`）の dataTransfer 経由で dockview の任意の位置にドロップできる。`App.tsx` の `onUnhandledDragOverEvent` でドラッグを受理し、`onDidDrop` で `addPanel` を呼ぶ。
+
+### レイアウトロック（現状の実装）
+
+ドロップダウン末尾のロックトグル（`toggleLayoutLock`）で全グループに `group.locked = true` を適用し、`api.updateOptions({ disableDnd: true })` でD&Dを無効化する。ロック中は新規追加グループにも自動でロックが伝播する（`onDidAddGroup`）。
+
 ### ホバーハイライト
 
-ドロップダウン項目にホバーすると、対象パネルの表示領域を半透明オーバーレイでハイライトする。
-- 表示中のパネル: パネルグループの実位置をハイライト。
-- 非表示のパネル: 表示予定領域を破線オーバーレイで示す。
+ドロップダウン項目にホバーすると、対象パネルの表示領域をハイライトする（`PanelHighlightOverlay.tsx`）。
+- 表示中のパネル: パネルグループの実位置を実線ボーダー＋グロー（GSAP の pulsing）で囲う。
+- 非表示のパネル: `estimateRegionRect` でリージョン推定位置を破線ボーダーで示す。Codex Quick は scenes パネル位置を起点に推定する専用ヒューリスティクスを持つ。
+- Reduced Motion 設定時はパルスアニメーションを停止。
 
 ---
 
@@ -183,15 +206,19 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 
 ### ビルトインプリセット
 
-アプリに3つのビルトインプリセットが組み込まれている。これらは削除・名前変更できない。
+**現状の実装**: `getBuiltinPresets()`（`layoutPresets.ts`）が 5 つのビルトインプリセットを返す。いずれも削除・名前変更不可。
 
-| プリセット名 | 説明 | パネル構成 | サイズ比率 |
-|------------|------|----------|----------|
-| デフォルト | 標準的な執筆レイアウト | Left: Scenes + Codex Quick / Center: Editor / Right: Chat + Chat History | 18% / 52% / 30% |
-| チャットメイン | AIチャットを広く使うレイアウト | Left: Scenes / Center: Editor / Right: Chat + Chat History + Snippets | 14% / 36% / 50% |
-| Codexメイン | 世界設定を参照しながらの執筆レイアウト | Left: Scenes + Codex + Codex Quick / Center: Editor / Right: Chat | 28% / 52% / 20% |
+| プリセット ID | 表示名（i18n キー） | 概要 |
+|------------|------------------|------|
+| `builtin:default` | Write（`layout.preset.default`） | 標準の執筆レイアウト。Scenes + Codex Quick / Editor / Chat + Chat History、Codex タブに Snippets。Left ~18%、Right ~33% |
+| `builtin:plan` | Plan（`layout.preset.plan`） | プロット構築用。Grid + Map / Timeline と Chat + Chat History / Codex + Snippets + Foreshadow + Matrix の 2 列構成 |
+| `builtin:chat-main` | Chat（`layout.preset.chatMain`） | チャット主体。Chat + Chat History / Codex + Snippets + Matrix の 2 列構成 |
+| `builtin:review` | Proofread（`layout.preset.review`） | 校閲用。Scenes / Editor / Kouetsu / Codex の 4 列、Scenes 下に Attribution |
+| `builtin:codex-main` | Condense（`layout.preset.codexMain`） | 世界観参照用。Codex（Snippets/Matrix/Map をタブ）/ Chat（Chat History）の 2 列、Codex 内 wide mode で list+Editor+detail 3 カラム発動 |
 
-ビルトインプリセットは画面幅に対する相対比率で構築されるため、異なるウィンドウサイズでも適切な比率が維持される。
+ビルトインプリセットは画面幅・高さに対する相対比率（`api.width * 0.xx`）で構築されるため、異なるウィンドウサイズでも適切な比率が維持される。
+
+※ 設計書旧版で記載していた「デフォルト / チャットメイン / Codexメイン」3 プリセット構成は、現行ではプリセット数・名称・パネル構成ともに刷新されている。詳細な panel 追加順は `layoutPresets.ts` の各 `build*` 関数を参照。
 
 ### カスタムプリセット
 
@@ -204,9 +231,10 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 ### クリック挙動
 
 - プリセットをクリックすると即座にレイアウトが切り替わり、ドロップダウンが閉じる。
-- アクティブなプリセットにはラジオボタン風のインジケータ（●）が表示される。
+- アクティブなプリセットにはチェックインジケータ（●＋✓）が表示される（`LayoutPresetDropdown.tsx`）。
 - 保存モード中はEscapeで保存をキャンセルできる。
 - click-outside / Escape でドロップダウンが閉じる。
+- 末尾の「デフォルトに戻す」（`resetToDefaultLayout`）はビルトイン `builtin:default` を再構築し、保存済みレイアウトを `clearSavedLayout()` で消去する。プリセット選択経由のリセットとは別経路。
 
 ### ボタン表示
 
@@ -317,6 +345,8 @@ Left/Right/Bottom Dockはすべて同じ操作モデルを共有する。
 - ゾーンの中央 → そのゾーンにタブとして追加。
 - ゾーンの上/下/左/右 → そのゾーン内でスプリット。
 
+※ 現状未実装: フローティングウィンドウへの分離操作（`addFloatingGroup` 等）は呼び出していない。dockview ライブラリ側の機能としては利用可能だが、現行 UI からはトリガーされず、Floating 状態への遷移は無効。Settings はモーダルダイアログで代替。
+
 ---
 
 ## レイアウトの永続化
@@ -349,6 +379,14 @@ OS AppDataディレクトリ内の `global-settings.json` に保存する。レ�
 3. `layoutPresets` と `activeLayoutPresetId` をストアにロード（ドロップダウンのUI表示用）
 
 これにより、起動時には最後に保存されたレイアウト（プリセット適用後にユーザーが手動調整した状態を含む）が復元される。
+
+**現状の実装（`App.tsx` の `handleReady`）**:
+復元処理は以下の三段階バリデーションを通る（`layoutValidation.ts`）。
+1. `validateSerializedLayout(saved)` — JSON 構造を事前検証（grid 形状・leaf 数・panel 数）。失敗時は trash → デフォルトのまま。
+2. `api.fromJSON(saved)` — 失敗（互換性のないシリアライズ形式など）したら例外を捕捉し、デフォルトレイアウトを再構築。
+3. `validateRuntimeLayout(api)` — 復元後の実レイアウトを検証（グループ数・単一グループ支配率）。失敗時はデフォルトに戻して保存済みレイアウトを消去。
+
+`saveLayout` は `onDidLayoutChange` から 500ms デバウンスで自動起動し、保存前にも `validateSerializedLayout` を通して退行レイアウトの保存を防ぐ。
 
 ### リセット
 
@@ -397,19 +435,28 @@ OS AppDataディレクトリ内の `global-settings.json` に保存する。レ�
 
 ### パネル直接アクセス（`Ctrl+Alt` + パネル頭文字）
 
-| ショートカット | 動作 |
-|-------------|------|
-| `Ctrl+Alt+S` | Scenesパネルにフォーカス/トグル |
-| `Ctrl+Alt+Q` | Codex Quickパネルにフォーカス/トグル |
-| `Ctrl+Alt+C` | Chatパネルにフォーカス/トグル |
-| `Ctrl+Alt+H` | Chat Historyパネルにフォーカス/トグル |
-| `Ctrl+Alt+X` | Codexパネルにフォーカス/トグル |
-| `Ctrl+Alt+N` | Snippetsパネルにフォーカス/トグル |
-| `Ctrl+Alt+A` | Attributionパネルにフォーカス/トグル |
-| `Ctrl+Alt+M` | Mapパネルにフォーカス/トグル |
-| `Ctrl+Alt+T` | Matrixパネルにフォーカス/トグル |
-| `Ctrl+Alt+G` | Gridパネルにフォーカス/トグル |
-| `Ctrl+Alt+,` | Settings を開く |
+**現状の実装**: 表示ヒント（ドロップダウンの `kbd`）は `KEYBOARD_SHORTCUT_MAP`（`panelRegions.ts`）、実際の発火は `App.tsx` の `handleKeyDown` 内 `keyMap` を参照。両者の対応は順次拡張中。
+
+| ショートカット | 動作 | 接続状況 |
+|-------------|------|---------|
+| `Ctrl+Alt+S` | Scenesパネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+Q` | Codex Quickパネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+C` | Chatパネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+H` | Chat Historyパネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+X` | Codexパネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+N` | Snippetsパネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+A` | Attributionパネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+L` | Timelineパネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+M` | Mapパネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+T` | Kouetsu（校閲）パネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+F` | Foreshadow（伏線）パネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+B` | Trash Binパネルにフォーカス/トグル | 有効 |
+| `Ctrl+Alt+G` | Gridパネルにフォーカス/トグル | ※ keyMap 未接続（表示ヒントのみ） |
+| `Ctrl+Alt+R` | Matrixパネルにフォーカス/トグル | ※ keyMap 未接続（表示ヒントのみ） |
+| `Ctrl+Alt+,` | Settings ダイアログを開く | 有効 |
+| `Ctrl+Shift+E` | エクスポートダイアログ | 有効 |
+| `Ctrl+Shift+F` | 全文検索ダイアログ | 有効 |
+| `Ctrl+Shift+P` | コマンドパレット | 有効 |
 
 ### ショートカットのカスタマイズ
 
@@ -459,11 +506,14 @@ OS AppDataディレクトリ内の `global-settings.json` に保存する。レ�
 
 #### 実装構成
 
-- `DockviewReact` コンポーネントが全ドックゾーンのレイアウトを管理
+- `DockviewReact` コンポーネントが全ドックゾーンのレイアウトを管理（`App.tsx`）
 - 各パネル（Scenes, Codex, Chat等）はdockviewのコンポーネントマップに登録
 - `DockviewApi` の参照をZustand store（`layoutStore`）に保持し、ヘッダードロップダウンやキーボードショートカットから操作
 - レイアウト永続化: `api.toJSON()` でシリアライズし、`global-settings.json` に保存
 - プリセット管理: ビルトインプリセットは `layoutPresets.ts` にビルダー関数として定義。カスタムプリセットはシリアライズ済みJSONとして `global-settings.json` に保存。`layoutStore` がプリセットのCRUD操作を提供
+- リージョン分類: `panelRegions.ts` で各パネルを `left` / `right` / `center-bottom` の 3 リージョンに分類し、トグルドロップダウンの区切りと `PanelHighlightOverlay` の推定位置に使用
+- 挿入位置の自動解決: `resolveInsertPosition()`（`layoutStore.ts`）が各パネルの優先アンカー（`PANEL_INSERT_REGISTRY`）を順に評価し、既存パネルに対する `within` / `left` / `right` / `above` / `below` の挿入位置を返す
+- 全パネルが閉じられた状態: `DockviewWatermark` コンポーネント（`watermarkComponent` prop）が主要パネルのショートカット一覧を表示
 - テーマ: `dockview-theme-dark` クラスを適用し、`--dv-*` CSS変数をプロジェクトのデザイントークンで上書き
 
 #### デフォルトレイアウト

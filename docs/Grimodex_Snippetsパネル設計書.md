@@ -74,8 +74,8 @@ Snippetsパネルは再利用可能なテキスト断片を管理するパネル
 |---------|------|
 | All | 全スニペット（デフォルト） |
 | From chat | `source_chat_message_id` が非NULL |
-| From editor | `source_chat_message_id` がNULL かつ `source_scene_id` が非NULL |
-| Manual | `source_chat_message_id` がNULL かつ `source_scene_id` がNULL |
+| From editor | `source_chat_message_id` がNULL かつ `scene_id` が非NULL |
+| Manual | `source_chat_message_id` がNULL かつ `scene_id` がNULL |
 
 ### contentSource カラムとの関係
 
@@ -87,7 +87,7 @@ Snippetsパネルは再利用可能なテキスト断片を管理するパネル
 | `"human"` | Editor 本文（人間が書いた領域）から抽出されたテキスト |
 | `null` | 手動作成（[+] ボタン、クリップボード貼付など原文に帰属情報がない場合） |
 
-ソースフィルタは `content_source` の値と `source_chat_message_id` / `source_scene_id` の有無を組み合わせて判定する。ソースバッジの [AI] / [Human] 表示も `content_source` を参照する。
+ソースフィルタは `content_source` の値と `source_chat_message_id` / `scene_id` の有無を組み合わせて判定する。ソースバッジの [AI] / [Human] 表示も `content_source` を参照する。
 
 ### タグフィルタ
 
@@ -100,7 +100,7 @@ Snippet のタグは Codex と同じ構造化タグ基盤の上に載る。UI �
 
 - タグ本体は `tags` テーブル（Codex と共有）に格納される
 - Snippet とタグの関連は `snippet_entry_tags` 多対多テーブルで管理
-- `snippets.tags_cache` は検索・表示を高速化するためのデノーマライズキャッシュ（カンマ区切り文字列）で、真のソース・オブ・トゥルースは `snippet_entry_tags` リレーション
+- `snippets.tags_cache` は検索・表示を高速化するためのデノーマライズキャッシュ（**現状の実装**: `{ name: string; color: string | null }[]` を `JSON.stringify` した文字列）で、真のソース・オブ・トゥルースは `snippet_entry_tags` リレーション
 - `tags_cache` は FTS5 のインデックス対象に含まれ、LIKE フォールバック検索でも走査される
 - 旧設計の「`tags` カラムにカンマ区切り TEXT / JSON 配列を直接保存する」方式は廃止
 
@@ -181,14 +181,16 @@ Snippet のタグは Codex と同じ構造化タグ基盤の上に載る。UI �
 
 #### ツールバーボタン
 
+**現状の実装**ではヘッダー右側のアイコン列に以下を、ボディ上端に「Open in Editor」リンクを配置している（明示的な保存ボタンは持たず、自動保存に一本化）。
+
 | ボタン | 詳細 |
 |--------|------|
-| 保存 (💾) | 即時保存（自動保存のflush）。自動保存（デバウンス2秒）が有効なため通常は不要 |
-| コピー (📋) | コンテンツをクリップボードにコピー（Attribution付き） |
-| Open in Editor (↗) | エディタパネルにSnippetタブとして開き、インラインAIやChat連携が利用可能 |
-| 関連シーン (📄) | `scene_id` がある場合のみ表示。クリックでEditorで開く |
-| 削除 (🗑) | 削除確認ダイアログ |
 | Insert at cursor | エディタのカーソル位置に挿入。D&Dの代替手段 |
+| コピー | コンテンツをクリップボードにコピー（Attribution付き） |
+| 関連シーン | `scene_id` がある場合のみ表示。クリックでEditorで開く |
+| Revision History | Revision Storeを開き、過去スナップショットを参照（`snippet` エンティティ） |
+| 削除 | 削除確認ダイアログ |
+| Open in Editor（ボディ内リンク） | エディタパネルに `contentType: "snippet"` タブとして開き、インラインAIやChat連携が利用可能 |
 
 #### フィールド
 
@@ -198,7 +200,7 @@ Snippet のタグは Codex と同じ構造化タグ基盤の上に載る。UI �
 | Content | TipTapミニエディタ。Markdown記法をリアルタイムにリッチテキストとしてレンダリング（太字、斜体、見出し、リスト、リンク対応）。DBの `snippets.content` カラムに保存。自動保存（デバウンス2秒）。**Attribution追跡あり**（後述） |
 | Tags | 構造化タグ。Codex と共通の TagSelector コンポーネントを使用し、候補のサジェストと新規タグ作成に対応 |
 | ソースバッジ | [AI]: パープルのピル / [Human]: グレーのピル / バッジなし: 手動作成 |
-| Source | `source_chat_message_id` がある場合、セッション名のリンク。クリックでChat Historyパネル経由で元セッションを開く |
+| Source | `source_chat_message_id` がある場合、セッション名のリンク。クリックでChat Historyパネル経由で元セッションを開く ※ 現状の実装ではメッセージ ID を含むテキスト表示のみで、ナビゲーションは未実装 |
 | Scene | `scene_id` がある場合、シーン名のリンク。クリックでEditorで開く |
 | Created | 作成日時 |
 | Used | エディタに挿入された回数（`usage_count`） |
@@ -267,10 +269,10 @@ Chat からの作成は **Quick 保存** と **Detailed 保存** の2系統を�
 - AI メッセージのコンテキストメニューまたはモディファイヤ付きクリックで **SnippetExtractionDialog** を開く
 - ダイアログでは以下をまとめて指定できる:
   - タイトル（デフォルトは選択テキストの先頭から生成）
-  - タグ（TagSelector。Codex 共通 UI）
-  - `contentSource`（`ai` / `human` / 未設定）
+  - タグ（**現状の実装**: カンマ区切りのプレーンテキスト入力で `tagsCache` に直接 JSON 化して書き込む。Codex 共通の `TagSelector` への置き換えは今後整備予定）
+  - `contentSource`（**現状の実装**: `messageRole` から `ai`／`human` を自動判定し、UI 上での明示的な切替は無し）
   - 必要に応じて本文のトリミング
-- 保存ボタンで Snippet を作成し、Quick 保存と同じく `source_chat_message_id` と `source_scene_id` を付与
+- 保存ボタンで Snippet を作成し、Quick 保存と同じく `source_chat_message_id` を付与（`scene_id` は Quick 保存側のフローで設定）
 
 #### extractedSnippets の追跡
 
@@ -296,8 +298,8 @@ Snippet 作成後、Snippetsパネル側では `snippetStore.pendingEntryId` に
 ### 4. クリップボードから
 
 - Snippetsパネルにフォーカスがある状態で `Ctrl+V` → クリップボードのテキストからスニペットを作成
-- タイトルは先頭30文字を自動生成
-- `content_source` は NULL（手動作成扱い）。ただしクリップボードに Grimodex 固有 MIME で AuthorshipMark 情報が含まれる場合はそれを継承する
+- **現状の実装**ではタイトルは先頭 40 文字（フォールバックで `snippets.clipboard` ローカライズ文言）を自動生成
+- `content_source` は NULL（手動作成扱い）。クリップボードの Grimodex 固有 MIME による AuthorshipMark 継承は今後整備予定
 
 ### 楽観的更新と再フェッチ
 
@@ -351,9 +353,10 @@ Snippet の `create` 呼び出しは楽観的更新で扱う。ストア側は `
 | Edit | 詳細ペインで編集モード |
 | --- | |
 | Duplicate | スニペットを複製（「{title} (copy)」） |
-| Go to source chat | `source_chat_message_id` がある場合のみ表示。Chat Historyで元セッションを開く |
+| Add to Map ▸ | サブメニュー: 各 Map ボード名を一覧表示。選択でこの Snippet を Map に Snippet ノードとして配置（手動キュレーション、Map パネル設計書「手動キュレーション」参照） |
 | Go to scene | `scene_id` がある場合のみ表示。Editorでそのシーンを開く |
-| **Add to Map ▸** | **サブメニュー: 各 Map ボード名を一覧表示。選択でこの Snippet を Map に Snippet ノードとして配置（手動キュレーション、Map パネル設計書「手動キュレーション」参照）** |
+| Register as Foreshadow | **現状の実装**: `CreateForeshadowDialog` を開き、Snippet のタイトル／本文をプリフィルした状態で伏線として登録する |
+| Go to source chat | `source_chat_message_id` がある場合のみ表示。Chat Historyで元セッションを開く ※ 現状未実装（コンテキストメニューには未登場） |
 | --- | |
 | Delete | 確認ダイアログ後に削除 |
 
@@ -381,8 +384,8 @@ CREATE TABLE snippets (
   project_id              TEXT NOT NULL REFERENCES projects(id),
   title                   TEXT NOT NULL DEFAULT 'Untitled',
   content                 TEXT NOT NULL DEFAULT '{}',  -- ProseMirror JSON
-  tags_cache              TEXT,                               -- 検索・表示用のカンマ区切りデノーマライズキャッシュ
-  source_scene_id         TEXT REFERENCES tree_nodes(id),     -- 作成元シーン（nullable）
+  tags_cache              TEXT,                               -- 検索・表示用のデノーマライズキャッシュ（JSON `{name, color}[]`）
+  scene_id                TEXT REFERENCES tree_nodes(id),     -- 作成元シーン（nullable、実装上のカラム名は `scene_id`）
   source_chat_message_id  TEXT REFERENCES chat_messages(id),  -- 抽出元チャット（nullable）
   content_source          TEXT,                               -- 'ai' | 'human' | NULL（ソース追跡）
   usage_count             INTEGER NOT NULL DEFAULT 0,
@@ -391,6 +394,8 @@ CREATE TABLE snippets (
 );
 
 CREATE INDEX idx_snippets_project ON snippets(project_id, created_at DESC);
+CREATE INDEX idx_snippets_scene   ON snippets(scene_id);
+CREATE INDEX idx_snippets_src_msg ON snippets(source_chat_message_id);
 
 -- Snippet と Tag の多対多リレーション（Codex と共有の tags テーブルを参照）
 CREATE TABLE snippet_entry_tags (
@@ -399,7 +404,7 @@ CREATE TABLE snippet_entry_tags (
   PRIMARY KEY (snippet_id, tag_id)
 );
 
-CREATE INDEX idx_snippet_entry_tags_tag ON snippet_entry_tags(tag_id);
+CREATE INDEX idx_snippet_entry_tags_tag_id ON snippet_entry_tags(tag_id);
 
 -- 全文検索用FTS5（title、content、tags_cacheを検索対象）
 CREATE VIRTUAL TABLE snippets_fts USING fts5(
@@ -434,12 +439,12 @@ Snippetのcontentは `snippets.content` カラムにProseMirror JSON形式で保
 
 **タグの役割分担**:
 - タグ本体は Codex と共有の `tags` テーブル、Snippet との関連は `snippet_entry_tags` 多対多テーブルが真のソース・オブ・トゥルース
-- `snippets.tags_cache` は FTS5 検索・一覧表示・LIKE フォールバックで使うためのデノーマライズキャッシュ（カンマ区切り文字列）
+- `snippets.tags_cache` は FTS5 検索・一覧表示・LIKE フォールバックで使うためのデノーマライズキャッシュ。**現状の実装**は `JSON.stringify({ name, color }[])` 形式の文字列で、タグピル表示時の色情報も併せ持つ
 - タグ編集時には `snippet_entry_tags` を更新したのち `tags_cache` を再計算して書き戻す
 
 **FTS5 の検索対象**: title、content、`tags_cache` を含める。3 文字以上は MATCH、1〜2 文字は LIKE フォールバック（title / content / `tags_cache` を走査）。
 
-`content_source` はスニペットの作成元（ai/human/NULL）を記録し、ソースバッジの表示・ソースフィルタ・Attribution 追跡に使用する。`source_scene_id` は「作成元シーン」、`source_chat_message_id` は「抽出元チャットメッセージ」を指す。
+`content_source` はスニペットの作成元（ai/human/NULL）を記録し、ソースバッジの表示・ソースフィルタ・Attribution 追跡に使用する。`scene_id`（実装カラム名）は「作成元シーン」、`source_chat_message_id` は「抽出元チャットメッセージ」を指す。
 
 ---
 

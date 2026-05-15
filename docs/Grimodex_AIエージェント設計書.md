@@ -16,9 +16,10 @@ LLMのTool Use（Function Calling）を活用し、プロジェクトデータ�
 
 Chatパネルのグローバルチャット（🌐ボタン）でプロジェクトスコープに切り替えた状態で、エージェントモードを有効化する。
 
-**有効化**: Chatパネルのヘッダーに **エージェントトグル**（🔧アイコン）を配置。ONにするとツール定義がシステムプロンプトに追加され、LLMがツールを使えるようになる。
+**有効化**: ChatInput 下段ツール列の **AI オプション ポップオーバー**（🔧 Wrench アイコン）内に **「Agent mode」チェックボックス**を配置（`src/features/chat/components/ChatInput.tsx`）。ONにするとツール定義がシステムプロンプトに追加され、LLMがツールを使えるようになる。Thinking トグルも同じポップオーバー内にあり、両者を一括で切り替えられる。
 
-- エージェントモードON時、コンテキストバーに `[Agent mode]` ピルを表示
+- エージェントモードON時、コンテキストバーに `[Agent]`（Bot アイコン）ピルを表示
+- 探索性が高そうな問いが入力欄に書かれた場合、ChatInput 上に「Agent mode で送る」サジェストチップが現れる（`agentSuggestion.ts` の `shouldSuggestAgentMode`）。応答後に「情報が足りない」系の文言を検出した場合は再試行サジェストも出る（`looksLikeMissingInfo`）
 - **Layer 1〜Layer 5 はすべて通常モードと同じ内容で注入される**。Agent モードは「事前注入を捨ててツール任せにする」モードではなく、「事前注入された summary を起点に、必要に応じて深掘りツールを呼べる」拡張モードと位置づける:
 	- 自動検出 Codex の summary、Spotlight された Codex の本文・custom details、Spotlight された Snippet、active tab content、storySoFar、conversation summary はすべて事前注入
 	- LLM は注入済みの summary で十分なら回答に直接使い、不足する場合のみ `get_codex_entry` で本文・custom details を取りに行く（階層的アクセス）
@@ -58,8 +59,9 @@ Chatパネルのグローバルチャット（🌐ボタン）でプロジェク
 └──────────────────────────────────────────────────┘
 ```
 
-- 選択されたエントリは `pinned_codex` に `source: 'manual'` として追加
+- 選択されたエントリは `chat_session_pinned_codex` に `pin_source: 'manual'` として追加（実装上の table 名は `chat_session_pinned_codex`。`pinSource` には他に `'chat_mention'` がある）
 - コンテキストクリエイターは通常のChatセッションのコンテキスト組み立てを支援するだけで、会話履歴には残らない（ワンショット）
+- 実装: 内部的に `runAgentLoop` を再利用しつつ、ツールサブセット（`search_codex` / `list_codex_by_type` / `search_codex_by_tags` / `search_snippets`）と `effort: chat` (低 effort)、固定 2,000 トークン予算で実行する（`src/features/chat/contextCreatorApi.ts`）。LLM には最終応答として `[{id, name, type, summary, reason}]` 形式の JSON 配列を返すよう指示する
 
 ---
 
@@ -246,6 +248,54 @@ Snippetを検索する。
 
 **実行**: チャプターノード + 要約データを返す。
 
+### Foreshadow / Timeline 系
+
+伏線（foreshadow）とストーリー時系列（story-time order）はそれぞれ専用 store・テーブルで管理されており、エージェントから能動的に参照できる。詳細は対応する設計書（`Grimodex_伏線設計書.md` 等）を参照。
+
+#### list_open_foreshadows
+
+未回収の伏線一覧を取得する。
+
+```typescript
+{
+  name: "list_open_foreshadows",
+  description: "List all unresolved foreshadowing items (payoff not confirmed and not abandoned).",
+  parameters: {}
+}
+```
+
+**実行**: `listOpenForeshadowsForContext(projectId)` 経由。`id`, `title`, `intent`, `loadBearing`（critical/supporting/optional/null）, `setupCount`（非 orphan）を返す。loadBearing 優先度 → 更新日時順。注: 優先度の高い小さなスライスはシステムプロンプトの `### 未回収の伏線` セクションに事前注入されている。
+
+#### get_foreshadow_detail
+
+特定の伏線の詳細（setup 一覧、payoff scene、AI rationale 等）を取得する。
+
+```typescript
+{
+  name: "get_foreshadow_detail",
+  description: "Get full detail for a single foreshadow including setups, payoff scene, and notes.",
+  parameters: {
+    id: { type: "string", description: "Foreshadow UUID" }
+  }
+}
+```
+
+#### get_scene_timeline_neighbors
+
+指定シーンのストーリー時系列上の前後シーン（読み順ではなく作中時系列）を返す。
+
+```typescript
+{
+  name: "get_scene_timeline_neighbors",
+  description: "Get up to 3 preceding and 3 following scenes in story-time order.",
+  parameters: {
+    sceneId: { type: "string", description: "Scene node id" }
+  }
+}
+```
+
+**実行**: 同 project 内の `storyTimeOrder` 付きシーンを fractional-index 比較で前後 3 件ずつ返す。`storyTimeLabel`（例: 「3年前」）と synopsis を含む。
+
 ---
 
 ## ツール実行フロー
@@ -279,7 +329,7 @@ Snippetを検索する。
 
   → UI: チェックボックス付きプレビュー表示
   → ユーザー: 選択して「Add」
-  → pinned_codex に追加
+  → chat_session_pinned_codex に追加
 ```
 
 ---
@@ -317,23 +367,34 @@ Snippetを検索する。
 
 全ツールは読み取り専用。データの変更・作成・削除は行わない。将来的に書き込みツール（エントリ作成等）を追加する場合は、ユーザー確認ステップを必須とする。
 
+### 既注入エントリへの short-circuit
+
+`get_codex_entry` が、システムプロンプトに既に full body + custom details + aliases ごと注入されているエントリ（= `fullyInjectedIds`、Spotlight された Codex などが対象）に対して呼ばれた場合、`toolExecutors` を経由せずに「既に注入済み」を示すスタブ結果を返す（`src/features/chat/chatStore.ts` の `guardedExecuteTool`）。LLM がプロンプト指示に従わず再 fetch しがちな挙動への保険であり、トークン浪費を防ぐ。
+
 ---
 
 ## UIの詳細
 
 ### エージェントモードトグル
 
-Chatパネルのヘッダー、グローバルチャットボタン（🌐）の隣に配置:
+ChatInput 下段ツール列の 🔧 Wrench アイコン（AI オプション ポップオーバー）内に Agent mode / Thinking mode のチェックボックスを並べる:
 
 ```
-[Chat] [Scene: The tower ▾] [🌐] [🔧]     [Sessions] [+]
-                                   ↑
-                              Agent mode toggle
+┌─ ChatInput card ──────────────────────────┐
+│ [TipTap editor]                            │
+│ [🔧][model picker]            [Send ▶]    │
+└────────────────────────────────────────────┘
+            ↓ 🔧 クリック
+   ┌──────────────────────────┐
+   │ ☑ Agent mode             │
+   │ ☑ Thinking mode          │
+   └──────────────────────────┘
 ```
 
 - OFF（デフォルト）: 通常のコンテキスト注入モード
-- ON: ツール定義がシステムプロンプトに追加。コンテキストバーに `[Agent mode]` ピル表示
-- トグル切替はセッション内で即時反映。セッションをまたいでは永続化しない
+- ON: ツール定義が `send_agent_message` に渡される。コンテキストバーに `[Agent]`（Bot アイコン）ピル表示
+- トグル切替はセッション内で即時反映。`chatStore.agentMode` で管理し、セッション再開時はデフォルト OFF（永続化しない）
+- 探索的な問いに対しては、ChatInput 上のサジェストチップ（`shouldSuggestAgentMode` ヒューリスティクス）から **一回限りの Agent mode override** で送信できる（永続トグルは変えない）
 
 ### ツール呼び出しの可視化
 
@@ -368,7 +429,7 @@ AI: エルフのキャラクターを探します。
    - 各エントリ: チェックボックス + name + type バッジ + summary先頭50文字
    - 全選択/全解除ボタン
    - 既に Spotlight 済みのエントリはチェック済み + 「Already spotlighted」ラベル
-4. 「Add selected」クリック → 選択エントリを `pinned_codex` に `source: 'manual'` で追加
+4. 「Add selected」クリック → 選択エントリを `chat_session_pinned_codex` に `pin_source: 'manual'` で追加
 5. 入力欄が閉じ、コンテキストバーのピルが更新される
 
 **キャンセル**: `Escape` または入力欄外クリックで閉じる（選択破棄）。
@@ -385,7 +446,7 @@ AI: エルフのキャラクターを探します。
 
 ### ツール呼び出し履歴
 
-`chat_messages.metadata` JSONフィールドにツール呼び出しの記録を保存する:
+`chat_messages.metadata` JSON フィールドに、ツール呼び出し記録（`tool_calls`）と最終応答の thinking ブロック（`thinking_blocks`、signature 込み）を保存する。フィールド名は `agentTypes.ts` の `ToolCallRecord` 型に合わせて camelCase（`resultSummary` / `tokensUsed`）:
 
 ```json
 {
@@ -393,20 +454,23 @@ AI: エルフのキャラクターを探します。
     {
       "name": "search_codex",
       "params": { "query": "エルフ" },
-      "result_summary": "3 entries found",
-      "tokens_used": 450
+      "resultSummary": "3 entries found",
+      "tokensUsed": 450
     },
     {
       "name": "get_codex_entry",
       "params": { "id": "elara-id" },
-      "result_summary": "Elara (character)",
-      "tokens_used": 1200
+      "resultSummary": "Elara (character)",
+      "tokensUsed": 1200
     }
+  ],
+  "thinking_blocks": [
+    { "thinking": "...", "signature": "..." }
   ]
 }
 ```
 
-これにより、Chat Historyで過去のエージェントセッションを開いた際にツール呼び出しの可視化を再現できる。
+これにより、Chat Historyで過去のエージェントセッションを開いた際にツール呼び出しと thinking の可視化を再現できる。ツール呼び出しのストリーミング中も `onToolComplete` ごとに同 metadata を更新するため、進行中の表示も保たれる。
 
 ---
 
@@ -434,8 +498,10 @@ Tool Use対応はモデルによって異なる:
 | Anthropic | Claude 3+全モデル | 完全対応 |
 | OpenAI | GPT-4o、GPT-4系 | 完全対応 |
 | Ollama | モデル依存 | llama3.1+は一部対応。非対応モデルではエージェントモード無効 |
+| AI のべりすと | 非対応 | `resolveModelCapabilities` で `supportsTools: false` 固定（KoboldAI 系 API のため） |
+| CLI（Claude Code 等） | 非対応 | subprocess 経由のためツール呼び出し不可。`supportsTools: false` 固定で、Agent mode ON のままでも送信時は通常チャットパス（`sendCliChatStream`）にフォールバックする |
 
-エージェントモードトグルは、現在のセッションモデルがTool Useに対応している場合のみ有効化する。対応状況は各プロバイダのSDK（`supportsToolUse` 等）またはSettings内のモデル設定で管理する。
+エージェントモードトグルは、現在のセッションモデルがTool Useに対応している場合のみ有効化する。対応状況は `getModelCapabilities` / `resolveModelCapabilities`（`src/features/chat/agent/modelLimits.ts`）の `supportsTools` で判定し、UI 側では ChatInput の `canUseTools` フラグで Agent mode チェックボックスをグレーアウトする。
 
 ### 拡張思考・effortとの併用
 

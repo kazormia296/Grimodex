@@ -55,9 +55,9 @@ Codexのフェーズ（経時的変化）はTimeline上にピンとして表示�
 |------|------|
 | パネルタイトル | 「Timeline」。左寄せ |
 | 軸モードドロップダウン | 現在の時間軸を表示・切替。「Story-time」「Reading-order」「Write-order」 |
-| カバレッジインジケーター | `📍 {story_time設定済み}/{総シーン数}`。軸モード=story時のみ表示 |
-| [🔍] 検索ボタン | 展開するとノード名インクリメンタル検索バーが表示される |
-| [⋮] パネルメニュー | View / Display / Export / Help |
+| カバレッジインジケーター | `📍 {story_time設定済み}/{総シーン数}`。軸モード=story時のみ表示。他軸モードでは `{N} scenes`（シーン総数）を表示 |
+| [🔍] 検索ボタン | 展開するとノード名インクリメンタル検索バーが表示される ※ 現状未実装 |
+| [⋮] パネルメニュー | View / Display / Export / Help ※ 現状はインライン Display トグル（タイトル `T` / Phaseピン `⏱`）とインスペクター開閉ボタン `⋮` のみ。Panel メニューとしては未実装 |
 
 ### パネルメニュー
 
@@ -77,6 +77,8 @@ Export
   タイムライン画像として保存（SVG / PNG）
 ```
 
+> **現状の実装**: ドロップダウン形式のパネルメニューは未実装。`TimelineHeader` の右端にインラインの Display トグル（`showTitles` / `showPhasePins`）とインスペクター開閉ボタンが並ぶ。`showChapterNumbers` は store と永続化スキーマには存在するが、ヘッダー UI からは切り替え不可（描画ロジックは反映済み）。グリッドライン・感情曲線・Export・View（レーン）切替は MVP 範囲外。
+
 ---
 
 ## B. モードバー
@@ -88,10 +90,10 @@ Export
 | モード | ノード位置の決定元 | 編集可否 |
 |--------|------------------|---------|
 | **Story-time** | `tree_nodes.story_time_order`。未設定シーンはフォールバック（後述） | ドラッグで編集可 |
-| **Reading-order** | ツリーのDFS順序（Scenesパネルと同じグローバル順序）。`computeGlobalSceneOrder`（`treeStore` 側の関数）で Part / Chapter / Scene の入れ子を線形化して生成 | 編集不可（Scenesパネルで編集） |
+| **Reading-order** | ツリーのDFS順序（Scenesパネルと同じグローバル順序）。`computeGlobalSceneOrder`（`src/features/codex/phaseResolver.ts`）で Part / Chapter / Scene の入れ子を線形化して生成 | 編集不可（Scenesパネルで編集） |
 | **Write-order** | `tree_nodes.created_at` 昇順 | 編集不可（創造時刻） |
 
-> Reading-order の線形化は `treeStore` が既に提供している `computeGlobalSceneOrder` を Timeline でも再利用する。Timeline が独自に DFS を再実装しないことで、Scenes パネルと完全に同じ順序が保証される。
+> Reading-order の線形化は `phaseResolver.ts` が提供する `computeGlobalSceneOrder` を Timeline / Map / Codex Phase 解決で共有利用する（命名上 `treeStore` 配下にあるわけではない点に注意）。Timeline が独自に DFS を再実装しないことで、Scenes パネルと完全に同じ順序が保証される。
 
 ### スペーシングモード
 
@@ -127,14 +129,14 @@ Export
 
 | フィルタ | データソース | 動作 |
 |---------|------------|------|
-| **POV** | `tree_nodes.pov_character_id`（将来追加） | 選択したキャラクターが視点のシーンのみ表示 |
-| **Location** | `tree_nodes.location_id`（将来追加） | 選択した場所のシーンのみ表示 |
+| **POV** | `tree_nodes.pov_character_id` | 選択したキャラクターが視点のシーンのみ表示 |
+| **Location** | `tree_nodes.location_id` | 選択した場所のシーンのみ表示 |
 | **Has phases only** | `codex_entry_phases.anchor_node_id` | Phaseがアンカーされているシーンのみ表示 |
 | **Status** | `tree_nodes.status` | 指定ステータスのシーンのみ表示 |
 
 フィルタ適用中は非マッチシーンを薄いスタイル（opacity 0.25）で表示。完全に隠すのではなく「そこにシーンがある」という構造感を維持する。
 
-> MVP では POV / Location フィルタは無効化（該当カラムが未実装のため）。Has phases / Status のみ実装。
+> **現状の実装**: フィルタ機能は未実装。`tree_nodes.pov_character_id` / `location_id` のカラム自体は schema・`treeStore` ともに導入済み（`povCharacterId` / `locationId`、Matrix / Map で利用中）だが、Timeline 側にフィルタ state（`timelineStore.filter`）や UI（フィルタドロップダウン）は存在しない。Has phases / Status を含め、フィルタ全種が将来拡張扱い。
 
 ---
 
@@ -314,6 +316,8 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 - 表示している `index: #45 / 132` は「story-time順での何番目か」を示す参考表示で編集不可
 - Anchored phases リストからCodex/Phase編集ダイアログへ遷移
 - パネル幅が狭い場合（Bottom Dockの高さ制約下）、インスペクターは畳まれてノード選択時にポップオーバーで表示
+
+> **現状の実装** (`TimelineInspector.tsx`): タイトル / Status（読み取り専用テキスト） / Story-time label（インライン編集、story-time モード時のみ） / 配置済み・Unscheduled 表示 / Synopsis / Anchored phases / Created at を表示する。Characters・Location 行、`index: #N / M` の参考表示、`[Open in Editor ↗]` ボタン、Status のドロップダウン編集、ポップオーバー化はいずれも未実装（将来拡張）。
 
 #### Story-time ラベルのインライン編集
 
@@ -608,11 +612,12 @@ Phaseは `anchor_node_id` でシーンに紐づく。Timelineパネル上では:
 | `zoom` | `number` | ズーム倍率（1.0 が Fit）。`0.25` 〜 `4.0` にクランプ |
 | `scrollOffset` | `number` | 水平スクロール位置（px）。復元中は `isRestoringRef` で save-back を抑止 |
 | `selectedNodeIds` | `string[]` | 選択中のノードID（配列。`Set<string>` ではない） |
-| `filter` | `{ povId?: string, locationId?: string, hasPhases: boolean, status?: SceneStatus[] }` | フィルタ状態 |
+| `filter` | `{ povId?: string, locationId?: string, hasPhases: boolean, status?: SceneStatus[] }` | フィルタ状態。※ 現状未実装（store に `filter` フィールドは存在しない） |
 | `inspectorOpen` | `boolean` | インスペクター開閉 |
 | `display` | `{ showTitles: boolean, showChapterNumbers: boolean, showPhasePins: boolean }` | 表示設定（フラットキー） |
+| `pendingEditNodeId` | `string \| null` | F2 によるラベル編集ターゲット。Inspector がこの値を読んで該当 input にフォーカスし、消費後に `null` に戻す |
 
-永続化: `axisMode` / `spacingMode` / `zoom` / `scrollOffset` / `display` は `global-settings.json` の `timeline` セクションに保存。`selectedNodeIds` / `filter` は永続化しない（セッション限定）。
+永続化: `axisMode` / `spacingMode` / `zoom` / `scrollOffset` / `display` は `global-settings.json` の `timeline` セクションに保存。`selectedNodeIds` / `filter` / `pendingEditNodeId` は永続化しない（セッション限定）。保存は store subscribe での 500ms デバウンス、初期復元時の save-back を抑止する専用ヘルパとして `loadAndSyncTimelineSettings` を提供する。
 
 #### store 型に関する注記
 
@@ -697,17 +702,13 @@ Phase resolution
 ### 将来拡張用（MVPでは不要）
 
 ```sql
--- POV/Location 連携（Constellationパネル / Timelineフィルタで使用予定）
-ALTER TABLE tree_nodes ADD COLUMN pov_character_id TEXT
-  REFERENCES codex_entries(id) ON DELETE SET NULL;
-ALTER TABLE tree_nodes ADD COLUMN location_id TEXT
-  REFERENCES codex_entries(id) ON DELETE SET NULL;
-
 -- 感情曲線（v2以降）
 ALTER TABLE tree_nodes ADD COLUMN emotion_score REAL;
 ```
 
-これらは Timeline パネル単体では必須ではない。Constellationパネル等の後続機能で本格導入する。
+これらは Timeline パネル単体では必須ではない。
+
+> **現状の実装**: POV / Location 連携カラム（`pov_character_id` / `location_id`、いずれも `codex_entries(id) ON DELETE SET NULL`）は**既に schema・`treeStore` に追加済み**で、Matrix / Map / Inspector などから利用されている。インデックスは `idx_tree_pov` / `idx_tree_location` の**部分インデックス**（`WHERE ... IS NOT NULL`）で作成されており、`story_time_order` 用の通常インデックス方針とは扱いが異なる。Timeline 側でこれらを参照するフィルタ UI は未実装。
 
 ---
 
@@ -788,7 +789,7 @@ Timelineパネルのデフォルト位置はBottom Dock（非表示）。`Ctrl+A
 
 ### Scenesパネル（参照関係の整理）
 
-- Scenes ツリーの線形化関数 `computeGlobalSceneOrder`（`treeStore`）を Timeline の Reading-order 軸が再利用する
+- Scenes ツリーの線形化関数 `computeGlobalSceneOrder`（実体は `src/features/codex/phaseResolver.ts`、Phase 解決と共有）を Timeline の Reading-order 軸が再利用する
 - Timeline が独自順序を実装しないことで、Scenes と Timeline の表示が常に一致する
 - Scenes 側で Part/Chapter のツリーを再構成した場合は `computeGlobalSceneOrder` の返り値が変わり、Timeline の Reading 軸に自動的に反映される
 

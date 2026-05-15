@@ -78,31 +78,40 @@ Claude Code などの AI エージェントから自然言語で操作できる�
 
 ### Cargo ワークスペース構成
 
+**現状の実装** (`src-tauri/crates/grimodex-mcp/`):
+
 ```
 src-tauri/
-├── Cargo.toml          ← workspace root に変更
+├── Cargo.toml          ← workspace root (members = ["crates/grimodex-mcp", "crates/grimodex-lint"])
 ├── src/                ← 既存の Tauri アプリ
 ├── crates/
-│   └── grimodex-mcp/
-│       ├── Cargo.toml
-│       └── src/
-│           ├── main.rs       ← エントリポイント (stdio server)
-│           ├── tools/        ← MCP Tool ハンドラ
-│           │   ├── mod.rs
-│           │   ├── project.rs
-│           │   ├── scene.rs
-│           │   ├── codex.rs
-│           │   ├── search.rs
-│           │   ├── chat.rs
-│           │   └── stats.rs
-│           ├── db.rs          ← DB 接続 (rusqlite + WAL)
-│           ├── content.rs     ← Markdown ファイル読み取り
-│           └── convert.rs     ← ProseMirror JSON → Markdown 変換
+│   ├── grimodex-mcp/
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── main.rs        ← エントリポイント (stdio server + ログ設定)
+│   │       ├── server.rs      ← rmcp `ServerHandler` (`GrimodexServer`)
+│   │       ├── tools/
+│   │       │   ├── mod.rs
+│   │       │   ├── project.rs
+│   │       │   ├── tree.rs
+│   │       │   ├── scene.rs
+│   │       │   ├── codex.rs
+│   │       │   ├── search.rs
+│   │       │   ├── chat.rs
+│   │       │   ├── snippets.rs
+│   │       │   ├── stats.rs
+│   │       │   └── lint.rs    ← Linter DTO（型のみ Phase 1 で凍結、コマンドは未実装）
+│   │       ├── db.rs          ← DB 接続 (rusqlite + WAL) + 型付きクエリ
+│   │       ├── convert.rs     ← ProseMirror JSON → Markdown 変換
+│   │       └── sanitize.rs    ← Phase 3 書き込みツール向け入力検証
+│   └── grimodex-lint/         ← Lint エンジン（別設計書参照）
 ```
 
-将来的には `database.rs`, `content.rs` 等を共有ライブラリクレート
+※ 現状未実装: `content.rs`（シーン本文はファイルではなく `tree_nodes.content` から読む。後述 §5 参照）、共有ライブラリ `grimodex-core`。
+
+**将来拡張**: `database.rs`, `content.rs` 等を共有ライブラリクレート
 (`grimodex-core`) に抽出し、Tauri アプリと MCP サーバーの両方から
-参照する構成にする。v1 では MCP サーバー側に必要最低限のコードを複製する。
+参照する構成にする。v1 では MCP サーバー側に必要最低限のコードを複製している。
 
 ### DB 接続
 
@@ -297,17 +306,22 @@ pub fn open_db(workspace_path: &Path) -> Result<Connection> {
 }
 ```
 
+※ 現状の実装: `scene_ids` を渡した場合は先頭から最大 50 件、`parent_id`/`status` 指定で全シーン取得した場合も 50 件で切り詰める。`limit` パラメータは未実装（常に上限 50）。
+
 ---
 
 ### 3.3 全文検索
 
-#### `search`
+#### `search_project`
 
 FTS5 トリグラムインデックスを使った横断検索。日本語対応。
 
+※ ツール名は実装上 `search_project`（MCP クライアントが汎用 `search` と
+衝突しないよう接尾辞を付けている）。
+
 ```json
 {
-  "name": "search",
+  "name": "search_project",
   "description": "プロジェクト全体をFTS5全文検索する。シーン本文、Codexエントリ、チャット履歴、ノートを横断的に検索。日本語対応（トリグラムトークナイザ）",
   "inputSchema": {
     "type": "object",
@@ -317,12 +331,9 @@ FTS5 トリグラムインデックスを使った横断検索。日本語対応
         "description": "検索クエリ（FTS5構文対応: AND/OR/NOT、フレーズ検索 \"...\" ）"
       },
       "scope": {
-        "type": "array",
-        "items": {
-          "type": "string",
-          "enum": ["scenes", "codex", "chat", "notes"]
-        },
-        "description": "検索対象を限定する。省略時は全対象を検索"
+        "type": "string",
+        "enum": ["all", "scenes", "codex", "snippets", "chat"],
+        "description": "検索対象を限定する。省略時は \"all\""
       },
       "limit": {
         "type": "integer",
@@ -375,7 +386,7 @@ Codex エントリの一覧を取得する。
   "inputSchema": {
     "type": "object",
     "properties": {
-      "type": {
+      "type_slug": {
         "type": "string",
         "description": "エントリタイプのslugでフィルタ (例: character, location, item, lore)"
       },
@@ -388,6 +399,8 @@ Codex エントリの一覧を取得する。
   }
 }
 ```
+
+※ 現状の実装ではパラメータ名は `type_slug`（予約語 `type` を避けるため）。
 
 **戻り値:**
 ```json
@@ -474,34 +487,38 @@ Codex エントリの詳細を取得する。
     "properties": {
       "name": {
         "type": "string",
-        "description": "エントリ名"
+        "description": "エントリ名（必須、最大 255 文字）"
       },
-      "type": {
+      "type_slug": {
         "type": "string",
         "description": "エントリタイプ slug (例: character, location, item, lore)"
       },
       "aliases": {
         "type": "array",
         "items": { "type": "string" },
-        "description": "別名リスト（本文中のハイライト検出に使用）"
+        "description": "別名リスト（本文中のハイライト検出に使用、最大 50 個・各 100 文字）"
       },
       "summary": {
         "type": "string",
-        "description": "概要（AI コンテキストに注入される要約文）"
+        "description": "概要（AI コンテキストに注入される要約文、最大 2000 文字）"
       },
       "content": {
         "type": "string",
-        "description": "詳細な説明（Markdown）"
+        "description": "詳細な説明（プレーンな Markdown、最大 1 MB）。内部で ProseMirror JSON に変換して保存"
       },
-      "parent_id": {
-        "type": "string",
-        "description": "親エントリのID（子エントリとして作成する場合）"
+      "tags": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "タグ名のリスト（未登録のタグは新規作成される）"
       }
     },
-    "required": ["name", "type"]
+    "required": ["name", "type_slug"]
   }
 }
 ```
+
+※ 現状未実装: `parent_id`（子エントリとして作成する経路）。  
+※ 実装追加: `tags`（作成と同時にタグを付与）。
 
 #### `update_codex_entry`
 
@@ -524,7 +541,12 @@ Codex エントリの詳細を取得する。
         "items": { "type": "string" }
       },
       "summary": { "type": "string" },
-      "content": { "type": "string", "description": "Markdown" }
+      "content": { "type": "string", "description": "Markdown（最大 1 MB、内部で ProseMirror JSON に変換）" },
+      "tags": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "タグ名のリスト（既存のタグを置き換える）"
+      }
     },
     "required": ["entry_id"]
   }
@@ -546,15 +568,17 @@ Codex エントリの詳細を取得する。
   "inputSchema": {
     "type": "object",
     "properties": {
-      "scene_id": {
+      "node_id": {
         "type": "string",
-        "description": "特定シーンに紐づくセッションのみ取得"
+        "description": "特定のツリーノード（シーン等）に紐づくセッションのみ取得"
       }
     },
     "required": []
   }
 }
 ```
+
+※ パラメータ名は実装上 `node_id`（チャットセッションはシーン以外のノードにも紐づき得るため）。
 
 #### `read_chat_history`
 
@@ -578,8 +602,9 @@ Codex エントリの詳細を取得する。
       },
       "limit": {
         "type": "integer",
-        "default": 50,
-        "description": "最大メッセージ数"
+        "default": 100,
+        "maximum": 200,
+        "description": "最大メッセージ数（1-200、デフォルト 100）"
       }
     },
     "required": ["session_id"]
@@ -604,17 +629,21 @@ Codex エントリの詳細を取得する。
     "properties": {
       "tag": {
         "type": "string",
-        "description": "タグ名でフィルタ"
+        "description": "タグ名でフィルタ（部分一致）"
       },
       "limit": {
         "type": "integer",
-        "default": 50
+        "default": 50,
+        "maximum": 100,
+        "description": "最大取得件数（1-100、デフォルト 50）"
       }
     },
     "required": []
   }
 }
 ```
+
+戻り値はスニペットの `content`（ProseMirror JSON）を Markdown に変換した形で返す。
 
 ---
 
@@ -636,40 +665,31 @@ Codex エントリの詳細を取得する。
 }
 ```
 
-**戻り値:**
+**戻り値（現状の実装）:**
 ```json
 {
-  "totalWordCount": 85200,
-  "totalScenes": 42,
-  "totalChapters": 12,
-  "chaptersBreakdown": [
-    {
-      "title": "第1章 目覚め",
-      "scenes": 4,
-      "wordCount": 8500,
-      "status": { "draft": 2, "complete": 2 }
-    }
+  "scene_count": 42,
+  "folder_count": 12,
+  "status_distribution": [
+    ["draft", 18],
+    ["complete", 12],
+    ["outline", 5],
+    ["revision", 5],
+    ["final", 2]
   ],
-  "statusDistribution": {
-    "outline": 5,
-    "draft": 18,
-    "complete": 12,
-    "revision": 5,
-    "final": 2
-  },
-  "codexEntries": {
-    "character": 15,
-    "location": 8,
-    "item": 12,
-    "lore": 6
-  },
-  "attribution": {
-    "human": 0.72,
-    "ai": 0.24,
-    "unknown": 0.04
-  }
+  "codex_entry_count": 41,
+  "codex_by_type": [
+    ["character", 15],
+    ["item", 12],
+    ["location", 8],
+    ["lore", 6]
+  ]
 }
 ```
+
+**将来拡張（未実装）**: `totalWordCount`、章単位の `chaptersBreakdown`、
+プロジェクト全体の `attribution`（人間 vs AI 比率）。  
+帰属比率は別ツール `get_attribution_report` で取得する。
 
 #### `get_attribution_report`
 
@@ -702,7 +722,7 @@ Codex エントリの詳細を取得する。
 | `list_tree` | R | o | ツリー構造一覧 |
 | `read_scene` | R | o | シーン本文（Markdown） |
 | `read_scenes_batch` | R | o | 複数シーン一括取得 |
-| `search` | R | o | FTS5 横断検索 |
+| `search_project` | R | o | FTS5 横断検索 |
 | `list_codex_entries` | R | o | Codex 一覧 |
 | `get_codex_entry` | R | o | Codex 詳細 |
 | `create_codex_entry` | W | o | Codex 新規作成 |
@@ -715,6 +735,15 @@ Codex エントリの詳細を取得する。
 | `write_scene` | W | v2 | シーン本文書き込み |
 | `create_scene` | W | v2 | シーン新規作成 |
 | `update_scene_metadata` | W | v2 | シーンメタデータ更新 |
+
+### 3.9 Linter 連携（Phase 1 で型のみ凍結）
+
+詳細は `docs/Grimodex_Linter設計書.md` §「MCP サーバー連携」を参照。
+実コマンド（`list_lint_diagnostics`, `run_lint`, `list_lint_rules`,
+`apply_lint_fix`）は MCP v2 / v4 で実装予定だが、外部クライアントが
+スキーマに対してコードを書けるよう、DTO 定義のみ Phase 1 で凍結済み
+（`tools/lint.rs` の `LintDiagnosticDto` 他）。
+座標系は LSP に合わせ `line` = 1-origin、`column` / `length` = 0-origin UTF-16 コードユニット。
 
 ---
 
@@ -731,6 +760,9 @@ Claude Code がコンテキストとして参照できる。
 | `grimodex://codex/{id}` | Codex エントリ詳細 |
 | `grimodex://codex` | Codex 全エントリ概要 |
 | `grimodex://stats` | プロジェクト統計 |
+
+※ 現状未実装。`GrimodexServer::get_info` は `ServerCapabilities::builder().enable_tools()`
+のみを宣言しており、`resources` capability は公開していない。すべて Tool 経由でアクセスする。
 
 ---
 
@@ -772,9 +804,15 @@ MCP サーバーはこれを Markdown に変換して返す。
 
 ### シーン本文
 
-シーンの本文は Content Dir に Markdown ファイルとして保存されている。
-`content_read` 相当の処理でファイルを直接読み取る。
-DB 上の `treeNodes.content`（ProseMirror JSON）は使用しない。
+**現状の実装**: シーン本文は DB の `tree_nodes.content` カラム（ProseMirror JSON）
+から読み取り、`prosemirror_to_markdown` で変換して返す。Content Dir
+からの直接読み取りは実装していない（`content.rs` モジュールも未作成）。
+ProseMirror JSON 以外（プレーンテキスト）が入っていた場合はそのまま返す
+フォールバックを持つ（`tools::scene::load_scene`）。
+
+**将来拡張**: 別途 Content Dir に Markdown ファイルとして保存する運用に
+切り替える場合、`content.rs` を追加してファイルパス解決とエンコーディング
+処理をそこに集約する想定。
 
 ---
 
@@ -811,12 +849,15 @@ Options:
 
 ### 起動時の検証
 
+**現状の実装** (`src/main.rs`):
+
 1. `--workspace` パスに `grimodex.db` が存在するか確認
-2. DB を WAL モードで開く（`busy_timeout = 5000`）
-3. スキーマバージョンを確認（互換性チェック）
-4. Content Dir のパスを解決: `{workspace}/content/`
-   （Tauri 本体と同じ: `lib.rs` L115 `ws_path.join("content")`）
+2. DB を WAL モードで開く（`busy_timeout = 5000`、`foreign_keys = ON`）
+3. `--project` 未指定時は `SELECT id FROM projects ORDER BY created_at LIMIT 1` で先頭プロジェクトを採用
+4. ログ出力先（stderr ＋ `~/.grimodex/logs/lint-mcp-*.log` の日次ローテーション）を初期化
 5. MCP サーバーを stdio で起動
+
+※ 現状未実装: スキーマバージョン検証、Content Dir パスの解決（§5 のとおりファイルを使わないため）。
 
 ---
 
@@ -934,7 +975,7 @@ Stored XSS が成立する。
 
 ```toml
 [dependencies]
-rmcp = { version = "0.1", features = ["server", "transport-io"] }
+rmcp = { version = "1.6", features = ["server", "transport-io", "macros"] }
 schemars = "1"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -945,8 +986,16 @@ anyhow = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+dirs = "5"
+chrono = "0.4"
 ```
+
+※ `rmcp` は当初 0.1 系を想定していたが、現状 1.6 系を使用。`macros` フィーチャを
+有効化して `#[tool_router]` / `#[tool_handler]` マクロでハンドラを定義している。  
+※ ファイルロギング (`tracing-appender`) と HOME ディレクトリ解決 (`dirs`)、
+タイムスタンプ整形 (`chrono`) は設計書段階では未列挙だった追加分。
 
 ---
 

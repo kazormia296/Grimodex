@@ -1,8 +1,10 @@
 # Grimodex — リビジョン履歴設計書
 
-> 最終更新: 2026-04-02
-> ステータス: 設計中
+> 最終更新: 2026-05-16
+> ステータス: 実装済み（Diff 表示はテキストブロック単位、Tauri 化は未着手）
 > 依存: Grimodex_統合DBスキーマ.md（content_versions テーブル）、Grimodex_Editorパネル設計書.md、Grimodex_Codexパネル設計書.md、Grimodex_Snippetsパネル設計書.md
+
+実装ディレクトリ: `src/features/revision/`（`api.ts`, `revisionStore.ts`, `RevisionHistoryModal.tsx`, `projectSnapshotApi.ts`, `ProjectSnapshotModal.tsx`）。
 
 ---
 
@@ -168,6 +170,11 @@ History ボタンクリックで **モーダルオーバーレイ** を表示す
    f. トースト: "Restored to revision from {timestamp}"
 ```
 
+**現状の実装**（`RevisionHistoryModal.handleRestoreConfirm`）:
+- ステップ a は `createRevision({ snapshotType: 'manual' })` を発行
+- ステップ b/c は `mainEditor.commands.setContent(json)` で TipTap を更新したのち、`entityType === 'scene'` の場合のみ `saveSceneContent` で DB に永続化する
+- Note / Codex / Snippet の復元時に対象テーブルへ書き戻す処理は **未実装**（エディタ側の自動保存に依存）（※ 現状未実装）
+
 ---
 
 ## キーボードショートカット
@@ -204,20 +211,20 @@ History ボタンクリックで **モーダルオーバーレイ** を表示す
 
 ### Diff 表示
 
-プレビューカラムの上部に **「Show changes」トグル** を配置する。ON にすると、選択中リビジョンとその1つ前のリビジョン間の差分をインラインハイライトで表示する。
+プレビューカラムの上部に **「Show changes」トグル** を配置する。ON にすると、選択中リビジョンとその1つ前のリビジョン間の差分を表示する。
 
-**実装方式:**
-- ProseMirror JSON から両バージョンのプレーンテキストを抽出（`Node.textContent`）
-- テキストレベルの diff を `diff-match-patch`（Google製、軽量）で算出
-- 差分結果を TipTap Decorations としてレンダリング:
-  - 追加テキスト: `background: rgba(0, 180, 0, 0.2)`（緑ハイライト）
-  - 削除テキスト: `background: rgba(255, 0, 0, 0.2); text-decoration: line-through`（赤取り消し線）
+**現状の実装**（`RevisionHistoryModal.tsx` の `PreviewPanel` / `computeBlockDiff`）:
+- ProseMirror JSON のトップレベルブロックごとにプレーンテキストを抽出
+- ブロック列を LCS（最長共通部分列）で照合し、未マッチのブロックを変更扱いにする
+- プレビューは **左右 2 カラムの並列ビュー**（左: 直前リビジョン、右: 選択リビジョン）
+- 変更ブロックには CSS クラス `diff-block-remove` / `diff-block-add` を付与してハイライト
 
 **「Current version」選択時の diff:**
 - 現在の content と最新リビジョンの差分を表示（未保存の変更が可視化される）
 
 **制約:**
-- テキストレベルの diff のため、書式変更（太字の追加等）は検出しない。テキストの追加・削除・変更のみ表示
+- ブロック単位の diff のため、同一ブロック内のテキスト差分はハイライトされない。書式変更（太字の追加等）も検出しない
+- 将来拡張: `diff-match-patch` 等を用いた文字単位の inline diff、TipTap Decorations による単一カラム表示は未実装
 
 ---
 
@@ -320,31 +327,29 @@ WHERE id NOT IN (SELECT version_id FROM project_snapshot_entries)
 - 削除は手動のみ。削除時は `project_snapshot_entries` もCASCADE削除
 - 参照されなくなった `content_versions` は次回プルーニング時に通常通り削除対象になる
 
-### Tauri コマンド
+### データアクセス API
+
+**現状の実装**: `src/features/revision/projectSnapshotApi.ts` がフロント側で Drizzle ORM を直接叩く。`projectId` は内部定数 `"default-project"` を使用（マルチプロジェクト対応は未実装）。
 
 ```typescript
-// プロジェクトスナップショット作成
-invoke('create_project_snapshot', {
-  projectId: string,
-  name: string,
-  description?: string
+createProjectSnapshot(params: {
+  name: string;
+  description?: string;
 }): Promise<{ id: string; entryCount: number }>
 
-// プロジェクトスナップショット一覧
-invoke('list_project_snapshots', {
-  projectId: string
-}): Promise<{ id: string; name: string; description: string | null; entryCount: number; createdAt: string }[]>
+listProjectSnapshots(): Promise<ProjectSnapshotMeta[]>
 
-// プロジェクトスナップショット復元
-invoke('restore_project_snapshot', {
-  snapshotId: string
-}): Promise<{ restoredCount: number; safetySnapshotId: string }>
+restoreProjectSnapshot(
+  snapshotId: string,
+  snapshotName: string,    // safety スナップショット名生成のため UI から渡す
+): Promise<{ restoredCount: number; safetySnapshotId: string }>
 
-// プロジェクトスナップショット削除
-invoke('delete_project_snapshot', {
-  snapshotId: string
-}): Promise<void>
+deleteProjectSnapshot(snapshotId: string): Promise<void>
 ```
+
+復元処理は対象テーブル（`tree_nodes` / `codex_entries` / `snippets`）の `content` を直接更新したのち、`ProjectSnapshotModal` 側で `window.location.reload()` を呼んでエディタを再初期化する（※ TipTap インスタンスを個別に更新する設計は未実装）。
+
+**将来拡張**: Rust 側に同等の Tauri コマンドを切り出す案は未実装（※ 現状未実装）。
 
 
 ---
@@ -369,50 +374,62 @@ invoke('delete_project_snapshot', {
 
 ### Settings
 
-- 自動リビジョン最低間隔（デフォルト: 5分、範囲: 1分〜60分）
-- リビジョン保持上限（デフォルト: 50、範囲: 10〜200）
+- 自動リビジョン最低間隔: 設定キー `revision.autoInterval`（単位: 分、デフォルト 5、範囲: 1〜60）
+- リビジョン保持上限: 設定キー `revision.keepCount`（デフォルト 50、範囲: 10〜200）
+- いずれも global スコープ。UI は `src/features/settings/categories/DataCategory.tsx` で提供
 
 ---
 
-## Tauri コマンド
+## データアクセス API
+
+**現状の実装**: Tauri コマンドではなく、フロントエンドから Drizzle ORM 経由で SQLite を直接操作する（`src/features/revision/api.ts`）。
 
 ```typescript
-// リビジョン一覧取得（メタデータのみ、contentは含まない）
-invoke('list_content_versions', {
-  entityType: string,   // 'scene' | 'note' | 'codex_entry' | 'snippet'
+// リビジョン一覧取得（メタデータのみ、content は空文字で返す）
+listRevisions(
+  entityType: EntityType,
   entityId: string,
-  limit: number,        // default: 20
-  offset: number        // default: 0
-}): Promise<{ id: string; versionNumber: number; snapshotType: 'auto' | 'manual'; createdAt: string }[]>
+  limit = 20,
+  offset = 0,
+): Promise<RevisionMeta[]>
 
-// 特定リビジョンのcontent取得
-invoke('get_content_version', {
-  versionId: string
-}): Promise<{ id: string; content: string; versionNumber: number; snapshotType: string; createdAt: string }>
+// 特定リビジョンの取得（content を含む）
+getRevision(id: string): Promise<ContentVersion | undefined>
 
-// 手動スナップショット作成
-invoke('create_content_snapshot', {
-  entityType: string,
+// リビジョン作成（前回と同一 content ならスキップして null を返す）
+createRevision(params: {
+  entityType: EntityType;
+  entityId: string;
+  content: string;
+  snapshotType: 'auto' | 'manual';
+}): Promise<ContentVersion | null>
+
+// 最新リビジョンの content 取得
+getLatestRevisionContent(
+  entityType: EntityType,
   entityId: string,
-  content: string       // 現在のProseMirror JSON
-}): Promise<{ id: string; versionNumber: number }>
+): Promise<string | null>
 
-// リビジョン復元
-invoke('restore_content_version', {
-  versionId: string
-}): Promise<{ restoredContent: string; safetySnapshotId: string }>
-
-// プルーニング（アプリ起動時 or スナップショット作成時に自動呼び出し）
-invoke('prune_content_versions', {
-  entityType: string,
+// プルーニング（auto を古い順に削除、project_snapshot_entries 参照ぶんは保護）
+pruneRevisions(
+  entityType: EntityType,
   entityId: string,
-  maxVersions: number   // Settingsから取得
-}): Promise<number>     // 削除された件数
+  keepCount = 50,
+): Promise<void>
 ```
+
+呼び出し箇所:
+- 自動リビジョン: `src/features/editor/EditorPane.tsx`（scene 用 `saveFn`）、`CodexDetailContent.tsx`、`SnippetDetailContent.tsx`
+- 手動リビジョン（`Ctrl+S`）: 同上の `handleManualSave` 系
+- プルーニングは `createRevision` 成功時に `revision.keepCount` を読み出して非同期実行
+
+**将来拡張**: Rust 側に `list_content_versions` / `get_content_version` / `create_content_snapshot` / `restore_content_version` / `prune_content_versions` を Tauri コマンドとして切り出す案は未実装（※ 現状未実装）。
 
 ---
 
 ## Zustand ストア
+
+**現状の実装**（`src/features/revision/revisionStore.ts`）:
 
 ```typescript
 interface RevisionHistoryState {
@@ -420,21 +437,33 @@ interface RevisionHistoryState {
   isOpen: boolean;
   entityType: EntityType | null;
   entityId: string | null;
+  currentContent: string | null;   // 「Current version」表示用の現在の content
 
   // リビジョンデータ
   revisions: RevisionMeta[];
-  selectedRevisionId: string | null;
-  selectedContent: string | null;   // 選択中リビジョンのProseMirror JSON
+  selectedRevisionId: string | null;  // null = 「Current version」
+  selectedContent: string | null;     // 選択中リビジョンの ProseMirror JSON
+  isLoadingContent: boolean;
+  page: number;
   hasMore: boolean;
 
+  // 自動リビジョンの間隔判定（エンティティ別の最終リビジョン時刻）
+  lastAutoRevisionAt: Record<string, number>;
+
   // アクション
-  open: (entityType: EntityType, entityId: string) => Promise<void>;
-  close: () => void;
-  selectRevision: (revisionId: string) => Promise<void>;
+  openHistory: (entityType: EntityType, entityId: string, currentContent: string) => void;
+  closeHistory: () => void;
+  loadRevisions: () => Promise<void>;
   loadMore: () => Promise<void>;
-  restore: (revisionId: string) => Promise<void>;
+  selectRevision: (id: string | null) => Promise<void>;
+  recordAutoRevision: (entityId: string) => void;
+  shouldAutoRevision: (entityId: string, intervalMs?: number) => boolean;
 }
 ```
+
+- `PAGE_SIZE = 20`（モジュール定数）
+- ヘルパー `getEntityType(nodeType)` で TreeNode の `nodeType` → `EntityType` 変換を提供
+- 復元処理（`restore`）はストアではなく `RevisionHistoryModal` の `handleRestoreConfirm` 内に実装されている（※ 設計とは配置が異なる）
 
 ---
 

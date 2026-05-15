@@ -115,42 +115,42 @@ Codex 基点で「真琴/Makoto の表記ゆれ」は Linter、「Codex: 目=青
 
 ### モジュール構成
 
-```
-src-tauri/src/lint/
-├── mod.rs              # 公開 API、エンジン
-├── rule.rs             # LintRule trait, Diagnostic, Severity
-├── context.rs          # LintContext (Codex データへのアクセス等)
-├── offset.rs           # UTF-16 offset 計算ユーティリティ
-├── rules/
-│   ├── ja/
-│   │   ├── ellipsis.rs              # 三点リーダー
-│   │   ├── dash.rs                  # ダッシュ
-│   │   ├── consecutive_punct.rs     # 連続句読点
-│   │   ├── halfwidth_kana.rs        # 半角カナ
-│   │   ├── quote_period.rs          # カギ括弧内末尾句点
-│   │   ├── sentence_length.rs       # 一文長
-│   │   ├── sentence_ending_repeat.rs # 同文末連続
-│   │   └── ...（particle_no_chain.rs は Phase 2）
-│   └── en/
-│       ├── smart_quotes.rs
-│       ├── em_dash.rs
-│       ├── ellipsis.rs
-│       └── double_space.rs
-├── dicts/              # 静的辞書（include_str!）
-│   └── (Phase 2 以降)
-└── tests/
-    └── fixtures/
-        └── <rule_id>/
-            ├── input.txt
-            └── expected.json
+**現状の実装**: Crate 分離方針（§MCP サーバー連携 § Crate 構成）に従い、Linter コアは `src-tauri/crates/grimodex-lint/` に独立した crate として配置済み。当初設計の `src-tauri/src/lint/` 配下ではない。
 
-src-tauri/data/lint/
-├── LICENSES.md         # 取り込んだ辞書の出典・ライセンス
-└── (各種 JSON 辞書)
+```
+src-tauri/crates/grimodex-lint/
+├── Cargo.toml
+└── src/
+    ├── lib.rs               # 公開 API（`lint()` / 型 re-export）
+    ├── engine.rs            # エンジン本体（disable resolve / 辞書衝突解決 / 出力ソート）
+    ├── error.rs             # `LintError`
+    ├── morph.rs             # lindera + UniDic ラッパー（Phase 2 で前倒し導入）
+    ├── offset.rs            # UTF-16 offset ユーティリティ
+    ├── rule.rs              # `LintRule` trait、`Diagnostic`、`Severity` ほか共通型
+    └── rules/
+        ├── mod.rs           # `build_ruleset()`（言語別にルールを登録）
+        ├── ja/              # consecutive_punct / dash / ellipsis /
+        │                    # halfwidth_fullwidth_mix / halfwidth_kana /
+        │                    # kanji_hiragana_chain / particle_no_chain /
+        │                    # quote_period / redundant_expression /
+        │                    # sentence_ending_repeat / sentence_length /
+        │                    # word_repetition
+        ├── en/              # double_space / ellipsis / em_dash / straight_quotes
+        ├── codex/           # name_inconsistency（F 群、Phase 2 → 1 前倒し、既定 OFF）
+        └── project/         # term_consistency（用語辞書）
+
+src-tauri/src/
+├── commands/lint.rs         # Tauri Command `lint_text`（薄い委譲）
+└── lint_logging.rs          # `tracing` + 日次ローテーション初期化
+
+src-tauri/data/lint/         # ※ 現状未実装
+└── (Phase 2 以降の取り込み辞書 + LICENSES.md を配置予定)
 
 scripts/
-└── extract-lint-dicts.ts   # 辞書抽出スクリプト（手動実行）
+└── extract-lint-dicts.ts   # 辞書抽出スクリプト（※ 現状未実装、Phase 2 で導入）
 ```
+
+**将来拡張**: textlint 系辞書を取り込むタイミングで `crates/grimodex-lint/data/` 配下に静的辞書を置き `include_str!` で埋め込む。lindera + UniDic は既に `embed-unidic` feature で埋め込み済み。
 
 ### ビルド方針（重要）
 
@@ -225,13 +225,23 @@ pub enum LintScope {
 
 pub struct LintContext<'a> {
     pub config: &'a LintConfig,
-    // Phase 2 以降で追加: pub codex: &'a CodexReader,
-    // Phase 1 の grimodex-lint crate は Codex DB に依存しない
-    // （F群ルール導入時にフィールドと CodexReader 型を同時追加）
+    /// Phase 2 で導入: lindera + UniDic でブロック単位にトークン化した
+    /// 結果（`block_tokens.is_some()` のときに limit。1 リクエストにつき
+    /// 1 回だけ走り、`requires_morphology()` を返す全ルールで共有する）。
+    pub block_tokens: Option<&'a [Vec<MorphToken>]>,
+    /// Codex Alias と衝突した行を除外済みの用語辞書（`project/term-consistency`
+    /// が直接走査する。エンジンが事前に解決する）。
+    pub term_dictionary: &'a [TermEntry],
 }
 
 pub struct LintConfig {
     pub rules: HashMap<String, RuleConfig>,
+    /// F 群（`codex/*`）が使う Codex エントリ。**フロントが lint 要求ごとに
+    /// 必要分を直列化して送る方式**で、grimodex-lint crate は DB に直接
+    /// 依存しない（当初構想の `CodexReader` トレイト経由ではない）。
+    pub codex_entries: Vec<CodexEntry>,
+    /// `project/term-consistency` が参照する用語辞書本体。
+    pub term_dictionary: Vec<TermEntry>,
 }
 
 pub struct RuleConfig {
@@ -244,6 +254,14 @@ pub trait LintRule: Send + Sync {
     fn id(&self) -> &'static str;
     fn default_severity(&self) -> Severity;
     fn supported_languages(&self) -> &'static [Language];
+
+    /// 形態素解析（`LintContext.block_tokens`）が必要なルールは true を返す。
+    /// 全有効ルールのうち一つでも true ならエンジンが 1 回だけ tokenize を走らせる
+    /// （Phase 2 の 1 パス統合最適化、§Phase 2 で検討すべきパフォーマンス課題）。
+    /// デフォルト: false（regex 専用ルール）。
+    fn requires_morphology(&self) -> bool {
+        false
+    }
 
     /// 適用可能なブロック種別。エンジン側でこの配列に含まれない BlockKind の
     /// ブロックは自動スキップする。デフォルトは全ブロック種別（codeBlock は
@@ -617,6 +635,11 @@ Phase 1 のデフォルト `all-halfwidth` は**日本語横書き小説で最�
       "options": { "policy": "strip" }
     }
     // ...
+  },
+  "inlineDisable": {
+    // 複数ブロック選択時の挙動（§複数ブロック選択時の挙動）。
+    // "ask" / "block" / "span" の 3 値。デフォルト "ask"。
+    "multiBlockPolicy": "ask"
   }
 }
 ```
@@ -811,19 +834,30 @@ Phase 1 から設定 UI に用意:
 
 ## Diagnostic の保持戦略
 
-### Phase 1: キャッシュなし（現在シーンのみ保持）
+### Phase 1: キャッシュなし（現在シーンのみ保持） → Incremental lint を前倒し
 
-Phase 1 のルールは regex のみで、実測コストは 5,000 文字 × 14 ルールでも **〜5ms**。予算 50ms に対して 10% 以下のため、**キャッシュを持たず、毎回再計算**する方針。
+Phase 1 のルールは regex のみで、実測コストは 5,000 文字 × 14 ルールでも **〜5ms**。当初は予算 50ms に対して 10% 以下のため**キャッシュを持たず、毎回再計算**する方針だったが、**形態素解析ルール 5 個を Phase 1 に前倒し**した影響でフルスキャンのコストが無視できず、**ブロック単位の差分キャッシュ（Incremental lint）**を `lintStore.ts` 内で実装している（§Phase 2 から Phase 1 へ前倒しした項目）。
 
 ```typescript
-// Zustand store
-type LintStore = {
+// Zustand store（現状の実装。`lintStore.ts`）
+interface LintState {
   currentSceneId: string | null;
-  diagnostics: Diagnostic[];         // 現在シーンの Diagnostic のみ
-  pendingRequestId: number;          // stale 応答破棄用の世代番号
+  rawDiagnostics: Diagnostic[];      // ignore フィルタ前の生 Diagnostic
+  diagnostics: Diagnostic[];          // 表示用（永続無視リスト適用後）
+  lastSceneText: string;              // ignore マッチ再評価用にシーン本文を保持
+  warnings: RuleWarning[];            // (rule_id, kind) でマージ保持
+  notifications: LintNotification[];  // Fix で disable Mark が消えた等の一時通知
+  pendingRequestId: number;           // stale 応答破棄用の世代番号
   isLinting: boolean;
-};
+  lastErrorMessage: string | null;
+  cursorOffset: number | null;        // エディタ → パネル逆方向ハイライト用
+}
+// クロージャ内（Zustand 管理外）:
+//   blockDiagCache: Map<`${kind}\0${text}`, Diagnostic[]>  // 相対 offset 保持
+//   lastConfigKey:  config / language / disables の JSON で busts
 ```
+
+`disables` 配列もキャッシュキーに含めており、disable の追加・削除でキャッシュが正しく失効する。
 
 ### ライフサイクル
 
@@ -1334,20 +1368,27 @@ pub fn lint(
 pub struct DisableDirective {
     pub range: Utf16Range,          // 無効化範囲（UTF-16、シーン全体座標）
     pub rules: RuleSelector,        // ["*"] = 全ルール、非空配列 = 指定ルール ID
-    pub kind: DisableKind,
 }
 
-pub enum RuleSelector {
-    All,                            // serde では ["*"] にシリアライズ
+// 注: 実装では `DisableKind` フィールドを持たない。Span / Block の区別は
+//     **UI レイヤの概念**で、Block 無効化はフロント側でブロック全体の
+//     `Utf16Range` に解決してから送る（`offsetMap.ts` の disable 抽出が担当）。
+//     Rust 側は (range, rules) のみで処理し、UI 由来の粒度は問わない。
+//     エンジン内部では検証済みの `SelectorKind` + `Utf16Range` ペアに変換した
+//     `ResolvedDirective` に詰め替えて `is_disabled` で評価する。
+
+// 配信形式（serde transparent）はフラットな `Vec<String>` で、TS 側の
+// `string[]` と直接一致する。
+pub struct RuleSelector(pub Vec<String>);
+
+// 検証後の内部表現。`validate()` が `RuleSelector` から構築する。
+pub enum SelectorKind {
+    All,                            // ["*"]
     Ids(Vec<String>),               // 非空のルール ID 配列
 }
-// 注: 空配列 [] は無効値。serde カスタム deserializer で弾いて
-//     Err に倒す（InvalidOption として上流で RuleWarning に変換）。
-
-pub enum DisableKind {
-    Span,       // インライン
-    Block,      // ブロック全体
-}
+// 注: 空配列 [] と "*" + 他 ID の混在はどちらも無効値。`validate()` が
+//     Err を返し、エンジンが `core/disables` の `RuleWarning::InvalidOption`
+//     として上流に伝える。directive 自体は破棄。
 ```
 
 ### 位置マップ構築時の directive 抽出
@@ -1365,14 +1406,18 @@ doc を walk する際、以下を同時に行う:
 Lint エンジンは Diagnostic を**発行前にフィルタ**:
 
 ```rust
-fn is_disabled(diag: &Diagnostic, disables: &[DisableDirective]) -> bool {
-    disables.iter().any(|d| {
+// 実装: エンジン入口で各 directive を `validate()` し、`ResolvedDirective`
+// （SelectorKind + Utf16Range）に詰め替えてから評価する。
+struct ResolvedDirective { kind: SelectorKind, range: Utf16Range }
+
+fn is_disabled(diag: &Diagnostic, resolved: &[ResolvedDirective]) -> bool {
+    resolved.iter().any(|d| {
         if !d.range.contains(&diag.range) {
             return false;
         }
-        match &d.rules {
-            RuleSelector::All => true,
-            RuleSelector::Ids(ids) => ids.iter().any(|id| id == &diag.rule_id),
+        match &d.kind {
+            SelectorKind::All => true,
+            SelectorKind::Ids(ids) => ids.iter().any(|id| id == &diag.rule_id),
         }
     })
 }

@@ -139,7 +139,7 @@ Show モードで選ばれた列候補に対し、Codex タグで二段目の絞
 | `Codex (locations)` | location タイプのみ | 同上 |
 | `Codex (items)` | item タイプのみ | 同上 |
 | `Codex (lore)` | lore タイプのみ | 同上 |
-| `POV` | character タイプの Codex エントリ | シーンの `tree_nodes.pov_character_id` を直接 JOIN（1行につき1セルだけ ●、未設定なら空行）。**Phase B 投入時はシーン POV のみで開始**。Beat レベル POV オーバーライド（`sceneBeat.attrs.pov` がシーン POV と異なる場合に該当キャラ列へ ★ を追加）は **Phase B 内の後続マイルストーン**で対応（後述「実装フェーズ」「Phase B POV オーバーライドの走査戦略」参照） |
+| `POV` | character タイプの Codex エントリ | シーンの `tree_nodes.pov_character_id` を直接 JOIN（1行につき1セルだけ ●、未設定なら空行）。Beat レベル POV オーバーライド（`sceneBeat.attrs.pov` がシーン POV と異なる場合に該当キャラ列へ ★ を追加）は実装済み — `scene_beat_pov_cache` の `Set<"sceneId::characterId">` を読み込み、`MatrixCell` の `pov` kind で `isBeatOverride` 分岐 |
 | `Location` | location タイプの Codex エントリ | シーンの `locationId`（同上） |
 | `Subplot` | `#subplot` タグ付きの `lore` エントリ | subplot の進行密度（言及スキャン結果ベース） |
 | `Custom` | **ユーザーが手動で追加した任意 Codex エントリの集合**（タイプ・タグ問わず） | 言及/関連の有無 |
@@ -213,13 +213,14 @@ Help
 
 #### Scene 行のセル
 
-- **クリック**: 該当シーンの Editor を開き、該当 Codex の最初の言及位置にスクロール
+- **クリック**: 該当シーンの Editor を開く（**現状**: 該当 Codex の最初の言及位置への自動スクロールは未実装、シーンの先頭を開くのみ）
 - **右クリック**:
   - **Open scene**: Editor で開く
-  - **Pin to scene**: Codex リレーションを明示的に作成
-  - **Remove association**: Codex リレーションを削除（言及ベースの ● は残る）
+  - **Show in Grid**: Grid パネルで該当シーンを reveal（実装拡張、`useGridStore.requestRevealScene`）
+  - **Pin to scene**: Codex リレーションを明示的に作成（`source !== 'relation'` のときのみ表示）
+  - **Remove association**: Codex リレーションを削除（言及ベースの ● は残る、`source === 'relation'` のときのみ表示）
   - **Add beat to this scene**: Unplaced beat を追加（列の Codex を `@mention` として自動挿入、後述「セルからの Beat 追加」）
-  - **Show source**: ● の根拠を表示（言及／リレーション／Beat メンションのどれか）
+  - **Show source**: ● の根拠を表示（言及／リレーション／Beat メンションのどれか）。**将来拡張**: 詳細モーダルでの全根拠リスト表示（現状はメニュー文言で最強 source のみ表示）
 
 #### Chapter 行のセル
 
@@ -292,7 +293,7 @@ POV / Location モードでは `scene_codex_pins` には書かない（メタデ
 
 ### Role-aware モードの仕様（Phase B）
 
-Beat システム設計書の Phase B で導入される Codex メンション role 修飾子（`actor` / `target` / `mentioned`）と、`sceneBeat.attrs.pov` を利用して、セル内に役割記号を描画する。
+Beat システム設計書の Phase B で導入された Codex メンション role 修飾子（`actor` / `target` / `mentioned`）と、`sceneBeat.attrs.pov` を利用して、セル内に役割記号を描画する。
 
 | 表示記号 | 意味 |
 |--------|------|
@@ -309,7 +310,7 @@ Beat システム設計書の Phase B で導入される Codex メンション r
 3. target（細枠）
 4. mentioned（薄）
 
-Phase A では Beat に role 修飾子が無いため Role-aware モードは利用不可（UI 上で disabled 表示）。Phase B 完了後に有効化される。
+> **現状の実装**: Role-aware モードは UI 上で常時選択可能（Phase A 時点での disabled 表示は採用していない）。`source='beat'` 行が無いシーンでは role が `'mentioned'` フォールバックとなり、`·` を表示する（`MatrixCell.tsx`）。記号と背景色の具体配色は実装側の決定。
 
 ---
 
@@ -451,16 +452,20 @@ Phase A で **2つの新規テーブル**を追加する。1つは明示的リ�
 
 シーン単位で Codex エントリを明示的に紐付けるテーブル。「Pin to scene」「Add scene to chapter (with this codex)」操作の保存先。Codex Quick の project-wide pin（既存 `codex_quick_pins`）とは別物（あちらはプロジェクト全体ピン、scene 単位ではない）。
 
+**現状の実装**（`src/db/schema.ts` / `src-tauri/src/database/migrate.rs`）:
+
 ```sql
 CREATE TABLE scene_codex_pins (
-  scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-  codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (scene_id, codex_entry_id)
+  scene_id   TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  entry_id   TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (scene_id, entry_id)
 );
-CREATE INDEX scene_codex_pins_by_scene ON scene_codex_pins(scene_id);
-CREATE INDEX scene_codex_pins_by_codex ON scene_codex_pins(codex_entry_id);
+CREATE INDEX idx_scene_codex_pins_scene ON scene_codex_pins(scene_id);
+CREATE INDEX idx_scene_codex_pins_entry ON scene_codex_pins(entry_id);
 ```
+
+`created_at` は SQL の `DEFAULT (datetime('now'))` ではなく、アプリ側（`upsertScenePin`）で ISO8601 文字列を埋める。カラム名は設計書上の `codex_entry_id` ではなく **`entry_id`** で確定済み（Grid パネル先行実装の都合、改名はしない）。
 
 このテーブルが下記キャッシュの `source = 'relation'` 行の一次ソースになる（同期更新）。Grid のカードで表示する Codex チップもこのテーブルを参照する。
 
@@ -468,34 +473,36 @@ CREATE INDEX scene_codex_pins_by_codex ON scene_codex_pins(codex_entry_id);
 
 下記の永続化キャッシュテーブル：
 
+**現状の実装**（`src/db/schema.ts` / `src-tauri/src/database/migrate.rs`）:
+
 ```sql
 CREATE TABLE scene_codex_mentions (
-  scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-  codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
-  mention_count INTEGER NOT NULL DEFAULT 0,
-  last_scanned_at TEXT NOT NULL DEFAULT (datetime('now')),
-  source TEXT NOT NULL,                          -- 'body' | 'beat' | 'relation'
-  role TEXT NOT NULL DEFAULT 'mentioned',        -- 'mentioned' | 'actor' | 'target'
+  scene_id        TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  source          TEXT NOT NULL,                          -- 'body' | 'beat' | 'relation'
+  role            TEXT NOT NULL DEFAULT 'mentioned',      -- 'mentioned' | 'actor' | 'target'
   PRIMARY KEY (scene_id, codex_entry_id, source)
 );
-CREATE INDEX scene_codex_mentions_by_scene ON scene_codex_mentions(scene_id);
-CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_id);
+CREATE INDEX idx_scm_codex ON scene_codex_mentions(codex_entry_id);
+CREATE INDEX idx_scm_scene ON scene_codex_mentions(scene_id);
 ```
 
 `source` はセル背景色の根拠区別（本文言及 / Beat メンション / Codex リレーション）に使う。1シーン × 1 Codex でも、根拠ごとに最大3行（`source='body'/'beat'/'relation'`）まで持てる。
 
-`role` は Phase B で導入する Codex メンション role 修飾子（Beat 設計書参照）を保持し、`source='beat'` の行のみ意味を持つ：
+> **※ 現状未実装**: `mention_count` カラムと `last_scanned_at` カラムは Phase A 時点では未追加。Phase B で `count` / `heatmap` Display モードを正式運用する際に additive 追加する想定。現状の `count` モードは便宜的に `cellInfo.sources.size`（根拠の種類数、最大3）を表示するに留まる（`src/features/matrix/lib/deriveCellRender.ts`）。
+
+`role` は Codex メンション role 修飾子（Beat 設計書参照）を保持し、`source='beat'` の行のみ意味を持つ：
 
 - `source='body'`: 本文テキストは actor/target を語らないので常に `'mentioned'`
 - `source='relation'`: 明示リレーションは役割を持たないので常に `'mentioned'`
 - `source='beat'`: 1シーン内の複数 beat に同じ Codex が異なる role で登場した場合、優先順位 `actor > target > mentioned` の **最強値**を1行に保持（Matrix の Role-aware 表示は1行参照で完結する）
 
-`role` カラムは **Phase A から DDL に含めて全行 `'mentioned'` のまま運用**する。Phase B で role 修飾子を導入するときに `source='beat'` 行の値を埋める実装を追加するだけで、PK 変更や追加マイグレーションは不要。
+**現状の実装**: `role` カラムは DDL に含まれており、`upsertSceneBeatMentions()`（`src/features/editor/beat/mentionApi.ts`）が `source='beat'` 行に actor/target/mentioned の値を書き込み済み。Phase B の Role-aware Display モードは UI 上で選択可能（`MatrixHeader.tsx`）。
 
 **POV はこのテーブルに含めない**。POV は「言及」ではなくメタデータのため `scene_codex_mentions` の責務範囲外：
 
 - シーン POV: `tree_nodes.pov_character_id` を Matrix 描画時に直接 JOIN
-- Beat POV（Phase B 以降の `sceneBeat.attrs.pov`）: **Phase B 投入時点では未対応**。後続マイルストーンで `scene_beat_pov_cache` テーブルを追加し、保存時にキャッシュする方針（描画時に全シーンの docJson を走査するアプローチは採用しない、後述「Phase B POV オーバーライドの走査戦略」参照）
+- Beat POV（`sceneBeat.attrs.pov`）: `scene_beat_pov_cache` テーブル（`beatPovCacheApi.ts` 経由で保存時に upsert）に永続化済み。Matrix 描画時は同テーブルを `Set<"sceneId::characterId">` 形式で読み込み、★ オーバーライド表示に利用する（`MatrixPanel.tsx` の `beatPovCache`）。詳細は後述「Phase B POV オーバーライドの走査戦略」参照
 
 ### 更新タイミング
 
@@ -515,15 +522,19 @@ CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_i
 
 #### リレーション同期の実装規約
 
-`scene_codex_pins` の INSERT/DELETE は **必ず専用関数 `upsertScenePin()` / `deleteScenePin()` 経由**で行う。これらの関数の内部で同一トランザクション内に `scene_codex_mentions` の `source='relation'` 行を upsert / delete する。
+`scene_codex_pins` の INSERT/DELETE は **必ず専用関数 `upsertScenePin()` / `deleteScenePin()` 経由**（`src/features/codex/sceneCodexPinsApi.ts`）で行う。これらの関数の内部で `scene_codex_mentions` の `source='relation'` 行を同期 upsert / delete する。
 
 - DB トリガーは使わない（Drizzle ORM 経路の透明性を優先）
 - `scene_codex_pins` への直接 INSERT/DELETE クエリを書かない（コードレビューで弾く規約）
 - Scene / Codex の CASCADE 削除は `scene_codex_mentions` 側にも `ON DELETE CASCADE` が効くため、`scene_codex_pins` 経由の二重削除は不要
 
+> **現状の実装**: sqlite-proxy がトランザクション API を露出していないため、**同一トランザクションでの atomic 同期ではなく** insert-first / prune-after の順序で fail-safe を担保している（同様の規約は `upsertSceneBodyMentions` / `upsertSceneBeatMentions` でも共通、`bodyMentionApi.ts` / `mentionApi.ts` 参照）。書き込み後は `bumpMatrixDataVersion()` で Matrix の再読み込みをトリガする。
+
 ### `mention_count` の Phase A 役割
 
-`dot` モードでは `mention_count` は表示に使わないが、Phase A から**正確な count を保存する**：
+> **※ 現状未実装**: `scene_codex_mentions.mention_count` カラムは Phase A 時点では追加されていない（DDL から省略済み）。`upsertSceneBodyMentions()` / `upsertSceneBeatMentions()` は「シーン × Codex × source の存在」のみを upsert し、回数は保持しない。Phase B で `count` / `heatmap` モードを正式運用する際は、`mention_count INTEGER NOT NULL DEFAULT 0` の additive migration と、保存パイプライン側の集計コードを同時投入する。
+
+`dot` モードでは `mention_count` は表示に使わないが、Phase B で**正確な count を保存する**設計とする：
 
 - Aho-Corasick マッチャーの戻り値を集計するだけのため、保存時の追加コストは無視できる
 - Phase B で `count` / `heatmap` モードを投入する際に**全シーン再スキャンが不要**になる（Settings の手動再構築依存を回避）
@@ -535,20 +546,23 @@ CREATE INDEX scene_codex_mentions_by_codex ON scene_codex_mentions(codex_entry_i
 
 ### Phase B POV オーバーライドの走査戦略
 
-Phase B の後続マイルストーンで Beat レベル POV オーバーライド（`sceneBeat.attrs.pov`）を Matrix の POV モードに反映する際、**走査タイミングは「シーン保存時のキャッシュ」一択**とする：
+Beat レベル POV オーバーライド（`sceneBeat.attrs.pov`）を Matrix の POV モードに反映する際、**走査タイミングは「シーン保存時のキャッシュ」一択**とする：
 
 - **採用**: 保存時に本文 docJson 内の `sceneBeat` ノードを走査し、シーン POV と異なる Beat POV を `scene_beat_pov_cache` テーブルに永続化。Matrix 描画時はこのキャッシュを JOIN するだけで済む
 - **不採用**: Matrix 描画のたびに全シーンの docJson を走査するアプローチ（500シーン分の docJson パースは Matrix の俯瞰用途と相反する）
 
-`scene_beat_pov_cache` のスキーマ案（Phase B 後続で確定）：
+**現状の実装**（`src/db/schema.ts` / `src-tauri/src/database/migrate.rs`）:
 
 ```sql
 CREATE TABLE scene_beat_pov_cache (
-  scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
-  pov_character_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  scene_id          TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  pov_character_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
   PRIMARY KEY (scene_id, pov_character_id)
 );
+CREATE INDEX idx_scene_beat_pov_scene ON scene_beat_pov_cache(scene_id);
 ```
+
+`extractBeatPovOverrides()` → `upsertSceneBeatPovOverrides()`（`src/features/editor/beat/`）の経路でシーン保存時に upsert される。Matrix 側は `MatrixPanel.tsx` の `beatPovCache: Set<string>` として全行を読み込み、POV モードのセルで ★ を描画する（`MatrixCell.tsx` の `pov` kind 分岐）。
 
 「シーン POV と異なる Beat POV のみ」を行として持つ（差分のみ保存）。シーン POV と一致する Beat POV は記録しない（行を 1 シーンあたり数行に抑える）。
 
@@ -612,45 +626,49 @@ CREATE TABLE scene_beat_pov_cache (
 
 依存: Codex 言及スキャナ、Scenes ツリー、Timeline の story-time order、Beat システム設計書 Phase A の Unplaced beat 機構
 
-- [ ] **`scene_codex_pins` テーブルの新規追加**（Drizzle migration）— 明示リレーションの一次ソース。Grid のカード Codex チップもこれを参照
-- [ ] **`scene_codex_mentions` キャッシュテーブルの新規追加**（Drizzle migration、PK は `(scene_id, codex_entry_id, source)`、`role` カラムは Phase A 時点で全行 `'mentioned'`）
-- [ ] シーン保存時のキャッシュ更新フック（既存の保存パイプラインに統合、本文 + Beat の両 source を同一トランザクションで upsert、`mention_count` を Phase A から正確に保持）
-- [ ] Codex 追加・rename・alias 変更時のキャッシュ部分再構築バックグラウンドジョブ（該当 Codex 列のみ再スキャン、共通経路）
-- [ ] **`scene_codex_pins` 操作の専用関数化**（`upsertScenePin()` / `deleteScenePin()` を実装し、内部で `scene_codex_mentions` の `source='relation'` 行を同一トランザクションで同期更新。直接 INSERT/DELETE は禁止規約）
-- [ ] **Settings → Data → "Codex 言及キャッシュを再構築" ボタン**（全 Codex × 全シーン再スキャン、進捗バー付き、衝突疑い時の逃げ道として）
-- [ ] 新規パネル `MatrixPanel` の実装（feature-based ディレクトリ `src/features/matrix/`）
-- [ ] Codex モード（default）
-- [ ] 行: シーン階層、列: Codex（タイプ別グループ）
-- [ ] セル表示（`scene_codex_mentions` キャッシュを参照、根拠別に背景色を変える）
-- [ ] **Tag フィルタ UI**（オートコンプリート、AND 条件、Show モードごとに別状態を保持）
-- [ ] Sort: Reading order / Story-time order
-- [ ] 🔍 検索（行/列の絞り込み、Chapter 名ヒット時は配下シーンを全表示、Scene 名ヒット時は親 Chapter を自動展開）
-- [ ] セルクリックで Editor を開く
-- [ ] **Scene 行のセル右クリック → 「Add beat to this scene」**（列の Codex を `@mention` として自動挿入）
-- [ ] **Scene 行ヘッダー右クリック → 「Add beat to this scene」**（Codex 自動挿入なし）
-- [ ] **Chapter 行のセルは hover 時のみ `+` ボタンを表示**（誤クリック防止のため、空セル全面ホットエリアにはしない）
-- [ ] **`+` ボタンクリック / セル右クリック → 「Add scene to this chapter」**（Codex モードでは列の Codex を `scene_codex_pins` 経由で自動付与。POV/Location モードでは新 Scene の `pov_character_id` / `location_id` を直接設定。folder 末尾に挿入、Scene 名は自動採番）
-- [ ] **Chapter 行ヘッダー右クリック → 「Add scene to this chapter」**（列要素の自動付与なし）
-- [ ] **新 Scene 作成直後のインライン入力ポップオーバー**（Synopsis 即入力、「Add another scene」で連続追加。Beat 追加ポップオーバーと同じパターン）
-- [ ] レイアウト: Bottom Dock デフォルト非表示（レイアウトシステム設計書に追記）
-- [ ] 設定の永続化（`global-settings.json`）
-- [ ] react-window 等による行・列両方の仮想スクロール
+- [x] **`scene_codex_pins` テーブルの新規追加**（Drizzle migration）— 明示リレーションの一次ソース。Grid のカード Codex チップもこれを参照（カラム名は `entry_id`）
+- [x] **`scene_codex_mentions` キャッシュテーブルの新規追加**（Drizzle migration、PK は `(scene_id, codex_entry_id, source)`、`role` カラムは現在 `source='beat'` 行のみが actor/target/mentioned 値を持つ）
+- [x] シーン保存時のキャッシュ更新フック（`upsertSceneBodyMentions` / `upsertSceneBeatMentions` で本文 + Beat の両 source を insert-then-prune で upsert。トランザクション API が無いため fail-safe 順序で代替）
+  - ※ `mention_count` は **未実装**（Phase B で additive 追加）
+- [x] Codex 追加・rename・alias 変更時のキャッシュ部分再構築バックグラウンドジョブ（`mentionRescanQueue.ts`、該当 Codex 列のみ対象スキャン）
+- [x] **`scene_codex_pins` 操作の専用関数化**（`upsertScenePin()` / `deleteScenePin()` を `sceneCodexPinsApi.ts` に実装、内部で `scene_codex_mentions` の `source='relation'` 行を insert-then-prune 順で同期。直接 INSERT/DELETE は禁止規約）
+- [x] **Settings → Data → "Codex 言及キャッシュを再構築" ボタン**（`src/features/settings/categories/DataCategory.tsx`、`enqueueRescan(null)` を呼び全 Codex × 全シーン再スキャン、進捗は `useRescanStore` 経由でステータスバーに表示）
+- [x] 新規パネル `MatrixPanel` の実装（`src/features/matrix/`）
+- [x] Codex モード（default）
+- [x] 行: シーン階層、列: Codex（タイプ別グループ）
+- [x] セル表示（`scene_codex_mentions` キャッシュを参照、根拠別に背景色を変える）
+- [x] **Tag フィルタ UI**（オートコンプリート、AND 条件、Show モードごとに別状態を保持）
+- [x] Sort: Reading order / Story-time order
+- [x] 🔍 検索（行/列の絞り込み、Chapter 名ヒット時は配下シーンを全表示、Scene 名ヒット時は親 Chapter を自動展開）
+- [x] セルクリックで Editor を開く
+- [x] **Scene 行のセル右クリック → 「Add beat to this scene」**（列の Codex を `@mention` として自動挿入。実装は `addUnplacedBeatFromGrid` の共通経路）
+- [x] **Scene 行ヘッダー右クリック → 「Add beat to this scene」**（Codex 自動挿入なし）
+- [x] **Scene 行のセル右クリック → 「Show in Grid」**（Grid パネルで該当シーンを reveal、設計書本文には未記載の実装拡張）
+- [x] **Chapter 行のセルは hover 時のみ `+` ボタンを表示**（誤クリック防止のため、空セル全面ホットエリアにはしない）
+- [x] **`+` ボタンクリック / セル右クリック → 「Add scene to this chapter」**（folder 末尾に挿入、`treeStore.createNode` 経由）
+  - ※ **現状未実装**: POV/Location モード時の新 Scene への `pov_character_id` / `location_id` 自動付与は未対応。現状は showMode 種別にかかわらず `upsertScenePin` で `scene_codex_pins` に登録する（`MatrixPanel.tsx::handleAddScene`）
+- [x] **Chapter 行ヘッダー右クリック → 「Add scene to this chapter」**（列要素の自動付与なし）
+- [x] **新 Scene 作成直後のインライン入力ポップオーバー**（`ScenePopover` で Synopsis 即入力、「Add another scene」で連続追加）
+- [x] レイアウト: `panelRegions.ts` の `matrix: "center-bottom"`（Bottom Dock 相当）デフォルト非表示
+- [x] 設定の永続化（`global-settings.json` の `matrix.*`、`matrixStore.ts` の 600ms debounce）
+- [x] **TanStack `useVirtualizer`** による行・列両方の仮想スクロール（設計時の想定は react-window、実装では同等の `@tanstack/react-virtual` を採用）
 
 ### Phase B: Matrix 拡張
 
-- [ ] Show モード切替（`POV` / `Location` / `Subplot` / `Custom`）
-- [ ] Custom モード: 列ヘッダ `+` ボタン、Codex パネルからの「Add to Matrix Custom」
-- [ ] Custom モード: 複数プリセットの保存・切替・rename・削除
-- [ ] Display モード: `count` / `heatmap` / `pov-color`（Phase A で `mention_count` を正確に保持しているため再スキャン不要）
-- [ ] **Display モード `role-aware`**（Beat 設計書 Phase B の role 修飾子と連動、actor 太枠 / target 細枠 / mentioned 薄 ● / POV ★）
-- [ ] `scene_codex_mentions` の `role` カラム（`source='beat'` 行）に actor/target/mentioned の最強値を書き込む実装（Phase A スキーマで `role` カラムは既に存在、PK 変更不要）
-- [ ] **`scene_beat_pov_cache` テーブルの新規追加**（Phase B 後続マイルストーン、Drizzle migration）
-- [ ] **POV モードに Beat レベル POV オーバーライドを反映**（保存時に `sceneBeat.attrs.pov` を `scene_beat_pov_cache` に upsert、Matrix 描画時は同テーブルを JOIN して該当キャラ列に ★ を追加。描画時 docJson 走査は採用しない）
-- [ ] フィルタ・絞り込み（空セル非表示、未編集のみ）
-- [ ] Codex 列の折りたたみ・並べ替え・ピン留め
-- [ ] CSV エクスポート（`source` 別行は1セル単位に集約。集約フォーマットは Phase B 着手前に確定 — 案: `●` 文字記号 / `B`/`R`/`M` の根拠コード文字列 / `source` を別列に分解、のいずれか）
-- [ ] Custom モードのプリセット切替時の UI 状態保持仕様（列幅は保持、スクロール位置はリセット）
-- [ ] Sort: Word count / Last edited
+- [x] Show モード切替（`POV` / `Location` / `Subplot` / `Custom`）— `MatrixHeader.tsx` の `SHOW_MODES` に列挙、`deriveColumns` で分岐
+- [x] Custom モード: ヘッダの `+` ボタンでセット作成、`ColumnHeaderMenu` の「セットから削除」、Codex パネルからの「Add to Matrix Custom」
+- [x] Custom モード: 複数プリセットの保存・切替・rename・削除（`matrixStore.ts` の `customSets` / `activeCustomSetId`）
+- [x] Display モード: `count` / `heatmap` / `pov-color` / `role-aware`（UI は全て選択可、`deriveCellRender.ts`）
+  - ※ `count` は現状 `cellInfo.sources.size`（根拠の種類数、最大3）を返す簡易実装。正確な mention 回数は `mention_count` カラム追加後に切り替え
+- [x] **Display モード `role-aware`**（actor `●` / target `◯` / mentioned `·` / POV `★`、`MatrixCell.tsx`）
+- [x] `scene_codex_mentions` の `role` カラム（`source='beat'` 行）に actor/target/mentioned の最強値を書き込む実装（`upsertSceneBeatMentions`）
+- [x] **`scene_beat_pov_cache` テーブルの新規追加**（Drizzle migration 済み、`beatPovCacheApi.ts`）
+- [x] **POV モードに Beat レベル POV オーバーライドを反映**（保存時に `extractBeatPovOverrides` → `upsertSceneBeatPovOverrides`、Matrix 側は `Set<"sceneId::characterId">` として一括読み込み）
+- [x] フィルタ・絞り込み（空セル非表示、未編集のみ）— Phase A から `hideEmptyRows` / `onlyUneditedRows` として実装済み
+- [x] Codex 列の折りたたみ・並べ替え・ピン留め（`pinnedColumnIds` / `hiddenColumnIds` / `collapsedTypeSections`）
+- [x] CSV エクスポート（`buildCsvString` / `exportCsv.ts`、現行フォーマットは `source` をコード文字列で集約）
+- [ ] Custom モードのプリセット切替時の UI 状態保持仕様（列幅は保持、スクロール位置はリセット — 現状はスクロール位置リセットのみ実装、列幅 D&D 自体が未実装）
+- [x] Sort: Word count / Last edited
 
 ### Phase C: 整合性チェック（v2+）
 

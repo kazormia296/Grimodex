@@ -82,6 +82,8 @@ Editorのアクティブシーンが変わったとき:
 
 各カードはクリック可能。クリックするとそのsourceのテキストだけをEditorのAttributionHighlight上で強調表示する（他のsourceを薄くする）。再クリックで解除。
 
+> **現状の実装**: 4枚カードではなく、`AttributionReport.tsx` の `StatBar`（ラベル + 横棒 + 文字数/割合）を Human / AI / Unknown の 3 行で縦に並べる構成。Total はフッターに表示。クリックでフィルタ on/off を切り替える挙動は仕様通り。
+
 ---
 
 ## C. ブレークダウンバー
@@ -94,8 +96,8 @@ Editorのアクティブシーンが変わったとき:
 ```
 
 - 各セグメントにホバーで割合と文字数のツールチップ
-- セグメントをクリック → サマリーカードのクリックと同じフィルタ動作
-- バーの高さ: 24px。角丸。各セグメントの最小幅は2px（0%でない場合は可視化保証）
+- セグメントをクリック → サマリーカードのクリックと同じフィルタ動作（※ 現状未実装。セグメント要素はクリックハンドラを持たない）
+- バーの高さ: 24px（`height` prop で上書き可能。シーン別テーブルのミニバーは 6px）。角丸。各セグメントの最小幅は2px（0%でない場合は可視化保証）
 
 ---
 
@@ -120,13 +122,15 @@ Editorのアクティブシーンが変わったとき:
 - デフォルトソート: ツリー順（Part > Chapter > Scene）
 - カラムヘッダークリックでソート切り替え（Total、AI%等で降順/昇順）
 
+> **現状の実装**: `AttributionProjectView.tsx` ではチャプターをツリー順で並べたまま、各チャプター内のシーン行のみソートする（チャプター行自体は並び替わらない）。`Scene` カラム以外のヘッダーをクリックすると初期方向は降順、再クリックで昇順/降順をトグルする。
+
 ### 行のインタラクション
 
 | 操作 | 動作 |
 |------|------|
 | 行クリック | ScopeをそのSceneに切り替え + Editorでそのシーンを開く |
 | 行ホバー | 軽いハイライト |
-| AI%カラムのミニバー | ブレークダウンバーと同じ3色スタックの縮小版 |
+| AI%カラムのミニバー | ブレークダウンバーと同じ3色スタックの縮小版（`BreakdownBar` を `height={6}` で再利用） |
 
 ### チャプターグルーピング
 
@@ -165,6 +169,8 @@ claude-haiku-4.5    ████              2,030 chars (15.5%)
 - バーはパープル系の濃淡で区別
 - モデルが1種類のみの場合はこのセクションを折りたたみ表示
 
+> **現状の実装**: `AttributionReport.tsx` の AI Model Breakdown はモデル名と文字数 / 割合のみのテキスト表示で、横棒グラフは未実装。`AttributionStats.modelBreakdown` に集計済み（`__unknown_model__` キーが Unknown model に対応）。モデル数による折りたたみも未実装。
+
 ---
 
 ## データ集計
@@ -190,11 +196,18 @@ function computeAttribution(sceneIds: string[]): AttributionStats {
 }
 ```
 
+> **現状の実装**:
+> - フィールド名は `human` / `ai` / `unknown` / `total` / `modelBreakdown` に加え `unmarked` を内部的に持つ（`src/features/attribution/attributionStats.ts` の `AttributionStats`）。
+> - Scope = シーン: `computeAttributionStats(doc)` で TipTap ドキュメントから即時集計（方法 A）。
+> - Scope = プロジェクト: `loadProjectAttributionStats(sceneIds)` が `authorship_spans` を一括 SELECT して JS 側で集計（方法 B）。アクティブシーンのメモリ上ドキュメントとの併用（ハイブリッド）は未実装。
+
 ### 集計タイミング
 
 - Attributionパネルが表示されている場合: エディタの自動保存完了後に再計算（デバウンス3秒）
 - Attributionパネルが非表示の場合: 再計算しない（パネル表示時に初回計算）
 - Scope変更時: 即座に再計算
+
+> **現状の実装**: Scope = シーン の場合は `editor.state.doc` を `useMemo` 依存に含めて毎トランザクションで再計算する（デバウンスなし）。Scope = プロジェクトでは `useEffect` でツリーロード時に 1 回ロードし、明示的な `Refresh` ボタンで再ロードする。自動保存完了後の自動再フェッチは未実装。
 
 ### パフォーマンス
 
@@ -247,6 +260,8 @@ Attribution 集計の前提となる AuthorshipMark は以下の属性を持つ�
 
 **プロジェクト全体の集計に Map Sticky を含める**: Sticky body は ProseMirror JSON で保持され、AI Branch 由来は初期 `ai`、ユーザーが編集すると `human` に切り替わる。Attribution パネルの「プロジェクト」スコープでは Sticky の文字数も AI 比率に算入する。サマリーカード上で「Map Stickies: N 件、AI X%」のように内訳を 1 行表示する（v2 で UI 拡張）。
 
+> **現状の実装**: DB スキーマ（`authorship_spans` の `codex_entry_id` / `snippet_id` / `detail_value_id` / `phase_id` / `sticky_id`）と SQL CHECK 制約（exactly one of nodeId/codexEntryId/snippetId/detailValueId/stickyId is NOT NULL、phaseId は codexEntryId と直交）まで実装済み。一方 `projectStats.ts` の `loadProjectAttributionStats` は `node_id` のみで `WHERE` を組み立てており、Codex / Snippet / Detail / Phase / Sticky 由来のスパンはプロジェクト集計から除外されている。Sticky 件数の内訳行 UI も未実装。
+
 ### AiEditedPlugin
 
 AI / Unknown スパン内にユーザーが文字を挿入した場合、挿入されたテキスト部分のマークを剥がし自動的に human 化する ProseMirror プラグイン。
@@ -262,9 +277,13 @@ AI / Unknown スパン内にユーザーが文字を挿入した場合、挿入�
 - オーバーライド後のマークには `manualOverride: true` が付与され、後続の `AiEditedPlugin` や自動判定ロジックでは上書きされない
 - 既存の timestamp / model / chatMessageId は維持（ただし source が human に変更された場合は model を NULL に置き換える）
 
+> **現状の実装**: 専用コンポーネントではなく `src/features/editor/EditorContextMenu.tsx` 内の `handleAttributionOverride` として実装（`data-testid="attribution-override-menu"`）。表示条件は「Attribution 表示が ON、かつ選択範囲に authorship マークが存在し、選択テキストが空でない」。`tr.addMark` で既存マークを上書きするため、既存属性（timestamp / model / chatMessageId）の保持・置換ロジックは未実装で、新しい `timestamp` で塗り直される。
+
 ### Codex / Snippet エディタでの初期マーク付与
 
-Codex / Snippet のミニエディタで AI 由来コンテンツを開いた際、保存済みの `authorship_spans`（`codex_entry_id` / `snippet_id` 参照）から `applyInitialMarks` が一括でマークを復元する。ミニエディタ上でも通常エディタと同等の AttributionHighlight・Attribution 集計が機能する。
+Codex / Snippet のミニエディタで AI 由来コンテンツを開いた際、保存済みの `authorship_spans`（`codex_entry_id` / `snippet_id` 参照）から `applyInitialAuthorshipMarks`（`src/features/attribution/applyInitialMarks.ts`）が一括でマークを復元する。ミニエディタ上でも通常エディタと同等の AttributionHighlight・Attribution 集計が機能する。
+
+> **現状の実装**: `applyInitialAuthorshipMarks(editor, source, content)` は引数で受け取った単一の `source` をドキュメント全体に一括適用するシンプルな実装。spans から復元するのではなく、HTML に `data-authorship` 属性が含まれる場合はスキップする。`programmaticInsert` メタを立てて `AiEditedPlugin` の介入を避ける。
 
 ### `unmarked` テキストの扱い
 
@@ -373,6 +392,8 @@ Generated: 2026-04-01
 - Scenes パネルの各シーンノードに、そのシーンの AI 帰属割合を小さなピルバッジで表示する
 - バッジのデータソースは Attribution と同じ `authorship_spans` テーブルで、バッチ API `loadBatchAiRatio(sceneIds: string[])` により全シーンを 1 リクエストで取得する（N+1 を避けパフォーマンスを確保）
 - シーン本文の自動保存完了時、および Attribution パネルの再集計完了時にバッジのキャッシュを無効化する
+
+> **現状の実装**: `loadBatchAiRatio` は `src/features/attribution/api.ts` に実装され、`src/features/tree/treeStore.ts` の `loadTree` で全シーン分を初回ロードする。シーン本文の自動保存完了時は `treeStore.refreshAiRatio(nodeId)` が単一シーンの比率のみ再計算する（`EditorPane.tsx` / `LinearSceneBlock.tsx` から呼び出し）。バッジ表示は `TreeNodeItem.tsx` の `useTreeStore((s) => s.aiRatios[node.id])`。Attribution パネルの再集計完了時の無効化は連携していない。
 
 ### → Chat History（間接的）
 

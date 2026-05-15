@@ -6,6 +6,8 @@ Chat Historyパネルはプロジェクト内の全チャットセッション�
 
 デフォルト位置: Right Top（Chatと同グループ、非アクティブタブ）。Chatパネルのタブバーに「履歴」タブとして常駐し、初期状態は非アクティブ。
 
+実装は `src/features/chat/ChatHistoryPanel.tsx`、状態は `src/features/chat/chatHistoryStore.ts`（Zustand）、DB アクセスは `src/features/chat/chatHistoryApi.ts`、セッションカードは `src/features/chat/components/SessionCard.tsx`。
+
 ---
 
 ## パネル構造
@@ -65,10 +67,12 @@ Chat Historyパネルはプロジェクト内の全チャットセッション�
 ### 全文検索
 
 - チャットメッセージの全文をインクリメンタル検索（FTS5）
-- 検索対象: ユーザーメッセージ + AIメッセージの本文
+- 検索対象: ユーザーメッセージ + AIメッセージの本文（`m.role != 'system'` でシステムプロンプトは除外）
 - 入力開始で即時フィルタ（デバウンス300ms）
 - マッチしたメッセージを含むセッションのみ表示
 - セッションカード内にマッチしたメッセージのスニペット（ハイライト付き）を表示
+- 取得件数の上限はクエリ内で `LIMIT 50`。それを超えるヒットは現状切り捨て（ページングは将来拡張）
+- ハイライトは FTS5 の `snippet()` 関数が `\x01` / `\x02` のセンチネル文字でマーカ付き文字列を返し、`ChatHistoryPanel` 側の `renderHighlight()` が `<mark>` に変換する
 
 ### 検索結果の表示
 
@@ -100,7 +104,9 @@ Ch 1 / First spell > Magic system brainstorm
 **シーンフィルタ（ドロップダウン）**:
 - All scenes（デフォルト）
 - 特定のシーンを選択 → そのシーンのセッションのみ表示
-- 選択UIはScenesツリーと同じ階層表示（Part > Chapter > Scene）
+- **現状の実装**: ネイティブ `<select>` + `<optgroup>` で **Folder > Scene の 2 階層**だけを並べる（`folder.title` が `<optgroup label>`、Scene は `<option>`）。Folder 階層をネストした「Part > Chapter > Scene」のフル階層表示は未実装
+- 親 Folder を持たない Scene は `Uncategorized` グループに入る
+- `sceneFilter` を選んでいる場合は `projectScopeOnly` トグルより優先される（`filterAndSortSessions` 仕様）
 
 **トグルフィルタ（ピル型、クリックでON/OFF）**:
 
@@ -140,6 +146,9 @@ Project scope                         ← シーン非紐づけ
 
 - シーンフィルタが適用されている場合はグループヘッダー不要（1グループのみ）
 - ソート順はグループ内のセッションに適用。グループ自体の順序はツリー順
+- **現状の実装**: グループヘッダーは Scene 単体のタイトル（`nodeMap[nodeId]?.title`）のみを描画する。`groupSessionsByScene` (`src/features/chat/chatHistoryStore.ts`) は祖先 Folder までさかのぼった「Ch 1: Awakening / The tower」形式のパス連結を行わない。`SessionGroup` 型もフラットな `groupLabel: string` を持つだけ
+- グループの順序は `Map` への挿入順（=セッション一覧の元順序）に依存。`nodeId === null` の Project scope グループだけは末尾に押し下げる。「ツリー順」での厳密ソートは未実装
+- Scene グループのヘッダーをクリックすると、`treeStore.setActiveScene` と `tabStore.openPinned` を同時に呼んで Editor で開く（`Go to scene` 相当の動作がヘッダー直クリックに割り当てられている）
 
 ### セッションカード
 
@@ -157,10 +166,11 @@ Project scope                         ← シーン非紐づけ
 |------|------|
 | セッションタイトル | LLMが最初の会話から自動生成（3-6語の要約）。手動リネームも可能。生成方法の詳細はChatパネル設計書を参照 |
 | タイムスタンプ | 最終更新の相対日時（Today / Yesterday / Mar 28 等） |
-| メッセージプレビュー | 最初のユーザーメッセージの先頭50文字。テキスト切り詰め |
-| メッセージ数バッジ | パープルのピル。総メッセージ数 |
-| Codex抽出バッジ | ティールのピル。このセッションから抽出されたCodexエントリ数。0の場合は非表示 |
-| Snippet抽出バッジ | アンバーのピル。このセッションから抽出されたSnippet数。0の場合は非表示 |
+| メッセージプレビュー | 最初のユーザーメッセージの先頭 **100 文字**（`chatHistoryApi.ts` の `firstUserMessage.content.slice(0, 100)`、行数で 1 行クランプ）。設計書旧版の「50文字」は実装と一致しない |
+| メッセージ数バッジ | パープルのピル。**`role !== 'system'` のメッセージ数**（システムプロンプトは除外） |
+| Codex抽出バッジ | ティールのピル。このセッションから抽出されたCodexエントリ数。0の場合は非表示。クリックでエントリ一覧のポップオーバーを表示 |
+| Snippet抽出バッジ | アンバーのピル。このセッションから抽出されたSnippet数。0の場合は非表示。クリックでエントリ一覧のポップオーバーを表示 |
+| 抽出ゼロ表示 | Codex / Snippet ともに 0 件のとき「No extractions」薄字を代わりに表示（実装側で追加された UI） |
 
 ### セッションカードのインタラクション
 
@@ -168,10 +178,12 @@ Project scope                         ← シーン非紐づけ
 |------|------|
 | クリック | Chatパネルでそのセッションを開く。Chatパネルが閉じていればデフォルト位置に開く |
 | ダブルクリック | Chatパネルでセッションを開き、さらにChatパネルにフォーカスを移す |
-| 右クリック | コンテキストメニュー（後述） |
+| 右クリック | コンテキストメニュー（後述） ※ 現状未実装 |
 | ホバー | カードを軽くハイライト |
 
 現在Chatパネルでアクティブなセッションは左ボーダー+背景ハイライトで強調表示。
+
+> **現状の実装**: クリック / ダブルクリックは両方とも `chatStore.selectSession(sessionId)` を呼ぶだけで、フォーカス移動の差分は実装されていない（コメント `// Focus chat panel via store (no direct DOM access needed)` のみ残っている）。`Enter` キーは `role="button"` のキーハンドラから単発で `onClick` を呼ぶ。
 
 ### コンテキストメニュー
 
@@ -184,6 +196,8 @@ Project scope                         ← シーン非紐づけ
 | Export as Markdown | セッションの全メッセージをMarkdown形式でエクスポート |
 | --- | |
 | Delete | 確認ダイアログ後に削除（抽出済みCodex/Snippetは残る） |
+
+> ※ 現状未実装。`SessionCard` には `onContextMenu` ハンドラも `ContextMenu` コンポーネントの呼び出しも存在しない。`Go to scene` 相当の動線はグループヘッダーのクリックに分解されている（前述「グルーピング」参照）。Rename / Delete / Export Markdown は将来拡張扱い。
 
 ---
 
@@ -222,6 +236,12 @@ Project scope                         ← シーン非紐づけ
 | `Enter` | 選択中のセッションをChatパネルで開く |
 | `Escape` | 検索クリア |
 
+> **現状の実装**:
+> - `Ctrl+Alt+H` はパネルレジストリ (`src/features/layout/panelRegions.ts`) でグローバル登録済み
+> - `Escape` は検索入力フォーカス時のみ `handleSearchChange("")` で検索クリア + 入力 blur
+> - `Enter` は `SessionCard` 単体のキーハンドラでカードを開く（リスト全体での選択カーソル概念は未実装）
+> - `Ctrl+F`（パネル内検索フォーカス）、`↑` / `↓` でのカード間移動は未実装
+
 ---
 
 ## DBへの影響
@@ -253,6 +273,8 @@ END;
 ```
 
 抽出数の集計は `chat_messages.metadata` JSONの `extractedCodex` / `extractedSnippets` 配列の長さをカウント。パフォーマンスが問題になった場合、`chat_sessions` に `codex_count` / `snippet_count` のデノーマライズドカラムを追加。
+
+> **現状の実装**: 抽出元の追跡は JSON メタデータではなく、`codex_entries.source_chat_message_id` / `snippets.source_chat_message_id` の **FK カラム**で行われている（`src/db/schema.ts`、`idx_codex_entries_src_msg` / `idx_snippets_src_msg` のインデックスあり）。`listSessionsWithStats` (`src/features/chat/chatHistoryApi.ts`) はセッション配下の `chat_messages.id` をまとめて引いたあと、この FK で `codexCount` / `snippetCount` を集計する。`listExtractionsBySession` も同じ FK を辿ってバッジクリック時のポップオーバー一覧を返す。FTS5 仮想テーブル `chat_messages_fts` および対応する `_ai` / `_ad` / `_au` トリガは `src-tauri/src/database/migrate.rs` に同等の DDL で実装済み。
 
 ---
 

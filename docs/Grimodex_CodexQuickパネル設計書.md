@@ -2,7 +2,7 @@
 
 ## 概要
 
-Codex QuickはScenesパネルとは独立した専用パネル。デフォルト配置はScenesパネルの下にdock（Left Dock内で垂直分割）。**現在エディタでアクティブなコンテンツ**（シーン・Note・Codexエントリのcontent）に関連するCodexエントリを自動表示する。
+Codex QuickはScenesパネルとは独立した専用パネル（`src/features/tree/CodexQuickPanel.tsx`、内容は `CodexQuickSection.tsx`）。**現状の実装**: Dockview 上で `codex-quick` パネルとして登録され、レイアウト解決規則（`src/features/layout/layoutStore.ts` の `PANEL_INSERT_REGISTRY`）によりデフォルトは Codex パネルと同じグループ（タブ内）にdock、Codex が無ければ Scenes パネルの下に挿入される。**現在エディタでアクティブなコンテンツ**（シーン・Note・Codexエントリのcontent）に関連するCodexエントリを自動表示する。
 
 ```
 ┌─────────────────────────────────────┐
@@ -20,20 +20,23 @@ Codex QuickはScenesパネルとは独立した専用パネル。デフォルト
 
 ## 表示ルール
 
-- エディタ本文中に出現するCodexエントリ名を自動検出し、一覧表示
-- 各エントリの左にカテゴリ別カラードット（Character: パープル、Location: ティール、Item: アンバー、Lore: コーラル）
+- エディタ本文中に出現するCodexエントリ名を自動検出し、一覧表示（`useCodexHighlightStore.matchedEntryIds` を購読）
+- 各エントリの左にカテゴリ別カラードット（色は `useCodexHighlightStore.typeColorMap` から動的取得。Character: パープル、Location: ティール、Item: アンバー、Lore: コーラル等は組み込み既定値）
 - 各エントリの右にカテゴリラベル（小さいテキスト）
-- 手動で「ピン留め」したCodexエントリも表示（自動検出に漏れた場合の補完）
+- 手動で「ピン留め」したCodexエントリも表示（自動検出に漏れた場合の補完。自動検出と重複した場合はマッチ側を優先して重複排除）
+- パネル上部にツールバーがあり、ソート順を `category` / `name-asc` / `name-desc` / `updated` / `created` から選択可能（`most-referenced` は参照数データを持たないため除外）。ソート状態は `useCodexStore.sortOrder` を共有し、Codex 管理パネルと同期する
 
 ## インタラクション
 
 | 操作 | 動作 |
 |------|------|
-| エントリをクリック | Codexパネルでそのエントリの詳細を開く（Codexパネルが閉じていればデフォルト位置に開く） |
-| エントリをホバー | ポップオーバーでCodexエントリのプレビュー（名前、カテゴリ、要約の先頭100文字） |
-| [+ Pin codex entry] | コマンドパレット風の検索UIでCodexエントリを選択し、ピン留め |
-| ピン留めエントリの右の × | ピン留め解除 |
-| `Ctrl+Alt+Q` | Codex Quickパネルにフォーカス/トグル |
+| エントリをクリック | Codexパネルを表示し（`useLayoutStore.showPanel("codex")`）、`useCodexStore.requestSelectEntry(id)` でそのエントリの詳細を選択 |
+| エントリをホバー | ポップオーバーでCodexエントリのプレビューを表示（`CodexQuickPopover` → `CodexEntryPopoverContent` を使用） |
+| 行ホバー時に出現するピンアイコン | クリックでピン留め／解除をトグル（`togglePinnedCodex`、ピン済みエントリでは PinOff アイコンを常時表示） |
+| [+ Pin Codex entry] | `CodexCommandPalette`（`src/features/codex/components/CodexCommandPalette.tsx`）を開き、検索してエントリを選択するとピン留め |
+| `Ctrl+Alt+Q` | Codex Quickパネルの表示トグル＋フォーカス（`src/App.tsx` のグローバルショートカット、表示後 `requestAnimationFrame` で `panel.api.setActive()` を呼ぶ） |
+
+※ 設計書当初の「ピン留めエントリの右の × 」は実装されておらず、現状は行ホバー時のピン／PinOff アイコンによるトグル UI に置き換えられている。
 
 ## データフロー
 
@@ -46,6 +49,10 @@ Codex QuickはScenesパネルとは独立した専用パネル。デフォルト
 ```
 
 このマッチングはエディタ内のCodexハイライト（Pure Decorations）と同じパイプライン（`useCodexHighlight` → `codexMatchOrchestrator`）を使い、`useCodexHighlightStore.matchedEntryIds` を共有する。
+
+### ピン留めの永続化
+
+手動ピン留めは `pinnedCodexIds`（`useTreeStore`）でメモリ保持し、`src/features/tree/codexQuickPinApi.ts` 経由で SQLite の `codex_quick_pins` テーブル（`src/db/schema.ts`）に永続化される。アプリ起動時に `loadPinnedCodexIds()` が DB から復元する。
 
 ### タブ種別ごとの挙動
 
