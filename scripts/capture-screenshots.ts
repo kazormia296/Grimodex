@@ -5,11 +5,11 @@
  *   pnpm screenshot
  *   pnpm screenshot:one -- panel-editor-1080x890
  *
- * Hi-DPI 撮影（devicePixelRatio のみ倍率適用）:
+ * Hi-DPI 撮影（`--scale N` で devicePixelRatio を N 倍。未指定の UI スケールは **N×100%** に揃える）:
  *   pnpm screenshot -- --scale 2
  *   SCREENSHOT_RENDER_SCALE=2 pnpm screenshot
  *
- * アプリ UI スケール（%・整数。staging で最大 500／通常アプリは別途 150 でクランプ）:
+ * UI スケール（%・整数）を明示する（manifest の `uiScale` より優先度は低い）:
  *   pnpm screenshot -- --ui-scale 200
  *   SCREENSHOT_UI_SCALE=200 pnpm screenshot
  * captureManifest の各エントリで `uiScale` を指定すると、そのカットだけ上書きされます。
@@ -257,9 +257,24 @@ async function performCaptureActions(page: Page, capture: ScreenshotCapture) {
 
 function resolveScreenshotUiScalePercent(
   capture: ScreenshotCapture,
+  renderScale: number,
   cliOrEnvUiScale?: number,
 ): number {
-  return capture.uiScale ?? cliOrEnvUiScale ?? 100;
+  if (capture.uiScale != null) return capture.uiScale;
+  if (cliOrEnvUiScale != null) return cliOrEnvUiScale;
+  if (renderScale !== 1) {
+    const requested = Math.round(100 * renderScale);
+    if (requested > SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT) {
+      console.warn(
+        `UI scale capped at ${SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT}% (from --scale ${renderScale}, would be ${requested}%)`,
+      );
+    }
+    return Math.min(
+      SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT,
+      Math.max(SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT, requested),
+    );
+  }
+  return 100;
 }
 
 async function captureOne(
@@ -289,6 +304,7 @@ async function captureOne(
     });
     const uiScalePct = resolveScreenshotUiScalePercent(
       capture,
+      renderScale,
       defaultUiScalePercent,
     );
 
@@ -397,7 +413,7 @@ async function main() {
     server = await ensureServer(baseUrl, port);
     if (renderScale !== 1) {
       console.log(
-        `Screenshot render scale ${renderScale}x (devicePixelRatio ×${renderScale})`,
+        `Screenshot render scale ${renderScale}x (devicePixelRatio ×${renderScale}; UI scale matches unless --ui-scale / capture.uiScale overrides)`,
       );
     }
     if (uiScalePercent != null && uiScalePercent !== 100) {
