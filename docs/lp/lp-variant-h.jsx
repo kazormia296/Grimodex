@@ -117,14 +117,446 @@ function HReveal({ children, style, delay = 0, burst = false }) {
   );
 }
 
+/* ============================================================
+   WORKSPACE SECTION — sticky scroll stage, preset tabs, hotspots, dialog
+   Ported from temp/Grimodex_2 design handoff. Pixel-perfect.
+   ============================================================ */
+
+const WS_PANELS = {
+  Editor:      { jp: "Editor",       cat: "次の一行を書く場所。",                  desc: "本文を執筆する中心パネル。AI や設定資料に飲み込まれず、最終的に作品へ落とし込むための主戦場。",                                    img: "assets/panel-editor.png" },
+  Scenes:      { jp: "Scenes",       cat: "場面を分けて、迷子を減らす。",            desc: "シーン単位で本文を管理し、長編の構成を扱いやすくするパネル。どこで何が起きているかを見失いにくくする。",                  img: "assets/panel-scenes.png" },
+  Grid:        { jp: "Grid",         cat: "章とシーンを、カードで見渡す。",          desc: "章・シーンをカード状に並べる構成ビュー。執筆順ではなく、物語全体の配置や流れを視覚的に確認できる。",                       img: "assets/panel-grid.png" },
+  Codex:       { jp: "Codex",        cat: "設定資料が、執筆の外に散らばらない。",       desc: "キャラクター、世界観、用語、組織などをまとめる設定資料庫。本文の横に作品世界を置いておける。",                          img: "assets/panel-codex.png" },
+  Snippets:    { jp: "Snippets",     cat: "まだ本文ではない言葉を、捨てずに持つ。",      desc: "台詞、描写、アイデア、断片的な文章を保管するパネル。今は使えない一文も、後のシーン素材にできる。",                       img: "assets/panel-snippets.png" },
+  Chat:        { jp: "Chat",         cat: "AI に丸投げしない。AI と揉む。",          desc: "AI との相談用パネル。本文生成よりも、違和感の整理、別案の検討、設定の掘り下げに使う補助空間。",                     img: "assets/panel-chat.png" },
+  Review:      { jp: "Review",       cat: "作品を、少し離れて見る。",                desc: "矛盾、弱い動機、説明不足、テンポの乱れなどを確認する校閲・レビュー用パネル。書いた後の違和感を拾う。",                     img: "assets/panel-kouetsu.png" },
+  Timeline:    { jp: "Timeline",     cat: "出来事の順番を見失わない。",              desc: "物語内の時系列を管理するパネル。回想、過去設定、章をまたぐ因果関係を整理しやすくする。",                                img: "assets/panel-timeline.png" },
+  Map:         { jp: "Map",          cat: "物語の迷子にならない。",                  desc: "付箋、ノード、関係線でアイデアや設定を広げる発散の盤。構造化しすぎず、眺めながら考えるための空間。",                       img: "assets/panel-map.png" },
+  Matrix:      { jp: "Matrix",       cat: "関係性を、表で殴る。",                    desc: "キャラクター同士、勢力、章、テーマなどの対応関係をマトリクスで確認するパネル。複雑な関係を一覧化できる。",                  img: "assets/panel-matrix.png" },
+  TrashBin:    { jp: "Trash Bin",    cat: "没案も、まだ死んでいない。",              desc: "削除した断片や使わなかった文章を一時的に保持するパネル。完全な廃棄ではなく、再利用可能な創作残骸として扱う。",            img: "assets/panel-trash-bin.png" },
+  ChatHistory: { jp: "Chat History", cat: "AI との思考ログを、作品の横に残す。",        desc: "AI との過去のやり取りを確認するパネル。相談の流れ、出てきた案、却下した方向性などを振り返り、執筆判断の履歴として扱える。", img: "assets/panel-chat-history.png" },
+  CodexQuick:  { jp: "Codex Quick",  cat: "設定を、開かずに引く。",                  desc: "Codex の情報を素早く参照するための簡易パネル。本文を書いている最中に、キャラクター名・用語・設定の要点だけを軽く確認できる。", img: "assets/panel-codex-quick.png" },
+  Attribution: { jp: "Attribution",  cat: "何を使い、どこから来たかを見える化する。",     desc: "参照情報、AI 出力、引用・出典・補助生成の痕跡などを整理するパネル。作品制作に混ざった素材や支援の由来を把握しやすくする。", img: "assets/panel-attribution.png" },
+  Foreshadow:  { jp: "Foreshadow",   cat: "伏線を、置いたまま忘れない。",            desc: "伏線、回収予定、未解決の要素を管理するパネル。思いつきで置いた仕込みを後から追跡し、放置や回収漏れを防ぐ。",                img: "assets/panel-foreshadow.png" },
+};
+
+const WS_ALL_PANEL_KEYS = [
+  "Editor", "Scenes", "Grid", "Codex", "CodexQuick",
+  "Snippets", "Chat", "ChatHistory", "Review", "Timeline",
+  "Map", "Matrix", "Attribution", "Foreshadow", "TrashBin",
+];
+
+const WS_PRESETS = [
+  {
+    id: "write", label: "WRITE", num: "01",
+    desc: "本文 + Codex + Chat。中心は本文。設定資料と相談相手を脇に置く、執筆中心のレイアウト。",
+    img: "assets/preset-default.png",
+    hotspots: [
+      { panel: "Scenes",      box: [0.000, 0.046, 0.122, 0.500] },
+      { panel: "CodexQuick",  box: [0.000, 0.546, 0.122, 0.454] },
+      { panel: "Editor",      box: [0.122, 0.046, 0.328, 0.954] },
+      { panel: "Chat",        box: [0.450, 0.046, 0.240, 0.954] },
+      { panel: "Codex",       box: [0.690, 0.046, 0.310, 0.954] },
+    ],
+  },
+  {
+    id: "plan", label: "PLAN", num: "02",
+    desc: "Grid + Map + Timeline。章とシーンを並べ、時系列と関係性で俯瞰する構成のレイアウト。",
+    img: "assets/preset-plan.png",
+    hotspots: [
+      { panel: "Grid",        box: [0.000, 0.046, 0.302, 0.504] },
+      { panel: "Map",         box: [0.302, 0.046, 0.388, 0.504] },
+      { panel: "Timeline",    box: [0.000, 0.550, 0.690, 0.450] },
+      { panel: "Chat",        box: [0.690, 0.046, 0.160, 0.480] },
+      { panel: "Codex",       box: [0.690, 0.526, 0.310, 0.474] },
+    ],
+  },
+  {
+    id: "chat", label: "CHAT", num: "03",
+    desc: "Chat を中央へ。設定の掘り下げ、別案の検討、違和感の整理を広いキャンバスで。",
+    img: "assets/preset-chat-main.png",
+    hotspots: [
+      { panel: "Chat",        box: [0.000, 0.046, 0.690, 0.954] },
+      { panel: "Codex",       box: [0.690, 0.046, 0.310, 0.954] },
+    ],
+  },
+  {
+    id: "codex", label: "CODEX", num: "04",
+    desc: "Codex を中央へ。キャラクター・場所・用語を本文の隣に置いて編集する、設定編みのレイアウト。",
+    img: "assets/preset-codex-main.png",
+    hotspots: [
+      { panel: "Codex",       box: [0.000, 0.046, 0.690, 0.954] },
+      { panel: "Chat",        box: [0.690, 0.046, 0.310, 0.954] },
+    ],
+  },
+  {
+    id: "review", label: "REVIEW", num: "05",
+    desc: "Review + Attribution。矛盾、説明不足、由来の不明な箇所を拾う、読み返しのレイアウト。",
+    img: "assets/preset-review.png",
+    hotspots: [
+      { panel: "Scenes",      box: [0.000, 0.046, 0.200, 0.300] },
+      { panel: "Editor",      box: [0.200, 0.046, 0.220, 0.954] },
+      { panel: "Attribution", box: [0.000, 0.346, 0.200, 0.654] },
+      { panel: "Review",      box: [0.420, 0.046, 0.270, 0.954] },
+      { panel: "Codex",       box: [0.690, 0.046, 0.310, 0.954] },
+    ],
+  },
+];
+
+function useWSScrollProgress(ref) {
+  const [progress, setProgress] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      if (!ref.current) return;
+      const rect = ref.current.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const denom = rect.height - vh;
+      let p;
+      if (denom <= 0) p = rect.top <= 0 ? 1 : 0;
+      else p = -rect.top / denom;
+      setProgress(Math.max(0, Math.min(1, p)));
+    };
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(update); };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [ref]);
+  return progress;
+}
+
+const WS_DIALOG_BTN_STYLE = {
+  background: HZ_BG, color: HZ_INK, border: `2px solid ${HZ_INK}`,
+  width: 34, height: 34, cursor: "pointer",
+  fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700,
+  display: "grid", placeItems: "center",
+};
+
+function WSPanelDialog({ openKey, onClose, onNav }) {
+  const idx = openKey ? WS_ALL_PANEL_KEYS.indexOf(openKey) : -1;
+  const prev = idx >= 0 ? WS_ALL_PANEL_KEYS[(idx - 1 + WS_ALL_PANEL_KEYS.length) % WS_ALL_PANEL_KEYS.length] : null;
+  const next = idx >= 0 ? WS_ALL_PANEL_KEYS[(idx + 1) % WS_ALL_PANEL_KEYS.length] : null;
+
+  useEffect(() => {
+    if (!openKey) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowLeft") onNav(prev);
+      if (e.key === "ArrowRight") onNav(next);
+    };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [openKey, prev, next, onClose, onNav]);
+
+  if (!openKey) return null;
+  const p = WS_PANELS[openKey];
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(10,10,10,0.78)",
+      zIndex: 1000, display: "grid", placeItems: "center", padding: "3vh 2vw",
+      animation: "ws-fade .18s ease-out", backdropFilter: "blur(2px)",
+    }}>
+      <button
+        onClick={(e) => { e.stopPropagation(); onNav(prev); }}
+        aria-label="前のパネル"
+        className="ws-carousel-btn ws-carousel-btn--prev"
+      >
+        <span style={{ fontSize: 22, lineHeight: 1, marginBottom: 2 }}>←</span>
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: ".08em", opacity: 0.6 }}>
+          {WS_PANELS[prev].jp.toUpperCase()}
+        </span>
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); onNav(next); }}
+        aria-label="次のパネル"
+        className="ws-carousel-btn ws-carousel-btn--next"
+      >
+        <span style={{ fontSize: 22, lineHeight: 1, marginBottom: 2 }}>→</span>
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: ".08em", opacity: 0.6 }}>
+          {WS_PANELS[next].jp.toUpperCase()}
+        </span>
+      </button>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        background: HZ_BG, color: HZ_INK, width: "min(1560px, 100%)",
+        maxHeight: "94vh", overflow: "hidden",
+        border: `2px solid ${HZ_INK}`, boxShadow: `8px 8px 0 ${HZ_INK}`,
+        display: "grid", gridTemplateRows: "auto 1fr",
+        animation: "ws-pop .22s cubic-bezier(.2,.9,.3,1.2)",
+        fontFamily: "'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          borderBottom: `2px solid ${HZ_INK}`, padding: "12px 18px", gap: 12,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{
+              background: HZ_INK, color: HZ_BG, padding: "4px 10px",
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700,
+              textTransform: "uppercase", letterSpacing: ".1em",
+            }}>P / {String(idx + 1).padStart(2, "0")}</span>
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 11, opacity: 0.55,
+              textTransform: "uppercase", letterSpacing: ".08em",
+            }}>── {p.jp}</span>
+          </div>
+          <button onClick={onClose} aria-label="閉じる" style={{
+            ...WS_DIALOG_BTN_STYLE, background: HZ_INK, color: HZ_BG,
+          }}>×</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "2.1fr 1fr", minHeight: 0 }}>
+          <div style={{
+            borderRight: `2px solid ${HZ_INK}`, background: "#0a0a0a",
+            display: "grid", placeItems: "stretch", overflow: "hidden",
+          }}>
+            <img src={p.img} alt={p.jp} style={{
+              width: "100%", height: "100%", objectFit: "contain",
+              display: "block", maxHeight: "86vh",
+            }} />
+          </div>
+          <div style={{ padding: "28px 28px 32px", overflow: "auto" }}>
+            <h3 style={{ margin: "0 0 18px", fontSize: 28, fontWeight: 800, letterSpacing: -0.8, lineHeight: 1.1 }}>
+              <span style={{ background: HZ_HL, padding: "0 8px" }}>{p.jp}</span>
+            </h3>
+            <p style={{ fontSize: 16, lineHeight: 1.85, margin: 0 }}>{p.desc}</p>
+            <div style={{
+              marginTop: 28, paddingTop: 18, borderTop: `1.5px dashed ${HZ_INK}`,
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 10, opacity: 0.55,
+              textTransform: "uppercase", letterSpacing: ".08em",
+              display: "flex", justifyContent: "space-between",
+            }}>
+              <span>← / → で別パネル · ESC で閉じる</span>
+              <span>{idx + 1} / {WS_ALL_PANEL_KEYS.length}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Sticky stage runway, mapped against the section's scrollable height (= height - 100vh).
+// The animation plays through ANIM_END, then `progress` stays at 1 for the rest of the
+// runway — that tail is the "look at the full screenshot" dwell zone before page-snap
+// hands the user off to the next section.
+const WS_STAGE_VH = 300;
+const WS_ANIM_END = 0.4;
+
+function HWorkspaceSection() {
+  const stageRef = useRef(null);
+  const rawProgress = useWSScrollProgress(stageRef);
+  const progress = Math.min(rawProgress / WS_ANIM_END, 1);
+  const [preset, setPreset] = useState("write");
+  const [openPanel, setOpenPanel] = useState(null);
+
+  const shown = WS_PRESETS.find((x) => x.id === preset);
+
+  const copyOpacity = Math.max(0, 1 - progress * 1.7);
+  const copyScale = 1 - progress * 0.55;
+  const copyTx = progress * 40;
+  const copyTy = -progress * 24;
+
+  const shotW = 42 + progress * 54;
+  const shotShadow = (1 - progress) * 12;
+  const chipStripOpacity = Math.min(1, Math.max(0, (progress - 0.35) / 0.4));
+
+  return (
+    <section
+      ref={stageRef}
+      id="workspace"
+      data-hz-page
+      data-hz-workspace
+      style={{
+        position: "relative", height: `${WS_STAGE_VH}vh`, color: HZ_INK, background: HZ_BG,
+        borderTop: `2px solid ${HZ_INK}`,
+        fontFamily: "'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+      }}
+    >
+      <style>{`
+        @keyframes ws-fade { from { opacity: 0 } to { opacity: 1 } }
+        @keyframes ws-pop { from { opacity: 0; transform: translateY(14px) scale(.97) } to { opacity: 1; transform: none } }
+        [data-hz-workspace] { scroll-snap-align: none !important; scroll-snap-stop: normal !important; }
+        .ws-carousel-btn { position: fixed; top: 50%; transform: translateY(-50%); z-index: 1001; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; width: 56px; height: 72px; background: ${HZ_BG}; color: ${HZ_INK}; border: 2px solid ${HZ_INK}; box-shadow: 4px 4px 0 ${HZ_INK}; cursor: pointer; padding: 8px 6px; transition: background .14s, box-shadow .14s, transform .14s; font-family: 'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 800; }
+        .ws-carousel-btn--prev { left: calc(2vw + 8px); }
+        .ws-carousel-btn--next { right: calc(2vw + 8px); }
+        .ws-carousel-btn:hover { background: ${HZ_HL}; box-shadow: 6px 6px 0 ${HZ_INK}; transform: translateY(-50%) translate(-2px, -2px); }
+        .ws-carousel-btn:active { box-shadow: 2px 2px 0 ${HZ_INK}; transform: translateY(-50%) translate(1px, 1px); }
+        .ws-tab { flex: 1; border: none; background: ${HZ_BG}; color: ${HZ_INK}; cursor: pointer; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; padding: 10px 14px; text-align: left; display: flex; flex-direction: column; gap: 2px; transition: background .12s; }
+        .ws-tab:hover { background: ${HZ_HL}; }
+        .ws-tab.active { background: ${HZ_INK}; color: ${HZ_BG}; }
+        .ws-tab + .ws-tab { border-left: 2px solid ${HZ_INK}; }
+        .ws-chip { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; padding: 9px 14px; border: 2px solid ${HZ_INK}; background: ${HZ_BG}; color: ${HZ_INK}; cursor: pointer; transition: transform .14s, box-shadow .14s, background .14s; white-space: nowrap; box-shadow: 3px 3px 0 ${HZ_INK}; position: relative; }
+        .ws-chip::after { content: "↗"; margin-left: 8px; opacity: 0.45; transition: opacity .14s, transform .14s; display: inline-block; }
+        .ws-chip:hover { background: ${HZ_HL}; transform: translate(-2px, -2px); box-shadow: 5px 5px 0 ${HZ_INK}; }
+        .ws-chip:hover::after { opacity: 1; transform: translate(2px, -2px); }
+        .ws-chip:active { transform: translate(1px, 1px); box-shadow: 2px 2px 0 ${HZ_INK}; }
+      `}</style>
+
+      <div style={{ position: "sticky", top: 0, height: "100vh", overflow: "hidden" }}>
+        <div style={{
+          position: "absolute", top: 28, left: 48, zIndex: 5,
+          display: "flex", alignItems: "center", gap: 12,
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 11,
+          textTransform: "uppercase", letterSpacing: ".1em",
+        }}>
+          <span style={{ background: HZ_INK, color: HZ_BG, padding: "4px 8px", fontWeight: 700 }}>β / 02</span>
+          <span style={{ opacity: 0.55 }}>── WORKSPACE</span>
+        </div>
+
+        <div style={{
+          position: "absolute", top: 24, right: 48, zIndex: 5,
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700,
+          textTransform: "uppercase", letterSpacing: ".1em",
+          background: HZ_HL, color: HZ_INK,
+          padding: "4px 10px", border: `2px solid ${HZ_INK}`,
+          opacity: 1 - copyOpacity,
+          pointerEvents: (1 - copyOpacity) > 0.1 ? "auto" : "none",
+          transition: "opacity .06s linear",
+        }}>
+          15 PANELS · ONE DESK
+        </div>
+
+        <div style={{
+          position: "absolute", top: 78, left: 48, right: 48,
+          transformOrigin: "left top",
+          transform: `translate(${copyTx}px, ${copyTy}px) scale(${copyScale})`,
+          opacity: copyOpacity,
+          pointerEvents: copyOpacity < 0.1 ? "none" : "auto",
+          zIndex: 3, willChange: "transform, opacity",
+        }}>
+          <h2 style={{
+            fontSize: "clamp(72px, 11vw, 144px)", lineHeight: 0.9,
+            fontWeight: 800, letterSpacing: "-0.035em",
+            margin: "0 0 18px",
+          }}>
+            <span style={{ background: HZ_HL, padding: "0 12px", display: "inline-block", lineHeight: 0.95 }}>15 PANELS.</span><br />
+            ONE DESK.
+          </h2>
+          <p style={{ fontSize: 16, lineHeight: 1.65, opacity: 0.78, maxWidth: 680, margin: 0 }}>
+            Editor、Codex、Map、Chat、Grid などを自由に並べ替えられる作業レイアウト。執筆、整理、発散、相談をひとつの画面内で行き来できる。
+          </p>
+        </div>
+
+        <div style={{
+          position: "absolute", bottom: 28, left: "50%",
+          transform: "translateX(-50%)",
+          width: `${shotW}%`, maxWidth: 1640,
+          zIndex: 2, willChange: "width",
+        }}>
+          <div style={{
+            display: "flex",
+            borderTop: `2px solid ${HZ_INK}`,
+            borderLeft: `2px solid ${HZ_INK}`,
+            borderRight: `2px solid ${HZ_INK}`,
+            background: HZ_BG,
+          }}>
+            {WS_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                className={`ws-tab ${preset === p.id ? "active" : ""}`}
+                onClick={() => setPreset(p.id)}
+              >
+                <span style={{ opacity: 0.55, fontSize: 9 }}>PRESET · {p.num}</span>
+                <span>{p.label}</span>
+              </button>
+            ))}
+          </div>
+
+          <div style={{
+            position: "relative",
+            border: `2px solid ${HZ_INK}`,
+            boxShadow: shotShadow > 1 ? `${shotShadow}px ${shotShadow}px 0 ${HZ_INK}` : "none",
+            background: "#1a1a1a",
+            aspectRatio: "16 / 9",
+            transition: "box-shadow .06s linear",
+          }}>
+            <img src={shown.img} alt={shown.label} style={{
+              width: "100%", height: "100%", display: "block", objectFit: "cover",
+              userSelect: "none", pointerEvents: "none",
+            }} />
+          </div>
+
+          <div style={{
+            padding: "12px 16px",
+            borderLeft: `2px solid ${HZ_INK}`,
+            borderRight: `2px solid ${HZ_INK}`,
+            borderBottom: `2px solid ${HZ_INK}`,
+            display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap",
+          }}>
+            <span style={{
+              background: HZ_INK, color: HZ_BG, padding: "3px 9px",
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 700,
+              textTransform: "uppercase", letterSpacing: ".08em",
+            }}>{shown.num} · {shown.label}</span>
+            <span style={{ fontSize: 13, lineHeight: 1.55, flex: 1, minWidth: 280 }}>{shown.desc}</span>
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 10, opacity: 0.55,
+              textTransform: "uppercase", letterSpacing: ".06em",
+            }}>↓ 15 PANELS から開く</span>
+          </div>
+
+          <div style={{
+            marginTop: 22,
+            opacity: chipStripOpacity,
+            pointerEvents: chipStripOpacity > 0.5 ? "auto" : "none",
+            transition: "opacity .12s linear",
+            display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center",
+          }}>
+            <span style={{
+              background: HZ_INK, color: HZ_BG, padding: "5px 10px",
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 800,
+              textTransform: "uppercase", letterSpacing: ".1em", marginRight: 4,
+            }}>ALL 15 PANELS ↓</span>
+            {WS_ALL_PANEL_KEYS.map((k) => (
+              <button key={k} className="ws-chip" onClick={() => setOpenPanel(k)}>
+                {WS_PANELS[k].jp}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <WSPanelDialog
+        openKey={openPanel}
+        onClose={() => setOpenPanel(null)}
+        onNav={(k) => setOpenPanel(k)}
+      />
+    </section>
+  );
+}
+
 function LPVariantH() {
   const [workflowMode, setWorkflowMode] = useState("plotter");
-  const panelPreviewRef = useRef(null);
   const workflowGridRef = useRef(null);
   const pagingLockRef = useRef(false);
   const heroTitleRef = useRef(null);
   const heroMetaRef = useRef(null);
   const heroBodyRef = useRef(null);
+
+  // Always start at the top on initial load, even if the URL has a fragment
+  // like #workspace. The hero animation is part of the brand and the page
+  // would feel broken if it played offscreen while the user is scrolled away.
+  useEffect(() => {
+    if ("scrollRestoration" in window.history) {
+      window.history.scrollRestoration = "manual";
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.scrollTo(0, 0);
+      });
+    });
+  }, []);
 
   useEffect(() => {
     const gsap = window.gsap;
@@ -245,19 +677,6 @@ function LPVariantH() {
 
   useEffect(() => {
     const gsap = window.gsap;
-    const target = panelPreviewRef.current;
-    if (!gsap || !target || !HMotionOK()) return undefined;
-
-    const tween = gsap.fromTo(
-      target,
-      { x: -12, autoAlpha: 0.65, filter: "contrast(1.35)" },
-      { x: 0, autoAlpha: 1, filter: "contrast(1)", duration: 0.32, ease: "power3.out" },
-    );
-    return () => tween.kill();
-  }, []);
-
-  useEffect(() => {
-    const gsap = window.gsap;
     const target = workflowGridRef.current;
     if (!gsap || !target || !HMotionOK()) return undefined;
 
@@ -277,14 +696,17 @@ function LPVariantH() {
     const getNavOffset = () =>
       document.querySelector(navSelector)?.getBoundingClientRect().height ?? 0;
     const getCurrentIndex = (pages) => {
+      // Pick the latest page whose start has scrolled past the nav.
+      // For tall sticky sections (Workspace = 220vh), this keeps "current"
+      // pinned to the section the user is actually inside, instead of jumping
+      // to the next section as soon as its top kisses the viewport.
       const navOffset = getNavOffset();
-      return pages.reduce(
-        (best, page, index) => {
-          const distance = Math.abs(page.getBoundingClientRect().top - navOffset);
-          return distance < best.distance ? { distance, index } : best;
-        },
-        { distance: Number.POSITIVE_INFINITY, index: 0 },
-      ).index;
+      const cursor = window.scrollY + navOffset + 1;
+      let idx = 0;
+      for (let i = 0; i < pages.length; i++) {
+        if (pages[i].offsetTop <= cursor) idx = i;
+      }
+      return idx;
     };
 
     const goToPage = (direction) => {
@@ -295,9 +717,21 @@ function LPVariantH() {
       const next = Math.min(Math.max(current + direction, 0), pages.length - 1);
       if (next === current) return false;
 
+      const target = pages[next];
+      const navOffset = getNavOffset();
+      // When entering a sticky stage from below, land at its END so scrolling
+      // up reveals the animation; from above, land at its START.
+      const isWorkspace = target.hasAttribute("data-hz-workspace");
+      let top;
+      if (isWorkspace && direction < 0) {
+        top = target.offsetTop + target.offsetHeight - window.innerHeight;
+      } else {
+        top = target.offsetTop - navOffset;
+      }
+
       pagingLockRef.current = true;
       window.scrollTo({
-        top: Math.max(0, pages[next].offsetTop - getNavOffset()),
+        top: Math.max(0, top),
         behavior: HMotionOK() ? "smooth" : "auto",
       });
       window.setTimeout(() => {
@@ -306,9 +740,30 @@ function LPVariantH() {
       return true;
     };
 
+    // Workspace section runs a tall sticky stage — page-snap must stand down
+    // while the user is scrolling through its interior, otherwise the scroll
+    // jumps past the sticky animation in one wheel tick. The thresholds use
+    // navOffset (not 0) because goToPage lands users at `offsetTop - navOffset`,
+    // making rect.top ≈ navOffset on entry, not 0.
+    const isInsideWorkspaceStage = (direction) => {
+      const stage = document.querySelector("[data-hz-workspace]");
+      if (!stage) return false;
+      const rect = stage.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const navOffset = getNavOffset();
+      const epsilon = 4;
+      if (direction > 0) {
+        // scrolling down: stay native from entry until the stage bottom reaches viewport bottom
+        return rect.top <= navOffset + epsilon && rect.bottom > vh + epsilon;
+      }
+      // scrolling up: stay native from end-of-sticky until the stage top reaches the nav
+      return rect.top < navOffset - epsilon && rect.bottom >= vh - epsilon;
+    };
+
     const onWheel = (event) => {
       if (Math.abs(event.deltaY) < 18 || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
       if (pagingLockRef.current) return;
+      if (isInsideWorkspaceStage(event.deltaY > 0 ? 1 : -1)) return;
       if (goToPage(event.deltaY > 0 ? 1 : -1)) {
         event.preventDefault();
       }
@@ -317,9 +772,11 @@ function LPVariantH() {
     const onKeyDown = (event) => {
       if (event.defaultPrevented) return;
       if (["ArrowDown", "PageDown", " "].includes(event.key)) {
+        if (isInsideWorkspaceStage(1)) return;
         if (goToPage(1)) event.preventDefault();
       }
       if (["ArrowUp", "PageUp"].includes(event.key)) {
+        if (isInsideWorkspaceStage(-1)) return;
         if (goToPage(-1)) event.preventDefault();
       }
     };
@@ -412,8 +869,8 @@ function LPVariantH() {
         .hz-shadow{box-shadow:5px 5px 0 ${HZ_INK}}
         .hz-split{display:block;width:max-content;transform-style:preserve-3d}
         .hz-pop{transform-origin:50% 80%;will-change:transform}
-        .hz-page{min-height:calc(100vh - 76px);scroll-snap-align:start;scroll-snap-stop:always;display:flex;flex-direction:column;justify-content:center}
-        html{scroll-snap-type:y mandatory;scroll-behavior:smooth}
+        .hz-page{min-height:calc(100vh - 76px);display:flex;flex-direction:column;justify-content:center}
+        html{scroll-behavior:smooth}
       `}</style>
 
       {/* NAV */}
@@ -507,36 +964,8 @@ function LPVariantH() {
         </div>
       </section>
 
-      {/* ZBAR — writing verbs (zine fingerprint) */}
-      {/* WORKSPACE */}
-      <section data-hz-page id="workspace" className="hz-page" style={{ padding: "100px 48px", color: HZ_INK }}>
-        <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}>
-          <HSectionMark tag="B / 02" kicker="WORKSPACE" />
-          <div>
-            <HReveal>
-              <h2 style={{ fontSize: 112, lineHeight: 0.92, fontWeight: 800, letterSpacing: -4, margin: "0 0 24px" }}>
-                <span className="hz-mark">15 PANELS.</span><br />ONE DESK.
-              </h2>
-            </HReveal>
-            <p style={{ fontSize: 16, lineHeight: 1.65, opacity: 0.8, maxWidth: 640, marginBottom: 40 }}>
-              Editor、Scenes、AI Chat、Codex、Map、Timeline、Snippets、Attribution、Foreshadow、Grid、Matrix などを Dockview で自由配置。執筆・整理・相談を、作品ごとの机に組み替える。
-            </p>
-            <div className="hz-shadow" style={{ border: `2px solid ${HZ_INK}` }}>
-              <div style={{ background: "#f6f3ec", padding: 22, color: HZ_INK }}>
-                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: ".12em", color: "rgba(10,10,10,0.48)", textTransform: "uppercase", marginBottom: 14 }}>
-                  App window · layout presets
-                </div>
-                <div ref={panelPreviewRef} style={{ border: `2px solid ${HZ_INK}`, background: HZ_BG, overflow: "hidden", willChange: "transform, opacity, filter" }}>
-                  <LPAppShellPreview accent={HZ_INK} activeIndicator="#fff200" minHeight={400} />
-                </div>
-                <p style={{ fontSize: 13, lineHeight: 1.65, opacity: 0.85, margin: "16px 0 0" }}>
-                  タイトルバーは本番に近い構成（ロゴ・ワークスペース・履歴・エクスポート・レイアウトプリセット・パネル表示・設定）。中央のプリセットボタンで <b>Write / Plan / Chat / Proofread / Condense</b> を切り替えると、下の Dock グリドが組み換わります。
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      {/* WORKSPACE — sticky scroll stage (snap-exempt) */}
+      <HWorkspaceSection />
 
       {/* THREE MOVES — D layout, G accents */}
       <section data-hz-page id="moves" className="hz-page" style={{ padding: "100px 48px", color: HZ_INK }}>
