@@ -644,15 +644,16 @@ Grid パネルは Beat と Synopsis の両方を表示する主要な計画ビ�
 - [x] `tree_nodes.unplaced_beats_doc TEXT NOT NULL DEFAULT '[]'` カラム追加（Unplaced beat の保存先）
 - [x] `tree_nodes.char_count INTEGER NOT NULL DEFAULT 0` カラム追加（Grid のステータスバー集計に使用、シーン保存時にフロントが値を同梱）
 - [x] `tree_nodes.unplaced_beat_preview TEXT` カラム追加（Grid 設計書参照）
+- [x] `tree_nodes.placed_beat_preview TEXT` カラム追加（Grid シーンカードでの Placed beat プレビュー、`placedBeatPreview.ts`）
 
 **TipTap 拡張:**
 - [x] TipTap カスタムノード `sceneBeat` の実装（Placed beat 用、`attrs`: `id` / `collapsed` / `beatType` / `pov`）
 - [x] TipTap カスタムノード `generatedProseBlock` の実装（`group: 'block'`、`content: 'block+'`、`defining: true`、`attrs`: `beatId` / `modified`）
-- [x] `appendTransaction`: `generatedProseBlock` 内の編集を検出して `modified=true` に倒す
+- [x] `appendTransaction`: `generatedProseBlock` 内の編集を検出して `modified=true` に倒す。加えて、対応 `sceneBeat` が doc から消えたオーファン `generatedProseBlock` を自動 unwrap する処理も同 hook 内に実装
 - [x] **Codex メンション拡張を SceneEditor に登録**: `CodexMentionExtension` を Beat 内 @メンションに配線済み（SceneBeatEditorContext 経由）
 - [x] **Mention Extension の suggestion provider 戦略**: Phase A は Chat と同一の provider を流用
-- [x] Beat の角括弧記法ハイライト（`BracketInstructionDecoration.ts`、Decoration で視覚的強調）
-- [x] paste ハンドラ: シーン内 ID 重複検出と再採番、対応 beat 不在の `generatedProseBlock` を unwrap（`pasteSanitize.ts`）
+- [~] Beat の角括弧記法ハイライト（`BracketInstructionDecoration.ts`、Decoration で視覚的強調）：拡張自体は実装済み、`createUnplacedBeatExtensions.ts` 経由で Unplaced beat 編集器には配線されているが、本文 SceneEditor の `extensions.ts` には**未登録**のため Placed beat 内では未稼働
+- [~] paste ハンドラ: シーン内 ID 重複検出と再採番（`pasteSanitize.ts` の `collectBeatIds` / `renumberDuplicateBeatIds`）は実装済みだが、`handlePaste` / `transformPasted` から**未配線**（テストのみが参照）。対応 beat 不在の `generatedProseBlock` の自動 unwrap は `GeneratedProseBlockNode` の `appendTransaction` 側で常時処理されており、こちらは別経路で達成済み
 
 **Editor 内 UI（Placed beat）:**
 - [x] `/` コマンドで Placed beat 挿入（slash command 登録済み）
@@ -672,62 +673,64 @@ Grid パネルは Beat と Synopsis の両方を表示する主要な計画ビ�
 - [x] `tree_nodes.unplaced_beats_doc`（Unplaced 配列）
 - [x] `tree_nodes.char_count`（本文の文字数。`countSceneBodyChars` で Beat を除いた本文のみ計算）
 - [x] `tree_nodes.unplaced_beat_preview`（Unplaced 先頭3件 × 40文字、`extractUnplacedBeatPreview.ts`）
+- [x] `tree_nodes.placed_beat_preview`（Placed beat のプレビュー、`placedBeatPreview.ts`）
 
 **Export:**
 - [x] Export 時の Beat ブロック除去：本文の `sceneBeat` ノードを除去、`generatedProseBlock` は unwrap（`exportEngine.ts`）。Unplaced beat は元から本文外なので Export 対象外
 
 **Phase A 既知の制限・v1 仕様:**
 - Unplace した beat を再度 Placed に戻しても、unwrap 済みの旧生成段落との連結は復元されない（片道変換）
-- Placed → Unplaced の D&D は未実装（メニューボタンで代替、Phase B）
-- SceneMetaPanel（右パネル）は未実装（SynopsisHeader / BeatsHeader のエディタ上部配置が現行、Phase B で右パネル化）
+- 角括弧記法ハイライト（`BracketInstructionDecoration`）は Unplaced beat 編集器のみ稼働。本文 SceneEditor の extensions に未登録のため Placed beat 内では未配線（要修正）
+- `pasteSanitize.ts` のシーン内 ID 重複再採番関数（`renumberDuplicateBeatIds`）は `handlePaste` / `transformPasted` に未配線（要修正）。orphan `generatedProseBlock` の unwrap は `appendTransaction` 側で別経路カバー済み
+- Toolbar からの Beat 挿入ボタン、`Ctrl+Shift+B` ショートカットは未実装（`/` コマンド・コンテキストメニュー・D&D で代替）
 
 依存: Editor、Chat のコンテキスト構築機構、Attribution、Codex メンション、@dnd-kit
 
 ### Phase B: Beat type・SceneMetaPanel・高度な操作
 
 **SceneMetaPanel（右パネル）:**
-- [ ] `EditorPane.tsx` のレイアウトを flex-row に変更（本文エリア + 右パネル 256px）
-- [ ] `SceneMetaPanel.tsx` を新規作成。内部に POV/Location セレクタ・Synopsis・Unplaced Beats・Placed Beats リストを配置
-- [ ] 既存の `SynopsisHeader.tsx` / `BeatsHeader.tsx` のコンテンツを `SceneMetaPanel` 内にリファクタ（ロジックは流用）
-- [ ] パネルトグルボタン（`EditorPane` のツールバー端）でパネルを折りたたみ可能
-- [ ] Focus Mode 有効時はパネルを自動折りたたみ
-- [ ] DndContext は EditorPane 全体を包む形を維持（右パネルから本文への D&D が機能するよう）
-- [ ] SceneMetaPanel のリサイズ対応（幅を自由に調整可能に）
+- [x] `EditorPane.tsx` のレイアウトを `ResizablePanelGroup` ベースに変更（本文エリア + 右パネル、幅は %ベースで永続化）
+- [x] `SceneMetaPanel.tsx` を新規作成。内部に POV/Location セレクタ・Synopsis・Unplaced Beats・Placed Beats リストを配置
+- [x] 既存の `SynopsisHeader.tsx` / `BeatsHeader.tsx` を `SceneMetaPanel` 配下にぶら下げる（薄いラッパーとして組み込み、内部ロジックはそのまま流用）
+- [x] パネルトグルボタン（`Toolbar` の `panelOpen` / `onTogglePanel` prop 経由）でパネルを折りたたみ可能
+- [x] Focus Mode 有効時はパネルを自動折りたたみ（`sceneMetaPanelOpen && !focusMode && !isCodexMode && !isSnippetMode` で表示判定）
+- [x] DndContext は EditorPane 全体を包む形を維持（右パネルから本文への D&D が機能する）
+- [x] SceneMetaPanel のリサイズ対応（`onLayoutChanged` → `editor.sceneMetaPanelWidth` で永続化）
 
 **Beat UI 拡張:**
-- [ ] **Beat フッター**: モデルセレクタ（Beat ごとの生成モデル上書き、省略時はプロジェクトデフォルト継承）+ Generate/Regenerate ボタンをフッターに移動
-- [ ] **ephemeral アクションバー**: 生成完了後に `generatedProseBlock` 下端へ Keep / Retry / Discard を表示。Beat 外クリックまたは編集開始で自動 Keep
-- [ ] **Clear Beat**: 次の Beat またはドキュメント末尾までの本文内容（`generatedProseBlock` + 手動テキスト）を全削除。確認ダイアログあり
-- [ ] **Beat ブロックの D&D 移動ハンドル**: SceneBeat NodeView に `⠿` ハンドルを追加し、本文内の任意位置にドラッグ移動可能（`generatedProseBlock` も一緒に移動）
-- [ ] Placed → Unplaced の D&D 実装（SceneMetaPanel への水平ドラッグ）
+- [x] **Beat フッター**: モデルセレクタ（Beat ごとの生成モデル上書き、省略時はプロジェクトデフォルト継承）+ Generate ボタンをフッターに配置。※ボタン文字列の Generate/Regenerate 切替は未実装でフッターは常に「Generate」表記。Regenerate は `[⋮]` メニュー側にあるため、文字列切替は Phase B 残課題（小タスク）
+- [x] **ephemeral アクションバー**: 生成完了後に `generatedProseBlock` 下端へ Keep / Retry / Discard を表示。Beat 外クリックまたは編集開始（`isModified` 検出）で自動 Keep
+- [x] **Clear Beat**: 次の Beat またはドキュメント末尾までの本文内容（`generatedProseBlock` + 手動テキスト）を全削除。確認ダイアログあり（`beatOperations.ts::clearBeatContent`）
+- [x] **Beat ブロックの D&D 移動ハンドル**: SceneBeat NodeView に `⠿` ハンドル（`useDraggable` + `GripVertical`）を追加し、`moveBeatToPosition` で本文内の任意位置にドラッグ移動可能（`generatedProseBlock` も追従）
+- [x] Placed → Unplaced の D&D 実装（`BeatsHeader` の `useDroppable({ id: "unplaced-drop-zone" })` 経由で SceneMetaPanel への水平ドラッグ）
 
 **Beat type:**
-- [ ] Beat type（`free` / `summary` / `guided` / `dialogue` / `setting` / `micro`）の選択 UI
-- [ ] Beat type に応じたデフォルトプロンプトの調整
+- [x] Beat type（`free` / `summary` / `guided` / `dialogue` / `setting` / `micro`）の選択 UI（Placed 側 `SceneBeatNodeView` / Unplaced 側 `UnplacedBeatItem` 両方）
+- [x] Beat type に応じたデフォルトプロンプトの調整（`/workspace/src/prompts/ja/beat.ts` 内で type ごとのガイダンス文を system prompt に追加）
 
 **Grid / Matrix 連携:**
-- [ ] **Grid パネルの Beat 主表示**: シーンカードの主表示を `unplaced_beat_preview` の箇条書きに変更、Synopsis は副表示へ（Grid 設計書と連携）
-- [ ] Matrix セルへの Beat 箇条書き表示オプション（Toggle で切替、デフォルト OFF）
-- [ ] **Beats ↔ Synopsis 相互変換**: Beats → Synopsis AI生成ボタン / Synopsis → Beat 提案ボタン（SceneMetaPanel 内）
+- [x] **Grid パネルの Beat 主表示**: シーンカードに Beat / Synopsis のタブ切替 UI を導入し、Beat タブを既定（`hasBeats` 時優先）。Placed beat と Unplaced beat の両方を箇条書き表示（`GridCardBody.tsx` + `parseBeatPreview.ts`）
+- [ ] Matrix セルへの Beat 箇条書き表示オプション（Toggle で切替、デフォルト OFF）※`matrixStore` の `cellRenderMode` は `dot` / `count` / `heatmap` / `pov` / `role-aware` のみ。`beat-list` モード未追加
+- [x] **Beats ↔ Synopsis 相互変換**: `generateBeatsFromSynopsis.ts`（Synopsis→Beats）/ `generateSynopsisFromBeats.ts`（Beats→Synopsis）の両方向。UI は `BeatsHeader` / `SynopsisHeader` の Sparkles ボタン経由
 
 **その他:**
-- [ ] `Generate alternative` で Snippet 化
-- [ ] `Convert to text`（Beat を通常段落に変換）
-- [ ] ステータスバーに Beat 統計表示
-- [ ] Focus mode での Beat 非表示オプション
-- [ ] リニア編集モードでの Beat 表示切替
-- [ ] **Codex メンション role 修飾子**: `@キャラ:actor` / `@キャラ:target` / `@キャラ`（default `mentioned`）の入力サジェスト＋保存
-- [ ] Mention ノードの `attrs.role` 拡張
-- [ ] Matrix の Role-aware Display モードに対応する出力（Matrix 設計書側で消費）
+- [x] `Generate alternative` で Snippet 化（`generateBeatAlternative.ts`、`[⋮]` メニューから起動）
+- [x] `Convert to text`（Beat を通常段落に変換、`beatOperations.ts` + `SceneBeatNodeView` メニュー）
+- [x] ステータスバーに Beat 統計表示（`Beats: N (M generated)` 表記、`EditorPane.tsx`）
+- [x] Focus mode での Beat 非表示オプション（Settings `editor.focusModeHideBeats` トグル、CSS で制御）
+- [x] リニア編集モードでの Beat 表示切替（`normal` / `collapsed` / `hidden` の3択、`LinearSceneBlock.tsx`）
+- [x] **Codex メンション role 修飾子**: `@キャラ:actor` / `@キャラ:target` / `@キャラ`（default `mentioned`）の入力サジェスト＋保存（`CodexMentionExtension` + `MentionPopup` のクイックピックチップ）
+- [x] Mention ノードの `attrs.role` 拡張（`CodexMentionExtension.ts` 内で定義）
+- [x] Matrix の Role-aware Display モードに対応する出力（`matrixStore` の `role-aware` モード、`MatrixCell` / `deriveCellRender.ts`）
 
 ### Phase C: AI コンテキスト注入の精緻化＋ role 自動推定
 
-- [ ] Settings で Beat 注入の ON/OFF トグル
-- [ ] Layer 3 への「Pending beats for this scene」セクション注入
-- [ ] 自分より後ろの Beat を予告として渡すロジック
-- [ ] **Beat 生成完了後、prose から各 `@mention` の role を AI 推定**
-- [ ] 推定結果を beat ヘッダーにバッジ提案表示（accept で `attrs.role` 更新、reject で default 維持）
-- [ ] 推定信頼度が低い場合は提案を出さない（曖昧な描写の誤推定を抑制）
+- [x] Settings で Beat 注入の ON/OFF トグル（`beat.injectIntoContext` / `beat.inferRoles`、`AiCategory.tsx`）
+- [x] Layer 3 への「Pending beats for this scene」セクション注入（`pendingBeatsContext.ts` + `contextBuilder.ts` + `beatPromptBuilder.ts`、Chat と Beat 生成で共有）
+- [x] 自分より後ろの Beat を予告として渡すロジック（`pendingBeatsContext.ts` で `currentBeatId` 以降の Placed beat と全 Unplaced beat を抽出）
+- [x] **Beat 生成完了後、prose から各 `@mention` の role を AI 推定**（`inferMentionRoles.ts`、`useBeatGeneration.ts` から呼出）
+- [x] 推定結果を beat ヘッダーにバッジ提案表示（`RoleSuggestionBadges.tsx` + `applyRoleSuggestion.ts` + `roleSuggestionsStore.ts`。accept で `attrs.role` 更新、reject で default 維持）
+- [x] 推定信頼度が低い場合は提案を出さない（Settings `beat.roleInferenceConfidenceThreshold`、default 0.7）
 
 ### Phase D: Bottom-up Beat 抽出（v2）
 

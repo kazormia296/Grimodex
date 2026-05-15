@@ -149,7 +149,7 @@ Codex + Snippet のピル合計が コンテキストバーの横幅に収まら
   - グループ化表示時もグループ内ピル展開後に同じ ✨ マークが付与される
 - **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合（CodexHighlightまたは@メンション経由）、そのエントリをセッションの `pinned_codex` に自動追加する。シーン本文での言及（summary注入）とは異なり、チャットでの言及はユーザーの明確な意図を示すため、content全文を注入する。自動ピン留めされたエントリはContext Barにピルとして表示され、不要な場合は×で除外可能
 - **チャット言及の編集による自動ピン解除**: 送信前にユーザーがメッセージを編集し、Codexエントリ名が入力欄から消えた場合、そのエントリの自動ピン留めを解除する。ただし手動ピン留め（「+」ボタンやピルプレビューのPinボタン経由）されたエントリは編集で解除されない。これを区別するため、`pinned_codex` の各エントリに `source: 'manual' | 'chat_mention'` を保持する
-- **Pin with children**: Codexエントリのピルのコンテキストメニューに「子エントリも含める」オプションを提供。選択すると親+全直接子エントリをまとめてピン留めし、それぞれcontent全文が注入される（手動ピンはサブツリートークン予算を無視する）。個別の×ボタンで子エントリ単位の除外も可能
+- **Pin with children**: Codex の **ピン留めダイアログ（`PinEntryDialog`）** に各エントリの「子エントリも含める」チェックボックスを提供。ONにすると `chat_session_pinned_codex.withChildren = 1` で保存され、親+全直接子エントリをまとめてピン留めし、それぞれcontent全文が注入される（手動ピンはサブツリートークン予算を無視する）。フラグは `togglePinChildren` でいつでも切り替え可能。個別の×ボタンで子エントリ単位の除外も可能
 
 ### 折りたたみ
 
@@ -309,7 +309,8 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 - @ボタン/ /ボタン : 後述の特殊入力のポップオーバー表示
 - 🛠️ボタン: AIのオプションをポップオーバーリスト表示。全て対応モデルのみ活性化。対応機能が一つもない場合はこのボタン自体非活性マウスカーソル🚫(コンテキストバーのAIボタンと同じ)。ポップオーバー内の各トグル状態は `ai_settings` テーブルに永続化され、セッション・再起動をまたいで保持される。
 	- **🔧 Agent mode トグル（スタンドアロン実行モード）**: Tool Use を有効化し、LLM がプロジェクトデータを能動的に検索・取得できるモードに切り替える。ON にすると送信時に `runAgentLoop` が起動し、LLM のツール呼び出しをループ実行する:
-		- **利用可能ツール（11 種）**: `search_codex` / `list_codex_by_type` / `get_codex_entry` / `list_codex_tags` / `search_codex_by_tags` / `find_related_entries` / `list_chapters` / `get_scene` / `search_scenes` / `search_snippets` / `get_chapter_summaries`
+		- **利用可能ツール（14 種）**: `search_codex` / `list_codex_by_type` / `get_codex_entry` / `list_codex_tags` / `search_codex_by_tags` / `find_related_entries` / `list_chapters` / `get_scene` / `search_scenes` / `search_snippets` / `get_chapter_summaries` / `list_open_foreshadows` / `get_foreshadow_detail` / `get_scene_timeline_neighbors`
+		  - 末尾3種は実装時に追加された伏線レジスタ／タイムライン探索系ツール: `list_open_foreshadows` は未回収伏線の一覧、`get_foreshadow_detail` は単一伏線の詳細（出現／回収シーン、関連 Codex）、`get_scene_timeline_neighbors` は指定シーンの前後シーンの synopsis を返す
 		- **呼び出し上限**: 1 ターンあたり最大 10 回のツール呼び出し。これを超えた場合はループ打ち切りで最終応答生成に遷移
 		- **トークン予算制御**: ツール結果の累計トークンが予算を超えそうになった時点で追加ツール呼び出しを抑止し、既取得の結果のみで応答を合成する
 		- **進捗 UI**: ループの状態（現在何番目のツールを呼んでいるか／累計ツール呼び出し回数／推定残予算）を `AgentProgressBar` コンポーネントでメッセージリスト上部に可視化する
@@ -670,7 +671,7 @@ AI のべりすと（[ai-novel.com](https://ai-novel.com/account_api_help.php)�
   - `top_a`, `tailfree`, `typical_p`, `min_p`, `rep_pen` (1.0〜2.0)
   - `badwords`, `stoptokens`, `logit_bias`
   - 入力エリアのモデルセレクタで AI のべりすとを選んだ時のみ、これらのプリセットを切り替える簡易 UI も検討（プリセット = `バランス` / `創造的` / `保守的` 等）
-- **ストリーミング**: API ドキュメントに明記されていないため、実装着手時に実機検証する。非対応の場合は非ストリーム応答として扱い、UI 側でローディング表示で繋ぐ
+- **ストリーミング**: 実装時に実機検証した結果、**ストリーミング非対応で確定**。Rust 側 `send_chat_ainoverist` で非ストリーム POST を投げ、完了後に応答テキストを一括 `stream-chunk` イベントとして emit してから `stream-done` を発火するアダプタ実装（`src-tauri/src/ai.rs` の `AiProvider::AiNovelist` 分岐）。フロント側のストリーミング UI は他プロバイダと共通のまま動作する
 - **トークン計上**: API レスポンスの `usage` を信頼。返さない場合は `tokens_in / tokens_out` を NULL 許容
 - **接続テスト**: Settings に専用の「接続テスト」ボタン（カスタム OpenAI 互換とは別動線）。短文を投げて 200 が返ることを確認
 
@@ -899,7 +900,7 @@ thinking ブロックのストリーミングは以下のイベント順序で�
 
 ### Map への送出
 
-> **🚧 未実装（Phase 未着手）**: 本セクションは設計のみで、現在の `ChatMessageContextMenu.tsx` には `Add to Map ▸` サブメニューが存在しない。`map_stickies.source_chat_message_id` / `map_ai_branches` への書き込みコードも未実装。Map パネル本体の進捗に合わせて段階導入する。
+> **🚧 UI 動線のみ未実装（Phase 未着手）**: 設計の受け皿となる DB スキーマ（`map_stickies.source_chat_message_id` の FK 列、`map_ai_branches` テーブル）は `src/db/schema.ts` で既に定義済み。`ChatMessageContextMenu.tsx` の `Add to Map ▸` サブメニューおよび書き込みハンドラのみ未実装で、Map パネル本体の進捗に合わせて段階導入する。
 
 Chat で AI と議論した内容を Map に還元するための動線。**新ノードタイプは追加せず**、既存の Sticky / Snippet / AI Branch / Codex のいずれかに変換する。Map パネル設計書「← Chat（Chat → Map）」と対応。
 

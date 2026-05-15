@@ -305,7 +305,7 @@ Attr / Cmt / Focus / TW の 4 つは独立したトグルで、組み合わせ�
 - `src/features/editor/SynopsisHeader.tsx` — 折りたたみヘッダー（Scene限定ガード済み: `nodeType !== "scene"` で null return）
 - `src/features/tree/SynopsisArea.tsx` — テキストエリア本体（同様に Scene 限定ガード済み）
 
-> **Phase B 実装済み（部分）**: Synopsis（Scene）・Beats を含む `SceneMetaPanel`（右パネル）は実装済みで、`EditorPane` の `ResizablePanelGroup` で本文と並列配置されている。ツールバー右端の ▶ ボタンで開閉可能。POV / Location セレクタの右パネルへの統合と、エディタ上部 C-4 セクションの完全廃止は未完了。
+> **Phase B 実装済み**: Synopsis（Scene）・Beats を含む `SceneMetaPanel`（右パネル）は実装済みで、`EditorPane` の `ResizablePanelGroup` で本文と並列配置されている。ツールバー右端の ▶ ボタンで開閉可能。`EditorPane.tsx` からの `SynopsisHeader` / `BeatsHeader` の直接 import は撤去済で、両コンポーネントは `SceneMetaPanel` 内部からのみ参照される（エディタ上部の C-4 配置は完全廃止済）。POV / Location セレクタの右パネルへの統合は未完了。
 
 ---
 
@@ -1384,9 +1384,9 @@ Codex Dynamic Phases のフェーズ定義、フェーズ切替 UI、`codex_phas
 
 ---
 
-## Beat システム（Phase A 実装済 / Phase B 進行中）
+## Beat システム（Phase A / Phase B いずれも実装済）
 
-Beat システムの Phase A は実装済み。Phase B として `SceneMetaPanel`（右パネル）への移行は **既に実装済**（`SceneMetaPanel.tsx` が SynopsisHeader / BeatsHeader を内部で使用、`EditorPane` の `ResizablePanelGroup` 配置済み、ツールバーの ▶ トグルで開閉可能）。残りの Phase B UI 拡張（D&D ハンドル / フッターモデルセレクタ / ephemeral アクションバー / Clear Beat メニュー）は未着手。詳細は [Beat システム設計書](./Grimodex_Beatシステム設計書.md)。
+Beat システムの Phase A は実装済み。Phase B として `SceneMetaPanel`（右パネル）への移行は **完了**（`SceneMetaPanel.tsx` が SynopsisHeader / BeatsHeader を内部で使用、`EditorPane` の `ResizablePanelGroup` 配置済み、ツールバーの ▶ トグルで開閉可能、`EditorPane.tsx` からの旧 import は撤去済）。Phase B UI 拡張（D&D ハンドル / フッターモデルセレクタ / ephemeral アクションバー / Clear Beat メニュー）も実装済み。詳細は [Beat システム設計書](./Grimodex_Beatシステム設計書.md)。
 
 ### TipTap カスタムノード
 
@@ -1417,9 +1417,9 @@ Beat システムの Phase A は実装済み。Phase B として `SceneMetaPanel
 - D&D による Unplaced → Placed の状態遷移
 - `+ Beat` ボタン
 
-**Phase B 実装済み（部分）**: `SceneMetaPanel.tsx`（右パネル）が SynopsisHeader / BeatsHeader を内部で使用する形で**統合済み**。`EditorPane` は `ResizablePanelGroup` で本文と右パネルを横並びにし、`DndContext` は EditorPane 全体を包むため右パネル → 本文の水平 D&D も継続して動作する。ツールバーの ▶ ボタンで右パネルの開閉が可能。
+**Phase B 実装済み**: `SceneMetaPanel.tsx`（右パネル）が SynopsisHeader / BeatsHeader を内部で使用する形で**統合済み**。`EditorPane` は `ResizablePanelGroup` で本文と右パネルを横並びにし、`DndContext` は EditorPane 全体を包むため右パネル → 本文の水平 D&D も継続して動作する。ツールバーの ▶ ボタンで右パネルの開閉が可能。
 
-> **未実装の Phase B 項目**: SynopsisHeader / BeatsHeader を「廃止」する（=右パネル専用コンポーネントに置換する）リファクタは未完了で、現状はエディタ上部にも依然として表示される構成が残っている可能性がある（`showSceneMetaPanel` トグルの状態次第）。
+> **エディタ上部の旧配置は廃止済**: `EditorPane.tsx` から `SynopsisHeader` / `BeatsHeader` の直接 import は撤去済で、両コンポーネントは `SceneMetaPanel.tsx` 内部からのみ描画される（`showSceneMetaPanel` トグル状態に関わらず、上部にデュアル描画される構成は残っていない）。
 
 ### Placed beat の本文中表示
 
@@ -1489,11 +1489,13 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 
 ---
 
-## 実装状況サマリー（2026-05-07 時点）
+## 実装状況サマリー（2026-05-16 時点）
 
 本セクションは設計書本文の理想形と現実装のギャップを集約したスナップショット。✅ 実装済 / 🟡 部分実装 / ❌ 未実装 / ⚠️ 設計と差異 / ➕ 設計書外で追加実装。
 
 > 履歴: 初回スナップショットの後、Bundle A / B / C で **Snippet タブアイコン / 文字数ミニプログレスバー / Show breadcrumb・Show line numbers トグル / Set ruby・Insert from Snippet コンテキストメニュー / 段落字下げ設定 / Breadcrumb 狭幅省略 / タブ種バナーの lucide 化** を実装済みに更新。Bundle B/C 着手時の調査で **Attribution highlight opacity / タブ種バナー本体** は既に実装済みであったことが判明したため、誤検知扱いで ✅ に修正。
+>
+> 2026-05-16 更新: 前スナップショット（2026-05-07）以降に **Cursor blink 配線 / Character fade-in / Character fade-out / Codex タブの Summary 入力欄 + ✦ Generate / SynopsisHeader・BeatsHeader のエディタ上部廃止 / Linear モード Beat 表示モード設定（`editor.linearBeatDisplay`）** の 6 項目が実装済みに昇格したことを確認。
 
 ### A. タブバー
 
@@ -1520,9 +1522,9 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 ### C-4. Synopsis / Summary
 
 - ✅ Scene の Synopsis（textarea、自動保存、✦ Generate、Beats からの生成）
-- ⚠️ 配置: 現在は SceneMetaPanel（右パネル）側に統合済み。エディタ上部の C-4 配置は実態と乖離
-- ❌ Codex タブの「Summary」入力欄 + ✦ Generate ボタン
-- 🟡 `InlineSynopsisEditor` 共有化: ファイル自体は存在するが、3パネル共通利用が完全に行き渡っているかは未検証
+- ⚠️ 配置: 現在は SceneMetaPanel（右パネル）側に統合済み。エディタ上部の C-4 配置は実態と乖離（本文上にはもう描画されないため設計書の「ツールバーとエディタキャンバスの間」表記は意図と相違）
+- ✅ Codex タブの「Summary」入力欄 + ✦ Generate ボタン — `src/features/codex/components/DetailsTab.tsx` の Summary textarea と `codex-generate-summary` ボタン（Wand2 アイコン）。`extractPlainText` + `generateSynopsisFromContent` 経由で生成
+- 🟡 `InlineSynopsisEditor` 共有化: Grid 系（`GridColumn` / `GridCardBody` / `GridFolderCard` / `GridContainerOutline`）と Scenes Outline モード（`TreeRenderer`）では採用済。Editor 側（`SceneMetaPanel` / `SynopsisHeader`）は独自 textarea 実装のままで未置換
 
 ### D. エディタキャンバス
 
@@ -1553,9 +1555,9 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 #### カーソル / 文字アニメーション 4 種
 
 - ✅ Smooth caret（CursorOverlayPlugin、`editor.smoothCaret` 連動）
-- 🟡 Cursor blink: 設定キーと UI トグルは存在するが、`editor.cursorBlink` が CursorOverlayPlugin に渡っておらず**設定値とエディタ動作が連動していない**
-- ❌ Character fade-in（`editor.fadeIn` 設定 UI のみ存在、エディタ実装未配線）
-- ❌ Character fade-out（`editor.fadeOut` 設定 UI のみ存在、エディタ実装未配線）
+- ✅ Cursor blink — `useCursorOverlay.ts` で `editor.cursorBlink` を読み、`createCursorOverlayPlugin` の `getBlink` に注入。プラグイン側で `blinking` クラスの付与/解除を制御
+- ✅ Character fade-in — `CharacterFadePlugin.ts` 本実装、`useCharacterFade.ts` で `editor.characterFadeIn` を購読し `EditorPane` で登録
+- ✅ Character fade-out — `CharacterFadeOutPlugin.ts` 本実装、同じく `useCharacterFade.ts` 経由で `editor.characterFadeOut` を購読
 
 ### E. ステータスバー
 
@@ -1567,7 +1569,7 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 ### リニア編集モード
 
 - ✅ LinearEditorView / LinearSceneBlock / linearEditorStore、IntersectionObserver 遅延マウント、Toolbar / FindReplace / CodexPopover / EditorContextMenu の共有
-- ❓ Beat の Linear 表示モード設定（通常 / 折りたたみ / 非表示の3択）は未確認
+- ✅ Beat の Linear 表示モード設定（通常 / 折りたたみ / 非表示の 3 択）— 設定キー `editor.linearBeatDisplay`（`useEditorSettings.ts` / `types.ts`）。設定 UI は `EditorCategory.tsx`、`LinearSceneBlock.tsx` の `data-linear-beat-display` 属性で適用
 
 ### エディタ内コンテキストメニュー
 
@@ -1609,22 +1611,25 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 ### Beat システム
 
 - ✅ Phase A: sceneBeat / generatedProseBlock ノード、Unplaced 別カラム、ヘッダーバー、`[⋮]` メニュー、`/` コマンド、`Ctrl+Shift+B`、ステータスバーの Beats 表示、Markdown export 時の除去
-- 🟡 Phase B: SceneMetaPanel 右パネル統合は実装済み。SynopsisHeader / BeatsHeader の完全廃止は未完了
+- ✅ Phase B: SceneMetaPanel 右パネル統合 + SynopsisHeader / BeatsHeader のエディタ上部廃止 — `EditorPane.tsx` から `SynopsisHeader` / `BeatsHeader` の直接 import は撤去済。両コンポーネントは `SceneMetaPanel.tsx` 内部からのみ参照される
 - ✅ Phase B: D&D ハンドル `⠿`（`useDraggable` + `GripVertical`）/ フッターのモデルセレクタ + Generate ボタン（モデル whitelist 連動）/ ephemeral アクションバー（生成完了後の `✓ Keep` / `↺ Retry` / `✕ Discard`、編集開始で自動 dismiss）/ `Clear Beat` メニュー項目（確認ダイアログ付き）
 
-### 重要ギャップ Top 5（更新版）
+### 重要ギャップ Top 5（2026-05-16 更新版）
 
-1. ~~文字アニメ 3 種~~ ✅ Bundle で実装済み（Cursor blink 配線、Character fade-in/fade-out プラグイン化）
-2. ~~Phase B Beat 拡張~~ ✅ 調査時点ですべて実装済（D&D ハンドル / モデルセレクタ / ephemeral アクションバー / Clear Beat 確認ダイアログ）。SynopsisHeader / BeatsHeader の完全廃止のみ未完了
+1. ~~文字アニメ 3 種~~ ✅ 実装済（Cursor blink 配線、Character fade-in/fade-out プラグイン化）
+2. ~~Phase B Beat 拡張~~ ✅ 完了。SynopsisHeader / BeatsHeader のエディタ上部廃止も `EditorPane.tsx` から直接 import 撤去済で完了
 3. ~~文字数詳細ポップオーバー~~ ✅ 実装済み（クリックで AnimatedDropdown 開、原稿用紙換算 / 推定読了時間 / 単語数 / 進捗）
-4. **VerticalPreview がモーダル実装で Dock / フローティング構想と乖離** — 「縦書きで参照しながら書く」体験が未提供。レイアウトシステムとの結合が深く要構造変更
-5. **クリップボード Authorship 伝搬の独自 MIME 出力側**（`application/x-grimodex-authorship`）— エディタからのコピー時にシリアライザ拡張で MIME を書き出す処理が未実装
+4. ~~Codex タブの「Summary」入力欄 + ✦ Generate ボタン~~ ✅ `DetailsTab.tsx` に実装済（Wand2 アイコン、`generateSynopsisFromContent` 経由）
+5. **VerticalPreview がモーダル実装で Dock / フローティング構想と乖離** — 「縦書きで参照しながら書く」体験が未提供。レイアウトシステムとの結合が深く要構造変更
+6. **クリップボード Authorship 伝搬の独自 MIME 出力側**（`application/x-grimodex-authorship`）— Chat 用 writer は `lib/clipboardAttribution.ts` に存在するが、エディタからのコピー時に TipTap `clipboardTextSerializer` / `transformCopied` 等で MIME を書き出すシリアライザ拡張は未実装
+7. **ペースト Case 1 判定の独自 MIME 統一** — `EditorPane.tsx` の paste handler は `html.includes("data-grimodex-source")` 文字列マッチに留まり、`clipboardData.getData("application/x-grimodex-authorship")` 直接読みへの統一は未完
+8. **タブを Center 外にドラッグ → フローティングウィンドウ / Group エッジへのドロップで新規スプリット作成** — `TabBar.tsx` のドラッグハンドラはタブ並び替え＋グループ間移動のみ。`WebviewWindow` 利用も未導入
 
 ### 残タスク（中量）
 
-- SynopsisHeader / BeatsHeader の旧エディタ上部配置を完全廃止し、SceneMetaPanel への移行を仕上げる
 - タブを Center 外にドラッグ → フローティングウィンドウ
 - Group エッジへのドロップで新規スプリット作成
-- ペースト Case 1 判定を独自 MIME `application/x-grimodex-authorship` 直接読みに統一
-- Codex タブの「Summary」入力欄 + ✦ Generate ボタン
+- ペースト Case 1 判定を独自 MIME `application/x-grimodex-authorship` 直接読みに統一（writer 側のエディタ copy 用シリアライザ拡張とセットで実装）
+- VerticalPreview を Right Dock デフォルト + Bottom Dock + フローティングウィンドウ構成へ刷新
+- `InlineSynopsisEditor` を Editor 側（`SceneMetaPanel` / `SynopsisHeader`）にも展開し、3 パネル共通利用を完成させる（Grid / Scenes Outline は既に置換済）
 - `InlineSynopsisEditor` の 3 パネル共通化を完全実施

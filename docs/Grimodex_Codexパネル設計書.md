@@ -10,6 +10,86 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ---
 
+## 実装状況サマリ（2026-05-16 時点）
+
+本セクションは設計書本文と実装（`src/features/codex/` および関連箇所）の照合結果を要約する。詳細な記述は各設計セクションに残し、ここでは「どこが実装済み」「どこが設計と乖離」「未実装」を一覧で把握できるようにする。
+
+### 実装済みの主要要素
+
+- **`CodexManagementPanel`**（`src/features/codex/CodexManagementPanel.tsx`、約1200行）
+  - スタック／スプリット切替（`ResizeObserver` で 400px 閾値）
+  - **Wide モード（≥1200px）の 3 カラムレイアウト**（List + 中央 `EditorPane` + Detail）。設計書には未記載の拡張で、Codex Content を Editor タブと同等に編集しつつ Detail タブを並べて閲覧できる
+  - ヘッダー、検索バー（debounce 300ms、Escape クリア）、フィルタタブ（ビルトイン + カスタム動的生成）、タグフィルタバー（OR フィルタ）
+  - ソート: `category / name-asc / name-desc / updated / created / most-referenced`（`codexSort.ts`）
+  - エントリリストの仮想化（`@tanstack/react-virtual`）と Category Grouped List
+  - キーボードショートカット: `Ctrl+K`（CodexCommandPalette）、`Ctrl+F`（検索フォーカス）、`↑↓`（ナビゲーション）、`F2`（rename）、`Delete`
+  - 削除確認ダイアログ、インラインリネーム
+  - `requestSelectEntry` / `pendingEntryId` 経由の外部遷移 API
+  - ゴミ箱 (`useDropTarget`)、Map、Matrix Custom Set との連携メニュー
+- **詳細画面**（`CodexDetailContent.tsx`）
+  - タブ: `details` / `relations` / `tracking` / `mentions` / `research` / `timeline` / **`foreshadow`（設計書未記載・追加実装）**
+  - ヘッダー: アイコン（`EntryHeroAvatar` + `IconPicker` + `IconCropDialog`）、name インライン編集、Type バッジ、Aliases、Tags
+  - リビジョン履歴ボタン（`Clock` アイコン）+ 削除ボタン
+- **Details タブ**: `PhaseIndicator` + Summary（Phase 編集対応・プレビュー対応）+ Content（TipTap + Phase 切替 + Open in Editor）+ DetailsSection（カスタムディテール）
+  - AI 自動要約（`Wand2` ボタン、`generateSynopsisFromContent`）
+  - summary 未記入時のヒントメッセージ
+- **Relations タブ**: 親エントリ表示、子エントリ追加、Suggested（`findMentionedEntriesAsync` 経由）、Dismiss 永続化（`codex_dismissed_relations`）、`ChildrenBudgetSelector` (4 プリセット: none / compact / standard / generous = 0% / 15% / 30% / 50%)
+- **Tracking タブ**: `ContextModeSelector`（always / mentioned / suppress / hidden）+ `ExcludedAliasesField`
+- **Mentions タブ**: `ReferencesSection`（Manuscript、`buildCrossReferenceReport` 経由）+ Source chat link（`source_chat_message_id` から `chatSessions.title` 解決）
+- **Research タブ**: `notes` プライベートノート（TipTap、2 秒 debounce 自動保存）
+- **Timeline タブ**: フェーズタイムライン、Add/Edit/Delete、解決モードバッジ Popover、アクティブシーンマーカー
+- **PhaseDialog**: label / anchor scene / summary / content / context mode の override 切替
+- **カスタムディテール（`DetailsSection.tsx`）**
+  - `text` (TipTap)、`dropdown`、`codex_reference` 3 種すべて表示・編集可
+  - `🤖` トグルで `include_in_context` ON/OFF
+- **マッチングパイプライン**
+  - `codexMatcher.ts`（JS Aho-Corasick）と `rustMatcher.ts`（Tauri Command `codex_rebuild_matcher` / `codex_match_text` 経由の Rust 実装）の 2 系統併存
+  - 除外パターン（`excludedAliases`）、CJK 文字クラス境界（`charClassBoundary.ts`）、最長一致解決
+  - `mentionRescanQueue.ts` による `scene_codex_mentions` キャッシュテーブル更新
+- **DB スキーマ**: `codex_types` / `codex_entries`（`contextMode` / `childrenBudget` / `notes` / `icon` / `parentId` 等）/ `codex_tags` / `codex_entry_tags` / `codex_detail_definitions` / `codex_detail_values` / `codex_dismissed_relations` / `codex_quick_pins` / `codex_entry_phases` / `codex_phase_detail_overrides` / `scene_codex_pins` / `scene_codex_mentions` 全て存在。`tree_nodes.story_time_order` / `story_time_label` / `projects.phase_resolution_mode` / `authorship_spans.phase_id` も存在
+- **API モジュール分割**: `tagApi` / `phaseApi` / `relationApi` / `detailApi` / `typeApi` の 5 分割を実装済み（設計書通り）
+- **`CodexCommandPalette`** + Aliases / ExcludedAliases / Tags 構造化管理 UI（`AliasesField` / `ExcludedAliasesField` / `TagSelector`）
+- **Chat 注入連携**: `chatStore.ts` で `contextMode` フィルタ（`hidden` / `suppress` 除外、`always` 常時注入）、`childrenBudget` ベースの BFS 子孫注入（`buildChildrenContext` + `computeChildrenTokenBudget`）、プロジェクトスコープでの `formatTimelineContext` 統合
+
+### 設計と乖離している箇所（部分実装）
+
+- **`ManageFieldsDialog`**（カスタムフィールド管理ダイアログ）が設計書の以下の機能を**未実装**:
+  - `dropdown` の `Options` 編集 UI（`field_config.options` 配列の追加/削除/並び替え）
+  - `codex_reference` の `Allowed types` 編集 UI（`field_config.allowedTypes`）
+  - ドラッグハンドル `⠿` による `sort_order` の D&D 並び替え
+  - `field_type` 変更時の互換性確認ダイアログ（既存値クリアの警告）
+  - `[+ Add option]` / Fractional Indexing による sort_order
+- **`PhaseDialog`** が設計書の以下を**未実装**:
+  - カスタムフィールドの override セクション（`codex_phase_detail_overrides` テーブル・API は存在するが、ダイアログ UI から個別フィールド override を編集できない）
+  - Anchor scene 選択時の `story_time_label` / reading-order インデックス表示
+  - Resolution mode の現在値表示（読み取り専用、設定へのリンク）
+- **フェーズ解決アルゴリズム（`phaseResolver.ts`）が設計書と異なる**:
+  - 設計書: `SceneTimeIndex`（`readingOrder` / `storyTimeOrder` / `storyTimeInherited` の 3 Map）+ `SceneTime` 判別ユニオン（`{axis: 'reading', value: number}` / `{axis: 'story', value: string}`）+ `compareSceneTime` + **エントリ単位の all-or-nothing reading-order フォールバック**
+  - 実装: 単一 `Map<string, number>`。`computeSceneTimeIndex(nodes, mode)` が `mode='story'/'auto'` 時に「`storyTimeOrder` が設定されたシーンを `storyTimeOrder` 昇順に並べ、未設定シーンは reading-order でその後ろに追加」して連番化する単純な実装。軸不一致の all-or-nothing フォールバックは未実装、`storyTimeInherited`（未設定シーンへの直前値継承）も未実装
+  - tie-break ロジック（同値時 reading-order → `created_at` 優先）は明示的に実装されていない
+- **`codex_reference` フィールドの値編集 UI**: 設計書では「検索 UI でエントリを選択しピル表示（クリックで遷移）」を求めているが、現状は単純なテキスト入力（エントリ ID を直接入力するプレースホルダー）
+- **検索バーの FTS5 trigram + 1-2 文字 LIKE フォールバック**: コードは `searchCodexEntries` を経由しているが、trigram と LIKE フォールバックの明示的な切替実装の確認は未済
+- **ヘッダーソート選択肢のラベル**: 設計書の「By category」「Name (A→Z)」等の表記が、実装側では i18n キー (`codex.sortCategory` 等) を介した翻訳になっている。動作は同等
+- **Mentions タブの `Codex` / `Chats` セクション**: 設計書では「将来対応」と明記。実装も設計通り未実装
+
+### 設計書に未記載の追加実装
+
+- **`Foreshadow` タブ**（`ForeshadowTab.tsx`）: 伏線レジスタとの連携専用タブ。`listForeshadowsByCodexEntry` で当該 Codex エントリに紐づく伏線の一覧（タイトル、setup 件数、ラベル: `planned` / `seeded` / `paid` / `critical_weak` / `needs_strengthening` / `orphan_payoff` / `abandoned`）を表示。詳細は [伏線レジスタ設計書](./Grimodex_伏線レジスタ設計書.md) に従う
+- **Wide モード（≥1200px）の 3 カラムレイアウト**: List + 中央 `EditorPane`（`contentType="codex"` で Codex content をフル機能エディタで編集）+ Detail パネルの並列表示。`phaseIdOverride` で Detail 側のプレビューフェーズと中央エディタを同期
+- **Codex エントリのリビジョン履歴**（`Clock` アイコン → `useRevisionStore.openHistory("codex_entry", ...)`）: content 変更の自動リビジョンと keep count 設定に統合
+- **`codexStore.previewPhaseByEntry`**: Wide モードでの中央 EditorPane と Detail タブ間で Phase プレビューを共有するためのストア状態
+- **`Matrix カスタムセットに追加`** / **`Map に追加`** / **`チャットで Spotlight`** をコンテキストメニューに統合
+- **ゴミ箱パネル連携**: `useDropTarget("codex-panel", ...)` でパネル全体を Trash drop target にし、削除前にキャプチャ（`captureCodexDeletion`）して復元可能化
+- **GlobalHistoryStore による undo/redo**: 作成・更新・削除・親変更・Suggested Dismiss / 各 Phase 操作すべてに undo/redo を実装
+
+### 完全に未実装（設計書通り「将来対応」）
+
+- 将来対応: **シーン単位 Codex タグ**（手動タグ付け）
+- 将来対応: **スパン単位セマンティックリンク**（任意範囲への明示的 Codex リンク）
+- 将来対応の拡張: フェーズ tags 上書き、フェーズ間 diff 表示、AI フェーズ提案、フェーズテンプレート
+
+---
+
 ## パネル構造
 
 ```
@@ -43,6 +123,8 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 │                    │                         │
 └────────────────────┴─────────────────────────┘
 ```
+
+> **実装注**: パネル幅 1200px 以上では、List + 中央 `EditorPane`（Codex content をフル機能エディタで開く）+ Detail の 3 カラムレイアウトに切り替わる（`CodexManagementPanel.tsx` の Wide モード）。設計書には未記載の拡張で、Codex Content をエディタタブと同等に編集しつつ Detail タブで設定情報を並べて閲覧できる。
 
 パネル幅が狭い場合（例: Left Dock で幅200px程度）は、リスト表示のみに切り替わり、エントリクリックで詳細画面に遷移する（スタックナビゲーション）。十分な幅がある場合はスプリットビューを使用する。閾値: 400px以上でスプリット、未満でスタック。
 
@@ -179,12 +261,14 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ### 構造
 
+> **実装注**: タブの実装上の順序は `Details / Relations / Tracking / Mentions / Research / Timeline / Foreshadow` の 7 タブ。設計書記載の 6 タブに加えて、伏線レジスタ連携用の `Foreshadow` タブが追加実装されている（後述「Foreshadow タブ」節参照、設計書未記載）。
+
 ```
 ┌─────────────────────────────────────────┐
 │ [🖼] Elara             👤character      │  ← ヘッダー（タブ外・常時表示）
 │ tags: [protagonist] [mage] [+]          │
 ├─────────────────────────────────────────┤
-│ Details│Relations│Timeline│Tracking│Mentions│Research│ ← タブ
+│ Details│Relations│Tracking│Mentions│Research│Timeline│Foreshadow│ ← タブ
 ├═════════════════════════════════════════┤
 │                                         │  ← Details タブ
 │ Aliases: [エララ]                       │
@@ -366,6 +450,8 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 | `dropdown` | `<select>`。選択肢は `field_config.options` から生成 | 選択肢文字列 |
 | `codex_reference` | 検索UIでCodexエントリを選択。ピル表示（クリックで遷移） | エントリID |
 
+> **実装状況**: `codex_reference` の値編集 UI は現状**単純なテキスト入力**（エントリ ID を直接入力するプレースホルダー、`DetailsSection.tsx` の `<input data-testid="detail-field-ref-...">`）。設計書の「検索 UI で選択しピル表示・クリックで遷移」は未実装。
+
 `codex_reference` の `field_config.allowedTypes` で参照可能なタイプを制限可能（NULL = 全タイプ）。
 
 ##### text フィールドのTipTapエディタ
@@ -410,6 +496,13 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 ##### Manage fields ダイアログ
 
 タイプに紐づくカスタムフィールド定義を一括管理するモーダルダイアログ。`codex_detail_definitions` テーブルを操作する。
+
+> **実装状況**（`ManageFieldsDialog.tsx`）: 以下の機能は**未実装**で、現状は Name / Type ドロップダウン（text/dropdown/codex_reference 切替）/ Include in AI context チェックボックスの基本フォームのみ:
+> - `dropdown` の `Options` リスト編集 UI（`field_config.options` を追加・削除・並び替え）
+> - `codex_reference` の `Allowed types` チェックボックス群（`field_config.allowedTypes`）
+> - ドラッグハンドル `⠿` による `sort_order` の D&D 並び替え（Fractional Indexing）
+> - `field_type` 変更時の互換性確認ダイアログ（既存値クリアの警告）
+> - 削除確認ダイアログは実装済み
 
 ###### ダイアログ構造
 
@@ -666,6 +759,22 @@ Trackingタブ内に「Context:」ドロップダウンを配置。エントリ�
 - `source_chat_message_id` がある場合: 「{セッションタイトル} (chat)」のリンクを表示。クリックでChat Historyパネル経由で元のチャットセッションを開く
 - Editorの「Add to Codex」から作成された場合: 「Created from editor」表示
 - 手動作成の場合: 表示なし
+
+---
+
+### Foreshadow タブ（実装済み・設計書未記載）
+
+伏線レジスタとの連携専用タブ（`src/features/codex/components/ForeshadowTab.tsx`）。当該 Codex エントリに `codex_entry_id` でリンクされた伏線の一覧を表示する。
+
+| 表示要素 | 内容 |
+|---------|------|
+| 伏線タイトル | `foreshadow.title` |
+| setup 件数 | バッジ表示 (`setupCount`) |
+| ラベルバッジ | `planned` / `seeded` / `paid` / `critical_weak` / `needs_strengthening` / `orphan_payoff` / `abandoned` の 7 種類、それぞれ色付き |
+
+- データソース: `listForeshadowsByCodexEntry(codexEntryId)`
+- 空状態は「リンクされた伏線はありません」のメッセージ
+- 伏線ラベルの定義と運用は [伏線レジスタ設計書](./Grimodex_伏線レジスタ設計書.md) を参照
 
 ---
 
@@ -1707,6 +1816,8 @@ Phase アンカーシーンと currentScene で**軸が食い違う**ことが�
 
 ### 状態解決アルゴリズム
 
+> **実装状況**: 以下に記述する 2 軸 `SceneTimeIndex`（`readingOrder` / `storyTimeOrder` / `storyTimeInherited`）、判別ユニオン `SceneTime`、`compareSceneTime`、エントリ単位の all-or-nothing reading-order フォールバックは**現時点（2026-05-16）の `phaseResolver.ts` には未実装**。実装は単一 `Map<string, number>` のシーン順序キャッシュで、`computeSceneTimeIndex(nodes, mode)` が `mode='story'/'auto'` のときに「`storyTimeOrder` が設定されたシーンを `storyTimeOrder` 昇順で並べ、未設定シーンは reading-order でその後ろに連結」した連番マップを返す簡易実装になっている。軸混在時の安全フォールバックや `storyTimeInherited`（直前値継承）は未対応。本節の設計（all-or-nothing フォールバック含む）は今後実装側を寄せていく際のターゲット仕様として残す。
+
 #### フェーズ解決パイプライン（2 段構成）
 
 フェーズ解決は `phaseResolver` モジュール内で 2 段のパイプラインとして実装される:
@@ -1884,6 +1995,11 @@ function resolveCodexState(
 - フェーズがcontent_overrideを持つ場合はそのcontentが使われる
 
 ### フェーズ作成/編集ダイアログ
+
+> **実装状況**（`PhaseDialog.tsx`）: Label / Anchor scene / Summary override / Content override（チェックのみ、内容は保存後に Details タブで編集）/ Context mode override は実装済み。**未実装**:
+> - カスタムフィールド override UI（`codex_phase_detail_overrides` テーブル・`phaseApi.upsertDetailOverride` API は存在するが、ダイアログから個別フィールドを選択して上書き値を入力する UI はない。現状はカスタムフィールドの override を編集する手段が UI 上に露出していない）
+> - Anchor scene 選択時の `story_time_label` / reading-order インデックス表示
+> - Resolution mode の現在値表示（読み取り専用、プロジェクト設定へのリンク）
 
 ```
 ┌─────────────────────────────────────────────────┐

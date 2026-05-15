@@ -1145,6 +1145,106 @@ React Flow を採用し、独自ノードタイプ（SceneNode / CodexNode / Not
 
 ---
 
+## 実装状況（2026-05-16 時点）
+
+設計書と実コード（`src/features/map/` 配下、`src-tauri/src/database/migrate.rs`、関連他パネル）の差分を Phase 別に整理する。凡例: ✅ 実装済 / 🟡 部分（差分あり）/ ⬜ 未実装。
+
+### サマリ
+
+| Phase | 達成 | 主な未達 |
+|-------|------|---------|
+| Phase A 基盤 | 8/11 完, 3 部分 | Sticky の Codex highlight・帰属バッジ・パフォーマンス閾値 / 空白右クリックメニュー / ホバーツールチップ |
+| Phase B 関係性・昇格 | 4/8 完, 4 部分 | User edge 多重ラベル UI / 検索の body・content 走査 / Snippet 出処エッジの接続先 / Corkboard 演出 |
+| Phase C AI と Theme | 3/4 完, 1 部分 | AI Branch の `session_id` 配線（Map ↔ Chat 双方向ジャンプが未通電）|
+| Phase D 高度な機能 | 4/4 完 | — |
+| Phase E v2 | 0/6 | 想定通り未着手 |
+
+横断的な未達（Phase に跨る）:
+
+- **Chat → Map 連携（`As Sticky` / `As Snippet` / `As AI Branch` / `As Codex…`）が完全未実装**。DB の `map_stickies.source_chat_message_id` カラムと `snippets.source_chat_message_id` は揃っているが、Chat メッセージのメニューに「Map に追加 ▸」が無く、書き込み経路も無い。
+- `Ctrl+D` Duplicate / `F2` rename inline / `Enter` open ショートカット未実装。
+- AI Branch 生成時に `sessionId` を `createAiBranch` へ渡しておらず（`MapCanvas.tsx:1046-1052`）、`map_ai_branches.session_id` が常に null。結果として AI Branch ノードダブルクリック → Chat への遷移が事実上死んでいる（`useMapNodes.ts:441-445` の分岐に入らない）。
+
+### Phase A 詳細
+
+- ✅ `map_boards` / `map_node_positions` / `map_stickies` テーブル — `src-tauri/src/database/migrate.rs:543-650`。新規プロジェクト作成時に `Main` ボードを自動 seed する trigger あり（`migrate.rs:750-754`）。
+- ✅ 複数ボード対応（一覧・追加・削除・リネーム・複製）— `mapApi.ts:40-259`、`MapHeader.tsx:159-286`。削除確認ダイアログは `countBoardEntities`（`mapApi.ts:131-147`）を持つが、`MapHeader.tsx:550-591` の `BoardDeleteConfirm` では件数表示に未使用（設計書 615-625 行のダブル確認はテキストのみ）。
+- ✅ Free モード — `src/features/map/layouts/free.ts`
+- 🟡 Sticky ノード — TipTap 編集・色変更・削除・空白ダブルクリック生成・`S` キー・パレット `[+Sticky]` は揃う。以下が未達:
+  - **`CodexHighlightMark` が `getStickyEditorExtensions` に含まれていない**（`src/features/editor/extensions.ts:213-224`、`AuthorshipMark` のみ）。設計書 257 行で必須とされた Codex 名のリアルタイムハイライトが Sticky 編集中に効かない。
+  - **読み取り専用時は `preview_text`（plain text）描画**（`StickyNode.tsx:262-278`）。設計書 1229-1234 行の「Codex highlight・authorship 色付けを事前計算で描画」が未達。
+  - **50 個閾値での static HTML フォールバック未実装**（設計書 1226-1238 行の Phase A 必達要件）。現状は編集中のみ TipTap、それ以外は単純な plain text。
+  - **タイトル input が無い**（`StickyNode.tsx` は body のみレンダリングし、`title` プロパティが UI から編集できない）。
+  - **帰属バッジ `✦` / `◐` / Chat 由来バッジ `💬` 未実装**（設計書 293-305 行）。
+  - サイズは幅 200px（設計書 240px）、`maxHeight` 編集時 480px / 非編集時 280px（設計書 600px 内部スクロール）。
+- ✅ ノードドラッグ・座標保存 — `useMapPositionPersistence.ts`
+- ✅ ズーム・パン — React Flow 標準
+- 🟡 既存 Codex/Scene/Snippet/Note の手動追加 — パネル右クリック「Add to Map ▸」とパレット `[▾Add…]` は完（`TreeContextMenu.tsx:303-329` / `EntryContextMenu.tsx:196-210` / `SnippetContextMenu.tsx:221-235` / `MapPalette.tsx:82-136` / `AddToMapPickerDialog.tsx`）。**Map 空白右クリックメニュー（`Add Scene…` 等）は未実装**（`MapCanvas.tsx:1160` で `onPaneContextMenu={(e) => e.preventDefault()}` のみ）。
+- 🟡 Scene / Codex / Snippet / Note ノード — Compact 表示完。ただし:
+  - **Codex ノードに summary 先頭 40 文字が常時表示**（`CodexNode.tsx:80-89`）。設計書 378 行はホバーツールチップへ退避する規定。
+  - **Snippet ノードの先頭 40 文字抽出が ProseMirror JSON の生文字列 `s.content.slice(0, 40)` で行われている**（`SnippetNode.tsx:16`）。設計書 391・1310-1316 行が求めた「JSON 走査で最初の text ノード」抽出が未達。
+  - **ホバーツールチップは未実装**（HTML `title` 属性のみ）。
+- ✅ Derived edges: Codex 親子 — `useMapEdges.ts:82-92`
+- ✅ ダブルクリックで Editor / Codex / Snippets 連携 — `useMapCallbacks.ts`
+- ✅ `Remove from this board` — `useMapContextMenu.ts:93-139`、`NodeContextMenu.tsx:229-234`
+
+### Phase B 詳細
+
+- 🟡 User edges — forward/backward ラベル・style・color・direction・floating endpoint 計算（`UserEdge.tsx`、`edges/floatingEdge.ts`、`EdgeContextMenu.tsx`、`mapApi.ts:945-1004`）はすべて動作。ただし **補助ラベル配列 `labels` は DB カラムのみで UI が無い**（`mapApi.ts:774,971` で常に `"[]"`）。**ドロップ時のラベル即時インライン入力**（設計書 516 行）も未実装で、描画後にダブルクリックして編集する流れ。
+- ✅ Frames 作成・移動・リサイズ — `nodes/FrameNode.tsx`、`hooks/useFrameDrawing.ts`、`hooks/useFrameGroupDrag.ts`、`mapApi.ts:1006-1066`。`useMapNodes.ts:157-210` で `show.frames && mode === "free"` のときのみ表示。
+- 🟡 検索バー・ミニマップ — 両方実装あり（`MapSearch.tsx`、`MapCanvas.tsx:1180-1182`）。ただし:
+  - **検索対象が `title`/`synopsis` 限定**（`MapSearch.tsx:38-39`）。Sticky body / Codex content / Snippet content / AI Branch prompt は引っかからない（設計書 762-768 行の網羅範囲未達）。
+  - **ヒット時のキャンバス上ハイライト（黄色）未実装**（ビューポート移動 + 選択のみ）。
+- ✅ Sticky → Scene/Codex/Snippet/Note 昇格 — `mapApi.ts:540-641`、`NodeContextMenu.tsx:195-225`。authorship_spans の `sticky_id` → 新エンティティ ID への張り替えあり。
+- ✅ Frame → Codex 昇格 — `mapApi.ts:1075-1185`、`MapCanvas.tsx:463-489`、`NodeContextMenu.tsx:102-126`。内包 Sticky body を ProseMirror JSON として連結し、`title` を H3 として挿入。authorship_spans を offset 調整して新 Codex に移植、Frame 中心に新 Codex ノード position を作成。設計書 332-338 行に一致。
+- 🟡 Derived edges 全種 — Codex 親子 / Scene 言及 / Phase アンカーは設計通り（`useMapEdges.ts:82-141`）。**Snippet 出処エッジ（設計書 491 行）は接続先が異なる**: 設計書では Snippet ノード ↔ 出処 Scene の薄い点線だが、実装は `useMapEdges.ts:143-170` で Snippet が言及する Codex への edge を `snippet-origin:` プレフィックスで描画。両端ノードが両方ボードにいる時のみ描画する原則は維持。200 ノード閾値での自動 OFF は機能（`useMapEdges.ts:81` で条件分岐）。
+- ✅ Color by (None / Status / Sticky color) — `mapStore.ts:18,68,82`、`MapHeader.tsx:381-396`、`types.ts:10`
+- 🟡 Visual theme: Default / Corkboard feel — `mapStore.ts:19,69,83`、`MapHeader.tsx:397-411`。Corkboard は `useMapNodes.ts:216,239` でカード微傾き（`±0.5deg`）+ `MapCanvas.tsx:1120,1140,1176` の背景処理あり。スキューモーフィックな質感の詰めは余地あり。
+
+### Phase C 詳細
+
+- 🟡 AI Branch ノード — 種からの Sticky 撒き（`mapApi.ts:653-805`、放射状配置、各 Sticky に `ai` authorship span を自動付与、branch→sticky の dashed エッジ生成）、`AINodeDialog.tsx` のプロンプト + 生成数（3/5/8）選択 UI、`×` ワンクリック削除（`AIBranchNode.tsx:33-62`、確認ダイアログなし即削除）、`ON DELETE SET NULL` による派生 Sticky の orphan 保持はすべて動作。**フルスナップショット undo/redo**（`mapApi.ts:811-943` の `getAiBranchSnapshot` / `restoreAiBranchSnapshot` / `eraseAiBranchSnapshot`）は branch row + position + 派生 sticky + position + dashed edges + authorship spans まで一括復元できる設計超えの実装。
+  - **未達**: `MapCanvas.tsx:1046-1052` で `createAiBranch` 呼び出し時に `sessionId` を渡していない。`mapAiApi.ts:86-92` の `send_chat_message` 呼び出しも session を発行・返却しないため `map_ai_branches.session_id` は恒常的に null。結果、`useMapNodes.ts:441-445` のダブルクリック → Chat ジャンプ条件に入らない。
+  - **未達**: `Delete with all derived stickies` サブメニュー（設計書 470 行）。
+- ✅ Theme モード（d3-force + Web Worker）— `layouts/theme.ts`、`layouts/forceEngine.ts`、`layouts/forceLayout.worker.ts`、`layouts/index.ts:28-38`
+- ✅ Hybrid（Pin/Unpin）— `layouts/index.ts:6-20` の `applyPinnedOverrides`、`mapApi.ts:404-409` の `setNodePinned`、`NodeContextMenu.tsx:136-138`、`Ctrl+P`（`useMapKeyboard.ts:158-163`）
+- ✅ Auto-arrange: Force-directed compact — `layouts/autoArrange.ts:63-86`
+
+### Phase D 詳細
+
+- ✅ Focus モード（選択 + 1 次接続のみ表示 / 他は opacity 0.15）— `hooks/focusNeighbors.ts`、`useMapCallbacks.ts` の `nodesWithFocus`
+- ✅ SVG / PNG / JSON エクスポート — `mapExport.ts`（`buildMapSVG` / `svgToPngBlob` / `buildMapJSON`）、`hooks/useMapExport.ts`、`MapHeader.tsx:433-441`
+- ✅ Sticky Branch（隣に新規 Sticky を生やしてエッジ自動接続）— `MapCanvas.tsx:917-1000`、`NodeContextMenu.tsx:186-193`
+- ✅ Auto-arrange: Grid by reading-order — `layouts/autoArrange.ts:44-60`、`hooks/useMapAutoArrange.ts`
+
+### Phase E（v2 想定 / 未着手）
+
+- ⬜ Codex Relation テーブル新設 + User edge → Relation 昇格
+- ⬜ Constellation visual theme（`visualTheme === "constellation"` の値だけ受け付け実体未実装）
+- ⬜ POV / Tag による Color by（`tree_nodes.pov_character_id` 列の追加が前提）
+- ⬜ World map overlay
+- ⬜ 全ボード横断検索
+- ⬜ Map から Grid / Matrix へのクロスナビゲーション
+
+### DB スキーマ差分
+
+- **`map_stickies.color`（8 色 enum）→ `palette_id` + `color_slot` の 2 カラム構成に置換**（`migrate.rs:1068-1120` の one-shot migration）。`src/lib/stickyPalettes.ts` ベースの任意パレット選択方式に拡張されている。設計書 894-895 行の 8 色固定 enum 制約は実装で緩和済。設計書スキーマ定義（894-906 行）を実装に合わせて更新する余地あり。
+- ✅ `authorship_spans.sticky_id` カラム・polymorphic CHECK 制約 — `migrate.rs:881` で実装済
+- ✅ `map_edges.forward_label` / `backward_label` / `labels` / `style` / `color` / `direction` — すべて設計通り
+- ✅ `map_node_positions.pinned` / `z_index` — 設計通り
+
+### 設計書外の追加実装
+
+- **Trash Bin 連携** — Sticky 削除時にゴミ箱へ転送するフロー（`MapCanvas.tsx:20-22,317-323,1125-1134` の `useDropTarget` / `captureMapStickyDeletion`）。設計書には未記載だがアプリ全体のゴミ箱機能と整合させるため追加されている。
+- **AI Branch full-snapshot undo/redo** — 上記 Phase C 詳細参照。設計書要求を超える堅牢性。
+- **グローバル統合 Undo スタック採用** — Map ローカル Undo は持たず、`useGlobalHistoryStore` に `kind: "map"` で push する統合スタックを使用。設計書 1305-1307 行の「他パネル独立スタック」とは異なる設計判断。
+
+### デッドコード / 整理候補
+
+- `src/features/map/nodes/AINode.tsx` — 旧 AI ノード（response 表示型）。`MapCanvas.tsx:113` は `AIBranchNode` を登録しており本ファイルは未参照。整理候補。
+
+---
+
 ## 実装フェーズ
 
 ### Phase A: マインドマップ基盤（最小動作）

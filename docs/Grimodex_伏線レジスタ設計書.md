@@ -119,6 +119,13 @@ foreshadows = sqliteTable("foreshadows", {
   payoffConfirmed: integer("payoff_confirmed", { mode: "boolean" }).notNull().default(false),
   abandoned: integer("abandoned", { mode: "boolean" }).notNull().default(false),
 
+  // AI コンテキスト注入から除外するかのフラグ（新規作成時の既定は true / 秘匿）
+  // 詳細は「AI コンテキスト注入と secret フラグ」セクション参照
+  secret: integer("secret", { mode: "boolean" }).notNull().default(true),
+
+  // 構造的重要度（Phase 6）。null は未設定で既存伏線の挙動を維持
+  loadBearing: text("load_bearing"),                     // 'critical' | 'supporting' | 'optional' | null
+
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 }, (t) => [
@@ -484,6 +491,43 @@ orphan 行は読み込まない。orphan UI で別途リスト化される。
 
 ---
 
+## AI コンテキスト注入と secret フラグ
+
+伏線レジスタは「未回収伏線一覧を AI コンテキストに確定的に注入する」ことを目標に掲げる（→ 「目標」セクション）。一方、ネタバレ回避のために**この伏線は AI に見せたくない**ケース（未明かしの真相を AI に執筆させる場面など）が存在する。
+
+そのため `foreshadows.secret: boolean` を導入する。
+
+| 観点 | 値 |
+|---|---|
+| 新規 INSERT 時の既定 | `true`（DB schema default = 1） |
+| 既存伏線への migration 既定 | `false`（後方互換のため、`add_column_if_missing` は default 0 で adds） |
+| 編集経路 | `EditForeshadowDialog` のチェックボックスで作者が切替（Phase 5 で実装） |
+| Create dialog での編集 | **なし**（DB default に委ねる。作成時の dialog 肥大化を避ける） |
+
+### `listOpenForeshadowsForContext`：AI コンテキスト用フィルタ
+
+`src/features/foreshadow/api.ts` の純 TS 関数。シーン補完／チャットの context-injection 時にこれを呼ぶ。
+
+```ts
+// 概念: projectId 内の「生きている未回収」かつ「秘匿でない」伏線を返す
+where (
+  projectId = ? AND
+  payoffConfirmed = false AND
+  abandoned = false AND
+  secret = false
+)
+```
+
+呼び出し元: `src/features/chat/chatStore.ts`、`src/features/chat/agent/toolExecutors.ts`。AI に渡るのは `secret = false` のもののみ。
+
+### 設計判断
+
+- **既定が秘匿（true）であるべき理由**: 「うっかり書いた伏線が AI に漏れる」より「明示的に開示した伏線のみ AI が知る」方が事故が少ない。執筆ワークフローでは、開示判断は意識的に行うべき作業。
+- **migration 既定が `false` であるべき理由**: 既存伏線は既に「AI に渡るもの」として作者が判断済み（Phase 1〜4 はそもそも secret フラグが無かった）。後付けで全件秘匿化すると挙動が変わるため、後方互換で `false` を採用。
+- **Create dialog から外す理由**: 新規作成時の UI を肥大化させない。`secret = true`（新規 INSERT 既定）→ 開示したくなったら EditForeshadowDialog で切替、という流れにする。実利用で「作成直後に開示したい」頻度が高ければ Phase 7+ で再検討。
+
+---
+
 ## AI 連携（Phase 1）
 
 ### `propose_past_setups`：遡及候補生成
@@ -772,6 +816,11 @@ foreshadow_link_codex(foreshadow_id: String, codex_id: String) -> Result<()>
 
 #[tauri::command]
 foreshadow_unlink_codex(foreshadow_id: String, codex_id: String) -> Result<()>
+
+#[tauri::command]
+foreshadow_list_linked_codex(foreshadow_id: String) -> Result<Vec<CodexEntry>>
+// Phase 5 で追加。EditForeshadowDialog 起動時に関連 Codex を表示するための片方向クエリ。
+// Codex 詳細側からの逆参照（listForeshadowsByCodexEntry）と双方向で対になる。
 
 #[tauri::command]
 foreshadow_save_anchors_for_scene(scene_id: String, payload: SaveAnchorsPayload) -> Result<SaveAnchorsResult>
@@ -1069,7 +1118,18 @@ Phase 1 デフォルトは執筆モード。
 - quota / rate-limit（Phase 3 計画には含まれていたが未実装。AI 呼び出しは手動トリガのみで暫定許容）
 - `fromPosHint` が null の `designated_existing` 採用時は position=0 にフォールバック。toast エラーへの変更は post-Phase 3 ポリッシュ候補
 
-### Phase 4（伏線本体メタデータ編集 / ライフサイクル UI）
+### Phase 4（2026-05-16 完了 — 伏線本体メタデータ編集 / ライフサイクル UI）
+
+**実装済み**
+
+- `EditForeshadowDialog.tsx` 新設（伏線パネルから Pencil ボタンで起動）
+- title / intent / notes / payoffConfirmed / abandoned の全フィールド差分パッチ送信
+- payoff anchor 解除フロー（確認モーダル → DB null 更新 + open editor の payoff mark sweep）
+- `payoffConfirmed` の disable 制御（anchor 未設定 / 解除予約時）
+- 「破棄」「成立確定」は確認モーダル無し、anchor 解除のみ確認モーダル
+- IPC は既存 `foreshadow_update` を流用（追加なし）
+
+**設計通りだが補足**: Phase 5 で同 dialog に Codex リンク編集と `secret` チェックボックスを、Phase 6 で `loadBearing` セレクタを追加実装したため、`EditForeshadowDialog` の実体は Phase 4 で骨格を確定し、Phase 5/6 で肉付けされた形になっている。
 
 **動機**
 
@@ -1150,7 +1210,26 @@ Phase 1〜3 は伏線の **作成 / setup 操作 / AI 評価 / 章監査** に�
 - 関連 Codex リンクの編集 UI（line 835 / 865 の入口①②モックには記載があるが現在 Create dialog にも未実装）
 - Setup の作者 strength 編集（現状 `null` 固定で、AI strength のみ表示）
 
-### Phase 5（関連 Codex リンク編集 + Setup 作者 strength 編集）
+### Phase 5（2026-05-16 完了 — 関連 Codex リンク編集 + Setup 作者 strength 編集 + secret フラグ）
+
+**実装済み**
+
+- **A. 関連 Codex リンク編集**: `EditForeshadowDialog` に Codex セクション追加
+  - `linksToAdd` / `linksToRemove` の 2 Set モデル（Cancel セマンティクス保持）
+  - 「+ Codex を追加」展開 → incremental search → クリックで追加 / `×` で削除
+  - Save 時に `addCodexLink` / `removeCodexLink` を順次適用
+  - `handleSave` の Save 実行条件を「patch 空でも Codex 差分があれば成立」に拡張
+  - 読み取り IPC `foreshadow_list_linked_codex` を 1 件追加（既定方針通り）
+- **B. Setup 作者 strength 編集**: `ForeshadowPanel.tsx` の `SetupRow` に inline `<select>` 追加
+  - subtle / moderate / overt / —（未設定）から選択
+  - `setSetupStrength(setupId, value)` で即時反映 → `loadSetups(foreshadowId)` でリフレッシュ
+- **C. `secret` フラグ（追加実装）**: 設計書では Phase 5 に元々含まれていなかったが、AI コンテキスト注入のネタバレ防止のため同時導入
+  - `foreshadows.secret` カラム追加（DB 既定 true / migration 既定 false）
+  - `EditForeshadowDialog` にチェックボックス追加（"AI にこの伏線を見せない"）
+  - `listOpenForeshadowsForContext` が `secret = false` でフィルタ
+  - 詳細は「AI コンテキスト注入と secret フラグ」セクション参照
+- **TS wrapper**: `api.ts` に `setSetupStrength` / `listCodexEntriesByForeshadow` / `listForeshadowsByCodexEntry` / `listOpenForeshadowsForContext` を追加
+- 新規コンポーネントファイルは作らず、既存ファイルへの追記で完結（設計通り）
 
 **動機**
 
@@ -1277,7 +1356,24 @@ onClose();
 - Codex 検索の type 別フィルタ（Phase 1 規模では文字列マッチで足りる）
 - 開いている Codex 詳細タブ（`ForeshadowTab.tsx`）の逆方向同期：伏線側から Codex リンクを add/remove した瞬間、開いている Codex タブは stale になる。次回タブ open 時に再フェッチされるため許容（グローバルイベント発火や store 購読は導入しない）
 
-### Phase 6（`load_bearing` 軸の導入）
+### Phase 6（2026-05-16 完了 — `load_bearing` 軸の導入）
+
+**実装済み**
+
+- **A. `foreshadows.load_bearing` カラム追加**
+  - `text("load_bearing")` として nullable で追加（DB schema 更新のみ、migration スクリプトは作らず）
+  - `types.ts` に `ForeshadowLoadBearing` 型追加
+  - `api.ts` の `normalizeForeshadowRow` / `update` patch 受付に対応（`snake_case` フォールバック付き）
+- **B. 派生ラベル `critical_weak` 新設 + `deriveLabel` ロジック変更**
+  - 案①（保守的）採用: `critical × weak` → `critical_weak` / `optional × weak` → `seeded` / `null|supporting × weak` → 既存 `needs_strengthening`
+  - `DerivedLabel` 型に `critical_weak` 追加、`LABEL_ORDER` / `LABEL_STYLE`（赤系 `bg-red-500/15`）に追加
+  - `ForeshadowMarkPopover` の `payoff-unanchored` ホワイトリスト（`planned` / `seeded`）は変更せず（`critical_weak` は除外）
+- **C. `EditForeshadowDialog` に `loadBearing` セレクタ追加**（critical / supporting / optional / 未設定）
+- **D. `CreateForeshadowDialog` に `loadBearing` セレクタ追加**（Create 欠落 → Edit で後付けのパターンを再生産せず）
+- **E. i18n キー追加**（`foreshadow.loadBearing.*`、`foreshadow.label.critical_weak` を ja/en に追加）
+- **テスト**: `deriveLabel.test.ts` に `critical_weak` ケース追加
+
+**Phase 6 の見送り（Phase 7+ に温存）**: AI プロンプト連携、AI による critical 自動推論、DB migration スクリプト化、UX 強化（ソート・検索・一括破棄）、quota / rate-limit。
 
 **動機**
 
@@ -1382,7 +1478,7 @@ E. **i18n 追加**
 
 | 項目 | 判断 | 再検討タイミング |
 |---|---|---|
-| `load_bearing` の独立軸採用 | **Phase 6 で実装予定**。critical / supporting / optional / null の 4 値、`critical × weak` のみ赤警告 `critical_weak` ラベル、null は既存挙動（`needs_strengthening`）維持の保守的ルール（案①） | — |
+| `load_bearing` の独立軸採用 | **Phase 6（2026-05-16）で実装済み**。critical / supporting / optional / null の 4 値、`critical × weak` のみ赤警告 `critical_weak` ラベル、null は既存挙動（`needs_strengthening`）維持の保守的ルール（案①） | AI 連携への入力化は Phase 7+ |
 | 読者ペルソナの数と種類 | 3 人（careful / casual / skim）で開始 | **Phase 2 で実装済み**。コスト・有用性は Phase 3 着手時にレビュー |
 | `ai_strength` の staleness 依存追跡 | `lastEvaluatedAt` のみで開始 | **Phase 2 で `sceneUpdatedAt` JOIN による判定を実装済み** |
 | Mark 表示のデフォルト | 執筆モード（非表示） | ユーザ設定で切替、好み判明したら既定変更検討 |
@@ -1569,3 +1665,8 @@ drizzle/migrations/
 - 2026-04-28: Phase 5 セクション追加（関連 Codex リンク編集 + Setup 作者 strength 編集）。Phase 4 で見送った 2 件をまとめて埋める設計。Codex リンクは `EditForeshadowDialog` に「全フィールド差分パッチ」モデルで統合（`linksToAdd` / `linksToRemove` 2 Set を Save 時に一括適用、Cancel セマンティクスを保持）。Setup 作者 strength は `SetupRow` の inline ドロップダウンで即時反映。読み取り IPC `foreshadow_list_linked_codex` を 1 件追加（`ForeshadowWithLabel` への M:N JOIN 注入を避けるため）。TS wrapper `setSetupStrength` / `listCodexEntriesByForeshadow` を `api.ts` に追加。新規コンポーネントファイルは作らず既存ファイルへの追記で完結。
 - 2026-04-28: Phase 6 セクション追加（`load_bearing` 軸の導入）。Phase 1 から繰り越されてきた最大の deferred decision を解消。`foreshadows.load_bearing` カラム追加（critical / supporting / optional / null）+ 派生ラベル `critical_weak` 新設で「critical かつ subtle」のみを赤警告化、`optional` 明示時は警告対象外、null（既存伏線）は既存挙動維持の保守的ルール（案①）を採用。`EditForeshadowDialog` と `CreateForeshadowDialog` の双方に `<select>` を追加し、Phase 4/5 で再生産していた「Create 欠落 → Edit で後付け」パターンを排除。**DB migration スクリプトは作らず**（開発段階のため Drizzle schema 更新のみ、再構築前提）、AI プロンプト連携は実証データ待ちで Phase 7+ に温存。Deferred decisions の `load_bearing` 行を「Phase 6 で実装予定」に更新。
 - 2026-04-27: 実装と設計書の差分修正。`evaluateSetupStrength` / `getChapterForeshadowStats` は実装上 Rust IPC を持たず `src/features/foreshadow/api.ts` の純 TS 実装である旨を実装ファイル配置セクションに追記（旧表記の `foreshadow_evaluate_setup_strength` を削除）。実装ファイル配置の TS ツリーを実態に合わせて補完: `marks/` サブディレクトリ（ForeshadowSetupMark / ForeshadowPayoffMark / foreshadowPasteRule + テスト）、`foreshadowStore.adoptProposedSetup.test.ts`、`ForeshadowPanel.stories.tsx`、`types.test.ts`、`api.getChapterForeshadowStats.test.ts` を追記。
+- 2026-05-16: Phase 4 / 5 / 6 の実装完了マーク + 実装差分を反映。
+  - Phase 4（伏線本体メタデータ編集）/ Phase 5（Codex M:N 編集 + Setup strength inline 編集）/ Phase 6（`load_bearing` 軸 + `critical_weak` ラベル）の各セクション冒頭に **実装済み** ブロックを追加。Deferred decisions の `load_bearing` 行を「Phase 6 で実装済み」に更新。
+  - **新規追加**: `foreshadows.secret` フラグを設計書に反映（設計書未記載のまま Phase 5 と同時実装されていた）。スキーマ定義に `secret` カラムを追記し、「AI コンテキスト注入と secret フラグ」セクションを新設して目的・既定値・migration 既定の非対称（schema default true / migration default false）・`listOpenForeshadowsForContext` のフィルタ挙動・Create dialog から外す設計判断を文書化。
+  - **IPC surface 補完**: Phase 5 narrative に登場するが IPC 一覧から漏れていた `foreshadow_list_linked_codex` を追加。
+  - スキーマ定義に `loadBearing` カラムも明示（Phase 6 narrative にしか書かれていなかった）。

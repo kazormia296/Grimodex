@@ -60,6 +60,12 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `scene_codex_pins` | 通常 | Matrix / Grid | シーン × Codex の明示的リレーション（Pin to scene の保存先） |
 | `scene_codex_mentions` | 通常 | Matrix | シーン × Codex の言及スキャンキャッシュ（source 別: body/beat/relation、role: mentioned/actor/target） |
 | `scene_beat_pov_cache` | 通常 | Matrix / Beat | Beat レベル POV キャラクターの集約キャッシュ |
+| `post_effect_runs` | 通常 | PostEffects | AI ポストエフェクトの実行単位（review / pseudo_comment / meta_structure / consistency / intra_scene_consistency） |
+| `post_effect_annotations` | 通常 | PostEffects | ポストエフェクトの注釈成果物（シーン範囲・カテゴリ・親子スレッド対応） |
+| `post_effect_annotation_relations` | 通常 | PostEffects | 注釈間の関係（contradiction / foreshadowing / theme_echo） |
+| `post_effect_annotations_fts` | FTS5仮想 | PostEffects | 注釈 content の全文検索 |
+| `scene_lens_data` | 通常 | PostEffects | シーン単位のレンズ計測結果（plot_structure / pacing / character_arc / pov） |
+| `trash_items` | 通常 | Trash | 物理ゴミ箱（削除されたテキスト断片および構造アイテム） |
 
 ---
 
@@ -78,7 +84,12 @@ projects (1)
  ├──< project_settings (*)    project_id
  ├──< labels (*)              project_id
  ├──< foreshadows (*)         project_id
- └──< map_boards (*)          project_id
+ ├──< map_boards (*)          project_id
+ ├──< post_effect_runs (*)    project_id
+ ├──< post_effect_annotations (*) project_id
+ ├──< post_effect_annotation_relations (*) project_id
+ ├──< scene_lens_data (*)     project_id
+ └──< trash_items (*)         project_id
 
 tree_nodes (1)
  ├──< tree_nodes (*)          parent_id (自己参照、ツリー構造)
@@ -171,6 +182,24 @@ map_node_positions (1)
 foreshadows (1)
  ├──< foreshadow_setups (*)      foreshadow_id
  └──< foreshadow_codex_links (*) foreshadow_id
+
+post_effect_runs (1)
+ ├──< post_effect_annotations (*)          run_id (nullable, ON DELETE SET NULL)
+ ├──< post_effect_annotation_relations (*) run_id (nullable, ON DELETE SET NULL)
+ └──< scene_lens_data (*)                  run_id (ON DELETE CASCADE)
+
+post_effect_annotations (1)
+ ├──< post_effect_annotations (*)          parent_id (自己参照、スレッド構造)
+ └──< post_effect_annotation_relations (*) annotation_a_id / annotation_b_id
+
+tree_nodes (1)
+ ├──< post_effect_runs (*)         scope_target_id (nullable)
+ ├──< post_effect_annotations (*)  scene_id (nullable)
+ ├──< scene_lens_data (*)          target_id (nullable)
+ └──< trash_items (*)              origin_scene_id (nullable)
+
+codex_entries (1)
+ └──< trash_items (*)              origin_codex_id (nullable)
 ```
 
 ---
@@ -188,9 +217,15 @@ CREATE TABLE projects (
   genre                 TEXT,                    -- 'Fantasy'|'Sci-Fi'|'Mystery'|... or custom
   pov                   TEXT,                    -- 'First person'|'Third person limited'|...
   tense                 TEXT,                    -- 'Past tense'|'Present tense'
-  language              TEXT DEFAULT 'ja',       -- 作品の執筆言語
+  language              TEXT NOT NULL DEFAULT 'ja',  -- 作品の執筆言語
   style_guide           TEXT,                    -- 文体ガイド（最大2,000文字）
   ai_instructions       TEXT,                    -- グローバルAI指示（最大4,000文字）
+  outline               TEXT,                    -- Phase 4: 物語全体の outline（free text）。著者が手書きする意図・テーマ・到達点。AI コンテキスト L2 に常時注入。空欄可
+  ai_policy             TEXT NOT NULL DEFAULT
+    '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}',
+                                                 -- プロジェクト単位の AI 使用方針（chat/bodyWrite/analysis トグル）。デフォルトは Full プリセット
+  is_sample             INTEGER NOT NULL DEFAULT 0,
+                                                 -- 1: サンプルワークスペースのプロジェクト（初回オープン時に SampleTour を起動）
   phase_resolution_mode TEXT NOT NULL DEFAULT 'reading'
     CHECK(phase_resolution_mode IN ('auto', 'reading', 'story')),
                                                  -- Phase解決に使う時間軸。'auto'=story_time_orderがあれば作中時間、なければ読者順 / 'reading'=常に読者順 / 'story'=作中時間（未設定Sceneは直前の値を継承）
@@ -198,6 +233,21 @@ CREATE TABLE projects (
   updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
 ```
+
+**`outline` の運用方針**:
+- 著者が手書きする「物語全体のアウトライン」を保持する自由テキストカラム。長さ制限は DB レベルでは設けない（UI 側でガイドラインを提示）。
+- AI コンテキスト L2 に常時注入される（`ai_policy` の `bodyWrite` / `analysis` トグルがオフでも投入される）。
+- 対称概念として `tree_nodes.synopsis`（フォルダ用）が chapter outline を担う。フォルダ階層の `synopsis` と組み合わせて階層的に注入される。
+
+**`ai_policy` の構造**:
+- JSON 文字列で `{ preset: string, toggles: { chat: bool, bodyWrite: bool, analysis: bool } }` 形式。
+- `preset` は UI のプリセット名（`'full'` / `'chat-only'` / `'analysis-only'` / `'custom'` 等）。`toggles` が実際の挙動を決める。
+- すべての toggle が `true` の "Full" がデフォルト。AI 連動機能をすべて無効化するには `toggles` 全てを `false` に設定する（preset は `'custom'` になる）。
+- アプリ層は機能ごとに該当 toggle を参照し、`false` のときは AI 呼び出しをスキップする（Chat / Body Write / 分析パスは独立判定）。
+
+**`is_sample` の用途**:
+- サンプルワークスペース（チュートリアル用テンプレートから生成されたプロジェクト）かどうかを区別するフラグ。
+- `EditorScreen` 初回オープン時に `SampleTour` を発火するトリガーとして使用される。通常プロジェクトは常に 0。
 
 **`phase_resolution_mode` のデフォルト方針**:
 - **SQLデフォルト = `'reading'`**: 既存プロジェクトを再オープンした際に従来の挙動（読者順）が保たれるよう、後方互換を優先。マイグレーション適用時はすべての既存プロジェクトがこの値になる。
@@ -247,7 +297,6 @@ CREATE TABLE tree_nodes (
 CREATE INDEX idx_tree_parent ON tree_nodes(project_id, parent_id, sort_order);
 CREATE INDEX idx_tree_story_time ON tree_nodes(project_id, story_time_order)
   WHERE story_time_order IS NOT NULL;
--- 以下2インデックスは Map Phase C-2 のマイグレーションで追加
 CREATE INDEX idx_tree_pov ON tree_nodes(project_id, pov_character_id)
   WHERE pov_character_id IS NOT NULL;
 CREATE INDEX idx_tree_location ON tree_nodes(project_id, location_id)
@@ -1617,6 +1666,7 @@ CREATE TABLE foreshadows (
   payoff_to_pos    INTEGER,
   payoff_confirmed INTEGER NOT NULL DEFAULT 0,  -- 1: 回収確定
   abandoned        INTEGER NOT NULL DEFAULT 0,  -- 1: 放棄済み
+  secret           INTEGER NOT NULL DEFAULT 1,  -- 1: 読者に明かさない伏線（既定）。新規 CREATE は 1、ALTER で追加された既存行は 0 にフォールバック
   load_bearing     TEXT,    -- Phase 6: 'critical'|'supporting'|'optional'|NULL
   created_at       INTEGER NOT NULL,  -- Unix timestamp (ms)
   updated_at       INTEGER NOT NULL
@@ -1625,6 +1675,8 @@ CREATE TABLE foreshadows (
 CREATE INDEX idx_foreshadows_project     ON foreshadows(project_id);
 CREATE INDEX idx_foreshadows_payoff_scene ON foreshadows(payoff_scene_id);
 ```
+
+`secret` カラムは Phase 5 で追加された軸。新規 CREATE TABLE のデフォルトは `1`（秘匿あり）だが、後発の `add_column_if_missing` で既存 DB に追加された場合は `0` がフォールバック値となる（既存伏線の互換性確保のため）。アプリ層は新規作成時に明示的に値を書き込む。
 
 ### foreshadow_setups
 
@@ -1717,3 +1769,288 @@ CREATE INDEX idx_scene_beat_pov_scene ON scene_beat_pov_cache(scene_id);
 | `map_ai_nodes` | `map_ai_branches` に改名。`response` カラム削除、`seed_node_ids` 追加 |
 | `scene_codex_pins` | `codex_entry_id` → `entry_id` に修正；インデックス名を `by_scene/by_codex` → `scene/entry` に統一 |
 | `scene_codex_mentions` | `mention_count`/`last_scanned_at` カラム削除（実装では不使用）；インデックス名修正 |
+
+---
+
+## PostEffects テーブル群（2026-05-16 追記）
+
+「書き換えずに注釈を重ねる」AI パスの実行単位と成果物。詳細は [PostEffects 設計書](./Grimodex_PostEffects設計書.md)。すべての CHECK 制約と FTS5 仮想テーブル / トリガーは Rust 側 `migrate.rs` に直書きされる（Drizzle では表現できないため）。
+
+### post_effect_runs
+
+ポストエフェクトの実行単位。`scope_type` で対象範囲（scene / folder / project）を、`effect_type` でレビュー種別を区別する。同一 `(project_id, effect_type, scope_type, scope_target_id)` で `running` が同時 2 本走るのを部分 UNIQUE で禁止。
+
+```sql
+CREATE TABLE post_effect_runs (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  effect_type     TEXT NOT NULL
+                    CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency')),
+  scope_type      TEXT NOT NULL CHECK(scope_type IN ('scene','folder','project')),
+  scope_target_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,  -- project スコープでは NULL
+  model           TEXT NOT NULL,
+  prompt_version  TEXT NOT NULL,
+  input_hash      TEXT,                -- 入力スナップショットのハッシュ（同入力の重複検出用）
+  status          TEXT NOT NULL CHECK(status IN ('running','completed','failed','cancelled')),
+  summary         TEXT,
+  error_message   TEXT,
+  started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at    TEXT
+);
+
+CREATE INDEX idx_runs_project_effect
+  ON post_effect_runs(project_id, effect_type, started_at DESC);
+
+-- 同じスコープで running が複数走らないように制御する部分 UNIQUE。
+-- SQLite は NULL を distinct 扱いするため COALESCE で空文字へ正規化して
+-- project 全体スコープ（scope_target_id IS NULL）も単一性を保つ。
+CREATE UNIQUE INDEX idx_runs_running_scope
+  ON post_effect_runs(project_id, effect_type, scope_type, COALESCE(scope_target_id, ''))
+  WHERE status = 'running';
+```
+
+**クラッシュリカバリ**: アプリ起動時に `running` のまま残っている run を `failed` へ遷移させる UPDATE が `migrate()` の末尾で走る（次回起動が UNIQUE 制約でブロックされるのを防ぐ）。
+
+### post_effect_annotations
+
+ポストエフェクトの注釈成果物。シーン上の範囲（PM 位置 / バイトオフセット）にアンカーされる注釈で、`parent_id` で親子スレッドを構成できる（pseudo_comment のリプライ等）。
+
+```sql
+CREATE TABLE post_effect_annotations (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id         TEXT REFERENCES post_effect_runs(id) ON DELETE SET NULL,  -- NULL = ユーザー手動メモ用枠（MVP は AI 生成のみ）
+  anchor_type    TEXT NOT NULL DEFAULT 'scene_range'
+                   CHECK(anchor_type IN ('scene_range','codex_entry','synopsis')),
+  scene_id       TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  range_start    INTEGER,   -- ソース次第で PM position or 正規化プレーンテキストへの byte offset
+  range_end      INTEGER,
+  text_snapshot  TEXT,      -- アンカー時点のテキスト（表示時に PM 位置を再解決する基準）
+  category       TEXT NOT NULL
+                   CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor')),
+  persona        TEXT,
+  severity       TEXT CHECK(severity IS NULL OR severity IN ('info','suggestion','warning','error')),
+  content        TEXT NOT NULL,
+  author_role    TEXT NOT NULL DEFAULT 'ai' CHECK(author_role IN ('ai','user','system')),
+  parent_id      TEXT REFERENCES post_effect_annotations(id) ON DELETE CASCADE,
+  status         TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','dismissed')),
+  metadata       TEXT NOT NULL DEFAULT '{}',
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_pea_scene  ON post_effect_annotations(project_id, scene_id, status);
+CREATE INDEX idx_pea_run    ON post_effect_annotations(run_id);
+CREATE INDEX idx_pea_parent ON post_effect_annotations(parent_id);
+```
+
+**`range_start` / `range_end` の意味論はソースによってブレる**:
+- Rust の consistency runner (`post_effect.rs::find_text_position`) は **正規化済みプレーンテキストへの byte offset** を書き込む。
+- JS の `saveAnnotationAnchors` (`syncAnnotations.ts`) は **PM position** を書き込む。
+- 表示時は `text_snapshot` から PM 位置を再解決する（`post-effect/resolveAnnotationRange.ts`）。`range_*` は曖昧マッチ時の近傍ヒントのみ。
+
+### post_effect_annotations_fts
+
+注釈 `content` の横断検索用 FTS5 仮想テーブル。trigram トークナイザー。
+
+```sql
+CREATE VIRTUAL TABLE post_effect_annotations_fts USING fts5(
+  content,
+  content=post_effect_annotations, content_rowid=rowid,
+  tokenize='trigram'
+);
+
+CREATE TRIGGER post_effect_annotations_fts_ai AFTER INSERT ON post_effect_annotations BEGIN
+  INSERT INTO post_effect_annotations_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+CREATE TRIGGER post_effect_annotations_fts_ad AFTER DELETE ON post_effect_annotations BEGIN
+  INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts, rowid, content)
+    VALUES ('delete', old.rowid, old.content);
+END;
+CREATE TRIGGER post_effect_annotations_fts_au AFTER UPDATE ON post_effect_annotations
+  WHEN old.content IS NOT new.content
+BEGIN
+  INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts, rowid, content)
+    VALUES ('delete', old.rowid, old.content);
+  INSERT INTO post_effect_annotations_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+```
+
+### post_effect_annotation_relations
+
+注釈間の関係。`relation_type` で `contradiction`（矛盾）/ `foreshadowing`（伏線設置 ↔ 回収）/ `theme_echo`（テーマの呼応）を区別。`foreshadowing` は `direction = 'a_to_b'` 固定で `a` を setup、`b` を payoff として扱う。
+
+```sql
+CREATE TABLE post_effect_annotation_relations (
+  id               TEXT PRIMARY KEY,
+  project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id           TEXT REFERENCES post_effect_runs(id) ON DELETE SET NULL,
+  annotation_a_id  TEXT NOT NULL REFERENCES post_effect_annotations(id) ON DELETE CASCADE,
+  annotation_b_id  TEXT NOT NULL REFERENCES post_effect_annotations(id) ON DELETE CASCADE,
+  relation_type    TEXT NOT NULL CHECK(relation_type IN ('contradiction','foreshadowing','theme_echo')),
+  direction        TEXT NOT NULL DEFAULT 'bidirectional'
+                     CHECK(direction IN ('bidirectional','a_to_b')),
+  description      TEXT,
+  status           TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','dismissed')),
+  metadata         TEXT NOT NULL DEFAULT '{}',
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_pear_a ON post_effect_annotation_relations(annotation_a_id);
+CREATE INDEX idx_pear_b ON post_effect_annotation_relations(annotation_b_id);
+```
+
+### scene_lens_data
+
+シーン単位のレンズ計測結果。`lens_type` ごとに `metrics`（数値 JSON）と `finding`（自然言語のサマリ）を持つ。
+
+```sql
+CREATE TABLE scene_lens_data (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id      TEXT NOT NULL REFERENCES post_effect_runs(id) ON DELETE CASCADE,
+  target_id   TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  lens_type   TEXT NOT NULL CHECK(lens_type IN ('plot_structure','pacing','character_arc','pov')),
+  metrics     TEXT NOT NULL DEFAULT '{}',         -- JSON: lens 固有の計測値
+  finding     TEXT,                                -- 自然言語のまとめ（nullable）
+  severity    TEXT NOT NULL DEFAULT 'info' CHECK(severity IN ('info','suggestion','warning','error')),
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_lens_run_target   ON scene_lens_data(run_id, target_id);
+CREATE INDEX idx_lens_target_type  ON scene_lens_data(target_id, lens_type);
+```
+
+---
+
+## Trash bin（2026-05-16 追記）
+
+削除されたコンテンツを保持する物理ゴミ箱。Phase 1 は文字屑（テキスト断片）のみ書き込まれる。Phase 4-5 で構造アイテム（scene / codex-entry 等）にも拡張される予定。
+
+### trash_items
+
+```sql
+CREATE TABLE trash_items (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind            TEXT NOT NULL,        -- 'text-fragment' | 'structure-item'
+  sub_kind        TEXT NOT NULL,        -- 'text-fragment' / 'scene' / 'codex-entry' / ...
+  origin_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  origin_codex_id TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+  preview_text    TEXT NOT NULL,        -- 一覧表示用の冒頭テキスト
+  preview_meta    TEXT,                 -- JSON: 追加プレビュー情報（フォントカラー等）
+  payload         TEXT NOT NULL,        -- JSON: 復元用の完全データ（ProseMirror JSON 等）
+  char_count      INTEGER NOT NULL,
+  is_interesting  INTEGER NOT NULL DEFAULT 0,  -- 1: 「気になる」フラグ（自動退避から保護）
+  deleted_at      TEXT NOT NULL                -- 削除時刻（ISO 8601）
+);
+
+CREATE INDEX idx_trash_project_deleted
+  ON trash_items(project_id, deleted_at DESC);
+CREATE INDEX idx_trash_project_kind_deleted
+  ON trash_items(project_id, kind, deleted_at DESC);
+```
+
+`payload` / `preview_meta` は素の TEXT で JSON 文字列を保持（`aiReasoning` と同じ流儀）。`origin_scene_id` / `origin_codex_id` は ON DELETE CASCADE なので、シーン本体や Codex エントリが削除されるとゴミ箱からも消える。シーン全体を消した瞬間にゴミ箱が空になるのは仕様（孤立した断片を残しても復元先がないため）。
+
+---
+
+## 自動シード / ポリモーフィック削除トリガー（2026-05-16 追記）
+
+設計書では「プロジェクト作成時にビルトインタイプとデフォルト Map ボードをシード」と要件のみ書かれていたが、実装は SQL トリガーで実現している。これらは `migrate()` 内で永続的に登録される。
+
+### seed_builtin_codex_types
+
+新規 `projects` 行に対してビルトイン Codex タイプ 4 件（character / location / item / lore）をシードするトリガー。`is_builtin = 1` で削除不可。
+
+```sql
+CREATE TRIGGER seed_builtin_codex_types
+AFTER INSERT ON projects BEGIN
+    INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+      VALUES (new.id || '-character', new.id, 'character', 'キャラクター', '#534AB7', 0, 1, 0.0, datetime('now'));
+    INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+      VALUES (new.id || '-location',  new.id, 'location',  '場所',         '#0F6E56', 1, 1, 1.0, datetime('now'));
+    INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+      VALUES (new.id || '-item',      new.id, 'item',      'アイテム',     '#BA7517', 2, 1, 2.0, datetime('now'));
+    INSERT OR IGNORE INTO codex_types (id, project_id, slug, label, color, palette_index, is_builtin, sort_order, created_at)
+      VALUES (new.id || '-lore',      new.id, 'lore',      '伝承',         '#993C1D', 3, 1, 3.0, datetime('now'));
+END;
+```
+
+### seed_default_map_board
+
+新規 `projects` 行に対して `title = 'Main'` の Map ボードを 1 件シードする。v1 は単一ボード固定（追加 UI を出さない）。
+
+```sql
+CREATE TRIGGER seed_default_map_board
+AFTER INSERT ON projects BEGIN
+    INSERT OR IGNORE INTO map_boards (id, project_id, title, sort_order, mode, viewport_x, viewport_y, viewport_zoom, show_config, color_by, created_at, updated_at)
+      VALUES (new.id || '-main-board', new.id, 'Main', 0.0, 'free', 0, 0, 1.0, '{}', 'none', datetime('now'), datetime('now'));
+END;
+```
+
+### delete_cv_on_*：content_versions のポリモーフィック連鎖削除
+
+`content_versions` は `(entity_type, entity_id)` のポリモーフィックキーで複数エンティティを参照するため SQL FK が貼れない。そこで各所有テーブルの DELETE に AFTER トリガーを仕掛けて、対応するリビジョン履歴を連鎖削除する。
+
+```sql
+CREATE TRIGGER delete_cv_on_tree_node_delete
+AFTER DELETE ON tree_nodes BEGIN
+    DELETE FROM content_versions
+      WHERE entity_type IN ('scene', 'note') AND entity_id = old.id;
+END;
+
+CREATE TRIGGER delete_cv_on_codex_entry_delete
+AFTER DELETE ON codex_entries BEGIN
+    DELETE FROM content_versions
+      WHERE entity_type = 'codex_entry' AND entity_id = old.id;
+END;
+
+CREATE TRIGGER delete_cv_on_snippet_delete
+AFTER DELETE ON snippets BEGIN
+    DELETE FROM content_versions
+      WHERE entity_type = 'snippet' AND entity_id = old.id;
+END;
+```
+
+`project_snapshot_entries.version_id` は `ON DELETE RESTRICT` なので、スナップショットに参照されているリビジョンを所有エンティティ削除で連鎖的に消そうとすると（トリガー経由でも）SQLite が DELETE をブロックする。スナップショット運用上はこれが正しい挙動。
+
+---
+
+## スキーマ更新履歴（2026-05-16）
+
+PostEffects パネル・Trash bin・projects テーブル拡張など、実装が先行していた領域を設計書に反映。
+
+### 追加テーブル（設計書に未記載だったもの）
+
+| テーブル | 追加理由 |
+|---------|---------|
+| `post_effect_runs` / `post_effect_annotations` / `post_effect_annotation_relations` / `scene_lens_data` | PostEffects パネル実装済みだが設計書に記載なし |
+| `post_effect_annotations_fts` | 注釈 content の FTS5 検索インデックスを追加 |
+| `trash_items` | 物理ゴミ箱（Phase 1）実装済みだが設計書に記載なし |
+
+### 追加カラム（設計書に未記載だったもの）
+
+| テーブル | カラム | 用途 |
+|---------|-------|------|
+| `projects` | `outline` | Phase 4: 物語全体の手書きアウトライン。AI コンテキスト L2 に常時注入 |
+| `projects` | `ai_policy` | プロジェクト単位の AI 使用方針（chat / bodyWrite / analysis トグル）。デフォルトは Full プリセット |
+| `projects` | `is_sample` | サンプルワークスペース判定フラグ。`EditorScreen` 初回オープン時の `SampleTour` 発火に使用 |
+| `foreshadows` | `secret` | 読者に明かさない伏線フラグ。新規 CREATE は 1、`add_column_if_missing` 経由の既存行は 0 |
+
+### 文書化されていなかったトリガー / 制約
+
+| 項目 | 内容 |
+|------|------|
+| `seed_builtin_codex_types` | プロジェクト作成時にビルトイン Codex タイプ 4 件を自動投入する `AFTER INSERT ON projects` トリガー |
+| `seed_default_map_board` | プロジェクト作成時にデフォルト Map ボード（title=Main）を 1 件投入するトリガー |
+| `delete_cv_on_tree_node_delete` / `delete_cv_on_codex_entry_delete` / `delete_cv_on_snippet_delete` | `content_versions` のポリモーフィック連鎖削除（SQL FK では表現不能なので AFTER DELETE トリガーで代替） |
+| `idx_runs_running_scope` | `post_effect_runs` の `running` ステータス同時 1 本制約（部分 UNIQUE + COALESCE で NULL を正規化） |
+| 起動時の `running → failed` リカバリ | プロセス強制終了等で残った run を `migrate()` 末尾の UPDATE が `failed` に遷移させる |
+
+### 文書上の調整
+
+| 箇所 | 変更 |
+|------|------|
+| `tree_nodes` の DDL | `idx_tree_pov` / `idx_tree_location` から "Phase C-2 マイグレーションで追加" の注釈を削除（既に基本 migrate に統合済み） |
+| `projects.language` | DEFAULT のみだったところを `NOT NULL DEFAULT 'ja'` に修正（実装に追従） |

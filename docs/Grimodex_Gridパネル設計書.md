@@ -95,7 +95,8 @@ Grimodex のツリーは任意深さ（Part > Chapter > Sub-chapter > Scene 等�
 ```
 ┌───────────────────────────────────────────────────────────────────┐
 │ A. ヘッダー                                                        │
-│ Grid   Part 1 / Act 1 ▾   3 chapters   [+ New Chapter]   [🔍] [⋮]│
+│ Grid / 🏠 ▸ Part 1 ▸ Act 1 ▾    3 章    🔍  ⇕  [表示・フィルタ▾] ⋮│
+│ (任意) Container Outline バー — dive-in 中の folder.synopsis を表示│
 ├───────────────────────────────────────────────────────────────────┤
 │ B. カード列                                                        │
 │ ┌─導入部 (平穏な日常)─┐  ┌─転機 (インサイティング)─┐  ┌─新たな状況─┐│
@@ -128,12 +129,13 @@ Grimodex のツリーは任意深さ（Part > Chapter > Sub-chapter > Scene 等�
 | 要素 | 詳細 |
 |------|------|
 | パネルタイトル | 「Grid」 |
-| Container セレクタ | 表示対象の親フォルダ。breadcrumb 表示（`Part 1 / Act 1`）。クリックでドロップダウン展開、ツリー上の任意 folder を選択可。Default はプロジェクトルート |
-| Chapter 数表示 | `{N} chapters`（直下フォルダ数。Scene 直接子は `+ {M} loose scenes` と併記） |
-| `[+ New Chapter]` | 現在の container 直下に新規 folder を作成。名前は自動採番（Scenes パネル設計書の採番ロジックに従う） |
-| `[⌃]` ツールバー切替 | 折りたたみツールバー（Display + Filter）の開閉。状態は global-settings に保存 |
-| 🔍 検索 | カード内テキスト（Scene 名 / Synopsis / beat 冒頭 / Codex 名）でインクリメンタル絞り込み。マッチしないカードはグレー表示。**Phase A では非表示または disabled（Phase B で実装）** |
-| `[⋮]` アクションメニュー | ドロップダウン: Apply structure template ▸ / Manage labels... / Help |
+| Container セレクタ | 表示対象の親フォルダ。Home (🏠) アイコン + breadcrumb 表示（`🏠 / Part 1 / Act 1`、各セグメント直接クリック可能）+ ChevronDown ボタンでツリー型 Popover を開いて任意 folder を選択。Default はプロジェクトルート（`null`） |
+| Chapter 数表示 | `{count} 章`（直下フォルダ数） |
+| 🔍 検索 | クリックで展開する inline input。カード内テキスト（Scene 名 / Synopsis / placed + unplaced beat / Codex 名）でインクリメンタル絞り込み。マッチしないカードは `opacity-40` で半透明（フィルタ通過なら表示は残す） |
+| ⇕ 全展開／全折りたたみ | `ChevronsUpDown` / `ChevronsDownUp` トグル。表示中の nested folder を一括展開／折りたたみ（dive-in しなくても章配下の章カードを開閉できる）。nested folder が無いとき非表示 |
+| `[表示・フィルタ▾]` | 折りたたみツールバー（Display + Filter + カードタブ）の開閉。状態は `global-settings.json` の `toolbarOpen` に保存（pressed 時 accent 背景） |
+| `[⋮]` アクションメニュー | ドロップダウン: Apply structure template ▸ / Manage labels... / Help (disabled) |
+| `+ 章を追加` | 列群の末尾に縦書きの細いボタンとして表示（ヘッダーには出さない）。クリックで現 container 直下に新規 folder を作成し、すぐ列ヘッダがインライン編集状態になる |
 
 ### Container セレクタの動作
 
@@ -144,27 +146,31 @@ Grimodex のツリーは任意深さ（Part > Chapter > Sub-chapter > Scene 等�
 - 選択 container は **プロジェクトスコープ**で永続化（プロジェクト切り替えで別プロジェクトの ID を引きずらないため、プロジェクト ID をキーに含めて保存）
 - 起動時に保存された ID が現プロジェクト内に存在しない場合（削除済み・別プロジェクト由来）はプロジェクトルートにフォールバック
 
-### `[⌃]` 折りたたみツールバー（ビュー状態のクイック切替）
+### `[表示・フィルタ▾]` 折りたたみツールバー（ビュー状態のクイック切替）
 
-`[⋮]` ドロップダウンとは役割を分離し、**頻繁に切り替える表示状態**だけをこのツールバーに集約する。`[⌃]` で開閉、状態は `global-settings.json` に保存（プロジェクト横断）。
+`[⋮]` ドロップダウンとは役割を分離し、**頻繁に切り替える表示状態**だけをこのツールバーに集約する。ボタン押下で開閉、状態は `global-settings.json` に保存（プロジェクト横断）。
 
 ```
-Display: ☑Synopsis  ☑Beat  ☑Codex  ☑Label  ☐Compact
-Filter:  ☐空のみ  ☐完成非表示  [Codex フィルタ▾]              [Clear]
+表示: ☑Synopsis ☑Beat ☑Codex ☑Status ☑Label ☑伏線 ☐Compact   カードタブ: [Auto|Beat|Synopsis]
+フィルタ: [🔴 ラベル1] [🔵 ラベル2] ...   Codex: [All ▾]    ☐空のみ ☐完成を非表示  [クリア]
 ```
 
 | グループ | 項目 | 既定 |
 |---------|------|------|
-| Display | Synopsis 表示（あれば、Beat の下に折りたたみで） | ON |
-| Display | Beat プレビュー表示 | ON |
+| Display | Synopsis 表示 | ON |
+| Display | Beat 表示 | ON |
 | Display | Codex チップ表示 | ON |
 | Display | Status ラベル文字表示（既存 `showStatusLabel`、旧 `showLabel`） | ON |
 | Display | Label カラーバー表示（新規 `showLabelBar`） | ON |
-| Display | Foreshadow indicator 表示 | ON |
-| Display | コンパクト表示 | OFF |
+| Display | Foreshadow indicator 表示 (`showForeshadow`) | ON |
+| Display | コンパクト表示 (`compactCards`) | OFF |
+| カードタブ | 全カードのタブを同期するモード (`cardTabMode`: `auto` / `beat` / `synopsis` の segmented control) | `auto` |
+| Filter | Label フィルタ（複数選択 OR、各ラベル色で塗られた Pill 行） | `[]` |
+| Filter | 特定 Codex を含む Scene のみ（Select ドロップダウン） | `null` |
 | Filter | 空の Scene のみ | OFF |
 | Filter | 完成済み Scene を非表示 | OFF |
-| Filter | 特定 Codex を含む Scene のみ（Codex セレクタ） | OFF |
+
+> **設計との差異**: Label フィルタは当初 Backlog で「Label 選択ドロップダウン」と書いていたが、ラベルが色情報を持つため Pill 行（`TagFilterBar` 準拠）に変更済み。色視認性と複数選択 OR の操作性を優先。
 
 ### `[⋮]` アクションメニュー（ドロップダウン）
 
@@ -187,19 +193,58 @@ Grid の使い方                    （Help）
 ### 列（Chapter）
 
 - 1列 = 1 Chapter（`tree_nodes.node_type = 'folder'`）
-- 列ヘッダ: Chapter 名 + 編集 ✏ + `[⋮]` メニュー（Rename / Delete / Move / Show in Scenes）
-- 列内のカードは `tree_nodes.sort_order` 昇順で縦に並ぶ
-- 列末尾に `+ New Scene` ボタン
-- 列幅は固定（300〜400px）。横スクロールで複数列を見る
+- 列ヘッダ: Chapter 名（double-click でインライン rename）+ シーン件数バッジ
+- 列ヘッダ直下に Chapter の Outline (`folder.synopsis`) を 2行 line-clamp 表示 + double-click でインライン編集（**実装済み, Phase 4 後続**）— このテキストは chat の chapter outline 注入経路にも乗る
+- 列内のカードは `tree_nodes.sort_order` 昇順で縦に並び、scene カードと**ネストされた子 folder カード**が混在表示される（下記「フォルダカード／dive-in」参照）
+- 列末尾に `+ シーンを追加` ボタン
+- 列幅は Compact OFF で 320px (`w-80`)、Compact ON で 224px (`w-56`)。横スクロールで複数列を見る
 - 列ヘッダ D&D で Chapter の並び替え（同 container 内）
 
-### Scene 直接子（Loose Scenes）
+### `+ 章を追加`（カラム末尾の縦書きボタン）
 
-選択 container 直下に Scene が直接ぶら下がっている場合、仮想列「`Scenes`」（または「`(no chapter)`」）として最右に表示される：
+設計書当初はヘッダーに `[+ New Chapter]` ボタンを置く想定だったが、実装では **列群の末尾に縦書きの細いボタン**（`writing-mode: vertical-rl`、幅 14px、`＋ 章を追加`）として配置済み。理由 — ヘッダーは breadcrumb + 検索 + 表示・フィルタ切替 + アクション `[⋮]` で混雑するため、列追加は「列の続きに足す」物理メタファに寄せたほうが直感的。
 
-- 個別 Scene を D&D で別 Chapter 列にドロップして移動できる（Phase A）
-- この仮想列に `+ New Scene` を押した場合、container 直下に Scene が追加される（Loose のまま）
-- 仮想列ごと既存 Chapter にまとめる／新規 Chapter folder に変換する一括操作は **Phase B で実装済み**（仮想列の `[⋮]` メニューから操作可能）
+列が0件のときはこのボタンを出さず、代わりに**中央に大きな Structure Template Picker ボタン**を表示（最初の Chapter を作る前の空状態で「テンプレートから始めるか手で作るか」を提示）。
+
+### フォルダカード／dive-in（実装済み, Phase 4 後続）
+
+任意深さのツリー (Part > Chapter > Sub-chapter > Scene 等) を Grid で扱うため、chapter 列の中に**ネストされた子 folder を `GridFolderCard` として表示**する設計を導入済み。当初設計の「1ビュー = 1階層深さに固定」を緩和し、**「直下の scene + 子フォルダ + 孫の scene (展開時)」を 1列の中に depth indent で並べる**形になった。
+
+**フォルダカード (`GridFolderCard`)**:
+
+- 点線ボーダー + folder アイコン + フォルダ名。**カードクリックで dive-in**（containerId をそのフォルダに切替）
+- 先頭の `▸ / ▾` ChevronRight でカード内の **展開／折りたたみ**を切替（既定: 展開）。折りたたみ時はカード下に `{n} シーン · {n} フォルダ` の件数を表示
+- カード本体に `folder.synopsis`（Outline）を 2行 line-clamp + double-click でインライン編集
+- depth に応じてカード左に `12px × depth` の indent を入れる（`GridDescendant.depth`）
+- 空 folder は ChevronRight を disabled（折りたたみ意味なし）
+
+**展開状態の管理**:
+
+- `collapsedFolderIds: Set<string>` を `gridStore` の session-only state として保持（永続化しない、デフォルト全展開）
+- カード単位の `▸ / ▾` トグル → `toggleFolderCollapsed`
+- ヘッダの `ChevronsDownUp / ChevronsUpDown` トグル → 表示中の全 nested folder を一括展開／折りたたみ (`expandAllFolders` / `collapseAllFolders`)
+
+**dive-in / dive-out**:
+
+- フォルダカードをクリック → `setContainerId(projectId, folder.id)`。breadcrumb の Home / 親リンクで dive-out
+- dive-in 中はその folder 自身が **container 列** (`GridContainerSceneColumn`) として実線で描画され、folder.title + folder アイコンがヘッダに出る
+- container folder の synopsis (outline) は列群の上に **`GridContainerOutline` バー**として横長に表示（folder 自身は dive-in 時に列／カードのいずれにもならないため、Outline がどこにも表示されないのを防ぐ）
+
+### Scene 直接子（Loose / Container 直下シーン）
+
+直下にぶら下がる scene の表現は、container が project root か folder かで分かれる:
+
+| パターン | container | 列の種類 | 列の見た目 |
+|---------|----------|---------|------------|
+| Project root の orphan scene | `null` | `GridLooseColumn` | 点線、`未分類シーン` タイトル |
+| Folder へ dive-in 中の直下 scene | folder id | `GridContainerSceneColumn` | 実線、folder アイコン + folder.title |
+
+両方とも sortOrder で chapter 列と混ぜて並べる（`orderedColumns`、Scenes パネル順と一致）。
+
+- 個別 Scene を D&D で別 Chapter 列にドロップして移動できる
+- 仮想列の `+ シーンを追加` は container 直下に Scene を追加する（loose のまま / container 直下のまま）
+- 仮想列ごと既存 Chapter にまとめる（`consolidateLooseIntoChapter`）／ Loose 列のみ新規 Chapter folder に変換（`convertLooseToChapter`）の一括操作は仮想列ヘッダの `[⋮]` メニューから利用可能
+- Container 列では `新規章フォルダに変換` は意味的に noisy（dive-in 中の直下シーンを wrap し直すのは主要操作でない）ため、`既存の章にまとめる` のみ提示する
 
 ### カード（Scene）
 
@@ -207,21 +252,46 @@ Grid の使い方                    （Help）
 
 | 領域 | 内容 | データソース |
 |------|------|--------|
-| ヘッダ | Scene 名 + 編集 ✏ + `[⋮]` メニュー | `tree_nodes.title` |
+| ヘッダ | Scene 名 (double-click でインライン rename) + Editor 起動ボタン + `[⋮]` メニュー | `tree_nodes.title` |
 | ヘッダ直下 | POV chip 行（最大3人 + `+N more`） | `scene_beat_pov_cache` ∪ `tree_nodes.povCharacterId`（後述「POV chip」参照） |
-| 本体（上段） | Beat 箇条書き（主表示）／ Synopsis は折りたたみ | `tree_nodes.unplaced_beat_preview` / `tree_nodes.synopsis`（保存時にフロントが事前抽出したプレビュー、Beat 設計書 / 後述「Beat 冒頭の取得戦略」参照） |
-| 本体（中段） | Codex チップ（最大5件） | `scene_codex_pins` |
-| フッタ | Label / 文字数 / Status | （Label は Phase B、`tree_nodes.status` は Scenes パネル設計書既定、文字数は `tree_nodes.char_count`） |
+| 本体（タブ切替） | Beat 箇条書き ⇄ Synopsis（タブで切替、後述「Beat / Synopsis タブ」参照） | `tree_nodes.unplaced_beat_preview` / `tree_nodes.placed_beat_preview` / `tree_nodes.synopsis` |
+| 本体（中段） | Codex チップ（最大5件、Compact 時 3件） | `scene_codex_pins` |
+| フッタ | Status バッジ + Foreshadow indicator + 文字数 | `tree_nodes.status` / `foreshadowStore` / `tree_nodes.char_count` |
+| 左端 | Label カラーバー（縦） | `tree_node_labels` (M:N) → `labels` |
 
-> Phase A での Codex チップは**表示専用**（タイプ別色分け・クリックで Codex 詳細パネル起動）。`+ Codex` 追加・`×` 削除のインタラクションは Phase B（後述「実装フェーズ」参照）。
+Codex チップは Phase B で editable 化済み (`+` → `PinEntryDialog`、`×` で削除）。Label カラーバーは設計通り左端の縦バー、`[⋮]` メニューに `Label を付ける ▸` チェックボックスサブメニュー。
 
-#### Beat 主表示と Synopsis 折りたたみ（実装済み）
+#### Beat / Synopsis タブ（実装済み, Phase 4 後続）
 
-**現行**: Beat 箇条書きを主表示、Synopsis は副表示として折りたたむ。Beat と Synopsis の役割分担（Beat = 構造的計画、Synopsis = 叙述的要約）を Grid 上でも視覚的に反映し、「Grid で Beat を計画 → Editor で D&D して生成」のフローを一貫させる。詳細は Beat システム設計書「Grid との接続」参照。
+設計書当初の「Beat 主表示・Synopsis 折りたたみ」案は、**Beat / Synopsis の 2タブ切替 UI** へ進化済み。Beat と Synopsis を**同時表示せず、タブで切り替えて見る**ことで、カード高さを安定させつつ両者の役割分担（Beat = 構造的計画、Synopsis = 叙述的要約）を保つ。
 
-- **Beat あり**: Beat を bullet 表示（最大8件 × 60文字、`unplaced_beat_preview` キャッシュから読む）。Synopsis がある場合は下に `▸ Show synopsis` / `▾ Hide synopsis` トグルで展開可能（双方向）
-- **Beat なし / Synopsis あり**: Synopsis を本体に直接表示
-- **両方なし**: 灰色で「空のシーン」と表示
+**UI**:
+
+- Display トグルで Beat / Synopsis のいずれか一方しか有効化していない場合はタブ列を出さず、その body をそのまま表示
+- 両方有効なら 2タブを表示し、各カードのデフォルトは「Beat に内容があれば Beat、なければ Synopsis」（per-card local state）
+- Beat タブ tab label は `Beat · {count}` 形式、Synopsis タブは `Synopsis`。中身が空のタブはタブ自身を dim 表示
+- 両方 Display オフ → 「空のシーン」プレースホルダー
+
+**カードタブ同期モード**（`cardTabMode: "auto" | "beat" | "synopsis"`、`global-settings.json` に永続化）:
+
+- `auto`（既定）: 各カードが独立してタブを記憶（local state）
+- `beat` / `synopsis`: **全カードを一斉にそのタブへ固定**。クリック時のタブ切替も全カードへ broadcast
+- 切替 UI は `[⌃]` ツールバーの Display 行末尾に 3-state segmented control として配置
+
+**Beat タブの中身**:
+
+- `placed_beat_preview`（本文に置かれた Beat の冒頭）と `unplaced_beat_preview`（Unplaced beats）を**両方 bullet 表示**
+- 先頭 prefix で kind を識別: `placed` は `┃`、`unplaced` は `01`/`02`/... の番号
+- 表示件数は最初 **3件** まで（`BEAT_VISIBLE_LIMIT = 3`）。超過分は `▾ 他 N 件` トグルで展開、`▴ 折りたたむ` で戻す（双方向）
+- Beat 0件のときは「＋ Beat を追加」プロンプトのみ
+- `unplaced` beat のテキストは double-click で**インライン編集**（`editUnplacedBeatFromGrid`、編集中は textarea を auto-resize、Enter 確定 / Shift+Enter 改行 / Esc 取消）。`placed` beat はカードからは編集不可（本文編集は Editor 側）
+- bullet 一覧の下に `＋ Beat` 小ボタンで新規 Unplaced beat を追加（カード下部の textarea にフォーカス、`addUnplacedBeatFromGrid`）
+
+**Synopsis タブの中身**:
+
+- `<InlineSynopsisEditor>` を `triggerOn="doubleClick"` で配置。空のときは「＋ シノプシスを追加」プロンプト
+
+> **設計との差異**: 当初設計は「Beat を主、Synopsis を折りたたみ副」の縦並びだったが、tab UI に変更した。理由 — (1) カード高さの安定（折りたたみは可変高で隣の列とずれる）、(2) 「Beat も Synopsis も覗ける」操作を 1クリックに統一できる、(3) 全カード同期モードで「今は Synopsis だけ俯瞰したい」のような視点切替が可能になる。
 
 #### POV chip
 
@@ -437,16 +507,18 @@ Pays off:
 - Save the Cat の "Theme Stated" → 「テーマ提示」（日本語版）
 - 24 chapters → ja は「導入フック / 状況設定 / プロットポイント1 / ピンチ1 / 中間点 / …」を意訳した日本語版
 
-**適用挙動**:
+**適用挙動**（実装済み、Phase 4 後続で挙動変更）:
 
-- **現在の container 直下に新規 Chapter folder を 1 つ作って、その配下に骨格を展開**する（既存構造と衝突させない／既存シーンを破壊しない）
-- ルート folder 名は `{テンプレート名} - {自動採番}`（例: `3幕構成 - 1`）
-- 各 placeholder scene の **synopsis にはその段階の説明文を初期値として埋める**（例: Save the Cat の "Theme Stated" → 「主人公が最終的に学ぶべき真実を、別キャラが何気なく提示する」）。ユーザーはそれを叩き台に書き始められる
-- scene 名は段階名（例: `テーマ提示`、`Plot Point 1`）。ユーザーが後から rename 可
-- 同じテンプレートを複数回適用してもよい（毎回新規 Chapter folder が作られる）
+- **現在の container 直下に template の `rootChildren` を直置きで展開**する（**ラッパー folder は作らない**）。既存構造とは衝突しない／既存シーンを破壊しない。新規ノードは siblings 末尾に追加
+- 各テンプレートは複数の folder ノード（例: `act1` / `act2` / `act3`）をルートに展開するため、container 直下にいきなり Chapter folder 群が並ぶ
+- **各段階の "stage 説明文" は folder.synopsis に書き込む**（Save the Cat の "Theme Stated" → 「主人公が最終的に学ぶべき真実を、別キャラが何気なく提示する」のテキストはその stage の **folder** の synopsis として保存される）。理由 — chat の chapter outline 注入経路 (`folder.synopsis`) に乗せるため。**scene.synopsis は空のまま** placeholder として残し、ユーザーが具体的な出来事を書く場所として残す
+- placeholder scene の名前は `grid.structureTemplates.placeholderScene`（既定「シーン」/「Scene」）。各 stage の "scene として直接書き出す段階"（例: 3幕構成の各 act 直下の1シーン）は stage の名前を使う
+- 同じテンプレートを複数回適用してもよい（毎回 rootChildren が container 末尾に追加される）
 - 結果はトーストで報告（「N folders / M scenes 追加」）
 
-**実装場所**: `src/features/grid/structureTemplates.ts`（テンプレート定義、純データ + i18n キー）。Apply 処理はフロント TS で Drizzle 直実行（既存 Scene/Folder 作成 API を反復呼び出し、原子性は1トランザクションでまとめる）。
+**実装場所**: `src/features/grid/structureTemplates.ts`（テンプレート定義、純データ + i18n キー）、`src/features/grid/applyStructureTemplate.ts`（適用処理）、`StructureTemplatePicker.tsx`（空 Grid 時に出る大ボタン）と `GridActionsMenu` の `Apply structure template ▸` サブメニュー（常時アクセス）の 2経路で起動。
+
+> **設計との差異**: 当初設計は「ラッパー folder を 1つ作る」「scene.synopsis に stage 説明を埋める」だったが、Phase 4 後続で **ラッパー不要 + folder.synopsis 経路に統一**へ変更。理由 — (1) ラッパーがあると `Part 1 / 3幕構成 - 1 / Act 1` のような冗長な階層になり Grid 上の breadcrumb が伸びる、(2) stage 説明文を chat への章 outline 注入経路に乗せるには folder.synopsis である必要がある（scene.synopsis では章 outline として扱われない）。
 
 **用語の使い分け**（"Beat" 衝突回避）:
 
@@ -464,14 +536,50 @@ i18n 辞書を作る際は、テンプレートの段階名・紹介文・Apply 
 
 | 操作 | 結果 |
 |------|------|
-| **タイトルクリック** | Editor で Scene を開く |
-| **本体クリック** | 何もしない（D&D の起点として残す） |
-| **Synopsis ダブルクリック** | インライン編集モード（後述「Synopsis 共有編集コンポーネント」参照） |
-| **編集 ✏ クリック** | Synopsis をインライン編集モードに切替（ダブルクリックと同じ） |
-| **`[⋮]` メニュー** | Open in Editor / Rename / Duplicate / Delete / Move to chapter… / Show in Scenes panel |
+| **タイトル double-click** | インライン rename |
+| **タイトル横の ExternalLink ボタン**（hover で出現） | Editor で Scene を開く |
+| **カード本体クリック** | シーン選択（Cmd/Ctrl+Click でトグル、Shift+Click で範囲選択。後述「複数選択」参照） |
+| **Synopsis タブ double-click** | InlineSynopsisEditor 起動 |
+| **Beat タブ unplaced beat double-click** | 該当 beat をインライン編集（textarea、Enter で確定） |
+| **Beat タブ `＋ Beat` ボタン** | カード下部に Beat 追加用 textarea を出す |
+| **`[⋮]` メニュー** | シーン一覧で表示 / Label を付ける ▸ (チェックボックス式マルチ選択) / 削除 |
+| **削除確認モーダル** | 本文または synopsis を持つシーンの削除時はパネル中央に確認モーダルを出す（複数選択削除でも 1つでも内容を持てば確認）。空シーンは確認なしで即削除 |
 | **D&D（同列内）** | `tree_nodes.sort_order` 更新のみ |
 | **D&D（別列）** | `tree_nodes.parent_id` と `sort_order` 更新のみ。関連テーブル（`scene_codex_pins` / `povCharacterId` / `locationId` / TipTap docJson）は touch しない — Scene エンティティの ID は変わらないため、リレーションは自動的に保持される |
-| **右クリック** | `[⋮]` メニューと同じ |
+| **D&D（複数選択時）** | 選択全体を `flatOrder` 順で同一 chapter にまとめて移動 (`moveScenesToChapter`) |
+
+> **設計との差異**: メニューから Rename / Duplicate / Move to chapter… を削除済み。Rename はタイトル double-click、Move to chapter は D&D（または複数選択ツールバーの `章に移動…`）で代替する方針。Duplicate は実装ニーズが立たず Backlog 入り。Open in Editor はヘッダの ExternalLink ボタンに昇格。
+
+### 章列の D&D — 3-zone (before / nest / after)
+
+章列ドラッグ時のドロップは pointer の X 位置で 3-zone に分岐:
+
+- 列の **左 40%** に drop → `before`（targetの直前へ並べ替え）
+- 列の **右 40%** に drop → `after`（targetの直後へ並べ替え）
+- 列の **中央 20%** に drop → `nest`（target の**子フォルダになる**）
+
+`nest` を実装した目的は、Part > Chapter > Sub-chapter のような階層構造を D&D で再構築するため。`computeColumnDropIndicator` / `computeColumnDropTarget` が以下を担保する:
+
+- **Cycle prevention**: target が active の自身または子孫の場合は drop を無効化（無限ループ防止）
+- **No-op detection**: 隣接 sibling への "before/after" で active が同じ位置に戻る drop は **null を返してドロップ無効**（隣の neighbor と swap したいときは neighbor の反対側 40% に drop する）
+- **Loose 領域への bubble 抑止**: container 直下の orphan area への drop は親 container へ抜けないようガード
+
+`GridFolderCard` 自身も nest droppable（`column-nest-{folderId}`）として登録され、フォルダカード単体への drop でその直下に append される。
+
+### 複数選択と一括操作
+
+- **シングル選択**: 単純クリックでそのシーンのみ選択（`selectOnly`）
+- **トグル選択**: Cmd/Ctrl+Click で選択／解除（`toggleSelection`）
+- **範囲選択**: Shift+Click で anchor から target まで `flatOrder` を基準に範囲選択 (`rangeSelect`)
+- **全選択**: Cmd/Ctrl+A（パネルにフォーカス時のみ）で表示中シーンを全選択 (`selectAll`)
+- **選択解除**: Esc（編集中以外）、または panel 背景クリック、または選択ツールバーの `×` 押下
+
+2件以上選択中は `GridSelectionToolbar`（パネル下部）が出現:
+
+- `{N} 件選択中` ラベル
+- `章に移動…` ポップオーバー（`GridChapterPickerContent`、章ツリーをドリルダウン選択）
+- `削除` ボタン（内容を持つシーンが含まれる場合は確認モーダル）
+- `×` で選択クリア
 
 ### Synopsis 共有編集コンポーネント
 
@@ -507,15 +615,16 @@ Synopsis は **Scenes パネル（Outline モード）／ Editor 上部の Synop
 ## C. ステータスバー
 
 ```
-3 chapters · 6 scenes · 12,400 chars · Last edited: Scene 2 (転機)
+3 章 · 6 シーン · 12,400 chars
 ```
 
 | 要素 | 表示 |
 |------|------|
-| Chapter 数 | 現 container 直下の folder 数 |
-| Scene 数 | 表示中の全 Scene 数（Loose 含む、再帰的にカウントしない） |
-| 合計文字数 | 表示中の Scene 本文文字数の合計（リアルタイム） |
-| 最終編集 | 最後に編集された Scene 名 + 所属 chapter |
+| Chapter 数 | 現 container 直下の folder 数（`totalChapters`） |
+| Scene 数 | container 配下の**全 Scene 数（chapter folder の再帰的子孫を含む）** + Loose / Container 直下シーン |
+| 合計文字数 | 表示中の Scene 本文文字数の合計（`tree_nodes.char_count` キャッシュと `useTreeStore.charCounts` ライブ値の max） |
+
+> **設計との差異**: 「Last edited Scene」の表示は未実装（追跡コスト割に立たずに見送り）。総 Scene 数は当初「再帰的にカウントしない」と書いていたが、実装は **章配下の全子孫シーンを再帰的にカウント**するように変更（dive-in しなくても章全体の規模が見える方が役立つ）。
 
 ---
 
@@ -567,8 +676,11 @@ Grid は新規テーブルを持たない。表示内容はすべて既存テー
 |---------|------|
 | Chapter 列 | `tree_nodes` の folder ノード（current container の直接の子） |
 | Scene カード | `tree_nodes` の scene ノード（folder 列の子、または Loose） |
-| Synopsis | `tree_nodes.synopsis` |
-| Beat 冒頭 | `tree_nodes.unplaced_beat_preview` キャッシュ（後述「Beat 冒頭の取得戦略」参照） |
+| Folder カード (nested) | `tree_nodes` の folder ノード（chapter 列内に depth indent で混在） |
+| Chapter Outline | `tree_nodes.synopsis`（folder ノードの synopsis = 列ヘッダ直下に line-clamp 表示 + chat の chapter outline 経路） |
+| Container Outline バー | dive-in 中の container folder の `tree_nodes.synopsis`（列群の上に横長バー表示） |
+| Scene Synopsis | `tree_nodes.synopsis`（Synopsis タブで表示） |
+| Beat（placed + unplaced） | `tree_nodes.placed_beat_preview` と `tree_nodes.unplaced_beat_preview` の 2系統キャッシュ（後述「Beat 冒頭の取得戦略」参照） |
 | POV chip | `scene_beat_pov_cache` ∪ `tree_nodes.povCharacterId`（dedupe、scene POV 先頭、character 名は `codexEntries` を join） |
 | Codex チップ | `scene_codex_pins` |
 | Label カラーバー | `tree_node_labels` (M:N) → `labels` (project スコープ、固定パレット色)。Phase B 新規テーブル |
@@ -578,17 +690,20 @@ Grid は新規テーブルを持たない。表示内容はすべて既存テー
 
 ### Beat 冒頭の取得戦略
 
-Grid は**最大数十シーン分**を同時に表示するため、カード描画のたびに各 Scene の `unplaced_beats_doc` 全体をパースして先頭 beat を取り出すのも避けたい（数十シーン × 数 KB の JSON パース）。**保存時にフロント側がプレビュー文字列を計算して同梱**するシンプルな方針を採る：
+Grid は**最大数十シーン分**を同時に表示するため、カード描画のたびに各 Scene の `unplaced_beats_doc` / 本文 doc 全体をパースして先頭 beat を取り出すのも避けたい（数十シーン × 数 KB の JSON パース）。**保存時にフロント側がプレビュー文字列を計算して同梱**するシンプルな方針を採る：
 
-**`tree_nodes.unplaced_beat_preview` キャッシュカラム（Phase A）**
+**`tree_nodes.unplaced_beat_preview` / `tree_nodes.placed_beat_preview` キャッシュカラム**
 
-シーン保存時、フロントが `unplaced_beats_doc`（Beat 設計書参照）の先頭3 beat の冒頭40文字を抽出し、保存ペイロードに `unplacedBeatPreview` フィールドとして同梱する。バックエンドはその値を `tree_nodes.unplaced_beat_preview` に保存するだけ（中身は解釈しない）：
+シーン保存時、フロントが (a) Unplaced beats doc から `extractUnplacedBeatPreview`、(b) 本文 docJson から `extractPlacedBeatPreviewFromString` を使って 2系統のプレビュー JSON 配列を生成し、保存ペイロードに `unplacedBeatPreview` / `placedBeatPreview` フィールドとして同梱する。バックエンドは値を opaque TEXT として保存・返却するだけ（中身は解釈しない）：
 
 ```sql
 ALTER TABLE tree_nodes ADD COLUMN unplaced_beat_preview TEXT;
+ALTER TABLE tree_nodes ADD COLUMN placed_beat_preview TEXT;
 -- 値の形式: '["雨の夜、廃社の前で立ち止まる朱音","祭壇に置かれた朱紐を見つける","触れた瞬間に流れ込む見知らぬ記憶"]'
 -- 値が NULL or '[]' なら表示しない
 ```
+
+Grid カードはこの 2系統を**両方読み出し**、`┃` 接頭辞 (placed) と `01` / `02` 番号 (unplaced) でリストに混在表示する（Beat タブ）。検索 (`useGridCardVisibility`) も両方の preview を結合して照合する。
 
 **フォーマット契約（フロント↔バックエンド共通の I/F）:**
 
@@ -625,19 +740,26 @@ Grid のビュー状態は**スコープを分けて**保存する：
 - **グローバルスコープ**（`global-settings.json`）: 表示・フィルタ設定（プロジェクト横断で一貫していてよいユーザー嗜好）
 
 ```json
-// global-settings.json
+// global-settings.json（実装済みの形）
 {
   "grid": {
-    "compactCards": false,
-    "showSynopsis": true,
-    "showBeats": true,
-    "showCodex": true,
-    "showLabel": true,
+    "display": {
+      "showSynopsis": true,
+      "showBeats": true,
+      "showCodex": true,
+      "showStatusLabel": true,   // 旧 showLabel — 後方互換で読み込み時にリネーム
+      "showLabelBar": true,
+      "showForeshadow": true,
+      "compactCards": false
+    },
     "filter": {
       "emptyOnly": false,
       "hideCompleted": false,
-      "codexFilter": []
-    }
+      "codexFilter": null,
+      "labelFilter": []
+    },
+    "toolbarOpen": false,
+    "cardTabMode": "auto"        // "auto" | "beat" | "synopsis" の全カード同期モード
   }
 }
 ```
@@ -725,18 +847,42 @@ Grid のビュー状態は**スコープを分けて**保存する：
 
 - [x] `src/features/grid/structureTemplates.ts` 定義（7 テンプレート、純データ）
 - [x] `[⋮] → Apply structure template ▸` メニューに置換（`LayoutTemplate` アイコン）
-- [x] 適用処理 `applyStructureTemplate`: 現 container 直下に新規 root folder を作り、その配下に folder/scene 骨格を `treeApi.createNode` で連続生成。各 placeholder scene の `synopsis` に段階説明文を初期値として埋める
-- [x] root folder 名は `{templateName} - {N}` 自動採番（同名衝突回避）
+- [x] 適用処理 `applyStructureTemplate`: 現 container 直下に rootChildren を**直置きで展開**（ラッパー folder は作らない、Phase 4 後続で挙動変更）。`treeApi.createNode` を反復呼び出し
+- [x] **段階説明文は `folder.synopsis` に書き込む**（scene.synopsis は空、chat の chapter outline 経路に乗せるため）
 - [x] 旧 `labelTemplates.ts` / `applyLabelTemplate.ts` / 関連 i18n エントリ削除
 - [x] ja/en 対訳辞書追加（`grid.structureTemplates.{key}.name` / `stages.{stageKey}.{name|synopsis}`）。各段階の synopsis は意訳ベースで物書きに役立つ叩き台として記述
 - [x] トースト通知（「N folders / M scenes 追加」）
+- [x] 空 Grid 時に中央に `StructureTemplatePicker` 大ボタンを表示（最初の Chapter を作る前の onboarding）
+
+### Phase 4 後続: dive-in / folder card モデル（完了済み）
+
+任意深さのツリー（Part > Chapter > Sub-chapter > Scene 等）を Grid 上で扱うために、当初設計の「1ビュー = 1階層深さに固定」を緩和した一群の変更。
+
+- [x] **`GridFolderCard`** — chapter 列内に nested folder をカードとして表示。点線ボーダー + folder アイコン、クリックで dive-in、ChevronRight で展開／折りたたみ、`folder.synopsis` を line-clamp 表示 + double-click でインライン編集
+- [x] **`collapsedFolderIds`** — session-only Set で folder ごとの折りたたみ状態を管理（永続化しない、既定全展開）
+- [x] **ヘッダーの全展開／全折りたたみボタン** (`ChevronsUpDown` / `ChevronsDownUp`)
+- [x] **`useGridDerivedData` の `flattenSubtree`** — chapter 列の `descendants` に scene と nested folder を depth 別 indent で混在格納
+- [x] **`GridContainerSceneColumn`** — dive-in 中 container folder の直下シーンを実線・folder アイコン付き列で描画（loose 列とは見た目で区別）
+- [x] **`GridContainerOutline`** — dive-in 中 container folder の synopsis を列群の上の横長バーで表示（folder 自身が列・カードどちらにもならないため）
+- [x] **章列の D&D 3-zone** (`computeColumnDropIndicator`) — 左 40% before / 右 40% after / 中央 20% nest。`column-nest-{folderId}` droppable を `GridFolderCard` 自身にも装着して、フォルダカードへの直接 nest drop に対応
+- [x] **Cycle prevention / No-op detection** — 自身の子孫への nest を拒否、隣接 sibling 同方向 drop は null を返してフィードバック停止
+- [x] **`ColumnDropIndicator`** — drop 先列に left/right padding gap または nest ring（amber-tinted）を出してプレビュー
+- [x] **章列ヘッダの Chapter Outline** — `InlineSynopsisEditor` を列ヘッダ直下に配置（folder.synopsis を 2行 clamp、double-click 編集）
+- [x] **placed_beat_preview カラム** — 本文 docJson から `extractPlacedBeatPreviewFromString` で抽出した placed beat プレビューを `tree_nodes.placed_beat_preview` に保存。Grid は unplaced と placed を統合して bullet 表示
+- [x] **Beat / Synopsis タブ UI** — Beat 主表示 + Synopsis 折りたたみの当初案からタブ切替に進化。`cardTabMode: "auto" | "beat" | "synopsis"` 全カード同期モード（`[⌃]` ツールバーの 3-state segmented control）
+- [x] **Beat のインライン編集** (`editUnplacedBeatFromGrid`) — double-click で textarea 編集、auto-resize、Enter 確定 / Shift+Enter 改行 / Esc 取消。`loadBeatTextByIndex` で fresh text を取得して race を避ける
+- [x] **Beat の overflow トグル** — `BEAT_VISIBLE_LIMIT = 3` を超える件数は `▾ 他 N 件` 展開 / `▴ 折りたたむ` 双方向
+- [x] **キーボード操作** — Esc で選択解除、Cmd/Ctrl+A で表示中シーン全選択（パネルにフォーカス時）
+- [x] **複数選択 D&D** — 選択中シーンを 1枚ドラッグすると `flatOrder` 順で選択全体が target chapter に移動 (`moveScenesToChapter`)
+- [x] **+ 章を追加 の縦書きボタン化** — ヘッダーから列末尾の細い縦書きボタンに移設（writing-mode: vertical-rl）
 
 ### Backlog
 
 **Phase E: AI 連携（v2+）**
 
 - [ ] カード `[⋮] → Generate scene from chapter outline`（章のサマリーから Scene 提案）
-- [ ] 空カード / `+ New Scene` の AI ドラフト生成
+- [ ] 空カード / `+ シーンを追加` の AI ドラフト生成
+- [ ] カード `[⋮] → Duplicate` の復活（needs があれば）
 
 ---
 
@@ -748,13 +894,10 @@ Grid のビュー状態は**スコープを分けて**保存する：
 - 代替案: 最後にユーザーが Editor で開いていた Scene の親 chapter
 - **判断ポイント**: 起動時に「全体俯瞰」が欲しいか「直近作業の続き」が欲しいか
 
-### Loose Scenes の扱い
+### Loose Scenes の扱い（実装で確定済み）
 
-container 直下に Scene が直接ぶら下がっている場合の仮想列の扱い：
-
-- **暫定方針**: 「`Scenes`」という名前の仮想列として最右に表示
-- 代替案: container 直下を単一列として扱い、「+ New Chapter」で初めて列が分裂する
-- 代替案: Loose Scenes はカード列ではなく上部にバナー表示
+- **採用方針**: project root では「未分類シーン」点線列 (`GridLooseColumn`)、folder へ dive-in 中はその folder 自身の実線列 (`GridContainerSceneColumn`) として表現。`orderedColumns` で chapter 列と sortOrder マージ
+- 既存 Chapter にまとめる／新規 Chapter folder に変換の一括操作はヘッダ `[⋮]` メニューから
 
 ### 編集ロックの粒度
 
@@ -763,18 +906,15 @@ container 直下に Scene が直接ぶら下がっている場合の仮想列の
 - **暫定方針**: ロックなし（最後の保存が勝ち）。Grimodex はローカル単独運用前提のため
 - v2 で WAL ベースの楽観ロックを検討
 
-### Beat 冒頭の文字数制限
+### Beat 表示件数と文字数制限（実装で確定済み）
 
-カード本体に表示する Unplaced beat の冒頭文の長さ：
+カード本体に表示する Beat の件数とプレビュー文字数：
 
-- **暫定方針（Phase A）**: 各 beat 冒頭1行（最大40文字）、最大3 beat 表示。それ以上は「+N more」リンク
-- **Phase B（Beat 主表示化）**: 暫定 8件 × 60文字に拡張（データモデル「Beat 冒頭の取得戦略」参照）
-- 代替案: 全 beat を全文表示（カード高さ可変）
+- **採用方針**: カードの Beat タブで初期 3件（`BEAT_VISIBLE_LIMIT = 3`）表示、超過は `▾ 他 N 件` で展開。preview の文字数上限は `extractUnplacedBeatPreview` / `extractPlacedBeatPreviewFromString` 側のロジックに委ねる（preview JSON 配列に格納された文字列をそのまま表示。clamp は CSS `line-clamp-1`（Compact）/ `line-clamp-2`（通常）で対応）
 
-### カード幅とレイアウト
+### カード幅とレイアウト（実装で確定済み）
 
-- **暫定方針**: 列幅固定 300〜400px、横スクロールで多列表示
-- 代替案: ウィンドウ幅に応じた列数自動調整（列幅は可変）
+- **採用方針**: Compact OFF で `w-80` (320px)、Compact ON で `w-56` (224px) の固定幅 + 横スクロール。`compactCards` トグルで切替
 
 ---
 

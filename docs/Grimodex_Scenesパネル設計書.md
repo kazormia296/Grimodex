@@ -102,6 +102,8 @@ Scene と Note はノード**作成時**に種別を選択する。作成後の�
 
 各Sceneノードは `synopsis` フィールドを持つ。「このシーンで何が起こるか」を1-3文で記述する要約文。Noteには不要のため持たない。
 
+`tree_nodes.synopsis` 列は Scene 以外に **Folder でも兼用**する（後述「Folder の Outline」）。Note のみ常に空。
+
 ### 目的
 
 - **プロッティング**: 執筆前にシーンの概要を計画する。Outlineビューモード（後述）で全シーンの流れを俯瞰
@@ -113,6 +115,15 @@ Scene と Note はノード**作成時**に種別を選択する。作成後の�
 - Scenesパネルでシーンを選択 → Codex Quickセクションの上に表示されるSynopsisエリアで編集（プレーンテキスト、リッチテキスト不要）
 - Editorパネルのシーンヘッダー部にもSynopsis表示・編集エリアを配置（折りたたみ可能）
 - 空の場合はプレースホルダー「What happens in this scene?」を表示
+- Outline ビューモード時はパネル下部の Synopsis エリアを**非表示**にする（Outline ビューがツリー内でインライン編集 UI を提供するため重複表示を避ける）
+
+### Folder の Outline（synopsis 兼用）
+
+`tree_nodes.synopsis` は Scene だけでなく Folder でも使用される。Folder を選択したとき、Synopsis エリアは見出しが **`Outline`** に切り替わり、その章/パートの概要を書き留められる。
+
+- AI 生成ボタン (`✦ Generate`) は Folder では非表示（自動要約の元となる本文が無いため）
+- プレースホルダーは Folder 用に切り替わる（`tree.outline.placeholder`）
+- Note は対象外（synopsis 欄を持たず、Synopsis エリアも非表示）
 
 ### AI生成
 
@@ -128,10 +139,11 @@ Synopsis編集エリアの右上に「✦ Generate」ボタンを配置。シー
 シーンのステータスが **Complete / Revision / Final** に遷移した時点で、synopsisが未記入の場合にAI生成を自動提案する。
 
 - ステータス遷移時にトースト通知: 「Synopsis is empty. Generate now?」 + [Generate] [Dismiss] ボタン
-- トーストの状態は `synopsisSuggestion`（Zustand 上のトースト用スライス）で管理する。同時に表示されるのは 1 件まで（新しい提案は既存を置き換える）
+- トーストの状態は `synopsisSuggestionStore`（Zustand）で管理する。同時に表示されるのは 1 件まで（新しい提案は既存を置き換える）
+- 提案発火ロジックは `src/features/editor/synopsisSuggestion.ts`、UI は `EditorPane` でフックされる
 - [Generate] → 上記のAI生成フローを実行（上書き確認なし、空のため）
 - [Dismiss] → 何もしない。同じシーンで再度ステータスが変わった場合は再提案する
-- Settingsの「Editor > Auto-suggest synopsis」トグル（デフォルト: ON）でオフにできる
+- Settingsの「Editor > Auto-suggest synopsis」トグル（デフォルト: ON）でオフにできる **※ Settings トグルは現状未実装、常時 ON で動作する**
 
 ### storySoFar のSynopsisカバレッジ警告
 
@@ -189,15 +201,16 @@ Chatパネルのコンテキストバーに、storySoFar（Layer 2）のSynopsis
 
 ### 適用範囲
 
-- Scene / Note / Folder の **3 種すべて**に付与可能（ステータスは Scene 限定だがラベルは制限なし）
+- **現状の実装**: Scene ノードのみに付与可能。コンテキストメニュー「Assign labels」も Scene/Note の右クリックで表示され、Folder の右クリックには無い
+- **将来拡張**: Note / Folder への付与を解放する計画あり（DB スキーマは既に 3 種すべてに対応済み — `tree_node_labels` は `tree_nodes(id)` を素直に参照）
 - 1 ノードに複数ラベルを付与可（M:N）
 
 ### 表示
 
-ノード行のタイトル右側、文字数の手前に**ラベルドット**（小さな丸）を最大 3 つまで横並びで表示。3 つを超える場合は `+N` バッジで省略する。
+ノード行のタイトル右側、文字数の手前に**ラベルドット**（小さな丸）を最大 **4 つ**まで横並びで表示。4 つを超える場合は `+N` バッジで省略する（`src/features/labels/LabelDots.tsx` の `MAX_DOTS = 4`）。
 
 ```
-● Scene title    ●●● +2    [34%] 1,247
+● Scene title    ●●●● +2   [34%] 1,247
                  ↑          ↑     ↑
                  ラベルドット AI%   文字数
 ```
@@ -256,18 +269,14 @@ CREATE TABLE tree_node_labels (
 
 ```
 ┌──────────────────────────────────────────────┐
-│ Scenes             [↩] [↪] [+] [⊞] [⋮] │
+│ Scenes                       [+] [⊞] [⋮] │
 │ [🔍 Filter...                             ] │
 └──────────────────────────────────────────────┘
 ```
 
+> Undo / Redo はアプリ全体のグローバルバーに `HistoryButtons`（`src/features/history/HistoryButtons.tsx`、`App.tsx` の上部）として配置されている。Scenes パネルの構造変更履歴はグローバルの `globalHistoryStore` に積まれ、グローバル Undo/Redo と `Ctrl+Z` / `Ctrl+Shift+Z` で共通操作される。`ScenesToolbar` 内には Undo/Redo ボタンを持たない。
+
 ### ボタン一覧
-
-**[↩] Undoボタン**
-直前のSceneパネル操作を元に戻す。操作履歴がない場合は非活性（透明度低下）。
-
-**[↪] Redoボタン**
-元に戻した操作をやり直す。Redo履歴がない場合は非活性。
 
 **[+] 新規作成ボタン**
 クリックでドロップダウンメニューを表示:
@@ -283,18 +292,16 @@ CREATE TABLE tree_node_labels (
 
 **[⊞] 展開/折りたたみトグル**
 - 全展開 → 全折りたたみ → 全展開 のトグル
+- 設計書の旧版にあった「Expand all / Collapse all」独立メニュー項目はこのトグルに集約
 
 **[⋮] パネルメニュー**
 - View: Tree (default) / Outline
-- Sort by: Manual (default) / Title (A→Z) / Word count / Status
-- Show: Word counts ✓ / AI attribution ✓ / Status dots ✓ / Label dots ✓ / アクティブを自動表示 ✓
-- Filter by status: All ✓ / Outline / Draft / Complete / Revision / Final
-- Filter by label: （プロジェクトに登録されているラベル一覧 / OR セマンティクス）
-- ---
-- Manage labels…
-- ---
-- Expand all
-- Collapse all
+- Sort by ▶: Manual (default) / Title (A→Z) / Word count / Status
+- Filter by status ▶: All ✓ / Outline / Draft / Complete / Revision / Final
+- Filter by label ▶: （プロジェクトに登録されているラベル一覧 / OR セマンティクス）
+- Show ▶: Word counts ✓ / Status dots ✓ / Label dots ✓ / AI attribution ✓ / アクティブを自動表示 ✓
+
+> 「Manage labels…」はノード右クリックメニューの「Assign labels ▶」サブメニュー末尾から開く構成（`TreeContextMenu.tsx`）。PanelMenu のトップレベル項目には現状並んでおらず、`ScenesPanelContext.openManageLabels()` 経由で `ManageLabelsDialog` を呼び出す。「Expand all / Collapse all」は上記 `[⊞]` トグルに統合済み。
 
 ### Sort by の動作仕様
 
@@ -615,14 +622,16 @@ Scenesパネルにフォーカスがある時のキーバインド:
 
 ### 概要
 
-Scenesパネルでの構造変更操作はすべて履歴スタックに積まれ、`Ctrl+Z` で元に戻し、`Ctrl+Shift+Z` でやり直しができる。最大50件を保持する。
+Scenes パネルでの構造変更操作はすべて**アプリ全体共通の履歴スタック**に積まれ、`Ctrl+Z` で元に戻し、`Ctrl+Shift+Z` でやり直しができる。最大 50 件（`MAX_HISTORY = 50`）を保持する。
+
+UI 上のボタンはアプリ上部のグローバルバーに置かれた `HistoryButtons`（`src/features/history/HistoryButtons.tsx`、`App.tsx`）に集約されており、Scenes パネル個別のツールバーには Undo / Redo は無い。
 
 ### 対象操作
 
 | 操作 | Undoの内容 |
 |------|-----------|
 | ノード作成（Scene / Note / Folder） | 作成したノードを削除 |
-| ノード削除 | 削除前の状態を復元（Sceneの場合は本文ファイルも含む） |
+| ノード削除 | 削除前の状態を復元（Sceneの場合は本文 ProseMirror JSON も含む） |
 | タイトル変更 | 変更前のタイトルに戻す |
 | Synopsis変更 | 変更前の内容に戻す |
 | ステータス変更 | 変更前のステータスに戻す |
@@ -630,14 +639,26 @@ Scenesパネルでの構造変更操作はすべて履歴スタックに積ま�
 
 ### スコープ
 
-キーボードショートカット（`Ctrl+Z` / `Ctrl+Shift+Z`）はSceneパネルのツリー部分にフォーカスがある時のみ動作する。テキスト入力中（タイトル編集・フィルター入力・Editorへの入力）はそれぞれのUndoが優先されSceneパネルの履歴には作用しない。
+キーボードショートカット（`Ctrl+Z` / `Ctrl+Shift+Z`）はグローバルハンドラ（`App.tsx`）が捕捉する。フォーカスが `<input>` / `<textarea>` / ProseMirror エディタ上にあるときはそのフィールドの Undo が優先され、グローバル履歴スタックには波及しない。
 
 ### 実装
 
-- `treeHistoryStore`（Zustand）が `past` / `future` の2スタックを管理
+- `useGlobalHistoryStore`（`src/store/globalHistoryStore.ts`、Zustand）が `past` / `future` の 2 スタックを管理。設計書旧版で言及していた `treeHistoryStore` はこの **`globalHistoryStore` に統合**された（Scenes ツリーだけでなく Codex / Beat 等の操作もここに積まれる）
 - 各操作の実行後にコマンドオブジェクト `{ undo, redo }` をスタックに Push
 - Undo/Redo実行中は `isReplaying` フラグを立て、再帰的なスタック蓄積を防ぐ
-- ノード削除のUndoはDBへの再挿入 + Sceneの場合はmarkdownファイルの復元を行う
+- ノード削除の Undo は DB への再挿入 + Scene の場合は ProseMirror JSON 本文を `saveSceneContent` で復元
+- 削除直後はゴミ箱パネルにも投入され（後述の「Trash bin 連携」）、グローバル Undo と Trash bin の両系統から復元できる
+
+---
+
+## Trash bin 連携
+
+Scene 削除は **Trash bin パネル** と双方向に統合されている。
+
+- `deleteNode` が成功すると `captureSceneDeletion`（`src/features/trash-bin/captureHooks.ts`）で対象 Scene を Trash bin の保留キューに投入する。投入は `nodeType === "scene"` のみで、Folder 自体と Note はキャプチャしない（Folder 配下の Scene は子要素として個別に投入される）
+- 直後 1500ms 以内に `Ctrl+Z`（グローバル Undo）を発火させると、`useTrashBinStore.cancelPending({ tempId })` で保留中の Trash bin エントリも一緒にキャンセルされる。すなわち「即時 Undo」と「Trash bin からの復元」が二重発火しない
+- 1500ms 以降は Trash bin にエントリが確定し、Scenes パネル側の履歴と Trash bin パネル側の復元 UI から独立して操作できる
+- 詳細は [`Grimodex_ゴミ箱パネル設計書.md`](Grimodex_ゴミ箱パネル設計書.md) を参照
 
 ---
 
@@ -787,9 +808,12 @@ Phase A で同じ migration ファイルに以下の3カラムが追加される
 
 - **`tree_nodes.unplaced_beats_doc TEXT NOT NULL DEFAULT '[]'`**: Unplaced beat の保存先（ProseMirror JSON 配列、Beat 設計書参照）。本文 (`content` カラム) とは独立した別データ
 - **`tree_nodes.unplaced_beat_preview TEXT`**: `unplaced_beats_doc` から抽出した先頭3件 × 40文字のプレビューキャッシュ。Grid パネルのカード描画で利用
+- **`tree_nodes.placed_beat_preview TEXT`**: 本文中に配置された Beat のプレビューキャッシュ（同 Grid 用）
 - **`tree_nodes.char_count INTEGER NOT NULL DEFAULT 0`**: 本文文字数キャッシュ。Grid パネルのステータスバー集計で利用
 
-シーン保存時、フロント側が `unplaced_beat_preview` と `char_count` の値を保存ペイロードに同梱する（バックエンドは保存するだけ、中身を解釈しない）。Scenes パネルではこれらのカラムを編集対象としない（読み取りもしない）。
+シーン保存時、フロント側が `unplaced_beat_preview` / `placed_beat_preview` と `char_count` の値を保存ペイロードに同梱する（バックエンドは保存するだけ、中身を解釈しない）。Scenes パネル UI 自体はこれらを編集しないが、**プロジェクトロード時に `treeStore.loadTree` で読み出し、`treeStore.nodePreviews`（`Record<nodeId, NodeBeatPreview>`）にキャッシュする**。Grid パネルや Matrix パネルは `useNodeBeatPreview(nodeId)` 経由でこのキャッシュを購読する。
+
+なお Scenes パネルのツリー行 (`TreeNodeItem`) 上で `char_count` の値そのものはノード文字数表示の即時プライミングに使われる（DB 読み込み直後でも 0 ではなくキャッシュ値が出る）。
 
 ### Outline モードの Synopsis インライン編集
 
