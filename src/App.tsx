@@ -67,6 +67,9 @@ import { WindowControls } from "@/components/WindowControls";
 import { TitleBar } from "@/components/TitleBar";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useLintStore } from "@/features/lint/lintStore";
+import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { HistoryButtons } from "@/features/history/HistoryButtons";
 import { getProject } from "@/features/project/api";
@@ -138,9 +141,156 @@ function TrashBinContent(_props: IDockviewPanelProps) {
 
 /* ── Default layout builder (delegates to builtin preset) ── */
 
+function getScreenshotCaptureId() {
+  try {
+    return localStorage.getItem("grimodex:screenshot-capture");
+  } catch {
+    return null;
+  }
+}
+
+function getScreenshotPanelId(): PanelId | null {
+  try {
+    return localStorage.getItem("grimodex:screenshot-panel") as PanelId | null;
+  } catch {
+    return null;
+  }
+}
+
+function getScreenshotPresetId() {
+  try {
+    return (
+      localStorage.getItem("grimodex:screenshot-preset") ?? "builtin:default"
+    );
+  } catch {
+    return "builtin:default";
+  }
+}
+
+function activateScreenshotPanel(api: DockviewReadyEvent["api"]) {
+  const panelId = getScreenshotPanelId();
+  if (panelId) api.getPanel(panelId)?.api.setActive();
+}
+
+function buildScreenshotSinglePanel(api: DockviewReadyEvent["api"]) {
+  const panelId = getScreenshotPanelId();
+  if (!panelId) return false;
+  api.addPanel({
+    id: panelId,
+    component: panelId,
+    title: getPanelTitle(panelId),
+    ...(panelId === "editor" ? { minimumWidth: 320 } : {}),
+  });
+  api.getPanel(panelId)?.api.setActive();
+  return true;
+}
+
 function buildDefaultLayout(api: DockviewReadyEvent["api"]) {
-  const preset = getBuiltinPreset("builtin:default");
+  if (buildScreenshotSinglePanel(api)) return;
+  const preset = getBuiltinPreset(getScreenshotPresetId());
   preset?.build(api);
+  activateScreenshotPanel(api);
+}
+
+function applyScreenshotSelectionState() {
+  if (!getScreenshotCaptureId()) return;
+
+  const panelId = getScreenshotPanelId();
+  useTreeStore.getState().setActiveScene("scene-1");
+
+  if (panelId !== "kouetsu") return;
+
+  const now = new Date().toISOString();
+  useKouetsuStore.setState({
+    activeTab: "issues",
+    activeIssuesScope: "current",
+  });
+  useLintStore.setState({
+    currentSceneId: "scene-1",
+    rawDiagnostics: [
+      {
+        rule_id: "ja/sentence-too-long",
+        severity: "warning",
+        message: "一文が長く、情景と行動が同じ段落に詰まっています",
+        range: { start: 28, end: 86 },
+        fix: {
+          label: "二文に分ける",
+          replacement:
+            "廃社は思っていたより小さかった。記憶の中では鬱蒼とした杉に囲まれていた。",
+          range: { start: 28, end: 86 },
+        },
+      },
+      {
+        rule_id: "ja/ambiguous-subject",
+        severity: "error",
+        message: "記憶が誰のものか、直前の文だけでは曖昧です",
+        range: { start: 148, end: 166 },
+      },
+    ],
+    diagnostics: [
+      {
+        rule_id: "ja/sentence-too-long",
+        severity: "warning",
+        message: "一文が長く、情景と行動が同じ段落に詰まっています",
+        range: { start: 28, end: 86 },
+        fix: {
+          label: "二文に分ける",
+          replacement:
+            "廃社は思っていたより小さかった。記憶の中では鬱蒼とした杉に囲まれていた。",
+          range: { start: 28, end: 86 },
+        },
+      },
+      {
+        rule_id: "ja/ambiguous-subject",
+        severity: "error",
+        message: "記憶が誰のものか、直前の文だけでは曖昧です",
+        range: { start: 148, end: 166 },
+      },
+    ],
+    lastSceneText:
+      "朱音は鳥居の手前で立ち止まった。十年ぶりだった。廃社は思っていたより小さかった。祭壇の奥に、赤いものがあった。朱紐だった。",
+    isLinting: false,
+    lastErrorMessage: null,
+  });
+  useAnnotationStore.getState().setAnnotations("scene-1", [
+    {
+      id: "ann-akahimo-wet",
+      projectId: "default-project",
+      runId: "run-screenshot-kouetsu",
+      anchorType: "scene_range",
+      sceneId: "scene-1",
+      rangeStart: 130,
+      rangeEnd: 150,
+      textSnapshot: "朱紐は乾いていた",
+      category: "consistency_anchor",
+      persona: "整合性チェック",
+      severity: "error",
+      content:
+        "Codexでは朱紐は雨に濡れると墨のように黒ずむ設定ですが、このシーンでは雨ざらしのまま乾いています。",
+      authorRole: "ai",
+      parentId: null,
+      status: "open",
+      metadata: JSON.stringify({
+        codex_ref: {
+          entry_id: "codex-akahimo",
+          entry_name: "朱紐",
+          source_field: "content",
+          expected_value: "雨に濡れると黒ずむ",
+          found_value: "雨ざらしでも乾いている",
+          found_text: "朱紐は乾いていた",
+          found_context:
+            "朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。",
+          confidence: "high",
+          llm_reason:
+            "物理的な状態が設定と逆になっており、読者が意図的な異常かミスか判別できないため。",
+          dismiss_key: "codex-akahimo:wetness:scene-1",
+          detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      }),
+      createdAt: now,
+      updatedAt: now,
+    },
+  ]);
 }
 
 /* ── App root ── */
@@ -371,6 +521,7 @@ function EditorScreen() {
       if (p?.phaseResolutionMode) {
         usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
       }
+      applyScreenshotSelectionState();
     });
   }, []);
 
@@ -435,6 +586,11 @@ function EditorScreen() {
 
       // Always show something immediately
       buildDefaultLayout(api);
+
+      if (getScreenshotCaptureId()) {
+        loadPresets();
+        return;
+      }
 
       // Then try to restore saved layout asynchronously
       loadLayout()

@@ -40,8 +40,14 @@ const SCHEMA_DDL = `
     sort_order TEXT NOT NULL DEFAULT 'a0',
     story_time_order TEXT,
     story_time_label TEXT,
+    pov_character_id TEXT,
+    location_id TEXT,
     status TEXT DEFAULT 'outline',
     content TEXT NOT NULL DEFAULT '{}',
+    unplaced_beats_doc TEXT NOT NULL DEFAULT '[]',
+    char_count INTEGER NOT NULL DEFAULT 0,
+    unplaced_beat_preview TEXT,
+    placed_beat_preview TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -54,8 +60,14 @@ const SCHEMA_DDL = `
     aliases TEXT,
     excluded_aliases TEXT,
     summary TEXT,
+    content TEXT NOT NULL DEFAULT '{}',
+    icon TEXT,
+    tags_cache TEXT,
+    context_mode TEXT NOT NULL DEFAULT 'mentioned',
+    children_budget TEXT NOT NULL DEFAULT 'compact',
     tags TEXT,
     source_chat_message_id TEXT,
+    notes TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -69,6 +81,8 @@ const SCHEMA_DDL = `
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL DEFAULT 'Untitled',
     content TEXT NOT NULL DEFAULT '',
+    tags_cache TEXT,
+    content_source TEXT,
     tags TEXT,
     scene_id TEXT,
     source_chat_message_id TEXT,
@@ -97,7 +111,18 @@ const SCHEMA_DDL = `
     tokens_out INTEGER,
     duration_ms INTEGER,
     metadata TEXT,
+    is_starred INTEGER NOT NULL DEFAULT 0,
+    is_summarized INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS chat_session_pinned_codex (
+    session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    codex_entry_id TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+    snippet_id TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+    with_children INTEGER NOT NULL DEFAULT 0,
+    pin_source TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, codex_entry_id, snippet_id)
   );
   CREATE TABLE IF NOT EXISTS authorship_spans (
     id TEXT PRIMARY KEY,
@@ -138,6 +163,7 @@ const SCHEMA_DDL = `
     slug TEXT NOT NULL,
     label TEXT NOT NULL,
     color TEXT NOT NULL DEFAULT '#888888',
+    palette_index INTEGER,
     icon TEXT,
     is_builtin INTEGER NOT NULL DEFAULT 0,
     sort_order REAL NOT NULL DEFAULT 0.0,
@@ -159,6 +185,134 @@ const SCHEMA_DDL = `
     entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
     value TEXT
+  );
+  CREATE TABLE IF NOT EXISTS labels (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL,
+    sort_order REAL NOT NULL DEFAULT 0.0,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS tree_node_labels (
+    node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    PRIMARY KEY (node_id, label_id)
+  );
+  CREATE TABLE IF NOT EXISTS map_boards (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT 'Main',
+    sort_order REAL NOT NULL DEFAULT 0.0,
+    mode TEXT NOT NULL DEFAULT 'free',
+    viewport_x REAL NOT NULL DEFAULT 0,
+    viewport_y REAL NOT NULL DEFAULT 0,
+    viewport_zoom REAL NOT NULL DEFAULT 1.0,
+    show_config TEXT NOT NULL DEFAULT '{}',
+    color_by TEXT NOT NULL DEFAULT 'none',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS map_ai_branches (
+    id TEXT PRIMARY KEY,
+    board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    prompt TEXT NOT NULL,
+    seed_node_ids TEXT NOT NULL DEFAULT '[]',
+    session_id TEXT,
+    model TEXT,
+    token_usage INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS map_stickies (
+    id TEXT PRIMARY KEY,
+    board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    title TEXT,
+    body TEXT NOT NULL DEFAULT '{"type":"doc","content":[]}',
+    preview_text TEXT,
+    palette_id TEXT NOT NULL DEFAULT 'post-it-playful',
+    color_slot INTEGER NOT NULL DEFAULT 0,
+    ai_branch_id TEXT,
+    source_chat_message_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS map_node_positions (
+    id TEXT PRIMARY KEY,
+    board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    node_ref_type TEXT NOT NULL,
+    tree_node_id TEXT,
+    codex_entry_id TEXT,
+    snippet_id TEXT,
+    sticky_id TEXT,
+    ai_branch_id TEXT,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    z_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS map_edges (
+    id TEXT PRIMARY KEY,
+    board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    from_position_id TEXT NOT NULL,
+    to_position_id TEXT NOT NULL,
+    forward_label TEXT,
+    backward_label TEXT,
+    labels TEXT NOT NULL DEFAULT '[]',
+    style TEXT NOT NULL DEFAULT 'solid',
+    color TEXT NOT NULL DEFAULT '#000000',
+    direction TEXT NOT NULL DEFAULT 'none',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS map_frames (
+    id TEXT PRIMARY KEY,
+    board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT 'Frame',
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    width REAL NOT NULL,
+    height REAL NOT NULL,
+    background TEXT NOT NULL DEFAULT '#f5f5f5',
+    border_color TEXT NOT NULL DEFAULT '#cccccc',
+    z_index INTEGER NOT NULL DEFAULT -1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS foreshadows (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    intent TEXT,
+    notes TEXT,
+    payoff_scene_id TEXT,
+    payoff_from_pos INTEGER,
+    payoff_to_pos INTEGER,
+    payoff_confirmed INTEGER NOT NULL DEFAULT 0,
+    abandoned INTEGER NOT NULL DEFAULT 0,
+    secret INTEGER NOT NULL DEFAULT 1,
+    load_bearing TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS foreshadow_setups (
+    id TEXT PRIMARY KEY,
+    foreshadow_id TEXT NOT NULL REFERENCES foreshadows(id) ON DELETE CASCADE,
+    scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    from_pos INTEGER NOT NULL,
+    to_pos INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    strength TEXT,
+    ai_strength TEXT,
+    ai_reasoning TEXT,
+    attribution TEXT NOT NULL DEFAULT 'human',
+    ai_rationale TEXT,
+    last_evaluated_at INTEGER,
+    is_orphan INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
   );
 `;
 
@@ -184,6 +338,11 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     "INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at) VALUES ('default-project', '無題のプロジェクト', 'ja', ?, ?)",
     [now, now],
   );
+
+  seedBuiltinCodexTypes(db, now);
+  if (isScreenshotMode()) {
+    seedScreenshotWorkspace(db, now);
+  }
 
   const AI_SETTINGS_KEY = "grimodex:ai-settings";
   const API_KEY_PREFIX = "grimodex:api-key:";
@@ -451,6 +610,42 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return undefined as T;
       case "abort_inline_ai_stream":
         return undefined as T;
+      case "list_post_effect_runs":
+        return [] as T;
+      case "get_post_effect_run":
+        return {
+          run: null,
+          annotations: getScreenshotAnnotations(now),
+          relations: [],
+        } as T;
+      case "list_annotations_for_scene":
+        return {
+          annotations: getScreenshotAnnotations(now).filter(
+            (annotation) =>
+              annotation.sceneId === (args.sceneId ?? args.scene_id),
+          ),
+          relations: [],
+        } as T;
+      case "list_annotations_for_project":
+        return { annotations: getScreenshotAnnotations(now) } as T;
+      case "update_annotation_status":
+        return {
+          ...getScreenshotAnnotations(now)[0],
+          status: args.status ?? "open",
+        } as T;
+      case "save_post_effect_annotations":
+        return undefined as T;
+      case "abort_post_effect_run":
+        return undefined as T;
+      case "trash_bin_list":
+        return getScreenshotTrashItems(now) as T;
+      case "trash_bin_create":
+        return getScreenshotTrashItems(now)[0] as T;
+      case "trash_bin_delete":
+      case "trash_bin_clear_all":
+        return undefined as T;
+      case "trash_bin_prune":
+        return 0 as T;
       case "send_agent_message":
         return (await handleSendAgentMessage(args)) as T;
       case "lint_text":
@@ -463,4 +658,532 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   }
 
   return { invoke };
+}
+
+function isScreenshotMode(): boolean {
+  try {
+    return localStorage.getItem("grimodex:screenshot-mode") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function proseDoc(lines: string[]): string {
+  return JSON.stringify({
+    type: "doc",
+    content: lines.map((text) => ({
+      type: "paragraph",
+      content: [{ type: "text", text }],
+    })),
+  });
+}
+
+function getScreenshotAnnotations(now: string) {
+  if (!isScreenshotMode()) return [];
+  return [
+    {
+      id: "ann-akahimo-wet",
+      projectId: "default-project",
+      runId: "run-screenshot-kouetsu",
+      anchorType: "scene_range",
+      sceneId: "scene-1",
+      rangeStart: 130,
+      rangeEnd: 150,
+      textSnapshot: "朱紐は乾いていた",
+      category: "consistency_anchor",
+      persona: "整合性チェック",
+      severity: "error",
+      content:
+        "Codexでは朱紐は雨に濡れると墨のように黒ずむ設定ですが、このシーンでは雨ざらしのまま乾いています。",
+      authorRole: "ai",
+      parentId: null,
+      status: "open",
+      metadata: JSON.stringify({
+        codex_ref: {
+          entry_id: "codex-akahimo",
+          entry_name: "朱紐",
+          source_field: "content",
+          expected_value: "雨に濡れると黒ずむ",
+          found_value: "雨ざらしでも乾いている",
+          found_text: "朱紐は乾いていた",
+          found_context:
+            "朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。",
+          confidence: "high",
+          llm_reason:
+            "物理的な状態が設定と逆になっており、読者が意図的な異常かミスか判別できないため。",
+          dismiss_key: "codex-akahimo:wetness:scene-1",
+          detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      }),
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: "ann-akane-memory",
+      projectId: "default-project",
+      runId: "run-screenshot-kouetsu",
+      anchorType: "scene_range",
+      sceneId: "scene-1",
+      rangeStart: 151,
+      rangeEnd: 180,
+      textSnapshot: "朱音自身の記憶ではなかった",
+      category: "consistency_anchor",
+      persona: "整合性チェック",
+      severity: "warning",
+      content:
+        "朱音が他者の記憶を受け取る能力は、この時点のCodexには未登録です。能力として採用するなら設定項目を追加してください。",
+      authorRole: "ai",
+      parentId: null,
+      status: "open",
+      metadata: JSON.stringify({
+        confidence: "medium",
+        found_text: "朱音自身の記憶ではなかった",
+        found_context:
+          "指が触れた瞬間、記憶が来た。朱音自身の記憶ではなかった。",
+        llm_reason:
+          "キャラクター能力として重要な変化だが、人物設定と儀式設定のどちらにも明示がないため。",
+        dismiss_key: "akane:foreign-memory:scene-1",
+        detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
+      }),
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+}
+
+function getScreenshotTrashItems(now: string) {
+  if (!isScreenshotMode()) return [];
+  return [
+    {
+      id: "trash-scene-draft",
+      projectId: "default-project",
+      kind: "structure-item",
+      subKind: "scene",
+      originSceneId: "scene-1",
+      originCodexId: null,
+      previewText: "旧稿：火の夜の導入",
+      previewMeta: JSON.stringify({
+        nodeType: "scene",
+        status: "draft",
+        folderHintName: "第一部：帰還",
+      }),
+      payload: JSON.stringify({
+        originalId: "scene-old-fire-night",
+        title: "旧稿：火の夜の導入",
+        body: proseDoc([
+          "火はまだ見えなかった。ただ、煙だけが山を降りてきていた。",
+        ]),
+        beats: "[]",
+        povCharacterId: "codex-akane",
+        folderHintId: "chapter-1",
+        folderHintName: "第一部：帰還",
+        metadata: {
+          synopsis: "回想章の没導入。",
+          status: "draft",
+          nodeType: "scene",
+          locationId: "codex-haisha",
+          sortOrder: "a9",
+          storyTimeOrder: "z1",
+          storyTimeLabel: "十年前",
+        },
+        charCount: 28,
+      }),
+      charCount: 28,
+      isInteresting: true,
+      deletedAt: now,
+    },
+    {
+      id: "trash-text-fragment",
+      projectId: "default-project",
+      kind: "text-fragment",
+      subKind: "text-fragment",
+      originSceneId: "scene-1",
+      originCodexId: null,
+      previewText: "朱音は泣きそうになった、という説明的な一文",
+      previewMeta: null,
+      payload: JSON.stringify({
+        text: "朱音は泣きそうになった、という説明的な一文",
+        spans: [
+          {
+            text: "朱音は泣きそうになった、という説明的な一文",
+            source: "human",
+            model: null,
+            chatMessageId: null,
+            timestamp: now,
+          },
+        ],
+      }),
+      charCount: 23,
+      isInteresting: false,
+      deletedAt: now,
+    },
+  ];
+}
+
+function seedBuiltinCodexTypes(db: Database, now: string): void {
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO codex_types
+      (id, project_id, slug, label, color, palette_index, icon, is_builtin, sort_order, created_at)
+     VALUES (?, 'default-project', ?, ?, ?, ?, ?, 1, ?, ?)`,
+  );
+  [
+    ["type-character", "character", "人物", "#7C9BD1", 0, "user", 0],
+    ["type-location", "location", "場所", "#7FB08E", 1, "map-pin", 1],
+    ["type-item", "item", "道具", "#D4A35F", 2, "package", 2],
+    ["type-lore", "lore", "設定", "#A783C9", 3, "book-open", 3],
+  ].forEach(([id, slug, label, color, paletteIndex, icon, sortOrder]) => {
+    stmt.run([id, slug, label, color, paletteIndex, icon, sortOrder, now]);
+  });
+  stmt.free();
+}
+
+function seedScreenshotWorkspace(db: Database, now: string): void {
+  db.run(
+    `UPDATE projects
+     SET title = '朱の記憶',
+       genre = '和風ダークファンタジー',
+       pov = '三人称限定視点',
+       tense = '過去形',
+       language = 'ja',
+       style_guide = '簡潔で鋭い文体を心がける。情景描写は短く、感情は行動と所作で示す。',
+       ai_instructions = '和風ダークファンタジーの執筆補助。設定の一貫性と人物の動機を重視する。',
+       updated_at = ?
+     WHERE id = 'default-project'`,
+    [now],
+  );
+
+  const sceneContent = proseDoc([
+    "朱音は鳥居の手前で立ち止まった。十年ぶりだった。",
+    "廃社は思っていたより小さかった。記憶の中では鬱蒼とした杉に囲まれた大きな建物だったが、今は雨に濡れた骨組みのように見えた。",
+    "拝殿の扉には鍵がかかっていなかった。朱音は錠前を拾い上げ、しばらく眺めてから、元の場所に置いた。",
+    "祭壇の奥に、赤いものがあった。朱紐だった。",
+    "朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。指が触れた瞬間、記憶が来た。朱音自身の記憶ではなかった。",
+  ]);
+
+  const nodes = [
+    [
+      "chapter-1",
+      null,
+      "folder",
+      "第一部：帰還",
+      "朱音が十年ぶりに故郷へ戻り、廃社と朱紐に再会する。",
+      "a0",
+      null,
+      null,
+      "outline",
+      "{}",
+      0,
+    ],
+    [
+      "scene-1",
+      "chapter-1",
+      "scene",
+      "一章：廃社",
+      "雨の夜、朱音は十年ぶりに故郷の廃社へ帰る。祭壇には十年前に置いてきた朱紐が残っていた。",
+      "a0",
+      "a0",
+      "雨の夜",
+      "draft",
+      sceneContent,
+      186,
+    ],
+    [
+      "scene-2",
+      "chapter-1",
+      "scene",
+      "二章：封じ文",
+      "廃社で朱紐とともに封じ文を見つける。朱音の名と「帰れ」の二文字が書かれている。",
+      "a1",
+      "a1",
+      "翌朝",
+      "outline",
+      proseDoc([
+        "廃社のシーンの翌朝。朱音は拝殿で目を覚ます。朱紐は手の中にある。",
+        "封じ文は朱紐の下に置かれていた。紙は十年経っても黄ばんでいない。",
+        "音羽が来る。「やっぱり来たか」と言って、饅頭を差し出す。それだけ。",
+      ]),
+      92,
+    ],
+    [
+      "scene-3",
+      "chapter-1",
+      "scene",
+      "回想：火の夜",
+      "十年前の夏の夜、廃社が燃えた。朱音はその場にいた。忘れられた声が残っている。",
+      "a2",
+      "a2",
+      "十年前",
+      "outline",
+      proseDoc([
+        "火は社の内側から出ていた。",
+        "「離れろ」という声がした。誰の声か、朱音は今も思い出せない。",
+        "朱音は走った。朱紐を手に、ただ走った。",
+      ]),
+      73,
+    ],
+  ];
+
+  const nodeStmt = db.prepare(
+    `INSERT OR IGNORE INTO tree_nodes
+      (id, project_id, parent_id, node_type, title, synopsis, sort_order,
+       story_time_order, story_time_label, status, content, char_count,
+       unplaced_beats_doc, created_at, updated_at)
+     VALUES (?, 'default-project', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
+  );
+  nodes.forEach((row) => nodeStmt.run([...row, now, now]));
+  nodeStmt.free();
+
+  const codexRows = [
+    [
+      "codex-akane",
+      "character",
+      "朱音",
+      "朱紐を操る一族の最後の生き残り。十年間、都で記録師として生きてきた。故郷の廃社が燃えたという知らせを受け、十年ぶりに桐野へ帰る。",
+      JSON.stringify([{ name: "主人公", color: "#7C9BD1" }]),
+    ],
+    [
+      "codex-otowa",
+      "character",
+      "音羽",
+      "朱音の幼なじみ。今は桐野で薬師をしている。十年間、朱音が帰ってくるのを待っていた。",
+      JSON.stringify([{ name: "協力者", color: "#7FB08E" }]),
+    ],
+    [
+      "codex-haisha",
+      "location",
+      "桐野の廃社",
+      "朱音の一族が代々守ってきた山中の社。十年前の火事で本殿が焼け、祭壇には朱音が置いていった朱紐が残っていた。",
+      JSON.stringify([{ name: "舞台", color: "#7FB08E" }]),
+    ],
+    [
+      "codex-akahimo",
+      "item",
+      "朱紐",
+      "朱音の一族が代々受け継いできた赤い紐。鬼を縛り、記憶を封じる力がある。朱音が十年前に廃社の祭壇に置いていったもの。",
+      JSON.stringify([{ name: "呪術", color: "#9B59B6" }]),
+    ],
+    [
+      "codex-akanawa",
+      "lore",
+      "朱縄の儀",
+      "朱音の一族が百年以上行ってきた鬼封じの儀式。朱紐を使い、鬼の記憶ごと封じ込める。",
+      JSON.stringify([{ name: "呪術", color: "#9B59B6" }]),
+    ],
+  ];
+  const codexStmt = db.prepare(
+    `INSERT OR IGNORE INTO codex_entries
+      (id, project_id, type, name, summary, content, tags_cache, context_mode,
+       children_budget, created_at, updated_at)
+     VALUES (?, 'default-project', ?, ?, ?, ?, ?, 'mentioned', 'compact', ?, ?)`,
+  );
+  codexRows.forEach(([id, type, name, summary, tags]) => {
+    codexStmt.run([
+      id,
+      type,
+      name,
+      summary,
+      proseDoc([summary]),
+      tags,
+      now,
+      now,
+    ]);
+  });
+  codexStmt.free();
+
+  const labelRows = [
+    ["label-ki", "起", "rose", 0],
+    ["label-important", "重要", "red", 1],
+    ["label-consider", "検討中", "slate", 2],
+  ];
+  const labelStmt = db.prepare(
+    `INSERT OR IGNORE INTO labels
+      (id, project_id, name, color, sort_order, created_at)
+     VALUES (?, 'default-project', ?, ?, ?, ?)`,
+  );
+  labelRows.forEach((row) => labelStmt.run([...row, now]));
+  labelStmt.free();
+  db.run(
+    `INSERT OR IGNORE INTO tree_node_labels (node_id, label_id) VALUES
+      ('scene-1', 'label-ki'),
+      ('scene-1', 'label-important'),
+      ('scene-2', 'label-consider')`,
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO snippets
+      (id, project_id, title, content, tags_cache, content_source, scene_id,
+       source_chat_message_id, usage_count, created_at, updated_at)
+     VALUES
+      ('snippet-akane-restraint', 'default-project', '朱音の律し方', ?, ?,
+       'human', 'scene-1', NULL, 2, ?, ?),
+      ('snippet-akahimo-reunion', 'default-project', '朱紐、再会', ?, ?,
+       'human', 'scene-1', NULL, 1, ?, ?)`,
+    [
+      proseDoc([
+        "鳥居をくぐるとき、朱音は一度だけ足を止めた。止まった理由を自分では説明できなかった。",
+      ]),
+      JSON.stringify([{ name: "語り口", color: "#5B8CDD" }]),
+      now,
+      now,
+      proseDoc([
+        "朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。",
+        "指が触れた瞬間、記憶が来た。朱音自身の記憶ではなかった。",
+      ]),
+      JSON.stringify([{ name: "朱紐", color: "#9B59B6" }]),
+      now,
+      now,
+    ],
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO map_boards
+      (id, project_id, title, sort_order, mode, viewport_x, viewport_y,
+       viewport_zoom, show_config, color_by, created_at, updated_at)
+     VALUES ('default-project-main-board', 'default-project', 'Main', 0, 'free',
+       0, 0, 0.9, '{}', 'type', ?, ?)`,
+    [now, now],
+  );
+  db.run(
+    `INSERT OR IGNORE INTO map_node_positions
+      (id, board_id, node_ref_type, tree_node_id, codex_entry_id, snippet_id,
+       sticky_id, ai_branch_id, x, y, pinned, z_index, created_at, updated_at)
+     VALUES
+      ('map-pos-akane', 'default-project-main-board', 'codex', NULL,
+       'codex-akane', NULL, NULL, NULL, 120, 100, 0, 1, ?, ?),
+      ('map-pos-haisha', 'default-project-main-board', 'codex', NULL,
+       'codex-haisha', NULL, NULL, NULL, 420, 110, 0, 1, ?, ?),
+      ('map-pos-akahimo', 'default-project-main-board', 'codex', NULL,
+       'codex-akahimo', NULL, NULL, NULL, 260, 330, 0, 1, ?, ?),
+      ('map-pos-scene-1', 'default-project-main-board', 'scene',
+       'scene-1', NULL, NULL, NULL, NULL, 720, 160, 0, 1, ?, ?),
+      ('map-pos-scene-2', 'default-project-main-board', 'scene',
+       'scene-2', NULL, NULL, NULL, NULL, 720, 390, 0, 1, ?, ?)`,
+    [now, now, now, now, now, now, now, now, now, now],
+  );
+  db.run(
+    `INSERT OR IGNORE INTO map_edges
+      (id, board_id, from_position_id, to_position_id, forward_label,
+       backward_label, labels, style, color, direction, created_at, updated_at)
+     VALUES
+      ('map-edge-1', 'default-project-main-board', 'map-pos-akane',
+       'map-pos-scene-1', '帰還', NULL, '[]', 'solid', '#8b7fd4',
+       'forward', ?, ?),
+      ('map-edge-2', 'default-project-main-board', 'map-pos-scene-1',
+       'map-pos-akahimo', '発見', NULL, '[]', 'solid', '#d4a35f',
+       'forward', ?, ?)`,
+    [now, now, now, now],
+  );
+  db.run(
+    `INSERT OR IGNORE INTO map_frames
+      (id, board_id, title, x, y, width, height, background, border_color, z_index,
+       created_at, updated_at)
+     VALUES ('map-frame-return', 'default-project-main-board', '第一部：帰還',
+       60, 40, 880, 520, '#2b3038', '#64748b', -1, ?, ?)`,
+    [now, now],
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO foreshadows
+      (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos,
+       payoff_to_pos, payoff_confirmed, abandoned, secret, load_bearing,
+       created_at, updated_at)
+     VALUES
+      ('fs-akahimo-warmth', 'default-project', '朱紐の温もり',
+       '十年経っても朱紐が乾いたままだった事実を後の章で回収する。',
+       '朱紐が朱音を待っていた／意思を持つ設定の伏線。', 'scene-2',
+       NULL, NULL, 0, 0, 1, 'critical', ?, ?),
+      ('fs-haisha-visitor', 'default-project', '廃社の侵入者',
+       '拝殿の錠前が落ちていた事実を、十年前以降の出入りの証拠にする。',
+       '朱鬼または別の誰かが廃社へ出入りしている。', NULL,
+       NULL, NULL, 0, 0, 1, 'supporting', ?, ?)`,
+    [Date.now(), Date.now(), Date.now(), Date.now()],
+  );
+  db.run(
+    `INSERT OR IGNORE INTO foreshadow_setups
+      (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
+       ai_strength, ai_reasoning, attribution, ai_rationale,
+       last_evaluated_at, is_orphan, created_at, updated_at)
+     VALUES
+      ('setup-akahimo-warmth', 'fs-akahimo-warmth', 'scene-1', 30, 52,
+       'designated_existing', 'moderate', 'moderate',
+       '読者が違和感として覚えやすい具体物になっている。', 'human',
+       NULL, ?, 0, ?, ?),
+      ('setup-haisha-lock', 'fs-haisha-visitor', 'scene-1', 18, 29,
+       'designated_existing', 'subtle', 'subtle',
+       '証拠としては弱いため後続で補強が必要。', 'human',
+       NULL, ?, 0, ?, ?)`,
+    [Date.now(), Date.now(), Date.now(), Date.now(), Date.now(), Date.now()],
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO chat_sessions
+      (id, project_id, node_id, title, title_manual, model, created_at, updated_at)
+     VALUES ('chat-scene-1', 'default-project', 'scene-1', '朱音の語り口について', 1,
+       'openrouter/anthropic/claude-sonnet-4.6', ?, ?)`,
+    [now, now],
+  );
+  const msgStmt = db.prepare(
+    `INSERT OR IGNORE INTO chat_messages
+      (id, session_id, role, content, model, tokens_in, tokens_out, duration_ms,
+       metadata, is_starred, is_summarized, created_at)
+     VALUES (?, 'chat-scene-1', ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?)`,
+  );
+  msgStmt.run([
+    "chat-message-user-1",
+    "user",
+    "一章の冒頭を書いたのですが、朱音の語り口がまだ定まっていません。彼女は感情を抑える人間なので、地の文でも感情が直接出てこないようにしたいです。",
+    null,
+    null,
+    null,
+    null,
+    0,
+    now,
+  ]);
+  msgStmt.run([
+    "chat-message-assistant-1",
+    "assistant",
+    "鳥居をくぐるとき、朱音は一度だけ足を止めた。止まった理由を自分では説明できなかった。草の匂いがした。杉の木が揺れた。それだけのことで、先に進めなくなった。感情の名前を出さずに、「三つ数えてから」という行動で内面の動揺を示す方向が合います。",
+    "openrouter/anthropic/claude-sonnet-4.6",
+    820,
+    118,
+    1320,
+    1,
+    now,
+  ]);
+  msgStmt.free();
+
+  const pinStmt = db.prepare(
+    `INSERT OR IGNORE INTO chat_session_pinned_codex
+      (session_id, codex_entry_id, snippet_id, with_children, pin_source, created_at)
+     VALUES ('chat-scene-1', ?, NULL, 0, 'manual', ?)`,
+  );
+  ["codex-akane", "codex-haisha", "codex-akahimo"].forEach((id) =>
+    pinStmt.run([id, now]),
+  );
+  pinStmt.free();
+
+  db.run(
+    `INSERT OR REPLACE INTO app_settings (key, value) VALUES
+      ('display.glassEffectEnabled', 'false'),
+      ('display.reduceMotion', 'true')`,
+  );
+
+  db.run(
+    `INSERT OR REPLACE INTO app_settings (key, value) VALUES ('editor.tabState', ?)`,
+    [
+      JSON.stringify({
+        tabs: [
+          { nodeId: "scene-1", isPreview: false, contentType: "scene" },
+          { nodeId: "codex-akahimo", isPreview: false, contentType: "codex" },
+        ],
+        activeTabId: "scene-1",
+        secondaryTabs: [],
+        secondaryActiveTabId: null,
+        activeGroupIndex: 0,
+        secondaryGroupOpen: false,
+        splitDirection: "right",
+        isLinearMode: false,
+      }),
+    ],
+  );
 }

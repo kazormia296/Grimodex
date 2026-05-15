@@ -18,6 +18,8 @@
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
     "tauri": "tauri",
+    "screenshot": "tsx scripts/capture-screenshots.ts",
+    "screenshot:one": "tsx scripts/capture-screenshots.ts",
     "generate:licenses": "tsx scripts/generate-licenses.ts",
     "seed:sample-en": "python3 scripts/seed-sample-en.py",
     "seed:sample-ja": "python3 scripts/seed-sample-ja.py"
