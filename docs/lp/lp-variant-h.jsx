@@ -8,7 +8,6 @@
 
 const HZ_INK = "#0a0a0a";
 const HZ_BG = "#ffffff";
-const HZ_RULE = "rgba(10,10,10,0.12)";
 const HZ_HL = "var(--hz-hl, #fff200)";
 
 function HChip({ children, hl, on }) {
@@ -119,7 +118,6 @@ function HReveal({ children, style, delay = 0, burst = false }) {
 }
 
 function LPVariantH() {
-  const [selectedPanel, setSelectedPanel] = useState(0);
   const [workflowMode, setWorkflowMode] = useState("plotter");
   const panelPreviewRef = useRef(null);
   const workflowGridRef = useRef(null);
@@ -256,7 +254,7 @@ function LPVariantH() {
       { x: 0, autoAlpha: 1, filter: "contrast(1)", duration: 0.32, ease: "power3.out" },
     );
     return () => tween.kill();
-  }, [selectedPanel]);
+  }, []);
 
   useEffect(() => {
     const gsap = window.gsap;
@@ -333,24 +331,6 @@ function LPVariantH() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, []);
-
-  const panelDetails = [
-    { name: "Scenes", copy: "章とシーンを管理し、いま書く場所へすぐ戻れる入口。長い原稿でも迷子になりにくい。" },
-    { name: "Editor", copy: "本文を書く中心。AI挿入や帰属ラベルを保持しながら、通常の原稿として編集できる。" },
-    { name: "AI Chat", copy: "本文を書かせるだけではなく、設定確認・表現案・構成相談・校閲をその場で揉める相談席。" },
-    { name: "Chat History", copy: "シーンごとの相談履歴を残し、以前の判断や候補案へ戻りやすくする。" },
-    { name: "Codex", copy: "人物、用語、世界観、アイデアを本文と並行して育てる設定資産の置き場。" },
-    { name: "Codex Quick", copy: "チャットや本文から浮かんだ思いつきを、手早くCodexへ送るための軽い入口。" },
-    { name: "Map", copy: "章、シーン、断片、アイデアを配置で見渡す。書けない時は本文ではなく地図を触れる。" },
-    { name: "Timeline", copy: "出来事の順序や前後関係を確認し、物語時間の混線をほどく。" },
-    { name: "Snippets", copy: "使い回したい断片、候補文、会話から拾った素材を本文の横に置いておける。" },
-    { name: "Attribution", copy: "human / ai / unknown の由来を確認する作業用の記録。第三者証明ではなく推敲の補助。" },
-    { name: "Kouetsu", copy: "校閲・検討用の視点を置く場所。矛盾、表現、読み味を本文の横で確認する。" },
-    { name: "Foreshadow", copy: "伏線や回収予定を別枠で持ち、忘れたくない意図を作品資産として扱う。" },
-    { name: "Grid", copy: "章やシーンを表として俯瞰し、抜け・偏り・密度を確認する。" },
-    { name: "Matrix", copy: "人物、章、テーマなど複数軸の関係を整理し、複雑な作品をほどく。" },
-    { name: "Trash Bin", copy: "消した要素を一時的に退避し、必要なら戻せる安全地帯。" },
-  ];
 
   const workflowSteps = {
     plotter: [
@@ -542,59 +522,17 @@ function LPVariantH() {
               Editor、Scenes、AI Chat、Codex、Map、Timeline、Snippets、Attribution、Foreshadow、Grid、Matrix などを Dockview で自由配置。執筆・整理・相談を、作品ごとの机に組み替える。
             </p>
             <div className="hz-shadow" style={{ border: `2px solid ${HZ_INK}` }}>
-              <div style={{ background: "#f6f3ec", minHeight: 360, display: "grid", gridTemplateColumns: "220px 1fr 280px", color: HZ_INK }}>
-                <div style={{ borderRight: `1px solid ${HZ_RULE}`, padding: 22 }}>
-                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: ".12em", color: "rgba(10,10,10,0.48)", textTransform: "uppercase", marginBottom: 18 }}>Selected Panel</div>
-                  <h3 style={{ fontSize: 32, lineHeight: 1, margin: 0, letterSpacing: -1 }}>{panelDetails[selectedPanel].name}</h3>
-                  <p style={{ fontSize: 14, lineHeight: 1.7, marginTop: 18 }}>{panelDetails[selectedPanel].copy}</p>
+              <div style={{ background: "#f6f3ec", padding: 22, color: HZ_INK }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: ".12em", color: "rgba(10,10,10,0.48)", textTransform: "uppercase", marginBottom: 14 }}>
+                  App window · layout presets
                 </div>
-                <div style={{ padding: 28, borderRight: `1px solid ${HZ_RULE}` }}>
-                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: ".12em", color: "rgba(10,10,10,0.48)", textTransform: "uppercase", marginBottom: 16 }}>Preview</div>
-                  <div ref={panelPreviewRef} style={{ border: `2px solid ${HZ_INK}`, background: HZ_BG, minHeight: 230, padding: 20, willChange: "transform, opacity, filter" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#ff5f57" }} />
-                      <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#ffbd2e" }} />
-                      <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#28c840" }} />
-                      <span style={{ marginLeft: 10, fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "rgba(10,10,10,0.48)" }}>grimodex · panel-focus</span>
-                    </div>
-                    <div style={{ fontSize: 44, fontWeight: 800, letterSpacing: -2, lineHeight: 0.95 }}>
-                      {panelDetails[selectedPanel].name}
-                    </div>
-                    <div style={{ marginTop: 18, height: 8, width: "70%", background: HZ_HL }} />
-                    <div style={{ marginTop: 26, display: "grid", gap: 10 }}>
-                      {[0, 1, 2].map((line) => (
-                        <div key={line} style={{ height: 12, width: `${86 - line * 16}%`, background: "rgba(10,10,10,0.12)" }} />
-                      ))}
-                    </div>
-                  </div>
+                <div ref={panelPreviewRef} style={{ border: `2px solid ${HZ_INK}`, background: HZ_BG, overflow: "hidden", willChange: "transform, opacity, filter" }}>
+                  <LPAppShellPreview accent={HZ_INK} activeIndicator="#fff200" minHeight={400} />
                 </div>
-                <div style={{ padding: 22 }}>
-                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: ".12em", color: "rgba(10,10,10,0.48)", textTransform: "uppercase", marginBottom: 14 }}>Detail</div>
-                  <p style={{ fontSize: 15, lineHeight: 1.7, margin: 0 }}>
-                    パネルを押すと、左のプレビューと説明が切り替わります。実スクリーンショットが用意できたら、この枠だけ画像に差し替えられます。
-                  </p>
-                </div>
+                <p style={{ fontSize: 13, lineHeight: 1.65, opacity: 0.85, margin: "16px 0 0" }}>
+                  タイトルバーは本番に近い構成（ロゴ・ワークスペース・履歴・エクスポート・レイアウトプリセット・パネル表示・設定）。中央のプリセットボタンで <b>Write / Plan / Chat / Proofread / Condense</b> を切り替えると、下の Dock グリドが組み換わります。
+                </p>
               </div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", border: `2px solid ${HZ_INK}`, borderTop: 0, marginTop: 0 }}>
-              {COPY.panels.map((p, i) => {
-                const accent = i === selectedPanel;
-                return (
-                  <button key={p} className="hz-pop" onClick={() => setSelectedPanel(i)} style={{
-                    borderRight: (i % 5) < 4 ? `2px solid ${HZ_INK}` : "none",
-                    borderBottom: i < 10 ? `2px solid ${HZ_INK}` : "none",
-                    padding: "16px 14px",
-                    background: accent ? HZ_HL : HZ_BG,
-                    textAlign: "left",
-                    cursor: "pointer",
-                    color: HZ_INK,
-                    font: "inherit",
-                  }}>
-                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", opacity: 0.6 }}>P/{String(i + 1).padStart(2, "0")}</div>
-                    <div style={{ fontWeight: 800, fontSize: 18, letterSpacing: -0.3, marginTop: 4 }}>{p}</div>
-                  </button>
-                );
-              })}
             </div>
           </div>
         </div>
@@ -801,6 +739,7 @@ function LPVariantH() {
           ]} />
         </div>
       </section>
+
     </LPFrame>
   );
 }

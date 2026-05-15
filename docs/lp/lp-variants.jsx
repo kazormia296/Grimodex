@@ -218,152 +218,1019 @@ function LPFrame({ bg, children, fontFamily }) {
   );
 }
 
-/* ============================================================
-   Shared "panel mock" — abstract the Map / Editor / AI shot
-   so each variant skins it differently.
-   ============================================================ */
+/**
+ * Dark themed panel bodies that echo real Grimodex panels (no app imports).
+ * panelIndex aligns with COPY.panels order.
+ */
+function LPPanelBodyRealistic({ panelIndex = 0, accent = "#7c3aed" }) {
+  const fg = "#e4e4e7";
+  const muted = "#71717a";
+  const line = "rgba(255,255,255,0.07)";
+  const card = "#18181b";
+  const mono = { fontFamily: "ui-monospace, monospace", fontSize: 9, letterSpacing: "0.04em", color: muted };
 
-function PanelMock({
-  theme = "light",
-  accent = "#534AB7",
-  showTitle = true,
+  const rowLine = (w) => (
+    <div key={w} style={{ height: 6, borderRadius: 3, background: "rgba(255,255,255,0.08)", width: w }} />
+  );
+
+  const phLines = (widths) => (
+    <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+      {widths.map((w) => rowLine(w))}
+    </div>
+  );
+
+  if (panelIndex === 0) {
+    return (
+      <div style={{ padding: 10, color: fg, fontSize: 11 }}>
+        <div style={{ ...mono, textTransform: "uppercase", marginBottom: 8 }}>Chapter / Scene</div>
+        <div style={{ border: `1px solid ${line}`, borderRadius: 6, padding: 8, background: card }}>
+          <div style={{ fontWeight: 600 }}>▼ Chapter 02</div>
+          {phLines(["72%", "55%"])}
+        </div>
+        <div style={{ border: `1px solid ${line}`, borderRadius: 6, padding: 8, background: card, marginTop: 8 }}>
+          <div style={{ fontWeight: 600, color: accent }}>▼ Chapter 03</div>
+          <div style={{ marginTop: 6, paddingLeft: 8, borderLeft: `2px solid ${accent}` }}>
+            <div style={{ fontWeight: 600 }}>Scene 12 — active</div>
+            {phLines(["90%", "40%"])}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (panelIndex === 1) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, color: fg, fontSize: 12 }}>
+        <div
+          style={{
+            flexShrink: 0,
+            display: "flex",
+            gap: 4,
+            padding: "6px 8px",
+            borderBottom: `1px solid ${line}`,
+            background: "#141416",
+          }}
+        >
+          {["B", "I", "⟨⟩", "•••"].map((x) => (
+            <span
+              key={x}
+              style={{
+                width: 24,
+                height: 22,
+                borderRadius: 4,
+                border: `1px solid ${line}`,
+                display: "grid",
+                placeItems: "center",
+                fontSize: 10,
+                color: muted,
+              }}
+            >
+              {x}
+            </span>
+          ))}
+        </div>
+        <div style={{ flex: 1, padding: 12, lineHeight: 1.75, overflow: "hidden" }}>
+          <div style={{ ...mono, marginBottom: 8 }}>Scene body · TipTap</div>
+          {phLines(["100%", "96%", "88%", "60%"])}
+        </div>
+      </div>
+    );
+  }
+
+  if (panelIndex === 2) {
+    return (
+      <div style={{ padding: 10, display: "grid", gap: 10, alignContent: "start", color: fg, fontSize: 11.5 }}>
+        <div style={{ justifySelf: "end", maxWidth: "88%", background: "#27272a", padding: "8px 10px", borderRadius: 10, border: `1px solid ${line}` }}>
+          <div style={{ ...mono, marginBottom: 4 }}>You</div>
+          {rowLine("75%")}
+        </div>
+        <div style={{ border: `1px solid ${line}`, borderRadius: 10, padding: "8px 10px", background: card }}>
+          <div style={{ ...mono, marginBottom: 4 }}>Model</div>
+          {phLines(["100%", "80%", "45%"])}
+          <div style={{ marginTop: 10, fontSize: 10, fontWeight: 600, color: accent }}>↳ Tool · Codex</div>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <span style={{ flex: 1, height: 28, borderRadius: 6, border: `1px solid ${line}`, background: "#09090b" }} />
+          <span style={{ width: 56, height: 28, borderRadius: 6, background: accent, opacity: 0.85 }} />
+        </div>
+      </div>
+    );
+  }
+
+  if (panelIndex === 3) {
+    return (
+      <div style={{ color: fg, fontSize: 11 }}>
+        {[
+          { k: "Thread A", sub: "Scene 03" },
+          { k: "Thread B", sub: "Scene 12 — current", hi: true },
+          { k: "Thread C", sub: "Scene 01" },
+        ].map((row) => (
+          <div
+            key={row.k}
+            style={{
+              padding: "10px 12px",
+              borderBottom: `1px solid ${line}`,
+              background: row.hi ? "rgba(124,58,237,0.12)" : "transparent",
+            }}
+          >
+            <div style={{ fontWeight: 600 }}>{row.k}</div>
+            <div style={{ color: muted, fontSize: 10, marginTop: 2 }}>{row.sub}</div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (panelIndex === 4) {
+    return (
+      <div style={{ padding: 10, display: "grid", gap: 6, color: fg, fontSize: 11 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 48px", gap: 8, marginBottom: 4 }}>
+          <div style={{ height: 28, borderRadius: 6, border: `1px solid ${line}`, background: "#09090b" }} />
+          <div style={{ height: 28, borderRadius: 6, border: `1px solid ${line}`, background: card }} />
+        </div>
+        {["Entry A", "Entry B", "Entry C"].map((name, i) => (
+          <div key={name} style={{ border: `1px solid ${line}`, borderRadius: 8, padding: "8px 10px", background: i === 1 ? "rgba(124,58,237,0.08)" : card }}>
+            <span style={{ ...mono }}>CODEX</span>
+            <div style={{ fontWeight: 600, marginTop: 4 }}>{name}</div>
+            {phLines(["70%"])}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (panelIndex === 5) {
+    return (
+      <div style={{ padding: 12, color: fg, fontSize: 11 }}>
+        <div style={{ ...mono, marginBottom: 8 }}>Quick capture</div>
+        <div style={{ border: `1px dashed ${accent}`, borderRadius: 8, padding: 10, background: "rgba(124,58,237,0.06)", minHeight: 64 }}>
+          {phLines(["92%", "50%"])}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+          <span style={{ ...mono, flex: 1 }}>→ Add to</span>
+          <span style={{ background: accent, color: "#fff", padding: "4px 10px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>
+            Codex
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (panelIndex === 6) {
+    return (
+      <div
+        style={{
+          position: "relative",
+          margin: 8,
+          flex: 1,
+          minHeight: 120,
+          background: `linear-gradient(${line} 1px, transparent 1px), linear-gradient(90deg, ${line} 1px, transparent 1px)`,
+          backgroundSize: "18px 18px",
+          border: `1px solid ${line}`,
+          borderRadius: 8,
+        }}
+      >
+        {[
+          { x: 10, y: 14, w: 52, h: 32 },
+          { x: 70, y: 44, w: 60, h: 40, hi: true },
+          { x: 36, y: 78, w: 44, h: 28 },
+        ].map((b, i) => (
+          <div
+            key={i}
+            style={{
+              position: "absolute",
+              left: b.x,
+              top: b.y,
+              width: b.w,
+              height: b.h,
+              borderRadius: 6,
+              background: b.hi ? "rgba(124,58,237,0.25)" : card,
+              border: `1px solid ${line}`,
+              boxShadow: b.hi ? `0 0 0 1px ${accent}` : "none",
+            }}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  if (panelIndex === 7) {
+    return (
+      <div style={{ padding: 12, color: fg, fontSize: 10 }}>
+        <div style={{ position: "relative", height: 40, marginBottom: 8 }}>
+          <div style={{ position: "absolute", left: 8, right: 8, top: 18, borderTop: `1px solid ${line}` }} />
+          {[
+            { l: "A1", left: "12%", on: true },
+            { l: "A2", left: "38%" },
+            { l: "A3", left: "64%" },
+            { l: "A4", left: "88%" },
+          ].map((d) => (
+            <div key={d.l} style={{ position: "absolute", left: d.left, top: 12, transform: "translateX(-50%)" }}>
+              <div
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  margin: "0 auto",
+                  background: d.on ? accent : "#3f3f46",
+                  border: `1px solid ${line}`,
+                }}
+              />
+              <div style={{ textAlign: "center", marginTop: 4, color: d.on ? fg : muted }}>{d.l}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ color: muted }}>Timeline ruler · story order</div>
+      </div>
+    );
+  }
+
+  if (panelIndex === 8) {
+    return (
+      <div style={{ padding: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, color: fg, fontSize: 11 }}>
+        {[1, 2, 3].map((i) => (
+          <div key={i} style={{ background: "#1c1917", border: `1px solid ${line}`, borderRadius: 8, padding: "8px 10px", minHeight: 56 }}>
+            {phLines(i === 3 ? ["100%", "70%"] : ["88%"])}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (panelIndex === 9) {
+    return (
+      <div style={{ padding: 10, color: fg, fontSize: 11 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          {[
+            { k: "human", c: "#22c55e", w: "72%" },
+            { k: "ai", c: accent, w: "22%" },
+            { k: "?", c: "#71717a", w: "6%" },
+          ].map((x) => (
+            <div key={x.k} style={{ flex: 1 }}>
+              <div style={{ height: 6, borderRadius: 3, background: x.c, width: x.w, marginBottom: 6 }} />
+              <div style={{ ...mono, textTransform: "uppercase" }}>{x.k}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: 10, border: `1px solid ${line}`, borderRadius: 8, background: card, lineHeight: 1.7 }}>
+          {phLines(["100%", "90%", "40%"])}
+        </div>
+      </div>
+    );
+  }
+
+  if (panelIndex === 10) {
+    return (
+      <div style={{ padding: 10, display: "grid", gap: 8, color: fg, fontSize: 11 }}>
+        {["Issue · wording", "Issue · consistency", "Issue · pacing"].map((t, i) => (
+          <div key={t} style={{ display: "grid", gridTemplateColumns: "26px 1fr", gap: 8, alignItems: "start" }}>
+            <span
+              style={{
+                background: "rgba(124,58,237,0.2)",
+                border: `1px solid ${line}`,
+                borderRadius: 4,
+                textAlign: "center",
+                fontWeight: 800,
+                fontSize: 9,
+                padding: "4px 0",
+              }}
+            >
+              {String(i + 1).padStart(2, "0")}
+            </span>
+            <div>
+              <div style={{ fontWeight: 600 }}>{t}</div>
+              {rowLine("85%")}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (panelIndex === 11) {
+    return (
+      <div style={{ margin: 8, border: `1px solid ${line}`, borderRadius: 8, overflow: "hidden", fontSize: 10, color: fg }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", background: card, borderBottom: `1px solid ${line}`, fontWeight: 700, ...mono }}>
+          {["Seed", "Status", "Payoff"].map((h) => (
+            <span key={h} style={{ padding: 8 }}>
+              {h}
+            </span>
+          ))}
+        </div>
+        {[
+          { a: "Item A", b: "Open", c: "Ch.8" },
+          { a: "Item B", b: "Done", c: "Ch.3" },
+        ].map((r) => (
+          <div key={r.a} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderBottom: `1px solid ${line}` }}>
+            <span style={{ padding: 8 }}>{r.a}</span>
+            <span style={{ padding: 8, color: r.b === "Open" ? accent : muted }}>{r.b}</span>
+            <span style={{ padding: 8 }}>{r.c}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (panelIndex === 12) {
+    return (
+      <div style={{ margin: 8, border: `1px solid ${line}`, borderRadius: 8, overflow: "hidden", fontSize: 9, color: fg }}>
+        <div style={{ display: "grid", gridTemplateColumns: "40px repeat(3, 1fr)", background: card, borderBottom: `1px solid ${line}` }}>
+          {["", "α", "β", "γ"].map((c) => (
+            <span key={c} style={{ padding: 6, fontWeight: 700, borderRight: `1px solid ${line}` }}>
+              {c}
+            </span>
+          ))}
+        </div>
+        {["R1", "R2", "R3"].map((rn, ri) => (
+          <div key={rn} style={{ display: "grid", gridTemplateColumns: "40px repeat(3, 1fr)" }}>
+            <span style={{ padding: 6, fontWeight: 600, borderRight: `1px solid ${line}`, borderBottom: `1px solid ${line}`, background: "#121214" }}>{rn}</span>
+            {[0, 1, 2].map((ci) => {
+              const on = ri === 1 && ci === 2;
+              return (
+                <span
+                  key={ci}
+                  style={{
+                    padding: 6,
+                    borderRight: `1px solid ${line}`,
+                    borderBottom: `1px solid ${line}`,
+                    textAlign: "center",
+                    background: on ? "rgba(124,58,237,0.2)" : "transparent",
+                  }}
+                >
+                  {on ? "●" : "○"}
+                </span>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (panelIndex === 13) {
+    return (
+      <div style={{ padding: 10, fontSize: 9, color: fg }}>
+        <div style={{ display: "grid", gridTemplateColumns: "26px repeat(3, 1fr)", gap: 2, marginBottom: 4, fontWeight: 700 }}>
+          {["", "x", "y", "z"].map((lb) => (
+            <span key={lb} style={{ textAlign: "center", padding: 4 }}>
+              {lb}
+            </span>
+          ))}
+        </div>
+        {["Axis 1", "Axis 2", "Axis 3"].map((row) => (
+          <div key={row} style={{ display: "grid", gridTemplateColumns: "26px repeat(3, 1fr)", gap: 2, marginBottom: 2 }}>
+            <span style={{ fontWeight: 600, padding: 4 }}>{row}</span>
+            {[0.8, 0.35, 0.55].map((a, i) => (
+              <span
+                key={i}
+                style={{
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 4,
+                  background: card,
+                  border: `1px solid ${line}`,
+                  borderRadius: 4,
+                  color: a > 0.5 ? accent : muted,
+                }}
+              >
+                {a > 0.5 ? "●" : "·"}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (panelIndex === 14) {
+    return (
+      <div style={{ padding: 10, color: fg, fontSize: 11 }}>
+        <div style={{ ...mono, marginBottom: 8 }}>Trash · restore available</div>
+        {[1, 2].map((i) => (
+          <div
+            key={i}
+            style={{
+              padding: "8px 10px",
+              border: `1px dashed ${line}`,
+              borderRadius: 8,
+              marginBottom: 6,
+              background: "#121214",
+              textDecoration: "line-through",
+              color: muted,
+            }}
+          >
+            Deleted node {i}
+          </div>
+        ))}
+        <span style={{ ...mono }}>↩ Restore</span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: 12, color: muted, fontSize: 11 }}>
+      {COPY.panels[panelIndex] ?? "Panel"}
+    </div>
+  );
+}
+
+function lpIconFileOutput({ size = 16, color = "currentColor" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="12" y1="18" x2="12" y2="12" />
+      <line x1="9" y1="15" x2="15" y2="15" />
+    </svg>
+  );
+}
+
+function lpIconSettings({ size = 16, color = "currentColor" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+    </svg>
+  );
+}
+
+function lpIconLayoutPreset({ size = 16, color = "currentColor" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="3" y="3" width="7" height="18" rx="1" />
+      <rect x="14" y="3" width="7" height="8" rx="1" />
+      <rect x="14" y="13" width="7" height="8" rx="1" />
+    </svg>
+  );
+}
+
+/* IDs mirror src/features/layout/layoutPresets.ts getBuiltinPresets() */
+const LP_BUILTIN_PRESETS = [
+  { id: "builtin:default", label: "Write" },
+  { id: "builtin:plan", label: "Plan" },
+  { id: "builtin:chat-main", label: "Chat" },
+  { id: "builtin:review", label: "Proofread" },
+  { id: "builtin:codex-main", label: "Condense" },
+];
+
+function LPDockPanel({
+  tabs,
+  panelIndex,
+  activeIndicator,
 }) {
-  const dark = theme === "dark";
-  const bg = dark ? "#0e0e10" : "#f6f3ec";
-  const ink = dark ? "#f6f3ec" : "#1a1815";
-  const sub = dark ? "rgba(246,243,236,0.6)" : "rgba(26,24,21,0.55)";
-  const line = dark ? "rgba(246,243,236,0.12)" : "rgba(26,24,21,0.12)";
-  const card = dark ? "#181819" : "#ffffff";
+  const hi = activeIndicator ?? "#7c3aed";
+  const tabMute = "#a1a1aa";
+  const tabStrip = "#18181b";
+  const border = "rgba(255,255,255,0.08)";
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        minHeight: 0,
+        background: "#09090b",
+      }}
+    >
+      <div
+        style={{
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          gap: 2,
+          paddingLeft: 4,
+          paddingRight: 4,
+          minHeight: 32,
+          borderBottom: `1px solid ${border}`,
+          background: tabStrip,
+          overflowX: "auto",
+        }}
+      >
+        {tabs.map((t) => (
+          <span
+            key={t.id}
+            style={{
+              fontSize: 12,
+              fontWeight: t.active ? 600 : 500,
+              color: t.active ? "#fafafa" : tabMute,
+              padding: "6px 10px",
+              borderBottom: t.active ? `2px solid ${hi}` : "2px solid transparent",
+              marginBottom: -1,
+              fontFamily: "ui-sans-serif, system-ui",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {t.label}
+          </span>
+        ))}
+      </div>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+          padding: 0,
+          background: "#0c0c0e",
+        }}
+      >
+        <LPPanelBodyRealistic panelIndex={panelIndex} accent={hi} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Full in-page Grimodex window: title bar + Dockview-style grid + builtin preset switcher.
+ */
+function LPAppShellPreview({
+  accent = "#534AB7",
+  activeIndicator,
+  mac = true,
+  minHeight = 440,
+}) {
+  const [preset, setPreset] = useState("builtin:default");
+  const hi = activeIndicator ?? accent;
+  const ink = "#18181b";
+  const muted = "rgba(24,24,27,0.55)";
+  const barBg = "#fafafa";
+  const barBorder = "rgba(24,24,27,0.12)";
+  const split = "#27272a";
+
+  const cell = { minWidth: 0, minHeight: 0, overflow: "hidden" };
+
+  const presetRow = (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+      <span style={{ display: "inline-flex", alignItems: "center", color: muted }} title="Layout presets">
+        {lpIconLayoutPreset({ size: 15, color: "rgba(24,24,27,0.45)" })}
+      </span>
+      {LP_BUILTIN_PRESETS.map((p) => {
+        const on = preset === p.id;
+        return (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => setPreset(p.id)}
+            style={{
+              fontSize: 11,
+              fontWeight: on ? 600 : 500,
+              padding: "4px 9px",
+              borderRadius: 6,
+              border: `1px solid ${on ? hi : barBorder}`,
+              background: on ? `${hi}26` : "transparent",
+              color: ink,
+              cursor: "pointer",
+              fontFamily: "ui-sans-serif, system-ui",
+            }}
+          >
+            {p.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  let dock;
+  if (preset === "builtin:default") {
+    dock = (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateAreas: `
+            "scenes editor chat"
+            "cq editor codex"
+          `,
+          gridTemplateColumns: "minmax(96px, 0.18fr) 1fr minmax(120px, 0.33fr)",
+          gridTemplateRows: "1fr 1fr",
+          gap: 1,
+          flex: 1,
+          minHeight: 0,
+          height: "100%",
+          background: split,
+        }}
+      >
+        <div style={{ gridArea: "scenes", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "scenes", label: COPY.panels[0], active: true },
+              { id: "grid", label: COPY.panels[12], active: false },
+            ]}
+            panelIndex={0}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "cq", ...cell }}>
+          <LPDockPanel
+            tabs={[{ id: "cq", label: COPY.panels[5], active: true }]}
+            panelIndex={5}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "editor", ...cell }}>
+          <LPDockPanel
+            tabs={[{ id: "ed", label: COPY.panels[1], active: true }]}
+            panelIndex={1}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "chat", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "chat", label: COPY.panels[2], active: true },
+              { id: "hist", label: COPY.panels[3], active: false },
+            ]}
+            panelIndex={2}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "codex", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "codex", label: COPY.panels[4], active: true },
+              { id: "snip", label: COPY.panels[8], active: false },
+            ]}
+            panelIndex={4}
+            activeIndicator={hi}
+          />
+        </div>
+      </div>
+    );
+  } else if (preset === "builtin:plan") {
+    dock = (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateAreas: `
+            "grid chat"
+            "timeline codex"
+          `,
+          gridTemplateColumns: "minmax(140px, 0.67fr) minmax(120px, 0.33fr)",
+          gridTemplateRows: "1fr minmax(64px, 0.24fr)",
+          gap: 1,
+          flex: 1,
+          minHeight: 0,
+          height: "100%",
+          background: split,
+        }}
+      >
+        <div style={{ gridArea: "grid", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "g", label: COPY.panels[12], active: true },
+              { id: "m", label: COPY.panels[6], active: false },
+            ]}
+            panelIndex={12}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "chat", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "c", label: COPY.panels[2], active: true },
+              { id: "h", label: COPY.panels[3], active: false },
+            ]}
+            panelIndex={2}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "timeline", ...cell }}>
+          <LPDockPanel
+            tabs={[{ id: "tl", label: COPY.panels[7], active: true }]}
+            panelIndex={7}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "codex", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "cx", label: COPY.panels[4], active: true },
+              { id: "sn", label: COPY.panels[8], active: false },
+              { id: "fs", label: COPY.panels[11], active: false },
+              { id: "mx", label: COPY.panels[13], active: false },
+            ]}
+            panelIndex={4}
+            activeIndicator={hi}
+          />
+        </div>
+      </div>
+    );
+  } else if (preset === "builtin:chat-main") {
+    dock = (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateAreas: `"chat codex"`,
+          gridTemplateColumns: "minmax(160px, 2fr) minmax(120px, 1fr)",
+          gridTemplateRows: "1fr",
+          gap: 1,
+          flex: 1,
+          minHeight: 0,
+          height: "100%",
+          background: split,
+        }}
+      >
+        <div style={{ gridArea: "chat", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "c", label: COPY.panels[2], active: true },
+              { id: "h", label: COPY.panels[3], active: false },
+            ]}
+            panelIndex={2}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "codex", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "cx", label: COPY.panels[4], active: true },
+              { id: "sn", label: COPY.panels[8], active: false },
+              { id: "mx", label: COPY.panels[13], active: false },
+            ]}
+            panelIndex={4}
+            activeIndicator={hi}
+          />
+        </div>
+      </div>
+    );
+  } else if (preset === "builtin:review") {
+    dock = (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateAreas: `
+            "scenes editor kouetsu codex"
+            "attr editor kouetsu codex"
+          `,
+          gridTemplateColumns:
+            "minmax(72px, 0.13fr) minmax(100px, 1fr) minmax(88px, 0.3fr) minmax(88px, 0.25fr)",
+          gridTemplateRows: "1fr minmax(56px, 0.38fr)",
+          gap: 1,
+          flex: 1,
+          minHeight: 0,
+          height: "100%",
+          background: split,
+        }}
+      >
+        <div style={{ gridArea: "scenes", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "sc", label: COPY.panels[0], active: true },
+              { id: "gr", label: COPY.panels[12], active: false },
+            ]}
+            panelIndex={0}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "attr", ...cell }}>
+          <LPDockPanel
+            tabs={[{ id: "at", label: COPY.panels[9], active: true }]}
+            panelIndex={9}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "editor", ...cell }}>
+          <LPDockPanel
+            tabs={[{ id: "ed", label: COPY.panels[1], active: true }]}
+            panelIndex={1}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "kouetsu", ...cell }}>
+          <LPDockPanel
+            tabs={[{ id: "k", label: COPY.panels[10], active: true }]}
+            panelIndex={10}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "codex", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "cx", label: COPY.panels[4], active: true },
+              { id: "sn", label: COPY.panels[8], active: false },
+              { id: "mx", label: COPY.panels[13], active: false },
+              { id: "fs", label: COPY.panels[11], active: false },
+              { id: "tl", label: COPY.panels[7], active: false },
+            ]}
+            panelIndex={4}
+            activeIndicator={hi}
+          />
+        </div>
+      </div>
+    );
+  } else {
+    dock = (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateAreas: `"codex chat"`,
+          gridTemplateColumns: "minmax(160px, 3fr) minmax(100px, 1fr)",
+          gridTemplateRows: "1fr",
+          gap: 1,
+          flex: 1,
+          minHeight: 0,
+          height: "100%",
+          background: split,
+        }}
+      >
+        <div style={{ gridArea: "codex", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "cx", label: COPY.panels[4], active: true },
+              { id: "sn", label: COPY.panels[8], active: false },
+              { id: "mx", label: COPY.panels[13], active: false },
+              { id: "mp", label: COPY.panels[6], active: false },
+            ]}
+            panelIndex={4}
+            activeIndicator={hi}
+          />
+        </div>
+        <div style={{ gridArea: "chat", ...cell }}>
+          <LPDockPanel
+            tabs={[
+              { id: "c", label: COPY.panels[2], active: true },
+              { id: "h", label: COPY.panels[3], active: false },
+            ]}
+            panelIndex={2}
+            activeIndicator={hi}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
       style={{
-        background: bg,
-        color: ink,
         borderRadius: 14,
-        boxShadow: dark
-          ? "0 30px 60px -20px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.06)"
-          : "0 30px 60px -20px rgba(0,0,0,0.25), 0 0 0 1px rgba(0,0,0,0.06)",
         overflow: "hidden",
-        position: "relative",
-        fontFamily: "ui-sans-serif, system-ui",
+        boxShadow: "0 30px 60px -20px rgba(0,0,0,0.28), 0 0 0 1px rgba(0,0,0,0.07)",
+        background: barBg,
+        fontFamily: 'ui-sans-serif, system-ui, "Inter", sans-serif',
+        color: ink,
+        display: "flex",
+        flexDirection: "column",
+        minHeight: minHeight + 48,
       }}
     >
-      {/* Window chrome */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderBottom: `1px solid ${line}` }}>
-        <span style={{ width: 11, height: 11, borderRadius: "50%", background: "#FF5F57" }} />
-        <span style={{ width: 11, height: 11, borderRadius: "50%", background: "#FEBC2E" }} />
-        <span style={{ width: 11, height: 11, borderRadius: "50%", background: "#28C840" }} />
-        <span style={{ marginLeft: 14, fontSize: 12, color: sub, fontFamily: "ui-monospace, monospace" }}>
-          grimodex · akane-no-kioku.gdx
-        </span>
-        <span style={{ marginLeft: "auto", fontSize: 11, color: sub, fontFamily: "ui-monospace, monospace" }}>
-          ⌘K
-        </span>
+      <div
+        style={{
+          position: "relative",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: mac ? "6px 12px 6px 72px" : "6px 12px",
+          borderBottom: `1px solid ${barBorder}`,
+          background: barBg,
+          flexWrap: "wrap",
+          rowGap: 8,
+          flexShrink: 0,
+          zIndex: 2,
+        }}
+      >
+        {mac && (
+          <div
+            style={{
+              position: "absolute",
+              left: 16,
+              top: "50%",
+              transform: "translateY(-50%)",
+              display: "flex",
+              gap: 7,
+            }}
+          >
+            <span style={{ width: 11, height: 11, borderRadius: "50%", background: "#FF5F57" }} />
+            <span style={{ width: 11, height: 11, borderRadius: "50%", background: "#FEBC2E" }} />
+            <span style={{ width: 11, height: 11, borderRadius: "50%", background: "#28C840" }} />
+          </div>
+        )}
+        <img
+          src="assets/grimodex-logo.svg"
+          alt=""
+          style={{ height: 24, width: "auto", display: "block" }}
+        />
+        <button
+          type="button"
+          style={{
+            fontSize: 13,
+            color: muted,
+            padding: "4px 10px",
+            borderRadius: 6,
+            border: "none",
+            background: "transparent",
+            cursor: "default",
+            fontFamily: "inherit",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+          }}
+        >
+          Workspace <span style={{ fontSize: 10, opacity: 0.65 }}>⌄</span>
+        </button>
+        <div style={{ display: "flex", gap: 2 }}>
+          <span
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 6,
+              display: "grid",
+              placeItems: "center",
+              color: muted,
+              border: `1px solid ${barBorder}`,
+              fontSize: 12,
+            }}
+          >
+            ◀
+          </span>
+          <span
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 6,
+              display: "grid",
+              placeItems: "center",
+              color: muted,
+              border: `1px solid ${barBorder}`,
+              fontSize: 12,
+            }}
+          >
+            ▶
+          </span>
+        </div>
+        <button
+          type="button"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 13,
+            color: muted,
+            padding: "4px 8px",
+            borderRadius: 6,
+            border: "none",
+            background: "transparent",
+            cursor: "default",
+            fontFamily: "inherit",
+          }}
+        >
+          {lpIconFileOutput({ size: 15, color: "rgba(24,24,27,0.55)" })}
+          <span>Export</span>
+        </button>
+        <div style={{ flex: 1, minWidth: 8 }} />
+        {presetRow}
+        <button
+          type="button"
+          style={{
+            fontSize: 13,
+            color: muted,
+            padding: "4px 10px",
+            borderRadius: 6,
+            border: "none",
+            background: "transparent",
+            cursor: "default",
+            fontFamily: "inherit",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+          }}
+        >
+          Panels <span style={{ fontSize: 10, opacity: 0.65 }}>⌄</span>
+        </button>
+        <button
+          type="button"
+          aria-label="Settings"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 13,
+            color: muted,
+            padding: "4px 8px",
+            borderRadius: 6,
+            border: "none",
+            background: "transparent",
+            cursor: "default",
+            fontFamily: "inherit",
+          }}
+        >
+          {lpIconSettings({ size: 16, color: "rgba(24,24,27,0.55)" })}
+          <span>Settings</span>
+        </button>
+        {!mac && (
+          <>
+            <div style={{ width: 1, height: 16, background: barBorder }} />
+            <span style={{ fontSize: 11, color: muted }}>─ □ ✕</span>
+          </>
+        )}
       </div>
-
-      {/* 3-pane workspace */}
-      <div style={{ display: "grid", gridTemplateColumns: "180px 1fr 280px", height: 360 }}>
-        {/* Sidebar — scenes */}
-        <div style={{ borderRight: `1px solid ${line}`, padding: "12px 10px", fontSize: 11 }}>
-          <div style={{ color: sub, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, fontSize: 10 }}>
-            Chapters
-          </div>
-          {[
-            { t: "第1章 雨の駅", on: false },
-            { t: "第2章 赤い傘", on: false },
-            { t: "第3章 再会", on: true },
-            { t: "第4章 告白", on: false },
-            { t: "第5章 別れ", on: false },
-          ].map((s, i) => (
-            <div
-              key={i}
-              style={{
-                padding: "6px 8px",
-                borderRadius: 6,
-                background: s.on ? accent : "transparent",
-                color: s.on ? "#fff" : ink,
-                marginBottom: 2,
-                fontWeight: s.on ? 700 : 500,
-              }}
-            >
-              {s.t}
-            </div>
-          ))}
-          <div style={{ color: sub, textTransform: "uppercase", letterSpacing: 1, margin: "16px 0 8px", fontSize: 10 }}>
-            Codex
-          </div>
-          {["七瀬 朱里", "白石 律", "雨宿りの駅", "赤い傘 (伏線)"].map((c, i) => (
-            <div key={i} style={{ padding: "5px 8px", color: sub, fontSize: 11 }}>
-              · {c}
-            </div>
-          ))}
-        </div>
-
-        {/* Editor */}
-        <div style={{ padding: "20px 28px", overflow: "hidden" }}>
-          {showTitle && (
-            <div style={{ fontSize: 9, letterSpacing: 1.5, color: sub, textTransform: "uppercase" }}>
-              CHAPTER 03
-            </div>
-          )}
-          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4, marginBottom: 12 }}>
-            再会 <span style={{ color: sub, fontSize: 14, fontWeight: 400 }}>· Reunion</span>
-          </div>
-
-          <div style={{ fontSize: 13, lineHeight: 1.85, color: ink }}>
-            <span>三年ぶりの駅に立つと、改札の灯りが滲んで見えた。</span>
-            <span
-              style={{
-                background: dark ? "rgba(184,255,58,0.16)" : "rgba(83,74,183,0.12)",
-                borderBottom: `2px solid ${accent}`,
-                padding: "0 2px",
-              }}
-            >
-              赤い傘が、ホームの端で揺れている。
-            </span>
-            <span> 律はもう来ているのだろうか。雨の音が遠い。</span>
-            <br /><br />
-            <span style={{ color: sub }}>
-              （ AI: 朱里の心拍を地の文に滲ませる方向で、次の段落候補が 3 つあります — Tab で挿入 ）
-            </span>
-          </div>
-
-          {/* Attribution legend */}
-          <div style={{ display: "flex", gap: 14, marginTop: 18, fontSize: 10, color: sub, fontFamily: "ui-monospace, monospace" }}>
-            <span><span style={{ display: "inline-block", width: 8, height: 8, background: "#27c08e", marginRight: 5, borderRadius: 2 }} />HUMAN 84%</span>
-            <span><span style={{ display: "inline-block", width: 8, height: 8, background: accent, marginRight: 5, borderRadius: 2 }} />AI 14%</span>
-            <span><span style={{ display: "inline-block", width: 8, height: 8, background: "#a0a0a0", marginRight: 5, borderRadius: 2 }} />UNKNOWN 2%</span>
-          </div>
-        </div>
-
-        {/* AI chat */}
-        <div style={{ borderLeft: `1px solid ${line}`, display: "flex", flexDirection: "column" }}>
-          <div style={{ padding: "10px 14px", fontSize: 10, letterSpacing: 1, color: sub, textTransform: "uppercase", borderBottom: `1px solid ${line}` }}>
-            AI Chat · Scene 03
-          </div>
-          <div style={{ padding: 14, fontSize: 11.5, lineHeight: 1.55, flex: 1, overflow: "hidden" }}>
-            <div style={{ background: dark ? "#1f1f22" : "#efece6", padding: "8px 10px", borderRadius: 8, marginBottom: 8 }}>
-              律の声、もっと低くしたい。
-            </div>
-            <div style={{ background: card, padding: "8px 10px", borderRadius: 8, marginBottom: 8, border: `1px solid ${line}` }}>
-              彼の声を低くするなら、語尾を短く切るのが効きます。<br />
-              <span style={{ color: accent, fontWeight: 600, fontSize: 10 }}>
-                ↳ Codex.白石律 / 性格 を更新しますか？
-              </span>
-            </div>
-            <div style={{ marginTop: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {["Codex+", "本文挿入", "再生成"].map((b) => (
-                <span key={b} style={{ padding: "3px 8px", border: `1px solid ${line}`, borderRadius: 99, fontSize: 10, color: sub }}>
-                  {b}
-                </span>
-              ))}
-            </div>
-          </div>
-          <div style={{ borderTop: `1px solid ${line}`, padding: "8px 12px", fontSize: 11, color: sub, fontFamily: "ui-monospace, monospace" }}>
-            ⏎ ask · ⌘⏎ insert
-          </div>
-        </div>
+      <div
+        style={{
+          flex: 1,
+          minHeight: minHeight,
+          display: "flex",
+          flexDirection: "column",
+          background: "#09090b",
+        }}
+      >
+        {dock}
       </div>
     </div>
   );
@@ -498,7 +1365,7 @@ function LPVariantA() {
 
         <div style={{ position: "relative" }}>
           <div style={{ position: "absolute", inset: -20, background: `repeating-linear-gradient(45deg, ${INK} 0, ${INK} 2px, transparent 2px, transparent 12px)`, opacity: 0.06, borderRadius: 18 }} />
-          <PanelMock theme="light" accent={ACCENT_PURPLE} />
+          <LPAppShellPreview accent={ACCENT_PURPLE} />
         </div>
 
         {/* Panel list strip */}
