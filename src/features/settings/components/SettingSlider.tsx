@@ -22,9 +22,7 @@ export function SettingSlider({
   const { value, setValue } = useSettingNumber(settingKey, defaultValue);
 
   return (
-    <div
-      className={`flex items-center gap-2 ${disabled ? "opacity-50" : ""}`}
-    >
+    <div className={`flex items-center gap-2 ${disabled ? "opacity-50" : ""}`}>
       <input
         type="range"
         min={min}
