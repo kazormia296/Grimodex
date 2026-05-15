@@ -28,6 +28,12 @@ await writeFile(
   [
     'import React from "react";',
     'import { createRoot } from "react-dom/client";',
+    'import { gsap } from "gsap";',
+    'import { ScrollTrigger } from "gsap/ScrollTrigger";',
+    "",
+    "gsap.registerPlugin(ScrollTrigger);",
+    "window.gsap = gsap;",
+    "window.ScrollTrigger = ScrollTrigger;",
     "",
     sharedVariants,
     sharedClean,

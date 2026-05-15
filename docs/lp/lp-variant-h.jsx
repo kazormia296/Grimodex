@@ -58,9 +58,191 @@ function HSectionMark({ tag, kicker }) {
   );
 }
 
+function HMotionOK() {
+  return !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+}
+
+function HReveal({ children, style, delay = 0, burst = false }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    const gsap = window.gsap;
+    if (!el || !gsap) return undefined;
+    if (!HMotionOK()) {
+      gsap.set(el, { autoAlpha: 1, y: 0, rotateX: 0, clipPath: "inset(0% 0% 0% 0%)" });
+      return undefined;
+    }
+
+    const hoverListeners = [];
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        el,
+        {
+          autoAlpha: 0,
+          y: burst ? 72 : 44,
+          rotateX: burst ? -13 : -4,
+          scale: burst ? 0.96 : 1,
+          clipPath: "inset(0% 0% 100% 0%)",
+          transformOrigin: "50% 0%",
+        },
+        {
+          autoAlpha: 1,
+          y: 0,
+          rotateX: 0,
+          scale: 1,
+          clipPath: "inset(0% 0% 0% 0%)",
+          duration: burst ? 0.95 : 0.72,
+          delay,
+          ease: burst ? "expo.out" : "power3.out",
+          scrollTrigger: {
+            trigger: el,
+            start: "top 84%",
+            once: true,
+          },
+        },
+      );
+    }, el);
+
+    return () => ctx.revert();
+  }, [burst, delay]);
+
+  return (
+    <div ref={ref} style={{ ...style, opacity: 0, willChange: "transform, opacity, clip-path" }}>
+      {children}
+    </div>
+  );
+}
+
 function LPVariantH() {
   const [selectedPanel, setSelectedPanel] = useState(0);
   const [workflowMode, setWorkflowMode] = useState("plotter");
+  const panelPreviewRef = useRef(null);
+  const workflowGridRef = useRef(null);
+  const pagingLockRef = useRef(false);
+
+  useEffect(() => {
+    const gsap = window.gsap;
+    if (!gsap || !HMotionOK()) return undefined;
+
+    const hoverListeners = [];
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        ".hz-nav-link",
+        { y: -18, autoAlpha: 0 },
+        { y: 0, autoAlpha: 1, duration: 0.5, stagger: 0.045, ease: "back.out(1.8)", delay: 0.15 },
+      );
+      gsap.fromTo(
+        ".hz-micro",
+        { y: 22, autoAlpha: 0, rotate: -1.5 },
+        { y: 0, autoAlpha: 1, rotate: 0, duration: 0.56, stagger: 0.04, ease: "power3.out", delay: 0.5 },
+      );
+
+      gsap.utils.toArray(".hz-pop").forEach((target) => {
+        const enter = () => gsap.to(target, { y: -4, scale: 1.035, duration: 0.18, ease: "power2.out" });
+        const leave = () => gsap.to(target, { y: 0, scale: 1, duration: 0.18, ease: "power2.out" });
+        target.addEventListener("mouseenter", enter);
+        target.addEventListener("mouseleave", leave);
+        hoverListeners.push([target, enter, leave]);
+      });
+    });
+
+    return () => {
+      hoverListeners.forEach(([target, enter, leave]) => {
+        target.removeEventListener("mouseenter", enter);
+        target.removeEventListener("mouseleave", leave);
+      });
+      ctx.revert();
+    };
+  }, []);
+
+  useEffect(() => {
+    const gsap = window.gsap;
+    const target = panelPreviewRef.current;
+    if (!gsap || !target || !HMotionOK()) return undefined;
+
+    const tween = gsap.fromTo(
+      target,
+      { x: -12, autoAlpha: 0.65, filter: "contrast(1.35)" },
+      { x: 0, autoAlpha: 1, filter: "contrast(1)", duration: 0.32, ease: "power3.out" },
+    );
+    return () => tween.kill();
+  }, [selectedPanel]);
+
+  useEffect(() => {
+    const gsap = window.gsap;
+    const target = workflowGridRef.current;
+    if (!gsap || !target || !HMotionOK()) return undefined;
+
+    const tween = gsap.fromTo(
+      target.children,
+      { y: 26, autoAlpha: 0, rotate: -1.5 },
+      { y: 0, autoAlpha: 1, rotate: 0, duration: 0.38, stagger: 0.055, ease: "back.out(1.7)" },
+    );
+    return () => tween.kill();
+  }, [workflowMode]);
+
+  useEffect(() => {
+    const pageSelector = "[data-hz-page]";
+    const navSelector = "[data-hz-nav]";
+
+    const getPages = () => Array.from(document.querySelectorAll(pageSelector));
+    const getNavOffset = () =>
+      document.querySelector(navSelector)?.getBoundingClientRect().height ?? 0;
+    const getCurrentIndex = (pages) => {
+      const navOffset = getNavOffset();
+      return pages.reduce(
+        (best, page, index) => {
+          const distance = Math.abs(page.getBoundingClientRect().top - navOffset);
+          return distance < best.distance ? { distance, index } : best;
+        },
+        { distance: Number.POSITIVE_INFINITY, index: 0 },
+      ).index;
+    };
+
+    const goToPage = (direction) => {
+      const pages = getPages();
+      if (pages.length === 0 || pagingLockRef.current) return;
+
+      const current = getCurrentIndex(pages);
+      const next = Math.min(Math.max(current + direction, 0), pages.length - 1);
+      if (next === current) return;
+
+      pagingLockRef.current = true;
+      window.scrollTo({
+        top: Math.max(0, pages[next].offsetTop - getNavOffset()),
+        behavior: HMotionOK() ? "smooth" : "auto",
+      });
+      window.setTimeout(() => {
+        pagingLockRef.current = false;
+      }, HMotionOK() ? 1300 : 120);
+    };
+
+    const onWheel = (event) => {
+      if (Math.abs(event.deltaY) < 18 || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+      event.preventDefault();
+      goToPage(event.deltaY > 0 ? 1 : -1);
+    };
+
+    const onKeyDown = (event) => {
+      if (event.defaultPrevented) return;
+      if (["ArrowDown", "PageDown", " "].includes(event.key)) {
+        event.preventDefault();
+        goToPage(1);
+      }
+      if (["ArrowUp", "PageUp"].includes(event.key)) {
+        event.preventDefault();
+        goToPage(-1);
+      }
+    };
+
+    window.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
 
   const panelDetails = [
     { name: "Scenes", copy: "章とシーンを管理し、いま書く場所へすぐ戻れる入口。長い原稿でも迷子になりにくい。" },
@@ -95,6 +277,29 @@ function LPVariantH() {
     ],
   };
   const activeWorkflow = workflowSteps[workflowMode];
+  const handleWorkflowModeClick = (mode, event) => {
+    const target = event.currentTarget;
+    const gsap = window.gsap;
+    setWorkflowMode(mode);
+
+    if (!gsap || !HMotionOK()) return;
+    gsap
+      .timeline()
+      .to(target, {
+        y: 4,
+        scale: 0.96,
+        boxShadow: `1px 1px 0 ${HZ_INK}`,
+        duration: 0.08,
+        ease: "power2.out",
+      })
+      .to(target, {
+        y: 0,
+        scale: 1,
+        boxShadow: `4px 4px 0 ${HZ_INK}`,
+        duration: 0.26,
+        ease: "back.out(2.4)",
+      });
+  };
   const advantageRows = [
     {
       title: "本文の横に、作品世界を置く。",
@@ -133,23 +338,27 @@ function LPVariantH() {
       <style>{`
         .hz-mark{background:${HZ_HL};padding:0 10px;display:inline-block;line-height:0.95}
         .hz-shadow{box-shadow:5px 5px 0 ${HZ_INK}}
+        .hz-split{display:inline-block;transform-style:preserve-3d}
+        .hz-pop{transform-origin:50% 80%;will-change:transform}
+        .hz-page{min-height:calc(100vh - 76px);scroll-snap-align:start;scroll-snap-stop:always;display:flex;flex-direction:column;justify-content:center}
+        html{scroll-snap-type:y mandatory;scroll-behavior:smooth}
       `}</style>
 
       {/* NAV */}
-      <div style={{ position: "sticky", top: 0, zIndex: 30, background: HZ_BG, borderTop: `4px solid ${HZ_INK}`, borderBottom: `2px solid ${HZ_INK}` }}>
+      <div data-hz-nav style={{ position: "sticky", top: 0, zIndex: 30, background: HZ_BG, borderTop: `4px solid ${HZ_INK}`, borderBottom: `2px solid ${HZ_INK}` }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", padding: "16px 48px", color: HZ_INK }}>
           <a href="#hero" style={{ display: "inline-flex", width: 190, color: HZ_INK }}>
             <img src="assets/grimodex-logo.svg" alt="Grimodex" style={{ width: "100%", height: "auto", display: "block" }} />
           </a>
           <div style={{ display: "flex", gap: 24, fontFamily: "'JetBrains Mono', monospace", fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em" }}>
-            <a href="#hero" style={{ color: HZ_INK, textDecoration: "none" }}>A HERO</a>
-            <a href="#workspace" style={{ color: HZ_INK, textDecoration: "none" }}>B WORKSPACE</a>
-            <a href="#moves" style={{ color: HZ_INK, textDecoration: "none" }}>C MOVES</a>
-            <a href="#workflow" style={{ color: HZ_INK, textDecoration: "none" }}>D WORKFLOW</a>
-            <a href="#for" style={{ color: HZ_INK, textDecoration: "none" }}>E FOR</a>
+            <a className="hz-nav-link" href="#hero" style={{ color: HZ_INK, textDecoration: "none" }}>A HERO</a>
+            <a className="hz-nav-link" href="#workspace" style={{ color: HZ_INK, textDecoration: "none" }}>B WORKSPACE</a>
+            <a className="hz-nav-link" href="#moves" style={{ color: HZ_INK, textDecoration: "none" }}>C MOVES</a>
+            <a className="hz-nav-link" href="#workflow" style={{ color: HZ_INK, textDecoration: "none" }}>D WORKFLOW</a>
+            <a className="hz-nav-link" href="#for" style={{ color: HZ_INK, textDecoration: "none" }}>E FOR</a>
           </div>
           <div style={{ justifySelf: "end", display: "flex", alignItems: "center", gap: 12 }}>
-            <a href="#download" className="hz-shadow" style={{ background: HZ_INK, color: HZ_BG, border: `2px solid ${HZ_INK}`, padding: "10px 18px", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".08em", textDecoration: "none" }}>
+            <a href="#download" className="hz-shadow hz-pop" style={{ background: HZ_INK, color: HZ_BG, border: `2px solid ${HZ_INK}`, padding: "10px 18px", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".08em", textDecoration: "none" }}>
               ↓ DOWNLOAD
             </a>
           </div>
@@ -157,10 +366,10 @@ function LPVariantH() {
       </div>
 
       {/* HERO */}
-      <section id="hero" style={{ padding: "120px 48px 80px", color: HZ_INK, position: "relative" }}>
-        <div>
+      <section data-hz-page id="hero" className="hz-page" style={{ padding: "48px 48px 56px", color: HZ_INK, position: "relative", overflow: "hidden" }}>
+        <div style={{ position: "relative", zIndex: 1 }}>
           <div>
-            <_Rev2>
+            <HReveal burst>
               <h1 style={{
                 margin: 0,
                 fontSize: "clamp(72px, 13vw, 200px)", lineHeight: 0.88,
@@ -171,18 +380,18 @@ function LPVariantH() {
                 時間も、<br />
                 <span className="hz-mark">書いている。</span>
               </h1>
-            </_Rev2>
-            <_Rev2 delay={80}>
+            </HReveal>
+            <HReveal delay={0.08}>
               <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 28, flexWrap: "wrap" }}>
-                <span style={{ background: HZ_INK, color: HZ_BG, padding: "4px 10px", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em" }}>A / 01</span>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".18em" }}>
+                <span className="hz-micro" style={{ background: HZ_INK, color: HZ_BG, padding: "4px 10px", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em" }}>A / 01</span>
+                <span className="hz-micro" style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".18em" }}>
                   A <span className="hz-mark" style={{ padding: "0 6px" }}>WRITING FIDGET IDE</span>
                 </span>
                 <span style={{ flex: 1, height: 1, background: HZ_INK, opacity: 0.25, minWidth: 40 }} />
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "rgba(10,10,10,0.55)", textTransform: "uppercase", letterSpacing: ".12em" }}>TAURI · LOCAL · CLI · BYOK</span>
               </div>
-            </_Rev2>
-            <_Rev2 delay={120}>
+            </HReveal>
+            <HReveal delay={0.12}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 48, marginTop: 56, alignItems: "start" }}>
                 <div>
                   <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: ".1em", color: "rgba(10,10,10,0.55)", marginBottom: 8 }}>EN ──</div>
@@ -212,42 +421,33 @@ function LPVariantH() {
                   </div>
                 </div>
               </div>
-            </_Rev2>
-            <_Rev2 delay={220}>
+            </HReveal>
+            <HReveal delay={0.22}>
               <div style={{ display: "flex", gap: 14, marginTop: 56, alignItems: "center", flexWrap: "wrap" }}>
-                <a href="#download" className="hz-shadow" style={{ background: HZ_INK, color: HZ_BG, border: `2px solid ${HZ_INK}`, padding: "18px 28px", fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".06em", textDecoration: "none" }}>
+                <a href="#download" className="hz-shadow hz-pop" style={{ background: HZ_INK, color: HZ_BG, border: `2px solid ${HZ_INK}`, padding: "18px 28px", fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".06em", textDecoration: "none" }}>
                   ↓ DOWNLOAD ダウンロード
                 </a>
-                <a href="#workflow" className="hz-shadow" style={{ background: HZ_HL, color: HZ_INK, border: `2px solid ${HZ_INK}`, padding: "18px 24px", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".06em", textDecoration: "none" }}>
+                <a href="#workflow" className="hz-shadow hz-pop" style={{ background: HZ_HL, color: HZ_INK, border: `2px solid ${HZ_INK}`, padding: "18px 24px", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".06em", textDecoration: "none" }}>
                   SEE WORKFLOWS →
                 </a>
                 <HChip>MAC ·dmg</HChip><HChip>WIN ·msi</HChip><HChip>LINUX ·AppImage</HChip>
               </div>
-            </_Rev2>
+            </HReveal>
           </div>
         </div>
       </section>
 
       {/* ZBAR — writing verbs (zine fingerprint) */}
-      <HZBar items={[
-        { t: "VERBS", k: true },
-        { t: "DRAFT" },
-        { t: "ASK" },
-        { t: "EXTRACT", hl: true },
-        { t: "ARRANGE" },
-        { t: "REVISE" },
-      ]} />
-
       {/* WORKSPACE */}
-      <section id="workspace" style={{ padding: "100px 48px", color: HZ_INK }}>
+      <section data-hz-page id="workspace" className="hz-page" style={{ padding: "100px 48px", color: HZ_INK }}>
         <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}>
           <HSectionMark tag="B / 02" kicker="WORKSPACE" />
           <div>
-            <_Rev2>
+            <HReveal>
               <h2 style={{ fontSize: 112, lineHeight: 0.92, fontWeight: 800, letterSpacing: -4, margin: "0 0 24px" }}>
                 <span className="hz-mark">15 PANELS.</span><br />ONE DESK.
               </h2>
-            </_Rev2>
+            </HReveal>
             <p style={{ fontSize: 16, lineHeight: 1.65, opacity: 0.8, maxWidth: 640, marginBottom: 40 }}>
               Editor、Scenes、AI Chat、Codex、Map、Timeline、Snippets、Attribution、Foreshadow、Grid、Matrix などを Dockview で自由配置。執筆・整理・相談を、作品ごとの机に組み替える。
             </p>
@@ -260,7 +460,7 @@ function LPVariantH() {
                 </div>
                 <div style={{ padding: 28, borderRight: `1px solid ${HZ_RULE}` }}>
                   <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: ".12em", color: "rgba(10,10,10,0.48)", textTransform: "uppercase", marginBottom: 16 }}>Preview</div>
-                  <div style={{ border: `2px solid ${HZ_INK}`, background: HZ_BG, minHeight: 230, padding: 20 }}>
+                  <div ref={panelPreviewRef} style={{ border: `2px solid ${HZ_INK}`, background: HZ_BG, minHeight: 230, padding: 20, willChange: "transform, opacity, filter" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
                       <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#ff5f57" }} />
                       <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#ffbd2e" }} />
@@ -290,7 +490,7 @@ function LPVariantH() {
               {COPY.panels.map((p, i) => {
                 const accent = i === selectedPanel;
                 return (
-                  <button key={p} onClick={() => setSelectedPanel(i)} style={{
+                  <button key={p} className="hz-pop" onClick={() => setSelectedPanel(i)} style={{
                     borderRight: (i % 5) < 4 ? `2px solid ${HZ_INK}` : "none",
                     borderBottom: i < 10 ? `2px solid ${HZ_INK}` : "none",
                     padding: "16px 14px",
@@ -311,17 +511,17 @@ function LPVariantH() {
       </section>
 
       {/* THREE MOVES — D layout, G accents */}
-      <section id="moves" style={{ borderTop: `2px solid ${HZ_INK}`, padding: "100px 48px", color: HZ_INK }}>
+      <section data-hz-page id="moves" className="hz-page" style={{ borderTop: `2px solid ${HZ_INK}`, padding: "100px 48px", color: HZ_INK }}>
         <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}>
           <HSectionMark tag="C / 03" kicker="THREE MOVES" />
           <div>
-            <_Rev2>
+            <HReveal>
               <h2 style={{ fontSize: 112, lineHeight: 0.92, fontWeight: 800, letterSpacing: -4, margin: "0 0 56px" }}>
                 THREE MOVES<br />THAT <span className="hz-mark">COMPOUND.</span>
               </h2>
-            </_Rev2>
+            </HReveal>
             {COPY.features.slice(0, 3).map((f, i) => (
-              <_Rev2 key={f.no} delay={i * 80}>
+              <HReveal key={f.no} delay={i * 0.08}>
                 <div style={{
                   borderTop: `2px solid ${HZ_INK}`,
                   padding: "44px 0",
@@ -354,23 +554,23 @@ function LPVariantH() {
                     <HChip hl>{["CODEX", "MAP", "AI CHAT"][i]}</HChip>
                   </div>
                 </div>
-              </_Rev2>
+              </HReveal>
             ))}
           </div>
         </div>
       </section>
 
       {/* WORKFLOW */}
-      <section id="workflow" style={{ borderTop: `2px solid ${HZ_INK}`, padding: "100px 48px", color: HZ_INK }}>
+      <section data-hz-page id="workflow" className="hz-page" style={{ borderTop: `2px solid ${HZ_INK}`, padding: "100px 48px", color: HZ_INK }}>
         <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}>
           <HSectionMark tag="D / 04" kicker="WORKFLOW" />
           <div>
-            <_Rev2>
+            <HReveal>
               <h2 style={{ fontSize: 112, lineHeight: 0.92, fontWeight: 800, letterSpacing: -4, margin: "0 0 48px" }}>
                 PLOTTER OR<br />
                 <span className="hz-mark">PANTSER.</span>
               </h2>
-            </_Rev2>
+            </HReveal>
             <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
               {[
                 { key: "plotter", label: "PLOTTER", desc: "先に構造を作る" },
@@ -380,7 +580,7 @@ function LPVariantH() {
                 return (
                   <button
                     key={mode.key}
-                    onClick={() => setWorkflowMode(mode.key)}
+                    onClick={(event) => handleWorkflowModeClick(mode.key, event)}
                     style={{
                       background: active ? HZ_HL : HZ_BG,
                       color: HZ_INK,
@@ -390,7 +590,8 @@ function LPVariantH() {
                       textAlign: "left",
                       cursor: "pointer",
                       fontFamily: "'JetBrains Mono', monospace",
-                      boxShadow: active ? `4px 4px 0 ${HZ_INK}` : "none",
+                      boxShadow: active ? `4px 4px 0 ${HZ_INK}` : `0 0 0 ${HZ_INK}`,
+                      transformOrigin: "50% 80%",
                     }}
                   >
                     <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: ".08em" }}>{mode.label}</div>
@@ -400,7 +601,7 @@ function LPVariantH() {
               })}
             </div>
             <div style={{ border: `2px solid ${HZ_INK}` }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
+              <div ref={workflowGridRef} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
                 {activeWorkflow.map((s, i) => (
                   <div key={s.n} style={{
                     borderRight: i < 3 ? `2px solid ${HZ_INK}` : "none",
@@ -431,15 +632,15 @@ function LPVariantH() {
       </section>
 
       {/* USE CASES */}
-      <section id="for" style={{ borderTop: `2px solid ${HZ_INK}`, padding: "100px 48px", color: HZ_INK }}>
+      <section data-hz-page id="for" className="hz-page" style={{ borderTop: `2px solid ${HZ_INK}`, padding: "100px 48px", color: HZ_INK }}>
         <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}>
           <HSectionMark tag="E / 05" kicker="FOR" />
           <div>
-            <_Rev2>
+            <HReveal>
               <h2 style={{ fontSize: 112, lineHeight: 0.92, fontWeight: 800, letterSpacing: -4, margin: "0 0 48px" }}>
                 WHY WRITE<br /><span className="hz-mark">HERE?</span>
               </h2>
-            </_Rev2>
+            </HReveal>
             <div style={{ border: `2px solid ${HZ_INK}` }}>
               {advantageRows.map((u, i) => (
                 <div key={u.title} style={{
@@ -468,7 +669,7 @@ function LPVariantH() {
       </section>
 
       {/* CTA — D's massive scale, G's brutalist buttons */}
-      <section id="download" style={{ borderTop: `4px solid ${HZ_INK}`, padding: "120px 48px", color: HZ_INK, textAlign: "center" }}>
+      <section data-hz-page id="download" className="hz-page" style={{ borderTop: `4px solid ${HZ_INK}`, padding: "120px 48px", color: HZ_INK, textAlign: "center" }}>
         <h2 style={{ fontSize: 220, lineHeight: 0.86, fontWeight: 800, letterSpacing: -8, margin: 0 }}>
           WRITE<br />
           <span className="hz-mark" style={{ padding: "0 18px" }}>DIFFERENTLY.</span>
