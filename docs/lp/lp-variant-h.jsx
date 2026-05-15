@@ -120,6 +120,9 @@ function LPVariantH() {
   const panelPreviewRef = useRef(null);
   const workflowGridRef = useRef(null);
   const pagingLockRef = useRef(false);
+  const heroTitleRef = useRef(null);
+  const heroMetaRef = useRef(null);
+  const heroBodyRef = useRef(null);
 
   useEffect(() => {
     const gsap = window.gsap;
@@ -154,6 +157,79 @@ function LPVariantH() {
       });
       ctx.revert();
     };
+  }, []);
+
+
+  useEffect(() => {
+    const gsap = window.gsap;
+    const title = heroTitleRef.current;
+    const heroBits = [
+      heroMetaRef.current,
+      heroBodyRef.current,
+    ].filter(Boolean);
+    if (!title || !gsap) return undefined;
+
+    const lines = title.querySelectorAll("[data-hz-hero-line]");
+    const marker = title.querySelector("[data-hz-hero-marker]");
+    if (!HMotionOK()) {
+      gsap.set([title, ...heroBits], { clearProps: "all", autoAlpha: 1 });
+      gsap.set(lines, { autoAlpha: 1, y: 0, rotateX: 0 });
+      gsap.set(marker, { "--hero-marker-scale": 1 });
+      return undefined;
+    }
+
+    const ctx = gsap.context(() => {
+      const rect = title.getBoundingClientRect();
+      const navHeight =
+        document.querySelector("[data-hz-nav]")?.getBoundingClientRect().height ?? 0;
+      const centeredX = window.innerWidth / 2 - (rect.left + rect.width / 2);
+      const finalY = Math.max(218, (window.innerHeight + navHeight) / 2 - (rect.top + rect.height / 2));
+
+      gsap.set(heroBits, { autoAlpha: 0, y: finalY + 28 });
+      gsap.set(lines, {
+        autoAlpha: 0,
+        y: 34,
+        rotateX: -9,
+        transformOrigin: "50% 50%",
+      });
+      gsap.set(marker, { "--hero-marker-scale": 0 });
+
+      gsap.set(title, {
+        x: centeredX,
+        y: finalY,
+        transformOrigin: "50% 50%",
+        willChange: "transform",
+      });
+
+      gsap
+        .timeline({ defaults: { ease: "power3.out" } })
+        .to(lines, {
+          autoAlpha: 1,
+          y: 0,
+          rotateX: 0,
+          duration: 0.9,
+          stagger: 0.48,
+        })
+        .to(marker, {
+          "--hero-marker-scale": 1,
+          duration: 0.68,
+          ease: "power3.out",
+        }, "+=0")
+        .to(title, {
+          x: 0,
+          duration: 1.18,
+          ease: "expo.inOut",
+        }, "+=0.18")
+        .to(heroBits, {
+          autoAlpha: 1,
+          y: finalY,
+          duration: 0.72,
+          stagger: 0.12,
+          ease: "power3.out",
+        }, "+=0.06");
+    }, title);
+
+    return () => ctx.revert();
   }, []);
 
   useEffect(() => {
@@ -337,8 +413,10 @@ function LPVariantH() {
     <LPFrame bg={HZ_BG} fontFamily="'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif">
       <style>{`
         .hz-mark{background:${HZ_HL};padding:0 10px;display:inline-block;line-height:0.95}
+        .hz-hero-marker{--hero-marker-scale:0;background:transparent;position:relative;isolation:isolate;overflow:visible}
+        .hz-hero-marker::before{content:"";position:absolute;left:0;right:0;bottom:.04em;height:.92em;background:${HZ_HL};transform:scaleX(var(--hero-marker-scale));transform-origin:left center;z-index:-1}
         .hz-shadow{box-shadow:5px 5px 0 ${HZ_INK}}
-        .hz-split{display:inline-block;transform-style:preserve-3d}
+        .hz-split{display:block;width:max-content;transform-style:preserve-3d}
         .hz-pop{transform-origin:50% 80%;will-change:transform}
         .hz-page{min-height:calc(100vh - 76px);scroll-snap-align:start;scroll-snap-stop:always;display:flex;flex-direction:column;justify-content:center}
         html{scroll-snap-type:y mandatory;scroll-behavior:smooth}
@@ -369,19 +447,28 @@ function LPVariantH() {
       <section data-hz-page id="hero" className="hz-page" style={{ padding: "48px 48px 56px", color: HZ_INK, position: "relative", overflow: "hidden" }}>
         <div style={{ position: "relative", zIndex: 1 }}>
           <div>
-            <HReveal burst>
-              <h1 style={{
+            <h1
+              ref={heroTitleRef}
+              data-hz-hero-title
+              style={{
                 margin: 0,
                 fontSize: "clamp(72px, 13vw, 200px)", lineHeight: 0.88,
                 fontWeight: 800, letterSpacing: "-0.035em",
                 fontFamily: "'Inter Tight', 'Helvetica Neue', Helvetica, Arial",
-              }}>
-                書いていない<br />
-                時間も、<br />
-                <span className="hz-mark">書いている。</span>
-              </h1>
-            </HReveal>
-            <HReveal delay={0.08}>
+                width: "max-content",
+              }}
+            >
+              <span data-hz-hero-line className="hz-split">{"\u66f8\u3044\u3066\u306a\u3044"}</span>
+              <span data-hz-hero-line className="hz-split">{"\u6642\u9593\u3082\u3001"}</span>
+              <span
+                data-hz-hero-line
+                data-hz-hero-marker
+                className="hz-mark hz-split hz-hero-marker"
+              >
+                {"\u66f8\u3044\u3066\u3044\u308b\u3002"}
+              </span>
+            </h1>
+            <div ref={heroMetaRef} data-hz-hero-meta>
               <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 28, flexWrap: "wrap" }}>
                 <span className="hz-micro" style={{ background: HZ_INK, color: HZ_BG, padding: "4px 10px", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em" }}>A / 01</span>
                 <span className="hz-micro" style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".18em" }}>
@@ -390,8 +477,8 @@ function LPVariantH() {
                 <span style={{ flex: 1, height: 1, background: HZ_INK, opacity: 0.25, minWidth: 40 }} />
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "rgba(10,10,10,0.55)", textTransform: "uppercase", letterSpacing: ".12em" }}>TAURI · LOCAL · CLI · BYOK</span>
               </div>
-            </HReveal>
-            <HReveal delay={0.12}>
+            </div>
+            <div ref={heroBodyRef} data-hz-hero-body>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 48, marginTop: 56, alignItems: "start" }}>
                 <div>
                   <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: ".1em", color: "rgba(10,10,10,0.55)", marginBottom: 8 }}>EN ──</div>
@@ -416,24 +503,13 @@ function LPVariantH() {
                   <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, lineHeight: 2, textTransform: "uppercase", letterSpacing: ".04em" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px dashed ${HZ_INK}` }}><span>RUNTIME</span><b>TAURI v2</b></div>
                     <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px dashed ${HZ_INK}` }}><span>STORAGE</span><b>LOCAL</b></div>
-                    <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px dashed ${HZ_INK}` }}><span>AI</span><b>LOCAL / CLI / BYOK</b></div>
+                    <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px dashed ${HZ_INK}` }}><span>AI</span><b>MCP / LOCAL / CLI / BYOK</b></div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}><span>STATUS</span><b style={{ background: HZ_HL, padding: "0 4px" }}>BETA</b></div>
                   </div>
                 </div>
               </div>
-            </HReveal>
-            <HReveal delay={0.22}>
-              <div style={{ display: "flex", gap: 14, marginTop: 56, alignItems: "center", flexWrap: "wrap" }}>
-                <a href="#download" className="hz-shadow hz-pop" style={{ background: HZ_INK, color: HZ_BG, border: `2px solid ${HZ_INK}`, padding: "18px 28px", fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".06em", textDecoration: "none" }}>
-                  ↓ DOWNLOAD ダウンロード
-                </a>
-                <a href="#workflow" className="hz-shadow hz-pop" style={{ background: HZ_HL, color: HZ_INK, border: `2px solid ${HZ_INK}`, padding: "18px 24px", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".06em", textDecoration: "none" }}>
-                  SEE WORKFLOWS →
-                </a>
-                <HChip>MAC ·dmg</HChip><HChip>WIN ·msi</HChip><HChip>LINUX ·AppImage</HChip>
+            </div>
               </div>
-            </HReveal>
-          </div>
         </div>
       </section>
 
