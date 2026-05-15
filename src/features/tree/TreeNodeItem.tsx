@@ -188,13 +188,25 @@ export function TreeNodeItem({
     const panel = dockviewApi.getPanel("editor");
     if (panel) {
       panel.api.setActive();
-    } else {
-      dockviewApi.addPanel({
-        id: "editor",
-        component: "editor",
-        title: t("layout.panel.editor"),
-      });
+      return;
     }
+    // Playwright 等の単体パネル撮影では scenes のみ表示 — ツリークリックで editor を
+    // addPanel しない（現レイアウトは 1 パネルに固定）。
+    try {
+      if (
+        localStorage.getItem("grimodex:screenshot-mode") === "true" &&
+        localStorage.getItem("grimodex:screenshot-panel") != null
+      ) {
+        return;
+      }
+    } catch {
+      /* noop */
+    }
+    dockviewApi.addPanel({
+      id: "editor",
+      component: "editor",
+      title: t("layout.panel.editor"),
+    });
   }, [t]);
 
   const handleClick = useCallback(

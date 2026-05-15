@@ -9,6 +9,7 @@ import {
   readingMinutes,
 } from "@/features/editor/charCountStats";
 import { cn } from "@/lib/utils";
+import { tiptapContentFromDb } from "@/lib/prosemirror";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
@@ -1226,11 +1227,10 @@ export function EditorPane({
           editor!.commands.setContent(parsed, { emitUpdate: false });
           markEnd("sceneLoad.setContent.codex");
         } else if (isSnippetMode) {
-          // Load snippet content (HTML)
           const snippet = await getSnippet(nodeId);
           if (cancelled) return;
           markStart("sceneLoad.setContent.snippet");
-          editor!.commands.setContent(snippet?.content || "", {
+          editor!.commands.setContent(tiptapContentFromDb(snippet?.content), {
             emitUpdate: false,
           });
           markEnd("sceneLoad.setContent.snippet");

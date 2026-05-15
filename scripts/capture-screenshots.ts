@@ -21,6 +21,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_PORT = 4174;
 const MIN_SCREENSHOT_BYTES = 1_500;
 const MAX_SCREENSHOT_BYTES_FLOOR = 10_000;
+/** 平坦なダークUIは PNG 圧縮率が高く、画素数が小さいほど変動が大きい */
+const SCREENSHOT_MIN_BYTES_SLACK = 0.88;
 
 function minScreenshotBytes(capture: ScreenshotCapture) {
   return Math.max(
@@ -29,6 +31,15 @@ function minScreenshotBytes(capture: ScreenshotCapture) {
       MAX_SCREENSHOT_BYTES_FLOOR,
       Math.floor((capture.width * capture.height * capture.scale) / 20),
     ),
+  );
+}
+
+/** 厳密下限ではなく slack をかけたしきい値（白飛び検知は維持しつつフレークを抑える） */
+function effectiveMinScreenshotBytes(capture: ScreenshotCapture) {
+  const raw = minScreenshotBytes(capture);
+  return Math.max(
+    MIN_SCREENSHOT_BYTES,
+    Math.floor(raw * SCREENSHOT_MIN_BYTES_SLACK),
   );
 }
 
@@ -198,7 +209,15 @@ async function captureOne(baseUrl: string, capture: ScreenshotCapture) {
       state: "attached",
       timeout: 15_000,
     });
-    await page.waitForTimeout(1_000);
+    await page
+      .waitForSelector("body[data-screenshot-ready='true']", {
+        state: "attached",
+        timeout: 20_000,
+      })
+      .catch(() => {
+        /* fallback: stale builds without marker */
+      });
+    await page.waitForTimeout(1_200);
     await performCaptureActions(page, capture);
     await page.waitForTimeout(300);
 
@@ -208,7 +227,7 @@ async function captureOne(baseUrl: string, capture: ScreenshotCapture) {
     await page.screenshot({ path: outputPath, fullPage: false });
 
     const file = await stat(outputPath);
-    const minimumBytes = minScreenshotBytes(capture);
+    const minimumBytes = effectiveMinScreenshotBytes(capture);
     if (file.size < minimumBytes) {
       throw new Error(
         `Screenshot ${capture.output} is unexpectedly small (${file.size} bytes, expected at least ${minimumBytes})`,

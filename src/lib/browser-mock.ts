@@ -126,13 +126,18 @@ const SCHEMA_DDL = `
   );
   CREATE TABLE IF NOT EXISTS authorship_spans (
     id TEXT PRIMARY KEY,
-    node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    codex_entry_id TEXT,
+    snippet_id TEXT,
+    detail_value_id TEXT,
     from_pos INTEGER NOT NULL,
     to_pos INTEGER NOT NULL,
     source TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
     model TEXT,
     timestamp TEXT,
-    chat_msg_id TEXT
+    chat_msg_id TEXT,
+    phase_id TEXT,
+    sticky_id TEXT
   );
   CREATE TABLE IF NOT EXISTS codex_tags (
     id TEXT PRIMARY KEY,
@@ -313,6 +318,22 @@ const SCHEMA_DDL = `
     is_orphan INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS codex_quick_pins (
+    entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS scene_codex_mentions (
+    scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'mentioned',
+    PRIMARY KEY (scene_id, codex_entry_id, source)
+  );
+  CREATE TABLE IF NOT EXISTS scene_beat_pov_cache (
+    scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    pov_character_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    PRIMARY KEY (scene_id, pov_character_id)
   );
 `;
 
@@ -990,6 +1011,11 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
   });
   codexStmt.free();
 
+  db.run(
+    `UPDATE tree_nodes SET pov_character_id = ?, location_id = ? WHERE id = 'scene-1'`,
+    ["codex-akane", "codex-haisha"],
+  );
+
   const labelRows = [
     ["label-ki", "起", "rose", 0],
     ["label-important", "重要", "red", 1],
@@ -1185,5 +1211,38 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
         isLinearMode: false,
       }),
     ],
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO codex_quick_pins (entry_id, created_at) VALUES
+      ('codex-akahimo', ?),
+      ('codex-akane', ?)`,
+    [now, now],
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO scene_codex_mentions
+      (scene_id, codex_entry_id, source, role) VALUES
+     ('scene-1', 'codex-akane', 'body', 'mentioned'),
+     ('scene-1', 'codex-akahimo', 'body', 'mentioned'),
+     ('scene-1', 'codex-haisha', 'body', 'mentioned'),
+     ('scene-2', 'codex-akanawa', 'body', 'mentioned')`,
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO scene_beat_pov_cache (scene_id, pov_character_id)
+     VALUES ('scene-1', 'codex-akane')`,
+  );
+
+  db.run(
+    `INSERT OR IGNORE INTO authorship_spans
+      (id, node_id, codex_entry_id, snippet_id, detail_value_id, from_pos, to_pos, source, model, timestamp, chat_msg_id, phase_id, sticky_id)
+     VALUES
+      ('shot-auth-s1a', 'scene-1', NULL, NULL, NULL, 0, 95, 'human', NULL, ?, NULL, NULL, NULL),
+      ('shot-auth-s1b', 'scene-1', NULL, NULL, NULL, 95, 168, 'ai', 'openrouter/anthropic/claude-sonnet-4.6', ?, NULL, NULL, NULL),
+      ('shot-auth-s1c', 'scene-1', NULL, NULL, NULL, 168, 186, 'unknown', NULL, ?, NULL, NULL, NULL),
+      ('shot-auth-s2a', 'scene-2', NULL, NULL, NULL, 0, 45, 'human', NULL, ?, NULL, NULL, NULL),
+      ('shot-auth-s3a', 'scene-3', NULL, NULL, NULL, 0, 30, 'ai', 'openrouter/anthropic/claude-sonnet-4.6', ?, NULL, NULL, NULL)`,
+    [now, now, now, now, now],
   );
 }

@@ -24,6 +24,7 @@ import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import { CodexPopover } from "@/features/editor/CodexPopover";
+import { tiptapContentFromDb } from "@/lib/prosemirror";
 import {
   copyWithAttribution,
   handleCopyWithAttribution,
@@ -88,7 +89,7 @@ export function SnippetDetailContent({
 
   const editor = useEditor({
     extensions: [StarterKit.configure(), AuthorshipMark],
-    content: snippet.content,
+    content: tiptapContentFromDb(snippet.content),
   });
 
   useAttribution(editor);
@@ -108,7 +109,9 @@ export function SnippetDetailContent({
     setTitle(snippet.title);
     isApplyingExternalUpdate.current = true;
     try {
-      editor?.commands.setContent(snippet.content, { emitUpdate: false });
+      editor?.commands.setContent(tiptapContentFromDb(snippet.content), {
+        emitUpdate: false,
+      });
     } finally {
       isApplyingExternalUpdate.current = false;
     }

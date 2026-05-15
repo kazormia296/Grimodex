@@ -1,10 +1,10 @@
 import { useMemo } from "react";
 import type { Snippet } from "@/features/snippets/api";
-import { htmlToPlainText } from "@/features/snippets/htmlToPlainText";
+import { prosemirrorToText } from "@/lib/prosemirror";
 
 export function SnippetCardBody({ snippet }: { snippet: Snippet }) {
   const plainText = useMemo(
-    () => htmlToPlainText(snippet.content),
+    () => prosemirrorToText(snippet.content),
     [snippet.content],
   );
   return (

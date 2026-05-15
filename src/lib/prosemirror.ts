@@ -8,6 +8,23 @@ export function prosemirrorToText(content: string): string {
   }
 }
 
+/**
+ * DB に保存された本文を TipTap `content` / `setContent` 向けに変換する。
+ * シーン・スニペット・Codex は ProseMirror JSON 文字列。`{` で始まらない場合は HTML 等のレガシー文字列としてそのまま渡す。
+ */
+export function tiptapContentFromDb(
+  raw: string | null | undefined,
+): string | Record<string, unknown> {
+  if (raw == null || raw === "" || raw === "{}") return "";
+  const t = raw.trim();
+  if (!t.startsWith("{")) return raw;
+  try {
+    return JSON.parse(t) as Record<string, unknown>;
+  } catch {
+    return raw;
+  }
+}
+
 function extractText(node: {
   type?: string;
   text?: string;

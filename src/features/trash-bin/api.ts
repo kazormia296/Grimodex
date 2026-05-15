@@ -74,7 +74,6 @@ export async function listTrashItems(
   projectId: string,
   limit = 50,
 ): Promise<TrashItemData[]> {
-  if (!isTauriRuntime()) return [];
   const rows = await invoke<unknown[]>("trash_bin_list", { projectId, limit });
   return rows.map(normalizeTrashItem);
 }
