@@ -656,9 +656,11 @@ function LPVariantH() {
   const [workflowMode, setWorkflowMode] = useState("plotter");
   const workflowGridRef = useRef(null);
   const pagingLockRef = useRef(false);
+  const navRef = useRef(null);
   const heroTitleRef = useRef(null);
   const heroMetaRef = useRef(null);
   const heroBodyRef = useRef(null);
+  const heroEchoRef = useRef(null);
 
   // Always start at the top on initial load, even if the URL has a fragment
   // like #workspace. The hero animation is part of the brand and the page
@@ -717,14 +719,23 @@ function LPVariantH() {
       heroMetaRef.current,
       heroBodyRef.current,
     ].filter(Boolean);
-    if (!title || !gsap) return undefined;
+    if (!title || !gsap) {
+      // Hero animation can't run — make sure the NAV (which we render
+      // hidden) still becomes visible so the page isn't navless.
+      if (navRef.current) navRef.current.style.opacity = "1";
+      return undefined;
+    }
 
     const lines = title.querySelectorAll("[data-hz-hero-line]");
     const marker = title.querySelector("[data-hz-hero-marker]");
+    const nav = navRef.current;
+    const echo = heroEchoRef.current;
     if (!HMotionOK()) {
       gsap.set([title, ...heroBits], { clearProps: "all", autoAlpha: 1 });
       gsap.set(lines, { autoAlpha: 1, y: 0, rotateX: 0 });
       gsap.set(marker, { "--hero-marker-scale": 1 });
+      if (nav) gsap.set(nav, { clearProps: "all", autoAlpha: 1 });
+      if (echo) gsap.set(echo, { clearProps: "all", autoAlpha: 1 });
       return undefined;
     }
 
@@ -759,8 +770,19 @@ function LPVariantH() {
         transformOrigin: "50% 50%",
         willChange: "transform",
       });
+      if (nav) gsap.set(nav, { autoAlpha: 0, y: -12 });
+      // Echo starts BIG and offset leftward toward the centered title
+      // (x: -vw*0.18). Motion is horizontal-only — the echo rides the title
+      // shift in mirror back to its tiny resting spot on the right edge.
+      if (echo) {
+        gsap.set(echo, {
+          autoAlpha: 0,
+          "--echo-size": "clamp(56px, 9vw, 96px)",
+          x: -window.innerWidth * 0.18,
+        });
+      }
 
-      gsap
+      const tl = gsap
         .timeline({ defaults: { ease: "power3.out" } })
         .to(lines, {
           autoAlpha: 1,
@@ -773,19 +795,42 @@ function LPVariantH() {
           "--hero-marker-scale": 1,
           duration: 0.68,
           ease: "power3.out",
-        }, "+=0")
-        .to(title, {
+        }, "+=0");
+      tl.to(title, {
+        x: 0,
+        duration: 1.18,
+        ease: "expo.inOut",
+      }, "+=0.18");
+      // Echo rides the title shift in mirror — shrinks + drifts back up to
+      // its top-right resting spot with the same duration and easing, so the
+      // two motions stay locked. autoAlpha fades up DURING the motion so the
+      // echo materializes as it moves rather than sitting visibly idle first.
+      if (echo) {
+        tl.to(echo, {
+          "--echo-size": "14px",
           x: 0,
+          autoAlpha: 1,
           duration: 1.18,
           ease: "expo.inOut",
-        }, "+=0.18")
-        .to(heroBits, {
+        }, "<");
+      }
+      tl.to(heroBits, {
+        autoAlpha: 1,
+        y: finalY,
+        duration: 0.72,
+        stagger: 0.12,
+        ease: "power3.out",
+      }, "+=0.06");
+      // NAV reveals together with the hero body bits — page "opens up"
+      // once the title settles, instead of being there from frame zero.
+      if (nav) {
+        tl.to(nav, {
           autoAlpha: 1,
-          y: finalY,
-          duration: 0.72,
-          stagger: 0.12,
+          y: 0,
+          duration: 0.55,
           ease: "power3.out",
-        }, "+=0.06");
+        }, "<");
+      }
     }, title);
 
     return () => ctx.revert();
@@ -988,6 +1033,34 @@ function LPVariantH() {
         .hz-page{min-height:calc(100vh - 76px);display:flex;flex-direction:column;justify-content:center}
         html{scroll-behavior:smooth}
 
+        /* Hero EN-mirror echo. Enters large near the centered title, then
+           rides the leftward title shift in reverse — shrinking and drifting
+           up to a tiny stamp at top-right that persists for the rest of the
+           hero. Font size is tweened via a CSS var so the shrink stays crisp
+           (transform: scale would soft-blur small text). */
+        .hz-hero-echo {
+          position: absolute;
+          top: 88px;
+          right: 48px;
+          font-family: 'JetBrains Mono', monospace;
+          font-weight: 800;
+          text-transform: uppercase;
+          letter-spacing: -0.01em;
+          font-size: var(--echo-size, 14px);
+          line-height: 1;
+          color: ${HZ_INK};
+          white-space: nowrap;
+          pointer-events: none;
+          z-index: 2;
+          opacity: 0;
+          text-align: right;
+          transform-origin: 100% 50%;
+          will-change: transform, opacity, font-size;
+        }
+        @media (max-width: 900px) {
+          .hz-hero-echo { top: 64px; right: 20px; font-size: 10px; }
+        }
+
         /* Responsive — desktop-first inline styles get overridden below. The
            hero animation depends on h1 having width:max-content for the
            center→shift transform, so we keep that on every viewport and only
@@ -1042,8 +1115,9 @@ function LPVariantH() {
         }
       `}</style>
 
-      {/* NAV */}
-      <div data-hz-nav style={{ position: "sticky", top: 0, zIndex: 30, background: HZ_BG, borderTop: `4px solid ${HZ_INK}`, borderBottom: `2px solid ${HZ_INK}` }}>
+      {/* NAV — hidden during the hero intro and revealed at the end of the
+          hero timeline so it doesn't compete with the headline animation. */}
+      <div ref={navRef} data-hz-nav style={{ position: "sticky", top: 0, zIndex: 30, background: HZ_BG, borderTop: `4px solid ${HZ_INK}`, borderBottom: `2px solid ${HZ_INK}`, opacity: 0 }}>
         <div className="hz-nav-row" style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", padding: "16px 48px", color: HZ_INK }}>
           <a href="#hero" className="hz-nav-logo" style={{ display: "inline-flex", width: 190, color: HZ_INK }}>
             <img src="assets/grimodex-logo.svg" alt="Grimodex" style={{ width: "100%", height: "auto", display: "block" }} />
@@ -1065,6 +1139,13 @@ function LPVariantH() {
 
       {/* HERO */}
       <section data-hz-page id="hero" className="hz-page hz-hero-section" style={{ padding: "48px 48px 56px", color: HZ_INK, position: "relative", overflow: "hidden" }}>
+        <div
+          ref={heroEchoRef}
+          className="hz-hero-echo"
+          aria-hidden="true"
+        >
+          YOU&rsquo;RE WRITING<span className="hz-mark">.</span>
+        </div>
         <div style={{ position: "relative", zIndex: 1 }}>
           <div>
             <h1
