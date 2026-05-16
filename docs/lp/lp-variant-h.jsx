@@ -6,6 +6,54 @@
  *   Whitespace stays Swiss; punctuation goes zine.
  */
 
+// Screenshots are fed through vite-imagetools at build time so the browser
+// receives PNG/WebP/AVIF variants pre-resized with Sharp (Lanczos) instead of
+// downscaling a single 4K source on the fly — the latter produces visible
+// aliasing on the fine 1px UI lines in the app captures.
+import pEditor from "/assets/panel-editor.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pScenes from "/assets/panel-scenes.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pGrid from "/assets/panel-grid.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pCodex from "/assets/panel-codex.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pSnippets from "/assets/panel-snippets.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pChat from "/assets/panel-chat.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pKouetsu from "/assets/panel-kouetsu.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pTimeline from "/assets/panel-timeline.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pMap from "/assets/panel-map.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pMatrix from "/assets/panel-matrix.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pTrashBin from "/assets/panel-trash-bin.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pChatHistory from "/assets/panel-chat-history.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pCodexQuick from "/assets/panel-codex-quick.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pAttribution from "/assets/panel-attribution.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pForeshadow from "/assets/panel-foreshadow.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import psDefault from "/assets/preset-default.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
+import psPlan from "/assets/preset-plan.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
+import psChat from "/assets/preset-chat-main.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
+import psCodex from "/assets/preset-codex-main.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
+import psReview from "/assets/preset-review.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
+
+// Renders the vite-imagetools `?as=picture` payload as a real <picture>,
+// preserving the styles/aria props passed by the caller on the inner <img>.
+function HPicture({ pic, alt, sizes, style, draggable }) {
+  const sources = pic.sources || {};
+  const fallback = pic.img || {};
+  return (
+    <picture>
+      {sources.avif && <source type="image/avif" srcSet={sources.avif} sizes={sizes} />}
+      {sources.webp && <source type="image/webp" srcSet={sources.webp} sizes={sizes} />}
+      <img
+        src={fallback.src}
+        srcSet={fallback.srcset}
+        sizes={sizes}
+        width={fallback.w}
+        height={fallback.h}
+        alt={alt}
+        draggable={draggable}
+        style={style}
+      />
+    </picture>
+  );
+}
+
 const HZ_INK = "#0a0a0a";
 const HZ_BG = "#ffffff";
 const HZ_HL = "var(--hz-hl, #fff200)";
@@ -123,21 +171,21 @@ function HReveal({ children, style, delay = 0, burst = false }) {
    ============================================================ */
 
 const WS_PANELS = {
-  Editor:      { jp: "Editor",       cat: "次の一行を書く場所。",                  desc: "本文を執筆する中心パネル。AI や設定資料に飲み込まれず、最終的に作品へ落とし込むための主戦場。",                                    img: "assets/panel-editor.png" },
-  Scenes:      { jp: "Scenes",       cat: "場面を分けて、迷子を減らす。",            desc: "シーン単位で本文を管理し、長編の構成を扱いやすくするパネル。どこで何が起きているかを見失いにくくする。",                  img: "assets/panel-scenes.png" },
-  Grid:        { jp: "Grid",         cat: "章とシーンを、カードで見渡す。",          desc: "章・シーンをカード状に並べる構成ビュー。執筆順ではなく、物語全体の配置や流れを視覚的に確認できる。",                       img: "assets/panel-grid.png" },
-  Codex:       { jp: "Codex",        cat: "設定資料が、執筆の外に散らばらない。",       desc: "キャラクター、世界観、用語、組織などをまとめる設定資料庫。本文の横に作品世界を置いておける。",                          img: "assets/panel-codex.png" },
-  Snippets:    { jp: "Snippets",     cat: "まだ本文ではない言葉を、捨てずに持つ。",      desc: "台詞、描写、アイデア、断片的な文章を保管するパネル。今は使えない一文も、後のシーン素材にできる。",                       img: "assets/panel-snippets.png" },
-  Chat:        { jp: "Chat",         cat: "AI に丸投げしない。AI と揉む。",          desc: "AI との相談用パネル。本文生成よりも、違和感の整理、別案の検討、設定の掘り下げに使う補助空間。",                     img: "assets/panel-chat.png" },
-  Review:      { jp: "Review",       cat: "作品を、少し離れて見る。",                desc: "矛盾、弱い動機、説明不足、テンポの乱れなどを確認する校閲・レビュー用パネル。書いた後の違和感を拾う。",                     img: "assets/panel-kouetsu.png" },
-  Timeline:    { jp: "Timeline",     cat: "出来事の順番を見失わない。",              desc: "物語内の時系列を管理するパネル。回想、過去設定、章をまたぐ因果関係を整理しやすくする。",                                img: "assets/panel-timeline.png" },
-  Map:         { jp: "Map",          cat: "物語の迷子にならない。",                  desc: "付箋、ノード、関係線でアイデアや設定を広げる発散の盤。構造化しすぎず、眺めながら考えるための空間。",                       img: "assets/panel-map.png" },
-  Matrix:      { jp: "Matrix",       cat: "関係性を、表で殴る。",                    desc: "キャラクター同士、勢力、章、テーマなどの対応関係をマトリクスで確認するパネル。複雑な関係を一覧化できる。",                  img: "assets/panel-matrix.png" },
-  TrashBin:    { jp: "Trash Bin",    cat: "没案も、まだ死んでいない。",              desc: "削除した断片や使わなかった文章を一時的に保持するパネル。完全な廃棄ではなく、再利用可能な創作残骸として扱う。",            img: "assets/panel-trash-bin.png" },
-  ChatHistory: { jp: "Chat History", cat: "AI との思考ログを、作品の横に残す。",        desc: "AI との過去のやり取りを確認するパネル。相談の流れ、出てきた案、却下した方向性などを振り返り、執筆判断の履歴として扱える。", img: "assets/panel-chat-history.png" },
-  CodexQuick:  { jp: "Codex Quick",  cat: "設定を、開かずに引く。",                  desc: "Codex の情報を素早く参照するための簡易パネル。本文を書いている最中に、キャラクター名・用語・設定の要点だけを軽く確認できる。", img: "assets/panel-codex-quick.png" },
-  Attribution: { jp: "Attribution",  cat: "何を使い、どこから来たかを見える化する。",     desc: "参照情報、AI 出力、引用・出典・補助生成の痕跡などを整理するパネル。作品制作に混ざった素材や支援の由来を把握しやすくする。", img: "assets/panel-attribution.png" },
-  Foreshadow:  { jp: "Foreshadow",   cat: "伏線を、置いたまま忘れない。",            desc: "伏線、回収予定、未解決の要素を管理するパネル。思いつきで置いた仕込みを後から追跡し、放置や回収漏れを防ぐ。",                img: "assets/panel-foreshadow.png" },
+  Editor:      { jp: "Editor",       cat: "次の一行を書く場所。",                  desc: "本文を執筆する中心パネル。AI や設定資料に飲み込まれず、最終的に作品へ落とし込むための主戦場。",                                    img: pEditor },
+  Scenes:      { jp: "Scenes",       cat: "場面を分けて、迷子を減らす。",            desc: "シーン単位で本文を管理し、長編の構成を扱いやすくするパネル。どこで何が起きているかを見失いにくくする。",                  img: pScenes },
+  Grid:        { jp: "Grid",         cat: "章とシーンを、カードで見渡す。",          desc: "章・シーンをカード状に並べる構成ビュー。物語全体の配置や流れを視覚的に確認できる。",                                    img: pGrid },
+  Codex:       { jp: "Codex",        cat: "設定資料が、執筆の外に散らばらない。",       desc: "キャラクター、世界観、用語、組織などをまとめる設定資料庫。AI に注入される情報源となる。",                                img: pCodex },
+  Snippets:    { jp: "Snippets",     cat: "まだ本文ではない言葉を、捨てずに持つ。",      desc: "台詞、描写、アイデア、断片的な文章を保管するパネル。今は使えない一文も、後のシーン素材にできる。",                       img: pSnippets },
+  Chat:        { jp: "Chat",         cat: "AI に丸投げしない。AI と揉む。",          desc: "AI との相談用パネル。本文生成よりも、違和感の整理、別案の検討、設定の掘り下げに使う補助空間。",                     img: pChat },
+  Review:      { jp: "Review",       cat: "作品を、少し離れて見る。",                desc: "矛盾、弱い動機、説明不足、テンポの乱れなどを確認する校閲・レビュー用パネル。書いた後の違和感を拾う。",                     img: pKouetsu },
+  Timeline:    { jp: "Timeline",     cat: "出来事の順番を見失わない。",              desc: "物語内の時系列を管理するパネル。回想、過去設定、章をまたぐ因果関係を整理しやすくする。",                                img: pTimeline },
+  Map:         { jp: "Map",          cat: "物語の迷子にならない。",                  desc: "付箋、ノード、関係線でアイデアや設定を広げる発散の盤。構造化しすぎず、眺めながら考えるための空間。",                       img: pMap },
+  Matrix:      { jp: "Matrix",       cat: "関係性を、表で殴る。",                    desc: "Codex エントリ × シーンの言及をマトリクスで一覧化するパネル。どのキャラがどのシーンに登場し、どの設定がどこで触れられているかを俯瞰できる。",                  img: pMatrix },
+  TrashBin:    { jp: "Trash Bin",    cat: "没案も、まだ死んでいない。",              desc: "削除した断片や使わなかった文章を一時的に保持するパネル。完全な廃棄ではなく、再利用可能な創作残骸として扱う。",            img: pTrashBin },
+  ChatHistory: { jp: "Chat History", cat: "AI との思考ログを、作品の横に残す。",        desc: "AI との過去のやり取りを確認するパネル。相談の流れ、出てきた案、却下した方向性などを振り返り、執筆判断の履歴として扱える。", img: pChatHistory },
+  CodexQuick:  { jp: "Codex Quick",  cat: "設定を、開かずに引く。",                  desc: "Codex の情報を素早く参照するための簡易パネル。シーンに登場するキャラクター名・用語・設定だけをリストアップ。",              img: pCodexQuick },
+  Attribution: { jp: "Attribution",  cat: "何を使い、どこから来たかを見える化する。",     desc: "AI / Human(人間) / Unknown(コピペ) の割合をグラフ化するパネル。AI の使用率を俯瞰できる。",                                  img: pAttribution },
+  Foreshadow:  { jp: "Foreshadow",   cat: "伏線を、置いたまま忘れない。",            desc: "伏線、回収予定、未解決の要素を管理するパネル。思いつきで置いた仕込みを後から追跡し、放置や回収漏れを防ぐ。AI に伏線案を要請することもできる。", img: pForeshadow },
 };
 
 const WS_ALL_PANEL_KEYS = [
@@ -150,27 +198,27 @@ const WS_PRESETS = [
   {
     id: "write", label: "WRITE", num: "01",
     desc: "本文 + Codex + Chat。中心は本文。設定資料と相談相手を脇に置く、執筆中心のレイアウト。",
-    img: "assets/preset-default.png",
+    img: psDefault,
   },
   {
     id: "plan", label: "PLAN", num: "02",
     desc: "Grid + Map + Timeline。章とシーンを並べ、時系列と関係性で俯瞰する構成のレイアウト。",
-    img: "assets/preset-plan.png",
+    img: psPlan,
   },
   {
     id: "chat", label: "CHAT", num: "03",
     desc: "Chat を中央へ。設定の掘り下げ、別案の検討、違和感の整理を広いキャンバスで。",
-    img: "assets/preset-chat-main.png",
+    img: psChat,
   },
   {
     id: "codex", label: "CODEX", num: "04",
     desc: "Codex を中央へ。キャラクター・場所・用語を本文の隣に置いて編集する、設定編みのレイアウト。",
-    img: "assets/preset-codex-main.png",
+    img: psCodex,
   },
   {
     id: "review", label: "REVIEW", num: "05",
     desc: "Review + Attribution。矛盾、説明不足、由来の不明な箇所を拾う、読み返しのレイアウト。",
-    img: "assets/preset-review.png",
+    img: psReview,
   },
 ];
 
@@ -326,10 +374,15 @@ function WSPanelDialog({ openKey, onClose, onNav }) {
               display: "grid", placeItems: "stretch", overflow: "hidden",
             }}
           >
-            <img src={p.img} alt={p.jp} style={{
-              width: "100%", height: "100%", objectFit: "contain",
-              display: "block", maxHeight: "86vh",
-            }} />
+            <HPicture
+              pic={p.img}
+              alt={p.jp}
+              sizes="(max-width: 900px) 100vw, 60vw"
+              style={{
+                width: "100%", height: "100%", objectFit: "contain",
+                display: "block", maxHeight: "86vh",
+              }}
+            />
           </div>
           <div className="ws-dialog-body" style={{ padding: "28px 28px 32px", overflow: "auto" }}>
             <h3 id="ws-dialog-title" style={{ margin: "0 0 18px", fontSize: 28, fontWeight: 800, letterSpacing: -0.8, lineHeight: 1.1 }}>
@@ -599,10 +652,16 @@ function HWorkspaceSection() {
               aspectRatio: "16 / 9",
             }}
           >
-            <img src={shown.img} alt={shown.label} style={{
-              width: "100%", height: "100%", display: "block", objectFit: "cover",
-              userSelect: "none", pointerEvents: "none",
-            }} />
+            <HPicture
+              pic={shown.img}
+              alt={shown.label}
+              sizes="96vw"
+              draggable={false}
+              style={{
+                width: "100%", height: "100%", display: "block", objectFit: "cover",
+                userSelect: "none", pointerEvents: "none",
+              }}
+            />
           </div>
 
           <div

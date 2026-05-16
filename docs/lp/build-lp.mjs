@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { build } from "vite";
+import { imagetools } from "vite-imagetools";
 
 const lpDir = dirname(fileURLToPath(import.meta.url));
 const buildDir = resolve(lpDir, ".lp-build");
@@ -50,9 +51,14 @@ await writeFile(
 
 await build({
   root: lpDir,
+  // Emit relative asset URLs so the bundle works both at the GitHub Pages
+  // subpath (`/Grimodex/lp/`) and when served locally from `docs/lp/`.
+  // Vite's default `/` root-absolute URLs would 404 in either case because
+  // index.html lives at `lp/`, not at the server root.
+  base: "./",
   configFile: false,
   publicDir: false,
-  plugins: [react()],
+  plugins: [react(), imagetools()],
   build: {
     outDir: resolve(lpDir, "assets"),
     emptyOutDir: false,
