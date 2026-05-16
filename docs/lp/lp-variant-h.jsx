@@ -976,16 +976,16 @@ function LPVariantH() {
 
   const workflowSteps = {
     plotter: [
-      { n: "01", k: "PLAN", t: "先に構造を作る" },
-      { n: "02", k: "CODEX", t: "設定・人物を固める" },
-      { n: "03", k: "MAP", t: "章とシーンを配置" },
-      { n: "04", k: "DRAFT", t: "設計に沿って書く" },
+      { n: "01", k: "DESIGN",    jp: "設計",     role: "entry", t: "キャラ・世界観・設定を、本文より先に固める。", panels: ["Codex", "Chat", "Snippets"] },
+      { n: "02", k: "OUTLINE",   jp: "構成",     role: null,    t: "プロット・章立て・伏線をマップ上に置く。",       panels: ["Matrix", "Timeline", "Foreshadow", "Map"] },
+      { n: "03", k: "WRITE",     jp: "執筆",     role: null,    t: "設計に沿って本文を進める。設定は脇に置く。",     panels: ["Editor", "Chat", "Codex"] },
+      { n: "04", k: "POLISH",    jp: "仕上げ",   role: "end",   t: "整合性と表現を磨く。回収漏れを潰す。",           panels: ["Review", "Foreshadow", "ChatHistory"] },
     ],
     pantser: [
-      { n: "01", k: "DRAFT", t: "探索しながら書く" },
-      { n: "02", k: "CHAT", t: "詰まった所を相談" },
-      { n: "03", k: "EXTRACT", t: "思いつきを資産化" },
-      { n: "04", k: "ARRANGE", t: "あとから整理する" },
+      { n: "01", k: "DRAFT",     jp: "走り書き", role: "entry", t: "思いつきで書き始める。AI と壁打ちする。",        panels: ["Editor", "Chat"] },
+      { n: "02", k: "CAPTURE",   jp: "回収",     role: null,    t: "出てきた設定・人物を、後から構造化する。",        panels: ["Snippets", "Codex"] },
+      { n: "03", k: "RECONCILE", jp: "整合",     role: null,    t: "矛盾と時系列を、後付けで揃える。",                panels: ["Codex", "Timeline", "Foreshadow"] },
+      { n: "04", k: "POLISH",    jp: "仕上げ",   role: "end",   t: "全体を俯瞰し、整える。",                          panels: ["Matrix", "Review", "ChatHistory"] },
     ],
   };
   const activeWorkflow = workflowSteps[workflowMode];
@@ -1143,7 +1143,9 @@ function LPVariantH() {
           .hz-3move-row { grid-template-columns: 1fr !important; gap: 14px !important; padding: 26px 0 !important; }
           .hz-3move-num { font-size: 40px !important; }
           .hz-3move-title { font-size: 28px !important; }
-          .hz-3move-meta { flex-direction: row !important; align-items: center !important; gap: 8px !important; }
+          .hz-3move-meta { flex-direction: row !important; align-items: center !important; gap: 8px !important; flex-wrap: wrap !important; }
+          .hz-3move-meta > * { margin-top: 0 !important; }
+          .hz-3move-compound { padding-top: 24px !important; }
 
           .hz-workflow-grid { grid-template-columns: 1fr 1fr !important; }
           .hz-workflow-step { padding: 22px 16px !important; min-height: 170px !important; }
@@ -1296,12 +1298,49 @@ function LPVariantH() {
                 THREE MOVES<br />THAT <span className="hz-mark">COMPOUND.</span>
               </h2>
             </HReveal>
-            {COPY.features.slice(0, 3).map((f, i) => (
+            {[
+              {
+                no: "01",
+                kicker_en: "TALK · 話す",
+                title_ja: ["設定を、", "毎回貼り直さない。"],
+                title_en: "Talk per scene. Stop re-pasting the world.",
+                body_ja: "Chat はシーンごとに独立。AI はそのシーンの本文と、ピン留め済みの Codex を見た状態で答える。会話は自動で要約され、後から拾い直せる。",
+                chips: ["Chat", "ChatHistory", "Scenes"],
+                out_ja: "脈絡が、残る。",
+                out_en: "Context persists.",
+                accent: "+1 DIALOG",
+                flow: "↓ feeds 02",
+              },
+              {
+                no: "02",
+                kicker_en: "EXTRACT · 抽出する",
+                title_ja: ["話の中身が、", "作品の資産になる。"],
+                title_en: "Conversation becomes canon.",
+                body_ja: "「これは設定だ」と思った断片を、Codex / Snippets に取り込む。Codex は Phase（時系列）で「いつの設定か」も分岐でき、後で書き換えても過去シーンが壊れない。",
+                chips: ["Codex", "Snippets", "Phase"],
+                out_ja: "世界が、育つ。",
+                out_en: "World grows.",
+                accent: "+1 WORLD",
+                flow: "↓ feeds 03",
+              },
+              {
+                no: "03",
+                kicker_en: "RECALL · 引き戻す",
+                title_ja: ["書くほど、AI が", "自分の世界を覚える。"],
+                title_en: "The world recalls itself.",
+                body_ja: "本文を書くと Rust 製マッチャが Codex を検出し、AI 文脈に自動投入。CodexQuick で開かずに引け、@ で呼べば次の Chat にピン留め。未回収の伏線も自動で文脈に乗る。",
+                chips: ["CodexQuick", "@ Mention", "Foreshadow"],
+                out_ja: "次の生成が、深くなる。",
+                out_en: "Next prompt lands deeper.",
+                accent: "+1 DEPTH",
+                flow: "↺ back to 01",
+              },
+            ].map((f, i) => (
               <HReveal key={f.no} delay={i * 0.08}>
                 <div className="hz-3move-row" style={{
                   borderTop: `2px solid ${HZ_INK}`,
                   padding: "44px 0",
-                  display: "grid", gridTemplateColumns: "100px 1fr 1fr 120px", gap: 32,
+                  display: "grid", gridTemplateColumns: "100px 1fr 1fr 140px", gap: 32,
                   alignItems: "start",
                 }}>
                   <div className="hz-3move-num" style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 64, fontWeight: 800, lineHeight: 0.9, letterSpacing: -3 }}>
@@ -1321,17 +1360,94 @@ function LPVariantH() {
                       ))}
                     </h3>
                     <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, opacity: 0.55, marginTop: 12, textTransform: "uppercase", letterSpacing: ".06em" }}>{f.title_en}</div>
+                    <div className="hz-3move-chips" style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 16 }}>
+                      {f.chips.map((c) => (
+                        <span key={c} className="hz-wf-chip" style={{
+                          display: "inline-flex", alignItems: "center",
+                          fontFamily: "'JetBrains Mono', monospace",
+                          fontSize: 9.5, fontWeight: 700, letterSpacing: ".06em",
+                          textTransform: "uppercase",
+                          padding: "3px 7px",
+                          border: `1.5px solid ${HZ_INK}`,
+                          background: HZ_BG, color: HZ_INK,
+                          whiteSpace: "nowrap",
+                        }}>{c}</span>
+                      ))}
+                    </div>
                   </div>
                   <div>
                     <p style={{ fontSize: 15, lineHeight: 1.75, margin: 0 }}>{f.body_ja}</p>
+                    <div className="hz-3move-output" style={{
+                      marginTop: 18, paddingTop: 14,
+                      borderTop: `1.5px dashed rgba(10,10,10,0.28)`,
+                      display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap",
+                    }}>
+                      <span style={{
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 10, fontWeight: 800, letterSpacing: ".1em",
+                        background: HZ_INK, color: HZ_BG, padding: "3px 7px",
+                      }}>↳ OUTPUT</span>
+                      <span style={{ fontSize: 14, fontWeight: 700 }}>{f.out_ja}</span>
+                      <span style={{
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 11, opacity: 0.55, letterSpacing: ".03em",
+                      }}>{f.out_en}</span>
+                    </div>
                   </div>
                   <div className="hz-3move-meta" style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
                     <HChip>0{i + 1} / 03</HChip>
-                    <HChip hl>{["CODEX", "MAP", "AI CHAT"][i]}</HChip>
+                    <HChip hl>{["TALK", "EXTRACT", "RECALL"][i]}</HChip>
+                    <div style={{
+                      marginTop: 12,
+                      padding: "4px 8px",
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 10, fontWeight: 800, letterSpacing: ".08em",
+                      background: HZ_INK, color: HZ_BG,
+                    }}>{f.accent}</div>
+                    <div style={{
+                      marginTop: 6,
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 9.5, opacity: 0.55, letterSpacing: ".05em",
+                      textTransform: "uppercase",
+                    }}>{f.flow}</div>
                   </div>
                 </div>
               </HReveal>
             ))}
+            <HReveal delay={0.24}>
+              <div className="hz-3move-compound" style={{
+                borderTop: `2px solid ${HZ_INK}`,
+                marginTop: 12, paddingTop: 32,
+              }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 18, marginBottom: 20, flexWrap: "wrap" }}>
+                  <span style={{
+                    background: HZ_HL, color: HZ_INK,
+                    padding: "7px 12px",
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 12, fontWeight: 800, letterSpacing: ".1em",
+                    border: `2px solid ${HZ_INK}`,
+                    boxShadow: `3px 3px 0 ${HZ_INK}`,
+                    whiteSpace: "nowrap",
+                  }}>↺ THE LOOP COMPOUNDS</span>
+                  <p style={{ fontSize: 15, lineHeight: 1.7, margin: 0, maxWidth: 620, flex: "1 1 320px" }}>
+                    一度回すごとに、対話は記憶になり、記憶は次の対話の文脈に戻る。
+                    <span style={{
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 11, opacity: 0.55, display: "block", marginTop: 6, letterSpacing: ".04em",
+                    }}>
+                      EVERY PASS TURNS DIALOG INTO MEMORY · MEMORY BACK INTO CONTEXT.
+                    </span>
+                  </p>
+                </div>
+                <HZBar items={[
+                  { t: "PASS N", k: true },
+                  { t: "+1 DIALOG" },
+                  { t: "+1 WORLD" },
+                  { t: "+1 DEPTH" },
+                  { t: "↳ COMPOUND", hl: true },
+                ]} />
+              </div>
+            </HReveal>
           </div>
         </div>
       </section>
@@ -1376,17 +1492,65 @@ function LPVariantH() {
                 );
               })}
             </div>
+            <div className="hz-workflow-tagline" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
+              <span style={{
+                background: HZ_INK, color: HZ_BG, padding: "5px 10px",
+                fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 800,
+                textTransform: "uppercase", letterSpacing: ".1em",
+              }}>↳ SAME END · OPPOSITE ENTRY</span>
+              <span style={{
+                fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: ".06em",
+                color: "rgba(10,10,10,0.65)",
+              }}>終点は同じ。入口だけ、逆。</span>
+            </div>
             <div style={{ border: `2px solid ${HZ_INK}` }}>
               <div ref={workflowGridRef} className="hz-workflow-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
                 {activeWorkflow.map((s, i) => (
                   <div key={s.n} className="hz-workflow-step" style={{
                     borderRight: i < 3 ? `2px solid ${HZ_INK}` : "none",
-                    padding: "32px 24px", minHeight: 220, position: "relative",
+                    padding: "28px 22px", minHeight: 248, position: "relative",
                     background: i === 0 ? HZ_HL : HZ_BG,
+                    display: "flex", flexDirection: "column",
                   }}>
-                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, textTransform: "uppercase", letterSpacing: ".1em", opacity: 0.7 }}>STEP {s.n}</div>
-                    <div className="hz-workflow-step-k" style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 800, fontSize: 36, letterSpacing: -1, marginTop: 6 }}>{s.k}</div>
-                    <div style={{ fontSize: 14, opacity: 0.75, marginTop: 8 }}>{s.t}</div>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, textTransform: "uppercase", letterSpacing: ".1em", opacity: 0.7 }}>STEP {s.n}</div>
+                      {s.role === "entry" && (
+                        <div style={{
+                          fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, fontWeight: 800,
+                          textTransform: "uppercase", letterSpacing: ".08em",
+                          color: HZ_INK, background: HZ_BG, border: `1.5px solid ${HZ_INK}`,
+                          padding: "2px 6px",
+                        }}>← ENTRY</div>
+                      )}
+                      {s.role === "end" && (
+                        <div style={{
+                          fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, fontWeight: 800,
+                          textTransform: "uppercase", letterSpacing: ".08em",
+                          color: HZ_BG, background: HZ_INK,
+                          padding: "3px 7px",
+                        }}>→ SHARED END</div>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+                      <div className="hz-workflow-step-k" style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 800, fontSize: 32, letterSpacing: -1, lineHeight: 1 }}>{s.k}</div>
+                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, opacity: 0.55, letterSpacing: ".04em" }}>/ {s.jp}</div>
+                    </div>
+                    <div style={{ fontSize: 13, lineHeight: 1.55, opacity: 0.78, marginTop: 10 }}>{s.t}</div>
+                    <div style={{ flex: 1 }} />
+                    <div className="hz-workflow-step-panels" style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 16 }}>
+                      {s.panels.map((p) => (
+                        <span key={p} className="hz-wf-chip" style={{
+                          display: "inline-flex", alignItems: "center",
+                          fontFamily: "'JetBrains Mono', monospace",
+                          fontSize: 9.5, fontWeight: 700, letterSpacing: ".06em",
+                          textTransform: "uppercase",
+                          padding: "3px 6px",
+                          border: `1.5px solid ${HZ_INK}`,
+                          background: HZ_BG, color: HZ_INK,
+                          whiteSpace: "nowrap",
+                        }}>{p}</span>
+                      ))}
+                    </div>
                     {i < 3 && (
                       <div className="hz-workflow-step-arrow" style={{ position: "absolute", right: -14, top: "50%", transform: "translateY(-50%)", width: 26, height: 26, background: HZ_BG, border: `2px solid ${HZ_INK}`, borderRadius: "50%", display: "grid", placeItems: "center", fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 800, zIndex: 2 }}>→</div>
                     )}
@@ -1397,9 +1561,9 @@ function LPVariantH() {
             <div style={{ marginTop: 18 }}>
               <HZBar items={[
                 { t: "NO SINGLE FLOW", k: true },
-                { t: workflowMode === "pantser" ? "PANTSER ACTIVE" : "PANTSER" },
-                { t: workflowMode === "plotter" ? "PLOTTER ACTIVE" : "PLOTTER" },
-                { t: "HYBRID", hl: true },
+                { t: "PLOTTER", hl: workflowMode === "plotter" },
+                { t: "PANTSER", hl: workflowMode === "pantser" },
+                { t: "OR HYBRID" },
                 { t: "↳ GRIMODEX :: FITS THE DRAFT" },
               ]} />
             </div>
