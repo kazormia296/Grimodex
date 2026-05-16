@@ -1,9 +1,19 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Clock, MapPin, Pencil, Trash2, Plus, Settings2 } from "lucide-react";
+import {
+  Clock,
+  MapPin,
+  Pencil,
+  Trash2,
+  Plus,
+  Settings2,
+  Eye,
+  EyeOff,
+} from "lucide-react";
 import type { CodexEntry } from "../api";
 import type { CodexEntryPhase } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
+import { computePhaseExposureBreakdown } from "../phaseResolver";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { PhaseDialog } from "./PhaseDialog";
 import {
@@ -102,6 +112,16 @@ export function TimelineTab({ entry }: TimelineTabProps) {
     };
   }, [activeSceneId, globalSceneOrder, sortedPhases]);
 
+  const exposure = useMemo(
+    () =>
+      computePhaseExposureBreakdown({
+        baseSummary: entry.summary,
+        baseContextMode: entry.contextMode,
+        phases: sortedPhases,
+      }),
+    [entry.summary, entry.contextMode, sortedPhases],
+  );
+
   const currentSceneTitle = activeSceneId
     ? (nodes.find((n) => n.id === activeSceneId)?.title ?? null)
     : null;
@@ -178,6 +198,67 @@ export function TimelineTab({ entry }: TimelineTabProps) {
         ? "codex.timeline.orderModeStoryDesc"
         : "codex.timeline.orderModeAutoDesc";
 
+  const COST_WARN_THRESHOLD = 600;
+  const exposureBadge =
+    exposure.total > 0 ? (
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <span
+              data-testid="phase-exposure-ai"
+              className="inline-flex items-center gap-1"
+            >
+              <Eye className="h-2.5 w-2.5" />
+              {t("codex.timeline.exposureAiCount", {
+                count: exposure.aiVisibleCount,
+              })}
+              {exposure.maxAiVisibleSummaryChars > 0 && (
+                <span
+                  className={
+                    exposure.maxAiVisibleSummaryChars > COST_WARN_THRESHOLD
+                      ? "text-destructive"
+                      : ""
+                  }
+                >
+                  {t("codex.timeline.exposureAiChars", {
+                    chars: exposure.maxAiVisibleSummaryChars,
+                  })}
+                </span>
+              )}
+            </span>
+            <span className="h-3 w-px bg-border" />
+            <span
+              data-testid="phase-exposure-wiki"
+              className="inline-flex items-center gap-1"
+            >
+              <EyeOff className="h-2.5 w-2.5" />
+              {t("codex.timeline.exposureWikiCount", {
+                count: exposure.wikiOnlyCount,
+              })}
+            </span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-72 text-xs">
+          <p className="font-semibold text-foreground">
+            {t("codex.timeline.exposureTitle")}
+          </p>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            {t("codex.timeline.exposureDesc")}
+          </p>
+          {exposure.maxAiVisibleSummaryChars > COST_WARN_THRESHOLD && (
+            <p className="mt-2 text-[11px] leading-relaxed text-destructive">
+              {t("codex.timeline.exposureCostWarning", {
+                chars: exposure.maxAiVisibleSummaryChars,
+              })}
+            </p>
+          )}
+        </PopoverContent>
+      </Popover>
+    ) : null;
+
   const orderModeBadge = (
     <Popover>
       <PopoverTrigger asChild>
@@ -229,8 +310,9 @@ export function TimelineTab({ entry }: TimelineTabProps) {
 
   return (
     <div className="space-y-0">
-      {/* Order mode badge + Scene 文脈なし pill */}
+      {/* Exposure breakdown + Order mode badge + Scene 文脈なし pill */}
       <div className="mb-2 flex flex-wrap items-center gap-1">
+        {exposureBadge}
         {orderModeBadge}
         {currentMarker.missing && (
           <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] text-muted-foreground">

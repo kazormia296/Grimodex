@@ -3,6 +3,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
 import {
   computeGlobalSceneOrder,
+  computePhaseExposureBreakdown,
   computeSceneTimeIndex,
   formatTimelineContext,
   resolveCodexState,
@@ -706,5 +707,166 @@ describe("computeSceneTimeIndex", () => {
   it("story モード: 空配列 → 空Map", () => {
     const result = computeSceneTimeIndex([], "story");
     expect(result.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computePhaseExposureBreakdown
+// ---------------------------------------------------------------------------
+
+describe("computePhaseExposureBreakdown", () => {
+  it("空 phases: total=0, base contextMode を反映する", () => {
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "Hi",
+      baseContextMode: "mentioned",
+      phases: [],
+    });
+    expect(result.total).toBe(0);
+    expect(result.aiVisibleCount).toBe(0);
+    expect(result.wikiOnlyCount).toBe(0);
+    expect(result.baseIsAiVisible).toBe(true);
+  });
+
+  it("base=hidden, phases なし: baseIsAiVisible=false", () => {
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "Hi",
+      baseContextMode: "hidden",
+      phases: [],
+    });
+    expect(result.baseIsAiVisible).toBe(false);
+  });
+
+  it("base=mentioned, override 無しの phases → 全て AI-visible", () => {
+    const phases = [
+      makePhase({ id: "p1", entryId: "e1" }),
+      makePhase({ id: "p2", entryId: "e1" }),
+    ];
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "S",
+      baseContextMode: "mentioned",
+      phases,
+    });
+    expect(result.aiVisibleCount).toBe(2);
+    expect(result.wikiOnlyCount).toBe(0);
+    expect(result.total).toBe(2);
+  });
+
+  it("base=hidden, override 無しの phases → 全て Wiki-only", () => {
+    const phases = [
+      makePhase({ id: "p1", entryId: "e1" }),
+      makePhase({ id: "p2", entryId: "e1" }),
+    ];
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "S",
+      baseContextMode: "hidden",
+      phases,
+    });
+    expect(result.aiVisibleCount).toBe(0);
+    expect(result.wikiOnlyCount).toBe(2);
+  });
+
+  it("中盤の contextMode override は以降の phases にも持ち越される", () => {
+    const phases = [
+      makePhase({ id: "p1", entryId: "e1" }), // mentioned (継承)
+      makePhase({ id: "p2", entryId: "e1", contextModeOverride: "hidden" }),
+      makePhase({ id: "p3", entryId: "e1" }), // hidden (継承)
+      makePhase({ id: "p4", entryId: "e1", contextModeOverride: "always" }),
+    ];
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "S",
+      baseContextMode: "mentioned",
+      phases,
+    });
+    expect(result.aiVisibleCount).toBe(2); // p1 (mentioned), p4 (always)
+    expect(result.wikiOnlyCount).toBe(2); // p2 (hidden), p3 (hidden 継承)
+  });
+
+  it("suppress も Wiki-only として扱う", () => {
+    const phases = [
+      makePhase({ id: "p1", entryId: "e1", contextModeOverride: "suppress" }),
+    ];
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "S",
+      baseContextMode: "mentioned",
+      phases,
+    });
+    expect(result.wikiOnlyCount).toBe(1);
+    expect(result.aiVisibleCount).toBe(0);
+  });
+
+  it("maxAiVisibleSummaryChars: base が AI-visible なら base summary 長を含む", () => {
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "12345678",
+      baseContextMode: "mentioned",
+      phases: [],
+    });
+    expect(result.maxAiVisibleSummaryChars).toBe(8);
+  });
+
+  it("maxAiVisibleSummaryChars: base が Wiki なら base summary は除外", () => {
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "12345678",
+      baseContextMode: "hidden",
+      phases: [],
+    });
+    expect(result.maxAiVisibleSummaryChars).toBe(0);
+  });
+
+  it("maxAiVisibleSummaryChars: AI-visible phase の summaryOverride が base より長ければそちらを採用", () => {
+    const phases = [
+      makePhase({
+        id: "p1",
+        entryId: "e1",
+        summaryOverride: "very long phase summary text here",
+      }),
+    ];
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "short",
+      baseContextMode: "mentioned",
+      phases,
+    });
+    expect(result.maxAiVisibleSummaryChars).toBe(
+      "very long phase summary text here".length,
+    );
+  });
+
+  it("maxAiVisibleSummaryChars: Wiki-only phase の summary 長はカウントしない", () => {
+    const phases = [
+      makePhase({
+        id: "p1",
+        entryId: "e1",
+        contextModeOverride: "hidden",
+        summaryOverride: "12345678901234567890",
+      }),
+    ];
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "short",
+      baseContextMode: "mentioned",
+      phases,
+    });
+    expect(result.maxAiVisibleSummaryChars).toBe(5); // base のみ
+  });
+
+  it("summaryOverride=null の phase は前段の summary を継承（長さ維持）", () => {
+    const phases = [
+      makePhase({
+        id: "p1",
+        entryId: "e1",
+        summaryOverride: "longer summary value here",
+      }),
+      makePhase({
+        id: "p2",
+        entryId: "e1",
+        // summaryOverride=null → p1 の summary を継承
+      }),
+    ];
+    const result = computePhaseExposureBreakdown({
+      baseSummary: "S",
+      baseContextMode: "mentioned",
+      phases,
+    });
+    expect(result.maxAiVisibleSummaryChars).toBe(
+      "longer summary value here".length,
+    );
   });
 });

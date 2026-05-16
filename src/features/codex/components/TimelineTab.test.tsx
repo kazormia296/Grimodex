@@ -240,4 +240,73 @@ describe("TimelineTab", () => {
       });
     });
   });
+
+  describe("Exposure breakdown", () => {
+    const makePhase = (
+      id: string,
+      label: string,
+      anchor: string,
+      contextModeOverride: string | null = null,
+    ): CodexEntryPhase => ({
+      id,
+      entryId: "entry-1",
+      label,
+      anchorNodeId: anchor,
+      summaryOverride: null,
+      contentOverride: null,
+      contextModeOverride,
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    });
+
+    it("Phase が AI 露出だけのときは AI 露出件数のバッジが出る", async () => {
+      mockPhaseState.globalSceneOrder = new Map([
+        ["scene-1", 0],
+        ["scene-2", 1],
+      ]);
+      mockPhaseState.phasesByEntry = {
+        "entry-1": [
+          makePhase("p1", "A", "scene-1"),
+          makePhase("p2", "B", "scene-2"),
+        ],
+      };
+      render(<TimelineTab entry={mockEntry} />);
+      await waitFor(() => {
+        expect(screen.getByTestId("phase-exposure-ai")).toHaveTextContent("2");
+      });
+    });
+
+    it("Phase に hidden override があると Wiki 限定件数が反映される", async () => {
+      mockPhaseState.globalSceneOrder = new Map([
+        ["scene-1", 0],
+        ["scene-2", 1],
+        ["scene-3", 2],
+      ]);
+      mockPhaseState.phasesByEntry = {
+        "entry-1": [
+          makePhase("p1", "A", "scene-1"),
+          makePhase("p2", "B", "scene-2", "hidden"),
+          makePhase("p3", "C", "scene-3"),
+        ],
+      };
+      render(<TimelineTab entry={mockEntry} />);
+      await waitFor(() => {
+        expect(screen.getByTestId("phase-exposure-ai")).toHaveTextContent("1");
+        expect(screen.getByTestId("phase-exposure-wiki")).toHaveTextContent(
+          "2",
+        );
+      });
+    });
+
+    it("Phase が無い時はバッジが出ない", async () => {
+      mockPhaseState.phasesByEntry = { "entry-1": [] };
+      render(<TimelineTab entry={mockEntry} />);
+      await waitFor(() => {
+        expect(
+          screen.getByText("フェーズが設定されていません。"),
+        ).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId("phase-exposure-ai")).not.toBeInTheDocument();
+    });
+  });
 });

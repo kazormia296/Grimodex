@@ -170,6 +170,69 @@ export function resolveCodexState(
   return state;
 }
 
+export interface PhaseExposureBreakdown {
+  /** AI に露出する Phase 数（always/mentioned が effective） */
+  aiVisibleCount: number;
+  /** Wiki 限定 Phase 数（suppress/hidden が effective） */
+  wikiOnlyCount: number;
+  /** Phase 総数 */
+  total: number;
+  /** Base の contextMode が AI 露出か */
+  baseIsAiVisible: boolean;
+  /**
+   * AI 露出状態における summary 文字数の最大値。
+   * Base が AI-visible なら base.summary 長を初期値に、各 AI-visible Phase の
+   * resolved summary 長と比較して最大を取る。Wiki-only 状態の値は無視。
+   */
+  maxAiVisibleSummaryChars: number;
+}
+
+function isAiVisibleMode(mode: string): boolean {
+  return mode === "always" || mode === "mentioned";
+}
+
+/**
+ * Phase 群を Base から順に走査し、AI 露出 / Wiki 限定の分解と
+ * AI 露出時の summary 文字数の最大値を算出する。
+ * Phases は anchor シーン順にソート済みである前提。
+ */
+export function computePhaseExposureBreakdown(input: {
+  baseSummary: string | null;
+  baseContextMode: string;
+  phases: CodexEntryPhase[];
+}): PhaseExposureBreakdown {
+  const { baseSummary, baseContextMode, phases } = input;
+  let currentMode = baseContextMode;
+  let currentSummary = baseSummary ?? "";
+  const baseIsAiVisible = isAiVisibleMode(baseContextMode);
+  let maxChars = baseIsAiVisible ? currentSummary.length : 0;
+
+  let aiVisible = 0;
+  let wikiOnly = 0;
+  for (const phase of phases) {
+    if (phase.contextModeOverride !== null) {
+      currentMode = phase.contextModeOverride;
+    }
+    if (phase.summaryOverride !== null) {
+      currentSummary = phase.summaryOverride;
+    }
+    if (isAiVisibleMode(currentMode)) {
+      aiVisible++;
+      if (currentSummary.length > maxChars) maxChars = currentSummary.length;
+    } else {
+      wikiOnly++;
+    }
+  }
+
+  return {
+    aiVisibleCount: aiVisible,
+    wikiOnlyCount: wikiOnly,
+    total: phases.length,
+    baseIsAiVisible,
+    maxAiVisibleSummaryChars: maxChars,
+  };
+}
+
 /**
  * プロジェクトスコープ用: 「現在の状態 + 変遷リスト」フォーマット
  */

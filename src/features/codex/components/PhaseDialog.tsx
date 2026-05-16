@@ -31,6 +31,11 @@ export function PhaseDialog({
     phase?.anchorNodeId ?? null,
   );
 
+  // AI 露出設定: 空文字は「デフォルト維持」(override しない)
+  const [aiExposureValue, setAiExposureValue] = useState<string>(
+    phase?.contextModeOverride ?? "",
+  );
+
   // Override fields: チェックで有効化
   const [summaryEnabled, setSummaryEnabled] = useState(
     phase?.summaryOverride != null,
@@ -41,16 +46,11 @@ export function PhaseDialog({
   const [contentEnabled, setContentEnabled] = useState(
     phase?.contentOverride != null,
   );
-  const [contextModeEnabled, setContextModeEnabled] = useState(
-    phase?.contextModeOverride != null,
-  );
-  const [contextModeValue, setContextModeValue] = useState(
-    phase?.contextModeOverride ?? "mentioned",
-  );
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const hasOverride = summaryEnabled || contentEnabled || contextModeEnabled;
+  const hasOverride =
+    summaryEnabled || contentEnabled || aiExposureValue !== "";
   const canSubmit = label.trim() && anchorNodeId && hasOverride;
 
   const handleSubmit = async () => {
@@ -64,7 +64,7 @@ export function PhaseDialog({
         contentOverride: contentEnabled
           ? (phase?.contentOverride ?? currentContent ?? null)
           : null,
-        contextModeOverride: contextModeEnabled ? contextModeValue : null,
+        contextModeOverride: aiExposureValue === "" ? null : aiExposureValue,
       };
       if (isEditing) {
         await updatePhase(phase.id, data);
@@ -129,8 +129,35 @@ export function PhaseDialog({
             </p>
           </div>
 
+          {/* AI 露出設定 (primary gate) */}
+          <div data-testid="phase-dialog-ai-exposure">
+            <p className="mb-2 text-xs font-medium text-muted-foreground">
+              ─── {t("phase.aiExposureSection")} ───
+            </p>
+            <label className="mb-1 block text-xs font-medium">
+              {t("phase.aiExposureLabel")}
+            </label>
+            <select
+              data-testid="phase-dialog-ai-exposure-select"
+              value={aiExposureValue}
+              onChange={(e) => setAiExposureValue(e.target.value)}
+              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+            >
+              <option value="">{t("phase.aiExposureDefault")}</option>
+              <option value="always">{t("phase.aiExposureAlways")}</option>
+              <option value="mentioned">
+                {t("phase.aiExposureMentioned")}
+              </option>
+              <option value="suppress">{t("phase.aiExposureSuppress")}</option>
+              <option value="hidden">{t("phase.aiExposureHidden")}</option>
+            </select>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              {t("phase.aiExposureHint")}
+            </p>
+          </div>
+
           {/* Override fields */}
-          <div>
+          <div data-testid="phase-dialog-overrides">
             <p className="mb-2 text-xs font-medium text-muted-foreground">
               ─── {t("phase.overrideFields")} ───
             </p>
@@ -176,33 +203,6 @@ export function PhaseDialog({
                   <p className="mt-1.5 rounded-md bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
                     {t("phase.contentNote")}
                   </p>
-                )}
-              </div>
-
-              {/* Context mode */}
-              <div>
-                <label className="flex cursor-pointer items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={contextModeEnabled}
-                    onChange={(e) => setContextModeEnabled(e.target.checked)}
-                    className="h-3.5 w-3.5 rounded accent-primary"
-                  />
-                  <span className="text-xs font-medium">
-                    {t("phase.contextMode")}
-                  </span>
-                </label>
-                {contextModeEnabled && (
-                  <select
-                    value={contextModeValue}
-                    onChange={(e) => setContextModeValue(e.target.value)}
-                    className="mt-1.5 w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-                  >
-                    <option value="always">always</option>
-                    <option value="mentioned">mentioned</option>
-                    <option value="suppress">suppress</option>
-                    <option value="hidden">hidden</option>
-                  </select>
                 )}
               </div>
             </div>
