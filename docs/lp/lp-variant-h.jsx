@@ -1238,10 +1238,20 @@ function LPVariantH() {
         document.querySelector("[data-hz-nav]")?.getBoundingClientRect()
           .height ?? 0;
       const centeredX = window.innerWidth / 2 - (rect.left + rect.width / 2);
-      const groupRects = [
-        rect,
-        ...heroBits.map((element) => element.getBoundingClientRect()),
-      ];
+      // On narrow viewports the hero grid stacks tall; including the whole
+      // column in vertical center math makes `(vh - groupHeight)` strongly
+      // negative and shoves headline+meta to the viewport top ("埋もれる").
+      // Center headline + meta only; body keeps natural flow below them.
+      const narrowHeroCenter =
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(max-width: 900px)").matches;
+      const heroMetaOnly = heroMetaRef.current;
+      const centerTargets = narrowHeroCenter
+        ? [title, ...(heroMetaOnly ? [heroMetaOnly] : [])]
+        : [title, ...heroBits];
+      const groupRects = centerTargets.map((element) =>
+        element.getBoundingClientRect(),
+      );
       const groupTop = Math.min(
         ...groupRects.map((groupRect) => groupRect.top),
       );
@@ -1653,7 +1663,7 @@ function LPVariantH() {
         .hz-shadow{box-shadow:5px 5px 0 ${HZ_INK}}
         .hz-split{display:block;width:max-content;transform-style:preserve-3d}
         .hz-pop{transform-origin:50% 80%;will-change:transform}
-        .hz-page{min-height:calc(100vh - 76px);display:flex;flex-direction:column;justify-content:center}
+        .hz-page{min-height:calc(100vh - 76px);min-height:calc(100dvh - 76px);display:flex;flex-direction:column;justify-content:center}
         html{scroll-behavior:smooth}
 
         /* Page-wide paper texture overlays. Opacity is driven through CSS
