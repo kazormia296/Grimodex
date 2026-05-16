@@ -174,33 +174,10 @@ const WS_PRESETS = [
   },
 ];
 
-function useWSScrollProgress(ref) {
-  const [progress, setProgress] = useState(0);
-  useEffect(() => {
-    let raf = 0;
-    const update = () => {
-      raf = 0;
-      if (!ref.current) return;
-      const rect = ref.current.getBoundingClientRect();
-      const vh = window.innerHeight;
-      const denom = rect.height - vh;
-      let p;
-      if (denom <= 0) p = rect.top <= 0 ? 1 : 0;
-      else p = -rect.top / denom;
-      setProgress(Math.max(0, Math.min(1, p)));
-    };
-    const onScroll = () => { if (!raf) raf = requestAnimationFrame(update); };
-    update();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [ref]);
-  return progress;
-}
+// Scroll-driven values for the sticky workspace stage are written directly
+// to DOM nodes via refs (see `HWorkspaceSection`). React state updates per
+// scroll frame caused noticeable jank in earlier iterations because the
+// whole section re-rendered on every wheel tick.
 
 const WS_DIALOG_BTN_STYLE = {
   background: HZ_BG, color: HZ_INK, border: `2px solid ${HZ_INK}`,
@@ -388,21 +365,82 @@ const WS_ANIM_END = 0.65;
 
 function HWorkspaceSection() {
   const stageRef = useRef(null);
-  const rawProgress = useWSScrollProgress(stageRef);
-  const progress = Math.min(rawProgress / WS_ANIM_END, 1);
+  const marketingRef = useRef(null);
+  const copyRef = useRef(null);
+  const stageInnerRef = useRef(null);
+  const frameRef = useRef(null);
+  const chipsRef = useRef(null);
   const [preset, setPreset] = useState("write");
   const [openPanel, setOpenPanel] = useState(null);
 
   const shown = WS_PRESETS.find((x) => x.id === preset);
 
-  const copyOpacity = Math.max(0, 1 - progress * 1.7);
-  const copyScale = 1 - progress * 0.55;
-  const copyTx = progress * 40;
-  const copyTy = -progress * 24;
+  // Drive scroll-based styles directly on DOM nodes — bypassing React's
+  // render cycle keeps the sticky animation at 60fps. Setting state per
+  // scroll frame previously triggered a full subtree re-render and dropped
+  // frames noticeably on long sessions.
+  useEffect(() => {
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      const stage = stageRef.current;
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const denom = rect.height - vh;
+      let raw;
+      if (denom <= 0) raw = rect.top <= 0 ? 1 : 0;
+      else raw = -rect.top / denom;
+      raw = Math.max(0, Math.min(1, raw));
+      const progress = Math.min(raw / WS_ANIM_END, 1);
 
-  const shotW = 42 + progress * 54;
-  const shotShadow = (1 - progress) * 12;
-  const chipStripOpacity = Math.min(1, Math.max(0, (progress - 0.35) / 0.4));
+      const copyOpacity = Math.max(0, 1 - progress * 1.7);
+      const copyScale = 1 - progress * 0.55;
+      const copyTx = progress * 40;
+      const copyTy = -progress * 24;
+      const shotW = 42 + progress * 54;
+      const shotShadow = (1 - progress) * 12;
+      const chipStripOpacity = Math.min(1, Math.max(0, (progress - 0.35) / 0.4));
+
+      const marketing = marketingRef.current;
+      if (marketing) {
+        const inv = 1 - copyOpacity;
+        marketing.style.opacity = String(inv);
+        marketing.style.pointerEvents = inv > 0.1 ? "auto" : "none";
+      }
+      const copy = copyRef.current;
+      if (copy) {
+        copy.style.transform = `translate(${copyTx}px, ${copyTy}px) scale(${copyScale})`;
+        copy.style.opacity = String(copyOpacity);
+        copy.style.pointerEvents = copyOpacity < 0.1 ? "none" : "auto";
+      }
+      const stageInner = stageInnerRef.current;
+      if (stageInner) {
+        stageInner.style.width = `${shotW}%`;
+      }
+      const frame = frameRef.current;
+      if (frame) {
+        frame.style.boxShadow = shotShadow > 1 ? `${shotShadow}px ${shotShadow}px 0 ${HZ_INK}` : "none";
+      }
+      const chips = chipsRef.current;
+      if (chips) {
+        chips.style.opacity = String(chipStripOpacity);
+        chips.style.pointerEvents = chipStripOpacity > 0.5 ? "auto" : "none";
+      }
+    };
+
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
 
   return (
     <section
@@ -470,6 +508,7 @@ function HWorkspaceSection() {
         </div>
 
         <div
+          ref={marketingRef}
           className="ws-marketing"
           style={{
             position: "absolute", top: 24, right: 48, zIndex: 5,
@@ -477,22 +516,22 @@ function HWorkspaceSection() {
             textTransform: "uppercase", letterSpacing: ".1em",
             background: HZ_HL, color: HZ_INK,
             padding: "4px 10px", border: `2px solid ${HZ_INK}`,
-            opacity: 1 - copyOpacity,
-            pointerEvents: (1 - copyOpacity) > 0.1 ? "auto" : "none",
-            transition: "opacity .06s linear",
+            opacity: 0,
+            pointerEvents: "none",
           }}
         >
           15 PANELS · ONE DESK
         </div>
 
         <div
+          ref={copyRef}
           className="ws-copy"
           style={{
             position: "absolute", top: 78, left: 48, right: 48,
             transformOrigin: "left top",
-            transform: `translate(${copyTx}px, ${copyTy}px) scale(${copyScale})`,
-            opacity: copyOpacity,
-            pointerEvents: copyOpacity < 0.1 ? "none" : "auto",
+            transform: "translate(0px, 0px) scale(1)",
+            opacity: 1,
+            pointerEvents: "auto",
             zIndex: 3, willChange: "transform, opacity",
           }}
         >
@@ -510,11 +549,12 @@ function HWorkspaceSection() {
         </div>
 
         <div
+          ref={stageInnerRef}
           className="ws-stage"
           style={{
             position: "absolute", bottom: 28, left: "50%",
             transform: "translateX(-50%)",
-            width: `${shotW}%`, maxWidth: 1640,
+            width: "42%", maxWidth: 1640,
             zIndex: 2, willChange: "width",
           }}
         >
@@ -541,14 +581,16 @@ function HWorkspaceSection() {
             ))}
           </div>
 
-          <div style={{
-            position: "relative",
-            border: `2px solid ${HZ_INK}`,
-            boxShadow: shotShadow > 1 ? `${shotShadow}px ${shotShadow}px 0 ${HZ_INK}` : "none",
-            background: "#1a1a1a",
-            aspectRatio: "16 / 9",
-            transition: "box-shadow .06s linear",
-          }}>
+          <div
+            ref={frameRef}
+            style={{
+              position: "relative",
+              border: `2px solid ${HZ_INK}`,
+              boxShadow: `12px 12px 0 ${HZ_INK}`,
+              background: "#1a1a1a",
+              aspectRatio: "16 / 9",
+            }}
+          >
             <img src={shown.img} alt={shown.label} style={{
               width: "100%", height: "100%", display: "block", objectFit: "cover",
               userSelect: "none", pointerEvents: "none",
@@ -578,12 +620,12 @@ function HWorkspaceSection() {
           </div>
 
           <div
+            ref={chipsRef}
             className="ws-chips"
             style={{
               marginTop: 22,
-              opacity: chipStripOpacity,
-              pointerEvents: chipStripOpacity > 0.5 ? "auto" : "none",
-              transition: "opacity .12s linear",
+              opacity: 0,
+              pointerEvents: "none",
               display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center",
             }}
           >
