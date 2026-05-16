@@ -1073,10 +1073,10 @@ function LPVariantH() {
   };
   const advantageRows = [
     {
-      pain: "AI に毎回、設定を貼り直すのに疲れた。",
+      pain: "ChatGPT/Claude Projects に上げた設定.md を、書き換えるたびに上げ直してる。",
       title: "AI が、自分の世界を覚える。",
       en: "Context that lingers.",
-      body: "シーンを開いただけで、関連 Codex と直前の会話サマリーが AI 文脈に自動投入される。@ で呼べば次の Chat にピン留めできる。",
+      body: "シーンを開いただけで、関連 Codex と直前の会話サマリーが AI 文脈に自動投入される。@ で呼べば次の Chat にピン留めできる。Codex はアプリ内データなので、書き換えたら次のターンから AI が見る内容も即変わる。",
       chip: "RECALL",
       moveTag: "↳ MOVE 03",
     },
