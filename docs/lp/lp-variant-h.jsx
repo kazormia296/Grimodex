@@ -1611,23 +1611,23 @@ function LPVariantH() {
   const advantageRows = [
     {
       pain: "ChatGPT/Claude Projects に上げた設定.md を、書き換えるたびに上げ直してる。",
-      title: "AI が、自分の世界を覚える。",
+      title: "AI が、世界を覚える。",
       en: "Context that lingers.",
       body: "Codex はアプリ内データ。書き換えれば次のターンから AI が見る内容も即変わる。毎回アップロードし直さなくていい。",
       chip: "TALK",
       moveTag: "↳ MOVE 03",
     },
     {
-      pain: "死んだはずのキャラが、後の章で歩いてた。",
-      title: "過去の設定が、過去のまま残る。",
+      pain: "死んだはずのキャラが、後の章で生きている。",
+      title: "設定を、更新する",
       en: "Phase-aware Codex.",
-      body: "シーン毎に Phase を切り替えると、設定を時系列で線形に更新できる。値を書き換えても、過去シーンは当時の状態のまま AI に読まれる。",
+      body: "シーン毎に Phase を切り替えると、設定を時系列で線形に更新できる。値を書き換えても、過去シーンは過去の Phase の状態のまま AI に読まれる。",
       chip: "CODEX · PHASE",
       moveTag: "↳ MOVE 02",
     },
     {
-      pain: "張った伏線が、20 章後に放置されてた。",
-      title: "張った伏線が、構造化されて残る。",
+      pain: "張った伏線を、回収するのを忘れてた。",
+      title: "伏線が、構造化される。",
       en: "Foreshadows, structured.",
       body: "未回収の伏線は、状態（仕込み済み・回収待ち・回収済み）付きで一覧できる構造化データとして Foreshadow に残る。AI 文脈にも自動で乗るが、まず自分の目で回収漏れを確認できることが効く。",
       chip: "FORESHADOW",
@@ -1635,17 +1635,17 @@ function LPVariantH() {
     },
     {
       pain: "AI に書かせると、自分の声が消える。",
-      title: "AI は、書き手ではなく相談相手。",
+      title: "AI は、Co-Writer。",
       en: "AI as second opinion.",
-      body: "Chat は本文生成より、矛盾チェック・別案・違和感の整理に使う設計。書いた一行が AI / 人間どちらに由来するかは Attribution に残るので、自分の手で書けている量が常に見える。",
+      body: "Chat は本文生成より、矛盾チェック・壁打ちに使う設計。書いた一行が AI / 人間どちらに由来するかは文字単位で追跡されているので、自分の書いた箇所が常に見える。",
       chip: "ATTRIBUTION",
       moveTag: "(ETHIC)",
     },
     {
       pain: "クラウドに原稿を預けたくない。",
-      title: "全部、あなたの machine の中。",
+      title: "ローカルファースト。",
       en: "Local-first, account-free.",
-      body: "原稿は SQLite にローカル保存。アカウント不要。ネットに出るのは、あなたが押した AI 呼び出しの一瞬だけ。",
+      body: "原稿は SQLite にローカル保存。アカウント不要。ネットに出るのは、自分で呼んだ AI 呼び出しのみ。ローカルLLMも対応。",
       chip: "LOCAL",
       moveTag: "(INFRA)",
     },
@@ -2212,12 +2212,12 @@ function LPVariantH() {
               {
                 no: "01",
                 kicker_en: "WRITE · 書く",
-                title_ja: ["書く手は、", "あなたの手のまま。"],
-                title_en: "You write. Tools stay out of the way.",
+                title_ja: ["書き手は、", "あなたのまま。"],
+                title_en: "Your voice stays your own.",
                 body_ja:
-                  "Editor / Scenes / Snippets を中心に、自分の文章で本文を進める。Codex も Chat も「呼ぶときだけ呼ぶ」道具で、書く手を奪わない。",
+                  "自分の文章で本文を進める。AI は「必要なときだけ呼ぶ」道具で、ハンドルを奪わない。",
                 chips: ["Editor", "Scenes", "Snippets"],
-                out_ja: "一行が、積まれる。",
+                out_ja: "一行が積まれる。",
                 out_en: "Lines accumulate.",
                 accent: "+1 LINE",
                 flow: "↓ feeds 02",
@@ -2225,26 +2225,26 @@ function LPVariantH() {
               {
                 no: "02",
                 kicker_en: "STRUCTURE · 構造的重力",
-                title_ja: ["書いた一行が、", "物語に落ちる。"],
-                title_en: "Lines fall into the story.",
+                title_ja: ["構造化への、", "重力。"],
+                title_en: "A gravity toward structure.",
                 body_ja:
-                  "Structural Gravity（構造的重力）— 書いた本文を、書き手が組まなくても物語の骨格に勝手に組み込む力。Codex の言及が Matrix の格子に並び、シーンが Timeline の点に変わり、Phase が当時の状態を保ち、Attribution に手書きの量が残る。",
+                  "Structural Gravity（構造的重力）— 書いた本文を、構造化する力。Codex の言及が Matrix の格子に並び、シーンが Timeline の点に変わり、Phase が Codex の状態を変化させ、Attribution に手書きの量が残る。",
                 chips: ["Codex", "Matrix", "Timeline", "Attribution"],
-                out_ja: "全体が、勝手に見える。",
-                out_en: "The story stays whole, on its own.",
+                out_ja: "構造が見える。",
+                out_en: "See the skeleton.",
                 accent: "+1 GRAVITY",
                 flow: "↓ feeds 03",
               },
               {
                 no: "03",
-                kicker_en: "TALK · 揉む",
-                title_ja: ["AI には書かせず、", "AI と揉む。"],
+                kicker_en: "TALK · 壁打ち",
+                title_ja: ["AI には書かせず、", "アイデアを揉む。"],
                 title_en: "Spar with AI. Don't ghostwrite.",
                 body_ja:
-                  "Chat はシーンごとに独立。AI はそのシーンの本文・関連 Codex・未回収の伏線を見た状態で答える。本文生成より、矛盾チェック・別案・違和感の整理に使う設計。",
+                  "Chat はシーンごとに独立。AI はそのシーンの本文・関連 Codex・未回収の伏線等を見た状態で答える。ブレスト、設定を煮詰め、物語を強化する。",
                 chips: ["Chat", "ChatHistory", "Foreshadow"],
-                out_ja: "次の WRITE が、深くなる。",
-                out_en: "Next WRITE lands deeper.",
+                out_ja: "設定が深くなる。",
+                out_en: "Your world grows deeper.",
                 accent: "+1 DEPTH",
                 flow: "↺ back to 01",
               },
@@ -2485,9 +2485,8 @@ function LPVariantH() {
                       flex: "1 1 320px",
                     }}
                   >
-                    書くたびに Structural Gravity が物語の骨格を組む。揉むたびに、次の一行が深くなる。3
-                    つの卓を行き来するほど、Codex も Matrix も Timeline
-                    も厚くなり、戻ってきたときの WRITE が変わる。
+                    構造的重力が物語の骨格を生む。
+                    骨格は、あなたの物語を強固にする。
                     <span
                       style={{
                         fontFamily: "'JetBrains Mono', monospace",
@@ -2498,8 +2497,8 @@ function LPVariantH() {
                         letterSpacing: ".04em",
                       }}
                     >
-                      WRITE FEEDS GRAVITY · GRAVITY FEEDS TALK · TALK FEEDS
-                      THE NEXT WRITE.
+                      WRITE FEEDS GRAVITY · GRAVITY FEEDS TALK · TALK FEEDS THE
+                      NEXT WRITE.
                     </span>
                   </p>
                 </div>
@@ -2612,7 +2611,7 @@ function LPVariantH() {
                   letterSpacing: ".1em",
                 }}
               >
-                ↳ SAME END · OPPOSITE ENTRY
+                ↳ SAME END · DIFFERENT PATH
               </span>
               <span
                 style={{
@@ -2622,7 +2621,7 @@ function LPVariantH() {
                   color: "rgba(10,10,10,0.65)",
                 }}
               >
-                終点は同じ。入口だけ、逆。
+                終点は同じ。経路は別。
               </span>
             </div>
             <div style={{ border: `2px solid ${HZ_INK}` }}>
