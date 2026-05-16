@@ -13,6 +13,14 @@
  *   pnpm screenshot -- --ui-scale 200
  *   SCREENSHOT_UI_SCALE=200 pnpm screenshot
  * captureManifest の各エントリで `uiScale` を指定すると、そのカットだけ上書きされます。
+ *
+ * テーマ切り替え（dark/light + カラーテーマ。manifest の `theme`/`colorTheme` より優先度は低い）:
+ *   pnpm screenshot -- --theme light
+ *   pnpm screenshot -- --color-theme modern-mystic
+ *   pnpm screenshot -- --theme light --color-theme warm-craft
+ *   SCREENSHOT_THEME=light SCREENSHOT_COLOR_THEME=modern-mystic pnpm screenshot
+ * デフォルト（dark + dark-academia）以外を指定したカットには
+ * `panel-editor-light.png`・`panel-editor-modern-mystic.png` のように接尾辞が付きます。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
@@ -20,12 +28,17 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Page } from "playwright";
 import {
+  DEFAULT_SCREENSHOT_COLOR_THEME,
   DEFAULT_SCREENSHOT_DIR,
+  DEFAULT_SCREENSHOT_THEME,
   SCREENSHOT_CAPTURES,
   SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT,
   SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT,
+  SCREENSHOT_COLOR_THEME_IDS,
   findScreenshotCapture,
+  screenshotOutputFilename,
   type ScreenshotCapture,
+  type ScreenshotTheme,
 } from "../src/screenshot-scenes/captureManifest";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,16 +49,42 @@ const MIN_SCREENSHOT_BYTES = 1_500;
 const MAX_SCREENSHOT_BYTES_FLOOR = 10_000;
 /** アプリ側と同じ許容範囲（staging クランプ上限） */
 const SCREENSHOT_UI_SCALE_ENV_KEY = "SCREENSHOT_UI_SCALE";
+const SCREENSHOT_THEME_ENV_KEY = "SCREENSHOT_THEME";
+const SCREENSHOT_COLOR_THEME_ENV_KEY = "SCREENSHOT_COLOR_THEME";
 /** 平坦なダークUIは PNG 圧縮率が高く、画素数が小さいほど変動が大きい */
 const SCREENSHOT_MIN_BYTES_SLACK = 0.88;
 
+function parseThemeValue(value: string, source: string): ScreenshotTheme {
+  const v = value.trim().toLowerCase();
+  if (v === "dark" || v === "light") return v;
+  throw new Error(`${source} must be "dark" or "light", got "${value}"`);
+}
+
+function envTheme(): ScreenshotTheme | undefined {
+  const raw = process.env[SCREENSHOT_THEME_ENV_KEY];
+  if (raw === undefined || raw === "") return undefined;
+  return parseThemeValue(raw, SCREENSHOT_THEME_ENV_KEY);
+}
+
+function parseColorThemeValue(value: string, source: string): string {
+  const v = value.trim();
+  if (!SCREENSHOT_COLOR_THEME_IDS.includes(v)) {
+    throw new Error(
+      `${source} must be one of ${SCREENSHOT_COLOR_THEME_IDS.join(", ")}; got "${value}"`,
+    );
+  }
+  return v;
+}
+
+function envColorTheme(): string | undefined {
+  const raw = process.env[SCREENSHOT_COLOR_THEME_ENV_KEY];
+  if (raw === undefined || raw === "") return undefined;
+  return parseColorThemeValue(raw, SCREENSHOT_COLOR_THEME_ENV_KEY);
+}
+
 function parsePositiveRenderScale(value: string): number {
   const n = Number(value);
-  if (
-    !Number.isFinite(n) ||
-    n < 1 ||
-    n > MAX_SCREENSHOT_RENDER_SCALE
-  ) {
+  if (!Number.isFinite(n) || n < 1 || n > MAX_SCREENSHOT_RENDER_SCALE) {
     throw new Error(
       `Screenshot render scale must be between 1 and ${MAX_SCREENSHOT_RENDER_SCALE}, got "${value}"`,
     );
@@ -83,10 +122,7 @@ function envUiScalePercent(): number | undefined {
   return parseUiScalePercent(raw.trim());
 }
 
-function minScreenshotBytes(
-  capture: ScreenshotCapture,
-  renderScale: number,
-) {
+function minScreenshotBytes(capture: ScreenshotCapture, renderScale: number) {
   const pixelFactor = renderScale * renderScale;
   return Math.max(
     MIN_SCREENSHOT_BYTES,
@@ -115,14 +151,22 @@ function parseCli(): {
   captures: readonly ScreenshotCapture[];
   renderScale: number;
   uiScalePercent?: number;
+  theme?: ScreenshotTheme;
+  colorTheme?: string;
 } {
   const raw = process.argv.slice(2);
   let renderScale = envRenderScale();
   let uiScalePercent = envUiScalePercent();
+  let theme = envTheme();
+  let colorTheme = envColorTheme();
   const requested: string[] = [];
 
   for (let i = 0; i < raw.length; i++) {
     const arg = raw[i];
+    // POSIX 慣習。`pnpm screenshot -- --theme light` のように pnpm が
+    // 素通しした区切り `--` を無視する（以降は positional 扱いでもよいが、
+    // ここでは引き続きフラグも許可している）。
+    if (arg === "--") continue;
     if (arg === "--scale" || arg === "-s") {
       const next = raw[++i];
       if (next === undefined) {
@@ -149,9 +193,37 @@ function parseCli(): {
       uiScalePercent = parseUiScalePercent(uiEq[1]);
       continue;
     }
+    if (arg === "--theme") {
+      const next = raw[++i];
+      if (next === undefined) {
+        throw new Error(`${arg} requires "dark" or "light"`);
+      }
+      theme = parseThemeValue(next, arg);
+      continue;
+    }
+    const themeEq = /^--theme=(.+)$/.exec(arg);
+    if (themeEq) {
+      theme = parseThemeValue(themeEq[1], "--theme");
+      continue;
+    }
+    if (arg === "--color-theme") {
+      const next = raw[++i];
+      if (next === undefined) {
+        throw new Error(
+          `${arg} requires one of: ${SCREENSHOT_COLOR_THEME_IDS.join(", ")}`,
+        );
+      }
+      colorTheme = parseColorThemeValue(next, arg);
+      continue;
+    }
+    const colorThemeEq = /^--color-theme=(.+)$/.exec(arg);
+    if (colorThemeEq) {
+      colorTheme = parseColorThemeValue(colorThemeEq[1], "--color-theme");
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(
-        `Unknown option "${arg}". Use --scale N (or -s N) for Hi-DPI capture, --ui-scale PCT for UI zoom.`,
+        `Unknown option "${arg}". Use --scale N (or -s N) for Hi-DPI capture, --ui-scale PCT for UI zoom, --theme dark|light, --color-theme ID.`,
       );
     }
     requested.push(arg);
@@ -170,7 +242,7 @@ function parseCli(): {
           return capture;
         });
 
-  return { captures, renderScale, uiScalePercent };
+  return { captures, renderScale, uiScalePercent, theme, colorTheme };
 }
 
 async function isServerReady(baseUrl: string): Promise<boolean> {
@@ -282,6 +354,8 @@ async function captureOne(
   capture: ScreenshotCapture,
   renderScale: number,
   defaultUiScalePercent?: number,
+  defaultTheme?: ScreenshotTheme,
+  defaultColorTheme?: string,
 ) {
   if (capture.uiScale != null) {
     if (
@@ -294,6 +368,15 @@ async function captureOne(
       );
     }
   }
+
+  const resolvedTheme: ScreenshotTheme =
+    capture.theme ?? defaultTheme ?? DEFAULT_SCREENSHOT_THEME;
+  const resolvedColorTheme: string =
+    capture.colorTheme ?? defaultColorTheme ?? DEFAULT_SCREENSHOT_COLOR_THEME;
+  const outputName = screenshotOutputFilename(capture.id, {
+    theme: resolvedTheme,
+    colorTheme: resolvedColorTheme,
+  });
 
   const browser = await chromium.launch();
   try {
@@ -309,7 +392,7 @@ async function captureOne(
     );
 
     await page.addInitScript(
-      ({ captureId, panelId, presetId, theme, uiScale }) => {
+      ({ captureId, panelId, presetId, theme, colorTheme, uiScale }) => {
         const workspacePath = "/dev/workspace";
         localStorage.setItem("grimodex:screenshot-mode", "true");
         localStorage.setItem("grimodex:screenshot-capture", captureId);
@@ -331,6 +414,7 @@ async function captureOne(
             ],
             lastActiveWorkspace: workspacePath,
             theme,
+            colorTheme,
             uiLanguage: "ja",
             uiScale,
             showLauncherOnStartup: false,
@@ -347,11 +431,12 @@ async function captureOne(
         captureId: capture.id,
         panelId: capture.panelId,
         presetId: capture.presetId,
-        theme: capture.theme,
+        theme: resolvedTheme,
+        colorTheme: resolvedColorTheme,
         uiScale: uiScalePct,
       },
     );
-    await page.emulateMedia({ colorScheme: capture.theme });
+    await page.emulateMedia({ colorScheme: resolvedTheme });
     await page.goto(baseUrl, {
       waitUntil: "networkidle",
     });
@@ -383,7 +468,7 @@ async function captureOne(
     await performCaptureActions(page, capture);
     await page.waitForTimeout(300);
 
-    const outputPath = join(ROOT, DEFAULT_SCREENSHOT_DIR, capture.output);
+    const outputPath = join(ROOT, DEFAULT_SCREENSHOT_DIR, outputName);
     await mkdir(dirname(outputPath), { recursive: true });
 
     await page.screenshot({ path: outputPath, fullPage: false });
@@ -392,19 +477,30 @@ async function captureOne(
     const minimumBytes = effectiveMinScreenshotBytes(capture, renderScale);
     if (file.size < minimumBytes) {
       throw new Error(
-        `Screenshot ${capture.output} is unexpectedly small (${file.size} bytes, expected at least ${minimumBytes})`,
+        `Screenshot ${outputName} is unexpectedly small (${file.size} bytes, expected at least ${minimumBytes})`,
       );
     }
     const scaleNote = renderScale !== 1 ? ` (scale=${renderScale})` : "";
     const uiNote = uiScalePct !== 100 ? ` (ui-scale=${uiScalePct}%)` : "";
-    console.log(`captured ${capture.output}${scaleNote}${uiNote}`);
+    const themeNote =
+      resolvedTheme !== DEFAULT_SCREENSHOT_THEME
+        ? ` (theme=${resolvedTheme})`
+        : "";
+    const colorThemeNote =
+      resolvedColorTheme !== DEFAULT_SCREENSHOT_COLOR_THEME
+        ? ` (color-theme=${resolvedColorTheme})`
+        : "";
+    console.log(
+      `captured ${outputName}${scaleNote}${uiNote}${themeNote}${colorThemeNote}`,
+    );
   } finally {
     await browser.close();
   }
 }
 
 async function main() {
-  const { captures, renderScale, uiScalePercent } = parseCli();
+  const { captures, renderScale, uiScalePercent, theme, colorTheme } =
+    parseCli();
   const port = Number(process.env.SCREENSHOT_PORT ?? DEFAULT_PORT);
   const baseUrl = `http://127.0.0.1:${port}`;
   let server: ChildProcessWithoutNullStreams | undefined;
@@ -419,8 +515,21 @@ async function main() {
     if (uiScalePercent != null && uiScalePercent !== 100) {
       console.log(`Default screenshot UI scale ${uiScalePercent}%`);
     }
+    if (theme != null) {
+      console.log(`Default screenshot theme ${theme}`);
+    }
+    if (colorTheme != null) {
+      console.log(`Default screenshot color theme ${colorTheme}`);
+    }
     for (const capture of captures) {
-      await captureOne(baseUrl, capture, renderScale, uiScalePercent);
+      await captureOne(
+        baseUrl,
+        capture,
+        renderScale,
+        uiScalePercent,
+        theme,
+        colorTheme,
+      );
     }
   } finally {
     server?.kill();

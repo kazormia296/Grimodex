@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_SCREENSHOT_COLOR_THEME,
   DEFAULT_SCREENSHOT_DIR,
+  DEFAULT_SCREENSHOT_THEME,
   SCREENSHOT_CAPTURES,
   screenshotOutputFilename,
   type ScreenshotPanelId,
@@ -18,6 +20,38 @@ describe("screenshotOutputFilename", () => {
     expect(screenshotOutputFilename("panel-scenes-460x650")).toBe(
       "panel-scenes.png",
     );
+  });
+
+  it("omits suffixes when theme/colorTheme are the defaults", () => {
+    expect(
+      screenshotOutputFilename("panel-editor-1080x890", {
+        theme: DEFAULT_SCREENSHOT_THEME,
+        colorTheme: DEFAULT_SCREENSHOT_COLOR_THEME,
+      }),
+    ).toBe("panel-editor.png");
+  });
+
+  it("appends a theme suffix only for non-default appearance", () => {
+    expect(
+      screenshotOutputFilename("panel-editor-1080x890", { theme: "light" }),
+    ).toBe("panel-editor-light.png");
+  });
+
+  it("appends a colorTheme suffix only for non-default palette", () => {
+    expect(
+      screenshotOutputFilename("panel-editor-1080x890", {
+        colorTheme: "modern-mystic",
+      }),
+    ).toBe("panel-editor-modern-mystic.png");
+  });
+
+  it("combines theme and colorTheme suffixes in a stable order", () => {
+    expect(
+      screenshotOutputFilename("panel-editor-1080x890", {
+        theme: "light",
+        colorTheme: "warm-craft",
+      }),
+    ).toBe("panel-editor-light-warm-craft.png");
   });
 });
 

@@ -1,3 +1,5 @@
+import { COLOR_THEMES, DEFAULT_COLOR_THEME } from "../lib/colorThemes";
+
 export type ScreenshotTheme = "dark" | "light";
 
 export type ScreenshotCaptureKind = "preset" | "panel";
@@ -37,7 +39,17 @@ export interface ScreenshotCapture {
   kind: ScreenshotCaptureKind;
   presetId?: ScreenshotPresetId;
   panelId?: ScreenshotPanelId;
-  theme: ScreenshotTheme;
+  /**
+   * dark/light モード。未指定時は CLI/env (`--theme` / `SCREENSHOT_THEME`)、
+   * それも無ければ `DEFAULT_SCREENSHOT_THEME`（dark）。
+   */
+  theme?: ScreenshotTheme;
+  /**
+   * カラーテーマ ID（COLOR_THEMES のいずれか）。未指定時は CLI/env
+   * (`--color-theme` / `SCREENSHOT_COLOR_THEME`)、それも無ければ
+   * `DEFAULT_SCREENSHOT_COLOR_THEME`。
+   */
+  colorTheme?: string;
   width: number;
   height: number;
   /** devicePixelRatio 系（UI の uiScale / ％ズームとは別） */
@@ -58,13 +70,38 @@ export const SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT = 500;
 
 export const DEFAULT_SCREENSHOT_DIR = "docs/screenshots/generated";
 
-/** `-123x456` 形式の末尾サイズを除いた PNG ファイル名（撮影 ID は従来どおり維持）。 */
-export function screenshotOutputFilename(captureId: string): string {
-  return `${captureId.replace(/-\d+x\d+$/, "")}.png`;
+/** 撮影時の dark/light デフォルト。manifest と CLI/env が両方未指定のときに使う。 */
+export const DEFAULT_SCREENSHOT_THEME: ScreenshotTheme = "dark";
+
+/** 撮影時のカラーテーマ ID デフォルト。アプリ既定値 (`DEFAULT_COLOR_THEME`) と揃える。 */
+export const DEFAULT_SCREENSHOT_COLOR_THEME: string = DEFAULT_COLOR_THEME;
+
+/** 有効な `--color-theme` 値（`SCREENSHOT_COLOR_THEME` 検証にも使用）。 */
+export const SCREENSHOT_COLOR_THEME_IDS: readonly string[] = COLOR_THEMES.map(
+  (theme) => theme.id,
+);
+
+/**
+ * `-123x456` 形式の末尾サイズを除いた PNG ファイル名。
+ * `opts.theme`/`opts.colorTheme` がデフォルトと異なる場合のみ接尾辞を付け、
+ * 既定テーマでは従来どおり `panel-editor.png` のような名前を返す。
+ */
+export function screenshotOutputFilename(
+  captureId: string,
+  opts?: { theme?: ScreenshotTheme; colorTheme?: string },
+): string {
+  const base = captureId.replace(/-\d+x\d+$/, "");
+  const parts: string[] = [base];
+  if (opts?.theme && opts.theme !== DEFAULT_SCREENSHOT_THEME) {
+    parts.push(opts.theme);
+  }
+  if (opts?.colorTheme && opts.colorTheme !== DEFAULT_SCREENSHOT_COLOR_THEME) {
+    parts.push(opts.colorTheme);
+  }
+  return `${parts.join("-")}.png`;
 }
 
 const SIZE_1080P = {
-  theme: "dark",
   width: 1920,
   height: 1080,
   scale: 1,
@@ -214,7 +251,6 @@ export const SCREENSHOT_CAPTURES: readonly ScreenshotCapture[] = [
   ...PANEL_CAPTURES.map((capture) => ({
     ...capture,
     kind: "panel" as const,
-    theme: "dark" as const,
     scale: 1,
     output: screenshotOutputFilename(capture.id),
   })),
