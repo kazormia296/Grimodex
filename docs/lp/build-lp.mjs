@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
@@ -8,6 +8,18 @@ import { imagetools } from "vite-imagetools";
 const lpDir = dirname(fileURLToPath(import.meta.url));
 const buildDir = resolve(lpDir, ".lp-build");
 const entryPath = resolve(buildDir, "lp-entry.jsx");
+const assetsDir = resolve(lpDir, "assets");
+
+// Clear previous build artifacts before each build. We keep `emptyOutDir:
+// false` because the assets/ directory also holds hand-placed files (e.g.
+// grimodex-logo.svg) that the build does not regenerate. Removing only the
+// `lp-` prefixed entries here lets us pair `[hash:8]` filenames below with
+// a clean slate, preventing old hashes from piling up across rebuilds.
+for (const entry of await readdir(assetsDir)) {
+  if (entry.startsWith("lp-")) {
+    await rm(resolve(assetsDir, entry), { force: true, recursive: true });
+  }
+}
 
 const variantsSource = await readFile(resolve(lpDir, "lp-variants.jsx"), "utf8");
 const cleanSource = await readFile(resolve(lpDir, "lp-clean.jsx"), "utf8");
@@ -68,7 +80,14 @@ await build({
       output: {
         entryFileNames: "lp-app.js",
         chunkFileNames: "lp-[hash].js",
-        assetFileNames: "lp-[name][extname]",
+        // vite-imagetools expands a single source PNG into multiple
+        // sizes/formats that all share the same Rollup `[name]`. With
+        // `lp-[name][extname]` Rollup resolved those clashes with
+        // arbitrary `2/3` suffixes whose order changed per build,
+        // producing huge git diffs even when JSX was untouched. Adding
+        // the content hash makes filenames content-addressable, so the
+        // same source always emits the same name on every machine.
+        assetFileNames: "lp-[name]-[hash:8][extname]",
       },
     },
   },
