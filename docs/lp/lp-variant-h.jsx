@@ -449,7 +449,13 @@ function HWorkspaceSection() {
       data-hz-page
       data-hz-workspace
       style={{
-        position: "relative", height: `${WS_STAGE_VH}vh`, color: HZ_INK, background: HZ_BG,
+        // z-index 26 lifts the whole section above the page-wide texture
+        // overlay (z-index 25). Necessary because the inner sticky div
+        // creates a stacking context that trapped any z-index attempts on
+        // `.ws-stage` — they never reached the root. Section bg is plain
+        // white so losing texture inside the section is visually neutral.
+        position: "relative", zIndex: 26,
+        height: `${WS_STAGE_VH}vh`, color: HZ_INK, background: HZ_BG,
         borderTop: `2px solid ${HZ_INK}`,
         fontFamily: "'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif",
       }}
@@ -494,6 +500,8 @@ function HWorkspaceSection() {
       `}</style>
 
       <div style={{ position: "sticky", top: 0, height: "100vh", overflow: "hidden" }}>
+        <div className="ws-tex-halftone-local" aria-hidden="true" />
+        <div className="ws-tex-grain-local" aria-hidden="true" />
         <div
           className="ws-marker"
           style={{
@@ -720,9 +728,12 @@ function LPVariantH() {
       heroBodyRef.current,
     ].filter(Boolean);
     if (!title || !gsap) {
-      // Hero animation can't run — make sure the NAV (which we render
-      // hidden) still becomes visible so the page isn't navless.
+      // Hero animation can't run — make sure the NAV and texture overlays
+      // (which we render hidden) still become visible so the page isn't
+      // missing chrome.
       if (navRef.current) navRef.current.style.opacity = "1";
+      document.documentElement.style.setProperty("--tex-halftone-op", "0.06");
+      document.documentElement.style.setProperty("--tex-grain-op", "0.1");
       return undefined;
     }
 
@@ -730,12 +741,14 @@ function LPVariantH() {
     const marker = title.querySelector("[data-hz-hero-marker]");
     const nav = navRef.current;
     const echo = heroEchoRef.current;
+    const docEl = document.documentElement;
     if (!HMotionOK()) {
       gsap.set([title, ...heroBits], { clearProps: "all", autoAlpha: 1 });
       gsap.set(lines, { autoAlpha: 1, y: 0, rotateX: 0 });
       gsap.set(marker, { "--hero-marker-scale": 1 });
       if (nav) gsap.set(nav, { clearProps: "all", autoAlpha: 1 });
       if (echo) gsap.set(echo, { clearProps: "all", autoAlpha: 1 });
+      gsap.set(docEl, { "--tex-halftone-op": 0.06, "--tex-grain-op": 0.1 });
       return undefined;
     }
 
@@ -831,6 +844,17 @@ function LPVariantH() {
           ease: "power3.out",
         }, "<");
       }
+      // Texture overlays fade in alongside the NAV — the page becomes
+      // "printed paper" only after the intro completes. CSS vars drive
+      // BOTH the page-wide fixed overlay and the workspace-local overlays
+      // simultaneously, so the texture stays consistent across the
+      // stacking-context boundary at the workspace section.
+      tl.to(docEl, {
+        "--tex-halftone-op": 0.06,
+        "--tex-grain-op": 0.1,
+        duration: 0.7,
+        ease: "power2.out",
+      }, "<");
     }, title);
 
     return () => ctx.revert();
@@ -1033,6 +1057,43 @@ function LPVariantH() {
         .hz-page{min-height:calc(100vh - 76px);display:flex;flex-direction:column;justify-content:center}
         html{scroll-behavior:smooth}
 
+        /* Page-wide paper texture overlays. Opacity is driven through CSS
+           custom properties on :root, set/tweened from the hero timeline.
+           That lets us mirror the same opacity onto a LOCAL overlay inside
+           the workspace sticky stage (.ws-tex-*-local) — necessary because
+           position: sticky always creates its own stacking context, so a
+           single fixed overlay cannot be escaped by elements inside it.
+           Global overlay covers everything except the workspace section
+           (lifted via z-index 26); local overlays cover the workspace
+           interior while sitting below .ws-stage (z 2) so the preset
+           screenshot stays clean. */
+        :root { --tex-halftone-op: 0; --tex-grain-op: 0; }
+        .hz-halftone, .ws-tex-halftone-local {
+          background-image: radial-gradient(circle at 1px 1px, ${HZ_INK} 1px, transparent 1.5px);
+          background-size: 10px 10px;
+          pointer-events: none;
+        }
+        .hz-grain, .ws-tex-grain-local {
+          background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+          pointer-events: none;
+        }
+        .hz-halftone {
+          position: fixed; inset: 0;
+          opacity: var(--tex-halftone-op);
+          z-index: 25;
+        }
+        .hz-grain {
+          position: fixed; inset: 0;
+          opacity: var(--tex-grain-op);
+          z-index: 25;
+        }
+        .ws-tex-halftone-local, .ws-tex-grain-local {
+          position: absolute; inset: 0;
+          z-index: 0;
+        }
+        .ws-tex-halftone-local { opacity: var(--tex-halftone-op); }
+        .ws-tex-grain-local    { opacity: var(--tex-grain-op); }
+
         /* Hero EN-mirror echo. Enters large near the centered title, then
            rides the leftward title shift in reverse — shrinking and drifting
            up to a tiny stamp at top-right that persists for the rest of the
@@ -1114,6 +1175,13 @@ function LPVariantH() {
           .hz-cta-massive { font-size: clamp(46px, 18vw, 220px) !important; }
         }
       `}</style>
+
+      {/* Page-wide paper texture overlays. Opacity is driven by CSS
+          variables on :root (--tex-halftone-op / --tex-grain-op) tweened
+          from the hero timeline; same vars also feed the workspace-local
+          overlays so the texture stays in sync across the section. */}
+      <div className="hz-halftone" aria-hidden="true" />
+      <div className="hz-grain" aria-hidden="true" />
 
       {/* NAV — hidden during the hero intro and revealed at the end of the
           hero timeline so it doesn't compete with the headline animation. */}
