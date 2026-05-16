@@ -1619,9 +1619,9 @@ function LPVariantH() {
     },
     {
       pain: "死んだはずのキャラが、後の章で生きている。",
-      title: "設定を、更新する",
+      title: "設定が、時系列で進む。",
       en: "Phase-aware Codex.",
-      body: "シーン毎に Phase を切り替えると、設定を時系列で線形に更新できる。値を書き換えても、過去シーンは過去の Phase の状態のまま AI に読まれる。",
+      body: "Phase は物語進行のスナップショット。シーン毎に Phase を切り替えれば Codex の値が時系列で変化し、過去シーンには過去の Phase の状態のまま AI が読みに行く。死んだキャラは、それ以降のシーンでは死んだまま。",
       chip: "CODEX · PHASE",
       moveTag: "↳ MOVE 02",
     },
@@ -1639,7 +1639,7 @@ function LPVariantH() {
       en: "AI as second opinion.",
       body: "Chat は本文生成より、矛盾チェック・壁打ちに使う設計。書いた一行が AI / 人間どちらに由来するかは文字単位で追跡されているので、自分の書いた箇所が常に見える。",
       chip: "ATTRIBUTION",
-      moveTag: "(ETHIC)",
+      moveTag: "↳ MOVE 01",
     },
     {
       pain: "クラウドに原稿を預けたくない。",
@@ -2228,8 +2228,8 @@ function LPVariantH() {
                 title_ja: ["構造化への、", "重力。"],
                 title_en: "A gravity toward structure.",
                 body_ja:
-                  "Structural Gravity（構造的重力）— 書いた本文を、構造化する力。Codex の言及が Matrix の格子に並び、シーンが Timeline の点に変わり、Phase が Codex の状態を変化させ、Attribution に手書きの量が残る。",
-                chips: ["Codex", "Matrix", "Timeline", "Attribution"],
+                  "Structural Gravity（構造的重力）— 書いた本文を、構造化する力。Codex の言及が Matrix の格子に並び、シーンが Timeline の点に変わる。Phase（物語進行のスナップショット）を切り替えれば、Codex の値が時系列で変化していく。",
+                chips: ["Codex", "Phase", "Matrix", "Timeline"],
                 out_ja: "構造が見える。",
                 out_en: "See the skeleton.",
                 accent: "+1 GRAVITY",
@@ -3065,7 +3065,6 @@ function LPVariantH() {
                 t: "GITHUB ↗",
                 href: "https://github.com/kazormia296/Grimodex",
               },
-              { t: "DOCS ↗" },
               { t: "© 2026", hl: true },
             ]}
           />
