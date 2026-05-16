@@ -322,7 +322,7 @@ function WSPanelDialog({ openKey, onClose, onNav }) {
           <div
             className="ws-dialog-image"
             style={{
-              borderRight: `2px solid ${HZ_INK}`, background: "#0a0a0a",
+              borderRight: `2px solid ${HZ_INK}`, background: HZ_BG,
               display: "grid", placeItems: "stretch", overflow: "hidden",
             }}
           >
@@ -1014,34 +1014,44 @@ function LPVariantH() {
   };
   const advantageRows = [
     {
-      title: "本文の横に、作品世界を置く。",
-      en: "Manuscript + World",
-      body: "本文、キャラクター設定、世界観、用語、メモ、AIとの相談を分断せずに扱える。設定を見失う問題に効く。",
-      chip: "CODEX",
+      pain: "AI に毎回、設定を貼り直すのに疲れた。",
+      title: "AI が、自分の世界を覚える。",
+      en: "Context that lingers.",
+      body: "シーンを開いただけで、関連 Codex と直前の会話サマリーが AI 文脈に自動投入される。@ で呼べば次の Chat にピン留めできる。",
+      chip: "RECALL",
+      moveTag: "↳ MOVE 03",
     },
     {
-      title: "長編に、地図を。",
-      en: "Structure Map",
-      body: "章構成、シーン、伏線、キャラの登場状況、情報開示の流れを俯瞰できる。物語の迷子を減らす。",
-      chip: "MAP",
+      pain: "死んだはずのキャラが、後の章で歩いてた。",
+      title: "過去の設定が、過去のまま残る。",
+      en: "Phase-aware Codex.",
+      body: "Codex Phase で時系列ごとに設定を分岐できる。脇役の年齢、組織の名前、関係性まで、後で書き換えても過去シーンは当時の値で読まれる。",
+      chip: "CODEX · PHASE",
+      moveTag: "↳ MOVE 02",
     },
     {
-      title: "書くのはあなた。揺さぶるのはAI。",
-      en: "AI as Support",
-      body: "矛盾チェック、展開相談、キャラの反応確認、シーンの目的整理に使える。作者の主導権を奪わず、思考を補助する。",
-      chip: "AI CHAT",
+      pain: "張った伏線が、20 章後に放置されてた。",
+      title: "AI が、伏線を毎回思い出す。",
+      en: "Open foreshadows, every prompt.",
+      body: "Foreshadow に登録した未回収要素は、Chat 文脈に毎回自動投入される。回収シーンでは、過去のどこに setup を仕込むべきかも AI に提案させられる。",
+      chip: "FORESHADOW",
+      moveTag: "↳ MOVE 03",
     },
     {
-      title: "シーンの意味まで、見える化する。",
-      en: "Scene Function",
-      body: "脚本ならビートや会話の役割、TRPGならNPCや未回収要素。完成原稿だけでなく、進行中の物語構造を扱える。",
-      chip: "BEATS",
+      pain: "AI に書かせると、自分の声が消える。",
+      title: "AI は、書き手ではなく相談相手。",
+      en: "AI as second opinion.",
+      body: "矛盾チェック、別案、シーンの目的整理に使う。挿入したテキストは human / ai を区別して保存される。代筆機ではなく揺さぶる相手として置く。",
+      chip: "ATTRIBUTION",
+      moveTag: "(ETHIC)",
     },
     {
-      title: "脱線も、次の一行になる。",
-      en: "Creative Fuel",
-      body: "思いつき、没セリフ、未使用設定、AIとの雑談、ゴミ箱行きの文章も後から再利用できる。",
-      chip: "SNIPPETS",
+      pain: "クラウドに原稿を預けたくない。",
+      title: "全部、あなたの machine の中。",
+      en: "Local-first, account-free.",
+      body: "原稿は SQLite にローカル保存。アカウント不要。ネットに出るのは、あなたが押した AI 呼び出しの一瞬だけ。",
+      chip: "LOCAL",
+      moveTag: "(INFRA)",
     },
   ];
 
@@ -1160,7 +1170,8 @@ function LPVariantH() {
           .hz-usecase-title { padding: 16px !important; }
           .hz-usecase-title-text { font-size: 18px !important; }
           .hz-usecase-body { grid-column: 1 / -1 !important; border-right: none !important; border-top: 1.5px dashed ${HZ_INK} !important; padding: 14px 16px !important; }
-          .hz-usecase-chip { grid-column: 1 / -1 !important; padding: 12px 16px !important; justify-content: flex-start !important; border-top: 1.5px dashed ${HZ_INK} !important; }
+          .hz-usecase-chip { grid-column: 1 / -1 !important; padding: 12px 16px !important; flex-direction: row !important; align-items: center !important; justify-content: flex-start !important; gap: 10px !important; border-top: 1.5px dashed ${HZ_INK} !important; }
+          .hz-usecase-pain { font-size: 12px !important; margin-bottom: 8px !important; }
 
           .hz-cta-section { padding: 72px 20px !important; }
           .hz-cta-massive { font-size: clamp(54px, 17vw, 220px) !important; letter-spacing: -4px !important; }
@@ -1592,13 +1603,31 @@ function LPVariantH() {
                     0{i + 1}
                   </div>
                   <div className="hz-usecase-title" style={{ borderRight: `2px solid ${HZ_INK}`, padding: "20px 18px" }}>
+                    <div className="hz-usecase-pain" style={{
+                      display: "flex", gap: 6, alignItems: "baseline",
+                      fontSize: 13, lineHeight: 1.45, color: "rgba(10,10,10,0.6)",
+                      marginBottom: 10,
+                    }}>
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, opacity: 0.7 }}>↳</span>
+                      <span>「{u.pain}」</span>
+                    </div>
                     <div className="hz-usecase-title-text" style={{ fontSize: 22, fontWeight: 800, letterSpacing: -0.5, lineHeight: 1.12 }}>{u.title}</div>
                     <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, opacity: 0.6, textTransform: "uppercase", letterSpacing: ".06em", marginTop: 6 }}>{u.en}</div>
                   </div>
                   <div className="hz-usecase-body" style={{ padding: "20px 18px", borderRight: `2px solid ${HZ_INK}`, fontSize: 14, lineHeight: 1.7 }}>
                     {u.body}
                   </div>
-                  <div className="hz-usecase-chip" style={{ padding: "20px 14px", display: "flex", alignItems: "center", justifyContent: "center", background: i === 0 ? HZ_HL : HZ_BG }}>
+                  <div className="hz-usecase-chip" style={{
+                    padding: "20px 14px",
+                    display: "flex", flexDirection: "column",
+                    alignItems: "center", justifyContent: "center", gap: 6,
+                    background: i === 0 ? HZ_HL : HZ_BG,
+                  }}>
+                    <div style={{
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 9, opacity: 0.5, letterSpacing: ".08em",
+                      textTransform: "uppercase",
+                    }}>{u.moveTag}</div>
                     <HChip>{u.chip}</HChip>
                   </div>
                 </div>
