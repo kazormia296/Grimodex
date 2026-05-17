@@ -1754,7 +1754,6 @@ function LPVariantH() {
           .hz-3move-title { font-size: 28px !important; }
           .hz-3move-meta { flex-direction: row !important; align-items: center !important; gap: 8px !important; flex-wrap: wrap !important; }
           .hz-3move-meta > * { margin-top: 0 !important; }
-          .hz-3move-compound { padding-top: 24px !important; }
 
           .hz-workflow-grid { grid-template-columns: 1fr 1fr !important; }
           .hz-workflow-step { padding: 22px 16px !important; min-height: 170px !important; }
@@ -2442,77 +2441,6 @@ function LPVariantH() {
                 </div>
               </HReveal>
             ))}
-            <HReveal delay={0.24}>
-              <div
-                className="hz-3move-compound"
-                style={{
-                  borderTop: `2px solid ${HZ_INK}`,
-                  marginTop: 12,
-                  paddingTop: 32,
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 18,
-                    marginBottom: 20,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <span
-                    style={{
-                      background: HZ_HL,
-                      color: HZ_INK,
-                      padding: "7px 12px",
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 12,
-                      fontWeight: 800,
-                      letterSpacing: ".1em",
-                      border: `2px solid ${HZ_INK}`,
-                      boxShadow: `3px 3px 0 ${HZ_INK}`,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    ↺ THE LOOP COMPOUNDS
-                  </span>
-                  <p
-                    style={{
-                      fontSize: 15,
-                      lineHeight: 1.7,
-                      margin: 0,
-                      maxWidth: 620,
-                      flex: "1 1 320px",
-                    }}
-                  >
-                    構造的重力が物語の骨格を生む。
-                    骨格は、あなたの物語を強固にする。
-                    <span
-                      style={{
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize: 11,
-                        opacity: 0.55,
-                        display: "block",
-                        marginTop: 6,
-                        letterSpacing: ".04em",
-                      }}
-                    >
-                      WRITE FEEDS GRAVITY · GRAVITY FEEDS TALK · TALK FEEDS THE
-                      NEXT WRITE.
-                    </span>
-                  </p>
-                </div>
-                <HZBar
-                  items={[
-                    { t: "PASS N", k: true },
-                    { t: "+1 LINE" },
-                    { t: "+1 GRAVITY" },
-                    { t: "+1 DEPTH" },
-                    { t: "↳ COMPOUND", hl: true },
-                  ]}
-                />
-              </div>
-            </HReveal>
           </div>
         </div>
       </section>
