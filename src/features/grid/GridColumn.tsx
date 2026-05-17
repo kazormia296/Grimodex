@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { GridSceneCard } from "./GridSceneCard";
 import { GridFolderCard } from "./GridFolderCard";
 import { GridColumnLabelBar } from "./GridColumnLabelBar";
@@ -37,6 +38,10 @@ interface Props {
    *  Includes the active card itself (multi-slot) so it visually travels
    *  with the swap rather than leaving a wandering empty slot. */
   axisLockOffsets?: Map<string, number>;
+  /** Signed translateX pixels for axis-locked column drag. Negative = left,
+   *  positive = right. Applies to passing sibling columns (one slot) and the
+   *  active column itself (multi-slot) so it travels with the swap. */
+  columnAxisLockOffsetPx?: number;
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   /** Flat scene order across all columns, for range selection. */
   flatOrder?: string[];
@@ -51,10 +56,12 @@ export function GridColumn({
   dropIndicator,
   columnDropIndicator,
   axisLockOffsets,
+  columnAxisLockOffsetPx,
   onRequestDeleteConfirm,
   flatOrder,
 }: Props) {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -130,13 +137,25 @@ export function GridColumn({
     columnDropIndicator?.targetId === folder.id &&
     columnDropIndicator.position === "nest";
 
+  const axisLockTx = columnAxisLockOffsetPx ?? 0;
+  const [e0, e1, e2, e3] = EASINGS.easeOut;
+  const axisLockTransition = reducedMotion
+    ? "none"
+    : `transform ${DURATIONS.fast}s cubic-bezier(${e0}, ${e1}, ${e2}, ${e3})`;
+
   return (
     <div
       ref={(node) => {
         setDragRef(node);
         setSlotRef(node);
       }}
+      data-grid-folder-id={folder.id}
       className="relative"
+      style={{
+        transform: axisLockTx ? `translateX(${axisLockTx}px)` : undefined,
+        transition: axisLockTransition,
+        willChange: axisLockTx ? "transform" : undefined,
+      }}
     >
       {isColDropBefore && (
         <div

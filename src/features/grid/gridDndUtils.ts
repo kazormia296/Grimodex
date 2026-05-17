@@ -919,6 +919,136 @@ export function computeSceneAxisLockPxOffsets(
   return result;
 }
 
+/**
+ * Resolve the axis-locked drop target for a column drag — X-axis sibling
+ * swap, restricted to same-parent folders. Cross-column moves and nest are
+ * only reachable in free mode.
+ *
+ * Algorithm mirrors computeSceneAxisLockTarget: count siblings whose midpoint
+ * is left of pointerX; that count is the target index in the active-removed
+ * sibling list. Returns null when the active card would land in its own slot.
+ */
+export function computeColumnAxisLockTarget(
+  activeFolderId: string,
+  pointerX: number,
+  orderedFolders: Array<{ id: string; parentId: string | null }>,
+  siblingRects: Record<string, { left: number; right: number }>,
+): DropTarget | null {
+  const active = orderedFolders.find((f) => f.id === activeFolderId);
+  if (!active) return null;
+  const parentId = active.parentId;
+  const siblingsAll = orderedFolders.filter((f) => f.parentId === parentId);
+  if (siblingsAll.length <= 1) return null;
+
+  const siblingsExcl = siblingsAll.filter((f) => f.id !== activeFolderId);
+  let targetIdx = 0;
+  let sawRect = false;
+  for (const sib of siblingsExcl) {
+    const rect = siblingRects[sib.id];
+    if (!rect) continue;
+    sawRect = true;
+    const mid = (rect.left + rect.right) / 2;
+    if (pointerX > mid) targetIdx++;
+  }
+  if (!sawRect) return null;
+
+  const activeIdxFull = siblingsAll.findIndex((f) => f.id === activeFolderId);
+  const equivalentFullIdx =
+    targetIdx <= activeIdxFull ? targetIdx : targetIdx + 1;
+  if (equivalentFullIdx === activeIdxFull) return null;
+
+  const afterId =
+    targetIdx > 0 ? (siblingsExcl[targetIdx - 1]?.id ?? null) : null;
+  return { targetParentId: parentId, afterId };
+}
+
+/**
+ * Column-axis shift directions during axis-locked column drag.
+ *
+ * Direction semantics:
+ *   "left"  = sibling shifts toward the row's leftmost (active is moving past
+ *             it from left to right)
+ *   "right" = sibling shifts toward the row's rightmost (active is moving past
+ *             it from right to left)
+ */
+export function computeColumnAxisLockShifts(
+  activeFolderId: string,
+  pointerX: number,
+  orderedFolders: Array<{ id: string; parentId: string | null }>,
+  siblingRects: Record<string, { left: number; right: number }>,
+): Map<string, "left" | "right"> {
+  const result = new Map<string, "left" | "right">();
+  const active = orderedFolders.find((f) => f.id === activeFolderId);
+  if (!active) return result;
+  const parentId = active.parentId;
+  const siblingsAll = orderedFolders.filter((f) => f.parentId === parentId);
+  const activeIdx = siblingsAll.findIndex((f) => f.id === activeFolderId);
+  if (activeIdx < 0) return result;
+
+  for (let i = 0; i < siblingsAll.length; i++) {
+    if (i === activeIdx) continue;
+    const sib = siblingsAll[i];
+    const rect = siblingRects[sib.id];
+    if (!rect) continue;
+    const mid = (rect.left + rect.right) / 2;
+    if (i < activeIdx && pointerX < mid) {
+      // Active passes this leftward sibling toward the left → sibling shifts right
+      result.set(sib.id, "right");
+    } else if (i > activeIdx && pointerX > mid) {
+      // Active passes this rightward sibling toward the right → sibling shifts left
+      result.set(sib.id, "left");
+    }
+  }
+  return result;
+}
+
+/**
+ * Compute axis-locked column drag translateX pixel offsets, width-aware.
+ *
+ * Mirrors computeSceneAxisLockPxOffsets on the X axis: passing siblings each
+ * shift by ±(active's slot width) — the size of the vacancy active leaves
+ * and that propagates through the swap chain. The active column shifts by
+ * the SUM of (slot width) for each sibling it passes, signed opposite the
+ * sibling shifts. Width-aware so variable-width columns swap correctly.
+ */
+export function computeColumnAxisLockPxOffsets(
+  activeFolderId: string,
+  pointerX: number,
+  orderedFolders: Array<{ id: string; parentId: string | null }>,
+  siblingRects: Record<string, { left: number; right: number }>,
+  gapPx: number,
+): Map<string, number> {
+  const result = new Map<string, number>();
+  const activeRect = siblingRects[activeFolderId];
+  if (!activeRect) return result;
+  const activeSlot = activeRect.right - activeRect.left + gapPx;
+
+  const directions = computeColumnAxisLockShifts(
+    activeFolderId,
+    pointerX,
+    orderedFolders,
+    siblingRects,
+  );
+
+  let activeOffset = 0;
+  for (const [id, dir] of directions) {
+    const r = siblingRects[id];
+    if (!r) continue;
+    const sibSlot = r.right - r.left + gapPx;
+    if (dir === "left") {
+      result.set(id, -activeSlot);
+      activeOffset += sibSlot;
+    } else {
+      result.set(id, activeSlot);
+      activeOffset -= sibSlot;
+    }
+  }
+  if (activeOffset !== 0) {
+    result.set(activeFolderId, activeOffset);
+  }
+  return result;
+}
+
 export function activeDragKind(activeId: string): DragKind | null {
   if (activeId.startsWith("scene-")) return "scene";
   if (activeId.startsWith("column-")) return "column";

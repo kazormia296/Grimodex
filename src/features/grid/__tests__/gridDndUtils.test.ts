@@ -16,6 +16,9 @@ import {
   computeSceneAxisLockTarget,
   computeSceneAxisLockShifts,
   computeSceneAxisLockPxOffsets,
+  computeColumnAxisLockTarget,
+  computeColumnAxisLockShifts,
+  computeColumnAxisLockPxOffsets,
 } from "../gridDndUtils";
 
 describe("parseId", () => {
@@ -1239,6 +1242,249 @@ describe("computeSceneAxisLockPxOffsets", () => {
       200,
       orderedScenes,
       { s3: rects.s3 },
+      gap,
+    );
+    expect(m.size).toBe(0);
+  });
+});
+
+describe("computeColumnAxisLockTarget", () => {
+  // Three folder columns in containerId=root, laid out horizontally.
+  // Card width 200, gap 20 → lefts at 0, 220, 440.
+  const orderedFolders = [
+    { id: "f1", parentId: "root" },
+    { id: "f2", parentId: "root" },
+    { id: "f3", parentId: "root" },
+    { id: "f4", parentId: "other" }, // different parent — ignored
+  ];
+  const rects = {
+    f1: { left: 0, right: 200 },
+    f2: { left: 220, right: 420 },
+    f3: { left: 440, right: 640 },
+    f4: { left: 0, right: 200 },
+  };
+
+  it("returns null when pointer stays within active's own rect", () => {
+    expect(
+      computeColumnAxisLockTarget("f2", 320, orderedFolders, rects),
+    ).toBeNull();
+  });
+
+  it("swap with left neighbor when pointer crosses left sibling midpoint", () => {
+    // Dragging f2 left; f1 mid = 100. pointerX = 80 → land before f1
+    const result = computeColumnAxisLockTarget("f2", 80, orderedFolders, rects);
+    expect(result).toEqual({ targetParentId: "root", afterId: null });
+  });
+
+  it("swap with right neighbor when pointer crosses right sibling midpoint", () => {
+    // Dragging f2 right; f3 mid = 540. pointerX = 560 → land after f3
+    const result = computeColumnAxisLockTarget(
+      "f2",
+      560,
+      orderedFolders,
+      rects,
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: "f3" });
+  });
+
+  it("skip past multiple neighbors when pointer is far left", () => {
+    // Dragging f3 left past both f1 and f2 (f1 mid 100, pointerX 50)
+    const result = computeColumnAxisLockTarget("f3", 50, orderedFolders, rects);
+    expect(result).toEqual({ targetParentId: "root", afterId: null });
+  });
+
+  it("skip past multiple neighbors when pointer is far right", () => {
+    // Dragging f1 right past f2 and f3 (f3 mid 540, pointerX 600)
+    const result = computeColumnAxisLockTarget(
+      "f1",
+      600,
+      orderedFolders,
+      rects,
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: "f3" });
+  });
+
+  it("ignores siblings in a different parent", () => {
+    const result = computeColumnAxisLockTarget(
+      "f2",
+      9999,
+      orderedFolders,
+      rects,
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: "f3" });
+  });
+
+  it("returns null for an only-child folder (no reorder possible)", () => {
+    const single = [{ id: "x1", parentId: "p1" }];
+    expect(
+      computeColumnAxisLockTarget("x1", 0, single, {
+        x1: { left: 0, right: 200 },
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when active folder id is unknown", () => {
+    expect(
+      computeColumnAxisLockTarget("ghost", 50, orderedFolders, rects),
+    ).toBeNull();
+  });
+
+  it("returns null when no sibling rects are provided", () => {
+    expect(
+      computeColumnAxisLockTarget("f2", 50, orderedFolders, {}),
+    ).toBeNull();
+  });
+
+  it("handles project-root siblings (parentId === null)", () => {
+    const rootSiblings = [
+      { id: "f1", parentId: null },
+      { id: "f2", parentId: null },
+      { id: "f3", parentId: null },
+    ];
+    // Dragging f2 right past f3 mid (540) at pointerX 560
+    const result = computeColumnAxisLockTarget("f2", 560, rootSiblings, rects);
+    expect(result).toEqual({ targetParentId: null, afterId: "f3" });
+  });
+});
+
+describe("computeColumnAxisLockShifts", () => {
+  const orderedFolders = [
+    { id: "f1", parentId: "root" },
+    { id: "f2", parentId: "root" },
+    { id: "f3", parentId: "root" },
+  ];
+  const rects = {
+    f1: { left: 0, right: 200 },
+    f2: { left: 220, right: 420 },
+    f3: { left: 440, right: 640 },
+  };
+
+  it("returns empty map when no displacement", () => {
+    const shifts = computeColumnAxisLockShifts(
+      "f2",
+      320,
+      orderedFolders,
+      rects,
+    );
+    expect(shifts.size).toBe(0);
+  });
+
+  it("shifts left sibling RIGHT when active moves left of it", () => {
+    // Dragging f2 left past f1 mid (pointerX=80, f1 mid=100) → f1 shifts right
+    const shifts = computeColumnAxisLockShifts("f2", 80, orderedFolders, rects);
+    expect(shifts.get("f1")).toBe("right");
+    expect(shifts.has("f3")).toBe(false);
+  });
+
+  it("shifts right sibling LEFT when active moves right of it", () => {
+    // Dragging f2 right past f3 mid (pointerX=560, f3 mid=540) → f3 shifts left
+    const shifts = computeColumnAxisLockShifts(
+      "f2",
+      560,
+      orderedFolders,
+      rects,
+    );
+    expect(shifts.get("f3")).toBe("left");
+    expect(shifts.has("f1")).toBe(false);
+  });
+
+  it("shifts multiple siblings when active jumps two slots", () => {
+    // Dragging f3 left past both f1 and f2 → both shift right
+    const shifts = computeColumnAxisLockShifts("f3", 50, orderedFolders, rects);
+    expect(shifts.get("f1")).toBe("right");
+    expect(shifts.get("f2")).toBe("right");
+  });
+
+  it("excludes active itself from the shift map", () => {
+    const shifts = computeColumnAxisLockShifts("f2", 80, orderedFolders, rects);
+    expect(shifts.has("f2")).toBe(false);
+  });
+});
+
+describe("computeColumnAxisLockPxOffsets", () => {
+  // Mixed-width row: active f2 is 200px, neighbors vary.
+  // gap = 12. Lefts/rights:
+  //   f1: 0..150    (w=150)
+  //   f2: 162..362  (w=200) ← active
+  //   f3: 374..624  (w=250)
+  //   f4: 636..811  (w=175)
+  const orderedFolders = [
+    { id: "f1", parentId: "root" },
+    { id: "f2", parentId: "root" },
+    { id: "f3", parentId: "root" },
+    { id: "f4", parentId: "root" },
+  ];
+  const rects = {
+    f1: { left: 0, right: 150 },
+    f2: { left: 162, right: 362 },
+    f3: { left: 374, right: 624 },
+    f4: { left: 636, right: 811 },
+  };
+  const gap = 12;
+  const activeSlot = 200 + gap;
+
+  it("returns empty when no displacement", () => {
+    const m = computeColumnAxisLockPxOffsets(
+      "f2",
+      262,
+      orderedFolders,
+      rects,
+      gap,
+    );
+    expect(m.size).toBe(0);
+  });
+
+  it("active shifts by right-sibling slot width, sibling shifts by active slot", () => {
+    // f3 midpoint = 499. pointer 510 → active f2 passes f3 toward the right.
+    const m = computeColumnAxisLockPxOffsets(
+      "f2",
+      510,
+      orderedFolders,
+      rects,
+      gap,
+    );
+    expect(m.get("f3")).toBe(-activeSlot);
+    // f2 (active) shifts right by f3's slot (250 + 12)
+    expect(m.get("f2")).toBe(250 + gap);
+    expect(m.has("f1")).toBe(false);
+    expect(m.has("f4")).toBe(false);
+  });
+
+  it("active offset is the SUM of passed-sibling slot widths", () => {
+    // pointer 800 → past f3 (mid 499) and f4 (mid 723.5).
+    const m = computeColumnAxisLockPxOffsets(
+      "f2",
+      800,
+      orderedFolders,
+      rects,
+      gap,
+    );
+    expect(m.get("f3")).toBe(-activeSlot);
+    expect(m.get("f4")).toBe(-activeSlot);
+    // active shifts right by sum of f3's slot + f4's slot
+    expect(m.get("f2")).toBe(250 + gap + 175 + gap);
+  });
+
+  it("leftward pass: active moves left by left-sibling slot, sibling moves right by active slot", () => {
+    // f1 midpoint = 75. pointerX 60 → active passes f1 toward the left.
+    const m = computeColumnAxisLockPxOffsets(
+      "f2",
+      60,
+      orderedFolders,
+      rects,
+      gap,
+    );
+    expect(m.get("f1")).toBe(activeSlot);
+    // f2 moves left by -(f1 width + gap) = -(150 + 12)
+    expect(m.get("f2")).toBe(-(150 + gap));
+  });
+
+  it("returns empty when active rect is missing (no width to compute slot)", () => {
+    const m = computeColumnAxisLockPxOffsets(
+      "f2",
+      510,
+      orderedFolders,
+      { f3: rects.f3 },
       gap,
     );
     expect(m.size).toBe(0);
