@@ -4,10 +4,13 @@ import {
   DragOverlay,
   PointerSensor,
   KeyboardSensor,
+  pointerWithin,
+  rectIntersection,
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
 import type {
+  CollisionDetection,
   DragEndEvent,
   DragOverEvent,
   DragStartEvent,
@@ -45,6 +48,23 @@ import {
 } from "./gridDndUtils";
 import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+
+/**
+ * Pointer-based collision wins for nested droppables — when the cursor is on
+ * a folder card inside a column, the folder card (smaller, closer to pointer)
+ * is picked instead of the enclosing column-slot. Falls back to
+ * `rectIntersection` for the gutters between columns where the pointer isn't
+ * inside any droppable rect (otherwise drops there yield no target).
+ *
+ * Default `rectIntersection` ranked targets by overlay-area overlap, which
+ * with our snap-to-cursor overlay flips between targets across frames and
+ * makes the indicator look like it lights up two places at once.
+ */
+const gridCollisionDetection: CollisionDetection = (args) => {
+  const pointer = pointerWithin(args);
+  if (pointer.length > 0) return pointer;
+  return rectIntersection(args);
+};
 
 /**
  * Pin the DragOverlay's center to the pointer. The actual draggable element
@@ -479,6 +499,7 @@ export function GridPanel() {
   return (
     <DndContext
       sensors={sensors}
+      collisionDetection={gridCollisionDetection}
       modifiers={[snapOverlayCenterToCursor]}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}

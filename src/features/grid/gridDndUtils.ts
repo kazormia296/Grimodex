@@ -131,6 +131,13 @@ export function computeSceneDropTarget(
     return { targetParentId: rawId, afterId: undefined };
   }
 
+  // Dropped on a nested folder card → append the scene into that folder.
+  // Without this, the folder card's `isNestOver` highlight fires during a
+  // scene drag but nothing happens on release — a confusing false positive.
+  if (kind === "nest") {
+    return { targetParentId: rawId, afterId: undefined };
+  }
+
   // Dropped at the end of a column → append after last sibling
   if (kind === "end") {
     return {

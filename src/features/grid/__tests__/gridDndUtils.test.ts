@@ -175,6 +175,21 @@ describe("computeSceneDropTarget", () => {
     );
     expect(result).toEqual({ targetParentId: "ch3", afterId: null });
   });
+
+  it("drops onto a nested folder card (column-nest) → append into that folder", () => {
+    // Folder cards register `column-nest-{id}` droppables; without this case
+    // the folder's hover highlight fires during a scene drag but the drop
+    // does nothing.
+    const result = computeSceneDropTarget(
+      "s1",
+      columnNestId("fB"),
+      0,
+      rect,
+      orderedScenes,
+      "root",
+    );
+    expect(result).toEqual({ targetParentId: "fB", afterId: undefined });
+  });
 });
 
 describe("computeColumnDropTarget", () => {
