@@ -27,8 +27,7 @@ interface Props {
   visibility: Map<string, CardVisibility>;
   dropIndicator?: DropIndicator | null;
   columnDropIndicator?: ColumnDropIndicator | null;
-  axisLockShifts?: Map<string, "up" | "down">;
-  axisLockShiftDistance?: number;
+  axisLockOffsets?: Map<string, number>;
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   flatOrder?: string[];
 }
@@ -50,8 +49,7 @@ export function GridContainerSceneColumn({
   visibility,
   dropIndicator,
   columnDropIndicator,
-  axisLockShifts,
-  axisLockShiftDistance,
+  axisLockOffsets,
   onRequestDeleteConfirm,
   flatOrder,
 }: Props) {
@@ -195,8 +193,7 @@ export function GridContainerSceneColumn({
                   dimmed={vis !== undefined && !vis.matchesSearch}
                   dropIndicator={dropIndicator}
                   columnDropIndicator={columnDropIndicator}
-                  axisLockShift={axisLockShifts?.get(scene.id)}
-                  axisLockShiftDistance={axisLockShiftDistance}
+                  axisLockOffsetPx={axisLockOffsets?.get(scene.id)}
                   onRequestDeleteConfirm={onRequestDeleteConfirm}
                   flatOrder={flatOrder}
                 />

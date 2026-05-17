@@ -31,12 +31,10 @@ interface Props {
    *  indicator — visually communicating where the column will land as the
    *  scene's sibling in its parent. */
   columnDropIndicator?: ColumnDropIndicator | null;
-  /** Axis-locked drag: slot-shift direction for this card (one slot up/down).
-   *  When defined, the card translates by axisLockShiftDistance pixels in that
-   *  direction to "make room" for the dragged sibling. */
-  axisLockShift?: "up" | "down";
-  /** Pixel distance the shifted card translates (active card height + gap). */
-  axisLockShiftDistance?: number;
+  /** Axis-locked drag: signed translateY pixels. Negative = up, positive =
+   *  down. Applies to both passing siblings (one slot) and the active card
+   *  itself (multi-slot) so the card travels visually with the swap. */
+  axisLockOffsetPx?: number;
   /** Called when delete is requested (single or multi-select). */
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   /** Flat scene order for range selection (Shift+Click). */
@@ -49,8 +47,7 @@ export function GridSceneCard({
   dimmed,
   dropIndicator,
   columnDropIndicator,
-  axisLockShift,
-  axisLockShiftDistance,
+  axisLockOffsetPx,
   onRequestDeleteConfirm,
   flatOrder,
 }: Props) {
@@ -171,10 +168,7 @@ export function GridSceneCard({
     }
   }
 
-  const axisLockOffset =
-    axisLockShift && axisLockShiftDistance && axisLockShiftDistance > 0
-      ? (axisLockShift === "up" ? -1 : 1) * axisLockShiftDistance
-      : 0;
+  const axisLockOffset = axisLockOffsetPx ?? 0;
   const [e0, e1, e2, e3] = EASINGS.easeOut;
   const axisLockTransition = reducedMotion
     ? "none"
