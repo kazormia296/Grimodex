@@ -23,7 +23,7 @@ if echo "$CMD" | grep -qE '\bgit\s+(checkout\s+--|restore|reset\s+--hard|clean\s
 fi
 
 # 3. 保護パスへの書き込み手段 (redirect, in-place editor, copy, etc.)
-WRITERS='(>|>>|\btee\b|\bsed\s+-i\b|\bperl\s+-i\b|\bcp\b|\bmv\b|\bdd\s+of=|\btruncate\b|\bpatch\b|\bpython3?\s+-c\b|\bnode\s+-e\b)'
+WRITERS='((^|[[:space:]0-9&])>>?|\btee\b|\bsed\s+-i\b|\bperl\s+-i\b|\bcp\b|\bmv\b|\bdd\s+of=|\btruncate\b|\bpatch\b|\bpython3?\s+-c\b|\bnode\s+-e\b)'
 
 if echo "$CMD" | grep -qE "$PROTECTED" && echo "$CMD" | grep -qE "$WRITERS"; then
   echo "Blocked: write to protected path via Bash: $CMD" >&2
