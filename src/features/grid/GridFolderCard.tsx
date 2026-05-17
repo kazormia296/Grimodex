@@ -10,6 +10,7 @@ import type { ColumnDropIndicator } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { GridFolderCardContextMenu } from "./GridFolderCardContextMenu";
+import { GridFolderMenu } from "./GridFolderMenu";
 
 interface Props {
   folder: TreeNodeData;
@@ -247,6 +248,15 @@ export function GridFolderCard({
                 {folder.title}
               </span>
             </button>
+          )}
+          {!editingTitle && (
+            <GridFolderMenu
+              folderId={folder.id}
+              isEmpty={isEmpty}
+              isExpanded={isExpanded}
+              onOpen={diveIn}
+              onToggleCollapse={() => toggleFolderCollapsed(folder.id)}
+            />
           )}
         </div>
         {!isExpanded && (

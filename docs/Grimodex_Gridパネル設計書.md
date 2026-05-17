@@ -199,7 +199,9 @@ Grid の使い方                    （Help）
 - 列末尾に `+ シーンを追加` ボタン
 - 列幅は Compact OFF で 320px (`w-80`)、Compact ON で 224px (`w-56`)。横スクロールで複数列を見る
 - ドラッグハンドル D&D で Chapter の並び替え（同 container 内）
-- **右クリック → コンテキストメニュー (`GridChapterColumnContextMenu`)**: 「中を表示（dive-in）/ シーンを追加 / リネーム / 削除」。**リネームはインライン edit に切替**（`useTreeStore.setPendingRenameId(folderId)` を呼んでヘッダ title を input にスワップ。Dialog は使わない — タイトル double-click と同じ即時編集体験に揃える）。削除のみ Radix Dialog で確認（章配下の scenes も巻き添えで消えるため）。Chapter 列にはヘッダの kebab は持たせず（rename/delete は新規追加機能で、ヘッダの混雑を避けるため context menu のみで提供）
+- **kebab (`GridChapterColumnMenu`) と右クリックコンテキストメニュー (`GridChapterColumnContextMenu`) を両方提供**: 内容は 1:1 で同一（「中を表示（dive-in）/ シーンを追加 / リネーム / 削除」）。kebab = ホバー時の discoverability、context menu = power-user 速度。Scene カード / Loose 列との整合のため両方備える
+- **リネームはインライン edit**（`useTreeStore.setPendingRenameId(folderId)` を呼んでヘッダ title を input にスワップ。Dialog は使わない — タイトル double-click と同じ即時編集体験に揃える）。削除のみ Radix Dialog で確認（章配下の scenes も巻き添えで消えるため）
+- kebab はヘッダ行を `group/colheader` でスコープし、列内のシーンカードを hover してもチラつかないようにする（drag handle / kebab はヘッダ hover 時のみ fade-in）
 
 ### `+ 章を追加`（カラム末尾の縦書きボタン）
 
@@ -219,7 +221,8 @@ Grid の使い方                    （Help）
 - カード本体に `folder.synopsis`（Outline）を 2行 line-clamp + double-click でインライン編集
 - depth に応じてカード左に `12px × depth` の indent を入れる（`GridDescendant.depth`）
 - 空 folder は ChevronRight を disabled（折りたたみ意味なし）
-- **右クリック → コンテキストメニュー (`GridFolderCardContextMenu`)**: 「中を表示 / 折りたたみ・展開 / リネーム / 削除」。**リネームはインライン edit**（`useTreeStore.setPendingRenameId(folderId)` 経由でカード title を input にスワップ。フォルダカードも `pendingRenameId === folder.id` を effect で監視して edit に入る）。削除のみ Radix Dialog で確認
+- **kebab (`GridFolderMenu`) と右クリックコンテキストメニュー (`GridFolderCardContextMenu`) を両方提供**: 内容は 1:1（「中を表示 / 折りたたみ・展開 / リネーム / 削除」）。Scene カードと同じ「kebab + context menu の両並走」方針
+- **リネームはインライン edit**（`useTreeStore.setPendingRenameId(folderId)` 経由でカード title を input にスワップ。フォルダカードも `pendingRenameId === folder.id` を effect で監視して edit に入る）。削除のみ Radix Dialog で確認
 
 **展開状態の管理**:
 
@@ -246,9 +249,9 @@ Grid の使い方                    （Help）
 
 - 個別 Scene を D&D で別 Chapter 列にドロップして移動できる
 - 仮想列の `+ シーンを追加` は container 直下に Scene を追加する（loose のまま / container 直下のまま）
-- 仮想列ごと既存 Chapter にまとめる（`consolidateLooseIntoChapter`）／ Loose 列のみ新規 Chapter folder に変換（`convertLooseToChapter`）の一括操作は仮想列ヘッダの `[⋮]` メニューから利用可能
+- 仮想列ごと既存 Chapter にまとめる（`consolidateLooseIntoChapter`）／ Loose 列のみ新規 Chapter folder に変換（`convertLooseToChapter`）の一括操作は仮想列ヘッダの `[⋮]` kebab (`GridLooseColumnMenu`、Radix DropdownMenu) から利用可能
 - Container 列では `新規章フォルダに変換` は意味的に noisy（dive-in 中の直下シーンを wrap し直すのは主要操作でない）ため、`既存の章にまとめる` のみ提示する
-- **右クリック → コンテキストメニュー (`GridLooseColumnContextMenu`)**: kebab と同じ項目を提供（`変種=loose` → addScene / 既存の章にまとめる ▸ / 新規章フォルダに変換、`変種=container` → addScene / 既存の章にまとめる ▸）。これらの列は折りたたみ/dive-in が無く drag-and-drop されないため**ドラッグハンドルは持たせない**。kebab は既存 UI として残し、context menu と両立させる（scene card と同じ「両方残す」方針）
+- **kebab (`GridLooseColumnMenu`) と右クリックコンテキストメニュー (`GridLooseColumnContextMenu`) を両方提供**: 内容は 1:1（`変種=loose` → addScene / 既存の章にまとめる ▸ / 新規章フォルダに変換、`変種=container` → addScene / 既存の章にまとめる ▸）。これらの列は折りたたみ/dive-in が無く drag-and-drop されないため**ドラッグハンドルは持たせない**
 
 ### カード（Scene）
 

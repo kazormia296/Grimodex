@@ -10,6 +10,7 @@ import { GridSceneCard } from "./GridSceneCard";
 import { GridFolderCard } from "./GridFolderCard";
 import { GridColumnLabelBar } from "./GridColumnLabelBar";
 import { GridChapterColumnContextMenu } from "./GridChapterColumnContextMenu";
+import { GridChapterColumnMenu } from "./GridChapterColumnMenu";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import {
   columnDraggableId,
@@ -164,7 +165,7 @@ export function GridColumn({
         setSlotRef(node);
       }}
       data-grid-folder-id={folder.id}
-      className="relative group"
+      className="relative"
       style={{
         transform: axisLockTx ? `translateX(${axisLockTx}px)` : undefined,
         transition: axisLockTransition,
@@ -196,7 +197,7 @@ export function GridColumn({
           {display.showLabelBar && <GridColumnLabelBar nodeId={folder.id} />}
 
           {/* Column header */}
-          <div className="flex items-center gap-1 px-3 py-2 border-b">
+          <div className="group/colheader flex items-center gap-1 px-3 py-2 border-b">
             <button
               type="button"
               {...attributes}
@@ -206,7 +207,7 @@ export function GridColumn({
               title={t("grid.column.dragHandle", "ドラッグして並べ替え")}
               className={cn(
                 "shrink-0 rounded p-0.5 cursor-grab active:cursor-grabbing",
-                "text-muted-foreground/40 opacity-0 group-hover:opacity-100",
+                "text-muted-foreground/40 opacity-0 group-hover/colheader:opacity-100",
                 "hover:text-muted-foreground hover:bg-accent",
                 "transition-opacity",
                 isDragging && "opacity-100",
@@ -250,6 +251,7 @@ export function GridColumn({
                 <span className="opacity-50">/{sceneItems.length}</span>
               )}
             </span>
+            {!editingTitle && <GridChapterColumnMenu folderId={folder.id} />}
           </div>
 
           {/* Phase 4 後続: chapter outline (folder.synopsis)。double-click で編集。

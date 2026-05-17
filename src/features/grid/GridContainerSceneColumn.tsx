@@ -1,13 +1,12 @@
-import { useEffect, useRef, useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
-import { Plus, MoreVertical, Folder } from "lucide-react";
+import { Plus, Folder } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
 import { GridSceneCard } from "./GridSceneCard";
 import { GridLooseColumnContextMenu } from "./GridLooseColumnContextMenu";
-import { consolidateLooseIntoChapter } from "./looseBatchOps";
+import { GridLooseColumnMenu } from "./GridLooseColumnMenu";
 import { columnEndId, columnEmptyId } from "./gridDndUtils";
 import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
@@ -55,33 +54,7 @@ export function GridContainerSceneColumn({
   flatOrder,
 }: Props) {
   const { t } = useTranslation();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const menuBtnRef = useRef<HTMLButtonElement>(null);
   const createNode = useTreeStore((s) => s.createNode);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    function handleClick(e: MouseEvent) {
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(e.target as Node) &&
-        menuBtnRef.current &&
-        !menuBtnRef.current.contains(e.target as Node)
-      ) {
-        setMenuOpen(false);
-      }
-    }
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setMenuOpen(false);
-    }
-    document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("mousedown", handleClick);
-      document.removeEventListener("keydown", handleKey);
-    };
-  }, [menuOpen]);
 
   const { setNodeRef: setEndRef, isOver: isEndOver } = useDroppable({
     id: columnEndId(folder.id),
@@ -95,14 +68,6 @@ export function GridContainerSceneColumn({
 
   async function addScene() {
     await createNode({ nodeType: "scene", parentId: folder.id });
-  }
-
-  async function handleConsolidate(chapterId: string) {
-    setMenuOpen(false);
-    await consolidateLooseIntoChapter(
-      scenes.map((s) => s.id),
-      chapterId,
-    );
   }
 
   const colWidth = display.compactCards ? "w-56" : "w-80";
@@ -139,39 +104,12 @@ export function GridContainerSceneColumn({
             )}
           </span>
 
-          {scenes.length > 0 && chapters.length > 0 && (
-            <div className="relative">
-              <button
-                ref={menuBtnRef}
-                className="rounded p-0.5 hover:bg-accent transition-colors"
-                onClick={() => setMenuOpen((v) => !v)}
-                title={t("grid.looseColumn.menu", "操作")}
-              >
-                <MoreVertical className="h-3.5 w-3.5 text-muted-foreground" />
-              </button>
-
-              {menuOpen && (
-                <div
-                  ref={menuRef}
-                  className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded-md border bg-popover p-1 shadow-md text-sm"
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  <div className="px-2 py-1 text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
-                    {t("grid.looseColumn.consolidate", "既存の章にまとめる")}
-                  </div>
-                  {chapters.map((ch) => (
-                    <button
-                      key={ch.id}
-                      className="flex w-full items-center rounded px-2 py-1.5 hover:bg-accent text-[12px]"
-                      onClick={() => void handleConsolidate(ch.id)}
-                    >
-                      {ch.title}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          <GridLooseColumnMenu
+            variant="container"
+            containerId={folder.id}
+            scenes={scenes}
+            chapters={chapters}
+          />
         </div>
 
         {/* Cards */}
