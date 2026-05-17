@@ -1215,8 +1215,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       return { nodes: updated, scenes: computeScenes(updated) };
     });
     usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+    // NOTE: pass `newParentId` directly — `?? undefined` would coerce null to
+    // undefined, and Drizzle omits undefined keys from the SET clause, so the
+    // parent_id column would never be cleared. That made "move to root" silently
+    // skip the DB write while still applying the optimistic in-memory update.
     await api.updateNode(id, {
-      parentId: newParentId ?? undefined,
+      parentId: newParentId,
       sortOrder,
     });
 
@@ -1226,7 +1230,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         label: "移動",
         async undo() {
           await api.updateNode(id, {
-            parentId: oldParentId ?? undefined,
+            parentId: oldParentId,
             sortOrder: oldSortOrder,
           });
           set((state) => {
@@ -1240,7 +1244,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         },
         async redo() {
           await api.updateNode(id, {
-            parentId: newParentId ?? undefined,
+            parentId: newParentId,
             sortOrder,
           });
           set((state) => {
