@@ -47,6 +47,7 @@ import {
   computeColumnDropIndicator,
 } from "./gridDndUtils";
 import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
+import { glog } from "./gridDndLog";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
 /**
@@ -145,6 +146,9 @@ export function GridPanel() {
   const pointerYRef = useRef(0);
   const pointerXRef = useRef(0);
   const panelRef = useRef<HTMLDivElement>(null);
+  // Dedupe key for dragOver logging — handler fires ~60Hz, but the meaningful
+  // state ({ overId, indicator }) changes only at zone boundaries.
+  const lastDragOverKeyRef = useRef<string>("");
 
   useEffect(() => {
     void loadForProject(projectId);
@@ -274,7 +278,14 @@ export function GridPanel() {
   );
 
   function handleDragStart(e: DragStartEvent) {
-    setActiveId(String(e.active.id));
+    const id = String(e.active.id);
+    glog("DragStart", "active", {
+      id,
+      kind: activeDragKind(id),
+      pointer: { x: pointerXRef.current, y: pointerYRef.current },
+    });
+    lastDragOverKeyRef.current = "";
+    setActiveId(id);
     setDropIndicator(null);
     setColumnDropIndicator(null);
   }
@@ -293,6 +304,17 @@ export function GridPanel() {
         pointerYRef.current,
         { top: rect.top, height: rect.height },
       );
+      const key = `scene|${overId}|${indicator?.targetId ?? ""}|${indicator?.position ?? ""}`;
+      if (key !== lastDragOverKeyRef.current) {
+        lastDragOverKeyRef.current = key;
+        glog("DragOver(scene)", "state change", {
+          activeId: activeIdStr,
+          overId,
+          pointer: { x: pointerXRef.current, y: pointerYRef.current },
+          rect,
+          indicator,
+        });
+      }
       setDropIndicator(indicator);
       setColumnDropIndicator(null);
       return;
@@ -311,6 +333,16 @@ export function GridPanel() {
           const midY = rect.top + rect.height / 2;
           const position: "before" | "after" =
             pointerYRef.current <= midY ? "before" : "after";
+          const key = `col-as-scene|${overId}|${sceneId}|${position}`;
+          if (key !== lastDragOverKeyRef.current) {
+            lastDragOverKeyRef.current = key;
+            glog("DragOver(column)", "sibling-scene path", {
+              activeFolderId: folderId,
+              targetSceneId: sceneId,
+              activeParent,
+              position,
+            });
+          }
           setDropIndicator({ targetId: sceneId, position });
           setColumnDropIndicator(null);
           return;
@@ -344,6 +376,17 @@ export function GridPanel() {
         orderedSiblings,
         containerId,
       );
+      const key = `col|${overId}|${indicator?.targetId ?? ""}|${indicator?.position ?? ""}`;
+      if (key !== lastDragOverKeyRef.current) {
+        lastDragOverKeyRef.current = key;
+        glog("DragOver(column)", "state change", {
+          activeFolderId: folderId,
+          overId,
+          pointer: { x: pointerXRef.current, y: pointerYRef.current },
+          rect,
+          indicator,
+        });
+      }
       setColumnDropIndicator(indicator);
       setDropIndicator(null);
     }
@@ -355,7 +398,16 @@ export function GridPanel() {
     setColumnDropIndicator(null);
     const activeIdStr = String(e.active.id);
     const overIdStr = e.over ? String(e.over.id) : "";
-    if (!overIdStr) return;
+    glog("DragEnd", "entry", {
+      activeId: activeIdStr,
+      overId: overIdStr,
+      kind: activeDragKind(activeIdStr),
+      pointer: { x: pointerXRef.current, y: pointerYRef.current },
+    });
+    if (!overIdStr) {
+      glog("DragEnd", "cancelled: no over target");
+      return;
+    }
 
     const kind = activeDragKind(activeIdStr);
 
@@ -386,10 +438,21 @@ export function GridPanel() {
           const orderedSelected = flatOrder.filter((id) =>
             selectedSceneIds.has(id),
           );
+          glog("DragEnd(scene)", "moveScenesToChapter (multi-select)", {
+            sceneIds: orderedSelected,
+            targetParentId: target.targetParentId,
+          });
           void moveScenesToChapter(orderedSelected, target.targetParentId);
         } else {
+          glog("DragEnd(scene)", "moveNode (single)", {
+            sceneId,
+            targetParentId: target.targetParentId,
+            afterId: target.afterId,
+          });
           void moveNode(sceneId, target.targetParentId, target.afterId);
         }
+      } else {
+        glog("DragEnd(scene)", "no target → no-op");
       }
       return;
     }
@@ -416,6 +479,12 @@ export function GridPanel() {
           } else {
             afterId = sceneId;
           }
+          glog("DragEnd(column)", "moveNode (sibling-scene path)", {
+            folderId,
+            activeParent,
+            afterId,
+            viaSceneId: sceneId,
+          });
           void moveNode(folderId, activeParent, afterId);
           return;
         }
@@ -449,7 +518,14 @@ export function GridPanel() {
         containerId,
       );
       if (target) {
+        glog("DragEnd(column)", "moveNode", {
+          folderId,
+          targetParentId: target.targetParentId,
+          afterId: target.afterId,
+        });
         void moveNode(folderId, target.targetParentId, target.afterId);
+      } else {
+        glog("DragEnd(column)", "no target → no-op");
       }
     }
   }

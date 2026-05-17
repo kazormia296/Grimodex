@@ -3,6 +3,8 @@
  * No React dependencies — easy to unit-test.
  */
 
+import { glog } from "./gridDndLog";
+
 export type DragKind = "scene" | "column";
 
 export interface DropIndicator {
@@ -39,10 +41,16 @@ export function computeSceneDropIndicator(
   const targetSceneId = rawId;
   if (targetSceneId === activeSceneId) return null;
   const midY = overRect.top + overRect.height / 2;
-  return {
+  const result: DropIndicator = {
     targetId: targetSceneId,
     position: pointerY <= midY ? "before" : "after",
   };
+  glog("computeSceneDropIndicator", "result", {
+    activeSceneId,
+    overId,
+    result,
+  });
+  return result;
 }
 
 export interface DropTarget {
@@ -102,13 +110,28 @@ export function computeSceneDropTarget(
   orderedScenes: Array<{ id: string; parentId: string | null }>,
   containerId: string | null,
 ): DropTarget | null {
-  if (!overId) return null;
+  glog("computeSceneDropTarget", "input", {
+    activeSceneId,
+    overId,
+    pointerY,
+    overRect,
+    containerId,
+    sceneCount: orderedScenes.length,
+  });
+  if (!overId) {
+    glog("computeSceneDropTarget", "early-return: empty overId");
+    return null;
+  }
   const { kind, rawId } = parseId(overId);
+  glog("computeSceneDropTarget", "parsed", { kind, rawId });
 
   // Dropped on a scene-drop zone: insert before or after based on pointer position
   if (kind === "drop") {
     const targetSceneId = rawId;
-    if (targetSceneId === activeSceneId) return null;
+    if (targetSceneId === activeSceneId) {
+      glog("computeSceneDropTarget", "early-return: drop on self");
+      return null;
+    }
     const targetScene = orderedScenes.find((s) => s.id === targetSceneId);
     const targetParentId = targetScene?.parentId ?? null;
     const midY = overRect.top + overRect.height / 2;
@@ -120,40 +143,53 @@ export function computeSceneDropTarget(
       const targetIdx = siblings.findIndex((s) => s.id === targetSceneId);
       const predecessor =
         targetIdx > 0 ? (siblings[targetIdx - 1]?.id ?? null) : null;
-      return { targetParentId, afterId: predecessor };
+      const result = { targetParentId, afterId: predecessor };
+      glog("computeSceneDropTarget", "branch: drop/before", result);
+      return result;
     }
-    return { targetParentId, afterId: targetSceneId };
+    const result = { targetParentId, afterId: targetSceneId };
+    glog("computeSceneDropTarget", "branch: drop/after", result);
+    return result;
   }
 
   // Dropped on column-slot: the full-column droppable wins collision detection
   // over scene-drop zones when hovering a non-empty column — treat as append.
   if (kind === "slot") {
-    return { targetParentId: rawId, afterId: undefined };
+    const result = { targetParentId: rawId, afterId: undefined };
+    glog("computeSceneDropTarget", "branch: slot (append)", result);
+    return result;
   }
 
   // Dropped on a nested folder card → append the scene into that folder.
   // Without this, the folder card's `isNestOver` highlight fires during a
   // scene drag but nothing happens on release — a confusing false positive.
   if (kind === "nest") {
-    return { targetParentId: rawId, afterId: undefined };
+    const result = { targetParentId: rawId, afterId: undefined };
+    glog("computeSceneDropTarget", "branch: nest (append into folder)", result);
+    return result;
   }
 
   // Dropped at the end of a column → append after last sibling
   if (kind === "end") {
-    return {
+    const result = {
       targetParentId: rawId === "loose" ? containerId : rawId,
       afterId: undefined,
     };
+    glog("computeSceneDropTarget", "branch: end (append)", result);
+    return result;
   }
 
   // Dropped on empty column → first (and only) child
   if (kind === "empty") {
-    return {
+    const result = {
       targetParentId: rawId === "loose" ? containerId : rawId,
       afterId: null,
     };
+    glog("computeSceneDropTarget", "branch: empty (first child)", result);
+    return result;
   }
 
+  glog("computeSceneDropTarget", "fallthrough: no match for kind", { kind });
   return null;
 }
 
@@ -298,21 +334,52 @@ export function computeColumnDropIndicator(
 
   // Explicit nest droppable (e.g. nested folder card)
   if (kind === "nest") {
-    if (rawId === activeFolderId) return null;
-    if (isSelfOrDescendant(rawId, activeFolderId, folderParentMap)) return null;
-    if ((folderParentMap[activeFolderId] ?? null) === rawId) return null;
-    return { targetId: rawId, position: "nest" };
+    if (rawId === activeFolderId) {
+      glog("computeColumnDropIndicator", "nest reject: target == active");
+      return null;
+    }
+    if (isSelfOrDescendant(rawId, activeFolderId, folderParentMap)) {
+      glog(
+        "computeColumnDropIndicator",
+        "nest reject: target is descendant of active",
+      );
+      return null;
+    }
+    if ((folderParentMap[activeFolderId] ?? null) === rawId) {
+      glog(
+        "computeColumnDropIndicator",
+        "nest reject: active already child of target",
+      );
+      return null;
+    }
+    const result: ColumnDropIndicator = { targetId: rawId, position: "nest" };
+    glog("computeColumnDropIndicator", "result: nest", result);
+    return result;
   }
 
   const targetId = resolveEnclosingFolderId(overId, sceneParentMap);
-  if (!targetId) return null;
-  if (targetId === activeFolderId) return null;
+  if (!targetId) {
+    glog("computeColumnDropIndicator", "no enclosing folder", { overId, kind });
+    return null;
+  }
+  if (targetId === activeFolderId) {
+    glog("computeColumnDropIndicator", "reject: target == active");
+    return null;
+  }
   // Conservative: dropping onto loose scenes (children of containerId) shouldn't
   // bubble up and move the column out of containerId.
-  if (targetId === containerId) return null;
-  // Cycle prevention: target must not be a descendant of active.
-  if (isSelfOrDescendant(targetId, activeFolderId, folderParentMap))
+  if (targetId === containerId) {
+    glog("computeColumnDropIndicator", "reject: target == containerId");
     return null;
+  }
+  // Cycle prevention: target must not be a descendant of active.
+  if (isSelfOrDescendant(targetId, activeFolderId, folderParentMap)) {
+    glog(
+      "computeColumnDropIndicator",
+      "reject: target is descendant of active",
+    );
+    return null;
+  }
   const position = resolveColumnDropPosition(
     activeFolderId,
     targetId,
@@ -321,8 +388,13 @@ export function computeColumnDropIndicator(
     folderParentMap,
     orderedSiblings,
   );
-  if (!position) return null;
-  return { targetId, position };
+  if (!position) {
+    glog("computeColumnDropIndicator", "no-op position (adjacent or same)");
+    return null;
+  }
+  const result: ColumnDropIndicator = { targetId, position };
+  glog("computeColumnDropIndicator", "result", result);
+  return result;
 }
 
 /**
@@ -347,26 +419,68 @@ export function computeColumnDropTarget(
   sceneParentMap: Record<string, string | null>,
   containerId: string | null,
 ): DropTarget | null {
-  if (!overId) return null;
+  glog("computeColumnDropTarget", "input", {
+    activeFolderId,
+    overId,
+    pointerX,
+    overRect,
+    containerId,
+  });
+  if (!overId) {
+    glog("computeColumnDropTarget", "early-return: empty overId");
+    return null;
+  }
   const { kind, rawId } = parseId(overId);
+  glog("computeColumnDropTarget", "parsed", { kind, rawId });
 
   // Explicit nest droppable (e.g. nested folder card) — append into target.
   if (kind === "nest") {
-    if (rawId === activeFolderId) return null;
-    if (isSelfOrDescendant(rawId, activeFolderId, folderParentMap)) return null;
-    if ((folderParentMap[activeFolderId] ?? null) === rawId) return null;
-    return { targetParentId: rawId, afterId: undefined };
+    if (rawId === activeFolderId) {
+      glog("computeColumnDropTarget", "nest reject: target == active");
+      return null;
+    }
+    if (isSelfOrDescendant(rawId, activeFolderId, folderParentMap)) {
+      glog(
+        "computeColumnDropTarget",
+        "nest reject: target is descendant of active",
+      );
+      return null;
+    }
+    if ((folderParentMap[activeFolderId] ?? null) === rawId) {
+      glog(
+        "computeColumnDropTarget",
+        "nest reject: active already child of target",
+      );
+      return null;
+    }
+    const result = { targetParentId: rawId, afterId: undefined };
+    glog("computeColumnDropTarget", "branch: explicit nest", result);
+    return result;
   }
 
   const targetId = resolveEnclosingFolderId(overId, sceneParentMap);
-  if (!targetId) return null;
-  if (targetId === activeFolderId) return null;
+  if (!targetId) {
+    glog("computeColumnDropTarget", "no enclosing folder", { overId, kind });
+    return null;
+  }
+  if (targetId === activeFolderId) {
+    glog("computeColumnDropTarget", "reject: enclosing folder == active");
+    return null;
+  }
   // Conservative: dropping a Part onto loose scenes (children of containerId)
   // shouldn't bubble up and move the Part out of containerId.
-  if (targetId === containerId) return null;
-  // Cycle prevention: target must not be a descendant of active.
-  if (isSelfOrDescendant(targetId, activeFolderId, folderParentMap))
+  if (targetId === containerId) {
+    glog("computeColumnDropTarget", "reject: enclosing folder == containerId");
     return null;
+  }
+  // Cycle prevention: target must not be a descendant of active.
+  if (isSelfOrDescendant(targetId, activeFolderId, folderParentMap)) {
+    glog(
+      "computeColumnDropTarget",
+      "reject: enclosing folder is descendant of active",
+    );
+    return null;
+  }
   const position = resolveColumnDropPosition(
     activeFolderId,
     targetId,
@@ -375,9 +489,15 @@ export function computeColumnDropTarget(
     folderParentMap,
     orderedSiblings,
   );
-  if (!position) return null;
+  glog("computeColumnDropTarget", "resolved position", { targetId, position });
+  if (!position) {
+    glog("computeColumnDropTarget", "no-op (adjacent or same)");
+    return null;
+  }
   if (position === "nest") {
-    return { targetParentId: targetId, afterId: undefined };
+    const result = { targetParentId: targetId, afterId: undefined };
+    glog("computeColumnDropTarget", "branch: implicit nest", result);
+    return result;
   }
   const targetParentId = folderParentMap[targetId] ?? null;
   if (position === "before") {
@@ -387,9 +507,13 @@ export function computeColumnDropTarget(
     );
     const idx = siblings.findIndex((f) => f.id === targetId);
     const predecessor = idx > 0 ? (siblings[idx - 1]?.id ?? null) : null;
-    return { targetParentId, afterId: predecessor };
+    const result = { targetParentId, afterId: predecessor };
+    glog("computeColumnDropTarget", "branch: before", result);
+    return result;
   }
-  return { targetParentId, afterId: targetId };
+  const result = { targetParentId, afterId: targetId };
+  glog("computeColumnDropTarget", "branch: after", result);
+  return result;
 }
 
 export function activeDragKind(activeId: string): DragKind | null {
