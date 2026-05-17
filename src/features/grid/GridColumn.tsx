@@ -112,7 +112,9 @@ export function GridColumn({
   );
   const INDENT_PX = 12;
 
-  // Column drop indicator (left/right gap when this column is the drop target)
+  // Column drop indicator (left/right insertion line when this column is the
+  // drop target). The gap-opening animation was replaced with a static line —
+  // see polish-motion: insertion animations were disabled, highlight only.
   const isColDropBefore =
     columnDropIndicator?.targetId === folder.id &&
     columnDropIndicator.position === "before";
@@ -122,7 +124,6 @@ export function GridColumn({
   const isColDropNest =
     columnDropIndicator?.targetId === folder.id &&
     columnDropIndicator.position === "nest";
-  const COL_GAP = display.compactCards ? 224 : 320; // w-56 = 14rem = 224px / w-80 = 20rem = 320px
 
   return (
     <div
@@ -130,12 +131,20 @@ export function GridColumn({
         setDragRef(node);
         setSlotRef(node);
       }}
-      style={{
-        paddingLeft: isColDropBefore ? COL_GAP : 0,
-        paddingRight: isColDropAfter ? COL_GAP : 0,
-        transition: "padding 120ms ease-out",
-      }}
+      className="relative"
     >
+      {isColDropBefore && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 -left-2 w-1 rounded-full bg-primary"
+        />
+      )}
+      {isColDropAfter && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 -right-2 w-1 rounded-full bg-primary"
+        />
+      )}
       <div
         className={cn(
           `flex flex-col h-full ${colWidth} shrink-0 rounded-lg border bg-muted/30`,

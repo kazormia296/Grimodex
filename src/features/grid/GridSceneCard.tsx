@@ -95,7 +95,6 @@ export function GridSceneCard({
     dropIndicator?.targetId === scene.id && dropIndicator.position === "before";
   const isDropAfter =
     dropIndicator?.targetId === scene.id && dropIndicator.position === "after";
-  const GAP = display.compactCards ? 56 : 72;
 
   function openInEditor() {
     useTabStore.getState().openPinned(scene.id);
@@ -157,12 +156,20 @@ export function GridSceneCard({
         setDropRef(node);
       }}
       data-grid-scene-id={scene.id}
-      style={{
-        paddingTop: isDropBefore ? GAP : 0,
-        paddingBottom: isDropAfter ? GAP : 0,
-        transition: "padding 120ms ease-out",
-      }}
+      className="relative"
     >
+      {isDropBefore && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -top-1.5 h-1 rounded-full bg-primary"
+        />
+      )}
+      {isDropAfter && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -bottom-1.5 h-1 rounded-full bg-primary"
+        />
+      )}
       <div
         tabIndex={0}
         role="option"
