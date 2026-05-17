@@ -11,6 +11,10 @@ interface Props {
   onOpenInEditor?: () => void;
   /** Self-contained menu component (e.g. GridCardMenu). */
   menuSlot?: React.ReactNode;
+  /** Drag handle rendered at the left of the row (e.g. GripVertical with
+   *  dnd-kit attributes/listeners). Placed before the title so the drag
+   *  affordance is explicit and never overlaps the action buttons. */
+  dragHandleSlot?: React.ReactNode;
 }
 
 export function GridCardHeader({
@@ -18,6 +22,7 @@ export function GridCardHeader({
   title,
   onOpenInEditor,
   menuSlot,
+  dragHandleSlot,
 }: Props) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
@@ -53,6 +58,7 @@ export function GridCardHeader({
 
   return (
     <div className="flex items-center gap-1 px-3 pt-2 pb-1 group">
+      {dragHandleSlot}
       {editing ? (
         <input
           ref={inputRef}

@@ -13,6 +13,11 @@ import { useGridStore } from "./gridStore";
 type Tab = "beat" | "synopsis";
 
 const BEAT_VISIBLE_LIMIT = 3;
+/** Heuristic threshold for "long" synopsis. Card width ~260px × 11px font →
+ *  roughly 30 chars/line; 4 lines ≈ 120 chars. We add a small margin so we
+ *  don't toggle for content that just barely fills the clamp. */
+const SYNOPSIS_LONG_THRESHOLD = 140;
+const SYNOPSIS_CLAMP_CLASS = "line-clamp-4";
 
 interface Props {
   nodeId: string;
@@ -71,6 +76,10 @@ export function GridCardBody({
 
   const cardTabMode = useGridStore((s) => s.cardTabMode);
   const setCardTabMode = useGridStore((s) => s.setCardTabMode);
+  const synopsisExpanded = useGridStore((s) =>
+    s.expandedSynopsisIds.has(nodeId),
+  );
+  const toggleSynopsisExpanded = useGridStore((s) => s.toggleSynopsisExpanded);
 
   const [beatsExpanded, setBeatsExpanded] = useState(false);
 
@@ -212,15 +221,47 @@ export function GridCardBody({
 
   function renderSynopsisBody() {
     if (hasSynopsis) {
+      const isLong = (synopsis?.length ?? 0) > SYNOPSIS_LONG_THRESHOLD;
+      const clamped = isLong && !synopsisExpanded;
       return (
-        <InlineSynopsisEditor
-          nodeId={nodeId}
-          synopsis={synopsis}
-          className="cursor-text rounded text-[11px] text-muted-foreground hover:bg-accent/30"
-          placeholder={t("grid.card.synopsisPlaceholder", "シノプシスを追加…")}
-          triggerOn="doubleClick"
-          onEditingChange={onEditingChange}
-        />
+        <div className="flex flex-col gap-1">
+          <InlineSynopsisEditor
+            nodeId={nodeId}
+            synopsis={synopsis}
+            className={cn(
+              "cursor-text rounded text-[11px] text-muted-foreground hover:bg-accent/30",
+              clamped && SYNOPSIS_CLAMP_CLASS,
+            )}
+            placeholder={t(
+              "grid.card.synopsisPlaceholder",
+              "シノプシスを追加…",
+            )}
+            triggerOn="doubleClick"
+            onEditingChange={onEditingChange}
+          />
+          {isLong && (
+            <button
+              type="button"
+              className="self-start inline-flex items-center gap-0.5 text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleSynopsisExpanded(nodeId);
+              }}
+            >
+              {synopsisExpanded ? (
+                <>
+                  <ChevronUp className="h-3 w-3" />
+                  <span>{t("grid.card.collapseSynopsis", "折りたたむ")}</span>
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="h-3 w-3" />
+                  <span>{t("grid.card.expandSynopsis", "もっと見る")}</span>
+                </>
+              )}
+            </button>
+          )}
+        </div>
       );
     }
     return (

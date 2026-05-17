@@ -6,6 +6,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
 import { GridSceneCard } from "./GridSceneCard";
+import { GridLooseColumnContextMenu } from "./GridLooseColumnContextMenu";
 import { consolidateLooseIntoChapter } from "./looseBatchOps";
 import { columnEndId, columnEmptyId } from "./gridDndUtils";
 import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
@@ -111,112 +112,119 @@ export function GridContainerSceneColumn({
   );
 
   return (
-    <div
-      className={cn(
-        `flex flex-col h-full ${colWidth} shrink-0 rounded-lg border bg-muted/30`,
-      )}
+    <GridLooseColumnContextMenu
+      variant="container"
+      containerId={folder.id}
+      scenes={scenes}
+      chapters={chapters}
     >
-      {/* Header */}
-      <div className="flex items-center gap-1.5 px-3 py-2 border-b">
-        <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <span
-          className="flex-1 truncate text-sm font-semibold"
-          title={folder.title}
-        >
-          {folder.title}
-        </span>
-        <span className="text-[10px] text-muted-foreground shrink-0">
-          {visibleScenes.length}
-          {visibleScenes.length !== scenes.length && (
-            <span className="opacity-50">/{scenes.length}</span>
-          )}
-        </span>
-
-        {scenes.length > 0 && chapters.length > 0 && (
-          <div className="relative">
-            <button
-              ref={menuBtnRef}
-              className="rounded p-0.5 hover:bg-accent transition-colors"
-              onClick={() => setMenuOpen((v) => !v)}
-              title={t("grid.looseColumn.menu", "操作")}
-            >
-              <MoreVertical className="h-3.5 w-3.5 text-muted-foreground" />
-            </button>
-
-            {menuOpen && (
-              <div
-                ref={menuRef}
-                className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded-md border bg-popover p-1 shadow-md text-sm"
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                <div className="px-2 py-1 text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
-                  {t("grid.looseColumn.consolidate", "既存の章にまとめる")}
-                </div>
-                {chapters.map((ch) => (
-                  <button
-                    key={ch.id}
-                    className="flex w-full items-center rounded px-2 py-1.5 hover:bg-accent text-[12px]"
-                    onClick={() => void handleConsolidate(ch.id)}
-                  >
-                    {ch.title}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+      <div
+        className={cn(
+          `flex flex-col h-full ${colWidth} shrink-0 rounded-lg border bg-muted/30`,
         )}
-      </div>
-
-      {/* Cards */}
-      <div className="flex flex-col gap-2 p-2 flex-1 min-h-0 overflow-y-auto">
-        {scenes.length === 0 ? (
-          <div
-            ref={setEmptyRef}
-            className={cn(
-              "flex-1 rounded-md border-2 border-dashed border-border min-h-16",
-              "flex items-center justify-center text-[11px] text-muted-foreground",
-              isEmptyOver && "border-primary bg-primary/5",
-            )}
-          >
-            {t("grid.column.dropHere", "ここにドロップ")}
-          </div>
-        ) : (
-          <>
-            {scenes.map((scene) => {
-              const vis = visibility.get(scene.id);
-              if (vis && !vis.passesFilter) return null;
-              return (
-                <GridSceneCard
-                  key={scene.id}
-                  scene={scene}
-                  display={display}
-                  dimmed={vis !== undefined && !vis.matchesSearch}
-                  dropIndicator={dropIndicator}
-                  columnDropIndicator={columnDropIndicator}
-                  axisLockOffsetPx={axisLockOffsets?.get(scene.id)}
-                  onRequestDeleteConfirm={onRequestDeleteConfirm}
-                  flatOrder={flatOrder}
-                />
-              );
-            })}
-            <div
-              ref={setEndRef}
-              className={cn(
-                "h-4 rounded transition-colors",
-                isEndOver && "bg-primary/20",
-              )}
-            />
-          </>
-        )}
-      </div>
-
-      <button
-        className="flex items-center gap-1 px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 border-t transition-colors rounded-b-lg"
-        onClick={() => void addScene()}
       >
-        <Plus className="h-3 w-3" />
-        {t("grid.column.newScene", "シーンを追加")}
-      </button>
-    </div>
+        {/* Header */}
+        <div className="flex items-center gap-1.5 px-3 py-2 border-b">
+          <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span
+            className="flex-1 truncate text-sm font-semibold"
+            title={folder.title}
+          >
+            {folder.title}
+          </span>
+          <span className="text-[10px] text-muted-foreground shrink-0">
+            {visibleScenes.length}
+            {visibleScenes.length !== scenes.length && (
+              <span className="opacity-50">/{scenes.length}</span>
+            )}
+          </span>
+
+          {scenes.length > 0 && chapters.length > 0 && (
+            <div className="relative">
+              <button
+                ref={menuBtnRef}
+                className="rounded p-0.5 hover:bg-accent transition-colors"
+                onClick={() => setMenuOpen((v) => !v)}
+                title={t("grid.looseColumn.menu", "操作")}
+              >
+                <MoreVertical className="h-3.5 w-3.5 text-muted-foreground" />
+              </button>
+
+              {menuOpen && (
+                <div
+                  ref={menuRef}
+                  className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded-md border bg-popover p-1 shadow-md text-sm"
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <div className="px-2 py-1 text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+                    {t("grid.looseColumn.consolidate", "既存の章にまとめる")}
+                  </div>
+                  {chapters.map((ch) => (
+                    <button
+                      key={ch.id}
+                      className="flex w-full items-center rounded px-2 py-1.5 hover:bg-accent text-[12px]"
+                      onClick={() => void handleConsolidate(ch.id)}
+                    >
+                      {ch.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Cards */}
+        <div className="flex flex-col gap-2 p-2 flex-1 min-h-0 overflow-y-auto">
+          {scenes.length === 0 ? (
+            <div
+              ref={setEmptyRef}
+              className={cn(
+                "flex-1 rounded-md border-2 border-dashed border-border min-h-16",
+                "flex items-center justify-center text-[11px] text-muted-foreground",
+                isEmptyOver && "border-primary bg-primary/5",
+              )}
+            >
+              {t("grid.column.dropHere", "ここにドロップ")}
+            </div>
+          ) : (
+            <>
+              {scenes.map((scene) => {
+                const vis = visibility.get(scene.id);
+                if (vis && !vis.passesFilter) return null;
+                return (
+                  <GridSceneCard
+                    key={scene.id}
+                    scene={scene}
+                    display={display}
+                    dimmed={vis !== undefined && !vis.matchesSearch}
+                    dropIndicator={dropIndicator}
+                    columnDropIndicator={columnDropIndicator}
+                    axisLockOffsetPx={axisLockOffsets?.get(scene.id)}
+                    onRequestDeleteConfirm={onRequestDeleteConfirm}
+                    flatOrder={flatOrder}
+                  />
+                );
+              })}
+              <div
+                ref={setEndRef}
+                className={cn(
+                  "h-4 rounded transition-colors",
+                  isEndOver && "bg-primary/20",
+                )}
+              />
+            </>
+          )}
+        </div>
+
+        <button
+          className="flex items-center gap-1 px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 border-t transition-colors rounded-b-lg"
+          onClick={() => void addScene()}
+        >
+          <Plus className="h-3 w-3" />
+          {t("grid.column.newScene", "シーンを追加")}
+        </button>
+      </div>
+    </GridLooseColumnContextMenu>
   );
 }

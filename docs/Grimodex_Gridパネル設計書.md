@@ -193,12 +193,13 @@ Grid の使い方                    （Help）
 ### 列（Chapter）
 
 - 1列 = 1 Chapter（`tree_nodes.node_type = 'folder'`）
-- 列ヘッダ: Chapter 名（double-click でインライン rename）+ シーン件数バッジ
+- 列ヘッダ: **`GripVertical` ドラッグハンドル**（hover で fade-in） + Chapter 名（double-click でインライン rename）+ シーン件数バッジ。ヘッダ全域に drag listener を貼っていた初期実装はタイトルクリックと drag の意図が衝突したためハンドル単独へ移行
 - 列ヘッダ直下に Chapter の Outline (`folder.synopsis`) を 2行 line-clamp 表示 + double-click でインライン編集（**実装済み, Phase 4 後続**）— このテキストは chat の chapter outline 注入経路にも乗る
 - 列内のカードは `tree_nodes.sort_order` 昇順で縦に並び、scene カードと**ネストされた子 folder カード**が混在表示される（下記「フォルダカード／dive-in」参照）
 - 列末尾に `+ シーンを追加` ボタン
 - 列幅は Compact OFF で 320px (`w-80`)、Compact ON で 224px (`w-56`)。横スクロールで複数列を見る
-- 列ヘッダ D&D で Chapter の並び替え（同 container 内）
+- ドラッグハンドル D&D で Chapter の並び替え（同 container 内）
+- **右クリック → コンテキストメニュー (`GridChapterColumnContextMenu`)**: 「中を表示（dive-in）/ シーンを追加 / リネーム / 削除」。**リネームはインライン edit に切替**（`useTreeStore.setPendingRenameId(folderId)` を呼んでヘッダ title を input にスワップ。Dialog は使わない — タイトル double-click と同じ即時編集体験に揃える）。削除のみ Radix Dialog で確認（章配下の scenes も巻き添えで消えるため）。Chapter 列にはヘッダの kebab は持たせず（rename/delete は新規追加機能で、ヘッダの混雑を避けるため context menu のみで提供）
 
 ### `+ 章を追加`（カラム末尾の縦書きボタン）
 
@@ -212,11 +213,13 @@ Grid の使い方                    （Help）
 
 **フォルダカード (`GridFolderCard`)**:
 
-- 点線ボーダー + folder アイコン + フォルダ名。**カードクリックで dive-in**（containerId をそのフォルダに切替）
+- 点線ボーダー + folder アイコン + フォルダ名。**folder アイコン／タイトル領域のクリックで dive-in**（containerId をそのフォルダに切替）
 - 先頭の `▸ / ▾` ChevronRight でカード内の **展開／折りたたみ**を切替（既定: 展開）。折りたたみ時はカード下に `{n} シーン · {n} フォルダ` の件数を表示
+- chevron と folder アイコンの間に **`GripVertical` ドラッグハンドル**を独立配置。hover で fade-in、ハンドルのみが drag listener を持つので、タイトル領域は純粋に dive-in 起動用となる（drag と click の責務分離。当初は title 全体に drag listener を兼用させていたが、click vs drag の意図が曖昧でユーザーが「どこから掴めるか」分からなかったため分離）
 - カード本体に `folder.synopsis`（Outline）を 2行 line-clamp + double-click でインライン編集
 - depth に応じてカード左に `12px × depth` の indent を入れる（`GridDescendant.depth`）
 - 空 folder は ChevronRight を disabled（折りたたみ意味なし）
+- **右クリック → コンテキストメニュー (`GridFolderCardContextMenu`)**: 「中を表示 / 折りたたみ・展開 / リネーム / 削除」。**リネームはインライン edit**（`useTreeStore.setPendingRenameId(folderId)` 経由でカード title を input にスワップ。フォルダカードも `pendingRenameId === folder.id` を effect で監視して edit に入る）。削除のみ Radix Dialog で確認
 
 **展開状態の管理**:
 
@@ -245,6 +248,7 @@ Grid の使い方                    （Help）
 - 仮想列の `+ シーンを追加` は container 直下に Scene を追加する（loose のまま / container 直下のまま）
 - 仮想列ごと既存 Chapter にまとめる（`consolidateLooseIntoChapter`）／ Loose 列のみ新規 Chapter folder に変換（`convertLooseToChapter`）の一括操作は仮想列ヘッダの `[⋮]` メニューから利用可能
 - Container 列では `新規章フォルダに変換` は意味的に noisy（dive-in 中の直下シーンを wrap し直すのは主要操作でない）ため、`既存の章にまとめる` のみ提示する
+- **右クリック → コンテキストメニュー (`GridLooseColumnContextMenu`)**: kebab と同じ項目を提供（`変種=loose` → addScene / 既存の章にまとめる ▸ / 新規章フォルダに変換、`変種=container` → addScene / 既存の章にまとめる ▸）。これらの列は折りたたみ/dive-in が無く drag-and-drop されないため**ドラッグハンドルは持たせない**。kebab は既存 UI として残し、context menu と両立させる（scene card と同じ「両方残す」方針）
 
 ### カード（Scene）
 
@@ -538,17 +542,22 @@ i18n 辞書を作る際は、テンプレートの段階名・紹介文・Apply 
 |------|------|
 | **タイトル double-click** | インライン rename |
 | **タイトル横の ExternalLink ボタン**（hover で出現） | Editor で Scene を開く |
-| **カード本体クリック** | シーン選択（Cmd/Ctrl+Click でトグル、Shift+Click で範囲選択。後述「複数選択」参照） |
+| **カード本体クリック（単独）** | シーン選択（`selectOnly`）に加え、`useTreeStore.setActiveScene(sceneId)` を呼び **AI Chat パネル・Timeline の active scene** を Grid のフォーカスに追随させる（Editor は開かない／ピン留めもしない、ソフトフォーカス）。Cmd/Ctrl+Click と Shift+Click では active scene を動かさない（複数選択の意図と矛盾するため。後述「複数選択」参照） |
 | **Synopsis タブ double-click** | InlineSynopsisEditor 起動 |
+| **長い Synopsis の `もっと見る / 折りたたむ`** | 140 文字超の Synopsis は既定で `line-clamp-4`。トグルで全文展開／再クランプ。展開状態は `gridStore.expandedSynopsisIds: Set<sceneId>` に session-only で保持（永続化しない、ページ再読込で全カード再クランプ） |
 | **Beat タブ unplaced beat double-click** | 該当 beat をインライン編集（textarea、Enter で確定） |
 | **Beat タブ `＋ Beat` ボタン** | カード下部に Beat 追加用 textarea を出す |
+| **ヘッダ左の `GripVertical` ドラッグハンドル**（hover で出現） | カードのドラッグ起点。当初は不可視の `absolute top-0 h-4` 帯でカード上端全域を drag 領域にしていたが、ExternalLink / kebab ボタンと重なって cursor が `grab` ⇄ `pointer` に高速点滅する問題があったため、独立した小ボタンに変更（drag listener はハンドルのみ）。編集中（synopsis/beat/title）はハンドル含めて drag は無効 |
 | **`[⋮]` メニュー** | シーン一覧で表示 / Label を付ける ▸ (チェックボックス式マルチ選択) / 削除 |
+| **右クリック → コンテキストメニュー (`GridSceneCardContextMenu`)** | エディタで開く / シーン一覧で表示 / Beat を追加 / Label を付ける ▸ / 削除。kebab と共存（kebab = ホバー discoverability、context menu = power-user 速度。両者は同一ソースの責務 + ラベルに揃える） |
 | **削除確認モーダル** | 本文または synopsis を持つシーンの削除時はパネル中央に確認モーダルを出す（複数選択削除でも 1つでも内容を持てば確認）。空シーンは確認なしで即削除 |
 | **D&D（同列内）** | `tree_nodes.sort_order` 更新のみ |
 | **D&D（別列）** | `tree_nodes.parent_id` と `sort_order` 更新のみ。関連テーブル（`scene_codex_pins` / `povCharacterId` / `locationId` / TipTap docJson）は touch しない — Scene エンティティの ID は変わらないため、リレーションは自動的に保持される |
 | **D&D（複数選択時）** | 選択全体を `flatOrder` 順で同一 chapter にまとめて移動 (`moveScenesToChapter`) |
 
 > **設計との差異**: メニューから Rename / Duplicate / Move to chapter… を削除済み。Rename はタイトル double-click、Move to chapter は D&D（または複数選択ツールバーの `章に移動…`）で代替する方針。Duplicate は実装ニーズが立たず Backlog 入り。Open in Editor はヘッダの ExternalLink ボタンに昇格。
+
+> **設計判断: なぜカードクリックで Editor を開かないか**: Grid は俯瞰／構造編集ビューで、シーンを 1つずつ "開く" 操作とは別の責務。クリック = 「ここに集中したいシーン」のソフトフォーカスとし、Editor 起動は明示的に ExternalLink ボタン or context menu からのみ。一方で AI Chat と Timeline は Grid のフォーカスに追随した方が「俯瞰しながら 1シーンを掘り下げる」ワークフローに合うため、`setActiveScene` で連動させる。
 
 ### 章列の D&D — 3-zone (before / nest / after)
 

@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
+import { GripVertical } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -16,6 +17,7 @@ import { GridCardLabelBar } from "./GridCardLabelBar";
 import { GridCardPovChips } from "./GridCardPovChips";
 import { GridCardForeshadowIndicator } from "./GridCardForeshadowIndicator";
 import { GridCardMenu } from "./GridCardMenu";
+import { GridSceneCardContextMenu } from "./GridSceneCardContextMenu";
 import { sceneDraggableId, sceneDroppableId } from "./gridDndUtils";
 import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
@@ -164,7 +166,10 @@ export function GridSceneCard({
     } else if (e.shiftKey) {
       rangeSelect(scene.id, flatOrder ?? []);
     } else {
+      // Single-select: propagate as active scene so Chat panel + Timeline
+      // ring follow the Grid focus without opening the Editor.
       selectOnly(scene.id);
+      useTreeStore.getState().setActiveScene(scene.id);
     }
   }
 
@@ -173,6 +178,29 @@ export function GridSceneCard({
   const axisLockTransition = reducedMotion
     ? "none"
     : `transform ${DURATIONS.fast}s cubic-bezier(${e0}, ${e1}, ${e2}, ${e3})`;
+
+  const dragHandle = (
+    <button
+      type="button"
+      {...attributes}
+      {...listeners}
+      onClick={(e) => e.stopPropagation()}
+      aria-label={t("grid.card.dragHandle", "ドラッグして移動")}
+      title={t("grid.card.dragHandle", "ドラッグして移動")}
+      className={cn(
+        "shrink-0 rounded p-0.5 cursor-grab active:cursor-grabbing",
+        "text-muted-foreground/40 opacity-0 group-hover:opacity-100",
+        "hover:text-muted-foreground hover:bg-accent",
+        "transition-opacity",
+        // Keep handle visible while card is being dragged so the cursor
+        // affordance stays consistent during the drag.
+        isDragging && "opacity-100",
+      )}
+      data-testid="grid-card-drag-handle"
+    >
+      <GripVertical className="h-3.5 w-3.5" />
+    </button>
+  );
 
   return (
     <div
@@ -202,112 +230,119 @@ export function GridSceneCard({
           className="pointer-events-none absolute inset-x-0 -bottom-1.5 h-1 rounded-full bg-primary"
         />
       )}
-      <div
-        tabIndex={0}
-        role="option"
-        aria-selected={isSelected}
-        className={cn(
-          "relative rounded-md border bg-card text-card-foreground shadow-sm",
-          "flex flex-col select-none outline-none",
-          (isDragging || dimmed) && "opacity-40",
-          isSelected && "ring-2 ring-primary border-primary/60 bg-primary/5",
-          isRevealed &&
-            "ring-2 ring-amber-400 border-amber-400/60 bg-amber-400/10",
-        )}
-        style={{ transition: "opacity 120ms ease-out" }}
-        onClick={handleCardClick}
+      <GridSceneCardContextMenu
+        sceneId={scene.id}
+        onOpenInEditor={openInEditor}
+        onAddBeat={() => {
+          if (!addingBeat) {
+            setAddingBeat(true);
+            setBeatDraft("");
+          }
+        }}
+        onDelete={requestDelete}
       >
-        {/* Drag handle area */}
         <div
-          {...attributes}
-          {...listeners}
-          className="absolute inset-x-0 top-0 h-4 cursor-grab active:cursor-grabbing rounded-t-md"
-          aria-label="ドラッグして移動"
-        />
-
-        {display.showLabelBar && <GridCardLabelBar nodeId={scene.id} />}
-
-        <GridCardHeader
-          nodeId={scene.id}
-          title={scene.title}
-          onOpenInEditor={openInEditor}
-          menuSlot={<GridCardMenu nodeId={scene.id} onDelete={requestDelete} />}
-        />
-
-        <GridCardPovChips
-          sceneId={scene.id}
-          scenePovCharacterId={scene.povCharacterId}
-          compact={display.compactCards}
-        />
-
-        <GridCardBody
-          nodeId={scene.id}
-          synopsis={scene.synopsis}
-          unplacedBeatPreview={preview.unplaced}
-          placedBeatPreview={preview.placed}
-          showSynopsis={display.showSynopsis}
-          showBeats={display.showBeats}
-          compact={display.compactCards}
-          onEditingChange={setIsEditing}
-          onRequestAddBeat={() => {
-            if (!addingBeat) {
-              setAddingBeat(true);
-              setBeatDraft("");
-            }
-          }}
-        />
-
-        {addingBeat && (
-          <div className="px-3 pb-2">
-            <textarea
-              ref={beatInputRef}
-              // eslint-disable-next-line jsx-a11y/no-autofocus
-              autoFocus
-              rows={1}
-              className="w-full resize-none overflow-hidden rounded border border-input bg-background px-2 py-1 text-[11px] leading-snug focus:outline-none focus:ring-1 focus:ring-ring"
-              placeholder={t(
-                "grid.card.beatPlaceholder",
-                "Beat を入力… (Enter で確定 / Shift+Enter で改行)",
-              )}
-              value={beatDraft}
-              onChange={(e) => setBeatDraft(e.target.value)}
-              onKeyDown={handleBeatKeyDown}
-              onBlur={() => void commitBeat()}
-              title={t(
-                "grid.card.beatEditHint",
-                "Enter で確定、Shift+Enter で改行、Esc で取消",
-              )}
-            />
-          </div>
-        )}
-
-        {display.showCodex && (
-          <div className="px-3 pb-2">
-            <GridCardChips
-              sceneId={scene.id}
-              editable
-              compact={display.compactCards}
-            />
-          </div>
-        )}
-
-        {/* Footer: status badge + foreshadow + char count */}
-        <div className="flex items-center gap-2 px-3 pb-2 pt-1 border-t border-border/40 mt-0.5">
-          <StatusBadge
-            status={scene.status}
-            iconOnly={!display.showStatusLabel}
-          />
-          {display.showForeshadow && (
-            <GridCardForeshadowIndicator
-              sceneId={scene.id}
-              compact={display.compactCards}
-            />
+          tabIndex={0}
+          role="option"
+          aria-selected={isSelected}
+          className={cn(
+            "group relative rounded-md border bg-card text-card-foreground shadow-sm",
+            "flex flex-col select-none outline-none",
+            (isDragging || dimmed) && "opacity-40",
+            isSelected && "ring-2 ring-primary border-primary/60 bg-primary/5",
+            isRevealed &&
+              "ring-2 ring-amber-400 border-amber-400/60 bg-amber-400/10",
           )}
-          <span className="text-[10px] text-muted-foreground/60 ml-auto">
-            {liveCharCount.toLocaleString()} chars
-          </span>
+          style={{ transition: "opacity 120ms ease-out" }}
+          onClick={handleCardClick}
+        >
+          {display.showLabelBar && <GridCardLabelBar nodeId={scene.id} />}
+
+          <GridCardHeader
+            nodeId={scene.id}
+            title={scene.title}
+            onOpenInEditor={openInEditor}
+            dragHandleSlot={dragHandle}
+            menuSlot={
+              <GridCardMenu nodeId={scene.id} onDelete={requestDelete} />
+            }
+          />
+
+          <GridCardPovChips
+            sceneId={scene.id}
+            scenePovCharacterId={scene.povCharacterId}
+            compact={display.compactCards}
+          />
+
+          <GridCardBody
+            nodeId={scene.id}
+            synopsis={scene.synopsis}
+            unplacedBeatPreview={preview.unplaced}
+            placedBeatPreview={preview.placed}
+            showSynopsis={display.showSynopsis}
+            showBeats={display.showBeats}
+            compact={display.compactCards}
+            onEditingChange={setIsEditing}
+            onRequestAddBeat={() => {
+              if (!addingBeat) {
+                setAddingBeat(true);
+                setBeatDraft("");
+              }
+            }}
+          />
+
+          {addingBeat && (
+            <div className="px-3 pb-2">
+              <textarea
+                ref={beatInputRef}
+                // eslint-disable-next-line jsx-a11y/no-autofocus
+                autoFocus
+                rows={1}
+                className="w-full resize-none overflow-hidden rounded border border-input bg-background px-2 py-1 text-[11px] leading-snug focus:outline-none focus:ring-1 focus:ring-ring"
+                placeholder={t(
+                  "grid.card.beatPlaceholder",
+                  "Beat を入力… (Enter で確定 / Shift+Enter で改行)",
+                )}
+                value={beatDraft}
+                onChange={(e) => setBeatDraft(e.target.value)}
+                onKeyDown={handleBeatKeyDown}
+                onBlur={() => void commitBeat()}
+                title={t(
+                  "grid.card.beatEditHint",
+                  "Enter で確定、Shift+Enter で改行、Esc で取消",
+                )}
+              />
+            </div>
+          )}
+
+          {display.showCodex && (
+            <div className="px-3 pb-2">
+              <GridCardChips
+                sceneId={scene.id}
+                editable
+                compact={display.compactCards}
+              />
+            </div>
+          )}
+
+          {/* Footer: status badge + foreshadow + char count */}
+          <div className="flex items-center gap-2 px-3 pb-2 pt-1 border-t border-border/40 mt-0.5">
+            <StatusBadge
+              status={scene.status}
+              iconOnly={!display.showStatusLabel}
+            />
+            {display.showForeshadow && (
+              <GridCardForeshadowIndicator
+                sceneId={scene.id}
+                compact={display.compactCards}
+              />
+            )}
+            <span className="text-[10px] text-muted-foreground/60 ml-auto">
+              {liveCharCount.toLocaleString()} chars
+            </span>
+          </div>
         </div>
-      </div>
+      </GridSceneCardContextMenu>
     </div>
   );
 }

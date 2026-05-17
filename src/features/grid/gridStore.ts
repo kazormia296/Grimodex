@@ -49,6 +49,9 @@ interface GridState {
   searchQuery: string;
   /** Folder IDs explicitly collapsed (session-only). */
   collapsedFolderIds: Set<string>;
+  /** Scene IDs whose synopsis is expanded past the default clamp.
+   *  Session-only — collapse state is the default and not worth persisting. */
+  expandedSynopsisIds: Set<string>;
   /** Currently selected scene IDs (session-only, not persisted). */
   selectedSceneIds: Set<string>;
   /** Anchor for Shift+Click range selection. */
@@ -73,6 +76,7 @@ interface GridState {
   toggleFolderCollapsed: (folderId: string) => void;
   expandAllFolders: () => void;
   collapseAllFolders: (folderIds: string[]) => void;
+  toggleSynopsisExpanded: (sceneId: string) => void;
   loadFromSettings: (settings: GlobalSettings) => void;
   /** Select a single scene, resetting any previous selection. */
   selectOnly: (id: string) => void;
@@ -116,6 +120,7 @@ export const useGridStore = create<GridState>((set, get) => ({
   cardTabMode: "auto",
   searchQuery: "",
   collapsedFolderIds: new Set<string>(),
+  expandedSynopsisIds: new Set<string>(),
   selectedSceneIds: new Set<string>(),
   selectionAnchorId: null,
   pendingRevealSceneId: null,
@@ -187,6 +192,15 @@ export const useGridStore = create<GridState>((set, get) => ({
 
   collapseAllFolders(folderIds) {
     set({ collapsedFolderIds: new Set<string>(folderIds) });
+  },
+
+  toggleSynopsisExpanded(sceneId) {
+    set((s) => {
+      const next = new Set(s.expandedSynopsisIds);
+      if (next.has(sceneId)) next.delete(sceneId);
+      else next.add(sceneId);
+      return { expandedSynopsisIds: next };
+    });
   },
 
   loadFromSettings(settings) {
