@@ -33,6 +33,10 @@ interface Props {
   visibility: Map<string, CardVisibility>;
   dropIndicator?: DropIndicator | null;
   columnDropIndicator?: ColumnDropIndicator | null;
+  /** Per-scene Y-axis slot shifts during axis-locked scene drag. */
+  axisLockShifts?: Map<string, "up" | "down">;
+  /** Pixel distance each shifted sibling translates. */
+  axisLockShiftDistance?: number;
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   /** Flat scene order across all columns, for range selection. */
   flatOrder?: string[];
@@ -46,6 +50,8 @@ export function GridColumn({
   visibility,
   dropIndicator,
   columnDropIndicator,
+  axisLockShifts,
+  axisLockShiftDistance,
   onRequestDeleteConfirm,
   flatOrder,
 }: Props) {
@@ -251,6 +257,8 @@ export function GridColumn({
                       dimmed={vis !== undefined && !vis.matchesSearch}
                       dropIndicator={dropIndicator}
                       columnDropIndicator={columnDropIndicator}
+                      axisLockShift={axisLockShifts?.get(node.id)}
+                      axisLockShiftDistance={axisLockShiftDistance}
                       onRequestDeleteConfirm={onRequestDeleteConfirm}
                       flatOrder={flatOrder}
                     />

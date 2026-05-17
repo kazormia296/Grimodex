@@ -764,6 +764,112 @@ export function computeColumnDropTarget(
   return result;
 }
 
+export type SceneDragMode = "axis-locked" | "free";
+
+/**
+ * Decide whether a scene drag is in "axis-locked" reorder mode (Y-only,
+ * same-parent swaps) or "free" full-DnD mode (3-zone insertion, column-nest,
+ * cross-column reparent).
+ *
+ * Hysteresis: once free, never reverts. Crossing the threshold even briefly
+ * commits to free for the rest of the drag — flipping back mid-gesture would
+ * make the visual feedback (sibling slide vs. drop bar) flicker.
+ */
+export function resolveSceneDragMode(
+  currentMode: SceneDragMode,
+  deltaX: number,
+  thresholdPx: number,
+): SceneDragMode {
+  if (currentMode === "free") return "free";
+  return Math.abs(deltaX) >= thresholdPx ? "free" : "axis-locked";
+}
+
+/**
+ * Resolve where the dragged scene would land if dropped right now in
+ * axis-locked mode. Restricted to same-parent reorder; cross-column drops are
+ * only available in free mode.
+ *
+ * Algorithm: walk siblings (active excluded), determine the target index as
+ * the count of upper siblings whose midpoint is above pointerY — i.e. how
+ * many siblings the dragged card has passed. Returns the predecessor in the
+ * remaining (active-removed) siblings list.
+ */
+export function computeSceneAxisLockTarget(
+  activeSceneId: string,
+  pointerY: number,
+  orderedScenes: Array<{ id: string; parentId: string | null }>,
+  siblingRects: Record<string, { top: number; bottom: number }>,
+): DropTarget | null {
+  const active = orderedScenes.find((s) => s.id === activeSceneId);
+  if (!active) return null;
+  const parentId = active.parentId;
+  const siblingsAll = orderedScenes.filter((s) => s.parentId === parentId);
+  if (siblingsAll.length <= 1) return null;
+
+  const siblingsExcl = siblingsAll.filter((s) => s.id !== activeSceneId);
+  // Number of remaining siblings whose midpoint is above pointerY.
+  let targetIdx = 0;
+  let sawRect = false;
+  for (const sib of siblingsExcl) {
+    const rect = siblingRects[sib.id];
+    if (!rect) continue;
+    sawRect = true;
+    const mid = (rect.top + rect.bottom) / 2;
+    if (pointerY > mid) targetIdx++;
+  }
+  if (!sawRect) return null;
+
+  const activeIdxFull = siblingsAll.findIndex((s) => s.id === activeSceneId);
+  // Map targetIdx (in siblingsExcl) back to siblingsAll space to detect no-op.
+  const equivalentFullIdx =
+    targetIdx <= activeIdxFull ? targetIdx : targetIdx + 1;
+  if (equivalentFullIdx === activeIdxFull) return null;
+
+  const afterId =
+    targetIdx > 0 ? (siblingsExcl[targetIdx - 1]?.id ?? null) : null;
+  return { targetParentId: parentId, afterId };
+}
+
+/**
+ * Compute which siblings should visually slide to make room for the dragged
+ * card during axis-locked drag. Returns a map of sibling id → shift direction
+ * ("up" or "down"). The dragged card itself is never in the map.
+ *
+ * Direction semantics:
+ *   "up"   = sibling shifts toward the column top (active is descending past it)
+ *   "down" = sibling shifts toward the column bottom (active is ascending past it)
+ */
+export function computeSceneAxisLockShifts(
+  activeSceneId: string,
+  pointerY: number,
+  orderedScenes: Array<{ id: string; parentId: string | null }>,
+  siblingRects: Record<string, { top: number; bottom: number }>,
+): Map<string, "up" | "down"> {
+  const result = new Map<string, "up" | "down">();
+  const active = orderedScenes.find((s) => s.id === activeSceneId);
+  if (!active) return result;
+  const parentId = active.parentId;
+  const siblingsAll = orderedScenes.filter((s) => s.parentId === parentId);
+  const activeIdx = siblingsAll.findIndex((s) => s.id === activeSceneId);
+  if (activeIdx < 0) return result;
+
+  for (let i = 0; i < siblingsAll.length; i++) {
+    if (i === activeIdx) continue;
+    const sib = siblingsAll[i];
+    const rect = siblingRects[sib.id];
+    if (!rect) continue;
+    const mid = (rect.top + rect.bottom) / 2;
+    if (i < activeIdx && pointerY < mid) {
+      // Active is moving above this upper sibling → upper sibling shifts down
+      result.set(sib.id, "down");
+    } else if (i > activeIdx && pointerY > mid) {
+      // Active is moving below this lower sibling → lower sibling shifts up
+      result.set(sib.id, "up");
+    }
+  }
+  return result;
+}
+
 export function activeDragKind(activeId: string): DragKind | null {
   if (activeId.startsWith("scene-")) return "scene";
   if (activeId.startsWith("column-")) return "column";

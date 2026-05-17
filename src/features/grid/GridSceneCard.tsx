@@ -8,6 +8,7 @@ import { StatusBadge } from "@/features/tree/StatusBadge";
 import { addUnplacedBeatFromGrid } from "@/features/editor/beat/addUnplacedBeatFromGrid";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { GridCardHeader } from "./GridCardHeader";
 import { GridCardBody } from "./GridCardBody";
 import { GridCardChips } from "./GridCardChips";
@@ -30,6 +31,12 @@ interface Props {
    *  indicator — visually communicating where the column will land as the
    *  scene's sibling in its parent. */
   columnDropIndicator?: ColumnDropIndicator | null;
+  /** Axis-locked drag: slot-shift direction for this card (one slot up/down).
+   *  When defined, the card translates by axisLockShiftDistance pixels in that
+   *  direction to "make room" for the dragged sibling. */
+  axisLockShift?: "up" | "down";
+  /** Pixel distance the shifted card translates (active card height + gap). */
+  axisLockShiftDistance?: number;
   /** Called when delete is requested (single or multi-select). */
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   /** Flat scene order for range selection (Shift+Click). */
@@ -42,10 +49,13 @@ export function GridSceneCard({
   dimmed,
   dropIndicator,
   columnDropIndicator,
+  axisLockShift,
+  axisLockShiftDistance,
   onRequestDeleteConfirm,
   flatOrder,
 }: Props) {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
   const [isEditing, setIsEditing] = useState(false);
   const [addingBeat, setAddingBeat] = useState(false);
   const [beatDraft, setBeatDraft] = useState("");
@@ -161,6 +171,15 @@ export function GridSceneCard({
     }
   }
 
+  const axisLockOffset =
+    axisLockShift && axisLockShiftDistance && axisLockShiftDistance > 0
+      ? (axisLockShift === "up" ? -1 : 1) * axisLockShiftDistance
+      : 0;
+  const [e0, e1, e2, e3] = EASINGS.easeOut;
+  const axisLockTransition = reducedMotion
+    ? "none"
+    : `transform ${DURATIONS.fast}s cubic-bezier(${e0}, ${e1}, ${e2}, ${e3})`;
+
   return (
     <div
       ref={(node) => {
@@ -169,6 +188,13 @@ export function GridSceneCard({
       }}
       data-grid-scene-id={scene.id}
       className="relative"
+      style={{
+        transform: axisLockOffset
+          ? `translateY(${axisLockOffset}px)`
+          : undefined,
+        transition: axisLockTransition,
+        willChange: axisLockOffset ? "transform" : undefined,
+      }}
     >
       {isDropBefore && (
         <div

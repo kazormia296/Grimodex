@@ -27,6 +27,8 @@ interface Props {
   visibility: Map<string, CardVisibility>;
   dropIndicator?: DropIndicator | null;
   columnDropIndicator?: ColumnDropIndicator | null;
+  axisLockShifts?: Map<string, "up" | "down">;
+  axisLockShiftDistance?: number;
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   /** Flat scene order across all columns, for range selection. */
   flatOrder?: string[];
@@ -45,6 +47,8 @@ export function GridLooseColumn({
   visibility,
   dropIndicator,
   columnDropIndicator,
+  axisLockShifts,
+  axisLockShiftDistance,
   onRequestDeleteConfirm,
   flatOrder,
 }: Props) {
@@ -206,6 +210,8 @@ export function GridLooseColumn({
                   dimmed={vis !== undefined && !vis.matchesSearch}
                   dropIndicator={dropIndicator}
                   columnDropIndicator={columnDropIndicator}
+                  axisLockShift={axisLockShifts?.get(scene.id)}
+                  axisLockShiftDistance={axisLockShiftDistance}
                   onRequestDeleteConfirm={onRequestDeleteConfirm}
                   flatOrder={flatOrder}
                 />

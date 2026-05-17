@@ -45,8 +45,15 @@ import {
   computeColumnDropTarget,
   computeSceneDropIndicator,
   computeColumnDropIndicator,
+  computeSceneAxisLockShifts,
+  computeSceneAxisLockTarget,
+  resolveSceneDragMode,
 } from "./gridDndUtils";
-import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
+import type {
+  DropIndicator,
+  ColumnDropIndicator,
+  SceneDragMode,
+} from "./gridDndUtils";
 import { glog } from "./gridDndLog";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
@@ -204,6 +211,26 @@ export function GridPanel() {
   // state ({ overId, indicator }) changes only at zone boundaries.
   const lastDragOverKeyRef = useRef<string>("");
 
+  // Scene Y-axis "axis-lock" reorder mode. While the cursor stays within
+  // SCENE_AXIS_LOCK_THRESHOLD_PX of the drag start in the X direction, the
+  // drag is restricted to same-parent reordering and the normal drop
+  // indicators are suppressed in favor of sibling slot-shifts (see
+  // computeSceneAxisLockShifts). Once the cursor exceeds the threshold the
+  // session commits to "free" full-DnD mode for the rest of the gesture
+  // (hysteresis — bouncing back would flicker the visual feedback).
+  const SCENE_AXIS_LOCK_THRESHOLD_PX = 40;
+  const axisLockSessionRef = useRef<{
+    mode: SceneDragMode;
+    startX: number;
+    activeSceneId: string;
+    siblingRects: Record<string, { top: number; bottom: number }>;
+    orderedSiblings: Array<{ id: string; parentId: string | null }>;
+  } | null>(null);
+  const [axisLockShifts, setAxisLockShifts] = useState<
+    Map<string, "up" | "down">
+  >(() => new Map());
+  const [axisLockShiftDistance, setAxisLockShiftDistance] = useState(0);
+
   useEffect(() => {
     void loadForProject(projectId);
     void useLabelStore.getState().load(projectId);
@@ -214,6 +241,40 @@ export function GridPanel() {
     const handler = (e: PointerEvent) => {
       pointerXRef.current = e.clientX;
       pointerYRef.current = e.clientY;
+
+      // Axis-lock live-update during a scene drag. handleDragOver only fires
+      // when `over` changes — within a single card we'd otherwise miss
+      // intra-card pointer movement, so the shift map has to be recomputed on
+      // every pointermove during a drag.
+      const session = axisLockSessionRef.current;
+      if (!session) return;
+      const deltaX = e.clientX - session.startX;
+      const nextMode = resolveSceneDragMode(
+        session.mode,
+        deltaX,
+        SCENE_AXIS_LOCK_THRESHOLD_PX,
+      );
+      if (nextMode !== session.mode) {
+        session.mode = nextMode;
+        if (nextMode === "free") {
+          setAxisLockShifts((prev) => (prev.size === 0 ? prev : new Map()));
+          return;
+        }
+      }
+      if (session.mode !== "axis-locked") return;
+      const next = computeSceneAxisLockShifts(
+        session.activeSceneId,
+        e.clientY,
+        session.orderedSiblings,
+        session.siblingRects,
+      );
+      setAxisLockShifts((prev) => {
+        if (prev.size !== next.size) return next;
+        for (const [id, dir] of next) {
+          if (prev.get(id) !== dir) return next;
+        }
+        return prev;
+      });
     };
     window.addEventListener("pointermove", handler);
     return () => window.removeEventListener("pointermove", handler);
@@ -333,15 +394,57 @@ export function GridPanel() {
 
   function handleDragStart(e: DragStartEvent) {
     const id = String(e.active.id);
+    const kind = activeDragKind(id);
     glog("DragStart", "active", {
       id,
-      kind: activeDragKind(id),
+      kind,
       pointer: { x: pointerXRef.current, y: pointerYRef.current },
     });
     lastDragOverKeyRef.current = "";
     setActiveId(id);
     setDropIndicator(null);
     setColumnDropIndicator(null);
+    axisLockSessionRef.current = null;
+    setAxisLockShifts((prev) => (prev.size === 0 ? prev : new Map()));
+
+    if (kind === "scene") {
+      const sceneId = id.replace(/^scene-/, "");
+      const sceneNode = nodes.find((n) => n.id === sceneId);
+      if (!sceneNode) return;
+      const parentId = sceneNode.parentId;
+      const siblings = nodes
+        .filter((n) => n.parentId === parentId && n.nodeType === "scene")
+        .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+      if (siblings.length <= 1) return;
+      const siblingRects: Record<string, { top: number; bottom: number }> = {};
+      let activeHeight = 0;
+      for (const sib of siblings) {
+        const el = document.querySelector(`[data-grid-scene-id="${sib.id}"]`);
+        if (!(el instanceof HTMLElement)) continue;
+        const r = el.getBoundingClientRect();
+        siblingRects[sib.id] = { top: r.top, bottom: r.bottom };
+        if (sib.id === sceneId) activeHeight = r.height;
+      }
+      if (!siblingRects[sceneId]) return;
+      // Captured rects are viewport coords frozen at drag start. If the column
+      // auto-scrolls mid-drag (long lists, pointer near edge), shift target
+      // and final-drop computations drift from what the user sees. Short
+      // columns are the common case; revisit if mid-drag scroll becomes
+      // ergonomically relevant.
+      axisLockSessionRef.current = {
+        mode: "axis-locked",
+        startX: pointerXRef.current,
+        activeSceneId: sceneId,
+        siblingRects,
+        orderedSiblings: siblings.map((s) => ({
+          id: s.id,
+          parentId: s.parentId,
+        })),
+      };
+      // Card gap inside columns is `gap-2` (8px). Approximate the slot height
+      // with the active card's measured height to drive sibling translateY.
+      setAxisLockShiftDistance(activeHeight + 8);
+    }
   }
 
   function handleDragOver(e: DragOverEvent) {
@@ -351,6 +454,13 @@ export function GridPanel() {
 
     if (kind === "scene") {
       const sceneId = activeIdStr.replace(/^scene-/, "");
+      // In axis-locked mode, suppress the normal drop bar — sibling
+      // slot-shifts are the only feedback.
+      if (axisLockSessionRef.current?.mode === "axis-locked") {
+        setDropIndicator(null);
+        setColumnDropIndicator(null);
+        return;
+      }
       const rect = e.over?.rect ?? { top: 0, height: 60 };
       const indicator = computeSceneDropIndicator(
         sceneId,
@@ -469,12 +579,52 @@ export function GridPanel() {
       kind: activeDragKind(activeIdStr),
       pointer: { x: pointerXRef.current, y: pointerYRef.current },
     });
+
+    const kind = activeDragKind(activeIdStr);
+    const session = axisLockSessionRef.current;
+    axisLockSessionRef.current = null;
+    setAxisLockShifts((prev) => (prev.size === 0 ? prev : new Map()));
+
+    // Axis-locked scene drag commits via captured session state — there is no
+    // dnd-kit "over" target requirement (the user can release anywhere in the
+    // viewport, the swap is decided purely from pointerY vs. captured rects).
+    if (kind === "scene" && session && session.mode === "axis-locked") {
+      const sceneId = activeIdStr.replace(/^scene-/, "");
+      const target = computeSceneAxisLockTarget(
+        sceneId,
+        pointerYRef.current,
+        session.orderedSiblings,
+        session.siblingRects,
+      );
+      if (target) {
+        if (selectedSceneIds.has(sceneId) && selectedSceneIds.size > 1) {
+          const orderedSelected = flatOrder.filter((id) =>
+            selectedSceneIds.has(id),
+          );
+          glog("DragEnd(scene)", "axis-lock multi-select", {
+            sceneIds: orderedSelected,
+            targetParentId: target.targetParentId,
+            afterId: target.afterId,
+          });
+          void moveScenesToChapter(orderedSelected, target.targetParentId);
+        } else {
+          glog("DragEnd(scene)", "axis-lock single", {
+            sceneId,
+            targetParentId: target.targetParentId,
+            afterId: target.afterId,
+          });
+          void moveNode(sceneId, target.targetParentId, target.afterId);
+        }
+      } else {
+        glog("DragEnd(scene)", "axis-lock no-op");
+      }
+      return;
+    }
+
     if (!overIdStr) {
       glog("DragEnd", "cancelled: no over target");
       return;
     }
-
-    const kind = activeDragKind(activeIdStr);
 
     if (kind === "scene") {
       const sceneId = activeIdStr.replace(/^scene-/, "");
@@ -606,6 +756,14 @@ export function GridPanel() {
     }
   }
 
+  function handleDragCancel() {
+    setActiveId(null);
+    setDropIndicator(null);
+    setColumnDropIndicator(null);
+    axisLockSessionRef.current = null;
+    setAxisLockShifts((prev) => (prev.size === 0 ? prev : new Map()));
+  }
+
   const activeDragNode: TreeNodeData | null = activeId
     ? (nodes.find((n) => n.id === activeId.replace(/^(scene|column)-/, "")) ??
       null)
@@ -656,6 +814,7 @@ export function GridPanel() {
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
     >
       <div
         ref={panelRef}
@@ -694,6 +853,8 @@ export function GridPanel() {
                   visibility={visibility}
                   dropIndicator={dropIndicator}
                   columnDropIndicator={columnDropIndicator}
+                  axisLockShifts={axisLockShifts}
+                  axisLockShiftDistance={axisLockShiftDistance}
                   onRequestDeleteConfirm={handleDeleteScenes}
                   flatOrder={flatOrder}
                 />
@@ -710,6 +871,8 @@ export function GridPanel() {
                   visibility={visibility}
                   dropIndicator={dropIndicator}
                   columnDropIndicator={columnDropIndicator}
+                  axisLockShifts={axisLockShifts}
+                  axisLockShiftDistance={axisLockShiftDistance}
                   onRequestDeleteConfirm={handleDeleteScenes}
                   flatOrder={flatOrder}
                 />
@@ -725,6 +888,8 @@ export function GridPanel() {
                 visibility={visibility}
                 dropIndicator={dropIndicator}
                 columnDropIndicator={columnDropIndicator}
+                axisLockShifts={axisLockShifts}
+                axisLockShiftDistance={axisLockShiftDistance}
                 onRequestDeleteConfirm={handleDeleteScenes}
                 flatOrder={flatOrder}
               />
