@@ -5,6 +5,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useGridStore } from "./gridStore";
 import { cn } from "@/lib/utils";
 import { columnDraggableId, columnNestId } from "./gridDndUtils";
+import type { ColumnDropIndicator } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 
@@ -12,9 +13,18 @@ interface Props {
   folder: TreeNodeData;
   compact?: boolean;
   isDragOverlay?: boolean;
+  /** Live column-drop indicator from the enclosing column drag handler.
+   *  Drives the 3-zone Y-axis insertion highlights (top/middle/bottom) when
+   *  this card is the active drop target. */
+  columnDropIndicator?: ColumnDropIndicator | null;
 }
 
-export function GridFolderCard({ folder, compact, isDragOverlay }: Props) {
+export function GridFolderCard({
+  folder,
+  compact,
+  isDragOverlay,
+  columnDropIndicator,
+}: Props) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const projectId = useTreeStore((s) => s.projectId);
@@ -40,6 +50,19 @@ export function GridFolderCard({ folder, compact, isDragOverlay }: Props) {
   });
 
   const isExpanded = !collapsedFolderIds.has(folder.id);
+
+  // 3-zone Y-axis indicators driven by the column-drop computation. `nest`
+  // (middle) shows a ring on the card; `before`/`after` (top/bottom 25%) show
+  // a horizontal bar above/below — mirrors the Scenes panel insertion UI.
+  const isDropBefore =
+    columnDropIndicator?.targetId === folder.id &&
+    columnDropIndicator.position === "before";
+  const isDropAfter =
+    columnDropIndicator?.targetId === folder.id &&
+    columnDropIndicator.position === "after";
+  const isDropInside =
+    columnDropIndicator?.targetId === folder.id &&
+    columnDropIndicator.position === "nest";
 
   const directScenes = nodes.filter(
     (n) => n.parentId === folder.id && n.nodeType === "scene",
@@ -68,11 +91,28 @@ export function GridFolderCard({ folder, compact, isDragOverlay }: Props) {
         "group relative flex flex-col rounded-md border-2 border-dashed border-border/60 bg-muted/30",
         "hover:border-primary/50 hover:bg-accent/40 transition-colors",
         "select-none",
-        isNestOver && "border-primary bg-primary/10 ring-2 ring-primary",
+        // Local hover fallback only when no computed indicator overrides it —
+        // avoids double-highlighting and lets no-op rejections suppress the ring.
+        isNestOver &&
+          !columnDropIndicator &&
+          "border-primary bg-primary/10 ring-2 ring-primary",
+        isDropInside && "border-primary bg-primary/10 ring-2 ring-primary",
         isDragging && "opacity-40",
       )}
       style={{ transition: "opacity 120ms ease-out" }}
     >
+      {isDropBefore && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -top-1 h-0.5 rounded-full bg-primary"
+        />
+      )}
+      {isDropAfter && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -bottom-1 h-0.5 rounded-full bg-primary"
+        />
+      )}
       <div
         className={cn(
           "flex items-center gap-1.5",

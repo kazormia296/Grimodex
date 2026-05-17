@@ -163,6 +163,9 @@ export function computeSceneDropTarget(
   // Dropped on a nested folder card → append the scene into that folder.
   // Without this, the folder card's `isNestOver` highlight fires during a
   // scene drag but nothing happens on release — a confusing false positive.
+  // Note: scene drag stays at nest-only here. Y-axis 3-zone for folder cards
+  // applies to COLUMN drag (computeColumnDropTarget), which is what the user
+  // asked to match the Scenes panel behavior for folder-into-folder DnD.
   if (kind === "nest") {
     const result = { targetParentId: rawId, afterId: undefined };
     glog("computeSceneDropTarget", "branch: nest (append into folder)", result);
@@ -232,6 +235,27 @@ function isSelfOrDescendant(
     cur = folderParentMap[cur] ?? null;
   }
   return false;
+}
+
+/**
+ * Resolve a folder-row drop into Scenes-panel-style 3-zone Y-axis bands:
+ *   top 25%    → "before"  (sibling of target, in target's parent)
+ *   middle 50% → "inside"  (nest into target)
+ *   bottom 25% → "after"   (sibling of target, in target's parent)
+ *
+ * Used by the `column-nest` droppable (folder card rendered inside a column).
+ * Mirrors the positioning UX of `useScenesDnd` so dragging onto a folder
+ * behaves the same way in both panels.
+ */
+function resolveFolderNestZone(
+  pointerY: number,
+  overRect: { top: number; height: number },
+): "before" | "inside" | "after" {
+  const topZone = overRect.top + overRect.height * 0.25;
+  const bottomZone = overRect.top + overRect.height * 0.75;
+  if (pointerY < topZone) return "before";
+  if (pointerY > bottomZone) return "after";
+  return "inside";
 }
 
 /**
@@ -323,7 +347,8 @@ export function computeColumnDropIndicator(
   activeFolderId: string,
   overId: string,
   pointerX: number,
-  overRect: { left: number; width: number },
+  pointerY: number,
+  overRect: { left: number; width: number; top: number; height: number },
   sceneParentMap: Record<string, string | null>,
   folderParentMap: Record<string, string | null>,
   orderedSiblings: Array<{ id: string; parentId: string | null }>,
@@ -332,12 +357,12 @@ export function computeColumnDropIndicator(
   if (!overId) return null;
   const { kind, rawId } = parseId(overId);
 
-  // Explicit nest droppable (nested folder card) OR empty-folder drop zone.
-  // `column-empty-{folderId}` only renders when the folder has no children
-  // (GridColumn.tsx), so a column drop there has only one meaningful intent:
-  // nest INTO that folder. Routing it through the 3-zone sibling logic would
-  // produce a stale before/after that gets rejected as an adjacent no-op.
-  if (kind === "nest" || (kind === "empty" && rawId !== "loose")) {
+  // Folder card (nested folder rendered inside a column) → Scenes-panel-style
+  // 3-zone Y-axis: top 25% before, middle 50% inside, bottom 25% after. This
+  // lets the user specify the insertion position when nesting a folder into
+  // another folder; before/after make the dragged folder a sibling of the
+  // target in the target's parent.
+  if (kind === "nest") {
     if (rawId === activeFolderId) {
       glog("computeColumnDropIndicator", "nest reject: target == active");
       return null;
@@ -349,15 +374,67 @@ export function computeColumnDropIndicator(
       );
       return null;
     }
+    const zone = resolveFolderNestZone(pointerY, overRect);
+    if (zone === "inside") {
+      if ((folderParentMap[activeFolderId] ?? null) === rawId) {
+        glog(
+          "computeColumnDropIndicator",
+          "nest reject: active already child of target",
+        );
+        return null;
+      }
+      const result: ColumnDropIndicator = {
+        targetId: rawId,
+        position: "nest",
+      };
+      glog("computeColumnDropIndicator", "result: nest inside", result);
+      return result;
+    }
+    if (
+      isAdjacentColumnNoOp(
+        activeFolderId,
+        rawId,
+        zone,
+        folderParentMap,
+        orderedSiblings,
+      )
+    ) {
+      glog("computeColumnDropIndicator", "nest reject: adjacent no-op", {
+        zone,
+        rawId,
+      });
+      return null;
+    }
+    const result: ColumnDropIndicator = { targetId: rawId, position: zone };
+    glog("computeColumnDropIndicator", `result: nest ${zone}`, result);
+    return result;
+  }
+
+  // Empty-folder drop zone — nest-only. Geometric ambiguity prevents a clean
+  // Y-axis 3-zone here (the empty area is a large rect spanning most of the
+  // column body), and column-slot already provides X-axis before/after for
+  // top-level columns.
+  if (kind === "empty" && rawId !== "loose") {
+    if (rawId === activeFolderId) {
+      glog("computeColumnDropIndicator", "empty reject: target == active");
+      return null;
+    }
+    if (isSelfOrDescendant(rawId, activeFolderId, folderParentMap)) {
+      glog(
+        "computeColumnDropIndicator",
+        "empty reject: target is descendant of active",
+      );
+      return null;
+    }
     if ((folderParentMap[activeFolderId] ?? null) === rawId) {
       glog(
         "computeColumnDropIndicator",
-        "nest reject: active already child of target",
+        "empty reject: active already child of target",
       );
       return null;
     }
     const result: ColumnDropIndicator = { targetId: rawId, position: "nest" };
-    glog("computeColumnDropIndicator", "result: nest", result);
+    glog("computeColumnDropIndicator", "result: empty nest", result);
     return result;
   }
 
@@ -407,6 +484,8 @@ export function computeColumnDropIndicator(
  * @param activeFolderId - The folder being dragged
  * @param overId - The dnd-kit `over.id` string
  * @param pointerX - Current pointer X (viewport coords)
+ * @param pointerY - Current pointer Y (viewport coords) — used by the Y-axis
+ *                   3-zone scheme on folder-card nest targets
  * @param overRect - Bounding rect of the over element
  * @param folderParentMap - Maps folderId → parentId
  * @param orderedSiblings - All folder nodes sorted by sortOrder (resolves predecessor for "before")
@@ -417,7 +496,8 @@ export function computeColumnDropTarget(
   activeFolderId: string,
   overId: string,
   pointerX: number,
-  overRect: { left: number; width: number },
+  pointerY: number,
+  overRect: { left: number; width: number; top: number; height: number },
   folderParentMap: Record<string, string | null>,
   orderedSiblings: Array<{ id: string; parentId: string | null }>,
   sceneParentMap: Record<string, string | null>,
@@ -427,6 +507,7 @@ export function computeColumnDropTarget(
     activeFolderId,
     overId,
     pointerX,
+    pointerY,
     overRect,
     containerId,
   });
@@ -437,13 +518,9 @@ export function computeColumnDropTarget(
   const { kind, rawId } = parseId(overId);
   glog("computeColumnDropTarget", "parsed", { kind, rawId });
 
-  // Explicit nest droppable (nested folder card) OR empty-folder drop zone.
-  // `column-empty-{folderId}` only renders when the folder has no children
-  // (GridColumn.tsx), so a column drop there is unambiguously a nest-into
-  // request. Falling through to the 3-zone sibling logic produced a stale
-  // before/after that got rejected as an adjacent no-op, leaving the user's
-  // drop silently ignored.
-  if (kind === "nest" || (kind === "empty" && rawId !== "loose")) {
+  // Folder card (nested folder rendered inside a column) → Scenes-panel-style
+  // 3-zone Y-axis: top 25% before, middle 50% inside, bottom 25% after.
+  if (kind === "nest") {
     if (rawId === activeFolderId) {
       glog("computeColumnDropTarget", "nest reject: target == active");
       return null;
@@ -455,15 +532,74 @@ export function computeColumnDropTarget(
       );
       return null;
     }
+    const zone = resolveFolderNestZone(pointerY, overRect);
+    if (zone === "inside") {
+      if ((folderParentMap[activeFolderId] ?? null) === rawId) {
+        glog(
+          "computeColumnDropTarget",
+          "nest reject: active already child of target",
+        );
+        return null;
+      }
+      const result = { targetParentId: rawId, afterId: undefined };
+      glog("computeColumnDropTarget", "branch: nest inside", result);
+      return result;
+    }
+    if (
+      isAdjacentColumnNoOp(
+        activeFolderId,
+        rawId,
+        zone,
+        folderParentMap,
+        orderedSiblings,
+      )
+    ) {
+      glog("computeColumnDropTarget", "nest reject: adjacent no-op", {
+        zone,
+        rawId,
+      });
+      return null;
+    }
+    const targetParentId = folderParentMap[rawId] ?? null;
+    if (zone === "before") {
+      const siblings = orderedSiblings.filter(
+        (f) => f.parentId === targetParentId && f.id !== activeFolderId,
+      );
+      const idx = siblings.findIndex((f) => f.id === rawId);
+      const predecessor = idx > 0 ? (siblings[idx - 1]?.id ?? null) : null;
+      const result = { targetParentId, afterId: predecessor };
+      glog("computeColumnDropTarget", "branch: nest before", result);
+      return result;
+    }
+    const result = { targetParentId, afterId: rawId };
+    glog("computeColumnDropTarget", "branch: nest after", result);
+    return result;
+  }
+
+  // Empty-folder drop zone — nest-only. Geometric ambiguity prevents a clean
+  // Y-axis 3-zone here (the empty area spans most of the column body), and
+  // column-slot already provides X-axis before/after for top-level columns.
+  if (kind === "empty" && rawId !== "loose") {
+    if (rawId === activeFolderId) {
+      glog("computeColumnDropTarget", "empty reject: target == active");
+      return null;
+    }
+    if (isSelfOrDescendant(rawId, activeFolderId, folderParentMap)) {
+      glog(
+        "computeColumnDropTarget",
+        "empty reject: target is descendant of active",
+      );
+      return null;
+    }
     if ((folderParentMap[activeFolderId] ?? null) === rawId) {
       glog(
         "computeColumnDropTarget",
-        "nest reject: active already child of target",
+        "empty reject: active already child of target",
       );
       return null;
     }
     const result = { targetParentId: rawId, afterId: undefined };
-    glog("computeColumnDropTarget", "branch: nest", result);
+    glog("computeColumnDropTarget", "branch: empty nest", result);
     return result;
   }
 

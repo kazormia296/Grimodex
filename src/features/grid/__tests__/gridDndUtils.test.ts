@@ -205,7 +205,7 @@ describe("computeColumnDropTarget", () => {
     { id: "ch3", parentId: "root" },
   ];
   const sceneParentMap: Record<string, string | null> = {};
-  const rect = { left: 0, width: 200 };
+  const rect = { left: 0, width: 200, top: 0, height: 100 };
 
   it("returns null when overId is empty", () => {
     expect(
@@ -213,6 +213,7 @@ describe("computeColumnDropTarget", () => {
         "ch1",
         "",
         100,
+        50, // pointerY (middle of rect → "inside" zone for nest tests)
         rect,
         folderParentMap,
         orderedFolders,
@@ -228,6 +229,7 @@ describe("computeColumnDropTarget", () => {
         "ch1",
         columnSlotId("ch1"),
         100,
+        50, // pointerY (middle of rect → "inside" zone for nest tests)
         rect,
         folderParentMap,
         orderedFolders,
@@ -242,6 +244,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       columnSlotId("ch3"),
       150, // right zone (>70%)
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -257,6 +260,7 @@ describe("computeColumnDropTarget", () => {
       "ch3",
       columnSlotId("ch2"),
       50, // left zone (<30%)
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -272,6 +276,7 @@ describe("computeColumnDropTarget", () => {
       "ch3",
       columnSlotId("ch1"),
       50, // left zone
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -287,6 +292,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       "scene-drop-s1",
       150, // right zone
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -305,6 +311,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       columnSlotId("ch2"),
       50, // left zone (would be "before ch2")
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -320,6 +327,7 @@ describe("computeColumnDropTarget", () => {
       "ch2",
       columnSlotId("ch1"),
       150, // right zone (would be "after ch1")
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -351,7 +359,8 @@ describe("computeColumnDropTarget", () => {
       "scene-drop-s_in_ch2",
       // pointerX such that relativeX < 40% → left zone of the scene
       20,
-      { left: 0, width: 100 },
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
+      { left: 0, width: 100, top: 0, height: 100 },
       fpm,
       ofs,
       { s_in_ch2: "ch2" },
@@ -365,6 +374,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       columnSlotId("ch2"),
       150, // right zone of ch2
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -381,6 +391,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       columnSlotId("ch1"),
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -396,6 +407,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       columnSlotId("ch3"),
       100, // center zone (30-70%)
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -410,6 +422,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       columnNestId("ch3"),
       0,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -424,6 +437,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       columnNestId("ch1"),
       0,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -441,6 +455,7 @@ describe("computeColumnDropTarget", () => {
       "sub1",
       columnNestId("ch1"),
       0,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       fpm,
       ofs,
@@ -457,6 +472,7 @@ describe("computeColumnDropTarget", () => {
       "sub1",
       columnSlotId("ch1"),
       100, // center zone
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       fpm,
       ofs,
@@ -478,6 +494,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       "scene-drop-loose1",
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       fpm,
       ofs,
@@ -503,6 +520,7 @@ describe("computeColumnDropTarget", () => {
       "A",
       columnNestId("C"),
       0,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       fpm,
       ofs,
@@ -527,6 +545,7 @@ describe("computeColumnDropTarget", () => {
       "A",
       columnSlotId("C"),
       100, // center zone
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       fpm,
       ofs,
@@ -547,7 +566,8 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       columnEmptyId("ch2"), // ch2 has no children
       400, // any pointerX inside the empty zone
-      { left: 300, width: 200 },
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
+      { left: 300, width: 200, top: 0, height: 100 },
       folderParentMap,
       orderedFolders,
       sceneParentMap,
@@ -561,6 +581,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       columnEmptyId("ch1"),
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -577,6 +598,7 @@ describe("computeColumnDropTarget", () => {
       "sub1",
       columnEmptyId("ch1"),
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       fpm,
       ofs,
@@ -597,6 +619,7 @@ describe("computeColumnDropTarget", () => {
       "A",
       columnEmptyId("C"),
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       fpm,
       ofs,
@@ -611,6 +634,7 @@ describe("computeColumnDropTarget", () => {
       "ch1",
       columnEmptyId("loose"),
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       folderParentMap,
       orderedFolders,
@@ -618,6 +642,110 @@ describe("computeColumnDropTarget", () => {
       null,
     );
     expect(result).toBeNull();
+  });
+
+  it("column-nest 3-zone: top 25% Y → before target as sibling", () => {
+    // Drop ch3 in top zone of ch2's folder card → insert ch3 BEFORE ch2.
+    // Predecessor among same-parent siblings (excluding active) is ch1.
+    const result = computeColumnDropTarget(
+      "ch3",
+      columnNestId("ch2"),
+      100, // pointerX irrelevant for nest 3-zone
+      10, // pointerY: top of 100-height rect → "before" zone
+      { left: 0, width: 200, top: 0, height: 100 },
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: "ch1" });
+  });
+
+  it("column-nest 3-zone: bottom 25% Y → after target as sibling", () => {
+    const result = computeColumnDropTarget(
+      "ch3",
+      columnNestId("ch1"),
+      100,
+      90, // pointerY: bottom of 100-height rect → "after" zone
+      { left: 0, width: 200, top: 0, height: 100 },
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toEqual({ targetParentId: "root", afterId: "ch1" });
+  });
+
+  it("column-nest 3-zone: middle 50% Y → inside (nest into target)", () => {
+    // Drop ch1 into the middle of ch3's folder card → nest into ch3 (append).
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnNestId("ch3"),
+      100,
+      50, // middle
+      { left: 0, width: 200, top: 0, height: 100 },
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toEqual({ targetParentId: "ch3", afterId: undefined });
+  });
+
+  it("column-nest 3-zone: top-zone on adjacent right sibling is a no-op (active would land back in its slot)", () => {
+    // ch1 over ch2.top → "before ch2" — ch1 is already directly before ch2, no-op.
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnNestId("ch2"),
+      100,
+      10,
+      { left: 0, width: 200, top: 0, height: 100 },
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("column-nest 3-zone: bottom-zone on adjacent left sibling is a no-op", () => {
+    // ch2 over ch1.bottom → "after ch1" — ch2 is already directly after ch1, no-op.
+    const result = computeColumnDropTarget(
+      "ch2",
+      columnNestId("ch1"),
+      100,
+      90,
+      { left: 0, width: 200, top: 0, height: 100 },
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("column-nest 3-zone: before/after when target's parent differs from active's parent (cross-column reparenting)", () => {
+    // ch_inner is inside ch1; dragging ch_outer (root child) onto ch_inner.top
+    // should reparent ch_outer to ch1 (ch_inner's parent), placed before ch_inner.
+    const fpm = { ...folderParentMap, ch_inner: "ch1", ch_outer: "root" };
+    const ofs = [
+      ...orderedFolders,
+      { id: "ch_inner", parentId: "ch1" },
+      { id: "ch_outer", parentId: "root" },
+    ];
+    const result = computeColumnDropTarget(
+      "ch_outer",
+      columnNestId("ch_inner"),
+      100,
+      10, // top zone → "before ch_inner"
+      { left: 0, width: 200, top: 0, height: 100 },
+      fpm,
+      ofs,
+      sceneParentMap,
+      null,
+    );
+    // ch_inner has no sibling before it inside ch1 → predecessor null (prepend).
+    expect(result).toEqual({ targetParentId: "ch1", afterId: null });
   });
 
   it("places column AFTER last loose scene when dropping 'before' a chapter that follows a loose column (regression)", () => {
@@ -650,7 +778,8 @@ describe("computeColumnDropTarget", () => {
       "scene-drop-s_in_ch1",
       // pointerX in left zone of the over scene → resolves to "before ch1"
       10,
-      { left: 0, width: 100 },
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
+      { left: 0, width: 100, top: 0, height: 100 },
       fpm,
       orderedSiblings,
       spm,
@@ -672,13 +801,14 @@ describe("computeColumnDropIndicator", () => {
     { id: "ch3", parentId: "root" },
   ];
   const sceneParentMap: Record<string, string | null> = {};
-  const rect = { left: 0, width: 200 };
+  const rect = { left: 0, width: 200, top: 0, height: 100 };
 
   it("shows nest indicator for column-empty drop zone of an empty folder", () => {
     const result = computeColumnDropIndicator(
       "ch1",
       columnEmptyId("ch2"),
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       sceneParentMap,
       folderParentMap,
@@ -693,6 +823,7 @@ describe("computeColumnDropIndicator", () => {
       "ch1",
       columnEmptyId("ch1"),
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       sceneParentMap,
       folderParentMap,
@@ -709,6 +840,7 @@ describe("computeColumnDropIndicator", () => {
       "sub1",
       columnEmptyId("ch1"),
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       sceneParentMap,
       fpm,
@@ -729,10 +861,56 @@ describe("computeColumnDropIndicator", () => {
       "A",
       columnEmptyId("C"),
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       {},
       fpm,
       ofs,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("column-nest 3-zone indicator: top 25% Y → before", () => {
+    const result = computeColumnDropIndicator(
+      "ch3",
+      columnNestId("ch2"),
+      100,
+      10, // top zone
+      { left: 0, width: 200, top: 0, height: 100 },
+      sceneParentMap,
+      folderParentMap,
+      orderedFolders,
+      null,
+    );
+    expect(result).toEqual({ targetId: "ch2", position: "before" });
+  });
+
+  it("column-nest 3-zone indicator: bottom 25% Y → after", () => {
+    const result = computeColumnDropIndicator(
+      "ch3",
+      columnNestId("ch1"),
+      100,
+      90, // bottom zone
+      { left: 0, width: 200, top: 0, height: 100 },
+      sceneParentMap,
+      folderParentMap,
+      orderedFolders,
+      null,
+    );
+    expect(result).toEqual({ targetId: "ch1", position: "after" });
+  });
+
+  it("column-nest 3-zone indicator: adjacent no-op (top zone on right-neighbor)", () => {
+    const result = computeColumnDropIndicator(
+      "ch1",
+      columnNestId("ch2"),
+      100,
+      10,
+      { left: 0, width: 200, top: 0, height: 100 },
+      sceneParentMap,
+      folderParentMap,
+      orderedFolders,
       null,
     );
     expect(result).toBeNull();
@@ -743,6 +921,7 @@ describe("computeColumnDropIndicator", () => {
       "ch1",
       columnEmptyId("loose"),
       100,
+      50, // pointerY (middle of rect → "inside" zone for nest tests)
       rect,
       sceneParentMap,
       folderParentMap,

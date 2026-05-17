@@ -236,6 +236,7 @@ export function GridColumn({
                       <GridFolderCard
                         folder={node}
                         compact={display.compactCards}
+                        columnDropIndicator={columnDropIndicator}
                       />
                     </div>
                   );

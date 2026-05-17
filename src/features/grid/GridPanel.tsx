@@ -365,12 +365,23 @@ export function GridPanel() {
           orderedSiblings.push({ id: n.id, parentId: n.parentId });
         }
       }
-      const rect = e.over?.rect ?? { left: 0, width: 200 };
+      const rect = e.over?.rect ?? {
+        left: 0,
+        width: 200,
+        top: 0,
+        height: 0,
+      };
       const indicator = computeColumnDropIndicator(
         folderId,
         overId,
         pointerXRef.current,
-        { left: rect.left, width: rect.width },
+        pointerYRef.current,
+        {
+          left: rect.left,
+          width: rect.width,
+          top: rect.top,
+          height: rect.height,
+        },
         sceneParentMap,
         folderParentMap,
         orderedSiblings,
@@ -506,12 +517,23 @@ export function GridPanel() {
           orderedSiblings.push({ id: n.id, parentId: n.parentId });
         }
       }
-      const rect = e.over?.rect ?? { left: 0, width: 200 };
+      const rect = e.over?.rect ?? {
+        left: 0,
+        width: 200,
+        top: 0,
+        height: 0,
+      };
       const target = computeColumnDropTarget(
         folderId,
         overIdStr,
         pointerXRef.current,
-        { left: rect.left, width: rect.width },
+        pointerYRef.current,
+        {
+          left: rect.left,
+          width: rect.width,
+          top: rect.top,
+          height: rect.height,
+        },
         folderParentMap,
         orderedSiblings,
         sceneParentMap,
