@@ -870,6 +870,55 @@ export function computeSceneAxisLockShifts(
   return result;
 }
 
+/**
+ * Compute axis-locked drag translateY pixel offsets, height-aware.
+ *
+ * Passing siblings each shift by ±(active's slot height) — the size of the
+ * vacancy active leaves and that propagates through the swap chain.
+ *
+ * The active card shifts by the SUM of (slot height) for each sibling it
+ * passes — it travels into each passed slot, and those slots can be
+ * different sizes than active's own. Using activeSlot * N would drift in
+ * variable-height columns and accumulate over multi-sibling passes.
+ */
+export function computeSceneAxisLockPxOffsets(
+  activeSceneId: string,
+  pointerY: number,
+  orderedScenes: Array<{ id: string; parentId: string | null }>,
+  siblingRects: Record<string, { top: number; bottom: number }>,
+  gapPx: number,
+): Map<string, number> {
+  const result = new Map<string, number>();
+  const activeRect = siblingRects[activeSceneId];
+  if (!activeRect) return result;
+  const activeSlot = activeRect.bottom - activeRect.top + gapPx;
+
+  const directions = computeSceneAxisLockShifts(
+    activeSceneId,
+    pointerY,
+    orderedScenes,
+    siblingRects,
+  );
+
+  let activeOffset = 0;
+  for (const [id, dir] of directions) {
+    const r = siblingRects[id];
+    if (!r) continue;
+    const sibSlot = r.bottom - r.top + gapPx;
+    if (dir === "up") {
+      result.set(id, -activeSlot);
+      activeOffset += sibSlot;
+    } else {
+      result.set(id, activeSlot);
+      activeOffset -= sibSlot;
+    }
+  }
+  if (activeOffset !== 0) {
+    result.set(activeSceneId, activeOffset);
+  }
+  return result;
+}
+
 export function activeDragKind(activeId: string): DragKind | null {
   if (activeId.startsWith("scene-")) return "scene";
   if (activeId.startsWith("column-")) return "column";

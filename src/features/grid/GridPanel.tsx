@@ -45,7 +45,7 @@ import {
   computeColumnDropTarget,
   computeSceneDropIndicator,
   computeColumnDropIndicator,
-  computeSceneAxisLockShifts,
+  computeSceneAxisLockPxOffsets,
   computeSceneAxisLockTarget,
   resolveSceneDragMode,
 } from "./gridDndUtils";
@@ -258,7 +258,6 @@ export function GridPanel() {
   const [axisLockOffsets, setAxisLockOffsets] = useState<Map<string, number>>(
     () => new Map(),
   );
-  const axisLockShiftDistanceRef = useRef(0);
   const axisLockScrollListenerRef = useRef<{
     el: HTMLElement;
     fn: () => void;
@@ -307,27 +306,13 @@ export function GridPanel() {
     const scrollDelta = session.scrollEl
       ? session.scrollEl.scrollTop - session.initialScrollTop
       : 0;
-    const directions = computeSceneAxisLockShifts(
+    const next = computeSceneAxisLockPxOffsets(
       session.activeSceneId,
       pointerYRef.current + scrollDelta,
       session.orderedSiblings,
       session.siblingRects,
+      8,
     );
-    const slot = axisLockShiftDistanceRef.current;
-    const next = new Map<string, number>();
-    let activeSlots = 0;
-    for (const [id, dir] of directions) {
-      if (dir === "up") {
-        next.set(id, -slot);
-        activeSlots += 1;
-      } else {
-        next.set(id, slot);
-        activeSlots -= 1;
-      }
-    }
-    if (activeSlots !== 0) {
-      next.set(session.activeSceneId, activeSlots * slot);
-    }
     setAxisLockOffsets((prev) => {
       if (prev.size !== next.size) return next;
       for (const [id, off] of next) {
@@ -486,13 +471,11 @@ export function GridPanel() {
         .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
       if (siblings.length <= 1) return;
       const siblingRects: Record<string, { top: number; bottom: number }> = {};
-      let activeHeight = 0;
       for (const sib of siblings) {
         const el = document.querySelector(`[data-grid-scene-id="${sib.id}"]`);
         if (!(el instanceof HTMLElement)) continue;
         const r = el.getBoundingClientRect();
         siblingRects[sib.id] = { top: r.top, bottom: r.bottom };
-        if (sib.id === sceneId) activeHeight = r.height;
       }
       if (!siblingRects[sceneId]) return;
       const activeEl = document.querySelector(
@@ -517,9 +500,6 @@ export function GridPanel() {
         scrollEl.addEventListener("scroll", onScroll, { passive: true });
         axisLockScrollListenerRef.current = { el: scrollEl, fn: onScroll };
       }
-      // Card gap inside columns is `gap-2` (8px). Approximate the slot height
-      // with the active card's measured height to drive sibling translateY.
-      axisLockShiftDistanceRef.current = activeHeight + 8;
       setAxisLockActive(true);
     }
   }

@@ -15,6 +15,7 @@ import {
   resolveSceneDragMode,
   computeSceneAxisLockTarget,
   computeSceneAxisLockShifts,
+  computeSceneAxisLockPxOffsets,
 } from "../gridDndUtils";
 
 describe("parseId", () => {
@@ -1145,6 +1146,102 @@ describe("computeSceneAxisLockShifts", () => {
   it("excludes active itself from the shift map", () => {
     const shifts = computeSceneAxisLockShifts("s2", 30, orderedScenes, rects);
     expect(shifts.has("s2")).toBe(false);
+  });
+});
+
+describe("computeSceneAxisLockPxOffsets", () => {
+  // Mixed-height column: active s2 is 80px tall, neighbors vary.
+  // gap = 8. Positions (top..bottom):
+  //   s1: 0..50    (h=50)
+  //   s2: 58..138  (h=80)  ← active
+  //   s3: 146..246 (h=100)
+  //   s4: 254..324 (h=70)
+  const orderedScenes = [
+    { id: "s1", parentId: "ch1" },
+    { id: "s2", parentId: "ch1" },
+    { id: "s3", parentId: "ch1" },
+    { id: "s4", parentId: "ch1" },
+  ];
+  const rects = {
+    s1: { top: 0, bottom: 50 },
+    s2: { top: 58, bottom: 138 },
+    s3: { top: 146, bottom: 246 },
+    s4: { top: 254, bottom: 324 },
+  };
+  const gap = 8;
+  const activeSlot = 80 + gap; // active's height + gap
+
+  it("returns empty when no displacement", () => {
+    // pointer inside s2 (its midpoint 98)
+    const m = computeSceneAxisLockPxOffsets(
+      "s2",
+      98,
+      orderedScenes,
+      rects,
+      gap,
+    );
+    expect(m.size).toBe(0);
+  });
+
+  it("active shifts by lower-sibling slot height, sibling shifts by active slot", () => {
+    // s3 midpoint = 196. pointer 200 → active s2 passes s3.
+    const m = computeSceneAxisLockPxOffsets(
+      "s2",
+      200,
+      orderedScenes,
+      rects,
+      gap,
+    );
+    // s3 moves up by active's slot
+    expect(m.get("s3")).toBe(-activeSlot);
+    // s2 (active) moves down by s3's slot (100 + 8)
+    expect(m.get("s2")).toBe(100 + gap);
+    // s1, s4 not in map
+    expect(m.has("s1")).toBe(false);
+    expect(m.has("s4")).toBe(false);
+  });
+
+  it("active offset is the SUM of passed-sibling slot heights", () => {
+    // pointer 260 → past s3 (mid 196) and s4 (mid 289). Wait s4 mid = 289 > 260.
+    // Adjust to pointer 300 to pass both.
+    const m = computeSceneAxisLockPxOffsets(
+      "s2",
+      300,
+      orderedScenes,
+      rects,
+      gap,
+    );
+    // s3 shifts up by active slot
+    expect(m.get("s3")).toBe(-activeSlot);
+    // s4 also shifts up by active slot — vacancy propagates at active's slot size
+    expect(m.get("s4")).toBe(-activeSlot);
+    // active moves down by sum of s3's slot + s4's slot
+    expect(m.get("s2")).toBe(100 + gap + 70 + gap);
+  });
+
+  it("upward pass: active moves up by upper-sibling slot, sibling moves down by active slot", () => {
+    // s1 midpoint = 25. pointer 20 → active passes s1 upward.
+    const m = computeSceneAxisLockPxOffsets(
+      "s2",
+      20,
+      orderedScenes,
+      rects,
+      gap,
+    );
+    expect(m.get("s1")).toBe(activeSlot);
+    // s2 moves up by -(s1.height + gap) = -(50 + 8)
+    expect(m.get("s2")).toBe(-(50 + gap));
+  });
+
+  it("returns empty when active rect is missing (no height to compute slot)", () => {
+    const m = computeSceneAxisLockPxOffsets(
+      "s2",
+      200,
+      orderedScenes,
+      { s3: rects.s3 },
+      gap,
+    );
+    expect(m.size).toBe(0);
   });
 });
 
