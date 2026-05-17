@@ -12,6 +12,9 @@ import {
   columnNestId,
   sceneDraggableId,
   columnDraggableId,
+  resolveSceneDragMode,
+  computeSceneAxisLockTarget,
+  computeSceneAxisLockShifts,
 } from "../gridDndUtils";
 
 describe("parseId", () => {
@@ -995,6 +998,154 @@ describe("activeDragKind", () => {
     expect(activeDragKind("column-f1")).toBe("column"));
   it("returns null for unknown", () =>
     expect(activeDragKind("unknown")).toBeNull());
+});
+
+describe("resolveSceneDragMode", () => {
+  const threshold = 40;
+
+  it("starts in axis-locked when initial deltaX is 0", () => {
+    expect(resolveSceneDragMode("axis-locked", 0, threshold)).toBe(
+      "axis-locked",
+    );
+  });
+
+  it("stays axis-locked while |deltaX| < threshold", () => {
+    expect(resolveSceneDragMode("axis-locked", 20, threshold)).toBe(
+      "axis-locked",
+    );
+    expect(resolveSceneDragMode("axis-locked", -39, threshold)).toBe(
+      "axis-locked",
+    );
+  });
+
+  it("transitions to free when |deltaX| >= threshold", () => {
+    expect(resolveSceneDragMode("axis-locked", 40, threshold)).toBe("free");
+    expect(resolveSceneDragMode("axis-locked", -50, threshold)).toBe("free");
+  });
+
+  it("hysteresis: free never reverts to axis-locked", () => {
+    expect(resolveSceneDragMode("free", 0, threshold)).toBe("free");
+    expect(resolveSceneDragMode("free", 5, threshold)).toBe("free");
+  });
+});
+
+describe("computeSceneAxisLockTarget", () => {
+  // Three siblings stacked vertically in ch1; sibling rect tops at 0, 100, 200
+  // (each card height 80, gap 20)
+  const orderedScenes = [
+    { id: "s1", parentId: "ch1" },
+    { id: "s2", parentId: "ch1" },
+    { id: "s3", parentId: "ch1" },
+    { id: "s4", parentId: "ch2" }, // different parent — must be ignored
+  ];
+  const rects = {
+    s1: { top: 0, bottom: 80 },
+    s2: { top: 100, bottom: 180 },
+    s3: { top: 200, bottom: 280 },
+    s4: { top: 0, bottom: 80 },
+  };
+
+  it("returns null when pointer stays within active's own rect", () => {
+    // Dragging s2; pointer at its midpoint (140)
+    expect(
+      computeSceneAxisLockTarget("s2", 140, orderedScenes, rects),
+    ).toBeNull();
+  });
+
+  it("swap with upper neighbor when pointer crosses upper sibling midpoint", () => {
+    // Dragging s2 up; s1 midpoint = 40. pointerY = 30 (above mid) → land before s1
+    const result = computeSceneAxisLockTarget("s2", 30, orderedScenes, rects);
+    expect(result).toEqual({ targetParentId: "ch1", afterId: null });
+  });
+
+  it("swap with lower neighbor when pointer crosses lower sibling midpoint", () => {
+    // Dragging s2 down; s3 midpoint = 240. pointerY = 250 → land after s3
+    const result = computeSceneAxisLockTarget("s2", 250, orderedScenes, rects);
+    expect(result).toEqual({ targetParentId: "ch1", afterId: "s3" });
+  });
+
+  it("skip past multiple neighbors when pointer is far up", () => {
+    // Dragging s3 up past both s1 and s2 (s1 mid = 40, pointerY 20)
+    const result = computeSceneAxisLockTarget("s3", 20, orderedScenes, rects);
+    expect(result).toEqual({ targetParentId: "ch1", afterId: null });
+  });
+
+  it("skip past multiple neighbors when pointer is far down", () => {
+    // Dragging s1 down past s2 and s3 (s3 mid = 240, pointerY = 260)
+    const result = computeSceneAxisLockTarget("s1", 260, orderedScenes, rects);
+    expect(result).toEqual({ targetParentId: "ch1", afterId: "s3" });
+  });
+
+  it("ignores siblings in a different parent", () => {
+    // s2 in ch1; s4 in ch2 — pointer way down shouldn't pick s4
+    const result = computeSceneAxisLockTarget("s2", 999, orderedScenes, rects);
+    expect(result).toEqual({ targetParentId: "ch1", afterId: "s3" });
+  });
+
+  it("returns null for an only-child scene (no reorder possible)", () => {
+    const single = [{ id: "x1", parentId: "p1" }];
+    expect(
+      computeSceneAxisLockTarget("x1", 0, single, {
+        x1: { top: 0, bottom: 50 },
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when active scene id is unknown", () => {
+    expect(
+      computeSceneAxisLockTarget("ghost", 50, orderedScenes, rects),
+    ).toBeNull();
+  });
+
+  it("returns null when no sibling rects are provided", () => {
+    expect(computeSceneAxisLockTarget("s2", 50, orderedScenes, {})).toBeNull();
+  });
+});
+
+describe("computeSceneAxisLockShifts", () => {
+  // Same fixture as above
+  const orderedScenes = [
+    { id: "s1", parentId: "ch1" },
+    { id: "s2", parentId: "ch1" },
+    { id: "s3", parentId: "ch1" },
+  ];
+  const rects = {
+    s1: { top: 0, bottom: 80 },
+    s2: { top: 100, bottom: 180 },
+    s3: { top: 200, bottom: 280 },
+  };
+
+  it("returns empty map when no displacement", () => {
+    const shifts = computeSceneAxisLockShifts("s2", 140, orderedScenes, rects);
+    expect(shifts.size).toBe(0);
+  });
+
+  it("shifts upper sibling DOWN when active moves above it", () => {
+    // Dragging s2 above s1 mid (pointer=30, mid=40) → s1 must shift down to
+    // make room above it for s2
+    const shifts = computeSceneAxisLockShifts("s2", 30, orderedScenes, rects);
+    expect(shifts.get("s1")).toBe("down");
+    expect(shifts.has("s3")).toBe(false);
+  });
+
+  it("shifts lower sibling UP when active moves below it", () => {
+    // Dragging s2 below s3 mid (pointer=250, s3 mid=240) → s3 shifts up
+    const shifts = computeSceneAxisLockShifts("s2", 250, orderedScenes, rects);
+    expect(shifts.get("s3")).toBe("up");
+    expect(shifts.has("s1")).toBe(false);
+  });
+
+  it("shifts multiple siblings when active jumps two slots", () => {
+    // Dragging s3 up past both s1 and s2 → both shift down
+    const shifts = computeSceneAxisLockShifts("s3", 20, orderedScenes, rects);
+    expect(shifts.get("s1")).toBe("down");
+    expect(shifts.get("s2")).toBe("down");
+  });
+
+  it("excludes active itself from the shift map", () => {
+    const shifts = computeSceneAxisLockShifts("s2", 30, orderedScenes, rects);
+    expect(shifts.has("s2")).toBe(false);
+  });
 });
 
 describe("id helpers", () => {
