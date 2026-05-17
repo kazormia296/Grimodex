@@ -718,6 +718,26 @@ describe("computeColumnDropIndicator", () => {
     expect(result).toBeNull();
   });
 
+  it("rejects column-empty nest indicator for descendant-cycle (mirror of target-side check)", () => {
+    const fpm: Record<string, string | null> = { A: null, B: "A", C: "B" };
+    const ofs = [
+      { id: "A", parentId: null },
+      { id: "B", parentId: "A" },
+      { id: "C", parentId: "B" },
+    ];
+    const result = computeColumnDropIndicator(
+      "A",
+      columnEmptyId("C"),
+      100,
+      rect,
+      {},
+      fpm,
+      ofs,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
   it("ignores column-empty-loose (no nest indicator)", () => {
     const result = computeColumnDropIndicator(
       "ch1",
