@@ -11,7 +11,9 @@ import type {
   DragEndEvent,
   DragOverEvent,
   DragStartEvent,
+  Modifier,
 } from "@dnd-kit/core";
+import { getEventCoordinates } from "@dnd-kit/utilities";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
@@ -43,6 +45,38 @@ import {
 } from "./gridDndUtils";
 import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+
+/**
+ * Pin the DragOverlay's center to the pointer. The actual draggable element
+ * for a column drag is the entire chapter column (≈ 320×600 px), but the
+ * overlay we render is a small title pill. dnd-kit's default behavior anchors
+ * the overlay to the active element's top-left, which leaves the pill far
+ * from the cursor — visually disconnected. Snapping center-to-cursor keeps
+ * the overlay under the pointer regardless of the active element's size.
+ *
+ * Inlined from `@dnd-kit/modifiers`'s snapCenterToCursor to avoid pulling in
+ * the whole package for a single helper.
+ */
+const snapOverlayCenterToCursor: Modifier = ({
+  activatorEvent,
+  draggingNodeRect,
+  transform,
+}) => {
+  if (!draggingNodeRect || !activatorEvent) return transform;
+  const coords = getEventCoordinates(activatorEvent);
+  if (!coords) return transform;
+  return {
+    ...transform,
+    x:
+      transform.x +
+      (coords.x - draggingNodeRect.left) -
+      draggingNodeRect.width / 2,
+    y:
+      transform.y +
+      (coords.y - draggingNodeRect.top) -
+      draggingNodeRect.height / 2,
+  };
+};
 
 export function GridPanel() {
   const { t } = useTranslation();
@@ -445,6 +479,7 @@ export function GridPanel() {
   return (
     <DndContext
       sensors={sensors}
+      modifiers={[snapOverlayCenterToCursor]}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
