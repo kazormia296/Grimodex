@@ -181,10 +181,12 @@ export function ContextBar({
     setUseGrouping((prev) => (prev === overflows ? prev : overflows));
   }, [totalPillCount]);
 
-  // レンダー後に毎回チェック（exit アニメーション中の要素も含めた幅を正確に測定）
+  // 内容（ピル数）が変わったら再判定。幅変化は ResizeObserver で追従する。
+  // deps なしで毎レンダー実行すると、commit-phase の setState がネストし
+  // "Maximum update depth exceeded" を踏むことがある（レイアウトプリセット切替時等）。
   useLayoutEffect(() => {
     checkGrouping();
-  });
+  }, [checkGrouping]);
 
   // パネル幅変化にも追従
   useEffect(() => {
