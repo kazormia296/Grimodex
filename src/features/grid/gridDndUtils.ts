@@ -260,7 +260,9 @@ function resolveFolderNestZone(
 
 /**
  * Determine if moving `activeFolderId` to be `position` of `targetId` would be a no-op
- * (target is adjacent to active in the same parent).
+ * (target is adjacent to active in the same parent). `targetId` may be a folder OR
+ * a scene id — target's parent is looked up from `orderedSiblings` (which contains
+ * both kinds) rather than `folderParentMap` (folder-only).
  */
 function isAdjacentColumnNoOp(
   activeFolderId: string,
@@ -270,7 +272,8 @@ function isAdjacentColumnNoOp(
   orderedSiblings: Array<{ id: string; parentId: string | null }>,
 ): boolean {
   const activeParentId = folderParentMap[activeFolderId] ?? null;
-  const targetParentId = folderParentMap[targetId] ?? null;
+  const targetEntry = orderedSiblings.find((s) => s.id === targetId);
+  const targetParentId = targetEntry?.parentId ?? null;
   if (targetParentId !== activeParentId) return false;
   const siblings = orderedSiblings
     .filter((f) => f.parentId === activeParentId)
@@ -438,6 +441,54 @@ export function computeColumnDropIndicator(
     return result;
   }
 
+  // Scene drop zone (scene card inside a column) → Y-axis 2-zone: column
+  // becomes a sibling of the scene in the scene's parent. The indicator
+  // targets the SCENE so the scene card itself can render the top/bottom bar.
+  // Previously this branch routed through the enclosing folder + X-axis 3-zone
+  // which gave column-level positioning, but column-slot already covers that
+  // and the per-scene Y feedback matches Scenes-panel ergonomics.
+  if (kind === "drop") {
+    const sceneId = rawId;
+    const targetParentId = sceneParentMap[sceneId] ?? null;
+    if (targetParentId === activeFolderId) {
+      glog(
+        "computeColumnDropIndicator",
+        "drop reject: scene's parent == active",
+      );
+      return null;
+    }
+    if (
+      targetParentId !== null &&
+      isSelfOrDescendant(targetParentId, activeFolderId, folderParentMap)
+    ) {
+      glog(
+        "computeColumnDropIndicator",
+        "drop reject: scene's parent is descendant of active",
+      );
+      return null;
+    }
+    const midY = overRect.top + overRect.height / 2;
+    const zone: "before" | "after" = pointerY <= midY ? "before" : "after";
+    if (
+      isAdjacentColumnNoOp(
+        activeFolderId,
+        sceneId,
+        zone,
+        folderParentMap,
+        orderedSiblings,
+      )
+    ) {
+      glog("computeColumnDropIndicator", "drop reject: adjacent no-op", {
+        zone,
+        sceneId,
+      });
+      return null;
+    }
+    const result: ColumnDropIndicator = { targetId: sceneId, position: zone };
+    glog("computeColumnDropIndicator", `result: drop ${zone}`, result);
+    return result;
+  }
+
   const targetId = resolveEnclosingFolderId(overId, sceneParentMap);
   if (!targetId) {
     glog("computeColumnDropIndicator", "no enclosing folder", { overId, kind });
@@ -600,6 +651,58 @@ export function computeColumnDropTarget(
     }
     const result = { targetParentId: rawId, afterId: undefined };
     glog("computeColumnDropTarget", "branch: empty nest", result);
+    return result;
+  }
+
+  // Scene drop zone → Y-axis 2-zone: column becomes a sibling of the scene in
+  // the scene's parent. Resolved predecessor uses ALL siblings (scenes and
+  // folders) since the dragged column gets interleaved among them.
+  if (kind === "drop") {
+    const sceneId = rawId;
+    const targetParentId = sceneParentMap[sceneId] ?? null;
+    if (targetParentId === activeFolderId) {
+      glog("computeColumnDropTarget", "drop reject: scene's parent == active");
+      return null;
+    }
+    if (
+      targetParentId !== null &&
+      isSelfOrDescendant(targetParentId, activeFolderId, folderParentMap)
+    ) {
+      glog(
+        "computeColumnDropTarget",
+        "drop reject: scene's parent is descendant of active",
+      );
+      return null;
+    }
+    const midY = overRect.top + overRect.height / 2;
+    const zone: "before" | "after" = pointerY <= midY ? "before" : "after";
+    if (
+      isAdjacentColumnNoOp(
+        activeFolderId,
+        sceneId,
+        zone,
+        folderParentMap,
+        orderedSiblings,
+      )
+    ) {
+      glog("computeColumnDropTarget", "drop reject: adjacent no-op", {
+        zone,
+        sceneId,
+      });
+      return null;
+    }
+    if (zone === "before") {
+      const siblings = orderedSiblings.filter(
+        (s) => s.parentId === targetParentId && s.id !== activeFolderId,
+      );
+      const idx = siblings.findIndex((s) => s.id === sceneId);
+      const predecessor = idx > 0 ? (siblings[idx - 1]?.id ?? null) : null;
+      const result = { targetParentId, afterId: predecessor };
+      glog("computeColumnDropTarget", "branch: drop before", result);
+      return result;
+    }
+    const result = { targetParentId, afterId: sceneId };
+    glog("computeColumnDropTarget", "branch: drop after", result);
     return result;
   }
 

@@ -16,7 +16,7 @@ import { GridCardPovChips } from "./GridCardPovChips";
 import { GridCardForeshadowIndicator } from "./GridCardForeshadowIndicator";
 import { GridCardMenu } from "./GridCardMenu";
 import { sceneDraggableId, sceneDroppableId } from "./gridDndUtils";
-import type { DropIndicator } from "./gridDndUtils";
+import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 import { useGridStore } from "./gridStore";
 
@@ -25,6 +25,11 @@ interface Props {
   display: GridDisplaySettings;
   dimmed?: boolean;
   dropIndicator?: DropIndicator | null;
+  /** Live column-drop indicator. When a column is dragged and this scene is
+   *  the target, drives the same top/bottom before/after bar as the scene-drag
+   *  indicator — visually communicating where the column will land as the
+   *  scene's sibling in its parent. */
+  columnDropIndicator?: ColumnDropIndicator | null;
   /** Called when delete is requested (single or multi-select). */
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   /** Flat scene order for range selection (Shift+Click). */
@@ -36,6 +41,7 @@ export function GridSceneCard({
   display,
   dimmed,
   dropIndicator,
+  columnDropIndicator,
   onRequestDeleteConfirm,
   flatOrder,
 }: Props) {
@@ -92,9 +98,15 @@ export function GridSceneCard({
   });
 
   const isDropBefore =
-    dropIndicator?.targetId === scene.id && dropIndicator.position === "before";
+    (dropIndicator?.targetId === scene.id &&
+      dropIndicator.position === "before") ||
+    (columnDropIndicator?.targetId === scene.id &&
+      columnDropIndicator.position === "before");
   const isDropAfter =
-    dropIndicator?.targetId === scene.id && dropIndicator.position === "after";
+    (dropIndicator?.targetId === scene.id &&
+      dropIndicator.position === "after") ||
+    (columnDropIndicator?.targetId === scene.id &&
+      columnDropIndicator.position === "after");
 
   function openInEditor() {
     useTabStore.getState().openPinned(scene.id);

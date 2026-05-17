@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { GridSceneCard } from "./GridSceneCard";
 import { consolidateLooseIntoChapter } from "./looseBatchOps";
 import { columnEndId, columnEmptyId } from "./gridDndUtils";
-import type { DropIndicator } from "./gridDndUtils";
+import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 
 interface CardVisibility {
@@ -26,6 +26,7 @@ interface Props {
   chapters: TreeNodeData[];
   visibility: Map<string, CardVisibility>;
   dropIndicator?: DropIndicator | null;
+  columnDropIndicator?: ColumnDropIndicator | null;
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   flatOrder?: string[];
 }
@@ -46,6 +47,7 @@ export function GridContainerSceneColumn({
   chapters,
   visibility,
   dropIndicator,
+  columnDropIndicator,
   onRequestDeleteConfirm,
   flatOrder,
 }: Props) {
@@ -188,6 +190,7 @@ export function GridContainerSceneColumn({
                   display={display}
                   dimmed={vis !== undefined && !vis.matchesSearch}
                   dropIndicator={dropIndicator}
+                  columnDropIndicator={columnDropIndicator}
                   onRequestDeleteConfirm={onRequestDeleteConfirm}
                   flatOrder={flatOrder}
                 />

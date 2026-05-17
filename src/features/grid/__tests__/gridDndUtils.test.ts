@@ -286,20 +286,38 @@ describe("computeColumnDropTarget", () => {
     expect(result).toEqual({ targetParentId: "root", afterId: null });
   });
 
-  it("resolves enclosing column when over.id is a scene-drop inside a target column", () => {
-    // Dragging ch1 over scene-drop-s1, where s1.parentId === "ch3"
+  it("scene-drop Y-axis 2-zone: bottom half → column becomes sibling AFTER the scene in scene's parent", () => {
+    // Dragging ch1 over scene-drop-s1 where s1.parentId === "ch3". With the
+    // new Y-axis semantic, the column becomes a sibling of the scene inside
+    // ch3 (a reparent + position insert in one drop). pointerY > midY → after.
     const result = computeColumnDropTarget(
       "ch1",
       "scene-drop-s1",
-      150, // right zone
-      50, // pointerY (middle of rect → "inside" zone for nest tests)
+      150, // pointerX irrelevant
+      80, // pointerY below midY (50) → "after"
       rect,
       folderParentMap,
       orderedFolders,
       { s1: "ch3" },
       null,
     );
-    expect(result).toEqual({ targetParentId: "root", afterId: "ch3" });
+    expect(result).toEqual({ targetParentId: "ch3", afterId: "s1" });
+  });
+
+  it("scene-drop Y-axis 2-zone: top half → column becomes sibling BEFORE the scene (predecessor null when scene is first)", () => {
+    const result = computeColumnDropTarget(
+      "ch1",
+      "scene-drop-s1",
+      150,
+      10, // top half → "before"
+      rect,
+      folderParentMap,
+      orderedFolders,
+      { s1: "ch3" },
+      null,
+    );
+    // s1 not present in orderedFolders → predecessor among ch3's children = null.
+    expect(result).toEqual({ targetParentId: "ch3", afterId: null });
   });
 
   it("returns null when hovering adjacent right-neighbor's left zone (no-op, no flip)", () => {
@@ -337,33 +355,25 @@ describe("computeColumnDropTarget", () => {
     expect(result).toBeNull();
   });
 
-  it("user's reported scenario: dropping ch1 (idx=1) on ch2's (idx=2) scene-drop left zone is no-op (no longer silently flips to after ch2)", () => {
-    // Reproduces the bug from screenshots: cursor on left edge of right-neighbor
-    // resolves to "before right-neighbor" which would be no-op. Previously
-    // flipped to "after right-neighbor" and moved active past the neighbor.
-    // Now returns null → no surprise move.
-    const fpm: Record<string, string | null> = {
-      ch0: "root",
-      ch1: "root",
-      ch2: "root",
-      ch3: "root",
-    };
+  it("scene-drop Y-axis adjacent no-op: column landing back in its current slot inside scene's parent", () => {
+    // Active column F is at index 0 in chapter ch's children, scene s1 at index 1.
+    // Drop F on s1's top half → "before s1" → would land F at index 0 (its
+    // current slot) — no-op rejected per isAdjacentColumnNoOp.
+    const fpm: Record<string, string | null> = { ch: "root", F: "ch" };
     const ofs = [
-      { id: "ch0", parentId: "root" },
-      { id: "ch1", parentId: "root" },
-      { id: "ch2", parentId: "root" },
-      { id: "ch3", parentId: "root" },
+      { id: "ch", parentId: "root" },
+      { id: "F", parentId: "ch" },
+      { id: "s1", parentId: "ch" },
     ];
     const result = computeColumnDropTarget(
-      "ch1",
-      "scene-drop-s_in_ch2",
-      // pointerX such that relativeX < 40% → left zone of the scene
-      20,
-      50, // pointerY (middle of rect → "inside" zone for nest tests)
+      "F",
+      "scene-drop-s1",
+      100,
+      10, // top → "before s1"
       { left: 0, width: 100, top: 0, height: 100 },
       fpm,
       ofs,
-      { s_in_ch2: "ch2" },
+      { s1: "ch" },
       null,
     );
     expect(result).toBeNull();
@@ -482,26 +492,29 @@ describe("computeColumnDropTarget", () => {
     expect(result).toBeNull();
   });
 
-  it("rejects loose-area drop (target === containerId) — does not bubble Part out of container", () => {
-    // Inside Part X (containerId="X"), looseScene.parentId === "X".
-    // Dragging ch1 over a loose scene resolves to "X" → must reject (not move ch1 to root).
+  it("scene-drop Y-axis: dropping a column on a loose scene inside the same container reorders it within the container (Part stays in container)", () => {
+    // Previously this branch rejected via target===containerId. With Y-axis
+    // semantic, the dragged column simply becomes a sibling of the loose
+    // scene inside the container — no "bubbling out" risk because the column
+    // lands in the scene's parent, which IS the container.
     const fpm = { ...folderParentMap, X: null, ch1: "X" };
     const ofs = [
       { id: "X", parentId: null },
       { id: "ch1", parentId: "X" },
+      { id: "loose1", parentId: "X" },
     ];
     const result = computeColumnDropTarget(
       "ch1",
       "scene-drop-loose1",
       100,
-      50, // pointerY (middle of rect → "inside" zone for nest tests)
+      80, // bottom → "after loose1"
       rect,
       fpm,
       ofs,
       { loose1: "X" },
       "X", // containerId
     );
-    expect(result).toBeNull();
+    expect(result).toEqual({ targetParentId: "X", afterId: "loose1" });
   });
 
   it("rejects cycle: nesting an ancestor folder into its descendant via column-nest", () => {
@@ -748,44 +761,58 @@ describe("computeColumnDropTarget", () => {
     expect(result).toEqual({ targetParentId: "ch1", afterId: null });
   });
 
-  it("places column AFTER last loose scene when dropping 'before' a chapter that follows a loose column (regression)", () => {
-    // Tree (children of Act = "act", in sortOrder):
-    //   s1, s7   (loose scenes)
-    //   ch1, ch2 (chapter folders)
-    //   pa1, pa2 (Part folders — pa1 is being dragged)
-    // User drops pa1 to the LEFT zone of ch1 (between the loose column and ch1).
-    // Predecessor must be s7 (the last loose scene before ch1), NOT null —
-    // null would make pa1 the FIRST child of act, dumping it before s1 visually.
+  it("scene-drop Y-axis: predecessor resolution across interleaved siblings (column inserted between scene and folder)", () => {
+    // Chapter ch has children [scene_a, folder_b, scene_c]. Dropping column
+    // pa1 on scene_c's TOP half → "before scene_c" → predecessor among ch's
+    // children excluding pa1 is folder_b (immediately preceding scene_c).
     const fpm: Record<string, string | null> = {
-      act: null,
-      ch1: "act",
-      ch2: "act",
-      pa1: "act",
-      pa2: "act",
+      ch: null,
+      folder_b: "ch",
+      pa1: null,
     };
     const orderedSiblings = [
-      { id: "act", parentId: null },
-      { id: "s1", parentId: "act" },
-      { id: "s7", parentId: "act" },
-      { id: "ch1", parentId: "act" },
-      { id: "ch2", parentId: "act" },
-      { id: "pa1", parentId: "act" },
-      { id: "pa2", parentId: "act" },
+      { id: "ch", parentId: null },
+      { id: "scene_a", parentId: "ch" },
+      { id: "folder_b", parentId: "ch" },
+      { id: "scene_c", parentId: "ch" },
+      { id: "pa1", parentId: null },
     ];
-    const spm = { s1: "act", s7: "act", s_in_ch1: "ch1" };
+    const spm = { scene_a: "ch", scene_c: "ch" };
     const result = computeColumnDropTarget(
       "pa1",
-      "scene-drop-s_in_ch1",
-      // pointerX in left zone of the over scene → resolves to "before ch1"
-      10,
-      50, // pointerY (middle of rect → "inside" zone for nest tests)
+      "scene-drop-scene_c",
+      100,
+      10, // top → "before scene_c"
       { left: 0, width: 100, top: 0, height: 100 },
       fpm,
       orderedSiblings,
       spm,
-      "act",
+      null,
     );
-    expect(result).toEqual({ targetParentId: "act", afterId: "s7" });
+    expect(result).toEqual({ targetParentId: "ch", afterId: "folder_b" });
+  });
+
+  it("scene-drop Y-axis: cycle prevention — scene's parent is descendant of active", () => {
+    // A → B → C, scene_in_C.parent = C. Dragging A onto scene_in_C would
+    // make A a child of C (a descendant of A) → cycle. Reject.
+    const fpm: Record<string, string | null> = { A: null, B: "A", C: "B" };
+    const ofs = [
+      { id: "A", parentId: null },
+      { id: "B", parentId: "A" },
+      { id: "C", parentId: "B" },
+    ];
+    const result = computeColumnDropTarget(
+      "A",
+      "scene-drop-scene_in_C",
+      100,
+      50,
+      { left: 0, width: 100, top: 0, height: 100 },
+      fpm,
+      ofs,
+      { scene_in_C: "C" },
+      null,
+    );
+    expect(result).toBeNull();
   });
 });
 
@@ -914,6 +941,36 @@ describe("computeColumnDropIndicator", () => {
       null,
     );
     expect(result).toBeNull();
+  });
+
+  it("scene-drop Y-axis indicator: top half → before scene", () => {
+    const result = computeColumnDropIndicator(
+      "ch1",
+      "scene-drop-s1",
+      100,
+      10,
+      { left: 0, width: 200, top: 0, height: 100 },
+      { s1: "ch3" },
+      folderParentMap,
+      orderedFolders,
+      null,
+    );
+    expect(result).toEqual({ targetId: "s1", position: "before" });
+  });
+
+  it("scene-drop Y-axis indicator: bottom half → after scene", () => {
+    const result = computeColumnDropIndicator(
+      "ch1",
+      "scene-drop-s1",
+      100,
+      90,
+      { left: 0, width: 200, top: 0, height: 100 },
+      { s1: "ch3" },
+      folderParentMap,
+      orderedFolders,
+      null,
+    );
+    expect(result).toEqual({ targetId: "s1", position: "after" });
   });
 
   it("ignores column-empty-loose (no nest indicator)", () => {

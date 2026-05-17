@@ -250,6 +250,7 @@ export function GridColumn({
                       display={display}
                       dimmed={vis !== undefined && !vis.matchesSearch}
                       dropIndicator={dropIndicator}
+                      columnDropIndicator={columnDropIndicator}
                       onRequestDeleteConfirm={onRequestDeleteConfirm}
                       flatOrder={flatOrder}
                     />

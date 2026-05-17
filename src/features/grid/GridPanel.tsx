@@ -655,6 +655,7 @@ export function GridPanel() {
                   chapters={chapters.map((ch) => ch.folder)}
                   visibility={visibility}
                   dropIndicator={dropIndicator}
+                  columnDropIndicator={columnDropIndicator}
                   onRequestDeleteConfirm={handleDeleteScenes}
                   flatOrder={flatOrder}
                 />
@@ -669,6 +670,7 @@ export function GridPanel() {
                 chapters={chapters.map((ch) => ch.folder)}
                 visibility={visibility}
                 dropIndicator={dropIndicator}
+                columnDropIndicator={columnDropIndicator}
                 onRequestDeleteConfirm={handleDeleteScenes}
                 flatOrder={flatOrder}
               />

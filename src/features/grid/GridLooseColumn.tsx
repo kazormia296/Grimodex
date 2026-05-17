@@ -11,7 +11,7 @@ import {
   convertLooseToChapter,
 } from "./looseBatchOps";
 import { columnEndId, columnEmptyId } from "./gridDndUtils";
-import type { DropIndicator } from "./gridDndUtils";
+import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 
 interface CardVisibility {
@@ -26,6 +26,7 @@ interface Props {
   chapters: TreeNodeData[];
   visibility: Map<string, CardVisibility>;
   dropIndicator?: DropIndicator | null;
+  columnDropIndicator?: ColumnDropIndicator | null;
   onRequestDeleteConfirm?: (sceneIds: string[]) => void;
   /** Flat scene order across all columns, for range selection. */
   flatOrder?: string[];
@@ -43,6 +44,7 @@ export function GridLooseColumn({
   chapters,
   visibility,
   dropIndicator,
+  columnDropIndicator,
   onRequestDeleteConfirm,
   flatOrder,
 }: Props) {
@@ -203,6 +205,7 @@ export function GridLooseColumn({
                   display={display}
                   dimmed={vis !== undefined && !vis.matchesSearch}
                   dropIndicator={dropIndicator}
+                  columnDropIndicator={columnDropIndicator}
                   onRequestDeleteConfirm={onRequestDeleteConfirm}
                   flatOrder={flatOrder}
                 />
