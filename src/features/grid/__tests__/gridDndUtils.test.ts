@@ -3,6 +3,7 @@ import {
   parseId,
   computeSceneDropTarget,
   computeColumnDropTarget,
+  computeColumnDropIndicator,
   activeDragKind,
   sceneDroppableId,
   columnSlotId,
@@ -535,6 +536,90 @@ describe("computeColumnDropTarget", () => {
     expect(result).toBeNull();
   });
 
+  it("nests via column-empty drop zone of an empty folder column (regression: silently no-op'd as adjacent sibling)", () => {
+    // The empty drop zone is rendered only when the target folder has NO
+    // children. Previously the code resolved this to the enclosing folder and
+    // ran the 3-zone sibling logic on the empty area's rect — when the empty
+    // folder was an adjacent sibling, the resulting before/after was rejected
+    // as a no-op and the drop did nothing. Now empty-folder drops are treated
+    // as explicit nest targets.
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnEmptyId("ch2"), // ch2 has no children
+      400, // any pointerX inside the empty zone
+      { left: 300, width: 200 },
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toEqual({ targetParentId: "ch2", afterId: undefined });
+  });
+
+  it("rejects nesting into own column-empty drop zone", () => {
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnEmptyId("ch1"),
+      100,
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rejects column-empty nest when active is already a direct child of the empty folder", () => {
+    const fpm = { ...folderParentMap, sub1: "ch1" };
+    const ofs = [...orderedFolders, { id: "sub1", parentId: "ch1" }];
+    const result = computeColumnDropTarget(
+      "sub1",
+      columnEmptyId("ch1"),
+      100,
+      rect,
+      fpm,
+      ofs,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rejects cycle: column-empty drop of an ancestor onto its descendant", () => {
+    const fpm: Record<string, string | null> = { A: null, B: "A", C: "B" };
+    const ofs = [
+      { id: "A", parentId: null },
+      { id: "B", parentId: "A" },
+      { id: "C", parentId: "B" },
+    ];
+    const result = computeColumnDropTarget(
+      "A",
+      columnEmptyId("C"),
+      100,
+      rect,
+      fpm,
+      ofs,
+      {},
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rejects column drop on column-empty-loose (loose area can't host a folder)", () => {
+    const result = computeColumnDropTarget(
+      "ch1",
+      columnEmptyId("loose"),
+      100,
+      rect,
+      folderParentMap,
+      orderedFolders,
+      sceneParentMap,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
   it("places column AFTER last loose scene when dropping 'before' a chapter that follows a loose column (regression)", () => {
     // Tree (children of Act = "act", in sortOrder):
     //   s1, s7   (loose scenes)
@@ -572,6 +657,79 @@ describe("computeColumnDropTarget", () => {
       "act",
     );
     expect(result).toEqual({ targetParentId: "act", afterId: "s7" });
+  });
+});
+
+describe("computeColumnDropIndicator", () => {
+  const folderParentMap: Record<string, string | null> = {
+    ch1: "root",
+    ch2: "root",
+    ch3: "root",
+  };
+  const orderedFolders = [
+    { id: "ch1", parentId: "root" },
+    { id: "ch2", parentId: "root" },
+    { id: "ch3", parentId: "root" },
+  ];
+  const sceneParentMap: Record<string, string | null> = {};
+  const rect = { left: 0, width: 200 };
+
+  it("shows nest indicator for column-empty drop zone of an empty folder", () => {
+    const result = computeColumnDropIndicator(
+      "ch1",
+      columnEmptyId("ch2"),
+      100,
+      rect,
+      sceneParentMap,
+      folderParentMap,
+      orderedFolders,
+      null,
+    );
+    expect(result).toEqual({ targetId: "ch2", position: "nest" });
+  });
+
+  it("rejects nest indicator when target empty folder is the active itself", () => {
+    const result = computeColumnDropIndicator(
+      "ch1",
+      columnEmptyId("ch1"),
+      100,
+      rect,
+      sceneParentMap,
+      folderParentMap,
+      orderedFolders,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rejects column-empty nest indicator when active is already a direct child", () => {
+    const fpm = { ...folderParentMap, sub1: "ch1" };
+    const ofs = [...orderedFolders, { id: "sub1", parentId: "ch1" }];
+    const result = computeColumnDropIndicator(
+      "sub1",
+      columnEmptyId("ch1"),
+      100,
+      rect,
+      sceneParentMap,
+      fpm,
+      ofs,
+      null,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("ignores column-empty-loose (no nest indicator)", () => {
+    const result = computeColumnDropIndicator(
+      "ch1",
+      columnEmptyId("loose"),
+      100,
+      rect,
+      sceneParentMap,
+      folderParentMap,
+      orderedFolders,
+      null,
+    );
+    expect(result).toBeNull();
   });
 });
 

@@ -332,8 +332,12 @@ export function computeColumnDropIndicator(
   if (!overId) return null;
   const { kind, rawId } = parseId(overId);
 
-  // Explicit nest droppable (e.g. nested folder card)
-  if (kind === "nest") {
+  // Explicit nest droppable (nested folder card) OR empty-folder drop zone.
+  // `column-empty-{folderId}` only renders when the folder has no children
+  // (GridColumn.tsx), so a column drop there has only one meaningful intent:
+  // nest INTO that folder. Routing it through the 3-zone sibling logic would
+  // produce a stale before/after that gets rejected as an adjacent no-op.
+  if (kind === "nest" || (kind === "empty" && rawId !== "loose")) {
     if (rawId === activeFolderId) {
       glog("computeColumnDropIndicator", "nest reject: target == active");
       return null;
@@ -433,8 +437,13 @@ export function computeColumnDropTarget(
   const { kind, rawId } = parseId(overId);
   glog("computeColumnDropTarget", "parsed", { kind, rawId });
 
-  // Explicit nest droppable (e.g. nested folder card) — append into target.
-  if (kind === "nest") {
+  // Explicit nest droppable (nested folder card) OR empty-folder drop zone.
+  // `column-empty-{folderId}` only renders when the folder has no children
+  // (GridColumn.tsx), so a column drop there is unambiguously a nest-into
+  // request. Falling through to the 3-zone sibling logic produced a stale
+  // before/after that got rejected as an adjacent no-op, leaving the user's
+  // drop silently ignored.
+  if (kind === "nest" || (kind === "empty" && rawId !== "loose")) {
     if (rawId === activeFolderId) {
       glog("computeColumnDropTarget", "nest reject: target == active");
       return null;
@@ -454,7 +463,7 @@ export function computeColumnDropTarget(
       return null;
     }
     const result = { targetParentId: rawId, afterId: undefined };
-    glog("computeColumnDropTarget", "branch: explicit nest", result);
+    glog("computeColumnDropTarget", "branch: nest", result);
     return result;
   }
 
