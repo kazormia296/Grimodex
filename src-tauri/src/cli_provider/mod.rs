@@ -117,7 +117,12 @@ fn resolved_unix_shell_exe(shell: &str) -> String {
 }
 
 #[cfg(unix)]
-async fn unix_shell_stdout(shell: &str, home: &str, dash_lc_flag: &str, script: &str) -> Option<String> {
+async fn unix_shell_stdout(
+    shell: &str,
+    home: &str,
+    dash_lc_flag: &str,
+    script: &str,
+) -> Option<String> {
     let exe = resolved_unix_shell_exe(shell);
     let output = Command::new(&exe)
         .env("HOME", home)
@@ -161,7 +166,9 @@ async fn detect_binary_unix(kind: CliKind) -> Option<String> {
     let home = dirs::home_dir()?.to_str()?.to_string();
 
     // 1) login shell（/etc/profile 系）
-    if let Some(p) = unix_shell_stdout("bash", &home, "-lc", &format!("command -v {bin_name}")).await {
+    if let Some(p) =
+        unix_shell_stdout("bash", &home, "-lc", &format!("command -v {bin_name}")).await
+    {
         if let Some(n) = normalize_detected_path(p) {
             return Some(n);
         }
@@ -296,7 +303,11 @@ fn macos_app_bundle_directory_names(kind: CliKind) -> &'static [&'static str] {
 }
 
 #[cfg(all(unix, target_os = "macos"))]
-fn unix_find_file_bfs_under(root: &std::path::Path, basename: &str, max_depth: usize) -> Option<PathBuf> {
+fn unix_find_file_bfs_under(
+    root: &std::path::Path,
+    basename: &str,
+    max_depth: usize,
+) -> Option<PathBuf> {
     if !root.is_dir() {
         return None;
     }
@@ -356,8 +367,7 @@ fn macos_app_bundle_cli(kind: CliKind, bin_name: &str) -> Option<String> {
                 for ent in read.flatten() {
                     let p = ent.path();
                     if p.is_file()
-                        && p
-                            .file_name()
+                        && p.file_name()
                             .and_then(|n| n.to_str())
                             .is_some_and(|n| n.eq_ignore_ascii_case(bin_name))
                     {
@@ -373,7 +383,10 @@ fn macos_app_bundle_cli(kind: CliKind, bin_name: &str) -> Option<String> {
 #[cfg(unix)]
 /// `bin_name` は英数字と `_` `-` のみ想定（claude / codex / opencode）。それ以外は素通ししない。
 fn bash_escape_singlequoted_literal(bin_name: &str) -> String {
-    if bin_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if bin_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         bin_name.to_string()
     } else {
         String::new()
@@ -442,10 +455,7 @@ fn dir_entry_name_eq_ignore_case(path: &std::path::Path, expected: &str) -> bool
 #[cfg(windows)]
 fn find_exe_windows_apps_aliases(local: &std::path::Path, bin_name: &str) -> Option<PathBuf> {
     let exe = windows_cli_exe_leaf(bin_name);
-    let p = local
-        .join("Microsoft")
-        .join("WindowsApps")
-        .join(&exe);
+    let p = local.join("Microsoft").join("WindowsApps").join(&exe);
     if p.exists() {
         return Some(p);
     }
@@ -455,19 +465,18 @@ fn find_exe_windows_apps_aliases(local: &std::path::Path, bin_name: &str) -> Opt
 #[cfg(windows)]
 fn local_appdata_vendor_roots(kind: CliKind) -> &'static [&'static str] {
     match kind {
-        CliKind::Claude => &[
-            "Anthropic",
-            "anthropic",
-            "Claude",
-            "claude",
-        ],
+        CliKind::Claude => &["Anthropic", "anthropic", "Claude", "claude"],
         CliKind::Codex => &["OpenAI", "openai"],
         CliKind::Opencode => &["opencode", "OpenCode", "sst", "anomalyco"],
     }
 }
 
 #[cfg(windows)]
-fn find_exe_bfs_under_root(root: &std::path::Path, exe_leaf: &str, max_depth: usize) -> Option<PathBuf> {
+fn find_exe_bfs_under_root(
+    root: &std::path::Path,
+    exe_leaf: &str,
+    max_depth: usize,
+) -> Option<PathBuf> {
     if !root.is_dir() {
         return None;
     }
@@ -489,7 +498,11 @@ fn find_exe_bfs_under_root(root: &std::path::Path, exe_leaf: &str, max_depth: us
 
 /// `LocalAppData` 直下の各ベンダーフォルダだけを浅く BFS（全体走査はしない）
 #[cfg(windows)]
-fn find_exe_under_vendor_roots(local: &std::path::Path, roots: &[&str], exe_leaf: &str) -> Option<PathBuf> {
+fn find_exe_under_vendor_roots(
+    local: &std::path::Path,
+    roots: &[&str],
+    exe_leaf: &str,
+) -> Option<PathBuf> {
     for r in roots {
         let sub = local.join(r);
         if let Some(p) = find_exe_bfs_under_root(&sub, exe_leaf, 12) {
@@ -501,7 +514,10 @@ fn find_exe_under_vendor_roots(local: &std::path::Path, roots: &[&str], exe_leaf
 
 /// 直下 1〜2 階層だけ見る汎用スキャン。`Packages` など巨大木は子を辿らない。
 #[cfg(windows)]
-fn find_exe_shallow_under_local_appdata(local: &std::path::Path, exe_leaf: &str) -> Option<PathBuf> {
+fn find_exe_shallow_under_local_appdata(
+    local: &std::path::Path,
+    exe_leaf: &str,
+) -> Option<PathBuf> {
     const SKIP_NESTED_SCAN: &[&str] = &[
         "Packages",
         "npm-cache",
@@ -610,7 +626,10 @@ async fn detect_binary_windows(kind: CliKind) -> Option<String> {
     }
 
     if let Some(home) = dirs::home_dir() {
-        let scoop = home.join("scoop").join("shims").join(format!("{bin_name}.exe"));
+        let scoop = home
+            .join("scoop")
+            .join("shims")
+            .join(format!("{bin_name}.exe"));
         if scoop.is_file() {
             return scoop.to_str().map(str::to_string);
         }
@@ -676,7 +695,14 @@ async fn powershell_resolve_exe(bin_name: &str, create_no_window: u32) -> Option
         bin_name
     );
     let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &ps,
+        ])
         .creation_flags(create_no_window)
         .output()
         .await

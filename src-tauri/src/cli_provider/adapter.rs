@@ -283,8 +283,9 @@ impl LineAdapter for OpenCodeAdapter {
                     }
                     let tokens = part.get("tokens");
                     let input_tokens = tokens.and_then(|t| t.get("input")).and_then(|x| x.as_u64());
-                    let output_tokens =
-                        tokens.and_then(|t| t.get("output")).and_then(|x| x.as_u64());
+                    let output_tokens = tokens
+                        .and_then(|t| t.get("output"))
+                        .and_then(|x| x.as_u64());
                     let stop_reason = reason.unwrap_or("end_turn").to_string();
                     out.push(CliEvent::Done {
                         input_tokens,
