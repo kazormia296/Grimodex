@@ -120,14 +120,24 @@ export function GridLooseColumn({
               {scenes.map((scene) => {
                 const vis = visibility.get(scene.id);
                 if (vis && !vis.passesFilter) return null;
+                const isDropBefore =
+                  (dropIndicator?.targetId === scene.id &&
+                    dropIndicator.position === "before") ||
+                  (columnDropIndicator?.targetId === scene.id &&
+                    columnDropIndicator.position === "before");
+                const isDropAfter =
+                  (dropIndicator?.targetId === scene.id &&
+                    dropIndicator.position === "after") ||
+                  (columnDropIndicator?.targetId === scene.id &&
+                    columnDropIndicator.position === "after");
                 return (
                   <GridSceneCard
                     key={scene.id}
                     scene={scene}
                     display={display}
                     dimmed={vis !== undefined && !vis.matchesSearch}
-                    dropIndicator={dropIndicator}
-                    columnDropIndicator={columnDropIndicator}
+                    isDropBefore={isDropBefore}
+                    isDropAfter={isDropAfter}
                     axisLockOffsetPx={axisLockOffsets?.get(scene.id)}
                     onRequestDeleteConfirm={onRequestDeleteConfirm}
                     flatOrder={flatOrder}

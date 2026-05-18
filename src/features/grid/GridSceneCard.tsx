@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { GripVertical } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -20,7 +20,6 @@ import { GridCardForeshadowIndicator } from "./GridCardForeshadowIndicator";
 import { GridCardMenu } from "./GridCardMenu";
 import { GridSceneCardContextMenu } from "./GridSceneCardContextMenu";
 import { sceneDraggableId, sceneDroppableId } from "./gridDndUtils";
-import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import type { GridDisplaySettings } from "./gridStore";
 import { useGridStore } from "./gridStore";
 
@@ -28,12 +27,12 @@ interface Props {
   scene: TreeNodeData;
   display: GridDisplaySettings;
   dimmed?: boolean;
-  dropIndicator?: DropIndicator | null;
-  /** Live column-drop indicator. When a column is dragged and this scene is
-   *  the target, drives the same top/bottom before/after bar as the scene-drag
-   *  indicator — visually communicating where the column will land as the
-   *  scene's sibling in its parent. */
-  columnDropIndicator?: ColumnDropIndicator | null;
+  /** Whether this scene is the target of a drop indicator with position "before".
+   *  Parent (column) computes this from its dropIndicator/columnDropIndicator
+   *  state so unaffected cards stay referentially stable for React.memo. */
+  isDropBefore?: boolean;
+  /** Whether this scene is the target of a drop indicator with position "after". */
+  isDropAfter?: boolean;
   /** Axis-locked drag: signed translateY pixels. Negative = up, positive =
    *  down. Applies to both passing siblings (one slot) and the active card
    *  itself (multi-slot) so the card travels visually with the swap. */
@@ -44,12 +43,12 @@ interface Props {
   flatOrder?: string[];
 }
 
-export function GridSceneCard({
+function GridSceneCardImpl({
   scene,
   display,
   dimmed,
-  dropIndicator,
-  columnDropIndicator,
+  isDropBefore = false,
+  isDropAfter = false,
   axisLockOffsetPx,
   onRequestDeleteConfirm,
   flatOrder,
@@ -107,17 +106,6 @@ export function GridSceneCard({
     id: sceneDroppableId(scene.id),
     data: { kind: "scene-drop", sceneId: scene.id },
   });
-
-  const isDropBefore =
-    (dropIndicator?.targetId === scene.id &&
-      dropIndicator.position === "before") ||
-    (columnDropIndicator?.targetId === scene.id &&
-      columnDropIndicator.position === "before");
-  const isDropAfter =
-    (dropIndicator?.targetId === scene.id &&
-      dropIndicator.position === "after") ||
-    (columnDropIndicator?.targetId === scene.id &&
-      columnDropIndicator.position === "after");
 
   function openInEditor() {
     useTabStore.getState().openPinned(scene.id);
@@ -359,3 +347,11 @@ export function GridSceneCard({
   );
   return __renderResult;
 }
+
+// NOTE: dnd-kit の useDraggable/useDroppable が InternalContext を購読しており、
+// pointer move のたびに `over` が変わって全 consumer が memo を貫通して再描画される。
+// このため drag 中の `gridSceneCard.render` 削減効果はゼロ。一方 drag していない
+// 通常時 (preview tab 切替、active scene 更新等) の浅比較 skip は機能している。
+// `isDropBefore`/`isDropAfter` を primitive props にしてあるのは、将来 dnd-kit を
+// 置換/除去したとき即座に memo が完全に効くようにするための前提。
+export const GridSceneCard = memo(GridSceneCardImpl);

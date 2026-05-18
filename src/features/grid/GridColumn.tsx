@@ -328,14 +328,24 @@ export function GridColumn({
                   }
                   const vis = visibility.get(node.id);
                   if (vis && !vis.passesFilter) return null;
+                  const isDropBefore =
+                    (dropIndicator?.targetId === node.id &&
+                      dropIndicator.position === "before") ||
+                    (columnDropIndicator?.targetId === node.id &&
+                      columnDropIndicator.position === "before");
+                  const isDropAfter =
+                    (dropIndicator?.targetId === node.id &&
+                      dropIndicator.position === "after") ||
+                    (columnDropIndicator?.targetId === node.id &&
+                      columnDropIndicator.position === "after");
                   return (
                     <div key={node.id} style={indentStyle}>
                       <GridSceneCard
                         scene={node}
                         display={display}
                         dimmed={vis !== undefined && !vis.matchesSearch}
-                        dropIndicator={dropIndicator}
-                        columnDropIndicator={columnDropIndicator}
+                        isDropBefore={isDropBefore}
+                        isDropAfter={isDropAfter}
                         axisLockOffsetPx={effectiveAxisLockOffsets.get(node.id)}
                         onRequestDeleteConfirm={onRequestDeleteConfirm}
                         flatOrder={flatOrder}
