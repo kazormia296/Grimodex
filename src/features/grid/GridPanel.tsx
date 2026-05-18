@@ -57,7 +57,13 @@ import type {
   ColumnDropIndicator,
   SceneDragMode,
 } from "./gridDndUtils";
-import { glog } from "./gridDndLog";
+import {
+  glog,
+  gperfStart,
+  gperfMark,
+  gperfMarkAsync,
+  gperfFlush,
+} from "./gridDndLog";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
 /**
@@ -344,86 +350,90 @@ export function GridPanel() {
   // either input changes which siblings the dragged card has passed.
   const recomputeAxisLock = useRef<() => void>(() => {});
   recomputeAxisLock.current = () => {
-    const session = axisLockSessionRef.current;
-    if (!session) return;
-    const deltaX = pointerXRef.current - session.startX;
-    const nextMode = resolveSceneDragMode(
-      session.mode,
-      deltaX,
-      SCENE_AXIS_LOCK_THRESHOLD_PX,
-    );
-    if (nextMode !== session.mode) {
-      session.mode = nextMode;
-      if (nextMode === "free") {
-        detachAxisLockScrollListener();
-        setAxisLockActive(false);
-        setAxisLockOffsets((prev) => (prev.size === 0 ? prev : new Map()));
-        return;
+    gperfMark("recomputeAxisLock", () => {
+      const session = axisLockSessionRef.current;
+      if (!session) return;
+      const deltaX = pointerXRef.current - session.startX;
+      const nextMode = resolveSceneDragMode(
+        session.mode,
+        deltaX,
+        SCENE_AXIS_LOCK_THRESHOLD_PX,
+      );
+      if (nextMode !== session.mode) {
+        session.mode = nextMode;
+        if (nextMode === "free") {
+          detachAxisLockScrollListener();
+          setAxisLockActive(false);
+          setAxisLockOffsets((prev) => (prev.size === 0 ? prev : new Map()));
+          return;
+        }
       }
-    }
-    if (session.mode !== "axis-locked") return;
-    const scrollDelta = session.scrollEl
-      ? session.scrollEl.scrollTop - session.initialScrollTop
-      : 0;
-    const next = computeSceneAxisLockPxOffsets(
-      session.activeSceneId,
-      pointerYRef.current + scrollDelta,
-      session.orderedSiblings,
-      session.siblingRects,
-      8,
-    );
-    setAxisLockOffsets((prev) => {
-      if (prev.size !== next.size) return next;
-      for (const [id, off] of next) {
-        if (prev.get(id) !== off) return next;
-      }
-      return prev;
+      if (session.mode !== "axis-locked") return;
+      const scrollDelta = session.scrollEl
+        ? session.scrollEl.scrollTop - session.initialScrollTop
+        : 0;
+      const next = computeSceneAxisLockPxOffsets(
+        session.activeSceneId,
+        pointerYRef.current + scrollDelta,
+        session.orderedSiblings,
+        session.siblingRects,
+        8,
+      );
+      setAxisLockOffsets((prev) => {
+        if (prev.size !== next.size) return next;
+        for (const [id, off] of next) {
+          if (prev.get(id) !== off) return next;
+        }
+        return prev;
+      });
     });
   };
 
   // Recompute column-axis-lock shifts from current pointer + horizontal scroll.
   const recomputeColumnAxisLock = useRef<() => void>(() => {});
   recomputeColumnAxisLock.current = () => {
-    const session = columnAxisLockSessionRef.current;
-    if (!session) return;
-    // Off-axis (Y) delta triggers the escape to free mode for column drags.
-    // resolveSceneDragMode is axis-agnostic: it just compares |delta| to
-    // threshold; we feed it deltaY here instead of deltaX.
-    const deltaY = pointerYRef.current - session.startY;
-    const nextMode = resolveSceneDragMode(
-      session.mode,
-      deltaY,
-      COLUMN_AXIS_LOCK_THRESHOLD_PX,
-    );
-    if (nextMode !== session.mode) {
-      session.mode = nextMode;
-      if (nextMode === "free") {
-        detachColumnAxisLockScrollListener();
-        setColumnAxisLockActive(false);
-        setColumnAxisLockOffsets((prev) =>
-          prev.size === 0 ? prev : new Map(),
-        );
-        return;
+    gperfMark("recomputeColumnAxisLock", () => {
+      const session = columnAxisLockSessionRef.current;
+      if (!session) return;
+      // Off-axis (Y) delta triggers the escape to free mode for column drags.
+      // resolveSceneDragMode is axis-agnostic: it just compares |delta| to
+      // threshold; we feed it deltaY here instead of deltaX.
+      const deltaY = pointerYRef.current - session.startY;
+      const nextMode = resolveSceneDragMode(
+        session.mode,
+        deltaY,
+        COLUMN_AXIS_LOCK_THRESHOLD_PX,
+      );
+      if (nextMode !== session.mode) {
+        session.mode = nextMode;
+        if (nextMode === "free") {
+          detachColumnAxisLockScrollListener();
+          setColumnAxisLockActive(false);
+          setColumnAxisLockOffsets((prev) =>
+            prev.size === 0 ? prev : new Map(),
+          );
+          return;
+        }
       }
-    }
-    if (session.mode !== "axis-locked") return;
-    const scrollDelta = session.scrollEl
-      ? session.scrollEl.scrollLeft - session.initialScrollLeft
-      : 0;
-    // gap-3 = 12px between columns in the orderedColumns flex row.
-    const next = computeColumnAxisLockPxOffsets(
-      session.activeFolderId,
-      pointerXRef.current + scrollDelta,
-      session.orderedSiblings,
-      session.siblingRects,
-      12,
-    );
-    setColumnAxisLockOffsets((prev) => {
-      if (prev.size !== next.size) return next;
-      for (const [id, off] of next) {
-        if (prev.get(id) !== off) return next;
-      }
-      return prev;
+      if (session.mode !== "axis-locked") return;
+      const scrollDelta = session.scrollEl
+        ? session.scrollEl.scrollLeft - session.initialScrollLeft
+        : 0;
+      // gap-3 = 12px between columns in the orderedColumns flex row.
+      const next = computeColumnAxisLockPxOffsets(
+        session.activeFolderId,
+        pointerXRef.current + scrollDelta,
+        session.orderedSiblings,
+        session.siblingRects,
+        12,
+      );
+      setColumnAxisLockOffsets((prev) => {
+        if (prev.size !== next.size) return next;
+        for (const [id, off] of next) {
+          if (prev.get(id) !== off) return next;
+        }
+        return prev;
+      });
     });
   };
 
@@ -553,6 +563,13 @@ export function GridPanel() {
   );
 
   function handleDragStart(e: DragStartEvent) {
+    // Open a perf session so DragOver / recomputeAxisLock / DragEnd can
+    // accumulate per-label timings. Flushed at DragEnd / DragCancel.
+    gperfStart();
+    gperfMark("DragStart", () => handleDragStartInner(e));
+  }
+
+  function handleDragStartInner(e: DragStartEvent) {
     const id = String(e.active.id);
     const kind = activeDragKind(id);
     glog("DragStart", "active", {
@@ -709,128 +726,159 @@ export function GridPanel() {
     const overId = e.over ? String(e.over.id) : "";
 
     if (kind === "scene") {
-      const sceneId = activeIdStr.replace(/^scene-/, "");
-      // In axis-locked mode, suppress the normal drop bar — sibling
-      // slot-shifts are the only feedback.
-      if (axisLockSessionRef.current?.mode === "axis-locked") {
-        setDropIndicator(null);
-        setColumnDropIndicator(null);
-        return;
-      }
-      const rect = e.over?.rect ?? { top: 0, height: 60 };
-      const indicator = computeSceneDropIndicator(
-        sceneId,
-        overId,
-        pointerYRef.current,
-        { top: rect.top, height: rect.height },
+      gperfMark("DragOver.scene", () =>
+        handleDragOverScene(e, activeIdStr, overId),
       );
-      const key = `scene|${overId}|${indicator?.targetId ?? ""}|${indicator?.position ?? ""}`;
-      if (key !== lastDragOverKeyRef.current) {
-        lastDragOverKeyRef.current = key;
-        glog("DragOver(scene)", "state change", {
-          activeId: activeIdStr,
-          overId,
-          pointer: { x: pointerXRef.current, y: pointerYRef.current },
-          rect,
-          indicator,
-        });
-      }
-      setDropIndicator(indicator);
-      setColumnDropIndicator(null);
       return;
     }
-
     if (kind === "column") {
-      // In axis-locked column drag, suppress the normal column indicator —
-      // sibling column slot-shifts are the only feedback.
-      if (columnAxisLockSessionRef.current?.mode === "axis-locked") {
-        setDropIndicator(null);
-        setColumnDropIndicator(null);
-        return;
-      }
-      const folderId = activeIdStr.replace(/^column-/, "");
-      const activeNode = nodes.find((n) => n.id === folderId);
-      const activeParent = activeNode?.parentId ?? null;
-
-      if (overId.startsWith("scene-drop-")) {
-        const sceneId = overId.slice("scene-drop-".length);
-        const sceneNode = nodes.find((n) => n.id === sceneId);
-        if (sceneNode && sceneNode.parentId === activeParent) {
-          const rect = e.over?.rect ?? { top: 0, height: 60 };
-          const midY = rect.top + rect.height / 2;
-          const position: "before" | "after" =
-            pointerYRef.current <= midY ? "before" : "after";
-          const key = `col-as-scene|${overId}|${sceneId}|${position}`;
-          if (key !== lastDragOverKeyRef.current) {
-            lastDragOverKeyRef.current = key;
-            glog("DragOver(column)", "sibling-scene path", {
-              activeFolderId: folderId,
-              targetSceneId: sceneId,
-              activeParent,
-              position,
-            });
-          }
-          setDropIndicator({ targetId: sceneId, position });
-          setColumnDropIndicator(null);
-          return;
-        }
-      }
-
-      const folderParentMap: Record<string, string | null> = {};
-      const orderedSiblings: Array<{ id: string; parentId: string | null }> =
-        [];
-      const sceneParentMap: Record<string, string | null> = {};
-      const sortedNodes = [...nodes].sort((a, b) =>
-        cmpKeys(a.sortOrder, b.sortOrder),
+      gperfMark("DragOver.column", () =>
+        handleDragOverColumn(e, activeIdStr, overId),
       );
-      for (const n of sortedNodes) {
-        if (n.nodeType === "folder") {
-          folderParentMap[n.id] = n.parentId;
-        }
-        if (n.nodeType === "scene") sceneParentMap[n.id] = n.parentId;
-        if (n.nodeType === "folder" || n.nodeType === "scene") {
-          orderedSiblings.push({ id: n.id, parentId: n.parentId });
-        }
-      }
-      const rect = e.over?.rect ?? {
-        left: 0,
-        width: 200,
-        top: 0,
-        height: 0,
-      };
-      const indicator = computeColumnDropIndicator(
-        folderId,
-        overId,
-        pointerXRef.current,
-        pointerYRef.current,
-        {
-          left: rect.left,
-          width: rect.width,
-          top: rect.top,
-          height: rect.height,
-        },
-        sceneParentMap,
-        folderParentMap,
-        orderedSiblings,
-        containerId,
-      );
-      const key = `col|${overId}|${indicator?.targetId ?? ""}|${indicator?.position ?? ""}`;
-      if (key !== lastDragOverKeyRef.current) {
-        lastDragOverKeyRef.current = key;
-        glog("DragOver(column)", "state change", {
-          activeFolderId: folderId,
-          overId,
-          pointer: { x: pointerXRef.current, y: pointerYRef.current },
-          rect,
-          indicator,
-        });
-      }
-      setColumnDropIndicator(indicator);
-      setDropIndicator(null);
     }
   }
 
+  function handleDragOverScene(
+    e: DragOverEvent,
+    activeIdStr: string,
+    overId: string,
+  ) {
+    const sceneId = activeIdStr.replace(/^scene-/, "");
+    // In axis-locked mode, suppress the normal drop bar — sibling
+    // slot-shifts are the only feedback.
+    if (axisLockSessionRef.current?.mode === "axis-locked") {
+      setDropIndicator(null);
+      setColumnDropIndicator(null);
+      return;
+    }
+    const rect = e.over?.rect ?? { top: 0, height: 60 };
+    const indicator = computeSceneDropIndicator(
+      sceneId,
+      overId,
+      pointerYRef.current,
+      { top: rect.top, height: rect.height },
+    );
+    const key = `scene|${overId}|${indicator?.targetId ?? ""}|${indicator?.position ?? ""}`;
+    if (key !== lastDragOverKeyRef.current) {
+      lastDragOverKeyRef.current = key;
+      glog("DragOver(scene)", "state change", {
+        activeId: activeIdStr,
+        overId,
+        pointer: { x: pointerXRef.current, y: pointerYRef.current },
+        rect,
+        indicator,
+      });
+    }
+    setDropIndicator(indicator);
+    setColumnDropIndicator(null);
+  }
+
+  function handleDragOverColumn(
+    e: DragOverEvent,
+    activeIdStr: string,
+    overId: string,
+  ) {
+    // In axis-locked column drag, suppress the normal column indicator —
+    // sibling column slot-shifts are the only feedback.
+    if (columnAxisLockSessionRef.current?.mode === "axis-locked") {
+      setDropIndicator(null);
+      setColumnDropIndicator(null);
+      return;
+    }
+    const folderId = activeIdStr.replace(/^column-/, "");
+    const activeNode = nodes.find((n) => n.id === folderId);
+    const activeParent = activeNode?.parentId ?? null;
+
+    if (overId.startsWith("scene-drop-")) {
+      const sceneId = overId.slice("scene-drop-".length);
+      const sceneNode = nodes.find((n) => n.id === sceneId);
+      if (sceneNode && sceneNode.parentId === activeParent) {
+        const rect = e.over?.rect ?? { top: 0, height: 60 };
+        const midY = rect.top + rect.height / 2;
+        const position: "before" | "after" =
+          pointerYRef.current <= midY ? "before" : "after";
+        const key = `col-as-scene|${overId}|${sceneId}|${position}`;
+        if (key !== lastDragOverKeyRef.current) {
+          lastDragOverKeyRef.current = key;
+          glog("DragOver(column)", "sibling-scene path", {
+            activeFolderId: folderId,
+            targetSceneId: sceneId,
+            activeParent,
+            position,
+          });
+        }
+        setDropIndicator({ targetId: sceneId, position });
+        setColumnDropIndicator(null);
+        return;
+      }
+    }
+
+    const folderParentMap: Record<string, string | null> = {};
+    const orderedSiblings: Array<{ id: string; parentId: string | null }> = [];
+    const sceneParentMap: Record<string, string | null> = {};
+    const sortedNodes = [...nodes].sort((a, b) =>
+      cmpKeys(a.sortOrder, b.sortOrder),
+    );
+    for (const n of sortedNodes) {
+      if (n.nodeType === "folder") {
+        folderParentMap[n.id] = n.parentId;
+      }
+      if (n.nodeType === "scene") sceneParentMap[n.id] = n.parentId;
+      if (n.nodeType === "folder" || n.nodeType === "scene") {
+        orderedSiblings.push({ id: n.id, parentId: n.parentId });
+      }
+    }
+    const rect = e.over?.rect ?? {
+      left: 0,
+      width: 200,
+      top: 0,
+      height: 0,
+    };
+    const indicator = computeColumnDropIndicator(
+      folderId,
+      overId,
+      pointerXRef.current,
+      pointerYRef.current,
+      {
+        left: rect.left,
+        width: rect.width,
+        top: rect.top,
+        height: rect.height,
+      },
+      sceneParentMap,
+      folderParentMap,
+      orderedSiblings,
+      containerId,
+    );
+    const key = `col|${overId}|${indicator?.targetId ?? ""}|${indicator?.position ?? ""}`;
+    if (key !== lastDragOverKeyRef.current) {
+      lastDragOverKeyRef.current = key;
+      glog("DragOver(column)", "state change", {
+        activeFolderId: folderId,
+        overId,
+        pointer: { x: pointerXRef.current, y: pointerYRef.current },
+        rect,
+        indicator,
+      });
+    }
+    setColumnDropIndicator(indicator);
+    setDropIndicator(null);
+  }
+
   function handleDragEnd(e: DragEndEvent) {
+    gperfMark("DragEnd", () => handleDragEndInner(e));
+    // Flush the per-session perf summary at gesture end. The async commits
+    // (moveNode / moveScenesToChapter) log their own resolution time inline
+    // via gperfMarkAsync below — their resolution typically happens after
+    // this flush, so they're not part of the summary.
+    gperfFlush({
+      activeId: String(e.active.id),
+      overId: e.over ? String(e.over.id) : "",
+      nodeCount: nodes.length,
+    });
+  }
+
+  function handleDragEndInner(e: DragEndEvent) {
     setActiveId(null);
     setDropIndicator(null);
     setColumnDropIndicator(null);
@@ -880,7 +928,10 @@ export function GridPanel() {
           targetParentId: target.targetParentId,
           afterId: target.afterId,
         });
-        void moveNode(folderId, target.targetParentId, target.afterId);
+        void gperfMarkAsync(
+          "moveNode(column, axis-lock)",
+          moveNode(folderId, target.targetParentId, target.afterId),
+        );
       } else {
         glog("DragEnd(column)", "axis-lock no-op");
       }
@@ -911,14 +962,20 @@ export function GridPanel() {
             targetParentId: target.targetParentId,
             afterId: target.afterId,
           });
-          void moveScenesToChapter(orderedSelected, target.targetParentId);
+          void gperfMarkAsync(
+            "moveScenesToChapter(axis-lock multi-select)",
+            moveScenesToChapter(orderedSelected, target.targetParentId),
+          );
         } else {
           glog("DragEnd(scene)", "axis-lock single", {
             sceneId,
             targetParentId: target.targetParentId,
             afterId: target.afterId,
           });
-          void moveNode(sceneId, target.targetParentId, target.afterId);
+          void gperfMarkAsync(
+            "moveNode(scene, axis-lock)",
+            moveNode(sceneId, target.targetParentId, target.afterId),
+          );
         }
       } else {
         glog("DragEnd(scene)", "axis-lock no-op");
@@ -962,14 +1019,20 @@ export function GridPanel() {
             sceneIds: orderedSelected,
             targetParentId: target.targetParentId,
           });
-          void moveScenesToChapter(orderedSelected, target.targetParentId);
+          void gperfMarkAsync(
+            "moveScenesToChapter(free multi-select)",
+            moveScenesToChapter(orderedSelected, target.targetParentId),
+          );
         } else {
           glog("DragEnd(scene)", "moveNode (single)", {
             sceneId,
             targetParentId: target.targetParentId,
             afterId: target.afterId,
           });
-          void moveNode(sceneId, target.targetParentId, target.afterId);
+          void gperfMarkAsync(
+            "moveNode(scene, free)",
+            moveNode(sceneId, target.targetParentId, target.afterId),
+          );
         }
       } else {
         glog("DragEnd(scene)", "no target → no-op");
@@ -1005,7 +1068,10 @@ export function GridPanel() {
             afterId,
             viaSceneId: sceneId,
           });
-          void moveNode(folderId, activeParent, afterId);
+          void gperfMarkAsync(
+            "moveNode(column, sibling-scene)",
+            moveNode(folderId, activeParent, afterId),
+          );
           return;
         }
       }
@@ -1054,7 +1120,10 @@ export function GridPanel() {
           targetParentId: target.targetParentId,
           afterId: target.afterId,
         });
-        void moveNode(folderId, target.targetParentId, target.afterId);
+        void gperfMarkAsync(
+          "moveNode(column, free)",
+          moveNode(folderId, target.targetParentId, target.afterId),
+        );
       } else {
         glog("DragEnd(column)", "no target → no-op");
       }
@@ -1073,6 +1142,8 @@ export function GridPanel() {
     detachColumnAxisLockScrollListener();
     setColumnAxisLockActive(false);
     setColumnAxisLockOffsets((prev) => (prev.size === 0 ? prev : new Map()));
+    // Flush so a cancelled gesture's accumulator doesn't leak into the next.
+    gperfFlush({ reason: "cancel" });
   }
 
   const activeDragNode: TreeNodeData | null = activeId
