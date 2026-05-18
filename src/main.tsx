@@ -6,6 +6,7 @@ import { debugLog, errorDetail } from "./lib/debugLog";
 import "./lib/i18n";
 import "./lib/perfLog";
 import "./index.css";
+import { ensureTokenizer } from "./features/chat/contextBuilder";
 
 window.addEventListener("unhandledrejection", (event) => {
   debugLog.error("Global", "unhandled rejection", errorDetail(event.reason));
@@ -32,3 +33,15 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </ErrorBoundary>
   </React.StrictMode>,
 );
+
+// Warm up tiktoken WASM during idle so the first chat-flow `await
+// ensureTokenizer()` returns immediately instead of paying ~30ms init cost
+// on the click critical path.
+const __idle =
+  (window as Window & { requestIdleCallback?: typeof requestIdleCallback })
+    .requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 0));
+__idle(() => {
+  void ensureTokenizer().catch(() => {
+    // Failures are already logged by ensureTokenizer itself.
+  });
+});

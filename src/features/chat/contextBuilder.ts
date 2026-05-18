@@ -13,6 +13,7 @@ import {
   JA_TYPE_LABELS,
 } from "@/prompts/ja/chatSystem";
 import { getPromptCatalog } from "@/prompts/index";
+import { recordMark } from "@/lib/perfLog";
 
 export interface SceneContext {
   id: string;
@@ -276,9 +277,17 @@ let encoderLoadingPromise: Promise<Tiktoken | null> | null = null;
 let _heuristicWarned = false;
 
 export async function ensureTokenizer(): Promise<void> {
-  if (encoder) return;
+  const __t0 = performance.now();
+  if (encoder) {
+    // Cached fast path. Records the cost of the async-call microtask hop
+    // so we can distinguish "tokenizer init is slow" from "main thread is
+    // backed up and the microtask is just queued behind sync work".
+    recordMark("ensureTokenizer.cached", performance.now() - __t0, __t0);
+    return;
+  }
   if (!encoderLoadingPromise) {
     encoderLoadingPromise = (async () => {
+      const __initStart = performance.now();
       try {
         const [liteInit, o200k, wasmUrl] = await Promise.all([
           import("tiktoken/lite/init"),
@@ -293,6 +302,11 @@ export async function ensureTokenizer(): Promise<void> {
           o200k.default.special_tokens,
           o200k.default.pat_str,
         );
+        recordMark(
+          "ensureTokenizer.wasmInit",
+          performance.now() - __initStart,
+          __initStart,
+        );
         return encoder;
       } catch (e) {
         // テスト環境 (happy-dom) や WASM サポート無し環境では heuristic にフォールバック。
@@ -301,11 +315,17 @@ export async function ensureTokenizer(): Promise<void> {
           "[contextBuilder] tiktoken WASM init failed, falling back to heuristic",
           e,
         );
+        recordMark(
+          "ensureTokenizer.wasmInitFailed",
+          performance.now() - __initStart,
+          __initStart,
+        );
         return null;
       }
     })();
   }
   await encoderLoadingPromise;
+  recordMark("ensureTokenizer.awaitDone", performance.now() - __t0, __t0);
 }
 
 // Cache token counts to avoid redundant BPE encoding on the same text.
