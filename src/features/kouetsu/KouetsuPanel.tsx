@@ -1,9 +1,11 @@
+import { useLayoutEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useKouetsuStore, type KouetsuTab } from "./kouetsuStore";
 import { IssuesTab } from "./IssuesTab";
 import { EditorialTab } from "./EditorialTab";
 import { CommentsTab } from "./CommentsTab";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 const TABS: { id: KouetsuTab; labelKey: string }[] = [
   { id: "issues", labelKey: "kouetsu.tab.issues" },
@@ -12,6 +14,10 @@ const TABS: { id: KouetsuTab; labelKey: string }[] = [
 ];
 
 export function KouetsuPanel() {
+  markStart("kouetsuPanel.render");
+  useLayoutEffect(() => {
+    markEnd("kouetsuPanel.render");
+  });
   const { t } = useTranslation();
   const { activeTab, setActiveTab } = useKouetsuStore();
 

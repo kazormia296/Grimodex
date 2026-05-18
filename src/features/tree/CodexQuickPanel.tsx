@@ -1,3 +1,4 @@
+import { useLayoutEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { CodexQuickSection } from "./CodexQuickSection";
 import {
@@ -5,12 +6,17 @@ import {
   type CodexSortOrder,
 } from "@/features/codex/codexStore";
 import { CODEX_SORT_OPTIONS } from "@/features/codex/codexSort";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 /**
  * CodexQuickPanel — standalone dockview panel for Codex Quick.
  * Displays auto-detected and pinned Codex entries for the active scene.
  */
 export function CodexQuickPanel() {
+  markStart("codexQuickPanel.render");
+  useLayoutEffect(() => {
+    markEnd("codexQuickPanel.render");
+  });
   const { t } = useTranslation();
   const sortOrder = useCodexStore((s) => s.sortOrder);
   const setSort = useCodexStore((s) => s.setSort);

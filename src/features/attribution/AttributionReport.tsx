@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from "react";
+import { useMemo, useCallback, useLayoutEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Download } from "lucide-react";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -13,6 +13,7 @@ import {
   downloadTextFile,
 } from "./exportReport";
 import type { FilterSource } from "./attributionStore";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 const UNKNOWN_MODEL_KEY = "__unknown_model__";
 
@@ -63,6 +64,10 @@ function StatBar({
 }
 
 export function AttributionReport() {
+  markStart("attributionReport.render");
+  useLayoutEffect(() => {
+    markEnd("attributionReport.render");
+  });
   const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
   const scope = useAttributionStore((s) => s.scope);

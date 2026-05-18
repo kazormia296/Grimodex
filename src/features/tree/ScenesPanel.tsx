@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+} from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { GripVertical } from "lucide-react";
@@ -27,11 +34,16 @@ import { ScenesFilterBar } from "./ScenesFilterBar";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 const DEFAULT_PROJECT_ID = "default-project";
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
 export function ScenesPanel() {
+  markStart("scenesPanel.render");
+  useLayoutEffect(() => {
+    markEnd("scenesPanel.render");
+  });
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);

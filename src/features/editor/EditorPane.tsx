@@ -1,4 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useCallback,
+} from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Clock, BookOpen, Files } from "lucide-react";
@@ -193,6 +199,10 @@ export function EditorPane({
   onFocus,
   phaseIdOverride,
 }: EditorPaneProps) {
+  markStart("editorPane.render");
+  useLayoutEffect(() => {
+    markEnd("editorPane.render");
+  });
   const { t } = useTranslation();
   const isCodexMode = contentType === "codex";
   const isSnippetMode = contentType === "snippet";

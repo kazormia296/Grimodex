@@ -1,4 +1,10 @@
-import { useCallback, useMemo, useEffect, useRef } from "react";
+import {
+  useCallback,
+  useMemo,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import { generateKeyBetween } from "fractional-indexing";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
@@ -12,8 +18,13 @@ import { TimelineHeader } from "./TimelineHeader";
 import { TimelineViewport, PAD_LEFT, PAD_RIGHT } from "./TimelineViewport";
 import { TimelineInspector } from "./TimelineInspector";
 import type { PhasePinData } from "./TimelineViewport";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 export function TimelinePanel() {
+  markStart("timelinePanel.render");
+  useLayoutEffect(() => {
+    markEnd("timelinePanel.render");
+  });
   const nodes = useTreeStore((s) => s.nodes);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateStoryTime = useTreeStore((s) => s.updateStoryTime);

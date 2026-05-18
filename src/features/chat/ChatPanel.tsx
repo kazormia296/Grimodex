@@ -1,4 +1,11 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useMemo,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "motion/react";
 import { useReducedMotion } from "@/lib/animation";
@@ -51,6 +58,10 @@ interface ContextMenuState {
 }
 
 export function ChatPanel() {
+  markStart("chatPanel.render");
+  useLayoutEffect(() => {
+    markEnd("chatPanel.render");
+  });
   const { t } = useTranslation();
   const reduced = useReducedMotion();
   const chatCapability = useAiCapability("chat");
