@@ -578,6 +578,27 @@ i18n 辞書を作る際は、テンプレートの段階名・紹介文・Apply 
 
 `GridFolderCard` 自身も nest droppable（`column-nest-{folderId}`）として登録され、フォルダカード単体への drop でその直下に append される。
 
+### Axis-lock 並び替え（実装済み, Phase 4 後続）
+
+「ドラッグ開始位置から X 軸方向に閾値以内（120px）」を保っている間は **同 parent の siblings 内での並び替えに限定**されるモード（`axisLockSessionRef.current.mode === "axis-locked"`）。drop indicator を抑止し、siblings の slot-swap アニメーション（カードが上下にスライドして空席を埋める）のみで feedback を返す。閾値を超えた瞬間 `mode = "free"` に移行し、以降そのジェスチャ内では axis-lock に戻らない（ヒステリシス — 揺り戻しで feedback がチラつくのを防ぐ）。
+
+**Siblings の範囲（重要）**:
+
+- axis-lock の siblings は active scene と **同じ `parentId` を持つ scene と folder カード両方**を含む（`gridSelectors.flattenSubtree` の rendered 順と一致）。folder カードを除外すると、間に folder を挟んだ並び替えで「folder が動かないまま scene が folder に重なって見える」表示崩れになる（フォルダ自身は data 上の sortOrder が変わらなくても、active scene の sortOrder 変化により描画スロットは詰まる必要があるため）
+- folder カードは active scene が通過した時点で **`activeSlot` 分だけ上下にスライド**する（`GridFolderCard` が `axisLockOffsetPx` prop を受けて translateY）。scene カードと同じ transition / reducedMotion ガード
+- siblings の DOM 取得は `data-grid-scene-id` と `data-grid-folder-id` の両方を query。`GridFolderCard` のルートにも `data-grid-folder-id` を付与（GridColumn ルートの同名属性とは folder.id で一意に区別される）
+
+**フォルダ内への侵入は禁止**:
+
+- axis-lock 中の active scene は **常に元の parent（depth）に留まる**。folder 内部（depth+1）のシーンとは順序入れ替えしない
+- 理由: depth indent が変わるカードと slot-swap すると視覚が破綻する／axis-lock は「同 parent の最小摩擦並び替え」の責務に限定するべき
+- folder への入れ込みが意図ある場合は、X 軸閾値を越えて free モードに移行してから folder カードへ drop（`column-nest` zone）する。axis-lock とは別ジェスチャ
+- 実装上は `computeSceneAxisLockTarget` / `computeSceneAxisLockShifts` / `computeSceneAxisLockPxOffsets` が `siblingsAll = orderedScenes.filter((s) => s.parentId === parentId)` でフィルタするため、深い depth のシーンは自然に除外される
+
+**Drop コミット**:
+
+- DragEnd で `computeSceneAxisLockTarget` が返す `afterId` は scene でも folder でも良い（`moveNode` 側は `siblings.findIndex((n) => n.id === afterId)` で nodeType を問わず lookup、`generateKeyBetween` で sortOrder を確定）
+
 ### 複数選択と一括操作
 
 - **シングル選択**: 単純クリックでそのシーンのみ選択（`selectOnly`）

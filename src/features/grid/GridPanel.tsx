@@ -573,13 +573,26 @@ export function GridPanel() {
       const sceneNode = nodes.find((n) => n.id === sceneId);
       if (!sceneNode) return;
       const parentId = sceneNode.parentId;
+      // Axis-lock siblings include BOTH scenes and folder cards at the active
+      // scene's parent depth — both kinds occupy a slot in the rendered list
+      // (see gridSelectors.flattenSubtree). Filtering folders out caused the
+      // axis-lock visual to ignore the vertical space the folder card occupies,
+      // leaving cards visually misaligned vs the post-drop sort order.
       const siblings = nodes
-        .filter((n) => n.parentId === parentId && n.nodeType === "scene")
+        .filter(
+          (n) =>
+            n.parentId === parentId &&
+            (n.nodeType === "scene" || n.nodeType === "folder"),
+        )
         .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
       if (siblings.length <= 1) return;
       const siblingRects: Record<string, { top: number; bottom: number }> = {};
       for (const sib of siblings) {
-        const el = document.querySelector(`[data-grid-scene-id="${sib.id}"]`);
+        const attr =
+          sib.nodeType === "folder"
+            ? "data-grid-folder-id"
+            : "data-grid-scene-id";
+        const el = document.querySelector(`[${attr}="${sib.id}"]`);
         if (!(el instanceof HTMLElement)) continue;
         const r = el.getBoundingClientRect();
         siblingRects[sib.id] = { top: r.top, bottom: r.bottom };

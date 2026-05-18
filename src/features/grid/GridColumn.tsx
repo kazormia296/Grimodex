@@ -293,6 +293,7 @@ export function GridColumn({
                           folder={node}
                           compact={display.compactCards}
                           columnDropIndicator={columnDropIndicator}
+                          axisLockOffsetPx={axisLockOffsets?.get(node.id)}
                         />
                       </div>
                     );

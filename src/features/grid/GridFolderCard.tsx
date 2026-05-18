@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { columnDraggableId, columnNestId } from "./gridDndUtils";
 import type { ColumnDropIndicator } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { GridFolderCardContextMenu } from "./GridFolderCardContextMenu";
 import { GridFolderMenu } from "./GridFolderMenu";
@@ -20,6 +21,11 @@ interface Props {
    *  Drives the 3-zone Y-axis insertion highlights (top/middle/bottom) when
    *  this card is the active drop target. */
   columnDropIndicator?: ColumnDropIndicator | null;
+  /** Axis-locked scene drag: signed translateY pixels. Folder cards sit
+   *  between scenes in the rendered list — when an axis-locked scene drag
+   *  passes this folder, the folder must shift too so the visual matches the
+   *  post-drop sort order. Same units / transition as GridSceneCard. */
+  axisLockOffsetPx?: number;
 }
 
 export function GridFolderCard({
@@ -27,8 +33,10 @@ export function GridFolderCard({
   compact,
   isDragOverlay,
   columnDropIndicator,
+  axisLockOffsetPx,
 }: Props) {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
   const nodes = useTreeStore((s) => s.nodes);
   const projectId = useTreeStore((s) => s.projectId);
   const setContainerId = useGridStore((s) => s.setContainerId);
@@ -120,6 +128,12 @@ export function GridFolderCard({
     toggleFolderCollapsed(folder.id);
   }
 
+  const axisLockOffset = axisLockOffsetPx ?? 0;
+  const [e0, e1, e2, e3] = EASINGS.easeOut;
+  const axisLockTransition = reducedMotion
+    ? "none"
+    : `transform ${DURATIONS.fast}s cubic-bezier(${e0}, ${e1}, ${e2}, ${e3})`;
+
   return (
     <GridFolderCardContextMenu
       folderId={folder.id}
@@ -133,6 +147,7 @@ export function GridFolderCard({
           setNestRef(node);
           setDragRef(node);
         }}
+        data-grid-folder-id={folder.id}
         className={cn(
           "group relative flex flex-col rounded-md border-2 border-dashed border-border/60 bg-muted/30",
           "hover:border-primary/50 hover:bg-accent/40 transition-colors",
@@ -145,7 +160,15 @@ export function GridFolderCard({
           isDropInside && "border-primary bg-primary/10 ring-2 ring-primary",
           isDragging && "opacity-40",
         )}
-        style={{ transition: "opacity 120ms ease-out" }}
+        style={{
+          transform: axisLockOffset
+            ? `translateY(${axisLockOffset}px)`
+            : undefined,
+          transition: axisLockOffset
+            ? `${axisLockTransition}, opacity 120ms ease-out`
+            : "opacity 120ms ease-out",
+          willChange: axisLockOffset ? "transform" : undefined,
+        }}
       >
         {isDropBefore && (
           <div

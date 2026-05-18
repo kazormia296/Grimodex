@@ -1248,6 +1248,81 @@ describe("computeSceneAxisLockPxOffsets", () => {
   });
 });
 
+describe("computeSceneAxisLockPxOffsets — folder-mixed siblings", () => {
+  // Regression: axis-lock used to filter siblings to nodeType=scene only, which
+  // ignored the vertical space a sibling folder card occupies. When dragging a
+  // scene past an interleaved folder, the folder must shift too so the visual
+  // matches the post-drop sort order. `orderedScenes` here is the misnomer —
+  // the function treats it as "ordered siblings of the active node's parent"
+  // regardless of node type.
+  //
+  // Layout (all parentId="ch1"):
+  //   sceneA: 0..60     (h=60)  ← active
+  //   folderF: 68..148  (h=80)
+  //   sceneB: 156..236  (h=80)
+  const orderedSiblings = [
+    { id: "sceneA", parentId: "ch1" },
+    { id: "folderF", parentId: "ch1" },
+    { id: "sceneB", parentId: "ch1" },
+  ];
+  const rects = {
+    sceneA: { top: 0, bottom: 60 },
+    folderF: { top: 68, bottom: 148 },
+    sceneB: { top: 156, bottom: 236 },
+  };
+  const gap = 8;
+  const activeSlot = 60 + gap; // sceneA's slot
+
+  it("shifts folder card up when active scene passes it downward", () => {
+    // pointer past folderF mid (108) but not yet past sceneB mid (196)
+    const m = computeSceneAxisLockPxOffsets(
+      "sceneA",
+      120,
+      orderedSiblings,
+      rects,
+      gap,
+    );
+    expect(m.get("folderF")).toBe(-activeSlot);
+    expect(m.has("sceneB")).toBe(false);
+    // active moves down by folderF's slot (80 + 8)
+    expect(m.get("sceneA")).toBe(80 + gap);
+  });
+
+  it("active offset accumulates folder + scene slots when passing both", () => {
+    // pointer past both folderF mid (108) and sceneB mid (196)
+    const m = computeSceneAxisLockPxOffsets(
+      "sceneA",
+      210,
+      orderedSiblings,
+      rects,
+      gap,
+    );
+    expect(m.get("folderF")).toBe(-activeSlot);
+    expect(m.get("sceneB")).toBe(-activeSlot);
+    // active moves down by folderF's slot + sceneB's slot
+    expect(m.get("sceneA")).toBe(80 + gap + 80 + gap);
+  });
+
+  it("excludes descendants of an open folder from siblings (different parentId)", () => {
+    // sceneInside is a child of folderF, NOT a sibling of sceneA. Even if it
+    // appears in the rendered list (folderF expanded), it must not participate
+    // in axis-lock against sceneA — the caller is responsible for passing only
+    // same-parent items, and computeSceneAxisLockPxOffsets relies on that.
+    const orderedWithDescendant = [
+      ...orderedSiblings,
+      { id: "sceneInside", parentId: "folderF" },
+    ];
+    const m = computeSceneAxisLockPxOffsets(
+      "sceneA",
+      120,
+      orderedWithDescendant,
+      { ...rects, sceneInside: { top: 100, bottom: 130 } },
+      gap,
+    );
+    expect(m.has("sceneInside")).toBe(false);
+  });
+});
+
 describe("computeColumnAxisLockTarget", () => {
   // Three folder columns in containerId=root, laid out horizontally.
   // Card width 200, gap 20 → lefts at 0, 220, 440.
