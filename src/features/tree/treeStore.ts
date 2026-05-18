@@ -1215,15 +1215,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       return { nodes: updated, scenes: computeScenes(updated) };
     });
     usePhaseStore.getState().recomputeSceneOrder(get().nodes);
-    // NOTE: pass `newParentId` directly — `?? undefined` would coerce null to
-    // undefined, and Drizzle omits undefined keys from the SET clause, so the
-    // parent_id column would never be cleared. That made "move to root" silently
-    // skip the DB write while still applying the optimistic in-memory update.
-    await api.updateNode(id, {
-      parentId: newParentId,
-      sortOrder,
-    });
 
+    // Register Undo immediately, BEFORE the DB await. The in-memory state is
+    // already updated; making Undo wait on the DB round-trip means a freshly-
+    // dropped card cannot be undone for 100s of ms (visible UX glitch under
+    // slow disk). Both undo() and redo() do their own api.updateNode call, so
+    // ordering with the foreground write is fine.
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
@@ -1256,6 +1253,15 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         },
       });
     }
+
+    // NOTE: pass `newParentId` directly — `?? undefined` would coerce null to
+    // undefined, and Drizzle omits undefined keys from the SET clause, so the
+    // parent_id column would never be cleared. That made "move to root" silently
+    // skip the DB write while still applying the optimistic in-memory update.
+    await api.updateNode(id, {
+      parentId: newParentId,
+      sortOrder,
+    });
   },
 
   setCharCount(id, count) {

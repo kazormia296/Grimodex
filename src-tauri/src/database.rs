@@ -17,8 +17,14 @@ pub struct Database {
 impl Database {
     pub fn new(path: &Path) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
+        // synchronous=NORMAL is safe with WAL (committed txns survive crash;
+        // only the very last group commit can be lost on power loss). The
+        // SQLite default `FULL` issues an extra fsync per write — on WSL2 and
+        // some SSDs that adds 100s of ms per UPDATE, which dominated D&D
+        // commit latency in grid perf logs.
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
              PRAGMA foreign_keys=ON;",
         )?;
         Ok(Self {
