@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getSetting, setSetting } from "@/features/settings/api";
+import { markStart, markEnd } from "@/lib/perfLog";
 
 const TAB_STATE_KEY = "editor.tabState";
 const SAVE_DEBOUNCE_MS = 500;
@@ -270,31 +271,38 @@ export const useTabStore = create<TabState>()((set, get) => {
     // ---- Primary group ----
 
     openPreview(nodeId) {
-      const { tabs } = get();
-      const existing = tabs.find((t) => t.nodeId === nodeId);
+      markStart("tabStore.openPreview");
+      try {
+        const { tabs } = get();
+        const existing = tabs.find((t) => t.nodeId === nodeId);
 
-      if (existing) {
-        // Remove any stale preview tab for other nodes
-        const cleaned = tabs.filter((t) => !t.isPreview || t.nodeId === nodeId);
-        set({ tabs: cleaned, activeTabId: nodeId, activeGroupIndex: 0 });
-        return;
+        if (existing) {
+          // Remove any stale preview tab for other nodes
+          const cleaned = tabs.filter(
+            (t) => !t.isPreview || t.nodeId === nodeId,
+          );
+          set({ tabs: cleaned, activeTabId: nodeId, activeGroupIndex: 0 });
+          return;
+        }
+
+        const withoutPreview = tabs.filter((t) => !t.isPreview);
+        const hadPreview = withoutPreview.length < tabs.length;
+        set({
+          tabs: [
+            ...withoutPreview,
+            {
+              nodeId,
+              isPreview: true,
+              contentType: "scene",
+              animateIn: !hadPreview,
+            },
+          ],
+          activeTabId: nodeId,
+          activeGroupIndex: 0,
+        });
+      } finally {
+        markEnd("tabStore.openPreview");
       }
-
-      const withoutPreview = tabs.filter((t) => !t.isPreview);
-      const hadPreview = withoutPreview.length < tabs.length;
-      set({
-        tabs: [
-          ...withoutPreview,
-          {
-            nodeId,
-            isPreview: true,
-            contentType: "scene",
-            animateIn: !hadPreview,
-          },
-        ],
-        activeTabId: nodeId,
-        activeGroupIndex: 0,
-      });
     },
 
     openPinned(nodeId) {

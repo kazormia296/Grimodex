@@ -6,6 +6,7 @@ import type { TreeNode as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { markStart, markEnd } from "@/lib/perfLog";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureSceneDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
@@ -623,7 +624,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   setActiveScene(id) {
-    set({ activeSceneId: id });
+    markStart("treeStore.setActiveScene");
+    try {
+      set({ activeSceneId: id });
+    } finally {
+      markEnd("treeStore.setActiveScene");
+    }
   },
 
   // --- Multi-selection ---

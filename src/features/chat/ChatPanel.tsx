@@ -30,6 +30,7 @@ import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
+import { markStart, markEnd } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type { PinnedSnippetEntryWithData } from "./chatApi";
 
@@ -120,7 +121,12 @@ export function ChatPanel() {
 
   // ツリーのシーン変更を chatStore に伝播
   useEffect(() => {
-    setActiveSceneId(treeActiveSceneId);
+    markStart("chatPanel.mirrorEffect");
+    try {
+      setActiveSceneId(treeActiveSceneId);
+    } finally {
+      markEnd("chatPanel.mirrorEffect");
+    }
   }, [treeActiveSceneId, setActiveSceneId]);
 
   // スコープ切替 / シーン切替時にセッションを自動ロードし最新を選択 (P0-1)
@@ -135,13 +141,23 @@ export function ChatPanel() {
           ? (scopeAnchorId ?? undefined)
           : null;
     (async () => {
-      await loadSessions(effectiveNodeId);
+      markStart("chatPanel.loadSessions");
+      try {
+        await loadSessions(effectiveNodeId);
+      } finally {
+        markEnd("chatPanel.loadSessions");
+      }
       if (stale) return;
       const { sessions } = useChatStore.getState();
-      if (sessions.length > 0) {
-        await selectSession(sessions[0].id);
-      } else {
-        await selectSession(null);
+      markStart("chatPanel.selectSessionAfterLoad");
+      try {
+        if (sessions.length > 0) {
+          await selectSession(sessions[0].id);
+        } else {
+          await selectSession(null);
+        }
+      } finally {
+        markEnd("chatPanel.selectSessionAfterLoad");
       }
     })();
     return () => {

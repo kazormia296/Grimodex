@@ -1135,296 +1135,308 @@ export function EditorPane({
     let cancelled = false;
 
     async function switchScene() {
-      const prevId = prevSceneIdRef.current;
-      if (prevId && prevId !== nodeId) {
-        // Save current cursor/scroll state before leaving this scene
-        const ed = editorRef.current;
-        if (ed) {
-          const { from, to } = ed.view.state.selection;
-          savedEditorStateRef.current.set(prevId, {
-            from,
-            to,
-            scrollTop: editorContainerRef.current?.scrollTop ?? 0,
-          });
-        }
-        await flush();
-      } else if (prevId === nodeId) {
-        // Same node, phase override changed: flush unsaved changes before reloading
-        await flush();
-      }
-      cancel();
-      saveSceneIdRef.current = nodeId;
-      // Update *after* flush() above so the flush still routes scene A's
-      // pending edits to the scene backend, even though the prop has already
-      // flipped to the new tab's contentType.
-      saveContentTypeRef.current = contentType;
-
-      // Hold the external-update guard for the entire scene-switch sequence
-      // (setContent + authorship load + foreshadow load). Releasing it earlier
-      // lets a fast typist trigger autosave while marks are mid-load, which
-      // would persist a doc with no setup marks and orphan every setup row.
-      isApplyingExternalUpdate.current = true;
+      markStart("editor.switchScene");
       try {
-        if (isCodexMode) {
-          // Load codex entry content (ProseMirror JSON)
-          const entry = await getCodexEntry(nodeId);
-          if (cancelled) return;
+        const prevId = prevSceneIdRef.current;
+        if (prevId && prevId !== nodeId) {
+          // Save current cursor/scroll state before leaving this scene
+          const ed = editorRef.current;
+          if (ed) {
+            const { from, to } = ed.view.state.selection;
+            savedEditorStateRef.current.set(prevId, {
+              from,
+              to,
+              scrollTop: editorContainerRef.current?.scrollTop ?? 0,
+            });
+          }
+          await flush();
+        } else if (prevId === nodeId) {
+          // Same node, phase override changed: flush unsaved changes before reloading
+          await flush();
+        }
+        cancel();
+        saveSceneIdRef.current = nodeId;
+        // Update *after* flush() above so the flush still routes scene A's
+        // pending edits to the scene backend, even though the prop has already
+        // flipped to the new tab's contentType.
+        saveContentTypeRef.current = contentType;
 
-          // Load phases into store so TabBar and banner can display the phase label
-          await usePhaseStore.getState().loadPhasesForEntry(nodeId);
-          if (cancelled) return;
+        // Hold the external-update guard for the entire scene-switch sequence
+        // (setContent + authorship load + foreshadow load). Releasing it earlier
+        // lets a fast typist trigger autosave while marks are mid-load, which
+        // would persist a doc with no setup marks and orphan every setup row.
+        isApplyingExternalUpdate.current = true;
+        try {
+          if (isCodexMode) {
+            // Load codex entry content (ProseMirror JSON)
+            const entry = await getCodexEntry(nodeId);
+            if (cancelled) return;
 
-          const phaseStore = usePhaseStore.getState();
-          const phases = phaseStore.phasesByEntry[nodeId] ?? [];
-          const globalSceneOrder = phaseStore.globalSceneOrder;
-          let phaseContentOverride: string | null = null;
-          let resolvedPhaseId: string | null = null;
+            // Load phases into store so TabBar and banner can display the phase label
+            await usePhaseStore.getState().loadPhasesForEntry(nodeId);
+            if (cancelled) return;
 
-          if (overridePhaseId === "__base__") {
-            // Explicit base: skip phase resolution, show entry.content as-is
-          } else if (overridePhaseId) {
-            // Explicit phase ID from preview: load that phase's contentOverride
-            const targetPhase = phases.find((p) => p.id === overridePhaseId);
-            if (targetPhase?.contentOverride != null) {
-              phaseContentOverride = targetPhase.contentOverride;
-              resolvedPhaseId = targetPhase.id;
-            }
-          } else {
-            // Auto-resolve: use the phase active at the current scene
-            const activeSceneId = useTreeStore.getState().activeSceneId;
-            if (activeSceneId) {
-              const currentOrder = globalSceneOrder.get(activeSceneId);
-              if (currentOrder !== undefined) {
-                const applicable = phases
-                  .filter(
-                    (p) =>
-                      p.anchorNodeId != null &&
-                      globalSceneOrder.has(p.anchorNodeId) &&
-                      globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
-                  )
-                  .sort(
-                    (a, b) =>
-                      globalSceneOrder.get(a.anchorNodeId!)! -
-                      globalSceneOrder.get(b.anchorNodeId!)!,
-                  );
-                const activePhase = applicable[applicable.length - 1] ?? null;
-                if (activePhase?.contentOverride != null) {
-                  phaseContentOverride = activePhase.contentOverride;
-                  resolvedPhaseId = activePhase.id;
+            const phaseStore = usePhaseStore.getState();
+            const phases = phaseStore.phasesByEntry[nodeId] ?? [];
+            const globalSceneOrder = phaseStore.globalSceneOrder;
+            let phaseContentOverride: string | null = null;
+            let resolvedPhaseId: string | null = null;
+
+            if (overridePhaseId === "__base__") {
+              // Explicit base: skip phase resolution, show entry.content as-is
+            } else if (overridePhaseId) {
+              // Explicit phase ID from preview: load that phase's contentOverride
+              const targetPhase = phases.find((p) => p.id === overridePhaseId);
+              if (targetPhase?.contentOverride != null) {
+                phaseContentOverride = targetPhase.contentOverride;
+                resolvedPhaseId = targetPhase.id;
+              }
+            } else {
+              // Auto-resolve: use the phase active at the current scene
+              const activeSceneId = useTreeStore.getState().activeSceneId;
+              if (activeSceneId) {
+                const currentOrder = globalSceneOrder.get(activeSceneId);
+                if (currentOrder !== undefined) {
+                  const applicable = phases
+                    .filter(
+                      (p) =>
+                        p.anchorNodeId != null &&
+                        globalSceneOrder.has(p.anchorNodeId) &&
+                        globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
+                    )
+                    .sort(
+                      (a, b) =>
+                        globalSceneOrder.get(a.anchorNodeId!)! -
+                        globalSceneOrder.get(b.anchorNodeId!)!,
+                    );
+                  const activePhase = applicable[applicable.length - 1] ?? null;
+                  if (activePhase?.contentOverride != null) {
+                    phaseContentOverride = activePhase.contentOverride;
+                    resolvedPhaseId = activePhase.id;
+                  }
                 }
               }
             }
-          }
-          activePhaseIdRef.current = resolvedPhaseId;
-          setLoadedPhaseId(resolvedPhaseId);
+            activePhaseIdRef.current = resolvedPhaseId;
+            setLoadedPhaseId(resolvedPhaseId);
 
-          const rawContent = phaseContentOverride ?? entry?.content ?? null;
-          markStart("sceneLoad.parseContent.codex");
-          const parsed =
-            rawContent && rawContent !== "{}" ? JSON.parse(rawContent) : "";
-          markEnd("sceneLoad.parseContent.codex");
-          markStart("sceneLoad.setContent.codex");
-          editor!.commands.setContent(parsed, { emitUpdate: false });
-          markEnd("sceneLoad.setContent.codex");
-        } else if (isSnippetMode) {
-          const snippet = await getSnippet(nodeId);
-          if (cancelled) return;
-          markStart("sceneLoad.setContent.snippet");
-          editor!.commands.setContent(tiptapContentFromDb(snippet?.content), {
-            emitUpdate: false,
-          });
-          markEnd("sceneLoad.setContent.snippet");
-        } else {
-          // Load scene/note content + unplaced beats in one query
-          markStart("sceneLoad.loadSceneFull");
-          const { content, unplacedBeatsDoc } = await loadSceneFull(nodeId);
-          markEnd("sceneLoad.loadSceneFull");
-          if (cancelled) return;
-          markStart(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
-          const parsed = content && content !== "{}" ? JSON.parse(content) : "";
-          markEnd(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
-          markStart(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
-          editor!.commands.setContent(parsed, { emitUpdate: false });
-          markEnd(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
-          try {
-            const beats = JSON.parse(unplacedBeatsDoc);
-            useUnplacedBeatsStore.getState().setBeats(nodeId, beats, "load");
-          } catch {
-            useUnplacedBeatsStore.getState().setBeats(nodeId, [], "load");
-          }
+            const rawContent = phaseContentOverride ?? entry?.content ?? null;
+            markStart("sceneLoad.parseContent.codex");
+            const parsed =
+              rawContent && rawContent !== "{}" ? JSON.parse(rawContent) : "";
+            markEnd("sceneLoad.parseContent.codex");
+            markStart("sceneLoad.setContent.codex");
+            editor!.commands.setContent(parsed, { emitUpdate: false });
+            markEnd("sceneLoad.setContent.codex");
+          } else if (isSnippetMode) {
+            const snippet = await getSnippet(nodeId);
+            if (cancelled) return;
+            markStart("sceneLoad.setContent.snippet");
+            editor!.commands.setContent(tiptapContentFromDb(snippet?.content), {
+              emitUpdate: false,
+            });
+            markEnd("sceneLoad.setContent.snippet");
+          } else {
+            // Load scene/note content + unplaced beats in one query
+            markStart("sceneLoad.loadSceneFull");
+            const { content, unplacedBeatsDoc } = await loadSceneFull(nodeId);
+            markEnd("sceneLoad.loadSceneFull");
+            if (cancelled) return;
+            markStart(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
+            const parsed =
+              content && content !== "{}" ? JSON.parse(content) : "";
+            markEnd(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
+            markStart(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
+            editor!.commands.setContent(parsed, { emitUpdate: false });
+            markEnd(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
+            try {
+              const beats = JSON.parse(unplacedBeatsDoc);
+              useUnplacedBeatsStore.getState().setBeats(nodeId, beats, "load");
+            } catch {
+              useUnplacedBeatsStore.getState().setBeats(nodeId, [], "load");
+            }
 
-          // Lazy backfill of placed_beat_preview for legacy scenes that have
-          // placed sceneBeat nodes but no cached preview yet.
-          const curPreview = useTreeStore.getState().nodePreviews[nodeId];
-          if (curPreview?.placed == null) {
-            const preview = extractPlacedBeatPreview(editor!.getJSON());
-            if (preview !== "[]") {
-              const next = preview;
-              savePlacedBeatPreviewOnly(nodeId, next).catch(() => {});
-              useTreeStore.getState().setNodePreview(nodeId, { placed: next });
+            // Lazy backfill of placed_beat_preview for legacy scenes that have
+            // placed sceneBeat nodes but no cached preview yet.
+            const curPreview = useTreeStore.getState().nodePreviews[nodeId];
+            if (curPreview?.placed == null) {
+              const preview = extractPlacedBeatPreview(editor!.getJSON());
+              if (preview !== "[]") {
+                const next = preview;
+                savePlacedBeatPreviewOnly(nodeId, next).catch(() => {});
+                useTreeStore
+                  .getState()
+                  .setNodePreview(nodeId, { placed: next });
+              }
             }
           }
-        }
 
-        const text = getDocText(editor!.state.doc);
-        const count = text.length;
-        setCharCount(count);
-        setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
-        const bc = countBeats(editor!.state.doc);
-        setBeatTotal(bc.total);
-        setBeatGenerated(bc.generated);
-        setIsDirty(false);
-        wasEmptyRef.current = count === 0;
+          const text = getDocText(editor!.state.doc);
+          const count = text.length;
+          setCharCount(count);
+          setWordCount(
+            text.trim() === "" ? 0 : text.trim().split(/\s+/).length,
+          );
+          const bc = countBeats(editor!.state.doc);
+          setBeatTotal(bc.total);
+          setBeatGenerated(bc.generated);
+          setIsDirty(false);
+          wasEmptyRef.current = count === 0;
 
-        if (!isCodexMode && !isSnippetMode) {
-          useTreeStore.getState().setCharCount(nodeId, count);
+          if (!isCodexMode && !isSnippetMode) {
+            useTreeStore.getState().setCharCount(nodeId, count);
 
-          markStart("sceneLoad.loadAuthorshipSpans");
-          const spans = await loadAuthorshipSpans(nodeId);
-          markEnd("sceneLoad.loadAuthorshipSpans");
-          if (!cancelled && spans.length > 0) {
-            markStart(`sceneLoad.spansToMarkData.${spans.length}`);
-            const markData = spansToMarkData(spans);
-            markEnd(`sceneLoad.spansToMarkData.${spans.length}`);
-            const authorshipType = editor!.schema.marks["authorship"];
-            if (authorshipType) {
-              markStart(`sceneLoad.applyAuthorshipMarks.${markData.length}`);
-              editor!
+            markStart("sceneLoad.loadAuthorshipSpans");
+            const spans = await loadAuthorshipSpans(nodeId);
+            markEnd("sceneLoad.loadAuthorshipSpans");
+            if (!cancelled && spans.length > 0) {
+              markStart(`sceneLoad.spansToMarkData.${spans.length}`);
+              const markData = spansToMarkData(spans);
+              markEnd(`sceneLoad.spansToMarkData.${spans.length}`);
+              const authorshipType = editor!.schema.marks["authorship"];
+              if (authorshipType) {
+                markStart(`sceneLoad.applyAuthorshipMarks.${markData.length}`);
+                editor!
+                  .chain()
+                  .command(({ tr }) => {
+                    tr.setMeta("programmaticInsert", true);
+                    for (const { from, to, attrs } of markData) {
+                      const docSize = tr.doc.content.size;
+                      const clampedFrom = Math.min(from, docSize);
+                      const clampedTo = Math.min(to, docSize);
+                      if (clampedFrom < clampedTo) {
+                        tr.addMark(
+                          clampedFrom,
+                          clampedTo,
+                          authorshipType.create(attrs),
+                        );
+                      }
+                    }
+                    return true;
+                  })
+                  .run();
+                markEnd(`sceneLoad.applyAuthorshipMarks.${markData.length}`);
+              }
+            }
+
+            // Load and apply foreshadow anchors
+            markStart("sceneLoad.loadForeshadowAnchors");
+            const foreshadowMarks = await loadForeshadowAnchors(nodeId);
+            markEnd("sceneLoad.loadForeshadowAnchors");
+            if (!cancelled && foreshadowMarks.length > 0 && editor) {
+              markStart(
+                `sceneLoad.applyForeshadowMarks.${foreshadowMarks.length}`,
+              );
+              editor
                 .chain()
                 .command(({ tr }) => {
                   tr.setMeta("programmaticInsert", true);
-                  for (const { from, to, attrs } of markData) {
+                  clearAllForeshadowMarks((fn) => fn(tr));
+                  const schema = tr.doc.type.schema;
+                  for (const { from, to, markName, attrs } of foreshadowMarks) {
+                    const markType = schema.marks[markName];
+                    if (!markType) continue;
                     const docSize = tr.doc.content.size;
-                    const clampedFrom = Math.min(from, docSize);
-                    const clampedTo = Math.min(to, docSize);
-                    if (clampedFrom < clampedTo) {
-                      tr.addMark(
-                        clampedFrom,
-                        clampedTo,
-                        authorshipType.create(attrs),
-                      );
-                    }
+                    const cf = Math.min(from, docSize);
+                    const ct = Math.min(to, docSize);
+                    if (cf < ct) tr.addMark(cf, ct, markType.create(attrs));
                   }
                   return true;
                 })
                 .run();
-              markEnd(`sceneLoad.applyAuthorshipMarks.${markData.length}`);
+              markEnd(
+                `sceneLoad.applyForeshadowMarks.${foreshadowMarks.length}`,
+              );
+            }
+
+            // Load and apply post-effect annotation anchors
+            markStart("sceneLoad.loadAnnotationAnchors");
+            const annotationResp = await listAnnotationsForScene({
+              projectId: useTreeStore.getState().projectId,
+              sceneId: nodeId,
+            });
+            markEnd("sceneLoad.loadAnnotationAnchors");
+            useAnnotationStore.getState().setFocusedAnnotationId(null);
+            useAnnotationStore
+              .getState()
+              .setAnnotations(nodeId, annotationResp.annotations);
+            if (!cancelled && editor) {
+              applyAnnotationsToEditor(editor, annotationResp.annotations);
             }
           }
+        } finally {
+          isApplyingExternalUpdate.current = false;
+        }
 
-          // Load and apply foreshadow anchors
-          markStart("sceneLoad.loadForeshadowAnchors");
-          const foreshadowMarks = await loadForeshadowAnchors(nodeId);
-          markEnd("sceneLoad.loadForeshadowAnchors");
-          if (!cancelled && foreshadowMarks.length > 0 && editor) {
-            markStart(
-              `sceneLoad.applyForeshadowMarks.${foreshadowMarks.length}`,
-            );
-            editor
-              .chain()
-              .command(({ tr }) => {
-                tr.setMeta("programmaticInsert", true);
-                clearAllForeshadowMarks((fn) => fn(tr));
-                const schema = tr.doc.type.schema;
-                for (const { from, to, markName, attrs } of foreshadowMarks) {
-                  const markType = schema.marks[markName];
-                  if (!markType) continue;
-                  const docSize = tr.doc.content.size;
-                  const cf = Math.min(from, docSize);
-                  const ct = Math.min(to, docSize);
-                  if (cf < ct) tr.addMark(cf, ct, markType.create(attrs));
-                }
-                return true;
-              })
+        // Reset scroll to top after scene load; saved state will be restored below.
+        if (editorContainerRef.current) {
+          editorContainerRef.current.scrollTop = 0;
+        }
+
+        prevSceneIdRef.current = nodeId;
+
+        // Decide whether to focus the editor immediately.
+        // Tab clicks set the flag; Scenes-panel navigation does not.
+        const focusNow = useTabStore
+          .getState()
+          .consumeEditorFocusRequest(groupIndex);
+
+        // Clear any pending lazy restore from a previous scene switch so stale
+        // state is never applied if this new switch doesn't produce saved data.
+        pendingCursorRestoreRef.current = null;
+
+        // 伏線パネルからのジャンプ要求は saved cursor 復元より優先する。
+        const fJump = useForeshadowNavStore.getState().consumeJump(nodeId);
+        if (fJump && !cancelled) {
+          requestAnimationFrame(() => {
+            if (cancelled) return;
+            const ed = editorRef.current;
+            if (!ed) return;
+            const docSize = ed.state.doc.content.size;
+            if (fJump.toPos > docSize) {
+              ed.chain().focus().scrollIntoView().run();
+              return;
+            }
+            const from = Math.min(fJump.fromPos, Math.max(0, docSize - 1));
+            const to = Math.min(fJump.toPos, Math.max(0, docSize - 1));
+            ed.chain()
+              .focus()
+              .setTextSelection({ from, to })
+              .scrollIntoView()
               .run();
-            markEnd(`sceneLoad.applyForeshadowMarks.${foreshadowMarks.length}`);
-          }
-
-          // Load and apply post-effect annotation anchors
-          markStart("sceneLoad.loadAnnotationAnchors");
-          const annotationResp = await listAnnotationsForScene({
-            projectId: useTreeStore.getState().projectId,
-            sceneId: nodeId,
           });
-          markEnd("sceneLoad.loadAnnotationAnchors");
-          useAnnotationStore.getState().setFocusedAnnotationId(null);
-          useAnnotationStore
-            .getState()
-            .setAnnotations(nodeId, annotationResp.annotations);
-          if (!cancelled && editor) {
-            applyAnnotationsToEditor(editor, annotationResp.annotations);
+        } else {
+          // Restore cursor/scroll state if this node was previously visited.
+          const saved = savedEditorStateRef.current.get(nodeId);
+          if (saved && !cancelled) {
+            if (focusNow) {
+              // Tab click: focus the editor and restore cursor/scroll immediately.
+              requestAnimationFrame(() => {
+                if (cancelled) return;
+                const ed = editorRef.current;
+                if (ed) {
+                  const docSize = ed.state.doc.content.size;
+                  const from = Math.min(saved.from, Math.max(0, docSize - 1));
+                  const to = Math.min(saved.to, Math.max(0, docSize - 1));
+                  ed.chain().focus().setTextSelection({ from, to }).run();
+                }
+                if (editorContainerRef.current) {
+                  editorContainerRef.current.scrollTop = saved.scrollTop;
+                }
+              });
+            } else {
+              // Scenes-panel navigation: defer restore until the editor is focused
+              // so keyboard navigation in the panel is not interrupted.
+              pendingCursorRestoreRef.current = {
+                from: saved.from,
+                to: saved.to,
+                scrollTop: saved.scrollTop,
+              };
+            }
           }
         }
       } finally {
-        isApplyingExternalUpdate.current = false;
-      }
-
-      // Reset scroll to top after scene load; saved state will be restored below.
-      if (editorContainerRef.current) {
-        editorContainerRef.current.scrollTop = 0;
-      }
-
-      prevSceneIdRef.current = nodeId;
-
-      // Decide whether to focus the editor immediately.
-      // Tab clicks set the flag; Scenes-panel navigation does not.
-      const focusNow = useTabStore
-        .getState()
-        .consumeEditorFocusRequest(groupIndex);
-
-      // Clear any pending lazy restore from a previous scene switch so stale
-      // state is never applied if this new switch doesn't produce saved data.
-      pendingCursorRestoreRef.current = null;
-
-      // 伏線パネルからのジャンプ要求は saved cursor 復元より優先する。
-      const fJump = useForeshadowNavStore.getState().consumeJump(nodeId);
-      if (fJump && !cancelled) {
-        requestAnimationFrame(() => {
-          if (cancelled) return;
-          const ed = editorRef.current;
-          if (!ed) return;
-          const docSize = ed.state.doc.content.size;
-          if (fJump.toPos > docSize) {
-            ed.chain().focus().scrollIntoView().run();
-            return;
-          }
-          const from = Math.min(fJump.fromPos, Math.max(0, docSize - 1));
-          const to = Math.min(fJump.toPos, Math.max(0, docSize - 1));
-          ed.chain()
-            .focus()
-            .setTextSelection({ from, to })
-            .scrollIntoView()
-            .run();
-        });
-      } else {
-        // Restore cursor/scroll state if this node was previously visited.
-        const saved = savedEditorStateRef.current.get(nodeId);
-        if (saved && !cancelled) {
-          if (focusNow) {
-            // Tab click: focus the editor and restore cursor/scroll immediately.
-            requestAnimationFrame(() => {
-              if (cancelled) return;
-              const ed = editorRef.current;
-              if (ed) {
-                const docSize = ed.state.doc.content.size;
-                const from = Math.min(saved.from, Math.max(0, docSize - 1));
-                const to = Math.min(saved.to, Math.max(0, docSize - 1));
-                ed.chain().focus().setTextSelection({ from, to }).run();
-              }
-              if (editorContainerRef.current) {
-                editorContainerRef.current.scrollTop = saved.scrollTop;
-              }
-            });
-          } else {
-            // Scenes-panel navigation: defer restore until the editor is focused
-            // so keyboard navigation in the panel is not interrupted.
-            pendingCursorRestoreRef.current = {
-              from: saved.from,
-              to: saved.to,
-              scrollTop: saved.scrollTop,
-            };
-          }
-        }
+        markEnd("editor.switchScene");
       }
     }
 

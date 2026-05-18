@@ -10,6 +10,7 @@ import { addUnplacedBeatFromGrid } from "@/features/editor/beat/addUnplacedBeatF
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+import { markStart, markEnd } from "@/lib/perfLog";
 import { GridCardHeader } from "./GridCardHeader";
 import { GridCardBody } from "./GridCardBody";
 import { GridCardChips } from "./GridCardChips";
@@ -167,9 +168,14 @@ export function GridSceneCard({
     } else if (e.shiftKey) {
       rangeSelect(scene.id, flatOrder ?? []);
     } else {
-      selectOnly(scene.id);
-      useTabStore.getState().openPreview(scene.id);
-      useTreeStore.getState().setActiveScene(scene.id);
+      markStart("grid.cardClick.single");
+      try {
+        selectOnly(scene.id);
+        useTabStore.getState().openPreview(scene.id);
+        useTreeStore.getState().setActiveScene(scene.id);
+      } finally {
+        markEnd("grid.cardClick.single");
+      }
     }
   }
 

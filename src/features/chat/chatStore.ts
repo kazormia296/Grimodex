@@ -2599,24 +2599,29 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   clearMessages: () => set({ messages: [] }),
   clearError: () => set({ error: null }),
   setActiveSceneId: (id: string) => {
-    const { activeSceneId, chatScope } = get();
-    // tree の active scene が変わったときは activeSceneId を更新。
-    // scope === "scene" のときは anchor が active scene を追従するため、
-    // セッションを切り替えるべく activeSessionId / messages をリセット。
-    // scope === "folder" / "project" のときは scope axis が sticky で、
-    // anchor は user 選択を維持する（=セッションも維持）。
-    if (id !== activeSceneId) {
-      if (chatScope === "scene") {
-        set({
-          activeSceneId: id,
-          activeSessionId: null,
-          messages: [],
-        });
+    markStart("chatStore.setActiveSceneId");
+    try {
+      const { activeSceneId, chatScope } = get();
+      // tree の active scene が変わったときは activeSceneId を更新。
+      // scope === "scene" のときは anchor が active scene を追従するため、
+      // セッションを切り替えるべく activeSessionId / messages をリセット。
+      // scope === "folder" / "project" のときは scope axis が sticky で、
+      // anchor は user 選択を維持する（=セッションも維持）。
+      if (id !== activeSceneId) {
+        if (chatScope === "scene") {
+          set({
+            activeSceneId: id,
+            activeSessionId: null,
+            messages: [],
+          });
+        } else {
+          set({ activeSceneId: id });
+        }
       } else {
         set({ activeSceneId: id });
       }
-    } else {
-      set({ activeSceneId: id });
+    } finally {
+      markEnd("chatStore.setActiveSceneId");
     }
   },
   setActiveProjectId: (id: string | null) => set({ activeProjectId: id }),
