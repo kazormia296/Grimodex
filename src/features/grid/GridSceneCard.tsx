@@ -119,6 +119,7 @@ export function GridSceneCard({
 
   function openInEditor() {
     useTabStore.getState().openPinned(scene.id);
+    useTreeStore.getState().setActiveScene(scene.id);
     useLayoutStore.getState().showPanel("editor");
   }
 
@@ -166,9 +167,8 @@ export function GridSceneCard({
     } else if (e.shiftKey) {
       rangeSelect(scene.id, flatOrder ?? []);
     } else {
-      // Single-select: propagate as active scene so Chat panel + Timeline
-      // ring follow the Grid focus without opening the Editor.
       selectOnly(scene.id);
+      useTabStore.getState().openPreview(scene.id);
       useTreeStore.getState().setActiveScene(scene.id);
     }
   }

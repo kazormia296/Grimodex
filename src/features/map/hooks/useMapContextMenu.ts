@@ -14,6 +14,8 @@ import { findPosByNodeId, buildUpsertArgs } from "../utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "../types";
 import type { MapSticky } from "@/db/schema";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { useTabStore } from "@/features/editor/tabStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 
 export interface ContextMenuState {
   nodeId: string;
@@ -141,6 +143,8 @@ export function useMapContextMenu({
   const handleContextMenuOpen = useCallback(() => {
     if (!contextMenu) return;
     const sceneId = contextMenu.nodeId.slice("scene:".length);
+    useTabStore.getState().openPinned(sceneId);
+    useLayoutStore.getState().showPanel("editor");
     setActiveScene(sceneId);
   }, [contextMenu, setActiveScene]);
 

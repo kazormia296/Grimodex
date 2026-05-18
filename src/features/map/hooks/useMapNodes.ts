@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import type { Node } from "@xyflow/react";
 import { useChatStore } from "@/features/chat/chatStore";
+import { useTabStore } from "@/features/editor/tabStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import {
   updateFrame,
   deleteFrame,
@@ -259,6 +261,8 @@ export function useMapNodes({
                   await updateSynopsis(n.id, synopsis);
                 },
                 onOpen: () => {
+                  useTabStore.getState().openPinned(n.id);
+                  useLayoutStore.getState().showPanel("editor");
                   setActiveScene(n.id);
                 },
               },
@@ -338,7 +342,11 @@ export function useMapNodes({
               data: {
                 title: n.title,
                 content: n.synopsis ?? "",
-                onOpen: () => setActiveScene(n.id),
+                onOpen: () => {
+                  useTabStore.getState().openPinned(n.id);
+                  useLayoutStore.getState().showPanel("editor");
+                  setActiveScene(n.id);
+                },
               },
             };
           })

@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useEffect, useRef } from "react";
 import { generateKeyBetween } from "fractional-indexing";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { usePhaseStore } from "@/features/codex/phaseStore";
@@ -140,19 +139,8 @@ export function TimelinePanel() {
   const handleSelectScene = useCallback(
     (id: string) => {
       selectNode(id);
+      useTabStore.getState().openPreview(id);
       setActiveScene(id);
-      const { dockviewApi } = useLayoutStore.getState();
-      if (!dockviewApi) return;
-      const panel = dockviewApi.getPanel("editor");
-      if (panel) {
-        panel.api.setActive();
-      } else {
-        dockviewApi.addPanel({
-          id: "editor",
-          component: "editor",
-          title: "Editor",
-        });
-      }
     },
     [selectNode, setActiveScene],
   );

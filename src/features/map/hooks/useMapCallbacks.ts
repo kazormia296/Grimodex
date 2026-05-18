@@ -2,6 +2,8 @@ import { useCallback, useMemo } from "react";
 import { useDebouncedCallback } from "@/lib/useDebounce";
 import type { Node, Edge, Connection } from "@xyflow/react";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useTabStore } from "@/features/editor/tabStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { createUserEdge, deleteUserEdge } from "../mapApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { findPosByNodeId } from "../utils/nodeIdCodec";
@@ -87,9 +89,15 @@ export function useMapCallbacks({
   const onNodeDoubleClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {
       if (node.id.startsWith("scene:")) {
-        setActiveScene(node.id.slice("scene:".length));
+        const id = node.id.slice("scene:".length);
+        useTabStore.getState().openPinned(id);
+        useLayoutStore.getState().showPanel("editor");
+        setActiveScene(id);
       } else if (node.id.startsWith("note:")) {
-        setActiveScene(node.id.slice("note:".length));
+        const id = node.id.slice("note:".length);
+        useTabStore.getState().openPinned(id);
+        useLayoutStore.getState().showPanel("editor");
+        setActiveScene(id);
       } else if (node.id.startsWith("codex:")) {
         useCodexStore
           .getState()
