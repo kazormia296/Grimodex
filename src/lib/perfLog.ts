@@ -63,6 +63,21 @@ export function markEnd(label: string): void {
   if (session) session.marks.push(record);
 }
 
+/** Direct mark recording when caller already has duration + start time
+ *  (e.g. measured via local performance.now() in a React render body).
+ *  Avoids the startTimes map so concurrent re-renders don't strand entries. */
+export function recordMark(
+  label: string,
+  duration: number,
+  start: number,
+): void {
+  if (!enabled && !session) return;
+  const record: MarkRecord = { label, start, duration };
+  recentMarks.push(record);
+  if (recentMarks.length > MAX_MARKS) recentMarks.shift();
+  if (session) session.marks.push(record);
+}
+
 function attributeLongtaskToConsole(entry: PerformanceEntry): void {
   const ltStart = entry.startTime;
   const ltEnd = ltStart + entry.duration;

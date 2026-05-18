@@ -1,10 +1,4 @@
-import {
-  useState,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useCallback,
-} from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Clock, BookOpen, Files } from "lucide-react";
@@ -126,7 +120,7 @@ import { AiPolicyBadge } from "@/features/ai-policy/AiPolicyBadge";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import { markStart, markEnd } from "@/lib/perfLog";
+import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
@@ -199,10 +193,7 @@ export function EditorPane({
   onFocus,
   phaseIdOverride,
 }: EditorPaneProps) {
-  markStart("editorPane.render");
-  useLayoutEffect(() => {
-    markEnd("editorPane.render");
-  });
+  const __perfStart = performance.now();
   const { t } = useTranslation();
   const isCodexMode = contentType === "codex";
   const isSnippetMode = contentType === "snippet";
@@ -1521,7 +1512,7 @@ export function EditorPane({
     [mentionPopup],
   );
 
-  return (
+  const __renderResult = (
     <div
       ref={setPaneRef}
       data-droptarget-id={editorDropId}
@@ -2103,4 +2094,6 @@ export function EditorPane({
         )}
     </div>
   );
+  recordMark("editorPane.render", performance.now() - __perfStart, __perfStart);
+  return __renderResult;
 }

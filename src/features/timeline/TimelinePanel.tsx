@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useMemo,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-} from "react";
+import { useCallback, useMemo, useEffect, useRef } from "react";
 import { generateKeyBetween } from "fractional-indexing";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
@@ -18,13 +12,10 @@ import { TimelineHeader } from "./TimelineHeader";
 import { TimelineViewport, PAD_LEFT, PAD_RIGHT } from "./TimelineViewport";
 import { TimelineInspector } from "./TimelineInspector";
 import type { PhasePinData } from "./TimelineViewport";
-import { markStart, markEnd } from "@/lib/perfLog";
+import { recordMark } from "@/lib/perfLog";
 
 export function TimelinePanel() {
-  markStart("timelinePanel.render");
-  useLayoutEffect(() => {
-    markEnd("timelinePanel.render");
-  });
+  const __perfStart = performance.now();
   const nodes = useTreeStore((s) => s.nodes);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
@@ -348,7 +339,7 @@ export function TimelinePanel() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [zoom, setZoom, scenes.length, weights, scheduledCount, setActiveScene]);
 
-  return (
+  const __renderResult = (
     <div
       ref={containerRef}
       tabIndex={-1}
@@ -387,4 +378,10 @@ export function TimelinePanel() {
       </div>
     </div>
   );
+  recordMark(
+    "timelinePanel.render",
+    performance.now() - __perfStart,
+    __perfStart,
+  );
+  return __renderResult;
 }

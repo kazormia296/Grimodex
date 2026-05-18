@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useLayoutEffect } from "react";
+import { useMemo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { Download } from "lucide-react";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -13,7 +13,7 @@ import {
   downloadTextFile,
 } from "./exportReport";
 import type { FilterSource } from "./attributionStore";
-import { markStart, markEnd } from "@/lib/perfLog";
+import { recordMark } from "@/lib/perfLog";
 
 const UNKNOWN_MODEL_KEY = "__unknown_model__";
 
@@ -64,10 +64,7 @@ function StatBar({
 }
 
 export function AttributionReport() {
-  markStart("attributionReport.render");
-  useLayoutEffect(() => {
-    markEnd("attributionReport.render");
-  });
+  const __perfStart = performance.now();
   const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
   const scope = useAttributionStore((s) => s.scope);
@@ -95,7 +92,7 @@ export function AttributionReport() {
     downloadTextFile(csv, "attribution-report.csv", "text/csv");
   }, [stats]);
 
-  return (
+  const __renderResult = (
     <div className="flex flex-col gap-3 p-3" data-testid="attribution-report">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">{t("attribution.report")}</h3>
@@ -227,4 +224,10 @@ export function AttributionReport() {
       )}
     </div>
   );
+  recordMark(
+    "attributionReport.render",
+    performance.now() - __perfStart,
+    __perfStart,
+  );
+  return __renderResult;
 }

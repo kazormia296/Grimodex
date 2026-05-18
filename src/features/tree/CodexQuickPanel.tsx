@@ -1,4 +1,3 @@
-import { useLayoutEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { CodexQuickSection } from "./CodexQuickSection";
 import {
@@ -6,17 +5,14 @@ import {
   type CodexSortOrder,
 } from "@/features/codex/codexStore";
 import { CODEX_SORT_OPTIONS } from "@/features/codex/codexSort";
-import { markStart, markEnd } from "@/lib/perfLog";
+import { recordMark } from "@/lib/perfLog";
 
 /**
  * CodexQuickPanel — standalone dockview panel for Codex Quick.
  * Displays auto-detected and pinned Codex entries for the active scene.
  */
 export function CodexQuickPanel() {
-  markStart("codexQuickPanel.render");
-  useLayoutEffect(() => {
-    markEnd("codexQuickPanel.render");
-  });
+  const __perfStart = performance.now();
   const { t } = useTranslation();
   const sortOrder = useCodexStore((s) => s.sortOrder);
   const setSort = useCodexStore((s) => s.setSort);
@@ -26,7 +22,7 @@ export function CodexQuickPanel() {
     (opt) => opt.value !== "most-referenced",
   ).map((opt) => ({ ...opt, label: t(opt.key) }));
 
-  return (
+  const __renderResult = (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
       <div className="flex flex-shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
@@ -52,4 +48,10 @@ export function CodexQuickPanel() {
       </div>
     </div>
   );
+  recordMark(
+    "codexQuickPanel.render",
+    performance.now() - __perfStart,
+    __perfStart,
+  );
+  return __renderResult;
 }

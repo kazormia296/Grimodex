@@ -1,11 +1,10 @@
-import { useLayoutEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useKouetsuStore, type KouetsuTab } from "./kouetsuStore";
 import { IssuesTab } from "./IssuesTab";
 import { EditorialTab } from "./EditorialTab";
 import { CommentsTab } from "./CommentsTab";
-import { markStart, markEnd } from "@/lib/perfLog";
+import { recordMark } from "@/lib/perfLog";
 
 const TABS: { id: KouetsuTab; labelKey: string }[] = [
   { id: "issues", labelKey: "kouetsu.tab.issues" },
@@ -14,14 +13,11 @@ const TABS: { id: KouetsuTab; labelKey: string }[] = [
 ];
 
 export function KouetsuPanel() {
-  markStart("kouetsuPanel.render");
-  useLayoutEffect(() => {
-    markEnd("kouetsuPanel.render");
-  });
+  const __perfStart = performance.now();
   const { t } = useTranslation();
   const { activeTab, setActiveTab } = useKouetsuStore();
 
-  return (
+  const __renderResult = (
     <div className="flex h-full flex-col" data-testid="kouetsu-panel">
       <div className="flex shrink-0 items-center gap-0.5 border-b border-border bg-muted/20 px-2 py-1">
         {TABS.map(({ id, labelKey }) => (
@@ -47,4 +43,10 @@ export function KouetsuPanel() {
       </div>
     </div>
   );
+  recordMark(
+    "kouetsuPanel.render",
+    performance.now() - __perfStart,
+    __perfStart,
+  );
+  return __renderResult;
 }

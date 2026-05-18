@@ -1,11 +1,4 @@
-import {
-  useState,
-  useRef,
-  useEffect,
-  useLayoutEffect,
-  useCallback,
-  useMemo,
-} from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "motion/react";
 import { useReducedMotion } from "@/lib/animation";
@@ -37,7 +30,7 @@ import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
-import { markStart, markEnd } from "@/lib/perfLog";
+import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type { PinnedSnippetEntryWithData } from "./chatApi";
 
@@ -58,10 +51,7 @@ interface ContextMenuState {
 }
 
 export function ChatPanel() {
-  markStart("chatPanel.render");
-  useLayoutEffect(() => {
-    markEnd("chatPanel.render");
-  });
+  const __perfStart = performance.now();
   const { t } = useTranslation();
   const reduced = useReducedMotion();
   const chatCapability = useAiCapability("chat");
@@ -591,7 +581,7 @@ export function ChatPanel() {
     createNewSession("default-project", "New session", nodeId);
   }, [createNewSession, chatScope, scopeAnchorId, chatSceneId]);
 
-  return (
+  const __renderResult = (
     <div className="glass-chat relative flex h-full flex-col bg-background">
       {/* メッセージリスト内の Codex ハイライトポップオーバー（単一インスタンス） */}
       <CodexPopover containerEl={messagesContainerEl} />
@@ -809,4 +799,6 @@ export function ChatPanel() {
       )}
     </div>
   );
+  recordMark("chatPanel.render", performance.now() - __perfStart, __perfStart);
+  return __renderResult;
 }

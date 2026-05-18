@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -72,7 +65,7 @@ import {
   gperfFlush,
 } from "./gridDndLog";
 import type { TreeNodeData } from "@/features/tree/treeStore";
-import { markStart, markEnd } from "@/lib/perfLog";
+import { recordMark } from "@/lib/perfLog";
 
 /**
  * Walk up from `el` looking for the first ancestor that scrolls vertically.
@@ -220,10 +213,7 @@ const snapOverlayCenterToCursor: Modifier = ({
 };
 
 export function GridPanel() {
-  markStart("gridPanel.render");
-  useLayoutEffect(() => {
-    markEnd("gridPanel.render");
-  });
+  const __perfStart = performance.now();
   const { t } = useTranslation();
   const projectId = useTreeStore((s) => s.projectId);
   const moveNode = useTreeStore((s) => s.moveNode);
@@ -1200,7 +1190,7 @@ export function GridPanel() {
     pinsByScene,
   });
 
-  return (
+  const __renderResult = (
     <DndContext
       sensors={sensors}
       collisionDetection={gridCollisionDetection}
@@ -1403,4 +1393,6 @@ export function GridPanel() {
       </DragOverlay>
     </DndContext>
   );
+  recordMark("gridPanel.render", performance.now() - __perfStart, __perfStart);
+  return __renderResult;
 }
