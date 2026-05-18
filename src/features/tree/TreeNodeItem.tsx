@@ -15,6 +15,7 @@ import { useDraggable, useDroppable, useDndContext } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
 import { StatusDot } from "./StatusDot";
+import { recordMark } from "@/lib/perfLog";
 import type { TreeNodeData, SceneStatus } from "./treeStore";
 import { TreeContextMenu } from "./TreeContextMenu";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -109,6 +110,7 @@ export function TreeNodeItem({
   orderedNodes,
   viewMode,
 }: TreeNodeItemProps) {
+  const __perfStart = performance.now();
   const toggleExpand = useTreeStore((s) => s.toggleExpand);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
@@ -274,7 +276,7 @@ export function TreeNodeItem({
 
   if (!isVisible) return null;
 
-  return (
+  const __renderResult = (
     <li ref={setRef} style={style} className="list-none" data-node-id={node.id}>
       <ContextMenu>
         <ContextMenuTrigger asChild>
@@ -479,4 +481,10 @@ export function TreeNodeItem({
       </AnimatePresence>
     </li>
   );
+  recordMark(
+    "treeNodeItem.render",
+    performance.now() - __perfStart,
+    __perfStart,
+  );
+  return __renderResult;
 }

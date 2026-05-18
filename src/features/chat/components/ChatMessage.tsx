@@ -20,6 +20,7 @@ import { useEditorStore } from "@/features/editor/editorStore";
 import { useTextSelection } from "@/features/chat/hooks/useTextSelection";
 import { SelectionToolbar } from "./SelectionToolbar";
 import { useCodexMarkdownComponents } from "@/features/chat/hooks/useCodexMarkdownComponents";
+import { recordMark } from "@/lib/perfLog";
 
 interface ParsedMetadata {
   tool_calls?: ToolCallRecord[];
@@ -102,6 +103,7 @@ export function ChatMessage({
   onStar,
   onContextMenu,
 }: ChatMessageProps) {
+  const __perfStart = performance.now();
   const { t } = useTranslation();
   const isAssistant = msg.role === "assistant";
   const isUser = msg.role === "user";
@@ -145,7 +147,7 @@ export function ChatMessage({
     onContextMenu?.(e, msg);
   };
 
-  return (
+  const __renderResult = (
     <div
       data-testid={`chat-message-${msg.id}`}
       data-role={msg.role}
@@ -286,4 +288,10 @@ export function ChatMessage({
       </div>
     </div>
   );
+  recordMark(
+    "chatMessage.render",
+    performance.now() - __perfStart,
+    __perfStart,
+  );
+  return __renderResult;
 }

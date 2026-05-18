@@ -9,6 +9,7 @@ import { columnDraggableId, columnNestId } from "./gridDndUtils";
 import type { ColumnDropIndicator } from "./gridDndUtils";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+import { recordMark } from "@/lib/perfLog";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { GridFolderCardContextMenu } from "./GridFolderCardContextMenu";
 import { GridFolderMenu } from "./GridFolderMenu";
@@ -35,6 +36,7 @@ export function GridFolderCard({
   columnDropIndicator,
   axisLockOffsetPx,
 }: Props) {
+  const __perfStart = performance.now();
   const { t } = useTranslation();
   const reducedMotion = useReducedMotion();
   const nodes = useTreeStore((s) => s.nodes);
@@ -134,7 +136,7 @@ export function GridFolderCard({
     ? "none"
     : `transform ${DURATIONS.fast}s cubic-bezier(${e0}, ${e1}, ${e2}, ${e3})`;
 
-  return (
+  const __renderResult = (
     <GridFolderCardContextMenu
       folderId={folder.id}
       isEmpty={isEmpty}
@@ -326,4 +328,10 @@ export function GridFolderCard({
       </div>
     </GridFolderCardContextMenu>
   );
+  recordMark(
+    "gridFolderCard.render",
+    performance.now() - __perfStart,
+    __perfStart,
+  );
+  return __renderResult;
 }

@@ -5,6 +5,7 @@ import { useTimelineStore } from "./timelineStore";
 import { computeAxisLabels } from "./timelineLabels";
 import { ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 import { TimelineContextMenu } from "./TimelineContextMenu";
+import { recordMark } from "@/lib/perfLog";
 
 const DOT_R = 6;
 const LABEL_Y = 16;
@@ -76,6 +77,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     }: Props,
     forwardedRef,
   ) {
+    const __perfStart = performance.now();
     const { t } = useTranslation();
     const activeSceneId = useTreeStore((s) => s.activeSceneId);
     const selectedNodeIds = useTimelineStore((s) => s.selectedNodeIds);
@@ -284,14 +286,20 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     );
 
     if (scenes.length === 0) {
-      return (
+      const __emptyResult = (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
           {t("timeline.noScenes", "シーンがありません")}
         </div>
       );
+      recordMark(
+        "timelineViewport.render",
+        performance.now() - __perfStart,
+        __perfStart,
+      );
+      return __emptyResult;
     }
 
-    return (
+    const __renderResult = (
       <>
         <div
           ref={setContainerRef}
@@ -581,5 +589,11 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         )}
       </>
     );
+    recordMark(
+      "timelineViewport.render",
+      performance.now() - __perfStart,
+      __perfStart,
+    );
+    return __renderResult;
   },
 );

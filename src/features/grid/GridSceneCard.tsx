@@ -10,7 +10,7 @@ import { addUnplacedBeatFromGrid } from "@/features/editor/beat/addUnplacedBeatF
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cn } from "@/lib/utils";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
-import { markStart, markEnd } from "@/lib/perfLog";
+import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import { GridCardHeader } from "./GridCardHeader";
 import { GridCardBody } from "./GridCardBody";
 import { GridCardChips } from "./GridCardChips";
@@ -54,6 +54,7 @@ export function GridSceneCard({
   onRequestDeleteConfirm,
   flatOrder,
 }: Props) {
+  const __perfStart = performance.now();
   const { t } = useTranslation();
   const reducedMotion = useReducedMotion();
   const [isEditing, setIsEditing] = useState(false);
@@ -208,7 +209,7 @@ export function GridSceneCard({
     </button>
   );
 
-  return (
+  const __renderResult = (
     <div
       ref={(node) => {
         setDragRef(node);
@@ -351,4 +352,10 @@ export function GridSceneCard({
       </GridSceneCardContextMenu>
     </div>
   );
+  recordMark(
+    "gridSceneCard.render",
+    performance.now() - __perfStart,
+    __perfStart,
+  );
+  return __renderResult;
 }

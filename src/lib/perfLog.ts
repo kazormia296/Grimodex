@@ -85,11 +85,28 @@ function attributeLongtaskToConsole(entry: PerformanceEntry): void {
   const overlap = recentMarks.filter(
     (m) => m.start + m.duration >= ltStart && m.start <= ltEnd,
   );
-  const top = overlap
-    .slice()
-    .sort((a, b) => b.duration - a.duration)
+
+  // Aggregate by label so 16 GridSceneCard renders show as one line
+  // "gridSceneCard.render=24.5ms (16x, max 2.1ms)" instead of 8 lines.
+  const byLabel = new Map<
+    string,
+    { total: number; count: number; max: number }
+  >();
+  for (const m of overlap) {
+    const cur = byLabel.get(m.label) ?? { total: 0, count: 0, max: 0 };
+    cur.total += m.duration;
+    cur.count += 1;
+    if (m.duration > cur.max) cur.max = m.duration;
+    byLabel.set(m.label, cur);
+  }
+  const top = Array.from(byLabel.entries())
+    .sort(([, a], [, b]) => b.total - a.total)
     .slice(0, 8)
-    .map((m) => `${m.label}=${m.duration.toFixed(1)}ms`);
+    .map(([label, v]) =>
+      v.count > 1
+        ? `${label}=${v.total.toFixed(1)}ms (${v.count}x, max ${v.max.toFixed(1)}ms)`
+        : `${label}=${v.total.toFixed(1)}ms`,
+    );
 
   const inFlight: string[] = [];
   startTimes.forEach((start, label) => {
