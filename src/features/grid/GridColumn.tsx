@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { GripVertical, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -130,6 +130,32 @@ export function GridColumn({
   }, [pendingRenameId, folder.id]);
 
   const colWidth = display.compactCards ? "w-56" : "w-80";
+
+  // Folder-aware axis-lock offset propagation. When an axis-lock drag passes a
+  // folder, the folder card translates by ±activeSlot — but its rendered
+  // descendants (depth+1, depth+2, ...) live as flat siblings in the column's
+  // DOM, so they need the same translate applied to stay visually attached to
+  // the folder block. Walk each descendant's parent chain (constrained to the
+  // chapter's subtree) and inherit the closest ancestor folder's offset.
+  const effectiveAxisLockOffsets = useMemo(() => {
+    const base = axisLockOffsets ?? new Map<string, number>();
+    if (base.size === 0) return base;
+    const parentMap = new Map<string, string | null>();
+    for (const d of descendants) parentMap.set(d.node.id, d.node.parentId);
+    const result = new Map(base);
+    for (const d of descendants) {
+      if (result.has(d.node.id)) continue;
+      let p = parentMap.get(d.node.id) ?? null;
+      while (p && p !== folder.id) {
+        if (result.has(p)) {
+          result.set(d.node.id, result.get(p)!);
+          break;
+        }
+        p = parentMap.get(p) ?? null;
+      }
+    }
+    return result;
+  }, [axisLockOffsets, descendants, folder.id]);
 
   const sceneItems = descendants
     .filter((d) => d.node.nodeType === "scene")
@@ -293,7 +319,9 @@ export function GridColumn({
                           folder={node}
                           compact={display.compactCards}
                           columnDropIndicator={columnDropIndicator}
-                          axisLockOffsetPx={axisLockOffsets?.get(node.id)}
+                          axisLockOffsetPx={effectiveAxisLockOffsets.get(
+                            node.id,
+                          )}
                         />
                       </div>
                     );
@@ -308,7 +336,7 @@ export function GridColumn({
                         dimmed={vis !== undefined && !vis.matchesSearch}
                         dropIndicator={dropIndicator}
                         columnDropIndicator={columnDropIndicator}
-                        axisLockOffsetPx={axisLockOffsets?.get(node.id)}
+                        axisLockOffsetPx={effectiveAxisLockOffsets.get(node.id)}
                         onRequestDeleteConfirm={onRequestDeleteConfirm}
                         flatOrder={flatOrder}
                       />

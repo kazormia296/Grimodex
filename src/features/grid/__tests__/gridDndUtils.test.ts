@@ -19,7 +19,9 @@ import {
   computeColumnAxisLockTarget,
   computeColumnAxisLockShifts,
   computeColumnAxisLockPxOffsets,
+  findFolderBlockLastVisibleId,
 } from "../gridDndUtils";
+import { makeNodeData } from "@/test-utils/nodeFixture";
 
 describe("parseId", () => {
   it("parses scene-drop- prefix", () => {
@@ -1577,4 +1579,107 @@ describe("id helpers", () => {
   it("columnEmptyId", () =>
     expect(columnEmptyId("loose")).toBe("column-empty-loose"));
   it("columnNestId", () => expect(columnNestId("f1")).toBe("column-nest-f1"));
+});
+
+describe("findFolderBlockLastVisibleId", () => {
+  // Tree:
+  //   ch1 (folder, parent=root)
+  //     fA (folder, parent=ch1)
+  //       s1 (scene, parent=fA)
+  //       fB (folder, parent=fA)
+  //         s2 (scene, parent=fB)
+  //     s3 (scene, parent=ch1)
+  const nodes = [
+    makeNodeData({
+      id: "root",
+      nodeType: "folder",
+      parentId: null,
+      sortOrder: "a0",
+    }),
+    makeNodeData({
+      id: "ch1",
+      nodeType: "folder",
+      parentId: "root",
+      sortOrder: "a1",
+    }),
+    makeNodeData({
+      id: "fA",
+      nodeType: "folder",
+      parentId: "ch1",
+      sortOrder: "a1",
+    }),
+    makeNodeData({
+      id: "s1",
+      nodeType: "scene",
+      parentId: "fA",
+      sortOrder: "a1",
+    }),
+    makeNodeData({
+      id: "fB",
+      nodeType: "folder",
+      parentId: "fA",
+      sortOrder: "a2",
+    }),
+    makeNodeData({
+      id: "s2",
+      nodeType: "scene",
+      parentId: "fB",
+      sortOrder: "a1",
+    }),
+    makeNodeData({
+      id: "s3",
+      nodeType: "scene",
+      parentId: "ch1",
+      sortOrder: "a2",
+    }),
+  ];
+
+  it("returns null for an empty folder", () => {
+    const empty = [
+      makeNodeData({
+        id: "f1",
+        nodeType: "folder",
+        parentId: null,
+        sortOrder: "a0",
+      }),
+    ];
+    expect(findFolderBlockLastVisibleId("f1", empty, new Set())).toBeNull();
+  });
+
+  it("returns null when the folder itself is collapsed", () => {
+    expect(
+      findFolderBlockLastVisibleId("fA", nodes, new Set(["fA"])),
+    ).toBeNull();
+  });
+
+  it("returns the deepest right-most scene for a fully expanded tree", () => {
+    // fA expanded, fB expanded → last visible node inside fA's block is s2.
+    expect(findFolderBlockLastVisibleId("fA", nodes, new Set())).toBe("s2");
+  });
+
+  it("returns the collapsed inner folder card when its contents are hidden", () => {
+    // fA expanded, fB collapsed → fB card is still visible, but s2 is not.
+    // Block ends at the fB card.
+    expect(findFolderBlockLastVisibleId("fA", nodes, new Set(["fB"]))).toBe(
+      "fB",
+    );
+  });
+
+  it("returns the deepest descendant when last child is a scene", () => {
+    // ch1's last visible direct child is s3 (a scene).
+    expect(findFolderBlockLastVisibleId("ch1", nodes, new Set())).toBe("s3");
+  });
+
+  it("returns the deepest right-most descendant when last child is an expanded folder", () => {
+    // Move s3 BEFORE fA so the last child of ch1 is fA (an expanded folder).
+    // Use the existing nodes but with reversed sortOrders.
+    const reordered = nodes.map((n) => {
+      if (n.id === "fA") return { ...n, sortOrder: "a2" };
+      if (n.id === "s3") return { ...n, sortOrder: "a1" };
+      return n;
+    });
+    expect(findFolderBlockLastVisibleId("ch1", reordered, new Set())).toBe(
+      "s2",
+    );
+  });
 });

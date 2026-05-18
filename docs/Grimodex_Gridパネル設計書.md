@@ -588,6 +588,16 @@ i18n 辞書を作る際は、テンプレートの段階名・紹介文・Apply 
 - folder カードは active scene が通過した時点で **`activeSlot` 分だけ上下にスライド**する（`GridFolderCard` が `axisLockOffsetPx` prop を受けて translateY）。scene カードと同じ transition / reducedMotion ガード
 - siblings の DOM 取得は `data-grid-scene-id` と `data-grid-folder-id` の両方を query。`GridFolderCard` のルートにも `data-grid-folder-id` を付与（GridColumn ルートの同名属性とは folder.id で一意に区別される）
 
+**展開フォルダの「ブロック rect」（union rect）**:
+
+- フォルダが展開済みのとき、可視ブロックは folder カード単体ではなく **folder カード top 〜 最深可視子の bottom** までの union rect として扱う。folder カードの rect だけだと midpoint がブロックの中心ではなくフォルダカード自身の中心になり、ユーザーが folder の内容を実際に通過しきる前に「folder を抜けた」判定が出てしまう（→ 内部の scene が宙に浮いて見える）
+- `findFolderBlockLastVisibleId(folderId, nodes, collapsedFolderIds)` ヘルパが「folder の可視ブロックの最後の rendered id」を返す:
+  - folder が崩れている／空 → `null`（caller は folder カード自身の rect を使う）
+  - 最後の可視子が scene → その scene id
+  - 最後の可視子が展開済み folder → 再帰してその子孫の右端
+  - 最後の可視子が折りたたみ folder → その folder の id（card は見えているが contents は隠れている）
+- folder ブロックが axis-lock で translate するとき、**内部の可視子孫も同じ offset を継承する**（`GridColumn.effectiveAxisLockOffsets`）。子孫は DOM 上は folder の flat sibling として描画されるため、folder の translate を inherit しないとブロックがバラバラに動いて見える
+
 **フォルダ内への侵入は禁止**:
 
 - axis-lock 中の active scene は **常に元の parent（depth）に留まる**。folder 内部（depth+1）のシーンとは順序入れ替えしない

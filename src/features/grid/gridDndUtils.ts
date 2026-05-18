@@ -4,6 +4,8 @@
  */
 
 import { glog } from "./gridDndLog";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
+import type { TreeNodeData } from "@/features/tree/treeStore";
 
 export type DragKind = "scene" | "column";
 
@@ -1075,4 +1077,45 @@ export function sceneDraggableId(sceneId: string) {
 }
 export function columnDraggableId(folderId: string) {
   return `column-${folderId}`;
+}
+
+/**
+ * Walk a folder's visible descendant tree (depth-first, sortOrder) and return
+ * the id of the deepest, right-most visible node — i.e. the **last rendered
+ * row inside the folder's visual block** in the Grid column.
+ *
+ * Used by axis-lock to compute the folder's union rect (folder card top, last
+ * visible descendant bottom). Without this, the folder's slot height in the
+ * axis-lock math is just the folder card itself, which leaves visible scenes
+ * inside it dangling when the parent scene drags past it.
+ *
+ * Returns `null` when:
+ * - the folder is collapsed (block consists of just the folder card → caller
+ *   should fall back to the folder card's own rect)
+ * - the folder is empty (same reason)
+ *
+ * Behavior for nested collapsed folders: returns the **collapsed folder card's
+ * id** (its card is still visible even though its contents are hidden) — the
+ * caller uses the collapsed folder card's bottom as the block boundary.
+ */
+export function findFolderBlockLastVisibleId(
+  folderId: string,
+  nodes: TreeNodeData[],
+  collapsedFolderIds: Set<string>,
+): string | null {
+  if (collapsedFolderIds.has(folderId)) return null;
+  const children = nodes
+    .filter((n) => n.parentId === folderId)
+    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+  if (children.length === 0) return null;
+  const last = children[children.length - 1];
+  if (last.nodeType === "folder" && !collapsedFolderIds.has(last.id)) {
+    const deeper = findFolderBlockLastVisibleId(
+      last.id,
+      nodes,
+      collapsedFolderIds,
+    );
+    return deeper ?? last.id;
+  }
+  return last.id;
 }

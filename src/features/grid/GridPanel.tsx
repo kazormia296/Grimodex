@@ -49,6 +49,7 @@ import {
   computeSceneAxisLockTarget,
   computeColumnAxisLockPxOffsets,
   computeColumnAxisLockTarget,
+  findFolderBlockLastVisibleId,
   resolveSceneDragMode,
 } from "./gridDndUtils";
 import type {
@@ -586,6 +587,7 @@ export function GridPanel() {
         )
         .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
       if (siblings.length <= 1) return;
+      const collapsedFolderIds = useGridStore.getState().collapsedFolderIds;
       const siblingRects: Record<string, { top: number; bottom: number }> = {};
       for (const sib of siblings) {
         const attr =
@@ -595,7 +597,33 @@ export function GridPanel() {
         const el = document.querySelector(`[${attr}="${sib.id}"]`);
         if (!(el instanceof HTMLElement)) continue;
         const r = el.getBoundingClientRect();
-        siblingRects[sib.id] = { top: r.top, bottom: r.bottom };
+        const top = r.top;
+        let bottom = r.bottom;
+        // For an expanded folder, the visible block extends past the folder
+        // card itself to include its rendered descendants. Without the union,
+        // the axis-lock midpoint sits at the folder card's center — well above
+        // the bottom of the actual block — so the active scene would "pass"
+        // the folder long before the user has dragged past its rendered
+        // contents, leaving the descendants visually dangling.
+        if (sib.nodeType === "folder") {
+          const lastId = findFolderBlockLastVisibleId(
+            sib.id,
+            nodes,
+            collapsedFolderIds,
+          );
+          if (lastId) {
+            const lastNode = nodes.find((n) => n.id === lastId);
+            const lastAttr =
+              lastNode?.nodeType === "folder"
+                ? "data-grid-folder-id"
+                : "data-grid-scene-id";
+            const lastEl = document.querySelector(`[${lastAttr}="${lastId}"]`);
+            if (lastEl instanceof HTMLElement) {
+              bottom = lastEl.getBoundingClientRect().bottom;
+            }
+          }
+        }
+        siblingRects[sib.id] = { top, bottom };
       }
       if (!siblingRects[sceneId]) return;
       const activeEl = document.querySelector(
