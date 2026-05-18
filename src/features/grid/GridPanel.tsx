@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
+  MeasuringStrategy,
   PointerSensor,
   KeyboardSensor,
   pointerWithin,
@@ -1195,6 +1196,13 @@ export function GridPanel() {
       sensors={sensors}
       collisionDetection={gridCollisionDetection}
       modifiers={[snapOverlayCenterToCursor]}
+      // dnd-kit デフォルトの "Optimized" 戦略は translate.x/y 変化で droppable
+      // を全件 getBoundingClientRect する。Grid は ~27 droppable + 16 cards で
+      // pointer move 毎に 15-25ms の layout thrashing になっていた。
+      // axis-lock 中は GridPanel が自前 siblingRects を保持しており、drag 中に
+      // 列やカードの実 rect が動く局面でも dnd-kit の measure 結果は使われない
+      // ため、BeforeDragging に切替えて drag 開始時のみ measure する。
+      measuring={{ droppable: { strategy: MeasuringStrategy.BeforeDragging } }}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
