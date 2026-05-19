@@ -499,6 +499,69 @@ CREATE TABLE IF NOT EXISTS project_snapshot_entries (
     PRIMARY KEY (snapshot_id, version_id)
 );
 
+-- Structural snapshot tables: see src-tauri/src/database/migrate.rs for the
+-- canonical definition. The legacy seed below writes only project_snapshots
+-- + project_snapshot_entries (content-only snapshot) so these tables stay
+-- empty until the user creates a new snapshot from the app.
+CREATE TABLE IF NOT EXISTS project_snapshot_tree_nodes (
+    snapshot_id        TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+    node_id            TEXT NOT NULL,
+    parent_id          TEXT,
+    node_type          TEXT NOT NULL,
+    title              TEXT NOT NULL,
+    synopsis           TEXT,
+    sort_order         TEXT NOT NULL,
+    story_time_order   TEXT,
+    story_time_label   TEXT,
+    pov_character_id   TEXT,
+    location_id        TEXT,
+    status             TEXT,
+    body_version_id    TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+    unplaced_beats_doc TEXT NOT NULL DEFAULT '[]',
+    char_count         INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (snapshot_id, node_id)
+);
+
+CREATE TABLE IF NOT EXISTS project_snapshot_codex_entries (
+    snapshot_id      TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+    entry_id         TEXT NOT NULL,
+    type             TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    parent_id        TEXT,
+    aliases          TEXT,
+    excluded_aliases TEXT,
+    summary          TEXT,
+    icon             TEXT,
+    context_mode     TEXT NOT NULL,
+    children_budget  TEXT NOT NULL,
+    notes            TEXT,
+    body_version_id  TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (snapshot_id, entry_id)
+);
+
+CREATE TABLE IF NOT EXISTS project_snapshot_snippets (
+    snapshot_id            TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+    snippet_id             TEXT NOT NULL,
+    title                  TEXT NOT NULL,
+    scene_id               TEXT,
+    source_chat_message_id TEXT,
+    body_version_id        TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+    created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (snapshot_id, snippet_id)
+);
+
+CREATE TABLE IF NOT EXISTS project_snapshot_aux (
+    snapshot_id  TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+    scope        TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, scope)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -876,22 +939,42 @@ BEGIN
     VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.content,''));
 END;
 
+-- Snapshot-aware cascade triggers. Versions referenced by any
+-- project_snapshot_* table are protected (RESTRICT FK); skipping them in the
+-- DELETE keeps tree_nodes / codex_entries / snippets deletes from rolling
+-- back with FOREIGN KEY constraint failed. Kept in sync with
+-- migrate_cv_triggers_protect_snapshot_versions in src-tauri/src/database/migrate.rs.
 CREATE TRIGGER IF NOT EXISTS delete_cv_on_tree_node_delete
 AFTER DELETE ON tree_nodes BEGIN
     DELETE FROM content_versions
-    WHERE entity_type IN ('scene', 'note') AND entity_id = old.id;
+    WHERE entity_type IN ('scene', 'note')
+      AND entity_id = old.id
+      AND id NOT IN (SELECT version_id FROM project_snapshot_entries)
+      AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL)
+      AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL)
+      AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL);
 END;
 
 CREATE TRIGGER IF NOT EXISTS delete_cv_on_codex_entry_delete
 AFTER DELETE ON codex_entries BEGIN
     DELETE FROM content_versions
-    WHERE entity_type = 'codex_entry' AND entity_id = old.id;
+    WHERE entity_type = 'codex_entry'
+      AND entity_id = old.id
+      AND id NOT IN (SELECT version_id FROM project_snapshot_entries)
+      AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL)
+      AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL)
+      AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL);
 END;
 
 CREATE TRIGGER IF NOT EXISTS delete_cv_on_snippet_delete
 AFTER DELETE ON snippets BEGIN
     DELETE FROM content_versions
-    WHERE entity_type = 'snippet' AND entity_id = old.id;
+    WHERE entity_type = 'snippet'
+      AND entity_id = old.id
+      AND id NOT IN (SELECT version_id FROM project_snapshot_entries)
+      AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL)
+      AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL)
+      AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL);
 END;
 
 -- プロジェクト作成時にビルトインCodexタイプを自動生成
