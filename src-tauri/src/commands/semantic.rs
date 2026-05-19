@@ -1,4 +1,4 @@
-//! Step 6: 本文セマンティック検索の Tauri command 入口。
+//! 本文セマンティック検索の Tauri command 入口 (Step 6 & 7)。
 //!
 //! 設計: temp/semantic-prose-search-context.md §3.5。
 //!
@@ -28,6 +28,7 @@ use tauri::Manager;
 
 use crate::semantic::embedding::{Embedder, EMBEDDING_DIM_RURI_V3_30M, MODEL_ID_RURI_V3_30M};
 use crate::semantic::index::{index_scene, UpsertOutcome};
+use crate::semantic::search::{run_search, SearchCache, SearchHit};
 
 use super::{with_db, AppError, WorkspaceState};
 
@@ -66,6 +67,9 @@ fn load_embedder() -> anyhow::Result<Embedder> {
 ///
 /// 戻り値: 挿入したチャンク数。古い content_hash で破棄された場合や
 /// 非シーンノード/存在しないIDの場合は `0`。
+///
+/// upsert 成功時は `SearchCache` の該当 scene を invalidate して、
+/// 次回 `semantic_search` で新しい chunks が読まれるようにする。
 #[tauri::command]
 pub(crate) async fn semantic_index_scene(
     app: tauri::AppHandle,
@@ -75,6 +79,7 @@ pub(crate) async fn semantic_index_scene(
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<usize, AppError> {
         let ws_state = app.state::<WorkspaceState>();
         let emb_state = app.state::<SemanticEmbedderState>();
+        let cache = app.state::<SearchCache>();
 
         // Embedder lazy load (初回のみコスト)。
         let mut guard = emb_state
@@ -89,12 +94,79 @@ pub(crate) async fn semantic_index_scene(
         let outcome = with_db(&ws_state, |db| {
             index_scene(db, embedder, &scene_id, &model_id)
         })?;
-        Ok(match outcome {
-            UpsertOutcome::Indexed(n) => n,
+
+        // Indexed のときだけ cache を捨てる。Skipped* は DB を触っていないので
+        // 既存キャッシュは有効。
+        let n = match outcome {
+            UpsertOutcome::Indexed(n) => {
+                cache.invalidate(&scene_id)?;
+                n
+            }
             UpsertOutcome::SkippedHashMismatch | UpsertOutcome::SkippedNotScene => 0,
-        })
+        };
+        Ok(n)
     })
     .await
     .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// 本文セマンティック検索。
+///
+/// クエリ文字列を Embedder で埋め込み、`scene_chunks` 全体 (または `scene_scope`
+/// 指定時は単一 scene 内) に対して総当たりコサイン → Top-K を返す。
+/// `description_mode=true` のとき、`dialogue_ratio > 0.6` のチャンクのスコアを
+/// 0.85 倍に減点する。
+#[tauri::command]
+pub(crate) async fn semantic_search(
+    app: tauri::AppHandle,
+    project_id: String,
+    query: String,
+    limit: usize,
+    scene_scope: Option<String>,
+    description_mode: Option<bool>,
+) -> Result<Vec<SearchHit>, AppError> {
+    let model_id = current_model_id();
+    let description_mode = description_mode.unwrap_or(false);
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SearchHit>, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            let emb_state = app.state::<SemanticEmbedderState>();
+            let cache = app.state::<SearchCache>();
+
+            // Embedder lazy load + クエリ埋め込み。検索クエリ prefix は embed_query
+            // 側で付与される (semantic/embedding.rs::QUERY_PREFIX)。
+            let mut guard = emb_state
+                .inner
+                .lock()
+                .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+            if guard.is_none() {
+                *guard = Some(load_embedder()?);
+            }
+            let embedder = guard.as_mut().expect("just ensured Some");
+            let query_embedding = embedder.embed_query(&query)?;
+            let embedding_dim = embedder.embedding_dim();
+            // Embedder を握り続ける必要は無いのでロック解放。スコアリング中に
+            // 並行 invoke が embed できるようにする。
+            drop(guard);
+
+            let hits = with_db(&ws_state, |db| {
+                run_search(
+                    db,
+                    &cache,
+                    &query_embedding,
+                    &project_id,
+                    scene_scope.as_deref(),
+                    limit,
+                    description_mode,
+                    &model_id,
+                    embedding_dim,
+                    crate::semantic::chunker::CHUNKER_VERSION,
+                )
+            })?;
+            Ok(hits)
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
     result
 }

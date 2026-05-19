@@ -117,6 +117,10 @@ pub fn run() {
                 inner: std::sync::Mutex::new(None),
             });
 
+            // Semantic search: in-memory embedding cache (scene_id -> Vec<f32>).
+            // Cleared on workspace open; invalidated per-scene on index_scene.
+            app.manage(semantic::search::SearchCache::new());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -185,6 +189,8 @@ pub fn run() {
             commands::onboarding::seed_sample_workspace,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_index_scene,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::semantic_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

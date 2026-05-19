@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 use crate::database::Database;
+use crate::semantic::search::SearchCache;
 use crate::workspace::{self, GlobalSettings};
 
 use super::{ActiveWorkspace, AppError, GlobalSettingsPath, WorkspaceState};
@@ -39,6 +40,7 @@ pub(crate) fn validate_workspace_path(path: String) -> bool {
 pub(crate) fn open_workspace(
     ws_state: tauri::State<'_, WorkspaceState>,
     gs_path: tauri::State<'_, GlobalSettingsPath>,
+    semantic_cache: tauri::State<'_, SearchCache>,
     path: String,
 ) -> Result<OpenWorkspaceResult, AppError> {
     let ws_path = PathBuf::from(&path);
@@ -62,6 +64,10 @@ pub(crate) fn open_workspace(
         db: database,
         path: ws_path,
     });
+
+    // Semantic search の in-memory cache は前 workspace の scene_id を握っているので
+    // 切替時に必ず捨てる (UUID 衝突は起きないが、安全側に倒す)。
+    semantic_cache.clear()?;
 
     // Update global settings
     let mut settings = workspace::read_global_settings(&gs_path.path);
