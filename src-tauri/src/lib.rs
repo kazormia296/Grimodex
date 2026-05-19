@@ -5,6 +5,7 @@ mod codex_matching;
 mod commands;
 mod database;
 mod lint_logging;
+mod semantic;
 mod workspace;
 
 use std::sync::{Arc, Mutex};
