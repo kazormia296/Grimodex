@@ -508,23 +508,33 @@ impl Database {
             -- (Nullify-on-delete behavior for source_chat_message_id / scene_id
             --  is now enforced by FK ON DELETE SET NULL; explicit triggers removed.)
 
-            -- Triggers to cascade-delete content_versions for polymorphic entity_id
+            -- Triggers to cascade-delete content_versions for polymorphic entity_id.
+            -- Versions referenced by project_snapshot_entries are protected
+            -- (that FK is ON DELETE RESTRICT, so an unconditional DELETE would
+            -- fail with FOREIGN KEY constraint failed and roll back the
+            -- enclosing tree_nodes / codex_entries / snippets delete).
             CREATE TRIGGER IF NOT EXISTS delete_cv_on_tree_node_delete
             AFTER DELETE ON tree_nodes BEGIN
                 DELETE FROM content_versions
-                WHERE entity_type IN ('scene', 'note') AND entity_id = old.id;
+                WHERE entity_type IN ('scene', 'note')
+                  AND entity_id = old.id
+                  AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
             END;
 
             CREATE TRIGGER IF NOT EXISTS delete_cv_on_codex_entry_delete
             AFTER DELETE ON codex_entries BEGIN
                 DELETE FROM content_versions
-                WHERE entity_type = 'codex_entry' AND entity_id = old.id;
+                WHERE entity_type = 'codex_entry'
+                  AND entity_id = old.id
+                  AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
             END;
 
             CREATE TRIGGER IF NOT EXISTS delete_cv_on_snippet_delete
             AFTER DELETE ON snippets BEGIN
                 DELETE FROM content_versions
-                WHERE entity_type = 'snippet' AND entity_id = old.id;
+                WHERE entity_type = 'snippet'
+                  AND entity_id = old.id
+                  AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
             END;
 
             -- Seed built-in codex types for every new project
@@ -898,6 +908,14 @@ impl Database {
         // still have the old `color` column; rebuild the table to migrate.
         Self::migrate_stickies_color_to_palette_slot(&conn)?;
 
+        // delete_cv_on_*_delete triggers originally dropped *all* content_versions
+        // for the deleted entity. Versions referenced by a snapshot entry have
+        // ON DELETE RESTRICT, so the trigger would fail with FOREIGN KEY
+        // constraint failed and abort the enclosing delete. Existing DBs still
+        // hold the buggy CREATE TRIGGER IF NOT EXISTS definitions; drop them
+        // here so the recreated batch above installs the snapshot-aware version.
+        Self::migrate_cv_triggers_protect_snapshot_versions(&conn)?;
+
         // PostEffects — 書き換えずに注釈を重ねる AI パスの実行単位と成果物。
         // 設計詳細は docs/Grimodex_PostEffects設計書.md。
         // enum CHECK と FTS5 仮想テーブル/トリガはここに直書きする（Drizzle では表現不可）。
@@ -1120,6 +1138,46 @@ impl Database {
                 ON map_stickies(source_chat_message_id)
                 WHERE source_chat_message_id IS NOT NULL;
             COMMIT;",
+        )?;
+        Ok(())
+    }
+
+    /// One-shot migration: drop the legacy delete_cv_on_*_delete triggers so
+    /// the snapshot-aware versions installed by `migrate()` take effect on
+    /// pre-existing databases. The original triggers wrote
+    /// `DELETE FROM content_versions WHERE entity_type = X AND entity_id = Y`
+    /// unconditionally; that violated `project_snapshot_entries.version_id`'s
+    /// RESTRICT FK whenever a snapshot referenced one of those versions and
+    /// caused the enclosing tree_nodes / codex_entries / snippets delete to
+    /// fail with `FOREIGN KEY constraint failed`.
+    pub(super) fn migrate_cv_triggers_protect_snapshot_versions(
+        conn: &Connection,
+    ) -> anyhow::Result<()> {
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS delete_cv_on_tree_node_delete;
+             DROP TRIGGER IF EXISTS delete_cv_on_codex_entry_delete;
+             DROP TRIGGER IF EXISTS delete_cv_on_snippet_delete;
+             CREATE TRIGGER delete_cv_on_tree_node_delete
+             AFTER DELETE ON tree_nodes BEGIN
+                 DELETE FROM content_versions
+                 WHERE entity_type IN ('scene', 'note')
+                   AND entity_id = old.id
+                   AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
+             END;
+             CREATE TRIGGER delete_cv_on_codex_entry_delete
+             AFTER DELETE ON codex_entries BEGIN
+                 DELETE FROM content_versions
+                 WHERE entity_type = 'codex_entry'
+                   AND entity_id = old.id
+                   AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
+             END;
+             CREATE TRIGGER delete_cv_on_snippet_delete
+             AFTER DELETE ON snippets BEGIN
+                 DELETE FROM content_versions
+                 WHERE entity_type = 'snippet'
+                   AND entity_id = old.id
+                   AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
+             END;",
         )?;
         Ok(())
     }

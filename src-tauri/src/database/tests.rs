@@ -1026,6 +1026,242 @@ fn test_nullify_snippet_scene_on_node_delete() {
     assert_eq!(rows[0]["scene_id"], Value::Null);
 }
 
+/// Regression: deleting a folder whose child scene has a content_version
+/// referenced by a project_snapshot used to fail with
+/// `FOREIGN KEY constraint failed` because `delete_cv_on_tree_node_delete`
+/// tried to drop the snapshot-protected version (RESTRICT FK on
+/// project_snapshot_entries.version_id). The trigger must skip those rows so
+/// the snapshot keeps pointing at preserved version data while unprotected
+/// versions are cleaned up.
+#[test]
+fn test_delete_tree_node_preserves_snapshot_protected_versions() {
+    let db = test_db();
+    let p = |s: &str| Value::String(s.into());
+
+    db.execute(
+        "INSERT INTO projects (id, title, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))",
+        &[p("snap-proj"), p("Snap")],
+        "run",
+    ).expect("insert project");
+
+    db.execute(
+        "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, ?, 'folder', 'Part 1', 'a0', datetime('now'), datetime('now'))",
+        &[p("snap-part1"), p("snap-proj")],
+        "run",
+    ).expect("insert folder");
+
+    db.execute(
+        "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, 'scene', 'Scene 1', 'a1', datetime('now'), datetime('now'))",
+        &[p("snap-scene1"), p("snap-proj"), p("snap-part1")],
+        "run",
+    ).expect("insert scene");
+
+    // Two versions for the same scene: v-protected referenced by a snapshot,
+    // v-orphan not referenced (should be cleaned up by the trigger).
+    db.execute(
+        "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number, snapshot_type, created_at) VALUES (?, 'scene', ?, '{}', 1, 'auto', datetime('now'))",
+        &[p("v-protected"), p("snap-scene1")],
+        "run",
+    ).expect("insert protected version");
+    db.execute(
+        "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number, snapshot_type, created_at) VALUES (?, 'scene', ?, '{}', 2, 'auto', datetime('now'))",
+        &[p("v-orphan"), p("snap-scene1")],
+        "run",
+    ).expect("insert orphan version");
+
+    db.execute(
+        "INSERT INTO project_snapshots (id, project_id, name, created_at) VALUES (?, ?, ?, datetime('now'))",
+        &[p("snap-1"), p("snap-proj"), p("第一部・初稿")],
+        "run",
+    ).expect("insert snapshot");
+    db.execute(
+        "INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES (?, ?)",
+        &[p("snap-1"), p("v-protected")],
+        "run",
+    ).expect("insert snapshot entry");
+
+    // Delete the folder; cascade hits the scene and the cv-cleanup trigger.
+    // Pre-fix this returned FOREIGN KEY constraint failed on v-protected.
+    db.execute(
+        "DELETE FROM tree_nodes WHERE id = ?",
+        &[p("snap-part1")],
+        "run",
+    ).expect("delete folder");
+
+    let nodes = db
+        .execute(
+            "SELECT id FROM tree_nodes WHERE project_id = ?",
+            &[p("snap-proj")],
+            "all",
+        )
+        .expect("query nodes");
+    assert_eq!(nodes.len(), 0, "folder and scene should be gone");
+
+    let versions = db
+        .execute(
+            "SELECT id FROM content_versions WHERE entity_id = ? ORDER BY id",
+            &[p("snap-scene1")],
+            "all",
+        )
+        .expect("query versions");
+    assert_eq!(
+        versions.len(),
+        1,
+        "only the snapshot-protected version should survive"
+    );
+    assert_eq!(versions[0]["id"], Value::String("v-protected".into()));
+
+    // Snapshot entry must still point at the protected version.
+    let entries = db
+        .execute(
+            "SELECT version_id FROM project_snapshot_entries WHERE snapshot_id = ?",
+            &[p("snap-1")],
+            "all",
+        )
+        .expect("query entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["version_id"], Value::String("v-protected".into()));
+}
+
+/// Simulates an existing DB that was migrated by an older binary: the buggy
+/// `delete_cv_on_*_delete` triggers are already installed. The next
+/// `migrate()` call must drop them and reinstall the snapshot-aware version
+/// so the user-visible bug stops reproducing.
+#[test]
+fn test_migrate_replaces_legacy_cv_triggers() {
+    let db = test_db();
+    let p = |s: &str| Value::String(s.into());
+
+    // Re-introduce the legacy (buggy) triggers, overwriting the fixed ones.
+    db.execute(
+        "DROP TRIGGER IF EXISTS delete_cv_on_tree_node_delete",
+        &[],
+        "run",
+    )
+    .expect("drop");
+    db.execute(
+        "DROP TRIGGER IF EXISTS delete_cv_on_codex_entry_delete",
+        &[],
+        "run",
+    )
+    .expect("drop");
+    db.execute(
+        "DROP TRIGGER IF EXISTS delete_cv_on_snippet_delete",
+        &[],
+        "run",
+    )
+    .expect("drop");
+    db.execute(
+        "CREATE TRIGGER delete_cv_on_tree_node_delete AFTER DELETE ON tree_nodes BEGIN \
+         DELETE FROM content_versions WHERE entity_type IN ('scene','note') AND entity_id = old.id; END",
+        &[],
+        "run",
+    )
+    .expect("legacy trigger");
+
+    // Re-run migrate(); the helper should replace the legacy trigger.
+    db.migrate().expect("re-migrate");
+
+    db.execute(
+        "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, 'default-project', 'scene', 'S', 'a0', datetime('now'), datetime('now'))",
+        &[p("legacy-scene")],
+        "run",
+    ).expect("insert scene");
+    db.execute(
+        "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number, snapshot_type, created_at) VALUES (?, 'scene', ?, '{}', 1, 'auto', datetime('now'))",
+        &[p("legacy-v"), p("legacy-scene")],
+        "run",
+    ).expect("insert version");
+    db.execute(
+        "INSERT INTO project_snapshots (id, project_id, name, created_at) VALUES (?, 'default-project', 'legacy snap', datetime('now'))",
+        &[p("legacy-snap")],
+        "run",
+    ).expect("insert snapshot");
+    db.execute(
+        "INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES (?, ?)",
+        &[p("legacy-snap"), p("legacy-v")],
+        "run",
+    ).expect("insert entry");
+
+    db.execute(
+        "DELETE FROM tree_nodes WHERE id = ?",
+        &[p("legacy-scene")],
+        "run",
+    )
+    .expect("post-migration delete must succeed");
+}
+
+/// Codex entries and snippets share the same trigger family; verify the
+/// snapshot protection covers them too.
+#[test]
+fn test_delete_codex_entry_and_snippet_preserve_snapshot_versions() {
+    let db = test_db();
+    let p = |s: &str| Value::String(s.into());
+
+    // Codex entry with a snapshot-protected version
+    db.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, 'default-project', 'character', 'X', datetime('now'), datetime('now'))",
+        &[p("cx-1")],
+        "run",
+    ).expect("insert codex");
+    db.execute(
+        "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number, snapshot_type, created_at) VALUES (?, 'codex_entry', ?, '{}', 1, 'auto', datetime('now'))",
+        &[p("cx-v1"), p("cx-1")],
+        "run",
+    ).expect("insert codex version");
+    db.execute(
+        "INSERT INTO project_snapshots (id, project_id, name, created_at) VALUES (?, 'default-project', ?, datetime('now'))",
+        &[p("snap-cx"), p("codex snap")],
+        "run",
+    ).expect("insert snapshot");
+    db.execute(
+        "INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES (?, ?)",
+        &[p("snap-cx"), p("cx-v1")],
+        "run",
+    ).expect("insert entry");
+    db.execute(
+        "DELETE FROM codex_entries WHERE id = ?",
+        &[p("cx-1")],
+        "run",
+    ).expect("delete codex entry");
+
+    // Snippet with a snapshot-protected version
+    db.execute(
+        "INSERT INTO snippets (id, project_id, title, created_at, updated_at) VALUES (?, 'default-project', 'sn', datetime('now'), datetime('now'))",
+        &[p("sn-1")],
+        "run",
+    ).expect("insert snippet");
+    db.execute(
+        "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number, snapshot_type, created_at) VALUES (?, 'snippet', ?, '{}', 1, 'auto', datetime('now'))",
+        &[p("sn-v1"), p("sn-1")],
+        "run",
+    ).expect("insert snippet version");
+    db.execute(
+        "INSERT INTO project_snapshots (id, project_id, name, created_at) VALUES (?, 'default-project', ?, datetime('now'))",
+        &[p("snap-sn"), p("snippet snap")],
+        "run",
+    ).expect("insert snapshot");
+    db.execute(
+        "INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES (?, ?)",
+        &[p("snap-sn"), p("sn-v1")],
+        "run",
+    ).expect("insert entry");
+    db.execute(
+        "DELETE FROM snippets WHERE id = ?",
+        &[p("sn-1")],
+        "run",
+    ).expect("delete snippet");
+
+    let surviving = db
+        .execute(
+            "SELECT id FROM content_versions WHERE id IN ('cx-v1', 'sn-v1') ORDER BY id",
+            &[],
+            "all",
+        )
+        .expect("query");
+    assert_eq!(surviving.len(), 2, "both snapshot-protected versions survive");
+}
+
 #[test]
 fn test_integrity_check_clean_db() {
     let db = test_db();
