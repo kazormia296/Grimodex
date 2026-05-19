@@ -1157,7 +1157,35 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_trash_project_deleted
                 ON trash_items(project_id, deleted_at DESC);
             CREATE INDEX IF NOT EXISTS idx_trash_project_kind_deleted
-                ON trash_items(project_id, kind, deleted_at DESC);",
+                ON trash_items(project_id, kind, deleted_at DESC);
+
+            -- Semantic search: 本文 prose の埋め込みチャンクを保存する。
+            -- Drizzle schema (src/db/schema.ts) と完全一致させる。
+            -- created_at / updated_at は ms-since-epoch INTEGER。Drizzle の mode: 'timestamp'
+            -- は Date を ms-INTEGER で serialize するため SQL DEFAULT は付けない。
+            -- 詳細: temp/semantic-prose-search-context.md §3.1。
+            CREATE TABLE IF NOT EXISTS scene_chunks (
+                id               TEXT PRIMARY KEY,
+                scene_id         TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                chunk_index      INTEGER NOT NULL,
+                text             TEXT NOT NULL,
+                char_start       INTEGER NOT NULL,
+                char_end         INTEGER NOT NULL,
+                dialogue_ratio   REAL NOT NULL DEFAULT 0,
+                embedding        BLOB NOT NULL,
+                embedding_dim    INTEGER NOT NULL,
+                model_id         TEXT NOT NULL,
+                content_hash     TEXT NOT NULL,
+                chunker_version  TEXT NOT NULL,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_scene_chunks_scene
+                ON scene_chunks(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_scene_chunks_model
+                ON scene_chunks(model_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_scene_chunks_scene_index
+                ON scene_chunks(scene_id, chunk_index);",
         )?;
 
         Ok(())

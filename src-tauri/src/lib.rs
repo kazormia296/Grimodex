@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 use codex_matching::CodexMatcherState;
+#[cfg(feature = "semantic-embedding")]
+use commands::semantic::SemanticEmbedderState;
 use commands::{
     AiSettingsPath, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag, LogGuard,
     PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
@@ -109,6 +111,12 @@ pub fn run() {
                 flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
 
+            // Semantic search: ruri-v3 ONNX Embedder. Lazy load on first invoke.
+            #[cfg(feature = "semantic-embedding")]
+            app.manage(SemanticEmbedderState {
+                inner: std::sync::Mutex::new(None),
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -174,7 +182,9 @@ pub fn run() {
             commands::post_effect::update_annotation_status,
             commands::post_effect::update_relation_status,
             commands::post_effect::save_post_effect_annotations,
-            commands::onboarding::seed_sample_workspace
+            commands::onboarding::seed_sample_workspace,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::semantic_index_scene,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

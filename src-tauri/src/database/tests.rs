@@ -35,6 +35,7 @@ fn test_migrate_creates_all_tables() {
         "foreshadows",
         "foreshadow_setups",
         "foreshadow_codex_links",
+        "scene_chunks",
     ];
     for table in &expected_tables {
         let rows = db
