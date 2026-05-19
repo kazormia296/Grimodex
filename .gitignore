@@ -16,3 +16,9 @@ temp/
 # cargo build 時に LINDERA_DICTIONARIES_PATH でここを指す想定。
 # 詳細は src-tauri/crates/grimodex-lint/README を参照。
 lindera-cache/
+
+# ruri-v3 ONNX モデル本体 (~150MB fp32 + ~40MB int8)。
+# scripts/export-ruri-onnx.py で cl-nagoya 本家から再生成可能。
+# Tauri ビルド時にリソースとして同梱するが、git には載せない。
+# tokenizer.json / config.json 等の軽量設定ファイルは別途 git に入れて良い。
+src-tauri/resources/semantic/**/*.onnx
