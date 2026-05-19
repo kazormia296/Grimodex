@@ -151,7 +151,7 @@ describe("ToolWindowStripe", () => {
       expect(container.querySelector("[data-stripe-divider]")).not.toBeNull();
     });
 
-    it("does not render a divider when all panels share the same sub-slot", () => {
+    it("renders a divider even when all panels share the same sub-slot (always visible)", () => {
       const { container } = render(
         <ToolWindowStripe
           region="left"
@@ -159,10 +159,10 @@ describe("ToolWindowStripe", () => {
           panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
         />,
       );
-      expect(container.querySelector("[data-stripe-divider]")).toBeNull();
+      expect(container.querySelector("[data-stripe-divider]")).not.toBeNull();
     });
 
-    it("does not render a divider for bottom stripe with only BL panels", () => {
+    it("renders a divider for bottom stripe with only BL panels (always visible)", () => {
       const { container } = render(
         <ToolWindowStripe
           region="bottom"
@@ -170,7 +170,7 @@ describe("ToolWindowStripe", () => {
           panels={[{ id: "timeline", slot: "BL", visible: true, active: true }]}
         />,
       );
-      expect(container.querySelector("[data-stripe-divider]")).toBeNull();
+      expect(container.querySelector("[data-stripe-divider]")).not.toBeNull();
     });
 
     it("renders divider between BL and BR groups in bottom stripe", () => {

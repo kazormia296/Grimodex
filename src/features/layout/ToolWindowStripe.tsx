@@ -12,9 +12,16 @@ interface StripeGroupProps {
   targetSlot: ToolWindowSlot;
   panels: ReadonlyArray<StripePanel>;
   orientation: "vertical" | "horizontal";
+  /** 残スペースを全部占有する (trailing グループ用) */
+  grow?: boolean;
 }
 
-function StripeGroup({ targetSlot, panels, orientation }: StripeGroupProps) {
+function StripeGroup({
+  targetSlot,
+  panels,
+  orientation,
+  grow,
+}: StripeGroupProps) {
   const moveToSlot = useLayoutStore((s) => s.moveToSlot);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
 
@@ -42,6 +49,7 @@ function StripeGroup({ targetSlot, panels, orientation }: StripeGroupProps) {
       onDrop={handleDrop}
       className={cn(
         "flex",
+        grow && "flex-1",
         orientation === "vertical"
           ? "flex-col items-center gap-1"
           : "flex-row items-center gap-1",
@@ -83,9 +91,8 @@ export function ToolWindowStripe({
 
   const topPanels = panels.filter((p) => isTopSlot(p.slot));
   const bottomPanels = panels.filter((p) => !isTopSlot(p.slot));
-  const showDivider = topPanels.length > 0 && bottomPanels.length > 0;
 
-  // region ごとの slot ペア: top と bottom の slot ID を決定
+  // region ごとの slot ペア
   const topSlot: ToolWindowSlot =
     region === "left" ? "LT" : region === "right" ? "RT" : "BL";
   const bottomSlot: ToolWindowSlot =
@@ -111,23 +118,23 @@ export function ToolWindowStripe({
         orientation={orientation}
       />
 
-      {showDivider && (
-        <div
-          data-stripe-divider
-          aria-hidden
-          className={cn(
-            "shrink-0 rounded-full bg-border/60",
-            orientation === "vertical"
-              ? "h-[1px] w-4 my-0.5"
-              : "w-[1px] h-4 mx-0.5",
-          )}
-        />
-      )}
+      {/* 常に表示: どちらのスロットにパネルがあるか一目で分かるようにする */}
+      <div
+        data-stripe-divider
+        aria-hidden
+        className={cn(
+          "shrink-0 rounded-full bg-border/60",
+          orientation === "vertical"
+            ? "h-[1px] w-4 my-0.5"
+            : "w-[1px] h-4 mx-0.5",
+        )}
+      />
 
       <StripeGroup
         targetSlot={bottomSlot}
         panels={bottomPanels}
         orientation={orientation}
+        grow
       />
     </div>
   );
