@@ -55,12 +55,24 @@ pub struct SearchHit {
     pub dialogue_ratio: f32,
 }
 
-/// scene_id → `Arc<Vec<CachedChunk>>` のキャッシュ。
+/// scene_id 単位のキャッシュエントリ。`model_id` / `embedding_dim` /
+/// `chunker_version` が現行と一致するときだけ hit とみなす。
+/// アプリ更新でモデル識別子が変わっても、workspace を開き直さずに
+/// 古い埋め込みベクトルを返さないためのガード。
+#[derive(Debug, Clone)]
+struct CacheEntry {
+    model_id: String,
+    embedding_dim: usize,
+    chunker_version: String,
+    chunks: Arc<Vec<CachedChunk>>,
+}
+
+/// scene_id → キャッシュエントリ。
 ///
 /// `Mutex` は std (spawn_blocking 内で使うため、tokio mutex の block_on を避ける)。
 /// `Arc` を返すことで、cache hit 時にロックを早期 release してから scoring を行える。
 pub struct SearchCache {
-    inner: Mutex<HashMap<String, Arc<Vec<CachedChunk>>>>,
+    inner: Mutex<HashMap<String, CacheEntry>>,
 }
 
 impl Default for SearchCache {
@@ -76,21 +88,53 @@ impl SearchCache {
         Self::default()
     }
 
-    /// scene_id のキャッシュエントリを取り出す。なければ `None`。
-    pub fn get(&self, scene_id: &str) -> Result<Option<Arc<Vec<CachedChunk>>>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|e| anyhow!("search cache lock poisoned: {e}"))?;
-        Ok(guard.get(scene_id).cloned())
-    }
-
-    pub fn put(&self, scene_id: String, chunks: Arc<Vec<CachedChunk>>) -> Result<()> {
+    /// scene_id のキャッシュエントリを取り出す。識別子が一致しない stale エントリは
+    /// ミス扱いにして除去する。
+    pub fn get(
+        &self,
+        scene_id: &str,
+        model_id: &str,
+        embedding_dim: usize,
+        chunker_version: &str,
+    ) -> Result<Option<Arc<Vec<CachedChunk>>>> {
         let mut guard = self
             .inner
             .lock()
             .map_err(|e| anyhow!("search cache lock poisoned: {e}"))?;
-        guard.insert(scene_id, chunks);
+        let Some(entry) = guard.get(scene_id) else {
+            return Ok(None);
+        };
+        if entry.model_id == model_id
+            && entry.embedding_dim == embedding_dim
+            && entry.chunker_version == chunker_version
+        {
+            return Ok(Some(entry.chunks.clone()));
+        }
+        guard.remove(scene_id);
+        Ok(None)
+    }
+
+    pub fn put(
+        &self,
+        scene_id: String,
+        model_id: String,
+        embedding_dim: usize,
+        chunker_version: String,
+        chunks: Arc<Vec<CachedChunk>>,
+    ) -> Result<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|e| anyhow!("search cache lock poisoned: {e}"))?;
+        guard.insert(
+            scene_id,
+            CacheEntry {
+                model_id,
+                embedding_dim,
+                chunker_version,
+                chunks,
+            },
+        );
         Ok(())
     }
 
@@ -294,7 +338,7 @@ pub fn run_search(
     // 2) cache から取得 or DB load + cache put
     let mut chunk_groups: Vec<Arc<Vec<CachedChunk>>> = Vec::with_capacity(scene_ids.len());
     for scene_id in &scene_ids {
-        let arc = match cache.get(scene_id)? {
+        let arc = match cache.get(scene_id, model_id, embedding_dim, chunker_version)? {
             Some(a) => a,
             None => {
                 let chunks = load_scene_chunks_from_db(
@@ -305,7 +349,13 @@ pub fn run_search(
                     chunker_version,
                 )?;
                 let arc = Arc::new(chunks);
-                cache.put(scene_id.clone(), arc.clone())?;
+                cache.put(
+                    scene_id.clone(),
+                    model_id.to_string(),
+                    embedding_dim,
+                    chunker_version.to_string(),
+                    arc.clone(),
+                )?;
                 arc
             }
         };
@@ -452,7 +502,10 @@ mod tests {
     #[test]
     fn cache_get_returns_none_for_missing() {
         let cache = SearchCache::new();
-        assert!(cache.get("nope").unwrap().is_none());
+        assert!(cache
+            .get("nope", MODEL_ID, 4, CHUNKER_VERSION)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -467,25 +520,89 @@ mod tests {
             dialogue_ratio: 0.0,
             embedding: vec![0.1; 4],
         }]);
-        cache.put("s1".into(), chunks.clone()).unwrap();
-        let got = cache.get("s1").unwrap().expect("cache hit");
+        cache
+            .put(
+                "s1".into(),
+                MODEL_ID.to_string(),
+                4,
+                CHUNKER_VERSION.to_string(),
+                chunks.clone(),
+            )
+            .unwrap();
+        let got = cache
+            .get("s1", MODEL_ID, 4, CHUNKER_VERSION)
+            .unwrap()
+            .expect("cache hit");
         assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn cache_misses_when_model_id_differs_and_drops_stale_entry() {
+        let cache = SearchCache::new();
+        cache
+            .put(
+                "s1".into(),
+                "old/model".to_string(),
+                4,
+                CHUNKER_VERSION.to_string(),
+                Arc::new(vec![]),
+            )
+            .unwrap();
+        assert!(cache
+            .get("s1", MODEL_ID, 4, CHUNKER_VERSION)
+            .unwrap()
+            .is_none());
+        // stale entry は lazy remove される。
+        assert!(cache
+            .get("s1", "old/model", 4, CHUNKER_VERSION)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn cache_invalidate_removes_entry() {
         let cache = SearchCache::new();
-        cache.put("s1".into(), Arc::new(vec![])).unwrap();
-        assert!(cache.get("s1").unwrap().is_some());
+        cache
+            .put(
+                "s1".into(),
+                MODEL_ID.to_string(),
+                4,
+                CHUNKER_VERSION.to_string(),
+                Arc::new(vec![]),
+            )
+            .unwrap();
+        assert!(cache
+            .get("s1", MODEL_ID, 4, CHUNKER_VERSION)
+            .unwrap()
+            .is_some());
         cache.invalidate("s1").unwrap();
-        assert!(cache.get("s1").unwrap().is_none());
+        assert!(cache
+            .get("s1", MODEL_ID, 4, CHUNKER_VERSION)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn cache_clear_removes_all() {
         let cache = SearchCache::new();
-        cache.put("s1".into(), Arc::new(vec![])).unwrap();
-        cache.put("s2".into(), Arc::new(vec![])).unwrap();
+        cache
+            .put(
+                "s1".into(),
+                MODEL_ID.to_string(),
+                4,
+                CHUNKER_VERSION.to_string(),
+                Arc::new(vec![]),
+            )
+            .unwrap();
+        cache
+            .put(
+                "s2".into(),
+                MODEL_ID.to_string(),
+                4,
+                CHUNKER_VERSION.to_string(),
+                Arc::new(vec![]),
+            )
+            .unwrap();
         assert_eq!(cache.len(), 2);
         cache.clear().unwrap();
         assert_eq!(cache.len(), 0);

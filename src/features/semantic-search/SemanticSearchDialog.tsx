@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { semanticSearch, type SemanticSearchHit } from "./api";
+import { nextSearchResultIndex } from "./searchResultSelection";
 import { useSemanticNavStore } from "./semanticNavStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -124,10 +125,16 @@ export function SemanticSearchDialog({ onClose }: SemanticSearchDialogProps) {
     (e: React.KeyboardEvent) => {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSelectedIndex((i) => Math.min(i + 1, results.length - 1));
+        setSelectedIndex((i) => {
+          const next = nextSearchResultIndex(i, "down", results.length);
+          return next ?? i;
+        });
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        setSelectedIndex((i) => Math.max(i - 1, 0));
+        setSelectedIndex((i) => {
+          const next = nextSearchResultIndex(i, "up", results.length);
+          return next ?? i;
+        });
       } else if (e.key === "Enter" && results[selectedIndex]) {
         e.preventDefault();
         openHit(results[selectedIndex]);
