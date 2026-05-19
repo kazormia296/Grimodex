@@ -120,6 +120,8 @@ import { AiPolicyBadge } from "@/features/ai-policy/AiPolicyBadge";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
+import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
+import { findChunkInDoc } from "@/features/semantic-search/findChunkInDoc";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import i18next from "i18next";
@@ -924,6 +926,38 @@ export function EditorPane({
     return unsubscribe;
   }, [editor, lintSceneId]);
 
+  // 同シーン内のセマンティック検索結果ジャンプ要求を処理する (Step 9 TODO)。
+  // 構造は foreshadow と同じ。chunk_text を findChunkInDoc で PM position に
+  // 変換して setTextSelection + scrollIntoView。
+  useEffect(() => {
+    if (!editor || !lintSceneId) return;
+    const unsubscribe = useSemanticNavStore.subscribe((state, prev) => {
+      const jump = state.pendingJump;
+      if (!jump || jump === prev.pendingJump) return;
+      if (jump.sceneId !== lintSceneId) return;
+      if (prevSceneIdRef.current !== lintSceneId) return;
+      const consumed = useSemanticNavStore.getState().consumeJump(lintSceneId);
+      if (!consumed) return;
+      pendingCursorRestoreRef.current = null;
+      const range = findChunkInDoc(editor.state.doc, consumed.chunkText);
+      if (!range) {
+        // 一致無しならスクロールだけ (シーン先頭に戻すのは過剰なのでフォーカスのみ)。
+        editor.chain().focus().run();
+        return;
+      }
+      const docSize = editor.state.doc.content.size;
+      const from = Math.min(range.from, Math.max(0, docSize - 1));
+      const to = Math.min(range.to, Math.max(0, docSize - 1));
+      editor
+        .chain()
+        .focus()
+        .setTextSelection({ from, to })
+        .scrollIntoView()
+        .run();
+    });
+    return unsubscribe;
+  }, [editor, lintSceneId]);
+
   // Scroll editor to annotation mark when panel item is focused
   useEffect(() => {
     if (!focusedAnnotationId || !editorContainerRef.current) return;
@@ -1392,8 +1426,13 @@ export function EditorPane({
         // state is never applied if this new switch doesn't produce saved data.
         pendingCursorRestoreRef.current = null;
 
-        // 伏線パネルからのジャンプ要求は saved cursor 復元より優先する。
+        // 伏線パネル / セマンティック検索からのジャンプ要求は saved cursor
+        // 復元より優先する。伏線が先 (両方が同 scene に立つことはほぼ無いが
+        // 念のため固定順)。
         const fJump = useForeshadowNavStore.getState().consumeJump(nodeId);
+        const sJump = fJump
+          ? null
+          : useSemanticNavStore.getState().consumeJump(nodeId);
         if (fJump && !cancelled) {
           requestAnimationFrame(() => {
             if (cancelled) return;
@@ -1406,6 +1445,25 @@ export function EditorPane({
             }
             const from = Math.min(fJump.fromPos, Math.max(0, docSize - 1));
             const to = Math.min(fJump.toPos, Math.max(0, docSize - 1));
+            ed.chain()
+              .focus()
+              .setTextSelection({ from, to })
+              .scrollIntoView()
+              .run();
+          });
+        } else if (sJump && !cancelled) {
+          requestAnimationFrame(() => {
+            if (cancelled) return;
+            const ed = editorRef.current;
+            if (!ed) return;
+            const range = findChunkInDoc(ed.state.doc, sJump.chunkText);
+            if (!range) {
+              ed.chain().focus().run();
+              return;
+            }
+            const docSize = ed.state.doc.content.size;
+            const from = Math.min(range.from, Math.max(0, docSize - 1));
+            const to = Math.min(range.to, Math.max(0, docSize - 1));
             ed.chain()
               .focus()
               .setTextSelection({ from, to })

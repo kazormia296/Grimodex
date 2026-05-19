@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { semanticSearch, type SemanticSearchHit } from "./api";
+import { useSemanticNavStore } from "./semanticNavStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useSearchModeStore } from "@/features/search/searchModeStore";
@@ -11,8 +12,9 @@ import { useSearchModeStore } from "@/features/search/searchModeStore";
  * 同じ Ctrl+Shift+F で `GlobalSearchDialog` (字句検索) と交互に出る。
  * モードは `useSearchModeStore` で永続化 (localStorage)。
  *
- * 結果クリックで該当シーンを開く。MVP では chunk_text 位置へのスクロール+
- * ハイライトは入れない (§3.6 ProseMirror position mapping は後続タスク)。
+ * 結果クリックで該当シーンを開き、`useSemanticNavStore` に chunk_text を渡して
+ * エディタ側 (`EditorPane`) で findChunkInDoc → scrollIntoView + setTextSelection
+ * によりハイライト+スクロールさせる (§3.6)。
  */
 
 // GlobalSearchDialog と一致させる必要は無いが、frontend 全体で project id を
@@ -83,10 +85,15 @@ export function SemanticSearchDialog({ onClose }: SemanticSearchDialogProps) {
   const openHit = useCallback(
     (hit: SemanticSearchHit) => {
       const { showPanel } = useLayoutStore.getState();
+      // setActiveScene 前に jump を登録しておく。EditorPane の switchScene
+      // 経路は同一 microtask で consume するため、ここで先に書く。
+      useSemanticNavStore.getState().requestJump({
+        sceneId: hit.sceneId,
+        chunkText: hit.chunkText,
+      });
       onClose();
       setActiveScene(hit.sceneId);
       showPanel("editor");
-      // TODO: chunk_text 先頭一致でのスクロール+ハイライト (§3.6 後続)。
     },
     [onClose, setActiveScene],
   );
