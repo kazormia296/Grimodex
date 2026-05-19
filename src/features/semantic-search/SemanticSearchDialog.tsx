@@ -35,6 +35,8 @@ export function SemanticSearchDialog({ onClose }: SemanticSearchDialogProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 連続クエリ間で古い結果が後から到着して上書きするのを防ぐ generation counter。
+  const requestGenRef = useRef(0);
 
   const setMode = useSearchModeStore((s) => s.setMode);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
@@ -52,6 +54,9 @@ export function SemanticSearchDialog({ onClose }: SemanticSearchDialogProps) {
   }, [onClose]);
 
   // Debounced search. query / descriptionMode のどちらが変わっても再実行する。
+  // - cleanup でタイマーを破棄し、unmount 後の setState を防ぐ。
+  // - requestGenRef で各リクエストに世代番号を振り、新しい世代が始まったら
+  //   古い世代の結果は捨てる (debounce を越えても遅延応答が前面に出ないように)。
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
     const q = query.trim();
@@ -63,6 +68,7 @@ export function SemanticSearchDialog({ onClose }: SemanticSearchDialogProps) {
     }
     setLoading(true);
     setError(null);
+    const myGen = ++requestGenRef.current;
     timerRef.current = setTimeout(async () => {
       try {
         const hits = await semanticSearch({
@@ -71,15 +77,31 @@ export function SemanticSearchDialog({ onClose }: SemanticSearchDialogProps) {
           limit: 20,
           descriptionMode,
         });
+        if (myGen !== requestGenRef.current) return;
         setResults(hits);
         setSelectedIndex(0);
       } catch (e) {
+        if (myGen !== requestGenRef.current) return;
         setResults([]);
         setError(String((e as Error)?.message ?? e));
       } finally {
-        setLoading(false);
+        if (myGen === requestGenRef.current) {
+          setLoading(false);
+        }
       }
     }, DEBOUNCE_MS);
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      // 次の effect / unmount で古い世代の結果を捨てるよう gen を進める。
+      // ref は DOM ノードではなく単なるカウンタなので exhaustive-deps の
+      // 「cleanup 時に value が変わっている可能性」警告は意図通り (snapshot
+      // ではなく "今の" gen を進めたい)。
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      requestGenRef.current++;
+    };
   }, [query, descriptionMode]);
 
   const openHit = useCallback(

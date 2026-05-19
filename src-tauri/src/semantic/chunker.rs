@@ -249,11 +249,17 @@ fn build_units(paragraphs: &[String], config: &ChunkerConfig) -> Vec<Unit> {
 
                 if is_tag {
                     // 直前の dialogue ビートに吸収。tag 部分は prose なので dialogue_chars は加算しない。
+                    // gap は plain_text 上で「直前ユニットの end から本段落の start まで」の
+                    // scalar 数。間に空段落があると gap > 1 になり、その分の \n を埋めないと
+                    // text.chars().count() != char_end - char_start でずれる。
                     let last = units.last_mut().expect("is_tag guarantees a previous unit");
-                    last.text.push('\n');
+                    let gap = p_start.saturating_sub(last.plain_text_end);
+                    for _ in 0..gap {
+                        last.text.push('\n');
+                    }
                     last.text.push_str(p);
                     last.plain_text_end = p_end;
-                    last.total_chars += 1 + p_chars; // 1 は段落間改行
+                    last.total_chars += gap + p_chars;
                 } else if p_chars > config.target_max_chars {
                     // 長い地の文段落は文単位に割る
                     let sentences = split_sentences_ja(p);
@@ -761,5 +767,27 @@ mod tests {
         // tag を吸収しているので、chunk text には両方が連続して含まれる
         assert!(chunks[0].text.contains("「行くぞ」"));
         assert!(chunks[0].text.contains("と彼は言った。"));
+    }
+
+    #[test]
+    fn chunk_scene_dialogue_tag_with_empty_paragraph_between_keeps_offset_invariant() {
+        // dialogue + 空段落 + dialogue tag。
+        // plain_text は paragraphs.join("\n") なので、空段落も 1 文字ぶん消費し
+        // dialogue と tag の間に \n が 2 つ入る。
+        // 吸収側がそのギャップを正しく埋めないと、chunk.text の文字数と
+        // (char_end - char_start) がずれる (TDD red 用回帰テスト)。
+        let doc = make_doc(&["「行くぞ」", "", "と彼は言った。"]);
+        let chunks = chunk_scene(&doc, &ChunkerConfig::default()).unwrap();
+        assert_eq!(chunks.len(), 1);
+        let c = &chunks[0];
+        assert_eq!(
+            c.text.chars().count(),
+            c.char_end - c.char_start,
+            "chunk text length must match char_end - char_start (got text={:?})",
+            c.text
+        );
+        // 内容としては「「行くぞ」\n\nと彼は言った。」になる (空段落の \n を保持)
+        assert!(c.text.contains("「行くぞ」"));
+        assert!(c.text.contains("と彼は言った。"));
     }
 }

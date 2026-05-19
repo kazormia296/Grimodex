@@ -1428,11 +1428,12 @@ export function EditorPane({
 
         // 伏線パネル / セマンティック検索からのジャンプ要求は saved cursor
         // 復元より優先する。伏線が先 (両方が同 scene に立つことはほぼ無いが
-        // 念のため固定順)。
+        // 念のため固定順)。両方の store から必ず consume する: そうしないと
+        // 敗者側 (例: fJump 採用時の semantic jump) が次の switchScene まで
+        // 残り、別シーンの呼び出しで余計な飛び先になる。
         const fJump = useForeshadowNavStore.getState().consumeJump(nodeId);
-        const sJump = fJump
-          ? null
-          : useSemanticNavStore.getState().consumeJump(nodeId);
+        const sJumpRaw = useSemanticNavStore.getState().consumeJump(nodeId);
+        const sJump = fJump ? null : sJumpRaw;
         if (fJump && !cancelled) {
           requestAnimationFrame(() => {
             if (cancelled) return;
