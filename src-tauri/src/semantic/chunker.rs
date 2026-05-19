@@ -179,10 +179,7 @@ pub fn split_sentences_ja(text: &str) -> Vec<&str> {
                 let mut end = i + c.len_utf8();
                 // 直後の閉じ括弧・連続終端記号を同じ文に飲み込む
                 while let Some(&(j, nc)) = it.peek() {
-                    if matches!(
-                        nc,
-                        '」' | '』' | '）' | ')' | '！' | '？' | '!' | '?'
-                    ) {
+                    if matches!(nc, '」' | '』' | '）' | ')' | '！' | '？' | '!' | '?') {
                         end = j + nc.len_utf8();
                         it.next();
                     } else {
@@ -247,16 +244,12 @@ fn build_units(paragraphs: &[String], config: &ChunkerConfig) -> Vec<Unit> {
                 });
             }
             ParagraphKind::Prose => {
-                let is_tag = units
-                    .last()
-                    .is_some_and(|u| u.dialogue_chars > 0)
+                let is_tag = units.last().is_some_and(|u| u.dialogue_chars > 0)
                     && is_dialogue_tag(p, config.dialogue_tag_max_chars);
 
                 if is_tag {
                     // 直前の dialogue ビートに吸収。tag 部分は prose なので dialogue_chars は加算しない。
-                    let last = units
-                        .last_mut()
-                        .expect("is_tag guarantees a previous unit");
+                    let last = units.last_mut().expect("is_tag guarantees a previous unit");
                     last.text.push('\n');
                     last.text.push_str(p);
                     last.plain_text_end = p_end;
@@ -327,10 +320,8 @@ fn pack_units(units: &[Unit], config: &ChunkerConfig) -> Vec<SceneChunk> {
         let same_as_prev_overlap = chunks
             .last()
             .map(|prev| {
-                prev.char_start
-                    == current.first().expect("non-empty").plain_text_start
-                    && prev.char_end
-                        == current.last().expect("non-empty").plain_text_end
+                prev.char_start == current.first().expect("non-empty").plain_text_start
+                    && prev.char_end == current.last().expect("non-empty").plain_text_end
             })
             .unwrap_or(false);
         if !same_as_prev_overlap {
