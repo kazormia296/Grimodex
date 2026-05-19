@@ -119,6 +119,7 @@ import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { AiPolicyBadge } from "@/features/ai-policy/AiPolicyBadge";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useChatStore } from "@/features/chat/chatStore";
+import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import i18next from "i18next";
@@ -481,6 +482,11 @@ export function EditorPane({
           .catch(() => {})
           .finally(() => markEnd("editor.coreSave.refreshContextLayers"));
       }
+      // セマンティック検索の再インデックスを debounce 付きで予約する。
+      // 連続入力中は 2.5s おきに後ろへずれ、ユーザが手を止めてから 1 度だけ
+      // Rust 側 `semantic_index_scene` を呼ぶ。正しさは Rust 側 content_hash
+      // 再検証で担保される (§3.4)。
+      scheduleSceneIndex(id);
     }
     markEnd("editor.coreSave");
   }, []);
