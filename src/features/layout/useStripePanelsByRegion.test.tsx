@@ -86,7 +86,7 @@ describe("useStripePanelsByRegion", () => {
     });
     const { result } = renderHook(() => useStripePanelsByRegion());
     expect(result.current.left).toEqual([
-      { id: "scenes", visible: true, active: true },
+      { id: "scenes", slot: "LT", visible: true, active: true },
     ]);
   });
 
@@ -103,11 +103,13 @@ describe("useStripePanelsByRegion", () => {
     // scenes は裏 tab → visible=true active=false
     expect(result.current.left).toContainEqual({
       id: "scenes",
+      slot: "LT",
       visible: true,
       active: false,
     });
     expect(result.current.left).toContainEqual({
       id: "codex",
+      slot: "LB",
       visible: true,
       active: true,
     });
@@ -120,8 +122,13 @@ describe("useStripePanelsByRegion", () => {
     });
     const { result } = renderHook(() => useStripePanelsByRegion());
     expect(result.current.left).toEqual([
-      { id: "scenes", visible: false, active: false },
-      { id: "command-center-results", visible: false, active: false },
+      { id: "scenes", slot: "LT", visible: false, active: false },
+      {
+        id: "command-center-results",
+        slot: "LB",
+        visible: false,
+        active: false,
+      },
     ]);
   });
 
@@ -133,6 +140,7 @@ describe("useStripePanelsByRegion", () => {
     const { result } = renderHook(() => useStripePanelsByRegion());
     expect(result.current.left).toContainEqual({
       id: "command-center-results",
+      slot: "LB",
       visible: false,
       active: false,
     });
@@ -147,7 +155,7 @@ describe("useStripePanelsByRegion", () => {
     });
     const { result } = renderHook(() => useStripePanelsByRegion());
     expect(result.current.left).toEqual([
-      { id: "snippets", visible: false, active: false },
+      { id: "snippets", slot: "LT", visible: false, active: false },
     ]);
     expect(result.current.bottom).toEqual([]);
   });
@@ -160,7 +168,7 @@ describe("useStripePanelsByRegion", () => {
     });
     const { result } = renderHook(() => useStripePanelsByRegion());
     expect(result.current.right).toEqual([
-      { id: "chat", visible: false, active: true },
+      { id: "chat", slot: "RT", visible: false, active: true },
     ]);
   });
 

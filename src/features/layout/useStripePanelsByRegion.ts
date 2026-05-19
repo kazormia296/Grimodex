@@ -4,10 +4,13 @@ import {
   DEFAULT_SLOT_MAP,
   SLOT_TO_REGION,
   type StripeRegion,
+  type ToolWindowSlot,
 } from "./toolWindowDefaults";
 
 export interface StripePanel {
   id: Exclude<PanelId, "editor">;
+  /** 有効 slot (override > DEFAULT_SLOT_MAP)。Phase 2 で divider / DnD に利用 */
+  slot: ToolWindowSlot;
   /**
    * Panel が Dockview に mount されている (group が存在する) か。
    * - 同じ tab group の「裏 tab」も visible=true
@@ -78,7 +81,7 @@ export function useStripePanelsByRegion(): StripePanelsByRegion {
 
         const slot = toolWindows[id]?.slot ?? DEFAULT_SLOT_MAP[id];
         const region = SLOT_TO_REGION[slot];
-        result[region].push({ id, visible, active });
+        result[region].push({ id, slot, visible, active });
       }
       return result;
     },

@@ -421,6 +421,18 @@
       "codexMain": "Condense",
       "saveLayout": "現在のレイアウトを保存",
       "resetDefault": "デフォルトに戻す"
+    },
+    "stripe": {
+      "moveTo": "移動先",
+      "removeFromSidebar": "サイドバーから削除",
+      "slot": {
+        "LT": "左 上",
+        "LB": "左 下",
+        "RT": "右 上",
+        "RB": "右 下",
+        "BL": "下 左",
+        "BR": "下 右"
+      }
     }
   },
   "kouetsu": {
@@ -2482,5 +2494,4 @@
       }
     }
   }
-
 }

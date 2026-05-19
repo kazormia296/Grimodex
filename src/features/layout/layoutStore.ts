@@ -198,6 +198,72 @@ export function resolveInsertPositionForRegion(
   }
 }
 
+/**
+ * Slot 単位で insert position を解決する Phase 2 用ロジック。
+ *
+ * 同 slot に既存 panel があれば within、なければ兄弟 slot の panel に対して
+ * 上下/左右の方向で配置する。editor は常に候補外。
+ *
+ * | slot | 兄弟 slot | 兄弟がいる場合の direction |
+ * |------|----------|------------------------|
+ * | LT   | LB       | above (LT は LB の上)   |
+ * | LB   | LT       | below (LB は LT の下)   |
+ * | RT   | RB       | above                  |
+ * | RB   | RT       | below                  |
+ * | BL   | BR       | left (BL は BR の左)    |
+ * | BR   | BL       | right (BR は BL の右)   |
+ */
+export function resolveInsertPositionForSlot(
+  api: Pick<DockviewApi, "getPanel">,
+  slot: ToolWindowSlot,
+  toolWindows?: Partial<Record<PanelId, ToolWindowState>>,
+): InsertPosition {
+  const SIBLING: Record<ToolWindowSlot, ToolWindowSlot> = {
+    LT: "LB",
+    LB: "LT",
+    RT: "RB",
+    RB: "RT",
+    BL: "BR",
+    BR: "BL",
+  };
+  const SIBLING_DIR: Record<ToolWindowSlot, string> = {
+    LT: "above",
+    LB: "below",
+    RT: "above",
+    RB: "below",
+    BL: "left",
+    BR: "right",
+  };
+
+  // 同 slot に既存 panel があれば within
+  for (const id of TOOL_WINDOW_PANEL_IDS) {
+    const effectiveSlot = toolWindows?.[id]?.slot ?? DEFAULT_SLOT_MAP[id];
+    if (effectiveSlot !== slot) continue;
+    if (api.getPanel(id)) return { referencePanel: id, direction: "within" };
+  }
+
+  // 兄弟 slot の panel に相対配置
+  const siblingSlot = SIBLING[slot];
+  for (const id of TOOL_WINDOW_PANEL_IDS) {
+    const effectiveSlot = toolWindows?.[id]?.slot ?? DEFAULT_SLOT_MAP[id];
+    if (effectiveSlot !== siblingSlot) continue;
+    if (api.getPanel(id)) {
+      return { referencePanel: id, direction: SIBLING_DIR[slot] };
+    }
+  }
+
+  // フォールバック: region 方向
+  const region = SLOT_TO_REGION[slot];
+  switch (region) {
+    case "left":
+      return { direction: "left" };
+    case "right":
+      return { direction: "right" };
+    case "bottom":
+      return { direction: "below" };
+  }
+}
+
 /** Human-readable panel title resolved via i18n */
 export function getPanelTitle(id: PanelId): string {
   return i18next.t(`layout.panel.${id}`);
@@ -274,6 +340,15 @@ interface LayoutState {
    * - togglePanel / showPanel / handlePanelDrop / keyboard shortcut から経由
    */
   openPanelAtSlot: (panel: PanelId, opts?: { focus?: boolean }) => void;
+
+  /**
+   * Panel を指定 slot に物理移動する (Phase 2)。
+   * - toolWindows slot を更新する
+   * - visible 中なら removePanel → openPanelAtSlot で再配置
+   * - closed なら slot 設定のみ更新
+   * - editor は no-op
+   */
+  moveToSlot: (panel: PanelId, slot: ToolWindowSlot) => void;
 
   /** Tool window 設定を global-settings から読み込み (handleReady で呼ぶ) */
   loadToolWindowSettings: () => Promise<void>;
@@ -537,8 +612,7 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
     const override = toolWindows[panelId];
     const slot =
       override?.slot ?? DEFAULT_SLOT_MAP[panelId as Exclude<PanelId, "editor">];
-    const region = SLOT_TO_REGION[slot];
-    const position = resolveInsertPositionForRegion(api, region, toolWindows);
+    const position = resolveInsertPositionForSlot(api, slot, toolWindows);
 
     api.addPanel({
       id: panelId,
@@ -546,6 +620,31 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
       title: getPanelTitle(panelId),
       position,
     });
+  },
+
+  moveToSlot(panelId, slot) {
+    const api = get().dockviewApi;
+    if (!api || panelId === "editor") return;
+
+    // slot 設定を先に更新 (resolveInsertPositionForSlot がこれを参照する)
+    get().setToolWindowSlot(panelId, slot);
+
+    // 可視中なら物理移動: removePanel → 直接 addPanel で再配置
+    const existing = api.getPanel(panelId);
+    if (existing) {
+      api.removePanel(existing);
+      const position = resolveInsertPositionForSlot(
+        api,
+        slot,
+        get().toolWindows,
+      );
+      api.addPanel({
+        id: panelId,
+        component: panelId,
+        title: getPanelTitle(panelId),
+        position,
+      });
+    }
   },
 
   async loadToolWindowSettings() {
