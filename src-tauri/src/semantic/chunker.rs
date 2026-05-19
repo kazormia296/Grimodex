@@ -1,5 +1,8 @@
 //! ProseMirror doc → SceneChunk 列。
 //!
+//! Step 6 で Tauri command `semantic_index_scene` に配線されるまでは外部から
+//! 呼ばれないため、本ファイルは crate 内 dead_code を許容する。
+//!
 //! 設計: temp/semantic-prose-search-context.md §3.3。
 //! 入力は ProseMirror / TipTap JSON で、`sceneBeat` (プロンプト) は除外し、
 //! `paragraph` ノードのみを順に取り出す (生成 prose を含む `generatedProseBlock`
@@ -16,6 +19,8 @@
 //!
 //! 戻り値の `char_start` / `char_end` は plain_text 上の Unicode scalar 単位。
 //! ProseMirror position や Rust の byte offset とは別物 (§3.2)。
+
+#![allow(dead_code)]
 
 use anyhow::Result;
 use serde_json::Value;
@@ -66,37 +71,311 @@ pub struct SceneChunk {
     pub dialogue_ratio: f32,
 }
 
+/// 発話・反応動詞辞書。dialogue tag 検出に使う。控えめに留め、誤結合より誤分離を優先する。
+const SPEECH_VERBS: &[&str] = &[
+    "言った",
+    "尋ねた",
+    "答えた",
+    "呟いた",
+    "つぶやいた",
+    "叫んだ",
+    "笑った",
+    "頷いた",
+    "うなずいた",
+    "首を振った",
+];
+
 /// ProseMirror doc を順に走査して `paragraph` 段落テキストだけ拾う。
 /// `sceneBeat` サブツリーはスキップ (Beat はプロンプトであって本文ではない)。
 /// `generatedProseBlock` 等は中に paragraph を持つので、その paragraph は取り込む。
 pub fn extract_paragraph_texts(doc: &Value) -> Vec<String> {
-    let _ = doc;
-    todo!("implement in next commit")
+    let mut out = Vec::new();
+    collect_paragraphs(doc, &mut out);
+    out
+}
+
+fn collect_paragraphs(node: &Value, out: &mut Vec<String>) {
+    let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if node_type == "sceneBeat" {
+        // Beat はプロンプト。本文としてはカウントしない。
+        return;
+    }
+    if node_type == "paragraph" {
+        let mut buf = String::new();
+        if let Some(content) = node.get("content").and_then(|v| v.as_array()) {
+            for child in content {
+                extract_inline_text(child, &mut buf);
+            }
+        }
+        out.push(buf);
+        return;
+    }
+    // それ以外 (doc / generatedProseBlock / 未知 block) は中の paragraph を探しに降りる
+    if let Some(content) = node.get("content").and_then(|v| v.as_array()) {
+        for child in content {
+            collect_paragraphs(child, out);
+        }
+    }
+}
+
+fn extract_inline_text(node: &Value, buf: &mut String) {
+    let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match node_type {
+        "text" => {
+            if let Some(t) = node.get("text").and_then(|v| v.as_str()) {
+                buf.push_str(t);
+            }
+        }
+        "hardBreak" => buf.push('\n'),
+        _ => {
+            // mark wrapper や未知 inline は中身を再帰
+            if let Some(content) = node.get("content").and_then(|v| v.as_array()) {
+                for child in content {
+                    extract_inline_text(child, buf);
+                }
+            }
+        }
+    }
 }
 
 /// 段落分類。先頭非空白が `「` または `『` なら Dialogue、それ以外 (空段落含む) は Prose。
 pub fn classify_paragraph(text: &str) -> ParagraphKind {
-    let _ = text;
-    todo!("implement in next commit")
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        if matches!(ch, '「' | '『') {
+            return ParagraphKind::Dialogue;
+        }
+        return ParagraphKind::Prose;
+    }
+    ParagraphKind::Prose
 }
 
 /// dialogue tag 判定。max_chars 以下かつ発話・反応動詞を含むなら true。
 pub fn is_dialogue_tag(text: &str, max_chars: usize) -> bool {
-    let _ = (text, max_chars);
-    todo!("implement in next commit")
+    if text.chars().count() > max_chars {
+        return false;
+    }
+    SPEECH_VERBS.iter().any(|v| text.contains(v))
 }
 
 /// 括弧深度を考慮した日本語文分割。深度 0 のときだけ 。！？!? で区切り、
 /// 直後の閉じ括弧・連続終端記号は同じ文に飲み込む。
+/// アルゴリズムは temp/semantic-prose-search-context.md §3.3 の pseudo-code に準拠。
 pub fn split_sentences_ja(text: &str) -> Vec<&str> {
-    let _ = text;
-    todo!("implement in next commit")
+    let mut out: Vec<&str> = Vec::new();
+    if text.is_empty() {
+        return out;
+    }
+    let mut depth: i32 = 0;
+    let mut start: usize = 0;
+    let mut it = text.char_indices().peekable();
+    while let Some((i, c)) = it.next() {
+        match c {
+            '「' | '『' | '（' | '(' => depth += 1,
+            '」' | '』' | '）' | ')' => depth = (depth - 1).max(0),
+            '。' | '！' | '？' | '!' | '?' if depth == 0 => {
+                let mut end = i + c.len_utf8();
+                // 直後の閉じ括弧・連続終端記号を同じ文に飲み込む
+                while let Some(&(j, nc)) = it.peek() {
+                    if matches!(
+                        nc,
+                        '」' | '』' | '）' | ')' | '！' | '？' | '!' | '?'
+                    ) {
+                        end = j + nc.len_utf8();
+                        it.next();
+                    } else {
+                        break;
+                    }
+                }
+                out.push(&text[start..end]);
+                start = end;
+            }
+            _ => {}
+        }
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
+#[derive(Debug, Clone)]
+struct Unit {
+    text: String,
+    plain_text_start: usize,
+    plain_text_end: usize,
+    total_chars: usize,
+    dialogue_chars: usize,
 }
 
 /// シーン doc → SceneChunk 列。
 pub fn chunk_scene(doc: &Value, config: &ChunkerConfig) -> Result<Vec<SceneChunk>> {
-    let _ = (doc, config);
-    todo!("implement in next commit")
+    let paragraphs = extract_paragraph_texts(doc);
+    let units = build_units(&paragraphs, config);
+    Ok(pack_units(&units, config))
+}
+
+fn build_units(paragraphs: &[String], config: &ChunkerConfig) -> Vec<Unit> {
+    let mut units: Vec<Unit> = Vec::new();
+    let mut scalar_cursor: usize = 0;
+
+    for (idx, p) in paragraphs.iter().enumerate() {
+        let p_chars = p.chars().count();
+        let p_start = scalar_cursor;
+        let p_end = p_start + p_chars;
+        // 次段落とは plain_text 上で "\n" 1 文字ぶん空く (paragraphs.join("\n") と等価)
+        scalar_cursor = p_end;
+        if idx + 1 < paragraphs.len() {
+            scalar_cursor += 1;
+        }
+
+        if p.is_empty() {
+            continue;
+        }
+
+        let kind = classify_paragraph(p);
+        match kind {
+            ParagraphKind::Dialogue => {
+                units.push(Unit {
+                    text: p.clone(),
+                    plain_text_start: p_start,
+                    plain_text_end: p_end,
+                    total_chars: p_chars,
+                    dialogue_chars: p_chars,
+                });
+            }
+            ParagraphKind::Prose => {
+                let is_tag = units
+                    .last()
+                    .is_some_and(|u| u.dialogue_chars > 0)
+                    && is_dialogue_tag(p, config.dialogue_tag_max_chars);
+
+                if is_tag {
+                    // 直前の dialogue ビートに吸収。tag 部分は prose なので dialogue_chars は加算しない。
+                    let last = units
+                        .last_mut()
+                        .expect("is_tag guarantees a previous unit");
+                    last.text.push('\n');
+                    last.text.push_str(p);
+                    last.plain_text_end = p_end;
+                    last.total_chars += 1 + p_chars; // 1 は段落間改行
+                } else if p_chars > config.target_max_chars {
+                    // 長い地の文段落は文単位に割る
+                    let sentences = split_sentences_ja(p);
+                    let mut scalar_within: usize = 0;
+                    for sentence in sentences {
+                        let s_chars = sentence.chars().count();
+                        if s_chars == 0 {
+                            continue;
+                        }
+                        let unit_start = p_start + scalar_within;
+                        scalar_within += s_chars;
+                        let unit_end = p_start + scalar_within;
+                        units.push(Unit {
+                            text: sentence.to_string(),
+                            plain_text_start: unit_start,
+                            plain_text_end: unit_end,
+                            total_chars: s_chars,
+                            dialogue_chars: 0,
+                        });
+                    }
+                } else {
+                    units.push(Unit {
+                        text: p.clone(),
+                        plain_text_start: p_start,
+                        plain_text_end: p_end,
+                        total_chars: p_chars,
+                        dialogue_chars: 0,
+                    });
+                }
+            }
+        }
+    }
+    units
+}
+
+fn pack_units(units: &[Unit], config: &ChunkerConfig) -> Vec<SceneChunk> {
+    if units.is_empty() {
+        return Vec::new();
+    }
+    let mut chunks: Vec<SceneChunk> = Vec::new();
+    let mut current: Vec<&Unit> = Vec::new();
+    let mut current_chars: usize = 0;
+
+    for unit in units {
+        let u_chars = unit.total_chars;
+        let would_exceed = current_chars + u_chars > config.target_max_chars;
+        let above_min = current_chars >= config.target_min_chars;
+        if current_chars > 0 && would_exceed && above_min {
+            chunks.push(materialize_chunk(&current, chunks.len()));
+            let overlap = config.overlap_sentences.min(current.len());
+            let carry_start = current.len() - overlap;
+            current = current[carry_start..].to_vec();
+            current_chars = current.iter().map(|u| u.total_chars).sum();
+            // overlap だけで構成されると次の iteration で重複し続ける。
+            // overlap unit が target_max を超えていても上のガードで前進するので問題ない。
+        }
+        current.push(unit);
+        current_chars += u_chars;
+    }
+
+    if !current.is_empty() {
+        // 末尾チャンクが直前の overlap と完全一致するなら emit しない
+        // (起こりにくいが防衛的に)
+        let same_as_prev_overlap = chunks
+            .last()
+            .map(|prev| {
+                prev.char_start
+                    == current.first().expect("non-empty").plain_text_start
+                    && prev.char_end
+                        == current.last().expect("non-empty").plain_text_end
+            })
+            .unwrap_or(false);
+        if !same_as_prev_overlap {
+            chunks.push(materialize_chunk(&current, chunks.len()));
+        }
+    }
+    chunks
+}
+
+fn materialize_chunk(units: &[&Unit], chunk_index: usize) -> SceneChunk {
+    let first = units.first().expect("materialize_chunk on empty");
+    let last = units.last().expect("materialize_chunk on empty");
+    let mut text = String::new();
+    let mut total_chars: usize = 0;
+    let mut dialogue_chars: usize = 0;
+    for (i, u) in units.iter().enumerate() {
+        if i > 0 {
+            let prev = units[i - 1];
+            // unit 間の plain_text 上の隙間 (改行など) を補う。
+            // 同段落内の sentence-split unit は連続するので gap = 0。
+            // 別段落の unit は paragraphs.join("\n") の分 gap >= 1。
+            if prev.plain_text_end < u.plain_text_start {
+                let gap = u.plain_text_start - prev.plain_text_end;
+                for _ in 0..gap {
+                    text.push('\n');
+                }
+                total_chars += gap;
+            }
+        }
+        text.push_str(&u.text);
+        total_chars += u.total_chars;
+        dialogue_chars += u.dialogue_chars;
+    }
+    let dialogue_ratio = if total_chars > 0 {
+        dialogue_chars as f32 / total_chars as f32
+    } else {
+        0.0
+    };
+    SceneChunk {
+        chunk_index,
+        text,
+        char_start: first.plain_text_start,
+        char_end: last.plain_text_end,
+        dialogue_ratio,
+    }
 }
 
 #[cfg(test)]
