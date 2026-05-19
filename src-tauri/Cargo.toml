@@ -22,7 +22,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
+default = ["semantic-embedding"]
 devtools = ["tauri/devtools"]
+# 本文セマンティック検索の ONNX 推論経路 (Step 4 以降)。production ビルドでは default 有効。
+# `cargo test --no-default-features` で off にすれば chunker などの pure-logic テストが
+# onnxruntime バイナリ無しで走る (Tauri ビルド時に download-binaries が dl)。
+semantic-embedding = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
 
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api"] }
@@ -50,6 +55,24 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 dirs = "5"
+# 本文セマンティック検索 (temp/semantic-prose-search-context.md §2.3)。
+# ort: ONNX Runtime バインディング。download-binaries で初回ビルド時に prebuilt ORT を取得する。
+# tokenizers: HuggingFace tokenizers (ruri-v3 ONNX に同梱の tokenizer.json をロード)。
+# ndarray: ONNX 入出力テンソルの構築・mean pooling 演算に使用。
+ort = { version = "2.0.0-rc.10", optional = true, default-features = false, features = [
+    "download-binaries",
+    "std",
+    "ndarray",
+    # download-binaries は build-time に prebuilt ORT を取りに行く。TLS feature を選ばないと
+    # ort-sys のビルドが落ちる。rustls は pure-Rust で system OpenSSL に依存しないため Tauri
+    # 配布物との相性が良い。
+    "tls-rustls",
+] }
+# fancy-regex を選ぶと pure-Rust のまま Oniguruma を避けられる。ruri-v3 の tokenizer.json は BPE 系。
+tokenizers = { version = "0.21", optional = true, default-features = false, features = [
+    "fancy-regex",
+] }
+ndarray = { version = "0.17", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
