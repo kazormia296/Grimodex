@@ -53,6 +53,8 @@ import { GridPanel } from "@/features/grid/GridPanel";
 import { MatrixPanel } from "@/features/matrix/MatrixPanel";
 import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
 import { SearchDialog } from "@/features/search/SearchDialog";
+import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
+import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
 import { CommandPalette } from "@/features/commandPalette/CommandPalette";
 import { useState } from "react";
 import { Settings, FileOutput } from "lucide-react";
@@ -233,6 +235,9 @@ function App() {
     (s) => s.globalSettings?.uiLanguage ?? "ja",
   );
   const { t } = useTranslation();
+
+  // semantic_reindex_all の進行状況 event を購読 (App 起動中ずっと 1 度だけ)。
+  useReindexProgressListener();
 
   // Sync uiLanguage setting → i18next + refresh dockview panel titles
   useEffect(() => {
@@ -805,6 +810,7 @@ function EditorScreen() {
         <CommandPalette onClose={() => setShowCommandPalette(false)} />
       )}
       {showSampleTour && <SampleTour />}
+      <ReindexProgressToast />
       <div className="flex flex-1 overflow-hidden">
         {/* Dockview layout */}
         <DockviewReact

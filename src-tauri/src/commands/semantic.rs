@@ -24,7 +24,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tauri::Manager;
+use serde::Serialize;
+use tauri::{Emitter, Manager};
 
 use crate::semantic::embedding::{Embedder, EMBEDDING_DIM_RURI_V3_30M, MODEL_ID_RURI_V3_30M};
 use crate::semantic::index::{
@@ -33,6 +34,26 @@ use crate::semantic::index::{
 use crate::semantic::search::{run_search, SearchCache, SearchHit};
 
 use super::{with_db, AppError, WorkspaceState};
+
+/// `semantic:reindex_progress` event の payload。frontend で
+/// `useReindexProgressListener` が listen し、Toast 表示に使う。
+///
+/// - `scene_index`: 完了した scene の累積数 (0..=total_scenes)。
+/// - `scene_id`: 直近完了 (または開始) した scene の id (情報用)。
+/// - `total_scenes`: 対象 scene 総数 (ループ開始時に確定)。
+/// - `chunks_indexed`: 直近完了までに投入した chunk の累積数。
+/// - `done`: 全 scene 完了で true。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SemanticReindexProgress {
+    scene_index: usize,
+    scene_id: String,
+    total_scenes: usize,
+    chunks_indexed: usize,
+    done: bool,
+}
+
+const REINDEX_PROGRESS_EVENT: &str = "semantic:reindex_progress";
 
 /// `lib.rs::setup` で `app.manage(...)` する Tauri 共有 state。
 ///
@@ -240,6 +261,7 @@ pub(crate) async fn semantic_reindex_all(
         // 対象 scene 一覧を先に確定 (途中の追加・削除に巻き込まれないため)
         let scene_ids: Vec<String> =
             with_db(&ws_state, |db| list_scene_ids_in_project(db, &project_id))?;
+        let total_scenes = scene_ids.len();
 
         // Embedder lazy load。全 scene を 1 つの guard で回せばロックの取り直しが不要。
         let mut guard = emb_state
@@ -252,7 +274,7 @@ pub(crate) async fn semantic_reindex_all(
         let embedder = guard.as_mut().expect("just ensured Some");
 
         let mut total: usize = 0;
-        for scene_id in &scene_ids {
+        for (i, scene_id) in scene_ids.iter().enumerate() {
             let outcome = with_db(&ws_state, |db| {
                 index_scene(db, embedder, scene_id, &model_id)
             })?;
@@ -260,6 +282,31 @@ pub(crate) async fn semantic_reindex_all(
                 cache.invalidate(scene_id)?;
                 total += n;
             }
+            // 1 scene 完了ごとに progress を流す。emit 失敗 (event channel が無い等)
+            // は再インデックス自体には影響しないので _ で握りつぶす。
+            let _ = app.emit(
+                REINDEX_PROGRESS_EVENT,
+                SemanticReindexProgress {
+                    scene_index: i + 1,
+                    scene_id: scene_id.clone(),
+                    total_scenes,
+                    chunks_indexed: total,
+                    done: i + 1 == total_scenes,
+                },
+            );
+        }
+        // total_scenes=0 のときは loop が回らず done event が出ないので別途送る。
+        if total_scenes == 0 {
+            let _ = app.emit(
+                REINDEX_PROGRESS_EVENT,
+                SemanticReindexProgress {
+                    scene_index: 0,
+                    scene_id: String::new(),
+                    total_scenes: 0,
+                    chunks_indexed: 0,
+                    done: true,
+                },
+            );
         }
         Ok(total)
     })
