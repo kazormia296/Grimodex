@@ -38,6 +38,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/semantic/ruri-v3-30m/model_int8.onnx",
+      "resources/semantic/ruri-v3-30m/tokenizer.json"
     ]
   }
 }

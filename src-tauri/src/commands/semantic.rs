@@ -42,12 +42,27 @@ pub(crate) struct SemanticEmbedderState {
     pub(crate) inner: Mutex<Option<Embedder>>,
 }
 
-/// 同梱モデルディレクトリ。MVP は dev 経路のみ対応するため
-/// `CARGO_MANIFEST_DIR/resources/semantic/ruri-v3-30m` を直指す。
-/// production bundling は Step 10 のフロント統合時に
-/// `tauri.conf.json#bundle.resources` で行う。
-fn resolve_ruri_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/semantic/ruri-v3-30m")
+/// 同梱モデルディレクトリを解決する。
+///
+/// 探索順:
+/// 1. `app.path().resource_dir()` 配下 (`tauri.conf.json#bundle.resources` で
+///    同梱したファイルの置き場)。tauri build で installer に同梱され、
+///    tauri dev 経由でも target/debug/ にコピーされる。
+/// 2. それが見つからない場合は `CARGO_MANIFEST_DIR/resources/semantic/ruri-v3-30m`
+///    にフォールバック (cargo test や非 Tauri 経路の救済)。
+///
+/// model_int8.onnx の存在で判定する: resource_dir に空のディレクトリだけある
+/// 過渡的な状態でも、CARGO_MANIFEST_DIR にフォールバックする。
+fn resolve_ruri_dir(app: &tauri::AppHandle) -> PathBuf {
+    let rel = Path::new("resources/semantic/ruri-v3-30m");
+    if let Ok(base) = app.path().resource_dir() {
+        let candidate = base.join(rel);
+        if candidate.join("model_int8.onnx").exists() {
+            return candidate;
+        }
+    }
+    // dev / test の安全網。
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
 
 /// `scene_chunks.model_id` 列に書く識別子。
@@ -58,8 +73,8 @@ fn current_model_id() -> String {
 
 /// model_int8.onnx + tokenizer.json から Embedder を構築。
 /// model 不在の dev 環境ではここで Err を返し、コマンドはエラー文字列を返却する。
-fn load_embedder() -> anyhow::Result<Embedder> {
-    let dir = resolve_ruri_dir();
+fn load_embedder(app: &tauri::AppHandle) -> anyhow::Result<Embedder> {
+    let dir = resolve_ruri_dir(app);
     let model_path = dir.join("model_int8.onnx");
     let tokenizer_path = dir.join("tokenizer.json");
     Embedder::load(&model_path, &tokenizer_path, EMBEDDING_DIM_RURI_V3_30M)
@@ -89,7 +104,7 @@ pub(crate) async fn semantic_index_scene(
             .lock()
             .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
         if guard.is_none() {
-            *guard = Some(load_embedder()?);
+            *guard = Some(load_embedder(&app)?);
         }
         let embedder = guard.as_mut().expect("just ensured Some");
 
@@ -143,7 +158,7 @@ pub(crate) async fn semantic_search(
                 .lock()
                 .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
             if guard.is_none() {
-                *guard = Some(load_embedder()?);
+                *guard = Some(load_embedder(&app)?);
             }
             let embedder = guard.as_mut().expect("just ensured Some");
             let query_embedding = embedder.embed_query(&query)?;
@@ -232,7 +247,7 @@ pub(crate) async fn semantic_reindex_all(
             .lock()
             .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
         if guard.is_none() {
-            *guard = Some(load_embedder()?);
+            *guard = Some(load_embedder(&app)?);
         }
         let embedder = guard.as_mut().expect("just ensured Some");
 
