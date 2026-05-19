@@ -163,9 +163,11 @@ export async function restoreProjectSnapshot(
   snapshotId: string,
   snapshotName: string,
 ): Promise<{ restoredCount: number; safetySnapshotId: string }> {
-  // 1. Safety snapshot of current state
+  // 1. Safety snapshot of current state. Name must be unique per project
+  // (UNIQUE(project_id, name)); appending the ISO timestamp lets the same
+  // source snapshot be restored multiple times without conflict.
   const safety = await createProjectSnapshot({
-    name: `Before restore to '${snapshotName}'`,
+    name: `Before restore to '${snapshotName}' (${new Date().toISOString()})`,
   });
 
   // 2. Get all version entries for the target snapshot

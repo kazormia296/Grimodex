@@ -336,6 +336,29 @@ const SCHEMA_DDL = `
     pov_character_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     PRIMARY KEY (scene_id, pov_character_id)
   );
+  CREATE TABLE IF NOT EXISTS content_versions (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('scene','note','codex_entry','snippet')),
+    entity_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    version_number INTEGER NOT NULL,
+    snapshot_type TEXT NOT NULL DEFAULT 'auto' CHECK(snapshot_type IN ('auto','manual')),
+    created_at TEXT NOT NULL,
+    UNIQUE(entity_type, entity_id, version_number)
+  );
+  CREATE TABLE IF NOT EXISTS project_snapshots (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(project_id, name)
+  );
+  CREATE TABLE IF NOT EXISTS project_snapshot_entries (
+    snapshot_id TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+    version_id TEXT NOT NULL REFERENCES content_versions(id) ON DELETE RESTRICT,
+    PRIMARY KEY (snapshot_id, version_id)
+  );
 `;
 
 const GLOBAL_SETTINGS_KEY = "grimodex:global-settings";

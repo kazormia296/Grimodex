@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   createProjectSnapshot,
   listProjectSnapshots,
@@ -68,7 +69,8 @@ export function ProjectSnapshotModal({
     try {
       const list = await listProjectSnapshots();
       setSnapshots(list);
-    } catch {
+    } catch (err) {
+      debugLog.error("ProjectSnapshot", "load failed", errorDetail(err));
       toast.error(t("snapshot.loadError"));
     } finally {
       setIsLoading(false);
@@ -93,7 +95,8 @@ export function ProjectSnapshotModal({
       setCreateName("");
       setCreateDesc("");
       await loadSnapshots();
-    } catch {
+    } catch (err) {
+      debugLog.error("ProjectSnapshot", "create failed", errorDetail(err));
       toast.error(t("snapshot.createError"));
     } finally {
       setIsCreating(false);
@@ -118,7 +121,8 @@ export function ProjectSnapshotModal({
       onClose();
       // Content is restored in DB; page reload ensures editors reflect changes
       window.location.reload();
-    } catch {
+    } catch (err) {
+      debugLog.error("ProjectSnapshot", "restore failed", errorDetail(err));
       toast.error(t("snapshot.restoreError"));
     } finally {
       setIsRestoring(false);
@@ -135,7 +139,8 @@ export function ProjectSnapshotModal({
       setConfirmDeleteId(null);
       if (selectedId === confirmDeleteId) setSelectedId(null);
       await loadSnapshots();
-    } catch {
+    } catch (err) {
+      debugLog.error("ProjectSnapshot", "delete failed", errorDetail(err));
       toast.error(t("snapshot.deleteError"));
     } finally {
       setIsDeleting(false);
