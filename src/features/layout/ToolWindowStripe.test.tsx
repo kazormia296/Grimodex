@@ -286,6 +286,42 @@ describe("ToolWindowStripe", () => {
       expect(moveToSlot).toHaveBeenCalledWith("codex", "LT");
     });
 
+    it("LT drop zone exists and accepts drops even when LT has no panels", () => {
+      const moveToSlot = vi.fn();
+      useLayoutStore.setState({ moveToSlot });
+      const { container } = render(
+        <ToolWindowStripe
+          region="left"
+          orientation="vertical"
+          panels={[{ id: "codex", slot: "LB", visible: true, active: true }]}
+        />,
+      );
+      const ltZone = container.querySelector("[data-drop-slot='LT']");
+      expect(ltZone).not.toBeNull();
+      fireEvent.drop(ltZone!, {
+        dataTransfer: { getData: vi.fn().mockReturnValue("codex") },
+      });
+      expect(moveToSlot).toHaveBeenCalledWith("codex", "LT");
+    });
+
+    it("LB drop zone exists and accepts drops even when LB has no panels", () => {
+      const moveToSlot = vi.fn();
+      useLayoutStore.setState({ moveToSlot });
+      const { container } = render(
+        <ToolWindowStripe
+          region="left"
+          orientation="vertical"
+          panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
+        />,
+      );
+      const lbZone = container.querySelector("[data-drop-slot='LB']");
+      expect(lbZone).not.toBeNull();
+      fireEvent.drop(lbZone!, {
+        dataTransfer: { getData: vi.fn().mockReturnValue("scenes") },
+      });
+      expect(moveToSlot).toHaveBeenCalledWith("scenes", "LB");
+    });
+
     it("drop with empty panelId is a no-op", () => {
       const moveToSlot = vi.fn();
       useLayoutStore.setState({ moveToSlot });

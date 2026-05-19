@@ -12,16 +12,9 @@ interface StripeGroupProps {
   targetSlot: ToolWindowSlot;
   panels: ReadonlyArray<StripePanel>;
   orientation: "vertical" | "horizontal";
-  /** 残スペースを全部占有する (trailing グループ用) */
-  grow?: boolean;
 }
 
-function StripeGroup({
-  targetSlot,
-  panels,
-  orientation,
-  grow,
-}: StripeGroupProps) {
+function StripeGroup({ targetSlot, panels, orientation }: StripeGroupProps) {
   const moveToSlot = useLayoutStore((s) => s.moveToSlot);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
 
@@ -48,11 +41,10 @@ function StripeGroup({
       onDragOver={handleDragOver}
       onDrop={handleDrop}
       className={cn(
-        "flex",
-        grow && "flex-1",
+        "flex flex-1",
         orientation === "vertical"
-          ? "flex-col items-center gap-1"
-          : "flex-row items-center gap-1",
+          ? "w-full flex-col items-center gap-1"
+          : "h-full flex-row items-center gap-1",
       )}
     >
       {panels.map((panel) => (
@@ -132,7 +124,6 @@ export function ToolWindowStripe({
         targetSlot={bottomSlot}
         panels={bottomPanels}
         orientation={orientation}
-        grow
       />
     </div>
   );
