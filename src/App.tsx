@@ -1,14 +1,12 @@
-import { useEffect, useCallback, useMemo } from "react";
+import { useEffect, useCallback } from "react";
 import { Toaster, toast } from "sonner";
 import {
   DockviewReact,
   type DockviewReadyEvent,
   type DockviewDidDropEvent,
-  type IDockviewPanelProps,
 } from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
 
-import { SceneEditor } from "@/features/tree/SceneEditor";
 import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
 import { LauncherScreen } from "@/features/workspace/LauncherScreen";
 import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
@@ -31,6 +29,8 @@ import {
   PANEL_DRAG_TYPE,
   type PanelId,
 } from "@/features/layout/layoutStore";
+import { DOCKVIEW_PANEL_COMPONENTS } from "@/features/layout/panelComponents";
+import { ToolWindowShell } from "@/features/layout/ToolWindowShell";
 import {
   validateSerializedLayout,
   validateRuntimeLayout,
@@ -38,25 +38,10 @@ import {
 import { useDebugLogStore } from "@/lib/debugLog";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { getBuiltinPreset, clearLayout } from "@/features/layout/layoutPresets";
-import { Sidebar } from "@/features/tree/Sidebar";
-import { CodexQuickPanel } from "@/features/tree/CodexQuickPanel";
-import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
-import { ChatPanel } from "@/features/chat/ChatPanel";
-import { ChatHistoryPanel } from "@/features/chat/ChatHistoryPanel";
-import { SnippetPanel } from "@/features/snippets/SnippetPanel";
-import { AttributionReport } from "@/features/attribution/AttributionReport";
-import { TimelinePanel } from "@/features/timeline/TimelinePanel";
-import { MapPanel } from "@/features/map/MapPanel";
-import { KouetsuPanel } from "@/features/kouetsu/KouetsuPanel";
-import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
-import { GridPanel } from "@/features/grid/GridPanel";
-import { MatrixPanel } from "@/features/matrix/MatrixPanel";
-import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
 import {
   CommandCenterBar,
   useCommandCenterStore,
 } from "@/features/commandCenter";
-import { CommandCenterResultsPanel } from "@/features/commandCenter/CommandCenterResultsPanel";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
 import { CommandPalette } from "@/features/commandPalette/CommandPalette";
@@ -93,72 +78,6 @@ import {
   clearScreenshotStageReady,
 } from "@/screenshot-scenes/screenshotBootstrap";
 import { cn } from "@/lib/utils";
-
-/* ── Panel content components for dockview ── */
-
-function ScenesContent(_props: IDockviewPanelProps) {
-  return <Sidebar />;
-}
-
-function CodexContent(_props: IDockviewPanelProps) {
-  return <CodexManagementPanel />;
-}
-
-function ChatHistoryContent(_props: IDockviewPanelProps) {
-  return <ChatHistoryPanel />;
-}
-
-function EditorContent(_props: IDockviewPanelProps) {
-  return <SceneEditor />;
-}
-
-function ChatContent(_props: IDockviewPanelProps) {
-  return <ChatPanel />;
-}
-
-function SnippetsContent(_props: IDockviewPanelProps) {
-  return <SnippetPanel />;
-}
-
-function AttributionContent(_props: IDockviewPanelProps) {
-  return <AttributionReport />;
-}
-
-function CodexQuickContent(_props: IDockviewPanelProps) {
-  return <CodexQuickPanel />;
-}
-
-function TimelineContent(_props: IDockviewPanelProps) {
-  return <TimelinePanel />;
-}
-
-function MapContent(_props: IDockviewPanelProps) {
-  return <MapPanel />;
-}
-
-function KouetsuContent(_props: IDockviewPanelProps) {
-  return <KouetsuPanel />;
-}
-
-function ForeshadowContent(_props: IDockviewPanelProps) {
-  return <ForeshadowPanel />;
-}
-
-function GridContent(_props: IDockviewPanelProps) {
-  return <GridPanel />;
-}
-
-function MatrixContent(_props: IDockviewPanelProps) {
-  return <MatrixPanel />;
-}
-
-function TrashBinContent(_props: IDockviewPanelProps) {
-  return <TrashBinPanel />;
-}
-
-function CommandCenterResultsContent(_props: IDockviewPanelProps) {
-  return <CommandCenterResultsPanel />;
-}
 
 /* ── Default layout builder (delegates to builtin preset) ── */
 
@@ -436,33 +355,13 @@ function EditorScreen() {
   useEffect(() => {
     useGlobalHistoryStore.getState().clear();
   }, []);
-  const { togglePanel, loadLayout, loadPresets, setDockviewApi } =
-    useLayoutStore();
-
-  // Component map for dockview — stable reference
-  const components = useMemo<
-    Record<string, React.FunctionComponent<IDockviewPanelProps>>
-  >(
-    () => ({
-      scenes: ScenesContent,
-      codex: CodexContent,
-      "chat-history": ChatHistoryContent,
-      editor: EditorContent,
-      chat: ChatContent,
-      snippets: SnippetsContent,
-      attribution: AttributionContent,
-      "codex-quick": CodexQuickContent,
-      timeline: TimelineContent,
-      map: MapContent,
-      kouetsu: KouetsuContent,
-      foreshadow: ForeshadowContent,
-      grid: GridContent,
-      matrix: MatrixContent,
-      "trash-bin": TrashBinContent,
-      "command-center-results": CommandCenterResultsContent,
-    }),
-    [],
-  );
+  const {
+    togglePanel,
+    loadLayout,
+    loadPresets,
+    loadToolWindowSettings,
+    setDockviewApi,
+  } = useLayoutStore();
 
   // Open settings dialog when triggered by error handler or other sources
   useEffect(() => {
@@ -547,6 +446,10 @@ function EditorScreen() {
       // Load preset metadata (custom presets list + active ID)
       loadPresets();
 
+      // Load tool window stripe state (slot / view mode / undock size).
+      // saved layout の復元と平行で OK — toolWindows は layout 復元結果に依存しない。
+      loadToolWindowSettings();
+
       // Accept external drags originating from the panel dropdown
       api.onUnhandledDragOverEvent((e) => {
         if (e.nativeEvent.dataTransfer?.types.includes(PANEL_DRAG_TYPE)) {
@@ -554,7 +457,7 @@ function EditorScreen() {
         }
       });
     },
-    [setDockviewApi, loadLayout, loadPresets],
+    [setDockviewApi, loadLayout, loadPresets, loadToolWindowSettings],
   );
 
   const handlePanelDrop = useCallback((event: DockviewDidDropEvent) => {
@@ -564,18 +467,22 @@ function EditorScreen() {
     if (!panelId) return;
     if (event.api.getPanel(panelId)) return; // already in layout
 
-    const position = event.group
-      ? {
-          referencePanel: event.group.activePanel?.id ?? "",
-          direction: "within" as const,
-        }
-      : { direction: "right" as const };
+    // canvas drop (明示的な drop target group なし) → preferred slot 経由で配置
+    // これで stripe / dropdown / DnD すべてが openPanelAtSlot を通る統一動線になる
+    if (!event.group) {
+      useLayoutStore.getState().openPanelAtSlot(panelId);
+      return;
+    }
 
+    // 明示的な group へドロップ → その tab に within で追加 (drop 先優先)
     event.api.addPanel({
       id: panelId,
       component: panelId,
       title: getPanelTitle(panelId),
-      position,
+      position: {
+        referencePanel: event.group.activePanel?.id ?? "",
+        direction: "within" as const,
+      },
       ...(panelId === "editor" ? { minimumWidth: 320 } : {}),
     });
   }, []);
@@ -831,14 +738,16 @@ function EditorScreen() {
       {showSampleTour && <SampleTour />}
       <ReindexProgressToast />
       <div className="flex flex-1 overflow-hidden">
-        {/* Dockview layout */}
-        <DockviewReact
-          className="dockview-theme-dark glass-dock flex-1"
-          onReady={handleReady}
-          onDidDrop={handlePanelDrop}
-          components={components}
-          watermarkComponent={DockviewWatermark}
-        />
+        {/* IntelliJ 式 3 方向 stripe + Dockview */}
+        <ToolWindowShell hidden={!!getScreenshotPanelId()}>
+          <DockviewReact
+            className="dockview-theme-dark glass-dock h-full w-full"
+            onReady={handleReady}
+            onDidDrop={handlePanelDrop}
+            components={DOCKVIEW_PANEL_COMPONENTS}
+            watermarkComponent={DockviewWatermark}
+          />
+        </ToolWindowShell>
       </div>
     </main>
   );

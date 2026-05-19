@@ -10,9 +10,9 @@ export const PANEL_REGION_MAP: Record<
   scenes: "left",
   codex: "left",
   "codex-quick": "left",
+  "command-center-results": "left",
   chat: "right",
   "chat-history": "right",
-  "command-center-results": "right",
   snippets: "center-bottom",
   attribution: "center-bottom",
   timeline: "center-bottom",
@@ -49,10 +49,10 @@ export const TOGGLEABLE_PANELS: Exclude<PanelId, "editor">[] = [
   "scenes",
   "codex",
   "codex-quick",
+  "command-center-results",
   // Right
   "chat",
   "chat-history",
-  "command-center-results",
   // Center-bottom
   "snippets",
   "attribution",

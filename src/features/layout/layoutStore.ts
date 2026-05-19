@@ -9,6 +9,24 @@ import {
   type CustomPreset,
 } from "./layoutPresets";
 import { validateSerializedLayout } from "./layoutValidation";
+import {
+  DEFAULT_SLOT_MAP,
+  DEFAULT_STRIPE_SIZES,
+  DEFAULT_STRIPE_VISIBILITY,
+  DEFAULT_VIEW_MODE,
+  SLOT_TO_REGION,
+  TOOL_WINDOW_PANEL_IDS,
+  type StripeRegion,
+  type ToolWindowSlot,
+  type ToolWindowState,
+  type ViewMode,
+} from "./toolWindowDefaults";
+import {
+  detectActualRegion,
+  pickDefaultSlotForRegion,
+} from "./stripeRegionDetection";
+
+export type { StripeRegion, ToolWindowSlot, ToolWindowState, ViewMode };
 
 export type PanelId =
   | "scenes"
@@ -147,6 +165,39 @@ export function resolveInsertPosition(
   return { direction: "right" };
 }
 
+/**
+ * Region (left/right/bottom) 単位で insert position を解決する Phase 1 用ロジック。
+ *
+ * 「同 region に既存 panel があればその group に tab として join、なければ region 方向に新 group」。
+ * editor を anchor にしないことで editor group が split されない invariant を守る。
+ *
+ * **effective slot** (= override > default) で region を判定するのが重要:
+ * ユーザーが panel X を別 region に動かしている場合、X は元の region の anchor 候補から外れ、
+ * 新しい region で anchor 候補になる。これを無視すると、復元時に icon stripe と
+ * 異なる region に panel が配置される。
+ */
+export function resolveInsertPositionForRegion(
+  api: Pick<DockviewApi, "getPanel">,
+  region: StripeRegion,
+  toolWindows?: Partial<Record<PanelId, ToolWindowState>>,
+): InsertPosition {
+  for (const id of TOOL_WINDOW_PANEL_IDS) {
+    const slot = toolWindows?.[id]?.slot ?? DEFAULT_SLOT_MAP[id];
+    if (SLOT_TO_REGION[slot] !== region) continue;
+    if (api.getPanel(id)) {
+      return { referencePanel: id, direction: "within" };
+    }
+  }
+  switch (region) {
+    case "left":
+      return { direction: "left" };
+    case "right":
+      return { direction: "right" };
+    case "bottom":
+      return { direction: "below" };
+  }
+}
+
 /** Human-readable panel title resolved via i18n */
 export function getPanelTitle(id: PanelId): string {
   return i18next.t(`layout.panel.${id}`);
@@ -179,6 +230,54 @@ interface LayoutState {
   /** Save current layout to global settings (debounced internally) */
   saveLayout: () => void;
 
+  /* ── Tool window stripe state (IntelliJ 式 3 方向サイドバー) ── */
+
+  /** Per-panel preferred slot/view-mode override. 値欠如 = DEFAULT_SLOT_MAP + DEFAULT_VIEW_MODE */
+  toolWindows: Partial<Record<PanelId, ToolWindowState>>;
+  /** Phase 3 で値が入る。Undock 中の panel id set (Dockview 外で overlay 描画) */
+  undockedPanels: Set<PanelId>;
+  /**
+   * Stripe に icon を出している panel 一覧。
+   * - `onDidAddPanel` で自動追加 (一度でも開かれた panel は icon が残る)。
+   * - 閉じても (`onDidRemovePanel`) この set からは消えない → icon が stripe に残り、
+   *   inactive 表示でクリックすると再オープン。
+   * - `removePanelFromStripe` で明示的に外す (Phase 2 の右クリック用)。
+   */
+  stripePanelIds: Set<PanelId>;
+  /** Stripe ごとの幅 (px)。Phase 4 で resize 永続化 */
+  stripeSizes: Record<StripeRegion, number>;
+  /** Stripe 自体の表示/非表示 */
+  stripeVisibility: Record<StripeRegion, boolean>;
+
+  /** Slot を変更 (stripe DnD or context menu からの再割当) */
+  setToolWindowSlot: (panel: PanelId, slot: ToolWindowSlot) => void;
+  /** Stripe icon の登録を外す (Phase 2 の右クリック menu 等から呼ぶ想定) */
+  removePanelFromStripe: (panel: PanelId) => void;
+  /** View Mode を変更 (Phase 3 で使用) */
+  setViewMode: (panel: PanelId, mode: ViewMode) => void;
+  /** Undock overlay のサイズを記録 (Phase 3) */
+  setUndockSize: (
+    panel: PanelId,
+    size: { width: number; height: number },
+  ) => void;
+  /** Pinned ↔ Unpinned 切替 (Phase 3) */
+  togglePin: (panel: PanelId) => void;
+  /** Stripe の幅 (Phase 4) */
+  setStripeSize: (region: StripeRegion, px: number) => void;
+  /** Stripe 全体の visibility (Phase 4) */
+  setStripeVisibility: (region: StripeRegion, visible: boolean) => void;
+
+  /**
+   * 唯一の panel 配置入口。
+   * - panel が visible なら focus
+   * - 未配置なら preferred slot から region を解決して新規 add
+   * - togglePanel / showPanel / handlePanelDrop / keyboard shortcut から経由
+   */
+  openPanelAtSlot: (panel: PanelId, opts?: { focus?: boolean }) => void;
+
+  /** Tool window 設定を global-settings から読み込み (handleReady で呼ぶ) */
+  loadToolWindowSettings: () => Promise<void>;
+
   /* ── Preset management ── */
 
   /** User-saved custom presets */
@@ -210,6 +309,46 @@ interface LayoutState {
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Stripe icon に登録されている panel について、actual region が slot.region と
+ * 異なる場合に slot を実位置で上書きする。
+ * - 自由ドラッグで動かしたら slot 追従 → 閉じた icon の位置が記憶される
+ * - レイアウト復元直後にも slot が actual に揃う
+ */
+function syncSlotsToActualRegions(
+  api: DockviewApi,
+  get: () => LayoutState,
+  set: (partial: Partial<LayoutState>) => void,
+) {
+  const stripeIds = get().stripePanelIds;
+  if (stripeIds.size === 0) return;
+
+  const updates: Partial<Record<PanelId, ToolWindowState>> = {};
+  let changed = false;
+
+  for (const id of stripeIds) {
+    if (id === "editor") continue;
+    const region = detectActualRegion(api, id);
+    if (!region) continue;
+
+    const current = get().toolWindows[id];
+    const currentSlot =
+      current?.slot ?? DEFAULT_SLOT_MAP[id as Exclude<PanelId, "editor">];
+    if (SLOT_TO_REGION[currentSlot] === region) continue;
+
+    updates[id] = {
+      ...current,
+      slot: pickDefaultSlotForRegion(region),
+      viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
+    };
+    changed = true;
+  }
+
+  if (changed) {
+    set({ toolWindows: { ...get().toolWindows, ...updates } });
+  }
+}
+
 function scheduleSave(get: () => LayoutState) {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
@@ -222,7 +361,14 @@ function scheduleSave(get: () => LayoutState) {
       if (!check.valid) return;
       const current = await invoke<GlobalSettings>("get_global_settings");
       await invoke("save_global_settings", {
-        settings: { ...current, layout },
+        settings: {
+          ...current,
+          layout,
+          toolWindows: get().toolWindows,
+          stripePanelIds: Array.from(get().stripePanelIds),
+          stripeSizes: get().stripeSizes,
+          stripeVisibility: get().stripeVisibility,
+        },
       });
     } catch {
       // Ignore save errors silently
@@ -243,8 +389,21 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
       }
     });
 
-    // Auto-save on any layout change
+    // 一度でも追加された panel は stripe に icon を残す (閉じても消えない)
+    api.onDidAddPanel((panel) => {
+      const id = panel.id as PanelId;
+      if (id === "editor") return;
+      const current = get().stripePanelIds;
+      if (current.has(id)) return;
+      const next = new Set(current);
+      next.add(id);
+      set({ stripePanelIds: next });
+    });
+
+    // 自由ドラッグで panel が別 region に動いたら slot を追従させる
+    // (これで close → reopen 時に最後にあった region に戻り、icon もそこに残る)
     api.onDidLayoutChange(() => {
+      syncSlotsToActualRegions(api, get, set);
       scheduleSave(get);
     });
   },
@@ -254,33 +413,188 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
     if (!api) return;
 
     const panel = api.getPanel(panelId);
-    if (panel) {
-      if (panel.group?.activePanel === panel) {
-        api.removePanel(panel);
-      } else {
-        panel.api.setActive();
-      }
-    } else {
-      addPanelWithDefaults(api, panelId);
+    if (panel && panel.group?.activePanel === panel) {
+      api.removePanel(panel);
+      return;
     }
+    get().openPanelAtSlot(panelId);
   },
 
   showPanel(panelId) {
     const api = get().dockviewApi;
     if (!api) return;
-
-    const panel = api.getPanel(panelId);
-    if (panel) {
-      panel.api.setActive();
-    } else {
-      addPanelWithDefaults(api, panelId);
-    }
+    get().openPanelAtSlot(panelId, { focus: true });
   },
 
   isPanelVisible(panelId) {
     const api = get().dockviewApi;
     if (!api) return false;
+    if (get().undockedPanels.has(panelId)) return true;
     return api.getPanel(panelId) !== undefined;
+  },
+
+  /* ── Tool window stripe state ── */
+
+  toolWindows: {},
+  undockedPanels: new Set<PanelId>(),
+  stripePanelIds: new Set<PanelId>(),
+  stripeSizes: { ...DEFAULT_STRIPE_SIZES },
+  stripeVisibility: { ...DEFAULT_STRIPE_VISIBILITY },
+
+  setToolWindowSlot(panelId, slot) {
+    const current = get().toolWindows[panelId];
+    const next: ToolWindowState = {
+      slot,
+      viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
+      ...(current?.undockSize ? { undockSize: current.undockSize } : {}),
+    };
+    set({ toolWindows: { ...get().toolWindows, [panelId]: next } });
+    scheduleSave(get);
+  },
+
+  removePanelFromStripe(panelId) {
+    const current = get().stripePanelIds;
+    if (!current.has(panelId)) return;
+    const next = new Set(current);
+    next.delete(panelId);
+    set({ stripePanelIds: next });
+    scheduleSave(get);
+  },
+
+  setViewMode(panelId, mode) {
+    const current = get().toolWindows[panelId];
+    if (panelId === "editor") return;
+    const slot =
+      current?.slot ?? DEFAULT_SLOT_MAP[panelId as Exclude<PanelId, "editor">];
+    const next: ToolWindowState = {
+      slot,
+      viewMode: mode,
+      ...(current?.undockSize ? { undockSize: current.undockSize } : {}),
+    };
+    set({ toolWindows: { ...get().toolWindows, [panelId]: next } });
+    scheduleSave(get);
+  },
+
+  setUndockSize(panelId, size) {
+    const current = get().toolWindows[panelId];
+    if (panelId === "editor") return;
+    const slot =
+      current?.slot ?? DEFAULT_SLOT_MAP[panelId as Exclude<PanelId, "editor">];
+    const next: ToolWindowState = {
+      slot,
+      viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
+      undockSize: size,
+    };
+    set({ toolWindows: { ...get().toolWindows, [panelId]: next } });
+    scheduleSave(get);
+  },
+
+  togglePin(panelId) {
+    if (panelId === "editor") return;
+    const current = get().toolWindows[panelId];
+    const currentMode = current?.viewMode ?? DEFAULT_VIEW_MODE;
+    const nextMode: ViewMode =
+      currentMode === "docked-pinned" ? "docked-unpinned" : "docked-pinned";
+    get().setViewMode(panelId, nextMode);
+  },
+
+  setStripeSize(region, px) {
+    set({ stripeSizes: { ...get().stripeSizes, [region]: px } });
+    scheduleSave(get);
+  },
+
+  setStripeVisibility(region, visible) {
+    set({ stripeVisibility: { ...get().stripeVisibility, [region]: visible } });
+    scheduleSave(get);
+  },
+
+  openPanelAtSlot(panelId, opts) {
+    const api = get().dockviewApi;
+    if (!api) return;
+
+    // Undock 中なら overlay layer に任せる (Phase 3)
+    if (get().undockedPanels.has(panelId)) return;
+
+    const existing = api.getPanel(panelId);
+    if (existing) {
+      if (opts?.focus !== false) existing.api.setActive();
+      return;
+    }
+
+    if (panelId === "editor") {
+      // Editor は通常 preset で作成される。フォールバックとして右に追加
+      api.addPanel({
+        id: "editor",
+        component: "editor",
+        title: getPanelTitle("editor"),
+        position: { direction: "right" },
+        minimumWidth: 320,
+      });
+      return;
+    }
+
+    const toolWindows = get().toolWindows;
+    const override = toolWindows[panelId];
+    const slot =
+      override?.slot ?? DEFAULT_SLOT_MAP[panelId as Exclude<PanelId, "editor">];
+    const region = SLOT_TO_REGION[slot];
+    const position = resolveInsertPositionForRegion(api, region, toolWindows);
+
+    api.addPanel({
+      id: panelId,
+      component: panelId,
+      title: getPanelTitle(panelId),
+      position,
+    });
+  },
+
+  async loadToolWindowSettings() {
+    try {
+      const settings = await invoke<GlobalSettings>("get_global_settings");
+      const next: Partial<LayoutState> = {};
+      const persisted = settings.toolWindows as
+        | Partial<Record<PanelId, ToolWindowState>>
+        | undefined;
+      if (persisted) {
+        next.toolWindows = persisted;
+        // Bootstrap undockedPanels from persisted viewMode === "undocked" (Phase 3 用)
+        const undocked = new Set<PanelId>();
+        for (const [id, state] of Object.entries(persisted)) {
+          if (state?.viewMode === "undocked") undocked.add(id as PanelId);
+        }
+        next.undockedPanels = undocked;
+      }
+      const persistedStripeIds = settings.stripePanelIds as
+        | PanelId[]
+        | undefined;
+      if (persistedStripeIds) {
+        // Merge with any already-populated entries from onDidAddPanel (layout restore が先に走るケース対応)
+        const merged = new Set(get().stripePanelIds);
+        for (const id of persistedStripeIds) merged.add(id);
+        next.stripePanelIds = merged;
+      }
+      const persistedSizes = settings.stripeSizes as
+        | Partial<Record<StripeRegion, number>>
+        | undefined;
+      if (persistedSizes) {
+        next.stripeSizes = {
+          ...DEFAULT_STRIPE_SIZES,
+          ...persistedSizes,
+        };
+      }
+      const persistedVis = settings.stripeVisibility as
+        | Partial<Record<StripeRegion, boolean>>
+        | undefined;
+      if (persistedVis) {
+        next.stripeVisibility = {
+          ...DEFAULT_STRIPE_VISIBILITY,
+          ...persistedVis,
+        };
+      }
+      if (Object.keys(next).length > 0) set(next);
+    } catch {
+      // Ignore — fall back to defaults
+    }
   },
 
   async loadLayout() {
@@ -411,18 +725,6 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
     await persistActivePresetId("builtin:default");
   },
 }));
-
-function addPanelWithDefaults(api: DockviewApi, panelId: PanelId) {
-  const title = getPanelTitle(panelId);
-  const position = resolveInsertPosition(api, panelId);
-  api.addPanel({
-    id: panelId,
-    component: panelId,
-    title,
-    position,
-    ...(panelId === "editor" ? { minimumWidth: 320 } : {}),
-  });
-}
 
 /* ── Persistence helpers ── */
 

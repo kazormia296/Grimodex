@@ -26,6 +26,14 @@ export interface GlobalSettings {
   layoutPresets?: Array<{ id: string; name: string; layout: unknown }>;
   /** ID of the last-applied layout preset */
   activeLayoutPresetId?: string | null;
+  /** Per-panel tool window state (slot / view mode / undock size) */
+  toolWindows?: Record<string, unknown>;
+  /** Panel ids that have icons on the stripe (persist across close so icon doesn't disappear) */
+  stripePanelIds?: string[];
+  /** Stripe (left/right/bottom) widths in px */
+  stripeSizes?: Record<string, number>;
+  /** Stripe visibility per region */
+  stripeVisibility?: Record<string, boolean>;
   /** Named color theme (e.g. "dark-academia"). Undefined = default theme. */
   colorTheme?: string;
   /** Workspace paths the user has explicitly trusted. */
