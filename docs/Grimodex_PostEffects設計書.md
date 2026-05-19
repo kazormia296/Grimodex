@@ -4,18 +4,21 @@
 
 ポストエフェクト（Post-Effect）とは、既に書かれた本文に対して**書き換えずに注釈を重ねる AI パス**の総称。本体の執筆フローとは別軸で走り、書き手のセルフレビュー・推敲支援を担う。
 
-本書が対象とする6機能:
+本書が対象とする9機能:
 
-| 機能        | 概要                                | 単位           |
-| --------- | --------------------------------- | ------------ |
-| レビュー      | 編集者視点の診断レポート（構造化所見リスト）            | span         |
-| 疑似コメント    | 読者ペルソナによる本文横の吹き出し、スレッド可           | span         |
-| メタ構造レビュー  | プロット構造・ペーシングなどの俯瞰診断               | scene/folder |
-| 整合性チェック   | 本文と Codex の事実矛盾を検出（Codex 基準）      | span         |
-| 自己整合性チェック | 本文内の自己矛盾を検出（Codex 不使用）            | span ペア      |
-| エンティティ抽出  | 本文から Codex 未登録の固有名詞・概念候補を抽出（本文基準） | span         |
+| 機能         | 概要                                | 単位           |
+| ---------- | --------------------------------- | ------------ |
+| レビュー       | 編集者視点の診断レポート（構造化所見リスト）            | span         |
+| 疑似コメント     | 読者ペルソナによる本文横の吹き出し、スレッド可           | span         |
+| メタ構造レビュー   | プロット構造・ペーシングなどの俯瞰診断               | scene/folder |
+| 整合性チェック    | 本文と Codex の事実矛盾を検出（Codex 基準）      | span         |
+| 自己整合性チェック  | 本文内の自己矛盾を検出（Codex 不使用）            | span ペア      |
+| エンティティ抽出   | 本文から Codex 未登録の固有名詞・概念候補を抽出（本文基準） | span         |
+| 誤字脱字チェック   | LLM ベースで本文中の誤字脱字・タイポ・同音異義語誤用を検出   | span         |
+| PoV ブレ検出   | 視点キャラ以外の内面描写・観察不能情報の混入を検出         | span         |
+| シーン目的診断    | シーンの存在意義を診断し削除候補を明示               | scene        |
 
-整合性チェックは「`consistency` (Codex 基準)」と「`intra_scene_consistency` (Codex 不使用)」の対の `effect_type` として実装する。さらに `entity_extraction`（本文基準）が `consistency`（Codex 基準）と逆方向の対をなす。詳細は §整合性チェック詳細設計 を参照。
+整合性チェック (`consistency` + `intra_scene_consistency`) と本文 → Codex 方向の `entity_extraction` は対の関係を成し、§整合性チェック詳細設計 にまとめる。軽量・コスト効率特化の `proofreading` / `pov_drift` / `scene_purpose` は §軽量 effect_type シリーズ で扱う。
 
 Linter 系（形式的ルールベース）は対象外。本書は「非決定的・LLM ベースの事後分析」のみを扱う。
 
@@ -380,6 +383,7 @@ start →    │ running │ ──completed──▶ completed (terminal)
 
 - 機能: **伏線・回収** / **テーマ一貫性**
 - 機能: **エンティティ抽出**（`entity_extraction`, 本文 → Codex 候補。`consistency` と逆方向の対）— 詳細は §エンティティ抽出（本文 → Codex 候補）
+- 機能: **軽量 effect_type シリーズ**（`proofreading` / `pov_drift` / `scene_purpose`）— 詳細は §軽量 effect_type シリーズ。整合性チェックより payload が小さく実装も流用範囲が広いため、優先度高め
 - `relation_type='foreshadowing' | 'theme_echo'`
 - `anchor_type='codex_entry'` 導入（Codex 基点の対等な relation）
 - `lens_type='character_arc' / 'pov'`
@@ -693,7 +697,7 @@ MVP: 明示ボタンのみ。`[整合性チェック]` と `[自己整合性チ�
 | 1 | migration + payload builder + 単一コール path（Codex+Scene が budget 内のみ対応）+ `found_context` 含む metadata + プロンプト + dedupe + UI 統合（両 effect_type 同時） |
 | 2 | Scene chunking（Phase 1 で実測コストを見てから判断） |
 | 3 | folder/project scope の per-scene iteration ランナー |
-| Future | 自動実行 opt-in / SemanticLink 統合 / 伏線・テーマ feature 解禁 / `entity_extraction` 解禁 |
+| Future | 自動実行 opt-in / SemanticLink 統合 / 伏線・テーマ feature 解禁 / `entity_extraction` 解禁 / 軽量 effect_type シリーズ（`proofreading` → `pov_drift` → `scene_purpose` の順）解禁 |
 
 ### エンティティ抽出（本文 → Codex 候補）
 
@@ -745,6 +749,133 @@ MVP: 明示ボタンのみ。`[整合性チェック]` と `[自己整合性チ�
 
 - **同名異キャラの自動分離は不可**: LLM は ambiguity flag を立てるだけ、判断はユーザー
 - **alias 漏れの「既知エントリへの追加提案」は MVP 対象外**: 完全な新規候補のみ提示。alias 提案は将来検討
+
+---
+
+## 軽量 effect_type シリーズ
+
+`consistency` と比べて **payload が小さく・プロンプトが単純・既存基盤の流用範囲が広い** 検出群。整合性チェック実装をベースにすれば追加コストは小さい。**ポスト MVP** で `proofreading` → `pov_drift` → `scene_purpose` の順に解禁する想定。
+
+### proofreading (誤字脱字)
+
+LLM ベースの誤字脱字検出。Linter（確定論ルール）では拾えない同音異義語の誤用・送り仮名違い・タイポ・一字脱落を扱う。**整合性チェック実装からの追加コストが最小**で、使用頻度が最も高い見込み。
+
+#### 思想
+
+- **Linter ではない**: 日本語誤字脱字は文脈依存が大半で確定論では Precision が出ない（textlint 系も同じ理由でカバーが薄い）
+- **自動適用なし**: 修正は提案のみ。本文を書き換えない（§設計原則 2 と整合）
+- **創作言語の保護**: Codex の `aliases` を「正しい表現リスト」として payload に乗せる選択肢を持つ
+
+#### Payload
+
+- Scene 本文のみ（Codex 不要 = 整合性チェックよりトークン半減）
+- オプション: Codex 既知エントリの `aliases` 一覧（誤字判定対象外として注入）
+
+#### プロンプト固定句（要点）
+
+- 「明らかな誤字脱字・送り仮名違い・タイポ・同音異義語の誤用のみ検出」
+- 「方言・創作言語・キャラ口調の崩しは指摘しない」
+- 「修正候補は 1〜2 個まで、`confidence` を 0〜1 で返す」
+
+#### Annotation 構造
+
+| フィールド | 内容 |
+|---|---|
+| `anchor_type` | `scene_range` |
+| `content` | 誤字部分の原文 |
+| `metadata.suggested_fix` | `[{ text: string, confidence: number }]` |
+| `metadata.fix_kind` | `typo` / `okurigana` / `homophone` / `missing_char` |
+| `status` | `open` → `resolved`（修正適用済み）/ `dismissed`（誤検出 or 創作言語） |
+
+#### 既知の限界
+
+- **ハルシネーション気味の修正案を返すことがある** → `confidence < 0.7` のものは UI で控えめに表示
+- **方言・創作言語の完全な保護は不可能**: alias リスト注入で部分対処、`dismissed` 永続化で運用上吸収
+
+### pov_drift (PoV ブレ検出)
+
+視点キャラ以外の内面描写・観察不能情報の混入を検出。三人称限定視点・一人称視点で特に有効。
+
+#### 思想
+
+- **Codex の PoV 情報を ground truth として扱う**: シーン単位で PoV キャラが設定されている前提
+- **物理描写は対象外**: 「彼の眉が動いた」は OK、「彼の心は揺れた」は要指摘
+- **PoV 未設定シーンはスキップ**: 神視点・PoV 交代シーンの誤検出を避ける
+
+#### Payload
+
+- Scene 本文 + Codex から **PoV キャラ 1 件のみ**（name + 視点モード + 観点情報）
+- Codex 1 件分なので整合性チェックより token はごく軽い
+
+#### プロンプト固定句（要点）
+
+- 「PoV キャラ X 以外の登場人物の内面・感情・思考の直接描写を検出せよ」
+- 「X が物理的に観察できない情報（同時刻の遠隔事象、他キャラの主観）も検出」
+- 「X 本人の内面描写・物理的な他者描写は問題なし」
+
+#### Annotation 構造
+
+| フィールド | 内容 |
+|---|---|
+| `anchor_type` | `scene_range` |
+| `content` | 違反 span の本文 |
+| `metadata.violated_pov` | `{ pov_entry_id, violation_kind }` |
+| `metadata.violation_kind` | `internal_state` / `unobservable_event` / `other_character_thought` |
+| `status` | `open` → `resolved` / `dismissed` |
+
+#### 既知の限界
+
+- **神視点シーン・PoV 交代シーン**は対象外（PoV 未設定として扱う）
+- **間接話法と直接内面描写の境界**は LLM が誤判定することがある（「〜と思っているようだった」は文脈で OK / NG が割れる）
+- **PoV のシーン紐付け仕様** は別途決定が必要（Scene metadata に `pov_entry_id` を追加 or Codex の scene_pin で代用）
+
+### scene_purpose (シーン目的診断)
+
+「このシーンは何のために必要か」を AI に診断させる。**span ではなく scene 単位の所見**。
+
+#### 思想
+
+- **削除判断ツール**: 目的が薄いシーンを `deletion_risk='high'` として明示する
+- **既存 `review` との違い**: review は問題点列挙、これは「存在意義」専門の特化レンズ
+- **scene 単位の annotation**: `anchor_type='scene'`（既存 `scene_lens_data` に近い形だが effect_type は独立）
+
+#### Payload
+
+- Scene 全文
+- オプション: 前後 1 シーンの要約（context 強化、token に余裕がある場合のみ）
+
+#### プロンプト固定句（要点）
+
+- 「このシーンの主要な役割を **1〜3 個** 列挙（情報開示 / 関係変化 / アクション / 世界観構築 / 雰囲気醸成 / 伏線埋め込み / 回収 / 場面転換）」
+- 「目的が薄い・他シーンと重複する場合は `deletion_risk='high'` を返せ」
+- 「役割は『何が起きるか』ではなく『物語にとっての機能』で答えよ」
+
+#### Annotation 構造
+
+| フィールド | 内容 |
+|---|---|
+| `anchor_type` | `scene` |
+| `content` | 診断テキスト（人間可読、削除候補理由含む） |
+| `metadata.primary_purpose` | `information` / `relationship` / `action` / `worldbuilding` / `atmosphere` / `setup` / `payoff` / `transition` |
+| `metadata.secondary_purposes` | 補助目的の配列（同 enum） |
+| `metadata.deletion_risk` | `low` / `medium` / `high` |
+| `status` | `open` → `resolved`（対応済み）/ `dismissed`（指摘無視） |
+
+#### 既知の限界
+
+- **「雰囲気のためのシーン」は誤判定されやすい**: 短い間奏シーンを「目的薄」と判定する傾向あり → `atmosphere` enum で救済
+- **作者の意図と乖離する場合がある**: 最終判断は作者、機械的に削除指示しない UI を徹底（「削除候補」ではなく「再検討候補」表現を推奨）
+
+### 後続候補（枠のみ）
+
+実装時期は MVP 後のユーザー観察で決定。設計書には**枠だけ**残し、詳細は実装着手時に詰める。
+
+| 候補 | 概要 | 想定 payload |
+|---|---|---|
+| `hook_check` | シーン冒頭/末尾のフック弱さ判定 | 各シーンの冒頭500字 + 末尾500字（バッチで安価） |
+| `reader_knowledge_gap` | 初出固有名詞の説明不足検出 | Codex 既知集合 + Scene + シーン順 |
+| `voice_consistency` | キャラ口調の一貫性検出（LLM 化） | Codex の voice 情報 + Scene 内の該当キャラ台詞 |
+| `tone_shift` | シーン内/シーン間のトーン急変検出 | 該当シーン + 前後シーンの要約 |
 
 ---
 
