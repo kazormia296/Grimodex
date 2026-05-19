@@ -4,17 +4,18 @@
 
 ポストエフェクト（Post-Effect）とは、既に書かれた本文に対して**書き換えずに注釈を重ねる AI パス**の総称。本体の執筆フローとは別軸で走り、書き手のセルフレビュー・推敲支援を担う。
 
-本書が対象とする5機能:
+本書が対象とする6機能:
 
-| 機能        | 概要                           | 単位           |
-| --------- | ---------------------------- | ------------ |
-| レビュー      | 編集者視点の診断レポート（構造化所見リスト）       | span         |
-| 疑似コメント    | 読者ペルソナによる本文横の吹き出し、スレッド可      | span         |
-| メタ構造レビュー  | プロット構造・ペーシングなどの俯瞰診断          | scene/folder |
-| 整合性チェック   | 本文と Codex の事実矛盾を検出（Codex 基準） | span         |
-| 自己整合性チェック | 本文内の自己矛盾を検出（Codex 不使用）       | span ペア      |
+| 機能        | 概要                                | 単位           |
+| --------- | --------------------------------- | ------------ |
+| レビュー      | 編集者視点の診断レポート（構造化所見リスト）            | span         |
+| 疑似コメント    | 読者ペルソナによる本文横の吹き出し、スレッド可           | span         |
+| メタ構造レビュー  | プロット構造・ペーシングなどの俯瞰診断               | scene/folder |
+| 整合性チェック   | 本文と Codex の事実矛盾を検出（Codex 基準）      | span         |
+| 自己整合性チェック | 本文内の自己矛盾を検出（Codex 不使用）            | span ペア      |
+| エンティティ抽出  | 本文から Codex 未登録の固有名詞・概念候補を抽出（本文基準） | span         |
 
-整合性チェックは「`consistency` (Codex 基準)」と「`intra_scene_consistency` (Codex 不使用)」の対の `effect_type` として実装する。詳細は §整合性チェック詳細設計 を参照。
+整合性チェックは「`consistency` (Codex 基準)」と「`intra_scene_consistency` (Codex 不使用)」の対の `effect_type` として実装する。さらに `entity_extraction`（本文基準）が `consistency`（Codex 基準）と逆方向の対をなす。詳細は §整合性チェック詳細設計 を参照。
 
 Linter 系（形式的ルールベース）は対象外。本書は「非決定的・LLM ベースの事後分析」のみを扱う。
 
@@ -378,6 +379,7 @@ start →    │ running │ ──completed──▶ completed (terminal)
 ### ポスト MVP
 
 - 機能: **伏線・回収** / **テーマ一貫性**
+- 機能: **エンティティ抽出**（`entity_extraction`, 本文 → Codex 候補。`consistency` と逆方向の対）— 詳細は §エンティティ抽出（本文 → Codex 候補）
 - `relation_type='foreshadowing' | 'theme_echo'`
 - `anchor_type='codex_entry'` 導入（Codex 基点の対等な relation）
 - `lens_type='character_arc' / 'pov'`
@@ -394,12 +396,13 @@ start →    │ running │ ──completed──▶ completed (terminal)
 
 ## 整合性チェック詳細設計
 
-`consistency` と `intra_scene_consistency` は対の関係で動く 2 つの `effect_type`。両者は同じ AI パス（PostEffect 基盤）に乗りつつ、Codex を ground truth とするか否かで役割を分担する。
+`consistency` と `intra_scene_consistency` は対の関係で動く 2 つの `effect_type`。両者は同じ AI パス（PostEffect 基盤）に乗りつつ、Codex を ground truth とするか否かで役割を分担する。さらに `entity_extraction`（ポスト MVP）が `consistency` と**逆方向の対**として加わる予定（§エンティティ抽出（本文 → Codex 候補））。
 
-| `effect_type` | 検出対象 | Codex 利用 | annotation 構造 |
-|---|---|---|---|
-| `consistency` | 本文と Codex の事実矛盾 | あり（ground truth） | 単独 annotation + `metadata.codex_ref` |
-| `intra_scene_consistency` | 本文内の自己矛盾 | なし | 2 annotation + relation (`contradiction`, `bidirectional`) |
+| `effect_type` | 検出対象 | Codex 利用 | annotation 構造 | 方向性 |
+|---|---|---|---|---|
+| `consistency` | 本文と Codex の事実矛盾 | あり（ground truth） | 単独 annotation + `metadata.codex_ref` | Codex → 本文（本文を Codex に合わせる） |
+| `intra_scene_consistency` | 本文内の自己矛盾 | なし | 2 annotation + relation (`contradiction`, `bidirectional`) | 本文内 |
+| `entity_extraction`（post MVP） | 本文中の Codex 未登録エンティティ | あり（既知集合の差分） | 単独 annotation + `metadata.proposed_entry` | 本文 → Codex（Codex を本文に合わせる） |
 
 ### 思想
 
@@ -690,7 +693,58 @@ MVP: 明示ボタンのみ。`[整合性チェック]` と `[自己整合性チ�
 | 1 | migration + payload builder + 単一コール path（Codex+Scene が budget 内のみ対応）+ `found_context` 含む metadata + プロンプト + dedupe + UI 統合（両 effect_type 同時） |
 | 2 | Scene chunking（Phase 1 で実測コストを見てから判断） |
 | 3 | folder/project scope の per-scene iteration ランナー |
-| Future | 自動実行 opt-in / SemanticLink 統合 / 伏線・テーマ feature 解禁 |
+| Future | 自動実行 opt-in / SemanticLink 統合 / 伏線・テーマ feature 解禁 / `entity_extraction` 解禁 |
+
+### エンティティ抽出（本文 → Codex 候補）
+
+`consistency` と**逆方向の対**として動く `effect_type='entity_extraction'`。本文中に出現するが Codex に未登録の固有名詞・概念を抽出し、Codex への追加候補として提示する。**ポスト MVP**。
+
+#### 思想
+
+- **方向性が逆**: `consistency` は「Codex を ground truth、本文を被検査側」。`entity_extraction` は「本文を一次ソース、Codex を既知集合（差分の参照側）」
+- **Lint ではない**: 決定論ベースの形態素解析は採用しない（[`Grimodex_Linter設計書.md`](Grimodex_Linter設計書.md) との境界）。理由は**「形態素のみで Precision 30〜60% / Recall 30〜80% が限界、Lint 枠に置くと鬱陶しさが価値を上回る」**（小説の造語人名は標準辞書の未知語、漢字造語は分解される）。LLM ベースで周辺文脈を読ませることで Precision 80%+ を狙う
+- **能動スキャン専用**: 自動実行は MVP 対象外。ユーザーが Codex パネルから明示的に走らせる
+- **採用/dismiss は既存 `status` で吸収**: 専用テーブルを作らず `post_effect_annotations.status` の `dismissed` を「永続無視」として使う（§dismiss 永続化 と同じ運用）
+
+#### Payload
+
+選定: **Codex の既知エントリの canonical + aliases 一覧**（差分参照用、本文の事実は不要）+ **Scene 本文**。
+内容: 既知集合は名前・alias・type のみ（context window 節約のため `summary`/`content` は注入しない）。
+
+#### プロンプト固定句（要点）
+
+- 「本文中に出現するが既知集合にない固有名詞・概念のみを抽出せよ」
+- 「一般名詞・代名詞・既知エントリの alias 漏れと思われるものは抽出しない」
+- 「同名異キャラの可能性がある場合は `metadata.ambiguity` に flag を立てる」
+- 「役職・通称（兄、先生、お嬢様）は本文中で**固有の指示対象を持つ**場合のみ抽出する」
+
+#### Annotation 構造
+
+| フィールド | 内容 |
+|---|---|
+| `anchor_type` | `scene_range`（出現箇所） |
+| `content` | 候補名（canonical 推定） |
+| `metadata.proposed_entry` | `{ name, type_guess: 'character'\|'location'\|'item'\|'lore', aliases: string[], rationale: string }` |
+| `metadata.ambiguity` | 同名異キャラ等の懸念 flag（optional） |
+| `status` | `open` → ユーザー操作で `resolved`（Codex 化済み）/ `dismissed`（永続無視） |
+
+#### UI
+
+- **Codex パネル側**にエントリポイントを置く（Linter パネルや Outline ではない）
+- スキャン結果は run 単位の候補リスト表示
+- 各候補に「Codex に追加」「無視」の二択。「Codex に追加」は既存の Codex 即時作成フローに乗せる（`source_post_effect_run_id` で帰属追跡）
+- `dismissed` は再スキャンでも再提示しない（dedupe key は `proposed_entry.name`）
+
+#### Dedupe / 採用判定の境界
+
+- 既知集合との完全一致は payload 段階で除外（LLM に投げない）
+- LLM 出力後の dedupe は `proposed_entry.name` で行う（同 run 内で同一候補が複数 span から上がるケース）
+- 同一 run の複数出現は 1 候補にマージし、`occurrences` 配列で全 span を保持
+
+#### 既知の限界
+
+- **同名異キャラの自動分離は不可**: LLM は ambiguity flag を立てるだけ、判断はユーザー
+- **alias 漏れの「既知エントリへの追加提案」は MVP 対象外**: 完全な新規候補のみ提示。alias 提案は将来検討
 
 ---
 
