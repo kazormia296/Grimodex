@@ -18,6 +18,8 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { useSyncUiScale } from "@/features/workspace/useSyncUiScale";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import type { SettingsCategory } from "@/features/settings/types";
+import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
+import { NovelcrafterImportDialog } from "@/features/import/NovelcrafterImportDialog";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
 import { DockviewWatermark } from "@/features/layout/DockviewWatermark";
@@ -313,6 +315,8 @@ function EditorScreen() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
+  const [showSnapshotModal, setShowSnapshotModal] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
@@ -746,7 +750,10 @@ function EditorScreen() {
         data-tauri-drag-region
       >
         <GrimodexLogo height={24} className="text-foreground" />
-        <WorkspaceMenu />
+        <WorkspaceMenu
+          onOpenSnapshot={() => setShowSnapshotModal(true)}
+          onOpenImport={() => setShowImportDialog(true)}
+        />
         <HistoryButtons />
         <button
           type="button"
@@ -785,6 +792,14 @@ function EditorScreen() {
         initialCategory={settingsInitialCategory}
       />
       <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
+      <ProjectSnapshotModal
+        open={showSnapshotModal}
+        onClose={() => setShowSnapshotModal(false)}
+      />
+      <NovelcrafterImportDialog
+        open={showImportDialog}
+        onClose={() => setShowImportDialog(false)}
+      />
       {showSearch && (
         <GlobalSearchDialog onClose={() => setShowSearch(false)} />
       )}

@@ -2,10 +2,20 @@ import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
-import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
-import { NovelcrafterImportDialog } from "@/features/import/NovelcrafterImportDialog";
 
-export function WorkspaceMenu() {
+// Dialog rendering is lifted to App.tsx (<main> level). WorkspaceMenu lives
+// inside <header class="glass-shell">, whose backdrop-filter creates a
+// containing block for position: fixed — rendering modals here would clip
+// their fixed inset-0 backdrop to the ~40px header strip.
+interface WorkspaceMenuProps {
+  onOpenSnapshot: () => void;
+  onOpenImport: () => void;
+}
+
+export function WorkspaceMenu({
+  onOpenSnapshot,
+  onOpenImport,
+}: WorkspaceMenuProps) {
   const { t } = useTranslation();
   const activeWorkspaceName = useWorkspaceStore((s) => s.activeWorkspaceName);
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
@@ -15,8 +25,6 @@ export function WorkspaceMenu() {
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
 
   const [isOpen, setIsOpen] = useState(false);
-  const [showSnapshotModal, setShowSnapshotModal] = useState(false);
-  const [showImportDialog, setShowImportDialog] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -126,7 +134,7 @@ export function WorkspaceMenu() {
             type="button"
             onClick={() => {
               setIsOpen(false);
-              setShowImportDialog(true);
+              onOpenImport();
             }}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
@@ -138,7 +146,7 @@ export function WorkspaceMenu() {
             type="button"
             onClick={() => {
               setIsOpen(false);
-              setShowSnapshotModal(true);
+              onOpenSnapshot();
             }}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
@@ -147,14 +155,6 @@ export function WorkspaceMenu() {
           </button>
         </div>
       )}
-      <ProjectSnapshotModal
-        open={showSnapshotModal}
-        onClose={() => setShowSnapshotModal(false)}
-      />
-      <NovelcrafterImportDialog
-        open={showImportDialog}
-        onClose={() => setShowImportDialog(false)}
-      />
     </div>
   );
 }
