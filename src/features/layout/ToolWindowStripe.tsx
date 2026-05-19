@@ -123,8 +123,8 @@ export function ToolWindowStripe({
         data-stripe-divider
         aria-hidden
         className={cn(
-          "shrink-0 rounded-full bg-border",
-          orientation === "vertical" ? "h-[2px] w-5 my-1" : "w-[2px] h-5 mx-1",
+          "shrink-0 rounded-full bg-muted-foreground/50",
+          orientation === "vertical" ? "h-[3px] w-6 my-1" : "w-[3px] h-6 mx-1",
         )}
       />
 
