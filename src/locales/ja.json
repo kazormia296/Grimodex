@@ -406,7 +406,7 @@
       "grid": "グリッド",
       "matrix": "マトリクス",
       "trash-bin": "ゴミ箱",
-      "command-center-results": "検索結果"
+      "command-center-results": "検索"
     },
     "preset": {
       "title": "レイアウトプリセット",
@@ -1605,17 +1605,21 @@
     "filter": {
       "sourceLabel": "ソース",
       "typeLabel": "種別",
-      "all": "すべて",
       "scene": "Scene",
       "codex": "Codex",
       "snippet": "Snippet",
       "lexical": "Lexical",
-      "semantic": "Semantic"
+      "semantic": "Semantic",
+      "includedHint": "クリックで除外",
+      "excludedHint": "クリックで表示",
+      "descriptionMode": "地の文優先",
+      "descriptionModeHint": "Semantic 検索で会話文の多いチャンクのスコアを下げて地の文を優先する",
+      "moreOptions": "その他のオプション",
+      "on": "ON",
+      "off": "OFF"
     },
     "panel": {
-      "queryLabel": "クエリ",
-      "queryEmpty": "(なし)",
-      "typeInBar": "ヘッダーの検索バーにキーワードを入力"
+      "emptyHint": "キーワードを入力して検索 (> でコマンドモード)"
     }
   },
   "chatCommands": {

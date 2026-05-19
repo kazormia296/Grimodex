@@ -406,7 +406,7 @@
       "grid": "Grid",
       "matrix": "Matrix",
       "trash-bin": "Trash Bin",
-      "command-center-results": "Search Results"
+      "command-center-results": "Search"
     },
     "preset": {
       "title": "Layout presets",
@@ -1601,17 +1601,21 @@
     "filter": {
       "sourceLabel": "Source",
       "typeLabel": "Type",
-      "all": "All",
       "scene": "Scene",
       "codex": "Codex",
       "snippet": "Snippet",
       "lexical": "Lexical",
-      "semantic": "Semantic"
+      "semantic": "Semantic",
+      "includedHint": "Click to hide",
+      "excludedHint": "Click to show",
+      "descriptionMode": "Narrative-first",
+      "descriptionModeHint": "Down-weight dialogue-heavy chunks in semantic search to surface narrative passages",
+      "moreOptions": "More options",
+      "on": "ON",
+      "off": "OFF"
     },
     "panel": {
-      "queryLabel": "Query",
-      "queryEmpty": "(none)",
-      "typeInBar": "Type in the header search bar"
+      "emptyHint": "Type to search (> for command mode)"
     }
   },
   "chatCommands": {

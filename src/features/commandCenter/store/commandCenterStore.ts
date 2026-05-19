@@ -24,8 +24,15 @@ interface CommandCenterState {
   mode: CommandCenterMode;
   /** input の raw 値 (prefix 含む) */
   query: string;
-  /** prefix を剥がした検索本文 */
+  /** prefix と -word を剥がした検索本文 (provider に渡す positive) */
   parsedQuery: string;
+  /** クエリから抽出された除外語。post-filter で title/subtitle に含む item を drop。 */
+  excludes: string[];
+  /**
+   * Semantic 検索の dialogue penalty。true で会話文比率 > 0.6 の chunk のスコアを
+   * 0.85 倍に減点して地の文ヒットを優先する。Lexical には影響しない。
+   */
+  descriptionMode: boolean;
   sections: CommandCenterSection[];
   /** flatItems index (空のときは 0) */
   selectedIndex: number;
@@ -36,6 +43,8 @@ interface CommandCenterState {
   setQuery: (q: string) => void;
   setMode: (m: CommandCenterMode) => void;
   setParsedQuery: (q: string) => void;
+  setExcludes: (excludes: string[]) => void;
+  setDescriptionMode: (v: boolean) => void;
   upsertSection: (
     section: CommandCenterSection,
     hideWhenEmpty: boolean,
@@ -54,6 +63,8 @@ export const useCommandCenterStore = create<CommandCenterState>()(
     mode: "search",
     query: "",
     parsedQuery: "",
+    excludes: [],
+    descriptionMode: false,
     sections: [],
     selectedIndex: 0,
     focusRequest: 0,
@@ -62,6 +73,8 @@ export const useCommandCenterStore = create<CommandCenterState>()(
     setQuery: (q) => set({ query: q }),
     setMode: (m) => set({ mode: m }),
     setParsedQuery: (q) => set({ parsedQuery: q }),
+    setExcludes: (excludes) => set({ excludes }),
+    setDescriptionMode: (v) => set({ descriptionMode: v }),
 
     upsertSection: (section, hideWhenEmpty) => {
       set((state) => {
@@ -114,7 +127,13 @@ export const useCommandCenterStore = create<CommandCenterState>()(
       set((state) => ({ focusRequest: state.focusRequest + 1 })),
 
     reset: () =>
-      set({ query: "", parsedQuery: "", sections: [], selectedIndex: 0 }),
+      set({
+        query: "",
+        parsedQuery: "",
+        excludes: [],
+        sections: [],
+        selectedIndex: 0,
+      }),
   }),
 );
 

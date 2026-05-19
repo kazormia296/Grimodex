@@ -2,26 +2,25 @@ import { useMemo } from "react";
 import { useCommandCenterStore } from "../store/commandCenterStore";
 import {
   useResultsPanelStore,
-  type SearchTypeFilter,
-  type SourceFilter,
+  type SearchTypeKind,
+  type SourceKind,
 } from "../store/resultsPanelStore";
 import type { CommandCenterSection, ItemKind } from "../providers/types";
 
 /**
- * Panel 側でフィルタを適用した sections を返す純粋関数 hook。
+ * 専用ビュー (パネル) でフィルタ適用済みの sections を返す。
  *
- * - searchTypeFilter:
- *   - "lexical"  → semantic section を除外
- *   - "semantic" → lexical section を除外
- *   - "all"      → 何もしない
- * - sourceFilter:
- *   - "scene"    → lexical-scene のみ残す + semantic は全件保持 (scene 由来)
- *   - "codex"    → lexical-codex のみ残す + semantic は除外
- *   - "snippet"  → lexical-snippet のみ残す + semantic は除外
- *   - "all"      → 何もしない
+ * 設計: **exclude 方式 (multi-select)**。指定された kind を「非表示」にする。
+ *
+ * - `excludedTypes` に "lexical" / "semantic" が含まれれば該当 section ごと除外
+ * - `excludedSources` (Scene/Codex/Snippet) に従って:
+ *   - "scene"   → lexical-scene を除外 + semantic section 全体を除外 (scene 由来のため)
+ *   - "codex"   → lexical-codex を除外
+ *   - "snippet" → lexical-snippet を除外
+ *
+ * 結果が 0 件になった section は丸ごと隠す (panel UI のノイズ削減)。
  */
-const SOURCE_KIND_MAP: Record<SourceFilter, ItemKind | null> = {
-  all: null,
+const SOURCE_KIND_TO_ITEM_KIND: Record<SourceKind, ItemKind> = {
   scene: "lexical-scene",
   codex: "lexical-codex",
   snippet: "lexical-snippet",
@@ -29,31 +28,31 @@ const SOURCE_KIND_MAP: Record<SourceFilter, ItemKind | null> = {
 
 export function filterSections(
   sections: readonly CommandCenterSection[],
-  sourceFilter: SourceFilter,
-  searchTypeFilter: SearchTypeFilter,
+  excludedSources: readonly SourceKind[],
+  excludedTypes: readonly SearchTypeKind[],
 ): CommandCenterSection[] {
+  const excludedItemKinds = new Set<ItemKind>(
+    excludedSources.map((s) => SOURCE_KIND_TO_ITEM_KIND[s]),
+  );
+  const excludeSemanticBySource = excludedSources.includes("scene");
+
   return sections.flatMap((section) => {
     const isSemantic = section.id === "semantic";
     const isLexical = section.id === "lexical";
 
-    // searchTypeFilter
-    if (searchTypeFilter === "lexical" && isSemantic) return [];
-    if (searchTypeFilter === "semantic" && isLexical) return [];
+    // type 除外
+    if (excludedTypes.includes("lexical") && isLexical) return [];
+    if (excludedTypes.includes("semantic") && isSemantic) return [];
 
-    // sourceFilter
-    if (sourceFilter !== "all") {
-      if (isSemantic && sourceFilter !== "scene") return [];
-      if (isLexical) {
-        const wantedKind = SOURCE_KIND_MAP[sourceFilter];
-        if (wantedKind) {
-          const filteredItems = section.items.filter(
-            (i) => i.kind === wantedKind,
-          );
-          // 結果が 0 件なら section ごと隠す (panel UI のノイズ削減)
-          if (filteredItems.length === 0) return [];
-          return [{ ...section, items: filteredItems }];
-        }
-      }
+    // source 除外 (semantic は scene 由来として扱う)
+    if (isSemantic && excludeSemanticBySource) return [];
+
+    if (isLexical && excludedItemKinds.size > 0) {
+      const filteredItems = section.items.filter(
+        (i) => !excludedItemKinds.has(i.kind),
+      );
+      if (filteredItems.length === 0) return [];
+      return [{ ...section, items: filteredItems }];
     }
     return [section];
   });
@@ -61,10 +60,10 @@ export function filterSections(
 
 export function useFilteredSections(): CommandCenterSection[] {
   const sections = useCommandCenterStore((s) => s.sections);
-  const sourceFilter = useResultsPanelStore((s) => s.sourceFilter);
-  const searchTypeFilter = useResultsPanelStore((s) => s.searchTypeFilter);
+  const excludedSources = useResultsPanelStore((s) => s.excludedSources);
+  const excludedTypes = useResultsPanelStore((s) => s.excludedTypes);
   return useMemo(
-    () => filterSections(sections, sourceFilter, searchTypeFilter),
-    [sections, sourceFilter, searchTypeFilter],
+    () => filterSections(sections, excludedSources, excludedTypes),
+    [sections, excludedSources, excludedTypes],
   );
 }

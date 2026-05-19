@@ -61,4 +61,11 @@ export interface CommandCenterProvider {
   hideWhenEmpty: boolean;
   supportsMode: (mode: CommandCenterMode) => boolean;
   search: (ctx: ProviderSearchContext) => Promise<CommandCenterSection>;
+  /**
+   * Provider 固有の memo bust factor。`useCommandCenterSearch` が
+   * baseKey に組み込むため、変化したときだけこの provider が再 fetch される
+   * (他の provider は無関係に維持)。例: Semantic は descriptionMode を含める。
+   * 戻り値の string を `baseKey` に concat。default: 何も追加しない。
+   */
+  cacheKeyExtras?: () => string;
 }

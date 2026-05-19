@@ -246,6 +246,62 @@ describe("useCommandCenterSearch", () => {
     expect(search.mock.calls[1][0]).toMatchObject({ limit: 50 });
   });
 
+  it("cacheKeyExtras change busts memo only for that provider (not others)", async () => {
+    // Semantic-style provider: cacheKeyExtras depends on an external toggle.
+    // Lexical-style provider: no cacheKeyExtras.
+    let semanticToggle = false;
+    const lexicalSearch = vi.fn<
+      (ctx: ProviderSearchContext) => Promise<CommandCenterSection>
+    >(async () => ({
+      id: "lexical",
+      title: "lexical",
+      order: 1,
+      items: [],
+    }));
+    const semanticSearchFn = vi.fn<
+      (ctx: ProviderSearchContext) => Promise<CommandCenterSection>
+    >(async () => ({
+      id: "semantic",
+      title: "semantic",
+      order: 2,
+      items: [],
+    }));
+    registerProvider(
+      makeProvider("lexical", { search: lexicalSearch, hideWhenEmpty: false }),
+    );
+    registerProvider({
+      ...makeProvider("semantic", {
+        search: semanticSearchFn,
+        hideWhenEmpty: false,
+      }),
+      order: 2,
+      cacheKeyExtras: () => `t=${semanticToggle ? 1 : 0}`,
+    });
+    renderHook(() => useCommandCenterSearch({ limit: 10 }));
+    act(() => {
+      useCommandCenterStore.getState().setQuery("hello");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(lexicalSearch).toHaveBeenCalledTimes(1);
+    expect(semanticSearchFn).toHaveBeenCalledTimes(1);
+
+    // Flip the semantic-only toggle. Since the effect re-runs (deps mocked here
+    // via store setter), only the semantic provider's baseKey changes → only
+    // semantic re-fires; lexical's memo stays hot.
+    semanticToggle = true;
+    act(() => {
+      // descriptionMode を変えて effect 再評価をトリガする
+      useCommandCenterStore.getState().setDescriptionMode(true);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(lexicalSearch).toHaveBeenCalledTimes(1);
+    expect(semanticSearchFn).toHaveBeenCalledTimes(2);
+  });
+
   it("superset memo: when limit decreases on same query, does NOT re-invoke", async () => {
     // Advisor verify scenario: panel open (limit 50) → close (limit 10) → open (50).
     // Single hook ownership + superset memoization should cause exactly 1 re-fetch

@@ -22,6 +22,7 @@ import { semanticSearch } from "@/features/semantic-search/api";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
+import { useCommandCenterStore } from "../store/commandCenterStore";
 
 function makeContext(
   overrides: Partial<ProviderSearchContext> = {},
@@ -49,6 +50,8 @@ const sampleHit = {
 describe("semanticSearchProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // default: descriptionMode off
+    useCommandCenterStore.setState({ descriptionMode: false });
   });
 
   it("supports only search mode", () => {
@@ -72,7 +75,7 @@ describe("semanticSearchProvider", () => {
     expect(semanticSearch).not.toHaveBeenCalled();
   });
 
-  it("invokes semanticSearch with trimmed query, ctx.limit, and NO descriptionMode", async () => {
+  it("invokes semanticSearch with trimmed query, ctx.limit, and descriptionMode from store (default false)", async () => {
     vi.mocked(semanticSearch).mockResolvedValueOnce([]);
     await semanticSearchProvider.search(
       makeContext({ query: "  hello world  ", limit: 50 }),
@@ -82,8 +85,26 @@ describe("semanticSearchProvider", () => {
       projectId: "default-project",
       query: "hello world",
       limit: 50,
+      descriptionMode: false,
     });
-    expect(callArgs).not.toHaveProperty("descriptionMode");
+  });
+
+  it("passes descriptionMode=true when commandCenterStore has it enabled", async () => {
+    useCommandCenterStore.setState({ descriptionMode: true });
+    vi.mocked(semanticSearch).mockResolvedValueOnce([]);
+    await semanticSearchProvider.search(makeContext());
+    const callArgs = vi.mocked(semanticSearch).mock.calls[0]?.[0];
+    expect(callArgs).toMatchObject({ descriptionMode: true });
+  });
+
+  it("cacheKeyExtras reflects descriptionMode flips", () => {
+    useCommandCenterStore.setState({ descriptionMode: false });
+    const off = semanticSearchProvider.cacheKeyExtras?.();
+    useCommandCenterStore.setState({ descriptionMode: true });
+    const on = semanticSearchProvider.cacheKeyExtras?.();
+    expect(off).toBeDefined();
+    expect(on).toBeDefined();
+    expect(off).not.toEqual(on);
   });
 
   it("maps hits to CommandCenterItem with score badge and chunkText subtitle", async () => {

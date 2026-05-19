@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useCommandCenterStore } from "../store/commandCenterStore";
 import { getProviders } from "../providers/registry";
 import { parseCommandInput } from "../lib/parseCommandInput";
+import { filterByExcludes } from "../lib/filterByExcludes";
 import type { CommandCenterProvider } from "../providers/types";
 
 /**
@@ -97,12 +98,16 @@ export function useCommandCenterSearch(
   const runtimesRef = useRef<Map<string, ProviderRuntime>>(new Map());
 
   const query = useCommandCenterStore((s) => s.query);
+  // descriptionMode は semantic provider の cacheKeyExtras で memo に影響する。
+  // ここで購読しないと変更が effect 再実行をトリガしないため、deps に含めて再評価させる。
+  const descriptionMode = useCommandCenterStore((s) => s.descriptionMode);
 
   useEffect(() => {
     const parsed = parseCommandInput(query);
     const store = useCommandCenterStore.getState();
     store.setMode(parsed.mode);
     store.setParsedQuery(parsed.text);
+    store.setExcludes(parsed.excludes);
 
     const trimmed = parsed.text.trim();
     const providers = getProviders(parsed.mode);
@@ -134,9 +139,14 @@ export function useCommandCenterSearch(
         query: trimmed,
         mode: parsed.mode,
         limit,
+        excludes: parsed.excludes,
       });
     }
-  }, [query, limit]);
+    // descriptionMode は scheduleProvider 内で `provider.cacheKeyExtras()` 経由で
+    // baseKey に組み込まれるため、ここで参照しなくても effect の deps に入れて
+    // 再実行されればその provider だけ memo が外れる (lexical は no-op で skip)。
+    void descriptionMode;
+  }, [query, limit, descriptionMode]);
 
   // unmount cleanup
   useEffect(() => {
@@ -152,6 +162,21 @@ interface ScheduleArgs {
   query: string;
   mode: "search" | "command";
   limit: number;
+  /** post-filter で section.items から drop する除外語 */
+  excludes: string[];
+}
+
+function makeBaseKey(
+  provider: CommandCenterProvider,
+  args: ScheduleArgs,
+): string {
+  // excludes は post-filter にしか効かないが、変更で見え方が変わるためメモ key に含める。
+  // 順序差で別 key にならないよう sort してから join (\x00 は通常クエリに現れない安全な区切り)。
+  const sortedExcludes = [...args.excludes].sort().join("\x00");
+  // provider 固有の bust factor (例: semantic は descriptionMode を含む)。
+  // 他 provider に影響しないよう provider.id 単位で計算される。
+  const extras = provider.cacheKeyExtras?.() ?? "";
+  return `${args.mode}::${args.query}::ex=${sortedExcludes}::extras=${extras}`;
 }
 
 function scheduleProvider(
@@ -160,9 +185,9 @@ function scheduleProvider(
   args: ScheduleArgs,
 ): void {
   const runtime = ensureRuntime(runtimes, provider.id);
-  const baseKey = `${args.mode}::${args.query}`;
+  const baseKey = makeBaseKey(provider, args);
 
-  // superset memo: same (mode, query) かつ limit が直近 max 以下なら skip
+  // superset memo: same baseKey (mode + query + excludes) かつ limit が直近 max 以下なら skip
   if (runtime.lastBaseKey === baseKey && args.limit <= runtime.lastMaxLimit) {
     return;
   }
@@ -214,9 +239,10 @@ async function runProvider(
       runtime.lastBaseKey = baseKey;
       runtime.lastMaxLimit = args.limit;
     }
+    const filtered = filterByExcludes(section, args.excludes);
     useCommandCenterStore
       .getState()
-      .upsertSection(section, provider.hideWhenEmpty);
+      .upsertSection(filtered, provider.hideWhenEmpty);
   } catch (e) {
     if (runtime.generation !== myGen || controller.signal.aborted) return;
     useCommandCenterStore.getState().upsertSection(

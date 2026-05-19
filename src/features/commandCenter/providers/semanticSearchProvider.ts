@@ -6,6 +6,7 @@ import {
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
+import { useCommandCenterStore } from "../store/commandCenterStore";
 import type {
   CommandCenterItem,
   CommandCenterProvider,
@@ -15,7 +16,8 @@ import type {
 
 /**
  * 本文セマンティック検索 Provider。
- * - `semanticSearch` を呼んで chunk ヒットを取得 (descriptionMode は false 固定)
+ * - `semanticSearch` を呼んで chunk ヒットを取得
+ * - `descriptionMode` は `commandCenterStore` から読む (FilterBar で切替可)
  * - onSelect は **requestJump → setActiveScene → showPanel** の順を守る
  *   (EditorPane の switchScene 経路が同一 microtask で consumeJump するため)
  */
@@ -74,14 +76,20 @@ export const semanticSearchProvider: CommandCenterProvider = {
   title: "Semantic",
   hideWhenEmpty: true,
   supportsMode: (mode) => mode === "search",
+  cacheKeyExtras: () => {
+    const desc = useCommandCenterStore.getState().descriptionMode;
+    return `desc=${desc ? "1" : "0"}`;
+  },
   async search(ctx: ProviderSearchContext): Promise<CommandCenterSection> {
     const query = ctx.query.trim();
     if (query.length < MIN_QUERY_LENGTH) return emptySection();
+    const descriptionMode = useCommandCenterStore.getState().descriptionMode;
     try {
       const hits = await semanticSearch({
         projectId: PROJECT_ID,
         query,
         limit: ctx.limit,
+        descriptionMode,
       });
       if (ctx.signal.aborted) return emptySection();
       return {

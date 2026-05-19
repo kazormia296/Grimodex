@@ -5,8 +5,8 @@ describe("useResultsPanelStore", () => {
   beforeEach(() => {
     useResultsPanelStore.setState({
       mounted: false,
-      sourceFilter: "all",
-      searchTypeFilter: "all",
+      excludedSources: [],
+      excludedTypes: [],
       selectedItemId: null,
       hoveredItemId: null,
     });
@@ -15,31 +15,52 @@ describe("useResultsPanelStore", () => {
   it("setters update the corresponding field", () => {
     const s = useResultsPanelStore.getState();
     s.setMounted(true);
-    s.setSourceFilter("codex");
-    s.setSearchTypeFilter("semantic");
     s.setSelected("x");
     s.setHovered("y");
     const next = useResultsPanelStore.getState();
     expect(next.mounted).toBe(true);
-    expect(next.sourceFilter).toBe("codex");
-    expect(next.searchTypeFilter).toBe("semantic");
     expect(next.selectedItemId).toBe("x");
     expect(next.hoveredItemId).toBe("y");
+  });
+
+  it("toggleSource: 含まれていれば除外配列に追加、再度トグルで除く", () => {
+    const { toggleSource } = useResultsPanelStore.getState();
+    toggleSource("scene");
+    expect(useResultsPanelStore.getState().excludedSources).toEqual(["scene"]);
+    toggleSource("codex");
+    expect(useResultsPanelStore.getState().excludedSources).toEqual([
+      "scene",
+      "codex",
+    ]);
+    toggleSource("scene");
+    expect(useResultsPanelStore.getState().excludedSources).toEqual(["codex"]);
+  });
+
+  it("toggleType: 同様にトグル動作", () => {
+    const { toggleType } = useResultsPanelStore.getState();
+    toggleType("lexical");
+    toggleType("semantic");
+    expect(useResultsPanelStore.getState().excludedTypes).toEqual([
+      "lexical",
+      "semantic",
+    ]);
+    toggleType("lexical");
+    expect(useResultsPanelStore.getState().excludedTypes).toEqual(["semantic"]);
   });
 
   it("reset() clears filters and selections but keeps mounted", () => {
     useResultsPanelStore.setState({
       mounted: true,
-      sourceFilter: "scene",
-      searchTypeFilter: "lexical",
+      excludedSources: ["scene", "codex"],
+      excludedTypes: ["semantic"],
       selectedItemId: "a",
       hoveredItemId: "b",
     });
     useResultsPanelStore.getState().reset();
     const s = useResultsPanelStore.getState();
     expect(s.mounted).toBe(true);
-    expect(s.sourceFilter).toBe("all");
-    expect(s.searchTypeFilter).toBe("all");
+    expect(s.excludedSources).toEqual([]);
+    expect(s.excludedTypes).toEqual([]);
     expect(s.selectedItemId).toBeNull();
     expect(s.hoveredItemId).toBeNull();
   });
