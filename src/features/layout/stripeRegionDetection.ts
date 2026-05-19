@@ -1,4 +1,4 @@
-import type { DockviewApi } from "dockview-react";
+import type { DockviewApi, DockviewGroupPanel } from "dockview-react";
 import type { PanelId } from "./layoutStore";
 import type { StripeRegion, ToolWindowSlot } from "./toolWindowDefaults";
 
@@ -58,6 +58,60 @@ export function detectActualRegion(
     panel.group.element.getBoundingClientRect(),
     editorPanel.group.element.getBoundingClientRect(),
   );
+}
+
+/**
+ * Dockview group 単位での region 検出。editor group との位置関係で判定。
+ * editor group 自身は null を返す。
+ */
+export function detectGroupRegion(
+  api: DockviewApi,
+  group: DockviewGroupPanel,
+): StripeRegion | null {
+  if (!group.element) return null;
+  const editorPanel = api.getPanel("editor");
+  if (!editorPanel?.group?.element) return null;
+  if (group === editorPanel.group) return null;
+  return detectRegionFromRects(
+    group.element.getBoundingClientRect(),
+    editorPanel.group.element.getBoundingClientRect(),
+  );
+}
+
+/**
+ * Region 別に Dockview groups を空間順 (top→bottom / left→right) でソート。
+ * editor group は除外。
+ */
+export function groupsByRegionInSpatialOrder(
+  api: DockviewApi,
+): Record<StripeRegion, DockviewGroupPanel[]> {
+  const result: Record<StripeRegion, DockviewGroupPanel[]> = {
+    left: [],
+    right: [],
+    bottom: [],
+  };
+  for (const group of api.groups) {
+    const region = detectGroupRegion(api, group);
+    if (!region) continue;
+    result[region].push(group);
+  }
+  // 縦並び (left/right) は top で sort、横並び (bottom) は left で sort
+  result.left.sort(
+    (a, b) =>
+      a.element.getBoundingClientRect().top -
+      b.element.getBoundingClientRect().top,
+  );
+  result.right.sort(
+    (a, b) =>
+      a.element.getBoundingClientRect().top -
+      b.element.getBoundingClientRect().top,
+  );
+  result.bottom.sort(
+    (a, b) =>
+      a.element.getBoundingClientRect().left -
+      b.element.getBoundingClientRect().left,
+  );
+  return result;
 }
 
 /**
