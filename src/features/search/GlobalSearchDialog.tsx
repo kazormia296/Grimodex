@@ -4,6 +4,8 @@ import { invoke } from "@/lib/tauri";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { useSearchModeStore } from "./searchModeStore";
+import { SearchModeTabs } from "@/features/semantic-search/SemanticSearchDialog";
 
 const PROJECT_ID = "default-project";
 const DEBOUNCE_MS = 200;
@@ -41,6 +43,7 @@ export function GlobalSearchDialog({ onClose }: GlobalSearchDialogProps) {
 
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const requestSelectEntry = useCodexStore((s) => s.requestSelectEntry);
+  const setMode = useSearchModeStore((s) => s.setMode);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -142,6 +145,9 @@ export function GlobalSearchDialog({ onClose }: GlobalSearchDialogProps) {
         }}
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Mode tabs */}
+        <SearchModeTabs current="lexical" onSelect={setMode} />
+
         {/* Input */}
         <div
           style={{

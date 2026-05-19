@@ -22,6 +22,8 @@ const SLOW_COMMANDS = new Set([
   "test_ai_connection",
   "list_ai_models",
   "start_post_effect_run",
+  /** 全 scene の再インデックスは scene 数 × Embedder 推論時間で分単位になりうる */
+  "semantic_reindex_all",
 ]);
 
 function withTimeout<T>(

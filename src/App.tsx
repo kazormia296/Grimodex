@@ -52,7 +52,7 @@ import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { GridPanel } from "@/features/grid/GridPanel";
 import { MatrixPanel } from "@/features/matrix/MatrixPanel";
 import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
-import { GlobalSearchDialog } from "@/features/search/GlobalSearchDialog";
+import { SearchDialog } from "@/features/search/SearchDialog";
 import { CommandPalette } from "@/features/commandPalette/CommandPalette";
 import { useState } from "react";
 import { Settings, FileOutput } from "lucide-react";
@@ -800,9 +800,7 @@ function EditorScreen() {
         open={showImportDialog}
         onClose={() => setShowImportDialog(false)}
       />
-      {showSearch && (
-        <GlobalSearchDialog onClose={() => setShowSearch(false)} />
-      )}
+      {showSearch && <SearchDialog onClose={() => setShowSearch(false)} />}
       {showCommandPalette && (
         <CommandPalette onClose={() => setShowCommandPalette(false)} />
       )}
