@@ -20,7 +20,9 @@ import {
   appSettings,
   projectSettings,
   codexDismissedRelations,
+  sceneChunks,
 } from "./schema";
+import type { NewSceneChunk } from "./schema";
 import * as schema from "./schema";
 
 function createTestDb() {
@@ -927,5 +929,125 @@ describe("cross-table relationships", () => {
     );
     expect(getTableName(appSettings)).toBe("app_settings");
     expect(getTableName(projectSettings)).toBe("project_settings");
+    expect(getTableName(sceneChunks)).toBe("scene_chunks");
+  });
+});
+
+describe("sceneChunks schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(sceneChunks)).toBe("scene_chunks");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(sceneChunks);
+    expect(columns).toContain("id");
+    expect(columns).toContain("sceneId");
+    expect(columns).toContain("chunkIndex");
+    expect(columns).toContain("text");
+    expect(columns).toContain("charStart");
+    expect(columns).toContain("charEnd");
+    expect(columns).toContain("dialogueRatio");
+    expect(columns).toContain("embedding");
+    expect(columns).toContain("embeddingDim");
+    expect(columns).toContain("modelId");
+    expect(columns).toContain("contentHash");
+    expect(columns).toContain("chunkerVersion");
+    expect(columns).toContain("createdAt");
+    expect(columns).toContain("updatedAt");
+  });
+
+  it("generates valid insert query with BLOB embedding", async () => {
+    const executedQueries: { sql: string; params: unknown[] }[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, params, _method) => {
+        executedQueries.push({ sql, params });
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    const embedding = Buffer.from(new Uint8Array(256 * 4)); // f32[256] = 1024 bytes
+    await db.insert(sceneChunks).values({
+      id: "chunk-001",
+      sceneId: "scene-001",
+      chunkIndex: 0,
+      text: "雨が窓を叩いていた。",
+      charStart: 0,
+      charEnd: 11,
+      dialogueRatio: 0,
+      embedding,
+      embeddingDim: 256,
+      modelId: "cl-nagoya/ruri-v3-30m@rev/model_int8.onnx/prefix-v1",
+      contentHash: "abc123",
+      chunkerVersion: "semantic-prose-chunker-v1",
+      createdAt: new Date("2026-05-19T00:00:00Z"),
+      updatedAt: new Date("2026-05-19T00:00:00Z"),
+    });
+    expect(executedQueries).toHaveLength(1);
+    expect(executedQueries[0].sql).toContain("insert");
+    expect(executedQueries[0].sql).toContain("scene_chunks");
+    expect(executedQueries[0].sql).toContain("embedding");
+    expect(executedQueries[0].sql).toContain("embedding_dim");
+    expect(executedQueries[0].sql).toContain("dialogue_ratio");
+    expect(executedQueries[0].sql).toContain("content_hash");
+    expect(executedQueries[0].sql).toContain("chunker_version");
+    expect(executedQueries[0].params).toContain("chunk-001");
+    expect(executedQueries[0].params).toContain("scene-001");
+    expect(executedQueries[0].params).toContain("semantic-prose-chunker-v1");
+  });
+
+  it("generates select by sceneId", async () => {
+    const executedQueries: string[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, _params, _method) => {
+        executedQueries.push(sql);
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db
+      .select()
+      .from(sceneChunks)
+      .where(eq(sceneChunks.sceneId, "scene-001"));
+    expect(executedQueries[0]).toContain("scene_chunks");
+    expect(executedQueries[0]).toContain("scene_id");
+  });
+
+  it("generates delete by sceneId for re-indexing", async () => {
+    const executedQueries: string[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, _params, _method) => {
+        executedQueries.push(sql);
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db.delete(sceneChunks).where(eq(sceneChunks.sceneId, "scene-001"));
+    expect(executedQueries[0]).toContain("delete");
+    expect(executedQueries[0]).toContain("scene_chunks");
+  });
+
+  it("type inference for NewSceneChunk requires embedding and model fields", () => {
+    // Compile-time check: the following must satisfy NewSceneChunk.
+    const row: NewSceneChunk = {
+      id: "c1",
+      sceneId: "s1",
+      chunkIndex: 0,
+      text: "abc",
+      charStart: 0,
+      charEnd: 3,
+      embedding: Buffer.from([0, 0, 0, 0]),
+      embeddingDim: 1,
+      modelId: "m",
+      contentHash: "h",
+      chunkerVersion: "v",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    expect(row.id).toBe("c1");
+    expect(row.embeddingDim).toBe(1);
+    expect(row.embedding.length).toBe(4);
   });
 });
