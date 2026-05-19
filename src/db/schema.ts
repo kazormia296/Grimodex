@@ -3,6 +3,7 @@ import {
   text,
   integer,
   real,
+  blob,
   primaryKey,
   foreignKey,
   index,
@@ -1395,6 +1396,44 @@ export const trashItems = sqliteTable(
   ],
 );
 
+// --- Semantic Search (本文セマンティック検索) ---
+// 詳細設計: temp/semantic-prose-search-context.md。
+// MVP は ruri-v3-30m ONNX を Rust 側で推論し、L2 正規化済み f32 配列を
+// `embedding` BLOB に little-endian で詰める。検索は Rust 側で総当たりコサイン。
+// マイグレーション規約 (CLAUDE.md): drizzle-kit migration は生成しない。
+export const sceneChunks = sqliteTable(
+  "scene_chunks",
+  {
+    id: text("id").primaryKey(),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    chunkIndex: integer("chunk_index").notNull(),
+    text: text("text").notNull(),
+    // Unicode scalar index in the scene's normalized plain text (NOT byte index, NOT UTF-16 code units).
+    charStart: integer("char_start").notNull(),
+    charEnd: integer("char_end").notNull(),
+    // 0.0〜1.0: チャンクに占める会話文の文字数比率。description_mode 減点に使う。
+    dialogueRatio: real("dialogue_ratio").notNull().default(0),
+    // f32 配列 (little-endian), L2 正規化済み。embedding_dim と長さで整合を取る。
+    embedding: blob("embedding", { mode: "buffer" }).notNull(),
+    embeddingDim: integer("embedding_dim").notNull(),
+    // 例: "cl-nagoya/ruri-v3-30m@<revision>/model_int8.onnx/prefix-v1"。
+    modelId: text("model_id").notNull(),
+    // ProseMirror JSON / 正規化済み plain text から安定的に算出。非同期 job race 回避用。
+    contentHash: text("content_hash").notNull(),
+    // 例: "semantic-prose-chunker-v1"。チャンク分割仕様変更で stale 判定。
+    chunkerVersion: text("chunker_version").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [
+    index("idx_scene_chunks_scene").on(t.sceneId),
+    index("idx_scene_chunks_model").on(t.modelId),
+    uniqueIndex("uq_scene_chunks_scene_index").on(t.sceneId, t.chunkIndex),
+  ],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
@@ -1482,6 +1521,9 @@ export type NewPostEffectAnnotationRelation =
   typeof postEffectAnnotationRelations.$inferInsert;
 export type SceneLensData = typeof sceneLensData.$inferSelect;
 export type NewSceneLensData = typeof sceneLensData.$inferInsert;
+
+export type SceneChunk = typeof sceneChunks.$inferSelect;
+export type NewSceneChunk = typeof sceneChunks.$inferInsert;
 
 export type PostEffectType =
   | "review"
