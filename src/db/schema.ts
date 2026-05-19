@@ -566,6 +566,119 @@ export const projectSnapshotEntries = sqliteTable(
   (table) => [primaryKey({ columns: [table.snapshotId, table.versionId] })],
 );
 
+// Structural snapshot: tree_nodes metadata at snapshot time.
+// `bodyVersionId` is RESTRICT FK so the referenced content_versions row is
+// preserved even after the source tree_node is deleted — this is what makes
+// "restore a deleted scene" possible.
+export const projectSnapshotTreeNodes = sqliteTable(
+  "project_snapshot_tree_nodes",
+  {
+    snapshotId: text("snapshot_id")
+      .notNull()
+      .references(() => projectSnapshots.id, { onDelete: "cascade" }),
+    nodeId: text("node_id").notNull(),
+    parentId: text("parent_id"),
+    nodeType: text("node_type").notNull(),
+    title: text("title").notNull(),
+    synopsis: text("synopsis"),
+    sortOrder: text("sort_order").notNull(),
+    storyTimeOrder: text("story_time_order"),
+    storyTimeLabel: text("story_time_label"),
+    povCharacterId: text("pov_character_id"),
+    locationId: text("location_id"),
+    status: text("status"),
+    bodyVersionId: text("body_version_id").references(
+      () => contentVersions.id,
+      {
+        onDelete: "restrict",
+      },
+    ),
+    unplacedBeatsDoc: text("unplaced_beats_doc").notNull().default("[]"),
+    charCount: integer("char_count").notNull().default(0),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [primaryKey({ columns: [table.snapshotId, table.nodeId] })],
+);
+
+export const projectSnapshotCodexEntries = sqliteTable(
+  "project_snapshot_codex_entries",
+  {
+    snapshotId: text("snapshot_id")
+      .notNull()
+      .references(() => projectSnapshots.id, { onDelete: "cascade" }),
+    entryId: text("entry_id").notNull(),
+    type: text("type").notNull(),
+    name: text("name").notNull(),
+    parentId: text("parent_id"),
+    aliases: text("aliases"),
+    excludedAliases: text("excluded_aliases"),
+    summary: text("summary"),
+    icon: text("icon"),
+    contextMode: text("context_mode").notNull(),
+    childrenBudget: text("children_budget").notNull(),
+    notes: text("notes"),
+    bodyVersionId: text("body_version_id").references(
+      () => contentVersions.id,
+      {
+        onDelete: "restrict",
+      },
+    ),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [primaryKey({ columns: [table.snapshotId, table.entryId] })],
+);
+
+export const projectSnapshotSnippets = sqliteTable(
+  "project_snapshot_snippets",
+  {
+    snapshotId: text("snapshot_id")
+      .notNull()
+      .references(() => projectSnapshots.id, { onDelete: "cascade" }),
+    snippetId: text("snippet_id").notNull(),
+    title: text("title").notNull(),
+    sceneId: text("scene_id"),
+    sourceChatMessageId: text("source_chat_message_id"),
+    bodyVersionId: text("body_version_id").references(
+      () => contentVersions.id,
+      {
+        onDelete: "restrict",
+      },
+    ),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [primaryKey({ columns: [table.snapshotId, table.snippetId] })],
+);
+
+// Per-snapshot, per-scope JSON blob for ancillary join tables (labels,
+// foreshadow setups, map layout, lint settings, etc.). Payload schema lives
+// in src/features/revision/projectSnapshotScopes.ts.
+export const projectSnapshotAux = sqliteTable(
+  "project_snapshot_aux",
+  {
+    snapshotId: text("snapshot_id")
+      .notNull()
+      .references(() => projectSnapshots.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+    payloadJson: text("payload_json").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.snapshotId, table.scope] })],
+);
+
 export const codexEntryPhases = sqliteTable(
   "codex_entry_phases",
   {
@@ -1299,6 +1412,20 @@ export type ContentVersion = typeof contentVersions.$inferSelect;
 export type NewContentVersion = typeof contentVersions.$inferInsert;
 export type ProjectSnapshot = typeof projectSnapshots.$inferSelect;
 export type NewProjectSnapshot = typeof projectSnapshots.$inferInsert;
+export type ProjectSnapshotTreeNode =
+  typeof projectSnapshotTreeNodes.$inferSelect;
+export type NewProjectSnapshotTreeNode =
+  typeof projectSnapshotTreeNodes.$inferInsert;
+export type ProjectSnapshotCodexEntry =
+  typeof projectSnapshotCodexEntries.$inferSelect;
+export type NewProjectSnapshotCodexEntry =
+  typeof projectSnapshotCodexEntries.$inferInsert;
+export type ProjectSnapshotSnippet =
+  typeof projectSnapshotSnippets.$inferSelect;
+export type NewProjectSnapshotSnippet =
+  typeof projectSnapshotSnippets.$inferInsert;
+export type ProjectSnapshotAux = typeof projectSnapshotAux.$inferSelect;
+export type NewProjectSnapshotAux = typeof projectSnapshotAux.$inferInsert;
 export type CodexEntryPhase = typeof codexEntryPhases.$inferSelect;
 export type NewCodexEntryPhase = typeof codexEntryPhases.$inferInsert;
 export type CodexPhaseDetailOverride =

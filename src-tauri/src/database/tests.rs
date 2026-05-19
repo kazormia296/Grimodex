@@ -1078,7 +1078,8 @@ fn test_delete_tree_node_preserves_snapshot_protected_versions() {
         "INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES (?, ?)",
         &[p("snap-1"), p("v-protected")],
         "run",
-    ).expect("insert snapshot entry");
+    )
+    .expect("insert snapshot entry");
 
     // Delete the folder; cascade hits the scene and the cv-cleanup trigger.
     // Pre-fix this returned FOREIGN KEY constraint failed on v-protected.
@@ -1086,7 +1087,8 @@ fn test_delete_tree_node_preserves_snapshot_protected_versions() {
         "DELETE FROM tree_nodes WHERE id = ?",
         &[p("snap-part1")],
         "run",
-    ).expect("delete folder");
+    )
+    .expect("delete folder");
 
     let nodes = db
         .execute(
@@ -1120,7 +1122,87 @@ fn test_delete_tree_node_preserves_snapshot_protected_versions() {
         )
         .expect("query entries");
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["version_id"], Value::String("v-protected".into()));
+    assert_eq!(
+        entries[0]["version_id"],
+        Value::String("v-protected".into())
+    );
+}
+
+/// End-to-end check for the structural-restore transaction:
+/// `defer_foreign_keys = ON` lets us wipe tree_nodes and re-insert in a
+/// single transaction even though the restored row references a codex
+/// entry that gets inserted later in the same transaction, and the
+/// `delete_cv_on_tree_node_delete` trigger fires (and skips the
+/// snapshot-protected content_version) during the wipe.
+#[test]
+fn test_defer_foreign_keys_wipe_and_restore_round_trip() {
+    let db = test_db();
+    let p = |s: &str| Value::String(s.into());
+
+    db.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, 'default-project', 'character', 'X', datetime('now'), datetime('now'))",
+        &[p("cx-1")],
+        "run",
+    ).expect("insert codex");
+    db.execute(
+        "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, pov_character_id, content, created_at, updated_at) VALUES (?, 'default-project', 'scene', 'S', 'a0', ?, '{}', datetime('now'), datetime('now'))",
+        &[p("sc-1"), p("cx-1")],
+        "run",
+    ).expect("insert scene");
+    db.execute(
+        "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number, snapshot_type, created_at) VALUES (?, 'scene', 'sc-1', '{}', 1, 'auto', datetime('now'))",
+        &[p("v-1")],
+        "run",
+    ).expect("insert version");
+    db.execute(
+        "INSERT INTO project_snapshots (id, project_id, name, created_at) VALUES (?, 'default-project', ?, datetime('now'))",
+        &[p("snap-1"), p("checkpoint")],
+        "run",
+    ).expect("insert snapshot");
+    db.execute(
+        "INSERT INTO project_snapshot_tree_nodes (snapshot_id, node_id, node_type, title, sort_order, body_version_id, pov_character_id) VALUES (?, 'sc-1', 'scene', 'S', 'a0', ?, 'cx-1')",
+        &[p("snap-1"), p("v-1")],
+        "run",
+    ).expect("insert snapshot tree node");
+
+    // Wipe + restore as one transaction. Deliberately INSERT the scene
+    // *before* the codex to prove the deferred check is at COMMIT time.
+    let stmts = vec![
+        crate::database::BatchStatement {
+            sql: "PRAGMA defer_foreign_keys = ON".into(),
+            params: vec![],
+            method: "run".into(),
+        },
+        crate::database::BatchStatement {
+            sql: "DELETE FROM tree_nodes WHERE project_id = ?".into(),
+            params: vec![p("default-project")],
+            method: "run".into(),
+        },
+        crate::database::BatchStatement {
+            sql: "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, pov_character_id, content, created_at, updated_at) VALUES (?, 'default-project', 'scene', 'S', 'a0', ?, '{}', datetime('now'), datetime('now'))".into(),
+            params: vec![p("sc-1"), p("cx-1")],
+            method: "run".into(),
+        },
+        crate::database::BatchStatement {
+            sql: "INSERT OR REPLACE INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, 'default-project', 'character', 'X', datetime('now'), datetime('now'))".into(),
+            params: vec![p("cx-1")],
+            method: "run".into(),
+        },
+    ];
+    db.execute_batch_tx(&stmts).expect("structural restore");
+
+    let scenes = db
+        .execute("SELECT id FROM tree_nodes WHERE id = 'sc-1'", &[], "all")
+        .expect("query");
+    assert_eq!(scenes.len(), 1);
+    let versions = db
+        .execute(
+            "SELECT id FROM content_versions WHERE id = 'v-1'",
+            &[],
+            "all",
+        )
+        .expect("query");
+    assert_eq!(versions.len(), 1);
 }
 
 /// Simulates an existing DB that was migrated by an older binary: the buggy
@@ -1181,7 +1263,8 @@ fn test_migrate_replaces_legacy_cv_triggers() {
         "INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES (?, ?)",
         &[p("legacy-snap"), p("legacy-v")],
         "run",
-    ).expect("insert entry");
+    )
+    .expect("insert entry");
 
     db.execute(
         "DELETE FROM tree_nodes WHERE id = ?",
@@ -1218,12 +1301,14 @@ fn test_delete_codex_entry_and_snippet_preserve_snapshot_versions() {
         "INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES (?, ?)",
         &[p("snap-cx"), p("cx-v1")],
         "run",
-    ).expect("insert entry");
+    )
+    .expect("insert entry");
     db.execute(
         "DELETE FROM codex_entries WHERE id = ?",
         &[p("cx-1")],
         "run",
-    ).expect("delete codex entry");
+    )
+    .expect("delete codex entry");
 
     // Snippet with a snapshot-protected version
     db.execute(
@@ -1245,12 +1330,10 @@ fn test_delete_codex_entry_and_snippet_preserve_snapshot_versions() {
         "INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES (?, ?)",
         &[p("snap-sn"), p("sn-v1")],
         "run",
-    ).expect("insert entry");
-    db.execute(
-        "DELETE FROM snippets WHERE id = ?",
-        &[p("sn-1")],
-        "run",
-    ).expect("delete snippet");
+    )
+    .expect("insert entry");
+    db.execute("DELETE FROM snippets WHERE id = ?", &[p("sn-1")], "run")
+        .expect("delete snippet");
 
     let surviving = db
         .execute(
@@ -1259,7 +1342,11 @@ fn test_delete_codex_entry_and_snippet_preserve_snapshot_versions() {
             "all",
         )
         .expect("query");
-    assert_eq!(surviving.len(), 2, "both snapshot-protected versions survive");
+    assert_eq!(
+        surviving.len(),
+        2,
+        "both snapshot-protected versions survive"
+    );
 }
 
 #[test]

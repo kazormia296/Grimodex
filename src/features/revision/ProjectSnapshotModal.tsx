@@ -10,6 +10,30 @@ import {
   deleteProjectSnapshot,
   type ProjectSnapshotMeta,
 } from "./projectSnapshotApi";
+import {
+  RESTORE_SCOPES,
+  fullRestoreScopeSet,
+  skipReportIsEmpty,
+  type RestoreScope,
+  type SkipReport,
+} from "./projectSnapshotScopes";
+
+function countSkipped(r: SkipReport): number {
+  return (
+    r.treeNodeLabels +
+    r.lintIgnoredDiagnostics +
+    r.foreshadowSetups +
+    r.foreshadowCodexLinks +
+    r.postEffectAnnotations +
+    r.postEffectAnnotationRelations +
+    r.authorshipSpans +
+    r.sceneCodexPins +
+    r.sceneCodexMentions +
+    r.sceneBeatPovCache +
+    r.foreshadowPayoffSceneCleared +
+    r.mapNodePositionsLinkCleared
+  );
+}
 
 interface ProjectSnapshotModalProps {
   open: boolean;
@@ -47,6 +71,9 @@ export function ProjectSnapshotModal({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [restoreScopes, setRestoreScopes] = useState<Set<RestoreScope>>(() =>
+    fullRestoreScopeSet(),
+  );
 
   useEffect(() => {
     if (!open) {
@@ -56,6 +83,7 @@ export function ProjectSnapshotModal({
       setCreateDesc("");
       setConfirmRestoreId(null);
       setConfirmDeleteId(null);
+      setRestoreScopes(fullRestoreScopeSet());
       return;
     }
     loadSnapshots();
@@ -63,6 +91,14 @@ export function ProjectSnapshotModal({
     // open が立ち上がる初回ロードでのみ呼びたい。再実行不要。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Reset the scope selection each time a different snapshot's confirm
+  // dialog opens, so prior choices don't bleed across snapshots.
+  useEffect(() => {
+    if (confirmRestoreId) {
+      setRestoreScopes(fullRestoreScopeSet());
+    }
+  }, [confirmRestoreId]);
 
   async function loadSnapshots() {
     setIsLoading(true);
@@ -109,13 +145,22 @@ export function ProjectSnapshotModal({
     if (!snap) return;
     setIsRestoring(true);
     try {
-      const result = await restoreProjectSnapshot(snap.id, snap.name);
+      const result = await restoreProjectSnapshot(snap.id, snap.name, {
+        scopes: snap.isStructural ? restoreScopes : undefined,
+      });
       toast.success(
         t("snapshot.restoreSuccess", {
           name: snap.name,
           count: result.restoredCount,
         }),
       );
+      if (!skipReportIsEmpty(result.skipped)) {
+        toast.info(
+          t("snapshot.restoreSkipNote", {
+            count: countSkipped(result.skipped),
+          }),
+        );
+      }
       setConfirmRestoreId(null);
       setSelectedId(null);
       onClose();
@@ -127,6 +172,15 @@ export function ProjectSnapshotModal({
     } finally {
       setIsRestoring(false);
     }
+  }
+
+  function toggleScope(scope: RestoreScope): void {
+    setRestoreScopes((prev) => {
+      const next = new Set(prev);
+      if (next.has(scope)) next.delete(scope);
+      else next.add(scope);
+      return next;
+    });
   }
 
   async function handleDeleteConfirm() {
@@ -158,15 +212,61 @@ export function ProjectSnapshotModal({
     <>
       {open && !!confirmRestoreId && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
-          <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[440px] max-w-[95vw]">
+          <div className="bg-background rounded-lg border border-border shadow-xl p-6 w-[480px] max-w-[95vw] max-h-[90vh] overflow-y-auto">
             <h2 className="text-base font-semibold mb-3">
               {t("snapshot.restoreTitle")}
             </h2>
-            <p className="text-sm text-muted-foreground mb-6">
+            <p className="text-sm text-muted-foreground mb-4">
               {t("snapshot.restoreDesc", { name: confirmRestoreSnap?.name })}
               <br />
               {t("snapshot.restoreDescSub")}
             </p>
+
+            {confirmRestoreSnap?.isStructural === false ? (
+              <p className="text-xs text-muted-foreground mb-4 px-3 py-2 rounded border border-border bg-muted/30">
+                {t("snapshot.restoreScopeLegacyNote")}
+              </p>
+            ) : (
+              <div className="mb-4">
+                <h3 className="text-sm font-medium mb-2">
+                  {t("snapshot.restoreScopeHeading")}
+                </h3>
+                <div className="space-y-1.5">
+                  {RESTORE_SCOPES.map((scope) => (
+                    <label
+                      key={scope}
+                      className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={restoreScopes.has(scope)}
+                        onChange={() => toggleScope(scope)}
+                        disabled={isRestoring}
+                      />
+                      <span className="flex-1">
+                        <span className="block text-sm">
+                          {t(
+                            `snapshot.scope${scope.charAt(0).toUpperCase() + scope.slice(1)}`,
+                          )}
+                        </span>
+                        <span className="block text-xs text-muted-foreground">
+                          {t(
+                            `snapshot.scope${scope.charAt(0).toUpperCase() + scope.slice(1)}Desc`,
+                          )}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {!restoreScopes.has("body") && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    ℹ {t("snapshot.restoreScopeHint")}
+                  </p>
+                )}
+              </div>
+            )}
+
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -180,7 +280,11 @@ export function ProjectSnapshotModal({
                 type="button"
                 className="px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
                 onClick={handleRestoreConfirm}
-                disabled={isRestoring}
+                disabled={
+                  isRestoring ||
+                  (confirmRestoreSnap?.isStructural === true &&
+                    restoreScopes.size === 0)
+                }
               >
                 {isRestoring
                   ? t("snapshot.restoring")

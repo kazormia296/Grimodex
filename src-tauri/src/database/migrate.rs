@@ -383,10 +383,81 @@ impl Database {
             -- version_id uses ON DELETE RESTRICT so pruning logic cannot
             -- silently strip a version that is referenced by a snapshot;
             -- the snapshot feature relies on blocking such deletes.
+            -- Legacy (pre-structural-snapshot) entries live here; new
+            -- snapshots write to project_snapshot_tree_nodes / _codex_entries /
+            -- _snippets / _aux below. Restore detects which form is present.
             CREATE TABLE IF NOT EXISTS project_snapshot_entries (
                 snapshot_id TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
                 version_id  TEXT NOT NULL REFERENCES content_versions(id) ON DELETE RESTRICT,
                 PRIMARY KEY (snapshot_id, version_id)
+            );
+
+            -- Structural snapshot tables: capture per-row metadata so restore
+            -- can recreate deleted entities and revert structural changes
+            -- (title / parent / sort_order / status / pov / location ...).
+            -- body content stays in content_versions and is referenced by
+            -- body_version_id (RESTRICT FK, same protection as legacy entries).
+            CREATE TABLE IF NOT EXISTS project_snapshot_tree_nodes (
+                snapshot_id        TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+                node_id            TEXT NOT NULL,
+                parent_id          TEXT,
+                node_type          TEXT NOT NULL,
+                title              TEXT NOT NULL,
+                synopsis           TEXT,
+                sort_order         TEXT NOT NULL,
+                story_time_order   TEXT,
+                story_time_label   TEXT,
+                pov_character_id   TEXT,
+                location_id        TEXT,
+                status             TEXT,
+                body_version_id    TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+                unplaced_beats_doc TEXT NOT NULL DEFAULT '[]',
+                char_count         INTEGER NOT NULL DEFAULT 0,
+                -- Original entity timestamps preserved so restore brings
+                -- back the real created/updated dates, not the moment of restore.
+                created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (snapshot_id, node_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS project_snapshot_codex_entries (
+                snapshot_id            TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+                entry_id               TEXT NOT NULL,
+                type                   TEXT NOT NULL,
+                name                   TEXT NOT NULL,
+                parent_id              TEXT,
+                aliases                TEXT,
+                excluded_aliases       TEXT,
+                summary                TEXT,
+                icon                   TEXT,
+                context_mode           TEXT NOT NULL,
+                children_budget        TEXT NOT NULL,
+                notes                  TEXT,
+                body_version_id        TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+                created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (snapshot_id, entry_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS project_snapshot_snippets (
+                snapshot_id            TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+                snippet_id             TEXT NOT NULL,
+                title                  TEXT NOT NULL,
+                scene_id               TEXT,
+                source_chat_message_id TEXT,
+                body_version_id        TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+                created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (snapshot_id, snippet_id)
+            );
+
+            -- Aux: per-snapshot, per-scope JSON payload. One row per scope.
+            -- payload_json shape is defined in src/features/revision/projectSnapshotScopes.ts.
+            CREATE TABLE IF NOT EXISTS project_snapshot_aux (
+                snapshot_id  TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+                scope        TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (snapshot_id, scope)
             );
 
             -- App-wide key-value store (shared across projects). All current
@@ -509,16 +580,19 @@ impl Database {
             --  is now enforced by FK ON DELETE SET NULL; explicit triggers removed.)
 
             -- Triggers to cascade-delete content_versions for polymorphic entity_id.
-            -- Versions referenced by project_snapshot_entries are protected
-            -- (that FK is ON DELETE RESTRICT, so an unconditional DELETE would
-            -- fail with FOREIGN KEY constraint failed and roll back the
+            -- Versions referenced by any project_snapshot_* table are protected
+            -- (those FKs are ON DELETE RESTRICT, so an unconditional DELETE
+            -- would fail with FOREIGN KEY constraint failed and roll back the
             -- enclosing tree_nodes / codex_entries / snippets delete).
             CREATE TRIGGER IF NOT EXISTS delete_cv_on_tree_node_delete
             AFTER DELETE ON tree_nodes BEGIN
                 DELETE FROM content_versions
                 WHERE entity_type IN ('scene', 'note')
                   AND entity_id = old.id
-                  AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
+                  AND id NOT IN (SELECT version_id FROM project_snapshot_entries)
+                  AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL)
+                  AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL)
+                  AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL);
             END;
 
             CREATE TRIGGER IF NOT EXISTS delete_cv_on_codex_entry_delete
@@ -526,7 +600,10 @@ impl Database {
                 DELETE FROM content_versions
                 WHERE entity_type = 'codex_entry'
                   AND entity_id = old.id
-                  AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
+                  AND id NOT IN (SELECT version_id FROM project_snapshot_entries)
+                  AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL)
+                  AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL)
+                  AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL);
             END;
 
             CREATE TRIGGER IF NOT EXISTS delete_cv_on_snippet_delete
@@ -534,7 +611,10 @@ impl Database {
                 DELETE FROM content_versions
                 WHERE entity_type = 'snippet'
                   AND entity_id = old.id
-                  AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
+                  AND id NOT IN (SELECT version_id FROM project_snapshot_entries)
+                  AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL)
+                  AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL)
+                  AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL);
             END;
 
             -- Seed built-in codex types for every new project
@@ -1146,10 +1226,13 @@ impl Database {
     /// the snapshot-aware versions installed by `migrate()` take effect on
     /// pre-existing databases. The original triggers wrote
     /// `DELETE FROM content_versions WHERE entity_type = X AND entity_id = Y`
-    /// unconditionally; that violated `project_snapshot_entries.version_id`'s
-    /// RESTRICT FK whenever a snapshot referenced one of those versions and
-    /// caused the enclosing tree_nodes / codex_entries / snippets delete to
-    /// fail with `FOREIGN KEY constraint failed`.
+    /// unconditionally; that violated the RESTRICT FK from any
+    /// project_snapshot_* table whose `version_id` / `body_version_id`
+    /// referenced that row, and caused the enclosing tree_nodes /
+    /// codex_entries / snippets delete to fail with
+    /// `FOREIGN KEY constraint failed`. Rerun on every migrate so a snapshot
+    /// schema bump (adding another protected source table) re-installs the
+    /// trigger body without requiring a one-shot guard.
     pub(super) fn migrate_cv_triggers_protect_snapshot_versions(
         conn: &Connection,
     ) -> anyhow::Result<()> {
@@ -1162,21 +1245,30 @@ impl Database {
                  DELETE FROM content_versions
                  WHERE entity_type IN ('scene', 'note')
                    AND entity_id = old.id
-                   AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
+                   AND id NOT IN (SELECT version_id FROM project_snapshot_entries)
+                   AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL)
+                   AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL)
+                   AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL);
              END;
              CREATE TRIGGER delete_cv_on_codex_entry_delete
              AFTER DELETE ON codex_entries BEGIN
                  DELETE FROM content_versions
                  WHERE entity_type = 'codex_entry'
                    AND entity_id = old.id
-                   AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
+                   AND id NOT IN (SELECT version_id FROM project_snapshot_entries)
+                   AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL)
+                   AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL)
+                   AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL);
              END;
              CREATE TRIGGER delete_cv_on_snippet_delete
              AFTER DELETE ON snippets BEGIN
                  DELETE FROM content_versions
                  WHERE entity_type = 'snippet'
                    AND entity_id = old.id
-                   AND id NOT IN (SELECT version_id FROM project_snapshot_entries);
+                   AND id NOT IN (SELECT version_id FROM project_snapshot_entries)
+                   AND id NOT IN (SELECT body_version_id FROM project_snapshot_tree_nodes WHERE body_version_id IS NOT NULL)
+                   AND id NOT IN (SELECT body_version_id FROM project_snapshot_codex_entries WHERE body_version_id IS NOT NULL)
+                   AND id NOT IN (SELECT body_version_id FROM project_snapshot_snippets WHERE body_version_id IS NOT NULL);
              END;",
         )?;
         Ok(())

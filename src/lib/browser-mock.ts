@@ -359,6 +359,61 @@ const SCHEMA_DDL = `
     version_id TEXT NOT NULL REFERENCES content_versions(id) ON DELETE RESTRICT,
     PRIMARY KEY (snapshot_id, version_id)
   );
+  CREATE TABLE IF NOT EXISTS project_snapshot_tree_nodes (
+    snapshot_id        TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+    node_id            TEXT NOT NULL,
+    parent_id          TEXT,
+    node_type          TEXT NOT NULL,
+    title              TEXT NOT NULL,
+    synopsis           TEXT,
+    sort_order         TEXT NOT NULL,
+    story_time_order   TEXT,
+    story_time_label   TEXT,
+    pov_character_id   TEXT,
+    location_id        TEXT,
+    status             TEXT,
+    body_version_id    TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+    unplaced_beats_doc TEXT NOT NULL DEFAULT '[]',
+    char_count         INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (snapshot_id, node_id)
+  );
+  CREATE TABLE IF NOT EXISTS project_snapshot_codex_entries (
+    snapshot_id      TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+    entry_id         TEXT NOT NULL,
+    type             TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    parent_id        TEXT,
+    aliases          TEXT,
+    excluded_aliases TEXT,
+    summary          TEXT,
+    icon             TEXT,
+    context_mode     TEXT NOT NULL,
+    children_budget  TEXT NOT NULL,
+    notes            TEXT,
+    body_version_id  TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (snapshot_id, entry_id)
+  );
+  CREATE TABLE IF NOT EXISTS project_snapshot_snippets (
+    snapshot_id            TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+    snippet_id             TEXT NOT NULL,
+    title                  TEXT NOT NULL,
+    scene_id               TEXT,
+    source_chat_message_id TEXT,
+    body_version_id        TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+    created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (snapshot_id, snippet_id)
+  );
+  CREATE TABLE IF NOT EXISTS project_snapshot_aux (
+    snapshot_id  TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+    scope        TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, scope)
+  );
 `;
 
 const GLOBAL_SETTINGS_KEY = "grimodex:global-settings";
@@ -538,6 +593,36 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     return { rows };
   }
 
+  function handleDbExecuteBatch(args: Record<string, unknown>): {
+    rows: Record<string, unknown>[];
+  } {
+    const statements = args.statements as {
+      sql: string;
+      params: SqlValue[];
+      method: string;
+    }[];
+    db.run("BEGIN");
+    let last: Record<string, unknown>[] = [];
+    try {
+      for (const s of statements) {
+        last = handleDbExecute({
+          sql: s.sql,
+          params: s.params,
+          method: s.method,
+        }).rows;
+      }
+      db.run("COMMIT");
+    } catch (e) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        /* noop */
+      }
+      throw e;
+    }
+    return { rows: last };
+  }
+
   function handleGetGlobalSettings(): Record<string, unknown> {
     try {
       const raw = localStorage.getItem(GLOBAL_SETTINGS_KEY);
@@ -629,6 +714,8 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return undefined as T;
       case "db_execute":
         return handleDbExecute(args) as T;
+      case "db_execute_batch":
+        return handleDbExecuteBatch(args) as T;
       case "get_ai_settings":
         return handleGetAiSettings() as T;
       case "save_ai_settings":
