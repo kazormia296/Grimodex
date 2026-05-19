@@ -4,6 +4,7 @@ import {
   clearSavedLayout,
   resolveInsertPosition,
   resolveInsertPositionForRegion,
+  resolveInsertPositionForSlot,
 } from "./layoutStore";
 import {
   DEFAULT_STRIPE_SIZES,
@@ -418,6 +419,192 @@ describe("useLayoutStore", () => {
     });
   });
 
+  describe("resolveInsertPositionForSlot", () => {
+    function makeApi(existing: string[]): Pick<DockviewApi, "getPanel"> {
+      return {
+        getPanel: vi
+          .fn()
+          .mockImplementation((id: string) =>
+            existing.includes(id) ? { id } : undefined,
+          ),
+      } as unknown as Pick<DockviewApi, "getPanel">;
+    }
+
+    // LT slot
+    it("LT: joins existing LT panel (within)", () => {
+      const api = makeApi(["scenes"]); // scenes default LT
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "LT")).toEqual({
+        referencePanel: "scenes",
+        direction: "within",
+      });
+    });
+
+    it("LT: places above LB sibling when no LT panel exists", () => {
+      const api = makeApi(["codex"]); // codex default LB
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "LT")).toEqual({
+        referencePanel: "codex",
+        direction: "above",
+      });
+    });
+
+    it("LT: falls back to direction:left when no left panels exist", () => {
+      const api = makeApi([]);
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "LT")).toEqual({
+        direction: "left",
+      });
+    });
+
+    // LB slot
+    it("LB: joins existing LB panel (within)", () => {
+      const api = makeApi(["codex"]); // codex default LB
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "LB")).toEqual({
+        referencePanel: "codex",
+        direction: "within",
+      });
+    });
+
+    it("LB: places below LT sibling when no LB panel exists", () => {
+      const api = makeApi(["scenes"]); // scenes default LT
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "LB")).toEqual({
+        referencePanel: "scenes",
+        direction: "below",
+      });
+    });
+
+    it("LB: falls back to direction:left when no left panels exist", () => {
+      const api = makeApi([]);
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "LB")).toEqual({
+        direction: "left",
+      });
+    });
+
+    // RT slot
+    it("RT: joins existing RT panel (within)", () => {
+      const api = makeApi(["chat"]); // chat default RT
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "RT")).toEqual({
+        referencePanel: "chat",
+        direction: "within",
+      });
+    });
+
+    it("RT: places above RB sibling when no RT panel exists", () => {
+      const api = makeApi(["attribution"]); // attribution default RB
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "RT")).toEqual({
+        referencePanel: "attribution",
+        direction: "above",
+      });
+    });
+
+    it("RT: falls back to direction:right when no right panels exist", () => {
+      const api = makeApi([]);
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "RT")).toEqual({
+        direction: "right",
+      });
+    });
+
+    // RB slot
+    it("RB: joins existing RB panel (within)", () => {
+      const api = makeApi(["attribution"]); // attribution default RB
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "RB")).toEqual({
+        referencePanel: "attribution",
+        direction: "within",
+      });
+    });
+
+    it("RB: places below RT sibling when no RB panel exists", () => {
+      const api = makeApi(["chat"]); // chat default RT
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "RB")).toEqual({
+        referencePanel: "chat",
+        direction: "below",
+      });
+    });
+
+    it("RB: falls back to direction:right when no right panels exist", () => {
+      const api = makeApi([]);
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "RB")).toEqual({
+        direction: "right",
+      });
+    });
+
+    // BL slot
+    it("BL: joins existing BL panel (within)", () => {
+      const api = makeApi(["timeline"]); // timeline default BL
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "BL")).toEqual({
+        referencePanel: "timeline",
+        direction: "within",
+      });
+    });
+
+    it("BL: places left of BR sibling when no BL panel exists", () => {
+      const api = makeApi(["snippets"]); // snippets default BR
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "BL")).toEqual({
+        referencePanel: "snippets",
+        direction: "left",
+      });
+    });
+
+    it("BL: falls back to direction:below when no bottom panels exist", () => {
+      const api = makeApi([]);
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "BL")).toEqual({
+        direction: "below",
+      });
+    });
+
+    // BR slot
+    it("BR: joins existing BR panel (within)", () => {
+      const api = makeApi(["snippets"]); // snippets default BR
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "BR")).toEqual({
+        referencePanel: "snippets",
+        direction: "within",
+      });
+    });
+
+    it("BR: places right of BL sibling when no BR panel exists", () => {
+      const api = makeApi(["timeline"]); // timeline default BL
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "BR")).toEqual({
+        referencePanel: "timeline",
+        direction: "right",
+      });
+    });
+
+    it("BR: falls back to direction:below when no bottom panels exist", () => {
+      const api = makeApi([]);
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "BR")).toEqual({
+        direction: "below",
+      });
+    });
+
+    // toolWindows override
+    it("respects toolWindows override when finding slot anchors", () => {
+      // snippets デフォルト BR → LT にオーバーライド
+      const api = makeApi(["snippets"]);
+      const toolWindows = {
+        snippets: { slot: "LT" as const, viewMode: "docked-pinned" as const },
+      };
+      expect(
+        resolveInsertPositionForSlot(api as DockviewApi, "LT", toolWindows),
+      ).toEqual({ referencePanel: "snippets", direction: "within" });
+    });
+
+    it("does not match overridden panel for its original default slot", () => {
+      // scenes デフォルト LT → RB にオーバーライドされている → LT anchor にならない
+      const api = makeApi(["scenes"]);
+      const toolWindows = {
+        scenes: { slot: "RB" as const, viewMode: "docked-pinned" as const },
+      };
+      expect(
+        resolveInsertPositionForSlot(api as DockviewApi, "LT", toolWindows),
+      ).toEqual({ direction: "left" });
+    });
+
+    it("excludes editor from anchor candidates", () => {
+      const api = makeApi(["editor"]);
+      expect(resolveInsertPositionForSlot(api as DockviewApi, "LT")).toEqual({
+        direction: "left",
+      });
+    });
+  });
+
   describe("resolveInsertPositionForRegion", () => {
     function makeApi(existing: string[]): Pick<DockviewApi, "getPanel"> {
       return {
@@ -506,7 +693,8 @@ describe("useLayoutStore", () => {
   });
 
   describe("openPanelAtSlot", () => {
-    it("adds command-center-results to the left region (within scenes if present)", () => {
+    it("adds command-center-results below scenes (LB below LT sibling, Phase 2 slot-precise)", () => {
+      // command-center-results は LB、scenes は LT。LB の下に配置される。
       const mockAddPanel = vi.fn();
       const mockApi = {
         getPanel: vi
@@ -523,7 +711,7 @@ describe("useLayoutStore", () => {
       expect(mockAddPanel).toHaveBeenCalledWith(
         expect.objectContaining({
           id: "command-center-results",
-          position: { referencePanel: "scenes", direction: "within" },
+          position: { referencePanel: "scenes", direction: "below" },
         }),
       );
     });
@@ -803,6 +991,74 @@ describe("useLayoutStore", () => {
       const before = useLayoutStore.getState().stripePanelIds;
       useLayoutStore.getState().removePanelFromStripe("chat");
       expect(useLayoutStore.getState().stripePanelIds).toBe(before);
+    });
+  });
+
+  describe("moveToSlot", () => {
+    it("updates toolWindows slot and physically moves visible panel", () => {
+      const mockPanel = { id: "scenes" };
+      const mockRemovePanel = vi.fn();
+      const mockAddPanel = vi.fn();
+      const mockApi = {
+        getPanel: vi
+          .fn()
+          .mockImplementation((id: string) =>
+            id === "scenes" ? mockPanel : undefined,
+          ),
+        removePanel: mockRemovePanel,
+        addPanel: mockAddPanel,
+        onDidAddGroup: vi.fn(),
+        onDidLayoutChange: vi.fn(),
+      };
+      useLayoutStore.setState({ dockviewApi: mockApi as never });
+      useLayoutStore.getState().moveToSlot("scenes", "LB");
+
+      // slot が更新されている
+      expect(useLayoutStore.getState().toolWindows["scenes"]?.slot).toBe("LB");
+      // 既存 panel が削除されて再追加される
+      expect(mockRemovePanel).toHaveBeenCalledWith(mockPanel);
+      expect(mockAddPanel).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "scenes" }),
+      );
+    });
+
+    it("only updates slot when panel is not visible (no physical move)", () => {
+      const mockRemovePanel = vi.fn();
+      const mockAddPanel = vi.fn();
+      const mockApi = {
+        getPanel: vi.fn().mockReturnValue(undefined),
+        removePanel: mockRemovePanel,
+        addPanel: mockAddPanel,
+        onDidAddGroup: vi.fn(),
+        onDidLayoutChange: vi.fn(),
+      };
+      useLayoutStore.setState({ dockviewApi: mockApi as never });
+      useLayoutStore.getState().moveToSlot("scenes", "LB");
+
+      expect(useLayoutStore.getState().toolWindows["scenes"]?.slot).toBe("LB");
+      expect(mockRemovePanel).not.toHaveBeenCalled();
+      expect(mockAddPanel).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op for editor", () => {
+      const mockAddPanel = vi.fn();
+      const mockApi = {
+        getPanel: vi.fn().mockReturnValue({ id: "editor" }),
+        removePanel: vi.fn(),
+        addPanel: mockAddPanel,
+        onDidAddGroup: vi.fn(),
+        onDidLayoutChange: vi.fn(),
+      };
+      useLayoutStore.setState({ dockviewApi: mockApi as never });
+      useLayoutStore.getState().moveToSlot("editor", "LB");
+      expect(mockAddPanel).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op when dockviewApi is null", () => {
+      useLayoutStore.setState({ dockviewApi: null });
+      expect(() =>
+        useLayoutStore.getState().moveToSlot("scenes", "LB"),
+      ).not.toThrow();
     });
   });
 });

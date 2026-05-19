@@ -164,6 +164,31 @@ describe("useStripePanelsByRegion", () => {
     ]);
   });
 
+  // Phase 2: slot field
+  it("includes slot field in each StripePanel (default slot)", () => {
+    // scenes デフォルト LT
+    useLayoutStore.setState({
+      dockviewApi: makeApi({}) as never,
+      stripePanelIds: new Set<PanelId>(["scenes"]),
+    });
+    const { result } = renderHook(() => useStripePanelsByRegion());
+    expect(result.current.left[0]).toMatchObject({ id: "scenes", slot: "LT" });
+  });
+
+  it("includes slot field reflecting toolWindows override", () => {
+    // snippets デフォルト BR → LT にオーバーライド
+    useLayoutStore.setState({
+      dockviewApi: makeApi({}) as never,
+      stripePanelIds: new Set<PanelId>(["snippets"]),
+      toolWindows: { snippets: { slot: "LT", viewMode: "docked-pinned" } },
+    });
+    const { result } = renderHook(() => useStripePanelsByRegion());
+    expect(result.current.left[0]).toMatchObject({
+      id: "snippets",
+      slot: "LT",
+    });
+  });
+
   it("skips editor id even if accidentally in stripePanelIds", () => {
     useLayoutStore.setState({
       dockviewApi: makeApi({
