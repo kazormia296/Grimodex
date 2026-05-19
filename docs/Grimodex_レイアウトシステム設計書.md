@@ -2,46 +2,153 @@
 
 ## 設計思想
 
-すべてのコンポーネント（パネル）はdockとfloatが可能。ユーザーは自由にパネルを配置・分割・タブ化・フローティングでき、レイアウトは永続化される。ヘッダー右側のレイアウトプリセットドロップダウンでレイアウト構成を一括切替でき、パネルトグルドロップダウンで個別パネルの開閉を制御する。
+採用モデル: **IntelliJ 式ツールウィンドウ Stripe + VS Code (Dockview) 式 Dock の hybrid**
 
-採用モデル: **VS Code式**
-- パネルのdock/float/tab/split → VS Code式
-- Editorのマルチタブ + スプリット → VS Code Editor Group式
+- **予測可能性**: 各 panel は preferred slot (= 配置先 region) を持ち、stripe アイコンや
+  キーボードショートカットから開いたときは常にその region に配置される。「どこに開くか
+  分からない」問題を排除する。
+- **カスタマイズ性**: ユーザーは Dockview の自由 D&D で panel を任意位置に移動可能。
+  自由ドラッグで動かすと slot が actual region に追従するため、閉じて再オープンしても
+  最後にいた region に戻る。
+- **二系統 UI の併存**: クイックアクセスは stripe アイコン (常駐)、全パネル管理は
+  ヘッダーの `PanelToggleDropdown` (旧来通り)。両方残す。
+
+過去経緯: `react-resizable-panels` ベースの固定 LeftDock/RightDock/BottomDock を
+Dockview に全面移行 (commit `58c4f30`, 2026-04-03) して自由 D&D を獲得した一方で、
+「panel をトグルしたときどこに開くか不明」という問題が残った。Phase 1 (本書時点) で
+IntelliJ 式 stripe を Dockview の上に被せて両者を両立する。
 
 ---
 
-## ドックゾーン構成
-
-アプリウィンドウは以下の領域で構成される。Left/Right DockはそれぞれTop/Bottomに縦分割（ゾーン内スプリット）できる。
+## 全体構造
 
 ```
-┌──────────────────────────────────────────────┐
-│  [メニュー] Title Bar  [レイアウト▼] [パネル▼] [⚙] │
-├───────┬──────────────────┬────────────────────┤
-│  L    │                  │  R                 │
-│  T    │     Center       │  T                 │
-│  o    │  (Editor Groups) │  o                 │
-│  p    │                  │  p                 │
-├───────┤                  ├────────────────────┤
-│  L    ├──────────────────┤  R                 │
-│  B    │     Bottom       │  B                 │
-│  o    │     Dock         │  o                 │
-│  t    │                  │  t                 │
-└───────┴──────────────────┴────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ [Menu] Grimodex … [Search/Command Bar] [Layout▼] [Panels▼] [⚙]│  ← Header
+├────┬──────────────────────────────────────────────────────┬──┤
+│    │                                                      │  │
+│ L  │                                                      │ R│
+│ S  │            DockviewReact (中央 content cell)         │ S│
+│ T  │   ┌─────────────┬───────────────┬──────────────┐     │ T│
+│ R  │   │             │               │              │     │ R│
+│ I  │   │  L Panels   │   Editor      │  R Panels    │     │ I│
+│ P  │   │             │               │              │     │ P│
+│ E  │   │             ├───────────────┤              │     │ E│
+│    │   │             │  Bottom Panel │              │     │  │
+│    │   └─────────────┴───────────────┴──────────────┘     │  │
+├────┤                                                      ├──┤
+│ L  ├───────────── Bottom Stripe ─────────────────────────┤R │
+│ ST │                                                      │ST│
+└────┴──────────────────────────────────────────────────────┴──┘
 ```
 
-### 各ゾーンの性質
+`ToolWindowShell` が CSS Grid で stripe と Dockview を配置:
 
-| ゾーン | 位置 | サイズ挙動 | 特記事項 |
-|--------|------|-----------|---------|
-| Left Top | 左端・上部 | 幅リサイズ可能（初期~18%） | デフォルトはScenesパネル |
-| Left Bottom | 左端・下部 | Left Topとの比率リサイズ可能 | デフォルトはCodex Quickパネル |
-| Center | 中央 | flex（残り領域を埋める） | Editor Group専用 |
-| Right Top | 右端・上部 | 幅リサイズ可能（初期~30%） | デフォルトはChat + Chat Historyタブ |
-| Right Bottom | 右端・下部 | Right Topとの比率リサイズ可能 | デフォルトは空（パネル追加時に生成） |
-| Bottom Dock | Centerの下 | 高さリサイズ可能（初期非表示） | パネル0個で非表示→Centerが拡張 |
+```css
+grid-template-columns: ${left}px 1fr ${right}px;
+grid-template-rows: 1fr ${bottom}px;
+grid-template-areas:
+  "left content right"
+  "left bottom  right";
+```
 
-Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が可能。
+- 左右 stripe は 2 行を span (常に container 全高)
+- 下 stripe は中央列のみ (Dockview の真下)
+- bottom stripe の表示/非表示で左右 stripe の高さが変動しない (Phase 2 で LT/LB を
+  上下分割しても上下にぶれない)
+
+---
+
+## ツールウィンドウ Stripe
+
+### Stripe の出現条件
+
+各 region の stripe は **「stripePanelIds に該当 region の panel が 1 つ以上ある」** ときに表示される。0 件なら grid セル幅 0 で完全に折り畳まれる。
+
+- `stripePanelIds: Set<PanelId>` は `onDidAddPanel` で自動登録される
+- 一度でも開かれた panel は閉じても stripePanelIds に残る → 再オープン経路を確保
+- 明示的に外す API は `removePanelFromStripe(panelId)` (Phase 2 の右クリックメニュー用)
+
+### Slot 構成
+
+6 slot (IntelliJ 互換): `LT` / `LB` (= 左 stripe top/bottom), `RT` / `RB` (= 右), `BL` / `BR` (= 下 left/right)。
+
+| Slot | Stripe | Phase 1 表示 | Phase 2 表示 |
+|------|--------|-------------|-------------|
+| LT | 左 | 左 stripe 上半分 | LT 専用グループ |
+| LB | 左 | 左 stripe (混在) | LB 専用グループ (divider で分離) |
+| RT | 右 | 同上 | RT |
+| RB | 右 | 同上 | RB (divider) |
+| BL | 下 | 下 stripe (混在) | BL (左半分) |
+| BR | 下 | 同上 | BR (右半分、divider) |
+
+Phase 1 では region 単位 (left/right/bottom の 3 つ) でのみ処理し、stripe 内の上下分割は
+Phase 2 で導入する。
+
+### アイコンの 3 状態
+
+| 状態 | 条件 | スタイル | data-state |
+|------|------|---------|------------|
+| shown | active tab として表示中 (or Undock overlay) | 濃い accent + 左に primary 色の縦バー | `shown` |
+| background | Dockview にあるが裏 tab | 中間 accent (`bg-accent/30`) | `background` |
+| closed | Dockview に居ない (placed 履歴のみ残存) | 薄い text、hover で反応 | `closed` |
+
+ARIA: `aria-pressed` = active. `data-stripe-icon="{panelId}"` で外部から特定可能。
+
+### クリック挙動
+
+すべて `togglePanel(panelId)` に集約:
+
+- **shown** クリック → `removePanel` で閉じる (icon は inactive 化、stripe からは消えない)
+- **background** クリック → そのタブを `setActive`
+- **closed** クリック → preferred slot で `openPanelAtSlot` 経由で再オープン
+
+右クリックメニュー / DnD は Phase 2。
+
+### Panel アイコン割当 (Lucide React)
+
+`src/features/layout/panelIcons.ts:PANEL_ICON_MAP`。
+
+| Panel | Lucide icon |
+|-------|-------------|
+| scenes | `FolderTree` |
+| codex | `BookOpen` |
+| codex-quick | `Zap` |
+| command-center-results | `Search` |
+| chat | `MessageSquare` |
+| chat-history | `MessagesSquare` |
+| snippets | `TextQuote` |
+| attribution | `Highlighter` |
+| timeline | `CalendarRange` |
+| map | `Map` |
+| kouetsu | `SpellCheck` |
+| foreshadow | `Sparkles` |
+| grid | `Grid2x2` |
+| matrix | `Table2` |
+| trash-bin | `Trash2` |
+
+### DEFAULT_SLOT_MAP (初期 slot 割当)
+
+`src/features/layout/toolWindowDefaults.ts`。「ユーザーが override していない panel を
+最初に開く位置」を定義する。
+
+| Panel | Slot | Stripe |
+|-------|------|--------|
+| scenes | LT | 左 |
+| codex | LB | 左 |
+| codex-quick | LB | 左 |
+| command-center-results | LB | 左 |
+| chat | RT | 右 |
+| chat-history | RT | 右 |
+| attribution | RB | 右 |
+| timeline | BL | 下 |
+| map | BL | 下 |
+| grid | BL | 下 |
+| matrix | BL | 下 |
+| snippets | BR | 下 |
+| kouetsu | BR | 下 |
+| foreshadow | BR | 下 |
+| trash-bin | BR | 下 |
 
 ---
 
@@ -51,92 +158,180 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 |--------|------|
 | Scenes | Part/Chapter/Sceneツリー + Folder/Note |
 | Codex Quick | 現在アクティブなシーンに関連するCodexエントリを自動表示。手動ピン留め対応 |
-| Codex | 世界設定DB（Character/Location/Item/Lore）。リスト+詳細のマスター/ディテールUI |
-| Editor | TipTapエディタ |
+| Codex | 世界設定DB (Character/Location/Item/Lore)。リスト+詳細のマスター/ディテールUI |
+| Editor | TipTapエディタ。Center Dock の Editor Group 内に常駐 (stripe 対象外) |
 | Chat | BYOK AIチャット。シーンコンテキスト自動注入、Codex/Snippet抽出、エディタ挿入 |
 | Chat History | 全シーン横断のチャットセッション検索・閲覧 |
+| Command Center Results | ヘッダーの検索バーから開く全文検索結果パネル |
 | Snippets | 再利用可能なテキスト断片。Chat/Editorから保存、D&Dでエディタに挿入 |
-| Attribution | AI帰属統計ダッシュボード。シーン/チャプター/プロジェクト単位の集計、モデル別使用状況 |
-| Map | マインドマップ用ボード（複数ボード対応）。Sticky で発散し、Codex/Scene/Note/Snippet を手動キュレーションで配置。Free / Theme の 2 モード。AI Branch で種からアイデアを撒く |
-| Matrix | シーン × Codex のクロス表。登場分布の俯瞰、不在検出、Beat 追加プロッティング起点。デフォルトBottom Dock（非表示） |
-| Grid | Chapter ごとに Scene カードを縦に積む作業ビュー。Synopsis インライン編集、D&Dで章間移動。デフォルトBottom Dock（非表示） |
-| Timeline | プロジェクト全体の時系列ビュー。デフォルトBottom Dock（非表示） |
-| Kouetsu（校閲） | 校閲モード（Issues / Editorial / Comments タブ） |
-| Foreshadow（伏線） | 伏線の張り・回収トラッキング |
+| Attribution | AI帰属統計ダッシュボード |
+| Map | マインドマップ用ボード (複数ボード対応) |
+| Matrix | シーン × Codex のクロス表 |
+| Grid | Chapter × Scene カード一覧の作業ビュー |
+| Timeline | プロジェクト全体の時系列ビュー |
+| Kouetsu (校閲) | 校閲モード (Issues / Editorial / Comments タブ) |
+| Foreshadow (伏線) | 伏線の張り・回収トラッキング |
 | Trash Bin | ソフト削除されたノードのゴミ箱 |
-| Settings | プロジェクト/AI/エディタ/表示/キーバインド/データ管理 |
+| Settings | プロジェクト/AI/エディタ/表示/キーバインド/データ管理 (モーダルダイアログ、stripe 対象外) |
 
-**現状の実装**: `PanelId`（`layoutStore.ts`）には `editor` を除く 14 個のトグル可能パネルが定義されている（`TOGGLEABLE_PANELS` in `panelRegions.ts`）。Settings は dockview パネルではなく、モーダルダイアログ（`SettingsDialog`）として実装されている。各プリセットでの配置は `layoutPresets.ts` のビルダー関数を参照。
-
-※ 現状未実装: Settings 専用のフローティングウィンドウ化（モーダルダイアログで代替）。
-
----
-
-## パネルの4状態と遷移
-
-```
-                    Click icon
-         ┌──────────────────────────┐
-         │                          ▼
-     ┌────────┐   Close tab   ┌─────────┐   Drag out   ┌───────────┐
-     │ Closed │◄──────────────│ Docked  │─────────────►│ Floating  │
-     └────────┘               └─────────┘               └───────────┘
-         ▲                     │      ▲                       │
-         │                     │      │                       │
-         │              Toggle │      │ Click icon            │ Minimize
-         │              icon   │      │                       │
-         │                     ▼      │                       │
-         │               ┌───────────┐│         Drop on zone  │
-         │               │ Collapsed │◄───────────────────────┘
-         │               └───────────┘
-         │                     │
-         └─────────────────────┘
-                Close tab
-```
-
-### 各状態の定義
-
-**Closed（閉じている）**
-- どのドックゾーンにも所属しておらず、フローティングウィンドウとしても存在しない。
-- ドロップダウンのチェックボックスがオフ。
-- ドロップダウンからクリックするとデフォルト位置にDocked状態で復元される。
-
-**Docked（ドックされている）**
-- いずれかのドックゾーン（Left/Right/Bottom/Center）にタブとして存在。
-- ドロップダウンのチェックボックスがオン。
-- タブをゾーン外にドラッグ → Floating へ遷移。
-- タブの×ボタン → Closed へ遷移。
-- ドロップダウンから再クリック → Closed へ遷移（アクティブタブの場合）。
-
-**Collapsed（折りたたまれている）**
-- ドックゾーンに所属しているが、ゾーン自体が折りたたまれている状態。
-- ドロップダウンのチェックボックスがオン（薄いスタイルで区別可能）。
-- ドロップダウンからクリック → Docked へ遷移（ゾーンを展開し、そのタブをアクティブにする）。
-
-**Floating（フローティング）**
-- アプリウィンドウ上に独立したウィンドウとして浮遊。
-- リサイズ・移動可能。
-- タイトルバーをドックゾーンのエッジにドロップ → Docked へ遷移。
-- 最小化 → Collapsed へ遷移。
-- ×ボタン → Closed へ遷移。
+**現状の実装**: `PanelId` (`layoutStore.ts`) には `editor` を除く 15 個のトグル可能パネルが
+定義され、`TOGGLEABLE_PANELS` (`panelRegions.ts`) と `DEFAULT_SLOT_MAP`
+(`toolWindowDefaults.ts`) でメタデータ管理されている。
 
 ---
 
-## パネルトグルドロップダウン
+## パネルの状態モデル
 
-### 位置と構造
-
-ヘッダーバー右側に配置されたマルチセレクトドロップダウン。パネルの開閉ランチャーとして機能する。
+ある panel は以下の 3 つの直交する状態を持つ:
 
 ```
-ヘッダー: [メニュー] [タイトル] ... [レイアウト▼] [パネル▼] [⚙設定]
+placed  = stripePanelIds.has(id)
+visible = api.getPanel(id) !== undefined
+active  = panel.group?.activePanel === panel
+```
 
-ドロップダウン展開時（現状の実装。表示は左→右→下部の順、各リージョン毎にセパレータ）:
+組合せ別の意味:
+
+| placed | visible | active | 意味 | UI |
+|--------|---------|--------|------|----|
+| ✗ | ✗ | ✗ | 一度も開かれていない | stripe に icon なし、dropdown でのみアクセス可 |
+| ✓ | ✗ | ✗ | placed 履歴あり、現在は閉じている | stripe に **closed** icon |
+| ✓ | ✓ | ✗ | tab group の裏 tab | stripe に **background** icon |
+| ✓ | ✓ | ✓ | 内容が画面に出ている | stripe に **shown** icon |
+| ✓ | (special) | ✓ | Undock overlay (Phase 3) | stripe に shown icon (visible は false でも active=true) |
+
+### 状態遷移
+
+```
+                ┌────────────────────────────────────────┐
+                │                                        │
+                ▼                                        │
+            ┌─────────┐  dropdown click /            ┌───┴─────┐
+   open ──► │ Visible │  keyboard shortcut /         │  Closed │ ◄─── add panel
+            │ Active  │  stripe icon click           │  (placed │
+            └─┬─┬─────┘                              │  history)│
+              │ │                                    └───┬──────┘
+              │ │  free drag to another tab group        │
+              │ ▼                                        │
+              │  ┌──────────┐  tab switch                │
+              │  │ Visible  │ ◄──────────────────┐       │
+              │  │ Background│                  │       │
+              │  └────┬─────┘                   │       │
+              │       │ click background icon   │       │
+              │       └─────────────────────────┘       │
+              │                                          │
+              │  panel removed (close button / stripe click on active)
+              └─────────────────────────────────────────►┘
+```
+
+「placed 履歴」自体は `stripePanelIds` に蓄積され、明示的に
+`removePanelFromStripe` を呼ばない限り消えない (再起動を跨いで永続化される)。
+
+---
+
+## パネル配置の統一入口
+
+`openPanelAtSlot(panelId, opts?)` (`layoutStore.ts`) を **唯一の panel 配置入口** にする:
+
+- `togglePanel(panelId)` — 既存 active なら remove、それ以外は openPanelAtSlot
+- `showPanel(panelId)` — openPanelAtSlot を `focus: true` で
+- `handlePanelDrop(event)` — canvas drop なら openPanelAtSlot、明示的 group drop は within
+- `App.tsx:handleKeyDown` — `togglePanel(panel)` 経由
+
+これによりキーボード・dropdown・stripe・DnD すべてが同じロジックを通る。
+
+### `openPanelAtSlot` の責務
+
+1. 既存 panel があれば `setActive` してリターン
+2. Undock 中なら overlay 層に委譲 (Phase 3 用、現在は no-op)
+3. `editor` は legacy fallback (`direction: "right"`, `minimumWidth: 320`)
+4. それ以外は `toolWindows[id]?.slot ?? DEFAULT_SLOT_MAP[id]` で region 確定
+5. `resolveInsertPositionForRegion(api, region, toolWindows)` で具体 position を解決
+6. `api.addPanel({ id, component: id, title, position })`
+
+### `resolveInsertPositionForRegion`
+
+```ts
+for (const id of TOOL_WINDOW_PANEL_IDS) {
+  const slot = toolWindows?.[id]?.slot ?? DEFAULT_SLOT_MAP[id];
+  if (SLOT_TO_REGION[slot] !== region) continue;
+  if (api.getPanel(id)) return { referencePanel: id, direction: "within" };
+}
+// fallback: region 方向に新 group
+return { direction: region === "bottom" ? "below" : region };
+```
+
+ポイント: **effective slot** (= override > default) で region を判定する。これがないと、
+ユーザーが panel X を別 region に動かした場合に X が旧 region の anchor に残ってしまい、
+復元時に icon stripe と異なる region に panel が配置される。
+
+`editor` を anchor 候補にしないことで editor group の split を回避する不変条件を守る。
+
+---
+
+## 自由ドラッグと slot 自動同期
+
+### 自由ドラッグ
+
+Dockview のネイティブ D&D は常に許可。タブの並び替え・ゾーン移動・別グループへの drop
+すべて Dockview に委ねる。Stripe は「お気に入りの場所」を覚えるだけで、runtime 強制は
+しない。
+
+### `syncSlotsToActualRegions`
+
+`api.onDidLayoutChange` のたびに走り、`stripePanelIds` の各 panel について「現在の
+actual region」を DOM から検出し、slot.region と異なれば slot を上書きする。
+
+```ts
+for (const id of get().stripePanelIds) {
+  if (id === "editor") continue;
+  const region = detectActualRegion(api, id);
+  if (!region) continue;
+  const currentRegion = SLOT_TO_REGION[toolWindows[id]?.slot ?? DEFAULT_SLOT_MAP[id]];
+  if (region === currentRegion) continue;
+  // 新 region の代表 slot に上書き (Phase 1 は LT/RT/BL)
+  updates[id] = { slot: pickDefaultSlotForRegion(region), viewMode: "docked-pinned" };
+}
+```
+
+これで:
+- 自由ドラッグで panel を別 region に動かす → slot 追従 → icon が新 stripe に移動
+- 閉じて再オープン → 最後にいた region で開く
+- 起動時の saved layout 復元後にも一度走り、saved layout の位置に slot を揃える
+
+### Region 検出ロジック (`detectRegionFromRects`)
+
+editor group の矩形に対して panel group の矩形を相対比較する pure 関数:
+
+| 条件 | 判定 |
+|------|------|
+| `panel.top ≥ editor.bottom` **かつ** editor と水平方向に重なる | `bottom` |
+| `panel.right ≤ editor.left` (= editor の完全に左) | `left` |
+| `panel.left ≥ editor.right` (= editor の完全に右) | `right` |
+| いずれにも当たらない (重なり・editor 上方など) | `null` (= slot にフォールバック) |
+
+**水平方向の重なりを bottom 判定に要求する** のが重要。これがないと、editor 列に下方向の
+panel が入って editor.bottom が中央付近に上がったとき、左列の下半分にいる panel まで
+bottom 扱いになる (Write preset 状態で chat を中央下に drop した際に発生した不具合)。
+
+4px の tolerance で resize 中の sub-pixel ゆらぎを吸収する。同じ tab group に editor が
+いる panel (= 中央 area の tab) と editor 不在時は null を返し、slot 由来の region に
+フォールバックする。
+
+---
+
+## PanelToggleDropdown (全パネル管理 UI)
+
+ヘッダーバー右側の「パネル▼」ボタンから開くマルチセレクトドロップダウン。stripe アイコンが
+出ていない panel (= 未 placed) を開く主たる経路。
+
+```
 ┌──────────────────────────────┐
 │ 左                           │
 │ [✓] シーン        Ctrl+Alt+S │
 │ [✓] Codex         Ctrl+Alt+X │
-│ [✓] Codex Quick   Ctrl+Alt+Q │
+│ [ ] Codex Quick   Ctrl+Alt+Q │
+│ [ ] 検索          Ctrl+Alt+K │
 ├──────────────────────────────┤
 │ 右                           │
 │ [✓] チャット      Ctrl+Alt+C │
@@ -157,240 +352,186 @@ Left/Right DockはTop/Bottom間で縦分割（ゾーン内スプリット）が�
 └──────────────────────────────┘
 ```
 
-ショートカット表記の正本は `KEYBOARD_SHORTCUT_MAP`（`panelRegions.ts`）。実装での発火は `App.tsx` の `handleKeyDown` 内 keyMap を参照（一部のショートカットはまだキーマップに未接続）。
+`TOGGLEABLE_PANELS` / `PANEL_REGION_MAP` / `KEYBOARD_SHORTCUT_MAP`
+(`panelRegions.ts`) が region 別グルーピングとショートカット表示の正本。実発火は
+`App.tsx:handleKeyDown` 内 `keyMap` を参照。
 
 ### クリック挙動
 
-- チェックオフ（Closed）→ クリックでデフォルト位置にDocked状態で復元。
-- チェックオン（Docked/アクティブ）→ クリックでClosed。
-- ドロップダウンはクリックしても閉じない（マルチセレクト）。click-outside / Escape で閉じる。
+- チェックオフ → `togglePanel` → `openPanelAtSlot` → preferred slot で開く
+- チェックオン (アクティブ) → `togglePanel` → 閉じる (stripe icon は残る)
 
-### ドラッグによる追加（現状の実装）
+### ドラッグによる追加
 
-非表示パネル行はドラッグ可能で、`PANEL_DRAG_TYPE`（`application/grimodex-panel-id`）の dataTransfer 経由で dockview の任意の位置にドロップできる。`App.tsx` の `onUnhandledDragOverEvent` でドラッグを受理し、`onDidDrop` で `addPanel` を呼ぶ。
+非表示 panel 行はドラッグ可能。`PANEL_DRAG_TYPE`
+(`"application/grimodex-panel-id"`) の dataTransfer で Dockview の任意位置に drop できる。
+`App.tsx:onUnhandledDragOverEvent` で受理、`onDidDrop` ハンドラが canvas drop なら
+`openPanelAtSlot` 経由、明示的な group drop ならその group に `within` 追加する。
 
-### レイアウトロック（現状の実装）
+### レイアウトロック
 
-ドロップダウン末尾のロックトグル（`toggleLayoutLock`）で全グループに `group.locked = true` を適用し、`api.updateOptions({ disableDnd: true })` でD&Dを無効化する。ロック中は新規追加グループにも自動でロックが伝播する（`onDidAddGroup`）。
+末尾のロックトグルで全 group に `group.locked = true` を適用、
+`api.updateOptions({ disableDnd: true })` で D&D を無効化。新規追加 group にもロックが
+伝播する (`onDidAddGroup`)。Stripe アイコンの click トグルはロック中も許可される
+(lock は移動禁止のみ)。
 
 ### ホバーハイライト
 
-ドロップダウン項目にホバーすると、対象パネルの表示領域をハイライトする（`PanelHighlightOverlay.tsx`）。
-- 表示中のパネル: パネルグループの実位置を実線ボーダー＋グロー（GSAP の pulsing）で囲う。
-- 非表示のパネル: `estimateRegionRect` でリージョン推定位置を破線ボーダーで示す。Codex Quick は scenes パネル位置を起点に推定する専用ヒューリスティクスを持つ。
-- Reduced Motion 設定時はパルスアニメーションを停止。
+`PanelHighlightOverlay.tsx` がドロップダウン項目 hover 時にパネル予定位置を破線で示す。
+表示中の panel は実 group 位置を実線 + GSAP pulsing で囲う。Reduced Motion 設定時は
+pulsing を停止。
 
 ---
 
-## レイアウトプリセットドロップダウン
+## LayoutPresetDropdown (プリセット管理)
 
-### 位置と構造
+ヘッダーバー右、`PanelToggleDropdown` の左に配置。
 
-ヘッダーバー右側、パネルトグルドロップダウンの**左**に配置。現在のレイアウト構成を名前付きプリセットとして保存・切替できるドロップダウン。
+### ビルトインプリセット (5 種)
 
-```
-ドロップダウン展開時:
-┌──────────────────────────────┐
-│ プリセット                    │
-│ (●) デフォルト                │
-│ ( ) チャットメイン             │
-│ ( ) Codexメイン               │
-├──────────────────────────────┤
-│ カスタム                      │
-│ ( ) 執筆集中モード       [🗑]  │
-│ ( ) レビュー用           [🗑]  │
-├──────────────────────────────┤
-│ [💾] 現在のレイアウトを保存    │
-└──────────────────────────────┘
-```
+`getBuiltinPresets()` (`layoutPresets.ts`)。削除・改名不可。
 
-### ビルトインプリセット
+| ID | 表示名 | 概要 |
+|----|--------|------|
+| `builtin:default` | Write | 執筆標準。Scenes + Codex Quick / Editor / Chat + Chat History、Codex タブに Snippets。Left ~18%、Right ~33% |
+| `builtin:plan` | Plan | プロット用。Grid + Map / Timeline と Chat + Chat History / Codex + Snippets + Foreshadow + Matrix の 2 列 |
+| `builtin:chat-main` | Chat | チャット主体。Chat + Chat History / Codex + Snippets + Matrix |
+| `builtin:review` | Proofread | 校閲用。Scenes / Editor / Kouetsu / Codex の 4 列、Scenes 下に Attribution |
+| `builtin:codex-main` | Condense | 世界観参照用。Codex (Snippets/Matrix/Map タブ) / Chat (Chat History) |
 
-**現状の実装**: `getBuiltinPresets()`（`layoutPresets.ts`）が 5 つのビルトインプリセットを返す。いずれも削除・名前変更不可。
-
-| プリセット ID | 表示名（i18n キー） | 概要 |
-|------------|------------------|------|
-| `builtin:default` | Write（`layout.preset.default`） | 標準の執筆レイアウト。Scenes + Codex Quick / Editor / Chat + Chat History、Codex タブに Snippets。Left ~18%、Right ~33% |
-| `builtin:plan` | Plan（`layout.preset.plan`） | プロット構築用。Grid + Map / Timeline と Chat + Chat History / Codex + Snippets + Foreshadow + Matrix の 2 列構成 |
-| `builtin:chat-main` | Chat（`layout.preset.chatMain`） | チャット主体。Chat + Chat History / Codex + Snippets + Matrix の 2 列構成 |
-| `builtin:review` | Proofread（`layout.preset.review`） | 校閲用。Scenes / Editor / Kouetsu / Codex の 4 列、Scenes 下に Attribution |
-| `builtin:codex-main` | Condense（`layout.preset.codexMain`） | 世界観参照用。Codex（Snippets/Matrix/Map をタブ）/ Chat（Chat History）の 2 列、Codex 内 wide mode で list+Editor+detail 3 カラム発動 |
-
-ビルトインプリセットは画面幅・高さに対する相対比率（`api.width * 0.xx`）で構築されるため、異なるウィンドウサイズでも適切な比率が維持される。
-
-※ 設計書旧版で記載していた「デフォルト / チャットメイン / Codexメイン」3 プリセット構成は、現行ではプリセット数・名称・パネル構成ともに刷新されている。詳細な panel 追加順は `layoutPresets.ts` の各 `build*` 関数を参照。
+ウィンドウ幅に対する比率 (`api.width * 0.xx`) で構築されるため、異なるサイズでも適切な比率が保たれる。
 
 ### カスタムプリセット
 
-ユーザーは現在のレイアウトに名前を付けて保存できる。
+- **保存**: 「現在のレイアウトを保存」→ 名前入力 → `DockviewApi.toJSON()` で全体を JSON 化
+- **適用**: 行クリック → `fromJSON()` で復元
+- **削除**: 行のゴミ箱アイコン (ビルトインには出ない)
 
-- **保存**: 「現在のレイアウトを保存」をクリック → 名前入力 → Enter/✓で確定。`DockviewApi.toJSON()` でシリアライズしたレイアウトJSON全体を保存する。
-- **適用**: プリセット名をクリック → `DockviewApi.fromJSON()` で即座に復元。
-- **削除**: カスタムプリセット行のゴミ箱アイコンをクリック。ビルトインプリセットには削除ボタンは表示されない。
+保存されるのは Dockview の layout JSON のみ。**`stripePanelIds` / `toolWindows` (slot
+設定) はプリセットに含めず、ユーザー設定として独立して永続化される**。これにより、
+プリセット切替で stripe アイコンの配置が崩れない (= ユーザーの slot カスタマイズが保護される)。
 
-### クリック挙動
+### リセット
 
-- プリセットをクリックすると即座にレイアウトが切り替わり、ドロップダウンが閉じる。
-- アクティブなプリセットにはチェックインジケータ（●＋✓）が表示される（`LayoutPresetDropdown.tsx`）。
-- 保存モード中はEscapeで保存をキャンセルできる。
-- click-outside / Escape でドロップダウンが閉じる。
-- 末尾の「デフォルトに戻す」（`resetToDefaultLayout`）はビルトイン `builtin:default` を再構築し、保存済みレイアウトを `clearSavedLayout()` で消去する。プリセット選択経由のリセットとは別経路。
-
-### ボタン表示
-
-アクティブなプリセットがある場合、ボタンにプリセット名が表示される。プリセットが選択されていない場合は「レイアウト」と表示される。
+「デフォルトに戻す」(`resetToDefaultLayout`) はビルトイン `builtin:default` を再構築し、
+保存済みレイアウトを `clearSavedLayout()` で消去する。`stripePanelIds` 等は維持される。
 
 ---
 
-## Center Dock（Editor Groups）
+## Center Dock (Editor Groups)
 
-### Editor Groupモデル
+`editor` panel は stripe 対象外で、常に Dockview の中央 area に存在する Editor Group の中で
+管理される (VS Code 式)。
 
-CenterドックはVS Codeの「Editor Group」モデルを採用する。
+### Editor Group モデル
 
-- Centerは1つ以上のEditor Groupに分割できる。
-- 各Editor Groupは独立したタブバーを持ち、複数のシーンタブを開ける。
-- Group間はリサイズハンドルで比率調整可能。
+- Center は 1 つ以上の Editor Group に分割可能
+- 各 Group は独立したタブバーを持ち、複数のシーンタブを開ける
+- Group 間はリサイズハンドルで比率調整可能
 
 ```
 ┌─────────────────────────────────┐
 │ [Scene 1] [Scene 3]  │ [Scene 2]│
-├─────────────────────────────────┤
-│                       │          │
-│   Editor Group 1      │ Editor   │
-│   (Scene 1 active)    │ Group 2  │
-│                       │          │
-│                       │          │
-└─────────────────────────────────┘
+├──────────────────────┼──────────┤
+│                      │          │
+│   Editor Group 1     │ Editor   │
+│   (Scene 1 active)   │ Group 2  │
+│                      │          │
+└──────────────────────┴──────────┘
 ```
 
 ### スプリット操作
 
-Editor Groupの分割は以下の3つの方法で行える。
+1. タブを Center 内の上下左右エッジにドラッグ → 新 Group
+2. エディタツールバーのスプリットアイコン (アクティブシーンを右に分割)
+3. `Ctrl+\` (垂直)、`Ctrl+Shift+\` (水平)
 
-1. **タブのドラッグ**: シーンタブをCenter内の左/右/上/下エッジにドラッグすると、新しいEditor Groupが生まれる。
-2. **スプリットボタン**: エディタツールバーのスプリットアイコン（アクティブシーンを右に分割）。
-3. **キーボードショートカット**: `Ctrl+\`（垂直分割）、`Ctrl+Shift+\`（水平分割）。分割先のGroupに同じシーンが表示され、同期編集が可能。
+### 同一シーンの複数ビュー
 
-### タブ操作
-
-- タブをGroup内でドラッグ → 順序変更。
-- タブを別のGroupのタブバーにドラッグ → そのGroupに移動。
-- タブをGroupのエッジにドラッグ → 新しいGroupとしてスプリット。
-- タブをCenter外にドラッグ → フローティングエディタウィンドウ。
-
-### 同一シーンの複数ビュー（同期編集）
-
-同一シーンを複数のEditor Groupで同時に開くことが可能。両方のビューは同一のTipTapドキュメントインスタンスを共有し、一方での編集が即座にもう一方に反映される。
-
-実装方針:
-- シーンIDごとに単一のTipTapドキュメントインスタンスを管理する（シーンストアで管理）。
-- 各Editor Groupのビューは同一インスタンスに対する `EditorView` を生成する。ProseMirrorの `EditorState` を共有し、`dispatchTransaction` で全ビューに変更を伝播する。
-- タブのタイトルにバッジ（例: 小さなドット）を表示し、同じシーンが他のGroupでも開かれていることを視覚的に示す。
-- ビューごとにスクロール位置とカーソル位置は独立（同じシーンの異なる箇所を参照しながら執筆するユースケースを想定）。
+同一シーン ID を複数 Group で同時に開ける。両ビューは同一 TipTap ドキュメントインスタンスを
+共有し、`dispatchTransaction` で変更が伝播する。スクロール・カーソル位置は独立。
 
 ---
 
-## ドックゾーン内の操作
+## ドックゾーン内の操作 (Dockview ネイティブ)
 
-Left/Right/Bottom Dockはすべて同じ操作モデルを共有する。
+Stripe の有無に関係なく、Dockview の自由 D&D は常時有効。タブをエッジに drop してスプリット、
+別 group のタブバーに drop してタブ化、Center 外にドラッグで Floating (フローティングウィンドウ)。
 
-### タブ追加
-
-パネルをドックゾーンのタブバーにドロップすると、既存パネルと並んでタブになる。
-
-```
-┌─────────────────┐         ┌──────────────────────┐
-│ [Scenes]        │   →     │ [Scenes] [Codex]     │
-│                 │         │                      │
-│  Scene tree     │         │  Codex list          │
-└─────────────────┘         └──────────────────────┘
-```
-
-### ゾーン内スプリット
-
-パネルをドックゾーンの上下左右のエッジにドロップすると、そのゾーンが分割される。
-
-```
-┌─────────────────┐         ┌──────────────────────┐
-│ [Scenes]        │   →     │ [Scenes]             │
-│                 │         │  Scene tree          │
-│  Scene tree     │         ├──────────────────────┤
-│                 │         │ [Codex]              │
-│                 │         │  Codex list          │
-└─────────────────┘         └──────────────────────┘
-```
-
-スプリット比率はリサイズハンドルで調整可能。
-
-### ゾーンの折りたたみ
-
-ゾーン内の全パネルが非アクティブ（Collapsed）になると、ゾーン自体がゼロ幅/ゼロ高さに折りたたまれ、隣接するCenterゾーンが拡張する。ドロップダウンから再度オンにすることで即座に復帰。
+スプリット比率はリサイズハンドルで自由に調整可能。
 
 ---
 
 ## フローティングウィンドウ
 
-### 振る舞い
+`addFloatingGroup` 等 dockview の API は提供されているが、現在の Grimodex UI からは
+明示的にトリガーされていない。Settings はモーダルダイアログ (`SettingsDialog`) で代替。
 
-- アプリウィンドウの範囲内で自由に配置・リサイズ可能。
-- タイトルバー: パネル名 + 最小化ボタン + ×ボタン。
-- タイトルバーをダブルクリック → 前回のDock位置に復帰（記憶している場合）。
-- 複数のフローティングウィンドウをスタック（タブ化）することはMVPでは非対応。
-
-### ドロップヒント
-
-フローティングウィンドウのタイトルバーをドラッグ中にドックゾーンのエッジに近づくと、ドロップ先を示すハイライト領域を表示する。
-
-- ゾーンの中央 → そのゾーンにタブとして追加。
-- ゾーンの上/下/左/右 → そのゾーン内でスプリット。
-
-※ 現状未実装: フローティングウィンドウへの分離操作（`addFloatingGroup` 等）は呼び出していない。dockview ライブラリ側の機能としては利用可能だが、現行 UI からはトリガーされず、Floating 状態への遷移は無効。Settings はモーダルダイアログで代替。
+将来的に Phase 3 で stripe の Undock view mode (overlay 表示) を導入予定。OS-level の独立
+ウィンドウ (Float / Window mode) は Tauri 制約により対象外。
 
 ---
 
 ## レイアウトの永続化
 
-### 保存対象
-
-- 各パネルの状態（Closed / Docked / Collapsed / Floating）
-- 各パネルの所属ゾーンとタブ順序
-- ゾーン内のスプリット構造と比率
-- Editor Groupの分割構造と各Groupで開いているタブ（Scene、Note、Codex content、Snippet content）。各タブはタブ種別と対象ID（node_id、codex_entry_id、snippet_id）で識別する。**注記:** エディタタブの開閉状態はレイアウトとは別にワークスペースDB（`editor.tabState`）に永続化される。詳細はEditorパネル設計書「タブ状態の永続化」を参照
-- フローティングウィンドウの位置・サイズ
-- 各ゾーンの幅/高さ
-
 ### 保存先
 
-OS AppDataディレクトリ内の `global-settings.json` に保存する。レイアウトはプロジェクト横断のUI状態であり、プロジェクトDBには含めない。アプリ起動時に読み込み、レイアウト変更のたびにデバウンス（500ms）で自動保存する。
+OS AppData ディレクトリ内の `global-settings.json`。プロジェクト横断の UI 状態。
 
-`global-settings.json` に保存されるレイアウト関連フィールド:
+### 保存フィールド
 
 | フィールド | 型 | 説明 |
 |-----------|---|------|
-| `layout` | `SerializedDockview \| null` | 現在のdockviewレイアウトJSON（自動保存） |
-| `layoutPresets` | `Array<{id, name, layout}> \| null` | ユーザー保存のカスタムプリセット一覧 |
-| `activeLayoutPresetId` | `string \| null` | 最後に適用したプリセットのID |
+| `layout` | `SerializedDockview \| null` | Dockview レイアウトの JSON (自動保存) |
+| `layoutPresets` | `Array<{id, name, layout}>` | ユーザー保存のカスタムプリセット |
+| `activeLayoutPresetId` | `string \| null` | 最後に適用したプリセット ID |
+| `toolWindows` | `Partial<Record<PanelId, ToolWindowState>>` | per-panel の slot / viewMode / undockSize override |
+| `stripePanelIds` | `string[]` | stripe icon を出している panel ID リスト |
+| `stripeSizes` | `Record<StripeRegion, number>` | stripe ごとの幅 (px) |
+| `stripeVisibility` | `Record<StripeRegion, boolean>` | stripe 全体の表示/非表示 (Phase 4 で UI 提供) |
+
+### scheduleSave (統一 coordinator)
+
+すべて単一の debounce 500ms save にまとめて競合を防ぐ:
+
+```ts
+function scheduleSave(get) {
+  setTimeout(async () => {
+    const layout = api.toJSON();
+    if (!validateSerializedLayout(layout).valid) return;
+    const current = await invoke("get_global_settings");
+    await invoke("save_global_settings", {
+      settings: {
+        ...current,
+        layout,
+        toolWindows: get().toolWindows,
+        stripePanelIds: Array.from(get().stripePanelIds),
+        stripeSizes: get().stripeSizes,
+        stripeVisibility: get().stripeVisibility,
+      },
+    });
+  }, 500);
+}
+```
+
+トリガー: `onDidLayoutChange`、`setToolWindowSlot`、`setViewMode`、
+`removePanelFromStripe`、`setStripeSize`、`setStripeVisibility`、`saveLayout()` 手動呼出。
 
 ### 起動時の復元
 
-1. `buildDefaultLayout()` で即座にデフォルトレイアウトを表示（ブランク画面を防ぐ）
-2. `global-settings.json` から `layout` を非同期で読み込み、存在すれば `fromJSON()` で上書き復元
-3. `layoutPresets` と `activeLayoutPresetId` をストアにロード（ドロップダウンのUI表示用）
+1. `buildDefaultLayout(api)` でデフォルトレイアウトを同期表示 (ブランク画面回避)
+2. `loadLayout()` で `global-settings.json` から layout を非同期取得し、3 段バリデーション通過後 `fromJSON` で復元
+   - `validateSerializedLayout(saved)` (grid 形状・leaf 数・panel 数)
+   - `api.fromJSON(saved)` 例外時はデフォルト再構築
+   - `validateRuntimeLayout(api)` (グループ数・単一グループ支配率)
+3. `loadPresets()` でカスタムプリセット一覧と active ID を取得
+4. `loadToolWindowSettings()` で `toolWindows` / `stripePanelIds` / `stripeSizes` / `stripeVisibility` を merge (layout 復元時の `onDidAddPanel` で既に populate されている `stripePanelIds` と merge する)
 
-これにより、起動時には最後に保存されたレイアウト（プリセット適用後にユーザーが手動調整した状態を含む）が復元される。
-
-**現状の実装（`App.tsx` の `handleReady`）**:
-復元処理は以下の三段階バリデーションを通る（`layoutValidation.ts`）。
-1. `validateSerializedLayout(saved)` — JSON 構造を事前検証（grid 形状・leaf 数・panel 数）。失敗時は trash → デフォルトのまま。
-2. `api.fromJSON(saved)` — 失敗（互換性のないシリアライズ形式など）したら例外を捕捉し、デフォルトレイアウトを再構築。
-3. `validateRuntimeLayout(api)` — 復元後の実レイアウトを検証（グループ数・単一グループ支配率）。失敗時はデフォルトに戻して保存済みレイアウトを消去。
-
-`saveLayout` は `onDidLayoutChange` から 500ms デバウンスで自動起動し、保存前にも `validateSerializedLayout` を通して退行レイアウトの保存を防ぐ。
+**起動時の優先順位**: saved layout > preferred slot。saved layout に panel があればその位置を尊重し、slot は表示用に裏で同期される。
 
 ### リセット
 
-レイアウトプリセットドロップダウンから「デフォルト」プリセットを選択することで初期配置に復帰する。コマンドパレット（`Ctrl+Shift+P`）からの「レイアウトをデフォルトに戻す」操作も同等。
+`resetToDefaultLayout` で `builtin:default` を再構築し、`clearSavedLayout` で saved layout を消去する。`stripePanelIds` などのユーザー設定は維持。
 
 ---
 
@@ -398,149 +539,187 @@ OS AppDataディレクトリ内の `global-settings.json` に保存する。レ�
 
 ### 設計原則
 
-小説執筆アプリであるため、テキスト編集のショートカット（`Ctrl+B` = Bold、`Ctrl+K` = リンク挿入、`Ctrl+I` = Italic 等）を絶対に上書きしない。レイアウト操作には `Ctrl+Alt` プレフィックスを使い、エディタ操作と完全に分離する。
+小説執筆アプリのため、TipTap デフォルトのテキスト編集ショートカット (`Ctrl+B` 太字、
+`Ctrl+I` 斜体、`Ctrl+K` リンク、`Ctrl+Z`/`Ctrl+Shift+Z` Undo/Redo 等) は絶対に
+上書きしない。レイアウト操作は `Ctrl+Alt` プレフィックス。
 
-### テキスト編集（TipTapデフォルト — 予約済み、上書き禁止）
-
-| ショートカット | 動作 |
-|-------------|------|
-| `Ctrl+B` | 太字 |
-| `Ctrl+I` | 斜体 |
-| `Ctrl+U` | 下線 |
-| `Ctrl+K` | リンク挿入 |
-| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
-| `Ctrl+A` | 全選択 |
-| `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | コピー / ペースト / カット |
-| `Ctrl+1` / `2` / `3` | 見出しH1 / H2 / H3（TipTap設定による） |
-
-### レイアウト操作（`Ctrl+Alt` プレフィックス）
+### グローバルショートカット
 
 | ショートカット | 動作 |
-|-------------|------|
-| `Ctrl+Alt+B` | Left Dockの表示/非表示トグル |
-| `Ctrl+Alt+J` | Bottom Dockの表示/非表示トグル |
-| `Ctrl+Alt+R` | Right Dockの表示/非表示トグル |
+|---|---|
+| `Ctrl+Shift+E` | エクスポートダイアログ |
+| `Ctrl+Shift+F` | Command Center バーにフォーカス (全文検索 / コマンド) |
+| `Ctrl+Shift+P` | コマンドパレット |
+| `Ctrl+Shift+D` | デバッグログビューア |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | 同一 Editor Group 内のタブ切替 |
+
+### パネル直接アクセス (`Ctrl+Alt` + 頭文字)
+
+`KEYBOARD_SHORTCUT_MAP` (`panelRegions.ts`) と `App.tsx:handleKeyDown` の `keyMap` が
+正本。両者が一致している必要がある。
+
+| ショートカット | パネル |
+|---|---|
+| `Ctrl+Alt+S` | Scenes |
+| `Ctrl+Alt+X` | Codex |
+| `Ctrl+Alt+Q` | Codex Quick |
+| `Ctrl+Alt+K` | Command Center Results (検索) |
+| `Ctrl+Alt+C` | Chat |
+| `Ctrl+Alt+H` | Chat History |
+| `Ctrl+Alt+N` | Snippets |
+| `Ctrl+Alt+A` | Attribution |
+| `Ctrl+Alt+L` | Timeline |
+| `Ctrl+Alt+M` | Map |
+| `Ctrl+Alt+T` | Kouetsu (校閲) |
+| `Ctrl+Alt+F` | Foreshadow (伏線) |
+| `Ctrl+Alt+G` | Grid (※ 現状 keyMap 未接続) |
+| `Ctrl+Alt+R` | Matrix (※ 現状 keyMap 未接続) |
+| `Ctrl+Alt+B` | Trash Bin |
+| `Ctrl+Alt+,` | Settings ダイアログ |
+
+### Editor
+
+| ショートカット | 動作 |
+|---|---|
 | `Ctrl+\` | アクティブエディタを右にスプリット |
 | `Ctrl+Shift+\` | アクティブエディタを下にスプリット |
 | `Alt+1` / `2` / `3` | Editor Group 1 / 2 / 3 にフォーカス |
 
-### タブ・ウィンドウ操作
+### カスタマイズ
 
-| ショートカット | 動作 |
-|-------------|------|
-| `Ctrl+W` | アクティブタブを閉じる |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | 同一Group内の次/前のタブ |
-| `Ctrl+Shift+P` | コマンドパレットを開く |
-| `Ctrl+Shift+N` | 新しいウィンドウ（将来的に） |
-
-### パネル直接アクセス（`Ctrl+Alt` + パネル頭文字）
-
-**現状の実装**: 表示ヒント（ドロップダウンの `kbd`）は `KEYBOARD_SHORTCUT_MAP`（`panelRegions.ts`）、実際の発火は `App.tsx` の `handleKeyDown` 内 `keyMap` を参照。両者の対応は順次拡張中。
-
-| ショートカット | 動作 | 接続状況 |
-|-------------|------|---------|
-| `Ctrl+Alt+S` | Scenesパネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+Q` | Codex Quickパネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+C` | Chatパネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+H` | Chat Historyパネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+X` | Codexパネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+N` | Snippetsパネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+A` | Attributionパネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+L` | Timelineパネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+M` | Mapパネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+T` | Kouetsu（校閲）パネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+F` | Foreshadow（伏線）パネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+B` | Trash Binパネルにフォーカス/トグル | 有効 |
-| `Ctrl+Alt+G` | Gridパネルにフォーカス/トグル | ※ keyMap 未接続（表示ヒントのみ） |
-| `Ctrl+Alt+R` | Matrixパネルにフォーカス/トグル | ※ keyMap 未接続（表示ヒントのみ） |
-| `Ctrl+Alt+,` | Settings ダイアログを開く | 有効 |
-| `Ctrl+Shift+E` | エクスポートダイアログ | 有効 |
-| `Ctrl+Shift+F` | 全文検索ダイアログ | 有効 |
-| `Ctrl+Shift+P` | コマンドパレット | 有効 |
-
-### ショートカットのカスタマイズ
-
-すべてのショートカットはSettings内のキーバインド設定画面で変更可能とする。コマンドパレット（`Ctrl+Shift+P`）からもキーバインドの検索・変更が可能。
+将来的に Settings 内のキーバインド設定画面で全ショートカットを変更可能とする。
+コマンドパレット (`Ctrl+Shift+P`) からもキーバインドを検索・変更できる予定。
 
 ---
 
-## dockingライブラリへの要件
+## 実装ファイル構成
 
-上記設計を実現するために、dockingライブラリに求める要件を整理する。
+`src/features/layout/`:
 
-### 必須要件
+| ファイル | 役割 |
+|----------|------|
+| `layoutStore.ts` | Zustand store。`dockviewApi` 保持 / `togglePanel` / `showPanel` / `openPanelAtSlot` / 全 slot/stripe 関連 action / preset CRUD / layout lock / 永続化 (`scheduleSave`, `loadToolWindowSettings`, `clearSavedLayout`) |
+| `toolWindowDefaults.ts` | 型 (`ToolWindowSlot` / `ViewMode` / `StripeRegion` / `ToolWindowState`) + 定数 (`DEFAULT_SLOT_MAP` / `SLOT_TO_REGION` / `DEFAULT_STRIPE_SIZES` / `DEFAULT_STRIPE_VISIBILITY` / `TOOL_WINDOW_PANEL_IDS`) |
+| `panelRegions.ts` | `PANEL_REGION_MAP` (3 region) / `KEYBOARD_SHORTCUT_MAP` / `TOGGLEABLE_PANELS` |
+| `panelIcons.ts` | `PANEL_ICON_MAP: Record<PanelId, LucideIcon>` |
+| `panelComponents.tsx` | `PANEL_COMPONENT_MAP` (素の React) + `DOCKVIEW_PANEL_COMPONENTS` (Dockview wrap)。Dockview と将来の Undock overlay 層が共有 |
+| `stripeRegionDetection.ts` | `detectRegionFromRects` (pure) / `detectActualRegion` (DOM 経由) / `pickDefaultSlotForRegion` |
+| `useStripePanelsByRegion.ts` | shell が使う hook。stripePanelIds を slot.region 別に分類して `Array<{id, visible, active}>` を返す |
+| `ToolWindowShell.tsx` | grid wrapper。3 stripe + Dockview を CSS Grid 配置 |
+| `ToolWindowStripe.tsx` | 1 stripe (region + orientation) |
+| `ToolWindowIcon.tsx` | 1 icon。`active` / `visible` で 3 状態描画 |
+| `PanelToggleDropdown.tsx` | 全パネル管理 UI (region 別) |
+| `LayoutPresetDropdown.tsx` | プリセット UI |
+| `PanelHighlightOverlay.tsx` | hover 時の panel 領域ハイライト |
+| `DockviewWatermark.tsx` | 全パネル閉時の watermark |
+| `layoutPresets.ts` | 5 ビルトイン preset builder + クリアロジック |
+| `layoutValidation.ts` | layout JSON / runtime 検証 |
 
-- タブ化（同一ゾーン内で複数パネルをタブ切替）
-- 4方向ドック（Left / Right / Bottom / Center）
-- フローティングウィンドウ（ドラッグで分離、リサイズ・移動可能）
-- ドラッグ&ドロップによるパネル移動（ゾーン間、タブ↔フローティング）
-- ゾーン内スプリット（上下/左右に分割）
-- レイアウトのシリアライズ/デシリアライズ（JSON形式）
-- 同一コンテンツの複数パネルへの表示（同一シーンの同期編集のため）
-- React対応
-- TypeScript型定義
+`App.tsx` (抜粋):
+- `ToolWindowShell` で `DockviewReact` をラップ
+- `components` prop に `DOCKVIEW_PANEL_COMPONENTS` を渡す
+- `handleReady` で `setDockviewApi` → `loadLayout` → `loadPresets` + `loadToolWindowSettings`
+- `handlePanelDrop` は canvas drop なら `openPanelAtSlot`、明示 group drop は `within`
 
-### あると嬉しい要件
+---
 
-- Editor Groupモデルのネイティブサポート（Center内の複数スプリット）
-- ドロップヒントのカスタマイズ（ハイライト領域のスタイル変更）
-- ゾーンの折りたたみ/展開アニメーション
-- ゾーンの最小幅/最大幅の設定
-- 軽量（バンドルサイズがTauriの軽量思想に合うこと）
-
-### 採用ライブラリ
-
-**`dockview-react` v5.2.0** を採用。
-
-#### 選定理由
-
-上記必須要件（タブ化、4方向ドック、フローティング、D&D、ゾーン内スプリット、レイアウトシリアライズ、React/TypeScript対応）をすべて単一ライブラリで満たす唯一の候補であった。
-
-| 候補                             | 判定     | 理由                                                                                   |
-| ------------------------------ | ------ | ------------------------------------------------------------------------------------ |
-| `dockview`                     | **採用** | 必須要件をすべて充足。VS Code風のEditor Groupモデルにネイティブ対応。`toJSON()`/`fromJSON()` によるレイアウト永続化が組み込み |
-| `FlexLayout`                   | 不採用    | フローティングウィンドウ非対応                                                                      |
-| `react-mosaic`                 | 不採用    | タイル型のみ、フローティング非対応                                                                    |
-| `rc-dock`                      | 不採用    | TypeScript型定義が不十分、ドキュメントが乏しい                                                         |
-| 自前実装（`react-resizable-panels`） | 不採用    | タブ化・D&D・フローティング・シリアライズを自前実装するコストが大きい                                                 |
-
-#### 実装構成
-
-- `DockviewReact` コンポーネントが全ドックゾーンのレイアウトを管理（`App.tsx`）
-- 各パネル（Scenes, Codex, Chat等）はdockviewのコンポーネントマップに登録
-- `DockviewApi` の参照をZustand store（`layoutStore`）に保持し、ヘッダードロップダウンやキーボードショートカットから操作
-- レイアウト永続化: `api.toJSON()` でシリアライズし、`global-settings.json` に保存
-- プリセット管理: ビルトインプリセットは `layoutPresets.ts` にビルダー関数として定義。カスタムプリセットはシリアライズ済みJSONとして `global-settings.json` に保存。`layoutStore` がプリセットのCRUD操作を提供
-- リージョン分類: `panelRegions.ts` で各パネルを `left` / `right` / `center-bottom` の 3 リージョンに分類し、トグルドロップダウンの区切りと `PanelHighlightOverlay` の推定位置に使用
-- 挿入位置の自動解決: `resolveInsertPosition()`（`layoutStore.ts`）が各パネルの優先アンカー（`PANEL_INSERT_REGISTRY`）を順に評価し、既存パネルに対する `within` / `left` / `right` / `above` / `below` の挿入位置を返す
-- 全パネルが閉じられた状態: `DockviewWatermark` コンポーネント（`watermarkComponent` prop）が主要パネルのショートカット一覧を表示
-- テーマ: `dockview-theme-dark` クラスを適用し、`--dv-*` CSS変数をプロジェクトのデザイントークンで上書き
-
-#### デフォルトレイアウト
+## デフォルトレイアウト (Write preset 起動直後)
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│ [メニュー] Grimodex  [レイアウト▼] [パネル▼] [⚙]          │  ← ヘッダー
-├──────────────┬──────────────────┬────────────────────────┤
-│ [シーン]      │                  │ [チャット][履歴]        │
-│              │   [エディタ]      │                        │
-│  Left Top    │   Center         │  Right Top             │
-│  (~18%)      │   (~52%)         │  (~30%)                │
-├──────────────┤                  │                        │
-│ [Codex Quick]│                  │                        │
-│              │                  │                        │
-│  Left Bottom │                  │                        │
-└──────────────┴──────────────────┴────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ [Menu] Grimodex … [Search bar] [Layout▼] [Panels▼] [⚙]           │  ← Header
+├────┬───────────────────────────────────────────────────────┬─────┤
+│ 📁 │                                                       │ 💬  │
+│    │                                                       │     │
+│    │  ┌──────────────┬───────────────┬────────────────┐   │     │
+│    │  │ [Scenes]     │               │ [Chat] [Hist.] │   │     │
+│    │  │              │ [Editor]      │                │   │     │
+│    │  │              │               │                │   │     │
+│    │  │              │               │                │   │     │
+│    │  │              │               │                │   │     │
+│    │  ├──────────────┤               │                │   │     │
+│    │  │ [Codex Quick]│               │                │   │     │
+│    │  │              │               │                │   │     │
+│    │  └──────────────┴───────────────┴────────────────┘   │     │
+│    │                                                       │     │
+├────┤                                                       ├─────┤
+│ (bottom stripe は panel が 0 のとき非表示)                          │
+└────┴───────────────────────────────────────────────────────┴─────┘
 ```
 
-- 履歴タブはチャットと同グループで非アクティブ（初期非表示）
-- Snippets・Attributionパネルは初期状態では非表示。ヘッダードロップダウンから追加するとEditor下部にグループとして配置される。
+- 左 stripe: 📁 Scenes (active) + ⚡ Codex Quick (active)
+- 右 stripe: 💬 Chat (active) + 🗨 Chat History (background tab)
+- 下 stripe: 非表示 (placed panel 0)
+- Snippets / Attribution / Map / Matrix / Grid / Timeline / Kouetsu / Foreshadow /
+  Trash Bin / Search は未 placed → stripe に icon なし。dropdown または shortcut で
+  最初に開いた瞬間に stripePanelIds 登録 + icon 出現
 
-> **注記**: `react-resizable-panels` はCodexManagementPanelおよびSnippetPanelのマスター/ディテール内部分割に引き続き使用している。アプリレベルのドックレイアウトのみdockviewに移行済み。
+---
+
+## Phase 2 以降のロードマップ
+
+### Phase 2: 6 slot 細分化 + Stripe DnD + 右クリックメニュー
+
+- ToolWindowStripe 内に divider を入れて LT/LB (左)、RT/RB (右)、BL/BR (下) を分離
+- `resolveInsertPositionForSlot(api, slot)` (6 slot 単位の解決) を追加
+- Stripe icon 間の DnD で slot 再割当 (新 MIME `application/grimodex-toolwindow-reassign`)
+- 右クリックメニュー: "Move To" (6 slot から選択) / "Remove from sidebar" (`removePanelFromStripe`)
+
+### Phase 3a: Dock Unpinned (auto-hide) prototype
+
+- `useAutoHidePanel(panelId)` hook で focus 境界外クリックを検知
+- 除外 selector を整備 (`data-radix-portal` / `data-popover-root` / `data-modal-root` 等を modal/popover 側に付与する横断変更)
+- panel ヘッダ / 右クリックメニューに View Mode 切替 UI (Pinned ↔ Unpinned)
+
+### Phase 3b: Undock (overlay)
+
+- `UndockedOverlayLayer` / `UndockedOverlay` — Dockview 外で absolute-positioned overlay 描画
+- View Mode に `undocked` を追加。Dockview ↔ overlay の移行ロジック
+- `panelComponents.tsx` の `PANEL_COMPONENT_MAP` を overlay 側でも mount
+- `resultsPanelStore.mounted` 等の派生 state を `dockviewApi.getPanel(id) || undockedPanels.has(id)` で導出するよう更新
+- 再起動時 bootstrap (viewMode === "undocked" の panel を overlay として復元)
+
+### Phase 4: 仕上げ
+
+- Stripe visibility トグル UI (Settings or PanelToggleDropdown 拡張)
+- Stripe 幅の resize handle (`stripeSizes`)
+- Onboarding tour に stripe 紹介を追加
+- Layout lock との連携最終確認
+
+### Phase 5 (将来候補)
+
+- Dockview → stripe へのドラッグ (panel を stripe icon 化)
+- Stripe 内アイコン並び順カスタマイズ
+- Stripe collapse (全アイコン非表示にして縦/横の細線だけ残す)
+
+---
+
+## docking ライブラリ採用: dockview-react
+
+`dockview-react` v5.x を採用。VS Code 風の Editor Group、自由 D&D、float、レイアウト
+シリアライズ (`toJSON`/`fromJSON`)、React/TypeScript 対応を満たす唯一の候補。
+
+| 候補 | 判定 | 理由 |
+|------|------|------|
+| `dockview` | **採用** | 必須要件をすべて満たす |
+| `FlexLayout` | 不採用 | フローティング非対応 |
+| `react-mosaic` | 不採用 | タイル型のみ |
+| `rc-dock` | 不採用 | TypeScript 型不十分、ドキュメント不足 |
+| 自前 (`react-resizable-panels`) | 不採用 | タブ化・D&D・float 自前実装のコスト大 |
+
+### Grimodex での組合せ方
+
+- アプリレベルのドックレイアウト → dockview
+- 個別パネル内のマスター/ディテール分割 (`CodexManagementPanel` / `SnippetPanel`) →
+  `react-resizable-panels` (引き続き使用)
+- ステータス確認: `dockview-theme-dark` クラスを適用、`--dv-*` CSS 変数を
+  プロジェクトのデザイントークンで上書き
 
 ---
 
 ## 今後の検討事項
 
-- **ドロップヒントのUXデザイン**: ハイライトの色・アニメーション・形状
-- **レスポンシブ対応**: ウィンドウが狭い場合のゾーン自動折りたたみルール
+- ドロップヒントの UX (ハイライト色・アニメーション)
+- レスポンシブ対応 (ウィンドウが狭い場合の stripe 自動折り畳みルール)
+- Phase 2 の sub-slot 内 position 記憶 (LT/LB 内で「上から N 番目」を保持するか)
+- Phase 3 の Undock pinning (Pinned overlay は IntelliJ 互換性のため別途検討)
