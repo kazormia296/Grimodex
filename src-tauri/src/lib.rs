@@ -191,6 +191,10 @@ pub fn run() {
             commands::semantic::semantic_index_scene,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_search,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::semantic_index_status,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::semantic_reindex_all,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

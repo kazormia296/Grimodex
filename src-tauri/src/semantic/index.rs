@@ -145,6 +145,104 @@ pub fn upsert_scene_chunks(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// インデックス状態の集計 (Step 8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `semantic_index_status` Tauri command の戻り値。frontend に JSON で返す。
+///
+/// - `indexed_chunk_count`: project 内 scene_chunks の総件数 (model/version 不問)。
+/// - `stale_chunk_count`: そのうち現行 `model_id` / `embedding_dim` / `chunker_version`
+///   と不一致のもの (再インデックス対象)。
+/// - `indexed_scene_count`: 何件の scene が一つでも chunk を持っているか。
+/// - `current_*`: 呼び出し側 (commands/semantic.rs) が握る現行の識別子をそのまま返す。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexStatusReport {
+    pub indexed_chunk_count: usize,
+    pub stale_chunk_count: usize,
+    pub indexed_scene_count: usize,
+    pub current_model_id: String,
+    pub current_embedding_dim: usize,
+    pub current_chunker_version: String,
+}
+
+/// 指定 project の scene_chunks の状態を 1 回の `with_conn` で集計する。
+pub fn collect_index_status(
+    db: &Database,
+    project_id: &str,
+    current_model_id: &str,
+    current_embedding_dim: usize,
+    current_chunker_version: &str,
+) -> Result<IndexStatusReport> {
+    db.with_conn(|conn| {
+        // 全 chunks (project 配下、model/version 問わず)
+        let indexed_chunk_count: i64 = conn.query_row(
+            "SELECT COUNT(*)
+             FROM scene_chunks sc
+             JOIN tree_nodes tn ON sc.scene_id = tn.id
+             WHERE tn.project_id = ?",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+
+        // stale chunks (現行と一致しないもの)
+        let stale_chunk_count: i64 = conn.query_row(
+            "SELECT COUNT(*)
+             FROM scene_chunks sc
+             JOIN tree_nodes tn ON sc.scene_id = tn.id
+             WHERE tn.project_id = ?
+               AND (sc.model_id != ?
+                    OR sc.embedding_dim != ?
+                    OR sc.chunker_version != ?)",
+            params![
+                project_id,
+                current_model_id,
+                current_embedding_dim as i64,
+                current_chunker_version,
+            ],
+            |row| row.get(0),
+        )?;
+
+        // chunk を持つ scene の distinct 件数
+        let indexed_scene_count: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT sc.scene_id)
+             FROM scene_chunks sc
+             JOIN tree_nodes tn ON sc.scene_id = tn.id
+             WHERE tn.project_id = ?",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+
+        Ok(IndexStatusReport {
+            indexed_chunk_count: indexed_chunk_count as usize,
+            stale_chunk_count: stale_chunk_count as usize,
+            indexed_scene_count: indexed_scene_count as usize,
+            current_model_id: current_model_id.to_string(),
+            current_embedding_dim,
+            current_chunker_version: current_chunker_version.to_string(),
+        })
+    })
+}
+
+/// 指定 project 配下の scene (node_type='scene') の id 一覧。
+/// reindex_all がイテレーション対象を取るのに使う。
+pub fn list_scene_ids_in_project(db: &Database, project_id: &str) -> Result<Vec<String>> {
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM tree_nodes
+             WHERE project_id = ? AND node_type = 'scene'
+             ORDER BY sort_order",
+        )?;
+        let rows = stmt.query_map(params![project_id], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // オーケストレーション (Embedder を借りるため feature gate)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -497,5 +595,130 @@ mod tests {
         .unwrap();
 
         assert_eq!(count_chunks(&db, "s1"), 0);
+    }
+
+    // ── collect_index_status / list_scene_ids_in_project (Step 8) ────────
+
+    const CURR_MODEL: &str = "current/model";
+    const CURR_DIM: usize = 4;
+    const CURR_VER: &str = "current-v1";
+
+    #[test]
+    fn status_empty_project_returns_zero_counts() {
+        let db = mem_db();
+        seed_project(&db);
+        let s = collect_index_status(&db, "p1", CURR_MODEL, CURR_DIM, CURR_VER).unwrap();
+        assert_eq!(s.indexed_chunk_count, 0);
+        assert_eq!(s.stale_chunk_count, 0);
+        assert_eq!(s.indexed_scene_count, 0);
+        assert_eq!(s.current_model_id, CURR_MODEL);
+        assert_eq!(s.current_embedding_dim, CURR_DIM);
+        assert_eq!(s.current_chunker_version, CURR_VER);
+    }
+
+    #[test]
+    fn status_counts_indexed_and_stale_chunks() {
+        let db = mem_db();
+        let content_a = r#"{"a":1}"#;
+        let content_b = r#"{"b":2}"#;
+        seed_scene(&db, "s_curr", content_a);
+        seed_scene(&db, "s_stale_model", content_b);
+
+        // s_curr に現行 (3 chunks)、s_stale_model に古い model (2 chunks)
+        upsert_scene_chunks(
+            &db,
+            "s_curr",
+            &compute_content_hash(content_a),
+            &vec![make_payload(CURR_DIM, 0.1); 3],
+            CURR_MODEL,
+            CURR_DIM,
+            CURR_VER,
+        )
+        .unwrap();
+        upsert_scene_chunks(
+            &db,
+            "s_stale_model",
+            &compute_content_hash(content_b),
+            &vec![make_payload(CURR_DIM, 0.2); 2],
+            "old/model",
+            CURR_DIM,
+            CURR_VER,
+        )
+        .unwrap();
+
+        let s = collect_index_status(&db, "p1", CURR_MODEL, CURR_DIM, CURR_VER).unwrap();
+        assert_eq!(s.indexed_chunk_count, 5);
+        assert_eq!(s.stale_chunk_count, 2);
+        assert_eq!(s.indexed_scene_count, 2);
+    }
+
+    #[test]
+    fn status_stale_when_chunker_version_differs() {
+        let db = mem_db();
+        let content = r#"{"a":1}"#;
+        seed_scene(&db, "s1", content);
+        upsert_scene_chunks(
+            &db,
+            "s1",
+            &compute_content_hash(content),
+            &vec![make_payload(CURR_DIM, 0.1); 4],
+            CURR_MODEL,
+            CURR_DIM,
+            "old-chunker",
+        )
+        .unwrap();
+        let s = collect_index_status(&db, "p1", CURR_MODEL, CURR_DIM, CURR_VER).unwrap();
+        assert_eq!(s.indexed_chunk_count, 4);
+        assert_eq!(s.stale_chunk_count, 4);
+    }
+
+    #[test]
+    fn status_stale_when_embedding_dim_differs() {
+        let db = mem_db();
+        let content = r#"{"a":1}"#;
+        seed_scene(&db, "s1", content);
+        upsert_scene_chunks(
+            &db,
+            "s1",
+            &compute_content_hash(content),
+            &vec![make_payload(CURR_DIM, 0.1); 2],
+            CURR_MODEL,
+            CURR_DIM, // 投入は dim=4
+            CURR_VER,
+        )
+        .unwrap();
+        // 別 dim を期待するクエリ → 全件 stale 扱い
+        let s = collect_index_status(&db, "p1", CURR_MODEL, 256, CURR_VER).unwrap();
+        assert_eq!(s.indexed_chunk_count, 2);
+        assert_eq!(s.stale_chunk_count, 2);
+    }
+
+    #[test]
+    fn list_scene_ids_excludes_folders_and_other_projects() {
+        let db = mem_db();
+        let content = r#"{}"#;
+        seed_scene(&db, "s1", content);
+        seed_scene(&db, "s2", content);
+        seed_folder(&db, "f1");
+        // 別 project のシーン
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('p2', 'other')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (
+                    id, project_id, node_type, title, sort_order, content,
+                    created_at, updated_at
+                ) VALUES ('s_other', 'p2', 'scene', 't', 'a0', '{}', datetime('now'), datetime('now'))",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut ids = list_scene_ids_in_project(&db, "p1").unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["s1".to_string(), "s2".to_string()]);
     }
 }

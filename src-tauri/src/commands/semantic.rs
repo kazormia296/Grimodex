@@ -27,7 +27,9 @@ use std::sync::Mutex;
 use tauri::Manager;
 
 use crate::semantic::embedding::{Embedder, EMBEDDING_DIM_RURI_V3_30M, MODEL_ID_RURI_V3_30M};
-use crate::semantic::index::{index_scene, UpsertOutcome};
+use crate::semantic::index::{
+    collect_index_status, index_scene, list_scene_ids_in_project, IndexStatusReport, UpsertOutcome,
+};
 use crate::semantic::search::{run_search, SearchCache, SearchHit};
 
 use super::{with_db, AppError, WorkspaceState};
@@ -168,5 +170,85 @@ pub(crate) async fn semantic_search(
         })
         .await
         .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// 指定 project の scene_chunks 状態を返す。
+///
+/// `current_*` は本コマンド側が握っている定数 (`current_model_id` /
+/// `EMBEDDING_DIM_RURI_V3_30M` / `CHUNKER_VERSION`) と DB 上の値の差から
+/// `stale_chunk_count` を算出する (§3.5)。Embedder のロードは不要。
+#[tauri::command]
+pub(crate) async fn semantic_index_status(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<IndexStatusReport, AppError> {
+    let model_id = current_model_id();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<IndexStatusReport, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            let report = with_db(&ws_state, |db| {
+                collect_index_status(
+                    db,
+                    &project_id,
+                    &model_id,
+                    EMBEDDING_DIM_RURI_V3_30M,
+                    crate::semantic::chunker::CHUNKER_VERSION,
+                )
+            })?;
+            Ok(report)
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// project 配下の全 scene を再インデックスする。
+///
+/// 初回インデックス構築・モデル変更時・chunker_version 変更時の全再構築用 (§3.5)。
+/// 各 scene について `index_scene` を順次呼び、戻り値はインデックスされた
+/// 合計 chunk 数 (skipped 分は加算されない)。1 scene でも失敗すれば即座にエラーで
+/// 中断する (MVP は強い整合性を優先)。
+///
+/// 成功した scene ごとに `SearchCache` の該当エントリを invalidate する。
+#[tauri::command]
+pub(crate) async fn semantic_reindex_all(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<usize, AppError> {
+    let model_id = current_model_id();
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<usize, AppError> {
+        let ws_state = app.state::<WorkspaceState>();
+        let emb_state = app.state::<SemanticEmbedderState>();
+        let cache = app.state::<SearchCache>();
+
+        // 対象 scene 一覧を先に確定 (途中の追加・削除に巻き込まれないため)
+        let scene_ids: Vec<String> =
+            with_db(&ws_state, |db| list_scene_ids_in_project(db, &project_id))?;
+
+        // Embedder lazy load。全 scene を 1 つの guard で回せばロックの取り直しが不要。
+        let mut guard = emb_state
+            .inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+        if guard.is_none() {
+            *guard = Some(load_embedder()?);
+        }
+        let embedder = guard.as_mut().expect("just ensured Some");
+
+        let mut total: usize = 0;
+        for scene_id in &scene_ids {
+            let outcome = with_db(&ws_state, |db| {
+                index_scene(db, embedder, scene_id, &model_id)
+            })?;
+            if let UpsertOutcome::Indexed(n) = outcome {
+                cache.invalidate(scene_id)?;
+                total += n;
+            }
+        }
+        Ok(total)
+    })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
     result
 }
