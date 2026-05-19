@@ -12,6 +12,7 @@
 
 pub(crate) mod chunker;
 pub(crate) mod index;
+pub(crate) mod preview;
 pub(crate) mod search;
 
 #[cfg(feature = "semantic-embedding")]

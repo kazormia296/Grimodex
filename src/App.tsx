@@ -52,7 +52,11 @@ import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { GridPanel } from "@/features/grid/GridPanel";
 import { MatrixPanel } from "@/features/matrix/MatrixPanel";
 import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
-import { SearchDialog } from "@/features/search/SearchDialog";
+import {
+  CommandCenterBar,
+  useCommandCenterStore,
+} from "@/features/commandCenter";
+import { CommandCenterResultsPanel } from "@/features/commandCenter/CommandCenterResultsPanel";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
 import { CommandPalette } from "@/features/commandPalette/CommandPalette";
@@ -150,6 +154,10 @@ function MatrixContent(_props: IDockviewPanelProps) {
 
 function TrashBinContent(_props: IDockviewPanelProps) {
   return <TrashBinPanel />;
+}
+
+function CommandCenterResultsContent(_props: IDockviewPanelProps) {
+  return <CommandCenterResultsPanel />;
 }
 
 /* ── Default layout builder (delegates to builtin preset) ── */
@@ -322,7 +330,6 @@ function EditorScreen() {
   const [showExport, setShowExport] = useState(false);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
-  const [showSearch, setShowSearch] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
@@ -452,6 +459,7 @@ function EditorScreen() {
       grid: GridContent,
       matrix: MatrixContent,
       "trash-bin": TrashBinContent,
+      "command-center-results": CommandCenterResultsContent,
     }),
     [],
   );
@@ -582,10 +590,19 @@ function EditorScreen() {
         return;
       }
 
-      // Ctrl+Shift+F: 全文検索ダイアログ
+      // Ctrl+Shift+F: CommandCenter バーをフォーカス。
+      // TipTap (features/editor/extensions.ts:135) が選択あり時に Mod-Shift-f を
+      // foreshadow picker に使うため、defaultPrevented を尊重して二重発火を避ける。
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "f") {
+        if (e.defaultPrevented) return;
         e.preventDefault();
-        setShowSearch((v) => !v);
+        const cc = useCommandCenterStore.getState();
+        if (cc.open) {
+          cc.setOpen(false);
+        } else {
+          cc.setOpen(true);
+          cc.requestFocus();
+        }
         return;
       }
 
@@ -611,6 +628,7 @@ function EditorScreen() {
         t: "kouetsu",
         f: "foreshadow",
         b: "trash-bin",
+        k: "command-center-results",
         ",": "settings",
       };
 
@@ -769,7 +787,9 @@ function EditorScreen() {
           <FileOutput className="h-4 w-4" />
           <span className="text-sm">{t("app.exportLabel")}</span>
         </button>
-        <div className="flex-1" />
+        <div className="flex min-w-0 flex-1 justify-center px-4">
+          <CommandCenterBar />
+        </div>
         <LayoutPresetDropdown />
         <PanelToggleDropdown />
         <button
@@ -805,7 +825,6 @@ function EditorScreen() {
         open={showImportDialog}
         onClose={() => setShowImportDialog(false)}
       />
-      {showSearch && <SearchDialog onClose={() => setShowSearch(false)} />}
       {showCommandPalette && (
         <CommandPalette onClose={() => setShowCommandPalette(false)} />
       )}

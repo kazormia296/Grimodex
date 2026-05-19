@@ -25,7 +25,8 @@ export type PanelId =
   | "foreshadow"
   | "grid"
   | "matrix"
-  | "trash-bin";
+  | "trash-bin"
+  | "command-center-results";
 
 /** MIME type used to transfer panel IDs during external drag operations */
 export const PANEL_DRAG_TYPE = "application/grimodex-panel-id";
@@ -114,6 +115,11 @@ const PANEL_INSERT_REGISTRY: Record<PanelId, InsertRule[]> = {
     { panel: "attribution", direction: "within" },
     { panel: "editor", direction: "below" },
     { panel: null, direction: "below" },
+  ],
+  "command-center-results": [
+    { panel: "chat", direction: "within" },
+    { panel: "chat-history", direction: "within" },
+    { panel: null, direction: "right" },
   ],
   editor: [
     { panel: "scenes", direction: "right" },

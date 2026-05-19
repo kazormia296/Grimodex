@@ -63,3 +63,28 @@ export function semanticIndexStatus(
 ): Promise<SemanticIndexStatus> {
   return invoke<SemanticIndexStatus>("semantic_index_status", { projectId });
 }
+
+/**
+ * Semantic ヒットの chunk 前後文脈を取得 (CommandCenter 専用ビューの hover プレビュー用)。
+ * Rust 側で plain_text を `char_indices()` 1 パスで切り出す (`semantic/preview.rs`)。
+ */
+export interface SemanticChunkContext {
+  before: string;
+  chunk: string;
+  after: string;
+  sceneTitle: string;
+}
+
+export function getSemanticChunkContext(args: {
+  sceneId: string;
+  charStart: number;
+  charEnd: number;
+  padding: number;
+}): Promise<SemanticChunkContext> {
+  return invoke<SemanticChunkContext>("semantic_chunk_context", {
+    sceneId: args.sceneId,
+    charStart: args.charStart,
+    charEnd: args.charEnd,
+    padding: args.padding,
+  });
+}

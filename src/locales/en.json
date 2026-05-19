@@ -405,7 +405,8 @@
       "foreshadow": "Foreshadow",
       "grid": "Grid",
       "matrix": "Matrix",
-      "trash-bin": "Trash Bin"
+      "trash-bin": "Trash Bin",
+      "command-center-results": "Search Results"
     },
     "preset": {
       "title": "Layout presets",
@@ -1586,6 +1587,32 @@
     "setSceneStatus": "Set scene status",
     "setSceneStatusDescription": "Change the status of the currently active scene",
     "noActiveScene": "No active scene"
+  },
+  "commandCenter": {
+    "placeholderSearch": "Search… (> for command mode)",
+    "placeholderCommand": "Command…",
+    "sectionLexical": "Lexical",
+    "sectionSemantic": "Semantic",
+    "sectionCommand": "Commands",
+    "loading": "Searching…",
+    "noResults": "No results",
+    "emptyHint": "Type to search (> for command mode)",
+    "untitled": "(Untitled)",
+    "filter": {
+      "sourceLabel": "Source",
+      "typeLabel": "Type",
+      "all": "All",
+      "scene": "Scene",
+      "codex": "Codex",
+      "snippet": "Snippet",
+      "lexical": "Lexical",
+      "semantic": "Semantic"
+    },
+    "panel": {
+      "queryLabel": "Query",
+      "queryEmpty": "(none)",
+      "typeInBar": "Type in the header search bar"
+    }
   },
   "chatCommands": {
     "continue": {

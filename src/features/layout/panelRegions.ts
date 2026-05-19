@@ -12,6 +12,7 @@ export const PANEL_REGION_MAP: Record<
   "codex-quick": "left",
   chat: "right",
   "chat-history": "right",
+  "command-center-results": "right",
   snippets: "center-bottom",
   attribution: "center-bottom",
   timeline: "center-bottom",
@@ -39,6 +40,7 @@ export const KEYBOARD_SHORTCUT_MAP: Partial<Record<PanelId, string>> = {
   grid: "Ctrl+Alt+G",
   matrix: "Ctrl+Alt+R",
   "trash-bin": "Ctrl+Alt+B",
+  "command-center-results": "Ctrl+Alt+K",
 };
 
 /** Panels shown in the dropdown, grouped by region */
@@ -50,6 +52,7 @@ export const TOGGLEABLE_PANELS: Exclude<PanelId, "editor">[] = [
   // Right
   "chat",
   "chat-history",
+  "command-center-results",
   // Center-bottom
   "snippets",
   "attribution",

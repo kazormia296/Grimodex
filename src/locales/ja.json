@@ -405,7 +405,8 @@
       "foreshadow": "伏線",
       "grid": "グリッド",
       "matrix": "マトリクス",
-      "trash-bin": "ゴミ箱"
+      "trash-bin": "ゴミ箱",
+      "command-center-results": "検索結果"
     },
     "preset": {
       "title": "レイアウトプリセット",
@@ -1590,6 +1591,32 @@
     "setSceneStatus": "シーンのステータスを変更",
     "setSceneStatusDescription": "現在開いているシーンのステータスを切り替える",
     "noActiveScene": "アクティブなシーンがありません"
+  },
+  "commandCenter": {
+    "placeholderSearch": "検索… (> でコマンドモード)",
+    "placeholderCommand": "コマンド…",
+    "sectionLexical": "字句検索",
+    "sectionSemantic": "意味検索",
+    "sectionCommand": "コマンド",
+    "loading": "検索中…",
+    "noResults": "結果なし",
+    "emptyHint": "キーワードを入力 (> でコマンドモード)",
+    "untitled": "(無題)",
+    "filter": {
+      "sourceLabel": "ソース",
+      "typeLabel": "種別",
+      "all": "すべて",
+      "scene": "Scene",
+      "codex": "Codex",
+      "snippet": "Snippet",
+      "lexical": "Lexical",
+      "semantic": "Semantic"
+    },
+    "panel": {
+      "queryLabel": "クエリ",
+      "queryEmpty": "(なし)",
+      "typeInBar": "ヘッダーの検索バーにキーワードを入力"
+    }
   },
   "chatCommands": {
     "continue": {
