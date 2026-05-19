@@ -14,8 +14,10 @@ import {
   DEFAULT_STRIPE_SIZES,
   DEFAULT_STRIPE_VISIBILITY,
   DEFAULT_VIEW_MODE,
+  SLOT_TO_INDEX,
   SLOT_TO_REGION,
   TOOL_WINDOW_PANEL_IDS,
+  migrateToolWindowsRecord,
   type StripeRegion,
   type ToolWindowSlot,
   type ToolWindowState,
@@ -411,9 +413,14 @@ function syncSlotsToActualRegions(
       current?.slot ?? DEFAULT_SLOT_MAP[id as Exclude<PanelId, "editor">];
     if (SLOT_TO_REGION[currentSlot] === region) continue;
 
+    const newSlot = pickDefaultSlotForRegion(region);
     updates[id] = {
       ...current,
-      slot: pickDefaultSlotForRegion(region),
+      slot: newSlot,
+      region,
+      // 別 region に動いたので groupRef はリセット (新 region 内の group 特定は P-D で実装)
+      groupRef: undefined,
+      indexInRegion: SLOT_TO_INDEX[newSlot],
       viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
     };
     changed = true;
@@ -518,8 +525,13 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
 
   setToolWindowSlot(panelId, slot) {
     const current = get().toolWindows[panelId];
+    // slot 変更時は region と indexInRegion も追従させる (Y migration consistency)
     const next: ToolWindowState = {
       slot,
+      region: SLOT_TO_REGION[slot],
+      indexInRegion: SLOT_TO_INDEX[slot],
+      // groupRef は slot 変更でリセット (どの group に居たかは分からなくなる)
+      groupRef: undefined,
       viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
       ...(current?.undockSize ? { undockSize: current.undockSize } : {}),
     };
@@ -541,8 +553,12 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
     if (panelId === "editor") return;
     const slot =
       current?.slot ?? DEFAULT_SLOT_MAP[panelId as Exclude<PanelId, "editor">];
+    // 新フィールド (region / groupRef / indexInRegion) は触らず維持
     const next: ToolWindowState = {
       slot,
+      region: current?.region,
+      groupRef: current?.groupRef,
+      indexInRegion: current?.indexInRegion,
       viewMode: mode,
       ...(current?.undockSize ? { undockSize: current.undockSize } : {}),
     };
@@ -557,6 +573,9 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
       current?.slot ?? DEFAULT_SLOT_MAP[panelId as Exclude<PanelId, "editor">];
     const next: ToolWindowState = {
       slot,
+      region: current?.region,
+      groupRef: current?.groupRef,
+      indexInRegion: current?.indexInRegion,
       viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
       undockSize: size,
     };
@@ -656,7 +675,8 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
         | Partial<Record<PanelId, ToolWindowState>>
         | undefined;
       if (persisted) {
-        next.toolWindows = persisted;
+        // Y モデル migration: 旧 slot のみ持つ state を region + indexInRegion で補完
+        next.toolWindows = migrateToolWindowsRecord(persisted);
         // Bootstrap undockedPanels from persisted viewMode === "undocked" (Phase 3 用)
         const undocked = new Set<PanelId>();
         for (const [id, state] of Object.entries(persisted)) {

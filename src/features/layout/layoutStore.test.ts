@@ -893,7 +893,12 @@ describe("useLayoutStore", () => {
         settings: expect.objectContaining({
           layout: validLayout,
           toolWindows: expect.objectContaining({
-            snippets: { slot: "RT", viewMode: "docked-pinned" },
+            snippets: expect.objectContaining({
+              slot: "RT",
+              region: "right",
+              indexInRegion: 0,
+              viewMode: "docked-pinned",
+            }),
           }),
         }),
       });
