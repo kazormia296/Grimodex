@@ -46,6 +46,7 @@ export function ToolWindowIcon({
   const togglePanel = useLayoutStore((s) => s.togglePanel);
   const moveToSlot = useLayoutStore((s) => s.moveToSlot);
   const removePanelFromStripe = useLayoutStore((s) => s.removePanelFromStripe);
+  const layoutLocked = useLayoutStore((s) => s.layoutLocked);
 
   const label = t(`layout.panel.${panelId}`);
   const shortcut = KEYBOARD_SHORTCUT_MAP[panelId];
@@ -95,7 +96,10 @@ export function ToolWindowIcon({
 
       <ContextMenuContent>
         <ContextMenuSub>
-          <ContextMenuSubTrigger data-testid={`ctx-move-to-${panelId}`}>
+          <ContextMenuSubTrigger
+            data-testid={`ctx-move-to-${panelId}`}
+            disabled={layoutLocked}
+          >
             {t("layout.stripe.moveTo")}
           </ContextMenuSubTrigger>
           <ContextMenuSubContent>

@@ -16,9 +16,13 @@ interface StripeGroupProps {
 
 function StripeGroup({ targetSlot, panels, orientation }: StripeGroupProps) {
   const moveToSlot = useLayoutStore((s) => s.moveToSlot);
+  const layoutLocked = useLayoutStore((s) => s.layoutLocked);
 
   const handleDragOver = (e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes(TOOL_WINDOW_REASSIGN_TYPE)) {
+    if (
+      !layoutLocked &&
+      e.dataTransfer.types.includes(TOOL_WINDOW_REASSIGN_TYPE)
+    ) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
     }
@@ -26,6 +30,7 @@ function StripeGroup({ targetSlot, panels, orientation }: StripeGroupProps) {
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    if (layoutLocked) return;
     const panelId = e.dataTransfer.getData(TOOL_WINDOW_REASSIGN_TYPE);
     if (panelId) moveToSlot(panelId as never, targetSlot);
   };

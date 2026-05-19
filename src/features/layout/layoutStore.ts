@@ -625,6 +625,7 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
   moveToSlot(panelId, slot) {
     const api = get().dockviewApi;
     if (!api || panelId === "editor") return;
+    if (get().layoutLocked) return;
 
     // slot 設定を先に更新 (resolveInsertPositionForSlot がこれを参照する)
     get().setToolWindowSlot(panelId, slot);
