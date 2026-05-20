@@ -64,14 +64,15 @@ IntelliJ 式の **非対称レイアウト** (中央のエディタ領域は固�
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ Header                                                        │
-├──┬───────────┬────────────────────────────┬───────────┬──────┤
-│L │ L Content │                            │ R Content │ R    │
-│  │ ┌───────┐ │                            │ ┌───────┐ │      │
-│S │ │ slot0 │ │                            │ │ slot0 │ │ S    │
-│T │ ├───────┤ │       Editor Area          │ └───────┘ │ T    │
-│R │ │ slot1 │ │   (<SceneEditor/> を置く)   │           │ R    │
-│I │ └───────┘ │                            │           │ I    │
-│P │           │                            │           │ P    │
+├──┬────────────────────────────────────────────────────┬──────┤
+│  │───────────────── Center Stripe ────────────────────│      │
+│L ├───────────┬────────────────────────────┬───────────┤ R    │
+│  │ L Content │                            │ R Content │      │
+│S │ ┌───────┐ │                            │ ┌───────┐ │ S    │
+│T │ │ slot0 │ │       Editor Area          │ │ slot0 │ │ T    │
+│R │ ├───────┤ │   (<SceneEditor/> を置く)   │ └───────┘ │ R    │
+│I │ │ slot1 │ │                            │           │ I    │
+│P │ └───────┘ │                            │           │ P    │
 │E ├───────────┴────────────────────────────┴───────────┤ E    │
 │  │ B Content                                          │      │
 │  │ ┌──────────┬──────────┐                            │      │
@@ -85,16 +86,20 @@ CSS グリッド (`LayoutShell`):
 
 ```css
 grid-template-columns: ${leftCell}px 1fr ${rightCell}px;
-grid-template-rows: 1fr ${bottomCell}px;
+grid-template-rows: ${STRIPE_SIZE}px 1fr ${bottomCell}px;
 grid-template-areas:
+  "left cstripe right"
   "left content right"
   "left bottom  right";
 ```
 
-- 左/右 region のセルは 2 行を span (常に全高)。
+- 左/右 region のセルは 3 行を span (常に全高)。
+- 中央領域の最上段 = **Center Stripe**（固定 `STRIPE_SIZE`、**常時表示**。bottom 帯と
+  上下対称の水平帯で、左右 region content の上にも被さる。詳細は §4「Center Workspace」）。
 - 各 region グリッドセル = `RegionDock` = stripe (固定 32px) + content (`region.size`px、
   全 slot 折りたたみ時は content 0、stripe は 32px のまま)。
-- `content` グリッドセル = エディタ領域 (`EditorArea`)。常に存在し、残り領域を埋める。
+- `content` グリッドセル = エディタ領域 (`EditorArea`)。`editorOpen` で開閉し、閉じて
+  center tool も無いときは幅 0 になり、side region が `1fr` filler で埋める（§6.5）。
 - 現行 `ToolWindowShell` の `hidden` prop（screenshot モードで stripe を外す）は
   `LayoutShell` に同等の API を残す。
 
@@ -155,11 +160,28 @@ interface SlotState {
 
 **v3 追加（Center Workspace）:**
 
-- **Editor open/close:** `center.editorOpen`。閉じると center 列幅 0（tool segment も無い場合）、
-  余白は left/right region に再配分。開いている間は常に center band 内の `editor` segment。
-- **Center tool slot:** Review 等で Editor 左右/右側に tool を横並び。配置時は band 上部に
-  **Center Stripe**（32px 横）を表示。
-- **center 列表示条件:** `editorOpen || hasCenterTools`。
+- **Center Stripe（常設）:** 中央領域の最上段に bottom 帯と上下対称の **水平帯**
+  （高さ `STRIPE_SIZE`）を**常時表示**する。左右 region content の上にも被さる全幅帯で、
+  side stripe は従来どおり全高・四隅は stripe。editor の開閉や center tool の有無に
+  関わらず消えない（「押すと消えるツールバー」を避け、同一コントロールで開閉する）。
+- **Editor アイコン:** Center Stripe 内に editor の開閉トグルを置く。`editor` は
+  `ToolWindowPanelId` ではなく移動・除去不可の固定 segment のため、`ToolWindowIcon`
+  （draggable / "Move to" コンテキストメニュー付き）ではなく **専用の非ドラッグアイコン**
+  とし、クリックで `setEditorOpen` をトグルする。閉じてもアイコンは Center Stripe に残り、
+  同一コントロールで再オープンできる。
+- **Editor open/close:** `center.editorOpen`。閉じると `editor` segment の content が
+  0 幅に畳まれる。`editor` も center tool も無く center band の content 幅が 0 に
+  なったときは、開いている side region の 1 つを `1fr` filler に切り替えてグリッド全幅を
+  埋める（§6.5）。Center Stripe 自体は常に残る。
+- **center content 幅の条件:** content 列（editor / center tool）が幅を持つ条件は
+  `editorOpen || hasCenterTools`。Center Stripe の表示はこの条件に**依らない**（常設）。
+- **Center tool slot:** Review 等で Editor の左右に tool を横並びにできる。tool アイコンは
+  Center Stripe に並び、DnD による center への tool 追加先も常設の Center Stripe が担う
+  （全幅帯のため tool アイコンと content 列は厳密には整列しない — center tool は低頻度の
+  ため許容する）。
+- **見た目:** Center Stripe は side/bottom stripe と同じ **レイアウト chrome**
+  （`bg-background/40` ＋ border、`ToolWindowIcon` のアイコン語彙）で描画し、エディタ
+  自身の chrome（breadcrumb / `TabBar` / ツールバー）とは視覚的に区別する。
 - **マイグレーション:** v2 `LayoutState`（`regions` のみ）→ v3 は `center` デフォルト付与。
 
 エディタは `center.segments` の `kind: "editor"` segment として表現する。内容 (`SceneEditor`)
@@ -224,25 +246,38 @@ Phase 1 で実装。Dockview 専用の `layoutValidation.ts` に替わる軽量�
 ## 5. コンポーネント構成
 
 ```
-<LayoutShell hidden?>           CSS グリッド。region と editor を配置
-├─ <RegionDock region="left">   stripe(縦 32px) + content
-│   ├─ <RegionStripe>           slot ごとに segment。境界に divider
-│   └─ <RegionContent>          展開中 slot のみ sizeRatio 比で分割
-│       └─ <SlotView> × N       slot.activePanel のコンポーネントを描画
-├─ <EditorArea>                 <SceneEditor/> + フォーカス用 ref/context
-├─ <RegionDock region="right">
-├─ <RegionDock region="bottom"> stripe(横) + content (横分割)
-└─ <Splitter> × N               region⇔editor / slot⇔slot
+<LayoutShell hidden?>             CSS グリッド（§3）。各要素を grid-area へ配置
+├─ <LayoutDnDHighlightOverlay>    DnD 中のドロップ先ハイライト（portal）
+├─ <LayoutPanelDragGhost>         pointer ドラッグ中のゴースト（portal）
+├─ <SideRegionStripeColumn>       side stripe 列（left / right、全高・四隅 stripe）
+│   └─ <RegionStripe>             slot ごとに <StripeGroup> → <ToolWindowIcon> × N
+├─ <RegionContent>                side region content。展開中 slot のみ sizeRatio 比で分割
+│   ├─ <SlotView> × N             slot.activePanel を描画（閉じた slot はアンマウント）
+│   └─ <Splitter> × N             open slot 間
+├─ <CenterStripe>                 cstripe 行。常設の横帯（§4）
+│   ├─ <EditorToggleIcon>         editor 開閉専用アイコン（非ドラッグ）
+│   └─ <RegionStripe>             center tool segment のアイコン（region="center"）
+├─ <CenterContent>                content 行。editor / center tool segment を横並び
+│   ├─ <EditorArea>               kind:"editor" segment → <SceneEditor/>
+│   ├─ <SlotView> × N             kind:"tool" segment を描画
+│   └─ <Splitter> × N             center segment 間
+├─ <RegionDock region="bottom">   bottom content（横分割）+ 横 stripe
+│   ├─ <RegionContent>            bottom region content
+│   └─ <RegionStripe>             bottom stripe（横）
+└─ <RegionResizeSplitter>         region ⇔ center 境界（left / right / bottom）
 ```
 
-- `RegionStripe` / `ToolWindowIcon` は現行を流用・改修（props: `visible`/`active` → 2 状態）。
-- `SlotView` は `PANEL_COMPONENT_MAP[slot.activePanel]` を描画。
-- 非アクティブパネル: Phase 2 で計測のうえ **アンマウント or `hidden` 保持**を決定（§13）。
-- `EditorArea`: `<SceneEditor/>` を 1 つ。`requestEditorFocus()` を
-  `layoutStore` または React context で公開し、`TreeNodeItem` 等の
-  `dockviewApi.getPanel("editor")` 依存を置換する。
-- glass テーマ: 現行 `glass-dock`（Dockview 全体）を region パネル用クラスに再割当（Phase 2
-  チェックリスト）。
+- `RegionStripe` は side / bottom / center 共通。slot（center は tool segment）ごとに
+  `StripeGroup` を作り `ToolWindowIcon` を並べる。アイコンは 3 状態（active /
+  open-inactive / collapsed）。
+- `CenterStripe` は常設の横帯（§4）。`EditorToggleIcon`（editor 専用・非ドラッグ・
+  `setEditorOpen` をトグル）と center tool アイコンを並べ、side / bottom stripe と同じ
+  レイアウト chrome（`bg-background/40` ＋ border）で描く。
+- `SlotView` は `PANEL_COMPONENT_MAP[panelId]` を描画。slot が閉じると DOM から
+  アンマウントされる。
+- `EditorArea` は `<SceneEditor/>` を 1 つ持ち、`registerEditorFocusHandler` 経由で
+  `requestEditorFocus()`（`layoutStore`）を公開する。
+- glass テーマ: `SlotView` / `EditorArea` は `glass-region-panel` クラスで描画する。
 
 ## 6. 振る舞い
 
@@ -303,6 +338,20 @@ stripe だけが残る。`region.size` は保持され、次に slot を開い�
 - stripe DnD 無効
 - `movePanel*` 無効
 - トグル（開閉）は**許可**（現行 `ToolWindowIcon` と同様）
+
+### 6.5 エディタの開閉と center filler
+
+- **トグル:** Center Stripe の Editor アイコン（または `PanelToggleDropdown` /
+  ショートカット）→ `setEditorOpen(boolean)`。`editor` segment の content を開閉する。
+  Center Stripe は常設のためトグルしても消えない。
+- **center filler:** editor を閉じ center tool も無いと center band の content 幅が 0 に
+  なる。このとき grid に伸縮列が 1 つも無くなり、固定 px 列だけではウィンドウ幅に追従
+  できず右側に余白が出る。これを防ぐため、開いている side region の 1 つ（左右とも開いて
+  いれば右、片方なら開いている側）を `1fr` filler に切り替え、その region の content 列を
+  `1fr`・専用 Splitter を非表示にする。残りの side region は固定 px のまま Splitter で
+  リサイズ可能。
+- editor を再び開く（または center tool が入る）と content 列が幅を持ち、filler は解除
+  される。`layoutLocked` 中もトグル（開閉）は許可（§6.4）。
 
 ## 7. DnD 設計
 
@@ -511,4 +560,5 @@ no-op または UI 無効化とする。Dockview パッケージは Phase 6 で 
 
 **解消済み（本書で決定）:** 初回 `activePanel` vs プリセット、custom preset 破棄、
 `layoutLocked` 維持、`sizeRatio` アルゴリズム、エディタフォーカス API、stripe 常時全表示、
-マイグレーション方式（完全リセット）。
+マイグレーション方式（完全リセット）、Center Stripe 常設化（editor 開閉トグルの常設動線）、
+center filler（editor 非表示時のグリッド充填）。
