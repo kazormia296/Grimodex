@@ -1,5 +1,4 @@
 import type { FunctionComponent } from "react";
-import type { IDockviewPanelProps } from "dockview-react";
 
 import { Sidebar } from "@/features/tree/Sidebar";
 import { CodexQuickPanel } from "@/features/tree/CodexQuickPanel";
@@ -18,12 +17,9 @@ import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
 import { CommandCenterResultsPanel } from "@/features/commandCenter/CommandCenterResultsPanel";
 import { SceneEditor } from "@/features/tree/SceneEditor";
 
-import type { PanelId } from "./layoutStore";
+import type { PanelId } from "./panelIds";
 
-/**
- * SSoT for panel content components.
- * Dockview と Undock overlay (Phase 3) の両方が参照する。
- */
+/** SSoT for panel content components. */
 export const PANEL_COMPONENT_MAP: Record<PanelId, FunctionComponent> = {
   scenes: Sidebar,
   codex: CodexManagementPanel,
@@ -42,23 +38,3 @@ export const PANEL_COMPONENT_MAP: Record<PanelId, FunctionComponent> = {
   "trash-bin": TrashBinPanel,
   "command-center-results": CommandCenterResultsPanel,
 };
-
-function makeDockviewWrapper(
-  Component: FunctionComponent,
-): FunctionComponent<IDockviewPanelProps> {
-  function PanelWrapper(_props: IDockviewPanelProps) {
-    return <Component />;
-  }
-  PanelWrapper.displayName = `DockviewPanel(${Component.displayName ?? Component.name})`;
-  return PanelWrapper;
-}
-
-export const DOCKVIEW_PANEL_COMPONENTS: Record<
-  PanelId,
-  FunctionComponent<IDockviewPanelProps>
-> = Object.fromEntries(
-  Object.entries(PANEL_COMPONENT_MAP).map(([id, Component]) => [
-    id,
-    makeDockviewWrapper(Component),
-  ]),
-) as Record<PanelId, FunctionComponent<IDockviewPanelProps>>;

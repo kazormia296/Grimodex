@@ -42,8 +42,8 @@ vi.mock("@/features/tree/treeStore", () => ({
 
 vi.mock("@/features/layout/layoutStore", () => ({
   useLayoutStore: Object.assign(
-    vi.fn((sel: (s: unknown) => unknown) => sel({ dockviewApi: null })),
-    { getState: () => ({ dockviewApi: null }) },
+    vi.fn((sel: (s: unknown) => unknown) => sel({ showPanel: vi.fn() })),
+    { getState: () => ({ showPanel: vi.fn() }) },
   ),
 }));
 

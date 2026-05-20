@@ -20,10 +20,11 @@ export interface GlobalSettings {
   uiLanguage: string;
   uiScale: number;
   showLauncherOnStartup: boolean;
-  /** Dockview layout serialization (project-independent UI state) */
+  /** Region/slot layout v2 (PersistedLayout) */
   layout?: unknown;
-  /** User-saved layout presets */
-  layoutPresets?: Array<{ id: string; name: string; layout: unknown }>;
+  layoutVersion?: number;
+  /** User-saved layout presets (LayoutState snapshots) */
+  layoutPresets?: Array<{ id: string; name: string; state: unknown }>;
   /** ID of the last-applied layout preset */
   activeLayoutPresetId?: string | null;
   /** Per-panel tool window state (slot / view mode / undock size) */

@@ -2,9 +2,8 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
-import { useLayoutStore, type PanelId } from "./layoutStore";
+import type { PanelId } from "./panelIds";
 import { PANEL_REGION_MAP, type PanelRegion } from "./panelRegions";
-import type { DockviewApi } from "dockview-react";
 import { isReducedMotion } from "@/lib/gsap";
 
 interface Rect {
@@ -14,43 +13,17 @@ interface Rect {
   height: number;
 }
 
-function estimateCodexQuickRect(api: DockviewApi): Rect | null {
-  const container = document.querySelector(".dockview-theme-dark");
-  if (!container) return null;
-  const cr = container.getBoundingClientRect();
-
-  const cqPanel = api.getPanel("codex-quick");
-  const scenesPanel = api.getPanel("scenes");
-  if (cqPanel?.group?.element && cqPanel.group !== scenesPanel?.group) {
-    const r = cqPanel.group.element.getBoundingClientRect();
-    return { left: r.left, top: r.top, width: r.width, height: r.height };
+function queryPanelElement(panelId: PanelId): Element | null {
+  if (panelId === "editor") {
+    return document.querySelector("[data-editor-area]");
   }
-
-  if (scenesPanel?.group?.element) {
-    const sr = scenesPanel.group.element.getBoundingClientRect();
-    const bottom = cr.bottom;
-    if (bottom > sr.bottom + 20) {
-      return {
-        left: sr.left,
-        top: sr.bottom,
-        width: sr.width,
-        height: bottom - sr.bottom,
-      };
-    }
-  }
-
-  return {
-    left: cr.left,
-    top: cr.top + cr.height * 0.5,
-    width: cr.width * 0.18,
-    height: cr.height * 0.5,
-  };
+  return document.querySelector(`[data-slot-panel="${panelId}"]`);
 }
 
 function estimateRegionRect(region: PanelRegion): Rect | null {
-  const container = document.querySelector(".dockview-theme-dark");
-  if (!container) return null;
-  const r = container.getBoundingClientRect();
+  const shell = document.querySelector("[data-layout-shell]");
+  if (!shell) return null;
+  const r = shell.getBoundingClientRect();
 
   switch (region) {
     case "left":
@@ -78,14 +51,9 @@ function estimateRegionRect(region: PanelRegion): Rect | null {
 }
 
 export function getPanelRect(panelId: PanelId): Rect | null {
-  const api = useLayoutStore.getState().dockviewApi;
-  if (!api) return null;
-
-  if (panelId === "codex-quick") return estimateCodexQuickRect(api);
-
-  const panel = api.getPanel(panelId);
-  if (panel?.group?.element) {
-    const r = panel.group.element.getBoundingClientRect();
+  const el = queryPanelElement(panelId);
+  if (el) {
+    const r = el.getBoundingClientRect();
     return { left: r.left, top: r.top, width: r.width, height: r.height };
   }
 
@@ -101,7 +69,6 @@ interface PanelHighlightOverlayProps {
   panelId: PanelId | null;
 }
 
-// Border color for the highlight ring
 const RING_COLOR = "oklch(0.55 0.22 264)";
 const GLOW_COLOR = "oklch(0.55 0.22 264 / 0.5)";
 
@@ -120,19 +87,16 @@ export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
 
     function measure() {
       if (!panelId) return;
-      const api = useLayoutStore.getState().dockviewApi;
-      const panel = api?.getPanel(panelId);
-      const exact = !!panel?.group?.element;
-      setIsExact(exact);
+      const el = queryPanelElement(panelId);
+      setIsExact(!!el);
       setRect(getPanelRect(panelId));
     }
 
     measure();
 
-    const api = useLayoutStore.getState().dockviewApi;
-    const panel = api?.getPanel(panelId);
     const target =
-      panel?.group?.element ?? document.querySelector(".dockview-theme-dark");
+      queryPanelElement(panelId) ??
+      document.querySelector("[data-layout-shell]");
     if (!target) return;
 
     const observer = new ResizeObserver(() => {
@@ -145,7 +109,6 @@ export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
     };
   }, [panelId]);
 
-  // Pulsing opacity animation — restarts whenever rect changes (new step)
   useGSAP(
     () => {
       if (!highlightRef.current || isReducedMotion()) return;

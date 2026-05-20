@@ -5,7 +5,7 @@ import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import { useLintStore } from "@/features/lint/lintStore";
-import type { PanelId } from "@/features/layout/layoutStore";
+import type { PanelId } from "@/features/layout/panelIds";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { useTreeStore } from "@/features/tree/treeStore";

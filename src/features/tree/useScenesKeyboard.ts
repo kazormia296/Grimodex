@@ -17,22 +17,10 @@ interface KeyboardArgs {
   initiateDelete: (ids: string[]) => void;
   treeRef: RefObject<HTMLDivElement | null>;
   filterRef: RefObject<HTMLInputElement | null>;
-  editorPanelTitle: string;
 }
 
-function focusEditorPanel(title: string) {
-  const { dockviewApi } = useLayoutStore.getState();
-  if (!dockviewApi) return;
-  const panel = dockviewApi.getPanel("editor");
-  if (panel) {
-    panel.api.setActive();
-  } else {
-    dockviewApi.addPanel({
-      id: "editor",
-      component: "editor",
-      title,
-    });
-  }
+function focusEditorPanel() {
+  useLayoutStore.getState().requestEditorFocus();
 }
 
 /** Keyboard navigation for the Scenes tree (arrows, Enter/Space, F2, Del,
@@ -49,7 +37,6 @@ export function useScenesKeyboard({
   initiateDelete,
   treeRef,
   filterRef,
-  editorPanelTitle,
 }: KeyboardArgs) {
   return useCallback(
     (e: React.KeyboardEvent) => {
@@ -62,7 +49,7 @@ export function useScenesKeyboard({
         if (next) {
           if (next.nodeType === "scene" || next.nodeType === "note") {
             useTabStore.getState().openPreview(next.id);
-            focusEditorPanel(editorPanelTitle);
+            focusEditorPanel();
           }
           useTreeStore.getState().selectNode(next.id, false);
         }
@@ -72,7 +59,7 @@ export function useScenesKeyboard({
         if (prev) {
           if (prev.nodeType === "scene" || prev.nodeType === "note") {
             useTabStore.getState().openPreview(prev.id);
-            focusEditorPanel(editorPanelTitle);
+            focusEditorPanel();
           }
           useTreeStore.getState().selectNode(prev.id, false);
         }
@@ -81,7 +68,7 @@ export function useScenesKeyboard({
         const cur = nodeMap[activeSceneId];
         if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
           useTabStore.getState().openPreview(cur.id);
-          focusEditorPanel(editorPanelTitle);
+          focusEditorPanel();
         }
       } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
@@ -89,7 +76,7 @@ export function useScenesKeyboard({
         if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
           useTabStore.getState().openInSecondaryGroup(cur.id);
           setActiveScene(cur.id);
-          focusEditorPanel(editorPanelTitle);
+          focusEditorPanel();
         }
       } else if (e.key === "Enter") {
         e.preventDefault();
@@ -97,7 +84,7 @@ export function useScenesKeyboard({
         if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
           useTabStore.getState().openPinned(cur.id);
           setActiveScene(cur.id);
-          focusEditorPanel(editorPanelTitle);
+          focusEditorPanel();
         } else if (cur) {
           toggleExpand(cur.id);
         }
@@ -152,7 +139,6 @@ export function useScenesKeyboard({
       setPendingRenameId,
       treeRef,
       filterRef,
-      editorPanelTitle,
     ],
   );
 }

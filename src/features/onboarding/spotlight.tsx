@@ -102,7 +102,7 @@ export function useFocusRects(
 
     measure();
 
-    const container = document.querySelector(".dockview-theme-dark");
+    const container = document.querySelector("[data-layout-shell]");
     const observer = new ResizeObserver(measure);
     if (container) observer.observe(container);
     window.addEventListener("resize", measure);

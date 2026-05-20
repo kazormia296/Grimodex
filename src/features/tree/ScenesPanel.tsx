@@ -225,7 +225,6 @@ export function ScenesPanel() {
     initiateDelete,
     treeRef,
     filterRef,
-    editorPanelTitle: t("layout.panel.editor"),
   });
 
   const {

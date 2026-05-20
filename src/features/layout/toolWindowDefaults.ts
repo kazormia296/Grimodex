@@ -1,4 +1,4 @@
-import type { PanelId } from "./layoutStore";
+import type { PanelId } from "./panelIds";
 
 /**
  * IntelliJ 式の 6 スロット (LT/LB = 左 stripe top/bottom, RT/RB = 右, BL/BR = 下)。

@@ -12,7 +12,7 @@ const DEMO_PANELS: PanelId[] = [
 
 export function LayoutDemoCard() {
   const { t } = useTranslation();
-  const { togglePanel, isPanelVisible } = useLayoutStore();
+  const { togglePanel, isPanelActive } = useLayoutStore();
 
   return (
     <div className="mt-3 rounded-lg border border-border bg-muted/30 p-2.5">
@@ -27,7 +27,7 @@ export function LayoutDemoCard() {
           >
             <input
               type="checkbox"
-              checked={isPanelVisible(id)}
+              checked={isPanelActive(id)}
               onChange={() => togglePanel(id)}
               className="accent-primary"
             />

@@ -1,11 +1,5 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useState } from "react";
 import { Toaster, toast } from "sonner";
-import {
-  DockviewReact,
-  type DockviewReadyEvent,
-  type DockviewDidDropEvent,
-} from "dockview-react";
-import "dockview-react/dist/styles/dockview.css";
 
 import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
 import { LauncherScreen } from "@/features/workspace/LauncherScreen";
@@ -20,25 +14,11 @@ import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
 import { NovelcrafterImportDialog } from "@/features/import/NovelcrafterImportDialog";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
-import { DockviewWatermark } from "@/features/layout/DockviewWatermark";
 import {
   useLayoutStore,
-  clearSavedLayout,
-  refreshPanelTitles,
-  getPanelTitle,
-  PANEL_DRAG_TYPE,
   type PanelId,
 } from "@/features/layout/layoutStore";
-import { DOCKVIEW_PANEL_COMPONENTS } from "@/features/layout/panelComponents";
-import { ToolWindowShell } from "@/features/layout/ToolWindowShell";
-import { TOOL_WINDOW_REASSIGN_TYPE } from "@/features/layout/ToolWindowIcon";
-import {
-  validateSerializedLayout,
-  validateRuntimeLayout,
-} from "@/features/layout/layoutValidation";
-import { useDebugLogStore } from "@/lib/debugLog";
-import { DebugLogViewer } from "@/lib/DebugLogViewer";
-import { getBuiltinPreset, clearLayout } from "@/features/layout/layoutPresets";
+import { LayoutShell } from "@/features/layout/LayoutShell";
 import {
   CommandCenterBar,
   useCommandCenterStore,
@@ -46,7 +26,8 @@ import {
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
 import { CommandPalette } from "@/features/commandPalette/CommandPalette";
-import { useState } from "react";
+import { useDebugLogStore } from "@/lib/debugLog";
+import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
 import {
@@ -69,9 +50,7 @@ import { invoke } from "@/lib/tauri";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { SampleTour } from "@/features/onboarding/SampleTour";
 import {
-  getScreenshotCaptureId,
   getScreenshotPanelId,
-  getScreenshotPresetId,
   isScreenshotCapture,
   bootstrapScreenshotWorkspace,
   applyScreenshotUiState,
@@ -79,33 +58,6 @@ import {
   clearScreenshotStageReady,
 } from "@/screenshot-scenes/screenshotBootstrap";
 import { cn } from "@/lib/utils";
-
-/* ── Default layout builder (delegates to builtin preset) ── */
-
-function activateScreenshotPanel(api: DockviewReadyEvent["api"]) {
-  const panelId = getScreenshotPanelId();
-  if (panelId) api.getPanel(panelId)?.api.setActive();
-}
-
-function buildScreenshotSinglePanel(api: DockviewReadyEvent["api"]) {
-  const panelId = getScreenshotPanelId();
-  if (!panelId) return false;
-  api.addPanel({
-    id: panelId,
-    component: panelId,
-    title: getPanelTitle(panelId),
-    ...(panelId === "editor" ? { minimumWidth: 320 } : {}),
-  });
-  api.getPanel(panelId)?.api.setActive();
-  return true;
-}
-
-function buildDefaultLayout(api: DockviewReadyEvent["api"]) {
-  if (buildScreenshotSinglePanel(api)) return;
-  const preset = getBuiltinPreset(getScreenshotPresetId());
-  preset?.build(api);
-  activateScreenshotPanel(api);
-}
 
 /* ── App root ── */
 
@@ -167,13 +119,10 @@ function App() {
   // semantic_reindex_all の進行状況 event を購読 (App 起動中ずっと 1 度だけ)。
   useReindexProgressListener();
 
-  // Sync uiLanguage setting → i18next + refresh dockview panel titles
+  // Sync uiLanguage setting → i18next
   useEffect(() => {
     if (i18next.language !== uiLanguage) {
-      i18next.changeLanguage(uiLanguage).then(() => {
-        const api = useLayoutStore.getState().dockviewApi;
-        if (api) refreshPanelTitles(api);
-      });
+      void i18next.changeLanguage(uiLanguage);
     }
   }, [uiLanguage]);
 
@@ -356,13 +305,11 @@ function EditorScreen() {
   useEffect(() => {
     useGlobalHistoryStore.getState().clear();
   }, []);
-  const {
-    togglePanel,
-    loadLayout,
-    loadPresets,
-    loadToolWindowSettings,
-    setDockviewApi,
-  } = useLayoutStore();
+  const { togglePanel, initializeLayout } = useLayoutStore();
+
+  useEffect(() => {
+    void initializeLayout();
+  }, [initializeLayout]);
 
   // Open settings dialog when triggered by error handler or other sources
   useEffect(() => {
@@ -383,187 +330,6 @@ function EditorScreen() {
     window.addEventListener("open-export-dialog", onOpenExport);
     return () => window.removeEventListener("open-export-dialog", onOpenExport);
   }, []);
-
-  // Dockview ready handler — build default layout synchronously, then
-  // try to restore persisted layout in the background (avoids blank screen
-  // if the DB query is slow or hangs in Tauri).
-  const handleReady = useCallback(
-    (event: DockviewReadyEvent) => {
-      const api = event.api;
-      setDockviewApi(api);
-
-      // Always show something immediately
-      buildDefaultLayout(api);
-
-      if (getScreenshotCaptureId()) {
-        loadPresets();
-        return;
-      }
-
-      // Then try to restore saved layout asynchronously
-      loadLayout()
-        .then(async (saved) => {
-          if (!saved) return;
-
-          // 1. Pre-validate before fromJSON — rejects definitively broken structure
-          const preCheck = validateSerializedLayout(saved);
-          if (!preCheck.valid) {
-            toast.warning(
-              i18next.t("app.invalidLayout", { reason: preCheck.reason }),
-            );
-            await clearSavedLayout();
-            return;
-          }
-
-          // 2. Apply — exceptions here are format-compatibility issues (e.g. old
-          //    dockview serialization). Silently rebuild default and let scheduleSave
-          //    overwrite the incompatible layout on the next change event.
-          try {
-            api.fromJSON(saved);
-            refreshPanelTitles(api);
-          } catch {
-            clearLayout(api);
-            buildDefaultLayout(api);
-            await clearSavedLayout();
-            return;
-          }
-
-          // 3. Post-validate — catches layouts that loaded but are degenerate
-          //    (e.g. single panel taking 100% after resize/drag accident)
-          const postCheck = validateRuntimeLayout(api);
-          if (!postCheck.valid) {
-            toast.warning(
-              i18next.t("app.degenLayout", { reason: postCheck.reason }),
-            );
-            clearLayout(api);
-            buildDefaultLayout(api);
-            await clearSavedLayout();
-          }
-        })
-        .catch(() => {
-          // DB unavailable — keep the default layout
-        });
-
-      // Load preset metadata (custom presets list + active ID)
-      loadPresets();
-
-      // Load tool window stripe state (slot / view mode / undock size).
-      // saved layout の復元と平行で OK — toolWindows は layout 復元結果に依存しない。
-      loadToolWindowSettings();
-
-      // Accept external drags: panel dropdown + stripe icon reassignment (Y モデル P-E)
-      api.onUnhandledDragOverEvent((e) => {
-        const types = e.nativeEvent.dataTransfer?.types;
-        if (!types) return;
-        if (types.includes(PANEL_DRAG_TYPE)) {
-          e.accept();
-          return;
-        }
-        if (types.includes(TOOL_WINDOW_REASSIGN_TYPE)) {
-          // 移動禁止中は overlay を出さない
-          if (useLayoutStore.getState().layoutLocked) return;
-          e.accept();
-        }
-      });
-    },
-    [setDockviewApi, loadLayout, loadPresets, loadToolWindowSettings],
-  );
-
-  const handleStripeIconDrop = useCallback(
-    (event: DockviewDidDropEvent, panelId: PanelId) => {
-      if (panelId === "editor") return;
-      if (useLayoutStore.getState().layoutLocked) return;
-
-      // Target group が無い (outer edge / canvas) → reject
-      if (!event.group) return;
-
-      const api = event.api;
-      const editorGroup = api.getPanel("editor")?.group;
-      const isEditorTarget = !!editorGroup && event.group === editorGroup;
-
-      // editor group が drop 先のとき、center (editor の tab 化) は不可。
-      // 上下左右の edge なら隣に新規 region を作る配置として許可する。
-      if (isEditorTarget && event.position === "center") return;
-
-      const existingPanel = api.getPanel(panelId);
-
-      // 自分の group の同位置に落としても無意味 → no-op
-      if (existingPanel?.group === event.group) {
-        if (event.position === "center") return;
-        // 唯一の panel を自 group に split しようとすると removePanel で
-        // group ごと消えてしまう → no-op
-        if (event.group.panels.length <= 1) return;
-      }
-
-      // Position → Direction (cross-region は許可 — region をまたぐ配置も受け入れる)
-      const direction =
-        event.position === "center"
-          ? ("within" as const)
-          : event.position === "top"
-            ? ("above" as const)
-            : event.position === "bottom"
-              ? ("below" as const)
-              : event.position; // "left" | "right"
-
-      // 移動 (remove → addPanel)
-      if (existingPanel) api.removePanel(existingPanel);
-      api.addPanel({
-        id: panelId,
-        component: panelId,
-        title: getPanelTitle(panelId),
-        position: { referenceGroup: event.group, direction },
-      });
-    },
-    [],
-  );
-
-  const handlePanelDrop = useCallback(
-    (event: DockviewDidDropEvent) => {
-      // Branch 1: stripe icon reassignment (Y モデル P-E)
-      const fromStripe = event.nativeEvent.dataTransfer?.getData(
-        TOOL_WINDOW_REASSIGN_TYPE,
-      ) as PanelId | undefined;
-      if (fromStripe) {
-        handleStripeIconDrop(event, fromStripe);
-        return;
-      }
-
-      // Branch 2: panel dropdown drag
-      const panelId = event.nativeEvent.dataTransfer?.getData(
-        PANEL_DRAG_TYPE,
-      ) as PanelId | undefined;
-      if (!panelId) return;
-      if (event.api.getPanel(panelId)) return; // already in layout
-
-      // canvas drop (明示的な drop target group なし) → preferred slot 経由で配置
-      // これで stripe / dropdown / DnD すべてが openPanelAtSlot を通る統一動線になる
-      if (!event.group) {
-        useLayoutStore.getState().openPanelAtSlot(panelId);
-        return;
-      }
-
-      // エディタ領域はエディタ専用 — ツールウィンドウを editor group の tab には
-      // しない。本来の stripe region へ openPanelAtSlot で配置する。
-      const isEditorGroup = event.group.panels.some((p) => p.id === "editor");
-      if (isEditorGroup) {
-        useLayoutStore.getState().openPanelAtSlot(panelId);
-        return;
-      }
-
-      // ツールウィンドウ group へドロップ → その tab に within で追加 (drop 先優先)
-      event.api.addPanel({
-        id: panelId,
-        component: panelId,
-        title: getPanelTitle(panelId),
-        position: {
-          referencePanel: event.group.activePanel?.id ?? "",
-          direction: "within" as const,
-        },
-        ...(panelId === "editor" ? { minimumWidth: 320 } : {}),
-      });
-    },
-    [handleStripeIconDrop],
-  );
 
   // Keyboard shortcuts (Ctrl+Alt+*)
   const handleKeyDown = useCallback(
@@ -626,13 +392,9 @@ function EditorScreen() {
         setShowSettings(true);
       } else {
         togglePanel(target);
-        // Ensure the panel receives focus after being shown
         if (target === "codex-quick") {
           requestAnimationFrame(() => {
-            useLayoutStore
-              .getState()
-              .dockviewApi?.getPanel("codex-quick")
-              ?.api.setActive();
+            useLayoutStore.getState().showPanel("codex-quick");
           });
         }
       }
@@ -816,16 +578,10 @@ function EditorScreen() {
       {showSampleTour && <SampleTour />}
       <ReindexProgressToast />
       <div className="flex flex-1 overflow-hidden">
-        {/* IntelliJ 式 3 方向 stripe + Dockview */}
-        <ToolWindowShell hidden={!!getScreenshotPanelId()}>
-          <DockviewReact
-            className="dockview-theme-dark glass-dock h-full w-full"
-            onReady={handleReady}
-            onDidDrop={handlePanelDrop}
-            components={DOCKVIEW_PANEL_COMPONENTS}
-            watermarkComponent={DockviewWatermark}
-          />
-        </ToolWindowShell>
+        <LayoutShell
+          hidden={!!getScreenshotPanelId()}
+          screenshotPanelId={getScreenshotPanelId()}
+        />
       </div>
     </main>
   );

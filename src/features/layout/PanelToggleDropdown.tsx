@@ -6,10 +6,10 @@ import {
   Check,
   Lock,
   Unlock,
-  GripVertical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useLayoutStore, type PanelId, PANEL_DRAG_TYPE } from "./layoutStore";
+import { useLayoutStore } from "./layoutStore";
+import type { PanelId } from "./panelIds";
 import {
   TOGGLEABLE_PANELS,
   KEYBOARD_SHORTCUT_MAP,
@@ -18,35 +18,14 @@ import {
 } from "./panelRegions";
 import { PanelHighlightOverlay } from "./PanelHighlightOverlay";
 
-/** Force re-render when dockview adds/removes panels */
-function useDockviewVersion() {
-  const api = useLayoutStore((s) => s.dockviewApi);
-  const [version, setVersion] = useState(0);
-
-  useEffect(() => {
-    if (!api) return;
-    const bump = () => setVersion((v) => v + 1);
-    const d1 = api.onDidAddPanel(bump);
-    const d2 = api.onDidRemovePanel(bump);
-    return () => {
-      d1.dispose();
-      d2.dispose();
-    };
-  }, [api]);
-
-  return version;
-}
-
 export function PanelToggleDropdown() {
   const { t } = useTranslation();
-  const { dockviewApi, togglePanel, layoutLocked, toggleLayoutLock } =
+  const { togglePanel, layoutLocked, toggleLayoutLock, isPanelActive } =
     useLayoutStore();
   const [isOpen, setIsOpen] = useState(false);
   const [hoveredPanelId, setHoveredPanelId] = useState<PanelId | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  useDockviewVersion();
 
-  // Tour integration — open/close via custom events
   useEffect(() => {
     const open = () => setIsOpen(true);
     const close = () => {
@@ -67,7 +46,6 @@ export function PanelToggleDropdown() {
     "center-bottom": t("layout.regionBottom"),
   };
 
-  // Click-outside to close
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -81,7 +59,6 @@ export function PanelToggleDropdown() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isOpen]);
 
-  // Escape to close
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
@@ -95,11 +72,6 @@ export function PanelToggleDropdown() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [isOpen]);
 
-  function isPanelVisible(panelId: PanelId) {
-    return dockviewApi?.getPanel(panelId) !== undefined;
-  }
-
-  // Group panels by region for separators
   const groups: { region: PanelRegion; panels: PanelId[] }[] = [];
   for (const panelId of TOGGLEABLE_PANELS) {
     const region = PANEL_REGION_MAP[panelId];
@@ -118,7 +90,6 @@ export function PanelToggleDropdown() {
       data-tour="panel-toggle-root"
       data-tour-target="panel-toggle-btn"
     >
-      {/* Trigger button */}
       <button
         type="button"
         title={t("layout.panelToggle")}
@@ -140,7 +111,6 @@ export function PanelToggleDropdown() {
         />
       </button>
 
-      {/* Dropdown menu */}
       {isOpen && (
         <div
           data-tour="panel-toggle-menu"
@@ -154,28 +124,15 @@ export function PanelToggleDropdown() {
                 {REGION_LABELS[group.region]}
               </div>
               {group.panels.map((panelId) => {
-                const visible = isPanelVisible(panelId);
+                const visible = isPanelActive(panelId);
                 return (
                   <button
                     key={panelId}
                     type="button"
-                    draggable={!visible}
                     onClick={() => togglePanel(panelId)}
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData(PANEL_DRAG_TYPE, panelId);
-                      e.dataTransfer.effectAllowed = "copy";
-                    }}
-                    onDragEnd={() => {
-                      setIsOpen(false);
-                      setHoveredPanelId(null);
-                    }}
                     onMouseEnter={() => setHoveredPanelId(panelId)}
-                    className={cn(
-                      "flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground",
-                      !visible && "cursor-grab active:cursor-grabbing",
-                    )}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
                   >
-                    {/* Checkbox */}
                     <span
                       className={cn(
                         "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border",
@@ -186,22 +143,13 @@ export function PanelToggleDropdown() {
                     >
                       {visible && <Check className="h-2.5 w-2.5" />}
                     </span>
-
-                    {/* Panel name */}
                     <span className="flex-1 text-left">
                       {t(`layout.panel.${panelId}`)}
                     </span>
-
-                    {/* Keyboard shortcut */}
                     {KEYBOARD_SHORTCUT_MAP[panelId] && (
                       <kbd className="rounded border border-border bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
                         {KEYBOARD_SHORTCUT_MAP[panelId]}
                       </kbd>
-                    )}
-
-                    {/* Drag handle — shown only for panels not yet in layout */}
-                    {!visible && (
-                      <GripVertical className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
                     )}
                   </button>
                 );
@@ -209,7 +157,6 @@ export function PanelToggleDropdown() {
             </div>
           ))}
 
-          {/* Layout lock toggle */}
           <div className="my-1 border-t border-border" />
           <button
             type="button"
@@ -228,7 +175,6 @@ export function PanelToggleDropdown() {
         </div>
       )}
 
-      {/* Hover highlight overlay */}
       <PanelHighlightOverlay panelId={isOpen ? hoveredPanelId : null} />
     </div>
   );
