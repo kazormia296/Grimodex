@@ -3,11 +3,17 @@ import type { RegionId } from "./layoutTypes";
 /** region content 最小幅/高さ (px) */
 export const MIN_REGION_SIZE = 120;
 
+/** open slot 間リサイズの最小幅/高さ (px) */
+export const MIN_SLOT_SIZE = 40;
+
 /** 中央エディタの実効最小幅 (px) — Splitter クランプ用 */
 export const MIN_EDITOR_SIZE = 320;
 
 /** stripe 固定幅/高さ (px) */
 export const STRIPE_SIZE = 32;
+
+/** region / slot 境界 Splitter の厚み (px) — Tailwind w-1.5 / h-1.5 と一致 */
+export const SPLITTER_GUTTER_PX = 6;
 
 /** ビューポートに対する region content 上限比率 */
 export const MAX_REGION_SIZE_RATIO = 0.5;

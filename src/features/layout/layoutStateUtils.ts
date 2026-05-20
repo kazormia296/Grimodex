@@ -9,6 +9,7 @@ import {
   DEFAULT_REGION_SIZES,
   MIN_EDITOR_SIZE,
   MIN_REGION_SIZE,
+  SPLITTER_GUTTER_PX,
 } from "./layoutConstants";
 import type {
   LayoutState,
@@ -190,23 +191,39 @@ export function getRegionContentSize(
   return hasOpen ? region.size : 0;
 }
 
-export function getOpenSlotPixelSizes(
-  regionId: RegionId,
-  layout: LayoutState,
-): Map<string, number> {
-  const region = layout.regions[regionId];
-  const contentSize = getRegionContentSize(regionId, layout);
+/** open slot に割り当て可能な px（splitter 厚みを除く） */
+export function getSlotLayoutBudget(
+  region: RegionState,
+  gutterPx: number = SPLITTER_GUTTER_PX,
+): number {
   const openSlots = region.slots.filter((s) => s.activePanel !== null);
+  if (openSlots.length === 0) return 0;
+  const gutterTotal = Math.max(0, openSlots.length - 1) * gutterPx;
+  return Math.max(0, region.size - gutterTotal);
+}
+
+export function getOpenSlotPixelSizesForRegion(
+  region: RegionState,
+): Map<string, number> {
+  const openSlots = region.slots.filter((s) => s.activePanel !== null);
+  const budget = getSlotLayoutBudget(region);
   const ratioSum = openSlots.reduce((sum, s) => sum + s.sizeRatio, 0);
   const sizes = new Map<string, number>();
 
   for (const slot of openSlots) {
     sizes.set(
       slot.id,
-      ratioSum > 0 ? contentSize * (slot.sizeRatio / ratioSum) : 0,
+      ratioSum > 0 ? budget * (slot.sizeRatio / ratioSum) : 0,
     );
   }
   return sizes;
+}
+
+export function getOpenSlotPixelSizes(
+  regionId: RegionId,
+  layout: LayoutState,
+): Map<string, number> {
+  return getOpenSlotPixelSizesForRegion(layout.regions[regionId]);
 }
 
 /**

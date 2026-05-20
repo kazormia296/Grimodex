@@ -1,32 +1,41 @@
-import { Fragment, useCallback } from "react";
+import { Fragment, memo, useCallback, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore } from "./layoutStore";
 import { Splitter } from "./Splitter";
 import { SlotView } from "./SlotView";
+import { getOpenSlotPixelSizesForRegion } from "./layoutStateUtils";
 import type { RegionId } from "./layoutTypes";
-import {
-  getOpenSlotPixelSizes,
-  getRegionContentSize,
-} from "./layoutStateUtils";
 
 interface RegionContentProps {
   region: RegionId;
   orientation: "vertical" | "horizontal";
 }
 
-export function RegionContent({ region, orientation }: RegionContentProps) {
-  const layout = useLayoutStore((s) => s.layout);
+function regionHasOpenSlots(
+  slots: { activePanel: string | null }[],
+): boolean {
+  return slots.some((slot) => slot.activePanel !== null);
+}
+
+export const RegionContent = memo(function RegionContent({
+  region,
+  orientation,
+}: RegionContentProps) {
+  const slots = useLayoutStore((s) => s.layout.regions[region].slots);
+  const regionSize = useLayoutStore((s) => s.layout.regions[region].size);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
-  const setSlotRatios = useLayoutStore((s) => s.setSlotRatios);
+  const nudgeAdjacentSlotSizes = useLayoutStore((s) => s.nudgeAdjacentSlotSizes);
+  const finalizeLayoutResize = useLayoutStore((s) => s.finalizeLayoutResize);
   const movePanelToSlot = useLayoutStore((s) => s.movePanelToSlot);
   const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
 
-  const contentSize = getRegionContentSize(region, layout);
-  const regionState = layout.regions[region];
-  const openSlots = regionState.slots.filter((s) => s.activePanel !== null);
-  const pixelSizes = getOpenSlotPixelSizes(region, layout);
+  const openSlots = slots.filter((s) => s.activePanel !== null);
+  const pixelSizes = useMemo(
+    () => getOpenSlotPixelSizesForRegion({ size: regionSize, slots }),
+    [regionSize, slots],
+  );
 
   const handleSlotDrop = useCallback(
     (slotId: string, e: React.DragEvent) => {
@@ -65,7 +74,7 @@ export function RegionContent({ region, orientation }: RegionContentProps) {
     [layoutLocked],
   );
 
-  if (contentSize <= 0) return null;
+  if (!regionHasOpenSlots(slots)) return null;
 
   return (
     <div
@@ -77,39 +86,28 @@ export function RegionContent({ region, orientation }: RegionContentProps) {
     >
       {openSlots.map((slot, index) => {
         const sizePx = pixelSizes.get(slot.id) ?? 0;
-        const style =
+        const sizeStyle =
           orientation === "vertical"
-            ? { height: sizePx, flexShrink: 0 }
-            : { width: sizePx, flexShrink: 0 };
+            ? { height: sizePx, flexShrink: 0, minHeight: 0 }
+            : { width: sizePx, flexShrink: 0, minWidth: 0 };
 
         return (
           <Fragment key={slot.id}>
             {index > 0 && (
               <Splitter
-                orientation={
-                  orientation === "vertical" ? "horizontal" : "vertical"
-                }
+                orientation={orientation}
                 disabled={layoutLocked}
                 onDrag={(delta) => {
                   const prevSlot = openSlots[index - 1];
-                  const prevPx = pixelSizes.get(prevSlot.id) ?? 0;
-                  const currPx = pixelSizes.get(slot.id) ?? 0;
-                  const newPrev = Math.max(40, prevPx + delta);
-                  const newCurr = Math.max(40, currPx - delta);
-                  setSlotRatios(
-                    region,
-                    prevSlot.id,
-                    slot.id,
-                    newPrev,
-                    newCurr,
-                  );
+                  nudgeAdjacentSlotSizes(region, prevSlot.id, slot.id, delta);
                 }}
+                onDragEnd={finalizeLayoutResize}
               />
             )}
             <div
               data-drop-slot={slot.id}
-              style={style}
-              className="relative min-h-0 min-w-0 overflow-hidden"
+              style={sizeStyle}
+              className="relative flex min-h-0 min-w-0 flex-col overflow-hidden"
               onDragOver={handleSlotDragOver}
               onDrop={(e) => handleSlotDrop(slot.id, e)}
             >
@@ -134,4 +132,4 @@ export function RegionContent({ region, orientation }: RegionContentProps) {
       )}
     </div>
   );
-}
+});

@@ -266,7 +266,7 @@ export function ScenesPanel() {
         <div
           ref={trashDropRef}
           data-droptarget-id="scenes-panel"
-          className="relative flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
+          className="relative flex h-full min-h-0 flex-col overflow-hidden data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
         >
           <ScenesToolbar
             onCreate={handleCreate}
@@ -289,7 +289,7 @@ export function ScenesPanel() {
             <ContextMenuTrigger asChild>
               <div
                 ref={treeRef}
-                className="flex-1 overflow-y-auto overflow-x-hidden py-1 outline-none"
+                className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-1 outline-none"
                 tabIndex={0}
                 onKeyDown={handleTreeKeyDown}
               >

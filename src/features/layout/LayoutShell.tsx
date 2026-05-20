@@ -1,8 +1,10 @@
-import { cn } from "@/lib/utils";
+import { memo } from "react";
 import type { PanelId } from "./panelIds";
 import { EditorArea } from "./EditorArea";
 import { RegionDock } from "./RegionDock";
+import { RegionResizeSplitter } from "./RegionResizeSplitter";
 import { SlotView } from "./SlotView";
+import { useLayoutStore } from "./layoutStore";
 import { useRegionSegments } from "./useRegionSegments";
 
 interface LayoutShellProps {
@@ -11,15 +13,30 @@ interface LayoutShellProps {
   screenshotPanelId?: PanelId | null;
 }
 
+function regionIsOpen(
+  slots: { activePanel: string | null }[],
+): boolean {
+  return slots.some((slot) => slot.activePanel !== null);
+}
+
 /**
  * IntelliJ-style asymmetric layout shell.
  * Central editor cell + left/right/bottom tool window regions.
  */
-export function LayoutShell({
+export const LayoutShell = memo(function LayoutShell({
   hidden = false,
   screenshotPanelId = null,
 }: LayoutShellProps) {
   const segments = useRegionSegments();
+  const leftOpen = useLayoutStore((s) =>
+    regionIsOpen(s.layout.regions.left.slots),
+  );
+  const rightOpen = useLayoutStore((s) =>
+    regionIsOpen(s.layout.regions.right.slots),
+  );
+  const bottomOpen = useLayoutStore((s) =>
+    regionIsOpen(s.layout.regions.bottom.slots),
+  );
 
   if (hidden && screenshotPanelId) {
     if (screenshotPanelId === "editor") {
@@ -51,65 +68,46 @@ export function LayoutShell({
   return (
     <div
       data-layout-shell
-      className={cn(
-        "grid h-full w-full overflow-hidden",
-        hasBottom ? "grid-rows-[1fr_auto]" : "grid-rows-1",
-        "grid-cols-[auto_1fr_auto]",
-      )}
-      style={{
-        gridTemplateAreas: hasBottom
-          ? '"left content right" "left bottom right"'
-          : '"left content right"',
-      }}
+      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
     >
-      <div style={{ gridArea: "left" }} className="flex min-h-0 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {hasLeft && (
           <RegionDock
             region="left"
             stripeOrientation="vertical"
             contentOrientation="vertical"
             segments={segments.left}
-            edge="before-editor"
           />
         )}
-      </div>
 
-      <div
-        style={{ gridArea: "content" }}
-        className="min-h-0 min-w-0 overflow-hidden"
-      >
-        <EditorArea />
-      </div>
+        {leftOpen && <RegionResizeSplitter region="left" />}
 
-      <div
-        style={{ gridArea: "right" }}
-        className="flex min-h-0 justify-end overflow-hidden"
-      >
+        <div className="h-full min-h-0 min-w-0 flex-1 overflow-hidden">
+          <EditorArea />
+        </div>
+
+        {rightOpen && <RegionResizeSplitter region="right" />}
+
         {hasRight && (
           <RegionDock
             region="right"
             stripeOrientation="vertical"
             contentOrientation="vertical"
             segments={segments.right}
-            edge="after-editor"
           />
         )}
       </div>
 
+      {bottomOpen && <RegionResizeSplitter region="bottom" />}
+
       {hasBottom && (
-        <div
-          style={{ gridArea: "bottom" }}
-          className="flex min-w-0 overflow-hidden"
-        >
-          <RegionDock
-            region="bottom"
-            stripeOrientation="horizontal"
-            contentOrientation="horizontal"
-            segments={segments.bottom}
-            edge="before-editor"
-          />
-        </div>
+        <RegionDock
+          region="bottom"
+          stripeOrientation="horizontal"
+          contentOrientation="horizontal"
+          segments={segments.bottom}
+        />
       )}
     </div>
   );
-}
+});

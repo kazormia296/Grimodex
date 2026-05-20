@@ -577,7 +577,7 @@ function EditorScreen() {
       )}
       {showSampleTour && <SampleTour />}
       <ReindexProgressToast />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         <LayoutShell
           hidden={!!getScreenshotPanelId()}
           screenshotPanelId={getScreenshotPanelId()}

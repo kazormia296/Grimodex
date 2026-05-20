@@ -287,9 +287,28 @@ html[data-glass-enabled="true"] body {
 }
 
 .app-shell[data-glass-enabled="true"][data-glass-dock="true"]
-  .glass-region-panel {
+  .glass-region-panel,
+.app-shell[data-glass-enabled="true"][data-glass-dock="true"]
+  [data-region-content] {
   background: var(--glass-bg);
   border-color: var(--glass-border);
+}
+
+/* v2 layout: panel surfaces inside region slots (replaces Dockview .dv-content-container) */
+.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
+  [data-slot-panel] {
+  background: transparent;
+}
+
+.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
+  [data-slot-panel]
+  .bg-background:not(.tiptap):not(.ProseMirror),
+.app-shell[data-glass-enabled="true"][data-glass-panels="true"]
+  [data-slot-panel]
+  .bg-card {
+  background-color: var(--glass-bg);
+  background-image: var(--glass-aurora);
+  background-attachment: fixed;
 }
 
 /* Tab strip + active sash are visible glass surfaces, so they paint the

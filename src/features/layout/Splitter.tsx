@@ -2,6 +2,10 @@ import { useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 
 interface SplitterProps {
+  /**
+   * Drag axis: `horizontal` = vertical bar (col-resize, delta from clientX),
+   * `vertical` = horizontal bar (row-resize, delta from clientY).
+   */
   orientation: "horizontal" | "vertical";
   disabled?: boolean;
   onDrag: (deltaPx: number) => void;
@@ -20,55 +24,81 @@ export function Splitter({
   onDragEnd,
   className,
 }: SplitterProps) {
-  const dragging = useRef(false);
-  const startPos = useRef(0);
+  const onDragRef = useRef(onDrag);
+  const onDragEndRef = useRef(onDragEnd);
+  const pendingDeltaRef = useRef(0);
+  const rafRef = useRef<number | null>(null);
+
+  onDragRef.current = onDrag;
+  onDragEndRef.current = onDragEnd;
+
+  const flushPendingDelta = useCallback(() => {
+    rafRef.current = null;
+    const delta = pendingDeltaRef.current;
+    if (delta === 0) return;
+    pendingDeltaRef.current = 0;
+    onDragRef.current(delta);
+  }, []);
 
   const handlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
+    (e: React.PointerEvent<HTMLDivElement>) => {
       if (disabled) return;
       e.preventDefault();
-      dragging.current = true;
-      startPos.current = orientation === "horizontal" ? e.clientX : e.clientY;
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      e.stopPropagation();
+
+      const pointerId = e.pointerId;
+      let lastPos = orientation === "horizontal" ? e.clientX : e.clientY;
+
+      const handleMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+        const current = orientation === "horizontal" ? ev.clientX : ev.clientY;
+        const delta = current - lastPos;
+        if (delta === 0) return;
+        lastPos = current;
+        pendingDeltaRef.current += delta;
+        if (rafRef.current === null) {
+          rafRef.current = requestAnimationFrame(flushPendingDelta);
+        }
+      };
+
+      const handleUp = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+        window.removeEventListener("pointermove", handleMove);
+        window.removeEventListener("pointerup", handleUp);
+        window.removeEventListener("pointercancel", handleUp);
+
+        if (rafRef.current !== null) {
+          cancelAnimationFrame(rafRef.current);
+          rafRef.current = null;
+        }
+        if (pendingDeltaRef.current !== 0) {
+          onDragRef.current(pendingDeltaRef.current);
+          pendingDeltaRef.current = 0;
+        }
+        onDragEndRef.current?.();
+      };
+
+      window.addEventListener("pointermove", handleMove);
+      window.addEventListener("pointerup", handleUp);
+      window.addEventListener("pointercancel", handleUp);
     },
-    [disabled, orientation],
+    [disabled, flushPendingDelta, orientation],
   );
 
-  const handlePointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      if (!dragging.current) return;
-      const current = orientation === "horizontal" ? e.clientX : e.clientY;
-      const delta = current - startPos.current;
-      startPos.current = current;
-      onDrag(delta);
-    },
-    [onDrag, orientation],
-  );
-
-  const handlePointerUp = useCallback(
-    (e: React.PointerEvent) => {
-      if (!dragging.current) return;
-      dragging.current = false;
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-      onDragEnd?.();
-    },
-    [onDragEnd],
-  );
+  const isColumnDivider = orientation === "horizontal";
 
   return (
     <div
       role="separator"
-      aria-orientation={orientation}
+      aria-orientation={isColumnDivider ? "vertical" : "horizontal"}
+      data-layout-splitter={orientation}
       onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
       className={cn(
-        "z-10 shrink-0 touch-none bg-border/60 hover:bg-primary/40 active:bg-primary/60",
+        "relative z-20 shrink-0 touch-none select-none bg-border/80 hover:bg-primary/60 active:bg-primary/80",
         disabled && "pointer-events-none opacity-30",
-        orientation === "horizontal"
-          ? "w-1 cursor-col-resize"
-          : "h-1 cursor-row-resize",
+        isColumnDivider
+          ? "h-full w-1.5 min-w-1.5 cursor-col-resize"
+          : "h-1.5 min-h-1.5 w-full cursor-row-resize",
         className,
       )}
     />

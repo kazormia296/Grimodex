@@ -101,6 +101,72 @@ describe("useLayoutStore", () => {
     });
   });
 
+  describe("nudgeRegionSize", () => {
+    it("accumulates drag deltas from current store size", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      const start = useLayoutStore.getState().layout.regions.left.size;
+      useLayoutStore.getState().nudgeRegionSize("left", 20, VIEWPORT);
+      useLayoutStore.getState().nudgeRegionSize("left", 15, VIEWPORT);
+      expect(useLayoutStore.getState().layout.regions.left.size).toBe(
+        start + 35,
+      );
+    });
+
+    it("no-ops when layout is locked", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      const start = useLayoutStore.getState().layout.regions.left.size;
+      useLayoutStore.setState({ layoutLocked: true });
+      useLayoutStore.getState().nudgeRegionSize("left", 40, VIEWPORT);
+      expect(useLayoutStore.getState().layout.regions.left.size).toBe(start);
+    });
+
+    it("shrinks right region when nudged with negative delta", () => {
+      useLayoutStore.getState().showPanel("chat");
+      const start = useLayoutStore.getState().layout.regions.right.size;
+      useLayoutStore.getState().nudgeRegionSize("right", -30, VIEWPORT);
+      expect(useLayoutStore.getState().layout.regions.right.size).toBe(
+        start - 30,
+      );
+    });
+
+    it("grows bottom region when nudged with positive delta", () => {
+      useLayoutStore.getState().showPanel("grid");
+      const start = useLayoutStore.getState().layout.regions.bottom.size;
+      useLayoutStore.getState().nudgeRegionSize("bottom", 40, VIEWPORT);
+      expect(useLayoutStore.getState().layout.regions.bottom.size).toBe(
+        start + 40,
+      );
+    });
+  });
+
+  describe("nudgeAdjacentSlotSizes", () => {
+    it("updates slot ratios from current pixel sizes", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().showPanel("codex");
+      useLayoutStore.getState().setRegionSize("left", 300, VIEWPORT);
+      useLayoutStore.getState().nudgeAdjacentSlotSizes("left", "l0", "l1", 30);
+      const open = useLayoutStore
+        .getState()
+        .layout.regions.left.slots.filter((s) => s.activePanel !== null);
+      const l0 = open.find((s) => s.id === "l0");
+      const l1 = open.find((s) => s.id === "l1");
+      expect(l0?.sizeRatio).toBeGreaterThan(l1?.sizeRatio ?? 0);
+    });
+  });
+
+  describe("finalizeLayoutResize", () => {
+    it("clamps combined horizontal regions after drag", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().showPanel("chat");
+      useLayoutStore.getState().setRegionSize("left", 500, VIEWPORT);
+      useLayoutStore.getState().setRegionSize("right", 500, VIEWPORT);
+      useLayoutStore.getState().finalizeLayoutResize();
+      const { left, right } = useLayoutStore.getState().layout.regions;
+      expect(left.size + right.size).toBeLessThanOrEqual(VIEWPORT.width - 320);
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
+  });
+
   describe("applyPreset", () => {
     it("applies builtin write preset with active panels", () => {
       useLayoutStore.getState().applyPreset("builtin:default");
@@ -137,7 +203,7 @@ describe("useLayoutStore", () => {
       vi.unstubAllGlobals();
     });
 
-    it("resets to default when old Dockview layout is stored", async () => {
+    it("applies write preset when old Dockview layout is stored", async () => {
       mockInvoke.mockResolvedValueOnce({
         recentWorkspaces: [],
         lastActiveWorkspace: null,
@@ -148,14 +214,16 @@ describe("useLayoutStore", () => {
       });
 
       await useLayoutStore.getState().initializeLayout();
-      const { layout } = useLayoutStore.getState();
+      const { layout, activePresetId } = useLayoutStore.getState();
       assertValidLayout(layout);
       expect(collectPanels(layout)).toHaveLength(TOOL_WINDOW_PANEL_IDS.length);
-      for (const region of Object.values(layout.regions)) {
-        for (const slot of region.slots) {
-          expect(slot.activePanel).toBeNull();
-        }
-      }
+      expect(activePresetId).toBe("builtin:default");
+      expect(
+        layout.regions.left.slots.find((s) => s.id === "l0")?.activePanel,
+      ).toBe("scenes");
+      expect(
+        layout.regions.right.slots.some((s) => s.activePanel === "chat"),
+      ).toBe(true);
     });
 
     it("loads v2 persisted layout when valid", async () => {

@@ -15,12 +15,13 @@ import {
   generateSlotId,
   getOpenSlots,
   applyAdjacentSlotPixelSizes,
+  getOpenSlotPixelSizes,
   normalizeSlotRatios,
   resetLayoutStateToDefault,
   updateRegion,
   validateLayoutState,
 } from "./layoutStateUtils";
-import { clampRegionSize } from "./layoutConstants";
+import { clampRegionSize, MIN_SLOT_SIZE } from "./layoutConstants";
 import {
   getBuiltinPresetState,
   getBuiltinPresets,
@@ -295,6 +296,17 @@ export interface LayoutStoreState {
     size: number,
     viewport?: { width: number; height: number },
   ) => void;
+  /** ドラッグ中の live 更新（永続化は finalizeLayoutResize まで遅延） */
+  setRegionSizeLive: (
+    region: RegionId,
+    size: number,
+    viewport?: { width: number; height: number },
+  ) => void;
+  nudgeRegionSize: (
+    region: RegionId,
+    deltaPx: number,
+    viewport?: { width: number; height: number },
+  ) => void;
   setSlotRatios: (
     region: RegionId,
     slotIdA: string,
@@ -302,6 +314,14 @@ export interface LayoutStoreState {
     ratioA: number,
     ratioB: number,
   ) => void;
+  nudgeAdjacentSlotSizes: (
+    region: RegionId,
+    slotIdA: string,
+    slotIdB: string,
+    deltaPx: number,
+  ) => void;
+  /** Run after resize drag ends: clamp, validate, persist once. */
+  finalizeLayoutResize: () => void;
 
   setDraggingPanel: (panel: ToolWindowPanelId | null) => void;
   toggleLayoutLock: () => void;
@@ -438,18 +458,48 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   setRegionSize: (region, size, viewport) => {
     if (get().layoutLocked) return;
+    get().setRegionSizeLive(region, size, viewport);
+    scheduleSave(get);
+  },
+
+  setRegionSizeLive: (region, size, viewport) => {
+    if (get().layoutLocked) return;
     const vp = viewport ?? getViewport();
     const clamped = clampRegionSize(region, size, vp);
-    set((state) => ({
-      layout: {
-        ...state.layout,
-        regions: {
-          ...state.layout.regions,
-          [region]: { ...state.layout.regions[region], size: clamped },
+    set((state) => {
+      const current = state.layout.regions[region].size;
+      if (clamped === current) return state;
+      return {
+        layout: {
+          ...state.layout,
+          regions: {
+            ...state.layout.regions,
+            [region]: { ...state.layout.regions[region], size: clamped },
+          },
         },
-      },
-    }));
-    scheduleSave(get);
+      };
+    });
+  },
+
+  nudgeRegionSize: (region, deltaPx, viewport) => {
+    if (get().layoutLocked || deltaPx === 0) return;
+    const vp = viewport ?? getViewport();
+    set((state) => {
+      const regionState = state.layout.regions[region];
+      const current = regionState.size;
+      const nextSize = clampRegionSize(region, current + deltaPx, vp);
+      if (nextSize === current) return state;
+
+      return {
+        layout: {
+          ...state.layout,
+          regions: {
+            ...state.layout.regions,
+            [region]: { ...regionState, size: nextSize },
+          },
+        },
+      };
+    });
   },
 
   setSlotRatios: (region, slotIdA, slotIdB, ratioA, ratioB) => {
@@ -467,6 +517,41 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       );
       return { layout: applyValidatedLayout(next) };
     });
+    scheduleSave(get);
+  },
+
+  nudgeAdjacentSlotSizes: (region, slotIdA, slotIdB, deltaPx) => {
+    if (get().layoutLocked || deltaPx === 0) return;
+
+    set((state) => {
+      const pixelSizes = getOpenSlotPixelSizes(region, state.layout);
+      const prevPx = pixelSizes.get(slotIdA) ?? 0;
+      const currPx = pixelSizes.get(slotIdB) ?? 0;
+      const newPrev = Math.max(MIN_SLOT_SIZE, prevPx + deltaPx);
+      const newCurr = Math.max(MIN_SLOT_SIZE, currPx - deltaPx);
+      if (newPrev === prevPx && newCurr === currPx) return state;
+
+      const next = applyAdjacentSlotPixelSizes(
+        state.layout,
+        region,
+        slotIdA,
+        slotIdB,
+        newPrev,
+        newCurr,
+      );
+      return { layout: next };
+    });
+  },
+
+  finalizeLayoutResize: () => {
+    if (get().layoutLocked) return;
+    const vp = getViewport();
+    set((state) => ({
+      layout: applyValidatedLayout(
+        clampLayoutStateForViewport(cloneLayoutState(state.layout), vp),
+        vp,
+      ),
+    }));
     scheduleSave(get);
   },
 
@@ -534,8 +619,14 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       /* fall through to default */
     }
 
-    const defaultLayout = buildDefaultLayoutState({ allInactive: true });
-    set({ layout: defaultLayout, initialized: true });
+    const presetLayout = getBuiltinPresetState("builtin:default", getViewport());
+    set({
+      layout: applyValidatedLayout(
+        presetLayout ?? buildDefaultLayoutState({ allInactive: true }),
+      ),
+      activePresetId: presetLayout ? "builtin:default" : null,
+      initialized: true,
+    });
     scheduleSave(get);
   },
 

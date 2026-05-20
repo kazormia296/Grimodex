@@ -1,9 +1,9 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { SceneEditor } from "@/features/tree/SceneEditor";
 import { registerEditorFocusHandler } from "./layoutStore";
 
 /** Central editor cell — always mounted. */
-export function EditorArea() {
+export const EditorArea = memo(function EditorArea() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -27,4 +27,4 @@ export function EditorArea() {
       <SceneEditor />
     </div>
   );
-}
+});

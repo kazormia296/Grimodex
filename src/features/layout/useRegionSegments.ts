@@ -1,32 +1,12 @@
 import { useMemo } from "react";
 import { useLayoutStore } from "./layoutStore";
-import {
-  getOpenSlotPixelSizes,
-  getRegionContentSize,
-} from "./layoutStateUtils";
 import type { RegionId, SlotState, ToolWindowPanelId } from "./layoutTypes";
-
 
 export interface RegionSegment {
   key: string;
   slotId: string;
   sizeRatio: number;
   panels: Array<{ id: ToolWindowPanelId; active: boolean }>;
-}
-
-export function useRegionSegments(): Record<RegionId, RegionSegment[]> {
-  const layout = useLayoutStore((s) => s.layout);
-
-  return useMemo(() => {
-    const result = {} as Record<RegionId, RegionSegment[]>;
-    for (const regionId of ["left", "right", "bottom"] as RegionId[]) {
-      const region = layout.regions[regionId];
-      result[regionId] = region.slots
-        .filter((slot) => slot.panels.length > 0)
-        .map((slot) => segmentFromSlot(slot));
-    }
-    return result;
-  }, [layout]);
 }
 
 function segmentFromSlot(slot: SlotState): RegionSegment {
@@ -41,4 +21,34 @@ function segmentFromSlot(slot: SlotState): RegionSegment {
   };
 }
 
-export { getOpenSlotPixelSizes, getRegionContentSize };
+function segmentsFromSlots(slots: SlotState[]): RegionSegment[] {
+  return slots
+    .filter((slot) => slot.panels.length > 0)
+    .map((slot) => segmentFromSlot(slot));
+}
+
+export function useRegionSegments(): Record<RegionId, RegionSegment[]> {
+  const leftSlots = useLayoutStore((s) => s.layout.regions.left.slots);
+  const rightSlots = useLayoutStore((s) => s.layout.regions.right.slots);
+  const bottomSlots = useLayoutStore((s) => s.layout.regions.bottom.slots);
+
+  const left = useMemo(
+    () => segmentsFromSlots(leftSlots),
+    [leftSlots],
+  );
+  const right = useMemo(
+    () => segmentsFromSlots(rightSlots),
+    [rightSlots],
+  );
+  const bottom = useMemo(
+    () => segmentsFromSlots(bottomSlots),
+    [bottomSlots],
+  );
+
+  return useMemo(
+    () => ({ left, right, bottom }),
+    [bottom, left, right],
+  );
+}
+
+export { getOpenSlotPixelSizes, getRegionContentSize } from "./layoutStateUtils";

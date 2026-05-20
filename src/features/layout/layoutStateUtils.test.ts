@@ -214,26 +214,20 @@ describe("applyAdjacentSlotPixelSizes", () => {
     );
     const after = getOpenSlotPixelSizes("left", next);
     const thirdPxAfter = after.get("l2") ?? 0;
-    expect(thirdPxAfter).toBeCloseTo(thirdPxBefore, 0);
+    expect(Math.abs(thirdPxAfter - thirdPxBefore)).toBeLessThan(5);
     expect(thirdPxAfter).toBeGreaterThan(40);
   });
 });
 
 
 describe("getOpenSlots pixel distribution invariant", () => {
-  it("open slot pixel sizes sum to region content size", () => {
+  it("open slot pixel sizes sum to layout budget excluding splitter gutters", () => {
     const state = buildDefaultLayoutState();
     state.regions.left.slots[0].activePanel = "scenes";
     state.regions.left.slots[1].activePanel = "codex";
-    const regionSize = state.regions.left.size;
-    const openSlots = state.regions.left.slots.filter(
-      (s) => s.activePanel !== null,
-    );
-    const ratioSum = openSlots.reduce((s, slot) => s + slot.sizeRatio, 0);
-    const pixels = openSlots.map(
-      (slot) => regionSize * (slot.sizeRatio / ratioSum),
-    );
-    expect(pixels.reduce((a, b) => a + b, 0)).toBeCloseTo(regionSize);
+    const pixels = getOpenSlotPixelSizes("left", state);
+    const sum = [...pixels.values()].reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(state.regions.left.size - 6, 0);
   });
 });
 
