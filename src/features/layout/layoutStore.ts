@@ -23,10 +23,7 @@ import {
   validateLayoutState,
 } from "./layoutStateUtils";
 import { clampRegionSize, MIN_SLOT_SIZE } from "./layoutConstants";
-import {
-  getBuiltinPresetState,
-  getBuiltinPresets,
-} from "./layoutPresets";
+import { getBuiltinPresetState, getBuiltinPresets } from "./layoutPresets";
 import type {
   CustomLayoutPreset,
   LayoutState,
@@ -87,7 +84,10 @@ function removePanelFromSlot(
     const removedSlot = slot;
     const remainingSlots = slots.filter((_, i) => i !== slotIndex);
     return {
-      slots: redistributeRatiosAfterRemovingOpenSlot(remainingSlots, removedSlot),
+      slots: redistributeRatiosAfterRemovingOpenSlot(
+        remainingSlots,
+        removedSlot,
+      ),
     };
   }
 
@@ -104,10 +104,7 @@ function removePanelFromSlot(
   };
 }
 
-function addPanelToSlot(
-  slot: SlotState,
-  panel: ToolWindowPanelId,
-): SlotState {
+function addPanelToSlot(slot: SlotState, panel: ToolWindowPanelId): SlotState {
   const panels = slot.panels.includes(panel)
     ? slot.panels
     : [...slot.panels, panel];
@@ -124,12 +121,28 @@ function movePanelInLayout(
   const source = findPanelLocation(layout, panel);
   let next = cloneLayoutState(layout);
 
+  // 移動元 slot が空になり削除されるか（残 panel 0 のとき削除される）
+  const sourceSlotRemoved =
+    source != null &&
+    source.slot.panels.filter((p) => p !== panel).length === 0;
+
   if (source) {
     next = updateRegion(next, source.region, (region) => ({
       ...region,
       slots: removePanelFromSlot(region.slots, source.slotIndex, panel).slots,
     }));
   }
+
+  // 同一 region 内で移動元 slot が削除されると配列が縮むため、
+  // 削除位置より後ろを指す insertIndex（削除前の配列基準）を 1 つ詰める。
+  const adjustedInsertIndex =
+    insertIndex != null &&
+    sourceSlotRemoved &&
+    source != null &&
+    source.region === targetRegion &&
+    source.slotIndex < insertIndex
+      ? insertIndex - 1
+      : insertIndex;
 
   next = updateRegion(next, targetRegion, (region) => {
     if (targetSlotId) {
@@ -150,9 +163,9 @@ function movePanelInLayout(
 
     const slots = [...region.slots];
     const index =
-      insertIndex == null
+      adjustedInsertIndex == null
         ? slots.length
-        : Math.max(0, Math.min(insertIndex, slots.length));
+        : Math.max(0, Math.min(adjustedInsertIndex, slots.length));
     slots.splice(index, 0, newSlot);
 
     const openSlots = getOpenSlots(slots);
@@ -165,9 +178,7 @@ function movePanelInLayout(
   return next;
 }
 
-function isPersistedLayoutV2(
-  data: unknown,
-): data is PersistedLayout {
+function isPersistedLayoutV2(data: unknown): data is PersistedLayout {
   if (!data || typeof data !== "object") return false;
   const obj = data as PersistedLayout;
   return (
@@ -192,7 +203,8 @@ function scheduleSave(get: () => LayoutStoreState) {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const { layout, activePresetId, customPresets, hiddenStripePanels } = get();
+      const { layout, activePresetId, customPresets, hiddenStripePanels } =
+        get();
       const check = validateLayoutState(layout, { viewport: getViewport() });
       if (!check.valid) return;
 
@@ -202,9 +214,7 @@ function scheduleSave(get: () => LayoutStoreState) {
         state: cloneLayoutState(layout),
         activePresetId: activePresetId ?? undefined,
         hiddenStripePanels:
-          hiddenStripePanels.size > 0
-            ? [...hiddenStripePanels]
-            : undefined,
+          hiddenStripePanels.size > 0 ? [...hiddenStripePanels] : undefined,
       };
 
       await invoke("save_global_settings", {
@@ -262,12 +272,16 @@ async function persistPresets(
 export async function clearSavedLayout() {
   try {
     const current = await invoke<GlobalSettings>("get_global_settings");
-    const { layout: _l, toolWindows: _t, stripePanelIds: _s, ...rest } =
-      current as GlobalSettings & {
-        layout?: unknown;
-        toolWindows?: unknown;
-        stripePanelIds?: unknown;
-      };
+    const {
+      layout: _l,
+      toolWindows: _t,
+      stripePanelIds: _s,
+      ...rest
+    } = current as GlobalSettings & {
+      layout?: unknown;
+      toolWindows?: unknown;
+      stripePanelIds?: unknown;
+    };
     await invoke("save_global_settings", {
       settings: {
         ...rest,
@@ -302,11 +316,7 @@ export interface LayoutStoreState {
   openPanelAtSlot: (panel: PanelId) => void;
   requestEditorFocus: () => void;
 
-  movePanelToSlot: (
-    panel: PanelId,
-    region: RegionId,
-    slotId: string,
-  ) => void;
+  movePanelToSlot: (panel: PanelId, region: RegionId, slotId: string) => void;
   movePanelToRegion: (panel: PanelId, region: RegionId) => void;
   moveToRegion: (panel: PanelId, region: RegionId) => void;
   removePanelFromStripe: (panel: PanelId) => void;
@@ -658,7 +668,8 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     set({ dragOverTarget: target });
   },
 
-  toggleLayoutLock: () => set((state) => ({ layoutLocked: !state.layoutLocked })),
+  toggleLayoutLock: () =>
+    set((state) => ({ layoutLocked: !state.layoutLocked })),
 
   async initializeLayout() {
     if (get().initialized) return;
@@ -708,7 +719,8 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         );
         set({
           layout: validated,
-          activePresetId: rawLayout.activePresetId ?? settings.activeLayoutPresetId ?? null,
+          activePresetId:
+            rawLayout.activePresetId ?? settings.activeLayoutPresetId ?? null,
           hiddenStripePanels: new Set(rawLayout.hiddenStripePanels ?? []),
           initialized: true,
         });
@@ -721,7 +733,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       /* fall through to default */
     }
 
-    const presetLayout = getBuiltinPresetState("builtin:default", getViewport());
+    const presetLayout = getBuiltinPresetState(
+      "builtin:default",
+      getViewport(),
+    );
     set({
       layout: applyValidatedLayout(
         presetLayout ?? buildDefaultLayoutState({ allInactive: true }),

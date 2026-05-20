@@ -34,9 +34,10 @@ function resetStore() {
 
 function assertValidLayout(state: LayoutState) {
   const result = validateLayoutState(state, { viewport: VIEWPORT });
-  expect(result.valid, result.valid ? "" : (result as { reason: string }).reason).toBe(
-    true,
-  );
+  expect(
+    result.valid,
+    result.valid ? "" : (result as { reason: string }).reason,
+  ).toBe(true);
 }
 
 function collectPanels(state: LayoutState): ToolWindowPanelId[] {
@@ -104,10 +105,12 @@ describe("useLayoutStore", () => {
       useLayoutStore.getState().showPanel("codex");
 
       const layoutBefore = useLayoutStore.getState().layout;
-      layoutBefore.regions.left.slots.find((slot) => slot.id === "l0")!.sizeRatio =
-        0.6;
-      layoutBefore.regions.left.slots.find((slot) => slot.id === "l1")!.sizeRatio =
-        0.4;
+      layoutBefore.regions.left.slots.find(
+        (slot) => slot.id === "l0",
+      )!.sizeRatio = 0.6;
+      layoutBefore.regions.left.slots.find(
+        (slot) => slot.id === "l1",
+      )!.sizeRatio = 0.4;
       useLayoutStore.setState({ layout: layoutBefore });
 
       useLayoutStore.getState().movePanelToRegion("scenes", "right");
@@ -118,6 +121,41 @@ describe("useLayoutStore", () => {
       expect(openLeft).toHaveLength(1);
       expect(openLeft[0]?.id).toBe("l1");
       expect(openLeft[0]?.sizeRatio).toBeCloseTo(1);
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
+  });
+
+  describe("movePanelToNewSlot", () => {
+    const slotOrder = () =>
+      useLayoutStore
+        .getState()
+        .layout.regions.left.slots.map((s) =>
+          s.panels.includes("scenes")
+            ? "scenes"
+            : s.panels.includes("chat")
+              ? "chat"
+              : s.panels.includes("codex")
+                ? "codex"
+                : "other",
+        );
+
+    it("inserts at the dropped position when a same-region source slot is removed", () => {
+      // left: [l0(scenes), l1(codex…), chatSlot]
+      useLayoutStore.getState().movePanelToNewSlot("chat", "left", 2);
+      // Move scenes (l0, index 0, single-panel → l0 removed) before the chat slot.
+      // insertIndex 2 is pre-removal; after l0 is removed it must become 1.
+      useLayoutStore.getState().movePanelToNewSlot("scenes", "left", 2);
+
+      expect(slotOrder()).toEqual(["codex", "scenes", "chat"]);
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
+
+    it("does not shift the insert position when the source slot sits after it", () => {
+      useLayoutStore.getState().movePanelToNewSlot("chat", "left", 2);
+      // chat slot is at index 2; dropping at index 0 must not be decremented.
+      useLayoutStore.getState().movePanelToNewSlot("chat", "left", 0);
+
+      expect(slotOrder()[0]).toBe("chat");
       assertValidLayout(useLayoutStore.getState().layout);
     });
   });
@@ -298,7 +336,9 @@ describe("layout store property invariants", () => {
     for (let i = 0; i < 100; i++) {
       const store = useLayoutStore.getState();
       const panel =
-        TOOL_WINDOW_PANEL_IDS[Math.floor(rand() * TOOL_WINDOW_PANEL_IDS.length)];
+        TOOL_WINDOW_PANEL_IDS[
+          Math.floor(rand() * TOOL_WINDOW_PANEL_IDS.length)
+        ];
       const region = REGIONS[Math.floor(rand() * REGIONS.length)];
       const op = Math.floor(rand() * 4);
 
@@ -352,7 +392,9 @@ describe("layout store property invariants", () => {
     expect(useLayoutStore.getState().isPanelActive("chat")).toBe(false);
 
     useLayoutStore.getState().showPanel("chat");
-    expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(false);
+    expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
+      false,
+    );
     expect(useLayoutStore.getState().isPanelActive("chat")).toBe(true);
   });
 
@@ -361,9 +403,7 @@ describe("layout store property invariants", () => {
     useLayoutStore.getState().showPanel("codex");
     useLayoutStore.getState().movePanelToNewSlot("chat", "left", 2);
     useLayoutStore.getState().setRegionSize("left", 300, VIEWPORT);
-    useLayoutStore
-      .getState()
-      .setSlotRatios("left", "l0", "l1", 150, 100, 800);
+    useLayoutStore.getState().setSlotRatios("left", "l0", "l1", 150, 100, 800);
     const open = useLayoutStore
       .getState()
       .layout.regions.left.slots.filter((s) => s.activePanel !== null);
