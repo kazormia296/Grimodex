@@ -31,6 +31,8 @@ import {
 } from "@/features/layout/layoutStore";
 import { DOCKVIEW_PANEL_COMPONENTS } from "@/features/layout/panelComponents";
 import { ToolWindowShell } from "@/features/layout/ToolWindowShell";
+import { TOOL_WINDOW_REASSIGN_TYPE } from "@/features/layout/ToolWindowIcon";
+import { detectGroupRegion } from "@/features/layout/stripeRegionDetection";
 import {
   validateSerializedLayout,
   validateRuntimeLayout,
@@ -450,9 +452,17 @@ function EditorScreen() {
       // saved layout の復元と平行で OK — toolWindows は layout 復元結果に依存しない。
       loadToolWindowSettings();
 
-      // Accept external drags originating from the panel dropdown
+      // Accept external drags: panel dropdown + stripe icon reassignment (Y モデル P-E)
       api.onUnhandledDragOverEvent((e) => {
-        if (e.nativeEvent.dataTransfer?.types.includes(PANEL_DRAG_TYPE)) {
+        const types = e.nativeEvent.dataTransfer?.types;
+        if (!types) return;
+        if (types.includes(PANEL_DRAG_TYPE)) {
+          e.accept();
+          return;
+        }
+        if (types.includes(TOOL_WINDOW_REASSIGN_TYPE)) {
+          // 移動禁止中は overlay を出さない
+          if (useLayoutStore.getState().layoutLocked) return;
           e.accept();
         }
       });
@@ -460,32 +470,93 @@ function EditorScreen() {
     [setDockviewApi, loadLayout, loadPresets, loadToolWindowSettings],
   );
 
-  const handlePanelDrop = useCallback((event: DockviewDidDropEvent) => {
-    const panelId = event.nativeEvent.dataTransfer?.getData(PANEL_DRAG_TYPE) as
-      | PanelId
-      | undefined;
-    if (!panelId) return;
-    if (event.api.getPanel(panelId)) return; // already in layout
+  const handleStripeIconDrop = useCallback(
+    (event: DockviewDidDropEvent, panelId: PanelId) => {
+      if (panelId === "editor") return;
+      if (useLayoutStore.getState().layoutLocked) return;
 
-    // canvas drop (明示的な drop target group なし) → preferred slot 経由で配置
-    // これで stripe / dropdown / DnD すべてが openPanelAtSlot を通る統一動線になる
-    if (!event.group) {
-      useLayoutStore.getState().openPanelAtSlot(panelId);
-      return;
-    }
+      // 1. Target group が無い (outer edge / canvas) → reject
+      // (cross-region 新規 region 作成は禁止 — 設計判断 Y')
+      if (!event.group) return;
 
-    // 明示的な group へドロップ → その tab に within で追加 (drop 先優先)
-    event.api.addPanel({
-      id: panelId,
-      component: panelId,
-      title: getPanelTitle(panelId),
-      position: {
-        referencePanel: event.group.activePanel?.id ?? "",
-        direction: "within" as const,
-      },
-      ...(panelId === "editor" ? { minimumWidth: 320 } : {}),
-    });
-  }, []);
+      const api = event.api;
+      const targetRegion = detectGroupRegion(api, event.group);
+      if (!targetRegion) return; // editor group 等への drop は reject
+
+      // 2. Source region
+      const existingPanel = api.getPanel(panelId);
+      let sourceRegion = null;
+      if (existingPanel?.group) {
+        sourceRegion = detectGroupRegion(api, existingPanel.group);
+      } else {
+        sourceRegion =
+          useLayoutStore.getState().toolWindows[panelId]?.region ?? null;
+      }
+
+      // 3. Cross-region reject
+      if (sourceRegion && sourceRegion !== targetRegion) return;
+
+      // 4. Position → Direction
+      const direction =
+        event.position === "center"
+          ? ("within" as const)
+          : event.position === "top"
+            ? ("above" as const)
+            : event.position === "bottom"
+              ? ("below" as const)
+              : event.position; // "left" | "right"
+
+      // 5. 移動 (remove → addPanel)
+      if (existingPanel) api.removePanel(existingPanel);
+      api.addPanel({
+        id: panelId,
+        component: panelId,
+        title: getPanelTitle(panelId),
+        position: { referenceGroup: event.group, direction },
+      });
+    },
+    [],
+  );
+
+  const handlePanelDrop = useCallback(
+    (event: DockviewDidDropEvent) => {
+      // Branch 1: stripe icon reassignment (Y モデル P-E)
+      const fromStripe = event.nativeEvent.dataTransfer?.getData(
+        TOOL_WINDOW_REASSIGN_TYPE,
+      ) as PanelId | undefined;
+      if (fromStripe) {
+        handleStripeIconDrop(event, fromStripe);
+        return;
+      }
+
+      // Branch 2: panel dropdown drag
+      const panelId = event.nativeEvent.dataTransfer?.getData(
+        PANEL_DRAG_TYPE,
+      ) as PanelId | undefined;
+      if (!panelId) return;
+      if (event.api.getPanel(panelId)) return; // already in layout
+
+      // canvas drop (明示的な drop target group なし) → preferred slot 経由で配置
+      // これで stripe / dropdown / DnD すべてが openPanelAtSlot を通る統一動線になる
+      if (!event.group) {
+        useLayoutStore.getState().openPanelAtSlot(panelId);
+        return;
+      }
+
+      // 明示的な group へドロップ → その tab に within で追加 (drop 先優先)
+      event.api.addPanel({
+        id: panelId,
+        component: panelId,
+        title: getPanelTitle(panelId),
+        position: {
+          referencePanel: event.group.activePanel?.id ?? "",
+          direction: "within" as const,
+        },
+        ...(panelId === "editor" ? { minimumWidth: 320 } : {}),
+      });
+    },
+    [handleStripeIconDrop],
+  );
 
   // Keyboard shortcuts (Ctrl+Alt+*)
   const handleKeyDown = useCallback(
