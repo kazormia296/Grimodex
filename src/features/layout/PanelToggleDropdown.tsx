@@ -18,6 +18,7 @@ import {
   PANEL_REGION_MAP,
   type PanelRegion,
 } from "./panelRegions";
+import { PANEL_ICON_MAP } from "./panelIcons";
 import { PanelHighlightOverlay } from "./PanelHighlightOverlay";
 import { usePanelDropdownPointerDrag } from "./usePanelDropdownPointerDrag";
 import type { ToolWindowPanelId } from "./layoutTypes";
@@ -116,7 +117,10 @@ export function PanelToggleDropdown() {
     "center-bottom": t("layout.regionBottom"),
   };
 
-  const groups: { region: PanelRegion; panels: PanelId[] }[] = [];
+  const groups: {
+    region: PanelRegion;
+    panels: Exclude<PanelId, "editor">[];
+  }[] = [];
   for (const panelId of TOGGLEABLE_PANELS) {
     const region = PANEL_REGION_MAP[panelId];
     const last = groups[groups.length - 1];
@@ -151,6 +155,7 @@ export function PanelToggleDropdown() {
             {group.panels.map((panelId) => {
               const visible = isPanelActive(panelId);
               const canDrag = !layoutLocked;
+              const PanelIcon = PANEL_ICON_MAP[panelId];
               return (
                 <div
                   key={panelId}
@@ -161,10 +166,7 @@ export function PanelToggleDropdown() {
                   data-tauri-drag-region="false"
                   onPointerDown={(e) => {
                     if (!canDrag) return;
-                    handleRowPointerDown(
-                      panelId as ToolWindowPanelId,
-                      e,
-                    );
+                    handleRowPointerDown(panelId as ToolWindowPanelId, e);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
@@ -196,6 +198,10 @@ export function PanelToggleDropdown() {
                   >
                     {visible && <Check className="h-2.5 w-2.5" />}
                   </span>
+                  <PanelIcon
+                    aria-hidden
+                    className="h-4 w-4 shrink-0 text-muted-foreground"
+                  />
                   <span className="flex-1 text-left">
                     {t(`layout.panel.${panelId}`)}
                   </span>
