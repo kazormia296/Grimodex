@@ -72,10 +72,7 @@ describe("layoutMetrics", () => {
       `${STRIPE_SIZE}px 260px ${SPLITTER_GUTTER_PX}px minmax(0, 1fr) ${SPLITTER_GUTTER_PX}px 340px ${STRIPE_SIZE}px`,
     );
     expect(sideLayoutChromePx(m)).toBe(
-      STRIPE_SIZE * 2 +
-        260 +
-        340 +
-        SPLITTER_GUTTER_PX * 2,
+      STRIPE_SIZE * 2 + 260 + 340 + SPLITTER_GUTTER_PX * 2,
     );
   });
 
@@ -94,6 +91,50 @@ describe("layoutMetrics", () => {
     });
 
     expect(buildLayoutGridTemplateColumns(m)).toContain("0px");
+  });
+
+  it("makes the right region the 1fr filler when center band is hidden", () => {
+    const m = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: false,
+      leftOpen: true,
+      rightOpen: true,
+      bottomOpen: false,
+      centerBandVisible: false,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 0,
+    });
+
+    // 余白を吸収する右 region は 1fr。固定 px のままだとウィンドウ幅に
+    // 追従できず右側に隙間が生じる。
+    expect(m.fillerRegion).toBe("right");
+    // filler の splitter は消し、resize 境界は左 splitter だけにする。
+    expect(m.leftSplitterPx).toBe(SPLITTER_GUTTER_PX);
+    expect(m.rightSplitterPx).toBe(0);
+    expect(buildLayoutGridTemplateColumns(m)).toBe(
+      `${STRIPE_SIZE}px 260px ${SPLITTER_GUTTER_PX}px 0px 0px minmax(0, 1fr) ${STRIPE_SIZE}px`,
+    );
+  });
+
+  it("uses the left region as filler when only left is open and band hidden", () => {
+    const m = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: false,
+      leftOpen: true,
+      rightOpen: false,
+      bottomOpen: false,
+      centerBandVisible: false,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 0,
+    });
+
+    expect(m.fillerRegion).toBe("left");
+    expect(m.leftSplitterPx).toBe(0);
+    expect(buildLayoutGridTemplateColumns(m)).toContain("minmax(0, 1fr)");
   });
 
   it("computeLayoutGridMetrics omits content and splitter when region closed", () => {

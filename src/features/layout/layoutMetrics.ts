@@ -10,6 +10,13 @@ export interface LayoutGridMetrics {
   rightSplitterPx: number;
   centerColumnPx: string;
   centerBandVisible: boolean;
+  /**
+   * center band 非表示時に、余白を吸収して伸縮する open side region。
+   * その region の content 列は `1fr` になり、専用 splitter は消える
+   * （固定境界を持たないため）。center band 表示時や埋める region が
+   * 無いときは null。
+   */
+  fillerRegion: "left" | "right" | null;
   bottomCellPx: number;
   bottomRowInset: number;
   leftDockPx: number;
@@ -57,12 +64,31 @@ export function computeLayoutGridMetrics(
 ): LayoutGridMetrics {
   const leftStripePx = input.hasLeft ? STRIPE_SIZE : 0;
   const rightStripePx = input.hasRight ? STRIPE_SIZE : 0;
-  const leftContentPx =
-    input.hasLeft && input.leftOpen ? input.leftSize : 0;
+  const leftContentPx = input.hasLeft && input.leftOpen ? input.leftSize : 0;
   const rightContentPx =
     input.hasRight && input.rightOpen ? input.rightSize : 0;
-  const leftSplitterPx = input.leftOpen ? SPLITTER_GUTTER_PX : 0;
-  const rightSplitterPx = input.rightOpen ? SPLITTER_GUTTER_PX : 0;
+
+  // center band 非表示時は、開いている side region の 1 つを `1fr` filler に
+  // してグリッド全体を埋める。filler が無いと固定 px 列だけになり、ウィンドウ
+  // 幅に追従できず右側に余白が生じる。
+  const leftIsOpen = input.hasLeft && input.leftOpen;
+  const rightIsOpen = input.hasRight && input.rightOpen;
+  let fillerRegion: "left" | "right" | null = null;
+  if (!input.centerBandVisible) {
+    if (rightIsOpen) fillerRegion = "right";
+    else if (leftIsOpen) fillerRegion = "left";
+  }
+
+  // filler region は固定境界を持たないため専用 splitter を消す。
+  const leftSplitterPx =
+    input.leftOpen && fillerRegion !== "left" ? SPLITTER_GUTTER_PX : 0;
+  const rightSplitterPx =
+    input.rightOpen && fillerRegion !== "right" ? SPLITTER_GUTTER_PX : 0;
+
+  // filler が無い（埋める region が無い）ときは center 列を `1fr` にして
+  // グリッド幅を埋める。filler があるときは center は 0px。
+  const centerColumnPx =
+    input.centerBandVisible || fillerRegion === null ? "minmax(0, 1fr)" : "0px";
 
   const leftDockPx = sideDockPx(input.hasLeft, input.leftOpen, input.leftSize);
   const rightDockPx = sideDockPx(
@@ -84,7 +110,8 @@ export function computeLayoutGridMetrics(
     leftSplitterPx,
     rightSplitterPx,
     centerBandVisible: input.centerBandVisible,
-    centerColumnPx: input.centerBandVisible ? "minmax(0, 1fr)" : "0px",
+    centerColumnPx,
+    fillerRegion,
     leftDockPx,
     rightDockPx,
     bottomDockPx: bottomDock,
@@ -96,13 +123,21 @@ export function computeLayoutGridMetrics(
 export function buildLayoutGridTemplateColumns(
   metrics: LayoutGridMetrics,
 ): string {
+  const leftContentColumn =
+    metrics.fillerRegion === "left"
+      ? "minmax(0, 1fr)"
+      : `${metrics.leftContentPx}px`;
+  const rightContentColumn =
+    metrics.fillerRegion === "right"
+      ? "minmax(0, 1fr)"
+      : `${metrics.rightContentPx}px`;
   return [
     `${metrics.leftStripePx}px`,
-    `${metrics.leftContentPx}px`,
+    leftContentColumn,
     `${metrics.leftSplitterPx}px`,
     metrics.centerColumnPx,
     `${metrics.rightSplitterPx}px`,
-    `${metrics.rightContentPx}px`,
+    rightContentColumn,
     `${metrics.rightStripePx}px`,
   ].join(" ");
 }

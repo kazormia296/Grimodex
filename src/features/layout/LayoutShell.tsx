@@ -22,9 +22,7 @@ interface LayoutShellProps {
   screenshotPanelId?: PanelId | null;
 }
 
-function regionIsOpen(
-  slots: { activePanel: string | null }[],
-): boolean {
+function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
   return slots.some((slot) => slot.activePanel !== null);
 }
 
@@ -107,8 +105,7 @@ export const LayoutShell = memo(function LayoutShell({
     );
   }
 
-  const mainRowAreas =
-    '"lstripe lcontent lspl editor rspl rcontent rstripe"';
+  const mainRowAreas = '"lstripe lcontent lspl editor rspl rcontent rstripe"';
   const gridTemplateAreas = hasBottom
     ? `${mainRowAreas} "lstripe bottom bottom bottom bottom bottom rstripe"`
     : mainRowAreas;
@@ -149,7 +146,7 @@ export const LayoutShell = memo(function LayoutShell({
           </div>
         )}
 
-        {leftOpen && (
+        {metrics.leftSplitterPx > 0 && (
           <div
             style={{ gridArea: "lspl" }}
             className="flex h-full min-h-0 overflow-hidden"
@@ -167,7 +164,7 @@ export const LayoutShell = memo(function LayoutShell({
           </div>
         )}
 
-        {rightOpen && (
+        {metrics.rightSplitterPx > 0 && (
           <div
             style={{ gridArea: "rspl" }}
             className="flex h-full min-h-0 overflow-hidden"
