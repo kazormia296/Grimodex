@@ -13,18 +13,18 @@ import {
 import { useLayoutStore, type PanelId } from "./layoutStore";
 import { PANEL_ICON_MAP } from "./panelIcons";
 import { KEYBOARD_SHORTCUT_MAP } from "./panelRegions";
-import type { ToolWindowSlot } from "./toolWindowDefaults";
+import type { StripeRegion } from "./toolWindowDefaults";
 
 /** MIME type for stripe icon DnD slot reassignment */
 export const TOOL_WINDOW_REASSIGN_TYPE =
   "application/grimodex-toolwindow-reassign";
 
-const ALL_SLOTS: ToolWindowSlot[] = ["LT", "LB", "RT", "RB", "BL", "BR"];
+const ALL_REGIONS: StripeRegion[] = ["left", "right", "bottom"];
 
 interface ToolWindowIconProps {
   panelId: Exclude<PanelId, "editor">;
-  /** 現在の有効 slot (divider 位置とコンテキストメニューの現 slot 表示に利用) */
-  slot: ToolWindowSlot;
+  /** 現在 icon が属する region (現 region 項目を disable にするのに使用) */
+  region: StripeRegion;
   /** Dockview に mount されている (同 group の裏 tab 含む) */
   visible: boolean;
   /** 画面に実際に出ている (active tab or undock overlay) */
@@ -33,18 +33,19 @@ interface ToolWindowIconProps {
 
 /**
  * Stripe 上のアイコン 1 個。3 状態を視覚化する。
- * Phase 2 で draggable + 右クリックコンテキストメニューを追加。
+ * Y モデル: コンテキストメニューは region 単位の Move To と Remove from sidebar の 2 項目のみ。
+ * Group 内の精緻配置は Dockview overlay の DnD で行う (P-E)。
  */
 export function ToolWindowIcon({
   panelId,
-  slot,
+  region,
   visible,
   active,
 }: ToolWindowIconProps) {
   const { t } = useTranslation();
   const Icon = PANEL_ICON_MAP[panelId];
   const togglePanel = useLayoutStore((s) => s.togglePanel);
-  const moveToSlot = useLayoutStore((s) => s.moveToSlot);
+  const moveToRegion = useLayoutStore((s) => s.moveToRegion);
   const removePanelFromStripe = useLayoutStore((s) => s.removePanelFromStripe);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
 
@@ -103,13 +104,13 @@ export function ToolWindowIcon({
             {t("layout.stripe.moveTo")}
           </ContextMenuSubTrigger>
           <ContextMenuSubContent>
-            {ALL_SLOTS.map((s) => (
+            {ALL_REGIONS.map((r) => (
               <ContextMenuItem
-                key={s}
-                disabled={s === slot}
-                onClick={() => moveToSlot(panelId, s)}
+                key={r}
+                disabled={r === region}
+                onClick={() => moveToRegion(panelId, r)}
               >
-                {t(`layout.stripe.slot.${s}`)}
+                {t(`layout.stripe.region.${r}`)}
               </ContextMenuItem>
             ))}
           </ContextMenuSubContent>

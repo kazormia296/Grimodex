@@ -8,9 +8,10 @@ import type { StripeSegment } from "./useStripeSegmentsByRegion";
 interface StripeGroupProps {
   segment: StripeSegment;
   orientation: "vertical" | "horizontal";
+  region: StripeRegion;
 }
 
-function StripeGroup({ segment, orientation }: StripeGroupProps) {
+function StripeGroup({ segment, orientation, region }: StripeGroupProps) {
   const moveToGroup = useLayoutStore((s) => s.moveToGroup);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
 
@@ -52,7 +53,7 @@ function StripeGroup({ segment, orientation }: StripeGroupProps) {
         <ToolWindowIcon
           key={panel.id}
           panelId={panel.id}
-          slot={panel.slot}
+          region={region}
           visible={panel.visible}
           active={panel.active}
         />
@@ -97,7 +98,11 @@ export function ToolWindowStripe({
     >
       {segments.map((segment, i) => (
         <Fragment key={segment.key}>
-          <StripeGroup segment={segment} orientation={orientation} />
+          <StripeGroup
+            segment={segment}
+            orientation={orientation}
+            region={region}
+          />
           {i < segments.length - 1 && (
             <div
               data-stripe-divider

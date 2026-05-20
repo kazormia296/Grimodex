@@ -363,6 +363,16 @@ interface LayoutState {
    */
   moveToGroup: (panel: PanelId, targetGroupId: string) => void;
 
+  /**
+   * Panel を指定 region に移動する (Y モデル, コンテキストメニュー用)。
+   * - region 内の既存 group があればそこに合流 (groupRef があれば優先、無ければ先頭)
+   * - region に group が無ければ新規 region を作成 (absolute direction)
+   * - 既に同じ region に居る (open) なら no-op
+   * - layout lock 中は no-op
+   * - editor は no-op
+   */
+  moveToRegion: (panel: PanelId, region: StripeRegion) => void;
+
   /** Tool window 設定を global-settings から読み込み (handleReady で呼ぶ) */
   loadToolWindowSettings: () => Promise<void>;
 
@@ -745,6 +755,86 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
           region: targetRegion,
           groupRef: targetGroupId,
           indexInRegion: targetIndex >= 0 ? targetIndex : 0,
+          viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
+          ...(current?.undockSize ? { undockSize: current.undockSize } : {}),
+        },
+      },
+    });
+    scheduleSave(get);
+  },
+
+  moveToRegion(panelId, region) {
+    const api = get().dockviewApi;
+    if (!api || panelId === "editor") return;
+    if (get().layoutLocked) return;
+
+    // 既存 panel と現 region を取得
+    const existing = api.getPanel(panelId);
+    if (existing?.group) {
+      const sourceRegion = detectGroupRegion(api, existing.group);
+      if (sourceRegion === region) return; // 既に同 region: Dockview drag で位置調整してもらう
+    }
+
+    // 移動先 group を解決:
+    //   1. groupRef が target region 内の既存 group と一致 → そこに合流
+    //   2. region に group が 1 個以上 → 先頭 (spatial order)
+    //   3. group 無し → 新規 region を作成 (absolute direction)
+    const stored = get().toolWindows[panelId];
+    const regionGroups = groupsByRegionInSpatialOrder(api)[region];
+
+    let targetGroupId: string | undefined;
+    if (
+      stored?.groupRef &&
+      regionGroups.some((g) => g.id === stored.groupRef)
+    ) {
+      targetGroupId = stored.groupRef;
+    } else if (regionGroups.length > 0) {
+      targetGroupId = regionGroups[0].id;
+    }
+
+    if (existing) api.removePanel(existing);
+
+    if (targetGroupId) {
+      const targetGroup = regionGroups.find((g) => g.id === targetGroupId)!;
+      api.addPanel({
+        id: panelId,
+        component: panelId,
+        title: getPanelTitle(panelId),
+        position: { referenceGroup: targetGroup, direction: "within" },
+      });
+    } else {
+      // 新規 region: absolute direction で配置
+      const absoluteDirection =
+        region === "left"
+          ? ("left" as const)
+          : region === "right"
+            ? ("right" as const)
+            : ("below" as const);
+      api.addPanel({
+        id: panelId,
+        component: panelId,
+        title: getPanelTitle(panelId),
+        position: { direction: absoluteDirection },
+      });
+    }
+
+    // toolWindows を更新
+    const newRegionGroups = groupsByRegionInSpatialOrder(api)[region];
+    const finalPanel = api.getPanel(panelId);
+    const finalGroupId = finalPanel?.group?.id;
+    const finalIndex = finalGroupId
+      ? newRegionGroups.findIndex((g) => g.id === finalGroupId)
+      : -1;
+    const current = get().toolWindows[panelId];
+    const newSlot = pickDefaultSlotForRegion(region);
+    set({
+      toolWindows: {
+        ...get().toolWindows,
+        [panelId]: {
+          slot: newSlot,
+          region,
+          groupRef: finalGroupId,
+          indexInRegion: finalIndex >= 0 ? finalIndex : 0,
           viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
           ...(current?.undockSize ? { undockSize: current.undockSize } : {}),
         },

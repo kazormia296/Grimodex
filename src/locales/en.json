@@ -425,6 +425,11 @@
     "stripe": {
       "moveTo": "Move To",
       "removeFromSidebar": "Remove from sidebar",
+      "region": {
+        "left": "Left",
+        "right": "Right",
+        "bottom": "Bottom"
+      },
       "slot": {
         "LT": "Left Top",
         "LB": "Left Bottom",

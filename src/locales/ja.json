@@ -425,6 +425,11 @@
     "stripe": {
       "moveTo": "移動先",
       "removeFromSidebar": "サイドバーから削除",
+      "region": {
+        "left": "左",
+        "right": "右",
+        "bottom": "下"
+      },
       "slot": {
         "LT": "左 上",
         "LB": "左 下",
