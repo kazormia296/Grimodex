@@ -1,6 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import i18next from "i18next";
-import { Trash2, ArrowLeft, Clock } from "lucide-react";
+import {
+  Trash2,
+  ArrowLeft,
+  Clock,
+  FileText,
+  Network,
+  Crosshair,
+  AtSign,
+  Microscope,
+  CalendarClock,
+  LineSquiggle,
+} from "lucide-react";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { createRevision, pruneRevisions } from "@/features/revision/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -31,36 +42,43 @@ function getTabs() {
       id: "details",
       label: i18next.t("codex.tab.details"),
       testId: "detail-tab-details",
+      icon: FileText,
     },
     {
       id: "relations",
       label: i18next.t("codex.tab.relations"),
       testId: "detail-tab-relations",
+      icon: Network,
     },
     {
       id: "tracking",
       label: i18next.t("codex.tab.tracking"),
       testId: "detail-tab-tracking",
+      icon: Crosshair,
     },
     {
       id: "mentions",
       label: i18next.t("codex.tab.mentions"),
       testId: "detail-tab-mentions",
+      icon: AtSign,
     },
     {
       id: "research",
       label: i18next.t("codex.tab.research"),
       testId: "detail-tab-research",
+      icon: Microscope,
     },
     {
       id: "timeline",
       label: i18next.t("codex.tab.timeline"),
       testId: "detail-tab-timeline",
+      icon: CalendarClock,
     },
     {
       id: "foreshadow",
       label: i18next.t("codex.tab.foreshadow"),
       testId: "detail-tab-foreshadow",
+      icon: LineSquiggle,
     },
   ];
 }
