@@ -32,7 +32,6 @@ import {
 import { DOCKVIEW_PANEL_COMPONENTS } from "@/features/layout/panelComponents";
 import { ToolWindowShell } from "@/features/layout/ToolWindowShell";
 import { TOOL_WINDOW_REASSIGN_TYPE } from "@/features/layout/ToolWindowIcon";
-import { detectGroupRegion } from "@/features/layout/stripeRegionDetection";
 import {
   validateSerializedLayout,
   validateRuntimeLayout,
@@ -475,28 +474,28 @@ function EditorScreen() {
       if (panelId === "editor") return;
       if (useLayoutStore.getState().layoutLocked) return;
 
-      // 1. Target group が無い (outer edge / canvas) → reject
-      // (cross-region 新規 region 作成は禁止 — 設計判断 Y')
+      // Target group が無い (outer edge / canvas) → reject
       if (!event.group) return;
 
       const api = event.api;
-      const targetRegion = detectGroupRegion(api, event.group);
-      if (!targetRegion) return; // editor group 等への drop は reject
+      const editorGroup = api.getPanel("editor")?.group;
+      const isEditorTarget = !!editorGroup && event.group === editorGroup;
 
-      // 2. Source region
+      // editor group が drop 先のとき、center (editor の tab 化) は不可。
+      // 上下左右の edge なら隣に新規 region を作る配置として許可する。
+      if (isEditorTarget && event.position === "center") return;
+
       const existingPanel = api.getPanel(panelId);
-      let sourceRegion = null;
-      if (existingPanel?.group) {
-        sourceRegion = detectGroupRegion(api, existingPanel.group);
-      } else {
-        sourceRegion =
-          useLayoutStore.getState().toolWindows[panelId]?.region ?? null;
+
+      // 自分の group の同位置に落としても無意味 → no-op
+      if (existingPanel?.group === event.group) {
+        if (event.position === "center") return;
+        // 唯一の panel を自 group に split しようとすると removePanel で
+        // group ごと消えてしまう → no-op
+        if (event.group.panels.length <= 1) return;
       }
 
-      // 3. Cross-region reject
-      if (sourceRegion && sourceRegion !== targetRegion) return;
-
-      // 4. Position → Direction
+      // Position → Direction (cross-region は許可 — region をまたぐ配置も受け入れる)
       const direction =
         event.position === "center"
           ? ("within" as const)
@@ -506,7 +505,7 @@ function EditorScreen() {
               ? ("below" as const)
               : event.position; // "left" | "right"
 
-      // 5. 移動 (remove → addPanel)
+      // 移動 (remove → addPanel)
       if (existingPanel) api.removePanel(existingPanel);
       api.addPanel({
         id: panelId,

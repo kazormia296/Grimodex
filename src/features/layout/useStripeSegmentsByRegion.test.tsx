@@ -126,9 +126,9 @@ describe("useStripeSegmentsByRegion", () => {
     expect(result.current).toEqual({ left: [], right: [], bottom: [] });
   });
 
-  it("returns 1 segment per Dockview group in spatial order (left region)", () => {
+  it("returns 1 segment per band (上下に積まれた group → 別 band)", () => {
     // editor: 200..800 → left region 必要条件: right <= 200
-    // top group at y=0..300, bottom group at y=300..600
+    // top group at y=0..300, bottom group at y=300..600 (上下積み → 2 band)
     useLayoutStore.setState({
       dockviewApi: makeApi({
         groups: [
@@ -140,13 +140,51 @@ describe("useStripeSegmentsByRegion", () => {
     });
     const { result } = renderHook(() => useStripeSegmentsByRegion());
     expect(result.current.left).toHaveLength(2);
-    expect(result.current.left[0].groupId).toBe("lt");
-    expect(result.current.left[1].groupId).toBe("lb");
+    expect(result.current.left[0].groupIds).toEqual(["lt"]);
+    expect(result.current.left[1].groupIds).toEqual(["lb"]);
     expect(result.current.left[0].panels.map((p) => p.id)).toEqual(["scenes"]);
     expect(result.current.left[1].panels.map((p) => p.id)).toEqual(["codex"]);
   });
 
-  it("orders groups by spatial position (vertical: top→bottom)", () => {
+  it("merges side-by-side groups into 1 band (左右に並ぶ group → 同 band, divider 無し)", () => {
+    // 縦 stripe で左右に並ぶ 2 group (同じ Y レンジ) → 1 band 1 segment
+    useLayoutStore.setState({
+      dockviewApi: makeApi({
+        groups: [
+          { id: "g-l", rect: [0, 0, 100, 600], panelIds: ["scenes"] },
+          { id: "g-r", rect: [100, 0, 100, 600], panelIds: ["codex"] },
+        ],
+      }) as never,
+      stripePanelIds: new Set<PanelId>(["scenes", "codex"]),
+    });
+    const { result } = renderHook(() => useStripeSegmentsByRegion());
+    // 左右並びは縦 stripe で表現できない → 1 segment にまとめる
+    expect(result.current.left).toHaveLength(1);
+    expect(result.current.left[0].groupIds).toEqual(["g-l", "g-r"]);
+    expect(result.current.left[0].panels.map((p) => p.id)).toEqual([
+      "scenes",
+      "codex",
+    ]);
+  });
+
+  it("mixed: 上段は左右並び (1 band) + 下段単独 (1 band) → 2 segment", () => {
+    useLayoutStore.setState({
+      dockviewApi: makeApi({
+        groups: [
+          { id: "top-l", rect: [0, 0, 100, 300], panelIds: ["scenes"] },
+          { id: "top-r", rect: [100, 0, 100, 300], panelIds: ["codex"] },
+          { id: "bottom", rect: [0, 300, 200, 300], panelIds: ["snippets"] },
+        ],
+      }) as never,
+      stripePanelIds: new Set<PanelId>(["scenes", "codex", "snippets"]),
+    });
+    const { result } = renderHook(() => useStripeSegmentsByRegion());
+    expect(result.current.left).toHaveLength(2);
+    expect(result.current.left[0].groupIds).toEqual(["top-l", "top-r"]);
+    expect(result.current.left[1].groupIds).toEqual(["bottom"]);
+  });
+
+  it("orders bands by spatial position (vertical: top→bottom)", () => {
     useLayoutStore.setState({
       dockviewApi: makeApi({
         groups: [
@@ -158,9 +196,9 @@ describe("useStripeSegmentsByRegion", () => {
       stripePanelIds: new Set<PanelId>(["scenes", "codex"]),
     });
     const { result } = renderHook(() => useStripeSegmentsByRegion());
-    expect(result.current.left.map((s) => s.groupId)).toEqual([
-      "earlier",
-      "later",
+    expect(result.current.left.map((s) => s.groupIds)).toEqual([
+      ["earlier"],
+      ["later"],
     ]);
   });
 
@@ -242,7 +280,9 @@ describe("useStripeSegmentsByRegion", () => {
       },
     });
     const { result } = renderHook(() => useStripeSegmentsByRegion());
-    const lbSegment = result.current.left.find((s) => s.groupId === "lb");
+    const lbSegment = result.current.left.find((s) =>
+      s.groupIds.includes("lb"),
+    );
     expect(lbSegment?.panels.map((p) => p.id)).toEqual(["codex"]);
     expect(lbSegment?.panels[0].visible).toBe(false);
   });
@@ -312,7 +352,7 @@ describe("useStripeSegmentsByRegion", () => {
     });
     const { result } = renderHook(() => useStripeSegmentsByRegion());
     expect(result.current.left).toHaveLength(1);
-    expect(result.current.left[0].groupId).toBeUndefined();
+    expect(result.current.left[0].groupIds).toEqual([]);
     expect(result.current.left[0].key).toBe("ghost-left");
     expect(result.current.left[0].panels.map((p) => p.id)).toEqual(["scenes"]);
   });

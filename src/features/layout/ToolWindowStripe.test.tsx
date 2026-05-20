@@ -34,11 +34,11 @@ function resetStore() {
 function seg(
   key: string,
   panels: StripePanel[],
-  opts: { groupId?: string; sizeRatio?: number } = {},
+  opts: { groupIds?: string[]; sizeRatio?: number } = {},
 ): StripeSegment {
   return {
     key,
-    groupId: opts.groupId ?? key,
+    groupIds: opts.groupIds ?? [key],
     panels,
     sizeRatio: opts.sizeRatio ?? 1,
   };
@@ -290,7 +290,7 @@ describe("ToolWindowStripe (Y モデル)", () => {
       );
     });
 
-    it("drop on segment calls moveToGroup(panelId, groupId)", () => {
+    it("drop on segment calls moveToGroup with the band's first group id", () => {
       const moveToGroup = vi.fn();
       useLayoutStore.setState({ moveToGroup });
       const { container } = render(
@@ -301,12 +301,12 @@ describe("ToolWindowStripe (Y モデル)", () => {
             seg(
               "g1",
               [{ id: "scenes", slot: "LT", visible: true, active: true }],
-              { groupId: "g1" },
+              { groupIds: ["g1"] },
             ),
             seg(
               "g2",
               [{ id: "codex", slot: "LB", visible: false, active: false }],
-              { groupId: "g2" },
+              { groupIds: ["g2"] },
             ),
           ]}
         />,
@@ -319,14 +319,37 @@ describe("ToolWindowStripe (Y モデル)", () => {
       expect(moveToGroup).toHaveBeenCalledWith("scenes", "g2");
     });
 
-    it("drop on ghost segment (no groupId) is a no-op", () => {
+    it("drop on a multi-group band targets the first group", () => {
+      const moveToGroup = vi.fn();
+      useLayoutStore.setState({ moveToGroup });
+      const { container } = render(
+        <ToolWindowStripe
+          region="left"
+          orientation="vertical"
+          segments={[
+            seg(
+              "g-l+g-r",
+              [{ id: "scenes", slot: "LT", visible: true, active: true }],
+              { groupIds: ["g-l", "g-r"] },
+            ),
+          ]}
+        />,
+      );
+      const zone = container.querySelector("[data-drop-segment='g-l+g-r']");
+      fireEvent.drop(zone!, {
+        dataTransfer: { getData: vi.fn().mockReturnValue("codex") },
+      });
+      expect(moveToGroup).toHaveBeenCalledWith("codex", "g-l");
+    });
+
+    it("drop on ghost segment (no group) is a no-op", () => {
       const moveToGroup = vi.fn();
       useLayoutStore.setState({ moveToGroup });
       const ghost: StripeSegment = {
         key: "ghost-left",
+        groupIds: [],
         panels: [{ id: "scenes", slot: "LT", visible: false, active: false }],
         sizeRatio: 1,
-        // groupId 未定義
       };
       const { container } = render(
         <ToolWindowStripe
@@ -374,7 +397,7 @@ describe("ToolWindowStripe (Y モデル)", () => {
             seg(
               "g1",
               [{ id: "scenes", slot: "LT", visible: true, active: true }],
-              { groupId: "g1" },
+              { groupIds: ["g1"] },
             ),
           ]}
         />,

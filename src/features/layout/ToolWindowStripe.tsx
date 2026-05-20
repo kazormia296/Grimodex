@@ -30,15 +30,17 @@ function StripeGroup({ segment, orientation, region }: StripeGroupProps) {
     if (layoutLocked) return;
     const panelId = e.dataTransfer.getData(TOOL_WINDOW_REASSIGN_TYPE);
     if (!panelId) return;
-    // ghost segment (no groupId) はドロップ先に出来ない
-    if (!segment.groupId) return;
-    moveToGroup(panelId as never, segment.groupId);
+    // ghost segment (group 無し) はドロップ先に出来ない。
+    // band に複数 group があれば先頭 group に合流 (精密配置は Dockview overlay で)
+    const targetGroupId = segment.groupIds[0];
+    if (!targetGroupId) return;
+    moveToGroup(panelId as never, targetGroupId);
   };
 
   return (
     <div
       data-drop-segment={segment.key}
-      data-drop-group-id={segment.groupId ?? ""}
+      data-drop-group-id={segment.groupIds[0] ?? ""}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
       style={{ flexGrow: segment.sizeRatio, flexBasis: 0 }}

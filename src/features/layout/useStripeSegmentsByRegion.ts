@@ -6,21 +6,22 @@ import {
   getStripeRegion,
   type StripeRegion,
 } from "./toolWindowDefaults";
-import { groupsByRegionInSpatialOrder } from "./stripeRegionDetection";
+import { findBandIndex, groupBandsByRegion } from "./stripeRegionDetection";
 import type { StripePanel } from "./useStripePanelsByRegion";
 
 /**
- * 1 segment は 1 Dockview group に対応。
- * groupId が undefined のものは "ghost" (Dockview 上に group が無いが closed icon を出す必要がある時)。
+ * 1 segment は 1 band (= stripe 主軸方向で重なる Dockview group の集合) に対応。
+ * 同じ band 内に複数 group があるのは交差軸スプリット (縦 stripe での左右並び等)。
+ * `groupIds` が空配列のものは "ghost" (Dockview 上に group が無いが closed icon を出す時)。
  */
 export interface StripeSegment {
-  /** Region 内で一意な key (Dockview group id か "ghost-{region}") */
+  /** Region 内で一意な key (group id を "+" 連結、または "ghost-{region}") */
   key: string;
-  /** 実 Dockview group の id。virtual ghost segment の場合 undefined */
-  groupId?: string;
+  /** この band に含まれる Dockview group id 群。ghost segment は空配列 */
+  groupIds: string[];
   /** この segment に属する panel (open + closed snap)。tab 順 → closed 順 */
   panels: StripePanel[];
-  /** flex-grow に使う比例値。group の実寸 (vertical: height, horizontal: width)。virtual は 1 */
+  /** flex-grow に使う比例値。band の主軸 extent (vertical: height, horizontal: width)。ghost は 1 */
   sizeRatio: number;
 }
 
@@ -35,14 +36,15 @@ const EMPTY_SEGMENTS: StripeSegmentsByRegion = {
 /**
  * Region 別の Stripe segment を返す hook。Y モデルの中核。
  *
- * Segment は Dockview group に 1:1 対応。group の実寸を sizeRatio に反映するので、
- * ToolWindowStripe で flex-grow に渡せば stripe divider が Dockview splitter に追従する。
+ * Segment は band (stripe 主軸方向で重なる group の集合) に 1:1 対応。
+ * - 縦 stripe で上下に積まれた group → 別 band → 別 segment (間に divider)
+ * - 縦 stripe で左右に並んだ group → 同じ band → 1 segment にまとめる (divider 無し)
+ * band の主軸 extent を sizeRatio に反映するので、divider が Dockview splitter に追従する。
  *
  * 閉じている panel の配置:
- *   1. groupRef が現在の group に一致 → その segment
- *   2. indexInRegion が segment 範囲内 → その index segment
- *   3. clamp して end
- *   4. region に group が一つも無く closed panel しかない → "ghost" virtual segment 1 個
+ *   1. groupRef がいずれかの band に含まれる → その segment
+ *   2. indexInRegion (band index) でスナップ (clamp)
+ *   3. region に band が一つも無く closed panel しかない → "ghost" segment 1 個
  */
 export function useStripeSegmentsByRegion(): StripeSegmentsByRegion {
   const api = useLayoutStore((s) => s.dockviewApi);
@@ -114,6 +116,7 @@ export function useStripeSegmentsByRegion(): StripeSegmentsByRegion {
             result[region] = [
               {
                 key: `ghost-${region}`,
+                groupIds: [],
                 panels: buckets[region],
                 sizeRatio: 1,
               },
@@ -123,7 +126,7 @@ export function useStripeSegmentsByRegion(): StripeSegmentsByRegion {
         return result;
       }
 
-      const groupsByRegion = groupsByRegionInSpatialOrder(api);
+      const bandsByRegion = groupBandsByRegion(api);
       const result: StripeSegmentsByRegion = {
         left: [],
         right: [],
@@ -131,40 +134,36 @@ export function useStripeSegmentsByRegion(): StripeSegmentsByRegion {
       };
 
       for (const region of ["left", "right", "bottom"] as const) {
-        const groups = groupsByRegion[region];
-        const isVertical = region !== "bottom";
+        const bands = bandsByRegion[region];
 
-        // (a) groups から segment 雛形を作成
-        const segments: StripeSegment[] = groups.map((g) => {
-          const rect = g.element.getBoundingClientRect();
-          const size = isVertical ? rect.height : rect.width;
-          return {
-            key: g.id,
-            groupId: g.id,
-            panels: [],
-            sizeRatio: size > 0 ? size : 1,
-          };
-        });
+        // (a) band ごとに segment 雛形を作成 (1 band = 1 segment)
+        const segments: StripeSegment[] = bands.map((band) => ({
+          key: band.groups.map((g) => g.id).join("+"),
+          groupIds: band.groups.map((g) => g.id),
+          panels: [],
+          sizeRatio: band.extent > 0 ? band.extent : 1,
+        }));
 
-        // (b) 開いている panel: 所属 group の segment に tab 順で追加
+        // (b) 開いている panel: band 内の各 group の tab 順で追加
         const assigned = new Set<string>();
-        for (const segment of segments) {
-          const group = groups.find((g) => g.id === segment.groupId);
-          if (!group) continue;
-          for (const dockviewPanel of group.panels) {
-            if (dockviewPanel.id === "editor") continue;
-            if (!stripePanelIds.has(dockviewPanel.id as PanelId)) continue;
-            const id = dockviewPanel.id as Exclude<PanelId, "editor">;
-            if (undockedPanels.has(id)) continue; // overlay 側で描画
-            segment.panels.push({
-              id,
-              slot: getEffectiveSlot(id, toolWindows[id]),
-              visible: true,
-              active: group.activePanel?.id === id,
-            });
-            assigned.add(id);
+        bands.forEach((band, bandIndex) => {
+          const segment = segments[bandIndex];
+          for (const group of band.groups) {
+            for (const dockviewPanel of group.panels) {
+              if (dockviewPanel.id === "editor") continue;
+              if (!stripePanelIds.has(dockviewPanel.id as PanelId)) continue;
+              const id = dockviewPanel.id as Exclude<PanelId, "editor">;
+              if (undockedPanels.has(id)) continue; // overlay 側で描画
+              segment.panels.push({
+                id,
+                slot: getEffectiveSlot(id, toolWindows[id]),
+                visible: true,
+                active: group.activePanel?.id === id,
+              });
+              assigned.add(id);
+            }
           }
-        }
+        });
 
         // (c) 閉じている (or undocked) panel: groupRef / indexInRegion でスナップ
         const stragglers: StripePanel[] = [];
@@ -184,15 +183,15 @@ export function useStripeSegmentsByRegion(): StripeSegmentsByRegion {
             active: isUndocked,
           };
 
-          // 1. groupRef が existing segment に一致
+          // 1. groupRef がいずれかの band に含まれる
           if (state?.groupRef) {
-            const seg = segments.find((s) => s.groupId === state.groupRef);
-            if (seg) {
-              seg.panels.push(stripePanel);
+            const bandIdx = findBandIndex(bands, state.groupRef);
+            if (bandIdx >= 0) {
+              segments[bandIdx].panels.push(stripePanel);
               continue;
             }
           }
-          // 2. indexInRegion でスナップ (clamp)
+          // 2. indexInRegion (band index) でスナップ (clamp)
           if (segments.length > 0) {
             const idx = getEffectiveIndexInRegion(id, state);
             const clamped = Math.max(0, Math.min(idx, segments.length - 1));
@@ -202,11 +201,12 @@ export function useStripeSegmentsByRegion(): StripeSegmentsByRegion {
           }
         }
 
-        // (d) Dockview に group が一つも無い region に closed panel しかなければ ghost
+        // (d) band が一つも無い region に closed panel しかなければ ghost
         if (segments.length === 0 && stragglers.length > 0) {
           result[region] = [
             {
               key: `ghost-${region}`,
+              groupIds: [],
               panels: stragglers,
               sizeRatio: 1,
             },

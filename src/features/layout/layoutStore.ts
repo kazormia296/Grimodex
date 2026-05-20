@@ -25,7 +25,8 @@ import {
 } from "./toolWindowDefaults";
 import {
   detectGroupRegion,
-  groupsByRegionInSpatialOrder,
+  findBandIndex,
+  groupBandsByRegion,
   pickDefaultSlotForRegion,
 } from "./stripeRegionDetection";
 
@@ -409,11 +410,11 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Stripe icon に登録されている panel について、Dockview 上の actual position
- * (region / group id / index in region) に合わせて toolWindows を追従させる。
+ * (region / group id / band index) に合わせて toolWindows を追従させる。
  *
  * - 自由ドラッグで region 跨ぎ移動 → region 追従
  * - 同 region 内で別 group に移動 → groupRef 追従
- * - splitter ドラッグで group が並べ替わった → indexInRegion 追従
+ * - splitter ドラッグで band が並べ替わった → indexInRegion (band index) 追従
  * - 閉じている panel は更新しない (groupRef / indexInRegion は最後に居た位置を保持)
  */
 function syncSlotsToActualRegions(
@@ -424,7 +425,7 @@ function syncSlotsToActualRegions(
   const stripeIds = get().stripePanelIds;
   if (stripeIds.size === 0) return;
 
-  const regionGroupsCache = groupsByRegionInSpatialOrder(api);
+  const bandsByRegion = groupBandsByRegion(api);
   const updates: Partial<Record<PanelId, ToolWindowState>> = {};
   let changed = false;
 
@@ -438,9 +439,7 @@ function syncSlotsToActualRegions(
     if (!region) continue;
 
     const groupId = panel.group.id;
-    const groupIndex = regionGroupsCache[region].findIndex(
-      (g) => g.id === groupId,
-    );
+    const bandIndex = findBandIndex(bandsByRegion[region], groupId);
 
     const current = get().toolWindows[id];
     const currentRegion =
@@ -453,7 +452,7 @@ function syncSlotsToActualRegions(
     if (
       currentRegion === region &&
       current?.groupRef === groupId &&
-      current?.indexInRegion === groupIndex
+      current?.indexInRegion === bandIndex
     ) {
       continue;
     }
@@ -464,7 +463,7 @@ function syncSlotsToActualRegions(
       slot: newSlot,
       region,
       groupRef: groupId,
-      indexInRegion: groupIndex >= 0 ? groupIndex : 0,
+      indexInRegion: bandIndex >= 0 ? bandIndex : 0,
       viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
     };
     changed = true;
@@ -727,11 +726,7 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
     if (existing) {
       // 同じ group なら no-op
       if (existing.group?.id === targetGroupId) return;
-      // Cross-region は reject
-      if (existing.group) {
-        const sourceRegion = detectGroupRegion(api, existing.group);
-        if (sourceRegion && sourceRegion !== targetRegion) return;
-      }
+      // cross-region 許可: source region のチェックはしない
       api.removePanel(existing);
     }
 
@@ -742,9 +737,9 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
       position: { referenceGroup: targetGroup, direction: "within" },
     });
 
-    // toolWindows: region / groupRef / indexInRegion を更新
-    const regionGroups = groupsByRegionInSpatialOrder(api)[targetRegion];
-    const targetIndex = regionGroups.findIndex((g) => g.id === targetGroupId);
+    // toolWindows: region / groupRef / indexInRegion (band index) を更新
+    const bands = groupBandsByRegion(api)[targetRegion];
+    const bandIndex = findBandIndex(bands, targetGroupId);
     const current = get().toolWindows[panelId];
     const newSlot = pickDefaultSlotForRegion(targetRegion);
     set({
@@ -754,7 +749,7 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
           slot: newSlot,
           region: targetRegion,
           groupRef: targetGroupId,
-          indexInRegion: targetIndex >= 0 ? targetIndex : 0,
+          indexInRegion: bandIndex >= 0 ? bandIndex : 0,
           viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
           ...(current?.undockSize ? { undockSize: current.undockSize } : {}),
         },
@@ -777,25 +772,28 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
 
     // 移動先 group を解決:
     //   1. groupRef が target region 内の既存 group と一致 → そこに合流
-    //   2. region に group が 1 個以上 → 先頭 (spatial order)
+    //   2. region に band が 1 個以上 → 先頭 band の先頭 group
     //   3. group 無し → 新規 region を作成 (absolute direction)
     const stored = get().toolWindows[panelId];
-    const regionGroups = groupsByRegionInSpatialOrder(api)[region];
+    const bands = groupBandsByRegion(api)[region];
+    const allGroupsInRegion = bands.flatMap((b) => b.groups);
 
     let targetGroupId: string | undefined;
     if (
       stored?.groupRef &&
-      regionGroups.some((g) => g.id === stored.groupRef)
+      allGroupsInRegion.some((g) => g.id === stored.groupRef)
     ) {
       targetGroupId = stored.groupRef;
-    } else if (regionGroups.length > 0) {
-      targetGroupId = regionGroups[0].id;
+    } else if (bands.length > 0) {
+      targetGroupId = bands[0].groups[0].id;
     }
 
     if (existing) api.removePanel(existing);
 
     if (targetGroupId) {
-      const targetGroup = regionGroups.find((g) => g.id === targetGroupId)!;
+      const targetGroup = allGroupsInRegion.find(
+        (g) => g.id === targetGroupId,
+      )!;
       api.addPanel({
         id: panelId,
         component: panelId,
@@ -819,11 +817,11 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
     }
 
     // toolWindows を更新
-    const newRegionGroups = groupsByRegionInSpatialOrder(api)[region];
+    const newBands = groupBandsByRegion(api)[region];
     const finalPanel = api.getPanel(panelId);
     const finalGroupId = finalPanel?.group?.id;
     const finalIndex = finalGroupId
-      ? newRegionGroups.findIndex((g) => g.id === finalGroupId)
+      ? findBandIndex(newBands, finalGroupId)
       : -1;
     const current = get().toolWindows[panelId];
     const newSlot = pickDefaultSlotForRegion(region);
