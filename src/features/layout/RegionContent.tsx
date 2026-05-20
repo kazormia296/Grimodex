@@ -12,6 +12,7 @@ import {
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
 import { SlotView } from "./SlotView";
+import { normalizeFlexGrow } from "./layoutStateUtils";
 import type { RegionId } from "./layoutTypes";
 
 interface RegionContentProps {
@@ -19,9 +20,7 @@ interface RegionContentProps {
   orientation: "vertical" | "horizontal";
 }
 
-function regionHasOpenSlots(
-  slots: { activePanel: string | null }[],
-): boolean {
+function regionHasOpenSlots(slots: { activePanel: string | null }[]): boolean {
   return slots.some((slot) => slot.activePanel !== null);
 }
 
@@ -33,10 +32,7 @@ function insertIndexBeforeSlot(
   return index < 0 ? slots.length : index;
 }
 
-function insertIndexAfterSlot(
-  slots: { id: string }[],
-  slotId: string,
-): number {
+function insertIndexAfterSlot(slots: { id: string }[], slotId: string): number {
   const index = slots.findIndex((slot) => slot.id === slotId);
   return index < 0 ? slots.length : index + 1;
 }
@@ -48,7 +44,9 @@ export const RegionContent = memo(function RegionContent({
   const slots = useLayoutStore((s) => s.layout.regions[region].slots);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const containerRef = useRef<HTMLDivElement>(null);
-  const nudgeAdjacentSlotSizes = useLayoutStore((s) => s.nudgeAdjacentSlotSizes);
+  const nudgeAdjacentSlotSizes = useLayoutStore(
+    (s) => s.nudgeAdjacentSlotSizes,
+  );
   const finalizeLayoutResize = useLayoutStore((s) => s.finalizeLayoutResize);
   const movePanelToSlot = useLayoutStore((s) => s.movePanelToSlot);
   const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
@@ -60,6 +58,7 @@ export const RegionContent = memo(function RegionContent({
   );
 
   const openSlots = slots.filter((s) => s.activePanel !== null);
+  const slotFlexGrow = normalizeFlexGrow(openSlots.map((s) => s.sizeRatio));
 
   const getLayoutBudgetPx = useCallback(() => {
     const el = containerRef.current;
@@ -94,7 +93,8 @@ export const RegionContent = memo(function RegionContent({
 
   const handleSlotDragOver = useCallback(
     (slotId: string, e: React.DragEvent) => {
-      if (!acceptsToolWindowReassignDrag(e, layoutLocked, draggingPanel)) return;
+      if (!acceptsToolWindowReassignDrag(e, layoutLocked, draggingPanel))
+        return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       setDragOverTarget({ type: "slot", region, slotId });
@@ -116,7 +116,8 @@ export const RegionContent = memo(function RegionContent({
       surface: "content-start" | "content-end",
       e: React.DragEvent,
     ) => {
-      if (!acceptsToolWindowReassignDrag(e, layoutLocked, draggingPanel)) return;
+      if (!acceptsToolWindowReassignDrag(e, layoutLocked, draggingPanel))
+        return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       setDragOverTarget({
@@ -131,7 +132,8 @@ export const RegionContent = memo(function RegionContent({
 
   const handleBetweenSlotDragOver = useCallback(
     (insertIndex: number, e: React.DragEvent) => {
-      if (!acceptsToolWindowReassignDrag(e, layoutLocked, draggingPanel)) return;
+      if (!acceptsToolWindowReassignDrag(e, layoutLocked, draggingPanel))
+        return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       setDragOverTarget({
@@ -167,9 +169,7 @@ export const RegionContent = memo(function RegionContent({
       ? insertIndexAfterSlot(slots, openSlots[openSlots.length - 1].id)
       : slots.length;
   const contentStartInsertIndex =
-    openSlots.length > 0
-      ? insertIndexBeforeSlot(slots, openSlots[0].id)
-      : 0;
+    openSlots.length > 0 ? insertIndexBeforeSlot(slots, openSlots[0].id) : 0;
 
   if (!regionHasOpenSlots(slots)) return null;
 
@@ -186,13 +186,13 @@ export const RegionContent = memo(function RegionContent({
         const sizeStyle =
           orientation === "vertical"
             ? {
-                flexGrow: slot.sizeRatio,
+                flexGrow: slotFlexGrow[index],
                 flexBasis: 0,
                 flexShrink: 0,
                 minHeight: 0,
               }
             : {
-                flexGrow: slot.sizeRatio,
+                flexGrow: slotFlexGrow[index],
                 flexBasis: 0,
                 flexShrink: 0,
                 minWidth: 0,

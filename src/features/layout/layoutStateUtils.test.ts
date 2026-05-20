@@ -4,6 +4,7 @@ import {
   findPanelLocation,
   isRegionOpen,
   normalizeSlotRatios,
+  normalizeFlexGrow,
   redistributeRatiosAfterRemovingOpenSlot,
   validateLayoutState,
   clampLayoutStateForViewport,
@@ -319,5 +320,36 @@ describe("layout state structural helpers", () => {
     expect(
       validateLayoutState(cloneLayout(state), { viewport: VIEWPORT }).valid,
     ).toBe(true);
+  });
+});
+
+describe("normalizeFlexGrow", () => {
+  it("normalizes ratios summing below 1 so the total becomes 1", () => {
+    // Open-slot sizeRatios drift below 1 as sibling slots collapse.
+    const result = normalizeFlexGrow([0.0439, 0.1239]);
+    expect(result.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
+  });
+
+  it("preserves relative proportions", () => {
+    const result = normalizeFlexGrow([0.0439, 0.1239]);
+    expect(result[1] / result[0]).toBeCloseTo(0.1239 / 0.0439, 10);
+  });
+
+  it("normalizes ratios summing above 1 down to 1", () => {
+    const result = normalizeFlexGrow([2, 3, 5]);
+    expect(result.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
+    expect(result).toEqual([0.2, 0.3, 0.5]);
+  });
+
+  it("returns a single value of 1 for one entry", () => {
+    expect(normalizeFlexGrow([0.04])).toEqual([1]);
+  });
+
+  it("falls back to equal split when the sum is non-positive", () => {
+    expect(normalizeFlexGrow([0, 0])).toEqual([0.5, 0.5]);
+  });
+
+  it("returns an empty array for no entries", () => {
+    expect(normalizeFlexGrow([])).toEqual([]);
   });
 });

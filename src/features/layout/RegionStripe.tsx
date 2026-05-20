@@ -6,10 +6,9 @@ import {
   TOOL_WINDOW_REASSIGN_TYPE,
 } from "./layoutDnD";
 import { useLayoutStore } from "./layoutStore";
-import {
-  DND_NEW_SLOT_BETWEEN_HALF_PX,
-} from "./layoutConstants";
+import { DND_NEW_SLOT_BETWEEN_HALF_PX } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
+import { normalizeFlexGrow } from "./layoutStateUtils";
 import type { RegionId } from "./layoutTypes";
 import type { RegionSegment } from "./useRegionSegments";
 
@@ -17,9 +16,16 @@ interface StripeGroupProps {
   segment: RegionSegment;
   orientation: "vertical" | "horizontal";
   region: RegionId;
+  /** 正規化済み flex-grow（segment 間の合計 = 1） */
+  flexGrow: number;
 }
 
-function StripeGroup({ segment, orientation, region }: StripeGroupProps) {
+function StripeGroup({
+  segment,
+  orientation,
+  region,
+  flexGrow,
+}: StripeGroupProps) {
   const movePanelToSlot = useLayoutStore((s) => s.movePanelToSlot);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
@@ -64,7 +70,7 @@ function StripeGroup({ segment, orientation, region }: StripeGroupProps) {
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      style={{ flexGrow: segment.sizeRatio, flexBasis: 0 }}
+      style={{ flexGrow, flexBasis: 0 }}
       className={cn(
         "flex min-h-0 min-w-0",
         orientation === "vertical"
@@ -108,10 +114,13 @@ export function RegionStripe({
 
   if (segments.length === 0) return null;
 
+  const segmentFlexGrow = normalizeFlexGrow(segments.map((s) => s.sizeRatio));
+
   const stripeEndInsertIndex =
     segments.length > 0
-      ? slots.findIndex((slot) => slot.id === segments[segments.length - 1].slotId) +
-        1
+      ? slots.findIndex(
+          (slot) => slot.id === segments[segments.length - 1].slotId,
+        ) + 1
       : slots.length;
 
   const insertIndexBetweenSegments = (segmentIndex: number): number => {
@@ -197,6 +206,7 @@ export function RegionStripe({
             segment={segment}
             orientation={orientation}
             region={region}
+            flexGrow={segmentFlexGrow[i]}
           />
           {i < segments.length - 1 && (
             <div

@@ -182,6 +182,20 @@ export function normalizeSlotRatios(slots: SlotState[]): SlotState[] {
 }
 
 /**
+ * 描画用 flex-grow 配列。比率を合計 1 に正規化して返す。
+ *
+ * CSS flex-grow は 1 行内の合計が 1 未満だと free space を全量分配せず
+ * 残りを空白のまま残す。生の sizeRatio（open slot だけだと合計 < 1 になり得る）を
+ * そのまま flex-grow に使うと slot がコンテナを埋めないため、描画直前に正規化する。
+ */
+export function normalizeFlexGrow(ratios: number[]): number[] {
+  if (ratios.length === 0) return [];
+  const sum = ratios.reduce((acc, r) => acc + r, 0);
+  if (sum <= 0) return ratios.map(() => 1 / ratios.length);
+  return ratios.map((r) => r / sum);
+}
+
+/**
  * open slot 削除後、削除 slot の ratio を残り open slot へ按分する。
  * 折りたたみ slot の ratio は保持（§6.2）。
  */
@@ -193,7 +207,9 @@ export function redistributeRatiosAfterRemovingOpenSlot(
     return remainingSlots;
   }
 
-  const openRemaining = remainingSlots.filter((slot) => slot.activePanel !== null);
+  const openRemaining = remainingSlots.filter(
+    (slot) => slot.activePanel !== null,
+  );
   if (openRemaining.length === 0) {
     return remainingSlots;
   }
