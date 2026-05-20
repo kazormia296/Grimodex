@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { useLayoutStore } from "./layoutStore";
 import { ToolWindowStripe } from "./ToolWindowStripe";
-import { useStripePanelsByRegion } from "./useStripePanelsByRegion";
+import { useStripeSegmentsByRegion } from "./useStripeSegmentsByRegion";
 
 interface ToolWindowShellProps {
   /** Dockview area (中央) */
@@ -12,8 +12,8 @@ interface ToolWindowShellProps {
 
 /**
  * IntelliJ 式 3 方向ツールウィンドウ shell。
- * Phase 1 では「currently visible panel がある region のみ stripe を表示」。
- * 0 panel の region は grid セル幅 0 で完全に潰す。
+ * Y モデル: stripe は Dockview group ごとの N segment で構成される。
+ * 0 segment の region は grid セル幅 0 で完全に潰す。
  * Phase 3 で undock overlay 層を兄弟要素として追加する想定。
  */
 export function ToolWindowShell({
@@ -22,15 +22,18 @@ export function ToolWindowShell({
 }: ToolWindowShellProps) {
   const stripeSizes = useLayoutStore((s) => s.stripeSizes);
   const stripeVisibility = useLayoutStore((s) => s.stripeVisibility);
-  const stripePanels = useStripePanelsByRegion();
+  const segments = useStripeSegmentsByRegion();
 
   if (hidden) {
     return <>{children}</>;
   }
 
-  const showLeft = stripeVisibility.left && stripePanels.left.length > 0;
-  const showRight = stripeVisibility.right && stripePanels.right.length > 0;
-  const showBottom = stripeVisibility.bottom && stripePanels.bottom.length > 0;
+  // segment が 1 つ以上 (内容の有無にかかわらず) あれば stripe を出す
+  const hasContent = (segs: ReadonlyArray<{ panels: unknown[] }>) =>
+    segs.some((s) => s.panels.length > 0);
+  const showLeft = stripeVisibility.left && hasContent(segments.left);
+  const showRight = stripeVisibility.right && hasContent(segments.right);
+  const showBottom = stripeVisibility.bottom && hasContent(segments.bottom);
 
   return (
     <div
@@ -50,7 +53,7 @@ export function ToolWindowShell({
           <ToolWindowStripe
             region="left"
             orientation="vertical"
-            panels={stripePanels.left}
+            segments={segments.left}
           />
         )}
       </div>
@@ -65,7 +68,7 @@ export function ToolWindowShell({
           <ToolWindowStripe
             region="right"
             orientation="vertical"
-            panels={stripePanels.right}
+            segments={segments.right}
           />
         )}
       </div>
@@ -74,7 +77,7 @@ export function ToolWindowShell({
           <ToolWindowStripe
             region="bottom"
             orientation="horizontal"
-            panels={stripePanels.bottom}
+            segments={segments.bottom}
           />
         )}
       </div>

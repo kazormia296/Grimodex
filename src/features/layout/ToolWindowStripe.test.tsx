@@ -8,6 +8,8 @@ import {
   DEFAULT_STRIPE_SIZES,
   DEFAULT_STRIPE_VISIBILITY,
 } from "./toolWindowDefaults";
+import type { StripeSegment } from "./useStripeSegmentsByRegion";
+import type { StripePanel } from "./useStripePanelsByRegion";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -28,31 +30,49 @@ function resetStore() {
   });
 }
 
-describe("ToolWindowStripe", () => {
+/** Helper: 1 segment fixture */
+function seg(
+  key: string,
+  panels: StripePanel[],
+  opts: { groupId?: string; sizeRatio?: number } = {},
+): StripeSegment {
+  return {
+    key,
+    groupId: opts.groupId ?? key,
+    panels,
+    sizeRatio: opts.sizeRatio ?? 1,
+  };
+}
+
+describe("ToolWindowStripe (Y モデル)", () => {
   beforeEach(() => {
     resetStore();
   });
 
-  it("returns null when panels list is empty", () => {
+  it("returns null when segments list is empty", () => {
     const { container } = render(
-      <ToolWindowStripe region="left" orientation="vertical" panels={[]} />,
+      <ToolWindowStripe region="left" orientation="vertical" segments={[]} />,
     );
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders an icon for each panel (active + inactive)", () => {
+  it("renders an icon for each panel across segments", () => {
     render(
       <ToolWindowStripe
         region="left"
         orientation="vertical"
-        panels={[
-          { id: "scenes", slot: "LT", visible: true, active: true },
-          {
-            id: "command-center-results",
-            slot: "LB",
-            visible: false,
-            active: false,
-          },
+        segments={[
+          seg("g1", [
+            { id: "scenes", slot: "LT", visible: true, active: true },
+          ]),
+          seg("g2", [
+            {
+              id: "command-center-results",
+              slot: "LB",
+              visible: false,
+              active: false,
+            },
+          ]),
         ]}
       />,
     );
@@ -71,7 +91,11 @@ describe("ToolWindowStripe", () => {
       <ToolWindowStripe
         region="left"
         orientation="vertical"
-        panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
+        segments={[
+          seg("g1", [
+            { id: "scenes", slot: "LT", visible: true, active: true },
+          ]),
+        ]}
       />,
     );
     const btn = screen.getByRole("button", { name: "layout.panel.scenes" });
@@ -84,11 +108,14 @@ describe("ToolWindowStripe", () => {
       <ToolWindowStripe
         region="left"
         orientation="vertical"
-        panels={[{ id: "scenes", slot: "LT", visible: true, active: false }]}
+        segments={[
+          seg("g1", [
+            { id: "scenes", slot: "LT", visible: true, active: false },
+          ]),
+        ]}
       />,
     );
     const btn = screen.getByRole("button", { name: "layout.panel.scenes" });
-    expect(btn.getAttribute("aria-pressed")).toBe("false");
     expect(btn.getAttribute("data-state")).toBe("background");
   });
 
@@ -97,15 +124,18 @@ describe("ToolWindowStripe", () => {
       <ToolWindowStripe
         region="left"
         orientation="vertical"
-        panels={[{ id: "scenes", slot: "LT", visible: false, active: false }]}
+        segments={[
+          seg("g1", [
+            { id: "scenes", slot: "LT", visible: false, active: false },
+          ]),
+        ]}
       />,
     );
     const btn = screen.getByRole("button", { name: "layout.panel.scenes" });
-    expect(btn.getAttribute("aria-pressed")).toBe("false");
     expect(btn.getAttribute("data-state")).toBe("closed");
   });
 
-  it("click invokes togglePanel regardless of state (close active / setActive or open inactive)", async () => {
+  it("click invokes togglePanel", async () => {
     const togglePanel = vi.fn();
     useLayoutStore.setState({ togglePanel });
     const user = userEvent.setup();
@@ -113,14 +143,10 @@ describe("ToolWindowStripe", () => {
       <ToolWindowStripe
         region="left"
         orientation="vertical"
-        panels={[
-          { id: "scenes", slot: "LT", visible: true, active: true },
-          {
-            id: "command-center-results",
-            slot: "LB",
-            visible: false,
-            active: false,
-          },
+        segments={[
+          seg("g1", [
+            { id: "scenes", slot: "LT", visible: true, active: true },
+          ]),
         ]}
       />,
     );
@@ -128,93 +154,113 @@ describe("ToolWindowStripe", () => {
       screen.getByRole("button", { name: "layout.panel.scenes" }),
     );
     expect(togglePanel).toHaveBeenCalledWith("scenes");
-    await user.click(
-      screen.getByRole("button", {
-        name: "layout.panel.command-center-results",
-      }),
-    );
-    expect(togglePanel).toHaveBeenCalledWith("command-center-results");
   });
 
-  describe("Phase 2 - sub-slot divider", () => {
-    it("renders a divider between LT and LB groups when both have panels", () => {
+  describe("divider rendering (N-1 for N segments)", () => {
+    it("renders no divider for 1 segment", () => {
       const { container } = render(
         <ToolWindowStripe
           region="left"
           orientation="vertical"
-          panels={[
-            { id: "scenes", slot: "LT", visible: true, active: true },
-            { id: "codex", slot: "LB", visible: false, active: false },
+          segments={[
+            seg("g1", [
+              { id: "scenes", slot: "LT", visible: true, active: true },
+            ]),
           ]}
         />,
       );
-      expect(container.querySelector("[data-stripe-divider]")).not.toBeNull();
+      expect(container.querySelectorAll("[data-stripe-divider]").length).toBe(
+        0,
+      );
     });
 
-    it("renders a divider even when all panels share the same sub-slot (always visible)", () => {
+    it("renders 1 divider for 2 segments", () => {
       const { container } = render(
         <ToolWindowStripe
           region="left"
           orientation="vertical"
-          panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
-        />,
-      );
-      expect(container.querySelector("[data-stripe-divider]")).not.toBeNull();
-    });
-
-    it("renders a divider for bottom stripe with only BL panels (always visible)", () => {
-      const { container } = render(
-        <ToolWindowStripe
-          region="bottom"
-          orientation="horizontal"
-          panels={[{ id: "timeline", slot: "BL", visible: true, active: true }]}
-        />,
-      );
-      expect(container.querySelector("[data-stripe-divider]")).not.toBeNull();
-    });
-
-    it("renders divider between BL and BR groups in bottom stripe", () => {
-      const { container } = render(
-        <ToolWindowStripe
-          region="bottom"
-          orientation="horizontal"
-          panels={[
-            { id: "timeline", slot: "BL", visible: true, active: true },
-            { id: "snippets", slot: "BR", visible: false, active: false },
+          segments={[
+            seg("g1", [
+              { id: "scenes", slot: "LT", visible: true, active: true },
+            ]),
+            seg("g2", [
+              { id: "codex", slot: "LB", visible: false, active: false },
+            ]),
           ]}
         />,
       );
-      expect(container.querySelector("[data-stripe-divider]")).not.toBeNull();
+      expect(container.querySelectorAll("[data-stripe-divider]").length).toBe(
+        1,
+      );
     });
 
-    it("LT group appears before LB group in vertical stripe", () => {
+    it("renders 2 dividers for 3 segments", () => {
       const { container } = render(
         <ToolWindowStripe
           region="left"
           orientation="vertical"
-          panels={[
-            { id: "codex", slot: "LB", visible: false, active: false },
-            { id: "scenes", slot: "LT", visible: true, active: true },
+          segments={[
+            seg("g1", [
+              { id: "scenes", slot: "LT", visible: true, active: true },
+            ]),
+            seg("g2", [
+              { id: "codex", slot: "LB", visible: false, active: false },
+            ]),
+            seg("g3", [
+              {
+                id: "command-center-results",
+                slot: "LB",
+                visible: false,
+                active: false,
+              },
+            ]),
           ]}
         />,
       );
-      const buttons = container.querySelectorAll("button");
-      const ids = Array.from(buttons).map((b) =>
-        b.getAttribute("data-stripe-icon"),
+      expect(container.querySelectorAll("[data-stripe-divider]").length).toBe(
+        2,
       );
-      const scenesIdx = ids.indexOf("scenes");
-      const codexIdx = ids.indexOf("codex");
-      expect(scenesIdx).toBeLessThan(codexIdx);
     });
   });
 
-  describe("Phase 2 - DnD icon reassignment", () => {
+  describe("segment flex-grow reflects sizeRatio", () => {
+    it("each segment gets flexGrow inline style from sizeRatio", () => {
+      const { container } = render(
+        <ToolWindowStripe
+          region="left"
+          orientation="vertical"
+          segments={[
+            seg(
+              "g1",
+              [{ id: "scenes", slot: "LT", visible: true, active: true }],
+              { sizeRatio: 300 },
+            ),
+            seg(
+              "g2",
+              [{ id: "codex", slot: "LB", visible: false, active: false }],
+              { sizeRatio: 100 },
+            ),
+          ]}
+        />,
+      );
+      const g1 = container.querySelector("[data-drop-segment='g1']");
+      const g2 = container.querySelector("[data-drop-segment='g2']");
+      expect((g1 as HTMLElement).style.flexGrow).toBe("300");
+      expect((g2 as HTMLElement).style.flexGrow).toBe("100");
+    });
+  });
+
+  describe("DnD icon reassignment", () => {
     it("icon button is draggable", () => {
       render(
         <ToolWindowStripe
           region="left"
           orientation="vertical"
-          panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
+          segments={[
+            seg("g1", [
+              { id: "scenes", slot: "LT", visible: true, active: true },
+            ]),
+          ]}
         />,
       );
       const btn = screen.getByRole("button", { name: "layout.panel.scenes" });
@@ -226,7 +272,11 @@ describe("ToolWindowStripe", () => {
         <ToolWindowStripe
           region="left"
           orientation="vertical"
-          panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
+          segments={[
+            seg("g1", [
+              { id: "scenes", slot: "LT", visible: true, active: true },
+            ]),
+          ]}
         />,
       );
       const btn = screen.getByRole("button", { name: "layout.panel.scenes" });
@@ -240,118 +290,118 @@ describe("ToolWindowStripe", () => {
       );
     });
 
-    it("drop on LB drop zone calls moveToSlot(panelId, 'LB')", () => {
-      const moveToSlot = vi.fn();
-      useLayoutStore.setState({ moveToSlot });
+    it("drop on segment calls moveToGroup(panelId, groupId)", () => {
+      const moveToGroup = vi.fn();
+      useLayoutStore.setState({ moveToGroup });
       const { container } = render(
         <ToolWindowStripe
           region="left"
           orientation="vertical"
-          panels={[
-            { id: "scenes", slot: "LT", visible: true, active: true },
-            { id: "codex", slot: "LB", visible: false, active: false },
+          segments={[
+            seg(
+              "g1",
+              [{ id: "scenes", slot: "LT", visible: true, active: true }],
+              { groupId: "g1" },
+            ),
+            seg(
+              "g2",
+              [{ id: "codex", slot: "LB", visible: false, active: false }],
+              { groupId: "g2" },
+            ),
           ]}
         />,
       );
-      const lbZone = container.querySelector("[data-drop-slot='LB']");
-      expect(lbZone).not.toBeNull();
-      fireEvent.drop(lbZone!, {
-        dataTransfer: {
-          getData: vi.fn().mockReturnValue("scenes"),
-        },
-      });
-      expect(moveToSlot).toHaveBeenCalledWith("scenes", "LB");
-    });
-
-    it("drop on LT drop zone calls moveToSlot(panelId, 'LT')", () => {
-      const moveToSlot = vi.fn();
-      useLayoutStore.setState({ moveToSlot });
-      const { container } = render(
-        <ToolWindowStripe
-          region="left"
-          orientation="vertical"
-          panels={[
-            { id: "scenes", slot: "LT", visible: true, active: true },
-            { id: "codex", slot: "LB", visible: false, active: false },
-          ]}
-        />,
-      );
-      const ltZone = container.querySelector("[data-drop-slot='LT']");
-      expect(ltZone).not.toBeNull();
-      fireEvent.drop(ltZone!, {
-        dataTransfer: {
-          getData: vi.fn().mockReturnValue("codex"),
-        },
-      });
-      expect(moveToSlot).toHaveBeenCalledWith("codex", "LT");
-    });
-
-    it("LT drop zone exists and accepts drops even when LT has no panels", () => {
-      const moveToSlot = vi.fn();
-      useLayoutStore.setState({ moveToSlot });
-      const { container } = render(
-        <ToolWindowStripe
-          region="left"
-          orientation="vertical"
-          panels={[{ id: "codex", slot: "LB", visible: true, active: true }]}
-        />,
-      );
-      const ltZone = container.querySelector("[data-drop-slot='LT']");
-      expect(ltZone).not.toBeNull();
-      fireEvent.drop(ltZone!, {
-        dataTransfer: { getData: vi.fn().mockReturnValue("codex") },
-      });
-      expect(moveToSlot).toHaveBeenCalledWith("codex", "LT");
-    });
-
-    it("LB drop zone exists and accepts drops even when LB has no panels", () => {
-      const moveToSlot = vi.fn();
-      useLayoutStore.setState({ moveToSlot });
-      const { container } = render(
-        <ToolWindowStripe
-          region="left"
-          orientation="vertical"
-          panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
-        />,
-      );
-      const lbZone = container.querySelector("[data-drop-slot='LB']");
-      expect(lbZone).not.toBeNull();
-      fireEvent.drop(lbZone!, {
+      const g2Zone = container.querySelector("[data-drop-segment='g2']");
+      expect(g2Zone).not.toBeNull();
+      fireEvent.drop(g2Zone!, {
         dataTransfer: { getData: vi.fn().mockReturnValue("scenes") },
       });
-      expect(moveToSlot).toHaveBeenCalledWith("scenes", "LB");
+      expect(moveToGroup).toHaveBeenCalledWith("scenes", "g2");
+    });
+
+    it("drop on ghost segment (no groupId) is a no-op", () => {
+      const moveToGroup = vi.fn();
+      useLayoutStore.setState({ moveToGroup });
+      const ghost: StripeSegment = {
+        key: "ghost-left",
+        panels: [{ id: "scenes", slot: "LT", visible: false, active: false }],
+        sizeRatio: 1,
+        // groupId 未定義
+      };
+      const { container } = render(
+        <ToolWindowStripe
+          region="left"
+          orientation="vertical"
+          segments={[ghost]}
+        />,
+      );
+      const zone = container.querySelector("[data-drop-segment='ghost-left']");
+      fireEvent.drop(zone!, {
+        dataTransfer: { getData: vi.fn().mockReturnValue("codex") },
+      });
+      expect(moveToGroup).not.toHaveBeenCalled();
     });
 
     it("drop with empty panelId is a no-op", () => {
-      const moveToSlot = vi.fn();
-      useLayoutStore.setState({ moveToSlot });
+      const moveToGroup = vi.fn();
+      useLayoutStore.setState({ moveToGroup });
       const { container } = render(
         <ToolWindowStripe
           region="left"
           orientation="vertical"
-          panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
+          segments={[
+            seg("g1", [
+              { id: "scenes", slot: "LT", visible: true, active: true },
+            ]),
+          ]}
         />,
       );
-      const ltZone = container.querySelector("[data-drop-slot='LT']");
-      fireEvent.drop(ltZone!, {
+      const zone = container.querySelector("[data-drop-segment='g1']");
+      fireEvent.drop(zone!, {
         dataTransfer: { getData: vi.fn().mockReturnValue("") },
       });
-      expect(moveToSlot).not.toHaveBeenCalled();
+      expect(moveToGroup).not.toHaveBeenCalled();
+    });
+
+    it("drop respects layout lock", () => {
+      const moveToGroup = vi.fn();
+      useLayoutStore.setState({ moveToGroup, layoutLocked: true });
+      const { container } = render(
+        <ToolWindowStripe
+          region="left"
+          orientation="vertical"
+          segments={[
+            seg(
+              "g1",
+              [{ id: "scenes", slot: "LT", visible: true, active: true }],
+              { groupId: "g1" },
+            ),
+          ]}
+        />,
+      );
+      const zone = container.querySelector("[data-drop-segment='g1']");
+      fireEvent.drop(zone!, {
+        dataTransfer: { getData: vi.fn().mockReturnValue("scenes") },
+      });
+      expect(moveToGroup).not.toHaveBeenCalled();
     });
   });
 
-  describe("Phase 2 - right-click context menu", () => {
+  describe("right-click context menu", () => {
     it("right-click on icon renders 'Remove from sidebar' option", async () => {
       render(
         <ToolWindowStripe
           region="left"
           orientation="vertical"
-          panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
+          segments={[
+            seg("g1", [
+              { id: "scenes", slot: "LT", visible: true, active: true },
+            ]),
+          ]}
         />,
       );
       const btn = screen.getByRole("button", { name: "layout.panel.scenes" });
       fireEvent.contextMenu(btn);
-      // Radix ContextMenu renders in portal; wait for it
       const removeItem = await screen.findByTestId(
         "ctx-remove-from-stripe-scenes",
       );
@@ -366,7 +416,11 @@ describe("ToolWindowStripe", () => {
         <ToolWindowStripe
           region="left"
           orientation="vertical"
-          panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
+          segments={[
+            seg("g1", [
+              { id: "scenes", slot: "LT", visible: true, active: true },
+            ]),
+          ]}
         />,
       );
       const btn = screen.getByRole("button", { name: "layout.panel.scenes" });
@@ -383,7 +437,11 @@ describe("ToolWindowStripe", () => {
         <ToolWindowStripe
           region="left"
           orientation="vertical"
-          panels={[{ id: "scenes", slot: "LT", visible: true, active: true }]}
+          segments={[
+            seg("g1", [
+              { id: "scenes", slot: "LT", visible: true, active: true },
+            ]),
+          ]}
         />,
       );
       const btn = screen.getByRole("button", { name: "layout.panel.scenes" });

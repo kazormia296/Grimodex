@@ -25,6 +25,8 @@ import {
 } from "./toolWindowDefaults";
 import {
   detectActualRegion,
+  detectGroupRegion,
+  groupsByRegionInSpatialOrder,
   pickDefaultSlotForRegion,
 } from "./stripeRegionDetection";
 
@@ -352,6 +354,16 @@ interface LayoutState {
    */
   moveToSlot: (panel: PanelId, slot: ToolWindowSlot) => void;
 
+  /**
+   * Panel を指定 Dockview group 内に物理移動する (Y モデル)。
+   * - target group が source と同じ region でない場合は no-op (cross-region 拒否)
+   * - 既に同じ group 内なら no-op
+   * - layout lock 中は no-op
+   * - toolWindows の region / groupRef / indexInRegion を更新
+   * - editor は no-op
+   */
+  moveToGroup: (panel: PanelId, targetGroupId: string) => void;
+
   /** Tool window 設定を global-settings から読み込み (handleReady で呼ぶ) */
   loadToolWindowSettings: () => Promise<void>;
 
@@ -665,6 +677,58 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
         position,
       });
     }
+  },
+
+  moveToGroup(panelId, targetGroupId) {
+    const api = get().dockviewApi;
+    if (!api || panelId === "editor") return;
+    if (get().layoutLocked) return;
+
+    const targetGroup = api.groups.find((g) => g.id === targetGroupId);
+    if (!targetGroup) return;
+
+    const targetRegion = detectGroupRegion(api, targetGroup);
+    if (!targetRegion) return; // editor group などは reject
+
+    const existing = api.getPanel(panelId);
+
+    if (existing) {
+      // 同じ group なら no-op
+      if (existing.group?.id === targetGroupId) return;
+      // Cross-region は reject
+      if (existing.group) {
+        const sourceRegion = detectGroupRegion(api, existing.group);
+        if (sourceRegion && sourceRegion !== targetRegion) return;
+      }
+      api.removePanel(existing);
+    }
+
+    api.addPanel({
+      id: panelId,
+      component: panelId,
+      title: getPanelTitle(panelId),
+      position: { referenceGroup: targetGroup, direction: "within" },
+    });
+
+    // toolWindows: region / groupRef / indexInRegion を更新
+    const regionGroups = groupsByRegionInSpatialOrder(api)[targetRegion];
+    const targetIndex = regionGroups.findIndex((g) => g.id === targetGroupId);
+    const current = get().toolWindows[panelId];
+    const newSlot = pickDefaultSlotForRegion(targetRegion);
+    set({
+      toolWindows: {
+        ...get().toolWindows,
+        [panelId]: {
+          slot: newSlot,
+          region: targetRegion,
+          groupRef: targetGroupId,
+          indexInRegion: targetIndex >= 0 ? targetIndex : 0,
+          viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
+          ...(current?.undockSize ? { undockSize: current.undockSize } : {}),
+        },
+      },
+    });
+    scheduleSave(get);
   },
 
   async loadToolWindowSettings() {
