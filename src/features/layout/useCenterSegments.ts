@@ -38,7 +38,3 @@ export function useCenterSegments(): RegionSegment[] {
     return segments;
   }, [center, hiddenStripePanels]);
 }
-
-export function useCenterHasStripe(): boolean {
-  return useCenterSegments().length > 0;
-}

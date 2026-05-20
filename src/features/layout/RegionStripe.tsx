@@ -263,14 +263,15 @@ export function RegionStripe({
       data-stripe-root
       data-stripe-region={region}
       className={cn(
-        "relative flex h-full min-h-0 w-full min-w-0 overflow-hidden bg-background/40",
+        "relative flex h-full min-h-0 w-full min-w-0 overflow-hidden",
+        // center は CenterStripe 側が bg/border を持つため二重化させない。
+        region !== "center" && "bg-background/40",
         orientation === "vertical"
           ? "flex-col gap-0 py-0.5"
           : "flex-row gap-0 px-0.5",
         region === "left" && "border-r border-border",
         region === "right" && "border-l border-border",
         region === "bottom" && "border-t border-border",
-        region === "center" && "border-b border-border",
       )}
     >
       {showDropZones && (

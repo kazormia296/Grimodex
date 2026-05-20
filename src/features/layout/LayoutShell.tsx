@@ -1,6 +1,7 @@
 import { memo, useMemo } from "react";
 import type { PanelId } from "./panelIds";
-import { CenterWorkspace } from "./CenterWorkspace";
+import { CenterContent } from "./CenterContent";
+import { CenterStripe } from "./CenterStripe";
 import { EditorArea } from "./EditorArea";
 import { isCenterBandVisible } from "./layoutStateUtils";
 import { RegionDock, SideRegionStripeColumn } from "./RegionDock";
@@ -11,6 +12,7 @@ import {
   buildLayoutGridTemplateColumns,
   computeLayoutGridMetrics,
 } from "./layoutMetrics";
+import { STRIPE_SIZE } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutDnDHighlightOverlay } from "./LayoutDnDHighlightOverlay";
@@ -29,8 +31,9 @@ function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
 /**
  * IntelliJ-style asymmetric layout shell (§3 of layout design doc).
  *
- * Bottom region spans left content + editor + right content (wide band between
- * side stripes). Side stripes span both rows; only stripe columns sit in corners.
+ * Center Stripe is a permanent top band and the bottom region a wide bottom
+ * band — both span left content + editor + right content between the side
+ * stripes. Side stripes span all rows; only stripe columns sit in the corners.
  */
 export const LayoutShell = memo(function LayoutShell({
   hidden = false,
@@ -105,10 +108,13 @@ export const LayoutShell = memo(function LayoutShell({
     );
   }
 
+  const cstripeRowAreas =
+    '"lstripe cstripe cstripe cstripe cstripe cstripe rstripe"';
   const mainRowAreas = '"lstripe lcontent lspl editor rspl rcontent rstripe"';
+  const bottomRowAreas = '"lstripe bottom bottom bottom bottom bottom rstripe"';
   const gridTemplateAreas = hasBottom
-    ? `${mainRowAreas} "lstripe bottom bottom bottom bottom bottom rstripe"`
-    : mainRowAreas;
+    ? `${cstripeRowAreas} ${mainRowAreas} ${bottomRowAreas}`
+    : `${cstripeRowAreas} ${mainRowAreas}`;
 
   return (
     <>
@@ -119,10 +125,19 @@ export const LayoutShell = memo(function LayoutShell({
         className="grid h-full w-full overflow-hidden"
         style={{
           gridTemplateColumns,
-          gridTemplateRows: hasBottom ? `1fr ${metrics.bottomCellPx}px` : "1fr",
+          gridTemplateRows: hasBottom
+            ? `${STRIPE_SIZE}px 1fr ${metrics.bottomCellPx}px`
+            : `${STRIPE_SIZE}px 1fr`,
           gridTemplateAreas,
         }}
       >
+        <div
+          style={{ gridArea: "cstripe" }}
+          className="min-h-0 min-w-0 overflow-hidden"
+        >
+          <CenterStripe />
+        </div>
+
         {hasLeft && (
           <div
             style={{ gridArea: "lstripe" }}
@@ -160,7 +175,7 @@ export const LayoutShell = memo(function LayoutShell({
             style={{ gridArea: "editor" }}
             className="min-h-0 min-w-0 overflow-hidden"
           >
-            <CenterWorkspace />
+            <CenterContent />
           </div>
         )}
 
