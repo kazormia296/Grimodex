@@ -972,11 +972,13 @@ describe("useLayoutStore", () => {
         id: "g-editor",
         element: { getBoundingClientRect: () => makeRect(...editorRect) },
         panels: [{ id: "editor" }],
+        header: { hidden: false },
       };
       const synthGroups = groups.map((g) => ({
         id: g.id,
         element: { getBoundingClientRect: () => makeRect(...g.rect) },
         panels: g.panelIds.map((id) => ({ id })),
+        header: { hidden: false },
       }));
       const all = [editorGroup, ...synthGroups];
       const panelToGroup = new Map<string, (typeof all)[number]>();
@@ -1028,11 +1030,13 @@ describe("useLayoutStore", () => {
           id: "g-lt",
           element: { getBoundingClientRect: () => makeRect(0, 0, 200, 300) },
           panels: [],
+          header: { hidden: false },
         },
         {
           id: "g-lb",
           element: { getBoundingClientRect: () => makeRect(0, 300, 200, 300) },
           panels: [{ id: "scenes" }],
+          header: { hidden: false },
         },
       ] as never;
       api.getPanel = vi.fn((id: string) => {
@@ -1083,6 +1087,7 @@ describe("useLayoutStore", () => {
           id: "g-rt",
           element: { getBoundingClientRect: () => makeRect(820, 0, 180, 600) },
           panels: [{ id: "scenes" }],
+          header: { hidden: false },
         },
       ] as never;
       api.getPanel = vi.fn((id: string) => {
@@ -1157,6 +1162,64 @@ describe("useLayoutStore", () => {
       // 閉じてる panel は保持
       expect(after?.groupRef).toBe("g-vanished");
       expect(after?.region).toBe("left");
+    });
+  });
+
+  describe("hideAllGroupHeaders (dock タブ除去)", () => {
+    function makeGroup(id: string, panelIds: string[]) {
+      return {
+        id,
+        panels: panelIds.map((pid) => ({ id: pid })),
+        header: { hidden: false },
+      };
+    }
+
+    function makeApi(groups: ReturnType<typeof makeGroup>[]) {
+      let layoutHandler: (() => void) | null = null;
+      let addGroupHandler: ((g: unknown) => void) | null = null;
+      return {
+        api: {
+          groups,
+          getPanel: vi.fn(),
+          onDidAddGroup: vi.fn().mockImplementation((cb) => {
+            addGroupHandler = cb;
+            return { dispose: vi.fn() };
+          }),
+          onDidAddPanel: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+          onDidLayoutChange: vi.fn().mockImplementation((cb) => {
+            layoutHandler = cb;
+            return { dispose: vi.fn() };
+          }),
+        },
+        fireLayoutChange: () => layoutHandler?.(),
+        fireAddGroup: (g: unknown) => addGroupHandler?.(g),
+      };
+    }
+
+    it("hides headers for all groups (editor / tool windows / multi-tab)", () => {
+      const editorGroup = makeGroup("g-editor", ["editor"]);
+      const leftGroup = makeGroup("g-left", ["scenes"]);
+      const multiTabGroup = makeGroup("g-right", ["chat", "chat-history"]);
+      const { api, fireLayoutChange } = makeApi([
+        editorGroup,
+        leftGroup,
+        multiTabGroup,
+      ]);
+      useLayoutStore.getState().setDockviewApi(api as never);
+      fireLayoutChange();
+      expect(editorGroup.header.hidden).toBe(true);
+      expect(leftGroup.header.hidden).toBe(true);
+      expect(multiTabGroup.header.hidden).toBe(true);
+    });
+
+    it("hides headers on group add", () => {
+      const editorGroup = makeGroup("g-editor", ["editor"]);
+      const toolGroup = makeGroup("g-tool", ["scenes"]);
+      const { api, fireAddGroup } = makeApi([editorGroup, toolGroup]);
+      useLayoutStore.getState().setDockviewApi(api as never);
+      fireAddGroup(toolGroup);
+      expect(toolGroup.header.hidden).toBe(true);
+      expect(editorGroup.header.hidden).toBe(true);
     });
   });
 

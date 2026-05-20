@@ -474,6 +474,21 @@ function syncSlotsToActualRegions(
   }
 }
 
+/**
+ * Dockview の全 group タブヘッダを非表示にする (IntelliJ 風)。
+ *
+ * - ツールウィンドウ group → 切替・開閉は stripe アイコンが担う
+ * - editor group → 章/シーン切替は SceneEditor 自身の TabBar が担う
+ *
+ * エディタ領域はエディタ専用 (ツールウィンドウは tab 化させない — handlePanelDrop 参照)
+ * なので editor group は常に "editor" 単独。よって例外なく全ヘッダを隠せる。
+ */
+function hideAllGroupHeaders(api: DockviewApi) {
+  for (const group of api.groups) {
+    group.header.hidden = true;
+  }
+}
+
 function scheduleSave(get: () => LayoutState) {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
@@ -512,6 +527,7 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
       if (get().layoutLocked) {
         group.locked = true;
       }
+      hideAllGroupHeaders(api);
     });
 
     // 一度でも追加された panel は stripe に icon を残す (閉じても消えない)
@@ -529,6 +545,7 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
     // (これで close → reopen 時に最後にあった region に戻り、icon もそこに残る)
     api.onDidLayoutChange(() => {
       syncSlotsToActualRegions(api, get, set);
+      hideAllGroupHeaders(api);
       scheduleSave(get);
     });
   },

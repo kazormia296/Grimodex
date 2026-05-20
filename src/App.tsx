@@ -542,7 +542,15 @@ function EditorScreen() {
         return;
       }
 
-      // 明示的な group へドロップ → その tab に within で追加 (drop 先優先)
+      // エディタ領域はエディタ専用 — ツールウィンドウを editor group の tab には
+      // しない。本来の stripe region へ openPanelAtSlot で配置する。
+      const isEditorGroup = event.group.panels.some((p) => p.id === "editor");
+      if (isEditorGroup) {
+        useLayoutStore.getState().openPanelAtSlot(panelId);
+        return;
+      }
+
+      // ツールウィンドウ group へドロップ → その tab に within で追加 (drop 先優先)
       event.api.addPanel({
         id: panelId,
         component: panelId,
