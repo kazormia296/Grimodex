@@ -1,8 +1,12 @@
 import i18next from "i18next";
 import {
+  buildCenterSegmentsWithTools,
   buildDefaultLayoutState,
   clampLayoutStateForViewport,
   cloneLayoutState,
+  redistributeSpaceOnEditorClose,
+  removePanelFromSideSlots,
+  updateCenter,
 } from "./layoutStateUtils";
 import { DEFAULT_REGION_SIZES } from "./layoutConstants";
 import type { LayoutState, RegionId, ToolWindowPanelId } from "./layoutTypes";
@@ -24,8 +28,9 @@ export type LayoutPresetMeta = BuiltinPresetMeta | CustomPresetMeta;
 
 interface PresetDefinition {
   activePanels: Partial<Record<ToolWindowPanelId, boolean>>;
-  /** viewport 幅/高さに対する比率。未指定 region は DEFAULT_REGION_SIZES を使用 */
   regionFractions?: Partial<Record<RegionId, number>>;
+  editorOpen?: boolean;
+  centerToolPanels?: ToolWindowPanelId[];
 }
 
 const PRESET_DEFINITIONS: Record<string, PresetDefinition> = {
@@ -39,6 +44,7 @@ const PRESET_DEFINITIONS: Record<string, PresetDefinition> = {
       chat: true,
       codex: true,
     },
+    editorOpen: false,
     regionFractions: { left: 0.45, right: 0.35, bottom: 0.17 },
   },
   "builtin:chat-main": {
@@ -52,6 +58,7 @@ const PRESET_DEFINITIONS: Record<string, PresetDefinition> = {
       codex: true,
       kouetsu: true,
     },
+    centerToolPanels: ["kouetsu", "codex"],
     regionFractions: { left: 0.13, right: 0.35, bottom: 0.28 },
   },
   "builtin:codex-main": {
@@ -76,14 +83,33 @@ const PRESET_I18N_KEYS: Record<(typeof BUILTIN_IDS)[number], string> = {
   "builtin:codex-main": "layout.preset.codexMain",
 };
 
-/** プリセット定義を viewport 上の LayoutState に展開 */
 export function materializePreset(
   definition: PresetDefinition,
   viewport: { width: number; height: number },
 ): LayoutState {
-  const state = buildDefaultLayoutState({
+  const editorOpen = definition.editorOpen ?? true;
+  let state = buildDefaultLayoutState({
     activePanels: definition.activePanels,
+    editorOpen,
   });
+
+  const centerToolPanels = definition.centerToolPanels ?? [];
+  if (centerToolPanels.length > 0) {
+    state = removePanelFromSideSlots(state, centerToolPanels);
+    state = updateCenter(state, (center) => ({
+      ...center,
+      editorOpen,
+      segments: buildCenterSegmentsWithTools(
+        centerToolPanels,
+        definition.activePanels,
+      ),
+    }));
+  } else if (definition.editorOpen != null) {
+    state = updateCenter(state, (center) => ({
+      ...center,
+      editorOpen,
+    }));
+  }
 
   if (definition.regionFractions) {
     for (const [region, fraction] of Object.entries(
@@ -98,7 +124,13 @@ export function materializePreset(
     }
   }
 
-  return clampLayoutStateForViewport(state, viewport);
+  let result = clampLayoutStateForViewport(state, viewport);
+
+  if (!editorOpen && centerToolPanels.length === 0) {
+    result = redistributeSpaceOnEditorClose(result, viewport);
+  }
+
+  return result;
 }
 
 export function getBuiltinPresetState(

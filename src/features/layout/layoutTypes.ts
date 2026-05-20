@@ -1,9 +1,12 @@
 import type { PanelId } from "./panelIds";
 
-/** 永続化スキーマ v2 */
-export const LAYOUT_SCHEMA_VERSION = 2 as const;
+/** 永続化スキーマ v3 */
+export const LAYOUT_SCHEMA_VERSION = 3 as const;
 
 export type RegionId = "left" | "right" | "bottom";
+
+/** side region + center band（DnD / drop target 用） */
+export type LayoutRegionId = RegionId | "center";
 
 export type ToolWindowPanelId = Exclude<PanelId, "editor">;
 
@@ -23,7 +26,31 @@ export interface RegionState {
   slots: SlotState[];
 }
 
+/** center band 内の左→右 segment。editor は 1 つのみ。 */
+export type CenterSegment =
+  | { id: string; kind: "editor"; sizeRatio: number }
+  | {
+      id: string;
+      kind: "tool";
+      sizeRatio: number;
+      panels: ToolWindowPanelId[];
+      activePanel: ToolWindowPanelId | null;
+    };
+
+export type CenterToolSegment = Extract<CenterSegment, { kind: "tool" }>;
+
+export interface CenterState {
+  editorOpen: boolean;
+  segments: CenterSegment[];
+}
+
 export interface LayoutState {
+  regions: Record<RegionId, RegionState>;
+  center: CenterState;
+}
+
+/** v2 永続化（migrate 用） */
+export interface LayoutStateV2 {
   regions: Record<RegionId, RegionState>;
 }
 
@@ -46,7 +73,7 @@ export type LayoutValidationResult =
   | { valid: false; reason: string };
 
 export interface PanelLocation {
-  region: RegionId;
+  region: LayoutRegionId;
   slotIndex: number;
   slot: SlotState;
 }

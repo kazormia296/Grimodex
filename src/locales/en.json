@@ -387,6 +387,7 @@
     "regionLeft": "Left",
     "regionRight": "Right",
     "regionBottom": "Bottom",
+    "regionCenter": "Center",
     "lockLayout": "Lock layout",
     "lockedLayout": "Layout locked",
     "panel": {

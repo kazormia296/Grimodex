@@ -1,6 +1,8 @@
 import { memo, useMemo } from "react";
 import type { PanelId } from "./panelIds";
+import { CenterWorkspace } from "./CenterWorkspace";
 import { EditorArea } from "./EditorArea";
+import { isCenterBandVisible } from "./layoutStateUtils";
 import { RegionDock, SideRegionStripeColumn } from "./RegionDock";
 import { RegionContent } from "./RegionContent";
 import { RegionResizeSplitter } from "./RegionResizeSplitter";
@@ -47,6 +49,8 @@ export const LayoutShell = memo(function LayoutShell({
   const hasRight = segments.right.some((s) => s.panels.length > 0);
   const hasBottom = segments.bottom.some((s) => s.panels.length > 0);
 
+  const centerBandVisible = isCenterBandVisible(layout);
+
   const metrics = useMemo(
     () =>
       computeLayoutGridMetrics({
@@ -56,12 +60,14 @@ export const LayoutShell = memo(function LayoutShell({
         leftOpen,
         rightOpen,
         bottomOpen,
+        centerBandVisible,
         leftSize: layout.regions.left.size,
         rightSize: layout.regions.right.size,
         bottomSize: layout.regions.bottom.size,
       }),
     [
       bottomOpen,
+      centerBandVisible,
       hasBottom,
       hasLeft,
       hasRight,
@@ -152,12 +158,14 @@ export const LayoutShell = memo(function LayoutShell({
           </div>
         )}
 
-        <div
-          style={{ gridArea: "editor" }}
-          className="min-h-0 min-w-0 overflow-hidden"
-        >
-          <EditorArea />
-        </div>
+        {centerBandVisible && (
+          <div
+            style={{ gridArea: "editor" }}
+            className="min-h-0 min-w-0 overflow-hidden"
+          >
+            <CenterWorkspace />
+          </div>
+        )}
 
         {rightOpen && (
           <div

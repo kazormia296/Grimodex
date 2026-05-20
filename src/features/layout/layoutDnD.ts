@@ -1,4 +1,4 @@
-import type { LayoutState, RegionId, ToolWindowPanelId } from "./layoutTypes";
+import type { LayoutState, LayoutRegionId, RegionId, ToolWindowPanelId } from "./layoutTypes";
 
 export type NewSlotDropSurface =
   | "stripe-start"
@@ -8,17 +8,15 @@ export type NewSlotDropSurface =
   | "content-between"
   | "content-end";
 
-/** MIME type for stripe icon HTML5 DnD slot reassignment */
 export const TOOL_WINDOW_REASSIGN_TYPE =
   "application/grimodex-toolwindow-reassign";
 
 export type DragOverTarget =
-  | { type: "slot"; region: RegionId; slotId: string }
+  | { type: "slot"; region: LayoutRegionId; slotId: string }
   | {
       type: "new-slot";
-      region: RegionId;
+      region: LayoutRegionId;
       insertIndex: number;
-      /** Which DOM node to highlight / hit-test */
       surface: NewSlotDropSurface;
     };
 
@@ -41,8 +39,13 @@ export function acceptsToolWindowReassignDrag(
   return e.dataTransfer.types.includes(TOOL_WINDOW_REASSIGN_TYPE);
 }
 
-function parseRegion(value: string | undefined | null): RegionId | null {
-  if (value === "left" || value === "right" || value === "bottom") {
+function parseRegion(value: string | undefined | null): LayoutRegionId | null {
+  if (
+    value === "left" ||
+    value === "right" ||
+    value === "bottom" ||
+    value === "center"
+  ) {
     return value;
   }
   return null;
@@ -58,6 +61,13 @@ export function resolveDropTargetFromElement(
       if (slotId) {
         const region =
           parseRegion(node.dataset.dropRegion) ??
+          parseRegion(
+            node.closest("[data-center-content]")?.getAttribute(
+              "data-center-content",
+            )
+              ? "center"
+              : null,
+          ) ??
           parseRegion(
             node.closest("[data-region-content]")?.getAttribute(
               "data-region-content",
@@ -118,6 +128,13 @@ export function resolveDropTargetFromElement(
         const region =
           parseRegion(node.dataset.dropRegion) ??
           parseRegion(
+            node.closest("[data-center-content]")?.getAttribute(
+              "data-center-content",
+            )
+              ? "center"
+              : null,
+          ) ??
+          parseRegion(
             node.closest("[data-region-content]")?.getAttribute(
               "data-region-content",
             ),
@@ -147,12 +164,12 @@ export function performToolWindowDrop(
   actions: {
     movePanelToSlot: (
       panel: ToolWindowPanelId,
-      region: RegionId,
+      region: LayoutRegionId,
       slotId: string,
     ) => void;
     movePanelToNewSlot: (
       panel: ToolWindowPanelId,
-      region: RegionId,
+      region: LayoutRegionId,
       insertIndex: number,
     ) => void;
   },
@@ -194,18 +211,23 @@ export function getDropTargetElement(target: DragOverTarget): Element | null {
               `[data-drop-new-slot="${target.region}"][data-drop-surface="${target.surface}"]`,
             ) ??
             document.querySelector(
-              `[data-region-content="${target.region}"]`,
+              target.region === "center"
+                ? "[data-center-content]"
+                : `[data-region-content="${target.region}"]`,
             )
           );
         case "content-between":
-          return document.querySelector(
-            `[data-region-content="${target.region}"] [data-drop-between][data-insert-index="${target.insertIndex}"]`,
-          );
+          return target.region === "center"
+            ? document.querySelector(
+                `[data-center-content] [data-drop-between][data-insert-index="${target.insertIndex}"]`,
+              )
+            : document.querySelector(
+                `[data-region-content="${target.region}"] [data-drop-between][data-insert-index="${target.insertIndex}"]`,
+              );
       }
   }
 }
 
-/** open slot の直前に挿入する index（region.slots 基準） */
 export function countOpenSlotsBeforeIndex(
   slots: LayoutState["regions"][RegionId]["slots"],
   insertIndex: number,
@@ -217,11 +239,52 @@ export function countOpenSlotsBeforeIndex(
   return count;
 }
 
-/** 新規 slot 挿入時の content 分割プレビュー矩形（1/(n+1) 均等分割） */
+export function countOpenCenterSegmentsBeforeIndex(
+  layout: LayoutState,
+  insertIndex: number,
+): number {
+  let count = 0;
+  for (let i = 0; i < insertIndex && i < layout.center.segments.length; i++) {
+    const segment = layout.center.segments[i];
+    if (segment.kind === "editor") {
+      if (layout.center.editorOpen) count++;
+    } else if (segment.activePanel !== null) {
+      count++;
+    }
+  }
+  return count;
+}
+
 export function getNewSlotPreviewRect(
   target: Extract<DragOverTarget, { type: "new-slot" }>,
   layout: LayoutState,
 ): DropTargetRect | null {
+  if (target.region === "center") {
+    const container = document.querySelector("[data-center-content]");
+    if (!container) return null;
+
+    const containerRect = container.getBoundingClientRect();
+    if (containerRect.width <= 0 || containerRect.height <= 0) return null;
+
+    const openCount = layout.center.segments.filter((segment) => {
+      if (segment.kind === "editor") return layout.center.editorOpen;
+      return segment.activePanel !== null;
+    }).length;
+    const openBefore = countOpenCenterSegmentsBeforeIndex(
+      layout,
+      target.insertIndex,
+    );
+    const totalSlots = openCount + 1;
+    const share = containerRect.width / totalSlots;
+    if (share <= 0) return null;
+    return {
+      left: containerRect.left + openBefore * share,
+      top: containerRect.top,
+      width: share,
+      height: containerRect.height,
+    };
+  }
+
   const container = document.querySelector(
     `[data-region-content="${target.region}"]`,
   );
@@ -230,7 +293,7 @@ export function getNewSlotPreviewRect(
   const containerRect = container.getBoundingClientRect();
   if (containerRect.width <= 0 || containerRect.height <= 0) return null;
 
-  const slots = layout.regions[target.region].slots;
+  const slots = layout.regions[target.region as RegionId].slots;
   const openCount = slots.filter((slot) => slot.activePanel !== null).length;
   const openBefore = countOpenSlotsBeforeIndex(slots, target.insertIndex);
   const isHorizontal = target.region === "bottom";

@@ -15,11 +15,11 @@ import { useLayoutStore } from "./layoutStore";
 import type { PanelId } from "./panelIds";
 import { PANEL_ICON_MAP } from "./panelIcons";
 import { KEYBOARD_SHORTCUT_MAP } from "./panelRegions";
-import type { RegionId } from "./layoutTypes";
+import type { LayoutRegionId, RegionId } from "./layoutTypes";
 
 interface ToolWindowIconProps {
   panelId: Exclude<PanelId, "editor">;
-  region: RegionId;
+  region: LayoutRegionId;
   /** panel === slot.activePanel */
   active: boolean;
   /** その slot が展開中か。false（折りたたみ）のときアイコンを更に dim 表示 */

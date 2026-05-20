@@ -8,8 +8,9 @@ export interface LayoutGridMetrics {
   rightContentPx: number;
   leftSplitterPx: number;
   rightSplitterPx: number;
+  centerColumnPx: string;
+  centerBandVisible: boolean;
   bottomCellPx: number;
-  /** Bottom row height (stripe + optional content). Side stripe columns only. */
   bottomRowInset: number;
   leftDockPx: number;
   rightDockPx: number;
@@ -23,17 +24,16 @@ export interface LayoutGridMetricsInput {
   leftOpen: boolean;
   rightOpen: boolean;
   bottomOpen: boolean;
+  centerBandVisible: boolean;
   leftSize: number;
   rightSize: number;
   bottomSize: number;
 }
 
-/** Region content size: open → stored size, closed → 0. */
 export function regionContentPx(open: boolean, storedSize: number): number {
   return open ? storedSize : 0;
 }
 
-/** Side dock width = stripe + content. */
 export function sideDockPx(
   hasRegion: boolean,
   open: boolean,
@@ -43,7 +43,6 @@ export function sideDockPx(
   return STRIPE_SIZE + regionContentPx(open, storedSize);
 }
 
-/** Bottom dock height = stripe + content. */
 export function bottomDockPx(
   hasRegion: boolean,
   open: boolean,
@@ -53,7 +52,6 @@ export function bottomDockPx(
   return STRIPE_SIZE + regionContentPx(open, storedSize);
 }
 
-/** Grid cell sizes: stripe / content / splitter columns are separate so bottom spans center. */
 export function computeLayoutGridMetrics(
   input: LayoutGridMetricsInput,
 ): LayoutGridMetrics {
@@ -85,6 +83,8 @@ export function computeLayoutGridMetrics(
     rightContentPx,
     leftSplitterPx,
     rightSplitterPx,
+    centerBandVisible: input.centerBandVisible,
+    centerColumnPx: input.centerBandVisible ? "minmax(0, 1fr)" : "0px",
     leftDockPx,
     rightDockPx,
     bottomDockPx: bottomDock,
@@ -93,7 +93,6 @@ export function computeLayoutGridMetrics(
   };
 }
 
-/** 7-column grid: lstripe | lcontent | lspl | editor | rspl | rcontent | rstripe */
 export function buildLayoutGridTemplateColumns(
   metrics: LayoutGridMetrics,
 ): string {
@@ -101,19 +100,17 @@ export function buildLayoutGridTemplateColumns(
     `${metrics.leftStripePx}px`,
     `${metrics.leftContentPx}px`,
     `${metrics.leftSplitterPx}px`,
-    "1fr",
+    metrics.centerColumnPx,
     `${metrics.rightSplitterPx}px`,
     `${metrics.rightContentPx}px`,
     `${metrics.rightStripePx}px`,
   ].join(" ");
 }
 
-/** CSS calc for side-region stripe segment zone height. */
 export function sideContentZoneHeight(bottomRowInset: number): string {
   return bottomRowInset > 0 ? `calc(100% - ${bottomRowInset}px)` : "100%";
 }
 
-/** Fixed horizontal chrome consumed before the flexible editor column. */
 export function sideLayoutChromePx(
   metrics: Pick<
     LayoutGridMetrics,
@@ -135,7 +132,10 @@ export function sideLayoutChromePx(
   );
 }
 
-export function regionAxisSize(region: RegionId, metrics: LayoutGridMetrics): number {
+export function regionAxisSize(
+  region: RegionId,
+  metrics: LayoutGridMetrics,
+): number {
   switch (region) {
     case "left":
       return metrics.leftDockPx;

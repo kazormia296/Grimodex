@@ -35,6 +35,7 @@ describe("layoutMetrics", () => {
       leftOpen: true,
       rightOpen: true,
       bottomOpen: true,
+      centerBandVisible: true,
       leftSize: 260,
       rightSize: 340,
       bottomSize: 220,
@@ -53,7 +54,7 @@ describe("layoutMetrics", () => {
     expect(m.bottomCellPx).toBe(m.bottomDockPx + SPLITTER_GUTTER_PX);
   });
 
-  it("buildLayoutGridTemplateColumns keeps bottom band wider than editor-only column", () => {
+  it("buildLayoutGridTemplateColumns uses 1fr center when band visible", () => {
     const m = computeLayoutGridMetrics({
       hasLeft: true,
       hasRight: true,
@@ -61,13 +62,14 @@ describe("layoutMetrics", () => {
       leftOpen: true,
       rightOpen: true,
       bottomOpen: true,
+      centerBandVisible: true,
       leftSize: 260,
       rightSize: 340,
       bottomSize: 220,
     });
 
     expect(buildLayoutGridTemplateColumns(m)).toBe(
-      `${STRIPE_SIZE}px 260px ${SPLITTER_GUTTER_PX}px 1fr ${SPLITTER_GUTTER_PX}px 340px ${STRIPE_SIZE}px`,
+      `${STRIPE_SIZE}px 260px ${SPLITTER_GUTTER_PX}px minmax(0, 1fr) ${SPLITTER_GUTTER_PX}px 340px ${STRIPE_SIZE}px`,
     );
     expect(sideLayoutChromePx(m)).toBe(
       STRIPE_SIZE * 2 +
@@ -75,6 +77,23 @@ describe("layoutMetrics", () => {
         340 +
         SPLITTER_GUTTER_PX * 2,
     );
+  });
+
+  it("buildLayoutGridTemplateColumns uses 0px center when band hidden", () => {
+    const m = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: false,
+      leftOpen: true,
+      rightOpen: true,
+      bottomOpen: false,
+      centerBandVisible: false,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 0,
+    });
+
+    expect(buildLayoutGridTemplateColumns(m)).toContain("0px");
   });
 
   it("computeLayoutGridMetrics omits content and splitter when region closed", () => {
@@ -85,6 +104,7 @@ describe("layoutMetrics", () => {
       leftOpen: false,
       rightOpen: false,
       bottomOpen: false,
+      centerBandVisible: false,
       leftSize: 260,
       rightSize: 340,
       bottomSize: 220,

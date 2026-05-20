@@ -49,12 +49,21 @@ describe("layoutPresets viewport safety", () => {
     ).toBe(true);
   });
 
-  it("plan preset leaves room for editor on narrow screens", () => {
+  it("plan preset hides editor and expands side regions", () => {
     const state = getBuiltinPresetState("builtin:plan", NARROW_VIEWPORT)!;
-    const editorSpace =
-      NARROW_VIEWPORT.width -
-      state.regions.left.size -
-      state.regions.right.size;
-    expect(editorSpace).toBeGreaterThanOrEqual(320);
+    expect(state.center.editorOpen).toBe(false);
+    expect(
+      state.regions.left.size + state.regions.right.size,
+    ).toBeGreaterThan(800);
+  });
+
+  it("review preset places kouetsu and codex in center", () => {
+    const state = getBuiltinPresetState("builtin:review", NARROW_VIEWPORT)!;
+    const centerPanels = state.center.segments
+      .filter((s) => s.kind === "tool")
+      .flatMap((s) => s.panels);
+    expect(centerPanels).toContain("kouetsu");
+    expect(centerPanels).toContain("codex");
+    expect(state.center.editorOpen).toBe(true);
   });
 });

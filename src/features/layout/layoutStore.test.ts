@@ -82,8 +82,20 @@ describe("useLayoutStore", () => {
       expect(slot?.activePanel).toBe("codex-quick");
     });
 
-    it("showPanel('editor') is a no-op crash", () => {
-      expect(() => useLayoutStore.getState().showPanel("editor")).not.toThrow();
+    it("showPanel('editor') opens the editor column", () => {
+      useLayoutStore.getState().setEditorOpen(false);
+      useLayoutStore.getState().showPanel("editor");
+      expect(useLayoutStore.getState().layout.center.editorOpen).toBe(true);
+    });
+  });
+
+  describe("togglePanel editor", () => {
+    it("toggles editor open state", () => {
+      expect(useLayoutStore.getState().layout.center.editorOpen).toBe(true);
+      useLayoutStore.getState().togglePanel("editor");
+      expect(useLayoutStore.getState().layout.center.editorOpen).toBe(false);
+      useLayoutStore.getState().togglePanel("editor");
+      expect(useLayoutStore.getState().layout.center.editorOpen).toBe(true);
     });
   });
 
@@ -297,24 +309,28 @@ describe("useLayoutStore", () => {
       ).toBe(true);
     });
 
-    it("loads v2 persisted layout when valid", async () => {
-      const saved = buildDefaultLayoutState({ allInactive: true });
-      saved.regions.left.slots[0].activePanel = "scenes";
+    it("migrates v2 persisted layout to v3 center state", async () => {
+      const full = buildDefaultLayoutState({ allInactive: true });
+      full.regions.left.slots[0].activePanel = "scenes";
+      const savedV2 = { regions: full.regions };
       mockInvoke.mockResolvedValue({
         recentWorkspaces: [],
         lastActiveWorkspace: null,
         theme: "system",
         showLauncherOnStartup: false,
-        layout: { layoutVersion: 2, state: saved },
+        layout: { layoutVersion: 2, state: savedV2 },
         layoutPresets: [],
       });
 
       await useLayoutStore.getState().initializeLayout();
+      const { layout } = useLayoutStore.getState();
       expect(
-        useLayoutStore
-          .getState()
-          .layout.regions.left.slots.find((s) => s.id === "l0")?.activePanel,
+        layout.regions.left.slots.find((s) => s.id === "l0")?.activePanel,
       ).toBe("scenes");
+      expect(layout.center.editorOpen).toBe(true);
+      expect(layout.center.segments.some((s) => s.kind === "editor")).toBe(
+        true,
+      );
     });
   });
 });

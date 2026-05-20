@@ -8,6 +8,7 @@ import {
   Lock,
   Unlock,
   GripVertical,
+  FileText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore } from "./layoutStore";
@@ -146,6 +147,44 @@ export function PanelToggleDropdown() {
         }}
         onMouseLeave={() => setHoveredPanelId(null)}
       >
+        <div>
+          <div className="px-3 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            {t("layout.regionCenter")}
+          </div>
+          <div
+            role="button"
+            tabIndex={0}
+            data-panel-toggle-item="editor"
+            data-testid="panel-toggle-item-editor"
+            data-tauri-drag-region="false"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                togglePanel("editor");
+              }
+            }}
+            onClick={() => togglePanel("editor")}
+            className="flex w-full touch-none select-none items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+          >
+            <span className="inline-block h-3.5 w-3.5 shrink-0" />
+            <span
+              className={cn(
+                "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border",
+                isPanelActive("editor")
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border",
+              )}
+            >
+              {isPanelActive("editor") && <Check className="h-2.5 w-2.5" />}
+            </span>
+            <FileText
+              aria-hidden
+              className="h-4 w-4 shrink-0 text-muted-foreground"
+            />
+            <span className="flex-1 text-left">{t("layout.panel.editor")}</span>
+          </div>
+        </div>
+
         {groups.map((group, gi) => (
           <div key={group.region}>
             {gi > 0 && <div className="my-1 border-t border-border" />}

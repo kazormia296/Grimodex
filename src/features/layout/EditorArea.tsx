@@ -1,10 +1,12 @@
 import { memo, useEffect, useRef } from "react";
 import { SceneEditor } from "@/features/tree/SceneEditor";
-import { registerEditorFocusHandler } from "./layoutStore";
+import { registerEditorFocusHandler, useLayoutStore } from "./layoutStore";
 
-/** Central editor cell — always mounted. */
+/** Central editor cell — always mounted when center band exists. */
 export const EditorArea = memo(function EditorArea() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const editorOpen = useLayoutStore((s) => s.layout.center.editorOpen);
+  const prevOpenRef = useRef(editorOpen);
 
   useEffect(() => {
     registerEditorFocusHandler(() => {
@@ -16,6 +18,19 @@ export const EditorArea = memo(function EditorArea() {
     });
     return () => registerEditorFocusHandler(null);
   }, []);
+
+  useEffect(() => {
+    if (!prevOpenRef.current && editorOpen) {
+      requestAnimationFrame(() => {
+        containerRef.current?.focus({ preventScroll: true });
+        const editor = containerRef.current?.querySelector<HTMLElement>(
+          ".ProseMirror, [contenteditable='true']",
+        );
+        editor?.focus({ preventScroll: true });
+      });
+    }
+    prevOpenRef.current = editorOpen;
+  }, [editorOpen]);
 
   return (
     <div

@@ -8,30 +8,46 @@ import {
   getScreenshotPresetId,
 } from "@/screenshot-scenes/screenshotBootstrap";
 import {
+  addPanelToCenterToolSegment,
+  addPanelToSlot,
+  applyAdjacentCenterSegmentPixelSizes,
+  applyAdjacentSlotPixelSizes,
   buildDefaultLayoutState,
   cloneLayoutState,
   clampLayoutStateForViewport,
+  ensureLayoutStateV3,
   findPanelLocation,
+  generateCenterToolSegmentId,
   generateSlotId,
-  getOpenSlots,
-  applyAdjacentSlotPixelSizes,
+  getOpenCenterSegmentPixelSizes,
   getOpenSlotPixelSizes,
+  getOpenSlots,
+  migrateLayoutStateV2toV3,
+  normalizeCenterSegmentRatios,
   normalizeSlotRatios,
-  redistributeRatiosAfterRemovingOpenSlot,
+  redistributeSpaceOnEditorClose,
+  removePanelFromCenterSegment,
+  removePanelFromSlot,
   resetLayoutStateToDefault,
+  updateCenter,
+  updateCenterToolSegment,
   updateRegion,
   validateLayoutState,
 } from "./layoutStateUtils";
 import { clampRegionSize, MIN_SLOT_SIZE } from "./layoutConstants";
 import { getBuiltinPresetState, getBuiltinPresets } from "./layoutPresets";
 import type {
+  CenterSegment,
+  CenterToolSegment,
   CustomLayoutPreset,
+  LayoutRegionId,
   LayoutState,
   PersistedLayout,
   RegionId,
   SlotState,
   ToolWindowPanelId,
 } from "./layoutTypes";
+import { LAYOUT_SCHEMA_VERSION } from "./layoutTypes";
 import { dragTargetsEqual, type DragOverTarget } from "./layoutDnD";
 import type { PanelId } from "./panelIds";
 
@@ -71,70 +87,140 @@ function applyValidatedLayout(
   return resetLayoutStateToDefault();
 }
 
-function removePanelFromSlot(
-  slots: SlotState[],
-  slotIndex: number,
-  panel: ToolWindowPanelId,
-): { slots: SlotState[] } {
-  const slot = slots[slotIndex];
-  const removedActive = slot.activePanel === panel;
-  const nextPanels = slot.panels.filter((p) => p !== panel);
-
-  if (nextPanels.length === 0) {
-    const removedSlot = slot;
-    const remainingSlots = slots.filter((_, i) => i !== slotIndex);
-    return {
-      slots: redistributeRatiosAfterRemovingOpenSlot(
-        remainingSlots,
-        removedSlot,
-      ),
-    };
+function scheduleEditorFocus() {
+  const focus = () => editorFocusHandler?.();
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(focus);
+  } else {
+    focus();
   }
-
-  return {
-    slots: slots.map((s, i) =>
-      i === slotIndex
-        ? {
-            ...s,
-            panels: nextPanels,
-            activePanel: removedActive ? null : s.activePanel,
-          }
-        : s,
-    ),
-  };
 }
 
-function addPanelToSlot(slot: SlotState, panel: ToolWindowPanelId): SlotState {
-  const panels = slot.panels.includes(panel)
-    ? slot.panels
-    : [...slot.panels, panel];
-  return { ...slot, panels, activePanel: panel };
+function removePanelFromSource(
+  layout: LayoutState,
+  panel: ToolWindowPanelId,
+): LayoutState {
+  const source = findPanelLocation(layout, panel);
+  if (!source) return layout;
+
+  if (source.region === "center") {
+    return updateCenter(layout, (center) => ({
+      ...center,
+      segments: removePanelFromCenterSegment(
+        center.segments,
+        source.slotIndex,
+        panel,
+        center.editorOpen,
+      ),
+    }));
+  }
+
+  return updateRegion(layout, source.region, (region) => ({
+    ...region,
+    slots: removePanelFromSlot(region.slots, source.slotIndex, panel).slots,
+  }));
+}
+
+function addPanelToCenterSegmentById(
+  segments: CenterSegment[],
+  segmentId: string,
+  panel: ToolWindowPanelId,
+): CenterSegment[] {
+  return segments.map((segment) =>
+    segment.id === segmentId && segment.kind === "tool"
+      ? addPanelToCenterToolSegment(segment, panel)
+      : segment,
+  );
+}
+
+function insertCenterToolSegment(
+  segments: CenterSegment[],
+  panel: ToolWindowPanelId,
+  insertIndex: number,
+  editorOpen: boolean,
+): CenterSegment[] {
+  const newSegment: CenterToolSegment = {
+    id: generateCenterToolSegmentId(),
+    kind: "tool",
+    sizeRatio: 1,
+    panels: [panel],
+    activePanel: panel,
+  };
+
+  const next = [...segments];
+  const index = Math.max(0, Math.min(insertIndex, next.length));
+  next.splice(index, 0, newSegment);
+
+  const openCount = next.filter((s) => {
+    if (s.kind === "editor") return editorOpen;
+    return s.activePanel !== null;
+  }).length;
+
+  return openCount > 1
+    ? normalizeCenterSegmentRatios(next, editorOpen)
+    : next;
 }
 
 function movePanelInLayout(
   layout: LayoutState,
   panel: ToolWindowPanelId,
-  targetRegion: RegionId,
+  targetRegion: LayoutRegionId,
   targetSlotId: string | null,
   insertIndex: number | null,
 ): LayoutState {
   const source = findPanelLocation(layout, panel);
   let next = cloneLayoutState(layout);
 
-  // 移動元 slot が空になり削除されるか（残 panel 0 のとき削除される）
+  const sourceSegmentRemoved =
+    source != null &&
+    source.region === "center" &&
+    source.slot.panels.filter((p) => p !== panel).length === 0;
+
   const sourceSlotRemoved =
     source != null &&
+    source.region !== "center" &&
     source.slot.panels.filter((p) => p !== panel).length === 0;
 
   if (source) {
-    next = updateRegion(next, source.region, (region) => ({
-      ...region,
-      slots: removePanelFromSlot(region.slots, source.slotIndex, panel).slots,
-    }));
+    next = removePanelFromSource(next, panel);
   }
 
-  // 同一 region 内で移動元 slot が削除されると配列が縮むため、
-  // 削除位置より後ろを指す insertIndex（削除前の配列基準）を 1 つ詰める。
+  if (targetRegion === "center") {
+    const adjustedInsertIndex =
+      insertIndex != null &&
+      sourceSegmentRemoved &&
+      source != null &&
+      source.region === "center" &&
+      source.slotIndex < insertIndex
+        ? insertIndex - 1
+        : insertIndex;
+
+    next = updateCenter(next, (center) => {
+      if (targetSlotId) {
+        return {
+          ...center,
+          segments: addPanelToCenterSegmentById(
+            center.segments,
+            targetSlotId,
+            panel,
+          ),
+        };
+      }
+
+      return {
+        ...center,
+        segments: insertCenterToolSegment(
+          center.segments,
+          panel,
+          adjustedInsertIndex ?? center.segments.length,
+          center.editorOpen,
+        ),
+      };
+    });
+
+    return next;
+  }
+
   const adjustedInsertIndex =
     insertIndex != null &&
     sourceSlotRemoved &&
@@ -178,14 +264,28 @@ function movePanelInLayout(
   return next;
 }
 
-function isPersistedLayoutV2(data: unknown): data is PersistedLayout {
+function isPersistedLayoutV3(data: unknown): data is PersistedLayout {
   if (!data || typeof data !== "object") return false;
   const obj = data as PersistedLayout;
   return (
-    obj.layoutVersion === 2 &&
+    obj.layoutVersion === LAYOUT_SCHEMA_VERSION &&
     obj.state != null &&
     typeof obj.state === "object" &&
-    obj.state.regions != null
+    obj.state.regions != null &&
+    obj.state.center != null
+  );
+}
+
+function isPersistedLayoutV2(data: unknown): data is {
+  layoutVersion: 2;
+  state: LayoutState;
+} {
+  if (!data || typeof data !== "object") return false;
+  const obj = data as { layoutVersion?: number; state?: unknown };
+  return (
+    obj.layoutVersion === 2 &&
+    obj.state != null &&
+    typeof obj.state === "object"
   );
 }
 
@@ -210,7 +310,7 @@ function scheduleSave(get: () => LayoutStoreState) {
 
       const current = await invoke<GlobalSettings>("get_global_settings");
       const persisted: PersistedLayout = {
-        layoutVersion: 2,
+        layoutVersion: LAYOUT_SCHEMA_VERSION,
         state: cloneLayoutState(layout),
         activePresetId: activePresetId ?? undefined,
         hiddenStripePanels:
@@ -220,7 +320,7 @@ function scheduleSave(get: () => LayoutStoreState) {
       await invoke("save_global_settings", {
         settings: {
           ...current,
-          layoutVersion: 2,
+          layoutVersion: LAYOUT_SCHEMA_VERSION,
           layout: persisted,
           activeLayoutPresetId: activePresetId ?? null,
           layoutPresets: customPresets.map((p) => ({
@@ -285,9 +385,9 @@ export async function clearSavedLayout() {
     await invoke("save_global_settings", {
       settings: {
         ...rest,
-        layoutVersion: 2,
+        layoutVersion: LAYOUT_SCHEMA_VERSION,
         layout: {
-          layoutVersion: 2,
+          layoutVersion: LAYOUT_SCHEMA_VERSION,
           state: buildDefaultLayoutState({ allInactive: true }),
         },
       },
@@ -306,7 +406,6 @@ export interface LayoutStoreState {
   activePresetId: string | null;
   customPresets: CustomLayoutPreset[];
   initialized: boolean;
-  /** Stripe から非表示にした panel（slot 所属は維持、パネル▼から再表示可） */
   hiddenStripePanels: Set<ToolWindowPanelId>;
 
   togglePanel: (panel: PanelId) => void;
@@ -315,14 +414,19 @@ export interface LayoutStoreState {
   isPanelActive: (panel: PanelId) => boolean;
   openPanelAtSlot: (panel: PanelId) => void;
   requestEditorFocus: () => void;
+  setEditorOpen: (open: boolean) => void;
 
-  movePanelToSlot: (panel: PanelId, region: RegionId, slotId: string) => void;
+  movePanelToSlot: (
+    panel: PanelId,
+    region: LayoutRegionId,
+    slotId: string,
+  ) => void;
   movePanelToRegion: (panel: PanelId, region: RegionId) => void;
   moveToRegion: (panel: PanelId, region: RegionId) => void;
   removePanelFromStripe: (panel: PanelId) => void;
   movePanelToNewSlot: (
     panel: PanelId,
-    region: RegionId,
+    region: LayoutRegionId,
     insertIndex: number,
   ) => void;
 
@@ -331,7 +435,6 @@ export interface LayoutStoreState {
     size: number,
     viewport?: { width: number; height: number },
   ) => void;
-  /** ドラッグ中の live 更新（永続化は finalizeLayoutResize まで遅延） */
   setRegionSizeLive: (
     region: RegionId,
     size: number,
@@ -357,7 +460,19 @@ export interface LayoutStoreState {
     deltaPx: number,
     layoutBudgetPx: number,
   ) => void;
-  /** Run after resize drag ends: clamp, validate, persist once. */
+  setCenterSegmentRatios: (
+    segmentIdA: string,
+    segmentIdB: string,
+    ratioA: number,
+    ratioB: number,
+    layoutBudgetPx: number,
+  ) => void;
+  nudgeAdjacentCenterSegmentSizes: (
+    segmentIdA: string,
+    segmentIdB: string,
+    deltaPx: number,
+    layoutBudgetPx: number,
+  ) => void;
   finalizeLayoutResize: () => void;
 
   setDraggingPanel: (
@@ -389,27 +504,64 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   initialized: false,
   hiddenStripePanels: new Set<ToolWindowPanelId>(),
 
+  setEditorOpen: (open) => {
+    const vp = getViewport();
+    set((state) => {
+      const wasOpen = state.layout.center.editorOpen;
+      if (wasOpen === open) return state;
+
+      let next = updateCenter(state.layout, (center) => ({
+        ...center,
+        editorOpen: open,
+        segments: normalizeCenterSegmentRatios(
+          center.segments,
+          open,
+        ),
+      }));
+
+      if (!open) {
+        next = redistributeSpaceOnEditorClose(next, vp);
+      }
+
+      return { layout: applyValidatedLayout(next, vp) };
+    });
+    scheduleSave(get);
+    if (open) scheduleEditorFocus();
+  },
+
   togglePanel: (panel) => {
     if (panel === "editor") {
-      get().requestEditorFocus();
+      const open = get().layout.center.editorOpen;
+      get().setEditorOpen(!open);
       return;
     }
+
     const toolPanel = panel as ToolWindowPanelId;
     const location = findPanelLocation(get().layout, toolPanel);
     if (!location) return;
 
     set((state) => {
       const opening = location.slot.activePanel !== toolPanel;
-      const next = updateRegion(state.layout, location.region, (region) => ({
-        ...region,
-        slots: region.slots.map((slot) => {
-          if (slot.id !== location.slot.id) return slot;
-          return {
-            ...slot,
-            activePanel: slot.activePanel === toolPanel ? null : toolPanel,
-          };
-        }),
-      }));
+      let next = state.layout;
+
+      if (location.region === "center") {
+        next = updateCenterToolSegment(next, location.slot.id, (segment) => ({
+          ...segment,
+          activePanel: segment.activePanel === toolPanel ? null : toolPanel,
+        }));
+      } else {
+        next = updateRegion(next, location.region, (region) => ({
+          ...region,
+          slots: region.slots.map((slot) => {
+            if (slot.id !== location.slot.id) return slot;
+            return {
+              ...slot,
+              activePanel: slot.activePanel === toolPanel ? null : toolPanel,
+            };
+          }),
+        }));
+      }
+
       return {
         layout: applyValidatedLayout(next),
         hiddenStripePanels: opening
@@ -422,23 +574,34 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   showPanel: (panel) => {
     if (panel === "editor") {
-      get().requestEditorFocus();
+      get().setEditorOpen(true);
       return;
     }
+
     const toolPanel = panel as ToolWindowPanelId;
     const location = findPanelLocation(get().layout, toolPanel);
     if (!location) return;
     if (location.slot.activePanel === toolPanel) return;
 
     set((state) => {
-      const next = updateRegion(state.layout, location.region, (region) => ({
-        ...region,
-        slots: region.slots.map((slot) =>
-          slot.id === location.slot.id
-            ? { ...slot, activePanel: toolPanel }
-            : slot,
-        ),
-      }));
+      let next = state.layout;
+
+      if (location.region === "center") {
+        next = updateCenterToolSegment(next, location.slot.id, (segment) => ({
+          ...segment,
+          activePanel: toolPanel,
+        }));
+      } else {
+        next = updateRegion(next, location.region, (region) => ({
+          ...region,
+          slots: region.slots.map((slot) =>
+            slot.id === location.slot.id
+              ? { ...slot, activePanel: toolPanel }
+              : slot,
+          ),
+        }));
+      }
+
       return {
         layout: applyValidatedLayout(next),
         hiddenStripePanels: unhideStripePanel(
@@ -453,7 +616,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   isPanelVisible: (panel) => get().isPanelActive(panel),
 
   isPanelActive: (panel) => {
-    if (panel === "editor") return true;
+    if (panel === "editor") return get().layout.center.editorOpen;
     const location = findPanelLocation(get().layout, panel);
     return location?.slot.activePanel === panel;
   },
@@ -463,7 +626,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   },
 
   requestEditorFocus: () => {
-    editorFocusHandler?.();
+    scheduleEditorFocus();
   },
 
   movePanelToSlot: (panel, region, slotId) => {
@@ -513,16 +676,25 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
       let layout = state.layout;
       if (location.slot.activePanel === toolPanel) {
-        layout = applyValidatedLayout(
-          updateRegion(layout, location.region, (region) => ({
-            ...region,
-            slots: region.slots.map((slot) =>
-              slot.id === location.slot.id
-                ? { ...slot, activePanel: null }
-                : slot,
-            ),
-          })),
-        );
+        if (location.region === "center") {
+          layout = applyValidatedLayout(
+            updateCenterToolSegment(layout, location.slot.id, (segment) => ({
+              ...segment,
+              activePanel: null,
+            })),
+          );
+        } else {
+          layout = applyValidatedLayout(
+            updateRegion(layout, location.region, (region) => ({
+              ...region,
+              slots: region.slots.map((slot) =>
+                slot.id === location.slot.id
+                  ? { ...slot, activePanel: null }
+                  : slot,
+              ),
+            })),
+          );
+        }
       }
 
       return { layout, hiddenStripePanels: hidden };
@@ -640,6 +812,61 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     });
   },
 
+  setCenterSegmentRatios: (
+    segmentIdA,
+    segmentIdB,
+    ratioA,
+    ratioB,
+    layoutBudgetPx,
+  ) => {
+    if (get().layoutLocked) return;
+    if (ratioA <= 0 || ratioB <= 0 || layoutBudgetPx <= 0) return;
+
+    set((state) => {
+      const next = applyAdjacentCenterSegmentPixelSizes(
+        state.layout,
+        segmentIdA,
+        segmentIdB,
+        ratioA,
+        ratioB,
+        layoutBudgetPx,
+      );
+      return { layout: applyValidatedLayout(next) };
+    });
+    scheduleSave(get);
+  },
+
+  nudgeAdjacentCenterSegmentSizes: (
+    segmentIdA,
+    segmentIdB,
+    deltaPx,
+    layoutBudgetPx,
+  ) => {
+    if (get().layoutLocked || deltaPx === 0 || layoutBudgetPx <= 0) return;
+
+    set((state) => {
+      const pixelSizes = getOpenCenterSegmentPixelSizes(
+        state.layout.center,
+        layoutBudgetPx,
+      );
+      const prevPx = pixelSizes.get(segmentIdA) ?? 0;
+      const currPx = pixelSizes.get(segmentIdB) ?? 0;
+      const newPrev = Math.max(MIN_SLOT_SIZE, prevPx + deltaPx);
+      const newCurr = Math.max(MIN_SLOT_SIZE, currPx - deltaPx);
+      if (newPrev === prevPx && newCurr === currPx) return state;
+
+      const next = applyAdjacentCenterSegmentPixelSizes(
+        state.layout,
+        segmentIdA,
+        segmentIdB,
+        newPrev,
+        newCurr,
+        layoutBudgetPx,
+      );
+      return { layout: next };
+    });
+  },
+
   finalizeLayoutResize: () => {
     if (get().layoutLocked) return;
     const vp = getViewport();
@@ -713,7 +940,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       >("get_global_settings");
 
       const rawLayout = settings.layout;
-      if (isPersistedLayoutV2(rawLayout)) {
+      if (isPersistedLayoutV3(rawLayout)) {
         const validated = applyValidatedLayout(
           cloneLayoutState(rawLayout.state),
         );
@@ -727,6 +954,28 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         if (validateLayoutState(rawLayout.state).valid) {
           scheduleSave(get);
         }
+        return;
+      }
+
+      if (isPersistedLayoutV2(rawLayout)) {
+        const v2Persisted = rawLayout as {
+          layoutVersion: 2;
+          state: Parameters<typeof migrateLayoutStateV2toV3>[0];
+          activePresetId?: string;
+          hiddenStripePanels?: ToolWindowPanelId[];
+        };
+        const migrated = migrateLayoutStateV2toV3(v2Persisted.state);
+        const validated = applyValidatedLayout(migrated);
+        set({
+          layout: validated,
+          activePresetId:
+            v2Persisted.activePresetId ??
+            settings.activeLayoutPresetId ??
+            null,
+          hiddenStripePanels: new Set(v2Persisted.hiddenStripePanels ?? []),
+          initialized: true,
+        });
+        scheduleSave(get);
         return;
       }
     } catch {
@@ -776,7 +1025,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     const custom = get().customPresets.find((p) => p.id === presetId);
     if (custom) {
       set({
-        layout: applyValidatedLayout(cloneLayoutState(custom.state), vp),
+        layout: applyValidatedLayout(
+          ensureLayoutStateV3(cloneLayoutState(custom.state)),
+          vp,
+        ),
         activePresetId: presetId,
         hiddenStripePanels: new Set(),
       });
@@ -829,7 +1081,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
             .map((p) => ({
               id: p.id,
               name: p.name,
-              state: p.state,
+              state: ensureLayoutStateV3(p.state),
             }))
         : [];
 

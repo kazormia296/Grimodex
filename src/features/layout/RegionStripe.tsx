@@ -8,13 +8,13 @@ import {
 import { useLayoutStore } from "./layoutStore";
 import { DND_NEW_SLOT_BETWEEN_HALF_PX } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
-import type { RegionId } from "./layoutTypes";
+import type { LayoutRegionId, RegionId } from "./layoutTypes";
 import type { RegionSegment } from "./useRegionSegments";
 
 interface StripeGroupProps {
   segment: RegionSegment;
   orientation: "vertical" | "horizontal";
-  region: RegionId;
+  region: LayoutRegionId;
   /** open slot は正規化済み比率（open 間で合計 1）、collapsed slot は 0 */
   flexGrow: number;
 }
@@ -99,7 +99,7 @@ function StripeGroup({
 interface CollapsedClusterProps {
   segments: RegionSegment[];
   orientation: "vertical" | "horizontal";
-  region: RegionId;
+  region: LayoutRegionId;
   /** "start" = ストライプ先頭側へ寄せる / "end" = 末尾側へ寄せる */
   anchor: "start" | "end";
 }
@@ -155,7 +155,7 @@ function CollapsedCluster({
 }
 
 interface RegionStripeProps {
-  region: RegionId;
+  region: LayoutRegionId;
   orientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
 }
@@ -169,7 +169,18 @@ export function RegionStripe({
   orientation,
   segments,
 }: RegionStripeProps) {
-  const slots = useLayoutStore((s) => s.layout.regions[region].slots);
+  const slots = useLayoutStore((s) =>
+    region === "center"
+      ? s.layout.center.segments
+          .filter((seg) => seg.kind === "tool")
+          .map((seg) => ({
+            id: seg.id,
+            sizeRatio: seg.sizeRatio,
+            panels: seg.panels,
+            activePanel: seg.activePanel,
+          }))
+      : s.layout.regions[region as RegionId].slots,
+  );
   const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
@@ -261,6 +272,7 @@ export function RegionStripe({
         region === "left" && "border-r border-border",
         region === "right" && "border-l border-border",
         region === "bottom" && "border-t border-border",
+        region === "center" && "border-b border-border",
       )}
     >
       {showDropZones && (

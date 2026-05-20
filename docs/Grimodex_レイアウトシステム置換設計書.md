@@ -47,8 +47,8 @@ IntelliJ 式の **非対称レイアウト** (中央のエディタ領域は固�
 
 ## 2. 設計方針
 
-1. **エディタ = 構造的な中央セル**。CSS グリッドの中央セルそのもの。「配置」という概念が
-   存在しないため、エディタが意図しない位置に出るバグは構造的に発生不可能。
+1. **エディタ = center band 内の固定 segment**。移動不可。`editorOpen` で列全体の表示/非表示を
+   切替。開いている間は常に center 内の所定位置。
 2. **すべて明示的データ**。region / slot / panel の所属は state に明示的に持つ。幾何計算で
    推測しない。divider 位置は slot 境界そのもの。
 3. **IntelliJ 非対称モデル**。3 つの region、各 region は主軸方向に N 個の slot に分割。
@@ -101,8 +101,8 @@ grid-template-areas:
 ## 4. データモデル
 
 ```ts
-/** 永続化スキーマ。旧 settings に layout キーが無い / layoutVersion < 2 ならマイグレーション */
-const LAYOUT_SCHEMA_VERSION = 2;
+/** 永続化スキーマ v3 */
+const LAYOUT_SCHEMA_VERSION = 3;
 
 type RegionId = "left" | "right" | "bottom";
 
@@ -114,7 +114,24 @@ interface PersistedLayout {
 
 interface LayoutState {
   regions: Record<RegionId, RegionState>;
+  center: CenterState;
 }
+
+interface CenterState {
+  editorOpen: boolean;
+  /** 左→右 segment。editor は 1 つのみ。tool segment は横並び。 */
+  segments: CenterSegment[];
+}
+
+type CenterSegment =
+  | { id: string; kind: "editor"; sizeRatio: number }
+  | {
+      id: string;
+      kind: "tool";
+      sizeRatio: number;
+      panels: ToolWindowPanelId[];
+      activePanel: ToolWindowPanelId | null;
+    };
 
 interface RegionState {
   /** content 領域のサイズ。left/right は px 幅、bottom は px 高さ。
@@ -136,8 +153,17 @@ interface SlotState {
 }
 ```
 
-エディタは `LayoutState` に含めない。中央セルとして構造的に常在し、内容 (`SceneEditor`)
-は `tabStore` 側が状態を持つ。
+**v3 追加（Center Workspace）:**
+
+- **Editor open/close:** `center.editorOpen`。閉じると center 列幅 0（tool segment も無い場合）、
+  余白は left/right region に再配分。開いている間は常に center band 内の `editor` segment。
+- **Center tool slot:** Review 等で Editor 左右/右側に tool を横並び。配置時は band 上部に
+  **Center Stripe**（32px 横）を表示。
+- **center 列表示条件:** `editorOpen || hasCenterTools`。
+- **マイグレーション:** v2 `LayoutState`（`regions` のみ）→ v3 は `center` デフォルト付与。
+
+エディタは `center.segments` の `kind: "editor"` segment として表現する。内容 (`SceneEditor`)
+は `tabStore` 側が状態を持つ。`editorOpen === false` のとき segment は DOM 上 `hidden` マウント。
 
 `panelRegions.ts` の `PanelRegion` 型 `"center-bottom"` は UI グルーピング用の別名であり、
 永続化の `RegionId` `"bottom"` にマッピングする（`PanelToggleDropdown` 等は Phase 3 で
@@ -337,7 +363,7 @@ global settings:
 
 ```ts
 {
-  layoutVersion: 2,
+  layoutVersion: 3,
   layout: LayoutState,
   activePresetId?: string,
   layoutPresets?: CustomLayoutPreset[],  // { id, name, state: LayoutState }
@@ -409,12 +435,16 @@ big-bang 置換。**完全リセット方式**を採用する（best-effort 移�
 
 起動時 `loadLayout()`:
 
-1. `layoutVersion >= 2` かつ `validateLayoutState` OK → そのまま適用
-2. それ以外（旧 Dockview JSON / 旧 `toolWindows` / 破損 / 初回起動）→
+1. `layoutVersion === 3` かつ `validateLayoutState` OK → そのまま適用
+2. `layoutVersion === 2` かつ `validateLayoutState` OK → `migrateLayoutStateV2toV3` で
+   `center: { editorOpen: true, segments: [editor] }` を付与して適用
+3. それ以外（旧 Dockview JSON / 旧 `toolWindows` / 破損 / 初回起動）→
    `buildDefaultLayoutState()`（新デフォルトレイアウト）を適用
-3. 旧 `SerializedDockview` / `toolWindows` / `layoutPresets`（Dockview 形式）/
+4. 旧 `SerializedDockview` / `toolWindows` / `layoutPresets`（Dockview 形式）/
    `undockedPanels` / `viewMode` は **すべて読み捨て**
-4. 成功後 `layoutVersion: 2` を書き込み
+5. 成功後 `layoutVersion: 3` を書き込み
+
+カスタムプリセット読み込み (`loadPresets`) でも v2 state には `migrateLayoutStateV2toV3` を適用する。
 
 **ユーザー影響:** 初回アップデート後、レイアウト（パネル配置・開閉状態・カスタム
 プリセット）はリセットされる。タブ・原稿データは不変。リリースノートに明記。

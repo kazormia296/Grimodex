@@ -284,6 +284,41 @@ describe("layoutDnD", () => {
     expect(rect).toEqual({ left: 0, top: 400, width: 300, height: 200 });
   });
 
+  it("resolveDropTargetFromElement finds center segment targets", () => {
+    document.body.innerHTML = `
+      <div data-center-content="center">
+        <div
+          data-drop-slot="ct0"
+          data-drop-region="center"
+          data-center-segment-kind="tool"
+        ></div>
+        <div
+          data-drop-between
+          data-drop-region="center"
+          data-insert-index="1"
+          data-drop-surface="content-between"
+        ></div>
+      </div>
+    `;
+
+    expect(
+      resolveDropTargetFromElement(
+        document.querySelector("[data-drop-slot='ct0']"),
+      ),
+    ).toEqual({ type: "slot", region: "center", slotId: "ct0" });
+
+    expect(
+      resolveDropTargetFromElement(
+        document.querySelector("[data-drop-between]"),
+      ),
+    ).toEqual({
+      type: "new-slot",
+      region: "center",
+      insertIndex: 1,
+      surface: "content-between",
+    });
+  });
+
   it("dragTargetsEqual compares target identity", () => {
     const slot = { type: "slot" as const, region: "left" as const, slotId: "l0" };
     expect(dragTargetsEqual(slot, { ...slot })).toBe(true);

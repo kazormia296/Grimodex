@@ -37,6 +37,12 @@ describe("buildDefaultLayoutState", () => {
     }
   });
 
+  it("includes default center state with editor segment", () => {
+    const state = buildDefaultLayoutState();
+    expect(state.center.editorOpen).toBe(true);
+    expect(state.center.segments.some((s) => s.kind === "editor")).toBe(true);
+  });
+
   it("uses default region sizes", () => {
     const state = buildDefaultLayoutState();
     expect(state.regions.left.size).toBe(DEFAULT_REGION_SIZES.left);
