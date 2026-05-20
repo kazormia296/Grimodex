@@ -8,7 +8,6 @@ import {
 import { useLayoutStore } from "./layoutStore";
 import { DND_NEW_SLOT_BETWEEN_HALF_PX } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
-import { normalizeFlexGrow } from "./layoutStateUtils";
 import type { RegionId } from "./layoutTypes";
 import type { RegionSegment } from "./useRegionSegments";
 
@@ -16,7 +15,7 @@ interface StripeGroupProps {
   segment: RegionSegment;
   orientation: "vertical" | "horizontal";
   region: RegionId;
-  /** 正規化済み flex-grow（segment 間の合計 = 1） */
+  /** open slot は正規化済み比率（open 間で合計 1）、collapsed slot は 0 */
   flexGrow: number;
 }
 
@@ -70,9 +69,14 @@ function StripeGroup({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      style={{ flexGrow, flexBasis: 0 }}
+      style={{
+        flexGrow,
+        // collapsed slot はアイコン実寸（basis auto）。0 にすると潰れて見えなくなる。
+        flexBasis: segment.open ? 0 : "auto",
+        flexShrink: 0,
+      }}
       className={cn(
-        "flex min-h-0 min-w-0",
+        "pointer-events-auto flex min-h-0 min-w-0",
         orientation === "vertical"
           ? "w-full flex-col items-center justify-start gap-0.5 overflow-y-auto overflow-x-hidden"
           : "h-full flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden",
@@ -85,8 +89,67 @@ function StripeGroup({
           panelId={panel.id}
           region={region}
           active={panel.active}
+          slotOpen={segment.open}
         />
       ))}
+    </div>
+  );
+}
+
+interface CollapsedClusterProps {
+  segments: RegionSegment[];
+  orientation: "vertical" | "horizontal";
+  region: RegionId;
+  /** "start" = ストライプ先頭側へ寄せる / "end" = 末尾側へ寄せる */
+  anchor: "start" | "end";
+}
+
+/**
+ * 折りたたみ slot のアイコン群（案A）。
+ *
+ * flex フローでは 0 サイズで、open バンドの比率配分に影響を与えない
+ * （＝ open バンドが content の slot サイズと一致する）。アイコンは
+ * absolute オーバーレイで境界に表示し、連続する collapsed slot は
+ * この cluster 内で実寸スタックする。
+ */
+function CollapsedCluster({
+  segments,
+  orientation,
+  region,
+  anchor,
+}: CollapsedClusterProps) {
+  const isVertical = orientation === "vertical";
+  return (
+    <div
+      data-stripe-collapsed-cluster
+      className={cn("relative", isVertical ? "w-full" : "h-full")}
+      style={{ flexGrow: 0, flexBasis: 0, flexShrink: 0 }}
+    >
+      <div
+        className={cn(
+          "pointer-events-none absolute flex items-center gap-0.5",
+          isVertical ? "left-0 right-0 flex-col" : "top-0 bottom-0 flex-row",
+        )}
+        style={
+          isVertical
+            ? anchor === "start"
+              ? { top: 0 }
+              : { bottom: 0 }
+            : anchor === "start"
+              ? { left: 0 }
+              : { right: 0 }
+        }
+      >
+        {segments.map((seg) => (
+          <StripeGroup
+            key={seg.key}
+            segment={seg}
+            orientation={orientation}
+            region={region}
+            flexGrow={0}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -96,6 +159,10 @@ interface RegionStripeProps {
   orientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
 }
+
+type StripeItem =
+  | { kind: "open"; segment: RegionSegment }
+  | { kind: "collapsed"; segments: RegionSegment[] };
 
 export function RegionStripe({
   region,
@@ -114,21 +181,35 @@ export function RegionStripe({
 
   if (segments.length === 0) return null;
 
-  const segmentFlexGrow = normalizeFlexGrow(segments.map((s) => s.sizeRatio));
+  // open slot の sizeRatio を open 間で正規化し、ストライプ全体を比率配分で
+  // 埋める（content の slot サイズと一致）。collapsed slot は flex フロー外
+  // （CollapsedCluster）に出すので配分に影響しない。
+  const openRatioSum = segments.reduce(
+    (sum, s) => sum + (s.open ? s.sizeRatio : 0),
+    0,
+  );
 
-  const stripeEndInsertIndex =
-    segments.length > 0
-      ? slots.findIndex(
-          (slot) => slot.id === segments[segments.length - 1].slotId,
-        ) + 1
-      : slots.length;
+  // 連続する collapsed segment を 1 cluster にまとめる（cluster 内で実寸スタック）
+  const items: StripeItem[] = [];
+  for (const seg of segments) {
+    if (seg.open) {
+      items.push({ kind: "open", segment: seg });
+      continue;
+    }
+    const last = items[items.length - 1];
+    if (last && last.kind === "collapsed") {
+      last.segments.push(seg);
+    } else {
+      items.push({ kind: "collapsed", segments: [seg] });
+    }
+  }
 
-  const insertIndexBetweenSegments = (segmentIndex: number): number => {
-    const nextSegment = segments[segmentIndex + 1];
-    if (!nextSegment) return slots.length;
-    const index = slots.findIndex((slot) => slot.id === nextSegment.slotId);
-    return index < 0 ? slots.length : index;
+  const slotIndexOf = (slotId: string): number => {
+    const i = slots.findIndex((slot) => slot.id === slotId);
+    return i < 0 ? slots.length : i;
   };
+  const stripeEndInsertIndex =
+    slotIndexOf(segments[segments.length - 1].slotId) + 1;
 
   const handleEdgeDrop = (e: React.DragEvent, insertIndex: number) => {
     e.preventDefault();
@@ -200,72 +281,86 @@ export function RegionStripe({
         />
       )}
 
-      {segments.map((segment, i) => (
-        <Fragment key={segment.key}>
-          <StripeGroup
-            segment={segment}
-            orientation={orientation}
-            region={region}
-            flexGrow={segmentFlexGrow[i]}
-          />
-          {i < segments.length - 1 && (
-            <div
-              className={cn(
-                "relative shrink-0",
-                orientation === "vertical"
-                  ? "my-0.5 flex w-full justify-center"
-                  : "mx-0.5 flex h-full items-center",
-              )}
-            >
+      {items.map((item, itemIdx) => {
+        if (item.kind === "collapsed") {
+          return (
+            <CollapsedCluster
+              key={`collapsed-${item.segments[0].key}`}
+              segments={item.segments}
+              orientation={orientation}
+              region={region}
+              anchor={itemIdx === 0 ? "start" : "end"}
+            />
+          );
+        }
+
+        const seg = item.segment;
+        const betweenInsertIndex = slotIndexOf(seg.slotId);
+        return (
+          <Fragment key={seg.key}>
+            {itemIdx > 0 && (
               <div
-                data-stripe-divider
-                aria-hidden
                 className={cn(
-                  "shrink-0 rounded-full bg-muted-foreground/50",
-                  orientation === "vertical" ? "h-px w-5" : "h-5 w-px",
+                  "relative shrink-0",
+                  orientation === "vertical"
+                    ? "my-0.5 flex w-full justify-center"
+                    : "mx-0.5 flex h-full items-center",
                 )}
-              />
-              {showDropZones && (
+              >
                 <div
-                  data-drop-edge="between"
-                  data-drop-region={region}
-                  data-insert-index={insertIndexBetweenSegments(i)}
-                  data-drop-surface="stripe-between"
-                  className="absolute z-20 opacity-0"
-                  style={
-                    orientation === "vertical"
-                      ? {
-                          left: 0,
-                          right: 0,
-                          top: "50%",
-                          height: stripeBetweenHitPx,
-                          transform: "translateY(-50%)",
-                        }
-                      : {
-                          top: 0,
-                          bottom: 0,
-                          left: "50%",
-                          width: stripeBetweenHitPx,
-                          transform: "translateX(-50%)",
-                        }
-                  }
-                  onDragOver={(e) =>
-                    handleEdgeDragOver(
-                      e,
-                      insertIndexBetweenSegments(i),
-                      "stripe-between",
-                    )
-                  }
-                  onDragLeave={handleEdgeDragLeave}
-                  onDrop={(e) =>
-                    handleEdgeDrop(e, insertIndexBetweenSegments(i))
-                  }
+                  data-stripe-divider
+                  aria-hidden
+                  className={cn(
+                    "shrink-0 rounded-full bg-muted-foreground/50",
+                    orientation === "vertical" ? "h-px w-5" : "h-5 w-px",
+                  )}
                 />
-              )}
-            </div>
-          )}
-        </Fragment>
-      ))}
+                {showDropZones && (
+                  <div
+                    data-drop-edge="between"
+                    data-drop-region={region}
+                    data-insert-index={betweenInsertIndex}
+                    data-drop-surface="stripe-between"
+                    className="absolute z-20 opacity-0"
+                    style={
+                      orientation === "vertical"
+                        ? {
+                            left: 0,
+                            right: 0,
+                            top: "50%",
+                            height: stripeBetweenHitPx,
+                            transform: "translateY(-50%)",
+                          }
+                        : {
+                            top: 0,
+                            bottom: 0,
+                            left: "50%",
+                            width: stripeBetweenHitPx,
+                            transform: "translateX(-50%)",
+                          }
+                    }
+                    onDragOver={(e) =>
+                      handleEdgeDragOver(
+                        e,
+                        betweenInsertIndex,
+                        "stripe-between",
+                      )
+                    }
+                    onDragLeave={handleEdgeDragLeave}
+                    onDrop={(e) => handleEdgeDrop(e, betweenInsertIndex)}
+                  />
+                )}
+              </div>
+            )}
+            <StripeGroup
+              segment={seg}
+              orientation={orientation}
+              region={region}
+              flexGrow={openRatioSum > 0 ? seg.sizeRatio / openRatioSum : 1}
+            />
+          </Fragment>
+        );
+      })}
 
       {showDropZones && (
         <div

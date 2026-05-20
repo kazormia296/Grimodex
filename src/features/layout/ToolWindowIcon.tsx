@@ -22,15 +22,22 @@ interface ToolWindowIconProps {
   region: RegionId;
   /** panel === slot.activePanel */
   active: boolean;
+  /** その slot が展開中か。false（折りたたみ）のときアイコンを更に dim 表示 */
+  slotOpen: boolean;
 }
 
 const ALL_REGIONS: RegionId[] = ["left", "right", "bottom"];
 
-/** Stripe icon — 2 states: shown (active) / hidden (registered but inactive). */
+/**
+ * Stripe icon — 3 states:
+ * active（展開 slot の表示中 panel）/ open-inactive（展開 slot の裏 tab）/
+ * collapsed（折りたたみ slot：更に dim）。
+ */
 export function ToolWindowIcon({
   panelId,
   region,
   active,
+  slotOpen,
 }: ToolWindowIconProps) {
   const { t } = useTranslation();
   const Icon = PANEL_ICON_MAP[panelId];
@@ -57,7 +64,7 @@ export function ToolWindowIcon({
           aria-pressed={active}
           draggable={!layoutLocked}
           onDragStart={(e) => {
-          setDraggingPanel(panelId, "html5");
+            setDraggingPanel(panelId, "html5");
             e.dataTransfer.setData(TOOL_WINDOW_REASSIGN_TYPE, panelId);
             e.dataTransfer.effectAllowed = "move";
           }}
@@ -71,7 +78,11 @@ export function ToolWindowIcon({
             "transition-transform duration-75 active:scale-[0.94]",
             active
               ? "bg-accent text-foreground"
-              : "text-muted-foreground/60 hover:bg-accent/30 hover:text-foreground",
+              : "hover:bg-accent/30 hover:text-foreground",
+            !active &&
+              (slotOpen
+                ? "text-muted-foreground/60"
+                : "text-muted-foreground/35"),
           )}
         >
           <Icon className="h-4 w-4" />

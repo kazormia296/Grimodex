@@ -23,28 +23,45 @@ describe("ToolWindowIcon context menu", () => {
   });
 
   it("removes an active panel from the stripe", async () => {
-    render(
-      <ToolWindowIcon region="left" panelId="scenes" active />,
-    );
+    render(<ToolWindowIcon region="left" panelId="scenes" active slotOpen />);
     const user = userEvent.setup();
 
-    await user.pointer({ keys: "[MouseRight>]", target: screen.getByRole("button") });
-    await user.click(await screen.findByTestId("ctx-remove-from-stripe-scenes"));
+    await user.pointer({
+      keys: "[MouseRight>]",
+      target: screen.getByRole("button"),
+    });
+    await user.click(
+      await screen.findByTestId("ctx-remove-from-stripe-scenes"),
+    );
 
-    expect(useLayoutStore.getState().hiddenStripePanels.has("scenes")).toBe(true);
+    expect(useLayoutStore.getState().hiddenStripePanels.has("scenes")).toBe(
+      true,
+    );
     expect(useLayoutStore.getState().isPanelActive("scenes")).toBe(false);
   });
 
   it("shows remove from sidebar even when the panel is inactive", async () => {
     useLayoutStore.getState().togglePanel("scenes");
     render(
-      <ToolWindowIcon region="left" panelId="scenes" active={false} />,
+      <ToolWindowIcon
+        region="left"
+        panelId="scenes"
+        active={false}
+        slotOpen={false}
+      />,
     );
     const user = userEvent.setup();
 
-    await user.pointer({ keys: "[MouseRight>]", target: screen.getByRole("button") });
-    await user.click(await screen.findByTestId("ctx-remove-from-stripe-scenes"));
+    await user.pointer({
+      keys: "[MouseRight>]",
+      target: screen.getByRole("button"),
+    });
+    await user.click(
+      await screen.findByTestId("ctx-remove-from-stripe-scenes"),
+    );
 
-    expect(useLayoutStore.getState().hiddenStripePanels.has("scenes")).toBe(true);
+    expect(useLayoutStore.getState().hiddenStripePanels.has("scenes")).toBe(
+      true,
+    );
   });
 });

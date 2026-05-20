@@ -6,6 +6,8 @@ export interface RegionSegment {
   key: string;
   slotId: string;
   sizeRatio: number;
+  /** slot が展開中か（activePanel !== null）。stripe の比率配分に使う */
+  open: boolean;
   panels: Array<{ id: ToolWindowPanelId; active: boolean }>;
 }
 
@@ -20,6 +22,7 @@ function segmentFromSlot(
     key: slot.id,
     slotId: slot.id,
     sizeRatio: slot.sizeRatio,
+    open: slot.activePanel !== null,
     panels: visiblePanels.map((id) => ({
       id,
       active: slot.activePanel === id,

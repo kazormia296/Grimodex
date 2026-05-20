@@ -9,6 +9,7 @@ const leftSegments = [
     key: "l0",
     slotId: "l0",
     sizeRatio: 1,
+    open: true,
     panels: [{ id: "scenes" as const, active: true }],
   },
 ];
