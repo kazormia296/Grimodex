@@ -940,6 +940,226 @@ describe("useLayoutStore", () => {
     });
   });
 
+  describe("syncSlotsToActualRegions (P-D: groupRef tracking)", () => {
+    function makeRect(left: number, top: number, w: number, h: number) {
+      return {
+        left,
+        top,
+        width: w,
+        height: h,
+        right: left + w,
+        bottom: top + h,
+        x: left,
+        y: top,
+        toJSON: () => ({}),
+      } as DOMRect;
+    }
+
+    /**
+     * Mock api with editor at center and configurable side groups.
+     * groupSpecs: [{ id, rect, panelIds }]
+     */
+    function makeMockApi(opts: {
+      groups: {
+        id: string;
+        rect: [number, number, number, number];
+        panelIds: string[];
+      }[];
+      editorRect?: [number, number, number, number];
+    }) {
+      const { groups, editorRect = [200, 0, 600, 600] } = opts;
+      const editorGroup = {
+        id: "g-editor",
+        element: { getBoundingClientRect: () => makeRect(...editorRect) },
+        panels: [{ id: "editor" }],
+      };
+      const synthGroups = groups.map((g) => ({
+        id: g.id,
+        element: { getBoundingClientRect: () => makeRect(...g.rect) },
+        panels: g.panelIds.map((id) => ({ id })),
+      }));
+      const all = [editorGroup, ...synthGroups];
+      const panelToGroup = new Map<string, (typeof all)[number]>();
+      for (const g of all) for (const p of g.panels) panelToGroup.set(p.id, g);
+      let layoutHandler: (() => void) | null = null;
+      return {
+        api: {
+          groups: synthGroups,
+          getPanel: vi.fn((id: string) => {
+            const group = panelToGroup.get(id);
+            return group ? { id, group } : undefined;
+          }),
+          onDidAddGroup: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+          onDidAddPanel: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+          onDidLayoutChange: vi.fn().mockImplementation((cb) => {
+            layoutHandler = cb;
+            return { dispose: vi.fn() };
+          }),
+        },
+        fireLayoutChange: () => layoutHandler?.(),
+      };
+    }
+
+    it("updates groupRef when panel moves to a different group within same region", () => {
+      // 初期: scenes は g-lt にいる
+      const { api, fireLayoutChange } = makeMockApi({
+        groups: [
+          { id: "g-lt", rect: [0, 0, 200, 300], panelIds: ["scenes"] },
+          { id: "g-lb", rect: [0, 300, 200, 300], panelIds: [] },
+        ],
+      });
+      useLayoutStore.setState({
+        stripePanelIds: new Set(["scenes"]),
+        toolWindows: {
+          scenes: {
+            slot: "LT",
+            region: "left",
+            groupRef: "g-lt",
+            indexInRegion: 0,
+            viewMode: "docked-pinned",
+          },
+        },
+      });
+      useLayoutStore.getState().setDockviewApi(api as never);
+
+      // 状態変更: scenes は g-lb に移動
+      api.groups = [
+        {
+          id: "g-lt",
+          element: { getBoundingClientRect: () => makeRect(0, 0, 200, 300) },
+          panels: [],
+        },
+        {
+          id: "g-lb",
+          element: { getBoundingClientRect: () => makeRect(0, 300, 200, 300) },
+          panels: [{ id: "scenes" }],
+        },
+      ] as never;
+      api.getPanel = vi.fn((id: string) => {
+        if (id === "scenes")
+          return { id: "scenes", group: api.groups[1] } as never;
+        if (id === "editor")
+          return {
+            id: "editor",
+            group: {
+              id: "g-editor",
+              element: {
+                getBoundingClientRect: () => makeRect(200, 0, 600, 600),
+              },
+            },
+          } as never;
+        return undefined;
+      });
+
+      fireLayoutChange();
+
+      const after = useLayoutStore.getState().toolWindows.scenes;
+      expect(after?.groupRef).toBe("g-lb");
+      expect(after?.indexInRegion).toBe(1);
+      expect(after?.region).toBe("left");
+    });
+
+    it("updates region+groupRef when panel moves across regions", () => {
+      const { api, fireLayoutChange } = makeMockApi({
+        groups: [{ id: "g-lt", rect: [0, 0, 200, 600], panelIds: ["scenes"] }],
+      });
+      useLayoutStore.setState({
+        stripePanelIds: new Set(["scenes"]),
+        toolWindows: {
+          scenes: {
+            slot: "LT",
+            region: "left",
+            groupRef: "g-lt",
+            indexInRegion: 0,
+            viewMode: "docked-pinned",
+          },
+        },
+      });
+      useLayoutStore.getState().setDockviewApi(api as never);
+
+      // 右側に動かす (editor.right = 800, group は left=820 で右側)
+      api.groups = [
+        {
+          id: "g-rt",
+          element: { getBoundingClientRect: () => makeRect(820, 0, 180, 600) },
+          panels: [{ id: "scenes" }],
+        },
+      ] as never;
+      api.getPanel = vi.fn((id: string) => {
+        if (id === "scenes")
+          return { id: "scenes", group: api.groups[0] } as never;
+        if (id === "editor")
+          return {
+            id: "editor",
+            group: {
+              id: "g-editor",
+              element: {
+                getBoundingClientRect: () => makeRect(200, 0, 600, 600),
+              },
+            },
+          } as never;
+        return undefined;
+      });
+
+      fireLayoutChange();
+
+      const after = useLayoutStore.getState().toolWindows.scenes;
+      expect(after?.region).toBe("right");
+      expect(after?.groupRef).toBe("g-rt");
+    });
+
+    it("is idempotent when nothing changed", () => {
+      const { api, fireLayoutChange } = makeMockApi({
+        groups: [{ id: "g-lt", rect: [0, 0, 200, 600], panelIds: ["scenes"] }],
+      });
+      useLayoutStore.setState({
+        stripePanelIds: new Set(["scenes"]),
+        toolWindows: {
+          scenes: {
+            slot: "LT",
+            region: "left",
+            groupRef: "g-lt",
+            indexInRegion: 0,
+            viewMode: "docked-pinned",
+          },
+        },
+      });
+      useLayoutStore.getState().setDockviewApi(api as never);
+
+      const before = useLayoutStore.getState().toolWindows;
+      fireLayoutChange();
+      const after = useLayoutStore.getState().toolWindows;
+      // 参照同一性: 何も更新されていないので same reference
+      expect(after).toBe(before);
+    });
+
+    it("preserves state for closed panels (no group)", () => {
+      const { api, fireLayoutChange } = makeMockApi({
+        groups: [],
+      });
+      useLayoutStore.setState({
+        stripePanelIds: new Set(["scenes"]),
+        toolWindows: {
+          scenes: {
+            slot: "LT",
+            region: "left",
+            groupRef: "g-vanished",
+            indexInRegion: 0,
+            viewMode: "docked-pinned",
+          },
+        },
+      });
+      useLayoutStore.getState().setDockviewApi(api as never);
+
+      fireLayoutChange();
+
+      const after = useLayoutStore.getState().toolWindows.scenes;
+      // 閉じてる panel は保持
+      expect(after?.groupRef).toBe("g-vanished");
+      expect(after?.region).toBe("left");
+    });
+  });
+
   describe("removePanelFromStripe", () => {
     it("removes id from stripePanelIds and schedules save", async () => {
       const validLayout = {

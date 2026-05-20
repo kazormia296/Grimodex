@@ -24,7 +24,6 @@ import {
   type ViewMode,
 } from "./toolWindowDefaults";
 import {
-  detectActualRegion,
   detectGroupRegion,
   groupsByRegionInSpatialOrder,
   pickDefaultSlotForRegion,
@@ -399,10 +398,13 @@ interface LayoutState {
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
- * Stripe icon に登録されている panel について、actual region が slot.region と
- * 異なる場合に slot を実位置で上書きする。
- * - 自由ドラッグで動かしたら slot 追従 → 閉じた icon の位置が記憶される
- * - レイアウト復元直後にも slot が actual に揃う
+ * Stripe icon に登録されている panel について、Dockview 上の actual position
+ * (region / group id / index in region) に合わせて toolWindows を追従させる。
+ *
+ * - 自由ドラッグで region 跨ぎ移動 → region 追従
+ * - 同 region 内で別 group に移動 → groupRef 追従
+ * - splitter ドラッグで group が並べ替わった → indexInRegion 追従
+ * - 閉じている panel は更新しない (groupRef / indexInRegion は最後に居た位置を保持)
  */
 function syncSlotsToActualRegions(
   api: DockviewApi,
@@ -412,27 +414,47 @@ function syncSlotsToActualRegions(
   const stripeIds = get().stripePanelIds;
   if (stripeIds.size === 0) return;
 
+  const regionGroupsCache = groupsByRegionInSpatialOrder(api);
   const updates: Partial<Record<PanelId, ToolWindowState>> = {};
   let changed = false;
 
   for (const id of stripeIds) {
     if (id === "editor") continue;
-    const region = detectActualRegion(api, id);
+
+    const panel = api.getPanel(id);
+    if (!panel?.group) continue; // 閉じている → 状態を保持
+
+    const region = detectGroupRegion(api, panel.group);
     if (!region) continue;
 
+    const groupId = panel.group.id;
+    const groupIndex = regionGroupsCache[region].findIndex(
+      (g) => g.id === groupId,
+    );
+
     const current = get().toolWindows[id];
-    const currentSlot =
-      current?.slot ?? DEFAULT_SLOT_MAP[id as Exclude<PanelId, "editor">];
-    if (SLOT_TO_REGION[currentSlot] === region) continue;
+    const currentRegion =
+      current?.region ??
+      SLOT_TO_REGION[
+        current?.slot ?? DEFAULT_SLOT_MAP[id as Exclude<PanelId, "editor">]
+      ];
+
+    // 何も変わっていないなら skip (idempotent)
+    if (
+      currentRegion === region &&
+      current?.groupRef === groupId &&
+      current?.indexInRegion === groupIndex
+    ) {
+      continue;
+    }
 
     const newSlot = pickDefaultSlotForRegion(region);
     updates[id] = {
       ...current,
       slot: newSlot,
       region,
-      // 別 region に動いたので groupRef はリセット (新 region 内の group 特定は P-D で実装)
-      groupRef: undefined,
-      indexInRegion: SLOT_TO_INDEX[newSlot],
+      groupRef: groupId,
+      indexInRegion: groupIndex >= 0 ? groupIndex : 0,
       viewMode: current?.viewMode ?? DEFAULT_VIEW_MODE,
     };
     changed = true;
