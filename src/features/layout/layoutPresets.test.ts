@@ -1,8 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  getBuiltinPresetState,
-  materializePreset,
-} from "./layoutPresets";
+import { getBuiltinPresetState, materializePreset } from "./layoutPresets";
 import { validateLayoutState } from "./layoutStateUtils";
 
 const LAPTOP_VIEWPORT = { width: 1366, height: 768 };
@@ -22,9 +19,10 @@ describe("layoutPresets viewport safety", () => {
       const state = getBuiltinPresetState(id, LAPTOP_VIEWPORT);
       expect(state).toBeDefined();
       const result = validateLayoutState(state!, { viewport: LAPTOP_VIEWPORT });
-      expect(result.valid, result.valid ? "" : (result as { reason: string }).reason).toBe(
-        true,
-      );
+      expect(
+        result.valid,
+        result.valid ? "" : (result as { reason: string }).reason,
+      ).toBe(true);
     });
 
     it(`${id} keeps at least one active panel on 1366px`, () => {

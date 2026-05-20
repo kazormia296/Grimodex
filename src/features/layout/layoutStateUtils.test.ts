@@ -4,6 +4,7 @@ import {
   findPanelLocation,
   isRegionOpen,
   normalizeSlotRatios,
+  redistributeRatiosAfterRemovingOpenSlot,
   validateLayoutState,
   clampLayoutStateForViewport,
   applyAdjacentSlotPixelSizes,
@@ -137,6 +138,64 @@ describe("normalizeSlotRatios", () => {
   });
 });
 
+describe("redistributeRatiosAfterRemovingOpenSlot", () => {
+  it("redistributes removed open slot ratio to remaining open slots", () => {
+    const removed = {
+      id: "b",
+      sizeRatio: 0.4,
+      panels: ["chat"] as ToolWindowPanelId[],
+      activePanel: "chat" as ToolWindowPanelId,
+    };
+    const remaining = [
+      {
+        id: "a",
+        sizeRatio: 0.36,
+        panels: ["scenes"] as ToolWindowPanelId[],
+        activePanel: "scenes" as ToolWindowPanelId,
+      },
+      {
+        id: "c",
+        sizeRatio: 0.24,
+        panels: ["codex"] as ToolWindowPanelId[],
+        activePanel: "codex" as ToolWindowPanelId,
+      },
+      {
+        id: "d",
+        sizeRatio: 5,
+        panels: ["grid"] as ToolWindowPanelId[],
+        activePanel: null,
+      },
+    ];
+
+    const next = redistributeRatiosAfterRemovingOpenSlot(remaining, removed);
+    const open = next.filter((slot) => slot.activePanel !== null);
+
+    expect(open.find((slot) => slot.id === "a")?.sizeRatio).toBeCloseTo(0.6);
+    expect(open.find((slot) => slot.id === "c")?.sizeRatio).toBeCloseTo(0.4);
+    expect(next.find((slot) => slot.id === "d")?.sizeRatio).toBe(5);
+  });
+
+  it("leaves slots unchanged when removed slot was collapsed", () => {
+    const removed = {
+      id: "b",
+      sizeRatio: 0.4,
+      panels: ["chat"] as ToolWindowPanelId[],
+      activePanel: null,
+    };
+    const remaining = [
+      {
+        id: "a",
+        sizeRatio: 0.6,
+        panels: ["scenes"] as ToolWindowPanelId[],
+        activePanel: "scenes" as ToolWindowPanelId,
+      },
+    ];
+
+    const next = redistributeRatiosAfterRemovingOpenSlot(remaining, removed);
+    expect(next[0].sizeRatio).toBe(0.6);
+  });
+});
+
 describe("findPanelLocation / isRegionOpen", () => {
   it("finds panel in default layout", () => {
     const state = buildDefaultLayoutState();
@@ -181,14 +240,15 @@ describe("clampLayoutStateForViewport", () => {
     state.regions.left.size = 600;
     state.regions.right.size = 600;
     const clamped = clampLayoutStateForViewport(state, LAPTOP_VIEWPORT);
+    const fixedChrome = 32 * 2 + 6 * 2;
     expect(
       clamped.regions.left.size + clamped.regions.right.size,
-    ).toBeLessThanOrEqual(LAPTOP_VIEWPORT.width - 320);
+    ).toBeLessThanOrEqual(LAPTOP_VIEWPORT.width - 320 - fixedChrome);
   });
 });
 
 describe("applyAdjacentSlotPixelSizes", () => {
-  it("preserves third open slot ratio when dragging two adjacent slots", () => {
+  it("preserves other open slots when adjacent sizes shift without budget change", () => {
     const state = buildDefaultLayoutState({ allInactive: true });
     state.regions.left.size = 300;
     state.regions.left.slots[0].activePanel = "scenes";
@@ -200,7 +260,9 @@ describe("applyAdjacentSlotPixelSizes", () => {
       activePanel: "chat",
     });
 
-    const before = getOpenSlotPixelSizes("left", state);
+    const before = getOpenSlotPixelSizes("left", state, 600);
+    const l0Before = before.get("l0") ?? 0;
+    const l1Before = before.get("l1") ?? 0;
     const thirdPxBefore = before.get("l2") ?? 0;
     expect(thirdPxBefore).toBeGreaterThan(50);
 
@@ -209,25 +271,36 @@ describe("applyAdjacentSlotPixelSizes", () => {
       "left",
       "l0",
       "l1",
-      120,
-      80,
+      l0Before + 30,
+      l1Before - 30,
+      600,
     );
-    const after = getOpenSlotPixelSizes("left", next);
-    const thirdPxAfter = after.get("l2") ?? 0;
-    expect(Math.abs(thirdPxAfter - thirdPxBefore)).toBeLessThan(5);
-    expect(thirdPxAfter).toBeGreaterThan(40);
+    const after = getOpenSlotPixelSizes("left", next, 600);
+    expect(after.get("l2")).toBeCloseTo(thirdPxBefore, 5);
   });
 });
-
 
 describe("getOpenSlots pixel distribution invariant", () => {
   it("open slot pixel sizes sum to layout budget excluding splitter gutters", () => {
     const state = buildDefaultLayoutState();
     state.regions.left.slots[0].activePanel = "scenes";
     state.regions.left.slots[1].activePanel = "codex";
-    const pixels = getOpenSlotPixelSizes("left", state);
+    const layoutBudget = 800;
+    const pixels = getOpenSlotPixelSizes("left", state, layoutBudget);
     const sum = [...pixels.values()].reduce((a, b) => a + b, 0);
-    expect(sum).toBeCloseTo(state.regions.left.size - 6, 0);
+    expect(sum).toBeCloseTo(layoutBudget - 6, 0);
+  });
+
+  it("region width resize does not change slot heights when layout budget is fixed", () => {
+    const state = buildDefaultLayoutState();
+    state.regions.left.slots[0].activePanel = "scenes";
+    state.regions.left.slots[1].activePanel = "codex";
+    state.regions.left.size = 260;
+    const at260 = getOpenSlotPixelSizes("left", state, 800);
+    state.regions.left.size = 420;
+    const at420 = getOpenSlotPixelSizes("left", state, 800);
+    expect(at420.get("l0")).toBeCloseTo(at260.get("l0") ?? 0, 5);
+    expect(at420.get("l1")).toBeCloseTo(at260.get("l1") ?? 0, 5);
   });
 });
 
@@ -243,8 +316,8 @@ describe("layout state structural helpers", () => {
     for (const region of REGIONS) {
       expect(state.regions[region].slots.length).toBeGreaterThan(0);
     }
-    expect(validateLayoutState(cloneLayout(state), { viewport: VIEWPORT }).valid).toBe(
-      true,
-    );
+    expect(
+      validateLayoutState(cloneLayout(state), { viewport: VIEWPORT }).valid,
+    ).toBe(true);
   });
 });

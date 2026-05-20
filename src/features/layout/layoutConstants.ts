@@ -15,6 +15,12 @@ export const STRIPE_SIZE = 32;
 /** region / slot 境界 Splitter の厚み (px) — Tailwind w-1.5 / h-1.5 と一致 */
 export const SPLITTER_GUTTER_PX = 6;
 
+/** DnD: content 端への新 slot 挿入ヒット領域 (px)。absolute 配置のためレイアウトに影響しない */
+export const DND_NEW_SLOT_EDGE_HIT_PX = 64;
+
+/** DnD: slot 間 / stripe divider への新 slot 挿入ヒット領域 (px, 境界からの半幅) */
+export const DND_NEW_SLOT_BETWEEN_HALF_PX = 24;
+
 /** ビューポートに対する region content 上限比率 */
 export const MAX_REGION_SIZE_RATIO = 0.5;
 

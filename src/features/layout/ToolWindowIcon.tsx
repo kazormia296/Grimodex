@@ -4,22 +4,18 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuSub,
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { TOOL_WINDOW_REASSIGN_TYPE } from "./layoutDnD";
 import { useLayoutStore } from "./layoutStore";
 import type { PanelId } from "./panelIds";
 import { PANEL_ICON_MAP } from "./panelIcons";
 import { KEYBOARD_SHORTCUT_MAP } from "./panelRegions";
 import type { RegionId } from "./layoutTypes";
-
-/** MIME type for stripe icon DnD slot reassignment */
-export const TOOL_WINDOW_REASSIGN_TYPE =
-  "application/grimodex-toolwindow-reassign";
-
-const ALL_REGIONS: RegionId[] = ["left", "right", "bottom"];
 
 interface ToolWindowIconProps {
   panelId: Exclude<PanelId, "editor">;
@@ -27,6 +23,8 @@ interface ToolWindowIconProps {
   /** panel === slot.activePanel */
   active: boolean;
 }
+
+const ALL_REGIONS: RegionId[] = ["left", "right", "bottom"];
 
 /** Stripe icon — 2 states: shown (active) / hidden (registered but inactive). */
 export function ToolWindowIcon({
@@ -38,7 +36,9 @@ export function ToolWindowIcon({
   const Icon = PANEL_ICON_MAP[panelId];
   const togglePanel = useLayoutStore((s) => s.togglePanel);
   const moveToRegion = useLayoutStore((s) => s.moveToRegion);
+  const removePanelFromStripe = useLayoutStore((s) => s.removePanelFromStripe);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
+  const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
 
   const label = t(`layout.panel.${panelId}`);
@@ -57,14 +57,17 @@ export function ToolWindowIcon({
           aria-pressed={active}
           draggable={!layoutLocked}
           onDragStart={(e) => {
-            setDraggingPanel(panelId);
+          setDraggingPanel(panelId, "html5");
             e.dataTransfer.setData(TOOL_WINDOW_REASSIGN_TYPE, panelId);
             e.dataTransfer.effectAllowed = "move";
           }}
-          onDragEnd={() => setDraggingPanel(null)}
+          onDragEnd={() => {
+            setDraggingPanel(null);
+            setDragOverTarget(null);
+          }}
           onClick={() => togglePanel(panelId)}
           className={cn(
-            "relative flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors",
+            "relative z-30 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors",
             "transition-transform duration-75 active:scale-[0.94]",
             active
               ? "bg-accent text-foreground"
@@ -94,13 +97,21 @@ export function ToolWindowIcon({
               <ContextMenuItem
                 key={r}
                 disabled={r === region}
-                onClick={() => moveToRegion(panelId, r)}
+                onSelect={() => moveToRegion(panelId, r)}
               >
                 {t(`layout.stripe.region.${r}`)}
               </ContextMenuItem>
             ))}
           </ContextMenuSubContent>
         </ContextMenuSub>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          data-testid={`ctx-remove-from-stripe-${panelId}`}
+          disabled={layoutLocked}
+          onSelect={() => removePanelFromStripe(panelId)}
+        >
+          {t("layout.stripe.removeFromSidebar")}
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );

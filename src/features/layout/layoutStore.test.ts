@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { SPLITTER_GUTTER_PX, STRIPE_SIZE } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import {
   buildDefaultLayoutState,
@@ -22,9 +23,12 @@ function resetStore() {
     layout: buildDefaultLayoutState({ allInactive: true }),
     layoutLocked: false,
     draggingPanel: null,
+    dragOverTarget: null,
+    panelDragSource: null,
     activePresetId: null,
     customPresets: [],
     initialized: false,
+    hiddenStripePanels: new Set(),
   });
 }
 
@@ -94,6 +98,30 @@ describe("useLayoutStore", () => {
     });
   });
 
+  describe("movePanelToSlot", () => {
+    it("redistributes ratios when an open slot is removed from the source region", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().showPanel("codex");
+
+      const layoutBefore = useLayoutStore.getState().layout;
+      layoutBefore.regions.left.slots.find((slot) => slot.id === "l0")!.sizeRatio =
+        0.6;
+      layoutBefore.regions.left.slots.find((slot) => slot.id === "l1")!.sizeRatio =
+        0.4;
+      useLayoutStore.setState({ layout: layoutBefore });
+
+      useLayoutStore.getState().movePanelToRegion("scenes", "right");
+
+      const openLeft = useLayoutStore
+        .getState()
+        .layout.regions.left.slots.filter((slot) => slot.activePanel !== null);
+      expect(openLeft).toHaveLength(1);
+      expect(openLeft[0]?.id).toBe("l1");
+      expect(openLeft[0]?.sizeRatio).toBeCloseTo(1);
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
+  });
+
   describe("setRegionSize", () => {
     it("clamps region size", () => {
       useLayoutStore.getState().setRegionSize("left", 50, VIEWPORT);
@@ -144,7 +172,9 @@ describe("useLayoutStore", () => {
       useLayoutStore.getState().showPanel("scenes");
       useLayoutStore.getState().showPanel("codex");
       useLayoutStore.getState().setRegionSize("left", 300, VIEWPORT);
-      useLayoutStore.getState().nudgeAdjacentSlotSizes("left", "l0", "l1", 30);
+      useLayoutStore
+        .getState()
+        .nudgeAdjacentSlotSizes("left", "l0", "l1", 30, 800);
       const open = useLayoutStore
         .getState()
         .layout.regions.left.slots.filter((s) => s.activePanel !== null);
@@ -162,7 +192,10 @@ describe("useLayoutStore", () => {
       useLayoutStore.getState().setRegionSize("right", 500, VIEWPORT);
       useLayoutStore.getState().finalizeLayoutResize();
       const { left, right } = useLayoutStore.getState().layout.regions;
-      expect(left.size + right.size).toBeLessThanOrEqual(VIEWPORT.width - 320);
+      const fixedChrome = STRIPE_SIZE * 2 + SPLITTER_GUTTER_PX * 2;
+      expect(left.size + right.size).toBeLessThanOrEqual(
+        VIEWPORT.width - 320 - fixedChrome,
+      );
       assertValidLayout(useLayoutStore.getState().layout);
     });
   });
@@ -288,11 +321,39 @@ describe("layout store property invariants", () => {
     }
   });
 
+  it("setDragOverTarget tracks hovered drop zone and clears on drag end", () => {
+    useLayoutStore.getState().setDraggingPanel("chat");
+    useLayoutStore.getState().setDragOverTarget({
+      type: "slot",
+      region: "left",
+      slotId: "l0",
+    });
+    expect(useLayoutStore.getState().dragOverTarget).toEqual({
+      type: "slot",
+      region: "left",
+      slotId: "l0",
+    });
+
+    useLayoutStore.getState().setDraggingPanel(null);
+    expect(useLayoutStore.getState().dragOverTarget).toBeNull();
+  });
+
   it("toggle twice collapses panel", () => {
     useLayoutStore.getState().togglePanel("chat");
     useLayoutStore.getState().togglePanel("chat");
     const loc = findPanelLocation(useLayoutStore.getState().layout, "chat");
     expect(loc?.slot.activePanel).toBeNull();
+  });
+
+  it("removePanelFromStripe hides icon and re-shows on showPanel", () => {
+    useLayoutStore.getState().showPanel("chat");
+    useLayoutStore.getState().removePanelFromStripe("chat");
+    expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(true);
+    expect(useLayoutStore.getState().isPanelActive("chat")).toBe(false);
+
+    useLayoutStore.getState().showPanel("chat");
+    expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(false);
+    expect(useLayoutStore.getState().isPanelActive("chat")).toBe(true);
   });
 
   it("setSlotRatios keeps third slot visible with 3 open slots", () => {
@@ -302,7 +363,7 @@ describe("layout store property invariants", () => {
     useLayoutStore.getState().setRegionSize("left", 300, VIEWPORT);
     useLayoutStore
       .getState()
-      .setSlotRatios("left", "l0", "l1", 150, 100);
+      .setSlotRatios("left", "l0", "l1", 150, 100, 800);
     const open = useLayoutStore
       .getState()
       .layout.regions.left.slots.filter((s) => s.activePanel !== null);

@@ -1,0 +1,106 @@
+import { describe, expect, it } from "vitest";
+import {
+  bottomDockPx,
+  buildLayoutGridTemplateColumns,
+  computeLayoutGridMetrics,
+  regionContentPx,
+  sideContentZoneHeight,
+  sideDockPx,
+  sideLayoutChromePx,
+} from "./layoutMetrics";
+import { SPLITTER_GUTTER_PX, STRIPE_SIZE } from "./layoutConstants";
+
+describe("layoutMetrics", () => {
+  it("regionContentPx returns 0 when closed", () => {
+    expect(regionContentPx(false, 260)).toBe(0);
+    expect(regionContentPx(true, 260)).toBe(260);
+  });
+
+  it("sideDockPx includes stripe and content when open", () => {
+    expect(sideDockPx(true, true, 260)).toBe(STRIPE_SIZE + 260);
+    expect(sideDockPx(true, false, 260)).toBe(STRIPE_SIZE);
+    expect(sideDockPx(false, true, 260)).toBe(0);
+  });
+
+  it("bottomDockPx includes stripe and content when open", () => {
+    expect(bottomDockPx(true, true, 220)).toBe(STRIPE_SIZE + 220);
+    expect(bottomDockPx(true, false, 220)).toBe(STRIPE_SIZE);
+  });
+
+  it("computeLayoutGridMetrics splits stripe, content, and splitter columns", () => {
+    const m = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: true,
+      leftOpen: true,
+      rightOpen: true,
+      bottomOpen: true,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 220,
+    });
+
+    expect(m.leftStripePx).toBe(STRIPE_SIZE);
+    expect(m.rightStripePx).toBe(STRIPE_SIZE);
+    expect(m.leftContentPx).toBe(260);
+    expect(m.rightContentPx).toBe(340);
+    expect(m.leftSplitterPx).toBe(SPLITTER_GUTTER_PX);
+    expect(m.rightSplitterPx).toBe(SPLITTER_GUTTER_PX);
+    expect(m.leftDockPx).toBe(STRIPE_SIZE + 260);
+    expect(m.rightDockPx).toBe(STRIPE_SIZE + 340);
+    expect(m.bottomDockPx).toBe(STRIPE_SIZE + 220);
+    expect(m.bottomRowInset).toBe(m.bottomDockPx);
+    expect(m.bottomCellPx).toBe(m.bottomDockPx + SPLITTER_GUTTER_PX);
+  });
+
+  it("buildLayoutGridTemplateColumns keeps bottom band wider than editor-only column", () => {
+    const m = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: true,
+      leftOpen: true,
+      rightOpen: true,
+      bottomOpen: true,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 220,
+    });
+
+    expect(buildLayoutGridTemplateColumns(m)).toBe(
+      `${STRIPE_SIZE}px 260px ${SPLITTER_GUTTER_PX}px 1fr ${SPLITTER_GUTTER_PX}px 340px ${STRIPE_SIZE}px`,
+    );
+    expect(sideLayoutChromePx(m)).toBe(
+      STRIPE_SIZE * 2 +
+        260 +
+        340 +
+        SPLITTER_GUTTER_PX * 2,
+    );
+  });
+
+  it("computeLayoutGridMetrics omits content and splitter when region closed", () => {
+    const m = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: true,
+      leftOpen: false,
+      rightOpen: false,
+      bottomOpen: false,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 220,
+    });
+
+    expect(m.leftContentPx).toBe(0);
+    expect(m.rightContentPx).toBe(0);
+    expect(m.leftSplitterPx).toBe(0);
+    expect(m.rightSplitterPx).toBe(0);
+    expect(m.leftStripePx).toBe(STRIPE_SIZE);
+    expect(m.rightStripePx).toBe(STRIPE_SIZE);
+    expect(m.bottomCellPx).toBe(STRIPE_SIZE);
+  });
+
+  it("sideContentZoneHeight subtracts bottom row inset", () => {
+    expect(sideContentZoneHeight(252)).toBe("calc(100% - 252px)");
+    expect(sideContentZoneHeight(0)).toBe("100%");
+  });
+});

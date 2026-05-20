@@ -31,6 +31,8 @@ export interface PersistedLayout {
   layoutVersion: typeof LAYOUT_SCHEMA_VERSION;
   state: LayoutState;
   activePresetId?: string;
+  /** Stripe に表示しない tool window（slot 登録は維持） */
+  hiddenStripePanels?: ToolWindowPanelId[];
 }
 
 export interface CustomLayoutPreset {

@@ -1,11 +1,50 @@
 import { memo } from "react";
 import { STRIPE_SIZE } from "./layoutConstants";
+import { sideContentZoneHeight } from "./layoutMetrics";
 import { RegionStripe } from "./RegionStripe";
 import { RegionContent } from "./RegionContent";
 import { useLayoutStore } from "./layoutStore";
 import type { RegionId } from "./layoutTypes";
 import type { RegionSegment } from "./useRegionSegments";
-import { cn } from "@/lib/utils";
+
+interface SideRegionStripeColumnProps {
+  region: "left" | "right";
+  stripeOrientation: "vertical" | "horizontal";
+  segments: ReadonlyArray<RegionSegment>;
+  /** Bottom grid row height (stripe + optional content). */
+  bottomRowInset: number;
+}
+
+/** Side stripe column spanning both grid rows (icons align with upper content zone). */
+export const SideRegionStripeColumn = memo(function SideRegionStripeColumn({
+  region,
+  stripeOrientation,
+  segments,
+  bottomRowInset,
+}: SideRegionStripeColumnProps) {
+  const contentZoneHeight = sideContentZoneHeight(bottomRowInset);
+
+  return (
+    <div
+      data-region-stripe-column={region}
+      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
+    >
+      <div
+        className="flex min-h-0 shrink-0 flex-col overflow-hidden"
+        style={{ height: contentZoneHeight }}
+      >
+        <RegionStripe
+          region={region}
+          orientation={stripeOrientation}
+          segments={segments}
+        />
+      </div>
+      {bottomRowInset > 0 && (
+        <div className="min-h-0 flex-1 bg-background/40" aria-hidden />
+      )}
+    </div>
+  );
+});
 
 interface RegionDockProps {
   region: RegionId;
@@ -14,30 +53,42 @@ interface RegionDockProps {
   segments: ReadonlyArray<RegionSegment>;
 }
 
-function StripeSlot({
-  region,
-  stripeOrientation,
+function BottomRegionDock({
   segments,
-}: {
-  region: RegionId;
-  stripeOrientation: "vertical" | "horizontal";
-  segments: ReadonlyArray<RegionSegment>;
-}) {
-  const stripeAxis = stripeOrientation === "vertical" ? "width" : "height";
+  stripeOrientation,
+  contentOrientation,
+}: Omit<RegionDockProps, "region">) {
+  const regionSize = useLayoutStore((s) => s.layout.regions.bottom.size);
+  const hasOpen = useLayoutStore((s) =>
+    s.layout.regions.bottom.slots.some((slot) => slot.activePanel !== null),
+  );
+
+  const contentSize = hasOpen ? regionSize : 0;
 
   return (
     <div
-      style={{
-        [stripeAxis === "width" ? "width" : "height"]: STRIPE_SIZE,
-        flexShrink: 0,
-      }}
-      className="h-full min-h-0 shrink-0"
+      data-region-dock="bottom"
+      className="flex min-h-0 w-full flex-1 flex-col overflow-hidden"
     >
-      <RegionStripe
-        region={region}
-        orientation={stripeOrientation}
-        segments={segments}
-      />
+      {contentSize > 0 && (
+        <div
+          style={{ height: contentSize, flexShrink: 0 }}
+          className="flex min-h-0 w-full min-w-0 flex-col overflow-hidden"
+        >
+          <RegionContent region="bottom" orientation={contentOrientation} />
+        </div>
+      )}
+
+      <div
+        style={{ height: STRIPE_SIZE, flexShrink: 0 }}
+        className="w-full min-h-0 shrink-0 overflow-hidden"
+      >
+        <RegionStripe
+          region="bottom"
+          orientation={stripeOrientation}
+          segments={segments}
+        />
+      </div>
     </div>
   );
 }
@@ -48,73 +99,14 @@ export const RegionDock = memo(function RegionDock({
   contentOrientation,
   segments,
 }: RegionDockProps) {
-  const regionSize = useLayoutStore((s) => s.layout.regions[region].size);
-  const hasOpen = useLayoutStore((s) =>
-    s.layout.regions[region].slots.some((slot) => slot.activePanel !== null),
-  );
-
   const hasPanels = segments.some((s) => s.panels.length > 0);
-  if (!hasPanels) return null;
-
-  const contentSize = hasOpen ? regionSize : 0;
-  const stripeAxis = stripeOrientation === "vertical" ? "width" : "height";
-  const totalSize = STRIPE_SIZE + contentSize;
-
-  if (region === "bottom") {
-    return (
-      <div
-        data-region-dock={region}
-        style={{ height: totalSize, flexShrink: 0 }}
-        className="flex w-full min-h-0 min-w-0 flex-col overflow-hidden"
-      >
-        {contentSize > 0 && (
-          <div
-            style={{ height: contentSize, flexShrink: 0 }}
-            className="flex min-h-0 w-full min-w-0 flex-col overflow-hidden"
-          >
-            <RegionContent region={region} orientation={contentOrientation} />
-          </div>
-        )}
-
-        <StripeSlot
-          region={region}
-          stripeOrientation={stripeOrientation}
-          segments={segments}
-        />
-      </div>
-    );
-  }
+  if (!hasPanels || region !== "bottom") return null;
 
   return (
-    <div
-      data-region-dock={region}
-      style={{
-        [stripeAxis === "width" ? "width" : "height"]: totalSize,
-        flexShrink: 0,
-      }}
-      className="flex h-full min-h-0 min-w-0 flex-row overflow-hidden"
-    >
-      {region === "left" && (
-        <StripeSlot
-          region={region}
-          stripeOrientation={stripeOrientation}
-          segments={segments}
-        />
-      )}
-
-      {contentSize > 0 && (
-        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <RegionContent region={region} orientation={contentOrientation} />
-        </div>
-      )}
-
-      {region === "right" && (
-        <StripeSlot
-          region={region}
-          stripeOrientation={stripeOrientation}
-          segments={segments}
-        />
-      )}
-    </div>
+    <BottomRegionDock
+      stripeOrientation={stripeOrientation}
+      contentOrientation={contentOrientation}
+      segments={segments}
+    />
   );
 });

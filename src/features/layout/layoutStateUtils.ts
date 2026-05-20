@@ -10,6 +10,7 @@ import {
   MIN_EDITOR_SIZE,
   MIN_REGION_SIZE,
   SPLITTER_GUTTER_PX,
+  STRIPE_SIZE,
 } from "./layoutConstants";
 import type {
   LayoutState,
@@ -79,9 +80,7 @@ function buildSlotsForRegion(
     const panels = byIndex.get(idx)!;
     const explicitActive = panels.find((p) => activePanels[p] === true);
     const activePanel =
-      allInactive && !explicitActive
-        ? null
-        : (explicitActive ?? null);
+      allInactive && !explicitActive ? null : (explicitActive ?? null);
 
     return {
       id: `${prefix}${idx}`,
@@ -182,6 +181,43 @@ export function normalizeSlotRatios(slots: SlotState[]): SlotState[] {
   });
 }
 
+/**
+ * open slot 削除後、削除 slot の ratio を残り open slot へ按分する。
+ * 折りたたみ slot の ratio は保持（§6.2）。
+ */
+export function redistributeRatiosAfterRemovingOpenSlot(
+  remainingSlots: SlotState[],
+  removedSlot: SlotState,
+): SlotState[] {
+  if (removedSlot.activePanel === null) {
+    return remainingSlots;
+  }
+
+  const openRemaining = remainingSlots.filter((slot) => slot.activePanel !== null);
+  if (openRemaining.length === 0) {
+    return remainingSlots;
+  }
+
+  const removedRatio = removedSlot.sizeRatio;
+  const openSum = openRemaining.reduce((sum, slot) => sum + slot.sizeRatio, 0);
+
+  const updated =
+    openSum <= 0
+      ? remainingSlots.map((slot) =>
+          slot.activePanel !== null ? { ...slot, sizeRatio: 1 } : slot,
+        )
+      : remainingSlots.map((slot) => {
+          if (slot.activePanel === null) return slot;
+          return {
+            ...slot,
+            sizeRatio:
+              slot.sizeRatio + removedRatio * (slot.sizeRatio / openSum),
+          };
+        });
+
+  return normalizeSlotRatios(updated);
+}
+
 export function getRegionContentSize(
   regionId: RegionId,
   layout: LayoutState,
@@ -193,28 +229,30 @@ export function getRegionContentSize(
 
 /** open slot に割り当て可能な px（splitter 厚みを除く） */
 export function getSlotLayoutBudget(
-  region: RegionState,
+  openSlotCount: number,
+  layoutBudgetPx: number,
   gutterPx: number = SPLITTER_GUTTER_PX,
 ): number {
-  const openSlots = region.slots.filter((s) => s.activePanel !== null);
-  if (openSlots.length === 0) return 0;
-  const gutterTotal = Math.max(0, openSlots.length - 1) * gutterPx;
-  return Math.max(0, region.size - gutterTotal);
+  if (openSlotCount <= 0) return 0;
+  const gutterTotal = Math.max(0, openSlotCount - 1) * gutterPx;
+  return Math.max(0, layoutBudgetPx - gutterTotal);
 }
 
+/**
+ * slot 分割軸上のコンテナサイズから open slot の px を算出する。
+ * left/right の region.size は幅なので、高さ方向の分割には使わない。
+ */
 export function getOpenSlotPixelSizesForRegion(
   region: RegionState,
+  layoutBudgetPx: number,
 ): Map<string, number> {
   const openSlots = region.slots.filter((s) => s.activePanel !== null);
-  const budget = getSlotLayoutBudget(region);
+  const budget = getSlotLayoutBudget(openSlots.length, layoutBudgetPx);
   const ratioSum = openSlots.reduce((sum, s) => sum + s.sizeRatio, 0);
   const sizes = new Map<string, number>();
 
   for (const slot of openSlots) {
-    sizes.set(
-      slot.id,
-      ratioSum > 0 ? budget * (slot.sizeRatio / ratioSum) : 0,
-    );
+    sizes.set(slot.id, ratioSum > 0 ? budget * (slot.sizeRatio / ratioSum) : 0);
   }
   return sizes;
 }
@@ -222,12 +260,21 @@ export function getOpenSlotPixelSizesForRegion(
 export function getOpenSlotPixelSizes(
   regionId: RegionId,
   layout: LayoutState,
+  layoutBudgetPx: number,
 ): Map<string, number> {
-  return getOpenSlotPixelSizesForRegion(layout.regions[regionId]);
+  return getOpenSlotPixelSizesForRegion(
+    layout.regions[regionId],
+    layoutBudgetPx,
+  );
+}
+
+function regionHasRegisteredPanels(region: RegionState): boolean {
+  return region.slots.some((slot) => slot.panels.length > 0);
 }
 
 /**
- * region サイズを viewport 制約内に収め、左右合算で MIN_EDITOR_SIZE を確保する。
+ * region サイズを viewport 制約内に収め、左右 content 合算で MIN_EDITOR_SIZE を確保する。
+ * bottom region は side stripe 間の広い帯を占有するため、stripe / splitter 幅を差し引く。
  */
 export function clampLayoutStateForViewport(
   state: LayoutState,
@@ -246,7 +293,14 @@ export function clampLayoutStateForViewport(
   const leftSize = next.regions.left.size;
   const rightSize = next.regions.right.size;
   const horizontalTotal = leftSize + rightSize;
-  const maxHorizontal = viewport.width - MIN_EDITOR_SIZE;
+  const leftOpen = isRegionOpen(next.regions.left);
+  const rightOpen = isRegionOpen(next.regions.right);
+  const fixedHorizontal =
+    (regionHasRegisteredPanels(next.regions.left) ? STRIPE_SIZE : 0) +
+    (regionHasRegisteredPanels(next.regions.right) ? STRIPE_SIZE : 0) +
+    (leftOpen ? SPLITTER_GUTTER_PX : 0) +
+    (rightOpen ? SPLITTER_GUTTER_PX : 0);
+  const maxHorizontal = viewport.width - MIN_EDITOR_SIZE - fixedHorizontal;
 
   if (horizontalTotal > maxHorizontal && horizontalTotal > 0) {
     const scale = maxHorizontal / horizontalTotal;
@@ -275,10 +329,28 @@ export function applyAdjacentSlotPixelSizes(
   slotIdB: string,
   pxA: number,
   pxB: number,
+  layoutBudgetPx: number,
 ): LayoutState {
-  const pixelSizes = getOpenSlotPixelSizes(regionId, layout);
+  const region = layout.regions[regionId];
+  const openSlots = region.slots.filter((s) => s.activePanel !== null);
+  const budget = getSlotLayoutBudget(openSlots.length, layoutBudgetPx);
+  const otherSlots = openSlots.filter(
+    (s) => s.id !== slotIdA && s.id !== slotIdB,
+  );
+  const remainingBudget = Math.max(0, budget - pxA - pxB);
+  const otherRatioSum = otherSlots.reduce((sum, s) => sum + s.sizeRatio, 0);
+
+  const pixelSizes = new Map<string, number>();
   pixelSizes.set(slotIdA, pxA);
   pixelSizes.set(slotIdB, pxB);
+  for (const slot of otherSlots) {
+    pixelSizes.set(
+      slot.id,
+      otherRatioSum > 0
+        ? remainingBudget * (slot.sizeRatio / otherRatioSum)
+        : 0,
+    );
+  }
 
   return updateRegion(layout, regionId, (region) => ({
     ...region,

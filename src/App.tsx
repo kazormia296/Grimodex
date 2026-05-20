@@ -14,10 +14,7 @@ import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
 import { NovelcrafterImportDialog } from "@/features/import/NovelcrafterImportDialog";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
-import {
-  useLayoutStore,
-  type PanelId,
-} from "@/features/layout/layoutStore";
+import { useLayoutStore, type PanelId } from "@/features/layout/layoutStore";
 import { LayoutShell } from "@/features/layout/LayoutShell";
 import {
   CommandCenterBar,

@@ -17,6 +17,7 @@ import {
   applyAdjacentSlotPixelSizes,
   getOpenSlotPixelSizes,
   normalizeSlotRatios,
+  redistributeRatiosAfterRemovingOpenSlot,
   resetLayoutStateToDefault,
   updateRegion,
   validateLayoutState,
@@ -34,11 +35,12 @@ import type {
   SlotState,
   ToolWindowPanelId,
 } from "./layoutTypes";
+import { dragTargetsEqual, type DragOverTarget } from "./layoutDnD";
 import type { PanelId } from "./panelIds";
-import { PANEL_DRAG_TYPE } from "./panelIds";
 
 export type { PanelId };
-export { PANEL_DRAG_TYPE };
+export { PANEL_DRAG_TYPE } from "./panelIds";
+export { dragTargetsEqual, TOOL_WINDOW_REASSIGN_TYPE } from "./layoutDnD";
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let editorFocusHandler: (() => void) | null = null;
@@ -82,7 +84,11 @@ function removePanelFromSlot(
   const nextPanels = slot.panels.filter((p) => p !== panel);
 
   if (nextPanels.length === 0) {
-    return { slots: slots.filter((_, i) => i !== slotIndex) };
+    const removedSlot = slot;
+    const remainingSlots = slots.filter((_, i) => i !== slotIndex);
+    return {
+      slots: redistributeRatiosAfterRemovingOpenSlot(remainingSlots, removedSlot),
+    };
   }
 
   return {
@@ -172,11 +178,21 @@ function isPersistedLayoutV2(
   );
 }
 
+function unhideStripePanel(
+  hidden: Set<ToolWindowPanelId>,
+  panel: ToolWindowPanelId,
+): Set<ToolWindowPanelId> {
+  if (!hidden.has(panel)) return hidden;
+  const next = new Set(hidden);
+  next.delete(panel);
+  return next;
+}
+
 function scheduleSave(get: () => LayoutStoreState) {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const { layout, activePresetId, customPresets } = get();
+      const { layout, activePresetId, customPresets, hiddenStripePanels } = get();
       const check = validateLayoutState(layout, { viewport: getViewport() });
       if (!check.valid) return;
 
@@ -185,6 +201,10 @@ function scheduleSave(get: () => LayoutStoreState) {
         layoutVersion: 2,
         state: cloneLayoutState(layout),
         activePresetId: activePresetId ?? undefined,
+        hiddenStripePanels:
+          hiddenStripePanels.size > 0
+            ? [...hiddenStripePanels]
+            : undefined,
       };
 
       await invoke("save_global_settings", {
@@ -267,9 +287,13 @@ export interface LayoutStoreState {
   layout: LayoutState;
   layoutLocked: boolean;
   draggingPanel: ToolWindowPanelId | null;
+  dragOverTarget: DragOverTarget | null;
+  panelDragSource: "html5" | "pointer" | null;
   activePresetId: string | null;
   customPresets: CustomLayoutPreset[];
   initialized: boolean;
+  /** Stripe から非表示にした panel（slot 所属は維持、パネル▼から再表示可） */
+  hiddenStripePanels: Set<ToolWindowPanelId>;
 
   togglePanel: (panel: PanelId) => void;
   showPanel: (panel: PanelId) => void;
@@ -285,6 +309,7 @@ export interface LayoutStoreState {
   ) => void;
   movePanelToRegion: (panel: PanelId, region: RegionId) => void;
   moveToRegion: (panel: PanelId, region: RegionId) => void;
+  removePanelFromStripe: (panel: PanelId) => void;
   movePanelToNewSlot: (
     panel: PanelId,
     region: RegionId,
@@ -313,17 +338,23 @@ export interface LayoutStoreState {
     slotIdB: string,
     ratioA: number,
     ratioB: number,
+    layoutBudgetPx: number,
   ) => void;
   nudgeAdjacentSlotSizes: (
     region: RegionId,
     slotIdA: string,
     slotIdB: string,
     deltaPx: number,
+    layoutBudgetPx: number,
   ) => void;
   /** Run after resize drag ends: clamp, validate, persist once. */
   finalizeLayoutResize: () => void;
 
-  setDraggingPanel: (panel: ToolWindowPanelId | null) => void;
+  setDraggingPanel: (
+    panel: ToolWindowPanelId | null,
+    source?: "html5" | "pointer" | null,
+  ) => void;
+  setDragOverTarget: (target: DragOverTarget | null) => void;
   toggleLayoutLock: () => void;
 
   initializeLayout: () => Promise<void>;
@@ -341,9 +372,12 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   layout: buildDefaultLayoutState({ allInactive: true }),
   layoutLocked: false,
   draggingPanel: null,
+  dragOverTarget: null,
+  panelDragSource: null,
   activePresetId: null,
   customPresets: [],
   initialized: false,
+  hiddenStripePanels: new Set<ToolWindowPanelId>(),
 
   togglePanel: (panel) => {
     if (panel === "editor") {
@@ -355,6 +389,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     if (!location) return;
 
     set((state) => {
+      const opening = location.slot.activePanel !== toolPanel;
       const next = updateRegion(state.layout, location.region, (region) => ({
         ...region,
         slots: region.slots.map((slot) => {
@@ -365,7 +400,12 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           };
         }),
       }));
-      return { layout: applyValidatedLayout(next) };
+      return {
+        layout: applyValidatedLayout(next),
+        hiddenStripePanels: opening
+          ? unhideStripePanel(state.hiddenStripePanels, toolPanel)
+          : state.hiddenStripePanels,
+      };
     });
     scheduleSave(get);
   },
@@ -389,7 +429,13 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
             : slot,
         ),
       }));
-      return { layout: applyValidatedLayout(next) };
+      return {
+        layout: applyValidatedLayout(next),
+        hiddenStripePanels: unhideStripePanel(
+          state.hiddenStripePanels,
+          toolPanel,
+        ),
+      };
     });
     scheduleSave(get);
   },
@@ -443,6 +489,35 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   moveToRegion: (panel, region) => {
     get().movePanelToRegion(panel, region);
+  },
+
+  removePanelFromStripe: (panel) => {
+    if (panel === "editor" || get().layoutLocked) return;
+    const toolPanel = panel as ToolWindowPanelId;
+    const location = findPanelLocation(get().layout, toolPanel);
+    if (!location) return;
+
+    set((state) => {
+      const hidden = new Set(state.hiddenStripePanels);
+      hidden.add(toolPanel);
+
+      let layout = state.layout;
+      if (location.slot.activePanel === toolPanel) {
+        layout = applyValidatedLayout(
+          updateRegion(layout, location.region, (region) => ({
+            ...region,
+            slots: region.slots.map((slot) =>
+              slot.id === location.slot.id
+                ? { ...slot, activePanel: null }
+                : slot,
+            ),
+          })),
+        );
+      }
+
+      return { layout, hiddenStripePanels: hidden };
+    });
+    scheduleSave(get);
   },
 
   movePanelToNewSlot: (panel, region, insertIndex) => {
@@ -502,9 +577,9 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     });
   },
 
-  setSlotRatios: (region, slotIdA, slotIdB, ratioA, ratioB) => {
+  setSlotRatios: (region, slotIdA, slotIdB, ratioA, ratioB, layoutBudgetPx) => {
     if (get().layoutLocked) return;
-    if (ratioA <= 0 || ratioB <= 0) return;
+    if (ratioA <= 0 || ratioB <= 0 || layoutBudgetPx <= 0) return;
 
     set((state) => {
       const next = applyAdjacentSlotPixelSizes(
@@ -514,17 +589,28 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         slotIdB,
         ratioA,
         ratioB,
+        layoutBudgetPx,
       );
       return { layout: applyValidatedLayout(next) };
     });
     scheduleSave(get);
   },
 
-  nudgeAdjacentSlotSizes: (region, slotIdA, slotIdB, deltaPx) => {
-    if (get().layoutLocked || deltaPx === 0) return;
+  nudgeAdjacentSlotSizes: (
+    region,
+    slotIdA,
+    slotIdB,
+    deltaPx,
+    layoutBudgetPx,
+  ) => {
+    if (get().layoutLocked || deltaPx === 0 || layoutBudgetPx <= 0) return;
 
     set((state) => {
-      const pixelSizes = getOpenSlotPixelSizes(region, state.layout);
+      const pixelSizes = getOpenSlotPixelSizes(
+        region,
+        state.layout,
+        layoutBudgetPx,
+      );
       const prevPx = pixelSizes.get(slotIdA) ?? 0;
       const currPx = pixelSizes.get(slotIdB) ?? 0;
       const newPrev = Math.max(MIN_SLOT_SIZE, prevPx + deltaPx);
@@ -538,6 +624,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         slotIdB,
         newPrev,
         newCurr,
+        layoutBudgetPx,
       );
       return { layout: next };
     });
@@ -555,7 +642,21 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     scheduleSave(get);
   },
 
-  setDraggingPanel: (panel) => set({ draggingPanel: panel }),
+  setDraggingPanel: (panel, source) => {
+    if (panel === null) {
+      set({ draggingPanel: null, dragOverTarget: null, panelDragSource: null });
+      return;
+    }
+    set({
+      draggingPanel: panel,
+      panelDragSource: source ?? get().panelDragSource,
+    });
+  },
+
+  setDragOverTarget: (target) => {
+    if (dragTargetsEqual(get().dragOverTarget, target)) return;
+    set({ dragOverTarget: target });
+  },
 
   toggleLayoutLock: () => set((state) => ({ layoutLocked: !state.layoutLocked })),
 
@@ -608,6 +709,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         set({
           layout: validated,
           activePresetId: rawLayout.activePresetId ?? settings.activeLayoutPresetId ?? null,
+          hiddenStripePanels: new Set(rawLayout.hiddenStripePanels ?? []),
           initialized: true,
         });
         if (validateLayoutState(rawLayout.state).valid) {
@@ -636,6 +738,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     set({
       layout: buildDefaultLayoutState({ allInactive: true }),
       activePresetId: null,
+      hiddenStripePanels: new Set(),
     });
     scheduleSave(get);
     void persistActivePresetId(null);
@@ -648,6 +751,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       set({
         layout: applyValidatedLayout(builtin, vp),
         activePresetId: presetId,
+        hiddenStripePanels: new Set(),
       });
       scheduleSave(get);
       void persistActivePresetId(presetId);
@@ -659,6 +763,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       set({
         layout: applyValidatedLayout(cloneLayoutState(custom.state), vp),
         activePresetId: presetId,
+        hiddenStripePanels: new Set(),
       });
       scheduleSave(get);
       void persistActivePresetId(presetId);

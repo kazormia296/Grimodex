@@ -17,11 +17,19 @@ describe("RegionResizeSplitter", () => {
     useLayoutStore.setState({ nudgeRegionSize: nudge });
 
     const { container } = render(<RegionResizeSplitter region="bottom" />);
-    const splitter = container.querySelector('[role="separator"]') as HTMLElement;
+    const splitter = container.querySelector(
+      '[role="separator"]',
+    ) as HTMLElement;
 
     fireEvent.pointerDown(splitter, { clientY: 200, pointerId: 1 });
-    fireEvent(window, new PointerEvent("pointermove", { clientY: 220, pointerId: 1 }));
-    fireEvent(window, new PointerEvent("pointerup", { clientY: 220, pointerId: 1 }));
+    fireEvent(
+      window,
+      new PointerEvent("pointermove", { clientY: 220, pointerId: 1 }),
+    );
+    fireEvent(
+      window,
+      new PointerEvent("pointerup", { clientY: 220, pointerId: 1 }),
+    );
 
     expect(nudge).toHaveBeenCalled();
     const lastCall = nudge.mock.calls.at(-1);
