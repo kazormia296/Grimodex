@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from "vitest";
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { RegionStripe } from "./RegionStripe";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
@@ -85,5 +85,30 @@ describe("RegionStripe", () => {
     expect(cls("scenes")).toContain("bg-accent"); // open + active
     expect(cls("codex-quick")).toContain("text-muted-foreground/60"); // open + inactive
     expect(cls("timeline")).toContain("text-muted-foreground/35"); // collapsed
+  });
+
+  it("renders an empty stripe instead of returning null", () => {
+    // center stripe は tool segment が無くても常設帯として描画する。
+    const { container } = render(
+      <RegionStripe region="center" orientation="horizontal" segments={[]} />,
+    );
+    expect(container.querySelector("[data-stripe-root]")).not.toBeNull();
+  });
+
+  it("exposes a full-cover drop zone on an empty stripe while dragging", async () => {
+    useLayoutStore.setState({ draggingPanel: "codex" });
+    const { container } = render(
+      <RegionStripe region="center" orientation="horizontal" segments={[]} />,
+    );
+
+    const endZone = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('[data-drop-edge="end"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(endZone.dataset.dropSurface).toBe("stripe-end");
+    expect(endZone.dataset.insertIndex).toBe("0");
+    // 空ストライプでは start エッジゾーンを出さない（end が全面を覆う）。
+    expect(container.querySelector('[data-drop-edge="start"]')).toBeNull();
   });
 });

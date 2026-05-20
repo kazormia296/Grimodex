@@ -188,7 +188,8 @@ export function RegionStripe({
     Boolean(draggingPanel && !layoutLocked),
   );
 
-  if (segments.length === 0) return null;
+  // segments が空でも null にせず描画する（center stripe を空のままドロップ先
+  // にするため）。side/bottom region は全 panel 事前登録なので空にはならない。
 
   // open slot の sizeRatio を open 間で正規化し、ストライプ全体を比率配分で
   // 埋める（content の slot サイズと一致）。collapsed slot は flex フロー外
@@ -218,7 +219,9 @@ export function RegionStripe({
     return i < 0 ? slotIds.length : i;
   };
   const stripeEndInsertIndex =
-    slotIndexOf(segments[segments.length - 1].slotId) + 1;
+    segments.length > 0
+      ? slotIndexOf(segments[segments.length - 1].slotId) + 1
+      : 0;
 
   const handleEdgeDrop = (e: React.DragEvent, insertIndex: number) => {
     e.preventDefault();
@@ -274,7 +277,7 @@ export function RegionStripe({
         region === "bottom" && "border-t border-border",
       )}
     >
-      {showDropZones && (
+      {showDropZones && segments.length > 0 && (
         <div
           data-drop-edge="start"
           data-drop-region={region}
@@ -381,9 +384,12 @@ export function RegionStripe({
           data-drop-surface="stripe-end"
           className="absolute z-20 opacity-0"
           style={
-            orientation === "vertical"
-              ? { bottom: 0, left: 0, right: 0, height: stripeEdgeHitPx }
-              : { top: 0, bottom: 0, right: 0, width: stripeEdgeHitPx }
+            // 空ストライプはストライプ全体をドロップ先にする。
+            segments.length === 0
+              ? { top: 0, bottom: 0, left: 0, right: 0 }
+              : orientation === "vertical"
+                ? { bottom: 0, left: 0, right: 0, height: stripeEdgeHitPx }
+                : { top: 0, bottom: 0, right: 0, width: stripeEdgeHitPx }
           }
           onDragOver={(e) =>
             handleEdgeDragOver(e, stripeEndInsertIndex, "stripe-end")
