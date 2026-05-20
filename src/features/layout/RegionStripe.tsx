@@ -5,6 +5,7 @@ import {
   acceptsToolWindowReassignDrag,
   TOOL_WINDOW_REASSIGN_TYPE,
 } from "./layoutDnD";
+import { useShallow } from "zustand/react/shallow";
 import { useLayoutStore } from "./layoutStore";
 import { DND_NEW_SLOT_BETWEEN_HALF_PX } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
@@ -169,17 +170,14 @@ export function RegionStripe({
   orientation,
   segments,
 }: RegionStripeProps) {
-  const slots = useLayoutStore((s) =>
-    region === "center"
-      ? s.layout.center.segments
-          .filter((seg) => seg.kind === "tool")
-          .map((seg) => ({
-            id: seg.id,
-            sizeRatio: seg.sizeRatio,
-            panels: seg.panels,
-            activePanel: seg.activePanel,
-          }))
-      : s.layout.regions[region as RegionId].slots,
+  const slotIds = useLayoutStore(
+    useShallow((s) =>
+      region === "center"
+        ? s.layout.center.segments
+            .filter((seg) => seg.kind === "tool")
+            .map((seg) => seg.id)
+        : s.layout.regions[region as RegionId].slots.map((slot) => slot.id),
+    ),
   );
   const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
@@ -216,8 +214,8 @@ export function RegionStripe({
   }
 
   const slotIndexOf = (slotId: string): number => {
-    const i = slots.findIndex((slot) => slot.id === slotId);
-    return i < 0 ? slots.length : i;
+    const i = slotIds.indexOf(slotId);
+    return i < 0 ? slotIds.length : i;
   };
   const stripeEndInsertIndex =
     slotIndexOf(segments[segments.length - 1].slotId) + 1;
