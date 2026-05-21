@@ -22,3 +22,7 @@ lindera-cache/
 # Tauri ビルド時にリソースとして同梱するが、git には載せない。
 # tokenizer.json / config.json 等の軽量設定ファイルは別途 git に入れて良い。
 src-tauri/resources/semantic/**/*.onnx
+
+# GitHub Wiki (Grimodex.wiki.git) を作業ツリー内にクローンしたもの。
+# 別リポジトリなのでメインリポジトリでは追跡しない。
+grimodex-wiki/
