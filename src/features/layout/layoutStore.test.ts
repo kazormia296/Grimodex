@@ -339,6 +339,26 @@ describe("useLayoutStore", () => {
       );
       assertValidLayout(useLayoutStore.getState().layout);
     });
+
+    it("allows left region past 50% when the editor band is fully hidden", () => {
+      const vp = { width: 1366, height: 768 };
+      vi.stubGlobal("innerWidth", vp.width);
+      vi.stubGlobal("innerHeight", vp.height);
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().showPanel("chat");
+      useLayoutStore.getState().setEditorOpen(false);
+      const halfCap = Math.floor(vp.width * 0.5);
+      useLayoutStore.getState().setRegionSize("left", halfCap + 250, vp);
+      useLayoutStore.getState().finalizeLayoutResize();
+      expect(
+        useLayoutStore.getState().layout.regions.left.size,
+      ).toBeGreaterThan(halfCap);
+      expect(
+        validateLayoutState(useLayoutStore.getState().layout, { viewport: vp })
+          .valid,
+      ).toBe(true);
+      vi.unstubAllGlobals();
+    });
   });
 
   describe("builtin preset overrides", () => {
@@ -360,7 +380,7 @@ describe("useLayoutStore", () => {
       expect(
         useLayoutStore.getState().builtinPresetOverrides["builtin:default"]
           ?.hiddenStripePanels,
-      ).toEqual(["chat"]);
+      ).toEqual(["map", "matrix", "trash-bin", "chat"]);
 
       useLayoutStore.getState().applyPreset("builtin:plan");
       expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
@@ -371,10 +391,7 @@ describe("useLayoutStore", () => {
       expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
         true,
       );
-      const loc = findPanelLocation(
-        useLayoutStore.getState().layout,
-        "grid",
-      );
+      const loc = findPanelLocation(useLayoutStore.getState().layout, "grid");
       expect(loc).not.toBeNull();
     });
 
@@ -423,9 +440,8 @@ describe("useLayoutStore", () => {
           .regions.left.slots[0].activePanel,
       ).toBe("grid");
       expect(
-        useLayoutStore
-          .getState()
-          .builtinPresetOverrides["builtin:plan"]?.hiddenStripePanels,
+        useLayoutStore.getState().builtinPresetOverrides["builtin:plan"]
+          ?.hiddenStripePanels,
       ).toEqual(["timeline"]);
     });
   });
@@ -445,9 +461,9 @@ describe("useLayoutStore", () => {
 
       await useLayoutStore.getState().saveCurrentAsPreset("Hidden Chat");
 
-      const saved = useLayoutStore.getState().customPresets.find(
-        (p) => p.id === "preset-hidden-chat",
-      );
+      const saved = useLayoutStore
+        .getState()
+        .customPresets.find((p) => p.id === "preset-hidden-chat");
       expect(saved?.hiddenStripePanels).toEqual(["chat"]);
 
       useLayoutStore.getState().showPanel("chat");
@@ -511,30 +527,12 @@ describe("useLayoutStore", () => {
           .valid,
       ).toBe(true);
       expect(
-        layout.regions.bottom.slots.some(
-          (s) => s.activePanel === "grid" || s.activePanel === "timeline",
+        layout.center.segments.some(
+          (s) => s.kind === "tool" && s.activePanel === "grid",
         ),
       ).toBe(true);
       expect(
         layout.regions.right.slots.some((s) => s.activePanel === "chat"),
-      ).toBe(true);
-      vi.unstubAllGlobals();
-    });
-
-    it("plan preset allows left region past 50% when editor band is hidden", () => {
-      const vp = { width: 1366, height: 768 };
-      vi.stubGlobal("innerWidth", vp.width);
-      vi.stubGlobal("innerHeight", vp.height);
-      useLayoutStore.getState().applyPreset("builtin:plan");
-      const halfCap = Math.floor(vp.width * 0.5);
-      useLayoutStore.getState().setRegionSize("left", halfCap + 250, vp);
-      useLayoutStore.getState().finalizeLayoutResize();
-      expect(
-        useLayoutStore.getState().layout.regions.left.size,
-      ).toBeGreaterThan(halfCap);
-      expect(
-        validateLayoutState(useLayoutStore.getState().layout, { viewport: vp })
-          .valid,
       ).toBe(true);
       vi.unstubAllGlobals();
     });

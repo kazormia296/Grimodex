@@ -1,18 +1,11 @@
 import i18next from "i18next";
 import {
-  buildCenterSegmentsWithTools,
-  buildDefaultLayoutState,
   clampLayoutStateForViewport,
   cloneLayoutState,
-  redistributeSpaceOnEditorClose,
-  removePanelFromSideSlots,
-  updateCenter,
 } from "./layoutStateUtils";
-import { DEFAULT_REGION_SIZES } from "./layoutConstants";
 import type {
   BuiltinPresetOverride,
   LayoutState,
-  RegionId,
   ToolWindowPanelId,
 } from "./layoutTypes";
 
@@ -31,47 +24,6 @@ export interface CustomPresetMeta {
 
 export type LayoutPresetMeta = BuiltinPresetMeta | CustomPresetMeta;
 
-interface PresetDefinition {
-  activePanels: Partial<Record<ToolWindowPanelId, boolean>>;
-  regionFractions?: Partial<Record<RegionId, number>>;
-  editorOpen?: boolean;
-  centerToolPanels?: ToolWindowPanelId[];
-}
-
-const PRESET_DEFINITIONS: Record<string, PresetDefinition> = {
-  "builtin:default": {
-    activePanels: { scenes: true, codex: true, chat: true },
-  },
-  "builtin:plan": {
-    activePanels: {
-      grid: true,
-      timeline: true,
-      chat: true,
-      codex: true,
-    },
-    editorOpen: false,
-    regionFractions: { left: 0.45, right: 0.35, bottom: 0.17 },
-  },
-  "builtin:chat-main": {
-    activePanels: { chat: true, codex: true },
-    regionFractions: { left: 0.45, right: 0.35, bottom: 0.28 },
-  },
-  "builtin:review": {
-    activePanels: {
-      scenes: true,
-      attribution: true,
-      codex: true,
-      kouetsu: true,
-    },
-    centerToolPanels: ["kouetsu", "codex"],
-    regionFractions: { left: 0.13, right: 0.35, bottom: 0.28 },
-  },
-  "builtin:codex-main": {
-    activePanels: { codex: true, chat: true },
-    regionFractions: { left: 0.45, right: 0.25, bottom: 0.28 },
-  },
-};
-
 export const BUILTIN_PRESET_IDS = [
   "builtin:default",
   "builtin:plan",
@@ -82,13 +34,11 @@ export const BUILTIN_PRESET_IDS = [
 
 export type BuiltinPresetId = (typeof BUILTIN_PRESET_IDS)[number];
 
-const BUILTIN_IDS = BUILTIN_PRESET_IDS;
-
 export function isBuiltinPresetId(id: string): id is BuiltinPresetId {
   return (BUILTIN_PRESET_IDS as readonly string[]).includes(id);
 }
 
-const PRESET_I18N_KEYS: Record<(typeof BUILTIN_IDS)[number], string> = {
+const PRESET_I18N_KEYS: Record<BuiltinPresetId, string> = {
   "builtin:default": "layout.preset.default",
   "builtin:plan": "layout.preset.plan",
   "builtin:chat-main": "layout.preset.chatMain",
@@ -96,63 +46,435 @@ const PRESET_I18N_KEYS: Record<(typeof BUILTIN_IDS)[number], string> = {
   "builtin:codex-main": "layout.preset.codexMain",
 };
 
-export function materializePreset(
-  definition: PresetDefinition,
-  viewport: { width: number; height: number },
-): LayoutState {
-  const editorOpen = definition.editorOpen ?? true;
-  let state = buildDefaultLayoutState({
-    activePanels: definition.activePanels,
-    editorOpen,
-  });
-
-  const centerToolPanels = definition.centerToolPanels ?? [];
-  if (centerToolPanels.length > 0) {
-    state = removePanelFromSideSlots(state, centerToolPanels);
-    state = updateCenter(state, (center) => ({
-      ...center,
-      editorOpen,
-      segments: buildCenterSegmentsWithTools(
-        centerToolPanels,
-        definition.activePanels,
-      ),
-    }));
-  } else if (definition.editorOpen != null) {
-    state = updateCenter(state, (center) => ({
-      ...center,
-      editorOpen,
-    }));
-  }
-
-  if (definition.regionFractions) {
-    for (const [region, fraction] of Object.entries(
-      definition.regionFractions,
-    ) as [RegionId, number][]) {
-      const axis = region === "bottom" ? viewport.height : viewport.width;
-      state.regions[region].size = Math.round(axis * fraction);
-    }
-  } else {
-    for (const region of ["left", "right", "bottom"] as RegionId[]) {
-      state.regions[region].size = DEFAULT_REGION_SIZES[region];
-    }
-  }
-
-  let result = clampLayoutStateForViewport(state, viewport);
-
-  if (!editorOpen && centerToolPanels.length === 0) {
-    result = redistributeSpaceOnEditorClose(result, viewport);
-  }
-
-  return result;
+interface BuiltinPresetDefinition {
+  /** プリセット本体。適用時に viewport へ clamp される。 */
+  state: LayoutState;
+  /** Stripe から外す tool window（slot 登録は state 側に維持）。 */
+  hiddenStripePanels: ToolWindowPanelId[];
 }
+
+const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
+  "builtin:default": {
+    state: {
+      regions: {
+        left: {
+          size: 475,
+          slots: [
+            {
+              id: "l0",
+              sizeRatio: 0.4894159653149702,
+              panels: ["scenes", "command-center-results"],
+              activePanel: "scenes",
+            },
+            {
+              id: "ldc62505d",
+              sizeRatio: 0.11757204794695256,
+              panels: ["timeline"],
+              activePanel: null,
+            },
+            {
+              id: "l1",
+              sizeRatio: 0.3930119867380773,
+              panels: ["codex-quick", "foreshadow", "kouetsu"],
+              activePanel: "codex-quick",
+            },
+          ],
+        },
+        right: {
+          size: 645,
+          slots: [
+            {
+              id: "r0",
+              sizeRatio: 0.42178217821782166,
+              panels: ["chat"],
+              activePanel: "chat",
+            },
+            {
+              id: "rbde9d62e",
+              sizeRatio: 0.6666666666666666,
+              panels: ["chat-history"],
+              activePanel: null,
+            },
+            {
+              id: "r57854c5d",
+              sizeRatio: 0.5782178217821783,
+              panels: ["codex", "snippets"],
+              activePanel: "codex",
+            },
+            {
+              id: "r1",
+              sizeRatio: 1,
+              panels: ["attribution"],
+              activePanel: null,
+            },
+          ],
+        },
+        bottom: {
+          size: 330,
+          slots: [
+            {
+              id: "b0",
+              sizeRatio: 1,
+              panels: ["map", "grid", "matrix"],
+              activePanel: null,
+            },
+            {
+              id: "b1",
+              sizeRatio: 1,
+              panels: ["trash-bin"],
+              activePanel: null,
+            },
+          ],
+        },
+      },
+      center: {
+        editorOpen: true,
+        segments: [{ id: "ceditor", kind: "editor", sizeRatio: 1 }],
+      },
+    },
+    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin"],
+  },
+  "builtin:plan": {
+    state: {
+      regions: {
+        left: {
+          size: 363,
+          slots: [
+            {
+              id: "l0",
+              sizeRatio: 1,
+              panels: ["scenes", "command-center-results"],
+              activePanel: null,
+            },
+            {
+              id: "l1",
+              sizeRatio: 1,
+              panels: ["codex-quick"],
+              activePanel: null,
+            },
+          ],
+        },
+        right: {
+          size: 896,
+          slots: [
+            {
+              id: "r0",
+              sizeRatio: 0.5121106159946215,
+              panels: ["chat"],
+              activePanel: "chat",
+            },
+            {
+              id: "r15845c75",
+              sizeRatio: 0.37858508604206503,
+              panels: ["chat-history"],
+              activePanel: null,
+            },
+            {
+              id: "r405a4231",
+              sizeRatio: 0.4878893840053786,
+              panels: ["codex", "snippets", "matrix", "foreshadow"],
+              activePanel: "codex",
+            },
+            {
+              id: "r1",
+              sizeRatio: 1,
+              panels: ["attribution"],
+              activePanel: null,
+            },
+          ],
+        },
+        bottom: {
+          size: 165,
+          slots: [
+            {
+              id: "b1",
+              sizeRatio: 1,
+              panels: ["kouetsu", "trash-bin", "timeline"],
+              activePanel: null,
+            },
+          ],
+        },
+      },
+      center: {
+        editorOpen: false,
+        segments: [
+          { id: "ceditor", kind: "editor", sizeRatio: 1 },
+          {
+            id: "ctcbae9d6f",
+            kind: "tool",
+            sizeRatio: 1,
+            panels: ["grid", "map"],
+            activePanel: "grid",
+          },
+        ],
+      },
+    },
+    hiddenStripePanels: ["codex-quick", "trash-bin", "kouetsu", "attribution"],
+  },
+  "builtin:chat-main": {
+    state: {
+      regions: {
+        left: {
+          size: 397,
+          slots: [
+            {
+              id: "l0",
+              sizeRatio: 0.4894159653149702,
+              panels: ["scenes", "command-center-results"],
+              activePanel: null,
+            },
+            {
+              id: "ldc62505d",
+              sizeRatio: 0.11757204794695256,
+              panels: ["timeline"],
+              activePanel: null,
+            },
+            {
+              id: "l1",
+              sizeRatio: 0.3930119867380773,
+              panels: ["codex-quick", "foreshadow", "kouetsu"],
+              activePanel: null,
+            },
+          ],
+        },
+        right: {
+          size: 798,
+          slots: [
+            {
+              id: "rbde9d62e",
+              sizeRatio: 1,
+              panels: ["chat-history", "codex", "snippets"],
+              activePanel: "chat-history",
+            },
+            {
+              id: "r1",
+              sizeRatio: 1,
+              panels: ["attribution"],
+              activePanel: null,
+            },
+          ],
+        },
+        bottom: {
+          size: 330,
+          slots: [
+            {
+              id: "b0",
+              sizeRatio: 1,
+              panels: ["map", "grid", "matrix"],
+              activePanel: null,
+            },
+            {
+              id: "b1",
+              sizeRatio: 1,
+              panels: ["trash-bin"],
+              activePanel: null,
+            },
+          ],
+        },
+      },
+      center: {
+        editorOpen: false,
+        segments: [
+          { id: "ceditor", kind: "editor", sizeRatio: 1 },
+          {
+            id: "ct89df2b04",
+            kind: "tool",
+            sizeRatio: 1,
+            panels: ["chat"],
+            activePanel: "chat",
+          },
+        ],
+      },
+    },
+    hiddenStripePanels: [
+      "map",
+      "grid",
+      "matrix",
+      "trash-bin",
+      "codex-quick",
+      "attribution",
+    ],
+  },
+  "builtin:review": {
+    state: {
+      regions: {
+        left: {
+          size: 475,
+          slots: [
+            {
+              id: "l0",
+              sizeRatio: 0.4894159653149702,
+              panels: ["scenes", "command-center-results"],
+              activePanel: "scenes",
+            },
+            {
+              id: "ldc62505d",
+              sizeRatio: 0.11757204794695256,
+              panels: ["timeline"],
+              activePanel: null,
+            },
+            {
+              id: "l1",
+              sizeRatio: 0.3930119867380773,
+              panels: ["codex-quick", "foreshadow", "attribution"],
+              activePanel: "codex-quick",
+            },
+          ],
+        },
+        right: {
+          size: 645,
+          slots: [
+            {
+              id: "r0",
+              sizeRatio: 0.42178217821782166,
+              panels: ["chat"],
+              activePanel: null,
+            },
+            {
+              id: "rbde9d62e",
+              sizeRatio: 0.6666666666666666,
+              panels: ["chat-history"],
+              activePanel: null,
+            },
+            {
+              id: "r57854c5d",
+              sizeRatio: 0.5782178217821783,
+              panels: ["codex", "snippets"],
+              activePanel: null,
+            },
+          ],
+        },
+        bottom: {
+          size: 330,
+          slots: [
+            {
+              id: "b0",
+              sizeRatio: 1,
+              panels: ["map", "grid", "matrix"],
+              activePanel: null,
+            },
+            {
+              id: "b1",
+              sizeRatio: 1,
+              panels: ["trash-bin"],
+              activePanel: null,
+            },
+          ],
+        },
+      },
+      center: {
+        editorOpen: true,
+        segments: [
+          { id: "ceditor", kind: "editor", sizeRatio: 0.5 },
+          {
+            id: "cteca5de5f",
+            kind: "tool",
+            sizeRatio: 0.5,
+            panels: ["kouetsu"],
+            activePanel: "kouetsu",
+          },
+        ],
+      },
+    },
+    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin"],
+  },
+  "builtin:codex-main": {
+    state: {
+      regions: {
+        left: {
+          size: 475,
+          slots: [
+            {
+              id: "l0",
+              sizeRatio: 0.4894159653149702,
+              panels: ["scenes", "command-center-results"],
+              activePanel: null,
+            },
+            {
+              id: "ldc62505d",
+              sizeRatio: 0.11757204794695256,
+              panels: ["timeline"],
+              activePanel: null,
+            },
+            {
+              id: "l1",
+              sizeRatio: 0.3930119867380773,
+              panels: ["codex-quick", "foreshadow", "kouetsu"],
+              activePanel: null,
+            },
+          ],
+        },
+        right: {
+          size: 728,
+          slots: [
+            {
+              id: "r0",
+              sizeRatio: 0.5131739931468541,
+              panels: ["chat"],
+              activePanel: "chat",
+            },
+            {
+              id: "rbde9d62e",
+              sizeRatio: 0.486826006853146,
+              panels: ["chat-history"],
+              activePanel: null,
+            },
+            {
+              id: "r1",
+              sizeRatio: 1,
+              panels: ["attribution"],
+              activePanel: null,
+            },
+          ],
+        },
+        bottom: {
+          size: 330,
+          slots: [
+            {
+              id: "b0",
+              sizeRatio: 1,
+              panels: ["map", "grid", "matrix"],
+              activePanel: null,
+            },
+            {
+              id: "b1",
+              sizeRatio: 1,
+              panels: ["trash-bin"],
+              activePanel: null,
+            },
+          ],
+        },
+      },
+      center: {
+        editorOpen: false,
+        segments: [
+          { id: "ceditor", kind: "editor", sizeRatio: 1 },
+          {
+            id: "ct9b619a84",
+            kind: "tool",
+            sizeRatio: 1,
+            panels: ["codex", "snippets"],
+            activePanel: "codex",
+          },
+        ],
+      },
+    },
+    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin"],
+  },
+};
 
 export function getBuiltinPresetState(
   id: string,
   viewport: { width: number; height: number } = { width: 1440, height: 900 },
 ): LayoutState | undefined {
-  const definition = PRESET_DEFINITIONS[id];
+  const definition = PRESET_DEFINITIONS[id as BuiltinPresetId];
   if (!definition) return undefined;
-  return materializePreset(definition, viewport);
+  return clampLayoutStateForViewport(definition.state, viewport);
+}
+
+export function getBuiltinPresetHiddenPanels(id: string): ToolWindowPanelId[] {
+  const definition = PRESET_DEFINITIONS[id as BuiltinPresetId];
+  return definition ? [...definition.hiddenStripePanels] : [];
 }
 
 export function resolveBuiltinPresetState(
@@ -166,11 +488,21 @@ export function resolveBuiltinPresetState(
   return getBuiltinPresetState(id, viewport);
 }
 
+export function resolveBuiltinPresetHiddenPanels(
+  id: string,
+  override?: BuiltinPresetOverride,
+): ToolWindowPanelId[] {
+  if (override) {
+    return [...(override.hiddenStripePanels ?? [])];
+  }
+  return getBuiltinPresetHiddenPanels(id);
+}
+
 export function getBuiltinPresets(
   viewport: { width: number; height: number } = { width: 1440, height: 900 },
   overrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>> = {},
 ): BuiltinPresetMeta[] {
-  return BUILTIN_IDS.map((id) => {
+  return BUILTIN_PRESET_IDS.map((id) => {
     const state = resolveBuiltinPresetState(id, viewport, overrides[id]);
     if (!state) {
       throw new Error(`Unknown builtin preset: ${id}`);

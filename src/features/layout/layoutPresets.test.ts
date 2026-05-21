@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { getBuiltinPresetState, materializePreset } from "./layoutPresets";
+import {
+  getBuiltinPresetHiddenPanels,
+  getBuiltinPresetState,
+} from "./layoutPresets";
 import { validateLayoutState } from "./layoutStateUtils";
 
 const LAPTOP_VIEWPORT = { width: 1366, height: 768 };
@@ -34,19 +37,19 @@ describe("layoutPresets viewport safety", () => {
     });
   }
 
-  it("legacy hardcoded 800px left fails validation without clamping", () => {
-    const unclamped = materializePreset(
-      {
-        activePanels: { grid: true, chat: true },
-        regionFractions: { left: 800 / 1366, right: 400 / 1366 },
-      },
-      LAPTOP_VIEWPORT,
-    );
-    // materialize uses fraction so 800/1366*1366=800 - but clampLayoutStateForViewport fixes it
-    expect(unclamped.regions.left.size).toBeLessThanOrEqual(683);
-    expect(
-      validateLayoutState(unclamped, { viewport: LAPTOP_VIEWPORT }).valid,
-    ).toBe(true);
+  it("each builtin preset exposes its hidden stripe panels", () => {
+    for (const id of ALL_BUILTIN_IDS) {
+      const state = getBuiltinPresetState(id, NARROW_VIEWPORT)!;
+      const registered = new Set(
+        Object.values(state.regions).flatMap((r) =>
+          r.slots.flatMap((s) => s.panels),
+        ),
+      );
+      for (const hidden of getBuiltinPresetHiddenPanels(id)) {
+        // hidden panels stay registered in a slot, only absent from the stripe
+        expect(registered.has(hidden)).toBe(true);
+      }
+    }
   });
 
   it("plan preset hides editor and expands side regions", () => {
@@ -57,13 +60,13 @@ describe("layoutPresets viewport safety", () => {
     );
   });
 
-  it("review preset places kouetsu and codex in center", () => {
+  it("review preset places kouetsu in the center band beside the editor", () => {
     const state = getBuiltinPresetState("builtin:review", NARROW_VIEWPORT)!;
     const centerPanels = state.center.segments
       .filter((s) => s.kind === "tool")
       .flatMap((s) => s.panels);
     expect(centerPanels).toContain("kouetsu");
-    expect(centerPanels).toContain("codex");
+    expect(centerPanels).not.toContain("codex");
     expect(state.center.editorOpen).toBe(true);
   });
 });
