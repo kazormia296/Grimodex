@@ -106,7 +106,42 @@ interface CollapsedClusterProps {
 }
 
 /**
- * 折りたたみ slot のアイコン群（案A）。
+ * 先頭の折りたたみ slot 群。0 サイズ absolute オーバーレイにすると、後続の
+ * open バンドが DOM 後勝ちで上に描画されアイコンが隠れる（CenterStripe と同根）。
+ * in-flow で実寸描画し後続バンドを押し出して重なりを解消する。
+ */
+function LeadingCollapsedCluster({
+  segments,
+  orientation,
+  region,
+}: Omit<CollapsedClusterProps, "anchor">) {
+  const isVertical = orientation === "vertical";
+  return (
+    <div
+      data-stripe-collapsed-cluster
+      data-stripe-collapsed-cluster-leading
+      className={cn(
+        "flex shrink-0 gap-0.5",
+        isVertical
+          ? "w-full flex-col items-center"
+          : "h-full flex-row items-center",
+      )}
+    >
+      {segments.map((seg) => (
+        <StripeGroup
+          key={seg.key}
+          segment={seg}
+          orientation={orientation}
+          region={region}
+          flexGrow={0}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 開いたバンドの間／末尾に挟まる折りたたみ slot 群。
  *
  * flex フローでは 0 サイズで、open バンドの比率配分に影響を与えない
  * （＝ open バンドが content の slot サイズと一致する）。アイコンは
@@ -128,7 +163,7 @@ function CollapsedCluster({
     >
       <div
         className={cn(
-          "pointer-events-none absolute flex items-center gap-0.5",
+          "absolute z-40 flex items-center gap-0.5",
           isVertical ? "left-0 right-0 flex-col" : "top-0 bottom-0 flex-row",
         )}
         style={
@@ -297,13 +332,23 @@ export function RegionStripe({
 
       {items.map((item, itemIdx) => {
         if (item.kind === "collapsed") {
+          if (itemIdx === 0) {
+            return (
+              <LeadingCollapsedCluster
+                key={`collapsed-${item.segments[0].key}`}
+                segments={item.segments}
+                orientation={orientation}
+                region={region}
+              />
+            );
+          }
           return (
             <CollapsedCluster
               key={`collapsed-${item.segments[0].key}`}
               segments={item.segments}
               orientation={orientation}
               region={region}
-              anchor={itemIdx === 0 ? "start" : "end"}
+              anchor="end"
             />
           );
         }

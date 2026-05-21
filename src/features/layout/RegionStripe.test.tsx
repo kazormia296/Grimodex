@@ -75,6 +75,72 @@ describe("RegionStripe", () => {
     expect(Number(cluster!.style.flexGrow)).toBe(0);
   });
 
+  it.each([
+    { region: "left" as const, orientation: "vertical" as const },
+    { region: "right" as const, orientation: "vertical" as const },
+    { region: "bottom" as const, orientation: "horizontal" as const },
+  ])(
+    "keeps leading collapsed icons visible when a later slot opens ($region)",
+    ({ region, orientation }) => {
+      // Regression: leading collapsed slots used a zero-size absolute overlay;
+      // the next open band fills the stripe and paints over earlier icons.
+      const leadingCollapsed: RegionSegment[] = [
+        {
+          key: "s0",
+          slotId: "s0",
+          sizeRatio: 0.5,
+          open: false,
+          panels: [{ id: "chat", active: false }],
+        },
+        {
+          key: "s1",
+          slotId: "s1",
+          sizeRatio: 0.5,
+          open: false,
+          panels: [{ id: "chat-history", active: false }],
+        },
+        {
+          key: "s2",
+          slotId: "s2",
+          sizeRatio: 0.5,
+          open: true,
+          panels: [
+            { id: "codex", active: true },
+            { id: "snippets", active: false },
+          ],
+        },
+      ];
+      const { container } = render(
+        <RegionStripe
+          region={region}
+          orientation={orientation}
+          segments={leadingCollapsed}
+        />,
+      );
+
+      expect(
+        container.querySelector('[data-stripe-icon="chat"]'),
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[data-stripe-icon="chat-history"]'),
+      ).not.toBeNull();
+
+      const leadingCluster = container.querySelector<HTMLElement>(
+        "[data-stripe-collapsed-cluster-leading]",
+      );
+      expect(leadingCluster).not.toBeNull();
+      expect(leadingCluster?.querySelector(".absolute")).toBeNull();
+
+      const icons = [
+        ...container.querySelectorAll<HTMLElement>("[data-stripe-icon]"),
+      ].map((el) => el.dataset.stripeIcon);
+      expect(icons.indexOf("chat")).toBeLessThan(icons.indexOf("codex"));
+      expect(icons.indexOf("chat-history")).toBeLessThan(
+        icons.indexOf("codex"),
+      );
+    },
+  );
+
   it("dims collapsed-slot icons more than open-slot icons", () => {
     const { container } = render(
       <RegionStripe region="left" orientation="vertical" segments={segments} />,
