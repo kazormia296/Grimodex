@@ -107,9 +107,9 @@ describe("CenterStripe DnD", () => {
       .layout.center.segments.filter((s) => s.kind === "tool");
     expect(centerTools.some((s) => s.panels.includes("scenes"))).toBe(true);
     expect(
-      useLayoutStore.getState().layout.regions.left.slots.some((s) =>
-        s.panels.includes("scenes"),
-      ),
+      useLayoutStore
+        .getState()
+        .layout.regions.left.slots.some((s) => s.panels.includes("scenes")),
     ).toBe(false);
     expect(useLayoutStore.getState().draggingPanel).toBeNull();
   });
@@ -127,8 +127,7 @@ describe("CenterStripe DnD", () => {
         (slot) => ({
           ...slot,
           panels: slot.panels.filter((id) => id !== "kouetsu"),
-          activePanel:
-            slot.activePanel === "kouetsu" ? null : slot.activePanel,
+          activePanel: slot.activePanel === "kouetsu" ? null : slot.activePanel,
         }),
       );
     }
