@@ -452,6 +452,8 @@
       "review": "Proofread",
       "codexMain": "Condense",
       "saveLayout": "現在のレイアウトを保存",
+      "saveBuiltin": "このプリセットに現在のレイアウトを保存",
+      "resetBuiltin": "プリセットを初期状態に戻す",
       "resetDefault": "デフォルトに戻す"
     },
     "stripe": {

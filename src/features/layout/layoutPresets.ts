@@ -9,7 +9,12 @@ import {
   updateCenter,
 } from "./layoutStateUtils";
 import { DEFAULT_REGION_SIZES } from "./layoutConstants";
-import type { LayoutState, RegionId, ToolWindowPanelId } from "./layoutTypes";
+import type {
+  BuiltinPresetOverride,
+  LayoutState,
+  RegionId,
+  ToolWindowPanelId,
+} from "./layoutTypes";
 
 export interface BuiltinPresetMeta {
   id: string;
@@ -67,13 +72,21 @@ const PRESET_DEFINITIONS: Record<string, PresetDefinition> = {
   },
 };
 
-const BUILTIN_IDS = [
+export const BUILTIN_PRESET_IDS = [
   "builtin:default",
   "builtin:plan",
   "builtin:chat-main",
   "builtin:review",
   "builtin:codex-main",
 ] as const;
+
+export type BuiltinPresetId = (typeof BUILTIN_PRESET_IDS)[number];
+
+const BUILTIN_IDS = BUILTIN_PRESET_IDS;
+
+export function isBuiltinPresetId(id: string): id is BuiltinPresetId {
+  return (BUILTIN_PRESET_IDS as readonly string[]).includes(id);
+}
 
 const PRESET_I18N_KEYS: Record<(typeof BUILTIN_IDS)[number], string> = {
   "builtin:default": "layout.preset.default",
@@ -142,15 +155,33 @@ export function getBuiltinPresetState(
   return materializePreset(definition, viewport);
 }
 
+export function resolveBuiltinPresetState(
+  id: string,
+  viewport: { width: number; height: number },
+  override?: BuiltinPresetOverride,
+): LayoutState | undefined {
+  if (override) {
+    return cloneLayoutState(override.state);
+  }
+  return getBuiltinPresetState(id, viewport);
+}
+
 export function getBuiltinPresets(
   viewport: { width: number; height: number } = { width: 1440, height: 900 },
+  overrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>> = {},
 ): BuiltinPresetMeta[] {
-  return BUILTIN_IDS.map((id) => ({
-    id,
-    name: i18next.t(PRESET_I18N_KEYS[id]),
-    builtin: true as const,
-    state: cloneLayoutState(getBuiltinPresetState(id, viewport)!),
-  }));
+  return BUILTIN_IDS.map((id) => {
+    const state = resolveBuiltinPresetState(id, viewport, overrides[id]);
+    if (!state) {
+      throw new Error(`Unknown builtin preset: ${id}`);
+    }
+    return {
+      id,
+      name: i18next.t(PRESET_I18N_KEYS[id]),
+      builtin: true as const,
+      state: cloneLayoutState(state),
+    };
+  });
 }
 
 export function getBuiltinPreset(id: string): BuiltinPresetMeta | undefined {

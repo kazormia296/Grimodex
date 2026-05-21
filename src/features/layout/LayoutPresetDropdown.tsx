@@ -16,9 +16,13 @@ export function LayoutPresetDropdown() {
   const { t } = useTranslation();
   const {
     customPresets,
+    builtinPresetOverrides,
     activePresetId,
     applyPreset,
     saveCurrentAsPreset,
+    saveCurrentAsBuiltinPreset,
+    resetBuiltinPresetToDefault,
+    hasBuiltinPresetOverride,
     deletePreset,
     resetToDefaultLayout,
   } = useLayoutStore();
@@ -69,7 +73,7 @@ export function LayoutPresetDropdown() {
     }
   }, [isSaving]);
 
-  const builtinPresets = getBuiltinPresets();
+  const builtinPresets = getBuiltinPresets(undefined, builtinPresetOverrides);
 
   const activeName =
     builtinPresets.find((p) => p.id === activePresetId)?.name ??
@@ -123,29 +127,57 @@ export function LayoutPresetDropdown() {
             {t("layout.preset.builtinSection")}
           </div>
           {builtinPresets.map((preset) => (
-            <button
+            <div
               key={preset.id}
-              type="button"
-              onClick={() => {
-                applyPreset(preset.id);
-                setIsOpen(false);
-              }}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+              className="group flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
             >
-              <span
-                className={cn(
-                  "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
-                  activePresetId === preset.id
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border",
-                )}
+              <button
+                type="button"
+                onClick={() => {
+                  applyPreset(preset.id);
+                  setIsOpen(false);
+                }}
+                className="flex flex-1 items-center gap-2"
               >
-                {activePresetId === preset.id && (
-                  <Check className="h-2.5 w-2.5" />
-                )}
-              </span>
-              <span className="flex-1 text-left">{preset.name}</span>
-            </button>
+                <span
+                  className={cn(
+                    "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
+                    activePresetId === preset.id
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border",
+                  )}
+                >
+                  {activePresetId === preset.id && (
+                    <Check className="h-2.5 w-2.5" />
+                  )}
+                </span>
+                <span className="flex-1 text-left">{preset.name}</span>
+              </button>
+              <button
+                type="button"
+                title={t("layout.preset.saveBuiltin")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void saveCurrentAsBuiltinPreset(preset.id);
+                }}
+                className="hidden rounded p-0.5 text-muted-foreground hover:text-foreground group-hover:block"
+              >
+                <Save className="h-3 w-3" />
+              </button>
+              {hasBuiltinPresetOverride(preset.id) && (
+                <button
+                  type="button"
+                  title={t("layout.preset.resetBuiltin")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void resetBuiltinPresetToDefault(preset.id);
+                  }}
+                  className="hidden rounded p-0.5 text-muted-foreground hover:text-foreground group-hover:block"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                </button>
+              )}
+            </div>
           ))}
 
           {/* Custom presets */}

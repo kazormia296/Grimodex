@@ -27,6 +27,7 @@ function resetStore() {
     panelDragSource: null,
     activePresetId: null,
     customPresets: [],
+    builtinPresetOverrides: {},
     initialized: false,
     hiddenStripePanels: new Set(),
   });
@@ -337,6 +338,156 @@ describe("useLayoutStore", () => {
         VIEWPORT.width - 320 - fixedChrome,
       );
       assertValidLayout(useLayoutStore.getState().layout);
+    });
+  });
+
+  describe("builtin preset overrides", () => {
+    it("saveCurrentAsBuiltinPreset and applyPreset restore overridden layout", async () => {
+      useLayoutStore.getState().applyPreset("builtin:default");
+      useLayoutStore.getState().showPanel("grid");
+      useLayoutStore.getState().removePanelFromStripe("chat");
+      expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
+        true,
+      );
+
+      await useLayoutStore
+        .getState()
+        .saveCurrentAsBuiltinPreset("builtin:default");
+
+      expect(
+        useLayoutStore.getState().hasBuiltinPresetOverride("builtin:default"),
+      ).toBe(true);
+      expect(
+        useLayoutStore.getState().builtinPresetOverrides["builtin:default"]
+          ?.hiddenStripePanels,
+      ).toEqual(["chat"]);
+
+      useLayoutStore.getState().applyPreset("builtin:plan");
+      expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
+        false,
+      );
+
+      useLayoutStore.getState().applyPreset("builtin:default");
+      expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
+        true,
+      );
+      const loc = findPanelLocation(
+        useLayoutStore.getState().layout,
+        "grid",
+      );
+      expect(loc).not.toBeNull();
+    });
+
+    it("resetBuiltinPresetToDefault restores factory builtin layout", async () => {
+      useLayoutStore.getState().applyPreset("builtin:default");
+      useLayoutStore.getState().showPanel("grid");
+      await useLayoutStore
+        .getState()
+        .saveCurrentAsBuiltinPreset("builtin:default");
+
+      await useLayoutStore
+        .getState()
+        .resetBuiltinPresetToDefault("builtin:default");
+
+      expect(
+        useLayoutStore.getState().hasBuiltinPresetOverride("builtin:default"),
+      ).toBe(false);
+      expect(
+        findPanelLocation(useLayoutStore.getState().layout, "grid")?.slot
+          .activePanel,
+      ).toBeNull();
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.regions.left.slots.find((s) => s.id === "l0")?.activePanel,
+      ).toBe("scenes");
+    });
+
+    it("loadPresets restores builtinLayoutPresetOverrides", async () => {
+      const state = buildDefaultLayoutState({ allInactive: true });
+      state.regions.left.slots[0].activePanel = "grid";
+      mockInvoke.mockResolvedValue({
+        recentWorkspaces: [],
+        lastActiveWorkspace: null,
+        theme: "system",
+        showLauncherOnStartup: false,
+        builtinLayoutPresetOverrides: {
+          "builtin:plan": { state, hiddenStripePanels: ["timeline"] },
+        },
+      });
+
+      await useLayoutStore.getState().loadPresets();
+
+      expect(
+        useLayoutStore.getState().builtinPresetOverrides["builtin:plan"]?.state
+          .regions.left.slots[0].activePanel,
+      ).toBe("grid");
+      expect(
+        useLayoutStore
+          .getState()
+          .builtinPresetOverrides["builtin:plan"]?.hiddenStripePanels,
+      ).toEqual(["timeline"]);
+    });
+  });
+
+  describe("custom preset hiddenStripePanels", () => {
+    it("saveCurrentAsPreset and applyPreset restore hidden stripe panels", async () => {
+      vi.stubGlobal("crypto", {
+        ...globalThis.crypto,
+        randomUUID: () => "preset-hidden-chat",
+      });
+
+      useLayoutStore.getState().showPanel("chat");
+      useLayoutStore.getState().removePanelFromStripe("chat");
+      expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
+        true,
+      );
+
+      await useLayoutStore.getState().saveCurrentAsPreset("Hidden Chat");
+
+      const saved = useLayoutStore.getState().customPresets.find(
+        (p) => p.id === "preset-hidden-chat",
+      );
+      expect(saved?.hiddenStripePanels).toEqual(["chat"]);
+
+      useLayoutStore.getState().showPanel("chat");
+      expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
+        false,
+      );
+
+      useLayoutStore.getState().applyPreset("preset-hidden-chat");
+      expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
+        true,
+      );
+
+      vi.unstubAllGlobals();
+    });
+
+    it("loadPresets restores hiddenStripePanels on custom presets", async () => {
+      const state = buildDefaultLayoutState({ allInactive: true });
+      mockInvoke.mockResolvedValue({
+        recentWorkspaces: [],
+        lastActiveWorkspace: null,
+        theme: "system",
+        showLauncherOnStartup: false,
+        layoutPresets: [
+          {
+            id: "loaded-preset",
+            name: "Loaded",
+            state,
+            hiddenStripePanels: ["codex"],
+          },
+        ],
+      });
+
+      await useLayoutStore.getState().loadPresets();
+
+      expect(
+        useLayoutStore
+          .getState()
+          .customPresets.find((p) => p.id === "loaded-preset")
+          ?.hiddenStripePanels,
+      ).toEqual(["codex"]);
     });
   });
 

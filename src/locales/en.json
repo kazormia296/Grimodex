@@ -452,6 +452,8 @@
       "review": "Proofread",
       "codexMain": "Condense",
       "saveLayout": "Save current layout",
+      "saveBuiltin": "Save current layout to this preset",
+      "resetBuiltin": "Restore preset to factory default",
       "resetDefault": "Reset to default"
     },
     "stripe": {

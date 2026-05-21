@@ -39,8 +39,15 @@ import {
   validateLayoutState,
 } from "./layoutStateUtils";
 import { clampRegionSize, MIN_SLOT_SIZE } from "./layoutConstants";
-import { getBuiltinPresetState, getBuiltinPresets } from "./layoutPresets";
+import {
+  getBuiltinPresetState,
+  getBuiltinPresets,
+  isBuiltinPresetId,
+  resolveBuiltinPresetState,
+  type BuiltinPresetId,
+} from "./layoutPresets";
 import type {
+  BuiltinPresetOverride,
   CenterSegment,
   CenterToolSegment,
   CustomLayoutPreset,
@@ -301,12 +308,57 @@ function unhideStripePanel(
   return next;
 }
 
+function serializeBuiltinOverrides(
+  overrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
+): GlobalSettings["builtinLayoutPresetOverrides"] {
+  const entries = Object.entries(overrides).filter(
+    ([id, o]) => isBuiltinPresetId(id) && o != null,
+  ) as [BuiltinPresetId, BuiltinPresetOverride][];
+  if (entries.length === 0) return undefined;
+  return Object.fromEntries(
+    entries.map(([id, o]) => [
+      id,
+      {
+        state: o.state,
+        hiddenStripePanels: o.hiddenStripePanels,
+      },
+    ]),
+  );
+}
+
+function parseBuiltinOverrides(
+  raw: GlobalSettings["builtinLayoutPresetOverrides"],
+): Partial<Record<BuiltinPresetId, BuiltinPresetOverride>> {
+  if (raw == null || typeof raw !== "object") return {};
+  const result: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (!isBuiltinPresetId(id) || value == null || typeof value !== "object") {
+      continue;
+    }
+    const entry = value as { state?: unknown; hiddenStripePanels?: unknown };
+    if (entry.state == null) continue;
+    const rawHidden = entry.hiddenStripePanels;
+    result[id] = {
+      state: ensureLayoutStateV3(entry.state as LayoutState),
+      hiddenStripePanels: Array.isArray(rawHidden)
+        ? (rawHidden as ToolWindowPanelId[])
+        : undefined,
+    };
+  }
+  return result;
+}
+
 function scheduleSave(get: () => LayoutStoreState) {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const { layout, activePresetId, customPresets, hiddenStripePanels } =
-        get();
+      const {
+        layout,
+        activePresetId,
+        customPresets,
+        builtinPresetOverrides,
+        hiddenStripePanels,
+      } = get();
       const check = validateLayoutState(layout, { viewport: getViewport() });
       if (!check.valid) return;
 
@@ -329,7 +381,11 @@ function scheduleSave(get: () => LayoutStoreState) {
             id: p.id,
             name: p.name,
             state: p.state,
+            hiddenStripePanels: p.hiddenStripePanels,
           })),
+          builtinLayoutPresetOverrides: serializeBuiltinOverrides(
+            builtinPresetOverrides,
+          ),
         },
       });
     } catch {
@@ -352,6 +408,7 @@ async function persistActivePresetId(id: string | null) {
 async function persistPresets(
   presets: CustomLayoutPreset[],
   activeId: string | null,
+  builtinOverrides?: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
 ) {
   try {
     const current = await invoke<GlobalSettings>("get_global_settings");
@@ -362,8 +419,31 @@ async function persistPresets(
           id: p.id,
           name: p.name,
           state: p.state,
+          hiddenStripePanels: p.hiddenStripePanels,
         })),
         activeLayoutPresetId: activeId,
+        ...(builtinOverrides !== undefined
+          ? {
+              builtinLayoutPresetOverrides:
+                serializeBuiltinOverrides(builtinOverrides),
+            }
+          : {}),
+      },
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function persistBuiltinOverrides(
+  overrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
+) {
+  try {
+    const current = await invoke<GlobalSettings>("get_global_settings");
+    await invoke("save_global_settings", {
+      settings: {
+        ...current,
+        builtinLayoutPresetOverrides: serializeBuiltinOverrides(overrides),
       },
     });
   } catch {
@@ -407,6 +487,7 @@ export interface LayoutStoreState {
   panelDragSource: "html5" | "pointer" | null;
   activePresetId: string | null;
   customPresets: CustomLayoutPreset[];
+  builtinPresetOverrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>;
   initialized: boolean;
   hiddenStripePanels: Set<ToolWindowPanelId>;
 
@@ -490,6 +571,9 @@ export interface LayoutStoreState {
 
   applyPreset: (presetId: string) => void;
   saveCurrentAsPreset: (name: string) => Promise<void>;
+  saveCurrentAsBuiltinPreset: (presetId: string) => Promise<void>;
+  resetBuiltinPresetToDefault: (presetId: string) => Promise<void>;
+  hasBuiltinPresetOverride: (presetId: string) => boolean;
   deletePreset: (id: string) => Promise<void>;
   renamePreset: (id: string, name: string) => Promise<void>;
   loadPresets: () => Promise<void>;
@@ -503,6 +587,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   panelDragSource: null,
   activePresetId: null,
   customPresets: [],
+  builtinPresetOverrides: {},
   initialized: false,
   hiddenStripePanels: new Set<ToolWindowPanelId>(),
 
@@ -1049,12 +1134,17 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   applyPreset: (presetId) => {
     const vp = getViewport();
-    const builtin = getBuiltinPresetState(presetId, vp);
-    if (builtin) {
+    if (isBuiltinPresetId(presetId)) {
+      const override = get().builtinPresetOverrides[presetId];
+      const builtin = resolveBuiltinPresetState(presetId, vp, override);
+      if (!builtin) return;
       set({
-        layout: applyValidatedLayout(builtin, vp),
+        layout: applyValidatedLayout(
+          ensureLayoutStateV3(cloneLayoutState(builtin)),
+          vp,
+        ),
         activePresetId: presetId,
-        hiddenStripePanels: new Set(),
+        hiddenStripePanels: new Set(override?.hiddenStripePanels ?? []),
       });
       scheduleSave(get);
       void persistActivePresetId(presetId);
@@ -1069,19 +1159,66 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           vp,
         ),
         activePresetId: presetId,
-        hiddenStripePanels: new Set(),
+        hiddenStripePanels: new Set(custom.hiddenStripePanels ?? []),
       });
       scheduleSave(get);
       void persistActivePresetId(presetId);
     }
   },
 
+  async saveCurrentAsBuiltinPreset(presetId) {
+    if (!isBuiltinPresetId(presetId)) return;
+    const { layout, hiddenStripePanels } = get();
+    const override: BuiltinPresetOverride = {
+      state: cloneLayoutState(layout),
+      hiddenStripePanels:
+        hiddenStripePanels.size > 0
+          ? [...hiddenStripePanels]
+          : undefined,
+    };
+    const builtinPresetOverrides = {
+      ...get().builtinPresetOverrides,
+      [presetId]: override,
+    };
+    set({ builtinPresetOverrides, activePresetId: presetId });
+    await persistBuiltinOverrides(builtinPresetOverrides);
+    scheduleSave(get);
+    void persistActivePresetId(presetId);
+  },
+
+  hasBuiltinPresetOverride: (presetId) =>
+    isBuiltinPresetId(presetId) &&
+    get().builtinPresetOverrides[presetId] != null,
+
+  async resetBuiltinPresetToDefault(presetId) {
+    if (!isBuiltinPresetId(presetId)) return;
+    const { [presetId]: _removed, ...rest } = get().builtinPresetOverrides;
+    set({ builtinPresetOverrides: rest });
+    await persistBuiltinOverrides(rest);
+    if (get().activePresetId === presetId) {
+      const vp = getViewport();
+      const builtin = getBuiltinPresetState(presetId, vp);
+      if (builtin) {
+        set({
+          layout: applyValidatedLayout(builtin, vp),
+          hiddenStripePanels: new Set(),
+        });
+        scheduleSave(get);
+      }
+    }
+  },
+
   async saveCurrentAsPreset(name) {
     const id = crypto.randomUUID();
+    const { layout, hiddenStripePanels } = get();
     const preset: CustomLayoutPreset = {
       id,
       name,
-      state: cloneLayoutState(get().layout),
+      state: cloneLayoutState(layout),
+      hiddenStripePanels:
+        hiddenStripePanels.size > 0
+          ? [...hiddenStripePanels]
+          : undefined,
     };
     const presets = [...get().customPresets, preset];
     set({ customPresets: presets, activePresetId: id });
@@ -1117,15 +1254,27 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
                 "state" in p &&
                 (p as { state: unknown }).state != null,
             )
-            .map((p) => ({
-              id: p.id,
-              name: p.name,
-              state: ensureLayoutStateV3(p.state),
-            }))
+            .map((p) => {
+              const rawHidden = (p as { hiddenStripePanels?: unknown })
+                .hiddenStripePanels;
+              return {
+                id: p.id,
+                name: p.name,
+                state: ensureLayoutStateV3(p.state),
+                hiddenStripePanels: Array.isArray(rawHidden)
+                  ? (rawHidden as ToolWindowPanelId[])
+                  : undefined,
+              };
+            })
         : [];
+
+      const builtinPresetOverrides = parseBuiltinOverrides(
+        settings.builtinLayoutPresetOverrides,
+      );
 
       set({
         customPresets,
+        builtinPresetOverrides,
         activePresetId: settings.activeLayoutPresetId ?? null,
       });
     } catch {

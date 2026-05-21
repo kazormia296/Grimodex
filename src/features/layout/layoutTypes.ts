@@ -67,10 +67,19 @@ export interface PersistedLayout {
   hiddenStripePanels?: ToolWindowPanelId[];
 }
 
+/** ビルトインプリセットのユーザー上書き（id は builtin:* でキー管理） */
+export interface BuiltinPresetOverride {
+  state: LayoutState;
+  /** Stripe から外した tool window（slot 登録は state 側に維持） */
+  hiddenStripePanels?: ToolWindowPanelId[];
+}
+
 export interface CustomLayoutPreset {
   id: string;
   name: string;
   state: LayoutState;
+  /** Stripe から外した tool window（slot 登録は state 側に維持） */
+  hiddenStripePanels?: ToolWindowPanelId[];
 }
 
 export type LayoutValidationResult =

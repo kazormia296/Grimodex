@@ -32,6 +32,9 @@ pub struct GlobalSettings {
     /// User-saved layout presets (array of {id, name, layout} objects).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layout_presets: Option<serde_json::Value>,
+    /// User overrides for built-in layout presets (map of builtin id → snapshot).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub builtin_layout_preset_overrides: Option<serde_json::Value>,
     /// ID of the last-applied layout preset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_layout_preset_id: Option<String>,
@@ -96,6 +99,7 @@ impl Default for GlobalSettings {
             show_launcher_on_startup: false,
             layout: None,
             layout_presets: None,
+            builtin_layout_preset_overrides: None,
             active_layout_preset_id: None,
             color_theme: None,
             trusted_workspaces: Vec::new(),

@@ -25,7 +25,17 @@ export interface GlobalSettings {
   layout?: unknown;
   layoutVersion?: number;
   /** User-saved layout presets (LayoutState snapshots) */
-  layoutPresets?: Array<{ id: string; name: string; state: unknown }>;
+  layoutPresets?: Array<{
+    id: string;
+    name: string;
+    state: unknown;
+    hiddenStripePanels?: string[];
+  }>;
+  /** User overrides for built-in layout presets (keyed by builtin:* id) */
+  builtinLayoutPresetOverrides?: Record<
+    string,
+    { state: unknown; hiddenStripePanels?: string[] }
+  >;
   /** ID of the last-applied layout preset */
   activeLayoutPresetId?: string | null;
   /** Per-panel tool window state (slot / view mode / undock size) */
