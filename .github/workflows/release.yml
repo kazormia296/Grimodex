@@ -34,7 +34,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: ubuntu-22.04
+          # ort の prebuilt ONNX Runtime は glibc 2.38+ でビルドされており
+          # __isoc23_strtol 等を参照する。ubuntu-22.04 (glibc 2.35) では
+          # rust-lld が undefined symbol で落ちるため 24.04 以上必須。
+          - platform: ubuntu-24.04
           - platform: macos-latest
           - platform: windows-latest
     runs-on: ${{ matrix.platform }}
@@ -52,7 +55,7 @@ jobs:
           cache: pnpm
 
       - name: Linux 依存ライブラリのインストール
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
