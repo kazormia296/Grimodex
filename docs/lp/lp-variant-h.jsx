@@ -2993,6 +2993,10 @@ function LPVariantH() {
                 t: "GITHUB ↗",
                 href: "https://github.com/kazormia296/Grimodex",
               },
+              {
+                t: "WIKI ↗",
+                href: "https://github.com/kazormia296/Grimodex/wiki",
+              },
               { t: "© 2026", hl: true },
             ]}
           />
