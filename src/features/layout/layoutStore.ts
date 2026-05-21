@@ -13,6 +13,7 @@ import {
   applyAdjacentCenterSegmentPixelSizes,
   applyAdjacentSlotPixelSizes,
   buildDefaultLayoutState,
+  buildRegionSizeClampContext,
   cloneLayoutState,
   clampLayoutStateForViewport,
   ensureLayoutStateV3,
@@ -722,7 +723,12 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   setRegionSizeLive: (region, size, viewport) => {
     if (get().layoutLocked) return;
     const vp = viewport ?? getViewport();
-    const clamped = clampRegionSize(region, size, vp);
+    const clamped = clampRegionSize(
+      region,
+      size,
+      vp,
+      buildRegionSizeClampContext(get().layout),
+    );
     set((state) => {
       const current = state.layout.regions[region].size;
       if (clamped === current) return state;
@@ -744,7 +750,12 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     set((state) => {
       const regionState = state.layout.regions[region];
       const current = regionState.size;
-      const nextSize = clampRegionSize(region, current + deltaPx, vp);
+      const nextSize = clampRegionSize(
+        region,
+        current + deltaPx,
+        vp,
+        buildRegionSizeClampContext(state.layout),
+      );
       if (nextSize === current) return state;
 
       return {

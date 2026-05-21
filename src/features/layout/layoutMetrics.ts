@@ -1,4 +1,8 @@
-import { STRIPE_SIZE, SPLITTER_GUTTER_PX } from "./layoutConstants";
+import {
+  computeFillerRegion,
+  STRIPE_SIZE,
+  SPLITTER_GUTTER_PX,
+} from "./layoutConstants";
 import type { RegionId } from "./layoutTypes";
 
 export interface LayoutGridMetrics {
@@ -73,11 +77,11 @@ export function computeLayoutGridMetrics(
   // 幅に追従できず右側に余白が生じる。
   const leftIsOpen = input.hasLeft && input.leftOpen;
   const rightIsOpen = input.hasRight && input.rightOpen;
-  let fillerRegion: "left" | "right" | null = null;
-  if (!input.centerBandVisible) {
-    if (rightIsOpen) fillerRegion = "right";
-    else if (leftIsOpen) fillerRegion = "left";
-  }
+  const fillerRegion = computeFillerRegion({
+    centerBandVisible: input.centerBandVisible,
+    leftOpen: leftIsOpen,
+    rightOpen: rightIsOpen,
+  });
 
   // filler region は固定境界を持たないため専用 splitter を消す。
   const leftSplitterPx =

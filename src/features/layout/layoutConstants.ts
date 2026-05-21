@@ -31,13 +31,78 @@ export const DEFAULT_REGION_SIZES: Record<RegionId, number> = {
   bottom: 220,
 };
 
+/** region サイズクランプ用のレイアウト文脈（filler 時の上限緩和など） */
+export interface RegionSizeClampContext {
+  centerBandVisible: boolean;
+  leftOpen: boolean;
+  rightOpen: boolean;
+  hasLeft: boolean;
+  hasRight: boolean;
+}
+
+/**
+ * center band 非表示時に 1fr で余白を吸収する side region。
+ * `layoutMetrics.computeLayoutGridMetrics` と同じ優先順位。
+ */
+export function computeFillerRegion(input: {
+  centerBandVisible: boolean;
+  leftOpen: boolean;
+  rightOpen: boolean;
+}): "left" | "right" | null {
+  if (input.centerBandVisible) return null;
+  if (input.rightOpen) return "right";
+  if (input.leftOpen) return "left";
+  return null;
+}
+
+function horizontalResizeChromePx(
+  context: RegionSizeClampContext,
+  fillerRegion: "left" | "right" | null,
+): number {
+  let chrome = 0;
+  if (context.hasLeft) chrome += STRIPE_SIZE;
+  if (context.hasRight) chrome += STRIPE_SIZE;
+  if (context.leftOpen && fillerRegion !== "left") chrome += SPLITTER_GUTTER_PX;
+  if (context.rightOpen && fillerRegion !== "right")
+    chrome += SPLITTER_GUTTER_PX;
+  return chrome;
+}
+
 /** viewport から region ごとの最大 content サイズを算出 */
 export function getMaxRegionSize(
   region: RegionId,
   viewport: { width: number; height: number },
+  context?: RegionSizeClampContext,
 ): number {
   const axis = region === "bottom" ? viewport.height : viewport.width;
-  return axis * MAX_REGION_SIZE_RATIO;
+  const defaultMax = axis * MAX_REGION_SIZE_RATIO;
+
+  if (!context || region === "bottom") return defaultMax;
+
+  const fillerRegion = computeFillerRegion({
+    centerBandVisible: context.centerBandVisible,
+    leftOpen: context.leftOpen,
+    rightOpen: context.rightOpen,
+  });
+  if (!fillerRegion) return defaultMax;
+
+  const chrome = horizontalResizeChromePx(context, fillerRegion);
+
+  // filler ではない固定側: 相手 region の最小幅を残してほぼ全幅まで伸ばせる
+  if (fillerRegion === "right" && region === "left" && context.leftOpen) {
+    return Math.max(
+      MIN_REGION_SIZE,
+      viewport.width - chrome - MIN_REGION_SIZE,
+    );
+  }
+  if (fillerRegion === "left" && region === "right" && context.rightOpen) {
+    return Math.max(
+      MIN_REGION_SIZE,
+      viewport.width - chrome - MIN_REGION_SIZE,
+    );
+  }
+
+  return defaultMax;
 }
 
 /** region content サイズを MIN〜MAX にクランプ */
@@ -45,7 +110,8 @@ export function clampRegionSize(
   region: RegionId,
   size: number,
   viewport: { width: number; height: number },
+  context?: RegionSizeClampContext,
 ): number {
-  const max = getMaxRegionSize(region, viewport);
+  const max = getMaxRegionSize(region, viewport, context);
   return Math.min(Math.max(size, MIN_REGION_SIZE), max);
 }

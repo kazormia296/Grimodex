@@ -279,6 +279,24 @@ describe("useLayoutStore", () => {
       ).toBe(true);
       vi.unstubAllGlobals();
     });
+
+    it("plan preset allows left region past 50% when editor band is hidden", () => {
+      const vp = { width: 1366, height: 768 };
+      vi.stubGlobal("innerWidth", vp.width);
+      vi.stubGlobal("innerHeight", vp.height);
+      useLayoutStore.getState().applyPreset("builtin:plan");
+      const halfCap = Math.floor(vp.width * 0.5);
+      useLayoutStore.getState().setRegionSize("left", halfCap + 250, vp);
+      useLayoutStore.getState().finalizeLayoutResize();
+      expect(useLayoutStore.getState().layout.regions.left.size).toBeGreaterThan(
+        halfCap,
+      );
+      expect(
+        validateLayoutState(useLayoutStore.getState().layout, { viewport: vp })
+          .valid,
+      ).toBe(true);
+      vi.unstubAllGlobals();
+    });
   });
 
   describe("initializeLayout migration", () => {

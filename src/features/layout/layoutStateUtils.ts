@@ -6,12 +6,14 @@ import {
 } from "./toolWindowDefaults";
 import {
   clampRegionSize,
+  computeFillerRegion,
   DEFAULT_REGION_SIZES,
   MIN_EDITOR_SIZE,
   MIN_REGION_SIZE,
   MIN_SLOT_SIZE,
   SPLITTER_GUTTER_PX,
   STRIPE_SIZE,
+  type RegionSizeClampContext,
 } from "./layoutConstants";
 import type {
   CenterSegment,
@@ -153,12 +155,19 @@ export function hasCenterTools(state: LayoutState): boolean {
   return getToolSegments(state.center).some((s) => s.panels.length > 0);
 }
 
+/** center content（エディタ / center tool 列）が表示中か */
+export function isCenterContentVisible(state: LayoutState): boolean {
+  if (state.center.editorOpen) return true;
+  return getToolSegments(state.center).some((s) => s.activePanel !== null);
+}
+
+/** @deprecated use isCenterContentVisible — 後方互換のエイリアス */
 export function isCenterBandVisible(state: LayoutState): boolean {
-  return state.center.editorOpen || hasCenterTools(state);
+  return isCenterContentVisible(state);
 }
 
 export function getCenterHorizontalReserve(state: LayoutState): number {
-  if (!isCenterBandVisible(state)) return 0;
+  if (!isCenterContentVisible(state)) return 0;
 
   let reserve = 0;
   if (state.center.editorOpen) {
@@ -256,7 +265,12 @@ export function validateLayoutState(
       };
     }
 
-    const maxSize = clampRegionSize(regionId, Infinity, viewport);
+    const maxSize = clampRegionSize(
+      regionId,
+      Infinity,
+      viewport,
+      buildRegionSizeClampContext(state),
+    );
     if (region.size > maxSize) {
       return {
         valid: false,
@@ -509,7 +523,7 @@ export function redistributeSpaceOnEditorClose(
   state: LayoutState,
   viewport: { width: number; height: number },
 ): LayoutState {
-  if (isCenterBandVisible(state)) return state;
+  if (isCenterContentVisible(state)) return state;
 
   const next = cloneLayoutState(state);
   const leftOpen = isRegionOpen(next.regions.left);
@@ -530,29 +544,56 @@ export function redistributeSpaceOnEditorClose(
   if (total <= 0 || available <= total) return next;
 
   const extra = available - total;
+  const clampContext = buildRegionSizeClampContext(next);
+  const fillerRegion = computeFillerRegion({
+    centerBandVisible: false,
+    leftOpen,
+    rightOpen,
+  });
+
   if (leftOpen && rightOpen) {
-    const leftShare = leftSize / total;
-    next.regions.left.size = clampRegionSize(
-      "left",
-      Math.round(leftSize + extra * leftShare),
-      viewport,
-    );
-    next.regions.right.size = clampRegionSize(
-      "right",
-      Math.round(rightSize + extra * (1 - leftShare)),
-      viewport,
-    );
+    if (fillerRegion === "right") {
+      next.regions.left.size = clampRegionSize(
+        "left",
+        Math.round(leftSize + extra),
+        viewport,
+        clampContext,
+      );
+    } else if (fillerRegion === "left") {
+      next.regions.right.size = clampRegionSize(
+        "right",
+        Math.round(rightSize + extra),
+        viewport,
+        clampContext,
+      );
+    } else {
+      const leftShare = leftSize / total;
+      next.regions.left.size = clampRegionSize(
+        "left",
+        Math.round(leftSize + extra * leftShare),
+        viewport,
+        clampContext,
+      );
+      next.regions.right.size = clampRegionSize(
+        "right",
+        Math.round(rightSize + extra * (1 - leftShare)),
+        viewport,
+        clampContext,
+      );
+    }
   } else if (leftOpen) {
     next.regions.left.size = clampRegionSize(
       "left",
       Math.round(leftSize + extra),
       viewport,
+      clampContext,
     );
   } else if (rightOpen) {
     next.regions.right.size = clampRegionSize(
       "right",
       Math.round(rightSize + extra),
       viewport,
+      clampContext,
     );
   }
 
@@ -564,20 +605,31 @@ export function clampLayoutStateForViewport(
   viewport: { width: number; height: number },
 ): LayoutState {
   const next = cloneLayoutState(state);
+  const clampContext = buildRegionSizeClampContext(next);
 
   for (const regionId of ALL_REGIONS) {
     next.regions[regionId].size = clampRegionSize(
       regionId,
       next.regions[regionId].size,
       viewport,
+      clampContext,
     );
   }
+
+  const fillerRegion = computeFillerRegion({
+    centerBandVisible: clampContext.centerBandVisible,
+    leftOpen: clampContext.leftOpen,
+    rightOpen: clampContext.rightOpen,
+  });
+
+  // filler あり: 固定側だけ px、相手は 1fr のため合算スケール不要
+  if (fillerRegion !== null) return next;
 
   const leftSize = next.regions.left.size;
   const rightSize = next.regions.right.size;
   const horizontalTotal = leftSize + rightSize;
-  const leftOpen = isRegionOpen(next.regions.left);
-  const rightOpen = isRegionOpen(next.regions.right);
+  const leftOpen = clampContext.leftOpen;
+  const rightOpen = clampContext.rightOpen;
   const fixedHorizontal =
     (regionHasRegisteredPanels(next.regions.left) ? STRIPE_SIZE : 0) +
     (regionHasRegisteredPanels(next.regions.right) ? STRIPE_SIZE : 0) +
@@ -592,11 +644,13 @@ export function clampLayoutStateForViewport(
       "left",
       Math.round(leftSize * scale),
       viewport,
+      clampContext,
     );
     next.regions.right.size = clampRegionSize(
       "right",
       Math.round(rightSize * scale),
       viewport,
+      clampContext,
     );
   }
 
@@ -692,6 +746,18 @@ export function applyAdjacentCenterSegmentPixelSizes(
       center.editorOpen,
     ),
   }));
+}
+
+export function buildRegionSizeClampContext(
+  state: LayoutState,
+): RegionSizeClampContext {
+  return {
+    centerBandVisible: isCenterContentVisible(state),
+    leftOpen: isRegionOpen(state.regions.left),
+    rightOpen: isRegionOpen(state.regions.right),
+    hasLeft: state.regions.left.slots.some((slot) => slot.panels.length > 0),
+    hasRight: state.regions.right.slots.some((slot) => slot.panels.length > 0),
+  };
 }
 
 export function isRegionOpen(region: RegionState): boolean {
