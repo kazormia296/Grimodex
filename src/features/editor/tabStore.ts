@@ -720,7 +720,13 @@ export const useTabStore = create<TabState>()((set, get) => {
     // ---- Dirty-tab tracking ----
 
     setTabDirty(nodeId, dirty) {
-      const next = new Set(get().dirtyTabIds);
+      const cur = get().dirtyTabIds;
+      // Idempotent: skip the store update (and subscriber notify) when the
+      // dirty state is unchanged. Without this guard every redundant call —
+      // e.g. an EditorPane mount syncing isDirty=false on an already-clean
+      // tab — allocates a new Set and re-renders all dirtyTabIds subscribers.
+      if (dirty === cur.has(nodeId)) return;
+      const next = new Set(cur);
       if (dirty) next.add(nodeId);
       else next.delete(nodeId);
       set({ dirtyTabIds: next });

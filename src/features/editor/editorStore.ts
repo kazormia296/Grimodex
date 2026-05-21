@@ -43,7 +43,9 @@ export const useEditorStore = create<EditorState>()((set, get) => {
     lastInsertRange: null,
     ghostPreview: null,
 
-    setEditor: (editor: Editor | null) => set({ editor }),
+    setEditor: (editor: Editor | null) =>
+      // Idempotent: skip notify when the same instance is re-registered.
+      set((s) => (s.editor === editor ? s : { editor })),
 
     showGhostPreview: (text: string) => {
       const { editor } = get();

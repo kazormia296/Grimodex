@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Clock, BookOpen, Files } from "lucide-react";
@@ -569,13 +569,21 @@ export function EditorPane({
   const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
   const insertFromPaste = useEditorStore((s) => s.insertFromPaste);
 
+  // Built once: a fresh extensions array on every render makes TipTap's
+  // useEditor onRender effect call editor.setOptions each render (schema/
+  // plugin churn). setMentionPopupState/setMentionIndex are stable setters.
+  const editorExtensions = useMemo(
+    () =>
+      getEditorExtensions({
+        setMentionPopup: (s) => {
+          setMentionPopupState(s);
+          setMentionIndex(0);
+        },
+      }),
+    [],
+  );
   const editor = useEditor({
-    extensions: getEditorExtensions({
-      setMentionPopup: (s) => {
-        setMentionPopupState(s);
-        setMentionIndex(0);
-      },
-    }),
+    extensions: editorExtensions,
     content: "",
     editorProps: {
       attributes: {
@@ -873,13 +881,16 @@ export function EditorPane({
     };
   }, [editor]);
 
-  // Register the primary editor in global store (for ChatPanel inserts)
+  // Register the primary editor in global store (for ChatPanel inserts).
+  // Standalone mounts (Codex panel wide mode, identified by phaseIdOverride)
+  // are NOT the primary scene editor and must not claim this slot — otherwise
+  // two groupIndex=0 panes fight over it and chat inserts misroute.
   const setGlobalEditor = useEditorStore((s) => s.setEditor);
   useEffect(() => {
-    if (groupIndex !== 0) return;
+    if (groupIndex !== 0 || phaseIdOverride !== undefined) return;
     setGlobalEditor(editor);
     return () => setGlobalEditor(null);
-  }, [editor, setGlobalEditor, groupIndex]);
+  }, [editor, setGlobalEditor, groupIndex, phaseIdOverride]);
 
   // Linter — scene-only, primary group only.
   const lintSceneId =

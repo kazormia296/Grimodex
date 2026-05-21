@@ -58,6 +58,19 @@ describe("useEditorStore", () => {
 
       expect(useEditorStore.getState().editor).toBeNull();
     });
+
+    it("does not notify subscribers when the same instance is re-registered", () => {
+      const editor = makeEditor();
+      useEditorStore.getState().setEditor(editor);
+      let notifications = 0;
+      const unsub = useEditorStore.subscribe(() => {
+        notifications++;
+      });
+      useEditorStore.getState().setEditor(editor);
+      unsub();
+      expect(notifications).toBe(0);
+      expect(useEditorStore.getState().editor).toBe(editor);
+    });
   });
 
   describe("insertFromChat", () => {

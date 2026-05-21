@@ -223,4 +223,50 @@ describe("tabStore", () => {
       expect(useTabStore.getState().tabs).toHaveLength(1);
     });
   });
+
+  // --- setTabDirty ---
+  describe("setTabDirty", () => {
+    beforeEach(() => {
+      useTabStore.setState({ dirtyTabIds: new Set() });
+    });
+
+    it("is a no-op (no new Set, no notify) when the state is unchanged", () => {
+      const before = useTabStore.getState().dirtyTabIds;
+      let notifications = 0;
+      const unsub = useTabStore.subscribe(() => {
+        notifications++;
+      });
+      // Tab is already clean — marking it clean again must not touch the store.
+      useTabStore.getState().setTabDirty("scene-1", false);
+      unsub();
+      expect(useTabStore.getState().dirtyTabIds).toBe(before);
+      expect(notifications).toBe(0);
+    });
+
+    it("does not re-notify when an already-dirty tab is marked dirty again", () => {
+      useTabStore.getState().setTabDirty("scene-1", true);
+      const afterAdd = useTabStore.getState().dirtyTabIds;
+      let notifications = 0;
+      const unsub = useTabStore.subscribe(() => {
+        notifications++;
+      });
+      useTabStore.getState().setTabDirty("scene-1", true);
+      unsub();
+      expect(useTabStore.getState().dirtyTabIds).toBe(afterAdd);
+      expect(notifications).toBe(0);
+    });
+
+    it("updates and notifies when the dirty state actually changes", () => {
+      let notifications = 0;
+      const unsub = useTabStore.subscribe(() => {
+        notifications++;
+      });
+      useTabStore.getState().setTabDirty("scene-1", true);
+      expect(useTabStore.getState().dirtyTabIds.has("scene-1")).toBe(true);
+      useTabStore.getState().setTabDirty("scene-1", false);
+      expect(useTabStore.getState().dirtyTabIds.has("scene-1")).toBe(false);
+      unsub();
+      expect(notifications).toBe(2);
+    });
+  });
 });
