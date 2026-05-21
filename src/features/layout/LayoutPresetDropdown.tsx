@@ -151,6 +151,7 @@ export function LayoutPresetDropdown() {
                     <Check className="h-2.5 w-2.5" />
                   )}
                 </span>
+                <preset.icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <span className="flex-1 text-left">{preset.name}</span>
               </button>
               <button

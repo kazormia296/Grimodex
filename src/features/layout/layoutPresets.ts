@@ -1,5 +1,13 @@
 import i18next from "i18next";
 import {
+  BookCheck,
+  Library,
+  MessageCircle,
+  Network,
+  PenLine,
+  type LucideIcon,
+} from "lucide-react";
+import {
   clampLayoutStateForViewport,
   cloneLayoutState,
 } from "./layoutStateUtils";
@@ -14,6 +22,7 @@ export interface BuiltinPresetMeta {
   name: string;
   builtin: true;
   state: LayoutState;
+  icon: LucideIcon;
 }
 
 export interface CustomPresetMeta {
@@ -47,6 +56,8 @@ const PRESET_I18N_KEYS: Record<BuiltinPresetId, string> = {
 };
 
 interface BuiltinPresetDefinition {
+  /** ドロップダウンに表示する Lucide アイコン。 */
+  icon: LucideIcon;
   /** プリセット本体。適用時に viewport へ clamp される。 */
   state: LayoutState;
   /** Stripe から外す tool window（slot 登録は state 側に維持）。 */
@@ -55,6 +66,7 @@ interface BuiltinPresetDefinition {
 
 const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
   "builtin:default": {
+    icon: PenLine,
     state: {
       regions: {
         left: {
@@ -135,6 +147,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
     hiddenStripePanels: ["map", "grid", "matrix", "trash-bin"],
   },
   "builtin:plan": {
+    icon: Network,
     state: {
       regions: {
         left: {
@@ -212,6 +225,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
     hiddenStripePanels: ["codex-quick", "trash-bin", "kouetsu", "attribution"],
   },
   "builtin:chat-main": {
+    icon: MessageCircle,
     state: {
       regions: {
         left: {
@@ -296,6 +310,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
     ],
   },
   "builtin:review": {
+    icon: BookCheck,
     state: {
       regions: {
         left: {
@@ -379,6 +394,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
     hiddenStripePanels: ["map", "grid", "matrix", "trash-bin"],
   },
   "builtin:codex-main": {
+    icon: Library,
     state: {
       regions: {
         left: {
@@ -512,6 +528,7 @@ export function getBuiltinPresets(
       name: i18next.t(PRESET_I18N_KEYS[id]),
       builtin: true as const,
       state: cloneLayoutState(state),
+      icon: PRESET_DEFINITIONS[id].icon,
     };
   });
 }
