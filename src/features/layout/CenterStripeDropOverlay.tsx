@@ -62,7 +62,9 @@ export function CenterStripeDropOverlay({
     if (layoutLocked) return;
     const panelId =
       draggingPanel ??
-      (e.dataTransfer.getData(TOOL_WINDOW_REASSIGN_TYPE) as ToolWindowPanelId | "");
+      (e.dataTransfer.getData(TOOL_WINDOW_REASSIGN_TYPE) as
+        | ToolWindowPanelId
+        | "");
     if (!panelId) return;
 
     performToolWindowDrop(resolveTarget(e.clientX, e.clientY), panelId, {

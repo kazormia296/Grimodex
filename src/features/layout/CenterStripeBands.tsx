@@ -2,8 +2,6 @@ import { Fragment } from "react";
 import { cn } from "@/lib/utils";
 import { EditorToggleIcon } from "./EditorToggleIcon";
 import { ToolWindowIcon } from "./ToolWindowIcon";
-import { CenterStripeDropOverlay } from "./CenterStripeDropOverlay";
-import { useShallow } from "zustand/react/shallow";
 import { useLayoutStore } from "./layoutStore";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import type { CenterStripeSegment } from "./useCenterSegments";
@@ -64,28 +62,42 @@ function CenterStripeBand({ segment, flexGrow }: CenterStripeBandProps) {
 
 interface CollapsedClusterProps {
   segments: CenterStripeSegment[];
-  anchor: "start" | "end";
 }
 
-function CollapsedCluster({ segments, anchor }: CollapsedClusterProps) {
-  const draggingPanel = useLayoutStore((s) => s.draggingPanel);
-  const layoutLocked = useLayoutStore((s) => s.layoutLocked);
+/**
+ * 先頭の折りたたみ tool 群。0 幅 absolute オーバーレイにすると、後続の
+ * divider / editor バンドが DOM 後勝ちで（同じ z-index のため）上に描画され
+ * アイコンが隠れる。in-flow で実寸描画し後続バンドを右へ押し出して重なりを解消する。
+ */
+function LeadingCollapsedCluster({ segments }: CollapsedClusterProps) {
+  return (
+    <div
+      data-stripe-collapsed-cluster
+      className="flex h-full shrink-0 flex-row items-center gap-0.5"
+    >
+      {segments.map((segment) => (
+        <CenterStripeBand key={segment.key} segment={segment} flexGrow={0} />
+      ))}
+    </div>
+  );
+}
 
+/**
+ * 開いたバンドの間／末尾に挟まる折りたたみ tool 群。flex フローでは 0 幅で
+ * open バンドの比率配分に影響を与えず、アイコンは absolute オーバーレイで
+ * 右境界へ寄せ、直前バンドの空き領域（アイコンは左寄せ）に重ねて表示する。
+ */
+function CollapsedCluster({ segments }: CollapsedClusterProps) {
   return (
     <div
       data-stripe-collapsed-cluster
       className="relative h-full"
       style={{ flexGrow: 0, flexBasis: 0, flexShrink: 0 }}
     >
-      <div
-        className={cn(
-          "absolute bottom-0 top-0 flex flex-row items-center gap-0.5",
-          anchor === "start" ? "left-0" : "right-0",
-          draggingPanel && !layoutLocked
-            ? "pointer-events-auto"
-            : "pointer-events-none",
-        )}
-      >
+      {/* collapsed アイコンはクリックで再展開できる必要がある。ドラッグ中の
+          イベントは z-40 の CenterStripeDropOverlay が受けるため、ここで
+          pointer-events を切る必要はない。 */}
+      <div className="absolute bottom-0 right-0 top-0 flex flex-row items-center gap-0.5">
         {segments.map((segment) => (
           <CenterStripeBand key={segment.key} segment={segment} flexGrow={0} />
         ))}
@@ -105,9 +117,6 @@ interface CenterStripeBandsProps {
 }
 
 export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
-  const slotIds = useLayoutStore(
-    useShallow((s) => s.layout.center.segments.map((seg) => seg.id)),
-  );
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const showDropZones = useDragDropZonesReady(
@@ -143,22 +152,6 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
 
   const hasOpenBands = items.some((item) => item.kind === "open");
 
-  const slotIndexOf = (slotId: string): number => {
-    const index = slotIds.indexOf(slotId);
-    return index < 0 ? slotIds.length : index;
-  };
-  const stripeEndInsertIndex =
-    segments.length > 0
-      ? slotIndexOf(segments[segments.length - 1].slotId) + 1
-      : 0;
-
-  const dropSegments = segments.map((segment) => ({
-    kind: segment.kind,
-    slotId: segment.slotId,
-    open: segment.open,
-    sizeRatio: segment.sizeRatio,
-  }));
-
   return (
     <div
       data-stripe-root
@@ -170,21 +163,20 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
           : "w-max min-w-max shrink-0",
       )}
     >
-      {showDropZones && (
-        <CenterStripeDropOverlay
-          segments={dropSegments}
-          slotIds={slotIds}
-          stripeEndInsertIndex={stripeEndInsertIndex}
-        />
-      )}
-
       {items.map((item, itemIdx) => {
         if (item.kind === "collapsed") {
+          if (itemIdx === 0) {
+            return (
+              <LeadingCollapsedCluster
+                key={`collapsed-${item.segments[0].key}`}
+                segments={item.segments}
+              />
+            );
+          }
           return (
             <CollapsedCluster
               key={`collapsed-${item.segments[0].key}`}
               segments={item.segments}
-              anchor={itemIdx === 0 ? "start" : "end"}
             />
           );
         }

@@ -186,12 +186,7 @@ export function centerInsertIndexAfter(
 }
 
 function pointInRect(x: number, y: number, rect: DOMRect): boolean {
-  return (
-    x >= rect.left &&
-    x <= rect.right &&
-    y >= rect.top &&
-    y <= rect.bottom
-  );
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
 function insertIndexFromStripeRatio(
@@ -241,6 +236,26 @@ export function resolveCenterStripeDropFromPoint(
   if (!root) return null;
 
   const rootRect = root.getBoundingClientRect();
+
+  // CenterStripe 全幅オーバーレイから呼ばれるため、バンド列(root)の左右外側
+  // （= left/right region content 列の上）にも対応する。左外は先頭、右外は
+  // 末尾へ新規 slot を挿入する。
+  if (clientX < rootRect.left) {
+    return {
+      type: "new-slot",
+      region: "center",
+      insertIndex: 0,
+      surface: "stripe-start",
+    };
+  }
+  if (clientX > rootRect.right) {
+    return {
+      type: "new-slot",
+      region: "center",
+      insertIndex: stripeEndInsertIndex,
+      surface: "stripe-end",
+    };
+  }
   if (!pointInRect(clientX, clientY, rootRect)) return null;
 
   const bands = [

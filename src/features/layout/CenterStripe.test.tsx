@@ -97,6 +97,77 @@ describe("CenterStripe", () => {
     expect(icons).toEqual(["kouetsu", "codex", "editor"]);
   });
 
+  it("keeps a collapsed tool icon visible in flow when placed left of the editor", () => {
+    // base = [editor, tool(codex, collapsed)] → tool を editor の左へ並べ替える
+    const base = buildCenterSegmentsWithTools(["codex"], { codex: false });
+    useLayoutStore.setState({
+      layout: {
+        ...buildDefaultLayoutState({ editorOpen: true }),
+        center: { editorOpen: true, segments: [base[1], base[0]] },
+      },
+      hiddenStripePanels: new Set(),
+    });
+
+    const { container } = render(<CenterStripe />);
+
+    // collapsed tool のアイコンが描画されている
+    expect(
+      container.querySelector('[data-stripe-icon="codex"]'),
+    ).not.toBeNull();
+
+    // 先頭 collapsed クラスタは in-flow（0 幅 absolute オーバーレイにしない）
+    const cluster = container.querySelector<HTMLElement>(
+      "[data-stripe-collapsed-cluster]",
+    );
+    expect(cluster).not.toBeNull();
+    expect(cluster?.className).not.toContain("absolute");
+    expect(cluster?.querySelector(".absolute")).toBeNull();
+    expect(cluster?.style.flexBasis).not.toBe("0px");
+
+    // DOM 順は collapsed tool → editor（後続バンドに隠れない）
+    const icons = [
+      ...container.querySelectorAll<HTMLElement>("[data-stripe-icon]"),
+    ].map((el) => el.dataset.stripeIcon);
+    expect(icons).toEqual(["codex", "editor"]);
+  });
+
+  it("keeps a non-leading collapsed tool icon clickable", () => {
+    // [editor(open), tool(codex, collapsed)] → 非先頭 collapsed クラスタ
+    useLayoutStore.setState({
+      layout: {
+        ...buildDefaultLayoutState({ editorOpen: true }),
+        center: {
+          editorOpen: true,
+          segments: buildCenterSegmentsWithTools(["codex"], { codex: false }),
+        },
+      },
+      hiddenStripePanels: new Set(),
+    });
+
+    const { container } = render(<CenterStripe />);
+
+    const icon = container.querySelector<HTMLElement>(
+      '[data-stripe-icon="codex"]',
+    );
+    expect(icon).not.toBeNull();
+
+    const cluster = container.querySelector<HTMLElement>(
+      "[data-stripe-collapsed-cluster]",
+    );
+    expect(cluster).not.toBeNull();
+    expect(cluster?.contains(icon)).toBe(true);
+
+    // collapsed アイコンの祖先に pointer-events-none が無い（クリック可能）
+    const root = container.querySelector("[data-stripe-root]");
+    for (
+      let node: HTMLElement | null = icon;
+      node && node !== root;
+      node = node.parentElement
+    ) {
+      expect(node.className).not.toContain("pointer-events-none");
+    }
+  });
+
   it("excludes editor from open flex-grow when editor is closed", () => {
     useLayoutStore.setState({
       layout: {

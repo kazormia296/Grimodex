@@ -1,6 +1,8 @@
 import { useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { cn } from "@/lib/utils";
 import { CenterStripeBands } from "./CenterStripeBands";
+import { CenterStripeDropOverlay } from "./CenterStripeDropOverlay";
 import { isCenterBandVisible } from "./layoutStateUtils";
 import {
   buildCenterStripeGridTemplateColumns,
@@ -8,6 +10,7 @@ import {
 } from "./layoutMetrics";
 import { useLayoutStore } from "./layoutStore";
 import { useCenterSegments } from "./useCenterSegments";
+import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { useRegionSegments } from "./useRegionSegments";
 
 function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
@@ -34,6 +37,10 @@ export function CenterStripe() {
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const isDragging = Boolean(draggingPanel && !layoutLocked);
+  const showDropZones = useDragDropZonesReady(isDragging);
+  const slotIds = useLayoutStore(
+    useShallow((s) => s.layout.center.segments.map((seg) => seg.id)),
+  );
 
   const stripeColumns = useMemo(() => {
     const metrics = computeLayoutGridMetrics({
@@ -62,10 +69,28 @@ export function CenterStripe() {
     rightOpen,
   ]);
 
+  const dropSegments = useMemo(
+    () =>
+      segments.map((segment) => ({
+        kind: segment.kind,
+        slotId: segment.slotId,
+        open: segment.open,
+        sizeRatio: segment.sizeRatio,
+      })),
+    [segments],
+  );
+
+  const stripeEndInsertIndex = useMemo(() => {
+    if (segments.length === 0) return 0;
+    const lastSlotId = segments[segments.length - 1].slotId;
+    const index = slotIds.indexOf(lastSlotId);
+    return index < 0 ? slotIds.length : index + 1;
+  }, [segments, slotIds]);
+
   return (
     <div
       data-center-stripe
-      className="grid h-full w-full min-w-0 overflow-hidden border-b border-border bg-background/40"
+      className="relative grid h-full w-full min-w-0 overflow-hidden border-b border-border bg-background/40"
       style={{ gridTemplateColumns: stripeColumns }}
     >
       <div aria-hidden className="min-h-0 min-w-0" />
@@ -74,13 +99,22 @@ export function CenterStripe() {
         data-center-stripe-column
         className={cn(
           "relative min-h-0 overflow-hidden",
-          centerBandVisible || isDragging ? "min-w-0 w-full" : "min-w-max shrink-0",
+          centerBandVisible || isDragging
+            ? "min-w-0 w-full"
+            : "min-w-max shrink-0",
         )}
       >
         <CenterStripeBands segments={segments} />
       </div>
       <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
+      {showDropZones && (
+        <CenterStripeDropOverlay
+          segments={dropSegments}
+          slotIds={slotIds}
+          stripeEndInsertIndex={stripeEndInsertIndex}
+        />
+      )}
     </div>
   );
 }
