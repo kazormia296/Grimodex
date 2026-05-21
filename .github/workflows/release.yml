@@ -114,9 +114,10 @@ jobs:
             | Linux (Debian/Ubuntu) | `.deb` |
             | Linux (Universal) | `.AppImage` |
             | macOS | `.dmg` |
-            | Windows | `.msi` または `.exe` |
+            | Windows | `.exe` |
 
             ---
             <!-- リリースノートをここに追記してください -->
-          releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft }}
+          # タグ push 時は常に Draft。手動実行時は inputs.draft（デフォルト true）で制御
+          releaseDraft: ${{ github.event_name != 'workflow_dispatch' || inputs.draft }}
           prerelease: ${{ contains(github.ref_name, '-') }}

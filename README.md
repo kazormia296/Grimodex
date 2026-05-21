@@ -22,7 +22,7 @@ Download the installer for your platform from the [latest release](../../release
 
 | Platform | File                  |
 | -------- | --------------------- |
-| Windows  | `.msi`                |
+| Windows  | `.exe`                |
 | macOS    | `.dmg`                |
 | Linux    | `.AppImage` or `.deb` |
 
