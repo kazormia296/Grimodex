@@ -1,2 +1,0 @@
-[env]
-LINDERA_CACHE = { value = "../lindera-cache", relative = true, force = true }

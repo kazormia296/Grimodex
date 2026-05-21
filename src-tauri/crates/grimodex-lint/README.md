@@ -20,8 +20,8 @@ curl -L -o unidic-mecab-2.1.2.tar.gz \
 
 # 2. プロジェクトルート相対でキャッシュ配置
 #    Layout: <cache_root>/<lindera-unidic_VERSION>/unidic-mecab-2.1.2.tar.gz
-mkdir -p lindera-cache/3.0.5
-mv unidic-mecab-2.1.2.tar.gz lindera-cache/3.0.5/
+mkdir -p lindera-cache/3.0.7
+mv unidic-mecab-2.1.2.tar.gz lindera-cache/3.0.7/
 
 # 3. ビルド時に env で指す（cargo は存在チェックだけで再 DL しない）
 LINDERA_DICTIONARIES_PATH=/absolute/path/to/lindera-cache \
@@ -34,5 +34,5 @@ LINDERA_DICTIONARIES_PATH=/absolute/path/to/lindera-cache \
 
 - `LINDERA_DICTIONARIES_PATH` のルートを指定すると、`<root>/<version>/<file>`
   の階層を見に行く。バージョンは `lindera-unidic` crate 側で決まる（現在
-  `3.0.5`）。
+  `3.0.7`、`src-tauri/Cargo.lock` を参照）。
 - 廃止予定の `LINDERA_CACHE` も使えるが、cargo の警告が出る。
