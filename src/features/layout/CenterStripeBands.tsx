@@ -2,6 +2,7 @@ import { Fragment } from "react";
 import { cn } from "@/lib/utils";
 import { EditorToggleIcon } from "./EditorToggleIcon";
 import { ToolWindowIcon } from "./ToolWindowIcon";
+import { MIN_EDITOR_SIZE, MIN_SLOT_SIZE } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import type { CenterStripeSegment } from "./useCenterSegments";
@@ -33,6 +34,13 @@ function CenterStripeBand({ segment, flexGrow }: CenterStripeBandProps) {
         flexGrow,
         flexBasis: segment.open ? 0 : "auto",
         flexShrink: 0,
+        // open バンドは CenterContent の各列と同じ min-width でクランプする。
+        // これが無いと editor が最低幅を割り込んだ際に帯と列の幅がずれる。
+        minWidth: segment.open
+          ? segment.kind === "editor"
+            ? MIN_EDITOR_SIZE
+            : MIN_SLOT_SIZE
+          : undefined,
       }}
       className={cn(
         "relative flex h-full min-h-0 min-w-0 flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden px-0.5",

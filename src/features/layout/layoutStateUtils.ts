@@ -175,6 +175,24 @@ export function getCenterHorizontalReserve(state: LayoutState): number {
   return reserve;
 }
 
+/**
+ * center content 列の実効幅(px)。editor が開いていれば filler region は
+ * 生じないため、viewport から固定 chrome と side region 幅を引いて算出する。
+ */
+export function getCenterContentWidthPx(
+  state: LayoutState,
+  viewport: { width: number },
+): number {
+  const leftOpen = isRegionOpen(state.regions.left);
+  const rightOpen = isRegionOpen(state.regions.right);
+  const sideChrome =
+    (regionHasRegisteredPanels(state.regions.left) ? STRIPE_SIZE : 0) +
+    (regionHasRegisteredPanels(state.regions.right) ? STRIPE_SIZE : 0) +
+    (leftOpen ? SPLITTER_GUTTER_PX + state.regions.left.size : 0) +
+    (rightOpen ? SPLITTER_GUTTER_PX + state.regions.right.size : 0);
+  return viewport.width - sideChrome;
+}
+
 export function centerToolSegmentToSlot(segment: CenterToolSegment): SlotState {
   return {
     id: segment.id,

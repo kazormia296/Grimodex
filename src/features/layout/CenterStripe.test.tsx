@@ -8,6 +8,7 @@ import {
   buildDefaultLayoutState,
   DEFAULT_EDITOR_SEGMENT_ID,
 } from "./layoutStateUtils";
+import { MIN_EDITOR_SIZE, MIN_SLOT_SIZE } from "./layoutConstants";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -166,6 +167,53 @@ describe("CenterStripe", () => {
     ) {
       expect(node.className).not.toContain("pointer-events-none");
     }
+  });
+
+  it("clamps open stripe bands to the center content min-width", () => {
+    useLayoutStore.setState({
+      layout: {
+        ...buildDefaultLayoutState({ editorOpen: true }),
+        center: {
+          editorOpen: true,
+          segments: [
+            { id: DEFAULT_EDITOR_SEGMENT_ID, kind: "editor", sizeRatio: 1 },
+            {
+              id: "ct0",
+              kind: "tool",
+              sizeRatio: 1,
+              panels: ["kouetsu"],
+              activePanel: "kouetsu",
+            },
+            {
+              id: "ct1",
+              kind: "tool",
+              sizeRatio: 1,
+              panels: ["codex"],
+              activePanel: null,
+            },
+          ],
+        },
+      },
+      hiddenStripePanels: new Set(),
+    });
+
+    const { container } = render(<CenterStripe />);
+
+    const editorBand = container.querySelector<HTMLElement>(
+      '[data-center-stripe-band-kind="editor"]',
+    );
+    const openToolBand = container.querySelector<HTMLElement>(
+      '[data-center-stripe-band-kind="tool"][data-band-open="true"]',
+    );
+    const collapsedToolBand = container.querySelector<HTMLElement>(
+      '[data-center-stripe-band-kind="tool"][data-band-open="false"]',
+    );
+
+    // open バンドは CenterContent の各列と同じ min-width でクランプ
+    expect(editorBand?.style.minWidth).toBe(`${MIN_EDITOR_SIZE}px`);
+    expect(openToolBand?.style.minWidth).toBe(`${MIN_SLOT_SIZE}px`);
+    // 折りたたみバンドはアイコン実寸（min-width なし）
+    expect(collapsedToolBand?.style.minWidth).toBe("");
   });
 
   it("excludes editor from open flex-grow when editor is closed", () => {

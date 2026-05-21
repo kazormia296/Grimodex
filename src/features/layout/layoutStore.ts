@@ -20,6 +20,8 @@ import {
   findPanelLocation,
   generateCenterToolSegmentId,
   generateSlotId,
+  getCenterContentWidthPx,
+  getCenterHorizontalReserve,
   getOpenSlotPixelSizes,
   nudgeAdjacentCenterSegmentPixelSizes,
   getOpenSlots,
@@ -701,11 +703,27 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   movePanelToNewSlot: (panel, region, insertIndex) => {
     if (panel === "editor" || get().layoutLocked) return;
     const toolPanel = panel as ToolWindowPanelId;
-    set((state) => ({
-      layout: applyValidatedLayout(
-        movePanelInLayout(state.layout, toolPanel, region, null, insertIndex),
-      ),
-    }));
+    const vp = getViewport();
+    set((state) => {
+      const moved = movePanelInLayout(
+        state.layout,
+        toolPanel,
+        region,
+        null,
+        insertIndex,
+      );
+      // 分割で editor が最低幅(MIN_EDITOR_SIZE)を割り込む場合は追加を拒否する。
+      if (region === "center" && moved.center.editorOpen) {
+        const clamped = clampLayoutStateForViewport(moved, vp);
+        if (
+          getCenterContentWidthPx(clamped, vp) <
+          getCenterHorizontalReserve(clamped)
+        ) {
+          return state;
+        }
+      }
+      return { layout: applyValidatedLayout(moved, vp) };
+    });
     scheduleSave(get);
   },
 
