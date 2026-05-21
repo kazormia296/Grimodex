@@ -92,7 +92,9 @@ describe("layoutDnD", () => {
         <div data-drop-edge="start" style="width:40px;height:20px"></div>
       </div>
     `;
-    const el = document.querySelector("[data-drop-edge='start']") as HTMLElement;
+    const el = document.querySelector(
+      "[data-drop-edge='start']",
+    ) as HTMLElement;
     el.getBoundingClientRect = () =>
       ({
         left: 10,
@@ -179,15 +181,9 @@ describe("layoutDnD", () => {
     layout.regions.left.slots[0].activePanel = "scenes";
     layout.regions.left.slots[1].activePanel = null;
 
-    expect(
-      countOpenSlotsBeforeIndex(layout.regions.left.slots, 0),
-    ).toBe(0);
-    expect(
-      countOpenSlotsBeforeIndex(layout.regions.left.slots, 1),
-    ).toBe(1);
-    expect(
-      countOpenSlotsBeforeIndex(layout.regions.left.slots, 2),
-    ).toBe(1);
+    expect(countOpenSlotsBeforeIndex(layout.regions.left.slots, 0)).toBe(0);
+    expect(countOpenSlotsBeforeIndex(layout.regions.left.slots, 1)).toBe(1);
+    expect(countOpenSlotsBeforeIndex(layout.regions.left.slots, 2)).toBe(1);
   });
 
   it("getNewSlotPreviewRect shows equal split bands for each insert position", () => {
@@ -320,7 +316,11 @@ describe("layoutDnD", () => {
   });
 
   it("dragTargetsEqual compares target identity", () => {
-    const slot = { type: "slot" as const, region: "left" as const, slotId: "l0" };
+    const slot = {
+      type: "slot" as const,
+      region: "left" as const,
+      slotId: "l0",
+    };
     expect(dragTargetsEqual(slot, { ...slot })).toBe(true);
     expect(
       dragTargetsEqual(slot, { type: "slot", region: "left", slotId: "l1" }),

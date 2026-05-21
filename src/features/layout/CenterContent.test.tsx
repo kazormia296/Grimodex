@@ -39,6 +39,8 @@ describe("CenterContent", () => {
   it("hides editor segment when editor is closed", () => {
     useLayoutStore.getState().setEditorOpen(false);
     const { container } = render(<CenterContent />);
-    expect(container.querySelector('[data-center-segment-kind="editor"]')).toBeNull();
+    expect(
+      container.querySelector('[data-center-segment-kind="editor"]'),
+    ).toBeNull();
   });
 });

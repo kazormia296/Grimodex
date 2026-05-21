@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": [
+      "resources/semantic/ruri-v3-30m/model_int8.onnx",
+      "resources/semantic/ruri-v3-30m/tokenizer.json"
+    ]
+  }
+}

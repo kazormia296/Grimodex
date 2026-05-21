@@ -52,9 +52,7 @@ export const EMPTY_LAYOUT: LayoutState = buildDefaultLayoutState({
 export function createDefaultCenterState(editorOpen = true): CenterState {
   return {
     editorOpen,
-    segments: [
-      { id: DEFAULT_EDITOR_SEGMENT_ID, kind: "editor", sizeRatio: 1 },
-    ],
+    segments: [{ id: DEFAULT_EDITOR_SEGMENT_ID, kind: "editor", sizeRatio: 1 }],
   };
 }
 
@@ -83,11 +81,7 @@ export function ensureLayoutStateV3(
 export function buildDefaultLayoutState(
   options: BuildDefaultLayoutOptions = {},
 ): LayoutState {
-  const {
-    allInactive = false,
-    activePanels = {},
-    editorOpen = true,
-  } = options;
+  const { allInactive = false, activePanels = {}, editorOpen = true } = options;
 
   const regions = {} as Record<RegionId, RegionState>;
   for (const regionId of ALL_REGIONS) {
@@ -146,8 +140,7 @@ export function getEditorSegment(
   center: CenterState,
 ): Extract<CenterSegment, { kind: "editor" }> | undefined {
   return center.segments.find(
-    (s): s is Extract<CenterSegment, { kind: "editor" }> =>
-      s.kind === "editor",
+    (s): s is Extract<CenterSegment, { kind: "editor" }> => s.kind === "editor",
   );
 }
 
@@ -441,8 +434,7 @@ export function redistributeRatiosAfterRemovingOpenCenterSegment(
           return {
             ...segment,
             sizeRatio:
-              segment.sizeRatio +
-              removedRatio * (segment.sizeRatio / openSum),
+              segment.sizeRatio + removedRatio * (segment.sizeRatio / openSum),
           };
         });
 
