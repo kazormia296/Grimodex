@@ -31,6 +31,9 @@ export function CenterStripe() {
   const hasRight = regionSegments.right.some((s) => s.panels.length > 0);
   const hasBottom = regionSegments.bottom.some((s) => s.panels.length > 0);
   const centerBandVisible = isCenterBandVisible(layout);
+  const draggingPanel = useLayoutStore((s) => s.draggingPanel);
+  const layoutLocked = useLayoutStore((s) => s.layoutLocked);
+  const isDragging = Boolean(draggingPanel && !layoutLocked);
 
   const stripeColumns = useMemo(() => {
     const metrics = computeLayoutGridMetrics({
@@ -68,9 +71,10 @@ export function CenterStripe() {
       <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
       <div
+        data-center-stripe-column
         className={cn(
-          "min-h-0 overflow-hidden",
-          centerBandVisible ? "min-w-0" : "min-w-max shrink-0",
+          "relative min-h-0 overflow-hidden",
+          centerBandVisible || isDragging ? "min-w-0 w-full" : "min-w-max shrink-0",
         )}
       >
         <CenterStripeBands segments={segments} />

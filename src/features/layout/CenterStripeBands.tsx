@@ -2,13 +2,9 @@ import { Fragment } from "react";
 import { cn } from "@/lib/utils";
 import { EditorToggleIcon } from "./EditorToggleIcon";
 import { ToolWindowIcon } from "./ToolWindowIcon";
-import {
-  acceptsToolWindowReassignDrag,
-  TOOL_WINDOW_REASSIGN_TYPE,
-} from "./layoutDnD";
+import { CenterStripeDropOverlay } from "./CenterStripeDropOverlay";
 import { useShallow } from "zustand/react/shallow";
 import { useLayoutStore } from "./layoutStore";
-import { DND_NEW_SLOT_BETWEEN_HALF_PX } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import type { CenterStripeSegment } from "./useCenterSegments";
 
@@ -18,62 +14,31 @@ interface CenterStripeBandProps {
 }
 
 function CenterStripeBand({ segment, flexGrow }: CenterStripeBandProps) {
-  const movePanelToSlot = useLayoutStore((s) => s.movePanelToSlot);
-  const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
-  const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
-
-  const handleDragOver = (e: React.DragEvent) => {
-    if (segment.kind !== "tool") return;
-    if (!acceptsToolWindowReassignDrag(e, layoutLocked, draggingPanel)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDragOverTarget({
-      type: "slot",
-      region: "center",
-      slotId: segment.slotId,
-    });
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    setDragOverTarget(null);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    if (segment.kind !== "tool") return;
-    e.preventDefault();
-    if (layoutLocked) return;
-    const panelId =
-      draggingPanel ??
-      (e.dataTransfer.getData(TOOL_WINDOW_REASSIGN_TYPE) as
-        | import("./layoutTypes").ToolWindowPanelId
-        | "");
-    if (!panelId) return;
-    movePanelToSlot(panelId, "center", segment.slotId);
-    setDraggingPanel(null);
-    setDragOverTarget(null);
-  };
+  const isTool = segment.kind === "tool";
 
   return (
     <div
       data-center-stripe-band
       data-band-open={segment.open ? "true" : "false"}
       data-center-stripe-band-kind={segment.kind}
-      data-drop-segment={segment.key}
-      data-drop-slot-id={segment.slotId}
-      data-drop-region="center"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      data-center-stripe-slot-id={segment.slotId}
+      {...(isTool
+        ? {
+            "data-drop-segment": segment.key,
+            "data-drop-slot-id": segment.slotId,
+            "data-drop-region": "center",
+          }
+        : {})}
       style={{
         flexGrow,
         flexBasis: segment.open ? 0 : "auto",
         flexShrink: 0,
       }}
       className={cn(
-        "pointer-events-auto flex h-full min-h-0 min-w-0 flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden px-0.5",
+        "relative flex h-full min-h-0 min-w-0 flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden px-0.5",
+        segment.kind === "editor" && segment.open && "min-w-0 flex-1",
         draggingPanel &&
           !layoutLocked &&
           segment.kind === "tool" &&
@@ -103,6 +68,9 @@ interface CollapsedClusterProps {
 }
 
 function CollapsedCluster({ segments, anchor }: CollapsedClusterProps) {
+  const draggingPanel = useLayoutStore((s) => s.draggingPanel);
+  const layoutLocked = useLayoutStore((s) => s.layoutLocked);
+
   return (
     <div
       data-stripe-collapsed-cluster
@@ -111,8 +79,11 @@ function CollapsedCluster({ segments, anchor }: CollapsedClusterProps) {
     >
       <div
         className={cn(
-          "pointer-events-none absolute bottom-0 top-0 flex flex-row items-center gap-0.5",
+          "absolute bottom-0 top-0 flex flex-row items-center gap-0.5",
           anchor === "start" ? "left-0" : "right-0",
+          draggingPanel && !layoutLocked
+            ? "pointer-events-auto"
+            : "pointer-events-none",
         )}
       >
         {segments.map((segment) => (
@@ -137,9 +108,6 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
   const slotIds = useLayoutStore(
     useShallow((s) => s.layout.center.segments.map((seg) => seg.id)),
   );
-  const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
-  const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
-  const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const showDropZones = useDragDropZonesReady(
@@ -184,43 +152,12 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
       ? slotIndexOf(segments[segments.length - 1].slotId) + 1
       : 0;
 
-  const handleEdgeDrop = (e: React.DragEvent, insertIndex: number) => {
-    e.preventDefault();
-    if (layoutLocked) return;
-    const panelId =
-      draggingPanel ??
-      (e.dataTransfer.getData(TOOL_WINDOW_REASSIGN_TYPE) as
-        | import("./layoutTypes").ToolWindowPanelId
-        | "");
-    if (!panelId) return;
-    movePanelToNewSlot(panelId, "center", insertIndex);
-    setDraggingPanel(null);
-    setDragOverTarget(null);
-  };
-
-  const handleEdgeDragOver = (
-    e: React.DragEvent,
-    insertIndex: number,
-    surface: "stripe-start" | "stripe-end" | "stripe-between",
-  ) => {
-    if (!acceptsToolWindowReassignDrag(e, layoutLocked, draggingPanel)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDragOverTarget({
-      type: "new-slot",
-      region: "center",
-      insertIndex,
-      surface,
-    });
-  };
-
-  const handleEdgeDragLeave = (e: React.DragEvent) => {
-    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    setDragOverTarget(null);
-  };
-
-  const stripeEdgeHitPx = 16;
-  const stripeBetweenHitPx = DND_NEW_SLOT_BETWEEN_HALF_PX * 2;
+  const dropSegments = segments.map((segment) => ({
+    kind: segment.kind,
+    slotId: segment.slotId,
+    open: segment.open,
+    sizeRatio: segment.sizeRatio,
+  }));
 
   return (
     <div
@@ -228,20 +165,16 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
       data-stripe-region="center"
       className={cn(
         "relative flex h-full min-h-0 overflow-hidden",
-        hasOpenBands ? "w-full min-w-0" : "w-max min-w-max shrink-0",
+        hasOpenBands || showDropZones
+          ? "w-full min-w-0"
+          : "w-max min-w-max shrink-0",
       )}
     >
-      {showDropZones && segments.length > 0 && (
-        <div
-          data-drop-edge="start"
-          data-drop-region="center"
-          data-insert-index={0}
-          data-drop-surface="stripe-start"
-          className="absolute z-20 opacity-0"
-          style={{ top: 0, bottom: 0, left: 0, width: stripeEdgeHitPx }}
-          onDragOver={(e) => handleEdgeDragOver(e, 0, "stripe-start")}
-          onDragLeave={handleEdgeDragLeave}
-          onDrop={(e) => handleEdgeDrop(e, 0)}
+      {showDropZones && (
+        <CenterStripeDropOverlay
+          segments={dropSegments}
+          slotIds={slotIds}
+          stripeEndInsertIndex={stripeEndInsertIndex}
         />
       )}
 
@@ -275,7 +208,6 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
         }
 
         const segment = item.segment;
-        const betweenInsertIndex = slotIndexOf(segment.slotId);
         return (
           <Fragment key={segment.key}>
             {itemIdx > 0 && (
@@ -285,31 +217,6 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
                   aria-hidden
                   className="h-5 w-px shrink-0 rounded-full bg-muted-foreground/50"
                 />
-                {showDropZones && (
-                  <div
-                    data-drop-edge="between"
-                    data-drop-region="center"
-                    data-insert-index={betweenInsertIndex}
-                    data-drop-surface="stripe-between"
-                    className="absolute z-20 opacity-0"
-                    style={{
-                      top: 0,
-                      bottom: 0,
-                      left: "50%",
-                      width: stripeBetweenHitPx,
-                      transform: "translateX(-50%)",
-                    }}
-                    onDragOver={(e) =>
-                      handleEdgeDragOver(
-                        e,
-                        betweenInsertIndex,
-                        "stripe-between",
-                      )
-                    }
-                    onDragLeave={handleEdgeDragLeave}
-                    onDrop={(e) => handleEdgeDrop(e, betweenInsertIndex)}
-                  />
-                )}
               </div>
             )}
             <CenterStripeBand
@@ -319,26 +226,6 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
           </Fragment>
         );
       })}
-
-      {showDropZones && (
-        <div
-          data-drop-edge="end"
-          data-drop-region="center"
-          data-insert-index={stripeEndInsertIndex}
-          data-drop-surface="stripe-end"
-          className="absolute z-20 opacity-0"
-          style={
-            segments.length === 0
-              ? { top: 0, bottom: 0, left: 0, right: 0 }
-              : { top: 0, bottom: 0, right: 0, width: stripeEdgeHitPx }
-          }
-          onDragOver={(e) =>
-            handleEdgeDragOver(e, stripeEndInsertIndex, "stripe-end")
-          }
-          onDragLeave={handleEdgeDragLeave}
-          onDrop={(e) => handleEdgeDrop(e, stripeEndInsertIndex)}
-        />
-      )}
     </div>
   );
 }

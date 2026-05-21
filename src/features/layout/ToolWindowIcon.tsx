@@ -46,7 +46,10 @@ export function ToolWindowIcon({
   const removePanelFromStripe = useLayoutStore((s) => s.removePanelFromStripe);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
+  const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
+  const passThroughDrop =
+    draggingPanel != null && draggingPanel !== panelId && !layoutLocked;
 
   const label = t(`layout.panel.${panelId}`);
   const shortcut = KEYBOARD_SHORTCUT_MAP[panelId];
@@ -76,6 +79,7 @@ export function ToolWindowIcon({
           className={cn(
             "relative z-30 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors",
             "transition-transform duration-75 active:scale-[0.94]",
+            passThroughDrop && "pointer-events-none",
             active
               ? "bg-accent text-foreground"
               : "hover:bg-accent/30 hover:text-foreground",

@@ -13,6 +13,8 @@ export function EditorToggleIcon() {
   const { t } = useTranslation();
   const togglePanel = useLayoutStore((s) => s.togglePanel);
   const editorOpen = useLayoutStore((s) => s.layout.center.editorOpen);
+  const draggingPanel = useLayoutStore((s) => s.draggingPanel);
+  const layoutLocked = useLayoutStore((s) => s.layoutLocked);
 
   const label = t("layout.panel.editor");
   const fixedHint = t("layout.editorToggle.fixedHint");
@@ -31,6 +33,7 @@ export function EditorToggleIcon() {
       className={cn(
         "relative z-30 flex h-7 w-7 shrink-0 cursor-default items-center justify-center rounded-md transition-colors",
         "ring-1 ring-inset transition-transform duration-75 active:scale-[0.94]",
+        draggingPanel && !layoutLocked && "pointer-events-none",
         editorOpen
           ? "bg-accent text-foreground ring-primary/45"
           : "text-muted-foreground/60 ring-border/70 hover:bg-accent/30 hover:text-foreground hover:ring-primary/30",

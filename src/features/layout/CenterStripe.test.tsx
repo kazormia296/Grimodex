@@ -14,10 +14,10 @@ vi.mock("react-i18next", () => ({
 }));
 
 function layoutWithCenterToolsBeforeEditor() {
-  const segments = buildCenterSegmentsWithTools(
-    ["kouetsu", "codex"],
-    { kouetsu: true, codex: true },
-  );
+  const segments = buildCenterSegmentsWithTools(["kouetsu", "codex"], {
+    kouetsu: true,
+    codex: true,
+  });
   return {
     ...buildDefaultLayoutState({ editorOpen: true }),
     center: {
@@ -145,7 +145,9 @@ describe("CenterStripe", () => {
     expect(
       container.querySelector('[data-stripe-icon="editor"]'),
     ).not.toBeNull();
-    expect(container.querySelector("[data-stripe-collapsed-cluster]")).toBeNull();
+    expect(
+      container.querySelector("[data-stripe-collapsed-cluster]"),
+    ).toBeNull();
   });
 
   it("shows editor icon in document flow when every panel is closed", () => {
@@ -161,7 +163,9 @@ describe("CenterStripe", () => {
     expect(
       container.querySelector('[data-stripe-icon="editor"]'),
     ).not.toBeNull();
-    expect(container.querySelector("[data-stripe-collapsed-cluster]")).toBeNull();
+    expect(
+      container.querySelector("[data-stripe-collapsed-cluster]"),
+    ).toBeNull();
     expect(
       container.querySelector('[data-center-stripe-band-kind="editor"]'),
     ).not.toBeNull();

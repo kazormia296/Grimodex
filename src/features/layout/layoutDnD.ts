@@ -169,6 +169,122 @@ export function resolveDropTargetFromPoint(
   return resolveDropTargetFromElement(document.elementFromPoint(x, y));
 }
 
+export interface CenterStripeDropSegment {
+  kind: "editor" | "tool";
+  slotId: string;
+  open: boolean;
+  sizeRatio: number;
+}
+
+export function centerInsertIndexAfter(
+  layout: LayoutState,
+  segmentId: string,
+): number {
+  const ids = layout.center.segments.map((seg) => seg.id);
+  const index = ids.indexOf(segmentId);
+  return index < 0 ? ids.length : index + 1;
+}
+
+function pointInRect(x: number, y: number, rect: DOMRect): boolean {
+  return (
+    x >= rect.left &&
+    x <= rect.right &&
+    y >= rect.top &&
+    y <= rect.bottom
+  );
+}
+
+function insertIndexFromStripeRatio(
+  clientX: number,
+  rootRect: DOMRect,
+  segments: ReadonlyArray<CenterStripeDropSegment>,
+  slotIds: ReadonlyArray<string>,
+): number {
+  const openSegments = segments.filter((segment) => segment.open);
+  if (openSegments.length === 0) {
+    const editor = segments.find((segment) => segment.kind === "editor");
+    if (!editor) return slotIds.length;
+    const index = slotIds.indexOf(editor.slotId);
+    return index < 0 ? slotIds.length : index + 1;
+  }
+
+  const totalRatio = openSegments.reduce(
+    (sum, segment) => sum + segment.sizeRatio,
+    0,
+  );
+  const xRatio = (clientX - rootRect.left) / Math.max(rootRect.width, 1);
+  let boundary = 0;
+
+  for (const segment of openSegments) {
+    boundary += segment.sizeRatio / totalRatio;
+    const slotIndex = slotIds.indexOf(segment.slotId);
+    if (xRatio <= boundary) {
+      return slotIndex < 0 ? slotIds.length : slotIndex + 1;
+    }
+  }
+
+  return slotIds.length;
+}
+
+/** Hit-test Center Stripe using band geometry and open-segment ratios (overlay sits on top). */
+export function resolveCenterStripeDropFromPoint(
+  clientX: number,
+  clientY: number,
+  segments: ReadonlyArray<CenterStripeDropSegment>,
+  slotIds: ReadonlyArray<string>,
+  stripeEndInsertIndex: number,
+  layout: LayoutState,
+): DragOverTarget | null {
+  const root = document.querySelector<HTMLElement>(
+    '[data-stripe-region="center"][data-stripe-root]',
+  );
+  if (!root) return null;
+
+  const rootRect = root.getBoundingClientRect();
+  if (!pointInRect(clientX, clientY, rootRect)) return null;
+
+  const bands = [
+    ...root.querySelectorAll<HTMLElement>("[data-center-stripe-band]"),
+  ].sort(
+    (a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left,
+  );
+
+  for (const band of bands) {
+    const rect = band.getBoundingClientRect();
+    if (!pointInRect(clientX, clientY, rect)) continue;
+
+    const kind = band.dataset.centerStripeBandKind;
+    const slotId = band.dataset.centerStripeSlotId;
+    if (!slotId) continue;
+
+    if (kind === "tool") {
+      return { type: "slot", region: "center", slotId };
+    }
+    if (kind === "editor") {
+      return {
+        type: "new-slot",
+        region: "center",
+        insertIndex: centerInsertIndexAfter(layout, slotId),
+        surface: "stripe-end",
+      };
+    }
+  }
+
+  const insertIndex = insertIndexFromStripeRatio(
+    clientX,
+    rootRect,
+    segments,
+    slotIds,
+  );
+
+  return {
+    type: "new-slot",
+    region: "center",
+    insertIndex,
+    surface: "stripe-end",
+  };
+}
+
 export function performToolWindowDrop(
   target: DragOverTarget,
   panelId: ToolWindowPanelId,
@@ -208,6 +324,14 @@ export function getDropTargetElement(target: DragOverTarget): Element | null {
             `[data-stripe-region="${target.region}"] [data-drop-edge="start"]`,
           );
         case "stripe-end":
+          if (target.region === "center") {
+            return (
+              document.querySelector("[data-center-stripe-drop-overlay]") ??
+              document.querySelector(
+                `[data-stripe-region="${target.region}"] [data-drop-edge="end"]`,
+              )
+            );
+          }
           return document.querySelector(
             `[data-stripe-region="${target.region}"] [data-drop-edge="end"]`,
           );
