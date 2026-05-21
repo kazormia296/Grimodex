@@ -48,6 +48,10 @@
       "titlePlaceholder": "小説のタイトル",
       "genreLabel": "ジャンル",
       "languageLabel": "執筆言語",
+      "seedHeading": "Codex をコピー",
+      "seedDescription": "別 Project から Codex type を選んで複製できます（コピー後は独立して編集されます）。",
+      "seedSourceLabel": "コピー元 Project",
+      "seedNoTypes": "コピー可能な Codex type がありません",
       "success": "プロジェクトを作成しました",
       "failed": "プロジェクトの作成に失敗しました"
     },

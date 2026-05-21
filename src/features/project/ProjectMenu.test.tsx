@@ -26,6 +26,8 @@ vi.mock("./CreateProjectDialog", () => ({
       title: string;
       genre: string;
       language: string;
+      seedFromProjectId?: string;
+      seedTypeSlugs: string[];
     }) => Promise<void>;
   }) =>
     open ? (
@@ -33,7 +35,12 @@ vi.mock("./CreateProjectDialog", () => ({
         type="button"
         data-testid="mock-create-submit"
         onClick={() =>
-          void onCreate({ title: "New", genre: "", language: "ja" })
+          void onCreate({
+            title: "New",
+            genre: "",
+            language: "ja",
+            seedTypeSlugs: [],
+          })
         }
       >
         mock create

@@ -9,12 +9,26 @@ vi.mock("./reloadProjectData", () => ({
   reloadProjectData: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("./seedCodexTypes", () => ({
+  seedCodexTypesFromProject: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/features/codex/typeApi", () => ({
+  ensureBuiltinTypes: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { reloadProjectData } from "./reloadProjectData";
+import { seedCodexTypesFromProject } from "./seedCodexTypes";
+import { ensureBuiltinTypes } from "@/features/codex/typeApi";
 
 const mockedReload = vi.mocked(reloadProjectData);
+const mockedSeed = vi.mocked(seedCodexTypesFromProject);
+const mockedEnsureBuiltin = vi.mocked(ensureBuiltinTypes);
 
 beforeEach(async () => {
   mockedReload.mockClear();
+  mockedSeed.mockClear();
+  mockedEnsureBuiltin.mockClear();
   useProjectStore.setState({
     currentProjectId: null,
     projects: [],
@@ -74,6 +88,22 @@ describe("useProjectStore", () => {
         useProjectStore.getState().projects.some((p) => p.id === created.id),
       ).toBe(true);
       expect(mockedReload).toHaveBeenCalledWith(created.id);
+      expect(mockedEnsureBuiltin).toHaveBeenCalledWith(created.id);
+    });
+
+    it("seeds selected codex types from the source project", async () => {
+      await useProjectStore.getState().initCurrentProject();
+
+      await useProjectStore.getState().createNewProject({
+        title: "Seeded Vol",
+        seedFromProjectId: PROJECT_ID,
+        seedTypeSlugs: ["character", "location"],
+      });
+
+      expect(mockedSeed).toHaveBeenCalledWith(PROJECT_ID, expect.any(String), [
+        "character",
+        "location",
+      ]);
     });
   });
 

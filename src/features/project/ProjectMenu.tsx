@@ -56,12 +56,16 @@ export function ProjectMenu() {
     title: string;
     genre: string;
     language: string;
+    seedFromProjectId?: string;
+    seedTypeSlugs: string[];
   }) {
     try {
       await createNewProject({
         title: data.title,
         genre: data.genre || undefined,
         language: data.language || undefined,
+        seedFromProjectId: data.seedFromProjectId,
+        seedTypeSlugs: data.seedTypeSlugs,
       });
       toast.success(t("project.create.success"));
     } catch {
@@ -160,6 +164,8 @@ export function ProjectMenu() {
       <CreateProjectDialog
         open={showCreateDialog}
         onClose={() => setShowCreateDialog(false)}
+        projects={projects}
+        defaultSourceProjectId={currentProjectId}
         onCreate={handleCreate}
       />
 

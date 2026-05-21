@@ -1,16 +1,22 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import type { Project } from "./api";
+import { listCodexTypes, type CodexType } from "@/features/codex/typeApi";
 
 export interface CreateProjectFormData {
   title: string;
   genre: string;
   language: string;
+  seedFromProjectId?: string;
+  seedTypeSlugs: string[];
 }
 
 interface CreateProjectDialogProps {
   open: boolean;
   onClose: () => void;
+  projects: Project[];
+  defaultSourceProjectId: string;
   onCreate: (data: CreateProjectFormData) => Promise<void>;
 }
 
@@ -37,12 +43,21 @@ const GENRE_OPTIONS = [
 export function CreateProjectDialog({
   open,
   onClose,
+  projects,
+  defaultSourceProjectId,
   onCreate,
 }: CreateProjectDialogProps) {
   const { t } = useTranslation();
   const [title, setTitle] = useState("");
   const [genre, setGenre] = useState("");
   const [language, setLanguage] = useState("ja");
+  const [seedFromProjectId, setSeedFromProjectId] = useState(
+    defaultSourceProjectId,
+  );
+  const [availableTypes, setAvailableTypes] = useState<CodexType[]>([]);
+  const [selectedTypeSlugs, setSelectedTypeSlugs] = useState<Set<string>>(
+    new Set(),
+  );
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -50,17 +65,49 @@ export function CreateProjectDialog({
       setTitle("");
       setGenre("");
       setLanguage("ja");
+      setSeedFromProjectId(defaultSourceProjectId);
+      setSelectedTypeSlugs(new Set());
       setIsSaving(false);
     }
-  }, [open]);
+  }, [open, defaultSourceProjectId]);
+
+  useEffect(() => {
+    if (!open || !seedFromProjectId) {
+      setAvailableTypes([]);
+      return;
+    }
+    let cancelled = false;
+    void listCodexTypes(seedFromProjectId).then((types) => {
+      if (!cancelled) setAvailableTypes(types);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, seedFromProjectId]);
 
   const canSave = title.trim().length > 0 && !isSaving;
+
+  const toggleTypeSlug = (slug: string) => {
+    setSelectedTypeSlugs((prev) => {
+      const next = new Set(prev);
+      if (next.has(slug)) next.delete(slug);
+      else next.add(slug);
+      return next;
+    });
+  };
 
   const handleSave = async () => {
     if (!canSave) return;
     setIsSaving(true);
     try {
-      await onCreate({ title: title.trim(), genre, language });
+      await onCreate({
+        title: title.trim(),
+        genre,
+        language,
+        seedFromProjectId:
+          selectedTypeSlugs.size > 0 ? seedFromProjectId : undefined,
+        seedTypeSlugs: [...selectedTypeSlugs],
+      });
       onClose();
     } finally {
       setIsSaving(false);
@@ -71,6 +118,8 @@ export function CreateProjectDialog({
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void handleSave();
     if (e.key === "Escape") onClose();
   };
+
+  const seedableProjects = projects.filter((p) => p.id !== undefined);
 
   return (
     <AnimatedOverlay
@@ -133,6 +182,65 @@ export function CreateProjectDialog({
             ))}
           </select>
         </div>
+
+        {seedableProjects.length > 0 && (
+          <div className="rounded-md border border-border p-3">
+            <p className="mb-2 text-xs font-medium text-foreground">
+              {t("project.create.seedHeading")}
+            </p>
+            <p className="mb-3 text-xs text-muted-foreground">
+              {t("project.create.seedDescription")}
+            </p>
+
+            <label className="mb-1 block text-xs text-muted-foreground">
+              {t("project.create.seedSourceLabel")}
+            </label>
+            <select
+              data-testid="project-seed-source-select"
+              value={seedFromProjectId}
+              onChange={(e) => {
+                setSeedFromProjectId(e.target.value);
+                setSelectedTypeSlugs(new Set());
+              }}
+              className="mb-3 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {seedableProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.title}
+                </option>
+              ))}
+            </select>
+
+            {availableTypes.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {t("project.create.seedNoTypes")}
+              </p>
+            ) : (
+              <div
+                data-testid="project-seed-type-list"
+                className="max-h-36 space-y-1 overflow-y-auto"
+              >
+                {availableTypes.map((type) => (
+                  <label
+                    key={type.id}
+                    className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-sm hover:bg-accent/50"
+                  >
+                    <input
+                      type="checkbox"
+                      data-testid={`project-seed-type-${type.slug}`}
+                      checked={selectedTypeSlugs.has(type.slug)}
+                      onChange={() => toggleTypeSlug(type.slug)}
+                    />
+                    <span>{type.label}</span>
+                    <span className="text-xs text-muted-foreground">
+                      ({type.slug})
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex justify-end gap-2 pt-2">
           <button

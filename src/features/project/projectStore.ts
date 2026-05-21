@@ -8,6 +8,7 @@ import {
   type Project,
 } from "./api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import { ensureBuiltinTypes } from "@/features/codex/typeApi";
 
 interface CreateProjectInput {
   title: string;
@@ -15,6 +16,8 @@ interface CreateProjectInput {
   language?: string;
   pov?: string;
   tense?: string;
+  seedFromProjectId?: string;
+  seedTypeSlugs?: string[];
 }
 
 interface ProjectState {
@@ -79,6 +82,15 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       pov: input.pov || undefined,
       tense: input.tense || undefined,
     });
+    await ensureBuiltinTypes(created.id);
+    if (input.seedFromProjectId && input.seedTypeSlugs?.length) {
+      const { seedCodexTypesFromProject } = await import("./seedCodexTypes");
+      await seedCodexTypesFromProject(
+        input.seedFromProjectId,
+        created.id,
+        input.seedTypeSlugs,
+      );
+    }
     await get().refreshProjects();
     await get().loadProject(created.id);
     return created;

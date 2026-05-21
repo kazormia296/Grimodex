@@ -48,6 +48,10 @@
       "titlePlaceholder": "Novel title",
       "genreLabel": "Genre",
       "languageLabel": "Writing language",
+      "seedHeading": "Copy Codex",
+      "seedDescription": "Optionally copy Codex types from another project. Copies are independent after creation.",
+      "seedSourceLabel": "Copy from project",
+      "seedNoTypes": "No Codex types available to copy",
       "success": "Project created",
       "failed": "Failed to create project"
     },
