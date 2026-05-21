@@ -75,10 +75,14 @@ export function LayoutPresetDropdown() {
 
   const builtinPresets = getBuiltinPresets(undefined, builtinPresetOverrides);
 
+  const activeBuiltinPreset = builtinPresets.find(
+    (p) => p.id === activePresetId,
+  );
   const activeName =
-    builtinPresets.find((p) => p.id === activePresetId)?.name ??
+    activeBuiltinPreset?.name ??
     customPresets.find((p) => p.id === activePresetId)?.name ??
     null;
+  const ActiveIcon = activeBuiltinPreset?.icon ?? Columns3;
 
   function handleSave() {
     const trimmed = saveName.trim();
@@ -112,7 +116,7 @@ export function LayoutPresetDropdown() {
             : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
         )}
       >
-        <Columns3 className="h-4 w-4" />
+        <ActiveIcon className="h-4 w-4" />
         <span>{activeName ?? t("layout.preset.layout")}</span>
         <ChevronDown
           className={cn("h-3 w-3 transition-transform", isOpen && "rotate-180")}
