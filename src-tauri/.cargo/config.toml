@@ -1,2 +1,6 @@
 [env]
-LINDERA_CACHE = { value = "../lindera-cache", relative = true, force = true }
+# lindera-unidic の build.rs が辞書を探す場所。リポジトリ直下の
+# lindera-cache/<version>/ を指す（.gitignore 済み・~140MB）。
+# force は付けない: ローカルで LINDERA_DICTIONARIES_PATH を明示的に
+# 渡すケース（grimodex-lint/README 参照）を上書きしないため。
+LINDERA_DICTIONARIES_PATH = { value = "../lindera-cache", relative = true }
