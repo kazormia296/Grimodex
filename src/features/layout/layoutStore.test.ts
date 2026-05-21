@@ -127,6 +127,54 @@ describe("useLayoutStore", () => {
       expect(tool?.sizeRatio).toBeCloseTo(0.3, 5);
       assertValidLayout(useLayoutStore.getState().layout);
     });
+
+    it("restores side region sizes across an editor-only hide and show", () => {
+      // editor 単独 (center tool 無し)、左右 region を固定サイズで開く
+      const base = buildDefaultLayoutState({ editorOpen: true });
+      useLayoutStore.setState({
+        layout: {
+          ...base,
+          regions: {
+            ...base.regions,
+            left: { ...base.regions.left, size: 200 },
+            right: { ...base.regions.right, size: 180 },
+          },
+        },
+      });
+
+      useLayoutStore.getState().setEditorOpen(false);
+      useLayoutStore.getState().setEditorOpen(true);
+
+      const { regions } = useLayoutStore.getState().layout;
+      expect(regions.left.size).toBe(200);
+      expect(regions.right.size).toBe(180);
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
+
+    it("clears the restore memory when a region is resized while collapsed", () => {
+      const base = buildDefaultLayoutState({ editorOpen: true });
+      useLayoutStore.setState({
+        layout: {
+          ...base,
+          regions: {
+            ...base.regions,
+            left: { ...base.regions.left, size: 200 },
+            right: { ...base.regions.right, size: 180 },
+          },
+        },
+      });
+
+      useLayoutStore.getState().setEditorOpen(false);
+      expect(
+        useLayoutStore.getState().layout.collapsedEditorRegionSizes,
+      ).toBeTruthy();
+
+      // collapse 中に region を手動リサイズ → 復元メモリは破棄される
+      useLayoutStore.getState().nudgeRegionSize("left", -40);
+      expect(
+        useLayoutStore.getState().layout.collapsedEditorRegionSizes,
+      ).toBeUndefined();
+    });
   });
 
   describe("movePanelToRegion", () => {

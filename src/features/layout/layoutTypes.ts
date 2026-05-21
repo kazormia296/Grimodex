@@ -47,6 +47,11 @@ export interface CenterState {
 export interface LayoutState {
   regions: Record<RegionId, RegionState>;
   center: CenterState;
+  /**
+   * editor 単独 collapse 時、再表示で幅を復元するため閉じる直前の左右
+   * region サイズを保持する。再表示で消費し、region の手動リサイズで破棄する。
+   */
+  collapsedEditorRegionSizes?: { left: number; right: number };
 }
 
 /** v2 永続化（migrate 用） */
