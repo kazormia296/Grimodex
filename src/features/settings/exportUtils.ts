@@ -2,14 +2,13 @@ import { db } from "@/db/client";
 import { treeNodes, codexEntries, codexTypes } from "@/db/schema";
 import { eq, asc } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 export async function exportAsMarkdown(): Promise<string> {
   const scenes = await db
     .select()
     .from(treeNodes)
-    .where(eq(treeNodes.projectId, PROJECT_ID))
+    .where(eq(treeNodes.projectId, getCurrentProjectId()))
     .orderBy(asc(treeNodes.sortOrder));
 
   const parts: string[] = [];
@@ -42,12 +41,12 @@ export async function exportCodexJson(): Promise<string> {
   const types = await db
     .select()
     .from(codexTypes)
-    .where(eq(codexTypes.projectId, PROJECT_ID));
+    .where(eq(codexTypes.projectId, getCurrentProjectId()));
 
   const entries = await db
     .select()
     .from(codexEntries)
-    .where(eq(codexEntries.projectId, PROJECT_ID));
+    .where(eq(codexEntries.projectId, getCurrentProjectId()));
 
   const typeMap = Object.fromEntries(types.map((t) => [t.slug, t.label]));
 

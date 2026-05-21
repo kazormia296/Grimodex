@@ -10,6 +10,7 @@ import {
 } from "../tagApi";
 import type { CodexTag } from "../tagApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 type PersistFn = (entryId: string, tagIds: string[]) => Promise<void>;
 
@@ -37,7 +38,7 @@ interface TagSelectorProps {
 export function TagSelector({
   entryId,
   entryType,
-  projectId = "default-project",
+  projectId = getCurrentProjectId(),
   selectedTags,
   onTagsChange,
   maxVisible,

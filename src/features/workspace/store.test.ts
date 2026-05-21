@@ -164,6 +164,8 @@ describe("useWorkspaceStore", () => {
         .mockResolvedValueOnce(false)
         // open_workspace
         .mockResolvedValueOnce({ name: "NewProject" })
+        // db_execute (initCurrentProject → listProjects)
+        .mockResolvedValueOnce({ rows: [] })
         // get_global_settings (re-read after open_workspace)
         .mockResolvedValueOnce({
           recentWorkspaces: [

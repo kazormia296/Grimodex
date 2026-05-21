@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { codexEntries } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { enqueueRescan } from "./mentionRescanQueue";
 
 export type CodexEntry = typeof codexEntries.$inferSelect;
@@ -15,12 +15,14 @@ export type BuiltinCodexEntryType = (typeof BUILTIN_CODEX_TYPES)[number];
 export type CodexEntryType = string;
 
 export async function listCodexEntries(
+  projectId: string,
   type?: CodexEntryType,
 ): Promise<CodexEntry[]> {
-  if (type) {
-    return db.select().from(codexEntries).where(eq(codexEntries.type, type));
-  }
-  return db.select().from(codexEntries);
+  const scope = eq(codexEntries.projectId, projectId);
+  return db
+    .select()
+    .from(codexEntries)
+    .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
 }
 
 export async function getCodexEntry(

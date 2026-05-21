@@ -16,6 +16,7 @@ import {
 import { useEditorStore } from "@/features/editor/editorStore";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
 import { useTabStore } from "@/features/editor/tabStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { Diagnostic, RuleWarning, Severity } from "./types";
 import { useLintStore } from "./lintStore";
 import { useLintIgnoreStore } from "./lintIgnoreStore";
@@ -37,12 +38,6 @@ import {
   useDiagnosticFilter,
   type SeverityFilter,
 } from "./useDiagnosticFilter";
-
-// TODO(multi-project): replace with the active project id from a
-// ProjectStore once the app supports more than one project. Mirrors the
-// same assumption in ScenesPanel.tsx / ExportDialog.tsx — these should
-// all update together.
-const DEFAULT_PROJECT_ID = "default-project";
 
 type PanelMode = "current" | "project" | "disables";
 
@@ -1017,7 +1012,7 @@ function ProjectLinterView() {
   }, [filteredScenes, groupMode]);
 
   const onStart = useCallback(() => {
-    void start(DEFAULT_PROJECT_ID);
+    void start(getCurrentProjectId());
   }, [start]);
 
   const onIgnore = useCallback(

@@ -4,6 +4,7 @@ import { X, MoreVertical, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { useChatStore } from "@/features/chat/chatStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import * as chatApi from "@/features/chat/chatApi";
 import type { ChatSession } from "@/features/chat/chatTypes";
 
@@ -215,7 +216,7 @@ export function SessionsPanel({
   const handleCreate = useCallback(async () => {
     try {
       await createNewSession(
-        "default-project",
+        getCurrentProjectId(),
         "New session",
         // project scope → undefined（DB で nodeId IS NULL になる）
         chatScope === "scene"

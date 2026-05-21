@@ -2,12 +2,11 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, Loader2, Sparkles } from "lucide-react";
 import { useSceneStore } from "@/features/tree/store";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "./foreshadowStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
 import { getChapterForeshadowStats } from "./api";
 import type { AuditCandidate, ChapterForeshadowStats } from "./types";
-
-const PROJECT_ID = "default-project";
 
 export function ForeshadowChapterTab() {
   const { t } = useTranslation();
@@ -161,7 +160,7 @@ export function ForeshadowChapterTab() {
       {dialogOpen && dialogInitial && (
         <CreateForeshadowDialog
           open={dialogOpen}
-          projectId={PROJECT_ID}
+          projectId={getCurrentProjectId()}
           initialTitle={dialogInitial.title}
           initialIntent={dialogInitial.intent}
           onSave={async () => {

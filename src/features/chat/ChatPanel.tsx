@@ -30,6 +30,7 @@ import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type { PinnedSnippetEntryWithData } from "./chatApi";
@@ -578,7 +579,7 @@ export function ChatPanel() {
         : chatScope === "folder"
           ? (scopeAnchorId ?? undefined)
           : undefined;
-    createNewSession("default-project", "New session", nodeId);
+    createNewSession(getCurrentProjectId(), "New session", nodeId);
   }, [createNewSession, chatScope, scopeAnchorId, chatSceneId]);
 
   const __renderResult = (

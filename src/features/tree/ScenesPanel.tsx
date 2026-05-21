@@ -28,8 +28,8 @@ import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { recordMark } from "@/lib/perfLog";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
-const DEFAULT_PROJECT_ID = "default-project";
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
 export function ScenesPanel() {
@@ -97,7 +97,7 @@ export function ScenesPanel() {
   const [deleteConfirm, setDeleteConfirm] = useState<string[] | null>(null);
 
   useEffect(() => {
-    loadTree(DEFAULT_PROJECT_ID).then(() => {
+    loadTree(getCurrentProjectId()).then(() => {
       const nodeIds = new Set(useTreeStore.getState().nodes.map((n) => n.id));
       useTabStore
         .getState()

@@ -11,9 +11,8 @@ import {
 import { SessionCard } from "./components/SessionCard";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { SortMode } from "./chatHistoryStore";
-
-const DEFAULT_PROJECT_ID = "default-project";
 
 /** Render FTS5 snippet: \x01 = highlight start, \x02 = highlight end */
 function renderHighlight(text: string): React.ReactNode {
@@ -106,7 +105,7 @@ export function ChatHistoryPanel() {
   }, [nodes]);
 
   useEffect(() => {
-    loadSessions(DEFAULT_PROJECT_ID);
+    loadSessions(getCurrentProjectId());
   }, [loadSessions]);
 
   const handleSearchChange = useCallback(
@@ -115,7 +114,7 @@ export function ChatHistoryPanel() {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
       if (q.trim()) {
         searchTimerRef.current = setTimeout(() => {
-          runSearch(DEFAULT_PROJECT_ID);
+          runSearch(getCurrentProjectId());
         }, 300);
       }
     },

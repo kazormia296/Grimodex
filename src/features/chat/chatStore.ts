@@ -77,6 +77,7 @@ import { prosemirrorToText } from "@/lib/prosemirror";
 import { getProject } from "@/features/project/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { listCodexEntries } from "@/features/codex/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { markStart, markEnd } from "@/lib/perfLog";
 import {
@@ -589,7 +590,8 @@ async function buildSceneContextPrompt(opts: {
   } = opts;
 
   await ensureTokenizer();
-  const allEntries = opts.prefetchedEntries ?? (await listCodexEntries());
+  const allEntries =
+    opts.prefetchedEntries ?? (await listCodexEntries(getCurrentProjectId()));
 
   const aiSettings = useAiSettingsStore.getState().settings;
   const chatModel = aiSettings?.model ?? "";
@@ -1147,7 +1149,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           : undefined;
     try {
       const session = await chatApi.createSession(
-        activeProjectId ?? "default-project",
+        activeProjectId ?? getCurrentProjectId(),
         "New session",
         effectiveNodeId,
       );
@@ -1357,7 +1359,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             : undefined;
       try {
         const session = await chatApi.createSession(
-          activeProjectId ?? "default-project",
+          activeProjectId ?? getCurrentProjectId(),
           "New session",
           effectiveNodeId ?? undefined,
         );
@@ -1394,7 +1396,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // Codex エントリを送信時に自動 Spotlight する。
         // listCodexEntries の結果は buildSceneContextPrompt に prefetchedEntries
         // として渡し、二重 fetch を避ける。
-        const allEntriesForCtx = sceneCtx ? await listCodexEntries() : [];
+        const allEntriesForCtx = sceneCtx
+          ? await listCodexEntries(getCurrentProjectId())
+          : [];
         if (sessionIdForPersist && sceneCtx) {
           const chatMentioned = await findMentionedEntriesAsync(
             content,
@@ -1723,7 +1727,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ];
 
       if (sceneCtx) {
-        const allEntries = await listCodexEntries();
+        const allEntries = await listCodexEntries(getCurrentProjectId());
 
         // P2-5: チャットメッセージ内のCodex言及を検出し自動ピン留め
         if (sessionIdForPersist) {
@@ -2110,7 +2114,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       try {
         const [projectCtx, allEntries] = await Promise.all([
           fetchProjectContext(activeProjectId),
-          listCodexEntries(),
+          listCodexEntries(getCurrentProjectId()),
         ]);
 
         // Phase 2 / 2.5: folder スコープでは 3 段階の集約 tier を持つ。

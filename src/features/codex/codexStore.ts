@@ -14,8 +14,7 @@ import { searchCodexEntries } from "./search";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureCodexDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
-
-const DEFAULT_PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 export type CodexSortOrder =
   | "category"
@@ -145,9 +144,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     set({ isLoading: true });
     try {
       const { filterType } = get();
+      const projectId = getCurrentProjectId();
       const [entries, types] = await Promise.all([
-        listCodexEntries(filterType ?? undefined),
-        listCodexTypes(DEFAULT_PROJECT_ID),
+        listCodexEntries(projectId, filterType ?? undefined),
+        listCodexTypes(projectId),
       ]);
       set({ entries, types, isLoading: false });
     } catch (e) {
@@ -170,7 +170,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     try {
       if (query.trim() === "") {
         const { filterType } = get();
-        const entries = await listCodexEntries(filterType ?? undefined);
+        const entries = await listCodexEntries(
+          getCurrentProjectId(),
+          filterType ?? undefined,
+        );
         set({ entries, isLoading: false });
       } else {
         const entries = await searchCodexEntries(query);
@@ -188,7 +191,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       const id = crypto.randomUUID();
       const entry = await createCodexEntry({
         id,
-        projectId: "default-project",
+        projectId: getCurrentProjectId(),
         ...data,
       });
       const { filterType } = get();
@@ -376,7 +379,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   setFilterType: async (type) => {
     set({ filterType: type, isLoading: true });
     try {
-      const entries = await listCodexEntries(type ?? undefined);
+      const entries = await listCodexEntries(
+        getCurrentProjectId(),
+        type ?? undefined,
+      );
       set({ entries, isLoading: false });
     } catch (e) {
       set({ isLoading: false });

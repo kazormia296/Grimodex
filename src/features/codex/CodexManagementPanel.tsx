@@ -35,6 +35,7 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { EditorPane } from "@/features/editor/EditorPane";
 import { useMatrixStore } from "@/features/matrix/matrixStore";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 // Fallback colors for when types haven't loaded yet
 const FALLBACK_TYPE_COLORS: Record<string, string> = {
@@ -557,8 +558,8 @@ export function CodexManagementPanel({
   }, [pendingEntryId, entries, isStackMode, clearPendingEntry]);
 
   useEffect(() => {
-    ensureBuiltinTypes("default-project")
-      .then(() => listCodexTypes("default-project"))
+    ensureBuiltinTypes(getCurrentProjectId())
+      .then(() => listCodexTypes(getCurrentProjectId()))
       .then(setCodexTypes)
       .catch(() => setCodexTypes([]));
   }, []);

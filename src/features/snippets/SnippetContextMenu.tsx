@@ -20,8 +20,7 @@ import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import type { Snippet } from "./api";
 import { useSnippetStore } from "./snippetStore";
 import { useAddToMapBoards } from "@/features/map/hooks/useAddToMapBoards";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 interface SnippetContextMenuProps {
   snippet: Snippet;
@@ -48,7 +47,7 @@ export function SnippetContextMenu({
   const createForeshadow = useForeshadowStore((s) => s.create);
   const [foreshadowDialogOpen, setForeshadowDialogOpen] = useState(false);
   const [mapMenuOpen, setMapMenuOpen] = useState(false);
-  const { boards, addToBoard } = useAddToMapBoards(PROJECT_ID);
+  const { boards, addToBoard } = useAddToMapBoards(getCurrentProjectId());
 
   useEffect(() => {
     const handlePointerDown = (e: PointerEvent) => {
@@ -129,7 +128,7 @@ export function SnippetContextMenu({
       | null;
   }) {
     await createForeshadow({
-      projectId: PROJECT_ID,
+      projectId: getCurrentProjectId(),
       title: data.title,
       intent: data.intent,
       loadBearing: data.loadBearing,
@@ -144,7 +143,7 @@ export function SnippetContextMenu({
     return (
       <CreateForeshadowDialog
         open={true}
-        projectId={PROJECT_ID}
+        projectId={getCurrentProjectId()}
         initialTitle={snippet.title.slice(0, 60)}
         initialIntent={snippet.content.slice(0, 200)}
         onSave={handleSaveForeshadow}

@@ -20,8 +20,7 @@ import {
   ContextMenuSeparator,
   ContextMenuShortcut,
 } from "@/components/ui/context-menu";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 const EMPTY_LABEL_IDS: readonly string[] = Object.freeze([]);
 
@@ -58,7 +57,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
   const assignedLabelIds = useLabelStore(
     (s) => s.nodeLabels[node.id] ?? EMPTY_LABEL_IDS,
   );
-  const { boards, addToBoard } = useAddToMapBoards(PROJECT_ID);
+  const { boards, addToBoard } = useAddToMapBoards(getCurrentProjectId());
   const scenesContext = useScenesPanelContext();
 
   // If the right-clicked node is part of a multi-selection, operations apply

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "./foreshadowStore";
 import { useForeshadowNavStore } from "./foreshadowNavStore";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
@@ -30,8 +31,6 @@ import type {
   ForeshadowStrength,
   ForeshadowWithLabel,
 } from "./types";
-
-const PROJECT_ID = "default-project";
 
 const LABEL_ORDER: DerivedLabel[] = [
   "planned",
@@ -375,7 +374,7 @@ export function ForeshadowPanel() {
   const usedLabels = new Set(items.map((item) => item.label));
 
   useEffect(() => {
-    void load(PROJECT_ID);
+    void load(getCurrentProjectId());
   }, [load]);
 
   const handleCreate = async (data: {
@@ -384,7 +383,7 @@ export function ForeshadowPanel() {
     loadBearing: ForeshadowLoadBearing | null;
   }) => {
     await create({
-      projectId: PROJECT_ID,
+      projectId: getCurrentProjectId(),
       title: data.title,
       intent: data.intent,
       loadBearing: data.loadBearing,
@@ -796,7 +795,7 @@ export function ForeshadowPanel() {
 
       <CreateForeshadowDialog
         open={dialogOpen}
-        projectId={PROJECT_ID}
+        projectId={getCurrentProjectId()}
         onSave={handleCreate}
         onClose={() => setDialogOpen(false)}
       />

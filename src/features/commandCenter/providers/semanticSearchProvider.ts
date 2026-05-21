@@ -7,6 +7,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
 import { useCommandCenterStore } from "../store/commandCenterStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import type {
   CommandCenterItem,
   CommandCenterProvider,
@@ -24,7 +25,6 @@ import type {
 
 const PROVIDER_ID = "semantic";
 const PROVIDER_ORDER = 2;
-const PROJECT_ID = "default-project";
 /** embedding 計算回避: 1 文字での検索は無意味なので skip */
 const MIN_QUERY_LENGTH = 2;
 
@@ -86,7 +86,7 @@ export const semanticSearchProvider: CommandCenterProvider = {
     const descriptionMode = useCommandCenterStore.getState().descriptionMode;
     try {
       const hits = await semanticSearch({
-        projectId: PROJECT_ID,
+        projectId: getCurrentProjectId(),
         query,
         limit: ctx.limit,
         descriptionMode,

@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import { invoke } from "@/lib/tauri";
 import { listCodexEntries } from "@/features/codex/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { LintTermEntry, Severity } from "./types";
 
 /**
@@ -77,7 +78,7 @@ async function fetchCodexAliases(): Promise<Set<string>> {
   // Rust engine's pre-filter in `resolve_term_dictionary`.
   const out = new Set<string>();
   try {
-    const rows = await listCodexEntries();
+    const rows = await listCodexEntries(getCurrentProjectId());
     for (const r of rows) {
       if (!r.aliases) continue;
       try {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import type { Editor } from "@tiptap/core";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { listCodexTypes } from "@/features/codex/typeApi";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useCodexHighlightStore } from "./codexHighlightStore";
@@ -74,7 +75,7 @@ export function useCodexHighlight(
         : theme === "light"
           ? false
           : window.matchMedia("(prefers-color-scheme: dark)").matches;
-    listCodexTypes("default-project").then((types) => {
+    listCodexTypes(getCurrentProjectId()).then((types) => {
       const map: Record<string, ReturnType<typeof resolveCodexColor>> = {};
       for (const t of types) {
         map[t.slug] = resolveCodexColor(

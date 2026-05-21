@@ -7,6 +7,7 @@ import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
 import type { TimelineSettings } from "@/features/timeline/timelineStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { useGridStore } from "@/features/grid/gridStore";
+import { useProjectStore } from "@/features/project/projectStore";
 
 export interface RecentWorkspace {
   path: string;
@@ -167,6 +168,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       const result = await invoke<OpenWorkspaceResult>("open_workspace", {
         path,
       });
+      // Resolve the current Project before the editor view renders so that
+      // panels reading currentProjectId have a value to work with.
+      await useProjectStore.getState().initCurrentProject();
       // Re-read global settings after open_workspace updated them
       const settings = await invoke<GlobalSettings>("get_global_settings");
       set({

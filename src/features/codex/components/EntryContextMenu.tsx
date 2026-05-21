@@ -13,8 +13,7 @@ import type { CodexEntry } from "../api";
 import type { CodexType } from "../typeApi";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useAddToMapBoards } from "@/features/map/hooks/useAddToMapBoards";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 interface EntryContextMenuProps {
   entry: CodexEntry;
@@ -52,7 +51,7 @@ export function EntryContextMenu({
   const [showCustomSetSubmenu, setShowCustomSetSubmenu] = useState(false);
   const [showMapSubmenu, setShowMapSubmenu] = useState(false);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
-  const { boards, addToBoard } = useAddToMapBoards(PROJECT_ID);
+  const { boards, addToBoard } = useAddToMapBoards(getCurrentProjectId());
 
   useEffect(() => {
     const handlePointerDown = (e: PointerEvent) => {

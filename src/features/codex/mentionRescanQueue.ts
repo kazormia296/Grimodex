@@ -5,8 +5,7 @@ import { eq, and, count } from "drizzle-orm";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { listCodexEntries } from "./api";
 import type { CodexMatchTarget } from "./codexMatcher";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 // ---------------------------------------------------------------------------
 // Queue state (Zustand — drives status bar "Scanning... N/Total")
@@ -71,7 +70,7 @@ export function enqueueRescan(forEntryId: string | null = null): void {
   if (runningPromise !== null) return;
 
   runningPromise = (async () => {
-    const allEntries = await listCodexEntries();
+    const allEntries = await listCodexEntries(getCurrentProjectId());
     const matchTargets: CodexMatchTarget[] = allEntries.map((e) => ({
       id: e.id,
       name: e.name,
@@ -102,7 +101,7 @@ export function enqueueRescan(forEntryId: string | null = null): void {
         .where(
           and(
             eq(treeNodes.nodeType, "scene"),
-            eq(treeNodes.projectId, PROJECT_ID),
+            eq(treeNodes.projectId, getCurrentProjectId()),
           ),
         );
       // Rescan scenes already mentioning + a sample of others (to catch new matches)
@@ -118,7 +117,7 @@ export function enqueueRescan(forEntryId: string | null = null): void {
         .where(
           and(
             eq(treeNodes.nodeType, "scene"),
-            eq(treeNodes.projectId, PROJECT_ID),
+            eq(treeNodes.projectId, getCurrentProjectId()),
           ),
         );
     }
@@ -139,7 +138,10 @@ export async function needsBodyBackfill(): Promise<boolean> {
     .select({ c: count() })
     .from(treeNodes)
     .where(
-      and(eq(treeNodes.nodeType, "scene"), eq(treeNodes.projectId, PROJECT_ID)),
+      and(
+        eq(treeNodes.nodeType, "scene"),
+        eq(treeNodes.projectId, getCurrentProjectId()),
+      ),
     );
   const sceneCount = sceneCountRow?.c ?? 0;
   if (sceneCount === 0) return false;

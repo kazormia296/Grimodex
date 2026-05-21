@@ -4,8 +4,7 @@ import { invoke } from "@/lib/tauri";
 import { useLintIgnoreStore, type LintIgnoreEntry } from "./lintIgnoreStore";
 import { buildBlocksFromJson } from "./projectScan";
 import { loadSceneContent } from "@/features/tree/api";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 interface EntryRow extends LintIgnoreEntry {
   sceneTitle: string | null;
@@ -26,7 +25,7 @@ async function fetchAllEntries(): Promise<EntryRow[]> {
           LEFT JOIN tree_nodes t ON l.scene_id = t.id
           WHERE t.project_id = ? OR t.project_id IS NULL
           ORDER BY t.title NULLS LAST, l.created_at DESC`,
-    params: [PROJECT_ID],
+    params: [getCurrentProjectId()],
     method: "all",
   });
   return r.rows.map((row) => ({

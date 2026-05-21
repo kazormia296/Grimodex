@@ -3,6 +3,7 @@ import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { listCodexTypes } from "@/features/codex/typeApi";
 import { resolveCodexColor } from "@/lib/resolveCodexColors";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 /**
  * Ensure the global typeColorMap is populated.
@@ -27,7 +28,7 @@ export function useEnsureCodexTypeColors() {
         : theme === "light"
           ? false
           : window.matchMedia("(prefers-color-scheme: dark)").matches;
-    listCodexTypes("default-project").then((types) => {
+    listCodexTypes(getCurrentProjectId()).then((types) => {
       if (cancelled) return;
       const map: Record<string, ReturnType<typeof resolveCodexColor>> = {};
       for (const t of types) {

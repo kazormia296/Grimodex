@@ -4,6 +4,7 @@ import { ReplaceStep } from "@tiptap/pm/transform";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import type { TrashOrigin, TrashSpan } from "@/features/trash-bin/types";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { markStart, markEnd } from "@/lib/perfLog";
 
 export const trashBinCaptureKey = new PluginKey<TrashBinCaptureState>(
@@ -95,7 +96,7 @@ function flushBuffer(buffer: BackspaceBuffer): void {
 
   useTrashBinStore.getState().enqueuePending(
     {
-      projectId: "default-project",
+      projectId: getCurrentProjectId(),
       kind: "text-fragment",
       subKind: "text-fragment",
       originSceneId: buffer.origin.kind === "scene" ? buffer.origin.id : null,

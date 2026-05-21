@@ -16,6 +16,7 @@ import {
   removePinnedCodex,
 } from "./codexQuickPinApi";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { cmpKeys, generateKeyBetween } from "./fractionalIndex";
 
 export type NodeType = "folder" | "scene" | "note";
@@ -164,7 +165,6 @@ function computeScenes(nodes: TreeNodeData[]): SceneMeta[] {
     .map((n) => ({ id: n.id, title: n.title, sortOrder: n.sortOrder }));
 }
 
-const DEFAULT_PROJECT_ID = "default-project";
 const DEFAULT_CHAPTER_ID = "default-chapter";
 
 export type ViewMode = "tree" | "outline";
@@ -477,7 +477,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   activeSceneId: "",
   selectedIds: [],
   isLoading: false,
-  projectId: DEFAULT_PROJECT_ID,
+  projectId: getCurrentProjectId(),
   expandedIds: [],
   filterQuery: "",
   viewMode: "tree",
@@ -495,7 +495,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   pinnedCodexIds: [],
   pendingRenameId: null,
 
-  async loadTree(projectId = DEFAULT_PROJECT_ID) {
+  async loadTree(projectId = getCurrentProjectId()) {
     set({ isLoading: true, projectId });
     try {
       const raw = await api.listNodes(projectId);

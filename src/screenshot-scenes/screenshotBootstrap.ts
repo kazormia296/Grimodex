@@ -10,8 +10,7 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 export function getScreenshotCaptureId(): string | null {
   try {
@@ -48,10 +47,10 @@ export function isScreenshotCapture(): boolean {
  * 撮影時はエディタ起動直後に一元ロードする。
  */
 export async function bootstrapScreenshotWorkspace(): Promise<void> {
-  await useTreeStore.getState().loadTree(PROJECT_ID);
+  await useTreeStore.getState().loadTree(getCurrentProjectId());
   await useCodexStore.getState().loadEntries();
   await useSnippetStore.getState().loadEntries();
-  await useTrashBinStore.getState().loadItems(PROJECT_ID);
+  await useTrashBinStore.getState().loadItems(getCurrentProjectId());
 }
 
 export function markScreenshotStageReady(): void {
@@ -158,7 +157,7 @@ export function applyScreenshotUiState(): void {
   useAnnotationStore.getState().setAnnotations("scene-1", [
     {
       id: "ann-akahimo-wet",
-      projectId: "default-project",
+      projectId: getCurrentProjectId(),
       runId: "run-screenshot-kouetsu",
       anchorType: "scene_range",
       sceneId: "scene-1",

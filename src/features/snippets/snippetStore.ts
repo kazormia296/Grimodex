@@ -8,6 +8,7 @@ import { searchSnippets } from "./search";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureSnippetDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 export type SnippetSourceFilter =
   | "all"
@@ -66,7 +67,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   loadEntries: async () => {
     set({ isLoading: true });
     try {
-      const entries = await snippetApi.listSnippets();
+      const entries = await snippetApi.listSnippets(getCurrentProjectId());
       set({ entries, isLoading: false });
     } catch (e) {
       set({ isLoading: false });
@@ -79,7 +80,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     set({ searchQuery: query, isLoading: true });
     try {
       if (query.trim() === "") {
-        const entries = await snippetApi.listSnippets();
+        const entries = await snippetApi.listSnippets(getCurrentProjectId());
         set({ entries, isLoading: false });
       } else {
         const entries = await searchSnippets(query);
@@ -97,7 +98,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       const id = crypto.randomUUID();
       const created = await snippetApi.createSnippet({
         id,
-        projectId: "default-project",
+        projectId: getCurrentProjectId(),
         ...data,
       });
       set((state) => ({ entries: [...state.entries, created] }));
@@ -134,7 +135,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       // Re-fetch after the INSERT so our SELECT is guaranteed to include the new entry.
       if (get().isLoading) {
         snippetApi
-          .listSnippets()
+          .listSnippets(getCurrentProjectId())
           .then((entries) =>
             set((state) => (state.searchQuery ? state : { entries })),
           )

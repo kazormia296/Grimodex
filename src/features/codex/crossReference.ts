@@ -5,6 +5,7 @@ import { listCodexEntries } from "./api";
 import type { CodexEntry } from "./api";
 import { createCodexMatcher } from "./codexMatcher";
 import { rebuildMatcher, matchText } from "./rustMatcher";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 interface QueryResult {
   rows: Array<{ id: string; title: string; parent_id: string | null }>;
@@ -26,12 +27,13 @@ export interface CrossReferenceEntry {
 export async function buildCrossReferenceReport(): Promise<
   CrossReferenceEntry[]
 > {
-  const entries = await listCodexEntries();
+  const projectId = getCurrentProjectId();
+  const entries = await listCodexEntries(projectId);
   if (entries.length === 0) return [];
 
   const scenesResult = await invoke<QueryResult>("db_execute", {
-    sql: "SELECT id, title, parent_id FROM tree_nodes WHERE node_type = 'scene' ORDER BY sort_order",
-    params: [],
+    sql: "SELECT id, title, parent_id FROM tree_nodes WHERE node_type = 'scene' AND project_id = ? ORDER BY sort_order",
+    params: [projectId],
     method: "all",
   });
   const scenes = scenesResult.rows;

@@ -25,6 +25,7 @@ import {
   createCodexType,
 } from "@/features/codex/typeApi";
 import { createNode, listNodes, saveSceneContent } from "@/features/tree/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { db } from "@/db/client";
 import { chatSessions, chatMessages } from "@/db/schema";
@@ -34,8 +35,6 @@ import type {
   ParsedChapter,
   ParsedChatSession,
 } from "./novelcrafterParser";
-
-export const PROJECT_ID = "default-project";
 
 /**
  * How a tag maps to a CodexType during import.
@@ -173,12 +172,12 @@ export async function importCodexEntries(
   const sorted = topoSortEntries(entries);
 
   // ── Phase 0: ensure builtin types exist ───────────────────────────────────
-  await ensureBuiltinTypes(PROJECT_ID);
+  await ensureBuiltinTypes(getCurrentProjectId());
 
   // ── Phase 0.5: resolve tag→type mappings ─────────────────────────────────
   const tagNameToTypeSlug = new Map<string, string>();
   if (tagOptions && tagOptions.tagTypeMap.size > 0) {
-    const allTypes = await listCodexTypes(PROJECT_ID);
+    const allTypes = await listCodexTypes(getCurrentProjectId());
     const existingSlugSet = new Set(allTypes.map((t) => t.slug));
     const createdSlugs = new Set(existingSlugSet);
 
@@ -193,7 +192,7 @@ export async function importCodexEntries(
           tagNameToTypeSlug.set(tagName, slug);
         } else {
           const newType = await createCodexType({
-            projectId: PROJECT_ID,
+            projectId: getCurrentProjectId(),
             slug,
             label: tagName,
           });
@@ -228,13 +227,13 @@ export async function importCodexEntries(
     }
   }
   // Load existing tags and create any that are missing
-  const existingTags = await listCodexTags(PROJECT_ID);
+  const existingTags = await listCodexTags(getCurrentProjectId());
   const tagNameToId = new Map(existingTags.map((t) => [t.name, t.id]));
   for (const name of allTagNames) {
     if (!tagNameToId.has(name)) {
       const tag = await createCodexTag({
         id: crypto.randomUUID(),
-        projectId: PROJECT_ID,
+        projectId: getCurrentProjectId(),
         name,
       });
       tagNameToId.set(name, tag.id);
@@ -248,7 +247,7 @@ export async function importCodexEntries(
     sorted.map((e) => resolvedTypeMap.get(e.id) ?? e.type),
   );
   for (const typeSlug of typeSlugSet) {
-    const defs = await listDefinitionsByType(PROJECT_ID, typeSlug);
+    const defs = await listDefinitionsByType(getCurrentProjectId(), typeSlug);
     typeDefMap.set(typeSlug, new Map(defs.map((d) => [d.name, d.id])));
   }
   // Track next sort order per type (starting after any existing definitions)
@@ -266,7 +265,7 @@ export async function importCodexEntries(
         const sortOrder = typeNextSortOrder.get(effectiveType) ?? 0;
         const def = await createDefinition({
           id: crypto.randomUUID(),
-          projectId: PROJECT_ID,
+          projectId: getCurrentProjectId(),
           typeSlug: effectiveType,
           name: fieldName,
           fieldType: "text",
@@ -301,7 +300,7 @@ export async function importCodexEntries(
 
       await createCodexEntry({
         id: e.id,
-        projectId: PROJECT_ID,
+        projectId: getCurrentProjectId(),
         type: effectiveType,
         name: e.name,
         aliases: JSON.stringify(e.aliases),
@@ -379,7 +378,7 @@ export async function importSnippets(
     try {
       await createSnippet({
         id: s.id,
-        projectId: PROJECT_ID,
+        projectId: getCurrentProjectId(),
         title: s.title,
         content: s.content,
         contentSource: "human",
@@ -422,7 +421,7 @@ export async function importChapters(
   }
 
   // Append chapters after any existing top-level nodes
-  const allRoots = (await listNodes(PROJECT_ID, null)).slice();
+  const allRoots = (await listNodes(getCurrentProjectId(), null)).slice();
   allRoots.sort((a, b) =>
     a.sortOrder < b.sortOrder ? -1 : a.sortOrder > b.sortOrder ? 1 : 0,
   );
@@ -436,7 +435,7 @@ export async function importChapters(
     try {
       await createNode({
         id: chapter.id,
-        projectId: PROJECT_ID,
+        projectId: getCurrentProjectId(),
         nodeType: "folder",
         title: chapter.title || "Untitled",
         sortOrder: chapterKeys[ci],
@@ -456,7 +455,7 @@ export async function importChapters(
           try {
             await createNode({
               id: scene.id,
-              projectId: PROJECT_ID,
+              projectId: getCurrentProjectId(),
               parentId: chapter.id,
               nodeType: "scene",
               title: scene.title || "Untitled",
@@ -515,7 +514,7 @@ export async function importChatSessionsBatch(
       const sessionCreated = s.createdAt;
       await db.insert(chatSessions).values({
         id: s.id,
-        projectId: PROJECT_ID,
+        projectId: getCurrentProjectId(),
         nodeId: null,
         title: s.title || "Imported chat",
         titleManual: s.titleFromFrontmatter ? 1 : 0,

@@ -15,6 +15,7 @@ import {
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { createRevision } from "./api";
 import type { EntityType } from "./api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import {
   AUX_SCOPES,
   AUX_SCOPE_OWNER,
@@ -30,8 +31,6 @@ import {
   type RestoreScope,
   type SkipReport,
 } from "./projectSnapshotScopes";
-
-const PROJECT_ID = "default-project";
 
 export interface ProjectSnapshotMeta {
   id: string;
@@ -152,6 +151,7 @@ export async function createProjectSnapshot(params: {
   description?: string;
 }): Promise<{ id: string; entryCount: number }> {
   const { name, description } = params;
+  const PROJECT_ID = getCurrentProjectId();
   const snapshotId = crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -319,6 +319,7 @@ export async function createProjectSnapshot(params: {
 // ── listProjectSnapshots ───────────────────────────────────────────
 
 export async function listProjectSnapshots(): Promise<ProjectSnapshotMeta[]> {
+  const PROJECT_ID = getCurrentProjectId();
   const snaps = await db
     .select()
     .from(projectSnapshots)
@@ -426,6 +427,7 @@ async function restoreStructural(
   snapshotId: string,
   scopes: ReadonlySet<RestoreScope>,
 ): Promise<{ restoredCount: number; skipped: SkipReport }> {
+  const PROJECT_ID = getCurrentProjectId();
   const skipped = emptySkipReport();
   const stmts: BatchStmt[] = [];
 

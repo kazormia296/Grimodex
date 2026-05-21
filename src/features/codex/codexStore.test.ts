@@ -86,7 +86,10 @@ describe("codexStore", () => {
 
       await useCodexStore.getState().loadEntries();
 
-      expect(mockListCodexEntries).toHaveBeenCalledWith(undefined);
+      expect(mockListCodexEntries).toHaveBeenCalledWith(
+        "default-project",
+        undefined,
+      );
       expect(useCodexStore.getState().entries).toEqual([mockEntry, mockEntry2]);
       expect(useCodexStore.getState().isLoading).toBe(false);
     });
@@ -97,7 +100,10 @@ describe("codexStore", () => {
 
       await useCodexStore.getState().loadEntries();
 
-      expect(mockListCodexEntries).toHaveBeenCalledWith("character");
+      expect(mockListCodexEntries).toHaveBeenCalledWith(
+        "default-project",
+        "character",
+      );
       expect(useCodexStore.getState().entries).toEqual([mockEntry]);
     });
 
@@ -311,7 +317,10 @@ describe("codexStore", () => {
       await useCodexStore.getState().setFilterType("character");
 
       expect(useCodexStore.getState().filterType).toBe("character");
-      expect(mockListCodexEntries).toHaveBeenCalledWith("character");
+      expect(mockListCodexEntries).toHaveBeenCalledWith(
+        "default-project",
+        "character",
+      );
     });
 
     it("clears filter when set to null", async () => {
@@ -320,7 +329,10 @@ describe("codexStore", () => {
       await useCodexStore.getState().setFilterType(null);
 
       expect(useCodexStore.getState().filterType).toBe(null);
-      expect(mockListCodexEntries).toHaveBeenCalledWith(undefined);
+      expect(mockListCodexEntries).toHaveBeenCalledWith(
+        "default-project",
+        undefined,
+      );
     });
   });
 

@@ -33,8 +33,7 @@ import {
   PopoverAnchor,
   PopoverContent,
 } from "@/components/ui/popover";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 const ARRANGE_ITEMS: { type: AutoArrangeType; label: string }[] = [
   { type: "reading-order", label: "Grid: 読み順" },
@@ -99,7 +98,7 @@ export function MapHeader() {
   const suppressTriggerRefocusRef = useRef(false);
 
   const reloadBoards = useCallback(async () => {
-    const all = await listBoards(PROJECT_ID);
+    const all = await listBoards(getCurrentProjectId());
     setBoards(all);
     return all;
   }, []);
@@ -115,7 +114,7 @@ export function MapHeader() {
       await renameBoard(editingBoard.id, trimmed);
       await reloadBoards();
     } else {
-      const newBoard = await createBoard(PROJECT_ID, trimmed);
+      const newBoard = await createBoard(getCurrentProjectId(), trimmed);
       const all = await reloadBoards();
       if (all.length === 1 || !activeBoardId) {
         setActiveBoardId(newBoard.id);
@@ -125,7 +124,7 @@ export function MapHeader() {
   }
 
   async function handleBoardDuplicate(id: string) {
-    const newBoard = await duplicateBoard(id, PROJECT_ID);
+    const newBoard = await duplicateBoard(id, getCurrentProjectId());
     await reloadBoards();
     setActiveBoardId(newBoard.id);
   }

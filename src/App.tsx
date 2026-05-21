@@ -42,9 +42,11 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { HistoryButtons } from "@/features/history/HistoryButtons";
-import { getProject } from "@/features/project/api";
+import {
+  useProjectStore,
+  getCurrentProjectId,
+} from "@/features/project/projectStore";
 import { invoke } from "@/lib/tauri";
-import { usePhaseStore } from "@/features/codex/phaseStore";
 import { SampleTour } from "@/features/onboarding/SampleTour";
 import {
   getScreenshotPanelId,
@@ -280,22 +282,22 @@ function EditorScreen() {
       window.removeEventListener("restart-sample-tour", onRestartTutorial);
   }, [seedAndOpenSample, setShowSampleTour]);
 
-  // 執筆言語を <html lang> に反映、Phase resolution mode を初期化
+  // Project メタデータ（執筆言語・Phase resolution mode）を適用し、
+  // screenshot キャプチャ用のステージを初期化する
   useEffect(() => {
-    getProject("default-project").then(async (p) => {
-      if (p?.language) document.documentElement.lang = p.language;
-      if (p?.phaseResolutionMode) {
-        usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
-      }
-      clearScreenshotStageReady();
-      if (isScreenshotCapture()) {
-        await bootstrapScreenshotWorkspace();
-      }
-      applyScreenshotUiState();
-      if (isScreenshotCapture()) {
-        markScreenshotStageReady();
-      }
-    });
+    useProjectStore
+      .getState()
+      .loadProject(getCurrentProjectId())
+      .then(async () => {
+        clearScreenshotStageReady();
+        if (isScreenshotCapture()) {
+          await bootstrapScreenshotWorkspace();
+        }
+        applyScreenshotUiState();
+        if (isScreenshotCapture()) {
+          markScreenshotStageReady();
+        }
+      });
   }, []);
 
   // ワークスペース切替時は前ワークスペースの Undo command を実行できないので clear する

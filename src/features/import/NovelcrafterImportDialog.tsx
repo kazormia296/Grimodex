@@ -8,9 +8,9 @@ import {
   importSnippets,
   importChapters,
   importChatSessionsBatch,
-  PROJECT_ID,
 } from "./importApi";
 import type { TagMappingAction, TagImportOptions } from "./importApi";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -101,7 +101,7 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
     const names = collectAllTagNames(parsed.codexEntries);
     setAllTagNames(names);
     setTagTypeConfigs(new Map(names.map((n) => [n, { mode: "none" }])));
-    void listCodexTypes(PROJECT_ID).then(setExistingTypes);
+    void listCodexTypes(getCurrentProjectId()).then(setExistingTypes);
   }, [parsed]);
 
   const handleFileChange = useCallback(
@@ -170,8 +170,8 @@ export function NovelcrafterImportDialog({ open, onClose }: Props) {
 
       await reloadCodex();
       await reloadSnippets();
-      await reloadTree(PROJECT_ID);
-      await reloadSessions(PROJECT_ID);
+      await reloadTree(getCurrentProjectId());
+      await reloadSessions(getCurrentProjectId());
 
       toast.success(
         t("import.success", {

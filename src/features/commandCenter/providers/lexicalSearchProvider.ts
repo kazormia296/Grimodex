@@ -3,6 +3,7 @@ import { invoke } from "@/lib/tauri";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import type {
   CommandCenterItem,
   CommandCenterProvider,
@@ -19,7 +20,6 @@ import type {
 
 const PROVIDER_ID = "lexical";
 const PROVIDER_ORDER = 1;
-const PROJECT_ID = "default-project";
 
 type LexicalSourceType = "scene" | "codex" | "snippet";
 
@@ -104,7 +104,7 @@ export const lexicalSearchProvider: CommandCenterProvider = {
     if (!query) return emptySection();
     try {
       const results = await invoke<LexicalSearchResult[]>("fts_search", {
-        projectId: PROJECT_ID,
+        projectId: getCurrentProjectId(),
         query,
         scope: "all",
         limit: ctx.limit,

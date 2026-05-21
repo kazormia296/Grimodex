@@ -7,13 +7,12 @@ import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
 import { useTabStore } from "@/features/editor/tabStore";
 import { listNodes, loadSceneContent } from "@/features/tree/api";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 import { useLintStore } from "./lintStore";
 import { useLintProjectStore } from "./lintProjectStore";
 import { buildBlocksFromJson } from "./projectScan";
 import type { LintDisableRange } from "./lintDisableWalker";
-
-const DEFAULT_PROJECT_ID = "default-project";
 
 interface SceneDisables {
   sceneId: string;
@@ -128,7 +127,7 @@ export function DisablesView() {
   const refreshOtherScenes = useCallback(async () => {
     setLoading(true);
     try {
-      const nodes = await listNodes(DEFAULT_PROJECT_ID);
+      const nodes = await listNodes(getCurrentProjectId());
       const scenes = nodes
         .filter((n) => n.nodeType === "scene" && n.id !== currentSceneId)
         .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));

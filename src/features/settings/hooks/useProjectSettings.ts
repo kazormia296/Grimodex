@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { getProject, updateProject } from "@/features/project/api";
 import type { Project } from "@/features/project/api";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 export function useProjectSettings() {
   const [project, setProject] = useState<Project | null>(null);
@@ -11,7 +10,7 @@ export function useProjectSettings() {
 
   useEffect(() => {
     let cancelled = false;
-    getProject(PROJECT_ID).then((p) => {
+    getProject(getCurrentProjectId()).then((p) => {
       if (!cancelled && p) setProject(p);
       setIsLoading(false);
     });
@@ -37,7 +36,9 @@ export function useProjectSettings() {
       if (existing) clearTimeout(existing);
 
       const timer = setTimeout(async () => {
-        await updateProject(PROJECT_ID, { [field]: value ?? undefined });
+        await updateProject(getCurrentProjectId(), {
+          [field]: value ?? undefined,
+        });
         timers.current.delete(field);
       }, 300);
       timers.current.set(field, timer);

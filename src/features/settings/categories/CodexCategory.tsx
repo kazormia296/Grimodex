@@ -13,13 +13,12 @@ import {
   codexTypeHasEntries,
 } from "@/features/codex/typeApi";
 import { useWorkspaceStore } from "@/features/workspace/store";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import {
   COLOR_THEMES,
   DEFAULT_COLOR_THEME,
   PALETTE_SIZE,
 } from "@/lib/colorThemes";
-
-const PROJECT_ID = "default-project";
 
 // --- Palette Swatch Picker ---
 
@@ -238,7 +237,7 @@ function AddForm({
     if (!label.trim() || !slug.trim()) return;
     try {
       const type = await createCodexType({
-        projectId: PROJECT_ID,
+        projectId: getCurrentProjectId(),
         slug: slug.trim(),
         label: label.trim(),
         ...(paletteIndex !== null ? { paletteIndex } : {}),
@@ -340,8 +339,8 @@ export function CodexCategory() {
     : null;
 
   const load = useCallback(async () => {
-    await ensureBuiltinTypes(PROJECT_ID);
-    const list = await listCodexTypes(PROJECT_ID);
+    await ensureBuiltinTypes(getCurrentProjectId());
+    const list = await listCodexTypes(getCurrentProjectId());
     setTypes(list);
   }, []);
 
@@ -360,7 +359,10 @@ export function CodexCategory() {
   };
 
   const handleDeleteClick = async (type: CodexType) => {
-    const hasEntries = await codexTypeHasEntries(PROJECT_ID, type.slug);
+    const hasEntries = await codexTypeHasEntries(
+      getCurrentProjectId(),
+      type.slug,
+    );
     if (hasEntries) {
       toast.error(t("settings.codex.cannotDelete", { label: type.label }));
       return;

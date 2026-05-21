@@ -17,6 +17,7 @@ import { invoke } from "@/lib/tauri";
 import { listNodes, loadSceneContent } from "@/features/tree/api";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { listCodexEntries } from "@/features/codex/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import type {
   BlockKind,
   Diagnostic,
@@ -260,7 +261,7 @@ export interface ProjectScanOptions {
 
 async function fetchCodexEntries(): Promise<LintCodexEntry[]> {
   try {
-    const rows = await listCodexEntries();
+    const rows = await listCodexEntries(getCurrentProjectId());
     const out: LintCodexEntry[] = [];
     for (const r of rows) {
       if (!r.name || !r.name.trim()) continue;

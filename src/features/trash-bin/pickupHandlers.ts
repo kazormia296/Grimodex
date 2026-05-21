@@ -31,8 +31,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
-
-const DEFAULT_PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 /**
  * 受け入れ可否判定 (設計書 §5-C のマトリクス)。
@@ -69,7 +68,7 @@ export async function dispatchDrop(
   item: TrashItemData,
   target: DropTarget,
   dropPoint: DropPoint,
-  projectId: string = DEFAULT_PROJECT_ID,
+  projectId: string = getCurrentProjectId(),
 ): Promise<RestoreOutcome> {
   const { kind } = target;
 
@@ -152,7 +151,7 @@ export async function dispatchDrop(
 function refreshAfterRestore(target: DropTarget): void {
   switch (target.kind) {
     case "scenes-panel":
-      void useTreeStore.getState().loadTree(DEFAULT_PROJECT_ID);
+      void useTreeStore.getState().loadTree(getCurrentProjectId());
       return;
     case "codex-panel":
       void useCodexStore.getState().loadEntries();
@@ -164,7 +163,7 @@ function refreshAfterRestore(target: DropTarget): void {
       useMapStore.getState().bumpBoardDataVersion();
       return;
     case "foreshadow-panel":
-      void useForeshadowStore.getState().load(DEFAULT_PROJECT_ID);
+      void useForeshadowStore.getState().load(getCurrentProjectId());
       return;
     case "scene-editor":
     case "codex-editor":

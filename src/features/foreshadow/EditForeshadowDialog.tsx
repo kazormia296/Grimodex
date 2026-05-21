@@ -12,6 +12,7 @@ import {
   listCodexEntriesByForeshadow,
 } from "./api";
 import { listCodexEntries } from "@/features/codex/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { CodexEntry } from "@/features/codex/api";
 
 type LinkedCodexEntry = { id: string; name: string };
@@ -84,7 +85,7 @@ export function EditForeshadowDialog({
         setLinkedEntries(m);
       });
 
-      void listCodexEntries().then(setAllCodexEntries);
+      void listCodexEntries(getCurrentProjectId()).then(setAllCodexEntries);
     }
     // item.id をキーにしてスナップショットを取る
     // eslint-disable-next-line react-hooks/exhaustive-deps

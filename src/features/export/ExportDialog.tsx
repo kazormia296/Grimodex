@@ -9,6 +9,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getProject } from "@/features/project/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import {
   ExportTree,
   buildInitialTreeState,
@@ -20,8 +21,6 @@ import { generateExport } from "./exportEngine";
 import type { ExportSettings } from "./types";
 import { DEFAULT_EXPORT_SETTINGS, EXPORT_SETTING_KEYS } from "./types";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
-
-const PROJECT_ID = "default-project";
 
 // ────────────────────────────────────────────────────────────────────
 // 設定のロード/セーブ
@@ -71,7 +70,7 @@ async function loadContentMap(): Promise<Record<string, string>> {
   const rows = await db
     .select({ id: treeNodes.id, content: treeNodes.content })
     .from(treeNodes)
-    .where(eq(treeNodes.projectId, PROJECT_ID));
+    .where(eq(treeNodes.projectId, getCurrentProjectId()));
 
   const map: Record<string, string> = {};
   for (const row of rows) {
@@ -170,7 +169,7 @@ export function ExportDialog({ open, onClose }: Props) {
       .catch(() => setContentMap({}));
 
     // プロジェクト情報をロード
-    getProject(PROJECT_ID).then((p) => {
+    getProject(getCurrentProjectId()).then((p) => {
       if (p) {
         setProjectTitle(p.title || "Untitled Project");
         setProjectLanguage(p.language || "ja");

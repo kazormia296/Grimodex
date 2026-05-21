@@ -18,6 +18,7 @@ import { useLintConfigStore } from "./lintConfigStore";
 import { resolveLintLanguage } from "./types";
 import type { LintCodexEntry, LintConfig, WireLintBlock } from "./types";
 import { listCodexEntries } from "@/features/codex/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useTermDictionaryStore } from "./termDictionaryStore";
 import { markStart, markEnd } from "@/lib/perfLog";
 
@@ -86,7 +87,7 @@ function resolveEffectiveConfig(): LintConfig {
  */
 async function fetchCodexEntriesForLint(): Promise<LintCodexEntry[]> {
   try {
-    const rows = await listCodexEntries();
+    const rows = await listCodexEntries(getCurrentProjectId());
     const out: LintCodexEntry[] = [];
     for (const r of rows) {
       if (!r.name || !r.name.trim()) continue;

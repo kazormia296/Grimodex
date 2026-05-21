@@ -3,9 +3,8 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "./foreshadowStore";
-
-const PROJECT_ID = "default-project";
 
 type MarkMode = "setup" | "payoff" | "payoff-unanchored";
 
@@ -67,7 +66,7 @@ export function ForeshadowMarkPopover({ editor }: Props) {
   useEffect(() => {
     if (mode === null) return;
     if (!useForeshadowStore.getState().isLoading) {
-      void load(PROJECT_ID);
+      void load(getCurrentProjectId());
     }
     setTimeout(() => searchRef.current?.focus(), 0);
   }, [mode, load]);
@@ -114,7 +113,7 @@ export function ForeshadowMarkPopover({ editor }: Props) {
     if (!newTitle.trim()) return;
     try {
       const item = await create({
-        projectId: PROJECT_ID,
+        projectId: getCurrentProjectId(),
         title: newTitle.trim(),
         intent: null,
         loadBearing: null,

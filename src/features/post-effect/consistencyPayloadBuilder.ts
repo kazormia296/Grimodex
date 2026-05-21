@@ -49,7 +49,7 @@ async function buildCodexPayload(
   projectId: string,
   sceneText: string,
 ): Promise<CodexPayloadEntry[]> {
-  // 全エントリを取得（project 絞り込みは後段で行う; listCodexEntries は project 絞りなし）
+  // プロジェクトの全 Codex エントリを取得
   const allEntries = await db
     .select()
     .from(codexEntries)

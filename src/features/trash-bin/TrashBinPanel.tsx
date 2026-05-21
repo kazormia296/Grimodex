@@ -12,8 +12,7 @@ import { pruneTrashItems } from "./api";
 import { useReducedMotion } from "@/lib/animation";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useConfirmDialog } from "./ConfirmDialog";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 // 設計書 §3.4: 文字屑 50 件 + 構造 50 件 = 物理ビュー最大 100 body
 const PHYSICS_DISPLAY_LIMIT = 100;
@@ -57,24 +56,24 @@ export function TrashBinPanel() {
     void (async () => {
       try {
         await pruneTrashItems(
-          PROJECT_ID,
+          getCurrentProjectId(),
           resolveRetentionDays(),
           PRUNE_MAX_COUNT,
         );
       } catch {
         /* prune 失敗は致命的ではない */
       }
-      await loadItems(PROJECT_ID);
+      await loadItems(getCurrentProjectId());
     })();
 
     // 1 時間おきのバックグラウンド prune (設計書 §3.4)
     // パネル mount 中のみ動作 — フォアグラウンド時のみという要件を満たす。
     const intervalId = setInterval(() => {
       void pruneTrashItems(
-        PROJECT_ID,
+        getCurrentProjectId(),
         resolveRetentionDays(),
         PRUNE_MAX_COUNT,
-      ).then(() => loadItems(PROJECT_ID));
+      ).then(() => loadItems(getCurrentProjectId()));
     }, PRUNE_INTERVAL_MS);
     return () => clearInterval(intervalId);
   }, [loadItems]);
@@ -121,7 +120,7 @@ export function TrashBinPanel() {
       confirmLabel: t("trashBin.clearAll"),
     });
     if (!ok) return;
-    void clearAll(PROJECT_ID);
+    void clearAll(getCurrentProjectId());
   };
 
   const handleRemoveItem = async (id: string) => {

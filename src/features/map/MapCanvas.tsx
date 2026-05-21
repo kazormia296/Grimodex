@@ -16,6 +16,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useMapStore } from "./mapStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureMapStickyDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
@@ -77,8 +78,6 @@ import { generateAiBranchCards } from "./mapAiApi";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
-
-const PROJECT_ID = "default-project";
 
 /** Pure classification used by onDeleteSelected — exported for tests. */
 export function partitionDeletableNodes(nodes: Node[]) {
@@ -173,7 +172,7 @@ export function MapCanvas() {
     setStickies,
     aiBranches,
     setAiBranches,
-  } = useMapBoardData(PROJECT_ID);
+  } = useMapBoardData(getCurrentProjectId());
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
@@ -317,7 +316,7 @@ export function MapCanvas() {
         // Trash 連携: 削除した Sticky をゴミ箱にキャプチャ。
         const trashTempId = `trash-sticky-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${cap.sticky.id}`;
         captureMapStickyDeletion({
-          projectId: PROJECT_ID,
+          projectId: getCurrentProjectId(),
           sticky: cap.sticky,
           position: cap.position,
           tempId: trashTempId,
@@ -442,7 +441,7 @@ export function MapCanvas() {
     handleChangeStickyColor,
   } = useMapContextMenu({
     boardId,
-    projectId: PROJECT_ID,
+    projectId: getCurrentProjectId(),
     positions,
     nodes,
     setPositions,
@@ -451,7 +450,7 @@ export function MapCanvas() {
     setActiveScene,
     onAfterPromote: (targetType) => {
       if (targetType === "scene" || targetType === "note") {
-        void useTreeStore.getState().loadTree(PROJECT_ID);
+        void useTreeStore.getState().loadTree(getCurrentProjectId());
       } else if (targetType === "codex") {
         void useCodexStore.getState().loadEntries();
       } else if (targetType === "snippet") {
@@ -465,7 +464,7 @@ export function MapCanvas() {
       if (!contextMenu || !boardId) return;
       const frameId = contextMenu.nodeId.slice("frame:".length);
       await promoteFrame(frameId, boardId, {
-        projectId: PROJECT_ID,
+        projectId: getCurrentProjectId(),
         codexType,
       });
       setFrames((prev) => prev.filter((f) => f.id !== frameId));

@@ -16,8 +16,7 @@ import {
   enqueueRescan,
   useRescanStore,
 } from "@/features/codex/mentionRescanQueue";
-
-const PROJECT_ID = "default-project";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 interface ProjectStats {
   sceneCount: number;
@@ -28,7 +27,7 @@ async function getProjectStats(): Promise<ProjectStats> {
   const scenes = await db
     .select({ content: treeNodes.content })
     .from(treeNodes)
-    .where(eq(treeNodes.projectId, PROJECT_ID));
+    .where(eq(treeNodes.projectId, getCurrentProjectId()));
 
   const sceneCount = scenes.filter(
     (n) =>
@@ -136,13 +135,13 @@ export function DataCategory() {
       const sessions = await db
         .select({ id: chatSessions.id })
         .from(chatSessions)
-        .where(eq(chatSessions.projectId, PROJECT_ID));
+        .where(eq(chatSessions.projectId, getCurrentProjectId()));
       for (const s of sessions) {
         await db.delete(chatMessages).where(eq(chatMessages.sessionId, s.id));
       }
       await db
         .delete(chatSessions)
-        .where(eq(chatSessions.projectId, PROJECT_ID));
+        .where(eq(chatSessions.projectId, getCurrentProjectId()));
       toast.success(t("settings.data.clearChatSuccess"));
       setConfirmClear(false);
     } catch {
