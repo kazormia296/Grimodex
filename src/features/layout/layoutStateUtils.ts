@@ -749,7 +749,38 @@ export function buildRegionSizeClampContext(
     rightOpen: isRegionOpen(state.regions.right),
     hasLeft: state.regions.left.slots.some((slot) => slot.panels.length > 0),
     hasRight: state.regions.right.slots.some((slot) => slot.panels.length > 0),
+    leftSize: state.regions.left.size,
+    rightSize: state.regions.right.size,
+    centerReserve: getCenterHorizontalReserve(state),
   };
+}
+
+export function getCenterSegmentMinSize(
+  center: CenterState,
+  segmentId: string,
+): number {
+  const segment = center.segments.find((s) => s.id === segmentId);
+  if (segment?.kind === "editor") return MIN_EDITOR_SIZE;
+  return MIN_SLOT_SIZE;
+}
+
+export function nudgeAdjacentCenterSegmentPixelSizes(
+  center: CenterState,
+  segmentIdA: string,
+  segmentIdB: string,
+  deltaPx: number,
+  layoutBudgetPx: number,
+): { pxA: number; pxB: number } | null {
+  const pixelSizes = getOpenCenterSegmentPixelSizes(center, layoutBudgetPx);
+  const prevPx = pixelSizes.get(segmentIdA) ?? 0;
+  const currPx = pixelSizes.get(segmentIdB) ?? 0;
+  const minA = getCenterSegmentMinSize(center, segmentIdA);
+  const minB = getCenterSegmentMinSize(center, segmentIdB);
+  const total = prevPx + currPx;
+  const newPrev = Math.min(Math.max(prevPx + deltaPx, minA), total - minB);
+  const newCurr = total - newPrev;
+  if (newPrev === prevPx && newCurr === currPx) return null;
+  return { pxA: newPrev, pxB: newCurr };
 }
 
 export function isRegionOpen(region: RegionState): boolean {

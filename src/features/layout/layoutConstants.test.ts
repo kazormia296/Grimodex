@@ -14,6 +14,9 @@ const PLAN_FILLER_CONTEXT: RegionSizeClampContext = {
   rightOpen: true,
   hasLeft: true,
   hasRight: true,
+  leftSize: 260,
+  rightSize: 340,
+  centerReserve: 0,
 };
 
 describe("computeFillerRegion", () => {
@@ -55,13 +58,17 @@ describe("clampRegionSize with filler layout", () => {
     ).toBe(maxLeft);
   });
 
-  it("keeps default 50% cap when center band is visible", () => {
+  it("allows side region beyond 50% viewport when center band is visible", () => {
     const context: RegionSizeClampContext = {
       ...PLAN_FILLER_CONTEXT,
       centerBandVisible: true,
+      leftSize: 200,
+      rightSize: 500,
+      centerReserve: 360,
     };
-    expect(getMaxRegionSize("left", LAPTOP, context)).toBe(
-      Math.floor(LAPTOP.width * 0.5),
-    );
+    const halfViewport = Math.floor(LAPTOP.width * 0.5);
+    const maxRight = getMaxRegionSize("right", LAPTOP, context);
+    expect(maxRight).toBeGreaterThan(halfViewport);
+    expect(maxRight).toBe(LAPTOP.width - 32 * 2 - 6 * 2 - 360 - 200);
   });
 });

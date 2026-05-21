@@ -207,6 +207,18 @@ describe("useLayoutStore", () => {
       );
     });
 
+    it("allows right region beyond 50% viewport when center band is visible", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().showPanel("chat");
+      const vp = { width: 1366, height: 768 };
+      useLayoutStore.getState().setRegionSize("left", 200, vp);
+      const halfCap = Math.floor(vp.width * 0.5);
+      useLayoutStore.getState().setRegionSize("right", halfCap + 120, vp);
+      expect(
+        useLayoutStore.getState().layout.regions.right.size,
+      ).toBeGreaterThan(halfCap);
+    });
+
     it("grows bottom region when nudged with positive delta", () => {
       useLayoutStore.getState().showPanel("grid");
       const start = useLayoutStore.getState().layout.regions.bottom.size;

@@ -38,6 +38,10 @@ export interface RegionSizeClampContext {
   rightOpen: boolean;
   hasLeft: boolean;
   hasRight: boolean;
+  leftSize: number;
+  rightSize: number;
+  /** center band 表示時に side region から確保する最小幅合計 */
+  centerReserve: number;
 }
 
 /**
@@ -78,6 +82,22 @@ export function getMaxRegionSize(
   const defaultMax = axis * MAX_REGION_SIZE_RATIO;
 
   if (!context || region === "bottom") return defaultMax;
+
+  if (context.centerBandVisible) {
+    const chrome = horizontalResizeChromePx(context, null);
+    const maxHorizontal = Math.max(
+      0,
+      viewport.width - chrome - context.centerReserve,
+    );
+    if (region === "left") {
+      const other = context.rightOpen ? context.rightSize : 0;
+      return Math.max(MIN_REGION_SIZE, maxHorizontal - other);
+    }
+    if (region === "right") {
+      const other = context.leftOpen ? context.leftSize : 0;
+      return Math.max(MIN_REGION_SIZE, maxHorizontal - other);
+    }
+  }
 
   const fillerRegion = computeFillerRegion({
     centerBandVisible: context.centerBandVisible,

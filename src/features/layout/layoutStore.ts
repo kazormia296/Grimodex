@@ -20,8 +20,8 @@ import {
   findPanelLocation,
   generateCenterToolSegmentId,
   generateSlotId,
-  getOpenCenterSegmentPixelSizes,
   getOpenSlotPixelSizes,
+  nudgeAdjacentCenterSegmentPixelSizes,
   getOpenSlots,
   migrateLayoutStateV2toV3,
   normalizeCenterSegmentRatios,
@@ -718,24 +718,18 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   setRegionSizeLive: (region, size, viewport) => {
     if (get().layoutLocked) return;
     const vp = viewport ?? getViewport();
-    const clamped = clampRegionSize(
-      region,
-      size,
-      vp,
-      buildRegionSizeClampContext(get().layout),
-    );
     set((state) => {
+      const clamped = clampRegionSize(
+        region,
+        size,
+        vp,
+        buildRegionSizeClampContext(state.layout),
+      );
       const current = state.layout.regions[region].size;
       if (clamped === current) return state;
-      return {
-        layout: {
-          ...state.layout,
-          regions: {
-            ...state.layout.regions,
-            [region]: { ...state.layout.regions[region], size: clamped },
-          },
-        },
-      };
+      const next = cloneLayoutState(state.layout);
+      next.regions[region] = { ...next.regions[region], size: clamped };
+      return { layout: applyValidatedLayout(next, vp) };
     });
   },
 
@@ -752,16 +746,9 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         buildRegionSizeClampContext(state.layout),
       );
       if (nextSize === current) return state;
-
-      return {
-        layout: {
-          ...state.layout,
-          regions: {
-            ...state.layout.regions,
-            [region]: { ...regionState, size: nextSize },
-          },
-        },
-      };
+      const next = cloneLayoutState(state.layout);
+      next.regions[region] = { ...regionState, size: nextSize };
+      return { layout: applyValidatedLayout(next, vp) };
     });
   },
 
@@ -851,22 +838,21 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     if (get().layoutLocked || deltaPx === 0 || layoutBudgetPx <= 0) return;
 
     set((state) => {
-      const pixelSizes = getOpenCenterSegmentPixelSizes(
+      const nudged = nudgeAdjacentCenterSegmentPixelSizes(
         state.layout.center,
+        segmentIdA,
+        segmentIdB,
+        deltaPx,
         layoutBudgetPx,
       );
-      const prevPx = pixelSizes.get(segmentIdA) ?? 0;
-      const currPx = pixelSizes.get(segmentIdB) ?? 0;
-      const newPrev = Math.max(MIN_SLOT_SIZE, prevPx + deltaPx);
-      const newCurr = Math.max(MIN_SLOT_SIZE, currPx - deltaPx);
-      if (newPrev === prevPx && newCurr === currPx) return state;
+      if (!nudged) return state;
 
       const next = applyAdjacentCenterSegmentPixelSizes(
         state.layout,
         segmentIdA,
         segmentIdB,
-        newPrev,
-        newCurr,
+        nudged.pxA,
+        nudged.pxB,
         layoutBudgetPx,
       );
       return { layout: next };

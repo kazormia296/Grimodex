@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bottomDockPx,
+  buildCenterStripeGridTemplateColumns,
   buildLayoutGridTemplateColumns,
   computeLayoutGridMetrics,
   regionContentPx,
@@ -163,5 +164,23 @@ describe("layoutMetrics", () => {
   it("sideContentZoneHeight subtracts bottom row inset", () => {
     expect(sideContentZoneHeight(252)).toBe("calc(100% - 252px)");
     expect(sideContentZoneHeight(0)).toBe("100%");
+  });
+
+  it("buildCenterStripeGridTemplateColumns mirrors the center band columns", () => {
+    const metrics = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: false,
+      leftOpen: true,
+      rightOpen: true,
+      bottomOpen: false,
+      centerBandVisible: true,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 0,
+    });
+    expect(buildCenterStripeGridTemplateColumns(metrics)).toBe(
+      `260px ${SPLITTER_GUTTER_PX}px minmax(0, 1fr) ${SPLITTER_GUTTER_PX}px 340px`,
+    );
   });
 });

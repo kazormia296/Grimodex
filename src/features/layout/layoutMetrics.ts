@@ -124,6 +124,26 @@ export function computeLayoutGridMetrics(
   };
 }
 
+export function buildCenterStripeGridTemplateColumns(
+  metrics: LayoutGridMetrics,
+): string {
+  const leftContentColumn =
+    metrics.fillerRegion === "left"
+      ? "minmax(0, 1fr)"
+      : `${metrics.leftContentPx}px`;
+  const rightContentColumn =
+    metrics.fillerRegion === "right"
+      ? "minmax(0, 1fr)"
+      : `${metrics.rightContentPx}px`;
+  return [
+    leftContentColumn,
+    `${metrics.leftSplitterPx}px`,
+    metrics.centerColumnPx,
+    `${metrics.rightSplitterPx}px`,
+    rightContentColumn,
+  ].join(" ");
+}
+
 export function buildLayoutGridTemplateColumns(
   metrics: LayoutGridMetrics,
 ): string {

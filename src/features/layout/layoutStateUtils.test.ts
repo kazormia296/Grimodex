@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildDefaultLayoutState,
+  buildCenterSegmentsWithTools,
   findPanelLocation,
   isRegionOpen,
   normalizeSlotRatios,
@@ -9,11 +10,18 @@ import {
   validateLayoutState,
   clampLayoutStateForViewport,
   applyAdjacentSlotPixelSizes,
+  getOpenCenterSegmentPixelSizes,
   getOpenSlotPixelSizes,
+  nudgeAdjacentCenterSegmentPixelSizes,
+  DEFAULT_EDITOR_SEGMENT_ID,
 } from "./layoutStateUtils";
 import { TOOL_WINDOW_PANEL_IDS } from "./toolWindowDefaults";
 import type { LayoutState, RegionId, ToolWindowPanelId } from "./layoutTypes";
-import { DEFAULT_REGION_SIZES, MIN_REGION_SIZE } from "./layoutConstants";
+import {
+  DEFAULT_REGION_SIZES,
+  MIN_EDITOR_SIZE,
+  MIN_REGION_SIZE,
+} from "./layoutConstants";
 
 const VIEWPORT = { width: 1200, height: 800 };
 const LAPTOP_VIEWPORT = { width: 1366, height: 768 };
@@ -357,5 +365,30 @@ describe("normalizeFlexGrow", () => {
 
   it("returns an empty array for no entries", () => {
     expect(normalizeFlexGrow([])).toEqual([]);
+  });
+});
+
+describe("nudgeAdjacentCenterSegmentPixelSizes", () => {
+  it("preserves total width and respects MIN_EDITOR_SIZE", () => {
+    const segments = buildCenterSegmentsWithTools(["kouetsu"], {
+      kouetsu: true,
+    });
+    const center = { editorOpen: true, segments };
+    const budget = 900;
+    const before = getOpenCenterSegmentPixelSizes(center, budget);
+    const toolId = segments.find((s) => s.kind === "tool")!.id;
+    const toolBefore = before.get(toolId) ?? 0;
+    const editorBefore = before.get(DEFAULT_EDITOR_SEGMENT_ID) ?? 0;
+
+    const nudged = nudgeAdjacentCenterSegmentPixelSizes(
+      center,
+      toolId,
+      DEFAULT_EDITOR_SEGMENT_ID,
+      500,
+      budget,
+    );
+    expect(nudged).not.toBeNull();
+    expect(nudged!.pxB).toBeGreaterThanOrEqual(MIN_EDITOR_SIZE);
+    expect(nudged!.pxA + nudged!.pxB).toBeCloseTo(toolBefore + editorBefore, 5);
   });
 });
