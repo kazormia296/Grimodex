@@ -1,4 +1,9 @@
-import type { LayoutState, LayoutRegionId, RegionId, ToolWindowPanelId } from "./layoutTypes";
+import type {
+  LayoutState,
+  LayoutRegionId,
+  RegionId,
+  ToolWindowPanelId,
+} from "./layoutTypes";
 
 export type NewSlotDropSurface =
   | "stripe-start"
@@ -62,16 +67,16 @@ export function resolveDropTargetFromElement(
         const region =
           parseRegion(node.dataset.dropRegion) ??
           parseRegion(
-            node.closest("[data-center-content]")?.getAttribute(
-              "data-center-content",
-            )
+            node
+              .closest("[data-center-content]")
+              ?.getAttribute("data-center-content")
               ? "center"
               : null,
           ) ??
           parseRegion(
-            node.closest("[data-region-content]")?.getAttribute(
-              "data-region-content",
-            ),
+            node
+              .closest("[data-region-content]")
+              ?.getAttribute("data-region-content"),
           );
         if (region) return { type: "slot", region, slotId };
       }
@@ -81,9 +86,9 @@ export function resolveDropTargetFromElement(
         const region =
           parseRegion(node.dataset.dropRegion) ??
           parseRegion(
-            node.closest("[data-stripe-region]")?.getAttribute(
-              "data-stripe-region",
-            ),
+            node
+              .closest("[data-stripe-region]")
+              ?.getAttribute("data-stripe-region"),
           );
         if (region) {
           return { type: "slot", region, slotId: segmentSlotId };
@@ -95,7 +100,9 @@ export function resolveDropTargetFromElement(
           parseRegion(node.dataset.dropRegion) ??
           parseRegion(node.getAttribute("data-drop-new-slot"));
         const insertIndex = Number(node.dataset.insertIndex ?? "0");
-        const surface = node.dataset.dropSurface as NewSlotDropSurface | undefined;
+        const surface = node.dataset.dropSurface as
+          | NewSlotDropSurface
+          | undefined;
         if (
           region &&
           (surface === "content-start" || surface === "content-end")
@@ -112,7 +119,9 @@ export function resolveDropTargetFromElement(
       if (node.hasAttribute("data-drop-edge")) {
         const region = parseRegion(node.dataset.dropRegion);
         const insertIndex = Number(node.dataset.insertIndex ?? "0");
-        const surface = node.dataset.dropSurface as NewSlotDropSurface | undefined;
+        const surface = node.dataset.dropSurface as
+          | NewSlotDropSurface
+          | undefined;
         if (
           region &&
           surface &&
@@ -128,19 +137,21 @@ export function resolveDropTargetFromElement(
         const region =
           parseRegion(node.dataset.dropRegion) ??
           parseRegion(
-            node.closest("[data-center-content]")?.getAttribute(
-              "data-center-content",
-            )
+            node
+              .closest("[data-center-content]")
+              ?.getAttribute("data-center-content")
               ? "center"
               : null,
           ) ??
           parseRegion(
-            node.closest("[data-region-content]")?.getAttribute(
-              "data-region-content",
-            ),
+            node
+              .closest("[data-region-content]")
+              ?.getAttribute("data-region-content"),
           );
         const insertIndex = Number(node.dataset.insertIndex ?? "0");
-        const surface = node.dataset.dropSurface as NewSlotDropSurface | undefined;
+        const surface = node.dataset.dropSurface as
+          | NewSlotDropSurface
+          | undefined;
         if (region && surface === "content-between") {
           return { type: "new-slot", region, insertIndex, surface };
         }

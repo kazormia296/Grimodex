@@ -52,9 +52,9 @@ describe("layoutPresets viewport safety", () => {
   it("plan preset hides editor and expands side regions", () => {
     const state = getBuiltinPresetState("builtin:plan", NARROW_VIEWPORT)!;
     expect(state.center.editorOpen).toBe(false);
-    expect(
-      state.regions.left.size + state.regions.right.size,
-    ).toBeGreaterThan(800);
+    expect(state.regions.left.size + state.regions.right.size).toBeGreaterThan(
+      800,
+    );
   });
 
   it("review preset places kouetsu and codex in center", () => {

@@ -102,8 +102,17 @@ jobs:
     name: Rust (check / clippy / test)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: ランナーのディスク容量を確保
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
+          df -h /
 
       - name: システム依存ライブラリのインストール
         run: |

@@ -295,7 +295,7 @@ export async function createProjectSnapshot(params: {
   const auxInserts: (typeof projectSnapshotAux.$inferInsert)[] = [];
   for (const scope of AUX_SCOPES) {
     const table = AUX_TABLE[scope];
-    let rows: RawRow[] = [];
+    let rows: RawRow[];
     try {
       rows = await rawAll(`SELECT * FROM "${table}"`);
     } catch {

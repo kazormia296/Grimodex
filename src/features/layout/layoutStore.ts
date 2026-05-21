@@ -156,9 +156,7 @@ function insertCenterToolSegment(
     return s.activePanel !== null;
   }).length;
 
-  return openCount > 1
-    ? normalizeCenterSegmentRatios(next, editorOpen)
-    : next;
+  return openCount > 1 ? normalizeCenterSegmentRatios(next, editorOpen) : next;
 }
 
 function movePanelInLayout(
@@ -513,10 +511,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       let next = updateCenter(state.layout, (center) => ({
         ...center,
         editorOpen: open,
-        segments: normalizeCenterSegmentRatios(
-          center.segments,
-          open,
-        ),
+        segments: normalizeCenterSegmentRatios(center.segments, open),
       }));
 
       if (!open) {
@@ -969,9 +964,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         set({
           layout: validated,
           activePresetId:
-            v2Persisted.activePresetId ??
-            settings.activeLayoutPresetId ??
-            null,
+            v2Persisted.activePresetId ?? settings.activeLayoutPresetId ?? null,
           hiddenStripePanels: new Set(v2Persisted.hiddenStripePanels ?? []),
           initialized: true,
         });
