@@ -288,9 +288,9 @@ describe("useLayoutStore", () => {
       const halfCap = Math.floor(vp.width * 0.5);
       useLayoutStore.getState().setRegionSize("left", halfCap + 250, vp);
       useLayoutStore.getState().finalizeLayoutResize();
-      expect(useLayoutStore.getState().layout.regions.left.size).toBeGreaterThan(
-        halfCap,
-      );
+      expect(
+        useLayoutStore.getState().layout.regions.left.size,
+      ).toBeGreaterThan(halfCap);
       expect(
         validateLayoutState(useLayoutStore.getState().layout, { viewport: vp })
           .valid,

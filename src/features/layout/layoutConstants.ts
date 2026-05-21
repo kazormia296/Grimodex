@@ -90,16 +90,10 @@ export function getMaxRegionSize(
 
   // filler ではない固定側: 相手 region の最小幅を残してほぼ全幅まで伸ばせる
   if (fillerRegion === "right" && region === "left" && context.leftOpen) {
-    return Math.max(
-      MIN_REGION_SIZE,
-      viewport.width - chrome - MIN_REGION_SIZE,
-    );
+    return Math.max(MIN_REGION_SIZE, viewport.width - chrome - MIN_REGION_SIZE);
   }
   if (fillerRegion === "left" && region === "right" && context.rightOpen) {
-    return Math.max(
-      MIN_REGION_SIZE,
-      viewport.width - chrome - MIN_REGION_SIZE,
-    );
+    return Math.max(MIN_REGION_SIZE, viewport.width - chrome - MIN_REGION_SIZE);
   }
 
   return defaultMax;
