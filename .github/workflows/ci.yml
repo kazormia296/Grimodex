@@ -135,6 +135,42 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: lindera-unidic バージョン解決
+        id: lindera-ver
+        run: |
+          ver=$(grep -A1 '^name = "lindera-unidic"$' src-tauri/Cargo.lock \
+            | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          if [ -z "$ver" ]; then
+            echo "::error::lindera-unidic version not found in src-tauri/Cargo.lock"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: UniDic 辞書キャッシュ復元
+        id: lindera-dict
+        uses: actions/cache/restore@0c907a75c2c80ebcb7f088228285e798b750cf8f # v4
+        with:
+          path: lindera-cache
+          key: lindera-unidic-${{ steps.lindera-ver.outputs.version }}-unidic-mecab-2.1.2
+
+      - name: UniDic 辞書を取得 (キャッシュミス時)
+        if: steps.lindera-dict.outputs.cache-hit != 'true'
+        run: |
+          dir="lindera-cache/${{ steps.lindera-ver.outputs.version }}"
+          mkdir -p "$dir"
+          curl -fSL --retry 5 --retry-all-errors \
+            -o "$dir/unidic-mecab-2.1.2.tar.gz" \
+            https://Lindera.dev/unidic-mecab-2.1.2.tar.gz
+          echo "f4502a563e1da44747f61dcd2b269e35  $dir/unidic-mecab-2.1.2.tar.gz" \
+            | md5sum -c -
+
+      - name: UniDic 辞書キャッシュ保存
+        if: steps.lindera-dict.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0c907a75c2c80ebcb7f088228285e798b750cf8f # v4
+        with:
+          path: lindera-cache
+          key: lindera-unidic-${{ steps.lindera-ver.outputs.version }}-unidic-mecab-2.1.2
+
       - name: cargo check
         working-directory: src-tauri
         run: cargo check --workspace
