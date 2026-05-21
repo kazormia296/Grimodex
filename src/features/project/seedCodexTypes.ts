@@ -4,8 +4,26 @@ import {
   codexDetailDefinitions,
   codexEntries,
   codexDetailValues,
+  codexTags,
+  codexEntryTags,
 } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
+
+/**
+ * Run a SELECT keyed by an id list in chunks so the bound-parameter count
+ * stays well under SQLite's limit (~999 on older builds).
+ */
+async function selectInChunks<T>(
+  ids: string[],
+  query: (chunk: string[]) => Promise<T[]>,
+): Promise<T[]> {
+  const CHUNK_SIZE = 400;
+  const out: T[] = [];
+  for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+    out.push(...(await query(ids.slice(i, i + CHUNK_SIZE))));
+  }
+  return out;
+}
 
 function sortEntriesForInsert<
   T extends { id: string; parentId: string | null },
@@ -78,6 +96,19 @@ export async function seedCodexTypesFromProject(
         sortOrder: sourceType.sortOrder,
         createdAt: new Date().toISOString(),
       });
+    } else {
+      // 同 slug の type が既にある (builtin 等) 場合は、コピー元の見た目
+      // (label / color / icon …) をシード先へ反映する。slug / isBuiltin は据え置く。
+      await db
+        .update(codexTypes)
+        .set({
+          label: sourceType.label,
+          color: sourceType.color,
+          paletteIndex: sourceType.paletteIndex,
+          icon: sourceType.icon,
+          sortOrder: sourceType.sortOrder,
+        })
+        .where(eq(codexTypes.id, existingTargetType.id));
     }
 
     const sourceDefs = await db
@@ -164,10 +195,12 @@ export async function seedCodexTypesFromProject(
   const copiedSourceEntryIds = [...entryIdMap.keys()];
   if (copiedSourceEntryIds.length === 0) return;
 
-  const values = await db
-    .select()
-    .from(codexDetailValues)
-    .where(inArray(codexDetailValues.entryId, copiedSourceEntryIds));
+  const values = await selectInChunks(copiedSourceEntryIds, (chunk) =>
+    db
+      .select()
+      .from(codexDetailValues)
+      .where(inArray(codexDetailValues.entryId, chunk)),
+  );
 
   for (const val of values) {
     const newEntryId = entryIdMap.get(val.entryId);
@@ -179,6 +212,67 @@ export async function seedCodexTypesFromProject(
       entryId: newEntryId,
       definitionId: newDefId,
       value: val.value,
+    });
+  }
+
+  await copyEntryTags(copiedSourceEntryIds, entryIdMap, targetProjectId);
+}
+
+/**
+ * Copy codex tag rows + entry↔tag links for the seeded entries. Tags are
+ * deduplicated against the target Project by name (codex_tags has a unique
+ * index on (project_id, name)).
+ */
+async function copyEntryTags(
+  sourceEntryIds: string[],
+  entryIdMap: Map<string, string>,
+  targetProjectId: string,
+): Promise<void> {
+  const tagLinks = await selectInChunks(sourceEntryIds, (chunk) =>
+    db
+      .select()
+      .from(codexEntryTags)
+      .where(inArray(codexEntryTags.entryId, chunk)),
+  );
+  if (tagLinks.length === 0) return;
+
+  const sourceTagIds = [...new Set(tagLinks.map((l) => l.tagId))];
+  const sourceTags = await selectInChunks(sourceTagIds, (chunk) =>
+    db.select().from(codexTags).where(inArray(codexTags.id, chunk)),
+  );
+
+  const existingTargetTags = await db
+    .select()
+    .from(codexTags)
+    .where(eq(codexTags.projectId, targetProjectId));
+  const targetTagByName = new Map(existingTargetTags.map((t) => [t.name, t]));
+
+  const tagIdMap = new Map<string, string>();
+  for (const tag of sourceTags) {
+    const existing = targetTagByName.get(tag.name);
+    if (existing) {
+      tagIdMap.set(tag.id, existing.id);
+      continue;
+    }
+    const newTagId = crypto.randomUUID();
+    tagIdMap.set(tag.id, newTagId);
+    await db.insert(codexTags).values({
+      id: newTagId,
+      projectId: targetProjectId,
+      name: tag.name,
+      color: tag.color,
+      typeFilter: tag.typeFilter,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  for (const link of tagLinks) {
+    const newEntryId = entryIdMap.get(link.entryId);
+    const newTagId = tagIdMap.get(link.tagId);
+    if (!newEntryId || !newTagId) continue;
+    await db.insert(codexEntryTags).values({
+      entryId: newEntryId,
+      tagId: newTagId,
     });
   }
 }

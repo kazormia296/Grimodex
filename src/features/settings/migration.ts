@@ -63,18 +63,21 @@ export async function migrateAppSettingsToScopedStores(): Promise<void> {
 }
 
 /**
- * Seed project_settings from globalSettings.projectDefaults for a new workspace.
+ * Seed project_settings from globalSettings.projectDefaults.
  * Idempotent: skips keys already present in project_settings.
- * Must be called after the workspace DB is open, only for new workspaces.
+ * Must be called after the workspace DB is open. Used both for new workspaces
+ * (default project) and for projects created later via the Project switcher.
  */
-export async function seedProjectSettingsFromDefaults(): Promise<void> {
+export async function seedProjectSettingsFromDefaults(
+  projectId: string = PROJECT_ID,
+): Promise<void> {
   const { useWorkspaceStore } = await import("@/features/workspace/store");
   const defaults =
     useWorkspaceStore.getState().globalSettings?.projectDefaults ?? {};
   for (const [key, value] of Object.entries(defaults)) {
-    const existing = await api.getProjectSetting(PROJECT_ID, key);
+    const existing = await api.getProjectSetting(projectId, key);
     if (existing === null) {
-      await api.setProjectSetting(PROJECT_ID, key, value);
+      await api.setProjectSetting(projectId, key, value);
     }
   }
 }

@@ -12,6 +12,8 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useCommandCenterStore } from "@/features/commandCenter/store/commandCenterStore";
 import { useResultsPanelStore } from "@/features/commandCenter/store/resultsPanelStore";
 import { useLintStore } from "@/features/lint/lintStore";
+import { useTermDictionaryStore } from "@/features/lint/termDictionaryStore";
+import { useMapStore } from "@/features/map/mapStore";
 
 /**
  * Project 切替時に mount 済みパネルの in-memory 状態を破棄し、
@@ -75,12 +77,35 @@ export async function reloadProjectData(projectId: string): Promise<void> {
   useResultsPanelStore.getState().reset();
   useLintStore.getState().clear();
 
-  await useTreeStore.getState().loadTree(projectId);
+  // 用語辞書は project スコープ (lint_term_dictionary)。isLoaded を倒して
+  // 次回 lint / 設定パネル参照時に新 Project 分を読み直させる。
+  useTermDictionaryStore.setState({
+    rows: [],
+    isLoaded: false,
+    loading: false,
+  });
+
+  // Map の board 選択 / transient UI を破棄。board データ自体は
+  // useMapBoardData が currentProjectId 変化を検知して読み直す。
+  useMapStore.setState({
+    activeBoardId: null,
+    focusedNodeId: null,
+    searchVisible: false,
+    pendingAutoArrange: null,
+    pendingExport: null,
+  });
+
+  // 1 ストアのロード失敗で切替全体を中断しない (他パネルは読み直せる)。
+  // tree は activeSceneId の起点なので失敗しても後続を進める。
+  await useTreeStore
+    .getState()
+    .loadTree(projectId)
+    .catch(() => {});
 
   const activeSceneId = useTreeStore.getState().activeSceneId;
   useChatStore.setState({ activeSceneId });
 
-  await Promise.all([
+  await Promise.allSettled([
     useCodexStore.getState().loadEntries(),
     useSnippetStore.getState().loadEntries(),
     useChatHistoryStore.getState().loadSessions(projectId),

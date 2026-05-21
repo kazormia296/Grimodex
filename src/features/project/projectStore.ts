@@ -56,21 +56,34 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   },
 
   refreshProjects: async () => {
-    const projectRows = await listProjects();
-    set({ projects: projectRows });
+    try {
+      const projectRows = await listProjects();
+      set({ projects: projectRows });
+    } catch {
+      // 一覧の一時的な取得失敗で切替 UI を空にしない。前回の一覧を保持する。
+    }
   },
 
   loadProject: async (projectId) => {
+    const previousId = get().currentProjectId;
+    // reloadProjectData 内の各ストアは getCurrentProjectId() を読むため、
+    // 再ロード前に currentProjectId を確定させておく必要がある。
     set({ currentProjectId: projectId });
-    const p = await getProject(projectId);
-    if (p?.language && typeof document !== "undefined") {
-      document.documentElement.lang = p.language;
+    try {
+      const p = await getProject(projectId);
+      if (p?.language && typeof document !== "undefined") {
+        document.documentElement.lang = p.language;
+      }
+      if (p?.phaseResolutionMode) {
+        usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
+      }
+      const { reloadProjectData } = await import("./reloadProjectData");
+      await reloadProjectData(projectId);
+    } catch (e) {
+      // 切替失敗 — パネルがロードされていない Project を指したままにしない。
+      set({ currentProjectId: previousId });
+      throw e;
     }
-    if (p?.phaseResolutionMode) {
-      usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
-    }
-    const { reloadProjectData } = await import("./reloadProjectData");
-    await reloadProjectData(projectId);
   },
 
   createNewProject: async (input) => {
@@ -82,14 +95,24 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       pov: input.pov || undefined,
       tense: input.tense || undefined,
     });
-    await ensureBuiltinTypes(created.id);
-    if (input.seedFromProjectId && input.seedTypeSlugs?.length) {
-      const { seedCodexTypesFromProject } = await import("./seedCodexTypes");
-      await seedCodexTypesFromProject(
-        input.seedFromProjectId,
-        created.id,
-        input.seedTypeSlugs,
-      );
+    try {
+      await ensureBuiltinTypes(created.id);
+      const { seedProjectSettingsFromDefaults } =
+        await import("@/features/settings/migration");
+      await seedProjectSettingsFromDefaults(created.id);
+      if (input.seedFromProjectId && input.seedTypeSlugs?.length) {
+        const { seedCodexTypesFromProject } = await import("./seedCodexTypes");
+        await seedCodexTypesFromProject(
+          input.seedFromProjectId,
+          created.id,
+          input.seedTypeSlugs,
+        );
+      }
+    } catch (e) {
+      // 初期化途中で失敗したら projects 行ごと巻き戻し、半端な Project を
+      // 残さない。FK ON DELETE CASCADE が部分コピーされた codex 行も除去する。
+      await deleteProjectRow(created.id).catch(() => {});
+      throw e;
     }
     await get().refreshProjects();
     await get().loadProject(created.id);

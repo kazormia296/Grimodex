@@ -16,7 +16,10 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useMapStore } from "./mapStore";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  getCurrentProjectId,
+  useCurrentProjectId,
+} from "@/features/project/projectStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureMapStickyDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
@@ -172,7 +175,7 @@ export function MapCanvas() {
     setStickies,
     aiBranches,
     setAiBranches,
-  } = useMapBoardData(getCurrentProjectId());
+  } = useMapBoardData(useCurrentProjectId());
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");

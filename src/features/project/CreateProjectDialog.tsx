@@ -109,6 +109,8 @@ export function CreateProjectDialog({
         seedTypeSlugs: [...selectedTypeSlugs],
       });
       onClose();
+    } catch {
+      // onCreate 側でトースト表示済み。ダイアログは開いたまま再入力を待つ。
     } finally {
       setIsSaving(false);
     }
@@ -118,8 +120,6 @@ export function CreateProjectDialog({
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void handleSave();
     if (e.key === "Escape") onClose();
   };
-
-  const seedableProjects = projects.filter((p) => p.id !== undefined);
 
   return (
     <AnimatedOverlay
@@ -183,7 +183,7 @@ export function CreateProjectDialog({
           </select>
         </div>
 
-        {seedableProjects.length > 0 && (
+        {projects.length > 0 && (
           <div className="rounded-md border border-border p-3">
             <p className="mb-2 text-xs font-medium text-foreground">
               {t("project.create.seedHeading")}
@@ -204,7 +204,7 @@ export function CreateProjectDialog({
               }}
               className="mb-3 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
             >
-              {seedableProjects.map((project) => (
+              {projects.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.title}
                 </option>

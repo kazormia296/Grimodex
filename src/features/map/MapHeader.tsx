@@ -33,7 +33,7 @@ import {
   PopoverAnchor,
   PopoverContent,
 } from "@/components/ui/popover";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { useCurrentProjectId } from "@/features/project/projectStore";
 
 const ARRANGE_ITEMS: { type: AutoArrangeType; label: string }[] = [
   { type: "reading-order", label: "Grid: 読み順" },
@@ -85,6 +85,7 @@ export function MapHeader() {
   const setPendingExport = useMapStore((s) => s.setPendingExport);
   const activeBoardId = useMapStore((s) => s.activeBoardId);
   const setActiveBoardId = useMapStore((s) => s.setActiveBoardId);
+  const projectId = useCurrentProjectId();
 
   const [boards, setBoards] = useState<MapBoard[]>([]);
   const activeBoard = boards.find((b) => b.id === activeBoardId);
@@ -98,10 +99,10 @@ export function MapHeader() {
   const suppressTriggerRefocusRef = useRef(false);
 
   const reloadBoards = useCallback(async () => {
-    const all = await listBoards(getCurrentProjectId());
+    const all = await listBoards(projectId);
     setBoards(all);
     return all;
-  }, []);
+  }, [projectId]);
 
   useEffect(() => {
     reloadBoards().catch(console.error);
@@ -114,7 +115,7 @@ export function MapHeader() {
       await renameBoard(editingBoard.id, trimmed);
       await reloadBoards();
     } else {
-      const newBoard = await createBoard(getCurrentProjectId(), trimmed);
+      const newBoard = await createBoard(projectId, trimmed);
       const all = await reloadBoards();
       if (all.length === 1 || !activeBoardId) {
         setActiveBoardId(newBoard.id);
@@ -124,7 +125,7 @@ export function MapHeader() {
   }
 
   async function handleBoardDuplicate(id: string) {
-    const newBoard = await duplicateBoard(id, getCurrentProjectId());
+    const newBoard = await duplicateBoard(id, projectId);
     await reloadBoards();
     setActiveBoardId(newBoard.id);
   }

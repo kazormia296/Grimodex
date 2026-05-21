@@ -6,8 +6,10 @@ import {
   codexEntries,
   codexDetailDefinitions,
   codexDetailValues,
+  codexTags,
+  codexEntryTags,
 } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { listCodexEntries } from "@/features/codex/api";
 import { seedCodexTypesFromProject } from "./seedCodexTypes";
 import { PROJECT_ID } from "./constants";
@@ -156,5 +158,67 @@ describe("seedCodexTypesFromProject", () => {
 
     const factionEntries = await listCodexEntries(TARGET, "faction");
     expect(factionEntries).toHaveLength(0);
+  });
+
+  it("copies codex tags and entry-tag links for seeded entries", async () => {
+    await db.insert(codexEntries).values({
+      id: "entry-tagged",
+      projectId: SOURCE,
+      type: "character",
+      name: "Tagged Hero",
+      content: "{}",
+    });
+    await db.insert(codexTags).values({
+      id: "src-tag-pro",
+      projectId: SOURCE,
+      name: "protagonist",
+      color: "#abcabc",
+    });
+    await db.insert(codexEntryTags).values({
+      entryId: "entry-tagged",
+      tagId: "src-tag-pro",
+    });
+
+    await seedCodexTypesFromProject(SOURCE, TARGET, ["character"]);
+
+    const targetTags = await db
+      .select()
+      .from(codexTags)
+      .where(eq(codexTags.projectId, TARGET));
+    const newTag = targetTags.find((t) => t.name === "protagonist");
+    expect(newTag).toBeDefined();
+    expect(newTag!.id).not.toBe("src-tag-pro");
+
+    const tagged = (await listCodexEntries(TARGET, "character")).find(
+      (e) => e.name === "Tagged Hero",
+    );
+    expect(tagged).toBeDefined();
+    const links = await db
+      .select()
+      .from(codexEntryTags)
+      .where(eq(codexEntryTags.entryId, tagged!.id));
+    expect(links).toHaveLength(1);
+    expect(links[0].tagId).toBe(newTag!.id);
+  });
+
+  it("updates an existing target type's appearance from the source", async () => {
+    await db.insert(codexEntries).values({
+      id: "entry-appearance",
+      projectId: SOURCE,
+      type: "character",
+      name: "Appearance Probe",
+      content: "{}",
+    });
+
+    await seedCodexTypesFromProject(SOURCE, TARGET, ["character"]);
+
+    const [targetChar] = await db
+      .select()
+      .from(codexTypes)
+      .where(
+        and(eq(codexTypes.projectId, TARGET), eq(codexTypes.slug, "character")),
+      );
+    expect(targetChar.label).toBe("Characters");
+    expect(targetChar.color).toBe("#111111");
   });
 });
