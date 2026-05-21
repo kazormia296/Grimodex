@@ -2,10 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
-import {
-  getDropTargetRect,
-  type DropTargetRect,
-} from "./layoutDnD";
+import { getDropTargetRect, type DropTargetRect } from "./layoutDnD";
 import { useLayoutStore } from "./layoutStore";
 import { isReducedMotion } from "@/lib/gsap";
 
