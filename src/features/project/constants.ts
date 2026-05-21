@@ -1,2 +1,2 @@
-/** Current project ID. Hardcoded until multi-project-per-workspace is supported. */
+/** Fallback project ID when DB lookup fails during workspace bootstrap. */
 export const PROJECT_ID = "default-project";

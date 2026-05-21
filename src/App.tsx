@@ -4,6 +4,7 @@ import { Toaster, toast } from "sonner";
 import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
 import { LauncherScreen } from "@/features/workspace/LauncherScreen";
 import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
+import { ProjectMenu } from "@/features/project/ProjectMenu";
 import { WorkspaceTrustDialog } from "@/features/workspace/WorkspaceTrustDialog";
 import { EulaConsentDialog } from "@/features/legal/EulaConsentDialog";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -523,6 +524,7 @@ function EditorScreen() {
           onOpenSnapshot={() => setShowSnapshotModal(true)}
           onOpenImport={() => setShowImportDialog(true)}
         />
+        <ProjectMenu />
         <HistoryButtons />
         <button
           type="button"

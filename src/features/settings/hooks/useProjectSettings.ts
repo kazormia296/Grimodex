@@ -1,23 +1,29 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { getProject, updateProject } from "@/features/project/api";
 import type { Project } from "@/features/project/api";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  useCurrentProjectId,
+  useProjectStore,
+} from "@/features/project/projectStore";
 
 export function useProjectSettings() {
   const [project, setProject] = useState<Project | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
+  const currentProjectId = useCurrentProjectId();
+
   useEffect(() => {
     let cancelled = false;
-    getProject(getCurrentProjectId()).then((p) => {
+    setIsLoading(true);
+    getProject(currentProjectId).then((p) => {
       if (!cancelled && p) setProject(p);
-      setIsLoading(false);
+      if (!cancelled) setIsLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [currentProjectId]);
 
   const updateField = useCallback(
     (
@@ -36,14 +42,15 @@ export function useProjectSettings() {
       if (existing) clearTimeout(existing);
 
       const timer = setTimeout(async () => {
-        await updateProject(getCurrentProjectId(), {
+        await updateProject(currentProjectId, {
           [field]: value ?? undefined,
         });
+        void useProjectStore.getState().refreshProjects();
         timers.current.delete(field);
       }, 300);
       timers.current.set(field, timer);
     },
-    [],
+    [currentProjectId],
   );
 
   return { project, isLoading, updateField };

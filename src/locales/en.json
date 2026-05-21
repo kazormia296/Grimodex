@@ -36,6 +36,30 @@
     "importNovelcrafter": "Import from Novelcrafter…",
     "fallback": "Workspace"
   },
+  "project": {
+    "menu": {
+      "fallback": "Project"
+    },
+    "switchFailed": "Failed to switch project",
+    "create": {
+      "action": "New Project…",
+      "heading": "New Project",
+      "titleLabel": "Title",
+      "titlePlaceholder": "Novel title",
+      "genreLabel": "Genre",
+      "languageLabel": "Writing language",
+      "success": "Project created",
+      "failed": "Failed to create project"
+    },
+    "delete": {
+      "action": "Delete project",
+      "confirmTitle": "Delete this project?",
+      "confirmBody": "\"{{title}}\" and all its manuscripts, Codex entries, and chat history will be permanently deleted. This cannot be undone.",
+      "success": "Project deleted",
+      "failed": "Failed to delete project",
+      "lastProject": "Cannot delete the last project in the workspace"
+    }
+  },
   "import": {
     "dialogTitle": "Import from Novelcrafter",
     "dropzone": "Drop a ZIP file here, or click to select",

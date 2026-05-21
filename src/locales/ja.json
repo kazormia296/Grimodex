@@ -36,6 +36,30 @@
     "importNovelcrafter": "Novelcrafterからインポート…",
     "fallback": "ワークスペース"
   },
+  "project": {
+    "menu": {
+      "fallback": "プロジェクト"
+    },
+    "switchFailed": "プロジェクトの切り替えに失敗しました",
+    "create": {
+      "action": "新規プロジェクト…",
+      "heading": "新規プロジェクト",
+      "titleLabel": "タイトル",
+      "titlePlaceholder": "小説のタイトル",
+      "genreLabel": "ジャンル",
+      "languageLabel": "執筆言語",
+      "success": "プロジェクトを作成しました",
+      "failed": "プロジェクトの作成に失敗しました"
+    },
+    "delete": {
+      "action": "プロジェクトを削除",
+      "confirmTitle": "プロジェクトを削除しますか？",
+      "confirmBody": "「{{title}}」とそのすべての原稿・Codex・チャット履歴が完全に削除されます。この操作は取り消せません。",
+      "success": "プロジェクトを削除しました",
+      "failed": "プロジェクトの削除に失敗しました",
+      "lastProject": "ワークスペース内の最後のプロジェクトは削除できません"
+    }
+  },
   "import": {
     "dialogTitle": "Novelcrafterからインポート",
     "dropzone": "ZIPファイルをドロップ、またはクリックして選択",
