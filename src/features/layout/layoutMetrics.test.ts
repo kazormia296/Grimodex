@@ -183,4 +183,21 @@ describe("layoutMetrics", () => {
       `260px ${SPLITTER_GUTTER_PX}px minmax(0, 1fr) ${SPLITTER_GUTTER_PX}px 340px`,
     );
   });
+
+  it("buildCenterStripeGridTemplateColumns keeps auto width for editor toggle when center band hidden", () => {
+    const metrics = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: false,
+      leftOpen: true,
+      rightOpen: true,
+      bottomOpen: false,
+      centerBandVisible: false,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 0,
+    });
+    expect(metrics.centerColumnPx).toBe("0px");
+    expect(buildCenterStripeGridTemplateColumns(metrics)).toContain(" auto ");
+  });
 });

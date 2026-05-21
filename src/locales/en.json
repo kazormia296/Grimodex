@@ -418,6 +418,9 @@
     "regionCenter": "Center",
     "lockLayout": "Lock layout",
     "lockedLayout": "Layout locked",
+    "editorToggle": {
+      "fixedHint": "Fixed in center · cannot move"
+    },
     "panel": {
       "scenes": "Scenes",
       "codex": "Codex",

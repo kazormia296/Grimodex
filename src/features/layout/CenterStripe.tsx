@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { cn } from "@/lib/utils";
 import { CenterStripeBands } from "./CenterStripeBands";
 import { isCenterBandVisible } from "./layoutStateUtils";
 import {
@@ -66,7 +67,12 @@ export function CenterStripe() {
     >
       <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
-      <div className="min-h-0 min-w-0 overflow-hidden">
+      <div
+        className={cn(
+          "min-h-0 overflow-hidden",
+          centerBandVisible ? "min-w-0" : "min-w-max shrink-0",
+        )}
+      >
         <CenterStripeBands segments={segments} />
       </div>
       <div aria-hidden className="min-h-0 min-w-0" />

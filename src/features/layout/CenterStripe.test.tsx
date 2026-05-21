@@ -14,10 +14,10 @@ vi.mock("react-i18next", () => ({
 }));
 
 function layoutWithCenterToolsBeforeEditor() {
-  const segments = buildCenterSegmentsWithTools(["kouetsu", "codex"], {
-    kouetsu: true,
-    codex: true,
-  });
+  const segments = buildCenterSegmentsWithTools(
+    ["kouetsu", "codex"],
+    { kouetsu: true, codex: true },
+  );
   return {
     ...buildDefaultLayoutState({ editorOpen: true }),
     center: {
@@ -121,6 +121,49 @@ describe("CenterStripe", () => {
     expect(grow[1]).toBeCloseTo(0.5, 5);
     expect(
       container.querySelector('[data-stripe-icon="editor"]'),
+    ).not.toBeNull();
+  });
+
+  it("shows editor icon when center band is hidden but a side region stays open", () => {
+    const layout = buildDefaultLayoutState({
+      allInactive: true,
+      editorOpen: false,
+    });
+    const chatSlot = layout.regions.right.slots.find((slot) =>
+      slot.panels.includes("chat"),
+    );
+    if (chatSlot) chatSlot.activePanel = "chat";
+
+    useLayoutStore.setState({
+      layout,
+      hiddenStripePanels: new Set(),
+    });
+
+    const { container } = render(<CenterStripe />);
+    const stripe = container.querySelector<HTMLElement>("[data-center-stripe]");
+    expect(stripe?.style.gridTemplateColumns).toContain("auto");
+    expect(
+      container.querySelector('[data-stripe-icon="editor"]'),
+    ).not.toBeNull();
+    expect(container.querySelector("[data-stripe-collapsed-cluster]")).toBeNull();
+  });
+
+  it("shows editor icon in document flow when every panel is closed", () => {
+    useLayoutStore.setState({
+      layout: buildDefaultLayoutState({
+        allInactive: true,
+        editorOpen: false,
+      }),
+      hiddenStripePanels: new Set(),
+    });
+
+    const { container } = render(<CenterStripe />);
+    expect(
+      container.querySelector('[data-stripe-icon="editor"]'),
+    ).not.toBeNull();
+    expect(container.querySelector("[data-stripe-collapsed-cluster]")).toBeNull();
+    expect(
+      container.querySelector('[data-center-stripe-band-kind="editor"]'),
     ).not.toBeNull();
   });
 });

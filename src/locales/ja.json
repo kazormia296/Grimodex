@@ -418,6 +418,9 @@
     "regionCenter": "中央",
     "lockLayout": "レイアウトをロック",
     "lockedLayout": "レイアウトロック中",
+    "editorToggle": {
+      "fixedHint": "中央固定・移動不可"
+    },
     "panel": {
       "scenes": "シーン",
       "codex": "Codex",

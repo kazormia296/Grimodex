@@ -125,6 +125,8 @@ function CollapsedCluster({ segments, anchor }: CollapsedClusterProps) {
 
 type StripeItem =
   | { kind: "open"; segment: CenterStripeSegment }
+  /** editor 閉じ時も常設表示（CollapsedCluster に入れると幅 0 で消える） */
+  | { kind: "pinned"; segment: CenterStripeSegment }
   | { kind: "collapsed"; segments: CenterStripeSegment[] };
 
 interface CenterStripeBandsProps {
@@ -151,6 +153,14 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
 
   const items: StripeItem[] = [];
   for (const segment of segments) {
+    if (segment.kind === "editor") {
+      if (segment.open) {
+        items.push({ kind: "open", segment });
+      } else {
+        items.push({ kind: "pinned", segment });
+      }
+      continue;
+    }
     if (segment.open) {
       items.push({ kind: "open", segment });
       continue;
@@ -162,6 +172,8 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
       items.push({ kind: "collapsed", segments: [segment] });
     }
   }
+
+  const hasOpenBands = items.some((item) => item.kind === "open");
 
   const slotIndexOf = (slotId: string): number => {
     const index = slotIds.indexOf(slotId);
@@ -214,7 +226,10 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
     <div
       data-stripe-root
       data-stripe-region="center"
-      className="relative flex h-full min-h-0 w-full min-w-0 overflow-hidden"
+      className={cn(
+        "relative flex h-full min-h-0 overflow-hidden",
+        hasOpenBands ? "w-full min-w-0" : "w-max min-w-max shrink-0",
+      )}
     >
       {showDropZones && segments.length > 0 && (
         <div
@@ -238,6 +253,24 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
               segments={item.segments}
               anchor={itemIdx === 0 ? "start" : "end"}
             />
+          );
+        }
+
+        if (item.kind === "pinned") {
+          const segment = item.segment;
+          return (
+            <Fragment key={segment.key}>
+              {itemIdx > 0 && (
+                <div className="relative mx-0.5 flex h-full shrink-0 items-center">
+                  <div
+                    data-stripe-divider
+                    aria-hidden
+                    className="h-5 w-px shrink-0 rounded-full bg-muted-foreground/50"
+                  />
+                </div>
+              )}
+              <CenterStripeBand segment={segment} flexGrow={0} />
+            </Fragment>
           );
         }
 

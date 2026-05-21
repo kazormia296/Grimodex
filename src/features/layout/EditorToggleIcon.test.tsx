@@ -37,4 +37,12 @@ describe("EditorToggleIcon", () => {
     await userEvent.setup().click(screen.getByRole("button"));
     expect(useLayoutStore.getState().layout.center.editorOpen).toBe(true);
   });
+
+  it("marks the icon as a fixed non-draggable control", () => {
+    render(<EditorToggleIcon />);
+    const button = screen.getByRole("button");
+    expect(button.dataset.stripeIconKind).toBe("fixed");
+    expect(button.className).toContain("ring-inset");
+    expect(button.className).toContain("cursor-default");
+  });
 });

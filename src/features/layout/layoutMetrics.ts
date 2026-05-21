@@ -135,10 +135,13 @@ export function buildCenterStripeGridTemplateColumns(
     metrics.fillerRegion === "right"
       ? "minmax(0, 1fr)"
       : `${metrics.rightContentPx}px`;
+  const centerStripeColumn =
+    metrics.centerColumnPx === "0px" ? "auto" : metrics.centerColumnPx;
+
   return [
     leftContentColumn,
     `${metrics.leftSplitterPx}px`,
-    metrics.centerColumnPx,
+    centerStripeColumn,
     `${metrics.rightSplitterPx}px`,
     rightContentColumn,
   ].join(" ");
