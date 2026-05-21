@@ -511,10 +511,12 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       const wasOpen = state.layout.center.editorOpen;
       if (wasOpen === open) return state;
 
+      // toggle で sizeRatio を再正規化すると hide→show が非可逆になり、
+      // editor の幅が復元されない。比率は描画側 (normalizeFlexGrow 等) が
+      // 都度正規化するため、ここでは editorOpen フラグのみを変更する。
       let next = updateCenter(state.layout, (center) => ({
         ...center,
         editorOpen: open,
-        segments: normalizeCenterSegmentRatios(center.segments, open),
       }));
 
       if (!open) {

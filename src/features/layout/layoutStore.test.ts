@@ -99,6 +99,36 @@ describe("useLayoutStore", () => {
     });
   });
 
+  describe("setEditorOpen", () => {
+    it("preserves center segment ratios across hide and show", () => {
+      // editor + 1 center tool（editor を広め 0.7 / tool 0.3 に設定）
+      useLayoutStore.getState().movePanelToNewSlot("scenes", "center", 1);
+      useLayoutStore.setState((s) => ({
+        layout: {
+          ...s.layout,
+          center: {
+            ...s.layout.center,
+            segments: s.layout.center.segments.map((seg) =>
+              seg.kind === "editor"
+                ? { ...seg, sizeRatio: 0.7 }
+                : { ...seg, sizeRatio: 0.3 },
+            ),
+          },
+        },
+      }));
+
+      useLayoutStore.getState().setEditorOpen(false);
+      useLayoutStore.getState().setEditorOpen(true);
+
+      const segments = useLayoutStore.getState().layout.center.segments;
+      const editor = segments.find((s) => s.kind === "editor");
+      const tool = segments.find((s) => s.kind === "tool");
+      expect(editor?.sizeRatio).toBeCloseTo(0.7, 5);
+      expect(tool?.sizeRatio).toBeCloseTo(0.3, 5);
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
+  });
+
   describe("movePanelToRegion", () => {
     it("moves panel and activates in target region", () => {
       useLayoutStore.getState().movePanelToRegion("scenes", "right");
