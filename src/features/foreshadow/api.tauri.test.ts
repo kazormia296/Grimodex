@@ -15,6 +15,7 @@ vi.mock("@/features/chat/chatApi", () => ({
 import {
   createForeshadow,
   listForeshadows,
+  listForeshadowsWithLabels,
   listSetups,
   proposePastSetups,
   updateForeshadow,
@@ -111,6 +112,46 @@ describe("foreshadow api tauri mapping", () => {
     expect(setups[0].foreshadowId).toBe("f1");
     expect(setups[0].sceneId).toBe("scene-1");
     expect(setups[0].isOrphan).toBe(true);
+  });
+
+  it("loads foreshadows with labels in a single tauri command", async () => {
+    mockInvoke.mockResolvedValue({
+      foreshadows: [
+        {
+          id: "f1",
+          project_id: "p1",
+          title: "伏線A",
+          intent: null,
+          notes: null,
+          payoff_scene_id: null,
+          payoff_from_pos: null,
+          payoff_to_pos: null,
+          payoff_confirmed: 0,
+          abandoned: 0,
+          load_bearing: null,
+          created_at: 1714000000000,
+          updated_at: 1714000001000,
+        },
+      ],
+      setups: [
+        {
+          foreshadow_id: "f1",
+          is_orphan: 0,
+          strength: null,
+          ai_strength: null,
+          ai_reasoning: null,
+        },
+      ],
+    });
+
+    const items = await listForeshadowsWithLabels("p1");
+
+    expect(mockInvoke).toHaveBeenCalledWith("foreshadow_list_with_labels", {
+      projectId: "p1",
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].setupCount).toBe(1);
+    expect(items[0].label).toBe("seeded");
   });
 
   it("filters invalid candidates from tauri propose response", async () => {

@@ -182,6 +182,81 @@ export async function listForeshadows(
     .where(eq(foreshadows.projectId, projectId)) as Promise<ForeshadowRow[]>;
 }
 
+type SetupLabelInput = Pick<
+  ForeshadowSetupRow,
+  "foreshadowId" | "isOrphan" | "strength" | "aiStrength" | "aiReasoning"
+>;
+
+export function buildForeshadowsWithLabels(
+  rows: ForeshadowRow[],
+  setups: SetupLabelInput[],
+): ForeshadowWithLabel[] {
+  if (rows.length === 0) return [];
+
+  const countMap = new Map<string, number>();
+  const weakMap = new Map<string, boolean>();
+
+  for (const s of setups) {
+    if (s.isOrphan) continue;
+    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
+    const evaluation = safeParseAiEvaluation(s.aiReasoning);
+    const effectiveStrength =
+      s.strength ?? evaluation?.careful?.strength ?? s.aiStrength;
+    if (effectiveStrength === "subtle") {
+      weakMap.set(s.foreshadowId, true);
+    }
+  }
+
+  return rows.map((r) => {
+    const setupCount = countMap.get(r.id) ?? 0;
+    const anyWeak = weakMap.get(r.id) ?? false;
+    return { ...r, setupCount, label: deriveLabel(r, setupCount, anyWeak) };
+  });
+}
+
+function normalizeSetupLabelInput(raw: unknown): SetupLabelInput {
+  const row = normalizeSetupRow(raw);
+  return {
+    foreshadowId: row.foreshadowId,
+    isOrphan: row.isOrphan,
+    strength: row.strength,
+    aiStrength: row.aiStrength,
+    aiReasoning: row.aiReasoning,
+  };
+}
+
+/** Load foreshadow rows with derived labels. Uses a single IPC in Tauri mode. */
+export async function listForeshadowsWithLabels(
+  projectId: string,
+): Promise<ForeshadowWithLabel[]> {
+  if (isTauriRuntime()) {
+    const res = await invoke<{
+      foreshadows: unknown[];
+      setups: unknown[];
+    }>("foreshadow_list_with_labels", { projectId });
+    const rows = (res.foreshadows ?? []).map(normalizeForeshadowRow);
+    const setups = (res.setups ?? []).map(normalizeSetupLabelInput);
+    return buildForeshadowsWithLabels(rows, setups);
+  }
+
+  const rows = await listForeshadows(projectId);
+  if (rows.length === 0) return [];
+
+  const ids = rows.map((r) => r.id);
+  const setups = await db
+    .select({
+      foreshadowId: foreshadowSetups.foreshadowId,
+      isOrphan: foreshadowSetups.isOrphan,
+      strength: foreshadowSetups.strength,
+      aiStrength: foreshadowSetups.aiStrength,
+      aiReasoning: foreshadowSetups.aiReasoning,
+    })
+    .from(foreshadowSetups)
+    .where(inArray(foreshadowSetups.foreshadowId, ids));
+
+  return buildForeshadowsWithLabels(rows, setups);
+}
+
 export interface SceneForeshadowInfo {
   setupForeshadowIds: string[];
   payoffForeshadowIds: string[];

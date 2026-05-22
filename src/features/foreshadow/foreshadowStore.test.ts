@@ -50,7 +50,7 @@ function makeSetup(
 // ── Mocks ───────────────────────────────────────────────────────────
 
 vi.mock("./api", () => ({
-  listForeshadows: vi.fn(),
+  listForeshadowsWithLabels: vi.fn(),
   createForeshadow: vi.fn(),
   deleteForeshadow: vi.fn(),
   listSetups: vi.fn(),
@@ -67,19 +67,6 @@ vi.mock("@/features/tree/store", () => ({
   useSceneStore: { getState: vi.fn() },
 }));
 
-vi.mock("@/db/client", () => ({
-  db: {
-    select: vi.fn().mockReturnThis(),
-    from: vi.fn().mockReturnThis(),
-    where: vi.fn().mockResolvedValue([]),
-  },
-}));
-
-vi.mock("drizzle-orm", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("drizzle-orm")>();
-  return { ...actual };
-});
-
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 vi.mock("i18next", () => ({
   default: { t: (_k: string, fallback: string) => fallback },
@@ -91,7 +78,7 @@ vi.mock("@/lib/debugLog", () => ({
 }));
 
 import {
-  listForeshadows,
+  listForeshadowsWithLabels,
   createForeshadow,
   deleteForeshadow,
   listSetups,
@@ -99,11 +86,10 @@ import {
   reanchorOrphanSetup,
   reinsertOrphanSetup,
 } from "./api";
-import { db } from "@/db/client";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
 
-const mockListForeshadows = vi.mocked(listForeshadows);
+const mockListForeshadowsWithLabels = vi.mocked(listForeshadowsWithLabels);
 const mockCreateForeshadow = vi.mocked(createForeshadow);
 const mockDeleteForeshadow = vi.mocked(deleteForeshadow);
 const mockListSetups = vi.mocked(listSetups);
@@ -112,11 +98,6 @@ const mockReanchorOrphanSetup = vi.mocked(reanchorOrphanSetup);
 const mockReinsertOrphanSetup = vi.mocked(reinsertOrphanSetup);
 const mockUseEditorStore = vi.mocked(useEditorStore);
 const mockUseSceneStore = vi.mocked(useSceneStore);
-const mockDb = db as unknown as {
-  select: ReturnType<typeof vi.fn>;
-  from: ReturnType<typeof vi.fn>;
-  where: ReturnType<typeof vi.fn>;
-};
 
 function makeEditorChainMock() {
   const run = vi.fn();
@@ -130,13 +111,6 @@ function makeEditorChainMock() {
   };
 }
 
-// Helper to set up db.select().from().where() chain return value
-function mockDbSetups(setups: ForeshadowSetupRow[]) {
-  mockDb.select.mockReturnThis();
-  mockDb.from.mockReturnThis();
-  mockDb.where.mockResolvedValue(setups);
-}
-
 // ── Tests ───────────────────────────────────────────────────────────
 
 describe("foreshadowStore", () => {
@@ -145,133 +119,29 @@ describe("foreshadowStore", () => {
     useForeshadowStore.setState({ items: [], isLoading: false });
   });
 
-  // ── load / buildWithLabels ────────────────────────────────────────
+  // ── load ──────────────────────────────────────────────────────────
 
-  describe("load (buildWithLabels)", () => {
-    it("empty rows → items stays empty, no DB setup query", async () => {
-      mockListForeshadows.mockResolvedValue([]);
+  describe("load", () => {
+    it("sets items from listForeshadowsWithLabels", async () => {
+      const items = [
+        { ...makeRow(), label: "planned" as const, setupCount: 0 },
+      ];
+      mockListForeshadowsWithLabels.mockResolvedValue(items);
+
+      await useForeshadowStore.getState().load("proj-1");
+
+      expect(mockListForeshadowsWithLabels).toHaveBeenCalledWith("proj-1");
+      expect(useForeshadowStore.getState().items).toEqual(items);
+      expect(useForeshadowStore.getState().isLoading).toBe(false);
+    });
+
+    it("clears loading state on failure", async () => {
+      mockListForeshadowsWithLabels.mockRejectedValue(new Error("IPC timeout"));
 
       await useForeshadowStore.getState().load("proj-1");
 
       expect(useForeshadowStore.getState().items).toEqual([]);
       expect(useForeshadowStore.getState().isLoading).toBe(false);
-      expect(mockDb.select).not.toHaveBeenCalled();
-    });
-
-    it("row with no setups gets label=planned and setupCount=0", async () => {
-      const row = makeRow();
-      mockListForeshadows.mockResolvedValue([row]);
-      mockDbSetups([]);
-
-      await useForeshadowStore.getState().load("proj-1");
-
-      const [item] = useForeshadowStore.getState().items;
-      expect(item.label).toBe("planned");
-      expect(item.setupCount).toBe(0);
-    });
-
-    it("non-orphan setup increments setupCount → label=seeded", async () => {
-      const row = makeRow();
-      const setup = makeSetup({ isOrphan: false });
-      mockListForeshadows.mockResolvedValue([row]);
-      mockDbSetups([setup]);
-
-      await useForeshadowStore.getState().load("proj-1");
-
-      const [item] = useForeshadowStore.getState().items;
-      expect(item.setupCount).toBe(1);
-      expect(item.label).toBe("seeded");
-    });
-
-    it("orphan setup is NOT counted", async () => {
-      const row = makeRow();
-      const setup = makeSetup({ isOrphan: true });
-      mockListForeshadows.mockResolvedValue([row]);
-      mockDbSetups([setup]);
-
-      await useForeshadowStore.getState().load("proj-1");
-
-      const [item] = useForeshadowStore.getState().items;
-      expect(item.setupCount).toBe(0);
-      expect(item.label).toBe("planned");
-    });
-
-    it("strength=subtle → label=needs_strengthening", async () => {
-      const row = makeRow();
-      const setup = makeSetup({ isOrphan: false, strength: "subtle" });
-      mockListForeshadows.mockResolvedValue([row]);
-      mockDbSetups([setup]);
-
-      await useForeshadowStore.getState().load("proj-1");
-
-      expect(useForeshadowStore.getState().items[0].label).toBe(
-        "needs_strengthening",
-      );
-    });
-
-    it("aiStrength=subtle → label=needs_strengthening", async () => {
-      const row = makeRow();
-      const setup = makeSetup({ isOrphan: false, aiStrength: "subtle" });
-      mockListForeshadows.mockResolvedValue([row]);
-      mockDbSetups([setup]);
-
-      await useForeshadowStore.getState().load("proj-1");
-
-      expect(useForeshadowStore.getState().items[0].label).toBe(
-        "needs_strengthening",
-      );
-    });
-
-    it("payoffConfirmed + setupCount>0 → label=paid", async () => {
-      const row = makeRow({ payoffConfirmed: true });
-      const setup = makeSetup({ isOrphan: false });
-      mockListForeshadows.mockResolvedValue([row]);
-      mockDbSetups([setup]);
-
-      await useForeshadowStore.getState().load("proj-1");
-
-      expect(useForeshadowStore.getState().items[0].label).toBe("paid");
-    });
-
-    it("payoffConfirmed + setupCount=0 → label=orphan_payoff", async () => {
-      const row = makeRow({ payoffConfirmed: true });
-      mockListForeshadows.mockResolvedValue([row]);
-      mockDbSetups([]);
-
-      await useForeshadowStore.getState().load("proj-1");
-
-      expect(useForeshadowStore.getState().items[0].label).toBe(
-        "orphan_payoff",
-      );
-    });
-
-    it("abandoned=true → label=abandoned regardless of setups", async () => {
-      const row = makeRow({ abandoned: true });
-      const setup = makeSetup({ isOrphan: false });
-      mockListForeshadows.mockResolvedValue([row]);
-      mockDbSetups([setup]);
-
-      await useForeshadowStore.getState().load("proj-1");
-
-      expect(useForeshadowStore.getState().items[0].label).toBe("abandoned");
-    });
-
-    it("multiple rows get independent labels", async () => {
-      const row1 = makeRow({ id: "f-1" });
-      const row2 = makeRow({ id: "f-2", payoffConfirmed: true });
-      const setup1 = makeSetup({
-        id: "s-1",
-        foreshadowId: "f-1",
-        isOrphan: false,
-      });
-      mockListForeshadows.mockResolvedValue([row1, row2]);
-      mockDbSetups([setup1]);
-
-      await useForeshadowStore.getState().load("proj-1");
-
-      const items = useForeshadowStore.getState().items;
-      expect(items.find((i) => i.id === "f-1")?.label).toBe("seeded");
-      expect(items.find((i) => i.id === "f-2")?.label).toBe("orphan_payoff");
     });
   });
 

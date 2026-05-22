@@ -400,6 +400,68 @@ pub(crate) fn foreshadow_list(
     })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ForeshadowListWithLabelsResponse {
+    foreshadows: Vec<Value>,
+    setups: Vec<Value>,
+}
+
+/// List foreshadows and their setup rows in a single DB lock acquisition.
+/// Avoids a follow-up `db_execute` IPC that can time out under lock contention.
+#[tauri::command]
+pub(crate) fn foreshadow_list_with_labels(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    project_id: String,
+) -> Result<ForeshadowListWithLabelsResponse, AppError> {
+    with_db(&ws_state, |db| {
+        let foreshadow_rows = db.execute(
+            "SELECT * FROM foreshadows WHERE project_id = ? ORDER BY updated_at DESC",
+            &[Value::String(project_id)],
+            "all",
+        )?;
+
+        let foreshadows: Vec<Value> = foreshadow_rows
+            .into_iter()
+            .map(Value::Object)
+            .collect();
+
+        if foreshadows.is_empty() {
+            return Ok(ForeshadowListWithLabelsResponse {
+                foreshadows,
+                setups: vec![],
+            });
+        }
+
+        let ids: Vec<String> = foreshadows
+            .iter()
+            .filter_map(|v| {
+                v.as_object()
+                    .and_then(|o| o.get("id"))
+                    .and_then(|id| id.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let params: Vec<Value> = ids.into_iter().map(Value::String).collect();
+        let setup_rows = db.execute(
+            &format!(
+                "SELECT foreshadow_id, is_orphan, strength, ai_strength, ai_reasoning \
+                 FROM foreshadow_setups WHERE foreshadow_id IN ({placeholders})"
+            ),
+            &params,
+            "all",
+        )?;
+
+        let setups = setup_rows.into_iter().map(Value::Object).collect();
+
+        Ok(ForeshadowListWithLabelsResponse { foreshadows, setups })
+    })
+}
+
 #[tauri::command]
 pub(crate) fn foreshadow_get(
     ws_state: tauri::State<'_, WorkspaceState>,

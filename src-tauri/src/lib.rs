@@ -152,6 +152,7 @@ pub fn run() {
             commands::foreshadow::foreshadow_update,
             commands::foreshadow::foreshadow_delete,
             commands::foreshadow::foreshadow_list,
+            commands::foreshadow::foreshadow_list_with_labels,
             commands::foreshadow::foreshadow_get,
             commands::foreshadow::foreshadow_link_codex,
             commands::foreshadow::foreshadow_unlink_codex,

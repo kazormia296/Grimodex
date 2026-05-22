@@ -1,12 +1,9 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "i18next";
-import { inArray } from "drizzle-orm";
-import { db } from "@/db/client";
-import { foreshadowSetups } from "@/db/schema";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import {
-  listForeshadows,
+  listForeshadowsWithLabels,
   createForeshadow,
   deleteForeshadow,
   updateForeshadow,
@@ -90,38 +87,6 @@ interface ForeshadowState {
   auditChapter: (chapterId: string) => Promise<void>;
 }
 
-async function buildWithLabels(
-  rows: ForeshadowRow[],
-): Promise<ForeshadowWithLabel[]> {
-  if (rows.length === 0) return [];
-
-  const ids = rows.map((r) => r.id);
-  const setups = await db
-    .select()
-    .from(foreshadowSetups)
-    .where(inArray(foreshadowSetups.foreshadowId, ids));
-
-  const countMap = new Map<string, number>();
-  const weakMap = new Map<string, boolean>();
-
-  for (const s of setups) {
-    if (s.isOrphan) continue;
-    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
-    const evaluation = safeParseAiEvaluation(s.aiReasoning);
-    const effectiveStrength =
-      s.strength ?? evaluation?.careful?.strength ?? s.aiStrength;
-    if (effectiveStrength === "subtle") {
-      weakMap.set(s.foreshadowId, true);
-    }
-  }
-
-  return rows.map((r) => {
-    const setupCount = countMap.get(r.id) ?? 0;
-    const anyWeak = weakMap.get(r.id) ?? false;
-    return { ...r, setupCount, label: deriveLabel(r, setupCount, anyWeak) };
-  });
-}
-
 export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   items: [],
   isLoading: false,
@@ -135,8 +100,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   load: async (projectId) => {
     set({ isLoading: true });
     try {
-      const rows = await listForeshadows(projectId);
-      const items = await buildWithLabels(rows);
+      const items = await listForeshadowsWithLabels(projectId);
       set({ items, isLoading: false });
     } catch (e) {
       set({ isLoading: false });
