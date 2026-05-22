@@ -50,12 +50,17 @@ interface RegionDockProps {
   stripeOrientation: "vertical" | "horizontal";
   contentOrientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
+  /** bottom stripe の左右端に確保するコーナートグル用の余白(px)。 */
+  stripeReserveStartPx?: number;
+  stripeReserveEndPx?: number;
 }
 
 function BottomRegionDock({
   segments,
   stripeOrientation,
   contentOrientation,
+  stripeReserveStartPx = 0,
+  stripeReserveEndPx = 0,
 }: Omit<RegionDockProps, "region">) {
   const regionSize = useLayoutStore((s) => s.layout.regions.bottom.size);
   const hasOpen = useLayoutStore((s) =>
@@ -90,6 +95,8 @@ function BottomRegionDock({
           region="bottom"
           orientation={stripeOrientation}
           segments={segments}
+          reserveStartPx={stripeReserveStartPx}
+          reserveEndPx={stripeReserveEndPx}
         />
       </div>
     </div>
@@ -101,6 +108,8 @@ export const RegionDock = memo(function RegionDock({
   stripeOrientation,
   contentOrientation,
   segments,
+  stripeReserveStartPx = 0,
+  stripeReserveEndPx = 0,
 }: RegionDockProps) {
   const hasPanels = segments.some((s) => s.panels.length > 0);
   if (!hasPanels || region !== "bottom") return null;
@@ -110,6 +119,8 @@ export const RegionDock = memo(function RegionDock({
       stripeOrientation={stripeOrientation}
       contentOrientation={contentOrientation}
       segments={segments}
+      stripeReserveStartPx={stripeReserveStartPx}
+      stripeReserveEndPx={stripeReserveEndPx}
     />
   );
 });

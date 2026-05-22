@@ -44,6 +44,15 @@ export interface CenterState {
   segments: CenterSegment[];
 }
 
+/**
+ * bottom region がボトム左右の角まで広がるか。
+ * true = bottom region が角を取る / false = side stripe が角を取る。
+ */
+export interface BottomCornerOwnership {
+  left: boolean;
+  right: boolean;
+}
+
 export interface LayoutState {
   regions: Record<RegionId, RegionState>;
   center: CenterState;
@@ -52,6 +61,11 @@ export interface LayoutState {
    * region サイズを保持する。再表示で消費し、region の手動リサイズで破棄する。
    */
   collapsedEditorRegionSizes?: { left: number; right: number };
+  /**
+   * ボトム両端の角を bottom region と side stripe のどちらが取るか。
+   * 未指定時は both false（side stripe が角を取る = 従来の挙動）。
+   */
+  bottomCorners?: BottomCornerOwnership;
 }
 
 /** v2 永続化（migrate 用） */

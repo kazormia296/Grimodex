@@ -415,6 +415,10 @@
     },
     "panelToggle": "Toggle panels",
     "panels": "Panels",
+    "bottomCorner": {
+      "giveToBottom": "Extend the bottom region into this corner",
+      "giveToSide": "Return this corner to the side stripe"
+    },
     "regionLeft": "Left",
     "regionRight": "Right",
     "regionBottom": "Bottom",

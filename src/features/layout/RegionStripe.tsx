@@ -194,6 +194,13 @@ interface RegionStripeProps {
   region: LayoutRegionId;
   orientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
+  /**
+   * stripe の先頭側／末尾側に確保する余白(px)。コーナートグルボタンが
+   * その端に被さる場合に、アイコンと重ならないよう空ける。
+   * vertical では top/bottom、horizontal では left/right に対応。
+   */
+  reserveStartPx?: number;
+  reserveEndPx?: number;
 }
 
 type StripeItem =
@@ -204,6 +211,8 @@ export function RegionStripe({
   region,
   orientation,
   segments,
+  reserveStartPx = 0,
+  reserveEndPx = 0,
 }: RegionStripeProps) {
   const slotIds = useLayoutStore(
     useShallow((s) =>
@@ -296,10 +305,24 @@ export function RegionStripe({
   const stripeEdgeHitPx = 16;
   const stripeBetweenHitPx = DND_NEW_SLOT_BETWEEN_HALF_PX * 2;
 
+  // コーナートグル用の予約余白。vertical は top/bottom、horizontal は
+  // left/right に効く。0 のときは inline style を出さず py-0.5/px-0.5 を残す。
+  const reserveStyle =
+    orientation === "vertical"
+      ? {
+          paddingTop: reserveStartPx || undefined,
+          paddingBottom: reserveEndPx || undefined,
+        }
+      : {
+          paddingLeft: reserveStartPx || undefined,
+          paddingRight: reserveEndPx || undefined,
+        };
+
   return (
     <div
       data-stripe-root
       data-stripe-region={region}
+      style={reserveStyle}
       className={cn(
         "relative flex h-full min-h-0 w-full min-w-0 overflow-hidden",
         // D案: stripe/rail も他パネルと同じ「もちもちカード」。境界線は引かず、

@@ -20,6 +20,7 @@ import {
 } from "./layoutConstants";
 import { isMochiLayout } from "./mochiLayout";
 import type {
+  BottomCornerOwnership,
   CenterSegment,
   CenterState,
   CenterToolSegment,
@@ -98,7 +99,16 @@ export function buildDefaultLayoutState(
   return {
     regions,
     center: createDefaultCenterState(editorOpen),
+    bottomCorners: { left: false, right: false },
   };
+}
+
+/**
+ * ボトム角オーナーシップを取得（未指定の永続データは both false 既定）。
+ * true = bottom region が角を取る / false = side stripe。
+ */
+export function getBottomCorners(state: LayoutState): BottomCornerOwnership {
+  return state.bottomCorners ?? { left: false, right: false };
 }
 
 function buildSlotsForRegion(

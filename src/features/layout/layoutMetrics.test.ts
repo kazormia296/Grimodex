@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   bottomDockPx,
   buildCenterStripeGridTemplateColumns,
+  buildLayoutGridTemplateAreas,
   buildLayoutGridTemplateColumns,
   buildLayoutGridTemplateRows,
   computeLayoutGridMetrics,
@@ -256,5 +257,55 @@ describe("layoutMetrics", () => {
     });
     expect(metrics.centerColumnPx).toBe("0px");
     expect(buildCenterStripeGridTemplateColumns(metrics)).toContain(" auto ");
+  });
+
+  describe("buildLayoutGridTemplateAreas", () => {
+    it("keeps both corners with the side stripes by default", () => {
+      const areas = buildLayoutGridTemplateAreas(true, {
+        left: false,
+        right: false,
+      });
+      expect(areas).toContain(
+        '"lstripe . bottom bottom bottom bottom bottom . rstripe"',
+      );
+    });
+
+    it("gives the bottom-left corner to the bottom region", () => {
+      const areas = buildLayoutGridTemplateAreas(true, {
+        left: true,
+        right: false,
+      });
+      expect(areas).toContain(
+        '"bottom bottom bottom bottom bottom bottom bottom . rstripe"',
+      );
+    });
+
+    it("gives the bottom-right corner to the bottom region", () => {
+      const areas = buildLayoutGridTemplateAreas(true, {
+        left: false,
+        right: true,
+      });
+      expect(areas).toContain(
+        '"lstripe . bottom bottom bottom bottom bottom bottom bottom"',
+      );
+    });
+
+    it("gives both corners to the bottom region", () => {
+      const areas = buildLayoutGridTemplateAreas(true, {
+        left: true,
+        right: true,
+      });
+      expect(areas).toContain(
+        '"bottom bottom bottom bottom bottom bottom bottom bottom bottom"',
+      );
+    });
+
+    it("omits the bottom row entirely when there is no bottom region", () => {
+      const areas = buildLayoutGridTemplateAreas(false, {
+        left: true,
+        right: true,
+      });
+      expect(areas).not.toContain("bottom");
+    });
   });
 });

@@ -415,6 +415,10 @@
     },
     "panelToggle": "パネルの表示切替",
     "panels": "パネル",
+    "bottomCorner": {
+      "giveToBottom": "ボトム領域をこの角まで広げる",
+      "giveToSide": "この角をサイドストライプに戻す"
+    },
     "regionLeft": "左",
     "regionRight": "右",
     "regionBottom": "下部",

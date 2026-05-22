@@ -20,6 +20,7 @@ import {
   findPanelLocation,
   generateCenterToolSegmentId,
   generateSlotId,
+  getBottomCorners,
   getCenterContentWidthPx,
   getCenterHorizontalReserve,
   getOpenSlotPixelSizes,
@@ -563,6 +564,8 @@ export interface LayoutStoreState {
   finalizeLayoutResize: () => void;
   /** 現在のビューポート＋もちもちモードで region サイズを再クランプする。 */
   reclampForViewport: () => void;
+  /** ボトム指定側の角を side stripe ↔ bottom region で切り替える。 */
+  toggleBottomCorner: (side: "left" | "right") => void;
 
   setDraggingPanel: (
     panel: ToolWindowPanelId | null,
@@ -1017,6 +1020,17 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     set((state) => ({
       layout: applyValidatedLayout(cloneLayoutState(state.layout)),
     }));
+    scheduleSave(get);
+  },
+
+  toggleBottomCorner: (side) => {
+    if (get().layoutLocked) return;
+    set((state) => {
+      const current = getBottomCorners(state.layout);
+      const next = cloneLayoutState(state.layout);
+      next.bottomCorners = { ...current, [side]: !current[side] };
+      return { layout: next };
+    });
     scheduleSave(get);
   },
 

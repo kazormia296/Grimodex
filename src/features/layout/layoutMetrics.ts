@@ -4,7 +4,7 @@ import {
   STRIPE_SIZE,
   STRIPE_GAP_PX,
 } from "./layoutConstants";
-import type { RegionId } from "./layoutTypes";
+import type { BottomCornerOwnership, RegionId } from "./layoutTypes";
 
 export interface LayoutGridMetrics {
   leftStripePx: number;
@@ -210,6 +210,30 @@ export function buildLayoutGridTemplateRows(
   const rows = [`${STRIPE_SIZE}px`, `${metrics.gapRowPx}px`, "1fr"];
   if (hasBottom) rows.push(`${metrics.bottomCellPx}px`);
   return rows.join(" ");
+}
+
+/**
+ * 9 列グリッドの grid-template-areas。bottom 行の両端セルを角オーナー
+ * シップで切り替える: side 所有なら lstripe/rstripe が bottom 行まで伸び、
+ * bottom 所有ならその角を bottom region が取る。side stripe が bottom 行を
+ * 取らない場合 lstripe/rstripe は上 3 行の矩形になる（grid 的に有効）。
+ */
+export function buildLayoutGridTemplateAreas(
+  hasBottom: boolean,
+  bottomCorners: BottomCornerOwnership,
+): string {
+  const cstripe =
+    '"lstripe . cstripe cstripe cstripe cstripe cstripe . rstripe"';
+  const gapRow = '"lstripe . . . . . . . rstripe"';
+  const main = '"lstripe . lcontent lspl editor rspl rcontent . rstripe"';
+  if (!hasBottom) return `${cstripe} ${gapRow} ${main}`;
+
+  const c1 = bottomCorners.left ? "bottom" : "lstripe";
+  const c2 = bottomCorners.left ? "bottom" : ".";
+  const c8 = bottomCorners.right ? "bottom" : ".";
+  const c9 = bottomCorners.right ? "bottom" : "rstripe";
+  const bottom = `"${c1} ${c2} bottom bottom bottom bottom bottom ${c8} ${c9}"`;
+  return `${cstripe} ${gapRow} ${main} ${bottom}`;
 }
 
 export function sideContentZoneHeight(bottomRowInset: number): string {

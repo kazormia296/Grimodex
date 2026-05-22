@@ -1,14 +1,19 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import type { PanelId } from "./panelIds";
+import {
+  BottomCornerToggle,
+  BOTTOM_CORNER_TOGGLE_CLEARANCE_PX,
+} from "./BottomCornerToggle";
 import { CenterContent } from "./CenterContent";
 import { CenterStripe } from "./CenterStripe";
 import { EditorArea } from "./EditorArea";
-import { isCenterBandVisible } from "./layoutStateUtils";
+import { getBottomCorners, isCenterBandVisible } from "./layoutStateUtils";
 import { RegionDock, SideRegionStripeColumn } from "./RegionDock";
 import { RegionContent } from "./RegionContent";
 import { RegionResizeSplitter } from "./RegionResizeSplitter";
 import { SlotView } from "./SlotView";
 import {
+  buildLayoutGridTemplateAreas,
   buildLayoutGridTemplateColumns,
   buildLayoutGridTemplateRows,
   computeLayoutGridMetrics,
@@ -127,18 +132,13 @@ export const LayoutShell = memo(function LayoutShell({
   }
 
   // 9 列 (stripe/gap/content/splitter/center/splitter/content/gap/stripe) ×
-  // 行 (center stripe / gap 行 / main / 任意 bottom)。`.` セルが D案ギャップ。
-  // side stripe は全行を貫く 1 枚のカードなので gap 行も lstripe/rstripe で埋める。
-  const cstripeRowAreas =
-    '"lstripe . cstripe cstripe cstripe cstripe cstripe . rstripe"';
-  const gapRowAreas = '"lstripe . . . . . . . rstripe"';
-  const mainRowAreas =
-    '"lstripe . lcontent lspl editor rspl rcontent . rstripe"';
-  const bottomRowAreas =
-    '"lstripe . bottom bottom bottom bottom bottom . rstripe"';
-  const gridTemplateAreas = hasBottom
-    ? `${cstripeRowAreas} ${gapRowAreas} ${mainRowAreas} ${bottomRowAreas}`
-    : `${cstripeRowAreas} ${gapRowAreas} ${mainRowAreas}`;
+  // 行 (center stripe / gap 行 / main / 任意 bottom)。bottom 行の両端は
+  // 角オーナーシップで side stripe ↔ bottom region を切り替える。
+  const bottomCorners = getBottomCorners(layout);
+  const gridTemplateAreas = buildLayoutGridTemplateAreas(
+    hasBottom,
+    bottomCorners,
+  );
 
   return (
     <>
@@ -146,7 +146,7 @@ export const LayoutShell = memo(function LayoutShell({
       <LayoutPanelDragGhost />
       <div
         data-layout-shell
-        className="grid h-full w-full overflow-hidden"
+        className="relative grid h-full w-full overflow-hidden"
         style={{
           gridTemplateColumns,
           gridTemplateRows,
@@ -164,7 +164,7 @@ export const LayoutShell = memo(function LayoutShell({
               region="left"
               stripeOrientation="vertical"
               segments={segments.left}
-              bottomRowInset={metrics.bottomRowInset}
+              bottomRowInset={bottomCorners.left ? 0 : metrics.bottomRowInset}
             />
           </div>
         )}
@@ -211,7 +211,7 @@ export const LayoutShell = memo(function LayoutShell({
               region="right"
               stripeOrientation="vertical"
               segments={segments.right}
-              bottomRowInset={metrics.bottomRowInset}
+              bottomRowInset={bottomCorners.right ? 0 : metrics.bottomRowInset}
             />
           </div>
         )}
@@ -236,9 +236,24 @@ export const LayoutShell = memo(function LayoutShell({
               stripeOrientation="horizontal"
               contentOrientation="horizontal"
               segments={segments.bottom}
+              stripeReserveStartPx={
+                hasLeft && bottomCorners.left
+                  ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
+                  : 0
+              }
+              stripeReserveEndPx={
+                hasRight && bottomCorners.right
+                  ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
+                  : 0
+              }
             />
           </div>
         )}
+
+        {/* 角オーナーシップ切替。side region と bottom region の両方が
+            あるときだけ、その角の取り合いが意味を持つ。 */}
+        {hasBottom && hasLeft && <BottomCornerToggle side="left" />}
+        {hasBottom && hasRight && <BottomCornerToggle side="right" />}
       </div>
     </>
   );
