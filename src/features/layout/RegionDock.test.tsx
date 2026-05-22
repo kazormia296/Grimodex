@@ -28,7 +28,6 @@ describe("SideRegionStripeColumn", () => {
         region="left"
         stripeOrientation="vertical"
         segments={leftSegments}
-        bottomRowInset={0}
       />,
     );
     expect(

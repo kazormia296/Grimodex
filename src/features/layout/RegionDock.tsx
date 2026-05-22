@@ -1,6 +1,5 @@
 import { memo } from "react";
 import { STRIPE_SIZE } from "./layoutConstants";
-import { sideContentZoneHeight } from "./layoutMetrics";
 import { RegionStripe } from "./RegionStripe";
 import { RegionContent } from "./RegionContent";
 import { useLayoutStore } from "./layoutStore";
@@ -12,35 +11,32 @@ interface SideRegionStripeColumnProps {
   region: "left" | "right";
   stripeOrientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
-  /** Bottom grid row height (stripe + optional content). */
-  bottomRowInset: number;
+  /** stripe 下端に確保するコーナートグル用の余白(px)。 */
+  reserveEndPx?: number;
 }
 
-/** Side stripe column spanning both grid rows (icons align with upper content zone). */
+/**
+ * Side stripe column — fills its whole grid area. When the side region
+ * owns the bottom corner, lstripe/rstripe spans the bottom row too, so
+ * the stripe extends all the way down into the corner.
+ */
 export const SideRegionStripeColumn = memo(function SideRegionStripeColumn({
   region,
   stripeOrientation,
   segments,
-  bottomRowInset,
+  reserveEndPx = 0,
 }: SideRegionStripeColumnProps) {
-  const contentZoneHeight = sideContentZoneHeight(bottomRowInset);
-
   return (
     <div
       data-region-stripe-column={region}
       className="flex h-full min-h-0 w-full flex-col"
     >
-      <div
-        className="flex min-h-0 shrink-0 flex-col"
-        style={{ height: contentZoneHeight }}
-      >
-        <RegionStripe
-          region={region}
-          orientation={stripeOrientation}
-          segments={segments}
-        />
-      </div>
-      {bottomRowInset > 0 && <div className="min-h-0 flex-1" aria-hidden />}
+      <RegionStripe
+        region={region}
+        orientation={stripeOrientation}
+        segments={segments}
+        reserveEndPx={reserveEndPx}
+      />
     </div>
   );
 });

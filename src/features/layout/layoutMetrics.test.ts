@@ -7,7 +7,6 @@ import {
   buildLayoutGridTemplateRows,
   computeLayoutGridMetrics,
   regionContentPx,
-  sideContentZoneHeight,
   sideDockPx,
   sideLayoutChromePx,
 } from "./layoutMetrics";
@@ -63,7 +62,6 @@ describe("layoutMetrics", () => {
     expect(m.leftDockPx).toBe(STRIPE_SIZE + 260);
     expect(m.rightDockPx).toBe(STRIPE_SIZE + 340);
     expect(m.bottomDockPx).toBe(STRIPE_SIZE + 220 + STRIPE_GAP_PX);
-    expect(m.bottomRowInset).toBe(m.bottomDockPx);
     expect(m.bottomCellPx).toBe(m.bottomDockPx + SPLITTER_GUTTER_PX);
   });
 
@@ -219,11 +217,6 @@ describe("layoutMetrics", () => {
     expect(legacy.bottomCellPx).toBe(STRIPE_SIZE);
   });
 
-  it("sideContentZoneHeight subtracts bottom row inset", () => {
-    expect(sideContentZoneHeight(252)).toBe("calc(100% - 252px)");
-    expect(sideContentZoneHeight(0)).toBe("100%");
-  });
-
   it("buildCenterStripeGridTemplateColumns mirrors the center band columns", () => {
     const metrics = computeLayoutGridMetrics({
       hasLeft: true,
@@ -260,13 +253,13 @@ describe("layoutMetrics", () => {
   });
 
   describe("buildLayoutGridTemplateAreas", () => {
-    it("keeps both corners with the side stripes by default", () => {
+    it("extends both side regions into the bottom row by default", () => {
       const areas = buildLayoutGridTemplateAreas(true, {
         left: false,
         right: false,
       });
       expect(areas).toContain(
-        '"lstripe . bottom bottom bottom bottom bottom . rstripe"',
+        '"lstripe . lcontent lspl bottom rspl rcontent . rstripe"',
       );
     });
 
@@ -276,7 +269,7 @@ describe("layoutMetrics", () => {
         right: false,
       });
       expect(areas).toContain(
-        '"bottom bottom bottom bottom bottom bottom bottom . rstripe"',
+        '"bottom bottom bottom bottom bottom rspl rcontent . rstripe"',
       );
     });
 
@@ -286,7 +279,7 @@ describe("layoutMetrics", () => {
         right: true,
       });
       expect(areas).toContain(
-        '"lstripe . bottom bottom bottom bottom bottom bottom bottom"',
+        '"lstripe . lcontent lspl bottom bottom bottom bottom bottom"',
       );
     });
 

@@ -28,7 +28,6 @@ export interface LayoutGridMetrics {
    */
   fillerRegion: "left" | "right" | null;
   bottomCellPx: number;
-  bottomRowInset: number;
   leftDockPx: number;
   rightDockPx: number;
   bottomDockPx: number;
@@ -138,7 +137,6 @@ export function computeLayoutGridMetrics(
     leftDockPx,
     rightDockPx,
     bottomDockPx: bottomDock,
-    bottomRowInset: bottomDock,
     // bottom row ↔ main 間のギャップ。もちもち時は content の開閉に
     // かかわらず常に確保する（閉じていても stripe が浮いて見えるよう）。
     // 旧レイアウトでは open 時の splitter 線のみ。
@@ -213,10 +211,13 @@ export function buildLayoutGridTemplateRows(
 }
 
 /**
- * 9 列グリッドの grid-template-areas。bottom 行の両端セルを角オーナー
- * シップで切り替える: side 所有なら lstripe/rstripe が bottom 行まで伸び、
- * bottom 所有ならその角を bottom region が取る。side stripe が bottom 行を
- * 取らない場合 lstripe/rstripe は上 3 行の矩形になる（grid 的に有効）。
+ * 9 列グリッドの grid-template-areas。bottom 行の構成を角オーナーシップで
+ * 切り替える:
+ *  - side 所有: その側の side region（stripe / gap / content / splitter）が
+ *    bottom 行まで縦に伸び、bottom region はその分インセットされる。
+ *  - bottom 所有: その角まで bottom region が広がる。
+ * editor 列（中央）は常に bottom region。lcontent/lspl/rcontent/rspl は
+ * side 所有時に main+bottom の 2 行にまたがる矩形になる。
  */
 export function buildLayoutGridTemplateAreas(
   hasBottom: boolean,
@@ -228,16 +229,15 @@ export function buildLayoutGridTemplateAreas(
   const main = '"lstripe . lcontent lspl editor rspl rcontent . rstripe"';
   if (!hasBottom) return `${cstripe} ${gapRow} ${main}`;
 
-  const c1 = bottomCorners.left ? "bottom" : "lstripe";
-  const c2 = bottomCorners.left ? "bottom" : ".";
-  const c8 = bottomCorners.right ? "bottom" : ".";
-  const c9 = bottomCorners.right ? "bottom" : "rstripe";
-  const bottom = `"${c1} ${c2} bottom bottom bottom bottom bottom ${c8} ${c9}"`;
+  // bottom 行の左 4 列 / 右 4 列。side 所有なら side region 各列が降りてくる。
+  const left = bottomCorners.left
+    ? "bottom bottom bottom bottom"
+    : "lstripe . lcontent lspl";
+  const right = bottomCorners.right
+    ? "bottom bottom bottom bottom"
+    : "rspl rcontent . rstripe";
+  const bottom = `"${left} bottom ${right}"`;
   return `${cstripe} ${gapRow} ${main} ${bottom}`;
-}
-
-export function sideContentZoneHeight(bottomRowInset: number): string {
-  return bottomRowInset > 0 ? `calc(100% - ${bottomRowInset}px)` : "100%";
 }
 
 export function sideLayoutChromePx(
