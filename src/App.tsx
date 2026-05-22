@@ -47,6 +47,8 @@ import {
   useProjectStore,
   getCurrentProjectId,
 } from "@/features/project/projectStore";
+import { getProject } from "@/features/project/api";
+import { usePhaseStore } from "@/features/codex/phaseStore";
 import { invoke } from "@/lib/tauri";
 import { SampleTour } from "@/features/onboarding/SampleTour";
 import {
@@ -289,19 +291,28 @@ function EditorScreen() {
   // Project メタデータ（執筆言語・Phase resolution mode）を適用し、
   // screenshot キャプチャ用のステージを初期化する
   useEffect(() => {
-    useProjectStore
-      .getState()
-      .loadProject(getCurrentProjectId())
-      .then(async () => {
-        clearScreenshotStageReady();
-        if (isScreenshotCapture()) {
-          await bootstrapScreenshotWorkspace();
+    void (async () => {
+      clearScreenshotStageReady();
+      if (isScreenshotCapture()) {
+        // 撮影ステージの Workspace は単一のシード済み Project。loadProject() は
+        // reloadProjectData() でタブ・チャット・マップの in-memory 状態を破棄し、
+        // それを bootstrap が復元しきれないため、メタデータだけ直接適用する。
+        const project = await getProject(getCurrentProjectId());
+        if (project?.language) {
+          document.documentElement.lang = project.language;
         }
+        if (project?.phaseResolutionMode) {
+          usePhaseStore
+            .getState()
+            .setResolutionMode(project.phaseResolutionMode);
+        }
+        await bootstrapScreenshotWorkspace();
         applyScreenshotUiState();
-        if (isScreenshotCapture()) {
-          markScreenshotStageReady();
-        }
-      });
+        markScreenshotStageReady();
+        return;
+      }
+      await useProjectStore.getState().loadProject(getCurrentProjectId());
+    })();
   }, []);
 
   // ワークスペース切替時は前ワークスペースの Undo command を実行できないので clear する

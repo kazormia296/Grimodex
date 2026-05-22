@@ -7,6 +7,7 @@ import {
   validateLayoutState,
 } from "./layoutStateUtils";
 import { TOOL_WINDOW_PANEL_IDS } from "./toolWindowDefaults";
+import { getBuiltinPresetHiddenPanels } from "./layoutPresets";
 import type { LayoutState, RegionId, ToolWindowPanelId } from "./layoutTypes";
 
 vi.mock("@/lib/tauri", () => ({
@@ -564,6 +565,39 @@ describe("useLayoutStore", () => {
       expect(
         layout.regions.right.slots.some((s) => s.activePanel === "chat"),
       ).toBe(true);
+    });
+
+    // Regression: the screenshot preset path used to set `layout`/`activePresetId`
+    // but not `hiddenStripePanels`, so preset captures rendered a stripe with
+    // panels that the real preset hides.
+    it("applies the preset's hiddenStripePanels for preset screenshot captures", async () => {
+      const data = new Map<string, string>([
+        ["grimodex:screenshot-mode", "true"],
+        ["grimodex:screenshot-capture", "preset-review-1920x1080"],
+        ["grimodex:screenshot-preset", "builtin:review"],
+      ]);
+      vi.stubGlobal("localStorage", {
+        getItem: (k: string) => data.get(k) ?? null,
+        setItem: (k: string, v: string) => void data.set(k, v),
+        removeItem: (k: string) => void data.delete(k),
+        clear: () => data.clear(),
+        key: () => null,
+        length: 0,
+      });
+      mockInvoke.mockResolvedValue({
+        recentWorkspaces: [],
+        lastActiveWorkspace: null,
+        theme: "system",
+        showLauncherOnStartup: false,
+      });
+
+      await useLayoutStore.getState().initializeLayout();
+
+      const { hiddenStripePanels, activePresetId } = useLayoutStore.getState();
+      expect(activePresetId).toBe("builtin:review");
+      const expected = getBuiltinPresetHiddenPanels("builtin:review");
+      expect(expected.length).toBeGreaterThan(0);
+      expect(hiddenStripePanels).toEqual(new Set(expected));
     });
 
     it("migrates v2 persisted layout to v3 center state", async () => {

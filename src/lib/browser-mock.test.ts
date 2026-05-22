@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createBrowserMock } from "./browser-mock";
 
 describe("createBrowserMock", () => {
@@ -163,6 +163,57 @@ describe("createBrowserMock", () => {
         messages: [{ role: "user", content: "Hello" }],
       });
       expect(result).toContain("AIは未接続です");
+    });
+  });
+
+  describe("schema completeness", () => {
+    // Regression: chat_summaries / chat_summary_messages were missing from
+    // SCHEMA_DDL, so listSummaries() threw "no such table" and the chat panel
+    // surfaced a "メッセージの読み込みに失敗しました" toast during screenshots.
+    it("provides the chat summary tables queried by listSummaries", async () => {
+      await expect(
+        mock.invoke("db_execute", {
+          sql: "select * from chat_summaries where session_id = ?",
+          params: ["chat-scene-1"],
+          method: "all",
+        }),
+      ).resolves.toBeDefined();
+
+      await expect(
+        mock.invoke("db_execute", {
+          sql: "select * from chat_summary_messages where summary_id = ?",
+          params: ["summary-1"],
+          method: "all",
+        }),
+      ).resolves.toBeDefined();
+    });
+  });
+
+  describe("screenshot staging", () => {
+    afterEach(() => {
+      localStorage.removeItem("grimodex:screenshot-mode");
+      localStorage.removeItem("grimodex:ai-settings");
+    });
+
+    // Regression: nothing seeds grimodex:ai-settings in the screenshot path, so
+    // the chat panel rendered "モデル未設定". In staging mode the mock now
+    // returns a default model matching the seeded chat-scene-1 session.
+    it("returns a default AI model in screenshot staging mode", async () => {
+      localStorage.setItem("grimodex:screenshot-mode", "true");
+      const stagingMock = await createBrowserMock();
+      const settings = await stagingMock.invoke<Record<string, unknown>>(
+        "get_ai_settings",
+        {},
+      );
+      expect(settings.model).toBeTruthy();
+    });
+
+    it("leaves the AI model unset outside staging mode", async () => {
+      const settings = await mock.invoke<Record<string, unknown>>(
+        "get_ai_settings",
+        {},
+      );
+      expect(settings.model).toBe("");
     });
   });
 

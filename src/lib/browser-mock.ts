@@ -127,6 +127,21 @@ const SCHEMA_DDL = `
     created_at TEXT NOT NULL,
     PRIMARY KEY (session_id, codex_entry_id, snippet_id)
   );
+  CREATE TABLE IF NOT EXISTS chat_summaries (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    summary TEXT NOT NULL,
+    token_count INTEGER,
+    generation INTEGER NOT NULL DEFAULT 1,
+    source_msg_count INTEGER NOT NULL DEFAULT 0,
+    last_msg_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS chat_summary_messages (
+    summary_id TEXT NOT NULL REFERENCES chat_summaries(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    PRIMARY KEY (summary_id, message_id)
+  );
   CREATE TABLE IF NOT EXISTS authorship_spans (
     id TEXT PRIMARY KEY,
     node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
@@ -458,7 +473,11 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     }
     return {
       provider: "openrouter",
-      model: "",
+      // 撮影ステージでは seedScreenshotWorkspace の chat-scene-1.model と
+      // 揃え、チャットパネルが「モデル未設定」表示にならないようにする。
+      model: isScreenshotStagingActive()
+        ? "openrouter/anthropic/claude-sonnet-4.6"
+        : "",
       ollamaEndpoint: "http://localhost:11434",
       thinkingEnabled: true,
     };

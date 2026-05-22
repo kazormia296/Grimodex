@@ -1076,14 +1076,13 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         return;
       }
 
-      const presetState = getBuiltinPresetState(
-        getScreenshotPresetId(),
-        getViewport(),
-      );
+      const presetId = getScreenshotPresetId();
+      const presetState = getBuiltinPresetState(presetId, getViewport());
       if (presetState) {
         set({
           layout: applyValidatedLayout(cloneLayoutState(presetState)),
-          activePresetId: getScreenshotPresetId(),
+          activePresetId: presetId,
+          hiddenStripePanels: new Set(getBuiltinPresetHiddenPanels(presetId)),
           initialized: true,
         });
         return;

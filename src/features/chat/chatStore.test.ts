@@ -11,6 +11,7 @@ vi.mock("./chatApi", () => ({
   createSession: vi.fn(),
   deleteSession: vi.fn(),
   listMessages: vi.fn(),
+  listSummaries: vi.fn(() => Promise.resolve([])),
   addMessage: vi.fn(),
   updateSessionTitle: vi.fn(),
   generateSessionTitle: vi.fn(() => Promise.resolve(null)),
