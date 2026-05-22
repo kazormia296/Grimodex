@@ -449,7 +449,7 @@ pub(crate) fn foreshadow_list_with_labels(
         let params: Vec<Value> = ids.into_iter().map(Value::String).collect();
         let setup_rows = db.execute(
             &format!(
-                "SELECT foreshadow_id, is_orphan, strength, ai_strength, ai_reasoning \
+                "SELECT foreshadow_id, is_orphan, strength, ai_strength, ai_reasoning, scene_id \
                  FROM foreshadow_setups WHERE foreshadow_id IN ({placeholders})"
             ),
             &params,

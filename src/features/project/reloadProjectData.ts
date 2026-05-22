@@ -7,6 +7,8 @@ import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { useGridStore } from "@/features/grid/gridStore";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
+import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
+import { useSceneBeatPovStore } from "@/features/editor/beat/sceneBeatPovStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useCommandCenterStore } from "@/features/commandCenter/store/commandCenterStore";
@@ -64,6 +66,17 @@ export async function reloadProjectData(projectId: string): Promise<void> {
   useForeshadowStore.setState({
     items: [],
     setupsByForeshadowId: {},
+    sceneInfoBySceneId: {},
+  });
+
+  useSceneCodexPinsStore.setState({
+    pinsByScene: {},
+    bulkLoadedProjectId: null,
+  });
+
+  useSceneBeatPovStore.setState({
+    povIdsByScene: {},
+    bulkLoadedProjectId: null,
   });
 
   useLabelStore.setState({
@@ -113,5 +126,7 @@ export async function reloadProjectData(projectId: string): Promise<void> {
     useLabelStore.getState().load(projectId),
     useGridStore.getState().loadForProject(projectId),
     useTrashBinStore.getState().loadItems(projectId),
+    useSceneCodexPinsStore.getState().loadAllForProject(projectId),
+    useSceneBeatPovStore.getState().loadAllForProject(projectId),
   ]);
 }

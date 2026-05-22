@@ -151,14 +151,14 @@ describe("foreshadow api tauri mapping", () => {
       ],
     });
 
-    const items = await listForeshadowsWithLabels("p1");
+    const result = await listForeshadowsWithLabels("p1");
 
     expect(mockInvoke).toHaveBeenCalledWith("foreshadow_list_with_labels", {
       projectId: "p1",
     });
-    expect(items).toHaveLength(1);
-    expect(items[0].setupCount).toBe(1);
-    expect(items[0].label).toBe("seeded");
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].setupCount).toBe(1);
+    expect(result.items[0].label).toBe("seeded");
   });
 
   it("loads open foreshadows for chat context in one command", async () => {

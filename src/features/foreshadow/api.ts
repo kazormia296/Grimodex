@@ -185,7 +185,41 @@ export async function listForeshadows(
 type SetupLabelInput = Pick<
   ForeshadowSetupRow,
   "foreshadowId" | "isOrphan" | "strength" | "aiStrength" | "aiReasoning"
->;
+> & {
+  sceneId?: string;
+};
+
+/** Grid カード等が per-scene IPC なしで参照する scene → 伏線 ID 索引。 */
+export function buildSceneForeshadowInfoIndex(
+  rows: ForeshadowRow[],
+  setups: Array<{ foreshadowId: string; sceneId?: string }>,
+): Record<string, SceneForeshadowInfo> {
+  const index: Record<string, SceneForeshadowInfo> = {};
+  const ensure = (sceneId: string): SceneForeshadowInfo => {
+    if (!index[sceneId]) {
+      index[sceneId] = { setupForeshadowIds: [], payoffForeshadowIds: [] };
+    }
+    return index[sceneId];
+  };
+
+  for (const setup of setups) {
+    if (!setup.sceneId) continue;
+    const info = ensure(setup.sceneId);
+    if (!info.setupForeshadowIds.includes(setup.foreshadowId)) {
+      info.setupForeshadowIds.push(setup.foreshadowId);
+    }
+  }
+
+  for (const row of rows) {
+    if (!row.payoffSceneId) continue;
+    const info = ensure(row.payoffSceneId);
+    if (!info.payoffForeshadowIds.includes(row.id)) {
+      info.payoffForeshadowIds.push(row.id);
+    }
+  }
+
+  return index;
+}
 
 export function buildForeshadowsWithLabels(
   rows: ForeshadowRow[],
@@ -218,6 +252,7 @@ function normalizeSetupLabelInput(raw: unknown): SetupLabelInput {
   const row = normalizeSetupRow(raw);
   return {
     foreshadowId: row.foreshadowId,
+    sceneId: row.sceneId,
     isOrphan: row.isOrphan,
     strength: row.strength,
     aiStrength: row.aiStrength,
@@ -396,24 +431,31 @@ function computeChapterForeshadowStats(
 }
 
 /** Load foreshadow rows with derived labels. Uses a single IPC in Tauri mode. */
-export async function listForeshadowsWithLabels(
-  projectId: string,
-): Promise<ForeshadowWithLabel[]> {
+export async function listForeshadowsWithLabels(projectId: string): Promise<{
+  items: ForeshadowWithLabel[];
+  sceneInfoBySceneId: Record<string, SceneForeshadowInfo>;
+}> {
   if (isTauriRuntime()) {
     const { rows, setups } = await invokeForeshadowListWithLabels(
       "foreshadow_list_with_labels",
       { projectId },
     );
-    return buildForeshadowsWithLabels(rows, setups);
+    return {
+      items: buildForeshadowsWithLabels(rows, setups),
+      sceneInfoBySceneId: buildSceneForeshadowInfoIndex(rows, setups),
+    };
   }
 
   const rows = await listForeshadows(projectId);
-  if (rows.length === 0) return [];
+  if (rows.length === 0) {
+    return { items: [], sceneInfoBySceneId: {} };
+  }
 
   const ids = rows.map((r) => r.id);
   const setups = await db
     .select({
       foreshadowId: foreshadowSetups.foreshadowId,
+      sceneId: foreshadowSetups.sceneId,
       isOrphan: foreshadowSetups.isOrphan,
       strength: foreshadowSetups.strength,
       aiStrength: foreshadowSetups.aiStrength,
@@ -422,7 +464,10 @@ export async function listForeshadowsWithLabels(
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.foreshadowId, ids));
 
-  return buildForeshadowsWithLabels(rows, setups);
+  return {
+    items: buildForeshadowsWithLabels(rows, setups as SetupLabelInput[]),
+    sceneInfoBySceneId: buildSceneForeshadowInfoIndex(rows, setups),
+  };
 }
 
 export interface SceneForeshadowInfo {

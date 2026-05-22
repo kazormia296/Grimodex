@@ -3,6 +3,7 @@ import { Plus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { CodexPill } from "@/features/codex/components/CodexPill";
 import { PinEntryDialog } from "@/features/codex/components/PinEntryDialog";
 
@@ -21,6 +22,10 @@ export function GridCardChips({ sceneId, editable, compact }: Props) {
 
   const MAX_CHIPS = compact ? 3 : 5;
 
+  const projectId = getCurrentProjectId();
+  const bulkLoadedProjectId = useSceneCodexPinsStore(
+    (s) => s.bulkLoadedProjectId,
+  );
   const loadPinsForScene = useSceneCodexPinsStore((s) => s.loadPinsForScene);
   const entryIds = useSceneCodexPinsStore(
     (s) => s.pinsByScene[sceneId] ?? EMPTY_IDS,
@@ -33,9 +38,10 @@ export function GridCardChips({ sceneId, editable, compact }: Props) {
   const entries = useCodexStore((s) => s.entries);
 
   useEffect(() => {
+    if (bulkLoadedProjectId === projectId) return;
     if (isPinsLoaded) return;
     void loadPinsForScene(sceneId);
-  }, [sceneId, isPinsLoaded, loadPinsForScene]);
+  }, [sceneId, isPinsLoaded, loadPinsForScene, bulkLoadedProjectId, projectId]);
 
   const pinnedIds = useMemo(() => new Set(entryIds), [entryIds]);
 

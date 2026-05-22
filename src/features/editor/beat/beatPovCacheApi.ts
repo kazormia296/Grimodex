@@ -1,7 +1,20 @@
 import { db } from "@/db/client";
-import { sceneBeatPovCache } from "@/db/schema";
+import { sceneBeatPovCache, treeNodes } from "@/db/schema";
 import { and, eq, notInArray } from "drizzle-orm";
 import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
+
+export async function listAllBeatPovForProject(
+  projectId: string,
+): Promise<Array<{ sceneId: string; povCharacterId: string }>> {
+  return db
+    .select({
+      sceneId: sceneBeatPovCache.sceneId,
+      povCharacterId: sceneBeatPovCache.povCharacterId,
+    })
+    .from(sceneBeatPovCache)
+    .innerJoin(treeNodes, eq(sceneBeatPovCache.sceneId, treeNodes.id))
+    .where(eq(treeNodes.projectId, projectId));
+}
 
 export async function listSceneBeatPovOverrides(
   sceneId: string,

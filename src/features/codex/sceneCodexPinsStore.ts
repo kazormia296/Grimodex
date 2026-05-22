@@ -1,19 +1,47 @@
 import { create } from "zustand";
-import { listPinsForScene, addPin, removePin } from "./sceneCodexPinsApi";
+import {
+  listPinsForScene,
+  listAllPinsForProject,
+  addPin,
+  removePin,
+} from "./sceneCodexPinsApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 interface SceneCodexPinsState {
   // Map from sceneId to array of entryIds (sorted by createdAt asc)
   pinsByScene: Record<string, string[]>;
+  /** loadAllForProject 完了済みの projectId。未設定時のみ per-scene フォールバック。 */
+  bulkLoadedProjectId: string | null;
 
   loadPinsForScene: (sceneId: string) => Promise<void>;
+  loadAllForProject: (projectId: string) => Promise<void>;
   addPin: (sceneId: string, entryId: string) => Promise<void>;
   removePin: (sceneId: string, entryId: string) => Promise<void>;
+}
+
+function groupPinsByScene(
+  rows: Array<{ sceneId: string; entryId: string }>,
+): Record<string, string[]> {
+  const grouped: Record<string, string[]> = {};
+  for (const row of rows) {
+    grouped[row.sceneId] ??= [];
+    grouped[row.sceneId].push(row.entryId);
+  }
+  return grouped;
 }
 
 export const useSceneCodexPinsStore = create<SceneCodexPinsState>()(
   (set, get) => ({
     pinsByScene: {},
+    bulkLoadedProjectId: null,
+
+    loadAllForProject: async (projectId) => {
+      const rows = await listAllPinsForProject(projectId);
+      set({
+        pinsByScene: groupPinsByScene(rows),
+        bulkLoadedProjectId: projectId,
+      });
+    },
 
     loadPinsForScene: async (sceneId) => {
       const rows = await listPinsForScene(sceneId);

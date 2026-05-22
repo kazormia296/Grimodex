@@ -116,7 +116,11 @@ function makeEditorChainMock() {
 describe("foreshadowStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useForeshadowStore.setState({ items: [], isLoading: false });
+    useForeshadowStore.setState({
+      items: [],
+      isLoading: false,
+      sceneInfoBySceneId: {},
+    });
   });
 
   // ── load ──────────────────────────────────────────────────────────
@@ -126,7 +130,10 @@ describe("foreshadowStore", () => {
       const items = [
         { ...makeRow(), label: "planned" as const, setupCount: 0 },
       ];
-      mockListForeshadowsWithLabels.mockResolvedValue(items);
+      mockListForeshadowsWithLabels.mockResolvedValue({
+        items,
+        sceneInfoBySceneId: {},
+      });
 
       await useForeshadowStore.getState().load("proj-1");
 

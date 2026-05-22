@@ -16,6 +16,7 @@ import {
   proposePastSetups,
   createForeshadowSetup,
   auditChapter as auditChapterApi,
+  type SceneForeshadowInfo,
 } from "./api";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -42,6 +43,7 @@ import type {
 interface ForeshadowState {
   items: ForeshadowWithLabel[];
   isLoading: boolean;
+  sceneInfoBySceneId: Record<string, SceneForeshadowInfo>;
 
   /** Setup rows keyed by foreshadowId; populated on demand. */
   setupsByForeshadowId: Record<string, ForeshadowSetupRow[]>;
@@ -90,6 +92,7 @@ interface ForeshadowState {
 export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   items: [],
   isLoading: false,
+  sceneInfoBySceneId: {},
   setupsByForeshadowId: {},
   evaluatingSetupIds: new Set<string>(),
   proposeResults: {},
@@ -100,8 +103,9 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   load: async (projectId) => {
     set({ isLoading: true });
     try {
-      const items = await listForeshadowsWithLabels(projectId);
-      set({ items, isLoading: false });
+      const { items, sceneInfoBySceneId } =
+        await listForeshadowsWithLabels(projectId);
+      set({ items, sceneInfoBySceneId, isLoading: false });
     } catch (e) {
       set({ isLoading: false });
       toast.error(

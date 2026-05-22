@@ -6,7 +6,7 @@
  * in sync using insert-then-prune ordering (no transaction API available).
  */
 import { db } from "@/db/client";
-import { sceneCodexPins, sceneCodexMentions } from "@/db/schema";
+import { sceneCodexPins, sceneCodexMentions, treeNodes } from "@/db/schema";
 import { eq, and, asc, sql } from "drizzle-orm";
 
 export interface SceneCodexPin {
@@ -22,6 +22,22 @@ export async function listPinsForScene(
     .select()
     .from(sceneCodexPins)
     .where(eq(sceneCodexPins.sceneId, sceneId))
+    .orderBy(asc(sceneCodexPins.createdAt));
+}
+
+/** Project 内の全 scene pin を 1 クエリで取得（Grid 一括表示用）。 */
+export async function listAllPinsForProject(
+  projectId: string,
+): Promise<SceneCodexPin[]> {
+  return db
+    .select({
+      sceneId: sceneCodexPins.sceneId,
+      entryId: sceneCodexPins.entryId,
+      createdAt: sceneCodexPins.createdAt,
+    })
+    .from(sceneCodexPins)
+    .innerJoin(treeNodes, eq(sceneCodexPins.sceneId, treeNodes.id))
+    .where(eq(treeNodes.projectId, projectId))
     .orderBy(asc(sceneCodexPins.createdAt));
 }
 

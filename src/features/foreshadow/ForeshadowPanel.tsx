@@ -339,6 +339,16 @@ export function ForeshadowPanel() {
       useForeshadowNavStore.getState().consumeSceneFilter();
       setActiveTab("list");
       setSceneFilter(sceneId);
+      const cached = useForeshadowStore.getState().sceneInfoBySceneId[sceneId];
+      if (cached) {
+        setSceneFilterIds(
+          new Set([
+            ...cached.setupForeshadowIds,
+            ...cached.payoffForeshadowIds,
+          ]),
+        );
+        return;
+      }
       void getSceneForeshadowInfo(sceneId).then(
         ({ setupForeshadowIds, payoffForeshadowIds }) => {
           setSceneFilterIds(

@@ -1,5 +1,3 @@
-import { useEffect, useState } from "react";
-import { getSceneForeshadowInfo } from "@/features/foreshadow/api";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
@@ -31,18 +29,12 @@ interface Props {
 }
 
 export function GridCardForeshadowIndicator({ sceneId, compact }: Props) {
-  const [setupIds, setSetupIds] = useState<string[]>([]);
-  const [payoffIds, setPayoffIds] = useState<string[]>([]);
+  const sceneInfo = useForeshadowStore(
+    (s) => s.sceneInfoBySceneId[sceneId],
+  );
+  const setupIds = sceneInfo?.setupForeshadowIds ?? [];
+  const payoffIds = sceneInfo?.payoffForeshadowIds ?? [];
   const storeItems = useForeshadowStore((s) => s.items);
-
-  useEffect(() => {
-    void getSceneForeshadowInfo(sceneId).then(
-      ({ setupForeshadowIds, payoffForeshadowIds }) => {
-        setSetupIds(setupForeshadowIds);
-        setPayoffIds(payoffForeshadowIds);
-      },
-    );
-  }, [sceneId]);
 
   const setupCount = setupIds.length;
   const payoffCount = payoffIds.length;

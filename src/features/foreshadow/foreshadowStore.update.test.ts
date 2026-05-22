@@ -22,7 +22,10 @@ const {
 
   return {
     mockUpdateForeshadow: vi.fn().mockResolvedValue(undefined),
-    mockListForeshadowsWithLabels: vi.fn().mockResolvedValue([]),
+    mockListForeshadowsWithLabels: vi.fn().mockResolvedValue({
+      items: [],
+      sceneInfoBySceneId: {},
+    }),
     mockUnsetPayoffMarks: vi.fn(),
     mockSaveSceneContent: vi.fn().mockResolvedValue(undefined),
     editorRef,

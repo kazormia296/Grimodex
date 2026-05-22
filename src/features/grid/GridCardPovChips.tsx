@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { listSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
+import { useSceneBeatPovStore } from "@/features/editor/beat/sceneBeatPovStore";
 
 const MAX_CHIPS = 3;
 
@@ -36,12 +35,10 @@ interface Props {
 }
 
 export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
-  const [beatPovIds, setBeatPovIds] = useState<string[]>([]);
+  const beatPovIds = useSceneBeatPovStore(
+    (s) => s.povIdsByScene[sceneId] ?? [],
+  );
   const entries = useCodexStore((s) => s.entries);
-
-  useEffect(() => {
-    void listSceneBeatPovOverrides(sceneId).then(setBeatPovIds);
-  }, [sceneId]);
 
   // Build effective POV list: scene POV first, then beat-only overrides
   const effectivePovIds: { id: string; isScene: boolean }[] = [];
