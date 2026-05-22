@@ -51,9 +51,7 @@ pub async fn read_chat_history(
 ) -> Result<CallToolResult, ErrorData> {
     let mut anchors_only = params.anchors_only.unwrap_or(false);
     if params.starred_only.unwrap_or(false) {
-        eprintln!(
-            "read_chat_history: starred_only is deprecated; use anchors_only instead"
-        );
+        eprintln!("read_chat_history: starred_only is deprecated; use anchors_only instead");
         anchors_only = true;
     }
     let limit = params.limit.unwrap_or(100).clamp(1, 200);

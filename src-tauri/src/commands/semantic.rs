@@ -326,48 +326,49 @@ pub(crate) async fn semantic_chunk_context(
     padding: usize,
 ) -> Result<crate::semantic::preview::PreviewContext, AppError> {
     use crate::semantic::preview::{slice_context, PreviewContext};
-    let result = tauri::async_runtime::spawn_blocking(move || -> Result<PreviewContext, AppError> {
-        let ws_state = app.state::<WorkspaceState>();
-        with_db(&ws_state, |db| {
-            let row: Option<(String, String)> = db.with_conn(|conn| {
-                let v = conn
-                    .query_row(
-                        "SELECT content, title FROM tree_nodes \
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<PreviewContext, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            with_db(&ws_state, |db| {
+                let row: Option<(String, String)> = db.with_conn(|conn| {
+                    let v = conn
+                        .query_row(
+                            "SELECT content, title FROM tree_nodes \
                          WHERE id = ? AND node_type = 'scene'",
-                        rusqlite::params![scene_id],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                    )
-                    .ok();
-                Ok(v)
-            })?;
+                            rusqlite::params![scene_id],
+                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                        )
+                        .ok();
+                    Ok(v)
+                })?;
 
-            let (content_json, scene_title) = match row {
-                Some(t) => t,
-                None => {
-                    return Ok(PreviewContext {
-                        before: String::new(),
-                        chunk: String::new(),
-                        after: String::new(),
-                        scene_title: String::new(),
-                    })
-                }
-            };
+                let (content_json, scene_title) = match row {
+                    Some(t) => t,
+                    None => {
+                        return Ok(PreviewContext {
+                            before: String::new(),
+                            chunk: String::new(),
+                            after: String::new(),
+                            scene_title: String::new(),
+                        })
+                    }
+                };
 
-            let doc: serde_json::Value = serde_json::from_str(&content_json)
-                .map_err(|e| anyhow::anyhow!("scene content JSON parse error: {e}"))?;
-            let paragraphs = crate::semantic::chunker::extract_paragraph_texts(&doc);
-            let plain_text = paragraphs.join("\n");
+                let doc: serde_json::Value = serde_json::from_str(&content_json)
+                    .map_err(|e| anyhow::anyhow!("scene content JSON parse error: {e}"))?;
+                let paragraphs = crate::semantic::chunker::extract_paragraph_texts(&doc);
+                let plain_text = paragraphs.join("\n");
 
-            Ok(slice_context(
-                &plain_text,
-                char_start,
-                char_end,
-                padding,
-                scene_title,
-            ))
+                Ok(slice_context(
+                    &plain_text,
+                    char_start,
+                    char_end,
+                    padding,
+                    scene_title,
+                ))
+            })
         })
-    })
-    .await
-    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
     result
 }

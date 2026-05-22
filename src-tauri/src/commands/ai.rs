@@ -251,6 +251,7 @@ pub(crate) async fn send_inline_ai_stream(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_agent_message(
     ai_path: tauri::State<'_, AiSettingsPath>,
     messages: Vec<ai::AgentMessage>,

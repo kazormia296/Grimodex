@@ -421,10 +421,7 @@ pub(crate) fn foreshadow_list_with_labels(
             "all",
         )?;
 
-        let foreshadows: Vec<Value> = foreshadow_rows
-            .into_iter()
-            .map(Value::Object)
-            .collect();
+        let foreshadows: Vec<Value> = foreshadow_rows.into_iter().map(Value::Object).collect();
 
         if foreshadows.is_empty() {
             return Ok(ForeshadowListWithLabelsResponse {
@@ -458,7 +455,10 @@ pub(crate) fn foreshadow_list_with_labels(
 
         let setups = setup_rows.into_iter().map(Value::Object).collect();
 
-        Ok(ForeshadowListWithLabelsResponse { foreshadows, setups })
+        Ok(ForeshadowListWithLabelsResponse {
+            foreshadows,
+            setups,
+        })
     })
 }
 
@@ -476,11 +476,7 @@ fn fetch_setup_label_rows(
         return Ok(vec![]);
     }
     let placeholders = in_placeholders(foreshadow_ids.len());
-    let params: Vec<Value> = foreshadow_ids
-        .iter()
-        .cloned()
-        .map(Value::String)
-        .collect();
+    let params: Vec<Value> = foreshadow_ids.iter().cloned().map(Value::String).collect();
     let setup_rows = db.execute(
         &format!(
             "SELECT foreshadow_id, is_orphan, strength, ai_strength, ai_reasoning \
@@ -506,10 +502,7 @@ pub(crate) fn foreshadow_list_open_for_context(
             &[Value::String(project_id)],
             "all",
         )?;
-        let foreshadows: Vec<Value> = foreshadow_rows
-            .into_iter()
-            .map(Value::Object)
-            .collect();
+        let foreshadows: Vec<Value> = foreshadow_rows.into_iter().map(Value::Object).collect();
         if foreshadows.is_empty() {
             return Ok(ForeshadowListWithLabelsResponse {
                 foreshadows,
@@ -526,7 +519,10 @@ pub(crate) fn foreshadow_list_open_for_context(
             })
             .collect();
         let setups = fetch_setup_label_rows(db, &ids)?;
-        Ok(ForeshadowListWithLabelsResponse { foreshadows, setups })
+        Ok(ForeshadowListWithLabelsResponse {
+            foreshadows,
+            setups,
+        })
     })
 }
 
@@ -556,8 +552,7 @@ pub(crate) fn foreshadow_get_scene_info(
         let setup_foreshadow_ids = setup_rows
             .iter()
             .filter_map(|row| {
-                row
-                    .get("foreshadow_id")
+                row.get("foreshadow_id")
                     .and_then(|v| v.as_str())
                     .map(str::to_owned)
             })
@@ -653,8 +648,7 @@ pub(crate) fn foreshadow_list_by_codex_entry(
         let ids: Vec<String> = link_rows
             .iter()
             .filter_map(|row| {
-                row
-                    .get("foreshadow_id")
+                row.get("foreshadow_id")
                     .and_then(|v| v.as_str())
                     .map(str::to_owned)
             })
@@ -666,12 +660,12 @@ pub(crate) fn foreshadow_list_by_codex_entry(
             &params,
             "all",
         )?;
-        let foreshadows: Vec<Value> = foreshadow_rows
-            .into_iter()
-            .map(Value::Object)
-            .collect();
+        let foreshadows: Vec<Value> = foreshadow_rows.into_iter().map(Value::Object).collect();
         let setups = fetch_setup_label_rows(db, &ids)?;
-        Ok(ForeshadowListWithLabelsResponse { foreshadows, setups })
+        Ok(ForeshadowListWithLabelsResponse {
+            foreshadows,
+            setups,
+        })
     })
 }
 
@@ -717,17 +711,14 @@ pub(crate) fn foreshadow_get_chapter_stats(
             "all",
         )?;
         let payoff_foreshadows = db.execute(
-            &format!(
-                "SELECT * FROM foreshadows WHERE payoff_scene_id IN ({scene_placeholders})"
-            ),
+            &format!("SELECT * FROM foreshadows WHERE payoff_scene_id IN ({scene_placeholders})"),
             &scene_params,
             "all",
         )?;
         let mut related_ids: Vec<String> = setups_on_scenes
             .iter()
             .filter_map(|row| {
-                row
-                    .get("foreshadow_id")
+                row.get("foreshadow_id")
                     .and_then(|v| v.as_str())
                     .map(str::to_owned)
             })
