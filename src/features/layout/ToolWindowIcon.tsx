@@ -42,7 +42,7 @@ export function ToolWindowIcon({
   const { t } = useTranslation();
   const Icon = PANEL_ICON_MAP[panelId];
   const togglePanel = useLayoutStore((s) => s.togglePanel);
-  const moveToRegion = useLayoutStore((s) => s.moveToRegion);
+  const movePanelToRegion = useLayoutStore((s) => s.movePanelToRegion);
   const removePanelFromStripe = useLayoutStore((s) => s.removePanelFromStripe);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
@@ -112,7 +112,7 @@ export function ToolWindowIcon({
               <ContextMenuItem
                 key={r}
                 disabled={r === region}
-                onSelect={() => moveToRegion(panelId, r)}
+                onSelect={() => movePanelToRegion(panelId, r)}
               >
                 {t(`layout.stripe.region.${r}`)}
               </ContextMenuItem>

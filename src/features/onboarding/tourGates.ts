@@ -252,7 +252,7 @@ export function useCodexViewGate(dwellMs = 3000): boolean {
 
     const tick = 250;
     const handle = window.setInterval(() => {
-      if (!useLayoutStore.getState().isPanelVisible("codex")) {
+      if (!useLayoutStore.getState().isPanelActive("codex")) {
         dwell = 0;
         return;
       }
@@ -282,7 +282,7 @@ export function usePanelDwellGate(panelId: PanelId, dwellMs = 3000): boolean {
     let dwell = 0;
     const tick = 250;
     const handle = window.setInterval(() => {
-      if (!useLayoutStore.getState().isPanelVisible(panelId)) {
+      if (!useLayoutStore.getState().isPanelActive(panelId)) {
         dwell = 0;
         return;
       }

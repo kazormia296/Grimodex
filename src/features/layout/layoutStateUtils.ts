@@ -174,11 +174,6 @@ export function isCenterContentVisible(state: LayoutState): boolean {
   return getToolSegments(state.center).some((s) => s.activePanel !== null);
 }
 
-/** @deprecated use isCenterContentVisible — 後方互換のエイリアス */
-export function isCenterBandVisible(state: LayoutState): boolean {
-  return isCenterContentVisible(state);
-}
-
 export function getCenterHorizontalReserve(state: LayoutState): number {
   if (!isCenterContentVisible(state)) return 0;
 

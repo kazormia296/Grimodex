@@ -81,11 +81,6 @@ export function getPanelTitle(id: PanelId): string {
   return i18next.t(`layout.panel.${id}`);
 }
 
-/** @deprecated v2 has no dockview titles — kept for call-site compat */
-export function refreshPanelTitles() {
-  /* no-op */
-}
-
 function getViewport(): { width: number; height: number } {
   if (typeof window === "undefined") return { width: 1200, height: 800 };
   return { width: window.innerWidth, height: window.innerHeight };
@@ -522,9 +517,7 @@ export interface LayoutStoreState {
 
   togglePanel: (panel: PanelId) => void;
   showPanel: (panel: PanelId) => void;
-  isPanelVisible: (panel: PanelId) => boolean;
   isPanelActive: (panel: PanelId) => boolean;
-  openPanelAtSlot: (panel: PanelId) => void;
   requestEditorFocus: () => void;
   setEditorOpen: (open: boolean) => void;
 
@@ -534,7 +527,6 @@ export interface LayoutStoreState {
     slotId: string,
   ) => void;
   movePanelToRegion: (panel: PanelId, region: RegionId) => void;
-  moveToRegion: (panel: PanelId, region: RegionId) => void;
   removePanelFromStripe: (panel: PanelId) => void;
   collapseLayoutRegion: (region: LayoutRegionId) => void;
   expandLayoutRegion: (region: RegionId) => void;
@@ -766,16 +758,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     scheduleSave(get);
   },
 
-  isPanelVisible: (panel) => get().isPanelActive(panel),
-
   isPanelActive: (panel) => {
     if (panel === "editor") return get().layout.center.editorOpen;
     const location = findPanelLocation(get().layout, panel);
     return location?.slot.activePanel === panel;
-  },
-
-  openPanelAtSlot: (panel) => {
-    get().showPanel(panel);
   },
 
   requestEditorFocus: () => {
@@ -813,10 +799,6 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       ),
     }));
     scheduleSave(get);
-  },
-
-  moveToRegion: (panel, region) => {
-    get().movePanelToRegion(panel, region);
   },
 
   removePanelFromStripe: (panel) => {

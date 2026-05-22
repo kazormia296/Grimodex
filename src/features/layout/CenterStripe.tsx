@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { CenterStripeBands } from "./CenterStripeBands";
 import { SideDockToggle } from "./SideDockToggle";
 import { CenterStripeDropOverlay } from "./CenterStripeDropOverlay";
-import { isCenterBandVisible } from "./layoutStateUtils";
+import { isCenterContentVisible } from "./layoutStateUtils";
 import {
   buildCenterStripeGridTemplateColumns,
   computeLayoutGridMetrics,
@@ -35,7 +35,7 @@ export function CenterStripe() {
   const hasLeft = regionSegments.left.some((s) => s.panels.length > 0);
   const hasRight = regionSegments.right.some((s) => s.panels.length > 0);
   const hasBottom = regionSegments.bottom.some((s) => s.panels.length > 0);
-  const centerBandVisible = isCenterBandVisible(layout);
+  const centerBandVisible = isCenterContentVisible(layout);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const isDragging = Boolean(draggingPanel && !layoutLocked);

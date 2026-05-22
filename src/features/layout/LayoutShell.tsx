@@ -7,7 +7,7 @@ import {
 import { CenterContent } from "./CenterContent";
 import { CenterStripe } from "./CenterStripe";
 import { EditorArea } from "./EditorArea";
-import { getBottomCorners, isCenterBandVisible } from "./layoutStateUtils";
+import { getBottomCorners, isCenterContentVisible } from "./layoutStateUtils";
 import { RegionDock, SideRegionStripeColumn } from "./RegionDock";
 import { RegionContent } from "./RegionContent";
 import { RegionResizeSplitter } from "./RegionResizeSplitter";
@@ -57,7 +57,7 @@ export const LayoutShell = memo(function LayoutShell({
   const hasRight = segments.right.some((s) => s.panels.length > 0);
   const hasBottom = segments.bottom.some((s) => s.panels.length > 0);
 
-  const centerBandVisible = isCenterBandVisible(layout);
+  const centerBandVisible = isCenterContentVisible(layout);
   const cardLayout = useCardLayout();
 
   // カードレイアウト ON/OFF 切替で chrome 量が変わるため、切替時に保存済みの
