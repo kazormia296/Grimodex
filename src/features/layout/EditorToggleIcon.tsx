@@ -31,7 +31,7 @@ export function EditorToggleIcon() {
       aria-pressed={editorOpen}
       onClick={() => togglePanel("editor")}
       className={cn(
-        "relative z-30 flex h-7 w-7 shrink-0 cursor-default items-center justify-center rounded-md transition-colors",
+        "relative z-30 flex h-7 w-7 shrink-0 cursor-default items-center justify-center rounded-full transition-colors",
         "ring-1 ring-inset transition-transform duration-75 active:scale-[0.94]",
         draggingPanel && !layoutLocked && "pointer-events-none",
         editorOpen
