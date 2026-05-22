@@ -4,6 +4,7 @@ import { renderHook, act } from "@testing-library/react";
 import type { Node } from "@xyflow/react";
 
 import { corkRotation, useMapNodes } from "./useMapNodes";
+import { layoutForAsync } from "../layouts";
 import type { MapNodePositionRecord } from "../types";
 
 // ── Pure exports ────────────────────────────────────────────────────────────
@@ -47,7 +48,7 @@ vi.mock("../layouts", () => ({
 }));
 
 vi.mock("../layouts/forceEngine", () => ({
-  WorkerForceLayoutEngine: vi.fn().mockImplementation(() => ({})),
+  WorkerForceLayoutEngine: class {},
 }));
 
 vi.mock("../mapApi", () => ({
@@ -165,5 +166,72 @@ describe("useMapNodes — 手動キュレーション表示判定", () => {
     const ids = nodes.map((n: Node) => n.id);
     expect(ids).toContain("scene:s1");
     expect(ids).not.toContain("scene:s2");
+  });
+});
+
+// ── theme モード: 再配置無限ループの回帰防止 ───────────────────────────────
+
+describe("useMapNodes — theme モード再配置ループ防止", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("modeTransitionActive のトグルだけでは force layout を再実行しない", async () => {
+    const baseProps: Parameters<typeof useMapNodes>[0] = {
+      boardId: "b1",
+      positions: [],
+      treeNodes: [],
+      codexEntries: [],
+      snippets: [],
+      stickies: [],
+      aiBranches: [],
+      frames: [],
+      show: {
+        scenes: true,
+        codex: true,
+        notes: false,
+        userEdges: true,
+        derivedEdges: false,
+        stickies: false,
+        aiBranch: false,
+        frames: false,
+        snippets: false,
+      },
+      mode: "theme",
+      colorBy: "none" as const,
+      visualTheme: "default",
+      modeTransitionActive: false,
+      setFrames: vi.fn(),
+      setStickies: vi.fn(),
+      setAiBranches: vi.fn(),
+      setPositions: vi.fn(),
+      setNodes: vi.fn(),
+      setForceLayoutRunning: vi.fn(),
+      setForceAlpha: vi.fn(),
+      updateNodeTitle: vi.fn(),
+      updateSynopsis: vi.fn(),
+      setActiveScene: vi.fn(),
+      groupDraggingRef: NOOP_REF,
+      persistingRef: NOOP_REF,
+    };
+
+    const { rerender } = renderHook((props) => useMapNodes(props), {
+      initialProps: baseProps,
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    const layoutCallsAfterInitial = vi.mocked(layoutForAsync).mock.calls.length;
+    expect(layoutCallsAfterInitial).toBeGreaterThan(0);
+
+    // Toggling the presentational transition flag must NOT re-run the layout.
+    rerender({ ...baseProps, modeTransitionActive: true });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(vi.mocked(layoutForAsync).mock.calls.length).toBe(
+      layoutCallsAfterInitial,
+    );
   });
 });

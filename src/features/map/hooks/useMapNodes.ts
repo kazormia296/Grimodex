@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { Node } from "@xyflow/react";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -99,6 +99,13 @@ export function useMapNodes({
   deletingStickyIds,
   onStickyExitComplete,
 }: UseMapNodesInput) {
+  // Read inside buildNodes via a ref so the (async, expensive) layout effect
+  // does NOT list `modeTransitionActive` as a dependency. In theme mode a
+  // rebuild runs the force layout, whose completion toggles this flag — having
+  // it as a dep would re-trigger the rebuild forever (infinite re-layout).
+  const modeTransitionActiveRef = useRef(modeTransitionActive);
+  modeTransitionActiveRef.current = modeTransitionActive;
+
   useEffect(() => {
     if (!boardId) return;
     let cancelled = false;
@@ -211,7 +218,7 @@ export function useMapNodes({
             }))
           : [];
 
-      const transitionClass = modeTransitionActive
+      const transitionClass = modeTransitionActiveRef.current
         ? "with-mode-transition"
         : undefined;
 
@@ -555,7 +562,6 @@ export function useMapNodes({
     colorBy,
     visualTheme,
     frames,
-    modeTransitionActive,
     setFrames,
     setStickies,
     setNodes,
@@ -571,4 +577,26 @@ export function useMapNodes({
     setAiBranches,
     setPositions,
   ]);
+
+  // Apply the mode-transition CSS class directly to already-built nodes when
+  // `modeTransitionActive` toggles. This is intentionally separate from the
+  // buildNodes effect above so a presentational flag change never re-runs the
+  // force layout (see the ref comment near the top of this hook).
+  const classTransitionMountRef = useRef(true);
+  useEffect(() => {
+    if (classTransitionMountRef.current) {
+      classTransitionMountRef.current = false;
+      return;
+    }
+    const cls = modeTransitionActive ? "with-mode-transition" : undefined;
+    setNodes((prev) => {
+      let changed = false;
+      const next = prev.map((n) => {
+        if (n.className === cls) return n;
+        changed = true;
+        return { ...n, className: cls };
+      });
+      return changed ? next : prev;
+    });
+  }, [modeTransitionActive, setNodes]);
 }

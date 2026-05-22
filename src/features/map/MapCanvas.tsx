@@ -240,8 +240,12 @@ export function MapCanvas() {
     const prev = prevForceRunningRef.current;
     prevForceRunningRef.current = forceLayoutRunning;
     if (reducedMotion || mode !== "theme") return;
-    if (prev && !forceLayoutRunning) {
+    if (!prev && forceLayoutRunning) {
+      // Force layout started: open the transition window now so the nodes
+      // rebuilt at sim completion already carry the animation class.
       setModeTransitionActive(true);
+    } else if (prev && !forceLayoutRunning) {
+      // Force layout finished: close the window once the CSS transition ends.
       const timer = setTimeout(
         () => setModeTransitionActive(false),
         TRANSITION_MS,
