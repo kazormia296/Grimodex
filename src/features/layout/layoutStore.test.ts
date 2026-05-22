@@ -744,6 +744,55 @@ describe("layout store property invariants", () => {
     });
   });
 
+  describe("expandLayoutRegion", () => {
+    it("reopens each slot to its first panel after a collapse", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().showPanel("codex");
+      useLayoutStore.getState().collapseLayoutRegion("left");
+      useLayoutStore.getState().expandLayoutRegion("left");
+      const left = useLayoutStore.getState().layout.regions.left.slots;
+      // The region is open again. Each slot with panels reopens to its first
+      // panel — the last-active panel is NOT preserved across a collapse.
+      expect(left.some((slot) => slot.activePanel !== null)).toBe(true);
+      for (const slot of left) {
+        if (slot.panels.length > 0) {
+          expect(slot.activePanel).toBe(slot.panels[0]);
+        } else {
+          expect(slot.activePanel).toBeNull();
+        }
+      }
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
+
+    it("does not clobber a slot that is already open", () => {
+      useLayoutStore.getState().showPanel("codex");
+      const codexSlotId = useLayoutStore
+        .getState()
+        .layout.regions.left.slots.find((s) => s.activePanel === "codex")?.id;
+      useLayoutStore.getState().expandLayoutRegion("left");
+      const codexSlot = useLayoutStore
+        .getState()
+        .layout.regions.left.slots.find((s) => s.id === codexSlotId);
+      expect(codexSlot?.activePanel).toBe("codex");
+    });
+
+    it("reopens the right region too", () => {
+      useLayoutStore.getState().showPanel("chat");
+      useLayoutStore.getState().collapseLayoutRegion("right");
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.regions.right.slots.every((s) => s.activePanel === null),
+      ).toBe(true);
+      useLayoutStore.getState().expandLayoutRegion("right");
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.regions.right.slots.some((s) => s.activePanel !== null),
+      ).toBe(true);
+    });
+  });
+
   describe("removeAllPanelsFromStripeRegion", () => {
     it("hides all panels in a region from the stripe", () => {
       useLayoutStore.getState().showPanel("chat");
