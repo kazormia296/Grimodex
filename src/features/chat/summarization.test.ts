@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { buildHandoffMetaComment, parseHandoffMetaComment } from "./conversationHistory";
+import {
+  buildHandoffMetaComment,
+  parseHandoffMetaComment,
+} from "./conversationHistory";
 import { getMaxSummaryGeneration } from "./summarization";
 import type { ChatSummary } from "./chatTypes";
 

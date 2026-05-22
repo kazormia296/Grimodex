@@ -441,9 +441,7 @@ interface ChatState {
 
   /** Prefix cache rebuilt indicator (one turn or dismiss) */
   cacheInvalidatedReason: "model" | "instructions" | "budget" | null;
-  invalidateContextCache: (
-    reason: "model" | "instructions" | "budget",
-  ) => void;
+  invalidateContextCache: (reason: "model" | "instructions" | "budget") => void;
   dismissCacheInvalidated: () => void;
   /** Session-scoped Codex IDs present at session start (L4 cache marker) */
   sessionStableCodexIds: string[];
@@ -497,9 +495,7 @@ async function maybeRunSummarization(
   l5Budget: number,
   lang: string,
   set: (
-    partial:
-      | Partial<ChatState>
-      | ((state: ChatState) => Partial<ChatState>),
+    partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>),
   ) => void,
 ): Promise<ChatMessage[]> {
   await ensureTokenizer();
@@ -513,9 +509,7 @@ async function maybeRunSummarization(
   const summaryTexts = summaries.map((s) => s.summary);
   const l5Used = computeL5UsedTokens(messages, summaryTexts, l5Budget);
   const maxGen =
-    summaries.length > 0
-      ? Math.max(...summaries.map((s) => s.generation))
-      : 0;
+    summaries.length > 0 ? Math.max(...summaries.map((s) => s.generation)) : 0;
 
   set({
     summaryCount: summaries.length,
@@ -1579,10 +1573,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     const aiSettingsEarly = useAiSettingsStore.getState().settings;
     const chatModelEarly = aiSettingsEarly?.model ?? "";
-    if (
-      get()._lastCachedModel &&
-      get()._lastCachedModel !== chatModelEarly
-    ) {
+    if (get()._lastCachedModel && get()._lastCachedModel !== chatModelEarly) {
       set({ cacheInvalidatedReason: "model" });
     }
     if (!get().sessionAgentToolsSnapshot) {

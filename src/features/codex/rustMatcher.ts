@@ -39,7 +39,9 @@ function hashEntries(entries: CodexMatchTarget[]): string {
 // Public API
 // ---------------------------------------------------------------------------
 
-async function invokeRebuildMatcher(entries: CodexMatchTarget[]): Promise<void> {
+async function invokeRebuildMatcher(
+  entries: CodexMatchTarget[],
+): Promise<void> {
   const hash = hashEntries(entries);
   if (hash === lastEntriesHash) return;
   lastEntriesHash = hash;

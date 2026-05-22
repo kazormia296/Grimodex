@@ -14,7 +14,9 @@ let activeCount = 0;
 function runWithTimeout<T>(item: QueueItem<T>): Promise<void> {
   return new Promise<void>((done) => {
     const timerId = setTimeout(() => {
-      item.reject(new Error(`IPC timeout after ${item.timeoutMs}ms: ${item.cmd}`));
+      item.reject(
+        new Error(`IPC timeout after ${item.timeoutMs}ms: ${item.cmd}`),
+      );
       done();
     }, item.timeoutMs);
 

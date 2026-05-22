@@ -54,17 +54,13 @@ describe("GridCardPovChips", () => {
 
   it("scene POV あり → チップ表示", () => {
     makeState({}, [{ id: "c1", name: "アリス" }]);
-    render(
-      <GridCardPovChips sceneId="s1" scenePovCharacterId="c1" />,
-    );
+    render(<GridCardPovChips sceneId="s1" scenePovCharacterId="c1" />);
     expect(screen.getByText("アリス")).toBeDefined();
   });
 
   it("beat POV のみ → チップ表示", () => {
     makeState({ s1: ["c2"] }, [{ id: "c2", name: "ボブ" }]);
-    render(
-      <GridCardPovChips sceneId="s1" scenePovCharacterId={null} />,
-    );
+    render(<GridCardPovChips sceneId="s1" scenePovCharacterId={null} />);
     expect(screen.getByText("ボブ")).toBeDefined();
   });
 });

@@ -70,7 +70,9 @@ export function estimateSummaryTokenCount(summaryText: string): number {
   return countTokens(summaryText);
 }
 
-export function getPreviousSummaryText(summaries: ChatSummary[]): string | undefined {
+export function getPreviousSummaryText(
+  summaries: ChatSummary[],
+): string | undefined {
   if (summaries.length === 0) return undefined;
   return summaries[summaries.length - 1].summary;
 }

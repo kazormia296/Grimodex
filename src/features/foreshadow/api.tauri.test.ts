@@ -177,9 +177,12 @@ describe("foreshadow api tauri mapping", () => {
 
     const rows = await listOpenForeshadowsForContext("p1");
 
-    expect(mockInvoke).toHaveBeenCalledWith("foreshadow_list_open_for_context", {
-      projectId: "p1",
-    });
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "foreshadow_list_open_for_context",
+      {
+        projectId: "p1",
+      },
+    );
     expect(rows[0].setupCount).toBe(1);
     expect(rows[0].loadBearing).toBe("critical");
   });

@@ -103,10 +103,7 @@ export function computeL5UsedTokens(
   summaries: string[],
   l5Budget: number,
 ): number {
-  const summaryTokens = summaries.reduce(
-    (sum, s) => sum + countTokens(s),
-    0,
-  );
+  const summaryTokens = summaries.reduce((sum, s) => sum + countTokens(s), 0);
   const { tier1, tier2, tier3 } = classifyMessagesForL5(messages, l5Budget);
   const messageTokens = [...tier1, ...tier2, ...tier3].reduce(
     (sum, m) => sum + countTokens(m.content),
@@ -126,7 +123,10 @@ export function shouldSummarize(
   const usageRatio = l5Budget > 0 ? l5UsedTokens / l5Budget : 1;
 
   if (usageRatio > 1) return true;
-  if (turns > PREVENTIVE_TURN_THRESHOLD && usageRatio > PREVENTIVE_BUDGET_RATIO) {
+  if (
+    turns > PREVENTIVE_TURN_THRESHOLD &&
+    usageRatio > PREVENTIVE_BUDGET_RATIO
+  ) {
     return true;
   }
   return false;

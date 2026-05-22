@@ -90,7 +90,9 @@ export function ChatPanel() {
     (s) => s.syncInsertedToEditorMetadata,
   );
   const createLinkedSession = useChatStore((s) => s.createLinkedSession);
-  const dismissCacheInvalidated = useChatStore((s) => s.dismissCacheInvalidated);
+  const dismissCacheInvalidated = useChatStore(
+    (s) => s.dismissCacheInvalidated,
+  );
   const summaryCount = useChatStore((s) => s.summaryCount);
   const maxSummaryGeneration = useChatStore((s) => s.maxSummaryGeneration);
   const cacheInvalidatedReason = useChatStore((s) => s.cacheInvalidatedReason);

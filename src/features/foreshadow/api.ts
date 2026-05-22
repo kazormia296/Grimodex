@@ -803,7 +803,8 @@ export async function updateSetup(
   if (isTauriRuntime()) {
     const tauriPatch: Record<string, unknown> = {};
     if (patch.strength !== undefined) tauriPatch.strength = patch.strength;
-    if (patch.aiStrength !== undefined) tauriPatch.aiStrength = patch.aiStrength;
+    if (patch.aiStrength !== undefined)
+      tauriPatch.aiStrength = patch.aiStrength;
     if (patch.aiReasoning !== undefined) {
       tauriPatch.aiReasoning = patch.aiReasoning;
     }
@@ -1343,7 +1344,9 @@ export async function getChapterForeshadowStats(
   const fRows = (await db
     .select()
     .from(foreshadows)
-    .where(inArray(foreshadows.id, Array.from(relatedFids)))) as ForeshadowRow[];
+    .where(
+      inArray(foreshadows.id, Array.from(relatedFids)),
+    )) as ForeshadowRow[];
 
   const allSetups = await db
     .select({

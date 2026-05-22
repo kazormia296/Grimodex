@@ -11,13 +11,17 @@ describe("enqueueIpc", () => {
     let maxActive = 0;
 
     const tasks = Array.from({ length: 8 }, (_, i) =>
-      enqueueIpc(`cmd-${i}`, async () => {
-        active++;
-        maxActive = Math.max(maxActive, active);
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        active--;
-        return i;
-      }, 1_000),
+      enqueueIpc(
+        `cmd-${i}`,
+        async () => {
+          active++;
+          maxActive = Math.max(maxActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          active--;
+          return i;
+        },
+        1_000,
+      ),
     );
 
     const results = await Promise.all(tasks);
@@ -40,11 +44,7 @@ describe("enqueueIpc", () => {
       void enqueueIpc("block", () => blocker.gate.then(() => "blocked"), 100);
     }
 
-    const queued = enqueueIpc(
-      "queued",
-      () => Promise.resolve("ok"),
-      100,
-    );
+    const queued = enqueueIpc("queued", () => Promise.resolve("ok"), 100);
 
     await vi.advanceTimersByTimeAsync(99);
     blockers.forEach((b) => b.release());

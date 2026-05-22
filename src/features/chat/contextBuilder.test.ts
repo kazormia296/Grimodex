@@ -1240,8 +1240,7 @@ describe("contextBuilder", () => {
         l5Text: "",
         l6Text: "",
       };
-      const fullTokens =
-        countTokens(layers.baseText) + countTokens(l4Text);
+      const fullTokens = countTokens(layers.baseText) + countTokens(l4Text);
       const result = trimToFit(layers, fullTokens - 10);
       expect(result.trimmedTexts.l4Text).toContain("Always");
       expect(result.trimmedTexts.l4Text).not.toContain("Mentioned");

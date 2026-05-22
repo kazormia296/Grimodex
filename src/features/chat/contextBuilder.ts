@@ -797,8 +797,7 @@ export function buildSystemPrompt(
       }
       const blockText = blockLines.join("\n");
       lines.push(blockText);
-      const isStable =
-        l4StableIds.size === 0 || l4StableIds.has(entry.id);
+      const isStable = l4StableIds.size === 0 || l4StableIds.has(entry.id);
       if (isStable) {
         stableLines.push(blockText);
       }

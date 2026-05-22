@@ -47,102 +47,102 @@ async function loadProjectStoresInBatches(
  */
 export async function reloadProjectData(projectId: string): Promise<void> {
   return withProjectLoad(async () => {
-  useGlobalHistoryStore.getState().clear();
+    useGlobalHistoryStore.getState().clear();
 
-  const tabStore = useTabStore.getState();
-  tabStore.closeAllTabsInGroup(0);
-  tabStore.closeAllTabsInGroup(1);
-  useTabStore.setState({
-    secondaryGroupOpen: false,
-    activeGroupIndex: 0,
-  });
+    const tabStore = useTabStore.getState();
+    tabStore.closeAllTabsInGroup(0);
+    tabStore.closeAllTabsInGroup(1);
+    useTabStore.setState({
+      secondaryGroupOpen: false,
+      activeGroupIndex: 0,
+    });
 
-  useChatStore.setState({
-    activeSessionId: null,
-    messages: [],
-    sessions: [],
-    activeProjectId: projectId,
-    activeSceneId: "",
-    error: null,
-  });
+    useChatStore.setState({
+      activeSessionId: null,
+      messages: [],
+      sessions: [],
+      activeProjectId: projectId,
+      activeSceneId: "",
+      error: null,
+    });
 
-  useChatHistoryStore.setState({
-    sessions: [],
-    searchQuery: "",
-    searchResults: [],
-    isSearchMode: false,
-    sceneFilter: null,
-  });
+    useChatHistoryStore.setState({
+      sessions: [],
+      searchQuery: "",
+      searchResults: [],
+      isSearchMode: false,
+      sceneFilter: null,
+    });
 
-  useCodexStore.setState({
-    entries: [],
-    types: [],
-    searchQuery: "",
-    filterType: null,
-    pendingEntryId: null,
-  });
+    useCodexStore.setState({
+      entries: [],
+      types: [],
+      searchQuery: "",
+      filterType: null,
+      pendingEntryId: null,
+    });
 
-  useSnippetStore.setState({
-    entries: [],
-    searchQuery: "",
-    pendingEntryId: null,
-  });
+    useSnippetStore.setState({
+      entries: [],
+      searchQuery: "",
+      pendingEntryId: null,
+    });
 
-  useForeshadowStore.setState({
-    items: [],
-    setupsByForeshadowId: {},
-    sceneInfoBySceneId: {},
-  });
+    useForeshadowStore.setState({
+      items: [],
+      setupsByForeshadowId: {},
+      sceneInfoBySceneId: {},
+    });
 
-  useSceneCodexPinsStore.setState({
-    pinsByScene: {},
-    bulkLoadedProjectId: null,
-  });
+    useSceneCodexPinsStore.setState({
+      pinsByScene: {},
+      bulkLoadedProjectId: null,
+    });
 
-  useSceneBeatPovStore.setState({
-    povIdsByScene: {},
-    bulkLoadedProjectId: null,
-  });
+    useSceneBeatPovStore.setState({
+      povIdsByScene: {},
+      bulkLoadedProjectId: null,
+    });
 
-  useLabelStore.setState({
-    labels: [],
-    nodeLabels: {},
-    projectId: null,
-  });
+    useLabelStore.setState({
+      labels: [],
+      nodeLabels: {},
+      projectId: null,
+    });
 
-  useGridStore.getState().clearSelection();
-  useCommandCenterStore.getState().reset();
-  useResultsPanelStore.getState().reset();
-  useLintStore.getState().clear();
+    useGridStore.getState().clearSelection();
+    useCommandCenterStore.getState().reset();
+    useResultsPanelStore.getState().reset();
+    useLintStore.getState().clear();
 
-  // 用語辞書は project スコープ (lint_term_dictionary)。isLoaded を倒して
-  // 次回 lint / 設定パネル参照時に新 Project 分を読み直させる。
-  useTermDictionaryStore.setState({
-    rows: [],
-    isLoaded: false,
-    loading: false,
-  });
+    // 用語辞書は project スコープ (lint_term_dictionary)。isLoaded を倒して
+    // 次回 lint / 設定パネル参照時に新 Project 分を読み直させる。
+    useTermDictionaryStore.setState({
+      rows: [],
+      isLoaded: false,
+      loading: false,
+    });
 
-  // Map の board 選択 / transient UI を破棄。board データ自体は
-  // useMapBoardData が currentProjectId 変化を検知して読み直す。
-  useMapStore.setState({
-    activeBoardId: null,
-    focusedNodeId: null,
-    searchVisible: false,
-    pendingAutoArrange: null,
-    pendingExport: null,
-  });
+    // Map の board 選択 / transient UI を破棄。board データ自体は
+    // useMapBoardData が currentProjectId 変化を検知して読み直す。
+    useMapStore.setState({
+      activeBoardId: null,
+      focusedNodeId: null,
+      searchVisible: false,
+      pendingAutoArrange: null,
+      pendingExport: null,
+    });
 
-  // 1 ストアのロード失敗で切替全体を中断しない (他パネルは読み直せる)。
-  // tree は activeSceneId の起点なので失敗しても後続を進める。
-  await useTreeStore
-    .getState()
-    .loadTree(projectId)
-    .catch(() => {});
+    // 1 ストアのロード失敗で切替全体を中断しない (他パネルは読み直せる)。
+    // tree は activeSceneId の起点なので失敗しても後続を進める。
+    await useTreeStore
+      .getState()
+      .loadTree(projectId)
+      .catch(() => {});
 
-  const activeSceneId = useTreeStore.getState().activeSceneId;
-  useChatStore.setState({ activeSceneId });
+    const activeSceneId = useTreeStore.getState().activeSceneId;
+    useChatStore.setState({ activeSceneId });
 
-  await loadProjectStoresInBatches(projectId);
+    await loadProjectStoresInBatches(projectId);
   });
 }

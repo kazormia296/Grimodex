@@ -29,9 +29,7 @@ interface Props {
 }
 
 export function GridCardForeshadowIndicator({ sceneId, compact }: Props) {
-  const sceneInfo = useForeshadowStore(
-    (s) => s.sceneInfoBySceneId[sceneId],
-  );
+  const sceneInfo = useForeshadowStore((s) => s.sceneInfoBySceneId[sceneId]);
   const setupIds = sceneInfo?.setupForeshadowIds ?? [];
   const payoffIds = sceneInfo?.payoffForeshadowIds ?? [];
   const storeItems = useForeshadowStore((s) => s.items);

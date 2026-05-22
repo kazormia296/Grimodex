@@ -233,7 +233,9 @@ export function getDeterministicAgentTools(): AgentToolDefinition[] {
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((tool) => ({
       ...tool,
-      inputSchema: sortSchemaKeys(tool.inputSchema) as AgentToolDefinition["inputSchema"],
+      inputSchema: sortSchemaKeys(
+        tool.inputSchema,
+      ) as AgentToolDefinition["inputSchema"],
     }));
 }
 
