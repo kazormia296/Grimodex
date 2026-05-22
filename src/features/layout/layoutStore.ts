@@ -91,15 +91,23 @@ function getViewport(): { width: number; height: number } {
   return { width: window.innerWidth, height: window.innerHeight };
 }
 
-function applyValidatedLayout(
+/**
+ * 候補レイアウトを clamp + validate し、有効ならそれを、無効なら fallback を
+ * 返す。validate 失敗は構造上 mutation のバグであり、ユーザーのレイアウトを
+ * 既定値で破壊する代わりに遷移自体を棄却する。in-app の mutation では
+ * fallback に直前の有効レイアウト（state.layout）を渡すこと。永続データの
+ * ロード等、直前状態が無い場面でのみ resetLayoutStateToDefault() を渡す。
+ */
+export function applyValidatedLayout(
   layout: LayoutState,
+  fallback: LayoutState,
   viewport?: { width: number; height: number },
 ): LayoutState {
   const vp = viewport ?? getViewport();
   const clamped = clampLayoutStateForViewport(cloneLayoutState(layout), vp);
   const result = validateLayoutState(clamped, { viewport: vp });
   if (result.valid) return clamped;
-  return resetLayoutStateToDefault();
+  return fallback;
 }
 
 function scheduleEditorFocus() {
@@ -668,7 +676,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         delete next.collapsedEditorRegionSizes;
       }
 
-      return { layout: applyValidatedLayout(next, vp) };
+      return { layout: applyValidatedLayout(next, state.layout, vp) };
     });
     scheduleSave(get);
     if (open) scheduleEditorFocus();
@@ -708,7 +716,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       }
 
       return {
-        layout: applyValidatedLayout(next),
+        layout: applyValidatedLayout(next, state.layout),
         hiddenStripePanels: opening
           ? unhideStripePanel(state.hiddenStripePanels, toolPanel)
           : state.hiddenStripePanels,
@@ -748,7 +756,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       }
 
       return {
-        layout: applyValidatedLayout(next),
+        layout: applyValidatedLayout(next, state.layout),
         hiddenStripePanels: unhideStripePanel(
           state.hiddenStripePanels,
           toolPanel,
@@ -780,6 +788,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     set((state) => ({
       layout: applyValidatedLayout(
         movePanelInLayout(state.layout, toolPanel, region, slotId, null),
+        state.layout,
       ),
     }));
     scheduleSave(get);
@@ -800,6 +809,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           lastSlot?.id ?? null,
           lastSlot ? null : targetSlots.length,
         ),
+        state.layout,
       ),
     }));
     scheduleSave(get);
@@ -827,6 +837,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
               ...segment,
               activePanel: null,
             })),
+            state.layout,
           );
         } else {
           layout = applyValidatedLayout(
@@ -838,6 +849,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
                   : slot,
               ),
             })),
+            state.layout,
           );
         }
       }
@@ -859,7 +871,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
               : segment,
           ),
         }));
-        return { layout: applyValidatedLayout(next) };
+        return { layout: applyValidatedLayout(next, state.layout) };
       });
       if (wasEditorOpen) {
         get().setEditorOpen(false);
@@ -875,6 +887,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           ...r,
           slots: r.slots.map((slot) => ({ ...slot, activePanel: null })),
         })),
+        state.layout,
       ),
     }));
     scheduleSave(get);
@@ -895,6 +908,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
               : slot,
           ),
         })),
+        state.layout,
       ),
     }));
     scheduleSave(get);
@@ -941,7 +955,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       }
 
       return {
-        layout: applyValidatedLayout(layout),
+        layout: applyValidatedLayout(layout, state.layout),
         hiddenStripePanels: hidden,
       };
     });
@@ -961,6 +975,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     set((state) => ({
       layout: applyValidatedLayout(
         movePanelInLayout(state.layout, toolPanel, region, slotId, null),
+        state.layout,
       ),
       hiddenStripePanels: unhideStripePanel(
         state.hiddenStripePanels,
@@ -1000,7 +1015,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         }
       }
       return {
-        layout: applyValidatedLayout(moved, vp),
+        layout: applyValidatedLayout(moved, state.layout, vp),
         hiddenStripePanels: unhideStripePanel(
           state.hiddenStripePanels,
           toolPanel,
@@ -1032,7 +1047,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           return state;
         }
       }
-      return { layout: applyValidatedLayout(moved, vp) };
+      return { layout: applyValidatedLayout(moved, state.layout, vp) };
     });
     scheduleSave(get);
   },
@@ -1059,7 +1074,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       next.regions[region] = { ...next.regions[region], size: clamped };
       // 手動リサイズしたら editor collapse の復元メモリは破棄する。
       delete next.collapsedEditorRegionSizes;
-      return { layout: applyValidatedLayout(next, vp) };
+      return { layout: applyValidatedLayout(next, state.layout, vp) };
     });
   },
 
@@ -1080,7 +1095,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       next.regions[region] = { ...regionState, size: nextSize };
       // 手動リサイズしたら editor collapse の復元メモリは破棄する。
       delete next.collapsedEditorRegionSizes;
-      return { layout: applyValidatedLayout(next, vp) };
+      return { layout: applyValidatedLayout(next, state.layout, vp) };
     });
   },
 
@@ -1098,7 +1113,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         ratioB,
         layoutBudgetPx,
       );
-      return { layout: applyValidatedLayout(next) };
+      return { layout: applyValidatedLayout(next, state.layout) };
     });
     scheduleSave(get);
   },
@@ -1156,7 +1171,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         ratioB,
         layoutBudgetPx,
       );
-      return { layout: applyValidatedLayout(next) };
+      return { layout: applyValidatedLayout(next, state.layout) };
     });
     scheduleSave(get);
   },
@@ -1197,6 +1212,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     set((state) => ({
       layout: applyValidatedLayout(
         clampLayoutStateForViewport(cloneLayoutState(state.layout), vp),
+        state.layout,
         vp,
       ),
     }));
@@ -1207,7 +1223,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     // カードレイアウト ON/OFF 切替で chrome 量が変わるため、保存済みの region
     // サイズを現在のモードに合わせて即座に再クランプする。
     set((state) => ({
-      layout: applyValidatedLayout(cloneLayoutState(state.layout)),
+      layout: applyValidatedLayout(
+        cloneLayoutState(state.layout),
+        state.layout,
+      ),
     }));
     scheduleSave(get);
   },
@@ -1261,7 +1280,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         if (loc) {
           loc.slot.activePanel = screenshotPanel as ToolWindowPanelId;
         }
-        set({ layout: applyValidatedLayout(layout), initialized: true });
+        set({
+          layout: applyValidatedLayout(layout, resetLayoutStateToDefault()),
+          initialized: true,
+        });
         return;
       }
 
@@ -1269,7 +1291,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       const presetState = getBuiltinPresetState(presetId, getViewport());
       if (presetState) {
         set({
-          layout: applyValidatedLayout(cloneLayoutState(presetState)),
+          layout: applyValidatedLayout(
+            cloneLayoutState(presetState),
+            resetLayoutStateToDefault(),
+          ),
           activePresetId: presetId,
           hiddenStripePanels: new Set(getBuiltinPresetHiddenPanels(presetId)),
           initialized: true,
@@ -1290,6 +1315,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       if (isPersistedLayoutV3(rawLayout)) {
         const validated = applyValidatedLayout(
           cloneLayoutState(rawLayout.state),
+          resetLayoutStateToDefault(),
         );
         set({
           layout: validated,
@@ -1312,7 +1338,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           hiddenStripePanels?: ToolWindowPanelId[];
         };
         const migrated = migrateLayoutStateV2toV3(v2Persisted.state);
-        const validated = applyValidatedLayout(migrated);
+        const validated = applyValidatedLayout(
+          migrated,
+          resetLayoutStateToDefault(),
+        );
         set({
           layout: validated,
           activePresetId:
@@ -1334,6 +1363,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     set({
       layout: applyValidatedLayout(
         presetLayout ?? buildDefaultLayoutState({ allInactive: true }),
+        resetLayoutStateToDefault(),
       ),
       activePresetId: presetLayout ? "builtin:default" : null,
       initialized: true,
@@ -1362,6 +1392,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       set({
         layout: applyValidatedLayout(
           ensureLayoutStateV3(cloneLayoutState(builtin)),
+          resetLayoutStateToDefault(),
           vp,
         ),
         activePresetId: presetId,
@@ -1379,6 +1410,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       set({
         layout: applyValidatedLayout(
           ensureLayoutStateV3(cloneLayoutState(custom.state)),
+          resetLayoutStateToDefault(),
           vp,
         ),
         activePresetId: presetId,
@@ -1421,7 +1453,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       const builtin = getBuiltinPresetState(presetId, vp);
       if (builtin) {
         set({
-          layout: applyValidatedLayout(builtin, vp),
+          layout: applyValidatedLayout(
+            builtin,
+            resetLayoutStateToDefault(),
+            vp,
+          ),
           hiddenStripePanels: new Set(getBuiltinPresetHiddenPanels(presetId)),
         });
         scheduleSave(get);
