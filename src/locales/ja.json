@@ -428,6 +428,12 @@
     "editorToggle": {
       "fixedHint": "中央固定・移動不可"
     },
+    "dockToggle": {
+      "collapseLeft": "左ドックを閉じる",
+      "expandLeft": "左ドックを開く",
+      "collapseRight": "右ドックを閉じる",
+      "expandRight": "右ドックを開く"
+    },
     "panel": {
       "scenes": "シーン",
       "codex": "Codex",

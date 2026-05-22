@@ -428,6 +428,12 @@
     "editorToggle": {
       "fixedHint": "Fixed in center · cannot move"
     },
+    "dockToggle": {
+      "collapseLeft": "Collapse left dock",
+      "expandLeft": "Expand left dock",
+      "collapseRight": "Collapse right dock",
+      "expandRight": "Expand right dock"
+    },
     "panel": {
       "scenes": "Scenes",
       "codex": "Codex",

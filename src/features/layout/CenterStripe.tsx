@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { cn } from "@/lib/utils";
 import { CenterStripeBands } from "./CenterStripeBands";
+import { SideDockToggle } from "./SideDockToggle";
 import { CenterStripeDropOverlay } from "./CenterStripeDropOverlay";
 import { isCenterBandVisible } from "./layoutStateUtils";
 import {
@@ -97,9 +98,11 @@ export function CenterStripe() {
       className="gx-panel relative grid h-full w-full min-w-0 overflow-hidden"
       style={{ gridTemplateColumns: stripeColumns }}
     >
-      {/* 9 列構成: stripe / gap / content / splitter の 4 列ぶんの空セル。
-          bands セルを下の editor 列と揃える。 */}
-      <div aria-hidden className="min-h-0 min-w-0" />
+      {/* 9 列構成: stripe / gap / content / splitter。先頭の stripe 列に
+          左ドック開閉トグルを置き、bands セルを下の editor 列と揃える。 */}
+      <div className="flex min-h-0 min-w-0 items-center justify-center">
+        {hasLeft && <SideDockToggle region="left" />}
+      </div>
       <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
@@ -117,6 +120,10 @@ export function CenterStripe() {
       <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
+      {/* 末尾の stripe 列に右ドック開閉トグルを置く。 */}
+      <div className="flex min-h-0 min-w-0 items-center justify-center">
+        {hasRight && <SideDockToggle region="right" />}
+      </div>
       <div aria-hidden className="min-h-0 min-w-0" />
       {showDropZones && (
         <CenterStripeDropOverlay

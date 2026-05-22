@@ -529,6 +529,7 @@ export interface LayoutStoreState {
   moveToRegion: (panel: PanelId, region: RegionId) => void;
   removePanelFromStripe: (panel: PanelId) => void;
   collapseLayoutRegion: (region: LayoutRegionId) => void;
+  expandLayoutRegion: (region: RegionId) => void;
   removeAllPanelsFromStripeRegion: (region: LayoutRegionId) => void;
   addPanelToStripeSlot: (
     panel: PanelId,
@@ -536,10 +537,7 @@ export interface LayoutStoreState {
     slotId: string,
   ) => void;
   /** center stripe の editor バンド等、特定 slot が無い場合に末尾へ tool segment を追加 */
-  addPanelToCenterStripe: (
-    panel: PanelId,
-    insertIndex?: number,
-  ) => void;
+  addPanelToCenterStripe: (panel: PanelId, insertIndex?: number) => void;
   movePanelToNewSlot: (
     panel: PanelId,
     region: LayoutRegionId,
@@ -882,6 +880,26 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     scheduleSave(get);
   },
 
+  // collapseLayoutRegion の逆操作。collapse は activePanel を null 化する
+  // だけで panels 配列は保持するため、各 slot を先頭 panel で開き直す。
+  // collapse 前に開いていた panel は記憶しない（multi-panel slot では
+  // 先頭 panel に戻る）。既に開いている slot は上書きしない。
+  expandLayoutRegion: (region) => {
+    set((state) => ({
+      layout: applyValidatedLayout(
+        updateRegion(state.layout, region, (r) => ({
+          ...r,
+          slots: r.slots.map((slot) =>
+            slot.activePanel === null && slot.panels.length > 0
+              ? { ...slot, activePanel: slot.panels[0] }
+              : slot,
+          ),
+        })),
+      ),
+    }));
+    scheduleSave(get);
+  },
+
   removeAllPanelsFromStripeRegion: (region) => {
     if (get().layoutLocked) return;
     const panels = collectPanelsInLayoutRegion(get().layout, region);
@@ -903,8 +921,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
             return {
               ...segment,
               activePanel:
-                segment.activePanel != null &&
-                panelSet.has(segment.activePanel)
+                segment.activePanel != null && panelSet.has(segment.activePanel)
                   ? null
                   : segment.activePanel,
             };
@@ -963,8 +980,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       return;
     }
 
-    const index =
-      insertIndex ?? get().layout.center.segments.length;
+    const index = insertIndex ?? get().layout.center.segments.length;
     const vp = getViewport();
     set((state) => {
       const moved = movePanelInLayout(
