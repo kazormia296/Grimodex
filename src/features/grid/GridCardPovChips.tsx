@@ -3,6 +3,7 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useSceneBeatPovStore } from "@/features/editor/beat/sceneBeatPovStore";
 
 const MAX_CHIPS = 3;
+const EMPTY_POV_IDS: string[] = [];
 
 // Visually distinct palette that works on both light/dark backgrounds
 const POV_PALETTE = [
@@ -36,7 +37,7 @@ interface Props {
 
 export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
   const beatPovIds = useSceneBeatPovStore(
-    (s) => s.povIdsByScene[sceneId] ?? [],
+    (s) => s.povIdsByScene[sceneId] ?? EMPTY_POV_IDS,
   );
   const entries = useCodexStore((s) => s.entries);
 
