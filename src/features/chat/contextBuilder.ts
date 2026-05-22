@@ -756,6 +756,7 @@ export function buildSystemPrompt(
       const displaySummary =
         entry.summary.trim() || entry.contentFallback || "";
       const phaseSuffix = entry.phaseLabel ? ` [${entry.phaseLabel}]` : "";
+      // L4_PRI_MENTIONED が既定値。いずれの条件にも一致しなければ初期値のまま。
       let priority = L4_PRI_MENTIONED;
       if (pinnedChildIds.has(entry.id)) {
         priority = L4_PRI_CHILD;
@@ -763,8 +764,6 @@ export function buildSystemPrompt(
         priority = L4_PRI_ALWAYS;
       } else if (pinnedIds.has(entry.id)) {
         priority = L4_PRI_PINNED;
-      } else {
-        priority = L4_PRI_MENTIONED;
       }
       const blockLines = [
         `<!-- l4pri:${priority} -->`,
