@@ -466,6 +466,11 @@
     "stripe": {
       "moveTo": "移動先",
       "removeFromSidebar": "サイドバーから削除",
+      "bandMenu": {
+        "addPanel": "パネルを追加",
+        "collapseRegion": "すべて折りたたむ",
+        "removeAllFromSidebar": "すべてのパネルをサイドバーから削除"
+      },
       "region": {
         "left": "左",
         "right": "右",

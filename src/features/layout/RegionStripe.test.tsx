@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from "vitest";
 import { render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { RegionStripe } from "./RegionStripe";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
@@ -166,6 +167,17 @@ describe("RegionStripe", () => {
     expect(cls("scenes")).toContain("bg-accent"); // open + active
     expect(cls("codex-quick")).toContain("text-muted-foreground/60"); // open + inactive
     expect(cls("timeline")).toContain("text-muted-foreground/35"); // collapsed
+  });
+
+  it("opens stripe band context menu on right click", async () => {
+    const user = userEvent.setup();
+    const { getByTestId } = render(
+      <RegionStripe region="left" orientation="vertical" segments={segments} />,
+    );
+    const band = document.querySelector("[data-drop-segment='l0']");
+    expect(band).not.toBeNull();
+    await user.pointer({ keys: "[MouseRight>]", target: band! });
+    expect(getByTestId("stripe-band-ctx-collapse")).toBeTruthy();
   });
 
   it("renders an empty stripe instead of returning null", () => {

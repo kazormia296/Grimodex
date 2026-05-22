@@ -721,6 +721,112 @@ describe("layout store property invariants", () => {
     expect(useLayoutStore.getState().isPanelActive("chat")).toBe(true);
   });
 
+  describe("collapseLayoutRegion", () => {
+    it("collapses all panels in a side region", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().showPanel("codex");
+      useLayoutStore.getState().collapseLayoutRegion("left");
+      const left = useLayoutStore.getState().layout.regions.left.slots;
+      expect(left.every((slot) => slot.activePanel === null)).toBe(true);
+    });
+
+    it("collapses editor and center tool panels", () => {
+      useLayoutStore.getState().setEditorOpen(true);
+      useLayoutStore.getState().showPanel("grid");
+      useLayoutStore.getState().collapseLayoutRegion("center");
+      const { center } = useLayoutStore.getState().layout;
+      expect(center.editorOpen).toBe(false);
+      for (const segment of center.segments) {
+        if (segment.kind === "tool") {
+          expect(segment.activePanel).toBeNull();
+        }
+      }
+    });
+  });
+
+  describe("removeAllPanelsFromStripeRegion", () => {
+    it("hides all panels in a region from the stripe", () => {
+      useLayoutStore.getState().showPanel("chat");
+      useLayoutStore.getState().showPanel("chat-history");
+      useLayoutStore.getState().removeAllPanelsFromStripeRegion("right");
+      const hidden = useLayoutStore.getState().hiddenStripePanels;
+      expect(hidden.has("chat")).toBe(true);
+      expect(hidden.has("chat-history")).toBe(true);
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.regions.right.slots.every((s) => s.activePanel === null),
+      ).toBe(true);
+    });
+
+    it("no-ops when layout is locked", () => {
+      useLayoutStore.getState().showPanel("chat");
+      useLayoutStore.setState({ layoutLocked: true });
+      useLayoutStore.getState().removeAllPanelsFromStripeRegion("right");
+      expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
+        false,
+      );
+    });
+  });
+
+  describe("addPanelToCenterStripe", () => {
+    it("inserts a new center tool segment at the end", () => {
+      useLayoutStore.getState().addPanelToCenterStripe("codex");
+      const toolSegments = useLayoutStore
+        .getState()
+        .layout.center.segments.filter((s) => s.kind === "tool");
+      expect(toolSegments).toHaveLength(1);
+      expect(toolSegments[0]?.panels).toContain("codex");
+      expect(toolSegments[0]?.activePanel).toBe("codex");
+    });
+
+    it("reopens a panel already in center", () => {
+      useLayoutStore.getState().addPanelToCenterStripe("codex");
+      useLayoutStore.getState().togglePanel("codex");
+      useLayoutStore.getState().addPanelToCenterStripe("codex");
+      expect(useLayoutStore.getState().isPanelActive("codex")).toBe(true);
+    });
+  });
+
+  describe("addPanelToStripeSlot", () => {
+    it("moves a panel into the target slot and unhides it", () => {
+      useLayoutStore.getState().showPanel("chat");
+      useLayoutStore.getState().removePanelFromStripe("scenes");
+      const leftSlotId =
+        useLayoutStore.getState().layout.regions.left.slots[0].id;
+      useLayoutStore
+        .getState()
+        .addPanelToStripeSlot("scenes", "left", leftSlotId);
+      const loc = findPanelLocation(useLayoutStore.getState().layout, "scenes");
+      expect(loc?.slot.id).toBe(leftSlotId);
+      expect(loc?.slot.activePanel).toBe("scenes");
+      expect(useLayoutStore.getState().hiddenStripePanels.has("scenes")).toBe(
+        false,
+      );
+    });
+
+    it("reopens a panel already in the same slot", () => {
+      useLayoutStore.getState().showPanel("scenes");
+      useLayoutStore.getState().togglePanel("scenes");
+      const leftSlotId =
+        useLayoutStore.getState().layout.regions.left.slots[0].id;
+      useLayoutStore
+        .getState()
+        .addPanelToStripeSlot("scenes", "left", leftSlotId);
+      expect(useLayoutStore.getState().isPanelActive("scenes")).toBe(true);
+    });
+
+    it("no-ops when layout is locked", () => {
+      useLayoutStore.setState({ layoutLocked: true });
+      const leftSlotId =
+        useLayoutStore.getState().layout.regions.left.slots[0].id;
+      useLayoutStore
+        .getState()
+        .addPanelToStripeSlot("scenes", "left", leftSlotId);
+      expect(useLayoutStore.getState().isPanelActive("scenes")).toBe(false);
+    });
+  });
+
   it("setSlotRatios keeps third slot visible with 3 open slots", () => {
     useLayoutStore.getState().showPanel("scenes");
     useLayoutStore.getState().showPanel("codex");

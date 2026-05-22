@@ -1,28 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import {
-  LayoutGrid,
-  ChevronDown,
-  Check,
-  Lock,
-  Unlock,
-  GripVertical,
-  FileText,
-} from "lucide-react";
+import { LayoutGrid, ChevronDown, Lock, Unlock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore } from "./layoutStore";
 import type { PanelId } from "./panelIds";
-import {
-  TOGGLEABLE_PANELS,
-  KEYBOARD_SHORTCUT_MAP,
-  PANEL_REGION_MAP,
-  type PanelRegion,
-} from "./panelRegions";
-import { PANEL_ICON_MAP } from "./panelIcons";
 import { PanelHighlightOverlay } from "./PanelHighlightOverlay";
 import { usePanelDropdownPointerDrag } from "./usePanelDropdownPointerDrag";
 import type { ToolWindowPanelId } from "./layoutTypes";
+import { PanelPickerMenuItems } from "./PanelPickerMenuItems";
 
 export function PanelToggleDropdown() {
   const { t } = useTranslation();
@@ -112,26 +98,6 @@ export function PanelToggleDropdown() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [isOpen]);
 
-  const REGION_LABELS: Record<PanelRegion, string> = {
-    left: t("layout.regionLeft"),
-    right: t("layout.regionRight"),
-    "center-bottom": t("layout.regionBottom"),
-  };
-
-  const groups: {
-    region: PanelRegion;
-    panels: Exclude<PanelId, "editor">[];
-  }[] = [];
-  for (const panelId of TOGGLEABLE_PANELS) {
-    const region = PANEL_REGION_MAP[panelId];
-    const last = groups[groups.length - 1];
-    if (last && last.region === region) {
-      last.panels.push(panelId);
-    } else {
-      groups.push({ region, panels: [panelId] });
-    }
-  }
-
   const menu =
     isOpen && menuStyle ? (
       <div
@@ -147,113 +113,16 @@ export function PanelToggleDropdown() {
         }}
         onMouseLeave={() => setHoveredPanelId(null)}
       >
-        <div>
-          <div className="px-3 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            {t("layout.regionCenter")}
-          </div>
-          <div
-            role="button"
-            tabIndex={0}
-            data-panel-toggle-item="editor"
-            data-testid="panel-toggle-item-editor"
-            data-tauri-drag-region="false"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                togglePanel("editor");
-              }
-            }}
-            onClick={() => togglePanel("editor")}
-            className="flex w-full touch-none select-none items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-          >
-            <span className="inline-block h-3.5 w-3.5 shrink-0" />
-            <span
-              className={cn(
-                "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border",
-                isPanelActive("editor")
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border",
-              )}
-            >
-              {isPanelActive("editor") && <Check className="h-2.5 w-2.5" />}
-            </span>
-            <FileText
-              aria-hidden
-              className="h-4 w-4 shrink-0 text-muted-foreground"
-            />
-            <span className="flex-1 text-left">{t("layout.panel.editor")}</span>
-          </div>
-        </div>
-
-        {groups.map((group, gi) => (
-          <div key={group.region}>
-            {gi > 0 && <div className="my-1 border-t border-border" />}
-            <div className="px-3 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-              {REGION_LABELS[group.region]}
-            </div>
-            {group.panels.map((panelId) => {
-              const visible = isPanelActive(panelId);
-              const canDrag = !layoutLocked;
-              const PanelIcon = PANEL_ICON_MAP[panelId];
-              return (
-                <div
-                  key={panelId}
-                  role="button"
-                  tabIndex={0}
-                  data-panel-toggle-item={panelId}
-                  data-testid={`panel-toggle-item-${panelId}`}
-                  data-tauri-drag-region="false"
-                  onPointerDown={(e) => {
-                    if (!canDrag) return;
-                    handleRowPointerDown(panelId as ToolWindowPanelId, e);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      togglePanel(panelId);
-                    }
-                  }}
-                  onMouseEnter={() => setHoveredPanelId(panelId)}
-                  className={cn(
-                    "flex w-full touch-none select-none items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground",
-                    canDrag && "cursor-grab active:cursor-grabbing",
-                  )}
-                >
-                  {canDrag ? (
-                    <GripVertical
-                      aria-hidden
-                      className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70"
-                    />
-                  ) : (
-                    <span className="inline-block h-3.5 w-3.5 shrink-0" />
-                  )}
-                  <span
-                    className={cn(
-                      "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border",
-                      visible
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border",
-                    )}
-                  >
-                    {visible && <Check className="h-2.5 w-2.5" />}
-                  </span>
-                  <PanelIcon
-                    aria-hidden
-                    className="h-4 w-4 shrink-0 text-muted-foreground"
-                  />
-                  <span className="flex-1 text-left">
-                    {t(`layout.panel.${panelId}`)}
-                  </span>
-                  {KEYBOARD_SHORTCUT_MAP[panelId] && (
-                    <kbd className="rounded border border-border bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
-                      {KEYBOARD_SHORTCUT_MAP[panelId]}
-                    </kbd>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ))}
+        <PanelPickerMenuItems
+          mode="toggle"
+          layoutLocked={layoutLocked}
+          isPanelActive={isPanelActive}
+          onTogglePanel={togglePanel}
+          onPanelPointerDown={(panelId, e) =>
+            handleRowPointerDown(panelId as ToolWindowPanelId, e)
+          }
+          onPanelMouseEnter={setHoveredPanelId}
+        />
 
         <div className="my-1 border-t border-border" />
         <button

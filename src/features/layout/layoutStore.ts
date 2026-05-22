@@ -14,6 +14,7 @@ import {
   applyAdjacentSlotPixelSizes,
   buildDefaultLayoutState,
   buildRegionSizeClampContext,
+  collectPanelsInLayoutRegion,
   cloneLayoutState,
   clampLayoutStateForViewport,
   ensureLayoutStateV3,
@@ -527,6 +528,18 @@ export interface LayoutStoreState {
   movePanelToRegion: (panel: PanelId, region: RegionId) => void;
   moveToRegion: (panel: PanelId, region: RegionId) => void;
   removePanelFromStripe: (panel: PanelId) => void;
+  collapseLayoutRegion: (region: LayoutRegionId) => void;
+  removeAllPanelsFromStripeRegion: (region: LayoutRegionId) => void;
+  addPanelToStripeSlot: (
+    panel: PanelId,
+    region: LayoutRegionId,
+    slotId: string,
+  ) => void;
+  /** center stripe の editor バンド等、特定 slot が無い場合に末尾へ tool segment を追加 */
+  addPanelToCenterStripe: (
+    panel: PanelId,
+    insertIndex?: number,
+  ) => void;
   movePanelToNewSlot: (
     panel: PanelId,
     region: LayoutRegionId,
@@ -832,6 +845,151 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       }
 
       return { layout, hiddenStripePanels: hidden };
+    });
+    scheduleSave(get);
+  },
+
+  collapseLayoutRegion: (region) => {
+    if (region === "center") {
+      const wasEditorOpen = get().layout.center.editorOpen;
+      set((state) => {
+        const next = updateCenter(state.layout, (center) => ({
+          ...center,
+          segments: center.segments.map((segment) =>
+            segment.kind === "tool"
+              ? { ...segment, activePanel: null }
+              : segment,
+          ),
+        }));
+        return { layout: applyValidatedLayout(next) };
+      });
+      if (wasEditorOpen) {
+        get().setEditorOpen(false);
+      } else {
+        scheduleSave(get);
+      }
+      return;
+    }
+
+    set((state) => ({
+      layout: applyValidatedLayout(
+        updateRegion(state.layout, region, (r) => ({
+          ...r,
+          slots: r.slots.map((slot) => ({ ...slot, activePanel: null })),
+        })),
+      ),
+    }));
+    scheduleSave(get);
+  },
+
+  removeAllPanelsFromStripeRegion: (region) => {
+    if (get().layoutLocked) return;
+    const panels = collectPanelsInLayoutRegion(get().layout, region);
+    if (panels.length === 0) return;
+    const panelSet = new Set(panels);
+
+    set((state) => {
+      const hidden = new Set(state.hiddenStripePanels);
+      for (const panelId of panels) {
+        hidden.add(panelId);
+      }
+
+      let layout = state.layout;
+      if (region === "center") {
+        layout = updateCenter(layout, (center) => ({
+          ...center,
+          segments: center.segments.map((segment) => {
+            if (segment.kind !== "tool") return segment;
+            return {
+              ...segment,
+              activePanel:
+                segment.activePanel != null &&
+                panelSet.has(segment.activePanel)
+                  ? null
+                  : segment.activePanel,
+            };
+          }),
+        }));
+      } else {
+        layout = updateRegion(layout, region, (r) => ({
+          ...r,
+          slots: r.slots.map((slot) => ({
+            ...slot,
+            activePanel:
+              slot.activePanel != null && panelSet.has(slot.activePanel)
+                ? null
+                : slot.activePanel,
+          })),
+        }));
+      }
+
+      return {
+        layout: applyValidatedLayout(layout),
+        hiddenStripePanels: hidden,
+      };
+    });
+    scheduleSave(get);
+  },
+
+  addPanelToStripeSlot: (panel, region, slotId) => {
+    if (panel === "editor" || get().layoutLocked) return;
+    const toolPanel = panel as ToolWindowPanelId;
+    const location = findPanelLocation(get().layout, toolPanel);
+
+    if (location?.region === region && location.slot.id === slotId) {
+      get().showPanel(toolPanel);
+      return;
+    }
+
+    set((state) => ({
+      layout: applyValidatedLayout(
+        movePanelInLayout(state.layout, toolPanel, region, slotId, null),
+      ),
+      hiddenStripePanels: unhideStripePanel(
+        state.hiddenStripePanels,
+        toolPanel,
+      ),
+    }));
+    scheduleSave(get);
+  },
+
+  addPanelToCenterStripe: (panel, insertIndex) => {
+    if (panel === "editor" || get().layoutLocked) return;
+    const toolPanel = panel as ToolWindowPanelId;
+    const location = findPanelLocation(get().layout, toolPanel);
+
+    if (location?.region === "center") {
+      get().showPanel(toolPanel);
+      return;
+    }
+
+    const index =
+      insertIndex ?? get().layout.center.segments.length;
+    const vp = getViewport();
+    set((state) => {
+      const moved = movePanelInLayout(
+        state.layout,
+        toolPanel,
+        "center",
+        null,
+        index,
+      );
+      if (moved.center.editorOpen) {
+        const clamped = clampLayoutStateForViewport(moved, vp);
+        if (
+          getCenterContentWidthPx(clamped, vp) <
+          getCenterHorizontalReserve(clamped)
+        ) {
+          return state;
+        }
+      }
+      return {
+        layout: applyValidatedLayout(moved, vp),
+        hiddenStripePanels: unhideStripePanel(
+          state.hiddenStripePanels,
+          toolPanel,
+        ),
+      };
     });
     scheduleSave(get);
   },

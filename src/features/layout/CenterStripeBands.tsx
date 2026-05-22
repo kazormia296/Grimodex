@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { cn } from "@/lib/utils";
 import { EditorToggleIcon } from "./EditorToggleIcon";
+import { StripeBandContextMenu } from "./StripeBandContextMenu";
 import { ToolWindowIcon } from "./ToolWindowIcon";
 import { MIN_EDITOR_SIZE, MIN_SLOT_SIZE } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
@@ -16,55 +17,62 @@ function CenterStripeBand({ segment, flexGrow }: CenterStripeBandProps) {
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const isTool = segment.kind === "tool";
+  const bandKind = segment.kind === "editor" ? "editor" : "tool";
 
   return (
-    <div
-      data-center-stripe-band
-      data-band-open={segment.open ? "true" : "false"}
-      data-center-stripe-band-kind={segment.kind}
-      data-center-stripe-slot-id={segment.slotId}
-      {...(isTool
-        ? {
-            "data-drop-segment": segment.key,
-            "data-drop-slot-id": segment.slotId,
-            "data-drop-region": "center",
-          }
-        : {})}
-      style={{
-        flexGrow,
-        flexBasis: segment.open ? 0 : "auto",
-        flexShrink: 0,
-        // open バンドは CenterContent の各列と同じ min-width でクランプする。
-        // これが無いと editor が最低幅を割り込んだ際に帯と列の幅がずれる。
-        minWidth: segment.open
-          ? segment.kind === "editor"
-            ? MIN_EDITOR_SIZE
-            : MIN_SLOT_SIZE
-          : undefined,
-      }}
-      className={cn(
-        "relative flex h-full min-h-0 min-w-0 flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden px-0.5",
-        segment.kind === "editor" && segment.open && "min-w-0 flex-1",
-        draggingPanel &&
-          !layoutLocked &&
-          segment.kind === "tool" &&
-          "ring-1 ring-primary/20",
-      )}
+    <StripeBandContextMenu
+      region="center"
+      slotId={segment.slotId}
+      bandKind={bandKind}
     >
-      {segment.kind === "editor" ? (
-        <EditorToggleIcon />
-      ) : (
-        segment.panels.map((panel) => (
-          <ToolWindowIcon
-            key={panel.id}
-            panelId={panel.id}
-            region="center"
-            active={panel.active}
-            slotOpen={segment.open}
-          />
-        ))
-      )}
-    </div>
+      <div
+        data-center-stripe-band
+        data-band-open={segment.open ? "true" : "false"}
+        data-center-stripe-band-kind={segment.kind}
+        data-center-stripe-slot-id={segment.slotId}
+        {...(isTool
+          ? {
+              "data-drop-segment": segment.key,
+              "data-drop-slot-id": segment.slotId,
+              "data-drop-region": "center",
+            }
+          : {})}
+        style={{
+          flexGrow,
+          flexBasis: segment.open ? 0 : "auto",
+          flexShrink: 0,
+          // open バンドは CenterContent の各列と同じ min-width でクランプする。
+          // これが無いと editor が最低幅を割り込んだ際に帯と列の幅がずれる。
+          minWidth: segment.open
+            ? segment.kind === "editor"
+              ? MIN_EDITOR_SIZE
+              : MIN_SLOT_SIZE
+            : undefined,
+        }}
+        className={cn(
+          "relative flex h-full min-h-0 min-w-0 flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden px-0.5",
+          segment.kind === "editor" && segment.open && "min-w-0 flex-1",
+          draggingPanel &&
+            !layoutLocked &&
+            segment.kind === "tool" &&
+            "ring-1 ring-primary/20",
+        )}
+      >
+        {segment.kind === "editor" ? (
+          <EditorToggleIcon />
+        ) : (
+          segment.panels.map((panel) => (
+            <ToolWindowIcon
+              key={panel.id}
+              panelId={panel.id}
+              region="center"
+              active={panel.active}
+              slotOpen={segment.open}
+            />
+          ))
+        )}
+      </div>
+    </StripeBandContextMenu>
   );
 }
 

@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { cn } from "@/lib/utils";
 import { ToolWindowIcon } from "./ToolWindowIcon";
+import { StripeBandContextMenu } from "./StripeBandContextMenu";
 import {
   acceptsToolWindowReassignDrag,
   TOOL_WINDOW_REASSIGN_TYPE,
@@ -67,37 +68,43 @@ function StripeGroup({
   };
 
   return (
-    <div
-      data-drop-segment={segment.key}
-      data-drop-slot-id={segment.slotId}
-      data-drop-region={region}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-      style={{
-        flexGrow,
-        // collapsed slot はアイコン実寸（basis auto）。0 にすると潰れて見えなくなる。
-        flexBasis: segment.open ? 0 : "auto",
-        flexShrink: 0,
-      }}
-      className={cn(
-        "pointer-events-auto flex min-h-0 min-w-0",
-        orientation === "vertical"
-          ? "w-full flex-col items-center justify-start gap-0.5 overflow-y-auto overflow-x-hidden"
-          : "h-full flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden",
-        draggingPanel && !layoutLocked && "ring-1 ring-primary/20",
-      )}
+    <StripeBandContextMenu
+      region={region}
+      slotId={segment.slotId}
+      bandKind="tool"
     >
-      {segment.panels.map((panel) => (
-        <ToolWindowIcon
-          key={panel.id}
-          panelId={panel.id}
-          region={region}
-          active={panel.active}
-          slotOpen={segment.open}
-        />
-      ))}
-    </div>
+      <div
+        data-drop-segment={segment.key}
+        data-drop-slot-id={segment.slotId}
+        data-drop-region={region}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        style={{
+          flexGrow,
+          // collapsed slot はアイコン実寸（basis auto）。0 にすると潰れて見えなくなる。
+          flexBasis: segment.open ? 0 : "auto",
+          flexShrink: 0,
+        }}
+        className={cn(
+          "pointer-events-auto flex min-h-0 min-w-0",
+          orientation === "vertical"
+            ? "w-full flex-col items-center justify-start gap-0.5 overflow-y-auto overflow-x-hidden"
+            : "h-full flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden",
+          draggingPanel && !layoutLocked && "ring-1 ring-primary/20",
+        )}
+      >
+        {segment.panels.map((panel) => (
+          <ToolWindowIcon
+            key={panel.id}
+            panelId={panel.id}
+            region={region}
+            active={panel.active}
+            slotOpen={segment.open}
+          />
+        ))}
+      </div>
+    </StripeBandContextMenu>
   );
 }
 

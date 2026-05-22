@@ -27,6 +27,7 @@ import type {
   LayoutState,
   LayoutStateV2,
   LayoutValidationResult,
+  LayoutRegionId,
   PanelLocation,
   RegionId,
   RegionState,
@@ -1016,6 +1017,28 @@ export function generateSlotId(region: RegionId): string {
 
 export function generateCenterToolSegmentId(): string {
   return `ct${crypto.randomUUID().slice(0, 8)}`;
+}
+
+/** region 内に登録されている tool panel id（stripe 一括操作の対象収集用） */
+export function collectPanelsInLayoutRegion(
+  layout: LayoutState,
+  region: LayoutRegionId,
+): ToolWindowPanelId[] {
+  const panels = new Set<ToolWindowPanelId>();
+  if (region === "center") {
+    for (const segment of getToolSegments(layout.center)) {
+      for (const panelId of segment.panels) {
+        panels.add(panelId);
+      }
+    }
+    return [...panels];
+  }
+  for (const slot of layout.regions[region].slots) {
+    for (const panelId of slot.panels) {
+      panels.add(panelId);
+    }
+  }
+  return [...panels];
 }
 
 export function addPanelToSlot(
