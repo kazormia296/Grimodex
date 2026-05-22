@@ -85,7 +85,7 @@
   --glass-tint-b: var(--content-accent);
 
   /* ─────────────────────────────────────────────────────────
-     Mochi layout system (D案) — see temp design handoff.
+     Card layout system (D案) — see temp design handoff.
      Structural tokens are theme-independent; colour tokens are
      derived from the active theme's --card / --background with
      color-mix so every colour theme adapts automatically.
@@ -155,7 +155,7 @@
   /* Sticky paper bg in dark mode is computed from the inline --sticky-bg-light
      variable via color-mix in the .sticky-paper rule (8% black mixed in). */
 
-  /* Mochi layout — dark theme: wider dome range + deeper drop shadow. */
+  /* Card layout — dark theme: wider dome range + deeper drop shadow. */
   --gx-panel-bg-top: color-mix(in oklch, var(--card) 90%, white);
   --gx-panel-bg-bottom: color-mix(in oklch, var(--card) 90%, black);
   --gx-panel-rim: rgba(255, 255, 255, 0.05);
@@ -476,16 +476,16 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 }
 
 /* ───────────────────────────────────────────────────────────
-   Mochi layout system (D案)
+   Card layout system (D案)
 
    `.gx-panel` is applied to every top-level panel surface (tool
-   panels, stripes/rails, the editor). The entire mochi treatment —
+   panels, stripes/rails, the editor). The entire card treatment —
    radius, dome gradient, rim shadow, canvas — is gated to
-   `[data-mochi="true"]`, an independent toggle (display.mochiLayout)
+   `[data-card="true"]`, an independent toggle (display.cardLayout)
    unrelated to the glass effect. When OFF, the legacy splitter-line
-   layout is restored (see the `:not([data-mochi="true"])` block).
+   layout is restored (see the `:not([data-card="true"])` block).
    ─────────────────────────────────────────────────────────── */
-.app-shell[data-mochi="true"] .gx-panel {
+.app-shell[data-card="true"] .gx-panel {
   border-radius: var(--gx-panel-radius);
   background: var(--gx-panel-bg);
   border: var(--gx-panel-border);
@@ -498,12 +498,12 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
    gradient bleeds through the transparent ones and leaves the opaque
    ones reading as black boxes. A flat surface keeps all chrome bands
    tonally uniform. Must follow the `.gx-panel` rule to win on order. */
-.app-shell[data-mochi="true"] .gx-panel--flat {
+.app-shell[data-card="true"] .gx-panel--flat {
   background: var(--background);
 }
 
 /* Canvas behind the cards — sunk below --background so cards lift off it. */
-.app-shell[data-mochi="true"] [data-layout-shell] {
+.app-shell[data-card="true"] [data-layout-shell] {
   background: var(--gx-canvas-bg);
 }
 
@@ -511,16 +511,16 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
    so the `.gx-panel` background shows. Direct-child scope only — the
    editor's paper surface and nested inputs keep their fill. tiptap /
    ProseMirror writing surfaces are always excluded. */
-.app-shell[data-mochi="true"]
+.app-shell[data-card="true"]
   [data-slot-panel].gx-panel
   > .bg-background:not(.tiptap):not(.ProseMirror),
-.app-shell[data-mochi="true"] [data-slot-panel].gx-panel > .bg-card {
+.app-shell[data-card="true"] [data-slot-panel].gx-panel > .bg-card {
   background-color: transparent;
 }
 
 /* Dragging a panel lifts the card — a touch more shadow + scale.
    Hover is intentionally left alone (the user rejected hover motion). */
-.app-shell[data-mochi="true"] .gx-panel--dragging {
+.app-shell[data-card="true"] .gx-panel--dragging {
   box-shadow:
     0 48px 96px rgba(0, 0, 0, 0.66),
     0 20px 40px rgba(0, 0, 0, 0.5),
@@ -531,25 +531,25 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   z-index: 10;
 }
 
-/* Mochi OFF — restore the legacy splitter-line chrome. The JSX no
+/* Card layout OFF — restore the legacy splitter-line chrome. The JSX no
    longer carries these borders / fills, so they live here, gated to
-   the absence of the mochi flag. Stripe/center-stripe panels abut
+   the absence of the card flag. Stripe/center-stripe panels abut
    the editor with hairline dividers; gaps and radius are all 0. */
-.app-shell:not([data-mochi="true"])
+.app-shell:not([data-card="true"])
   [data-stripe-root]:not([data-stripe-region="center"]),
-.app-shell:not([data-mochi="true"]) [data-center-stripe] {
+.app-shell:not([data-card="true"]) [data-center-stripe] {
   background-color: color-mix(in oklch, var(--background) 40%, transparent);
 }
-.app-shell:not([data-mochi="true"]) [data-stripe-region="left"] {
+.app-shell:not([data-card="true"]) [data-stripe-region="left"] {
   border-right: 1px solid var(--border);
 }
-.app-shell:not([data-mochi="true"]) [data-stripe-region="right"] {
+.app-shell:not([data-card="true"]) [data-stripe-region="right"] {
   border-left: 1px solid var(--border);
 }
-.app-shell:not([data-mochi="true"]) [data-stripe-region="bottom"] {
+.app-shell:not([data-card="true"]) [data-stripe-region="bottom"] {
   border-top: 1px solid var(--border);
 }
-.app-shell:not([data-mochi="true"]) [data-center-stripe] {
+.app-shell:not([data-card="true"]) [data-center-stripe] {
   border-bottom: 1px solid var(--border);
 }
 

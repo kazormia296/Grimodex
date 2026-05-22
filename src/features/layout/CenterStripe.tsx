@@ -9,7 +9,7 @@ import {
   computeLayoutGridMetrics,
 } from "./layoutMetrics";
 import { useLayoutStore } from "./layoutStore";
-import { useMochiLayout } from "./mochiLayout";
+import { useCardLayout } from "./cardLayout";
 import { useCenterSegments } from "./useCenterSegments";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { useRegionSegments } from "./useRegionSegments";
@@ -42,7 +42,7 @@ export function CenterStripe() {
   const slotIds = useLayoutStore(
     useShallow((s) => s.layout.center.segments.map((seg) => seg.id)),
   );
-  const mochi = useMochiLayout();
+  const cardLayout = useCardLayout();
 
   const stripeColumns = useMemo(() => {
     const metrics = computeLayoutGridMetrics({
@@ -56,7 +56,7 @@ export function CenterStripe() {
       leftSize: layout.regions.left.size,
       rightSize: layout.regions.right.size,
       bottomSize: layout.regions.bottom.size,
-      mochi,
+      cardLayout,
     });
     return buildCenterStripeGridTemplateColumns(metrics);
   }, [
@@ -70,7 +70,7 @@ export function CenterStripe() {
     layout.regions.right.size,
     leftOpen,
     rightOpen,
-    mochi,
+    cardLayout,
   ]);
 
   const dropSegments = useMemo(

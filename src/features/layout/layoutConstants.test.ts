@@ -73,10 +73,10 @@ describe("clampRegionSize with filler layout", () => {
     ).toBe(maxLeft);
   });
 
-  it("uses legacy chrome (no outer pad / gaps, 6px splitter) when mochi is off", () => {
+  it("uses legacy chrome (no outer pad / gaps, 6px splitter) when cardLayout is off", () => {
     const ctx: RegionSizeClampContext = {
       ...PLAN_FILLER_CONTEXT,
-      mochi: false,
+      cardLayout: false,
     };
     const maxLeft = getMaxRegionSize("left", LAPTOP, ctx);
     expect(maxLeft).toBe(

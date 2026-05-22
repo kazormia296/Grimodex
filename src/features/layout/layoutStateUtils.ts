@@ -18,7 +18,7 @@ import {
   STRIPE_SIZE,
   type RegionSizeClampContext,
 } from "./layoutConstants";
-import { isMochiLayout } from "./mochiLayout";
+import { isCardLayout } from "./cardLayout";
 import type {
   BottomCornerOwnership,
   CenterSegment,
@@ -197,13 +197,13 @@ export function getCenterContentWidthPx(
   state: LayoutState,
   viewport: { width: number },
 ): number {
-  const mochi = isMochiLayout();
-  const splitterPx = regionSplitterPx(mochi);
-  const stripeChrome = STRIPE_SIZE + (mochi ? STRIPE_GAP_PX : 0);
+  const cardLayout = isCardLayout();
+  const splitterPx = regionSplitterPx(cardLayout);
+  const stripeChrome = STRIPE_SIZE + (cardLayout ? STRIPE_GAP_PX : 0);
   const leftOpen = isRegionOpen(state.regions.left);
   const rightOpen = isRegionOpen(state.regions.right);
   const sideChrome =
-    (mochi ? OUTER_PAD_PX * 2 : 0) +
+    (cardLayout ? OUTER_PAD_PX * 2 : 0) +
     (regionHasRegisteredPanels(state.regions.left) ? stripeChrome : 0) +
     (regionHasRegisteredPanels(state.regions.right) ? stripeChrome : 0) +
     (leftOpen ? splitterPx + state.regions.left.size : 0) +
@@ -489,9 +489,9 @@ export function getRegionContentSize(
 export function getSlotLayoutBudget(
   openSlotCount: number,
   layoutBudgetPx: number,
-  // 同一 region 内のスロット間 splitter 幅。もちもち ON では panel-gap、
+  // 同一 region 内のスロット間 splitter 幅。カードレイアウト ON では panel-gap、
   // OFF では旧来の 6px 実線。D案の階層 stripe-gap > panel-gap に対応。
-  gutterPx: number = slotSplitterPx(isMochiLayout()),
+  gutterPx: number = slotSplitterPx(isCardLayout()),
 ): number {
   if (openSlotCount <= 0) return 0;
   const gutterTotal = Math.max(0, openSlotCount - 1) * gutterPx;
@@ -560,11 +560,11 @@ export function redistributeSpaceOnEditorClose(
   const rightOpen = isRegionOpen(next.regions.right);
   if (!leftOpen && !rightOpen) return next;
 
-  const mochi = isMochiLayout();
-  const splitterPx = regionSplitterPx(mochi);
-  const stripeChrome = STRIPE_SIZE + (mochi ? STRIPE_GAP_PX : 0);
+  const cardLayout = isCardLayout();
+  const splitterPx = regionSplitterPx(cardLayout);
+  const stripeChrome = STRIPE_SIZE + (cardLayout ? STRIPE_GAP_PX : 0);
   const fixedHorizontal =
-    (mochi ? OUTER_PAD_PX * 2 : 0) +
+    (cardLayout ? OUTER_PAD_PX * 2 : 0) +
     (regionHasRegisteredPanels(next.regions.left) ? stripeChrome : 0) +
     (regionHasRegisteredPanels(next.regions.right) ? stripeChrome : 0) +
     (leftOpen ? splitterPx : 0) +
@@ -664,11 +664,11 @@ export function clampLayoutStateForViewport(
   const horizontalTotal = leftSize + rightSize;
   const leftOpen = clampContext.leftOpen;
   const rightOpen = clampContext.rightOpen;
-  const mochi = isMochiLayout();
-  const splitterPx = regionSplitterPx(mochi);
-  const stripeChrome = STRIPE_SIZE + (mochi ? STRIPE_GAP_PX : 0);
+  const cardLayout = isCardLayout();
+  const splitterPx = regionSplitterPx(cardLayout);
+  const stripeChrome = STRIPE_SIZE + (cardLayout ? STRIPE_GAP_PX : 0);
   const fixedHorizontal =
-    (mochi ? OUTER_PAD_PX * 2 : 0) +
+    (cardLayout ? OUTER_PAD_PX * 2 : 0) +
     (regionHasRegisteredPanels(next.regions.left) ? stripeChrome : 0) +
     (regionHasRegisteredPanels(next.regions.right) ? stripeChrome : 0) +
     (leftOpen ? splitterPx : 0) +
@@ -798,7 +798,7 @@ export function buildRegionSizeClampContext(
     leftSize: state.regions.left.size,
     rightSize: state.regions.right.size,
     centerReserve: getCenterHorizontalReserve(state),
-    mochi: isMochiLayout(),
+    cardLayout: isCardLayout(),
   };
 }
 

@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { getBottomCorners } from "./layoutStateUtils";
 import { useLayoutStore } from "./layoutStore";
-import { useMochiLayout } from "./mochiLayout";
+import { useCardLayout } from "./cardLayout";
 
 interface BottomCornerToggleProps {
   side: "left" | "right";
@@ -26,11 +26,11 @@ export function BottomCornerToggle({ side }: BottomCornerToggleProps) {
   const ownedByBottom = useLayoutStore((s) => getBottomCorners(s.layout)[side]);
   const toggleBottomCorner = useLayoutStore((s) => s.toggleBottomCorner);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
-  const mochi = useMochiLayout();
+  const cardLayout = useCardLayout();
 
   const SideIcon = side === "left" ? PanelLeft : PanelRight;
   const Icon = ownedByBottom ? PanelBottom : SideIcon;
-  const offset = mochi ? "calc(var(--gx-outer-pad) + 6px)" : "6px";
+  const offset = cardLayout ? "calc(var(--gx-outer-pad) + 6px)" : "6px";
   const label = t(
     ownedByBottom
       ? "layout.bottomCorner.giveToSide"

@@ -30,12 +30,12 @@ describe("layoutMetrics", () => {
   });
 
   it("bottomDockPx includes stripe, content, and the content↔stripe gap", () => {
-    // もちもち ON: content↔icon-stripe 間の stripe-gap を含む。
+    // カードレイアウト ON: content↔icon-stripe 間の stripe-gap を含む。
     expect(bottomDockPx(true, true, 220)).toBe(
       STRIPE_SIZE + 220 + STRIPE_GAP_PX,
     );
     expect(bottomDockPx(true, false, 220)).toBe(STRIPE_SIZE);
-    // もちもち OFF: ギャップなし。
+    // カードレイアウト OFF: ギャップなし。
     expect(bottomDockPx(true, true, 220, false)).toBe(STRIPE_SIZE + 220);
   });
 
@@ -87,7 +87,7 @@ describe("layoutMetrics", () => {
     );
   });
 
-  it("omits gap tracks and uses thin splitters when mochi is off", () => {
+  it("omits gap tracks and uses thin splitters when cardLayout is off", () => {
     const m = computeLayoutGridMetrics({
       hasLeft: true,
       hasRight: true,
@@ -99,7 +99,7 @@ describe("layoutMetrics", () => {
       leftSize: 260,
       rightSize: 340,
       bottomSize: 220,
-      mochi: false,
+      cardLayout: false,
     });
 
     expect(m.gapLeftPx).toBe(0);
@@ -200,7 +200,7 @@ describe("layoutMetrics", () => {
     // content を閉じていても bottom stripe を浮かせる stripe-gap は残る。
     expect(m.bottomCellPx).toBe(STRIPE_SIZE + STRIPE_GAP_PX);
 
-    // もちもち OFF: 閉じた bottom には gap を入れない（旧レイアウト）。
+    // カードレイアウト OFF: 閉じた bottom には gap を入れない（旧レイアウト）。
     const legacy = computeLayoutGridMetrics({
       hasLeft: true,
       hasRight: true,
@@ -212,7 +212,7 @@ describe("layoutMetrics", () => {
       leftSize: 260,
       rightSize: 340,
       bottomSize: 220,
-      mochi: false,
+      cardLayout: false,
     });
     expect(legacy.bottomCellPx).toBe(STRIPE_SIZE);
   });

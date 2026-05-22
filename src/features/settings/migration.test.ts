@@ -109,6 +109,69 @@ describe("migrateAppSettingsToScopedStores", () => {
   });
 });
 
+describe("migrateCardLayoutKey", () => {
+  const mockUpdateGlobalSettings = vi.fn().mockResolvedValue(undefined);
+  const mockGetState = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.doMock("@/features/workspace/store", () => ({
+      useWorkspaceStore: { getState: mockGetState },
+    }));
+  });
+
+  it("copies the legacy display.mochiLayout value to display.cardLayout", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: {
+        userPreferences: {
+          "display.mochiLayout": "false",
+          "editor.fontSize": "16",
+        },
+      },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { migrateCardLayoutKey } = await import("./migration");
+    await migrateCardLayoutKey();
+
+    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+      userPreferences: {
+        "editor.fontSize": "16",
+        "display.cardLayout": "false",
+      },
+    });
+  });
+
+  it("is a no-op when the legacy key is absent", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: { userPreferences: { "display.cardLayout": "true" } },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { migrateCardLayoutKey } = await import("./migration");
+    await migrateCardLayoutKey();
+
+    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite an existing display.cardLayout value", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: {
+        userPreferences: {
+          "display.mochiLayout": "false",
+          "display.cardLayout": "true",
+        },
+      },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { migrateCardLayoutKey } = await import("./migration");
+    await migrateCardLayoutKey();
+
+    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
+  });
+});
+
 describe("seedProjectSettingsFromDefaults", () => {
   const mockGetState = vi.fn();
 

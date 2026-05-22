@@ -205,8 +205,8 @@ function EditorScreen() {
   const glassEnabled = useSettingsStore((s) =>
     s.getBoolean("display.glassEffectEnabled", true),
   );
-  const mochiLayout = useSettingsStore((s) =>
-    s.getBoolean("display.mochiLayout", true),
+  const cardLayout = useSettingsStore((s) =>
+    s.getBoolean("display.cardLayout", true),
   );
   const glassTransparency = useSettingsStore((s) =>
     s.getNumber("display.glassTransparency", 30),
@@ -504,7 +504,7 @@ function EditorScreen() {
   return (
     <main
       className="app-shell flex h-screen flex-col"
-      data-mochi={mochiLayout ? "true" : undefined}
+      data-card={cardLayout ? "true" : undefined}
       data-glass-enabled={glassEnabled ? "true" : undefined}
       data-glass-shell={glassSurfaceShell ? "true" : undefined}
       data-glass-dock={glassSurfaceDock ? "true" : undefined}

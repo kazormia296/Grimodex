@@ -207,13 +207,13 @@ export function DisplayCategory() {
 
       <SettingSection title={t("settings.display.layout", "Layout")}>
         <SettingRow
-          label={t("settings.display.mochiLayout", "Mochi panels")}
+          label={t("settings.display.cardLayout", "Card layout")}
           description={t(
-            "settings.display.mochiLayoutDesc",
+            "settings.display.cardLayoutDesc",
             "Float panels as soft rounded cards separated by gaps. When off, panels abut with 1px splitter lines.",
           )}
         >
-          <SettingToggle settingKey="display.mochiLayout" defaultValue={true} />
+          <SettingToggle settingKey="display.cardLayout" defaultValue={true} />
         </SettingRow>
       </SettingSection>
 

@@ -562,7 +562,7 @@ export interface LayoutStoreState {
     layoutBudgetPx: number,
   ) => void;
   finalizeLayoutResize: () => void;
-  /** 現在のビューポート＋もちもちモードで region サイズを再クランプする。 */
+  /** 現在のビューポート＋カードレイアウトモードで region サイズを再クランプする。 */
   reclampForViewport: () => void;
   /** ボトム指定側の角を side stripe ↔ bottom region で切り替える。 */
   toggleBottomCorner: (side: "left" | "right") => void;
@@ -1015,7 +1015,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   },
 
   reclampForViewport: () => {
-    // もちもち ON/OFF 切替で chrome 量が変わるため、保存済みの region
+    // カードレイアウト ON/OFF 切替で chrome 量が変わるため、保存済みの region
     // サイズを現在のモードに合わせて即座に再クランプする。
     set((state) => ({
       layout: applyValidatedLayout(cloneLayoutState(state.layout)),

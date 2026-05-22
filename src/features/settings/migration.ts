@@ -62,6 +62,26 @@ export async function migrateAppSettingsToScopedStores(): Promise<void> {
   await api.setSetting(SCHEMA_VERSION_KEY, String(CURRENT_VERSION));
 }
 
+const LEGACY_CARD_LAYOUT_KEY = "display.mochiLayout";
+const CARD_LAYOUT_KEY = "display.cardLayout";
+
+/**
+ * One-time key rename: the card-layout toggle was originally persisted under
+ * `display.mochiLayout`. Carry any saved value over to `display.cardLayout`.
+ * Idempotent — acts only while the legacy key is present and the new one absent.
+ */
+export async function migrateCardLayoutKey(): Promise<void> {
+  const { useWorkspaceStore } = await import("@/features/workspace/store");
+  const ws = useWorkspaceStore.getState();
+  const prefs = ws.globalSettings?.userPreferences;
+  if (!prefs || !(LEGACY_CARD_LAYOUT_KEY in prefs)) return;
+  if (CARD_LAYOUT_KEY in prefs) return;
+  const { [LEGACY_CARD_LAYOUT_KEY]: legacyValue, ...rest } = prefs;
+  await ws.updateGlobalSettings({
+    userPreferences: { ...rest, [CARD_LAYOUT_KEY]: legacyValue },
+  });
+}
+
 /**
  * Seed project_settings from globalSettings.projectDefaults.
  * Idempotent: skips keys already present in project_settings.

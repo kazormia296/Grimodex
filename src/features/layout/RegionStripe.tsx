@@ -325,7 +325,7 @@ export function RegionStripe({
       style={reserveStyle}
       className={cn(
         "relative flex h-full min-h-0 w-full min-w-0 overflow-hidden",
-        // D案: stripe/rail も他パネルと同じ「もちもちカード」。境界線は引かず、
+        // D案: stripe/rail も他パネルと同じ「カード」。境界線は引かず、
         // ギャップで分離する。center は CenterStripe 側がカードを持つため除外。
         region !== "center" && "gx-panel",
         orientation === "vertical"

@@ -16,7 +16,7 @@ export interface LayoutGridMetrics {
   /** stripe ↔ content 間の D案ギャップ列幅。stripe が無ければ 0。 */
   gapLeftPx: number;
   gapRightPx: number;
-  /** center stripe ↔ main 間のギャップ行高さ。もちもち OFF 時は 0。 */
+  /** center stripe ↔ main 間のギャップ行高さ。カードレイアウト OFF 時は 0。 */
   gapRowPx: number;
   centerColumnPx: string;
   centerBandVisible: boolean;
@@ -44,8 +44,8 @@ export interface LayoutGridMetricsInput {
   leftSize: number;
   rightSize: number;
   bottomSize: number;
-  /** もちもちレイアウト ON/OFF。未指定時は ON 扱い。 */
-  mochi?: boolean;
+  /** カードレイアウト ON/OFF。未指定時は ON 扱い。 */
+  cardLayout?: boolean;
 }
 
 export function regionContentPx(open: boolean, storedSize: number): number {
@@ -65,21 +65,21 @@ export function bottomDockPx(
   hasRegion: boolean,
   open: boolean,
   storedSize: number,
-  mochi: boolean = true,
+  cardLayout: boolean = true,
 ): number {
   if (!hasRegion) return 0;
   // bottom region は content と icon stripe を 1 セル内で縦積みするため、
-  // 両者の間の stripe-gap をドック高さに含める（もちもち ON 時のみ）。
-  const stripeGap = open && mochi ? STRIPE_GAP_PX : 0;
+  // 両者の間の stripe-gap をドック高さに含める（カードレイアウト ON 時のみ）。
+  const stripeGap = open && cardLayout ? STRIPE_GAP_PX : 0;
   return STRIPE_SIZE + regionContentPx(open, storedSize) + stripeGap;
 }
 
 export function computeLayoutGridMetrics(
   input: LayoutGridMetricsInput,
 ): LayoutGridMetrics {
-  const mochi = input.mochi ?? true;
-  const splitterPx = regionSplitterPx(mochi);
-  const gapPx = mochi ? STRIPE_GAP_PX : 0;
+  const cardLayout = input.cardLayout ?? true;
+  const splitterPx = regionSplitterPx(cardLayout);
+  const gapPx = cardLayout ? STRIPE_GAP_PX : 0;
   const leftStripePx = input.hasLeft ? STRIPE_SIZE : 0;
   const rightStripePx = input.hasRight ? STRIPE_SIZE : 0;
   const leftContentPx = input.hasLeft && input.leftOpen ? input.leftSize : 0;
@@ -118,7 +118,7 @@ export function computeLayoutGridMetrics(
     input.hasBottom,
     input.bottomOpen,
     input.bottomSize,
-    mochi,
+    cardLayout,
   );
 
   return {
@@ -137,10 +137,11 @@ export function computeLayoutGridMetrics(
     leftDockPx,
     rightDockPx,
     bottomDockPx: bottomDock,
-    // bottom row ↔ main 間のギャップ。もちもち時は content の開閉に
+    // bottom row ↔ main 間のギャップ。カードレイアウト時は content の開閉に
     // かかわらず常に確保する（閉じていても stripe が浮いて見えるよう）。
     // 旧レイアウトでは open 時の splitter 線のみ。
-    bottomCellPx: bottomDock + (mochi || input.bottomOpen ? splitterPx : 0),
+    bottomCellPx:
+      bottomDock + (cardLayout || input.bottomOpen ? splitterPx : 0),
   };
 }
 

@@ -19,7 +19,7 @@ import {
   computeLayoutGridMetrics,
 } from "./layoutMetrics";
 import { useLayoutStore } from "./layoutStore";
-import { useMochiLayout } from "./mochiLayout";
+import { useCardLayout } from "./cardLayout";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutDnDHighlightOverlay } from "./LayoutDnDHighlightOverlay";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
@@ -57,16 +57,16 @@ export const LayoutShell = memo(function LayoutShell({
   const hasBottom = segments.bottom.some((s) => s.panels.length > 0);
 
   const centerBandVisible = isCenterBandVisible(layout);
-  const mochi = useMochiLayout();
+  const cardLayout = useCardLayout();
 
-  // もちもち ON/OFF 切替で chrome 量が変わるため、切替時に保存済みの
+  // カードレイアウト ON/OFF 切替で chrome 量が変わるため、切替時に保存済みの
   // region サイズを即座に再クランプする（初回マウントでは何もしない）。
-  const mochiRef = useRef(mochi);
+  const cardLayoutRef = useRef(cardLayout);
   useEffect(() => {
-    if (mochiRef.current === mochi) return;
-    mochiRef.current = mochi;
+    if (cardLayoutRef.current === cardLayout) return;
+    cardLayoutRef.current = cardLayout;
     useLayoutStore.getState().reclampForViewport();
-  }, [mochi]);
+  }, [cardLayout]);
 
   const metrics = useMemo(
     () =>
@@ -81,7 +81,7 @@ export const LayoutShell = memo(function LayoutShell({
         leftSize: layout.regions.left.size,
         rightSize: layout.regions.right.size,
         bottomSize: layout.regions.bottom.size,
-        mochi,
+        cardLayout,
       }),
     [
       bottomOpen,
@@ -94,7 +94,7 @@ export const LayoutShell = memo(function LayoutShell({
       layout.regions.right.size,
       leftOpen,
       rightOpen,
-      mochi,
+      cardLayout,
     ],
   );
 
@@ -151,7 +151,7 @@ export const LayoutShell = memo(function LayoutShell({
           gridTemplateColumns,
           gridTemplateRows,
           gridTemplateAreas,
-          padding: mochi ? "var(--gx-outer-pad)" : undefined,
+          padding: cardLayout ? "var(--gx-outer-pad)" : undefined,
         }}
       >
         <div style={{ gridArea: "cstripe" }} className="min-h-0 min-w-0">
@@ -231,7 +231,7 @@ export const LayoutShell = memo(function LayoutShell({
           >
             {bottomOpen ? (
               <RegionResizeSplitter region="bottom" />
-            ) : mochi ? (
+            ) : cardLayout ? (
               // content を閉じていても bottom stripe を浮かせるギャップ。
               <div
                 aria-hidden
