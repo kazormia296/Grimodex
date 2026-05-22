@@ -11,10 +11,14 @@ import {
   MIN_EDITOR_SIZE,
   MIN_REGION_SIZE,
   MIN_SLOT_SIZE,
-  SPLITTER_GUTTER_PX,
+  OUTER_PAD_PX,
+  regionSplitterPx,
+  slotSplitterPx,
+  STRIPE_GAP_PX,
   STRIPE_SIZE,
   type RegionSizeClampContext,
 } from "./layoutConstants";
+import { isMochiLayout } from "./mochiLayout";
 import type {
   CenterSegment,
   CenterState,
@@ -183,13 +187,17 @@ export function getCenterContentWidthPx(
   state: LayoutState,
   viewport: { width: number },
 ): number {
+  const mochi = isMochiLayout();
+  const splitterPx = regionSplitterPx(mochi);
+  const stripeChrome = STRIPE_SIZE + (mochi ? STRIPE_GAP_PX : 0);
   const leftOpen = isRegionOpen(state.regions.left);
   const rightOpen = isRegionOpen(state.regions.right);
   const sideChrome =
-    (regionHasRegisteredPanels(state.regions.left) ? STRIPE_SIZE : 0) +
-    (regionHasRegisteredPanels(state.regions.right) ? STRIPE_SIZE : 0) +
-    (leftOpen ? SPLITTER_GUTTER_PX + state.regions.left.size : 0) +
-    (rightOpen ? SPLITTER_GUTTER_PX + state.regions.right.size : 0);
+    (mochi ? OUTER_PAD_PX * 2 : 0) +
+    (regionHasRegisteredPanels(state.regions.left) ? stripeChrome : 0) +
+    (regionHasRegisteredPanels(state.regions.right) ? stripeChrome : 0) +
+    (leftOpen ? splitterPx + state.regions.left.size : 0) +
+    (rightOpen ? splitterPx + state.regions.right.size : 0);
   return viewport.width - sideChrome;
 }
 
@@ -471,7 +479,9 @@ export function getRegionContentSize(
 export function getSlotLayoutBudget(
   openSlotCount: number,
   layoutBudgetPx: number,
-  gutterPx: number = SPLITTER_GUTTER_PX,
+  // 同一 region 内のスロット間 splitter 幅。もちもち ON では panel-gap、
+  // OFF では旧来の 6px 実線。D案の階層 stripe-gap > panel-gap に対応。
+  gutterPx: number = slotSplitterPx(isMochiLayout()),
 ): number {
   if (openSlotCount <= 0) return 0;
   const gutterTotal = Math.max(0, openSlotCount - 1) * gutterPx;
@@ -540,11 +550,15 @@ export function redistributeSpaceOnEditorClose(
   const rightOpen = isRegionOpen(next.regions.right);
   if (!leftOpen && !rightOpen) return next;
 
+  const mochi = isMochiLayout();
+  const splitterPx = regionSplitterPx(mochi);
+  const stripeChrome = STRIPE_SIZE + (mochi ? STRIPE_GAP_PX : 0);
   const fixedHorizontal =
-    (regionHasRegisteredPanels(next.regions.left) ? STRIPE_SIZE : 0) +
-    (regionHasRegisteredPanels(next.regions.right) ? STRIPE_SIZE : 0) +
-    (leftOpen ? SPLITTER_GUTTER_PX : 0) +
-    (rightOpen ? SPLITTER_GUTTER_PX : 0);
+    (mochi ? OUTER_PAD_PX * 2 : 0) +
+    (regionHasRegisteredPanels(next.regions.left) ? stripeChrome : 0) +
+    (regionHasRegisteredPanels(next.regions.right) ? stripeChrome : 0) +
+    (leftOpen ? splitterPx : 0) +
+    (rightOpen ? splitterPx : 0);
 
   const available = Math.max(0, viewport.width - fixedHorizontal);
   const leftSize = leftOpen ? next.regions.left.size : 0;
@@ -640,11 +654,15 @@ export function clampLayoutStateForViewport(
   const horizontalTotal = leftSize + rightSize;
   const leftOpen = clampContext.leftOpen;
   const rightOpen = clampContext.rightOpen;
+  const mochi = isMochiLayout();
+  const splitterPx = regionSplitterPx(mochi);
+  const stripeChrome = STRIPE_SIZE + (mochi ? STRIPE_GAP_PX : 0);
   const fixedHorizontal =
-    (regionHasRegisteredPanels(next.regions.left) ? STRIPE_SIZE : 0) +
-    (regionHasRegisteredPanels(next.regions.right) ? STRIPE_SIZE : 0) +
-    (leftOpen ? SPLITTER_GUTTER_PX : 0) +
-    (rightOpen ? SPLITTER_GUTTER_PX : 0);
+    (mochi ? OUTER_PAD_PX * 2 : 0) +
+    (regionHasRegisteredPanels(next.regions.left) ? stripeChrome : 0) +
+    (regionHasRegisteredPanels(next.regions.right) ? stripeChrome : 0) +
+    (leftOpen ? splitterPx : 0) +
+    (rightOpen ? splitterPx : 0);
   const centerReserve = getCenterHorizontalReserve(next);
   const maxHorizontal = viewport.width - centerReserve - fixedHorizontal;
 
@@ -770,6 +788,7 @@ export function buildRegionSizeClampContext(
     leftSize: state.regions.left.size,
     rightSize: state.regions.right.size,
     centerReserve: getCenterHorizontalReserve(state),
+    mochi: isMochiLayout(),
   };
 }
 

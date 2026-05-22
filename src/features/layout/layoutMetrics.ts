@@ -1,7 +1,8 @@
 import {
   computeFillerRegion,
+  regionSplitterPx,
   STRIPE_SIZE,
-  SPLITTER_GUTTER_PX,
+  STRIPE_GAP_PX,
 } from "./layoutConstants";
 import type { RegionId } from "./layoutTypes";
 
@@ -12,6 +13,11 @@ export interface LayoutGridMetrics {
   rightContentPx: number;
   leftSplitterPx: number;
   rightSplitterPx: number;
+  /** stripe ↔ content 間の D案ギャップ列幅。stripe が無ければ 0。 */
+  gapLeftPx: number;
+  gapRightPx: number;
+  /** center stripe ↔ main 間のギャップ行高さ。もちもち OFF 時は 0。 */
+  gapRowPx: number;
   centerColumnPx: string;
   centerBandVisible: boolean;
   /**
@@ -39,6 +45,8 @@ export interface LayoutGridMetricsInput {
   leftSize: number;
   rightSize: number;
   bottomSize: number;
+  /** もちもちレイアウト ON/OFF。未指定時は ON 扱い。 */
+  mochi?: boolean;
 }
 
 export function regionContentPx(open: boolean, storedSize: number): number {
@@ -66,6 +74,9 @@ export function bottomDockPx(
 export function computeLayoutGridMetrics(
   input: LayoutGridMetricsInput,
 ): LayoutGridMetrics {
+  const mochi = input.mochi ?? true;
+  const splitterPx = regionSplitterPx(mochi);
+  const gapPx = mochi ? STRIPE_GAP_PX : 0;
   const leftStripePx = input.hasLeft ? STRIPE_SIZE : 0;
   const rightStripePx = input.hasRight ? STRIPE_SIZE : 0;
   const leftContentPx = input.hasLeft && input.leftOpen ? input.leftSize : 0;
@@ -85,9 +96,9 @@ export function computeLayoutGridMetrics(
 
   // filler region は固定境界を持たないため専用 splitter を消す。
   const leftSplitterPx =
-    input.leftOpen && fillerRegion !== "left" ? SPLITTER_GUTTER_PX : 0;
+    input.leftOpen && fillerRegion !== "left" ? splitterPx : 0;
   const rightSplitterPx =
-    input.rightOpen && fillerRegion !== "right" ? SPLITTER_GUTTER_PX : 0;
+    input.rightOpen && fillerRegion !== "right" ? splitterPx : 0;
 
   // filler が無い（埋める region が無い）ときは center 列を `1fr` にして
   // グリッド幅を埋める。filler があるときは center は 0px。
@@ -113,6 +124,9 @@ export function computeLayoutGridMetrics(
     rightContentPx,
     leftSplitterPx,
     rightSplitterPx,
+    gapLeftPx: leftStripePx > 0 ? gapPx : 0,
+    gapRightPx: rightStripePx > 0 ? gapPx : 0,
+    gapRowPx: gapPx,
     centerBandVisible: input.centerBandVisible,
     centerColumnPx,
     fillerRegion,
@@ -120,7 +134,7 @@ export function computeLayoutGridMetrics(
     rightDockPx,
     bottomDockPx: bottomDock,
     bottomRowInset: bottomDock,
-    bottomCellPx: bottomDock + (input.bottomOpen ? SPLITTER_GUTTER_PX : 0),
+    bottomCellPx: bottomDock + (input.bottomOpen ? splitterPx : 0),
   };
 }
 
@@ -147,6 +161,11 @@ export function buildCenterStripeGridTemplateColumns(
   ].join(" ");
 }
 
+/**
+ * 9 列構成（D案）: stripe / gap / content / splitter / center /
+ * splitter / content / gap / stripe。gap 列と splitter 帯がパネル間の
+ * 余白を作る — 線は引かない。grid-template-areas の `.` セルと対応。
+ */
 export function buildLayoutGridTemplateColumns(
   metrics: LayoutGridMetrics,
 ): string {
@@ -160,13 +179,29 @@ export function buildLayoutGridTemplateColumns(
       : `${metrics.rightContentPx}px`;
   return [
     `${metrics.leftStripePx}px`,
+    `${metrics.gapLeftPx}px`,
     leftContentColumn,
     `${metrics.leftSplitterPx}px`,
     metrics.centerColumnPx,
     `${metrics.rightSplitterPx}px`,
     rightContentColumn,
+    `${metrics.gapRightPx}px`,
     `${metrics.rightStripePx}px`,
   ].join(" ");
+}
+
+/**
+ * 行構成（D案）: center stripe / gap 行 / main / (任意) bottom。
+ * gap 行が center stripe と main の間に呼吸を作る。bottom 境界は
+ * bottomCellPx 先頭の splitter 帯がギャップを兼ねる。
+ */
+export function buildLayoutGridTemplateRows(
+  metrics: LayoutGridMetrics,
+  hasBottom: boolean,
+): string {
+  const rows = [`${STRIPE_SIZE}px`, `${metrics.gapRowPx}px`, "1fr"];
+  if (hasBottom) rows.push(`${metrics.bottomCellPx}px`);
+  return rows.join(" ");
 }
 
 export function sideContentZoneHeight(bottomRowInset: number): string {
@@ -182,6 +217,8 @@ export function sideLayoutChromePx(
     | "rightContentPx"
     | "leftSplitterPx"
     | "rightSplitterPx"
+    | "gapLeftPx"
+    | "gapRightPx"
   >,
 ): number {
   return (
@@ -190,7 +227,9 @@ export function sideLayoutChromePx(
     metrics.leftContentPx +
     metrics.rightContentPx +
     metrics.leftSplitterPx +
-    metrics.rightSplitterPx
+    metrics.rightSplitterPx +
+    metrics.gapLeftPx +
+    metrics.gapRightPx
   );
 }
 

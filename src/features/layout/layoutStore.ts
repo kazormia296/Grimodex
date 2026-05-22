@@ -561,6 +561,8 @@ export interface LayoutStoreState {
     layoutBudgetPx: number,
   ) => void;
   finalizeLayoutResize: () => void;
+  /** 現在のビューポート＋もちもちモードで region サイズを再クランプする。 */
+  reclampForViewport: () => void;
 
   setDraggingPanel: (
     panel: ToolWindowPanelId | null,
@@ -1005,6 +1007,15 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         clampLayoutStateForViewport(cloneLayoutState(state.layout), vp),
         vp,
       ),
+    }));
+    scheduleSave(get);
+  },
+
+  reclampForViewport: () => {
+    // もちもち ON/OFF 切替で chrome 量が変わるため、保存済みの region
+    // サイズを現在のモードに合わせて即座に再クランプする。
+    set((state) => ({
+      layout: applyValidatedLayout(cloneLayoutState(state.layout)),
     }));
     scheduleSave(get);
   },

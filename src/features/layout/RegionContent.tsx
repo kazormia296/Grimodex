@@ -8,6 +8,7 @@ import { useLayoutStore } from "./layoutStore";
 import {
   DND_NEW_SLOT_BETWEEN_HALF_PX,
   DND_NEW_SLOT_EDGE_HIT_PX,
+  PANEL_GAP_PX,
 } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
@@ -178,7 +179,8 @@ export const RegionContent = memo(function RegionContent({
       ref={containerRef}
       data-region-content={region}
       className={cn(
-        "relative flex h-full min-h-0 w-full min-w-0 overflow-hidden",
+        // overflow visible: each slot's card draws its shadow into the gap.
+        "relative flex h-full min-h-0 w-full min-w-0",
         orientation === "vertical" ? "flex-col" : "flex-row",
       )}
     >
@@ -204,6 +206,7 @@ export const RegionContent = memo(function RegionContent({
               <div className="relative shrink-0">
                 <Splitter
                   orientation={orientation}
+                  thickness={PANEL_GAP_PX}
                   disabled={layoutLocked}
                   onDrag={(delta) => {
                     const prevSlot = openSlots[index - 1];
@@ -263,7 +266,7 @@ export const RegionContent = memo(function RegionContent({
               data-drop-slot={slot.id}
               data-drop-region={region}
               style={sizeStyle}
-              className="relative flex min-h-0 min-w-0 flex-col overflow-hidden"
+              className="relative flex min-h-0 min-w-0 flex-col"
               onDragOver={(e) => handleSlotDragOver(slot.id, e)}
               onDragLeave={handleSlotDragLeave}
               onDrop={(e) => handleSlotDrop(slot.id, e)}

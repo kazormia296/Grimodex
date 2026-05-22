@@ -9,6 +9,7 @@ import {
   computeLayoutGridMetrics,
 } from "./layoutMetrics";
 import { useLayoutStore } from "./layoutStore";
+import { useMochiLayout } from "./mochiLayout";
 import { useCenterSegments } from "./useCenterSegments";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { useRegionSegments } from "./useRegionSegments";
@@ -41,6 +42,7 @@ export function CenterStripe() {
   const slotIds = useLayoutStore(
     useShallow((s) => s.layout.center.segments.map((seg) => seg.id)),
   );
+  const mochi = useMochiLayout();
 
   const stripeColumns = useMemo(() => {
     const metrics = computeLayoutGridMetrics({
@@ -54,6 +56,7 @@ export function CenterStripe() {
       leftSize: layout.regions.left.size,
       rightSize: layout.regions.right.size,
       bottomSize: layout.regions.bottom.size,
+      mochi,
     });
     return buildCenterStripeGridTemplateColumns(metrics);
   }, [
@@ -67,6 +70,7 @@ export function CenterStripe() {
     layout.regions.right.size,
     leftOpen,
     rightOpen,
+    mochi,
   ]);
 
   const dropSegments = useMemo(
@@ -90,7 +94,7 @@ export function CenterStripe() {
   return (
     <div
       data-center-stripe
-      className="relative grid h-full w-full min-w-0 overflow-hidden border-b border-border bg-background/40"
+      className="gx-panel relative grid h-full w-full min-w-0 overflow-hidden"
       style={{ gridTemplateColumns: stripeColumns }}
     >
       <div aria-hidden className="min-h-0 min-w-0" />

@@ -3,13 +3,19 @@ import {
   bottomDockPx,
   buildCenterStripeGridTemplateColumns,
   buildLayoutGridTemplateColumns,
+  buildLayoutGridTemplateRows,
   computeLayoutGridMetrics,
   regionContentPx,
   sideContentZoneHeight,
   sideDockPx,
   sideLayoutChromePx,
 } from "./layoutMetrics";
-import { SPLITTER_GUTTER_PX, STRIPE_SIZE } from "./layoutConstants";
+import {
+  LEGACY_SPLITTER_PX,
+  SPLITTER_GUTTER_PX,
+  STRIPE_GAP_PX,
+  STRIPE_SIZE,
+} from "./layoutConstants";
 
 describe("layoutMetrics", () => {
   it("regionContentPx returns 0 when closed", () => {
@@ -70,10 +76,39 @@ describe("layoutMetrics", () => {
     });
 
     expect(buildLayoutGridTemplateColumns(m)).toBe(
-      `${STRIPE_SIZE}px 260px ${SPLITTER_GUTTER_PX}px minmax(0, 1fr) ${SPLITTER_GUTTER_PX}px 340px ${STRIPE_SIZE}px`,
+      `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 260px ${SPLITTER_GUTTER_PX}px minmax(0, 1fr) ${SPLITTER_GUTTER_PX}px 340px ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
     );
     expect(sideLayoutChromePx(m)).toBe(
-      STRIPE_SIZE * 2 + 260 + 340 + SPLITTER_GUTTER_PX * 2,
+      STRIPE_SIZE * 2 + 260 + 340 + SPLITTER_GUTTER_PX * 2 + STRIPE_GAP_PX * 2,
+    );
+  });
+
+  it("omits gap tracks and uses thin splitters when mochi is off", () => {
+    const m = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: true,
+      leftOpen: true,
+      rightOpen: true,
+      bottomOpen: true,
+      centerBandVisible: true,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 220,
+      mochi: false,
+    });
+
+    expect(m.gapLeftPx).toBe(0);
+    expect(m.gapRightPx).toBe(0);
+    expect(m.gapRowPx).toBe(0);
+    expect(m.leftSplitterPx).toBe(LEGACY_SPLITTER_PX);
+    expect(m.rightSplitterPx).toBe(LEGACY_SPLITTER_PX);
+    expect(m.bottomCellPx).toBe(m.bottomDockPx + LEGACY_SPLITTER_PX);
+    expect(buildLayoutGridTemplateColumns(m)).toBe(
+      `${STRIPE_SIZE}px 0px 260px ${LEGACY_SPLITTER_PX}px minmax(0, 1fr) ${LEGACY_SPLITTER_PX}px 340px 0px ${STRIPE_SIZE}px`,
+    );
+    expect(buildLayoutGridTemplateRows(m, true)).toBe(
+      `${STRIPE_SIZE}px 0px 1fr ${m.bottomCellPx}px`,
     );
   });
 
@@ -115,7 +150,7 @@ describe("layoutMetrics", () => {
     expect(m.leftSplitterPx).toBe(SPLITTER_GUTTER_PX);
     expect(m.rightSplitterPx).toBe(0);
     expect(buildLayoutGridTemplateColumns(m)).toBe(
-      `${STRIPE_SIZE}px 260px ${SPLITTER_GUTTER_PX}px 0px 0px minmax(0, 1fr) ${STRIPE_SIZE}px`,
+      `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 260px ${SPLITTER_GUTTER_PX}px 0px 0px minmax(0, 1fr) ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
     );
   });
 

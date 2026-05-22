@@ -12,8 +12,35 @@ export const MIN_EDITOR_SIZE = 320;
 /** stripe 固定幅/高さ (px) */
 export const STRIPE_SIZE = 32;
 
-/** region / slot 境界 Splitter の厚み (px) — Tailwind w-1.5 / h-1.5 と一致 */
-export const SPLITTER_GUTTER_PX = 6;
+/**
+ * Mochi layout (D案) — 構造ギャップ。階層 outer > stripe > panel が重要。
+ * CSS 側の --gx-outer-pad / --gx-stripe-gap / --gx-panel-gap と一致させること。
+ */
+/** ウィンドウ外周 → stripe の内側余白 (px) */
+export const OUTER_PAD_PX = 14;
+/** stripe 間 / stripe ↔ center のギャップ (px) */
+export const STRIPE_GAP_PX = 12;
+/** 同一 stripe 内のパネル間ギャップ (px) */
+export const PANEL_GAP_PX = 10;
+
+/**
+ * region 境界 Splitter（resize ハンドル）の厚み (px) — もちもち ON 時。
+ * D案ではこの帯が stripe 間ギャップそのものになる（線は描かない）。
+ */
+export const SPLITTER_GUTTER_PX = STRIPE_GAP_PX;
+
+/** 旧レイアウト（もちもち OFF）の Splitter 実線の厚み (px)。 */
+export const LEGACY_SPLITTER_PX = 6;
+
+/** もちもち ON/OFF に応じた region 境界 Splitter 帯の幅。 */
+export function regionSplitterPx(mochi: boolean): number {
+  return mochi ? SPLITTER_GUTTER_PX : LEGACY_SPLITTER_PX;
+}
+
+/** もちもち ON/OFF に応じた同一 region 内スロット間 Splitter 帯の幅。 */
+export function slotSplitterPx(mochi: boolean): number {
+  return mochi ? PANEL_GAP_PX : LEGACY_SPLITTER_PX;
+}
 
 /** DnD: content 端への新 slot 挿入ヒット領域 (px)。absolute 配置のためレイアウトに影響しない */
 export const DND_NEW_SLOT_EDGE_HIT_PX = 64;
@@ -42,6 +69,8 @@ export interface RegionSizeClampContext {
   rightSize: number;
   /** center band 表示時に side region から確保する最小幅合計 */
   centerReserve: number;
+  /** もちもちレイアウト ON/OFF。未指定時は ON 扱い。 */
+  mochi?: boolean;
 }
 
 /**
@@ -63,12 +92,17 @@ function horizontalResizeChromePx(
   context: RegionSizeClampContext,
   fillerRegion: "left" | "right" | null,
 ): number {
-  let chrome = 0;
-  if (context.hasLeft) chrome += STRIPE_SIZE;
-  if (context.hasRight) chrome += STRIPE_SIZE;
-  if (context.leftOpen && fillerRegion !== "left") chrome += SPLITTER_GUTTER_PX;
-  if (context.rightOpen && fillerRegion !== "right")
-    chrome += SPLITTER_GUTTER_PX;
+  const mochi = context.mochi ?? true;
+  const splitterPx = regionSplitterPx(mochi);
+  const gapPx = mochi ? STRIPE_GAP_PX : 0;
+  // 外周パディング (左右) — もちもち時のみレイアウト幅を消費する。
+  let chrome = mochi ? OUTER_PAD_PX * 2 : 0;
+  // stripe 本体 + その stripe ↔ content 間ギャップ列。
+  if (context.hasLeft) chrome += STRIPE_SIZE + gapPx;
+  if (context.hasRight) chrome += STRIPE_SIZE + gapPx;
+  // content ↔ editor 境界の splitter 帯（filler 側は境界を持たない）。
+  if (context.leftOpen && fillerRegion !== "left") chrome += splitterPx;
+  if (context.rightOpen && fillerRegion !== "right") chrome += splitterPx;
   return chrome;
 }
 

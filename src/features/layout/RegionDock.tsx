@@ -27,10 +27,10 @@ export const SideRegionStripeColumn = memo(function SideRegionStripeColumn({
   return (
     <div
       data-region-stripe-column={region}
-      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
+      className="flex h-full min-h-0 w-full flex-col"
     >
       <div
-        className="flex min-h-0 shrink-0 flex-col overflow-hidden"
+        className="flex min-h-0 shrink-0 flex-col"
         style={{ height: contentZoneHeight }}
       >
         <RegionStripe
@@ -39,9 +39,7 @@ export const SideRegionStripeColumn = memo(function SideRegionStripeColumn({
           segments={segments}
         />
       </div>
-      {bottomRowInset > 0 && (
-        <div className="min-h-0 flex-1 bg-background/40" aria-hidden />
-      )}
+      {bottomRowInset > 0 && <div className="min-h-0 flex-1" aria-hidden />}
     </div>
   );
 });
@@ -68,12 +66,12 @@ function BottomRegionDock({
   return (
     <div
       data-region-dock="bottom"
-      className="flex min-h-0 w-full flex-1 flex-col overflow-hidden"
+      className="flex min-h-0 w-full flex-1 flex-col"
     >
       {contentSize > 0 && (
         <div
           style={{ height: contentSize, flexShrink: 0 }}
-          className="flex min-h-0 w-full min-w-0 flex-col overflow-hidden"
+          className="flex min-h-0 w-full min-w-0 flex-col"
         >
           <RegionContent region="bottom" orientation={contentOrientation} />
         </div>
@@ -81,7 +79,7 @@ function BottomRegionDock({
 
       <div
         style={{ height: STRIPE_SIZE, flexShrink: 0 }}
-        className="w-full min-h-0 shrink-0 overflow-hidden"
+        className="w-full min-h-0 shrink-0"
       >
         <RegionStripe
           region="bottom"

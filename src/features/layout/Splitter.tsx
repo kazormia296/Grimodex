@@ -1,5 +1,7 @@
 import { useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
+import { LEGACY_SPLITTER_PX, STRIPE_GAP_PX } from "./layoutConstants";
+import { useMochiLayout } from "./mochiLayout";
 
 interface SplitterProps {
   /**
@@ -11,6 +13,11 @@ interface SplitterProps {
   onDrag: (deltaPx: number) => void;
   onDragEnd?: () => void;
   className?: string;
+  /**
+   * Cross-axis thickness in px. In the mochi layout (D案) this band IS the
+   * inter-panel gap — it draws no line, only carries the resize cursor.
+   */
+  thickness?: number;
 }
 
 /**
@@ -23,6 +30,7 @@ export function Splitter({
   onDrag,
   onDragEnd,
   className,
+  thickness = STRIPE_GAP_PX,
 }: SplitterProps) {
   const onDragRef = useRef(onDrag);
   const onDragEndRef = useRef(onDragEnd);
@@ -86,6 +94,9 @@ export function Splitter({
   );
 
   const isColumnDivider = orientation === "horizontal";
+  const mochi = useMochiLayout();
+  // もちもち ON: ギャップ幅の透明帯。OFF: 旧来の 6px 実線。
+  const effectiveThickness = mochi ? thickness : LEGACY_SPLITTER_PX;
 
   return (
     <div
@@ -93,12 +104,21 @@ export function Splitter({
       aria-orientation={isColumnDivider ? "vertical" : "horizontal"}
       data-layout-splitter={orientation}
       onPointerDown={handlePointerDown}
-      className={cn(
-        "relative z-20 shrink-0 touch-none select-none bg-border/80 hover:bg-primary/60 active:bg-primary/80",
-        disabled && "pointer-events-none opacity-30",
+      style={
         isColumnDivider
-          ? "h-full w-1.5 min-w-1.5 cursor-col-resize"
-          : "h-1.5 min-h-1.5 w-full cursor-row-resize",
+          ? { width: effectiveThickness, height: "100%" }
+          : { width: "100%", height: effectiveThickness }
+      }
+      className={cn(
+        "relative z-20 shrink-0 touch-none select-none transition-colors",
+        // もちもち ON: 線を引かず、ギャップ自体の直接ホバーのみ淡く反応。
+        // OFF: 旧来の実線スプリッタ。
+        mochi
+          ? "hover:bg-foreground/[0.06] active:bg-foreground/10"
+          : "bg-border/80 hover:bg-primary/60 active:bg-primary/80",
+        disabled && "pointer-events-none",
+        !mochi && disabled && "opacity-30",
+        isColumnDivider ? "cursor-col-resize" : "cursor-row-resize",
         className,
       )}
     />

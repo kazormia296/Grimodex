@@ -21,6 +21,7 @@ import {
   DEFAULT_REGION_SIZES,
   MIN_EDITOR_SIZE,
   MIN_REGION_SIZE,
+  PANEL_GAP_PX,
 } from "./layoutConstants";
 
 const VIEWPORT = { width: 1200, height: 800 };
@@ -303,7 +304,8 @@ describe("getOpenSlots pixel distribution invariant", () => {
     const layoutBudget = 800;
     const pixels = getOpenSlotPixelSizes("left", state, layoutBudget);
     const sum = [...pixels.values()].reduce((a, b) => a + b, 0);
-    expect(sum).toBeCloseTo(layoutBudget - 6, 0);
+    // 2 open slots → 1 inter-slot gutter of panel-gap width.
+    expect(sum).toBeCloseTo(layoutBudget - PANEL_GAP_PX, 0);
   });
 
   it("region width resize does not change slot heights when layout budget is fixed", () => {

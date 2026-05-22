@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import type { PanelId } from "./panelIds";
 import { CenterContent } from "./CenterContent";
 import { CenterStripe } from "./CenterStripe";
@@ -10,10 +10,11 @@ import { RegionResizeSplitter } from "./RegionResizeSplitter";
 import { SlotView } from "./SlotView";
 import {
   buildLayoutGridTemplateColumns,
+  buildLayoutGridTemplateRows,
   computeLayoutGridMetrics,
 } from "./layoutMetrics";
-import { STRIPE_SIZE } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
+import { useMochiLayout } from "./mochiLayout";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutDnDHighlightOverlay } from "./LayoutDnDHighlightOverlay";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
@@ -51,6 +52,16 @@ export const LayoutShell = memo(function LayoutShell({
   const hasBottom = segments.bottom.some((s) => s.panels.length > 0);
 
   const centerBandVisible = isCenterBandVisible(layout);
+  const mochi = useMochiLayout();
+
+  // もちもち ON/OFF 切替で chrome 量が変わるため、切替時に保存済みの
+  // region サイズを即座に再クランプする（初回マウントでは何もしない）。
+  const mochiRef = useRef(mochi);
+  useEffect(() => {
+    if (mochiRef.current === mochi) return;
+    mochiRef.current = mochi;
+    useLayoutStore.getState().reclampForViewport();
+  }, [mochi]);
 
   const metrics = useMemo(
     () =>
@@ -65,6 +76,7 @@ export const LayoutShell = memo(function LayoutShell({
         leftSize: layout.regions.left.size,
         rightSize: layout.regions.right.size,
         bottomSize: layout.regions.bottom.size,
+        mochi,
       }),
     [
       bottomOpen,
@@ -77,12 +89,18 @@ export const LayoutShell = memo(function LayoutShell({
       layout.regions.right.size,
       leftOpen,
       rightOpen,
+      mochi,
     ],
   );
 
   const gridTemplateColumns = useMemo(
     () => buildLayoutGridTemplateColumns(metrics),
     [metrics],
+  );
+
+  const gridTemplateRows = useMemo(
+    () => buildLayoutGridTemplateRows(metrics, hasBottom),
+    [metrics, hasBottom],
   );
 
   if (hidden && screenshotPanelId) {
@@ -108,13 +126,19 @@ export const LayoutShell = memo(function LayoutShell({
     );
   }
 
+  // 9 列 (stripe/gap/content/splitter/center/splitter/content/gap/stripe) ×
+  // 行 (center stripe / gap 行 / main / 任意 bottom)。`.` セルが D案ギャップ。
+  // side stripe は全行を貫く 1 枚のカードなので gap 行も lstripe/rstripe で埋める。
   const cstripeRowAreas =
-    '"lstripe cstripe cstripe cstripe cstripe cstripe rstripe"';
-  const mainRowAreas = '"lstripe lcontent lspl editor rspl rcontent rstripe"';
-  const bottomRowAreas = '"lstripe bottom bottom bottom bottom bottom rstripe"';
+    '"lstripe . cstripe cstripe cstripe cstripe cstripe . rstripe"';
+  const gapRowAreas = '"lstripe . . . . . . . rstripe"';
+  const mainRowAreas =
+    '"lstripe . lcontent lspl editor rspl rcontent . rstripe"';
+  const bottomRowAreas =
+    '"lstripe . bottom bottom bottom bottom bottom . rstripe"';
   const gridTemplateAreas = hasBottom
-    ? `${cstripeRowAreas} ${mainRowAreas} ${bottomRowAreas}`
-    : `${cstripeRowAreas} ${mainRowAreas}`;
+    ? `${cstripeRowAreas} ${gapRowAreas} ${mainRowAreas} ${bottomRowAreas}`
+    : `${cstripeRowAreas} ${gapRowAreas} ${mainRowAreas}`;
 
   return (
     <>
@@ -125,24 +149,17 @@ export const LayoutShell = memo(function LayoutShell({
         className="grid h-full w-full overflow-hidden"
         style={{
           gridTemplateColumns,
-          gridTemplateRows: hasBottom
-            ? `${STRIPE_SIZE}px 1fr ${metrics.bottomCellPx}px`
-            : `${STRIPE_SIZE}px 1fr`,
+          gridTemplateRows,
           gridTemplateAreas,
+          padding: mochi ? "var(--gx-outer-pad)" : undefined,
         }}
       >
-        <div
-          style={{ gridArea: "cstripe" }}
-          className="min-h-0 min-w-0 overflow-hidden"
-        >
+        <div style={{ gridArea: "cstripe" }} className="min-h-0 min-w-0">
           <CenterStripe />
         </div>
 
         {hasLeft && (
-          <div
-            style={{ gridArea: "lstripe" }}
-            className="min-h-0 overflow-hidden"
-          >
+          <div style={{ gridArea: "lstripe" }} className="min-h-0">
             <SideRegionStripeColumn
               region="left"
               stripeOrientation="vertical"
@@ -153,10 +170,7 @@ export const LayoutShell = memo(function LayoutShell({
         )}
 
         {leftOpen && (
-          <div
-            style={{ gridArea: "lcontent" }}
-            className="min-h-0 min-w-0 overflow-hidden"
-          >
+          <div style={{ gridArea: "lcontent" }} className="min-h-0 min-w-0">
             <RegionContent region="left" orientation="vertical" />
           </div>
         )}
@@ -171,10 +185,7 @@ export const LayoutShell = memo(function LayoutShell({
         )}
 
         {centerBandVisible && (
-          <div
-            style={{ gridArea: "editor" }}
-            className="min-h-0 min-w-0 overflow-hidden"
-          >
+          <div style={{ gridArea: "editor" }} className="min-h-0 min-w-0">
             <CenterContent />
           </div>
         )}
@@ -189,19 +200,13 @@ export const LayoutShell = memo(function LayoutShell({
         )}
 
         {rightOpen && (
-          <div
-            style={{ gridArea: "rcontent" }}
-            className="min-h-0 min-w-0 overflow-hidden"
-          >
+          <div style={{ gridArea: "rcontent" }} className="min-h-0 min-w-0">
             <RegionContent region="right" orientation="vertical" />
           </div>
         )}
 
         {hasRight && (
-          <div
-            style={{ gridArea: "rstripe" }}
-            className="min-h-0 overflow-hidden"
-          >
+          <div style={{ gridArea: "rstripe" }} className="min-h-0">
             <SideRegionStripeColumn
               region="right"
               stripeOrientation="vertical"
@@ -214,7 +219,7 @@ export const LayoutShell = memo(function LayoutShell({
         {hasBottom && (
           <div
             style={{ gridArea: "bottom" }}
-            className="flex min-h-0 min-w-0 flex-col overflow-hidden"
+            className="flex min-h-0 min-w-0 flex-col"
           >
             {bottomOpen && <RegionResizeSplitter region="bottom" />}
             <RegionDock

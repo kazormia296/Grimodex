@@ -3,8 +3,17 @@ import {
   clampRegionSize,
   computeFillerRegion,
   getMaxRegionSize,
+  LEGACY_SPLITTER_PX,
+  MIN_REGION_SIZE,
+  OUTER_PAD_PX,
+  SPLITTER_GUTTER_PX,
+  STRIPE_GAP_PX,
+  STRIPE_SIZE,
   type RegionSizeClampContext,
 } from "./layoutConstants";
+
+/** stripe 本体 + その stripe ↔ content 間ギャップ列の合計 (片側)。 */
+const STRIPE_CHROME = STRIPE_SIZE + STRIPE_GAP_PX;
 
 const LAPTOP = { width: 1366, height: 768 };
 
@@ -50,12 +59,29 @@ describe("clampRegionSize with filler layout", () => {
     );
   });
 
-  it("caps left at viewport minus stripes, splitter, and min filler width", () => {
+  it("caps left at viewport minus outer pad, stripes, splitter, and min filler width", () => {
     const maxLeft = getMaxRegionSize("left", LAPTOP, PLAN_FILLER_CONTEXT);
-    expect(maxLeft).toBe(LAPTOP.width - 32 * 2 - 6 - 120);
+    expect(maxLeft).toBe(
+      LAPTOP.width -
+        OUTER_PAD_PX * 2 -
+        STRIPE_CHROME * 2 -
+        SPLITTER_GUTTER_PX -
+        MIN_REGION_SIZE,
+    );
     expect(
       clampRegionSize("left", maxLeft + 500, LAPTOP, PLAN_FILLER_CONTEXT),
     ).toBe(maxLeft);
+  });
+
+  it("uses legacy chrome (no outer pad / gaps, 6px splitter) when mochi is off", () => {
+    const ctx: RegionSizeClampContext = {
+      ...PLAN_FILLER_CONTEXT,
+      mochi: false,
+    };
+    const maxLeft = getMaxRegionSize("left", LAPTOP, ctx);
+    expect(maxLeft).toBe(
+      LAPTOP.width - STRIPE_SIZE * 2 - LEGACY_SPLITTER_PX - MIN_REGION_SIZE,
+    );
   });
 
   it("allows side region beyond 50% viewport when center band is visible", () => {
@@ -64,11 +90,18 @@ describe("clampRegionSize with filler layout", () => {
       centerBandVisible: true,
       leftSize: 200,
       rightSize: 500,
-      centerReserve: 360,
+      centerReserve: 300,
     };
     const halfViewport = Math.floor(LAPTOP.width * 0.5);
     const maxRight = getMaxRegionSize("right", LAPTOP, context);
     expect(maxRight).toBeGreaterThan(halfViewport);
-    expect(maxRight).toBe(LAPTOP.width - 32 * 2 - 6 * 2 - 360 - 200);
+    expect(maxRight).toBe(
+      LAPTOP.width -
+        OUTER_PAD_PX * 2 -
+        STRIPE_CHROME * 2 -
+        SPLITTER_GUTTER_PX * 2 -
+        300 -
+        200,
+    );
   });
 });

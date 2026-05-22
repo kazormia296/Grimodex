@@ -302,14 +302,12 @@ export function RegionStripe({
       data-stripe-region={region}
       className={cn(
         "relative flex h-full min-h-0 w-full min-w-0 overflow-hidden",
-        // center は CenterStripe 側が bg/border を持つため二重化させない。
-        region !== "center" && "bg-background/40",
+        // D案: stripe/rail も他パネルと同じ「もちもちカード」。境界線は引かず、
+        // ギャップで分離する。center は CenterStripe 側がカードを持つため除外。
+        region !== "center" && "gx-panel",
         orientation === "vertical"
           ? "flex-col gap-0 py-0.5"
           : "flex-row gap-0 px-0.5",
-        region === "left" && "border-r border-border",
-        region === "right" && "border-l border-border",
-        region === "bottom" && "border-t border-border",
       )}
     >
       {showDropZones && segments.length > 0 && (

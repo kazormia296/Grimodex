@@ -10,6 +10,7 @@ import {
   DND_NEW_SLOT_EDGE_HIT_PX,
   MIN_EDITOR_SIZE,
   MIN_SLOT_SIZE,
+  PANEL_GAP_PX,
 } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
@@ -161,7 +162,7 @@ export const CenterContent = memo(function CenterContent() {
     <div
       ref={containerRef}
       data-center-content
-      className="relative flex h-full min-h-0 w-full min-w-0 flex-row overflow-hidden"
+      className="relative flex h-full min-h-0 w-full min-w-0 flex-row"
     >
       {visibleSegments.map((segment, index) => {
         const minWidth =
@@ -180,6 +181,7 @@ export const CenterContent = memo(function CenterContent() {
               <div className="relative shrink-0">
                 <Splitter
                   orientation="horizontal"
+                  thickness={PANEL_GAP_PX}
                   disabled={layoutLocked}
                   onDrag={(delta) => {
                     const prevSegment = visibleSegments[index - 1];
@@ -218,7 +220,7 @@ export const CenterContent = memo(function CenterContent() {
                 data-center-segment-kind="editor"
                 style={sizeStyle}
                 className={cn(
-                  "relative flex min-h-0 min-w-0 flex-col overflow-hidden",
+                  "relative flex min-h-0 min-w-0 flex-col",
                   !center.editorOpen && "hidden",
                 )}
               >
@@ -231,7 +233,7 @@ export const CenterContent = memo(function CenterContent() {
                 data-center-segment={segment.id}
                 data-center-segment-kind="tool"
                 style={sizeStyle}
-                className="relative flex min-h-0 min-w-0 flex-col overflow-hidden"
+                className="relative flex min-h-0 min-w-0 flex-col"
                 onDragOver={(e) => handleSlotDragOver(segment.id, e)}
                 onDragLeave={handleSlotDragLeave}
                 onDrop={(e) => handleSlotDrop(segment.id, e)}
