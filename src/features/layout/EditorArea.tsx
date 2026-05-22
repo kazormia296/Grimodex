@@ -37,7 +37,7 @@ export const EditorArea = memo(function EditorArea() {
       ref={containerRef}
       data-editor-area
       tabIndex={-1}
-      className="gx-panel glass-region-panel h-full min-h-0 w-full min-w-0 overflow-hidden outline-none"
+      className="gx-panel gx-panel--flat glass-region-panel h-full min-h-0 w-full min-w-0 overflow-hidden outline-none"
     >
       <SceneEditor />
     </div>

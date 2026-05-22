@@ -492,6 +492,16 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   box-shadow: var(--gx-panel-shadow);
 }
 
+/* `--flat` variant: a card with a uniform fill instead of the dome
+   gradient. Used by the editor, whose chrome (breadcrumb / tab bar /
+   toolbar) mixes transparent and opaque `bg-background` bands — a
+   gradient bleeds through the transparent ones and leaves the opaque
+   ones reading as black boxes. A flat surface keeps all chrome bands
+   tonally uniform. Must follow the `.gx-panel` rule to win on order. */
+.app-shell[data-mochi="true"] .gx-panel--flat {
+  background: var(--background);
+}
+
 /* Canvas behind the cards — sunk below --background so cards lift off it. */
 .app-shell[data-mochi="true"] [data-layout-shell] {
   background: var(--gx-canvas-bg);
