@@ -595,14 +595,38 @@ CREATE TABLE chat_messages (
   tokens_in     INTEGER,            -- 入力トークン数
   tokens_out    INTEGER,            -- 出力トークン数
   duration_ms   INTEGER,            -- 生成時間（ミリ秒）
-  metadata      TEXT,               -- JSON: { extractedCodex: [...], extractedSnippets: [...] }
-  is_starred    INTEGER NOT NULL DEFAULT 0,   -- 1: ユーザーがスター付け（要約時に保護）
+  metadata      TEXT,               -- JSON: { extractedCodex: [...], extractedSnippets: [...], insertedToEditor: bool }
+  is_starred    INTEGER NOT NULL DEFAULT 0,   -- DEPRECATED: ⭐スター機能は廃止。
+                                              -- 後方互換のためカラムは残置するが新規書き込みは常に 0。
+                                              -- 要約時の保護は Tier ベース自動判定に置換
+                                              -- (Chatパネル設計書 §Layer 5 参照)。
+                                              -- 次回メジャー migration で DROP 予定
   is_summarized INTEGER NOT NULL DEFAULT 0,   -- 1: プログレッシブ要約済み
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, created_at);
 ```
+
+`chat_messages.metadata` の JSON 構造:
+
+```json
+{
+  "extractedCodex": ["codex-entry-id-1"],
+  "extractedSnippets": ["snippet-id-1", "snippet-id-2"],
+  "insertedToEditor": true
+}
+```
+
+各フィールド:
+
+- `extractedCodex` (string[]): このメッセージから抽出されて作られた Codex エントリの ID
+- `extractedSnippets` (string[]): このメッセージから保存された Snippet の ID
+- `insertedToEditor` (boolean): このメッセージのテキストが Editor に挿入されたか。
+  Insert ボタン押下時に Editor 側で `true` に更新する (Editor パネル設計書参照)
+
+これらは Layer 5 の Tier ベース自動保護で **Tier 2 アンカー** 判定に使用される
+(Chat パネル設計書 §Layer 5 参照)。
 
 ### authorship_spans
 
@@ -665,15 +689,26 @@ CREATE INDEX idx_codex_quick_pins_created ON codex_quick_pins(created_at);
 
 ```sql
 CREATE TABLE chat_summaries (
-  id          TEXT PRIMARY KEY,
-  session_id  TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-  summary     TEXT NOT NULL,
-  token_count INTEGER,             -- 要約テキストの推定トークン数
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  id              TEXT PRIMARY KEY,
+  session_id      TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  summary         TEXT NOT NULL,          -- runSummarization が生成した会話要約本文
+  token_count     INTEGER NOT NULL,       -- 要約本文の推定トークン数 (Layer 5 予算計算用)
+  generation      INTEGER NOT NULL DEFAULT 1,  -- 何世代目の要約か。3 超で多段要約警告
+  source_msg_count INTEGER NOT NULL,      -- このサマリが取り込んだメッセージ数
+  last_msg_id     TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+                                          -- 取り込んだ最後のメッセージ ID (整合性チェック用)
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_chat_summaries_session ON chat_summaries(session_id, created_at);
+CREATE INDEX idx_chat_summaries_generation ON chat_summaries(session_id, generation);
 ```
+
+**migration 戦略:**
+
+- `generation` / `source_msg_count` / `last_msg_id` カラム追加 (`ALTER TABLE ADD COLUMN`)
+- 既存レコードは `generation = 1`, `source_msg_count = 0`, `last_msg_id = NULL` で
+  バックフィル (情報がないため正確な値は復元しない)
 
 ### chat_summary_messages
 
@@ -1032,7 +1067,7 @@ SQLiteにはネイティブJSON型がないため、TEXT カラムにJSON文字�
 | `codex_tags.type_filter` | `string[] \| null` | `["character", "lore"]` または `null`（全タイプ） |
 | `codex_detail_definitions.field_config` | `object` | `{"multiline":true}`, `{"options":["人間","エルフ"]}`, `{"allowedTypes":["faction"]}` |
 | `snippets.tags_cache` | `{name: string, color: string}[]` | `[{"name":"dialogue","color":"#ff6b6b"}]`（snippet_entry_tagsの非正規化キャッシュ） |
-| `chat_messages.metadata` | `object` | `{"extractedCodex":["id1"],"extractedSnippets":["id2"]}` |
+| `chat_messages.metadata` | `object` | `{"extractedCodex":["id1"],"extractedSnippets":["id2"],"insertedToEditor":true}` |
 | `app_settings.value` | `any` | `"16"`, `"system"`, `"true"` |
 | `project_settings.value` | `any` | `"16"`, `"system"`, `"true"` |
 | `map_boards.show_config` | `object` | `{"scene":true,"codex":false}` ノードタイプ別の表示ON/OFF |

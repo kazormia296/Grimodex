@@ -595,10 +595,10 @@ Codex エントリの詳細を取得する。
         "type": "string",
         "description": "チャットセッションのUUID"
       },
-      "starred_only": {
+      "anchors_only": {
         "type": "boolean",
         "default": false,
-        "description": "スター付きメッセージのみ取得"
+        "description": "アンカーメッセージのみ取得 (Tier 1+2)。具体的には: role='user' のすべてのメッセージ、Codex/Snippet として抽出された AI メッセージ、Editor に挿入された AI メッセージ。汎用的な雑談や未採用の候補出力など Tier 3 のメッセージは除外される"
       },
       "limit": {
         "type": "integer",
@@ -611,6 +611,12 @@ Codex エントリの詳細を取得する。
   }
 }
 ```
+
+**互換性ノート (旧 `starred_only` パラメータ)**: v1 初期では `starred_only` (boolean)
+パラメータが存在したが、⭐スター機能廃止に伴い `anchors_only` に置換された。
+クライアント実装は `anchors_only` を使用すること。
+サーバは互換性のため `starred_only` を受け付けた場合 `anchors_only` として
+解釈するが、deprecation 警告をログに出す。
 
 ---
 

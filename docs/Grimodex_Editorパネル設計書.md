@@ -1339,6 +1339,54 @@ Codex タブで Editor を開いている状態で、Codex 側の Dynamic Phase 
 - ChatのAI応答の「Insert」ボタン → エディタのカーソル位置に挿入（AuthorshipMark: ai）
 - **インラインAI** はChatの会話履歴には残らない独立したワンショット生成。同じLLMプロバイダ・モデルを使用し、Codexエントリ（Layer 4）も共有するが、会話セッションとは無関係
 
+### Chat メッセージの Insert 時の責務
+
+Chat パネルから「Insert」ボタン経由でテキストがエディタに挿入される際、
+Editor 側は以下 2 つの永続化を 1 トランザクションで行う:
+
+1. **AuthorshipMark の付与**: `{ source: 'ai', model, chatMessageId }` 属性を
+   付けたマークを挿入範囲に適用 (既存の挙動)
+2. **chat_messages.metadata の更新**: 抽出元の `chat_messages` レコードの
+   `metadata.insertedToEditor` を `true` に更新する (新規追加責務)
+
+```typescript
+// 実装イメージ (src/features/editor/insertFromChat.ts)
+async function insertFromChat(
+  editor: Editor,
+  chatMessageId: string,
+  text: string,
+  model: string,
+) {
+  await db.transaction(async (tx) => {
+    // 1. エディタ挿入 + AuthorshipMark 付与
+    editor.commands.insertContent({
+      type: "text",
+      text,
+      marks: [{ type: "authorship", attrs: { source: "ai", model, chatMessageId } }],
+    });
+    await saveAuthorshipSpans(tx, editor);
+
+    // 2. 抽出元メッセージの metadata 更新
+    await updateChatMessageMetadata(tx, chatMessageId, {
+      insertedToEditor: true,
+    });
+  });
+}
+```
+
+この更新により、後続の Chat ターンでの Progressive Summarization が
+当該メッセージを Tier 2 アンカーとして自動保護する
+(Chat パネル設計書 §Layer 5 参照)。
+
+**注意:**
+- 同じ AI メッセージから複数回 Insert された場合も `true` のままで OK (idempotent)
+- 挿入後にユーザーがエディタ上で当該テキストを削除した場合も metadata は `true` のまま
+  (「一度でも書き手が採用した」という事実は要約品質の判断に有用なため reset しない)
+- Snippet 経由の挿入 (Snippet パネル → エディタ D&D) は `chat_messages` 側ではなく
+  Snippet 側の `usage_count` をインクリメントする。Snippet 自体が
+  `metadata.extractedSnippets` 経由で既に Tier 2 アンカーになっているため
+  二重保護は不要
+
 ### Codexパネル
 
 - エディタ内のCodexハイライトをホバー → ポップオーバーの「Open in Codex」でCodexパネルの詳細画面を開く

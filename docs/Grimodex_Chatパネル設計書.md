@@ -489,18 +489,82 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - **子孫エントリの自動注入**: 上記でマッチした親Codexエントリの子孫エントリのsummaryを、サブツリートークン予算（エントリごとに設定、デフォルト: Layer 4予算の15%）の範囲内でBFS（幅優先）順に自動追加。depth制限はなく、予算が自然な制限として機能する（子のcontext_modeも個別に判定。Codexパネル設計書「コンテキスト注入への影響」セクション参照）
 - 予算超過時の優先順: always > mentioned > pinned content > 子孫エントリsummary（最初に切り詰め）
 - 予算配分: コンテキストの ~20%
+- **append-only 順序ポリシー (prefix cache 最適化)**: 同一セッション内で
+  Codex 注入リストに新規エントリが加わる場合 (チャット言及による自動ピン留め等)、
+  既存エントリの順序は固定し、**新規エントリは末尾に追加** する。理由は
+  プロンプトプレフィックスの不変性を保ち、LLM プロバイダ側のプレフィックスキャッシュを
+  最大限活かすため。詳細は §「プレフィックスキャッシュ最適化」参照
+
+  実装上の含意:
+  - `buildCodexContext` 内のソートは「最初に注入した順 + 末尾追加」の安定ソート
+  - 子孫エントリの BFS 走査結果も `entry_id` で二次ソートし、同じ親集合なら
+    必ず同じバイト列を返すことを保証
+  - context_mode フィルタによる除外/復活で順序がシャッフルされないよう注意
+
+  例外: アクティブシーン移動 / モデル変更 / AI 指示変更時は Codex 集合自体が
+  再構築されるためキャッシュは無効化される (これは設計上回避不能)
 
 **Layer 5: Conversation history**
+
 - 現在のセッションのメッセージ履歴
-- **Progressive summarization（G17）**: 以下の2段階トリガーで古いメッセージ群をLLMで要約し「会話要約」として先頭に保持する。直近の会話は原文を維持
-  - **予防的圧縮**: 4往復を超え、かつLayer 5予算の80%を消費している場合 → 次のターンでオーバーフローしないよう早めに圧縮
-  - **緊急圧縮**: Layer 5予算を超過した場合（往復数問わず、最低3往復経過後）→ 即時圧縮でAPIエラーを回避
-  - 最低往復数（3往復）未満では圧縮しない（1〜2往復の要約は意味をなさないため）
-  - 判定ロジックは `shouldSummarize`、要約実行は `runSummarization` として分離。ターン開始時のコンテキスト構築で `shouldSummarize` が真を返した場合に `runSummarization` が裏で走り、完了後に新しい要約を先頭へ差し込んだ再計算済みコンテキストで LLM 呼び出しを行う
-- **⭐ スター機能**: ユーザーは任意のメッセージに「重要」マーク（⭐）を付与できる（`chat_messages.is_starred` に永続化）。スター付きメッセージは `runSummarization` の入力から除外され、原文のまま Layer 5 に保持される。要約対象から明示的に守りたい宣言やキャラクター設定などを固定するために使用する
-- **要約の永続化**: 生成された要約は `chat_summaries` 専用テーブルに保存される（スキーマは後述 DB 章参照）。同一セッションで複数世代の要約を保持し、新規要約は直前世代の要約を「既要約済みメッセージ群」として含める形で累積させる。要約に取り込まれたメッセージは `chat_messages.is_summarized = 1` が立ち、次回の `shouldSummarize` 判定から除外される
-- 要約生成にはSettingsのサマリー用モデルを使用（Synopsis自動生成と同じモデル）
-- フォールバック: 要約生成に失敗した場合は従来のFIFO切り詰めを適用（`is_summarized` は更新しない）
+- **Progressive summarization (G17)**: 以下の 2 段階トリガーで古いメッセージ群を LLM で
+  要約し「会話要約」として先頭に保持する。直近の会話は原文を維持
+  - **予防的圧縮**: 4 往復を超え、かつ Layer 5 予算の 80% を消費している場合 →
+    次のターンでオーバーフローしないよう早めに圧縮
+  - **緊急圧縮**: Layer 5 予算を超過した場合 (往復数問わず、最低 3 往復経過後) →
+    即時圧縮で API エラーを回避
+  - 最低往復数 (3 往復) 未満では圧縮しない (1〜2 往復の要約は意味をなさないため)
+  - 判定ロジックは `shouldSummarize`、要約実行は `runSummarization` として分離。
+    ターン開始時のコンテキスト構築で `shouldSummarize` が真を返した場合に
+    `runSummarization` が裏で走り、完了後に新しい要約を先頭へ差し込んだ再計算済み
+    コンテキストで LLM 呼び出しを行う
+
+- **Tier ベース自動保護**: メッセージは以下の Tier 判定で要約対象から除外される。
+  ⭐ などの明示マークは不要で、書く行為そのものから保護対象を抽出する
+
+  | Tier | 対象 | 保護方法 | 判定 |
+  |---|---|---|---|
+  | **Tier 1** | セッション最初のユーザーメッセージ + 直近 3 往復 | 無条件保護 (サブ予算外) | メッセージ位置 |
+  | **Tier 2** | 「使われた」AI 応答とすべてのユーザー発話 | サブ予算 (L5 の 40%) 内で新しい順 | 下記シグナル |
+  | **Tier 3** | それ以外の AI 応答 | 要約対象 | (残り全部) |
+
+  **Tier 2 のシグナル** (いずれかを満たすメッセージは「アンカー」として扱う):
+
+  - `role === 'user'` (ユーザー発話は無条件にアンカー)
+  - `metadata.extractedCodex` が空でない (Codex 抽出済み)
+  - `metadata.extractedSnippets` が空でない (Snippet 保存済み)
+  - `metadata.insertedToEditor === true` (エディタに挿入済み) — 「書き手が
+    この文章を実際に作品に組み込んだ」最強のシグナル。Insert ボタン押下時に
+    Editor 側で書き込む (Editor パネル設計書参照)
+
+  Tier 1 が予算を食い尽くす極端ケース (最初のメッセージが超長文 + 3 往復が全部長い)
+  では Tier 2/3 が圧縮される。これは設計上正しい挙動。
+
+  保護対象として残したい AI 応答が抽出も挿入もされない場合は、Snippet 保存
+  (1 ボタン) で `metadata.extractedSnippets` を立てれば自動的に Tier 2 入りする。
+  Snippet 機能が旧 ⭐ の上位互換として機能する。
+
+- **要約の永続化**: 生成された要約は `chat_summaries` 専用テーブルに保存される
+  (スキーマは後述 DB 章参照)。同一セッションで複数世代の要約を保持し、新規要約は
+  直前世代の要約を「既要約済みメッセージ群」として含める形で累積させる。
+  要約に取り込まれたメッセージは `chat_messages.is_summarized = 1` が立ち、
+  次回の `shouldSummarize` 判定から除外される
+
+- **多段要約による品質劣化警告**: 同一セッションの `chat_summaries` 件数が 3 を
+  超えたら、コンテキストバーに警告ピル `⚠ N 回要約済み — 新セッション推奨` を
+  表示する。クリックで「現セッションを参考リンクとして残し、新セッションを開始」
+  アクションを提供。Codex 関連の議論で指摘されているとおり、要約は世代を重ねる
+  ごとに指数的に情報が劣化するため、ユーザーに能動的なセッション分割を促す
+
+- 要約生成には Settings のサマリー用モデルを使用 (Synopsis 自動生成と同じモデル)
+
+- **要約プロンプト (handoff 形式)**: 汎用「要約してください」ではなく、
+  「次のターンのアシスタントが文脈を失わずに作業を継続できるための引き継ぎ要約」と
+  task-oriented にフレーミングする。詳細は §「Handoff 指向の要約プロンプト」参照
+
+- フォールバック: 要約生成に失敗した場合は従来の FIFO 切り詰めを適用
+  (`is_summarized` は更新しない)
+
 - 予算配分: コンテキストの ~20%
 
 #### 検討済み・不採用のコンテキスト注入モード
@@ -607,14 +671,154 @@ function buildContext(
   //   6. 子孫エントリはサブツリートークン予算（Layer 4予算の比率）内でBFS順に注入
   //      （各子エントリも個別にフェーズ解決）
   const layer5 = buildConversationHistory(session.messages, allocations.layer5);
-  // Progressive summarization: 2段階トリガー
-  //   予防的: 4往復超 && Layer5予算80%超 → 早めに圧縮
-  //   緊急:   Layer5予算超過 && 最低3往復経過 → 即時圧縮でAPIエラー回避
-  // ⭐マーク付きメッセージは要約対象から除外
+  // Progressive summarization: 2 段階トリガー
+  //   予防的: 4 往復超 && Layer5 予算 80% 超 → 早めに圧縮
+  //   緊急:   Layer5 予算超過 && 最低 3 往復経過 → 即時圧縮で API エラー回避
+  //
+  // Tier ベース自動保護 (⭐ は廃止):
+  //   Tier 1 (無条件): セッション最初のユーザーメッセージ + 直近 3 往復
+  //   Tier 2 (サブ予算 L5×40% 内): role='user' or metadata.extractedCodex/
+  //          extractedSnippets/insertedToEditor のいずれか
+  //   Tier 3 (要約対象): 上記以外の AI 応答
+  //
+  // 多段要約警告: chat_summaries 件数 > 3 で警告ピル表示
 
   return assembleLayers([layer1, layer2, layer3, layer4, layer5]);
 }
 ```
+
+### Handoff 指向の要約プロンプト
+
+`runSummarization` で使う要約プロンプトは、汎用「要約してください」ではなく
+「次のターンのアシスタントが文脈を失わずに作業を継続できるための引き継ぎ要約」と
+task-oriented にフレーミングする。OpenAI Codex の compaction prompt と同型の
+構造を取り、小説執筆コンテキストに特化させる。
+
+```text
+CONVERSATION CHECKPOINT — HANDOFF SUMMARY
+
+あなたは小説執筆セッションの引き継ぎ要約を作成しています。
+次のターンのアシスタントが文脈を失わずに作業を継続できるよう、
+以下を構造化して保持してください:
+
+## このセッションの執筆目標
+ユーザーが何を達成しようとしているか (例: 第3章の書き直し、特定キャラの
+内面描写の改善)。
+
+## 合意・決定した事項
+キャラクター / プロット / 世界観について、ユーザーとの対話で確定した内容。
+原文の重要な引用は短く保持。
+
+## 言及された Codex エントリ
+ID 付きで列挙し、それぞれの議論での扱いを 1 文で。
+形式: `- {entry_id} ({name}): {このセッションでの扱い}`
+
+## 文体・トーンに関するユーザーの指示
+言葉遣い、視点、テンポ等についてユーザーが明示した好み。
+
+## 検討中のドラフト / 提案テキスト
+まだ採用/不採用が決まっていない案。短く要約。
+
+## 未解決の問い / 保留中のアクション
+次ターン以降で扱うべき事項。
+
+---
+
+入力メッセージ:
+{messages}
+```
+
+**要約への埋め込みメタ情報**: 要約本文の先頭に HTML コメント形式で世代情報を
+埋める。クライアントからは見えるが LLM への意味的影響は最小:
+
+```
+<!-- gen=N source_msg_count=M last_msg_id=xxx generated_at=ISO8601 -->
+
+## このセッションの執筆目標
+...
+```
+
+- `gen=N`: 何世代目の要約か。`shouldSummarize` が次世代生成時に参照し、
+  3 を超えたら多段要約警告を発火
+- `source_msg_count=M`: 何件のメッセージを取り込んだか
+- `last_msg_id=xxx`: 取り込んだ最後のメッセージ ID。整合性チェック用
+- これらは `chat_summaries` の専用カラムにも別途格納する (後述 DB 章)。
+  コメント埋め込みは LLM 経由のデバッグ可視性のため
+
+## プレフィックスキャッシュ最適化
+
+OpenAI / Anthropic / OpenRouter いずれも、リクエストプロンプトの**完全一致する
+プレフィックス**部分について KV キャッシュを再利用する機構を持つ。サンプリングコストが
+ネットワーク帯域コストを支配するため、プレフィックスキャッシュのヒット率が
+チャットの実コスト・レイテンシに直結する。本セクションは Grimodex Chat / Agent モードで
+キャッシュヒット率を最大化するための設計ルールを定める。
+
+### 基本原則: 静的→動的の順序
+
+レイヤー順序は「ターン間で変化しないもの」を先頭に、「ターンごとに変化するもの」を
+末尾に配置する。現行 L1→L2→L3→L4→L5 はこの原則に沿っている:
+
+| レイヤー | 静的度 | キャッシュ寿命 |
+|---|---|---|
+| L1 Project info | 高 (Settings 変更時のみ変化) | セッション全体 |
+| L2 storySoFar | 中 (新規 synopsis 追加時のみ伸長) | 数ターン〜セッション全体 |
+| L3 Current scene | 中 (アクティブシーン内では本文編集のみで変化) | シーン編集まで |
+| L4 Codex | 動 (チャット言及で自動ピン追加) | append-only ポリシーで延命 |
+| L5 History | 動 (毎ターン append) | append-only により延命 |
+
+### キャッシュ無効化トリガー
+
+以下の操作はプロンプトの早期トークンを変化させ、L5 以降のキャッシュを破壊する:
+
+| 操作 | 影響範囲 | 対策 |
+|---|---|---|
+| モデル切替 | プロンプト全体 (モデル固有指示が含まれるため) | コンテキストバーに警告表示 |
+| AI 指示 (Settings の Global Instructions) 変更 | L1 以降全体 | Settings 保存時に該当セッションに警告 |
+| アクティブシーン移動 | L2/L3/L4 (フェーズ解決値が変わる) | 警告は出さない (頻繁すぎる) |
+| 比率ベース配分設定の変更 | レイヤー境界が変わる | Settings 保存時に警告 |
+| ツール定義変更 (Agent モード) | プロンプト中盤以降 | 同セッション内では変更禁止 (後述) |
+
+「キャッシュ再構築」インジケータをコンテキストバーに小さく表示する:
+
+```
+[15,234 tok] [⚠ cache rebuilt] [モデル切替により]
+```
+
+### Anthropic 利用時の `cache_control` マーカー
+
+Anthropic API は明示的なキャッシュブレークポイントを最大 4 箇所まで打てる
+(`cache_control: { type: "ephemeral" }`)。Vercel AI SDK 経由でも
+`providerOptions.anthropic` で渡せる。Grimodex は以下 4 箇所に打つ:
+
+1. **L1 末尾** — Project info の境界
+2. **L2 末尾** — storySoFar の境界 (省略時は L1 のマーカーが繰り上がる)
+3. **L3 末尾** — Current scene の境界
+4. **L4 安定部分の末尾** — append-only 順序の最後の「セッション開始時から
+   存在していたエントリ」の直後。新規追加された Codex エントリはマーカーの後に
+   並ぶため、キャッシュは安定部分まで効く
+
+OpenAI / OpenRouter は自動 prefix caching で、明示マーカーは不要 (ただし
+プロンプト構造の安定性は同様に重要)。
+
+### Codex モデル経由時の encrypted_content (将来検討)
+
+OpenAI Responses API の `/v1/responses/compact` エンドポイントを利用すると、
+コンパクション結果が `type=compaction` + `encrypted_content` の opaque blob として
+返り、次ターン以降のリクエストで Grimodex 側は内容を知ることなくサーバに渡すだけで
+復号・展開される。これは Anthropic / その他プロバイダにはない独自機能で、
+Grimodex のローカル `runSummarization` より高品質な可能性が高い。
+
+Phase X (現状は v1 スコープ外) で Vercel AI SDK が Responses API + compact()
+をサポートした段階で、OpenAI/Codex モデル選択時のみ自動的にこちらへ
+切り替える形を検討する。
+
+### 既知のトレードオフ
+
+- ストリーミング応答中にユーザーが新規メッセージを送ると、ストリーミングを
+  中止して新セッション扱いとするか、待機させるか — 現状の「Stop で中止 → 次入力」
+  運用で問題ないが、頻繁にやるとキャッシュが効かない
+- フェーズシステム (経時的変化) はキャッシュと相性が悪い。同じ Codex エントリでも
+  シーンによって注入される値が違うため。これは設計上のコストとして許容する
 
 ---
 
@@ -972,20 +1176,26 @@ CREATE TABLE chat_messages (
   tokens_out     INTEGER,           -- 出力トークン数
   duration_ms    INTEGER,           -- 生成時間（ミリ秒）
   metadata       TEXT,              -- JSON: { extractedCodex: [...], extractedSnippets: [...],
-                                   --         thinkingBlocks: [{thinking, signature}] }
-  is_starred     INTEGER NOT NULL DEFAULT 0,  -- ⭐スター付きメッセージ。1 の場合 Progressive Summarization の
-                                              -- 要約対象から除外され、原文のまま Layer 5 に保持される
+                                   --         insertedToEditor: bool, thinkingBlocks: [...] }
+  is_starred     INTEGER NOT NULL DEFAULT 0,  -- DEPRECATED: ⭐スター機能は廃止。
+                                              -- 後方互換のためカラムは残置するが新規書き込みは常に 0。
+                                              -- 要約時の保護は Tier ベース自動判定に置換
+                                              -- (§Layer 5 参照)。次回メジャー migration で DROP 予定
   is_summarized  INTEGER NOT NULL DEFAULT 0,  -- 1 の場合、このメッセージは既に chat_summaries のいずれかに
                                               -- 取り込み済み。次回の shouldSummarize 判定からは除外される
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE chat_summaries (
-  id          TEXT PRIMARY KEY,
-  session_id  TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-  summary     TEXT NOT NULL,        -- runSummarization が生成した会話要約本文
-  token_count INTEGER NOT NULL,     -- 要約本文の推定トークン数（Layer 5 予算計算に使用）
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  id              TEXT PRIMARY KEY,
+  session_id      TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  summary         TEXT NOT NULL,          -- runSummarization が生成した会話要約本文
+  token_count     INTEGER NOT NULL,       -- 要約本文の推定トークン数 (Layer 5 予算計算用)
+  generation      INTEGER NOT NULL DEFAULT 1,  -- 何世代目の要約か。3 超で多段要約警告
+  source_msg_count INTEGER NOT NULL,      -- このサマリが取り込んだメッセージ数
+  last_msg_id     TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+                                          -- 取り込んだ最後のメッセージ ID (整合性チェック用)
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- 要約のソースメッセージ集合は chat_summary_messages テーブルに正規化。
@@ -994,6 +1204,7 @@ CREATE TABLE chat_summaries (
 CREATE INDEX idx_chat_sessions_node ON chat_sessions(project_id, node_id);
 CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, created_at);
 CREATE INDEX idx_chat_summaries_session ON chat_summaries(session_id, created_at);
+CREATE INDEX idx_chat_summaries_generation ON chat_summaries(session_id, generation);
 ```
 
 ### 抽出バッジの管理
@@ -1003,11 +1214,20 @@ CREATE INDEX idx_chat_summaries_session ON chat_summaries(session_id, created_at
 ```json
 {
   "extractedCodex": ["codex-entry-id-1"],
-  "extractedSnippets": ["snippet-id-1", "snippet-id-2"]
+  "extractedSnippets": ["snippet-id-1", "snippet-id-2"],
+  "insertedToEditor": true
 }
 ```
 
-これによりメッセージ上に「Codex抽出済み」「Snippet保存済み」のバッジを表示し、抽出先へのリンクも提供できる。
+各フィールド:
+
+- `extractedCodex` (string[]): このメッセージから抽出されて作られた Codex エントリの ID
+- `extractedSnippets` (string[]): このメッセージから保存された Snippet の ID
+- `insertedToEditor` (boolean): このメッセージのテキストが Editor に挿入されたか。
+  Insert ボタン押下時に Editor 側で `true` に更新する (Editor パネル設計書参照)
+
+これらは Layer 5 の Tier ベース自動保護で **Tier 2 アンカー** 判定に使用される
+(§Layer 5 参照)。メッセージ上に「Codex抽出済み」「Snippet保存済み」のバッジを表示し、抽出先へのリンクも提供できる。
 
 ---
 
@@ -1038,7 +1258,7 @@ Note: EditorにはインラインAIコマンド機能がある（`/` またはCt
 
 ### Chat → Editor
 
-- 「Insert」ボタン → エディタのカーソル位置に挿入、AuthorshipMark付与
+- 「Insert」ボタン → エディタのカーソル位置に挿入、AuthorshipMark 付与、`metadata.insertedToEditor` 更新（Editor パネル設計書参照）
 - 挿入後のハイライトフラッシュ（2秒間、薄いパープル背景でフェードアウト）
 
 ### Chat → Codex
