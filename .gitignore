@@ -26,3 +26,7 @@ src-tauri/resources/semantic/**/*.onnx
 # GitHub Wiki (Grimodex.wiki.git) を作業ツリー内にクローンしたもの。
 # 別リポジトリなのでメインリポジトリでは追跡しない。
 grimodex-wiki/
+
+# pnpm screenshot で再生成されるスクリーンショット。
+# 再生成コマンドは docs/screenshots/generated/memo.txt 参照（こちらは追跡する）。
+docs/screenshots/generated/*.png
