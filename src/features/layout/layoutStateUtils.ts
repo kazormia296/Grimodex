@@ -13,12 +13,17 @@ import {
   MIN_SLOT_SIZE,
   OUTER_PAD_PX,
   regionSplitterPx,
-  slotSplitterPx,
   STRIPE_GAP_PX,
   STRIPE_SIZE,
   type RegionSizeClampContext,
 } from "./layoutConstants";
 import { isCardLayout } from "./cardLayout";
+import {
+  applyAdjacentItemPixelSizes,
+  getOpenItemPixelSizes,
+  normalizeOpenItemRatios,
+  redistributeRatiosAfterRemoval,
+} from "./layoutTrackMath";
 import type {
   BottomCornerOwnership,
   CenterSegment,
@@ -356,37 +361,30 @@ export function validateLayoutState(
   return { valid: true };
 }
 
+/** slot が開いている（アクティブパネルを持つ）か。 */
+function slotIsOpen(slot: SlotState): boolean {
+  return slot.activePanel !== null;
+}
+
+/** center segment が開いているか（editor は editorOpen、tool は activePanel）。 */
+function centerSegmentIsOpen(
+  segment: CenterSegment,
+  editorOpen: boolean,
+): boolean {
+  return segment.kind === "editor" ? editorOpen : segment.activePanel !== null;
+}
+
 export function normalizeSlotRatios(slots: SlotState[]): SlotState[] {
-  const openSlots = slots.filter((s) => s.activePanel !== null);
-  if (openSlots.length === 0) return slots;
-
-  const sum = openSlots.reduce((acc, s) => acc + s.sizeRatio, 0);
-  if (sum <= 0) return slots;
-
-  return slots.map((slot) => {
-    if (slot.activePanel === null) return slot;
-    return { ...slot, sizeRatio: slot.sizeRatio / sum };
-  });
+  return normalizeOpenItemRatios(slots, slotIsOpen);
 }
 
 export function normalizeCenterSegmentRatios(
   segments: CenterSegment[],
   editorOpen: boolean,
 ): CenterSegment[] {
-  const openSegments = segments.filter((s) => {
-    if (s.kind === "editor") return editorOpen;
-    return s.activePanel !== null;
-  });
-  if (openSegments.length === 0) return segments;
-
-  const sum = openSegments.reduce((acc, s) => acc + s.sizeRatio, 0);
-  if (sum <= 0) return segments;
-
-  const openIds = new Set(openSegments.map((s) => s.id));
-  return segments.map((segment) => {
-    if (!openIds.has(segment.id)) return segment;
-    return { ...segment, sizeRatio: segment.sizeRatio / sum };
-  });
+  return normalizeOpenItemRatios(segments, (s) =>
+    centerSegmentIsOpen(s, editorOpen),
+  );
 }
 
 export function normalizeFlexGrow(ratios: number[]): number[] {
@@ -400,35 +398,11 @@ export function redistributeRatiosAfterRemovingOpenSlot(
   remainingSlots: SlotState[],
   removedSlot: SlotState,
 ): SlotState[] {
-  if (removedSlot.activePanel === null) {
-    return remainingSlots;
-  }
-
-  const openRemaining = remainingSlots.filter(
-    (slot) => slot.activePanel !== null,
+  return redistributeRatiosAfterRemoval(
+    remainingSlots,
+    removedSlot,
+    slotIsOpen,
   );
-  if (openRemaining.length === 0) {
-    return remainingSlots;
-  }
-
-  const removedRatio = removedSlot.sizeRatio;
-  const openSum = openRemaining.reduce((sum, slot) => sum + slot.sizeRatio, 0);
-
-  const updated =
-    openSum <= 0
-      ? remainingSlots.map((slot) =>
-          slot.activePanel !== null ? { ...slot, sizeRatio: 1 } : slot,
-        )
-      : remainingSlots.map((slot) => {
-          if (slot.activePanel === null) return slot;
-          return {
-            ...slot,
-            sizeRatio:
-              slot.sizeRatio + removedRatio * (slot.sizeRatio / openSum),
-          };
-        });
-
-  return normalizeSlotRatios(updated);
 }
 
 export function redistributeRatiosAfterRemovingOpenCenterSegment(
@@ -436,46 +410,11 @@ export function redistributeRatiosAfterRemovingOpenCenterSegment(
   removedSegment: CenterToolSegment,
   editorOpen: boolean,
 ): CenterSegment[] {
-  if (removedSegment.activePanel === null) {
-    return remainingSegments;
-  }
-
-  const openRemaining = remainingSegments.filter((segment) => {
-    if (segment.kind === "editor") return editorOpen;
-    return segment.activePanel !== null;
-  });
-  if (openRemaining.length === 0) {
-    return remainingSegments;
-  }
-
-  const removedRatio = removedSegment.sizeRatio;
-  const openSum = openRemaining.reduce((sum, s) => sum + s.sizeRatio, 0);
-
-  const updated =
-    openSum <= 0
-      ? remainingSegments.map((segment) => {
-          if (segment.kind === "editor" && editorOpen) {
-            return { ...segment, sizeRatio: 1 };
-          }
-          if (segment.kind === "tool" && segment.activePanel !== null) {
-            return { ...segment, sizeRatio: 1 };
-          }
-          return segment;
-        })
-      : remainingSegments.map((segment) => {
-          const isOpen =
-            segment.kind === "editor"
-              ? editorOpen
-              : segment.activePanel !== null;
-          if (!isOpen) return segment;
-          return {
-            ...segment,
-            sizeRatio:
-              segment.sizeRatio + removedRatio * (segment.sizeRatio / openSum),
-          };
-        });
-
-  return normalizeCenterSegmentRatios(updated, editorOpen);
+  return redistributeRatiosAfterRemoval(
+    remainingSegments,
+    removedSegment,
+    (s) => centerSegmentIsOpen(s, editorOpen),
+  );
 }
 
 export function getRegionContentSize(
@@ -487,52 +426,22 @@ export function getRegionContentSize(
   return hasOpen ? region.size : 0;
 }
 
-export function getSlotLayoutBudget(
-  openSlotCount: number,
-  layoutBudgetPx: number,
-  // 同一 region 内のスロット間 splitter 幅。カードレイアウト ON では panel-gap、
-  // OFF では旧来の 6px 実線。D案の階層 stripe-gap > panel-gap に対応。
-  gutterPx: number = slotSplitterPx(isCardLayout()),
-): number {
-  if (openSlotCount <= 0) return 0;
-  const gutterTotal = Math.max(0, openSlotCount - 1) * gutterPx;
-  return Math.max(0, layoutBudgetPx - gutterTotal);
-}
-
 export function getOpenSlotPixelSizesForRegion(
   region: RegionState,
   layoutBudgetPx: number,
 ): Map<string, number> {
-  const openSlots = region.slots.filter((s) => s.activePanel !== null);
-  const budget = getSlotLayoutBudget(openSlots.length, layoutBudgetPx);
-  const ratioSum = openSlots.reduce((sum, s) => sum + s.sizeRatio, 0);
-  const sizes = new Map<string, number>();
-
-  for (const slot of openSlots) {
-    sizes.set(slot.id, ratioSum > 0 ? budget * (slot.sizeRatio / ratioSum) : 0);
-  }
-  return sizes;
+  return getOpenItemPixelSizes(region.slots, slotIsOpen, layoutBudgetPx);
 }
 
 export function getOpenCenterSegmentPixelSizes(
   center: CenterState,
   layoutBudgetPx: number,
 ): Map<string, number> {
-  const openSegments = center.segments.filter((s) => {
-    if (s.kind === "editor") return center.editorOpen;
-    return s.activePanel !== null;
-  });
-  const budget = getSlotLayoutBudget(openSegments.length, layoutBudgetPx);
-  const ratioSum = openSegments.reduce((sum, s) => sum + s.sizeRatio, 0);
-  const sizes = new Map<string, number>();
-
-  for (const segment of openSegments) {
-    sizes.set(
-      segment.id,
-      ratioSum > 0 ? budget * (segment.sizeRatio / ratioSum) : 0,
-    );
-  }
-  return sizes;
+  return getOpenItemPixelSizes(
+    center.segments,
+    (s) => centerSegmentIsOpen(s, center.editorOpen),
+    layoutBudgetPx,
+  );
 }
 
 export function getOpenSlotPixelSizes(
@@ -705,35 +614,16 @@ export function applyAdjacentSlotPixelSizes(
   pxB: number,
   layoutBudgetPx: number,
 ): LayoutState {
-  const region = layout.regions[regionId];
-  const openSlots = region.slots.filter((s) => s.activePanel !== null);
-  const budget = getSlotLayoutBudget(openSlots.length, layoutBudgetPx);
-  const otherSlots = openSlots.filter(
-    (s) => s.id !== slotIdA && s.id !== slotIdB,
-  );
-  const remainingBudget = Math.max(0, budget - pxA - pxB);
-  const otherRatioSum = otherSlots.reduce((sum, s) => sum + s.sizeRatio, 0);
-
-  const pixelSizes = new Map<string, number>();
-  pixelSizes.set(slotIdA, pxA);
-  pixelSizes.set(slotIdB, pxB);
-  for (const slot of otherSlots) {
-    pixelSizes.set(
-      slot.id,
-      otherRatioSum > 0
-        ? remainingBudget * (slot.sizeRatio / otherRatioSum)
-        : 0,
-    );
-  }
-
   return updateRegion(layout, regionId, (region) => ({
     ...region,
-    slots: normalizeSlotRatios(
-      region.slots.map((slot) => {
-        if (slot.activePanel === null) return slot;
-        const px = pixelSizes.get(slot.id);
-        return px != null ? { ...slot, sizeRatio: px } : slot;
-      }),
+    slots: applyAdjacentItemPixelSizes(
+      region.slots,
+      slotIsOpen,
+      slotIdA,
+      slotIdB,
+      pxA,
+      pxB,
+      layoutBudgetPx,
     ),
   }));
 }
@@ -746,43 +636,16 @@ export function applyAdjacentCenterSegmentPixelSizes(
   pxB: number,
   layoutBudgetPx: number,
 ): LayoutState {
-  const { center } = layout;
-  const openSegments = center.segments.filter((s) => {
-    if (s.kind === "editor") return center.editorOpen;
-    return s.activePanel !== null;
-  });
-  const budget = getSlotLayoutBudget(openSegments.length, layoutBudgetPx);
-  const otherSegments = openSegments.filter(
-    (s) => s.id !== segmentIdA && s.id !== segmentIdB,
-  );
-  const remainingBudget = Math.max(0, budget - pxA - pxB);
-  const otherRatioSum = otherSegments.reduce((sum, s) => sum + s.sizeRatio, 0);
-
-  const pixelSizes = new Map<string, number>();
-  pixelSizes.set(segmentIdA, pxA);
-  pixelSizes.set(segmentIdB, pxB);
-  for (const segment of otherSegments) {
-    pixelSizes.set(
-      segment.id,
-      otherRatioSum > 0
-        ? remainingBudget * (segment.sizeRatio / otherRatioSum)
-        : 0,
-    );
-  }
-
   return updateCenter(layout, (center) => ({
     ...center,
-    segments: normalizeCenterSegmentRatios(
-      center.segments.map((segment) => {
-        const isOpen =
-          segment.kind === "editor"
-            ? center.editorOpen
-            : segment.activePanel !== null;
-        if (!isOpen) return segment;
-        const px = pixelSizes.get(segment.id);
-        return px != null ? { ...segment, sizeRatio: px } : segment;
-      }),
-      center.editorOpen,
+    segments: applyAdjacentItemPixelSizes(
+      center.segments,
+      (s) => centerSegmentIsOpen(s, center.editorOpen),
+      segmentIdA,
+      segmentIdB,
+      pxA,
+      pxB,
+      layoutBudgetPx,
     ),
   }));
 }
