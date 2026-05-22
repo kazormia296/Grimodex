@@ -4,6 +4,7 @@ import { render, waitFor } from "@testing-library/react";
 import { RegionStripe } from "./RegionStripe";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
+import { PANEL_GAP_PX } from "./layoutConstants";
 import type { RegionSegment } from "./useRegionSegments";
 
 // l0: open (multi-panel), l1: collapsed, l2: open
@@ -73,6 +74,20 @@ describe("RegionStripe", () => {
     );
     expect(cluster).not.toBeNull();
     expect(Number(cluster!.style.flexGrow)).toBe(0);
+  });
+
+  it("sizes the open-slot divider band to the content Splitter thickness", () => {
+    // Regression: the stripe divider used a 5px band (my-0.5 + 1px line)
+    // while the content Splitter is PANEL_GAP_PX wide — the mismatch drifted
+    // the stripe split position away from the Splitter position.
+    const { container } = render(
+      <RegionStripe region="left" orientation="vertical" segments={segments} />,
+    );
+    const divider = container.querySelector<HTMLElement>(
+      "[data-stripe-divider]",
+    );
+    const band = divider?.parentElement as HTMLElement;
+    expect(band.style.height).toBe(`${PANEL_GAP_PX}px`);
   });
 
   it.each([

@@ -97,6 +97,10 @@ export function CenterStripe() {
       className="gx-panel relative grid h-full w-full min-w-0 overflow-hidden"
       style={{ gridTemplateColumns: stripeColumns }}
     >
+      {/* 9 列構成: stripe / gap / content / splitter の 4 列ぶんの空セル。
+          bands セルを下の editor 列と揃える。 */}
+      <div aria-hidden className="min-h-0 min-w-0" />
+      <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
       <div
@@ -110,6 +114,8 @@ export function CenterStripe() {
       >
         <CenterStripeBands segments={segments} />
       </div>
+      <div aria-hidden className="min-h-0 min-w-0" />
+      <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
       <div aria-hidden className="min-h-0 min-w-0" />
       {showDropZones && (

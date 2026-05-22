@@ -145,6 +145,12 @@ export function computeLayoutGridMetrics(
   };
 }
 
+/**
+ * center stripe 内側の 9 列テンプレート。center stripe は最上段を全幅で
+ * 占有するため、メイングリッド（buildLayoutGridTemplateColumns）と同じ
+ * 9 列構成にして bands を下の editor 列と揃える。center band 非表示時のみ
+ * 中央列を `auto` にしてツールアイコンを自然幅で残す。
+ */
 export function buildCenterStripeGridTemplateColumns(
   metrics: LayoutGridMetrics,
 ): string {
@@ -160,11 +166,15 @@ export function buildCenterStripeGridTemplateColumns(
     metrics.centerColumnPx === "0px" ? "auto" : metrics.centerColumnPx;
 
   return [
+    `${metrics.leftStripePx}px`,
+    `${metrics.gapLeftPx}px`,
     leftContentColumn,
     `${metrics.leftSplitterPx}px`,
     centerStripeColumn,
     `${metrics.rightSplitterPx}px`,
     rightContentColumn,
+    `${metrics.gapRightPx}px`,
+    `${metrics.rightStripePx}px`,
   ].join(" ");
 }
 
@@ -212,8 +222,11 @@ export function buildLayoutGridTemplateRows(
 }
 
 /**
- * 9 列グリッドの grid-template-areas。bottom 行の構成を角オーナーシップで
- * 切り替える:
+ * 9 列グリッドの grid-template-areas。
+ *  - center stripe は最上段を全幅で占有し、上の両角も持つ。
+ *  - side stripe は main 行（＋角所有時は bottom 行）にのみ広がり、上端は
+ *    content / editor の上端と一致する（gap 行ぶん center stripe の下）。
+ * bottom 行の構成は角オーナーシップで切り替える:
  *  - side 所有: その側の side region（stripe / gap / content / splitter）が
  *    bottom 行まで縦に伸び、bottom region はその分インセットされる。
  *  - bottom 所有: その角まで bottom region が広がる。
@@ -225,8 +238,8 @@ export function buildLayoutGridTemplateAreas(
   bottomCorners: BottomCornerOwnership,
 ): string {
   const cstripe =
-    '"lstripe . cstripe cstripe cstripe cstripe cstripe . rstripe"';
-  const gapRow = '"lstripe . . . . . . . rstripe"';
+    '"cstripe cstripe cstripe cstripe cstripe cstripe cstripe cstripe cstripe"';
+  const gapRow = '". . . . . . . . ."';
   const main = '"lstripe . lcontent lspl editor rspl rcontent . rstripe"';
   if (!hasBottom) return `${cstripe} ${gapRow} ${main}`;
 

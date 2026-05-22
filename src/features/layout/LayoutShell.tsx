@@ -37,9 +37,10 @@ function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
 /**
  * IntelliJ-style asymmetric layout shell (§3 of layout design doc).
  *
- * Center Stripe is a permanent top band and the bottom region a wide bottom
- * band — both span left content + editor + right content between the side
- * stripes. Side stripes span all rows; only stripe columns sit in the corners.
+ * Center Stripe is a full-width permanent top band — it spans every column
+ * and owns the top corners. Side stripes span only the main row (plus the
+ * bottom row when they own a bottom corner), so their top edge is flush with
+ * the content / editor top edge. The bottom region is a wide bottom band.
  */
 export const LayoutShell = memo(function LayoutShell({
   hidden = false,

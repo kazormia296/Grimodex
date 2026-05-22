@@ -217,7 +217,7 @@ describe("layoutMetrics", () => {
     expect(legacy.bottomCellPx).toBe(STRIPE_SIZE);
   });
 
-  it("buildCenterStripeGridTemplateColumns mirrors the center band columns", () => {
+  it("buildCenterStripeGridTemplateColumns spans the full 9-column grid", () => {
     const metrics = computeLayoutGridMetrics({
       hasLeft: true,
       hasRight: true,
@@ -230,8 +230,29 @@ describe("layoutMetrics", () => {
       rightSize: 340,
       bottomSize: 0,
     });
+    // center stripe は全幅。stripe / gap 列を含む 9 列で bands を editor と揃える。
     expect(buildCenterStripeGridTemplateColumns(metrics)).toBe(
-      `260px ${SPLITTER_GUTTER_PX}px minmax(0, 1fr) ${SPLITTER_GUTTER_PX}px 340px`,
+      `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 260px ${SPLITTER_GUTTER_PX}px minmax(0, 1fr) ${SPLITTER_GUTTER_PX}px 340px ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
+    );
+  });
+
+  it("buildCenterStripeGridTemplateColumns matches the main grid columns when the center band is visible", () => {
+    const metrics = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: true,
+      leftOpen: true,
+      rightOpen: true,
+      bottomOpen: true,
+      centerBandVisible: true,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 220,
+    });
+    // 中央列が実寸のとき center stripe の 9 列はメイングリッドと完全一致し、
+    // bands が下の editor 列とピクセル単位で揃う。
+    expect(buildCenterStripeGridTemplateColumns(metrics)).toBe(
+      buildLayoutGridTemplateColumns(metrics),
     );
   });
 
@@ -253,6 +274,22 @@ describe("layoutMetrics", () => {
   });
 
   describe("buildLayoutGridTemplateAreas", () => {
+    it("spans the center stripe full-width and starts side stripes at the main row", () => {
+      const areas = buildLayoutGridTemplateAreas(false, {
+        left: false,
+        right: false,
+      });
+      // 上段は center stripe が全 9 列を占有し、上の両角も持つ。
+      expect(areas).toContain(
+        '"cstripe cstripe cstripe cstripe cstripe cstripe cstripe cstripe cstripe"',
+      );
+      // gap 行に side stripe は無い（main 行から始まり content と上端が揃う）。
+      expect(areas).toContain('". . . . . . . . ."');
+      expect(areas).toContain(
+        '"lstripe . lcontent lspl editor rspl rcontent . rstripe"',
+      );
+    });
+
     it("extends both side regions into the bottom row by default", () => {
       const areas = buildLayoutGridTemplateAreas(true, {
         left: false,

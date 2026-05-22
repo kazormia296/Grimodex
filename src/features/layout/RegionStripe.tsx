@@ -7,7 +7,11 @@ import {
 } from "./layoutDnD";
 import { useShallow } from "zustand/react/shallow";
 import { useLayoutStore } from "./layoutStore";
-import { DND_NEW_SLOT_BETWEEN_HALF_PX } from "./layoutConstants";
+import {
+  DND_NEW_SLOT_BETWEEN_HALF_PX,
+  slotSplitterPx,
+} from "./layoutConstants";
+import { useCardLayout } from "./cardLayout";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import type { LayoutRegionId, RegionId } from "./layoutTypes";
 import type { RegionSegment } from "./useRegionSegments";
@@ -305,8 +309,15 @@ export function RegionStripe({
   const stripeEdgeHitPx = 16;
   const stripeBetweenHitPx = DND_NEW_SLOT_BETWEEN_HALF_PX * 2;
 
+  // open slot 間のアイコングループ仕切り幅。content 側の Splitter 帯
+  // （slotSplitterPx）と一致させることで、ストライプの分割位置と
+  // content の Splitter 位置を揃える。
+  const cardLayout = useCardLayout();
+  const dividerGapPx = slotSplitterPx(cardLayout);
+
   // コーナートグル用の予約余白。vertical は top/bottom、horizontal は
-  // left/right に効く。0 のときは inline style を出さず py-0.5/px-0.5 を残す。
+  // left/right に効く。装飾パディングは置かず、アイコン配分域を content の
+  // slot 領域と厳密に一致させる（py-0.5/px-0.5 は使わない）。
   const reserveStyle =
     orientation === "vertical"
       ? {
@@ -328,9 +339,7 @@ export function RegionStripe({
         // D案: stripe/rail も他パネルと同じ「カード」。境界線は引かず、
         // ギャップで分離する。center は CenterStripe 側がカードを持つため除外。
         region !== "center" && "gx-panel",
-        orientation === "vertical"
-          ? "flex-col gap-0 py-0.5"
-          : "flex-row gap-0 px-0.5",
+        orientation === "vertical" ? "flex-col gap-0" : "flex-row gap-0",
       )}
     >
       {showDropZones && segments.length > 0 && (
@@ -381,11 +390,14 @@ export function RegionStripe({
             {itemIdx > 0 && (
               <div
                 className={cn(
-                  "relative shrink-0",
-                  orientation === "vertical"
-                    ? "my-0.5 flex w-full justify-center"
-                    : "mx-0.5 flex h-full items-center",
+                  "relative flex shrink-0 items-center justify-center",
+                  orientation === "vertical" ? "w-full" : "h-full",
                 )}
+                style={
+                  orientation === "vertical"
+                    ? { height: dividerGapPx }
+                    : { width: dividerGapPx }
+                }
               >
                 <div
                   data-stripe-divider
