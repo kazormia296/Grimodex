@@ -1040,7 +1040,10 @@ export async function listForeshadowsByCodexEntry(
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.foreshadowId, fids));
 
-  return buildForeshadowsWithLabels(rows as ForeshadowRow[], setups);
+  return buildForeshadowsWithLabels(
+    rows as ForeshadowRow[],
+    setups as SetupLabelInput[],
+  );
 }
 
 // ── AI propose stub ───────────────────────────────────────────────
@@ -1359,5 +1362,10 @@ export async function getChapterForeshadowStats(
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.foreshadowId, Array.from(relatedFids)));
 
-  return computeChapterForeshadowStats(chapterId, scenes, fRows, allSetups);
+  return computeChapterForeshadowStats(
+    chapterId,
+    scenes,
+    fRows,
+    allSetups as SetupLabelInput[],
+  );
 }
