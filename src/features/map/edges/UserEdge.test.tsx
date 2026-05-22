@@ -128,3 +128,58 @@ describe("UserEdge — ラベル編集", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 });
+
+describe("UserEdge — ラベル追加プレースホルダー", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("選択中はラベルなしエッジに「＋ラベル」プレースホルダーが出る", () => {
+    render(<UserEdge {...makeProps({ selected: true })} />);
+    expect(screen.getByText("＋ラベル")).toBeTruthy();
+  });
+
+  it("非選択のラベルなしエッジにはプレースホルダーを出さない", () => {
+    render(<UserEdge {...makeProps({ selected: false })} />);
+    expect(screen.queryByText("＋ラベル")).toBeNull();
+  });
+
+  it("ラベルなしエッジのプレースホルダーは1つだけ", () => {
+    render(<UserEdge {...makeProps({ selected: true })} />);
+    expect(screen.getAllByText("＋ラベル")).toHaveLength(1);
+  });
+
+  it("ホバーでプレースホルダーが出現する", async () => {
+    const { container } = render(
+      <UserEdge {...makeProps({ selected: false })} />,
+    );
+    const hitArea = container.querySelector('[style*="cursor: text"]');
+    await userEvent.hover(hitArea!.parentElement!);
+    expect(screen.getByText("＋ラベル")).toBeTruthy();
+  });
+
+  it("プレースホルダーのクリックで入力欄が開く", async () => {
+    render(<UserEdge {...makeProps({ selected: true })} />);
+    await userEvent.click(screen.getByText("＋ラベル"));
+    expect(screen.getByRole("textbox")).toBeTruthy();
+  });
+
+  it("プレースホルダーから入力した値が forwardLabel で onLabelSave に渡る", async () => {
+    const onLabelSave = vi.fn();
+    render(
+      <UserEdge {...makeProps({ selected: true, data: { onLabelSave } })} />,
+    );
+    await userEvent.click(screen.getByText("＋ラベル"));
+    await userEvent.type(screen.getByRole("textbox"), "入口");
+    await userEvent.keyboard("{Enter}");
+    expect(onLabelSave).toHaveBeenCalledWith("forwardLabel", "入口");
+  });
+
+  it("forwardLabel があるとき選択中は backward プレースホルダーが出る", () => {
+    render(
+      <UserEdge
+        {...makeProps({ selected: true, data: { forwardLabel: "行き" } })}
+      />,
+    );
+    expect(screen.getByText("行き")).toBeTruthy();
+    expect(screen.getByText("＋ラベル")).toBeTruthy();
+  });
+});

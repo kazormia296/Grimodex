@@ -27,6 +27,7 @@ function InlineLabel({
   offsetY,
   labelX,
   labelY,
+  selected,
   onSave,
 }: {
   value: string | null | undefined;
@@ -34,9 +35,11 @@ function InlineLabel({
   offsetY: number;
   labelX: number;
   labelY: number;
+  selected: boolean;
   onSave: (label: string | null) => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const onSaveRef = useRef(onSave);
@@ -68,6 +71,8 @@ function InlineLabel({
         pointerEvents: "all",
       }}
       className="nodrag nopan"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       onDoubleClick={(e) => {
         e.stopPropagation();
         startEdit();
@@ -111,6 +116,28 @@ function InlineLabel({
         >
           {value}
         </div>
+      ) : selected || hovered ? (
+        <button
+          type="button"
+          className="nodrag nopan"
+          onClick={(e) => {
+            e.stopPropagation();
+            startEdit();
+          }}
+          style={{
+            background: "var(--background)",
+            border: `1px dashed ${color}`,
+            borderRadius: 4,
+            padding: "1px 6px",
+            fontSize: 11,
+            color: "var(--muted-foreground)",
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+            opacity: 0.9,
+          }}
+        >
+          ＋ラベル
+        </button>
       ) : (
         <div style={{ width: 24, height: 16, cursor: "text" }} />
       )}
@@ -167,11 +194,16 @@ export const UserEdge = memo(function UserEdge({
   const markerStart =
     direction === "bidirectional" ? `url(#arrow-start-${id})` : undefined;
 
-  const hasForward = d.forwardLabel !== undefined;
-  const hasBackward = d.backwardLabel !== undefined;
-  // If only one label exists, center it; if both, offset each
-  const forwardOffsetY = hasBackward ? -14 : 0;
-  const backwardOffsetY = hasForward ? 14 : 0;
+  const forwardHasText =
+    typeof d.forwardLabel === "string" && d.forwardLabel.length > 0;
+  const backwardHasText =
+    typeof d.backwardLabel === "string" && d.backwardLabel.length > 0;
+  // The backward-label slot stays hidden until the forward label has a
+  // value, so a labelless edge surfaces a single "＋ラベル" affordance
+  // instead of two stacked empty placeholders.
+  const showBackward = forwardHasText || backwardHasText;
+  const forwardOffsetY = showBackward ? -14 : 0;
+  const backwardOffsetY = 14;
 
   return (
     <>
@@ -220,15 +252,17 @@ export const UserEdge = memo(function UserEdge({
           offsetY={forwardOffsetY}
           labelX={labelX}
           labelY={labelY}
+          selected={!!selected}
           onSave={(label) => d.onLabelSave?.("forwardLabel", label)}
         />
-        {hasBackward && (
+        {showBackward && (
           <InlineLabel
             value={d.backwardLabel}
             color={color}
             offsetY={backwardOffsetY}
             labelX={labelX}
             labelY={labelY}
+            selected={!!selected}
             onSave={(label) => d.onLabelSave?.("backwardLabel", label)}
           />
         )}
