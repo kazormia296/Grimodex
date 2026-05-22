@@ -77,7 +77,7 @@ export function ToolWindowIcon({
           }}
           onClick={() => togglePanel(panelId)}
           className={cn(
-            "relative z-30 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors",
+            "relative z-30 flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors",
             "transition-transform duration-75 active:scale-[0.94]",
             passThroughDrop && "pointer-events-none",
             active
