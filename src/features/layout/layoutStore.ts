@@ -181,6 +181,21 @@ function movePanelInLayout(
   insertIndex: number | null,
 ): LayoutState {
   const source = findPanelLocation(layout, panel);
+
+  // 自身が唯一のパネルである slot/segment へ、その slot/segment 自体を
+  // ドロップした場合は no-op。removePanelFromSource が slot を先に削除し、
+  // 再追加先 ID が失われて panel が宙に浮く → validate 失敗で
+  // applyValidatedLayout が全レイアウトをリセットしてしまうため。
+  if (
+    source != null &&
+    targetSlotId != null &&
+    source.region === targetRegion &&
+    source.slot.id === targetSlotId &&
+    source.slot.panels.length === 1
+  ) {
+    return layout;
+  }
+
   let next = cloneLayoutState(layout);
 
   const sourceSegmentRemoved =

@@ -215,6 +215,22 @@ describe("useLayoutStore", () => {
       expect(openLeft[0]?.sizeRatio).toBeCloseTo(1);
       assertValidLayout(useLayoutStore.getState().layout);
     });
+
+    it("is a no-op when a single-panel center tool segment is dropped onto itself", () => {
+      useLayoutStore.getState().movePanelToNewSlot("scenes", "center", 1);
+      const segment = useLayoutStore
+        .getState()
+        .layout.center.segments.find((s) => s.id !== "ceditor")!;
+      const layoutBefore = useLayoutStore.getState().layout;
+
+      useLayoutStore.getState().movePanelToSlot("scenes", "center", segment.id);
+
+      const layoutAfter = useLayoutStore.getState().layout;
+      expect(layoutAfter.center.segments).toEqual(layoutBefore.center.segments);
+      expect(layoutAfter.center.editorOpen).toBe(true);
+      expect(findPanelLocation(layoutAfter, "scenes")?.region).toBe("center");
+      assertValidLayout(layoutAfter);
+    });
   });
 
   describe("movePanelToNewSlot", () => {
