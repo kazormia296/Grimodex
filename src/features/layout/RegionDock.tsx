@@ -4,6 +4,7 @@ import { sideContentZoneHeight } from "./layoutMetrics";
 import { RegionStripe } from "./RegionStripe";
 import { RegionContent } from "./RegionContent";
 import { useLayoutStore } from "./layoutStore";
+import { useMochiLayout } from "./mochiLayout";
 import type { RegionId } from "./layoutTypes";
 import type { RegionSegment } from "./useRegionSegments";
 
@@ -60,6 +61,7 @@ function BottomRegionDock({
   const hasOpen = useLayoutStore((s) =>
     s.layout.regions.bottom.slots.some((slot) => slot.activePanel !== null),
   );
+  const mochi = useMochiLayout();
 
   const contentSize = hasOpen ? regionSize : 0;
 
@@ -67,6 +69,9 @@ function BottomRegionDock({
     <div
       data-region-dock="bottom"
       className="flex min-h-0 w-full flex-1 flex-col"
+      // content と icon stripe の間の stripe-gap。bottomDockPx が同じ
+      // 値をドック高さに加算しているので overflow しない。
+      style={{ gap: mochi ? "var(--gx-stripe-gap)" : undefined }}
     >
       {contentSize > 0 && (
         <div

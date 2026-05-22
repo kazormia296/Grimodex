@@ -221,7 +221,16 @@ export const LayoutShell = memo(function LayoutShell({
             style={{ gridArea: "bottom" }}
             className="flex min-h-0 min-w-0 flex-col"
           >
-            {bottomOpen && <RegionResizeSplitter region="bottom" />}
+            {bottomOpen ? (
+              <RegionResizeSplitter region="bottom" />
+            ) : mochi ? (
+              // content を閉じていても bottom stripe を浮かせるギャップ。
+              <div
+                aria-hidden
+                className="shrink-0"
+                style={{ height: "var(--gx-stripe-gap)" }}
+              />
+            ) : null}
             <RegionDock
               region="bottom"
               stripeOrientation="horizontal"

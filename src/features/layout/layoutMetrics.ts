@@ -66,9 +66,13 @@ export function bottomDockPx(
   hasRegion: boolean,
   open: boolean,
   storedSize: number,
+  mochi: boolean = true,
 ): number {
   if (!hasRegion) return 0;
-  return STRIPE_SIZE + regionContentPx(open, storedSize);
+  // bottom region は content と icon stripe を 1 セル内で縦積みするため、
+  // 両者の間の stripe-gap をドック高さに含める（もちもち ON 時のみ）。
+  const stripeGap = open && mochi ? STRIPE_GAP_PX : 0;
+  return STRIPE_SIZE + regionContentPx(open, storedSize) + stripeGap;
 }
 
 export function computeLayoutGridMetrics(
@@ -115,6 +119,7 @@ export function computeLayoutGridMetrics(
     input.hasBottom,
     input.bottomOpen,
     input.bottomSize,
+    mochi,
   );
 
   return {
@@ -134,7 +139,10 @@ export function computeLayoutGridMetrics(
     rightDockPx,
     bottomDockPx: bottomDock,
     bottomRowInset: bottomDock,
-    bottomCellPx: bottomDock + (input.bottomOpen ? splitterPx : 0),
+    // bottom row ↔ main 間のギャップ。もちもち時は content の開閉に
+    // かかわらず常に確保する（閉じていても stripe が浮いて見えるよう）。
+    // 旧レイアウトでは open 時の splitter 線のみ。
+    bottomCellPx: bottomDock + (mochi || input.bottomOpen ? splitterPx : 0),
   };
 }
 

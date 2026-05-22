@@ -29,9 +29,14 @@ describe("layoutMetrics", () => {
     expect(sideDockPx(false, true, 260)).toBe(0);
   });
 
-  it("bottomDockPx includes stripe and content when open", () => {
-    expect(bottomDockPx(true, true, 220)).toBe(STRIPE_SIZE + 220);
+  it("bottomDockPx includes stripe, content, and the content↔stripe gap", () => {
+    // もちもち ON: content↔icon-stripe 間の stripe-gap を含む。
+    expect(bottomDockPx(true, true, 220)).toBe(
+      STRIPE_SIZE + 220 + STRIPE_GAP_PX,
+    );
     expect(bottomDockPx(true, false, 220)).toBe(STRIPE_SIZE);
+    // もちもち OFF: ギャップなし。
+    expect(bottomDockPx(true, true, 220, false)).toBe(STRIPE_SIZE + 220);
   });
 
   it("computeLayoutGridMetrics splits stripe, content, and splitter columns", () => {
@@ -56,7 +61,7 @@ describe("layoutMetrics", () => {
     expect(m.rightSplitterPx).toBe(SPLITTER_GUTTER_PX);
     expect(m.leftDockPx).toBe(STRIPE_SIZE + 260);
     expect(m.rightDockPx).toBe(STRIPE_SIZE + 340);
-    expect(m.bottomDockPx).toBe(STRIPE_SIZE + 220);
+    expect(m.bottomDockPx).toBe(STRIPE_SIZE + 220 + STRIPE_GAP_PX);
     expect(m.bottomRowInset).toBe(m.bottomDockPx);
     expect(m.bottomCellPx).toBe(m.bottomDockPx + SPLITTER_GUTTER_PX);
   });
@@ -193,7 +198,24 @@ describe("layoutMetrics", () => {
     expect(m.rightSplitterPx).toBe(0);
     expect(m.leftStripePx).toBe(STRIPE_SIZE);
     expect(m.rightStripePx).toBe(STRIPE_SIZE);
-    expect(m.bottomCellPx).toBe(STRIPE_SIZE);
+    // content を閉じていても bottom stripe を浮かせる stripe-gap は残る。
+    expect(m.bottomCellPx).toBe(STRIPE_SIZE + STRIPE_GAP_PX);
+
+    // もちもち OFF: 閉じた bottom には gap を入れない（旧レイアウト）。
+    const legacy = computeLayoutGridMetrics({
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: true,
+      leftOpen: false,
+      rightOpen: false,
+      bottomOpen: false,
+      centerBandVisible: false,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 220,
+      mochi: false,
+    });
+    expect(legacy.bottomCellPx).toBe(STRIPE_SIZE);
   });
 
   it("sideContentZoneHeight subtracts bottom row inset", () => {
