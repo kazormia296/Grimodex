@@ -462,6 +462,388 @@ pub(crate) fn foreshadow_list_with_labels(
     })
 }
 
+fn in_placeholders(count: usize) -> String {
+    std::iter::repeat_n("?", count)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn fetch_setup_label_rows(
+    db: &database::Database,
+    foreshadow_ids: &[String],
+) -> anyhow::Result<Vec<Value>> {
+    if foreshadow_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let placeholders = in_placeholders(foreshadow_ids.len());
+    let params: Vec<Value> = foreshadow_ids
+        .iter()
+        .cloned()
+        .map(Value::String)
+        .collect();
+    let setup_rows = db.execute(
+        &format!(
+            "SELECT foreshadow_id, is_orphan, strength, ai_strength, ai_reasoning \
+             FROM foreshadow_setups WHERE foreshadow_id IN ({placeholders})"
+        ),
+        &params,
+        "all",
+    )?;
+    Ok(setup_rows.into_iter().map(Value::Object).collect())
+}
+
+/// Open (unresolved) foreshadows + setup label rows in one DB lock acquisition.
+#[tauri::command]
+pub(crate) fn foreshadow_list_open_for_context(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    project_id: String,
+) -> Result<ForeshadowListWithLabelsResponse, AppError> {
+    with_db(&ws_state, |db| {
+        let foreshadow_rows = db.execute(
+            "SELECT id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at \
+             FROM foreshadows \
+             WHERE project_id = ? AND payoff_confirmed = 0 AND abandoned = 0 AND secret = 0",
+            &[Value::String(project_id)],
+            "all",
+        )?;
+        let foreshadows: Vec<Value> = foreshadow_rows
+            .into_iter()
+            .map(Value::Object)
+            .collect();
+        if foreshadows.is_empty() {
+            return Ok(ForeshadowListWithLabelsResponse {
+                foreshadows,
+                setups: vec![],
+            });
+        }
+        let ids: Vec<String> = foreshadows
+            .iter()
+            .filter_map(|v| {
+                v.as_object()
+                    .and_then(|o| o.get("id"))
+                    .and_then(|id| id.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        let setups = fetch_setup_label_rows(db, &ids)?;
+        Ok(ForeshadowListWithLabelsResponse { foreshadows, setups })
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ForeshadowSceneInfoResponse {
+    setup_foreshadow_ids: Vec<String>,
+    payoff_foreshadow_ids: Vec<String>,
+}
+
+#[tauri::command]
+pub(crate) fn foreshadow_get_scene_info(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    scene_id: String,
+) -> Result<ForeshadowSceneInfoResponse, AppError> {
+    with_db(&ws_state, |db| {
+        let setup_rows = db.execute(
+            "SELECT DISTINCT foreshadow_id FROM foreshadow_setups WHERE scene_id = ?",
+            &[Value::String(scene_id.clone())],
+            "all",
+        )?;
+        let payoff_rows = db.execute(
+            "SELECT id FROM foreshadows WHERE payoff_scene_id = ?",
+            &[Value::String(scene_id)],
+            "all",
+        )?;
+        let setup_foreshadow_ids = setup_rows
+            .iter()
+            .filter_map(|row| {
+                row
+                    .get("foreshadow_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        let payoff_foreshadow_ids = payoff_rows
+            .iter()
+            .filter_map(|row| row.get("id").and_then(|v| v.as_str()).map(str::to_owned))
+            .collect();
+        Ok(ForeshadowSceneInfoResponse {
+            setup_foreshadow_ids,
+            payoff_foreshadow_ids,
+        })
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ForeshadowSceneContextResponse {
+    setups: Vec<Value>,
+    payoffs: Vec<Value>,
+    setup_scene_rows: Vec<Value>,
+}
+
+#[tauri::command]
+pub(crate) fn foreshadow_get_scene_context(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    scene_id: String,
+) -> Result<ForeshadowSceneContextResponse, AppError> {
+    with_db(&ws_state, |db| {
+        let setup_rows = db.execute(
+            "SELECT DISTINCT f.title AS title, f.intent AS intent \
+             FROM foreshadow_setups fs \
+             INNER JOIN foreshadows f ON fs.foreshadow_id = f.id \
+             WHERE fs.scene_id = ? AND f.abandoned = 0",
+            &[Value::String(scene_id.clone())],
+            "all",
+        )?;
+        let payoff_rows = db.execute(
+            "SELECT f.id AS id, f.title AS title, f.intent AS intent \
+             FROM foreshadows f \
+             WHERE f.payoff_scene_id = ? AND f.abandoned = 0",
+            &[Value::String(scene_id.clone())],
+            "all",
+        )?;
+        let payoff_ids: Vec<String> = payoff_rows
+            .iter()
+            .filter_map(|row| row.get("id").and_then(|v| v.as_str()).map(str::to_owned))
+            .collect();
+        let setup_scene_rows = if payoff_ids.is_empty() {
+            vec![]
+        } else {
+            let placeholders = in_placeholders(payoff_ids.len());
+            let params: Vec<Value> = payoff_ids.into_iter().map(Value::String).collect();
+            db.execute(
+                &format!(
+                    "SELECT fs.foreshadow_id AS foreshadow_id, tn.title AS scene_title \
+                     FROM foreshadow_setups fs \
+                     INNER JOIN tree_nodes tn ON fs.scene_id = tn.id \
+                     WHERE fs.foreshadow_id IN ({placeholders})"
+                ),
+                &params,
+                "all",
+            )?
+            .into_iter()
+            .map(Value::Object)
+            .collect()
+        };
+        Ok(ForeshadowSceneContextResponse {
+            setups: setup_rows.into_iter().map(Value::Object).collect(),
+            payoffs: payoff_rows.into_iter().map(Value::Object).collect(),
+            setup_scene_rows,
+        })
+    })
+}
+
+#[tauri::command]
+pub(crate) fn foreshadow_list_by_codex_entry(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    codex_entry_id: String,
+) -> Result<ForeshadowListWithLabelsResponse, AppError> {
+    with_db(&ws_state, |db| {
+        let link_rows = db.execute(
+            "SELECT foreshadow_id FROM foreshadow_codex_links WHERE codex_entry_id = ?",
+            &[Value::String(codex_entry_id)],
+            "all",
+        )?;
+        if link_rows.is_empty() {
+            return Ok(ForeshadowListWithLabelsResponse {
+                foreshadows: vec![],
+                setups: vec![],
+            });
+        }
+        let ids: Vec<String> = link_rows
+            .iter()
+            .filter_map(|row| {
+                row
+                    .get("foreshadow_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        let placeholders = in_placeholders(ids.len());
+        let params: Vec<Value> = ids.iter().cloned().map(Value::String).collect();
+        let foreshadow_rows = db.execute(
+            &format!("SELECT * FROM foreshadows WHERE id IN ({placeholders})"),
+            &params,
+            "all",
+        )?;
+        let foreshadows: Vec<Value> = foreshadow_rows
+            .into_iter()
+            .map(Value::Object)
+            .collect();
+        let setups = fetch_setup_label_rows(db, &ids)?;
+        Ok(ForeshadowListWithLabelsResponse { foreshadows, setups })
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ForeshadowChapterStatsBundle {
+    scenes: Vec<Value>,
+    setups_on_scenes: Vec<Value>,
+    payoff_foreshadows: Vec<Value>,
+    related_foreshadows: Vec<Value>,
+    related_setups: Vec<Value>,
+}
+
+#[tauri::command]
+pub(crate) fn foreshadow_get_chapter_stats(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    chapter_id: String,
+) -> Result<ForeshadowChapterStatsBundle, AppError> {
+    with_db(&ws_state, |db| {
+        let scenes = db.execute(
+            "SELECT id, content FROM tree_nodes WHERE parent_id = ? AND node_type = 'scene'",
+            &[Value::String(chapter_id)],
+            "all",
+        )?;
+        if scenes.is_empty() {
+            return Ok(ForeshadowChapterStatsBundle {
+                scenes: vec![],
+                setups_on_scenes: vec![],
+                payoff_foreshadows: vec![],
+                related_foreshadows: vec![],
+                related_setups: vec![],
+            });
+        }
+        let scene_ids: Vec<String> = scenes
+            .iter()
+            .filter_map(|row| row.get("id").and_then(|v| v.as_str()).map(str::to_owned))
+            .collect();
+        let scene_placeholders = in_placeholders(scene_ids.len());
+        let scene_params: Vec<Value> = scene_ids.iter().cloned().map(Value::String).collect();
+        let setups_on_scenes = db.execute(
+            &format!("SELECT * FROM foreshadow_setups WHERE scene_id IN ({scene_placeholders})"),
+            &scene_params,
+            "all",
+        )?;
+        let payoff_foreshadows = db.execute(
+            &format!(
+                "SELECT * FROM foreshadows WHERE payoff_scene_id IN ({scene_placeholders})"
+            ),
+            &scene_params,
+            "all",
+        )?;
+        let mut related_ids: Vec<String> = setups_on_scenes
+            .iter()
+            .filter_map(|row| {
+                row
+                    .get("foreshadow_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        for row in &payoff_foreshadows {
+            if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+                if !related_ids.iter().any(|existing| existing == id) {
+                    related_ids.push(id.to_string());
+                }
+            }
+        }
+        if related_ids.is_empty() {
+            return Ok(ForeshadowChapterStatsBundle {
+                scenes: scenes.into_iter().map(Value::Object).collect(),
+                setups_on_scenes: setups_on_scenes.into_iter().map(Value::Object).collect(),
+                payoff_foreshadows: payoff_foreshadows.into_iter().map(Value::Object).collect(),
+                related_foreshadows: vec![],
+                related_setups: vec![],
+            });
+        }
+        let related_placeholders = in_placeholders(related_ids.len());
+        let related_params: Vec<Value> = related_ids.iter().cloned().map(Value::String).collect();
+        let related_foreshadows = db.execute(
+            &format!("SELECT * FROM foreshadows WHERE id IN ({related_placeholders})"),
+            &related_params,
+            "all",
+        )?;
+        let related_setups = fetch_setup_label_rows(db, &related_ids)?;
+        Ok(ForeshadowChapterStatsBundle {
+            scenes: scenes.into_iter().map(Value::Object).collect(),
+            setups_on_scenes: setups_on_scenes.into_iter().map(Value::Object).collect(),
+            payoff_foreshadows: payoff_foreshadows.into_iter().map(Value::Object).collect(),
+            related_foreshadows: related_foreshadows.into_iter().map(Value::Object).collect(),
+            related_setups,
+        })
+    })
+}
+
+#[tauri::command]
+pub(crate) fn foreshadow_get_setup(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    setup_id: String,
+) -> Result<Option<Value>, AppError> {
+    with_db(&ws_state, |db| {
+        let rows = db.execute(
+            "SELECT * FROM foreshadow_setups WHERE id = ?",
+            &[Value::String(setup_id)],
+            "get",
+        )?;
+        Ok(rows.first().cloned().map(Value::Object))
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ForeshadowSetupPatch {
+    strength: Option<Option<String>>,
+    ai_strength: Option<Option<String>>,
+    ai_reasoning: Option<Option<String>>,
+    is_orphan: Option<bool>,
+    last_evaluated_at: Option<Option<i64>>,
+}
+
+#[tauri::command]
+pub(crate) fn foreshadow_update_setup(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    id: String,
+    patch: ForeshadowSetupPatch,
+) -> Result<(), AppError> {
+    with_db(&ws_state, |db| {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut sets: Vec<&str> = Vec::new();
+        let mut params: Vec<Value> = Vec::new();
+
+        if let Some(strength) = patch.strength {
+            sets.push("strength = ?");
+            params.push(strength.map(Value::String).unwrap_or(Value::Null));
+        }
+        if let Some(ai_strength) = patch.ai_strength {
+            sets.push("ai_strength = ?");
+            params.push(ai_strength.map(Value::String).unwrap_or(Value::Null));
+        }
+        if let Some(ai_reasoning) = patch.ai_reasoning {
+            sets.push("ai_reasoning = ?");
+            params.push(ai_reasoning.map(Value::String).unwrap_or(Value::Null));
+        }
+        if let Some(is_orphan) = patch.is_orphan {
+            sets.push("is_orphan = ?");
+            params.push(Value::Bool(is_orphan));
+        }
+        if let Some(last_evaluated_at) = patch.last_evaluated_at {
+            sets.push("last_evaluated_at = ?");
+            params.push(
+                last_evaluated_at
+                    .map(|v| Value::Number(v.into()))
+                    .unwrap_or(Value::Null),
+            );
+        }
+
+        if sets.is_empty() {
+            return Ok(());
+        }
+
+        sets.push("updated_at = ?");
+        params.push(Value::Number(now.into()));
+        params.push(Value::String(id.clone()));
+
+        let sql = format!(
+            "UPDATE foreshadow_setups SET {} WHERE id = ?",
+            sets.join(", ")
+        );
+        db.execute(&sql, &params, "run")?;
+        Ok(())
+    })
+}
+
 #[tauri::command]
 pub(crate) fn foreshadow_get(
     ws_state: tauri::State<'_, WorkspaceState>,

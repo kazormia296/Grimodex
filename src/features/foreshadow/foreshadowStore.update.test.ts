@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const {
   mockUpdateForeshadow,
-  mockListForeshadows,
+  mockListForeshadowsWithLabels,
   mockUnsetPayoffMarks,
   mockSaveSceneContent,
   editorRef,
@@ -22,7 +22,7 @@ const {
 
   return {
     mockUpdateForeshadow: vi.fn().mockResolvedValue(undefined),
-    mockListForeshadows: vi.fn().mockResolvedValue([]),
+    mockListForeshadowsWithLabels: vi.fn().mockResolvedValue([]),
     mockUnsetPayoffMarks: vi.fn(),
     mockSaveSceneContent: vi.fn().mockResolvedValue(undefined),
     editorRef,
@@ -34,7 +34,7 @@ vi.mock("./api", async (importOriginal) => {
   return {
     ...actual,
     updateForeshadow: mockUpdateForeshadow,
-    listForeshadows: mockListForeshadows,
+    listForeshadowsWithLabels: mockListForeshadowsWithLabels,
     listSetups: vi.fn().mockResolvedValue([]),
     auditChapter: vi.fn().mockResolvedValue([]),
   };
@@ -83,7 +83,7 @@ import { useForeshadowStore } from "./foreshadowStore";
 describe("ForeshadowStore.update", () => {
   beforeEach(() => {
     mockUpdateForeshadow.mockClear();
-    mockListForeshadows.mockClear();
+    mockListForeshadowsWithLabels.mockClear();
     mockUnsetPayoffMarks.mockClear();
     mockSaveSceneContent.mockClear();
     editorRef.current = {
@@ -94,7 +94,7 @@ describe("ForeshadowStore.update", () => {
     useForeshadowStore.setState({ items: [], setupsByForeshadowId: {} });
   });
 
-  it("updateForeshadow を呼び、load（listForeshadows）を実行する", async () => {
+  it("updateForeshadow を呼び、load（listForeshadowsWithLabels）を実行する", async () => {
     await useForeshadowStore
       .getState()
       .update("f-1", { title: "新タイトル" }, "p-1");
@@ -102,7 +102,7 @@ describe("ForeshadowStore.update", () => {
     expect(mockUpdateForeshadow).toHaveBeenCalledWith("f-1", {
       title: "新タイトル",
     });
-    expect(mockListForeshadows).toHaveBeenCalledWith("p-1");
+    expect(mockListForeshadowsWithLabels).toHaveBeenCalledWith("p-1");
     expect(mockUnsetPayoffMarks).not.toHaveBeenCalled();
   });
 

@@ -225,17 +225,185 @@ function normalizeSetupLabelInput(raw: unknown): SetupLabelInput {
   };
 }
 
+async function invokeForeshadowListWithLabels(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<{ rows: ForeshadowRow[]; setups: SetupLabelInput[] }> {
+  const res = await invoke<{
+    foreshadows: unknown[];
+    setups: unknown[];
+  }>(command, args);
+  return {
+    rows: (res.foreshadows ?? []).map(normalizeForeshadowRow),
+    setups: (res.setups ?? []).map(normalizeSetupLabelInput),
+  };
+}
+
+function buildOpenForeshadowsForContext(
+  rows: Array<{
+    id: string;
+    title: string;
+    intent: string | null;
+    loadBearing: ForeshadowLoadBearing | null;
+    updatedAt: unknown;
+  }>,
+  setups: Array<Pick<ForeshadowSetupRow, "foreshadowId" | "isOrphan">>,
+): OpenForeshadowForContext[] {
+  if (rows.length === 0) return [];
+
+  const countMap = new Map<string, number>();
+  for (const s of setups) {
+    if (s.isOrphan) continue;
+    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
+  }
+
+  const priority: Record<string, number> = {
+    critical: 0,
+    supporting: 1,
+    optional: 2,
+  };
+  const toMs = (v: unknown): number => {
+    if (v instanceof Date) return v.getTime();
+    if (typeof v === "string") return new Date(v).getTime();
+    if (typeof v === "number") return v;
+    return 0;
+  };
+  return rows
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      intent: r.intent,
+      loadBearing: r.loadBearing,
+      setupCount: countMap.get(r.id) ?? 0,
+      _updatedMs: toMs(r.updatedAt),
+    }))
+    .sort((a, b) => {
+      const pa = priority[a.loadBearing ?? ""] ?? 3;
+      const pb = priority[b.loadBearing ?? ""] ?? 3;
+      if (pa !== pb) return pa - pb;
+      return b._updatedMs - a._updatedMs;
+    })
+    .map(({ _updatedMs: _ms, ...rest }) => rest);
+}
+
+function buildSceneForeshadowContextFromBundle(res: {
+  setups: unknown[];
+  payoffs: unknown[];
+  setupSceneRows: unknown[];
+}): SceneForeshadowContext {
+  const setupSceneByForeshadow: Record<string, string> = {};
+  for (const raw of res.setupSceneRows ?? []) {
+    const row = (raw ?? {}) as Record<string, unknown>;
+    const foreshadowId = String(row.foreshadowId ?? row.foreshadow_id ?? "");
+    const sceneTitle = String(row.sceneTitle ?? row.scene_title ?? "");
+    if (foreshadowId && !(foreshadowId in setupSceneByForeshadow)) {
+      setupSceneByForeshadow[foreshadowId] = sceneTitle;
+    }
+  }
+
+  const setups = (res.setups ?? []).map((raw) => {
+    const row = (raw ?? {}) as Record<string, unknown>;
+    return {
+      title: String(row.title ?? ""),
+      intent: (row.intent as string | null | undefined) ?? null,
+    };
+  });
+
+  const payoffs = (res.payoffs ?? []).map((raw) => {
+    const row = (raw ?? {}) as Record<string, unknown>;
+    const id = String(row.id ?? "");
+    return {
+      title: String(row.title ?? ""),
+      intent: (row.intent as string | null | undefined) ?? null,
+      setupSceneTitle: setupSceneByForeshadow[id] ?? null,
+    };
+  });
+
+  return { setups, payoffs };
+}
+
+function computeChapterForeshadowStats(
+  chapterId: string,
+  scenes: Array<{ id: string; content: string }>,
+  relatedForeshadows: ForeshadowRow[],
+  relatedSetups: SetupLabelInput[],
+): ChapterForeshadowStats {
+  const scenesWithBody = scenes.filter((s) => {
+    try {
+      const doc = JSON.parse(s.content) as { content?: unknown[] };
+      return Array.isArray(doc.content) && doc.content.length > 0;
+    } catch {
+      return false;
+    }
+  }).length;
+
+  if (scenes.length === 0) {
+    return {
+      chapterId,
+      totalScenes: 0,
+      scenesWithBody: 0,
+      byLabel: {},
+      orphanCount: 0,
+      needsStrengtheningCount: 0,
+    };
+  }
+
+  if (relatedForeshadows.length === 0) {
+    return {
+      chapterId,
+      totalScenes: scenes.length,
+      scenesWithBody,
+      byLabel: {},
+      orphanCount: 0,
+      needsStrengtheningCount: 0,
+    };
+  }
+
+  const countMap = new Map<string, number>();
+  const weakMap = new Map<string, boolean>();
+  for (const s of relatedSetups) {
+    if (s.isOrphan) continue;
+    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
+    const evaluation = safeParseAiEvaluation(s.aiReasoning);
+    const effectiveStrength =
+      s.strength ?? evaluation?.careful?.strength ?? s.aiStrength;
+    if (effectiveStrength === "subtle") {
+      weakMap.set(s.foreshadowId, true);
+    }
+  }
+
+  const byLabel: Partial<Record<DerivedLabel, number>> = {};
+  let orphanCount = 0;
+  let needsStrengtheningCount = 0;
+
+  for (const row of relatedForeshadows) {
+    const setupCount = countMap.get(row.id) ?? 0;
+    const anyWeak = weakMap.get(row.id) ?? false;
+    const label = deriveLabel(row, setupCount, anyWeak);
+    byLabel[label] = (byLabel[label] ?? 0) + 1;
+    if (label === "orphan_payoff") orphanCount++;
+    if (label === "needs_strengthening") needsStrengtheningCount++;
+  }
+
+  return {
+    chapterId,
+    totalScenes: scenes.length,
+    scenesWithBody,
+    byLabel,
+    orphanCount,
+    needsStrengtheningCount,
+  };
+}
+
 /** Load foreshadow rows with derived labels. Uses a single IPC in Tauri mode. */
 export async function listForeshadowsWithLabels(
   projectId: string,
 ): Promise<ForeshadowWithLabel[]> {
   if (isTauriRuntime()) {
-    const res = await invoke<{
-      foreshadows: unknown[];
-      setups: unknown[];
-    }>("foreshadow_list_with_labels", { projectId });
-    const rows = (res.foreshadows ?? []).map(normalizeForeshadowRow);
-    const setups = (res.setups ?? []).map(normalizeSetupLabelInput);
+    const { rows, setups } = await invokeForeshadowListWithLabels(
+      "foreshadow_list_with_labels",
+      { projectId },
+    );
     return buildForeshadowsWithLabels(rows, setups);
   }
 
@@ -279,6 +447,14 @@ export interface OpenForeshadowForContext {
 export async function listOpenForeshadowsForContext(
   projectId: string,
 ): Promise<OpenForeshadowForContext[]> {
+  if (isTauriRuntime()) {
+    const { rows, setups } = await invokeForeshadowListWithLabels(
+      "foreshadow_list_open_for_context",
+      { projectId },
+    );
+    return buildOpenForeshadowsForContext(rows, setups);
+  }
+
   const rows = (await db
     .select({
       id: foreshadows.id,
@@ -309,7 +485,6 @@ export async function listOpenForeshadowsForContext(
 
   if (rows.length === 0) return [];
 
-  // Batch setup count (excluding isOrphan)
   const ids = rows.map((r) => r.id);
   const setups = await db
     .select({
@@ -318,44 +493,24 @@ export async function listOpenForeshadowsForContext(
     })
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.foreshadowId, ids));
-  const countMap = new Map<string, number>();
-  for (const s of setups) {
-    if (s.isOrphan) continue;
-    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
-  }
 
-  const priority: Record<string, number> = {
-    critical: 0,
-    supporting: 1,
-    optional: 2,
-  };
-  const toMs = (v: unknown): number => {
-    if (v instanceof Date) return v.getTime();
-    if (typeof v === "string") return new Date(v).getTime();
-    if (typeof v === "number") return v;
-    return 0;
-  };
-  return rows
-    .map((r) => ({
-      id: r.id,
-      title: r.title,
-      intent: r.intent,
-      loadBearing: r.loadBearing,
-      setupCount: countMap.get(r.id) ?? 0,
-      _updatedMs: toMs(r.updatedAt),
-    }))
-    .sort((a, b) => {
-      const pa = priority[a.loadBearing ?? ""] ?? 3;
-      const pb = priority[b.loadBearing ?? ""] ?? 3;
-      if (pa !== pb) return pa - pb;
-      return b._updatedMs - a._updatedMs;
-    })
-    .map(({ _updatedMs: _ms, ...rest }) => rest);
+  return buildOpenForeshadowsForContext(rows, setups);
 }
 
 export async function getSceneForeshadowInfo(
   sceneId: string,
 ): Promise<SceneForeshadowInfo> {
+  if (isTauriRuntime()) {
+    const res = await invoke<{
+      setupForeshadowIds: string[];
+      payoffForeshadowIds: string[];
+    }>("foreshadow_get_scene_info", { sceneId });
+    return {
+      setupForeshadowIds: res.setupForeshadowIds ?? [],
+      payoffForeshadowIds: res.payoffForeshadowIds ?? [],
+    };
+  }
+
   const [setupRows, payoffRows] = await Promise.all([
     db
       .selectDistinct({ foreshadowId: foreshadowSetups.foreshadowId })
@@ -397,6 +552,15 @@ export interface SceneForeshadowContext {
 export async function getSceneForeshadowContext(
   sceneId: string,
 ): Promise<SceneForeshadowContext> {
+  if (isTauriRuntime()) {
+    const res = await invoke<{
+      setups: unknown[];
+      payoffs: unknown[];
+      setupSceneRows: unknown[];
+    }>("foreshadow_get_scene_context", { sceneId });
+    return buildSceneForeshadowContextFromBundle(res);
+  }
+
   const [setupRows, payoffRows] = await Promise.all([
     db
       .selectDistinct({
@@ -591,6 +755,23 @@ export async function updateSetup(
     >
   >,
 ): Promise<void> {
+  if (isTauriRuntime()) {
+    const tauriPatch: Record<string, unknown> = {};
+    if (patch.strength !== undefined) tauriPatch.strength = patch.strength;
+    if (patch.aiStrength !== undefined) tauriPatch.aiStrength = patch.aiStrength;
+    if (patch.aiReasoning !== undefined) {
+      tauriPatch.aiReasoning = patch.aiReasoning;
+    }
+    if (patch.isOrphan !== undefined) tauriPatch.isOrphan = patch.isOrphan;
+    if (patch.lastEvaluatedAt !== undefined) {
+      tauriPatch.lastEvaluatedAt = patch.lastEvaluatedAt
+        ? patch.lastEvaluatedAt.getTime()
+        : null;
+    }
+    await invoke("foreshadow_update_setup", { id, patch: tauriPatch });
+    return;
+  }
+
   await db
     .update(foreshadowSetups)
     .set({ ...patch, updatedAt: new Date() })
@@ -598,6 +779,12 @@ export async function updateSetup(
 }
 
 export async function deleteSetup(id: string): Promise<void> {
+  if (isTauriRuntime()) {
+    await invoke("foreshadow_resolve_orphan", {
+      payload: { setupId: id, action: "delete" },
+    });
+    return;
+  }
   await db.delete(foreshadowSetups).where(eq(foreshadowSetups.id, id));
 }
 
@@ -647,10 +834,9 @@ export async function reinsertOrphanSetup(
     if (!newId) {
       throw new Error(`reinserted setup not found for: ${setupId}`);
     }
-    const [created] = await db
-      .select()
-      .from(foreshadowSetups)
-      .where(eq(foreshadowSetups.id, newId));
+    const created = await invoke<unknown | null>("foreshadow_get_setup", {
+      setupId: newId,
+    });
     if (!created) {
       throw new Error(`reinserted setup row missing: ${newId}`);
     }
@@ -776,6 +962,14 @@ export async function setSetupStrength(
 export async function listForeshadowsByCodexEntry(
   codexEntryId: string,
 ): Promise<ForeshadowWithLabel[]> {
+  if (isTauriRuntime()) {
+    const { rows, setups } = await invokeForeshadowListWithLabels(
+      "foreshadow_list_by_codex_entry",
+      { codexEntryId },
+    );
+    return buildForeshadowsWithLabels(rows, setups);
+  }
+
   const links = await db
     .select({ foreshadowId: foreshadowCodexLinks.foreshadowId })
     .from(foreshadowCodexLinks)
@@ -790,31 +984,17 @@ export async function listForeshadowsByCodexEntry(
     .where(inArray(foreshadows.id, fids));
 
   const setups = await db
-    .select()
+    .select({
+      foreshadowId: foreshadowSetups.foreshadowId,
+      isOrphan: foreshadowSetups.isOrphan,
+      strength: foreshadowSetups.strength,
+      aiStrength: foreshadowSetups.aiStrength,
+      aiReasoning: foreshadowSetups.aiReasoning,
+    })
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.foreshadowId, fids));
 
-  const countMap = new Map<string, number>();
-  const weakMap = new Map<string, boolean>();
-  for (const s of setups) {
-    if (s.isOrphan) continue;
-    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
-    const evaluation = safeParseAiEvaluation(s.aiReasoning as string | null);
-    const effectiveStrength =
-      (s.strength as string | null) ??
-      evaluation?.careful?.strength ??
-      (s.aiStrength as string | null);
-    if (effectiveStrength === "subtle") {
-      weakMap.set(s.foreshadowId, true);
-    }
-  }
-
-  return rows.map((r) => {
-    const row = r as ForeshadowRow;
-    const setupCount = countMap.get(row.id) ?? 0;
-    const anyWeak = weakMap.get(row.id) ?? false;
-    return { ...row, setupCount, label: deriveLabel(row, setupCount, anyWeak) };
-  });
+  return buildForeshadowsWithLabels(rows as ForeshadowRow[], setups);
 }
 
 // ── AI propose stub ───────────────────────────────────────────────
@@ -1057,7 +1237,29 @@ export async function auditChapter(
 export async function getChapterForeshadowStats(
   chapterId: string,
 ): Promise<ChapterForeshadowStats> {
-  // 章配下のシーンを取得
+  if (isTauriRuntime()) {
+    const bundle = await invoke<{
+      scenes: unknown[];
+      setupsOnScenes: unknown[];
+      payoffForeshadows: unknown[];
+      relatedForeshadows: unknown[];
+      relatedSetups: unknown[];
+    }>("foreshadow_get_chapter_stats", { chapterId });
+    const scenes = (bundle.scenes ?? []).map((raw) => {
+      const row = (raw ?? {}) as Record<string, unknown>;
+      return {
+        id: String(row.id ?? ""),
+        content: String(row.content ?? ""),
+      };
+    });
+    return computeChapterForeshadowStats(
+      chapterId,
+      scenes,
+      (bundle.relatedForeshadows ?? []).map(normalizeForeshadowRow),
+      (bundle.relatedSetups ?? []).map(normalizeSetupLabelInput),
+    );
+  }
+
   const scenes = await db
     .select({
       id: treeNodes.id,
@@ -1069,103 +1271,45 @@ export async function getChapterForeshadowStats(
     );
 
   const sceneIds = scenes.map((s) => s.id);
-  const scenesWithBody = scenes.filter((s) => {
-    try {
-      const doc = JSON.parse(s.content) as { content?: unknown[] };
-      return Array.isArray(doc.content) && doc.content.length > 0;
-    } catch {
-      return false;
-    }
-  }).length;
 
   if (sceneIds.length === 0) {
-    return {
-      chapterId,
-      totalScenes: 0,
-      scenesWithBody: 0,
-      byLabel: {},
-      orphanCount: 0,
-      needsStrengtheningCount: 0,
-    };
+    return computeChapterForeshadowStats(chapterId, scenes, [], []);
   }
 
-  // 配下シーンに関連する foreshadow を取得（setup 経由）
   const setups = await db
     .select()
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.sceneId, sceneIds));
 
-  // payoff が配下シーンにある foreshadow も取得
   const payoffForeshadows = await db
     .select()
     .from(foreshadows)
     .where(inArray(foreshadows.payoffSceneId, sceneIds));
 
-  // 関連 foreshadow ID を集める
   const relatedFids = new Set<string>([
     ...setups.map((s) => s.foreshadowId),
     ...payoffForeshadows.map((f) => f.id),
   ]);
 
   if (relatedFids.size === 0) {
-    return {
-      chapterId,
-      totalScenes: scenes.length,
-      scenesWithBody,
-      byLabel: {},
-      orphanCount: 0,
-      needsStrengtheningCount: 0,
-    };
+    return computeChapterForeshadowStats(chapterId, scenes, [], []);
   }
 
-  // foreshadow 本体を取得して派生ラベルを計算
-  const fRows = await db
+  const fRows = (await db
     .select()
     .from(foreshadows)
-    .where(inArray(foreshadows.id, Array.from(relatedFids)));
+    .where(inArray(foreshadows.id, Array.from(relatedFids)))) as ForeshadowRow[];
 
   const allSetups = await db
-    .select()
+    .select({
+      foreshadowId: foreshadowSetups.foreshadowId,
+      isOrphan: foreshadowSetups.isOrphan,
+      strength: foreshadowSetups.strength,
+      aiStrength: foreshadowSetups.aiStrength,
+      aiReasoning: foreshadowSetups.aiReasoning,
+    })
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.foreshadowId, Array.from(relatedFids)));
 
-  const countMap = new Map<string, number>();
-  const weakMap = new Map<string, boolean>();
-  for (const s of allSetups) {
-    if (s.isOrphan) {
-      continue;
-    }
-    countMap.set(s.foreshadowId, (countMap.get(s.foreshadowId) ?? 0) + 1);
-    const evaluation = safeParseAiEvaluation(s.aiReasoning as string | null);
-    const effectiveStrength =
-      (s.strength as string | null) ??
-      evaluation?.careful?.strength ??
-      (s.aiStrength as string | null);
-    if (effectiveStrength === "subtle") {
-      weakMap.set(s.foreshadowId, true);
-    }
-  }
-
-  const byLabel: Partial<Record<DerivedLabel, number>> = {};
-  let orphanCount = 0;
-  let needsStrengtheningCount = 0;
-
-  for (const r of fRows) {
-    const row = r as ForeshadowRow;
-    const setupCount = countMap.get(row.id) ?? 0;
-    const anyWeak = weakMap.get(row.id) ?? false;
-    const label = deriveLabel(row, setupCount, anyWeak);
-    byLabel[label] = (byLabel[label] ?? 0) + 1;
-    if (label === "orphan_payoff") orphanCount++;
-    if (label === "needs_strengthening") needsStrengtheningCount++;
-  }
-
-  return {
-    chapterId,
-    totalScenes: scenes.length,
-    scenesWithBody,
-    byLabel,
-    orphanCount,
-    needsStrengtheningCount,
-  };
+  return computeChapterForeshadowStats(chapterId, scenes, fRows, allSetups);
 }
