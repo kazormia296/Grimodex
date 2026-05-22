@@ -34,17 +34,14 @@ No runtime required — just install and launch. AI chat works with a cloud API 
 
 ## Screenshots / スクリーンショット
 
-![Editor view — English workspace](docs/screenshots/screenshot-editor.png)
-_Editor, AI chat, and Codex side-by-side (English sample workspace)_
+![Write — editor, AI chat, and Codex side-by-side](docs/screenshots/screenshot-write.png)
+_Write — エディタ・AIチャット・Codex を並べた執筆ビュー（日本語サンプル「朱の記憶」）_
 
-![AI chat and snippet extraction](docs/screenshots/screenshot-chat-codex.png)
-_Extracting a snippet from AI chat; Codex character detail on the right_
+![Plan — story grid with scene cards](docs/screenshots/screenshot-plan.png)
+_Plan — シーンをカードで俯瞰するプランニングビュー_
 
-![Japanese workspace](docs/screenshots/screenshot-japanese.png)
-_日本語サンプルワークスペース（朱の記憶）— エディタ + AIチャット + Codex_
-
-![Codex entry open](docs/screenshots/screenshot-codex-open.png)
-_Codexエントリとノートを開いた状態 — AIチャットと並べて参照_
+![Chat — AI chat with conversation history](docs/screenshots/screenshot-chat.png)
+_Chat — AIチャットと会話履歴を並べたビュー_
 
 ---
 
