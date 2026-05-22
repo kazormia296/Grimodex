@@ -1,6 +1,6 @@
 # 開発環境構築ガイド
 
-> 最終更新: 2026-04-02
+> 最終更新: 2026-05-22
 
 ## 前提条件
 
@@ -9,7 +9,8 @@
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | 最新 | devcontainer実行環境 |
 | [VS Code](https://code.visualstudio.com/) | 最新 | エディタ |
 | [Dev Containers 拡張](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) | 最新 | VS Code拡張 |
-| [VcXsrv](https://sourceforge.net/projects/vcxsrv/) | 最新 | X11サーバー（GUI表示用） |
+
+Tauriアプリのウィンドウ表示は WSL2 同梱の WSLg がそのまま処理します。VcXsrv などの X11 サーバーを別途用意する必要はありません。
 
 ### Docker Desktop の設定
 
@@ -19,42 +20,23 @@
 
 ## セットアップ手順
 
-### 1. VcXsrv を起動する
-
-Tauriアプリのウィンドウ表示にはX11サーバーが必要です。
-
-1. XLaunch を起動
-2. **Multiple windows** を選択 → Next
-3. **Start no client** を選択 → Next
-4. **☑ Disable access control** にチェック → Next → Finish
-
-タスクトレイにXアイコンが表示されれば起動完了です。
-
-> **Windows ファイアウォール**: 初回起動時にファイアウォール許可ダイアログが出たら、
-> **プライベートネットワーク**を許可してください。
-
-### 2. リポジトリをクローンする
+### 1. リポジトリをクローンする
 
 ```bash
 git clone <repository-url>
 ```
 
-### 3. VS Code でコンテナを開く
+### 2. VS Code でコンテナを開く
 
 1. VS Code でクローンしたフォルダを開く
 2. コマンドパレット（`Ctrl+Shift+P`）→ **Dev Containers: Reopen in Container**
 3. 初回ビルドには数分かかります（Rustツールチェーン + pnpm依存のインストール）
 
-### 4. 起動確認
+### 3. 起動確認
 
 コンテナ内のターミナルで:
 
 ```bash
-# X11接続テスト
-timeout 3 bash -c 'echo > /dev/tcp/host.docker.internal/6000' \
-  && echo "OK: X11 reachable" \
-  || echo "NG: X11 unreachable"
-
 # Tauriアプリを起動（初回はRustコンパイルに数分かかる）
 pnpm tauri dev
 ```
@@ -82,18 +64,6 @@ pnpm tauri dev
 
 ## トラブルシューティング
 
-### X11接続テストで `NG: X11 unreachable` になる
-
-**原因**: コンテナ内のファイアウォールまたはWindows側のファイアウォールがX11通信をブロックしている。
-
-**対処**:
-1. VcXsrvがタスクトレイで起動しているか確認
-2. Windows Defender ファイアウォール → 受信の規則 で「VcXsrv」がプライベートネットワークで許可されているか確認
-3. コンテナ内のファイアウォールを再適用:
-   ```bash
-   sudo /usr/local/bin/init-firewall.sh
-   ```
-
 ### `cargo` で Permission denied が出る
 
 **原因**: Dockerボリュームがroot所有で作成されている。
@@ -113,10 +83,6 @@ docker volume rm <volume-name>
 ```
 
 その後、VS Code で **Dev Containers: Rebuild Container** を実行。
-
-### GTK初期化エラー: `Failed to initialize gtk backend`
-
-**原因**: X11サーバーに接続できていない。上記「X11接続テストで NG になる」の対処を参照。
 
 ### ファイアウォールスクリプトがハングする
 
@@ -166,4 +132,3 @@ sudo /usr/local/bin/init-firewall.sh
 - crates.io / static.crates.io
 - Anthropic API
 - VS Code Marketplace
-- X11（Docker ホストのポート6000）

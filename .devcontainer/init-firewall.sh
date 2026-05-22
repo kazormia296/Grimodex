@@ -42,14 +42,6 @@ iptables -A INPUT -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
 # Allow localhost
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
-# Allow X11 forwarding to Docker host (VcXsrv on port 6000)
-DOCKER_HOST_IP=$(getent hosts host.docker.internal | awk '{print $1}' || true)
-if [ -n "$DOCKER_HOST_IP" ]; then
-    echo "Allowing X11 to Docker host: $DOCKER_HOST_IP"
-    iptables -A OUTPUT -p tcp -d "$DOCKER_HOST_IP" --dport 6000 -j ACCEPT
-else
-    echo "WARNING: Could not resolve host.docker.internal, X11 forwarding may not work"
-fi
 
 # Create ipset with CIDR support
 ipset create allowed-domains hash:net -exist

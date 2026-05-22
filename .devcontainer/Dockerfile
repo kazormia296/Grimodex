@@ -41,7 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libjavascriptcoregtk-4.1-dev \
   # SQLite development headers (for rusqlite bundled build)
   pkg-config \
-  # GUI runtime dependencies (for tauri dev via X11 forwarding)
+  # GUI runtime dependencies (for running the app in-container via WSLg)
   dbus-x11 \
   libdbus-1-3 \
   at-spi2-core \
