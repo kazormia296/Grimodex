@@ -41,7 +41,7 @@ import type {
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { runAgentLoop } from "./agent/agentLoop";
 import { executeTool } from "./agent/toolExecutors";
-import { AGENT_TOOLS } from "./agent/toolDefinitions";
+import { snapshotAgentTools } from "./agent/toolDefinitions";
 import {
   getToolTokenBudget,
   buildThinkingParams,
@@ -65,6 +65,7 @@ import type {
   AgentMessagePayload,
   ToolCallRecord,
   AgentLoopProgress,
+  AgentToolDefinition,
 } from "./agent/agentTypes";
 import {
   useTreeStore,
@@ -91,7 +92,10 @@ import {
   shouldSummarize,
   selectSummarizationCandidates,
   runSummarization,
+  getPreviousSummaryText,
+  estimateSummaryTokenCount,
 } from "./summarization";
+import { computeL5UsedTokens } from "./conversationHistory";
 import type { CodexEntry } from "@/features/codex/api";
 import {
   listContextDetailsByEntryIds,
@@ -420,8 +424,8 @@ interface ChatState {
   clearError: () => void;
   setActiveSceneId: (id: string) => void;
   setActiveProjectId: (id: string | null) => void;
-  /** G17: スターのトグル（要約対象外フラグ） */
-  starMessage: (messageId: string, starred: boolean) => Promise<void>;
+  /** Editor Insert 後に in-memory metadata を同期 */
+  syncInsertedToEditorMetadata: (messageId: string) => void;
   /** G20: stores old message content when editing, to detect removed @mentions */
   _editingOldContent: string | null;
   /** autoリストから特定エントリを即時除去（ピン直後のBug#1修正用） */
@@ -430,6 +434,24 @@ interface ChatState {
   /** C: エディタの「チャットで調べる」が pre-fill するテキスト（consumed-once） */
   pendingLookupText: string | null;
   setPendingLookupText: (text: string | null) => void;
+
+  /** Progressive summarization: session summary stats for ContextBar warning */
+  summaryCount: number;
+  maxSummaryGeneration: number;
+
+  /** Prefix cache rebuilt indicator (one turn or dismiss) */
+  cacheInvalidatedReason: "model" | "instructions" | "budget" | null;
+  invalidateContextCache: (
+    reason: "model" | "instructions" | "budget",
+  ) => void;
+  dismissCacheInvalidated: () => void;
+  /** Session-scoped Codex IDs present at session start (L4 cache marker) */
+  sessionStableCodexIds: string[];
+  /** Immutable agent tool snapshot for the active session */
+  sessionAgentToolsSnapshot: AgentToolDefinition[] | null;
+  /** Start a new session while keeping reference to the current one */
+  createLinkedSession: () => Promise<void>;
+  _lastCachedModel: string | null;
 }
 
 /**
@@ -456,6 +478,124 @@ function parseMentionedSceneIdsFromMetadata(
     // JSON parse 失敗は単に未指定として扱う
   }
   return undefined;
+}
+
+/** L4 append-only: preserve first-appearance order, tie-break by entry_id. */
+function stableSortCodexEntries<T extends { id: string }>(entries: T[]): T[] {
+  return entries
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) => {
+      const idCmp = a.entry.id.localeCompare(b.entry.id);
+      return idCmp !== 0 ? idCmp : a.index - b.index;
+    })
+    .map(({ entry }) => entry);
+}
+
+async function maybeRunSummarization(
+  sessionId: string,
+  messages: ChatMessage[],
+  l5Budget: number,
+  lang: string,
+  set: (
+    partial:
+      | Partial<ChatState>
+      | ((state: ChatState) => Partial<ChatState>),
+  ) => void,
+): Promise<ChatMessage[]> {
+  await ensureTokenizer();
+  let summaries: Awaited<ReturnType<typeof chatApi.listSummaries>> = [];
+  try {
+    summaries = await chatApi.listSummaries(sessionId);
+  } catch {
+    return messages;
+  }
+
+  const summaryTexts = summaries.map((s) => s.summary);
+  const l5Used = computeL5UsedTokens(messages, summaryTexts, l5Budget);
+  const maxGen =
+    summaries.length > 0
+      ? Math.max(...summaries.map((s) => s.generation))
+      : 0;
+
+  set({
+    summaryCount: summaries.length,
+    maxSummaryGeneration: maxGen,
+  });
+
+  if (!shouldSummarize(messages, l5Budget, l5Used)) {
+    return messages;
+  }
+
+  const candidates = selectSummarizationCandidates(messages, l5Budget);
+  if (candidates.length === 0) return messages;
+
+  try {
+    const generation = await chatApi.getSummaryGeneration(sessionId);
+    const previousSummary = getPreviousSummaryText(summaries);
+    const candidateIds = candidates.map((m) => m.id);
+    const lastMsgId = candidateIds[candidateIds.length - 1]!;
+
+    const summaryText = await runSummarization(
+      candidates,
+      chatApi.sendChatMessageWithThinking,
+      {
+        lang,
+        previousSummary,
+        generation,
+        sourceMsgCount: candidates.length,
+        lastMsgId,
+      },
+    );
+
+    const tokenCount = estimateSummaryTokenCount(summaryText);
+    const chatSummary = await chatApi.addSummary(
+      sessionId,
+      summaryText,
+      candidateIds,
+      {
+        tokenCount,
+        generation,
+        sourceMsgCount: candidates.length,
+        lastMsgId,
+      },
+    );
+    await chatApi.markMessagesSummarized(candidateIds);
+
+    let resultMessages = messages;
+    set((s) => {
+      const updatedMessages = s.messages.map((m) =>
+        candidateIds.includes(m.id) ? { ...m, isSummarized: 1 } : m,
+      );
+      const summaryMarkerMsg: ChatMessage = {
+        id: `summary-${chatSummary.id}`,
+        sessionId,
+        role: "assistant",
+        content: summaryText,
+        metadata: JSON.stringify({ summary_id: chatSummary.id }),
+        createdAt: chatSummary.createdAt,
+        isSummarized: 0,
+      };
+      const lastCandidateIdx = updatedMessages.reduce(
+        (acc, m, idx) => (candidateIds.includes(m.id) ? idx : acc),
+        -1,
+      );
+      resultMessages = [
+        ...updatedMessages.slice(0, lastCandidateIdx + 1),
+        summaryMarkerMsg,
+        ...updatedMessages.slice(lastCandidateIdx + 1),
+      ];
+      return {
+        messages: resultMessages,
+        summaryCount: summaries.length + 1,
+        maxSummaryGeneration: generation,
+      };
+    });
+
+    return resultMessages;
+  } catch (e) {
+    debugLog.error("ChatStore", "summarization", errorDetail(e));
+    return messages;
+  }
 }
 
 /**
@@ -559,6 +699,8 @@ interface SceneContextPayload {
    * Agent モードで `get_codex_entry` 短絡判定に使う。Spotlight 経路を通った
    * エントリ（pinnedCodexEntries）が該当する。 */
   fullyInjectedIds: string[];
+  stableCodexIds: string[];
+  cacheSegments?: string[];
   /** Phase 4 後続: ContextBar chip 表示用の outline 値。注入されたものと同一。 */
   projectOutline: string | undefined;
   chapterOutlines: Array<{ title: string; outline: string }>;
@@ -578,6 +720,7 @@ async function buildSceneContextPrompt(opts: {
    * tree から本文を読み込み、buildSystemPrompt の mentionedScenes として
    * 注入される (eco モードでも必ず注入)。 */
   mentionedSceneIds?: string[];
+  sessionStableCodexIds?: string[];
 }): Promise<SceneContextPayload> {
   const {
     sceneCtx,
@@ -619,7 +762,10 @@ async function buildSceneContextPrompt(opts: {
   const alwaysNotMentioned = alwaysEntries.filter(
     (e) => !mentionedIds.has(e.id),
   );
-  const rawCodexEntries = [...mentioned, ...alwaysNotMentioned];
+  const rawCodexEntries = stableSortCodexEntries([
+    ...mentioned,
+    ...alwaysNotMentioned,
+  ]);
 
   const buildCodexCtx = (e: CodexEntry): CodexContext => {
     const summary = e.summary ?? "";
@@ -1020,8 +1166,15 @@ async function buildSceneContextPrompt(opts: {
     mentionedScenes: mentionedScenes.length > 0 ? mentionedScenes : undefined,
     lang: projectCtx?.language ?? "ja",
     agentMode: opts.agentMode,
+    sessionStableCodexIds: opts.sessionStableCodexIds,
+    alwaysEntryIds: alwaysNotPinned.map((e) => e.id),
   });
   markEnd("buildSceneCtx.buildSystemPrompt");
+
+  const stableCodexIds = [
+    ...allPinnedIdSet,
+    ...rawCodexEntries.map((e) => e.id),
+  ];
 
   return {
     prompt: promptResult.prompt,
@@ -1030,6 +1183,8 @@ async function buildSceneContextPrompt(opts: {
     detectedEntries: detectedNotPinned,
     alwaysEntries: alwaysNotPinned,
     fullyInjectedIds: pinnedCodexEntries.map((e) => e.id),
+    stableCodexIds: [...new Set(stableCodexIds)],
+    cacheSegments: promptResult.cacheSegments,
     projectOutline: projectCtx?.outline?.trim()
       ? projectCtx.outline
       : undefined,
@@ -1061,6 +1216,89 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   includeBodies: true,
   _editingOldContent: null,
   pendingLookupText: null,
+  summaryCount: 0,
+  maxSummaryGeneration: 0,
+  cacheInvalidatedReason: null,
+  sessionStableCodexIds: [],
+  sessionAgentToolsSnapshot: null,
+  _lastCachedModel: null,
+
+  invalidateContextCache: (reason) => {
+    set({ cacheInvalidatedReason: reason });
+  },
+
+  dismissCacheInvalidated: () => {
+    set({ cacheInvalidatedReason: null });
+  },
+
+  syncInsertedToEditorMetadata: (messageId) => {
+    set((s) => ({
+      messages: s.messages.map((m) => {
+        if (m.id !== messageId) return m;
+        let meta: Record<string, unknown> = {};
+        if (m.metadata) {
+          try {
+            meta = JSON.parse(m.metadata) as Record<string, unknown>;
+          } catch {
+            meta = {};
+          }
+        }
+        return {
+          ...m,
+          metadata: JSON.stringify({ ...meta, insertedToEditor: true }),
+        };
+      }),
+    }));
+  },
+
+  createLinkedSession: async () => {
+    const {
+      activeSessionId,
+      activeProjectId,
+      activeSceneId,
+      chatScope,
+      sessions,
+    } = get();
+    const ref = sessions.find((s) => s.id === activeSessionId);
+    const projectId = activeProjectId ?? getCurrentProjectId();
+    const nodeId =
+      chatScope === "project"
+        ? undefined
+        : chatScope === "folder"
+          ? undefined
+          : activeSceneId || undefined;
+    try {
+      const session = await chatApi.createSession(
+        projectId,
+        ref ? `Linked: ${ref.title}` : "New session",
+        nodeId,
+      );
+      set((state) => ({
+        sessions: [session, ...state.sessions],
+        activeSessionId: session.id,
+        messages: [],
+        summaryCount: 0,
+        maxSummaryGeneration: 0,
+        sessionStableCodexIds: [],
+        sessionAgentToolsSnapshot: snapshotAgentTools(),
+        cacheInvalidatedReason: null,
+      }));
+      if (ref) {
+        const linkMsg = await chatApi.addMessage(
+          session.id,
+          "system",
+          i18next.t("chat.linkedSessionReference", {
+            title: ref.title,
+            sessionId: ref.id,
+          }),
+        );
+        set({ messages: [linkMsg] });
+      }
+    } catch (e) {
+      toast.error(i18next.t("chat.createSessionFailed"));
+      debugLog.error("ChatStore", "createLinkedSession", errorDetail(e));
+    }
+  },
 
   removeEntryFromAuto: (entryId: string) => {
     set((state) => ({
@@ -1102,12 +1340,33 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   selectSession: async (sessionId: string | null) => {
     if (sessionId === null) {
-      set({ activeSessionId: null, messages: [] });
+      set({
+        activeSessionId: null,
+        messages: [],
+        summaryCount: 0,
+        maxSummaryGeneration: 0,
+        sessionStableCodexIds: [],
+        sessionAgentToolsSnapshot: null,
+      });
       return;
     }
     try {
-      const messages = await chatApi.listMessages(sessionId);
-      set({ activeSessionId: sessionId, messages });
+      const [messages, summaries] = await Promise.all([
+        chatApi.listMessages(sessionId),
+        chatApi.listSummaries(sessionId),
+      ]);
+      set({
+        activeSessionId: sessionId,
+        messages,
+        summaryCount: summaries.length,
+        maxSummaryGeneration:
+          summaries.length > 0
+            ? Math.max(...summaries.map((s) => s.generation))
+            : 0,
+        sessionStableCodexIds: [],
+        sessionAgentToolsSnapshot: snapshotAgentTools(),
+        cacheInvalidatedReason: null,
+      });
     } catch (e) {
       toast.error(i18next.t("chat.loadMessagesFailed"));
       debugLog.error("ChatStore", "selectSession", errorDetail(e));
@@ -1125,6 +1384,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessions: [session, ...state.sessions],
         activeSessionId: session.id,
         messages: [],
+        summaryCount: 0,
+        maxSummaryGeneration: 0,
+        sessionStableCodexIds: [],
+        sessionAgentToolsSnapshot: snapshotAgentTools(),
+        cacheInvalidatedReason: null,
       }));
     } catch (e) {
       toast.error(i18next.t("chat.createSessionFailed"));
@@ -1312,6 +1576,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     if (isStreaming) return;
     await ensureTokenizer();
     if (!content.trim()) return;
+
+    const aiSettingsEarly = useAiSettingsStore.getState().settings;
+    const chatModelEarly = aiSettingsEarly?.model ?? "";
+    if (
+      get()._lastCachedModel &&
+      get()._lastCachedModel !== chatModelEarly
+    ) {
+      set({ cacheInvalidatedReason: "model" });
+    }
+    if (!get().sessionAgentToolsSnapshot) {
+      set({ sessionAgentToolsSnapshot: snapshotAgentTools() });
+    }
+    set({ _lastCachedModel: chatModelEarly });
+
     const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
     // 一回限りの Agent mode override (サジェストチップ / 再試行ボタンから)
     // ユーザーの永続トグルは変更しない。
@@ -1416,8 +1694,28 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }
         }
 
+        const projectCtxLang = projectCtx?.language ?? "ja";
+        let agentMessages = prevMessages;
+        if (sessionIdForPersist) {
+          const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
+            chatModelEarly,
+            aiSettingsEarly,
+          );
+          const budgets = allocateLayerBudgets(contextWindow, {
+            maxOutputTokens,
+          });
+          agentMessages = await maybeRunSummarization(
+            sessionIdForPersist,
+            prevMessages,
+            budgets.l5,
+            projectCtxLang,
+            set,
+          );
+        }
+
         const agentMsgs: AgentMessagePayload[] = [];
         let systemPromptForAgent = "";
+        let systemCacheSegmentsForAgent: string[] | undefined;
         // Spotlight された (= L4 に full body + custom details + aliases が
         // 揃って注入された) エントリの ID 集合。`get_codex_entry` が
         // この集合の ID で呼ばれた場合は executor を呼ばずスタブを返す
@@ -1425,7 +1723,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         let fullyInjectedIds: Set<string> = new Set();
         if (sceneCtx) {
           const messagesForCtx: ChatMessage[] = [
-            ...prevMessages.filter((m) => !m.isSummarized),
+            ...agentMessages.filter((m) => !m.isSummarized),
             userMsg,
           ];
           const ctxResult = await buildSceneContextPrompt({
@@ -1439,9 +1737,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             prefetchedEntries: allEntriesForCtx,
             agentMode: true,
             mentionedSceneIds: options?.mentionedSceneIds,
+            sessionStableCodexIds: get().sessionStableCodexIds,
           });
           systemPromptForAgent = ctxResult.prompt;
+          systemCacheSegmentsForAgent = ctxResult.cacheSegments;
           fullyInjectedIds = new Set(ctxResult.fullyInjectedIds);
+          if (get().sessionStableCodexIds.length === 0) {
+            set({ sessionStableCodexIds: ctxResult.stableCodexIds });
+          }
           set({
             contextTokenCount: ctxResult.totalTokens,
             contextLayers: ctxResult.layers,
@@ -1530,14 +1833,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const agentControl = getPromptCatalog(
           projectCtx?.language ?? "ja",
         ).agentControl;
+        const agentTools =
+          get().sessionAgentToolsSnapshot ?? snapshotAgentTools();
         const { toolCallRecords, finalThinkingBlocks } = await runAgentLoop({
           messages: agentMsgs,
-          tools: AGENT_TOOLS,
+          tools: agentTools,
           tokenBudget,
           callLimitMessage: agentControl.callLimitMessage,
           tokenBudgetMessage: agentControl.tokenBudgetMessage,
           sendToLLM: (msgs, tools) =>
-            chatApi.sendAgentMessage(msgs, tools, agentThinkingParams),
+            chatApi.sendAgentMessage(
+              msgs,
+              tools,
+              agentThinkingParams,
+              systemCacheSegmentsForAgent,
+            ),
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
             set({ agentProgress: progress });
@@ -1665,59 +1975,26 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         : null;
       const projectCtx = await fetchProjectContext(activeProjectId);
 
-      // G17: 要約トリガーチェック
+      const aiSettings = useAiSettingsStore.getState().settings;
+      const chatModel = aiSettings?.model ?? "";
+      const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
+        chatModel,
+        aiSettings,
+      );
+      const budgets = allocateLayerBudgets(contextWindow, { maxOutputTokens });
+
       let currentMessages = get().messages;
-      if (sessionIdForPersist && shouldSummarize(prevMessages)) {
-        try {
-          const candidates = selectSummarizationCandidates(prevMessages);
-          if (candidates.length > 0) {
-            const summaryText = await runSummarization(
-              candidates,
-              chatApi.sendChatMessageWithThinking,
-              projectCtx?.language ?? "ja",
-            );
-            const candidateIds = candidates.map((m) => m.id);
-            const chatSummary = await chatApi.addSummary(
-              sessionIdForPersist,
-              summaryText,
-              candidateIds,
-            );
-            await chatApi.markMessagesSummarized(candidateIds);
-            // Update in-memory state: mark candidates as summarized, inject summary into messages
-            set((s) => {
-              const updatedMessages = s.messages.map((m) =>
-                candidateIds.includes(m.id) ? { ...m, isSummarized: 1 } : m,
-              );
-              const summaryMarkerMsg: ChatMessage = {
-                id: `summary-${chatSummary.id}`,
-                sessionId: sessionIdForPersist ?? "",
-                role: "assistant",
-                content: summaryText,
-                metadata: JSON.stringify({ summary_id: chatSummary.id }),
-                createdAt: chatSummary.createdAt,
-                isSummarized: 0,
-              };
-              // Insert summary marker after the last summarized message
-              const lastCandidateIdx = updatedMessages.reduce(
-                (acc, m, idx) => (candidateIds.includes(m.id) ? idx : acc),
-                -1,
-              );
-              const withSummary = [
-                ...updatedMessages.slice(0, lastCandidateIdx + 1),
-                summaryMarkerMsg,
-                ...updatedMessages.slice(lastCandidateIdx + 1),
-              ];
-              return { messages: withSummary };
-            });
-            currentMessages = get().messages;
-          }
-        } catch (e) {
-          debugLog.error("ChatStore", "summarization", errorDetail(e));
-          // 要約失敗は警告のみ、チャットは続行
-        }
+      if (sessionIdForPersist) {
+        currentMessages = await maybeRunSummarization(
+          sessionIdForPersist,
+          prevMessages,
+          budgets.l5,
+          projectCtx?.language ?? "ja",
+          set,
+        );
       }
 
-      // G17: 要約済みメッセージを除外（starred は保持）し、APIペイロードを構築
+      // APIペイロードを構築（要約済みメッセージを除外）
       const messagesForApi: ChatMessage[] = [
         ...currentMessages.filter(
           (m) =>
@@ -1725,6 +2002,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         ),
         userMsg,
       ];
+
+      let systemCacheSegments: string[] | undefined;
 
       if (sceneCtx) {
         const allEntries = await listCodexEntries(getCurrentProjectId());
@@ -1784,7 +2063,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           commandInstruction,
           prefetchedEntries: allEntries,
           mentionedSceneIds: options?.mentionedSceneIds,
+          sessionStableCodexIds: get().sessionStableCodexIds,
         });
+
+        if (get().sessionStableCodexIds.length === 0) {
+          set({ sessionStableCodexIds: ctxResult.stableCodexIds });
+        }
+        systemCacheSegments = ctxResult.cacheSegments;
 
         set({
           contextTokenCount: ctxResult.totalTokens,
@@ -1792,6 +2077,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           lastSystemPrompt: ctxResult.prompt,
           detectedEntries: ctxResult.detectedEntries,
           alwaysEntries: ctxResult.alwaysEntries,
+          cacheInvalidatedReason: null,
         });
 
         const systemMsg: ChatMessage = {
@@ -1827,8 +2113,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
       }
 
-      const aiSettings = useAiSettingsStore.getState().settings;
-      const chatModel = aiSettings?.model ?? "";
       const chatThinkingParams = buildThinkingParams(
         chatModel,
         getEffortForTask("chat"),
@@ -2019,6 +2303,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               apiPayload,
               chatThinkingParams,
               callbacks,
+              systemCacheSegments,
             );
 
         streamPromise
@@ -2515,21 +2800,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } catch (e) {
       toast.error(i18next.t("chat.deleteMessageFailed"));
       debugLog.error("ChatStore", "deleteMessage", errorDetail(e));
-    }
-  },
-
-  // --- G17: スターのトグル ---
-  starMessage: async (messageId: string, starred: boolean) => {
-    try {
-      await chatApi.toggleStarMessage(messageId, starred);
-      set((s) => ({
-        messages: s.messages.map((m) =>
-          m.id === messageId ? { ...m, isStarred: starred ? 1 : 0 } : m,
-        ),
-      }));
-    } catch (e) {
-      toast.error(i18next.t("chat.starUpdateFailed"));
-      debugLog.error("ChatStore", "starMessage", errorDetail(e));
     }
   },
 

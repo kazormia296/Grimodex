@@ -1188,6 +1188,30 @@ impl Database {
                 ON scene_chunks(scene_id, chunk_index);",
         )?;
 
+        // Chat summaries: generation tracking for Tier-based progressive summarization.
+        Self::add_column_if_missing(
+            &conn,
+            "chat_summaries",
+            "generation",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "chat_summaries",
+            "source_msg_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "chat_summaries",
+            "last_msg_id",
+            "TEXT REFERENCES chat_messages(id) ON DELETE SET NULL",
+        )?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_chat_summaries_generation
+                ON chat_summaries(session_id, generation);",
+        )?;
+
         Ok(())
     }
 

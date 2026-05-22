@@ -86,7 +86,14 @@ export function ChatPanel() {
   const setChatScope = useChatStore((s) => s.setChatScope);
   const includeBodies = useChatStore((s) => s.includeBodies);
   const setIncludeBodies = useChatStore((s) => s.setIncludeBodies);
-  const starMessage = useChatStore((s) => s.starMessage);
+  const syncInsertedToEditorMetadata = useChatStore(
+    (s) => s.syncInsertedToEditorMetadata,
+  );
+  const createLinkedSession = useChatStore((s) => s.createLinkedSession);
+  const dismissCacheInvalidated = useChatStore((s) => s.dismissCacheInvalidated);
+  const summaryCount = useChatStore((s) => s.summaryCount);
+  const maxSummaryGeneration = useChatStore((s) => s.maxSummaryGeneration);
+  const cacheInvalidatedReason = useChatStore((s) => s.cacheInvalidatedReason);
 
   // Phase 2: scene と folder スコープでは本文（または集約本文）が context に
   // 入るので、そこから検出された codex を ContextBar に出す。project スコープは
@@ -450,9 +457,12 @@ export function ChatPanel() {
       const model = aiSettings?.model
         ? normalizeModelId(aiSettings.provider, aiSettings.model)
         : null;
-      rawInsertFromChat(content, messageId, model ?? undefined);
+      const ok = rawInsertFromChat(content, messageId, model ?? undefined);
+      if (ok) {
+        syncInsertedToEditorMetadata(messageId);
+      }
     },
-    [rawInsertFromChat, aiSettings],
+    [rawInsertFromChat, aiSettings, syncInsertedToEditorMetadata],
   );
 
   const handleEditMessage = useCallback(
@@ -490,13 +500,6 @@ export function ChatPanel() {
       regenerate(messageId, { withAgentMode: true });
     },
     [regenerate],
-  );
-
-  const handleStar = useCallback(
-    (messageId: string, starred: boolean) => {
-      starMessage(messageId, starred);
-    },
-    [starMessage],
   );
 
   // Context menu state
@@ -633,6 +636,11 @@ export function ChatPanel() {
         canUseCreator={false}
         projectOutline={projectOutline}
         chapterOutlines={chapterOutlines}
+        summaryCount={summaryCount}
+        maxSummaryGeneration={maxSummaryGeneration}
+        onCreateLinkedSession={() => void createLinkedSession()}
+        cacheInvalidatedReason={cacheInvalidatedReason}
+        onDismissCacheInvalidated={dismissCacheInvalidated}
       />
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
@@ -671,7 +679,6 @@ export function ChatPanel() {
                       onDelete={handleDeleteMessage}
                       onRegenerate={handleRegenerate}
                       onRetryWithAgent={handleRetryWithAgent}
-                      onStar={handleStar}
                       onContextMenu={handleContextMenu}
                     />
                   </motion.div>

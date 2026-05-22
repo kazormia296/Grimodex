@@ -70,6 +70,7 @@ pub(crate) async fn send_chat_message(
     effort: Option<String>,
     reasoning_enabled: Option<bool>,
     reasoning_effort: Option<String>,
+    system_cache_segments: Option<Vec<String>>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
@@ -88,6 +89,7 @@ pub(crate) async fn send_chat_message(
         retry_429,
         ai_novelist_mode: ai::AiNovelistMode::Chat,
         openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
+        system_cache_segments,
     };
     let result = ai::send_chat(
         &params,
@@ -121,6 +123,7 @@ pub(crate) async fn send_chat_message_stream(
     effort: Option<String>,
     reasoning_enabled: Option<bool>,
     reasoning_effort: Option<String>,
+    system_cache_segments: Option<Vec<String>>,
 ) -> Result<(), AppError> {
     abort_flag
         .flag
@@ -144,6 +147,7 @@ pub(crate) async fn send_chat_message_stream(
         retry_429,
         ai_novelist_mode: ai::AiNovelistMode::Chat,
         openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
+        system_cache_segments,
     };
 
     let result = ai::send_chat_stream(
@@ -219,6 +223,7 @@ pub(crate) async fn send_inline_ai_stream(
         retry_429,
         ai_novelist_mode: ai::AiNovelistMode::Completion,
         openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
+        system_cache_segments: None,
     };
 
     let result = ai::send_chat_stream(
@@ -254,6 +259,7 @@ pub(crate) async fn send_agent_message(
     effort: Option<String>,
     reasoning_enabled: Option<bool>,
     reasoning_effort: Option<String>,
+    system_cache_segments: Option<Vec<String>>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
@@ -272,6 +278,7 @@ pub(crate) async fn send_agent_message(
         retry_429,
         ai_novelist_mode: ai::AiNovelistMode::Chat,
         openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
+        system_cache_segments,
     };
     let result = ai::send_chat_with_tools(&params, &messages, &tools).await?;
     Ok(result)

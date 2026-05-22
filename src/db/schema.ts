@@ -399,12 +399,21 @@ export const chatSummaries = sqliteTable(
       .references(() => chatSessions.id, { onDelete: "cascade" }),
     summary: text("summary").notNull(),
     tokenCount: integer("token_count"),
+    generation: integer("generation").notNull().default(1),
+    sourceMsgCount: integer("source_msg_count").notNull().default(0),
+    lastMsgId: text("last_msg_id").references(() => chatMessages.id, {
+      onDelete: "set null",
+    }),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
   },
   (table) => [
     index("idx_chat_summaries_session").on(table.sessionId, table.createdAt),
+    index("idx_chat_summaries_generation").on(
+      table.sessionId,
+      table.generation,
+    ),
   ],
 );
 

@@ -59,7 +59,7 @@ export function getDescendantsBFS(
     queue.push(...getChildrenFromArray(current.id, allEntries));
   }
 
-  return result;
+  return result.sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /**

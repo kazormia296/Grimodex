@@ -472,6 +472,7 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub model: Option<String>,
+    pub metadata: Option<String>,
     pub is_starred: bool,
     pub created_at: String,
 }
@@ -763,15 +764,23 @@ pub fn list_chat_sessions(
 pub fn get_chat_messages(
     conn: &Connection,
     session_id: &str,
-    starred_only: bool,
+    anchors_only: bool,
     limit: u32,
 ) -> Result<Vec<ChatMessage>> {
-    let sql = if starred_only {
-        "SELECT id, session_id, role, content, model, is_starred, created_at
-         FROM chat_messages WHERE session_id = ?1 AND is_starred = 1
+    let sql = if anchors_only {
+        "SELECT id, session_id, role, content, model, metadata, is_starred, created_at
+         FROM chat_messages WHERE session_id = ?1 AND (
+           role = 'user'
+           OR json_extract(metadata, '$.insertedToEditor') = 1
+           OR json_extract(metadata, '$.insertedToEditor') = 'true'
+           OR (json_type(json_extract(metadata, '$.extractedCodex')) = 'array'
+               AND json_array_length(json_extract(metadata, '$.extractedCodex')) > 0)
+           OR (json_type(json_extract(metadata, '$.extractedSnippets')) = 'array'
+               AND json_array_length(json_extract(metadata, '$.extractedSnippets')) > 0)
+         )
          ORDER BY created_at LIMIT ?2"
     } else {
-        "SELECT id, session_id, role, content, model, is_starred, created_at
+        "SELECT id, session_id, role, content, model, metadata, is_starred, created_at
          FROM chat_messages WHERE session_id = ?1
          ORDER BY created_at LIMIT ?2"
     };
@@ -784,8 +793,9 @@ pub fn get_chat_messages(
             role: row.get(2)?,
             content: row.get(3)?,
             model: row.get(4)?,
-            is_starred: row.get::<_, i64>(5)? != 0,
-            created_at: row.get(6)?,
+            metadata: row.get(5)?,
+            is_starred: row.get::<_, i64>(6)? != 0,
+            created_at: row.get(7)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -1536,15 +1546,23 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO chat_messages (id, session_id, role, content, is_starred) VALUES ('m2', 'cs1', 'assistant', 'Hi', 1)",
+            "INSERT INTO chat_messages (id, session_id, role, content, metadata) VALUES ('m2', 'cs1', 'assistant', 'Hi', '{\"insertedToEditor\":true}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_messages (id, session_id, role, content) VALUES ('m3', 'cs1', 'assistant', 'plain')",
             [],
         )
         .unwrap();
         let all = get_chat_messages(&conn, "cs1", false, 100).unwrap();
-        assert_eq!(all.len(), 2);
-        let starred = get_chat_messages(&conn, "cs1", true, 100).unwrap();
-        assert_eq!(starred.len(), 1);
-        assert!(starred[0].is_starred);
+        assert_eq!(all.len(), 3);
+        let anchors = get_chat_messages(&conn, "cs1", true, 100).unwrap();
+        assert_eq!(anchors.len(), 2);
+        assert!(anchors.iter().any(|m| m.id == "m1"));
+        assert!(anchors.iter().any(|m| m.id == "m2"));
+        let anchored = anchors.iter().find(|m| m.id == "m2").unwrap();
+        assert!(anchored.metadata.is_some());
     }
 
     #[test]

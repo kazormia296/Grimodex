@@ -182,6 +182,10 @@ export interface BuildSystemPromptInput {
    * 「事前注入を起点にしてツールは深掘り用」という運用前提を LLM に明示する。
    */
   agentMode?: boolean;
+  /** Codex entry IDs fixed at session start — L4 cache marker boundary. */
+  sessionStableCodexIds?: string[];
+  /** context_mode=always entries (L4 trim: lowest removal priority). */
+  alwaysEntryIds?: string[];
 }
 
 export interface LayerBudgets {
@@ -268,6 +272,8 @@ export interface SystemPromptResult {
   totalTokens: number;
   layers: LayerBreakdown[];
   trimmedLayers?: string[];
+  /** Anthropic cache_control segments (L1–L4 boundaries). */
+  cacheSegments?: string[];
 }
 
 // tiktoken (WASM) を o200k_base ranks + lite ランタイムだけ動的 import する。
@@ -363,28 +369,54 @@ export { JA_TYPE_LABELS };
 // Layer trim helpers
 // ---------------------------------------------------------------------------
 
-/** L4: Codexエントリを末尾から1件ずつ削除（`- **` で分割） */
+/** L4 trim priority: lower = removed first (children → mentioned → pinned → always). */
+const L4_PRI_CHILD = 0;
+const L4_PRI_MENTIONED = 1;
+const L4_PRI_PINNED = 2;
+const L4_PRI_ALWAYS = 3;
+
+/** L4: remove lowest-priority entry blocks first. */
 function trimL4Text(text: string, targetTokens: number): string {
   if (countTokens(text) <= targetTokens) return text;
   if (targetTokens <= 0) return "";
 
-  // Split on lines starting with "- **" to get entries
-  // Keep the header line (first line: "\n## 登場キャラクター・設定情報")
   const headerMatch = text.match(/^(\n## [^\n]+\n)/);
   const header = headerMatch ? headerMatch[1] : "";
   const body = header ? text.slice(header.length) : text;
 
-  // Split into entry blocks — each starting with "- **"
-  const entryBlocks = body.split(/(?=\n- \*\*)/).filter((b) => b.length > 0);
-
-  // Remove from the end until within budget
-  let kept = [...entryBlocks];
-  while (kept.length > 0) {
-    const candidate = header + kept.join("");
-    if (countTokens(candidate) <= targetTokens) return candidate;
-    kept = kept.slice(0, kept.length - 1);
+  const parts = body.split(/(?=<!-- l4pri:\d -->)/).filter((b) => b.length > 0);
+  if (parts.length === 0) {
+    const entryBlocks = body.split(/(?=\n- \*\*)/).filter((b) => b.length > 0);
+    let kept = [...entryBlocks];
+    while (kept.length > 0) {
+      const candidate = header + kept.join("");
+      if (countTokens(candidate) <= targetTokens) return candidate;
+      kept = kept.slice(0, kept.length - 1);
+    }
+    return header.trim() ? header : "";
   }
-  return "";
+
+  const blocks = parts.map((block, index) => {
+    const priMatch = block.match(/<!-- l4pri:(\d+) -->/);
+    return {
+      block,
+      priority: priMatch ? Number(priMatch[1]) : L4_PRI_MENTIONED,
+      index,
+    };
+  });
+
+  const removed = new Set<number>();
+  for (const item of [...blocks].sort(
+    (a, b) => a.priority - b.priority || a.index - b.index,
+  )) {
+    const kept = blocks.filter((_, i) => !removed.has(i));
+    const candidate = header + kept.map((b) => b.block).join("");
+    if (countTokens(candidate) <= targetTokens) break;
+    removed.add(item.index);
+  }
+
+  const kept = blocks.filter((_, i) => !removed.has(i));
+  return header + kept.map((b) => b.block).join("");
 }
 
 /** L2: Story So Far のエントリを先頭から削除 */
@@ -704,6 +736,7 @@ export function buildSystemPrompt(
   }
 
   const pinnedIds = new Set((input.pinnedCodexEntries ?? []).map((e) => e.id));
+  const alwaysEntryIdSet = new Set(input.alwaysEntryIds ?? []);
   const allCodex = deduplicateById([
     ...(input.codexEntries ?? []).filter(
       (e) => !pinnedChildIds.has(e.id) && !pinnedIds.has(e.id),
@@ -711,51 +744,74 @@ export function buildSystemPrompt(
     ...pinnedWithChildren,
   ]);
   let l4Text = "";
+  const l4StableIds = new Set(input.sessionStableCodexIds ?? []);
+  let l4StableSegment = "";
   const hasPinnedSnippets =
     input.pinnedSnippets && input.pinnedSnippets.length > 0;
   if (allCodex.length > 0 || hasPinnedSnippets) {
     const lines = [s.headers.codexSection];
+    const stableLines = [s.headers.codexSection];
     for (const entry of allCodex) {
       const label = s.typeLabels[entry.type] ?? entry.type;
-      // G13: summary未記入時はcontentPlainTextにフォールバック
       const displaySummary =
         entry.summary.trim() || entry.contentFallback || "";
       const phaseSuffix = entry.phaseLabel ? ` [${entry.phaseLabel}]` : "";
-      // Header 行（サマリも本文もこの下にラベル付きでぶら下げる）。
-      // 旧形式 `... (type): {summary}` だと summary か本文か区別できず、
-      // また本文ラベル "本文:" が L3 のシーン本文ヘッダと衝突するため、
-      // それぞれ `${labels.codexSummary}` / `${labels.codexFullContent}` を介して
-      // 明示する。
-      // id 行: Agent モードで get_codex_entry を打つときに search_codex
-      // 経由の往復をなくすため、UUID をエントリ直下に露出する。
-      lines.push(`- **${entry.name}**${phaseSuffix} (${label})`);
-      lines.push(`  ${s.labels.codexId}: ${entry.id}`);
+      let priority = L4_PRI_MENTIONED;
+      if (pinnedChildIds.has(entry.id)) {
+        priority = L4_PRI_CHILD;
+      } else if (alwaysEntryIdSet.has(entry.id)) {
+        priority = L4_PRI_ALWAYS;
+      } else if (pinnedIds.has(entry.id)) {
+        priority = L4_PRI_PINNED;
+      } else {
+        priority = L4_PRI_MENTIONED;
+      }
+      const blockLines = [
+        `<!-- l4pri:${priority} -->`,
+        `- **${entry.name}**${phaseSuffix} (${label})`,
+        `  ${s.labels.codexId}: ${entry.id}`,
+      ];
       if (entry.aliases && entry.aliases.length > 0) {
-        lines.push(`  ${s.labels.codexAliases}: ${entry.aliases.join(", ")}`);
+        blockLines.push(
+          `  ${s.labels.codexAliases}: ${entry.aliases.join(", ")}`,
+        );
       }
       if (displaySummary) {
-        lines.push(`  ${s.labels.codexSummary}: ${displaySummary}`);
+        blockLines.push(`  ${s.labels.codexSummary}: ${displaySummary}`);
       }
       if (pinnedIds.has(entry.id) && entry.tags?.length) {
-        lines.push(`  ${s.labels.codexTags}: ${entry.tags.join(", ")}`);
+        blockLines.push(`  ${s.labels.codexTags}: ${entry.tags.join(", ")}`);
       }
       if (pinnedIds.has(entry.id) && entry.customDetails?.length) {
         for (const detail of entry.customDetails) {
-          lines.push(`  - ${detail.fieldName}: ${detail.value}`);
+          blockLines.push(`  - ${detail.fieldName}: ${detail.value}`);
         }
       }
       if (entry.fullContent) {
-        lines.push(`  ${s.labels.codexFullContent}:\n${entry.fullContent}`);
+        blockLines.push(
+          `  ${s.labels.codexFullContent}:\n${entry.fullContent}`,
+        );
       }
       if (entry.childrenContext) {
-        lines.push(entry.childrenContext);
+        blockLines.push(entry.childrenContext);
+      }
+      const blockText = blockLines.join("\n");
+      lines.push(blockText);
+      const isStable =
+        l4StableIds.size === 0 || l4StableIds.has(entry.id);
+      if (isStable) {
+        stableLines.push(blockText);
       }
     }
-    // G16: ピン留めSnippetをL4に注入
     for (const snippet of input.pinnedSnippets ?? []) {
-      lines.push(`- **${snippet.title}** (Snippet): ${snippet.content}`);
+      const snippetBlock = `- **${snippet.title}** (Snippet): ${snippet.content}`;
+      lines.push(snippetBlock);
+      if (l4StableIds.size === 0 || l4StableIds.has(snippet.id)) {
+        stableLines.push(snippetBlock);
+      }
     }
     l4Text = lines.join("\n");
+    l4StableSegment = stableLines.join("\n");
   }
 
   // L5: G17 会話要約（Progressive Summarization）
@@ -870,6 +926,14 @@ export function buildSystemPrompt(
     effectiveL5,
     effectiveL6,
   ].join("\n");
+
+  const cacheSegments = [
+    `${baseText}${effectiveL1}`,
+    effectiveL2,
+    effectiveL3,
+    l4StableSegment || effectiveL4,
+  ].filter((seg) => seg.trim().length > 0);
+
   // 結合後の全文を再 tokenize しない: 各 layer 合計 + join した \n 6 個分 (BPE で各 1 token)
   const totalTokens =
     baseTokens +
@@ -886,6 +950,7 @@ export function buildSystemPrompt(
     totalTokens,
     layers,
     ...(trimmedLayers ? { trimmedLayers } : {}),
+    cacheSegments,
   };
 }
 

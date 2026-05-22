@@ -4,6 +4,7 @@ import { Fragment, Slice } from "@tiptap/pm/model";
 import { computeAttributedSegments } from "@/features/snippets/snippetDiff";
 import type { AttributedSegment } from "@/lib/clipboardAttribution";
 import { incrementSnippetUsageCount } from "@/features/snippets/api";
+import * as chatApi from "@/features/chat/chatApi";
 
 export interface InsertRange {
   from: number;
@@ -138,6 +139,16 @@ export const useEditorStore = create<EditorState>()((set, get) => {
       set({
         lastInsertRange: { from: insertPos, to: insertEnd, chatMessageId },
       });
+
+      // Tier 2 anchor: mark chat message as inserted into editor.
+      // sqlite-proxy has no transactions — insert first, then metadata; on
+      // metadata failure the editor content remains (user-visible) but anchor
+      // signal may be missing until retry.
+      void chatApi
+        .updateMessageMetadata(chatMessageId, { insertedToEditor: true })
+        .catch((err: unknown) => {
+          console.error("insertFromChat: metadata update failed", err);
+        });
 
       if (highlightTimer) clearTimeout(highlightTimer);
       highlightTimer = setTimeout(() => {

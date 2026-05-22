@@ -595,6 +595,46 @@ pub struct ChatParams<'a> {
     /// OpenRouter で provider routing を固定する slug (例: "anthropic")。
     /// None / 空文字なら適用しない。Anthropic prompt cache を効かせるための設定。
     pub openrouter_provider_pin: Option<&'a str>,
+    /// Chat L1–L4 boundary segments for Anthropic `cache_control` markers.
+    pub system_cache_segments: Option<Vec<String>>,
+}
+
+fn supports_prompt_cache(provider: &AiProvider, model: &str) -> bool {
+    matches!(provider, AiProvider::Anthropic)
+        || (matches!(provider, AiProvider::OpenRouter) && model.contains("claude"))
+}
+
+/// Build Anthropic/OpenRouter-Claude system payload with optional cache markers.
+fn build_system_payload(
+    provider: &AiProvider,
+    model: &str,
+    fallback: &str,
+    cache_segments: Option<&[String]>,
+) -> serde_json::Value {
+    if let Some(segments) = cache_segments {
+        if supports_prompt_cache(provider, model) {
+            let blocks: Vec<serde_json::Value> = segments
+                .iter()
+                .filter(|s| !s.is_empty())
+                .map(|text| {
+                    serde_json::json!({
+                        "type": "text",
+                        "text": text,
+                        "cache_control": { "type": "ephemeral" }
+                    })
+                })
+                .collect();
+            if !blocks.is_empty() {
+                // AUDIT POINT: Chat cache_control at L1/L2/L3/L4 boundaries (4 segments max).
+                return serde_json::Value::Array(blocks);
+            }
+        }
+        let joined = segments.join("\n");
+        if !joined.is_empty() {
+            return serde_json::Value::String(joined);
+        }
+    }
+    serde_json::Value::String(fallback.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -949,8 +989,14 @@ pub async fn send_chat(
                 "max_tokens": 4096,
                 "messages": chat_messages,
             });
-            if !system_content.is_empty() {
-                body["system"] = serde_json::Value::String(system_content);
+            let system_payload = build_system_payload(
+                params.provider,
+                params.model,
+                &system_content,
+                params.system_cache_segments.as_deref(),
+            );
+            if !system_content.is_empty() || params.system_cache_segments.is_some() {
+                body["system"] = system_payload;
             }
             apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 
@@ -1465,8 +1511,10 @@ pub async fn send_chat_with_tools(
                 }
             }
 
-            // Build Anthropic tool definitions
-            let anthropic_tools: Vec<serde_json::Value> = tools
+            // Build Anthropic tool definitions (deterministic name order for prefix cache)
+            let mut sorted_tools: Vec<_> = tools.iter().collect();
+            sorted_tools.sort_by(|a, b| a.name.cmp(&b.name));
+            let anthropic_tools: Vec<serde_json::Value> = sorted_tools
                 .iter()
                 .map(|t| {
                     serde_json::json!({
@@ -1483,8 +1531,13 @@ pub async fn send_chat_with_tools(
                 "messages": anthropic_messages,
                 "tools": anthropic_tools
             });
-            if !system_content.is_empty() {
-                body["system"] = serde_json::Value::String(system_content);
+            if !system_content.is_empty() || params.system_cache_segments.is_some() {
+                body["system"] = build_system_payload(
+                    params.provider,
+                    params.model,
+                    &system_content,
+                    params.system_cache_segments.as_deref(),
+                );
             }
             // thinking / effort パラメータを追加
             apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
@@ -1856,8 +1909,14 @@ pub async fn send_chat_stream(
                 "messages": chat_messages,
                 "stream": true,
             });
-            if !system_content.is_empty() {
-                body["system"] = serde_json::Value::String(system_content);
+            let system_payload = build_system_payload(
+                params.provider,
+                params.model,
+                &system_content,
+                params.system_cache_segments.as_deref(),
+            );
+            if !system_content.is_empty() || params.system_cache_segments.is_some() {
+                body["system"] = system_payload;
             }
             apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 

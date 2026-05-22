@@ -214,5 +214,35 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   },
 ];
 
+/** Sort object keys recursively for deterministic JSON schema. */
+function sortSchemaKeys(obj: unknown): unknown {
+  if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
+    return obj;
+  }
+  const record = obj as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(record).sort()) {
+    sorted[key] = sortSchemaKeys(record[key]);
+  }
+  return sorted;
+}
+
+/** Deterministic tool list: name order + sorted schema keys. */
+export function getDeterministicAgentTools(): AgentToolDefinition[] {
+  return [...AGENT_TOOLS]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((tool) => ({
+      ...tool,
+      inputSchema: sortSchemaKeys(tool.inputSchema) as AgentToolDefinition["inputSchema"],
+    }));
+}
+
+/** Deep-cloned session snapshot — immutable for the session lifetime. */
+export function snapshotAgentTools(): AgentToolDefinition[] {
+  return structuredClone(getDeterministicAgentTools());
+}
+
 /** ツール名→定義のマップ */
-export const TOOL_MAP = new Map(AGENT_TOOLS.map((t) => [t.name, t]));
+export const TOOL_MAP = new Map(
+  getDeterministicAgentTools().map((t) => [t.name, t]),
+);

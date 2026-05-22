@@ -18,7 +18,9 @@ pub struct ListChatSessionsParams {
 pub struct ReadChatHistoryParams {
     /// Chat session ID (required).
     pub session_id: String,
-    /// Return only starred messages (default: false).
+    /// Return only anchor messages: all user messages + AI with Tier-2 signals.
+    pub anchors_only: Option<bool>,
+    /// Deprecated: use `anchors_only`. When true, maps to `anchors_only=true`.
     pub starred_only: Option<bool>,
     /// Maximum messages to return (1-200, default: 100).
     pub limit: Option<u32>,
@@ -47,7 +49,13 @@ pub async fn read_chat_history(
     server: &GrimodexServer,
     params: ReadChatHistoryParams,
 ) -> Result<CallToolResult, ErrorData> {
-    let starred_only = params.starred_only.unwrap_or(false);
+    let mut anchors_only = params.anchors_only.unwrap_or(false);
+    if params.starred_only.unwrap_or(false) {
+        eprintln!(
+            "read_chat_history: starred_only is deprecated; use anchors_only instead"
+        );
+        anchors_only = true;
+    }
     let limit = params.limit.unwrap_or(100).clamp(1, 200);
 
     let conn = server
@@ -55,7 +63,7 @@ pub async fn read_chat_history(
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-    let messages = db::get_chat_messages(&conn, &params.session_id, starred_only, limit)
+    let messages = db::get_chat_messages(&conn, &params.session_id, anchors_only, limit)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
     let json = serde_json::to_string_pretty(&messages)

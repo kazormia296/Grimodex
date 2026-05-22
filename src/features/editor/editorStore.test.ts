@@ -2,6 +2,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { Editor } from "@tiptap/core";
 import { useEditorStore } from "./editorStore";
 
+vi.mock("@/features/chat/chatApi", () => ({
+  updateMessageMetadata: vi.fn().mockResolvedValue(undefined),
+}));
+
+import { updateMessageMetadata } from "@/features/chat/chatApi";
+
 function makeEditor(overrides = {}) {
   const state = {
     selection: { from: 5, to: 5 },
@@ -105,6 +111,19 @@ describe("useEditorStore", () => {
       expect(range).toHaveProperty("from");
       expect(range).toHaveProperty("to");
       expect(range).toHaveProperty("chatMessageId", "msg-1");
+    });
+
+    it("updates chat message metadata with insertedToEditor", async () => {
+      const editor = makeEditor();
+      useEditorStore.getState().setEditor(editor);
+
+      useEditorStore.getState().insertFromChat("挿入テキスト", "msg-insert-1");
+
+      await vi.waitFor(() => {
+        expect(updateMessageMetadata).toHaveBeenCalledWith("msg-insert-1", {
+          insertedToEditor: true,
+        });
+      });
     });
 
     it("inserts at end of document when cursor position is unavailable", () => {

@@ -1,53 +1,42 @@
 import type { ChatMessage } from "./chatTypes";
 import type { ChatMessageResult } from "./chatApi";
+import type { ChatSummary } from "./chatTypes";
 import type { ThinkingParams } from "./agent/modelLimits";
 import { getPromptCatalog } from "@/prompts/index";
+import { countTokens } from "./contextBuilder";
+import { buildHandoffMetaComment } from "./conversationHistory";
 
-export const SUMMARIZATION_THRESHOLD = 16;
-export const KEEP_RECENT_COUNT = 8;
-
-/**
- * 要約トリガー判定。
- * system以外の未要約メッセージ数が閾値を超えたら true を返す。
- */
-export function shouldSummarize(messages: ChatMessage[]): boolean {
-  const unsummarized = messages.filter(
-    (m) => m.role !== "system" && !m.isSummarized,
-  );
-  return unsummarized.length > SUMMARIZATION_THRESHOLD;
-}
+export {
+  shouldSummarize,
+  selectSummarizationCandidates,
+  computeL5UsedTokens,
+  classifyMessagesForL5,
+  isTier2Anchor,
+  countTurns,
+} from "./conversationHistory";
 
 /**
- * 要約対象メッセージを選定する。
- * 条件: system除外 / starred除外 / 既要約除外 / 直近 KEEP_RECENT_COUNT 件除外
- */
-export function selectSummarizationCandidates(
-  messages: ChatMessage[],
-): ChatMessage[] {
-  const nonSystem = messages.filter((m) => m.role !== "system");
-  // 直近 N 件を保護
-  const recentIds = new Set(
-    nonSystem.slice(-KEEP_RECENT_COUNT).map((m) => m.id),
-  );
-
-  return nonSystem.filter(
-    (m) => !m.isStarred && !m.isSummarized && !recentIds.has(m.id),
-  );
-}
-
-/**
- * 要約用プロンプトを構築する。
+ * 要約用プロンプトを構築する (handoff 形式)。
  */
 export function createSummarizationPrompt(
-  messages: ChatMessage[],
-  lang = "ja",
+  candidates: ChatMessage[],
+  opts: {
+    lang?: string;
+    previousSummary?: string;
+    generation: number;
+  },
 ): string {
-  return getPromptCatalog(lang).summarization.buildPrompt(messages);
+  return getPromptCatalog(opts.lang ?? "ja").summarization.buildPrompt(
+    candidates,
+    {
+      previousSummary: opts.previousSummary,
+      generation: opts.generation,
+    },
+  );
 }
 
 /**
  * LLMを呼び出して要約を生成する。
- * sendMessage は sendChatMessageWithThinking と同じシグネチャ。
  */
 export async function runSummarization(
   candidates: ChatMessage[],
@@ -55,11 +44,38 @@ export async function runSummarization(
     messages: { role: string; content: string }[],
     thinkingParams?: ThinkingParams,
   ) => Promise<ChatMessageResult>,
-  lang = "ja",
+  opts: {
+    lang?: string;
+    previousSummary?: string;
+    generation: number;
+    sourceMsgCount: number;
+    lastMsgId: string;
+  },
 ): Promise<string> {
-  const prompt = createSummarizationPrompt(candidates, lang);
+  const prompt = createSummarizationPrompt(candidates, opts);
   const result = await sendMessage([{ role: "user", content: prompt }], {
     effort: "low",
   });
-  return result.text.trim();
+  const trimmed = result.text.trim();
+  const meta = buildHandoffMetaComment({
+    generation: opts.generation,
+    sourceMsgCount: opts.sourceMsgCount,
+    lastMsgId: opts.lastMsgId,
+    generatedAt: new Date().toISOString(),
+  });
+  return trimmed.startsWith("<!-- gen=") ? trimmed : `${meta}\n\n${trimmed}`;
+}
+
+export function estimateSummaryTokenCount(summaryText: string): number {
+  return countTokens(summaryText);
+}
+
+export function getPreviousSummaryText(summaries: ChatSummary[]): string | undefined {
+  if (summaries.length === 0) return undefined;
+  return summaries[summaries.length - 1].summary;
+}
+
+export function getMaxSummaryGeneration(summaries: ChatSummary[]): number {
+  if (summaries.length === 0) return 0;
+  return Math.max(...summaries.map((s) => s.generation));
 }

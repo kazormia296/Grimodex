@@ -19,6 +19,7 @@ import {
   gte,
   and,
   or,
+  max,
 } from "drizzle-orm";
 import type {
   ChatSession,
@@ -115,6 +116,7 @@ export async function sendAgentMessage(
   messages: AgentMessagePayload[],
   tools: AgentToolDefinition[],
   thinkingParams?: ThinkingParams,
+  systemCacheSegments?: string[],
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -123,6 +125,7 @@ export async function sendAgentMessage(
     effort: thinkingParams?.effort ?? null,
     reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
     reasoningEffort: thinkingParams?.reasoningEffort ?? null,
+    systemCacheSegments: systemCacheSegments ?? null,
   });
 }
 
@@ -141,6 +144,7 @@ export interface ChatMessageResult {
 export async function sendChatMessageWithThinking(
   messages: { role: string; content: string }[],
   thinkingParams?: ThinkingParams,
+  systemCacheSegments?: string[],
 ): Promise<ChatMessageResult> {
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
@@ -148,6 +152,7 @@ export async function sendChatMessageWithThinking(
     effort: thinkingParams?.effort ?? null,
     reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
     reasoningEffort: thinkingParams?.reasoningEffort ?? null,
+    systemCacheSegments: systemCacheSegments ?? null,
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
@@ -214,6 +219,7 @@ export async function sendChatMessageStream(
   messages: { role: string; content: string }[],
   thinkingParams: ThinkingParams | undefined,
   callbacks: StreamCallbacks,
+  systemCacheSegments?: string[],
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
@@ -246,6 +252,7 @@ export async function sendChatMessageStream(
     effort: thinkingParams?.effort ?? null,
     reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
     reasoningEffort: thinkingParams?.reasoningEffort ?? null,
+    systemCacheSegments: systemCacheSegments ?? null,
   }).catch((e: unknown) => {
     // Error is also emitted as chat:stream-error from Rust, but handle here too
     const msg = e instanceof Error ? e.message : String(e);
@@ -681,16 +688,6 @@ export async function unpinCodexEntriesByIds(
 // G17: Progressive Summarization CRUD
 // ---------------------------------------------------------------------------
 
-export async function toggleStarMessage(
-  messageId: string,
-  starred: boolean,
-): Promise<void> {
-  await db
-    .update(chatMessages)
-    .set({ isStarred: starred ? 1 : 0 })
-    .where(eq(chatMessages.id, messageId));
-}
-
 async function buildSummary(
   row: typeof chatSummaries.$inferSelect,
 ): Promise<ChatSummary> {
@@ -704,6 +701,9 @@ async function buildSummary(
     summary: row.summary,
     sourceMessageIds: messageRows.map((r) => r.messageId),
     tokenCount: row.tokenCount,
+    generation: row.generation ?? 1,
+    sourceMsgCount: row.sourceMsgCount ?? 0,
+    lastMsgId: row.lastMsgId ?? null,
     createdAt: row.createdAt,
   };
 }
@@ -738,15 +738,33 @@ export async function listSummaries(sessionId: string): Promise<ChatSummary[]> {
     summary: row.summary,
     sourceMessageIds: idsBySummary.get(row.id) ?? [],
     tokenCount: row.tokenCount,
+    generation: row.generation ?? 1,
+    sourceMsgCount: row.sourceMsgCount ?? 0,
+    lastMsgId: row.lastMsgId ?? null,
     createdAt: row.createdAt,
   }));
+}
+
+/** Returns the next generation number for a new summary (max + 1, or 1). */
+export async function getSummaryGeneration(sessionId: string): Promise<number> {
+  const rows = await db
+    .select({ maxGen: max(chatSummaries.generation) })
+    .from(chatSummaries)
+    .where(eq(chatSummaries.sessionId, sessionId));
+  const current = rows[0]?.maxGen ?? 0;
+  return (current ?? 0) + 1;
 }
 
 export async function addSummary(
   sessionId: string,
   summary: string,
   sourceMessageIds: string[],
-  tokenCount?: number,
+  options?: {
+    tokenCount?: number;
+    generation?: number;
+    sourceMsgCount?: number;
+    lastMsgId?: string | null;
+  },
 ): Promise<ChatSummary> {
   // Invariant: a summary always references at least one source message.
   if (sourceMessageIds.length === 0) {
@@ -760,7 +778,10 @@ export async function addSummary(
       id,
       sessionId,
       summary,
-      tokenCount: tokenCount ?? null,
+      tokenCount: options?.tokenCount ?? null,
+      generation: options?.generation ?? 1,
+      sourceMsgCount: options?.sourceMsgCount ?? sourceMessageIds.length,
+      lastMsgId: options?.lastMsgId ?? sourceMessageIds.at(-1) ?? null,
       createdAt: now,
     })
     .returning();

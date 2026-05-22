@@ -98,6 +98,11 @@ interface ContextBarProps {
   projectOutline?: string;
   /** Phase 4 後続: 祖先 chapter の outline（outermost → innermost 順） */
   chapterOutlines?: ReadonlyArray<{ title: string; outline: string }>;
+  summaryCount?: number;
+  maxSummaryGeneration?: number;
+  onCreateLinkedSession?: () => void;
+  cacheInvalidatedReason?: "model" | "instructions" | "budget" | null;
+  onDismissCacheInvalidated?: () => void;
 }
 
 export function ContextBar({
@@ -124,6 +129,11 @@ export function ContextBar({
   canUseCreator = false,
   projectOutline,
   chapterOutlines = EMPTY_CHAPTER_OUTLINES,
+  summaryCount = 0,
+  maxSummaryGeneration = 0,
+  onCreateLinkedSession,
+  cacheInvalidatedReason,
+  onDismissCacheInvalidated,
 }: ContextBarProps) {
   const { t } = useTranslation();
   const reduced = useReducedMotion();
@@ -291,6 +301,48 @@ export function ContextBar({
             )}
           </span>
           <div className="flex items-center gap-2">
+            {(summaryCount > 3 || maxSummaryGeneration > 3) &&
+              onCreateLinkedSession && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCreateLinkedSession();
+                  }}
+                  className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 hover:bg-amber-500/25 dark:text-amber-300"
+                  title={t("chat.context.multiSummaryWarning", {
+                    count: Math.max(summaryCount, maxSummaryGeneration),
+                  })}
+                >
+                  {t("chat.context.multiSummaryWarning", {
+                    count: Math.max(summaryCount, maxSummaryGeneration),
+                  })}
+                </button>
+              )}
+            {cacheInvalidatedReason && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDismissCacheInvalidated?.();
+                }}
+                className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300"
+                title={
+                  cacheInvalidatedReason === "model"
+                    ? t("chat.context.cacheRebuiltModel")
+                    : cacheInvalidatedReason === "instructions"
+                      ? t("chat.context.cacheRebuiltInstructions")
+                      : t("chat.context.cacheRebuiltBudget")
+                }
+              >
+                {t("chat.context.cacheRebuilt")}{" "}
+                {cacheInvalidatedReason === "model"
+                  ? t("chat.context.cacheRebuiltModel")
+                  : cacheInvalidatedReason === "instructions"
+                    ? t("chat.context.cacheRebuiltInstructions")
+                    : t("chat.context.cacheRebuiltBudget")}
+              </button>
+            )}
             {contextTokenCount > 0 &&
               (() => {
                 const estimated = estimateInputCost(model, contextTokenCount);

@@ -1224,4 +1224,27 @@ describe("contextBuilder", () => {
       expect(budgets.l5).toBe(600);
     });
   });
+
+  describe("trimToFit L4 priority", () => {
+    it("removes lower-priority L4 entries before always entries", () => {
+      const l4Text =
+        "\n## 登場キャラクター・設定情報\n" +
+        "<!-- l4pri:1 -->\n- **Mentioned** (character)\n  id: m1\n  summary: m\n" +
+        "<!-- l4pri:3 -->\n- **Always** (lore)\n  id: a1\n  summary: a\n";
+      const layers = {
+        baseText: "base instruction",
+        l1Text: "",
+        l2Text: "",
+        l3Text: "",
+        l4Text,
+        l5Text: "",
+        l6Text: "",
+      };
+      const fullTokens =
+        countTokens(layers.baseText) + countTokens(l4Text);
+      const result = trimToFit(layers, fullTokens - 10);
+      expect(result.trimmedTexts.l4Text).toContain("Always");
+      expect(result.trimmedTexts.l4Text).not.toContain("Mentioned");
+    });
+  });
 });

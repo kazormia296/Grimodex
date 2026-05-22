@@ -84,7 +84,6 @@ interface ChatMessageProps {
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
   onRetryWithAgent?: (messageId: string) => void;
-  onStar?: (messageId: string, starred: boolean) => void;
   onContextMenu?: (e: React.MouseEvent, msg: ChatMessageType) => void;
 }
 
@@ -100,7 +99,6 @@ export function ChatMessage({
   onDelete,
   onRegenerate,
   onRetryWithAgent,
-  onStar,
   onContextMenu,
 }: ChatMessageProps) {
   const __perfStart = performance.now();
@@ -224,7 +222,6 @@ export function ChatMessage({
               <ChatMessageActions
                 messageId={msg.id}
                 messageRole="assistant"
-                isStarred={!!msg.isStarred}
                 onInsert={() => onInsert(msg.content, msg.id)}
                 onInsertHover={(hovering) =>
                   hovering ? showGhostPreview(msg.content) : clearGhostPreview()
@@ -236,7 +233,6 @@ export function ChatMessage({
                 onCopy={handleCopy}
                 onRegenerate={onRegenerate}
                 onDelete={onDelete}
-                onStar={onStar}
               />
             )}
             {isAssistant && selectionInfo && (
@@ -272,10 +268,8 @@ export function ChatMessage({
               <ChatMessageActions
                 messageId={msg.id}
                 messageRole="user"
-                isStarred={!!msg.isStarred}
                 onEdit={onEdit}
                 onDelete={onDelete}
-                onStar={onStar}
               />
             )}
           </>
