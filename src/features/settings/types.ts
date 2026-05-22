@@ -169,7 +169,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "display.showAiBadge": "false",
   "display.reduceMotion": "false",
   "display.cardLayout": "true",
-  "display.glassEffectEnabled": "true",
+  "display.glassEffectEnabled": "false",
   "display.glassTransparency": "30",
   "display.glassBackdropGradient": "true",
   "display.glassNativeVibrancy": "true",

@@ -1,7 +1,7 @@
 import { useSettingsStore } from "@/features/settings/settingsStore";
 
 /**
- * Card layout (D案) toggle — independent of the glass effect.
+ * Card layout (D案) toggle — mutually exclusive with the glass effect.
  *
  * ON  : gapped cards (dome gradient + rim shadow, rounded, no lines).
  * OFF : the legacy splitter-line layout (abutting panes, 1px dividers).

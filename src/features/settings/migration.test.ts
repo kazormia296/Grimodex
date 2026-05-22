@@ -172,6 +172,87 @@ describe("migrateCardLayoutKey", () => {
   });
 });
 
+describe("resolveCardLayoutGlassConflict", () => {
+  const mockUpdateGlobalSettings = vi.fn().mockResolvedValue(undefined);
+  const mockGetState = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.doMock("@/features/workspace/store", () => ({
+      useWorkspaceStore: { getState: mockGetState },
+    }));
+  });
+
+  it("turns the glass effect off when both are persisted on", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: {
+        userPreferences: {
+          "display.cardLayout": "true",
+          "display.glassEffectEnabled": "true",
+        },
+      },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { resolveCardLayoutGlassConflict } = await import("./migration");
+    await resolveCardLayoutGlassConflict();
+
+    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+      userPreferences: {
+        "display.cardLayout": "true",
+        "display.glassEffectEnabled": "false",
+      },
+    });
+  });
+
+  it("resolves the conflict when the card layout relies on its default", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: {
+        userPreferences: { "display.glassEffectEnabled": "true" },
+      },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { resolveCardLayoutGlassConflict } = await import("./migration");
+    await resolveCardLayoutGlassConflict();
+
+    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+      userPreferences: { "display.glassEffectEnabled": "false" },
+    });
+  });
+
+  it("is a no-op when the card layout is off", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: {
+        userPreferences: {
+          "display.cardLayout": "false",
+          "display.glassEffectEnabled": "true",
+        },
+      },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { resolveCardLayoutGlassConflict } = await import("./migration");
+    await resolveCardLayoutGlassConflict();
+
+    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when the glass effect is off by default", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: {
+        userPreferences: { "display.cardLayout": "true" },
+      },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { resolveCardLayoutGlassConflict } = await import("./migration");
+    await resolveCardLayoutGlassConflict();
+
+    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
+  });
+});
+
 describe("seedProjectSettingsFromDefaults", () => {
   const mockGetState = vi.fn();
 

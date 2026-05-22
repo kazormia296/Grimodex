@@ -193,10 +193,12 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       const {
         migrateAppSettingsToScopedStores,
         migrateCardLayoutKey,
+        resolveCardLayoutGlassConflict,
         seedProjectSettingsFromDefaults,
       } = await import("@/features/settings/migration");
       await migrateAppSettingsToScopedStores();
       await migrateCardLayoutKey();
+      await resolveCardLayoutGlassConflict();
       // Seed project defaults for brand-new workspaces
       if (!result.isExisting) {
         await seedProjectSettingsFromDefaults();

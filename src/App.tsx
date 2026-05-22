@@ -203,7 +203,7 @@ function EditorScreen() {
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
   const glassEnabled = useSettingsStore((s) =>
-    s.getBoolean("display.glassEffectEnabled", true),
+    s.getBoolean("display.glassEffectEnabled", false),
   );
   const cardLayout = useSettingsStore((s) =>
     s.getBoolean("display.cardLayout", true),

@@ -1,5 +1,5 @@
 import * as api from "./api";
-import { KEY_SCOPE } from "./types";
+import { DEFAULT_SETTINGS, KEY_SCOPE } from "./types";
 import { PROJECT_ID } from "@/features/project/constants";
 
 const SCHEMA_VERSION_KEY = "meta.settingsSchemaVersion";
@@ -79,6 +79,26 @@ export async function migrateCardLayoutKey(): Promise<void> {
   const { [LEGACY_CARD_LAYOUT_KEY]: legacyValue, ...rest } = prefs;
   await ws.updateGlobalSettings({
     userPreferences: { ...rest, [CARD_LAYOUT_KEY]: legacyValue },
+  });
+}
+
+/**
+ * Card layout and the glass effect are mutually exclusive. Legacy installs may
+ * have both persisted ON — resolve in favour of the card layout by turning the
+ * glass effect off. Idempotent: acts only while both are effectively enabled.
+ */
+export async function resolveCardLayoutGlassConflict(): Promise<void> {
+  const { useWorkspaceStore } = await import("@/features/workspace/store");
+  const ws = useWorkspaceStore.getState();
+  const prefs = ws.globalSettings?.userPreferences;
+  if (!prefs) return;
+  const isEnabled = (key: string) =>
+    (prefs[key] ?? DEFAULT_SETTINGS[key]) === "true";
+  if (!isEnabled(CARD_LAYOUT_KEY) || !isEnabled("display.glassEffectEnabled")) {
+    return;
+  }
+  await ws.updateGlobalSettings({
+    userPreferences: { ...prefs, "display.glassEffectEnabled": "false" },
   });
 }
 

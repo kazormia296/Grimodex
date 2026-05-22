@@ -481,8 +481,8 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
    `.gx-panel` is applied to every top-level panel surface (tool
    panels, stripes/rails, the editor). The entire card treatment —
    radius, dome gradient, rim shadow, canvas — is gated to
-   `[data-card="true"]`, an independent toggle (display.cardLayout)
-   unrelated to the glass effect. When OFF, the legacy splitter-line
+   `[data-card="true"]`, a toggle (display.cardLayout) that is mutually
+   exclusive with the glass effect. When OFF, the legacy splitter-line
    layout is restored (see the `:not([data-card="true"])` block).
    ─────────────────────────────────────────────────────────── */
 .app-shell[data-card="true"] .gx-panel {

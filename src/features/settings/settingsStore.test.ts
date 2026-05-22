@@ -74,8 +74,11 @@ describe("KEY_SCOPE routing invariants", () => {
     }
   });
 
-  it("glass settings default to on with all surfaces available", () => {
-    expect(DEFAULT_SETTINGS["display.glassEffectEnabled"]).toBe("true");
+  it("card layout is the default; the glass effect defaults off (mutually exclusive)", () => {
+    expect(DEFAULT_SETTINGS["display.cardLayout"]).toBe("true");
+    expect(DEFAULT_SETTINGS["display.glassEffectEnabled"]).toBe("false");
+    // Glass surface sub-settings still default ON so the effect is complete
+    // once the master toggle is enabled.
     expect(DEFAULT_SETTINGS["display.glassTransparency"]).toBe("30");
     expect(DEFAULT_SETTINGS["display.glassBackdropGradient"]).toBe("true");
     expect(DEFAULT_SETTINGS["display.glassNativeVibrancy"]).toBe("true");

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
-import { SettingToggle } from "../components/SettingToggle";
+import { SettingToggle, ControlledToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
 import { SettingDropdown } from "../components/SettingDropdown";
 import { useSettingBoolean, useSettingControl } from "../useSettingControl";
@@ -75,15 +75,29 @@ export function DisplayCategory() {
   );
   const setCodexHighlightEnabled = useCodexHighlightStore((s) => s.setEnabled);
 
-  // Master glass toggle — when OFF every other glass-related control
-  // below is rendered inert (disabled + dimmed) so it's clear that they
-  // have no visual effect until the master is turned ON. Their stored
-  // values are preserved across the toggle.
-  const { value: glassEnabled } = useSettingBoolean(
-    "display.glassEffectEnabled",
+  // Card layout and the glass effect are mutually exclusive — enabling one
+  // turns the other off (both may be off: the legacy splitter-line layout).
+  // The master glass toggle additionally renders every glass-related control
+  // below inert (disabled + dimmed) while OFF; their stored values are
+  // preserved across the toggle.
+  const { value: cardLayout, setValue: setCardLayout } = useSettingBoolean(
+    "display.cardLayout",
     true,
   );
+  const { value: glassEnabled, setValue: setGlassEnabled } = useSettingBoolean(
+    "display.glassEffectEnabled",
+    false,
+  );
   const glassChildrenDisabled = !glassEnabled;
+
+  const handleCardLayoutChange = (next: boolean) => {
+    setCardLayout(next);
+    if (next) setGlassEnabled(false);
+  };
+  const handleGlassChange = (next: boolean) => {
+    setGlassEnabled(next);
+    if (next) setCardLayout(false);
+  };
 
   // Sync codex highlight to store
   useEffect(() => {
@@ -210,10 +224,13 @@ export function DisplayCategory() {
           label={t("settings.display.cardLayout", "Card layout")}
           description={t(
             "settings.display.cardLayoutDesc",
-            "Float panels as soft rounded cards separated by gaps. When off, panels abut with 1px splitter lines.",
+            "Float panels as soft rounded cards separated by gaps. When off, panels abut with 1px splitter lines. Mutually exclusive with the glass effect.",
           )}
         >
-          <SettingToggle settingKey="display.cardLayout" defaultValue={true} />
+          <ControlledToggle
+            value={cardLayout}
+            onChange={handleCardLayoutChange}
+          />
         </SettingRow>
       </SettingSection>
 
@@ -225,13 +242,10 @@ export function DisplayCategory() {
           )}
           description={t(
             "settings.display.glassEffectEnabledDesc",
-            "Applies translucent glass surfaces across the app chrome.",
+            "Applies translucent glass surfaces across the app chrome. Mutually exclusive with the card layout.",
           )}
         >
-          <SettingToggle
-            settingKey="display.glassEffectEnabled"
-            defaultValue={true}
-          />
+          <ControlledToggle value={glassEnabled} onChange={handleGlassChange} />
         </SettingRow>
         <SettingRow
           label={t("settings.display.glassTransparency", "Transparency")}
