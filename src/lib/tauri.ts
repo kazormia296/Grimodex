@@ -1,4 +1,5 @@
 import type { BrowserMock } from "./browser-mock";
+import { enqueueIpc } from "./ipcQueue";
 export type { BrowserMock };
 
 /** Check at call time, not module-load time, to avoid race with Tauri bridge injection. */
@@ -24,30 +25,9 @@ const SLOW_COMMANDS = new Set([
   "start_post_effect_run",
   /** 全 scene の再インデックスは scene 数 × Embedder 推論時間で分単位になりうる */
   "semantic_reindex_all",
+  /** 中規模プロジェクトでは Aho-Corasick 構築に 10 秒超かかることがある */
+  "codex_rebuild_matcher",
 ]);
-
-function withTimeout<T>(
-  promise: Promise<T>,
-  ms: number,
-  label: string,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timerId = setTimeout(
-      () => reject(new Error(`IPC timeout after ${ms}ms: ${label}`)),
-      ms,
-    );
-    promise.then(
-      (value) => {
-        clearTimeout(timerId);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timerId);
-        reject(error);
-      },
-    );
-  });
-}
 
 let browserMock: BrowserMock | null = null;
 let browserMockReady: Promise<BrowserMock> | null = null;
@@ -92,7 +72,7 @@ export async function invoke<T = unknown>(
     console.debug(`[tauri] invoke: ${cmd} (native)`);
     const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
     const ms = SLOW_COMMANDS.has(cmd) ? AI_IPC_TIMEOUT_MS : IPC_TIMEOUT_MS;
-    return withTimeout(tauriInvoke<T>(cmd, args), ms, cmd);
+    return enqueueIpc(cmd, () => tauriInvoke<T>(cmd, args), ms);
   }
   const mock = await getBrowserMock();
   return mock.invoke<T>(cmd, args);

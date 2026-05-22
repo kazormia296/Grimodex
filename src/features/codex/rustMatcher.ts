@@ -1,5 +1,9 @@
 import { invoke } from "@/lib/tauri";
 import {
+  isProjectLoading,
+  whenProjectLoadDone,
+} from "@/features/project/projectLoadGate";
+import {
   createCodexMatcher,
   findMentionedEntries,
   type CodexMatch,
@@ -19,6 +23,8 @@ function isTauri(): boolean {
 // ---------------------------------------------------------------------------
 
 let lastEntriesHash = "";
+let pendingEntries: CodexMatchTarget[] | null = null;
+let pendingFlush: Promise<void> | null = null;
 
 function hashEntries(entries: CodexMatchTarget[]): string {
   return entries
@@ -33,16 +39,7 @@ function hashEntries(entries: CodexMatchTarget[]): string {
 // Public API
 // ---------------------------------------------------------------------------
 
-/**
- * Rebuild the Rust-side Aho-Corasick matcher with the given entries.
- * Skips the IPC call when entries are unchanged.
- * Falls back to a no-op when Tauri is not available (browser / test env).
- */
-export async function rebuildMatcher(
-  entries: CodexMatchTarget[],
-): Promise<void> {
-  if (!isTauri()) return;
-
+async function invokeRebuildMatcher(entries: CodexMatchTarget[]): Promise<void> {
   const hash = hashEntries(entries);
   if (hash === lastEntriesHash) return;
   lastEntriesHash = hash;
@@ -64,6 +61,38 @@ export async function rebuildMatcher(
   }));
 
   await invoke<void>("codex_rebuild_matcher", { entries: rustEntries });
+}
+
+async function flushPendingRebuild(): Promise<void> {
+  if (!pendingEntries || isProjectLoading()) return;
+  const entries = pendingEntries;
+  pendingEntries = null;
+  await invokeRebuildMatcher(entries);
+}
+
+/**
+ * Rebuild the Rust-side Aho-Corasick matcher with the given entries.
+ * Skips the IPC call when entries are unchanged.
+ * Falls back to a no-op when Tauri is not available (browser / test env).
+ */
+export async function rebuildMatcher(
+  entries: CodexMatchTarget[],
+): Promise<void> {
+  if (!isTauri()) return;
+
+  if (isProjectLoading()) {
+    pendingEntries = entries;
+    if (!pendingFlush) {
+      pendingFlush = whenProjectLoadDone()
+        .then(() => flushPendingRebuild())
+        .finally(() => {
+          pendingFlush = null;
+        });
+    }
+    return pendingFlush;
+  }
+
+  await invokeRebuildMatcher(entries);
 }
 
 /**

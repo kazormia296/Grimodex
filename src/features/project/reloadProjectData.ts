@@ -16,12 +16,37 @@ import { useResultsPanelStore } from "@/features/commandCenter/store/resultsPane
 import { useLintStore } from "@/features/lint/lintStore";
 import { useTermDictionaryStore } from "@/features/lint/termDictionaryStore";
 import { useMapStore } from "@/features/map/mapStore";
+import { withProjectLoad } from "./projectLoadGate";
+
+async function loadProjectStoresInBatches(
+  projectId: string,
+  batchSize = 3,
+): Promise<void> {
+  const loaders = [
+    () => useCodexStore.getState().loadEntries(),
+    () => useSnippetStore.getState().loadEntries(),
+    () => useChatHistoryStore.getState().loadSessions(projectId),
+    () => useForeshadowStore.getState().load(projectId),
+    () => useLabelStore.getState().load(projectId),
+    () => useGridStore.getState().loadForProject(projectId),
+    () => useTrashBinStore.getState().loadItems(projectId),
+    () => useSceneCodexPinsStore.getState().loadAllForProject(projectId),
+    () => useSceneBeatPovStore.getState().loadAllForProject(projectId),
+  ];
+
+  for (let i = 0; i < loaders.length; i += batchSize) {
+    await Promise.allSettled(
+      loaders.slice(i, i + batchSize).map((load) => load()),
+    );
+  }
+}
 
 /**
  * Project 切替時に mount 済みパネルの in-memory 状態を破棄し、
  * 新 Project のデータを再ロードする。Workspace 再オープン相当の処理。
  */
 export async function reloadProjectData(projectId: string): Promise<void> {
+  return withProjectLoad(async () => {
   useGlobalHistoryStore.getState().clear();
 
   const tabStore = useTabStore.getState();
@@ -118,15 +143,6 @@ export async function reloadProjectData(projectId: string): Promise<void> {
   const activeSceneId = useTreeStore.getState().activeSceneId;
   useChatStore.setState({ activeSceneId });
 
-  await Promise.allSettled([
-    useCodexStore.getState().loadEntries(),
-    useSnippetStore.getState().loadEntries(),
-    useChatHistoryStore.getState().loadSessions(projectId),
-    useForeshadowStore.getState().load(projectId),
-    useLabelStore.getState().load(projectId),
-    useGridStore.getState().loadForProject(projectId),
-    useTrashBinStore.getState().loadItems(projectId),
-    useSceneCodexPinsStore.getState().loadAllForProject(projectId),
-    useSceneBeatPovStore.getState().loadAllForProject(projectId),
-  ]);
+  await loadProjectStoresInBatches(projectId);
+  });
 }

@@ -9,7 +9,12 @@ import type { CodexMatchTarget } from "./codexMatcher";
 // The Tauri path is covered by Rust unit tests in codex_matching.rs
 
 vi.mock("@/lib/tauri", () => ({
-  invoke: vi.fn(),
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/features/project/projectLoadGate", () => ({
+  isProjectLoading: vi.fn().mockReturnValue(false),
+  whenProjectLoadDone: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { invoke } from "@/lib/tauri";
