@@ -35,7 +35,9 @@ export function StripeBandContextMenu({
     (s) => s.removeAllPanelsFromStripeRegion,
   );
   const addPanelToStripeSlot = useLayoutStore((s) => s.addPanelToStripeSlot);
-  const addPanelToCenterStripe = useLayoutStore((s) => s.addPanelToCenterStripe);
+  const addPanelToCenterStripe = useLayoutStore(
+    (s) => s.addPanelToCenterStripe,
+  );
 
   const showAddPanel =
     bandKind === "tool" || (bandKind === "editor" && region === "center");

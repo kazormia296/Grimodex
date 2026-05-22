@@ -81,9 +81,9 @@ describe("StripeBandContextMenu", () => {
     await user.hover(screen.getByTestId("stripe-band-ctx-add-panel"));
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("panel-pick-item-chat").length).toBeGreaterThan(
-        0,
-      );
+      expect(
+        screen.getAllByTestId("panel-pick-item-chat").length,
+      ).toBeGreaterThan(0);
     });
   });
 
