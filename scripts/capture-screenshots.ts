@@ -406,6 +406,15 @@ async function captureOne(
             presetId ?? "builtin:default",
           );
         }
+        const userPreferences: Record<string, string> = {
+          "display.glassEffectEnabled": "false",
+          "display.reduceMotion": "true",
+        };
+        // 詳細ペイン (SceneMetaPanel) は default / review のプリセット撮影
+        // ではレイアウトを締めて見せるため閉じておく。
+        if (presetId === "builtin:default" || presetId === "builtin:review") {
+          userPreferences["editor.sceneMetaPanelOpen"] = "false";
+        }
         localStorage.setItem(
           "grimodex:global-settings",
           JSON.stringify({
@@ -420,10 +429,7 @@ async function captureOne(
             showLauncherOnStartup: false,
             acceptedEulaVersion: "1.0",
             trustedWorkspaces: [workspacePath],
-            userPreferences: {
-              "display.glassEffectEnabled": "false",
-              "display.reduceMotion": "true",
-            },
+            userPreferences,
           }),
         );
       },
