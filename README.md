@@ -26,9 +26,9 @@ Download the installer for your platform from the [latest release](../../release
 | macOS    | `.dmg`                |
 | Linux    | `.AppImage` or `.deb` |
 
-No runtime required — just install and launch. An OpenRouter API key is needed to use AI chat.
+No runtime required — just install and launch. AI chat works with a cloud API key (OpenRouter / OpenAI / Anthropic), a local Ollama model, or an agentic CLI — see Features below.
 
-最新リリースのページからお使いのOSに合わせたインストーラーを取得してください。ランタイム不要です。AIチャットを使う場合はOpenRouter APIキーが必要です。
+最新リリースのページからお使いのOSに合わせたインストーラーを取得してください。ランタイム不要です。AIチャットはクラウドのAPIキー（OpenRouter / OpenAI / Anthropic）、ローカルのOllama、エージェント型CLIのいずれかで利用できます（詳細は下記の機能を参照）。
 
 ---
 
@@ -51,14 +51,22 @@ _Codexエントリとノートを開いた状態 — AIチャットと並べて�
 ## Features / 機能
 
 - **Chapter / scene editor** — Independent TipTap instance per scene, rich text with attribution tracking.
+- **Japanese novel typesetting** — Ruby (furigana), emphasis dots (傍点), and a vertical-writing preview.
+- **Prose linter** — Deterministic Japanese text checks backed by UniDic morphological analysis.
 - **AI chat per scene** — Separate conversation history for each scene.
+- **Flexible AI backends** — Bring your own cloud API key (OpenRouter / OpenAI / Anthropic), run a local model via Ollama, or drive an agentic CLI you already use (Claude Code / Codex CLI / OpenCode).
+- **MCP server** — Grimodex ships an MCP server, so external agents can read and edit your project.
 - **Codex** — Characters, worldbuilding, items, whatever. Extract from chat and reference in-editor.
 - **Snippets** — Reusable fragments pulled from chat.
 - **Source attribution** — Every inserted range is tagged human / ai / unknown.
 - **Local storage** — SQLite (WAL mode) + FTS5 on disk. No account required; only AI calls hit the network.
 
 - **チャプター / シーンエディタ** — シーンごとに独立したTipTapインスタンス、帰属追跡つきリッチテキスト。
+- **日本語小説向け組版** — ルビ（ふりがな）、傍点、縦書きプレビュー。
+- **文章リンター** — UniDic形態素解析ベースの決定論的な日本語文章チェック。
 - **シーン単位のAIチャット** — シーンごとに独立した会話履歴。
+- **柔軟なAIバックエンド** — クラウドのAPIキー持ち込み（OpenRouter / OpenAI / Anthropic）、Ollamaによるローカルモデル、または手持ちのエージェント型CLI（Claude Code / Codex CLI / OpenCode）。
+- **MCPサーバー** — GrimodexはMCPサーバーを同梱。外部エージェントからプロジェクトを読み書きできます。
 - **Codex** — 登場人物・世界観・アイテムなど。チャットから抽出してエディタ内で参照。
 - **スニペット** — チャットから拾った再利用可能な断片。
 - **出所追跡** — 挿入されたテキストは human / ai / unknown でタグづけ。
@@ -73,13 +81,14 @@ _Codexエントリとノートを開いた状態 — AIチャットと並べて�
 - **Editor:** TipTap / ProseMirror
 - **State:** Zustand (global) + Jotai (local)
 - **DB:** SQLite via Drizzle ORM, WAL mode, FTS5 enabled
+- **Semantic search:** Ruri v3 embeddings (ONNX Runtime) + UniDic morphology (lindera)
 - **Test:** Vitest
 
 ---
 
 ## Development / 開発
 
-Prerequisites: Node.js, Rust toolchain, and the platform dependencies required by Tauri.
+Prerequisites: Node.js, pnpm, a Rust toolchain, Python 3 (only for generating the embedding model), and the platform dependencies required by Tauri.
 
 ```sh
 pnpm install
@@ -96,7 +105,19 @@ cargo clippy --all-targets
 cargo test
 ```
 
-前提: Node.js、pnpm、Rustツールチェイン、Tauriが要求するプラットフォーム依存物。`pnpm tauri dev` でフルアプリ、`pnpm dev` でフロントのみ、`pnpm test` でフロント側のVitest、Rust側は `src-tauri/` 内で `cargo check` / `cargo clippy` / `cargo test`。
+### First-build setup / 初回ビルドの準備
+
+- **ONNX Runtime & UniDic** — The first Rust build downloads the ONNX Runtime binaries (`ort`) and the UniDic dictionary (`lindera`, embedded for the Japanese prose linter). Network access is required, so the first build is slow.
+- **Embedding model** — The semantic-search model (`model.onnx` / `model_int8.onnx`, ~150 MB) is **not** committed to the repo. Generate it from the upstream `cl-nagoya/ruri-v3-30m` weights:
+
+  ```sh
+  pip install "optimum[onnxruntime]" sentencepiece protobuf
+  python3 scripts/export-ruri-onnx.py
+  ```
+
+  The files are written to `src-tauri/resources/semantic/ruri-v3-30m/`. Without them the app still builds and runs, but semantic search stays disabled. Passing `--no-default-features` to `cargo` skips the embedding path entirely.
+
+初回のRustビルドでは ONNX Runtime バイナリ（`ort`）と UniDic 辞書（`lindera`、日本語リンター用に同梱）がダウンロードされます（ネットワーク必須・初回は時間がかかります）。セマンティック検索用の埋め込みモデル（`model.onnx` / `model_int8.onnx`、約150MB）はリポジトリに含まれていないため、`pip install "optimum[onnxruntime]" sentencepiece protobuf` のうえ `python3 scripts/export-ruri-onnx.py` を実行し `cl-nagoya/ruri-v3-30m` から `src-tauri/resources/semantic/ruri-v3-30m/` へ再生成してください。生成しなくてもアプリのビルド・起動はできますが、セマンティック検索は無効になります。`cargo` に `--no-default-features` を渡すと埋め込み経路ごとスキップできます。
 
 ---
 
