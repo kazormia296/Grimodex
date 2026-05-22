@@ -39,7 +39,7 @@ describe("resolveCodexColor", () => {
 
   it("uses DEFAULT_COLOR_THEME when themeId is undefined", () => {
     const result = resolveCodexColor(0, "#000000", undefined, false);
-    // Should use dark-academia (default), light, slot 0 = Amethyst
-    expect(result).toEqual({ hl: "#EDE0F5", tx: "#5B3080", fg: "#6B3D99" });
+    // Should use the simple theme (default), light, slot 0 = Blue
+    expect(result).toEqual({ hl: "#E8F0FF", tx: "#1A3A8F", fg: "#2045AA" });
   });
 });

@@ -515,4 +515,4 @@ export const COLOR_THEMES: ColorTheme[] = [
 ];
 
 /** デフォルトのカラーテーマID（colorTheme 未設定時に使用） */
-export const DEFAULT_COLOR_THEME = "dark-academia";
+export const DEFAULT_COLOR_THEME = "simple";
