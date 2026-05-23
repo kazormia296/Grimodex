@@ -51,7 +51,9 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       const providerChanged = prev?.provider !== "cli";
       const kindChanged = prev?.cli?.kind !== settings.cli?.kind;
       if (providerChanged || kindChanged) {
-        const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
+        const path = await cliApi.detectCliBinary(
+          settings.cli?.kind ?? "claude",
+        );
         cliBinaryAvailable = path !== null;
       }
     } else {
