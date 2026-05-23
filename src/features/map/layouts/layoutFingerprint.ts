@@ -19,7 +19,8 @@ export function layoutFingerprint(input: LayoutFingerprintInput): string {
   const pinned = input.positions
     .filter(
       (p) =>
-        (p.nodeRefType === "scene" || p.nodeRefType === "codex") && p.pinned === 1,
+        (p.nodeRefType === "scene" || p.nodeRefType === "codex") &&
+        p.pinned === 1,
     )
     .map((p) => p.treeNodeId ?? p.codexEntryId)
     .filter(Boolean)

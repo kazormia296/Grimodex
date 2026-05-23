@@ -91,7 +91,11 @@ describe("layoutFingerprint", () => {
     const fp1 = layoutFingerprint(base);
     const fp2 = layoutFingerprint({
       ...base,
-      positions: base.positions.map((p) => ({ ...p, x: p.x + 500, y: p.y + 500 })),
+      positions: base.positions.map((p) => ({
+        ...p,
+        x: p.x + 500,
+        y: p.y + 500,
+      })),
     });
     expect(fp2).toBe(fp1);
   });

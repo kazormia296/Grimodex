@@ -1,9 +1,6 @@
 import { useEffect } from "react";
 import { useMapStore } from "../mapStore";
-import {
-  serializeShowConfig,
-  updateMapBoardSettings,
-} from "../mapApi";
+import { serializeShowConfig, updateMapBoardSettings } from "../mapApi";
 
 export const isBoardHydratingRef = { current: false };
 
