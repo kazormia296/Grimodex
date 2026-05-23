@@ -10,9 +10,8 @@ import {
   DND_NEW_SLOT_EDGE_HIT_PX,
   MIN_EDITOR_SIZE,
   MIN_SLOT_SIZE,
-  slotSplitterPx,
+  PANEL_GAP_PX,
 } from "./layoutConstants";
-import { useCardLayout } from "./cardLayout";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
 import { AnimatedSlotPanel } from "./AnimatedSlotPanel";
@@ -44,8 +43,6 @@ export const CenterContent = memo(function CenterContent() {
   const showDropZones = useDragDropZonesReady(
     Boolean(draggingPanel && !layoutLocked),
   );
-  const cardLayout = useCardLayout();
-  const slotSplitterThickness = slotSplitterPx(cardLayout);
 
   const visibleSegments = center.segments.filter((segment) =>
     centerSegmentVisible(segment, center.editorOpen),
@@ -184,7 +181,7 @@ export const CenterContent = memo(function CenterContent() {
               <div className="relative shrink-0">
                 <Splitter
                   orientation="horizontal"
-                  thickness={slotSplitterThickness}
+                  thickness={PANEL_GAP_PX}
                   disabled={layoutLocked}
                   onDrag={(delta) => {
                     const prevSegment = visibleSegments[index - 1];

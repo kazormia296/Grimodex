@@ -124,6 +124,7 @@ export function CenterStripe() {
       <div className="flex min-h-0 min-w-0 items-center justify-center">
         {hasRight && <SideDockToggle region="right" />}
       </div>
+      <div aria-hidden className="min-h-0 min-w-0" />
       {showDropZones && (
         <CenterStripeDropOverlay
           segments={dropSegments}

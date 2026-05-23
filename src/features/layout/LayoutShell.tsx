@@ -192,15 +192,7 @@ export const LayoutShell = memo(function LayoutShell({
               open={leftOpen}
               className="h-full w-full min-h-0 min-w-0"
             >
-              <RegionContent
-                region="left"
-                orientation="vertical"
-                trackInsetEndPx={
-                  hasBottom && !bottomCorners.left
-                    ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
-                    : 0
-                }
-              />
+              <RegionContent region="left" orientation="vertical" />
             </AnimatedRegionChrome>
           </div>
         )}
@@ -236,15 +228,7 @@ export const LayoutShell = memo(function LayoutShell({
               open={rightOpen}
               className="h-full w-full min-h-0 min-w-0"
             >
-              <RegionContent
-                region="right"
-                orientation="vertical"
-                trackInsetEndPx={
-                  hasBottom && !bottomCorners.right
-                    ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
-                    : 0
-                }
-              />
+              <RegionContent region="right" orientation="vertical" />
             </AnimatedRegionChrome>
           </div>
         )}
