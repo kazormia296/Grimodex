@@ -95,6 +95,7 @@ import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
 import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
 import { ForeshadowMarkHoverPopover } from "@/features/foreshadow/ForeshadowMarkHoverPopover";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
+import { EditorBodyWithLoading } from "@/features/editor/EditorContentSkeleton";
 import { useFocusMode } from "@/features/editor/useFocusMode";
 import {
   useTypewriterScroll,
@@ -244,6 +245,7 @@ export function EditorPane({
   );
   useCharCountMilestone(charCount, targetCharCount, charCountRef);
   const [isDirty, setIsDirty] = useState(false);
+  const [isSceneContentLoading, setIsSceneContentLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [statusPopoverOpen, setStatusPopoverOpen] = useState(false);
   const statusPopoverRef = useRef<HTMLDivElement>(null);
@@ -1220,6 +1222,7 @@ export function EditorPane({
     if (!editor || !nodeId) return;
 
     let cancelled = false;
+    setIsSceneContentLoading(true);
 
     async function switchScene() {
       markStart("editor.switchScene");
@@ -1356,6 +1359,10 @@ export function EditorPane({
                   .setNodePreview(nodeId, { placed: next });
               }
             }
+          }
+
+          if (!cancelled) {
+            setIsSceneContentLoading(false);
           }
 
           const text = getDocText(editor!.state.doc);
@@ -1547,6 +1554,11 @@ export function EditorPane({
             }
           }
         }
+      } catch (err) {
+        if (!cancelled) {
+          setIsSceneContentLoading(false);
+        }
+        throw err;
       } finally {
         markEnd("editor.switchScene");
       }
@@ -1814,25 +1826,27 @@ export function EditorPane({
                       )}
                     </div>
                   )}
-                  <SceneBeatEditorContextProvider value={{ sceneId: nodeId }}>
-                    <EditorContent editor={editor} />
-                  </SceneBeatEditorContextProvider>
-                  <CodexPopover editor={editor} />
-                  <CommentAddPopover editor={editor} />
-                  <ForeshadowMarkPopover editor={editor} />
-                  <ForeshadowMarkHoverPopover
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                  />
-                  <CommentHoverPopover
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                  />
-                  <EditorContextMenu
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                    toolbarActionsRef={toolbarActionsRef}
-                  />
+                  <EditorBodyWithLoading isLoading={isSceneContentLoading}>
+                    <SceneBeatEditorContextProvider value={{ sceneId: nodeId }}>
+                      <EditorContent editor={editor} />
+                    </SceneBeatEditorContextProvider>
+                    <CodexPopover editor={editor} />
+                    <CommentAddPopover editor={editor} />
+                    <ForeshadowMarkPopover editor={editor} />
+                    <ForeshadowMarkHoverPopover
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                    />
+                    <CommentHoverPopover
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                    />
+                    <EditorContextMenu
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                      toolbarActionsRef={toolbarActionsRef}
+                    />
+                  </EditorBodyWithLoading>
                 </div>
               </EditorDropDiv>
             </ResizablePanel>
@@ -1945,25 +1959,27 @@ export function EditorPane({
                       )}
                     </div>
                   )}
-                  <SceneBeatEditorContextProvider value={{ sceneId: nodeId }}>
-                    <EditorContent editor={editor} />
-                  </SceneBeatEditorContextProvider>
-                  <CodexPopover editor={editor} />
-                  <CommentAddPopover editor={editor} />
-                  <ForeshadowMarkPopover editor={editor} />
-                  <ForeshadowMarkHoverPopover
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                  />
-                  <CommentHoverPopover
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                  />
-                  <EditorContextMenu
-                    editor={editor}
-                    containerRef={editorContainerRef}
-                    toolbarActionsRef={toolbarActionsRef}
-                  />
+                  <EditorBodyWithLoading isLoading={isSceneContentLoading}>
+                    <SceneBeatEditorContextProvider value={{ sceneId: nodeId }}>
+                      <EditorContent editor={editor} />
+                    </SceneBeatEditorContextProvider>
+                    <CodexPopover editor={editor} />
+                    <CommentAddPopover editor={editor} />
+                    <ForeshadowMarkPopover editor={editor} />
+                    <ForeshadowMarkHoverPopover
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                    />
+                    <CommentHoverPopover
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                    />
+                    <EditorContextMenu
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                      toolbarActionsRef={toolbarActionsRef}
+                    />
+                  </EditorBodyWithLoading>
                 </div>
               </EditorDropDiv>
             </div>
