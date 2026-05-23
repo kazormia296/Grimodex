@@ -15,7 +15,17 @@ function segmentFromSlot(
   slot: SlotState,
   hiddenStripePanels: ReadonlySet<ToolWindowPanelId>,
 ): RegionSegment | null {
-  const visiblePanels = slot.panels.filter((id) => !hiddenStripePanels.has(id));
+  let visiblePanels = slot.panels.filter((id) => !hiddenStripePanels.has(id));
+  // Slot が展開中なのに stripe 非表示指定だけの panel 群だと、
+  // content には表示されているのに stripe アイコンが消える。
+  // 展開中の activePanel だけは stripe に出す。
+  if (
+    visiblePanels.length === 0 &&
+    slot.activePanel !== null &&
+    slot.panels.includes(slot.activePanel)
+  ) {
+    visiblePanels = [slot.activePanel];
+  }
   if (visiblePanels.length === 0) return null;
 
   return {

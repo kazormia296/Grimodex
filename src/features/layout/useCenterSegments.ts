@@ -17,9 +17,17 @@ function segmentFromCenterTool(
   segment: Extract<CenterSegment, { kind: "tool" }>,
   hiddenStripePanels: ReadonlySet<ToolWindowPanelId>,
 ): CenterStripeSegment | null {
-  const visiblePanels = segment.panels.filter(
+  let visiblePanels = segment.panels.filter(
     (id) => !hiddenStripePanels.has(id),
   );
+  // useRegionSegments と同様: 展開中の activePanel は stripe に出す。
+  if (
+    visiblePanels.length === 0 &&
+    segment.activePanel !== null &&
+    segment.panels.includes(segment.activePanel)
+  ) {
+    visiblePanels = [segment.activePanel];
+  }
   if (visiblePanels.length === 0) return null;
 
   return {
