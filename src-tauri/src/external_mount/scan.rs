@@ -59,7 +59,7 @@ fn walk(
     root: &Path,
     current: &Path,
     depth: u32,
-    visited: &mut HashSet<(u64, u64)>,
+    visited: &mut HashSet<DirVisitKey>,
     dirs: &mut Vec<ScannedDir>,
     files: &mut Vec<ScannedFile>,
 ) -> Result<()> {
@@ -120,27 +120,42 @@ fn walk(
     Ok(())
 }
 
-fn dir_key(path: &Path) -> Result<(u64, u64)> {
-    let meta = fs::metadata(path)
-        .with_context(|| format!("failed to stat directory {}", path.display()))?;
-    dir_key_from_metadata(&meta)
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+enum DirVisitKey {
+    #[cfg(unix)]
+    Inode(u64, u64),
+    #[cfg(not(unix))]
+    CanonicalPath(String),
 }
 
-#[cfg(unix)]
-fn dir_key_from_metadata(meta: &fs::Metadata) -> Result<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    Ok((meta.dev(), meta.ino()))
-}
+fn dir_key(path: &Path) -> Result<DirVisitKey> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(path)
+            .with_context(|| format!("failed to stat directory {}", path.display()))?;
+        return Ok(DirVisitKey::Inode(meta.dev(), meta.ino()));
+    }
 
-#[cfg(windows)]
-fn dir_key_from_metadata(meta: &fs::Metadata) -> Result<(u64, u64)> {
-    use std::os::windows::fs::MetadataExt;
-    Ok((meta.volume_serial_number(), meta.file_index()))
-}
+    #[cfg(windows)]
+    {
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize directory {}", path.display()))?;
+        return Ok(DirVisitKey::CanonicalPath(
+            canonical.to_string_lossy().replace('\\', "/"),
+        ));
+    }
 
-#[cfg(not(any(unix, windows)))]
-fn dir_key_from_metadata(_meta: &fs::Metadata) -> Result<(u64, u64)> {
-    Ok((0, 0))
+    #[cfg(not(any(unix, windows)))]
+    {
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize directory {}", path.display()))?;
+        Ok(DirVisitKey::CanonicalPath(
+            canonical.to_string_lossy().replace('\\', "/"),
+        ))
+    }
 }
 
 #[cfg(test)]
