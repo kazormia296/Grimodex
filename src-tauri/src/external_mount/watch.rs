@@ -9,6 +9,8 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
+use super::path::{canonicalize_mount_root, rel_path_under_root};
+
 const DEBOUNCE_MS: u64 = 500;
 
 #[derive(Debug, Clone)]
@@ -50,6 +52,8 @@ impl WatchRegistry {
     ) -> Result<()> {
         self.unregister(&root_id);
 
+        let canonical_root = canonicalize_mount_root(&root_path)?;
+
         let (tx, mut rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
 
         let mut watcher = RecommendedWatcher::new(
@@ -66,7 +70,7 @@ impl WatchRegistry {
 
         let app_for_cb = app.clone();
         let root_id_for_cb = root_id.clone();
-        let root_path_for_cb = root_path.clone();
+        let canonical_root_for_cb = canonical_root.clone();
         let registry = app.state::<ExternalMountWatchState>().inner.clone();
 
         tauri::async_runtime::spawn(async move {
@@ -77,7 +81,7 @@ impl WatchRegistry {
                             &app_for_cb,
                             &registry,
                             &root_id_for_cb,
-                            &root_path_for_cb,
+                            &canonical_root_for_cb,
                             event,
                         ) {
                             tracing::warn!("external mount watcher error: {e}");
@@ -163,7 +167,7 @@ fn handle_notify_event(
     app: &AppHandle,
     registry: &Arc<Mutex<WatchRegistry>>,
     root_id: &str,
-    root_path: &Path,
+    canonical_root: &Path,
     event: Event,
 ) -> Result<()> {
     if matches!(
@@ -172,8 +176,8 @@ fn handle_notify_event(
         )
     ) && event.paths.len() >= 2
     {
-        let old_rel = rel_path_from_root(root_path, &event.paths[0])?;
-        let new_rel = rel_path_from_root(root_path, &event.paths[1])?;
+        let old_rel = rel_path_under_root(canonical_root, &event.paths[0])?;
+        let new_rel = rel_path_under_root(canonical_root, &event.paths[1])?;
         let payload = FileEventPayload {
             root_id: root_id.to_string(),
             rel_path: new_rel,
@@ -190,7 +194,7 @@ fn handle_notify_event(
         if !should_track_path(path) {
             continue;
         }
-        let rel_path = rel_path_from_root(root_path, path)?;
+        let rel_path = rel_path_under_root(canonical_root, path)?;
         let payload = match event.kind {
             EventKind::Modify(ModifyKind::Data(_)) | EventKind::Modify(ModifyKind::Any) => {
                 FileEventPayload {
@@ -227,17 +231,4 @@ fn handle_notify_event(
 
 fn should_track_path(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("md") || path.is_dir()
-}
-
-fn rel_path_from_root(root: &Path, path: &Path) -> Result<String> {
-    let canonical_root = root
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize {}", root.display()))?;
-    let canonical = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
-    let rel = canonical
-        .strip_prefix(&canonical_root)
-        .with_context(|| format!("{} is not under {}", path.display(), root.display()))?;
-    Ok(rel.to_string_lossy().replace('\\', "/"))
 }
