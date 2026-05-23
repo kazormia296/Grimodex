@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/context-menu";
 import { useLayoutStore } from "./layoutStore";
 import { useStripeIconPointerDrag } from "./useStripeIconPointerDrag";
+import { stripeAxisForRegion } from "./layoutStripeSwap";
 import type { PanelId } from "./panelIds";
 import { PANEL_ICON_MAP } from "./panelIcons";
 import { KEYBOARD_SHORTCUT_MAP } from "./panelRegions";
@@ -46,6 +47,9 @@ export function ToolWindowIcon({
   const movePanelToRegion = useLayoutStore((s) => s.movePanelToRegion);
   const removePanelFromStripe = useLayoutStore((s) => s.removePanelFromStripe);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
+  const stripeSwapMode = useLayoutStore((s) => s.stripeSwapMode);
+  const stripeSwapSlotId = useLayoutStore((s) => s.stripeSwapSlotId);
+  const stripeSwapOffsets = useLayoutStore((s) => s.stripeSwapOffsets);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const passThroughDrop =
     draggingPanel != null && draggingPanel !== panelId && !layoutLocked;
@@ -61,6 +65,11 @@ export function ToolWindowIcon({
   const shortcut = KEYBOARD_SHORTCUT_MAP[panelId];
   const tooltip = shortcut ? `${label} (${shortcut})` : label;
 
+  const axisLockedSwap =
+    stripeSwapMode === "axis-locked" && stripeSwapSlotId === slotId;
+  const swapOffset = axisLockedSwap ? stripeSwapOffsets[panelId] : undefined;
+  const swapAxis = stripeAxisForRegion(region);
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -72,12 +81,25 @@ export function ToolWindowIcon({
           aria-label={label}
           aria-pressed={active}
           onPointerDown={handlePointerDown}
+          style={
+            swapOffset != null
+              ? {
+                  transform:
+                    swapAxis === "horizontal"
+                      ? `translateX(${swapOffset}px)`
+                      : `translateY(${swapOffset}px)`,
+                  transition: "transform 120ms ease-out",
+                }
+              : undefined
+          }
           className={cn(
             "relative z-30 flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors",
             "transition-transform duration-75 active:scale-[0.94]",
             "touch-none select-none",
             passThroughDrop && "pointer-events-none",
-            draggingPanel === panelId && "opacity-40",
+            draggingPanel === panelId &&
+              stripeSwapMode !== "axis-locked" &&
+              "opacity-40",
             active
               ? "bg-accent text-foreground"
               : "hover:bg-accent/30 hover:text-foreground",

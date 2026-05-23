@@ -54,6 +54,12 @@ export const STRIPE_DRAG_LONG_PRESS_MS = 250;
 /** Stripe pointer hit-test padding beyond stripe bounds (px). */
 export const STRIPE_DRAG_DETECTION_PAD_PX = 24;
 
+/** Off-axis movement before stripe drag escapes axis-lock swap mode (px). */
+export const STRIPE_SWAP_AXIS_LOCK_PX = 120;
+
+/** gap-0.5 between stripe icons — used for axis-lock slot size math. */
+export const STRIPE_ICON_GAP_PX = 2;
+
 /** ビューポートに対する region content 上限比率 */
 export const MAX_REGION_SIZE_RATIO = 0.5;
 

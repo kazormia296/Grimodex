@@ -370,6 +370,13 @@ stripe アイコンは **pointer 統一**（`useStripeIconPointerDrag`）。`Too
 
 `layoutLocked` 時は session 開始不可。`panelDragOffset` でゴースト位置を保持する。
 
+**同一 slot 並べ替え（Grid 準拠 axis-lock）**: ドラッグ開始直後は axis-locked モード。
+オフ軸移動が `STRIPE_SWAP_AXIS_LOCK_PX`（120px）未満の間は **同一 slot 内の midpoint
+スワップのみ**（`layoutStripeSwap.ts` — Grid の `computeSceneAxisLockTarget` 相当）。
+兄弟アイコンは `stripeSwapOffsets` でスライド表示し、ゴーストと insert 線は非表示。
+120px 超えで **free** に確定（ヒステリシス — 戻っても axis-locked に復帰しない）し、
+従来の cross-slot / cross-region DnD（insert 線・Highlight）に移行する。
+
 **TabBar / エディタ内 DnD**（`DRAG_DATA_KEY`）とは MIME 型で分離。中央 `EditorArea` では
 ツールウィンドウ drop を受け付けない（シーン tab DnD のみ `SceneEditor` が処理）。
 
@@ -377,7 +384,7 @@ stripe アイコンは **pointer 統一**（`useStripeIconPointerDrag`）。`Too
 
 | ドロップ先 | 挙動 |
 |-----------|------|
-| 同一 slot stripe（`stripe-reorder`） | `panels[]` 順序のみ変更。**`activePanel` は不変** |
+| 同一 slot stripe（`stripe-reorder`） | axis-locked: midpoint スワップで `panels[]` 順序のみ変更。**`activePanel` は不変**。free モードでも同一 slot 上は gap ヒステリシス insert |
 | 既存 slot (stripe segment / `RegionContent` 内) | panel をその slot に移動、**必ず** `activePanel = panel` |
 | slot 間境界 / region 端 | その index に **新規 slot** を挿入、panel を入れ、`activePanel = panel`、`sizeRatio = 1`、open slot 間で正規化 |
 | 別 region の stripe（segment 上） | ドロップ先 segment の slot に移動。segment が無い領域は **末尾に新規 slot** |
@@ -386,11 +393,11 @@ stripe アイコンは **pointer 統一**（`useStripeIconPointerDrag`）。`Too
 cross-region 移動は許可。ドラッグ中の視覚フィードバック:
 
 - **`LayoutDnDHighlightOverlay`**: `slot` / `new-slot` 向け（領域全体の dashed rect）
-- **`StripeInsertIndicator`**: `stripe-reorder` 向け（アイコン間の 1–2px 線）。Highlight と**排他**
-- **`LayoutPanelDragGhost`**: pointer drag 中のアイコン clone
+- **`StripeInsertIndicator`**: free モードの `stripe-reorder` 向け（アイコン間の 1–2px 線）。axis-locked 時は非表示。Highlight と**排他**
+- **`LayoutPanelDragGhost`**: pointer drag 中のアイコン clone（axis-locked 時は非表示 — スライドが唯一のフィードバック）
 
 stripe ヒット領域は `STRIPE_DRAG_DETECTION_PAD_PX`（24px）で stripe 外側を拡張。
-insert index は `calculateStripeInsertIndex` の gap ヒステリシスで粘着する。
+free モードの insert index は `calculateStripeInsertIndex` の gap ヒステリシスで粘着する。
 
 ### 7.3 移動時の後処理
 

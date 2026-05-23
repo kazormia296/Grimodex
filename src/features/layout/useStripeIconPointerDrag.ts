@@ -6,14 +6,32 @@ import {
   resolveDropTargetFromPoint,
   type CenterStripeDropSegment,
 } from "./layoutDnD";
-import { STRIPE_DRAG_LONG_PRESS_MS } from "./layoutConstants";
+import {
+  STRIPE_DRAG_LONG_PRESS_MS,
+  STRIPE_ICON_GAP_PX,
+  STRIPE_SWAP_AXIS_LOCK_PX,
+} from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
+import {
+  axisPointerCoord,
+  collectStripeIconRects,
+  computeStripeAxisLockInsertIndex,
+  computeStripeAxisLockPxOffsets,
+  getSlotPanelIds,
+  offAxisDelta,
+  resolveStripeDragMode,
+  stripeAxisForRegion,
+  type StripeAxis,
+  type StripeDragMode,
+  type StripeIconRect,
+} from "./layoutStripeSwap";
 import type { LayoutRegionId, ToolWindowPanelId } from "./layoutTypes";
 
 /**
  * Pointer drag for stripe tool window icons.
  * Pattern reference: leoweyr/react-ide-workspace-layout GlobalSideBar long-press drag
  * https://github.com/leoweyr/react-ide-workspace-layout
+ * Axis-lock swap mirrors src/features/grid/gridDndUtils.ts + GridPanel.tsx.
  */
 
 interface UseStripeIconPointerDragOptions {
@@ -23,15 +41,27 @@ interface UseStripeIconPointerDragOptions {
   layoutLocked: boolean;
 }
 
+interface AxisLockSession {
+  mode: StripeDragMode;
+  startX: number;
+  startY: number;
+  region: LayoutRegionId;
+  slotId: string;
+  panels: ToolWindowPanelId[];
+  siblingRects: Record<string, StripeIconRect>;
+  axis: StripeAxis;
+}
+
 export function useStripeIconPointerDrag({
   panelId,
-  region: _region,
+  region,
   slotId,
   layoutLocked,
 }: UseStripeIconPointerDragOptions) {
   const togglePanel = useLayoutStore((s) => s.togglePanel);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
+  const setStripeSwapPreview = useLayoutStore((s) => s.setStripeSwapPreview);
   const movePanelToSlot = useLayoutStore((s) => s.movePanelToSlot);
   const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
   const reorderPanelInSlot = useLayoutStore((s) => s.reorderPanelInSlot);
@@ -71,7 +101,8 @@ export function useStripeIconPointerDrag({
           sizeRatio: segment.sizeRatio,
         }),
       );
-      const stripeEndInsertIndex = slotIds.length > 0 ? slotIds.length : 0;
+      const stripeEndInsertIndex =
+        slotIds.length > 0 ? slotIds.length : 0;
 
       return resolveCenterStripeDropFromPoint(
         clientX,
@@ -95,6 +126,7 @@ export function useStripeIconPointerDrag({
     longPressFired: boolean;
     element: HTMLElement;
     longPressTimer: ReturnType<typeof setTimeout> | null;
+    axisLock: AxisLockSession | null;
   } | null>(null);
 
   const clearSession = useCallback(() => {
@@ -105,15 +137,89 @@ export function useStripeIconPointerDrag({
     sessionRef.current = null;
   }, []);
 
+  const initAxisLockSession = useCallback(
+    (startX: number, startY: number): AxisLockSession | null => {
+      const panels = getSlotPanelIds(layout, region, slotId);
+      if (!panels || panels.length <= 1) return null;
+
+      const segmentEl = document.querySelector<HTMLElement>(
+        `[data-drop-slot-id="${slotId}"]`,
+      );
+      if (!segmentEl) return null;
+
+      const axis = stripeAxisForRegion(region);
+      const siblingRects = collectStripeIconRects(segmentEl, panels, axis);
+      if (!siblingRects[panelId]) return null;
+
+      return {
+        mode: "axis-locked",
+        startX,
+        startY,
+        region,
+        slotId,
+        panels,
+        siblingRects,
+        axis,
+      };
+    },
+    [layout, panelId, region, slotId],
+  );
+
+  const recomputeAxisLock = useCallback(
+    (session: AxisLockSession, clientX: number, clientY: number) => {
+      const dx = clientX - session.startX;
+      const dy = clientY - session.startY;
+      session.mode = resolveStripeDragMode(
+        session.mode,
+        offAxisDelta(session.axis, dx, dy),
+        STRIPE_SWAP_AXIS_LOCK_PX,
+      );
+
+      if (session.mode === "free") {
+        setStripeSwapPreview({
+          mode: "free",
+          slotId: session.slotId,
+          offsets: {},
+        });
+        setDragOverTarget(resolveTarget(clientX, clientY));
+        return;
+      }
+
+      const pointerCoord = axisPointerCoord(session.axis, clientX, clientY);
+      const offsets = computeStripeAxisLockPxOffsets(
+        panelId,
+        pointerCoord,
+        session.panels,
+        session.siblingRects,
+        STRIPE_ICON_GAP_PX,
+      );
+      setStripeSwapPreview({
+        mode: "axis-locked",
+        slotId: session.slotId,
+        offsets,
+      });
+      setDragOverTarget(null);
+    },
+    [panelId, resolveTarget, setDragOverTarget, setStripeSwapPreview],
+  );
+
   const startDragSession = useCallback(
     (offsetX: number, offsetY: number) => {
       const session = sessionRef.current;
       if (!session || session.dragging) return;
       session.dragging = true;
       session.longPressFired = true;
+      session.axisLock = initAxisLockSession(session.startX, session.startY);
+      if (session.axisLock) {
+        setStripeSwapPreview({
+          mode: "axis-locked",
+          slotId,
+          offsets: {},
+        });
+      }
       setDraggingPanel(panelId, "pointer", { x: offsetX, y: offsetY });
     },
-    [panelId, setDraggingPanel],
+    [initAxisLockSession, panelId, setDraggingPanel, setStripeSwapPreview, slotId],
   );
 
   const handlePointerDown = useCallback(
@@ -141,6 +247,7 @@ export function useStripeIconPointerDrag({
         longPressFired: false,
         element: e.currentTarget,
         longPressTimer,
+        axisLock: null,
       };
 
       e.currentTarget.setPointerCapture(pointerId);
@@ -164,6 +271,11 @@ export function useStripeIconPointerDrag({
           } else {
             return;
           }
+        }
+
+        if (session.axisLock) {
+          recomputeAxisLock(session.axisLock, ev.clientX, ev.clientY);
+          return;
         }
 
         setDragOverTarget(resolveTarget(ev.clientX, ev.clientY));
@@ -193,16 +305,40 @@ export function useStripeIconPointerDrag({
 
         if (session.dragging && moved) {
           ev.preventDefault();
-          const target = resolveTarget(ev.clientX, ev.clientY);
-          if (target && !layoutLocked) {
-            performToolWindowDrop(target, panelId, {
-              movePanelToSlot,
-              movePanelToNewSlot,
-              reorderPanelInSlot,
-            });
+          const axisLock = session.axisLock;
+          if (axisLock?.mode === "axis-locked") {
+            const pointerCoord = axisPointerCoord(
+              axisLock.axis,
+              ev.clientX,
+              ev.clientY,
+            );
+            const insertIndex = computeStripeAxisLockInsertIndex(
+              panelId,
+              pointerCoord,
+              axisLock.panels,
+              axisLock.siblingRects,
+            );
+            if (insertIndex !== null && !layoutLocked) {
+              reorderPanelInSlot(
+                panelId,
+                axisLock.region,
+                axisLock.slotId,
+                insertIndex,
+              );
+            }
+          } else {
+            const target = resolveTarget(ev.clientX, ev.clientY);
+            if (target && !layoutLocked) {
+              performToolWindowDrop(target, panelId, {
+                movePanelToSlot,
+                movePanelToNewSlot,
+                reorderPanelInSlot,
+              });
+            }
           }
           setDraggingPanel(null);
           setDragOverTarget(null);
+          setStripeSwapPreview(null);
           clearSession();
           return;
         }
@@ -210,6 +346,7 @@ export function useStripeIconPointerDrag({
         togglePanel(panelId);
         setDraggingPanel(null);
         setDragOverTarget(null);
+        setStripeSwapPreview(null);
         clearSession();
       };
 
@@ -224,8 +361,10 @@ export function useStripeIconPointerDrag({
       movePanelToSlot,
       panelId,
       reorderPanelInSlot,
+      recomputeAxisLock,
       setDragOverTarget,
       setDraggingPanel,
+      setStripeSwapPreview,
       slotId,
       startDragSession,
       togglePanel,

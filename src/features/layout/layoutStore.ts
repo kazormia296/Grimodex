@@ -510,6 +510,9 @@ export interface LayoutStoreState {
   dragOverTarget: DragOverTarget | null;
   panelDragSource: "html5" | "pointer" | null;
   panelDragOffset: { x: number; y: number } | null;
+  stripeSwapMode: "axis-locked" | "free" | null;
+  stripeSwapSlotId: string | null;
+  stripeSwapOffsets: Partial<Record<ToolWindowPanelId, number>>;
   activePresetId: string | null;
   customPresets: CustomLayoutPreset[];
   builtinPresetOverrides: Partial<
@@ -608,6 +611,13 @@ export interface LayoutStoreState {
     offset?: { x: number; y: number } | null,
   ) => void;
   setDragOverTarget: (target: DragOverTarget | null) => void;
+  setStripeSwapPreview: (
+    preview: {
+      mode: "axis-locked" | "free";
+      slotId: string;
+      offsets: Partial<Record<ToolWindowPanelId, number>>;
+    } | null,
+  ) => void;
   toggleLayoutLock: () => void;
 
   initializeLayout: () => Promise<void>;
@@ -631,6 +641,9 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   dragOverTarget: null,
   panelDragSource: null,
   panelDragOffset: null,
+  stripeSwapMode: null,
+  stripeSwapSlotId: null,
+  stripeSwapOffsets: {},
   activePresetId: null,
   customPresets: [],
   builtinPresetOverrides: {},
@@ -1278,6 +1291,9 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         dragOverTarget: null,
         panelDragSource: null,
         panelDragOffset: null,
+        stripeSwapMode: null,
+        stripeSwapSlotId: null,
+        stripeSwapOffsets: {},
       });
       return;
     }
@@ -1285,6 +1301,22 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       draggingPanel: panel,
       panelDragSource: source ?? get().panelDragSource,
       panelDragOffset: offset ?? get().panelDragOffset,
+    });
+  },
+
+  setStripeSwapPreview: (preview) => {
+    if (preview === null) {
+      set({
+        stripeSwapMode: null,
+        stripeSwapSlotId: null,
+        stripeSwapOffsets: {},
+      });
+      return;
+    }
+    set({
+      stripeSwapMode: preview.mode,
+      stripeSwapSlotId: preview.slotId,
+      stripeSwapOffsets: preview.offsets,
     });
   },
 
