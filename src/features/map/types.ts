@@ -59,7 +59,6 @@ export interface MapPersistentState {
   gridSnap: boolean;
   minimapVisible: boolean;
   visualTheme: VisualTheme;
-  colorBy: ColorByAxis;
 }
 
 // Auto-mode default: compact

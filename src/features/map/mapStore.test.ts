@@ -132,7 +132,6 @@ describe("useMapStore", () => {
         activeBoardId: "b1",
         gridSnap: true,
         minimapVisible: true,
-        colorBy: "status" as const,
         visualTheme: "corkboard" as const,
       },
     };
@@ -142,8 +141,32 @@ describe("useMapStore", () => {
     const s = useMapStore.getState();
     expect(s.gridSnap).toBe(true);
     expect(s.minimapVisible).toBe(true);
-    expect(s.colorBy).toBe("status");
     expect(s.visualTheme).toBe("corkboard");
     expect(s.activeBoardId).toBe("b1");
+    expect(s.colorBy).toBe("none");
+  });
+
+  it("hydrateFromBoard で mode/viewport/show/colorBy を復元する", () => {
+    useMapStore.getState().hydrateFromBoard({
+      id: "b1",
+      projectId: "p1",
+      title: "Main",
+      sortOrder: 0,
+      mode: "theme",
+      viewportX: 120,
+      viewportY: 80,
+      viewportZoom: 1.25,
+      showConfig: JSON.stringify({ scenes: false, codex: true }),
+      colorBy: "status",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    const s = useMapStore.getState();
+    expect(s.mode).toBe("theme");
+    expect(s.viewport).toEqual({ x: 120, y: 80, zoom: 1.25 });
+    expect(s.show.scenes).toBe(false);
+    expect(s.show.codex).toBe(true);
+    expect(s.colorBy).toBe("status");
   });
 });

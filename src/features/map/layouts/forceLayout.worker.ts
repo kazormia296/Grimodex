@@ -5,6 +5,7 @@ import {
   forceLink,
   forceCollide,
 } from "d3-force";
+import { seededRandom } from "./seededRandom";
 
 export interface ForceNode {
   id: string;
@@ -57,8 +58,12 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
     const simNodes = nodes.map((n) => ({
       id: n.id,
       tags: n.tags ?? [],
-      x: n.x ?? (Math.random() - 0.5) * options.width,
-      y: n.y ?? (Math.random() - 0.5) * options.height,
+      x:
+        n.x ??
+        (seededRandom(options.randomSeed, n.id) - 0.5) * options.width,
+      y:
+        n.y ??
+        (seededRandom(options.randomSeed + 1, n.id) - 0.5) * options.height,
     }));
 
     // Build weighted links from explicit links + tag similarity

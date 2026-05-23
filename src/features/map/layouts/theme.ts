@@ -2,6 +2,8 @@ import type { LayoutInput, LayoutOutput } from "./types";
 import type { ForceLayoutEngine } from "./forceEngine";
 import type { ForceNode, ForceLink } from "./forceLayout.worker";
 import { parseTags } from "@/features/codex/components/EntryCard";
+import { posToNodeKey } from "./posToNodeKey";
+import { hashStringToSeed } from "./seededRandom";
 
 export async function layoutTheme(
   input: LayoutInput,
@@ -10,24 +12,36 @@ export async function layoutTheme(
 ): Promise<LayoutOutput> {
   const { scenes, codexEntries } = input;
 
+  const initialPos = new Map<string, { x: number; y: number }>();
+  for (const p of input.positions) {
+    const key = posToNodeKey(p);
+    if (key && (key.startsWith("scene:") || key.startsWith("codex:"))) {
+      initialPos.set(key, { x: p.x, y: p.y });
+    }
+  }
+
   // Build force nodes: scenes + codex entries visible in this view
   const nodes: ForceNode[] = [
-    ...scenes.map((s) => ({
-      id: `scene:${s.id}`,
-      tags: s.tags ?? [],
-    })),
-    ...codexEntries.map((e) => ({
-      id: `codex:${e.id}`,
-      tags: parseTags(e.tagsCache).map((t) => t.name),
-    })),
+    ...scenes.map((s) => {
+      const key = `scene:${s.id}`;
+      const seed = initialPos.get(key);
+      return {
+        id: key,
+        tags: s.tags ?? [],
+        ...(seed ? { x: seed.x, y: seed.y } : {}),
+      };
+    }),
+    ...codexEntries.map((e) => {
+      const key = `codex:${e.id}`;
+      const seed = initialPos.get(key);
+      return {
+        id: key,
+        tags: parseTags(e.tagsCache).map((t) => t.name),
+        ...(seed ? { x: seed.x, y: seed.y } : {}),
+      };
+    }),
   ];
 
-  // Build links from POV/location references.
-  // d3-force-link throws "node not found: <id>" if a link references a node
-  // outside the simulation set, so we must drop any link whose target codex
-  // is not on this board (positionedCodexIds 経由で visibleCodex に絞られている).
-  // Without this guard, the worker rejects, buildNodes() throws unhandled,
-  // and forceLayoutRunning is stuck at true (progress bar永続化＋ドラッグ不可).
   const presentNodeIds = new Set(nodes.map((n) => n.id));
   const links: ForceLink[] = [];
   for (const scene of scenes) {
@@ -46,7 +60,30 @@ export async function layoutTheme(
     }
   }
 
-  const output = await engine.run({ nodes, links }, onProgress);
+  if (input.userEdges?.length) {
+    const posById = new Map(input.positions.map((p) => [p.id, p]));
+    for (const edge of input.userEdges) {
+      const sourceKey = posToNodeKey(posById.get(edge.fromPositionId));
+      const targetKey = posToNodeKey(posById.get(edge.toPositionId));
+      if (
+        sourceKey &&
+        targetKey &&
+        presentNodeIds.has(sourceKey) &&
+        presentNodeIds.has(targetKey)
+      ) {
+        links.push({ source: sourceKey, target: targetKey, strength: 0.4 });
+      }
+    }
+  }
+
+  const randomSeed = input.boardId
+    ? hashStringToSeed(input.boardId)
+    : 42;
+
+  const output = await engine.run(
+    { nodes, links, options: { randomSeed } },
+    onProgress,
+  );
 
   const result: LayoutOutput = new Map();
   for (const pos of output.positions) {

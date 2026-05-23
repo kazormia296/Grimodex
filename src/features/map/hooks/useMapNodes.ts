@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import type { Node } from "@xyflow/react";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -14,8 +14,10 @@ import {
   extractPreviewText,
 } from "../mapApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { layoutFor, layoutForAsync } from "../layouts";
+import { layoutFor, layoutForAsync, applyPinnedOverrides } from "../layouts";
 import { WorkerForceLayoutEngine } from "../layouts/forceEngine";
+import { layoutFingerprint } from "../layouts/layoutFingerprint";
+import type { LayoutUserEdge } from "../layouts/types";
 import type { MapNodePositionRecord, ShowFlags } from "../types";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntry } from "@/features/codex/api";
@@ -43,6 +45,7 @@ export function stickyRotation(id: string): number {
 interface UseMapNodesInput {
   boardId: string | null;
   positions: MapNodePositionRecord[];
+  userEdges: LayoutUserEdge[];
   treeNodes: TreeNodeData[];
   codexEntries: CodexEntry[];
   snippets: Snippet[];
@@ -73,6 +76,7 @@ interface UseMapNodesInput {
 export function useMapNodes({
   boardId,
   positions,
+  userEdges,
   treeNodes,
   codexEntries,
   snippets,
@@ -106,20 +110,55 @@ export function useMapNodes({
   const modeTransitionActiveRef = useRef(modeTransitionActive);
   modeTransitionActiveRef.current = modeTransitionActive;
 
+  const positionsRef = useRef(positions);
+  positionsRef.current = positions;
+
+  const layoutCacheRef = useRef<{
+    boardId: string | null;
+    fingerprint: string;
+    computedPositions: Map<string, { x: number; y: number }>;
+  }>({ boardId: null, fingerprint: "", computedPositions: new Map() });
+
+  const themeLayoutFingerprint = useMemo(() => {
+    if (!boardId) return "";
+    const positionedTreeNodeIds = new Set(
+      positions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
+    );
+    const positionedCodexIds = new Set(
+      positions.filter((p) => p.codexEntryId).map((p) => p.codexEntryId!),
+    );
+    const scenes = treeNodes.filter(
+      (n) => n.nodeType === "scene" && positionedTreeNodeIds.has(n.id),
+    );
+    const visibleCodex = codexEntries.filter((e) =>
+      positionedCodexIds.has(e.id),
+    );
+    return layoutFingerprint({
+      boardId,
+      scenes,
+      codexEntries: visibleCodex,
+      positions,
+      userEdges,
+    });
+  }, [boardId, treeNodes, codexEntries, positions, userEdges]);
+
   useEffect(() => {
     if (!boardId) return;
     let cancelled = false;
 
     async function buildNodes() {
+      const currentPositions = positionsRef.current;
       // ── Manual curation: only entities that have a position row ───────────
       const positionedTreeNodeIds = new Set(
-        positions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
+        currentPositions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
       );
       const positionedCodexIds = new Set(
-        positions.filter((p) => p.codexEntryId).map((p) => p.codexEntryId!),
+        currentPositions
+          .filter((p) => p.codexEntryId)
+          .map((p) => p.codexEntryId!),
       );
       const positionedSnippetIds = new Set(
-        positions.filter((p) => p.snippetId).map((p) => p.snippetId!),
+        currentPositions.filter((p) => p.snippetId).map((p) => p.snippetId!),
       );
 
       const scenes = treeNodes.filter(
@@ -137,28 +176,55 @@ export function useMapNodes({
 
       let computedPositions;
       if (mode === "theme") {
-        setForceLayoutRunning(true);
-        setForceAlpha(1);
-        const engine = new WorkerForceLayoutEngine();
-        computedPositions = await layoutForAsync(
-          "theme",
-          {
-            scenes,
-            codexEntries: visibleCodex,
-            positions,
-          },
-          engine,
-          (alpha) => {
-            if (!cancelled) setForceAlpha(alpha);
-          },
-        );
-        if (cancelled) return;
-        setForceLayoutRunning(false);
+        const layoutInput = {
+          scenes,
+          codexEntries: visibleCodex,
+          positions: currentPositions,
+          userEdges,
+          boardId: boardId ?? undefined,
+        };
+        const fingerprint = themeLayoutFingerprint;
+        const cache = layoutCacheRef.current;
+        const cacheHit =
+          cache.boardId === boardId && cache.fingerprint === fingerprint;
+
+        if (cacheHit) {
+          computedPositions = new Map(cache.computedPositions);
+        } else {
+          setForceLayoutRunning(true);
+          setForceAlpha(1);
+          const engine = new WorkerForceLayoutEngine();
+          computedPositions = await layoutForAsync(
+            "theme",
+            layoutInput,
+            engine,
+            (alpha) => {
+              if (!cancelled) setForceAlpha(alpha);
+            },
+          );
+          if (cancelled) return;
+          setForceLayoutRunning(false);
+          layoutCacheRef.current = {
+            boardId,
+            fingerprint,
+            computedPositions: new Map(computedPositions),
+          };
+        }
+
+        computedPositions = applyPinnedOverrides(computedPositions, {
+          ...layoutInput,
+          positions: currentPositions,
+        });
       } else {
+        layoutCacheRef.current = {
+          boardId: null,
+          fingerprint: "",
+          computedPositions: new Map(),
+        };
         computedPositions = layoutFor(mode as "free", {
           scenes,
           codexEntries: visibleCodex,
-          positions,
+          positions: currentPositions,
         });
       }
       if (cancelled) return;
@@ -225,7 +291,7 @@ export function useMapNodes({
       const corkboardFeel = visualTheme === "corkboard";
 
       const zIndexMap = new Map<string, number>();
-      for (const p of positions) {
+      for (const p of currentPositions) {
         if (p.treeNodeId && p.nodeRefType === "scene")
           zIndexMap.set(`scene:${p.treeNodeId}`, p.zIndex ?? 0);
         else if (p.treeNodeId && p.nodeRefType === "note")
@@ -301,7 +367,7 @@ export function useMapNodes({
 
       // Snippet positions from positions array
       const snippetPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of positions) {
+      for (const p of currentPositions) {
         if (p.snippetId) {
           snippetPosMap.set(`snippet:${p.snippetId}`, { x: p.x, y: p.y });
         }
@@ -328,7 +394,7 @@ export function useMapNodes({
         : [];
 
       const notePosMap = new Map<string, { x: number; y: number }>();
-      for (const p of positions) {
+      for (const p of currentPositions) {
         if (p.treeNodeId && p.nodeRefType === "note") {
           notePosMap.set(`note:${p.treeNodeId}`, { x: p.x, y: p.y });
         }
@@ -361,7 +427,7 @@ export function useMapNodes({
 
       // Sticky nodes: positions from positions array
       const stickyPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of positions) {
+      for (const p of currentPositions) {
         if (p.stickyId) {
           stickyPosMap.set(`sticky:${p.stickyId}`, { x: p.x, y: p.y });
         }
@@ -425,7 +491,7 @@ export function useMapNodes({
 
       // AI Branch nodes
       const aiBranchPosMap = new Map<string, { x: number; y: number }>();
-      for (const p of positions) {
+      for (const p of currentPositions) {
         if (p.aiBranchId) {
           aiBranchPosMap.set(`ai_branch:${p.aiBranchId}`, {
             x: p.x,
@@ -558,7 +624,6 @@ export function useMapNodes({
     };
   }, [
     boardId,
-    positions,
     treeNodes,
     codexEntries,
     snippets,
@@ -566,6 +631,8 @@ export function useMapNodes({
     aiBranches,
     show,
     mode,
+    themeLayoutFingerprint,
+    userEdges,
     colorBy,
     visualTheme,
     frames,

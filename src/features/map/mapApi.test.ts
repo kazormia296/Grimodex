@@ -309,6 +309,85 @@ describe("mapApi — createSticky", () => {
   });
 });
 
+describe("mapApi — updateMapBoardSettings", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("ボード設定を更新して返す", async () => {
+    const updatedBoard = {
+      id: "b1",
+      projectId: "p1",
+      title: "Main",
+      sortOrder: 0,
+      mode: "theme",
+      viewportX: 10,
+      viewportY: 20,
+      viewportZoom: 1.5,
+      showConfig: '{"scenes":true}',
+      colorBy: "status",
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-02",
+    };
+    const chain = makeMock([updatedBoard]);
+    (db.update as ReturnType<typeof vi.fn>).mockReturnValue(chain);
+
+    const { updateMapBoardSettings } = await import("./mapApi");
+    const result = await updateMapBoardSettings("b1", {
+      mode: "theme",
+      viewportX: 10,
+      viewportY: 20,
+      viewportZoom: 1.5,
+      showConfig: '{"scenes":true}',
+      colorBy: "status",
+    });
+    expect(result?.mode).toBe("theme");
+    expect(result?.viewportZoom).toBe(1.5);
+  });
+
+  it("getMapBoard が単体ボードを返す", async () => {
+    const board = {
+      id: "b1",
+      projectId: "p1",
+      title: "Main",
+      sortOrder: 0,
+      mode: "free",
+      viewportX: 0,
+      viewportY: 0,
+      viewportZoom: 1,
+      showConfig: "{}",
+      colorBy: "none",
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+    const chain = makeMock([board]);
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(chain);
+
+    const { getMapBoard } = await import("./mapApi");
+    const result = await getMapBoard("b1");
+    expect(result?.id).toBe("b1");
+  });
+});
+
+describe("mapApi — show config", () => {
+  it("parseShowConfig / serializeShowConfig が往復できる", async () => {
+    const { parseShowConfig, serializeShowConfig } = await import("./mapApi");
+    const show = {
+      scenes: false,
+      codex: true,
+      snippets: true,
+      notes: true,
+      stickies: false,
+      aiBranch: true,
+      derivedEdges: false,
+      userEdges: true,
+      frames: false,
+    };
+    const parsed = parseShowConfig(serializeShowConfig(show));
+    expect(parsed).toEqual(show);
+  });
+});
+
 describe("mapApi — duplicateBoard", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -172,4 +172,83 @@ describe("layoutTheme", () => {
     await layoutTheme(input, engine, (a) => alphas.push(a));
     expect(alphas.length).toBeGreaterThan(0);
   });
+
+  it("同一 input で2回実行すると同一座標になる", async () => {
+    const engine = new SyncForceLayoutEngine();
+    const input: LayoutInput = {
+      boardId: "board-stable",
+      scenes: [makeScene("s1"), makeScene("s2", "c1"), makeScene("s3")],
+      codexEntries: [makeCodex("c1")],
+      positions: [
+        makePosition("s1", "scene", { x: 100, y: 100 }),
+        makePosition("s2", "scene", { x: 200, y: 150 }),
+        makePosition("c1", "codex", { x: 180, y: 120 }),
+      ],
+    };
+    const first = await layoutTheme(input, engine);
+    const second = await layoutTheme(input, engine);
+    for (const [key, pos] of first) {
+      expect(second.get(key)).toEqual(pos);
+    }
+  });
+
+  it("User edge で接続した Scene/Codex が近接する", async () => {
+    const engine = new SyncForceLayoutEngine();
+    const input: LayoutInput = {
+      boardId: "board-edges",
+      scenes: [makeScene("s1"), makeScene("s2")],
+      codexEntries: [makeCodex("c1"), makeCodex("c2")],
+      positions: [
+        makePosition("s1", "scene"),
+        makePosition("s2", "scene"),
+        makePosition("c1", "codex"),
+        makePosition("c2", "codex"),
+      ],
+      userEdges: [{ fromPositionId: "pos-s1", toPositionId: "pos-c1" }],
+    };
+    const result = await layoutTheme(input, engine);
+    const s1 = result.get("scene:s1")!;
+    const c1 = result.get("codex:c1")!;
+    const c2 = result.get("codex:c2")!;
+    const linkedDist = Math.hypot(s1.x - c1.x, s1.y - c1.y);
+    const unlinkedDist = Math.hypot(s1.x - c2.x, s1.y - c2.y);
+    expect(linkedDist).toBeLessThan(unlinkedDist);
+  });
+
+  it("positions の x,y が engine nodes に渡される", async () => {
+    const captured: { id: string; x?: number; y?: number }[] = [];
+    const engine = {
+      run: async (input: {
+        nodes: { id: string; x?: number; y?: number }[];
+      }) => {
+        captured.push(...input.nodes);
+        return {
+          positions: input.nodes.map((n) => ({
+            id: n.id,
+            x: n.x ?? 0,
+            y: n.y ?? 0,
+          })),
+        };
+      },
+    };
+    await layoutTheme(
+      {
+        scenes: [makeScene("s1")],
+        codexEntries: [makeCodex("c1")],
+        positions: [
+          makePosition("s1", "scene", { x: 100, y: 200 }),
+          makePosition("c1", "codex", { x: 300, y: 400 }),
+        ],
+      },
+      engine,
+    );
+    expect(captured.find((n) => n.id === "scene:s1")).toMatchObject({
+      x: 100,
+      y: 200,
+    });
+    expect(captured.find((n) => n.id === "codex:c1")).toMatchObject({
+      x: 300,
+      y: 400,
+    });
+  });
 });

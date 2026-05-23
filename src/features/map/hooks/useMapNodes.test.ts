@@ -1,10 +1,11 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { Node } from "@xyflow/react";
 
 import { corkRotation, useMapNodes } from "./useMapNodes";
 import { layoutForAsync } from "../layouts";
+import { layoutFingerprint } from "../layouts/layoutFingerprint";
 import type { MapNodePositionRecord } from "../types";
 
 // ── Pure exports ────────────────────────────────────────────────────────────
@@ -45,6 +46,12 @@ vi.mock("../layouts", () => ({
     },
   ),
   layoutForAsync: vi.fn().mockResolvedValue(new Map()),
+  applyPinnedOverrides: vi.fn((computed: Map<string, { x: number; y: number }>) => computed),
+}));
+
+vi.mock("../layouts/layoutFingerprint", () => ({
+  layoutFingerprint: vi.fn().mockReturnValue("fp-1"),
+  computeLayoutFingerprint: vi.fn().mockReturnValue("fp-1"),
 }));
 
 vi.mock("../layouts/forceEngine", () => ({
@@ -64,7 +71,11 @@ vi.mock("@/features/chat/chatStore", () => ({
   },
 }));
 
-function makePosition(id: string, treeNodeId: string): MapNodePositionRecord {
+function makePosition(
+  id: string,
+  treeNodeId: string,
+  overrides: Partial<MapNodePositionRecord> = {},
+): MapNodePositionRecord {
   return {
     id,
     boardId: "b1",
@@ -80,6 +91,7 @@ function makePosition(id: string, treeNodeId: string): MapNodePositionRecord {
     zIndex: 0,
     createdAt: "",
     updatedAt: "",
+    ...overrides,
   };
 }
 
@@ -135,6 +147,7 @@ describe("useMapNodes — 手動キュレーション表示判定", () => {
           snippets: false,
         },
         mode: "free",
+        userEdges: [],
         colorBy: "none",
         visualTheme: "default",
         modeTransitionActive: false,
@@ -196,6 +209,7 @@ describe("useMapNodes — theme モード再配置ループ防止", () => {
         snippets: false,
       },
       mode: "theme",
+      userEdges: [],
       colorBy: "none" as const,
       visualTheme: "default",
       modeTransitionActive: false,
@@ -265,6 +279,7 @@ describe("useMapNodes — theme モード再配置ループ防止", () => {
         snippets: false,
       },
       mode: "theme",
+      userEdges: [],
       colorBy: "none" as const,
       visualTheme: "default",
       modeTransitionActive: false,
@@ -293,5 +308,79 @@ describe("useMapNodes — theme モード再配置ループ防止", () => {
     expect(setForceLayoutRunning).toHaveBeenCalledWith(false);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
+  });
+
+  it("fingerprint 不変時は layoutForAsync を再呼び出ししない", async () => {
+    vi.mocked(layoutFingerprint).mockReturnValue("stable-fp");
+
+    const baseProps: Parameters<typeof useMapNodes>[0] = {
+      boardId: "b1",
+      positions: [makePosition("pos1", "s1")],
+      treeNodes: [
+        {
+          id: "s1",
+          nodeType: "scene",
+          title: "Scene",
+          synopsis: null,
+          status: "outline",
+          sortOrder: "a0",
+        },
+      ] as Parameters<typeof useMapNodes>[0]["treeNodes"],
+      codexEntries: [],
+      snippets: [],
+      stickies: [],
+      aiBranches: [],
+      frames: [],
+      show: {
+        scenes: true,
+        codex: true,
+        notes: false,
+        userEdges: true,
+        derivedEdges: false,
+        stickies: false,
+        aiBranch: false,
+        frames: false,
+        snippets: false,
+      },
+      mode: "theme",
+      userEdges: [],
+      colorBy: "none" as const,
+      visualTheme: "default",
+      modeTransitionActive: false,
+      setFrames: vi.fn(),
+      setStickies: vi.fn(),
+      setAiBranches: vi.fn(),
+      setPositions: vi.fn(),
+      setNodes: vi.fn(),
+      setForceLayoutRunning: vi.fn(),
+      setForceAlpha: vi.fn(),
+      updateNodeTitle: vi.fn(),
+      updateSynopsis: vi.fn(),
+      setActiveScene: vi.fn(),
+      groupDraggingRef: NOOP_REF,
+      persistingRef: NOOP_REF,
+    };
+
+    const { rerender } = renderHook((props) => useMapNodes(props), {
+      initialProps: baseProps,
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    const callsAfterInitial = vi.mocked(layoutForAsync).mock.calls.length;
+    expect(callsAfterInitial).toBe(1);
+
+    rerender({
+      ...baseProps,
+      positions: [makePosition("pos1", "s1", { x: 999, y: 888 })],
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(vi.mocked(layoutForAsync).mock.calls.length).toBe(callsAfterInitial);
   });
 });
