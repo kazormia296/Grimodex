@@ -528,7 +528,10 @@ function EditorScreen() {
     >
       <header
         className={cn(
-          "glass-shell flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-1",
+          // py-2: ボタン上下に最低 8px の Tauri drag region 帯を確保する。
+          // py-1 (4px) では狭すぎて掴みづらく、CommandCenterBar の opt-out と
+          // 相まってウィンドウ移動できない事象が出ていた。
+          "glass-shell flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2",
           isMac && "pl-20",
           getScreenshotPanelId() && "no-screenshot",
         )}
@@ -550,7 +553,13 @@ function EditorScreen() {
           <FileOutput className="h-4 w-4" />
           <span className="text-sm">{t("app.exportLabel")}</span>
         </button>
-        <div className="flex min-w-0 flex-1 justify-center px-4">
+        {/* Tauri v2 の data-tauri-drag-region は親→子で必ずしも継承されない
+            ため、wrapper 自身にも明示的に付与する。CommandCenterBar 側で
+            "false" による opt-out をしているので bar の中はそのまま除外。 */}
+        <div
+          data-tauri-drag-region
+          className="flex min-w-0 flex-1 justify-center px-8"
+        >
           <CommandCenterBar />
         </div>
         <LayoutPresetDropdown />
