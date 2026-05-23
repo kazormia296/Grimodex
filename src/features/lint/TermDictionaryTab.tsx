@@ -13,6 +13,8 @@ import {
   useTermDictionaryStore,
   type TermDictionaryRow,
 } from "./termDictionaryStore";
+import { useTranslation } from "react-i18next";
+import { TableRowSkeletonRows } from "@/components/ui/skeleton-patterns";
 
 type EditingState = {
   id: string | null;
@@ -33,6 +35,7 @@ const EMPTY_EDIT: EditingState = {
 };
 
 export function TermDictionaryTab() {
+  const { t } = useTranslation();
   const rows = useTermDictionaryStore((s) => s.rows);
   const isLoaded = useTermDictionaryStore((s) => s.isLoaded);
   const searchQuery = useTermDictionaryStore((s) => s.searchQuery);
@@ -152,13 +155,30 @@ export function TermDictionaryTab() {
         </div>
       </div>
 
-      {filteredRows.length === 0 ? (
+      {!isLoaded ? (
+        <div
+          className="overflow-hidden rounded border border-border"
+          aria-label={t("common.loadingContent")}
+        >
+          <table className="w-full text-xs">
+            <thead className="bg-muted/50 text-left">
+              <tr>
+                <th className="w-8 px-2 py-1.5" />
+                <th className="px-2 py-1.5">推奨表記</th>
+                <th className="px-2 py-1.5">許容しない表記</th>
+                <th className="w-20 px-2 py-1.5">Severity</th>
+                <th className="w-14 px-2 py-1.5 text-center">ON</th>
+                <th className="w-24 px-2 py-1.5" />
+              </tr>
+            </thead>
+            <tbody>
+              <TableRowSkeletonRows testId="term-dictionary-loading" />
+            </tbody>
+          </table>
+        </div>
+      ) : filteredRows.length === 0 ? (
         <div className="flex h-32 items-center justify-center text-xs text-muted-foreground">
-          {isLoaded
-            ? rows.length === 0
-              ? "用語辞書はまだ空です。"
-              : "該当エントリなし。"
-            : "読み込み中..."}
+          {rows.length === 0 ? "用語辞書はまだ空です。" : "該当エントリなし。"}
         </div>
       ) : (
         <div className="overflow-hidden rounded border border-border">

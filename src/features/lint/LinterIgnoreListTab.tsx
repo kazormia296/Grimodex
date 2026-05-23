@@ -5,6 +5,7 @@ import { useLintIgnoreStore, type LintIgnoreEntry } from "./lintIgnoreStore";
 import { buildBlocksFromJson } from "./projectScan";
 import { loadSceneContent } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
 
 interface EntryRow extends LintIgnoreEntry {
   sceneTitle: string | null;
@@ -231,9 +232,10 @@ export function LinterIgnoreListTab() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center p-8 text-sm text-muted-foreground">
-        読み込み中...
-      </div>
+      <ListRowSkeletonList
+        testId="linter-ignore-list-loading"
+        className="p-2"
+      />
     );
   }
 

@@ -22,6 +22,7 @@ import {
 } from "@/lib/clipboardAttribution";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
+import { GridCardSkeletonList } from "@/components/ui/skeleton-patterns";
 
 const SOURCE_FILTER_OPTIONS: { value: SnippetSourceFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -420,14 +421,11 @@ export function SnippetPanel() {
 
             <div className="flex-1 overflow-y-auto">
               {isLoading && (
-                <div
-                  data-testid="snippet-loading"
-                  className="flex items-center justify-center py-8"
-                >
-                  <span className="animate-pulse text-xs text-muted-foreground">
-                    {t("common.loading")}
-                  </span>
-                </div>
+                <GridCardSkeletonList
+                  testId="snippet-loading"
+                  columns={gridCols}
+                  count={gridCols * 2}
+                />
               )}
 
               {!isLoading && filteredEntries.length === 0 && (

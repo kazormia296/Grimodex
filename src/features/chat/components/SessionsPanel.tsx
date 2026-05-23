@@ -7,6 +7,7 @@ import { useChatStore } from "@/features/chat/chatStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import * as chatApi from "@/features/chat/chatApi";
 import type { ChatSession } from "@/features/chat/chatTypes";
+import { SessionRowSkeletonList } from "@/components/ui/skeleton-patterns";
 
 interface SessionsPanelProps {
   sceneTitle: string;
@@ -153,6 +154,7 @@ export function SessionsPanel({
   onClose,
 }: SessionsPanelProps) {
   const sessions = useChatStore((s) => s.sessions);
+  const isLoadingSessions = useChatStore((s) => s.isLoadingSessions);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const loadSessions = useChatStore((s) => s.loadSessions);
   const selectSession = useChatStore((s) => s.selectSession);
@@ -275,7 +277,9 @@ export function SessionsPanel({
 
         {/* Session list */}
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {sessions.length === 0 ? (
+          {isLoadingSessions ? (
+            <SessionRowSkeletonList testId="sessions-panel-loading" />
+          ) : sessions.length === 0 ? (
             <p className="text-center text-xs text-muted-foreground mt-4">
               {t("chat.noSessions")}
             </p>

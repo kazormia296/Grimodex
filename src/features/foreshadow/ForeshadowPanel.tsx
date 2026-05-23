@@ -17,6 +17,7 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "./foreshadowStore";
 import { useForeshadowNavStore } from "./foreshadowNavStore";
+import { ForeshadowItemSkeletonList } from "@/components/ui/skeleton-patterns";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
 import { EditForeshadowDialog } from "./EditForeshadowDialog";
 import { ForeshadowChapterTab } from "./ForeshadowChapterTab";
@@ -528,7 +529,7 @@ export function ForeshadowPanel() {
       {activeTab === "list" && (
         <div className="flex-1 overflow-y-auto">
           {isLoading && (
-            <p className="px-3 py-4 text-xs text-muted-foreground">…</p>
+            <ForeshadowItemSkeletonList testId="foreshadow-panel-loading" />
           )}
 
           {!isLoading && items.length === 0 && (

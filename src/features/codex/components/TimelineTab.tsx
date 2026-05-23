@@ -21,6 +21,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { TimelineItemSkeletonList } from "@/components/ui/skeleton-patterns";
 
 interface TimelineTabProps {
   entry: CodexEntry;
@@ -153,6 +154,15 @@ export function TimelineTab({ entry }: TimelineTabProps) {
   };
 
   const confirmPhase = phases.find((p) => p.id === confirmDeleteId);
+
+  if (rawPhases === undefined) {
+    return (
+      <TimelineItemSkeletonList
+        testId="timeline-tab-loading"
+        className="px-2 py-4"
+      />
+    );
+  }
 
   // フェーズ0件の空状態
   if (phases.length === 0) {

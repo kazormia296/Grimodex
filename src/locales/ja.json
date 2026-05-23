@@ -1,6 +1,7 @@
 {
   "common": {
     "loading": "読み込み中…",
+    "loadingContent": "読み込み中…",
     "cancel": "キャンセル",
     "save": "保存",
     "delete": "削除",

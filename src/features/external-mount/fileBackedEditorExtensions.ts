@@ -18,7 +18,9 @@ import i18next from "@/lib/i18n";
 /** Strip unsupported marks/nodes from pasted rich content. */
 export function sanitizePastedMarkdown(markdown: string): string {
   return markdown
-    .replace(/｜[^《]+《[^》]+》/g, (m) => m.replace(/｜([^《]+)《[^》]+》/, "$1"))
+    .replace(/｜[^《]+《[^》]+》/g, (m) =>
+      m.replace(/｜([^《]+)《[^》]+》/, "$1"),
+    )
     .replace(/《《([^》]+)》》/g, "$1");
 }
 

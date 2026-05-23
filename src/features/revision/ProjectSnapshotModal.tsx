@@ -10,6 +10,7 @@ import {
   deleteProjectSnapshot,
   type ProjectSnapshotMeta,
 } from "./projectSnapshotApi";
+import { RevisionRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import {
   RESTORE_SCOPES,
   fullRestoreScopeSet,
@@ -401,9 +402,7 @@ export function ProjectSnapshotModal({
         {/* Snapshot list */}
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {isLoading ? (
-            <p className="text-sm text-muted-foreground text-center py-8">
-              {t("snapshot.loading")}
-            </p>
+            <RevisionRowSkeletonList testId="snapshot-list-loading" />
           ) : snapshots.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">
               {t("snapshot.empty")}

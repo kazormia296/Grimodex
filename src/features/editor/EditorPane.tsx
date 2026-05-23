@@ -603,274 +603,282 @@ export function EditorPane({
   );
   const editor = useEditor(
     {
-    extensions: editorExtensions,
-    content: "",
-    editorProps: {
-      attributes: {
-        role: "textbox",
-        "aria-multiline": "true",
-      },
-      handlePaste(view, event, slice) {
-        const html = event.clipboardData?.getData("text/html");
-        const plainText = event.clipboardData?.getData("text/plain") ?? "";
+      extensions: editorExtensions,
+      content: "",
+      editorProps: {
+        attributes: {
+          role: "textbox",
+          "aria-multiline": "true",
+        },
+        handlePaste(view, event, slice) {
+          const html = event.clipboardData?.getData("text/html");
+          const plainText = event.clipboardData?.getData("text/plain") ?? "";
 
-        if (html) {
-          // Case 1: Grimodex 固有コピー（Codex/Snippet/Chat パネル）
-          if (html.includes("data-grimodex-source")) {
-            const segments = parseClipboardHtml(html);
-            if (segments) {
-              insertFromPaste(segments);
+          if (html) {
+            // Case 1: Grimodex 固有コピー（Codex/Snippet/Chat パネル）
+            if (html.includes("data-grimodex-source")) {
+              const segments = parseClipboardHtml(html);
+              if (segments) {
+                insertFromPaste(segments);
+                return true;
+              }
+            }
+
+            // Case 2: エディタ内コピー — ProseMirror パース済み Slice を使用
+            // data-pm-slice は ProseMirror がコピー時に付与するマーカー。
+            // 第3引数 slice は全マーク・ノード（ruby, emphasisDots, underline,
+            // authorship 等）を保持している。programmaticInsert meta を設定して
+            // AiEditedPlugin による authorship マーク除去を防ぐ。
+            if (html.includes("data-pm-slice") && slice.size > 0) {
+              view.dispatch(
+                view.state.tr
+                  .setMeta("programmaticInsert", true)
+                  .setMeta("paste", true)
+                  .setMeta("uiEvent", "paste")
+                  .replaceSelection(slice)
+                  .scrollIntoView(),
+              );
               return true;
             }
           }
 
-          // Case 2: エディタ内コピー — ProseMirror パース済み Slice を使用
-          // data-pm-slice は ProseMirror がコピー時に付与するマーカー。
-          // 第3引数 slice は全マーク・ノード（ruby, emphasisDots, underline,
-          // authorship 等）を保持している。programmaticInsert meta を設定して
-          // AiEditedPlugin による authorship マーク除去を防ぐ。
-          if (html.includes("data-pm-slice") && slice.size > 0) {
-            view.dispatch(
-              view.state.tr
-                .setMeta("programmaticInsert", true)
-                .setMeta("paste", true)
-                .setMeta("uiEvent", "paste")
-                .replaceSelection(slice)
-                .scrollIntoView(),
-            );
+          // Case 3: 外部テキスト貼り付け
+          if (plainText) {
+            insertFromPaste([{ text: plainText, source: "unknown" }]);
             return true;
           }
-        }
-
-        // Case 3: 外部テキスト貼り付け
-        if (plainText) {
-          insertFromPaste([{ text: plainText, source: "unknown" }]);
-          return true;
-        }
-        return false;
-      },
-      handleDrop(view, event) {
-        const snippetData = event.dataTransfer?.getData(
-          "application/x-grimodex-snippet",
-        );
-        if (!snippetData) return false;
-        event.preventDefault();
-        try {
-          const { id, content, source, originalContent } = JSON.parse(
-            snippetData,
-          ) as {
-            id: string;
-            content: string;
-            source: "ai" | "human";
-            originalContent: string | null;
-          };
-          const coords = view.posAtCoords({
-            left: event.clientX,
-            top: event.clientY,
-          });
-          insertFromSnippet(id, content, source, originalContent, coords?.pos);
-          return true;
-        } catch {
           return false;
-        }
+        },
+        handleDrop(view, event) {
+          const snippetData = event.dataTransfer?.getData(
+            "application/x-grimodex-snippet",
+          );
+          if (!snippetData) return false;
+          event.preventDefault();
+          try {
+            const { id, content, source, originalContent } = JSON.parse(
+              snippetData,
+            ) as {
+              id: string;
+              content: string;
+              source: "ai" | "human";
+              originalContent: string | null;
+            };
+            const coords = view.posAtCoords({
+              left: event.clientX,
+              top: event.clientY,
+            });
+            insertFromSnippet(
+              id,
+              content,
+              source,
+              originalContent,
+              coords?.pos,
+            );
+            return true;
+          } catch {
+            return false;
+          }
+        },
       },
-    },
-    onUpdate({ editor: e }) {
-      if (isApplyingExternalUpdate.current) return;
-      // インライン AI の生成中・diff 表示中はオートセーブを止める。
-      // Accept/Reject が呼ばれて idle に戻った時点で reset + dispatch によって
-      // 再度 onUpdate が走り、その時に通常の schedule が実行される。
-      if (useInlineAiStore.getState().status !== "idle") return;
-      markStart("editor.onUpdate");
-      markStart("editor.onUpdate.schedule");
-      schedule();
-      markEnd("editor.onUpdate.schedule");
-      markStart("editor.onUpdate.setDirty");
-      setIsDirtyRef.current(true);
-      markEnd("editor.onUpdate.setDirty");
-      const sid = saveSceneIdRef.current;
+      onUpdate({ editor: e }) {
+        if (isApplyingExternalUpdate.current) return;
+        // インライン AI の生成中・diff 表示中はオートセーブを止める。
+        // Accept/Reject が呼ばれて idle に戻った時点で reset + dispatch によって
+        // 再度 onUpdate が走り、その時に通常の schedule が実行される。
+        if (useInlineAiStore.getState().status !== "idle") return;
+        markStart("editor.onUpdate");
+        markStart("editor.onUpdate.schedule");
+        schedule();
+        markEnd("editor.onUpdate.schedule");
+        markStart("editor.onUpdate.setDirty");
+        setIsDirtyRef.current(true);
+        markEnd("editor.onUpdate.setDirty");
+        const sid = saveSceneIdRef.current;
 
-      // Auto-promote preview tab to pinned when user starts editing.
-      if (sid) {
-        markStart("editor.onUpdate.tabPin");
-        if (groupIndex === 0) {
-          useTabStore.getState().pinTab(sid);
-        } else {
-          useTabStore.getState().pinSecondaryTab(sid);
-        }
-        markEnd("editor.onUpdate.tabPin");
-        // Auto-transition outline → draft on first keystroke in empty scene.
-        // Only walk the doc text while wasEmptyRef is still true — once we've
-        // seen any content, this branch is skipped permanently.
-        if (!isCodexMode && !isSnippetMode && wasEmptyRef.current) {
-          const count = getDocText(e.state.doc).length;
-          if (count > 0) {
-            wasEmptyRef.current = false;
-            const nodeStatus = useTreeStore
-              .getState()
-              .nodes.find((n) => n.id === sid)?.status as
-              | SceneStatus
-              | null
-              | undefined;
-            if (shouldAutoDraftTransition(count, true, nodeStatus ?? null)) {
-              useTreeStore
+        // Auto-promote preview tab to pinned when user starts editing.
+        if (sid) {
+          markStart("editor.onUpdate.tabPin");
+          if (groupIndex === 0) {
+            useTabStore.getState().pinTab(sid);
+          } else {
+            useTabStore.getState().pinSecondaryTab(sid);
+          }
+          markEnd("editor.onUpdate.tabPin");
+          // Auto-transition outline → draft on first keystroke in empty scene.
+          // Only walk the doc text while wasEmptyRef is still true — once we've
+          // seen any content, this branch is skipped permanently.
+          if (!isCodexMode && !isSnippetMode && wasEmptyRef.current) {
+            const count = getDocText(e.state.doc).length;
+            if (count > 0) {
+              wasEmptyRef.current = false;
+              const nodeStatus = useTreeStore
                 .getState()
-                .setStatus(sid, "draft")
-                .catch(() => {});
+                .nodes.find((n) => n.id === sid)?.status as
+                | SceneStatus
+                | null
+                | undefined;
+              if (shouldAutoDraftTransition(count, true, nodeStatus ?? null)) {
+                useTreeStore
+                  .getState()
+                  .setStatus(sid, "draft")
+                  .catch(() => {});
+              }
             }
           }
-        }
-        // Broadcast to other panes showing the same content. Skip the
-        // expensive `e.getJSON()` deep-clone when no Codex/Snippet mini-editor
-        // or second EditorPane group is subscribed for this scene id — the
-        // common case during normal scene editing.
-        if (hasOtherLiveContentSubscriber(sid)) {
-          markStart("editor.setLiveContent");
-          useSceneContentStore
-            .getState()
-            .setLiveContent(sid, e.getJSON(), groupIndex);
-          markEnd("editor.setLiveContent");
-        }
-      }
-
-      // Debounce stats: footer counts and tree-store charCount sync don't
-      // need to update on every keystroke. The doc walk + setState x4 +
-      // store fan-out happens once per typing burst instead of per char.
-      if (statSyncTimeoutRef.current != null) {
-        window.clearTimeout(statSyncTimeoutRef.current);
-      }
-      statSyncTimeoutRef.current = window.setTimeout(() => {
-        statSyncTimeoutRef.current = null;
-        markStart("editor.statSync");
-        const text = getDocText(e.state.doc);
-        const count = text.length;
-        setCharCount(count);
-        setWordCount(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
-        const bc = countBeats(e.state.doc);
-        setBeatTotal(bc.total);
-        setBeatGenerated(bc.generated);
-        if (sid && !isCodexMode && !isSnippetMode) {
-          useTreeStore.getState().setCharCount(sid, count);
-        }
-        markEnd("editor.statSync");
-      }, 200);
-      markEnd("editor.onUpdate");
-    },
-    onTransaction({ editor: e, transaction }) {
-      if (!transaction.docChanged) return;
-      if (isCodexMode || isSnippetMode) return;
-      const sid = saveSceneIdRef.current;
-      if (!sid) return;
-      markStart("editor.onTransaction");
-
-      // Reconcile sceneBeat ↔ unplacedBeatsStore for transactions that
-      // bypass `placeBeatAtEnd` / `unplaceBeat` — most importantly Ctrl+Z.
-      //   Disappear from doc + not in store → restore (Place → Undo).
-      //   Appear in doc + still in store    → drop from store (Unplace → Undo,
-      //                                       prevents the same id showing up
-      //                                       in both lists in the Grid).
-      markStart("editor.onTransaction.beatScan");
-      const oldBeats = new Map<
-        string,
-        {
-          beatType: string;
-          pov: string | null;
-          content: unknown[];
-        }
-      >();
-      transaction.before.descendants((node) => {
-        if (node.type.name === "sceneBeat") {
-          const id = node.attrs.id as string | null;
-          if (id) {
-            oldBeats.set(id, {
-              beatType: (node.attrs.beatType ?? "free") as string,
-              pov: (node.attrs.pov ?? null) as string | null,
-              content: node.content.toJSON() as unknown[],
-            });
+          // Broadcast to other panes showing the same content. Skip the
+          // expensive `e.getJSON()` deep-clone when no Codex/Snippet mini-editor
+          // or second EditorPane group is subscribed for this scene id — the
+          // common case during normal scene editing.
+          if (hasOtherLiveContentSubscriber(sid)) {
+            markStart("editor.setLiveContent");
+            useSceneContentStore
+              .getState()
+              .setLiveContent(sid, e.getJSON(), groupIndex);
+            markEnd("editor.setLiveContent");
           }
-          return false;
         }
-        return true;
-      });
 
-      const newIds = new Set<string>();
-      e.state.doc.descendants((node) => {
-        if (node.type.name === "sceneBeat") {
-          const id = node.attrs.id as string | null;
-          if (id) newIds.add(id);
-          return false;
+        // Debounce stats: footer counts and tree-store charCount sync don't
+        // need to update on every keystroke. The doc walk + setState x4 +
+        // store fan-out happens once per typing burst instead of per char.
+        if (statSyncTimeoutRef.current != null) {
+          window.clearTimeout(statSyncTimeoutRef.current);
         }
-        return true;
-      });
-      markEnd("editor.onTransaction.beatScan");
+        statSyncTimeoutRef.current = window.setTimeout(() => {
+          statSyncTimeoutRef.current = null;
+          markStart("editor.statSync");
+          const text = getDocText(e.state.doc);
+          const count = text.length;
+          setCharCount(count);
+          setWordCount(
+            text.trim() === "" ? 0 : text.trim().split(/\s+/).length,
+          );
+          const bc = countBeats(e.state.doc);
+          setBeatTotal(bc.total);
+          setBeatGenerated(bc.generated);
+          if (sid && !isCodexMode && !isSnippetMode) {
+            useTreeStore.getState().setCharCount(sid, count);
+          }
+          markEnd("editor.statSync");
+        }, 200);
+        markEnd("editor.onUpdate");
+      },
+      onTransaction({ editor: e, transaction }) {
+        if (!transaction.docChanged) return;
+        if (isCodexMode || isSnippetMode) return;
+        const sid = saveSceneIdRef.current;
+        if (!sid) return;
+        markStart("editor.onTransaction");
 
-      const store = useUnplacedBeatsStore.getState();
-
-      for (const [id, snap] of oldBeats) {
-        if (newIds.has(id)) continue;
-        if (store.getBeats(sid).some((b) => b.id === id)) continue;
-        store.addBeat(sid, {
-          id,
-          beatType: snap.beatType as UnplacedBeat["beatType"],
-          pov: snap.pov,
-          collapsed: false,
-          content: snap.content as UnplacedBeat["content"],
+        // Reconcile sceneBeat ↔ unplacedBeatsStore for transactions that
+        // bypass `placeBeatAtEnd` / `unplaceBeat` — most importantly Ctrl+Z.
+        //   Disappear from doc + not in store → restore (Place → Undo).
+        //   Appear in doc + still in store    → drop from store (Unplace → Undo,
+        //                                       prevents the same id showing up
+        //                                       in both lists in the Grid).
+        markStart("editor.onTransaction.beatScan");
+        const oldBeats = new Map<
+          string,
+          {
+            beatType: string;
+            pov: string | null;
+            content: unknown[];
+          }
+        >();
+        transaction.before.descendants((node) => {
+          if (node.type.name === "sceneBeat") {
+            const id = node.attrs.id as string | null;
+            if (id) {
+              oldBeats.set(id, {
+                beatType: (node.attrs.beatType ?? "free") as string,
+                pov: (node.attrs.pov ?? null) as string | null,
+                content: node.content.toJSON() as unknown[],
+              });
+            }
+            return false;
+          }
+          return true;
         });
-      }
 
-      for (const id of newIds) {
-        if (oldBeats.has(id)) continue;
-        if (!store.getBeats(sid).some((b) => b.id === id)) continue;
-        store.removeBeat(sid, id);
-      }
+        const newIds = new Set<string>();
+        e.state.doc.descendants((node) => {
+          if (node.type.name === "sceneBeat") {
+            const id = node.attrs.id as string | null;
+            if (id) newIds.add(id);
+            return false;
+          }
+          return true;
+        });
+        markEnd("editor.onTransaction.beatScan");
 
-      // Live-sync the Grid preview cache (treeStore) so the Grid panel sees
-      // beat changes immediately, without waiting for the debounced save.
-      // Phase 4: 打鍵 50/s の経路。setNodePreview が同値 skip + nodes[] 非更新
-      // なので、whole-array selector 29 サイトは notify されない。
-      markStart("editor.onTransaction.treeMirror");
-      const placed = extractPlacedBeatPreviewFromDoc(e.state.doc);
-      const unplaced = extractUnplacedBeatPreview(store.getBeats(sid));
-      useTreeStore.getState().setNodePreview(sid, {
-        placed: placed === "[]" ? null : placed,
-        unplaced: unplaced === "[]" ? null : unplaced,
-      });
-      markEnd("editor.onTransaction.treeMirror");
-      markEnd("editor.onTransaction");
-    },
-    onSelectionUpdate() {},
-    onFocus() {
-      onFocus();
-      // Trash bin の D&D 復元先として「最後にフォーカスしていたエディタ」を共有。
-      // editor 参照も渡し、text-fragment 挿入時に直接 chain().insertContent を呼べるように。
-      if (nodeId) {
-        const kind = isSnippetMode
-          ? "snippet"
-          : isCodexMode
-            ? "codex"
-            : "scene";
-        useFocusedContentEditorStore
-          .getState()
-          .setCurrent({ kind, id: nodeId }, editorRef.current);
-      }
-      // Apply lazy cursor/scroll restore if one was deferred (Scenes-panel navigation).
-      const pending = pendingCursorRestoreRef.current;
-      if (pending) {
-        pendingCursorRestoreRef.current = null;
-        const ed = editorRef.current;
-        if (ed) {
-          const docSize = ed.state.doc.content.size;
-          const from = Math.min(pending.from, Math.max(0, docSize - 1));
-          const to = Math.min(pending.to, Math.max(0, docSize - 1));
-          ed.commands.setTextSelection({ from, to });
+        const store = useUnplacedBeatsStore.getState();
+
+        for (const [id, snap] of oldBeats) {
+          if (newIds.has(id)) continue;
+          if (store.getBeats(sid).some((b) => b.id === id)) continue;
+          store.addBeat(sid, {
+            id,
+            beatType: snap.beatType as UnplacedBeat["beatType"],
+            pov: snap.pov,
+            collapsed: false,
+            content: snap.content as UnplacedBeat["content"],
+          });
         }
-        if (editorContainerRef.current) {
-          editorContainerRef.current.scrollTop = pending.scrollTop;
+
+        for (const id of newIds) {
+          if (oldBeats.has(id)) continue;
+          if (!store.getBeats(sid).some((b) => b.id === id)) continue;
+          store.removeBeat(sid, id);
         }
-      }
+
+        // Live-sync the Grid preview cache (treeStore) so the Grid panel sees
+        // beat changes immediately, without waiting for the debounced save.
+        // Phase 4: 打鍵 50/s の経路。setNodePreview が同値 skip + nodes[] 非更新
+        // なので、whole-array selector 29 サイトは notify されない。
+        markStart("editor.onTransaction.treeMirror");
+        const placed = extractPlacedBeatPreviewFromDoc(e.state.doc);
+        const unplaced = extractUnplacedBeatPreview(store.getBeats(sid));
+        useTreeStore.getState().setNodePreview(sid, {
+          placed: placed === "[]" ? null : placed,
+          unplaced: unplaced === "[]" ? null : unplaced,
+        });
+        markEnd("editor.onTransaction.treeMirror");
+        markEnd("editor.onTransaction");
+      },
+      onSelectionUpdate() {},
+      onFocus() {
+        onFocus();
+        // Trash bin の D&D 復元先として「最後にフォーカスしていたエディタ」を共有。
+        // editor 参照も渡し、text-fragment 挿入時に直接 chain().insertContent を呼べるように。
+        if (nodeId) {
+          const kind = isSnippetMode
+            ? "snippet"
+            : isCodexMode
+              ? "codex"
+              : "scene";
+          useFocusedContentEditorStore
+            .getState()
+            .setCurrent({ kind, id: nodeId }, editorRef.current);
+        }
+        // Apply lazy cursor/scroll restore if one was deferred (Scenes-panel navigation).
+        const pending = pendingCursorRestoreRef.current;
+        if (pending) {
+          pendingCursorRestoreRef.current = null;
+          const ed = editorRef.current;
+          if (ed) {
+            const docSize = ed.state.doc.content.size;
+            const from = Math.min(pending.from, Math.max(0, docSize - 1));
+            const to = Math.min(pending.to, Math.max(0, docSize - 1));
+            ed.commands.setTextSelection({ from, to });
+          }
+          if (editorContainerRef.current) {
+            editorContainerRef.current.scrollTop = pending.scrollTop;
+          }
+        }
+      },
     },
-  },
-  [editorExtensions],
+    [editorExtensions],
   );
 
   const editorViewReady = useEditorViewReady(editor);
@@ -878,8 +886,7 @@ export function EditorPane({
   const mountedEditor =
     editorViewReady && isEditorViewReady(editor) ? editor : null;
   /** DB-native-only features (authorship, inline AI) — not on file-backed scenes. */
-  const dbNativeEditor =
-    mountedEditor && !isFileBacked ? mountedEditor : null;
+  const dbNativeEditor = mountedEditor && !isFileBacked ? mountedEditor : null;
 
   editorRef.current = editor;
 
@@ -1598,7 +1605,10 @@ export function EditorPane({
     }
     window.addEventListener("external-mount:reload-scene", onExternalReload);
     return () =>
-      window.removeEventListener("external-mount:reload-scene", onExternalReload);
+      window.removeEventListener(
+        "external-mount:reload-scene",
+        onExternalReload,
+      );
   }, [nodeId]);
 
   const isNote =

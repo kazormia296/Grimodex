@@ -318,6 +318,12 @@ describe("SnippetPanel", () => {
     expect(screen.getByTestId("snippet-loading")).toBeInTheDocument();
   });
 
+  it("hides loading skeleton when entries are loaded", async () => {
+    useSnippetStore.setState({ isLoading: false, entries: [fakeSnippet()] });
+    render(<SnippetPanel />);
+    expect(screen.queryByTestId("snippet-loading")).not.toBeInTheDocument();
+  });
+
   it("shows context menu on right-click", async () => {
     useSnippetStore.setState({
       entries: [fakeSnippet({ id: "snippet-1" })],

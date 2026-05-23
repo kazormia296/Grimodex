@@ -28,6 +28,7 @@ import { CategoryGroupHeader } from "./components/CategoryGroupHeader";
 import { TagFilterBar } from "./components/TagFilterBar";
 import { CodexCommandPalette } from "./components/CodexCommandPalette";
 import { AnimatePresence } from "motion/react";
+import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import { buildCrossReferenceReport } from "./crossReference";
 import * as chatApi from "@/features/chat/chatApi";
 import { useChatStore } from "@/features/chat/chatStore";
@@ -114,9 +115,10 @@ function VirtualizedEntryList({
 
   if (isLoading) {
     return (
-      <p className="flex-1 p-3 text-center text-xs text-muted-foreground">
-        {t("common.loading")}
-      </p>
+      <ListRowSkeletonList
+        testId="codex-list-loading"
+        className="flex-1 overflow-hidden"
+      />
     );
   }
 
@@ -361,9 +363,10 @@ function CategoryGroupedList({
 
   if (isLoading) {
     return (
-      <p className="flex-1 p-3 text-center text-xs text-muted-foreground">
-        {t("common.loading")}
-      </p>
+      <ListRowSkeletonList
+        testId="codex-category-list-loading"
+        className="flex-1 overflow-hidden"
+      />
     );
   }
 
@@ -510,7 +513,7 @@ export function CodexManagementPanel({
   const [refCountMap, setRefCountMap] = useState<Map<string, number>>(
     new Map(),
   );
-  const [refCountLoading, setRefCountLoading] = useState(false);
+  const [, setRefCountLoading] = useState(false);
   // M2: inline rename
   const [renamingEntryId, setRenamingEntryId] = useState<string | null>(null);
   // Delete confirmation dialog
@@ -997,7 +1000,7 @@ export function CodexManagementPanel({
 
   // Shared props for both list components
   const listProps = {
-    isLoading: isLoading || refCountLoading,
+    isLoading,
     selectedEntryId: selectedEntry?.id ?? null,
     onSelect: handleSelectEntry,
     onDelete: handleDelete,

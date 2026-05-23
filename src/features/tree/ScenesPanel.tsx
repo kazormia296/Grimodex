@@ -29,6 +29,7 @@ import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { recordMark } from "@/lib/perfLog";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { TreeRowSkeletonList } from "@/components/ui/skeleton-patterns";
 
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
@@ -242,13 +243,7 @@ export function ScenesPanel() {
   // hooks の呼び出し順を一定に保つため早期 return より前に置く (React rules)。
   const trashDropRef = useDropTarget("scenes-panel", "scenes-panel");
 
-  if (isLoading && nodes.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        {t("common.loading")}
-      </div>
-    );
-  }
+  const showTreeSkeleton = isLoading && nodes.length === 0;
 
   const draggingNode = draggingId ? nodeMap[draggingId] : null;
 
@@ -293,7 +288,9 @@ export function ScenesPanel() {
                 tabIndex={0}
                 onKeyDown={handleTreeKeyDown}
               >
-                {nodes.length === 0 ? (
+                {showTreeSkeleton ? (
+                  <TreeRowSkeletonList testId="scenes-panel-loading" />
+                ) : nodes.length === 0 ? (
                   <div
                     data-testid="scenes-empty-state"
                     className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center"

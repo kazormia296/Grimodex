@@ -127,6 +127,7 @@ export function CodexDetailContent({
     (entry.childrenBudget as ChildrenBudgetPreset) ?? "compact",
   );
   const [selectedTags, setSelectedTags] = useState<CodexTag[]>([]);
+  const [tagsLoading, setTagsLoading] = useState(true);
   const [icon, setIcon] = useState<string | null>(
     (entry.icon as string | null) ?? null,
   );
@@ -176,7 +177,10 @@ export function CodexDetailContent({
   ]);
 
   useEffect(() => {
-    listEntryTags(entry.id).then(setSelectedTags);
+    setTagsLoading(true);
+    listEntryTags(entry.id)
+      .then(setSelectedTags)
+      .finally(() => setTagsLoading(false));
   }, [entry.id]);
 
   useEffect(() => {
@@ -346,6 +350,7 @@ export function CodexDetailContent({
         icon={icon}
         aliases={aliases}
         selectedTags={selectedTags}
+        tagsLoading={tagsLoading}
         onNameChange={setName}
         onNameCommit={() => void handleNameBlur()}
         onTypeChange={(newType) => void handleTypeChange(newType)}
