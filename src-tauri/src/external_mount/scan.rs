@@ -1,12 +1,16 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use super::hash::content_hash;
 use super::io::{file_mtime_iso, read_text_file};
 use super::path::{canonicalize_mount_root, rel_path_from_canonical};
+
+/// Maximum directory nesting depth while scanning a mount root.
+pub(crate) const MAX_SCAN_DEPTH: u32 = 64;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,7 +41,15 @@ pub fn scan_root(root: &Path) -> Result<ScanResult> {
     let canonical_root = canonicalize_mount_root(root)?;
     let mut dirs = Vec::new();
     let mut files = Vec::new();
-    walk(&canonical_root, &canonical_root, &mut dirs, &mut files)?;
+    let mut visited = HashSet::new();
+    walk(
+        &canonical_root,
+        &canonical_root,
+        0,
+        &mut visited,
+        &mut dirs,
+        &mut files,
+    )?;
     dirs.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(ScanResult { dirs, files })
@@ -46,9 +58,18 @@ pub fn scan_root(root: &Path) -> Result<ScanResult> {
 fn walk(
     root: &Path,
     current: &Path,
+    depth: u32,
+    visited: &mut HashSet<(u64, u64)>,
     dirs: &mut Vec<ScannedDir>,
     files: &mut Vec<ScannedFile>,
 ) -> Result<()> {
+    if depth > MAX_SCAN_DEPTH {
+        bail!(
+            "scan depth exceeded maximum of {MAX_SCAN_DEPTH} at {}",
+            current.display()
+        );
+    }
+
     let entries = fs::read_dir(current)
         .with_context(|| format!("failed to read dir {}", current.display()))?;
     for entry in entries {
@@ -59,6 +80,15 @@ fn walk(
         }
         let path = entry.path();
         if file_type.is_dir() {
+            let dir_key = dir_key(&path)?;
+            if !visited.insert(dir_key) {
+                tracing::warn!(
+                    "skipping already visited directory during scan: {}",
+                    path.display()
+                );
+                continue;
+            }
+
             let rel = rel_path_from_canonical(root, &path)?;
             if !rel.is_empty() {
                 dirs.push(ScannedDir {
@@ -70,7 +100,7 @@ fn walk(
                     rel_path: rel,
                 });
             }
-            walk(root, &path, dirs, files)?;
+            walk(root, &path, depth + 1, visited, dirs, files)?;
         } else if file_type.is_file() {
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
@@ -90,14 +120,42 @@ fn walk(
     Ok(())
 }
 
+fn dir_key(path: &Path) -> Result<(u64, u64)> {
+    let meta = fs::metadata(path)
+        .with_context(|| format!("failed to stat directory {}", path.display()))?;
+    dir_key_from_metadata(&meta)
+}
+
+#[cfg(unix)]
+fn dir_key_from_metadata(meta: &fs::Metadata) -> Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Ok((meta.dev(), meta.ino()))
+}
+
+#[cfg(windows)]
+fn dir_key_from_metadata(meta: &fs::Metadata) -> Result<(u64, u64)> {
+    use std::os::windows::fs::MetadataExt;
+    Ok((meta.volume_serial_number(), meta.file_index()))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn dir_key_from_metadata(_meta: &fs::Metadata) -> Result<(u64, u64)> {
+    Ok((0, 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("grimodex-scan-{name}-{}", uuid::Uuid::new_v4()))
+    }
 
     #[test]
     fn scan_finds_md_files_and_dirs() {
-        let dir = std::env::temp_dir().join(format!("grimodex-scan-{}", uuid::Uuid::new_v4()));
+        let dir = temp_dir("basic");
         fs::create_dir_all(dir.join("chapter")).unwrap();
         fs::write(dir.join("chapter/01-intro.md"), "# Intro\n").unwrap();
         fs::write(dir.join("notes.md"), "note").unwrap();
@@ -105,6 +163,23 @@ mod tests {
         let result = scan_root(&dir).unwrap();
         assert_eq!(result.files.len(), 2);
         assert!(result.dirs.iter().any(|d| d.rel_path == "chapter"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_errors_when_depth_exceeded() {
+        let dir = temp_dir("depth");
+        fs::create_dir_all(&dir).unwrap();
+        let mut nested = dir.clone();
+        for i in 0..=MAX_SCAN_DEPTH {
+            nested = nested.join(format!("level-{i}"));
+            fs::create_dir_all(&nested).unwrap();
+        }
+        fs::write(nested.join("deep.md"), "deep").unwrap();
+
+        let err = scan_root(&dir).unwrap_err();
+        assert!(err.to_string().contains("scan depth exceeded"));
 
         fs::remove_dir_all(&dir).ok();
     }
