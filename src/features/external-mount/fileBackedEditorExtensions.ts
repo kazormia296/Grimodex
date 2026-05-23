@@ -45,10 +45,11 @@ const PasteSanitizerExtension = Extension.create({
 });
 
 const FILE_BACKED_EXTENSIONS: Extensions = [
+  // bulletList/orderedList/listItem は StarterKit デフォルトのまま有効化する。
+  // disable すると tiptap-markdown が `- ` をパースしても受け皿の node 型が無く、
+  // リストマーカーが落ちる → disk の生 Markdown と pmJsonToMarkdown 経由の
+  // 再生成結果が乖離して rename 検出 (mountManager.hashForNode) が外れる。
   StarterKit.configure({
-    bulletList: false,
-    orderedList: false,
-    listItem: false,
     link: {
       openOnClick: true,
       HTMLAttributes: { target: "_blank", rel: "noopener noreferrer" },
