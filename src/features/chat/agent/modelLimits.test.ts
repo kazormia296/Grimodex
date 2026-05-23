@@ -6,6 +6,7 @@ import {
   getModelCapabilities,
   getToolTokenBudget,
   modelSupportsTools,
+  resolveModelCapabilities,
 } from "./modelLimits";
 
 describe("getModelCapabilities", () => {
@@ -130,6 +131,34 @@ describe("getEffortForTask", () => {
   it("synopsis は low", () => expect(getEffortForTask("synopsis")).toBe("low"));
   it("session_title は low", () =>
     expect(getEffortForTask("session_title")).toBe("low"));
+});
+
+describe("resolveModelCapabilities ai-novelist v1", () => {
+  it("spiko_ultra with apiVariant v1 enables tools and reasoning", () => {
+    const caps = resolveModelCapabilities(
+      "spiko_ultra",
+      {
+        provider: "ai-novelist",
+      },
+      "v1",
+    );
+    expect(caps.contextWindow).toBe(200_000);
+    expect(caps.maxOutputTokens).toBe(32_768);
+    expect(caps.supportsTools).toBe(true);
+    expect(caps.supportsReasoning).toBe(true);
+  });
+
+  it("legacy spiko disables tools and reasoning", () => {
+    const caps = resolveModelCapabilities(
+      "spiko",
+      {
+        provider: "ai-novelist",
+      },
+      "legacy",
+    );
+    expect(caps.supportsTools).toBe(false);
+    expect(caps.supportsReasoning).toBe(false);
+  });
 });
 
 describe("buildThinkingParams", () => {

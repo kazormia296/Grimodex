@@ -114,6 +114,7 @@ describe("inlineAiStreaming", () => {
       reasoningEnabled: null,
       reasoningEffort: null,
       model: null,
+      apiVariant: null,
     });
   });
 });

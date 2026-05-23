@@ -835,7 +835,7 @@ Phase X (現状は v1 スコープ外) で Vercel AI SDK が Responses API + com
 | OpenAI | Vercel AI SDK `openai` | GPT-4o等 |
 | Ollama | Vercel AI SDK `ollama` | ローカルモデル。オフライン対応 |
 | OpenAI 互換（カスタム） | Vercel AI SDK `openai`（`baseURL` 上書き） | llama.cpp / LM Studio / vLLM / 自前ホストの GPU 推論サーバ等。`baseURL` と任意の `apiKey` を Settings で指定 |
-| AI のべりすと | Vercel AI SDK `openai`（`baseURL` 固定） | 日本語小説特化。`https://api.tringpt.com/api` / Bearer 認証。OpenAI 互換チャット API。最大 40k 入力 / 4k 出力（モデル依存）・独自サンプリングパラメータ・拡張思考非対応の特殊扱い（後述） |
+| AI のべりすと | Rust `reqwest` 直叩き | 日本語小説特化。レガシー `https://api.tringpt.com/api`（独自フォーマット）と v1 `https://api.tringpt.com/v1`（OpenAI 互換 SSE）のハイブリッド。モデルごとに `apiVariant` で経路分岐。Bearer 認証は keyring に保存 |
 
 ##### ローカル LLM / OpenAI 互換接続時の制限
 
@@ -849,17 +849,22 @@ Ollama および OpenAI 互換（カスタム）プロバイダで接続する�
 
 ##### AI のべりすと固有の扱い
 
-AI のべりすと（[ai-novel.com](https://ai-novel.com/account_api_help.php)）は OpenAI 互換チャット API を提供するが、商用 API と前提が大きく異なるため独立プロバイダとして扱い、以下の特殊化を行う。
+AI のべりすと（[ai-novel.com](https://ai-novel.com/account_api_help.php)）は商用 API と前提が大きく異なるため独立プロバイダとして扱い、以下の特殊化を行う。
 
-- **配線**: ベース実装は Vercel AI SDK `openai` の `baseURL` 差し替え（`https://api.tringpt.com/api`）。Bearer 認証は keyring に保存
-- **モデル一覧と能力**: ハードコード（動的取得は将来検討）。現行主力は 40k 入力でクラウド API と遜色ない予算配分が可能、レガシーは出力上限が小さく特殊扱いが必要
+- **配線**: Rust `reqwest` 直叩き。`AiModel.apiVariant`（`legacy` | `v1`）でリクエスト経路を切替
+- **エンドポイント二系統**:
+  - legacy: `POST https://api.tringpt.com/api` — 独自フォーマット (`text`/`length`/`data[]`)。ストリーミング非対応（一括 emit）
+  - v1: `POST https://api.tringpt.com/v1/chat/completions` — OpenAI 互換 SSE ストリーミング
+- **モデル一覧**: レガシー静的リスト + `GET /v1/models` 動的取得をマージ（同一 id は v1 優先）。取得失敗時は `spiko_ultra` 等の既知 v1 静的 fallback
+- **モデル一覧と能力**:
 
   | モデル | 最大入力 | 最大出力 | 区分 |
   |--|--|--|--|
-  | `derrida_03` / `spiko` / `spiko_solid` / `spiko_max` | 40,000 | 4,096 | 現行主力 |
-  | `damsel_ray` | 12,288 | 400 | 現行（出力極小） |
-  | `supertrin_highpres` / `supertrin_maxpres` / `supertrin` | 9,216 | 400 | レガシー |
-  | `damsel` | 2,400 | 400 | レガシー（最古） |
+  | `spiko_ultra` | 200,000 | 32,768 | v1（Agent / 推論 / SSE 対応） |
+  | `derrida_03` / `spiko` / `spiko_solid` / `spiko_max` | 40,000 | 4,096 | legacy 現行主力 |
+  | `damsel_ray` | 12,288 | 400 | legacy 現行（出力極小） |
+  | `supertrin_highpres` / `supertrin_maxpres` / `supertrin` | 9,216 | 400 | legacy レガシー |
+  | `damsel` | 2,400 | 400 | legacy レガシー（最古） |
 
 - **コンテキスト窓の扱い**: モデルごとの最大入力を `getModelContextLimit` から返し、§トークン予算管理 の比率配分をそのまま適用する。AI のべりすとは入力上限と出力上限が別管理のため、入力側 floor 合計（応答予約を除く 4,500 tok = L1 500 + L2 500 + L3 2,000 + L4 500 + L5 1,000）を割るモデル（**`damsel` のみ**）に限り、本プロバイダ専用の縮退配分プロファイルを適用:
   - L3 Scene を最優先
@@ -869,13 +874,12 @@ AI のべりすと（[ai-novel.com](https://ai-novel.com/account_api_help.php)�
   - supertrin 系（9,216 入力）/ damsel_ray（12,288 入力）/ 現行主力（40,000 入力）は通常配分で問題なし。出力 400 tok 制約は次項のクランプで吸収
 - **出力上限のクランプ**: 応答予約は `min(設定比率による配分, model.max_output)` でクランプする。`damsel_ray` / レガシー系は出力 400 tok 上限のため、ストリーミング中の最大応答長 UI もこの値に合わせる
 - **レート制限**: 現行モデル 200 req/分、`damsel` のみ 90 req/分。プロバイダ層で 429 検出時は指数バックオフでリトライし、UI に「レート制限到達」を表示
-- **拡張思考**: 非対応（`supportsThinking: false` / `supportsAdaptiveThinking: false`）。`thinking` / `effort` パラメータはリクエストに含めない
-- **構造化出力依存タスク**: AI Codex 自動抽出 / Synopsis 自動生成 / セッションタイトル自動生成はデフォルト無効化（ユーザーが明示オプトイン可能）。日本語継続生成への特化と引き換え
-- **独自サンプリングパラメータ**: OpenAI には存在しない以下のフィールドを Settings の AI のべりすと専用セクションで編集可能にし、リクエストボディに素通しで含める:
-  - `top_a`, `tailfree`, `typical_p`, `min_p`, `rep_pen` (1.0〜2.0)
-  - `badwords`, `stoptokens`, `logit_bias`
-  - 入力エリアのモデルセレクタで AI のべりすとを選んだ時のみ、これらのプリセットを切り替える簡易 UI も検討（プリセット = `バランス` / `創造的` / `保守的` 等）
-- **ストリーミング**: 実装時に実機検証した結果、**ストリーミング非対応で確定**。Rust 側 `send_chat_ainoverist` で非ストリーム POST を投げ、完了後に応答テキストを一括 `stream-chunk` イベントとして emit してから `stream-done` を発火するアダプタ実装（`src-tauri/src/ai.rs` の `AiProvider::AiNovelist` 分岐）。フロント側のストリーミング UI は他プロバイダと共通のまま動作する
+- **拡張思考 / 推論**: legacy は非対応。v1（`spiko_ultra` 等）はフラット `reasoning_effort` 対応（Settings の thinking トグル経由）
+- **Agent モード**: v1 モデルのみ Tool Use 対応。legacy は `supportsTools: false` 固定
+- **多言語モード**: Settings `aiNovelist.multilingualMode`。legacy は `multilingualmode`、v1 は `multilingual_mode` を body に注入（デフォルト false = 日本語）
+- **構造化出力依存タスク**: AI Codex 自動抽出 / Synopsis 自動生成 / セッションタイトル自動生成はデフォルト無効化（ユーザーが明示オプトイン可能）
+- **独自サンプリングパラメータ**: legacy モデル選択時のみ Settings で編集可能（`top_a`, `tailfree`, `typical_p`, `min_p`, `rep_pen` 等）。v1 選択時は UI 非表示
+- **ストリーミング**: legacy のみ非対応（Rust 側で非ストリーム POST → 一括 `stream-chunk` emit）。v1 は真 SSE ストリーム
 - **トークン計上**: API レスポンスの `usage` を信頼。返さない場合は `tokens_in / tokens_out` を NULL 許容
 - **接続テスト**: Settings に専用の「接続テスト」ボタン（カスタム OpenAI 互換とは別動線）。短文を投げて 200 が返ることを確認
 

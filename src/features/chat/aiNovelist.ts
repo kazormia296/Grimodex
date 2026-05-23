@@ -1,31 +1,23 @@
 /**
  * AI のべりすと専用の定数・モデル能力定義。
  *
- * API エンドポイント: https://api.tringpt.com/api (POST のみ)
- * OpenAI 互換エンドポイントは存在しない。
+ * レガシー `/api` (独自フォーマット) + v1 `/v1` (OpenAI 互換) ハイブリッド。
  */
 
-import type { AiModel } from "./types";
 import type { ModelCapabilities } from "./agent/modelLimits";
 
+/** レガシー Text / Messages API */
 export const AINOVERIST_BASE_URL = "https://api.tringpt.com/api";
 
-/** UI に表示するモデル一覧 (Rust 側静的リストと一致させること) */
-export const AINOVERIST_MODELS: AiModel[] = [
-  { id: "derrida_03", name: "derrida_03" },
-  { id: "spiko", name: "spiko" },
-  { id: "spiko_solid", name: "spiko_solid" },
-  { id: "spiko_max", name: "spiko_max" },
-  { id: "damsel_ray", name: "damsel_ray" },
-  { id: "supertrin_highpres", name: "supertrin_highpres" },
-  { id: "supertrin_maxpres", name: "supertrin_maxpres" },
-  { id: "supertrin", name: "supertrin (legacy)" },
-  { id: "damsel", name: "damsel (legacy)" },
-];
+/** OpenAI 互換 v1 エンドポイント */
+export const AINOVERIST_V1_BASE_URL = "https://api.tringpt.com/v1";
+
+/** v1 取得失敗時の静的 fallback */
+export const AINOVERIST_V1_KNOWN_MODELS = ["spiko_ultra"] as const;
 
 /**
- * モデル別の能力情報 (contextWindow / maxOutputTokens)。
- * Rust 側 `ai_novelist::MAX_OUTPUT_TOKENS` と一致させること。
+ * レガシー モデル別の能力情報 (contextWindow / maxOutputTokens)。
+ * Rust 側 legacy caps と一致させること。
  */
 export const AINOVERIST_MODEL_CAPS: Record<
   string,
@@ -42,7 +34,21 @@ export const AINOVERIST_MODEL_CAPS: Record<
   damsel: { contextWindow: 2_400, maxOutputTokens: 400 },
 };
 
-/** KoboldAI 系独自サンプリングキー */
+/** v1 既知モデルの能力情報 */
+export const AINOVERIST_V1_MODEL_CAPS: Record<
+  string,
+  Pick<ModelCapabilities, "contextWindow" | "maxOutputTokens">
+> = {
+  spiko_ultra: { contextWindow: 200_000, maxOutputTokens: 32_768 },
+};
+
+/** v1 未知モデルの保守的デフォルト */
+export const AINOVERIST_V1_DEFAULT_CAPS = {
+  contextWindow: 200_000,
+  maxOutputTokens: 32_768,
+} as const;
+
+/** KoboldAI 系独自サンプリングキー (legacy のみ) */
 export const AINOVERIST_EXTRA_SAMPLING_KEYS = [
   "top_a",
   "tailfree",
@@ -56,3 +62,27 @@ export const AINOVERIST_EXTRA_SAMPLING_KEYS = [
 
 export type AinoveristSamplingKey =
   (typeof AINOVERIST_EXTRA_SAMPLING_KEYS)[number];
+
+export type AinoveristApiVariant = "legacy" | "v1";
+
+export function isAinoveristV1Model(
+  model: string,
+  apiVariant?: AinoveristApiVariant | string | null,
+): boolean {
+  if (apiVariant === "v1") return true;
+  if (apiVariant === "legacy") return false;
+  return (AINOVERIST_V1_KNOWN_MODELS as readonly string[]).includes(model);
+}
+
+export function resolveAinoveristApiVariant(
+  model: string,
+  models: Array<{ id: string; apiVariant?: string }>,
+  persisted?: string | null,
+): AinoveristApiVariant | undefined {
+  const fromList = models.find((m) => m.id === model)?.apiVariant;
+  if (fromList === "v1" || fromList === "legacy") return fromList;
+  if (persisted === "v1" || persisted === "legacy") return persisted;
+  if (isAinoveristV1Model(model)) return "v1";
+  if (model) return "legacy";
+  return undefined;
+}

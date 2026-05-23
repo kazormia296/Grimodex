@@ -10,8 +10,8 @@ use crate::ai_novelist;
 /// - `OpenaiCompatible` はユーザーが任意の OpenAI 互換エンドポイント
 ///   (llama.cpp / LM Studio / vLLM / 自前ホスト等) を `baseURL` で指定する
 ///   プロバイダ。`AiSettings.openai_compatible.base_url` を参照する。
-/// - `AiNovelist` は AI のべりすと専用プロバイダ。独自 API フォーマット
-///   (text / length / data ラッパ) を使い、OpenAI 互換エンドポイントを持たない。
+/// - `AiNovelist` は AI のべりすと専用プロバイダ。レガシー `/api` (独自フォーマット)
+///   と v1 `/v1` (OpenAI 互換) を `api_variant` で切り替える。
 /// - `Cli` はローカルにインストール済みの CLI エージェント (Claude Code 等) を
 ///   subprocess で起動するプロバイダ。HTTP 系の `send_chat*` には流れず、
 ///   `commands/cli_ai.rs` の専用ハンドラで処理される。
@@ -86,15 +86,22 @@ impl AiProvider {
 
     /// OpenAI-compatible base URL (used for chat/completions).
     /// Ollama exposes the OpenAI-compatible API at /v1, not /api.
-    pub fn openai_compat_base_url(&self, ep: ProviderEndpoints<'_>) -> String {
+    pub fn openai_compat_base_url(
+        &self,
+        ep: ProviderEndpoints<'_>,
+        api_variant: Option<&str>,
+    ) -> String {
         match self {
             AiProvider::Ollama => format!("{}/v1", ep.ollama.trim_end_matches('/')),
+            AiProvider::AiNovelist if api_variant == Some("v1") => {
+                ai_novelist::V1_BASE_URL.to_string()
+            }
             _ => self.base_url(ep),
         }
     }
 
     /// Models endpoint URL.
-    pub fn models_url(&self, ep: ProviderEndpoints<'_>) -> String {
+    pub fn models_url(&self, ep: ProviderEndpoints<'_>, api_variant: Option<&str>) -> String {
         match self {
             AiProvider::OpenRouter => "https://openrouter.ai/api/v1/models".to_string(),
             AiProvider::OpenAI => "https://api.openai.com/v1/models".to_string(),
@@ -106,7 +113,10 @@ impl AiProvider {
             AiProvider::OpenaiCompatible => {
                 format!("{}/models", ep.openai_compat_custom.trim_end_matches('/'))
             }
-            AiProvider::AiNovelist => String::new(), // 静的リストを返すため不要
+            AiProvider::AiNovelist if api_variant == Some("v1") => {
+                ai_novelist::V1_MODELS_URL.to_string()
+            }
+            AiProvider::AiNovelist => String::new(),
             AiProvider::Cli => String::new(),
         }
     }
@@ -162,6 +172,9 @@ pub struct AiNovelistSettings {
     /// このプロバイダを使うかどうか。デフォルト false (構造化出力の精度が低いため)。
     #[serde(default)]
     pub enable_structured_tasks: Option<bool>,
+    /// 日本語以外で生成する場合に true (legacy: multilingualmode / v1: multilingual_mode)
+    #[serde(default)]
+    pub multilingual_mode: Option<bool>,
 }
 
 /// CLI プロバイダ用の設定。`provider = Cli` のときのみ意味を持つ。
@@ -200,6 +213,9 @@ pub struct AiSettings {
     /// Anthropic prompt cache が同一 provider に当たりやすくする。
     #[serde(default)]
     pub openrouter_provider_pin: Option<String>,
+    /// 選択中モデルの API 経路 ("legacy" | "v1")。バックエンド専用呼び出しの fallback 用。
+    #[serde(default, rename = "modelApiVariant")]
+    pub model_api_variant: Option<String>,
 }
 
 impl AiSettings {
@@ -222,6 +238,7 @@ impl Default for AiSettings {
             ai_novelist: AiNovelistSettings::default(),
             cli: None,
             openrouter_provider_pin: None,
+            model_api_variant: None,
         }
     }
 }
@@ -231,6 +248,119 @@ impl Default for AiSettings {
 pub struct AiModel {
     pub id: String,
     pub name: String,
+    #[serde(default, rename = "apiVariant", skip_serializing_if = "Option::is_none")]
+    pub api_variant: Option<String>,
+}
+
+fn legacy_ainoverist_model(id: &str, name: &str) -> AiModel {
+    AiModel {
+        id: id.to_string(),
+        name: name.to_string(),
+        api_variant: Some("legacy".to_string()),
+    }
+}
+
+fn v1_ainoverist_model(id: &str, name: &str) -> AiModel {
+    AiModel {
+        id: id.to_string(),
+        name: name.to_string(),
+        api_variant: Some("v1".to_string()),
+    }
+}
+
+/// レガシー + v1 モデル一覧をマージする。同一 id は v1 を優先。
+pub fn merge_ainoverist_models(legacy: Vec<AiModel>, v1: Vec<AiModel>) -> Vec<AiModel> {
+    let mut by_id: std::collections::HashMap<String, AiModel> = std::collections::HashMap::new();
+    for m in legacy {
+        by_id.insert(m.id.clone(), m);
+    }
+    for m in v1 {
+        by_id.insert(m.id.clone(), m);
+    }
+    let mut merged: Vec<AiModel> = by_id.into_values().collect();
+    merged.sort_by(|a, b| a.id.cmp(&b.id));
+    merged
+}
+
+async fn fetch_ainoverist_v1_models(api_key: &str) -> anyhow::Result<Vec<AiModel>> {
+    if api_key.is_empty() {
+        return Ok(ai_novelist::known_v1_models_static()
+            .into_iter()
+            .map(|(id, name)| v1_ainoverist_model(id, name))
+            .collect());
+    }
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(ai_novelist::V1_MODELS_URL)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await?
+        .error_for_status()?;
+    let body: serde_json::Value = resp.json().await?;
+    let models = body["data"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|m| {
+            let id = m["id"].as_str()?;
+            let name = m["name"]
+                .as_str()
+                .or_else(|| m["id"].as_str())
+                .unwrap_or(id);
+            Some(v1_ainoverist_model(id, name))
+        })
+        .collect();
+    Ok(models)
+}
+
+fn static_legacy_ainoverist_models() -> Vec<AiModel> {
+    ai_novelist::legacy_models()
+        .into_iter()
+        .map(|(id, name)| legacy_ainoverist_model(id, name))
+        .collect()
+}
+
+fn static_v1_ainoverist_models() -> Vec<AiModel> {
+    ai_novelist::known_v1_models_static()
+        .into_iter()
+        .map(|(id, name)| v1_ainoverist_model(id, name))
+        .collect()
+}
+
+/// 明示 api_variant → settings.model_api_variant → モデル名推論 の順で解決。
+pub fn resolve_api_variant(
+    explicit: Option<&str>,
+    settings: &AiSettings,
+    model: &str,
+) -> Option<String> {
+    if let Some(v) = explicit.filter(|s| !s.is_empty()) {
+        return Some(v.to_string());
+    }
+    if let Some(ref v) = settings.model_api_variant {
+        if !v.is_empty() {
+            return Some(v.clone());
+        }
+    }
+    if matches!(settings.provider, AiProvider::AiNovelist) {
+        if ai_novelist::is_v1_variant(None, model) {
+            return Some("v1".to_string());
+        }
+        return Some("legacy".to_string());
+    }
+    None
+}
+
+fn is_ainoverist_v1(params: &ChatParams<'_>) -> bool {
+    matches!(params.provider, AiProvider::AiNovelist)
+        && ai_novelist::is_v1_variant(params.api_variant.as_deref(), params.model)
+}
+
+fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
+    if is_ainoverist_v1(params) {
+        ai_novelist::length_for(params.model)
+    } else {
+        4096
+    }
 }
 
 /// Read AI settings from the given file path.
@@ -293,57 +423,26 @@ pub async fn fetch_models(
                 AiModel {
                     id: "claude-sonnet-4-6".to_string(),
                     name: "Claude Sonnet 4.6".to_string(),
+                    api_variant: None,
                 },
                 AiModel {
                     id: "claude-haiku-4-5-20251001".to_string(),
                     name: "Claude Haiku 4.5".to_string(),
+                    api_variant: None,
                 },
             ]);
         }
         AiProvider::AiNovelist => {
-            return Ok(vec![
-                AiModel {
-                    id: "derrida_03".to_string(),
-                    name: "derrida_03".to_string(),
-                },
-                AiModel {
-                    id: "spiko".to_string(),
-                    name: "spiko".to_string(),
-                },
-                AiModel {
-                    id: "spiko_solid".to_string(),
-                    name: "spiko_solid".to_string(),
-                },
-                AiModel {
-                    id: "spiko_max".to_string(),
-                    name: "spiko_max".to_string(),
-                },
-                AiModel {
-                    id: "damsel_ray".to_string(),
-                    name: "damsel_ray".to_string(),
-                },
-                AiModel {
-                    id: "supertrin_highpres".to_string(),
-                    name: "supertrin_highpres".to_string(),
-                },
-                AiModel {
-                    id: "supertrin_maxpres".to_string(),
-                    name: "supertrin_maxpres".to_string(),
-                },
-                AiModel {
-                    id: "supertrin".to_string(),
-                    name: "supertrin (legacy)".to_string(),
-                },
-                AiModel {
-                    id: "damsel".to_string(),
-                    name: "damsel (legacy)".to_string(),
-                },
-            ]);
+            let legacy = static_legacy_ainoverist_models();
+            let v1 = fetch_ainoverist_v1_models(api_key)
+                .await
+                .unwrap_or_else(|_| static_v1_ainoverist_models());
+            return Ok(merge_ainoverist_models(legacy, v1));
         }
         _ => {}
     }
 
-    let url = provider.models_url(endpoints);
+    let url = provider.models_url(endpoints, None);
     if url.is_empty() {
         return Ok(vec![]);
     }
@@ -388,6 +487,7 @@ pub async fn fetch_models(
                     Some(AiModel {
                         id: name.to_string(),
                         name: name.to_string(),
+                        api_variant: None,
                     })
                 })
                 .collect()
@@ -407,6 +507,7 @@ pub async fn fetch_models(
                     Some(AiModel {
                         id: id.to_string(),
                         name: name.to_string(),
+                        api_variant: None,
                     })
                 })
                 .collect()
@@ -422,11 +523,14 @@ pub async fn test_connection(
     model: &str,
     api_key: &str,
     endpoints: ProviderEndpoints<'_>,
+    api_variant: Option<&str>,
 ) -> anyhow::Result<String> {
     let client = reqwest::Client::new();
 
-    // AI のべりすと: 独自エンドポイント (POST <base>) + text / length フィールド
-    if matches!(provider, AiProvider::AiNovelist) {
+    // AI のべりすと legacy: 独自エンドポイント (POST <base>) + text / length フィールド
+    if matches!(provider, AiProvider::AiNovelist)
+        && !ai_novelist::is_v1_variant(api_variant, model)
+    {
         let url = provider.base_url(endpoints);
         if url.is_empty() {
             return Err(anyhow::anyhow!(
@@ -495,7 +599,7 @@ pub async fn test_connection(
         AiProvider::Ollama => {
             let url = format!(
                 "{}/chat/completions",
-                provider.openai_compat_base_url(endpoints)
+                provider.openai_compat_base_url(endpoints, api_variant)
             );
             let body = serde_json::json!({
                 "model": model,
@@ -520,10 +624,10 @@ pub async fn test_connection(
             Ok(text.to_string())
         }
         _ => {
-            // OpenAI-compatible format (OpenRouter, OpenAI, OpenaiCompatible)
+            // OpenAI-compatible format (OpenRouter, OpenAI, OpenaiCompatible, AiNovelist v1)
             let url = format!(
                 "{}/chat/completions",
-                provider.openai_compat_base_url(endpoints)
+                provider.openai_compat_base_url(endpoints, api_variant)
             );
             let body = serde_json::json!({
                 "model": model,
@@ -597,6 +701,8 @@ pub struct ChatParams<'a> {
     pub openrouter_provider_pin: Option<&'a str>,
     /// Chat L1–L4 boundary segments for Anthropic `cache_control` markers.
     pub system_cache_segments: Option<Vec<String>>,
+    /// AI のべりすと: "legacy" | "v1"。FE から渡される API 経路。
+    pub api_variant: Option<String>,
 }
 
 fn supports_prompt_cache(provider: &AiProvider, model: &str) -> bool {
@@ -975,8 +1081,8 @@ pub async fn send_chat(
 ) -> anyhow::Result<ChatResponse> {
     let client = reqwest::Client::new();
 
-    // AI のべりすとは独自フォーマットなので OpenAI 互換パスから外して専用関数に流す
-    if matches!(params.provider, AiProvider::AiNovelist) {
+    // AI のべりすと legacy は独自フォーマット。v1 は OpenAI 互換分岐へ合流。
+    if matches!(params.provider, AiProvider::AiNovelist) && !is_ainoverist_v1(params) {
         return send_chat_ainoverist(&client, params, messages).await;
     }
 
@@ -1015,12 +1121,13 @@ pub async fn send_chat(
 
             let mut body = serde_json::json!({
                 "model": params.model,
-                "max_tokens": 4096,
+                "max_tokens": openai_max_tokens(params),
                 "messages": chat_messages,
             });
             apply_reasoning_to_body(
                 &mut body,
                 params.provider,
+                params.api_variant.as_deref(),
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
@@ -1254,10 +1361,11 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
     })
 }
 
-/// Ollama/OpenRouter 向け reasoning パラメータをリクエストボディに適用する。
+/// Ollama / OpenRouter / AI のべりすと v1 向け reasoning パラメータを適用する。
 fn apply_reasoning_to_body(
     body: &mut serde_json::Value,
     provider: &AiProvider,
+    api_variant: Option<&str>,
     reasoning_enabled: Option<bool>,
     reasoning_effort: &Option<String>,
 ) {
@@ -1279,6 +1387,17 @@ fn apply_reasoning_to_body(
             } else {
                 body["reasoning"] = serde_json::json!({ "effort": "none" });
             }
+        }
+    }
+
+    if matches!(provider, AiProvider::AiNovelist) && api_variant == Some("v1") {
+        if reasoning_enabled == Some(true) {
+            let effort = match reasoning_effort.as_deref() {
+                Some("max") => "high",
+                Some(e @ ("low" | "medium" | "high")) => e,
+                _ => "medium",
+            };
+            body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
         }
     }
 }
@@ -1358,11 +1477,7 @@ fn anthropic_request(
 }
 
 /// Build a POST request to an OpenAI-compatible `/chat/completions` endpoint
-/// (OpenAI / OpenRouter / Ollama / OpenaiCompatible). Adds `Authorization: Bearer ...`
-/// for providers that require it (skips Ollama, and skips OpenaiCompatible when
-/// the API key is empty for keyless local LLM servers), and OpenRouter's
-/// attribution headers, then attaches `body` as JSON.
-/// AiNovelist はこの関数を経由しない (独自エンドポイントを使用)。
+/// (OpenAI / OpenRouter / Ollama / OpenaiCompatible / AiNovelist v1).
 fn openai_compat_request(
     client: &reqwest::Client,
     params: &ChatParams<'_>,
@@ -1370,7 +1485,9 @@ fn openai_compat_request(
 ) -> reqwest::RequestBuilder {
     let url = format!(
         "{}/chat/completions",
-        params.provider.openai_compat_base_url(params.endpoints)
+        params
+            .provider
+            .openai_compat_base_url(params.endpoints, params.api_variant.as_deref())
     );
     let mut req = client.post(url).header("content-type", "application/json");
     let needs_auth = match params.provider {
@@ -1417,11 +1534,10 @@ pub async fn send_chat_with_tools(
 ) -> anyhow::Result<ChatResponse> {
     let client = reqwest::Client::new();
 
-    // AI のべりすとは tool use を持たない (Phase A.2 では capabilitiesOverride で
-    // supportsTools=false 固定だが、Agent mode から誤って呼ばれた場合の防御)
-    if matches!(params.provider, AiProvider::AiNovelist) {
+    // AI のべりすと legacy は tool use 非対応。v1 は OpenAI 互換分岐へ合流。
+    if matches!(params.provider, AiProvider::AiNovelist) && !is_ainoverist_v1(params) {
         return Err(anyhow::anyhow!(
-            "AI のべりすとは Tool Use に対応していません"
+            "AI のべりすと (legacy) は Tool Use に対応していません"
         ));
     }
 
@@ -1626,13 +1742,14 @@ pub async fn send_chat_with_tools(
 
             let mut body = serde_json::json!({
                 "model": params.model,
-                "max_tokens": 4096,
+                "max_tokens": openai_max_tokens(params),
                 "messages": openai_messages,
                 "tools": openai_tools
             });
             apply_reasoning_to_body(
                 &mut body,
                 params.provider,
+                params.api_variant.as_deref(),
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
@@ -1723,9 +1840,12 @@ pub async fn call_post_effect_api(
         _ => {
             // OpenRouter / OpenAI compat: use /chat/completions.
             // OpenRouter passes cache_control to Anthropic when using a Claude model.
+            let api_variant = resolve_api_variant(None, settings, &settings.model);
             let url = format!(
                 "{}/chat/completions",
-                settings.provider.openai_compat_base_url(endpoints)
+                settings
+                    .provider
+                    .openai_compat_base_url(endpoints, api_variant.as_deref())
             );
             let mut body = serde_json::json!({
                 "model": settings.model,
@@ -1856,8 +1976,8 @@ pub async fn send_chat_stream(
 
     let client = reqwest::Client::new();
 
-    // AI のべりすと: ストリーミング非対応なので非ストリーム版を呼んで結果を一括 emit
-    if matches!(params.provider, AiProvider::AiNovelist) {
+    // AI のべりすと legacy: ストリーミング非対応なので非ストリーム版を呼んで結果を一括 emit
+    if matches!(params.provider, AiProvider::AiNovelist) && !is_ainoverist_v1(params) {
         if abort_flag.load(Ordering::Relaxed) {
             let _ = app_handle.emit(
                 &done_event,
@@ -2027,13 +2147,14 @@ pub async fn send_chat_stream(
 
             let mut body = serde_json::json!({
                 "model": params.model,
-                "max_tokens": 4096,
+                "max_tokens": openai_max_tokens(params),
                 "messages": chat_messages,
                 "stream": true,
             });
             apply_reasoning_to_body(
                 &mut body,
                 params.provider,
+                params.api_variant.as_deref(),
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
@@ -2244,6 +2365,7 @@ mod tests {
             ai_novelist: AiNovelistSettings::default(),
             cli: None,
             openrouter_provider_pin: None,
+            model_api_variant: None,
         };
 
         write_ai_settings(&path, &settings).expect("write");
@@ -2300,17 +2422,21 @@ mod tests {
         let ep = ProviderEndpoints::new("http://localhost:11434", "");
         // Ollama uses /v1 for OpenAI-compatible endpoints
         assert_eq!(
-            AiProvider::Ollama.openai_compat_base_url(ep),
+            AiProvider::Ollama.openai_compat_base_url(ep, None),
             "http://localhost:11434/v1"
         );
         // Other providers unchanged
         assert_eq!(
-            AiProvider::OpenRouter.openai_compat_base_url(ep),
+            AiProvider::OpenRouter.openai_compat_base_url(ep, None),
             "https://openrouter.ai/api/v1"
         );
         assert_eq!(
-            AiProvider::OpenAI.openai_compat_base_url(ep),
+            AiProvider::OpenAI.openai_compat_base_url(ep, None),
             "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            AiProvider::AiNovelist.openai_compat_base_url(ep, Some("v1")),
+            ai_novelist::V1_BASE_URL
         );
     }
 
@@ -2323,7 +2449,7 @@ mod tests {
         );
         // openai_compat_base_url falls through to base_url for OpenaiCompatible
         assert_eq!(
-            AiProvider::OpenaiCompatible.openai_compat_base_url(ep),
+            AiProvider::OpenaiCompatible.openai_compat_base_url(ep, None),
             "http://localhost:1234/v1"
         );
         // Trailing slash trimmed
@@ -2338,7 +2464,7 @@ mod tests {
     fn test_openai_compatible_models_url() {
         let ep = ProviderEndpoints::new("", "http://localhost:1234/v1");
         assert_eq!(
-            AiProvider::OpenaiCompatible.models_url(ep),
+            AiProvider::OpenaiCompatible.models_url(ep, None),
             "http://localhost:1234/v1/models"
         );
     }
@@ -2381,7 +2507,48 @@ mod tests {
             AiProvider::AiNovelist.base_url(ep),
             "https://api.tringpt.com/api"
         );
-        assert_eq!(AiProvider::AiNovelist.models_url(ep), "");
+        assert_eq!(AiProvider::AiNovelist.models_url(ep, None), "");
+        assert_eq!(
+            AiProvider::AiNovelist.models_url(ep, Some("v1")),
+            ai_novelist::V1_MODELS_URL
+        );
+    }
+
+    #[test]
+    fn test_merge_ainoverist_models_v1_wins_on_duplicate_id() {
+        let legacy = vec![legacy_ainoverist_model("spiko", "spiko")];
+        let v1 = vec![v1_ainoverist_model("spiko_ultra", "Spiko Ultra")];
+        let merged = merge_ainoverist_models(legacy, v1);
+        assert_eq!(merged.len(), 2);
+        let ultra = merged.iter().find(|m| m.id == "spiko_ultra").unwrap();
+        assert_eq!(ultra.api_variant.as_deref(), Some("v1"));
+    }
+
+    #[test]
+    fn test_apply_reasoning_to_body_ainoverist_v1_flat_effort() {
+        let mut body = serde_json::json!({});
+        apply_reasoning_to_body(
+            &mut body,
+            &AiProvider::AiNovelist,
+            Some("v1"),
+            Some(true),
+            &Some("high".to_string()),
+        );
+        assert_eq!(body["reasoning_effort"], "high");
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn test_apply_reasoning_to_body_ainoverist_legacy_skips() {
+        let mut body = serde_json::json!({});
+        apply_reasoning_to_body(
+            &mut body,
+            &AiProvider::AiNovelist,
+            Some("legacy"),
+            Some(true),
+            &Some("high".to_string()),
+        );
+        assert!(body.as_object().unwrap().is_empty());
     }
 
     #[test]

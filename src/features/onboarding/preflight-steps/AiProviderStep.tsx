@@ -4,6 +4,7 @@ import { CheckCircle } from "lucide-react";
 import { useAiSettingsStore } from "@/features/chat/store";
 import type { AiProvider } from "@/features/chat/types";
 import { DEFAULT_AI_SETTINGS } from "@/features/chat/types";
+import { resolveAinoveristApiVariant } from "@/features/chat/aiNovelist";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 
 const PREFLIGHT_PROVIDERS: AiProvider[] = [
@@ -66,7 +67,18 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
   }, [hasApiKey, settings?.provider]);
 
   async function handleModelChange(modelId: string) {
-    const updated = { ...localSettings, model: modelId };
+    // AI のべりすと: model と apiVariant を同時に永続化する
+    // (詳細は ChatInput.handleSelectModel コメント参照)
+    const apiVariant = resolveAinoveristApiVariant(
+      modelId,
+      models,
+      localSettings.modelApiVariant,
+    );
+    const updated = {
+      ...localSettings,
+      model: modelId,
+      modelApiVariant: apiVariant ?? null,
+    };
     setLocalSettings(updated);
     await saveSettings(updated);
   }

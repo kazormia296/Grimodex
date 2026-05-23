@@ -1,4 +1,9 @@
-import { AINOVERIST_MODEL_CAPS } from "../aiNovelist";
+import {
+  AINOVERIST_MODEL_CAPS,
+  AINOVERIST_V1_DEFAULT_CAPS,
+  AINOVERIST_V1_MODEL_CAPS,
+  isAinoveristV1Model,
+} from "../aiNovelist";
 
 /** モデルの能力情報 */
 export type EffortLevel = "low" | "medium" | "high" | "max";
@@ -203,6 +208,7 @@ export function resolveModelCapabilities(
     openaiCompatible?: unknown;
     aiNovelist?: unknown;
   } | null,
+  apiVariant?: string | null,
 ): ModelCapabilities {
   const base = getModelCapabilities(model);
   if (!settings) return base;
@@ -219,8 +225,22 @@ export function resolveModelCapabilities(
     };
   }
 
-  // AI のべりすと: モデル別の caps をテーブルから引く
+  // AI のべりすと: v1 / legacy で能力が異なる
   if (settings.provider === "ai-novelist") {
+    if (isAinoveristV1Model(model, apiVariant)) {
+      const v1 = AINOVERIST_V1_MODEL_CAPS[model] ?? AINOVERIST_V1_DEFAULT_CAPS;
+      return {
+        ...base,
+        contextWindow: v1.contextWindow,
+        maxOutputTokens: v1.maxOutputTokens,
+        supportsTools: true,
+        supportsThinking: false,
+        supportsAdaptiveThinking: false,
+        supportsEffort: false,
+        supportsMaxEffort: false,
+        supportsReasoning: true,
+      };
+    }
     const aino = AINOVERIST_MODEL_CAPS[model];
     if (aino) {
       return {
@@ -241,6 +261,7 @@ export function resolveModelCapabilities(
       supportsThinking: false,
       supportsAdaptiveThinking: false,
       supportsEffort: false,
+      supportsReasoning: false,
     };
   }
 
@@ -313,9 +334,17 @@ export function buildThinkingParams(
   taskEffort: EffortLevel,
   display: ThinkingDisplay = "summarized",
   enabled = true,
+  settings?: {
+    provider?: string;
+    openaiCompatible?: unknown;
+    aiNovelist?: unknown;
+  } | null,
+  apiVariant?: string | null,
 ): ThinkingParams {
   if (!enabled) return {};
-  const caps = getModelCapabilities(model);
+  const caps = settings
+    ? resolveModelCapabilities(model, settings, apiVariant)
+    : getModelCapabilities(model);
 
   if (caps.supportsAdaptiveThinking) {
     // Opus 4.6, Sonnet 4.6: adaptive thinking + effort

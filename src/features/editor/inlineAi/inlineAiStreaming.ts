@@ -34,7 +34,7 @@ export interface InlineAiStreamCallbacks {
 export async function sendInlineAiStream(
   messages: { role: string; content: string }[],
   callbacks: InlineAiStreamCallbacks,
-  options?: { model?: string },
+  options?: { model?: string; apiVariant?: string | null },
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("inline-ai:stream-chunk", (event) => {
@@ -66,6 +66,7 @@ export async function sendInlineAiStream(
     reasoningEnabled: null,
     reasoningEffort: null,
     model: options?.model ?? null,
+    apiVariant: options?.apiVariant ?? null,
   }).catch((e: unknown) => {
     const msg = e instanceof Error ? e.message : String(e);
     callbacks.onError(msg);
