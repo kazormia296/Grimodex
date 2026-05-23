@@ -282,9 +282,9 @@ describe("useLayoutStore", () => {
         .getState()
         .reorderPanelInSlot("codex", "left", slot.id, slot.panels.length);
 
-      const after = useLayoutStore
-        .getState()
-        .layout.regions.left.slots.find((s) => s.id === slot.id)!;
+      const after = useLayoutStore.getState().layout.regions.left.slots.find(
+        (s) => s.id === slot.id,
+      )!;
       expect(after.panels.at(-1)).toBe("codex");
       expect(after.activePanel).toBe(activeBefore);
       assertValidLayout(useLayoutStore.getState().layout);
@@ -722,6 +722,18 @@ describe("layout store property invariants", () => {
 
     useLayoutStore.getState().setDraggingPanel(null);
     expect(useLayoutStore.getState().dragOverTarget).toBeNull();
+    expect(useLayoutStore.getState().stripeSwapMode).toBeNull();
+  });
+
+  it("setStripeSwapPreview clears on setDraggingPanel(null)", () => {
+    useLayoutStore.getState().setStripeSwapPreview({
+      mode: "axis-locked",
+      slotId: "l0",
+      offsets: { chat: 30 },
+    });
+    useLayoutStore.getState().setDraggingPanel("chat", "pointer");
+    useLayoutStore.getState().setDraggingPanel(null);
+    expect(useLayoutStore.getState().stripeSwapOffsets).toEqual({});
   });
 
   it("toggle twice collapses panel", () => {

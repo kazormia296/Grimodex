@@ -21,6 +21,7 @@ function stripeOrientationForSegment(
 export function StripeInsertIndicator() {
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const dragOverTarget = useLayoutStore((s) => s.dragOverTarget);
+  const stripeSwapMode = useLayoutStore((s) => s.stripeSwapMode);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const [line, setLine] = useState<{
     left: number;
@@ -33,6 +34,7 @@ export function StripeInsertIndicator() {
     if (
       !draggingPanel ||
       layoutLocked ||
+      stripeSwapMode === "axis-locked" ||
       !dragOverTarget ||
       dragOverTarget.type !== "stripe-reorder"
     ) {
@@ -40,9 +42,7 @@ export function StripeInsertIndicator() {
       return;
     }
 
-    function measure(
-      target: Extract<DragOverTarget, { type: "stripe-reorder" }>,
-    ) {
+    function measure(target: Extract<DragOverTarget, { type: "stripe-reorder" }>) {
       const segmentEl = document.querySelector<HTMLElement>(
         `[data-drop-slot-id="${target.slotId}"]`,
       );
@@ -116,7 +116,7 @@ export function StripeInsertIndicator() {
     observer.observe(shell);
 
     return () => observer.disconnect();
-  }, [dragOverTarget, draggingPanel, layoutLocked]);
+  }, [dragOverTarget, draggingPanel, layoutLocked, stripeSwapMode]);
 
   if (!line) return null;
 

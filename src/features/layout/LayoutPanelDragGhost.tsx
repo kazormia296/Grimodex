@@ -11,6 +11,7 @@ export function LayoutPanelDragGhost() {
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const dragSource = useLayoutStore((s) => s.panelDragSource);
   const dragOffset = useLayoutStore((s) => s.panelDragOffset);
+  const stripeSwapMode = useLayoutStore((s) => s.stripeSwapMode);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -27,7 +28,14 @@ export function LayoutPanelDragGhost() {
     return () => document.removeEventListener("pointermove", onMove);
   }, [dragSource, draggingPanel]);
 
-  if (!draggingPanel || dragSource !== "pointer" || !pos) return null;
+  if (
+    !draggingPanel ||
+    dragSource !== "pointer" ||
+    stripeSwapMode === "axis-locked" ||
+    !pos
+  ) {
+    return null;
+  }
 
   const Icon = PANEL_ICON_MAP[draggingPanel];
   const offsetX = dragOffset?.x ?? 14;
