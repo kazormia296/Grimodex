@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { Editor } from "@tiptap/core";
+import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
   cursorOverlayKey,
@@ -41,7 +42,7 @@ export function useCursorOverlay(editor: Editor | null) {
 
   // Force update cycle when either toggle changes
   useEffect(() => {
-    if (!editor) return;
+    if (!isEditorViewReady(editor)) return;
     const { tr } = editor.state;
     tr.setMeta(cursorOverlayKey, true);
     editor.view.dispatch(tr);

@@ -17,6 +17,7 @@ import { useTreeStore } from "./treeStore";
 import { StatusDot } from "./StatusDot";
 import { recordMark } from "@/lib/perfLog";
 import type { TreeNodeData, SceneStatus } from "./treeStore";
+import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { TreeContextMenu } from "./TreeContextMenu";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -144,6 +145,7 @@ export function TreeNodeItem({
   const { active: dndActive } = useDndContext();
   const dragInProgress = dndActive !== null;
   const reduced = useReducedMotion();
+  const fileBacked = isFileBackedNode(node.sourceUri);
 
   // D&D: draggable
   const {
@@ -151,7 +153,7 @@ export function TreeNodeItem({
     listeners,
     setNodeRef: setDragRef,
     isDragging,
-  } = useDraggable({ id: node.id, data: { node } });
+  } = useDraggable({ id: node.id, data: { node }, disabled: fileBacked });
 
   // D&D: droppable
   const { setNodeRef: setDropRef } = useDroppable({
@@ -293,9 +295,17 @@ export function TreeNodeItem({
           >
             {/* Drag handle — always in layout to prevent title shift */}
             <span
-              {...attributes}
-              {...listeners}
-              className="flex h-5 w-4 flex-shrink-0 cursor-grab items-center justify-center text-muted-foreground/50 opacity-0 group-hover:opacity-100"
+              {...(fileBacked ? {} : attributes)}
+              {...(fileBacked ? {} : listeners)}
+              className={cn(
+                "flex h-5 w-4 flex-shrink-0 items-center justify-center text-muted-foreground/50 opacity-0 group-hover:opacity-100",
+                fileBacked
+                  ? "cursor-not-allowed opacity-30"
+                  : "cursor-grab",
+              )}
+              title={
+                fileBacked ? t("externalMount.filenameOrder") : undefined
+              }
               onClick={(e) => e.stopPropagation()}
             >
               <GripVertical className="h-4 w-4" />

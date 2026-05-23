@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { Editor } from "@tiptap/core";
+import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
   characterFadeKey,
@@ -47,14 +48,14 @@ export function useCharacterFade(editor: Editor | null) {
 
   // Force a re-render path so the plugin sees the toggle change immediately.
   useEffect(() => {
-    if (!editor) return;
+    if (!isEditorViewReady(editor)) return;
     const { tr } = editor.state;
     tr.setMeta(characterFadeKey, { type: "cleanup", now: Date.now() });
     editor.view.dispatch(tr);
   }, [editor, fadeIn]);
 
   useEffect(() => {
-    if (!editor) return;
+    if (!isEditorViewReady(editor)) return;
     const { tr } = editor.state;
     tr.setMeta(characterFadeOutKey, { type: "consumed" });
     editor.view.dispatch(tr);

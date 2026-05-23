@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useRef } from "react";
 import type { Editor } from "@tiptap/core";
 import i18next from "i18next";
+import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import { useInlineAiStore } from "./inlineAiStore";
 import {
   inlineAiDiffKey,
@@ -26,7 +27,7 @@ export function useInlineAiDiff(editor: Editor | null) {
   } | null>(null);
 
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || !isEditorViewReady(editor)) return;
     const existing = editor.view.state.plugins.find(
       (p) => p.spec.key === inlineAiDiffKey,
     );

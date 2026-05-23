@@ -17,6 +17,7 @@ import { useLintStore } from "@/features/lint/lintStore";
 import { useTermDictionaryStore } from "@/features/lint/termDictionaryStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { withProjectLoad } from "./projectLoadGate";
+import { initializeExternalMounts } from "@/features/external-mount/mountManager";
 
 async function loadProjectStoresInBatches(
   projectId: string,
@@ -144,5 +145,7 @@ export async function reloadProjectData(projectId: string): Promise<void> {
     useChatStore.setState({ activeSceneId });
 
     await loadProjectStoresInBatches(projectId);
+
+    void initializeExternalMounts().catch(() => {});
   });
 }

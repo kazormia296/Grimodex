@@ -23,6 +23,9 @@ import {
 } from "@/features/commandCenter";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
+import { useExternalMountListener } from "@/features/external-mount/useExternalMountListener";
+import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
+import { initializeExternalMounts } from "@/features/external-mount/mountManager";
 import { CommandPalette } from "@/features/commandPalette/CommandPalette";
 import { useDebugLogStore } from "@/lib/debugLog";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
@@ -120,6 +123,7 @@ function App() {
 
   // semantic_reindex_all の進行状況 event を購読 (App 起動中ずっと 1 度だけ)。
   useReindexProgressListener();
+  useExternalMountListener();
 
   // Sync uiLanguage setting → i18next
   useEffect(() => {
@@ -238,6 +242,10 @@ function EditorScreen() {
     s.getBoolean("display.glassSurfaceEditorChrome", true),
   );
   const isMac = isMacPlatform();
+
+  useEffect(() => {
+    void initializeExternalMounts().catch(() => {});
+  }, []);
 
   useEffect(() => {
     const html = document.documentElement;
@@ -602,6 +610,7 @@ function EditorScreen() {
       )}
       {showSampleTour && <SampleTour />}
       <ReindexProgressToast />
+      <ReloadConflictDialog />
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <LayoutShell
           hidden={!!getScreenshotPanelId()}

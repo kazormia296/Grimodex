@@ -5,6 +5,10 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { FindReplaceStorage } from "./FindReplaceExtension";
 
+function supportsFindReplace(editor: Editor): boolean {
+  return typeof editor.commands.clearFind === "function";
+}
+
 interface FindReplaceBarProps {
   editor: Editor | null;
   open: boolean;
@@ -37,7 +41,7 @@ export function FindReplaceBar({
 
   // Clear decorations on close
   useEffect(() => {
-    if (!open && editor) {
+    if (!open && editor && supportsFindReplace(editor)) {
       editor.commands.clearFind();
       setQuery("");
     }
@@ -45,16 +49,16 @@ export function FindReplaceBar({
 
   // Update search when query or options change
   useEffect(() => {
-    if (!editor || !open) return;
+    if (!editor || !open || !supportsFindReplace(editor)) return;
     editor.commands.setFindQuery(query);
   }, [query, editor, open]);
 
   useEffect(() => {
-    if (!editor || !open) return;
+    if (!editor || !open || !supportsFindReplace(editor)) return;
     editor.commands.setFindOptions({ caseSensitive, useRegex });
   }, [caseSensitive, useRegex, editor, open]);
 
-  if (!open || !editor) return null;
+  if (!open || !editor || !supportsFindReplace(editor)) return null;
 
   const storage = editor.storage.findReplace as FindReplaceStorage;
   const matchCount = storage?.matches?.length ?? 0;

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { Editor } from "@tiptap/core";
+import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import {
   createTrashBinCapturePlugin,
   trashBinCaptureKey,
@@ -23,9 +24,7 @@ export function useTrashBinCapture(
 ) {
   // Plugin 冪等登録 + cleanup
   useEffect(() => {
-    if (!editor) return;
-    // editor.view は通常存在するが、モック化された useEditor では undefined のことがある
-    if (!editor.view?.state) return;
+    if (!isEditorViewReady(editor)) return;
     const exists = editor.view.state.plugins.find(
       (p) => p.spec.key === trashBinCaptureKey,
     );
@@ -43,9 +42,7 @@ export function useTrashBinCapture(
 
   // origin / paused 変化を meta dispatch
   useEffect(() => {
-    if (!editor) return;
-    if (editor.isDestroyed) return;
-    if (!editor.view?.state) return;
+    if (!isEditorViewReady(editor)) return;
     const tr = editor.state.tr;
     tr.setMeta(META_ORIGIN, origin);
     tr.setMeta(META_PAUSED, paused);

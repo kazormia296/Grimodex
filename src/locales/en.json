@@ -2214,6 +2214,35 @@
       "noScenesSelected": "(No scenes selected)"
     }
   },
+  "externalMount": {
+    "title": "External MD Roots",
+    "description": "Mount a folder of Markdown files. Files sync bidirectionally; Git is managed externally.",
+    "remove": "Remove mount",
+    "empty": "No external roots mounted.",
+    "missing": "Some mount paths are unavailable. Re-locate or remove them.",
+    "add": "Add Mount",
+    "manage": "Manage mounts",
+    "manageDesc": "Link Markdown folders on disk to this project.",
+    "open": "Open…",
+    "filenameOrder": "Filename determines order",
+    "banner": "This scene is linked to a Markdown file. Body formatting is limited to GFM. Grimodex-only metadata such as status, POV, and synopsis is not saved to the Markdown file.",
+    "conflictTitle": "External file changed",
+    "conflictBody": "This scene was edited externally while you have unsaved changes. Choose which version to keep.",
+    "keepLocal": "Keep my edits",
+    "reload": "Reload from file",
+    "addTitle": "Add External MD Root",
+    "path": "Folder path",
+    "pathPlaceholder": "/path/to/novel",
+    "browse": "Browse",
+    "label": "Display label",
+    "mount": "Mount",
+    "toast": {
+      "mounted": "Mounted {{label}}",
+      "removed": "External mount removed",
+      "fileDeletedExternally": "File was deleted externally",
+      "renamed": "Renamed to {{title}}"
+    }
+  },
   "scenes": {
     "sortManual": "Manual",
     "sortTitle": "By title",

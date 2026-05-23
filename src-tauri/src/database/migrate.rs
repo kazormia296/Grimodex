@@ -934,6 +934,11 @@ impl Database {
         Self::add_column_if_missing(&conn, "tree_nodes", "unplaced_beat_preview", "TEXT")?;
         Self::add_column_if_missing(&conn, "tree_nodes", "placed_beat_preview", "TEXT")?;
 
+        // External MD mount — file-backed scene metadata (additive).
+        Self::add_column_if_missing(&conn, "tree_nodes", "source_uri", "TEXT")?;
+        Self::add_column_if_missing(&conn, "tree_nodes", "source_mtime", "TEXT")?;
+        Self::add_column_if_missing(&conn, "tree_nodes", "archived_at", "TEXT")?;
+
         // Phase 4 (chat outline): projects.outline は既存 DB に対する additive 追加。
         // 著者が手書きする物語全体の outline を保持し、AI コンテキスト L2 に常時注入される。
         Self::add_column_if_missing(&conn, "projects", "outline", "TEXT")?;
