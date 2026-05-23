@@ -3,7 +3,12 @@ import { cn } from "@/lib/utils";
 import { EditorToggleIcon } from "./EditorToggleIcon";
 import { StripeBandContextMenu } from "./StripeBandContextMenu";
 import { ToolWindowIcon } from "./ToolWindowIcon";
-import { MIN_EDITOR_SIZE, MIN_SLOT_SIZE } from "./layoutConstants";
+import {
+  MIN_EDITOR_SIZE,
+  MIN_SLOT_SIZE,
+  slotSplitterPx,
+} from "./layoutConstants";
+import { useCardLayout } from "./cardLayout";
 import { useLayoutStore } from "./layoutStore";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import type { CenterStripeSegment } from "./useCenterSegments";
@@ -50,8 +55,7 @@ function CenterStripeBand({ segment, flexGrow }: CenterStripeBandProps) {
             : undefined,
         }}
         className={cn(
-          "relative flex h-full min-h-0 min-w-0 flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden px-0.5",
-          segment.kind === "editor" && segment.open && "min-w-0 flex-1",
+          "relative flex h-full min-h-0 min-w-0 flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden",
           draggingPanel &&
             !layoutLocked &&
             segment.kind === "tool" &&
@@ -79,42 +83,40 @@ function CenterStripeBand({ segment, flexGrow }: CenterStripeBandProps) {
 
 interface CollapsedClusterProps {
   segments: CenterStripeSegment[];
+  /** "start" = 先頭側に寄せる / "end" = 末尾側に寄せる */
+  anchor: "start" | "end";
 }
 
 /**
- * 先頭の折りたたみ tool 群。0 幅 absolute オーバーレイにすると、後続の
- * divider / editor バンドが DOM 後勝ちで（同じ z-index のため）上に描画され
- * アイコンが隠れる。in-flow で実寸描画し後続バンドを右へ押し出して重なりを解消する。
+ * 先頭の折りたたみ tool 群。in-flow にすると open バンドが押し出され、
+ * 後続 open バンドの開始位置が CenterContent の slot 0 と一致しなくなる。
+ * 0 幅の absolute オーバーレイで描画し、後続 open バンドは比率配分で先頭から
+ * 割り振られるようにする。
  */
-function LeadingCollapsedCluster({ segments }: CollapsedClusterProps) {
-  return (
-    <div
-      data-stripe-collapsed-cluster
-      className="flex h-full shrink-0 flex-row items-center gap-0.5"
-    >
-      {segments.map((segment) => (
-        <CenterStripeBand key={segment.key} segment={segment} flexGrow={0} />
-      ))}
-    </div>
-  );
+function LeadingCollapsedCluster({
+  segments,
+}: Omit<CollapsedClusterProps, "anchor">) {
+  return <CollapsedCluster segments={segments} anchor="start" />;
 }
 
 /**
  * 開いたバンドの間／末尾に挟まる折りたたみ tool 群。flex フローでは 0 幅で
  * open バンドの比率配分に影響を与えず、アイコンは absolute オーバーレイで
- * 右境界へ寄せ、直前バンドの空き領域（アイコンは左寄せ）に重ねて表示する。
+ * 境界に寄せて表示する。
  */
-function CollapsedCluster({ segments }: CollapsedClusterProps) {
+function CollapsedCluster({ segments, anchor }: CollapsedClusterProps) {
   return (
     <div
       data-stripe-collapsed-cluster
       className="relative h-full"
       style={{ flexGrow: 0, flexBasis: 0, flexShrink: 0 }}
     >
-      {/* collapsed アイコンはクリックで再展開できる必要がある。ドラッグ中の
-          イベントは z-40 の CenterStripeDropOverlay が受けるため、ここで
-          pointer-events を切る必要はない。 */}
-      <div className="absolute bottom-0 right-0 top-0 flex flex-row items-center gap-0.5">
+      <div
+        className={cn(
+          "absolute bottom-0 top-0 flex flex-row items-center gap-0.5",
+          anchor === "start" ? "left-0" : "right-0",
+        )}
+      >
         {segments.map((segment) => (
           <CenterStripeBand key={segment.key} segment={segment} flexGrow={0} />
         ))}
@@ -125,8 +127,6 @@ function CollapsedCluster({ segments }: CollapsedClusterProps) {
 
 type StripeItem =
   | { kind: "open"; segment: CenterStripeSegment }
-  /** editor 閉じ時も常設表示（CollapsedCluster に入れると幅 0 で消える） */
-  | { kind: "pinned"; segment: CenterStripeSegment }
   | { kind: "collapsed"; segments: CenterStripeSegment[] };
 
 interface CenterStripeBandsProps {
@@ -136,6 +136,8 @@ interface CenterStripeBandsProps {
 export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
+  const cardLayout = useCardLayout();
+  const dividerGapPx = slotSplitterPx(cardLayout);
   const showDropZones = useDragDropZonesReady(
     Boolean(draggingPanel && !layoutLocked),
   );
@@ -145,16 +147,12 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
     0,
   );
 
+  // open バンド以外（閉じた tool / 閉じた editor）は連続する collapsed cluster
+  // にまとめ、0 幅 overlay として描画する。これで open バンドの flex 配分が
+  // CenterContent の visibleSegments と同じ並びになる（CenterContent は
+  // closed editor を除外する）。
   const items: StripeItem[] = [];
   for (const segment of segments) {
-    if (segment.kind === "editor") {
-      if (segment.open) {
-        items.push({ kind: "open", segment });
-      } else {
-        items.push({ kind: "pinned", segment });
-      }
-      continue;
-    }
     if (segment.open) {
       items.push({ kind: "open", segment });
       continue;
@@ -180,30 +178,40 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
           : "w-max min-w-max shrink-0",
       )}
     >
-      {items.map((item, itemIdx) => {
-        if (item.kind === "collapsed") {
-          if (itemIdx === 0) {
+      {(() => {
+        let renderedOpenBands = 0;
+
+        return items.map((item, itemIdx) => {
+          if (item.kind === "collapsed") {
+            if (itemIdx === 0) {
+              return (
+                <LeadingCollapsedCluster
+                  key={`collapsed-${item.segments[0].key}`}
+                  segments={item.segments}
+                />
+              );
+            }
             return (
-              <LeadingCollapsedCluster
+              <CollapsedCluster
                 key={`collapsed-${item.segments[0].key}`}
                 segments={item.segments}
+                anchor="end"
               />
             );
           }
-          return (
-            <CollapsedCluster
-              key={`collapsed-${item.segments[0].key}`}
-              segments={item.segments}
-            />
-          );
-        }
 
-        if (item.kind === "pinned") {
           const segment = item.segment;
+          // collapsed cluster は 0 幅 overlay。divider は open バンド同士の
+          // 境界にのみ挟む（CenterContent の Splitter と 1:1 対応）。
+          const showDivider = renderedOpenBands > 0;
+          renderedOpenBands += 1;
           return (
             <Fragment key={segment.key}>
-              {itemIdx > 0 && (
-                <div className="relative mx-0.5 flex h-full shrink-0 items-center">
+              {showDivider && (
+                <div
+                  className="relative flex h-full shrink-0 items-center justify-center"
+                  style={{ width: dividerGapPx }}
+                >
                   <div
                     data-stripe-divider
                     aria-hidden
@@ -211,30 +219,16 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
                   />
                 </div>
               )}
-              <CenterStripeBand segment={segment} flexGrow={0} />
+              <CenterStripeBand
+                segment={segment}
+                flexGrow={
+                  openRatioSum > 0 ? segment.sizeRatio / openRatioSum : 1
+                }
+              />
             </Fragment>
           );
-        }
-
-        const segment = item.segment;
-        return (
-          <Fragment key={segment.key}>
-            {itemIdx > 0 && (
-              <div className="relative mx-0.5 flex h-full shrink-0 items-center">
-                <div
-                  data-stripe-divider
-                  aria-hidden
-                  className="h-5 w-px shrink-0 rounded-full bg-muted-foreground/50"
-                />
-              </div>
-            )}
-            <CenterStripeBand
-              segment={segment}
-              flexGrow={openRatioSum > 0 ? segment.sizeRatio / openRatioSum : 1}
-            />
-          </Fragment>
-        );
-      })}
+        });
+      })()}
     </div>
   );
 }

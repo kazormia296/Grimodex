@@ -12,8 +12,6 @@ interface SideRegionStripeColumnProps {
   region: "left" | "right";
   stripeOrientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
-  /** stripe 下端に確保するコーナートグル用の余白(px)。 */
-  reserveEndPx?: number;
 }
 
 /**
@@ -25,7 +23,6 @@ export const SideRegionStripeColumn = memo(function SideRegionStripeColumn({
   region,
   stripeOrientation,
   segments,
-  reserveEndPx = 0,
 }: SideRegionStripeColumnProps) {
   return (
     <div
@@ -36,7 +33,6 @@ export const SideRegionStripeColumn = memo(function SideRegionStripeColumn({
         region={region}
         orientation={stripeOrientation}
         segments={segments}
-        reserveEndPx={reserveEndPx}
       />
     </div>
   );
@@ -47,7 +43,8 @@ interface RegionDockProps {
   stripeOrientation: "vertical" | "horizontal";
   contentOrientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
-  /** bottom stripe の左右端に確保するコーナートグル用の余白(px)。 */
+  /** bottom stripe の左右端に確保するコーナートグル用の余白(px)。
+   *  content には適用しない（alignment 維持のため）。 */
   stripeReserveStartPx?: number;
   stripeReserveEndPx?: number;
 }

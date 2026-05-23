@@ -511,6 +511,14 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   overflow: visible;
 }
 
+/* Stripe (side/bottom) は .gx-panel の 1px border をオフにする。border が
+   あると stripe 内側の flex 配分域が両端 1px ずつ縮み、content 側の Slot
+   Splitter 位置と divider 位置がズレる（content には border が無い）。
+   center stripe は .gx-panel を付けていないため対象外。 */
+.app-shell[data-card="true"] [data-stripe-region].gx-panel {
+  border: none;
+}
+
 /* Canvas behind the cards — sunk below --background so cards lift off it. */
 .app-shell[data-card="true"] [data-layout-shell] {
   background: var(--gx-canvas-bg);
