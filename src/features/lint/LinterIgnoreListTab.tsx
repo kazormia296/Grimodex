@@ -5,6 +5,7 @@ import { useLintIgnoreStore, type LintIgnoreEntry } from "./lintIgnoreStore";
 import { buildBlocksFromJson } from "./projectScan";
 import { loadSceneContent } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { useTranslation } from "react-i18next";
 import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
 
 interface EntryRow extends LintIgnoreEntry {
@@ -186,6 +187,7 @@ function SceneGroup({
 }
 
 export function LinterIgnoreListTab() {
+  const { t } = useTranslation();
   const [entries, setEntries] = useState<EntryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [staleness, setStaleness] = useState<Map<string, StalenessStatus>>(
@@ -242,10 +244,8 @@ export function LinterIgnoreListTab() {
   if (entries.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
-        <span>永続無視エントリはありません。</span>
-        <span className="text-xs">
-          診断パネルの右クリックメニューから「永続的に無視」で追加できます。
-        </span>
+        <span>{t("lintSettings.ignoreList.empty")}</span>
+        <span className="text-xs">{t("lintSettings.ignoreList.emptyHint")}</span>
       </div>
     );
   }
@@ -270,8 +270,7 @@ export function LinterIgnoreListTab() {
     <div className="flex flex-col h-full">
       {staleCount > 0 && (
         <div className="mx-3 mt-3 rounded border border-yellow-300 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20 px-3 py-2 text-xs text-yellow-800 dark:text-yellow-400">
-          {staleCount}{" "}
-          件のエントリが陳腐化または孤児状態です。不要なものを削除してください。
+          {t("lintSettings.ignoreList.staleWarning", { count: staleCount })}
         </div>
       )}
       <div className="flex-1 overflow-y-auto divide-y divide-border">

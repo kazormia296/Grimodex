@@ -178,7 +178,9 @@ export function TermDictionaryTab() {
         </div>
       ) : filteredRows.length === 0 ? (
         <div className="flex h-32 items-center justify-center text-xs text-muted-foreground">
-          {rows.length === 0 ? "用語辞書はまだ空です。" : "該当エントリなし。"}
+          {rows.length === 0
+            ? t("lintSettings.termDictionary.empty")
+            : t("lintSettings.termDictionary.noMatch")}
         </div>
       ) : (
         <div className="overflow-hidden rounded border border-border">

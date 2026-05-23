@@ -1,7 +1,11 @@
 // @vitest-environment happy-dom
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ListRowSkeletonList, TreeRowSkeletonList } from "./skeleton-patterns";
+import {
+  ChatHistorySkeletonList,
+  ListRowSkeletonList,
+  TreeRowSkeletonList,
+} from "./skeleton-patterns";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -21,6 +25,14 @@ describe("skeleton-patterns", () => {
   it("shows list row skeleton list with aria-busy", () => {
     render(<ListRowSkeletonList />);
     expect(screen.getByTestId("list-row-skeleton-list")).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+  });
+
+  it("shows chat history skeleton list with aria-busy", () => {
+    render(<ChatHistorySkeletonList />);
+    expect(screen.getByTestId("chat-history-loading")).toHaveAttribute(
       "aria-busy",
       "true",
     );

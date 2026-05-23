@@ -2100,6 +2100,17 @@
     "restoreScopeHint": "本文を OFF にすると、伏線・マップ・校閲・ラベルなど本文に依存する一部が復元されません。",
     "restoreSkipNote": "{{count}} 件のアイテムは依存するデータ範囲が選択されていないため復元をスキップしました。"
   },
+  "lintSettings": {
+    "ignoreList": {
+      "empty": "永続無視エントリはありません。",
+      "emptyHint": "診断パネルの右クリックメニューから「永続的に無視」で追加できます。",
+      "staleWarning": "{{count}} 件のエントリが陳腐化または孤児状態です。不要なものを削除してください。"
+    },
+    "termDictionary": {
+      "empty": "用語辞書はまだ空です。",
+      "noMatch": "該当エントリなし。"
+    }
+  },
   "validation": {
     "invalidData": "レイアウトデータが不正です",
     "missingGrid": "grid フィールドがありません",
