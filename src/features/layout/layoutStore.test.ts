@@ -192,6 +192,23 @@ describe("useLayoutStore", () => {
   });
 
   describe("movePanelToSlot", () => {
+    it("keeps the source slot open with the next panel when the active panel moves away", () => {
+      useLayoutStore.getState().showPanel("codex");
+      useLayoutStore.getState().showPanel("chat");
+
+      useLayoutStore.getState().movePanelToRegion("codex", "right");
+
+      const sourceSlot = useLayoutStore
+        .getState()
+        .layout.regions.left.slots.find((s) => s.id === "l1");
+      expect(sourceSlot?.activePanel).toBe("codex-quick");
+      expect(sourceSlot?.panels).toEqual([
+        "codex-quick",
+        "command-center-results",
+      ]);
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
+
     it("redistributes ratios when an open slot is removed from the source region", () => {
       useLayoutStore.getState().showPanel("scenes");
       useLayoutStore.getState().showPanel("codex");
@@ -282,9 +299,9 @@ describe("useLayoutStore", () => {
         .getState()
         .reorderPanelInSlot("codex", "left", slot.id, slot.panels.length);
 
-      const after = useLayoutStore.getState().layout.regions.left.slots.find(
-        (s) => s.id === slot.id,
-      )!;
+      const after = useLayoutStore
+        .getState()
+        .layout.regions.left.slots.find((s) => s.id === slot.id)!;
       expect(after.panels.at(-1)).toBe("codex");
       expect(after.activePanel).toBe(activeBefore);
       assertValidLayout(useLayoutStore.getState().layout);

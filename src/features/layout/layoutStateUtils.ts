@@ -739,6 +739,21 @@ export function removePanelFromSideSlots(
   return next;
 }
 
+function nextActivePanelAfterRemoval(
+  panels: ToolWindowPanelId[],
+  removedPanel: ToolWindowPanelId,
+  remainingPanels: ToolWindowPanelId[],
+): ToolWindowPanelId {
+  const removedIdx = panels.indexOf(removedPanel);
+  for (let i = removedIdx + 1; i < panels.length; i++) {
+    const candidate = panels[i];
+    if (remainingPanels.includes(candidate)) {
+      return candidate;
+    }
+  }
+  return remainingPanels[0];
+}
+
 export function removePanelFromSlot(
   slots: SlotState[],
   slotIndex: number,
@@ -759,13 +774,17 @@ export function removePanelFromSlot(
     };
   }
 
+  const nextActivePanel = removedActive
+    ? nextActivePanelAfterRemoval(slot.panels, panel, nextPanels)
+    : slot.activePanel;
+
   return {
     slots: slots.map((s, i) =>
       i === slotIndex
         ? {
             ...s,
             panels: nextPanels,
-            activePanel: removedActive ? null : s.activePanel,
+            activePanel: nextActivePanel,
           }
         : s,
     ),
@@ -794,12 +813,16 @@ export function removePanelFromCenterSegment(
     );
   }
 
+  const nextActivePanel = removedActive
+    ? nextActivePanelAfterRemoval(segment.panels, panel, nextPanels)
+    : segment.activePanel;
+
   return segments.map((s, i) => {
     if (i !== segmentIndex || s.kind !== "tool") return s;
     return {
       ...s,
       panels: nextPanels,
-      activePanel: removedActive ? null : s.activePanel,
+      activePanel: nextActivePanel,
     };
   });
 }
