@@ -13,6 +13,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { SortMode } from "./chatHistoryStore";
+import { ChatHistorySkeletonList } from "@/components/ui/skeleton-patterns";
 
 /** Render FTS5 snippet: \x01 = highlight start, \x02 = highlight end */
 function renderHighlight(text: string): React.ReactNode {
@@ -282,9 +283,7 @@ export function ChatHistoryPanel() {
       {/* Main list */}
       <div className="flex-1 overflow-y-auto px-2 py-2">
         {isLoading && sessions.length === 0 && (
-          <p className="py-8 text-center text-xs text-muted-foreground">
-            {t("common.loading")}
-          </p>
+          <ChatHistorySkeletonList testId="chat-history-loading" />
         )}
 
         {/* Search mode */}

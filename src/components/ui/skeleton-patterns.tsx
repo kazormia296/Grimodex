@@ -130,13 +130,11 @@ export function GridCardSkeletonList({
     <SkeletonRegion
       testId={testId}
       className={cn("p-2", className)}
-      style={
-        {
-          display: "grid",
-          gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-          gap: "4px",
-        } as React.CSSProperties
-      }
+      style={{
+        display: "grid",
+        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+        gap: "4px",
+      } as React.CSSProperties}
     >
       {Array.from({ length: count }, (_, index) => (
         <GridCardSkeleton key={index} />
@@ -173,6 +171,27 @@ export function SessionRowSkeletonList({
     >
       {Array.from({ length: count }, (_, index) => (
         <SessionRowSkeleton key={index} />
+      ))}
+    </SkeletonRegion>
+  );
+}
+
+/** Chat history panel: group header + session rows. */
+export function ChatHistorySkeletonList({
+  className,
+  testId = "chat-history-loading",
+}: {
+  className?: string;
+  testId?: string;
+}) {
+  return (
+    <SkeletonRegion testId={testId} className={cn("space-y-3 px-2 py-2", className)}>
+      {[0, 1].map((groupIndex) => (
+        <div key={groupIndex}>
+          <Skeleton className="mb-2 h-3 w-24 rounded-sm" />
+          <SessionRowSkeleton />
+          <SessionRowSkeleton />
+        </div>
       ))}
     </SkeletonRegion>
   );

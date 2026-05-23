@@ -2091,6 +2091,17 @@
     "restoreScopeHint": "Disabling Body & structure will skip foreshadow setups, map links, lint ignores and label assignments that depend on it.",
     "restoreSkipNote": "{{count}} items were skipped because their dependent scope was not selected."
   },
+  "lintSettings": {
+    "ignoreList": {
+      "empty": "No persistent ignore entries.",
+      "emptyHint": "Add entries via “Ignore permanently” in the diagnostics panel context menu.",
+      "staleWarning": "{{count}} entries are stale or orphaned. Remove any you no longer need."
+    },
+    "termDictionary": {
+      "empty": "The term dictionary is empty.",
+      "noMatch": "No matching entries."
+    }
+  },
   "validation": {
     "invalidData": "Layout data is invalid",
     "missingGrid": "Missing grid field",
