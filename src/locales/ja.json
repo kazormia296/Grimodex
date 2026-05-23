@@ -2250,8 +2250,12 @@
     "banner": "このシーンは Markdown ファイルに直結しています。本文の装飾は GFM 範囲に限定されます。status・POV・synopsis 等の Grimodex 専用メタデータは Markdown ファイルには保存されません。",
     "conflictTitle": "外部ファイルが変更されました",
     "conflictBody": "編集中に外部でファイルが変更されました。どちらの内容を保持するか選んでください。",
+    "conflictQueue": "他に {{count}} 件の競合が待機中です",
     "keepLocal": "編集中の内容を保持",
     "reload": "ファイルから再読み込み",
+    "removeConfirmTitle": "マウントを解除しますか？",
+    "removeConfirmBody": "「{{label}}」のマウントを解除すると、関連するシーンと注釈データ（帰属・伏線など）が完全に削除されます。ディスク上の Markdown ファイル自体は削除されません。",
+    "removeConfirmAction": "解除して削除",
     "addTitle": "外部 MD ルートを追加",
     "path": "フォルダパス",
     "pathPlaceholder": "/path/to/novel",
@@ -2262,7 +2266,9 @@
       "mounted": "「{{label}}」をマウントしました",
       "removed": "外部マウントを解除しました",
       "fileDeletedExternally": "ファイルが外部で削除されました",
-      "renamed": "「{{title}}」にリネームされました"
+      "renamed": "「{{title}}」にリネームされました",
+      "reconcileFailed": "「{{label}}」の同期に失敗しました",
+      "mountFailed": "マウントに失敗しました"
     }
   },
   "scenes": {

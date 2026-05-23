@@ -32,6 +32,13 @@ export async function listRegisteredMounts(): Promise<ExternalRoot[]> {
   return invoke<ExternalRoot[]>("external_mount_list");
 }
 
+export async function getExternalFileMtime(
+  rootId: string,
+  relPath: string,
+): Promise<string> {
+  return invoke<string>("external_mount_file_mtime", { rootId, relPath });
+}
+
 export async function scanMount(rootId: string): Promise<ScanResult> {
   return invoke<ScanResult>("external_mount_scan", { rootId });
 }

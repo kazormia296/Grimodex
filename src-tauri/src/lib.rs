@@ -216,6 +216,7 @@ pub fn run() {
             commands::external_mount::external_mount_unregister,
             commands::external_mount::external_mount_read_file,
             commands::external_mount::external_mount_write_file,
+            commands::external_mount::external_mount_file_mtime,
             commands::external_mount::external_mount_list,
             commands::external_mount::external_mount_scan,
         ])

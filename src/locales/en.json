@@ -2241,8 +2241,12 @@
     "banner": "This scene is linked to a Markdown file. Body formatting is limited to GFM. Grimodex-only metadata such as status, POV, and synopsis is not saved to the Markdown file.",
     "conflictTitle": "External file changed",
     "conflictBody": "This scene was edited externally while you have unsaved changes. Choose which version to keep.",
+    "conflictQueue": "{{count}} more conflict(s) waiting",
     "keepLocal": "Keep my edits",
     "reload": "Reload from file",
+    "removeConfirmTitle": "Remove mount?",
+    "removeConfirmBody": "Removing \"{{label}}\" will permanently delete linked scenes and annotation data (attribution, foreshadowing, etc.). Markdown files on disk are not deleted.",
+    "removeConfirmAction": "Remove and delete",
     "addTitle": "Add External MD Root",
     "path": "Folder path",
     "pathPlaceholder": "/path/to/novel",
@@ -2253,7 +2257,9 @@
       "mounted": "Mounted {{label}}",
       "removed": "External mount removed",
       "fileDeletedExternally": "File was deleted externally",
-      "renamed": "Renamed to {{title}}"
+      "renamed": "Renamed to {{title}}",
+      "reconcileFailed": "Failed to sync \"{{label}}\"",
+      "mountFailed": "Failed to mount folder"
     }
   },
   "scenes": {

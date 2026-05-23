@@ -1,9 +1,19 @@
+// @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TreeNode } from "@/features/tree/api";
 
-const { mockUpdateNode, mockListAllNodes } = vi.hoisted(() => ({
+const {
+  mockUpdateNode,
+  mockListAllNodes,
+  mockSaveSceneContent,
+  mockLoadTree,
+  mockSetCharCount,
+} = vi.hoisted(() => ({
   mockUpdateNode: vi.fn().mockResolvedValue(undefined),
   mockListAllNodes: vi.fn(),
+  mockSaveSceneContent: vi.fn().mockResolvedValue({ placedBeatPreview: null }),
+  mockLoadTree: vi.fn().mockResolvedValue(undefined),
+  mockSetCharCount: vi.fn(),
 }));
 
 vi.mock("@/features/tree/api", async (importOriginal) => {
@@ -12,10 +22,41 @@ vi.mock("@/features/tree/api", async (importOriginal) => {
     ...actual,
     updateNode: mockUpdateNode,
     listAllNodes: mockListAllNodes,
+    saveSceneContent: mockSaveSceneContent,
   };
 });
 
-import { buildDbByUriMap } from "./mountManager";
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: {
+    getState: () => ({
+      loadTree: mockLoadTree,
+      setCharCount: mockSetCharCount,
+    }),
+  },
+}));
+
+vi.mock("@/features/semantic-search/scheduler", () => ({
+  scheduleSceneIndex: vi.fn(),
+}));
+
+vi.mock("@/features/project/projectStore", () => ({
+  getCurrentProjectId: () => "p1",
+}));
+
+vi.mock("@/features/editor/tabStore", () => ({
+  useTabStore: {
+    getState: () => ({ tabs: [], dirtyTabIds: new Set<string>() }),
+  },
+}));
+
+import { contentHash } from "./contentHash";
+import { markdownToPmJson, pmJsonToMarkdown } from "./markdownBridge";
+import {
+  applyExternalContent,
+  buildDbByUriMap,
+  hashForNodeContent,
+} from "./mountManager";
+import { useExternalRootStore } from "./externalRootStore";
 
 function node(
   overrides: Partial<TreeNode> & Pick<TreeNode, "id" | "sourceUri">,
@@ -37,7 +78,6 @@ function node(
     charCount: 0,
     unplacedBeatPreview: null,
     placedBeatPreview: null,
-    sourceUri: null,
     sourceMtime: null,
     archivedAt: null,
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -77,5 +117,94 @@ describe("buildDbByUriMap", () => {
       "dup",
       expect.objectContaining({ archivedAt: expect.any(String) }),
     );
+  });
+});
+
+describe("hashForNodeContent", () => {
+  it("matches disk contentHash from ProseMirror JSON via markdown", async () => {
+    const markdown = "Hello, rename detection.";
+    const pmJson = JSON.stringify(markdownToPmJson(markdown));
+    const diskHash = await contentHash(pmJsonToMarkdown(pmJson));
+
+    const nodeHash = await hashForNodeContent(pmJson);
+
+    expect(nodeHash).toBe(diskHash);
+  });
+
+  it("does not match raw ProseMirror JSON against markdown hash", async () => {
+    const markdown = "Different formats must not compare equal.";
+    const pmJson = JSON.stringify(markdownToPmJson(markdown));
+    const wrongHash = await contentHash(pmJson);
+
+    const nodeHash = await hashForNodeContent(pmJson);
+
+    expect(nodeHash).not.toBe(wrongHash);
+  });
+});
+
+describe("applyExternalContent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useExternalRootStore.setState({ mutedWrites: [], conflicts: [] });
+  });
+
+  it("updates charCount and does not mute the path", async () => {
+    const markdown = "External sync body text.";
+    const mtime = "2026-05-24T12:00:00.000Z";
+
+    await applyExternalContent(
+      "scene-1",
+      "root-1",
+      "chapter/01.md",
+      markdown,
+      mtime,
+    );
+
+    expect(mockSaveSceneContent).toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({
+        content: expect.any(String),
+        charCount: markdown.length,
+      }),
+    );
+    expect(mockUpdateNode).toHaveBeenCalledWith("scene-1", {
+      sourceMtime: mtime,
+    });
+    expect(mockSetCharCount).toHaveBeenCalledWith("scene-1", markdown.length);
+    expect(
+      useExternalRootStore.getState().isMuted("root-1", "chapter/01.md"),
+    ).toBe(false);
+  });
+});
+
+describe("reload conflict queue", () => {
+  beforeEach(() => {
+    useExternalRootStore.setState({ conflicts: [] });
+  });
+
+  it("queues multiple conflicts instead of overwriting", () => {
+    const first = {
+      sceneId: "s1",
+      rootId: "r1",
+      relPath: "a.md",
+      incomingContent: "a",
+      incomingMtime: "2026-01-01T00:00:00.000Z",
+    };
+    const second = {
+      sceneId: "s2",
+      rootId: "r1",
+      relPath: "b.md",
+      incomingContent: "b",
+      incomingMtime: "2026-01-02T00:00:00.000Z",
+    };
+
+    useExternalRootStore.getState().enqueueConflict(first);
+    useExternalRootStore.getState().enqueueConflict(second);
+
+    expect(useExternalRootStore.getState().conflicts).toEqual([first, second]);
+
+    useExternalRootStore.getState().shiftConflict();
+
+    expect(useExternalRootStore.getState().conflicts).toEqual([second]);
   });
 });

@@ -10,6 +10,7 @@ import {
 import { useExternalRootStore } from "../externalRootStore";
 import { removeExternalMount } from "../mountManager";
 import { AddMountDialog } from "./AddMountDialog";
+import type { ExternalRoot } from "../types";
 
 interface MountListDialogProps {
   open: boolean;
@@ -21,6 +22,19 @@ export function MountListDialog({ open, onClose }: MountListDialogProps) {
   const roots = useExternalRootStore((s) => s.roots);
   const missingRoots = useExternalRootStore((s) => s.missingRoots);
   const [addOpen, setAddOpen] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<ExternalRoot | null>(null);
+  const [removing, setRemoving] = useState(false);
+
+  async function handleRemoveConfirm() {
+    if (!confirmRemove) return;
+    setRemoving(true);
+    try {
+      await removeExternalMount(confirmRemove.id);
+      setConfirmRemove(null);
+    } finally {
+      setRemoving(false);
+    }
+  }
 
   return (
     <>
@@ -49,7 +63,7 @@ export function MountListDialog({ open, onClose }: MountListDialogProps) {
                   type="button"
                   className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-destructive"
                   aria-label={t("externalMount.remove")}
-                  onClick={() => void removeExternalMount(root.id)}
+                  onClick={() => setConfirmRemove(root)}
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -76,6 +90,43 @@ export function MountListDialog({ open, onClose }: MountListDialogProps) {
           </button>
         </DialogContent>
       </Dialog>
+      {confirmRemove && (
+        <Dialog
+          open
+          onOpenChange={(v) => {
+            if (!v && !removing) setConfirmRemove(null);
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{t("externalMount.removeConfirmTitle")}</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              {t("externalMount.removeConfirmBody", {
+                label: confirmRemove.label,
+              })}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded border border-border px-3 py-1.5 text-sm hover:bg-accent"
+                onClick={() => setConfirmRemove(null)}
+                disabled={removing}
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                className="rounded bg-destructive px-3 py-1.5 text-sm text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+                onClick={() => void handleRemoveConfirm()}
+                disabled={removing}
+              >
+                {t("externalMount.removeConfirmAction")}
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
       <AddMountDialog open={addOpen} onClose={() => setAddOpen(false)} />
     </>
   );

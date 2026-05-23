@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -39,6 +40,8 @@ export function AddMountDialog({ open, onClose }: AddMountDialogProps) {
       onClose();
       setPath("");
       setLabel("");
+    } catch {
+      toast.error(t("externalMount.toast.mountFailed"));
     } finally {
       setBusy(false);
     }

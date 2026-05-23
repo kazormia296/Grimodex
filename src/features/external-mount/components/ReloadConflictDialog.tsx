@@ -10,13 +10,14 @@ import { resolveReloadConflict } from "../mountManager";
 
 export function ReloadConflictDialog() {
   const { t } = useTranslation();
-  const conflict = useExternalRootStore((s) => s.conflict);
+  const conflict = useExternalRootStore((s) => s.conflicts[0]);
+  const pendingCount = useExternalRootStore((s) => s.conflicts.length);
 
   return (
     <Dialog
       open={conflict != null}
       onOpenChange={(open) => {
-        if (!open) useExternalRootStore.getState().setConflict(null);
+        if (!open) useExternalRootStore.getState().shiftConflict();
       }}
     >
       <DialogContent className="max-w-md">
@@ -26,6 +27,11 @@ export function ReloadConflictDialog() {
         <p className="text-sm text-muted-foreground">
           {t("externalMount.conflictBody")}
         </p>
+        {pendingCount > 1 && (
+          <p className="text-xs text-muted-foreground">
+            {t("externalMount.conflictQueue", { count: pendingCount - 1 })}
+          </p>
+        )}
         <div className="flex gap-2 justify-end">
           <button
             type="button"
