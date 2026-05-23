@@ -1,7 +1,9 @@
 import type { MapNodePositionRecord } from "../types";
 
 /** Map a position row to its React Flow / force-layout node key. */
-export function posToNodeKey(pos: MapNodePositionRecord | undefined): string | null {
+export function posToNodeKey(
+  pos: MapNodePositionRecord | undefined,
+): string | null {
   if (!pos) return null;
   if (pos.nodeRefType === "scene" && pos.treeNodeId)
     return `scene:${pos.treeNodeId}`;

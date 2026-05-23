@@ -27,7 +27,12 @@ import {
 } from "@/db/schema";
 import { eq, and, isNotNull, inArray } from "drizzle-orm";
 import { generateKeyBetween } from "@/features/tree/fractionalIndex";
-import type { NodeRefType, ShowFlags, MapBoardRecord, ColorByAxis } from "./types";
+import type {
+  NodeRefType,
+  ShowFlags,
+  MapBoardRecord,
+  ColorByAxis,
+} from "./types";
 import { DEFAULT_PALETTE_ID, DEFAULT_COLOR_SLOT } from "@/lib/stickyPalettes";
 
 const DEFAULT_SHOW: ShowFlags = {

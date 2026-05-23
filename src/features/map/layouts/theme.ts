@@ -76,9 +76,7 @@ export async function layoutTheme(
     }
   }
 
-  const randomSeed = input.boardId
-    ? hashStringToSeed(input.boardId)
-    : 42;
+  const randomSeed = input.boardId ? hashStringToSeed(input.boardId) : 42;
 
   const output = await engine.run(
     { nodes, links, options: { randomSeed } },
