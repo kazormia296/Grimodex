@@ -22,22 +22,27 @@ export async function layoutTheme(
     })),
   ];
 
-  // Build links from POV/location references
+  // Build links from POV/location references.
+  // d3-force-link throws "node not found: <id>" if a link references a node
+  // outside the simulation set, so we must drop any link whose target codex
+  // is not on this board (positionedCodexIds 経由で visibleCodex に絞られている).
+  // Without this guard, the worker rejects, buildNodes() throws unhandled,
+  // and forceLayoutRunning is stuck at true (progress bar永続化＋ドラッグ不可).
+  const presentNodeIds = new Set(nodes.map((n) => n.id));
   const links: ForceLink[] = [];
   for (const scene of scenes) {
+    const sceneKey = `scene:${scene.id}`;
     if (scene.povCharacterId) {
-      links.push({
-        source: `scene:${scene.id}`,
-        target: `codex:${scene.povCharacterId}`,
-        strength: 0.4,
-      });
+      const targetKey = `codex:${scene.povCharacterId}`;
+      if (presentNodeIds.has(targetKey)) {
+        links.push({ source: sceneKey, target: targetKey, strength: 0.4 });
+      }
     }
     if (scene.locationId) {
-      links.push({
-        source: `scene:${scene.id}`,
-        target: `codex:${scene.locationId}`,
-        strength: 0.4,
-      });
+      const targetKey = `codex:${scene.locationId}`;
+      if (presentNodeIds.has(targetKey)) {
+        links.push({ source: sceneKey, target: targetKey, strength: 0.4 });
+      }
     }
   }
 

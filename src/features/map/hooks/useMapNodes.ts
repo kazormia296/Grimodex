@@ -544,7 +544,14 @@ export function useMapNodes({
       });
     }
 
-    buildNodes();
+    // Defense: any unhandled rejection inside buildNodes (e.g. force-layout
+    // worker rejection from d3-force-link "node not found") would otherwise
+    // leave forceLayoutRunning stuck at true — progress bar永続化＋
+    // nodesDraggable false でドラッグ不可 になる。catch で必ず復帰させる。
+    buildNodes().catch((err) => {
+      console.error("[useMapNodes] buildNodes failed", err);
+      if (!cancelled) setForceLayoutRunning(false);
+    });
     return () => {
       cancelled = true;
       setForceLayoutRunning(false);
