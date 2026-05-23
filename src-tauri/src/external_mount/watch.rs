@@ -1,9 +1,12 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use futures::FutureExt;
 use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::{AppHandle, Emitter, Manager};
@@ -12,6 +15,33 @@ use tokio::sync::mpsc;
 use super::path::{canonicalize_mount_root, rel_path_under_root};
 
 const DEBOUNCE_MS: u64 = 500;
+
+/// Spawn a fire-and-forget task with panic logging (debounce flush).
+fn spawn_logged_task(label: &'static str, future: impl Future<Output = ()> + Send + 'static) {
+    tauri::async_runtime::spawn(async move {
+        match AssertUnwindSafe(future).catch_unwind().await {
+            Ok(()) => {}
+            Err(payload) => {
+                tracing::error!("external mount {label} task panicked: {payload:?}");
+            }
+        }
+    });
+}
+
+/// Spawn a long-lived task; caller must abort via returned `JoinHandle`.
+fn spawn_logged_handle(
+    label: &'static str,
+    future: impl Future<Output = ()> + Send + 'static,
+) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(async move {
+        match AssertUnwindSafe(future).catch_unwind().await {
+            Ok(()) => {}
+            Err(payload) => {
+                tracing::error!("external mount {label} task panicked: {payload:?}");
+            }
+        }
+    })
+}
 
 #[derive(Debug, Clone)]
 struct FileEventPayload {
@@ -34,6 +64,13 @@ pub struct WatchRegistry {
 struct WatcherHandle {
     #[allow(dead_code)]
     watcher: RecommendedWatcher,
+    event_loop: tauri::async_runtime::JoinHandle<()>,
+}
+
+impl Drop for WatcherHandle {
+    fn drop(&mut self) {
+        self.event_loop.abort();
+    }
 }
 
 impl WatchRegistry {
@@ -73,7 +110,7 @@ impl WatchRegistry {
         let canonical_root_for_cb = canonical_root.clone();
         let registry = app.state::<ExternalMountWatchState>().inner.clone();
 
-        tauri::async_runtime::spawn(async move {
+        let event_loop = spawn_logged_handle("watcher", async move {
             while let Some(res) = rx.recv().await {
                 match res {
                     Ok(event) => {
@@ -92,7 +129,13 @@ impl WatchRegistry {
             }
         });
 
-        self.watchers.insert(root_id, WatcherHandle { watcher });
+        self.watchers.insert(
+            root_id,
+            WatcherHandle {
+                watcher,
+                event_loop,
+            },
+        );
         Ok(())
     }
 
@@ -113,7 +156,7 @@ impl WatchRegistry {
         let app = app.clone();
         let root_id = root_id.to_string();
         let registry = app.state::<ExternalMountWatchState>().inner.clone();
-        tauri::async_runtime::spawn(async move {
+        spawn_logged_task("debounce-flush", async move {
             tokio::time::sleep(Duration::from_millis(DEBOUNCE_MS)).await;
             if let Ok(mut reg) = registry.lock() {
                 reg.flush_if_ready(&app, &root_id);
