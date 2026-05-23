@@ -14,6 +14,7 @@ vi.mock("./api", () => ({
 
 vi.mock("./cliApi", () => ({
   detectCliBinary: vi.fn(),
+  listCliModels: vi.fn(),
 }));
 
 import * as api from "./api";
@@ -28,6 +29,7 @@ const mockTestAiConnection = vi.mocked(api.testAiConnection);
 const mockListAiModels = vi.mocked(api.listAiModels);
 
 const mockDetectCliBinary = vi.mocked(cliApi.detectCliBinary);
+const mockListCliModels = vi.mocked(cliApi.listCliModels);
 
 function resetStore() {
   useAiSettingsStore.setState({
@@ -186,6 +188,23 @@ describe("useAiSettingsStore", () => {
       const state = useAiSettingsStore.getState();
       expect(state.models).toEqual(models);
       expect(state.isLoadingModels).toBe(false);
+    });
+
+    it("fetches CLI models when provider is cli", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "cli",
+          cli: { kind: "codex", binaryPath: "/usr/bin/codex" },
+        },
+      });
+      const models: AiModel[] = [{ id: "gpt-5.5", name: "GPT-5.5" }];
+      mockListCliModels.mockResolvedValueOnce(models);
+
+      await useAiSettingsStore.getState().loadModels();
+
+      expect(mockListCliModels).toHaveBeenCalledWith("codex", "/usr/bin/codex");
+      expect(useAiSettingsStore.getState().models).toEqual(models);
     });
 
     it("does nothing without settings", async () => {
@@ -396,6 +415,21 @@ describe("selectProviderReadiness", () => {
     });
     expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
       "pending",
+    );
+  });
+
+  it("cli with cliBinaryAvailable=true and empty model → ready", () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...defaultSettings,
+        provider: "cli",
+        model: "",
+        cli: { kind: "claude", binaryPath: "", model: "" },
+      },
+      cliBinaryAvailable: true,
+    });
+    expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
+      "ready",
     );
   });
 

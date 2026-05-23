@@ -130,7 +130,10 @@ export function ChatInput({
     }
   })();
 
-  const currentModel = aiSettings?.model ?? "";
+  const currentModel =
+    aiSettings?.provider === "cli"
+      ? (aiSettings.cli?.model ?? "")
+      : (aiSettings?.model ?? "");
   const selectedApiVariant = resolveAinoveristApiVariant(
     currentModel,
     models,
@@ -321,7 +324,12 @@ export function ChatInput({
   }, []);
 
   const modelLabel = (() => {
-    if (!currentModel) return t("chat.noModel");
+    if (!currentModel) {
+      if (aiSettings?.provider === "cli") {
+        return aiSettings.cli?.kind ?? "cli";
+      }
+      return t("chat.noModel");
+    }
     const parts = currentModel.split("/");
     return parts[parts.length - 1];
   })();
@@ -333,6 +341,19 @@ export function ChatInput({
 
   const handleSelectModel = async (modelId: string) => {
     if (!aiSettings) return;
+    if (aiSettings.provider === "cli") {
+      const cli = aiSettings.cli ?? {
+        kind: "claude" as const,
+        binaryPath: "",
+        model: "",
+      };
+      await saveSettings({
+        ...aiSettings,
+        cli: { ...cli, model: modelId },
+      });
+      setModelOpen(false);
+      return;
+    }
     // AI のべりすと: model 切替時に apiVariant を再解決して同時に永続化する。
     // chat 経路は毎送信で動的に再計算するので影響ないが、Inline AI / Beat /
     // foreshadow 等 FE が apiVariant を渡さない経路は settings.modelApiVariant

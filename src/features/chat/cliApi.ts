@@ -107,3 +107,14 @@ export async function detectCliBinary(cli: CliKind): Promise<string | null> {
 export async function testCliConnection(binaryPath: string): Promise<string> {
   return invoke<string>("test_cli_connection", { binaryPath });
 }
+
+/** CLI が利用可能なモデル一覧を取得する */
+export async function listCliModels(
+  cli: CliKind,
+  binaryPath?: string,
+): Promise<Array<{ id: string; name: string }>> {
+  return invoke<Array<{ id: string; name: string }>>("list_cli_models", {
+    cli,
+    binaryPath: binaryPath || null,
+  });
+}
