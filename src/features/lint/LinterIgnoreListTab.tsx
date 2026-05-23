@@ -245,7 +245,9 @@ export function LinterIgnoreListTab() {
     return (
       <div className="flex flex-col items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
         <span>{t("lintSettings.ignoreList.empty")}</span>
-        <span className="text-xs">{t("lintSettings.ignoreList.emptyHint")}</span>
+        <span className="text-xs">
+          {t("lintSettings.ignoreList.emptyHint")}
+        </span>
       </div>
     );
   }
