@@ -222,7 +222,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
         ],
       },
     },
-    hiddenStripePanels: ["codex-quick", "trash-bin", "kouetsu", "attribution"],
+    hiddenStripePanels: ["trash-bin", "kouetsu", "attribution"],
   },
   "builtin:chat-main": {
     icon: MessageCircle,
@@ -300,14 +300,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
         ],
       },
     },
-    hiddenStripePanels: [
-      "map",
-      "grid",
-      "matrix",
-      "trash-bin",
-      "codex-quick",
-      "attribution",
-    ],
+    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin", "attribution"],
   },
   "builtin:review": {
     icon: BookCheck,

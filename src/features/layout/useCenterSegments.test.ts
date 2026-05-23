@@ -59,4 +59,57 @@ describe("useCenterSegments", () => {
       "editor",
     ]);
   });
+
+  it("shows active panel on center stripe when segment is open but panel is hidden", () => {
+    useLayoutStore.setState({
+      layout: {
+        ...buildDefaultLayoutState({ editorOpen: false }),
+        center: {
+          editorOpen: false,
+          segments: [
+            { id: "ceditor", kind: "editor", sizeRatio: 1 },
+            {
+              id: "ctool",
+              kind: "tool",
+              sizeRatio: 1,
+              panels: ["grid", "map"],
+              activePanel: "grid",
+            },
+          ],
+        },
+      },
+      hiddenStripePanels: new Set(["grid", "map"]),
+    });
+
+    const { result } = renderHook(() => useCenterSegments());
+    const tool = result.current.find((segment) => segment.kind === "tool");
+    expect(tool?.panels).toEqual([{ id: "grid", active: true }]);
+  });
+
+  it("omits hidden panels from center stripe when their segment is collapsed", () => {
+    useLayoutStore.setState({
+      layout: {
+        ...buildDefaultLayoutState({ editorOpen: false }),
+        center: {
+          editorOpen: false,
+          segments: [
+            { id: "ceditor", kind: "editor", sizeRatio: 1 },
+            {
+              id: "ctool",
+              kind: "tool",
+              sizeRatio: 1,
+              panels: ["chat"],
+              activePanel: null,
+            },
+          ],
+        },
+      },
+      hiddenStripePanels: new Set(["chat"]),
+    });
+
+    const { result } = renderHook(() => useCenterSegments());
+    expect(result.current.some((segment) => segment.kind === "tool")).toBe(
+      false,
+    );
+  });
 });
