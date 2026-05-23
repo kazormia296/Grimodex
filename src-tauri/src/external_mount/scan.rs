@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use super::hash::content_hash;
 use super::io::{file_mtime_iso, read_text_file};
+use super::path::{canonicalize_mount_root, rel_path_from_canonical};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,9 +34,7 @@ pub struct ScanResult {
 /// Recursively scan `root` for `.md` files and intermediate directories.
 /// Symlinks are not followed (`follow_links = false`).
 pub fn scan_root(root: &Path) -> Result<ScanResult> {
-    let canonical_root = root
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize {}", root.display()))?;
+    let canonical_root = canonicalize_mount_root(root)?;
     let mut dirs = Vec::new();
     let mut files = Vec::new();
     walk(&canonical_root, &canonical_root, &mut dirs, &mut files)?;
@@ -60,7 +59,7 @@ fn walk(
         }
         let path = entry.path();
         if file_type.is_dir() {
-            let rel = rel_path_from(root, &path)?;
+            let rel = rel_path_from_canonical(root, &path)?;
             if !rel.is_empty() {
                 dirs.push(ScannedDir {
                     name: path
@@ -76,7 +75,7 @@ fn walk(
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
             }
-            let rel = rel_path_from(root, &path)?;
+            let rel = rel_path_from_canonical(root, &path)?;
             let content = read_text_file(&path)?;
             let mtime = file_mtime_iso(&path)?;
             let hash = content_hash(&content);
@@ -89,17 +88,6 @@ fn walk(
         }
     }
     Ok(())
-}
-
-fn rel_path_from(root: &Path, path: &Path) -> Result<String> {
-    let rel = path
-        .strip_prefix(root)
-        .with_context(|| format!("{} is not under {}", path.display(), root.display()))?;
-    Ok(normalize_rel_path(rel))
-}
-
-fn normalize_rel_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]

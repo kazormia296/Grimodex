@@ -7,6 +7,7 @@ use tauri::{AppHandle, State};
 
 use crate::commands::AppError;
 use crate::external_mount::io::{atomic_write_text, file_mtime_iso, read_text_file, resolve_under_root};
+use crate::external_mount::path::{self, OverlapError};
 use crate::external_mount::scan::{scan_root, ScanResult};
 use crate::external_mount::watch::ExternalMountWatchState;
 
@@ -52,12 +53,22 @@ pub(crate) fn external_mount_register(
     {
         let reg = mount_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         for existing in reg.roots.values() {
-            if paths_overlap(&existing.path, &path) {
-                return Err(anyhow::anyhow!(
-                    "mount path overlaps with existing root: {}",
-                    existing.label
-                )
-                .into());
+            match path::overlap_check(&root_path, Path::new(&existing.path)) {
+                Ok(true) => {
+                    return Err(anyhow::anyhow!(
+                        "mount path overlaps with existing root: {}",
+                        existing.label
+                    )
+                    .into());
+                }
+                Ok(false) => {}
+                Err(OverlapError::NewMissing(e)) => return Err(e.into()),
+                Err(OverlapError::ExistingMissing(e)) => {
+                    tracing::warn!(
+                        "skipping overlap check against missing existing root {}: {e}",
+                        existing.label
+                    );
+                }
             }
         }
     }
@@ -170,14 +181,4 @@ fn lookup_root_path(
         .get(root_id)
         .ok_or_else(|| anyhow::anyhow!("unknown external root: {root_id}"))?;
     Ok(PathBuf::from(&root.path))
-}
-
-fn paths_overlap(a: &str, b: &str) -> bool {
-    let a = Path::new(a)
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(a));
-    let b = Path::new(b)
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(b));
-    a.starts_with(&b) || b.starts_with(&a)
 }
