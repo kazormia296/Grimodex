@@ -186,10 +186,7 @@ export const LayoutShell = memo(function LayoutShell({
         )}
 
         {hasLeft && (
-          <div
-            style={{ gridArea: "lcontent" }}
-            className="min-h-0 min-w-0"
-          >
+          <div style={{ gridArea: "lcontent" }} className="min-h-0 min-w-0">
             <AnimatedRegionChrome
               region="left"
               open={leftOpen}
@@ -225,10 +222,7 @@ export const LayoutShell = memo(function LayoutShell({
         )}
 
         {hasRight && (
-          <div
-            style={{ gridArea: "rcontent" }}
-            className="min-h-0 min-w-0"
-          >
+          <div style={{ gridArea: "rcontent" }} className="min-h-0 min-w-0">
             <AnimatedRegionChrome
               region="right"
               open={rightOpen}

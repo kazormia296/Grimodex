@@ -43,9 +43,7 @@ export const AnimatedRegionChrome = memo(function AnimatedRegionChrome({
             transformOrigin: REGION_TRANSFORM_ORIGIN[region],
             ...style,
           }}
-          initial={
-            reduced ? false : { opacity: 0, clipPath: clip.closed }
-          }
+          initial={reduced ? false : { opacity: 0, clipPath: clip.closed }}
           animate={{ opacity: 1, clipPath: clip.open }}
           exit={
             reduced
