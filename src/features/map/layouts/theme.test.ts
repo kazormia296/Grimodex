@@ -147,6 +147,20 @@ describe("layoutTheme", () => {
     expect(result.has("scene:s1")).toBe(true);
   });
 
+  it("POV/Location が未配置 codex を指していても例外を投げない（無視する）", async () => {
+    // d3-force-link は target ノードが nodes 配列に無いと "node not found" を投げる。
+    // theme レイアウトはボード未配置 codex を指す scene があると worker が reject し、
+    // forceLayoutRunning が永続化して進捗バーが消えずノードもドラッグ不能になる。
+    const engine = new SyncForceLayoutEngine();
+    const input: LayoutInput = {
+      // s1 の POV は "missing" だが、codexEntries には "c1" しか居ない。
+      scenes: [makeScene("s1", "missing", "alsoMissing"), makeScene("s2")],
+      codexEntries: [makeCodex("c1")],
+      positions: [],
+    };
+    await expect(layoutTheme(input, engine)).resolves.toBeDefined();
+  });
+
   it("progress コールバックが呼ばれる", async () => {
     const engine = new SyncForceLayoutEngine();
     const alphas: number[] = [];

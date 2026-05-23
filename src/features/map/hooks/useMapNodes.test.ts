@@ -234,4 +234,64 @@ describe("useMapNodes — theme モード再配置ループ防止", () => {
       layoutCallsAfterInitial,
     );
   });
+
+  it("force layout が reject しても setForceLayoutRunning(false) が呼ばれる", async () => {
+    // 防御深化: theme worker が "node not found" 等で reject した時、buildNodes
+    // を fire-and-forget で投げっぱなしにすると forceLayoutRunning が true で
+    // 永続化し、進捗バーが消えずノードもドラッグ不能になる。.catch で必ず
+    // 復帰させていることを確認する。
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(layoutForAsync).mockRejectedValueOnce(new Error("worker failed"));
+    const setForceLayoutRunning = vi.fn();
+
+    const props: Parameters<typeof useMapNodes>[0] = {
+      boardId: "b1",
+      positions: [],
+      treeNodes: [],
+      codexEntries: [],
+      snippets: [],
+      stickies: [],
+      aiBranches: [],
+      frames: [],
+      show: {
+        scenes: true,
+        codex: true,
+        notes: false,
+        userEdges: true,
+        derivedEdges: false,
+        stickies: false,
+        aiBranch: false,
+        frames: false,
+        snippets: false,
+      },
+      mode: "theme",
+      colorBy: "none" as const,
+      visualTheme: "default",
+      modeTransitionActive: false,
+      setFrames: vi.fn(),
+      setStickies: vi.fn(),
+      setAiBranches: vi.fn(),
+      setPositions: vi.fn(),
+      setNodes: vi.fn(),
+      setForceLayoutRunning,
+      setForceAlpha: vi.fn(),
+      updateNodeTitle: vi.fn(),
+      updateSynopsis: vi.fn(),
+      setActiveScene: vi.fn(),
+      groupDraggingRef: NOOP_REF,
+      persistingRef: NOOP_REF,
+    };
+
+    renderHook(() => useMapNodes(props));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // (true で始まり, reject 後 false で復帰しているはず)
+    expect(setForceLayoutRunning).toHaveBeenCalledWith(true);
+    expect(setForceLayoutRunning).toHaveBeenCalledWith(false);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
 });
