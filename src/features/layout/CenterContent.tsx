@@ -178,7 +178,13 @@ export const CenterContent = memo(function CenterContent() {
         return (
           <Fragment key={segment.id}>
             {index > 0 && (
-              <div className="relative shrink-0">
+              <div
+                // `flex` で SplitterHandle を cross-axis stretch させる。
+                // block 配置だと SplitterChrome の height: 100% が親を
+                // 参照できず潰れる。
+                className="relative flex shrink-0"
+                style={{ width: PANEL_GAP_PX }}
+              >
                 <Splitter
                   orientation="horizontal"
                   thickness={PANEL_GAP_PX}

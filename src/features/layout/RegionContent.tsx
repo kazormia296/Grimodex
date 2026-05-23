@@ -203,7 +203,18 @@ export const RegionContent = memo(function RegionContent({
         return (
           <Fragment key={slot.id}>
             {index > 0 && (
-              <div className="relative shrink-0">
+              <div
+                // `flex` で SplitterHandle を cross-axis stretch させる。
+                // 通常 block 配置だと SplitterChrome の height: 100% が
+                // 親 (SplitterHandle, height:auto) を参照できず潰れる。
+                // 明示寸法は main-axis のみ与える。
+                className="relative flex shrink-0"
+                style={
+                  orientation === "horizontal"
+                    ? { width: PANEL_GAP_PX }
+                    : { height: PANEL_GAP_PX }
+                }
+              >
                 <Splitter
                   orientation={orientation}
                   thickness={PANEL_GAP_PX}

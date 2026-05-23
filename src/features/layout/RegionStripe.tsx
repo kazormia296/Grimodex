@@ -118,37 +118,23 @@ interface CollapsedClusterProps {
 }
 
 /**
- * 先頭の折りたたみ slot 群。0 サイズ absolute オーバーレイにすると、後続の
- * open バンドが DOM 後勝ちで上に描画されアイコンが隠れる（CenterStripe と同根）。
- * in-flow で実寸描画し後続バンドを押し出して重なりを解消する。
+ * 先頭の折りたたみ slot 群。in-flow にすると open バンドが押し出され、
+ * 後続 open バンドの開始位置が content の slot 0 と一致しなくなる。
+ * 0 サイズの absolute オーバーレイで描画し、後続 open バンドは stripe の
+ * 先頭から比率配分で割り振られるようにする。
  */
 function LeadingCollapsedCluster({
   segments,
   orientation,
   region,
 }: Omit<CollapsedClusterProps, "anchor">) {
-  const isVertical = orientation === "vertical";
   return (
-    <div
-      data-stripe-collapsed-cluster
-      data-stripe-collapsed-cluster-leading
-      className={cn(
-        "flex shrink-0 gap-0.5",
-        isVertical
-          ? "w-full flex-col items-center"
-          : "h-full flex-row items-center",
-      )}
-    >
-      {segments.map((seg) => (
-        <StripeGroup
-          key={seg.key}
-          segment={seg}
-          orientation={orientation}
-          region={region}
-          flexGrow={0}
-        />
-      ))}
-    </div>
+    <CollapsedCluster
+      segments={segments}
+      orientation={orientation}
+      region={region}
+      anchor="start"
+    />
   );
 }
 
@@ -207,9 +193,10 @@ interface RegionStripeProps {
   orientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
   /**
-   * stripe の先頭側／末尾側に確保する余白(px)。コーナートグルボタンが
-   * その端に被さる場合に、アイコンと重ならないよう空ける。
+   * stripe 端に確保するコーナートグル用の余白(px)。bottom stripe が
+   * 角を取るときだけ使う（icon が toggle と重ならないように）。
    * vertical では top/bottom、horizontal では left/right に対応。
+   * 注: alignment 維持の都合上、content 側に同じ余白は付けない。
    */
   reserveStartPx?: number;
   reserveEndPx?: number;
@@ -323,25 +310,21 @@ export function RegionStripe({
   const cardLayout = useCardLayout();
   const dividerGapPx = slotSplitterPx(cardLayout);
 
-  // コーナートグル用の予約余白。vertical は top/bottom、horizontal は
-  // left/right に効く。装飾パディングは置かず、アイコン配分域を content の
-  // slot 領域と厳密に一致させる（py-0.5/px-0.5 は使わない）。
-  const reserveStyle =
-    orientation === "vertical"
-      ? {
-          paddingTop: reserveStartPx || undefined,
-          paddingBottom: reserveEndPx || undefined,
-        }
-      : {
-          paddingLeft: reserveStartPx || undefined,
-          paddingRight: reserveEndPx || undefined,
-        };
-
   return (
     <div
       data-stripe-root
       data-stripe-region={region}
-      style={reserveStyle}
+      style={
+        orientation === "vertical"
+          ? {
+              paddingTop: reserveStartPx || undefined,
+              paddingBottom: reserveEndPx || undefined,
+            }
+          : {
+              paddingLeft: reserveStartPx || undefined,
+              paddingRight: reserveEndPx || undefined,
+            }
+      }
       className={cn(
         "relative flex h-full min-h-0 w-full min-w-0 overflow-hidden",
         // D案: stripe/rail も他パネルと同じ「カード」。境界線は引かず、
@@ -368,99 +351,107 @@ export function RegionStripe({
         />
       )}
 
-      {items.map((item, itemIdx) => {
-        if (item.kind === "collapsed") {
-          if (itemIdx === 0) {
+      {(() => {
+        let renderedOpenBands = 0;
+
+        return items.map((item, itemIdx) => {
+          if (item.kind === "collapsed") {
+            if (itemIdx === 0) {
+              return (
+                <LeadingCollapsedCluster
+                  key={`collapsed-${item.segments[0].key}`}
+                  segments={item.segments}
+                  orientation={orientation}
+                  region={region}
+                />
+              );
+            }
             return (
-              <LeadingCollapsedCluster
+              <CollapsedCluster
                 key={`collapsed-${item.segments[0].key}`}
                 segments={item.segments}
                 orientation={orientation}
                 region={region}
+                anchor="end"
               />
             );
           }
-          return (
-            <CollapsedCluster
-              key={`collapsed-${item.segments[0].key}`}
-              segments={item.segments}
-              orientation={orientation}
-              region={region}
-              anchor="end"
-            />
-          );
-        }
 
-        const seg = item.segment;
-        const betweenInsertIndex = slotIndexOf(seg.slotId);
-        return (
-          <Fragment key={seg.key}>
-            {itemIdx > 0 && (
-              <div
-                className={cn(
-                  "relative flex shrink-0 items-center justify-center",
-                  orientation === "vertical" ? "w-full" : "h-full",
-                )}
-                style={
-                  orientation === "vertical"
-                    ? { height: dividerGapPx }
-                    : { width: dividerGapPx }
-                }
-              >
+          const seg = item.segment;
+          const betweenInsertIndex = slotIndexOf(seg.slotId);
+          // collapsed cluster は 0 サイズ overlay。dividerは open バンド同士の
+          // 境界にのみ挟む（content の Splitter と 1:1 対応させる）。
+          const showDivider = renderedOpenBands > 0;
+          renderedOpenBands += 1;
+          return (
+            <Fragment key={seg.key}>
+              {showDivider && (
                 <div
-                  data-stripe-divider
-                  aria-hidden
                   className={cn(
-                    "shrink-0 rounded-full bg-muted-foreground/50",
-                    orientation === "vertical" ? "h-px w-5" : "h-5 w-px",
+                    "relative flex shrink-0 items-center justify-center",
+                    orientation === "vertical" ? "w-full" : "h-full",
                   )}
-                />
-                {showDropZones && (
+                  style={
+                    orientation === "vertical"
+                      ? { height: dividerGapPx }
+                      : { width: dividerGapPx }
+                  }
+                >
                   <div
-                    data-drop-edge="between"
-                    data-drop-region={region}
-                    data-insert-index={betweenInsertIndex}
-                    data-drop-surface="stripe-between"
-                    className="absolute z-20 opacity-0"
-                    style={
-                      orientation === "vertical"
-                        ? {
-                            left: 0,
-                            right: 0,
-                            top: "50%",
-                            height: stripeBetweenHitPx,
-                            transform: "translateY(-50%)",
-                          }
-                        : {
-                            top: 0,
-                            bottom: 0,
-                            left: "50%",
-                            width: stripeBetweenHitPx,
-                            transform: "translateX(-50%)",
-                          }
-                    }
-                    onDragOver={(e) =>
-                      handleEdgeDragOver(
-                        e,
-                        betweenInsertIndex,
-                        "stripe-between",
-                      )
-                    }
-                    onDragLeave={handleEdgeDragLeave}
-                    onDrop={(e) => handleEdgeDrop(e, betweenInsertIndex)}
+                    data-stripe-divider
+                    aria-hidden
+                    className={cn(
+                      "shrink-0 rounded-full bg-muted-foreground/50",
+                      orientation === "vertical" ? "h-px w-5" : "h-5 w-px",
+                    )}
                   />
-                )}
-              </div>
-            )}
-            <StripeGroup
-              segment={seg}
-              orientation={orientation}
-              region={region}
-              flexGrow={openRatioSum > 0 ? seg.sizeRatio / openRatioSum : 1}
-            />
-          </Fragment>
-        );
-      })}
+                  {showDropZones && (
+                    <div
+                      data-drop-edge="between"
+                      data-drop-region={region}
+                      data-insert-index={betweenInsertIndex}
+                      data-drop-surface="stripe-between"
+                      className="absolute z-20 opacity-0"
+                      style={
+                        orientation === "vertical"
+                          ? {
+                              left: 0,
+                              right: 0,
+                              top: "50%",
+                              height: stripeBetweenHitPx,
+                              transform: "translateY(-50%)",
+                            }
+                          : {
+                              top: 0,
+                              bottom: 0,
+                              left: "50%",
+                              width: stripeBetweenHitPx,
+                              transform: "translateX(-50%)",
+                            }
+                      }
+                      onDragOver={(e) =>
+                        handleEdgeDragOver(
+                          e,
+                          betweenInsertIndex,
+                          "stripe-between",
+                        )
+                      }
+                      onDragLeave={handleEdgeDragLeave}
+                      onDrop={(e) => handleEdgeDrop(e, betweenInsertIndex)}
+                    />
+                  )}
+                </div>
+              )}
+              <StripeGroup
+                segment={seg}
+                orientation={orientation}
+                region={region}
+                flexGrow={openRatioSum > 0 ? seg.sizeRatio / openRatioSum : 1}
+              />
+            </Fragment>
+          );
+        });
+      })()}
 
       {showDropZones && (
         <div

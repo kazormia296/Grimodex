@@ -116,14 +116,14 @@ describe("CenterStripe", () => {
       container.querySelector('[data-stripe-icon="codex"]'),
     ).not.toBeNull();
 
-    // 先頭 collapsed クラスタは in-flow（0 幅 absolute オーバーレイにしない）
+    // 先頭 collapsed クラスタは 0 幅 absolute オーバーレイ（content 側の
+    // slot 配分原点と open バンドの開始位置を揃えるため）。
     const cluster = container.querySelector<HTMLElement>(
       "[data-stripe-collapsed-cluster]",
     );
     expect(cluster).not.toBeNull();
-    expect(cluster?.className).not.toContain("absolute");
-    expect(cluster?.querySelector(".absolute")).toBeNull();
-    expect(cluster?.style.flexBasis).not.toBe("0px");
+    expect(cluster?.querySelector(".absolute")).not.toBeNull();
+    expect(cluster?.style.flexBasis).toBe("0px");
 
     // DOM 順は collapsed tool → editor（後続バンドに隠れない）
     const icons = [
@@ -261,15 +261,16 @@ describe("CenterStripe", () => {
     const { container } = render(<CenterStripe />);
     const stripe = container.querySelector<HTMLElement>("[data-center-stripe]");
     expect(stripe?.style.gridTemplateColumns).toContain("auto");
+    // 閉じた editor は collapsed cluster の overlay 内に描画される。
     expect(
       container.querySelector('[data-stripe-icon="editor"]'),
     ).not.toBeNull();
     expect(
       container.querySelector("[data-stripe-collapsed-cluster]"),
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
-  it("shows editor icon in document flow when every panel is closed", () => {
+  it("shows editor icon when every panel is closed", () => {
     useLayoutStore.setState({
       layout: buildDefaultLayoutState({
         allInactive: true,
@@ -282,11 +283,13 @@ describe("CenterStripe", () => {
     expect(
       container.querySelector('[data-stripe-icon="editor"]'),
     ).not.toBeNull();
+    // 閉じた editor も collapsed cluster overlay の中の band として描画される。
+    const editorBand = container.querySelector<HTMLElement>(
+      '[data-center-stripe-band-kind="editor"]',
+    );
+    expect(editorBand).not.toBeNull();
     expect(
       container.querySelector("[data-stripe-collapsed-cluster]"),
-    ).toBeNull();
-    expect(
-      container.querySelector('[data-center-stripe-band-kind="editor"]'),
     ).not.toBeNull();
   });
 });

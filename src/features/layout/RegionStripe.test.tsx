@@ -98,8 +98,10 @@ describe("RegionStripe", () => {
   ])(
     "keeps leading collapsed icons visible when a later slot opens ($region)",
     ({ region, orientation }) => {
-      // Regression: leading collapsed slots used a zero-size absolute overlay;
-      // the next open band fills the stripe and paints over earlier icons.
+      // Alignment: leading collapsed slots render as a 0-size absolute
+      // overlay so subsequent open bands distribute from the stripe's
+      // origin (matching the content side's first slot). Icons sit on
+      // a z-elevated layer above the open band so they remain visible.
       const leadingCollapsed: RegionSegment[] = [
         {
           key: "s0",
@@ -142,10 +144,11 @@ describe("RegionStripe", () => {
       ).not.toBeNull();
 
       const leadingCluster = container.querySelector<HTMLElement>(
-        "[data-stripe-collapsed-cluster-leading]",
+        "[data-stripe-collapsed-cluster]",
       );
       expect(leadingCluster).not.toBeNull();
-      expect(leadingCluster?.querySelector(".absolute")).toBeNull();
+      // 0-size overlay: inner absolute layer holds the icons.
+      expect(leadingCluster?.querySelector(".absolute")).not.toBeNull();
 
       const icons = [
         ...container.querySelectorAll<HTMLElement>("[data-stripe-icon]"),
