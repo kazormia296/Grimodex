@@ -50,10 +50,11 @@ vi.mock("@/features/editor/tabStore", () => ({
 }));
 
 import { contentHash } from "./contentHash";
-import { markdownToPmJson, pmJsonToMarkdown } from "./markdownBridge";
+import { markdownToPmJson } from "./markdownBridge";
 import {
   applyExternalContent,
   buildDbByUriMap,
+  hashForDiskContent,
   hashForNodeContent,
 } from "./mountManager";
 import { useExternalRootStore } from "./externalRootStore";
@@ -121,17 +122,10 @@ describe("buildDbByUriMap", () => {
 });
 
 describe("hashForNodeContent", () => {
-  it("matches disk contentHash from ProseMirror JSON via markdown", async () => {
-    const markdown = "Hello, rename detection.";
-    const pmJson = JSON.stringify(markdownToPmJson(markdown));
-    const diskHash = await contentHash(pmJsonToMarkdown(pmJson));
-
-    const nodeHash = await hashForNodeContent(pmJson);
-
-    expect(nodeHash).toBe(diskHash);
-  });
-
   it("does not match raw ProseMirror JSON against markdown hash", async () => {
+    // 旧 hashForNode は node.content (PM JSON 文字列) を生 markdown と直接比較
+    // していたため必ず外れていた。修正後は pmJsonToMarkdown 経由なので、JSON
+    // 文字列の SHA-256 とは別の値になる。
     const markdown = "Different formats must not compare equal.";
     const pmJson = JSON.stringify(markdownToPmJson(markdown));
     const wrongHash = await contentHash(pmJson);
@@ -139,6 +133,43 @@ describe("hashForNodeContent", () => {
     const nodeHash = await hashForNodeContent(pmJson);
 
     expect(nodeHash).not.toBe(wrongHash);
+  });
+});
+
+describe("hashForDiskContent vs hashForNodeContent", () => {
+  // 同一内容のシーンが「disk の生 markdown」「DB に保存された PM JSON」のどちらを
+  // 起点にしても同じ rename-detection ハッシュを返すことを実証する。
+  // round-trip drift (空行縮退、末尾改行付加、リスト記法) を吸収できているかを
+  // 多様なサンプルで確認するゴールデンテスト。
+  const SAMPLES: Array<[string, string]> = [
+    ["simple paragraph", "Hello world.\n"],
+    ["bold + italic", "Hello **world** and *emph*.\n"],
+    ["heading + paragraph", "# Title\n\nBody text.\n"],
+    ["bullet list", "- one\n- two\n- three\n"],
+    ["task list", "- [ ] todo\n- [x] done\n"],
+    ["fenced code", "```ts\nconst x = 1;\n```\n"],
+    ["multi-paragraph", "Para one.\n\nPara two.\n\nPara three.\n"],
+    [
+      "heading-body-list",
+      "# Title\n\nBody **bold** text.\n\n- item 1\n- item 2\n",
+    ],
+    ["trailing newline absent", "Hello world."],
+    ["multiple blank lines", "Para one.\n\n\nPara two.\n"],
+  ];
+
+  for (const [name, raw] of SAMPLES) {
+    it(`disk and node hashes agree for: ${name}`, async () => {
+      const pmJson = JSON.stringify(markdownToPmJson(raw));
+      const nodeHash = await hashForNodeContent(pmJson);
+      const diskHash = await hashForDiskContent(raw);
+      expect(nodeHash).toBe(diskHash);
+    });
+  }
+
+  it("yields different hashes for semantically different markdown", async () => {
+    const a = await hashForDiskContent("Hello world.\n");
+    const b = await hashForDiskContent("Goodbye world.\n");
+    expect(a).not.toBe(b);
   });
 });
 

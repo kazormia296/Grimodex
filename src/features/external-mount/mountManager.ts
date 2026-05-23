@@ -177,7 +177,11 @@ async function reconcileRoot(
     allNodes,
   );
 
-  // Boot-time rename detection via content hash
+  // Boot-time rename detection via normalized-markdown content hash.
+  // scan.files[].contentHash は disk の生 markdown を直接 SHA-256 したもので、
+  // pmJsonToMarkdown を通った後の正規化形と一致しないため使えない (round-trip
+  // drift: trailing newline 付加、段落間空行の縮退など)。disk 側も hashForDiskContent
+  // で同じ pmJsonToMarkdown 経路を通してから比較する。
   const dbOnly = [...dbByUri.entries()].filter(
     ([uri, node]) =>
       !node.archivedAt && !diskByPath.has(parseSourceUri(uri)?.relPath ?? ""),
@@ -186,11 +190,19 @@ async function reconcileRoot(
     (f) => !dbByUri.has(buildSourceUri(root.id, f.relPath)),
   );
 
+  const diskHashByPath = new Map<string, string>();
+  for (const f of diskOnly) {
+    diskHashByPath.set(f.relPath, await hashForDiskContent(f.content));
+  }
+
   for (const [uri, node] of dbOnly) {
     const parsed = parseSourceUri(uri);
     if (!parsed) continue;
     const nodeHash = await hashForNode(node);
-    const match = diskOnly.find((f) => f.contentHash === nodeHash);
+    const match =
+      nodeHash != null
+        ? diskOnly.find((f) => diskHashByPath.get(f.relPath) === nodeHash)
+        : undefined;
     if (match) {
       const newUri = buildSourceUri(root.id, match.relPath);
       await updateNode(node.id, {
@@ -230,6 +242,19 @@ async function hashForNode(node: { content: string }): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Compute a rename-detection hash from raw disk Markdown that survives the
+ * `markdown → pmjson → markdown` round-trip drift (段落間空行の縮退、末尾改行の
+ * 付加、リストマーカーの差異など)。`hashForNode` と同じ正規化経路を通すので、
+ * 同一内容のファイルがどちらの起点でも同じハッシュになる。Rust 側 scan が返す
+ * 生 markdown の SHA-256 (= `scan.files[].contentHash`) はリネーム判定には使えない。
+ */
+export async function hashForDiskContent(content: string): Promise<string> {
+  const pmJson = JSON.stringify(markdownToPmJson(content));
+  const normalized = pmJsonToMarkdown(pmJson);
+  return contentHash(normalized);
 }
 
 /** @internal Exported for unit tests. */
@@ -488,10 +513,13 @@ async function handleFileAdded(
   const file = scan.files.find((f) => f.relPath === relPath);
   if (!file) return;
 
+  // recentDeletes は handleFileRemoved 側で hashForNode (pmJsonToMarkdown 経路)
+  // で計算しているので、disk 側も同じ正規化経路の hashForDiskContent で揃える。
+  const fileHash = await hashForDiskContent(file.content);
   const recent = recentDeletes.find(
     (d) =>
       d.rootId === root.id &&
-      d.contentHash === file.contentHash &&
+      d.contentHash === fileHash &&
       Date.now() - d.at < RENAME_WINDOW_MS,
   );
   if (recent) {
@@ -511,15 +539,17 @@ async function handleFileRemoved(
   const node = await findNodeByUri(uri);
   if (!node) return;
 
-  const { pmJsonToMarkdown } = await import("./markdownBridge");
-  const { contentHash } = await import("./contentHash");
-  const hash = await contentHash(pmJsonToMarkdown(node.content));
-  recentDeletes.push({
-    rootId: root.id,
-    relPath,
-    contentHash: hash,
-    at: Date.now(),
-  });
+  // handleFileAdded 側で hashForDiskContent と比較するので、削除側も同じ正規化
+  // 経路 (hashForNode) で計算する。parse 不能なら rename 候補から除外。
+  const hash = await hashForNode(node);
+  if (hash) {
+    recentDeletes.push({
+      rootId: root.id,
+      relPath,
+      contentHash: hash,
+      at: Date.now(),
+    });
+  }
 
   const { useTabStore } = await import("@/features/editor/tabStore");
   const isDirty = useTabStore.getState().dirtyTabIds.has(node.id);
