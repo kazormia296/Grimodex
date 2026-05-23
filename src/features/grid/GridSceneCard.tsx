@@ -8,6 +8,7 @@ import { useNodeBeatPreview, useTreeStore } from "@/features/tree/treeStore";
 import { StatusBadge } from "@/features/tree/StatusBadge";
 import { addUnplacedBeatFromGrid } from "@/features/editor/beat/addUnplacedBeatFromGrid";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { cn } from "@/lib/utils";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
@@ -91,6 +92,8 @@ function GridSceneCardImpl({
     }
   }
 
+  const fileBacked = isFileBackedNode(scene.sourceUri);
+
   const {
     attributes,
     listeners,
@@ -99,7 +102,7 @@ function GridSceneCardImpl({
   } = useDraggable({
     id: sceneDraggableId(scene.id),
     data: { kind: "scene", sceneId: scene.id },
-    disabled: isEditing || addingBeat,
+    disabled: isEditing || addingBeat || fileBacked,
   });
 
   const { setNodeRef: setDropRef } = useDroppable({
@@ -177,19 +180,26 @@ function GridSceneCardImpl({
   const dragHandle = (
     <button
       type="button"
-      {...attributes}
-      {...listeners}
+      {...(fileBacked ? {} : attributes)}
+      {...(fileBacked ? {} : listeners)}
       onClick={(e) => e.stopPropagation()}
-      aria-label={t("grid.card.dragHandle", "ドラッグして移動")}
-      title={t("grid.card.dragHandle", "ドラッグして移動")}
+      aria-label={
+        fileBacked
+          ? t("externalMount.filenameOrder")
+          : t("grid.card.dragHandle")
+      }
+      title={
+        fileBacked
+          ? t("externalMount.filenameOrder")
+          : t("grid.card.dragHandle")
+      }
       className={cn(
-        "shrink-0 rounded p-0.5 cursor-grab active:cursor-grabbing",
-        "text-muted-foreground/40 opacity-0 group-hover:opacity-100",
-        "hover:text-muted-foreground hover:bg-accent",
+        "shrink-0 rounded p-0.5",
+        fileBacked
+          ? "cursor-not-allowed text-muted-foreground/30 opacity-30"
+          : "cursor-grab active:cursor-grabbing text-muted-foreground/40 opacity-0 group-hover:opacity-100 hover:text-muted-foreground hover:bg-accent",
         "transition-opacity",
-        // Keep handle visible while card is being dragged so the cursor
-        // affordance stays consistent during the drag.
-        isDragging && "opacity-100",
+        isDragging && !fileBacked && "opacity-100",
       )}
       data-testid="grid-card-drag-handle"
     >

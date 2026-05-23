@@ -12,6 +12,10 @@ import { cn } from "@/lib/utils";
 import { tiptapContentFromDb } from "@/lib/prosemirror";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
+import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
+import { scheduleWriteBack } from "@/features/external-mount/writeBack";
+import { FileBackedSceneBanner } from "@/features/external-mount/components/FileBackedSceneBanner";
 import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
 import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
@@ -63,6 +67,8 @@ import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
+import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
+import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -399,11 +405,18 @@ export function EditorPane({
         },
       );
       markEnd("editor.coreSave.invokeSave");
-      // Mirror the derived previews into the tree store so the Grid panel
-      // reflects placed/unplaced changes without waiting for the next
-      // loadTree (e.g. unplaced→placed via drag&drop).
-      // Phase 4: nodes[] ではなく nodePreviews を更新するので、whole-array
-      // selector 29 サイトは notify されない (Phase 3 メモ参照)。
+
+      const fileBackedUri = useTreeStore
+        .getState()
+        .nodes.find((n) => n.id === id)?.sourceUri;
+      if (fileBackedUri && isFileBackedNode(fileBackedUri)) {
+        scheduleWriteBack(id, fileBackedUri, sceneJsonStr);
+        useTreeStore.getState().setCharCount(id, charCount);
+        scheduleSceneIndex(id);
+        markEnd("editor.coreSave");
+        return;
+      }
+
       markStart("editor.coreSave.treeMirror");
       useTreeStore.getState().setNodePreview(id, {
         placed: placedBeatPreview ?? null,
@@ -572,17 +585,22 @@ export function EditorPane({
   // Built once: a fresh extensions array on every render makes TipTap's
   // useEditor onRender effect call editor.setOptions each render (schema/
   // plugin churn). setMentionPopupState/setMentionIndex are stable setters.
+  const isFileBacked = isFileBackedNode(activeNode?.sourceUri);
+
   const editorExtensions = useMemo(
     () =>
-      getEditorExtensions({
-        setMentionPopup: (s) => {
-          setMentionPopupState(s);
-          setMentionIndex(0);
-        },
-      }),
-    [],
+      isFileBacked
+        ? getFileBackedEditorExtensions()
+        : getEditorExtensions({
+            setMentionPopup: (s) => {
+              setMentionPopupState(s);
+              setMentionIndex(0);
+            },
+          }),
+    [isFileBacked],
   );
-  const editor = useEditor({
+  const editor = useEditor(
+    {
     extensions: editorExtensions,
     content: "",
     editorProps: {
@@ -849,7 +867,17 @@ export function EditorPane({
         }
       }
     },
-  });
+  },
+  [editorExtensions],
+  );
+
+  const editorViewReady = useEditorViewReady(editor);
+  /** Editor handle safe for PM view access (plugins, dom listeners, dispatch). */
+  const mountedEditor =
+    editorViewReady && isEditorViewReady(editor) ? editor : null;
+  /** DB-native-only features (authorship, inline AI) — not on file-backed scenes. */
+  const dbNativeEditor =
+    mountedEditor && !isFileBacked ? mountedEditor : null;
 
   editorRef.current = editor;
 
@@ -859,8 +887,8 @@ export function EditorPane({
   // inside the TipTap pipeline (decorations diff, NodeView updates, DOM
   // mutations) — none of which our per-plugin marks reach.
   useEffect(() => {
-    if (!editor) return;
-    const view = editor.view;
+    if (!isEditorViewReady(mountedEditor)) return;
+    const view = mountedEditor.view;
     const original = view.dispatch.bind(view);
     let depth = 0;
     view.dispatch = function patched(...args) {
@@ -879,7 +907,7 @@ export function EditorPane({
     return () => {
       view.dispatch = original;
     };
-  }, [editor]);
+  }, [mountedEditor]);
 
   // Register the primary editor in global store (for ChatPanel inserts).
   // Standalone mounts (Codex panel wide mode, identified by phaseIdOverride)
@@ -888,14 +916,14 @@ export function EditorPane({
   const setGlobalEditor = useEditorStore((s) => s.setEditor);
   useEffect(() => {
     if (groupIndex !== 0 || phaseIdOverride !== undefined) return;
-    setGlobalEditor(editor);
+    setGlobalEditor(mountedEditor);
     return () => setGlobalEditor(null);
-  }, [editor, setGlobalEditor, groupIndex, phaseIdOverride]);
+  }, [mountedEditor, setGlobalEditor, groupIndex, phaseIdOverride]);
 
   // Linter — scene-only, primary group only.
   const lintSceneId =
     groupIndex === 0 && !isCodexMode && !isSnippetMode ? nodeId : null;
-  useLinter(editor, lintSceneId);
+  useLinter(mountedEditor, lintSceneId);
 
   // ゴミ箱キャプチャ。Snippet タブは origin = null で skip、
   // Scene/Codex は対応する種別で記録する。
@@ -904,7 +932,7 @@ export function EditorPane({
     : nodeId
       ? { kind: isCodexMode ? "codex" : "scene", id: nodeId }
       : null;
-  useTrashBinCapture(editor, trashOrigin);
+  useTrashBinCapture(mountedEditor, trashOrigin);
 
   // 同シーン内の伏線ジャンプ要求を処理する。
   // クロスシーンは switchScene の consumeJump に任せる（タイミング統一のため）。
@@ -1069,13 +1097,15 @@ export function EditorPane({
   // When typewriter mode is toggled (on or off), scroll immediately to center
   // the cursor to prevent a visual jump from the 50vh padding being added/removed.
   useEffect(() => {
-    if (!editorContainerRef.current || !editor) return;
+    if (!editorContainerRef.current || !isEditorViewReady(mountedEditor))
+      return;
     const container = editorContainerRef.current;
+    const ed = mountedEditor;
     const raf = requestAnimationFrame(() => {
-      const { from } = editor.view.state.selection;
+      const { from } = ed.view.state.selection;
       let coordsTop: number;
       try {
-        coordsTop = editor.view.coordsAtPos(from).top;
+        coordsTop = ed.view.coordsAtPos(from).top;
       } catch {
         return;
       }
@@ -1089,18 +1119,25 @@ export function EditorPane({
       container.scrollTo({ top: Math.max(0, target), behavior: "auto" });
     });
     return () => cancelAnimationFrame(raf);
-  }, [typewriterMode, editor, nodeId]);
+  }, [typewriterMode, mountedEditor, nodeId]);
   const { generate, accept, reject, rejectOrAbort, retry } =
-    useInlineAiDiff(editor);
+    useInlineAiDiff(dbNativeEditor);
   void reject;
 
-  useCursorOverlay(editor);
-  useCharacterFade(editor);
-  useAttribution(editor);
+  useCursorOverlay(mountedEditor);
+  useCharacterFade(mountedEditor);
+  useAttribution(dbNativeEditor);
 
   // Listen for slash-command events dispatched by SlashCommandExtension
   useEffect(() => {
-    if (!editor) return;
+    if (!dbNativeEditor || !isEditorViewReady(dbNativeEditor)) return;
+    const ed = dbNativeEditor;
+    let dom: HTMLElement;
+    try {
+      dom = ed.view.dom;
+    } catch {
+      return;
+    }
     function onSlashCommand(e: Event) {
       const cmd = (e as CustomEvent).detail?.command as
         | InlineAiCommand
@@ -1109,7 +1146,7 @@ export function EditorPane({
       // Beat system: structural inserts skip the AI pipeline entirely.
       if (cmd.kind === "insert-node") {
         if (cmd.id === "sceneBeat") {
-          editor.chain().focus().insertSceneBeat().run();
+          ed.chain().focus().insertSceneBeat().run();
         }
         return;
       }
@@ -1126,7 +1163,7 @@ export function EditorPane({
       const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
       const codexEntries = useCodexStore.getState().entries;
       const context = buildInlineAiContext({
-        editor,
+        editor: ed,
         projectTitle,
         sceneTitle: node?.title ?? "",
         matchedCodexIds,
@@ -1134,13 +1171,11 @@ export function EditorPane({
       });
       generate(cmd, context);
     }
-    editor.view.dom.addEventListener("inlineai:slash-command", onSlashCommand);
-    return () =>
-      editor.view.dom.removeEventListener(
-        "inlineai:slash-command",
-        onSlashCommand,
-      );
-  }, [editor, nodeId, generate]);
+    dom.addEventListener("inlineai:slash-command", onSlashCommand);
+    return () => {
+      dom.removeEventListener("inlineai:slash-command", onSlashCommand);
+    };
+  }, [dbNativeEditor, nodeId, generate]);
 
   // Subscribe to content sync from the other pane (or CodexContentEditor mini-editor).
   // Apply is rAF-coalesced: a typing burst on the peer pane collapses to at most
@@ -1532,6 +1567,28 @@ export function EditorPane({
     groupIndex,
   ]);
 
+  useEffect(() => {
+    function onExternalReload(e: Event) {
+      const detail = (e as CustomEvent<{ sceneId: string; content: string }>)
+        .detail;
+      if (detail.sceneId !== nodeId || !editorRef.current) return;
+      isApplyingExternalUpdate.current = true;
+      try {
+        const parsed =
+          detail.content && detail.content !== "{}"
+            ? JSON.parse(detail.content)
+            : "";
+        editorRef.current.commands.setContent(parsed, { emitUpdate: false });
+        setIsDirtyRef.current(false);
+      } finally {
+        isApplyingExternalUpdate.current = false;
+      }
+    }
+    window.addEventListener("external-mount:reload-scene", onExternalReload);
+    return () =>
+      window.removeEventListener("external-mount:reload-scene", onExternalReload);
+  }, [nodeId]);
+
   const isNote =
     !isCodexMode && !isSnippetMode && activeNode?.nodeType === "note";
 
@@ -1607,6 +1664,9 @@ export function EditorPane({
         sceneId={isCodexMode || isSnippetMode ? undefined : nodeId}
         nodeType={activeNode?.nodeType}
       />
+      {isFileBacked && !isCodexMode && !isSnippetMode && (
+        <FileBackedSceneBanner />
+      )}
       {isNote && (
         <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
           <span className="font-medium">{t("editor.ribbon.noteEditing")}</span>

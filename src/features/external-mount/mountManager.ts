@@ -1,0 +1,549 @@
+import { toast } from "sonner";
+import i18next from "@/lib/i18n";
+import {
+  getProjectSetting,
+  setProjectSetting,
+} from "@/features/settings/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  createNode,
+  listAllNodes,
+  saveSceneContent,
+  updateNode,
+} from "@/features/tree/api";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
+import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
+import * as mountApi from "./api";
+import { useExternalRootStore } from "./externalRootStore";
+import { markdownToPmJson } from "./markdownBridge";
+import {
+  basename,
+  buildMountFolderUri,
+  buildSourceUri,
+  dirname,
+  parseSourceUri,
+  titleFromFilename,
+} from "./sourceUri";
+import type { ExternalRoot, FileEvent, ScanResult, ScannedFile } from "./types";
+import { EXTERNAL_ROOTS_KEY } from "./types";
+
+const ARCHIVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const RENAME_WINDOW_MS = 5000;
+
+interface RecentDelete {
+  rootId: string;
+  relPath: string;
+  contentHash: string;
+  at: number;
+}
+
+const recentDeletes: RecentDelete[] = [];
+
+export async function loadRootsFromSettings(): Promise<ExternalRoot[]> {
+  const projectId = getCurrentProjectId();
+  const raw = await getProjectSetting(projectId, EXTERNAL_ROOTS_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw) as ExternalRoot[];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveRootsToSettings(roots: ExternalRoot[]): Promise<void> {
+  const projectId = getCurrentProjectId();
+  await setProjectSetting(
+    projectId,
+    EXTERNAL_ROOTS_KEY,
+    JSON.stringify(roots),
+  );
+}
+
+export async function initializeExternalMounts(): Promise<void> {
+  const previous = useExternalRootStore.getState().roots;
+  for (const root of previous) {
+    try {
+      await mountApi.unregisterMount(root.id);
+    } catch {
+      // ignore stale watchers
+    }
+  }
+
+  const roots = await loadRootsFromSettings();
+  useExternalRootStore.getState().setRoots(roots);
+  await purgeExpiredArchives();
+
+  const missing: ExternalRoot[] = [];
+  for (const root of roots) {
+    try {
+      const scan = await mountApi.registerMount(root.id, root.path, root.label);
+      await reconcileRoot(root, scan);
+    } catch {
+      missing.push(root);
+    }
+  }
+  useExternalRootStore.getState().setMissingRoots(missing);
+  useExternalRootStore.getState().setInitialized(true);
+  await useTreeStore.getState().loadTree(getCurrentProjectId());
+}
+
+export async function addExternalMount(path: string, label?: string): Promise<void> {
+  const id = crypto.randomUUID();
+  const resolvedLabel = label ?? basename(path);
+  const root: ExternalRoot = { id, path, label: resolvedLabel };
+  const scan = await mountApi.registerMount(id, path, resolvedLabel);
+  const roots = [...(await loadRootsFromSettings()), root];
+  await saveRootsToSettings(roots);
+  useExternalRootStore.getState().addRoot(root);
+  await reconcileRoot(root, scan);
+  await useTreeStore.getState().loadTree(getCurrentProjectId());
+  toast.success(i18next.t("externalMount.toast.mounted", { label: resolvedLabel }));
+}
+
+export async function removeExternalMount(rootId: string): Promise<void> {
+  await mountApi.unregisterMount(rootId);
+  const roots = (await loadRootsFromSettings()).filter((r) => r.id !== rootId);
+  await saveRootsToSettings(roots);
+  useExternalRootStore.getState().removeRoot(rootId);
+
+  const projectId = getCurrentProjectId();
+  const prefix = rootPrefix(rootId);
+  const nodes = await listAllNodes(projectId);
+  const { deleteNode } = await import("@/features/tree/api");
+  for (const node of nodes) {
+    if (node.sourceUri?.startsWith(prefix)) {
+      await deleteNode(node.id);
+    }
+  }
+  await useTreeStore.getState().loadTree(projectId);
+  toast.success(i18next.t("externalMount.toast.removed"));
+}
+
+function rootPrefix(rootId: string): string {
+  return `external-root://${rootId}/`;
+}
+
+async function reconcileRoot(
+  root: ExternalRoot,
+  scan: ScanResult,
+): Promise<void> {
+  const projectId = getCurrentProjectId();
+  const allNodes = await listAllNodes(projectId);
+  const prefix = rootPrefix(root.id);
+
+  const mountFolderUri = buildMountFolderUri(root.id);
+  let mountFolder = allNodes.find((n) => n.sourceUri === mountFolderUri);
+  if (!mountFolder) {
+    mountFolder = await createNode({
+      id: crypto.randomUUID(),
+      projectId,
+      nodeType: "folder",
+      title: root.label,
+      sortOrder: nextSortOrder(allNodes, null),
+      parentId: null,
+      sourceUri: mountFolderUri,
+    });
+  }
+
+  const dbByUri = await buildDbByUriMap(
+    allNodes,
+    prefix,
+    mountFolderUri,
+  );
+
+  const diskByPath = new Map(scan.files.map((f) => [f.relPath, f]));
+  const folderIds = await ensureFolderTree(
+    root,
+    scan,
+    mountFolder.id,
+    allNodes,
+  );
+
+  // Boot-time rename detection via content hash
+  const dbOnly = [...dbByUri.entries()].filter(
+    ([uri, node]) =>
+      !node.archivedAt &&
+      !diskByPath.has(parseSourceUri(uri)?.relPath ?? ""),
+  );
+  const diskOnly = scan.files.filter(
+    (f) => !dbByUri.has(buildSourceUri(root.id, f.relPath)),
+  );
+
+  for (const [uri, node] of dbOnly) {
+    const parsed = parseSourceUri(uri);
+    if (!parsed) continue;
+    const match = diskOnly.find((f) => f.contentHash === hashForNode(node, scan));
+    if (match) {
+      const newUri = buildSourceUri(root.id, match.relPath);
+      await updateNode(node.id, {
+        sourceUri: newUri,
+        title: titleFromFilename(basename(match.relPath)),
+        sourceMtime: match.mtime,
+      });
+      diskOnly.splice(diskOnly.indexOf(match), 1);
+      dbByUri.delete(uri);
+      dbByUri.set(newUri, { ...node, sourceUri: newUri });
+    } else if (!node.archivedAt) {
+      await softArchiveNode(node.id);
+    }
+  }
+
+  for (const file of scan.files) {
+    const uri = buildSourceUri(root.id, file.relPath);
+    const existing = dbByUri.get(uri);
+    if (existing?.archivedAt) {
+      await updateNode(existing.id, { archivedAt: null, sourceMtime: file.mtime });
+    }
+    if (existing) {
+      await syncFileCache(existing.id, file);
+    } else {
+      await upsertSceneFromFile(root, file, mountFolder.id, folderIds);
+    }
+  }
+}
+
+function hashForNode(
+  node: { content: string },
+  scan: ScanResult,
+): string | null {
+  try {
+    const content = JSON.parse(node.content) as Record<string, unknown>;
+    const text = JSON.stringify(content);
+    const match = scan.files.find((f) => f.content === text);
+    return match?.contentHash ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureFolderTree(
+  root: ExternalRoot,
+  scan: ScanResult,
+  mountFolderId: string,
+  allNodes: Awaited<ReturnType<typeof listAllNodes>>,
+): Promise<Map<string, string>> {
+  const folderIds = new Map<string, string>();
+  const projectId = getCurrentProjectId();
+  const sortedDirs = [...scan.dirs].sort((a, b) =>
+    a.relPath.localeCompare(b.relPath),
+  );
+
+  for (const dir of sortedDirs) {
+    const uri = buildSourceUri(root.id, dir.relPath);
+    let node = allNodes.find((n) => n.sourceUri === uri);
+    if (!node) {
+      const parentRel = dirname(dir.relPath);
+      const parentId =
+        parentRel == null
+          ? mountFolderId
+          : (folderIds.get(parentRel) ?? mountFolderId);
+      node = await createNode({
+        id: crypto.randomUUID(),
+        projectId,
+        nodeType: "folder",
+        title: dir.name,
+        sortOrder: nextSortOrder(allNodes, parentId),
+        parentId,
+        sourceUri: uri,
+      });
+      allNodes.push(node);
+    }
+    folderIds.set(dir.relPath, node.id);
+  }
+  return folderIds;
+}
+
+/** @internal Exported for unit tests. */
+export async function buildDbByUriMap(
+  allNodes: Awaited<ReturnType<typeof listAllNodes>>,
+  prefix: string,
+  mountFolderUri: string,
+): Promise<Map<string, Awaited<ReturnType<typeof listAllNodes>>[number]>> {
+  const candidates = allNodes.filter(
+    (n) => n.sourceUri?.startsWith(prefix) && n.sourceUri !== mountFolderUri,
+  );
+  const grouped = new Map<string, typeof candidates>();
+  for (const node of candidates) {
+    const uri = node.sourceUri!;
+    const group = grouped.get(uri) ?? [];
+    group.push(node);
+    grouped.set(uri, group);
+  }
+
+  const map = new Map<string, (typeof candidates)[number]>();
+  for (const [uri, nodes] of grouped) {
+    const active = nodes.filter((n) => !n.archivedAt);
+    if (active.length > 1) {
+      active.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      for (const dup of active.slice(1)) {
+        await softArchiveNode(dup.id);
+      }
+    }
+    const preferred =
+      active[0] ??
+      nodes
+        .slice()
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+    if (preferred) map.set(uri, preferred);
+  }
+  return map;
+}
+
+async function upsertSceneFromFile(
+  root: ExternalRoot,
+  file: ScannedFile,
+  mountFolderId: string,
+  folderIds: Map<string, string>,
+): Promise<void> {
+  const projectId = getCurrentProjectId();
+  const uri = buildSourceUri(root.id, file.relPath);
+  const existing = (await listAllNodes(projectId)).find((n) => n.sourceUri === uri);
+  if (existing) {
+    if (existing.archivedAt) {
+      await updateNode(existing.id, {
+        archivedAt: null,
+        sourceMtime: file.mtime,
+      });
+    }
+    await syncFileCache(existing.id, file);
+    return;
+  }
+
+  const parentRel = dirname(file.relPath);
+  const parentId =
+    parentRel == null ? mountFolderId : (folderIds.get(parentRel) ?? mountFolderId);
+  const pmJson = JSON.stringify(markdownToPmJson(file.content));
+  const node = await createNode({
+    id: crypto.randomUUID(),
+    projectId,
+    nodeType: "scene",
+    title: titleFromFilename(basename(file.relPath)),
+    sortOrder: sortOrderForFilename(file.relPath),
+    parentId,
+    sourceUri: uri,
+    sourceMtime: file.mtime,
+    content: pmJson,
+  });
+  await saveSceneContent(node.id, pmJson);
+  scheduleSceneIndex(node.id);
+}
+
+async function syncFileCache(
+  nodeId: string,
+  file: ScannedFile,
+): Promise<void> {
+  const pmJson = JSON.stringify(markdownToPmJson(file.content));
+  await saveSceneContent(nodeId, pmJson);
+  await updateNode(nodeId, {
+    sourceMtime: file.mtime,
+    title: titleFromFilename(basename(file.relPath)),
+  });
+  scheduleSceneIndex(nodeId);
+}
+
+function sortOrderForFilename(relPath: string): string {
+  return basename(relPath).toLowerCase();
+}
+
+function nextSortOrder(
+  nodes: { parentId: string | null; sortOrder: string }[],
+  parentId: string | null,
+): string {
+  const siblings = nodes.filter((n) => n.parentId === parentId);
+  const keys = generateNKeysBetween(null, null, Math.max(siblings.length + 1, 1));
+  return keys[keys.length - 1] ?? "a0";
+}
+
+async function softArchiveNode(nodeId: string): Promise<void> {
+  await updateNode(nodeId, { archivedAt: new Date().toISOString() });
+}
+
+export async function purgeExpiredArchives(): Promise<void> {
+  const projectId = getCurrentProjectId();
+  const cutoff = Date.now() - ARCHIVE_RETENTION_MS;
+  const allNodes = await listAllNodes(projectId);
+  for (const node of allNodes) {
+    if (!node.archivedAt) continue;
+    const archivedAt = Date.parse(node.archivedAt);
+    if (!Number.isNaN(archivedAt) && archivedAt < cutoff) {
+      const { deleteNode } = await import("@/features/tree/api");
+      await deleteNode(node.id);
+    }
+  }
+}
+
+export async function handleFileEvent(event: FileEvent): Promise<void> {
+  if (useExternalRootStore.getState().isMuted(event.rootId, event.relPath)) {
+    return;
+  }
+
+  const root = useExternalRootStore
+    .getState()
+    .roots.find((r) => r.id === event.rootId);
+  if (!root) return;
+
+  switch (event.kind) {
+    case "changed":
+      await handleFileChanged(root, event.relPath);
+      break;
+    case "added":
+      await handleFileAdded(root, event.relPath);
+      break;
+    case "removed":
+      await handleFileRemoved(root, event.relPath);
+      break;
+    case "renamed":
+      if (event.oldRelPath) {
+        await handleFileRenamed(root, event.oldRelPath, event.relPath);
+      }
+      break;
+  }
+}
+
+async function handleFileChanged(
+  root: ExternalRoot,
+  relPath: string,
+): Promise<void> {
+  const uri = buildSourceUri(root.id, relPath);
+  const node = await findNodeByUri(uri);
+  if (!node) return;
+
+  const content = await mountApi.readExternalFile(root.id, relPath);
+  const { useTabStore } = await import("@/features/editor/tabStore");
+  const isDirty = useTabStore.getState().dirtyTabIds.has(node.id);
+
+  if (isDirty) {
+    useExternalRootStore.getState().setConflict({
+      sceneId: node.id,
+      rootId: root.id,
+      relPath,
+      incomingContent: content,
+      incomingMtime: new Date().toISOString(),
+    });
+    return;
+  }
+
+  await applyExternalContent(node.id, root.id, relPath, content);
+}
+
+async function applyExternalContent(
+  nodeId: string,
+  rootId: string,
+  relPath: string,
+  markdown: string,
+): Promise<void> {
+  const pmJson = JSON.stringify(markdownToPmJson(markdown));
+  await saveSceneContent(nodeId, pmJson);
+  await updateNode(nodeId, { sourceMtime: new Date().toISOString() });
+  scheduleSceneIndex(nodeId);
+  await useTreeStore.getState().loadTree(getCurrentProjectId());
+
+  const { useTabStore } = await import("@/features/editor/tabStore");
+  if (useTabStore.getState().tabs.some((t) => t.nodeId === nodeId)) {
+    window.dispatchEvent(
+      new CustomEvent("external-mount:reload-scene", {
+        detail: { sceneId: nodeId, content: pmJson },
+      }),
+    );
+  }
+  useExternalRootStore.getState().mutePath(rootId, relPath);
+}
+
+async function handleFileAdded(
+  root: ExternalRoot,
+  relPath: string,
+): Promise<void> {
+  const scan = await mountApi.scanMount(root.id);
+  const file = scan.files.find((f) => f.relPath === relPath);
+  if (!file) return;
+
+  const recent = recentDeletes.find(
+    (d) =>
+      d.rootId === root.id &&
+      d.contentHash === file.contentHash &&
+      Date.now() - d.at < RENAME_WINDOW_MS,
+  );
+  if (recent) {
+    await handleFileRenamed(root, recent.relPath, relPath);
+    return;
+  }
+
+  await reconcileRoot(root, scan);
+  await useTreeStore.getState().loadTree(getCurrentProjectId());
+}
+
+async function handleFileRemoved(
+  root: ExternalRoot,
+  relPath: string,
+): Promise<void> {
+  const uri = buildSourceUri(root.id, relPath);
+  const node = await findNodeByUri(uri);
+  if (!node) return;
+
+  const { pmJsonToMarkdown } = await import("./markdownBridge");
+  const { contentHash } = await import("./contentHash");
+  const hash = await contentHash(pmJsonToMarkdown(node.content));
+  recentDeletes.push({
+    rootId: root.id,
+    relPath,
+    contentHash: hash,
+    at: Date.now(),
+  });
+
+  const { useTabStore } = await import("@/features/editor/tabStore");
+  const isDirty = useTabStore.getState().dirtyTabIds.has(node.id);
+  if (isDirty) {
+    toast.warning(i18next.t("externalMount.toast.fileDeletedExternally"));
+    return;
+  }
+
+  await softArchiveNode(node.id);
+  await useTreeStore.getState().loadTree(getCurrentProjectId());
+}
+
+async function handleFileRenamed(
+  root: ExternalRoot,
+  oldRelPath: string,
+  newRelPath: string,
+): Promise<void> {
+  const oldUri = buildSourceUri(root.id, oldRelPath);
+  const node = await findNodeByUri(oldUri);
+  if (!node) {
+    await handleFileAdded(root, newRelPath);
+    return;
+  }
+  const newUri = buildSourceUri(root.id, newRelPath);
+  await updateNode(node.id, {
+    sourceUri: newUri,
+    title: titleFromFilename(basename(newRelPath)),
+  });
+  await useTreeStore.getState().loadTree(getCurrentProjectId());
+  toast.info(
+    i18next.t("externalMount.toast.renamed", {
+      title: titleFromFilename(basename(newRelPath)),
+    }),
+  );
+}
+
+async function findNodeByUri(uri: string) {
+  const projectId = getCurrentProjectId();
+  const nodes = await listAllNodes(projectId);
+  return nodes.find((n) => n.sourceUri === uri);
+}
+
+export async function resolveReloadConflict(
+  choice: "keep-local" | "reload",
+): Promise<void> {
+  const conflict = useExternalRootStore.getState().conflict;
+  if (!conflict) return;
+  if (choice === "reload") {
+    await applyExternalContent(
+      conflict.sceneId,
+      conflict.rootId,
+      conflict.relPath,
+      conflict.incomingContent,
+    );
+  }
+  useExternalRootStore.getState().setConflict(null);
+}

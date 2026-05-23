@@ -81,6 +81,12 @@ export const treeNodes = sqliteTable(
     unplacedBeatPreview: text("unplaced_beat_preview"),
     // JSON array string of placed-beat preview lines, extracted from `content` on save.
     placedBeatPreview: text("placed_beat_preview"),
+    /** File-backed scene location: `external-root://<rootId>/<rel-path>` or null (DB-native). */
+    sourceUri: text("source_uri"),
+    /** Last synced file mtime (ISO 8601) for file-backed nodes. */
+    sourceMtime: text("source_mtime"),
+    /** Soft-delete timestamp for archived file-backed nodes. */
+    archivedAt: text("archived_at"),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),

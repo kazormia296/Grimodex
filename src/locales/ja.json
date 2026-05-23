@@ -2223,6 +2223,35 @@
       "noScenesSelected": "(シーンが選択されていません)"
     }
   },
+  "externalMount": {
+    "title": "外部 MD ルート",
+    "description": "Markdown ファイルのフォルダをマウントします。ファイルと双方向同期し、Git 管理は外部で行います。",
+    "remove": "マウントを解除",
+    "empty": "外部ルートは登録されていません。",
+    "missing": "一部のマウントパスにアクセスできません。再指定するか削除してください。",
+    "add": "マウントを追加",
+    "manage": "マウント管理",
+    "manageDesc": "ディスク上の Markdown フォルダをこのプロジェクトに紐づけます。",
+    "open": "開く…",
+    "filenameOrder": "ファイル名で並び順が決まります",
+    "banner": "このシーンは Markdown ファイルに直結しています。本文の装飾は GFM 範囲に限定されます。status・POV・synopsis 等の Grimodex 専用メタデータは Markdown ファイルには保存されません。",
+    "conflictTitle": "外部ファイルが変更されました",
+    "conflictBody": "編集中に外部でファイルが変更されました。どちらの内容を保持するか選んでください。",
+    "keepLocal": "編集中の内容を保持",
+    "reload": "ファイルから再読み込み",
+    "addTitle": "外部 MD ルートを追加",
+    "path": "フォルダパス",
+    "pathPlaceholder": "/path/to/novel",
+    "browse": "参照",
+    "label": "表示名",
+    "mount": "マウント",
+    "toast": {
+      "mounted": "「{{label}}」をマウントしました",
+      "removed": "外部マウントを解除しました",
+      "fileDeletedExternally": "ファイルが外部で削除されました",
+      "renamed": "「{{title}}」にリネームされました"
+    }
+  },
   "scenes": {
     "sortManual": "手動",
     "sortTitle": "タイトル順",

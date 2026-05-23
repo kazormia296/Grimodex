@@ -198,10 +198,119 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
     case "sceneBreak":
       return renderSceneBreak(ctx.settings);
 
+    case "bulletList":
+    case "orderedList":
+      return renderList(node, ctx);
+
+    case "listItem":
+      return (node.content ?? []).map((c) => renderNode(c, ctx)).join("");
+
+    case "taskList":
+      return renderList(node, ctx, true);
+
+    case "taskItem": {
+      const checked = Boolean(node.attrs?.checked);
+      const inner = (node.content ?? [])
+        .map((c) => renderNode(c, ctx))
+        .join("")
+        .trimEnd();
+      return `- [${checked ? "x" : " "}] ${inner}\n`;
+    }
+
+    case "blockquote": {
+      const inner = (node.content ?? [])
+        .map((c) => renderNode(c, ctx))
+        .join("")
+        .trimEnd()
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+      return inner + "\n";
+    }
+
+    case "codeBlock": {
+      const lang = (node.attrs?.language as string) ?? "";
+      const code = (node.content ?? [])
+        .map((c) => c.text ?? "")
+        .join("");
+      return "```" + lang + "\n" + code + "\n```\n";
+    }
+
+    case "horizontalRule":
+      return "---\n";
+
+    case "image": {
+      const src = (node.attrs?.src as string) ?? "";
+      const alt = (node.attrs?.alt as string) ?? "";
+      const title = node.attrs?.title as string | undefined;
+      if (ctx.settings.format === "markdown") {
+        return title
+          ? `![${alt}](${src} "${title}")`
+          : `![${alt}](${src})`;
+      }
+      return "";
+    }
+
+    case "table":
+      return renderTable(node, ctx);
+
+    case "tableRow":
+    case "tableHeader":
+    case "tableCell":
+      return (node.content ?? []).map((c) => renderNode(c, ctx)).join("");
+
     default:
       // 未知ノードは子要素を再帰
       return (node.content ?? []).map((c) => renderNode(c, ctx)).join("");
   }
+}
+
+function renderList(node: PMNode, ctx: RenderCtx, task = false): string {
+  const ordered = node.type === "orderedList";
+  let index = 1;
+  const lines: string[] = [];
+  for (const child of node.content ?? []) {
+    const inner = (child.content ?? [])
+      .map((c) => renderNode(c, ctx))
+      .join("")
+      .trimEnd();
+    if (task && child.type === "taskItem") {
+      lines.push(renderNode(child, ctx).trimEnd());
+    } else {
+      const prefix = ordered ? `${index}. ` : "- ";
+      lines.push(
+        prefix +
+          inner
+            .split("\n")
+            .filter(Boolean)
+            .join("\n"),
+      );
+      index += 1;
+    }
+  }
+  return lines.join("\n") + "\n";
+}
+
+function renderTable(node: PMNode, ctx: RenderCtx): string {
+  if (ctx.settings.format !== "markdown") return "";
+  const rows = node.content ?? [];
+  if (rows.length === 0) return "";
+  const rendered = rows.map((row) => {
+    const cells = (row.content ?? []).map((cell) =>
+      (cell.content ?? [])
+        .map((c) => renderNode(c, ctx))
+        .join("")
+        .trim()
+        .replace(/\|/g, "\\|"),
+    );
+    return `| ${cells.join(" | ")} |`;
+  });
+  if (rendered.length >= 1) {
+    const colCount = (rows[0].content ?? []).length;
+    const sep = `| ${Array(colCount).fill("---").join(" | ")} |`;
+    rendered.splice(1, 0, sep);
+  }
+  return rendered.join("\n") + "\n";
 }
 
 function applyMarks(text: string, marks: PMMark[], ctx: RenderCtx): string {
@@ -220,6 +329,23 @@ function applyMarks(text: string, marks: PMMark[], ctx: RenderCtx): string {
         if (ctx.settings.format === "markdown") result = `*${result}*`;
         else if (ctx.settings.format === "html") result = `<em>${result}</em>`;
         break;
+      case "strike":
+        if (ctx.settings.format === "markdown") result = `~~${result}~~`;
+        else if (ctx.settings.format === "html") result = `<s>${result}</s>`;
+        break;
+      case "code":
+        if (ctx.settings.format === "markdown") result = `\`${result}\``;
+        else if (ctx.settings.format === "html") result = `<code>${result}</code>`;
+        break;
+      case "link": {
+        const href = (mark.attrs?.href as string) ?? "";
+        if (ctx.settings.format === "markdown") {
+          result = `[${result}](${href})`;
+        } else if (ctx.settings.format === "html") {
+          result = `<a href="${escapeHtml(href)}">${result}</a>`;
+        }
+        break;
+      }
       // その他のマークは無視（テキストはそのまま）
     }
   }
@@ -280,6 +406,28 @@ function renderSceneContent(
   } catch {
     return "\n";
   }
+}
+
+/** ProseMirror JSON document → GFM markdown (pure, for file-backed scenes). */
+export function renderPmDocToMarkdown(contentJson: string): string {
+  const ctx: RenderCtx = {
+    settings: {
+      format: "markdown",
+      folderHeading: false,
+      folderHeadingStyle: "numbers",
+      sceneTitle: "none",
+      sceneDivider: "none",
+      sceneBreakStyle: "hr",
+      sceneBreakCustom: "",
+      sceneDividerCustom: "",
+      rubyStyle: "base",
+      emphasisDotsStyle: "plain",
+      includeTrashBin: false,
+    },
+    resolvedRuby: "base",
+    resolvedEmphasis: "plain",
+  };
+  return renderSceneContent(contentJson, ctx).trimEnd() + "\n";
 }
 
 // ────────────────────────────────────────────────────────────────────

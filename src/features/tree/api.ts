@@ -35,13 +35,18 @@ export async function listNodes(
   projectId: string,
   parentId?: string | null,
 ): Promise<TreeNode[]> {
+  const notArchived = isNull(treeNodes.archivedAt);
   if (parentId !== undefined) {
     if (parentId === null) {
       return db
         .select()
         .from(treeNodes)
         .where(
-          and(eq(treeNodes.projectId, projectId), isNull(treeNodes.parentId)),
+          and(
+            eq(treeNodes.projectId, projectId),
+            isNull(treeNodes.parentId),
+            notArchived,
+          ),
         );
     }
     return db
@@ -51,9 +56,18 @@ export async function listNodes(
         and(
           eq(treeNodes.projectId, projectId),
           eq(treeNodes.parentId, parentId),
+          notArchived,
         ),
       );
   }
+  return db
+    .select()
+    .from(treeNodes)
+    .where(and(eq(treeNodes.projectId, projectId), notArchived));
+}
+
+/** Includes archived nodes — for external mount reconciliation only. */
+export async function listAllNodes(projectId: string): Promise<TreeNode[]> {
   return db.select().from(treeNodes).where(eq(treeNodes.projectId, projectId));
 }
 
@@ -67,7 +81,17 @@ export async function createNode(
     NewTreeNode,
     "id" | "projectId" | "nodeType" | "title" | "sortOrder"
   > &
-    Partial<Pick<NewTreeNode, "parentId" | "status" | "synopsis">>,
+    Partial<
+      Pick<
+        NewTreeNode,
+        | "parentId"
+        | "status"
+        | "synopsis"
+        | "sourceUri"
+        | "sourceMtime"
+        | "content"
+      >
+    >,
 ): Promise<TreeNode> {
   const now = new Date().toISOString();
   const rows = await db
@@ -91,6 +115,10 @@ export async function updateNode(
       | "storyTimeLabel"
       | "povCharacterId"
       | "locationId"
+      | "sourceUri"
+      | "sourceMtime"
+      | "archivedAt"
+      | "content"
     >
   >,
 ): Promise<TreeNode | undefined> {

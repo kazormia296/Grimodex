@@ -1,17 +1,50 @@
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useEditorStore } from "./editorStore";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { isEditorViewReady } from "./isEditorViewReady";
 
 interface VerticalPreviewProps {
   open: boolean;
   onClose: () => void;
 }
 
+function readPreviewHtml(editor: NonNullable<ReturnType<typeof useEditorStore.getState>["editor"]>): string {
+  try {
+    return editor.getHTML();
+  } catch {
+    const text = editor.getText();
+    if (!text) return "";
+    return `<p>${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`;
+  }
+}
+
 export function VerticalPreview({ open, onClose }: VerticalPreviewProps) {
   const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
+  const [html, setHtml] = useState("");
 
-  const html = editor?.getHTML() ?? "";
+  useEffect(() => {
+    if (!open) {
+      setHtml("");
+      return;
+    }
+    if (!isEditorViewReady(editor)) {
+      setHtml("");
+      return;
+    }
+
+    const refresh = () => {
+      if (!isEditorViewReady(editor)) return;
+      setHtml(readPreviewHtml(editor));
+    };
+
+    refresh();
+    editor.on?.("update", refresh);
+    return () => {
+      editor.off?.("update", refresh);
+    };
+  }, [open, editor]);
 
   return (
     <AnimatedOverlay

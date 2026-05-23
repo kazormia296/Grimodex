@@ -12,6 +12,7 @@ import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
 import { exportCodexJson } from "../exportUtils";
 import { IntegrityCheckSection } from "@/features/workspace/IntegrityCheckDialog";
+import { MountListDialog } from "@/features/external-mount/components/MountListDialog";
 import {
   enqueueRescan,
   useRescanStore,
@@ -76,6 +77,7 @@ export function DataCategory() {
   const [isExportingCodex, setIsExportingCodex] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [mountDialogOpen, setMountDialogOpen] = useState(false);
   const rescanRunning = useRescanStore((s) => s.isRunning);
   const rescanProgress = useRescanStore((s) => s.progress);
   const rescanTotal = useRescanStore((s) => s.total);
@@ -330,10 +332,29 @@ export function DataCategory() {
         </div>
       </SettingSection>
 
+      <SettingSection title={t("externalMount.title")}>
+        <SettingRow
+          label={t("externalMount.manage")}
+          description={t("externalMount.manageDesc")}
+        >
+          <button
+            type="button"
+            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+            onClick={() => setMountDialogOpen(true)}
+          >
+            {t("externalMount.open")}
+          </button>
+        </SettingRow>
+      </SettingSection>
+
       {/* Integrity Check */}
       <SettingSection title={t("settings.data.integrityCheck")}>
         <IntegrityCheckSection />
       </SettingSection>
+      <MountListDialog
+        open={mountDialogOpen}
+        onClose={() => setMountDialogOpen(false)}
+      />
     </div>
   );
 }

@@ -21,6 +21,7 @@ import { listCodexEntries } from "@/features/codex/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useTermDictionaryStore } from "./termDictionaryStore";
 import { markStart, markEnd } from "@/lib/perfLog";
+import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 
 /**
  * Imperative trigger used when an action must bypass the normal debounce
@@ -166,7 +167,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
 
   // Push diagnostics → editor decorations whenever they change.
   useEffect(() => {
-    if (!editor) return;
+    if (!isEditorViewReady(editor)) return;
     const view = editor.view;
     const tr = view.state.tr.setMeta(lintDecorationKey, {
       type: "lintDecoration/set",
@@ -181,7 +182,7 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
 
   // Debounced lint driver.
   useEffect(() => {
-    if (!editor) return;
+    if (!isEditorViewReady(editor)) return;
 
     // Explicitly clear any stale decorations from the editor before the
     // new scene's content is loaded. TipTap re-uses one editor instance

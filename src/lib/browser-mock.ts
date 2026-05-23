@@ -805,6 +805,17 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return lintTextBrowser(
           args as unknown as Parameters<typeof lintTextBrowser>[0],
         ) as T;
+      case "external_mount_register":
+        return { dirs: [], files: [] } as T;
+      case "external_mount_unregister":
+      case "external_mount_write_file":
+        return undefined as T;
+      case "external_mount_read_file":
+        return "" as T;
+      case "external_mount_list":
+        return [] as T;
+      case "external_mount_scan":
+        return { dirs: [], files: [] } as T;
       default:
         throw new Error(`[browser-mock] Unknown Tauri command: ${cmd}`);
     }

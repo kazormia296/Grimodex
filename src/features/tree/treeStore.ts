@@ -42,6 +42,10 @@ export interface TreeNodeData {
   povCharacterId: string | null;
   locationId: string | null;
   charCount: number;
+  /** File-backed scene location (null = DB-native). */
+  sourceUri?: string | null;
+  sourceMtime?: string | null;
+  archivedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -137,6 +141,9 @@ function toNodeData(n: ApiNode): TreeNodeData {
     povCharacterId: n.povCharacterId ?? null,
     locationId: n.locationId ?? null,
     charCount: n.charCount,
+    sourceUri: n.sourceUri ?? null,
+    sourceMtime: n.sourceMtime ?? null,
+    archivedAt: n.archivedAt ?? null,
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
   };

@@ -4,6 +4,7 @@ mod cli_provider;
 mod codex_matching;
 mod commands;
 mod database;
+mod external_mount;
 mod lint_logging;
 mod semantic;
 mod workspace;
@@ -18,6 +19,8 @@ use commands::{
     AiSettingsPath, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag, LogGuard,
     PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
 };
+use external_mount::watch::ExternalMountWatchState;
+use commands::external_mount::ExternalMountState;
 
 #[tauri::command]
 fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
@@ -121,6 +124,9 @@ pub fn run() {
             // Cleared on workspace open; invalidated per-scene on index_scene.
             app.manage(semantic::search::SearchCache::new());
 
+            app.manage(ExternalMountWatchState::new());
+            app.manage(ExternalMountState::new());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -206,6 +212,12 @@ pub fn run() {
             commands::semantic::semantic_reindex_all,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_chunk_context,
+            commands::external_mount::external_mount_register,
+            commands::external_mount::external_mount_unregister,
+            commands::external_mount::external_mount_read_file,
+            commands::external_mount::external_mount_write_file,
+            commands::external_mount::external_mount_list,
+            commands::external_mount::external_mount_scan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

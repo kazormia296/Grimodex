@@ -747,6 +747,74 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   color: oklch(0.7 0.15 240);
 }
 
+/* GFM: task lists, code blocks (file-backed MD scenes) */
+.tiptap ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+  margin: 1em 0;
+}
+
+.tiptap li[data-type="taskItem"] {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
+  margin: 0.25em 0;
+}
+
+.tiptap li[data-type="taskItem"] > label {
+  flex-shrink: 0;
+  margin: 0;
+  user-select: none;
+}
+
+.tiptap li[data-type="taskItem"] > label input {
+  margin: 0.2em 0 0;
+}
+
+.tiptap li[data-type="taskItem"] > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.tiptap li[data-type="taskItem"] > div > p {
+  margin: 0;
+}
+
+.tiptap li[data-type="taskItem"][data-checked="true"] > div {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+.tiptap s,
+.tiptap strike,
+.tiptap del {
+  text-decoration: line-through;
+}
+
+.tiptap pre {
+  background: var(--muted);
+  border-radius: 0.375rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875em;
+  margin: 1em 0;
+  overflow-x: auto;
+  padding: 0.75em 1em;
+}
+
+.tiptap pre code {
+  background: none;
+  font-size: inherit;
+  padding: 0;
+}
+
+.tiptap :not(pre) > code {
+  background: var(--muted);
+  border-radius: 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875em;
+  padding: 0.125em 0.25em;
+}
+
 /* チャットパネルのテーブル（Tailwind Typography prose内） */
 .prose table {
   border-collapse: collapse;
