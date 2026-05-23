@@ -99,8 +99,7 @@ export function useStripeIconPointerDrag({
           sizeRatio: segment.sizeRatio,
         }),
       );
-      const stripeEndInsertIndex =
-        slotIds.length > 0 ? slotIds.length : 0;
+      const stripeEndInsertIndex = slotIds.length > 0 ? slotIds.length : 0;
 
       return resolveCenterStripeDropFromPoint(
         clientX,
@@ -210,7 +209,13 @@ export function useStripeIconPointerDrag({
       }
       setDraggingPanel(panelId, "pointer", { x: offsetX, y: offsetY });
     },
-    [initAxisLockSession, panelId, setDraggingPanel, setStripeSwapPreview, slotId],
+    [
+      initAxisLockSession,
+      panelId,
+      setDraggingPanel,
+      setStripeSwapPreview,
+      slotId,
+    ],
   );
 
   const handlePointerDown = useCallback(
