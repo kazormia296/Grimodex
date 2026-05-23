@@ -14,6 +14,8 @@ import {
   getOpenSlotPixelSizes,
   nudgeAdjacentCenterSegmentPixelSizes,
   reorderPanelInSlot,
+  removePanelFromSlot,
+  removePanelFromCenterSegment,
   DEFAULT_EDITOR_SEGMENT_ID,
 } from "./layoutStateUtils";
 import { TOOL_WINDOW_PANEL_IDS } from "./toolWindowDefaults";
@@ -393,6 +395,87 @@ describe("nudgeAdjacentCenterSegmentPixelSizes", () => {
     expect(nudged).not.toBeNull();
     expect(nudged!.pxB).toBeGreaterThanOrEqual(MIN_EDITOR_SIZE);
     expect(nudged!.pxA + nudged!.pxB).toBeCloseTo(toolBefore + editorBefore, 5);
+  });
+});
+
+describe("removePanelFromSlot", () => {
+  it("promotes the next panel when the active panel is removed", () => {
+    const slots = [
+      {
+        id: "l1",
+        sizeRatio: 1,
+        panels: [
+          "codex",
+          "codex-quick",
+          "command-center-results",
+        ] as ToolWindowPanelId[],
+        activePanel: "codex" as ToolWindowPanelId,
+      },
+    ];
+
+    const { slots: next } = removePanelFromSlot(slots, 0, "codex");
+
+    expect(next[0].panels).toEqual(["codex-quick", "command-center-results"]);
+    expect(next[0].activePanel).toBe("codex-quick");
+  });
+
+  it("promotes the first remaining panel when the last active panel is removed", () => {
+    const slots = [
+      {
+        id: "l1",
+        sizeRatio: 1,
+        panels: ["codex", "codex-quick"] as ToolWindowPanelId[],
+        activePanel: "codex-quick" as ToolWindowPanelId,
+      },
+    ];
+
+    const { slots: next } = removePanelFromSlot(slots, 0, "codex-quick");
+
+    expect(next[0].panels).toEqual(["codex"]);
+    expect(next[0].activePanel).toBe("codex");
+  });
+
+  it("leaves activePanel unchanged when a background panel is removed", () => {
+    const slots = [
+      {
+        id: "l1",
+        sizeRatio: 1,
+        panels: ["codex", "codex-quick"] as ToolWindowPanelId[],
+        activePanel: "codex" as ToolWindowPanelId,
+      },
+    ];
+
+    const { slots: next } = removePanelFromSlot(slots, 0, "codex-quick");
+
+    expect(next[0].panels).toEqual(["codex"]);
+    expect(next[0].activePanel).toBe("codex");
+  });
+});
+
+describe("removePanelFromCenterSegment", () => {
+  it("promotes the next panel when the active panel is removed", () => {
+    const segments = [
+      { id: DEFAULT_EDITOR_SEGMENT_ID, kind: "editor" as const, sizeRatio: 1 },
+      {
+        id: "ctool0",
+        kind: "tool" as const,
+        sizeRatio: 1,
+        panels: ["scenes", "grid"] as ToolWindowPanelId[],
+        activePanel: "scenes" as ToolWindowPanelId,
+      },
+    ];
+    const toolIndex = segments.findIndex((s) => s.kind === "tool");
+
+    const next = removePanelFromCenterSegment(
+      segments,
+      toolIndex,
+      "scenes",
+      true,
+    );
+    const tool = next.find((s) => s.kind === "tool");
+
+    expect(tool?.panels).toEqual(["grid"]);
+    expect(tool?.activePanel).toBe("grid");
   });
 });
 
