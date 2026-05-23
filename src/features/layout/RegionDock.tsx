@@ -79,7 +79,12 @@ function BottomRegionDock({
         style={{ height: regionSize, flexShrink: 0 }}
         className="flex min-h-0 w-full min-w-0 flex-col"
       >
-        <RegionContent region="bottom" orientation={contentOrientation} />
+        <RegionContent
+          region="bottom"
+          orientation={contentOrientation}
+          trackInsetStartPx={stripeReserveStartPx}
+          trackInsetEndPx={stripeReserveEndPx}
+        />
       </AnimatedRegionChrome>
 
       <div
