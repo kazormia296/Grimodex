@@ -1722,6 +1722,7 @@
   },
   "editor": {
     "placeholder": "ここに書き始める…",
+    "loadingContent": "読み込み中…",
     "beat": {
       "label": "Beat",
       "collapse": "折りたたむ",

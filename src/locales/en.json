@@ -1718,6 +1718,7 @@
   },
   "editor": {
     "placeholder": "Start writing here…",
+    "loadingContent": "Loading…",
     "beat": {
       "label": "Beat",
       "collapse": "Collapse",
