@@ -9,7 +9,7 @@ import {
   OPENROUTER_PROVIDER_PINS,
   groupModelsByDeveloper,
 } from "@/features/chat/types";
-import type { AiProvider, CliKind } from "@/features/chat/types";
+import type { AiProvider, CliKind, AiModel } from "@/features/chat/types";
 import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
 import {
@@ -43,6 +43,12 @@ const NUMERIC_SAMPLING_KEYS = new Set([
   "min_p",
   "rep_pen",
 ]);
+
+function withCustomCliModel(models: AiModel[], current?: string): AiModel[] {
+  const trimmed = current?.trim();
+  if (!trimmed || models.some((m) => m.id === trimmed)) return models;
+  return [{ id: trimmed, name: `${trimmed} (custom)` }, ...models];
+}
 
 /**
  * サンプリング 1 キー分の編集 UI を返す。
@@ -179,7 +185,9 @@ export function AiCategory() {
     if (!settings) return;
     // ollama / ai-novelist は認証不要でモデル一覧を取得できる
     const noKeyNeeded =
-      settings.provider === "ollama" || settings.provider === "ai-novelist";
+      settings.provider === "ollama" ||
+      settings.provider === "ai-novelist" ||
+      settings.provider === "cli";
     if (hasApiKey || noKeyNeeded) {
       handleLoadModels();
     }
@@ -191,6 +199,14 @@ export function AiCategory() {
       ...localSettings!,
       provider,
       model: "",
+      cli:
+        provider === "cli"
+          ? (localSettings!.cli ?? {
+              kind: "claude" as CliKind,
+              binaryPath: "",
+              model: "",
+            })
+          : localSettings!.cli,
       // OpenAI 互換に切替時は openaiCompatible 設定を初期化（既存値は保持）
       openaiCompatible:
         localSettings!.openaiCompatible ?? DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
@@ -533,6 +549,23 @@ export function AiCategory() {
               binaryPath: "",
               model: "",
             };
+            const updateCliLocal = (patch: Partial<typeof cli>): void => {
+              setLocalSettings((s) => {
+                if (!s) return s;
+                const current = s.cli ?? {
+                  kind: "claude" as CliKind,
+                  binaryPath: "",
+                  model: "",
+                };
+                return { ...s, cli: { ...current, ...patch } };
+              });
+            };
+            const persistCliSettings = (): void => {
+              setLocalSettings((s) => {
+                if (s) void saveSettings(s);
+                return s;
+              });
+            };
             const updateCli = async (
               patch: Partial<typeof cli>,
             ): Promise<void> => {
@@ -553,7 +586,7 @@ export function AiCategory() {
                         kind: e.target.value as CliKind,
                         // バイナリパスは CLI 種別に紐づくのでクリア
                         binaryPath: "",
-                      });
+                      }).then(() => handleLoadModels());
                     }}
                     className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
                   >
@@ -583,8 +616,9 @@ export function AiCategory() {
                       type="text"
                       value={cli.binaryPath ?? ""}
                       onChange={(e) =>
-                        updateCli({ binaryPath: e.target.value })
+                        updateCliLocal({ binaryPath: e.target.value })
                       }
+                      onBlur={persistCliSettings}
                       className="w-72 rounded-md border border-input bg-background px-2 py-1 text-sm font-mono focus:outline-none"
                       placeholder={`${cli.kind}（PATH またはフルパス）`}
                     />
@@ -594,6 +628,7 @@ export function AiCategory() {
                         const path = await detectCliBinary(cli.kind);
                         if (path) {
                           await updateCli({ binaryPath: path });
+                          handleLoadModels();
                           toast.success(`検出: ${path}`);
                         } else {
                           toast.error(
@@ -609,15 +644,29 @@ export function AiCategory() {
                 </SettingRow>
                 <SettingRow
                   label="モデル"
-                  description="CLI に --model で渡される。空欄なら CLI のデフォルト"
+                  description={
+                    cli.kind === "claude"
+                      ? "Claude Code は一覧コマンドがないためよく使うモデルを表示します。空欄なら CLI のデフォルト"
+                      : "CLI から取得したモデル一覧。空欄なら CLI のデフォルト"
+                  }
                 >
-                  <input
-                    type="text"
-                    value={cli.model ?? ""}
-                    onChange={(e) => updateCli({ model: e.target.value })}
-                    className="w-48 rounded-md border border-input bg-background px-2 py-1 text-sm font-mono focus:outline-none"
-                    placeholder="(任意)"
-                  />
+                  <div className="flex gap-2">
+                    <ModelPicker
+                      models={withCustomCliModel(models, cli.model ?? "")}
+                      value={cli.model ?? ""}
+                      onChange={(modelId) => void updateCli({ model: modelId })}
+                      isLoading={isLoadingModels}
+                      placeholder="(CLI デフォルト)"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleLoadModels}
+                      disabled={isLoadingModels}
+                      className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
+                    >
+                      {t("settings.ai.refresh")}
+                    </button>
+                  </div>
                 </SettingRow>
                 <div className="mt-2">
                   <button
@@ -736,24 +785,26 @@ export function AiCategory() {
 
           return (
             <>
-              <SettingRow label={t("settings.ai.defaultChatModel")}>
-                <div className="flex gap-2">
-                  <ModelPicker
-                    models={models}
-                    value={localSettings.model}
-                    onChange={handleModelChange}
-                    isLoading={isLoadingModels}
-                  />
-                  <button
-                    type="button"
-                    onClick={handleLoadModels}
-                    disabled={isLoadingModels}
-                    className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
-                  >
-                    {t("settings.ai.refresh")}
-                  </button>
-                </div>
-              </SettingRow>
+              {localSettings.provider !== "cli" && (
+                <SettingRow label={t("settings.ai.defaultChatModel")}>
+                  <div className="flex gap-2">
+                    <ModelPicker
+                      models={models}
+                      value={localSettings.model}
+                      onChange={handleModelChange}
+                      isLoading={isLoadingModels}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleLoadModels}
+                      disabled={isLoadingModels}
+                      className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent disabled:opacity-50"
+                    >
+                      {t("settings.ai.refresh")}
+                    </button>
+                  </div>
+                </SettingRow>
+              )}
 
               <SettingRow
                 label={t("settings.ai.inlineModel")}

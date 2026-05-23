@@ -753,6 +753,126 @@ async fn npm_prefix_windows(create_no_window: u32) -> Option<String> {
     }
 }
 
+/// CLI が利用可能なモデル一覧を返す。
+///
+/// - **Codex**: `codex debug models --bundled` の JSON をパース
+/// - **OpenCode**: `opencode models` の stdout (`provider/model` 1 行 1 件)
+/// - **Claude Code**: 一覧コマンドが無いため既知エイリアス/モデル ID の静的リスト
+pub async fn list_models(
+    kind: CliKind,
+    binary_path: Option<&str>,
+) -> anyhow::Result<Vec<crate::ai::AiModel>> {
+    match kind {
+        CliKind::Claude => Ok(known_claude_models()),
+        CliKind::Codex => {
+            let bin = resolve_binary_for_list(kind, binary_path);
+            let raw = run_cli_for_stdout(&bin, &["debug", "models", "--bundled"]).await?;
+            parse_codex_models_json(&raw)
+        }
+        CliKind::Opencode => {
+            let bin = resolve_binary_for_list(kind, binary_path);
+            let raw = run_cli_for_stdout(&bin, &["models"]).await?;
+            Ok(parse_opencode_models_stdout(&raw))
+        }
+    }
+}
+
+fn resolve_binary_for_list(kind: CliKind, binary_path: Option<&str>) -> String {
+    binary_path
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| kind.default_binary_name().to_string())
+}
+
+async fn run_cli_for_stdout(binary: &str, args: &[&str]) -> anyhow::Result<String> {
+    let mut cmd = Command::new(binary);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to spawn `{binary} {}`: {e}", args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!(
+            "`{binary} {}` exited with {}: {stderr}",
+            args.join(" "),
+            output.status
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn known_claude_models() -> Vec<crate::ai::AiModel> {
+    [
+        ("opus", "Opus (latest alias)"),
+        ("sonnet", "Sonnet (latest alias)"),
+        ("haiku", "Haiku (latest alias)"),
+        ("claude-opus-4-7", "Claude Opus 4.7"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+        ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
+        ("claude-3-5-haiku-20241022", "Claude Haiku 3.5"),
+    ]
+    .into_iter()
+    .map(|(id, name)| crate::ai::AiModel {
+        id: id.to_string(),
+        name: name.to_string(),
+        api_variant: None,
+    })
+    .collect()
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexModelsResponse {
+    models: Vec<CodexModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexModelEntry {
+    slug: String,
+    display_name: Option<String>,
+    visibility: Option<String>,
+}
+
+fn parse_codex_models_json(raw: &str) -> anyhow::Result<Vec<crate::ai::AiModel>> {
+    let parsed: CodexModelsResponse = serde_json::from_str(raw.trim())
+        .map_err(|e| anyhow::anyhow!("Failed to parse Codex models JSON: {e}"))?;
+    Ok(parsed
+        .models
+        .into_iter()
+        .filter(|m| m.visibility.as_deref().unwrap_or("list") == "list")
+        .map(|m| crate::ai::AiModel {
+            id: m.slug.clone(),
+            name: m.display_name.unwrap_or(m.slug),
+            api_variant: None,
+        })
+        .collect())
+}
+
+fn parse_opencode_models_stdout(raw: &str) -> Vec<crate::ai::AiModel> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| line.contains('/'))
+        .map(|line| {
+            let id = line.to_string();
+            let name = line.rsplit('/').next().unwrap_or(line).to_string();
+            crate::ai::AiModel {
+                id,
+                name,
+                api_variant: None,
+            }
+        })
+        .collect()
+}
+
 /// バイナリパスの存在確認 (`<bin> --version` を叩いて 0 終了するか)。
 /// 認証状態までは確認しない (CLI 側でログインプロンプトが出る or stderr を読む)。
 pub async fn test_binary(binary_path: &str) -> anyhow::Result<String> {
@@ -1008,5 +1128,38 @@ fn kill_process_group(pid: Option<u32>, sig: i32) {
     #[cfg(all(not(unix), not(windows)))]
     {
         let _ = (pid, sig);
+    }
+}
+
+#[cfg(test)]
+mod list_models_tests {
+    use super::*;
+
+    #[test]
+    fn parse_codex_models_json_extracts_visible_models() {
+        let raw = r#"{
+            "models": [
+                {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list"},
+                {"slug": "hidden", "display_name": "Hidden", "visibility": "hidden"}
+            ]
+        }"#;
+        let models = parse_codex_models_json(raw).expect("parse");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-5.5");
+        assert_eq!(models[0].name, "GPT-5.5");
+    }
+
+    #[test]
+    fn parse_opencode_models_stdout_splits_provider_model() {
+        let raw = "anthropic/claude-sonnet-4-6\nopenai/gpt-4o\n";
+        let models = parse_opencode_models_stdout(raw);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "anthropic/claude-sonnet-4-6");
+        assert_eq!(models[0].name, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn known_claude_models_is_non_empty() {
+        assert!(!known_claude_models().is_empty());
     }
 }

@@ -146,6 +146,7 @@ pub fn run() {
             commands::ai::send_agent_message,
             commands::cli_ai::detect_cli_binary,
             commands::cli_ai::test_cli_connection,
+            commands::cli_ai::list_cli_models,
             commands::cli_ai::abort_cli_chat_stream,
             commands::cli_ai::send_cli_chat_stream,
             commands::foreshadow::foreshadow_create,

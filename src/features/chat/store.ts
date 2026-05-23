@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import * as api from "./api";
-import { detectCliBinary } from "./cliApi";
+import * as cliApi from "./cliApi";
 import { resolveAinoveristApiVariant } from "./aiNovelist";
 import type { AiSettings, AiModel, ConnectionTestResult } from "./types";
 import { DEFAULT_AI_SETTINGS } from "./types";
@@ -37,7 +37,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     const key = await api.getApiKey(settings.provider);
     let cliBinaryAvailable: boolean | null = null;
     if (settings.provider === "cli") {
-      const path = await detectCliBinary(settings.cli?.kind ?? "claude");
+      const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
       cliBinaryAvailable = path !== null;
     }
     set({ settings, hasApiKey: key !== null, cliBinaryAvailable });
@@ -51,7 +51,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       const providerChanged = prev?.provider !== "cli";
       const kindChanged = prev?.cli?.kind !== settings.cli?.kind;
       if (providerChanged || kindChanged) {
-        const path = await detectCliBinary(settings.cli?.kind ?? "claude");
+        const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
         cliBinaryAvailable = path !== null;
       }
     } else {
@@ -111,9 +111,12 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
 
     set({ isLoadingModels: true });
     try {
-      // CLI プロバイダはモデル一覧を持たない (CLI 側 settings で個別管理)
       if (settings.provider === "cli") {
-        set({ models: [], isLoadingModels: false });
+        const models = await cliApi.listCliModels(
+          settings.cli?.kind ?? "claude",
+          settings.cli?.binaryPath,
+        );
+        set({ models, isLoadingModels: false });
         return;
       }
       // それ以外は Rust 側 fetch_models に委譲
@@ -140,7 +143,8 @@ export type ProviderReadiness =
 export function selectProviderReadiness(s: AiSettingsState): ProviderReadiness {
   const { settings, hasApiKey, cliBinaryAvailable } = s;
   if (!settings) return "pending";
-  if (!settings.model) return "no-model";
+  // CLI は cli.model が空でも CLI 側デフォルトに委譲できるため model 不要
+  if (!settings.model && settings.provider !== "cli") return "no-model";
   switch (settings.provider) {
     case "openrouter":
     case "openai":

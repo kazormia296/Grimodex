@@ -30,6 +30,15 @@ pub(crate) async fn test_cli_connection(binary_path: String) -> Result<String, A
     Ok(result)
 }
 
+/// CLI が利用可能なモデル一覧を返す (Codex/OpenCode は CLI コマンド、Claude は静的リスト)。
+#[tauri::command]
+pub(crate) async fn list_cli_models(
+    cli: CliKind,
+    binary_path: Option<String>,
+) -> Result<Vec<crate::ai::AiModel>, AppError> {
+    Ok(cli_provider::list_models(cli, binary_path.as_deref()).await?)
+}
+
 /// 進行中の CLI ストリームを中断する。AtomicBool を立てるだけで、
 /// `cli_provider::run` のループが次の iteration で kill する。
 ///
