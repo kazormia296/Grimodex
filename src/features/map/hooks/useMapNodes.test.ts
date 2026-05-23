@@ -46,7 +46,9 @@ vi.mock("../layouts", () => ({
     },
   ),
   layoutForAsync: vi.fn().mockResolvedValue(new Map()),
-  applyPinnedOverrides: vi.fn((computed: Map<string, { x: number; y: number }>) => computed),
+  applyPinnedOverrides: vi.fn(
+    (computed: Map<string, { x: number; y: number }>) => computed,
+  ),
 }));
 
 vi.mock("../layouts/layoutFingerprint", () => ({
@@ -382,5 +384,167 @@ describe("useMapNodes — theme モード再配置ループ防止", () => {
     });
 
     expect(vi.mocked(layoutForAsync).mock.calls.length).toBe(callsAfterInitial);
+  });
+});
+
+// ── userEdges 参照安定性に依存する契約の固定 ─────────────────────────────
+//
+// MapCanvas 側で `userEdges.map((e) => ({...}))` を毎レンダリングで生成して
+// 渡すと、本フックの buildNodes effect が `userEdges` 参照変化で毎フレーム
+// 走り、setNodes → 再レンダリング → 新 .map() の無限ループとなる
+// (Maximum update depth exceeded)。回避は MapCanvas 側で useMemo 化する
+// しかないため、本テストは「親が安定参照を渡してきた場合は再実行しない」
+// という契約を固定する。MapCanvas で useMemo が剥がれたら、本フックは
+// 防御しきれないことの明示でもある。
+describe("useMapNodes — userEdges 参照安定時は再構築しない契約", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("同一参照の userEdges で rerender しても setNodes を追加で呼ばない", async () => {
+    vi.mocked(layoutFingerprint).mockReturnValue("stable-fp");
+    const setNodes = vi.fn();
+
+    const positions = [makePosition("pos1", "s1")];
+    const treeNodes = [
+      {
+        id: "s1",
+        nodeType: "scene",
+        title: "Scene",
+        synopsis: null,
+        status: "outline",
+        sortOrder: "a0",
+      },
+    ] as Parameters<typeof useMapNodes>[0]["treeNodes"];
+
+    // Critical: a single, stable userEdges reference reused across renders.
+    // Mirrors what MapCanvas's useMemo guarantees.
+    const stableUserEdges = [{ fromPositionId: "pos1", toPositionId: "pos1" }];
+
+    const baseProps: Parameters<typeof useMapNodes>[0] = {
+      boardId: "b1",
+      positions,
+      treeNodes,
+      codexEntries: [],
+      snippets: [],
+      stickies: [],
+      aiBranches: [],
+      frames: [],
+      show: {
+        scenes: true,
+        codex: true,
+        notes: false,
+        userEdges: true,
+        derivedEdges: false,
+        stickies: false,
+        aiBranch: false,
+        frames: false,
+        snippets: false,
+      },
+      mode: "free",
+      userEdges: stableUserEdges,
+      colorBy: "none" as const,
+      visualTheme: "default",
+      modeTransitionActive: false,
+      setFrames: vi.fn(),
+      setStickies: vi.fn(),
+      setAiBranches: vi.fn(),
+      setPositions: vi.fn(),
+      setNodes,
+      setForceLayoutRunning: vi.fn(),
+      setForceAlpha: vi.fn(),
+      updateNodeTitle: vi.fn(),
+      updateSynopsis: vi.fn(),
+      setActiveScene: vi.fn(),
+      groupDraggingRef: NOOP_REF,
+      persistingRef: NOOP_REF,
+    };
+
+    const { rerender } = renderHook((props) => useMapNodes(props), {
+      initialProps: baseProps,
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    const setNodesCallsAfterInitial = setNodes.mock.calls.length;
+    expect(setNodesCallsAfterInitial).toBeGreaterThan(0);
+
+    // Rerender with the SAME object identity for userEdges. No effect re-run
+    // should happen, so setNodes must not be called again.
+    rerender({ ...baseProps, userEdges: stableUserEdges });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(setNodes.mock.calls.length).toBe(setNodesCallsAfterInitial);
+  });
+
+  it("内容同一でも参照が変わると effect が再実行する (= 親 memo が必須)", async () => {
+    // This pins the contract from the other direction: the hook compares
+    // `userEdges` by reference (Object.is), so a fresh array of the same
+    // shape WILL re-trigger the build. That is exactly the loop trigger that
+    // bit MapCanvas pre-fix; this test fails if someone "fixes" the hook to
+    // deep-compare and silently lets the parent regress.
+    vi.mocked(layoutFingerprint).mockReturnValue("stable-fp");
+    const setNodes = vi.fn();
+
+    const baseProps: Parameters<typeof useMapNodes>[0] = {
+      boardId: "b1",
+      positions: [],
+      treeNodes: [],
+      codexEntries: [],
+      snippets: [],
+      stickies: [],
+      aiBranches: [],
+      frames: [],
+      show: {
+        scenes: true,
+        codex: true,
+        notes: false,
+        userEdges: true,
+        derivedEdges: false,
+        stickies: false,
+        aiBranch: false,
+        frames: false,
+        snippets: false,
+      },
+      mode: "free",
+      userEdges: [{ fromPositionId: "a", toPositionId: "b" }],
+      colorBy: "none" as const,
+      visualTheme: "default",
+      modeTransitionActive: false,
+      setFrames: vi.fn(),
+      setStickies: vi.fn(),
+      setAiBranches: vi.fn(),
+      setPositions: vi.fn(),
+      setNodes,
+      setForceLayoutRunning: vi.fn(),
+      setForceAlpha: vi.fn(),
+      updateNodeTitle: vi.fn(),
+      updateSynopsis: vi.fn(),
+      setActiveScene: vi.fn(),
+      groupDraggingRef: NOOP_REF,
+      persistingRef: NOOP_REF,
+    };
+
+    const { rerender } = renderHook((props) => useMapNodes(props), {
+      initialProps: baseProps,
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    const callsAfterInitial = setNodes.mock.calls.length;
+
+    // Fresh reference, identical content — triggers the deps comparison
+    // and re-runs buildNodes.
+    rerender({
+      ...baseProps,
+      userEdges: [{ fromPositionId: "a", toPositionId: "b" }],
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(setNodes.mock.calls.length).toBeGreaterThan(callsAfterInitial);
   });
 });
