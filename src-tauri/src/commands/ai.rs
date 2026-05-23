@@ -27,32 +27,88 @@ pub(super) fn should_retry_429(settings: &ai::AiSettings) -> bool {
 }
 
 /// AI のべりすと用 extra_body を構築する。
-/// `EXTRA_SAMPLING_KEYS` で許可されたキーだけを `settings.ai_novelist.sampling`
-/// から抽出して返す。値が無い / 全て空なら None。
-pub(super) fn build_ai_novelist_extra_body(settings: &ai::AiSettings) -> Option<serde_json::Value> {
+/// legacy: サンプリング + multilingualmode
+/// v1: multilingual_mode のみ (サンプリングは legacy 専用)
+pub(super) fn build_ai_novelist_extra_body(
+    settings: &ai::AiSettings,
+    api_variant: Option<&str>,
+) -> Option<serde_json::Value> {
     if !matches!(settings.provider, ai::AiProvider::AiNovelist) {
         return None;
     }
-    let user_sampling = settings.ai_novelist.sampling.as_ref()?;
-    let user_obj = user_sampling.as_object()?;
+
+    let is_v1 = api_variant == Some("v1");
     let mut out = serde_json::Map::new();
-    for key in ai_novelist::EXTRA_SAMPLING_KEYS {
-        if let Some(v) = user_obj.get(*key) {
-            if v.is_null() {
-                continue;
-            }
-            if let Some(s) = v.as_str() {
-                if s.is_empty() {
-                    continue;
+
+    if !is_v1 {
+        if let Some(user_sampling) = settings.ai_novelist.sampling.as_ref() {
+            if let Some(user_obj) = user_sampling.as_object() {
+                for key in ai_novelist::EXTRA_SAMPLING_KEYS {
+                    if let Some(v) = user_obj.get(*key) {
+                        if v.is_null() {
+                            continue;
+                        }
+                        if let Some(s) = v.as_str() {
+                            if s.is_empty() {
+                                continue;
+                            }
+                        }
+                        out.insert((*key).to_string(), v.clone());
+                    }
                 }
             }
-            out.insert((*key).to_string(), v.clone());
         }
     }
+
+    if settings.ai_novelist.multilingual_mode == Some(true) {
+        if is_v1 {
+            out.insert(
+                "multilingual_mode".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        } else {
+            out.insert(
+                "multilingualmode".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
+    }
+
     if out.is_empty() {
         None
     } else {
         Some(serde_json::Value::Object(out))
+    }
+}
+
+fn build_chat_params<'a>(
+    settings: &'a ai::AiSettings,
+    api_key: &'a str,
+    extra_body: Option<serde_json::Value>,
+    retry_429: bool,
+    ai_novelist_mode: ai::AiNovelistMode,
+    api_variant: Option<String>,
+    thinking: Option<ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+    system_cache_segments: Option<Vec<String>>,
+) -> ai::ChatParams<'a> {
+    ai::ChatParams {
+        provider: &settings.provider,
+        model: &settings.model,
+        api_key,
+        endpoints: settings.endpoints(),
+        thinking,
+        effort,
+        reasoning_enabled,
+        reasoning_effort,
+        extra_body,
+        retry_429,
+        ai_novelist_mode,
+        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
+        system_cache_segments,
+        api_variant,
     }
 }
 
@@ -71,26 +127,28 @@ pub(crate) async fn send_chat_message(
     reasoning_enabled: Option<bool>,
     reasoning_effort: Option<String>,
     system_cache_segments: Option<Vec<String>>,
+    api_variant: Option<String>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
-    let extra_body = build_ai_novelist_extra_body(&settings);
+    let variant = api_variant.as_deref();
+    let extra_body = build_ai_novelist_extra_body(&settings, variant);
     let retry_429 = should_retry_429(&settings);
-    let params = ai::ChatParams {
-        provider: &settings.provider,
-        model: &settings.model,
-        api_key: &api_key,
-        endpoints: settings.endpoints(),
+    let resolved_variant =
+        ai::resolve_api_variant(variant, &settings, &settings.model);
+    let params = build_chat_params(
+        &settings,
+        &api_key,
+        extra_body,
+        retry_429,
+        ai::AiNovelistMode::Chat,
+        resolved_variant,
         thinking,
         effort,
         reasoning_enabled,
         reasoning_effort,
-        extra_body,
-        retry_429,
-        ai_novelist_mode: ai::AiNovelistMode::Chat,
-        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
         system_cache_segments,
-    };
+    );
     let result = ai::send_chat(
         &params,
         &messages
@@ -124,6 +182,7 @@ pub(crate) async fn send_chat_message_stream(
     reasoning_enabled: Option<bool>,
     reasoning_effort: Option<String>,
     system_cache_segments: Option<Vec<String>>,
+    api_variant: Option<String>,
 ) -> Result<(), AppError> {
     abort_flag
         .flag
@@ -132,23 +191,24 @@ pub(crate) async fn send_chat_message_stream(
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
     let flag_clone = Arc::clone(&abort_flag.flag);
-    let extra_body = build_ai_novelist_extra_body(&settings);
+    let variant = api_variant.as_deref();
+    let extra_body = build_ai_novelist_extra_body(&settings, variant);
     let retry_429 = should_retry_429(&settings);
-    let params = ai::ChatParams {
-        provider: &settings.provider,
-        model: &settings.model,
-        api_key: &api_key,
-        endpoints: settings.endpoints(),
+    let resolved_variant =
+        ai::resolve_api_variant(variant, &settings, &settings.model);
+    let params = build_chat_params(
+        &settings,
+        &api_key,
+        extra_body,
+        retry_429,
+        ai::AiNovelistMode::Chat,
+        resolved_variant,
         thinking,
         effort,
         reasoning_enabled,
         reasoning_effort,
-        extra_body,
-        retry_429,
-        ai_novelist_mode: ai::AiNovelistMode::Chat,
-        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
         system_cache_segments,
-    };
+    );
 
     let result = ai::send_chat_stream(
         &params,
@@ -196,6 +256,7 @@ pub(crate) async fn send_inline_ai_stream(
     reasoning_enabled: Option<bool>,
     reasoning_effort: Option<String>,
     model: Option<String>,
+    api_variant: Option<String>,
 ) -> Result<(), AppError> {
     abort_flag
         .flag
@@ -208,23 +269,28 @@ pub(crate) async fn send_inline_ai_stream(
         .as_deref()
         .filter(|m| !m.is_empty())
         .unwrap_or(&settings.model);
-    let extra_body = build_ai_novelist_extra_body(&settings);
+    let variant = api_variant
+        .as_deref()
+        .or_else(|| settings.model_api_variant.as_deref());
+    let mut settings_for_call = settings.clone();
+    settings_for_call.model = resolved_model.to_string();
+    let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
     let retry_429 = should_retry_429(&settings);
-    let params = ai::ChatParams {
-        provider: &settings.provider,
-        model: resolved_model,
-        api_key: &api_key,
-        endpoints: settings.endpoints(),
+    let resolved_variant =
+        ai::resolve_api_variant(variant, &settings_for_call, resolved_model);
+    let params = build_chat_params(
+        &settings_for_call,
+        &api_key,
+        extra_body,
+        retry_429,
+        ai::AiNovelistMode::Completion,
+        resolved_variant,
         thinking,
         effort,
         reasoning_enabled,
         reasoning_effort,
-        extra_body,
-        retry_429,
-        ai_novelist_mode: ai::AiNovelistMode::Completion,
-        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
-        system_cache_segments: None,
-    };
+        None,
+    );
 
     let result = ai::send_chat_stream(
         &params,
@@ -261,26 +327,28 @@ pub(crate) async fn send_agent_message(
     reasoning_enabled: Option<bool>,
     reasoning_effort: Option<String>,
     system_cache_segments: Option<Vec<String>>,
+    api_variant: Option<String>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
-    let extra_body = build_ai_novelist_extra_body(&settings);
+    let variant = api_variant.as_deref();
+    let extra_body = build_ai_novelist_extra_body(&settings, variant);
     let retry_429 = should_retry_429(&settings);
-    let params = ai::ChatParams {
-        provider: &settings.provider,
-        model: &settings.model,
-        api_key: &api_key,
-        endpoints: settings.endpoints(),
+    let resolved_variant =
+        ai::resolve_api_variant(variant, &settings, &settings.model);
+    let params = build_chat_params(
+        &settings,
+        &api_key,
+        extra_body,
+        retry_429,
+        ai::AiNovelistMode::Chat,
+        resolved_variant,
         thinking,
         effort,
         reasoning_enabled,
         reasoning_effort,
-        extra_body,
-        retry_429,
-        ai_novelist_mode: ai::AiNovelistMode::Chat,
-        openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
         system_cache_segments,
-    };
+    );
     let result = ai::send_chat_with_tools(&params, &messages, &tools).await?;
     Ok(result)
 }
@@ -334,9 +402,66 @@ pub(crate) async fn test_ai_connection(
     ai_path: tauri::State<'_, AiSettingsPath>,
     provider: ai::AiProvider,
     model: String,
+    api_variant: Option<String>,
 ) -> Result<String, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&provider)?;
-    let result = ai::test_connection(&provider, &model, &api_key, settings.endpoints()).await?;
+    let variant = ai::resolve_api_variant(api_variant.as_deref(), &settings, &model);
+    let result = ai::test_connection(
+        &provider,
+        &model,
+        &api_key,
+        settings.endpoints(),
+        variant.as_deref(),
+    )
+        .await?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_ai_novelist_extra_body_v1_multilingual_mode() {
+        let settings = ai::AiSettings {
+            provider: ai::AiProvider::AiNovelist,
+            ai_novelist: ai::AiNovelistSettings {
+                multilingual_mode: Some(true),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let body = build_ai_novelist_extra_body(&settings, Some("v1")).unwrap();
+        assert_eq!(body["multilingual_mode"], true);
+        assert!(body.get("multilingualmode").is_none());
+    }
+
+    #[test]
+    fn build_ai_novelist_extra_body_legacy_multilingualmode() {
+        let settings = ai::AiSettings {
+            provider: ai::AiProvider::AiNovelist,
+            ai_novelist: ai::AiNovelistSettings {
+                multilingual_mode: Some(true),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let body = build_ai_novelist_extra_body(&settings, Some("legacy")).unwrap();
+        assert_eq!(body["multilingualmode"], true);
+        assert!(body.get("multilingual_mode").is_none());
+    }
+
+    #[test]
+    fn build_ai_novelist_extra_body_v1_skips_sampling() {
+        let settings = ai::AiSettings {
+            provider: ai::AiProvider::AiNovelist,
+            ai_novelist: ai::AiNovelistSettings {
+                sampling: Some(serde_json::json!({ "rep_pen": 1.2 })),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(build_ai_novelist_extra_body(&settings, Some("v1")).is_none());
+    }
 }

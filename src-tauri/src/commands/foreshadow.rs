@@ -1330,7 +1330,9 @@ pub(crate) async fn foreshadow_propose_past_setups(
 
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
-    let extra_body = crate::commands::ai::build_ai_novelist_extra_body(&settings);
+    let api_variant = ai::resolve_api_variant(None, &settings, &settings.model);
+    let extra_body =
+        crate::commands::ai::build_ai_novelist_extra_body(&settings, api_variant.as_deref());
     let retry_429 = crate::commands::ai::should_retry_429(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
@@ -1346,6 +1348,7 @@ pub(crate) async fn foreshadow_propose_past_setups(
         ai_novelist_mode: ai::AiNovelistMode::Chat,
         openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
         system_cache_segments: None,
+        api_variant,
     };
     let response = ai::send_chat(&params, &[("user", prompt.as_str())]).await?;
     let text = response
@@ -1470,7 +1473,9 @@ pub(crate) async fn foreshadow_audit_chapter(
 
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
-    let extra_body = crate::commands::ai::build_ai_novelist_extra_body(&settings);
+    let api_variant = ai::resolve_api_variant(None, &settings, &settings.model);
+    let extra_body =
+        crate::commands::ai::build_ai_novelist_extra_body(&settings, api_variant.as_deref());
     let retry_429 = crate::commands::ai::should_retry_429(&settings);
     let params = ai::ChatParams {
         provider: &settings.provider,
@@ -1486,6 +1491,7 @@ pub(crate) async fn foreshadow_audit_chapter(
         ai_novelist_mode: ai::AiNovelistMode::Chat,
         openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
         system_cache_segments: None,
+        api_variant,
     };
     let response = ai::send_chat(&params, &[("user", prompt.as_str())]).await?;
     let text = response

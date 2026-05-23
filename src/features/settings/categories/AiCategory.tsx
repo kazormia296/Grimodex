@@ -14,7 +14,10 @@ import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
 import {
   AINOVERIST_BASE_URL,
+  AINOVERIST_V1_BASE_URL,
   AINOVERIST_EXTRA_SAMPLING_KEYS,
+  isAinoveristV1Model,
+  resolveAinoveristApiVariant,
 } from "@/features/chat/aiNovelist";
 import { SettingSection } from "../components/SettingSection";
 import { SettingScopeHeader } from "../components/SettingScopeHeader";
@@ -227,7 +230,16 @@ export function AiCategory() {
   }
 
   async function handleModelChange(model: string) {
-    const updated = { ...localSettings!, model };
+    const apiVariant = resolveAinoveristApiVariant(
+      model,
+      models,
+      localSettings?.modelApiVariant,
+    );
+    const updated = {
+      ...localSettings!,
+      model,
+      modelApiVariant: apiVariant ?? null,
+    };
     setLocalSettings(updated);
     await saveSettings(updated);
   }
@@ -396,53 +408,100 @@ export function AiCategory() {
               <span className="font-mono">ai-novel.com/account_api.php</span>{" "}
               で発行できます。
             </p>
-            <SettingRow label="Base URL">
+            <SettingRow label="Base URL (legacy)">
               <span className="text-sm text-muted-foreground font-mono">
                 {AINOVERIST_BASE_URL}
               </span>
             </SettingRow>
-            <div className="mt-3 mb-2">
-              <p className="mb-1 text-sm font-medium text-foreground">
-                サンプリングパラメータ
-              </p>
-              <p className="mb-2 text-xs text-muted-foreground">
-                空欄でリクエストから省略されます。配列・オブジェクトは JSON
-                文字列で入力してください（例:{" "}
-                <code className="font-mono">["foo","bar"]</code>）。
-              </p>
-              <div className="space-y-1.5">
-                {AINOVERIST_EXTRA_SAMPLING_KEYS.map((key) =>
-                  renderSamplingInput(
-                    key,
-                    localSettings.aiNovelist?.sampling?.[key],
-                    (next) => {
-                      const current = localSettings.aiNovelist?.sampling ?? {};
-                      const merged = { ...current };
-                      if (next === undefined) {
-                        delete merged[key];
-                      } else {
-                        merged[key] = next;
-                      }
-                      const updated = {
-                        ...localSettings,
-                        aiNovelist: {
-                          ...localSettings.aiNovelist,
-                          sampling: merged,
-                        },
-                      };
-                      setLocalSettings(updated);
-                      void saveSettings(updated);
+            <SettingRow label="Base URL (v1)">
+              <span className="text-sm text-muted-foreground font-mono">
+                {AINOVERIST_V1_BASE_URL}
+              </span>
+            </SettingRow>
+            <SettingRow
+              label="多言語モード"
+              description="日本語以外で生成する場合に有効にしてください（spiko Ultra / v1 モデル向け）"
+            >
+              <input
+                type="checkbox"
+                checked={localSettings.aiNovelist?.multilingualMode ?? false}
+                onChange={async (e) => {
+                  const updated = {
+                    ...localSettings,
+                    aiNovelist: {
+                      ...localSettings.aiNovelist,
+                      multilingualMode: e.target.checked,
                     },
-                    () => {
-                      /* onBlur は no-op: onChange で同期保存済み */
-                    },
-                  ),
-                )}
+                  };
+                  setLocalSettings(updated);
+                  await saveSettings(updated);
+                }}
+                className="h-4 w-4"
+              />
+            </SettingRow>
+            {!isAinoveristV1Model(
+              localSettings.model,
+              resolveAinoveristApiVariant(
+                localSettings.model,
+                models,
+                localSettings.modelApiVariant,
+              ),
+            ) && (
+              <div className="mt-3 mb-2">
+                <p className="mb-1 text-sm font-medium text-foreground">
+                  サンプリングパラメータ
+                </p>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  空欄でリクエストから省略されます。配列・オブジェクトは JSON
+                  文字列で入力してください（例:{" "}
+                  <code className="font-mono">["foo","bar"]</code>）。
+                </p>
+                <div className="space-y-1.5">
+                  {AINOVERIST_EXTRA_SAMPLING_KEYS.map((key) =>
+                    renderSamplingInput(
+                      key,
+                      localSettings.aiNovelist?.sampling?.[key],
+                      (next) => {
+                        const current =
+                          localSettings.aiNovelist?.sampling ?? {};
+                        const merged = { ...current };
+                        if (next === undefined) {
+                          delete merged[key];
+                        } else {
+                          merged[key] = next;
+                        }
+                        const updated = {
+                          ...localSettings,
+                          aiNovelist: {
+                            ...localSettings.aiNovelist,
+                            sampling: merged,
+                          },
+                        };
+                        setLocalSettings(updated);
+                        void saveSettings(updated);
+                      },
+                      () => {
+                        /* onBlur は no-op: onChange で同期保存済み */
+                      },
+                    ),
+                  )}
+                </div>
               </div>
-            </div>
+            )}
             <SettingRow
               label="Codex 自動抽出 / Synopsis 自動生成を許可"
-              description="このプロバイダは構造化出力 (JSON) の精度が低いため、デフォルトで無効化されています"
+              description={
+                isAinoveristV1Model(
+                  localSettings.model,
+                  resolveAinoveristApiVariant(
+                    localSettings.model,
+                    models,
+                    localSettings.modelApiVariant,
+                  ),
+                )
+                  ? "v1 モデルでは利用可能ですが、デフォルトは保守的に無効化されています"
+                  : "このプロバイダは構造化出力 (JSON) の精度が低いため、デフォルトで無効化されています"
+              }
             >
               <input
                 type="checkbox"
@@ -801,13 +860,21 @@ export function AiCategory() {
         {/* Thinking toggle — thinking対応モデル選択時のみ表示 */}
         {localSettings.model &&
           (() => {
-            // openai-compatible 等のプリセット capabilitiesOverride を反映するため
-            // resolveModelCapabilities を使う
+            const selectedApiVariant = resolveAinoveristApiVariant(
+              localSettings.model,
+              models,
+              localSettings.modelApiVariant,
+            );
             const caps = resolveModelCapabilities(
               localSettings.model,
               localSettings,
+              selectedApiVariant,
             );
-            return caps.supportsAdaptiveThinking || caps.supportsThinking;
+            return (
+              caps.supportsAdaptiveThinking ||
+              caps.supportsThinking ||
+              caps.supportsReasoning
+            );
           })() && (
             <SettingRow
               label={t("settings.ai.thinkingMode")}

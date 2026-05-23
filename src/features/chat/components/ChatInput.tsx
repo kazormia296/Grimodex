@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { useAiSettingsStore } from "../store";
 import { useChatStore } from "../chatStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { getModelCapabilities } from "../agent/modelLimits";
+import { resolveModelCapabilities } from "../agent/modelLimits";
+import { resolveAinoveristApiVariant } from "../aiNovelist";
 import { getChatInputExtensions } from "../extensions/chatInputExtensions";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
@@ -130,7 +131,16 @@ export function ChatInput({
   })();
 
   const currentModel = aiSettings?.model ?? "";
-  const caps = getModelCapabilities(currentModel);
+  const selectedApiVariant = resolveAinoveristApiVariant(
+    currentModel,
+    models,
+    aiSettings?.modelApiVariant,
+  );
+  const caps = resolveModelCapabilities(
+    currentModel,
+    aiSettings,
+    selectedApiVariant,
+  );
 
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
@@ -323,7 +333,21 @@ export function ChatInput({
 
   const handleSelectModel = async (modelId: string) => {
     if (!aiSettings) return;
-    await saveSettings({ ...aiSettings, model: modelId });
+    // AI のべりすと: model 切替時に apiVariant を再解決して同時に永続化する。
+    // chat 経路は毎送信で動的に再計算するので影響ないが、Inline AI / Beat /
+    // foreshadow 等 FE が apiVariant を渡さない経路は settings.modelApiVariant
+    // を fallback として読むため、ここで stale 値を残すと legacy モデルが v1
+    // エンドポイントへ送られる等のミスルーティングが起きる。
+    const apiVariant = resolveAinoveristApiVariant(
+      modelId,
+      models,
+      aiSettings.modelApiVariant,
+    );
+    await saveSettings({
+      ...aiSettings,
+      model: modelId,
+      modelApiVariant: apiVariant ?? null,
+    });
     setModelOpen(false);
   };
 

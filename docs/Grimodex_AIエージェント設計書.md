@@ -514,7 +514,7 @@ Tool Use対応はモデルによって異なる:
 | Anthropic | Claude 3+全モデル | 完全対応 |
 | OpenAI | GPT-4o、GPT-4系 | 完全対応 |
 | Ollama | モデル依存 | llama3.1+は一部対応。非対応モデルではエージェントモード無効 |
-| AI のべりすと | 非対応 | `resolveModelCapabilities` で `supportsTools: false` 固定（KoboldAI 系 API のため） |
+| AI のべりすと | 条件付き | legacy モデル: 非対応 (`supportsTools: false`)。v1 モデル（`spiko_ultra` 等、`apiVariant === "v1"`）: 対応 (`supportsTools: true`)。`resolveModelCapabilities` が `apiVariant` で分岐 |
 | CLI（Claude Code 等） | 非対応 | subprocess 経由のためツール呼び出し不可。`supportsTools: false` 固定で、Agent mode ON のままでも送信時は通常チャットパス（`sendCliChatStream`）にフォールバックする |
 
 エージェントモードトグルは、現在のセッションモデルがTool Useに対応している場合のみ有効化する。対応状況は `getModelCapabilities` / `resolveModelCapabilities`（`src/features/chat/agent/modelLimits.ts`）の `supportsTools` で判定し、UI 側では ChatInput の `canUseTools` フラグで Agent mode チェックボックスをグレーアウトする。

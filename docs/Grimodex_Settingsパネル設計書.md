@@ -178,7 +178,7 @@ BYOKのAPIキー管理とモデル設定。Chatパネル設計書で定義され
 | Anthropic | `anthropic` | API キー必須 |
 | Ollama | `ollama` | API キー不要。`Endpoint`（既定 `http://localhost:11434`）を指定し `GET /api/tags` でモデル取得 |
 | OpenAI 互換 | `openai-compatible` | llama.cpp / LM Studio / vLLM / 自前ホストの GPU 推論サーバ等。`Base URL` / `コンテキスト窓` / `最大出力` / `構造化出力許可` を入力。API キーは任意 |
-| AI のべりすと | `ai-novelist` | 日本語小説特化プロバイダ。Base URL 固定。API キー必須。`top_a` / `tailfree` / `typical_p` / `min_p` / `rep_pen` 等のサンプリングパラメータを個別編集可能。構造化出力（Codex 自動抽出 / Synopsis 自動生成）はデフォルト無効 |
+| AI のべりすと | `ai-novelist` | 日本語小説特化プロバイダ。Base URL 二系統（legacy `/api` + v1 `/v1`）。`GET /v1/models` で v1 モデル動的取得 + レガシー静的リストをマージ。API キー必須。legacy モデル選択時のみ KoboldAI サンプリングパラメータ編集可。`multilingualMode` チェックボックスあり。構造化出力（Codex 自動抽出 / Synopsis 自動生成）はデフォルト無効 |
 | CLI エージェント | `cli` | API キーではなく**ローカル CLI バイナリ**経由で呼び出す。`Claude Code` (`claude`) / `Codex CLI` (`codex`) / `OpenCode` (`opencode`) を選択し、バイナリパスを「自動検出」または手動指定。事前に CLI 側で `claude login` 等の認証が必要。ツール（ファイル R/W / shell）は全て無効化された状態で起動する |
 
 ```
@@ -650,7 +650,7 @@ UI の外観など「どのプロジェクトを開いても同じであって�
 | Project (ゴミ箱 `trashBin.enabled` / `trashBin.retentionDays`) | `app_settings` テーブル | プロジェクト固有 |
 | Project (デフォルト雛形 `projectDefaults`) | `global-settings.json` | 全プロジェクトの初期値として共有 |
 | AI (APIキー) | Tauri keyring | セキュリティ |
-| AI (モデル / Provider pin / openai-compatible / ai-novelist サンプリング / cli 設定) | `chat/store` 経由 + `app_settings` テーブル | プロジェクト固有 |
+| AI (モデル / Provider pin / openai-compatible / ai-novelist サンプリング・多言語モード / cli 設定) | `chat/store` 経由 + `app_settings` テーブル | プロジェクト固有 |
 | AI (`ai.inlineModel` / `ai.sessionTitleModel` / `ai.modelWhitelist`) | `global-settings.json` | グローバル |
 | AI (コンテキスト予算 `ai.contextBudget.*`) | `app_settings` テーブル | プロジェクト固有 |
 | AI (Beat 連携 `beat.injectIntoContext` / `beat.inferRoles` / `beat.roleInferenceConfidenceThreshold`) | `app_settings` テーブル | プロジェクト固有 |

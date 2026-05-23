@@ -48,6 +48,8 @@ export interface AiNovelistSettings {
   sampling?: Record<string, unknown>;
   /** AI Codex 自動抽出 / Synopsis / セッションタイトル自動生成を許可するか */
   enableStructuredTasks?: boolean;
+  /** 日本語以外で生成する場合に true */
+  multilingualMode?: boolean;
 }
 
 export const DEFAULT_AI_NOVELIST_SETTINGS: AiNovelistSettings = {};
@@ -68,6 +70,8 @@ export interface AiSettings {
    * 設定すると Anthropic prompt cache が安定して効くようになる。
    */
   openrouterProviderPin?: string | null;
+  /** 選択中モデルの API 経路 (legacy | v1)。バックエンド fallback 用 */
+  modelApiVariant?: "legacy" | "v1" | null;
 }
 
 /** OpenRouter provider pin の候補一覧（UI 用）。 */
@@ -89,6 +93,8 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
 export interface AiModel {
   id: string;
   name: string;
+  /** AI のべりすと: "legacy" | "v1" */
+  apiVariant?: "legacy" | "v1";
 }
 
 /**

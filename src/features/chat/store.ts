@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import * as api from "./api";
 import { detectCliBinary } from "./cliApi";
+import { resolveAinoveristApiVariant } from "./aiNovelist";
 import type { AiSettings, AiModel, ConnectionTestResult } from "./types";
 import { DEFAULT_AI_SETTINGS } from "./types";
 
@@ -74,14 +75,20 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   },
 
   testConnection: async () => {
-    const { settings, hasApiKey } = get();
+    const { settings, hasApiKey, models } = get();
     if (!settings || !hasApiKey || !settings.model) return;
 
     set({ isTestingConnection: true, connectionTestResult: null });
     try {
+      const apiVariant = resolveAinoveristApiVariant(
+        settings.model,
+        models,
+        settings.modelApiVariant,
+      );
       const message = await api.testAiConnection(
         settings.provider,
         settings.model,
+        apiVariant,
       );
       set({
         isTestingConnection: false,

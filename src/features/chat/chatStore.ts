@@ -50,6 +50,12 @@ import {
 } from "./agent/modelLimits";
 import { useAiSettingsStore } from "./store";
 import * as cliApi from "./cliApi";
+import { resolveAinoveristApiVariant } from "./aiNovelist";
+
+function getChatApiVariant(model: string): string | undefined {
+  const { settings, models } = useAiSettingsStore.getState();
+  return resolveAinoveristApiVariant(model, models, settings?.modelApiVariant);
+}
 
 /**
  * 会話履歴を CLI に渡す単一プロンプトに平坦化する。
@@ -732,9 +738,11 @@ async function buildSceneContextPrompt(opts: {
 
   const aiSettings = useAiSettingsStore.getState().settings;
   const chatModel = aiSettings?.model ?? "";
+  const chatApiVariant = getChatApiVariant(chatModel);
   const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
     chatModel,
     aiSettings,
+    chatApiVariant,
   );
   const budgets = allocateLayerBudgets(contextWindow, { maxOutputTokens });
   const L4_TOTAL_BUDGET = budgets.l4;
@@ -1688,9 +1696,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const projectCtxLang = projectCtx?.language ?? "ja";
         let agentMessages = prevMessages;
         if (sessionIdForPersist) {
+          const agentApiVariant = getChatApiVariant(chatModelEarly);
           const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
             chatModelEarly,
             aiSettingsEarly,
+            agentApiVariant,
           );
           const budgets = allocateLayerBudgets(contextWindow, {
             maxOutputTokens,
@@ -1782,12 +1792,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // Token budget + thinking params
         const aiSettings = useAiSettingsStore.getState().settings;
         const currentModel = aiSettings?.model ?? "";
+        const agentApiVariant = getChatApiVariant(currentModel);
         const tokenBudget = getToolTokenBudget(currentModel);
         const agentThinkingParams = buildThinkingParams(
           currentModel,
           getEffortForTask("agent"),
           "summarized",
           aiSettings?.thinkingEnabled ?? true,
+          aiSettings,
+          agentApiVariant,
         );
 
         // Accumulate tool calls for live metadata update
@@ -1838,6 +1851,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               tools,
               agentThinkingParams,
               systemCacheSegmentsForAgent,
+              agentApiVariant,
             ),
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
@@ -1968,9 +1982,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
       const aiSettings = useAiSettingsStore.getState().settings;
       const chatModel = aiSettings?.model ?? "";
+      const chatApiVariant = getChatApiVariant(chatModel);
       const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
         chatModel,
         aiSettings,
+        chatApiVariant,
       );
       const budgets = allocateLayerBudgets(contextWindow, { maxOutputTokens });
 
@@ -2109,6 +2125,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         getEffortForTask("chat"),
         "summarized",
         aiSettings?.thinkingEnabled ?? true,
+        aiSettings,
+        chatApiVariant,
       );
       const apiPayload = messagesForApi.map((m) => ({
         role: m.role,
@@ -2295,6 +2313,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               chatThinkingParams,
               callbacks,
               systemCacheSegments,
+              chatApiVariant,
             );
 
         streamPromise

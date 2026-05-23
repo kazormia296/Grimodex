@@ -106,6 +106,7 @@ describe("chat/api", () => {
       expect(mockInvoke).toHaveBeenCalledWith("test_ai_connection", {
         provider: "openrouter",
         model: "gpt-4",
+        apiVariant: null,
       });
       expect(result).toBe("Hello! Connection successful.");
     });

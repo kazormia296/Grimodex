@@ -117,6 +117,7 @@ export async function sendAgentMessage(
   tools: AgentToolDefinition[],
   thinkingParams?: ThinkingParams,
   systemCacheSegments?: string[],
+  apiVariant?: string | null,
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -126,6 +127,7 @@ export async function sendAgentMessage(
     reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
     reasoningEffort: thinkingParams?.reasoningEffort ?? null,
     systemCacheSegments: systemCacheSegments ?? null,
+    apiVariant: apiVariant ?? null,
   });
 }
 
@@ -145,6 +147,7 @@ export async function sendChatMessageWithThinking(
   messages: { role: string; content: string }[],
   thinkingParams?: ThinkingParams,
   systemCacheSegments?: string[],
+  apiVariant?: string | null,
 ): Promise<ChatMessageResult> {
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
@@ -153,6 +156,7 @@ export async function sendChatMessageWithThinking(
     reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
     reasoningEffort: thinkingParams?.reasoningEffort ?? null,
     systemCacheSegments: systemCacheSegments ?? null,
+    apiVariant: apiVariant ?? null,
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
@@ -220,6 +224,7 @@ export async function sendChatMessageStream(
   thinkingParams: ThinkingParams | undefined,
   callbacks: StreamCallbacks,
   systemCacheSegments?: string[],
+  apiVariant?: string | null,
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
@@ -253,6 +258,7 @@ export async function sendChatMessageStream(
     reasoningEnabled: thinkingParams?.reasoningEnabled ?? null,
     reasoningEffort: thinkingParams?.reasoningEffort ?? null,
     systemCacheSegments: systemCacheSegments ?? null,
+    apiVariant: apiVariant ?? null,
   }).catch((e: unknown) => {
     // Error is also emitted as chat:stream-error from Rust, but handle here too
     const msg = e instanceof Error ? e.message : String(e);

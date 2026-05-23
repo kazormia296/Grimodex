@@ -27,8 +27,13 @@ export async function deleteApiKey(provider: AiProvider): Promise<void> {
 export async function testAiConnection(
   provider: AiProvider,
   model: string,
+  apiVariant?: string | null,
 ): Promise<string> {
-  return invoke<string>("test_ai_connection", { provider, model });
+  return invoke<string>("test_ai_connection", {
+    provider,
+    model,
+    apiVariant: apiVariant ?? null,
+  });
 }
 
 export async function listAiModels(provider: AiProvider): Promise<AiModel[]> {
