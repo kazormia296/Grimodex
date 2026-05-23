@@ -34,6 +34,7 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type { PinnedSnippetEntryWithData } from "./chatApi";
+import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
 
 interface SnippetDialogState {
   open: boolean;
@@ -57,6 +58,7 @@ export function ChatPanel() {
   const reduced = useReducedMotion();
   const chatCapability = useAiCapability("chat");
   const messages = useChatStore((s) => s.messages);
+  const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
@@ -646,7 +648,9 @@ export function ChatPanel() {
       />
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        {messages.length === 0 ? (
+        {isLoadingMessages ? (
+          <MessageBubbleSkeletonList testId="chat-messages-loading" />
+        ) : messages.length === 0 ? (
           <p className="mt-8 text-center text-sm text-muted-foreground">
             {t("chat.noMessages")}
           </p>

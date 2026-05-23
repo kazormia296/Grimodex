@@ -299,13 +299,9 @@ export function TreeNodeItem({
               {...(fileBacked ? {} : listeners)}
               className={cn(
                 "flex h-5 w-4 flex-shrink-0 items-center justify-center text-muted-foreground/50 opacity-0 group-hover:opacity-100",
-                fileBacked
-                  ? "cursor-not-allowed opacity-30"
-                  : "cursor-grab",
+                fileBacked ? "cursor-not-allowed opacity-30" : "cursor-grab",
               )}
-              title={
-                fileBacked ? t("externalMount.filenameOrder") : undefined
-              }
+              title={fileBacked ? t("externalMount.filenameOrder") : undefined}
               onClick={(e) => e.stopPropagation()}
             >
               <GripVertical className="h-4 w-4" />

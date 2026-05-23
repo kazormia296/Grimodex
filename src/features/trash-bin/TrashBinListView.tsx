@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Trash2, Hand } from "lucide-react";
 import type { TrashItemData } from "./types";
+import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import { dominantSource } from "./displayHelpers";
 import { TrashBinPopover } from "./TrashBinPopover";
 
@@ -32,9 +33,7 @@ export function TrashBinListView({
 
   if (isLoading) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        …
-      </div>
+      <ListRowSkeletonList testId="trash-bin-list-loading" className="p-2" />
     );
   }
   if (items.length === 0) {

@@ -9,7 +9,9 @@ interface VerticalPreviewProps {
   onClose: () => void;
 }
 
-function readPreviewHtml(editor: NonNullable<ReturnType<typeof useEditorStore.getState>["editor"]>): string {
+function readPreviewHtml(
+  editor: NonNullable<ReturnType<typeof useEditorStore.getState>["editor"]>,
+): string {
   try {
     return editor.getHTML();
   } catch {

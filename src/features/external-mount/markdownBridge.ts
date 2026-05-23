@@ -23,7 +23,9 @@ export function markdownToPmJson(markdown: string): Record<string, unknown> {
   }
 }
 
-function normalizeImportedDoc(doc: Record<string, unknown>): Record<string, unknown> {
+function normalizeImportedDoc(
+  doc: Record<string, unknown>,
+): Record<string, unknown> {
   const content = doc.content;
   if (!Array.isArray(content)) return doc;
 

@@ -230,9 +230,7 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
 
     case "codeBlock": {
       const lang = (node.attrs?.language as string) ?? "";
-      const code = (node.content ?? [])
-        .map((c) => c.text ?? "")
-        .join("");
+      const code = (node.content ?? []).map((c) => c.text ?? "").join("");
       return "```" + lang + "\n" + code + "\n```\n";
     }
 
@@ -244,9 +242,7 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       const alt = (node.attrs?.alt as string) ?? "";
       const title = node.attrs?.title as string | undefined;
       if (ctx.settings.format === "markdown") {
-        return title
-          ? `![${alt}](${src} "${title}")`
-          : `![${alt}](${src})`;
+        return title ? `![${alt}](${src} "${title}")` : `![${alt}](${src})`;
       }
       return "";
     }
@@ -278,13 +274,7 @@ function renderList(node: PMNode, ctx: RenderCtx, task = false): string {
       lines.push(renderNode(child, ctx).trimEnd());
     } else {
       const prefix = ordered ? `${index}. ` : "- ";
-      lines.push(
-        prefix +
-          inner
-            .split("\n")
-            .filter(Boolean)
-            .join("\n"),
-      );
+      lines.push(prefix + inner.split("\n").filter(Boolean).join("\n"));
       index += 1;
     }
   }
@@ -335,7 +325,8 @@ function applyMarks(text: string, marks: PMMark[], ctx: RenderCtx): string {
         break;
       case "code":
         if (ctx.settings.format === "markdown") result = `\`${result}\``;
-        else if (ctx.settings.format === "html") result = `<code>${result}</code>`;
+        else if (ctx.settings.format === "html")
+          result = `<code>${result}</code>`;
         break;
       case "link": {
         const href = (mark.attrs?.href as string) ?? "";

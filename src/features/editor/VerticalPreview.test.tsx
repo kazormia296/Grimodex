@@ -72,9 +72,9 @@ describe("VerticalPreview", () => {
     });
     render(<VerticalPreview open={true} onClose={vi.fn()} />);
     await waitFor(() => {
-      expect(screen.getByTestId("vertical-preview-content").innerHTML).toContain(
-        "fallback text",
-      );
+      expect(
+        screen.getByTestId("vertical-preview-content").innerHTML,
+      ).toContain("fallback text");
     });
   });
 

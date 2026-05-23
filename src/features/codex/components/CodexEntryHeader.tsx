@@ -16,6 +16,7 @@ import { EntryHeroAvatar } from "./EntryHeroAvatar";
 import { TagSelector } from "./TagSelector";
 import { TagsChip } from "./TagsChip";
 import { TypeBadge } from "./TypeBadge";
+import { ChipSkeletonList } from "@/components/ui/skeleton-patterns";
 
 const KICKER_ICON: Record<CodexEntryType, typeof UserIcon> = {
   character: UserIcon,
@@ -31,6 +32,7 @@ interface CodexEntryHeaderProps {
   icon: string | null;
   aliases: string[];
   selectedTags: CodexTag[];
+  tagsLoading?: boolean;
   onNameChange: (value: string) => void;
   onNameCommit: () => void;
   onTypeChange: (type: CodexEntryType) => void;
@@ -50,6 +52,7 @@ export function CodexEntryHeader({
   icon,
   aliases,
   selectedTags,
+  tagsLoading = false,
   onNameChange,
   onNameCommit,
   onTypeChange,
@@ -145,25 +148,31 @@ export function CodexEntryHeader({
             data-testid="codex-detail-tags"
             className="relative mt-2 min-w-0"
           >
-            <TagsMeasure
-              ref={tagsFit.measureRef}
-              tags={selectedTags}
-              addLabel={t("codex.tagSelector.addTag")}
-            />
-            {tagsFit.fits ? (
-              <TagSelector
-                entryId={entry.id}
-                entryType={type}
-                selectedTags={selectedTags}
-                onTagsChange={onTagsChange}
-              />
+            {tagsLoading ? (
+              <ChipSkeletonList testId="codex-detail-tags-loading" />
             ) : (
-              <TagsChip
-                entryId={entry.id}
-                entryType={type}
-                selectedTags={selectedTags}
-                onTagsChange={onTagsChange}
-              />
+              <>
+                <TagsMeasure
+                  ref={tagsFit.measureRef}
+                  tags={selectedTags}
+                  addLabel={t("codex.tagSelector.addTag")}
+                />
+                {tagsFit.fits ? (
+                  <TagSelector
+                    entryId={entry.id}
+                    entryType={type}
+                    selectedTags={selectedTags}
+                    onTagsChange={onTagsChange}
+                  />
+                ) : (
+                  <TagsChip
+                    entryId={entry.id}
+                    entryType={type}
+                    selectedTags={selectedTags}
+                    onTagsChange={onTagsChange}
+                  />
+                )}
+              </>
             )}
           </div>
         </div>

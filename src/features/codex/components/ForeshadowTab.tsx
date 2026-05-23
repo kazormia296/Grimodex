@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ForeshadowItemSkeletonList } from "@/components/ui/skeleton-patterns";
 import { listForeshadowsByCodexEntry } from "@/features/foreshadow/api";
 import type { ForeshadowWithLabel } from "@/features/foreshadow/types";
 
@@ -38,12 +39,10 @@ export function ForeshadowTab({ codexEntryId }: ForeshadowTabProps) {
 
   if (items === null) {
     return (
-      <div
-        data-testid="foreshadow-tab-loading"
-        className="flex items-center justify-center py-8 text-xs text-muted-foreground"
-      >
-        {t("common.loading", "読み込み中…")}
-      </div>
+      <ForeshadowItemSkeletonList
+        testId="foreshadow-tab-loading"
+        className="py-2"
+      />
     );
   }
 

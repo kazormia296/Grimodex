@@ -9,6 +9,8 @@ import { createRevision } from "./api";
 import { saveSceneContent } from "@/features/tree/api";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { getReadonlyEditorExtensions } from "@/features/editor/extensions";
+import { EditorContentSkeleton } from "@/features/editor/EditorContentSkeleton";
+import { RevisionRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import type { RevisionMeta } from "./api";
 
 // ---------------------------------------------------------------------------
@@ -225,8 +227,11 @@ function PreviewPanel({
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-        {t("revision.loading")}
+      <div
+        className="flex h-full items-center justify-center p-4"
+        data-testid="revision-preview-loading"
+      >
+        <EditorContentSkeleton />
       </div>
     );
   }
@@ -297,6 +302,7 @@ export function RevisionHistoryModal() {
     selectedRevisionId,
     selectedContent,
     isLoadingContent,
+    isLoadingRevisions,
     hasMore,
     closeHistory,
     loadMore,
@@ -529,17 +535,21 @@ export function RevisionHistoryModal() {
               </button>
 
               {/* Saved revisions */}
-              {revisions.map((rev) => (
-                <RevisionListItem
-                  key={rev.id}
-                  revision={rev}
-                  isSelected={selectedRevisionId === rev.id}
-                  onClick={() => selectRevision(rev.id)}
-                />
-              ))}
+              {isLoadingRevisions ? (
+                <RevisionRowSkeletonList testId="revision-list-loading" />
+              ) : (
+                revisions.map((rev) => (
+                  <RevisionListItem
+                    key={rev.id}
+                    revision={rev}
+                    isSelected={selectedRevisionId === rev.id}
+                    onClick={() => selectRevision(rev.id)}
+                  />
+                ))
+              )}
 
               {/* Load more */}
-              {hasMore && (
+              {!isLoadingRevisions && hasMore && (
                 <button
                   type="button"
                   className="w-full text-center py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -549,7 +559,7 @@ export function RevisionHistoryModal() {
                 </button>
               )}
 
-              {revisions.length === 0 && (
+              {!isLoadingRevisions && revisions.length === 0 && (
                 <p className="text-xs text-muted-foreground px-3 py-4 text-center">
                   {t("revision.noRevisions")}
                 </p>

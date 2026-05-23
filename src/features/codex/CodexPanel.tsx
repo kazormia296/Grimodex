@@ -6,6 +6,7 @@ import { useCodexStore } from "./codexStore";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import type { CodexEntry, CodexEntryType } from "./api";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
+import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
 
 const TYPE_OPTION_KEYS: { value: CodexEntryType; key: string }[] = [
   { value: "character", key: "codex.character" },
@@ -201,9 +202,10 @@ function CodexVirtualList({
 
   if (isLoading) {
     return (
-      <p className="flex-1 p-3 text-center text-xs text-muted-foreground">
-        {t("common.loading")}
-      </p>
+      <ListRowSkeletonList
+        testId="codex-panel-loading"
+        className="flex-1 overflow-hidden"
+      />
     );
   }
 

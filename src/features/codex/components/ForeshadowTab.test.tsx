@@ -64,6 +64,9 @@ describe("ForeshadowTab", () => {
     expect(
       await screen.findByTestId("foreshadow-tab-empty"),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("foreshadow-tab-loading"),
+    ).not.toBeInTheDocument();
   });
 
   it("displays linked foreshadows with title and label", async () => {

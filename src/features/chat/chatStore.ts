@@ -320,6 +320,7 @@ interface ChatState {
   sessions: ChatSession[];
   activeSessionId: string | null;
   isLoadingSessions: boolean;
+  isLoadingMessages: boolean;
 
   // Messages & streaming
   messages: ChatMessage[];
@@ -1198,6 +1199,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   sessions: [],
   activeSessionId: null,
   isLoadingSessions: false,
+  isLoadingMessages: false,
   messages: [],
   isStreaming: false,
   error: null,
@@ -1345,6 +1347,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({
         activeSessionId: null,
         messages: [],
+        isLoadingMessages: false,
         summaryCount: 0,
         maxSummaryGeneration: 0,
         sessionStableCodexIds: [],
@@ -1352,6 +1355,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       });
       return;
     }
+    set({ isLoadingMessages: true, activeSessionId: sessionId, messages: [] });
     try {
       const [messages, summaries] = await Promise.all([
         chatApi.listMessages(sessionId),
@@ -1360,6 +1364,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({
         activeSessionId: sessionId,
         messages,
+        isLoadingMessages: false,
         summaryCount: summaries.length,
         maxSummaryGeneration:
           summaries.length > 0
@@ -1370,6 +1375,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         cacheInvalidatedReason: null,
       });
     } catch (e) {
+      set({ isLoadingMessages: false });
       toast.error(i18next.t("chat.loadMessagesFailed"));
       debugLog.error("ChatStore", "selectSession", errorDetail(e));
     }

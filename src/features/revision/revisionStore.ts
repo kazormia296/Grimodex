@@ -19,6 +19,7 @@ interface RevisionHistoryState {
   /** Content of selected revision (loaded on demand) */
   selectedContent: string | null;
   isLoadingContent: boolean;
+  isLoadingRevisions: boolean;
   page: number;
   hasMore: boolean;
 
@@ -52,6 +53,7 @@ export const useRevisionStore = create<RevisionHistoryState>()((set, get) => ({
   selectedRevisionId: null,
   selectedContent: null,
   isLoadingContent: false,
+  isLoadingRevisions: false,
   page: 0,
   hasMore: false,
   lastAutoRevisionAt: {},
@@ -67,6 +69,7 @@ export const useRevisionStore = create<RevisionHistoryState>()((set, get) => ({
       selectedContent: null,
       page: 0,
       hasMore: false,
+      isLoadingRevisions: true,
     });
     get().loadRevisions();
   },
@@ -78,12 +81,14 @@ export const useRevisionStore = create<RevisionHistoryState>()((set, get) => ({
   async loadRevisions() {
     const { entityType, entityId } = get();
     if (!entityType || !entityId) return;
+    set({ isLoadingRevisions: true });
     const { listRevisions } = await import("./api");
     const items = await listRevisions(entityType, entityId, PAGE_SIZE, 0);
     set({
       revisions: items,
       page: 1,
       hasMore: items.length === PAGE_SIZE,
+      isLoadingRevisions: false,
     });
   },
 

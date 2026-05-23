@@ -1,9 +1,6 @@
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
-import {
-  getProjectSetting,
-  setProjectSetting,
-} from "@/features/settings/api";
+import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import {
   createNode,
@@ -51,13 +48,11 @@ export async function loadRootsFromSettings(): Promise<ExternalRoot[]> {
   }
 }
 
-export async function saveRootsToSettings(roots: ExternalRoot[]): Promise<void> {
+export async function saveRootsToSettings(
+  roots: ExternalRoot[],
+): Promise<void> {
   const projectId = getCurrentProjectId();
-  await setProjectSetting(
-    projectId,
-    EXTERNAL_ROOTS_KEY,
-    JSON.stringify(roots),
-  );
+  await setProjectSetting(projectId, EXTERNAL_ROOTS_KEY, JSON.stringify(roots));
 }
 
 export async function initializeExternalMounts(): Promise<void> {
@@ -88,7 +83,10 @@ export async function initializeExternalMounts(): Promise<void> {
   await useTreeStore.getState().loadTree(getCurrentProjectId());
 }
 
-export async function addExternalMount(path: string, label?: string): Promise<void> {
+export async function addExternalMount(
+  path: string,
+  label?: string,
+): Promise<void> {
   const id = crypto.randomUUID();
   const resolvedLabel = label ?? basename(path);
   const root: ExternalRoot = { id, path, label: resolvedLabel };
@@ -98,7 +96,9 @@ export async function addExternalMount(path: string, label?: string): Promise<vo
   useExternalRootStore.getState().addRoot(root);
   await reconcileRoot(root, scan);
   await useTreeStore.getState().loadTree(getCurrentProjectId());
-  toast.success(i18next.t("externalMount.toast.mounted", { label: resolvedLabel }));
+  toast.success(
+    i18next.t("externalMount.toast.mounted", { label: resolvedLabel }),
+  );
 }
 
 export async function removeExternalMount(rootId: string): Promise<void> {
@@ -146,11 +146,7 @@ async function reconcileRoot(
     });
   }
 
-  const dbByUri = await buildDbByUriMap(
-    allNodes,
-    prefix,
-    mountFolderUri,
-  );
+  const dbByUri = await buildDbByUriMap(allNodes, prefix, mountFolderUri);
 
   const diskByPath = new Map(scan.files.map((f) => [f.relPath, f]));
   const folderIds = await ensureFolderTree(
@@ -163,8 +159,7 @@ async function reconcileRoot(
   // Boot-time rename detection via content hash
   const dbOnly = [...dbByUri.entries()].filter(
     ([uri, node]) =>
-      !node.archivedAt &&
-      !diskByPath.has(parseSourceUri(uri)?.relPath ?? ""),
+      !node.archivedAt && !diskByPath.has(parseSourceUri(uri)?.relPath ?? ""),
   );
   const diskOnly = scan.files.filter(
     (f) => !dbByUri.has(buildSourceUri(root.id, f.relPath)),
@@ -173,7 +168,9 @@ async function reconcileRoot(
   for (const [uri, node] of dbOnly) {
     const parsed = parseSourceUri(uri);
     if (!parsed) continue;
-    const match = diskOnly.find((f) => f.contentHash === hashForNode(node, scan));
+    const match = diskOnly.find(
+      (f) => f.contentHash === hashForNode(node, scan),
+    );
     if (match) {
       const newUri = buildSourceUri(root.id, match.relPath);
       await updateNode(node.id, {
@@ -193,7 +190,10 @@ async function reconcileRoot(
     const uri = buildSourceUri(root.id, file.relPath);
     const existing = dbByUri.get(uri);
     if (existing?.archivedAt) {
-      await updateNode(existing.id, { archivedAt: null, sourceMtime: file.mtime });
+      await updateNode(existing.id, {
+        archivedAt: null,
+        sourceMtime: file.mtime,
+      });
     }
     if (existing) {
       await syncFileCache(existing.id, file);
@@ -282,9 +282,7 @@ export async function buildDbByUriMap(
     }
     const preferred =
       active[0] ??
-      nodes
-        .slice()
-        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+      nodes.slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
     if (preferred) map.set(uri, preferred);
   }
   return map;
@@ -298,7 +296,9 @@ async function upsertSceneFromFile(
 ): Promise<void> {
   const projectId = getCurrentProjectId();
   const uri = buildSourceUri(root.id, file.relPath);
-  const existing = (await listAllNodes(projectId)).find((n) => n.sourceUri === uri);
+  const existing = (await listAllNodes(projectId)).find(
+    (n) => n.sourceUri === uri,
+  );
   if (existing) {
     if (existing.archivedAt) {
       await updateNode(existing.id, {
@@ -312,7 +312,9 @@ async function upsertSceneFromFile(
 
   const parentRel = dirname(file.relPath);
   const parentId =
-    parentRel == null ? mountFolderId : (folderIds.get(parentRel) ?? mountFolderId);
+    parentRel == null
+      ? mountFolderId
+      : (folderIds.get(parentRel) ?? mountFolderId);
   const pmJson = JSON.stringify(markdownToPmJson(file.content));
   const node = await createNode({
     id: crypto.randomUUID(),
@@ -329,10 +331,7 @@ async function upsertSceneFromFile(
   scheduleSceneIndex(node.id);
 }
 
-async function syncFileCache(
-  nodeId: string,
-  file: ScannedFile,
-): Promise<void> {
+async function syncFileCache(nodeId: string, file: ScannedFile): Promise<void> {
   const pmJson = JSON.stringify(markdownToPmJson(file.content));
   await saveSceneContent(nodeId, pmJson);
   await updateNode(nodeId, {
@@ -351,7 +350,11 @@ function nextSortOrder(
   parentId: string | null,
 ): string {
   const siblings = nodes.filter((n) => n.parentId === parentId);
-  const keys = generateNKeysBetween(null, null, Math.max(siblings.length + 1, 1));
+  const keys = generateNKeysBetween(
+    null,
+    null,
+    Math.max(siblings.length + 1, 1),
+  );
   return keys[keys.length - 1] ?? "a0";
 }
 

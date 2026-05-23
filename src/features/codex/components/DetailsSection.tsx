@@ -15,6 +15,7 @@ import {
 } from "../detailApi";
 import { CodexContentEditor } from "./CodexContentEditor";
 import { ManageFieldsDialog } from "./ManageFieldsDialog";
+import { FormFieldSkeletonList } from "@/components/ui/skeleton-patterns";
 
 interface TextFieldProps {
   definition: CodexDetailDefinition;
@@ -172,9 +173,11 @@ export function DetailsSection({ entry }: DetailsSectionProps) {
   const { t } = useTranslation();
   const [definitions, setDefinitions] = useState<CodexDetailDefinition[]>([]);
   const [valuesMap, setValuesMap] = useState<Map<string, string>>(new Map());
+  const [isLoading, setIsLoading] = useState(true);
   const [isManageOpen, setIsManageOpen] = useState(false);
 
   const load = useCallback(async () => {
+    setIsLoading(true);
     const [defs, vals] = await Promise.all([
       listDefinitionsByType(entry.projectId, entry.type),
       listValuesByEntry(entry.id),
@@ -185,6 +188,7 @@ export function DetailsSection({ entry }: DetailsSectionProps) {
       map.set(v.value.definitionId, v.value.value ?? "");
     });
     setValuesMap(map);
+    setIsLoading(false);
   }, [entry.id, entry.projectId, entry.type]);
 
   useEffect(() => {
@@ -233,7 +237,9 @@ export function DetailsSection({ entry }: DetailsSectionProps) {
         </div>
       </div>
 
-      {definitions.length === 0 ? (
+      {isLoading ? (
+        <FormFieldSkeletonList testId="details-section-loading" />
+      ) : definitions.length === 0 ? (
         <p
           data-testid="details-section-empty"
           className="text-xs text-muted-foreground"
