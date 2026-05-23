@@ -1,13 +1,16 @@
 import { createPortal } from "react-dom";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { cn } from "@/lib/utils";
+import { PANEL_ICON_MAP } from "./panelIcons";
 import { useLayoutStore } from "./layoutStore";
 
-/** Follows the pointer during panel dropdown pointer-drag sessions. */
+/** Follows the pointer during stripe / dropdown pointer-drag sessions. */
 export function LayoutPanelDragGhost() {
   const { t } = useTranslation();
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const dragSource = useLayoutStore((s) => s.panelDragSource);
+  const dragOffset = useLayoutStore((s) => s.panelDragOffset);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -26,13 +29,26 @@ export function LayoutPanelDragGhost() {
 
   if (!draggingPanel || dragSource !== "pointer" || !pos) return null;
 
+  const Icon = PANEL_ICON_MAP[draggingPanel];
+  const offsetX = dragOffset?.x ?? 14;
+  const offsetY = dragOffset?.y ?? 14;
+
   return createPortal(
     <div
       data-panel-drag-ghost
-      className="pointer-events-none fixed z-[9999] -translate-x-1/2 -translate-y-1/2 rounded-md border border-primary/40 bg-popover px-2 py-1 text-xs shadow-lg"
-      style={{ left: pos.x, top: pos.y }}
+      className={cn(
+        "pointer-events-none fixed z-[9999] flex items-center gap-1.5 rounded-full",
+        "border border-primary/40 bg-popover/95 px-2 py-1 shadow-lg backdrop-blur-sm",
+      )}
+      style={{
+        left: pos.x - offsetX,
+        top: pos.y - offsetY,
+      }}
     >
-      {t(`layout.panel.${draggingPanel}`)}
+      <Icon className="h-4 w-4 shrink-0 text-foreground" />
+      <span className="max-w-[10rem] truncate text-xs text-foreground">
+        {t(`layout.panel.${draggingPanel}`)}
+      </span>
     </div>,
     document.body,
   );

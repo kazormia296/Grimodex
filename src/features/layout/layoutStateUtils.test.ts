@@ -13,6 +13,7 @@ import {
   getOpenCenterSegmentPixelSizes,
   getOpenSlotPixelSizes,
   nudgeAdjacentCenterSegmentPixelSizes,
+  reorderPanelInSlot,
   DEFAULT_EDITOR_SEGMENT_ID,
 } from "./layoutStateUtils";
 import { TOOL_WINDOW_PANEL_IDS } from "./toolWindowDefaults";
@@ -392,5 +393,25 @@ describe("nudgeAdjacentCenterSegmentPixelSizes", () => {
     expect(nudged).not.toBeNull();
     expect(nudged!.pxB).toBeGreaterThanOrEqual(MIN_EDITOR_SIZE);
     expect(nudged!.pxA + nudged!.pxB).toBeCloseTo(toolBefore + editorBefore, 5);
+  });
+});
+
+describe("reorderPanelInSlot", () => {
+  it("moves a panel within the same slot without changing activePanel", () => {
+    const state = buildDefaultLayoutState();
+    const slot = state.regions.left.slots.find((s) => s.panels.length > 1);
+    expect(slot).toBeDefined();
+    if (!slot) return;
+
+    const panel = slot.panels[0];
+    const nextSlots = reorderPanelInSlot(
+      state.regions.left.slots,
+      slot.id,
+      panel,
+      slot.panels.length,
+    );
+    const nextSlot = nextSlots.find((s) => s.id === slot.id)!;
+    expect(nextSlot.panels.at(-1)).toBe(panel);
+    expect(nextSlot.activePanel).toBe(slot.activePanel);
   });
 });

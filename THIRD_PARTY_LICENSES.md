@@ -349,7 +349,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tanstack/react-virtual (3.13.23)
+### @tanstack/react-virtual (3.13.25)
 
 - License: MIT
 - Repository: https://github.com/TanStack/virtual
@@ -383,7 +383,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tauri-apps/api (2.10.1)
+### @tauri-apps/api (2.11.0)
 
 - License: Apache-2.0 OR MIT
 - Repository: https://github.com/tauri-apps/tauri
@@ -573,7 +573,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tauri-apps/plugin-dialog (2.6.0)
+### @tauri-apps/plugin-dialog (2.7.1)
 
 - License: MIT OR Apache-2.0
 - Repository: https://github.com/tauri-apps/plugins-workspace
@@ -702,7 +702,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/core (3.23.4)
+### @tiptap/core (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -736,7 +736,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-character-count (3.23.4)
+### @tiptap/extension-character-count (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -770,7 +770,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-link (3.23.4)
+### @tiptap/extension-link (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -804,7 +804,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-mention (3.23.4)
+### @tiptap/extension-mention (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -838,7 +838,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-paragraph (3.23.4)
+### @tiptap/extension-paragraph (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -872,7 +872,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-placeholder (3.23.4)
+### @tiptap/extension-placeholder (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -906,7 +906,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-table (3.23.4)
+### @tiptap/extension-table (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -940,7 +940,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-table-cell (3.23.4)
+### @tiptap/extension-table-cell (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -974,7 +974,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-table-header (3.23.4)
+### @tiptap/extension-table-header (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -1008,7 +1008,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-table-row (3.23.4)
+### @tiptap/extension-table-row (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -1042,7 +1042,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-typography (3.23.4)
+### @tiptap/extension-typography (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -1076,7 +1076,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/extension-underline (3.23.4)
+### @tiptap/extension-underline (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -1110,7 +1110,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/pm (3.23.4)
+### @tiptap/pm (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -1144,7 +1144,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/react (3.23.4)
+### @tiptap/react (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -1178,7 +1178,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/starter-kit (3.23.4)
+### @tiptap/starter-kit (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -1212,7 +1212,7 @@ SOFTWARE.
 ```
 </details>
 
-### @tiptap/suggestion (3.23.4)
+### @tiptap/suggestion (3.23.6)
 
 - License: MIT
 - Repository: https://github.com/ueberdosis/tiptap
@@ -1348,7 +1348,7 @@ SOFTWARE.
 ```
 </details>
 
-### ai (6.0.182)
+### ai (6.0.190)
 
 - License: Apache-2.0
 - Repository: https://github.com/vercel/ai
@@ -1871,7 +1871,7 @@ THIS SOFTWARE.
 - License: Apache-2.0
 - Repository: https://github.com/drizzle-team/drizzle-orm
 
-### fflate (0.8.2)
+### fflate (0.8.3)
 
 - License: MIT
 - Repository: https://github.com/101arrowz/fflate
@@ -1882,7 +1882,7 @@ THIS SOFTWARE.
 ```
 MIT License
 
-Copyright (c) 2023 Arjun Barrett
+Copyright (c) 2026 Arjun Barrett
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -2043,7 +2043,7 @@ express Statement of Purpose.
 - License: Standard 'no charge' license: https://gsap.com/standard-license.
 - Repository: https://github.com/greensock/GSAP
 
-### i18next (26.0.4)
+### i18next (26.2.0)
 
 - License: MIT
 - Repository: https://github.com/i18next/i18next
@@ -2077,7 +2077,7 @@ SOFTWARE.
 ```
 </details>
 
-### jotai (2.19.0)
+### jotai (2.20.0)
 
 - License: MIT
 - Repository: https://github.com/pmndrs/jotai
@@ -2145,7 +2145,7 @@ THE SOFTWARE.
 ```
 </details>
 
-### lucide-react (1.7.0)
+### lucide-react (1.16.0)
 
 - License: ISC
 - Repository: https://github.com/lucide-icons/lucide
@@ -2234,7 +2234,7 @@ THE SOFTWARE.
 ```
 </details>
 
-### motion (12.38.0)
+### motion (12.40.0)
 
 - License: MIT
 - Repository: https://github.com/motiondivision/motion
@@ -2300,10 +2300,10 @@ THE SOFTWARE.
 ```
 </details>
 
-### prosemirror-model (1.25.4)
+### prosemirror-model (1.25.7)
 
 - License: MIT
-- Repository: git://github.com/prosemirror/prosemirror-model
+- Repository: https://code.haverbeke.berlin/prosemirror/prosemirror-model
 
 <details>
 <summary>License Text</summary>
@@ -2364,10 +2364,10 @@ THE SOFTWARE.
 ```
 </details>
 
-### prosemirror-view (1.41.7)
+### prosemirror-view (1.41.8)
 
 - License: MIT
-- Repository: git://github.com/prosemirror/prosemirror-view
+- Repository: https://code.haverbeke.berlin/prosemirror/prosemirror-view
 
 <details>
 <summary>License Text</summary>
@@ -2396,7 +2396,7 @@ THE SOFTWARE.
 ```
 </details>
 
-### react (19.2.4)
+### react (19.2.6)
 
 - License: MIT
 - Repository: https://github.com/facebook/react
@@ -2430,7 +2430,7 @@ SOFTWARE.
 ```
 </details>
 
-### react-dom (19.2.4)
+### react-dom (19.2.6)
 
 - License: MIT
 - Repository: https://github.com/facebook/react
@@ -2464,7 +2464,7 @@ SOFTWARE.
 ```
 </details>
 
-### react-i18next (17.0.2)
+### react-i18next (17.0.8)
 
 - License: MIT
 - Repository: https://github.com/i18next/react-i18next
@@ -2533,7 +2533,7 @@ SOFTWARE.
 ```
 </details>
 
-### react-resizable-panels (4.9.0)
+### react-resizable-panels (4.11.1)
 
 - License: MIT
 - Repository: https://github.com/bvaughn/react-resizable-panels
@@ -2636,7 +2636,7 @@ SOFTWARE.
 ```
 </details>
 
-### tailwind-merge (3.5.0)
+### tailwind-merge (3.6.0)
 
 - License: MIT
 - Repository: https://github.com/dcastil/tailwind-merge
@@ -2709,7 +2709,7 @@ SOFTWARE.
 ```
 </details>
 
-### zustand (5.0.12)
+### zustand (5.0.13)
 
 - License: MIT
 - Repository: https://github.com/pmndrs/zustand
@@ -102436,6 +102436,39 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 </details>
 
 ## Reference Implementations
+
+### react-ide-workspace-layout (DnD UX pattern reference for layout stripe drag) (develop branch)
+
+- License: MIT
+- Repository: https://github.com/leoweyr/react-ide-workspace-layout
+
+<details>
+<summary>License Text</summary>
+
+```
+MIT License
+
+Copyright (c) 2026-present, leoweyr
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+</details>
 
 ### vscode-ai-novelist (API protocol reference for AI のべりすと integration) (main branch)
 

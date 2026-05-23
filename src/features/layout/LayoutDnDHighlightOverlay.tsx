@@ -22,7 +22,12 @@ export function LayoutDnDHighlightOverlay() {
   targetRef.current = dragOverTarget;
 
   useLayoutEffect(() => {
-    if (!draggingPanel || layoutLocked || !dragOverTarget) {
+    if (
+      !draggingPanel ||
+      layoutLocked ||
+      !dragOverTarget ||
+      dragOverTarget.type === "stripe-reorder"
+    ) {
       setRect(null);
       return;
     }

@@ -25,6 +25,7 @@ export function usePanelDropdownPointerDrag({
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
   const movePanelToSlot = useLayoutStore((s) => s.movePanelToSlot);
   const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
+  const reorderPanelInSlot = useLayoutStore((s) => s.reorderPanelInSlot);
   const sessionRef = useRef<{
     pointerId: number;
     panelId: ToolWindowPanelId;
@@ -79,7 +80,11 @@ export function usePanelDropdownPointerDrag({
             return;
           }
           session.dragging = true;
-          setDraggingPanel(session.panelId, "pointer");
+          const rect = session.element.getBoundingClientRect();
+          setDraggingPanel(session.panelId, "pointer", {
+            x: session.startX - rect.left,
+            y: session.startY - rect.top,
+          });
           onDragSessionStart?.();
         }
 
@@ -105,6 +110,7 @@ export function usePanelDropdownPointerDrag({
             performToolWindowDrop(target, session.panelId, {
               movePanelToSlot,
               movePanelToNewSlot,
+              reorderPanelInSlot,
             });
           }
           endSession(true);
@@ -125,6 +131,7 @@ export function usePanelDropdownPointerDrag({
       movePanelToNewSlot,
       movePanelToSlot,
       onDragSessionStart,
+      reorderPanelInSlot,
       setDragOverTarget,
       setDraggingPanel,
       togglePanel,

@@ -359,8 +359,16 @@ Dockview overlay に依存せず自作。`layoutLocked` 時は全 DnD 無効。
 
 ### 7.1 ドラッグソース
 
-stripe アイコン (`draggable`)。`dragstart` で `setDraggingPanel(panelId)`。
-`dragend` で `null`。`dataTransfer` はフォールバック用に `TOOL_WINDOW_REASSIGN_TYPE` を維持。
+stripe アイコンは **pointer 統一**（`useStripeIconPointerDrag`）。`ToolWindowIcon` の
+`onPointerDown` で session を開始する。
+
+- **250ms 長押し** OR **6px 移動**（`PANEL_POINTER_DRAG_THRESHOLD_PX`）のどちらか先で
+  drag session 開始 → `setDraggingPanel(panel, "pointer", offset)`
+- session 開始後に **6px 未満の移動で pointerup** → `togglePanel`（誤 drop 防止）
+- **6px 以上移動して drop** → `performToolWindowDrop`
+- `PanelToggleDropdown` 行は従来通り pointer threshold のみ（長押しなし）
+
+`layoutLocked` 時は session 開始不可。`panelDragOffset` でゴースト位置を保持する。
 
 **TabBar / エディタ内 DnD**（`DRAG_DATA_KEY`）とは MIME 型で分離。中央 `EditorArea` では
 ツールウィンドウ drop を受け付けない（シーン tab DnD のみ `SceneEditor` が処理）。
@@ -369,20 +377,29 @@ stripe アイコン (`draggable`)。`dragstart` で `setDraggingPanel(panelId)`�
 
 | ドロップ先 | 挙動 |
 |-----------|------|
+| 同一 slot stripe（`stripe-reorder`） | `panels[]` 順序のみ変更。**`activePanel` は不変** |
 | 既存 slot (stripe segment / `RegionContent` 内) | panel をその slot に移動、**必ず** `activePanel = panel` |
 | slot 間境界 / region 端 | その index に **新規 slot** を挿入、panel を入れ、`activePanel = panel`、`sizeRatio = 1`、open slot 間で正規化 |
 | 別 region の stripe（segment 上） | ドロップ先 segment の slot に移動。segment が無い領域は **末尾に新規 slot** |
 | 別 region の空 content | **末尾に新規 slot** 1 つ |
 
-cross-region 移動は許可。ドラッグ中は対象 drop zone にハイライト overlay（現行
-`PanelHighlightOverlay` を流用・改修可）。
+cross-region 移動は許可。ドラッグ中の視覚フィードバック:
+
+- **`LayoutDnDHighlightOverlay`**: `slot` / `new-slot` 向け（領域全体の dashed rect）
+- **`StripeInsertIndicator`**: `stripe-reorder` 向け（アイコン間の 1–2px 線）。Highlight と**排他**
+- **`LayoutPanelDragGhost`**: pointer drag 中のアイコン clone
+
+stripe ヒット領域は `STRIPE_DRAG_DETECTION_PAD_PX`（24px）で stripe 外側を拡張。
+insert index は `calculateStripeInsertIndex` の gap ヒステリシスで粘着する。
 
 ### 7.3 移動時の後処理
 
-- 移動元 slot から panel を除去
+- 移動元 slot から panel を除去（`stripe-reorder` 以外）
 - 移動元 slot が空 (`panels.length === 0`) → slot 削除
 - 移動元の `activePanel` が移動 panel だった → `activePanel = null`（他 panel があっても
   自動で別 panel を active にしない。ユーザーが stripe で選択）
+- **`stripe-reorder`**: `panels[]` の順序のみ更新。`activePanel` は変更しない（表示順と
+  表示中 panel を分離）
 
 ### 7.4 コンテキストメニュー（`ToolWindowIcon`）
 
@@ -399,8 +416,9 @@ cross-region 移動は許可。ドラッグ中は対象 drop zone にハイラ�
 
 - `togglePanel` / `showPanel` — §6.1
 - `movePanelToSlot` / `movePanelToRegion` / `movePanelToNewSlot` — §7
+- `reorderPanelInSlot(panel, region, slotId, insertIndex)` — §7.2 stripe-reorder
 - `setRegionSize` / `setSlotRatios` — §6.2
-- `setDraggingPanel` — §7.1
+- `setDraggingPanel(panel, source?, offset?)` — §7.1
 - `requestEditorFocus()` — §5（エディタ中央セルへフォーカス。`tabStore` 連携は呼び出し側）
 - `layoutLocked` / `toggleLayoutLock` — §6.4
 - `loadLayout` / `saveLayout`（debounce）/ `applyPreset` / `resetToDefaultLayout`
@@ -518,7 +536,10 @@ big-bang 置換。**完全リセット方式**を採用する（best-effort 移�
 - `layoutConstants.ts` — min/max サイズ
 - `layoutStateUtils.ts` — `validateLayoutState`, `normalizeSlotRatios`, `buildDefaultLayoutState`
 - `LayoutShell` / `RegionDock` / `RegionContent` / `SlotView` / `Splitter` / `EditorArea`
-- 自作 DnD + drop highlight
+- `splitter/SplitterHandle` / `splitter/SplitterChrome` — Splitter style/functional 分離
+- 自作 DnD + drop highlight + `StripeInsertIndicator` + `LayoutPanelDragGhost`
+- `useStripeIconPointerDrag` — stripe pointer drag（250ms 長押し / 6px threshold）
+- `reorderPanelInSlot` / `reorderPanelInCenterSegment`（`layoutStateUtils` pure）
 - `layoutStore` v2
 - `layoutValidation` v2（上記 utils）
 
@@ -552,7 +573,6 @@ no-op または UI 無効化とする。Dockview パッケージは Phase 6 で 
 | 項目 | 対応時期 | メモ |
 |------|---------|------|
 | 非アクティブパネル DOM | Phase 2 | Grid 等の再マウントコストを計測。`hidden` 保持 vs アンマウント |
-| DnD UX（ヒット領域・プレビュー） | Phase 4 入口 | §7 は骨格のみ。詳細は Phase 4 設計メモ可 |
 | undock / floating | スコープ外 | 将来 overlay 層。`LayoutState` を汚さない |
 | pin / auto-hide | スコープ外 | 将来拡張 |
 | Sample Tour / screenshot | Phase 2–3 | `data-stripe-icon`、panel 固有 capture の動作確認 |
@@ -561,4 +581,5 @@ no-op または UI 無効化とする。Dockview パッケージは Phase 6 で 
 **解消済み（本書で決定）:** 初回 `activePanel` vs プリセット、custom preset 破棄、
 `layoutLocked` 維持、`sizeRatio` アルゴリズム、エディタフォーカス API、stripe 常時全表示、
 マイグレーション方式（完全リセット）、Center Stripe 常設化（editor 開閉トグルの常設動線）、
-center filler（editor 非表示時のグリッド充填）。
+center filler（editor 非表示時のグリッド充填）、**DnD UX**（pointer 統一・stripe-reorder・
+InsertIndicator / Highlight 排他・`STRIPE_DRAG_DETECTION_PAD_PX`）。

@@ -10,8 +10,8 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { TOOL_WINDOW_REASSIGN_TYPE } from "./layoutDnD";
 import { useLayoutStore } from "./layoutStore";
+import { useStripeIconPointerDrag } from "./useStripeIconPointerDrag";
 import type { PanelId } from "./panelIds";
 import { PANEL_ICON_MAP } from "./panelIcons";
 import { KEYBOARD_SHORTCUT_MAP } from "./panelRegions";
@@ -20,6 +20,7 @@ import type { LayoutRegionId, RegionId } from "./layoutTypes";
 interface ToolWindowIconProps {
   panelId: Exclude<PanelId, "editor">;
   region: LayoutRegionId;
+  slotId: string;
   /** panel === slot.activePanel */
   active: boolean;
   /** その slot が展開中か。false（折りたたみ）のときアイコンを更に dim 表示 */
@@ -36,20 +37,25 @@ const ALL_REGIONS: RegionId[] = ["left", "right", "bottom"];
 export function ToolWindowIcon({
   panelId,
   region,
+  slotId,
   active,
   slotOpen,
 }: ToolWindowIconProps) {
   const { t } = useTranslation();
   const Icon = PANEL_ICON_MAP[panelId];
-  const togglePanel = useLayoutStore((s) => s.togglePanel);
   const movePanelToRegion = useLayoutStore((s) => s.movePanelToRegion);
   const removePanelFromStripe = useLayoutStore((s) => s.removePanelFromStripe);
-  const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
-  const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const passThroughDrop =
     draggingPanel != null && draggingPanel !== panelId && !layoutLocked;
+
+  const { handlePointerDown } = useStripeIconPointerDrag({
+    panelId,
+    region,
+    slotId,
+    layoutLocked,
+  });
 
   const label = t(`layout.panel.${panelId}`);
   const shortcut = KEYBOARD_SHORTCUT_MAP[panelId];
@@ -65,21 +71,13 @@ export function ToolWindowIcon({
           title={tooltip}
           aria-label={label}
           aria-pressed={active}
-          draggable={!layoutLocked}
-          onDragStart={(e) => {
-            setDraggingPanel(panelId, "html5");
-            e.dataTransfer.setData(TOOL_WINDOW_REASSIGN_TYPE, panelId);
-            e.dataTransfer.effectAllowed = "move";
-          }}
-          onDragEnd={() => {
-            setDraggingPanel(null);
-            setDragOverTarget(null);
-          }}
-          onClick={() => togglePanel(panelId)}
+          onPointerDown={handlePointerDown}
           className={cn(
             "relative z-30 flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors",
             "transition-transform duration-75 active:scale-[0.94]",
+            "touch-none select-none",
             passThroughDrop && "pointer-events-none",
+            draggingPanel === panelId && "opacity-40",
             active
               ? "bg-accent text-foreground"
               : "hover:bg-accent/30 hover:text-foreground",

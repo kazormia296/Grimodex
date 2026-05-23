@@ -99,6 +99,7 @@ function StripeGroup({
             key={panel.id}
             panelId={panel.id}
             region={region}
+            slotId={segment.slotId}
             active={panel.active}
             slotOpen={segment.open}
           />
