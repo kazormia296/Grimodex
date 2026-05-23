@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   ReactFlow,
@@ -181,6 +181,19 @@ export function MapCanvas() {
   } = useMapBoardData(useCurrentProjectId());
 
   useMapBoardPersistence();
+
+  // Stable projection of userEdges for layout/auto-arrange hooks. Without this
+  // memo, the inline `.map()` would yield a fresh array every render, and the
+  // effect in useMapNodes (which lists `userEdges` in its deps) would re-fire
+  // every render → setNodes → re-render → loop (Maximum update depth exceeded).
+  const layoutUserEdges = useMemo(
+    () =>
+      userEdges.map((e) => ({
+        fromPositionId: e.fromPositionId,
+        toPositionId: e.toPositionId,
+      })),
+    [userEdges],
+  );
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
@@ -398,10 +411,7 @@ export function MapCanvas() {
   useMapNodes({
     boardId,
     positions,
-    userEdges: userEdges.map((e) => ({
-      fromPositionId: e.fromPositionId,
-      toPositionId: e.toPositionId,
-    })),
+    userEdges: layoutUserEdges,
     treeNodes,
     codexEntries,
     snippets: snippetEntries,
@@ -1147,10 +1157,7 @@ export function MapCanvas() {
     boardId,
     pendingAutoArrange,
     positions,
-    userEdges: userEdges.map((e) => ({
-      fromPositionId: e.fromPositionId,
-      toPositionId: e.toPositionId,
-    })),
+    userEdges: layoutUserEdges,
     treeNodes,
     codexEntries,
     setPositions,
