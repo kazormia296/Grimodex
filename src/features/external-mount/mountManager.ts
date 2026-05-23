@@ -1,5 +1,7 @@
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
+import { debugLog, errorDetail } from "@/lib/debugLog";
+import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
 import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import {
@@ -13,7 +15,8 @@ import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import * as mountApi from "./api";
 import { useExternalRootStore } from "./externalRootStore";
-import { markdownToPmJson } from "./markdownBridge";
+import { markdownToPmJson, pmJsonToMarkdown } from "./markdownBridge";
+import { contentHash } from "./contentHash";
 import {
   basename,
   buildMountFolderUri,
@@ -71,11 +74,29 @@ export async function initializeExternalMounts(): Promise<void> {
 
   const missing: ExternalRoot[] = [];
   for (const root of roots) {
+    let scan: ScanResult;
     try {
-      const scan = await mountApi.registerMount(root.id, root.path, root.label);
-      await reconcileRoot(root, scan);
-    } catch {
+      scan = await mountApi.registerMount(root.id, root.path, root.label);
+    } catch (err) {
+      debugLog.error(
+        "ExternalMount",
+        `register failed: ${root.path}`,
+        errorDetail(err),
+      );
       missing.push(root);
+      continue;
+    }
+    try {
+      await reconcileRoot(root, scan);
+    } catch (err) {
+      debugLog.error(
+        "ExternalMount",
+        `reconcile failed: ${root.label}`,
+        errorDetail(err),
+      );
+      toast.error(
+        i18next.t("externalMount.toast.reconcileFailed", { label: root.label }),
+      );
     }
   }
   useExternalRootStore.getState().setMissingRoots(missing);
@@ -168,9 +189,8 @@ async function reconcileRoot(
   for (const [uri, node] of dbOnly) {
     const parsed = parseSourceUri(uri);
     if (!parsed) continue;
-    const match = diskOnly.find(
-      (f) => f.contentHash === hashForNode(node, scan),
-    );
+    const nodeHash = await hashForNode(node);
+    const match = diskOnly.find((f) => f.contentHash === nodeHash);
     if (match) {
       const newUri = buildSourceUri(root.id, match.relPath);
       await updateNode(node.id, {
@@ -203,18 +223,20 @@ async function reconcileRoot(
   }
 }
 
-function hashForNode(
-  node: { content: string },
-  scan: ScanResult,
-): string | null {
+async function hashForNode(node: { content: string }): Promise<string | null> {
   try {
-    const content = JSON.parse(node.content) as Record<string, unknown>;
-    const text = JSON.stringify(content);
-    const match = scan.files.find((f) => f.content === text);
-    return match?.contentHash ?? null;
+    const markdown = pmJsonToMarkdown(node.content);
+    return await contentHash(markdown);
   } catch {
     return null;
   }
+}
+
+/** @internal Exported for unit tests. */
+export async function hashForNodeContent(
+  content: string,
+): Promise<string | null> {
+  return hashForNode({ content });
 }
 
 async function ensureFolderTree(
@@ -413,33 +435,39 @@ async function handleFileChanged(
   if (!node) return;
 
   const content = await mountApi.readExternalFile(root.id, relPath);
+  const fileMtime = await mountApi.getExternalFileMtime(root.id, relPath);
   const { useTabStore } = await import("@/features/editor/tabStore");
   const isDirty = useTabStore.getState().dirtyTabIds.has(node.id);
 
   if (isDirty) {
-    useExternalRootStore.getState().setConflict({
+    useExternalRootStore.getState().enqueueConflict({
       sceneId: node.id,
       rootId: root.id,
       relPath,
       incomingContent: content,
-      incomingMtime: new Date().toISOString(),
+      incomingMtime: fileMtime,
     });
     return;
   }
 
-  await applyExternalContent(node.id, root.id, relPath, content);
+  await applyExternalContent(node.id, root.id, relPath, content, fileMtime);
 }
 
 async function applyExternalContent(
   nodeId: string,
-  rootId: string,
-  relPath: string,
+  _rootId: string,
+  _relPath: string,
   markdown: string,
+  sourceMtime?: string,
 ): Promise<void> {
   const pmJson = JSON.stringify(markdownToPmJson(markdown));
-  await saveSceneContent(nodeId, pmJson);
-  await updateNode(nodeId, { sourceMtime: new Date().toISOString() });
+  const charCount = countSceneBodyCharsFromJson(pmJson);
+  await saveSceneContent(nodeId, { content: pmJson, charCount });
+  await updateNode(nodeId, {
+    sourceMtime: sourceMtime ?? new Date().toISOString(),
+  });
   scheduleSceneIndex(nodeId);
+  useTreeStore.getState().setCharCount(nodeId, charCount);
   await useTreeStore.getState().loadTree(getCurrentProjectId());
 
   const { useTabStore } = await import("@/features/editor/tabStore");
@@ -450,7 +478,6 @@ async function applyExternalContent(
       }),
     );
   }
-  useExternalRootStore.getState().mutePath(rootId, relPath);
 }
 
 async function handleFileAdded(
@@ -535,10 +562,13 @@ async function findNodeByUri(uri: string) {
   return nodes.find((n) => n.sourceUri === uri);
 }
 
+/** @internal Exported for unit tests. */
+export { applyExternalContent };
+
 export async function resolveReloadConflict(
   choice: "keep-local" | "reload",
 ): Promise<void> {
-  const conflict = useExternalRootStore.getState().conflict;
+  const conflict = useExternalRootStore.getState().conflicts[0];
   if (!conflict) return;
   if (choice === "reload") {
     await applyExternalContent(
@@ -546,7 +576,8 @@ export async function resolveReloadConflict(
       conflict.rootId,
       conflict.relPath,
       conflict.incomingContent,
+      conflict.incomingMtime,
     );
   }
-  useExternalRootStore.getState().setConflict(null);
+  useExternalRootStore.getState().shiftConflict();
 }

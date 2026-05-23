@@ -31,9 +31,9 @@ export function useExternalMountListener(): void {
         });
         if (cancelled) {
           unlisten();
-          return;
+        } else {
+          unsubs.push(unlisten);
         }
-        unsubs.push(unlisten);
       }
     })();
 

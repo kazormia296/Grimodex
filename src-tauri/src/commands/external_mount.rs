@@ -6,7 +6,7 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::commands::AppError;
-use crate::external_mount::io::{atomic_write_text, read_text_file, resolve_under_root};
+use crate::external_mount::io::{atomic_write_text, file_mtime_iso, read_text_file, resolve_under_root};
 use crate::external_mount::scan::{scan_root, ScanResult};
 use crate::external_mount::watch::ExternalMountWatchState;
 
@@ -138,6 +138,17 @@ pub(crate) fn external_mount_list(
 ) -> Result<Vec<RegisteredRoot>, AppError> {
     let reg = mount_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(reg.roots.values().cloned().collect())
+}
+
+#[tauri::command]
+pub(crate) fn external_mount_file_mtime(
+    mount_state: State<'_, ExternalMountState>,
+    root_id: String,
+    rel_path: String,
+) -> Result<String, AppError> {
+    let root_path = lookup_root_path(&mount_state, &root_id)?;
+    let abs = resolve_under_root(&root_path, &rel_path)?;
+    file_mtime_iso(&abs).map_err(AppError::from)
 }
 
 #[tauri::command]

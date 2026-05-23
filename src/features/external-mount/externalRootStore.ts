@@ -11,14 +11,15 @@ interface ExternalRootState {
   roots: ExternalRoot[];
   missingRoots: ExternalRoot[];
   isInitialized: boolean;
-  conflict: ReloadConflictState | null;
+  conflicts: ReloadConflictState[];
   mutedWrites: MuteEntry[];
   setRoots: (roots: ExternalRoot[]) => void;
   addRoot: (root: ExternalRoot) => void;
   removeRoot: (rootId: string) => void;
   setMissingRoots: (roots: ExternalRoot[]) => void;
   setInitialized: (value: boolean) => void;
-  setConflict: (conflict: ReloadConflictState | null) => void;
+  enqueueConflict: (conflict: ReloadConflictState) => void;
+  shiftConflict: () => void;
   mutePath: (rootId: string, relPath: string, ms?: number) => void;
   isMuted: (rootId: string, relPath: string) => boolean;
 }
@@ -29,7 +30,7 @@ export const useExternalRootStore = create<ExternalRootState>()((set, get) => ({
   roots: [],
   missingRoots: [],
   isInitialized: false,
-  conflict: null,
+  conflicts: [],
   mutedWrites: [],
 
   setRoots: (roots) => set({ roots }),
@@ -41,7 +42,9 @@ export const useExternalRootStore = create<ExternalRootState>()((set, get) => ({
     set((s) => ({ roots: s.roots.filter((r) => r.id !== rootId) })),
   setMissingRoots: (missingRoots) => set({ missingRoots }),
   setInitialized: (isInitialized) => set({ isInitialized }),
-  setConflict: (conflict) => set({ conflict }),
+  enqueueConflict: (conflict) =>
+    set((s) => ({ conflicts: [...s.conflicts, conflict] })),
+  shiftConflict: () => set((s) => ({ conflicts: s.conflicts.slice(1) })),
 
   mutePath: (rootId, relPath, ms = MUTE_MS) => {
     const until = Date.now() + ms;
