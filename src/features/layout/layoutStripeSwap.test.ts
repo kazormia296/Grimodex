@@ -110,9 +110,9 @@ describe("computeStripeAxisLockShifts", () => {
   };
 
   it("returns empty map when no displacement", () => {
-    expect(
-      computeStripeAxisLockShifts("scenes", 44, panels, rects).size,
-    ).toBe(0);
+    expect(computeStripeAxisLockShifts("scenes", 44, panels, rects).size).toBe(
+      0,
+    );
   });
 
   it("shifts upper sibling toward-end when active moves above it", () => {

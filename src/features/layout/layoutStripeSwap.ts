@@ -91,8 +91,7 @@ export function computeStripeAxisLockInsertIndex(
   }
   if (!sawRect) return null;
 
-  const equivalentFullIdx =
-    targetIdx <= activeIdx ? targetIdx : targetIdx + 1;
+  const equivalentFullIdx = targetIdx <= activeIdx ? targetIdx : targetIdx + 1;
   if (equivalentFullIdx === activeIdx) return null;
 
   return equivalentFullIdx;

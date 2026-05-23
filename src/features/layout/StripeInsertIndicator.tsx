@@ -42,7 +42,9 @@ export function StripeInsertIndicator() {
       return;
     }
 
-    function measure(target: Extract<DragOverTarget, { type: "stripe-reorder" }>) {
+    function measure(
+      target: Extract<DragOverTarget, { type: "stripe-reorder" }>,
+    ) {
       const segmentEl = document.querySelector<HTMLElement>(
         `[data-drop-slot-id="${target.slotId}"]`,
       );
