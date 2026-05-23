@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
+import { CSS_DURATIONS } from "@/lib/animation";
 import type { PanelId } from "./panelIds";
 import { PANEL_REGION_MAP, type PanelRegion } from "./panelRegions";
 import { isReducedMotion } from "@/lib/gsap";
@@ -139,8 +140,7 @@ export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
         height: rect.height,
         pointerEvents: "none",
         zIndex: 9999,
-        transition:
-          "left 150ms ease, top 150ms ease, width 150ms ease, height 150ms ease",
+        transition: `left ${CSS_DURATIONS.fast} ease, top ${CSS_DURATIONS.fast} ease, width ${CSS_DURATIONS.fast} ease, height ${CSS_DURATIONS.fast} ease`,
       }}
     >
       <div

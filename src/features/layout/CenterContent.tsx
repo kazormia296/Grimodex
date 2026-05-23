@@ -14,7 +14,7 @@ import {
 } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
-import { SlotView } from "./SlotView";
+import { AnimatedSlotPanel } from "./AnimatedSlotPanel";
 import { EditorArea } from "./EditorArea";
 import { normalizeFlexGrow } from "./layoutStateUtils";
 import type { CenterSegment } from "./layoutTypes";
@@ -239,7 +239,7 @@ export const CenterContent = memo(function CenterContent() {
                 onDrop={(e) => handleSlotDrop(segment.id, e)}
               >
                 {segment.activePanel && (
-                  <SlotView panelId={segment.activePanel} />
+                  <AnimatedSlotPanel panelId={segment.activePanel} />
                 )}
               </div>
             )}

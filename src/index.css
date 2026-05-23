@@ -502,6 +502,15 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   background: var(--background);
 }
 
+/* Animation wrappers must not clip card shadows into inter-panel gaps. */
+.app-shell[data-card="true"] [data-animated-region] {
+  overflow: visible;
+}
+
+.app-shell[data-card="true"] [data-region-content] {
+  overflow: visible;
+}
+
 /* Canvas behind the cards — sunk below --background so cards lift off it. */
 .app-shell[data-card="true"] [data-layout-shell] {
   background: var(--gx-canvas-bg);

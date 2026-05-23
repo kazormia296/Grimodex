@@ -41,6 +41,14 @@ export const VARIANTS = {
   },
 } as const;
 
+/** CSS transition-duration strings aligned with DURATIONS. */
+export const CSS_DURATIONS = {
+  fast: `${DURATIONS.fast * 1000}ms`,
+  normal: `${DURATIONS.normal * 1000}ms`,
+  slow: `${DURATIONS.slow * 1000}ms`,
+  dialog: `${DURATIONS.dialog * 1000}ms`,
+} as const;
+
 export function useReducedMotion(): boolean {
   const osReduced = useOsReducedMotion();
   const appReduced = useSettingsStore((s) =>

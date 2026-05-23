@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { CSS_DURATIONS } from "@/lib/animation";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -88,7 +89,7 @@ export function ToolWindowIcon({
                     swapAxis === "horizontal"
                       ? `translateX(${swapOffset}px)`
                       : `translateY(${swapOffset}px)`,
-                  transition: "transform 120ms ease-out",
+                  transition: `transform ${CSS_DURATIONS.fast} ease-out`,
                 }
               : undefined
           }

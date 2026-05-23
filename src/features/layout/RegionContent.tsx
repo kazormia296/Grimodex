@@ -12,7 +12,7 @@ import {
 } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
-import { SlotView } from "./SlotView";
+import { AnimatedSlotPanel } from "./AnimatedSlotPanel";
 import { normalizeFlexGrow } from "./layoutStateUtils";
 import type { RegionId } from "./layoutTypes";
 
@@ -271,7 +271,9 @@ export const RegionContent = memo(function RegionContent({
               onDragLeave={handleSlotDragLeave}
               onDrop={(e) => handleSlotDrop(slot.id, e)}
             >
-              {slot.activePanel && <SlotView panelId={slot.activePanel} />}
+              {slot.activePanel && (
+                <AnimatedSlotPanel panelId={slot.activePanel} />
+              )}
             </div>
           </Fragment>
         );
