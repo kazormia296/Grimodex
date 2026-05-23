@@ -7,6 +7,7 @@ function applyPinnedOverrides(
   computed: LayoutOutput,
   input: LayoutInput,
 ): LayoutOutput {
+  const result = new Map(computed);
   for (const pos of input.positions) {
     if (pos.pinned !== 1) continue;
     const key = pos.treeNodeId
@@ -14,10 +15,12 @@ function applyPinnedOverrides(
       : pos.codexEntryId
         ? `codex:${pos.codexEntryId}`
         : null;
-    if (key && computed.has(key)) computed.set(key, { x: pos.x, y: pos.y });
+    if (key && result.has(key)) result.set(key, { x: pos.x, y: pos.y });
   }
-  return computed;
+  return result;
 }
+
+export { applyPinnedOverrides };
 
 /** Synchronous layout dispatcher for free mode. */
 export function layoutFor(_mode: MapMode, input: LayoutInput): LayoutOutput {
@@ -33,8 +36,7 @@ export async function layoutForAsync(
 ): Promise<LayoutOutput> {
   const { layoutTheme } = await import("./theme");
   const computed = await layoutTheme(input, engine, onProgress);
-  applyPinnedOverrides(computed, input);
-  return computed;
+  return applyPinnedOverrides(computed, input);
 }
 
 export { layoutFree } from "./free";

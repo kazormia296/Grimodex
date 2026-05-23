@@ -66,4 +66,30 @@ describe("SyncForceLayoutEngine", () => {
     expect(distLinked).toBeLessThan(distIsolated1);
     expect(distLinked).toBeLessThan(distIsolated2);
   });
+
+  it("提供された x,y を初期座標として使う", async () => {
+    const engine = new SyncForceLayoutEngine();
+    const result = await engine.run({
+      nodes: [{ id: "only", x: 123, y: 456 }],
+      links: [],
+      options: { iterations: 0, randomSeed: 42 },
+    });
+    expect(result.positions[0]).toEqual({ id: "only", x: 123, y: 456 });
+  });
+
+  it("同一 seed + 同一 input で同一 output になる", async () => {
+    const engine = new SyncForceLayoutEngine();
+    const input = {
+      nodes: [
+        { id: "a", tags: ["fantasy"] },
+        { id: "b", tags: ["fantasy", "magic"] },
+        { id: "c", tags: ["sci-fi"] },
+      ],
+      links: [{ source: "a", target: "b", strength: 0.4 }],
+      options: { randomSeed: 12345, iterations: 120 },
+    };
+    const first = await engine.run(input);
+    const second = await engine.run(input);
+    expect(first.positions).toEqual(second.positions);
+  });
 });

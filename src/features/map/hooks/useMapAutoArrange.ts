@@ -7,6 +7,7 @@ import {
 } from "../layouts/autoArrange";
 import { WorkerForceLayoutEngine } from "../layouts/forceEngine";
 import type { MapNodePositionRecord, MapMode } from "../types";
+import type { LayoutUserEdge } from "../layouts/types";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntry } from "@/features/codex/api";
 
@@ -14,6 +15,7 @@ interface UseMapAutoArrangeInput {
   boardId: string | null;
   pendingAutoArrange: AutoArrangeType | null;
   positions: MapNodePositionRecord[];
+  userEdges: LayoutUserEdge[];
   treeNodes: TreeNodeData[];
   codexEntries: CodexEntry[];
   setPositions: React.Dispatch<React.SetStateAction<MapNodePositionRecord[]>>;
@@ -27,6 +29,7 @@ export function useMapAutoArrange({
   boardId,
   pendingAutoArrange,
   positions,
+  userEdges,
   treeNodes,
   codexEntries,
   setPositions,
@@ -40,7 +43,6 @@ export function useMapAutoArrange({
     const type = pendingAutoArrange;
     setPendingAutoArrange(null);
 
-    // Only consider scenes/codex that are already on the board (manual curation)
     const positionedTreeNodeIds = new Set(
       positions.filter((p) => p.treeNodeId).map((p) => p.treeNodeId!),
     );
@@ -65,7 +67,13 @@ export function useMapAutoArrange({
       setForceAlpha(1);
       const engine = new WorkerForceLayoutEngine();
       newPositions = await autoArrangeForceDirected(
-        { scenes, codexEntries: visibleCodex, positions },
+        {
+          scenes,
+          codexEntries: visibleCodex,
+          positions,
+          userEdges,
+          boardId,
+        },
         engine,
         pinnedIds,
         (alpha) => setForceAlpha(alpha),
@@ -112,6 +120,7 @@ export function useMapAutoArrange({
     boardId,
     treeNodes,
     codexEntries,
+    userEdges,
     positions,
     setPositions,
     setForceLayoutRunning,

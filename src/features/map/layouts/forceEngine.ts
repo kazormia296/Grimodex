@@ -4,6 +4,7 @@ import type {
   ForceOptions,
   WorkerOutMessage,
 } from "./forceLayout.worker";
+import { seededRandom } from "./seededRandom";
 
 export interface ForceInput {
   nodes: ForceNode[];
@@ -91,8 +92,12 @@ export class SyncForceLayoutEngine implements ForceLayoutEngine {
     const simNodes = nodes.map((n) => ({
       id: n.id,
       tags: n.tags ?? [],
-      x: n.x ?? (Math.random() - 0.5) * options.width,
-      y: n.y ?? (Math.random() - 0.5) * options.height,
+      x:
+        n.x ??
+        (seededRandom(options.randomSeed, n.id) - 0.5) * options.width,
+      y:
+        n.y ??
+        (seededRandom(options.randomSeed + 1, n.id) - 0.5) * options.height,
     }));
 
     type SimNode = (typeof simNodes)[0];

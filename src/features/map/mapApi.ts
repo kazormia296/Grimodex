@@ -27,8 +27,33 @@ import {
 } from "@/db/schema";
 import { eq, and, isNotNull, inArray } from "drizzle-orm";
 import { generateKeyBetween } from "@/features/tree/fractionalIndex";
-import type { NodeRefType } from "./types";
+import type { NodeRefType, ShowFlags, MapBoardRecord, ColorByAxis } from "./types";
 import { DEFAULT_PALETTE_ID, DEFAULT_COLOR_SLOT } from "@/lib/stickyPalettes";
+
+const DEFAULT_SHOW: ShowFlags = {
+  scenes: true,
+  codex: true,
+  snippets: true,
+  notes: false,
+  stickies: true,
+  aiBranch: false,
+  derivedEdges: true,
+  userEdges: true,
+  frames: true,
+};
+
+export function parseShowConfig(json: string): ShowFlags {
+  try {
+    const parsed = JSON.parse(json) as Partial<ShowFlags>;
+    return { ...DEFAULT_SHOW, ...parsed };
+  } catch {
+    return { ...DEFAULT_SHOW };
+  }
+}
+
+export function serializeShowConfig(show: ShowFlags): string {
+  return JSON.stringify(show);
+}
 
 export type PromoteTargetType = "scene" | "note" | "snippet" | "codex";
 
@@ -43,6 +68,37 @@ export async function listBoards(projectId: string): Promise<MapBoard[]> {
     .from(mapBoards)
     .where(eq(mapBoards.projectId, projectId))
     .orderBy(mapBoards.sortOrder);
+}
+
+export async function getMapBoard(
+  boardId: string,
+): Promise<MapBoard | undefined> {
+  const rows = await db
+    .select()
+    .from(mapBoards)
+    .where(eq(mapBoards.id, boardId))
+    .limit(1);
+  return rows[0];
+}
+
+export async function updateMapBoardSettings(
+  boardId: string,
+  partial: {
+    mode?: MapBoardRecord["mode"];
+    viewportX?: number;
+    viewportY?: number;
+    viewportZoom?: number;
+    showConfig?: string;
+    colorBy?: ColorByAxis;
+  },
+): Promise<MapBoard | undefined> {
+  const now = new Date().toISOString();
+  const rows = await db
+    .update(mapBoards)
+    .set({ ...partial, updatedAt: now })
+    .where(eq(mapBoards.id, boardId))
+    .returning();
+  return rows[0];
 }
 
 export async function getOrCreateBoard(projectId: string): Promise<MapBoard> {

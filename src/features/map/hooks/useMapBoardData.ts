@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import {
   getOrCreateBoard,
+  getMapBoard,
   listBoards,
   listNodePositions,
   listUserEdges,
@@ -9,6 +10,11 @@ import {
   listAiBranches,
 } from "../mapApi";
 import { useMapStore } from "../mapStore";
+import {
+  markBoardHydrating,
+  clearBoardHydrating,
+  syncBoardPersistenceSnapshot,
+} from "./useMapBoardPersistence";
 import type { MapNodePositionRecord } from "../types";
 import type {
   MapBoard,
@@ -71,7 +77,8 @@ export function useMapBoardData(projectId: string) {
     let cancelled = false;
 
     async function load() {
-      const [pos, ue, fr, st, ai] = await Promise.all([
+      const [board, pos, ue, fr, st, ai] = await Promise.all([
+        getMapBoard(boardId),
         listNodePositions(boardId),
         listUserEdges(boardId),
         listFrames(boardId),
@@ -79,6 +86,14 @@ export function useMapBoardData(projectId: string) {
         listAiBranches(boardId),
       ]);
       if (cancelled) return;
+
+      if (board) {
+        markBoardHydrating();
+        useMapStore.getState().hydrateFromBoard(board);
+        syncBoardPersistenceSnapshot();
+        clearBoardHydrating();
+      }
+
       setPositions(pos as MapNodePositionRecord[]);
       setUserEdges(ue);
       setFrames(fr);

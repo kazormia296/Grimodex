@@ -1,12 +1,14 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { GlobalSettings } from "@/features/workspace/store";
+import { parseShowConfig } from "./mapApi";
 import type {
   MapMode,
   ShowFlags,
   MapPersistentState,
   ColorByAxis,
   VisualTheme,
+  MapBoardRecord,
 } from "./types";
 
 interface MapState {
@@ -41,6 +43,7 @@ interface MapState {
   setPendingExport: (type: "svg" | "png" | "json" | null) => void;
   bumpBoardDataVersion: () => void;
   loadFromSettings: (settings: GlobalSettings) => void;
+  hydrateFromBoard: (board: MapBoardRecord) => void;
 }
 
 // Import here to avoid circular dep — autoArrange types live in layouts
@@ -95,8 +98,20 @@ export const useMapStore = create<MapState>((set) => ({
       activeBoardId: saved.activeBoardId ?? null,
       gridSnap: saved.gridSnap ?? false,
       minimapVisible: saved.minimapVisible ?? false,
-      colorBy: saved.colorBy ?? "none",
       visualTheme: saved.visualTheme ?? "default",
+    });
+  },
+
+  hydrateFromBoard: (board) => {
+    set({
+      mode: board.mode,
+      viewport: {
+        x: board.viewportX,
+        y: board.viewportY,
+        zoom: board.viewportZoom,
+      },
+      show: parseShowConfig(board.showConfig),
+      colorBy: (board.colorBy as ColorByAxis) ?? "none",
     });
   },
 }));
@@ -106,7 +121,6 @@ function snapshotPersistent(s: MapState): MapPersistentState {
     activeBoardId: s.activeBoardId,
     gridSnap: s.gridSnap,
     minimapVisible: s.minimapVisible,
-    colorBy: s.colorBy,
     visualTheme: s.visualTheme,
   };
 }

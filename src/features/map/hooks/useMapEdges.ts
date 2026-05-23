@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { Edge } from "@xyflow/react";
 import { createCodexMatcher } from "@/features/codex/codexMatcher";
+import { posToNodeKey } from "../layouts/posToNodeKey";
 import type { ShowFlags, MapNodePositionRecord } from "../types";
 
 interface UseMapEdgesInput {
@@ -39,23 +40,6 @@ interface UseMapEdgesInput {
     field: "forwardLabel" | "backwardLabel",
     label: string | null,
   ) => void;
-}
-
-function posToRfId(pos: MapNodePositionRecord | undefined): string | null {
-  if (!pos) return null;
-  if (pos.nodeRefType === "scene" && pos.treeNodeId)
-    return `scene:${pos.treeNodeId}`;
-  if (pos.nodeRefType === "note" && pos.treeNodeId)
-    return `note:${pos.treeNodeId}`;
-  if (pos.nodeRefType === "codex" && pos.codexEntryId)
-    return `codex:${pos.codexEntryId}`;
-  if (pos.nodeRefType === "ai_branch" && pos.aiBranchId)
-    return `ai_branch:${pos.aiBranchId}`;
-  if (pos.nodeRefType === "sticky" && pos.stickyId)
-    return `sticky:${pos.stickyId}`;
-  if (pos.nodeRefType === "snippet" && pos.snippetId)
-    return `snippet:${pos.snippetId}`;
-  return null;
 }
 
 export function useMapEdges({
@@ -176,8 +160,8 @@ export function useMapEdges({
           .map((ue) => {
             const fromPos = positions.find((p) => p.id === ue.fromPositionId);
             const toPos = positions.find((p) => p.id === ue.toPositionId);
-            const sourceId = posToRfId(fromPos);
-            const targetId = posToRfId(toPos);
+            const sourceId = posToNodeKey(fromPos);
+            const targetId = posToNodeKey(toPos);
             if (!sourceId || !targetId) return null;
             return {
               id: `user:${ue.id}`,

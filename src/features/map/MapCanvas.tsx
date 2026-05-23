@@ -47,6 +47,7 @@ import { useMapExport } from "./hooks/useMapExport";
 import { useFrameDrawing } from "./hooks/useFrameDrawing";
 import { useMapKeyboard } from "./hooks/useMapKeyboard";
 import { useMapBoardData } from "./hooks/useMapBoardData";
+import { useMapBoardPersistence } from "./hooks/useMapBoardPersistence";
 import { useMapEdges } from "./hooks/useMapEdges";
 import { useMapNodes } from "./hooks/useMapNodes";
 import { useMapPositionPersistence } from "./hooks/useMapPositionPersistence";
@@ -135,6 +136,7 @@ export function MapCanvas() {
   const mode = useMapStore((s) => s.mode);
   const setMode = useMapStore((s) => s.setMode);
   const show = useMapStore((s) => s.show);
+  const viewport = useMapStore((s) => s.viewport);
   const minimapVisible = useMapStore((s) => s.minimapVisible);
   const gridSnap = useMapStore((s) => s.gridSnap);
   const setGridSnap = useMapStore((s) => s.setGridSnap);
@@ -154,6 +156,7 @@ export function MapCanvas() {
     getViewport,
     screenToFlowPosition,
     fitView,
+    setViewport: setReactFlowViewport,
     getNodes,
     getEdges,
     zoomIn,
@@ -176,6 +179,8 @@ export function MapCanvas() {
     aiBranches,
     setAiBranches,
   } = useMapBoardData(useCurrentProjectId());
+
+  useMapBoardPersistence();
 
   const [nodes, setNodes] = useState<Node[]>([]);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("default");
@@ -221,6 +226,32 @@ export function MapCanvas() {
   const TRANSITION_MS = DURATIONS.slow * 1000 + 50;
 
   const isMountRef = useRef(true);
+  const initialFitDoneRef = useRef(false);
+  const lastAppliedBoardRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!boardId) return;
+    if (lastAppliedBoardRef.current === boardId) return;
+    lastAppliedBoardRef.current = boardId;
+    initialFitDoneRef.current = false;
+    setReactFlowViewport(
+      { x: viewport.x, y: viewport.y, zoom: viewport.zoom },
+      { duration: 0 },
+    );
+  }, [boardId, viewport.x, viewport.y, viewport.zoom, setReactFlowViewport]);
+
+  useEffect(() => {
+    if (nodes.length === 0 || initialFitDoneRef.current) return;
+    const hasSavedViewport =
+      viewport.x !== 0 || viewport.y !== 0 || viewport.zoom !== 1;
+    if (hasSavedViewport) {
+      initialFitDoneRef.current = true;
+      return;
+    }
+    initialFitDoneRef.current = true;
+    fitView({ duration: 0 });
+  }, [nodes.length, viewport.x, viewport.y, viewport.zoom, fitView]);
+
   useEffect(() => {
     if (isMountRef.current) {
       isMountRef.current = false;
@@ -367,6 +398,10 @@ export function MapCanvas() {
   useMapNodes({
     boardId,
     positions,
+    userEdges: userEdges.map((e) => ({
+      fromPositionId: e.fromPositionId,
+      toPositionId: e.toPositionId,
+    })),
     treeNodes,
     codexEntries,
     snippets: snippetEntries,
@@ -1112,6 +1147,10 @@ export function MapCanvas() {
     boardId,
     pendingAutoArrange,
     positions,
+    userEdges: userEdges.map((e) => ({
+      fromPositionId: e.fromPositionId,
+      toPositionId: e.toPositionId,
+    })),
     treeNodes,
     codexEntries,
     setPositions,
@@ -1171,7 +1210,6 @@ export function MapCanvas() {
         onMoveEnd={syncViewport}
         snapToGrid={gridSnap}
         snapGrid={[16, 16]}
-        fitView
         proOptions={{ hideAttribution: true }}
         connectionMode={ConnectionMode.Loose}
         nodesDraggable={paletteMode === "default" && !modeTransitionActive}
