@@ -1,3 +1,4 @@
+import { STRIPE_DRAG_DETECTION_PAD_PX } from "./layoutConstants";
 import type {
   LayoutState,
   LayoutRegionId,
@@ -18,6 +19,12 @@ export const TOOL_WINDOW_REASSIGN_TYPE =
 
 export type DragOverTarget =
   | { type: "slot"; region: LayoutRegionId; slotId: string }
+  | {
+      type: "stripe-reorder";
+      region: LayoutRegionId;
+      slotId: string;
+      insertIndex: number;
+    }
   | {
       type: "new-slot";
       region: LayoutRegionId;
@@ -54,6 +61,53 @@ function parseRegion(value: string | undefined | null): LayoutRegionId | null {
     return value;
   }
   return null;
+}
+
+/**
+ * Gap stickiness for stripe icon insert index.
+ * Pattern reference: leoweyr/react-ide-workspace-layout GlobalSideBar.calculateIndexInGroup
+ * https://github.com/leoweyr/react-ide-workspace-layout
+ */
+export function calculateStripeInsertIndex(
+  container: HTMLElement,
+  mouseCoord: number,
+  orientation: "vertical" | "horizontal",
+  prevIndex: number = -1,
+): number {
+  const children = container.querySelectorAll("[data-stripe-icon]");
+  const count = children.length;
+  if (count === 0) return 0;
+
+  for (let i = 0; i < count; i++) {
+    const rect = children[i].getBoundingClientRect();
+    const start = orientation === "vertical" ? rect.top : rect.left;
+    const end = orientation === "vertical" ? rect.bottom : rect.right;
+
+    if (mouseCoord >= start && mouseCoord <= end) {
+      return i;
+    }
+    if (i === 0 && mouseCoord < start) return 0;
+    if (i === count - 1 && mouseCoord > end) return count;
+
+    if (i < count - 1) {
+      const nextRect = children[i + 1].getBoundingClientRect();
+      const nextStart =
+        orientation === "vertical" ? nextRect.top : nextRect.left;
+      if (mouseCoord > end && mouseCoord < nextStart) {
+        if (prevIndex === i || prevIndex === i + 1) {
+          return prevIndex;
+        }
+        return mouseCoord - end < nextStart - mouseCoord ? i : i + 1;
+      }
+    }
+  }
+
+  return count;
+}
+
+function parseInsertIndex(value: string | undefined): number {
+  const n = Number(value ?? "0");
+  return Number.isFinite(n) ? n : 0;
 }
 
 export function resolveDropTargetFromElement(
@@ -133,6 +187,25 @@ export function resolveDropTargetFromElement(
         }
       }
 
+      if (node.hasAttribute("data-drop-stripe-reorder")) {
+        const region =
+          parseRegion(node.dataset.dropRegion) ??
+          parseRegion(
+            node
+              .closest("[data-stripe-region]")
+              ?.getAttribute("data-stripe-region"),
+          );
+        const slotId = node.dataset.dropSlotId;
+        if (region && slotId) {
+          return {
+            type: "stripe-reorder",
+            region,
+            slotId,
+            insertIndex: parseInsertIndex(node.dataset.insertIndex),
+          };
+        }
+      }
+
       if (node.hasAttribute("data-drop-between")) {
         const region =
           parseRegion(node.dataset.dropRegion) ??
@@ -162,11 +235,130 @@ export function resolveDropTargetFromElement(
   return null;
 }
 
+function isPointInPaddedStripeRegion(
+  x: number,
+  y: number,
+  stripeRoot: HTMLElement,
+  pad: number = STRIPE_DRAG_DETECTION_PAD_PX,
+): boolean {
+  const rect = stripeRoot.getBoundingClientRect();
+  return (
+    x >= rect.left - pad &&
+    x <= rect.right + pad &&
+    y >= rect.top - pad &&
+    y <= rect.bottom + pad
+  );
+}
+
+function resolveStripeReorderFromSegment(
+  segmentEl: HTMLElement,
+  x: number,
+  y: number,
+  region: LayoutRegionId,
+  slotId: string,
+  prevIndex: number,
+): DragOverTarget | null {
+  const stripeRoot = segmentEl.closest<HTMLElement>("[data-stripe-root]");
+  if (!stripeRoot || !isPointInPaddedStripeRegion(x, y, stripeRoot)) {
+    return null;
+  }
+
+  const orientation =
+    stripeRoot.getAttribute("data-stripe-region") === "bottom" ||
+    stripeRoot.closest("[data-region-dock='bottom']")
+      ? "horizontal"
+      : stripeRoot.getAttribute("data-stripe-region") === "center"
+        ? "horizontal"
+        : "vertical";
+
+  const mouseCoord = orientation === "vertical" ? y : x;
+  const insertIndex = calculateStripeInsertIndex(
+    segmentEl,
+    mouseCoord,
+    orientation,
+    prevIndex,
+  );
+
+  return {
+    type: "stripe-reorder",
+    region,
+    slotId,
+    insertIndex,
+  };
+}
+
+export interface ResolveDropTargetOptions {
+  draggingPanel?: ToolWindowPanelId | null;
+  sourceSlotId?: string | null;
+  prevTarget?: DragOverTarget | null;
+}
+
 export function resolveDropTargetFromPoint(
   x: number,
   y: number,
+  options?: ResolveDropTargetOptions,
 ): DragOverTarget | null {
-  return resolveDropTargetFromElement(document.elementFromPoint(x, y));
+  const el = document.elementFromPoint(x, y);
+  const direct = resolveDropTargetFromElement(el);
+  if (direct?.type === "stripe-reorder") return direct;
+  if (direct && direct.type !== "slot") return direct;
+
+  const draggingPanel = options?.draggingPanel;
+  const sourceSlotId = options?.sourceSlotId;
+  const prevIndex =
+    options?.prevTarget?.type === "stripe-reorder"
+      ? options.prevTarget.insertIndex
+      : -1;
+
+  if (draggingPanel && sourceSlotId && el) {
+    const segmentEl =
+      el.closest<HTMLElement>("[data-drop-segment]") ??
+      el.closest<HTMLElement>("[data-drop-slot-id]");
+    if (segmentEl) {
+      const slotId =
+        segmentEl.dataset.dropSlotId ?? segmentEl.dataset.dropSegment;
+      const region =
+        parseRegion(segmentEl.dataset.dropRegion) ??
+        parseRegion(
+          segmentEl
+            .closest("[data-stripe-region]")
+            ?.getAttribute("data-stripe-region"),
+        );
+      if (region && slotId === sourceSlotId) {
+        const reorder = resolveStripeReorderFromSegment(
+          segmentEl,
+          x,
+          y,
+          region,
+          slotId,
+          prevIndex,
+        );
+        if (reorder) return reorder;
+      }
+    }
+  }
+
+  if (direct?.type === "slot" && draggingPanel && sourceSlotId) {
+    if (direct.slotId === sourceSlotId) {
+      const segmentEl = document.querySelector<HTMLElement>(
+        `[data-drop-slot-id="${sourceSlotId}"]`,
+      );
+      if (segmentEl) {
+        const reorder = resolveStripeReorderFromSegment(
+          segmentEl,
+          x,
+          y,
+          direct.region,
+          sourceSlotId,
+          prevIndex,
+        );
+        if (reorder) return reorder;
+      }
+    }
+    return direct;
+  }
+
+  return direct;
 }
 
 export interface CenterStripeDropSegment {
@@ -314,8 +506,23 @@ export function performToolWindowDrop(
       region: LayoutRegionId,
       insertIndex: number,
     ) => void;
+    reorderPanelInSlot: (
+      panel: ToolWindowPanelId,
+      region: LayoutRegionId,
+      slotId: string,
+      insertIndex: number,
+    ) => void;
   },
 ): void {
+  if (target.type === "stripe-reorder") {
+    actions.reorderPanelInSlot(
+      panelId,
+      target.region,
+      target.slotId,
+      target.insertIndex,
+    );
+    return;
+  }
   if (target.type === "slot") {
     actions.movePanelToSlot(panelId, target.region, target.slotId);
     return;
@@ -325,6 +532,12 @@ export function performToolWindowDrop(
 
 export function getDropTargetElement(target: DragOverTarget): Element | null {
   switch (target.type) {
+    case "stripe-reorder":
+      return (
+        document.querySelector(
+          `[data-drop-stripe-reorder][data-drop-slot-id="${target.slotId}"][data-insert-index="${target.insertIndex}"]`,
+        ) ?? document.querySelector(`[data-drop-slot-id="${target.slotId}"]`)
+      );
     case "slot":
       return (
         document.querySelector(`[data-drop-slot="${target.slotId}"]`) ??
@@ -495,6 +708,13 @@ export function dragTargetsEqual(
   if (a.type !== b.type) return false;
   if (a.type === "slot" && b.type === "slot") {
     return a.region === b.region && a.slotId === b.slotId;
+  }
+  if (a.type === "stripe-reorder" && b.type === "stripe-reorder") {
+    return (
+      a.region === b.region &&
+      a.slotId === b.slotId &&
+      a.insertIndex === b.insertIndex
+    );
   }
   if (a.type === "new-slot" && b.type === "new-slot") {
     return (

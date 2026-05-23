@@ -66,6 +66,7 @@ function CenterStripeBand({ segment, flexGrow }: CenterStripeBandProps) {
               key={panel.id}
               panelId={panel.id}
               region="center"
+              slotId={segment.slotId}
               active={panel.active}
               slotOpen={segment.open}
             />

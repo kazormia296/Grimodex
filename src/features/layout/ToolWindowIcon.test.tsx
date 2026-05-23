@@ -4,7 +4,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ToolWindowIcon } from "./ToolWindowIcon";
 import { useLayoutStore } from "./layoutStore";
-import { buildDefaultLayoutState } from "./layoutStateUtils";
+import { buildDefaultLayoutState, findPanelLocation } from "./layoutStateUtils";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -23,7 +23,19 @@ describe("ToolWindowIcon context menu", () => {
   });
 
   it("removes an active panel from the stripe", async () => {
-    render(<ToolWindowIcon region="left" panelId="scenes" active slotOpen />);
+    const slotId = findPanelLocation(
+      useLayoutStore.getState().layout,
+      "scenes",
+    )!.slot.id;
+    render(
+      <ToolWindowIcon
+        region="left"
+        panelId="scenes"
+        slotId={slotId}
+        active
+        slotOpen
+      />,
+    );
     const user = userEvent.setup();
 
     await user.pointer({
@@ -42,10 +54,15 @@ describe("ToolWindowIcon context menu", () => {
 
   it("shows remove from sidebar even when the panel is inactive", async () => {
     useLayoutStore.getState().togglePanel("scenes");
+    const slotId = findPanelLocation(
+      useLayoutStore.getState().layout,
+      "scenes",
+    )!.slot.id;
     render(
       <ToolWindowIcon
         region="left"
         panelId="scenes"
+        slotId={slotId}
         active={false}
         slotOpen={false}
       />,

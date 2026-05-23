@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ToolWindowIcon } from "./ToolWindowIcon";
 import { useLayoutStore } from "./layoutStore";
-import { buildDefaultLayoutState } from "./layoutStateUtils";
+import { buildDefaultLayoutState, findPanelLocation } from "./layoutStateUtils";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -22,8 +22,18 @@ describe("ToolWindowIcon DnD hit testing", () => {
 
   it("disables pointer events on icons while another panel is dragged", () => {
     useLayoutStore.setState({ draggingPanel: "codex" });
+    const slotId = findPanelLocation(
+      useLayoutStore.getState().layout,
+      "scenes",
+    )!.slot.id;
     render(
-      <ToolWindowIcon region="left" panelId="scenes" active={false} slotOpen />,
+      <ToolWindowIcon
+        region="left"
+        panelId="scenes"
+        slotId={slotId}
+        active={false}
+        slotOpen
+      />,
     );
 
     expect(screen.getByRole("button").className).toContain(

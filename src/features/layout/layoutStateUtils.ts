@@ -919,6 +919,58 @@ export function addPanelToCenterToolSegment(
   return { ...segment, panels, activePanel: panel };
 }
 
+function reorderPanelsArray(
+  panels: ToolWindowPanelId[],
+  panel: ToolWindowPanelId,
+  insertIndex: number,
+): ToolWindowPanelId[] {
+  const currentIndex = panels.indexOf(panel);
+  if (currentIndex < 0) return panels;
+
+  let targetIndex = Math.max(0, Math.min(insertIndex, panels.length));
+  if (currentIndex < targetIndex) {
+    targetIndex -= 1;
+  }
+  if (targetIndex === currentIndex) return panels;
+
+  const next = [...panels];
+  next.splice(currentIndex, 1);
+  next.splice(targetIndex, 0, panel);
+  return next;
+}
+
+export function reorderPanelInSlot(
+  slots: SlotState[],
+  slotId: string,
+  panel: ToolWindowPanelId,
+  insertIndex: number,
+): SlotState[] {
+  return slots.map((slot) =>
+    slot.id === slotId
+      ? {
+          ...slot,
+          panels: reorderPanelsArray(slot.panels, panel, insertIndex),
+        }
+      : slot,
+  );
+}
+
+export function reorderPanelInCenterSegment(
+  segments: CenterSegment[],
+  segmentId: string,
+  panel: ToolWindowPanelId,
+  insertIndex: number,
+): CenterSegment[] {
+  return segments.map((segment) =>
+    segment.id === segmentId && segment.kind === "tool"
+      ? {
+          ...segment,
+          panels: reorderPanelsArray(segment.panels, panel, insertIndex),
+        }
+      : segment,
+  );
+}
+
 export function buildCenterSegmentsWithTools(
   toolPanels: ToolWindowPanelId[],
   activePanels: Partial<Record<ToolWindowPanelId, boolean>>,

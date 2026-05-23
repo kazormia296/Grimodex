@@ -462,6 +462,28 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.`;
 
+const REACT_IDE_WORKSPACE_LAYOUT_LICENSE_TEXT = `MIT License
+
+Copyright (c) 2026-present, leoweyr
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.`;
+
 function gatherReferenceImplementations(): LicenseEntry[] {
   return [
     {
@@ -475,6 +497,16 @@ function gatherReferenceImplementations(): LicenseEntry[] {
       license: "MIT",
       repository: "https://github.com/whiteball/vscode-ai-novelist",
       licenseText: VSCODE_AI_NOVELIST_LICENSE_TEXT,
+    },
+    {
+      // Stripe DnD UX pattern (long-press drag, insert indicator, gap hysteresis) を
+      // src/features/layout/ へ移植。GlobalSideBar / Workspace の挙動を参考に
+      // Grimodex の LayoutState モデル上で独立実装した。
+      name: "react-ide-workspace-layout (DnD UX pattern reference for layout stripe drag)",
+      version: "develop branch",
+      license: "MIT",
+      repository: "https://github.com/leoweyr/react-ide-workspace-layout",
+      licenseText: REACT_IDE_WORKSPACE_LAYOUT_LICENSE_TEXT,
     },
   ];
 }

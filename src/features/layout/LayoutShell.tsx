@@ -23,6 +23,7 @@ import { useCardLayout } from "./cardLayout";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutDnDHighlightOverlay } from "./LayoutDnDHighlightOverlay";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
+import { StripeInsertIndicator } from "./StripeInsertIndicator";
 
 interface LayoutShellProps {
   /** Screenshot mode: hide stripes and show a single panel full-screen */
@@ -144,6 +145,7 @@ export const LayoutShell = memo(function LayoutShell({
   return (
     <>
       <LayoutDnDHighlightOverlay />
+      <StripeInsertIndicator />
       <LayoutPanelDragGhost />
       <div
         data-layout-shell

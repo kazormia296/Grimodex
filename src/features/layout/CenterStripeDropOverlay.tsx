@@ -23,6 +23,7 @@ export function CenterStripeDropOverlay({
   const layout = useLayoutStore((s) => s.layout);
   const movePanelToSlot = useLayoutStore((s) => s.movePanelToSlot);
   const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
+  const reorderPanelInSlot = useLayoutStore((s) => s.reorderPanelInSlot);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
@@ -70,6 +71,7 @@ export function CenterStripeDropOverlay({
     performToolWindowDrop(resolveTarget(e.clientX, e.clientY), panelId, {
       movePanelToSlot,
       movePanelToNewSlot,
+      reorderPanelInSlot,
     });
     setDraggingPanel(null);
     setDragOverTarget(null);
@@ -79,7 +81,7 @@ export function CenterStripeDropOverlay({
     <div
       data-center-stripe-drop-overlay
       data-drop-region="center"
-      className="absolute inset-0 z-40"
+      className="pointer-events-none absolute inset-0 z-40"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}

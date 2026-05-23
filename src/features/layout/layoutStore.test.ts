@@ -268,6 +268,29 @@ describe("useLayoutStore", () => {
     });
   });
 
+  describe("reorderPanelInSlot", () => {
+    it("reorders panels within a multi-panel slot and keeps activePanel", () => {
+      useLayoutStore.getState().showPanel("codex");
+      const layout = useLayoutStore.getState().layout;
+      const slot = layout.regions.left.slots.find((s) =>
+        s.panels.includes("codex"),
+      )!;
+      expect(slot.panels.length).toBeGreaterThan(1);
+      const activeBefore = slot.activePanel;
+
+      useLayoutStore
+        .getState()
+        .reorderPanelInSlot("codex", "left", slot.id, slot.panels.length);
+
+      const after = useLayoutStore
+        .getState()
+        .layout.regions.left.slots.find((s) => s.id === slot.id)!;
+      expect(after.panels.at(-1)).toBe("codex");
+      expect(after.activePanel).toBe(activeBefore);
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
+  });
+
   describe("setRegionSize", () => {
     it("clamps region size", () => {
       useLayoutStore.getState().setRegionSize("left", 50, VIEWPORT);

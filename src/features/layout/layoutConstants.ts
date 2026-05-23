@@ -48,6 +48,12 @@ export const DND_NEW_SLOT_EDGE_HIT_PX = 64;
 /** DnD: slot 間 / stripe divider への新 slot 挿入ヒット領域 (px, 境界からの半幅) */
 export const DND_NEW_SLOT_BETWEEN_HALF_PX = 24;
 
+/** Stripe icon pointer drag: long-press before drag mode (desktop fallback). */
+export const STRIPE_DRAG_LONG_PRESS_MS = 250;
+
+/** Stripe pointer hit-test padding beyond stripe bounds (px). */
+export const STRIPE_DRAG_DETECTION_PAD_PX = 24;
+
 /** ビューポートに対する region content 上限比率 */
 export const MAX_REGION_SIZE_RATIO = 0.5;
 

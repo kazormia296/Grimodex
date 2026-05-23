@@ -34,6 +34,8 @@ import {
   redistributeSpaceOnEditorClose,
   removePanelFromCenterSegment,
   removePanelFromSlot,
+  reorderPanelInCenterSegment,
+  reorderPanelInSlot,
   resetLayoutStateToDefault,
   updateCenter,
   updateCenterToolSegment,
@@ -507,6 +509,7 @@ export interface LayoutStoreState {
   draggingPanel: ToolWindowPanelId | null;
   dragOverTarget: DragOverTarget | null;
   panelDragSource: "html5" | "pointer" | null;
+  panelDragOffset: { x: number; y: number } | null;
   activePresetId: string | null;
   customPresets: CustomLayoutPreset[];
   builtinPresetOverrides: Partial<
@@ -541,6 +544,12 @@ export interface LayoutStoreState {
   movePanelToNewSlot: (
     panel: PanelId,
     region: LayoutRegionId,
+    insertIndex: number,
+  ) => void;
+  reorderPanelInSlot: (
+    panel: PanelId,
+    region: LayoutRegionId,
+    slotId: string,
     insertIndex: number,
   ) => void;
 
@@ -596,6 +605,7 @@ export interface LayoutStoreState {
   setDraggingPanel: (
     panel: ToolWindowPanelId | null,
     source?: "html5" | "pointer" | null,
+    offset?: { x: number; y: number } | null,
   ) => void;
   setDragOverTarget: (target: DragOverTarget | null) => void;
   toggleLayoutLock: () => void;
@@ -620,6 +630,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   draggingPanel: null,
   dragOverTarget: null,
   panelDragSource: null,
+  panelDragOffset: null,
   activePresetId: null,
   customPresets: [],
   builtinPresetOverrides: {},
@@ -1034,6 +1045,42 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     scheduleSave(get);
   },
 
+  reorderPanelInSlot: (panel, region, slotId, insertIndex) => {
+    if (panel === "editor" || get().layoutLocked) return;
+    const toolPanel = panel as ToolWindowPanelId;
+    const vp = getViewport();
+    set((state) => {
+      const location = findPanelLocation(state.layout, toolPanel);
+      if (!location || location.slot.id !== slotId) return state;
+
+      let next = cloneLayoutState(state.layout);
+      if (region === "center") {
+        next = updateCenter(next, (center) => ({
+          ...center,
+          segments: reorderPanelInCenterSegment(
+            center.segments,
+            slotId,
+            toolPanel,
+            insertIndex,
+          ),
+        }));
+      } else {
+        next = updateRegion(next, region, (regionState) => ({
+          ...regionState,
+          slots: reorderPanelInSlot(
+            regionState.slots,
+            slotId,
+            toolPanel,
+            insertIndex,
+          ),
+        }));
+      }
+
+      return { layout: applyValidatedLayout(next, state.layout, vp) };
+    });
+    scheduleSave(get);
+  },
+
   setRegionSize: (region, size, viewport) => {
     if (get().layoutLocked) return;
     get().setRegionSizeLive(region, size, viewport);
@@ -1224,18 +1271,20 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     scheduleSave(get);
   },
 
-  setDraggingPanel: (panel, source) => {
+  setDraggingPanel: (panel, source, offset) => {
     if (panel === null) {
       set({
         draggingPanel: null,
         dragOverTarget: null,
         panelDragSource: null,
+        panelDragOffset: null,
       });
       return;
     }
     set({
       draggingPanel: panel,
       panelDragSource: source ?? get().panelDragSource,
+      panelDragOffset: offset ?? get().panelDragOffset,
     });
   },
 

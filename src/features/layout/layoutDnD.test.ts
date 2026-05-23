@@ -2,12 +2,14 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   TOOL_WINDOW_REASSIGN_TYPE,
+  calculateStripeInsertIndex,
   countOpenSlotsBeforeIndex,
   getDropTargetElement,
   getDropTargetRect,
   getNewSlotPreviewRect,
   dragTargetsEqual,
   acceptsToolWindowReassignDrag,
+  performToolWindowDrop,
   resolveDropTargetFromElement,
 } from "./layoutDnD";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
@@ -326,5 +328,86 @@ describe("layoutDnD", () => {
       dragTargetsEqual(slot, { type: "slot", region: "left", slotId: "l1" }),
     ).toBe(false);
     expect(dragTargetsEqual(null, slot)).toBe(false);
+
+    const reorder = {
+      type: "stripe-reorder" as const,
+      region: "left" as const,
+      slotId: "l0",
+      insertIndex: 1,
+    };
+    expect(dragTargetsEqual(reorder, { ...reorder })).toBe(true);
+    expect(dragTargetsEqual(reorder, { ...reorder, insertIndex: 2 })).toBe(
+      false,
+    );
+  });
+
+  it("resolveDropTargetFromElement finds stripe-reorder zones", () => {
+    document.body.innerHTML = `
+      <div data-stripe-region="left">
+        <div
+          data-drop-stripe-reorder
+          data-drop-region="left"
+          data-drop-slot-id="slot-a"
+          data-insert-index="2"
+        ></div>
+      </div>
+    `;
+
+    expect(
+      resolveDropTargetFromElement(
+        document.querySelector("[data-drop-stripe-reorder]"),
+      ),
+    ).toEqual({
+      type: "stripe-reorder",
+      region: "left",
+      slotId: "slot-a",
+      insertIndex: 2,
+    });
+  });
+
+  it("calculateStripeInsertIndex uses gap hysteresis", () => {
+    document.body.innerHTML = `
+      <div id="segment">
+        <button data-stripe-icon="a"></button>
+        <button data-stripe-icon="b"></button>
+      </div>
+    `;
+    const segment = document.getElementById("segment")!;
+    const buttons = segment.querySelectorAll("[data-stripe-icon]");
+    buttons.forEach((button, index) => {
+      button.getBoundingClientRect = () =>
+        ({
+          top: index * 40,
+          bottom: index * 40 + 28,
+          left: 0,
+          right: 28,
+          width: 28,
+          height: 28,
+          x: 0,
+          y: index * 40,
+        }) as DOMRect;
+    });
+
+    expect(calculateStripeInsertIndex(segment, 34, "vertical", 1)).toBe(1);
+    expect(calculateStripeInsertIndex(segment, 34, "vertical", 0)).toBe(0);
+  });
+
+  it("performToolWindowDrop routes stripe-reorder to reorderPanelInSlot", () => {
+    const calls: string[] = [];
+    performToolWindowDrop(
+      {
+        type: "stripe-reorder",
+        region: "left",
+        slotId: "slot-a",
+        insertIndex: 0,
+      },
+      "chat",
+      {
+        movePanelToSlot: () => calls.push("slot"),
+        movePanelToNewSlot: () => calls.push("new"),
+        reorderPanelInSlot: () => calls.push("reorder"),
+      },
+    );
+    expect(calls).toEqual(["reorder"]);
   });
 });
