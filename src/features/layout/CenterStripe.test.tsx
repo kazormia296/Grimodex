@@ -8,7 +8,7 @@ import {
   buildDefaultLayoutState,
   DEFAULT_EDITOR_SEGMENT_ID,
 } from "./layoutStateUtils";
-import { MIN_EDITOR_SIZE, MIN_SLOT_SIZE, PANEL_GAP_PX } from "./layoutConstants";
+import { MIN_EDITOR_SIZE, MIN_SLOT_SIZE } from "./layoutConstants";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -44,42 +44,6 @@ describe("CenterStripe", () => {
     const stripe = container.querySelector<HTMLElement>("[data-center-stripe]");
     expect(stripe?.className).toContain("grid");
     expect(stripe?.style.gridTemplateColumns).toContain("minmax(0, 1fr)");
-  });
-
-  it("sizes the open-segment divider band to the content Splitter thickness", () => {
-    useLayoutStore.setState({
-      layout: {
-        ...buildDefaultLayoutState({ editorOpen: true }),
-        center: {
-          editorOpen: true,
-          segments: [
-            { id: DEFAULT_EDITOR_SEGMENT_ID, kind: "editor", sizeRatio: 1 },
-            {
-              id: "ct0",
-              kind: "tool",
-              sizeRatio: 1,
-              panels: ["kouetsu"],
-              activePanel: "kouetsu",
-            },
-            {
-              id: "ct1",
-              kind: "tool",
-              sizeRatio: 1,
-              panels: ["codex"],
-              activePanel: "codex",
-            },
-          ],
-        },
-      },
-      hiddenStripePanels: new Set(),
-    });
-
-    const { container } = render(<CenterStripe />);
-    const divider = container.querySelector<HTMLElement>(
-      "[data-stripe-divider]",
-    );
-    const band = divider?.parentElement as HTMLElement;
-    expect(band.style.width).toBe(`${PANEL_GAP_PX}px`);
   });
 
   it("distributes flex-grow among open segments including editor", () => {
@@ -152,13 +116,14 @@ describe("CenterStripe", () => {
       container.querySelector('[data-stripe-icon="codex"]'),
     ).not.toBeNull();
 
-    // 先頭 collapsed クラスタは 0 幅 overlay（open バンド配分を content と一致）
+    // 先頭 collapsed クラスタは in-flow（0 幅 absolute オーバーレイにしない）
     const cluster = container.querySelector<HTMLElement>(
       "[data-stripe-collapsed-cluster]",
     );
     expect(cluster).not.toBeNull();
-    expect(cluster?.style.flexBasis).toBe("0px");
-    expect(cluster?.querySelector(".absolute")).not.toBeNull();
+    expect(cluster?.className).not.toContain("absolute");
+    expect(cluster?.querySelector(".absolute")).toBeNull();
+    expect(cluster?.style.flexBasis).not.toBe("0px");
 
     // DOM 順は collapsed tool → editor（後続バンドに隠れない）
     const icons = [

@@ -142,10 +142,10 @@ describe("RegionStripe", () => {
       ).not.toBeNull();
 
       const leadingCluster = container.querySelector<HTMLElement>(
-        "[data-stripe-collapsed-cluster]",
+        "[data-stripe-collapsed-cluster-leading]",
       );
       expect(leadingCluster).not.toBeNull();
-      expect(leadingCluster?.querySelector(".absolute")).not.toBeNull();
+      expect(leadingCluster?.querySelector(".absolute")).toBeNull();
 
       const icons = [
         ...container.querySelectorAll<HTMLElement>("[data-stripe-icon]"),

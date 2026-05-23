@@ -8,23 +8,17 @@ import { useLayoutStore } from "./layoutStore";
 import {
   DND_NEW_SLOT_BETWEEN_HALF_PX,
   DND_NEW_SLOT_EDGE_HIT_PX,
-  slotSplitterPx,
+  PANEL_GAP_PX,
 } from "./layoutConstants";
-import { useCardLayout } from "./cardLayout";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
 import { AnimatedSlotPanel } from "./AnimatedSlotPanel";
 import { normalizeFlexGrow } from "./layoutStateUtils";
-import { stripeTrackInsetStyle } from "./layoutStripeAlignment";
 import type { RegionId } from "./layoutTypes";
 
 interface RegionContentProps {
   region: RegionId;
   orientation: "vertical" | "horizontal";
-  /** stripe reserveStartPx と同じ inset（flex トラックを stripe と揃える） */
-  trackInsetStartPx?: number;
-  /** stripe reserveEndPx と同じ inset */
-  trackInsetEndPx?: number;
 }
 
 function regionHasOpenSlots(slots: { activePanel: string | null }[]): boolean {
@@ -47,8 +41,6 @@ function insertIndexAfterSlot(slots: { id: string }[], slotId: string): number {
 export const RegionContent = memo(function RegionContent({
   region,
   orientation,
-  trackInsetStartPx = 0,
-  trackInsetEndPx = 0,
 }: RegionContentProps) {
   const slots = useLayoutStore((s) => s.layout.regions[region].slots);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
@@ -65,8 +57,6 @@ export const RegionContent = memo(function RegionContent({
   const showDropZones = useDragDropZonesReady(
     Boolean(draggingPanel && !layoutLocked),
   );
-  const cardLayout = useCardLayout();
-  const slotSplitterThickness = slotSplitterPx(cardLayout);
 
   const openSlots = slots.filter((s) => s.activePanel !== null);
   const slotFlexGrow = normalizeFlexGrow(openSlots.map((s) => s.sizeRatio));
@@ -184,17 +174,10 @@ export const RegionContent = memo(function RegionContent({
 
   if (!regionHasOpenSlots(slots)) return null;
 
-  const trackInsetStyle = stripeTrackInsetStyle({
-    orientation,
-    insetStartPx: trackInsetStartPx,
-    insetEndPx: trackInsetEndPx,
-  });
-
   return (
     <div
       ref={containerRef}
       data-region-content={region}
-      style={trackInsetStyle}
       className={cn(
         // overflow visible: each slot's card draws its shadow into the gap.
         "relative flex h-full min-h-0 w-full min-w-0",
@@ -223,7 +206,7 @@ export const RegionContent = memo(function RegionContent({
               <div className="relative shrink-0">
                 <Splitter
                   orientation={orientation}
-                  thickness={slotSplitterThickness}
+                  thickness={PANEL_GAP_PX}
                   disabled={layoutLocked}
                   onDrag={(delta) => {
                     const prevSlot = openSlots[index - 1];

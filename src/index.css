@@ -492,13 +492,6 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   box-shadow: var(--gx-panel-shadow);
 }
 
-/* stripe / rail は gap 列で分離されており、border が flex トラックを
-   食うと slot 境界とアイコン分割位置がずれる。shadow のみ残す。 */
-.app-shell[data-card="true"] [data-stripe-root],
-.app-shell[data-card="true"] [data-center-stripe] {
-  border: none;
-}
-
 /* `--flat` variant: a card with a uniform fill instead of the dome
    gradient. Used by the editor, whose chrome (breadcrumb / tab bar /
    toolbar) mixes transparent and opaque `bg-background` bands — a
