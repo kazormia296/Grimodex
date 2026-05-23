@@ -1,13 +1,16 @@
 import { memo, useEffect, useMemo, useRef } from "react";
+import { motion } from "motion/react";
 import type { PanelId } from "./panelIds";
 import {
   BottomCornerToggle,
   BOTTOM_CORNER_TOGGLE_CLEARANCE_PX,
 } from "./BottomCornerToggle";
+import { AnimatedRegionChrome } from "./AnimatedRegionChrome";
 import { CenterContent } from "./CenterContent";
 import { CenterStripe } from "./CenterStripe";
 import { EditorArea } from "./EditorArea";
 import { getBottomCorners, isCenterContentVisible } from "./layoutStateUtils";
+import { presetCrossfadeTransition } from "./layoutAnimation";
 import { RegionDock, SideRegionStripeColumn } from "./RegionDock";
 import { RegionContent } from "./RegionContent";
 import { RegionResizeSplitter } from "./RegionResizeSplitter";
@@ -24,6 +27,7 @@ import { useRegionSegments } from "./useRegionSegments";
 import { LayoutDnDHighlightOverlay } from "./LayoutDnDHighlightOverlay";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
+import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
 
 interface LayoutShellProps {
   /** Screenshot mode: hide stripes and show a single panel full-screen */
@@ -49,6 +53,7 @@ export const LayoutShell = memo(function LayoutShell({
 }: LayoutShellProps) {
   const segments = useRegionSegments();
   const layout = useLayoutStore((s) => s.layout);
+  const { crossfadeKey, animateEntry, reduced } = useLayoutPresetCrossfade();
 
   const leftOpen = regionIsOpen(layout.regions.left.slots);
   const rightOpen = regionIsOpen(layout.regions.right.slots);
@@ -147,9 +152,13 @@ export const LayoutShell = memo(function LayoutShell({
       <LayoutDnDHighlightOverlay />
       <StripeInsertIndicator />
       <LayoutPanelDragGhost />
-      <div
+      <motion.div
+        key={crossfadeKey}
         data-layout-shell
         className="relative grid h-full w-full overflow-hidden"
+        initial={animateEntry && !reduced ? { opacity: 0 } : false}
+        animate={{ opacity: 1 }}
+        transition={presetCrossfadeTransition(reduced)}
         style={{
           gridTemplateColumns,
           gridTemplateRows,
@@ -176,9 +185,18 @@ export const LayoutShell = memo(function LayoutShell({
           </div>
         )}
 
-        {leftOpen && (
-          <div style={{ gridArea: "lcontent" }} className="min-h-0 min-w-0">
-            <RegionContent region="left" orientation="vertical" />
+        {hasLeft && (
+          <div
+            style={{ gridArea: "lcontent" }}
+            className="min-h-0 min-w-0"
+          >
+            <AnimatedRegionChrome
+              region="left"
+              open={leftOpen}
+              className="h-full w-full min-h-0 min-w-0"
+            >
+              <RegionContent region="left" orientation="vertical" />
+            </AnimatedRegionChrome>
           </div>
         )}
 
@@ -206,9 +224,18 @@ export const LayoutShell = memo(function LayoutShell({
           </div>
         )}
 
-        {rightOpen && (
-          <div style={{ gridArea: "rcontent" }} className="min-h-0 min-w-0">
-            <RegionContent region="right" orientation="vertical" />
+        {hasRight && (
+          <div
+            style={{ gridArea: "rcontent" }}
+            className="min-h-0 min-w-0"
+          >
+            <AnimatedRegionChrome
+              region="right"
+              open={rightOpen}
+              className="h-full w-full min-h-0 min-w-0"
+            >
+              <RegionContent region="right" orientation="vertical" />
+            </AnimatedRegionChrome>
           </div>
         )}
 
@@ -265,7 +292,7 @@ export const LayoutShell = memo(function LayoutShell({
             あるときだけ、その角の取り合いが意味を持つ。 */}
         {hasBottom && hasLeft && <BottomCornerToggle side="left" />}
         {hasBottom && hasRight && <BottomCornerToggle side="right" />}
-      </div>
+      </motion.div>
     </>
   );
 });

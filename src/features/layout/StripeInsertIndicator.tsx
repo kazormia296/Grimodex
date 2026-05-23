@@ -1,5 +1,6 @@
 import { useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { CSS_DURATIONS } from "@/lib/animation";
 import type { DragOverTarget } from "./layoutDnD";
 import { useLayoutStore } from "./layoutStore";
 
@@ -131,7 +132,7 @@ export function StripeInsertIndicator() {
         top: line.top,
         width: line.width,
         height: line.height,
-        transition: "left 80ms ease, top 80ms ease",
+        transition: `left ${CSS_DURATIONS.fast} ease, top ${CSS_DURATIONS.fast} ease`,
       }}
     />,
     document.body,

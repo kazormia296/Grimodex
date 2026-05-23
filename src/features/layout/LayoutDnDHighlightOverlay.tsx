@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
+import { CSS_DURATIONS } from "@/lib/animation";
 import { getDropTargetRect, type DropTargetRect } from "./layoutDnD";
 import { useLayoutStore } from "./layoutStore";
 import { isReducedMotion } from "@/lib/gsap";
@@ -92,8 +93,7 @@ export function LayoutDnDHighlightOverlay() {
         height: rect.height,
         pointerEvents: "none",
         zIndex: 9998,
-        transition:
-          "left 120ms ease, top 120ms ease, width 120ms ease, height 120ms ease",
+        transition: `left ${CSS_DURATIONS.fast} ease, top ${CSS_DURATIONS.fast} ease, width ${CSS_DURATIONS.fast} ease, height ${CSS_DURATIONS.fast} ease`,
       }}
     >
       <div

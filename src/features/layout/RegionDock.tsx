@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { STRIPE_SIZE } from "./layoutConstants";
+import { AnimatedRegionChrome } from "./AnimatedRegionChrome";
 import { RegionStripe } from "./RegionStripe";
 import { RegionContent } from "./RegionContent";
 import { useLayoutStore } from "./layoutStore";
@@ -64,8 +65,6 @@ function BottomRegionDock({
   );
   const cardLayout = useCardLayout();
 
-  const contentSize = hasOpen ? regionSize : 0;
-
   return (
     <div
       data-region-dock="bottom"
@@ -74,14 +73,14 @@ function BottomRegionDock({
       // 値をドック高さに加算しているので overflow しない。
       style={{ gap: cardLayout ? "var(--gx-stripe-gap)" : undefined }}
     >
-      {contentSize > 0 && (
-        <div
-          style={{ height: contentSize, flexShrink: 0 }}
-          className="flex min-h-0 w-full min-w-0 flex-col"
-        >
-          <RegionContent region="bottom" orientation={contentOrientation} />
-        </div>
-      )}
+      <AnimatedRegionChrome
+        region="bottom"
+        open={hasOpen}
+        style={{ height: regionSize, flexShrink: 0 }}
+        className="flex min-h-0 w-full min-w-0 flex-col"
+      >
+        <RegionContent region="bottom" orientation={contentOrientation} />
+      </AnimatedRegionChrome>
 
       <div
         style={{ height: STRIPE_SIZE, flexShrink: 0 }}
