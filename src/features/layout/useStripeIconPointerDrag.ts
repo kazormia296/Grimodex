@@ -7,7 +7,6 @@ import {
   type CenterStripeDropSegment,
 } from "./layoutDnD";
 import {
-  STRIPE_DRAG_LONG_PRESS_MS,
   STRIPE_ICON_GAP_PX,
   STRIPE_SWAP_AXIS_LOCK_PX,
 } from "./layoutConstants";
@@ -29,8 +28,7 @@ import type { LayoutRegionId, ToolWindowPanelId } from "./layoutTypes";
 
 /**
  * Pointer drag for stripe tool window icons.
- * Pattern reference: leoweyr/react-ide-workspace-layout GlobalSideBar long-press drag
- * https://github.com/leoweyr/react-ide-workspace-layout
+ * Drag starts after PANEL_POINTER_DRAG_THRESHOLD_PX movement; short click toggles panel.
  * Axis-lock swap mirrors src/features/grid/gridDndUtils.ts + GridPanel.tsx.
  */
 
@@ -123,17 +121,11 @@ export function useStripeIconPointerDrag({
     offsetX: number;
     offsetY: number;
     dragging: boolean;
-    longPressFired: boolean;
     element: HTMLElement;
-    longPressTimer: ReturnType<typeof setTimeout> | null;
     axisLock: AxisLockSession | null;
   } | null>(null);
 
   const clearSession = useCallback(() => {
-    const session = sessionRef.current;
-    if (session?.longPressTimer) {
-      clearTimeout(session.longPressTimer);
-    }
     sessionRef.current = null;
   }, []);
 
@@ -208,7 +200,6 @@ export function useStripeIconPointerDrag({
       const session = sessionRef.current;
       if (!session || session.dragging) return;
       session.dragging = true;
-      session.longPressFired = true;
       session.axisLock = initAxisLockSession(session.startX, session.startY);
       if (session.axisLock) {
         setStripeSwapPreview({
@@ -233,10 +224,6 @@ export function useStripeIconPointerDrag({
       const offsetX = e.clientX - rect.left;
       const offsetY = e.clientY - rect.top;
 
-      const longPressTimer = setTimeout(() => {
-        startDragSession(offsetX, offsetY);
-      }, STRIPE_DRAG_LONG_PRESS_MS);
-
       sessionRef.current = {
         pointerId,
         startX,
@@ -244,9 +231,7 @@ export function useStripeIconPointerDrag({
         offsetX,
         offsetY,
         dragging: false,
-        longPressFired: false,
         element: e.currentTarget,
-        longPressTimer,
         axisLock: null,
       };
 
@@ -263,10 +248,6 @@ export function useStripeIconPointerDrag({
             dx * dx + dy * dy >=
             PANEL_POINTER_DRAG_THRESHOLD_PX * PANEL_POINTER_DRAG_THRESHOLD_PX
           ) {
-            if (session.longPressTimer) {
-              clearTimeout(session.longPressTimer);
-              session.longPressTimer = null;
-            }
             startDragSession(session.offsetX, session.offsetY);
           } else {
             return;
@@ -288,10 +269,6 @@ export function useStripeIconPointerDrag({
         document.removeEventListener("pointermove", onMove);
         document.removeEventListener("pointerup", onUp);
         document.removeEventListener("pointercancel", onUp);
-
-        if (session.longPressTimer) {
-          clearTimeout(session.longPressTimer);
-        }
 
         if (session.element.hasPointerCapture?.(pointerId)) {
           session.element.releasePointerCapture(pointerId);

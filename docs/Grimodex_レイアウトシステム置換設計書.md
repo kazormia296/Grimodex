@@ -362,7 +362,7 @@ Dockview overlay に依存せず自作。`layoutLocked` 時は全 DnD 無効。
 stripe アイコンは **pointer 統一**（`useStripeIconPointerDrag`）。`ToolWindowIcon` の
 `onPointerDown` で session を開始する。
 
-- **250ms 長押し** OR **6px 移動**（`PANEL_POINTER_DRAG_THRESHOLD_PX`）のどちらか先で
+- **6px 移動**（`PANEL_POINTER_DRAG_THRESHOLD_PX`）で
   drag session 開始 → `setDraggingPanel(panel, "pointer", offset)`
 - session 開始後に **6px 未満の移動で pointerup** → `togglePanel`（誤 drop 防止）
 - **6px 以上移動して drop** → `performToolWindowDrop`
@@ -545,7 +545,7 @@ big-bang 置換。**完全リセット方式**を採用する（best-effort 移�
 - `LayoutShell` / `RegionDock` / `RegionContent` / `SlotView` / `Splitter` / `EditorArea`
 - `splitter/SplitterHandle` / `splitter/SplitterChrome` — Splitter style/functional 分離
 - 自作 DnD + drop highlight + `StripeInsertIndicator` + `LayoutPanelDragGhost`
-- `useStripeIconPointerDrag` — stripe pointer drag（250ms 長押し / 6px threshold）
+- `useStripeIconPointerDrag` — stripe pointer drag（6px threshold、短クリックで toggle）
 - `reorderPanelInSlot` / `reorderPanelInCenterSegment`（`layoutStateUtils` pure）
 - `layoutStore` v2
 - `layoutValidation` v2（上記 utils）
