@@ -738,6 +738,15 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         activeSceneId: nodeType === "scene" ? newNode.id : state.activeSceneId,
         expandedIds,
         pendingRenameId: newNode.id,
+        // Folders don't open a tab, so trigger reveal explicitly to scroll
+        // the new folder into view. Scenes/notes scroll via the activeSceneId
+        // path (notes through tab open → setActiveScene), so leave those.
+        // Gate on autoRevealActiveScene to keep parity with scene/note —
+        // turning the setting off should suppress folder auto-scroll too.
+        pendingRevealId:
+          nodeType === "folder" && state.autoRevealActiveScene
+            ? newNode.id
+            : state.pendingRevealId,
       };
     });
     usePhaseStore.getState().recomputeSceneOrder(get().nodes);
