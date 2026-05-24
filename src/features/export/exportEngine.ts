@@ -9,6 +9,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import type { ExportSettings, RubyStyle, EmphasisDotsStyle } from "./types";
 import { defaultRubyStyle, defaultEmphasisDotsStyle } from "./types";
+import { renderRubyText } from "./rubyFormats";
 
 // ────────────────────────────────────────────────────────────────────
 // ProseMirror JSON 型
@@ -348,16 +349,7 @@ function renderRuby(
   annotation: string,
   style: RubyStyle,
 ): string {
-  switch (style) {
-    case "html":
-      return `<ruby>${base}<rp>(</rp><rt>${annotation}</rt><rp>)</rp></ruby>`;
-    case "parentheses":
-      return `${base}(${annotation})`;
-    case "aozora":
-      return `｜${base}《${annotation}》`;
-    case "base":
-      return base;
-  }
+  return renderRubyText(base, annotation, style);
 }
 
 function renderEmphasisDots(text: string, style: EmphasisDotsStyle): string {

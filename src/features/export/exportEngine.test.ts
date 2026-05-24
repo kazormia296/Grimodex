@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { generateExport } from "./exportEngine";
+import { renderRubyText } from "./rubyFormats";
 import type { TreeNodeData } from "@/features/tree/treeStore";
-import type { ExportSettings } from "./types";
-import { DEFAULT_EXPORT_SETTINGS } from "./types";
+import type { ExportSettings, RubyStyle } from "./types";
+import { DEFAULT_EXPORT_SETTINGS, defaultRubyStyle } from "./types";
 
 // ────────────────────────────────────────────────────────────────────
 // ヘルパー
@@ -537,68 +538,85 @@ describe("generateExport - scene titles", () => {
 // ────────────────────────────────────────────────────────────────────
 
 describe("generateExport - ruby styles", () => {
-  function rubyDoc(): string {
+  const BASE = "漢字";
+  const ANNO = "かんじ";
+
+  function rubyDoc(base = BASE, annotation = ANNO): string {
     return JSON.stringify({
       type: "doc",
       content: [
         {
           type: "paragraph",
-          content: [
-            { type: "ruby", attrs: { base: "漢字", annotation: "かんじ" } },
-          ],
+          content: [{ type: "ruby", attrs: { base, annotation } }],
         },
       ],
     });
   }
 
-  it("html: <ruby> タグ", () => {
+  function exportWithRubyStyle(rubyStyle: RubyStyle, doc = rubyDoc()): string {
     const s1 = makeScene("s1", "S");
-    const result = generateExport({
+    return generateExport({
       nodes: [s1],
-      contentMap: { s1: rubyDoc() },
+      contentMap: { s1: doc },
       checkedIds: new Set(["s1"]),
-      settings: settings({ format: "plaintext", rubyStyle: "html" }),
+      settings: settings({ format: "plaintext", rubyStyle }),
     });
-    expect(result).toContain(
-      "<ruby>漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>",
+  }
+
+  const ALL_RUBY_STYLES: RubyStyle[] = [
+    "html",
+    "parentheses",
+    "aozora",
+    "aozora-auto",
+    "narou-parens",
+    "hash-underscore",
+    "rb-bracket",
+    "mediawiki",
+    "wikiwiki",
+    "denden",
+    "denden-chars",
+    "renpy",
+    "game-engine",
+    "base",
+  ];
+
+  it.each(ALL_RUBY_STYLES)(
+    "rubyStyle %s: export pipeline outputs expected notation",
+    (rubyStyle) => {
+      const result = exportWithRubyStyle(rubyStyle);
+      expect(result).toContain(renderRubyText(BASE, ANNO, rubyStyle));
+    },
+  );
+
+  it("base: annotation text is omitted", () => {
+    const result = exportWithRubyStyle("base");
+    expect(result).toContain(BASE);
+    expect(result).not.toContain(ANNO);
+  });
+
+  it("aozora-auto: no fullwidth pipe prefix", () => {
+    const result = exportWithRubyStyle("aozora-auto");
+    expect(result).toContain("漢字《かんじ》");
+    expect(result).not.toContain("｜漢字");
+  });
+
+  it("denden-chars: per-character when base and annotation lengths match", () => {
+    const result = exportWithRubyStyle(
+      "denden-chars",
+      rubyDoc("対象", "ルビ"),
     );
+    expect(result).toContain("{対象|ル|ビ}");
   });
 
-  it("parentheses: 括弧表記", () => {
-    const s1 = makeScene("s1", "S");
-    const result = generateExport({
-      nodes: [s1],
-      contentMap: { s1: rubyDoc() },
-      checkedIds: new Set(["s1"]),
-      settings: settings({ format: "plaintext", rubyStyle: "parentheses" }),
-    });
-    expect(result).toContain("漢字(かんじ)");
+  it("game-engine: per-character when base and annotation lengths match", () => {
+    const result = exportWithRubyStyle(
+      "game-engine",
+      rubyDoc("対象", "ルビ"),
+    );
+    expect(result).toContain("[ruby text=ル]対[ruby text=ビ]象");
   });
 
-  it("aozora: 青空文庫形式", () => {
-    const s1 = makeScene("s1", "S");
-    const result = generateExport({
-      nodes: [s1],
-      contentMap: { s1: rubyDoc() },
-      checkedIds: new Set(["s1"]),
-      settings: settings({ format: "plaintext", rubyStyle: "aozora" }),
-    });
-    expect(result).toContain("｜漢字《かんじ》");
-  });
-
-  it("base: ルビなし（ベースのみ）", () => {
-    const s1 = makeScene("s1", "S");
-    const result = generateExport({
-      nodes: [s1],
-      contentMap: { s1: rubyDoc() },
-      checkedIds: new Set(["s1"]),
-      settings: settings({ format: "plaintext", rubyStyle: "base" }),
-    });
-    expect(result).toContain("漢字");
-    expect(result).not.toContain("かんじ");
-  });
-
-  it("null (plaintext): 括弧表記をデフォルト選択", () => {
+  it("null (plaintext): defaults to parentheses", () => {
     const s1 = makeScene("s1", "S");
     const result = generateExport({
       nodes: [s1],
@@ -606,10 +624,12 @@ describe("generateExport - ruby styles", () => {
       checkedIds: new Set(["s1"]),
       settings: settings({ format: "plaintext", rubyStyle: null }),
     });
-    expect(result).toContain("漢字(かんじ)");
+    expect(result).toContain(
+      renderRubyText(BASE, ANNO, defaultRubyStyle("plaintext")),
+    );
   });
 
-  it("null (html): html タグをデフォルト選択", () => {
+  it("null (html): defaults to html ruby tag", () => {
     const s1 = makeScene("s1", "S");
     const result = generateExport({
       nodes: [s1],
@@ -617,7 +637,22 @@ describe("generateExport - ruby styles", () => {
       checkedIds: new Set(["s1"]),
       settings: settings({ format: "html", rubyStyle: null }),
     });
-    expect(result).toContain("<ruby>漢字");
+    expect(result).toContain(
+      renderRubyText(BASE, ANNO, defaultRubyStyle("html")),
+    );
+  });
+
+  it("null (markdown): defaults to html ruby tag", () => {
+    const s1 = makeScene("s1", "S");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: rubyDoc() },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "markdown", rubyStyle: null }),
+    });
+    expect(result).toContain(
+      renderRubyText(BASE, ANNO, defaultRubyStyle("markdown")),
+    );
   });
 });
 
