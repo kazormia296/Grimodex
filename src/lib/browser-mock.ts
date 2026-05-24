@@ -51,6 +51,9 @@ const SCHEMA_DDL = `
     char_count INTEGER NOT NULL DEFAULT 0,
     unplaced_beat_preview TEXT,
     placed_beat_preview TEXT,
+    source_uri TEXT,
+    source_mtime TEXT,
+    archived_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );

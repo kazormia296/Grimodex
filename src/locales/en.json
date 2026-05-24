@@ -967,6 +967,7 @@
       "openInEditor": "Open in Editor",
       "moreBeats": "+{{n}} more",
       "collapseBeats": "Collapse",
+      "dragHandle": "Drag to move",
       "menu": {
         "rename": "Rename",
         "addBeat": "+ Add Beat…",
