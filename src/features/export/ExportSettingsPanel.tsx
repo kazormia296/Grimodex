@@ -274,6 +274,28 @@ export function ExportSettingsPanel({
               { value: "html", label: t("export.settings.htmlRuby") },
               { value: "parentheses", label: t("export.settings.parentheses") },
               { value: "aozora", label: t("export.settings.aozora") },
+              { value: "aozora-auto", label: t("export.settings.aozoraAuto") },
+              {
+                value: "narou-parens",
+                label: t("export.settings.narouParens"),
+              },
+              {
+                value: "hash-underscore",
+                label: t("export.settings.hashUnderscore"),
+              },
+              { value: "rb-bracket", label: t("export.settings.rbBracket") },
+              { value: "mediawiki", label: t("export.settings.mediawiki") },
+              { value: "wikiwiki", label: t("export.settings.wikiwiki") },
+              { value: "denden", label: t("export.settings.denden") },
+              {
+                value: "denden-chars",
+                label: t("export.settings.dendenChars"),
+              },
+              { value: "renpy", label: t("export.settings.renpy") },
+              {
+                value: "game-engine",
+                label: t("export.settings.gameEngine"),
+              },
               { value: "base", label: t("export.settings.baseOnly") },
             ]}
           />

@@ -18,7 +18,21 @@ export type SceneDivider =
 export type SceneTitleStyle = "none" | "heading" | "bold" | "plain";
 
 /** ルビ出力スタイル */
-export type RubyStyle = "html" | "parentheses" | "aozora" | "base";
+export type RubyStyle =
+  | "html"
+  | "parentheses"
+  | "aozora"
+  | "aozora-auto"
+  | "narou-parens"
+  | "hash-underscore"
+  | "rb-bracket"
+  | "mediawiki"
+  | "wikiwiki"
+  | "denden"
+  | "denden-chars"
+  | "renpy"
+  | "game-engine"
+  | "base";
 
 /** 傍点出力スタイル */
 export type EmphasisDotsStyle = "html" | "aozora" | "double-angle" | "plain";

@@ -1,4 +1,5 @@
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { renderRubyText } from "@/features/export/rubyFormats";
 
 /**
  * Export ruby nodes as HTML string.
@@ -9,7 +10,7 @@ export function rubyToHtml(node: ProseMirrorNode): string {
     base: string;
     annotation: string;
   };
-  return `<ruby>${base}<rp>(</rp><rt>${annotation}</rt><rp>)</rp></ruby>`;
+  return renderRubyText(base, annotation, "html");
 }
 
 /**
@@ -21,7 +22,7 @@ export function rubyToPlainText(node: ProseMirrorNode): string {
     base: string;
     annotation: string;
   };
-  return `${base}(${annotation})`;
+  return renderRubyText(base, annotation, "parentheses");
 }
 
 /**
