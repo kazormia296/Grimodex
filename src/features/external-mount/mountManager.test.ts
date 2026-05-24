@@ -8,12 +8,23 @@ const {
   mockSaveSceneContent,
   mockLoadTree,
   mockSetCharCount,
+  mockUpsertSceneBodyMentions,
+  mockCodexState,
+  mockChatState,
 } = vi.hoisted(() => ({
   mockUpdateNode: vi.fn().mockResolvedValue(undefined),
   mockListAllNodes: vi.fn(),
   mockSaveSceneContent: vi.fn().mockResolvedValue({ placedBeatPreview: null }),
   mockLoadTree: vi.fn().mockResolvedValue(undefined),
   mockSetCharCount: vi.fn(),
+  mockUpsertSceneBodyMentions: vi.fn().mockResolvedValue(undefined),
+  mockCodexState: {
+    entries: [] as Array<{ id: string; name: string; type: string }>,
+  },
+  mockChatState: {
+    activeSceneId: "",
+    refreshContextLayers: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 vi.mock("@/features/tree/api", async (importOriginal) => {
@@ -47,6 +58,22 @@ vi.mock("@/features/editor/tabStore", () => ({
   useTabStore: {
     getState: () => ({ tabs: [], dirtyTabIds: new Set<string>() }),
   },
+}));
+
+vi.mock("@/features/codex/codexStore", () => ({
+  useCodexStore: {
+    getState: () => mockCodexState,
+  },
+}));
+
+vi.mock("@/features/chat/chatStore", () => ({
+  useChatStore: {
+    getState: () => mockChatState,
+  },
+}));
+
+vi.mock("@/features/editor/beat/bodyMentionApi", () => ({
+  upsertSceneBodyMentions: mockUpsertSceneBodyMentions,
 }));
 
 import { contentHash } from "./contentHash";
@@ -205,6 +232,76 @@ describe("applyExternalContent", () => {
     expect(
       useExternalRootStore.getState().isMuted("root-1", "chapter/01.md"),
     ).toBe(false);
+  });
+});
+
+describe("applyExternalContent — Codex body mention + chat refresh", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useExternalRootStore.setState({ mutedWrites: [], conflicts: [] });
+    mockCodexState.entries = [];
+    mockChatState.activeSceneId = "";
+  });
+
+  it("calls upsertSceneBodyMentions when codex entries exist", async () => {
+    mockCodexState.entries = [{ id: "e1", name: "太郎", type: "character" }];
+
+    await applyExternalContent(
+      "scene-1",
+      "root-1",
+      "chapter/01.md",
+      "External text mentions 太郎.",
+      "2026-05-24T12:00:00.000Z",
+    );
+
+    expect(mockUpsertSceneBodyMentions).toHaveBeenCalledTimes(1);
+    expect(mockUpsertSceneBodyMentions).toHaveBeenCalledWith(
+      "scene-1",
+      expect.any(String),
+      mockCodexState.entries,
+    );
+  });
+
+  it("skips upsertSceneBodyMentions when codex entries are empty", async () => {
+    mockCodexState.entries = [];
+
+    await applyExternalContent(
+      "scene-1",
+      "root-1",
+      "chapter/01.md",
+      "External text.",
+      "2026-05-24T12:00:00.000Z",
+    );
+
+    expect(mockUpsertSceneBodyMentions).not.toHaveBeenCalled();
+  });
+
+  it("calls refreshContextLayers when the synced scene is active in chat", async () => {
+    mockChatState.activeSceneId = "scene-1";
+
+    await applyExternalContent(
+      "scene-1",
+      "root-1",
+      "chapter/01.md",
+      "External text.",
+      "2026-05-24T12:00:00.000Z",
+    );
+
+    expect(mockChatState.refreshContextLayers).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips refreshContextLayers when a different scene is active", async () => {
+    mockChatState.activeSceneId = "scene-other";
+
+    await applyExternalContent(
+      "scene-1",
+      "root-1",
+      "chapter/01.md",
+      "External text.",
+      "2026-05-24T12:00:00.000Z",
+    );
+
+    expect(mockChatState.refreshContextLayers).not.toHaveBeenCalled();
   });
 });
 
