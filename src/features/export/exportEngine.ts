@@ -77,7 +77,7 @@ function renderFolderHeading(
   depth: number,
   settings: ExportSettings,
 ): string {
-  const { format, folderHeadingStyle } = settings;
+  const { format, folderHeadingStyle, folderHeadingFormat } = settings;
 
   if (format === "markdown") {
     const hashes = "#".repeat(depth + 1);
@@ -90,6 +90,12 @@ function renderFolderHeading(
   }
 
   // plaintext
+  if (folderHeadingFormat === "pixiv-chapter") {
+    // pixiv 小説の章タグ。深さに関係なく [chapter:タイトル]。
+    // pixivChapterNewpage が true なら章前に改ページマーカーを差し込む。
+    const prefix = settings.pixivChapterNewpage ? "[newpage]\n" : "";
+    return `${prefix}[chapter:${title}]`;
+  }
   if (folderHeadingStyle === "squares") {
     const symbol =
       depth === 0 ? "■" : depth === 1 ? "□" : depth === 2 ? "◇" : "・";
@@ -362,6 +368,14 @@ function renderEmphasisDots(text: string, style: EmphasisDotsStyle): string {
       return `《《${text}》》`;
     case "plain":
       return text;
+    case "narou-emphasis-batch": {
+      // |語《・・》 — 中黒は語のコードポイント長と一致させる
+      const chars = [...text];
+      return `|${text}《${"・".repeat(chars.length)}》`;
+    }
+    case "narou-emphasis-per-char":
+      // |字《・》|字《・》 — 1文字ずつ分割
+      return [...text].map((c) => `|${c}《・》`).join("");
   }
 }
 
@@ -413,6 +427,7 @@ export function renderPmDocToArchiveMarkdown(
       format: "markdown",
       folderHeading: false,
       folderHeadingStyle: "numbers",
+      folderHeadingFormat: "standard",
       sceneTitle: "none",
       sceneDivider: "none",
       sceneBreakStyle: "hr",
@@ -421,6 +436,9 @@ export function renderPmDocToArchiveMarkdown(
       rubyStyle,
       emphasisDotsStyle,
       includeTrashBin: false,
+      pixivChapterNewpage: false,
+      narouEmphasisMode: "batch",
+      exportPresetId: "custom",
     },
     resolvedRuby: rubyStyle,
     resolvedEmphasis: emphasisDotsStyle,

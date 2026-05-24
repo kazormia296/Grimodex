@@ -2296,7 +2296,57 @@
       "breakPlaceholder": "Enter break text",
       "preview": "Preview",
       "previewError": "(Preview generation error)",
-      "noScenesSelected": "(No scenes selected)"
+      "noScenesSelected": "(No scenes selected)",
+      "narouEmphasisBatch": "Narou emphasis (|word《・・》)",
+      "narouEmphasisPerChar": "Narou emphasis (per char)",
+      "preset": {
+        "label": "Preset",
+        "section": "Publishing site preset",
+        "custom": "Custom",
+        "narou": "Shōsetsuka ni Narō",
+        "kakuyomu": "Kakuyomu",
+        "alphapolis": "Alphapolis",
+        "pixiv": "pixiv Novel",
+        "hameln": "Hameln",
+        "novelup": "Novelup+",
+        "novelism": "Novelism",
+        "aozora": "Aozora Bunko text",
+        "genericMd": "Generic Markdown",
+        "wordHtml": "Word paste (HTML)",
+        "userPresetsGroup": "User-defined",
+        "builtinGroup": "Built-in",
+        "genericGroup": "Generic"
+      },
+      "presetNote": {
+        "narou": "Emphasis as |word《・・》. Per-character split available.",
+        "kakuyomu": "Base 20 chars / ruby 50 chars limit.",
+        "pixiv": "pixiv emphasis notation is provisional. You may need to re-apply emphasis after pasting.",
+        "novelism": "Emphasis works only when 'notation conversion' is enabled on Novelism.",
+        "aozora": "Aozora Bunko text (｜《》 + emphasis annotation).",
+        "genericMd": "For pasting to Discord / Slack / note.",
+        "wordHtml": "Word / LibreOffice render <ruby> tags."
+      },
+      "presetOption": {
+        "pixivChapterNewpage": "Insert [newpage] before chapter heading",
+        "narouEmphasisPerChar": "Split emphasis per character"
+      },
+      "userPresets": {
+        "saveCurrent": "Save current settings…",
+        "saveTitle": "Save preset",
+        "namePlaceholder": "Preset name",
+        "save": "Save",
+        "cancel": "Cancel",
+        "emptyError": "Enter a name",
+        "tooLongError": "Name must be 40 characters or fewer",
+        "deleteConfirm": "Delete \"{{name}}\"?",
+        "delete": "Delete"
+      },
+      "validation": {
+        "title": "{{site}} character limits exceeded",
+        "rubyExceeded": "Ruby {{actual}}/{{limit}} chars for “{{base}}”",
+        "baseExceeded": "Base {{actual}}/{{limit}} chars for “{{base}}”",
+        "moreCount": "+{{count}} more"
+      }
     }
   },
   "externalMount": {
