@@ -54,6 +54,18 @@ export interface ShowFlags {
   frames: boolean;
 }
 
+export const DEFAULT_SHOW: ShowFlags = {
+  scenes: true,
+  codex: true,
+  snippets: true,
+  notes: false,
+  stickies: true,
+  aiBranch: false,
+  derivedEdges: true,
+  userEdges: true,
+  frames: true,
+};
+
 export interface MapPersistentState {
   activeBoardId: string | null;
   gridSnap: boolean;

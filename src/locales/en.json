@@ -46,6 +46,9 @@
     "import": {
       "action": "Import…"
     },
+    "zipExport": {
+      "action": "Export project as ZIP…"
+    },
     "create": {
       "action": "New Project…",
       "heading": "New Project",
@@ -141,6 +144,22 @@
       "overwrite": "Overwrite",
       "append": "Append",
       "skip": "Skip"
+    }
+  },
+  "zipExport": {
+    "title": "Export project as ZIP",
+    "description": "Export the entire project as a human-readable directory structure. Scene text is Markdown; metadata and chat history are preserved in sidecar files.",
+    "includeMarks": "Include authorship / comment marks (.marks.json)",
+    "includeChats": "Include chat sessions",
+    "includeSnippets": "Include snippets",
+    "includeMaps": "Include map boards (JSON / SVG / PNG)",
+    "export": "Export ZIP",
+    "exporting": "Exporting…",
+    "success": "Export complete: {{filename}}",
+    "failed": "Export failed: {{error}}",
+    "progress": {
+      "preparing": "Preparing export…",
+      "phase": "{{phase}} ({{current}}/{{total}})"
     }
   },
   "legal": {

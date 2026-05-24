@@ -46,6 +46,9 @@
     "import": {
       "action": "インポート…"
     },
+    "zipExport": {
+      "action": "プロジェクトを zip エクスポート…"
+    },
     "create": {
       "action": "新規プロジェクト…",
       "heading": "新規プロジェクト",
@@ -141,6 +144,22 @@
       "overwrite": "上書き",
       "append": "末尾に追記",
       "skip": "反映しない"
+    }
+  },
+  "zipExport": {
+    "title": "プロジェクトを zip エクスポート",
+    "description": "プロジェクト全体を人間可読なディレクトリ構造の ZIP として出力します。シーン本文は Markdown、メタデータとチャット履歴はサイドカーファイルに保持されます。",
+    "includeMarks": "帰属 / コメントマークを含める (.marks.json)",
+    "includeChats": "チャットセッションを含める",
+    "includeSnippets": "スニペットを含める",
+    "includeMaps": "マップボードを含める (JSON / SVG / PNG)",
+    "export": "ZIP をエクスポート",
+    "exporting": "エクスポート中…",
+    "success": "エクスポート完了: {{filename}}",
+    "failed": "エクスポートに失敗しました: {{error}}",
+    "progress": {
+      "preparing": "エクスポートを準備中…",
+      "phase": "{{phase}} ({{current}}/{{total}})"
     }
   },
   "legal": {
