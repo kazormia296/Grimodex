@@ -82,7 +82,7 @@ export function KakuyomuImportFlow({ importTarget, onClose }: Props) {
         title: parsed.metadata.title || parsed.projectTitle,
         genre: parsed.metadata.genre,
       });
-    } catch (err) {
+    } catch {
       toast.error(t("project.create.failed"));
       setPhase("preview");
       return;
