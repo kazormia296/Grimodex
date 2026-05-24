@@ -191,6 +191,62 @@ describe("RegionStripe", () => {
     expect(container.querySelector("[data-stripe-root]")).not.toBeNull();
   });
 
+  it("reserves padding at the trailing end for the corner toggle", () => {
+    // Regression: side stripe が bottom 角を取るとき、stripe 末尾の
+    // CollapsedCluster (anchor="end" → bottom: 0) のアイコンと
+    // BottomCornerToggle (absolute bottom-left/right) が重なっていた。
+    // reserveEndPx を渡すと stripe root に padding が入り、trailing
+    // collapsed cluster がトグルぶん押し上げられる。
+    const trailingCollapsed: RegionSegment[] = [
+      {
+        key: "l0",
+        slotId: "l0",
+        sizeRatio: 1,
+        open: true,
+        panels: [{ id: "scenes", active: true }],
+      },
+      {
+        key: "l1",
+        slotId: "l1",
+        sizeRatio: 1,
+        open: false,
+        panels: [{ id: "timeline", active: false }],
+      },
+    ];
+    const { container } = render(
+      <RegionStripe
+        region="left"
+        orientation="vertical"
+        segments={trailingCollapsed}
+        reserveEndPx={28}
+      />,
+    );
+    const stripeRoot =
+      container.querySelector<HTMLElement>("[data-stripe-root]");
+    expect(stripeRoot).not.toBeNull();
+    expect(stripeRoot!.style.paddingBottom).toBe("28px");
+    expect(stripeRoot!.style.paddingTop).toBe("");
+  });
+
+  it("applies reserveStartPx/reserveEndPx on the inline axis when horizontal", () => {
+    // horizontal stripe (bottom region) では reserve は左右端に効く。
+    const { container } = render(
+      <RegionStripe
+        region="bottom"
+        orientation="horizontal"
+        segments={segments}
+        reserveStartPx={28}
+        reserveEndPx={28}
+      />,
+    );
+    const stripeRoot =
+      container.querySelector<HTMLElement>("[data-stripe-root]");
+    expect(stripeRoot!.style.paddingLeft).toBe("28px");
+    expect(stripeRoot!.style.paddingRight).toBe("28px");
+    expect(stripeRoot!.style.paddingTop).toBe("");
+    expect(stripeRoot!.style.paddingBottom).toBe("");
+  });
+
   it("exposes a full-cover drop zone on an empty stripe while dragging", async () => {
     useLayoutStore.setState({ draggingPanel: "codex" });
     const { container } = render(

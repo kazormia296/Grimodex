@@ -12,6 +12,10 @@ interface SideRegionStripeColumnProps {
   region: "left" | "right";
   stripeOrientation: "vertical" | "horizontal";
   segments: ReadonlyArray<RegionSegment>;
+  /** stripe 下端に確保するコーナートグル余白(px)。side stripe が bottom
+   *  角を取るときだけ使う（trailing CollapsedCluster のアイコンが
+   *  BottomCornerToggle と重ならないように）。 */
+  reserveEndPx?: number;
 }
 
 /**
@@ -23,6 +27,7 @@ export const SideRegionStripeColumn = memo(function SideRegionStripeColumn({
   region,
   stripeOrientation,
   segments,
+  reserveEndPx = 0,
 }: SideRegionStripeColumnProps) {
   return (
     <div
@@ -33,6 +38,7 @@ export const SideRegionStripeColumn = memo(function SideRegionStripeColumn({
         region={region}
         orientation={stripeOrientation}
         segments={segments}
+        reserveEndPx={reserveEndPx}
       />
     </div>
   );

@@ -176,6 +176,11 @@ export const LayoutShell = memo(function LayoutShell({
               region="left"
               stripeOrientation="vertical"
               segments={segments.left}
+              reserveEndPx={
+                hasBottom && !bottomCorners.left
+                  ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
+                  : 0
+              }
             />
           </div>
         )}
@@ -234,6 +239,11 @@ export const LayoutShell = memo(function LayoutShell({
               region="right"
               stripeOrientation="vertical"
               segments={segments.right}
+              reserveEndPx={
+                hasBottom && !bottomCorners.right
+                  ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
+                  : 0
+              }
             />
           </div>
         )}

@@ -36,4 +36,35 @@ describe("SideRegionStripeColumn", () => {
     expect(container.querySelector("[data-stripe-root]")).toBeTruthy();
     expect(container.querySelector("[data-region-content]")).toBeNull();
   });
+
+  it("forwards reserveEndPx to the inner stripe for the corner toggle", () => {
+    // side stripe が bottom 角を取るとき、LayoutShell 側で
+    // BOTTOM_CORNER_TOGGLE_CLEARANCE_PX を渡す。column コンポーネントが
+    // 落とすと、trailing collapsed cluster と toggle が重なる回帰になる。
+    const { container } = render(
+      <SideRegionStripeColumn
+        region="left"
+        stripeOrientation="vertical"
+        segments={leftSegments}
+        reserveEndPx={28}
+      />,
+    );
+    const stripeRoot =
+      container.querySelector<HTMLElement>("[data-stripe-root]");
+    expect(stripeRoot).not.toBeNull();
+    expect(stripeRoot!.style.paddingBottom).toBe("28px");
+  });
+
+  it("omits trailing padding when no reserve is requested", () => {
+    const { container } = render(
+      <SideRegionStripeColumn
+        region="left"
+        stripeOrientation="vertical"
+        segments={leftSegments}
+      />,
+    );
+    const stripeRoot =
+      container.querySelector<HTMLElement>("[data-stripe-root]");
+    expect(stripeRoot!.style.paddingBottom).toBe("");
+  });
 });
