@@ -32,7 +32,9 @@ export function ImportDropzone({
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
-            const input = (e.currentTarget as HTMLElement).querySelector("input");
+            const input = (e.currentTarget as HTMLElement).querySelector(
+              "input",
+            );
             input?.click();
           }
         }}
@@ -108,9 +110,7 @@ export function ImportErrorList({ errors }: { errors: string[] }) {
 
 /** Stable-height region for dropzone / file picker — avoids layout jump on tab switch. */
 export function ImportInputSlot({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex min-h-60 flex-col gap-4">{children}</div>
-  );
+  return <div className="flex min-h-60 flex-col gap-4">{children}</div>;
 }
 
 export function ImportAnalyzingPlaceholder() {

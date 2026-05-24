@@ -10,7 +10,11 @@ import {
   countScenesInTree,
 } from "../markdownParser";
 import type { MarkdownParseResult } from "../markdownParser";
-import { importChapters, importTree, importProjectMetadata } from "../importApi";
+import {
+  importChapters,
+  importTree,
+  importProjectMetadata,
+} from "../importApi";
 import type { ImportProgress } from "../importApi";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { getProject } from "@/features/project/api";
@@ -27,10 +31,7 @@ import {
 } from "../importShared";
 
 import type { MarkdownImportMode } from "../importTypes";
-import {
-  prepareImportTarget,
-  type ImportTarget,
-} from "../importTarget";
+import { prepareImportTarget, type ImportTarget } from "../importTarget";
 
 interface Props {
   importTarget: ImportTarget;
@@ -51,10 +52,7 @@ async function readDirRecursive(
     const fullPath = `${dirPath}/${entry.name}`.replace(/\/+/g, "/");
     if (entry.isDirectory) {
       files.push(...(await readDirRecursive(fullPath, basePath)));
-    } else if (
-      entry.name.endsWith(".md") ||
-      entry.name.endsWith(".markdown")
-    ) {
+    } else if (entry.name.endsWith(".md") || entry.name.endsWith(".markdown")) {
       const content = await readTextFile(fullPath);
       const relPath = fullPath.slice(basePath.length + 1);
       files.push({ relPath, content });
@@ -163,10 +161,7 @@ export function MarkdownImportFlow({
       try {
         const entries: { relPath: string; content: string }[] = [];
         for (const file of files) {
-          if (
-            !file.name.endsWith(".md") &&
-            !file.name.endsWith(".markdown")
-          ) {
+          if (!file.name.endsWith(".md") && !file.name.endsWith(".markdown")) {
             continue;
           }
           const relPath = file.webkitRelativePath || file.name;
