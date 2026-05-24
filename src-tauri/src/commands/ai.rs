@@ -81,6 +81,7 @@ pub(super) fn build_ai_novelist_extra_body(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_chat_params<'a>(
     settings: &'a ai::AiSettings,
     api_key: &'a str,
@@ -119,6 +120,7 @@ pub(crate) struct ChatMessagePayload {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_chat_message(
     ai_path: tauri::State<'_, AiSettingsPath>,
     messages: Vec<ChatMessagePayload>,
@@ -134,8 +136,7 @@ pub(crate) async fn send_chat_message(
     let variant = api_variant.as_deref();
     let extra_body = build_ai_novelist_extra_body(&settings, variant);
     let retry_429 = should_retry_429(&settings);
-    let resolved_variant =
-        ai::resolve_api_variant(variant, &settings, &settings.model);
+    let resolved_variant = ai::resolve_api_variant(variant, &settings, &settings.model);
     let params = build_chat_params(
         &settings,
         &api_key,
@@ -194,8 +195,7 @@ pub(crate) async fn send_chat_message_stream(
     let variant = api_variant.as_deref();
     let extra_body = build_ai_novelist_extra_body(&settings, variant);
     let retry_429 = should_retry_429(&settings);
-    let resolved_variant =
-        ai::resolve_api_variant(variant, &settings, &settings.model);
+    let resolved_variant = ai::resolve_api_variant(variant, &settings, &settings.model);
     let params = build_chat_params(
         &settings,
         &api_key,
@@ -271,13 +271,12 @@ pub(crate) async fn send_inline_ai_stream(
         .unwrap_or(&settings.model);
     let variant = api_variant
         .as_deref()
-        .or_else(|| settings.model_api_variant.as_deref());
+        .or(settings.model_api_variant.as_deref());
     let mut settings_for_call = settings.clone();
     settings_for_call.model = resolved_model.to_string();
     let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
     let retry_429 = should_retry_429(&settings);
-    let resolved_variant =
-        ai::resolve_api_variant(variant, &settings_for_call, resolved_model);
+    let resolved_variant = ai::resolve_api_variant(variant, &settings_for_call, resolved_model);
     let params = build_chat_params(
         &settings_for_call,
         &api_key,
@@ -334,8 +333,7 @@ pub(crate) async fn send_agent_message(
     let variant = api_variant.as_deref();
     let extra_body = build_ai_novelist_extra_body(&settings, variant);
     let retry_429 = should_retry_429(&settings);
-    let resolved_variant =
-        ai::resolve_api_variant(variant, &settings, &settings.model);
+    let resolved_variant = ai::resolve_api_variant(variant, &settings, &settings.model);
     let params = build_chat_params(
         &settings,
         &api_key,
@@ -414,7 +412,7 @@ pub(crate) async fn test_ai_connection(
         settings.endpoints(),
         variant.as_deref(),
     )
-        .await?;
+    .await?;
     Ok(result)
 }
 

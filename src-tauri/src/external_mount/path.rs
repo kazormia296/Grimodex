@@ -48,10 +48,10 @@ pub enum OverlapError {
 /// Check whether `new_path` overlaps `existing_path` (either contains the other).
 pub fn overlap_check(new_path: &Path, existing_path: &Path) -> Result<bool, OverlapError> {
     let new_canon = new_path.canonicalize().map_err(|e| {
-        OverlapError::NewMissing(
-            anyhow::Error::from(e)
-                .context(format!("failed to canonicalize new mount path {}", new_path.display())),
-        )
+        OverlapError::NewMissing(anyhow::Error::from(e).context(format!(
+            "failed to canonicalize new mount path {}",
+            new_path.display()
+        )))
     })?;
     let existing_canon = existing_path
         .canonicalize()
@@ -121,7 +121,7 @@ fn path_starts_with(path: &Path, prefix: &Path) -> bool {
             return true;
         }
         let next = path_str.as_bytes()[prefix_str.len()];
-        return next == b'\\' || next == b'/';
+        next == b'\\' || next == b'/'
     }
 
     #[cfg(not(windows))]
@@ -149,7 +149,7 @@ fn strip_path_prefix(path: &Path, prefix: &Path) -> Result<PathBuf> {
         } else if let Some(stripped) = rest.strip_prefix('/') {
             rest = stripped.to_string();
         }
-        return Ok(PathBuf::from(rest));
+        Ok(PathBuf::from(rest))
     }
 
     #[cfg(not(windows))]
@@ -171,10 +171,7 @@ mod tests {
 
     #[test]
     fn strip_extended_prefix_cases() {
-        assert_eq!(
-            strip_extended_prefix(r"\\?\C:\foo\bar"),
-            r"C:\foo\bar"
-        );
+        assert_eq!(strip_extended_prefix(r"\\?\C:\foo\bar"), r"C:\foo\bar");
         assert_eq!(
             strip_extended_prefix(r"\\?\UNC\server\share\foo"),
             r"\\server\share\foo"
@@ -307,7 +304,10 @@ mod tests {
         let file_str = strip_extended_prefix(r"\\?\C:\mount\root\chapter\01.md");
         assert!(file_str.starts_with(&root_str));
         let rest = file_str.strip_prefix(&root_str).unwrap();
-        let rest = rest.strip_prefix('\\').or_else(|| rest.strip_prefix('/')).unwrap_or(rest);
+        let rest = rest
+            .strip_prefix('\\')
+            .or_else(|| rest.strip_prefix('/'))
+            .unwrap_or(rest);
         assert_eq!(rest.replace('\\', "/"), "chapter/01.md");
     }
 
@@ -317,7 +317,10 @@ mod tests {
         let file_str = strip_extended_prefix(r"\\?\UNC\server\share\notes\doc.md");
         assert!(file_str.starts_with(&root_str));
         let rest = file_str.strip_prefix(&root_str).unwrap();
-        let rest = rest.strip_prefix('\\').or_else(|| rest.strip_prefix('/')).unwrap_or(rest);
+        let rest = rest
+            .strip_prefix('\\')
+            .or_else(|| rest.strip_prefix('/'))
+            .unwrap_or(rest);
         assert_eq!(rest.replace('\\', "/"), "doc.md");
     }
 

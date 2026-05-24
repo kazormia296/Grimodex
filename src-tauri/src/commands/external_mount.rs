@@ -6,7 +6,9 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::commands::AppError;
-use crate::external_mount::io::{atomic_write_text, file_mtime_iso, read_text_file, resolve_under_root};
+use crate::external_mount::io::{
+    atomic_write_text, file_mtime_iso, read_text_file, resolve_under_root,
+};
 use crate::external_mount::path::{self, OverlapError};
 use crate::external_mount::scan::{scan_root, ScanResult};
 use crate::external_mount::watch::ExternalMountWatchState;
@@ -51,7 +53,10 @@ pub(crate) fn external_mount_register(
     }
 
     {
-        let reg = mount_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let reg = mount_state
+            .inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         for existing in reg.roots.values() {
             match path::overlap_check(&root_path, Path::new(&existing.path)) {
                 Ok(true) => {
@@ -147,7 +152,10 @@ pub(crate) fn external_mount_write_file(
 pub(crate) fn external_mount_list(
     mount_state: State<'_, ExternalMountState>,
 ) -> Result<Vec<RegisteredRoot>, AppError> {
-    let reg = mount_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let reg = mount_state
+        .inner
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(reg.roots.values().cloned().collect())
 }
 
@@ -175,7 +183,10 @@ fn lookup_root_path(
     mount_state: &State<'_, ExternalMountState>,
     root_id: &str,
 ) -> Result<PathBuf, AppError> {
-    let reg = mount_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let reg = mount_state
+        .inner
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let root = reg
         .roots
         .get(root_id)

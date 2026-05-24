@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use super::hash::content_hash;
@@ -134,7 +134,7 @@ fn dir_key(path: &Path) -> Result<DirVisitKey> {
         use std::os::unix::fs::MetadataExt;
         let meta = fs::metadata(path)
             .with_context(|| format!("failed to stat directory {}", path.display()))?;
-        return Ok(DirVisitKey::Inode(meta.dev(), meta.ino()));
+        Ok(DirVisitKey::Inode(meta.dev(), meta.ino()))
     }
 
     #[cfg(windows)]
@@ -142,9 +142,9 @@ fn dir_key(path: &Path) -> Result<DirVisitKey> {
         let canonical = path
             .canonicalize()
             .with_context(|| format!("failed to canonicalize directory {}", path.display()))?;
-        return Ok(DirVisitKey::CanonicalPath(
+        Ok(DirVisitKey::CanonicalPath(
             canonical.to_string_lossy().replace('\\', "/"),
-        ));
+        ))
     }
 
     #[cfg(not(any(unix, windows)))]
