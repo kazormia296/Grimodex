@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildMapJSON, buildMapSVG } from "@/features/map/mapExport";
 import { buildMapNodesFromData } from "@/features/map/boardToReactFlow";
 import { DEFAULT_SHOW } from "@/features/map/types";
+import { assignBoardSlugs } from "./mapSerializer";
 
 describe("mapSerializer (pure export path)", () => {
   it("generates JSON and SVG from board nodes", () => {
@@ -51,5 +52,40 @@ describe("mapSerializer (pure export path)", () => {
     const svg = buildMapSVG(nodes, []);
     expect(svg).toContain("<svg");
     expect(svg).toContain("Test Scene");
+  });
+});
+
+describe("assignBoardSlugs", () => {
+  it("disambiguates duplicate titles so archive paths do not collide", () => {
+    // Regression: each serializeMapBoard call previously held its own
+    // `used` Set, so two boards titled "Plot" both resolved to maps/Plot
+    // and the second silently overwrote the first when the zip was keyed
+    // by path.
+    const result = assignBoardSlugs([
+      { id: "a", title: "Plot" },
+      { id: "b", title: "Plot" },
+      { id: "c", title: "Other" },
+      { id: "d", title: "Plot" },
+    ]);
+    expect(result.map((r) => r.slug)).toEqual([
+      "Plot",
+      "Plot-2",
+      "Other",
+      "Plot-3",
+    ]);
+    expect(result.map((r) => r.board.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("uses a fallback slug for empty/null titles and dedupes those too", () => {
+    const result = assignBoardSlugs([
+      { id: "a", title: null },
+      { id: "b", title: "" },
+      { id: "c", title: null },
+    ]);
+    expect(result.map((r) => r.slug)).toEqual(["board", "board-2", "board-3"]);
+  });
+
+  it("returns an empty list for empty input", () => {
+    expect(assignBoardSlugs([])).toEqual([]);
   });
 });
