@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent } from "storybook/test";
 import { vi } from "vitest";
 import { LayoutShell } from "../LayoutShell";
 import { useLayoutStore } from "../layoutStore";
@@ -97,46 +97,54 @@ export const LayoutLocked: Story = {
     },
   ],
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const scenesIcon = canvas.getByLabelText(/layout\.panel\.scenes/i);
-    await userEvent.click(scenesIcon);
+    const scenesIcon = canvasElement.querySelector<HTMLElement>(
+      '[data-stripe-icon="scenes"]',
+    );
+    expect(scenesIcon).toBeTruthy();
+    await userEvent.click(scenesIcon!);
     expect(useLayoutStore.getState().layoutLocked).toBe(true);
   },
 };
 
 export const StripeReorder: Story = {
   play: async ({ canvasElement }) => {
+    // builtin:plan places `codex` in the right region (slot r405a4231 with
+    // codex/snippets/matrix/foreshadow), not the left.
     const layout = useLayoutStore.getState().layout;
-    const slot = layout.regions.left.slots.find((s) =>
+    const slot = layout.regions.right.slots.find((s) =>
       s.panels.includes("codex"),
     );
     expect(slot).toBeDefined();
     if (!slot || slot.panels.length < 2) return;
 
     const orderBefore = [...slot.panels];
-    const canvas = within(canvasElement);
-    const codexIcon = canvas.getByLabelText(/layout\.panel\.codex/i);
+    const codexIcon = canvasElement.querySelector<HTMLElement>(
+      '[data-stripe-icon="codex"]',
+    );
+    expect(codexIcon).toBeTruthy();
 
     await userEvent.pointer([
-      { keys: "[MouseLeft>]", target: codexIcon },
+      { keys: "[MouseLeft>]", target: codexIcon! },
       { coords: { clientX: 200, clientY: 120 } },
       { keys: "[/MouseLeft]" },
     ]);
 
     const after = useLayoutStore
       .getState()
-      .layout.regions.left.slots.find((s) => s.id === slot.id);
+      .layout.regions.right.slots.find((s) => s.id === slot.id);
     expect(after?.panels).toEqual(orderBefore);
   },
 };
 
 export const CrossRegionMove: Story = {
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const chatIcon = canvas.getByLabelText(/layout\.panel\.chat/i);
+    const chatIcon = canvasElement.querySelector<HTMLElement>(
+      '[data-stripe-icon="chat"]',
+    );
+    expect(chatIcon).toBeTruthy();
 
     await userEvent.pointer([
-      { keys: "[MouseLeft>]", target: chatIcon },
+      { keys: "[MouseLeft>]", target: chatIcon! },
       { coords: { clientX: 80, clientY: 200 } },
       { keys: "[/MouseLeft]" },
     ]);
