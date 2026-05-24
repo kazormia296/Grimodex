@@ -35,7 +35,7 @@ export interface MapBoardFiles {
 
 export async function serializeMapBoard(
   input: MapBoardExportInput,
-): Promise<{ slug: string; files: MapBoardFiles }> {
+): Promise<MapBoardFiles> {
   const { board, treeNodes, codexEntries, snippets } = input;
 
   const [positions, userEdges, frames, stickies, aiBranches] =
@@ -87,15 +87,25 @@ export async function serializeMapBoard(
     // PNG requires canvas; skip in headless environments
   }
 
-  const used = new Set<string>();
-  const slug = resolveUniqueSlug(board.title || "board", used);
-
   return {
-    slug,
-    files: {
-      json: buildMapJSON(rfNodes, rfEdges),
-      svg,
-      png,
-    },
+    json: buildMapJSON(rfNodes, rfEdges),
+    svg,
+    png,
   };
+}
+
+/**
+ * Assign a unique directory slug to each board. The caller writes archive
+ * entries under `maps/<slug>/board.*`; without a shared `used` Set, two
+ * boards with identical titles would resolve to the same slug and the second
+ * board would silently overwrite the first when the archive is keyed by path.
+ */
+export function assignBoardSlugs<T extends { title: string | null }>(
+  boards: readonly T[],
+): { board: T; slug: string }[] {
+  const used = new Set<string>();
+  return boards.map((board) => ({
+    board,
+    slug: resolveUniqueSlug(board.title || "board", used),
+  }));
 }

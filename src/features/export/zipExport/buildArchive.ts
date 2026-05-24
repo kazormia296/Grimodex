@@ -30,7 +30,7 @@ import {
 } from "./foreshadowSerializer";
 import { serializeChatSession } from "./chatSerializer";
 import { serializeSnippets } from "./snippetSerializer";
-import { serializeMapBoard } from "./mapSerializer";
+import { serializeMapBoard, assignBoardSlugs } from "./mapSerializer";
 import { slugifyTitle } from "./slug";
 import type { ZipExportSettings, ArchiveFileEntry } from "./types";
 import type { ForeshadowSetupRow } from "@/features/foreshadow/types";
@@ -278,9 +278,13 @@ export async function buildArchive(
     const boards = await listBoards(projectId);
     report("maps", 0, boards.length);
 
-    for (let i = 0; i < boards.length; i++) {
-      const board = boards[i];
-      const { slug, files: mapFiles } = await serializeMapBoard({
+    // assignBoardSlugs shares one `used` Set across boards so two boards with
+    // identical titles get distinct directories (e.g. "Plot" + "Plot-2"),
+    // preventing the second from overwriting the first in `zipInput`.
+    const boardSlugs = assignBoardSlugs(boards);
+    for (let i = 0; i < boardSlugs.length; i++) {
+      const { board, slug } = boardSlugs[i];
+      const mapFiles = await serializeMapBoard({
         board,
         treeNodes: nodes,
         codexEntries: codex,
