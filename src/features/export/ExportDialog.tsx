@@ -119,15 +119,39 @@ const FORMAT_MIME: Record<ExportSettings["format"], string> = {
   html: "text/html;charset=utf-8",
 };
 
+const FORMAT_FILTER: Record<
+  ExportSettings["format"],
+  { name: string; extensions: string[] }
+> = {
+  markdown: { name: "Markdown", extensions: ["md"] },
+  plaintext: { name: "Plain Text", extensions: ["txt"] },
+  html: { name: "HTML", extensions: ["html"] },
+};
+
 async function saveFile(
   content: string,
   format: ExportSettings["format"],
   defaultName: string,
 ): Promise<string | null> {
   const ext = FORMAT_EXT[format];
-  const mime = FORMAT_MIME[format];
   const filename = `${defaultName}.${ext}`;
 
+  // Tauri 環境: OS ネイティブの保存ダイアログを開き、ユーザーが選んだパスへ書き込む。
+  // キャンセル時は path が null になるのでそのまま return。
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+    const path = await save({
+      defaultPath: filename,
+      filters: [FORMAT_FILTER[format]],
+    });
+    if (!path) return null;
+    await writeTextFile(path, content);
+    return path;
+  }
+
+  // ブラウザフォールバック (dev サーバー / vitest)。
+  const mime = FORMAT_MIME[format];
   const blob = new Blob([content], { type: `${mime};charset=utf-8` });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
