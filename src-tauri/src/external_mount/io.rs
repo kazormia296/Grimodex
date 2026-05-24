@@ -33,8 +33,8 @@ pub fn resolve_under_root(root: &Path, rel_path: &str) -> Result<PathBuf> {
 
 /// Read a UTF-8 text file, normalizing CRLF → LF.
 pub fn read_text_file(path: &Path) -> Result<String> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     Ok(raw.replace("\r\n", "\n"))
 }
 
@@ -66,8 +66,7 @@ pub fn atomic_write_text(path: &Path, content: &str) -> Result<()> {
 
 /// File mtime as ISO 8601 UTC string.
 pub fn file_mtime_iso(path: &Path) -> Result<String> {
-    let meta = fs::metadata(path)
-        .with_context(|| format!("failed to stat {}", path.display()))?;
+    let meta = fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
     let modified = meta
         .modified()
         .with_context(|| format!("failed to get mtime for {}", path.display()))?;

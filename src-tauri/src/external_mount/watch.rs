@@ -81,12 +81,7 @@ impl WatchRegistry {
         }
     }
 
-    pub fn register(
-        &mut self,
-        app: AppHandle,
-        root_id: String,
-        root_path: PathBuf,
-    ) -> Result<()> {
+    pub fn register(&mut self, app: AppHandle, root_id: String, root_path: PathBuf) -> Result<()> {
         self.unregister(&root_id);
 
         let canonical_root = canonicalize_mount_root(&root_path)?;
@@ -146,10 +141,13 @@ impl WatchRegistry {
 
     fn queue_event(&mut self, app: &AppHandle, root_id: &str, event: FileEventPayload) {
         let now = Instant::now();
-        let batch = self.pending.entry(root_id.to_string()).or_insert(PendingBatch {
-            events: Vec::new(),
-            deadline: now + Duration::from_millis(DEBOUNCE_MS),
-        });
+        let batch = self
+            .pending
+            .entry(root_id.to_string())
+            .or_insert(PendingBatch {
+                events: Vec::new(),
+                deadline: now + Duration::from_millis(DEBOUNCE_MS),
+            });
         batch.events.push(event);
         batch.deadline = now + Duration::from_millis(DEBOUNCE_MS);
 
@@ -215,8 +213,8 @@ fn handle_notify_event(
 ) -> Result<()> {
     if matches!(
         event.kind,
-        EventKind::Modify(ModifyKind::Name(RenameMode::Any)) | EventKind::Modify(ModifyKind::Name(RenameMode::Both)
-        )
+        EventKind::Modify(ModifyKind::Name(RenameMode::Any))
+            | EventKind::Modify(ModifyKind::Name(RenameMode::Both))
     ) && event.paths.len() >= 2
     {
         let old_rel = rel_path_under_root(canonical_root, &event.paths[0])?;

@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 use codex_matching::CodexMatcherState;
+use commands::external_mount::ExternalMountState;
 #[cfg(feature = "semantic-embedding")]
 use commands::semantic::SemanticEmbedderState;
 use commands::{
@@ -20,7 +21,6 @@ use commands::{
     PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
 };
 use external_mount::watch::ExternalMountWatchState;
-use commands::external_mount::ExternalMountState;
 
 #[tauri::command]
 fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {

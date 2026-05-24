@@ -248,7 +248,11 @@ impl Default for AiSettings {
 pub struct AiModel {
     pub id: String,
     pub name: String,
-    #[serde(default, rename = "apiVariant", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "apiVariant",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub api_variant: Option<String>,
 }
 
@@ -528,8 +532,7 @@ pub async fn test_connection(
     let client = reqwest::Client::new();
 
     // AI のべりすと legacy: 独自エンドポイント (POST <base>) + text / length フィールド
-    if matches!(provider, AiProvider::AiNovelist)
-        && !ai_novelist::is_v1_variant(api_variant, model)
+    if matches!(provider, AiProvider::AiNovelist) && !ai_novelist::is_v1_variant(api_variant, model)
     {
         let url = provider.base_url(endpoints);
         if url.is_empty() {
@@ -1390,15 +1393,16 @@ fn apply_reasoning_to_body(
         }
     }
 
-    if matches!(provider, AiProvider::AiNovelist) && api_variant == Some("v1") {
-        if reasoning_enabled == Some(true) {
-            let effort = match reasoning_effort.as_deref() {
-                Some("max") => "high",
-                Some(e @ ("low" | "medium" | "high")) => e,
-                _ => "medium",
-            };
-            body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
-        }
+    if matches!(provider, AiProvider::AiNovelist)
+        && api_variant == Some("v1")
+        && reasoning_enabled == Some(true)
+    {
+        let effort = match reasoning_effort.as_deref() {
+            Some("max") => "high",
+            Some(e @ ("low" | "medium" | "high")) => e,
+            _ => "medium",
+        };
+        body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
     }
 }
 

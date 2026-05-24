@@ -574,7 +574,7 @@ fn decode_ps_path_output(stdout: &[u8]) -> Option<String> {
         return Some(utf8);
     }
     // Windows PowerShell 5.1 がパイプへ UTF-16 LE を出すことがある
-    if stdout.len() >= 4 && stdout.len() % 2 == 0 {
+    if stdout.len() >= 4 && stdout.len().is_multiple_of(2) {
         let u16s: Vec<u16> = stdout
             .chunks_exact(2)
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
@@ -635,12 +635,13 @@ async fn detect_binary_windows(kind: CliKind) -> Option<String> {
         }
     }
 
-    for dir_opt in [dirs::data_dir(), dirs::data_local_dir()] {
-        if let Some(dir) = dir_opt {
-            let npm_dir = dir.join("npm");
-            if let Some(p) = first_matching_npm_shim(bin_name, &npm_dir) {
-                return Some(p);
-            }
+    for dir in [dirs::data_dir(), dirs::data_local_dir()]
+        .into_iter()
+        .flatten()
+    {
+        let npm_dir = dir.join("npm");
+        if let Some(p) = first_matching_npm_shim(bin_name, &npm_dir) {
+            return Some(p);
         }
     }
 
