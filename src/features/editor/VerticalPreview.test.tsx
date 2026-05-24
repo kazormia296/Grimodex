@@ -13,6 +13,7 @@ function mockEditorWithHtml(html: string) {
     on: vi.fn(),
     off: vi.fn(),
     state: { doc: { textContent: "" } },
+    view: { dom: document.createElement("div") },
   } as unknown as ReturnType<typeof useEditorStore.getState>["editor"];
 }
 
@@ -68,6 +69,7 @@ describe("VerticalPreview", () => {
         isInitialized: true,
         on: vi.fn(),
         off: vi.fn(),
+        view: { dom: document.createElement("div") },
       } as never,
     });
     render(<VerticalPreview open={true} onClose={vi.fn()} />);

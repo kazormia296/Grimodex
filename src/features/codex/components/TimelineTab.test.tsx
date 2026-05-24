@@ -66,6 +66,7 @@ describe("TimelineTab", () => {
   });
 
   it("フェーズなし時に説明テキストが表示される", async () => {
+    mockPhaseState.phasesByEntry = { "entry-1": [] };
     render(<TimelineTab entry={mockEntry} />);
     await waitFor(() => {
       expect(
@@ -75,6 +76,7 @@ describe("TimelineTab", () => {
   });
 
   it("「Add phase」ボタンが存在する", async () => {
+    mockPhaseState.phasesByEntry = { "entry-1": [] };
     render(<TimelineTab entry={mockEntry} />);
     await waitFor(() => {
       expect(screen.getAllByText("Add phase").length).toBeGreaterThan(0);

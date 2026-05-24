@@ -967,6 +967,7 @@
       "openInEditor": "エディタで開く",
       "moreBeats": "他 {{n}} 件",
       "collapseBeats": "折りたたむ",
+      "dragHandle": "ドラッグして移動",
       "menu": {
         "rename": "名前を変更",
         "addBeat": "+ Beat を追加…",
