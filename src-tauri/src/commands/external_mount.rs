@@ -26,6 +26,54 @@ pub struct ExternalMountRegistry {
     roots: HashMap<String, RegisteredRoot>,
 }
 
+impl ExternalMountRegistry {
+    /// Atomically check for overlap against existing roots and insert the new
+    /// root. Single `&mut self` borrow keeps the check+insert from racing
+    /// against another caller holding the same `MutexGuard`.
+    pub fn try_register(
+        &mut self,
+        root_id: String,
+        path: String,
+        label: String,
+    ) -> anyhow::Result<()> {
+        let new_path = Path::new(&path);
+        for existing in self.roots.values() {
+            match path::overlap_check(new_path, Path::new(&existing.path)) {
+                Ok(true) => {
+                    anyhow::bail!("mount path overlaps with existing root: {}", existing.label);
+                }
+                Ok(false) => {}
+                Err(OverlapError::NewMissing(e)) => return Err(e),
+                Err(OverlapError::ExistingMissing(e)) => {
+                    tracing::warn!(
+                        "skipping overlap check against missing existing root {}: {e}",
+                        existing.label
+                    );
+                }
+            }
+        }
+        self.roots.insert(
+            root_id.clone(),
+            RegisteredRoot {
+                id: root_id,
+                path,
+                label,
+            },
+        );
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn contains(&self, root_id: &str) -> bool {
+        self.roots.contains_key(root_id)
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.roots.len()
+    }
+}
+
 pub struct ExternalMountState {
     pub inner: Mutex<ExternalMountRegistry>,
 }
@@ -52,32 +100,10 @@ pub(crate) fn external_mount_register(
         return Err(anyhow::anyhow!("mount path is not a directory: {path}").into());
     }
 
-    {
-        let reg = mount_state
-            .inner
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        for existing in reg.roots.values() {
-            match path::overlap_check(&root_path, Path::new(&existing.path)) {
-                Ok(true) => {
-                    return Err(anyhow::anyhow!(
-                        "mount path overlaps with existing root: {}",
-                        existing.label
-                    )
-                    .into());
-                }
-                Ok(false) => {}
-                Err(OverlapError::NewMissing(e)) => return Err(e.into()),
-                Err(OverlapError::ExistingMissing(e)) => {
-                    tracing::warn!(
-                        "skipping overlap check against missing existing root {}: {e}",
-                        existing.label
-                    );
-                }
-            }
-        }
-    }
-
+    // scan_root walks the tree and reads every .md; keep it outside the
+    // mount_state lock so concurrent read/write/list/unregister are not
+    // blocked. The check+insert below stays atomic because it runs under one
+    // MutexGuard.
     let scan = scan_root(&root_path)?;
 
     {
@@ -85,14 +111,7 @@ pub(crate) fn external_mount_register(
             .inner
             .lock()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        reg.roots.insert(
-            root_id.clone(),
-            RegisteredRoot {
-                id: root_id.clone(),
-                path: path.clone(),
-                label,
-            },
-        );
+        reg.try_register(root_id.clone(), path.clone(), label)?;
     }
 
     let mut watch_reg = watch_state
@@ -192,4 +211,165 @@ fn lookup_root_path(
         .get(root_id)
         .ok_or_else(|| anyhow::anyhow!("unknown external root: {root_id}"))?;
     Ok(PathBuf::from(&root.path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "grimodex-mount-reg-{name}-{}",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    fn path_str(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn try_register_inserts_first_root() {
+        let dir = temp_dir("first");
+        fs::create_dir_all(&dir).unwrap();
+        let mut reg = ExternalMountRegistry::default();
+
+        reg.try_register("root-a".into(), path_str(&dir), "A".into())
+            .unwrap();
+        assert!(reg.contains("root-a"));
+        assert_eq!(reg.len(), 1);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn try_register_accepts_non_overlapping_paths() {
+        let dir_a = temp_dir("a");
+        let dir_b = temp_dir("b");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        let mut reg = ExternalMountRegistry::default();
+
+        reg.try_register("root-a".into(), path_str(&dir_a), "A".into())
+            .unwrap();
+        reg.try_register("root-b".into(), path_str(&dir_b), "B".into())
+            .unwrap();
+        assert_eq!(reg.len(), 2);
+
+        fs::remove_dir_all(&dir_a).ok();
+        fs::remove_dir_all(&dir_b).ok();
+    }
+
+    #[test]
+    fn try_register_rejects_parent_of_existing() {
+        let parent = temp_dir("parent");
+        let child = parent.join("child");
+        fs::create_dir_all(&child).unwrap();
+        let mut reg = ExternalMountRegistry::default();
+
+        reg.try_register("root-child".into(), path_str(&child), "Child".into())
+            .unwrap();
+        let err = reg
+            .try_register("root-parent".into(), path_str(&parent), "Parent".into())
+            .unwrap_err();
+        assert!(err.to_string().contains("overlaps"));
+
+        // Atomicity: the failed insert must NOT have mutated the registry.
+        assert_eq!(reg.len(), 1);
+        assert!(reg.contains("root-child"));
+        assert!(!reg.contains("root-parent"));
+
+        fs::remove_dir_all(&parent).ok();
+    }
+
+    #[test]
+    fn try_register_rejects_child_of_existing() {
+        let parent = temp_dir("p");
+        let child = parent.join("c");
+        fs::create_dir_all(&child).unwrap();
+        let mut reg = ExternalMountRegistry::default();
+
+        reg.try_register("root-parent".into(), path_str(&parent), "Parent".into())
+            .unwrap();
+        let err = reg
+            .try_register("root-child".into(), path_str(&child), "Child".into())
+            .unwrap_err();
+        assert!(err.to_string().contains("overlaps"));
+        assert_eq!(reg.len(), 1);
+        assert!(!reg.contains("root-child"));
+
+        fs::remove_dir_all(&parent).ok();
+    }
+
+    #[test]
+    fn try_register_rejects_same_path() {
+        let dir = temp_dir("same");
+        fs::create_dir_all(&dir).unwrap();
+        let mut reg = ExternalMountRegistry::default();
+
+        reg.try_register("root-a".into(), path_str(&dir), "A".into())
+            .unwrap();
+        let err = reg
+            .try_register("root-b".into(), path_str(&dir), "B".into())
+            .unwrap_err();
+        assert!(err.to_string().contains("overlaps"));
+        assert_eq!(reg.len(), 1);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn try_register_propagates_new_missing_when_overlap_checked() {
+        // try_register itself does not validate the new path (the caller's
+        // is_dir() check does). But when at least one existing root forces an
+        // overlap_check, canonicalize() on a missing new path surfaces as
+        // OverlapError::NewMissing — which try_register must propagate (not
+        // silently insert).
+        let existing = temp_dir("existing");
+        let missing = temp_dir("missing-new");
+        fs::create_dir_all(&existing).unwrap();
+        let mut reg = ExternalMountRegistry::default();
+
+        reg.try_register("root-existing".into(), path_str(&existing), "E".into())
+            .unwrap();
+
+        let err = reg
+            .try_register("root-missing".into(), path_str(&missing), "M".into())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("canonicalize")
+                || err.to_string().contains("No such file")
+                || err.to_string().contains("cannot find"),
+            "unexpected error: {err}"
+        );
+        // Atomicity: the failed insert must NOT have mutated the registry.
+        assert_eq!(reg.len(), 1);
+        assert!(!reg.contains("root-missing"));
+
+        fs::remove_dir_all(&existing).ok();
+    }
+
+    #[test]
+    fn try_register_skips_missing_existing_and_accepts_new() {
+        // If an already-registered root no longer exists on disk, overlap_check
+        // returns ExistingMissing; try_register must log+skip and still accept
+        // the new (non-overlapping) registration.
+        let gone = temp_dir("gone");
+        let live = temp_dir("live");
+        fs::create_dir_all(&gone).unwrap();
+        fs::create_dir_all(&live).unwrap();
+        let mut reg = ExternalMountRegistry::default();
+
+        reg.try_register("root-gone".into(), path_str(&gone), "Gone".into())
+            .unwrap();
+        fs::remove_dir_all(&gone).unwrap();
+
+        reg.try_register("root-live".into(), path_str(&live), "Live".into())
+            .unwrap();
+        assert!(reg.contains("root-live"));
+        assert_eq!(reg.len(), 2);
+
+        fs::remove_dir_all(&live).ok();
+    }
 }
