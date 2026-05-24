@@ -106,21 +106,42 @@ pub(crate) fn external_mount_register(
     // MutexGuard.
     let scan = scan_root(&root_path)?;
 
-    {
-        let mut reg = mount_state
+    register_with_rollback(&mount_state.inner, &root_id, path, label, || {
+        let mut watch_reg = watch_state
             .inner
             .lock()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        reg.try_register(root_id.clone(), path.clone(), label)?;
-    }
-
-    let mut watch_reg = watch_state
-        .inner
-        .lock()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    watch_reg.register(app, root_id, root_path)?;
+        watch_reg.register(app, root_id.clone(), root_path)
+    })?;
 
     Ok(scan)
+}
+
+/// Register a root and run a side-effect (typically watcher start) with
+/// atomic rollback. If `do_side_effect` errors, the entry inserted by
+/// `try_register` is removed so callers don't observe an orphan mount whose
+/// reads/writes would resolve but whose change events would never fire.
+fn register_with_rollback<F>(
+    mount: &Mutex<ExternalMountRegistry>,
+    root_id: &str,
+    path: String,
+    label: String,
+    do_side_effect: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce() -> anyhow::Result<()>,
+{
+    {
+        let mut reg = mount.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        reg.try_register(root_id.to_string(), path, label)?;
+    }
+    if let Err(e) = do_side_effect() {
+        if let Ok(mut reg) = mount.lock() {
+            reg.roots.remove(root_id);
+        }
+        return Err(e);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -348,6 +369,70 @@ mod tests {
         assert!(!reg.contains("root-missing"));
 
         fs::remove_dir_all(&existing).ok();
+    }
+
+    #[test]
+    fn register_with_rollback_keeps_root_on_side_effect_ok() {
+        let dir = temp_dir("rb-ok");
+        fs::create_dir_all(&dir).unwrap();
+        let mount = Mutex::new(ExternalMountRegistry::default());
+
+        register_with_rollback(&mount, "root", path_str(&dir), "L".into(), || Ok(())).unwrap();
+
+        let reg = mount.lock().unwrap();
+        assert!(reg.contains("root"));
+        assert_eq!(reg.len(), 1);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn register_with_rollback_removes_root_on_side_effect_err() {
+        // Mirrors the orphan-mount scenario: try_register succeeds, but the
+        // watcher (modeled here by the closure) fails. The rollback must
+        // leave the registry empty so a subsequent read/write does not
+        // resolve a path with no watcher attached.
+        let dir = temp_dir("rb-err");
+        fs::create_dir_all(&dir).unwrap();
+        let mount = Mutex::new(ExternalMountRegistry::default());
+
+        let err = register_with_rollback(&mount, "root", path_str(&dir), "L".into(), || {
+            anyhow::bail!("watcher boom")
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("watcher boom"));
+
+        let reg = mount.lock().unwrap();
+        assert_eq!(reg.len(), 0);
+        assert!(!reg.contains("root"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn register_with_rollback_skips_side_effect_when_try_register_fails() {
+        // If try_register rejects (e.g. overlapping path), the side effect
+        // must NOT run — otherwise a watcher could be started for a root we
+        // never registered.
+        let dir = temp_dir("rb-overlap");
+        fs::create_dir_all(&dir).unwrap();
+        let mount = Mutex::new(ExternalMountRegistry::default());
+        register_with_rollback(&mount, "root-a", path_str(&dir), "A".into(), || Ok(())).unwrap();
+
+        let side_effect_called = std::sync::atomic::AtomicBool::new(false);
+        let err = register_with_rollback(&mount, "root-b", path_str(&dir), "B".into(), || {
+            side_effect_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("overlaps"));
+        assert!(!side_effect_called.load(std::sync::atomic::Ordering::SeqCst));
+
+        let reg = mount.lock().unwrap();
+        assert_eq!(reg.len(), 1);
+        assert!(reg.contains("root-a"));
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
