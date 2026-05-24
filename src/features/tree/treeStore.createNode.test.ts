@@ -31,6 +31,7 @@ beforeEach(() => {
     selectedIds: [],
     activeSceneId: "",
     expandedIds: [],
+    pendingRevealId: null,
   });
 });
 
@@ -88,5 +89,47 @@ describe("createNode with invalid fractional-indexing siblings", () => {
     // indexing キーで、無効な "z0" を兄弟リストから除外していることを確認。
     expect(created!.sortOrder).not.toBe("z0");
     expect(created!.sortOrder.startsWith("a")).toBe(true);
+  });
+});
+
+describe("createNode pendingRevealId (scroll trigger)", () => {
+  // Folders don't open a tab, so activeSceneId never changes for them and the
+  // ScenesPanel auto-reveal effect doesn't fire. createNode sets
+  // pendingRevealId to compensate; scenes/notes still rely on the existing
+  // activeSceneId path.
+  it("sets pendingRevealId to the new folder id so the panel scrolls to it", async () => {
+    const created = await useTreeStore
+      .getState()
+      .createNode({ nodeType: "folder", parentId: null });
+
+    expect(useTreeStore.getState().pendingRevealId).toBe(created.id);
+  });
+
+  it("does not set pendingRevealId when creating a scene (activeSceneId path handles it)", async () => {
+    await useTreeStore
+      .getState()
+      .createNode({ nodeType: "scene", parentId: null });
+
+    expect(useTreeStore.getState().pendingRevealId).toBeNull();
+  });
+
+  it("does not set pendingRevealId when creating a note (tab-open path handles it)", async () => {
+    await useTreeStore
+      .getState()
+      .createNode({ nodeType: "note", parentId: null });
+
+    expect(useTreeStore.getState().pendingRevealId).toBeNull();
+  });
+
+  it("does not set pendingRevealId for a new folder when autoRevealActiveScene is off", async () => {
+    // パリティ: ユーザーが auto-reveal を切っていたら scene/note と同じく
+    // folder もスクロールさせない。
+    useTreeStore.setState({ autoRevealActiveScene: false });
+
+    await useTreeStore
+      .getState()
+      .createNode({ nodeType: "folder", parentId: null });
+
+    expect(useTreeStore.getState().pendingRevealId).toBeNull();
   });
 });

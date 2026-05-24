@@ -41,17 +41,23 @@ export function ScenesToolbar({ onCreate, onToggleAll }: ScenesToolbarProps) {
               <Plus className="h-3.5 w-3.5" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[140px]">
+          <DropdownMenuContent
+            align="end"
+            className="min-w-[140px]"
+            // Don't return focus to the "+" trigger on close — the newly
+            // created node opens an inline rename input that takes focus via
+            // autoFocus. Letting Radix restore focus to the trigger would
+            // immediately blur the input and finishEdit() would exit rename
+            // mode before the user can type.
+            onCloseAutoFocus={(e) => e.preventDefault()}
+          >
             {CREATE_OPTIONS.map((opt, i) =>
               opt === null ? (
                 <DropdownMenuSeparator key={`sep-${i}`} />
               ) : (
                 <DropdownMenuItem
                   key={opt.type}
-                  onSelect={(e) => {
-                    e.preventDefault();
-                    onCreate(opt.type);
-                  }}
+                  onSelect={() => onCreate(opt.type)}
                 >
                   {t(opt.labelKey)}
                 </DropdownMenuItem>

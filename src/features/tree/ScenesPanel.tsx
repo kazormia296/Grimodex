@@ -165,8 +165,6 @@ export function ScenesPanel() {
 
   const handleCreate = useCallback(
     (type: NodeType) => {
-      // The DropdownMenu item uses e.preventDefault() to keep the menu open
-      // so the user can create multiple items in a row.
       let parentId: string | null = null;
       const active = nodeMap[activeSceneId];
       if (active?.nodeType === "scene" || active?.nodeType === "note") {
