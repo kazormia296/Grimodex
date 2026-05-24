@@ -32,14 +32,18 @@
 ┌───────────────────────────────────────────────────────────────────┐
 │ エクスポート                                                  [×] │
 ├──────────────────────────────────┬────────────────────────────────┤
+│                                  │ ── 投稿サイトプリセット ──      │
+│ ☑ ▼ 📁 第一部: 旅立ち            │ [カスタム ▼]    [💾 保存…]    │
+│   ☑ ▼ 📁 第1章: 始まり           │ （※プリセット選択時のみ注記表示）│
+│     ☑ 塔の麓                     │ （※ルビ文字数警告バナーがここ） │
+│     ☑ 最初の呪文                  │                                │
+│   ☑   幕間                       │  出力形式                      │
+│ ☐ ▶ 📁 第二部: 暗転              │  ○ Markdown                   │
+│ ☑   エピローグ                    │  ● プレーンテキスト             │
+│                                  │  ○ HTML                       │
 │                                  │                                │
-│ ☑ ▼ 📁 第一部: 旅立ち            │  出力形式                      │
-│   ☑ ▼ 📁 第1章: 始まり           │  ○ Markdown                   │
-│     ☑ 塔の麓                     │  ● プレーンテキスト             │
-│     ☑ 最初の呪文                  │  ○ HTML                       │
-│   ☑   幕間                       │                                │
-│ ☐ ▶ 📁 第二部: 暗転              │  ── フォルダー見出し ──         │
-│ ☑   エピローグ                    │  ☑ フォルダー名を見出しにする    │
+│                                  │  ── フォルダー見出し ──         │
+│                                  │  ☑ フォルダー名を見出しにする    │
 │                                  │  見出し記号: [# ▼]             │
 │                                  │                                │
 │                                  │  ── シーン区切り ──             │
@@ -155,7 +159,8 @@ Folderのチェックボックスをクリックすると、配下の全Sceneの
 | フィールド | UI要素 | デフォルト | 詳細 |
 |-----------|--------|-----------|------|
 | フォルダー名を見出しにする | チェックボックス | ON | OFFにするとフォルダー名は出力されない |
-| 見出し記号 | ドロップダウン | `#` | 出力形式ごとの見出しスタイル（後述） |
+| 見出し記号 | ドロップダウン | `■□◇` | 出力形式ごとの見出しスタイル（後述） |
+| 見出しフォーマット | `folderHeadingFormat` | `standard` | `standard` = 上記の通り、`pixiv-chapter` = pixiv 小説の `[chapter:タイトル]` 記法（プリセット側で自動設定） |
 
 #### 見出しの深さマッピング
 
@@ -177,6 +182,16 @@ Folderのチェックボックスをクリックすると、配下の全Sceneの
 | `数字のみ` | フォルダータイトルをそのまま出力（記号なし） |
 
 Markdown / HTML 選択時は見出し記号ドロップダウンを非表示にし、標準の見出し構文を使用する。
+
+#### `pixiv-chapter` フォーマット
+
+pixiv プリセット選択時に自動で適用される pixiv 小説専用フォーマット。深さに関係なくすべての階層を `[chapter:タイトル]` で出力する（pixiv 側でネスト見出しを扱えないため）。
+
+| サブオプション | キー | デフォルト | 詳細 |
+|---|---|---|---|
+| `[newpage]` を章前に挿入 | `pixivChapterNewpage` | OFF | ON のとき各 `[chapter:...]` の直前に `[newpage]\n` を差し込む。pixiv の章間改ページ慣習に対応 |
+
+`folderHeadingFormat === "pixiv-chapter"` は **plaintext** 出力のときのみ有効。Markdown / HTML では `standard` 動作にフォールバック。
 
 ---
 
@@ -225,12 +240,25 @@ TipTapの独自ノード/マークのエクスポート方法を設定する。
 
 #### ルビ（振り仮名）
 
-| 選択肢 | 出力例 | 詳細 |
-|--------|--------|------|
-| HTML rubyタグ | `<ruby>漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>` | HTML出力時のデフォルト。Markdownでもインライン HTMLとして有効 |
-| 括弧表記 | `漢字(かんじ)` | プレーンテキスト出力時のデフォルト。既存の `rubyToPlainText()` を使用 |
-| 青空文庫形式 | `｜漢字《かんじ》` | 青空文庫互換。日本語小説の標準的な入稿形式 |
-| ベースのみ | `漢字` | ルビを除去し親文字のみを出力 |
+実装は `src/features/export/rubyFormats.ts` 参照。各投稿サイト・Wiki エンジン・ゲームエンジン向けの記法を網羅する。
+
+| 選択肢 | id | 出力例 | 詳細 |
+|--------|------|--------|------|
+| HTML rubyタグ | `html` | `<ruby>漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>` | HTML出力時のデフォルト |
+| 括弧表記 | `parentheses` | `漢字(かんじ)` | プレーンテキスト出力時のデフォルト |
+| 青空文庫形式 | `aozora` | `｜漢字《かんじ》` | 親文字直前の `｜` で範囲を明示 |
+| なろう自動判定 | `aozora-auto` | `漢字《かんじ》` | カクヨム・なろうの自動判定形式 |
+| なろう括弧 | `narou-parens` | `\|漢字(かんじ)` | 半角バー + 半角括弧 |
+| ハッシュアンダースコア | `hash-underscore` | `#漢字__かんじ__#` | 一部投稿サイトの古い記法 |
+| `[[rb:]]` 形式 | `rb-bracket` | `[[rb:漢字 > かんじ]]` | pixiv 小説など |
+| MediaWiki | `mediawiki` | `{{ruby|漢字|かんじ}}` | MediaWiki テンプレート |
+| WikiWiki | `wikiwiki` | `&ruby(かんじ){漢字};` | WikiWiki プラグイン |
+| でんでんマークダウン | `denden` | `{漢字|かんじ}` | でんでんコンバーター |
+| でんでん文字単位 | `denden-chars` | `{対象|ル|ビ}` | 文字数一致時は1字ずつ分割 |
+| Ren'Py | `renpy` | `\r[漢字,かんじ]` | Ren'Py ノベルゲームエンジン |
+| ゲームエンジン汎用 | `game-engine` | `[ruby text=ル]対[ruby text=ビ]象` | 文字数一致時は1字ずつ分割 |
+| ベースのみ | `base` | `漢字` | ルビを除去し親文字のみを出力 |
+| 自動 | `null` | （形式依存） | 出力形式別のデフォルトに従う |
 
 出力形式ごとのデフォルト:
 
@@ -242,12 +270,19 @@ TipTapの独自ノード/マークのエクスポート方法を設定する。
 
 #### 傍点（圏点）
 
-| 選択肢 | 出力例 | 詳細 |
-|--------|--------|------|
-| HTMLタグ | `<span class="emphasis-dots">重要</span>` | HTML出力時のデフォルト |
-| 青空文庫形式 | `重要［＃「重要」に傍点］` | 青空文庫互換の傍点注記 |
-| 二重山括弧 | `《《重要》》` | 一部の入稿形式で使われる記法 |
-| そのまま | `重要` | 傍点記法を除去しテキストのみ出力 |
+実装は `src/features/export/exportEngine.ts` の `renderEmphasisDots`。
+
+| 選択肢 | id | 出力例 | 詳細 |
+|--------|------|--------|------|
+| HTMLタグ | `html` | `<span class="emphasis-dots">重要</span>` | HTML出力時のデフォルト |
+| 青空文庫形式 | `aozora` | `重要［＃「重要」に傍点］` | 青空文庫互換の傍点注記 |
+| 二重山括弧 | `double-angle` | `《《重要》》` | カクヨム・アルファポリス等の標準 |
+| そのまま | `plain` | `重要` | 傍点記法を除去しテキストのみ出力 |
+| なろう傍点（まとめ） | `narou-emphasis-batch` | `\|重要《・・》` | コードポイント長分の中黒をまとめて指定 |
+| なろう傍点（1文字ずつ） | `narou-emphasis-per-char` | `\|重《・》\|要《・》` | 1文字ずつ分割。長単語や約物混在時に安全 |
+| 自動 | `null` | （形式依存） | 出力形式別のデフォルトに従う |
+
+なろう傍点モード（`narouEmphasisMode`: `batch` / `per-char`）はなろうプリセット選択時の UI トグルと連動する（後述）。
 
 出力形式ごとのデフォルト:
 
@@ -267,6 +302,75 @@ TipTapの独自ノード/マークのエクスポート方法を設定する。
 | `---` | `---` | Markdown水平線 |
 | 空行 | `\n` | 空行1行に変換 |
 | カスタム | テキスト入力欄が出現 | 任意の文字列を指定 |
+
+---
+
+### 投稿サイトプリセット
+
+右ペイン最上部に配置されるプリセット選択 UI。投稿サイト・汎用フォーマットごとに「出力形式 / 区切り / ルビ / 傍点 / 章見出し」を一括で適用する。実装は `src/features/export/ExportPresetPicker.tsx` と `src/features/export/exportPresets.ts`。
+
+#### ビルトインプリセット一覧
+
+| ID | 表示名 | format | 見出し | ルビ | 傍点 | scene break | 備考 |
+|---|---|---|---|---|---|---|---|
+| `narou` | 小説家になろう | plaintext | OFF | `aozora` | `narou-emphasis-batch` | `asterisks` | base 10字 / ruby 10字の警告。1文字分割サブオプションあり |
+| `kakuyomu` | カクヨム | plaintext | OFF | `aozora-auto` | `double-angle` | `asterisks` | base 20字 / ruby 50字の警告 |
+| `alphapolis` | アルファポリス | plaintext | OFF | `aozora` | `double-angle` | `asterisks` | — |
+| `pixiv` | pixiv 小説 | plaintext | ON / `pixiv-chapter` | `rb-bracket` | `double-angle` | `custom: [newpage]` | `[newpage]` 章前挿入サブオプションあり |
+| `hameln` | ハーメルン | plaintext | OFF | `aozora` | `double-angle` | `asterisks` | — |
+| `novelup` | ノベルアップ+ | plaintext | OFF | `aozora` | `double-angle` | `asterisks` | base 50字 / ruby 50字の警告 |
+| `novelism` | ノベリズム | plaintext | OFF | `aozora` | `double-angle` | `asterisks` | 「記法変換 ON 時のみ有効」と注記 |
+| `aozora` | 青空文庫テキスト | plaintext | OFF | `aozora` | `aozora` | `asterisks` (`blank2` divider) | 青空文庫入稿用 |
+| `generic-md` | 汎用 Markdown | markdown | ON | `parentheses` | `plain` | `hr` (`blank2` divider) | Discord / Slack / note 貼付向け |
+| `word-html` | Word 貼付 (HTML) | html | ON | `html` | `html` | `hr` | Word / LibreOffice の `<ruby>` 解釈に対応 |
+| `custom` | カスタム | （現在値） | — | — | — | — | プリセット適用なし。手動変更時に自動でこの ID へフォールバック |
+
+#### 適用方式
+
+- **完全上書き**: プリセット選択で 7 軸（format / folderHeading / folderHeadingFormat / sceneDivider / sceneTitle / rubyStyle / emphasisDotsStyle / sceneBreakStyle ＋ サブオプション）を一括差し替え
+- **保持フィールド**: `includeTrashBin` はプリセットと無関係な「コンテンツ選択」軸として、適用時に現在値を引き継ぐ
+- **手動変更で自動 custom フォールバック**: 詳細設定を 1 項目でも触ると `detectExportPreset(settings, hint)` で再検出し、ビルトインと一致しなくなれば `exportPresetId` を `custom` に書き換える
+- **重複ビルトインの hint 優先**: `alphapolis` / `hameln` / `novelup` / `novelism` は実サイト仕様上同じ設定値になるため、settings だけからは区別不能。現在の `exportPresetId` を hint として渡す限り、ユーザーの選択が維持される
+
+#### サブオプション
+
+プリセット選択時のみ追加で表示されるトグル:
+
+| プリセット | サブオプション | 設定キー | 詳細 |
+|---|---|---|---|
+| `narou` | 傍点を1文字ずつ分割 | `narouEmphasisMode` (`batch` / `per-char`) | ON で `emphasisDotsStyle` を `narou-emphasis-per-char` に切替 |
+| `pixiv` | 章見出しの前に `[newpage]` を入れる | `pixivChapterNewpage` | ON で `[chapter:...]` の直前に `[newpage]\n` を挿入 |
+| `novelism` | （注記表示のみ） | — | 「傍点は記法変換 ON 設定の場合のみ有効」と表示 |
+
+#### サイト別ルビ文字数バリデーション
+
+実装は `src/features/export/exportValidation.ts`。プリセットに `rubyLimit: { baseMax, rubyMax }` が定義されている場合のみ走査する（`custom` は対象外）。
+
+- ProseMirror JSON 内の `ruby` ノードを再帰的に辿り、`base` / `annotation` のコードポイント長を上限と比較
+- 違反は `RubyLengthWarning[]` として返し、UI 上部の **警告バナー** に最大 5 件まで表示（超過分は「他 N 件」）
+- **警告のみでエクスポートはブロックしない**
+
+| プリセット | baseMax | rubyMax |
+|---|---|---|
+| narou | 10 | 10 |
+| kakuyomu | 20 | 50 |
+| novelup | 50 | 50 |
+
+#### カスタムプリセット保存
+
+`Save current settings…` ボタンから現在の設定に名前を付けて保存できる。
+
+| 項目 | 詳細 |
+|---|---|
+| 保存先キー | `export.userPresets`（JSON 配列を 1 キーに格納） |
+| 1件あたりの形状 | `{ id: string; name: string; settings: ExportSettings }` |
+| ID 生成 | `crypto.randomUUID()`（フォールバック: `up-${ts}-${rand}`） |
+| 名前バリデーション | 1〜40 文字、trim 後の空文字は不可 |
+| 保存時の正規化 | 保存される `settings.exportPresetId` は常に `custom` に固定（再選択時にユーザープリセットとして識別するため） |
+| 構造比較で再選択検出 | Select の現在値は、構造一致するユーザープリセットがあればそれを表示。なければ `detectExportPreset` の結果 |
+| 削除 | ユーザープリセット選択時のみ削除ボタン表示。`window.confirm` で確認後に削除 |
+
+UI 上は optgroup で「ビルトイン」「汎用」「ユーザー定義」を分離する。
 
 ---
 
@@ -317,19 +421,31 @@ TipTapの独自ノード/マークのエクスポート方法を設定する。
 ### エクスポート実行フロー
 
 1. [エクスポート] クリック
-2. ファイルをダウンロード
+2. 保存ダイアログを表示してパスを取得し、ファイルへ書き込む
    - デフォルトファイル名: `{プロジェクトタイトル}.{拡張子}`（例: `My Fantasy Novel.txt`）
-   - **現状の実装**: ブラウザの `Blob` + `<a download>` でダウンロード（保存先選択 UI なし、ブラウザのデフォルトダウンロードフォルダに保存）。トーストにはファイル名のみ表示。
-   - **将来拡張**: Tauri の `plugin-dialog` を使ったネイティブ保存ダイアログ、拡張子フィルター、「フォルダを開く」リンク付きトースト
-3. 完了後、トースト通知: `エクスポート完了: {ファイル名}`
-4. ダイアログは閉じない（連続エクスポート可能）
+   - **Tauri 環境**: `@tauri-apps/plugin-dialog` の `save()` で OS ネイティブの保存ダイアログを表示。出力形式に応じた filter（Markdown / Plain Text / HTML）を渡す。確定後 `@tauri-apps/plugin-fs` の `writeTextFile()` でユーザーが選んだフルパスへ書き込む
+   - **ブラウザ環境（dev サーバー / vitest）**: 従来通り `Blob` + `<a download>` でデフォルトダウンロードフォルダに保存（フォールバック）
+   - 環境判定は `"__TAURI_INTERNALS__" in window`
+3. 完了後、トースト通知: `エクスポート完了: {ファイル名またはフルパス}`
+4. 保存ダイアログでキャンセル（path = null）された場合はトーストも出さず無音で終了
+5. ダイアログは閉じない（連続エクスポート可能）
+
+### 必要な Tauri capability
+
+`src-tauri/capabilities/default.json` に以下が必要:
+
+- `dialog:allow-save`
+- `fs:allow-write-text-file`（`scope: $HOME/**`）
+
+書き込み先がホームディレクトリ外（例: `/tmp` 直下、ルート、外付けデバイスを mount していないパス）になる場合は permission denied になり、エラーハンドリング経由で toast.error が出る。スコープ拡張は別途検討事項。
 
 ### エラーハンドリング
 
 | エラー | 対応 |
 |--------|------|
-| 書き込み権限なし | トーストでエラー表示。別の保存先を選択するよう案内 |
-| ディスク容量不足 | トーストでエラー表示 |
+| 書き込み権限なし (`$HOME/**` 外を選択した場合など) | `toast.error("エクスポートに失敗しました: {message}")` |
+| ディスク容量不足 | 同上 |
+| 保存ダイアログでキャンセル | 無音で終了。toast を出さない |
 | シーン未選択で実行 | ボタンdisabledのため到達しない |
 
 ---
@@ -409,21 +525,28 @@ HTML形式を選択した場合、完全なHTML文書として出力する。
 
 エクスポート設定は `app_settings` テーブルに保存し、次回ダイアログを開いた時に復元する。シーンの選択状態は保存しない（毎回全選択で開始）。
 
-| キー | デフォルト値 |
-|------|-------------|
-| `export.format` | `"plaintext"` |
-| `export.folderHeading` | `true` |
-| `export.folderHeadingStyle` | `"squares"` |
-| `export.sceneDivider` | `"blank"` |
-| `export.sceneDividerCustom` | `""` |
-| `export.sceneTitle` | `"none"` |
-| `export.rubyStyle` | `null` (出力形式に応じた自動選択) |
-| `export.emphasisDotsStyle` | `null` (出力形式に応じた自動選択) |
-| `export.sceneBreakStyle` | `"asterisks"` |
-| `export.sceneBreakCustom` | `""` |
-| `export.includeTrashBin` | `false` |
+| キー | デフォルト値 | 詳細 |
+|------|-------------|------|
+| `export.format` | `"plaintext"` | |
+| `export.folderHeading` | `true` | |
+| `export.folderHeadingStyle` | `"squares"` | |
+| `export.folderHeadingFormat` | `"standard"` | `"standard"` / `"pixiv-chapter"` |
+| `export.sceneDivider` | `"blank"` | |
+| `export.sceneDividerCustom` | `""` | |
+| `export.sceneTitle` | `"none"` | |
+| `export.rubyStyle` | `null` | 出力形式に応じた自動選択 |
+| `export.emphasisDotsStyle` | `null` | 出力形式に応じた自動選択 |
+| `export.sceneBreakStyle` | `"asterisks"` | |
+| `export.sceneBreakCustom` | `""` | |
+| `export.includeTrashBin` | `false` | プリセット切替で上書きされない |
+| `export.pixivChapterNewpage` | `false` | pixiv プリセット選択時のみ意味を持つ |
+| `export.narouEmphasisMode` | `"batch"` | `"batch"` / `"per-char"`。なろうプリセット選択時のみ意味を持つ |
+| `export.exportPresetId` | `"custom"` | 現在選択中のプリセット ID。手動変更で `custom` にフォールバック |
+| `export.userPresets` | `""` (= 空配列) | ユーザー定義プリセットを JSON 文字列で格納 |
 
 `rubyStyle` / `emphasisDotsStyle` が `null` の場合、出力形式に応じたデフォルト（前述の表参照）を使用する。ユーザーが明示的に変更した場合のみ値が保存される。
+
+`export.userPresets` は `JSON.stringify([{ id, name, settings }])` の形式で 1 キーに格納する（複数キーへの分割は採らない）。読み出し時は `parseUserPresets()` で安全にパースし、壊れていれば空配列にフォールバックする。
 
 ---
 
@@ -476,9 +599,10 @@ Settings の Data カテゴリにあった「Export as Markdown」「Export as p
 
 - **EPUB出力**: 電子書籍形式での出力。章構造をEPUBのセクションにマッピング
 - **縦書きPDF出力**: 日本語小説の入稿用。外部ライブラリまたはTauri側での生成を要検討
-- **エクスポートプリセット**: 「青空文庫形式」「入稿用テキスト」等のプリセットを用意し、複数の設定を一括で適用
 - **Synopsis付きエクスポート**: アウトライン確認用に各シーンのSynopsisをシーン先頭に挿入するオプション
 - **一括コマンドパレット対応**: `Ctrl+Shift+P` →「Export all scenes as Markdown」等で設定ダイアログを経由せず即時エクスポート
+- **カスタムプリセットのリネーム / 並べ替え**: 現状は追加・削除のみ。リネームと並べ替え UI は未実装
+- **Tauri 保存先スコープの拡張**: 現状の `$HOME/**` 制約を緩めるか、書込先プリセット（Documents/Downloads など）を別途用意するか
 
 ---
 
