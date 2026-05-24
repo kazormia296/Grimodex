@@ -415,6 +415,37 @@ export function EditorPane({
         scheduleWriteBack(id, fileBackedUri, sceneJsonStr);
         useTreeStore.getState().setCharCount(id, charCount);
         scheduleSceneIndex(id);
+
+        // file-backed Scene でも schema 非依存の Codex 本文検出とチャット
+        // context 再構築は実行する。他の schema 依存処理
+        // (authorship/foreshadow/annotation/sceneBeat/aiRatio) は
+        // file-backed editor 拡張で外しているため空打ちになるのでスキップ。
+        const allEntries = useCodexStore.getState().entries;
+        if (allEntries.length > 0) {
+          setTimeout(() => {
+            markStart("editor.coreSave.bodyMentionUpsert");
+            upsertSceneBodyMentions(id, sceneJsonStr, allEntries)
+              .catch((e) => {
+                debugLog.error(
+                  "EditorPane",
+                  "upsertSceneBodyMentions failed (file-backed)",
+                  errorDetail(e),
+                );
+              })
+              .finally(() => {
+                markEnd("editor.coreSave.bodyMentionUpsert");
+              });
+          }, 0);
+        }
+        const chatState = useChatStore.getState();
+        if (chatState.activeSceneId === id) {
+          markStart("editor.coreSave.refreshContextLayers");
+          chatState
+            .refreshContextLayers()
+            .catch(() => {})
+            .finally(() => markEnd("editor.coreSave.refreshContextLayers"));
+        }
+
         markEnd("editor.coreSave");
         return;
       }

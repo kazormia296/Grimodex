@@ -13,6 +13,9 @@ import {
 import { useTreeStore } from "@/features/tree/treeStore";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
+import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { useChatStore } from "@/features/chat/chatStore";
 import * as mountApi from "./api";
 import { useExternalRootStore } from "./externalRootStore";
 import { markdownToPmJson, pmJsonToMarkdown } from "./markdownBridge";
@@ -494,6 +497,26 @@ async function applyExternalContent(
   scheduleSceneIndex(nodeId);
   useTreeStore.getState().setCharCount(nodeId, charCount);
   await useTreeStore.getState().loadTree(getCurrentProjectId());
+
+  // file-backed Scene でも schema 非依存の Codex 本文検出と チャット context
+  // 再構築は実行する。Mention 拡張のような schema 依存処理は file-backed
+  // editor 側で外しているのでここでは扱わない (see fileBackedEditorExtensions.ts)。
+  const codexEntries = useCodexStore.getState().entries;
+  if (codexEntries.length > 0) {
+    try {
+      await upsertSceneBodyMentions(nodeId, pmJson, codexEntries);
+    } catch (err) {
+      debugLog.error(
+        "ExternalMount",
+        "upsertSceneBodyMentions failed",
+        errorDetail(err),
+      );
+    }
+  }
+  const chatState = useChatStore.getState();
+  if (chatState.activeSceneId === nodeId) {
+    await chatState.refreshContextLayers().catch(() => {});
+  }
 
   const { useTabStore } = await import("@/features/editor/tabStore");
   if (useTabStore.getState().tabs.some((t) => t.nodeId === nodeId)) {
