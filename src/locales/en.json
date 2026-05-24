@@ -43,6 +43,9 @@
       "fallback": "Project"
     },
     "switchFailed": "Failed to switch project",
+    "import": {
+      "action": "Import…"
+    },
     "create": {
       "action": "New Project…",
       "heading": "New Project",
@@ -74,6 +77,12 @@
       "novelcrafter": "Novelcrafter",
       "kakuyomu": "Kakuyomu",
       "markdown": "Markdown"
+    },
+    "target": {
+      "label": "Import destination",
+      "newProject": "Create new project",
+      "currentProject": "Add to current project",
+      "newProjectMetadataHint": "Title and metadata from the import will be applied to the new project."
     },
     "dropzone": "Drop a ZIP file here, or click to select",
     "dropzoneAccept": ".zip",

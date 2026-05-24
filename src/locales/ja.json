@@ -43,6 +43,9 @@
       "fallback": "プロジェクト"
     },
     "switchFailed": "プロジェクトの切り替えに失敗しました",
+    "import": {
+      "action": "インポート…"
+    },
     "create": {
       "action": "新規プロジェクト…",
       "heading": "新規プロジェクト",
@@ -74,6 +77,12 @@
       "novelcrafter": "Novelcrafter",
       "kakuyomu": "カクヨム",
       "markdown": "Markdown"
+    },
+    "target": {
+      "label": "インポート先",
+      "newProject": "新規プロジェクトとしてインポート",
+      "currentProject": "現在のプロジェクトに追加",
+      "newProjectMetadataHint": "作品タイトルなどのメタデータは新規プロジェクトに反映されます。"
     },
     "dropzone": "ZIPファイルをドロップ、またはクリックして選択",
     "dropzoneAccept": ".zip",

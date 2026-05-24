@@ -9,13 +9,9 @@ import { useWorkspaceStore } from "./store";
 // their fixed inset-0 backdrop to the ~40px header strip.
 interface WorkspaceMenuProps {
   onOpenSnapshot: () => void;
-  onOpenImport: () => void;
 }
 
-export function WorkspaceMenu({
-  onOpenSnapshot,
-  onOpenImport,
-}: WorkspaceMenuProps) {
+export function WorkspaceMenu({ onOpenSnapshot }: WorkspaceMenuProps) {
   const { t } = useTranslation();
   const activeWorkspaceName = useWorkspaceStore((s) => s.activeWorkspaceName);
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
@@ -129,18 +125,6 @@ export function WorkspaceMenu({
           </button>
 
           <div className="my-1 border-t border-border" />
-
-          <button
-            type="button"
-            onClick={() => {
-              setIsOpen(false);
-              onOpenImport();
-            }}
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-          >
-            <span className="w-4" />
-            {t("workspaceMenu.import")}
-          </button>
 
           <button
             type="button"

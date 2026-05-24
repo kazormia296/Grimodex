@@ -23,12 +23,17 @@ import {
   ImportAnalyzingPlaceholder,
   ImportFlowFooter,
 } from "../importShared";
+import {
+  prepareImportTarget,
+  type ImportTarget,
+} from "../importTarget";
 
 interface Props {
+  importTarget: ImportTarget;
   onClose: () => void;
 }
 
-export function KakuyomuImportFlow({ onClose }: Props) {
+export function KakuyomuImportFlow({ importTarget, onClose }: Props) {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<SimpleImportPhase>("idle");
   const [parsed, setParsed] = useState<KakuyomuParseResult | null>(null);
@@ -43,10 +48,14 @@ export function KakuyomuImportFlow({ onClose }: Props) {
   const reloadTree = useTreeStore((s) => s.loadTree);
 
   useEffect(() => {
+    if (importTarget === "newProject") {
+      setHasExistingOutline(false);
+      return;
+    }
     void getProject(getCurrentProjectId()).then((p) => {
       setHasExistingOutline(Boolean(p?.outline?.trim()));
     });
-  }, []);
+  }, [importTarget]);
 
   const handleFileChange = useCallback(
     async (file: File) => {
@@ -74,17 +83,37 @@ export function KakuyomuImportFlow({ onClose }: Props) {
     setErrors([]);
     const allErrors = [...parsed.warnings];
 
-    if (applyMetadata) {
+    try {
+      await prepareImportTarget(importTarget, {
+        title: parsed.metadata.title || parsed.projectTitle,
+        genre: parsed.metadata.genre,
+      });
+    } catch (err) {
+      toast.error(t("project.create.failed"));
+      setPhase("preview");
+      return;
+    }
+
+    const shouldApplyMetadata =
+      importTarget === "newProject" || applyMetadata;
+
+    if (shouldApplyMetadata) {
       const project = await getProject(getCurrentProjectId());
       const outline = resolveOutline(
         project?.outline,
         parsed.metadata.outline,
-        outlineMode,
+        importTarget === "newProject" ? "overwrite" : outlineMode,
       );
       try {
         await importProjectMetadata({
-          title: parsed.metadata.title,
-          genre: parsed.metadata.genre,
+          title:
+            importTarget === "newProject"
+              ? undefined
+              : parsed.metadata.title,
+          genre:
+            importTarget === "newProject"
+              ? undefined
+              : parsed.metadata.genre,
           outline,
         });
       } catch (err) {
@@ -107,7 +136,7 @@ export function KakuyomuImportFlow({ onClose }: Props) {
         imported,
       }),
     );
-  }, [parsed, applyMetadata, outlineMode, t, reloadTree]);
+  }, [parsed, importTarget, applyMetadata, outlineMode, t, reloadTree]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -147,13 +176,19 @@ export function KakuyomuImportFlow({ onClose }: Props) {
               </ul>
             )}
           </div>
-          <MetadataApplyPanel
-            applyMetadata={applyMetadata}
-            onApplyMetadataChange={setApplyMetadata}
-            outlineMode={outlineMode}
-            onOutlineModeChange={setOutlineMode}
-            hasExistingOutline={hasExistingOutline}
-          />
+          {importTarget === "newProject" ? (
+            <p className="text-xs text-muted-foreground">
+              {t("import.target.newProjectMetadataHint")}
+            </p>
+          ) : (
+            <MetadataApplyPanel
+              applyMetadata={applyMetadata}
+              onApplyMetadataChange={setApplyMetadata}
+              outlineMode={outlineMode}
+              onOutlineModeChange={setOutlineMode}
+              hasExistingOutline={hasExistingOutline}
+            />
+          )}
         </>
       )}
 

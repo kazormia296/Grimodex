@@ -27,8 +27,15 @@ import {
 } from "../importShared";
 
 import type { MarkdownImportMode } from "../importTypes";
+import {
+  prepareImportTarget,
+  type ImportTarget,
+} from "../importTarget";
 
 interface Props {
+  importTarget: ImportTarget;
+  markdownMode: MarkdownImportMode;
+  onMarkdownModeChange: (mode: MarkdownImportMode) => void;
   onClose: () => void;
 }
 
@@ -56,9 +63,14 @@ async function readDirRecursive(
   return files;
 }
 
-export function MarkdownImportFlow({ onClose }: Props) {
+export function MarkdownImportFlow({
+  importTarget,
+  markdownMode,
+  onMarkdownModeChange,
+  onClose,
+}: Props) {
   const { t } = useTranslation();
-  const [mode, setMode] = useState<MarkdownImportMode>("single");
+  const [mode, setMode] = useState<MarkdownImportMode>(markdownMode);
   const [phase, setPhase] = useState<SimpleImportPhase>("idle");
   const [parsed, setParsed] = useState<MarkdownParseResult | null>(null);
   const [progress, setProgress] = useState<ImportProgress | null>(null);
@@ -72,10 +84,18 @@ export function MarkdownImportFlow({ onClose }: Props) {
   const reloadTree = useTreeStore((s) => s.loadTree);
 
   useEffect(() => {
+    setMode(markdownMode);
+  }, [markdownMode]);
+
+  useEffect(() => {
+    if (importTarget === "newProject") {
+      setHasExistingOutline(false);
+      return;
+    }
     void getProject(getCurrentProjectId()).then((p) => {
       setHasExistingOutline(Boolean(p?.outline?.trim()));
     });
-  }, []);
+  }, [importTarget]);
 
   const showPreview = useCallback((result: MarkdownParseResult) => {
     setParsed(result);
@@ -171,7 +191,17 @@ export function MarkdownImportFlow({ onClose }: Props) {
     setPhase("importing");
     setErrors([]);
 
-    if (applyMetadata) {
+    try {
+      await prepareImportTarget(importTarget, {
+        title: parsed.projectTitle,
+      });
+    } catch {
+      toast.error(t("project.create.failed"));
+      setPhase("preview");
+      return;
+    }
+
+    if (importTarget === "currentProject" && applyMetadata) {
       try {
         await importProjectMetadata({ title: parsed.projectTitle });
       } catch (err) {
@@ -204,7 +234,7 @@ export function MarkdownImportFlow({ onClose }: Props) {
         imported: importResult.imported,
       }),
     );
-  }, [parsed, applyMetadata, t, reloadTree]);
+  }, [parsed, importTarget, applyMetadata, t, reloadTree]);
 
   const clearLocalState = useCallback(() => {
     setPhase("idle");
@@ -243,6 +273,7 @@ export function MarkdownImportFlow({ onClose }: Props) {
               onClick={() => {
                 if (mode === "single") return;
                 setMode("single");
+                onMarkdownModeChange("single");
                 clearLocalState();
               }}
               className={`rounded px-2 py-1 text-xs ${
@@ -261,6 +292,7 @@ export function MarkdownImportFlow({ onClose }: Props) {
               onClick={() => {
                 if (mode === "multi") return;
                 setMode("multi");
+                onMarkdownModeChange("multi");
                 clearLocalState();
               }}
               className={`rounded px-2 py-1 text-xs ${
@@ -336,13 +368,19 @@ export function MarkdownImportFlow({ onClose }: Props) {
               </li>
             </ul>
           </div>
-          <MetadataApplyPanel
-            applyMetadata={applyMetadata}
-            onApplyMetadataChange={setApplyMetadata}
-            outlineMode={outlineMode}
-            onOutlineModeChange={setOutlineMode}
-            hasExistingOutline={hasExistingOutline}
-          />
+          {importTarget === "newProject" ? (
+            <p className="text-xs text-muted-foreground">
+              {t("import.target.newProjectMetadataHint")}
+            </p>
+          ) : (
+            <MetadataApplyPanel
+              applyMetadata={applyMetadata}
+              onApplyMetadataChange={setApplyMetadata}
+              outlineMode={outlineMode}
+              onOutlineModeChange={setOutlineMode}
+              hasExistingOutline={hasExistingOutline}
+            />
+          )}
         </>
       )}
 

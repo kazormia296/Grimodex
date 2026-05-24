@@ -1,6 +1,7 @@
 import { Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ImportProgress } from "./importApi";
+import type { ImportTarget } from "./importTarget";
 
 interface ImportDropzoneProps {
   accept: string;
@@ -197,3 +198,31 @@ export function resolveOutline(
 }
 
 export { type MetadataApplyOptions };
+
+export function ImportTargetPanel({
+  importTarget,
+  onImportTargetChange,
+}: {
+  importTarget: ImportTarget;
+  onImportTargetChange: (target: ImportTarget) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <fieldset className="space-y-1 rounded-md border border-border p-3 text-sm">
+      <legend className="px-1 text-xs font-medium text-muted-foreground">
+        {t("import.target.label")}
+      </legend>
+      {(["newProject", "currentProject"] as const).map((target) => (
+        <label key={target} className="flex items-center gap-2">
+          <input
+            type="radio"
+            name="importTarget"
+            checked={importTarget === target}
+            onChange={() => onImportTargetChange(target)}
+          />
+          {t(`import.target.${target}`)}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
