@@ -32,6 +32,10 @@ import {
   ImportAnalyzingPlaceholder,
   ImportFlowFooter,
 } from "../importShared";
+import {
+  prepareImportTarget,
+  type ImportTarget,
+} from "../importTarget";
 
 type Phase =
   | "idle"
@@ -72,10 +76,11 @@ function computeConflicts(
 }
 
 interface Props {
+  importTarget: ImportTarget;
   onClose: () => void;
 }
 
-export function NovelcrafterImportFlow({ onClose }: Props) {
+export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<Phase>("idle");
   const [parsed, setParsed] = useState<ParseResult | null>(null);
@@ -101,8 +106,12 @@ export function NovelcrafterImportFlow({ onClose }: Props) {
     const names = collectAllTagNames(parsed.codexEntries);
     setAllTagNames(names);
     setTagTypeConfigs(new Map(names.map((n) => [n, { mode: "none" }])));
+    if (importTarget === "newProject") {
+      setExistingTypes([]);
+      return;
+    }
     void listCodexTypes(getCurrentProjectId()).then(setExistingTypes);
-  }, [parsed]);
+  }, [parsed, importTarget]);
 
   const handleFileChange = useCallback(
     async (file: File) => {
@@ -129,6 +138,17 @@ export function NovelcrafterImportFlow({ onClose }: Props) {
       if (!parsed) return;
       setPhase("importing");
       setErrors([]);
+
+      try {
+        await prepareImportTarget(importTarget, {
+          title: parsed.projectTitle,
+        });
+      } catch {
+        toast.error(t("project.create.failed"));
+        setPhase("preview");
+        return;
+      }
+
       const allErrors: string[] = [];
       const { imported: codexImported, errors: codexErrors } =
         await importCodexEntries(parsed.codexEntries, setProgress, tagOptions);
@@ -157,7 +177,7 @@ export function NovelcrafterImportFlow({ onClose }: Props) {
         }),
       );
     },
-    [parsed, t, reloadCodex, reloadSnippets, reloadTree, reloadSessions],
+    [parsed, importTarget, t, reloadCodex, reloadSnippets, reloadTree, reloadSessions],
   );
 
   const handlePreviewImport = useCallback(() => {

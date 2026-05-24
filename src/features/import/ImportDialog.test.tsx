@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { ImportSource, MarkdownImportMode } from "./importTypes";
+import { defaultImportTarget } from "./importTarget";
 
 /** Mirror ImportDialog top-level source tabs. */
 function topLevelSources(): ImportSource[] {
@@ -19,5 +20,12 @@ describe("ImportDialog source config", () => {
   it("maps markdown mode sub-tabs to file accept attributes", () => {
     expect(acceptForMarkdownMode("single")).toContain(".md");
     expect(acceptForMarkdownMode("multi")).toBe(".zip");
+  });
+
+  it("defaults import target by source and markdown mode", () => {
+    expect(defaultImportTarget("novelcrafter")).toBe("newProject");
+    expect(defaultImportTarget("kakuyomu")).toBe("newProject");
+    expect(defaultImportTarget("markdown", "single")).toBe("currentProject");
+    expect(defaultImportTarget("markdown", "multi")).toBe("newProject");
   });
 });

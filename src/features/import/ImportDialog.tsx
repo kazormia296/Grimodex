@@ -1,7 +1,12 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
-import type { ImportSource } from "./importTypes";
+import type { ImportSource, MarkdownImportMode } from "./importTypes";
+import {
+  defaultImportTarget,
+  type ImportTarget,
+} from "./importTarget";
+import { ImportTargetPanel } from "./importShared";
 import { NovelcrafterImportFlow } from "./flows/NovelcrafterImportFlow";
 import { KakuyomuImportFlow } from "./flows/KakuyomuImportFlow";
 import { MarkdownImportFlow } from "./flows/MarkdownImportFlow";
@@ -20,6 +25,10 @@ export function ImportDialog({ open, onClose }: Props) {
   const { t } = useTranslation();
   const dialogRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useState<ImportSource>("novelcrafter");
+  const [markdownMode, setMarkdownMode] = useState<MarkdownImportMode>("single");
+  const [importTarget, setImportTarget] = useState<ImportTarget>(() =>
+    defaultImportTarget("novelcrafter"),
+  );
   const [flowKey, setFlowKey] = useState(0);
 
   const handleClose = useCallback(() => {
@@ -31,6 +40,12 @@ export function ImportDialog({ open, onClose }: Props) {
     setSource(next);
     setFlowKey((k) => k + 1);
   }, []);
+
+  useEffect(() => {
+    setImportTarget(
+      defaultImportTarget(source, source === "markdown" ? markdownMode : undefined),
+    );
+  }, [source, markdownMode]);
 
   useEffect(() => {
     if (open) dialogRef.current?.focus();
@@ -89,18 +104,34 @@ export function ImportDialog({ open, onClose }: Props) {
           ))}
         </div>
 
+        <ImportTargetPanel
+          importTarget={importTarget}
+          onImportTargetChange={setImportTarget}
+        />
+
         <div
           key={flowKey}
           className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto"
         >
           {source === "novelcrafter" && (
-            <NovelcrafterImportFlow onClose={handleClose} />
+            <NovelcrafterImportFlow
+              importTarget={importTarget}
+              onClose={handleClose}
+            />
           )}
           {source === "kakuyomu" && (
-            <KakuyomuImportFlow onClose={handleClose} />
+            <KakuyomuImportFlow
+              importTarget={importTarget}
+              onClose={handleClose}
+            />
           )}
           {source === "markdown" && (
-            <MarkdownImportFlow onClose={handleClose} />
+            <MarkdownImportFlow
+              importTarget={importTarget}
+              markdownMode={markdownMode}
+              onMarkdownModeChange={setMarkdownMode}
+              onClose={handleClose}
+            />
           )}
         </div>
       </div>

@@ -117,4 +117,12 @@ describe("ProjectMenu", () => {
     fireEvent.click(screen.getByTestId("project-create-open"));
     expect(screen.getByTestId("mock-create-submit")).toBeInTheDocument();
   });
+
+  it("calls onOpenImport when import is clicked", () => {
+    const onOpenImport = vi.fn();
+    render(<ProjectMenu onOpenImport={onOpenImport} />);
+    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    fireEvent.click(screen.getByTestId("project-import-open"));
+    expect(onOpenImport).toHaveBeenCalledOnce();
+  });
 });

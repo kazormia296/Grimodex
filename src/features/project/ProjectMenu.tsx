@@ -8,7 +8,7 @@ import {
 } from "./projectStore";
 import { CreateProjectDialog } from "./CreateProjectDialog";
 
-export function ProjectMenu() {
+export function ProjectMenu({ onOpenImport }: { onOpenImport?: () => void }) {
   const { t } = useTranslation();
   const currentProjectId = useCurrentProjectId();
   const currentProject = useCurrentProject();
@@ -157,6 +157,20 @@ export function ProjectMenu() {
               <span className="w-4" />
               {t("project.create.action")}
             </button>
+            {onOpenImport && (
+              <button
+                type="button"
+                data-testid="project-import-open"
+                onClick={() => {
+                  setIsOpen(false);
+                  onOpenImport();
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+              >
+                <span className="w-4" />
+                {t("project.import.action")}
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -546,11 +546,8 @@ function EditorScreen() {
         data-tauri-drag-region
       >
         <GrimodexLogo height={24} className="text-foreground" />
-        <WorkspaceMenu
-          onOpenSnapshot={() => setShowSnapshotModal(true)}
-          onOpenImport={() => setShowImportDialog(true)}
-        />
-        <ProjectMenu />
+        <WorkspaceMenu onOpenSnapshot={() => setShowSnapshotModal(true)} />
+        <ProjectMenu onOpenImport={() => setShowImportDialog(true)} />
         <HistoryButtons />
         <button
           type="button"
