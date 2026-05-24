@@ -2,10 +2,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import type { ImportSource, MarkdownImportMode } from "./importTypes";
-import {
-  defaultImportTarget,
-  type ImportTarget,
-} from "./importTarget";
+import { defaultImportTarget, type ImportTarget } from "./importTarget";
 import { ImportTargetPanel } from "./importShared";
 import { NovelcrafterImportFlow } from "./flows/NovelcrafterImportFlow";
 import { KakuyomuImportFlow } from "./flows/KakuyomuImportFlow";
@@ -25,7 +22,8 @@ export function ImportDialog({ open, onClose }: Props) {
   const { t } = useTranslation();
   const dialogRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useState<ImportSource>("novelcrafter");
-  const [markdownMode, setMarkdownMode] = useState<MarkdownImportMode>("single");
+  const [markdownMode, setMarkdownMode] =
+    useState<MarkdownImportMode>("single");
   const [importTarget, setImportTarget] = useState<ImportTarget>(() =>
     defaultImportTarget("novelcrafter"),
   );
@@ -43,7 +41,10 @@ export function ImportDialog({ open, onClose }: Props) {
 
   useEffect(() => {
     setImportTarget(
-      defaultImportTarget(source, source === "markdown" ? markdownMode : undefined),
+      defaultImportTarget(
+        source,
+        source === "markdown" ? markdownMode : undefined,
+      ),
     );
   }, [source, markdownMode]);
 
@@ -76,7 +77,10 @@ export function ImportDialog({ open, onClose }: Props) {
         tabIndex={-1}
         className="flex min-h-0 flex-1 flex-col gap-4"
       >
-        <h2 id="import-dialog-title" className="shrink-0 text-base font-semibold">
+        <h2
+          id="import-dialog-title"
+          className="shrink-0 text-base font-semibold"
+        >
           {t("import.dialogTitleUnified")}
         </h2>
 

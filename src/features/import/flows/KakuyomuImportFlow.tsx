@@ -8,10 +8,7 @@ import type { ImportProgress } from "../importApi";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { getProject } from "@/features/project/api";
 import { useTreeStore } from "@/features/tree/treeStore";
-import {
-  countFoldersInTree,
-  countScenesInTree,
-} from "../markdownParser";
+import { countFoldersInTree, countScenesInTree } from "../markdownParser";
 import {
   ImportDropzone,
   ImportErrorList,
@@ -23,10 +20,7 @@ import {
   ImportAnalyzingPlaceholder,
   ImportFlowFooter,
 } from "../importShared";
-import {
-  prepareImportTarget,
-  type ImportTarget,
-} from "../importTarget";
+import { prepareImportTarget, type ImportTarget } from "../importTarget";
 
 interface Props {
   importTarget: ImportTarget;
@@ -94,8 +88,7 @@ export function KakuyomuImportFlow({ importTarget, onClose }: Props) {
       return;
     }
 
-    const shouldApplyMetadata =
-      importTarget === "newProject" || applyMetadata;
+    const shouldApplyMetadata = importTarget === "newProject" || applyMetadata;
 
     if (shouldApplyMetadata) {
       const project = await getProject(getCurrentProjectId());
@@ -107,13 +100,9 @@ export function KakuyomuImportFlow({ importTarget, onClose }: Props) {
       try {
         await importProjectMetadata({
           title:
-            importTarget === "newProject"
-              ? undefined
-              : parsed.metadata.title,
+            importTarget === "newProject" ? undefined : parsed.metadata.title,
           genre:
-            importTarget === "newProject"
-              ? undefined
-              : parsed.metadata.genre,
+            importTarget === "newProject" ? undefined : parsed.metadata.genre,
           outline,
         });
       } catch (err) {
@@ -142,7 +131,10 @@ export function KakuyomuImportFlow({ importTarget, onClose }: Props) {
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       {(phase === "idle" || phase === "preview") && (
         <ImportInputSlot>
-          <ImportDropzone accept=".zip" onFile={(f) => void handleFileChange(f)} />
+          <ImportDropzone
+            accept=".zip"
+            onFile={(f) => void handleFileChange(f)}
+          />
         </ImportInputSlot>
       )}
 

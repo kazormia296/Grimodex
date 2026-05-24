@@ -1,7 +1,10 @@
 import { useState, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { parseNovelcrafterZip, collectAllTagNames } from "../novelcrafterParser";
+import {
+  parseNovelcrafterZip,
+  collectAllTagNames,
+} from "../novelcrafterParser";
 import {
   importCodexEntries,
   importSnippets,
@@ -32,10 +35,7 @@ import {
   ImportAnalyzingPlaceholder,
   ImportFlowFooter,
 } from "../importShared";
-import {
-  prepareImportTarget,
-  type ImportTarget,
-} from "../importTarget";
+import { prepareImportTarget, type ImportTarget } from "../importTarget";
 
 type Phase =
   | "idle"
@@ -177,7 +177,15 @@ export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
         }),
       );
     },
-    [parsed, importTarget, t, reloadCodex, reloadSnippets, reloadTree, reloadSessions],
+    [
+      parsed,
+      importTarget,
+      t,
+      reloadCodex,
+      reloadSnippets,
+      reloadTree,
+      reloadSessions,
+    ],
   );
 
   const handlePreviewImport = useCallback(() => {
