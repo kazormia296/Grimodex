@@ -7,6 +7,9 @@
 
 import { unzipSync, strFromU8 } from "fflate";
 import yaml from "js-yaml";
+import type { ParsedChapter, ParsedScene } from "./importTypes";
+
+export type { ParsedChapter, ParsedScene } from "./importTypes";
 
 // ─────────────────────────────────────────────────────────────────
 // Output types
@@ -43,27 +46,6 @@ export interface ParsedSnippet {
   title: string;
   /** Raw markdown body (stored verbatim as snippet content) */
   content: string;
-}
-
-/** A scene parsed from novel.md (under a chapter). */
-export interface ParsedScene {
-  /** New Grimodex UUID */
-  id: string;
-  title: string;
-  /**
-   * Verbatim text between this scene's heading and the next heading.
-   * Bullets, `---` separators, and prose are all preserved as-is — the body
-   * editor treats them as plain paragraph text after import.
-   */
-  body: string;
-}
-
-/** A chapter parsed from novel.md (`## Heading`). */
-export interface ParsedChapter {
-  /** New Grimodex UUID */
-  id: string;
-  title: string;
-  scenes: ParsedScene[];
 }
 
 /** A single message inside an imported chat session. */

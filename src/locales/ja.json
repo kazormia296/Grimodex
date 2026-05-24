@@ -34,6 +34,7 @@
     "newWorkspace": "新規ワークスペース",
     "startScreen": "スタート画面",
     "projectSnapshot": "プロジェクトスナップショット…",
+    "import": "インポート…",
     "importNovelcrafter": "Novelcrafterからインポート…",
     "fallback": "ワークスペース"
   },
@@ -67,6 +68,13 @@
   },
   "import": {
     "dialogTitle": "Novelcrafterからインポート",
+    "dialogTitleUnified": "インポート",
+    "sourceLabel": "インポート形式",
+    "source": {
+      "novelcrafter": "Novelcrafter",
+      "kakuyomu": "カクヨム",
+      "markdown": "Markdown"
+    },
     "dropzone": "ZIPファイルをドロップ、またはクリックして選択",
     "dropzoneAccept": ".zip",
     "bodyMarkdownOnly": "本文インポートはMarkdown形式 (full markdown) でエクスポートされたZIPのみ対応しています。docx / html 形式の本文は読み込まれません。",
@@ -88,6 +96,8 @@
     "close": "閉じる",
     "noFile": "ファイルが選択されていません",
     "invalidZip": "有効なZIPファイルを選択してください",
+    "invalidKakuyomu": "有効なカクヨムバックアップZIPを選択してください",
+    "invalidMarkdown": "有効なMarkdownファイルを選択してください",
     "tagMappingTitle": "タグ → CodexType マッピング",
     "tagMappingSubtitle": "タグをCodexTypeとして使用する場合は設定してください。設定しないタグはそのまま残ります。",
     "tagMappingNone": "使用しない",
@@ -98,7 +108,31 @@
     "conflictTitle": "タイプの競合",
     "conflictSubtitle": "{{count}}件のエントリに複数のタイプタグが付いています。各エントリで使用するタグを選択してください。",
     "conflictBack": "戻る",
-    "conflictImport": "インポート"
+    "conflictImport": "インポート",
+    "kakuyomu": {
+      "title": "作品タイトル",
+      "applyMetadata": "作品タイトル・紹介文・ジャンルを現在のプロジェクトに反映",
+      "flatStructureWarning": "目次に章見出しがありません — 全エピソードを1つのフォルダに配置します",
+      "success": "インポート完了: フォルダ {{folders}} / シーン {{scenes}}（{{imported}} ノード）"
+    },
+    "markdown": {
+      "modeLabel": "Markdown 入力形式",
+      "singleFile": "単一ファイル",
+      "folderOrZip": "フォルダ / ZIP",
+      "folderOrZipHint": "Markdownファイルを含むZIP",
+      "headingRule": "見出し: # タイトル / ## 章 / ### シーン（2段のみの場合は # 章 / ## シーン）",
+      "pickFolder": "フォルダを選択…",
+      "pickFolderBrowser": "フォルダを選択（ブラウザ）",
+      "noFiles": "Markdownファイルが見つかりません",
+      "folderError": "フォルダの読み込みに失敗しました",
+      "success": "インポート完了: フォルダ {{folders}} / シーン {{scenes}}（{{imported}} ノード）"
+    },
+    "metadata": {
+      "outlineExists": "既存のあらすじがある場合",
+      "overwrite": "上書き",
+      "append": "末尾に追記",
+      "skip": "反映しない"
+    }
   },
   "legal": {
     "eula": {

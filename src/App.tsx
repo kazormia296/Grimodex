@@ -12,7 +12,7 @@ import { useSyncUiScale } from "@/features/workspace/useSyncUiScale";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import type { SettingsCategory } from "@/features/settings/types";
 import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
-import { NovelcrafterImportDialog } from "@/features/import/NovelcrafterImportDialog";
+import { ImportDialog } from "@/features/import/ImportDialog";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
 import { useLayoutStore, type PanelId } from "@/features/layout/layoutStore";
@@ -601,7 +601,7 @@ function EditorScreen() {
         open={showSnapshotModal}
         onClose={() => setShowSnapshotModal(false)}
       />
-      <NovelcrafterImportDialog
+      <ImportDialog
         open={showImportDialog}
         onClose={() => setShowImportDialog(false)}
       />
