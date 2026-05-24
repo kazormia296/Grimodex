@@ -34,6 +34,7 @@
     "newWorkspace": "New Workspace",
     "startScreen": "Start Screen",
     "projectSnapshot": "Project Snapshot…",
+    "import": "Import…",
     "importNovelcrafter": "Import from Novelcrafter…",
     "fallback": "Workspace"
   },
@@ -67,6 +68,13 @@
   },
   "import": {
     "dialogTitle": "Import from Novelcrafter",
+    "dialogTitleUnified": "Import",
+    "sourceLabel": "Import format",
+    "source": {
+      "novelcrafter": "Novelcrafter",
+      "kakuyomu": "Kakuyomu",
+      "markdown": "Markdown"
+    },
     "dropzone": "Drop a ZIP file here, or click to select",
     "dropzoneAccept": ".zip",
     "bodyMarkdownOnly": "Body import only supports Markdown (\"full markdown\") exports. Bodies exported as docx or html will not be imported.",
@@ -88,6 +96,8 @@
     "close": "Close",
     "noFile": "No file selected",
     "invalidZip": "Please select a valid ZIP file",
+    "invalidKakuyomu": "Please select a valid Kakuyomu backup ZIP",
+    "invalidMarkdown": "Please select a valid Markdown file",
     "tagMappingTitle": "Tag → CodexType Mapping",
     "tagMappingSubtitle": "Optionally map tags to CodexTypes. Tags without a mapping are kept as-is.",
     "tagMappingNone": "No mapping",
@@ -98,7 +108,31 @@
     "conflictTitle": "Type Conflicts",
     "conflictSubtitle": "{{count}} entries have multiple type tags. Select which tag to use for each.",
     "conflictBack": "Back",
-    "conflictImport": "Import"
+    "conflictImport": "Import",
+    "kakuyomu": {
+      "title": "Title",
+      "applyMetadata": "Apply title, synopsis, and genre to current project",
+      "flatStructureWarning": "No chapter headers in table of contents — all episodes placed in one folder",
+      "success": "Import complete: {{folders}} folders / {{scenes}} scenes ({{imported}} nodes)"
+    },
+    "markdown": {
+      "modeLabel": "Markdown input type",
+      "singleFile": "Single file",
+      "folderOrZip": "Folder / ZIP",
+      "folderOrZipHint": "ZIP containing Markdown files",
+      "headingRule": "Headings: # title / ## chapter / ### scene (two-level: # chapter / ## scene)",
+      "pickFolder": "Select folder…",
+      "pickFolderBrowser": "Select folder (browser)",
+      "noFiles": "No Markdown files found",
+      "folderError": "Failed to read folder",
+      "success": "Import complete: {{folders}} folders / {{scenes}} scenes ({{imported}} nodes)"
+    },
+    "metadata": {
+      "outlineExists": "When project synopsis already exists",
+      "overwrite": "Overwrite",
+      "append": "Append",
+      "skip": "Skip"
+    }
   },
   "legal": {
     "eula": {

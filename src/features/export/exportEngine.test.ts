@@ -601,18 +601,12 @@ describe("generateExport - ruby styles", () => {
   });
 
   it("denden-chars: per-character when base and annotation lengths match", () => {
-    const result = exportWithRubyStyle(
-      "denden-chars",
-      rubyDoc("対象", "ルビ"),
-    );
+    const result = exportWithRubyStyle("denden-chars", rubyDoc("対象", "ルビ"));
     expect(result).toContain("{対象|ル|ビ}");
   });
 
   it("game-engine: per-character when base and annotation lengths match", () => {
-    const result = exportWithRubyStyle(
-      "game-engine",
-      rubyDoc("対象", "ルビ"),
-    );
+    const result = exportWithRubyStyle("game-engine", rubyDoc("対象", "ルビ"));
     expect(result).toContain("[ruby text=ル]対[ruby text=ビ]象");
   });
 

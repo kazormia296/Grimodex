@@ -29,12 +29,19 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { db } from "@/db/client";
 import { chatSessions, chatMessages } from "@/db/schema";
+import { updateProject } from "@/features/project/api";
+import { markdownToPmJson } from "@/features/external-mount/markdownBridge";
 import type {
   ParsedCodexEntry,
   ParsedSnippet,
   ParsedChapter,
   ParsedChatSession,
 } from "./novelcrafterParser";
+import {
+  chaptersToImportedNodes,
+  type ImportedNode,
+  type ParsedScene,
+} from "./importTypes";
 
 /**
  * How a tag maps to a CodexType during import.
@@ -153,6 +160,55 @@ function fieldValueToProseMirror(text: string): string {
     });
   }
   return JSON.stringify({ type: "doc", content: paragraphs });
+}
+
+type SceneContentSource =
+  | ParsedScene
+  | Extract<ImportedNode, { kind: "scene" }>;
+
+async function resolveSceneContent(scene: SceneContentSource): Promise<string> {
+  if (scene.bodyProseMirror) return scene.bodyProseMirror;
+  if (scene.bodyMarkdown) {
+    return JSON.stringify(markdownToPmJson(scene.bodyMarkdown));
+  }
+  if (scene.body) {
+    return fieldValueToProseMirror(scene.body);
+  }
+  return "{}";
+}
+
+function sceneCharCount(contentJson: string): number {
+  try {
+    const doc = JSON.parse(contentJson) as {
+      content?: { text?: string; content?: unknown[] }[];
+    };
+    let count = 0;
+    function walk(nodes: { text?: string; content?: unknown[] }[]): void {
+      for (const n of nodes) {
+        if (n.text) count += n.text.length;
+        if (n.content)
+          walk(n.content as { text?: string; content?: unknown[] }[]);
+      }
+    }
+    if (doc.content) walk(doc.content);
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+export async function importProjectMetadata(meta: {
+  title?: string;
+  outline?: string;
+  genre?: string;
+}): Promise<void> {
+  const projectId = getCurrentProjectId();
+  const patch: { title?: string; outline?: string; genre?: string } = {};
+  if (meta.title) patch.title = meta.title;
+  if (meta.outline) patch.outline = meta.outline;
+  if (meta.genre) patch.genre = meta.genre;
+  if (Object.keys(patch).length === 0) return;
+  await updateProject(projectId, patch);
 }
 
 /**
@@ -402,88 +458,121 @@ export async function importSnippets(
 // ─────────────────────────────────────────────────────────────────
 
 /**
- * Insert chapters (folders) and their scenes into the tree, appended after any
- * existing top-level nodes. Each scene's bullets become its synopsis and the
- * post-`---` body becomes its ProseMirror content.
+ * Insert a recursive folder/scene tree, appended after existing top-level nodes.
  */
-export async function importChapters(
-  chapters: ParsedChapter[],
+export async function importTree(
+  roots: ImportedNode[],
   onProgress?: (p: ImportProgress) => void,
 ): Promise<{ imported: number; errors: string[] }> {
   let imported = 0;
   const errors: string[] = [];
 
-  const totalScenes = chapters.reduce((sum, c) => sum + c.scenes.length, 0);
-  const total = chapters.length + totalScenes;
+  const total = countTreeNodes(roots);
   if (total === 0) {
     onProgress?.({ total: 0, done: 0, currentName: "" });
     return { imported: 0, errors };
   }
 
-  // Append chapters after any existing top-level nodes
   const allRoots = (await listNodes(getCurrentProjectId(), null)).slice();
   allRoots.sort((a, b) =>
     a.sortOrder < b.sortOrder ? -1 : a.sortOrder > b.sortOrder ? 1 : 0,
   );
-  const lastRootKey = allRoots.at(-1)?.sortOrder ?? null;
-  const chapterKeys = generateNKeysBetween(lastRootKey, null, chapters.length);
+  let lastSiblingKey = allRoots.at(-1)?.sortOrder ?? null;
 
   let done = 0;
-  for (let ci = 0; ci < chapters.length; ci++) {
-    const chapter = chapters[ci];
-    onProgress?.({ total, done, currentName: chapter.title });
-    try {
-      await createNode({
-        id: chapter.id,
-        projectId: getCurrentProjectId(),
-        nodeType: "folder",
-        title: chapter.title || "Untitled",
-        sortOrder: chapterKeys[ci],
-      });
-      imported++;
-      done++;
 
-      if (chapter.scenes.length > 0) {
-        const sceneKeys = generateNKeysBetween(
-          null,
-          null,
-          chapter.scenes.length,
-        );
-        for (let si = 0; si < chapter.scenes.length; si++) {
-          const scene = chapter.scenes[si];
-          onProgress?.({ total, done, currentName: scene.title });
-          try {
-            await createNode({
-              id: scene.id,
-              projectId: getCurrentProjectId(),
-              parentId: chapter.id,
-              nodeType: "scene",
-              title: scene.title || "Untitled",
-              sortOrder: sceneKeys[si],
-            });
-            // Set body content if present
-            if (scene.body) {
-              await saveSceneContent(scene.id, {
-                content: fieldValueToProseMirror(scene.body),
-                charCount: scene.body.length,
-              });
-            }
-            imported++;
-          } catch (sceneErr) {
-            errors.push(`${scene.title}: ${String(sceneErr)}`);
-          }
+  async function insertNodes(
+    nodes: ImportedNode[],
+    parentId: string | null,
+  ): Promise<void> {
+    const keys = generateNKeysBetween(null, null, nodes.length);
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i]!;
+      if (node.kind === "folder") {
+        onProgress?.({ total, done, currentName: node.title });
+        try {
+          const sortOrder =
+            parentId === null
+              ? (() => {
+                  const key = generateNKeysBetween(lastSiblingKey, null, 1)[0]!;
+                  lastSiblingKey = key;
+                  return key;
+                })()
+              : keys[i]!;
+          await createNode({
+            id: node.id,
+            projectId: getCurrentProjectId(),
+            parentId: parentId ?? undefined,
+            nodeType: "folder",
+            title: node.title || "Untitled",
+            sortOrder,
+          });
+          imported++;
           done++;
+          await insertNodes(node.children, node.id);
+        } catch (err) {
+          errors.push(`${node.title}: ${String(err)}`);
+          done += countTreeNodes(node.children);
         }
+      } else {
+        onProgress?.({ total, done, currentName: node.title });
+        try {
+          const sortOrder =
+            parentId === null
+              ? (() => {
+                  const key = generateNKeysBetween(lastSiblingKey, null, 1)[0]!;
+                  lastSiblingKey = key;
+                  return key;
+                })()
+              : keys[i]!;
+          await createNode({
+            id: node.id,
+            projectId: getCurrentProjectId(),
+            parentId: parentId ?? undefined,
+            nodeType: "scene",
+            title: node.title || "Untitled",
+            sortOrder,
+          });
+          const content = await resolveSceneContent(node);
+          if (content !== "{}") {
+            await saveSceneContent(node.id, {
+              content,
+              charCount: sceneCharCount(content),
+            });
+          }
+          imported++;
+        } catch (err) {
+          errors.push(`${node.title}: ${String(err)}`);
+        }
+        done++;
+        await new Promise((r) => setTimeout(r, 0));
       }
-    } catch (chapterErr) {
-      errors.push(`${chapter.title}: ${String(chapterErr)}`);
-      // Skip ahead past this chapter's scenes in progress
-      done += chapter.scenes.length;
     }
   }
 
+  await insertNodes(roots, null);
   onProgress?.({ total, done: total, currentName: "" });
   return { imported, errors };
+}
+
+function countTreeNodes(nodes: ImportedNode[]): number {
+  let count = 0;
+  for (const n of nodes) {
+    count++;
+    if (n.kind === "folder") count += countTreeNodes(n.children);
+  }
+  return count;
+}
+
+/**
+ * Insert chapters (folders) and their scenes into the tree, appended after any
+ * existing top-level nodes.
+ */
+export async function importChapters(
+  chapters: ParsedChapter[],
+  onProgress?: (p: ImportProgress) => void,
+): Promise<{ imported: number; errors: string[] }> {
+  return importTree(chaptersToImportedNodes(chapters), onProgress);
 }
 
 // ─────────────────────────────────────────────────────────────────
