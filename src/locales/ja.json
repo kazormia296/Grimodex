@@ -2305,7 +2305,57 @@
       "breakPlaceholder": "ブレイク文字を入力",
       "preview": "プレビュー",
       "previewError": "(プレビュー生成エラー)",
-      "noScenesSelected": "(シーンが選択されていません)"
+      "noScenesSelected": "(シーンが選択されていません)",
+      "narouEmphasisBatch": "なろう傍点（|語《・・》）",
+      "narouEmphasisPerChar": "なろう傍点（1文字ずつ）",
+      "preset": {
+        "label": "プリセット",
+        "section": "投稿サイトプリセット",
+        "custom": "カスタム",
+        "narou": "小説家になろう",
+        "kakuyomu": "カクヨム",
+        "alphapolis": "アルファポリス",
+        "pixiv": "pixiv 小説",
+        "hameln": "ハーメルン",
+        "novelup": "ノベルアップ+",
+        "novelism": "ノベリズム",
+        "aozora": "青空文庫テキスト",
+        "genericMd": "汎用 Markdown",
+        "wordHtml": "Word 貼付 (HTML)",
+        "userPresetsGroup": "ユーザー定義",
+        "builtinGroup": "ビルトイン",
+        "genericGroup": "汎用"
+      },
+      "presetNote": {
+        "narou": "傍点は |語《・・》 形式。1文字ずつ分割するオプションあり。",
+        "kakuyomu": "親文字 20 字 / ルビ 50 字の上限あり。",
+        "pixiv": "pixiv の傍点記法は暫定。貼付後に UI で傍点を再適用する必要がある場合があります。",
+        "novelism": "傍点は「記法変換 ON」設定の場合のみ有効です。",
+        "aozora": "青空文庫テキスト形式（｜《》＋傍点注記）。",
+        "genericMd": "Discord / Slack / note などへの貼付向け。",
+        "wordHtml": "Word / LibreOffice は <ruby> タグを解釈します。"
+      },
+      "presetOption": {
+        "pixivChapterNewpage": "章見出しの前に [newpage] を入れる",
+        "narouEmphasisPerChar": "傍点を 1 文字ずつ分割する"
+      },
+      "userPresets": {
+        "saveCurrent": "現在の設定を保存…",
+        "saveTitle": "プリセットを保存",
+        "namePlaceholder": "プリセット名",
+        "save": "保存",
+        "cancel": "キャンセル",
+        "emptyError": "名前を入力してください",
+        "tooLongError": "名前は 40 文字以内で入力してください",
+        "deleteConfirm": "「{{name}}」を削除しますか？",
+        "delete": "削除"
+      },
+      "validation": {
+        "title": "{{site}} の文字数上限を超えています",
+        "rubyExceeded": "ルビ {{actual}}/{{limit}} 字「{{base}}」",
+        "baseExceeded": "親文字 {{actual}}/{{limit}} 字「{{base}}」",
+        "moreCount": "他 {{count}} 件"
+      }
     }
   },
   "externalMount": {

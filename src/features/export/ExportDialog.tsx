@@ -18,8 +18,13 @@ import {
 import type { ExportTreeState } from "./ExportTree";
 import { ExportSettingsPanel } from "./ExportSettingsPanel";
 import { generateExport } from "./exportEngine";
-import type { ExportSettings } from "./types";
+import type { ExportSettings, ExportPresetId } from "./types";
 import { DEFAULT_EXPORT_SETTINGS, EXPORT_SETTING_KEYS } from "./types";
+import {
+  parseUserPresets,
+  serializeUserPresets,
+  type UserExportPreset,
+} from "./exportUserPresets";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 
 // ────────────────────────────────────────────────────────────────────
@@ -59,6 +64,16 @@ function loadSettingsFromStore(
       EXPORT_SETTING_KEYS.includeTrashBin,
       DEFAULT_EXPORT_SETTINGS.includeTrashBin,
     ),
+    folderHeadingFormat: (s.get(EXPORT_SETTING_KEYS.folderHeadingFormat) ||
+      DEFAULT_EXPORT_SETTINGS.folderHeadingFormat) as ExportSettings["folderHeadingFormat"],
+    pixivChapterNewpage: s.getBoolean(
+      EXPORT_SETTING_KEYS.pixivChapterNewpage,
+      DEFAULT_EXPORT_SETTINGS.pixivChapterNewpage,
+    ),
+    narouEmphasisMode: (s.get(EXPORT_SETTING_KEYS.narouEmphasisMode) ||
+      DEFAULT_EXPORT_SETTINGS.narouEmphasisMode) as ExportSettings["narouEmphasisMode"],
+    exportPresetId: (s.get(EXPORT_SETTING_KEYS.exportPresetId) ||
+      DEFAULT_EXPORT_SETTINGS.exportPresetId) as ExportPresetId,
   };
 }
 
@@ -145,6 +160,7 @@ export function ExportDialog({ open, onClose }: Props) {
     DEFAULT_EXPORT_SETTINGS,
   );
   const [contentMap, setContentMap] = useState<Record<string, string>>({});
+  const [userPresets, setUserPresets] = useState<UserExportPreset[]>([]);
   const [isCopied, setIsCopied] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [projectTitle, setProjectTitle] = useState("Untitled Project");
@@ -162,6 +178,10 @@ export function ExportDialog({ open, onClose }: Props) {
     // 設定をロード
     const loaded = loadSettingsFromStore(settingsStore);
     setExportSettings(loaded);
+
+    // ユーザープリセットをロード
+    const userPresetsJson = settingsStore.get(EXPORT_SETTING_KEYS.userPresets);
+    setUserPresets(parseUserPresets(userPresetsJson));
 
     // コンテンツをロード
     loadContentMap()
@@ -215,6 +235,34 @@ export function ExportDialog({ open, onClose }: Props) {
       settingsStore.set(
         EXPORT_SETTING_KEYS.includeTrashBin,
         String(next.includeTrashBin),
+      );
+      settingsStore.set(
+        EXPORT_SETTING_KEYS.folderHeadingFormat,
+        next.folderHeadingFormat,
+      );
+      settingsStore.set(
+        EXPORT_SETTING_KEYS.pixivChapterNewpage,
+        String(next.pixivChapterNewpage),
+      );
+      settingsStore.set(
+        EXPORT_SETTING_KEYS.narouEmphasisMode,
+        next.narouEmphasisMode,
+      );
+      settingsStore.set(
+        EXPORT_SETTING_KEYS.exportPresetId,
+        next.exportPresetId,
+      );
+    },
+    [settingsStore],
+  );
+
+  // ユーザープリセット変更を永続化
+  const handleUserPresetsChange = useCallback(
+    (next: UserExportPreset[]) => {
+      setUserPresets(next);
+      settingsStore.set(
+        EXPORT_SETTING_KEYS.userPresets,
+        serializeUserPresets(next),
       );
     },
     [settingsStore],
@@ -316,6 +364,8 @@ export function ExportDialog({ open, onClose }: Props) {
             nodes={nodes}
             contentMap={contentMap}
             checkedIds={treeState.checkedIds}
+            userPresets={userPresets}
+            onUserPresetsChange={handleUserPresetsChange}
           />
         </div>
       </div>

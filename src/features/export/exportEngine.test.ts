@@ -309,6 +309,82 @@ describe("generateExport - folder headings (markdown)", () => {
   });
 });
 
+describe("generateExport - folder headings (pixiv-chapter)", () => {
+  it("pixiv-chapter フォーマット: [chapter:タイトル]", () => {
+    const f1 = makeFolder("f1", "第一部");
+    const s1 = makeScene("s1", "シーン1", "f1");
+    const result = generateExport({
+      nodes: [f1, s1],
+      contentMap: { s1: doc(para("本文")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({
+        format: "plaintext",
+        folderHeading: true,
+        folderHeadingFormat: "pixiv-chapter",
+      }),
+    });
+    expect(result).toContain("[chapter:第一部]");
+    expect(result).not.toContain("■");
+  });
+
+  it("pixiv-chapter + pixivChapterNewpage=true: [newpage] が章前に挿入される", () => {
+    const f1 = makeFolder("f1", "第一部");
+    const s1 = makeScene("s1", "シーン1", "f1");
+    const result = generateExport({
+      nodes: [f1, s1],
+      contentMap: { s1: doc(para("本文")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({
+        format: "plaintext",
+        folderHeading: true,
+        folderHeadingFormat: "pixiv-chapter",
+        pixivChapterNewpage: true,
+      }),
+    });
+    expect(result).toContain("[newpage]");
+    expect(result).toContain("[chapter:第一部]");
+    // [newpage] が [chapter:] より先に出る
+    expect(result.indexOf("[newpage]")).toBeLessThan(
+      result.indexOf("[chapter:"),
+    );
+  });
+
+  it("pixiv-chapter + pixivChapterNewpage=false: [newpage] は出ない", () => {
+    const f1 = makeFolder("f1", "第一部");
+    const s1 = makeScene("s1", "シーン1", "f1");
+    const result = generateExport({
+      nodes: [f1, s1],
+      contentMap: { s1: doc(para("本文")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({
+        format: "plaintext",
+        folderHeading: true,
+        folderHeadingFormat: "pixiv-chapter",
+        pixivChapterNewpage: false,
+      }),
+    });
+    expect(result).toContain("[chapter:第一部]");
+    expect(result).not.toContain("[newpage]");
+  });
+
+  it("pixiv-chapter は plaintext 専用で markdown/html では standard に戻る", () => {
+    const f1 = makeFolder("f1", "第一部");
+    const s1 = makeScene("s1", "シーン1", "f1");
+    const md = generateExport({
+      nodes: [f1, s1],
+      contentMap: { s1: doc(para("本文")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({
+        format: "markdown",
+        folderHeading: true,
+        folderHeadingFormat: "pixiv-chapter",
+      }),
+    });
+    expect(md).toContain("# 第一部");
+    expect(md).not.toContain("[chapter:");
+  });
+});
+
 describe("generateExport - folder headings (html)", () => {
   it("深さ0: <h1>", () => {
     const f1 = makeFolder("f1", "第一部");
@@ -739,6 +815,28 @@ describe("generateExport - emphasis dots styles", () => {
       settings: settings({ format: "plaintext", emphasisDotsStyle: null }),
     });
     expect(result).toContain("傍点");
+  });
+
+  it("narou-emphasis-batch: |語《・・》 形式（語の長さ分の中黒）", () => {
+    const s1 = makeScene("s1", "S");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: emphasisDoc() },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ emphasisDotsStyle: "narou-emphasis-batch" }),
+    });
+    expect(result).toContain("|重要《・・》");
+  });
+
+  it("narou-emphasis-per-char: 1文字ごとに |字《・》", () => {
+    const s1 = makeScene("s1", "S");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: emphasisDoc() },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ emphasisDotsStyle: "narou-emphasis-per-char" }),
+    });
+    expect(result).toContain("|重《・》|要《・》");
   });
 });
 
