@@ -143,9 +143,26 @@ export const CrossRegionMove: Story = {
     );
     expect(chatIcon).toBeTruthy();
 
+    // Aim the drop at the actual scenes-icon rect in the left stripe rather
+    // than a hard-coded (80, 200): when builtin:plan's left panels are all
+    // inactive the left content column collapses to 0px and (80, 200) lands
+    // in EditorArea, which the story stubs to a drop-attribute-less <div>,
+    // so resolveDropTargetFromPoint returns null and the move never fires.
+    // The scenes icon is always rendered in slot l0 of the left stripe.
+    const scenesIcon = canvasElement.querySelector<HTMLElement>(
+      '[data-stripe-icon="scenes"]',
+    );
+    expect(scenesIcon).toBeTruthy();
+    const rect = scenesIcon!.getBoundingClientRect();
+
     await userEvent.pointer([
       { keys: "[MouseLeft>]", target: chatIcon! },
-      { coords: { clientX: 80, clientY: 200 } },
+      {
+        coords: {
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2,
+        },
+      },
       { keys: "[/MouseLeft]" },
     ]);
 
