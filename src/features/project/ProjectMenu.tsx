@@ -8,7 +8,13 @@ import {
 } from "./projectStore";
 import { CreateProjectDialog } from "./CreateProjectDialog";
 
-export function ProjectMenu({ onOpenImport }: { onOpenImport?: () => void }) {
+export function ProjectMenu({
+  onOpenImport,
+  onOpenZipExport,
+}: {
+  onOpenImport?: () => void;
+  onOpenZipExport?: () => void;
+}) {
   const { t } = useTranslation();
   const currentProjectId = useCurrentProjectId();
   const currentProject = useCurrentProject();
@@ -169,6 +175,20 @@ export function ProjectMenu({ onOpenImport }: { onOpenImport?: () => void }) {
               >
                 <span className="w-4" />
                 {t("project.import.action")}
+              </button>
+            )}
+            {onOpenZipExport && (
+              <button
+                type="button"
+                data-testid="project-zip-export-open"
+                onClick={() => {
+                  setIsOpen(false);
+                  onOpenZipExport();
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+              >
+                <span className="w-4" />
+                {t("project.zipExport.action")}
               </button>
             )}
           </div>

@@ -33,19 +33,10 @@ import type {
   MapBoardRecord,
   ColorByAxis,
 } from "./types";
+import { DEFAULT_SHOW } from "./types";
 import { DEFAULT_PALETTE_ID, DEFAULT_COLOR_SLOT } from "@/lib/stickyPalettes";
 
-const DEFAULT_SHOW: ShowFlags = {
-  scenes: true,
-  codex: true,
-  snippets: true,
-  notes: false,
-  stickies: true,
-  aiBranch: false,
-  derivedEdges: true,
-  userEdges: true,
-  frames: true,
-};
+export { DEFAULT_SHOW } from "./types";
 
 export function parseShowConfig(json: string): ShowFlags {
   try {

@@ -391,8 +391,23 @@ function renderSceneContent(
   }
 }
 
+export interface ArchiveMarkdownOptions {
+  rubyStyle?: RubyStyle;
+  emphasisDotsStyle?: EmphasisDotsStyle;
+}
+
 /** ProseMirror JSON document → GFM markdown (pure, for file-backed scenes). */
 export function renderPmDocToMarkdown(contentJson: string): string {
+  return renderPmDocToArchiveMarkdown(contentJson);
+}
+
+/** Archive-oriented markdown: plain ruby/emphasis formats, no HTML. */
+export function renderPmDocToArchiveMarkdown(
+  contentJson: string,
+  options: ArchiveMarkdownOptions = {},
+): string {
+  const rubyStyle = options.rubyStyle ?? "parentheses";
+  const emphasisDotsStyle = options.emphasisDotsStyle ?? "double-angle";
   const ctx: RenderCtx = {
     settings: {
       format: "markdown",
@@ -403,14 +418,47 @@ export function renderPmDocToMarkdown(contentJson: string): string {
       sceneBreakStyle: "hr",
       sceneBreakCustom: "",
       sceneDividerCustom: "",
-      rubyStyle: "base",
-      emphasisDotsStyle: "plain",
+      rubyStyle,
+      emphasisDotsStyle,
       includeTrashBin: false,
     },
-    resolvedRuby: "base",
-    resolvedEmphasis: "plain",
+    resolvedRuby: rubyStyle,
+    resolvedEmphasis: emphasisDotsStyle,
   };
   return renderSceneContent(contentJson, ctx).trimEnd() + "\n";
+}
+
+function htmlToPlainText(html: string): string {
+  if (typeof DOMParser !== "undefined") {
+    return (
+      new DOMParser().parseFromString(html, "text/html").body.textContent ??
+      html
+    );
+  }
+  return html
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * DB 本文 → archive 用 Markdown。
+ * シーン/Codex は ProseMirror JSON。スニペットはプレーンテキストや HTML もあり得る。
+ */
+export function renderArchiveBodyFromDb(
+  raw: string | null | undefined,
+  options: ArchiveMarkdownOptions = {},
+): string {
+  if (raw == null || raw === "") return "\n";
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed === "{}") return "\n";
+
+  if (trimmed.startsWith("{")) {
+    return renderPmDocToArchiveMarkdown(raw, options);
+  }
+
+  const body = trimmed.startsWith("<") ? htmlToPlainText(raw) : raw;
+  return body.trimEnd() + "\n";
 }
 
 // ────────────────────────────────────────────────────────────────────

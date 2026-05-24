@@ -31,6 +31,7 @@ import { useDebugLogStore } from "@/lib/debugLog";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
+import { ZipExportDialog } from "@/features/export/ZipExportDialog";
 import {
   COLOR_THEMES,
   DEFAULT_COLOR_THEME,
@@ -203,6 +204,7 @@ function EditorScreen() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
+  const [showZipExportDialog, setShowZipExportDialog] = useState(false);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -547,7 +549,10 @@ function EditorScreen() {
       >
         <GrimodexLogo height={24} className="text-foreground" />
         <WorkspaceMenu onOpenSnapshot={() => setShowSnapshotModal(true)} />
-        <ProjectMenu onOpenImport={() => setShowImportDialog(true)} />
+        <ProjectMenu
+          onOpenImport={() => setShowImportDialog(true)}
+          onOpenZipExport={() => setShowZipExportDialog(true)}
+        />
         <HistoryButtons />
         <button
           type="button"
@@ -594,6 +599,10 @@ function EditorScreen() {
         initialCategory={settingsInitialCategory}
       />
       <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
+      <ZipExportDialog
+        open={showZipExportDialog}
+        onClose={() => setShowZipExportDialog(false)}
+      />
       <ProjectSnapshotModal
         open={showSnapshotModal}
         onClose={() => setShowSnapshotModal(false)}

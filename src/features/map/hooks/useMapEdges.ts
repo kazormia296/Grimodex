@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import type { Edge } from "@xyflow/react";
-import { createCodexMatcher } from "@/features/codex/codexMatcher";
-import { posToNodeKey } from "../layouts/posToNodeKey";
+import { buildMapEdgesFromData } from "../boardToReactFlow";
 import type { ShowFlags, MapNodePositionRecord } from "../types";
 
 interface UseMapEdgesInput {
@@ -53,141 +52,32 @@ export function useMapEdges({
   onUserEdgeLabelSave,
 }: UseMapEdgesInput): Edge[] {
   return useMemo(() => {
-    const derived: Edge[] = [];
+    const edges = buildMapEdgesFromData({
+      codexEntries,
+      treeNodes,
+      snippetEntries,
+      phasesByEntry,
+      userEdges,
+      positions,
+      show,
+    });
 
-    const totalVisible = codexEntries.length + treeNodes.length;
-    if (show.derivedEdges && totalVisible > 200) {
-      console.warn(
-        `[Map] Derived edges auto-disabled: ${totalVisible} visible nodes exceed threshold of 200`,
-      );
-    }
+    if (!onUserEdgeLabelSave) return edges;
 
-    if (show.derivedEdges && totalVisible <= 200) {
-      // Codex parent-child edges
-      for (const e of codexEntries.filter((e) => e.parentId != null)) {
-        derived.push({
-          id: `derived:${e.id}->${e.parentId}`,
-          source: `codex:${e.parentId}`,
-          target: `codex:${e.id}`,
-          style: { stroke: "#999", strokeDasharray: "4 2" },
-          animated: false,
-          zIndex: 0,
-        });
-      }
-
-      // Phase anchor edges: codex → scene
-      const visibleSceneIds = new Set(
-        treeNodes.filter((n) => n.nodeType === "scene").map((n) => n.id),
-      );
-      const visibleCodexIds = new Set(codexEntries.map((e) => e.id));
-      for (const [entryId, phases] of Object.entries(phasesByEntry)) {
-        if (!visibleCodexIds.has(entryId)) continue;
-        for (const phase of phases) {
-          if (!phase.anchorNodeId) continue;
-          if (!visibleSceneIds.has(phase.anchorNodeId)) continue;
-          derived.push({
-            id: `phase-anchor:${phase.id}`,
-            source: `codex:${entryId}`,
-            target: `scene:${phase.anchorNodeId}`,
-            style: { stroke: "#D97706", strokeDasharray: "3 3", opacity: 0.7 },
-            animated: false,
-            zIndex: 0,
-            data: { label: phase.label },
-          });
-        }
-      }
-
-      if (codexEntries.length > 0) {
-        const matcher = createCodexMatcher(codexEntries);
-
-        // Scene mention edges
-        for (const scene of treeNodes.filter((n) => n.nodeType === "scene")) {
-          const text = [scene.title, scene.synopsis].filter(Boolean).join(" ");
-          if (!text) continue;
-          const seen = new Set<string>();
-          for (const m of matcher(text)) {
-            if (seen.has(m.entryId)) continue;
-            seen.add(m.entryId);
-            if (!visibleCodexIds.has(m.entryId)) continue;
-            derived.push({
-              id: `mention:${scene.id}->${m.entryId}`,
-              source: `scene:${scene.id}`,
-              target: `codex:${m.entryId}`,
-              style: {
-                stroke: "#0891B2",
-                strokeDasharray: "2 4",
-                opacity: 0.6,
-              },
-              animated: false,
-              zIndex: 0,
-            });
-          }
-        }
-
-        // Snippet origin edges. The dedup set lives outside the snippet loop
-        // because the edge id is keyed by (sceneId, entryId) — multiple snippets
-        // attached to the same scene that mention the same codex entry must
-        // collapse into one edge. A per-snippet Set would let the second
-        // snippet emit a duplicate id and trigger React's "two children with
-        // the same key" warning, forcing recovery reconciliation on every
-        // render.
-        const seenEdge = new Set<string>();
-        for (const snippet of snippetEntries.filter((s) => s.sceneId)) {
-          for (const m of matcher(snippet.content)) {
-            const key = `${snippet.sceneId}->${m.entryId}`;
-            if (seenEdge.has(key)) continue;
-            seenEdge.add(key);
-            if (!visibleCodexIds.has(m.entryId)) continue;
-            derived.push({
-              id: `snippet-origin:${key}`,
-              source: `scene:${snippet.sceneId!}`,
-              target: `codex:${m.entryId}`,
-              style: {
-                stroke: "#059669",
-                strokeDasharray: "1 4",
-                opacity: 0.5,
-              },
-              animated: false,
-              zIndex: 0,
-            });
-          }
-        }
-      }
-    }
-
-    const user: Edge[] = show.userEdges
-      ? userEdges
-          .map((ue) => {
-            const fromPos = positions.find((p) => p.id === ue.fromPositionId);
-            const toPos = positions.find((p) => p.id === ue.toPositionId);
-            const sourceId = posToNodeKey(fromPos);
-            const targetId = posToNodeKey(toPos);
-            if (!sourceId || !targetId) return null;
-            return {
-              id: `user:${ue.id}`,
-              source: sourceId,
-              target: targetId,
-              type: "user",
-              zIndex: 1,
-              data: {
-                forwardLabel: ue.forwardLabel,
-                backwardLabel: ue.backwardLabel,
-                style: ue.style,
-                color: ue.color,
-                direction: ue.direction,
-                onLabelSave: onUserEdgeLabelSave
-                  ? (
-                      field: "forwardLabel" | "backwardLabel",
-                      label: string | null,
-                    ) => onUserEdgeLabelSave(ue.id, field, label)
-                  : undefined,
-              },
-            } as Edge;
-          })
-          .filter((e): e is Edge => e !== null)
-      : [];
-
-    return [...derived, ...user];
+    return edges.map((edge) => {
+      if (edge.type !== "user" || !edge.id.startsWith("user:")) return edge;
+      const edgeId = edge.id.slice("user:".length);
+      return {
+        ...edge,
+        data: {
+          ...edge.data,
+          onLabelSave: (
+            field: "forwardLabel" | "backwardLabel",
+            label: string | null,
+          ) => onUserEdgeLabelSave(edgeId, field, label),
+        },
+      };
+    });
   }, [
     codexEntries,
     treeNodes,
@@ -195,8 +85,7 @@ export function useMapEdges({
     phasesByEntry,
     userEdges,
     positions,
-    show.derivedEdges,
-    show.userEdges,
+    show,
     onUserEdgeLabelSave,
   ]);
 }
