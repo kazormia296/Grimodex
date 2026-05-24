@@ -17,7 +17,7 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 - 型チェック: npx tsc --noEmit
 - Rustチェック: cd src-tauri && cargo check
 - Rust Lint: cd src-tauri && cargo clippy --all-targets
-- Rust テスト: cd src-tauri && cargo test
+- Rust テスト: cd src-tauri && cargo test --no-default-features（default features 有効時は libort_sys の glibc symbol mismatch でローカルリンク失敗）
 
 ## コード規約
 
