@@ -128,6 +128,39 @@ describe("markdownBridge", () => {
     });
   });
 
+  describe("breaks: true (Obsidian-default line breaks)", () => {
+    function nodeTypesInFirstPara(doc: Record<string, unknown>): string[] {
+      const first = (doc.content as Array<Record<string, unknown>>)[0]!;
+      return (first.content as Array<Record<string, unknown>>).map(
+        (n) => n.type as string,
+      );
+    }
+
+    it("single newline inside paragraph becomes hardBreak (not soft space)", () => {
+      const md = "hohohohoho\nyoyouy\nuiuiui\n";
+      const doc = markdownToPmJson(md);
+      const inner = nodeTypesInFirstPara(doc);
+      expect(inner).toEqual(["text", "hardBreak", "text", "hardBreak", "text"]);
+    });
+
+    it("blank line still produces a separate paragraph (not a hardBreak)", () => {
+      const md = "Para A\n\nPara B\n";
+      const doc = markdownToPmJson(md);
+      const types = (doc.content as Array<{ type: string }>).map((n) => n.type);
+      expect(types).toEqual(["paragraph", "paragraph"]);
+    });
+
+    it("full round-trip: a\\nb\\n\\nc → a\\nb\\n\\nc (hardBreak preserved, paragraph preserved)", () => {
+      const md = "a\nb\n\nc\n";
+      const pm = markdownToPmJson(md);
+      const back = pmJsonToMarkdown(pm);
+      expect(back).toBe("a\nb\n\nc\n");
+      // Idempotent — second round-trip must match.
+      const pm2 = markdownToPmJson(back);
+      expect(pmJsonToMarkdown(pm2)).toBe(back);
+    });
+  });
+
   it("round-trips a paragraph + HR + heading without re-promoting to Setext", () => {
     const md = "First paragraph.\n\n---\n\n## Heading\n\nBody.\n";
     const json = markdownToPmJson(md);
@@ -194,6 +227,24 @@ describe("renderPmDocToMarkdown GFM", () => {
     };
     const out = renderPmDocToMarkdown(JSON.stringify(doc));
     expect(out).toBe("Para A\n\nPara B\n\n## H\n\nPara C\n");
+  });
+
+  it("emits `\\n` for hardBreak node (round-trips with breaks: true parser)", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "a" },
+            { type: "hardBreak" },
+            { type: "text", text: "b" },
+          ],
+        },
+      ],
+    };
+    const out = renderPmDocToMarkdown(JSON.stringify(doc));
+    expect(out).toBe("a\nb\n");
   });
 
   it("survives double round-trip (paragraphs do NOT collapse into one)", () => {

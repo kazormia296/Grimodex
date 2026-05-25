@@ -55,7 +55,12 @@ const FILE_BACKED_EXTENSIONS: Extensions = [
       HTMLAttributes: { target: "_blank", rel: "noopener noreferrer" },
     },
   }),
-  Markdown.configure({ html: true }),
+  // `breaks: true` matches Obsidian's default ("Strict line breaks" OFF) and
+  // GFM — single newline within a paragraph becomes a hard break (visible).
+  // Round-trip safety: the doc-level join in exportEngine preserves paragraph
+  // boundaries via blank lines, and the `hardBreak` case there emits `\n` so
+  // a re-parse reproduces the same hardBreak node.
+  Markdown.configure({ html: true, breaks: true }),
   Placeholder.configure({
     placeholder: () => i18next.t("editor.placeholder"),
   }),

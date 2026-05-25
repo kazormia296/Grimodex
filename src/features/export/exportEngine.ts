@@ -194,6 +194,13 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       return applyMarks(raw, node.marks ?? [], ctx);
     }
 
+    case "hardBreak":
+      // With `Markdown.configure({ breaks: true })` on the parse side, a bare
+      // `\n` within paragraph text re-parses into a hardBreak node, so emitting
+      // just `\n` round-trips faithfully. (Avoid `\\\n` / `  \n` to keep disk
+      // contents clean for other editors like Obsidian.)
+      return "\n";
+
     case "ruby":
       return renderRuby(
         (node.attrs?.base as string) ?? "",
