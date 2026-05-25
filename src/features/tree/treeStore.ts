@@ -540,9 +540,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       set({
         nodes,
         scenes: sc,
-        activeSceneId: activeStillExists
-          ? prevActive
-          : (sc[0]?.id ?? ""),
+        activeSceneId: activeStillExists ? prevActive : (sc[0]?.id ?? ""),
         isLoading: false,
         expandedIds: chapters.map((c) => c.id),
         charCounts,
