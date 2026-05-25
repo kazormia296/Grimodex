@@ -64,6 +64,8 @@ export function serializeCodexEntries(
     const body = renderPmDocToArchiveMarkdown(entry.content, {
       rubyStyle: settings.rubyFormatForArchive,
       emphasisDotsStyle: settings.emphasisDotsFormatForArchive,
+      // See sceneSerializer.ts for the cross-mode hardBreak rationale.
+      strictLineBreaks: true,
     });
 
     const notesSection = entry.notes?.trim()

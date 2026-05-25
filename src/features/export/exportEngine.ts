@@ -484,13 +484,20 @@ export interface ArchiveMarkdownOptions {
   emphasisDotsStyle?: EmphasisDotsStyle;
   /**
    * Must match the parser's `breaks` setting (see `RenderCtx.strictLineBreaks`).
-   * The file-backed write-back path (`pmJsonToMarkdown`) reads this from
-   * `editor.markdownStrictLineBreaks`. Export/archive callers leave it false
-   * for diff-friendly bare `\n` — but note the asymmetric risk: archives are
-   * re-importable via `importApi → markdownToPmJson`, so if a user re-imports
-   * an archive while strict mode is on, hardBreak nodes will collapse to soft
-   * breaks (same class of data loss as the bug this option fixes). Tracked as
-   * a follow-up; not in scope for the file-backed round-trip fix.
+   *
+   * Caller policy:
+   *  - `pmJsonToMarkdown` (file-backed write-back) — reads
+   *    `editor.markdownStrictLineBreaks` and passes it through; the parser
+   *    on the same machine uses the same setting, so round-trip is faithful.
+   *  - zipExport (`sceneSerializer`, `codexSerializer`) — pins `true`. The
+   *    archive may be re-imported by a different Grimodex instance via
+   *    `importApi → markdownToPmJson`; emitting the spec hardBreak marker
+   *    (`  \n`) survives the receiver's `editor.markdownStrictLineBreaks`
+   *    setting in either direction.
+   *  - generateExport (publish path, markdown/html/plaintext) — leaves it
+   *    false. Output is one-way for user consumption (Obsidian, GitHub,
+   *    投稿サイト); cross-mode re-import via importApi is not the canonical
+   *    flow, and diff-friendly bare `\n` is preferred for the publish format.
    */
   strictLineBreaks?: boolean;
 }
@@ -657,9 +664,10 @@ export function generateExport(input: GenerateExportInput): string {
     settings.emphasisDotsStyle ?? defaultEmphasisDotsStyle(settings.format);
 
   // generateExport is the user-facing publish path (markdown/html/plaintext).
-  // Strict-mode hardBreak isn't wired here yet — the file-backed write-back
-  // (`pmJsonToMarkdown`) is the critical round-trip; export-then-import is a
-  // separate, asymmetric path (see ArchiveMarkdownOptions.strictLineBreaks).
+  // Leaves strictLineBreaks=false for diff-friendly bare `\n` output. The
+  // cross-mode hardBreak risk is handled at the archive boundary by zipExport
+  // (which always emits `  \n`); publish output is one-way and not expected
+  // to round-trip back through importApi. See ArchiveMarkdownOptions docs.
   const ctx: RenderCtx = {
     settings,
     resolvedRuby,
