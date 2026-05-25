@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -16,11 +16,22 @@ vi.mock("./inlineAiApi", () => ({
 import { useInlineAiDiff } from "./useInlineAiDiff";
 import { useInlineAiStore } from "./inlineAiStore";
 
+const createdEditors: Editor[] = [];
+const hookUnmounts: Array<() => void> = [];
+
 function makeEditor(content: string): Editor {
-  return new Editor({
+  const editor = new Editor({
     extensions: [StarterKit, AuthorshipMark],
     content,
   });
+  createdEditors.push(editor);
+  return editor;
+}
+
+function renderInlineAiDiffHook(editor: Editor) {
+  const rendered = renderHook(() => useInlineAiDiff(editor));
+  hookUnmounts.push(rendered.unmount);
+  return rendered;
 }
 
 function getText(editor: Editor): string {
@@ -46,9 +57,16 @@ describe("useInlineAiDiff", () => {
     useInlineAiStore.getState().reset();
   });
 
+  afterEach(() => {
+    hookUnmounts.splice(0).forEach((unmount) => unmount());
+    createdEditors.splice(0).forEach((editor) => {
+      if (!editor.isDestroyed) editor.destroy();
+    });
+  });
+
   it("accept(insert): leaves generated text intact and adds authorship mark", () => {
     const editor = makeEditor("<p>hello world</p>");
-    const { result } = renderHook(() => useInlineAiDiff(editor));
+    const { result } = renderInlineAiDiffHook(editor);
 
     // 模擬: 挿入モードの chunk が届いた直後の状態を再現する。
     // "hello world" → PM [1,12). insertPos=6 の直後に "BRAVE" を挿入し、
@@ -102,7 +120,7 @@ describe("useInlineAiDiff", () => {
       .run();
     // doc は "helloBRAVE world"
 
-    const { result } = renderHook(() => useInlineAiDiff(editor));
+    const { result } = renderInlineAiDiffHook(editor);
     const ac = new AbortController();
     useInlineAiStore.getState().startGeneration({
       commandId: "rewrite",
@@ -139,7 +157,7 @@ describe("useInlineAiDiff", () => {
       })
       .run();
 
-    const { result } = renderHook(() => useInlineAiDiff(editor));
+    const { result } = renderInlineAiDiffHook(editor);
     const ac = new AbortController();
     useInlineAiStore.getState().startGeneration({
       commandId: "rewrite",
