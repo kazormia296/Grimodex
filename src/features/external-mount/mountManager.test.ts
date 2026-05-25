@@ -11,6 +11,8 @@ const {
   mockUpsertSceneBodyMentions,
   mockCodexState,
   mockChatState,
+  mockReadExternalFile,
+  mockGetExternalFileMtime,
 } = vi.hoisted(() => ({
   mockUpdateNode: vi.fn().mockResolvedValue(undefined),
   mockListAllNodes: vi.fn(),
@@ -25,6 +27,10 @@ const {
     activeSceneId: "",
     refreshContextLayers: vi.fn().mockResolvedValue(undefined),
   },
+  mockReadExternalFile: vi.fn().mockResolvedValue("Updated.\n"),
+  mockGetExternalFileMtime: vi
+    .fn()
+    .mockResolvedValue("2026-05-24T12:00:00.000Z"),
 }));
 
 vi.mock("@/features/tree/api", async (importOriginal) => {
@@ -76,13 +82,21 @@ vi.mock("@/features/editor/beat/bodyMentionApi", () => ({
   upsertSceneBodyMentions: mockUpsertSceneBodyMentions,
 }));
 
+vi.mock("./api", () => ({
+  readExternalFile: (...args: unknown[]) => mockReadExternalFile(...args),
+  getExternalFileMtime: (...args: unknown[]) =>
+    mockGetExternalFileMtime(...args),
+}));
+
 import { contentHash } from "./contentHash";
 import { markdownToPmJson } from "./markdownBridge";
 import {
   applyExternalContent,
   buildDbByUriMap,
+  handleFileEvent,
   hashForDiskContent,
   hashForNodeContent,
+  _resetPendingArchives,
 } from "./mountManager";
 import { useExternalRootStore } from "./externalRootStore";
 
@@ -302,6 +316,55 @@ describe("applyExternalContent — Codex body mention + chat refresh", () => {
     );
 
     expect(mockChatState.refreshContextLayers).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleFileEvent removed deferral", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetPendingArchives();
+    useExternalRootStore.setState({
+      roots: [{ id: "root-1", path: "/mnt", label: "M" }],
+      mutedWrites: [],
+      conflicts: [],
+    });
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "scene-1",
+        sourceUri: "external-root://root-1/chapter/01.md",
+        content: JSON.stringify(markdownToPmJson("Hello.\n")),
+      }),
+    ]);
+  });
+
+  it("does not archive immediately on removed; cancels when changed follows", async () => {
+    vi.useFakeTimers();
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "removed",
+    });
+
+    expect(mockUpdateNode).not.toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({ archivedAt: expect.any(String) }),
+    );
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "changed",
+    });
+
+    await vi.advanceTimersByTimeAsync(6000);
+
+    expect(mockUpdateNode).not.toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({ archivedAt: expect.any(String) }),
+    );
+
+    vi.useRealTimers();
   });
 });
 

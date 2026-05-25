@@ -28,7 +28,7 @@ import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { recordMark } from "@/lib/perfLog";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { useExternalRootStore } from "@/features/external-mount/externalRootStore";
 import { TreeRowSkeletonList } from "@/components/ui/skeleton-patterns";
 
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
@@ -60,7 +60,7 @@ export function ScenesPanel() {
   const autoRevealActiveScene = useTreeStore((s) => s.autoRevealActiveScene);
   const pendingRevealId = useTreeStore((s) => s.pendingRevealId);
   const projectId = useTreeStore((s) => s.projectId);
-  const loadTree = useTreeStore((s) => s.loadTree);
+  const mountInitialized = useExternalRootStore((s) => s.isInitialized);
   const createNode = useTreeStore((s) => s.createNode);
   const expandAll = useTreeStore((s) => s.expandAll);
   const collapseAll = useTreeStore((s) => s.collapseAll);
@@ -97,20 +97,21 @@ export function ScenesPanel() {
   );
   const [deleteConfirm, setDeleteConfirm] = useState<string[] | null>(null);
 
+  // Tab restore runs after external-mount reconcile so node IDs in the tree
+  // match persisted tab nodeIds (initializeExternalMounts → loadTree in App).
   useEffect(() => {
-    loadTree(getCurrentProjectId()).then(() => {
-      const nodeIds = new Set(useTreeStore.getState().nodes.map((n) => n.id));
-      useTabStore
-        .getState()
-        .loadTabState(nodeIds)
-        .then(() => {
-          useTabStore.getState().initAutoSave();
-        });
-    });
+    if (!mountInitialized) return;
+    const nodeIds = new Set(useTreeStore.getState().nodes.map((n) => n.id));
+    void useTabStore
+      .getState()
+      .loadTabState(nodeIds)
+      .then(() => {
+        useTabStore.getState().initAutoSave();
+      });
     return () => {
       useTabStore.getState().disposeAutoSave?.();
     };
-  }, [loadTree]);
+  }, [mountInitialized]);
 
   const { childMap, nodeMap, leafDescendantsByFolder, flatNodes } =
     useScenesDerivedData({

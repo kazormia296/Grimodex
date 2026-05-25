@@ -530,10 +530,19 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           nodePreviews[n.id] = { placed, unplaced };
         }
       }
+      const prevActive = get().activeSceneId;
+      const prevNode = prevActive
+        ? nodes.find((n) => n.id === prevActive)
+        : undefined;
+      const activeStillExists =
+        prevNode != null &&
+        (prevNode.nodeType === "scene" || prevNode.nodeType === "note");
       set({
         nodes,
         scenes: sc,
-        activeSceneId: sc[0]?.id ?? "",
+        activeSceneId: activeStillExists
+          ? prevActive
+          : (sc[0]?.id ?? ""),
         isLoading: false,
         expandedIds: chapters.map((c) => c.id),
         charCounts,

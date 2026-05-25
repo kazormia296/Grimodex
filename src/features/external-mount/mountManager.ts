@@ -43,6 +43,29 @@ interface RecentDelete {
 
 const recentDeletes: RecentDelete[] = [];
 
+interface PendingArchive {
+  rootId: string;
+  relPath: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const pendingArchives: PendingArchive[] = [];
+
+function cancelPendingArchive(rootId: string, relPath: string): void {
+  const idx = pendingArchives.findIndex(
+    (p) => p.rootId === rootId && p.relPath === relPath,
+  );
+  if (idx === -1) return;
+  clearTimeout(pendingArchives[idx].timer);
+  pendingArchives.splice(idx, 1);
+}
+
+/** @internal test helper */
+export function _resetPendingArchives(): void {
+  for (const p of pendingArchives) clearTimeout(p.timer);
+  pendingArchives.length = 0;
+}
+
 export async function loadRootsFromSettings(): Promise<ExternalRoot[]> {
   const projectId = getCurrentProjectId();
   const raw = await getProjectSetting(projectId, EXTERNAL_ROOTS_KEY);
@@ -458,6 +481,7 @@ async function handleFileChanged(
   root: ExternalRoot,
   relPath: string,
 ): Promise<void> {
+  cancelPendingArchive(root.id, relPath);
   const uri = buildSourceUri(root.id, relPath);
   const node = await findNodeByUri(uri);
   if (!node) return;
@@ -532,6 +556,7 @@ async function handleFileAdded(
   root: ExternalRoot,
   relPath: string,
 ): Promise<void> {
+  cancelPendingArchive(root.id, relPath);
   const scan = await mountApi.scanMount(root.id);
   const file = scan.files.find((f) => f.relPath === relPath);
   if (!file) return;
@@ -581,8 +606,20 @@ async function handleFileRemoved(
     return;
   }
 
-  await softArchiveNode(node.id);
-  await useTreeStore.getState().loadTree(getCurrentProjectId());
+  // Atomic saves (delete temp + rename) emit removed before added/changed.
+  // Defer archive so tabs and tree nodes stay stable through the window.
+  cancelPendingArchive(root.id, relPath);
+  const capturedUri = uri;
+  const timer = setTimeout(() => {
+    cancelPendingArchive(root.id, relPath);
+    void (async () => {
+      const still = await findNodeByUri(capturedUri);
+      if (!still || still.archivedAt) return;
+      await softArchiveNode(still.id);
+      await useTreeStore.getState().loadTree(getCurrentProjectId());
+    })();
+  }, RENAME_WINDOW_MS);
+  pendingArchives.push({ rootId: root.id, relPath, timer });
 }
 
 async function handleFileRenamed(
@@ -590,6 +627,8 @@ async function handleFileRenamed(
   oldRelPath: string,
   newRelPath: string,
 ): Promise<void> {
+  cancelPendingArchive(root.id, oldRelPath);
+  cancelPendingArchive(root.id, newRelPath);
   const oldUri = buildSourceUri(root.id, oldRelPath);
   const node = await findNodeByUri(oldUri);
   if (!node) {
