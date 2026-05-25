@@ -58,6 +58,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.spellCheck": "global",
   "editor.smartQuotes": "global",
   "editor.smartDashes": "global",
+  "editor.markdownStrictLineBreaks": "global",
   "editor.inlineAiCommand": "global",
   "editor.inlineAiShortcut": "global",
   "editor.smoothCaret": "global",
@@ -147,6 +148,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.spellCheck": "false",
   "editor.smartQuotes": "false",
   "editor.smartDashes": "false",
+  // false → Obsidian default / GFM: single newline = visible line break (hardBreak)
+  // true  → CommonMark spec: single newline = soft break (space)
+  "editor.markdownStrictLineBreaks": "false",
   "editor.inlineAiCommand": "true",
   "editor.inlineAiShortcut": "true",
   "editor.smoothCaret": "true",

@@ -267,6 +267,8 @@
       "smartQuotesDesc": "Auto-convert \" → “ ” (not recommended for Japanese)",
       "smartDashes": "Smart Dashes",
       "smartDashesDesc": "Auto-convert -- → —",
+      "markdownStrictLineBreaks": "Strict line breaks (CommonMark)",
+      "markdownStrictLineBreaksDesc": "OFF (default): single newline becomes a visible line break (matches Obsidian default / GFM). ON: single newline becomes a space per CommonMark spec. Takes effect on next file load",
       "inlineAi": "Inline AI",
       "slashCommand": "Enable / commands",
       "paletteShortcut": "Enable Ctrl+Shift+Space palette",

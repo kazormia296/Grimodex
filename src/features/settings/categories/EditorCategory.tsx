@@ -172,6 +172,15 @@ export function EditorCategory() {
         >
           <SettingToggle settingKey="editor.smartDashes" defaultValue={false} />
         </SettingRow>
+        <SettingRow
+          label={t("settings.editor.markdownStrictLineBreaks")}
+          description={t("settings.editor.markdownStrictLineBreaksDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.markdownStrictLineBreaks"
+            defaultValue={false}
+          />
+        </SettingRow>
       </SettingSection>
 
       <SettingSection title={t("settings.editor.inlineAi")}>

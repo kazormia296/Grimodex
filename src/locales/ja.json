@@ -267,6 +267,8 @@
       "smartQuotesDesc": "\" → “ ” の自動変換（日本語ではOFF推奨）",
       "smartDashes": "スマートダッシュ",
       "smartDashesDesc": "-- → — の自動変換",
+      "markdownStrictLineBreaks": "厳密な改行（CommonMark準拠）",
+      "markdownStrictLineBreaksDesc": "OFF（既定）: 単一改行を見える改行として表示（Obsidian デフォルト・GFM 相当）。ON: CommonMark 仕様通り、単一改行を空白として表示。設定変更は次回ファイル読み込みから反映",
       "inlineAi": "インライン AI",
       "slashCommand": "/ コマンドを有効化",
       "paletteShortcut": "Ctrl+Shift+Space パレットを有効化",

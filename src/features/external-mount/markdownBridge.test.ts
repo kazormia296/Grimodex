@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { renderPmDocToMarkdown } from "@/features/export/exportEngine";
 import { pmJsonToMarkdown, markdownToPmJson } from "./markdownBridge";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 
 describe("markdownBridge", () => {
   it("round-trips basic paragraph markdown", () => {
@@ -158,6 +159,49 @@ describe("markdownBridge", () => {
       // Idempotent — second round-trip must match.
       const pm2 = markdownToPmJson(back);
       expect(pmJsonToMarkdown(pm2)).toBe(back);
+    });
+  });
+
+  describe("editor.markdownStrictLineBreaks = true (CommonMark spec opt-in)", () => {
+    // Mutate the cache directly to avoid the debounced persist side-effects
+    // (the public `set()` triggers async workspace/DB writes that can outlive
+    // the happy-dom environment in test teardown).
+    function setStrict(value: "true" | "false"): void {
+      useSettingsStore.setState((s) => ({
+        cache: { ...s.cache, "editor.markdownStrictLineBreaks": value },
+      }));
+    }
+    afterEach(() => setStrict("false"));
+
+    it("falls back to soft break (space) when setting is enabled", () => {
+      setStrict("true");
+      const doc = markdownToPmJson("a\nb\n");
+      const first = (doc.content as Array<Record<string, unknown>>)[0]!;
+      const inner = first.content as Array<Record<string, unknown>>;
+      // Single text node with space-joined content, no hardBreak.
+      expect(inner).toHaveLength(1);
+      expect(inner[0]?.type).toBe("text");
+      expect(inner[0]?.text).toBe("a b");
+    });
+
+    it("toggling off restores hardBreak behaviour on the next parse", () => {
+      setStrict("true");
+      const strict = markdownToPmJson("a\nb\n");
+      const strictInner = (
+        (strict.content as Array<Record<string, unknown>>)[0]!.content as Array<
+          Record<string, unknown>
+        >
+      ).map((n) => n.type);
+      expect(strictInner).toEqual(["text"]);
+
+      setStrict("false");
+      const lax = markdownToPmJson("a\nb\n");
+      const laxInner = (
+        (lax.content as Array<Record<string, unknown>>)[0]!.content as Array<
+          Record<string, unknown>
+        >
+      ).map((n) => n.type);
+      expect(laxInner).toEqual(["text", "hardBreak", "text"]);
     });
   });
 
