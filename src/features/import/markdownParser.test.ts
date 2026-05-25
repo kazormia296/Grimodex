@@ -68,6 +68,63 @@ Content here.
     expect(result.chapters).toHaveLength(1);
     expect(result.chapters[0]?.scenes[0]?.bodyMarkdown).toBe("Content here.");
   });
+
+  it("rescues H2-direct content as a synthetic scene named after the chapter", () => {
+    // H1+H2+H3 mixed → chapterLevel=2, sceneLevel=3, skipTitle=true.
+    // Content under ## that appears before any ### used to be silently dropped.
+    const md = `# Title
+
+## 概要
+
+hohohohoho
+yoyouy
+uiuiui
+
+Body paragraph.
+
+## 詳細
+
+### サブセクション
+
+Detail body.
+`;
+    const result = parseMarkdownSingle(md);
+    expect(result.projectTitle).toBe("Title");
+    expect(result.chapters.map((c) => c.title)).toEqual(["概要", "詳細"]);
+    // 概要 chapter has no ### but its body must survive as a synthetic scene.
+    const gaiyou = result.chapters[0]!;
+    expect(gaiyou.scenes).toHaveLength(1);
+    expect(gaiyou.scenes[0]?.title).toBe("概要");
+    expect(gaiyou.scenes[0]?.bodyMarkdown).toContain("hohohohoho");
+    expect(gaiyou.scenes[0]?.bodyMarkdown).toContain("Body paragraph.");
+    // 詳細 chapter has a ### sub — that subsection owns its body.
+    const shousai = result.chapters[1]!;
+    expect(shousai.scenes.map((s) => s.title)).toEqual(["サブセクション"]);
+    expect(shousai.scenes[0]?.bodyMarkdown).toContain("Detail body.");
+  });
+
+  it("rescues a chapter with no scene-level heading at all (H1+H2+H3 mixed)", () => {
+    // headingLevels = [1, 2, 3] → chapterLevel=2, sceneLevel=3, skipTitle=true
+    // 参考資料 has no ### so its content would have been dropped.
+    const md = `# Title
+
+## 参考資料
+
+- one
+- two
+
+## 別章
+
+### サブ
+
+Sub body.
+`;
+    const result = parseMarkdownSingle(md);
+    const chap = result.chapters.find((c) => c.title === "参考資料")!;
+    expect(chap).toBeDefined();
+    expect(chap.scenes).toHaveLength(1);
+    expect(chap.scenes[0]?.bodyMarkdown).toContain("- one");
+  });
 });
 
 describe("parseMarkdownMulti", () => {

@@ -58,6 +58,28 @@ export function parseMarkdownSingle(text: string): MarkdownParseResult {
     bodyLines = [];
   }
 
+  /**
+   * H1+H2+H3 mixed files (skipTitle=true) where chapter-level (H2) has direct
+   * content before any scene-level (H3) heading used to silently drop that
+   * content. Synthesise a scene named after the chapter to hold it — this also
+   * captures the entire chapter body when no H3 ever appears.
+   *
+   * Returns false when there is no current chapter, signalling that the caller
+   * should drop the line (preamble text between the title and the first chapter
+   * heading has no natural home and is not preserved, matching prior behaviour).
+   */
+  function ensureScene(): boolean {
+    if (currentScene) return true;
+    if (!currentChapter) return false;
+    currentScene = {
+      id: crypto.randomUUID(),
+      title: currentChapter.title,
+      body: "",
+    };
+    currentChapter.scenes.push(currentScene);
+    return true;
+  }
+
   for (const line of lines) {
     const headingMatch = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
     if (headingMatch) {
@@ -101,11 +123,17 @@ export function parseMarkdownSingle(text: string): MarkdownParseResult {
         continue;
       }
 
-      if (currentScene) bodyLines.push(line);
+      // Heading at a non-chapter/scene level (e.g. H4 under chapter=H2/scene=H3
+      // or H1 inside a 2-level body) — preserve verbatim in body markdown so
+      // the source structure round-trips intact.
+      if (ensureScene()) bodyLines.push(line);
       continue;
     }
 
-    if (currentScene) bodyLines.push(line);
+    // Skip leading blank lines until the first body line of the scene to keep
+    // bodyMarkdown clean; once any body line exists, preserve blanks.
+    if (!currentScene && line.trim() === "") continue;
+    if (ensureScene()) bodyLines.push(line);
   }
 
   flushScene();

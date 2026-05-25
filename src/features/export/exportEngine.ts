@@ -242,7 +242,9 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
     }
 
     case "horizontalRule":
-      return "---\n";
+      // 前後に空行を確保 — `paragraph\n---\n` の形で書き戻すと CommonMark の
+      // Setext H2 マーカー扱いで再パース時に直前段落が H2 に昇格してしまう。
+      return "\n---\n\n";
 
     case "image": {
       const src = (node.attrs?.src as string) ?? "";
