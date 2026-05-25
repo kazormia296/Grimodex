@@ -343,9 +343,11 @@ export async function importCodexEntries(
       let icon: string | undefined;
       if (e.thumbnail) {
         try {
-          const file = new File([e.thumbnail], "thumbnail.jpg", {
-            type: "image/jpeg",
-          });
+          const file = new File(
+            [e.thumbnail as Uint8Array<ArrayBuffer>],
+            "thumbnail.jpg",
+            { type: "image/jpeg" },
+          );
           icon = await resizeAndConvertToWebP(file);
         } catch {
           // thumbnail conversion is best-effort

@@ -35,7 +35,7 @@ async function saveZipBlob(
   }
 
   const url = URL.createObjectURL(
-    new Blob([blob], { type: "application/zip" }),
+    new Blob([blob as Uint8Array<ArrayBuffer>], { type: "application/zip" }),
   );
   const a = document.createElement("a");
   a.href = url;
