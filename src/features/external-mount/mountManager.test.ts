@@ -86,6 +86,16 @@ vi.mock("./api", () => ({
   readExternalFile: (...args: unknown[]) => mockReadExternalFile(...args),
   getExternalFileMtime: (...args: unknown[]) =>
     mockGetExternalFileMtime(...args),
+  unregisterMount: vi.fn().mockResolvedValue(undefined),
+  registerMount: vi.fn().mockResolvedValue({ files: [], dirs: [] }),
+  scanMount: vi.fn().mockResolvedValue({ files: [], dirs: [] }),
+}));
+
+const mockGetProjectSetting = vi.fn().mockResolvedValue(null);
+const mockSetProjectSetting = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/features/settings/api", () => ({
+  getProjectSetting: (...args: unknown[]) => mockGetProjectSetting(...args),
+  setProjectSetting: (...args: unknown[]) => mockSetProjectSetting(...args),
 }));
 
 import { contentHash } from "./contentHash";
@@ -96,7 +106,9 @@ import {
   handleFileEvent,
   hashForDiskContent,
   hashForNodeContent,
+  initializeExternalMounts,
   _resetPendingArchives,
+  _resetRecentDeletes,
 } from "./mountManager";
 import { useExternalRootStore } from "./externalRootStore";
 
@@ -323,6 +335,7 @@ describe("handleFileEvent removed deferral", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetPendingArchives();
+    _resetRecentDeletes();
     useExternalRootStore.setState({
       roots: [{ id: "root-1", path: "/mnt", label: "M" }],
       mutedWrites: [],
@@ -365,6 +378,94 @@ describe("handleFileEvent removed deferral", () => {
     );
 
     vi.useRealTimers();
+  });
+
+  it("archives after RENAME_WINDOW_MS elapses with no follow-up event", async () => {
+    vi.useFakeTimers();
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "removed",
+    });
+
+    // Before timer fires: no archive yet.
+    expect(mockUpdateNode).not.toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({ archivedAt: expect.any(String) }),
+    );
+
+    await vi.advanceTimersByTimeAsync(6000);
+
+    // After RENAME_WINDOW_MS (5s) + buffer: softArchiveNode must have run.
+    expect(mockUpdateNode).toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({ archivedAt: expect.any(String) }),
+    );
+
+    vi.useRealTimers();
+  });
+});
+
+describe("initializeExternalMounts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetProjectSetting.mockResolvedValue(null);
+    mockListAllNodes.mockResolvedValue([]);
+    useExternalRootStore.setState({
+      roots: [],
+      missingRoots: [],
+      isInitialized: false,
+      conflicts: [],
+      mutedWrites: [],
+    });
+  });
+
+  // 1840c8c7 regression: setInitialized(true) を loadTree より先に呼ぶと
+  // ScenesPanel の useEffect([mountInitialized]) が nodes 空のまま発火し、
+  // タブ復元の validNodeIds が空セットになって scene/note タブが全部消える。
+  it("flips isInitialized only after loadTree resolves", async () => {
+    const events: string[] = [];
+    mockLoadTree.mockImplementation(async () => {
+      events.push("loadTree:start");
+      // microtask + macrotask の両方を渡って yield する
+      await Promise.resolve();
+      await new Promise((r) => setTimeout(r, 0));
+      events.push("loadTree:end");
+    });
+    const unsub = useExternalRootStore.subscribe((s, prev) => {
+      if (!prev.isInitialized && s.isInitialized) {
+        events.push("setInitialized");
+      }
+    });
+
+    await initializeExternalMounts();
+    unsub();
+
+    expect(events).toEqual([
+      "loadTree:start",
+      "loadTree:end",
+      "setInitialized",
+    ]);
+  });
+
+  // setInitialized が永久に立たないと ScenesPanel が loadTabState を呼ばず、
+  // タブが永久に空のまま (loadTabState で空書き込みされ persisted state が
+  // 破壊される副作用も含む)。settings 読み込みの例外でも finally に到達する。
+  it("sets isInitialized=true even when loadRootsFromSettings throws", async () => {
+    mockGetProjectSetting.mockRejectedValueOnce(new Error("boom"));
+
+    await initializeExternalMounts();
+
+    expect(useExternalRootStore.getState().isInitialized).toBe(true);
+  });
+
+  it("sets isInitialized=true even when loadTree throws", async () => {
+    mockLoadTree.mockRejectedValueOnce(new Error("loadTree boom"));
+
+    await initializeExternalMounts();
+
+    expect(useExternalRootStore.getState().isInitialized).toBe(true);
   });
 });
 

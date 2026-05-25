@@ -66,6 +66,11 @@ export function _resetPendingArchives(): void {
   pendingArchives.length = 0;
 }
 
+/** @internal test helper */
+export function _resetRecentDeletes(): void {
+  recentDeletes.length = 0;
+}
+
 export async function loadRootsFromSettings(): Promise<ExternalRoot[]> {
   const projectId = getCurrentProjectId();
   const raw = await getProjectSetting(projectId, EXTERNAL_ROOTS_KEY);
@@ -94,40 +99,63 @@ export async function initializeExternalMounts(): Promise<void> {
     }
   }
 
-  const roots = await loadRootsFromSettings();
-  useExternalRootStore.getState().setRoots(roots);
-  await purgeExpiredArchives();
-
   const missing: ExternalRoot[] = [];
-  for (const root of roots) {
-    let scan: ScanResult;
-    try {
-      scan = await mountApi.registerMount(root.id, root.path, root.label);
-    } catch (err) {
-      debugLog.error(
-        "ExternalMount",
-        `register failed: ${root.path}`,
-        errorDetail(err),
-      );
-      missing.push(root);
-      continue;
+  try {
+    const roots = await loadRootsFromSettings();
+    useExternalRootStore.getState().setRoots(roots);
+    await purgeExpiredArchives();
+
+    for (const root of roots) {
+      let scan: ScanResult;
+      try {
+        scan = await mountApi.registerMount(root.id, root.path, root.label);
+      } catch (err) {
+        debugLog.error(
+          "ExternalMount",
+          `register failed: ${root.path}`,
+          errorDetail(err),
+        );
+        missing.push(root);
+        continue;
+      }
+      try {
+        await reconcileRoot(root, scan);
+      } catch (err) {
+        debugLog.error(
+          "ExternalMount",
+          `reconcile failed: ${root.label}`,
+          errorDetail(err),
+        );
+        toast.error(
+          i18next.t("externalMount.toast.reconcileFailed", {
+            label: root.label,
+          }),
+        );
+      }
     }
+  } catch (err) {
+    // loadRootsFromSettings / purgeExpiredArchives が落ちると ScenesPanel が
+    // mountInitialized = true を永久に待ち、タブ復元 (loadTabState) が走らない。
+    // ここで握ってでも下の finally に到達させる。なお、setRoots 未実行で抜けた
+    // 場合 useExternalRootStore.roots は previous 値のままになるが、loadTree は
+    // DB から tree を組み立てるので表示は安全。
+    debugLog.error("ExternalMount", "initialize failed", errorDetail(err));
+  } finally {
+    useExternalRootStore.getState().setMissingRoots(missing);
+    // ScenesPanel.tsx の useEffect([mountInitialized]) は mountInitialized が
+    // true に変わった commit 時点の useTreeStore.nodes から validNodeIds を作り
+    // tabStore.loadTabState に渡す。setInitialized(true) を loadTree より先に
+    // 呼ぶと React の commit が yield 中に走り、nodes 空のまま useEffect が
+    // 発火して scene/note タブが全部除外される (1840c8c7 の race)。よって
+    // setInitialized は必ず loadTree 完了後。loadTree が落ちても初期化フラグは
+    // 立てて UI を進行させる。
     try {
-      await reconcileRoot(root, scan);
+      await useTreeStore.getState().loadTree(getCurrentProjectId());
     } catch (err) {
-      debugLog.error(
-        "ExternalMount",
-        `reconcile failed: ${root.label}`,
-        errorDetail(err),
-      );
-      toast.error(
-        i18next.t("externalMount.toast.reconcileFailed", { label: root.label }),
-      );
+      debugLog.error("ExternalMount", "loadTree failed", errorDetail(err));
     }
+    useExternalRootStore.getState().setInitialized(true);
   }
-  useExternalRootStore.getState().setMissingRoots(missing);
-  useExternalRootStore.getState().setInitialized(true);
-  await useTreeStore.getState().loadTree(getCurrentProjectId());
 }
 
 export async function addExternalMount(
