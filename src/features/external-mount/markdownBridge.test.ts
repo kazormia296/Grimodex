@@ -127,6 +127,47 @@ describe("markdownBridge", () => {
         "paragraph",
       ]);
     });
+
+    it("does not insert a blank line inside a multi-line raw HTML block (`<div>` on its own line)", () => {
+      // Bug #3: html:true モードの HTML block (`<div>...</div>`) 内に `---`
+      // 単独行があると、normalizer が直前に blank line を挿入して
+      // CommonMark rule 7 で HTML block を終端させ、`---` が HR、続き部分が
+      // 浮遊する paragraph + 閉じタグ単独行に分解されていた。HTML タグが
+      // 開いている間は rescue を skip し、block を保つ。
+      // TipTap schema は `<div>` ノードを持たないので最終的に1 paragraph に
+      // 集約される ("A --- B")。重要なのは HR が現れない (= 分裂しない) こと。
+      const md = "<div>\nA\n---\nB\n</div>\n";
+      const doc = markdownToPmJson(md);
+      const types = (doc.content as Array<{ type: string }>).map((n) => n.type);
+      expect(types).toEqual(["paragraph"]);
+    });
+
+    it('does not insert a blank line for `<div class="x">` (open tag with attributes on its own line)', () => {
+      const md = '<div class="note">\nA\n---\nB\n</div>\n';
+      const doc = markdownToPmJson(md);
+      const types = (doc.content as Array<{ type: string }>).map((n) => n.type);
+      expect(types).toEqual(["paragraph"]);
+    });
+
+    it("does not insert a blank line for `<div>text...` (open tag with same-line content)", () => {
+      // advisor-caught variant: end-anchored open-tag regex would miss this,
+      // letting rescue fire inside the still-open HTML block. The permissive
+      // regex catches it.
+      const md = "<div>text\nA\n---\nB\n</div>\n";
+      const doc = markdownToPmJson(md);
+      const types = (doc.content as Array<{ type: string }>).map((n) => n.type);
+      expect(types).toEqual(["paragraph"]);
+    });
+
+    it("still rescues `paragraph\\n---` when only an inline (single-line) HTML tag precedes it", () => {
+      // 1 行で開閉する HTML タグは block を開かない (CommonMark の HTML
+      // block 終了は空行 / 閉じタグ単独行)。直後の `paragraph\n---` は通常
+      // 通り rescue 対象。
+      const md = "<span>x</span>\nA\n---\nB\n";
+      const doc = markdownToPmJson(md);
+      const types = (doc.content as Array<{ type: string }>).map((n) => n.type);
+      expect(types).toContain("horizontalRule");
+    });
   });
 
   describe("breaks: true (Obsidian-default line breaks)", () => {

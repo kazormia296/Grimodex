@@ -42,13 +42,34 @@ export function markdownToPmJson(markdown: string): Record<string, unknown> {
  * promotes the prior paragraph into a heading — almost never the intent in
  * AI-generated / convention-following markdown that uses `---` as a horizontal
  * rule. We do NOT touch `***` / `___` (no Setext ambiguity) nor 1–2 dashes
- * (intentional Setext H2 with short underline). Code fences are skipped.
+ * (intentional Setext H2 with short underline).
+ *
+ * Skipped contexts:
+ *  - fenced code blocks (``` / ~~~) — `---` is literal code
+ *  - open multi-line raw HTML blocks (html:true mode) — inserting a blank line
+ *    would terminate the HTML block (CommonMark rule 7) and the `---` would
+ *    split off as an HR, leaving a floating closing tag paragraph (bug #3).
+ *
+ * The HTML detector is intentionally conservative — false positives only mean
+ * a `---` doesn't get its blank line inserted (the pre-fix behaviour), while
+ * false negatives reproduce bug #3. Over-skip is invisible; under-skip is a
+ * regression.
  */
+// HTML open-tag heuristic: line head starts with `<tag` followed by space, `>`,
+// `/>`, or end-of-line. Permissive on what follows (`<div>text...` and
+// `<div class="x">text...` both match) — false positives only suppress rescue,
+// which is the pre-fix behaviour and harmless. End-anchoring the regex would
+// miss `<div>text...` and reproduce bug #3 for that variant.
+const HTML_OPEN_TAG_LINE = /^\s{0,3}<[a-zA-Z][a-zA-Z0-9-]*(?:\s|\/?>|$)/;
+const HTML_CLOSE_TAG_ON_LINE = /<\/[a-zA-Z][a-zA-Z0-9-]*\s*>/;
+const HTML_CLOSE_ONLY_LINE = /^\s{0,3}<\/[a-zA-Z][a-zA-Z0-9-]*\s*>\s*$/;
+
 function normalizeImportedMarkdown(markdown: string): string {
   const lines = markdown.split("\n");
   const out: string[] = [];
   let inFence = false;
   let fenceMarker = "";
+  let inHtmlBlock = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     const fenceMatch = /^\s{0,3}(```+|~~~+)/.exec(line);
@@ -60,8 +81,26 @@ function normalizeImportedMarkdown(markdown: string): string {
         inFence = false;
       }
     }
+    if (!inFence) {
+      if (!inHtmlBlock) {
+        // Open only when the line starts with an HTML-ish tag AND does not
+        // also close one on the same line (single-line `<span>x</span>`
+        // doesn't open a multi-line block).
+        if (
+          HTML_OPEN_TAG_LINE.test(line) &&
+          !HTML_CLOSE_TAG_ON_LINE.test(line)
+        ) {
+          inHtmlBlock = true;
+        }
+      } else if (line.trim() === "" || HTML_CLOSE_ONLY_LINE.test(line)) {
+        // CommonMark type 6/7 blocks end on a blank line; we additionally
+        // close on a stand-alone closing tag for the well-formed case.
+        inHtmlBlock = false;
+      }
+    }
     const promotesPrevToSetextH2 =
       !inFence &&
+      !inHtmlBlock &&
       /^\s{0,3}-{3,}\s*$/.test(line) &&
       i > 0 &&
       lines[i - 1]!.trim() !== "";
