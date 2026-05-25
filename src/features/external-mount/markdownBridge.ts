@@ -1,13 +1,25 @@
 import { Editor } from "@tiptap/core";
 import { renderPmDocToMarkdown } from "@/features/export/exportEngine";
-import { getFileBackedEditorExtensions } from "./fileBackedEditorExtensions";
+import {
+  getFileBackedEditorExtensions,
+  isStrictLineBreaks,
+} from "./fileBackedEditorExtensions";
 
-/** ProseMirror JSON string/object → GFM markdown. */
+/**
+ * ProseMirror JSON string/object → GFM markdown.
+ *
+ * Mirrors the parser's `breaks` mode (read from `editor.markdownStrictLineBreaks`)
+ * so hardBreak nodes round-trip in both modes. Without this, a hardBreak written
+ * under strict mode re-parses as a soft break (space) on the next read and the
+ * line break is silently lost.
+ */
 export function pmJsonToMarkdown(
   content: string | Record<string, unknown>,
 ): string {
   const json = typeof content === "string" ? content : JSON.stringify(content);
-  return renderPmDocToMarkdown(json);
+  return renderPmDocToMarkdown(json, {
+    strictLineBreaks: isStrictLineBreaks(),
+  });
 }
 
 /** GFM markdown → ProseMirror JSON object (requires DOM — use in browser/tests). */

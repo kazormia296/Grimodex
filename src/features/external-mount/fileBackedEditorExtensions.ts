@@ -58,7 +58,7 @@ const PasteSanitizerExtension = Extension.create({
  * parse / next file open without app restart (already-open editors keep
  * the breaks mode they were constructed with).
  */
-function isStrictLineBreaks(): boolean {
+export function isStrictLineBreaks(): boolean {
   try {
     return useSettingsStore
       .getState()

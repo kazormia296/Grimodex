@@ -154,6 +154,13 @@ interface RenderCtx {
   settings: ExportSettings;
   resolvedRuby: RubyStyle;
   resolvedEmphasis: EmphasisDotsStyle;
+  /**
+   * Mirrors `editor.markdownStrictLineBreaks`. When true, the parser ignores
+   * the GFM "single-newline = hardBreak" shortcut and only honours the
+   * CommonMark hardBreak markers (`  \n` / `\\\n`). The exporter must match —
+   * a bare `\n` would re-parse as a soft break and silently lose the node.
+   */
+  strictLineBreaks: boolean;
 }
 
 /**
@@ -202,11 +209,14 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
     }
 
     case "hardBreak":
-      // With `Markdown.configure({ breaks: true })` on the parse side, a bare
-      // `\n` within paragraph text re-parses into a hardBreak node, so emitting
-      // just `\n` round-trips faithfully. (Avoid `\\\n` / `  \n` to keep disk
-      // contents clean for other editors like Obsidian.)
-      return "\n";
+      // Round-trip rule depends on the parser's `breaks` mode:
+      //  - `breaks: true`  (Obsidian-default / GFM): bare `\n` already re-parses
+      //    as a hardBreak — emit `\n` and keep disk content free of trailing
+      //    spaces (cleaner diffs, less editor trimming friction).
+      //  - `breaks: false` (CommonMark strict, opt-in): bare `\n` collapses to
+      //    a soft break (space) on re-parse, permanently losing the node. Emit
+      //    the spec hardBreak marker (`  \n`) so it round-trips.
+      return ctx.strictLineBreaks ? "  \n" : "\n";
 
     case "ruby":
       return renderRuby(
@@ -472,11 +482,25 @@ function renderSceneContent(
 export interface ArchiveMarkdownOptions {
   rubyStyle?: RubyStyle;
   emphasisDotsStyle?: EmphasisDotsStyle;
+  /**
+   * Must match the parser's `breaks` setting (see `RenderCtx.strictLineBreaks`).
+   * The file-backed write-back path (`pmJsonToMarkdown`) reads this from
+   * `editor.markdownStrictLineBreaks`. Export/archive callers leave it false
+   * for diff-friendly bare `\n` — but note the asymmetric risk: archives are
+   * re-importable via `importApi → markdownToPmJson`, so if a user re-imports
+   * an archive while strict mode is on, hardBreak nodes will collapse to soft
+   * breaks (same class of data loss as the bug this option fixes). Tracked as
+   * a follow-up; not in scope for the file-backed round-trip fix.
+   */
+  strictLineBreaks?: boolean;
 }
 
 /** ProseMirror JSON document → GFM markdown (pure, for file-backed scenes). */
-export function renderPmDocToMarkdown(contentJson: string): string {
-  return renderPmDocToArchiveMarkdown(contentJson);
+export function renderPmDocToMarkdown(
+  contentJson: string,
+  options: ArchiveMarkdownOptions = {},
+): string {
+  return renderPmDocToArchiveMarkdown(contentJson, options);
 }
 
 /** Archive-oriented markdown: plain ruby/emphasis formats, no HTML. */
@@ -506,6 +530,7 @@ export function renderPmDocToArchiveMarkdown(
     },
     resolvedRuby: rubyStyle,
     resolvedEmphasis: emphasisDotsStyle,
+    strictLineBreaks: options.strictLineBreaks ?? false,
   };
   return renderSceneContent(contentJson, ctx).trimEnd() + "\n";
 }
@@ -631,7 +656,16 @@ export function generateExport(input: GenerateExportInput): string {
   const resolvedEmphasis: EmphasisDotsStyle =
     settings.emphasisDotsStyle ?? defaultEmphasisDotsStyle(settings.format);
 
-  const ctx: RenderCtx = { settings, resolvedRuby, resolvedEmphasis };
+  // generateExport is the user-facing publish path (markdown/html/plaintext).
+  // Strict-mode hardBreak isn't wired here yet — the file-backed write-back
+  // (`pmJsonToMarkdown`) is the critical round-trip; export-then-import is a
+  // separate, asymmetric path (see ArchiveMarkdownOptions.strictLineBreaks).
+  const ctx: RenderCtx = {
+    settings,
+    resolvedRuby,
+    resolvedEmphasis,
+    strictLineBreaks: false,
+  };
 
   // フラットなブロック列を構築
   const blocks = buildBlocks(nodes, checkedIds, null, 0);

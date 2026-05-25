@@ -203,6 +203,41 @@ describe("markdownBridge", () => {
       ).map((n) => n.type);
       expect(laxInner).toEqual(["text", "hardBreak", "text"]);
     });
+
+    // CommonMark hardBreak markers (`  \n` or `\\\n`) survive strict mode —
+    // they're spec-defined and independent of the `breaks` option. Without
+    // this guarantee the round-trip fix below is meaningless.
+    it("parses `  \\n` (two trailing spaces) as hardBreak even with strict on", () => {
+      setStrict("true");
+      const doc = markdownToPmJson("a  \nb\n");
+      const inner = (
+        (doc.content as Array<Record<string, unknown>>)[0]!.content as Array<
+          Record<string, unknown>
+        >
+      ).map((n) => n.type);
+      expect(inner).toEqual(["text", "hardBreak", "text"]);
+    });
+
+    // Regression guard for the data-loss bug: with strict mode on, the
+    // exporter previously emitted a bare `\n` for hardBreak, which the
+    // strict-mode parser then collapsed into a soft break (space) on the
+    // next read — silently dropping the hardBreak forever.
+    it("round-trip preserves hardBreak under strict mode (`a  \\nb` survives)", () => {
+      setStrict("true");
+      const md = "a  \nb\n";
+      const pm = markdownToPmJson(md);
+      const back = pmJsonToMarkdown(pm);
+      // Re-parse must still yield a hardBreak (not a soft-break-collapsed text).
+      const pm2 = markdownToPmJson(back);
+      const inner = (
+        (pm2.content as Array<Record<string, unknown>>)[0]!.content as Array<
+          Record<string, unknown>
+        >
+      ).map((n) => n.type);
+      expect(inner).toEqual(["text", "hardBreak", "text"]);
+      // Idempotent: second round-trip equals the first.
+      expect(pmJsonToMarkdown(pm2)).toBe(back);
+    });
   });
 
   describe("nested block structure preservation", () => {
