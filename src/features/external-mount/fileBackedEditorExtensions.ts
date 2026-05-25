@@ -11,6 +11,7 @@ import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import CharacterCount from "@tiptap/extension-character-count";
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
+import { ParagraphWithEmptyLineSupport } from "@/features/editor/extensions";
 import type { Extensions } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 import i18next from "@/lib/i18n";
@@ -76,12 +77,19 @@ function buildFileBackedExtensions(strict: boolean): Extensions {
     // disable すると tiptap-markdown が `- ` をパースしても受け皿の node 型が無く、
     // リストマーカーが落ちる → disk の生 Markdown と pmJsonToMarkdown 経由の
     // 再生成結果が乖離して rename 検出 (mountManager.hashForNode) が外れる。
+    //
+    // paragraph: false + ParagraphWithEmptyLineSupport で empty paragraph node を
+    // `<p></p>` として serialize し、blank-line marker のラウンドトリップを成立
+    // させる (markdownBridge.normalizeImportedMarkdown が連続空行を `<p></p>` に
+    // 展開して import するので、serialize 側もそれに合わせないと書き戻しで消える)。
     StarterKit.configure({
+      paragraph: false,
       link: {
         openOnClick: true,
         HTMLAttributes: { target: "_blank", rel: "noopener noreferrer" },
       },
     }),
+    ParagraphWithEmptyLineSupport,
     Markdown.configure({ html: true, breaks: !strict }),
     Placeholder.configure({
       placeholder: () => i18next.t("editor.placeholder"),

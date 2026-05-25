@@ -70,6 +70,38 @@ function normalizeImportedMarkdown(markdown: string): string {
   let inFence = false;
   let fenceMarker = "";
   let inHtmlBlock = false;
+  // Track a run of consecutive blank lines that started outside any code
+  // fence / HTML block. When the run ends (or input ends), 2+ consecutive
+  // blanks are rewritten so each *extra* blank becomes a `<p></p>` HTML
+  // block — markdown-it preserves these (html:true), producing an empty
+  // paragraph node, and the matching serializer (ParagraphWithEmptyLineSupport)
+  // round-trips it back to `<p></p>`. Without expansion, markdown-it
+  // (CommonMark) silently collapses any number of blank lines into a single
+  // paragraph break and the extra blank lines vanish from the editor.
+  //
+  // `blankRunStart` is the index into `out` of the first blank in the
+  // current run, or -1 when no run is open. Synthetic blanks inserted by
+  // the Setext rescue below intentionally do NOT start a run — they aren't
+  // user content and shouldn't be expanded.
+  let blankRunStart = -1;
+
+  function flushBlankRun(): void {
+    if (blankRunStart < 0) return;
+    const runLength = out.length - blankRunStart;
+    if (runLength >= 2) {
+      // N consecutive blanks → 1 blank + (N-1) × (`<p></p>` + blank).
+      // The leading blank serves as the paragraph separator before the
+      // first `<p></p>` block; each `<p></p>` needs a trailing blank to
+      // be recognised as a CommonMark type-6 HTML block.
+      const replacement: string[] = [""];
+      for (let k = 0; k < runLength - 1; k++) {
+        replacement.push("<p></p>", "");
+      }
+      out.splice(blankRunStart, runLength, ...replacement);
+    }
+    blankRunStart = -1;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     const fenceMatch = /^\s{0,3}(```+|~~~+)/.exec(line);
@@ -104,11 +136,29 @@ function normalizeImportedMarkdown(markdown: string): string {
       /^\s{0,3}-{3,}\s*$/.test(line) &&
       i > 0 &&
       lines[i - 1]!.trim() !== "";
+
+    const isSafeContext = !inFence && !inHtmlBlock;
+    const isBlank = line.trim() === "";
+
+    // The blank run ends here unless this line is itself a safe-context
+    // blank. Flush BEFORE pushing the non-blank line so `runLength` counts
+    // only the blanks, not the line that terminates the run.
+    if (!(isSafeContext && isBlank)) {
+      flushBlankRun();
+    }
+
     if (promotesPrevToSetextH2) {
       out.push("");
+      // Synthetic — do not enter a blank run on it (it wasn't user-authored
+      // and shouldn't be expanded into `<p></p>`).
     }
     out.push(line);
+
+    if (isSafeContext && isBlank && blankRunStart < 0) {
+      blankRunStart = out.length - 1;
+    }
   }
+  flushBlankRun();
   return out.join("\n");
 }
 

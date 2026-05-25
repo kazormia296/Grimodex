@@ -186,6 +186,27 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       const inner = (node.content ?? [])
         .map((c) => renderNode(c, ctx))
         .join("");
+      // Empty paragraph nodes carry "visible blank line" semantics — they
+      // originate from `<p></p>` HTML blocks injected by
+      // `normalizeImportedMarkdown` when the user wrote 2+ consecutive
+      // blank lines. Round-trip them back as `<p></p>` so markdown-it
+      // (html:true) preserves them on re-parse; emitting just `"\n"`
+      // would let `renderBlockChildren`'s `"\n"`-join inflate them into
+      // additional blank lines on every save (3 paragraphs → 4 blanks →
+      // 4 paragraphs on the next read).
+      //
+      // Format-gated: only markdown needs the explicit marker — the markdown
+      // round-trip (`renderPmDocToMarkdown` → `markdownToPmJson`, used by
+      // `hashForDiskContent` and external-mount write-back) is the only path
+      // where the doc is re-parsed and must reproduce the same node graph.
+      // plaintext / html (publish-only output, no re-parse) keep the prior
+      // behaviour (`"\n"` lets the doc-level `"\n"`-join surface a blank
+      // line) so users don't see literal `<p></p>` in their `.txt` / `.html`
+      // exports.
+      if (inner === "") {
+        if (ctx.settings.format === "markdown") return "<p></p>\n";
+        return "\n";
+      }
       return inner + "\n";
     }
 

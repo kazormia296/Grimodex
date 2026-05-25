@@ -430,6 +430,63 @@ describe("generateExport - folder headings (html)", () => {
 });
 
 // ────────────────────────────────────────────────────────────────────
+// Empty paragraph serialization (format-gated)
+// ────────────────────────────────────────────────────────────────────
+
+describe("empty paragraph node serialization is format-gated", () => {
+  // A doc whose middle paragraph is empty — what `normalizeImportedMarkdown`
+  // produces for 2+ consecutive user-authored blank lines.
+  function docWithEmpty(): string {
+    return JSON.stringify({
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "A" }] },
+        { type: "paragraph" },
+        { type: "paragraph", content: [{ type: "text", text: "B" }] },
+      ],
+    });
+  }
+
+  it("markdown: empty paragraph → `<p></p>` (re-parses to the same node)", () => {
+    const s1 = makeScene("s1", "scene");
+    const out = generateExport({
+      nodes: [s1],
+      contentMap: { s1: docWithEmpty() },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "markdown" }),
+    });
+    // Marker present once between A and B.
+    expect(out).toMatch(/A\n\n<p><\/p>\n\nB/);
+  });
+
+  it("plaintext: empty paragraph → blank line (no literal `<p></p>` in user output)", () => {
+    const s1 = makeScene("s1", "scene");
+    const out = generateExport({
+      nodes: [s1],
+      contentMap: { s1: docWithEmpty() },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "plaintext" }),
+    });
+    expect(out).not.toContain("<p></p>");
+  });
+
+  it("html: empty paragraph does not leak literal `<p></p>` into the document body", () => {
+    const s1 = makeScene("s1", "scene");
+    const out = generateExport({
+      nodes: [s1],
+      contentMap: { s1: docWithEmpty() },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "html" }),
+      projectTitle: "Doc",
+      projectLanguage: "ja",
+    });
+    // HTML export wraps each scene in a styled section; the body must not
+    // contain a stray `<p></p>` marker that came from the markdown round-trip.
+    expect(out).not.toContain("<p></p>");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
 // シーン区切り
 // ────────────────────────────────────────────────────────────────────
 

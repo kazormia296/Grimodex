@@ -48,7 +48,12 @@ export interface EditorExtensionOptions {
 // tiptap-markdown serializes empty paragraphs as blank lines, which markdown-it
 // then discards on parse. This override emits <p></p> (raw HTML) instead,
 // which is preserved when Markdown is configured with html: true.
-const ParagraphWithEmptyLineSupport = Paragraph.extend({
+//
+// Exported so file-backed (external-mount/import) editors can share the same
+// serializer — see fileBackedEditorExtensions.ts. Both code paths must agree,
+// otherwise round-trip of `<p></p>` blank-paragraph markers is asymmetric and
+// `hashForDiskContent` drifts.
+export const ParagraphWithEmptyLineSupport = Paragraph.extend({
   addStorage() {
     return {
       markdown: {

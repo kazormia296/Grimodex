@@ -358,6 +358,110 @@ describe("markdownBridge", () => {
     });
   });
 
+  describe("consecutive blank lines preserved as empty paragraph nodes", () => {
+    function nodeTypes(doc: Record<string, unknown>): string[] {
+      return (doc.content as Array<Record<string, unknown>>).map(
+        (n) => n.type as string,
+      );
+    }
+
+    // Pre-fix bug: markdown-it (CommonMark) collapses 2+ blank lines into a
+    // single paragraph break, so users who wrote `A\n\n\nB` to add visual
+    // spacing saw the extra blank silently dropped on import. We rewrite
+    // them as `<p></p>` HTML blocks so they survive as empty paragraph nodes.
+
+    it("preserves a single extra blank line (2 blanks) as one empty paragraph", () => {
+      const md = "Para A\n\n\nPara B\n";
+      const doc = markdownToPmJson(md);
+      const types = nodeTypes(doc);
+      expect(types).toEqual(["paragraph", "paragraph", "paragraph"]);
+      // Middle paragraph is empty.
+      const middle = (doc.content as Array<Record<string, unknown>>)[1]!;
+      expect(middle.content ?? []).toEqual([]);
+    });
+
+    it("preserves two extra blank lines (3 blanks) as two empty paragraphs", () => {
+      const md = "Para A\n\n\n\nPara B\n";
+      const doc = markdownToPmJson(md);
+      const types = nodeTypes(doc);
+      expect(types).toEqual([
+        "paragraph",
+        "paragraph",
+        "paragraph",
+        "paragraph",
+      ]);
+    });
+
+    it("does not insert empty paragraphs for a single blank line", () => {
+      const md = "Para A\n\nPara B\n";
+      const doc = markdownToPmJson(md);
+      const types = nodeTypes(doc);
+      expect(types).toEqual(["paragraph", "paragraph"]);
+    });
+
+    it("does not expand blank lines inside fenced code blocks", () => {
+      const md = "```\nfoo\n\n\nbar\n```\n";
+      const doc = markdownToPmJson(md);
+      const types = nodeTypes(doc);
+      expect(types).toEqual(["codeBlock"]);
+      // The code block keeps the raw blanks (markdown-it preserves them).
+      const cb = (doc.content as Array<Record<string, unknown>>)[0]!;
+      const text = (cb.content as Array<{ text: string }>)
+        .map((n) => n.text)
+        .join("");
+      expect(text).toContain("foo\n\n\nbar");
+    });
+
+    it("does not expand blank lines inside a multi-line HTML block", () => {
+      // Within an open `<div>...</div>` HTML block the first blank line
+      // closes the block per CommonMark — anything before that close stays
+      // as raw HTML, and we don't inject `<p></p>` inside it.
+      const md = "<div>\nA\nB\n</div>\n\n\nC\n";
+      const doc = markdownToPmJson(md);
+      // Top level has at least the trailing `<p></p>` (for the 2-blank gap)
+      // and the `C` paragraph. The HTML-block content collapses to a
+      // paragraph node ("A B") because TipTap has no `<div>` node.
+      const types = nodeTypes(doc);
+      expect(types[types.length - 1]).toBe("paragraph"); // C
+      // An extra empty paragraph from the 2-blank run between </div> and C
+      // must appear before C.
+      const cIdx = types.lastIndexOf("paragraph");
+      expect(cIdx).toBeGreaterThan(0);
+      const beforeC = (doc.content as Array<Record<string, unknown>>)[
+        cIdx - 1
+      ]!;
+      expect(beforeC.type).toBe("paragraph");
+      expect(beforeC.content ?? []).toEqual([]);
+    });
+
+    it("preserves blank-line structure across full round-trip", () => {
+      const md = "A\n\n\nB\n";
+      const pm = markdownToPmJson(md);
+      const back = pmJsonToMarkdown(pm);
+      // Round-trip must still parse to 3 paragraphs (A, empty, B).
+      const pm2 = markdownToPmJson(back);
+      const types = nodeTypes(pm2);
+      expect(types).toEqual(["paragraph", "paragraph", "paragraph"]);
+      // Idempotent: same markdown after a second round-trip.
+      expect(pmJsonToMarkdown(pm2)).toBe(back);
+    });
+
+    it("preserves multiple blank-line runs in the same document", () => {
+      const md = "A\n\n\nB\n\n\n\nC\n";
+      const doc = markdownToPmJson(md);
+      const types = nodeTypes(doc);
+      // A, [empty], B, [empty], [empty], C
+      expect(types).toEqual([
+        "paragraph",
+        "paragraph",
+        "paragraph",
+        "paragraph",
+        "paragraph",
+        "paragraph",
+      ]);
+    });
+  });
+
   it("round-trips a paragraph + HR + heading without re-promoting to Setext", () => {
     const md = "First paragraph.\n\n---\n\n## Heading\n\nBody.\n";
     const json = markdownToPmJson(md);
