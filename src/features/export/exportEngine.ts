@@ -671,6 +671,42 @@ export function generateExport(input: GenerateExportInput): string {
   const blocks = buildBlocks(nodes, checkedIds, null, 0);
   if (blocks.length === 0) return "";
 
+  // 「synthetic-echo」抑制用の事前集計。
+  // import 側 (markdownParser.parseMarkdownSingle) は `## chapter\n\nbody` のような
+  // chapter 直下に body しか無い入力に対して、本文救済のため chapter と同名の
+  // synthetic scene を作る。既定 export (folderHeading=true, sceneTitle="heading")
+  // をそのまま流すと `## chapter\n### chapter\nbody` のように見出しが重複し、
+  // 入力と構造が一致しなくなる。
+  //
+  // 抑制条件 (全部満たすときのみ scene 見出しを omit):
+  //  1. settings.folderHeading=true  — chapter heading が実際に出力される
+  //     (false のときに抑制すると title が完全に消える)
+  //  2. parent folder の直接子 (checked) scene が 1 件のみ
+  //     (兄弟がいるなら区別できなくなる)
+  //  3. その唯一の scene の title が parent folder の title と一致
+  //
+  // ユーザーが意図的に同名にしていた場合も、出力 → 再 import で
+  // 「folder + synthetic scene of same name」に戻るので idempotent。
+  const nodeById = new Map<string, TreeNodeData>(nodes.map((n) => [n.id, n]));
+  const checkedScenesByFolder = new Map<string, number>();
+  for (const n of nodes) {
+    if (n.nodeType !== "scene") continue;
+    if (!checkedIds.has(n.id)) continue;
+    if (!n.parentId) continue;
+    checkedScenesByFolder.set(
+      n.parentId,
+      (checkedScenesByFolder.get(n.parentId) ?? 0) + 1,
+    );
+  }
+  function isSyntheticEcho(sceneNode: TreeNodeData): boolean {
+    if (!settings.folderHeading) return false;
+    if (!sceneNode.parentId) return false;
+    const parent = nodeById.get(sceneNode.parentId);
+    if (parent?.nodeType !== "folder") return false;
+    if ((checkedScenesByFolder.get(parent.id) ?? 0) !== 1) return false;
+    return parent.title === sceneNode.title;
+  }
+
   // ブロックを結合
   const parts: string[] = [];
   let prevKind: "folder" | "scene" | null = null;
@@ -695,8 +731,9 @@ export function generateExport(input: GenerateExportInput): string {
       prevKind = "folder";
     } else {
       // scene
+      const suppressTitle = isSyntheticEcho(block.node);
       const titleText =
-        settings.sceneTitle !== "none"
+        settings.sceneTitle !== "none" && !suppressTitle
           ? renderSceneTitle(block.node.title, block.folderDepth, settings)
           : "";
       const content = renderSceneContent(contentMap[block.node.id], ctx);

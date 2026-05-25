@@ -1013,3 +1013,112 @@ describe("generateExport - Beat ノード", () => {
     expect(result).toContain("二段落目");
   });
 });
+
+// ────────────────────────────────────────────────────────────────────
+// synthetic-echo シーン見出しの抑制（bug #2 retrospective）
+//
+// `## 概要\n\nbody` を `parseMarkdownSingle` で取り込むと、本文を救うために
+// chapter と同名の synthetic scene が作られる (markdownParser.ts:71)。
+// この状態で `sceneTitle: "heading"` のままエクスポートすると
+// `## 概要\n### 概要\nbody` のような重複見出しが出力され、入力と構造が一致
+// しない。chapter heading が出力される（= folderHeading=true）かつ folder
+// 直下の (checked) scene が 1 件のみ・タイトル一致のときに限り、scene 側
+// の見出しを抑制する。ユーザーが意図して同名にした場合も丸ごと idempotent
+// な round-trip になるので副作用は限定的。
+// ────────────────────────────────────────────────────────────────────
+
+describe("generateExport - synthetic-echo scene heading suppression", () => {
+  it("synthetic-echo (folder + single scene with same title) suppresses scene heading", () => {
+    // 入力相当: `## 概要\n\nbody` を import した tree
+    const f = makeFolder("f1", "概要");
+    const s1 = makeScene("s1", "概要", "f1");
+    const result = generateExport({
+      nodes: [f, s1],
+      contentMap: { s1: doc(para("body")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({
+        format: "markdown",
+        folderHeading: true,
+        sceneTitle: "heading",
+      }),
+    });
+    expect(result).toContain("# 概要"); // folder heading は出る (depth 0 → #)
+    expect(result).not.toContain("## 概要"); // 抑制対象の scene heading (folderDepth 1 → ##)
+    // Idempotent: re-import → folder "概要" + scene "概要" (synthetic) と同じ構造になる
+  });
+
+  it("folderHeading=false の場合は scene heading を抑制しない（タイトル完全喪失を防ぐ）", () => {
+    const f = makeFolder("f1", "概要");
+    const s1 = makeScene("s1", "概要", "f1");
+    const result = generateExport({
+      nodes: [f, s1],
+      contentMap: { s1: doc(para("body")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({
+        format: "markdown",
+        folderHeading: false,
+        sceneTitle: "heading",
+      }),
+    });
+    // folder heading が出ていないので scene heading が唯一のタイトル → 残す
+    expect(result).toContain("# 概要");
+    expect(result).toContain("body");
+  });
+
+  it("同 folder 配下に scene が 2 件以上ある場合は抑制しない", () => {
+    const f = makeFolder("f1", "概要");
+    const s1 = makeScene("s1", "概要", "f1", "a0");
+    const s2 = makeScene("s2", "別のシーン", "f1", "a1");
+    const result = generateExport({
+      nodes: [f, s1, s2],
+      contentMap: {
+        s1: doc(para("body1")),
+        s2: doc(para("body2")),
+      },
+      checkedIds: new Set(["s1", "s2"]),
+      settings: settings({
+        format: "markdown",
+        folderHeading: true,
+        sceneTitle: "heading",
+      }),
+    });
+    // sibling が複数なら個々の scene heading は必要（区別できなくなる）
+    expect(result).toContain("# 概要");
+    expect(result).toContain("## 概要"); // s1 scene heading は残る
+    expect(result).toContain("## 別のシーン");
+  });
+
+  it("scene title が folder title と異なる場合は抑制しない", () => {
+    const f = makeFolder("f1", "概要");
+    const s1 = makeScene("s1", "オープニング", "f1");
+    const result = generateExport({
+      nodes: [f, s1],
+      contentMap: { s1: doc(para("body")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({
+        format: "markdown",
+        folderHeading: true,
+        sceneTitle: "heading",
+      }),
+    });
+    expect(result).toContain("# 概要");
+    expect(result).toContain("## オープニング");
+  });
+
+  it("sceneTitle=bold でも echo は抑制される (heading 限定ではなく全 sceneTitle 形式)", () => {
+    const f = makeFolder("f1", "概要");
+    const s1 = makeScene("s1", "概要", "f1");
+    const result = generateExport({
+      nodes: [f, s1],
+      contentMap: { s1: doc(para("body")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({
+        format: "markdown",
+        folderHeading: true,
+        sceneTitle: "bold",
+      }),
+    });
+    expect(result).toContain("# 概要");
+    expect(result).not.toContain("**概要**"); // bold 形式の echo も抑制
+  });
+});

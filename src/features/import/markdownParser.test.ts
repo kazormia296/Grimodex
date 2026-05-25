@@ -7,6 +7,9 @@ import {
   countScenesInTree,
   countFoldersInTree,
 } from "./markdownParser";
+import { generateExport } from "@/features/export/exportEngine";
+import { DEFAULT_EXPORT_SETTINGS } from "@/features/export/types";
+import type { TreeNodeData } from "@/features/tree/treeStore";
 
 function makeZip(files: Record<string, string>): Uint8Array {
   const input: Record<string, Uint8Array> = {};
@@ -153,5 +156,75 @@ describe("parseMarkdownMulti", () => {
     });
     const result = parseMarkdownZip(zip);
     expect(countScenesInTree(result.tree)).toBe(2);
+  });
+});
+
+describe("parseMarkdownSingle ↔ generateExport round-trip (synthetic-echo)", () => {
+  // `## chapter\n\nbody` のように chapter 直下に body しかない入力は、parser が
+  // 本文救済のため chapter と同名 synthetic scene を作る (markdownParser.ts:71)。
+  // 既定 export (folderHeading=true, sceneTitle="heading") でそのまま流すと
+  // `## chapter\n### chapter\nbody` と見出しが重複していた。重複は exportEngine
+  // 側で抑制する (bug #2 fix)。
+  function asTreeNode(
+    id: string,
+    nodeType: "folder" | "scene",
+    title: string,
+    parentId: string | null,
+    sortOrder = "a0",
+  ): TreeNodeData {
+    return {
+      id,
+      projectId: "p1",
+      parentId,
+      nodeType,
+      title,
+      synopsis: null,
+      sortOrder,
+      status: null,
+      storyTimeOrder: null,
+      storyTimeLabel: null,
+      povCharacterId: null,
+      locationId: null,
+      charCount: 0,
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    };
+  }
+
+  it("`## 概要\\n\\nbody` → export では `### 概要` の echo が出ない", () => {
+    const md = "## 概要\n\nbody\n";
+    const parsed = parseMarkdownSingle(md);
+    const chapter = parsed.chapters[0]!;
+    const synth = chapter.scenes[0]!;
+    expect(synth.title).toBe(chapter.title); // synthetic-echo の前提を確認
+
+    const folder = asTreeNode(chapter.id, "folder", chapter.title, null);
+    const scene = asTreeNode(synth.id, "scene", synth.title, chapter.id);
+
+    const out = generateExport({
+      nodes: [folder, scene],
+      contentMap: {
+        [scene.id]: JSON.stringify({
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: synth.bodyMarkdown ?? "" }],
+            },
+          ],
+        }),
+      },
+      checkedIds: new Set([scene.id]),
+      settings: {
+        ...DEFAULT_EXPORT_SETTINGS,
+        format: "markdown",
+        folderHeading: true,
+        sceneTitle: "heading",
+      },
+    });
+
+    expect(out).toContain("# 概要"); // chapter heading は出る (depth 0)
+    expect(out).not.toContain("## 概要"); // synthetic echo (folderDepth 1) は抑制
+    expect(out).toContain("body");
   });
 });
