@@ -856,6 +856,10 @@ describe("generateExport - scene break node", () => {
     });
   }
 
+  // Block-level children of `doc` are separated by a blank line so the next
+  // markdown parse keeps them as separate paragraphs (rather than collapsing
+  // into one soft-break-joined paragraph). Scene break markers are no
+  // exception — they must be surrounded by blank lines on round-trip.
   it("asterisks: * * *", () => {
     const s1 = makeScene("s1", "S");
     const result = generateExport({
@@ -864,7 +868,7 @@ describe("generateExport - scene break node", () => {
       checkedIds: new Set(["s1"]),
       settings: settings({ sceneBreakStyle: "asterisks" }),
     });
-    expect(result).toContain("前文\n* * *\n後文");
+    expect(result).toContain("前文\n\n* * *\n\n後文");
   });
 
   it("hr: ---", () => {
@@ -875,7 +879,7 @@ describe("generateExport - scene break node", () => {
       checkedIds: new Set(["s1"]),
       settings: settings({ sceneBreakStyle: "hr" }),
     });
-    expect(result).toContain("前文\n---\n後文");
+    expect(result).toContain("前文\n\n---\n\n後文");
   });
 
   it("blank: 空行", () => {
@@ -886,6 +890,7 @@ describe("generateExport - scene break node", () => {
       checkedIds: new Set(["s1"]),
       settings: settings({ sceneBreakStyle: "blank" }),
     });
+    // "blank" style emits an empty sceneBreak — doc join adds the blank line.
     expect(result).toContain("前文\n\n後文");
   });
 
@@ -897,7 +902,7 @@ describe("generateExport - scene break node", () => {
       checkedIds: new Set(["s1"]),
       settings: settings({ sceneBreakStyle: "custom", sceneBreakCustom: "✦" }),
     });
-    expect(result).toContain("前文\n✦\n後文");
+    expect(result).toContain("前文\n\n✦\n\n後文");
   });
 });
 

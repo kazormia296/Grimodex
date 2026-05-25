@@ -159,7 +159,14 @@ interface RenderCtx {
 function renderNode(node: PMNode, ctx: RenderCtx): string {
   switch (node.type) {
     case "doc":
-      return (node.content ?? []).map((c) => renderNode(c, ctx)).join("");
+      // Block-level children each terminate with a single `\n`; joining with
+      // an extra `\n` yields the blank line CommonMark requires between
+      // paragraphs/headings/etc. Joining with `""` would collapse adjacent
+      // paragraphs into one (soft-break joined) on the next parse.
+      return (node.content ?? [])
+        .map((c) => renderNode(c, ctx))
+        .filter((s) => s.length > 0)
+        .join("\n");
 
     case "paragraph": {
       const inner = (node.content ?? [])
@@ -242,9 +249,9 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
     }
 
     case "horizontalRule":
-      // 前後に空行を確保 — `paragraph\n---\n` の形で書き戻すと CommonMark の
-      // Setext H2 マーカー扱いで再パース時に直前段落が H2 に昇格してしまう。
-      return "\n---\n\n";
+      // doc-level separator (`\n` between blocks) ensures the blank line CommonMark
+      // needs to disambiguate `---` from a Setext H2 underline.
+      return "---\n";
 
     case "image": {
       const src = (node.attrs?.src as string) ?? "";
@@ -388,7 +395,9 @@ function renderSceneBreak(settings: ExportSettings): string {
     case "hr":
       return "---\n";
     case "blank":
-      return "\n";
+      // doc-level join already inserts the blank-line separator between block
+      // children; emit empty so the filter drops this node entirely.
+      return "";
     case "custom":
       return (settings.sceneBreakCustom || "* * *") + "\n";
   }

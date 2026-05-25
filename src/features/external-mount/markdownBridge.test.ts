@@ -169,6 +169,46 @@ describe("renderPmDocToMarkdown GFM", () => {
     expect(out).toMatch(/Para text\n\n---\n\n## Next/);
   });
 
+  it("emits blank lines between block-level children", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Para A" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Para B" }],
+        },
+        {
+          type: "heading",
+          attrs: { level: 2 },
+          content: [{ type: "text", text: "H" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Para C" }],
+        },
+      ],
+    };
+    const out = renderPmDocToMarkdown(JSON.stringify(doc));
+    expect(out).toBe("Para A\n\nPara B\n\n## H\n\nPara C\n");
+  });
+
+  it("survives double round-trip (paragraphs do NOT collapse into one)", () => {
+    // Regression guard for the pre-fix bug where doc.join('') produced
+    // `Para1\nPara2\n` (no blank line), causing the 2nd parse to collapse the
+    // three paragraphs into a single soft-break-joined paragraph.
+    const md = "Para one.\n\nPara two.\n\nPara three.\n";
+    const pm1 = markdownToPmJson(md);
+    const md1 = pmJsonToMarkdown(pm1);
+    const pm2 = markdownToPmJson(md1);
+    expect((pm2.content as Array<{ type: string }>).length).toBe(3);
+    const md2 = pmJsonToMarkdown(pm2);
+    expect(md2).toBe(md1);
+  });
+
   it("serializes task items via renderList", () => {
     const doc = {
       type: "doc",
