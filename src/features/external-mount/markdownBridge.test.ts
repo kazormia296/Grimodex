@@ -205,6 +205,83 @@ describe("markdownBridge", () => {
     });
   });
 
+  describe("nested block structure preservation", () => {
+    function nodeTypes(doc: Record<string, unknown>): string[] {
+      return (doc.content as Array<Record<string, unknown>>).map(
+        (n) => n.type as string,
+      );
+    }
+
+    it("loose list with multi-paragraph item round-trips paragraph structure", () => {
+      const md = "- first\n\n  second\n\n- next item\n";
+      const pm = markdownToPmJson(md);
+      const back = pmJsonToMarkdown(pm);
+      const pm2 = markdownToPmJson(back);
+      // Item 1 must still hold two paragraphs after round-trip.
+      const list = (pm2.content as Array<Record<string, unknown>>)[0]!;
+      const items = list.content as Array<Record<string, unknown>>;
+      expect(items).toHaveLength(2);
+      const item1Children = (items[0]!.content as Array<{ type: string }>).map(
+        (n) => n.type,
+      );
+      expect(item1Children).toEqual(["paragraph", "paragraph"]);
+    });
+
+    it("multi-paragraph blockquote preserves both paragraphs", () => {
+      const md = "> first\n>\n> second\n";
+      const pm = markdownToPmJson(md);
+      const back = pmJsonToMarkdown(pm);
+      const pm2 = markdownToPmJson(back);
+      const bq = (pm2.content as Array<Record<string, unknown>>)[0]!;
+      expect(bq.type).toBe("blockquote");
+      const inner = (bq.content as Array<{ type: string }>).map((n) => n.type);
+      // Must be two paragraphs (not one paragraph with hardBreak / soft join).
+      expect(inner).toEqual(["paragraph", "paragraph"]);
+    });
+
+    it("blockquote with nested loose list keeps the list inside the quote", () => {
+      const md = "> outer\n>\n> - a\n>\n>   b\n";
+      const pm = markdownToPmJson(md);
+      const back = pmJsonToMarkdown(pm);
+      const pm2 = markdownToPmJson(back);
+      const top = nodeTypes(pm2);
+      // Top level: just the blockquote — list & continuation must NOT escape.
+      expect(top).toEqual(["blockquote"]);
+      const bq = (pm2.content as Array<Record<string, unknown>>)[0]!;
+      const bqInner = (bq.content as Array<{ type: string }>).map(
+        (n) => n.type,
+      );
+      expect(bqInner).toEqual(["paragraph", "bulletList"]);
+    });
+
+    it("task item with multi-paragraph keeps continuation inside the item", () => {
+      const md = "- [ ] one\n\n  two\n";
+      const pm = markdownToPmJson(md);
+      const back = pmJsonToMarkdown(pm);
+      const pm2 = markdownToPmJson(back);
+      const top = nodeTypes(pm2);
+      // Continuation must NOT escape to a top-level paragraph.
+      expect(top).toEqual(["taskList"]);
+      const item = (
+        (pm2.content as Array<Record<string, unknown>>)[0]!.content as Array<
+          Record<string, unknown>
+        >
+      )[0]!;
+      const itemChildren = (item.content as Array<{ type: string }>).map(
+        (n) => n.type,
+      );
+      expect(itemChildren).toEqual(["paragraph", "paragraph"]);
+    });
+
+    it("tight list stays tight (no extra blank lines)", () => {
+      const md = "- a\n- b\n- c\n";
+      const pm = markdownToPmJson(md);
+      const back = pmJsonToMarkdown(pm);
+      // Must NOT introduce blank lines between items of a tight list.
+      expect(back).toBe("- a\n- b\n- c\n");
+    });
+  });
+
   it("round-trips a paragraph + HR + heading without re-promoting to Setext", () => {
     const md = "First paragraph.\n\n---\n\n## Heading\n\nBody.\n";
     const json = markdownToPmJson(md);

@@ -156,17 +156,24 @@ interface RenderCtx {
   resolvedEmphasis: EmphasisDotsStyle;
 }
 
+/**
+ * Join the markdown of a sequence of block-level nodes. Each child renderer
+ * already terminates with a single `\n`, so joining with one more `\n` yields
+ * the blank line CommonMark requires between paragraphs/headings/blockquotes/
+ * lists. Joining with `""` collapses adjacent paragraphs into a single one
+ * (soft-break joined) on the next parse, which loses paragraph structure.
+ */
+function renderBlockChildren(nodes: PMNode[], ctx: RenderCtx): string {
+  return nodes
+    .map((c) => renderNode(c, ctx))
+    .filter((s) => s.length > 0)
+    .join("\n");
+}
+
 function renderNode(node: PMNode, ctx: RenderCtx): string {
   switch (node.type) {
     case "doc":
-      // Block-level children each terminate with a single `\n`; joining with
-      // an extra `\n` yields the blank line CommonMark requires between
-      // paragraphs/headings/etc. Joining with `""` would collapse adjacent
-      // paragraphs into one (soft-break joined) on the next parse.
-      return (node.content ?? [])
-        .map((c) => renderNode(c, ctx))
-        .filter((s) => s.length > 0)
-        .join("\n");
+      return renderBlockChildren(node.content ?? [], ctx);
 
     case "paragraph": {
       const inner = (node.content ?? [])
@@ -214,7 +221,7 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
 
     case "generatedProseBlock":
       // 生成 prose は中身の段落だけを残す（unwrap）
-      return (node.content ?? []).map((c) => renderNode(c, ctx)).join("");
+      return renderBlockChildren(node.content ?? [], ctx);
 
     case "sceneBreak":
       return renderSceneBreak(ctx.settings);
@@ -224,29 +231,31 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       return renderList(node, ctx);
 
     case "listItem":
-      return (node.content ?? []).map((c) => renderNode(c, ctx)).join("");
+      // Fallback for listItem rendered outside renderList. Within renderList,
+      // children are walked directly with prefix + indent applied per item.
+      return renderBlockChildren(node.content ?? [], ctx);
 
     case "taskList":
       return renderList(node, ctx, true);
 
     case "taskItem": {
+      // Fallback for taskItem rendered outside renderList(task). Indents
+      // continuation lines by the list-marker width (2) — not the full
+      // prefix width — so 4+ space indents don't trigger a code block.
       const checked = Boolean(node.attrs?.checked);
-      const inner = (node.content ?? [])
-        .map((c) => renderNode(c, ctx))
-        .join("")
-        .trimEnd();
-      return `- [${checked ? "x" : " "}] ${inner}\n`;
+      const inner = renderBlockChildren(node.content ?? [], ctx).trimEnd();
+      return listItemFormat(inner, `- [${checked ? "x" : " "}] `, "  ") + "\n";
     }
 
     case "blockquote": {
-      const inner = (node.content ?? [])
-        .map((c) => renderNode(c, ctx))
-        .join("")
-        .trimEnd()
+      const inner = renderBlockChildren(node.content ?? [], ctx).trimEnd();
+      // Prefix every line with `> `; empty lines become `>` (CommonMark
+      // requires the marker on blank quoted lines to keep the quote going).
+      const quoted = inner
         .split("\n")
-        .map((line) => `> ${line}`)
+        .map((line) => (line.length > 0 ? `> ${line}` : ">"))
         .join("\n");
-      return inner + "\n";
+      return quoted + "\n";
     }
 
     case "codeBlock": {
@@ -284,24 +293,61 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
   }
 }
 
+/**
+ * Format a list item: first line gets `firstLine` (marker + optional task
+ * decoration); subsequent non-empty lines indented by `indent` (matching the
+ * LIST MARKER width, not the full prefix) so CommonMark keeps the continuation
+ * inside the same list item. Empty lines stay empty so the blank-line-between-
+ * paragraphs structure round-trips.
+ *
+ * For task items the indent is `"  "` (just `- `), not `"      "` (`- [ ] `):
+ * a 4+ space indent triggers an indented code block on re-parse.
+ */
+function listItemFormat(
+  inner: string,
+  firstLine: string,
+  indent: string,
+): string {
+  return inner
+    .split("\n")
+    .map((line, i) => {
+      if (i === 0) return firstLine + line;
+      if (line.length === 0) return "";
+      return indent + line;
+    })
+    .join("\n");
+}
+
 function renderList(node: PMNode, ctx: RenderCtx, task = false): string {
   const ordered = node.type === "orderedList";
-  let index = 1;
+  // bulletList/orderedList carry a `tight` attribute from MarkdownTightLists
+  // (true = `- a\n- b`, false = blank-line-separated loose list with possible
+  // multi-paragraph items). TaskList doesn't carry it; default to tight.
+  const tight = node.attrs?.tight !== false;
   const lines: string[] = [];
+  let index = 1;
   for (const child of node.content ?? []) {
-    const inner = (child.content ?? [])
-      .map((c) => renderNode(c, ctx))
-      .join("")
-      .trimEnd();
+    let firstLine: string;
+    let indent: string;
     if (task && child.type === "taskItem") {
-      lines.push(renderNode(child, ctx).trimEnd());
-    } else {
-      const prefix = ordered ? `${index}. ` : "- ";
-      lines.push(prefix + inner.split("\n").filter(Boolean).join("\n"));
+      const checked = Boolean(child.attrs?.checked);
+      firstLine = `- [${checked ? "x" : " "}] `;
+      indent = "  "; // list marker width (`- `), not including `[x] ` decoration
+    } else if (ordered) {
+      firstLine = `${index}. `;
+      indent = " ".repeat(firstLine.length);
       index += 1;
+    } else {
+      firstLine = "- ";
+      indent = "  ";
     }
+    const inner = renderBlockChildren(child.content ?? [], ctx).trimEnd();
+    lines.push(listItemFormat(inner, firstLine, indent));
   }
-  return lines.join("\n") + "\n";
+  // Loose lists need a blank line between items so re-parse keeps multi-
+  // paragraph children inside the right item (otherwise the next marker is
+  // ambiguous with a continuation paragraph at the same indent).
+  return lines.join(tight ? "\n" : "\n\n") + "\n";
 }
 
 function renderTable(node: PMNode, ctx: RenderCtx): string {
