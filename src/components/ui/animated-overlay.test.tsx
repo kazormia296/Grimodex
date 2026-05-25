@@ -73,12 +73,12 @@ describe("AnimatedOverlay", () => {
   });
 
   it("calls onClose when backdrop is clicked", async () => {
-    const { container } = render(
+    render(
       <AnimatedOverlay open onClose={onClose} className="dialog">
         <span>Content</span>
       </AnimatedOverlay>,
     );
-    const backdrop = container.firstChild as HTMLElement;
+    const backdrop = screen.getByTestId("animated-overlay-backdrop");
     await userEvent.pointer([
       { target: backdrop, keys: "[MouseLeft>]" },
       { target: backdrop, keys: "[/MouseLeft]" },

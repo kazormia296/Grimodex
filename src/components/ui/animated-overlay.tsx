@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
@@ -38,10 +39,18 @@ export function AnimatedOverlay({
     return () => window.removeEventListener("keydown", handler);
   }, [open, onClose]);
 
-  return (
+  if (typeof document === "undefined") return null;
+
+  // Portal to document.body so the overlay escapes any ancestor stacking
+  // context. Surfaces like .glass-chat use `backdrop-filter`, which becomes
+  // the containing block for fixed-positioned descendants — without the
+  // portal, `fixed inset-0` would only cover that surface, letting other
+  // panels paint over the modal.
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
+          data-testid="animated-overlay-backdrop"
           className={cn(
             "fixed inset-0 z-50 flex items-center justify-center",
             backdropClassName,
@@ -72,6 +81,7 @@ export function AnimatedOverlay({
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   );
 }
