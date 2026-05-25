@@ -85,6 +85,29 @@ describe("boardToReactFlow", () => {
     });
   });
 
+  it("builds derived codex relation edges when enabled", () => {
+    const edges = buildMapEdgesFromData({
+      codexEntries,
+      treeNodes,
+      snippetEntries: [],
+      phasesByEntry: {},
+      userEdges: [],
+      positions,
+      show: { ...DEFAULT_SHOW, derivedEdges: true },
+      codexRelations: [
+        {
+          id: "rel-1",
+          fromCodexId: "codex-1",
+          toCodexId: "codex-1",
+          label: "師匠",
+          relationType: "custom",
+        },
+      ],
+    });
+
+    expect(edges.some((e) => e.id === "codex-relation:rel-1")).toBe(true);
+  });
+
   it("builds derived codex mention edges when enabled", () => {
     const edges = buildMapEdgesFromData({
       codexEntries,

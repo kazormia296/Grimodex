@@ -845,7 +845,10 @@
       "none": "(none)",
       "suggestions": "Suggestions",
       "addAsChild": "Add as child",
-      "dismiss": "Dismiss"
+      "dismiss": "Dismiss",
+      "typedTitle": "Formal relations",
+      "typedRemove": "Remove relation",
+      "typedRemoved": "Relation removed"
     },
     "research": {
       "notesLabel": "Notes",
@@ -1973,6 +1976,9 @@
       "noteDescription": "This file is a note, not a scene",
       "codexEditing": "Editing Codex Entry",
       "snippetEditing": "Editing Snippet"
+    },
+    "noteContext": {
+      "title": "AI Context Settings"
     },
     "splash": {
       "hint": "Select a scene from the tree to start writing"

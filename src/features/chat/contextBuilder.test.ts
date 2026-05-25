@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildSystemPrompt,
   trimToFit,
+  trimL4Text,
   countTokens,
   sanitizeSceneContent,
   allocateLayerBudgets,
@@ -1229,8 +1230,8 @@ describe("contextBuilder", () => {
     it("removes lower-priority L4 entries before always entries", () => {
       const l4Text =
         "\n## 登場キャラクター・設定情報\n" +
-        "<!-- l4pri:1 -->\n- **Mentioned** (character)\n  id: m1\n  summary: m\n" +
-        "<!-- l4pri:3 -->\n- **Always** (lore)\n  id: a1\n  summary: a\n";
+        "<!-- l4pri:2 -->\n- **Mentioned** (character)\n  id: m1\n  summary: m\n" +
+        "<!-- l4pri:4 -->\n- **Always** (lore)\n  id: a1\n  summary: a\n";
       const layers = {
         baseText: "base instruction",
         l1Text: "",
@@ -1244,6 +1245,117 @@ describe("contextBuilder", () => {
       const result = trimToFit(layers, fullTokens - 10);
       expect(result.trimmedTexts.l4Text).toContain("Always");
       expect(result.trimmedTexts.l4Text).not.toContain("Mentioned");
+    });
+
+    it("trimL4Text removes pinned (pri 3) before always (pri 4)", () => {
+      const l4Text =
+        "\n## 登場キャラクター・設定情報\n" +
+        "<!-- l4pri:3 -->\n- **Pinned** (Snippet): pinned body\n" +
+        "<!-- l4pri:4 -->\n- **Always** (lore)\n  id: a1\n  summary: a\n";
+      const trimmed = trimL4Text(l4Text, countTokens(l4Text) - 5);
+      expect(trimmed).toContain("Always");
+      expect(trimmed).not.toContain("Pinned");
+    });
+
+    it("trimL4Text treats markerless blocks as mentioned (pri 2)", () => {
+      const l4Text =
+        "\n## 登場キャラクター・設定情報\n" +
+        "- **NoMarker** (character)\n  id: n1\n  summary: n\n" +
+        "<!-- l4pri:4 -->\n- **Always** (lore)\n  id: a1\n  summary: a\n";
+      const trimmed = trimL4Text(l4Text, countTokens(l4Text) - 5);
+      expect(trimmed).toContain("Always");
+      expect(trimmed).not.toContain("NoMarker");
+    });
+  });
+
+  describe("buildSystemPrompt — noteEntries / storyTimeLabel (Phase A)", () => {
+    it("injects note entries into L4 with note tags", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "s1", title: "Scene", content: "body" },
+        noteEntries: [
+          {
+            id: "note-1",
+            title: "設定メモ",
+            content: "重要な背景設定",
+            aliases: ["背景"],
+          },
+        ],
+      });
+      expect(result.prompt).toContain("<note>");
+      expect(result.prompt).toContain("設定メモ");
+      expect(result.prompt).toContain("重要な背景設定");
+      expect(result.prompt).toContain("note-1");
+    });
+
+    it("injects current scene storyTimeLabel into L3", () => {
+      const result = buildSystemPrompt({
+        scene: {
+          id: "s1",
+          title: "夕暮れ",
+          content: "本文",
+          storyTimeLabel: "第3話・夕方",
+        },
+      });
+      expect(result.prompt).toContain("第3話・夕方");
+    });
+
+    it("injects relation-derived codex with via comment and pri 1", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "s1", title: "Scene", content: "body" },
+        codexEntries: [
+          {
+            id: "a1",
+            type: "character",
+            name: "Alice",
+            summary: "main",
+          },
+        ],
+        relationCodexEntries: [
+          {
+            id: "b1",
+            type: "character",
+            name: "Bob",
+            summary: "ally",
+            relationVia: "師匠 of Alice",
+          },
+        ],
+      });
+      expect(result.prompt).toContain("<!-- l4pri:1 -->");
+      expect(result.prompt).toContain("<!-- via: 師匠 of Alice -->");
+      expect(result.prompt).toContain("Bob");
+    });
+
+    it("relation-derived codex pinned in session keeps pri 3 over relation pri 1", () => {
+      const bob: CodexContext = {
+        id: "b1",
+        type: "character",
+        name: "Bob",
+        summary: "ally",
+        relationVia: "師匠 of Alice",
+      };
+      const result = buildSystemPrompt({
+        scene: { id: "s1", title: "Scene", content: "body" },
+        pinnedCodexEntries: [bob],
+      });
+      expect(result.prompt).toContain("<!-- l4pri:3 -->");
+      expect(result.prompt).not.toContain("<!-- l4pri:1 -->");
+    });
+
+    it("relation-derived codex with context_mode always keeps pri 4", () => {
+      const bob: CodexContext = {
+        id: "b1",
+        type: "character",
+        name: "Bob",
+        summary: "ally",
+        relationVia: "師匠 of Alice",
+      };
+      const result = buildSystemPrompt({
+        scene: { id: "s1", title: "Scene", content: "body" },
+        codexEntries: [bob],
+        alwaysEntryIds: ["b1"],
+      });
+      expect(result.prompt).toContain("<!-- l4pri:4 -->");
+      expect(result.prompt).not.toContain("<!-- l4pri:1 -->");
     });
   });
 });

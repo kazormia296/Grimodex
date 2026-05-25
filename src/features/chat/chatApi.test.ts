@@ -22,6 +22,10 @@ vi.mock("@/db/schema", () => ({
   },
   chatMessages: { id: "id", sessionId: "sessionId", createdAt: "createdAt" },
   codexEntries: { id: "id" },
+  chatSessionPinnedCodex: {
+    sessionId: "sessionId",
+    stickyId: "stickyId",
+  },
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -29,6 +33,10 @@ vi.mock("drizzle-orm", () => ({
   desc: vi.fn((col: unknown) => ({ desc: col })),
   inArray: vi.fn((...args: unknown[]) => ({ inArray: args })),
   isNull: vi.fn((col: unknown) => ({ isNull: col })),
+  and: vi.fn((...args: unknown[]) => ({ and: args })),
+  or: vi.fn((...args: unknown[]) => ({ or: args })),
+  isNotNull: vi.fn((col: unknown) => ({ isNotNull: col })),
+  asc: vi.fn((col: unknown) => ({ asc: col })),
 }));
 
 import { db } from "@/db/client";
@@ -41,6 +49,7 @@ import {
   listMessages,
   addMessage,
   updateSessionTitle,
+  unpinStickyEntry,
 } from "./chatApi";
 import type { ChatSession } from "./chatTypes";
 
@@ -263,6 +272,16 @@ describe("chatApi - session/message persistence", () => {
       await updateSessionTitle("session-1", "新しいタイトル");
 
       expect(mockDb.update).toHaveBeenCalled();
+    });
+  });
+
+  describe("unpinStickyEntry", () => {
+    it("deletes sticky pin row for the session", async () => {
+      mockDeleteChain();
+
+      await unpinStickyEntry("session-1", "sticky-abc");
+
+      expect(mockDb.delete).toHaveBeenCalled();
     });
   });
 });

@@ -2270,3 +2270,102 @@ fn test_post_effect_crash_recovery_running_to_failed() {
         Value::String("Process terminated unexpectedly".into())
     );
 }
+
+#[test]
+fn test_migrate_codex_relations_source_map_edge_id_preserves_deleted_edge_ref() {
+    let db = test_db();
+    let conn = db.conn.lock().expect("lock");
+
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS codex_relations;
+         CREATE TABLE codex_relations (
+            id                  TEXT PRIMARY KEY,
+            project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            from_codex_id       TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+            to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+            relation_type       TEXT NOT NULL DEFAULT 'custom',
+            label               TEXT,
+            depth_hint          INTEGER,
+            source_map_edge_id  TEXT REFERENCES map_edges(id) ON DELETE SET NULL,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+    .expect("legacy codex_relations");
+
+    conn.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, created_at, updated_at)
+         VALUES ('cx-a', 'default-project', 'character', 'A', datetime('now'), datetime('now')),
+                ('cx-b', 'default-project', 'character', 'B', datetime('now'), datetime('now'))",
+        [],
+    )
+    .expect("codex");
+    conn.execute(
+        "INSERT INTO map_boards (id, project_id, title, created_at, updated_at)
+         VALUES ('board-1', 'default-project', 'Main', datetime('now'), datetime('now'))",
+        [],
+    )
+    .expect("board");
+    conn.execute(
+        "INSERT INTO map_node_positions
+            (id, board_id, node_ref_type, codex_entry_id, x, y, pinned, z_index, created_at, updated_at)
+         VALUES ('pos-a', 'board-1', 'codex', 'cx-a', 0, 0, 0, 0, datetime('now'), datetime('now')),
+                ('pos-b', 'board-1', 'codex', 'cx-b', 100, 0, 0, 0, datetime('now'), datetime('now'))",
+        [],
+    )
+    .expect("positions");
+    conn.execute(
+        "INSERT INTO map_edges (id, board_id, from_position_id, to_position_id, style, color, direction, created_at, updated_at)
+         VALUES ('edge-1', 'board-1', 'pos-a', 'pos-b', 'solid', '#555555', 'none', datetime('now'), datetime('now'))",
+        [],
+    )
+    .expect("edge");
+    conn.execute(
+        "INSERT INTO codex_relations
+            (id, project_id, from_codex_id, to_codex_id, relation_type, source_map_edge_id, created_at, updated_at)
+         VALUES ('rel-1', 'default-project', 'cx-a', 'cx-b', 'custom', 'edge-1', datetime('now'), datetime('now'))",
+        [],
+    )
+    .expect("relation");
+
+    Database::migrate_codex_relations_source_map_edge_id(&conn).expect("migrate");
+
+    conn.execute("DELETE FROM map_edges WHERE id = 'edge-1'", [])
+        .expect("delete edge");
+
+    let source_edge: Option<String> = conn
+        .query_row(
+            "SELECT source_map_edge_id FROM codex_relations WHERE id = 'rel-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query");
+    assert_eq!(source_edge.as_deref(), Some("edge-1"));
+
+    let fk_cols: Vec<String> = conn
+        .prepare("PRAGMA foreign_key_list(codex_relations)")
+        .expect("pragma")
+        .query_map([], |row| row.get::<_, String>("from"))
+        .expect("map")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert!(
+        !fk_cols.iter().any(|c| c == "source_map_edge_id"),
+        "source_map_edge_id should no longer have FK"
+    );
+}
+
+#[test]
+fn test_migrate_chat_session_pinned_add_sticky_idempotent() {
+    let db = test_db();
+    let conn = db.conn.lock().expect("lock");
+    Database::migrate_chat_session_pinned_add_sticky(&conn).expect("idempotent sticky migrate");
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(chat_session_pinned_codex)")
+        .expect("pragma")
+        .query_map([], |row| row.get::<_, String>("name"))
+        .expect("map")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert!(cols.iter().any(|c| c == "sticky_id"));
+}

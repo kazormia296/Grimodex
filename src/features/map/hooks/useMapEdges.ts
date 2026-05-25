@@ -32,6 +32,13 @@ interface UseMapEdgesInput {
     color: string;
     direction: string;
   }[];
+  codexRelations?: {
+    id: string;
+    fromCodexId: string;
+    toCodexId: string;
+    label?: string | null;
+    relationType: string;
+  }[];
   positions: MapNodePositionRecord[];
   show: ShowFlags;
   onUserEdgeLabelSave?: (
@@ -47,6 +54,7 @@ export function useMapEdges({
   snippetEntries,
   phasesByEntry,
   userEdges,
+  codexRelations,
   positions,
   show,
   onUserEdgeLabelSave,
@@ -60,6 +68,7 @@ export function useMapEdges({
       userEdges,
       positions,
       show,
+      codexRelations,
     });
 
     if (!onUserEdgeLabelSave) return edges;
@@ -84,6 +93,7 @@ export function useMapEdges({
     snippetEntries,
     phasesByEntry,
     userEdges,
+    codexRelations,
     positions,
     show,
     onUserEdgeLabelSave,

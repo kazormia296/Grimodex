@@ -87,6 +87,12 @@ export const treeNodes = sqliteTable(
     sourceMtime: text("source_mtime"),
     /** Soft-delete timestamp for archived file-backed nodes. */
     archivedAt: text("archived_at"),
+    /** Note-only: AI context injection mode (null for folder/scene). */
+    contextMode: text("context_mode"), // 'always' | 'mentioned' | 'suppress' | 'hidden'
+    /** Note-only: alternate names for mention detection (JSON array). */
+    aliases: text("aliases").default("[]"),
+    /** Note-only: aliases excluded from mention detection (JSON array). */
+    excludedAliases: text("excluded_aliases").default("[]"),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
@@ -458,6 +464,9 @@ export const chatSessionPinnedCodex = sqliteTable(
     snippetId: text("snippet_id").references(() => snippets.id, {
       onDelete: "cascade",
     }),
+    stickyId: text("sticky_id").references(() => mapStickies.id, {
+      onDelete: "cascade",
+    }),
     withChildren: integer("with_children").notNull().default(0),
     pinSource: text("pin_source", { enum: ["manual", "chat_mention"] })
       .notNull()
@@ -470,6 +479,7 @@ export const chatSessionPinnedCodex = sqliteTable(
     index("idx_chat_pin_session").on(table.sessionId, table.createdAt),
     uniqueIndex("uq_chat_pin_codex").on(table.sessionId, table.codexEntryId),
     uniqueIndex("uq_chat_pin_snippet").on(table.sessionId, table.snippetId),
+    uniqueIndex("uq_chat_pin_sticky").on(table.sessionId, table.stickyId),
   ],
 );
 
@@ -942,6 +952,38 @@ export const mapEdges = sqliteTable(
     index("idx_map_edges_board").on(table.boardId),
     index("idx_map_edges_from").on(table.fromPositionId),
     index("idx_map_edges_to").on(table.toPositionId),
+  ],
+);
+
+/** Formal typed relations between Codex entries (Map User edge promotion, manual). */
+export const codexRelations = sqliteTable(
+  "codex_relations",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    fromCodexId: text("from_codex_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    toCodexId: text("to_codex_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    relationType: text("relation_type").notNull().default("custom"),
+    label: text("label"),
+    depthHint: integer("depth_hint"),
+    sourceMapEdgeId: text("source_map_edge_id"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_codex_relations_project").on(table.projectId),
+    index("idx_codex_relations_from").on(table.fromCodexId),
+    index("idx_codex_relations_to").on(table.toCodexId),
   ],
 );
 

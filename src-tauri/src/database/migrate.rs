@@ -979,6 +979,35 @@ impl Database {
         // Foreshadow secret flag — existing records default false (backwards-compat)
         Self::add_column_if_missing(&conn, "foreshadows", "secret", "INTEGER NOT NULL DEFAULT 0")?;
 
+        // Note AI context injection (Phase A): context_mode / aliases on tree_nodes.
+        Self::migrate_tree_nodes_note_context(&conn)?;
+
+        // Chat session pins: extend codex/snippet CHECK to include sticky (Phase D).
+        Self::migrate_chat_session_pinned_add_sticky(&conn)?;
+
+        // Codex typed relations (Phase C): Map User edge promotion target.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS codex_relations (
+                id                  TEXT PRIMARY KEY,
+                project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                from_codex_id       TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                relation_type       TEXT NOT NULL DEFAULT 'custom',
+                label               TEXT,
+                depth_hint          INTEGER,
+                source_map_edge_id  TEXT,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_project
+                ON codex_relations(project_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_from
+                ON codex_relations(from_codex_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_to
+                ON codex_relations(to_codex_id);",
+        )?;
+        Self::migrate_codex_relations_source_map_edge_id(&conn)?;
+
         // Beat-level POV override cache for Matrix ★ display.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS scene_beat_pov_cache (
@@ -1276,6 +1305,161 @@ impl Database {
                 WHERE source_chat_message_id IS NOT NULL;
             COMMIT;",
         )?;
+        Ok(())
+    }
+
+    /// One-shot migration: add Note AI context columns to tree_nodes.
+    /// Non-note rows keep context_mode NULL; existing notes default to 'mentioned'.
+    pub(super) fn migrate_tree_nodes_note_context(conn: &Connection) -> anyhow::Result<()> {
+        Self::add_column_if_missing(&conn, "tree_nodes", "context_mode", "TEXT")?;
+        Self::add_column_if_missing(
+            &conn,
+            "tree_nodes",
+            "aliases",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "tree_nodes",
+            "excluded_aliases",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        conn.execute_batch(
+            "UPDATE tree_nodes SET context_mode = 'mentioned'
+             WHERE node_type = 'note' AND context_mode IS NULL;",
+        )?;
+        Ok(())
+    }
+
+    /// One-shot migration: extend chat_session_pinned_codex CHECK to allow sticky_id.
+    /// SQLite cannot ALTER CHECK constraints — table rebuild required (down not supported).
+    pub(super) fn migrate_chat_session_pinned_add_sticky(
+        conn: &Connection,
+    ) -> anyhow::Result<()> {
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(chat_session_pinned_codex)")?
+            .query_map([], |row| row.get::<_, String>("name"))?
+            .collect::<Result<_, _>>()?;
+        if columns.iter().any(|c| c == "sticky_id") {
+            return Ok(());
+        }
+        // PRAGMA foreign_keys has no effect inside a transaction; disable before BEGIN.
+        conn.pragma_update(None, "foreign_keys", false)?;
+        conn.execute_batch(
+            "BEGIN;
+            CREATE TABLE chat_session_pinned_codex_new (
+                id              TEXT PRIMARY KEY,
+                session_id      TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+                sticky_id       TEXT REFERENCES map_stickies(id) ON DELETE CASCADE,
+                with_children   INTEGER NOT NULL DEFAULT 0,
+                pin_source      TEXT NOT NULL DEFAULT 'manual'
+                                  CHECK(pin_source IN ('manual','chat_mention')),
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (
+                    (CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN snippet_id     IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN sticky_id      IS NOT NULL THEN 1 ELSE 0 END) = 1
+                )
+            );
+            INSERT INTO chat_session_pinned_codex_new
+                (id, session_id, codex_entry_id, snippet_id, sticky_id,
+                 with_children, pin_source, created_at)
+            SELECT id, session_id, codex_entry_id, snippet_id, NULL,
+                   with_children, pin_source, created_at
+            FROM chat_session_pinned_codex;
+            DROP TABLE chat_session_pinned_codex;
+            ALTER TABLE chat_session_pinned_codex_new RENAME TO chat_session_pinned_codex;
+            CREATE INDEX IF NOT EXISTS idx_chat_pin_session
+                ON chat_session_pinned_codex(session_id, created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_pin_codex
+                ON chat_session_pinned_codex(session_id, codex_entry_id)
+                WHERE codex_entry_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_pin_snippet
+                ON chat_session_pinned_codex(session_id, snippet_id)
+                WHERE snippet_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_pin_sticky
+                ON chat_session_pinned_codex(session_id, sticky_id)
+                WHERE sticky_id IS NOT NULL;
+            COMMIT;",
+        )?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        let fk_errors: Vec<String> = conn
+            .prepare("PRAGMA foreign_key_check(chat_session_pinned_codex)")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        if !fk_errors.is_empty() {
+            anyhow::bail!(
+                "foreign key check failed after chat_session_pinned_codex rebuild"
+            );
+        }
+        Ok(())
+    }
+
+    /// Drop FK on codex_relations.source_map_edge_id so promoted edge IDs survive
+    /// user-edge deletion (traceability for Map → Relation promotion).
+    pub(super) fn migrate_codex_relations_source_map_edge_id(
+        conn: &Connection,
+    ) -> anyhow::Result<()> {
+        let table_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'codex_relations'",
+            [],
+            |row| row.get(0),
+        )?;
+        if table_exists == 0 {
+            return Ok(());
+        }
+
+        let has_source_edge_fk = conn
+            .prepare("PRAGMA foreign_key_list(codex_relations)")?
+            .query_map([], |row| row.get::<_, String>("from"))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|col| col == "source_map_edge_id");
+        if !has_source_edge_fk {
+            return Ok(());
+        }
+
+        conn.pragma_update(None, "foreign_keys", false)?;
+        conn.execute_batch(
+            "BEGIN;
+            CREATE TABLE codex_relations_new (
+                id                  TEXT PRIMARY KEY,
+                project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                from_codex_id       TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                relation_type       TEXT NOT NULL DEFAULT 'custom',
+                label               TEXT,
+                depth_hint          INTEGER,
+                source_map_edge_id  TEXT,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
+            );
+            INSERT INTO codex_relations_new
+                (id, project_id, from_codex_id, to_codex_id, relation_type, label,
+                 depth_hint, source_map_edge_id, created_at, updated_at)
+            SELECT id, project_id, from_codex_id, to_codex_id, relation_type, label,
+                   depth_hint, source_map_edge_id, created_at, updated_at
+            FROM codex_relations;
+            DROP TABLE codex_relations;
+            ALTER TABLE codex_relations_new RENAME TO codex_relations;
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_project
+                ON codex_relations(project_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_from
+                ON codex_relations(from_codex_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_relations_to
+                ON codex_relations(to_codex_id);
+            COMMIT;",
+        )?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        let fk_errors: Vec<String> = conn
+            .prepare("PRAGMA foreign_key_check(codex_relations)")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        if !fk_errors.is_empty() {
+            anyhow::bail!("foreign key check failed after codex_relations rebuild");
+        }
         Ok(())
     }
 

@@ -4,6 +4,7 @@ import { getChildrenFromArray } from "../childrenBudget";
 import { useCodexStore } from "../codexStore";
 import { ChildrenBudgetSelector } from "./ChildrenBudgetSelector";
 import { RelationSection } from "./RelationSection";
+import { CodexTypedRelationsSection } from "./CodexTypedRelationsSection";
 
 interface RelationsTabProps {
   entry: CodexEntry;
@@ -22,6 +23,7 @@ export function RelationsTab({
   return (
     <div className="space-y-3">
       <RelationSection entry={entry} />
+      <CodexTypedRelationsSection entry={entry} />
       <ChildrenBudgetSelector
         value={childrenBudget}
         onChange={onChildrenBudgetChange}

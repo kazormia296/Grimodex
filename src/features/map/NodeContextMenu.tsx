@@ -44,6 +44,8 @@ interface NodeContextMenuProps {
   onPromote?: (type: PromoteTargetType, codexType?: string) => void;
   onPromoteFrame?: (codexType: string) => void;
   onBranchFrom?: () => void;
+  onPinToChatContext?: () => void;
+  isStickyPinnedToChat?: boolean;
   onChangeColor?: (paletteId: string, colorSlot: number) => void;
   /** Palette of the right-clicked sticky; defaults to the default palette. */
   stickyPaletteId?: string;
@@ -72,6 +74,8 @@ export function NodeContextMenu({
   onPromote,
   onPromoteFrame,
   onBranchFrom,
+  onPinToChatContext,
+  isStickyPinnedToChat = false,
   onChangeColor,
   stickyPaletteId,
 }: NodeContextMenuProps) {
@@ -151,6 +155,17 @@ export function NodeContextMenu({
             <DropdownMenuItem onSelect={focusedNodeId ? onExitFocus : onFocus}>
               {focusedNodeId ? "フォーカスを解除" : "フォーカス"}
             </DropdownMenuItem>
+
+            {isSticky && onPinToChatContext && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={onPinToChatContext}>
+                  {isStickyPinnedToChat
+                    ? "チャットコンテキストのピン解除"
+                    : "チャットコンテキストにピン"}
+                </DropdownMenuItem>
+              </>
+            )}
 
             {isSticky && onChangeColor && (
               <>

@@ -31,6 +31,7 @@ import type {
   NodeRefType,
   ShowFlags,
   MapBoardRecord,
+  MapNodePositionRecord,
   ColorByAxis,
 } from "./types";
 import { DEFAULT_SHOW } from "./types";
@@ -1053,6 +1054,58 @@ export async function updateUserEdge(
 
 export async function deleteUserEdge(id: string): Promise<void> {
   await db.delete(mapEdges).where(eq(mapEdges.id, id));
+}
+
+/**
+ * Phase C: Promote a User edge (both ends Codex) to a formal codex_relation.
+ * Deletes the user edge after creating the relation (derived edge renders instead).
+ */
+export async function promoteUserEdgeToCodexRelation(
+  edgeId: string,
+  projectId: string,
+  positions: MapNodePositionRecord[],
+): Promise<{ relationId: string } | null> {
+  const edges = await db
+    .select()
+    .from(mapEdges)
+    .where(eq(mapEdges.id, edgeId));
+  const edge = edges[0];
+  if (!edge) return null;
+
+  const fromPos = positions.find((p) => p.id === edge.fromPositionId);
+  const toPos = positions.find((p) => p.id === edge.toPositionId);
+  const fromCodexId =
+    fromPos?.nodeRefType === "codex" ? fromPos.codexEntryId : null;
+  const toCodexId = toPos?.nodeRefType === "codex" ? toPos.codexEntryId : null;
+  if (!fromCodexId || !toCodexId) return null;
+
+  const { createCodexRelation, findCodexRelationByEdgeEndpoints } =
+    await import("@/features/codex/codexRelationApi");
+  const { slugifyRelationType } = await import(
+    "@/features/codex/relationExpansion"
+  );
+
+  const relationType = slugifyRelationType(edge.forwardLabel);
+  const existing = await findCodexRelationByEdgeEndpoints(
+    fromCodexId,
+    toCodexId,
+    relationType,
+  );
+  if (existing) {
+    await deleteUserEdge(edgeId);
+    return { relationId: existing.id };
+  }
+
+  const relation = await createCodexRelation({
+    projectId,
+    fromCodexId,
+    toCodexId,
+    relationType,
+    label: edge.forwardLabel?.trim() || null,
+    sourceMapEdgeId: edgeId,
+  });
+  await deleteUserEdge(edgeId);
+  return { relationId: relation.id };
 }
 
 // ── Frames ─────────────────────────────────────────────────────────────────

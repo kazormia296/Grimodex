@@ -37,6 +37,7 @@ import type {
   ProjectContext,
   CodexContext,
   LayerBreakdown,
+  NoteContext,
 } from "./contextBuilder";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { runAgentLoop } from "./agent/agentLoop";
@@ -80,6 +81,7 @@ import {
 } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { loadSceneContent, getNode } from "@/features/tree/api";
+import type { TreeNodeData } from "@/features/tree/treeStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { getProject } from "@/features/project/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -117,8 +119,8 @@ import type { ResolvedCodexState } from "@/features/codex/phaseResolver";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getSnippet } from "@/features/snippets/api";
-import { listPinnedSnippetEntries } from "./chatApi";
-import type { PinnedSnippetContext } from "./contextBuilder";
+import { listPinnedSnippetEntries, listPinnedStickyEntries } from "./chatApi";
+import type { PinnedSnippetContext, PinnedStickyContext } from "./contextBuilder";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { buildPendingBeatsSection } from "@/features/editor/beat/pendingBeatsContext";
 import { getPromptCatalog } from "@/prompts/index";
@@ -127,6 +129,8 @@ import {
   listOpenForeshadowsForContext,
 } from "@/features/foreshadow/api";
 import { listNodeLabels } from "@/features/labels/labelApi";
+import { listCodexRelations } from "@/features/codex/codexRelationApi";
+import { expandCodexRelationsBFS } from "@/features/codex/relationExpansion";
 
 // フェーズ解決ヘルパー: エントリ配列に対してフェーズを一括解決する
 async function resolveEntriesForContext(
@@ -650,7 +654,8 @@ async function fetchSceneContext(
       title: node.title,
       synopsis: node.synopsis ?? undefined,
       content: prosemirrorToText(content ?? ""),
-      contentJson: content ?? undefined,
+      contentJson: content ?? "",
+      storyTimeLabel: node.storyTimeLabel ?? null,
     };
   } catch {
     return null;
@@ -748,21 +753,59 @@ async function buildSceneContextPrompt(opts: {
   const budgets = allocateLayerBudgets(contextWindow, { maxOutputTokens });
   const L4_TOTAL_BUDGET = budgets.l4;
 
-  // G12: context_mode filter
-  const detectableEntries = allEntries.filter(
+  // G12: context_mode filter (Codex + Note)
+  const allNodesEarly = useTreeStore.getState().nodes;
+  const noteNodes = allNodesEarly.filter((n) => n.nodeType === "note");
+  const detectableCodex = allEntries.filter(
     (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
   );
-  const alwaysEntries = allEntries.filter((e) => e.contextMode === "always");
+  const alwaysCodexEntries = allEntries.filter((e) => e.contextMode === "always");
+  const detectableNotes = noteNodes.filter((n) => {
+    const mode = n.contextMode ?? "mentioned";
+    return mode !== "hidden" && mode !== "suppress";
+  });
+  const alwaysNoteNodes = noteNodes.filter(
+    (n) => (n.contextMode ?? "mentioned") === "always",
+  );
+
+  const noteToMatchTarget = (node: TreeNodeData) => ({
+    id: node.id,
+    name: node.title,
+    type: "note",
+    aliases: node.aliases ?? "[]",
+    excludedAliases: node.excludedAliases ?? "[]",
+  });
+
+  const detectableMatchTargets = [
+    ...detectableCodex.map((e) => ({
+      id: e.id,
+      name: e.name,
+      type: e.type,
+      aliases: e.aliases,
+      excludedAliases: e.excludedAliases,
+    })),
+    ...detectableNotes.map(noteToMatchTarget),
+  ];
+
+  const mentionText = [
+    sceneCtx.content,
+    ...conversationMessages
+      .filter((m) => m.role === "user")
+      .map((m) => m.content),
+  ].join("\n");
 
   markStart("buildSceneCtx.findMentionedEntriesAsync");
-  const mentioned = await findMentionedEntriesAsync(
-    sceneCtx.content,
-    detectableEntries,
+  const mentionedAll = await findMentionedEntriesAsync(
+    mentionText,
+    detectableMatchTargets,
   );
   markEnd("buildSceneCtx.findMentionedEntriesAsync");
 
+  const mentioned = mentionedAll.filter((e) => e.type !== "note");
+  const mentionedNotes = mentionedAll.filter((e) => e.type === "note");
+
   const mentionedIds = new Set(mentioned.map((e) => e.id));
-  const alwaysNotMentioned = alwaysEntries.filter(
+  const alwaysNotMentioned = alwaysCodexEntries.filter(
     (e) => !mentionedIds.has(e.id),
   );
   const rawCodexEntries = stableSortCodexEntries([
@@ -927,9 +970,35 @@ async function buildSceneContextPrompt(opts: {
     .filter((e) => !pinnedIdSet.has(e.id))
     .map((e) => allEntries.find((a) => a.id === e.id))
     .filter((e): e is CodexEntry => e !== undefined);
-  const alwaysNotPinned = alwaysEntries.filter(
+  const alwaysNotPinned = alwaysCodexEntries.filter(
     (e) => !pinnedIdSet.has(e.id) && !mentionedIds.has(e.id),
   );
+
+  // Note L4 entries (mentioned + always-not-mentioned)
+  const mentionedNoteIds = new Set(mentionedNotes.map((n) => n.id));
+  const noteById = new Map(noteNodes.map((n) => [n.id, n]));
+  const buildNoteCtx = (node: TreeNodeData): NoteContext => {
+    const aliases = parseAliases(node.aliases);
+    return {
+      id: node.id,
+      title: node.title,
+      content: prosemirrorToText(node.content ?? ""),
+      ...(aliases ? { aliases } : {}),
+    };
+  };
+  const rawNoteEntries: NoteContext[] = [
+    ...mentionedNotes
+      .map((m) => noteById.get(m.id))
+      .filter((n): n is TreeNodeData => n !== undefined)
+      .map(buildNoteCtx),
+    ...alwaysNoteNodes
+      .filter((n) => !mentionedNoteIds.has(n.id))
+      .map(buildNoteCtx),
+  ];
+  const noteEntries =
+    rawNoteEntries.length > 0 ? rawNoteEntries : undefined;
+  const alwaysNoteIds =
+    alwaysNoteNodes.length > 0 ? alwaysNoteNodes.map((n) => n.id) : undefined;
 
   // Story so far
   const allNodes = useTreeStore.getState().nodes;
@@ -1005,6 +1074,7 @@ async function buildSceneContextPrompt(opts: {
 
   // G16: pinned snippets
   let pinnedSnippets: PinnedSnippetContext[] = [];
+  let pinnedStickies: PinnedStickyContext[] = [];
   if (activeSessionId) {
     try {
       const snippetItems = await listPinnedSnippetEntries(activeSessionId);
@@ -1012,6 +1082,16 @@ async function buildSceneContextPrompt(opts: {
         id: s.id,
         title: s.title,
         content: extractPlainText(s.content) || s.title,
+      }));
+    } catch {
+      // 取得失敗は無視
+    }
+    try {
+      const stickyItems = await listPinnedStickyEntries(activeSessionId);
+      pinnedStickies = stickyItems.map((s) => ({
+        id: s.id,
+        title: s.title,
+        content: s.content,
       }));
     } catch {
       // 取得失敗は無視
@@ -1122,10 +1202,6 @@ async function buildSceneContextPrompt(opts: {
     ]);
   markEnd("buildSceneCtx.fetchLabelsAndForeshadow");
   const sceneLabels = sceneLabelRows.map((l) => l.name);
-  const sceneForeshadowInput =
-    sceneForeshadow.setups.length > 0 || sceneForeshadow.payoffs.length > 0
-      ? sceneForeshadow
-      : undefined;
   const openForeshadowsInput =
     openForeshadowRows.length > 0
       ? openForeshadowRows.map((r) => ({
@@ -1133,7 +1209,28 @@ async function buildSceneContextPrompt(opts: {
           intent: r.intent,
           loadBearing: r.loadBearing,
           setupCount: r.setupCount,
+          derivedLabel: r.derivedLabel,
         }))
+      : undefined;
+  const sceneForeshadowInput =
+    sceneForeshadow.setups.length > 0 || sceneForeshadow.payoffs.length > 0
+      ? {
+          setups: sceneForeshadow.setups.map((s) => ({
+            title: s.title,
+            intent: s.intent,
+            derivedLabel: s.derivedLabel,
+            strength: s.strength ?? null,
+            excerpt: s.excerpt ?? null,
+          })),
+          payoffs: sceneForeshadow.payoffs.map((p) => ({
+            title: p.title,
+            intent: p.intent,
+            setupSceneTitle: p.setupSceneTitle,
+            derivedLabel: p.derivedLabel,
+            strength: p.strength ?? null,
+            excerpt: p.excerpt ?? null,
+          })),
+        }
       : undefined;
 
   // @scene mention の本文ロード (per-send only)。buildSystemPrompt の中で
@@ -1144,6 +1241,28 @@ async function buildSceneContextPrompt(opts: {
     sceneCtx.id,
   );
 
+  // Phase Cb: BFS-expand formal Codex relations from entries already in L4.
+  const projectIdForRel = useTreeStore.getState().projectId;
+  let relationCodexEntries: CodexContext[] | undefined;
+  if (projectIdForRel) {
+    const l4SeedIds = new Set([
+      ...codexEntries.map((e) => e.id),
+      ...pinnedCodexEntries.map((e) => e.id),
+    ]);
+    if (l4SeedIds.size > 0) {
+      const relations = await listCodexRelations(projectIdForRel).catch(
+        () => [],
+      );
+      const expanded = expandCodexRelationsBFS(
+        [...l4SeedIds],
+        relations,
+        allEntries,
+        l4SeedIds,
+      );
+      relationCodexEntries = expanded.length > 0 ? expanded : undefined;
+    }
+  }
+
   markStart("buildSceneCtx.buildSystemPrompt");
   const promptResult = buildSystemPrompt({
     scene: sceneCtx,
@@ -1153,6 +1272,7 @@ async function buildSceneContextPrompt(opts: {
     codexEntries,
     pinnedCodexEntries,
     pinnedSnippets: pinnedSnippets.length > 0 ? pinnedSnippets : undefined,
+    pinnedStickies: pinnedStickies.length > 0 ? pinnedStickies : undefined,
     activeTabContent,
     commandInstruction,
     conversationTokens,
@@ -1171,12 +1291,17 @@ async function buildSceneContextPrompt(opts: {
     agentMode: opts.agentMode,
     sessionStableCodexIds: opts.sessionStableCodexIds,
     alwaysEntryIds: alwaysNotPinned.map((e) => e.id),
+    noteEntries,
+    alwaysNoteIds,
+    relationCodexEntries,
   });
   markEnd("buildSceneCtx.buildSystemPrompt");
 
   const stableCodexIds = [
     ...allPinnedIdSet,
     ...rawCodexEntries.map((e) => e.id),
+    ...(noteEntries?.map((n) => n.id) ?? []),
+    ...(relationCodexEntries?.map((e) => e.id) ?? []),
   ];
 
   return {

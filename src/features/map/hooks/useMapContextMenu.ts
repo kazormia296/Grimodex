@@ -16,12 +16,16 @@ import type { MapSticky } from "@/db/schema";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { useChatStore } from "@/features/chat/chatStore";
+import * as chatApi from "@/features/chat/chatApi";
 
 export interface ContextMenuState {
   nodeId: string;
   screenPosition: { x: number; y: number };
   isPinned: boolean;
   isScene: boolean;
+  /** Sticky がアクティブセッションの L4 ピンに載っているか */
+  isStickyPinnedToChat?: boolean;
 }
 
 interface UseMapContextMenuInput {
@@ -53,12 +57,30 @@ export function useMapContextMenu({
     (event: React.MouseEvent, node: Node) => {
       event.preventDefault();
       const pos = findPosByNodeId(positions, node.id);
-      setContextMenu({
+      const baseMenu: ContextMenuState = {
         nodeId: node.id,
         screenPosition: { x: event.clientX, y: event.clientY },
         isPinned: pos ? pos.pinned === 1 : false,
         isScene: node.id.startsWith("scene:"),
-      });
+      };
+      setContextMenu(baseMenu);
+
+      if (!node.id.startsWith("sticky:")) return;
+
+      void (async () => {
+        const sessionId = useChatStore.getState().activeSessionId;
+        const stickyId = node.id.slice("sticky:".length);
+        let isStickyPinnedToChat = false;
+        if (sessionId) {
+          const pinned = await chatApi.listPinnedStickyEntries(sessionId);
+          isStickyPinnedToChat = pinned.some((s) => s.id === stickyId);
+        }
+        setContextMenu((prev) =>
+          prev?.nodeId === node.id
+            ? { ...prev, isStickyPinnedToChat }
+            : prev,
+        );
+      })();
     },
     [positions],
   );
@@ -243,6 +265,26 @@ export function useMapContextMenu({
     [contextMenu, positions, setStickies],
   );
 
+  const handleToggleStickyChatPin = useCallback(async () => {
+    if (!contextMenu) return;
+    const pos = findPosByNodeId(positions, contextMenu.nodeId);
+    if (!pos?.stickyId) return;
+    const sessionId = useChatStore.getState().activeSessionId;
+    if (!sessionId) {
+      toast.error("アクティブなチャットセッションがありません");
+      return;
+    }
+    if (contextMenu.isStickyPinnedToChat) {
+      await chatApi.unpinStickyEntry(sessionId, pos.stickyId);
+      toast.success("Sticky のチャットコンテキストピンを解除しました");
+    } else {
+      await chatApi.pinStickyEntry(sessionId, pos.stickyId);
+      toast.success("Sticky をチャットコンテキストにピンしました");
+    }
+    await useChatStore.getState().refreshContextLayers();
+    setContextMenu(null);
+  }, [contextMenu, positions]);
+
   return {
     contextMenu,
     setContextMenu,
@@ -255,5 +297,6 @@ export function useMapContextMenu({
     handleSendToBack,
     handlePromoteSticky,
     handleChangeStickyColor,
+    handleToggleStickyChatPin,
   };
 }

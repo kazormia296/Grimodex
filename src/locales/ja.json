@@ -845,7 +845,10 @@
       "none": "(なし)",
       "suggestions": "提案",
       "addAsChild": "子として追加",
-      "dismiss": "却下"
+      "dismiss": "却下",
+      "typedTitle": "正式リレーション",
+      "typedRemove": "リレーションを削除",
+      "typedRemoved": "リレーションを削除しました"
     },
     "research": {
       "notesLabel": "ノート",
@@ -1982,6 +1985,9 @@
       "noteDescription": "このファイルはシーンではなくノートです",
       "codexEditing": "Codex エントリ編集中",
       "snippetEditing": "スニペット編集中"
+    },
+    "noteContext": {
+      "title": "AI コンテキスト設定"
     },
     "splash": {
       "hint": "ツリーからシーンを選択して執筆を始めましょう"

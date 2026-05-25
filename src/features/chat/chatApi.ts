@@ -8,6 +8,7 @@ import {
   chatSessionPinnedCodex,
   codexEntries,
   snippets,
+  mapStickies,
 } from "@/db/schema";
 import {
   eq,
@@ -28,6 +29,7 @@ import type {
   MessageRole,
 } from "./chatTypes";
 import type { CodexEntry } from "@/features/codex/api";
+import { prosemirrorToText } from "@/lib/prosemirror";
 import { sanitizeSceneContent } from "./contextBuilder";
 import { getPromptCatalog } from "@/prompts/index";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -594,6 +596,82 @@ export async function listPinnedSnippetEntries(
     }));
 }
 
+/** A map sticky returned as a chat-context pinned item. */
+export interface PinnedStickyEntryWithData {
+  id: string;
+  title: string | null;
+  content: string;
+  pinnedType: "sticky";
+}
+
+export async function listPinnedStickyEntries(
+  sessionId: string,
+): Promise<PinnedStickyEntryWithData[]> {
+  const pinRows = await db
+    .select({ stickyId: chatSessionPinnedCodex.stickyId })
+    .from(chatSessionPinnedCodex)
+    .where(
+      and(
+        eq(chatSessionPinnedCodex.sessionId, sessionId),
+        isNotNull(chatSessionPinnedCodex.stickyId),
+      ),
+    )
+    .orderBy(asc(chatSessionPinnedCodex.createdAt));
+
+  const ids = pinRows
+    .map((r) => r.stickyId)
+    .filter((id): id is string => id !== null);
+  if (ids.length === 0) return [];
+
+  const entries = await db
+    .select()
+    .from(mapStickies)
+    .where(inArray(mapStickies.id, ids));
+  const entryMap = new Map(entries.map((e) => [e.id, e]));
+
+  return ids
+    .map((id) => entryMap.get(id))
+    .filter((e): e is NonNullable<typeof e> => e !== undefined)
+    .map((e) => ({
+      id: e.id,
+      title: e.title,
+      content: prosemirrorToText(e.body),
+      pinnedType: "sticky" as const,
+    }));
+}
+
+export async function pinStickyEntry(
+  sessionId: string,
+  stickyId: string,
+): Promise<void> {
+  await db
+    .insert(chatSessionPinnedCodex)
+    .values({
+      id: crypto.randomUUID(),
+      sessionId,
+      stickyId,
+      codexEntryId: null,
+      snippetId: null,
+      withChildren: 0,
+      pinSource: "manual",
+    })
+    .onConflictDoNothing();
+}
+
+export async function unpinStickyEntry(
+  sessionId: string,
+  stickyId: string,
+): Promise<void> {
+  await db
+    .delete(chatSessionPinnedCodex)
+    .where(
+      and(
+        eq(chatSessionPinnedCodex.sessionId, sessionId),
+        eq(chatSessionPinnedCodex.stickyId, stickyId),
+      ),
+    );
+}
+
 export async function pinCodexEntry(
   sessionId: string,
   entryId: string,
@@ -608,6 +686,7 @@ export async function pinCodexEntry(
           sessionId,
           snippetId: entryId,
           codexEntryId: null,
+          stickyId: null,
           withChildren: withChildren ? 1 : 0,
           pinSource: source,
         }
@@ -616,6 +695,7 @@ export async function pinCodexEntry(
           sessionId,
           codexEntryId: entryId,
           snippetId: null,
+          stickyId: null,
           withChildren: withChildren ? 1 : 0,
           pinSource: source,
         };
@@ -664,6 +744,7 @@ export async function unpinCodexEntry(
         or(
           eq(chatSessionPinnedCodex.codexEntryId, entryId),
           eq(chatSessionPinnedCodex.snippetId, entryId),
+          eq(chatSessionPinnedCodex.stickyId, entryId),
         ),
       ),
     );

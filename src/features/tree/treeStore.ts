@@ -46,6 +46,14 @@ export interface TreeNodeData {
   sourceUri?: string | null;
   sourceMtime?: string | null;
   archivedAt?: string | null;
+  /** Note body (ProseMirror JSON). Loaded for note nodes only (scene bodies stay out of store). */
+  content?: string;
+  /** Note-only: AI context injection mode. */
+  contextMode?: string | null;
+  /** Note-only: alternate names (JSON array string). */
+  aliases?: string | null;
+  /** Note-only: excluded aliases (JSON array string). */
+  excludedAliases?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -144,6 +152,10 @@ function toNodeData(n: ApiNode): TreeNodeData {
     sourceUri: n.sourceUri ?? null,
     sourceMtime: n.sourceMtime ?? null,
     archivedAt: n.archivedAt ?? null,
+    ...(n.nodeType === "note" ? { content: n.content } : {}),
+    contextMode: n.contextMode ?? null,
+    aliases: n.aliases ?? null,
+    excludedAliases: n.excludedAliases ?? null,
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
   };

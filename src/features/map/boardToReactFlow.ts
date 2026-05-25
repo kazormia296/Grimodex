@@ -26,6 +26,14 @@ export interface BoardUserEdge {
   direction: string;
 }
 
+export interface BoardCodexRelation {
+  id: string;
+  fromCodexId: string;
+  toCodexId: string;
+  label?: string | null;
+  relationType: string;
+}
+
 export interface BoardCodexEntry {
   id: string;
   name: string;
@@ -74,6 +82,7 @@ export function buildMapEdgesFromData(input: {
   userEdges: BoardUserEdge[];
   positions: MapNodePositionRecord[];
   show: ShowFlags;
+  codexRelations?: BoardCodexRelation[];
 }): Edge[] {
   const {
     codexEntries,
@@ -83,6 +92,7 @@ export function buildMapEdgesFromData(input: {
     userEdges,
     positions,
     show,
+    codexRelations = [],
   } = input;
 
   const derived: Edge[] = [];
@@ -169,6 +179,28 @@ export function buildMapEdgesFromData(input: {
           });
         }
       }
+    }
+
+    for (const rel of codexRelations) {
+      if (
+        !visibleCodexIds.has(rel.fromCodexId) ||
+        !visibleCodexIds.has(rel.toCodexId)
+      ) {
+        continue;
+      }
+      derived.push({
+        id: `codex-relation:${rel.id}`,
+        source: `codex:${rel.fromCodexId}`,
+        target: `codex:${rel.toCodexId}`,
+        style: {
+          stroke: "#7c3aed",
+          strokeDasharray: "5 3",
+          opacity: 0.85,
+        },
+        animated: false,
+        zIndex: 0,
+        data: { label: rel.label ?? rel.relationType, isCodexRelation: true },
+      });
     }
   }
 

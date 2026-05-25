@@ -22,6 +22,16 @@ export interface SceneContext {
   /** Raw ProseMirror JSON string (DB value). Used to extract Placed beats for context injection. */
   contentJson?: string;
   synopsis?: string;
+  /** Story-time label for the current scene (e.g. "第3話・夕方"). Injected into L3 when set. */
+  storyTimeLabel?: string | null;
+}
+
+export interface NoteContext {
+  id: string;
+  title: string;
+  /** Plain text body (from prosemirrorToText). */
+  content: string;
+  aliases?: string[];
 }
 
 export interface ProjectContext {
@@ -55,6 +65,8 @@ export interface CodexContext {
   childrenContext?: string; // pre-computed descendant summaries within budget
   customDetails?: Array<{ fieldName: string; value: string }>; // G14
   phaseLabel?: string; // フェーズラベル（フェーズ適用中のみ）
+  /** Phase Cb: relation BFS 由来の注入。L4 trim pri = L4_PRI_RELATION */
+  relationVia?: string;
 }
 
 export interface PinnedCodexContext extends CodexContext {
@@ -66,6 +78,12 @@ export interface PinnedSnippetContext {
   id: string;
   title: string;
   content: string; // plain text extracted from ProseMirror JSON
+}
+
+export interface PinnedStickyContext {
+  id: string;
+  title: string | null;
+  content: string;
 }
 
 export interface TrimInput {
@@ -109,6 +127,8 @@ export interface BuildSystemPromptInput {
   conversationSummary?: string;
   /** G16: ピン留めされたSnippetエントリ (L4に注入) */
   pinnedSnippets?: PinnedSnippetContext[];
+  /** Phase D: ピン留めされた Map Sticky (L4に注入) */
+  pinnedStickies?: PinnedStickyContext[];
   /** G19: アクティブタブのコンテンツ (L3に注入) */
   activeTabContent?: {
     type: "codex" | "snippet";
@@ -126,13 +146,20 @@ export interface BuildSystemPromptInput {
    * setups は当シーンで仕込みが置かれた伏線、payoffs は当シーンで回収される伏線。
    * 両方が空の場合はセクションごと省略する。 */
   sceneForeshadow?: {
-    setups: Array<{ title: string; intent: string | null }>;
+    setups: Array<{
+      title: string;
+      intent: string | null;
+      derivedLabel?: string;
+      strength?: string | null;
+      excerpt?: string | null;
+    }>;
     payoffs: Array<{
       title: string;
       intent: string | null;
-      /** 仕込みが置かれた代表シーンのタイトル（複数ある場合は最初の 1 件）。
-       * 仕込み未配置の payoff（設計のみ）の場合は null。 */
       setupSceneTitle: string | null;
+      derivedLabel?: string;
+      strength?: string | null;
+      excerpt?: string | null;
     }>;
   };
   /** Phase 2: プロジェクト全体の未回収伏線リスト。L2 storySoFar 末尾に
@@ -144,6 +171,7 @@ export interface BuildSystemPromptInput {
     intent: string | null;
     loadBearing: "critical" | "supporting" | "optional" | null;
     setupCount: number;
+    derivedLabel?: string;
   }>;
   /** Phase 2: ストーリー時系列で 1 つ前のシーン。reading-order の
    * `previousScene` と異なる場合のみ注入される（呼び出し側で同一性判定済みを期待）。
@@ -186,6 +214,12 @@ export interface BuildSystemPromptInput {
   sessionStableCodexIds?: string[];
   /** context_mode=always entries (L4 trim: lowest removal priority). */
   alwaysEntryIds?: string[];
+  /** Note entries injected into L4 (mentioned / always). */
+  noteEntries?: NoteContext[];
+  /** context_mode=always note IDs (L4 trim: pri 4). */
+  alwaysNoteIds?: string[];
+  /** Phase Cb: Codex entries discovered via relation BFS (L4 pri 1). */
+  relationCodexEntries?: CodexContext[];
 }
 
 export interface LayerBudgets {
@@ -369,14 +403,25 @@ export { JA_TYPE_LABELS };
 // Layer trim helpers
 // ---------------------------------------------------------------------------
 
-/** L4 trim priority: lower = removed first (children → mentioned → pinned → always). */
-const L4_PRI_CHILD = 0;
-const L4_PRI_MENTIONED = 1;
-const L4_PRI_PINNED = 2;
-const L4_PRI_ALWAYS = 3;
+/**
+ * L4 trim priority (v2.1 single-axis scale 0–4): lower = removed first.
+ * Sequence reflects user-intent strength only; source type (Codex/Note/Sticky) is irrelevant.
+ *
+ * | pri | Category              | Blocks                                    |
+ * | 0   | Auto-derived children | Codex children (children_budget)          |
+ * | 1   | Auto-derived relation | Codex relations via BFS (Phase Cb)        |
+ * | 2   | Mentioned             | Codex/Note mentioned; markerless default  |
+ * | 3   | User-pinned           | Codex/Snippet/Sticky session pin          |
+ * | 4   | User-marked-always    | Codex/Note context_mode=always            |
+ */
+export const L4_PRI_CHILD = 0;
+export const L4_PRI_RELATION = 1;
+export const L4_PRI_MENTIONED = 2;
+export const L4_PRI_PINNED = 3;
+export const L4_PRI_ALWAYS = 4;
 
 /** L4: remove lowest-priority entry blocks first. */
-function trimL4Text(text: string, targetTokens: number): string {
+export function trimL4Text(text: string, targetTokens: number): string {
   if (countTokens(text) <= targetTokens) return text;
   if (targetTokens <= 0) return "";
 
@@ -595,21 +640,32 @@ export function buildSystemPrompt(
   // 圧力に最も強い。
   let l2Text = input.storySoFar ? `\n${input.storySoFar}` : "";
   if (input.openForeshadows && input.openForeshadows.length > 0) {
-    const fsLines: string[] = [s.headers.openForeshadows];
-    for (const fs of input.openForeshadows) {
-      const intentSuffix = fs.intent ? ` — ${fs.intent}` : "";
-      const meta: string[] = [];
-      if (fs.loadBearing === "critical") meta.push(s.labels.foreshadowCritical);
-      else if (fs.loadBearing === "supporting")
-        meta.push(s.labels.foreshadowSupporting);
-      else if (fs.loadBearing === "optional")
-        meta.push(s.labels.foreshadowOptional);
-      if (fs.setupCount > 0)
-        meta.push(`${s.labels.foreshadowSetup}: ${fs.setupCount}件`);
-      const metaSuffix = meta.length > 0 ? `（${meta.join(", ")}）` : "";
-      fsLines.push(`- 「${fs.title}」${intentSuffix}${metaSuffix}`);
+    let openFs = input.openForeshadows;
+    const formatOpenFs = (items: typeof openFs) => {
+      const fsLines: string[] = [s.headers.openForeshadows];
+      for (const fs of items) {
+        const intentSuffix = fs.intent ? ` — ${fs.intent}` : "";
+        const meta: string[] = [];
+        if (fs.derivedLabel) meta.push(`label: ${fs.derivedLabel}`);
+        if (fs.loadBearing === "critical")
+          meta.push(s.labels.foreshadowCritical);
+        else if (fs.loadBearing === "supporting")
+          meta.push(s.labels.foreshadowSupporting);
+        else if (fs.loadBearing === "optional")
+          meta.push(s.labels.foreshadowOptional);
+        if (fs.setupCount > 0)
+          meta.push(`${s.labels.foreshadowSetup}: ${fs.setupCount}件`);
+        const metaSuffix = meta.length > 0 ? `（${meta.join(", ")}）` : "";
+        fsLines.push(`- 「${fs.title}」${intentSuffix}${metaSuffix}`);
+      }
+      return fsLines.join("\n");
+    };
+    let fsBlock = formatOpenFs(openFs);
+    const OPEN_FS_TOKEN_BUDGET = 1000;
+    if (countTokens(fsBlock) > OPEN_FS_TOKEN_BUDGET) {
+      openFs = openFs.filter((fs) => fs.loadBearing === "critical");
+      fsBlock = formatOpenFs(openFs);
     }
-    const fsBlock = fsLines.join("\n");
     if (l2Text) {
       // storySoFar が存在する場合は \n\n 区切りで追記（trim 単位として独立）
       l2Text = `${l2Text}\n\n${fsBlock}`;
@@ -659,6 +715,9 @@ export function buildSystemPrompt(
       ? ` [${input.sceneLabels.join(", ")}]`
       : "";
   l3Text += `${s.headers.currentScene}\n${s.labels.title}: ${input.scene.title}${labelSuffix}`;
+  if (input.scene.storyTimeLabel?.trim()) {
+    l3Text += `\n${s.labels.storyTimeLabel}: ${input.scene.storyTimeLabel.trim()}`;
+  }
   if (input.scene.synopsis) {
     l3Text += `\n${s.labels.synopsis}: ${input.scene.synopsis}`;
   }
@@ -678,18 +737,32 @@ export function buildSystemPrompt(
       const lines: string[] = [s.headers.sceneForeshadow];
       for (const setup of fs.setups) {
         const intentSuffix = setup.intent ? ` — ${setup.intent}` : "";
+        const meta: string[] = [];
+        if (setup.derivedLabel) meta.push(`label: ${setup.derivedLabel}`);
+        if (setup.strength) meta.push(`strength: ${setup.strength}`);
+        const metaSuffix = meta.length > 0 ? ` [${meta.join(", ")}]` : "";
         lines.push(
-          `- ${s.labels.foreshadowSetup}: 「${setup.title}」${intentSuffix}`,
+          `- ${s.labels.foreshadowSetup}: 「${setup.title}」${intentSuffix}${metaSuffix}`,
         );
+        if (setup.excerpt?.trim()) {
+          lines.push(`  excerpt: ${setup.excerpt.trim()}`);
+        }
       }
       for (const payoff of fs.payoffs) {
         const intentSuffix = payoff.intent ? ` — ${payoff.intent}` : "";
         const setupSuffix = payoff.setupSceneTitle
           ? `（${s.labels.foreshadowSetup}: 「${payoff.setupSceneTitle}」）`
           : "";
+        const meta: string[] = [];
+        if (payoff.derivedLabel) meta.push(`label: ${payoff.derivedLabel}`);
+        if (payoff.strength) meta.push(`strength: ${payoff.strength}`);
+        const metaSuffix = meta.length > 0 ? ` [${meta.join(", ")}]` : "";
         lines.push(
-          `- ${s.labels.foreshadowPayoff}: 「${payoff.title}」${intentSuffix}${setupSuffix}`,
+          `- ${s.labels.foreshadowPayoff}: 「${payoff.title}」${intentSuffix}${setupSuffix}${metaSuffix}`,
         );
+        if (payoff.excerpt?.trim()) {
+          lines.push(`  excerpt: ${payoff.excerpt.trim()}`);
+        }
       }
       l3Text += lines.join("\n");
     }
@@ -741,6 +814,7 @@ export function buildSystemPrompt(
     ...(input.codexEntries ?? []).filter(
       (e) => !pinnedChildIds.has(e.id) && !pinnedIds.has(e.id),
     ),
+    ...(input.relationCodexEntries ?? []),
     ...pinnedWithChildren,
   ]);
   let l4Text = "";
@@ -748,7 +822,10 @@ export function buildSystemPrompt(
   let l4StableSegment = "";
   const hasPinnedSnippets =
     input.pinnedSnippets && input.pinnedSnippets.length > 0;
-  if (allCodex.length > 0 || hasPinnedSnippets) {
+  const hasPinnedStickies =
+    input.pinnedStickies && input.pinnedStickies.length > 0;
+  const hasNotes = input.noteEntries && input.noteEntries.length > 0;
+  if (allCodex.length > 0 || hasPinnedSnippets || hasPinnedStickies || hasNotes) {
     const lines = [s.headers.codexSection];
     const stableLines = [s.headers.codexSection];
     for (const entry of allCodex) {
@@ -756,7 +833,7 @@ export function buildSystemPrompt(
       const displaySummary =
         entry.summary.trim() || entry.contentFallback || "";
       const phaseSuffix = entry.phaseLabel ? ` [${entry.phaseLabel}]` : "";
-      // L4_PRI_MENTIONED が既定値。いずれの条件にも一致しなければ初期値のまま。
+      // L4_PRI_MENTIONED が既定値。ユーザー意図 (always/pin) は relation BFS より優先。
       let priority = L4_PRI_MENTIONED;
       if (pinnedChildIds.has(entry.id)) {
         priority = L4_PRI_CHILD;
@@ -764,12 +841,17 @@ export function buildSystemPrompt(
         priority = L4_PRI_ALWAYS;
       } else if (pinnedIds.has(entry.id)) {
         priority = L4_PRI_PINNED;
+      } else if (entry.relationVia) {
+        priority = L4_PRI_RELATION;
       }
       const blockLines = [
         `<!-- l4pri:${priority} -->`,
         `- **${entry.name}**${phaseSuffix} (${label})`,
         `  ${s.labels.codexId}: ${entry.id}`,
       ];
+      if (entry.relationVia) {
+        blockLines.push(`  <!-- via: ${entry.relationVia} -->`);
+      }
       if (entry.aliases && entry.aliases.length > 0) {
         blockLines.push(
           `  ${s.labels.codexAliases}: ${entry.aliases.join(", ")}`,
@@ -801,11 +883,53 @@ export function buildSystemPrompt(
         stableLines.push(blockText);
       }
     }
+    const alwaysNoteIdSet = new Set(input.alwaysNoteIds ?? []);
+    for (const note of input.noteEntries ?? []) {
+      const priority = alwaysNoteIdSet.has(note.id)
+        ? L4_PRI_ALWAYS
+        : L4_PRI_MENTIONED;
+      const blockLines = [
+        `<!-- l4pri:${priority} -->`,
+        `<note>`,
+        `- **${note.title}** (Note)`,
+        `  ${s.labels.codexId}: ${note.id}`,
+      ];
+      if (note.aliases && note.aliases.length > 0) {
+        blockLines.push(
+          `  ${s.labels.codexAliases}: ${note.aliases.join(", ")}`,
+        );
+      }
+      if (note.content.trim()) {
+        blockLines.push(`  ${s.labels.contentBody}: ${note.content.trim()}`);
+      }
+      blockLines.push(`</note>`);
+      const blockText = blockLines.join("\n");
+      lines.push(blockText);
+      if (l4StableIds.size === 0 || l4StableIds.has(note.id)) {
+        stableLines.push(blockText);
+      }
+    }
     for (const snippet of input.pinnedSnippets ?? []) {
-      const snippetBlock = `- **${snippet.title}** (Snippet): ${snippet.content}`;
+      const snippetBlock = `<!-- l4pri:${L4_PRI_PINNED} -->\n- **${snippet.title}** (Snippet): ${snippet.content}`;
       lines.push(snippetBlock);
       if (l4StableIds.size === 0 || l4StableIds.has(snippet.id)) {
         stableLines.push(snippetBlock);
+      }
+    }
+    for (const sticky of input.pinnedStickies ?? []) {
+      const title = sticky.title?.trim() || "Sticky";
+      const blockLines = [
+        `<!-- l4pri:${L4_PRI_PINNED} -->`,
+        `<sticky>`,
+        `- **${title}** (Sticky)`,
+        `  ${s.labels.codexId}: ${sticky.id}`,
+        `  ${s.labels.contentBody}: ${sticky.content.trim()}`,
+        `</sticky>`,
+      ];
+      const stickyBlock = blockLines.join("\n");
+      lines.push(stickyBlock);
+      if (l4StableIds.size === 0 || l4StableIds.has(sticky.id)) {
+        stableLines.push(stickyBlock);
       }
     }
     l4Text = lines.join("\n");

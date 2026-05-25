@@ -78,6 +78,31 @@ describe("loadTree activeSceneId", () => {
     expect(useTreeStore.getState().activeSceneId).toBe("scene-b");
   });
 
+  it("keeps scene bodies out of store but loads note content", async () => {
+    mockListNodes.mockResolvedValue([
+      {
+        ...sceneNode("scene-a", "a0"),
+        content: '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"scene body"}]}]}',
+      },
+      {
+        ...sceneNode("note-a", "a1"),
+        nodeType: "note" as const,
+        title: "Note",
+        content: '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"note body"}]}]}',
+        contextMode: "mentioned",
+        aliases: "[]",
+        excludedAliases: "[]",
+      },
+    ]);
+
+    await useTreeStore.getState().loadTree("p1");
+
+    const scene = useTreeStore.getState().nodes.find((n) => n.id === "scene-a");
+    const note = useTreeStore.getState().nodes.find((n) => n.id === "note-a");
+    expect(scene?.content).toBeUndefined();
+    expect(note?.content).toContain("note body");
+  });
+
   it("falls back to the first scene when the previous active node is gone", async () => {
     mockListNodes.mockResolvedValue([sceneNode("scene-a", "a0")]);
 

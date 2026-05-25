@@ -119,6 +119,9 @@ export async function updateNode(
       | "sourceMtime"
       | "archivedAt"
       | "content"
+      | "contextMode"
+      | "aliases"
+      | "excludedAliases"
     >
   >,
 ): Promise<TreeNode | undefined> {

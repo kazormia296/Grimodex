@@ -13,6 +13,8 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { listCodexRelations } from "@/features/codex/codexRelationApi";
+import type { CodexRelationRow } from "@/features/codex/codexRelationApi";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useMapStore } from "./mapStore";
@@ -59,6 +61,7 @@ import {
   deleteUserEdge,
   updateUserEdge,
   createUserEdge,
+  promoteUserEdgeToCodexRelation,
   deleteFrame,
   deleteAiBranch,
   deleteSticky,
@@ -181,6 +184,19 @@ export function MapCanvas() {
   } = useMapBoardData(useCurrentProjectId());
 
   useMapBoardPersistence();
+
+  const [codexRelations, setCodexRelations] = useState<CodexRelationRow[]>([]);
+
+  const projectId = useCurrentProjectId();
+  useEffect(() => {
+    if (!projectId) {
+      setCodexRelations([]);
+      return;
+    }
+    listCodexRelations(projectId)
+      .then(setCodexRelations)
+      .catch(() => setCodexRelations([]));
+  }, [projectId, userEdges.length]);
 
   // Stable projection of userEdges for layout/auto-arrange hooks. Without this
   // memo, the inline `.map()` would yield a fresh array every render, and the
@@ -461,6 +477,13 @@ export function MapCanvas() {
     snippetEntries,
     phasesByEntry,
     userEdges,
+    codexRelations: codexRelations.map((r) => ({
+      id: r.id,
+      fromCodexId: r.fromCodexId,
+      toCodexId: r.toCodexId,
+      label: r.label,
+      relationType: r.relationType,
+    })),
     positions,
     show,
     onUserEdgeLabelSave: handleUserEdgeLabelSave,
@@ -491,6 +514,7 @@ export function MapCanvas() {
     handleSendToBack,
     handlePromoteSticky,
     handleChangeStickyColor,
+    handleToggleStickyChatPin,
   } = useMapContextMenu({
     boardId,
     projectId: getCurrentProjectId(),
@@ -845,11 +869,28 @@ export function MapCanvas() {
         style?: "solid" | "dashed" | "dotted";
         color?: string;
       };
+      const edgeId = edge.id.slice("user:".length);
+      const ue = userEdgesRef.current.find((u) => u.id === edgeId);
+      let canPromoteToRelation = false;
+      if (ue) {
+        const fromPosRec = positionsRef.current.find(
+          (p) => p.id === ue.fromPositionId,
+        );
+        const toPosRec = positionsRef.current.find(
+          (p) => p.id === ue.toPositionId,
+        );
+        canPromoteToRelation =
+          fromPosRec?.nodeRefType === "codex" &&
+          toPosRec?.nodeRefType === "codex" &&
+          !!fromPosRec.codexEntryId &&
+          !!toPosRec.codexEntryId;
+      }
       setEdgeContextMenu({
-        edgeId: edge.id.slice("user:".length),
+        edgeId,
         screenPosition: { x: e.clientX, y: e.clientY },
         style: d.style ?? "solid",
         color: d.color ?? "#555555",
+        canPromoteToRelation,
       });
     },
     [],
@@ -1298,6 +1339,12 @@ export function MapCanvas() {
               ? handleBranchFromSticky
               : undefined
           }
+          onPinToChatContext={
+            contextMenu.nodeId.startsWith("sticky:")
+              ? handleToggleStickyChatPin
+              : undefined
+          }
+          isStickyPinnedToChat={contextMenu.isStickyPinnedToChat}
           onChangeColor={
             contextMenu.nodeId.startsWith("sticky:")
               ? handleChangeStickyColor
@@ -1410,6 +1457,24 @@ export function MapCanvas() {
                   u.id === edgeContextMenu.edgeId ? updated : u,
                 ),
               );
+          }}
+          onPromoteToRelation={async () => {
+            const edgeId = edgeContextMenu.edgeId;
+            const pid = getCurrentProjectId();
+            const result = await promoteUserEdgeToCodexRelation(
+              edgeId,
+              pid,
+              positionsRef.current,
+            );
+            if (!result) {
+              toast.error("両端が Codex ノードの User edge のみ昇格できます");
+              return;
+            }
+            setUserEdges((prev) => prev.filter((u) => u.id !== edgeId));
+            const refreshed = await listCodexRelations(pid);
+            setCodexRelations(refreshed);
+            toast.success("Codex Relation に昇格しました");
+            setEdgeContextMenu(null);
           }}
           onDelete={async () => {
             const edgeId = edgeContextMenu.edgeId;

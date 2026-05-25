@@ -71,6 +71,7 @@ export const AUX_SCOPES = [
   "codex_phase_detail_overrides",
   "codex_quick_pins",
   "codex_dismissed_relations",
+  "codex_relations",
   // owned by `snippet`
   "snippet_entry_tags",
   // owned by `labels`
@@ -111,6 +112,7 @@ export const AUX_SCOPE_OWNER: Record<AuxScope, RestoreScope> = {
   codex_phase_detail_overrides: "codex",
   codex_quick_pins: "codex",
   codex_dismissed_relations: "codex",
+  codex_relations: "codex",
   snippet_entry_tags: "snippet",
   labels: "labels",
   tree_node_labels: "labels",
@@ -148,6 +150,7 @@ export const AUX_TABLE: Record<AuxScope, string> = {
   codex_phase_detail_overrides: "codex_phase_detail_overrides",
   codex_quick_pins: "codex_quick_pins",
   codex_dismissed_relations: "codex_dismissed_relations",
+  codex_relations: "codex_relations",
   snippet_entry_tags: "snippet_entry_tags",
   labels: "labels",
   tree_node_labels: "tree_node_labels",

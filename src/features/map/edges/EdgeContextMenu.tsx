@@ -12,6 +12,7 @@ export interface EdgeContextMenuState {
   screenPosition: { x: number; y: number };
   style: "solid" | "dashed" | "dotted";
   color: string;
+  canPromoteToRelation?: boolean;
 }
 
 interface EdgeContextMenuProps extends EdgeContextMenuState {
@@ -19,6 +20,7 @@ interface EdgeContextMenuProps extends EdgeContextMenuState {
   onStyleChange: (style: "solid" | "dashed" | "dotted") => void;
   onColorChange: (color: string) => void;
   onDelete: () => void;
+  onPromoteToRelation?: () => void;
 }
 
 const COLOR_PRESETS = [
@@ -45,6 +47,8 @@ export function EdgeContextMenu({
   onStyleChange,
   onColorChange,
   onDelete,
+  onPromoteToRelation,
+  canPromoteToRelation,
 }: EdgeContextMenuProps) {
   return (
     <DropdownMenu
@@ -103,6 +107,14 @@ export function EdgeContextMenu({
             />
           ))}
         </div>
+        {canPromoteToRelation && onPromoteToRelation && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onPromoteToRelation}>
+              Codex Relation に昇格
+            </DropdownMenuItem>
+          </>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={onDelete}

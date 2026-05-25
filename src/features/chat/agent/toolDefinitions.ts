@@ -6,7 +6,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "search_codex",
     description:
-      "Search Codex entries by keyword across name, aliases, summary, and tags. Note: entries mentioned in the current scene and entries spotlighted by the user are already injected into the system prompt with their summaries (and their UUIDs as `id: ...` lines, plus aliases) — use this tool to discover entries that are NOT already injected. Returns id, name, type, and summary (no full content). Whitespace-separated tokens are treated as OR (any match), so a multi-word query is fine.",
+      "Search Codex entries and Notes by keyword across name, aliases, summary, and tags. Note: entries mentioned in the current scene (including Notes) and entries spotlighted by the user are already injected into the system prompt with their summaries (and their UUIDs as `id: ...` lines, plus aliases) — use this tool to discover entries that are NOT already injected. Returns id, name, type, and summary (no full content). Whitespace-separated tokens are treated as OR (any match), so a multi-word query is fine.",
     inputSchema: {
       type: "object",
       properties: {
@@ -175,7 +175,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "list_open_foreshadows",
     description:
-      "List all unresolved foreshadowing items in the project (payoff not yet confirmed and not abandoned). Returns id, title, intent, loadBearing (critical/supporting/optional/null), and setupCount (non-orphan). Sorted by loadBearing priority then most recently updated. Note: a small priority-sorted slice is already injected into the system prompt under '### 未回収の伏線' — use this tool when you need the full list (e.g. trimmed in static injection) or want id-based follow-up via get_foreshadow_detail.",
+      "List all unresolved foreshadowing items in the project (payoff not yet confirmed and not abandoned). Returns id, title, intent, loadBearing (critical/supporting/optional/null), setupCount (non-orphan), and derived lifecycle labels (e.g. critical_weak, needs_strengthening). Sorted by loadBearing priority then most recently updated. Note: a priority-sorted slice with derived labels is already injected into the system prompt under '### 未回収の伏線' and scene-specific labels under '### このシーンの伏線' — use this tool when you need the full list or id-based follow-up via get_foreshadow_detail.",
     inputSchema: {
       type: "object",
       properties: {},

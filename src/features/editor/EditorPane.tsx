@@ -16,6 +16,7 @@ import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBac
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { scheduleWriteBack } from "@/features/external-mount/writeBack";
 import { FileBackedSceneBanner } from "@/features/external-mount/components/FileBackedSceneBanner";
+import { NoteContextControls } from "@/features/editor/NoteContextControls";
 import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
 import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
@@ -1728,6 +1729,7 @@ export function EditorPane({
           </span>
         </div>
       )}
+      {isNote && <NoteContextControls nodeId={nodeId} />}
       {isCodexMode && (
         <div className="flex items-center gap-1.5 border-b border-purple-500/30 bg-purple-500/10 px-3 py-1 text-xs text-purple-600 dark:text-purple-400">
           <span className="flex items-center gap-1 font-medium">

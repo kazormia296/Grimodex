@@ -54,6 +54,9 @@ const SCHEMA_DDL = `
     source_uri TEXT,
     source_mtime TEXT,
     archived_at TEXT,
+    context_mode TEXT,
+    aliases TEXT NOT NULL DEFAULT '[]',
+    excluded_aliases TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -81,6 +84,18 @@ const SCHEMA_DDL = `
     entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     dismissed_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     PRIMARY KEY (entry_id, dismissed_id)
+  );
+  CREATE TABLE IF NOT EXISTS codex_relations (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    from_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    to_codex_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL DEFAULT 'custom',
+    label TEXT,
+    depth_hint INTEGER,
+    source_map_edge_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS snippets (
     id TEXT PRIMARY KEY,

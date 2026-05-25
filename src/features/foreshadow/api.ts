@@ -280,11 +280,39 @@ function buildOpenForeshadowsForContext(
     title: string;
     intent: string | null;
     loadBearing: ForeshadowLoadBearing | null;
+    payoffConfirmed: boolean;
+    abandoned: boolean;
     updatedAt: unknown;
   }>,
-  setups: Array<Pick<ForeshadowSetupRow, "foreshadowId" | "isOrphan">>,
+  setups: SetupLabelInput[],
 ): OpenForeshadowForContext[] {
   if (rows.length === 0) return [];
+
+  const labeled = buildForeshadowsWithLabels(
+    rows.map(
+      (r): ForeshadowRow => ({
+        id: r.id,
+        projectId: "",
+        title: r.title,
+        intent: r.intent,
+        notes: null,
+        payoffSceneId: null,
+        payoffFromPos: null,
+        payoffToPos: null,
+        payoffConfirmed: r.payoffConfirmed,
+        abandoned: r.abandoned,
+        secret: false,
+        loadBearing: r.loadBearing,
+        createdAt: new Date(),
+        updatedAt:
+          r.updatedAt instanceof Date
+            ? r.updatedAt
+            : new Date(String(r.updatedAt ?? Date.now())),
+      }),
+    ),
+    setups,
+  );
+  const labelById = new Map(labeled.map((l) => [l.id, l.label]));
 
   const countMap = new Map<string, number>();
   for (const s of setups) {
@@ -310,6 +338,7 @@ function buildOpenForeshadowsForContext(
       intent: r.intent,
       loadBearing: r.loadBearing,
       setupCount: countMap.get(r.id) ?? 0,
+      derivedLabel: labelById.get(r.id),
       _updatedMs: toMs(r.updatedAt),
     }))
     .sort((a, b) => {
@@ -487,6 +516,8 @@ export interface OpenForeshadowForContext {
   intent: string | null;
   loadBearing: ForeshadowLoadBearing | null;
   setupCount: number;
+  /** Derived lifecycle label from setup count + strength evaluation. */
+  derivedLabel?: DerivedLabel;
 }
 
 export async function listOpenForeshadowsForContext(
@@ -534,12 +565,16 @@ export async function listOpenForeshadowsForContext(
   const setups = await db
     .select({
       foreshadowId: foreshadowSetups.foreshadowId,
+      sceneId: foreshadowSetups.sceneId,
       isOrphan: foreshadowSetups.isOrphan,
+      strength: foreshadowSetups.strength,
+      aiStrength: foreshadowSetups.aiStrength,
+      aiReasoning: foreshadowSetups.aiReasoning,
     })
     .from(foreshadowSetups)
     .where(inArray(foreshadowSetups.foreshadowId, ids));
 
-  return buildOpenForeshadowsForContext(rows, setups);
+  return buildOpenForeshadowsForContext(rows, setups as SetupLabelInput[]);
 }
 
 export async function getSceneForeshadowInfo(
@@ -579,15 +614,21 @@ export async function getSceneForeshadowInfo(
  * 一度の呼び出しで join 込みでまとめて返す。abandoned 伏線は除外する。
  */
 export interface SceneForeshadowContextSetup {
+  foreshadowId?: string;
   title: string;
   intent: string | null;
+  derivedLabel?: DerivedLabel;
+  strength?: ForeshadowStrength | null;
+  excerpt?: string | null;
 }
 export interface SceneForeshadowContextPayoff {
+  foreshadowId?: string;
   title: string;
   intent: string | null;
-  /** 仕込みが配置されている代表シーンのタイトル（複数あっても 1 件のみ）。
-   * 仕込みが未配置の場合は null。 */
   setupSceneTitle: string | null;
+  derivedLabel?: DerivedLabel;
+  strength?: ForeshadowStrength | null;
+  excerpt?: string | null;
 }
 export interface SceneForeshadowContext {
   setups: SceneForeshadowContextSetup[];
@@ -608,9 +649,18 @@ export async function getSceneForeshadowContext(
 
   const [setupRows, payoffRows] = await Promise.all([
     db
-      .selectDistinct({
+      .select({
+        foreshadowId: foreshadowSetups.foreshadowId,
         title: foreshadows.title,
         intent: foreshadows.intent,
+        notes: foreshadows.notes,
+        payoffConfirmed: foreshadows.payoffConfirmed,
+        abandoned: foreshadows.abandoned,
+        loadBearing: foreshadows.loadBearing,
+        strength: foreshadowSetups.strength,
+        aiStrength: foreshadowSetups.aiStrength,
+        aiReasoning: foreshadowSetups.aiReasoning,
+        isOrphan: foreshadowSetups.isOrphan,
       })
       .from(foreshadowSetups)
       .innerJoin(foreshadows, eq(foreshadowSetups.foreshadowId, foreshadows.id))
@@ -625,6 +675,10 @@ export async function getSceneForeshadowContext(
         id: foreshadows.id,
         title: foreshadows.title,
         intent: foreshadows.intent,
+        notes: foreshadows.notes,
+        payoffConfirmed: foreshadows.payoffConfirmed,
+        abandoned: foreshadows.abandoned,
+        loadBearing: foreshadows.loadBearing,
       })
       .from(foreshadows)
       .where(
@@ -635,8 +689,46 @@ export async function getSceneForeshadowContext(
       ),
   ]);
 
+  const foreshadowIds = [
+    ...new Set([
+      ...setupRows.map((r) => r.foreshadowId),
+      ...payoffRows.map((r) => r.id),
+    ]),
+  ];
+  let labelById = new Map<string, DerivedLabel>();
+  if (foreshadowIds.length > 0) {
+    const [fRows, allSetups] = await Promise.all([
+      db.select().from(foreshadows).where(inArray(foreshadows.id, foreshadowIds)),
+      db
+        .select({
+          foreshadowId: foreshadowSetups.foreshadowId,
+          sceneId: foreshadowSetups.sceneId,
+          isOrphan: foreshadowSetups.isOrphan,
+          strength: foreshadowSetups.strength,
+          aiStrength: foreshadowSetups.aiStrength,
+          aiReasoning: foreshadowSetups.aiReasoning,
+        })
+        .from(foreshadowSetups)
+        .where(inArray(foreshadowSetups.foreshadowId, foreshadowIds)),
+    ]);
+    labelById = new Map(
+      buildForeshadowsWithLabels(
+        fRows as ForeshadowRow[],
+        allSetups as SetupLabelInput[],
+      ).map((l) => [l.id, l.label]),
+    );
+  }
+
+  const effectiveStrength = (
+    strength: ForeshadowStrength | null | undefined,
+    aiStrength: ForeshadowStrength | null | undefined,
+    aiReasoning: string | null | undefined,
+  ): ForeshadowStrength | null => {
+    const evaluation = safeParseAiEvaluation(aiReasoning ?? null);
+    return strength ?? evaluation?.careful?.strength ?? aiStrength ?? null;
+  };
+
   // 各 payoff foreshadow に対して、最初の setup シーンタイトルを 1 件取得する。
-  // 0..1 件で済むのでまとめて IN クエリ → JS 側で代表 1 件抽出。
   const payoffIds = payoffRows.map((r) => r.id);
   const setupSceneByForeshadow: Record<string, string> = {};
   if (payoffIds.length > 0) {
@@ -649,19 +741,39 @@ export async function getSceneForeshadowContext(
       .innerJoin(treeNodes, eq(foreshadowSetups.sceneId, treeNodes.id))
       .where(inArray(foreshadowSetups.foreshadowId, payoffIds));
     for (const row of setupSceneRows) {
-      // 最初に見つけた 1 件のみ採用（複数 setups は L3 を肥大化させない）
       if (!(row.foreshadowId in setupSceneByForeshadow)) {
         setupSceneByForeshadow[row.foreshadowId] = row.sceneTitle;
       }
     }
   }
 
+  const seenSetupForeshadowIds = new Set<string>();
+  const dedupedSetupRows = setupRows.filter((r) => {
+    if (seenSetupForeshadowIds.has(r.foreshadowId)) return false;
+    seenSetupForeshadowIds.add(r.foreshadowId);
+    return true;
+  });
+
   return {
-    setups: setupRows.map((r) => ({ title: r.title, intent: r.intent })),
+    setups: dedupedSetupRows.map((r) => ({
+      foreshadowId: r.foreshadowId,
+      title: r.title,
+      intent: r.intent,
+      derivedLabel: labelById.get(r.foreshadowId),
+      strength: effectiveStrength(
+        r.strength as ForeshadowStrength | null,
+        r.aiStrength as ForeshadowStrength | null,
+        r.aiReasoning,
+      ),
+      excerpt: r.notes?.trim() || null,
+    })),
     payoffs: payoffRows.map((r) => ({
+      foreshadowId: r.id,
       title: r.title,
       intent: r.intent,
       setupSceneTitle: setupSceneByForeshadow[r.id] ?? null,
+      derivedLabel: labelById.get(r.id),
+      excerpt: r.notes?.trim() || null,
     })),
   };
 }
