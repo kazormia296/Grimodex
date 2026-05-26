@@ -121,8 +121,9 @@ export function useCommandCenterSearch(
     const providers = getProviders(parsed.mode, surface);
     const activeIds = new Set(providers.map((p) => p.id));
 
-    // クエリ空: 全 runtime を破棄して sections を完全クリア
-    if (!trimmed) {
+    // search mode で空クエリのときは結果を完全クリア。
+    // command mode (`> ` 起動) のときは空クエリでもコマンド一覧を出したいので provider を回す。
+    if (!trimmed && parsed.mode === "search") {
       for (const runtime of runtimesRef.current.values()) {
         cancelRuntime(runtime);
         runtime.lastBaseKey = null;

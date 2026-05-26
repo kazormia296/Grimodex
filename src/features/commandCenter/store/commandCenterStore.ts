@@ -160,12 +160,17 @@ export const useCommandCenterStore = useBarStore;
 /**
  * popover の実際の表示有無は `open` 単独ではなく、parsedQuery が非空であるかも見る。
  * 空クエリ時に open を false にしない設計を補完する派生 selector。
+ *
+ * command mode (`> ` 起動) のときは空クエリでもコマンド一覧を出したいので parsedQuery を問わない。
  */
 export function selectPopoverOpen(state: {
   open: boolean;
   parsedQuery: string;
+  mode: CommandCenterMode;
 }): boolean {
-  return state.open && state.parsedQuery.trim().length > 0;
+  if (!state.open) return false;
+  if (state.mode === "command") return true;
+  return state.parsedQuery.trim().length > 0;
 }
 
 /**

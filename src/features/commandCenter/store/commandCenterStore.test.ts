@@ -201,10 +201,27 @@ describe("useCommandCenterStore", () => {
     expect(s.selectedIndex).toBe(0);
   });
 
-  it("selectPopoverOpen: open=true でも parsedQuery 空なら false", () => {
-    expect(selectPopoverOpen({ open: true, parsedQuery: "" })).toBe(false);
-    expect(selectPopoverOpen({ open: true, parsedQuery: "   " })).toBe(false);
-    expect(selectPopoverOpen({ open: true, parsedQuery: "x" })).toBe(true);
-    expect(selectPopoverOpen({ open: false, parsedQuery: "x" })).toBe(false);
+  it("selectPopoverOpen: search mode は parsedQuery 空なら false", () => {
+    expect(
+      selectPopoverOpen({ open: true, parsedQuery: "", mode: "search" }),
+    ).toBe(false);
+    expect(
+      selectPopoverOpen({ open: true, parsedQuery: "   ", mode: "search" }),
+    ).toBe(false);
+    expect(
+      selectPopoverOpen({ open: true, parsedQuery: "x", mode: "search" }),
+    ).toBe(true);
+    expect(
+      selectPopoverOpen({ open: false, parsedQuery: "x", mode: "search" }),
+    ).toBe(false);
+  });
+
+  it("selectPopoverOpen: command mode は parsedQuery 空でも open なら true", () => {
+    expect(
+      selectPopoverOpen({ open: true, parsedQuery: "", mode: "command" }),
+    ).toBe(true);
+    expect(
+      selectPopoverOpen({ open: false, parsedQuery: "", mode: "command" }),
+    ).toBe(false);
   });
 });

@@ -17,6 +17,12 @@ export type { CommandCenterMode } from "./providers/types";
 import { registerProvider } from "./providers/registry";
 import { lexicalSearchProvider } from "./providers/lexicalSearchProvider";
 import { semanticSearchProvider } from "./providers/semanticSearchProvider";
+import { quickOpenProvider } from "./providers/quickOpenProvider";
+import { commandProvider } from "./providers/commandProvider";
 
+// panel: 全文検索
 registerProvider(lexicalSearchProvider);
 registerProvider(semanticSearchProvider);
+// bar: Quick Open (search mode) + Commands (command mode)
+registerProvider(quickOpenProvider);
+registerProvider(commandProvider);

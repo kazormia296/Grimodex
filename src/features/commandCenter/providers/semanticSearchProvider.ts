@@ -74,7 +74,7 @@ export const semanticSearchProvider: CommandCenterProvider = {
   order: PROVIDER_ORDER,
   title: "Semantic",
   hideWhenEmpty: true,
-  surfaces: ["bar", "panel"],
+  surfaces: ["panel"],
   supportsMode: (mode) => mode === "search",
   cacheKeyExtras: (extras) => `desc=${extras.descriptionMode ? "1" : "0"}`,
   async search(ctx: ProviderSearchContext): Promise<CommandCenterSection> {
