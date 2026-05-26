@@ -1311,10 +1311,10 @@ impl Database {
     /// One-shot migration: add Note AI context columns to tree_nodes.
     /// Non-note rows keep context_mode NULL; existing notes default to 'mentioned'.
     pub(super) fn migrate_tree_nodes_note_context(conn: &Connection) -> anyhow::Result<()> {
-        Self::add_column_if_missing(&conn, "tree_nodes", "context_mode", "TEXT")?;
-        Self::add_column_if_missing(&conn, "tree_nodes", "aliases", "TEXT NOT NULL DEFAULT '[]'")?;
+        Self::add_column_if_missing(conn, "tree_nodes", "context_mode", "TEXT")?;
+        Self::add_column_if_missing(conn, "tree_nodes", "aliases", "TEXT NOT NULL DEFAULT '[]'")?;
         Self::add_column_if_missing(
-            &conn,
+            conn,
             "tree_nodes",
             "excluded_aliases",
             "TEXT NOT NULL DEFAULT '[]'",
