@@ -276,6 +276,42 @@ describe("CenterStripe", () => {
     expect(cluster?.querySelector(".absolute")).toBeNull();
   });
 
+  it("offsets the first open band's content to reveal the leading collapsed editor icon", () => {
+    // editor 閉 + center tool 開: collapsed editor は 0 幅 overlay として
+    // stripe-root の left:0 に積まれる。open バンドの内部アイコンが overlay の
+    // editor icon を覆い隠さないよう、最初の open バンドに paddingLeft が要る。
+    const layout = buildDefaultLayoutState({ editorOpen: false });
+    layout.center = {
+      editorOpen: false,
+      segments: buildCenterSegmentsWithTools(["codex"], { codex: true }),
+    };
+    useLayoutStore.setState({ layout, hiddenStripePanels: new Set() });
+
+    const { container } = render(<CenterStripe />);
+    const openBand = container.querySelector<HTMLElement>(
+      '[data-center-stripe-band-kind="tool"][data-band-open="true"]',
+    );
+    expect(openBand).not.toBeNull();
+    // editor 1 icon ぶん (28px) 以上のオフセットが必要。
+    expect(parseFloat(openBand!.style.paddingLeft)).toBeGreaterThanOrEqual(28);
+  });
+
+  it("does not offset open bands when there is no leading collapsed cluster", () => {
+    // editor も tool も両方 open: 先頭 cluster 無し → padding 不要。
+    const layout = buildDefaultLayoutState({ editorOpen: true });
+    layout.center = {
+      editorOpen: true,
+      segments: buildCenterSegmentsWithTools(["codex"], { codex: true }),
+    };
+    useLayoutStore.setState({ layout, hiddenStripePanels: new Set() });
+
+    const { container } = render(<CenterStripe />);
+    const editorBand = container.querySelector<HTMLElement>(
+      '[data-center-stripe-band-kind="editor"]',
+    );
+    expect(editorBand?.style.paddingLeft).toBe("");
+  });
+
   it("shows editor icon when every panel is closed", () => {
     useLayoutStore.setState({
       layout: buildDefaultLayoutState({

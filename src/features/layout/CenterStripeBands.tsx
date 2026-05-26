@@ -16,9 +16,20 @@ import type { CenterStripeSegment } from "./useCenterSegments";
 interface CenterStripeBandProps {
   segment: CenterStripeSegment;
   flexGrow: number;
+  /**
+   * 先頭 CollapsedCluster overlay と重なる位置にこの open バンドが置かれる
+   * とき、内部アイコンを overlay 幅ぶん右へオフセットして occlusion を防ぐ。
+   * バンド自体の左端 (flex position) は動かさず、CenterContent slot 0 との
+   * 整列は維持する。
+   */
+  leadingPaddingPx?: number;
 }
 
-function CenterStripeBand({ segment, flexGrow }: CenterStripeBandProps) {
+function CenterStripeBand({
+  segment,
+  flexGrow,
+  leadingPaddingPx = 0,
+}: CenterStripeBandProps) {
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const isTool = segment.kind === "tool";
@@ -53,6 +64,7 @@ function CenterStripeBand({ segment, flexGrow }: CenterStripeBandProps) {
               ? MIN_EDITOR_SIZE
               : MIN_SLOT_SIZE
             : undefined,
+          paddingLeft: leadingPaddingPx || undefined,
         }}
         className={cn(
           "relative flex h-full min-h-0 min-w-0 flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden",
@@ -184,6 +196,24 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
 
   const hasOpenBands = items.some((item) => item.kind === "open");
 
+  // 先頭が collapsed cluster の場合、cluster は 0 幅 absolute overlay として
+  // stripe-root の left:0 に積まれる（→ 後続 open バンドの flex 開始位置と一致）。
+  // open バンド側の justify-start で並ぶアイコンが z-30 で overlay icon を
+  // 覆い隠してしまうため、最初の open バンドの内部だけ overlay 幅ぶん右へ
+  // オフセットする（バンドの flex 位置は据え置き）。
+  const leadingClusterIconCount =
+    hasOpenBands && items.length > 0 && items[0].kind === "collapsed"
+      ? items[0].segments.reduce(
+          (sum, seg) => sum + (seg.kind === "editor" ? 1 : seg.panels.length),
+          0,
+        )
+      : 0;
+  // h-7 w-7 = 28px / gap-0.5 = 2px / 末尾に小さい呼吸を確保。
+  const leadingPaddingPx =
+    leadingClusterIconCount > 0
+      ? leadingClusterIconCount * 28 + (leadingClusterIconCount - 1) * 2 + 4
+      : 0;
+
   return (
     <div
       data-stripe-root
@@ -222,6 +252,7 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
           // collapsed cluster は 0 幅 overlay。divider は open バンド同士の
           // 境界にのみ挟む（CenterContent の Splitter と 1:1 対応）。
           const showDivider = renderedOpenBands > 0;
+          const isFirstOpenBand = renderedOpenBands === 0;
           renderedOpenBands += 1;
           return (
             <Fragment key={segment.key}>
@@ -242,6 +273,7 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
                 flexGrow={
                   openRatioSum > 0 ? segment.sizeRatio / openRatioSum : 1
                 }
+                leadingPaddingPx={isFirstOpenBand ? leadingPaddingPx : 0}
               />
             </Fragment>
           );
