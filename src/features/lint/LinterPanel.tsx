@@ -384,7 +384,7 @@ function CurrentLinterView() {
         );
       }
       if (autoResolveIds.length > 0) {
-        void applyAutoResolvedTypos(autoResolveIds);
+        void applyAutoResolvedTypos(autoResolveIds, editor, currentSceneId);
       }
       if (currentSceneId) {
         void runLintNow(editor, currentSceneId);
@@ -444,7 +444,11 @@ function CurrentLinterView() {
       );
     }
     if (autoResolveIds.length > 0) {
-      void applyAutoResolvedTypos([...new Set(autoResolveIds)]);
+      void applyAutoResolvedTypos(
+        [...new Set(autoResolveIds)],
+        editor,
+        currentSceneId,
+      );
     }
     if (currentSceneId) void runLintNow(editor, currentSceneId);
   }, [editor, filtered, currentSceneId, pushNotification]);
@@ -1165,7 +1169,7 @@ function ProjectLinterView() {
         );
       }
       if (autoResolveIds.length > 0) {
-        void applyAutoResolvedTypos(autoResolveIds);
+        void applyAutoResolvedTypos(autoResolveIds, editor, scene.sceneId);
       }
       void runLintNow(editor, scene.sceneId);
     },

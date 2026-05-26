@@ -156,6 +156,18 @@ describe("applyAnnotationsToEditor", () => {
     expect(tr.addMark).toHaveBeenCalledTimes(1);
   });
 
+  it("resolved annotations are also skipped (closed annotations don't underline)", () => {
+    const { editor, invokeCommand, makeMockTr } = makeMockEditor();
+    applyAnnotationsToEditor(editor, [
+      makeAnnotation({ id: "ann-1", status: "resolved" }),
+      makeAnnotation({ id: "ann-2", status: "open" }),
+      makeAnnotation({ id: "ann-3", status: "dismissed" }),
+    ]);
+    const tr = makeMockTr();
+    invokeCommand(tr);
+    expect(tr.addMark).toHaveBeenCalledTimes(1);
+  });
+
   it("annotations with null textSnapshot AND mismatched PM range are skipped (orphans)", () => {
     const { editor, invokeCommand, makeMockTr } = makeMockEditor();
     applyAnnotationsToEditor(editor, [

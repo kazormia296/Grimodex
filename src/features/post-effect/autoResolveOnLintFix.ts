@@ -1,6 +1,8 @@
+import type { Editor } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { useAnnotationStore } from "./annotationStore";
 import { updateAnnotationStatus } from "./api";
+import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
 import { parseAnnotationMeta } from "./annotationMeta";
 import { resolveAnnotationRange } from "./resolveAnnotationRange";
 
@@ -57,16 +59,25 @@ export function collectTypoAnnotationsResolvedByFix(
  * `collectTypoAnnotationsResolvedByFix` の結果を DB / store に反映する。
  * fire-and-forget で呼べる (個別失敗はログに出さず黙って次へ)。
  */
-export async function applyAutoResolvedTypos(ids: string[]): Promise<void> {
+export async function applyAutoResolvedTypos(
+  ids: string[],
+  editor: Editor | null = null,
+  sceneId: string | null = null,
+): Promise<void> {
   if (ids.length === 0) return;
-  const localUpdate = useAnnotationStore.getState().updateAnnotationStatus;
+  const store = useAnnotationStore.getState();
   for (const id of ids) {
     try {
       await updateAnnotationStatus(id, "resolved");
-      localUpdate(id, "resolved");
     } catch {
       /* ignore individual failure; orphan-state will surface in panel */
     }
+    store.updateAnnotationStatus(id, "resolved");
+  }
+  if (editor && sceneId) {
+    const next =
+      useAnnotationStore.getState().annotationsByScene.get(sceneId) ?? [];
+    applyAnnotationsToEditor(editor, next);
   }
 }
 

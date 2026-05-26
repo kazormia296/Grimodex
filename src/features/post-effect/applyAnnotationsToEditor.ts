@@ -5,8 +5,10 @@ import { ANNOTATION_REBUILD_META } from "./AnnotationPlugin";
 
 /**
  * Applies annotation marks to the TipTap editor as peAnnotation marks.
- * Clears all existing peAnnotation marks first, then re-applies non-dismissed ones.
- * Call this after scene load and after a post-effect run completes.
+ * Clears all existing peAnnotation marks first, then re-applies open ones.
+ * Call this after scene load, after a post-effect run completes, and whenever
+ * a user closes an annotation (resolved / dismissed) so the editor underline
+ * disappears in sync with the panel.
  *
  * The DB `range_start`/`range_end` stored from a fresh consistency run are byte
  * offsets into the whitespace-normalized plain text (see Rust `find_text_position`),
@@ -31,7 +33,9 @@ export function applyAnnotationsToEditor(
       const docSize = tr.doc.content.size;
       if (docSize > 2) tr.removeMark(1, docSize - 1, markType);
       for (const ann of annotations) {
-        if (ann.status === "dismissed") continue;
+        // dismissed / resolved (= closed) はオーバーレイから外す。
+        // 旧仕様は dismissed のみ除外で resolved が underline され続けていた。
+        if (ann.status !== "open") continue;
         const resolved = resolveAnnotationRange(tr.doc, {
           rangeStart: ann.rangeStart,
           rangeEnd: ann.rangeEnd,

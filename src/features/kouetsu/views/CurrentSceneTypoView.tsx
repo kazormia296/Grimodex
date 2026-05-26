@@ -24,9 +24,9 @@ import {
 import {
   listAnnotationsForScene,
   runPostEffect,
-  updateAnnotationStatus,
 } from "@/features/post-effect/api";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
+import { closeAnnotation } from "@/features/post-effect/closeAnnotation";
 import { applyTypoFixAndResolve } from "@/features/post-effect/typoFix";
 import { parseAnnotationMeta } from "@/features/post-effect/annotationMeta";
 import {
@@ -325,11 +325,7 @@ function AiTypoList({ sceneId }: { sceneId: string }) {
 }
 
 function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
-  const {
-    focusedAnnotationId,
-    setFocusedAnnotationId,
-    updateAnnotationStatus: localUpdate,
-  } = useAnnotationStore();
+  const { focusedAnnotationId, setFocusedAnnotationId } = useAnnotationStore();
   const editor = useEditorStore((s) => s.editor);
   const focused = focusedAnnotationId === ann.id;
   const parsed = parseAnnotationMeta(ann);
@@ -343,20 +339,10 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
     ann.status === "open";
 
   async function dismiss() {
-    try {
-      await updateAnnotationStatus(ann.id, "dismissed");
-      localUpdate(ann.id, "dismissed");
-    } catch {
-      /* ignore */
-    }
+    await closeAnnotation(ann, "dismissed", editor);
   }
   async function resolve() {
-    try {
-      await updateAnnotationStatus(ann.id, "resolved");
-      localUpdate(ann.id, "resolved");
-    } catch {
-      /* ignore */
-    }
+    await closeAnnotation(ann, "resolved", editor);
   }
   async function fix() {
     const result = await applyTypoFixAndResolve(editor, ann);

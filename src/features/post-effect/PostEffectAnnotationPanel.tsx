@@ -2,9 +2,11 @@ import { useEffect } from "react";
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useEditorStore } from "@/features/editor/editorStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAnnotationStore } from "./annotationStore";
-import { listAnnotationsForScene, updateAnnotationStatus } from "./api";
+import { listAnnotationsForScene } from "./api";
+import { closeAnnotation } from "./closeAnnotation";
 import { parseAnnotationMeta } from "./annotationMeta";
 import {
   CodexChip,
@@ -28,29 +30,16 @@ const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
 };
 
 function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
-  const {
-    focusedAnnotationId,
-    setFocusedAnnotationId,
-    updateAnnotationStatus: localUpdate,
-  } = useAnnotationStore();
+  const { focusedAnnotationId, setFocusedAnnotationId } = useAnnotationStore();
+  const editor = useEditorStore((s) => s.editor);
   const focused = focusedAnnotationId === ann.id;
 
   async function dismiss() {
-    try {
-      await updateAnnotationStatus(ann.id, "dismissed");
-      localUpdate(ann.id, "dismissed");
-    } catch {
-      /* ignore */
-    }
+    await closeAnnotation(ann, "dismissed", editor);
   }
 
   async function resolve() {
-    try {
-      await updateAnnotationStatus(ann.id, "resolved");
-      localUpdate(ann.id, "resolved");
-    } catch {
-      /* ignore */
-    }
+    await closeAnnotation(ann, "resolved", editor);
   }
 
   const severity = (ann.severity ?? "info") as PostEffectSeverity;

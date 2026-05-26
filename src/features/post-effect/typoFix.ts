@@ -2,6 +2,7 @@ import type { Editor } from "@tiptap/core";
 import { resolveAnnotationRange } from "./resolveAnnotationRange";
 import { updateAnnotationStatus } from "./api";
 import { useAnnotationStore } from "./annotationStore";
+import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
 import { parseAnnotationMeta } from "./annotationMeta";
 import type { PostEffectAnnotation } from "./types";
 
@@ -48,9 +49,18 @@ export async function applyTypoFixAndResolve(
 
   try {
     await updateAnnotationStatus(ann.id, "resolved");
-    useAnnotationStore.getState().updateAnnotationStatus(ann.id, "resolved");
   } catch {
     /* DB エラー時も置換自体は完了しているので applied:true で返す */
+  }
+  useAnnotationStore.getState().updateAnnotationStatus(ann.id, "resolved");
+
+  // 置換で text snapshot が消えるので元の mark は既にエディタから外れているが、
+  // 「同じ文字列が他の場所にもあって別 annotation で underline されていた」
+  // 等のケースを綺麗にするため一度 refresh する。
+  if (ann.sceneId) {
+    const next =
+      useAnnotationStore.getState().annotationsByScene.get(ann.sceneId) ?? [];
+    applyAnnotationsToEditor(editor, next);
   }
 
   return { applied: true, range: resolved };
