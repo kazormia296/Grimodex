@@ -13,11 +13,19 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 - ビルド: pnpm tauri build
 - テスト: pnpm test
 - テスト(単体): pnpm test --run [ファイルパス]
+- ブラウザテスト: pnpm test:browser（実 Chromium、`*.browser.test.tsx`。flex/grid 実寸など happy-dom で測れない幾何 invariant 用）
 - Lint: pnpm lint:fix
 - 型チェック: npx tsc --noEmit
 - Rustチェック: cd src-tauri && cargo check
 - Rust Lint: cd src-tauri && cargo clippy --all-targets
 - Rust テスト: cd src-tauri && cargo test --no-default-features（default features 有効時は libort_sys の glibc symbol mismatch でローカルリンク失敗）
+
+## テスト方針
+
+- 通常は happy-dom 単体テスト (`*.test.ts(x)`) で十分。
+- **レイアウト / 幾何が絡むバグは browser test 必須** — happy-dom は flex/grid の実寸を計算しないため、`getBoundingClientRect()` で位置や寸法を assert したい場合は `*.browser.test.tsx` を書く。Splitter ヒット領域・region overflow・stripe band ↔ content slot 整列など過去 3 回再発したバグはこのスイートで gate されている（`src/features/layout/layoutInvariants.browser.test.tsx`）。
+- レイアウト変更 (CenterStripe / RegionStripe / Splitter / LayoutShell 周辺) を入れたら `pnpm test:browser` も走らせる。
+- Splitter は dev 時に `console.warn` でヒット領域 0 化を自前検出する（SplitterHandle 内 assertion、test 環境では無効）。
 
 ## コード規約
 
