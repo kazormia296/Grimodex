@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { codexRelations } from "@/db/schema";
-import { and, eq, or, inArray } from "drizzle-orm";
+import { and, asc, eq, or, inArray } from "drizzle-orm";
 
 export type CodexRelationRow = typeof codexRelations.$inferSelect;
 export type NewCodexRelation = typeof codexRelations.$inferInsert;
@@ -100,6 +100,8 @@ export async function findCodexRelationByEdgeEndpoints(
           ),
         ),
       ),
-    );
+    )
+    .orderBy(asc(codexRelations.createdAt), asc(codexRelations.id))
+    .limit(1);
   return rows[0];
 }

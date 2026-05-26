@@ -272,14 +272,24 @@ export function useMapContextMenu({
       toast.error("アクティブなチャットセッションがありません");
       return;
     }
-    if (contextMenu.isStickyPinnedToChat) {
-      await chatApi.unpinStickyEntry(sessionId, pos.stickyId);
-      toast.success("Sticky のチャットコンテキストピンを解除しました");
-    } else {
-      await chatApi.pinStickyEntry(sessionId, pos.stickyId);
-      toast.success("Sticky をチャットコンテキストにピンしました");
+    const wasPinned = contextMenu.isStickyPinnedToChat;
+    try {
+      if (wasPinned) {
+        await chatApi.unpinStickyEntry(sessionId, pos.stickyId);
+        toast.success("Sticky のチャットコンテキストピンを解除しました");
+      } else {
+        await chatApi.pinStickyEntry(sessionId, pos.stickyId);
+        toast.success("Sticky をチャットコンテキストにピンしました");
+      }
+      await useChatStore.getState().refreshContextLayers();
+    } catch (err) {
+      console.error("[useMapContextMenu] toggle sticky chat pin failed", err);
+      toast.error(
+        wasPinned
+          ? "Sticky のピン解除に失敗しました"
+          : "Sticky のピン追加に失敗しました",
+      );
     }
-    await useChatStore.getState().refreshContextLayers();
     setContextMenu(null);
   }, [contextMenu, positions]);
 

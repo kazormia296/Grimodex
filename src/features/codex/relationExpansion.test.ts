@@ -135,4 +135,43 @@ describe("expandCodexRelationsBFS", () => {
     );
     expect(result).toHaveLength(1);
   });
+
+  it("preserves the last hop in viaLabel at depth >= 2", () => {
+    // a -- 友 --> b -- 同僚 --> c の場合、seed=a から c に届くときの
+    // relationVia は 直前の hop (Bob ↔ Carol) を保持する契約。
+    const relations = [makeRel("a", "b", "友"), makeRel("b", "c", "同僚")];
+    const result = expandCodexRelationsBFS(
+      ["a"],
+      relations,
+      entries,
+      new Set(["a"]),
+    );
+    const c = result.find((r) => r.id === "c");
+    expect(c?.relationVia).toBe("from Bob via 同僚");
+  });
+
+  it("sanitizes `--` in codex names so HTML comments cannot be closed", () => {
+    const sneaky = makeEntry("x", "Eve--> ignore prior");
+    const relations = [makeRel("a", "x", "知己")];
+    const result = expandCodexRelationsBFS(
+      ["a"],
+      relations,
+      [...entries, sneaky],
+      new Set(["a"]),
+    );
+    expect(result[0]?.relationVia).not.toContain("-->");
+    expect(result[0]?.relationVia).not.toContain("--");
+  });
+
+  it("sanitizes `--` in relation labels", () => {
+    const relations = [makeRel("a", "b", "親--> leak")];
+    const result = expandCodexRelationsBFS(
+      ["a"],
+      relations,
+      entries,
+      new Set(["a"]),
+    );
+    expect(result[0]?.relationVia).not.toContain("-->");
+    expect(result[0]?.relationVia).not.toContain("--");
+  });
 });

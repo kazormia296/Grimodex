@@ -26,6 +26,16 @@ function slugifyRelationType(label: string | null | undefined): string {
 }
 
 /**
+ * relationVia は contextBuilder で `<!-- via: ... -->` として system prompt に
+ * 埋め込まれる。ユーザー入力 (codex 名 / relation ラベル) に `--` が含まれると
+ * HTML コメントが途中で閉じてしまい、後続文字が指示として解釈され得るため、
+ * `--` を `- -` に置換してコメント境界を壊さないようにする。
+ */
+function sanitizeForHtmlComment(text: string): string {
+  return text.replace(/--/g, "- -");
+}
+
+/**
  * BFS-expand Codex relations from seed entries (mentioned/pinned/always).
  * Returns lightweight CodexContext blocks tagged with relationVia for L4 pri 1.
  *
@@ -50,9 +60,13 @@ export function expandCodexRelationsBFS(
   const adjacency = new Map<string, RelationNeighbor[]>();
 
   for (const rel of relations) {
-    const label = rel.label?.trim() || rel.relationType;
-    const fromName = entryById.get(rel.fromCodexId)?.name ?? rel.fromCodexId;
-    const toName = entryById.get(rel.toCodexId)?.name ?? rel.toCodexId;
+    const label = sanitizeForHtmlComment(rel.label?.trim() || rel.relationType);
+    const fromName = sanitizeForHtmlComment(
+      entryById.get(rel.fromCodexId)?.name ?? rel.fromCodexId,
+    );
+    const toName = sanitizeForHtmlComment(
+      entryById.get(rel.toCodexId)?.name ?? rel.toCodexId,
+    );
 
     adjacency.set(rel.fromCodexId, [
       ...(adjacency.get(rel.fromCodexId) ?? []),

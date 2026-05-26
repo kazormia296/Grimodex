@@ -150,6 +150,139 @@ describe("mapApi — user edges", () => {
   });
 });
 
+describe("mapApi — promoteUserEdgeToCodexRelation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  function makePosition(over: {
+    id: string;
+    nodeRefType: "codex" | "scene" | "note";
+    codexEntryId?: string | null;
+  }) {
+    return {
+      id: over.id,
+      boardId: "b1",
+      nodeRefType: over.nodeRefType,
+      treeNodeId: null,
+      codexEntryId: over.codexEntryId ?? null,
+      snippetId: null,
+      stickyId: null,
+      aiBranchId: null,
+      x: 0,
+      y: 0,
+      pinned: 0,
+      zIndex: 0,
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    };
+  }
+
+  it("両端が codex でない場合は null を返し、エッジは削除しない", async () => {
+    const edge = {
+      id: "edge-1",
+      boardId: "b1",
+      fromPositionId: "pos-a",
+      toPositionId: "pos-b",
+      forwardLabel: "師匠",
+    };
+    const selectChain = makeMock([edge]);
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectChain);
+    const deleteChain = makeMock([]);
+    (db.delete as ReturnType<typeof vi.fn>).mockReturnValue(deleteChain);
+
+    vi.doMock("@/features/codex/codexRelationApi", () => ({
+      createCodexRelation: vi.fn(),
+      findCodexRelationByEdgeEndpoints: vi.fn(),
+    }));
+
+    const { promoteUserEdgeToCodexRelation } = await import("./mapApi");
+    const result = await promoteUserEdgeToCodexRelation("edge-1", "proj", [
+      makePosition({ id: "pos-a", nodeRefType: "codex", codexEntryId: "c-a" }),
+      // 片端が scene → promotion 不可
+      makePosition({ id: "pos-b", nodeRefType: "scene" }),
+    ]);
+
+    expect(result).toBeNull();
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it("既存 relation があれば再利用し、user edge は削除する", async () => {
+    const edge = {
+      id: "edge-1",
+      boardId: "b1",
+      fromPositionId: "pos-a",
+      toPositionId: "pos-b",
+      forwardLabel: "師匠",
+    };
+    const selectChain = makeMock([edge]);
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectChain);
+    const deleteChain = makeMock([]);
+    (db.delete as ReturnType<typeof vi.fn>).mockReturnValue(deleteChain);
+
+    const createCodexRelation = vi.fn();
+    const findCodexRelationByEdgeEndpoints = vi
+      .fn()
+      .mockResolvedValue({ id: "rel-existing" });
+    vi.doMock("@/features/codex/codexRelationApi", () => ({
+      createCodexRelation,
+      findCodexRelationByEdgeEndpoints,
+    }));
+
+    const { promoteUserEdgeToCodexRelation } = await import("./mapApi");
+    const result = await promoteUserEdgeToCodexRelation("edge-1", "proj", [
+      makePosition({ id: "pos-a", nodeRefType: "codex", codexEntryId: "c-a" }),
+      makePosition({ id: "pos-b", nodeRefType: "codex", codexEntryId: "c-b" }),
+    ]);
+
+    expect(result).toEqual({ relationId: "rel-existing" });
+    expect(createCodexRelation).not.toHaveBeenCalled();
+    expect(db.delete).toHaveBeenCalled();
+  });
+
+  it("新規 relation を作って user edge を削除する", async () => {
+    const edge = {
+      id: "edge-1",
+      boardId: "b1",
+      fromPositionId: "pos-a",
+      toPositionId: "pos-b",
+      forwardLabel: "師匠",
+    };
+    const selectChain = makeMock([edge]);
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectChain);
+    const deleteChain = makeMock([]);
+    (db.delete as ReturnType<typeof vi.fn>).mockReturnValue(deleteChain);
+
+    const createCodexRelation = vi.fn().mockResolvedValue({ id: "rel-new" });
+    const findCodexRelationByEdgeEndpoints = vi
+      .fn()
+      .mockResolvedValue(undefined);
+    vi.doMock("@/features/codex/codexRelationApi", () => ({
+      createCodexRelation,
+      findCodexRelationByEdgeEndpoints,
+    }));
+
+    const { promoteUserEdgeToCodexRelation } = await import("./mapApi");
+    const result = await promoteUserEdgeToCodexRelation("edge-1", "proj", [
+      makePosition({ id: "pos-a", nodeRefType: "codex", codexEntryId: "c-a" }),
+      makePosition({ id: "pos-b", nodeRefType: "codex", codexEntryId: "c-b" }),
+    ]);
+
+    expect(result).toEqual({ relationId: "rel-new" });
+    expect(createCodexRelation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj",
+        fromCodexId: "c-a",
+        toCodexId: "c-b",
+        sourceMapEdgeId: "edge-1",
+        label: "師匠",
+      }),
+    );
+    expect(db.delete).toHaveBeenCalled();
+  });
+});
+
 describe("mapApi — frames", () => {
   beforeEach(() => {
     vi.clearAllMocks();

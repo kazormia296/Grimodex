@@ -1312,12 +1312,7 @@ impl Database {
     /// Non-note rows keep context_mode NULL; existing notes default to 'mentioned'.
     pub(super) fn migrate_tree_nodes_note_context(conn: &Connection) -> anyhow::Result<()> {
         Self::add_column_if_missing(&conn, "tree_nodes", "context_mode", "TEXT")?;
-        Self::add_column_if_missing(
-            &conn,
-            "tree_nodes",
-            "aliases",
-            "TEXT NOT NULL DEFAULT '[]'",
-        )?;
+        Self::add_column_if_missing(&conn, "tree_nodes", "aliases", "TEXT NOT NULL DEFAULT '[]'")?;
         Self::add_column_if_missing(
             &conn,
             "tree_nodes",
@@ -1333,9 +1328,7 @@ impl Database {
 
     /// One-shot migration: extend chat_session_pinned_codex CHECK to allow sticky_id.
     /// SQLite cannot ALTER CHECK constraints — table rebuild required (down not supported).
-    pub(super) fn migrate_chat_session_pinned_add_sticky(
-        conn: &Connection,
-    ) -> anyhow::Result<()> {
+    pub(super) fn migrate_chat_session_pinned_add_sticky(conn: &Connection) -> anyhow::Result<()> {
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(chat_session_pinned_codex)")?
             .query_map([], |row| row.get::<_, String>("name"))?
@@ -1387,11 +1380,20 @@ impl Database {
         conn.pragma_update(None, "foreign_keys", true)?;
         let fk_errors: Vec<String> = conn
             .prepare("PRAGMA foreign_key_check(chat_session_pinned_codex)")?
-            .query_map([], |row| row.get(0))?
+            .query_map([], |row| {
+                let table: String = row.get(0)?;
+                let rowid: Option<i64> = row.get(1)?;
+                let parent: String = row.get(2)?;
+                let fkid: i64 = row.get(3)?;
+                Ok(format!(
+                    "table={table} rowid={rowid:?} parent={parent} fkid={fkid}"
+                ))
+            })?
             .collect::<Result<_, _>>()?;
         if !fk_errors.is_empty() {
             anyhow::bail!(
-                "foreign key check failed after chat_session_pinned_codex rebuild"
+                "foreign key check failed after chat_session_pinned_codex rebuild: {}",
+                fk_errors.join("; ")
             );
         }
         Ok(())
@@ -1455,10 +1457,21 @@ impl Database {
         conn.pragma_update(None, "foreign_keys", true)?;
         let fk_errors: Vec<String> = conn
             .prepare("PRAGMA foreign_key_check(codex_relations)")?
-            .query_map([], |row| row.get(0))?
+            .query_map([], |row| {
+                let table: String = row.get(0)?;
+                let rowid: Option<i64> = row.get(1)?;
+                let parent: String = row.get(2)?;
+                let fkid: i64 = row.get(3)?;
+                Ok(format!(
+                    "table={table} rowid={rowid:?} parent={parent} fkid={fkid}"
+                ))
+            })?
             .collect::<Result<_, _>>()?;
         if !fk_errors.is_empty() {
-            anyhow::bail!("foreign key check failed after codex_relations rebuild");
+            anyhow::bail!(
+                "foreign key check failed after codex_relations rebuild: {}",
+                fk_errors.join("; ")
+            );
         }
         Ok(())
     }

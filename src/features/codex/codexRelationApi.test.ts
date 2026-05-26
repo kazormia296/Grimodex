@@ -11,6 +11,8 @@ vi.mock("@/db/schema", () => ({
     relationType: "relationType",
     fromCodexId: "fromCodexId",
     toCodexId: "toCodexId",
+    createdAt: "createdAt",
+    id: "id",
   },
 }));
 
@@ -18,6 +20,7 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((...args: unknown[]) => ({ eq: args })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
   or: vi.fn((...args: unknown[]) => ({ or: args })),
+  asc: vi.fn((col: unknown) => ({ asc: col })),
 }));
 
 import { db } from "@/db/client";
@@ -28,7 +31,9 @@ const mockDb = vi.mocked(db);
 function mockSelectChain(rows: Record<string, unknown>[]) {
   const chain = {
     from: vi.fn().mockReturnThis(),
-    where: vi.fn().mockResolvedValue(rows),
+    where: vi.fn().mockReturnThis(),
+    orderBy: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockResolvedValue(rows),
   };
   mockDb.select.mockReturnValue(chain as never);
   return chain;
@@ -54,7 +59,11 @@ describe("findCodexRelationByEdgeEndpoints", () => {
     expect(found?.id).toBe("rel-ab");
     const chain = mockDb.select.mock.results[0]?.value as {
       where: ReturnType<typeof vi.fn>;
+      orderBy: ReturnType<typeof vi.fn>;
+      limit: ReturnType<typeof vi.fn>;
     };
     expect(chain.where).toHaveBeenCalledOnce();
+    expect(chain.orderBy).toHaveBeenCalledOnce();
+    expect(chain.limit).toHaveBeenCalledWith(1);
   });
 });
