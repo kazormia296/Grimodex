@@ -22,6 +22,7 @@ import {
   buildSynopsisFromContentPromptJa,
   buildSessionTitlePromptJa,
 } from "./ja/chatApi";
+import { JA_POST_EFFECT } from "./ja/postEffect";
 
 const JA_CATALOG = {
   chatSystem: JA_CHAT_SYSTEM,
@@ -53,6 +54,7 @@ const JA_CATALOG = {
     buildSynopsisFromContentPrompt: buildSynopsisFromContentPromptJa,
     buildSessionTitlePrompt: buildSessionTitlePromptJa,
   },
+  postEffect: JA_POST_EFFECT,
 };
 
 export type PromptCatalog = typeof JA_CATALOG;

@@ -25,6 +25,7 @@ import {
   listAnnotationsForScene,
   runPostEffect,
 } from "@/features/post-effect/api";
+import { getPromptCatalog } from "@/prompts/index";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { closeAnnotation } from "@/features/post-effect/closeAnnotation";
 import { applyTypoFixAndResolve } from "@/features/post-effect/typoFix";
@@ -95,6 +96,7 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
             input_hash: payload.inputHash,
             codex_payload_json: "[]",
             scene_text: payload.sceneText,
+            system_prompt: getPromptCatalog("ja").postEffect.typoSystem,
           },
           {
             onDone: (e) =>

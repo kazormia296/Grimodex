@@ -176,8 +176,6 @@ pub fn run() {
             commands::foreshadow::foreshadow_setup_create_ai,
             commands::foreshadow::foreshadow_save_anchors_for_scene,
             commands::foreshadow::foreshadow_load_anchors_for_scene,
-            commands::foreshadow::foreshadow_propose_past_setups,
-            commands::foreshadow::foreshadow_audit_chapter,
             commands::integrity::fts_optimize,
             commands::integrity::fts_rebuild,
             commands::integrity::fts_search,

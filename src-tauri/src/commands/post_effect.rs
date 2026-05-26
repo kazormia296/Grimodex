@@ -19,109 +19,19 @@ use super::{AiSettingsPath, AppError, WorkspaceState};
 use crate::ai::{call_post_effect_api, get_api_key, read_ai_settings};
 
 // ---------------------------------------------------------------------------
-// プロンプトバージョン定数 (プロンプトの本質的変更で minor/major を上げる)
+// プロンプトバージョン定数 — FE 側 (consistencyPayloadBuilder.ts /
+// typoPayloadBuilder.ts) と必ず同値であること。プロンプト本文の変更時は
+// 両側を同期して bump し、cache key が新しい input_hash と再計算される。
 // ---------------------------------------------------------------------------
 
 const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.1";
 const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.0";
 const TYPO_PROMPT_VERSION: &str = "typo_detection_v1.0";
 
-// ---------------------------------------------------------------------------
-// システムプロンプト定数 (凍結文字列 — template literal で動的注入しない)
+// システムプロンプト本文は FE catalog (src/prompts/ja/postEffect.ts) で管理し、
+// `StartPostEffectRunArgs.system_prompt` として IPC 経由で渡される。
 // AUDIT POINT: cache_control は Codex prefix と Scene の境界に正確に挿入される。
 // call_post_effect_api がこの前提でキャッシュ境界を制御する。
-// ---------------------------------------------------------------------------
-
-const CONSISTENCY_SYSTEM_PROMPT: &str = r#"You are a continuity checker for a novel manuscript.
-
-Your task: inspect SCENE TEXT for factual contradictions against the CODEX entries provided.
-
-Rules:
-- Report ONLY violations where a specific claim in SCENE TEXT directly contradicts a specific field in the CODEX.
-- Do NOT report internal scene inconsistencies between two passages (that is intra_scene_consistency's role).
-- Do NOT report anything that is not in the CODEX at all — only check against what is explicitly stated in CODEX fields.
-- If a span does not contradict any CODEX entry, do not report it.
-- Include enough context in found_context (~30 characters before/after found_text) to locate the exact position in the scene.
-
-When source_field is "detail", set "detail_name" to the EXACT name string from the entry's detail_values list (e.g. "温度", "材質"). For "summary" or "content" set detail_name to null.
-
-Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
-{
-  "violations": [
-    {
-      "entry_id": "string",
-      "source_field": "summary" | "content" | "detail",
-      "source_excerpt": "string (quote from CODEX that is contradicted)",
-      "detail_name": "string or null (the detail's name, only when source_field='detail')",
-      "expected_value": "string (what CODEX says)",
-      "found_text": "string (exact text in SCENE that contradicts)",
-      "found_context": "string (~30 chars before+after found_text for positioning)",
-      "confidence": "high" | "medium" | "low",
-      "reason": "string (brief explanation)"
-    }
-  ]
-}"#;
-
-const TYPO_SYSTEM_PROMPT: &str = r#"You are a proofreader for a novel manuscript.
-
-Your task: detect Japanese typos and small spelling errors INSIDE the SCENE TEXT.
-
-Categories you SHOULD report:
-- "okurigana": 送り仮名のゆれ (例: 「行なう」↔「行う」、「申し込む」↔「申込む」)
-- "missing-particle": 助詞 (は/が/を/に/の/と etc.) が抜けていそうな箇所
-- "homophone": 同音異義語の誤変換 (例: 「以外」↔「意外」、「効く」↔「聴く」)
-- "missing-char": 一字脱落 (例: 「あした」が「あした」になっているような完全な欠落)
-- "other": 上記に当てはまらない明確なタイポ
-
-Rules:
-- Only report when you are reasonably confident it is an error, not a stylistic choice.
-- This is a NOVEL. Characters may use colloquial / dialect / intentionally mistaken speech (e.g.「すいません」「ふいんき」「いづれ」). Do NOT flag those in dialogue if they read as deliberate voice.
-- Do NOT report style preferences, redundant expressions, sentence length, repetition. Those are handled by other tools.
-- Do NOT propose alternative wordings ("better phrasing") — only typo-class fixes.
-- Include enough context in found_context (~30 characters before/after found_text) to locate the exact position.
-- suggestion must be the corrected substring that would replace found_text.
-
-Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
-{
-  "issues": [
-    {
-      "found_text": "string (exact substring in SCENE that is the typo)",
-      "found_context": "string (~30 chars before+after found_text for positioning)",
-      "suggestion": "string (corrected substring)",
-      "category": "okurigana" | "missing-particle" | "homophone" | "missing-char" | "other",
-      "confidence": "high" | "medium" | "low",
-      "reason": "string (brief explanation in Japanese)"
-    }
-  ]
-}"#;
-
-const INTRA_SYSTEM_PROMPT: &str = r#"You are a continuity checker for a novel manuscript.
-
-Your task: detect internal self-contradictions WITHIN the SCENE TEXT itself.
-
-Rules:
-- Only report contradictions where two different passages in the SAME scene are inconsistent (same character's state/action/attribute contradicting itself, etc.).
-- No CODEX is provided — judge only by the scene text itself.
-- Do NOT report anything that is not a genuine contradiction.
-- Include enough context in found_context (~30 characters before/after found_text) to locate the exact position.
-
-Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
-{
-  "pairs": [
-    {
-      "a": {
-        "found_text": "string (first contradicting passage)",
-        "found_context": "string (~30 chars before+after)"
-      },
-      "b": {
-        "found_text": "string (second contradicting passage)",
-        "found_context": "string (~30 chars before+after)"
-      },
-      "confidence": "high" | "medium" | "low",
-      "reason": "string (brief explanation)"
-    }
-  ]
-}"#;
 
 // ---------------------------------------------------------------------------
 // Input / Output 型
@@ -139,6 +49,8 @@ pub(crate) struct StartPostEffectRunArgs {
     /// JSON array of CodexPayloadEntry (consistency のみ; intra では空 JSON array を渡す)
     codex_payload_json: String,
     scene_text: String,
+    /// System prompt 本文。FE catalog (src/prompts/ja/postEffect.ts) から渡される。
+    system_prompt: String,
 }
 
 #[derive(Serialize)]
@@ -168,6 +80,8 @@ pub(crate) struct StartPostEffectRunMultiArgs {
     prompt_version: String,
     input_hash: String,
     scenes: Vec<ScenePayload>,
+    /// System prompt 本文。FE catalog (src/prompts/ja/postEffect.ts) から渡される。
+    system_prompt: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -1302,6 +1216,7 @@ async fn process_consistency_scene(
     scene_id: &str,
     codex_payload_json: &str,
     scene_text: &str,
+    system_prompt: &str,
     ai_settings_path: &std::path::Path,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
@@ -1325,7 +1240,7 @@ async fn process_consistency_scene(
     let raw_response = call_post_effect_api(
         &ai_settings,
         &api_key,
-        CONSISTENCY_SYSTEM_PROMPT,
+        system_prompt,
         Some(codex_payload_json),
         scene_text,
     )
@@ -1659,6 +1574,7 @@ async fn process_consistency_scene(
     Ok(count)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_consistency_task(
     app: AppHandle,
     run_id: String,
@@ -1666,6 +1582,7 @@ async fn run_consistency_task(
     scene_id: String,
     codex_payload_json: String,
     scene_text: String,
+    system_prompt: String,
     ai_settings_path: std::path::PathBuf,
 ) {
     let emit_err = |msg: &str| {
@@ -1695,6 +1612,7 @@ async fn run_consistency_task(
         &scene_id,
         &codex_payload_json,
         &scene_text,
+        &system_prompt,
         &ai_settings_path,
         |p, s| {
             let _ = app.emit(
@@ -1734,12 +1652,14 @@ async fn run_consistency_task(
 
 /// intra_scene_consistency チェックを 1 シーン分実行し、挿入したペア数を返す。
 /// 進捗イベントや run ステータス更新は呼び出し側が担当する。
+#[allow(clippy::too_many_arguments)]
 async fn process_intra_scene(
     app: &AppHandle,
     run_id: &str,
     project_id: &str,
     scene_id: &str,
     scene_text: &str,
+    system_prompt: &str,
     ai_settings_path: &std::path::Path,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
@@ -1759,24 +1679,19 @@ async fn process_intra_scene(
         "[post_effect] intra: calling AI"
     );
     let ai_start = std::time::Instant::now();
-    let raw_response = call_post_effect_api(
-        &ai_settings,
-        &api_key,
-        INTRA_SYSTEM_PROMPT,
-        None,
-        scene_text,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(
-            run_id = run_id,
-            scene_id = scene_id,
-            elapsed_ms = ai_start.elapsed().as_millis(),
-            error = %e,
-            "[post_effect] intra: AI call failed"
-        );
-        anyhow::anyhow!("AI 呼び出し失敗: {e}")
-    })?;
+    let raw_response =
+        call_post_effect_api(&ai_settings, &api_key, system_prompt, None, scene_text)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    run_id = run_id,
+                    scene_id = scene_id,
+                    elapsed_ms = ai_start.elapsed().as_millis(),
+                    error = %e,
+                    "[post_effect] intra: AI call failed"
+                );
+                anyhow::anyhow!("AI 呼び出し失敗: {e}")
+            })?;
     tracing::info!(
         run_id = run_id,
         scene_id = scene_id,
@@ -1980,6 +1895,7 @@ async fn run_intra_task(
     project_id: String,
     scene_id: String,
     scene_text: String,
+    system_prompt: String,
     ai_settings_path: std::path::PathBuf,
 ) {
     let emit_err = |msg: &str| {
@@ -2008,6 +1924,7 @@ async fn run_intra_task(
         &project_id,
         &scene_id,
         &scene_text,
+        &system_prompt,
         &ai_settings_path,
         |p, s| {
             let _ = app.emit(
@@ -2046,12 +1963,14 @@ async fn run_intra_task(
 // ---------------------------------------------------------------------------
 
 /// typo_detection チェックを 1 シーン分実行し、挿入したアノテーション数を返す。
+#[allow(clippy::too_many_arguments)]
 async fn process_typo_scene(
     app: &AppHandle,
     run_id: &str,
     project_id: &str,
     scene_id: &str,
     scene_text: &str,
+    system_prompt: &str,
     ai_settings_path: &std::path::Path,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
@@ -2072,7 +1991,7 @@ async fn process_typo_scene(
     );
     let ai_start = std::time::Instant::now();
     let raw_response =
-        call_post_effect_api(&ai_settings, &api_key, TYPO_SYSTEM_PROMPT, None, scene_text)
+        call_post_effect_api(&ai_settings, &api_key, system_prompt, None, scene_text)
             .await
             .map_err(|e| {
                 tracing::error!(
@@ -2247,6 +2166,7 @@ async fn run_typo_task(
     project_id: String,
     scene_id: String,
     scene_text: String,
+    system_prompt: String,
     ai_settings_path: std::path::PathBuf,
 ) {
     let emit_err = |msg: &str| {
@@ -2275,6 +2195,7 @@ async fn run_typo_task(
         &project_id,
         &scene_id,
         &scene_text,
+        &system_prompt,
         &ai_settings_path,
         |p, s| {
             let _ = app.emit(
@@ -2318,6 +2239,7 @@ async fn run_multi_task(
     project_id: String,
     effect_type: String,
     scenes: Vec<ScenePayload>,
+    system_prompt: String,
     ai_settings_path: std::path::PathBuf,
 ) {
     let abort_flag = app.state::<PostEffectAbortFlag>();
@@ -2375,6 +2297,7 @@ async fn run_multi_task(
                     &scene.scene_id,
                     &scene.codex_payload_json,
                     &scene.scene_text,
+                    &system_prompt,
                     &ai_settings_path,
                     |_p, _s| {},
                 )
@@ -2387,6 +2310,7 @@ async fn run_multi_task(
                     &project_id,
                     &scene.scene_id,
                     &scene.scene_text,
+                    &system_prompt,
                     &ai_settings_path,
                     |_p, _s| {},
                 )
@@ -2399,6 +2323,7 @@ async fn run_multi_task(
                     &project_id,
                     &scene.scene_id,
                     &scene.scene_text,
+                    &system_prompt,
                     &ai_settings_path,
                     |_p, _s| {},
                 )
@@ -2601,6 +2526,7 @@ pub(crate) async fn start_post_effect_run(
     let effect = args.effect_type.clone();
     let codex_json = args.codex_payload_json.clone();
     let scene_text = args.scene_text.clone();
+    let system_prompt = args.system_prompt.clone();
     let rid = run_id.clone();
 
     tokio::task::spawn(async move {
@@ -2610,15 +2536,40 @@ pub(crate) async fn start_post_effect_run(
             match effect.as_str() {
                 "consistency" => {
                     run_consistency_task(
-                        app, rid, project_id, scene_id, codex_json, scene_text, ai_path,
+                        app,
+                        rid,
+                        project_id,
+                        scene_id,
+                        codex_json,
+                        scene_text,
+                        system_prompt,
+                        ai_path,
                     )
                     .await;
                 }
                 "typo_detection" => {
-                    run_typo_task(app, rid, project_id, scene_id, scene_text, ai_path).await;
+                    run_typo_task(
+                        app,
+                        rid,
+                        project_id,
+                        scene_id,
+                        scene_text,
+                        system_prompt,
+                        ai_path,
+                    )
+                    .await;
                 }
                 _ => {
-                    run_intra_task(app, rid, project_id, scene_id, scene_text, ai_path).await;
+                    run_intra_task(
+                        app,
+                        rid,
+                        project_id,
+                        scene_id,
+                        scene_text,
+                        system_prompt,
+                        ai_path,
+                    )
+                    .await;
                 }
             }
         })
@@ -2736,13 +2687,14 @@ pub(crate) async fn start_post_effect_run_multi(
     let project_id = args.project_id.clone();
     let effect = args.effect_type.clone();
     let scenes = args.scenes;
+    let system_prompt = args.system_prompt.clone();
     let rid = run_id.clone();
 
     tokio::task::spawn(async move {
         let app_clone = app.clone();
         let rid_clone = rid.clone();
         let join = tokio::task::spawn(async move {
-            run_multi_task(app, rid, project_id, effect, scenes, ai_path).await;
+            run_multi_task(app, rid, project_id, effect, scenes, system_prompt, ai_path).await;
         })
         .await;
         if let Err(join_err) = join {

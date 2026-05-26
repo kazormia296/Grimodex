@@ -25,6 +25,7 @@ import {
   runPostEffectMulti,
 } from "@/features/post-effect/api";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
+import { getPromptCatalog } from "@/prompts/index";
 import { applyTypoFixAndResolve } from "@/features/post-effect/typoFix";
 import { parseAnnotationMeta } from "@/features/post-effect/annotationMeta";
 import {
@@ -136,6 +137,7 @@ export function ProjectTypoView() {
             prompt_version: TYPO_PROMPT_VERSION,
             input_hash: payload.inputHash,
             scenes: payload.scenes,
+            system_prompt: getPromptCatalog("ja").postEffect.typoSystem,
           },
           {
             onDone: (e) =>

@@ -1263,15 +1263,6 @@ function isValidCandidate(candidate: unknown): candidate is ProposedSetup {
 export async function proposePastSetups(
   req: ProposeRequest,
 ): Promise<ProposedSetup[]> {
-  if (isTauriRuntime()) {
-    const res = await invoke<{ candidates: ProposedSetup[] }>(
-      "foreshadow_propose_past_setups",
-      { req },
-    );
-    if (!Array.isArray(res?.candidates)) return [];
-    return res.candidates.filter(isValidCandidate);
-  }
-
   let _project;
   try {
     _project = await getProject(useTreeStore.getState().projectId);
@@ -1381,17 +1372,6 @@ function isValidAuditCandidate(c: unknown): c is AuditCandidate {
 export async function auditChapter(
   req: ChapterAuditRequest,
 ): Promise<AuditCandidate[]> {
-  if (isTauriRuntime()) {
-    const res = await invoke<{ candidates: AuditCandidate[] }>(
-      "foreshadow_audit_chapter",
-      {
-        req,
-      },
-    );
-    if (!Array.isArray(res?.candidates)) return [];
-    return res.candidates.filter(isValidAuditCandidate);
-  }
-
   let _auditProject;
   try {
     _auditProject = await getProject(useTreeStore.getState().projectId);

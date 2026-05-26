@@ -62,6 +62,7 @@ describe("runPostEffect 自動 cleanup", () => {
     input_hash: "hash",
     codex_payload_json: "[]",
     scene_text: "",
+    system_prompt: "test system prompt",
   } as const;
 
   it("done 受信で listen を全解除する", async () => {

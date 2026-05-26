@@ -17,6 +17,7 @@ import {
   listAnnotationsForScene,
   runPostEffect,
 } from "@/features/post-effect/api";
+import { getPromptCatalog } from "@/prompts/index";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { PostEffectAnnotationPanel } from "@/features/post-effect/PostEffectAnnotationPanel";
 import type {
@@ -106,6 +107,8 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
                   input_hash: payload.inputHash,
                   codex_payload_json: payload.codexPayloadJson,
                   scene_text: payload.sceneText,
+                  system_prompt:
+                    getPromptCatalog("ja").postEffect.consistencySystem,
                 },
                 {
                   onDone: (e) =>
@@ -145,6 +148,7 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
                   input_hash: payload.inputHash,
                   codex_payload_json: "[]",
                   scene_text: payload.sceneText,
+                  system_prompt: getPromptCatalog("ja").postEffect.intraSystem,
                 },
                 {
                   onDone: (e) => resolve({ kind: "ok", effect: "intra", e }),

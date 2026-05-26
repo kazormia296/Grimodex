@@ -18,6 +18,7 @@ import {
   listAnnotationsForScene,
   runPostEffectMulti,
 } from "@/features/post-effect/api";
+import { getPromptCatalog } from "@/prompts/index";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { parseAnnotationMeta } from "@/features/post-effect/annotationMeta";
 import {
@@ -147,6 +148,10 @@ export function ProjectAnnotationsView() {
                     prompt_version: promptVersion,
                     input_hash: payload.inputHash,
                     scenes: payload.scenes,
+                    system_prompt:
+                      effect === "consistency"
+                        ? getPromptCatalog("ja").postEffect.consistencySystem
+                        : getPromptCatalog("ja").postEffect.intraSystem,
                   },
                   {
                     onDone: (e) => resolve({ kind: "ok", effect, e }),

@@ -23,10 +23,8 @@ import {
   listForeshadowsWithLabels,
   listOpenForeshadowsForContext,
   listSetups,
-  proposePastSetups,
   updateForeshadow,
   updateSetup,
-  type ProposeRequest,
 } from "./api";
 
 describe("foreshadow api tauri mapping", () => {
@@ -293,36 +291,6 @@ describe("foreshadow api tauri mapping", () => {
     expect(mockInvoke).toHaveBeenCalledWith("foreshadow_resolve_orphan", {
       payload: { setupId: "s1", action: "delete" },
     });
-  });
-
-  it("filters invalid candidates from tauri propose response", async () => {
-    mockInvoke.mockResolvedValue({
-      candidates: [
-        {
-          sceneId: "scene-1",
-          kind: "designated_existing",
-          rationale: "ok",
-          predictedStrength: "subtle",
-        },
-        {
-          sceneId: "scene-2",
-          kind: "invalid_kind",
-          rationale: "ng",
-          predictedStrength: "subtle",
-        },
-      ],
-    });
-
-    const req: ProposeRequest = {
-      intent: "intent",
-      payoffSceneId: "scene-9",
-      payoffExcerpt: "payoff",
-      pastScenes: [],
-      relatedCodex: [],
-    };
-    const result = await proposePastSetups(req);
-    expect(result).toHaveLength(1);
-    expect(result[0].sceneId).toBe("scene-1");
   });
 
   it("preserves omitted fields and explicit null in update payload", async () => {

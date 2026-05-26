@@ -119,6 +119,8 @@ export interface StartPostEffectRunRequest {
   /** JSON array of CodexPayloadEntry (consistency only; empty for intra_scene) */
   codex_payload_json: string;
   scene_text: string;
+  /** System prompt 本文。FE catalog (`src/prompts/ja/postEffect.ts`) から取得して渡す。 */
+  system_prompt: string;
 }
 
 export interface StartPostEffectRunResult {
@@ -140,6 +142,8 @@ export interface StartPostEffectRunMultiRequest {
     codex_payload_json: string;
     scene_text: string;
   }>;
+  /** System prompt 本文。FE catalog (`src/prompts/ja/postEffect.ts`) から取得して渡す。 */
+  system_prompt: string;
 }
 
 // ---------------------------------------------------------------------------
