@@ -1,13 +1,17 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import { playwright } from "@vitest/browser-playwright";
 
 const alias = { "@": path.resolve(__dirname, "./src") };
 
 export default defineConfig({
-  plugins: [react()],
+  // Tailwind 4 は utilities を Vite plugin 経由で生成する。これが無いと
+  // browser test で `grid` `h-full` 等のクラスが no-op になり、layout が
+  // 全く効かない (shell が display:block に潰れる)。
+  plugins: [react(), tailwindcss()],
   resolve: { alias },
   optimizeDeps: {
     include: ["@tanstack/react-virtual"],

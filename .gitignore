@@ -30,3 +30,6 @@ grimodex-wiki/
 # pnpm screenshot で再生成されるスクリーンショット。
 # 再生成コマンドは docs/screenshots/generated/memo.txt 参照（こちらは追跡する）。
 docs/screenshots/generated/*.png
+
+# Vitest browser-mode attachments (per-run failure screenshots)
+.vitest-attachments/

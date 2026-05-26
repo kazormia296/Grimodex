@@ -1,5 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import "@/lib/i18n";
+// Layout/CSS-dependent tests (e.g. layoutInvariants.browser.test.tsx) need
+// Tailwind + CSS variables loaded. The editor browser tests don't depend on
+// CSS so they were happy without it; importing globally is harmless for them.
+import "@/index.css";
 import { vi } from "vitest";
 
 // Real browser has ResizeObserver, but we still stub virtualizer

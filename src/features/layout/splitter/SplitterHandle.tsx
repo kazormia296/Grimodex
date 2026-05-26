@@ -1,4 +1,4 @@
-import { useCallback, useRef, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useRef, type ReactNode } from "react";
 
 export interface SplitterHandleProps {
   orientation: "horizontal" | "vertical";
@@ -22,6 +22,38 @@ export function SplitterHandle({
   const onDragEndRef = useRef(onDragEnd);
   const pendingDeltaRef = useRef(0);
   const rafRef = useRef<number | null>(null);
+  const handleRef = useRef<HTMLDivElement>(null);
+
+  // Dev-only: ヒット領域が潰れていたら警告する。Splitter は flex/grid の
+  // ネストで親寸法が見えなくなると width/height が 0 化しやすい (chrome の
+  // `width: 100%` が auto=0 に解決される、h-full が flex main 軸を食い潰す、
+  // 等)。grow_share=0 のような正当な「無いはず」のケースは disabled プロップで
+  // 既に抑止されているので、ここで警告が出たら基本的にレイアウトのバグ。
+  //
+  // test 環境では browser invariant test 側で getBoundingClientRect を直接
+  // 検証するので、ここでは出さない (vitest が console.warn を捕まえると React
+  // Fiber ツリーまでシリアライズして出力が爆発する)。
+  useLayoutEffect(() => {
+    if (!import.meta.env.DEV || import.meta.env.MODE === "test") return;
+    if (disabled) return;
+    const el = handleRef.current;
+    if (!el) return;
+    // 親が初回レイアウトを終えるまで 1 フレーム待つ。
+    const id = requestAnimationFrame(() => {
+      const r = el.getBoundingClientRect();
+      const minHit = 4;
+      if (r.width < minHit || r.height < minHit) {
+        // el は console に渡さない (DevTools の Inspect で十分、Vitest の
+        // console capture を巨大化させない)。
+        console.warn(
+          `[SplitterHandle] collapsed hit area: ${r.width.toFixed(1)}×${r.height.toFixed(1)}px (orientation=${orientation}). ` +
+            `Parent must provide cross-axis stretch + main-axis explicit px. ` +
+            `Common cause: chrome の % 寸法を解決できる sized 親が無い / h-full が flex main 軸を食い潰す。`,
+        );
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  });
 
   onDragRef.current = onDrag;
   onDragEndRef.current = onDragEnd;
@@ -89,6 +121,7 @@ export function SplitterHandle({
   //   はみ出る。cross 軸はそれぞれの flex 方向で stretch されるので不要。
   return (
     <div
+      ref={handleRef}
       onPointerDown={handlePointerDown}
       data-splitter-handle
       className="w-full"
