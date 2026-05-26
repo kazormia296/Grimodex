@@ -89,7 +89,37 @@ export async function saveRootsToSettings(
   await setProjectSetting(projectId, EXTERNAL_ROOTS_KEY, JSON.stringify(roots));
 }
 
+// Boot fires this 2x (App.tsx StrictMode double-effect) plus 1x from
+// reloadProjectData during loadProject. All three race past the
+// `previous = []` snapshot, skip the unregister loop, and collide at
+// registerMount with "overlaps with existing root: <self>". Dedup
+// concurrent calls for the same project; chain across projects so a
+// rapid switch still re-inits after the prior project's init drains.
+let inFlightInit: { projectId: string; promise: Promise<void> } | null = null;
+
 export async function initializeExternalMounts(): Promise<void> {
+  const projectId = getCurrentProjectId();
+  if (inFlightInit && inFlightInit.projectId === projectId) {
+    return inFlightInit.promise;
+  }
+  const previousInit = inFlightInit?.promise;
+  const entry: { projectId: string; promise: Promise<void> } = {
+    projectId,
+    promise: Promise.resolve(),
+  };
+  entry.promise = (async () => {
+    if (previousInit) await previousInit.catch(() => {});
+    try {
+      await doInitializeExternalMounts();
+    } finally {
+      if (inFlightInit === entry) inFlightInit = null;
+    }
+  })();
+  inFlightInit = entry;
+  return entry.promise;
+}
+
+async function doInitializeExternalMounts(): Promise<void> {
   const previous = useExternalRootStore.getState().roots;
   for (const root of previous) {
     try {
