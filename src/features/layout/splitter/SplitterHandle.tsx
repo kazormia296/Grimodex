@@ -79,15 +79,19 @@ export function SplitterHandle({
     [disabled, flushPendingDelta, orientation],
   );
 
-  // h-full w-full は必須: 親 (RegionContent / RegionResizeSplitter) は cross 軸を
-  // flex stretch で渡し、main 軸を explicit px で与えるだけなので、SplitterHandle
-  // 自身が full 寸法を取らないと SplitterChrome の `width: 100%` / `height: 100%`
-  // の参照先が auto=0 に潰れ、splitter のヒット領域が 0 px になる。
+  // w-full は必須 (h-full は付けない):
+  // - 親が flex-row な slot splitter (orientation="vertical" / 水平バー) では、
+  //   SplitterHandle の main 軸 = width が auto = 0 に潰れ、内側 chrome の
+  //   `width: 100%` が 0 になりヒット領域が消える。w-full で stretch を強制する。
+  // - h-full を付けると、bottom region splitter のように flex-col 親に直接
+  //   SplitterHandle が乗るケースで height: 100% が bottom grid cell 全体を
+  //   占有してしまい、bottom region の content/stripe が押し出されて画面外に
+  //   はみ出る。cross 軸はそれぞれの flex 方向で stretch されるので不要。
   return (
     <div
       onPointerDown={handlePointerDown}
       data-splitter-handle
-      className="h-full w-full"
+      className="w-full"
     >
       {children}
     </div>

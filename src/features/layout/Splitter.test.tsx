@@ -45,10 +45,10 @@ describe("Splitter", () => {
     expect(el.style.width).toBe(`${PANEL_GAP_PX}px`);
   });
 
-  it("makes the SplitterHandle fill its parent so chrome's 100% does not collapse", () => {
-    // Regression: SplitterHandle に width/height class が無いと、内側の
-    // SplitterChrome の width:100% / height:100% が参照先 auto=0 に潰れて
-    // ヒット領域が 0 px になり、ホバー / ドラッグが効かなくなる。
+  it("stretches the SplitterHandle's cross axis so chrome's percentage does not collapse", () => {
+    // Regression: SplitterHandle に何も class が無いと、flex-row 親の slot
+    // splitter で main 軸 (width) が auto = 0 に潰れ、内側 chrome の
+    // width:100% が 0 px になりヒット領域が消える。w-full でこの軸を埋める。
     render(
       <div className="flex h-40 w-40 flex-col">
         <Splitter orientation="vertical" onDrag={() => {}} />
@@ -58,7 +58,9 @@ describe("Splitter", () => {
       "[data-splitter-handle]",
     );
     expect(handle).not.toBeNull();
-    expect(handle!.className).toContain("h-full");
     expect(handle!.className).toContain("w-full");
+    // h-full を付けると flex-col 親に直接乗るケース (bottom region splitter)
+    // で grid cell 全体を占有してしまい、bottom panel が画面外にはみ出る。
+    expect(handle!.className).not.toContain("h-full");
   });
 });
