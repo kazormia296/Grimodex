@@ -31,6 +31,10 @@ import type { ScannedScene } from "./projectScan";
 import { extensionFor, renderReport, type ReportFormat } from "./lintReport";
 import { runLintNow } from "./useLinter";
 import {
+  applyAutoResolvedTypos,
+  collectTypoAnnotationsResolvedByFix,
+} from "@/features/post-effect/autoResolveOnLintFix";
+import {
   filterDiagnostics,
   groupByRule,
   groupBySeverity,
@@ -353,6 +357,16 @@ function CurrentLinterView() {
       const to = strOffsetToPmPos(before, d.fix.range.end);
       if (from == null || to == null) return;
       const beforeDisableCount = before.disables.length;
+      // AI typo annotation の auto-resolve 候補は Fix 適用前の doc/位置を必須とする
+      const autoResolveIds = currentSceneId
+        ? collectTypoAnnotationsResolvedByFix(
+            currentSceneId,
+            editor.state.doc,
+            from,
+            to,
+            d.fix.replacement,
+          )
+        : [];
       editor
         .chain()
         .focus()
@@ -368,6 +382,9 @@ function CurrentLinterView() {
         pushNotification(
           `Fix 適用により ${removed} 件の Lint 無効化が削除されました`,
         );
+      }
+      if (autoResolveIds.length > 0) {
+        void applyAutoResolvedTypos(autoResolveIds);
       }
       if (currentSceneId) {
         void runLintNow(editor, currentSceneId);
@@ -391,6 +408,26 @@ function CurrentLinterView() {
     const sorted = [...withFix].sort(
       (a, b) => b.fix!.range.start - a.fix!.range.start,
     );
+    // 適用前 doc で全 Fix の auto-resolve 候補を集める (Fix 後は textSnapshot が
+    // ずれて resolveAnnotationRange が orphan を返すため)
+    const preDoc = editor.state.doc;
+    const autoResolveIds: string[] = [];
+    if (currentSceneId) {
+      for (const d of sorted) {
+        const from = strOffsetToPmPos(map, d.fix!.range.start);
+        const to = strOffsetToPmPos(map, d.fix!.range.end);
+        if (from == null || to == null) continue;
+        autoResolveIds.push(
+          ...collectTypoAnnotationsResolvedByFix(
+            currentSceneId,
+            preDoc,
+            from,
+            to,
+            d.fix!.replacement,
+          ),
+        );
+      }
+    }
     let chain = editor.chain().focus();
     for (const d of sorted) {
       const from = strOffsetToPmPos(map, d.fix!.range.start);
@@ -405,6 +442,9 @@ function CurrentLinterView() {
       pushNotification(
         `一括 Fix 適用により ${removed} 件の Lint 無効化が削除されました`,
       );
+    }
+    if (autoResolveIds.length > 0) {
+      void applyAutoResolvedTypos([...new Set(autoResolveIds)]);
     }
     if (currentSceneId) void runLintNow(editor, currentSceneId);
   }, [editor, filtered, currentSceneId, pushNotification]);
@@ -1104,6 +1144,13 @@ function ProjectLinterView() {
       const from = strOffsetToPmPos(map, d.fix.range.start);
       const to = strOffsetToPmPos(map, d.fix.range.end);
       if (from == null || to == null) return;
+      const autoResolveIds = collectTypoAnnotationsResolvedByFix(
+        scene.sceneId,
+        editor.state.doc,
+        from,
+        to,
+        d.fix.replacement,
+      );
       editor
         .chain()
         .focus()
@@ -1116,6 +1163,9 @@ function ProjectLinterView() {
         projectPushNotification(
           `Fix 適用により ${removed} 件の Lint 無効化が削除されました`,
         );
+      }
+      if (autoResolveIds.length > 0) {
+        void applyAutoResolvedTypos(autoResolveIds);
       }
       void runLintNow(editor, scene.sceneId);
     },

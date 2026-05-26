@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { usePanelRef } from "react-resizable-panels";
 import { cn } from "@/lib/utils";
@@ -14,6 +14,9 @@ import { useKouetsuStore } from "./kouetsuStore";
 import { IssuesScopeBar } from "./IssuesScopeBar";
 import { LinterSection } from "./sections/LinterSection";
 import { ConsistencySection } from "./sections/ConsistencySection";
+import { TypoSection } from "./sections/TypoSection";
+
+const TYPO_RULE_ID = "ja/typo-confusable";
 
 function SectionHeader({
   title,
@@ -63,19 +66,35 @@ function SectionHeader({
 export function IssuesTab() {
   const [linterExpanded, setLinterExpanded] = useState(true);
   const [consistencyExpanded, setConsistencyExpanded] = useState(true);
+  const [typoExpanded, setTypoExpanded] = useState(true);
   const linterRef = usePanelRef();
   const consistencyRef = usePanelRef();
+  const typoRef = usePanelRef();
 
   const scope = useKouetsuStore((s) => s.activeIssuesScope);
-  const diagnosticCount = useLintStore((s) => s.diagnostics.length);
+  const diagnostics = useLintStore((s) => s.diagnostics);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const annotationsByScene = useAnnotationStore((s) => s.annotationsByScene);
-  const consistencyCount =
+
+  // typo Lint は誤字脱字セクションに別集計しつつ、校正セクションにも従来どおり含める
+  // (Linter 全件パネルの一貫性を優先。MVP のトレードオフ)
+  const typoLintCount = useMemo(
+    () => diagnostics.filter((d) => d.rule_id === TYPO_RULE_ID).length,
+    [diagnostics],
+  );
+  const linterCount = diagnostics.length;
+
+  const sceneAnnotations =
     scope === "current" && activeSceneId
-      ? (annotationsByScene
-          .get(activeSceneId)
-          ?.filter((a) => a.status === "open").length ?? 0)
-      : 0;
+      ? (annotationsByScene.get(activeSceneId) ?? [])
+      : [];
+  const consistencyCount = sceneAnnotations.filter(
+    (a) => a.status === "open" && a.category !== "typo_anchor",
+  ).length;
+  const typoAiCount = sceneAnnotations.filter(
+    (a) => a.status === "open" && a.category === "typo_anchor",
+  ).length;
+  const typoCount = typoLintCount + typoAiCount;
 
   const handleLinterToggle = () => {
     if (linterExpanded) {
@@ -93,6 +112,14 @@ export function IssuesTab() {
     }
   };
 
+  const handleTypoToggle = () => {
+    if (typoExpanded) {
+      typoRef.current?.collapse();
+    } else {
+      typoRef.current?.expand();
+    }
+  };
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <IssuesScopeBar />
@@ -106,7 +133,7 @@ export function IssuesTab() {
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="50%"
+          defaultSize="34%"
           onResize={() => {
             setLinterExpanded(!(linterRef.current?.isCollapsed() ?? false));
           }}
@@ -114,7 +141,7 @@ export function IssuesTab() {
         >
           <SectionHeader
             title="校正"
-            count={diagnosticCount}
+            count={linterCount}
             expanded={linterExpanded}
             onToggle={handleLinterToggle}
           />
@@ -130,7 +157,7 @@ export function IssuesTab() {
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="50%"
+          defaultSize="33%"
           onResize={() => {
             setConsistencyExpanded(
               !(consistencyRef.current?.isCollapsed() ?? false),
@@ -146,6 +173,30 @@ export function IssuesTab() {
           />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ConsistencySection />
+          </div>
+        </ResizablePanel>
+
+        <ResizableHandle horizontal withHandle />
+
+        <ResizablePanel
+          panelRef={typoRef}
+          collapsible
+          collapsedSize={32}
+          minSize="15%"
+          defaultSize="33%"
+          onResize={() => {
+            setTypoExpanded(!(typoRef.current?.isCollapsed() ?? false));
+          }}
+          className="flex flex-col overflow-hidden"
+        >
+          <SectionHeader
+            title="誤字脱字"
+            count={typoCount}
+            expanded={typoExpanded}
+            onToggle={handleTypoToggle}
+          />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <TypoSection />
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>

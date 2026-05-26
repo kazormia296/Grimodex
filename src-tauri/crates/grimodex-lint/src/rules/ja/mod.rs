@@ -9,4 +9,5 @@ pub mod quote_period;
 pub mod redundant_expression;
 pub mod sentence_ending_repeat;
 pub mod sentence_length;
+pub mod typo_confusable;
 pub mod word_repetition;

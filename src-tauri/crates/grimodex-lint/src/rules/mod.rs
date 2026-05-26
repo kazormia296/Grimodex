@@ -33,6 +33,7 @@ pub fn build_ruleset(language: Language) -> (Vec<Box<dyn LintRule>>, Vec<RuleWar
                 ja::sentence_ending_repeat::SentenceEndingRepeatRule,
             ));
             rules.push(Box::new(ja::sentence_length::SentenceLengthRule));
+            rules.push(Box::new(ja::typo_confusable::TypoConfusableRule));
             rules.push(Box::new(ja::word_repetition::WordRepetitionRule));
             // Codex-linked rules are language-agnostic but registered
             // here so they run on Japanese scenes by default.

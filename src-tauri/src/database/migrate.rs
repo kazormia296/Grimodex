@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 use super::Database;
 
@@ -1038,7 +1038,7 @@ impl Database {
                 id              TEXT PRIMARY KEY,
                 project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 effect_type     TEXT NOT NULL
-                                  CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency')),
+                                  CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency','typo_detection')),
                 scope_type      TEXT NOT NULL
                                   CHECK(scope_type IN ('scene','folder','project')),
                 scope_target_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
@@ -1072,7 +1072,7 @@ impl Database {
                 range_end      INTEGER,
                 text_snapshot  TEXT,
                 category       TEXT NOT NULL
-                                  CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor')),
+                                  CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor','typo_anchor')),
                 persona        TEXT,
                 severity       TEXT CHECK(severity IS NULL OR severity IN ('info','suggestion','warning','error')),
                 content        TEXT NOT NULL,
@@ -1158,6 +1158,10 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_lens_target_type
                 ON scene_lens_data(target_id, lens_type);",
         )?;
+
+        // 既存 DB の post_effect_runs / post_effect_annotations CHECK 制約に
+        // typo_detection / typo_anchor を追加 (新 DB は上の CREATE TABLE で済)。
+        Self::migrate_post_effect_typo_categories(&conn)?;
 
         // PostEffect クラッシュリカバリ: プロセス強制終了等で running のまま残った run を
         // 起動時に failed へ落とす。idx_runs_running_scope の UNIQUE が次回起動を
@@ -1252,6 +1256,97 @@ impl Database {
     /// One-shot migration: drop legacy `color` enum column from map_stickies
     /// and replace with `palette_id` + `color_slot`. Old color names map to
     /// post-it-playful slots 0..5; gray/white fall back to slot 0.
+    /// 既存 DB の post_effect_runs.effect_type / post_effect_annotations.category の
+    /// CHECK 制約に `typo_detection` / `typo_anchor` を追加する。
+    ///
+    /// CHECK を緩める方向 (許容値の追加) のみで既存データに矛盾は生じないため、
+    /// `writable_schema` で sqlite_master.sql を直接書き換える方式を採る
+    /// (テーブル再構築より影響範囲が小さく、FTS5/triggers/indexes/外部 FK の
+    /// 取り回しが要らない)。冪等性は CHECK 文字列の中に新値が含まれるかで判定。
+    pub(super) fn migrate_post_effect_typo_categories(conn: &Connection) -> anyhow::Result<()> {
+        let runs_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'post_effect_runs'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        let anns_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'post_effect_annotations'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let runs_needs = runs_sql
+            .as_deref()
+            .is_some_and(|s| !s.contains("typo_detection"));
+        let anns_needs = anns_sql
+            .as_deref()
+            .is_some_and(|s| !s.contains("typo_anchor"));
+
+        if !runs_needs && !anns_needs {
+            return Ok(());
+        }
+
+        // schema_version を bump して次の statement で sqlite が schema を読み直すよう促す
+        let current_version: i64 = conn.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+
+        conn.pragma_update(None, "writable_schema", true)?;
+
+        if runs_needs {
+            if let Some(old) = runs_sql {
+                let new = old.replace(
+                    "'consistency','intra_scene_consistency')",
+                    "'consistency','intra_scene_consistency','typo_detection')",
+                );
+                if new != old {
+                    conn.execute(
+                        "UPDATE sqlite_master SET sql = ?1 \
+                         WHERE type = 'table' AND name = 'post_effect_runs'",
+                        params![new],
+                    )?;
+                } else {
+                    tracing::warn!(
+                        "post_effect_runs CHECK constraint not in expected form; skipping typo_detection migration"
+                    );
+                }
+            }
+        }
+
+        if anns_needs {
+            if let Some(old) = anns_sql {
+                let new = old.replace(
+                    "'foreshadow_anchor','theme_anchor')",
+                    "'foreshadow_anchor','theme_anchor','typo_anchor')",
+                );
+                if new != old {
+                    conn.execute(
+                        "UPDATE sqlite_master SET sql = ?1 \
+                         WHERE type = 'table' AND name = 'post_effect_annotations'",
+                        params![new],
+                    )?;
+                } else {
+                    tracing::warn!(
+                        "post_effect_annotations CHECK constraint not in expected form; skipping typo_anchor migration"
+                    );
+                }
+            }
+        }
+
+        conn.pragma_update(None, "schema_version", current_version + 1)?;
+        conn.pragma_update(None, "writable_schema", false)?;
+
+        // 反映を確認: integrity_check が ok を返さなければ巻き戻して bail
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            anyhow::bail!("integrity_check failed after typo CHECK widening: {integrity}");
+        }
+
+        Ok(())
+    }
+
     pub(super) fn migrate_stickies_color_to_palette_slot(conn: &Connection) -> anyhow::Result<()> {
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(map_stickies)")?
@@ -1550,5 +1645,120 @@ impl Database {
             "ALTER TABLE {table} ADD COLUMN {column} {column_def};"
         ))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn open_legacy_post_effect_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        // Old schema (pre-typo) — must NOT contain 'typo_detection' / 'typo_anchor'
+        conn.execute_batch(
+            "CREATE TABLE post_effect_runs (
+                id              TEXT PRIMARY KEY,
+                project_id      TEXT NOT NULL,
+                effect_type     TEXT NOT NULL
+                                  CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency')),
+                scope_type      TEXT NOT NULL,
+                scope_target_id TEXT,
+                model           TEXT NOT NULL,
+                prompt_version  TEXT NOT NULL,
+                input_hash      TEXT,
+                status          TEXT NOT NULL DEFAULT 'running',
+                summary         TEXT,
+                error_message   TEXT,
+                started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at    TEXT
+            );
+            CREATE TABLE post_effect_annotations (
+                id             TEXT PRIMARY KEY,
+                project_id     TEXT NOT NULL,
+                run_id         TEXT,
+                anchor_type    TEXT NOT NULL DEFAULT 'scene_range',
+                scene_id       TEXT,
+                range_start    INTEGER,
+                range_end      INTEGER,
+                text_snapshot  TEXT,
+                category       TEXT NOT NULL
+                                  CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor')),
+                persona        TEXT,
+                severity       TEXT,
+                content        TEXT NOT NULL,
+                author_role    TEXT NOT NULL DEFAULT 'ai',
+                parent_id      TEXT,
+                status         TEXT NOT NULL DEFAULT 'open',
+                metadata       TEXT NOT NULL DEFAULT '{}',
+                created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn typo_categories_migration_widens_runs_check() {
+        let conn = open_legacy_post_effect_db();
+        // Before: typo_detection 不可
+        let before = conn.execute(
+            "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+             VALUES ('r1', 'p1', 'typo_detection', 'scene', 'm', 'v')",
+            [],
+        );
+        assert!(
+            before.is_err(),
+            "legacy schema should reject typo_detection"
+        );
+
+        Database::migrate_post_effect_typo_categories(&conn).expect("migration ok");
+
+        // After: typo_detection 可
+        conn.execute(
+            "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+             VALUES ('r1', 'p1', 'typo_detection', 'scene', 'm', 'v')",
+            [],
+        )
+        .expect("typo_detection should be accepted after migration");
+    }
+
+    #[test]
+    fn typo_categories_migration_widens_annotations_check() {
+        let conn = open_legacy_post_effect_db();
+        let before = conn.execute(
+            "INSERT INTO post_effect_annotations (id, project_id, category, content)
+             VALUES ('a1', 'p1', 'typo_anchor', 'x')",
+            [],
+        );
+        assert!(before.is_err(), "legacy schema should reject typo_anchor");
+
+        Database::migrate_post_effect_typo_categories(&conn).expect("migration ok");
+
+        conn.execute(
+            "INSERT INTO post_effect_annotations (id, project_id, category, content)
+             VALUES ('a1', 'p1', 'typo_anchor', 'x')",
+            [],
+        )
+        .expect("typo_anchor should be accepted after migration");
+    }
+
+    #[test]
+    fn typo_categories_migration_is_idempotent() {
+        let conn = open_legacy_post_effect_db();
+        Database::migrate_post_effect_typo_categories(&conn).expect("first run");
+        // 2回目以降は no-op (sql に typo_detection が含まれる → 早期 return)
+        Database::migrate_post_effect_typo_categories(&conn).expect("second run no-op");
+        Database::migrate_post_effect_typo_categories(&conn).expect("third run no-op");
+
+        // 機能が保たれている
+        conn.execute(
+            "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+             VALUES ('r2', 'p1', 'typo_detection', 'scene', 'm', 'v')",
+            [],
+        )
+        .unwrap();
     }
 }

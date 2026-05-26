@@ -1587,7 +1587,8 @@ export type PostEffectType =
   | "pseudo_comment"
   | "meta_structure"
   | "consistency"
-  | "intra_scene_consistency";
+  | "intra_scene_consistency"
+  | "typo_detection";
 export type PostEffectScopeType = "scene" | "folder" | "project";
 export type PostEffectRunStatus =
   | "running"
@@ -1600,7 +1601,8 @@ export type PostEffectCategory =
   | "pseudo_comment"
   | "consistency_anchor"
   | "foreshadow_anchor"
-  | "theme_anchor";
+  | "theme_anchor"
+  | "typo_anchor";
 export type PostEffectSeverity = "info" | "suggestion" | "warning" | "error";
 export type PostEffectAuthorRole = "ai" | "user" | "system";
 export type PostEffectStatus = "open" | "resolved" | "dismissed";

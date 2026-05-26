@@ -2,11 +2,13 @@ import type {
   ConsistencyAnnotationMeta,
   IntraAnnotationMeta,
   PostEffectAnnotation,
+  TypoAnnotationMeta,
+  TypoCategory,
 } from "./types";
 
 export interface ParsedAnnotationMeta {
-  /** consistency (codex_ref あり) or intra_scene (codex_ref なし) */
-  kind: "consistency" | "intra";
+  /** typo (typo_ref あり) / consistency (codex_ref あり) / intra_scene (fallback) */
+  kind: "consistency" | "intra" | "typo";
   orphaned: boolean;
   detectedByModel?: string;
   llmReason?: string;
@@ -22,6 +24,11 @@ export interface ParsedAnnotationMeta {
     detailName?: string;
     expectedValue?: string;
     foundValue?: string;
+  };
+  /** typo only */
+  typo?: {
+    category: TypoCategory;
+    suggestion: string;
   };
 }
 
@@ -44,10 +51,28 @@ export function parseAnnotationMeta(
   const meta = safeParseMetadata(ann);
   if (!meta) return { kind: "intra", orphaned: false };
 
+  const orphaned = meta.orphaned === true;
+
+  const typoRef = meta.typo_ref as TypoAnnotationMeta["typo_ref"] | undefined;
+  if (typoRef && typeof typoRef === "object" && typoRef.found_text) {
+    return {
+      kind: "typo",
+      orphaned,
+      detectedByModel: typoRef.detected_by_model,
+      llmReason: typoRef.llm_reason,
+      confidence: typoRef.confidence,
+      foundText: typoRef.found_text,
+      foundContext: typoRef.found_context,
+      typo: {
+        category: typoRef.category,
+        suggestion: typoRef.suggestion,
+      },
+    };
+  }
+
   const ref = meta.codex_ref as
     | ConsistencyAnnotationMeta["codex_ref"]
     | undefined;
-  const orphaned = meta.orphaned === true;
 
   if (ref && typeof ref === "object" && ref.entry_id) {
     return {

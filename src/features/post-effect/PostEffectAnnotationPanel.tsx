@@ -11,6 +11,8 @@ import {
   ConfidenceBadge,
   ContrastRow,
   ExpandedDetails,
+  TypoChip,
+  TypoContrastRow,
 } from "./AnnotationDetails";
 import type { PostEffectAnnotation, PostEffectSeverity } from "./types";
 
@@ -56,9 +58,9 @@ function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
   const parsed = parseAnnotationMeta(ann);
   const currentModel = useAiSettingsStore((s) => s.settings?.model);
 
-  // consistency の content は "{entry}.{detail} と矛盾: {found}" の長文。
-  // CodexChip + ContrastRow が同じ情報を綺麗に持つので、consistency 時は
-  // タイトル本文を出さず chip 行で代替する。
+  // consistency / typo の content は冗長な自動生成文 (例「entry.detail と矛盾: ...」)。
+  // chip + 対比行 + reason 行が同じ情報を綺麗に持つので、それらが揃う種別は
+  // タイトル本文を抑制する。intra は対比情報が無いので content をタイトル表示。
   const showTitle = parsed.kind === "intra";
 
   return (
@@ -83,6 +85,7 @@ function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
         {SEVERITY_ICONS[severity]}
         <div className="flex flex-1 flex-wrap items-center gap-1.5">
           {parsed.codex && <CodexChip codex={parsed.codex} />}
+          {parsed.typo && <TypoChip category={parsed.typo.category} />}
           {parsed.confidence && <ConfidenceBadge level={parsed.confidence} />}
           {showTitle && (
             <p className="basis-full leading-snug">{ann.content}</p>
@@ -121,6 +124,12 @@ function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
           found={parsed.codex.foundValue}
         />
       )}
+      {parsed.typo && (
+        <TypoContrastRow
+          found={parsed.foundText}
+          suggestion={parsed.typo.suggestion}
+        />
+      )}
       {ann.textSnapshot && (
         <blockquote className="border-l-2 border-muted-foreground/30 pl-2 text-xs text-muted-foreground line-clamp-2">
           {ann.textSnapshot}
@@ -135,15 +144,20 @@ function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
 
 export function PostEffectAnnotationPanel({ sceneId }: Props) {
   const { annotationsByScene, setAnnotations } = useAnnotationStore();
-  const annotations = annotationsByScene.get(sceneId) ?? [];
+  const allAnnotations = annotationsByScene.get(sceneId) ?? [];
 
   useEffect(() => {
-    if (annotations.length > 0) return;
+    if (allAnnotations.length > 0) return;
     const projectId = useTreeStore.getState().projectId;
     listAnnotationsForScene({ projectId, sceneId })
       .then((resp) => setAnnotations(sceneId, resp.annotations))
       .catch(() => {});
-  }, [sceneId, annotations.length, setAnnotations]);
+  }, [sceneId, allAnnotations.length, setAnnotations]);
+
+  // 整合性 (consistency / intra) のみ。typo は TypoSection で別表示。
+  const annotations = allAnnotations.filter(
+    (a) => a.category !== "typo_anchor",
+  );
 
   const open = annotations.filter((a) => a.status === "open");
   const done = annotations.filter(

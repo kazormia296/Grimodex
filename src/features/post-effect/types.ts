@@ -67,6 +67,28 @@ export interface IntraAnnotationMeta {
   detected_by_model?: string;
 }
 
+export type TypoCategory =
+  | "okurigana"
+  | "missing-particle"
+  | "homophone"
+  | "missing-char"
+  | "other";
+
+export interface TypoAnnotationMeta {
+  typo_ref?: {
+    category: TypoCategory;
+    found_text: string;
+    found_context: string;
+    suggestion: string;
+    confidence: "high" | "medium" | "low";
+    llm_reason: string;
+    dismiss_key: string;
+    dismiss_source?: "manual" | "run_completed" | "cascade";
+    detected_by_model?: string;
+  };
+  orphaned?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Codex payload entry (frontend → Rust)
 // ---------------------------------------------------------------------------

@@ -76,7 +76,12 @@ export function ProjectAnnotationsView() {
     if (!projectId) return;
     setLoading(true);
     listAnnotationsForProject({ projectId, status: "open" })
-      .then((resp) => setAnnotations(resp.annotations))
+      .then((resp) =>
+        // 整合性 (consistency / intra) のみ。typo は ProjectTypoView で別表示。
+        setAnnotations(
+          resp.annotations.filter((a) => a.category !== "typo_anchor"),
+        ),
+      )
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [projectId]);

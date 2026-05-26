@@ -26,6 +26,7 @@ import { computeInputHash, normalizeText } from "./canonicalize";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexPayloadEntry } from "./types";
+import { TYPO_PROMPT_VERSION } from "./typoPayloadBuilder";
 
 // ---------------------------------------------------------------------------
 // Prompt versions (semver 定数)
@@ -293,7 +294,10 @@ export async function buildMultiPayload(
   scopeType: "folder" | "project",
   scopeTargetId: string | null,
   model: string,
-  effectType: "consistency" | "intra_scene_consistency" = "consistency",
+  effectType:
+    | "consistency"
+    | "intra_scene_consistency"
+    | "typo_detection" = "consistency",
 ): Promise<MultiPayloadResult> {
   const { nodes } = useTreeStore.getState();
   const sceneIds = getSceneIdsForScope(nodes, scopeType, scopeTargetId);
@@ -309,6 +313,7 @@ export async function buildMultiPayload(
         scene_text: sceneText,
       });
     } else {
+      // intra_scene_consistency / typo_detection は Codex 不要
       scenes.push({
         scene_id: sceneId,
         codex_payload_json: "[]",
@@ -320,7 +325,9 @@ export async function buildMultiPayload(
   const promptVersion =
     effectType === "consistency"
       ? CONSISTENCY_PROMPT_VERSION
-      : INTRA_CONSISTENCY_PROMPT_VERSION;
+      : effectType === "typo_detection"
+        ? TYPO_PROMPT_VERSION
+        : INTRA_CONSISTENCY_PROMPT_VERSION;
 
   const inputHash = await computeInputHash({
     promptVersion,

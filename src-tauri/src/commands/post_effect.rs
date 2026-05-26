@@ -24,6 +24,7 @@ use crate::ai::{call_post_effect_api, get_api_key, read_ai_settings};
 
 const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.1";
 const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.0";
+const TYPO_PROMPT_VERSION: &str = "typo_detection_v1.0";
 
 // ---------------------------------------------------------------------------
 // システムプロンプト定数 (凍結文字列 — template literal で動的注入しない)
@@ -57,6 +58,39 @@ Respond with a JSON object in this exact format (no markdown, no explanation, on
       "found_context": "string (~30 chars before+after found_text for positioning)",
       "confidence": "high" | "medium" | "low",
       "reason": "string (brief explanation)"
+    }
+  ]
+}"#;
+
+const TYPO_SYSTEM_PROMPT: &str = r#"You are a proofreader for a novel manuscript.
+
+Your task: detect Japanese typos and small spelling errors INSIDE the SCENE TEXT.
+
+Categories you SHOULD report:
+- "okurigana": 送り仮名のゆれ (例: 「行なう」↔「行う」、「申し込む」↔「申込む」)
+- "missing-particle": 助詞 (は/が/を/に/の/と etc.) が抜けていそうな箇所
+- "homophone": 同音異義語の誤変換 (例: 「以外」↔「意外」、「効く」↔「聴く」)
+- "missing-char": 一字脱落 (例: 「あした」が「あした」になっているような完全な欠落)
+- "other": 上記に当てはまらない明確なタイポ
+
+Rules:
+- Only report when you are reasonably confident it is an error, not a stylistic choice.
+- This is a NOVEL. Characters may use colloquial / dialect / intentionally mistaken speech (e.g.「すいません」「ふいんき」「いづれ」). Do NOT flag those in dialogue if they read as deliberate voice.
+- Do NOT report style preferences, redundant expressions, sentence length, repetition. Those are handled by other tools.
+- Do NOT propose alternative wordings ("better phrasing") — only typo-class fixes.
+- Include enough context in found_context (~30 characters before/after found_text) to locate the exact position.
+- suggestion must be the corrected substring that would replace found_text.
+
+Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
+{
+  "issues": [
+    {
+      "found_text": "string (exact substring in SCENE that is the typo)",
+      "found_context": "string (~30 chars before+after found_text for positioning)",
+      "suggestion": "string (corrected substring)",
+      "category": "okurigana" | "missing-particle" | "homophone" | "missing-char" | "other",
+      "confidence": "high" | "medium" | "low",
+      "reason": "string (brief explanation in Japanese)"
     }
   ]
 }"#;
@@ -248,6 +282,20 @@ fn dismiss_key_intra_legacy(scene_id: &str, a_text: &str, b_text: &str) -> Strin
     let mut texts = [normalize_ws(a_text), normalize_ws(b_text)];
     texts.sort();
     sha256_hex(&format!("{}|{}|{}", scene_id, texts[0], texts[1]))
+}
+
+/// dismiss_key (typo_detection): hash(scene_id + "|" + strong_normalize(found_text) + "|" + strong_normalize(suggestion))
+///
+/// suggestion をキーに含めるのは、同じ found_text でも提案語が違えば別判断
+/// として扱う方が自然なため (ユーザーが「以外→意外」を却下しても「以外→
+/// 異界」が来るシナリオは別 dismiss にする)。
+fn dismiss_key_typo(scene_id: &str, found_text: &str, suggestion: &str) -> String {
+    sha256_hex(&format!(
+        "{}|{}|{}",
+        scene_id,
+        strong_normalize(found_text),
+        strong_normalize(suggestion)
+    ))
 }
 
 /// violation の `entry_id` が Codex payload の有効 id 集合に含まれるか判定する。
@@ -784,6 +832,112 @@ mod dismiss_key_legacy_tests {
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod is_typo_previously_closed_tests {
+    use super::is_typo_previously_closed;
+    use rusqlite::{params, Connection};
+
+    fn open_typo_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE post_effect_annotations (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT,
+                run_id      TEXT,
+                anchor_type TEXT,
+                scene_id    TEXT,
+                range_start INTEGER,
+                range_end   INTEGER,
+                text_snapshot TEXT,
+                category    TEXT NOT NULL,
+                persona     TEXT,
+                severity    TEXT,
+                content     TEXT,
+                author_role TEXT,
+                parent_id   TEXT,
+                status      TEXT NOT NULL,
+                metadata    TEXT NOT NULL DEFAULT '{}',
+                created_at  TEXT,
+                updated_at  TEXT
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert(conn: &Connection, id: &str, status: &str, category: &str, metadata: &str) {
+        conn.execute(
+            "INSERT INTO post_effect_annotations
+                (id, category, status, metadata, content, author_role)
+             VALUES (?, ?, ?, ?, '', 'ai')",
+            params![id, category, status, metadata],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn matches_dismissed_top_level_key() {
+        let conn = open_typo_db();
+        insert(
+            &conn,
+            "a1",
+            "dismissed",
+            "typo_anchor",
+            r#"{"dismiss_key":"K1"}"#,
+        );
+        assert!(is_typo_previously_closed(&conn, "K1"));
+        assert!(!is_typo_previously_closed(&conn, "other"));
+    }
+
+    #[test]
+    fn matches_resolved_top_level_key() {
+        let conn = open_typo_db();
+        insert(
+            &conn,
+            "a1",
+            "resolved",
+            "typo_anchor",
+            r#"{"dismiss_key":"K1"}"#,
+        );
+        assert!(is_typo_previously_closed(&conn, "K1"));
+    }
+
+    #[test]
+    fn matches_legacy_nested_key_in_typo_ref() {
+        let conn = open_typo_db();
+        // legacy: dismiss_key only inside typo_ref
+        insert(
+            &conn,
+            "a1",
+            "dismissed",
+            "typo_anchor",
+            r#"{"typo_ref":{"dismiss_key":"K1"}}"#,
+        );
+        assert!(is_typo_previously_closed(&conn, "K1"));
+    }
+
+    #[test]
+    fn ignores_open_typo() {
+        let conn = open_typo_db();
+        insert(&conn, "a1", "open", "typo_anchor", r#"{"dismiss_key":"K1"}"#);
+        assert!(!is_typo_previously_closed(&conn, "K1"));
+    }
+
+    #[test]
+    fn ignores_other_category_with_matching_key() {
+        let conn = open_typo_db();
+        insert(
+            &conn,
+            "a1",
+            "dismissed",
+            "consistency_anchor",
+            r#"{"dismiss_key":"K1"}"#,
+        );
+        assert!(!is_typo_previously_closed(&conn, "K1"));
+    }
+}
+
 /// `idx` を直下の char 境界に丸める（`is_char_boundary` が安定 API なので自前実装）。
 /// stable Rust では `str::floor_char_boundary` がまだ unstable なため。
 fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
@@ -930,6 +1084,24 @@ fn is_manually_dismissed(conn: &rusqlite::Connection, dismiss_keys: &[&str]) -> 
         .collect();
     conn.query_row(&sql, rusqlite::params_from_iter(params), |_| Ok(()))
         .is_ok()
+}
+
+/// typo annotation が既にユーザーによって閉じられているか判定する。
+///
+/// `is_manually_dismissed` との違い:
+/// - status を `dismissed` だけでなく `resolved` も対象にする (ユーザーが
+///   「解決済み」(✓) で閉じたケースを再検出させない)
+/// - dismiss_source の有無は問わない (resolved は dismiss_source を立てない)
+/// - dismiss_key の格納位置は top-level 優先だが、過去 (typo_ref 内 nested)
+///   で保存されたものとの互換のため両方を OR で照会する
+fn is_typo_previously_closed(conn: &rusqlite::Connection, dismiss_key: &str) -> bool {
+    let sql = "SELECT 1 FROM post_effect_annotations
+                 WHERE category = 'typo_anchor'
+                   AND status IN ('dismissed', 'resolved')
+                   AND (json_extract(metadata, '$.dismiss_key') = ?1
+                        OR json_extract(metadata, '$.typo_ref.dismiss_key') = ?1)
+                 LIMIT 1";
+    conn.query_row(sql, [dismiss_key], |_| Ok(())).is_ok()
 }
 
 /// confidence の優先順位 (high > medium > low) で重みを返す。
@@ -1744,6 +1916,273 @@ async fn run_intra_task(
 }
 
 // ---------------------------------------------------------------------------
+// typo_detection run
+// ---------------------------------------------------------------------------
+
+/// typo_detection チェックを 1 シーン分実行し、挿入したアノテーション数を返す。
+async fn process_typo_scene(
+    app: &AppHandle,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    scene_text: &str,
+    ai_settings_path: &std::path::Path,
+    on_stage: impl Fn(f32, &str) + Send,
+) -> Result<usize, anyhow::Error> {
+    let ai_settings = read_ai_settings(ai_settings_path);
+    let api_key = match get_api_key(&ai_settings.provider) {
+        Ok(Some(k)) => k,
+        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
+        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
+    };
+
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        provider = %ai_settings.provider,
+        model = %ai_settings.model,
+        scene_chars = scene_text.chars().count(),
+        "[post_effect] typo: calling AI"
+    );
+    let ai_start = std::time::Instant::now();
+    let raw_response =
+        call_post_effect_api(&ai_settings, &api_key, TYPO_SYSTEM_PROMPT, None, scene_text)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    run_id = run_id,
+                    scene_id = scene_id,
+                    elapsed_ms = ai_start.elapsed().as_millis(),
+                    error = %e,
+                    "[post_effect] typo: AI call failed"
+                );
+                anyhow::anyhow!("AI 呼び出し失敗: {e}")
+            })?;
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        elapsed_ms = ai_start.elapsed().as_millis(),
+        raw_bytes = raw_response.len(),
+        "[post_effect] typo: AI response received"
+    );
+
+    on_stage(0.5, "parsing");
+    let json_str = extract_json(&raw_response);
+    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] typo: JSON parse FAILED"
+        );
+        anyhow::anyhow!("LLM 出力のパース失敗: {e}")
+    })?;
+
+    let issues = extract_array_field(&parsed, "issues").map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] typo: JSON structure INVALID"
+        );
+        anyhow::anyhow!("LLM 出力の構造が不正: {e}")
+    })?;
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        issues_count = issues.len(),
+        "[post_effect] typo: parsed issues"
+    );
+
+    // dedupe: 同じ scene 内で同じ (found_text + suggestion) を 1 件にまとめる
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deduped: Vec<&Value> = issues
+        .iter()
+        .filter(|p| {
+            let ft = strong_normalize(p["found_text"].as_str().unwrap_or(""));
+            let sg = strong_normalize(p["suggestion"].as_str().unwrap_or(""));
+            if ft.is_empty() {
+                return false;
+            }
+            seen.insert(format!("{ft}|{sg}"))
+        })
+        .collect();
+
+    on_stage(0.7, "saving");
+    let ws_state = app.state::<WorkspaceState>();
+    let count: usize = super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            let mut count = 0usize;
+
+            for issue in &deduped {
+                let found_text = issue["found_text"].as_str().unwrap_or("");
+                let found_context = issue["found_context"].as_str().unwrap_or("");
+                let suggestion = issue["suggestion"].as_str().unwrap_or("");
+                let raw_category = issue["category"].as_str().unwrap_or("other");
+                let category_label = match raw_category {
+                    "okurigana" | "missing-particle" | "homophone" | "missing-char" | "other" => {
+                        raw_category
+                    }
+                    _ => "other",
+                };
+                let confidence = issue["confidence"].as_str().unwrap_or("medium");
+                let reason = issue["reason"].as_str().unwrap_or("");
+                // typo は致命傷ではないので consistency より一段弱め
+                let severity = match confidence {
+                    "high" => "warning",
+                    _ => "suggestion",
+                };
+
+                let dismiss_key = dismiss_key_typo(scene_id, found_text, suggestion);
+                // 過去に dismissed / resolved されている場合は新規 annotation を
+                // 作らない (ユーザー判断を尊重 + done セクションが重複しない)
+                if is_typo_previously_closed(conn, &dismiss_key) {
+                    continue;
+                }
+
+                let (range_start, range_end, orphaned) =
+                    match find_text_position(scene_text, found_text, found_context) {
+                        Some((s, e)) => (s as i64, e as i64, false),
+                        None => (0i64, 0i64, true),
+                    };
+
+                let new_id = Uuid::new_v4().to_string();
+                let content = if suggestion.is_empty() {
+                    format!("「{found_text}」: {reason}")
+                } else {
+                    format!("「{found_text}」→「{suggestion}」: {reason}")
+                };
+                // dismiss_key は top-level に置く (`is_manually_dismissed` 等の
+                // 既存ヘルパが $.dismiss_key を見る規約に揃える)。typo_ref には
+                // 表示用のメタ情報のみを残す。
+                let metadata = serde_json::json!({
+                    "dismiss_key": dismiss_key,
+                    "typo_ref": {
+                        "category": category_label,
+                        "found_text": found_text,
+                        "found_context": found_context,
+                        "suggestion": suggestion,
+                        "confidence": confidence,
+                        "llm_reason": reason,
+                        "dismiss_key": dismiss_key,
+                        "detected_by_model": ai_settings.model,
+                    },
+                    "orphaned": orphaned,
+                });
+
+                conn.execute(
+                    "INSERT INTO post_effect_annotations
+                        (id, project_id, run_id, anchor_type, scene_id,
+                         range_start, range_end, text_snapshot,
+                         category, severity, content, author_role,
+                         status, metadata, created_at, updated_at)
+                     VALUES (?, ?, ?, 'scene_range', ?,
+                             ?, ?, ?,
+                             'typo_anchor', ?, ?, 'ai',
+                             'open', ?, datetime('now'), datetime('now'))",
+                    params![
+                        new_id,
+                        project_id,
+                        run_id,
+                        scene_id,
+                        range_start,
+                        range_end,
+                        found_text,
+                        severity,
+                        content,
+                        metadata.to_string(),
+                    ],
+                )?;
+
+                let _ = app.emit(
+                    "post_effect:partial",
+                    PartialEvent {
+                        run_id,
+                        annotation_id: new_id,
+                    },
+                );
+                count += 1;
+            }
+
+            Ok(count)
+        })
+    })?;
+
+    Ok(count)
+}
+
+async fn run_typo_task(
+    app: AppHandle,
+    run_id: String,
+    project_id: String,
+    scene_id: String,
+    scene_text: String,
+    ai_settings_path: std::path::PathBuf,
+) {
+    let emit_err = |msg: &str| {
+        let _ = app.emit(
+            "post_effect:error",
+            ErrorEvent {
+                run_id: &run_id,
+                error: msg.to_string(),
+            },
+        );
+    };
+
+    let _ = app.emit(
+        "post_effect:progress",
+        ProgressEvent {
+            run_id: &run_id,
+            stage: "calling_ai",
+            progress: 0.1,
+            message: None,
+        },
+    );
+
+    match process_typo_scene(
+        &app,
+        &run_id,
+        &project_id,
+        &scene_id,
+        &scene_text,
+        &ai_settings_path,
+        |p, s| {
+            let _ = app.emit(
+                "post_effect:progress",
+                ProgressEvent {
+                    run_id: &run_id,
+                    stage: s,
+                    progress: p,
+                    message: None,
+                },
+            );
+        },
+    )
+    .await
+    {
+        Ok(n) => {
+            finalize_run(&app, &run_id);
+            let _ = app.emit(
+                "post_effect:done",
+                DoneEvent {
+                    run_id: &run_id,
+                    annotation_count: n,
+                    summary: None,
+                },
+            );
+        }
+        Err(e) => {
+            emit_err(&e.to_string());
+            fail_run(&app, &run_id, &e.to_string());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Multi-scene run task
 // ---------------------------------------------------------------------------
 
@@ -1801,29 +2240,44 @@ async fn run_multi_task(
         );
         let scene_start = std::time::Instant::now();
 
-        let result = if effect_type == "consistency" {
-            process_consistency_scene(
-                &app,
-                &run_id,
-                &project_id,
-                &scene.scene_id,
-                &scene.codex_payload_json,
-                &scene.scene_text,
-                &ai_settings_path,
-                |_p, _s| {},
-            )
-            .await
-        } else {
-            process_intra_scene(
-                &app,
-                &run_id,
-                &project_id,
-                &scene.scene_id,
-                &scene.scene_text,
-                &ai_settings_path,
-                |_p, _s| {},
-            )
-            .await
+        let result = match effect_type.as_str() {
+            "consistency" => {
+                process_consistency_scene(
+                    &app,
+                    &run_id,
+                    &project_id,
+                    &scene.scene_id,
+                    &scene.codex_payload_json,
+                    &scene.scene_text,
+                    &ai_settings_path,
+                    |_p, _s| {},
+                )
+                .await
+            }
+            "typo_detection" => {
+                process_typo_scene(
+                    &app,
+                    &run_id,
+                    &project_id,
+                    &scene.scene_id,
+                    &scene.scene_text,
+                    &ai_settings_path,
+                    |_p, _s| {},
+                )
+                .await
+            }
+            _ => {
+                process_intra_scene(
+                    &app,
+                    &run_id,
+                    &project_id,
+                    &scene.scene_id,
+                    &scene.scene_text,
+                    &ai_settings_path,
+                    |_p, _s| {},
+                )
+                .await
+            }
         };
 
         let elapsed_ms = scene_start.elapsed().as_millis();
@@ -1930,17 +2384,20 @@ pub(crate) async fn start_post_effect_run(
         .store(false, std::sync::atomic::Ordering::Relaxed);
 
     let effect_type = args.effect_type.as_str();
-    let supported = matches!(effect_type, "consistency" | "intra_scene_consistency");
+    let supported = matches!(
+        effect_type,
+        "consistency" | "intra_scene_consistency" | "typo_detection"
+    );
     if !supported {
         return Err(
             anyhow::anyhow!("effect_type '{}' は Phase 1b では未実装です", effect_type).into(),
         );
     }
 
-    let prompt_version = if effect_type == "consistency" {
-        CONSISTENCY_PROMPT_VERSION
-    } else {
-        INTRA_PROMPT_VERSION
+    let prompt_version = match effect_type {
+        "consistency" => CONSISTENCY_PROMPT_VERSION,
+        "typo_detection" => TYPO_PROMPT_VERSION,
+        _ => INTRA_PROMPT_VERSION,
     };
     if args.prompt_version != prompt_version {
         tracing::warn!(
@@ -2024,13 +2481,19 @@ pub(crate) async fn start_post_effect_run(
         let app_clone = app.clone();
         let rid_clone = rid.clone();
         let join = tokio::task::spawn(async move {
-            if effect == "consistency" {
-                run_consistency_task(
-                    app, rid, project_id, scene_id, codex_json, scene_text, ai_path,
-                )
-                .await;
-            } else {
-                run_intra_task(app, rid, project_id, scene_id, scene_text, ai_path).await;
+            match effect.as_str() {
+                "consistency" => {
+                    run_consistency_task(
+                        app, rid, project_id, scene_id, codex_json, scene_text, ai_path,
+                    )
+                    .await;
+                }
+                "typo_detection" => {
+                    run_typo_task(app, rid, project_id, scene_id, scene_text, ai_path).await;
+                }
+                _ => {
+                    run_intra_task(app, rid, project_id, scene_id, scene_text, ai_path).await;
+                }
             }
         })
         .await;
@@ -2076,7 +2539,10 @@ pub(crate) async fn start_post_effect_run_multi(
     }
 
     let effect_type = args.effect_type.as_str();
-    let supported = matches!(effect_type, "consistency" | "intra_scene_consistency");
+    let supported = matches!(
+        effect_type,
+        "consistency" | "intra_scene_consistency" | "typo_detection"
+    );
     if !supported {
         return Err(anyhow::anyhow!("effect_type '{}' は未実装です", effect_type).into());
     }

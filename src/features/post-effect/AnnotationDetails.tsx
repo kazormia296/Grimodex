@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { clipValue, type ParsedAnnotationMeta } from "./annotationMeta";
+import type { TypoCategory } from "./types";
 
 function openCodexEntry(id: string) {
   useLayoutStore.getState().showPanel("codex");
@@ -86,6 +87,48 @@ export function ContrastRow({ expected, found }: ContrastRowProps) {
       <span className="truncate text-foreground/90">{left}</span>
       <ArrowRight size={10} className="shrink-0 text-muted-foreground" />
       <span className="text-muted-foreground">本文:</span>
+      <span className="truncate text-foreground/90">{right}</span>
+    </div>
+  );
+}
+
+const TYPO_CATEGORY_LABEL: Record<TypoCategory, string> = {
+  okurigana: "送り仮名",
+  "missing-particle": "助詞",
+  homophone: "同音異義",
+  "missing-char": "脱字",
+  other: "誤字",
+};
+
+export function TypoChip({ category }: { category: TypoCategory }) {
+  return (
+    <span
+      title={`誤字脱字: ${TYPO_CATEGORY_LABEL[category]}`}
+      className={cn(
+        "inline-flex shrink-0 items-center rounded border border-border/70 bg-muted/40 px-1.5 py-0 text-[10px] text-foreground/80",
+      )}
+    >
+      {TYPO_CATEGORY_LABEL[category]}
+    </span>
+  );
+}
+
+interface TypoContrastRowProps {
+  found: string | undefined;
+  suggestion: string | undefined;
+}
+
+/** typo の 誤→正 対比 1 行。両辺が有意な値のときだけ描画。 */
+export function TypoContrastRow({ found, suggestion }: TypoContrastRowProps) {
+  const left = clipValue(found);
+  const right = clipValue(suggestion);
+  if (!left || !right) return null;
+  return (
+    <div className="flex items-center gap-1.5 text-[11px] leading-tight">
+      <span className="text-muted-foreground">誤:</span>
+      <span className="truncate text-foreground/90">{left}</span>
+      <ArrowRight size={10} className="shrink-0 text-muted-foreground" />
+      <span className="text-muted-foreground">正:</span>
       <span className="truncate text-foreground/90">{right}</span>
     </div>
   );
