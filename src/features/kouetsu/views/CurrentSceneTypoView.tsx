@@ -5,6 +5,7 @@ import {
   Info,
   Loader2,
   Sparkles,
+  Wrench,
   X,
   XCircle,
 } from "lucide-react";
@@ -26,6 +27,7 @@ import {
   updateAnnotationStatus,
 } from "@/features/post-effect/api";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
+import { applyTypoFixAndResolve } from "@/features/post-effect/typoFix";
 import { parseAnnotationMeta } from "@/features/post-effect/annotationMeta";
 import {
   ConfidenceBadge,
@@ -328,11 +330,17 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
     setFocusedAnnotationId,
     updateAnnotationStatus: localUpdate,
   } = useAnnotationStore();
+  const editor = useEditorStore((s) => s.editor);
   const focused = focusedAnnotationId === ann.id;
   const parsed = parseAnnotationMeta(ann);
   const currentModel = useAiSettingsStore((s) => s.settings?.model);
   const severity = (ann.severity ?? "info") as PostEffectSeverity;
   const isDone = ann.status === "dismissed" || ann.status === "resolved";
+  const canFix =
+    !!parsed.typo?.suggestion &&
+    !!parsed.foundText &&
+    !!editor &&
+    ann.status === "open";
 
   async function dismiss() {
     try {
@@ -348,6 +356,14 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
       localUpdate(ann.id, "resolved");
     } catch {
       /* ignore */
+    }
+  }
+  async function fix() {
+    const result = await applyTypoFixAndResolve(editor, ann);
+    if (!result.applied) {
+      toast.error("置換できませんでした", {
+        description: "該当箇所が本文中で見つからないか変更されています",
+      });
     }
   }
 
@@ -376,6 +392,19 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
         </div>
         {!isDone && (
           <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            {canFix && (
+              <button
+                aria-label="Quick Fix (suggestion を適用)"
+                title={`「${parsed.typo!.suggestion}」に置き換える`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void fix();
+                }}
+                className="rounded p-0.5 text-blue-600 hover:bg-blue-500/20"
+              >
+                <Wrench size={13} />
+              </button>
+            )}
             <button
               aria-label="解決済み"
               title="解決済み"

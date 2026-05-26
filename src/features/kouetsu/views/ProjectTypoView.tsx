@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Info, Loader2, Sparkles, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  Info,
+  Loader2,
+  Sparkles,
+  Wrench,
+  XCircle,
+} from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -18,6 +25,7 @@ import {
   runPostEffectMulti,
 } from "@/features/post-effect/api";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
+import { applyTypoFixAndResolve } from "@/features/post-effect/typoFix";
 import { parseAnnotationMeta } from "@/features/post-effect/annotationMeta";
 import {
   ConfidenceBadge,
@@ -280,10 +288,31 @@ function SceneGroupSection({
 
 function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
   const { setFocusedAnnotationId, focusedAnnotationId } = useAnnotationStore();
+  const activeSceneId = useTreeStore((s) => s.activeSceneId);
+  const editor = useEditorStore((s) => s.editor);
   const focused = focusedAnnotationId === ann.id;
   const parsed = parseAnnotationMeta(ann);
   const currentModel = useAiSettingsStore((s) => s.settings?.model);
   const severity = (ann.severity ?? "info") as PostEffectSeverity;
+  // Fix は active scene 上でしか走らせない (別シーンの doc を読み込まずに
+  // insertContentAt するのは不可能なため)。クリックで該当シーンに移った直後の
+  // 同じレンダーで Fix を押すのは無理なので、まず scene 切替→もう一度押す UX
+  // を期待する。
+  const canFix =
+    !!parsed.typo?.suggestion &&
+    !!parsed.foundText &&
+    !!editor &&
+    ann.status === "open" &&
+    activeSceneId === ann.sceneId;
+
+  async function fix() {
+    const result = await applyTypoFixAndResolve(editor, ann);
+    if (!result.applied) {
+      toast.error("置換できませんでした", {
+        description: "該当箇所が本文中で見つからないか変更されています",
+      });
+    }
+  }
 
   return (
     <div
@@ -300,7 +329,7 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
         }
       }}
       className={cn(
-        "flex flex-col gap-1 rounded border px-2 py-1.5 text-xs cursor-pointer select-none transition-colors",
+        "group flex flex-col gap-1 rounded border px-2 py-1.5 text-xs cursor-pointer select-none transition-colors",
         focused
           ? "border-primary/60 bg-primary/5"
           : "border-border hover:border-muted-foreground/40 hover:bg-accent/30",
@@ -312,6 +341,19 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
           {parsed.typo && <TypoChip category={parsed.typo.category} />}
           {parsed.confidence && <ConfidenceBadge level={parsed.confidence} />}
         </div>
+        {canFix && (
+          <button
+            aria-label="Quick Fix (suggestion を適用)"
+            title={`「${parsed.typo!.suggestion}」に置き換える`}
+            onClick={(e) => {
+              e.stopPropagation();
+              void fix();
+            }}
+            className="shrink-0 rounded p-0.5 text-blue-600 opacity-0 transition-opacity hover:bg-blue-500/20 group-hover:opacity-100"
+          >
+            <Wrench size={13} />
+          </button>
+        )}
       </div>
       {parsed.typo && (
         <TypoContrastRow
