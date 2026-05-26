@@ -461,6 +461,7 @@ export function Toolbar({
           ref={rightGroupRef}
           className="absolute inset-y-0 right-0 flex items-center gap-0.5 border-l border-border bg-background px-1.5"
         >
+          {/* Editor settings: 文字サイズ・モード切替 */}
           <div ref={fontSizeBtnRef}>
             <ToolbarButton
               label={t("editor.toolbar.fontSize")}
@@ -470,6 +471,22 @@ export function Toolbar({
               Aa
             </ToolbarButton>
           </div>
+          <ToolbarButton
+            label={t("editor.toolbar.focusMode")}
+            active={focusMode}
+            onClick={toggleFocusMode}
+          >
+            Focus
+          </ToolbarButton>
+          <ToolbarButton
+            label={t("editor.toolbar.typewriterMode")}
+            active={typewriterMode}
+            onClick={toggleTypewriterMode}
+          >
+            TW
+          </ToolbarButton>
+          <Sep />
+          {/* Overlays: 帰属 / コメント / 伏線 / 校閲 (peAnnotation) */}
           <ToolbarButton
             label={t("editor.toolbar.attribution")}
             active={showAttribution}
@@ -495,20 +512,6 @@ export function Toolbar({
             onClick={toggleShowForeshadowMarks}
           >
             Fs
-          </ToolbarButton>
-          <ToolbarButton
-            label={t("editor.toolbar.focusMode")}
-            active={focusMode}
-            onClick={toggleFocusMode}
-          >
-            Focus
-          </ToolbarButton>
-          <ToolbarButton
-            label={t("editor.toolbar.typewriterMode")}
-            active={typewriterMode}
-            onClick={toggleTypewriterMode}
-          >
-            TW
           </ToolbarButton>
           {sceneId && nodeType === "scene" && (
             <ToolbarButton
