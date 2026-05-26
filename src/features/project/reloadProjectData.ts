@@ -11,7 +11,10 @@ import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
 import { useSceneBeatPovStore } from "@/features/editor/beat/sceneBeatPovStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { useCommandCenterStore } from "@/features/commandCenter/store/commandCenterStore";
+import {
+  useBarStore,
+  usePanelStore,
+} from "@/features/commandCenter/store/commandCenterStore";
 import { useResultsPanelStore } from "@/features/commandCenter/store/resultsPanelStore";
 import { useLintStore } from "@/features/lint/lintStore";
 import { useTermDictionaryStore } from "@/features/lint/termDictionaryStore";
@@ -112,7 +115,8 @@ export async function reloadProjectData(projectId: string): Promise<void> {
     });
 
     useGridStore.getState().clearSelection();
-    useCommandCenterStore.getState().reset();
+    useBarStore.getState().reset();
+    usePanelStore.getState().reset();
     useResultsPanelStore.getState().reset();
     useLintStore.getState().clear();
 

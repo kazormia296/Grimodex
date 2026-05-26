@@ -50,7 +50,7 @@ describe("handleCommandCenterKeyDown", () => {
   it("Escape: popover 開状態なら close + preventDefault", () => {
     setStore({ open: true, parsedQuery: "x" });
     const e = fakeEvent("Escape");
-    handleCommandCenterKeyDown(e);
+    handleCommandCenterKeyDown(e, useCommandCenterStore);
     expect(useCommandCenterStore.getState().open).toBe(false);
     expect(e.preventDefault).toHaveBeenCalled();
   });
@@ -58,7 +58,7 @@ describe("handleCommandCenterKeyDown", () => {
   it("Escape: open=false のときは preventDefault しない", () => {
     setStore({ open: false });
     const e = fakeEvent("Escape");
-    handleCommandCenterKeyDown(e);
+    handleCommandCenterKeyDown(e, useCommandCenterStore);
     expect(e.preventDefault).not.toHaveBeenCalled();
   });
 
@@ -70,7 +70,7 @@ describe("handleCommandCenterKeyDown", () => {
       selectedIndex: 0,
     });
     const e = fakeEvent("ArrowDown");
-    handleCommandCenterKeyDown(e);
+    handleCommandCenterKeyDown(e, useCommandCenterStore);
     expect(useCommandCenterStore.getState().selectedIndex).toBe(1);
     expect(e.preventDefault).toHaveBeenCalled();
   });
@@ -83,7 +83,7 @@ describe("handleCommandCenterKeyDown", () => {
       selectedIndex: 1,
     });
     const e = fakeEvent("ArrowUp");
-    handleCommandCenterKeyDown(e);
+    handleCommandCenterKeyDown(e, useCommandCenterStore);
     expect(useCommandCenterStore.getState().selectedIndex).toBe(0);
     expect(e.preventDefault).toHaveBeenCalled();
   });
@@ -91,14 +91,14 @@ describe("handleCommandCenterKeyDown", () => {
   it("ArrowDown: popover 閉じていればキャレット移動 (preventDefault しない)", () => {
     setStore({ open: false, parsedQuery: "x" });
     const e = fakeEvent("ArrowDown");
-    handleCommandCenterKeyDown(e);
+    handleCommandCenterKeyDown(e, useCommandCenterStore);
     expect(e.preventDefault).not.toHaveBeenCalled();
   });
 
   it("ArrowDown: open=true でも parsedQuery が空ならキャレット移動", () => {
     setStore({ open: true, parsedQuery: "" });
     const e = fakeEvent("ArrowDown");
-    handleCommandCenterKeyDown(e);
+    handleCommandCenterKeyDown(e, useCommandCenterStore);
     expect(e.preventDefault).not.toHaveBeenCalled();
   });
 
@@ -111,7 +111,7 @@ describe("handleCommandCenterKeyDown", () => {
       selectedIndex: 0,
     });
     const e = fakeEvent("Enter");
-    handleCommandCenterKeyDown(e);
+    handleCommandCenterKeyDown(e, useCommandCenterStore);
     expect(onSelect).toHaveBeenCalled();
     expect(e.preventDefault).toHaveBeenCalled();
   });
@@ -123,14 +123,14 @@ describe("handleCommandCenterKeyDown", () => {
       sections: [],
     });
     const e = fakeEvent("Enter");
-    handleCommandCenterKeyDown(e);
+    handleCommandCenterKeyDown(e, useCommandCenterStore);
     expect(e.preventDefault).not.toHaveBeenCalled();
   });
 
   it("通常文字キー: 何もしない", () => {
     setStore({ open: true, parsedQuery: "x" });
     const e = fakeEvent("a");
-    handleCommandCenterKeyDown(e);
+    handleCommandCenterKeyDown(e, useCommandCenterStore);
     expect(e.preventDefault).not.toHaveBeenCalled();
   });
 });

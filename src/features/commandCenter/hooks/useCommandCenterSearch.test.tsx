@@ -71,7 +71,7 @@ describe("useCommandCenterSearch", () => {
   });
 
   it("parses input and writes mode/parsedQuery to store", () => {
-    renderHook(() => useCommandCenterSearch());
+    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
     act(() => {
       useCommandCenterStore.getState().setQuery(">cmd hello");
     });
@@ -98,7 +98,9 @@ describe("useCommandCenterSearch", () => {
     }));
     registerProvider(makeProvider("lexical", { search }));
 
-    renderHook(() => useCommandCenterSearch({ limit: 10 }));
+    renderHook(() =>
+      useCommandCenterSearch(useCommandCenterStore, { limit: 10 }),
+    );
     act(() => {
       useCommandCenterStore.getState().setQuery("邂逅");
     });
@@ -121,7 +123,7 @@ describe("useCommandCenterSearch", () => {
 
   it("shows loading section immediately while debounce timer is pending", () => {
     registerProvider(makeProvider("lexical"));
-    renderHook(() => useCommandCenterSearch());
+    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
     act(() => {
       useCommandCenterStore.getState().setQuery("x");
     });
@@ -153,7 +155,7 @@ describe("useCommandCenterSearch", () => {
       });
     });
     registerProvider(makeProvider("lexical", { search }));
-    renderHook(() => useCommandCenterSearch());
+    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
 
     act(() => {
       useCommandCenterStore.getState().setQuery("first");
@@ -194,7 +196,7 @@ describe("useCommandCenterSearch", () => {
 
   it("clears all sections when query becomes empty", async () => {
     registerProvider(makeProvider("lexical"));
-    renderHook(() => useCommandCenterSearch());
+    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
     act(() => {
       useCommandCenterStore.getState().setQuery("hello");
     });
@@ -220,7 +222,8 @@ describe("useCommandCenterSearch", () => {
     }));
     registerProvider(makeProvider("lexical", { search, hideWhenEmpty: false }));
     const { rerender } = renderHook(
-      ({ limit }: { limit: number }) => useCommandCenterSearch({ limit }),
+      ({ limit }: { limit: number }) =>
+        useCommandCenterSearch(useCommandCenterStore, { limit }),
       { initialProps: { limit: 10 } },
     );
     act(() => {
@@ -278,7 +281,9 @@ describe("useCommandCenterSearch", () => {
       order: 2,
       cacheKeyExtras: () => `t=${semanticToggle ? 1 : 0}`,
     });
-    renderHook(() => useCommandCenterSearch({ limit: 10 }));
+    renderHook(() =>
+      useCommandCenterSearch(useCommandCenterStore, { limit: 10 }),
+    );
     act(() => {
       useCommandCenterStore.getState().setQuery("hello");
     });
@@ -317,7 +322,8 @@ describe("useCommandCenterSearch", () => {
     }));
     registerProvider(makeProvider("lexical", { search, hideWhenEmpty: false }));
     const { rerender } = renderHook(
-      ({ limit }: { limit: number }) => useCommandCenterSearch({ limit }),
+      ({ limit }: { limit: number }) =>
+        useCommandCenterSearch(useCommandCenterStore, { limit }),
       { initialProps: { limit: 10 } },
     );
 
@@ -369,7 +375,7 @@ describe("useCommandCenterSearch", () => {
         supportsMode: (m) => m === "command",
       }),
     );
-    renderHook(() => useCommandCenterSearch());
+    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
     act(() => {
       useCommandCenterStore.getState().setQuery("hello");
     });
@@ -401,7 +407,7 @@ describe("useCommandCenterSearch", () => {
         },
       }),
     );
-    renderHook(() => useCommandCenterSearch());
+    renderHook(() => useCommandCenterSearch(useCommandCenterStore));
     act(() => {
       useCommandCenterStore.getState().setQuery("hello");
     });

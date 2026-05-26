@@ -19,7 +19,7 @@ import { useLayoutStore, type PanelId } from "@/features/layout/layoutStore";
 import { LayoutShell } from "@/features/layout/LayoutShell";
 import {
   CommandCenterBar,
-  useCommandCenterStore,
+  useBarStore,
   useResultsPanelStore,
 } from "@/features/commandCenter";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
@@ -379,7 +379,7 @@ function EditorScreen() {
       // focus を渡し、`> ` prefix で command mode に切替えて起動する。
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
-        const cc = useCommandCenterStore.getState();
+        const cc = useBarStore.getState();
         cc.setQuery("> ");
         cc.setOpen(true);
         cc.requestFocus();

@@ -4,7 +4,6 @@ import { useResultsPanelStore } from "./resultsPanelStore";
 describe("useResultsPanelStore", () => {
   beforeEach(() => {
     useResultsPanelStore.setState({
-      mounted: false,
       excludedSources: [],
       excludedTypes: [],
       selectedItemId: null,
@@ -14,11 +13,9 @@ describe("useResultsPanelStore", () => {
 
   it("setters update the corresponding field", () => {
     const s = useResultsPanelStore.getState();
-    s.setMounted(true);
     s.setSelected("x");
     s.setHovered("y");
     const next = useResultsPanelStore.getState();
-    expect(next.mounted).toBe(true);
     expect(next.selectedItemId).toBe("x");
     expect(next.hoveredItemId).toBe("y");
   });
@@ -48,9 +45,8 @@ describe("useResultsPanelStore", () => {
     expect(useResultsPanelStore.getState().excludedTypes).toEqual(["semantic"]);
   });
 
-  it("reset() clears filters and selections but keeps mounted", () => {
+  it("reset() clears filters and selections", () => {
     useResultsPanelStore.setState({
-      mounted: true,
       excludedSources: ["scene", "codex"],
       excludedTypes: ["semantic"],
       selectedItemId: "a",
@@ -58,7 +54,6 @@ describe("useResultsPanelStore", () => {
     });
     useResultsPanelStore.getState().reset();
     const s = useResultsPanelStore.getState();
-    expect(s.mounted).toBe(true);
     expect(s.excludedSources).toEqual([]);
     expect(s.excludedTypes).toEqual([]);
     expect(s.selectedItemId).toBeNull();

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MoreHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useCommandCenterStore } from "./store/commandCenterStore";
+import { usePanelStore } from "./store/commandCenterStore";
 import {
   useResultsPanelStore,
   type SearchTypeKind,
@@ -120,8 +120,8 @@ export function CommandCenterFilterBar() {
   const excludedTypes = useResultsPanelStore((s) => s.excludedTypes);
   const toggleSource = useResultsPanelStore((s) => s.toggleSource);
   const toggleType = useResultsPanelStore((s) => s.toggleType);
-  const descriptionMode = useCommandCenterStore((s) => s.descriptionMode);
-  const setDescriptionMode = useCommandCenterStore((s) => s.setDescriptionMode);
+  const descriptionMode = usePanelStore((s) => s.descriptionMode);
+  const setDescriptionMode = usePanelStore((s) => s.setDescriptionMode);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const unit1Ref = useRef<HTMLDivElement>(null);

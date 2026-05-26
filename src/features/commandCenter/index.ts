@@ -6,6 +6,9 @@
 export { CommandCenterBar } from "./CommandCenterBar";
 export {
   selectPopoverOpen,
+  useBarStore,
+  usePanelStore,
+  /** @deprecated bar 用 store の旧名。新規コードでは useBarStore を使う。 */
   useCommandCenterStore,
 } from "./store/commandCenterStore";
 export { useResultsPanelStore } from "./store/resultsPanelStore";

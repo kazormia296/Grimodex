@@ -2,10 +2,7 @@ import type { RefObject } from "react";
 import { AnimatedPopover } from "@/components/ui/animated-popover";
 import { CommandCenterResultList } from "./CommandCenterResultList";
 import { BAR_VISIBLE_LIMIT_PER_SECTION } from "./lib/constants";
-import {
-  selectPopoverOpen,
-  useCommandCenterStore,
-} from "./store/commandCenterStore";
+import { selectPopoverOpen, useBarStore } from "./store/commandCenterStore";
 
 interface CommandCenterPopoverProps {
   /** Bar 全体を囲む ref。AnimatedPopover の click-outside 検出に使う */
@@ -20,8 +17,8 @@ interface CommandCenterPopoverProps {
 export function CommandCenterPopover({
   containerRef,
 }: CommandCenterPopoverProps) {
-  const popoverOpen = useCommandCenterStore(selectPopoverOpen);
-  const setOpen = useCommandCenterStore((s) => s.setOpen);
+  const popoverOpen = useBarStore(selectPopoverOpen);
+  const setOpen = useBarStore((s) => s.setOpen);
 
   return (
     <AnimatedPopover

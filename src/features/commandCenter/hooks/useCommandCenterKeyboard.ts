@@ -2,7 +2,7 @@ import type { KeyboardEvent } from "react";
 import {
   barVisibleFlat,
   selectPopoverOpen,
-  useCommandCenterStore,
+  type SearchStore,
 } from "../store/commandCenterStore";
 
 /**
@@ -14,8 +14,9 @@ import {
  */
 export function handleCommandCenterKeyDown(
   e: KeyboardEvent<HTMLInputElement>,
+  store: SearchStore,
 ): void {
-  const state = useCommandCenterStore.getState();
+  const state = store.getState();
 
   if (e.key === "Escape") {
     if (state.open) {

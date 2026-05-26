@@ -57,8 +57,12 @@ interface CommandCenterState {
   reset: () => void;
 }
 
-export const useCommandCenterStore = create<CommandCenterState>()(
-  (set, get) => ({
+/**
+ * Store factory。bar/panel で独立した store instance を作る用途。
+ * 両者ともクエリ・mode・sections・selectedIndex を独自保持する。
+ */
+export function createSearchStore() {
+  return create<CommandCenterState>()((set, get) => ({
     open: false,
     mode: "search",
     query: "",
@@ -107,10 +111,9 @@ export const useCommandCenterStore = create<CommandCenterState>()(
 
     moveSelection: (dir) => {
       const { sections, selectedIndex } = get();
-      // selectedIndex は **バーが表示中の** flat items に対する index。
-      // パネル mount 中 store の各 section に 50 件入っていても、バー側は
-      // BAR_VISIBLE_LIMIT_PER_SECTION で slice したものを表示するので、
-      // ↑↓ の境界もそれに合わせる。
+      // selectedIndex は **バー側 popover が表示中の** flat items に対する index。
+      // panel 側は store の sections を直接 hover/selected で扱うため、この
+      // selectedIndex を使わない (互換目的で残す)。
       const flat = barVisibleFlat(sections);
       const nextIdx = nextSearchResultIndex(selectedIndex, dir, flat.length);
       if (nextIdx !== null) set({ selectedIndex: nextIdx });
@@ -134,8 +137,25 @@ export const useCommandCenterStore = create<CommandCenterState>()(
         sections: [],
         selectedIndex: 0,
       }),
-  }),
-);
+  }));
+}
+
+export type SearchStore = ReturnType<typeof createSearchStore>;
+
+/**
+ * ヘッダー常駐 CommandCenter バー用 store。
+ * Quick Open / コマンド系で使う (Phase B 以降)。
+ */
+export const useBarStore = createSearchStore();
+
+/**
+ * Dockview 検索パネル用 store。
+ * 全文検索 (lexical/semantic) で使う。
+ */
+export const usePanelStore = createSearchStore();
+
+/** @deprecated bar 用 store の旧名。新規コードでは `useBarStore` を使う。 */
+export const useCommandCenterStore = useBarStore;
 
 /**
  * popover の実際の表示有無は `open` 単独ではなく、parsedQuery が非空であるかも見る。

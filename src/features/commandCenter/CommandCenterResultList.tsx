@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
-import { useCommandCenterStore } from "./store/commandCenterStore";
+import { useBarStore } from "./store/commandCenterStore";
 import { flattenSections } from "./lib/flattenSections";
 import { CommandCenterResultItem } from "./CommandCenterResultItem";
 import type { CommandCenterSection } from "./providers/types";
@@ -22,9 +22,9 @@ export function CommandCenterResultList({
   maxItemsPerSection,
 }: CommandCenterResultListProps) {
   const { t } = useTranslation();
-  const storeSections = useCommandCenterStore((s) => s.sections);
-  const selectedIndex = useCommandCenterStore((s) => s.selectedIndex);
-  const parsedQuery = useCommandCenterStore((s) => s.parsedQuery);
+  const storeSections = useBarStore((s) => s.sections);
+  const selectedIndex = useBarStore((s) => s.selectedIndex);
+  const parsedQuery = useBarStore((s) => s.parsedQuery);
 
   const effective = useMemo(() => {
     const raw = sections ?? storeSections;
@@ -83,13 +83,13 @@ export function CommandCenterResultList({
                 item={item}
                 selected={sectionStart + idx === selectedIndex}
                 onMouseEnter={() =>
-                  useCommandCenterStore.setState({
+                  useBarStore.setState({
                     selectedIndex: sectionStart + idx,
                   })
                 }
                 onClick={() => {
                   item.onSelect();
-                  useCommandCenterStore.getState().setOpen(false);
+                  useBarStore.getState().setOpen(false);
                 }}
               />
             ))}

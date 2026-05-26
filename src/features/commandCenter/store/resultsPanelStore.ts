@@ -1,10 +1,9 @@
 import { create } from "zustand";
 
 /**
- * 専用ビュー (Dockview パネル `command-center-results`) のローカル状態。
- * バー (commandCenterStore) とは独立 — フィルタ・選択・hover は panel 専用。
- *
- * バーが書く sections は `commandCenterStore` の SSoT で読む。
+ * 検索パネル (Dockview `command-center-results`) のローカル UI 状態。
+ * 検索クエリ・結果は `usePanelStore` (SearchStore) が SSoT で、ここは
+ * panel 専用 UI 状態 (フィルタ・hover/selected・focus signal) のみ。
  *
  * フィルタは **exclude 方式** (multi-select)。一度クリックで除外、もう一度で復帰。
  * - excludedSources: scene/codex/snippet のうち非表示にしたい kind の集合
@@ -15,8 +14,6 @@ export type SourceKind = "scene" | "codex" | "snippet";
 export type SearchTypeKind = "lexical" | "semantic";
 
 interface ResultsPanelState {
-  /** Dockview にパネルが mount 中か。limit 切替 (10 ↔ 50) の判定に使う。 */
-  mounted: boolean;
   excludedSources: SourceKind[];
   excludedTypes: SearchTypeKind[];
   selectedItemId: string | null;
@@ -24,7 +21,6 @@ interface ResultsPanelState {
   /** Ctrl+Shift+F → CommandCenterResultsPanel が watch して input.focus() */
   focusRequest: number;
 
-  setMounted: (v: boolean) => void;
   toggleSource: (kind: SourceKind) => void;
   toggleType: (kind: SearchTypeKind) => void;
   setSelected: (id: string | null) => void;
@@ -38,14 +34,12 @@ function toggle<T extends string>(list: T[], item: T): T[] {
 }
 
 export const useResultsPanelStore = create<ResultsPanelState>()((set) => ({
-  mounted: false,
   excludedSources: [],
   excludedTypes: [],
   selectedItemId: null,
   hoveredItemId: null,
   focusRequest: 0,
 
-  setMounted: (v) => set({ mounted: v }),
   toggleSource: (kind) =>
     set((s) => ({ excludedSources: toggle(s.excludedSources, kind) })),
   toggleType: (kind) =>

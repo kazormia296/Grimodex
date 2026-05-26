@@ -2,49 +2,44 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Loader2, Search, Terminal } from "lucide-react";
-import { useCommandCenterStore } from "./store/commandCenterStore";
+import { usePanelStore } from "./store/commandCenterStore";
 import { useResultsPanelStore } from "./store/resultsPanelStore";
+import { useCommandCenterSearch } from "./hooks/useCommandCenterSearch";
 import { useFilteredSections } from "./hooks/useFilteredSections";
 import { previewCache } from "./lib/previewCache";
+import { PANEL_FETCH_LIMIT } from "./lib/constants";
 import { CommandCenterFilterBar } from "./CommandCenterFilterBar";
 import { CommandCenterPreviewPopover } from "./CommandCenterPreviewPopover";
 import { CommandCenterResultItem } from "./CommandCenterResultItem";
 
 /**
- * 検索パネル (Dockview)。バーと同じ commandCenterStore.query を編集し、
- * 同じ結果を横断的に閲覧する。
+ * 検索パネル (Dockview)。`usePanelStore` を独自に持ち、バー (`useBarStore`) とは
+ * クエリ・結果が完全分離される。
  *
- * - クエリ + provider 実行は CommandCenter バー (`useCommandCenterSearch`) が SSoT。
- *   パネルからは `useCommandCenterSearch` を呼ばない (二重 hook race 防止)。
- *   パネル内の入力欄は store の `query`/`setQuery` を共有するため、バーが既に
- *   起動している `useCommandCenterSearch` がそのまま結果を更新する。
- * - パネル mount 中は `useResultsPanelStore.mounted` が true になり、バー側が
- *   それを購読して provider の limit を 50 に拡大する。
- * - パネル限定のフィルタ・選択は `resultsPanelStore`。
+ * - クエリ + provider 実行は自前で `useCommandCenterSearch(usePanelStore, ...)`
+ *   を起動する。バーが `useBarStore` で並行に駆動するが、store が別なので race しない。
+ * - panel UI 状態 (フィルタ・hover・selected・focus signal) は `resultsPanelStore`。
  */
 
 export function CommandCenterResultsPanel() {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
-  const setMounted = useResultsPanelStore((s) => s.setMounted);
   const hoveredItemId = useResultsPanelStore((s) => s.hoveredItemId);
   const setHovered = useResultsPanelStore((s) => s.setHovered);
   const selectedItemId = useResultsPanelStore((s) => s.selectedItemId);
   const setSelected = useResultsPanelStore((s) => s.setSelected);
   const focusRequest = useResultsPanelStore((s) => s.focusRequest);
-  const query = useCommandCenterStore((s) => s.query);
-  const setQuery = useCommandCenterStore((s) => s.setQuery);
-  const mode = useCommandCenterStore((s) => s.mode);
-  const parsedQuery = useCommandCenterStore((s) => s.parsedQuery);
+  const query = usePanelStore((s) => s.query);
+  const setQuery = usePanelStore((s) => s.setQuery);
+  const mode = usePanelStore((s) => s.mode);
+  const parsedQuery = usePanelStore((s) => s.parsedQuery);
+
+  useCommandCenterSearch(usePanelStore, {
+    limit: PANEL_FETCH_LIMIT,
+    surface: "panel",
+  });
 
   const sections = useFilteredSections();
-
-  useEffect(() => {
-    setMounted(true);
-    return () => {
-      setMounted(false);
-    };
-  }, [setMounted]);
 
   // Ctrl+Shift+F の requestFocus() でパネル内 input を focus + 全選択。
   useEffect(() => {

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useCommandCenterStore } from "../store/commandCenterStore";
+import { usePanelStore } from "../store/commandCenterStore";
 import {
   useResultsPanelStore,
   type SearchTypeKind,
@@ -59,7 +59,7 @@ export function filterSections(
 }
 
 export function useFilteredSections(): CommandCenterSection[] {
-  const sections = useCommandCenterStore((s) => s.sections);
+  const sections = usePanelStore((s) => s.sections);
   const excludedSources = useResultsPanelStore((s) => s.excludedSources);
   const excludedTypes = useResultsPanelStore((s) => s.excludedTypes);
   return useMemo(

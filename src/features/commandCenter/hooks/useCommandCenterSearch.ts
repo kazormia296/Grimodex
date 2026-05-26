@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useCommandCenterStore } from "../store/commandCenterStore";
+import type { SearchStore } from "../store/commandCenterStore";
 import { getProviders } from "../providers/registry";
 import { parseCommandInput } from "../lib/parseCommandInput";
 import { filterByExcludes } from "../lib/filterByExcludes";
@@ -98,23 +98,24 @@ function debounceFor(providerId: string): number {
 }
 
 export function useCommandCenterSearch(
+  store: SearchStore,
   options: UseCommandCenterSearchOptions = {},
 ): void {
   const limit = options.limit ?? DEFAULT_LIMIT;
   const surface = options.surface;
   const runtimesRef = useRef<Map<string, ProviderRuntime>>(new Map());
 
-  const query = useCommandCenterStore((s) => s.query);
+  const query = store((s) => s.query);
   // descriptionMode は semantic provider の cacheKeyExtras で memo に影響する。
   // ここで購読しないと変更が effect 再実行をトリガしないため、deps に含めて再評価させる。
-  const descriptionMode = useCommandCenterStore((s) => s.descriptionMode);
+  const descriptionMode = store((s) => s.descriptionMode);
 
   useEffect(() => {
     const parsed = parseCommandInput(query);
-    const store = useCommandCenterStore.getState();
-    store.setMode(parsed.mode);
-    store.setParsedQuery(parsed.text);
-    store.setExcludes(parsed.excludes);
+    const state = store.getState();
+    state.setMode(parsed.mode);
+    state.setParsedQuery(parsed.text);
+    state.setExcludes(parsed.excludes);
 
     const trimmed = parsed.text.trim();
     const providers = getProviders(parsed.mode, surface);
@@ -127,7 +128,7 @@ export function useCommandCenterSearch(
         runtime.lastBaseKey = null;
         runtime.lastMaxLimit = 0;
       }
-      store.reset();
+      state.reset();
       return;
     }
 
@@ -137,13 +138,13 @@ export function useCommandCenterSearch(
         const runtime = runtimesRef.current.get(id);
         if (runtime) cancelRuntime(runtime);
         runtimesRef.current.delete(id);
-        useCommandCenterStore.getState().removeSection(id);
+        store.getState().removeSection(id);
       }
     }
 
     const extras: ProviderExtras = { descriptionMode };
     for (const provider of providers) {
-      scheduleProvider(provider, runtimesRef.current, {
+      scheduleProvider(provider, store, runtimesRef.current, {
         query: trimmed,
         mode: parsed.mode,
         limit,
@@ -151,7 +152,7 @@ export function useCommandCenterSearch(
         extras,
       });
     }
-  }, [query, limit, descriptionMode, surface]);
+  }, [store, query, limit, descriptionMode, surface]);
 
   // unmount cleanup
   useEffect(() => {
@@ -188,6 +189,7 @@ function makeBaseKey(
 
 function scheduleProvider(
   provider: CommandCenterProvider,
+  store: SearchStore,
   runtimes: Map<string, ProviderRuntime>,
   args: ScheduleArgs,
 ): void {
@@ -212,17 +214,24 @@ function scheduleProvider(
     items: [],
     state: { kind: "loading" as const },
   };
-  useCommandCenterStore
-    .getState()
-    .upsertSection(loadingSection, provider.hideWhenEmpty);
+  store.getState().upsertSection(loadingSection, provider.hideWhenEmpty);
 
   runtime.timer = setTimeout(() => {
-    void runProvider(provider, runtime, controller, myGen, baseKey, args);
+    void runProvider(
+      provider,
+      store,
+      runtime,
+      controller,
+      myGen,
+      baseKey,
+      args,
+    );
   }, debounceFor(provider.id));
 }
 
 async function runProvider(
   provider: CommandCenterProvider,
+  store: SearchStore,
   runtime: ProviderRuntime,
   controller: AbortController,
   myGen: number,
@@ -248,12 +257,10 @@ async function runProvider(
       runtime.lastMaxLimit = args.limit;
     }
     const filtered = filterByExcludes(section, args.excludes);
-    useCommandCenterStore
-      .getState()
-      .upsertSection(filtered, provider.hideWhenEmpty);
+    store.getState().upsertSection(filtered, provider.hideWhenEmpty);
   } catch (e) {
     if (runtime.generation !== myGen || controller.signal.aborted) return;
-    useCommandCenterStore.getState().upsertSection(
+    store.getState().upsertSection(
       {
         id: provider.id,
         title: provider.title,

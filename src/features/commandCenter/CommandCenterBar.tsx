@@ -2,40 +2,41 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Search, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useCommandCenterStore } from "./store/commandCenterStore";
-import { useResultsPanelStore } from "./store/resultsPanelStore";
+import { useBarStore } from "./store/commandCenterStore";
 import { useCommandCenterSearch } from "./hooks/useCommandCenterSearch";
 import { handleCommandCenterKeyDown } from "./hooks/useCommandCenterKeyboard";
 import { CommandCenterPopover } from "./CommandCenterPopover";
-import { BAR_FETCH_LIMIT, PANEL_FETCH_LIMIT } from "./lib/constants";
+import { BAR_FETCH_LIMIT } from "./lib/constants";
 
 /**
  * ヘッダー中央に常駐する検索 / Command Center バー。
  *
  * 設計メモ:
  * - `data-tauri-drag-region="false"` を最外 div に明示して header 全体の drag を子要素で除外
- * - input フォーカスは store の `focusRequest` カウンタを watch して制御 (Ctrl+Shift+F 用)
+ * - input フォーカスは store の `focusRequest` カウンタを watch して制御 (Ctrl+Shift+P 用)
  * - popover の click-outside / Escape は containerRef 経由で AnimatedPopover に委ねる
  *
- * `useCommandCenterSearch` の単一所有者 — 専用ビュー側からは呼ばない (二重 hook race 防止)。
- * パネル mount 中は `limit: PANEL_FETCH_LIMIT (=50)` で fetch し、store には 50 件入る。
- * バーの popover 表示は `CommandCenterResultList` 側で per-section に slice する。
+ * Phase A2 で検索パネルとは別 store (`useBarStore`) に分離済。バーは
+ * `BAR_FETCH_LIMIT` 固定、検索パネルは独自に `usePanelStore` + `PANEL_FETCH_LIMIT`
+ * で fetch する。両者は同じ provider を独立に駆動するため Tauri command が
+ * 二重呼びになるが、Phase B で bar 用 provider (Quick Open / コマンド) に
+ * 差し替える前提の暫定構成。
  */
 export function CommandCenterBar() {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const query = useCommandCenterStore((s) => s.query);
-  const mode = useCommandCenterStore((s) => s.mode);
-  const open = useCommandCenterStore((s) => s.open);
-  const focusRequest = useCommandCenterStore((s) => s.focusRequest);
-  const setQuery = useCommandCenterStore((s) => s.setQuery);
-  const setOpen = useCommandCenterStore((s) => s.setOpen);
-  const panelMounted = useResultsPanelStore((s) => s.mounted);
+  const query = useBarStore((s) => s.query);
+  const mode = useBarStore((s) => s.mode);
+  const open = useBarStore((s) => s.open);
+  const focusRequest = useBarStore((s) => s.focusRequest);
+  const setQuery = useBarStore((s) => s.setQuery);
+  const setOpen = useBarStore((s) => s.setOpen);
 
-  useCommandCenterSearch({
-    limit: panelMounted ? PANEL_FETCH_LIMIT : BAR_FETCH_LIMIT,
+  useCommandCenterSearch(useBarStore, {
+    limit: BAR_FETCH_LIMIT,
+    surface: "bar",
   });
 
   // requestFocus() で input にフォーカス + 全選択
@@ -73,7 +74,7 @@ export function CommandCenterBar() {
             if (!open) setOpen(true);
           }}
           onFocus={() => setOpen(true)}
-          onKeyDown={handleCommandCenterKeyDown}
+          onKeyDown={(e) => handleCommandCenterKeyDown(e, useBarStore)}
           placeholder={placeholder}
           aria-label={placeholder}
           className={cn(
