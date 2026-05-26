@@ -44,4 +44,21 @@ describe("Splitter", () => {
     const el = screen.getByRole("separator");
     expect(el.style.width).toBe(`${PANEL_GAP_PX}px`);
   });
+
+  it("makes the SplitterHandle fill its parent so chrome's 100% does not collapse", () => {
+    // Regression: SplitterHandle に width/height class が無いと、内側の
+    // SplitterChrome の width:100% / height:100% が参照先 auto=0 に潰れて
+    // ヒット領域が 0 px になり、ホバー / ドラッグが効かなくなる。
+    render(
+      <div className="flex h-40 w-40 flex-col">
+        <Splitter orientation="vertical" onDrag={() => {}} />
+      </div>,
+    );
+    const handle = document.querySelector<HTMLElement>(
+      "[data-splitter-handle]",
+    );
+    expect(handle).not.toBeNull();
+    expect(handle!.className).toContain("h-full");
+    expect(handle!.className).toContain("w-full");
+  });
 });

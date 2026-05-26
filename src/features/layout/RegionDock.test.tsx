@@ -41,18 +41,37 @@ describe("SideRegionStripeColumn", () => {
     // side stripe が bottom 角を取るとき、LayoutShell 側で
     // BOTTOM_CORNER_TOGGLE_CLEARANCE_PX を渡す。column コンポーネントが
     // 落とすと、trailing collapsed cluster と toggle が重なる回帰になる。
+    // 末尾に collapsed slot を置いて trailing cluster の overlay offset で
+    // reserveEndPx が反映されることを確認する (stripe-root には padding を
+    // 入れない — そうすると content と flex 配分域がズレるため)。
+    const segmentsWithTrailing = [
+      ...leftSegments,
+      {
+        key: "l1",
+        slotId: "l1",
+        sizeRatio: 1,
+        open: false,
+        panels: [{ id: "codex-quick" as const, active: false }],
+      },
+    ];
     const { container } = render(
       <SideRegionStripeColumn
         region="left"
         stripeOrientation="vertical"
-        segments={leftSegments}
+        segments={segmentsWithTrailing}
         reserveEndPx={28}
       />,
     );
     const stripeRoot =
       container.querySelector<HTMLElement>("[data-stripe-root]");
     expect(stripeRoot).not.toBeNull();
-    expect(stripeRoot!.style.paddingBottom).toBe("28px");
+    expect(stripeRoot!.style.paddingBottom).toBe("");
+    const cluster = container.querySelector<HTMLElement>(
+      "[data-stripe-collapsed-cluster]",
+    );
+    const overlay = cluster?.querySelector<HTMLElement>(".absolute");
+    expect(overlay).not.toBeNull();
+    expect(overlay!.style.bottom).toBe("28px");
   });
 
   it("omits trailing padding when no reserve is requested", () => {

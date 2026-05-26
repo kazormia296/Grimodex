@@ -79,8 +79,16 @@ export function SplitterHandle({
     [disabled, flushPendingDelta, orientation],
   );
 
+  // h-full w-full は必須: 親 (RegionContent / RegionResizeSplitter) は cross 軸を
+  // flex stretch で渡し、main 軸を explicit px で与えるだけなので、SplitterHandle
+  // 自身が full 寸法を取らないと SplitterChrome の `width: 100%` / `height: 100%`
+  // の参照先が auto=0 に潰れ、splitter のヒット領域が 0 px になる。
   return (
-    <div onPointerDown={handlePointerDown} data-splitter-handle>
+    <div
+      onPointerDown={handlePointerDown}
+      data-splitter-handle
+      className="h-full w-full"
+    >
       {children}
     </div>
   );
