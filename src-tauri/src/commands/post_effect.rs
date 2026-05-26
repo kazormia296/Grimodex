@@ -263,8 +263,8 @@ fn dismiss_key_consistency(entry_id: &str, found_text: &str) -> String {
 
 /// dismiss_key の v1.0 版 (Phase 3 より前): hash(entry_id + "|" + normalize_ws(found_text))
 ///
-/// is_manually_dismissed の dual-lookup 専用。既存 DB の manual dismiss は
-/// この v1.0 key で保存されているため、後方互換を取るためだけに残す。
+/// `is_annotation_previously_closed` の dual-lookup 専用。既存 DB の manual
+/// dismiss はこの v1.0 key で保存されているため、後方互換を取るためだけに残す。
 /// 新規 annotation の保存には `dismiss_key_consistency` のみを使う。
 fn dismiss_key_consistency_legacy(entry_id: &str, found_text: &str) -> String {
     sha256_hex(&format!("{}|{}", entry_id, normalize_ws(found_text)))
@@ -784,7 +784,7 @@ mod dismiss_key_legacy_tests {
     /// 句読点付き found_text に対して legacy (normalize_ws) と新版
     /// (strong_normalize) の hash が異なることを確認する。
     /// この差異こそが既存 manual dismiss が無効化される regression の根源。
-    /// is_manually_dismissed の dual-lookup で両方を照会してカバーする。
+    /// `is_annotation_previously_closed` の dual-lookup で両方を照会してカバーする。
     #[test]
     fn new_and_legacy_differ_when_punctuation_present() {
         let entry = "entry-1";
@@ -834,11 +834,11 @@ mod dismiss_key_legacy_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-mod is_typo_previously_closed_tests {
-    use super::is_typo_previously_closed;
+mod is_annotation_previously_closed_tests {
+    use super::is_annotation_previously_closed;
     use rusqlite::{params, Connection};
 
-    fn open_typo_db() -> Connection {
+    fn open_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE post_effect_annotations (
@@ -876,9 +876,11 @@ mod is_typo_previously_closed_tests {
         .unwrap();
     }
 
+    // ---- typo ----
+
     #[test]
-    fn matches_dismissed_top_level_key() {
-        let conn = open_typo_db();
+    fn typo_matches_dismissed_top_level_key() {
+        let conn = open_db();
         insert(
             &conn,
             "a1",
@@ -886,13 +888,21 @@ mod is_typo_previously_closed_tests {
             "typo_anchor",
             r#"{"dismiss_key":"K1"}"#,
         );
-        assert!(is_typo_previously_closed(&conn, "K1"));
-        assert!(!is_typo_previously_closed(&conn, "other"));
+        assert!(is_annotation_previously_closed(
+            &conn,
+            "typo_anchor",
+            &["K1"]
+        ));
+        assert!(!is_annotation_previously_closed(
+            &conn,
+            "typo_anchor",
+            &["other"]
+        ));
     }
 
     #[test]
-    fn matches_resolved_top_level_key() {
-        let conn = open_typo_db();
+    fn typo_matches_resolved_top_level_key() {
+        let conn = open_db();
         insert(
             &conn,
             "a1",
@@ -900,13 +910,16 @@ mod is_typo_previously_closed_tests {
             "typo_anchor",
             r#"{"dismiss_key":"K1"}"#,
         );
-        assert!(is_typo_previously_closed(&conn, "K1"));
+        assert!(is_annotation_previously_closed(
+            &conn,
+            "typo_anchor",
+            &["K1"]
+        ));
     }
 
     #[test]
-    fn matches_legacy_nested_key_in_typo_ref() {
-        let conn = open_typo_db();
-        // legacy: dismiss_key only inside typo_ref
+    fn typo_matches_legacy_nested_key_in_typo_ref() {
+        let conn = open_db();
         insert(
             &conn,
             "a1",
@@ -914,19 +927,92 @@ mod is_typo_previously_closed_tests {
             "typo_anchor",
             r#"{"typo_ref":{"dismiss_key":"K1"}}"#,
         );
-        assert!(is_typo_previously_closed(&conn, "K1"));
+        assert!(is_annotation_previously_closed(
+            &conn,
+            "typo_anchor",
+            &["K1"]
+        ));
     }
 
     #[test]
-    fn ignores_open_typo() {
-        let conn = open_typo_db();
-        insert(&conn, "a1", "open", "typo_anchor", r#"{"dismiss_key":"K1"}"#);
-        assert!(!is_typo_previously_closed(&conn, "K1"));
+    fn typo_ignores_open() {
+        let conn = open_db();
+        insert(
+            &conn,
+            "a1",
+            "open",
+            "typo_anchor",
+            r#"{"dismiss_key":"K1"}"#,
+        );
+        assert!(!is_annotation_previously_closed(
+            &conn,
+            "typo_anchor",
+            &["K1"]
+        ));
+    }
+
+    // ---- consistency (legacy: dismiss_key nested in codex_ref) ----
+
+    #[test]
+    fn consistency_matches_legacy_nested_key_in_codex_ref() {
+        let conn = open_db();
+        // 既存 DB の consistency annotation は dismiss_key が codex_ref 内のみに保存されていた
+        insert(
+            &conn,
+            "a1",
+            "dismissed",
+            "consistency_anchor",
+            r#"{"codex_ref":{"dismiss_key":"K1","entry_id":"e"}}"#,
+        );
+        assert!(is_annotation_previously_closed(
+            &conn,
+            "consistency_anchor",
+            &["K1"]
+        ));
     }
 
     #[test]
-    fn ignores_other_category_with_matching_key() {
-        let conn = open_typo_db();
+    fn consistency_matches_resolved_with_nested_key() {
+        let conn = open_db();
+        insert(
+            &conn,
+            "a1",
+            "resolved",
+            "consistency_anchor",
+            r#"{"codex_ref":{"dismiss_key":"K1","entry_id":"e"}}"#,
+        );
+        assert!(is_annotation_previously_closed(
+            &conn,
+            "consistency_anchor",
+            &["K1"]
+        ));
+    }
+
+    // ---- intra (dismiss_key top-level, category="consistency_anchor") ----
+
+    #[test]
+    fn intra_matches_resolved_top_level_key() {
+        let conn = open_db();
+        // resolved は dismiss_source を立てないので旧 is_manually_dismissed では拾えなかった
+        insert(
+            &conn,
+            "a1",
+            "resolved",
+            "consistency_anchor",
+            r#"{"dismiss_key":"K1","found_text":"x"}"#,
+        );
+        assert!(is_annotation_previously_closed(
+            &conn,
+            "consistency_anchor",
+            &["K1"]
+        ));
+    }
+
+    // ---- category isolation ----
+
+    #[test]
+    fn category_isolation_typo_vs_consistency() {
+        let conn = open_db();
         insert(
             &conn,
             "a1",
@@ -934,7 +1020,38 @@ mod is_typo_previously_closed_tests {
             "consistency_anchor",
             r#"{"dismiss_key":"K1"}"#,
         );
-        assert!(!is_typo_previously_closed(&conn, "K1"));
+        // category 不一致なら hit しない
+        assert!(!is_annotation_previously_closed(
+            &conn,
+            "typo_anchor",
+            &["K1"]
+        ));
+    }
+
+    // ---- legacy/new dual key lookup ----
+
+    #[test]
+    fn matches_any_key_in_list() {
+        let conn = open_db();
+        insert(
+            &conn,
+            "a1",
+            "dismissed",
+            "consistency_anchor",
+            r#"{"dismiss_key":"NEW1"}"#,
+        );
+        // 1 番目 (legacy) は外れだが 2 番目 (new) で hit
+        assert!(is_annotation_previously_closed(
+            &conn,
+            "consistency_anchor",
+            &["LEGACY1", "NEW1"]
+        ));
+    }
+
+    #[test]
+    fn empty_keys_returns_false() {
+        let conn = open_db();
+        assert!(!is_annotation_previously_closed(&conn, "typo_anchor", &[]));
     }
 }
 
@@ -1055,53 +1172,54 @@ fn score_context_match(window: &str, context: &str) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// DB ヘルパー: dismiss_key が manual dismiss 済みかチェック
+// DB ヘルパー: dismiss_key が closed 済みかチェック (typo / consistency / intra 共通)
 // ---------------------------------------------------------------------------
 
-/// dismiss_key 群のいずれかが manual dismiss されているかを判定する。
-///
-/// Phase 3 で dismiss_key の hash 計算が変わったため (normalize_ws →
-/// strong_normalize)、既存 DB の dismiss_key は旧版で保存されている。
-/// 新規 run では呼び出し側から legacy key を併せて渡し、両方を
-/// 1 クエリで照会することでユーザーの過去判断を尊重する。
-fn is_manually_dismissed(conn: &rusqlite::Connection, dismiss_keys: &[&str]) -> bool {
-    if dismiss_keys.is_empty() {
-        return false;
-    }
-    // SQL IN (?, ?, ...) を動的に組み立てる
-    let placeholders = std::iter::repeat_n("?", dismiss_keys.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "SELECT 1 FROM post_effect_annotations
-          WHERE json_extract(metadata, '$.dismiss_key') IN ({placeholders})
-            AND json_extract(metadata, '$.dismiss_source') = 'manual'
-          LIMIT 1"
-    );
-    let params: Vec<&dyn rusqlite::ToSql> = dismiss_keys
-        .iter()
-        .map(|k| k as &dyn rusqlite::ToSql)
-        .collect();
-    conn.query_row(&sql, rusqlite::params_from_iter(params), |_| Ok(()))
-        .is_ok()
-}
-
-/// typo annotation が既にユーザーによって閉じられているか判定する。
+/// annotation が既にユーザーによって閉じられているか判定する (typo / consistency
+/// / intra 共通)。
 ///
 /// `is_manually_dismissed` との違い:
 /// - status を `dismissed` だけでなく `resolved` も対象にする (ユーザーが
 ///   「解決済み」(✓) で閉じたケースを再検出させない)
 /// - dismiss_source の有無は問わない (resolved は dismiss_source を立てない)
-/// - dismiss_key の格納位置は top-level 優先だが、過去 (typo_ref 内 nested)
-///   で保存されたものとの互換のため両方を OR で照会する
-fn is_typo_previously_closed(conn: &rusqlite::Connection, dismiss_key: &str) -> bool {
-    let sql = "SELECT 1 FROM post_effect_annotations
-                 WHERE category = 'typo_anchor'
-                   AND status IN ('dismissed', 'resolved')
-                   AND (json_extract(metadata, '$.dismiss_key') = ?1
-                        OR json_extract(metadata, '$.typo_ref.dismiss_key') = ?1)
-                 LIMIT 1";
-    conn.query_row(sql, [dismiss_key], |_| Ok(())).is_ok()
+/// - dismiss_key の格納位置は新規分は top-level だが、既存 (consistency:
+///   `codex_ref` 内 / 旧 typo: `typo_ref` 内) で nested 保存されたものとの
+///   後方互換のため複数 path を OR で照会する
+///
+/// 同じ dismiss_key を持つ closed annotation が一件でも存在すれば true を返す。
+/// 呼び出し側は true なら新規 INSERT を skip することで、AI 再実行時に過去判断が
+/// 上書きされる UX バグを防ぐ。
+fn is_annotation_previously_closed(
+    conn: &rusqlite::Connection,
+    category: &str,
+    dismiss_keys: &[&str],
+) -> bool {
+    if dismiss_keys.is_empty() {
+        return false;
+    }
+    let placeholders = std::iter::repeat_n("?", dismiss_keys.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    // category は呼び出し側が文字列リテラルで指定する (ユーザー入力ではない)
+    let sql = format!(
+        "SELECT 1 FROM post_effect_annotations
+           WHERE category = ?1
+             AND status IN ('dismissed', 'resolved')
+             AND (json_extract(metadata, '$.dismiss_key')            IN ({placeholders})
+                  OR json_extract(metadata, '$.codex_ref.dismiss_key') IN ({placeholders})
+                  OR json_extract(metadata, '$.typo_ref.dismiss_key')  IN ({placeholders}))
+           LIMIT 1"
+    );
+    // params: [category, keys..., keys..., keys...]
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + dismiss_keys.len() * 3);
+    params.push(&category as &dyn rusqlite::ToSql);
+    for _ in 0..3 {
+        for k in dismiss_keys {
+            params.push(k as &dyn rusqlite::ToSql);
+        }
+    }
+    conn.query_row(&sql, rusqlite::params_from_iter(params), |_| Ok(()))
+        .is_ok()
 }
 
 /// confidence の優先順位 (high > medium > low) で重みを返す。
@@ -1389,14 +1507,19 @@ async fn process_consistency_scene(
                 let dismiss_key = dismiss_key_consistency(entry_id, found_text);
                 let legacy_dismiss_key = dismiss_key_consistency_legacy(entry_id, found_text);
                 let entry_name = name_map.get(entry_id).cloned().unwrap_or_default();
-                let initial_status = if is_manually_dismissed(
+
+                // 過去に dismissed / resolved されている場合は新規 annotation を
+                // 作らない (ユーザー判断を尊重 + done セクションが重複しない)。
+                // 旧 is_manually_dismissed は dismissed のみ + dismiss_source 必須で
+                // resolved を取りこぼし、かつ dismiss_key が codex_ref 内 nested の
+                // ため top-level クエリが空振りしていた regression を解消する。
+                if is_annotation_previously_closed(
                     conn,
+                    "consistency_anchor",
                     &[&dismiss_key, &legacy_dismiss_key],
                 ) {
-                    "dismissed"
-                } else {
-                    "open"
-                };
+                    continue;
+                }
 
                 let (range_start, range_end, orphaned) =
                     match find_text_position(scene_text, found_text, found_context) {
@@ -1406,14 +1529,10 @@ async fn process_consistency_scene(
 
                 // 既存 open annotation で range が重なるものを探す。
                 // ヒットすれば INSERT せず UPDATE (LLM の表現揺れを吸収)。
-                // 既存 dismissed/resolved は触らない (ユーザー判断を尊重)。
-                let existing = if initial_status == "open" {
-                    find_overlapping_open_annotation(
-                        conn, project_id, scene_id, entry_id, range_start, range_end,
-                    )
-                } else {
-                    None
-                };
+                // 既存 dismissed/resolved は上の早期 continue で除外済み。
+                let existing = find_overlapping_open_annotation(
+                    conn, project_id, scene_id, entry_id, range_start, range_end,
+                );
 
                 // confidence は既存とのマージで max を採る (揺らぎで下がるのを防ぐ)
                 let merged_confidence: String = match &existing {
@@ -1428,7 +1547,12 @@ async fn process_consistency_scene(
                     detail_name.unwrap_or(source_field),
                     found_text
                 );
+                // dismiss_key は top-level にも複製保存する (
+                // is_annotation_previously_closed が新規分は top-level の
+                // $.dismiss_key を優先参照するため。後方互換で nested 版も
+                // 残す)。
                 let metadata = serde_json::json!({
+                    "dismiss_key": dismiss_key,
                     "codex_ref": {
                         "entry_id": entry_id,
                         "entry_name": entry_name,
@@ -1489,7 +1613,7 @@ async fn process_consistency_scene(
                          VALUES (?, ?, ?, 'scene_range', ?,
                                  ?, ?, ?,
                                  'consistency_anchor', ?, ?, 'ai',
-                                 ?, ?, datetime('now'), datetime('now'))",
+                                 'open', ?, datetime('now'), datetime('now'))",
                         params![
                             new_id,
                             project_id,
@@ -1500,7 +1624,6 @@ async fn process_consistency_scene(
                             found_text,
                             severity,
                             content,
-                            initial_status,
                             metadata.to_string(),
                         ],
                     )?;
@@ -1728,14 +1851,19 @@ async fn process_intra_scene(
 
                 let dismiss_key = dismiss_key_intra(scene_id, a_text, b_text);
                 let legacy_dismiss_key = dismiss_key_intra_legacy(scene_id, a_text, b_text);
-                let initial_status = if is_manually_dismissed(
+
+                // 過去に dismissed / resolved されている場合は新規 pair を
+                // 作らない (ユーザー判断を尊重)。同 dismiss_key の片側 a/b の
+                // どちらかが closed なら pair 全体を skip する (
+                // update_relation_status はカスケードで両側を同 status にする
+                // ため、片側だけ open になる正規ルートは存在しない)。
+                if is_annotation_previously_closed(
                     conn,
+                    "consistency_anchor",
                     &[&dismiss_key, &legacy_dismiss_key],
                 ) {
-                    "dismissed"
-                } else {
-                    "open"
-                };
+                    continue;
+                }
 
                 let (a_start, a_end, a_orphaned) =
                     match find_text_position(scene_text, a_text, a_ctx) {
@@ -1780,7 +1908,7 @@ async fn process_intra_scene(
                      VALUES (?, ?, ?, 'scene_range', ?,
                              ?, ?, ?,
                              'consistency_anchor', ?, ?, 'ai',
-                             ?, ?, datetime('now'), datetime('now'))",
+                             'open', ?, datetime('now'), datetime('now'))",
                     params![
                         ann_a_id,
                         project_id,
@@ -1791,7 +1919,6 @@ async fn process_intra_scene(
                         a_text,
                         severity,
                         reason,
-                        initial_status,
                         meta_a.to_string(),
                     ],
                 )?;
@@ -1804,7 +1931,7 @@ async fn process_intra_scene(
                      VALUES (?, ?, ?, 'scene_range', ?,
                              ?, ?, ?,
                              'consistency_anchor', ?, ?, 'ai',
-                             ?, ?, datetime('now'), datetime('now'))",
+                             'open', ?, datetime('now'), datetime('now'))",
                     params![
                         ann_b_id,
                         project_id,
@@ -1815,7 +1942,6 @@ async fn process_intra_scene(
                         b_text,
                         severity,
                         reason,
-                        initial_status,
                         meta_b.to_string(),
                     ],
                 )?;
@@ -2040,7 +2166,7 @@ async fn process_typo_scene(
                 let dismiss_key = dismiss_key_typo(scene_id, found_text, suggestion);
                 // 過去に dismissed / resolved されている場合は新規 annotation を
                 // 作らない (ユーザー判断を尊重 + done セクションが重複しない)
-                if is_typo_previously_closed(conn, &dismiss_key) {
+                if is_annotation_previously_closed(conn, "typo_anchor", &[&dismiss_key]) {
                     continue;
                 }
 
@@ -2056,9 +2182,9 @@ async fn process_typo_scene(
                 } else {
                     format!("「{found_text}」→「{suggestion}」: {reason}")
                 };
-                // dismiss_key は top-level に置く (`is_manually_dismissed` 等の
-                // 既存ヘルパが $.dismiss_key を見る規約に揃える)。typo_ref には
-                // 表示用のメタ情報のみを残す。
+                // dismiss_key は top-level に置く (
+                // `is_annotation_previously_closed` が $.dismiss_key を優先参照
+                // するため)。typo_ref 内にも残すのは旧 DB との後方互換のため。
                 let metadata = serde_json::json!({
                     "dismiss_key": dismiss_key,
                     "typo_ref": {
