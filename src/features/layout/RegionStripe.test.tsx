@@ -247,12 +247,12 @@ describe("RegionStripe", () => {
     expect(container.querySelector("[data-stripe-root]")).not.toBeNull();
   });
 
-  it("reserves padding at the trailing end for the corner toggle", () => {
-    // Regression: side stripe が bottom 角を取るとき、stripe 末尾の
-    // CollapsedCluster (anchor="end" → bottom: 0) のアイコンと
-    // BottomCornerToggle (absolute bottom-left/right) が重なっていた。
-    // reserveEndPx を渡すと stripe root に padding が入り、trailing
-    // collapsed cluster がトグルぶん押し上げられる。
+  it("offsets the trailing CollapsedCluster icons instead of padding stripe-root", () => {
+    // Regression: side stripe が bottom 角を取るとき、reserveEndPx を stripe
+    // root の paddingBottom に入れると flex 配分域の高さが content (padding 無し)
+    // とズレ、バンド/slot が下方向にズレる (#2)。reserveEndPx は trailing
+    // CollapsedCluster の anchor 内 offset (bottom) として吸収し、stripe-root
+    // 自身には padding を入れない。
     const trailingCollapsed: RegionSegment[] = [
       {
         key: "l0",
@@ -280,27 +280,69 @@ describe("RegionStripe", () => {
     const stripeRoot =
       container.querySelector<HTMLElement>("[data-stripe-root]");
     expect(stripeRoot).not.toBeNull();
-    expect(stripeRoot!.style.paddingBottom).toBe("28px");
+    // stripe-root に padding を入れない (= flex 配分域 = content と同じ高さ)。
+    expect(stripeRoot!.style.paddingBottom).toBe("");
     expect(stripeRoot!.style.paddingTop).toBe("");
+    // trailing cluster の絶対配置子に bottom: 28 が乗っている。
+    const cluster = container.querySelector<HTMLElement>(
+      "[data-stripe-collapsed-cluster]",
+    );
+    expect(cluster).not.toBeNull();
+    const overlay = cluster!.querySelector<HTMLElement>(".absolute");
+    expect(overlay).not.toBeNull();
+    expect(overlay!.style.bottom).toBe("28px");
   });
 
-  it("applies reserveStartPx/reserveEndPx on the inline axis when horizontal", () => {
-    // horizontal stripe (bottom region) では reserve は左右端に効く。
+  it("offsets leading/trailing cluster overlays on the inline axis when horizontal", () => {
+    // horizontal stripe (bottom region) では reserve は左右端 (leading=left,
+    // trailing=right) の cluster overlay 内 offset に効く。stripe-root 自体には
+    // padding は入らない。
+    const segs: RegionSegment[] = [
+      {
+        key: "b0",
+        slotId: "b0",
+        sizeRatio: 1,
+        open: false,
+        panels: [{ id: "scenes", active: false }],
+      },
+      {
+        key: "b1",
+        slotId: "b1",
+        sizeRatio: 1,
+        open: true,
+        panels: [{ id: "chat", active: true }],
+      },
+      {
+        key: "b2",
+        slotId: "b2",
+        sizeRatio: 1,
+        open: false,
+        panels: [{ id: "timeline", active: false }],
+      },
+    ];
     const { container } = render(
       <RegionStripe
         region="bottom"
         orientation="horizontal"
-        segments={segments}
+        segments={segs}
         reserveStartPx={28}
         reserveEndPx={28}
       />,
     );
     const stripeRoot =
       container.querySelector<HTMLElement>("[data-stripe-root]");
-    expect(stripeRoot!.style.paddingLeft).toBe("28px");
-    expect(stripeRoot!.style.paddingRight).toBe("28px");
-    expect(stripeRoot!.style.paddingTop).toBe("");
-    expect(stripeRoot!.style.paddingBottom).toBe("");
+    expect(stripeRoot!.style.paddingLeft).toBe("");
+    expect(stripeRoot!.style.paddingRight).toBe("");
+    const clusters = [
+      ...container.querySelectorAll<HTMLElement>(
+        "[data-stripe-collapsed-cluster]",
+      ),
+    ];
+    expect(clusters.length).toBe(2);
+    const leadingOverlay = clusters[0].querySelector<HTMLElement>(".absolute");
+    const trailingOverlay = clusters[1].querySelector<HTMLElement>(".absolute");
+    expect(leadingOverlay!.style.left).toBe("28px");
+    expect(trailingOverlay!.style.right).toBe("28px");
   });
 
   it("exposes a full-cover drop zone on an empty stripe while dragging", async () => {

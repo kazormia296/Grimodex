@@ -159,6 +159,12 @@ interface CollapsedClusterProps {
   region: LayoutRegionId;
   /** "start" = ストライプ先頭側へ寄せる / "end" = 末尾側へ寄せる */
   anchor: "start" | "end";
+  /**
+   * cluster の anchor 方向に確保するオフセット(px)。0 のときアイコンは
+   * stripe の端ぴったりに寄る。コーナートグルとの重なり回避用に、先頭/
+   * 末尾の cluster でのみ非ゼロを渡す。
+   */
+  offsetPx?: number;
 }
 
 /**
@@ -171,6 +177,7 @@ function LeadingCollapsedCluster({
   segments,
   orientation,
   region,
+  offsetPx,
 }: Omit<CollapsedClusterProps, "anchor">) {
   return (
     <CollapsedCluster
@@ -178,6 +185,7 @@ function LeadingCollapsedCluster({
       orientation={orientation}
       region={region}
       anchor="start"
+      offsetPx={offsetPx}
     />
   );
 }
@@ -195,6 +203,7 @@ function CollapsedCluster({
   orientation,
   region,
   anchor,
+  offsetPx = 0,
 }: CollapsedClusterProps) {
   const isVertical = orientation === "vertical";
   return (
@@ -211,11 +220,11 @@ function CollapsedCluster({
         style={
           isVertical
             ? anchor === "start"
-              ? { top: 0 }
-              : { bottom: 0 }
+              ? { top: offsetPx }
+              : { bottom: offsetPx }
             : anchor === "start"
-              ? { left: 0 }
-              : { right: 0 }
+              ? { left: offsetPx }
+              : { right: offsetPx }
         }
       >
         {segments.map((seg) => (
@@ -372,20 +381,14 @@ export function RegionStripe({
   const dividerGapPx = slotSplitterPx(cardLayout);
 
   return (
+    // reserveStart/EndPx は stripe-root の outer padding にしていたが、それだと
+    // 隣の content (lcontent) には padding が無いため flex 配分域の高さ/幅が
+    // ズレ、side が bottom 角を取る (lstripe と lcontent が同じ高さ) 構成で
+    // バンドと slot の位置が下方向にズレる。padding は使わず、コーナートグル
+    // 回避は先頭/末尾 CollapsedCluster の anchor 側 offset として吸収する。
     <div
       data-stripe-root
       data-stripe-region={region}
-      style={
-        orientation === "vertical"
-          ? {
-              paddingTop: reserveStartPx || undefined,
-              paddingBottom: reserveEndPx || undefined,
-            }
-          : {
-              paddingLeft: reserveStartPx || undefined,
-              paddingRight: reserveEndPx || undefined,
-            }
-      }
       className={cn(
         "relative flex h-full min-h-0 w-full min-w-0 overflow-hidden",
         // D案: stripe/rail も他パネルと同じ「カード」。境界線は引かず、
@@ -424,9 +427,14 @@ export function RegionStripe({
                   segments={item.segments}
                   orientation={orientation}
                   region={region}
+                  offsetPx={reserveStartPx}
                 />
               );
             }
+            // 末尾 cluster のみ stripe end の角トグル回避 offset を入れる。
+            // 中間 (open バンドの間) cluster は anchor=end でも flex 中位
+            // 位置に積まれるので offset 不要。
+            const isTrailing = itemIdx === items.length - 1;
             return (
               <CollapsedCluster
                 key={`collapsed-${item.segments[0].key}`}
@@ -434,6 +442,7 @@ export function RegionStripe({
                 orientation={orientation}
                 region={region}
                 anchor="end"
+                offsetPx={isTrailing ? reserveEndPx : 0}
               />
             );
           }
