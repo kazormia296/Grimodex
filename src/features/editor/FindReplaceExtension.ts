@@ -14,6 +14,31 @@ export interface FindReplaceStorage {
 
 const pluginKey = new PluginKey<DecorationSet>("findReplace");
 
+/**
+ * Scroll the DOM element at the given ProseMirror position into view.
+ *
+ * Why: TipTap の `.scrollIntoView()` (= `tr.scrollIntoView()`) はエディタが
+ * blur 状態（フォーカスは検索バー側）だと Editor の overflow:auto 親まで
+ * 確実にスクロールが伝播しないため、DOM API で直接スクロールする。
+ */
+function scrollMatchIntoView(
+  editor: import("@tiptap/core").Editor,
+  pos: number,
+): void {
+  try {
+    const { node } = editor.view.domAtPos(pos);
+    const target: Element | null =
+      node.nodeType === Node.ELEMENT_NODE
+        ? (node as Element)
+        : node.parentElement;
+    if (target) {
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  } catch {
+    // domAtPos can throw if pos is out of range after a doc edit; ignore.
+  }
+}
+
 function buildMatches(
   doc: import("prosemirror-model").Node,
   query: string,
@@ -90,6 +115,14 @@ export const FindReplaceExtension = Extension.create<
             tr.setMeta(pluginKey, { matches, currentIndex: 0 });
             dispatch(tr);
           }
+          if (matches.length > 0) {
+            const first = matches[0];
+            editor
+              .chain()
+              .setTextSelection({ from: first.from, to: first.to })
+              .run();
+            scrollMatchIntoView(editor, first.from);
+          }
           return true;
         },
 
@@ -133,8 +166,11 @@ export const FindReplaceExtension = Extension.create<
             });
             dispatch(tr);
           }
-          // Scroll match into view
-          editor.commands.setTextSelection({ from: match.from, to: match.to });
+          editor
+            .chain()
+            .setTextSelection({ from: match.from, to: match.to })
+            .run();
+          scrollMatchIntoView(editor, match.from);
           return true;
         },
 
@@ -155,7 +191,11 @@ export const FindReplaceExtension = Extension.create<
             });
             dispatch(tr);
           }
-          editor.commands.setTextSelection({ from: match.from, to: match.to });
+          editor
+            .chain()
+            .setTextSelection({ from: match.from, to: match.to })
+            .run();
+          scrollMatchIntoView(editor, match.from);
           return true;
         },
 

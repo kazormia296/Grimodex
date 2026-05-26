@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useReducer } from "react";
 import type { Editor } from "@tiptap/react";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -31,6 +31,18 @@ export function FindReplaceBar({
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [useRegex, setUseRegex] = useState(false);
   const findInputRef = useRef<HTMLInputElement>(null);
+
+  // editor.storage は React state ではないため、findNext/findPrev で currentIndex が
+  // 進んでも再レンダリングされない。transaction を購読してマッチカウント表示を更新する。
+  const [, bumpStorageRev] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => {
+    if (!editor || !open) return;
+    const handler = () => bumpStorageRev();
+    editor.on("transaction", handler);
+    return () => {
+      editor.off("transaction", handler);
+    };
+  }, [editor, open]);
 
   // Focus on open
   useEffect(() => {
