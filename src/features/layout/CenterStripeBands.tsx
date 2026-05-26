@@ -92,10 +92,27 @@ interface CollapsedClusterProps {
  * 後続 open バンドの開始位置が CenterContent の slot 0 と一致しなくなる。
  * 0 幅の absolute オーバーレイで描画し、後続 open バンドは比率配分で先頭から
  * 割り振られるようにする。
+ *
+ * 例外: open バンドが 1 つも無い場合は overlay 化すると stripe-root / center
+ * column が幅 0 に潰れて icon が overflow-hidden で消える。揃える対象の open
+ * バンドが無い状況では in-flow で実寸描画する。
  */
 function LeadingCollapsedCluster({
   segments,
-}: Omit<CollapsedClusterProps, "anchor">) {
+  inflow,
+}: Omit<CollapsedClusterProps, "anchor"> & { inflow: boolean }) {
+  if (inflow) {
+    return (
+      <div
+        data-stripe-collapsed-cluster
+        className="flex h-full shrink-0 flex-row items-center gap-0.5"
+      >
+        {segments.map((segment) => (
+          <CenterStripeBand key={segment.key} segment={segment} flexGrow={0} />
+        ))}
+      </div>
+    );
+  }
   return <CollapsedCluster segments={segments} anchor="start" />;
 }
 
@@ -188,6 +205,7 @@ export function CenterStripeBands({ segments }: CenterStripeBandsProps) {
                 <LeadingCollapsedCluster
                   key={`collapsed-${item.segments[0].key}`}
                   segments={item.segments}
+                  inflow={!hasOpenBands}
                 />
               );
             }

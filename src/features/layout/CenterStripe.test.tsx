@@ -261,13 +261,19 @@ describe("CenterStripe", () => {
     const { container } = render(<CenterStripe />);
     const stripe = container.querySelector<HTMLElement>("[data-center-stripe]");
     expect(stripe?.style.gridTemplateColumns).toContain("auto");
-    // 閉じた editor は collapsed cluster の overlay 内に描画される。
+    // 閉じた editor は collapsed cluster 内に描画される。
     expect(
       container.querySelector('[data-stripe-icon="editor"]'),
     ).not.toBeNull();
-    expect(
-      container.querySelector("[data-stripe-collapsed-cluster]"),
-    ).not.toBeNull();
+    // open バンドが center に無いので cluster は in-flow（実幅あり）にする。
+    // overlay 化すると stripe-root が 0 幅に潰れて icon が overflow-hidden で
+    // 消えてしまうのを防ぐ。
+    const cluster = container.querySelector<HTMLElement>(
+      "[data-stripe-collapsed-cluster]",
+    );
+    expect(cluster).not.toBeNull();
+    expect(cluster?.style.flexBasis).toBe("");
+    expect(cluster?.querySelector(".absolute")).toBeNull();
   });
 
   it("shows editor icon when every panel is closed", () => {
@@ -283,13 +289,16 @@ describe("CenterStripe", () => {
     expect(
       container.querySelector('[data-stripe-icon="editor"]'),
     ).not.toBeNull();
-    // 閉じた editor も collapsed cluster overlay の中の band として描画される。
     const editorBand = container.querySelector<HTMLElement>(
       '[data-center-stripe-band-kind="editor"]',
     );
     expect(editorBand).not.toBeNull();
-    expect(
-      container.querySelector("[data-stripe-collapsed-cluster]"),
-    ).not.toBeNull();
+    // open バンドが無い場合は cluster を in-flow にして icon が消えないこと。
+    const cluster = container.querySelector<HTMLElement>(
+      "[data-stripe-collapsed-cluster]",
+    );
+    expect(cluster).not.toBeNull();
+    expect(cluster?.style.flexBasis).toBe("");
+    expect(cluster?.querySelector(".absolute")).toBeNull();
   });
 });
