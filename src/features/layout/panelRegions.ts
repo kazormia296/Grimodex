@@ -40,7 +40,7 @@ export const KEYBOARD_SHORTCUT_MAP: Partial<Record<PanelId, string>> = {
   grid: "Ctrl+Alt+G",
   matrix: "Ctrl+Alt+R",
   "trash-bin": "Ctrl+Alt+B",
-  "command-center-results": "Ctrl+Alt+K",
+  "command-center-results": "Ctrl+Shift+F",
 };
 
 /** Panels shown in the dropdown, grouped by region */

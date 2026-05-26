@@ -8,6 +8,7 @@ export {
   selectPopoverOpen,
   useCommandCenterStore,
 } from "./store/commandCenterStore";
+export { useResultsPanelStore } from "./store/resultsPanelStore";
 export type { CommandCenterMode } from "./providers/types";
 
 import { registerProvider } from "./providers/registry";

@@ -21,12 +21,15 @@ interface ResultsPanelState {
   excludedTypes: SearchTypeKind[];
   selectedItemId: string | null;
   hoveredItemId: string | null;
+  /** Ctrl+Shift+F → CommandCenterResultsPanel が watch して input.focus() */
+  focusRequest: number;
 
   setMounted: (v: boolean) => void;
   toggleSource: (kind: SourceKind) => void;
   toggleType: (kind: SearchTypeKind) => void;
   setSelected: (id: string | null) => void;
   setHovered: (id: string | null) => void;
+  requestFocus: () => void;
   reset: () => void;
 }
 
@@ -40,6 +43,7 @@ export const useResultsPanelStore = create<ResultsPanelState>()((set) => ({
   excludedTypes: [],
   selectedItemId: null,
   hoveredItemId: null,
+  focusRequest: 0,
 
   setMounted: (v) => set({ mounted: v }),
   toggleSource: (kind) =>
@@ -48,6 +52,7 @@ export const useResultsPanelStore = create<ResultsPanelState>()((set) => ({
     set((s) => ({ excludedTypes: toggle(s.excludedTypes, kind) })),
   setSelected: (id) => set({ selectedItemId: id }),
   setHovered: (id) => set({ hoveredItemId: id }),
+  requestFocus: () => set((s) => ({ focusRequest: s.focusRequest + 1 })),
   reset: () =>
     set({
       excludedSources: [],

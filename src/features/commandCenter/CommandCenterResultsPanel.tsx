@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Loader2, Search, Terminal } from "lucide-react";
@@ -25,11 +25,13 @@ import { CommandCenterResultItem } from "./CommandCenterResultItem";
 
 export function CommandCenterResultsPanel() {
   const { t } = useTranslation();
+  const inputRef = useRef<HTMLInputElement>(null);
   const setMounted = useResultsPanelStore((s) => s.setMounted);
   const hoveredItemId = useResultsPanelStore((s) => s.hoveredItemId);
   const setHovered = useResultsPanelStore((s) => s.setHovered);
   const selectedItemId = useResultsPanelStore((s) => s.selectedItemId);
   const setSelected = useResultsPanelStore((s) => s.setSelected);
+  const focusRequest = useResultsPanelStore((s) => s.focusRequest);
   const query = useCommandCenterStore((s) => s.query);
   const setQuery = useCommandCenterStore((s) => s.setQuery);
   const mode = useCommandCenterStore((s) => s.mode);
@@ -43,6 +45,13 @@ export function CommandCenterResultsPanel() {
       setMounted(false);
     };
   }, [setMounted]);
+
+  // Ctrl+Shift+F の requestFocus() でパネル内 input を focus + 全選択。
+  useEffect(() => {
+    if (focusRequest === 0) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [focusRequest]);
 
   // 検索本文 (prefix 剥がし後) が変わったら previewCache を全クリア。
   // raw `query` だとキャレット移動などで毎キーストローク発火してしまうため parsedQuery を使う。
@@ -67,6 +76,7 @@ export function CommandCenterResultsPanel() {
             )}
           />
           <input
+            ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}

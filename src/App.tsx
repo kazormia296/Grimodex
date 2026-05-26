@@ -20,13 +20,13 @@ import { LayoutShell } from "@/features/layout/LayoutShell";
 import {
   CommandCenterBar,
   useCommandCenterStore,
+  useResultsPanelStore,
 } from "@/features/commandCenter";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
 import { useExternalMountListener } from "@/features/external-mount/useExternalMountListener";
 import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
-import { CommandPalette } from "@/features/commandPalette/CommandPalette";
 import { useDebugLogStore } from "@/lib/debugLog";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
@@ -207,7 +207,6 @@ function EditorScreen() {
   const [showZipExportDialog, setShowZipExportDialog] = useState(false);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
-  const [showCommandPalette, setShowCommandPalette] = useState(false);
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
   const glassEnabled = useSettingsStore((s) =>
@@ -365,26 +364,25 @@ function EditorScreen() {
         return;
       }
 
-      // Ctrl+Shift+F: CommandCenter バーをフォーカス。
-      // TipTap (features/editor/extensions.ts:135) が選択あり時に Mod-Shift-f を
+      // Ctrl+Shift+F: 検索パネル (command-center-results) を開き、パネル内 input にフォーカス。
+      // TipTap (features/editor/extensions.ts) が選択あり時に Mod-Shift-f を
       // foreshadow picker に使うため、defaultPrevented を尊重して二重発火を避ける。
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "f") {
         if (e.defaultPrevented) return;
         e.preventDefault();
-        const cc = useCommandCenterStore.getState();
-        if (cc.open) {
-          cc.setOpen(false);
-        } else {
-          cc.setOpen(true);
-          cc.requestFocus();
-        }
+        useLayoutStore.getState().showPanel("command-center-results");
+        useResultsPanelStore.getState().requestFocus();
         return;
       }
 
-      // Ctrl+Shift+P: コマンドパレット
+      // Ctrl+Shift+P: VSCode コマンドパレット相当。CommandCenter バーに
+      // focus を渡し、`> ` prefix で command mode に切替えて起動する。
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
-        setShowCommandPalette((v) => !v);
+        const cc = useCommandCenterStore.getState();
+        cc.setQuery("> ");
+        cc.setOpen(true);
+        cc.requestFocus();
         return;
       }
 
@@ -403,7 +401,6 @@ function EditorScreen() {
         t: "kouetsu",
         f: "foreshadow",
         b: "trash-bin",
-        k: "command-center-results",
         ",": "settings",
       };
 
@@ -611,9 +608,6 @@ function EditorScreen() {
         open={showImportDialog}
         onClose={() => setShowImportDialog(false)}
       />
-      {showCommandPalette && (
-        <CommandPalette onClose={() => setShowCommandPalette(false)} />
-      )}
       {showSampleTour && <SampleTour />}
       <ReindexProgressToast />
       <ReloadConflictDialog />

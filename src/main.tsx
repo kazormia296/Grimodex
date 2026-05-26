@@ -18,9 +18,14 @@ document.addEventListener("contextmenu", (e) => e.preventDefault());
 // ブラウザデフォルトショートカットを無効化
 // Ctrl+R: リロード, Ctrl+P: 印刷, Ctrl+F: ページ内検索
 // F5: リロード, F3: 検索
+// Shift/Alt 併用は自前ショートカット (Ctrl+Shift+F = CommandCenter バー等) に
+// 譲るため block 対象外。
 document.addEventListener("keydown", (e) => {
   const blocked =
-    (e.ctrlKey && ["r", "p", "f"].includes(e.key.toLowerCase())) ||
+    (e.ctrlKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      ["r", "p", "f"].includes(e.key.toLowerCase())) ||
     e.key === "F5" ||
     e.key === "F3";
   if (blocked) e.preventDefault();
