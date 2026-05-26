@@ -276,10 +276,12 @@ describe("CenterStripe", () => {
     expect(cluster?.querySelector(".absolute")).toBeNull();
   });
 
-  it("offsets the first open band's content to reveal the leading collapsed editor icon", () => {
+  it("offsets the first open band's icons via an absolute shift so the band's flex outer stays at grow_share", () => {
     // editor 閉 + center tool 開: collapsed editor は 0 幅 overlay として
-    // stripe-root の left:0 に積まれる。open バンドの内部アイコンが overlay の
-    // editor icon を覆い隠さないよう、最初の open バンドに paddingLeft が要る。
+    // stripe-root の left:0 に積まれる。open バンドのアイコンが overlay の
+    // editor icon を覆い隠さないよう、アイコンを absolute で右へ逃がす。
+    // バンド outer に padding を入れると flex-shrink:0 と相俟って outer 幅が
+    // 膨らみ、後続バンドが右方向へずれる。
     const layout = buildDefaultLayoutState({ editorOpen: false });
     layout.center = {
       editorOpen: false,
@@ -292,12 +294,18 @@ describe("CenterStripe", () => {
       '[data-center-stripe-band-kind="tool"][data-band-open="true"]',
     );
     expect(openBand).not.toBeNull();
-    // editor 1 icon ぶん (28px) 以上のオフセットが必要。
-    expect(parseFloat(openBand!.style.paddingLeft)).toBeGreaterThanOrEqual(28);
+    // バンドの outer には padding を入れない（flex 寸法の純度を保つ）。
+    expect(openBand!.style.paddingLeft).toBe("");
+    // アイコンは absolute シフト wrapper の中に置かれる。
+    const shift = openBand!.querySelector<HTMLElement>(
+      "[data-stripe-leading-shift]",
+    );
+    expect(shift).not.toBeNull();
+    expect(parseFloat(shift!.style.left)).toBeGreaterThanOrEqual(28);
   });
 
-  it("does not offset open bands when there is no leading collapsed cluster", () => {
-    // editor も tool も両方 open: 先頭 cluster 無し → padding 不要。
+  it("does not wrap icons when there is no leading collapsed cluster", () => {
+    // editor も tool も両方 open: 先頭 cluster 無し → shift wrapper 不要。
     const layout = buildDefaultLayoutState({ editorOpen: true });
     layout.center = {
       editorOpen: true,
@@ -310,6 +318,7 @@ describe("CenterStripe", () => {
       '[data-center-stripe-band-kind="editor"]',
     );
     expect(editorBand?.style.paddingLeft).toBe("");
+    expect(editorBand?.querySelector("[data-stripe-leading-shift]")).toBeNull();
   });
 
   it("shows editor icon when every panel is closed", () => {

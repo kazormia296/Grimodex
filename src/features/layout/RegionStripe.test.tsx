@@ -77,6 +77,62 @@ describe("RegionStripe", () => {
     expect(Number(cluster!.style.flexGrow)).toBe(0);
   });
 
+  it("offsets the first open slot's icons via an absolute shift so the band's flex outer stays at grow_share", () => {
+    // 先頭 slot が collapsed + 後続 slot が open のとき、cluster は 0 サイズ
+    // overlay として stripe-root の start に積まれる。open slot の内部アイコン
+    // (z-30) が overlay icon を覆い隠さないよう、最初の open slot のアイコン
+    // を absolute で下方向へ逃がす。バンド outer に padding を入れると
+    // flex-shrink:0 と相俟って outer が膨らみ、後続バンドが下方向へずれる。
+    const leadingCollapsed: RegionSegment[] = [
+      {
+        key: "l0",
+        slotId: "l0",
+        sizeRatio: 0.3,
+        open: false,
+        panels: [{ id: "scenes", active: false }],
+      },
+      {
+        key: "l1",
+        slotId: "l1",
+        sizeRatio: 0.7,
+        open: true,
+        panels: [{ id: "chat", active: true }],
+      },
+    ];
+    const { container } = render(
+      <RegionStripe
+        region="left"
+        orientation="vertical"
+        segments={leadingCollapsed}
+      />,
+    );
+    const groups = [
+      ...container.querySelectorAll<HTMLElement>("[data-drop-segment]"),
+    ];
+    const openGroup = groups[1];
+    // バンドの outer には padding を入れない（flex 寸法の純度を保つ）。
+    expect(openGroup.style.paddingTop).toBe("");
+    expect(openGroup.style.paddingLeft).toBe("");
+    // アイコンは absolute シフト wrapper の中に置かれる。
+    const shift = openGroup.querySelector<HTMLElement>(
+      "[data-stripe-leading-shift]",
+    );
+    expect(shift).not.toBeNull();
+    expect(parseFloat(shift!.style.top)).toBeGreaterThanOrEqual(28);
+  });
+
+  it("does not wrap icons when there is no leading collapsed cluster", () => {
+    // 先頭 slot が open のときは shift wrapper 不要 (overlay と重ならない)。
+    const { container } = render(
+      <RegionStripe region="left" orientation="vertical" segments={segments} />,
+    );
+    const groups = [
+      ...container.querySelectorAll<HTMLElement>("[data-drop-segment]"),
+    ];
+    expect(groups[0].style.paddingTop).toBe("");
+    expect(groups[0].querySelector("[data-stripe-leading-shift]")).toBeNull();
+  });
+
   it("sizes the open-slot divider band to the content Splitter thickness", () => {
     // Regression: the stripe divider used a 5px band (my-0.5 + 1px line)
     // while the content Splitter is PANEL_GAP_PX wide — the mismatch drifted

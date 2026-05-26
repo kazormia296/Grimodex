@@ -19,8 +19,11 @@ interface CenterStripeBandProps {
   /**
    * 先頭 CollapsedCluster overlay と重なる位置にこの open バンドが置かれる
    * とき、内部アイコンを overlay 幅ぶん右へオフセットして occlusion を防ぐ。
-   * バンド自体の左端 (flex position) は動かさず、CenterContent slot 0 との
-   * 整列は維持する。
+   *
+   * 注: バンドの outer に paddingLeft を入れると flex-shrink:0 と相俟って
+   * outer 幅が膨らみ、後続バンドが右方向へ押し出されて CenterContent slot
+   * 境界とズレる。よってアイコンは absolute で逃がし、バンドの flex 寸法
+   * (= 後続バンドの起点) は据え置く。
    */
   leadingPaddingPx?: number;
 }
@@ -64,7 +67,6 @@ function CenterStripeBand({
               ? MIN_EDITOR_SIZE
               : MIN_SLOT_SIZE
             : undefined,
-          paddingLeft: leadingPaddingPx || undefined,
         }}
         className={cn(
           "relative flex h-full min-h-0 min-w-0 flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden",
@@ -74,7 +76,28 @@ function CenterStripeBand({
             "ring-1 ring-primary/20",
         )}
       >
-        {segment.kind === "editor" ? (
+        {leadingPaddingPx > 0 ? (
+          <div
+            data-stripe-leading-shift
+            className="absolute bottom-0 top-0 flex flex-row items-center gap-0.5"
+            style={{ left: leadingPaddingPx }}
+          >
+            {segment.kind === "editor" ? (
+              <EditorToggleIcon />
+            ) : (
+              segment.panels.map((panel) => (
+                <ToolWindowIcon
+                  key={panel.id}
+                  panelId={panel.id}
+                  region="center"
+                  slotId={segment.slotId}
+                  active={panel.active}
+                  slotOpen={segment.open}
+                />
+              ))
+            )}
+          </div>
+        ) : segment.kind === "editor" ? (
           <EditorToggleIcon />
         ) : (
           segment.panels.map((panel) => (

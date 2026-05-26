@@ -23,6 +23,16 @@ interface StripeGroupProps {
   region: LayoutRegionId;
   /** open slot は正規化済み比率（open 間で合計 1）、collapsed slot は 0 */
   flexGrow: number;
+  /**
+   * 先頭 CollapsedCluster overlay と重なる位置にこの open slot が置かれる
+   * とき、内部アイコンを overlay 幅ぶんずらして occlusion を防ぐ (vertical は
+   * top、horizontal は left)。
+   *
+   * 注: バンドの outer に padding を入れると flex-shrink:0 と相俟って outer が
+   * 膨らみ、後続バンドが下方向へ押し出されて content slot 境界とズレる。
+   * よってアイコンは absolute で逃がし、バンドの flex 寸法は据え置く。
+   */
+  leadingPaddingPx?: number;
 }
 
 function StripeGroup({
@@ -30,7 +40,9 @@ function StripeGroup({
   orientation,
   region,
   flexGrow,
+  leadingPaddingPx = 0,
 }: StripeGroupProps) {
+  const isVertical = orientation === "vertical";
   const movePanelToSlot = useLayoutStore((s) => s.movePanelToSlot);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
@@ -87,23 +99,55 @@ function StripeGroup({
           flexShrink: 0,
         }}
         className={cn(
-          "pointer-events-auto flex min-h-0 min-w-0",
-          orientation === "vertical"
+          "pointer-events-auto relative flex min-h-0 min-w-0",
+          isVertical
             ? "w-full flex-col items-center justify-start gap-0.5 overflow-y-auto overflow-x-hidden"
             : "h-full flex-row items-center justify-start gap-0.5 overflow-x-auto overflow-y-hidden",
           draggingPanel && !layoutLocked && "ring-1 ring-primary/20",
         )}
       >
-        {segment.panels.map((panel) => (
-          <ToolWindowIcon
-            key={panel.id}
-            panelId={panel.id}
-            region={region}
-            slotId={segment.slotId}
-            active={panel.active}
-            slotOpen={segment.open}
-          />
-        ))}
+        {leadingPaddingPx > 0 ? (
+          // バンドの outer に padding を入れると flex-shrink:0 と相俟って outer
+          // が膨らみ、後続バンドが下方向へ押し出されて content の slot 境界と
+          // ずれる。padding 相当の offset は absolute で吸収し、バンドの flex
+          // 寸法 (= 後続バンドの起点) は据え置く。
+          <div
+            data-stripe-leading-shift
+            className={cn(
+              "absolute flex items-center gap-0.5",
+              isVertical
+                ? "left-0 right-0 flex-col"
+                : "top-0 bottom-0 flex-row",
+            )}
+            style={
+              isVertical
+                ? { top: leadingPaddingPx }
+                : { left: leadingPaddingPx }
+            }
+          >
+            {segment.panels.map((panel) => (
+              <ToolWindowIcon
+                key={panel.id}
+                panelId={panel.id}
+                region={region}
+                slotId={segment.slotId}
+                active={panel.active}
+                slotOpen={segment.open}
+              />
+            ))}
+          </div>
+        ) : (
+          segment.panels.map((panel) => (
+            <ToolWindowIcon
+              key={panel.id}
+              panelId={panel.id}
+              region={region}
+              slotId={segment.slotId}
+              active={panel.active}
+              slotOpen={segment.open}
+            />
+          ))
+        )}
       </div>
     </StripeBandContextMenu>
   );
@@ -257,6 +301,23 @@ export function RegionStripe({
     }
   }
 
+  // 先頭 CollapsedCluster は 0 サイズ overlay として stripe-root の start に積まれる。
+  // 後続の最初の open slot も flex 開始 0 から justify-start でアイコンを並べるため、
+  // open 側 (z-30) が overlay のアイコンを覆い隠す。最初の open slot にだけ
+  // cluster の icon span ぶんの padding を入れて overlay の外へ逃がす。
+  const leadingCluster =
+    items.length > 0 && items[0].kind === "collapsed" ? items[0] : null;
+  const hasOpenBands = items.some((item) => item.kind === "open");
+  const leadingClusterIconCount =
+    leadingCluster && hasOpenBands
+      ? leadingCluster.segments.reduce((sum, seg) => sum + seg.panels.length, 0)
+      : 0;
+  // h-7 w-7 = 28px / gap-0.5 = 2px / 末尾に小さい呼吸を確保。
+  const leadingPaddingPx =
+    leadingClusterIconCount > 0
+      ? leadingClusterIconCount * 28 + (leadingClusterIconCount - 1) * 2 + 4
+      : 0;
+
   const slotIndexOf = (slotId: string): number => {
     const i = slotIds.indexOf(slotId);
     return i < 0 ? slotIds.length : i;
@@ -382,6 +443,7 @@ export function RegionStripe({
           // collapsed cluster は 0 サイズ overlay。dividerは open バンド同士の
           // 境界にのみ挟む（content の Splitter と 1:1 対応させる）。
           const showDivider = renderedOpenBands > 0;
+          const isFirstOpenBand = renderedOpenBands === 0;
           renderedOpenBands += 1;
           return (
             <Fragment key={seg.key}>
@@ -447,6 +509,7 @@ export function RegionStripe({
                 orientation={orientation}
                 region={region}
                 flexGrow={openRatioSum > 0 ? seg.sizeRatio / openRatioSum : 1}
+                leadingPaddingPx={isFirstOpenBand ? leadingPaddingPx : 0}
               />
             </Fragment>
           );
