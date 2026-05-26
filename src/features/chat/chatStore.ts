@@ -120,7 +120,10 @@ import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getSnippet } from "@/features/snippets/api";
 import { listPinnedSnippetEntries, listPinnedStickyEntries } from "./chatApi";
-import type { PinnedSnippetContext, PinnedStickyContext } from "./contextBuilder";
+import type {
+  PinnedSnippetContext,
+  PinnedStickyContext,
+} from "./contextBuilder";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { buildPendingBeatsSection } from "@/features/editor/beat/pendingBeatsContext";
 import { getPromptCatalog } from "@/prompts/index";
@@ -759,7 +762,9 @@ async function buildSceneContextPrompt(opts: {
   const detectableCodex = allEntries.filter(
     (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
   );
-  const alwaysCodexEntries = allEntries.filter((e) => e.contextMode === "always");
+  const alwaysCodexEntries = allEntries.filter(
+    (e) => e.contextMode === "always",
+  );
   const detectableNotes = noteNodes.filter((n) => {
     const mode = n.contextMode ?? "mentioned";
     return mode !== "hidden" && mode !== "suppress";
@@ -995,8 +1000,7 @@ async function buildSceneContextPrompt(opts: {
       .filter((n) => !mentionedNoteIds.has(n.id))
       .map(buildNoteCtx),
   ];
-  const noteEntries =
-    rawNoteEntries.length > 0 ? rawNoteEntries : undefined;
+  const noteEntries = rawNoteEntries.length > 0 ? rawNoteEntries : undefined;
   const alwaysNoteIds =
     alwaysNoteNodes.length > 0 ? alwaysNoteNodes.map((n) => n.id) : undefined;
 

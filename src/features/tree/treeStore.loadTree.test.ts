@@ -82,13 +82,15 @@ describe("loadTree activeSceneId", () => {
     mockListNodes.mockResolvedValue([
       {
         ...sceneNode("scene-a", "a0"),
-        content: '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"scene body"}]}]}',
+        content:
+          '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"scene body"}]}]}',
       },
       {
         ...sceneNode("note-a", "a1"),
         nodeType: "note" as const,
         title: "Note",
-        content: '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"note body"}]}]}',
+        content:
+          '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"note body"}]}]}',
         contextMode: "mentioned",
         aliases: "[]",
         excludedAliases: "[]",

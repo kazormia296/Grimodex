@@ -1065,10 +1065,7 @@ export async function promoteUserEdgeToCodexRelation(
   projectId: string,
   positions: MapNodePositionRecord[],
 ): Promise<{ relationId: string } | null> {
-  const edges = await db
-    .select()
-    .from(mapEdges)
-    .where(eq(mapEdges.id, edgeId));
+  const edges = await db.select().from(mapEdges).where(eq(mapEdges.id, edgeId));
   const edge = edges[0];
   if (!edge) return null;
 
@@ -1081,9 +1078,8 @@ export async function promoteUserEdgeToCodexRelation(
 
   const { createCodexRelation, findCodexRelationByEdgeEndpoints } =
     await import("@/features/codex/codexRelationApi");
-  const { slugifyRelationType } = await import(
-    "@/features/codex/relationExpansion"
-  );
+  const { slugifyRelationType } =
+    await import("@/features/codex/relationExpansion");
 
   const relationType = slugifyRelationType(edge.forwardLabel);
   const existing = await findCodexRelationByEdgeEndpoints(

@@ -1287,6 +1287,23 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain("note-1");
     });
 
+    it("truncates note content at NOTE_CONTENT_MAX_CHARS", () => {
+      const longBody = "あ".repeat(2000);
+      const result = buildSystemPrompt({
+        scene: { id: "s1", title: "Scene", content: "body" },
+        noteEntries: [
+          {
+            id: "note-long",
+            title: "long",
+            content: longBody,
+          },
+        ],
+      });
+      // 1500 chars + truncation marker, NOT the full 2000
+      expect(result.prompt).toContain("…");
+      expect(result.prompt).not.toContain(longBody);
+    });
+
     it("injects current scene storyTimeLabel into L3", () => {
       const result = buildSystemPrompt({
         scene: {

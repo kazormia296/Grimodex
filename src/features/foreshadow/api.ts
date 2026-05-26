@@ -29,6 +29,10 @@ import type {
 } from "./types";
 import { safeParseAiEvaluation } from "./types";
 import { deriveLabel } from "./deriveLabel";
+import { prosemirrorToText } from "@/lib/prosemirror";
+
+/** Max chars of a scene-prefix excerpt used when `foreshadows.notes` is empty. */
+const SETUP_EXCERPT_FALLBACK_MAX_CHARS = 200;
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -696,9 +700,20 @@ export async function getSceneForeshadowContext(
     ]),
   ];
   let labelById = new Map<string, DerivedLabel>();
+  let allSetups: Array<{
+    foreshadowId: string;
+    sceneId: string;
+    isOrphan: boolean;
+    strength: ForeshadowStrength | null;
+    aiStrength: ForeshadowStrength | null;
+    aiReasoning: string | null;
+  }> = [];
   if (foreshadowIds.length > 0) {
-    const [fRows, allSetups] = await Promise.all([
-      db.select().from(foreshadows).where(inArray(foreshadows.id, foreshadowIds)),
+    const [fRows, setupsRows] = await Promise.all([
+      db
+        .select()
+        .from(foreshadows)
+        .where(inArray(foreshadows.id, foreshadowIds)),
       db
         .select({
           foreshadowId: foreshadowSetups.foreshadowId,
@@ -711,6 +726,7 @@ export async function getSceneForeshadowContext(
         .from(foreshadowSetups)
         .where(inArray(foreshadowSetups.foreshadowId, foreshadowIds)),
     ]);
+    allSetups = setupsRows as typeof allSetups;
     labelById = new Map(
       buildForeshadowsWithLabels(
         fRows as ForeshadowRow[],
@@ -726,6 +742,21 @@ export async function getSceneForeshadowContext(
   ): ForeshadowStrength | null => {
     const evaluation = safeParseAiEvaluation(aiReasoning ?? null);
     return strength ?? evaluation?.careful?.strength ?? aiStrength ?? null;
+  };
+
+  /** Pick the strongest strength from a foreshadow's non-orphan setups
+   * (manual > careful eval > ai_strength), used as the payoff-side representative. */
+  const representativeStrengthFor = (
+    fid: string,
+  ): ForeshadowStrength | null => {
+    const candidates = allSetups.filter(
+      (s) => s.foreshadowId === fid && !s.isOrphan,
+    );
+    for (const c of candidates) {
+      const s = effectiveStrength(c.strength, c.aiStrength, c.aiReasoning);
+      if (s) return s;
+    }
+    return null;
   };
 
   // 各 payoff foreshadow に対して、最初の setup シーンタイトルを 1 件取得する。
@@ -754,6 +785,29 @@ export async function getSceneForeshadowContext(
     return true;
   });
 
+  // #14 fallback: when foreshadows.notes is empty for a setup in the current
+  // scene, derive a short prefix from the scene body via prosemirrorToText.
+  // PM position-based slicing would be more precise but requires Node-instantiation
+  // outside the data layer; the prefix is good enough as last-resort context.
+  let sceneExcerptFallback: string | null = null;
+  const needsFallback = dedupedSetupRows.some((r) => !r.notes?.trim());
+  if (needsFallback) {
+    const sceneRows = await db
+      .select({ content: treeNodes.content })
+      .from(treeNodes)
+      .where(eq(treeNodes.id, sceneId));
+    const raw = sceneRows[0]?.content;
+    if (raw) {
+      const plain = prosemirrorToText(raw).trim();
+      if (plain) {
+        sceneExcerptFallback =
+          plain.length > SETUP_EXCERPT_FALLBACK_MAX_CHARS
+            ? plain.slice(0, SETUP_EXCERPT_FALLBACK_MAX_CHARS) + "…"
+            : plain;
+      }
+    }
+  }
+
   return {
     setups: dedupedSetupRows.map((r) => ({
       foreshadowId: r.foreshadowId,
@@ -765,7 +819,7 @@ export async function getSceneForeshadowContext(
         r.aiStrength as ForeshadowStrength | null,
         r.aiReasoning,
       ),
-      excerpt: r.notes?.trim() || null,
+      excerpt: r.notes?.trim() || sceneExcerptFallback,
     })),
     payoffs: payoffRows.map((r) => ({
       foreshadowId: r.id,
@@ -773,6 +827,7 @@ export async function getSceneForeshadowContext(
       intent: r.intent,
       setupSceneTitle: setupSceneByForeshadow[r.id] ?? null,
       derivedLabel: labelById.get(r.id),
+      strength: representativeStrengthFor(r.id),
       excerpt: r.notes?.trim() || null,
     })),
   };

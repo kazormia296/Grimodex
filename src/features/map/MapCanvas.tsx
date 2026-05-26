@@ -188,15 +188,21 @@ export function MapCanvas() {
   const [codexRelations, setCodexRelations] = useState<CodexRelationRow[]>([]);
 
   const projectId = useCurrentProjectId();
-  useEffect(() => {
+  const refreshCodexRelations = useCallback(async () => {
     if (!projectId) {
       setCodexRelations([]);
       return;
     }
-    listCodexRelations(projectId)
-      .then(setCodexRelations)
-      .catch(() => setCodexRelations([]));
-  }, [projectId, userEdges.length]);
+    try {
+      const rows = await listCodexRelations(projectId);
+      setCodexRelations(rows);
+    } catch {
+      setCodexRelations([]);
+    }
+  }, [projectId]);
+  useEffect(() => {
+    void refreshCodexRelations();
+  }, [refreshCodexRelations]);
 
   // Stable projection of userEdges for layout/auto-arrange hooks. Without this
   // memo, the inline `.map()` would yield a fresh array every render, and the
@@ -1471,8 +1477,7 @@ export function MapCanvas() {
               return;
             }
             setUserEdges((prev) => prev.filter((u) => u.id !== edgeId));
-            const refreshed = await listCodexRelations(pid);
-            setCodexRelations(refreshed);
+            await refreshCodexRelations();
             toast.success("Codex Relation に昇格しました");
             setEdgeContextMenu(null);
           }}

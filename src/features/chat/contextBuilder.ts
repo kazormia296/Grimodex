@@ -420,6 +420,14 @@ export const L4_PRI_MENTIONED = 2;
 export const L4_PRI_PINNED = 3;
 export const L4_PRI_ALWAYS = 4;
 
+/** Max chars of a Note body injected into L4 to keep one Note from monopolizing the budget. */
+export const NOTE_CONTENT_MAX_CHARS = 1500;
+
+function truncateForL4(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max) + "…";
+}
+
 /** L4: remove lowest-priority entry blocks first. */
 export function trimL4Text(text: string, targetTokens: number): string {
   if (countTokens(text) <= targetTokens) return text;
@@ -825,7 +833,12 @@ export function buildSystemPrompt(
   const hasPinnedStickies =
     input.pinnedStickies && input.pinnedStickies.length > 0;
   const hasNotes = input.noteEntries && input.noteEntries.length > 0;
-  if (allCodex.length > 0 || hasPinnedSnippets || hasPinnedStickies || hasNotes) {
+  if (
+    allCodex.length > 0 ||
+    hasPinnedSnippets ||
+    hasPinnedStickies ||
+    hasNotes
+  ) {
     const lines = [s.headers.codexSection];
     const stableLines = [s.headers.codexSection];
     for (const entry of allCodex) {
@@ -899,8 +912,11 @@ export function buildSystemPrompt(
           `  ${s.labels.codexAliases}: ${note.aliases.join(", ")}`,
         );
       }
-      if (note.content.trim()) {
-        blockLines.push(`  ${s.labels.contentBody}: ${note.content.trim()}`);
+      const trimmedContent = note.content.trim();
+      if (trimmedContent) {
+        blockLines.push(
+          `  ${s.labels.contentBody}: ${truncateForL4(trimmedContent, NOTE_CONTENT_MAX_CHARS)}`,
+        );
       }
       blockLines.push(`</note>`);
       const blockText = blockLines.join("\n");

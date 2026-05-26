@@ -76,9 +76,7 @@ export function useMapContextMenu({
           isStickyPinnedToChat = pinned.some((s) => s.id === stickyId);
         }
         setContextMenu((prev) =>
-          prev?.nodeId === node.id
-            ? { ...prev, isStickyPinnedToChat }
-            : prev,
+          prev?.nodeId === node.id ? { ...prev, isStickyPinnedToChat } : prev,
         );
       })();
     },

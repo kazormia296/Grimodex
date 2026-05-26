@@ -71,9 +71,11 @@ export function CodexTypedRelationsSection({
                   {arrow} {resolveName(otherId)}
                 </span>
                 <span className="ml-1 text-[10px] text-muted-foreground">
-                  ({getTypeLabel(
+                  (
+                  {getTypeLabel(
                     entries.find((e) => e.id === otherId)?.type ?? "lore",
-                  )})
+                  )}
+                  )
                 </span>
               </div>
               <button

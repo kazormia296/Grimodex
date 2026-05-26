@@ -2369,3 +2369,110 @@ fn test_migrate_chat_session_pinned_add_sticky_idempotent() {
         .expect("collect");
     assert!(cols.iter().any(|c| c == "sticky_id"));
 }
+
+/// Capture (column name, declared type) tuples for stable schema comparison.
+fn table_column_signature(conn: &rusqlite::Connection, table: &str) -> Vec<(String, String)> {
+    conn.prepare(&format!("PRAGMA table_info({})", table))
+        .expect("pragma table_info")
+        .query_map([], |row| {
+            Ok((row.get::<_, String>("name")?, row.get::<_, String>("type")?))
+        })
+        .expect("map")
+        .collect::<Result<_, _>>()
+        .expect("collect")
+}
+
+fn fk_columns(conn: &rusqlite::Connection, table: &str) -> Vec<String> {
+    let mut cols: Vec<String> = conn
+        .prepare(&format!("PRAGMA foreign_key_list({})", table))
+        .expect("pragma fk_list")
+        .query_map([], |row| row.get::<_, String>("from"))
+        .expect("map")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    cols.sort();
+    cols
+}
+
+/// New DB (fresh migrate) and a DB whose legacy table is upgraded via the
+/// codex_relations FK-drop migration must end up with the same schema.
+/// Catches drift between the initial CREATE TABLE and the upgrade path.
+#[test]
+fn test_migrate_codex_relations_schema_matches_new_db() {
+    let fresh = test_db();
+    let fresh_conn = fresh.conn.lock().expect("lock");
+    let fresh_cols = table_column_signature(&fresh_conn, "codex_relations");
+    let fresh_fks = fk_columns(&fresh_conn, "codex_relations");
+
+    let legacy = test_db();
+    let legacy_conn = legacy.conn.lock().expect("lock");
+    legacy_conn
+        .execute_batch(
+            "DROP TABLE IF EXISTS codex_relations;
+             CREATE TABLE codex_relations (
+                id                  TEXT PRIMARY KEY,
+                project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                from_codex_id       TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                relation_type       TEXT NOT NULL DEFAULT 'custom',
+                label               TEXT,
+                depth_hint          INTEGER,
+                source_map_edge_id  TEXT REFERENCES map_edges(id) ON DELETE SET NULL,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .expect("legacy schema");
+    Database::migrate_codex_relations_source_map_edge_id(&legacy_conn).expect("upgrade");
+    let upgraded_cols = table_column_signature(&legacy_conn, "codex_relations");
+    let upgraded_fks = fk_columns(&legacy_conn, "codex_relations");
+
+    assert_eq!(fresh_cols, upgraded_cols, "column signature must match");
+    assert_eq!(fresh_fks, upgraded_fks, "FK columns must match");
+    assert!(
+        !fresh_fks.iter().any(|c| c == "source_map_edge_id"),
+        "new DB must also have no FK on source_map_edge_id"
+    );
+}
+
+/// Same drift check for chat_session_pinned_codex: rebuilt legacy table
+/// must have the same columns and CHECK semantics as a freshly created one.
+#[test]
+fn test_migrate_chat_session_pinned_schema_matches_new_db() {
+    let fresh = test_db();
+    let fresh_conn = fresh.conn.lock().expect("lock");
+    let fresh_cols = table_column_signature(&fresh_conn, "chat_session_pinned_codex");
+    assert!(
+        fresh_cols.iter().any(|(n, _)| n == "sticky_id"),
+        "fresh DB must have sticky_id"
+    );
+
+    let legacy = test_db();
+    let legacy_conn = legacy.conn.lock().expect("lock");
+    legacy_conn
+        .execute_batch(
+            "DROP TABLE IF EXISTS chat_session_pinned_codex;
+             CREATE TABLE chat_session_pinned_codex (
+                id              TEXT PRIMARY KEY,
+                session_id      TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+                with_children   INTEGER NOT NULL DEFAULT 0,
+                pin_source      TEXT NOT NULL DEFAULT 'manual'
+                                  CHECK(pin_source IN ('manual','chat_mention')),
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (
+                    (CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN snippet_id     IS NOT NULL THEN 1 ELSE 0 END) = 1
+                )
+             );",
+        )
+        .expect("legacy schema");
+    Database::migrate_chat_session_pinned_add_sticky(&legacy_conn).expect("upgrade");
+
+    let upgraded_cols = table_column_signature(&legacy_conn, "chat_session_pinned_codex");
+    assert_eq!(
+        fresh_cols, upgraded_cols,
+        "column signature must match between fresh DB and upgraded legacy DB"
+    );
+}
