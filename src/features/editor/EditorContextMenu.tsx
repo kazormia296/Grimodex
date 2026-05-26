@@ -5,6 +5,10 @@ import { toast } from "sonner";
 import type { Editor } from "@tiptap/react";
 import { BUILTIN_CODEX_TYPES } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
+import {
+  findMentionedEntries,
+  type CodexMatchTarget,
+} from "@/features/codex/codexMatcher";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
@@ -56,6 +60,12 @@ export function EditorContextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
 
   const [hasAuthorship, setHasAuthorship] = useState(false);
+  /**
+   * 単一の Codex 項目にだけマッチする選択時、その対象を保持する。
+   * 「除外エイリアスとして登録」項目を出すかどうかの判定に使う。
+   */
+  const [singleMatchedCodex, setSingleMatchedCodex] =
+    useState<CodexMatchTarget | null>(null);
 
   const activeSceneId = useSceneStore((s) => s.activeSceneId);
   const codexCreate = useCodexStore((s) => s.create);
@@ -108,9 +118,18 @@ export function EditorContextMenu({
       const disableSnapshot = detectDisableAtSelection(editor);
       const authorshipSnapshot = detectAuthorshipAtSelection(editor);
 
+      const trimmed = text.trim();
+      let single: CodexMatchTarget | null = null;
+      if (trimmed.length > 0 && trimmed.length <= 200) {
+        const entries = useCodexStore.getState().entries as CodexMatchTarget[];
+        const matches = findMentionedEntries(text, entries);
+        if (matches.length === 1) single = matches[0];
+      }
+
       setSelectedText(text);
       setDisableState(disableSnapshot);
       setHasAuthorship(authorshipSnapshot);
+      setSingleMatchedCodex(single);
       setPos({ x: e.clientX, y: e.clientY });
     }
 
@@ -174,6 +193,38 @@ export function EditorContextMenu({
       useLayoutStore.getState().showPanel("codex");
       useCodexStore.getState().requestSelectEntry(entry.id);
     }
+  };
+
+  const handleRegisterExcludedAlias = async () => {
+    close();
+    const target = singleMatchedCodex;
+    const trimmed = selectedText.trim();
+    if (!target || !trimmed) return;
+
+    const current = useCodexStore
+      .getState()
+      .entries.find((e) => e.id === target.id);
+    if (!current) return;
+
+    let existing: string[] = [];
+    try {
+      const parsed = JSON.parse(current.excludedAliases ?? "[]");
+      if (Array.isArray(parsed)) existing = parsed as string[];
+    } catch {
+      existing = [];
+    }
+
+    if (existing.includes(trimmed)) {
+      toast.info(t("editor.contextMenu.excludedAliasAlreadyExists"));
+      return;
+    }
+
+    await useCodexStore.getState().update(target.id, {
+      excludedAliases: JSON.stringify([...existing, trimmed]),
+    });
+    toast.success(
+      t("editor.contextMenu.excludedAliasRegistered", { name: target.name }),
+    );
   };
 
   const handleSaveAsSnippet = () => {
@@ -464,6 +515,17 @@ export function EditorContextMenu({
             >
               {t("editor.contextMenu.addToCodex")}
             </button>
+            {singleMatchedCodex && (
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
+                onClick={handleRegisterExcludedAlias}
+              >
+                {t("editor.contextMenu.registerAsExcludedAlias", {
+                  name: singleMatchedCodex.name,
+                })}
+              </button>
+            )}
             <button
               type="button"
               className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"

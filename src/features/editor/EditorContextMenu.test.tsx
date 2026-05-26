@@ -7,21 +7,35 @@ import type { Editor } from "@tiptap/react";
 // vi.hoisted ensures these are available when vi.mock factories run
 const {
   mockCodexCreate,
+  mockCodexUpdate,
   mockRequestSelectEntry,
   mockShowPanel,
   mockSnippetCreate,
+  mockToastSuccess,
+  mockToastInfo,
+  codexEntriesHolder,
 } = vi.hoisted(() => ({
   mockCodexCreate: vi.fn(),
+  mockCodexUpdate: vi.fn(),
   mockRequestSelectEntry: vi.fn(),
   mockShowPanel: vi.fn(),
   mockSnippetCreate: vi.fn(),
+  mockToastSuccess: vi.fn(),
+  mockToastInfo: vi.fn(),
+  codexEntriesHolder: { entries: [] as Array<Record<string, unknown>> },
 }));
 
 // useCodexStore must work as both a hook (selector fn) and have getState()
 const { mockUseCodexStore } = vi.hoisted(() => {
   const codexState = {
+    get entries() {
+      return codexEntriesHolder.entries;
+    },
     get create() {
       return mockCodexCreate;
+    },
+    get update() {
+      return mockCodexUpdate;
     },
     get requestSelectEntry() {
       return mockRequestSelectEntry;
@@ -33,6 +47,13 @@ const { mockUseCodexStore } = vi.hoisted(() => {
   );
   return { mockUseCodexStore: store };
 });
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: mockToastSuccess,
+    info: mockToastInfo,
+  },
+}));
 
 vi.mock("@/features/codex/codexStore", () => ({
   useCodexStore: mockUseCodexStore,
@@ -104,8 +125,12 @@ function Wrapper({ editor }: { editor: Editor | null }) {
 describe("EditorContextMenu - Codexに追加", () => {
   beforeEach(() => {
     mockCodexCreate.mockClear();
+    mockCodexUpdate.mockClear();
     mockRequestSelectEntry.mockClear();
     mockShowPanel.mockClear();
+    mockToastSuccess.mockClear();
+    mockToastInfo.mockClear();
+    codexEntriesHolder.entries = [];
   });
 
   it("Codex追加後にshowPanel('codex')とrequestSelectEntryを呼ぶ", async () => {
@@ -154,5 +179,150 @@ describe("EditorContextMenu - Codexに追加", () => {
 
     expect(mockShowPanel).not.toHaveBeenCalled();
     expect(mockRequestSelectEntry).not.toHaveBeenCalled();
+  });
+});
+
+describe("EditorContextMenu - 除外エイリアスとして登録", () => {
+  beforeEach(() => {
+    mockCodexCreate.mockClear();
+    mockCodexUpdate.mockClear();
+    mockRequestSelectEntry.mockClear();
+    mockShowPanel.mockClear();
+    mockToastSuccess.mockClear();
+    mockToastInfo.mockClear();
+    codexEntriesHolder.entries = [];
+  });
+
+  it("単一のCodexにマッチする選択時に登録項目が表示される", async () => {
+    codexEntriesHolder.entries = [
+      {
+        id: "e-1",
+        name: "リン",
+        type: "character",
+        aliases: "[]",
+        excludedAliases: "[]",
+      },
+    ];
+
+    const editor = makeEditor("リン");
+    const { getByTestId } = render(<Wrapper editor={editor} />);
+
+    fireEvent.contextMenu(getByTestId("container"), {
+      clientX: 50,
+      clientY: 50,
+    });
+
+    expect(
+      await screen.findByText("「リン」の除外エイリアスに登録"),
+    ).toBeTruthy();
+  });
+
+  it("複数のCodexにマッチする選択時は登録項目が表示されない", async () => {
+    codexEntriesHolder.entries = [
+      {
+        id: "e-1",
+        name: "リン",
+        type: "character",
+        aliases: "[]",
+        excludedAliases: "[]",
+      },
+      {
+        id: "e-2",
+        name: "サト",
+        type: "character",
+        aliases: "[]",
+        excludedAliases: "[]",
+      },
+    ];
+
+    const editor = makeEditor("リンとサトが");
+    const { getByTestId } = render(<Wrapper editor={editor} />);
+
+    fireEvent.contextMenu(getByTestId("container"), {
+      clientX: 50,
+      clientY: 50,
+    });
+
+    // Add-to-codex always shows (canSetDisable), but our new item shouldn't.
+    await screen.findByText("コデックスに追加");
+    expect(screen.queryByText(/除外エイリアスに登録$/)).toBeNull();
+  });
+
+  it("クリックで update が選択テキストを追加した配列で呼ばれる", async () => {
+    codexEntriesHolder.entries = [
+      {
+        id: "e-1",
+        name: "リン",
+        type: "character",
+        aliases: "[]",
+        excludedAliases: "[]",
+      },
+    ];
+    mockCodexUpdate.mockResolvedValue(undefined);
+
+    const editor = makeEditor("リン");
+    const { getByTestId } = render(<Wrapper editor={editor} />);
+
+    fireEvent.contextMenu(getByTestId("container"), {
+      clientX: 50,
+      clientY: 50,
+    });
+
+    const btn = await screen.findByText("「リン」の除外エイリアスに登録");
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(mockCodexUpdate).toHaveBeenCalledWith("e-1", {
+        excludedAliases: JSON.stringify(["リン"]),
+      });
+      expect(mockToastSuccess).toHaveBeenCalled();
+    });
+  });
+
+  it("既に excludedAliases に含まれていれば matcher 側で除外され項目が出ない", async () => {
+    codexEntriesHolder.entries = [
+      {
+        id: "e-1",
+        name: "リン",
+        type: "character",
+        aliases: "[]",
+        excludedAliases: JSON.stringify(["リン"]),
+      },
+    ];
+
+    const editor = makeEditor("リン");
+    const { getByTestId } = render(<Wrapper editor={editor} />);
+
+    fireEvent.contextMenu(getByTestId("container"), {
+      clientX: 50,
+      clientY: 50,
+    });
+
+    await screen.findByText("コデックスに追加");
+    expect(screen.queryByText(/除外エイリアスに登録$/)).toBeNull();
+  });
+
+  it("200文字超の選択では項目が表示されない", async () => {
+    codexEntriesHolder.entries = [
+      {
+        id: "e-1",
+        name: "リン",
+        type: "character",
+        aliases: "[]",
+        excludedAliases: "[]",
+      },
+    ];
+
+    const longText = "リン" + "あ".repeat(250);
+    const editor = makeEditor(longText);
+    const { getByTestId } = render(<Wrapper editor={editor} />);
+
+    fireEvent.contextMenu(getByTestId("container"), {
+      clientX: 50,
+      clientY: 50,
+    });
+
+    await screen.findByText("コデックスに追加");
+    expect(screen.queryByText(/除外エイリアスに登録$/)).toBeNull();
   });
 });
