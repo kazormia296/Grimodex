@@ -39,7 +39,23 @@ export interface CommandCenterSection {
 
 export type CommandCenterMode = "search" | "command";
 
-export interface ProviderSearchContext {
+/**
+ * Provider が出力対象とする surface。
+ * - "bar": ヘッダー常駐の CommandCenterBar (Quick Open / コマンド系)
+ * - "panel": Dockview の CommandCenterResultsPanel (全文検索系)
+ *
+ * Phase A1: lexical/semantic は両方 (`["bar", "panel"]`)。
+ * Phase B で bar 用 (quickOpen/command) と panel 用 (lexical/semantic) に分離する。
+ */
+export type Surface = "bar" | "panel";
+
+/** cacheKeyExtras / search に渡される provider extras。store を直接読まずに済むよう DI する。 */
+export interface ProviderExtras {
+  /** semantic の dialogue penalty (search モード) */
+  descriptionMode: boolean;
+}
+
+export interface ProviderSearchContext extends ProviderExtras {
   /** prefix を剥がした生クエリ */
   query: string;
   /** 旧クエリの結果を捨てるための補助シグナル */
@@ -59,6 +75,8 @@ export interface CommandCenterProvider {
   title: string;
   /** 0 件の section を結果配列から除外するか */
   hideWhenEmpty: boolean;
+  /** 出力対象 surface。bar = ヘッダーバー、panel = 検索パネル。 */
+  surfaces: readonly Surface[];
   supportsMode: (mode: CommandCenterMode) => boolean;
   search: (ctx: ProviderSearchContext) => Promise<CommandCenterSection>;
   /**
@@ -67,5 +85,5 @@ export interface CommandCenterProvider {
    * (他の provider は無関係に維持)。例: Semantic は descriptionMode を含める。
    * 戻り値の string を `baseKey` に concat。default: 何も追加しない。
    */
-  cacheKeyExtras?: () => string;
+  cacheKeyExtras?: (extras: ProviderExtras) => string;
 }

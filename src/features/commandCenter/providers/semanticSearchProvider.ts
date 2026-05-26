@@ -6,7 +6,6 @@ import {
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
-import { useCommandCenterStore } from "../store/commandCenterStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import type {
   CommandCenterItem,
@@ -75,21 +74,18 @@ export const semanticSearchProvider: CommandCenterProvider = {
   order: PROVIDER_ORDER,
   title: "Semantic",
   hideWhenEmpty: true,
+  surfaces: ["bar", "panel"],
   supportsMode: (mode) => mode === "search",
-  cacheKeyExtras: () => {
-    const desc = useCommandCenterStore.getState().descriptionMode;
-    return `desc=${desc ? "1" : "0"}`;
-  },
+  cacheKeyExtras: (extras) => `desc=${extras.descriptionMode ? "1" : "0"}`,
   async search(ctx: ProviderSearchContext): Promise<CommandCenterSection> {
     const query = ctx.query.trim();
     if (query.length < MIN_QUERY_LENGTH) return emptySection();
-    const descriptionMode = useCommandCenterStore.getState().descriptionMode;
     try {
       const hits = await semanticSearch({
         projectId: getCurrentProjectId(),
         query,
         limit: ctx.limit,
-        descriptionMode,
+        descriptionMode: ctx.descriptionMode,
       });
       if (ctx.signal.aborted) return emptySection();
       return {

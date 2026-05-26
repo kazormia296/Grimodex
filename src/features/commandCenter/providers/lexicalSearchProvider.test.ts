@@ -38,6 +38,7 @@ function makeContext(
     limit: 10,
     mode: "search",
     generation: 1,
+    descriptionMode: false,
     ...overrides,
   };
 }

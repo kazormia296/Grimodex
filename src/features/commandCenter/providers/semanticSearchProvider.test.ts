@@ -22,7 +22,6 @@ import { semanticSearch } from "@/features/semantic-search/api";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
-import { useCommandCenterStore } from "../store/commandCenterStore";
 
 function makeContext(
   overrides: Partial<ProviderSearchContext> = {},
@@ -33,6 +32,7 @@ function makeContext(
     limit: 10,
     mode: "search",
     generation: 1,
+    descriptionMode: false,
     ...overrides,
   };
 }
@@ -50,8 +50,6 @@ const sampleHit = {
 describe("semanticSearchProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // default: descriptionMode off
-    useCommandCenterStore.setState({ descriptionMode: false });
   });
 
   it("supports only search mode", () => {
@@ -89,19 +87,20 @@ describe("semanticSearchProvider", () => {
     });
   });
 
-  it("passes descriptionMode=true when commandCenterStore has it enabled", async () => {
-    useCommandCenterStore.setState({ descriptionMode: true });
+  it("passes descriptionMode=true when ctx has it enabled", async () => {
     vi.mocked(semanticSearch).mockResolvedValueOnce([]);
-    await semanticSearchProvider.search(makeContext());
+    await semanticSearchProvider.search(makeContext({ descriptionMode: true }));
     const callArgs = vi.mocked(semanticSearch).mock.calls[0]?.[0];
     expect(callArgs).toMatchObject({ descriptionMode: true });
   });
 
   it("cacheKeyExtras reflects descriptionMode flips", () => {
-    useCommandCenterStore.setState({ descriptionMode: false });
-    const off = semanticSearchProvider.cacheKeyExtras?.();
-    useCommandCenterStore.setState({ descriptionMode: true });
-    const on = semanticSearchProvider.cacheKeyExtras?.();
+    const off = semanticSearchProvider.cacheKeyExtras?.({
+      descriptionMode: false,
+    });
+    const on = semanticSearchProvider.cacheKeyExtras?.({
+      descriptionMode: true,
+    });
     expect(off).toBeDefined();
     expect(on).toBeDefined();
     expect(off).not.toEqual(on);

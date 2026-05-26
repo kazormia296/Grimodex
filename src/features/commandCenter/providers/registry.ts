@@ -1,4 +1,8 @@
-import type { CommandCenterMode, CommandCenterProvider } from "./types";
+import type {
+  CommandCenterMode,
+  CommandCenterProvider,
+  Surface,
+} from "./types";
 
 /**
  * Provider レジストリ。アプリ起動時に lexical/semantic を登録、将来 command も追加。
@@ -14,9 +18,17 @@ export function unregisterProvider(id: string): void {
   providers.delete(id);
 }
 
-export function getProviders(mode: CommandCenterMode): CommandCenterProvider[] {
+/**
+ * `surface` で provider を絞り込み。surface 未指定なら従来通り全 provider。
+ * 検索 hook が bar/panel どちらで動いているかを伝えるためのフィルタ。
+ */
+export function getProviders(
+  mode: CommandCenterMode,
+  surface?: Surface,
+): CommandCenterProvider[] {
   return Array.from(providers.values())
     .filter((p) => p.supportsMode(mode))
+    .filter((p) => surface === undefined || p.surfaces.includes(surface))
     .sort((a, b) => a.order - b.order);
 }
 

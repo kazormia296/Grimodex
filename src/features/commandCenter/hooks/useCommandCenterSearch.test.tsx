@@ -27,6 +27,7 @@ function makeProvider(
     order: options.order ?? 1,
     title: id,
     hideWhenEmpty: options.hideWhenEmpty ?? true,
+    surfaces: ["bar", "panel"],
     supportsMode: options.supportsMode ?? ((m) => m === "search"),
     search:
       options.search ??

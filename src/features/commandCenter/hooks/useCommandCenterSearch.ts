@@ -3,7 +3,11 @@ import { useCommandCenterStore } from "../store/commandCenterStore";
 import { getProviders } from "../providers/registry";
 import { parseCommandInput } from "../lib/parseCommandInput";
 import { filterByExcludes } from "../lib/filterByExcludes";
-import type { CommandCenterProvider } from "../providers/types";
+import type {
+  CommandCenterProvider,
+  ProviderExtras,
+  Surface,
+} from "../providers/types";
 
 /**
  * 検索バーの「入力を購読 → debounce → provider 並行実行 → store に upsert」フック。
@@ -58,6 +62,8 @@ const DEFAULT_LIMIT = 10;
 export interface UseCommandCenterSearchOptions {
   /** 1 provider あたりの取得件数。バー単独=10、Dockview パネル mount 中=50 */
   limit?: number;
+  /** 絞り込み対象の surface。Phase A2 で bar/panel 個別に hook を起動するときに使う。 */
+  surface?: Surface;
 }
 
 function ensureRuntime(
@@ -95,6 +101,7 @@ export function useCommandCenterSearch(
   options: UseCommandCenterSearchOptions = {},
 ): void {
   const limit = options.limit ?? DEFAULT_LIMIT;
+  const surface = options.surface;
   const runtimesRef = useRef<Map<string, ProviderRuntime>>(new Map());
 
   const query = useCommandCenterStore((s) => s.query);
@@ -110,7 +117,7 @@ export function useCommandCenterSearch(
     store.setExcludes(parsed.excludes);
 
     const trimmed = parsed.text.trim();
-    const providers = getProviders(parsed.mode);
+    const providers = getProviders(parsed.mode, surface);
     const activeIds = new Set(providers.map((p) => p.id));
 
     // クエリ空: 全 runtime を破棄して sections を完全クリア
@@ -134,19 +141,17 @@ export function useCommandCenterSearch(
       }
     }
 
+    const extras: ProviderExtras = { descriptionMode };
     for (const provider of providers) {
       scheduleProvider(provider, runtimesRef.current, {
         query: trimmed,
         mode: parsed.mode,
         limit,
         excludes: parsed.excludes,
+        extras,
       });
     }
-    // descriptionMode は scheduleProvider 内で `provider.cacheKeyExtras()` 経由で
-    // baseKey に組み込まれるため、ここで参照しなくても effect の deps に入れて
-    // 再実行されればその provider だけ memo が外れる (lexical は no-op で skip)。
-    void descriptionMode;
-  }, [query, limit, descriptionMode]);
+  }, [query, limit, descriptionMode, surface]);
 
   // unmount cleanup
   useEffect(() => {
@@ -164,6 +169,8 @@ interface ScheduleArgs {
   limit: number;
   /** post-filter で section.items から drop する除外語 */
   excludes: string[];
+  /** provider が search/cacheKey で使う追加コンテキスト */
+  extras: ProviderExtras;
 }
 
 function makeBaseKey(
@@ -175,7 +182,7 @@ function makeBaseKey(
   const sortedExcludes = [...args.excludes].sort().join("\x00");
   // provider 固有の bust factor (例: semantic は descriptionMode を含む)。
   // 他 provider に影響しないよう provider.id 単位で計算される。
-  const extras = provider.cacheKeyExtras?.() ?? "";
+  const extras = provider.cacheKeyExtras?.(args.extras) ?? "";
   return `${args.mode}::${args.query}::ex=${sortedExcludes}::extras=${extras}`;
 }
 
@@ -229,6 +236,7 @@ async function runProvider(
       limit: args.limit,
       mode: args.mode,
       generation: myGen,
+      descriptionMode: args.extras.descriptionMode,
     });
     if (runtime.generation !== myGen || controller.signal.aborted) return;
     // 同じ base key への重ね打ちなら maxLimit は max を取る、

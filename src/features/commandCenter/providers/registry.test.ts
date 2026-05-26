@@ -17,6 +17,7 @@ function makeProvider(
     order: 1,
     title: id,
     hideWhenEmpty: true,
+    surfaces: ["bar", "panel"],
     supportsMode: () => true,
     search: async () => ({ id, title: id, order: 1, items: [] }),
     ...overrides,
@@ -57,5 +58,27 @@ describe("commandCenter/providers/registry", () => {
     registerProvider(makeProvider("lexical"));
     unregisterProvider("lexical");
     expect(getProviders("search")).toEqual([]);
+  });
+
+  it("filters by surface when specified", () => {
+    registerProvider(makeProvider("bar-only", { surfaces: ["bar"] }));
+    registerProvider(makeProvider("panel-only", { surfaces: ["panel"] }));
+    registerProvider(makeProvider("both", { surfaces: ["bar", "panel"] }));
+    expect(
+      getProviders("search", "bar")
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual(["bar-only", "both"]);
+    expect(
+      getProviders("search", "panel")
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual(["both", "panel-only"]);
+    // surface 未指定なら全件 (後方互換)
+    expect(
+      getProviders("search")
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual(["bar-only", "both", "panel-only"]);
   });
 });
