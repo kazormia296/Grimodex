@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { BookOpen, ChevronDown, Loader2 } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -19,12 +19,6 @@ import {
 } from "@/features/post-effect/api";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { PostEffectAnnotationPanel } from "@/features/post-effect/PostEffectAnnotationPanel";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import type {
   PostEffectAnnotation,
   PostEffectDoneEvent,
@@ -246,36 +240,24 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
         <span className="text-xs text-muted-foreground">現在シーン整合性</span>
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            disabled={disabled}
-            title={triggerTitle}
-            className={cn(
-              "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
-              "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-            )}
-          >
-            {running ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : (
-              <BookOpen size={12} />
-            )}
-            <span>実行</span>
-            <ChevronDown size={10} />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[140px]">
-            <DropdownMenuItem onSelect={() => void run("consistency")}>
-              Codex整合性
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => void run("intra")}>
-              シーン内矛盾
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => void run("both")}>
-              両方実行
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <button
+          type="button"
+          disabled={disabled}
+          title={triggerTitle}
+          onClick={() => void run("both")}
+          className={cn(
+            "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
+            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            "disabled:cursor-not-allowed disabled:opacity-50",
+          )}
+        >
+          {running ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <Sparkles size={12} />
+          )}
+          <span>AIチェック</span>
+        </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <PostEffectAnnotationPanel sceneId={sceneId} />

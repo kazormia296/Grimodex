@@ -144,6 +144,11 @@ export function IssuesTab() {
             count={linterCount}
             expanded={linterExpanded}
             onToggle={handleLinterToggle}
+            action={
+              <span className="text-[10px] text-muted-foreground">
+                自動検出
+              </span>
+            }
           />
           <div className="min-h-0 flex-1 overflow-hidden">
             <LinterSection />

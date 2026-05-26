@@ -168,7 +168,7 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
           ) : (
             <Sparkles size={12} />
           )}
-          <span>AI実行</span>
+          <span>AIチェック</span>
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">

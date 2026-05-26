@@ -222,7 +222,7 @@ export function ProjectTypoView() {
           ) : (
             <Sparkles size={12} />
           )}
-          <span>AI実行</span>
+          <span>AIチェック</span>
         </button>
       </div>
 

@@ -1,12 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  AlertTriangle,
-  BookOpen,
-  ChevronDown,
-  Info,
-  Loader2,
-  XCircle,
-} from "lucide-react";
+import { AlertTriangle, Info, Loader2, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -33,12 +26,6 @@ import {
   ContrastRow,
   ExpandedDetails,
 } from "@/features/post-effect/AnnotationDetails";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import type {
   PostEffectAnnotation,
   PostEffectDoneEvent,
@@ -334,44 +321,32 @@ export function ProjectAnnotationsView() {
             </button>
           </div>
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            disabled={runningAll || analysisCapability.state !== "enabled"}
-            title={
-              analysisCapability.state === "disabled"
-                ? analysisCapability.reason === "policy"
-                  ? "AIポリシーにより無効"
-                  : analysisCapability.reason === "no-model"
-                    ? "AIモデルが未選択です"
-                    : "AIが未設定です"
-                : "全シーンの整合性チェックを実行"
-            }
-            className={cn(
-              "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
-              "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-            )}
-          >
-            {runningAll ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : (
-              <BookOpen size={12} />
-            )}
-            <span>実行</span>
-            <ChevronDown size={10} />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[140px]">
-            <DropdownMenuItem onSelect={() => void runMulti("consistency")}>
-              Codex整合性
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => void runMulti("intra")}>
-              シーン内矛盾
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => void runMulti("both")}>
-              両方実行
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <button
+          type="button"
+          disabled={runningAll || analysisCapability.state !== "enabled"}
+          onClick={() => void runMulti("both")}
+          title={
+            analysisCapability.state === "disabled"
+              ? analysisCapability.reason === "policy"
+                ? "AIポリシーにより無効"
+                : analysisCapability.reason === "no-model"
+                  ? "AIモデルが未選択です"
+                  : "AIが未設定です"
+              : "全シーンの整合性チェックを実行"
+          }
+          className={cn(
+            "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
+            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            "disabled:cursor-not-allowed disabled:opacity-50",
+          )}
+        >
+          {runningAll ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <Sparkles size={12} />
+          )}
+          <span>AIチェック</span>
+        </button>
       </div>
 
       {loading ? (
