@@ -512,7 +512,7 @@ export function Toolbar({
           </ToolbarButton>
           {sceneId && nodeType === "scene" && (
             <ToolbarButton
-              label={t("editor.toolbar.consistencyMarks")}
+              label={t("editor.toolbar.reviewMarks")}
               active={showAnnotations}
               onClick={() => {
                 toggleShowAnnotations();
@@ -521,7 +521,7 @@ export function Toolbar({
                 );
               }}
             >
-              Cs
+              Rv
             </ToolbarButton>
           )}
           {onTogglePanel !== undefined && (

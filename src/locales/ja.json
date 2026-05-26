@@ -1882,7 +1882,7 @@
       "attribution": "帰属表示",
       "comments": "コメント表示（未実装）",
       "foreshadowMarks": "伏線マーク表示",
-      "consistencyMarks": "整合性アノテーション表示",
+      "reviewMarks": "校閲アノテーション表示",
       "focusMode": "フォーカスモード",
       "typewriterMode": "タイプライターモード",
       "sceneMetaPanel": "シーン情報パネル",

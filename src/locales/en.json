@@ -1873,7 +1873,7 @@
       "attribution": "Attribution",
       "comments": "Comments (not implemented)",
       "foreshadowMarks": "Show foreshadow marks",
-      "consistencyMarks": "Show consistency annotations",
+      "reviewMarks": "Show review annotations",
       "focusMode": "Focus mode",
       "typewriterMode": "Typewriter mode",
       "sceneMetaPanel": "Scene info panel",
