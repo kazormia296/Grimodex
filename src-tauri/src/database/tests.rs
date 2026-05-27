@@ -2476,3 +2476,104 @@ fn test_migrate_chat_session_pinned_schema_matches_new_db() {
         "column signature must match between fresh DB and upgraded legacy DB"
     );
 }
+
+#[test]
+fn test_migrate_authorship_spans_check_with_sticky_idempotent() {
+    let db = test_db();
+    let conn = db.conn.lock().expect("lock");
+    Database::migrate_authorship_spans_check_with_sticky(&conn)
+        .expect("idempotent authorship spans check migrate");
+    Database::migrate_authorship_spans_check_with_sticky(&conn)
+        .expect("idempotent on second run");
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(authorship_spans)")
+        .expect("pragma")
+        .query_map([], |row| row.get::<_, String>("name"))
+        .expect("map")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert!(cols.iter().any(|c| c == "sticky_id"));
+}
+
+/// Legacy DBs added sticky_id via ALTER TABLE but the CHECK still required
+/// exactly one of the original four FKs to be NOT NULL — sticky-only inserts
+/// (e.g. Map AI branch) failed. Verify the rebuild allows sticky-only spans.
+#[test]
+fn test_migrate_authorship_spans_check_allows_sticky_only() {
+    let legacy = test_db();
+    let legacy_conn = legacy.conn.lock().expect("lock");
+    // Recreate the pre-fix shape: column exists, but CHECK omits sticky_id.
+    legacy_conn
+        .execute_batch(
+            "DROP TABLE IF EXISTS authorship_spans;
+             CREATE TABLE authorship_spans (
+                id              TEXT PRIMARY KEY,
+                node_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+                detail_value_id TEXT REFERENCES codex_detail_values(id) ON DELETE CASCADE,
+                from_pos        INTEGER NOT NULL,
+                to_pos          INTEGER NOT NULL,
+                source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
+                model           TEXT,
+                timestamp       TEXT,
+                chat_msg_id     TEXT,
+                phase_id        TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
+                sticky_id       TEXT REFERENCES map_stickies(id) ON DELETE CASCADE,
+                CHECK (
+                    (CASE WHEN node_id         IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN codex_entry_id  IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN snippet_id      IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN detail_value_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+                ),
+                CHECK (phase_id IS NULL OR codex_entry_id IS NOT NULL)
+             );",
+        )
+        .expect("legacy schema");
+
+    // Seed a board + sticky so the FK target exists.
+    legacy_conn
+        .execute_batch(
+            "INSERT INTO projects (id, title) VALUES ('p1', 'P');
+             INSERT INTO map_boards (id, project_id, title, mode, created_at, updated_at)
+                VALUES ('b1', 'p1', 'B', 'free', datetime('now'), datetime('now'));
+             INSERT INTO map_stickies
+                (id, board_id, body, palette_id, color_slot, created_at, updated_at)
+                VALUES ('s1', 'b1', '{}', 'default', 0,
+                        datetime('now'), datetime('now'));",
+        )
+        .expect("seed");
+
+    // Sticky-only insert must fail against the legacy CHECK.
+    let legacy_err = legacy_conn.execute(
+        "INSERT INTO authorship_spans
+            (id, sticky_id, from_pos, to_pos, source, timestamp)
+         VALUES ('a1', 's1', 0, 10, 'ai', datetime('now'))",
+        [],
+    );
+    assert!(
+        legacy_err.is_err(),
+        "legacy CHECK must reject sticky-only span"
+    );
+
+    Database::migrate_authorship_spans_check_with_sticky(&legacy_conn).expect("upgrade");
+
+    // After migration, the same insert must succeed.
+    legacy_conn
+        .execute(
+            "INSERT INTO authorship_spans
+                (id, sticky_id, from_pos, to_pos, source, timestamp)
+             VALUES ('a1', 's1', 0, 10, 'ai', datetime('now'))",
+            [],
+        )
+        .expect("sticky-only span insert must succeed after migration");
+
+    // Exclusivity still holds: setting two owners must fail.
+    let dup_err = legacy_conn.execute(
+        "INSERT INTO authorship_spans
+            (id, sticky_id, node_id, from_pos, to_pos, source)
+         VALUES ('a2', 's1', 'whatever', 0, 10, 'ai')",
+        [],
+    );
+    assert!(dup_err.is_err(), "two owners must still fail CHECK");
+}

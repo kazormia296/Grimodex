@@ -976,6 +976,9 @@ impl Database {
             "TEXT REFERENCES map_stickies(id) ON DELETE CASCADE",
         )?;
 
+        // Extend authorship_spans CHECK to allow sticky_id as a 5th exclusive owner.
+        Self::migrate_authorship_spans_check_with_sticky(&conn)?;
+
         // Foreshadow secret flag — existing records default false (backwards-compat)
         Self::add_column_if_missing(&conn, "foreshadows", "secret", "INTEGER NOT NULL DEFAULT 0")?;
 
@@ -1488,6 +1491,104 @@ impl Database {
         if !fk_errors.is_empty() {
             anyhow::bail!(
                 "foreign key check failed after chat_session_pinned_codex rebuild: {}",
+                fk_errors.join("; ")
+            );
+        }
+        Ok(())
+    }
+
+    /// One-shot migration: extend authorship_spans CHECK to include sticky_id as
+    /// a 5th exclusive owner (Map Sticky authorship). The sticky_id column was
+    /// added additively earlier, but the CHECK still required exactly one of the
+    /// original four FKs to be NOT NULL — causing sticky-only inserts (e.g.
+    /// Map AI branch) to fail.
+    /// SQLite cannot ALTER CHECK constraints — table rebuild required.
+    pub(super) fn migrate_authorship_spans_check_with_sticky(
+        conn: &Connection,
+    ) -> anyhow::Result<()> {
+        let create_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'authorship_spans'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        let Some(create_sql) = create_sql else {
+            return Ok(());
+        };
+        // Detect whether the existing CHECK already references sticky_id. The
+        // additive ALTER TABLE only touches the column list, not CHECK clauses,
+        // so a CHECK mentioning sticky_id is the marker of the new schema.
+        if create_sql.contains("CASE WHEN sticky_id") {
+            return Ok(());
+        }
+        // PRAGMA foreign_keys has no effect inside a transaction; disable before BEGIN.
+        conn.pragma_update(None, "foreign_keys", false)?;
+        conn.execute_batch(
+            "BEGIN;
+            CREATE TABLE authorship_spans_new (
+                id              TEXT PRIMARY KEY,
+                node_id         TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
+                snippet_id      TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+                detail_value_id TEXT REFERENCES codex_detail_values(id) ON DELETE CASCADE,
+                sticky_id       TEXT REFERENCES map_stickies(id) ON DELETE CASCADE,
+                from_pos        INTEGER NOT NULL,
+                to_pos          INTEGER NOT NULL,
+                source          TEXT NOT NULL CHECK(source IN ('human','ai','unknown')),
+                model           TEXT,
+                timestamp       TEXT,
+                chat_msg_id     TEXT,
+                phase_id        TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
+                CHECK (
+                    (CASE WHEN node_id         IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN codex_entry_id  IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN snippet_id      IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN detail_value_id IS NOT NULL THEN 1 ELSE 0 END +
+                     CASE WHEN sticky_id       IS NOT NULL THEN 1 ELSE 0 END) = 1
+                ),
+                CHECK (phase_id IS NULL OR codex_entry_id IS NOT NULL)
+            );
+            INSERT INTO authorship_spans_new
+                (id, node_id, codex_entry_id, snippet_id, detail_value_id, sticky_id,
+                 from_pos, to_pos, source, model, timestamp, chat_msg_id, phase_id)
+            SELECT id, node_id, codex_entry_id, snippet_id, detail_value_id, sticky_id,
+                   from_pos, to_pos, source, model, timestamp, chat_msg_id, phase_id
+            FROM authorship_spans;
+            DROP TABLE authorship_spans;
+            ALTER TABLE authorship_spans_new RENAME TO authorship_spans;
+            CREATE INDEX IF NOT EXISTS idx_authorship_node
+                ON authorship_spans(node_id, source);
+            CREATE INDEX IF NOT EXISTS idx_authorship_codex
+                ON authorship_spans(codex_entry_id, source);
+            CREATE INDEX IF NOT EXISTS idx_authorship_snippet
+                ON authorship_spans(snippet_id, source);
+            CREATE INDEX IF NOT EXISTS idx_authorship_detail
+                ON authorship_spans(detail_value_id);
+            CREATE INDEX IF NOT EXISTS idx_authorship_phase
+                ON authorship_spans(phase_id)
+                WHERE phase_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_authorship_sticky
+                ON authorship_spans(sticky_id)
+                WHERE sticky_id IS NOT NULL;
+            COMMIT;",
+        )?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        let fk_errors: Vec<String> = conn
+            .prepare("PRAGMA foreign_key_check(authorship_spans)")?
+            .query_map([], |row| {
+                let table: String = row.get(0)?;
+                let rowid: Option<i64> = row.get(1)?;
+                let parent: String = row.get(2)?;
+                let fkid: i64 = row.get(3)?;
+                Ok(format!(
+                    "table={table} rowid={rowid:?} parent={parent} fkid={fkid}"
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        if !fk_errors.is_empty() {
+            anyhow::bail!(
+                "foreign key check failed after authorship_spans rebuild: {}",
                 fk_errors.join("; ")
             );
         }
