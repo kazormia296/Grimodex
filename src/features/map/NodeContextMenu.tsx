@@ -44,6 +44,7 @@ interface NodeContextMenuProps {
   onPromote?: (type: PromoteTargetType, codexType?: string) => void;
   onPromoteFrame?: (codexType: string) => void;
   onBranchFrom?: () => void;
+  onOpenAiBranch?: () => void;
   onPinToChatContext?: () => void;
   isStickyPinnedToChat?: boolean;
   onChangeColor?: (paletteId: string, colorSlot: number) => void;
@@ -74,6 +75,7 @@ export function NodeContextMenu({
   onPromote,
   onPromoteFrame,
   onBranchFrom,
+  onOpenAiBranch,
   onPinToChatContext,
   isStickyPinnedToChat = false,
   onChangeColor,
@@ -203,6 +205,15 @@ export function NodeContextMenu({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={onBranchFrom}>
                   ここから分岐
+                </DropdownMenuItem>
+              </>
+            )}
+
+            {onOpenAiBranch && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={onOpenAiBranch}>
+                  ✦ AI Branch を生成…
                 </DropdownMenuItem>
               </>
             )}

@@ -1137,22 +1137,35 @@ export function MapCanvas() {
     [boardId, screenToFlowPosition, handleAddSticky],
   );
 
-  const handleOpenAiBranch = useCallback(() => {
-    if (!boardId) return;
-    const selected = getNodes().filter((n) => n.selected && n.type !== "frame");
-    const seedNodeIds = selected.map((n) => n.id);
-    const seedNodeTitles = selected
-      .map((n) => {
-        const data = n.data as { title?: string; name?: string };
-        return data.title ?? data.name ?? n.id;
-      })
-      .filter(Boolean) as string[];
-    setAiBranchDialog({
-      spawnPosition: getSpawnPosition(),
-      seedNodeIds,
-      seedNodeTitles,
-    });
-  }, [boardId, getNodes, getSpawnPosition]);
+  const handleOpenAiBranch = useCallback(
+    (explicitSeedNodeId?: string) => {
+      if (!boardId) return;
+      // When invoked from a node context menu (explicitSeedNodeId), seed
+      // from that node regardless of selection state. Otherwise fall back
+      // to the current multi-node selection (Palette / keyboard path).
+      // Frames have no meaningful body to feed the prompt, so they're
+      // always excluded.
+      const allNodes = getNodes();
+      const seedNodes = explicitSeedNodeId
+        ? allNodes.filter(
+            (n) => n.id === explicitSeedNodeId && n.type !== "frame",
+          )
+        : allNodes.filter((n) => n.selected && n.type !== "frame");
+      const seedNodeIds = seedNodes.map((n) => n.id);
+      const seedNodeTitles = seedNodes
+        .map((n) => {
+          const data = n.data as { title?: string; name?: string };
+          return data.title ?? data.name ?? n.id;
+        })
+        .filter(Boolean) as string[];
+      setAiBranchDialog({
+        spawnPosition: getSpawnPosition(),
+        seedNodeIds,
+        seedNodeTitles,
+      });
+    },
+    [boardId, getNodes, getSpawnPosition],
+  );
 
   const handleAiBranchConfirm = useCallback(
     async (prompt: string, count: 3 | 5 | 8) => {
@@ -1402,6 +1415,11 @@ export function MapCanvas() {
             contextMenu.nodeId.startsWith("sticky:")
               ? handleBranchFromSticky
               : undefined
+          }
+          onOpenAiBranch={
+            contextMenu.nodeId.startsWith("frame:")
+              ? undefined
+              : () => handleOpenAiBranch(contextMenu.nodeId)
           }
           onPinToChatContext={
             contextMenu.nodeId.startsWith("sticky:")
