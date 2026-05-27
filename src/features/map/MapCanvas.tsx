@@ -82,6 +82,7 @@ import {
 } from "./mapApi";
 import { AINodeDialog } from "./AINodeDialog";
 import { generateAiBranchCards } from "./mapAiApi";
+import { computeAiBranchLayout } from "./aiBranchLayout";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
@@ -610,11 +611,29 @@ export function MapCanvas() {
           const snapshot = !useGlobalHistoryStore.getState().isReplaying
             ? await getAiBranchSnapshot(branchId)
             : null;
+          // The DB cascades dashed branch→sticky edges via FK ON DELETE CASCADE
+          // when the branch position is removed, but the client edge state has
+          // to be cleared explicitly. Resolve via the branch position whether
+          // or not we have a snapshot (replay path has no snapshot).
+          const branchPos = positionsRef.current.find(
+            (p) => p.nodeRefType === "ai_branch" && p.aiBranchId === branchId,
+          );
+          const cascadedEdgeIds = branchPos
+            ? userEdgesRef.current
+                .filter((e) => e.fromPositionId === branchPos.id)
+                .map((e) => e.id)
+            : [];
           await deleteAiBranch(branchId);
           setAiBranches((prev) => prev.filter((b) => b.id !== branchId));
+          if (cascadedEdgeIds.length > 0) {
+            setUserEdges((prev) =>
+              prev.filter((e) => !cascadedEdgeIds.includes(e.id)),
+            );
+          }
 
           if (snapshot) {
             const cap = snapshot;
+            const edgeIds = cap.edges.map((e) => e.id);
             useGlobalHistoryStore.getState().push({
               kind: "map",
               label: "AI Branch 削除",
@@ -627,6 +646,9 @@ export function MapCanvas() {
                   ...prev,
                   cap.branchPosition as MapNodePositionRecord,
                 ]);
+                if (cap.edges.length > 0) {
+                  setUserEdges((prev) => [...prev, ...cap.edges]);
+                }
               },
               async redo() {
                 await deleteAiBranch(cap.branch.id);
@@ -636,6 +658,11 @@ export function MapCanvas() {
                 setPositions((prev) =>
                   prev.filter((p) => p.id !== cap.branchPosition.id),
                 );
+                if (edgeIds.length > 0) {
+                  setUserEdges((prev) =>
+                    prev.filter((e) => !edgeIds.includes(e.id)),
+                  );
+                }
               },
             });
           }
@@ -651,7 +678,7 @@ export function MapCanvas() {
         }
       }
     },
-    [setPositions, setAiBranches],
+    [setPositions, setAiBranches, setUserEdges, positionsRef, userEdgesRef],
   );
 
   const onDeleteSelected = useCallback(async () => {
@@ -1141,12 +1168,24 @@ export function MapCanvas() {
         );
 
         const pos = dialogState.spawnPosition;
+        // Place the card cluster in the most open region around the spawn,
+        // avoiding overlap with existing on-board nodes.
+        const layout = computeAiBranchLayout(
+          pos.x,
+          pos.y,
+          cards.length,
+          positionsRef.current.map((p) => ({ x: p.x, y: p.y })),
+        );
         const result = await createAiBranch(
           boardId,
           prompt,
           dialogState.seedNodeIds,
           cards,
-          { spawnX: pos.x, spawnY: pos.y },
+          {
+            spawnX: layout.branch.x,
+            spawnY: layout.branch.y,
+            cardPositions: layout.cards,
+          },
         );
 
         setAiBranches((prev) => [...prev, result.branch]);
@@ -1155,6 +1194,9 @@ export function MapCanvas() {
           ...prev,
           ...(result.positions as MapNodePositionRecord[]),
         ]);
+        if (result.edges.length > 0) {
+          setUserEdges((prev) => [...prev, ...result.edges]);
+        }
 
         if (!useGlobalHistoryStore.getState().isReplaying) {
           // Capture full snapshot (includes edges + spans created internally)
@@ -1165,6 +1207,7 @@ export function MapCanvas() {
             const posIds = cap.stickyPositions
               .map((p) => p.id)
               .concat(cap.branchPosition.id);
+            const edgeIds = cap.edges.map((e) => e.id);
             useGlobalHistoryStore.getState().push({
               kind: "map",
               label: "AI Branch 生成",
@@ -1179,6 +1222,9 @@ export function MapCanvas() {
                 setPositions((prev) =>
                   prev.filter((p) => !posIds.includes(p.id)),
                 );
+                setUserEdges((prev) =>
+                  prev.filter((e) => !edgeIds.includes(e.id)),
+                );
               },
               async redo() {
                 await restoreAiBranchSnapshot(cap);
@@ -1189,6 +1235,9 @@ export function MapCanvas() {
                   cap.branchPosition as MapNodePositionRecord,
                   ...(cap.stickyPositions as MapNodePositionRecord[]),
                 ]);
+                if (cap.edges.length > 0) {
+                  setUserEdges((prev) => [...prev, ...cap.edges]);
+                }
               },
             });
           }
@@ -1197,7 +1246,15 @@ export function MapCanvas() {
         setGeneratingAiBranch(false);
       }
     },
-    [boardId, aiBranchDialog, setAiBranches, setStickies, setPositions],
+    [
+      boardId,
+      aiBranchDialog,
+      setAiBranches,
+      setStickies,
+      setPositions,
+      setUserEdges,
+      positionsRef,
+    ],
   );
 
   const { executeAutoArrange } = useMapAutoArrange({

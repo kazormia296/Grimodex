@@ -714,16 +714,28 @@ export async function createAiBranch(
     model?: string | null;
     spawnX?: number;
     spawnY?: number;
+    /**
+     * Top-left coordinates for each card, in the same order as `cards`.
+     * Caller is expected to compute these via computeAiBranchLayout so it can
+     * factor in existing on-board positions. When omitted or length mismatch,
+     * falls back to a radial layout around the spawn point (legacy behavior).
+     */
+    cardPositions?: { x: number; y: number }[];
   },
 ): Promise<{
   branch: MapAiBranch;
   stickies: MapSticky[];
   positions: MapNodePosition[];
+  edges: MapEdge[];
 }> {
   const now = new Date().toISOString();
   const branchId = crypto.randomUUID();
   const spawnX = options?.spawnX ?? 0;
   const spawnY = options?.spawnY ?? 0;
+  const cardPositions =
+    options?.cardPositions && options.cardPositions.length === cards.length
+      ? options.cardPositions
+      : null;
 
   const [branch] = await db
     .insert(mapAiBranches)
@@ -764,6 +776,7 @@ export async function createAiBranch(
 
   const stickies: MapSticky[] = [];
   const positions: MapNodePosition[] = [branchPosition];
+  const edges: MapEdge[] = [];
 
   const angleStep = cards.length > 0 ? (2 * Math.PI) / cards.length : 0;
   const radius = 280;
@@ -775,9 +788,16 @@ export async function createAiBranch(
     const body = card.body || '{"type":"doc","content":[]}';
     const previewText = extractPreviewText(body);
 
-    const angle = angleStep * i - Math.PI / 2;
-    const x = spawnX + Math.round(radius * Math.cos(angle));
-    const y = spawnY + Math.round(radius * Math.sin(angle));
+    let x: number;
+    let y: number;
+    if (cardPositions) {
+      x = cardPositions[i].x;
+      y = cardPositions[i].y;
+    } else {
+      const angle = angleStep * i - Math.PI / 2;
+      x = spawnX + Math.round(radius * Math.cos(angle));
+      y = spawnY + Math.round(radius * Math.sin(angle));
+    }
 
     const [sticky] = await db
       .insert(mapStickies)
@@ -817,20 +837,23 @@ export async function createAiBranch(
       .returning();
 
     // Dashed edge: branch → sticky
-    await db.insert(mapEdges).values({
-      id: crypto.randomUUID(),
-      boardId,
-      fromPositionId: branchPosId,
-      toPositionId: posId,
-      forwardLabel: null,
-      backwardLabel: null,
-      labels: "[]",
-      style: "dashed",
-      color: "#888888",
-      direction: "forward",
-      createdAt: now,
-      updatedAt: now,
-    } satisfies NewMapEdge);
+    const [edge] = await db
+      .insert(mapEdges)
+      .values({
+        id: crypto.randomUUID(),
+        boardId,
+        fromPositionId: branchPosId,
+        toPositionId: posId,
+        forwardLabel: null,
+        backwardLabel: null,
+        labels: "[]",
+        style: "dashed",
+        color: "#888888",
+        direction: "forward",
+        createdAt: now,
+        updatedAt: now,
+      } satisfies NewMapEdge)
+      .returning();
 
     // Authorship span covering the full body (use full text, not truncated preview)
     const bodyLen = extractAllText(body).length;
@@ -852,9 +875,10 @@ export async function createAiBranch(
 
     stickies.push(sticky);
     positions.push(pos);
+    edges.push(edge);
   }
 
-  return { branch, stickies, positions };
+  return { branch, stickies, positions, edges };
 }
 
 export async function deleteAiBranch(id: string): Promise<void> {
