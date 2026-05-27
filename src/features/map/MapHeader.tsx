@@ -12,7 +12,7 @@ import {
 } from "./mapApi";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ChevronDown, MoreVertical } from "lucide-react";
+import { ChevronDown, MoreVertical, Pencil, Copy, Trash2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -187,61 +187,115 @@ export function MapHeader() {
               }
             }}
           >
-            {boards.map((b) => (
-              <DropdownMenuItem
-                key={b.id}
-                onSelect={() => setActiveBoardId(b.id)}
-                className={b.id === activeBoardId ? "bg-accent" : undefined}
-              >
-                <span className="truncate">{b.title}</span>
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger disabled={!activeBoard}>
-                アクティブボード操作
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
+            {boards.map((b) => {
+              const isActive = b.id === activeBoardId;
+              const canDelete = boards.length > 1;
+              return (
                 <DropdownMenuItem
-                  disabled={!activeBoard}
-                  onSelect={() => {
-                    if (!activeBoard) return;
-                    suppressTriggerRefocusRef.current = true;
-                    setEditingBoard({
-                      mode: "rename",
-                      id: activeBoard.id,
-                      title: activeBoard.title,
-                    });
-                  }}
-                >
-                  リネーム
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  disabled={!activeBoard}
-                  onSelect={() => {
-                    if (!activeBoard) return;
-                    void handleBoardDuplicate(activeBoard.id);
-                  }}
-                >
-                  複製
-                </DropdownMenuItem>
-                {boards.length > 1 && activeBoard && (
-                  <DropdownMenuItem
-                    onSelect={() => {
+                  key={b.id}
+                  onSelect={() => setActiveBoardId(b.id)}
+                  onKeyDown={(e) => {
+                    // Per-row keyboard shortcuts mirror the hover icons.
+                    // Keep them after Radix's own keys (Arrow / Enter / Esc)
+                    // resolve naturally — only handle our additions.
+                    if (e.key === "F2") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      suppressTriggerRefocusRef.current = true;
+                      setEditingBoard({
+                        mode: "rename",
+                        id: b.id,
+                        title: b.title,
+                      });
+                    } else if ((e.ctrlKey || e.metaKey) && e.key === "d") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void handleBoardDuplicate(b.id);
+                    } else if (
+                      (e.key === "Delete" || e.key === "Backspace") &&
+                      canDelete
+                    ) {
+                      e.preventDefault();
+                      e.stopPropagation();
                       suppressTriggerRefocusRef.current = true;
                       setEditingBoard({
                         mode: "delete",
-                        id: activeBoard.id,
-                        title: activeBoard.title,
+                        id: b.id,
+                        title: b.title,
                       });
-                    }}
-                    className="text-[color:var(--destructive)] focus:text-[color:var(--destructive)]"
+                    }
+                  }}
+                  className={`group flex items-center justify-between gap-1 ${isActive ? "bg-accent" : ""}`}
+                >
+                  <span className="truncate">{b.title}</span>
+                  {/* Per-row hover actions. Each button preventDefault on
+                      onSelect via pointer-down so Radix does not close the
+                      menu or fire the row's onSelect (which would switch
+                      the active board) — only the icon's own intent runs. */}
+                  <div
+                    className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    削除
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      title="リネーム (F2)"
+                      aria-label={`「${b.title}」をリネーム`}
+                      className="h-5 w-5 text-muted-foreground hover:bg-accent/70 hover:text-foreground"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        suppressTriggerRefocusRef.current = true;
+                        setEditingBoard({
+                          mode: "rename",
+                          id: b.id,
+                          title: b.title,
+                        });
+                      }}
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      title="複製 (Ctrl+D)"
+                      aria-label={`「${b.title}」を複製`}
+                      className="h-5 w-5 text-muted-foreground hover:bg-accent/70 hover:text-foreground"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleBoardDuplicate(b.id);
+                      }}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                    {canDelete && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        title="削除 (Delete)"
+                        aria-label={`「${b.title}」を削除`}
+                        className="h-5 w-5 text-muted-foreground hover:bg-destructive/15 hover:text-[color:var(--destructive)]"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          suppressTriggerRefocusRef.current = true;
+                          setEditingBoard({
+                            mode: "delete",
+                            id: b.id,
+                            title: b.title,
+                          });
+                        }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                </DropdownMenuItem>
+              );
+            })}
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               onSelect={() => {
                 suppressTriggerRefocusRef.current = true;
