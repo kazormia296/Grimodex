@@ -338,6 +338,12 @@ interface ChatState {
   contextTokenCount: number;
   contextLayers: LayerBreakdown[];
   lastSystemPrompt: string;
+  /**
+   * Monotonic counter bumped each time refreshContextLayers completes.
+   * Subscribers (e.g. ContextBar's pinnedStickies list) can watch this to
+   * pick up pins/unpins triggered from outside ChatPanel (Map / Codex).
+   */
+  pinsVersion: number;
 
   /** Phase 4 後続: ContextBar chip 表示用。projectOutline は trim 済みの空でない場合のみ。 */
   projectOutline: string | undefined;
@@ -1337,6 +1343,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   contextTokenCount: 0,
   contextLayers: [],
   lastSystemPrompt: "",
+  pinsVersion: 0,
   projectOutline: undefined,
   chapterOutlines: [],
   detectedEntries: [],
@@ -2872,6 +2879,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         alwaysEntries: ctxResult.alwaysEntries,
         projectOutline: ctxResult.projectOutline,
         chapterOutlines: ctxResult.chapterOutlines,
+        pinsVersion: get().pinsVersion + 1,
       });
     } catch {
       // コンテキスト計算失敗は無視（送信時に再計算される）

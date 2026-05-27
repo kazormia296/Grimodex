@@ -163,8 +163,8 @@ export function NodeContextMenu({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={onPinToChatContext}>
                   {isStickyPinnedToChat
-                    ? "チャットコンテキストのピン解除"
-                    : "チャットコンテキストにピン"}
+                    ? "チャットの Spotlight を解除"
+                    : "チャットの Spotlight に追加"}
                 </DropdownMenuItem>
               </>
             )}

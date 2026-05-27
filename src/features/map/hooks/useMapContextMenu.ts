@@ -276,18 +276,18 @@ export function useMapContextMenu({
     try {
       if (wasPinned) {
         await chatApi.unpinStickyEntry(sessionId, pos.stickyId);
-        toast.success("Sticky のチャットコンテキストピンを解除しました");
+        toast.success("Sticky の Spotlight を解除しました");
       } else {
         await chatApi.pinStickyEntry(sessionId, pos.stickyId);
-        toast.success("Sticky をチャットコンテキストにピンしました");
+        toast.success("Sticky を Spotlight に追加しました");
       }
       await useChatStore.getState().refreshContextLayers();
     } catch (err) {
       console.error("[useMapContextMenu] toggle sticky chat pin failed", err);
       toast.error(
         wasPinned
-          ? "Sticky のピン解除に失敗しました"
-          : "Sticky のピン追加に失敗しました",
+          ? "Sticky の Spotlight 解除に失敗しました"
+          : "Sticky の Spotlight 追加に失敗しました",
       );
     }
     setContextMenu(null);

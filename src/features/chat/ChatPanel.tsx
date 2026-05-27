@@ -33,7 +33,10 @@ import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
-import type { PinnedSnippetEntryWithData } from "./chatApi";
+import type {
+  PinnedSnippetEntryWithData,
+  PinnedStickyEntryWithData,
+} from "./chatApi";
 import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
 
 interface SnippetDialogState {
@@ -67,6 +70,7 @@ export function ChatPanel() {
   const regenerate = useChatStore((s) => s.regenerate);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const contextLayers = useChatStore((s) => s.contextLayers);
+  const pinsVersion = useChatStore((s) => s.pinsVersion);
   const projectOutline = useChatStore((s) => s.projectOutline);
   const chapterOutlines = useChatStore((s) => s.chapterOutlines);
   const detectedEntries = useChatStore((s) => s.detectedEntries);
@@ -203,17 +207,28 @@ export function ChatPanel() {
   const [pinnedSnippets, setPinnedSnippets] = useState<
     PinnedSnippetEntryWithData[]
   >([]);
+  // Map "Spotlight" stickies (chatSessionPinnedCodex with stickyId set).
+  // Internal naming keeps "pinned" to match the underlying DB column /
+  // chat API; the user-visible label says Spotlight.
+  const [pinnedStickies, setPinnedStickies] = useState<
+    PinnedStickyEntryWithData[]
+  >([]);
 
   useEffect(() => {
     if (!activeSessionId) {
       setPinnedEntries([]);
       setPinnedSnippets([]);
+      setPinnedStickies([]);
       return;
     }
     chatApi.listPinnedCodexEntries(activeSessionId).then(setPinnedEntries);
     chatApi.listPinnedSnippetEntries(activeSessionId).then(setPinnedSnippets);
+    chatApi.listPinnedStickyEntries(activeSessionId).then(setPinnedStickies);
     setDismissedViaChildIds(new Set());
-  }, [activeSessionId]);
+    // pinsVersion bumps after any refreshContextLayers run; including it
+    // in deps lets us pick up Map / Codex / Sticky pin changes that
+    // happen outside this panel.
+  }, [activeSessionId, pinsVersion]);
 
   const pinnedIds = useMemo(
     () => new Set(pinnedEntries.map((e) => e.id)),
@@ -611,6 +626,12 @@ export function ChatPanel() {
       <ContextBar
         pinnedEntries={[...pinnedEntries, ...inputPinnedEntries]}
         pinnedSnippets={pinnedSnippets}
+        pinnedStickies={pinnedStickies}
+        onUnpinSticky={async (stickyId) => {
+          if (!activeSessionId) return;
+          await chatApi.unpinStickyEntry(activeSessionId, stickyId);
+          await useChatStore.getState().refreshContextLayers();
+        }}
         detectedEntries={
           showDetectedEntries
             ? detectedEntries.filter((e) => !inputPinnedIds.has(e.id))

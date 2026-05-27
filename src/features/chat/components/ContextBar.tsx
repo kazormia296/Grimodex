@@ -28,6 +28,7 @@ import type { CodexEntry } from "@/features/codex/api";
 import type {
   PinnedCodexEntryWithData,
   PinnedSnippetEntryWithData,
+  PinnedStickyEntryWithData,
 } from "../chatApi";
 import type { LayerBreakdown } from "../contextBuilder";
 import { PromptPreviewModal } from "./PromptPreviewModal";
@@ -72,6 +73,13 @@ interface ContextBarProps {
   alwaysEntries?: CodexEntry[];
   /** G16: pinned snippet entries */
   pinnedSnippets?: PinnedSnippetEntryWithData[];
+  /**
+   * Map Sticky を「Spotlight」した一時注入。ユーザー向け表記は
+   * Spotlight だが、DB / API は pin と同じテーブル (sticky_id 列) を
+   * 使うため命名は pinnedStickies のまま。
+   */
+  pinnedStickies?: PinnedStickyEntryWithData[];
+  onUnpinSticky?: (stickyId: string) => void | Promise<void>;
   /** 手動ピンをautoに戻す（source==="manual"のエントリのみ） */
   onReturnToAuto: (entryId: string) => void;
   /** ピン解除してcontextから完全除去 */
@@ -110,6 +118,8 @@ export function ContextBar({
   detectedEntries = [],
   alwaysEntries = [],
   pinnedSnippets = [],
+  pinnedStickies = [],
+  onUnpinSticky,
   onReturnToAuto,
   onRemove,
   onRemoveAuto,
@@ -743,6 +753,33 @@ export function ContextBar({
                     </button>
                   </span>
                 ))}
+                {/* Spotlight Sticky エントリ (Map 由来) */}
+                {pinnedStickies.map((sticky) => {
+                  const label =
+                    sticky.title ?? sticky.content.slice(0, 24) ?? "Sticky";
+                  return (
+                    <span
+                      key={sticky.id}
+                      title={
+                        sticky.content
+                          ? `Spotlight: ${sticky.content.slice(0, 80)}`
+                          : "Spotlight"
+                      }
+                      className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-900"
+                    >
+                      <Sparkles className="h-3 w-3" aria-hidden />
+                      {label}
+                      <button
+                        type="button"
+                        onClick={() => onUnpinSticky?.(sticky.id)}
+                        className="hover:text-destructive"
+                        aria-label={`Spotlight 解除: ${label}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  );
+                })}
               </div>
               {/* /pills-visible */}
             </div>
