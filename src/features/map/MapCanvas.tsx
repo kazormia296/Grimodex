@@ -85,6 +85,10 @@ import {
 import { AINodeDialog } from "./AINodeDialog";
 import { generateAiBranchCards } from "./mapAiApi";
 import { computeAiBranchLayout } from "./aiBranchLayout";
+import {
+  findNonOverlappingBranchPosition,
+  type Rect as BranchRect,
+} from "./branchPlacement";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
@@ -1073,9 +1077,37 @@ export function MapCanvas() {
         paletteId?: string;
         colorSlot?: number;
       };
-      const offset = dir === "left" ? -280 : 280;
-      const newX = sourceNode.position.x + offset;
-      const newY = sourceNode.position.y;
+      const NEW_STICKY_W = 200;
+      const NEW_STICKY_H = 120;
+      const NODE_FALLBACK: Record<string, { w: number; h: number }> = {
+        scene: { w: 180, h: 72 },
+        codex: { w: 200, h: 90 },
+        note: { w: 180, h: 72 },
+        ai: { w: 160, h: 96 },
+        sticky: { w: 240, h: 120 },
+        snippet: { w: 200, h: 40 },
+        ai_branch: { w: 200, h: 90 },
+      };
+      const existingRects: BranchRect[] = getNodes()
+        .filter((n) => n.id !== sourceNodeId && !n.hidden)
+        .map((n) => {
+          const type = n.type ?? "sticky";
+          const styleW =
+            typeof n.style?.width === "number" ? n.style.width : undefined;
+          const styleH =
+            typeof n.style?.height === "number" ? n.style.height : undefined;
+          const w =
+            n.measured?.width ?? styleW ?? NODE_FALLBACK[type]?.w ?? 200;
+          const h =
+            n.measured?.height ?? styleH ?? NODE_FALLBACK[type]?.h ?? 120;
+          return { x: n.position.x, y: n.position.y, w, h };
+        });
+      const { x: newX, y: newY } = findNonOverlappingBranchPosition(
+        sourceNode.position,
+        { w: NEW_STICKY_W, h: NEW_STICKY_H },
+        dir,
+        existingRects,
+      );
       const result = await createSticky({
         boardId,
         x: newX,
