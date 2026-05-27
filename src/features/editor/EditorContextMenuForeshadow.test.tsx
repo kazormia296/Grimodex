@@ -21,6 +21,7 @@ const { mockUseCodexStore } = vi.hoisted(() => {
     get requestSelectEntry() {
       return mockRequestSelectEntry;
     },
+    entries: [] as Array<Record<string, unknown>>,
   };
   const store = Object.assign(
     (sel: (s: typeof codexState) => unknown) => sel(codexState),
