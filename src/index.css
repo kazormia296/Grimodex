@@ -1138,6 +1138,12 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   animation: editor-fade-out 80ms ease-in forwards;
 }
 
+@keyframes grimodex-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Attribution decorations — color-mix blends semantic hue with content background,
    so light/dark and per-theme adaptation is automatic.
    AI = teal-green (hue 165°, "processed/machine"), Unknown = warm amber (hue 30°, "uncertain").

@@ -5,6 +5,7 @@ import {
   Background,
   Controls,
   MiniMap,
+  ViewportPortal,
   type Node,
   BackgroundVariant,
   useReactFlow,
@@ -231,7 +232,12 @@ export function MapCanvas() {
     seedNodeIds: string[];
     seedNodeTitles: string[];
   } | null>(null);
-  const [generatingAiBranch, setGeneratingAiBranch] = useState(false);
+  // null = idle. {spawnPosition} = generation in progress; the spinner is
+  // rendered at that flow coord so it tracks pan/zoom alongside the
+  // upcoming branch position.
+  const [generatingAiBranch, setGeneratingAiBranch] = useState<{
+    spawnPosition: { x: number; y: number };
+  } | null>(null);
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
   const [forceAlpha, setForceAlpha] = useState(1);
@@ -1172,7 +1178,7 @@ export function MapCanvas() {
       if (!boardId || !aiBranchDialog) return;
       const dialogState = aiBranchDialog;
       setAiBranchDialog(null);
-      setGeneratingAiBranch(true);
+      setGeneratingAiBranch({ spawnPosition: dialogState.spawnPosition });
 
       try {
         const cards = await generateAiBranchCards(
@@ -1257,7 +1263,7 @@ export function MapCanvas() {
           }
         }
       } finally {
-        setGeneratingAiBranch(false);
+        setGeneratingAiBranch(null);
       }
     },
     [
@@ -1348,6 +1354,46 @@ export function MapCanvas() {
         <Controls />
         {minimapVisible && (
           <MiniMap style={{ width: 120, height: 80 }} zoomable pannable />
+        )}
+        {generatingAiBranch && (
+          <ViewportPortal>
+            <div
+              style={{
+                position: "absolute",
+                // Anchor at the spawn point, then offset to sit below it
+                // (where the future branch node lives). The wrapper
+                // translate(-50%, 0) centers horizontally on spawnX.
+                left: generatingAiBranch.spawnPosition.x,
+                top: generatingAiBranch.spawnPosition.y + 40,
+                transform: "translate(-50%, 0)",
+                background: "var(--popover)",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                padding: "6px 12px",
+                fontSize: 12,
+                color: "var(--foreground)",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                whiteSpace: "nowrap",
+                pointerEvents: "none",
+              }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  width: 12,
+                  height: 12,
+                  borderRadius: "50%",
+                  border: "2px solid var(--border)",
+                  borderTopColor: "var(--foreground)",
+                  animation: "grimodex-spin 0.8s linear infinite",
+                }}
+              />
+              <span>AI Branch を生成中…</span>
+            </div>
+          </ViewportPortal>
         )}
       </ReactFlow>
 
@@ -1450,30 +1496,6 @@ export function MapCanvas() {
       )}
 
       {forceLayoutRunning && <ForceLayoutProgress alpha={forceAlpha} />}
-
-      {generatingAiBranch && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 60,
-            left: "50%",
-            transform: "translateX(-50%)",
-            background: "var(--popover)",
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            padding: "6px 16px",
-            fontSize: 12,
-            color: "var(--foreground)",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
-            zIndex: 20,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
-          <span>✨ AI Branch を生成中…</span>
-        </div>
-      )}
 
       <MapPalette
         paletteMode={paletteMode}
