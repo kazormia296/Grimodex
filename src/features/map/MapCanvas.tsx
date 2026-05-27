@@ -254,6 +254,14 @@ export function MapCanvas() {
   const handleBranchFromNodeRef = useRef<
     (sourceNodeId: string, dir: "left" | "right") => void
   >(() => {});
+  // Stable identity — used in useMapNodes deps. Without useCallback this
+  // would be a fresh arrow on every MapCanvas render, retriggering the
+  // node-build useMemo → setNodes → StoreUpdater → infinite render loop.
+  const stableOnBranchFromNode = useCallback(
+    (id: string, dir: "left" | "right") =>
+      handleBranchFromNodeRef.current(id, dir),
+    [],
+  );
 
   const stickiesRef = useRef(stickies);
   stickiesRef.current = stickies;
@@ -474,7 +482,7 @@ export function MapCanvas() {
     persistingRef,
     deletingStickyIds,
     onStickyExitComplete,
-    onBranchFrom: (id, dir) => handleBranchFromNodeRef.current(id, dir),
+    onBranchFrom: stableOnBranchFromNode,
   });
 
   const handleUserEdgeLabelSave = useCallback(
