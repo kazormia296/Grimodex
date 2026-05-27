@@ -1144,6 +1144,36 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   }
 }
 
+/* Map: + ボタンで隣接 Sticky 分岐を追加するアフォーダンス */
+.map-branch-affordance {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  border: 1px dashed var(--border);
+  background: var(--popover);
+  color: var(--muted-foreground);
+  font-size: 14px;
+  line-height: 1;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+.map-branch-affordance:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  transform: scale(1.08);
+}
+.map-branch-affordance:active {
+  transform: scale(0.95);
+}
+
 /* Attribution decorations — color-mix blends semantic hue with content background,
    so light/dark and per-theme adaptation is automatic.
    AI = teal-green (hue 165°, "processed/machine"), Unknown = warm amber (hue 30°, "uncertain").

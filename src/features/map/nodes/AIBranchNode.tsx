@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
+import { NodeBranchToolbar } from "./NodeBranchToolbar";
 
 export interface AIBranchNodeData {
   prompt: string;
@@ -8,6 +9,7 @@ export interface AIBranchNodeData {
   derivedStickyCount?: number;
   onOpenChat?: () => void;
   onDelete?: () => void;
+  onBranchFrom?: (dir: "left" | "right") => void;
   [key: string]: unknown;
 }
 
@@ -29,6 +31,7 @@ export const AIBranchNode = memo(function AIBranchNode({
       onMouseLeave={() => setHovered(false)}
     >
       <FloatingHandle isConnectable={isConnectable} />
+      <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
 
       {/* × delete badge */}
       {(hovered || selected) && d.onDelete && (

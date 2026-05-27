@@ -200,7 +200,7 @@ export function NodeContextMenu({
               </>
             )}
 
-            {isSticky && onBranchFrom && (
+            {onBranchFrom && (
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={onBranchFrom}>

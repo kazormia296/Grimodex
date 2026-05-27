@@ -3,6 +3,7 @@ import type { NodeProps } from "@xyflow/react";
 import { parseTags } from "@/features/codex/components/EntryCard";
 import { TagPill } from "@/features/codex/components/TagPill";
 import { FloatingHandle } from "./FloatingHandle";
+import { NodeBranchToolbar } from "./NodeBranchToolbar";
 
 export interface CodexNodeData {
   name: string;
@@ -12,6 +13,7 @@ export interface CodexNodeData {
   tagsCache?: string | null;
   colorBy?: "none" | "status";
   onOpen?: () => void;
+  onBranchFrom?: (dir: "left" | "right") => void;
   [key: string]: unknown;
 }
 
@@ -56,6 +58,7 @@ export const CodexNode = memo(function CodexNode({
       }}
     >
       <FloatingHandle isConnectable={isConnectable} />
+      <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
       <span className="map-edit-indicator" aria-hidden>
         ✎
       </span>

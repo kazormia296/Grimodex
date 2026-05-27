@@ -72,6 +72,7 @@ interface UseMapNodesInput {
   persistingRef: React.MutableRefObject<Set<string>>;
   deletingStickyIds?: Set<string>;
   onStickyExitComplete?: (id: string) => void;
+  onBranchFrom?: (sourceNodeId: string, dir: "left" | "right") => void;
 }
 
 export function useMapNodes({
@@ -103,6 +104,7 @@ export function useMapNodes({
   persistingRef,
   deletingStickyIds,
   onStickyExitComplete,
+  onBranchFrom,
 }: UseMapNodesInput) {
   // Read inside buildNodes via a ref so the (async, expensive) layout effect
   // does NOT list `modeTransitionActive` as a dependency. In theme mode a
@@ -339,6 +341,8 @@ export function useMapNodes({
                   useLayoutStore.getState().showPanel("editor");
                   setActiveScene(n.id);
                 },
+                onBranchFrom: (dir: "left" | "right") =>
+                  onBranchFrom?.(key, dir),
               },
             };
           })
@@ -365,6 +369,8 @@ export function useMapNodes({
                   useLayoutStore.getState().showPanel("codex");
                   useCodexStore.getState().requestSelectEntry(e.id);
                 },
+                onBranchFrom: (dir: "left" | "right") =>
+                  onBranchFrom?.(key, dir),
               },
             };
           })
@@ -393,6 +399,8 @@ export function useMapNodes({
               data: {
                 title: s.title || null,
                 content: s.content,
+                onBranchFrom: (dir: "left" | "right") =>
+                  onBranchFrom?.(key, dir),
               },
             };
           })
@@ -425,6 +433,8 @@ export function useMapNodes({
                   useLayoutStore.getState().showPanel("editor");
                   setActiveScene(n.id);
                 },
+                onBranchFrom: (dir: "left" | "right") =>
+                  onBranchFrom?.(key, dir),
               },
             };
           })
@@ -489,6 +499,8 @@ export function useMapNodes({
                     ),
                   );
                 },
+                onBranchFrom: (dir: "left" | "right") =>
+                  onBranchFrom?.(key, dir),
               },
             };
           })
@@ -567,6 +579,8 @@ export function useMapNodes({
                     });
                   }
                 },
+                onBranchFrom: (dir: "left" | "right") =>
+                  onBranchFrom?.(key, dir),
               },
             };
           })
@@ -653,6 +667,7 @@ export function useMapNodes({
     persistingRef,
     deletingStickyIds,
     onStickyExitComplete,
+    onBranchFrom,
     setAiBranches,
     setPositions,
   ]);

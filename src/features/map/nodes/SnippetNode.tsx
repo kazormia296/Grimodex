@@ -1,10 +1,12 @@
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
+import { NodeBranchToolbar } from "./NodeBranchToolbar";
 
 export interface SnippetNodeData {
   title: string | null;
   content: string;
+  onBranchFrom?: (dir: "left" | "right") => void;
   [key: string]: unknown;
 }
 
@@ -19,6 +21,7 @@ export const SnippetNode = memo(function SnippetNode({
   return (
     <div style={{ position: "relative" }}>
       <FloatingHandle isConnectable={isConnectable} />
+      <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
       <div
         style={{
           width: 200,

@@ -248,6 +248,13 @@ export function MapCanvas() {
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
 
+  // Forward-declared so useMapNodes (which runs above the actual handler
+  // definition) can still inject a stable closure into each node's data.
+  // The ref is updated below once the real handler exists.
+  const handleBranchFromNodeRef = useRef<
+    (sourceNodeId: string, dir: "left" | "right") => void
+  >(() => {});
+
   const stickiesRef = useRef(stickies);
   stickiesRef.current = stickies;
 
@@ -467,6 +474,7 @@ export function MapCanvas() {
     persistingRef,
     deletingStickyIds,
     onStickyExitComplete,
+    onBranchFrom: (id, dir) => handleBranchFromNodeRef.current(id, dir),
   });
 
   const handleUserEdgeLabelSave = useCallback(
@@ -1046,90 +1054,101 @@ export function MapCanvas() {
     [boardId, getSpawnPosition, setStickies, setPositions],
   );
 
-  const handleBranchFromSticky = useCallback(async () => {
-    if (!contextMenu || !boardId) return;
-    const sourceNodeId = contextMenu.nodeId;
-    const sourceNode = getNodes().find((n) => n.id === sourceNodeId);
-    if (!sourceNode) return;
-    const sourcePos = findPosByNodeId(positionsRef.current, sourceNodeId);
-    if (!sourcePos) return;
-    const sourceData = sourceNode.data as {
-      paletteId?: string;
-      colorSlot?: number;
-    };
-    const newX = sourceNode.position.x + 280;
-    const newY = sourceNode.position.y;
-    const result = await createSticky({
-      boardId,
-      x: newX,
-      y: newY,
-      paletteId: sourceData.paletteId,
-      colorSlot: sourceData.colorSlot,
-    });
-    pendingAutoFocusIds.add(result.sticky.id);
-    setStickies((prev) => [...prev, result.sticky]);
-    setPositions((prev) => [...prev, result.position as MapNodePositionRecord]);
-    const edge = await createUserEdge({
-      boardId,
-      fromPositionId: sourcePos.id,
-      toPositionId: result.position.id,
-    });
-    setUserEdges((prev) => [...prev, edge]);
-
-    if (!useGlobalHistoryStore.getState().isReplaying) {
-      const captured = {
-        sticky: { ...result.sticky },
-        position: { ...result.position },
-        edge: { ...edge },
-        sourcePosId: sourcePos.id,
-        boardId,
+  const handleBranchFromNode = useCallback(
+    async (sourceNodeId: string, dir: "left" | "right" = "right") => {
+      if (!boardId) return;
+      const sourceNode = getNodes().find((n) => n.id === sourceNodeId);
+      if (!sourceNode) return;
+      const sourcePos = findPosByNodeId(positionsRef.current, sourceNodeId);
+      if (!sourcePos) return;
+      const sourceData = sourceNode.data as {
+        paletteId?: string;
+        colorSlot?: number;
       };
-      useGlobalHistoryStore.getState().push({
-        kind: "map",
-        label: "分岐 Sticky 作成",
-        async undo() {
-          await deleteUserEdge(captured.edge.id);
-          await deleteSticky(captured.sticky.id);
-          setUserEdges((prev) => prev.filter((u) => u.id !== captured.edge.id));
-          setStickies((prev) =>
-            prev.filter((s) => s.id !== captured.sticky.id),
-          );
-          setPositions((prev) =>
-            prev.filter((p) => p.id !== captured.position.id),
-          );
-        },
-        async redo() {
-          const recreatedSticky = await createSticky({
-            id: captured.sticky.id,
-            boardId: captured.boardId,
-            x: captured.position.x,
-            y: captured.position.y,
-            paletteId: captured.sticky.paletteId,
-            colorSlot: captured.sticky.colorSlot,
-            title: captured.sticky.title ?? undefined,
-            body: captured.sticky.body,
-          });
-          const recreatedEdge = await createUserEdge({
-            id: captured.edge.id,
-            boardId: captured.boardId,
-            fromPositionId: captured.sourcePosId,
-            toPositionId: recreatedSticky.position.id,
-            forwardLabel: captured.edge.forwardLabel ?? undefined,
-            backwardLabel: captured.edge.backwardLabel ?? undefined,
-            style: captured.edge.style,
-            color: captured.edge.color,
-            direction: captured.edge.direction,
-          });
-          setStickies((prev) => [...prev, recreatedSticky.sticky]);
-          setPositions((prev) => [
-            ...prev,
-            recreatedSticky.position as MapNodePositionRecord,
-          ]);
-          setUserEdges((prev) => [...prev, recreatedEdge]);
-        },
+      const offset = dir === "left" ? -280 : 280;
+      const newX = sourceNode.position.x + offset;
+      const newY = sourceNode.position.y;
+      const result = await createSticky({
+        boardId,
+        x: newX,
+        y: newY,
+        paletteId: sourceData.paletteId,
+        colorSlot: sourceData.colorSlot,
       });
-    }
-  }, [contextMenu, boardId, getNodes, setStickies, setPositions, setUserEdges]);
+      pendingAutoFocusIds.add(result.sticky.id);
+      setStickies((prev) => [...prev, result.sticky]);
+      setPositions((prev) => [
+        ...prev,
+        result.position as MapNodePositionRecord,
+      ]);
+      const edge = await createUserEdge({
+        boardId,
+        fromPositionId: sourcePos.id,
+        toPositionId: result.position.id,
+      });
+      setUserEdges((prev) => [...prev, edge]);
+
+      if (!useGlobalHistoryStore.getState().isReplaying) {
+        const captured = {
+          sticky: { ...result.sticky },
+          position: { ...result.position },
+          edge: { ...edge },
+          sourcePosId: sourcePos.id,
+          boardId,
+        };
+        useGlobalHistoryStore.getState().push({
+          kind: "map",
+          label: "分岐 Sticky 作成",
+          async undo() {
+            await deleteUserEdge(captured.edge.id);
+            await deleteSticky(captured.sticky.id);
+            setUserEdges((prev) =>
+              prev.filter((u) => u.id !== captured.edge.id),
+            );
+            setStickies((prev) =>
+              prev.filter((s) => s.id !== captured.sticky.id),
+            );
+            setPositions((prev) =>
+              prev.filter((p) => p.id !== captured.position.id),
+            );
+          },
+          async redo() {
+            const recreatedSticky = await createSticky({
+              id: captured.sticky.id,
+              boardId: captured.boardId,
+              x: captured.position.x,
+              y: captured.position.y,
+              paletteId: captured.sticky.paletteId,
+              colorSlot: captured.sticky.colorSlot,
+              title: captured.sticky.title ?? undefined,
+              body: captured.sticky.body,
+            });
+            const recreatedEdge = await createUserEdge({
+              id: captured.edge.id,
+              boardId: captured.boardId,
+              fromPositionId: captured.sourcePosId,
+              toPositionId: recreatedSticky.position.id,
+              forwardLabel: captured.edge.forwardLabel ?? undefined,
+              backwardLabel: captured.edge.backwardLabel ?? undefined,
+              style: captured.edge.style,
+              color: captured.edge.color,
+              direction: captured.edge.direction,
+            });
+            setStickies((prev) => [...prev, recreatedSticky.sticky]);
+            setPositions((prev) => [
+              ...prev,
+              recreatedSticky.position as MapNodePositionRecord,
+            ]);
+            setUserEdges((prev) => [...prev, recreatedEdge]);
+          },
+        });
+      }
+    },
+    [boardId, getNodes, setStickies, setPositions, setUserEdges],
+  );
+  // Keep the forward-declared ref in sync so node data closures call the
+  // latest implementation of handleBranchFromNode.
+  handleBranchFromNodeRef.current = handleBranchFromNode;
 
   const handlePaneDoubleClick = useCallback(
     (event: React.MouseEvent) => {
@@ -1458,9 +1477,9 @@ export function MapCanvas() {
           onPromote={handlePromoteSticky}
           onPromoteFrame={handlePromoteFrame}
           onBranchFrom={
-            contextMenu.nodeId.startsWith("sticky:")
-              ? handleBranchFromSticky
-              : undefined
+            contextMenu.nodeId.startsWith("frame:")
+              ? undefined
+              : () => handleBranchFromNode(contextMenu.nodeId, "right")
           }
           onOpenAiBranch={
             contextMenu.nodeId.startsWith("frame:")

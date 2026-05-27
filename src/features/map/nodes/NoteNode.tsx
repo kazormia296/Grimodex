@@ -1,11 +1,13 @@
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
+import { NodeBranchToolbar } from "./NodeBranchToolbar";
 
 export interface NoteNodeData {
   title: string;
   content?: string | null;
   onOpen?: () => void;
+  onBranchFrom?: (dir: "left" | "right") => void;
   [key: string]: unknown;
 }
 
@@ -20,6 +22,7 @@ export const NoteNode = memo(function NoteNode({
   return (
     <div style={{ position: "relative" }}>
       <FloatingHandle isConnectable={isConnectable} />
+      <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
       <span className="map-edit-indicator" aria-hidden>
         ✎
       </span>

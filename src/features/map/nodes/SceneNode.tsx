@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
+import { NodeBranchToolbar } from "./NodeBranchToolbar";
 
 export interface SceneNodeData {
   title: string;
@@ -15,6 +16,7 @@ export interface SceneNodeData {
   onTitleChange?: (title: string) => void;
   onSynopsisChange?: (synopsis: string) => void;
   onOpen?: () => void;
+  onBranchFrom?: (dir: "left" | "right") => void;
   [key: string]: unknown;
 }
 
@@ -648,6 +650,7 @@ export const SceneNode = memo(function SceneNode({
   return (
     <div style={{ ...rotationStyle, position: "relative" }}>
       <FloatingHandle isConnectable={isConnectable} />
+      <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
       <span className="map-edit-indicator" aria-hidden>
         ✎
       </span>

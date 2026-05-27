@@ -9,6 +9,7 @@ import {
 import { motion } from "motion/react";
 import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
+import { NodeBranchToolbar } from "./NodeBranchToolbar";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getStickyEditorExtensions } from "@/features/editor/extensions";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
@@ -38,6 +39,7 @@ export interface StickyNodeData {
     paletteId?: string;
     colorSlot?: number;
   }) => Promise<void>;
+  onBranchFrom?: (dir: "left" | "right") => void;
   [key: string]: unknown;
 }
 
@@ -201,6 +203,7 @@ export const StickyNode = memo(function StickyNode({
   return (
     <div style={{ position: "relative" }}>
       <FloatingHandle isConnectable={isConnectable} />
+      <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
 
       {/* motion wrapper: enter/exit animation. transformOrigin switches on delete. */}
       <motion.div
