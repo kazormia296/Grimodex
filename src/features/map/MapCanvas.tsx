@@ -79,6 +79,7 @@ import {
   listNodePositions,
   listStickies,
   pendingAutoFocusIds,
+  pendingEdgeLabelEdits,
 } from "./mapApi";
 import { AINodeDialog } from "./AINodeDialog";
 import { generateAiBranchCards } from "./mapAiApi";
@@ -1499,6 +1500,14 @@ export function MapCanvas() {
         <EdgeContextMenu
           {...edgeContextMenu}
           onClose={() => setEdgeContextMenu(null)}
+          onEditLabel={(field) => {
+            const edgeId = edgeContextMenu.edgeId;
+            pendingEdgeLabelEdits.set(edgeId, field);
+            // Force re-render so useMapEdges picks up the pending edit signal
+            // and pipes it into the target InlineLabel.
+            setUserEdges((prev) => [...prev]);
+            setEdgeContextMenu(null);
+          }}
           onStyleChange={async (style) => {
             const updated = await updateUserEdge(edgeContextMenu.edgeId, {
               style,

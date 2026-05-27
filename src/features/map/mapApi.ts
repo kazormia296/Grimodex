@@ -57,6 +57,16 @@ export type PromoteTargetType = "scene" | "note" | "snippet" | "codex";
 /** Sticky IDs that should enter edit mode immediately on first mount. */
 export const pendingAutoFocusIds = new Set<string>();
 
+/**
+ * UserEdge IDs (without "user:" prefix) that should auto-open the inline
+ * label editor for the given field. Consumed by InlineLabel on the next
+ * render and immediately cleared. Used by EdgeContextMenu「ラベル編集」.
+ */
+export const pendingEdgeLabelEdits = new Map<
+  string,
+  "forwardLabel" | "backwardLabel"
+>();
+
 // ── Board ──────────────────────────────────────────────────────────────────
 
 export async function listBoards(projectId: string): Promise<MapBoard[]> {

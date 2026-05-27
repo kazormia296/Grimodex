@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { Edge } from "@xyflow/react";
 import { buildMapEdgesFromData } from "../boardToReactFlow";
+import { pendingEdgeLabelEdits } from "../mapApi";
 import type { ShowFlags, MapNodePositionRecord } from "../types";
 
 interface UseMapEdgesInput {
@@ -71,21 +72,23 @@ export function useMapEdges({
       codexRelations,
     });
 
-    if (!onUserEdgeLabelSave) return edges;
-
     return edges.map((edge) => {
       if (edge.type !== "user" || !edge.id.startsWith("user:")) return edge;
       const edgeId = edge.id.slice("user:".length);
-      return {
-        ...edge,
-        data: {
-          ...edge.data,
-          onLabelSave: (
-            field: "forwardLabel" | "backwardLabel",
-            label: string | null,
-          ) => onUserEdgeLabelSave(edgeId, field, label),
-        },
+      const pendingEdit = pendingEdgeLabelEdits.get(edgeId) ?? null;
+      const nextData = {
+        ...edge.data,
+        startEditField: pendingEdit,
+        ...(onUserEdgeLabelSave
+          ? {
+              onLabelSave: (
+                field: "forwardLabel" | "backwardLabel",
+                label: string | null,
+              ) => onUserEdgeLabelSave(edgeId, field, label),
+            }
+          : {}),
       };
+      return { ...edge, data: nextData };
     });
   }, [
     codexEntries,

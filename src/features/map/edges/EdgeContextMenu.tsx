@@ -21,6 +21,7 @@ interface EdgeContextMenuProps extends EdgeContextMenuState {
   onColorChange: (color: string) => void;
   onDelete: () => void;
   onPromoteToRelation?: () => void;
+  onEditLabel?: (field: "forwardLabel" | "backwardLabel") => void;
 }
 
 const COLOR_PRESETS = [
@@ -49,6 +50,7 @@ export function EdgeContextMenu({
   onDelete,
   onPromoteToRelation,
   canPromoteToRelation,
+  onEditLabel,
 }: EdgeContextMenuProps) {
   return (
     <DropdownMenu
@@ -72,6 +74,18 @@ export function EdgeContextMenu({
         />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[200px]">
+        {onEditLabel && (
+          <>
+            <DropdownMenuLabel>ラベル編集</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => onEditLabel("forwardLabel")}>
+              順方向ラベル
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onEditLabel("backwardLabel")}>
+              逆方向ラベル
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
         <DropdownMenuLabel>線種</DropdownMenuLabel>
         {STYLE_ITEMS.map(({ value, label, glyph }) => (
           <DropdownMenuItem

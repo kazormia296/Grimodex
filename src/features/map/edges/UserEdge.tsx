@@ -7,6 +7,7 @@ import {
   type EdgeProps,
 } from "@xyflow/react";
 import { getFloatingEdgeParams } from "./floatingEdge";
+import { pendingEdgeLabelEdits } from "../mapApi";
 
 export interface UserEdgeData {
   forwardLabel?: string | null;
@@ -18,6 +19,12 @@ export interface UserEdgeData {
     field: "forwardLabel" | "backwardLabel",
     label: string | null,
   ) => void;
+  /**
+   * Set by useMapEdges from pendingEdgeLabelEdits. When InlineLabel sees its
+   * own field name here, it auto-enters edit mode (used by EdgeContextMenu
+   * 「ラベル編集」).
+   */
+  startEditField?: "forwardLabel" | "backwardLabel" | null;
   [key: string]: unknown;
 }
 
@@ -28,7 +35,10 @@ function InlineLabel({
   labelX,
   labelY,
   selected,
+  field,
+  startEditField,
   onSave,
+  onAutoEditConsumed,
 }: {
   value: string | null | undefined;
   color: string;
@@ -36,7 +46,10 @@ function InlineLabel({
   labelX: number;
   labelY: number;
   selected: boolean;
+  field: "forwardLabel" | "backwardLabel";
+  startEditField?: "forwardLabel" | "backwardLabel" | null;
   onSave: (label: string | null) => void;
+  onAutoEditConsumed: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -49,6 +62,18 @@ function InlineLabel({
     setDraft(value ?? "");
     setEditing(true);
   }, [value]);
+
+  // Auto-enter edit mode when EdgeContextMenu「ラベル編集」requested it.
+  useEffect(() => {
+    if (startEditField === field) {
+      setDraft(value ?? "");
+      setEditing(true);
+      onAutoEditConsumed();
+    }
+    // value/onAutoEditConsumed intentionally omitted: this should fire only
+    // when the signal changes, not when value re-arrives on save.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startEditField, field]);
 
   const commitEdit = useCallback(() => {
     setEditing(false);
@@ -139,7 +164,11 @@ function InlineLabel({
           ＋ラベル
         </button>
       ) : (
-        <div style={{ width: 24, height: 16, cursor: "text" }} />
+        // Invisible hover hit-area. Made generous (80×32) so the parent
+        // wrapper's onMouseEnter reliably fires when the user approaches the
+        // edge midpoint — otherwise the「＋ラベル」placeholder becomes
+        // practically un-discoverable on a thin (2-3px) edge line.
+        <div style={{ width: 80, height: 32, cursor: "text" }} />
       )}
     </div>
   );
@@ -160,6 +189,14 @@ export const UserEdge = memo(function UserEdge({
   const color = isThemed ? "var(--foreground)" : rawColor;
   const edgeStyle = d.style ?? "solid";
   const direction = d.direction ?? "none";
+
+  // Once an InlineLabel consumes the auto-edit signal, clear the module-level
+  // map so a subsequent re-render does not re-enter edit mode involuntarily.
+  const onAutoEditConsumed = useCallback(() => {
+    if (id.startsWith("user:")) {
+      pendingEdgeLabelEdits.delete(id.slice("user:".length));
+    }
+  }, [id]);
 
   // Floating edge: anchor at the node-rectangle border closest to the other
   // node, instead of at a fixed handle position. Both nodes use a single
@@ -253,7 +290,10 @@ export const UserEdge = memo(function UserEdge({
           labelX={labelX}
           labelY={labelY}
           selected={!!selected}
+          field="forwardLabel"
+          startEditField={d.startEditField}
           onSave={(label) => d.onLabelSave?.("forwardLabel", label)}
+          onAutoEditConsumed={onAutoEditConsumed}
         />
         {showBackward && (
           <InlineLabel
@@ -263,7 +303,10 @@ export const UserEdge = memo(function UserEdge({
             labelX={labelX}
             labelY={labelY}
             selected={!!selected}
+            field="backwardLabel"
+            startEditField={d.startEditField}
             onSave={(label) => d.onLabelSave?.("backwardLabel", label)}
+            onAutoEditConsumed={onAutoEditConsumed}
           />
         )}
       </EdgeLabelRenderer>
