@@ -3,6 +3,7 @@ import type { Node } from "@xyflow/react";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { useCodexStore } from "@/features/codex/codexStore";
 import {
   updateFrame,
   deleteFrame,
@@ -361,8 +362,8 @@ export function useMapNodes({
                 tagsCache: e.tagsCache ?? null,
                 colorBy,
                 onOpen: () => {
-                  useTabStore.getState().openCodexTab(e.id);
                   useLayoutStore.getState().showPanel("codex");
+                  useCodexStore.getState().requestSelectEntry(e.id);
                 },
               },
             };
