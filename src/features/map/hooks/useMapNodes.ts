@@ -360,6 +360,10 @@ export function useMapNodes({
                 color: "#534AB7",
                 tagsCache: e.tagsCache ?? null,
                 colorBy,
+                onOpen: () => {
+                  useTabStore.getState().openCodexTab(e.id);
+                  useLayoutStore.getState().showPanel("codex");
+                },
               },
             };
           })

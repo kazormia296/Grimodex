@@ -11,12 +11,14 @@ export interface CodexNodeData {
   color?: string;
   tagsCache?: string | null;
   colorBy?: "none" | "status";
+  onOpen?: () => void;
   [key: string]: unknown;
 }
 
 export const CodexNode = memo(function CodexNode({
   data,
   selected,
+  isConnectable,
 }: NodeProps) {
   const d = data as CodexNodeData;
   // colorBy=none disables the intrinsic type accent stripe for visual calm.
@@ -29,6 +31,10 @@ export const CodexNode = memo(function CodexNode({
 
   return (
     <div
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        d.onOpen?.();
+      }}
       style={{
         position: "relative",
         width: 200,
@@ -49,7 +55,7 @@ export const CodexNode = memo(function CodexNode({
         lineHeight: 1.4,
       }}
     >
-      <FloatingHandle />
+      <FloatingHandle isConnectable={isConnectable} />
       <span className="map-edit-indicator" aria-hidden>
         ✎
       </span>

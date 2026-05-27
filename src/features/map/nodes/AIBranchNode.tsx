@@ -14,6 +14,7 @@ export interface AIBranchNodeData {
 export const AIBranchNode = memo(function AIBranchNode({
   data,
   selected,
+  isConnectable,
 }: NodeProps) {
   const d = data as AIBranchNodeData;
   const promptPreview = d.prompt.slice(0, 60);
@@ -27,7 +28,7 @@ export const AIBranchNode = memo(function AIBranchNode({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <FloatingHandle />
+      <FloatingHandle isConnectable={isConnectable} />
 
       {/* × delete badge */}
       {(hovered || selected) && d.onDelete && (

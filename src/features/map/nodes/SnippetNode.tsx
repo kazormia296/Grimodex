@@ -11,13 +11,14 @@ export interface SnippetNodeData {
 export const SnippetNode = memo(function SnippetNode({
   data,
   selected,
+  isConnectable,
 }: NodeProps) {
   const d = data as SnippetNodeData;
   const label = d.title?.trim() || d.content.trim().slice(0, 40);
 
   return (
     <div style={{ position: "relative" }}>
-      <FloatingHandle />
+      <FloatingHandle isConnectable={isConnectable} />
       <div
         style={{
           width: 200,

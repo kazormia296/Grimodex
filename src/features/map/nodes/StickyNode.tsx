@@ -127,6 +127,7 @@ function StickyBodyEditor({
 export const StickyNode = memo(function StickyNode({
   data,
   selected,
+  isConnectable,
 }: NodeProps) {
   const d = data as StickyNodeData;
   const rotation = d.rotation ?? 0;
@@ -199,7 +200,7 @@ export const StickyNode = memo(function StickyNode({
 
   return (
     <div style={{ position: "relative" }}>
-      <FloatingHandle />
+      <FloatingHandle isConnectable={isConnectable} />
 
       {/* motion wrapper: enter/exit animation. transformOrigin switches on delete. */}
       <motion.div

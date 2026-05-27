@@ -610,6 +610,7 @@ type EditMode = "none" | "title" | "synopsis";
 export const SceneNode = memo(function SceneNode({
   data,
   selected,
+  isConnectable,
 }: NodeProps) {
   const d = data as SceneNodeData;
   const [editMode, setEditMode] = useState<EditMode>("none");
@@ -646,7 +647,7 @@ export const SceneNode = memo(function SceneNode({
 
   return (
     <div style={{ ...rotationStyle, position: "relative" }}>
-      <FloatingHandle />
+      <FloatingHandle isConnectable={isConnectable} />
       <span className="map-edit-indicator" aria-hidden>
         ✎
       </span>

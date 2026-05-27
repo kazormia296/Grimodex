@@ -9,13 +9,17 @@ export interface NoteNodeData {
   [key: string]: unknown;
 }
 
-export const NoteNode = memo(function NoteNode({ data, selected }: NodeProps) {
+export const NoteNode = memo(function NoteNode({
+  data,
+  selected,
+  isConnectable,
+}: NodeProps) {
   const d = data as NoteNodeData;
   const preview = (d.content ?? "").trim().slice(0, 40);
 
   return (
     <div style={{ position: "relative" }}>
-      <FloatingHandle />
+      <FloatingHandle isConnectable={isConnectable} />
       <span className="map-edit-indicator" aria-hidden>
         ✎
       </span>
