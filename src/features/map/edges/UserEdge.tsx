@@ -1,4 +1,11 @@
-import { memo, useState, useRef, useEffect, useCallback } from "react";
+import {
+  memo,
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+} from "react";
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -7,6 +14,7 @@ import {
   type EdgeProps,
 } from "@xyflow/react";
 import { getFloatingEdgeParams } from "./floatingEdge";
+import { getBezierControlPoints, getLabelPos, type Pt } from "./labelGeometry";
 import { pendingEdgeLabelEdits } from "../mapApi";
 
 export interface UserEdgeData {
@@ -28,12 +36,17 @@ export interface UserEdgeData {
   [key: string]: unknown;
 }
 
+type ControlPoints = { p0: Pt; p1: Pt; p2: Pt; p3: Pt };
+
+const LABEL_PADDING = 6;
+
 function InlineLabel({
   value,
   color,
-  offsetY,
-  labelX,
-  labelY,
+  anchorX,
+  anchorY,
+  controlPoints,
+  outwardHint,
   selected,
   field,
   startEditField,
@@ -42,9 +55,10 @@ function InlineLabel({
 }: {
   value: string | null | undefined;
   color: string;
-  offsetY: number;
-  labelX: number;
-  labelY: number;
+  anchorX: number;
+  anchorY: number;
+  controlPoints: ControlPoints;
+  outwardHint: Pt;
   selected: boolean;
   field: "forwardLabel" | "backwardLabel";
   startEditField?: "forwardLabel" | "backwardLabel" | null;
@@ -58,12 +72,16 @@ function InlineLabel({
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
 
+  // Measured size of the visible label box. Drives the AABB support-function
+  // offset so the label clears the curve regardless of its own dimensions.
+  const measureRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+
   const startEdit = useCallback(() => {
     setDraft(value ?? "");
     setEditing(true);
   }, [value]);
 
-  // Auto-enter edit mode when EdgeContextMenu「ラベル編集」requested it.
   useEffect(() => {
     if (startEditField === field) {
       setDraft(value ?? "");
@@ -88,11 +106,50 @@ function InlineLabel({
     }
   }, [editing]);
 
+  const hasText = typeof value === "string" && value.length > 0;
+  // Push the label off the curve only when it carries real text — placeholders
+  // and the hover hit-area stay anchored at the bezier midpoint so the user
+  // can find them where the edge is.
+  const useOffset = hasText;
+
+  useLayoutEffect(() => {
+    const el = measureRef.current;
+    if (!el || !useOffset) {
+      setSize(null);
+      return;
+    }
+    const update = () => {
+      setSize({ w: el.offsetWidth, h: el.offsetHeight });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [useOffset, value, editing]);
+
+  let cx = anchorX;
+  let cy = anchorY;
+  if (useOffset && size) {
+    const { p0, p1, p2, p3 } = controlPoints;
+    const pos = getLabelPos(
+      p0,
+      p1,
+      p2,
+      p3,
+      size.w,
+      size.h,
+      outwardHint,
+      LABEL_PADDING,
+    );
+    cx = pos.x;
+    cy = pos.y;
+  }
+
   return (
     <div
       style={{
         position: "absolute",
-        transform: `translate(-50%, -50%) translate(${labelX}px,${labelY + offsetY}px)`,
+        transform: `translate(-50%, -50%) translate(${cx}px,${cy}px)`,
         pointerEvents: "all",
       }}
       className="nodrag nopan"
@@ -128,6 +185,7 @@ function InlineLabel({
         />
       ) : value ? (
         <div
+          ref={measureRef}
           style={{
             background: "var(--background)",
             border: `1px solid ${color}`,
@@ -272,6 +330,45 @@ export const UserEdge = memo(function UserEdge({
 
   if (!params) return null;
 
+  // Reconstruct the same control points React Flow's getBezierPath uses, so
+  // labelGeometry.getLabelPos can evaluate the tangent at t=0.5 on the exact
+  // curve being rendered.
+  const singleControl: ControlPoints = getBezierControlPoints(
+    sx,
+    sy,
+    params.sourcePos,
+    tx,
+    ty,
+    params.targetPos,
+  );
+  const forwardControl: ControlPoints = getBezierControlPoints(
+    sx + offX,
+    sy + offY,
+    params.sourcePos,
+    tx + offX,
+    ty + offY,
+    params.targetPos,
+  );
+  const backwardControl: ControlPoints = getBezierControlPoints(
+    tx - offX,
+    ty - offY,
+    params.targetPos,
+    sx - offX,
+    sy - offY,
+    params.sourcePos,
+  );
+
+  // Chord-normal hints used to anchor the label's side. Sign is fed into
+  // getLabelPos and reconciled against the tangent normal; this preserves
+  // continuity through near-linear configurations (no teleport across the
+  // chord when the curve straightens).
+  const chordN: Pt = { x: nx, y: ny };
+  const chordNNeg: Pt = { x: -nx, y: -ny };
+  // Forward: matches historical "above" placement in single mode (-N), and
+  // tracks its own offset strand in parallel mode (+N, where the strand sits).
+  const forwardHint: Pt = parallel ? chordN : chordNNeg;
+  const backwardHint: Pt = parallel ? chordNNeg : chordN;
+
   const strokeDasharray =
     edgeStyle === "dashed" ? "6 3" : edgeStyle === "dotted" ? "2 3" : undefined;
 
@@ -349,9 +446,10 @@ export const UserEdge = memo(function UserEdge({
         <InlineLabel
           value={d.forwardLabel}
           color={color}
-          offsetY={parallel ? 0 : showBackwardSlot ? -14 : 0}
-          labelX={parallel ? forwardLabelX : singleLabelX}
-          labelY={parallel ? forwardLabelY : singleLabelY}
+          anchorX={parallel ? forwardLabelX : singleLabelX}
+          anchorY={parallel ? forwardLabelY : singleLabelY}
+          controlPoints={parallel ? forwardControl : singleControl}
+          outwardHint={forwardHint}
           selected={!!selected}
           field="forwardLabel"
           startEditField={d.startEditField}
@@ -362,9 +460,10 @@ export const UserEdge = memo(function UserEdge({
           <InlineLabel
             value={d.backwardLabel}
             color={color}
-            offsetY={parallel ? 0 : 14}
-            labelX={parallel ? backwardLabelX : singleLabelX}
-            labelY={parallel ? backwardLabelY : singleLabelY}
+            anchorX={parallel ? backwardLabelX : singleLabelX}
+            anchorY={parallel ? backwardLabelY : singleLabelY}
+            controlPoints={parallel ? backwardControl : singleControl}
+            outwardHint={backwardHint}
             selected={!!selected}
             field="backwardLabel"
             startEditField={d.startEditField}
