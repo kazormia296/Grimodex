@@ -928,6 +928,7 @@ export function MapCanvas() {
       const d = edge.data as {
         style?: "solid" | "dashed" | "dotted";
         color?: string;
+        direction?: "none" | "forward" | "bidirectional";
       };
       const edgeId = edge.id.slice("user:".length);
       const ue = userEdgesRef.current.find((u) => u.id === edgeId);
@@ -950,6 +951,7 @@ export function MapCanvas() {
         screenPosition: { x: e.clientX, y: e.clientY },
         style: d.style ?? "solid",
         color: d.color ?? "#555555",
+        direction: d.direction ?? "none",
         canPromoteToRelation,
       });
     },
@@ -1621,6 +1623,17 @@ export function MapCanvas() {
           onColorChange={async (color) => {
             const updated = await updateUserEdge(edgeContextMenu.edgeId, {
               color,
+            });
+            if (updated)
+              setUserEdges((prev) =>
+                prev.map((u) =>
+                  u.id === edgeContextMenu.edgeId ? updated : u,
+                ),
+              );
+          }}
+          onDirectionChange={async (direction) => {
+            const updated = await updateUserEdge(edgeContextMenu.edgeId, {
+              direction,
             });
             if (updated)
               setUserEdges((prev) =>

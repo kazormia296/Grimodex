@@ -174,6 +174,9 @@ function InlineLabel({
   );
 }
 
+// Visual separation between the two parallel strands when both labels exist.
+const PARALLEL_OFFSET = 6;
+
 export const UserEdge = memo(function UserEdge({
   id,
   source,
@@ -210,13 +213,61 @@ export const UserEdge = memo(function UserEdge({
       ? getFloatingEdgeParams(sourceNode, targetNode)
       : null;
 
-  const [edgePath, labelX, labelY] = getBezierPath({
-    sourceX: params?.sx ?? 0,
-    sourceY: params?.sy ?? 0,
+  const forwardHasText =
+    typeof d.forwardLabel === "string" && d.forwardLabel.length > 0;
+  const backwardHasText =
+    typeof d.backwardLabel === "string" && d.backwardLabel.length > 0;
+  // The backward「＋ラベル」affordance only appears once the forward label
+  // exists, so a labelless edge surfaces a single "＋ラベル" entry point.
+  // Parallel rendering kicks in only after the backward label actually has
+  // text — otherwise the backward affordance rides the single line with the
+  // legacy Y-offset stacking.
+  const showBackwardSlot = forwardHasText || backwardHasText;
+  const parallel = backwardHasText;
+
+  const sx = params?.sx ?? 0;
+  const sy = params?.sy ?? 0;
+  const tx = params?.tx ?? 0;
+  const ty = params?.ty ?? 0;
+  const dxv = tx - sx;
+  const dyv = ty - sy;
+  const len = Math.hypot(dxv, dyv);
+  // Unit perpendicular to source→target. Zero-length fallback keeps degenerate
+  // self-loops from producing NaN coordinates.
+  const nx = len > 0 ? -dyv / len : 0;
+  const ny = len > 0 ? dxv / len : 0;
+
+  // Single-strand layout: bezier midpoint is the natural anchor for the
+  // forward label (and the backward「＋ラベル」affordance) so the visible
+  // label tracks the curve as the nodes move.
+  const [singlePath, singleLabelX, singleLabelY] = getBezierPath({
+    sourceX: sx,
+    sourceY: sy,
     sourcePosition: params?.sourcePos,
-    targetX: params?.tx ?? 0,
-    targetY: params?.ty ?? 0,
+    targetX: tx,
+    targetY: ty,
     targetPosition: params?.targetPos,
+  });
+
+  // Parallel-strand layout: shift the endpoints perpendicular to the chord so
+  // forward and backward labels each ride their own visible line.
+  const offX = nx * PARALLEL_OFFSET;
+  const offY = ny * PARALLEL_OFFSET;
+  const [forwardPath, forwardLabelX, forwardLabelY] = getBezierPath({
+    sourceX: sx + offX,
+    sourceY: sy + offY,
+    sourcePosition: params?.sourcePos,
+    targetX: tx + offX,
+    targetY: ty + offY,
+    targetPosition: params?.targetPos,
+  });
+  const [backwardPath, backwardLabelX, backwardLabelY] = getBezierPath({
+    sourceX: tx - offX,
+    sourceY: ty - offY,
+    sourcePosition: params?.targetPos,
+    targetX: sx - offX,
+    targetY: sy - offY,
+    targetPosition: params?.sourcePos,
   });
 
   if (!params) return null;
@@ -224,23 +275,15 @@ export const UserEdge = memo(function UserEdge({
   const strokeDasharray =
     edgeStyle === "dashed" ? "6 3" : edgeStyle === "dotted" ? "2 3" : undefined;
 
-  const markerEnd =
-    direction === "forward" || direction === "bidirectional"
-      ? `url(#arrow-${id})`
-      : undefined;
-  const markerStart =
-    direction === "bidirectional" ? `url(#arrow-start-${id})` : undefined;
+  const arrowEnd = `url(#arrow-${id})`;
+  const arrowStart = `url(#arrow-start-${id})`;
 
-  const forwardHasText =
-    typeof d.forwardLabel === "string" && d.forwardLabel.length > 0;
-  const backwardHasText =
-    typeof d.backwardLabel === "string" && d.backwardLabel.length > 0;
-  // The backward-label slot stays hidden until the forward label has a
-  // value, so a labelless edge surfaces a single "＋ラベル" affordance
-  // instead of two stacked empty placeholders.
-  const showBackward = forwardHasText || backwardHasText;
-  const forwardOffsetY = showBackward ? -14 : 0;
-  const backwardOffsetY = 14;
+  const baseStyle = {
+    stroke: color,
+    strokeWidth: selected ? 3 : 2,
+    strokeDasharray,
+    opacity: selected ? 1 : 0.75,
+  };
 
   return (
     <>
@@ -255,7 +298,7 @@ export const UserEdge = memo(function UserEdge({
         >
           <path d="M0,0 L0,6 L8,3 z" style={{ fill: color }} />
         </marker>
-        {direction === "bidirectional" && (
+        {direction === "bidirectional" && !parallel && (
           <marker
             id={`arrow-start-${id}`}
             markerWidth="8"
@@ -269,39 +312,59 @@ export const UserEdge = memo(function UserEdge({
         )}
       </defs>
 
-      <BaseEdge
-        id={id}
-        path={edgePath}
-        style={{
-          stroke: color,
-          strokeWidth: selected ? 3 : 2,
-          strokeDasharray,
-          opacity: selected ? 1 : 0.75,
-        }}
-        markerEnd={markerEnd}
-        markerStart={markerStart}
-      />
+      {parallel ? (
+        <>
+          <BaseEdge
+            id={id}
+            path={forwardPath}
+            style={baseStyle}
+            markerEnd={
+              direction === "forward" || direction === "bidirectional"
+                ? arrowEnd
+                : undefined
+            }
+          />
+          <BaseEdge
+            id={`${id}-backward`}
+            path={backwardPath}
+            style={baseStyle}
+            markerEnd={direction === "bidirectional" ? arrowEnd : undefined}
+          />
+        </>
+      ) : (
+        <BaseEdge
+          id={id}
+          path={singlePath}
+          style={baseStyle}
+          markerEnd={
+            direction === "forward" || direction === "bidirectional"
+              ? arrowEnd
+              : undefined
+          }
+          markerStart={direction === "bidirectional" ? arrowStart : undefined}
+        />
+      )}
 
       <EdgeLabelRenderer>
         <InlineLabel
           value={d.forwardLabel}
           color={color}
-          offsetY={forwardOffsetY}
-          labelX={labelX}
-          labelY={labelY}
+          offsetY={parallel ? 0 : showBackwardSlot ? -14 : 0}
+          labelX={parallel ? forwardLabelX : singleLabelX}
+          labelY={parallel ? forwardLabelY : singleLabelY}
           selected={!!selected}
           field="forwardLabel"
           startEditField={d.startEditField}
           onSave={(label) => d.onLabelSave?.("forwardLabel", label)}
           onAutoEditConsumed={onAutoEditConsumed}
         />
-        {showBackward && (
+        {showBackwardSlot && (
           <InlineLabel
             value={d.backwardLabel}
             color={color}
-            offsetY={backwardOffsetY}
-            labelX={labelX}
-            labelY={labelY}
+            offsetY={parallel ? 0 : 14}
+            labelX={parallel ? backwardLabelX : singleLabelX}
+            labelY={parallel ? backwardLabelY : singleLabelY}
             selected={!!selected}
             field="backwardLabel"
             startEditField={d.startEditField}

@@ -7,11 +7,14 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 
+export type EdgeDirection = "none" | "forward" | "bidirectional";
+
 export interface EdgeContextMenuState {
   edgeId: string;
   screenPosition: { x: number; y: number };
   style: "solid" | "dashed" | "dotted";
   color: string;
+  direction: EdgeDirection;
   canPromoteToRelation?: boolean;
 }
 
@@ -19,6 +22,7 @@ interface EdgeContextMenuProps extends EdgeContextMenuState {
   onClose: () => void;
   onStyleChange: (style: "solid" | "dashed" | "dotted") => void;
   onColorChange: (color: string) => void;
+  onDirectionChange: (direction: EdgeDirection) => void;
   onDelete: () => void;
   onPromoteToRelation?: () => void;
   onEditLabel?: (field: "forwardLabel" | "backwardLabel") => void;
@@ -40,13 +44,21 @@ const STYLE_ITEMS = [
   { value: "dotted", label: "点線", glyph: "···" },
 ] as const;
 
+const DIRECTION_ITEMS = [
+  { value: "none", label: "なし", glyph: "──" },
+  { value: "forward", label: "順方向", glyph: "→" },
+  { value: "bidirectional", label: "双方向", glyph: "↔" },
+] as const;
+
 export function EdgeContextMenu({
   screenPosition,
   style,
   color,
+  direction,
   onClose,
   onStyleChange,
   onColorChange,
+  onDirectionChange,
   onDelete,
   onPromoteToRelation,
   canPromoteToRelation,
@@ -86,6 +98,18 @@ export function EdgeContextMenu({
             <DropdownMenuSeparator />
           </>
         )}
+        <DropdownMenuLabel>矢印方向</DropdownMenuLabel>
+        {DIRECTION_ITEMS.map(({ value, label, glyph }) => (
+          <DropdownMenuItem
+            key={value}
+            onSelect={() => onDirectionChange(value)}
+            className={direction === value ? "font-semibold" : undefined}
+          >
+            <span className="inline-block w-8">{glyph}</span>
+            {label}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
         <DropdownMenuLabel>線種</DropdownMenuLabel>
         {STYLE_ITEMS.map(({ value, label, glyph }) => (
           <DropdownMenuItem

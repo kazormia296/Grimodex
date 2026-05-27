@@ -9,9 +9,11 @@ const baseProps = {
   screenPosition: { x: 100, y: 100 },
   style: "solid" as const,
   color: "#555555",
+  direction: "none" as const,
   onClose: vi.fn(),
   onStyleChange: vi.fn(),
   onColorChange: vi.fn(),
+  onDirectionChange: vi.fn(),
   onDelete: vi.fn(),
 };
 
