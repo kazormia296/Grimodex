@@ -602,6 +602,11 @@
       "bodiesOn": "Bodies included in context (click for eco mode = synopses only)",
       "bodiesOff": "Eco mode: synopses only (click to also include bodies)"
     },
+    "mapOverlay": {
+      "label": "Map",
+      "on": "Map board injected into context (click to turn off)",
+      "off": "Inject Map board into context (click to turn on)"
+    },
     "quickActions": {
       "ariaLabel": "Quick actions",
       "scene": {

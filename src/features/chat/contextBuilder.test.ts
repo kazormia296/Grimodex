@@ -356,6 +356,45 @@ describe("contextBuilder", () => {
       const nameMatches = result.prompt.match(/\*\*花子\*\*/g);
       expect(nameMatches).toHaveLength(1);
     });
+
+    it("mapBoardMarkdown 指定時に L4 に <map> ブロックが含まれる", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+      const result = buildSystemPrompt({
+        scene,
+        mapBoardMarkdown:
+          '<map board="World">\n## Edges\n- [Sticky] "A" → [Codex] "リン": 契約\n</map>',
+      });
+      expect(result.prompt).toContain('<map board="World">');
+      expect(result.prompt).toContain('[Sticky] "A" → [Codex] "リン": 契約');
+    });
+
+    it("mapBoardMarkdown 未指定時は <map> ブロックを出さない", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+      const result = buildSystemPrompt({ scene });
+      expect(result.prompt).not.toContain("<map");
+    });
+
+    it("mapBoardMarkdown のみで他 L4 要素なしでも L4 セクションが出る", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+      const result = buildSystemPrompt({
+        scene,
+        mapBoardMarkdown:
+          '<map board="X">\n## Floating\n- **N** (Sticky)\n</map>',
+      });
+      expect(result.prompt).toContain('<map board="X">');
+    });
   });
 
   describe("sanitizeSceneContent", () => {

@@ -129,6 +129,13 @@ export interface BuildSystemPromptInput {
   pinnedSnippets?: PinnedSnippetContext[];
   /** Phase D: ピン留めされた Map Sticky (L4に注入) */
   pinnedStickies?: PinnedStickyContext[];
+  /**
+   * Map overlay: アクティブな Map board 全体を markdown 化したもの。
+   * `<map>...</map>` で囲まれた 1 ブロック。pinnedStickies の直後に
+   * L4_PRI_PINNED で追加され、stableLines にも積まれる。
+   * 不要なら未指定 (undefined) で何もしない。
+   */
+  mapBoardMarkdown?: string;
   /** G19: アクティブタブのコンテンツ (L3に注入) */
   activeTabContent?: {
     type: "codex" | "snippet";
@@ -855,11 +862,13 @@ export function buildSystemPrompt(
   const hasPinnedStickies =
     input.pinnedStickies && input.pinnedStickies.length > 0;
   const hasNotes = input.noteEntries && input.noteEntries.length > 0;
+  const hasMapBoard = Boolean(input.mapBoardMarkdown?.trim());
   if (
     allCodex.length > 0 ||
     hasPinnedSnippets ||
     hasPinnedStickies ||
-    hasNotes
+    hasNotes ||
+    hasMapBoard
   ) {
     const lines = [s.headers.codexSection];
     const stableLines = [s.headers.codexSection];
@@ -968,6 +977,12 @@ export function buildSystemPrompt(
       if (l4StableIds.size === 0 || l4StableIds.has(sticky.id)) {
         stableLines.push(stickyBlock);
       }
+    }
+    // Map overlay: board 全体を 1 ブロックとして L4 に注入（pri = PINNED）
+    if (hasMapBoard) {
+      const mapBlock = `<!-- l4pri:${L4_PRI_PINNED} -->\n${input.mapBoardMarkdown!.trim()}`;
+      lines.push(mapBlock);
+      stableLines.push(mapBlock);
     }
     l4Text = lines.join("\n");
     // stable segment は trimL4Text を通らないため、この時点で marker を strip して

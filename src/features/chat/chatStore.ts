@@ -120,6 +120,17 @@ import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getSnippet } from "@/features/snippets/api";
 import { listPinnedSnippetEntries, listPinnedStickyEntries } from "./chatApi";
+import { useMapStore } from "@/features/map/mapStore";
+import {
+  listStickies as listMapStickies,
+  listUserEdges as listMapUserEdges,
+  listFrames as listMapFrames,
+  listNodePositions as listMapNodePositions,
+  listAiBranches as listMapAiBranches,
+  getMapBoard,
+} from "@/features/map/mapApi";
+import { buildMapContextMarkdown } from "@/features/map/mapToContextPrompt";
+import type { ResolvedLabel } from "@/features/map/mapToContextPrompt";
 import type {
   PinnedSnippetContext,
   PinnedStickyContext,
@@ -392,6 +403,22 @@ interface ChatState {
   setChatScope: (
     scope: "scene" | "folder" | "project",
     anchorId?: string | null,
+  ) => void;
+
+  /**
+   * Map overlay: アクティブな Map board 全体を L4 に注入するかどうか。
+   * chatScope (scene/folder/project) と直交する独立トグル。
+   *
+   * `useMapBoardAutoActivate` フックが Map panel の可視状態と activeBoardId に
+   * 追従させる: 可視+board 有りで ON、非可視/board 無しで OFF。手動 toggle は
+   * 次の panel/board 変更で再同期される。
+   */
+  includeMapBoard: boolean;
+  /** 注入対象の board id。null なら useMapStore.activeBoardId を解決 (送信時)。*/
+  mapBoardId: string | null;
+  setIncludeMapBoard: (
+    on: boolean,
+    options?: { source?: "user" | "auto"; boardId?: string | null },
   ) => void;
 
   /**
@@ -719,6 +746,94 @@ interface SceneContextPayload {
   /** Phase 4 後続: ContextBar chip 表示用の outline 値。注入されたものと同一。 */
   projectOutline: string | undefined;
   chapterOutlines: Array<{ title: string; outline: string }>;
+}
+
+/**
+ * Map overlay: 現在 includeMapBoard が ON ならアクティブな board を
+ * シリアライズして返す。OFF / board 未解決 / DB 失敗のときは undefined。
+ *
+ * Endpoint resolver: 非 Sticky 端点（Scene/Codex/Snippet/Note/AIBranch）を
+ * kind+title に解決する。codex は呼び出し側が既に取得済みの entries を渡す
+ * （重複 fetch 防止）。tree / aiBranch / snippet は内部で lookup。
+ */
+async function loadMapBoardMarkdown(
+  allEntries: CodexEntry[],
+): Promise<string | undefined> {
+  const { includeMapBoard, mapBoardId } = useChatStore.getState();
+  if (!includeMapBoard) return undefined;
+  const resolvedBoardId = mapBoardId ?? useMapStore.getState().activeBoardId;
+  if (!resolvedBoardId) return undefined;
+  try {
+    const [board, mapStickies, mapEdges, mapFrames, mapPositions, aiBranches] =
+      await Promise.all([
+        getMapBoard(resolvedBoardId),
+        listMapStickies(resolvedBoardId),
+        listMapUserEdges(resolvedBoardId),
+        listMapFrames(resolvedBoardId),
+        listMapNodePositions(resolvedBoardId),
+        listMapAiBranches(resolvedBoardId),
+      ]);
+    if (!board) return undefined;
+    const treeNodesById = new Map(
+      useTreeStore.getState().nodes.map((n) => [n.id, n] as const),
+    );
+    const codexById = new Map(allEntries.map((e) => [e.id, e] as const));
+    const aiBranchById = new Map(aiBranches.map((a) => [a.id, a] as const));
+    // snippet endpoint は稀。同期取得できないので初回のみ「(snippet)」表示で
+    // injection を成立させ、副作用で次回送信時に warm 化する。
+    const snippetCache = new Map<string, string>();
+    const fillSnippetTitle = (id: string): string | null => {
+      const cached = snippetCache.get(id);
+      if (cached !== undefined) return cached;
+      getSnippet(id)
+        .then((s) => {
+          if (s) snippetCache.set(id, s.title);
+        })
+        .catch(() => {});
+      return null;
+    };
+    const resolveLabel = (
+      p: (typeof mapPositions)[number],
+    ): ResolvedLabel | null => {
+      if (p.nodeRefType === "scene" || p.nodeRefType === "note") {
+        if (!p.treeNodeId) return null;
+        const node = treeNodesById.get(p.treeNodeId);
+        if (!node) return null;
+        return { kind: p.nodeRefType, title: node.title || "(untitled)" };
+      }
+      if (p.nodeRefType === "codex") {
+        if (!p.codexEntryId) return null;
+        const e = codexById.get(p.codexEntryId);
+        if (!e) return null;
+        return { kind: "codex", title: e.name || "(untitled)" };
+      }
+      if (p.nodeRefType === "snippet") {
+        if (!p.snippetId) return null;
+        const title = fillSnippetTitle(p.snippetId);
+        return title
+          ? { kind: "snippet", title }
+          : { kind: "snippet", title: "(snippet)" };
+      }
+      if (p.nodeRefType === "ai_branch") {
+        if (!p.aiBranchId) return null;
+        const ab = aiBranchById.get(p.aiBranchId);
+        if (!ab) return null;
+        const promptHead = ab.prompt.trim().slice(0, 40);
+        return { kind: "ai_branch", title: promptHead || "(AI branch)" };
+      }
+      return null;
+    };
+    return buildMapContextMarkdown({
+      boardTitle: board.title,
+      stickies: mapStickies,
+      edges: mapEdges,
+      frames: mapFrames,
+      positions: mapPositions,
+      resolveLabel,
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 async function buildSceneContextPrompt(opts: {
@@ -1108,6 +1223,10 @@ async function buildSceneContextPrompt(opts: {
     }
   }
 
+  // Map overlay: scope と直交する独立トグル。ON のとき active board
+  // 全体（Sticky / Edge / Frame）を 1 ブロックとして L4 に注入する。
+  const mapBoardMarkdown = await loadMapBoardMarkdown(allEntries);
+
   // G19: active tab content
   let activeTabContent:
     | { type: "codex" | "snippet"; title: string; content: string }
@@ -1283,6 +1402,7 @@ async function buildSceneContextPrompt(opts: {
     pinnedCodexEntries,
     pinnedSnippets: pinnedSnippets.length > 0 ? pinnedSnippets : undefined,
     pinnedStickies: pinnedStickies.length > 0 ? pinnedStickies : undefined,
+    mapBoardMarkdown,
     activeTabContent,
     commandInstruction,
     conversationTokens,
@@ -1354,6 +1474,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   chatScope: "scene",
   scopeAnchorId: null,
   includeBodies: true,
+  includeMapBoard: false,
+  mapBoardId: null,
   _editingOldContent: null,
   pendingLookupText: null,
   summaryCount: 0,
@@ -1491,7 +1613,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       });
       return;
     }
-    set({ isLoadingMessages: true, activeSessionId: sessionId, messages: [] });
+    set({
+      isLoadingMessages: true,
+      activeSessionId: sessionId,
+      messages: [],
+    });
     try {
       const [messages, summaries] = await Promise.all([
         chatApi.listMessages(sessionId),
@@ -1662,6 +1788,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             options?.mentionedSceneIds,
             null,
           );
+          // Map overlay は scope と直交するため scene/folder/project の全経路で注入する。
+          const allEntriesForMap = await listCodexEntries(
+            getCurrentProjectId(),
+          );
+          const mapBoardMarkdown = await loadMapBoardMarkdown(allEntriesForMap);
           const { prompt } = buildSystemPrompt({
             scene: { id: "", title: "", content: "" },
             project: projectCtx,
@@ -1669,6 +1800,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               mentionedScenes.length > 0 ? mentionedScenes : undefined,
             lang: projectCtx.language ?? "ja",
             agentMode,
+            mapBoardMarkdown,
           });
           parts.push(`[system]\n${prompt}`);
         }
@@ -2801,6 +2933,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           };
         });
 
+        // Map overlay: scope と直交するため folder/project 経路でも注入する。
+        const mapBoardMarkdown = await loadMapBoardMarkdown(allEntries);
         const promptResult = buildSystemPrompt({
           scene: aggregatedScene
             ? {
@@ -2824,6 +2958,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             mentionedScenes.length > 0 ? mentionedScenes : undefined,
           lang: projectCtx?.language ?? "ja",
           agentMode: get().agentMode,
+          mapBoardMarkdown,
         });
 
         set({
@@ -2910,6 +3045,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     });
   },
   setIncludeBodies: (on: boolean) => set({ includeBodies: on }),
+  setIncludeMapBoard: (on, options) => {
+    // 現状 source は telemetry / 将来拡張用。動作上は user/auto 共通で
+    // includeMapBoard と mapBoardId を更新するだけ（panel/board 変更で
+    // 再同期される設計のため、override セマンティクスは持たない）。
+    const next: Partial<ChatState> = { includeMapBoard: on };
+    if (options?.boardId !== undefined) {
+      next.mapBoardId = options.boardId;
+    } else if (!on) {
+      // OFF 時は board 参照もクリアして stale な id を残さない
+      next.mapBoardId = null;
+    }
+    set(next);
+  },
 
   // --- P2-1: ストリーミング中断 ---
   stopGeneration: () => {

@@ -602,6 +602,11 @@
       "bodiesOn": "本文を context に含める（クリックで eco モード = synopsis のみに切替）",
       "bodiesOff": "eco モード: synopsis のみ（クリックで本文も含める）"
     },
+    "mapOverlay": {
+      "label": "Map",
+      "on": "Map board 全体を context に注入中（クリックで OFF）",
+      "off": "Map board を context に注入する（クリックで ON）"
+    },
     "quickActions": {
       "ariaLabel": "クイックアクション",
       "scene": {

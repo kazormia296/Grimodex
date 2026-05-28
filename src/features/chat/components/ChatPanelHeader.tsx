@@ -10,6 +10,7 @@ import {
   Circle,
   BookOpen,
   Leaf,
+  Map as MapIcon,
 } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
@@ -39,6 +40,14 @@ interface ChatPanelHeaderProps {
   /** 本文を context に含めるか (eco モード相当)。project では非表示 */
   includeBodies: boolean;
   onToggleIncludeBodies: () => void;
+  /**
+   * Map overlay: アクティブな Map board 全体を L4 に注入するか。
+   * chatScope と直交する独立トグル。
+   */
+  includeMapBoard: boolean;
+  /** Map ON のとき chip に表示する board title。null なら "Map" のみ。 */
+  mapBoardTitle: string | null;
+  onToggleIncludeMapBoard: () => void;
 }
 
 interface TreeRow {
@@ -82,6 +91,9 @@ export function ChatPanelHeader({
   onNewSession,
   includeBodies,
   onToggleIncludeBodies,
+  includeMapBoard,
+  mapBoardTitle,
+  onToggleIncludeMapBoard,
 }: ChatPanelHeaderProps) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
@@ -302,6 +314,32 @@ export function ChatPanelHeader({
             )}
           </button>
         )}
+
+        {/* Map overlay toggle: scope と直交。ON で active board 全体を L4 注入。 */}
+        <button
+          type="button"
+          onClick={onToggleIncludeMapBoard}
+          aria-pressed={includeMapBoard}
+          aria-label={
+            includeMapBoard ? t("chat.mapOverlay.on") : t("chat.mapOverlay.off")
+          }
+          title={
+            includeMapBoard ? t("chat.mapOverlay.on") : t("chat.mapOverlay.off")
+          }
+          className={[
+            "flex max-w-[160px] items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
+            includeMapBoard
+              ? "bg-primary/10 text-primary hover:bg-primary/15"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          ].join(" ")}
+        >
+          <MapIcon className="h-3 w-3 shrink-0" />
+          {includeMapBoard && mapBoardTitle ? (
+            <span className="truncate">{mapBoardTitle}</span>
+          ) : (
+            <span>{t("chat.mapOverlay.label")}</span>
+          )}
+        </button>
       </div>
 
       <div className="flex shrink-0 items-center gap-1">

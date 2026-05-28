@@ -1071,4 +1071,43 @@ describe("useChatStore", () => {
       expect(args?.scene.title).toBe("テストシーン");
     });
   });
+
+  describe("setIncludeMapBoard (Map overlay)", () => {
+    it("ON にすると includeMapBoard が true、boardId が反映される", () => {
+      useChatStore
+        .getState()
+        .setIncludeMapBoard(true, { source: "auto", boardId: "b1" });
+      const s = useChatStore.getState();
+      expect(s.includeMapBoard).toBe(true);
+      expect(s.mapBoardId).toBe("b1");
+    });
+
+    it("OFF にすると mapBoardId も自動的に null クリアされる (stale 防止)", () => {
+      useChatStore.setState({ includeMapBoard: true, mapBoardId: "b1" });
+      useChatStore.getState().setIncludeMapBoard(false);
+      const s = useChatStore.getState();
+      expect(s.includeMapBoard).toBe(false);
+      expect(s.mapBoardId).toBeNull();
+    });
+
+    it("ON 時に boardId 未指定なら既存の mapBoardId を維持", () => {
+      useChatStore.setState({ includeMapBoard: false, mapBoardId: "b-prev" });
+      useChatStore.getState().setIncludeMapBoard(true);
+      const s = useChatStore.getState();
+      expect(s.includeMapBoard).toBe(true);
+      expect(s.mapBoardId).toBe("b-prev");
+    });
+
+    it("auto と user の両方とも state を更新する (override セマンティクスなし)", () => {
+      useChatStore.setState({ includeMapBoard: true, mapBoardId: "b1" });
+      useChatStore.getState().setIncludeMapBoard(false, { source: "user" });
+      expect(useChatStore.getState().includeMapBoard).toBe(false);
+      useChatStore
+        .getState()
+        .setIncludeMapBoard(true, { source: "auto", boardId: "b2" });
+      const s = useChatStore.getState();
+      expect(s.includeMapBoard).toBe(true);
+      expect(s.mapBoardId).toBe("b2");
+    });
+  });
 });

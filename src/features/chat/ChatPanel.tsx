@@ -5,6 +5,9 @@ import { useReducedMotion } from "@/lib/animation";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { useChatStore } from "./chatStore";
+import { useMapBoardAutoActivate } from "./useMapBoardAutoActivate";
+import { useMapStore } from "@/features/map/mapStore";
+import { getMapBoard } from "@/features/map/mapApi";
 import { useSceneStore } from "@/features/tree/store";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -60,6 +63,7 @@ export function ChatPanel() {
   const { t } = useTranslation();
   const reduced = useReducedMotion();
   const chatCapability = useAiCapability("chat");
+  useMapBoardAutoActivate();
   const messages = useChatStore((s) => s.messages);
   const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
   const isStreaming = useChatStore((s) => s.isStreaming);
@@ -92,6 +96,10 @@ export function ChatPanel() {
   const setChatScope = useChatStore((s) => s.setChatScope);
   const includeBodies = useChatStore((s) => s.includeBodies);
   const setIncludeBodies = useChatStore((s) => s.setIncludeBodies);
+  const includeMapBoard = useChatStore((s) => s.includeMapBoard);
+  const mapBoardIdFromStore = useChatStore((s) => s.mapBoardId);
+  const setIncludeMapBoard = useChatStore((s) => s.setIncludeMapBoard);
+  const [mapBoardTitle, setMapBoardTitle] = useState<string | null>(null);
   const syncInsertedToEditorMetadata = useChatStore(
     (s) => s.syncInsertedToEditorMetadata,
   );
@@ -196,6 +204,8 @@ export function ChatPanel() {
     chatScope,
     scopeAnchorId,
     includeBodies,
+    includeMapBoard,
+    mapBoardIdFromStore,
     allCodexEntries,
     refreshContextLayers,
   ]);
@@ -604,6 +614,34 @@ export function ChatPanel() {
     createNewSession(getCurrentProjectId(), "New session", nodeId);
   }, [createNewSession, chatScope, scopeAnchorId, chatSceneId]);
 
+  // Map overlay chip 表示用の board title 取得。includeMapBoard が ON のとき
+  // のみ fetch する（OFF 時に余計な DB アクセスを発生させない）。
+  const activeBoardIdForChip = useMapStore((s) => s.activeBoardId);
+  const resolvedMapBoardId = mapBoardIdFromStore ?? activeBoardIdForChip;
+  useEffect(() => {
+    if (!includeMapBoard || !resolvedMapBoardId) {
+      setMapBoardTitle(null);
+      return;
+    }
+    let cancelled = false;
+    getMapBoard(resolvedMapBoardId)
+      .then((b) => {
+        if (!cancelled) setMapBoardTitle(b?.title ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [includeMapBoard, resolvedMapBoardId]);
+
+  const handleToggleMapOverlay = useCallback(() => {
+    const next = !includeMapBoard;
+    setIncludeMapBoard(next, {
+      source: "user",
+      boardId: next ? (resolvedMapBoardId ?? null) : null,
+    });
+  }, [includeMapBoard, resolvedMapBoardId, setIncludeMapBoard]);
+
   const __renderResult = (
     <div className="glass-chat relative flex h-full flex-col bg-background">
       {/* メッセージリスト内の Codex ハイライトポップオーバー（単一インスタンス） */}
@@ -621,6 +659,9 @@ export function ChatPanel() {
         onNewSession={handleNewSession}
         includeBodies={includeBodies}
         onToggleIncludeBodies={() => setIncludeBodies(!includeBodies)}
+        includeMapBoard={includeMapBoard}
+        mapBoardTitle={mapBoardTitle}
+        onToggleIncludeMapBoard={handleToggleMapOverlay}
       />
 
       <ContextBar
