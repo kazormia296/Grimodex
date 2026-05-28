@@ -36,6 +36,27 @@ import type {
 } from "./types";
 import { DEFAULT_SHOW } from "./types";
 import { DEFAULT_PALETTE_ID, DEFAULT_COLOR_SLOT } from "@/lib/stickyPalettes";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
+
+/**
+ * 執筆タイムラプス: Map 系操作を統一窓口で capture する。drag 中の
+ * upsertNodePosition は将来 coalescing (200ms quiet / pointerup) を入れたい
+ * が、現状は全 op を逐次記録する (チェーン健全性のみ担保、UI 影響は無視できる
+ * 程度を想定)。
+ */
+function recordMapEvent(
+  opType: string,
+  entityId: string | null,
+  payload: Record<string, unknown>,
+): void {
+  recordChangeEvent({
+    domain: "map",
+    opType,
+    entityType: "map",
+    entityId,
+    payload,
+  });
+}
 
 export { DEFAULT_SHOW } from "./types";
 
@@ -419,6 +440,12 @@ export async function upsertNodePosition(data: {
       .set({ x: data.x, y: data.y, updatedAt: now })
       .where(eq(mapNodePositions.id, existing.id))
       .returning();
+    recordMapEvent("position.move", updated[0]?.id ?? null, {
+      boardId: data.boardId,
+      x: data.x,
+      y: data.y,
+      ref: data.nodeRefType,
+    });
     return updated[0];
   }
 
@@ -443,6 +470,12 @@ export async function upsertNodePosition(data: {
     .insert(mapNodePositions)
     .values(insertData)
     .returning();
+  recordMapEvent("position.create", id, {
+    boardId: data.boardId,
+    x: data.x,
+    y: data.y,
+    ref: data.nodeRefType,
+  });
   return inserted[0];
 }
 
@@ -473,6 +506,7 @@ export async function setNodePinned(
 
 export async function deleteNodePosition(id: string): Promise<void> {
   await db.delete(mapNodePositions).where(eq(mapNodePositions.id, id));
+  recordMapEvent("position.delete", id, {});
 }
 
 // ── Stickies ───────────────────────────────────────────────────────────────
@@ -560,6 +594,10 @@ export async function createSticky(data: {
     y: data.y,
   });
 
+  recordMapEvent("sticky.create", stickyId, {
+    boardId: data.boardId,
+    title: data.title ?? null,
+  });
   return { sticky, position };
 }
 
@@ -587,11 +625,13 @@ export async function updateSticky(
     .set(set)
     .where(eq(mapStickies.id, id))
     .returning();
+  recordMapEvent("sticky.update", id, { fields: Object.keys(update) });
   return rows[0];
 }
 
 export async function deleteSticky(id: string): Promise<void> {
   await db.delete(mapStickies).where(eq(mapStickies.id, id));
+  recordMapEvent("sticky.delete", id, {});
 }
 
 /**
@@ -1063,6 +1103,11 @@ export async function createUserEdge(data: {
     updatedAt: now,
   };
   const inserted = await db.insert(mapEdges).values(insertData).returning();
+  recordMapEvent("edge.create", id, {
+    boardId: data.boardId,
+    from: data.fromPositionId,
+    to: data.toPositionId,
+  });
   return inserted[0];
 }
 
@@ -1083,11 +1128,13 @@ export async function updateUserEdge(
     .set({ ...update, updatedAt: now })
     .where(eq(mapEdges.id, id))
     .returning();
+  recordMapEvent("edge.update", id, { fields: Object.keys(update) });
   return rows[0];
 }
 
 export async function deleteUserEdge(id: string): Promise<void> {
   await db.delete(mapEdges).where(eq(mapEdges.id, id));
+  recordMapEvent("edge.delete", id, {});
 }
 
 /**
@@ -1172,6 +1219,7 @@ export async function createFrame(data: {
     updatedAt: now,
   };
   const inserted = await db.insert(mapFrames).values(insertData).returning();
+  recordMapEvent("frame.create", id, { boardId: data.boardId });
   return inserted[0];
 }
 
@@ -1193,11 +1241,13 @@ export async function updateFrame(
     .set({ ...update, updatedAt: now })
     .where(eq(mapFrames.id, id))
     .returning();
+  recordMapEvent("frame.update", id, { fields: Object.keys(update) });
   return rows[0];
 }
 
 export async function deleteFrame(id: string): Promise<void> {
   await db.delete(mapFrames).where(eq(mapFrames.id, id));
+  recordMapEvent("frame.delete", id, {});
 }
 
 /**
