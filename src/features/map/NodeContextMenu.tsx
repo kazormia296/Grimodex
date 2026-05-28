@@ -31,6 +31,7 @@ interface NodeContextMenuProps {
   isScene: boolean;
   isSticky?: boolean;
   isFrame?: boolean;
+  isAiBranch?: boolean;
   focusedNodeId: string | null;
   onClose: () => void;
   onOpen: () => void;
@@ -50,6 +51,9 @@ interface NodeContextMenuProps {
   onChangeColor?: (paletteId: string, colorSlot: number) => void;
   /** Palette of the right-clicked sticky; defaults to the default palette. */
   stickyPaletteId?: string;
+  /** AI Branch 専用: 派生 Sticky ごと一括削除。confirm は呼び出し側で。 */
+  onDeleteWithDerivedStickies?: () => void;
+  derivedStickyCount?: number;
 }
 
 const DESTRUCTIVE_CLASS =
@@ -62,6 +66,7 @@ export function NodeContextMenu({
   isScene,
   isSticky = false,
   isFrame = false,
+  isAiBranch = false,
   focusedNodeId,
   onClose,
   onOpen,
@@ -80,6 +85,8 @@ export function NodeContextMenu({
   isStickyPinnedToChat = false,
   onChangeColor,
   stickyPaletteId,
+  onDeleteWithDerivedStickies,
+  derivedStickyCount = 0,
 }: NodeContextMenuProps) {
   const palette = getPalette(stickyPaletteId ?? DEFAULT_PALETTE_ID);
 
@@ -256,8 +263,22 @@ export function NodeContextMenu({
               onSelect={onRemoveFromBoard}
               className={DESTRUCTIVE_CLASS}
             >
-              {isSticky ? "削除" : "このボードから削除"}
+              {isSticky || isAiBranch ? "削除" : "このボードから削除"}
             </DropdownMenuItem>
+
+            {isAiBranch && onDeleteWithDerivedStickies && (
+              <DropdownMenuItem
+                onSelect={onDeleteWithDerivedStickies}
+                className={DESTRUCTIVE_CLASS}
+              >
+                派生 Sticky ごと削除…
+                {derivedStickyCount > 0 && (
+                  <span className="ml-2 opacity-70">
+                    ({derivedStickyCount} 枚)
+                  </span>
+                )}
+              </DropdownMenuItem>
+            )}
           </>
         )}
       </DropdownMenuContent>

@@ -35,6 +35,7 @@ import { StickyNode } from "./nodes/StickyNode";
 import { SnippetNode } from "./nodes/SnippetNode";
 import { AIBranchNode } from "./nodes/AIBranchNode";
 import { NodeContextMenu } from "./NodeContextMenu";
+import { useConfirmDialog } from "@/features/trash-bin/ConfirmDialog";
 import { UserEdge } from "./edges/UserEdge";
 import { MapPalette } from "./MapPalette";
 import { AddToMapPickerDialog } from "./AddToMapPickerDialog";
@@ -568,6 +569,100 @@ export function MapCanvas() {
       }
     },
   });
+
+  const { confirm: confirmDestructive, dialog: confirmDestructiveDialog } =
+    useConfirmDialog();
+
+  // 設計書 §「ワンクリック削除」: 右クリック → 派生 Sticky ごと一括削除。
+  // `×` バッジは確認なしで AI Branch だけ消す path（派生 Sticky は orphan
+  // 化）。こちらは派生 Sticky まで根こそぎ消すため件数表示の確認ダイアログ
+  // を挟む。restoreAiBranchSnapshot による完全 undo に対応。
+  const handleDeleteAiBranchWithDerived = useCallback(
+    async (branchId: string) => {
+      if (!boardId) return;
+      const snapshot = await getAiBranchSnapshot(branchId);
+      if (!snapshot) {
+        setContextMenu(null);
+        return;
+      }
+      const count = snapshot.stickies.length;
+      setContextMenu(null);
+      const ok = await confirmDestructive({
+        title: "AI Branch を派生 Sticky ごと削除",
+        description:
+          count > 0
+            ? `${count} 枚の派生 Sticky も一緒に削除されます。Undo で元に戻せます。`
+            : "派生 Sticky はありません。AI Branch ノードを削除します。",
+        confirmLabel: "削除",
+      });
+      if (!ok) return;
+      try {
+        await eraseAiBranchSnapshot(snapshot);
+      } catch (err) {
+        toast.error("AI Branch の一括削除に失敗しました", {
+          description: String(err),
+        });
+        return;
+      }
+      const stickyIds = new Set(snapshot.stickies.map((s) => s.id));
+      const removedPosIds = new Set([
+        snapshot.branchPosition.id,
+        ...snapshot.stickyPositions.map((p) => p.id),
+      ]);
+      const removedEdgeIds = new Set(snapshot.edges.map((e) => e.id));
+      setAiBranches((prev) => prev.filter((b) => b.id !== branchId));
+      setStickies((prev) => prev.filter((s) => !stickyIds.has(s.id)));
+      setPositions((prev) => prev.filter((p) => !removedPosIds.has(p.id)));
+      if (removedEdgeIds.size > 0) {
+        setUserEdges((prev) => prev.filter((e) => !removedEdgeIds.has(e.id)));
+      }
+
+      if (!useGlobalHistoryStore.getState().isReplaying) {
+        const cap = snapshot;
+        useGlobalHistoryStore.getState().push({
+          kind: "map",
+          label: "AI Branch 一括削除",
+          async undo() {
+            await restoreAiBranchSnapshot(cap);
+            setAiBranches((prev) => [...prev, cap.branch]);
+            setStickies((prev) => [...prev, ...cap.stickies]);
+            setPositions((prev) => [
+              ...prev,
+              cap.branchPosition as MapNodePositionRecord,
+              ...(cap.stickyPositions as MapNodePositionRecord[]),
+            ]);
+            if (cap.edges.length > 0) {
+              setUserEdges((prev) => [...prev, ...cap.edges]);
+            }
+          },
+          async redo() {
+            await eraseAiBranchSnapshot(cap);
+            const reStickyIds = new Set(cap.stickies.map((s) => s.id));
+            const rePosIds = new Set([
+              cap.branchPosition.id,
+              ...cap.stickyPositions.map((p) => p.id),
+            ]);
+            const reEdgeIds = new Set(cap.edges.map((e) => e.id));
+            setAiBranches((prev) => prev.filter((b) => b.id !== cap.branch.id));
+            setStickies((prev) => prev.filter((s) => !reStickyIds.has(s.id)));
+            setPositions((prev) => prev.filter((p) => !rePosIds.has(p.id)));
+            if (reEdgeIds.size > 0) {
+              setUserEdges((prev) => prev.filter((e) => !reEdgeIds.has(e.id)));
+            }
+          },
+        });
+      }
+    },
+    [
+      boardId,
+      confirmDestructive,
+      setContextMenu,
+      setAiBranches,
+      setStickies,
+      setPositions,
+      setUserEdges,
+    ],
+  );
 
   const handlePromoteFrame = useCallback(
     async (codexType: string) => {
@@ -1529,6 +1624,7 @@ export function MapCanvas() {
           isScene={contextMenu.isScene}
           isSticky={contextMenu.nodeId.startsWith("sticky:")}
           isFrame={contextMenu.nodeId.startsWith("frame:")}
+          isAiBranch={contextMenu.nodeId.startsWith("ai_branch:")}
           focusedNodeId={focusedNodeId}
           onClose={() => setContextMenu(null)}
           onOpen={handleContextMenuOpen}
@@ -1568,8 +1664,26 @@ export function MapCanvas() {
                   ?.paletteId
               : undefined
           }
+          onDeleteWithDerivedStickies={
+            contextMenu.nodeId.startsWith("ai_branch:")
+              ? () =>
+                  void handleDeleteAiBranchWithDerived(
+                    contextMenu.nodeId.slice("ai_branch:".length),
+                  )
+              : undefined
+          }
+          derivedStickyCount={
+            contextMenu.nodeId.startsWith("ai_branch:")
+              ? stickies.filter(
+                  (s) =>
+                    s.aiBranchId ===
+                    contextMenu.nodeId.slice("ai_branch:".length),
+                ).length
+              : 0
+          }
         />
       )}
+      {confirmDestructiveDialog}
 
       {pendingAutoArrange && (
         <AutoArrangeDialog
