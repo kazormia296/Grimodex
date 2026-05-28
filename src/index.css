@@ -1384,6 +1384,15 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   background: color-mix(in oklch, var(--foreground) 8%, transparent);
 }
 
+/* Connect mode: nodes become non-draggable (handled by RF nodesDraggable=false).
+   Visual affordance: crosshair cursor over the canvas + always-visible handle hint. */
+.map-connect-mode .react-flow__node {
+  cursor: crosshair;
+}
+.map-connect-mode .react-flow__pane {
+  cursor: crosshair;
+}
+
 /* Floating connection handles — drop / drag pair.
    Both cover a transparent rectangle that includes a 6px ring around the
    node body. drag stays at z-index: -1 so it's only exposed on the

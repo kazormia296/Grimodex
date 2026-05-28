@@ -319,7 +319,6 @@ export function useMapNodes({
               type: "scene",
               position: pos,
               className: transitionClass,
-              draggable: true,
               zIndex: zIndexMap.get(key) ?? 0,
               data: {
                 title: n.title,
@@ -394,7 +393,6 @@ export function useMapNodes({
                 y: 400 + Math.floor(idx / 5) * 80,
               },
               className: transitionClass,
-              draggable: true,
               zIndex: zIndexMap.get(key) ?? 0,
               data: {
                 title: s.title || null,
@@ -423,7 +421,6 @@ export function useMapNodes({
                 y: 600 + Math.floor(idx / 5) * 120,
               },
               className: transitionClass,
-              draggable: true,
               zIndex: zIndexMap.get(key) ?? 0,
               data: {
                 title: n.title,
@@ -458,7 +455,6 @@ export function useMapNodes({
                 y: 200 + Math.floor(idx / 5) * 200,
               },
               className: transitionClass,
-              draggable: true,
               zIndex: zIndexMap.get(key) ?? 0,
               data: {
                 id: st.id,
@@ -531,7 +527,6 @@ export function useMapNodes({
                 y: 800 + Math.floor(idx / 4) * 140,
               },
               className: transitionClass,
-              draggable: true,
               zIndex: zIndexMap.get(key) ?? 0,
               data: {
                 prompt: ab.prompt,
