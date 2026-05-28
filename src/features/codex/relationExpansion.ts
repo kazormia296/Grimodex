@@ -26,10 +26,11 @@ function slugifyRelationType(label: string | null | undefined): string {
 }
 
 /**
- * relationVia は contextBuilder で `<!-- via: ... -->` として system prompt に
- * 埋め込まれる。ユーザー入力 (codex 名 / relation ラベル) に `--` が含まれると
- * HTML コメントが途中で閉じてしまい、後続文字が指示として解釈され得るため、
- * `--` を `- -` に置換してコメント境界を壊さないようにする。
+ * relationVia は contextBuilder で可視プロース行 (`経由: ...`) として system
+ * prompt に注入される。旧実装は HTML コメントだったため `--` が含まれると
+ * コメント境界が壊れる懸念から `--` → `- -` の置換を入れていた。現在は
+ * 可視プロースに移行したのでこの defense は厳密には不要だが、user 入力中の
+ * `--` が prompt 上で見栄えを乱す可能性 (markdown 等) を防ぐ意味で残している。
  */
 function sanitizeForHtmlComment(text: string): string {
   return text.replace(/--/g, "- -");

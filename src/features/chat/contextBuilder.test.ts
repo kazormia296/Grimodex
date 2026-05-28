@@ -1322,7 +1322,7 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain("第3話・夕方");
     });
 
-    it("injects relation-derived codex with via comment", () => {
+    it("injects relation-derived codex with visible relation label (not HTML comment)", () => {
       const result = buildSystemPrompt({
         scene: { id: "s1", title: "Scene", content: "body" },
         codexEntries: [
@@ -1339,11 +1339,12 @@ describe("contextBuilder", () => {
             type: "character",
             name: "Bob",
             summary: "ally",
-            relationVia: "師匠 of Alice",
+            relationVia: "from Alice via 師匠",
           },
         ],
       });
-      expect(result.prompt).toContain("<!-- via: 師匠 of Alice -->");
+      expect(result.prompt).toContain("経由: from Alice via 師匠");
+      expect(result.prompt).not.toContain("<!-- via:");
       expect(result.prompt).toContain("Bob");
     });
 

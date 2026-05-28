@@ -880,7 +880,11 @@ export function buildSystemPrompt(
         `  ${s.labels.codexId}: ${entry.id}`,
       ];
       if (entry.relationVia) {
-        blockLines.push(`  <!-- via: ${entry.relationVia} -->`);
+        // 旧実装は `<!-- via: ... -->` で HTML コメント注入していたが、
+        // (1) コメント構文ぶんの token を浪費し、(2) 一部 LLM はコメントを
+        // 無視するため traversal 方向の手掛かりが届かないことがあった。
+        // 通常行として可視注入する。
+        blockLines.push(`  ${s.labels.codexRelation}: ${entry.relationVia}`);
       }
       if (entry.aliases && entry.aliases.length > 0) {
         blockLines.push(

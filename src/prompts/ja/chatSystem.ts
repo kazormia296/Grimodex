@@ -125,6 +125,10 @@ export const JA_CHAT_SYSTEM = {
     /** L4 Codex エントリの fullContent ラベル。L3 シーン本文 (`本文:`) と
      * 衝突しないよう「全文」と区別する。 */
     codexFullContent: "全文",
+    /** L4 relation BFS で取り込まれた Codex エントリの「経由」ラベル。
+     * LLM に traversal 方向 (from/to seed via label) を可視で伝えるため、
+     * HTML コメントではなく通常行として注入する。 */
+    codexRelation: "経由",
     /** L3 sceneForeshadow セクションの「仕込み」行ラベル */
     foreshadowSetup: "仕込み",
     /** L3 sceneForeshadow セクションの「回収」行ラベル */
