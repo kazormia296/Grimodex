@@ -34,19 +34,10 @@ export interface NoteContext {
   aliases?: string[];
 }
 
-export interface ProjectContext {
-  title: string;
-  genre?: string | null;
-  pov?: string | null;
-  tense?: string | null;
-  styleGuide?: string | null;
-  aiInstructions?: string | null;
-  language?: string;
-  /** Phase 4: 著者手書きの outline。fetch ヘルパーが project から拾い、
-   * `BuildSystemPromptInput.projectOutline` に渡されることを想定する。
-   * L1 (project info) には載らない (L2 narrative 層の扱い)。 */
-  outline?: string | null;
-}
+// ProjectContext は features/project/contextAtoms に切り出し、Chat と
+// Map (AI Branch) で共有。互換のためここから re-export する。
+export type { ProjectContext } from "@/features/project/contextAtoms";
+import type { ProjectContext } from "@/features/project/contextAtoms";
 
 export interface CodexContext {
   id: string;

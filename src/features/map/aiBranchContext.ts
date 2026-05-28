@@ -3,8 +3,14 @@ import type { AiBranchSeed, AiBranchProjectContext } from "./mapAiApi";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
+import { useChatStore } from "@/features/chat/chatStore";
+import {
+  listPinnedCodexEntries,
+  listPinnedSnippetEntries,
+  listPinnedStickyEntries,
+} from "@/features/chat/chatApi";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import { getProject } from "@/features/project/api";
+import { fetchProjectContext } from "@/features/project/contextAtoms";
 import type { MapSticky, MapAiBranch } from "@/db/schema";
 
 /** 1500 文字を超える seed body は prompt 圧迫を避けるため切り詰める。
@@ -92,26 +98,83 @@ export function collectAiBranchSeeds(
 }
 
 /**
- * Project info を AI Branch 用に整形して返す。失敗時 null。Chat の
- * fetchProjectContext と重複するが、あちらは module-private なので
- * 当面コピー (将来 atom として切り出す可能性あり)。
+ * Project info を AI Branch 用に整形して返す。共有 atom
+ * fetchProjectContext (features/project/contextAtoms) の薄ラッパ。
+ * field 名が outline→synopsis に変わるだけ。
  */
 export async function fetchAiBranchProjectContext(
   projectId: string,
 ): Promise<AiBranchProjectContext | null> {
+  const ctx = await fetchProjectContext(projectId);
+  if (!ctx) return null;
+  return {
+    title: ctx.title,
+    genre: ctx.genre,
+    pov: ctx.pov,
+    tense: ctx.tense,
+    synopsis: ctx.outline,
+    styleGuide: ctx.styleGuide,
+    aiInstructions: ctx.aiInstructions,
+  };
+}
+
+/**
+ * アクティブな Chat session の pin (Codex / Snippet / Sticky) を AI
+ * Branch の seed 配列の前段に挿入する。Chat で「常時参照したい世界観」
+ * として pin したエンティティを Map AI Branch 側でも自動で踏まえる
+ * ためのブリッジ。session が無いときは空配列。
+ *
+ * 設計上の妥協:
+ *  - chat session は project-scoped かつ複数存在しうるが、ここでは
+ *    activeSessionId 一本だけを参照する。「ユーザーが今フォーカス
+ *    している世界観」を流用するセマンティクス。
+ *  - pin の本文は prosemirrorToText で plain 化、長文は 1500 字 clamp。
+ *  - 失敗は silent (空配列フォールバック)。
+ */
+export async function fetchActiveSessionSpotlight(): Promise<AiBranchSeed[]> {
+  const sessionId = useChatStore.getState().activeSessionId;
+  if (!sessionId) return [];
+
   try {
-    const project = await getProject(projectId);
-    if (!project) return null;
-    return {
-      title: project.title,
-      genre: project.genre,
-      pov: project.pov,
-      tense: project.tense,
-      synopsis: project.outline,
-      styleGuide: project.styleGuide,
-      aiInstructions: project.aiInstructions,
-    };
+    const [codexPins, snippetPins, stickyPins] = await Promise.all([
+      listPinnedCodexEntries(sessionId),
+      listPinnedSnippetEntries(sessionId),
+      listPinnedStickyEntries(sessionId),
+    ]);
+
+    const out: AiBranchSeed[] = [];
+
+    for (const entry of codexPins) {
+      const rawBody =
+        (entry.summary && entry.summary.trim()) ||
+        (entry.content ? prosemirrorToText(entry.content).trim() : "");
+      out.push({
+        type: "codex",
+        title: entry.name || "(無題)",
+        body: rawBody ? clampBody(rawBody) : undefined,
+      });
+    }
+
+    for (const sn of snippetPins) {
+      const body = sn.content ? prosemirrorToText(sn.content).trim() : "";
+      out.push({
+        type: "snippet",
+        title: sn.title || "(スニペット)",
+        body: body ? clampBody(body) : undefined,
+      });
+    }
+
+    for (const st of stickyPins) {
+      const body = st.content ? prosemirrorToText(st.content).trim() : "";
+      out.push({
+        type: "sticky",
+        title: st.title || "(Sticky)",
+        body: body ? clampBody(body) : undefined,
+      });
+    }
+
+    return out;
   } catch {
-    return null;
+    return [];
   }
 }

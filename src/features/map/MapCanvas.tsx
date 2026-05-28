@@ -89,6 +89,7 @@ import { generateAiBranchCards, type AiBranchSeed } from "./mapAiApi";
 import {
   collectAiBranchSeeds,
   fetchAiBranchProjectContext,
+  fetchActiveSessionSpotlight,
 } from "./aiBranchContext";
 import { computeAiBranchLayout } from "./aiBranchLayout";
 import {
@@ -1377,16 +1378,18 @@ export function MapCanvas() {
       });
 
       try {
-        // Fire-and-forget project fetch in parallel with anything else.
-        // Failure → null → system prompt は最小（global instruction だけ）。
-        const projectCtx = await fetchAiBranchProjectContext(
-          getCurrentProjectId(),
-        );
+        // project info と Spotlight pins を並列 fetch。失敗時はそれぞれ
+        // null / [] にフォールバックして prompt のセクションが落ちるだけ。
+        const [projectCtx, spotlight] = await Promise.all([
+          fetchAiBranchProjectContext(getCurrentProjectId()),
+          fetchActiveSessionSpotlight(),
+        ]);
         const cards = await generateAiBranchCards(
           prompt,
           count,
           dialogState.seeds,
           projectCtx,
+          spotlight,
         );
 
         const pos = dialogState.spawnPosition;

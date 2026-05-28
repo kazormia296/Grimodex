@@ -40,6 +40,7 @@ import type {
   NoteContext,
 } from "./contextBuilder";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
+import { fetchProjectContext as fetchProjectContextAtom } from "@/features/project/contextAtoms";
 import { runAgentLoop } from "./agent/agentLoop";
 import { executeTool } from "./agent/toolExecutors";
 import { snapshotAgentTools } from "./agent/toolDefinitions";
@@ -83,7 +84,6 @@ import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { loadSceneContent, getNode } from "@/features/tree/api";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import { getProject } from "@/features/project/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { listCodexEntries } from "@/features/codex/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -698,27 +698,12 @@ async function fetchSceneContext(
   }
 }
 
+// fetchProjectContext は features/project/contextAtoms に切り出して
+// Map AI Branch と共有。chatStore 側はラッパーで既存 callsite を維持。
 async function fetchProjectContext(
   projectId: string | null,
 ): Promise<ProjectContext | null> {
-  const effectiveId = projectId ?? useTreeStore.getState().projectId;
-  if (!effectiveId) return null;
-  try {
-    const project = await getProject(effectiveId);
-    if (!project) return null;
-    return {
-      title: project.title,
-      genre: project.genre,
-      pov: project.pov,
-      tense: project.tense,
-      styleGuide: project.styleGuide,
-      aiInstructions: project.aiInstructions,
-      language: project.language,
-      outline: project.outline,
-    };
-  } catch {
-    return null;
-  }
+  return fetchProjectContextAtom(projectId);
 }
 
 // Module-level cleanup function for the active stream

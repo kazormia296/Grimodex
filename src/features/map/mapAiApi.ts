@@ -39,38 +39,62 @@ const TYPE_LABELS: Record<AiBranchSeed["type"], string> = {
   ai_branch: "AI Branch",
 };
 
-function buildSystemPrompt(project: AiBranchProjectContext | null): string {
+function buildSystemPrompt(
+  project: AiBranchProjectContext | null,
+  spotlight: AiBranchSeed[],
+): string {
   const lines: string[] = [
     "あなたは小説執筆を支援する AI アシスタントです。読者の興味を引き、物語の世界観を尊重したアイデアを提案してください。",
   ];
-  if (!project) return lines.join("\n");
 
-  const info: string[] = [`- タイトル: ${project.title}`];
-  if (project.genre) info.push(`- ジャンル: ${project.genre}`);
-  if (project.pov) info.push(`- 視点: ${project.pov}`);
-  if (project.tense) info.push(`- 時制: ${project.tense}`);
-  if (info.length > 0) {
-    lines.push("");
-    lines.push("# プロジェクト情報");
-    lines.push(...info);
+  if (project) {
+    const info: string[] = [`- タイトル: ${project.title}`];
+    if (project.genre) info.push(`- ジャンル: ${project.genre}`);
+    if (project.pov) info.push(`- 視点: ${project.pov}`);
+    if (project.tense) info.push(`- 時制: ${project.tense}`);
+    if (info.length > 0) {
+      lines.push("");
+      lines.push("# プロジェクト情報");
+      lines.push(...info);
+    }
+
+    if (project.synopsis && project.synopsis.trim()) {
+      lines.push("");
+      lines.push("# プロジェクト概要");
+      lines.push(project.synopsis.trim());
+    }
+
+    if (project.styleGuide && project.styleGuide.trim()) {
+      lines.push("");
+      lines.push("# 文体ガイド");
+      lines.push(project.styleGuide.trim());
+    }
+
+    if (project.aiInstructions && project.aiInstructions.trim()) {
+      lines.push("");
+      lines.push("# 追加指示");
+      lines.push(project.aiInstructions.trim());
+    }
   }
 
-  if (project.synopsis && project.synopsis.trim()) {
+  if (spotlight.length > 0) {
     lines.push("");
-    lines.push("# プロジェクト概要");
-    lines.push(project.synopsis.trim());
-  }
-
-  if (project.styleGuide && project.styleGuide.trim()) {
+    lines.push("# 常時参照する設定 (Spotlight)");
+    lines.push(
+      "以下はユーザーが Chat で pin した「常時参照したい世界観要素」です。回答にあたって尊重してください。",
+    );
     lines.push("");
-    lines.push("# 文体ガイド");
-    lines.push(project.styleGuide.trim());
-  }
-
-  if (project.aiInstructions && project.aiInstructions.trim()) {
-    lines.push("");
-    lines.push("# 追加指示");
-    lines.push(project.aiInstructions.trim());
+    spotlight.forEach((s, i) => {
+      lines.push(
+        `## ${i + 1}. [${TYPE_LABELS[s.type]}] ${s.title || "(無題)"}`,
+      );
+      if (s.body && s.body.trim()) {
+        lines.push(s.body.trim());
+      }
+      lines.push("");
+    });
+    // 末尾の空行をトリム (join 後の余白を抑える)
+    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   }
 
   return lines.join("\n");
@@ -175,8 +199,9 @@ export async function generateAiBranchCards(
   count: number,
   seeds: AiBranchSeed[] = [],
   project: AiBranchProjectContext | null = null,
+  spotlight: AiBranchSeed[] = [],
 ): Promise<AiBranchCard[]> {
-  const systemPrompt = buildSystemPrompt(project);
+  const systemPrompt = buildSystemPrompt(project, spotlight);
   const userPrompt = buildUserPrompt(prompt, count, seeds);
 
   const messages = [
