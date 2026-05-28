@@ -1491,6 +1491,84 @@ export const sceneChunks = sqliteTable(
   ],
 );
 
+/**
+ * 執筆タイムラプス (Timelapse) — append-only change event log.
+ *
+ * Each event carries an opaque JSON payload (e.g. PM `tr.steps`, store action
+ * before/after) plus a sha256 chain that lets replay verify "this log itself
+ * was not retroactively forged". See plan §2 (change-events).
+ *
+ * Notes:
+ * - `payload` is text (canonical JSON). The plan calls for msgpack; we stay
+ *   on JSON to avoid a new dep until the size/perf data justifies the swap.
+ * - `prevHash` / `hash` are sha256 raw bytes (32B each).
+ * - `(projectId, sequence)` is monotone within a project; `sessionId` only
+ *   distinguishes contiguous runs for replay-snapshotting heuristics.
+ */
+export const changeEvents = sqliteTable(
+  "change_events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id").references(() => treeNodes.id, {
+      onDelete: "set null",
+    }),
+    domain: text("domain").notNull(), // 'editor'|'codex'|'snippet'|'grid'|'map'|'synopsis'|'beat'
+    opType: text("op_type").notNull(),
+    entityType: text("entity_type"),
+    entityId: text("entity_id"),
+    payload: text("payload").notNull(),
+    sessionId: text("session_id").notNull(),
+    sequence: integer("sequence").notNull(),
+    timestamp: integer("timestamp").notNull(),
+    prevHash: blob("prev_hash", { mode: "buffer" }).notNull(),
+    hash: blob("hash", { mode: "buffer" }).notNull(),
+  },
+  (t) => [
+    index("idx_change_events_project_ts").on(t.projectId, t.timestamp),
+    index("idx_change_events_scene_ts").on(t.sceneId, t.timestamp),
+    uniqueIndex("uq_change_events_project_seq").on(t.projectId, t.sequence),
+  ],
+);
+
+/**
+ * 執筆タイムラプス — periodic state snapshots that anchor replay.
+ *
+ * The replay engine seeks by jumping to the nearest snapshot then applying
+ * forward events. Snapshots are recorded per (projectId, domain, entityId)
+ * roughly every 1000 events or 1 hour; see plan §6.
+ */
+export const stateSnapshots = sqliteTable(
+  "state_snapshots",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    domain: text("domain").notNull(),
+    entityType: text("entity_type"),
+    entityId: text("entity_id"),
+    // Sequence anchor: this snapshot represents the state AFTER applying
+    // change_events with sequence <= anchorSequence.
+    anchorSequence: integer("anchor_sequence").notNull(),
+    anchorTimestamp: integer("anchor_timestamp").notNull(),
+    /** zstd-compressed serialized snapshot blob (plan §6). */
+    payload: blob("payload", { mode: "buffer" }).notNull(),
+    encoding: text("encoding").notNull().default("zstd-json"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    index("idx_state_snap_project_seq").on(t.projectId, t.anchorSequence),
+    index("idx_state_snap_domain_seq").on(
+      t.projectId,
+      t.domain,
+      t.anchorSequence,
+    ),
+  ],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
@@ -1581,6 +1659,11 @@ export type NewSceneLensData = typeof sceneLensData.$inferInsert;
 
 export type SceneChunk = typeof sceneChunks.$inferSelect;
 export type NewSceneChunk = typeof sceneChunks.$inferInsert;
+
+export type ChangeEvent = typeof changeEvents.$inferSelect;
+export type NewChangeEvent = typeof changeEvents.$inferInsert;
+export type StateSnapshot = typeof stateSnapshots.$inferSelect;
+export type NewStateSnapshot = typeof stateSnapshots.$inferInsert;
 
 export type PostEffectType =
   | "review"

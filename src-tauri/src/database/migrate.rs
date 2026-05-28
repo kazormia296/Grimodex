@@ -1253,6 +1253,50 @@ impl Database {
                 ON chat_summaries(session_id, generation);",
         )?;
 
+        // 執筆タイムラプス: append-only change event log + state snapshots.
+        // See src/db/schema.ts changeEvents / stateSnapshots for the TS-side
+        // schema and src/features/timelapse/recorder.ts for the write window.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS change_events (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                scene_id     TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                domain       TEXT NOT NULL,
+                op_type      TEXT NOT NULL,
+                entity_type  TEXT,
+                entity_id    TEXT,
+                payload      TEXT NOT NULL,
+                session_id   TEXT NOT NULL,
+                sequence     INTEGER NOT NULL,
+                timestamp    INTEGER NOT NULL,
+                prev_hash    BLOB NOT NULL,
+                hash         BLOB NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_change_events_project_ts
+                ON change_events(project_id, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_change_events_scene_ts
+                ON change_events(scene_id, timestamp);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_seq
+                ON change_events(project_id, sequence);
+
+            CREATE TABLE IF NOT EXISTS state_snapshots (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                domain            TEXT NOT NULL,
+                entity_type       TEXT,
+                entity_id         TEXT,
+                anchor_sequence   INTEGER NOT NULL,
+                anchor_timestamp  INTEGER NOT NULL,
+                payload           BLOB NOT NULL,
+                encoding          TEXT NOT NULL DEFAULT 'zstd-json',
+                created_at        INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_state_snap_project_seq
+                ON state_snapshots(project_id, anchor_sequence);
+            CREATE INDEX IF NOT EXISTS idx_state_snap_domain_seq
+                ON state_snapshots(project_id, domain, anchor_sequence);",
+        )?;
+
         Ok(())
     }
 
