@@ -2095,7 +2095,10 @@
     "columnHuman": "Human",
     "columnAi": "AI",
     "columnUnknown": "Unknown",
-    "columnAiPct": "AI%"
+    "columnAiPct": "AI%",
+    "exportJson": "JSON",
+    "exportHtml": "HTML",
+    "exportProjectReportTitle": "Export project-wide authorship report"
   },
   "phase": {
     "editTitle": "Edit Phase",

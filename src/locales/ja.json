@@ -2104,7 +2104,10 @@
     "columnHuman": "人間",
     "columnAi": "AI",
     "columnUnknown": "不明",
-    "columnAiPct": "AI%"
+    "columnAiPct": "AI%",
+    "exportJson": "JSON",
+    "exportHtml": "HTML",
+    "exportProjectReportTitle": "プロジェクト全体の帰属レポートを書き出す"
   },
   "phase": {
     "editTitle": "フェーズを編集",

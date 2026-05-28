@@ -9,10 +9,18 @@ import {
   ArrowDown,
 } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useAttributionStore } from "./attributionStore";
 import { loadProjectAttributionStats } from "./projectStats";
 import { BreakdownBar } from "./BreakdownBar";
 import type { AttributionStats } from "./attributionStats";
+import { buildProjectAuthorshipReport } from "./projectAuthorship";
+import {
+  exportAuthorshipJson,
+  exportAuthorshipHtml,
+  downloadTextFile,
+} from "./exportReport";
+import { Download } from "lucide-react";
 
 type SortColumn = "scene" | "total" | "human" | "ai" | "unknown" | "aiPct";
 type SortDir = "asc" | "desc";
@@ -66,11 +74,13 @@ export function AttributionProjectView() {
   const nodes = useTreeStore((s) => s.nodes);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const setScope = useAttributionStore((s) => s.setScope);
+  const projectId = useCurrentProjectId();
 
   const [statsMap, setStatsMap] = useState<Record<string, AttributionStats>>(
     {},
   );
   const [isLoading, setIsLoading] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [collapsedChapters, setCollapsedChapters] = useState<Set<string>>(
     new Set(),
   );
@@ -117,6 +127,35 @@ export function AttributionProjectView() {
     setScope("scene");
   };
 
+  const handleExport = useCallback(
+    async (format: "json" | "html") => {
+      if (!projectId || isExporting) return;
+      setIsExporting(true);
+      try {
+        const report = await buildProjectAuthorshipReport(projectId);
+        const datestamp = new Date().toISOString().slice(0, 10);
+        if (format === "json") {
+          downloadTextFile(
+            exportAuthorshipJson(report),
+            `authorship-report-${datestamp}.json`,
+            "application/json",
+          );
+        } else {
+          downloadTextFile(
+            exportAuthorshipHtml(report),
+            `authorship-report-${datestamp}.html`,
+            "text/html",
+          );
+        }
+      } catch (e) {
+        console.error("[AuthorshipReport] export failed", e);
+      } finally {
+        setIsExporting(false);
+      }
+    },
+    [projectId, isExporting],
+  );
+
   const chapters = nodes.filter((n) => n.nodeType === "folder");
   const scenesByChapter: Record<string, typeof nodes> = {};
   for (const node of nodes) {
@@ -138,8 +177,28 @@ export function AttributionProjectView() {
 
   return (
     <div className="space-y-1">
-      {/* Refresh */}
-      <div className="flex justify-end">
+      {/* Refresh + Export */}
+      <div className="flex items-center justify-end gap-1">
+        <button
+          type="button"
+          onClick={() => handleExport("json")}
+          disabled={isExporting || !projectId}
+          className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
+          title={t("attribution.exportProjectReportTitle")}
+        >
+          <Download className="h-3 w-3" />
+          {t("attribution.exportJson")}
+        </button>
+        <button
+          type="button"
+          onClick={() => handleExport("html")}
+          disabled={isExporting || !projectId}
+          className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
+          title={t("attribution.exportProjectReportTitle")}
+        >
+          <Download className="h-3 w-3" />
+          {t("attribution.exportHtml")}
+        </button>
         <button
           type="button"
           onClick={load}
