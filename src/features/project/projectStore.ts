@@ -81,9 +81,25 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       await reloadProjectData(projectId);
       // 執筆タイムラプス recorder を本 project に bind。失敗しても本流は止めない
       // (chain init は best-effort、次の event で再試行される)。
-      void import("@/features/timelapse/recorder")
-        .then(({ initRecorderForProject }) => initRecorderForProject(projectId))
-        .catch((err) => console.warn("[timelapse] recorder init failed", err));
+      // 執筆タイムラプス recorder: real browser only. Skip in tests and SSR
+      // — VITEST env signals vitest; tauri-host process has neither flag.
+      if (
+        typeof window !== "undefined" &&
+        !(
+          typeof import.meta !== "undefined" &&
+          (import.meta as { vitest?: boolean }).vitest
+        ) &&
+        !(typeof process !== "undefined" && process.env?.VITEST)
+      ) {
+        void import("@/features/timelapse/recorder")
+          .then(({ setRecorderEnabled, initRecorderForProject }) => {
+            setRecorderEnabled(true);
+            return initRecorderForProject(projectId);
+          })
+          .catch((err) =>
+            console.warn("[timelapse] recorder init failed", err),
+          );
+      }
     } catch (e) {
       // 切替失敗 — パネルがロードされていない Project を指したままにしない。
       set({ currentProjectId: previousId });

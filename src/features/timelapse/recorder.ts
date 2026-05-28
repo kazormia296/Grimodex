@@ -61,7 +61,10 @@ interface RecorderState {
 }
 
 const state: RecorderState = {
-  enabled: typeof window !== "undefined", // disabled in node/vitest by default
+  // OFF by default so test environments don't write through the chain. The
+  // app entry point (projectStore.loadProject) flips this on when binding
+  // to a real project.
+  enabled: false,
   projectId: null,
   sessionId: newSessionId(),
   lastSequence: 0,
@@ -92,6 +95,13 @@ export function setRecorderEnabled(enabled: boolean): void {
  * project's last hash transparently.
  */
 export async function initRecorderForProject(projectId: string): Promise<void> {
+  // When the recorder is disabled (typical in tests), don't touch the DB —
+  // mocked db harnesses don't need to mock the chain-tail SELECT and we
+  // avoid leaking timers / promises across test files.
+  if (!state.enabled) {
+    state.projectId = projectId;
+    return;
+  }
   if (state.projectId === projectId && state.initPromise) {
     return state.initPromise;
   }
