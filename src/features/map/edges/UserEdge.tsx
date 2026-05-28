@@ -151,6 +151,13 @@ function InlineLabel({
         position: "absolute",
         transform: `translate(-50%, -50%) translate(${cx}px,${cy}px)`,
         pointerEvents: "all",
+        // React Flow paints each edge <svg> with inline z-index: 0 (creates a
+        // stacking context), while .react-flow__edgelabel-renderer is z-auto.
+        // Without an explicit z-index here, the edge's interaction stroke wins
+        // hit-testing directly over the visible curve, so hovering on the edge
+        // midpoint fails to surface「＋ラベル」. Promoting the wrapper past 0
+        // keeps the placeholder reachable on the curve itself.
+        zIndex: 1,
       }}
       className="nodrag nopan"
       onMouseEnter={() => setHovered(true)}
@@ -199,34 +206,47 @@ function InlineLabel({
         >
           {value}
         </div>
-      ) : selected || hovered ? (
-        <button
-          type="button"
-          className="nodrag nopan"
-          onClick={(e) => {
-            e.stopPropagation();
-            startEdit();
-          }}
+      ) : (
+        // Stable-size hit area (80×32) regardless of hover/selected state, so
+        // the wrapper does not resize between "no button" and "button" — a
+        // size swap combined with translate(-50%,-50%) re-centering caused
+        // hover detection to oscillate near the hit-area boundary.
+        <div
           style={{
-            background: "var(--background)",
-            border: `1px dashed ${color}`,
-            borderRadius: 4,
-            padding: "1px 6px",
-            fontSize: 11,
-            color: "var(--muted-foreground)",
-            cursor: "pointer",
-            whiteSpace: "nowrap",
-            opacity: 0.9,
+            position: "relative",
+            width: 80,
+            height: 32,
+            cursor: "text",
           }}
         >
-          ＋ラベル
-        </button>
-      ) : (
-        // Invisible hover hit-area. Made generous (80×32) so the parent
-        // wrapper's onMouseEnter reliably fires when the user approaches the
-        // edge midpoint — otherwise the「＋ラベル」placeholder becomes
-        // practically un-discoverable on a thin (2-3px) edge line.
-        <div style={{ width: 80, height: 32, cursor: "text" }} />
+          {(selected || hovered) && (
+            <button
+              type="button"
+              className="nodrag nopan"
+              onClick={(e) => {
+                e.stopPropagation();
+                startEdit();
+              }}
+              style={{
+                position: "absolute",
+                left: "50%",
+                top: "50%",
+                transform: "translate(-50%, -50%)",
+                background: "var(--background)",
+                border: `1px dashed ${color}`,
+                borderRadius: 4,
+                padding: "1px 6px",
+                fontSize: 11,
+                color: "var(--muted-foreground)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                opacity: 0.9,
+              }}
+            >
+              ＋ラベル
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
