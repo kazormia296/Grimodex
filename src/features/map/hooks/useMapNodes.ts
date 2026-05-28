@@ -116,6 +116,26 @@ export function useMapNodes({
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
 
+  // buildNodes は座標 drag のたび re-run したくないので positions そのものを
+  // deps に入れていない。が、picker 経由で新規 entity を Map に追加する経路は
+  // positions に行が増えるだけで他の deps が動かず、新規ノードが画面に出ない。
+  // entity ID 集合の fingerprint だけを deps にして、座標変動は無視・構造変化
+  // だけ pickup する。
+  const positionsStructureFingerprint = useMemo(() => {
+    return positions
+      .map(
+        (p) =>
+          p.treeNodeId ??
+          p.codexEntryId ??
+          p.snippetId ??
+          p.stickyId ??
+          p.aiBranchId ??
+          p.id,
+      )
+      .sort()
+      .join("|");
+  }, [positions]);
+
   const layoutCacheRef = useRef<{
     boardId: string | null;
     fingerprint: string;
@@ -644,6 +664,7 @@ export function useMapNodes({
     snippets,
     stickies,
     aiBranches,
+    positionsStructureFingerprint,
     show,
     mode,
     themeLayoutFingerprint,
