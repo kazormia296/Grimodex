@@ -396,6 +396,11 @@ export function MapHeader() {
         onChange={(v) => setShow({ notes: v })}
       />
       <ShowCheckbox
+        label="AI Branch"
+        checked={show.aiBranch}
+        onChange={(v) => setShow({ aiBranch: v })}
+      />
+      <ShowCheckbox
         label="Edges"
         checked={show.derivedEdges}
         onChange={(v) => setShow({ derivedEdges: v })}

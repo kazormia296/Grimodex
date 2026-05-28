@@ -60,7 +60,7 @@ export const DEFAULT_SHOW: ShowFlags = {
   snippets: true,
   notes: false,
   stickies: true,
-  aiBranch: false,
+  aiBranch: true,
   derivedEdges: true,
   userEdges: true,
   frames: true,
