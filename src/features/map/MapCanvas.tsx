@@ -85,7 +85,11 @@ import {
   pendingEdgeLabelEdits,
 } from "./mapApi";
 import { AINodeDialog } from "./AINodeDialog";
-import { generateAiBranchCards } from "./mapAiApi";
+import { generateAiBranchCards, type AiBranchSeed } from "./mapAiApi";
+import {
+  collectAiBranchSeeds,
+  fetchAiBranchProjectContext,
+} from "./aiBranchContext";
 import { computeAiBranchLayout } from "./aiBranchLayout";
 import {
   findNonOverlappingBranchPosition,
@@ -239,6 +243,7 @@ export function MapCanvas() {
     indicatorPosition: { x: number; y: number };
     seedNodeIds: string[];
     seedNodeTitles: string[];
+    seeds: AiBranchSeed[];
   } | null>(null);
   // null = idle. spinner は seed ノード直下（indicatorPosition）に
   // ViewportPortal で flow 座標固定で出すため pan/zoom に追従する。
@@ -1328,6 +1333,9 @@ export function MapCanvas() {
           return data.title ?? data.name ?? n.id;
         })
         .filter(Boolean) as string[];
+      // store にある最新 entity から body を抜き出して seed payload を構築。
+      // 確認ダイアログ表示時点で確定させ、生成リクエスト時に再 fetch しない。
+      const seeds = collectAiBranchSeeds(seedNodes, stickies, aiBranches);
       const spawnPosition = getSpawnPosition();
       // 進行中スピナーは seed ノードの bounding box の下端中央に
       // 出して「どのノードから派生中か」を視覚的に紐付ける。
@@ -1353,9 +1361,10 @@ export function MapCanvas() {
         indicatorPosition,
         seedNodeIds,
         seedNodeTitles,
+        seeds,
       });
     },
-    [boardId, getNodes, getSpawnPosition],
+    [boardId, getNodes, getSpawnPosition, stickies, aiBranches],
   );
 
   const handleAiBranchConfirm = useCallback(
@@ -1368,10 +1377,16 @@ export function MapCanvas() {
       });
 
       try {
+        // Fire-and-forget project fetch in parallel with anything else.
+        // Failure → null → system prompt は最小（global instruction だけ）。
+        const projectCtx = await fetchAiBranchProjectContext(
+          getCurrentProjectId(),
+        );
         const cards = await generateAiBranchCards(
           prompt,
           count,
-          dialogState.seedNodeTitles,
+          dialogState.seeds,
+          projectCtx,
         );
 
         const pos = dialogState.spawnPosition;
