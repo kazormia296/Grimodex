@@ -19,9 +19,20 @@ export const AINode = memo(function AINode({ data, selected }: NodeProps) {
   return (
     <div style={{ position: "relative" }}>
       <Handle type="target" position={Position.Left} className="map-handle" />
-      <span className="map-edit-indicator" aria-hidden>
-        ✎
-      </span>
+      {hasSession && (
+        <button
+          type="button"
+          className="map-edit-indicator"
+          title="Chat パネルで開く"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            d.onOpenChat?.();
+          }}
+        >
+          ✎
+        </button>
+      )}
       <div
         onDoubleClick={(e) => {
           e.stopPropagation();

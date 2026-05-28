@@ -1351,21 +1351,37 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   background-blend-mode: multiply;
 }
 
-/* Hover edit-affordance indicator (✎). Fades in after 500ms hover.
-   Nodes render a child with class "map-edit-indicator" near the top-right. */
+/* Edit-affordance indicator (✎). Fades in after 500ms hover. Now rendered
+   as a real <button> so single click also opens the entity (in addition to
+   the double-click on the node body itself). pointer-events は hover 中だけ
+   有効化して非ホバー時の誤クリックを防ぐ。 */
 .map-edit-indicator {
   position: absolute;
   top: 4px;
   right: 6px;
   font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
   color: var(--muted-foreground);
   opacity: 0;
-  transition: opacity 120ms ease-out 500ms;
+  transition:
+    opacity 120ms ease-out 500ms,
+    color 80ms ease-out;
   pointer-events: none;
   user-select: none;
+  cursor: pointer;
+  border-radius: 3px;
 }
 .react-flow__node:hover .map-edit-indicator {
   opacity: 0.7;
+  pointer-events: auto;
+}
+.map-edit-indicator:hover {
+  opacity: 1 !important;
+  color: var(--foreground);
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
 }
 
 /* Floating connection handles — drop / drag pair.

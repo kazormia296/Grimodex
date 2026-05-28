@@ -23,9 +23,18 @@ export const NoteNode = memo(function NoteNode({
     <div style={{ position: "relative" }}>
       <FloatingHandle isConnectable={isConnectable} />
       <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
-      <span className="map-edit-indicator" aria-hidden>
+      <button
+        type="button"
+        className="map-edit-indicator"
+        title="Editor で開く"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          d.onOpen?.();
+        }}
+      >
         ✎
-      </span>
+      </button>
       <div
         onDoubleClick={(e) => {
           e.stopPropagation();

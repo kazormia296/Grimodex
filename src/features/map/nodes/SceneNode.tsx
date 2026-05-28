@@ -651,9 +651,18 @@ export const SceneNode = memo(function SceneNode({
     <div style={{ ...rotationStyle, position: "relative" }}>
       <FloatingHandle isConnectable={isConnectable} />
       <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
-      <span className="map-edit-indicator" aria-hidden>
+      <button
+        type="button"
+        className="map-edit-indicator"
+        title="Editor で開く"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          handleOpen();
+        }}
+      >
         ✎
-      </span>
+      </button>
 
       {d.variant === "compact" && (
         <CompactScene d={d} selected={!!selected} borderColor={borderColor} />

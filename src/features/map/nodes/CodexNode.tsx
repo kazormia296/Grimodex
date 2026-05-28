@@ -59,9 +59,18 @@ export const CodexNode = memo(function CodexNode({
     >
       <FloatingHandle isConnectable={isConnectable} />
       <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
-      <span className="map-edit-indicator" aria-hidden>
+      <button
+        type="button"
+        className="map-edit-indicator"
+        title="Codex で開く"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          d.onOpen?.();
+        }}
+      >
         ✎
-      </span>
+      </button>
 
       <div
         style={{
