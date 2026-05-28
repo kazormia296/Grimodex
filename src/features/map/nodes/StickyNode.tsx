@@ -144,6 +144,7 @@ export const StickyNode = memo(function StickyNode({
   const [glueOrient, setGlueOrient] = useState<"left" | "top">("left");
   const latestBodyRef = useRef<string>(d.body);
   const measureRef = useRef<HTMLDivElement>(null);
+  const wrapperElRef = useRef<HTMLDivElement>(null);
 
   // Sync body from parent when not editing
   useEffect(() => {
@@ -200,8 +201,39 @@ export const StickyNode = memo(function StickyNode({
     }
   }, [isDeleting, editing, save]);
 
+  // Click-away: document-level pointerdown 監視。React Flow が pane に
+  // transform をかけているため `position: fixed` + `zIndex: -1` の
+  // sentinel div ではクリックを拾えない。
+  useEffect(() => {
+    if (!editing) return;
+    const handler = (e: PointerEvent) => {
+      const root = wrapperElRef.current;
+      if (root && !root.contains(e.target as Node)) {
+        void exitEditing();
+      }
+    };
+    document.addEventListener("pointerdown", handler, true);
+    return () => document.removeEventListener("pointerdown", handler, true);
+  }, [editing, exitEditing]);
+
+  // Unmount safety net: パネル切替 / ボード切替 / アプリ終了などで
+  // StickyNode が unmount された際、編集中なら最新本文を flush する。
+  const editingRef = useRef(editing);
+  const saveRef = useRef(save);
+  useEffect(() => {
+    editingRef.current = editing;
+    saveRef.current = save;
+  });
+  useEffect(() => {
+    return () => {
+      if (editingRef.current) {
+        void saveRef.current();
+      }
+    };
+  }, []);
+
   return (
-    <div style={{ position: "relative" }}>
+    <div ref={wrapperElRef} style={{ position: "relative" }}>
       <FloatingHandle isConnectable={isConnectable} />
       <NodeBranchToolbar onBranchFrom={d.onBranchFrom} />
 
@@ -284,18 +316,6 @@ export const StickyNode = memo(function StickyNode({
           </div>
         </div>
       </motion.div>
-
-      {/* Click-away to exit editing */}
-      {editing && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: -1,
-          }}
-          onPointerDown={exitEditing}
-        />
-      )}
     </div>
   );
 });
