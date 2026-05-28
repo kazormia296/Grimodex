@@ -36,6 +36,7 @@ import {
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
 import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { extractBeatPovOverrides } from "@/features/editor/beat/extractBeatPovOverrides";
 import { upsertSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
@@ -798,8 +799,36 @@ export function EditorPane({
       },
       onTransaction({ editor: e, transaction }) {
         if (!transaction.docChanged) return;
-        if (isCodexMode || isSnippetMode) return;
         const sid = saveSceneIdRef.current;
+        // 執筆タイムラプス: scene/codex/snippet いずれの body 編集も capture する。
+        // recordChangeEvent 自体は disabled / no-project 時に no-op なので守備不要。
+        if (sid) {
+          try {
+            const steps = transaction.steps.map((s) => s.toJSON());
+            const domain = isCodexMode
+              ? "codex"
+              : isSnippetMode
+                ? "snippet"
+                : "editor";
+            const entityType = isCodexMode
+              ? "codex_entry"
+              : isSnippetMode
+                ? "snippet"
+                : "scene";
+            recordChangeEvent({
+              domain,
+              opType: "doc.step",
+              sceneId: !isCodexMode && !isSnippetMode ? sid : null,
+              entityType,
+              entityId: sid,
+              payload: { steps },
+            });
+          } catch (err) {
+            // 防御的: capture 失敗で本流の onTransaction を止めない。
+            console.warn("[timelapse] editor capture failed", err);
+          }
+        }
+        if (isCodexMode || isSnippetMode) return;
         if (!sid) return;
         markStart("editor.onTransaction");
 
