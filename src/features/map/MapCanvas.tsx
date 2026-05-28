@@ -36,6 +36,7 @@ import { SnippetNode } from "./nodes/SnippetNode";
 import { AIBranchNode } from "./nodes/AIBranchNode";
 import { NodeContextMenu } from "./NodeContextMenu";
 import { useConfirmDialog } from "@/features/trash-bin/ConfirmDialog";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { UserEdge } from "./edges/UserEdge";
 import { MapPalette } from "./MapPalette";
 import { AddToMapPickerDialog } from "./AddToMapPickerDialog";
@@ -1111,10 +1112,16 @@ export function MapCanvas() {
     async (flowPos?: { x: number; y: number }) => {
       if (!boardId) return;
       const pos = flowPos ?? getSpawnPosition();
+      const settings = useSettingsStore.getState();
       const sticky = await createSticky({
         boardId,
         x: pos.x,
         y: pos.y,
+        paletteId: settings.get(
+          "map.defaultStickyPaletteId",
+          "post-it-playful",
+        ),
+        colorSlot: settings.getNumber("map.defaultStickyColorSlot", 0),
       });
       pendingAutoFocusIds.add(sticky.sticky.id);
       setStickies((prev) => [...prev, sticky.sticky]);

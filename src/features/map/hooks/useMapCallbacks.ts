@@ -5,6 +5,13 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { createUserEdge, deleteUserEdge } from "../mapApi";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import type { NewMapEdge } from "@/db/schema";
+
+function defaultEdgeStyle(): NewMapEdge["style"] {
+  const raw = useSettingsStore.getState().get("map.defaultEdgeStyle", "solid");
+  return raw === "dashed" || raw === "dotted" ? raw : "solid";
+}
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { findPosByNodeId } from "../utils/nodeIdCodec";
 import type { MapEdge } from "@/db/schema";
@@ -54,6 +61,7 @@ export function useMapCallbacks({
         boardId,
         fromPositionId: sourcePos.id,
         toPositionId: targetPos.id,
+        style: defaultEdgeStyle(),
       });
       setUserEdges((prev) => [...prev, newEdge]);
 

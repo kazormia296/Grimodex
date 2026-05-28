@@ -8,6 +8,7 @@ import {
   BookOpen,
   CheckSquare,
   Info,
+  Network,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -19,6 +20,7 @@ export type SettingsCategory =
   | "keys"
   | "data"
   | "codex"
+  | "map"
   | "linter"
   | "about";
 
@@ -36,6 +38,7 @@ export const SETTINGS_CATEGORIES: CategoryDef[] = [
   { id: "keys", label: "Keys", Icon: Keyboard },
   { id: "data", label: "Data", Icon: Database },
   { id: "codex", label: "Codex", Icon: BookOpen },
+  { id: "map", label: "Map", Icon: Network },
   { id: "linter", label: "Linter", Icon: CheckSquare },
   { id: "about", label: "About", Icon: Info },
 ];
@@ -122,6 +125,10 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   // Tree — work-specific (project)
   "tree.folderNaming": "project",
   "tree.numberingScope": "project",
+  // Map defaults — user preference (global)
+  "map.defaultStickyPaletteId": "global",
+  "map.defaultStickyColorSlot": "global",
+  "map.defaultEdgeStyle": "global",
   // Export — work-specific (project)
   "export.format": "project",
   "export.folderHeading": "project",
@@ -225,4 +232,8 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "export.emphasisDotsStyle": "",
   "export.sceneBreakStyle": "asterisks",
   "export.sceneBreakCustom": "",
+  // Map defaults
+  "map.defaultStickyPaletteId": "post-it-playful",
+  "map.defaultStickyColorSlot": "0",
+  "map.defaultEdgeStyle": "solid",
 };
