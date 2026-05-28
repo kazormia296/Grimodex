@@ -233,14 +233,14 @@ export function MapCanvas() {
     useState<EdgeContextMenuState | null>(null);
   const [aiBranchDialog, setAiBranchDialog] = useState<{
     spawnPosition: { x: number; y: number };
+    indicatorPosition: { x: number; y: number };
     seedNodeIds: string[];
     seedNodeTitles: string[];
   } | null>(null);
-  // null = idle. {spawnPosition} = generation in progress; the spinner is
-  // rendered at that flow coord so it tracks pan/zoom alongside the
-  // upcoming branch position.
+  // null = idle. spinner は seed ノード直下（indicatorPosition）に
+  // ViewportPortal で flow 座標固定で出すため pan/zoom に追従する。
   const [generatingAiBranch, setGeneratingAiBranch] = useState<{
-    spawnPosition: { x: number; y: number };
+    indicatorPosition: { x: number; y: number };
   } | null>(null);
   const [modeTransitionActive, setModeTransitionActive] = useState(false);
   const [forceLayoutRunning, setForceLayoutRunning] = useState(false);
@@ -1225,8 +1225,29 @@ export function MapCanvas() {
           return data.title ?? data.name ?? n.id;
         })
         .filter(Boolean) as string[];
+      const spawnPosition = getSpawnPosition();
+      // 進行中スピナーは seed ノードの bounding box の下端中央に
+      // 出して「どのノードから派生中か」を視覚的に紐付ける。
+      // seed が無い経路（Palette / shortcut で 0 選択時）は
+      // spawn 位置にフォールバック。
+      const indicatorPosition =
+        seedNodes.length > 0
+          ? (() => {
+              const xs = seedNodes.map(
+                (n) => n.position.x + (n.measured?.width ?? 0) / 2,
+              );
+              const bottoms = seedNodes.map(
+                (n) => n.position.y + (n.measured?.height ?? 0),
+              );
+              return {
+                x: xs.reduce((s, v) => s + v, 0) / xs.length,
+                y: Math.max(...bottoms),
+              };
+            })()
+          : spawnPosition;
       setAiBranchDialog({
-        spawnPosition: getSpawnPosition(),
+        spawnPosition,
+        indicatorPosition,
         seedNodeIds,
         seedNodeTitles,
       });
@@ -1239,7 +1260,9 @@ export function MapCanvas() {
       if (!boardId || !aiBranchDialog) return;
       const dialogState = aiBranchDialog;
       setAiBranchDialog(null);
-      setGeneratingAiBranch({ spawnPosition: dialogState.spawnPosition });
+      setGeneratingAiBranch({
+        indicatorPosition: dialogState.indicatorPosition,
+      });
 
       try {
         const cards = await generateAiBranchCards(
@@ -1421,11 +1444,11 @@ export function MapCanvas() {
             <div
               style={{
                 position: "absolute",
-                // Anchor at the spawn point, then offset to sit below it
-                // (where the future branch node lives). The wrapper
-                // translate(-50%, 0) centers horizontally on spawnX.
-                left: generatingAiBranch.spawnPosition.x,
-                top: generatingAiBranch.spawnPosition.y + 40,
+                // Anchor under the seed node(s) so the indicator stays
+                // visually tied to the node being expanded. translate
+                // centers horizontally and adds an 8px gap below.
+                left: generatingAiBranch.indicatorPosition.x,
+                top: generatingAiBranch.indicatorPosition.y + 8,
                 transform: "translate(-50%, 0)",
                 background: "var(--popover)",
                 border: "1px solid var(--border)",
