@@ -420,6 +420,28 @@ export const L4_PRI_MENTIONED = 2;
 export const L4_PRI_PINNED = 3;
 export const L4_PRI_ALWAYS = 4;
 
+export interface L4PriorityFlags {
+  isChild: boolean;
+  isAlways: boolean;
+  isPinned: boolean;
+  hasRelationVia: boolean;
+}
+
+export function computeL4Priority(flags: L4PriorityFlags): number {
+  if (flags.isChild) return L4_PRI_CHILD;
+  if (flags.isAlways) return L4_PRI_ALWAYS;
+  if (flags.isPinned) return L4_PRI_PINNED;
+  if (flags.hasRelationVia) return L4_PRI_RELATION;
+  return L4_PRI_MENTIONED;
+}
+
+const L4_PRI_MARKER_RE = /<!-- l4pri:\d+ -->\n?/g;
+
+/** trimL4Text 後に LLM へ渡す前で marker を除去。trim 内部 sort には marker が必要なので必ず trim 後に呼ぶこと。 */
+function stripL4Markers(text: string): string {
+  return text.replace(L4_PRI_MARKER_RE, "");
+}
+
 /** Max chars of a Note body injected into L4 to keep one Note from monopolizing the budget. */
 export const NOTE_CONTENT_MAX_CHARS = 1500;
 
@@ -846,17 +868,12 @@ export function buildSystemPrompt(
       const displaySummary =
         entry.summary.trim() || entry.contentFallback || "";
       const phaseSuffix = entry.phaseLabel ? ` [${entry.phaseLabel}]` : "";
-      // L4_PRI_MENTIONED が既定値。ユーザー意図 (always/pin) は relation BFS より優先。
-      let priority = L4_PRI_MENTIONED;
-      if (pinnedChildIds.has(entry.id)) {
-        priority = L4_PRI_CHILD;
-      } else if (alwaysEntryIdSet.has(entry.id)) {
-        priority = L4_PRI_ALWAYS;
-      } else if (pinnedIds.has(entry.id)) {
-        priority = L4_PRI_PINNED;
-      } else if (entry.relationVia) {
-        priority = L4_PRI_RELATION;
-      }
+      const priority = computeL4Priority({
+        isChild: pinnedChildIds.has(entry.id),
+        isAlways: alwaysEntryIdSet.has(entry.id),
+        isPinned: pinnedIds.has(entry.id),
+        hasRelationVia: Boolean(entry.relationVia),
+      });
       const blockLines = [
         `<!-- l4pri:${priority} -->`,
         `- **${entry.name}**${phaseSuffix} (${label})`,
@@ -949,7 +966,9 @@ export function buildSystemPrompt(
       }
     }
     l4Text = lines.join("\n");
-    l4StableSegment = stableLines.join("\n");
+    // stable segment は trimL4Text を通らないため、この時点で marker を strip して
+    // cacheSegments (= LLM に届く content blocks) に marker が漏れないようにする。
+    l4StableSegment = stripL4Markers(stableLines.join("\n"));
   }
 
   // L5: G17 会話要約（Progressive Summarization）
@@ -1010,6 +1029,10 @@ export function buildSystemPrompt(
       trimmedLayers = result.trimmedLayers;
     }
   }
+
+  // trim 後 (or trim をスキップした場合の素の l4Text) から marker を strip。
+  // ここで落とすことで l4Tokens / prompt / cacheSegments 全てが marker レスになる。
+  effectiveL4 = stripL4Markers(effectiveL4);
 
   // 各 layer のトークン数を 1 度だけ計算 (cache hit でも text 全長 hash コストを避ける)
   const baseTokens = countTokens(baseText);

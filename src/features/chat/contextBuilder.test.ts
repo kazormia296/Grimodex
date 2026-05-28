@@ -7,6 +7,12 @@ import {
   sanitizeSceneContent,
   allocateLayerBudgets,
   computeResponseReservation,
+  computeL4Priority,
+  L4_PRI_CHILD,
+  L4_PRI_RELATION,
+  L4_PRI_MENTIONED,
+  L4_PRI_PINNED,
+  L4_PRI_ALWAYS,
   type SceneContext,
   type ProjectContext,
   type CodexContext,
@@ -1316,7 +1322,7 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain("第3話・夕方");
     });
 
-    it("injects relation-derived codex with via comment and pri 1", () => {
+    it("injects relation-derived codex with via comment", () => {
       const result = buildSystemPrompt({
         scene: { id: "s1", title: "Scene", content: "body" },
         codexEntries: [
@@ -1337,42 +1343,85 @@ describe("contextBuilder", () => {
           },
         ],
       });
-      expect(result.prompt).toContain("<!-- l4pri:1 -->");
       expect(result.prompt).toContain("<!-- via: 師匠 of Alice -->");
       expect(result.prompt).toContain("Bob");
     });
 
-    it("relation-derived codex pinned in session keeps pri 3 over relation pri 1", () => {
-      const bob: CodexContext = {
-        id: "b1",
-        type: "character",
-        name: "Bob",
-        summary: "ally",
-        relationVia: "師匠 of Alice",
-      };
+    it("strips l4pri markers from final prompt and cacheSegments (LLM never sees them)", () => {
       const result = buildSystemPrompt({
         scene: { id: "s1", title: "Scene", content: "body" },
-        pinnedCodexEntries: [bob],
+        codexEntries: [
+          { id: "a1", type: "character", name: "Alice", summary: "main" },
+        ],
+        relationCodexEntries: [
+          {
+            id: "b1",
+            type: "character",
+            name: "Bob",
+            summary: "ally",
+            relationVia: "師匠 of Alice",
+          },
+        ],
+        pinnedSnippets: [{ id: "sn1", title: "Tip", content: "snippet body" }],
+        alwaysEntryIds: ["a1"],
       });
-      expect(result.prompt).toContain("<!-- l4pri:3 -->");
-      expect(result.prompt).not.toContain("<!-- l4pri:1 -->");
+      expect(result.prompt).not.toMatch(/<!-- l4pri:\d+ -->/);
+      for (const seg of result.cacheSegments ?? []) {
+        expect(seg).not.toMatch(/<!-- l4pri:\d+ -->/);
+      }
     });
+  });
 
-    it("relation-derived codex with context_mode always keeps pri 4", () => {
-      const bob: CodexContext = {
-        id: "b1",
-        type: "character",
-        name: "Bob",
-        summary: "ally",
-        relationVia: "師匠 of Alice",
-      };
-      const result = buildSystemPrompt({
-        scene: { id: "s1", title: "Scene", content: "body" },
-        codexEntries: [bob],
-        alwaysEntryIds: ["b1"],
-      });
-      expect(result.prompt).toContain("<!-- l4pri:4 -->");
-      expect(result.prompt).not.toContain("<!-- l4pri:1 -->");
+  describe("computeL4Priority", () => {
+    it("returns CHILD for pinned children", () => {
+      expect(
+        computeL4Priority({
+          isChild: true,
+          isAlways: false,
+          isPinned: false,
+          hasRelationVia: false,
+        }),
+      ).toBe(L4_PRI_CHILD);
+    });
+    it("returns ALWAYS over PINNED/RELATION", () => {
+      expect(
+        computeL4Priority({
+          isChild: false,
+          isAlways: true,
+          isPinned: true,
+          hasRelationVia: true,
+        }),
+      ).toBe(L4_PRI_ALWAYS);
+    });
+    it("returns PINNED over RELATION (session pin wins against relation BFS)", () => {
+      expect(
+        computeL4Priority({
+          isChild: false,
+          isAlways: false,
+          isPinned: true,
+          hasRelationVia: true,
+        }),
+      ).toBe(L4_PRI_PINNED);
+    });
+    it("returns RELATION when only relationVia is set", () => {
+      expect(
+        computeL4Priority({
+          isChild: false,
+          isAlways: false,
+          isPinned: false,
+          hasRelationVia: true,
+        }),
+      ).toBe(L4_PRI_RELATION);
+    });
+    it("defaults to MENTIONED when no flag is set", () => {
+      expect(
+        computeL4Priority({
+          isChild: false,
+          isAlways: false,
+          isPinned: false,
+          hasRelationVia: false,
+        }),
+      ).toBe(L4_PRI_MENTIONED);
     });
   });
 });
