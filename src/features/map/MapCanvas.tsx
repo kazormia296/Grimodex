@@ -173,6 +173,7 @@ export function MapCanvas() {
     zoomIn,
     zoomOut,
     zoomTo,
+    setCenter,
   } = useReactFlow();
 
   const reducedMotion = useReducedMotion();
@@ -1719,6 +1720,7 @@ export function MapCanvas() {
         <AddToMapPickerDialog
           boardId={boardId}
           initialType={pickerType}
+          getSpawnPosition={getSpawnPosition}
           onPicked={(pos) => {
             setPositions((prev) => {
               const idx = prev.findIndex((p) => p.id === pos.id);
@@ -1728,6 +1730,12 @@ export function MapCanvas() {
                 return next;
               }
               return [...prev, pos];
+            });
+            // 中心配置のズレ保険として挿入先にビューを寄せる。
+            // getViewport().zoom を維持してパンだけ動かす。
+            setCenter(pos.x, pos.y, {
+              zoom: getViewport().zoom,
+              duration: 400,
             });
           }}
           onClose={() => setPickerType(null)}

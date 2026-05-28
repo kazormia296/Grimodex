@@ -4,7 +4,6 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { upsertNodePosition } from "./mapApi";
-import { useMapStore } from "./mapStore";
 import type { MapNodePositionRecord } from "./types";
 
 type EntityType = "scene" | "note" | "codex" | "snippet";
@@ -19,6 +18,10 @@ const TYPE_LABELS: Record<EntityType, string> = {
 interface AddToMapPickerDialogProps {
   boardId: string;
   initialType?: EntityType;
+  /** Map 中心 (flow 座標) を返す。MapCanvas の getSpawnPosition を渡す。
+   *  window.innerWidth/2 ベースの自前計算だと Map が region に部分占有
+   *  しているレイアウトでズレるため必須。 */
+  getSpawnPosition: () => { x: number; y: number };
   onPicked?: (position: MapNodePositionRecord) => void;
   onClose: () => void;
 }
@@ -26,6 +29,7 @@ interface AddToMapPickerDialogProps {
 export function AddToMapPickerDialog({
   boardId,
   initialType = "scene",
+  getSpawnPosition,
   onPicked,
   onClose,
 }: AddToMapPickerDialogProps) {
@@ -36,7 +40,6 @@ export function AddToMapPickerDialog({
   const treeNodes = useTreeStore((s) => s.nodes);
   const codexEntries = useCodexStore((s) => s.entries);
   const snippetEntries = useSnippetStore((s) => s.entries);
-  const viewport = useMapStore((s) => s.viewport);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -85,10 +88,7 @@ export function AddToMapPickerDialog({
   })();
 
   async function handleSelect(id: string) {
-    const cx = (-viewport.x + window.innerWidth / 2) / viewport.zoom;
-    const cy = (-viewport.y + window.innerHeight / 2) / viewport.zoom;
-    const x = cx + (Math.random() - 0.5) * 120;
-    const y = cy + (Math.random() - 0.5) * 120;
+    const { x, y } = getSpawnPosition();
 
     const args =
       entityType === "scene" || entityType === "note"
