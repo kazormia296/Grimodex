@@ -18,6 +18,7 @@ import {
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { cmpKeys, generateKeyBetween } from "./fractionalIndex";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -601,6 +602,18 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const nodes = [...state.nodes, newNode];
       return { nodes, scenes: computeScenes(nodes) };
     });
+    recordChangeEvent({
+      domain: "grid",
+      opType: "scene.create",
+      entityType: "scene",
+      entityId: created.id,
+      sceneId: created.id,
+      payload: {
+        parentId: newNode.parentId,
+        sortOrder: newNode.sortOrder,
+        title: newNode.title,
+      },
+    });
     return created.id;
   },
 
@@ -624,12 +637,31 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const nodes = [...state.nodes, newNode];
       return { nodes, scenes: computeScenes(nodes) };
     });
+    recordChangeEvent({
+      domain: "grid",
+      opType: "note.create",
+      entityType: "note",
+      entityId: created.id,
+      payload: {
+        parentId: newNode.parentId,
+        sortOrder: newNode.sortOrder,
+        title: newNode.title,
+      },
+    });
     return created.id;
   },
 
   async deleteScene(id) {
     const { scenes } = get();
     await api.deleteNode(id);
+    recordChangeEvent({
+      domain: "grid",
+      opType: "scene.delete",
+      entityType: "scene",
+      entityId: id,
+      sceneId: null,
+      payload: { id },
+    });
     const { activeSceneId } = get();
     const remaining = scenes.filter((s) => s.id !== id);
     const newActive =
@@ -770,6 +802,20 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     });
     usePhaseStore.getState().recomputeSceneOrder(get().nodes);
 
+    recordChangeEvent({
+      domain: "grid",
+      opType: "node.create",
+      entityType: newNode.nodeType,
+      entityId: newNode.id,
+      sceneId: newNode.nodeType === "scene" ? newNode.id : null,
+      payload: {
+        parentId: newNode.parentId,
+        sortOrder: newNode.sortOrder,
+        title: newNode.title,
+        nodeType: newNode.nodeType,
+      },
+    });
+
     if (!useGlobalHistoryStore.getState().isReplaying) {
       const captured = { ...newNode };
       const createLabel =
@@ -909,6 +955,21 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       : activeSceneId;
     set({ nodes: remaining, scenes: newScenes, activeSceneId: newActive });
     usePhaseStore.getState().recomputeSceneOrder(remaining);
+    if (successfullyDeleted.size > 0) {
+      recordChangeEvent({
+        domain: "grid",
+        opType: "node.delete",
+        entityType: "node",
+        entityId: id,
+        sceneId: null,
+        payload: {
+          rootId: id,
+          deletedIds: [...successfullyDeleted],
+          partialFailure,
+          prevActiveSceneId,
+        },
+      });
+    }
     // Close editor tabs only for nodes that actually got deleted.
     const tabStore = useTabStore.getState();
     for (const delId of successfullyDeleted) {
@@ -1023,6 +1084,14 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set((state) => ({
       nodes: state.nodes.map((n) => (n.id === id ? { ...n, synopsis } : n)),
     }));
+    recordChangeEvent({
+      domain: "synopsis",
+      opType: "update",
+      entityType: "tree_node",
+      entityId: id,
+      sceneId: id,
+      payload: { before: oldSynopsis, after: synopsis },
+    });
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
@@ -1256,6 +1325,19 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       return { nodes: updated, scenes: computeScenes(updated) };
     });
     usePhaseStore.getState().recomputeSceneOrder(get().nodes);
+    recordChangeEvent({
+      domain: "grid",
+      opType: "node.move",
+      entityType: node.nodeType,
+      entityId: id,
+      sceneId: node.nodeType === "scene" ? id : null,
+      payload: {
+        parentBefore: oldParentId,
+        parentAfter: newParentId,
+        sortBefore: oldSortOrder,
+        sortAfter: sortOrder,
+      },
+    });
 
     // Register Undo immediately, BEFORE the DB await. The in-memory state is
     // already updated; making Undo wait on the DB round-trip means a freshly-

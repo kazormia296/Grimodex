@@ -15,6 +15,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureCodexDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 export type CodexSortOrder =
   | "category"
@@ -238,6 +239,17 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           },
         });
       }
+      recordChangeEvent({
+        domain: "codex",
+        opType: "entry.create",
+        entityType: "codex_entry",
+        entityId: entry.id,
+        payload: {
+          type: entry.type,
+          name: entry.name,
+          parentId: entry.parentId,
+        },
+      });
       return entry;
     } catch (e) {
       toast.error(i18next.t("codex.store.createFailed"));
@@ -261,6 +273,18 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       debugLog.error("CodexStore", `update: ${rootCause(e)}`, errorDetail(e));
       return;
     }
+
+    recordChangeEvent({
+      domain: "codex",
+      opType: "entry.update",
+      entityType: "codex_entry",
+      entityId: id,
+      payload: {
+        fields: Object.keys(data),
+        // before/after は keys のみで巨大な content を chain に含めない。
+        // body 差分は AuthorshipMark + editor onTransaction が別経路で捕捉する。
+      },
+    });
 
     if (!before) return;
     if (useGlobalHistoryStore.getState().isReplaying) return;
@@ -327,6 +351,14 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       debugLog.error("CodexStore", `remove: ${rootCause(e)}`, errorDetail(e));
       return;
     }
+
+    recordChangeEvent({
+      domain: "codex",
+      opType: "entry.delete",
+      entityType: "codex_entry",
+      entityId: id,
+      payload: { name: before?.name ?? null, type: before?.type ?? null },
+    });
 
     if (before && !useGlobalHistoryStore.getState().isReplaying) {
       const captured = { ...before };

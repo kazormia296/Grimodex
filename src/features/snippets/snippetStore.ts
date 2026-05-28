@@ -9,6 +9,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureSnippetDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 export type SnippetSourceFilter =
   | "all"
@@ -102,6 +103,14 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         ...data,
       });
       set((state) => ({ entries: [...state.entries, created] }));
+      recordChangeEvent({
+        domain: "snippet",
+        opType: "snippet.create",
+        entityType: "snippet",
+        entityId: created.id,
+        sceneId: created.sceneId ?? null,
+        payload: { title: created.title, sceneId: created.sceneId },
+      });
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
         const captured = { ...created };
@@ -167,6 +176,14 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       return;
     }
 
+    recordChangeEvent({
+      domain: "snippet",
+      opType: "snippet.update",
+      entityType: "snippet",
+      entityId: id,
+      payload: { fields: Object.keys(data) },
+    });
+
     if (!before) return;
     if (useGlobalHistoryStore.getState().isReplaying) return;
 
@@ -213,6 +230,14 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       debugLog.error("SnippetStore", "remove", errorDetail(e));
       return;
     }
+
+    recordChangeEvent({
+      domain: "snippet",
+      opType: "snippet.delete",
+      entityType: "snippet",
+      entityId: id,
+      payload: { title: before?.title ?? null },
+    });
 
     if (!before) return;
     if (useGlobalHistoryStore.getState().isReplaying) return;
