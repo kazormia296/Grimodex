@@ -2109,6 +2109,17 @@
     "exportHtml": "HTML",
     "exportProjectReportTitle": "プロジェクト全体の帰属レポートを書き出す"
   },
+  "timelapse": {
+    "title": "執筆タイムラプス",
+    "refresh": "再読み込み",
+    "verify": "チェーン検証",
+    "verifyTitle": "sha256 チェーンを再計算してログの連続性を確認",
+    "verifyOk": "チェーン OK — {{count}} 件の event を検証",
+    "verifyBroken": "sequence {{seq}} でチェーン破綻: {{reason}}",
+    "scrub": "event をスクラブ",
+    "scrubHint": "スライダーを動かして event を見る",
+    "noEvents": "まだ change event は記録されていません"
+  },
   "phase": {
     "editTitle": "フェーズを編集",
     "addTitle": "フェーズを追加",

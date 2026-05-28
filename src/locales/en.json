@@ -2100,6 +2100,17 @@
     "exportHtml": "HTML",
     "exportProjectReportTitle": "Export project-wide authorship report"
   },
+  "timelapse": {
+    "title": "Timelapse",
+    "refresh": "Refresh",
+    "verify": "Verify chain",
+    "verifyTitle": "Recompute sha256 chain to confirm log integrity",
+    "verifyOk": "Chain OK — {{count}} events verified",
+    "verifyBroken": "Chain broken at sequence {{seq}}: {{reason}}",
+    "scrub": "Scrub through events",
+    "scrubHint": "Drag the scrubber to inspect an event.",
+    "noEvents": "No change events recorded yet."
+  },
   "phase": {
     "editTitle": "Edit Phase",
     "addTitle": "Add Phase",
