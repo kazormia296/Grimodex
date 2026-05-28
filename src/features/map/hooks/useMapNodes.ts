@@ -470,6 +470,7 @@ export function useMapNodes({
                 colorBy,
                 rotation: stickyRotation(st.id),
                 isDeleting: deletingStickyIds?.has(st.id) ?? false,
+                aiDerived: st.aiBranchId !== null,
                 onExitComplete: onStickyExitComplete,
                 onUpdate: async (updates: {
                   title?: string;

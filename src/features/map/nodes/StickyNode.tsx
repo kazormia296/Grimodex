@@ -33,6 +33,8 @@ export interface StickyNodeData {
   colorBy?: string;
   rotation?: number;
   isDeleting?: boolean;
+  /** true when sticky was created by an AI Branch (map_stickies.ai_branch_id !== null). */
+  aiDerived?: boolean;
   onExitComplete?: (id: string) => void;
   onUpdate?: (updates: {
     title?: string;
@@ -306,10 +308,15 @@ export const StickyNode = memo(function StickyNode({
               }
             }}
           >
-            {/* Content area measured by ResizeObserver */}
+            {/* Content area measured by ResizeObserver。
+                data-grimodex-source は clipboard copy 時に祖先要素ごと
+                serialize される性質を利用して、AI 由来 Sticky の本文に
+                "ai" provenance を伝搬する (clipboardAttribution.parseClipboardHtml
+                Case 1 で拾われる)。 */}
             <div
               ref={measureRef}
               data-testid="sticky-content"
+              data-grimodex-source={d.aiDerived ? "ai" : undefined}
               className="sticky-content"
             >
               {/* Body */}

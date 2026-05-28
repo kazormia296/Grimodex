@@ -102,12 +102,19 @@ export function parseClipboardHtml(
 
   const doc = new DOMParser().parseFromString(html, "text/html");
 
-  // Case 1: Codex/Snippet copy (data-grimodex-source wrapper)
+  // Case 1: Codex/Snippet/Sticky copy (data-grimodex-source wrapper).
+  // Walk with paragraph awareness (extractMixedSegments) and force all
+  // segments to the wrapper's declared source — the wrapper guarantees
+  // the entire selection has the same provenance.
   const grimodexEl = doc.querySelector("[data-grimodex-source]");
   if (grimodexEl) {
     const source = grimodexEl.getAttribute(
       "data-grimodex-source",
     ) as AuthorshipSource;
+    const raw = extractMixedSegments(grimodexEl);
+    if (raw.length > 0) {
+      return raw.map((s) => ({ text: s.text, source }));
+    }
     const text = grimodexEl.textContent ?? "";
     if (text) return [{ text, source }];
     return null;
