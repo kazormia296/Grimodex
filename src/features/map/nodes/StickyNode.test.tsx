@@ -20,6 +20,10 @@ vi.mock("@tiptap/react", () => ({
   EditorContent: () => <div data-testid="tiptap-editor" />,
 }));
 
+vi.mock("@tiptap/core", () => ({
+  generateHTML: vi.fn().mockReturnValue("<p>rendered body</p>"),
+}));
+
 vi.mock("@/features/editor/extensions", () => ({
   getStickyEditorExtensions: vi.fn().mockReturnValue([]),
 }));
@@ -67,9 +71,10 @@ function makeProps(
 describe("StickyNode — 表示", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("previewText が表示される", () => {
-    render(<StickyNode {...makeProps({ previewText: "本文プレビュー" })} />);
-    expect(screen.getByText("本文プレビュー")).toBeTruthy();
+  it("非編集時に本文の HTML が描画される", () => {
+    const { container } = render(<StickyNode {...makeProps()} />);
+    const view = container.querySelector('[data-testid="sticky-body-view"]');
+    expect(view?.innerHTML).toBe("<p>rendered body</p>");
   });
 
   it("非編集時に TipTap エディタが表示されない", () => {

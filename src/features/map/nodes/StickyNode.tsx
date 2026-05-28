@@ -4,6 +4,7 @@ import {
   useRef,
   useCallback,
   useEffect,
+  useMemo,
   type CSSProperties,
 } from "react";
 import { motion } from "motion/react";
@@ -11,6 +12,7 @@ import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
 import { NodeBranchToolbar } from "./NodeBranchToolbar";
 import { useEditor, EditorContent } from "@tiptap/react";
+import { generateHTML } from "@tiptap/core";
 import { getStickyEditorExtensions } from "@/features/editor/extensions";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import {
@@ -76,6 +78,31 @@ function parseBodyContent(body: string): object | undefined {
   } catch {
     return undefined;
   }
+}
+
+function StickyBodyView({ body }: { body: string }) {
+  const html = useMemo(() => {
+    const json = parseBodyContent(body);
+    if (!json) return "";
+    try {
+      return generateHTML(json, getStickyEditorExtensions());
+    } catch {
+      return "";
+    }
+  }, [body]);
+  return (
+    <div
+      data-testid="sticky-body-view"
+      className="sticky-body-view"
+      style={{
+        fontSize: 12,
+        lineHeight: 1.5,
+        color: "rgba(0,0,0,0.65)",
+        wordBreak: "break-word",
+      }}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }
 
 interface StickyBodyEditorProps {
@@ -263,8 +290,8 @@ export const StickyNode = memo(function StickyNode({
               {
                 width: 200,
                 minHeight: 52,
-                maxHeight: editing ? 480 : 280,
-                overflow: editing ? "auto" : "hidden",
+                maxHeight: editing ? 480 : undefined,
+                overflow: editing ? "auto" : "visible",
                 outline: selected ? "2px solid #534AB7" : "none",
                 outlineOffset: "2px",
                 cursor: editing ? "text" : "default",
@@ -296,21 +323,7 @@ export const StickyNode = memo(function StickyNode({
                   onEscape={exitEditing}
                 />
               ) : (
-                <div
-                  style={{
-                    fontSize: 12,
-                    lineHeight: 1.5,
-                    color: "rgba(0,0,0,0.65)",
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                    overflow: "hidden",
-                    display: "-webkit-box",
-                    WebkitLineClamp: 8,
-                    WebkitBoxOrient: "vertical",
-                  }}
-                >
-                  {d.previewText}
-                </div>
+                <StickyBodyView body={d.body} />
               )}
             </div>
           </div>
