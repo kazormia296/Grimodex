@@ -75,7 +75,11 @@ export function renderDocToCanvas(
   const contentWidth = width - theme.paddingPx * 2;
   let y = theme.paddingPx + theme.fontSizePx;
 
-  doc.forEach((block) => {
+  // Manual childCount loop (not `doc.forEach`) so the past-canvas-bottom
+  // early-out below can actually `break` — ProseMirror's Fragment.forEach
+  // ignores a callback's return value, so returning early there is a no-op.
+  for (let bi = 0; bi < doc.childCount; bi += 1) {
+    const block = doc.child(bi);
     const runs: Run[] = [];
     block.forEach((child) => {
       if (!child.isText || !child.text) return;
@@ -95,7 +99,7 @@ export function renderDocToCanvas(
     });
     if (runs.length === 0) {
       y += theme.lineHeightPx + theme.paragraphGapPx;
-      return;
+      continue;
     }
     const linesPainted = paintParagraph(
       ctx,
@@ -109,9 +113,9 @@ export function renderDocToCanvas(
     if (y > height + theme.lineHeightPx) {
       // Stop drawing once we're well past the canvas bottom; later content
       // would be clipped anyway and measureText calls add up.
-      return false as unknown as void;
+      break;
     }
-  });
+  }
 }
 
 function paintParagraph(

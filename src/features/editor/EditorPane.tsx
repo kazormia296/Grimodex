@@ -802,7 +802,20 @@ export function EditorPane({
         const sid = saveSceneIdRef.current;
         // 執筆タイムラプス: scene/codex/snippet いずれの body 編集も capture する。
         // recordChangeEvent 自体は disabled / no-project 時に no-op なので守備不要。
-        if (sid) {
+        //
+        // ただし onTransaction は emitUpdate:false の setContent でも発火する。
+        // scene 切替ロード・peer pane の live sync・authorship マーク再適用・
+        // external reload はすべて isApplyingExternalUpdate 窓内のプログラム的
+        // 更新で、これらを doc.step として記録するとロードが「執筆」に化けて
+        // チェーンが汚れる（切替のたびに全文を再記録）。onUpdate (オートセーブ)
+        // と同じく isApplyingExternalUpdate を見て、実ユーザー編集だけ捕捉する。
+        //
+        // onUpdate と違い inline-AI status では *あえて* gate しない。onUpdate は
+        // full-doc autosave なので idle まで待てるが、こちらは step replay 用の
+        // 逐次 capture。AI の insertText/delete は実 step で、これを飛ばすと後続
+        // step の position がズレて replay (step.apply) が壊れる。AI insert/reject
+        // は両方 step として残り「AI が X を提案→ユーザーが削除」と忠実に再現される。
+        if (sid && !isApplyingExternalUpdate.current) {
           try {
             const steps = transaction.steps.map((s) => s.toJSON());
             const domain = isCodexMode
