@@ -2147,7 +2147,12 @@
     "exportProjectNoSteps": "No recorded writing in this project yet",
     "tabTextExport": "Text",
     "tabVideoExport": "Timelapse video",
-    "movedToDialog": "Video export has moved to the Export dialog (Ctrl+Shift+E) → Timelapse video tab."
+    "movedToDialog": "Video export has moved to the Export dialog (Ctrl+Shift+E) → Timelapse video tab.",
+    "duration": "Length",
+    "pace": "Pace",
+    "paceFast": "Snappy (compress pauses)",
+    "paceStandard": "Standard",
+    "paceSlow": "Keep pauses"
   },
   "phase": {
     "editTitle": "Edit Phase",

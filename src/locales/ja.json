@@ -2156,7 +2156,12 @@
     "exportProjectNoSteps": "このプロジェクトにはまだ記録された執筆がありません",
     "tabTextExport": "テキスト",
     "tabVideoExport": "タイムラプス動画",
-    "movedToDialog": "動画の書き出しは「エクスポート」ダイアログ (Ctrl+Shift+E) の「タイムラプス動画」タブから行えます。"
+    "movedToDialog": "動画の書き出しは「エクスポート」ダイアログ (Ctrl+Shift+E) の「タイムラプス動画」タブから行えます。",
+    "duration": "尺",
+    "pace": "テンポ",
+    "paceFast": "テンポ優先（休止を圧縮）",
+    "paceStandard": "標準",
+    "paceSlow": "間も再現"
   },
   "phase": {
     "editTitle": "フェーズを編集",

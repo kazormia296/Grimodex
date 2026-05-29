@@ -59,11 +59,29 @@ describe("TimelapseExportSection", () => {
           projectId: "p1",
           sceneId: "s1",
           mimeType: "video/webm;codecs=vp9",
+          targetDurationSec: 30,
         }),
       ),
     );
+    // Standard pace leaves maxIdleMs to the scheduler default (not passed).
+    const firstCall = exportMock.produceSceneTimelapseWebm.mock
+      .calls[0] as unknown as [{ maxIdleMs?: number }];
+    expect(firstCall[0].maxIdleMs).toBeUndefined();
     await waitFor(() => expect(exportMock.saveWebmBlob).toHaveBeenCalled());
     expect(exportMock.produceProjectTimelapseWebm).not.toHaveBeenCalled();
+  });
+
+  it("passes the selected duration and pace (maxIdleMs)", async () => {
+    render(<TimelapseExportSection />);
+    const [durationSel, paceSel] = screen.getAllByRole("combobox");
+    fireEvent.change(durationSel, { target: { value: "60" } });
+    fireEvent.change(paceSel, { target: { value: "fast" } });
+    fireEvent.click(screen.getByTestId("timelapse-export-video"));
+    await waitFor(() =>
+      expect(exportMock.produceSceneTimelapseWebm).toHaveBeenCalledWith(
+        expect.objectContaining({ targetDurationSec: 60, maxIdleMs: 800 }),
+      ),
+    );
   });
 
   it("exports the whole project when the project scope is selected", async () => {

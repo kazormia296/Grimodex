@@ -33,6 +33,8 @@ export interface SceneTimelapseOptions {
   height?: number;
   fps?: number;
   targetDurationSec?: number;
+  /** Clamp long idle gaps (§5.5 / P3). Default 2000ms. */
+  maxIdleMs?: number;
   /** Override the WebM mime (A6 feature-detect supplies a supported one). */
   mimeType?: string;
   /** Render theme. Default: resolveEditorTheme() from the live editor (P1). */
@@ -133,6 +135,7 @@ export async function produceSceneTimelapseWebm(
   const schedule = buildFrameSchedule(start.replayEvents, {
     fps,
     targetDurationSec: opts.targetDurationSec,
+    ...(opts.maxIdleMs !== undefined ? { maxIdleMs: opts.maxIdleMs } : {}),
   });
 
   const canvas = document.createElement("canvas");

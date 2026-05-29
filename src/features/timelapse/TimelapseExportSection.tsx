@@ -37,7 +37,12 @@ export function TimelapseExportSection({
   );
   const supportedMime = useMemo(() => pickSupportedWebmMime(), []);
   const [scope, setScope] = useState<Scope>("scene");
+  const [durationSec, setDurationSec] = useState(30);
+  const [pace, setPace] = useState<"fast" | "standard" | "slow">("standard");
   const [busy, setBusy] = useState(false);
+
+  // pace → maxIdleMs (長休止のクランプ強度)。standard は buildFrameSchedule 既定(2000ms)。
+  const maxIdleMs = pace === "fast" ? 800 : pace === "slow" ? 15000 : undefined;
 
   const sceneReady = scope === "project" || !!activeSceneId;
   const canExport = !!supportedMime && sceneReady && !busy;
@@ -53,6 +58,8 @@ export function TimelapseExportSection({
         ({ blob } = await produceProjectTimelapseWebm({
           projectId,
           mimeType: supportedMime,
+          targetDurationSec: durationSec,
+          ...(maxIdleMs !== undefined ? { maxIdleMs } : {}),
         }));
         base = projectTitle || "project-timelapse";
       } else {
@@ -60,6 +67,8 @@ export function TimelapseExportSection({
           projectId,
           sceneId: activeSceneId as string,
           mimeType: supportedMime,
+          targetDurationSec: durationSec,
+          ...(maxIdleMs !== undefined ? { maxIdleMs } : {}),
         }));
         base = sceneTitle || "timelapse";
       }
@@ -151,6 +160,38 @@ export function TimelapseExportSection({
               ? t("timelapse.exportProjectHint")
               : t("timelapse.exportHint")}
           </p>
+
+          {/* 尺 / テンポ (P3) */}
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              {t("timelapse.duration")}
+              <select
+                aria-label={t("timelapse.duration")}
+                value={durationSec}
+                onChange={(e) => setDurationSec(Number(e.target.value))}
+                className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+              >
+                {[15, 30, 60].map((d) => (
+                  <option key={d} value={d}>{`${d}s`}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              {t("timelapse.pace")}
+              <select
+                aria-label={t("timelapse.pace")}
+                value={pace}
+                onChange={(e) =>
+                  setPace(e.target.value as "fast" | "standard" | "slow")
+                }
+                className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+              >
+                <option value="fast">{t("timelapse.paceFast")}</option>
+                <option value="standard">{t("timelapse.paceStandard")}</option>
+                <option value="slow">{t("timelapse.paceSlow")}</option>
+              </select>
+            </label>
+          </div>
         </>
       )}
 
