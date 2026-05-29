@@ -509,6 +509,112 @@ ON→OFF（`enabled === false`）:
 
 ---
 
+## 17. P0 記録スキーマ設計 — 軸C(会話フロー)とUI動作の forward-only 記録
+
+### 17.0 前提と本節の境界
+
+P5 描画より前に「記録フックだけ」を入れ、今日からデータ蓄積を始める。対象は現状 change_events に一切記録がない 2 種:
+
+- 軸C-1 AIチャットの会話フロー(add / delete / regenerate / edit)
+- 軸C-2 パネル・レイアウト・activeScene・focus の動き
+
+いずれも forward-only(記録開始後の分しか取れない)で、記録漏れは過去分が永久欠落する。よって「何を・どの粒度で・どんな payload で」を P0 で確定し、後で直せない決定(本文焼き込み・delete 別建て・seed 経路)を今すべて入れる。描画 consumer は P5 で別実装する(`replayEngine` は `opType==='doc.step'` のみ処理 — replayEngine.ts:9-13)。
+
+### 17.1 前段必須 — Domain union 拡張(これ無しでは全フックが型で空振りする)
+
+`recorder.ts:27-34` の `Domain` union と `queryEvents.ts:5-12` の `Domain` は `editor|codex|snippet|grid|map|synopsis|beat` で、`'chat'`/`'layout'` を持たない。`RecordEventInput.domain` は `Domain` 型固定(recorder.ts:36-37)、strict TS なので呼び出し側がコンパイルできない。
+
+P0 でまず両所に `'chat'` `'layout'` を追加し、`schema.ts:1522` の `domain` コメント(列は enum でなく TEXT。migration 不要)を追記する。`hashChain` は `domain` を不透明 TEXT として正規化 body に含む(hashChain.ts:60)ため新ドメイン追加に支障なし。これは記録フックの前段で、最初に着手する。
+
+### 17.2 chat の payload は本文を inline 焼き込み(参照 id only は lossy — 後で直せない)
+
+`chat_messages` は mutable で破壊的に削除される:
+
+- `deleteMessage` は物理削除 `db.delete(chatMessages).where(eq(id))`(chatApi.ts:452-454)。soft-delete ではない。
+- `regenerate` は assistant message を `deleteMessage` 物理削除してから再 insert(chatStore.ts:3134-3142 付近)。
+- `deleteMessagesFrom` も createdAt 範囲の物理削除(chatApi.ts:456-468)。
+
+したがって `change_events` に `messageId` 参照だけを残すと、edit/regenerate/delete 後に join 先が dangling し replay 不能になる。**`role`/`text`/`sessionId` を append-only な `change_events.payload` へ snapshot として焼き込む。`messageId` は照合用に併記するが join 必須にしない。**
+
+### 17.3 opType をイベント種別で分ける(snapshot だけにせず「動き」を別建て記録)
+
+軸Cは「会話フロー」の忠実再現であり、メッセージが消える/差し替わる動き自体が再現対象。add 時に本文を焼くだけでは「いつ・どれが消えたか」が記録されず、削除・再生成の演出を timestamp 順に表現できない。delete 系も独立イベントとして append する(forward-only — 今入れないと過去分の削除イベントは永久欠落)。
+
+| opType | payload(JSON TEXT) | 記録点 |
+| --- | --- | --- |
+| `chat.message.add` | `{ sessionId, messageId, role, text, model?, createdAt(ISO) }` | `chatApi.addMessage` 成功後(chatApi.ts:444-449) |
+| `chat.message.delete` | `{ sessionId, messageId }` | `chatApi.deleteMessage`(chatApi.ts:452-454)・`deleteMessagesFrom`(chatApi.ts:456-468) |
+| `chat.message.regenerate` | `{ sessionId, oldMessageId }`(または delete→add の 2 イベント) | `chatStore.regenerate`(chatStore.ts:3134-3142 付近) |
+| `chat.message.edit`(任意) | `{ sessionId, messageId, text }` | `editUserMessage`(chatStore.ts:454 付近) |
+
+**timestamp 衝突の回避(fix 反映):** user turn と assistant が同一 epoch に潰れると会話のリズムが失われる。`chat.message.add` の timestamp は recorder の per-event 現在時刻(recorder.ts:194)に委ねるので、**user turn は send/optimistic push 地点で 1 件、assistant は完了 add 地点で 1 件**、それぞれ実発生時刻で個別に記録する(まとめて 1 epoch で打たない)。`tokensIn/tokensOut` 等の冗長フィールドは volume 抑制のため payload から外す。
+
+**streaming(fix 明示):** `addMessage` は完了後 1 回の insert(chatApi.ts:428-442)。**P0 では delta を記録しない(完了時 `chat.message.add` の snapshot のみ)** と明示する。打鍵感が欲しくなったら append-only なので後方互換で `chat.message.stream` を足せる。
+
+### 17.4 layout は diff にせず自己完結 full snapshot(ただし発火粒度を contract 化)
+
+diff 復元は baseline からの fold consumer を新規に要し、forward-only + toggle 時 GENESIS wipe + flush 取りこぼし(recorder.ts:270 で再 queue するがタブ閉じで queue 内は消える)のいずれか 1 件欠落で以降全ズレ。**毎イベント `LayoutState` 全体を載せる自己完結 snapshot はこれに免疫。** `LayoutState`(layoutTypes.ts:56-69)は region×3 + 小 slot 配列 + 数 segment + panel-id 文字列配列の有界構造で JSON は通常 1KB 未満、recorder.ts:42 の「<~4KB typical」に収まる。
+
+**volume 爆発の真因は snapshot サイズでなくフック位置(fix 反映 — これを誤ると forward-only の volume bomb):** `layoutStore` は live ドラッグ mutator(`setRegionSizeLive`:1103, `nudgeRegionSize`:1123, `nudgeAdjacentSlotSizes`:1163, `nudgeAdjacentCenterSegmentSizes`:1221)と commit mutator(`setRegionSize`:1097, `setSlotRatios`:1144, `setCenterSegmentRatios`:1197, `finalizeLayoutResize`:1251)が分離している。**フックは確定 mutator のみに張り、live ドラッグ・scroll は非記録。** scroll は replay 時に caret から viewport を再導出する意図的 defer と明記する。
+
+加えて、`finalizeLayoutResize` を通らない離散レイアウト操作を取りこぼさないよう、以下も `domain='layout'` で記録する: `togglePanel`(:701)、`setEditorOpen`(:653)、`applyPreset`(:1449)、`movePanelToSlot`(:795)、`movePanelToRegion`(:807)、`setRegionSize`(:1097)。各イベントは自己完結 snapshot なので「いつ何が起きたか」が単独で復元できる。
+
+**timestamp 順 UI 再生は change_events ストリーム(hash-chain + sequence/timestamp 順)で行う。** `state_snapshots`(schema.ts:1551-1582)は `anchorSequence` で seek する別消費モデルなので playback には使わない、と書き分ける(後述 17.5 の初期 seed のみ snapshots 経路)。
+
+### 17.5 初期状態 seed は「毎セッション開始時 + state_snapshots 経路」(OFF→ON 1 回では支配経路で欠落)
+
+layout/UI は相対イベント(panel toggled 等)だけだと replay 初期状態が未定義になる。だが seed を「ON 直後だけ」焼く案は forward-only で破綻する:
+
+- `stampSceneBaselines` を呼ぶのは `rearmFromGenesis` のみで、それは `setTimelapseEnabled(true)`(toggle.ts:111)と purge 経路(toggle.ts:128)からしか走らない。
+- アプリの支配経路 = 既に ON のプロジェクトを開く通常起動は `projectStore.loadProject → initRecorderForProject`(projectStore.ts:104-105)で、seed も baseline も一切焼かない。
+- editor scene は last OFF→ON で焼いた baseline から forward replay できるが、layout/UI は editor doc と寿命が違う。ユーザーは毎日同じ ON プロジェクトを開閉するため、その「開いた瞬間の layout/activeScene/focus」が記録されないとそのセッションの初期 UI 状態が欠落する。
+
+**fix:** 通常ロード経路(`projectStore.loadProject`、projectStore.ts:104-105 直後)で、ON のとき layout/activeScene/focus の現在状態を `recordStateSnapshot`(snapshots.ts:32)へ次の条件で焼く:
+
+- `domain='layout'`(activeScene/focus を分けるなら `'ui'` 系の opType でなく entityType で区別)
+- **`entityId='workspace'`(固定・非 null)** — `loadLatestSnapshot` は `entityId===null` を扱えない(snapshots.ts:75-81)ため、必ず非 null の固定 id を付与する
+- `anchorSequence` = 現在の chain head
+
+replay は `loadLatestSnapshot`(snapshots.ts:65-110)で `asOfSequence` 直前の初期状態を取り、そこから 17.4 の相対イベントで前進する。**seed を change_events 本線に append しない**(毎セッション seed が sequence/hashChain を消費して volume を膨らませ、consumer が「初期 seed」と「実操作」を区別する必要が出る)。
+
+**chat の seed:** OFF→ON 直後は空会話なので seed 不要は正しい。ただし 2 回目以降のセッション開始時点では既存会話が `chat_messages` に存在する(change_events には無い)。過去会話を初期表示したいなら chat も per-session-open の seed snapshot(`domain='chat'`)を同経路で焼く。**P0 のスコープ決定: replay 初期画面は「空チャット」から始め、過去会話の初期表示は defer する**(forward-only だが、空起点 + 以後 `chat.message.add` の前進再生で会話フローは成立する。過去会話の初期表示が必要になった時点で seed snapshot を足す)。
+
+### 17.6 連続性契約(§15)との整合 — wipe は domain 非依存で自動波及(改修不要)
+
+`wipeHistory` は `db.delete(changeEvents).where(eq(projectId))`(toggle.ts:55)で domain 絞りが無く、`state_snapshots` も同様(toggle.ts:56-58)。将来の chat/layout 行も同じ projectId なら巻き込まれて消える。OFF→ON の「全 wipe → genesis 録り直し」は新ドメインにも自動で効くため改修不要。production toggle 時は `resetRecorderChain` で head リセットを忘れない(冪等ガード recorder.ts:105-107 の罠 — §15)。
+
+### 17.7 sceneId / entityId / sessionId の正しい配置(sound 判定 + 必須補完)
+
+- **sceneId は treeNode id のみ。** `change_events.sceneId` は `treeNodes` への FK で `onDelete:set null`(schema.ts:1519-1521)。PRAGMA foreign_keys=ON が単一 `Mutex<Connection>` 上で有効(database.rs:25-29)なので、非 treeNodes 値(chat session id 等)を sceneId に入れると flush insert(recorder.ts:264)が FK 制約で落ち、catch で batch 再 queue → 永久リトライ失敗 = 全 flush 停止。sceneId は scene-scope 時の `activeSceneId`(treeNode id)のみに限定する。
+- **chat session/panel 等の非 treeNodes id は FK 無しの `entityId` へ。** `entityType`/`entityId` は FK 無し nullable text(schema.ts:1524-1525)。既存 precedent: `EditorPane.tsx:831-838` で codex/snippet モードは `sceneId:null` + `entityId:非treeNodes id` を本番運用済み。chat session/panel id はこれと完全同型。`entityType` を `chat_session`/`chat_message`/`panel`/`focus` 等で命名する。
+- **sessionId カラムは触らない。** `change_events.sessionId`(schema.ts:1527, recorder.ts:240)は録画 run id であって chat session id ではない。chat session id を sessionId カラムに入れると recorder が上書きする。**chat session id は必ず payload の `sessionId` フィールドへ**(17.2-17.3)。再生は payload の sessionId 基準でグルーピングする(チャット scope は scene/folder/project 可変 — chatStore.ts:393-404。sceneId だけだと folder/project scope の会話を拾えない)。
+- **1 本の entityId の表現力:** chat は session+message の 2 階層、UI は panel+focus の複数次元だが FK 無しカラムは 1 本。階層は `entityType` でタグ付けし、副次 id は payload(JSON TEXT)へ載せる。
+
+### 17.8 hash / TEXT / 索引の整合
+
+payload は `canonicalisePayload`(recorder.ts:280-291)で top-level key sort → JSON TEXT 化され、drizzle TEXT-only 制約(メモリ grimodex-drizzle-proxy-no-blobs / commit 70687944)に適合。hash は hex TEXT。`hashChain` は payloadStr 経由(recorder.ts:231,245)で計算するので本文 inline 焼き込みも hash 連鎖と整合する。**注意: `canonicalisePayload` は top-level キーのみソート(nested は素通し)** ため、hash 安定が要る nested 構造は呼び出し側で事前ソートする。
+
+再生 consumer は `loadProjectChangeEvents`(queryEvents.ts:21-27)+ クライアント側 domain/entityId フィルタが前提(sceneId:null の chat/UI は `loadSceneChangeEvents` で拾えない — queryEvents.ts:35-49、`idx_change_events_scene_ts` も NULL に効かない)。
+
+### 残存リスク
+
+- chat 過去会話の初期表示を defer(17.5)したため、2 回目以降セッションの replay は空チャット起点になる。会話の「途中から開いた」感が必要になったら後追いで seed snapshot を要する(append-only なので前方互換)。
+- `chat.message.add` の payload は本文 inline で 1 件が大きく(長文 assistant 応答)、editor step より総量が重い。`loadProjectChangeEvents` は project 全ロードのため、長期蓄積でメモリ・ロード時間が膨らむ。entityType/domain 単位の部分索引・ページングを P5 再生 consumer で要検討。
+- layout フックを live mutator(setRegionSizeLive 等)に誤って張ると 1 ドラッグで数十〜数百件の full snapshot が出る volume bomb。確定 mutator 限定の contract を実装レビューで gate する。
+- streaming delta 非記録のため「AI が打っている」途中経過は再生されない(完了 snapshot のみ)。
+- seed を毎セッション開始で焼くため、ON プロジェクトを頻繁に開閉すると `state_snapshots` の workspace 行が積み増す(seek は最新 1 件 limit なので replay は無害、ストレージのみ)。
+
+### 実装順(P0)
+
+1. `recorder.ts:27-34` と `queryEvents.ts:5-12` の `Domain` union に `'chat'` `'layout'` を追加し、`schema.ts:1522` の domain コメントを更新する。
+2. `chatApi.addMessage`(:444-449 成功後)に `chat.message.add`(payload に role/text/sessionId/messageId inline)を user turn / assistant それぞれ実発生時刻で記録するフックを置く。
+3. `chatApi.deleteMessage`(:452)・`deleteMessagesFrom`(:456)・`chatStore.regenerate`(:3134-3142)・`editUserMessage`(:454)に `chat.message.delete`/`regenerate`/`edit` 記録フックを置く(delete を別建て append)。
+4. `layoutStore` の確定 mutator(`finalizeLayoutResize`:1251, `togglePanel`:701, `setEditorOpen`:653, `applyPreset`:1449, `movePanelToSlot`:795, `movePanelToRegion`:807, `setRegionSize`:1097)に `domain='layout'` の full LayoutState snapshot 記録を置く(live mutator・scroll は非記録)。
+5. `projectStore.loadProject`(projectStore.ts:104-105 直後)に、ON のとき layout/activeScene/focus を `recordStateSnapshot`(`entityId='workspace'`, anchorSequence=chain head)へ焼く per-session seed を追加する。
+6. payload に sceneId=treeNode id のみ / chat session id は payload.sessionId / 非 treeNodes id は entityId、の配置規約を各フックで徹底し、`canonicalisePayload` の nested 非ソートに備え nested を事前ソートする。
+
+---
+
 ## 付録 A: 主要シンボル早見
 
 - 記録: `recordChangeEvent`（recorder.ts:156）, `flushNow`（:184）, `setRecorderEnabled`（:86）, `initRecorderForProject`（:97）
