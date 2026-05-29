@@ -96,3 +96,28 @@ describe("handleCopyWithAttribution → parseClipboardHtml round-trip", () => {
     expect(Object.keys(data)).toHaveLength(0);
   });
 });
+
+// Chat メッセージコピーは span に data-message-id / data-model を載せる。
+// parseClipboardHtml がそれを segment へ引き継ぎ、paste で mark に焼ける。
+describe("parseClipboardHtml — chat メッセージの model/messageId 引き継ぎ", () => {
+  it("data-message-id / data-model を segment に載せる", () => {
+    const html =
+      '<span data-grimodex-source="ai" data-message-id="m1" data-model="claude-x">AI本文</span>';
+    const segments = parseClipboardHtml(html);
+    expect(segments).not.toBeNull();
+    expect(segments![0]).toMatchObject({
+      source: "ai",
+      chatMessageId: "m1",
+      model: "claude-x",
+    });
+  });
+
+  it("data-message-id / data-model が無い producer では null になる", () => {
+    const html = '<span data-grimodex-source="human">人間本文</span>';
+    const segments = parseClipboardHtml(html);
+    expect(segments).not.toBeNull();
+    expect(segments![0].source).toBe("human");
+    expect(segments![0].chatMessageId ?? null).toBeNull();
+    expect(segments![0].model ?? null).toBeNull();
+  });
+});

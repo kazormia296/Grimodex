@@ -23,6 +23,7 @@ import { useTrashBinStore } from "./trashBinStore";
 import { useDropTargetRegistry } from "@/store/dropTargetRegistry";
 import { acceptsMatrix, pickupAndDispatch } from "./pickupHandlers";
 import { useConfirmDialog } from "./ConfirmDialog";
+import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import type { TextFragmentPayload, TrashItemData } from "./types";
 
 interface Props {
@@ -69,10 +70,27 @@ export function TrashBinPopover({
   };
 
   const handleCopy = async () => {
-    const text =
-      item.subKind === "text-fragment"
-        ? ((item.payload as TextFragmentPayload).text ?? item.previewText)
-        : item.previewText;
+    if (item.subKind === "text-fragment") {
+      const payload = item.payload as TextFragmentPayload;
+      const text = payload.text ?? item.previewText;
+      if (!text) return;
+      // spans の source が単一なら其れを、混在なら "unknown" を伝搬する。
+      // (paste Case 1 は単一 source 前提。per-span 復元は pickup 経路が担保。)
+      // 素の writeText だと paste 時 Case 3 で常に "unknown" 化していた。
+      const sources = new Set(
+        payload.spans.filter((s) => s.text.length > 0).map((s) => s.source),
+      );
+      const source = sources.size === 1 ? [...sources][0] : "unknown";
+      try {
+        await copyWithAttribution(text, source);
+        toast.success(t("trashBin.copied", "コピーしました"));
+      } catch {
+        toast.error(t("trashBin.copyFailed", "コピーに失敗しました"));
+      }
+      return;
+    }
+    // 構造アイテムは previewText (帰属概念なし) をプレーンコピー。
+    const text = item.previewText;
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);

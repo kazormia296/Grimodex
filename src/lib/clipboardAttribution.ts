@@ -3,6 +3,9 @@ import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 export interface AttributedSegment {
   text: string;
   source: AuthorshipSource;
+  /** Chat メッセージコピー由来のときのみ非 null。paste 時に authorship mark へ載せる。 */
+  model?: string | null;
+  chatMessageId?: string | null;
 }
 
 function escapeHtml(s: string): string {
@@ -57,7 +60,7 @@ export async function copyChatMessageWithAttribution(
   messageId: string,
   model?: string | null,
 ): Promise<void> {
-  const html = `<span data-grimodex-source="ai" data-message-id="${escapeHtml(messageId)}">${escapeHtml(text)}</span>`;
+  const html = `<span data-grimodex-source="ai" data-message-id="${escapeHtml(messageId)}" data-model="${escapeHtml(model ?? "")}">${escapeHtml(text)}</span>`;
   const authorshipJson = JSON.stringify({
     source: "ai",
     model: model ?? null,
@@ -111,12 +114,16 @@ export function parseClipboardHtml(
     const source = grimodexEl.getAttribute(
       "data-grimodex-source",
     ) as AuthorshipSource;
+    // Chat メッセージコピー (copyChatMessageWithAttribution) は messageId/model も
+    // span に載せる。他の producer (Codex/Snippet/Sticky) では属性が無く null。
+    const chatMessageId = grimodexEl.getAttribute("data-message-id") || null;
+    const model = grimodexEl.getAttribute("data-model") || null;
     const raw = extractMixedSegments(grimodexEl);
     if (raw.length > 0) {
-      return raw.map((s) => ({ text: s.text, source }));
+      return raw.map((s) => ({ text: s.text, source, model, chatMessageId }));
     }
     const text = grimodexEl.textContent ?? "";
-    if (text) return [{ text, source }];
+    if (text) return [{ text, source, model, chatMessageId }];
     return null;
   }
 

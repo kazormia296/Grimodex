@@ -267,6 +267,10 @@ export const useEditorStore = create<EditorState>()((set, get) => {
                     source: seg.source,
                     timestamp: now,
                     originalLength: part.length,
+                    // Chat メッセージコピー由来のときだけ非 null (data-model /
+                    // data-message-id 経由)。他 producer では undefined → mark default。
+                    model: seg.model ?? null,
+                    chatMessageId: seg.chatMessageId ?? null,
                   },
                 },
               ],
