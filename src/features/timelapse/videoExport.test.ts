@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi } from "vitest";
-import { captureCanvasToWebm } from "./videoExport";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { captureCanvasToWebm, pickSupportedWebmMime } from "./videoExport";
 
 /**
  * Stub MediaRecorder so happy-dom (which lacks it) can still exercise the
@@ -89,5 +89,31 @@ describe("captureCanvasToWebm", () => {
       maxFrames: 5,
     });
     expect(drawFrame).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe("pickSupportedWebmMime", () => {
+  const orig = (globalThis as { MediaRecorder?: unknown }).MediaRecorder;
+  afterEach(() => {
+    (globalThis as { MediaRecorder?: unknown }).MediaRecorder = orig;
+  });
+
+  it("returns null when MediaRecorder is unavailable", () => {
+    (globalThis as { MediaRecorder?: unknown }).MediaRecorder = undefined;
+    expect(pickSupportedWebmMime()).toBeNull();
+  });
+
+  it("returns the first supported candidate", () => {
+    (globalThis as { MediaRecorder?: unknown }).MediaRecorder = {
+      isTypeSupported: (m: string) => m === "video/webm;codecs=vp8",
+    };
+    expect(pickSupportedWebmMime()).toBe("video/webm;codecs=vp8");
+  });
+
+  it("returns null when no candidate is supported", () => {
+    (globalThis as { MediaRecorder?: unknown }).MediaRecorder = {
+      isTypeSupported: () => false,
+    };
+    expect(pickSupportedWebmMime()).toBeNull();
   });
 });

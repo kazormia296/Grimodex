@@ -14,6 +14,33 @@
 const DEFAULT_FPS = 30;
 const DEFAULT_MIME = "video/webm;codecs=vp9";
 
+/** WebM mime candidates, best (smallest) first. */
+export const WEBM_MIME_CANDIDATES = [
+  "video/webm;codecs=vp9",
+  "video/webm;codecs=vp8",
+  "video/webm",
+] as const;
+
+/**
+ * Return the first WebM mime the runtime can actually record, or null if none.
+ * MediaRecorder may be absent, or WebM recording unsupported on this webview
+ * (historically WKWebView / WebKitGTK). Callers should disable export when null.
+ */
+export function pickSupportedWebmMime(
+  candidates: readonly string[] = WEBM_MIME_CANDIDATES,
+): string | null {
+  if (
+    typeof MediaRecorder === "undefined" ||
+    typeof MediaRecorder.isTypeSupported !== "function"
+  ) {
+    return null;
+  }
+  for (const mime of candidates) {
+    if (MediaRecorder.isTypeSupported(mime)) return mime;
+  }
+  return null;
+}
+
 export interface CaptureWebmOptions {
   /** Frames per second the captureStream() should emit. Defaults to 30. */
   fps?: number;
