@@ -34,6 +34,11 @@ vi.mock("../mapApi", () => ({
   pendingAutoFocusIds: new Set<string>(),
 }));
 
+vi.mock("@/lib/clipboardAttribution", () => ({
+  handleCopyWithAttribution: vi.fn(),
+}));
+import { handleCopyWithAttribution } from "@/lib/clipboardAttribution";
+
 function makeProps(
   overrides: Partial<{
     id: string;
@@ -42,6 +47,7 @@ function makeProps(
     previewText: string;
     paletteId: string;
     colorSlot: number;
+    aiDerived: boolean;
     onUpdate: ReturnType<typeof vi.fn>;
   }> = {},
 ): NodeProps {
@@ -80,6 +86,57 @@ describe("StickyNode — 表示", () => {
   it("非編集時に TipTap エディタが表示されない", () => {
     render(<StickyNode {...makeProps()} />);
     expect(screen.queryByTestId("tiptap-editor")).toBeNull();
+  });
+});
+
+describe("StickyNode — コピー時の Authorship 伝搬", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const getStickyContent = (container: HTMLElement) =>
+    container.querySelector('[data-testid="sticky-content"]') as HTMLElement;
+
+  it("AI 由来 Sticky の copy で source='ai' が clipboard に注入される", () => {
+    const { container } = render(
+      <StickyNode {...makeProps({ aiDerived: true })} />,
+    );
+    fireEvent.copy(getStickyContent(container));
+    expect(handleCopyWithAttribution).toHaveBeenCalledTimes(1);
+    expect(handleCopyWithAttribution).toHaveBeenCalledWith(
+      expect.anything(),
+      "ai",
+    );
+  });
+
+  it("人間由来 Sticky の copy では source='human' になる", () => {
+    const { container } = render(
+      <StickyNode {...makeProps({ aiDerived: false })} />,
+    );
+    fireEvent.copy(getStickyContent(container));
+    expect(handleCopyWithAttribution).toHaveBeenCalledWith(
+      expect.anything(),
+      "human",
+    );
+  });
+
+  it("aiDerived 未指定 Sticky の copy も source='human' にフォールバックする", () => {
+    const { container } = render(<StickyNode {...makeProps()} />);
+    fireEvent.copy(getStickyContent(container));
+    expect(handleCopyWithAttribution).toHaveBeenCalledWith(
+      expect.anything(),
+      "human",
+    );
+  });
+
+  it("旧実装の死んだ data-grimodex-source 属性は付与されない (退行防止)", () => {
+    // b6b763ae は祖先 div に data-grimodex-source を付けたが、PM の copy は
+    // 自分の slice しか serialize せず祖先要素を含めないため伝搬しなかった。
+    // onCopy 方式に移行したので、この属性は残っていてはいけない。
+    const { container } = render(
+      <StickyNode {...makeProps({ aiDerived: true })} />,
+    );
+    expect(
+      getStickyContent(container).hasAttribute("data-grimodex-source"),
+    ).toBe(false);
   });
 });
 

@@ -21,6 +21,7 @@ import {
   pendingAutoFocusIds,
 } from "../mapApi";
 import { resolveStickyHex } from "@/lib/stickyPalettes";
+import { handleCopyWithAttribution } from "@/lib/clipboardAttribution";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
 export interface StickyNodeData {
@@ -309,15 +310,25 @@ export const StickyNode = memo(function StickyNode({
             }}
           >
             {/* Content area measured by ResizeObserver。
-                data-grimodex-source は clipboard copy 時に祖先要素ごと
-                serialize される性質を利用して、AI 由来 Sticky の本文に
-                "ai" provenance を伝搬する (clipboardAttribution.parseClipboardHtml
-                Case 1 で拾われる)。 */}
+                onCopy で provenance を clipboard に注入する。編集モードでは選択は
+                ProseMirror 内にあり、PM 自身の copy serialization は自分の slice
+                だけを出力して祖先要素を含めないため、祖先 div への
+                data-grimodex-source 付与では伝搬できなかった (旧実装)。React の
+                onCopy は bubble phase で PM の copy listener の後に発火するので、
+                handleCopyWithAttribution が clipboardData を上書きして
+                data-grimodex-source を載せられる。paste 側は EditorPane
+                handlePaste Case 1 → parseClipboardHtml で source を拾う。
+                非編集時は userSelect:none で選択不可なので handler は no-op
+                (handleCopyWithAttribution が空選択で early-return)。aiDerived は
+                AI Branch 由来 Sticky 全体の provenance (本文 JSON に authorship
+                mark は無く、実体は authorshipSpans テーブル管理)。 */}
             <div
               ref={measureRef}
               data-testid="sticky-content"
-              data-grimodex-source={d.aiDerived ? "ai" : undefined}
               className="sticky-content"
+              onCopy={(e) =>
+                handleCopyWithAttribution(e, d.aiDerived ? "ai" : "human")
+              }
             >
               {/* Body */}
               {editing ? (
