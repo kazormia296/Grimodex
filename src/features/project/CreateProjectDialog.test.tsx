@@ -67,6 +67,7 @@ describe("CreateProjectDialog", () => {
         title: "Volume 2",
         genre: "Fantasy",
         language: "en",
+        timelapseEnabled: true,
         seedFromProjectId: undefined,
         seedTypeSlugs: [],
       });
@@ -101,6 +102,7 @@ describe("CreateProjectDialog", () => {
         title: "Volume 2",
         genre: "",
         language: "ja",
+        timelapseEnabled: true,
         seedFromProjectId: "proj-a",
         seedTypeSlugs: ["character"],
       });
@@ -118,5 +120,29 @@ describe("CreateProjectDialog", () => {
       />,
     );
     expect(screen.getByTestId("project-create-submit")).toBeDisabled();
+  });
+
+  it("passes timelapseEnabled=false when the checkbox is unchecked", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CreateProjectDialog
+        open
+        onClose={() => {}}
+        projects={sampleProjects}
+        defaultSourceProjectId="proj-a"
+        onCreate={onCreate}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("project-title-input"), {
+      target: { value: "No Lapse" },
+    });
+    fireEvent.click(screen.getByTestId("project-timelapse-checkbox"));
+    fireEvent.click(screen.getByTestId("project-create-submit"));
+
+    await waitFor(() => {
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "No Lapse", timelapseEnabled: false }),
+      );
+    });
   });
 });

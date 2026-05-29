@@ -8,6 +8,7 @@ export interface CreateProjectFormData {
   title: string;
   genre: string;
   language: string;
+  timelapseEnabled: boolean;
   seedFromProjectId?: string;
   seedTypeSlugs: string[];
 }
@@ -51,6 +52,7 @@ export function CreateProjectDialog({
   const [title, setTitle] = useState("");
   const [genre, setGenre] = useState("");
   const [language, setLanguage] = useState("ja");
+  const [timelapseEnabled, setTimelapseEnabled] = useState(true);
   const [seedFromProjectId, setSeedFromProjectId] = useState(
     defaultSourceProjectId,
   );
@@ -65,6 +67,7 @@ export function CreateProjectDialog({
       setTitle("");
       setGenre("");
       setLanguage("ja");
+      setTimelapseEnabled(true);
       setSeedFromProjectId(defaultSourceProjectId);
       setSelectedTypeSlugs(new Set());
       setIsSaving(false);
@@ -104,6 +107,7 @@ export function CreateProjectDialog({
         title: title.trim(),
         genre,
         language,
+        timelapseEnabled,
         seedFromProjectId:
           selectedTypeSlugs.size > 0 ? seedFromProjectId : undefined,
         seedTypeSlugs: [...selectedTypeSlugs],
@@ -182,6 +186,23 @@ export function CreateProjectDialog({
             ))}
           </select>
         </div>
+
+        <label className="flex cursor-pointer items-start gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            data-testid="project-timelapse-checkbox"
+            checked={timelapseEnabled}
+            onChange={(e) => setTimelapseEnabled(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="text-foreground">
+              {t("project.create.timelapseLabel")}
+            </span>
+            <br />
+            {t("project.create.timelapseHint")}
+          </span>
+        </label>
 
         {projects.length > 0 && (
           <div className="rounded-md border border-border p-3">

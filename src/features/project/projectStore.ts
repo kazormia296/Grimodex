@@ -16,6 +16,8 @@ interface CreateProjectInput {
   language?: string;
   pov?: string;
   tense?: string;
+  /** Record a writing timelapse for this project (default ON). */
+  timelapseEnabled?: boolean;
   seedFromProjectId?: string;
   seedTypeSlugs?: string[];
 }
@@ -126,6 +128,15 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       const { seedProjectSettingsFromDefaults } =
         await import("@/features/settings/migration");
       await seedProjectSettingsFromDefaults(created.id);
+      // 執筆タイムラプスの記録可否を明示保存。seedProjectSettingsFromDefaults は
+      // global default からのシードでフォーム入力を拾わないため、作成フォームの
+      // 値はここで直接書く (canonical key: timelapse.enabled, 既定 ON)。
+      const { setProjectSetting } = await import("@/features/settings/api");
+      await setProjectSetting(
+        created.id,
+        "timelapse.enabled",
+        String(input.timelapseEnabled ?? true),
+      );
       if (input.seedFromProjectId && input.seedTypeSlugs?.length) {
         const { seedCodexTypesFromProject } = await import("./seedCodexTypes");
         await seedCodexTypesFromProject(

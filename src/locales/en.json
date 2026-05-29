@@ -56,6 +56,8 @@
       "titlePlaceholder": "Novel title",
       "genreLabel": "Genre",
       "languageLabel": "Writing language",
+      "timelapseLabel": "Record a writing timelapse",
+      "timelapseHint": "Captures your edits so you can export the writing process as a video. Toggle anytime in Settings.",
       "seedHeading": "Copy Codex",
       "seedDescription": "Optionally copy Codex types from another project. Copies are independent after creation.",
       "seedSourceLabel": "Copy from project",

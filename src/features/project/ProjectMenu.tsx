@@ -62,6 +62,7 @@ export function ProjectMenu({
     title: string;
     genre: string;
     language: string;
+    timelapseEnabled: boolean;
     seedFromProjectId?: string;
     seedTypeSlugs: string[];
   }) {
@@ -70,6 +71,7 @@ export function ProjectMenu({
         title: data.title,
         genre: data.genre || undefined,
         language: data.language || undefined,
+        timelapseEnabled: data.timelapseEnabled,
         seedFromProjectId: data.seedFromProjectId,
         seedTypeSlugs: data.seedTypeSlugs,
       });
