@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type React from "react";
 import { SnippetPanel } from "./SnippetPanel";
@@ -350,6 +350,36 @@ describe("SnippetPanel", () => {
     await userEvent.dblClick(item);
 
     expect(copyWithAttribution).toHaveBeenCalledWith("コピー内容", "human");
+  });
+
+  it("AI snippet のカードコピーボタンは source='ai' で copyWithAttribution を呼ぶ", async () => {
+    const { copyWithAttribution } = await import("@/lib/clipboardAttribution");
+    useSnippetStore.setState({
+      entries: [
+        fakeSnippet({ id: "s1", content: "AI内容", contentSource: "ai" }),
+      ],
+    });
+
+    render(<SnippetPanel />);
+    await userEvent.click(screen.getByTestId("snippet-copy-s1"));
+
+    expect(copyWithAttribution).toHaveBeenCalledWith("AI内容", "ai");
+  });
+
+  it("AI snippet カードの onCopy は source='ai' を注入する", async () => {
+    const { handleCopyWithAttribution } =
+      await import("@/lib/clipboardAttribution");
+    useSnippetStore.setState({
+      entries: [fakeSnippet({ id: "s1", contentSource: "ai" })],
+    });
+
+    render(<SnippetPanel />);
+    fireEvent.copy(screen.getByTestId("snippet-item-s1"));
+
+    expect(handleCopyWithAttribution).toHaveBeenCalledWith(
+      expect.anything(),
+      "ai",
+    );
   });
 
   it("navigates focused index with arrow keys", async () => {

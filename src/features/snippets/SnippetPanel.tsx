@@ -487,7 +487,8 @@ export function SnippetPanel() {
                         onCopy={(e) =>
                           handleCopyWithAttribution(
                             e,
-                            "human" as AuthorshipSource,
+                            (snippet.contentSource as AuthorshipSource) ??
+                              "human",
                           )
                         }
                         className={`group flex cursor-grab items-start gap-1 rounded-md border border-border p-2 hover:bg-accent/50 active:cursor-grabbing ${
@@ -508,7 +509,8 @@ export function SnippetPanel() {
                                   e.stopPropagation();
                                   copyWithAttribution(
                                     snippet.content,
-                                    "human" as AuthorshipSource,
+                                    (snippet.contentSource as AuthorshipSource) ??
+                                      "human",
                                   );
                                 }}
                                 className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-accent hover:text-accent-foreground group-hover:opacity-100 active:scale-[0.97] transition-transform duration-75"

@@ -15,7 +15,10 @@ import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { SummaryBlock } from "./SummaryBlock";
-import { copyChatMessageWithAttribution } from "@/lib/clipboardAttribution";
+import {
+  copyChatMessageWithAttribution,
+  handleCopyWithAttribution,
+} from "@/lib/clipboardAttribution";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTextSelection } from "@/features/chat/hooks/useTextSelection";
 import { SelectionToolbar } from "./SelectionToolbar";
@@ -152,6 +155,13 @@ export function ChatMessage({
       className={
         msg.role === "user" ? "flex justify-end" : "flex justify-start"
       }
+      // ネイティブ Ctrl+C / ブラウザコピーで provenance を注入する。
+      // 未対応だと ReactMarkdown のプレーン DOM がそのままコピーされ、
+      // paste 時に EditorPane Case 3 へ落ちて "unknown" 化していた。
+      // role→source は context-menu コピー (handleContextCopy) と同じ規則。
+      onCopy={(e) =>
+        handleCopyWithAttribution(e, msg.role === "assistant" ? "ai" : "human")
+      }
     >
       <div
         ref={isAssistant ? containerRef : undefined}
@@ -249,7 +259,11 @@ export function ChatMessage({
                   onSaveSnippetDetailed?.(messageId, selectedText);
                 }}
                 onCopy={(text) => {
-                  void navigator.clipboard.writeText(text);
+                  // SelectionToolbar は assistant メッセージのみで表示される
+                  // (isAssistant && selectionInfo)。素の writeText だと "ai"
+                  // provenance が乗らず paste で "unknown" 化するため、
+                  // フルメッセージコピー (handleCopy) と同じ経路に揃える。
+                  void copyChatMessageWithAttribution(text, msg.id, msg.model);
                 }}
               />
             )}

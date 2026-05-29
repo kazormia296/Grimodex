@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { SnippetDetailContent } from "./SnippetDetailContent";
 import type { Snippet } from "./api";
+import {
+  copyWithAttribution,
+  handleCopyWithAttribution,
+} from "@/lib/clipboardAttribution";
 
 // ----- TipTap mocks -----
 let editorHtml = "";
@@ -202,5 +206,46 @@ describe("SnippetDetailContent — autosave flush on unmount", () => {
     // No edits made → autosave was never scheduled → flush is a no-op.
     unmount();
     expect(onSave).not.toHaveBeenCalled();
+  });
+});
+
+describe("SnippetDetailContent — コピー時の source 伝搬", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    editorHtml = "";
+  });
+
+  const renderDetail = (overrides: Partial<Snippet>) =>
+    render(
+      <SnippetDetailContent
+        snippet={fakeSnippet(overrides)}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+  it("AI snippet のコピーボタンは source='ai' で copyWithAttribution を呼ぶ", () => {
+    const { getByTestId } = renderDetail({ contentSource: "ai" });
+    fireEvent.click(getByTestId("snippet-copy-button"));
+    expect(copyWithAttribution).toHaveBeenCalledWith(expect.anything(), "ai");
+  });
+
+  it("AI snippet 本文の onCopy は source='ai' を注入する", () => {
+    const { getByTestId } = renderDetail({ contentSource: "ai" });
+    // tiptap-editor は本文 div の子。copy は bubble して本文 div の onCopy へ。
+    fireEvent.copy(getByTestId("tiptap-editor"));
+    expect(handleCopyWithAttribution).toHaveBeenCalledWith(
+      expect.anything(),
+      "ai",
+    );
+  });
+
+  it("contentSource=null の snippet は 'human' にフォールバックする", () => {
+    const { getByTestId } = renderDetail({ contentSource: null });
+    fireEvent.click(getByTestId("snippet-copy-button"));
+    expect(copyWithAttribution).toHaveBeenCalledWith(
+      expect.anything(),
+      "human",
+    );
   });
 });

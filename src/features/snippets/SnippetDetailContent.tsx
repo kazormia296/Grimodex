@@ -272,7 +272,7 @@ export function SnippetDetailContent({
               onClick={() =>
                 copyWithAttribution(
                   editor?.getText() ?? snippet.content,
-                  "human" as AuthorshipSource,
+                  (snippet.contentSource as AuthorshipSource) ?? "human",
                 )
               }
               className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -369,7 +369,10 @@ export function SnippetDetailContent({
       <div
         className="flex-1 space-y-3 overflow-y-auto px-7 py-3"
         onCopy={(e) =>
-          handleCopyWithAttribution(e, "human" as AuthorshipSource)
+          handleCopyWithAttribution(
+            e,
+            (snippet.contentSource as AuthorshipSource) ?? "human",
+          )
         }
       >
         <div>
