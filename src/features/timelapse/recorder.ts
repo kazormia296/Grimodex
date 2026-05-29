@@ -167,6 +167,15 @@ export function resetRecorderChain(): void {
 }
 
 /**
+ * Current chain head sequence (last committed event for the bound project).
+ * Used to anchor per-session seed snapshots (§17 P0.4) so forward layout/chat
+ * events (sequence > head) replay on top of the seeded initial state.
+ */
+export function getRecorderChainHead(): number {
+  return state.lastSequence;
+}
+
+/**
  * Public test hook: reset all in-memory state. Production code should not
  * call this — `initRecorderForProject` is the normal entry point.
  */

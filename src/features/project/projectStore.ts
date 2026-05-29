@@ -101,8 +101,16 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
             await import("@/features/timelapse/recorder");
           // setRecorderEnabled must precede init: when disabled, init only
           // binds projectId and skips the chain-tail read (recorder.ts).
-          setRecorderEnabled(await isTimelapseEnabled(projectId));
+          const enabled = await isTimelapseEnabled(projectId);
+          setRecorderEnabled(enabled);
           await initRecorderForProject(projectId);
+          // §17 P0.4: 毎セッション開始時に現在のレイアウトを seed snapshot として
+          // 焼き、replay の初期 UI 状態を確定させる (forward layout イベントの起点)。
+          if (enabled) {
+            const { seedWorkspaceSnapshot } =
+              await import("@/features/timelapse/seedSession");
+            await seedWorkspaceSnapshot(projectId);
+          }
         })().catch((err) =>
           console.warn("[timelapse] recorder init failed", err),
         );
