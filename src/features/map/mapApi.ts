@@ -36,6 +36,7 @@ import type {
 } from "./types";
 import { DEFAULT_SHOW } from "./types";
 import { DEFAULT_PALETTE_ID, DEFAULT_COLOR_SLOT } from "@/lib/stickyPalettes";
+import { seedAuthorshipMarksJson } from "@/features/attribution/seedAuthorshipMarks";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 /**
@@ -835,7 +836,14 @@ export async function createAiBranch(
     const card = cards[i];
     const stickyId = crypto.randomUUID();
     const posId = crypto.randomUUID();
-    const body = card.body || '{"type":"doc","content":[]}';
+    // Seed the body with "ai" authorship marks so the sticky is self-describing:
+    // when a human later edits it, AiEditedPlugin strips the mark from inserted
+    // text, leaving per-span provenance that copy serialization carries. The
+    // authorshipSpans row below tracks sticky-level provenance for promotion.
+    const body = seedAuthorshipMarksJson(
+      card.body || '{"type":"doc","content":[]}',
+      { source: "ai", timestamp: now, model: options?.model ?? null },
+    );
     const previewText = extractPreviewText(body);
 
     let x: number;

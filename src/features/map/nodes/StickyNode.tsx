@@ -21,7 +21,11 @@ import {
   pendingAutoFocusIds,
 } from "../mapApi";
 import { resolveStickyHex } from "@/lib/stickyPalettes";
-import { handleCopyWithAttribution } from "@/lib/clipboardAttribution";
+import {
+  aiEditedKey,
+  createAiEditedPlugin,
+} from "@/features/attribution/AiEditedPlugin";
+import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
 export interface StickyNodeData {
@@ -130,6 +134,22 @@ function StickyBodyEditor({
   });
   useTrashBinCapture(editor, { kind: "sticky", id: stickyId });
 
+  // Register AiEditedPlugin so text the human types inside an AI-seeded span
+  // loses its "ai" authorship mark (becomes human). This is what lets copy
+  // distinguish edited (human) text from AI-original text within one sticky.
+  // We register only this plugin (not the full useAttribution) to keep the
+  // sticky's visual behavior unchanged — no attribution decorations.
+  useEffect(() => {
+    if (!isEditorViewReady(editor)) return;
+    const has = editor.view.state.plugins.find(
+      (p) => p.spec.key === aiEditedKey,
+    );
+    if (!has) editor.registerPlugin(createAiEditedPlugin());
+    return () => {
+      if (isEditorViewReady(editor)) editor.unregisterPlugin(aiEditedKey);
+    };
+  }, [editor]);
+
   useEffect(() => {
     if (editor) {
       setTimeout(() => editor.commands.focus("end"), 0);
@@ -139,6 +159,13 @@ function StickyBodyEditor({
   if (!editor) return null;
 
   return (
+    // `nodrag`: xyflow's d3-drag captures pointerdown on the node and
+    // preventDefault()s it, which blocks caret placement in the contenteditable.
+    // The class makes the drag filter skip this region so clicks move the caret.
+    // (React onPointerDown stopPropagation runs at the React root, after d3-drag's
+    // element-level native listener already fired — too late.) `nowheel`/`nopan`
+    // let the editor scroll/select without zooming or panning the map. Same
+    // pattern as UserEdge's editable label.
     <div
       onPointerDown={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
@@ -149,7 +176,7 @@ function StickyBodyEditor({
         }
       }}
       style={{ fontSize: 12, lineHeight: 1.5 }}
-      className="sticky-editor"
+      className="sticky-editor nodrag nowheel nopan"
     >
       <EditorContent editor={editor} />
     </div>
@@ -310,25 +337,18 @@ export const StickyNode = memo(function StickyNode({
             }}
           >
             {/* Content area measured by ResizeObserver。
-                onCopy で provenance を clipboard に注入する。編集モードでは選択は
-                ProseMirror 内にあり、PM 自身の copy serialization は自分の slice
-                だけを出力して祖先要素を含めないため、祖先 div への
-                data-grimodex-source 付与では伝搬できなかった (旧実装)。React の
-                onCopy は bubble phase で PM の copy listener の後に発火するので、
-                handleCopyWithAttribution が clipboardData を上書きして
-                data-grimodex-source を載せられる。paste 側は EditorPane
-                handlePaste Case 1 → parseClipboardHtml で source を拾う。
-                非編集時は userSelect:none で選択不可なので handler は no-op
-                (handleCopyWithAttribution が空選択で early-return)。aiDerived は
-                AI Branch 由来 Sticky 全体の provenance (本文 JSON に authorship
-                mark は無く、実体は authorshipSpans テーブル管理)。 */}
+                コピーの provenance は ProseMirror ネイティブの copy serialization に
+                委譲する。AI Branch 由来 Sticky の本文は作成時に "ai" authorship mark
+                をシード済みで、人間が編集した範囲は AiEditedPlugin が mark を剥がす
+                ため、PM が出力する span[data-authorship] が per-span の source を
+                正しく載せる (EditorPane handlePaste Case 2 → parseClipboardHtml が
+                拾う)。一律 source でスタンプしていた旧 onCopy だと AI Sticky の
+                人間編集部分まで "ai" になっていた (本 fix の対象)。非編集時は
+                userSelect:none で選択不可なのでコピー自体が発生しない。 */}
             <div
               ref={measureRef}
               data-testid="sticky-content"
               className="sticky-content"
-              onCopy={(e) =>
-                handleCopyWithAttribution(e, d.aiDerived ? "ai" : "human")
-              }
             >
               {/* Body */}
               {editing ? (

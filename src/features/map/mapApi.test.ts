@@ -616,6 +616,51 @@ describe("mapApi — createAiBranch", () => {
     expect(db.insert).toHaveBeenCalledTimes(6);
   });
 
+  it("sticky 本文に作成時 'ai' authorship mark がシードされる", async () => {
+    const branch = { id: "branch-2", boardId: "b1" };
+    const branchPos = { id: "pos-b" };
+    const sticky = { id: "sticky-2", aiBranchId: "branch-2" };
+    const stickyPos = { id: "pos-s" };
+    const edge = { id: "edge-2" };
+    const span = { id: "span-2" };
+
+    (db.insert as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(makeMock([branch]))
+      .mockReturnValueOnce(makeMock([branchPos]))
+      .mockReturnValueOnce(makeMock([sticky]))
+      .mockReturnValueOnce(makeMock([stickyPos]))
+      .mockReturnValueOnce(makeMock([edge]))
+      .mockReturnValueOnce(makeMock([span]));
+
+    const { createAiBranch } = await import("./mapApi");
+    await createAiBranch(
+      "b1",
+      "p",
+      [],
+      [
+        {
+          title: "t",
+          body: JSON.stringify({
+            type: "doc",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "本文" }] },
+            ],
+          }),
+        },
+      ],
+    );
+
+    // 3rd insert は mapStickies。values() に渡った body を検査する。
+    const stickyChain = (db.insert as ReturnType<typeof vi.fn>).mock.results[2]
+      .value as { values: ReturnType<typeof vi.fn> };
+    const insertedBody = stickyChain.values.mock.calls[0][0].body as string;
+    const parsed = JSON.parse(insertedBody);
+    expect(parsed.content[0].content[0].marks[0]).toMatchObject({
+      type: "authorship",
+      attrs: { source: "ai" },
+    });
+  });
+
   it("cards が空のとき branch と branchPosition だけ作成する", async () => {
     const branch = {
       id: "branch-empty",

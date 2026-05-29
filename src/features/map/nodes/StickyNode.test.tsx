@@ -34,11 +34,6 @@ vi.mock("../mapApi", () => ({
   pendingAutoFocusIds: new Set<string>(),
 }));
 
-vi.mock("@/lib/clipboardAttribution", () => ({
-  handleCopyWithAttribution: vi.fn(),
-}));
-import { handleCopyWithAttribution } from "@/lib/clipboardAttribution";
-
 function makeProps(
   overrides: Partial<{
     id: string;
@@ -95,48 +90,17 @@ describe("StickyNode — コピー時の Authorship 伝搬", () => {
   const getStickyContent = (container: HTMLElement) =>
     container.querySelector('[data-testid="sticky-content"]') as HTMLElement;
 
-  it("AI 由来 Sticky の copy で source='ai' が clipboard に注入される", () => {
+  it("一律 source でスタンプする onCopy ハンドラを持たない (per-span を PM に委譲)", () => {
+    // 旧実装は onCopy={handleCopyWithAttribution(e, aiDerived ? "ai" : "human")}
+    // で選択全体を sticky 単位の source で塗り潰し、AI Sticky の人間編集部分まで
+    // "ai" にしていた。per-span 化のため onCopy は撤去し、ProseMirror ネイティブの
+    // span[data-authorship] serialization に委譲する。
     const { container } = render(
       <StickyNode {...makeProps({ aiDerived: true })} />,
     );
-    fireEvent.copy(getStickyContent(container));
-    expect(handleCopyWithAttribution).toHaveBeenCalledTimes(1);
-    expect(handleCopyWithAttribution).toHaveBeenCalledWith(
-      expect.anything(),
-      "ai",
-    );
-  });
-
-  it("人間由来 Sticky の copy では source='human' になる", () => {
-    const { container } = render(
-      <StickyNode {...makeProps({ aiDerived: false })} />,
-    );
-    fireEvent.copy(getStickyContent(container));
-    expect(handleCopyWithAttribution).toHaveBeenCalledWith(
-      expect.anything(),
-      "human",
-    );
-  });
-
-  it("aiDerived 未指定 Sticky の copy も source='human' にフォールバックする", () => {
-    const { container } = render(<StickyNode {...makeProps()} />);
-    fireEvent.copy(getStickyContent(container));
-    expect(handleCopyWithAttribution).toHaveBeenCalledWith(
-      expect.anything(),
-      "human",
-    );
-  });
-
-  it("旧実装の死んだ data-grimodex-source 属性は付与されない (退行防止)", () => {
-    // b6b763ae は祖先 div に data-grimodex-source を付けたが、PM の copy は
-    // 自分の slice しか serialize せず祖先要素を含めないため伝搬しなかった。
-    // onCopy 方式に移行したので、この属性は残っていてはいけない。
-    const { container } = render(
-      <StickyNode {...makeProps({ aiDerived: true })} />,
-    );
-    expect(
-      getStickyContent(container).hasAttribute("data-grimodex-source"),
-    ).toBe(false);
+    const content = getStickyContent(container);
+    expect(content.oncopy).toBeNull();
+    expect(content.hasAttribute("data-grimodex-source")).toBe(false);
   });
 });
 
@@ -150,6 +114,20 @@ describe("StickyNode — 編集モード", () => {
     ) as HTMLElement;
     fireEvent.dblClick(innerDiv);
     expect(screen.getByTestId("tiptap-editor")).toBeTruthy();
+  });
+
+  it("編集ラッパに nodrag が付き、クリックでのカーソル移動が xyflow drag に奪われない", () => {
+    // xyflow の d3-drag が pointerdown を preventDefault するとキャレット移動が
+    // ブロックされる。nodrag クラスで drag filter がこの領域を除外する。
+    // (happy-dom では d3-drag は走らないためクラス存在を退行 gate として検証)
+    const { container } = render(<StickyNode {...makeProps()} />);
+    const innerDiv = container.querySelector(
+      "[style*='cursor']",
+    ) as HTMLElement;
+    fireEvent.dblClick(innerDiv);
+    const wrapper = container.querySelector(".sticky-editor") as HTMLElement;
+    expect(wrapper).toBeTruthy();
+    expect(wrapper.classList.contains("nodrag")).toBe(true);
   });
 
   it("Escape キーで編集が終了する", async () => {
