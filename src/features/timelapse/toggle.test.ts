@@ -36,7 +36,11 @@ vi.mock("@/features/settings/api", () => settingsMock);
 vi.mock("@/features/tree/api", () => treeMock);
 
 import { changeEvents, stateSnapshots } from "@/db/schema";
-import { setTimelapseEnabled, purgeTimelapseHistory } from "./toggle";
+import {
+  setTimelapseEnabled,
+  purgeTimelapseHistory,
+  isTimelapseEnabled,
+} from "./toggle";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -92,6 +96,23 @@ describe("setTimelapseEnabled", () => {
       "timelapse.enabled",
       "false",
     );
+  });
+});
+
+describe("isTimelapseEnabled", () => {
+  it("defaults ON when no row exists (legacy projects)", async () => {
+    settingsMock.getProjectSetting.mockResolvedValue(null);
+    expect(await isTimelapseEnabled("p1")).toBe(true);
+  });
+
+  it("is OFF only for an explicit 'false'", async () => {
+    settingsMock.getProjectSetting.mockResolvedValue("false");
+    expect(await isTimelapseEnabled("p1")).toBe(false);
+  });
+
+  it("is ON for 'true'", async () => {
+    settingsMock.getProjectSetting.mockResolvedValue("true");
+    expect(await isTimelapseEnabled("p1")).toBe(true);
   });
 });
 

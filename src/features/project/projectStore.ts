@@ -80,7 +80,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       const { reloadProjectData } = await import("./reloadProjectData");
       await reloadProjectData(projectId);
       // 執筆タイムラプス recorder を本 project に bind。失敗しても本流は止めない
-      // (chain init は best-effort、次の event で再試行される)。
+      // (chain init は best-effort、次の event で再試行される)。記録の ON/OFF は
+      // per-project 設定 (timelapse.enabled, 既定 ON) で決まる (§15.5)。
       // 執筆タイムラプス recorder: real browser only. Skip in tests and SSR
       // — VITEST env signals vitest; tauri-host process has neither flag.
       if (
@@ -91,14 +92,18 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         ) &&
         !(typeof process !== "undefined" && process.env?.VITEST)
       ) {
-        void import("@/features/timelapse/recorder")
-          .then(({ setRecorderEnabled, initRecorderForProject }) => {
-            setRecorderEnabled(true);
-            return initRecorderForProject(projectId);
-          })
-          .catch((err) =>
-            console.warn("[timelapse] recorder init failed", err),
-          );
+        void (async () => {
+          const { isTimelapseEnabled } =
+            await import("@/features/timelapse/toggle");
+          const { setRecorderEnabled, initRecorderForProject } =
+            await import("@/features/timelapse/recorder");
+          // setRecorderEnabled must precede init: when disabled, init only
+          // binds projectId and skips the chain-tail read (recorder.ts).
+          setRecorderEnabled(await isTimelapseEnabled(projectId));
+          await initRecorderForProject(projectId);
+        })().catch((err) =>
+          console.warn("[timelapse] recorder init failed", err),
+        );
       }
     } catch (e) {
       // 切替失敗 — パネルがロードされていない Project を指したままにしない。
