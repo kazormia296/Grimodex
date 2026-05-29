@@ -58,6 +58,14 @@ export function resolveEditorTheme(): EditorRenderTheme {
     const text = resolved(cs.color, DEFAULT_THEME.text);
     const background = resolved(cs.backgroundColor, DEFAULT_THEME.background);
 
+    // muted 文字色 / border 色 (blockquote 用, P2)。
+    probe.style.color = "var(--content-foreground-muted)";
+    cs = getComputedStyle(probe);
+    const textMuted = resolved(cs.color, DEFAULT_THEME.textMuted);
+    probe.style.color = "var(--content-border)";
+    cs = getComputedStyle(probe);
+    const border = resolved(cs.color, DEFAULT_THEME.border);
+
     // 帰属色は .attribution-* の color-mix(--attribution-pct, --content-background)。
     // inline 背景を消してからクラスを当てて解決させる。
     probe.style.color = "";
@@ -89,6 +97,8 @@ export function resolveEditorTheme(): EditorRenderTheme {
       ...DEFAULT_THEME,
       background,
       text,
+      textMuted,
+      border,
       showAttribution: useAttributionStore.getState().showAttribution,
       attributionAi,
       attributionUnknown,

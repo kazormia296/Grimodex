@@ -15,6 +15,8 @@ const CSS = `
 :root {
   --content-background: oklch(0.97 0.02 95);
   --content-foreground: oklch(0.2 0.02 95);
+  --content-foreground-muted: oklch(0.5 0.02 95);
+  --content-border: oklch(0.85 0.01 95);
   --attribution-pct: 20%;
 }
 .attribution-ai {
@@ -63,6 +65,8 @@ describe("resolveEditorTheme (real browser)", () => {
     for (const c of [
       t.background,
       t.text,
+      t.textMuted,
+      t.border,
       t.attributionAi,
       t.attributionUnknown,
     ]) {
