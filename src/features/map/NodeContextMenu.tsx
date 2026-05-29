@@ -53,6 +53,8 @@ interface NodeContextMenuProps {
   stickyPaletteId?: string;
   /** AI Branch 専用: 派生 Sticky ごと一括削除。confirm は呼び出し側で。 */
   onDeleteWithDerivedStickies?: () => void;
+  /** AI Branch 専用: 派生 Sticky を全て採用 (branch から切り離す)。 */
+  onAdoptAllDerived?: () => void;
   derivedStickyCount?: number;
 }
 
@@ -86,6 +88,7 @@ export function NodeContextMenu({
   onChangeColor,
   stickyPaletteId,
   onDeleteWithDerivedStickies,
+  onAdoptAllDerived,
   derivedStickyCount = 0,
 }: NodeContextMenuProps) {
   const palette = getPalette(stickyPaletteId ?? DEFAULT_PALETTE_ID);
@@ -265,6 +268,18 @@ export function NodeContextMenu({
             >
               {isSticky || isAiBranch ? "削除" : "このボードから削除"}
             </DropdownMenuItem>
+
+            {isAiBranch && onAdoptAllDerived && derivedStickyCount > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={onAdoptAllDerived}>
+                  派生 Sticky を全て採用
+                  <span className="ml-2 opacity-70">
+                    ({derivedStickyCount} 枚)
+                  </span>
+                </DropdownMenuItem>
+              </>
+            )}
 
             {isAiBranch && onDeleteWithDerivedStickies && (
               <DropdownMenuItem

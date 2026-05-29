@@ -73,6 +73,10 @@ interface UseMapNodesInput {
   deletingStickyIds?: Set<string>;
   onStickyExitComplete?: (id: string) => void;
   onBranchFrom?: (sourceNodeId: string, dir: "left" | "right") => void;
+  /** 採用: branch 由来 Sticky を通常 Sticky 化する (stickyId)。 */
+  onAdopt?: (stickyId: string) => void;
+  /** 不採用: branch 由来 Sticky をゴミ箱へ送る (stickyId)。 */
+  onReject?: (stickyId: string) => void;
 }
 
 export function useMapNodes({
@@ -105,6 +109,8 @@ export function useMapNodes({
   deletingStickyIds,
   onStickyExitComplete,
   onBranchFrom,
+  onAdopt,
+  onReject,
 }: UseMapNodesInput) {
   // Read inside buildNodes via a ref so the (async, expensive) layout effect
   // does NOT list `modeTransitionActive` as a dependency. In theme mode a
@@ -486,7 +492,12 @@ export function useMapNodes({
                 colorBy,
                 rotation: stickyRotation(st.id),
                 isDeleting: deletingStickyIds?.has(st.id) ?? false,
-                aiDerived: st.aiBranchId !== null,
+                // aiDerived: AI 生成 provenance (採用後も保持 = onCopy が "ai" のまま)。
+                // branchAttached: まだ branch に属するか (採用で外れる) = 採用/不採用 UI の表示条件。
+                aiDerived: st.aiDerived === 1,
+                branchAttached: st.aiBranchId !== null,
+                onAdopt: () => onAdopt?.(st.id),
+                onReject: () => onReject?.(st.id),
                 onExitComplete: onStickyExitComplete,
                 onUpdate: async (updates: {
                   title?: string;
@@ -685,6 +696,8 @@ export function useMapNodes({
     deletingStickyIds,
     onStickyExitComplete,
     onBranchFrom,
+    onAdopt,
+    onReject,
     setAiBranches,
     setPositions,
   ]);

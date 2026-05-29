@@ -677,6 +677,9 @@ impl Database {
                 color_slot             INTEGER NOT NULL DEFAULT 0
                                          CHECK(color_slot >= 0),
                 ai_branch_id           TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL,
+                -- AI由来フラグ。ai_branch_id は「現在の所属 branch」(採用で NULL 化)、
+                -- こちらは「AI が生成した付箋か」という出自で採用後も保持する。
+                ai_derived             INTEGER NOT NULL DEFAULT 0,
                 source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
                 created_at             TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1295,6 +1298,23 @@ impl Database {
                 ON state_snapshots(project_id, anchor_sequence);
             CREATE INDEX IF NOT EXISTS idx_state_snap_domain_seq
                 ON state_snapshots(project_id, domain, anchor_sequence);",
+        )?;
+
+        // Sticky 採用/不採用 (Plan B): AI由来 provenance を branch 所属から分離。
+        // ai_branch_id は採用 (adopt) で NULL 化されるため、「AI が生成した付箋か」
+        // という出自は別カラムで保持する。StickyNode の onCopy 帰属ラベルはこれを見る。
+        // 既存 DB 用の additive 追加 (新規 DB は CREATE TABLE 側で付与済)。
+        Self::add_column_if_missing(
+            &conn,
+            "map_stickies",
+            "ai_derived",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        // 既存 branch 由来の付箋を遡及マーク。ai_derived = 1 のみ対象なので冪等。
+        conn.execute(
+            "UPDATE map_stickies SET ai_derived = 1 \
+             WHERE ai_branch_id IS NOT NULL AND ai_derived = 0",
+            [],
         )?;
 
         Ok(())

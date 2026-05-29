@@ -9,6 +9,12 @@ vi.mock("@xyflow/react", async (importOriginal) => {
   return {
     ...actual,
     Handle: () => null,
+    // NodeToolbar はポータルで RF viewport に描画し、store context が無い
+    // happy-dom では null を返す。テストは showAdoptUI 条件と onClick の検証が
+    // 目的なので children をそのまま描画するパススルーに差し替える。
+    NodeToolbar: ({ children }: { children?: React.ReactNode }) => (
+      <div data-testid="node-toolbar">{children}</div>
+    ),
   };
 });
 
@@ -43,6 +49,9 @@ function makeProps(
     paletteId: string;
     colorSlot: number;
     aiDerived: boolean;
+    branchAttached: boolean;
+    onAdopt: ReturnType<typeof vi.fn>;
+    onReject: ReturnType<typeof vi.fn>;
     onUpdate: ReturnType<typeof vi.fn>;
   }> = {},
 ): NodeProps {
@@ -101,6 +110,53 @@ describe("StickyNode — コピー時の Authorship 伝搬", () => {
     const content = getStickyContent(container);
     expect(content.oncopy).toBeNull();
     expect(content.hasAttribute("data-grimodex-source")).toBe(false);
+  });
+});
+
+describe("StickyNode — 採用 / 不採用 (AI Branch)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("branchAttached=true のとき採用 / 不採用ボタンを表示する", () => {
+    render(
+      <StickyNode {...makeProps({ branchAttached: true, aiDerived: true })} />,
+    );
+    expect(screen.getByLabelText("この付箋を採用")).toBeTruthy();
+    expect(screen.getByLabelText("この付箋を不採用")).toBeTruthy();
+  });
+
+  it("branchAttached=false (通常 / 採用済み Sticky) ではボタンを表示しない", () => {
+    render(
+      <StickyNode {...makeProps({ branchAttached: false, aiDerived: true })} />,
+    );
+    expect(screen.queryByLabelText("この付箋を採用")).toBeNull();
+    expect(screen.queryByLabelText("この付箋を不採用")).toBeNull();
+  });
+
+  it("採用ボタンクリックで onAdopt が呼ばれる", () => {
+    const onAdopt = vi.fn();
+    render(<StickyNode {...makeProps({ branchAttached: true, onAdopt })} />);
+    fireEvent.click(screen.getByLabelText("この付箋を採用"));
+    expect(onAdopt).toHaveBeenCalledTimes(1);
+  });
+
+  it("不採用ボタンクリックで onReject が呼ばれる", () => {
+    const onReject = vi.fn();
+    render(<StickyNode {...makeProps({ branchAttached: true, onReject })} />);
+    fireEvent.click(screen.getByLabelText("この付箋を不採用"));
+    expect(onReject).toHaveBeenCalledTimes(1);
+  });
+
+  it("採用済み (branchAttached=false) でも aiDerived=true なら onCopy で 'ai' を維持する想定 (provenance 保持)", () => {
+    // aiDerived は branchAttached と独立。採用後 (branchAttached=false) でも
+    // aiDerived=true が残るため onCopy ラベルは "ai" を維持する。ここでは
+    // ボタン非表示と本文描画の両立だけを退行 gate する。
+    const { container } = render(
+      <StickyNode {...makeProps({ branchAttached: false, aiDerived: true })} />,
+    );
+    expect(
+      container.querySelector('[data-testid="sticky-paper"]'),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText("この付箋を採用")).toBeNull();
   });
 });
 

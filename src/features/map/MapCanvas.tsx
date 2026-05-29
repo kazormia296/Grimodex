@@ -68,6 +68,9 @@ import {
   deleteFrame,
   deleteAiBranch,
   deleteSticky,
+  adoptSticky,
+  reattachSticky,
+  adoptAllForBranch,
   createSticky,
   getSticky,
   upsertNodePosition,
@@ -466,6 +469,56 @@ export function MapCanvas() {
     [setStickies, setPositions],
   );
 
+  // 採用: AI Branch 由来 Sticky を branch から切り離して通常 Sticky 化する。
+  // aiDerived (= AI 由来 provenance) は維持されるので onCopy は "ai" のまま。
+  const stableOnAdoptSticky = useCallback(
+    async (stickyId: string) => {
+      const result = await adoptSticky(stickyId);
+      setStickies((prev) =>
+        prev.map((s) => (s.id === stickyId ? result.sticky : s)),
+      );
+      const removed = result.removedEdge;
+      if (removed) {
+        setUserEdges((prev) => prev.filter((e) => e.id !== removed.id));
+      }
+      const branchId = result.previousAiBranchId;
+      if (branchId && !useGlobalHistoryStore.getState().isReplaying) {
+        useGlobalHistoryStore.getState().push({
+          kind: "map",
+          label: "Sticky 採用",
+          async undo() {
+            await reattachSticky(stickyId, branchId, removed);
+            setStickies((prev) =>
+              prev.map((s) =>
+                s.id === stickyId ? { ...s, aiBranchId: branchId } : s,
+              ),
+            );
+            if (removed) setUserEdges((prev) => [...prev, removed]);
+          },
+          async redo() {
+            await adoptSticky(stickyId);
+            setStickies((prev) =>
+              prev.map((s) =>
+                s.id === stickyId ? { ...s, aiBranchId: null } : s,
+              ),
+            );
+            if (removed) {
+              setUserEdges((prev) => prev.filter((e) => e.id !== removed.id));
+            }
+          },
+        });
+      }
+    },
+    [setStickies, setUserEdges],
+  );
+
+  // 不採用: branch 由来 Sticky をゴミ箱へ。通常の Sticky 削除と同じ 2-phase
+  // animated delete に流すだけ — onStickyExitComplete が trash キャプチャと
+  // Undo 登録を行う (既存経路の再利用)。
+  const stableOnRejectSticky = useCallback((stickyId: string) => {
+    setDeletingStickyIds((prev) => new Set(prev).add(stickyId));
+  }, []);
+
   useMapNodes({
     boardId,
     positions,
@@ -496,6 +549,8 @@ export function MapCanvas() {
     deletingStickyIds,
     onStickyExitComplete,
     onBranchFrom: stableOnBranchFromNode,
+    onAdopt: stableOnAdoptSticky,
+    onReject: stableOnRejectSticky,
   });
 
   const handleUserEdgeLabelSave = useCallback(
@@ -670,6 +725,91 @@ export function MapCanvas() {
       setPositions,
       setUserEdges,
     ],
+  );
+
+  // 一括採用: AI Branch の派生 Sticky を全て branch から切り離して通常 Sticky 化。
+  // 各 Sticky の aiBranchId を null にし、点線エッジを除去する。aiDerived (AI 由来
+  // provenance) は保持されるので copy は "ai" のまま。単一 Undo で全件を branch に
+  // 戻す (reattachSticky)。
+  const handleAdoptAllForBranch = useCallback(
+    async (branchId: string) => {
+      setContextMenu(null);
+      const results = await adoptAllForBranch(branchId);
+      if (results.length === 0) return;
+      const adoptedIds = new Set(results.map((r) => r.sticky.id));
+      const removedEdgeIds = new Set(
+        results
+          .map((r) => r.removedEdge?.id)
+          .filter((id): id is string => Boolean(id)),
+      );
+      setStickies((prev) =>
+        prev.map((s) =>
+          adoptedIds.has(s.id) ? { ...s, aiBranchId: null } : s,
+        ),
+      );
+      if (removedEdgeIds.size > 0) {
+        setUserEdges((prev) => prev.filter((e) => !removedEdgeIds.has(e.id)));
+      }
+      toast.success(`${results.length} 枚の Sticky を採用しました`);
+
+      if (!useGlobalHistoryStore.getState().isReplaying) {
+        const cap = results;
+        useGlobalHistoryStore.getState().push({
+          kind: "map",
+          label: "Sticky 一括採用",
+          async undo() {
+            for (const r of cap) {
+              if (r.previousAiBranchId) {
+                await reattachSticky(
+                  r.sticky.id,
+                  r.previousAiBranchId,
+                  r.removedEdge,
+                );
+              }
+            }
+            const reAdoptedIds = new Set(cap.map((r) => r.sticky.id));
+            setStickies((prev) =>
+              prev.map((s) =>
+                reAdoptedIds.has(s.id)
+                  ? {
+                      ...s,
+                      aiBranchId:
+                        cap.find((r) => r.sticky.id === s.id)
+                          ?.previousAiBranchId ?? s.aiBranchId,
+                    }
+                  : s,
+              ),
+            );
+            const restoredEdges = cap
+              .map((r) => r.removedEdge)
+              .filter((e): e is NonNullable<typeof e> => Boolean(e));
+            if (restoredEdges.length > 0) {
+              setUserEdges((prev) => [...prev, ...restoredEdges]);
+            }
+          },
+          async redo() {
+            for (const r of cap) {
+              await adoptSticky(r.sticky.id);
+            }
+            const reAdoptedIds = new Set(cap.map((r) => r.sticky.id));
+            const reEdgeIds = new Set(
+              cap
+                .map((r) => r.removedEdge?.id)
+                .filter((id): id is string => Boolean(id)),
+            );
+            setStickies((prev) =>
+              prev.map((s) =>
+                reAdoptedIds.has(s.id) ? { ...s, aiBranchId: null } : s,
+              ),
+            );
+            if (reEdgeIds.size > 0) {
+              setUserEdges((prev) => prev.filter((e) => !reEdgeIds.has(e.id)));
+            }
+          },
+        });
+      }
+    },
+    [setContextMenu, setStickies, setUserEdges],
   );
 
   const handlePromoteFrame = useCallback(
@@ -1694,6 +1834,14 @@ export function MapCanvas() {
             contextMenu.nodeId.startsWith("ai_branch:")
               ? () =>
                   void handleDeleteAiBranchWithDerived(
+                    contextMenu.nodeId.slice("ai_branch:".length),
+                  )
+              : undefined
+          }
+          onAdoptAllDerived={
+            contextMenu.nodeId.startsWith("ai_branch:")
+              ? () =>
+                  void handleAdoptAllForBranch(
                     contextMenu.nodeId.slice("ai_branch:".length),
                   )
               : undefined

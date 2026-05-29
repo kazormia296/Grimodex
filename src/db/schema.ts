@@ -860,6 +860,10 @@ export const mapStickies = sqliteTable(
     aiBranchId: text("ai_branch_id").references(() => mapAiBranches.id, {
       onDelete: "set null",
     }),
+    // AI由来 provenance フラグ。aiBranchId は「現在どの branch に属するか」を表し、
+    // 採用 (adopt) で null に落ちる。一方こちらは「AI が生成した付箋か」という
+    // 出自で、採用後も保持される。onCopy の帰属ラベル (StickyNode) はこちらを見る。
+    aiDerived: integer("ai_derived").notNull().default(0),
     sourceChatMessageId: text("source_chat_message_id").references(
       () => chatMessages.id,
       { onDelete: "set null" },

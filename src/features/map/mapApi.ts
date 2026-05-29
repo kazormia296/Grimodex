@@ -636,6 +636,131 @@ export async function deleteSticky(id: string): Promise<void> {
 }
 
 /**
+ * 「採用」: AI Branch 由来 Sticky を branch から切り離して通常 Sticky 化する。
+ * - aiBranchId を null にする (= branch 所属を解除)。これで derivedStickyCount
+ *   から外れ、branch 削除に巻き込まれなくなり、他の Sticky と同じ扱いになる。
+ * - branch→sticky の点線エッジ (createAiBranch が永続化したもの) を削除する。
+ * - **ai_derived は維持する** (Plan B): 「AI が生成した」出自は採用後も残し、
+ *   StickyNode の onCopy 帰属ラベルが "ai" のままになるようにする。本文 JSON の
+ *   authorship マークと authorshipSpans 行も触らない。
+ *
+ * 戻り値は undo (reattachSticky) に必要な情報。aiBranchId が既に null の
+ * (= 通常 Sticky / 採用済み) 場合は no-op で removedEdge=null を返す。
+ */
+export async function adoptSticky(stickyId: string): Promise<{
+  sticky: MapSticky;
+  previousAiBranchId: string | null;
+  removedEdge: MapEdge | null;
+}> {
+  const [sticky] = await db
+    .select()
+    .from(mapStickies)
+    .where(eq(mapStickies.id, stickyId))
+    .limit(1);
+  if (!sticky) throw new Error(`Sticky ${stickyId} not found`);
+
+  const branchId = sticky.aiBranchId;
+  let removedEdge: MapEdge | null = null;
+
+  if (branchId) {
+    // 点線エッジ branchPos → stickyPos を特定して削除する。
+    const [stickyPos] = await db
+      .select()
+      .from(mapNodePositions)
+      .where(
+        and(
+          eq(mapNodePositions.boardId, sticky.boardId),
+          eq(mapNodePositions.stickyId, stickyId),
+        ),
+      )
+      .limit(1);
+    const [branchPos] = await db
+      .select()
+      .from(mapNodePositions)
+      .where(
+        and(
+          eq(mapNodePositions.boardId, sticky.boardId),
+          eq(mapNodePositions.aiBranchId, branchId),
+        ),
+      )
+      .limit(1);
+    if (stickyPos && branchPos) {
+      const [edge] = await db
+        .select()
+        .from(mapEdges)
+        .where(
+          and(
+            eq(mapEdges.fromPositionId, branchPos.id),
+            eq(mapEdges.toPositionId, stickyPos.id),
+          ),
+        )
+        .limit(1);
+      if (edge) {
+        await db.delete(mapEdges).where(eq(mapEdges.id, edge.id));
+        removedEdge = edge;
+      }
+    }
+  }
+
+  const now = new Date().toISOString();
+  const [updated] = await db
+    .update(mapStickies)
+    .set({ aiBranchId: null, updatedAt: now })
+    .where(eq(mapStickies.id, stickyId))
+    .returning();
+  recordMapEvent("sticky.adopt", stickyId, { branchId });
+  return { sticky: updated, previousAiBranchId: branchId, removedEdge };
+}
+
+/**
+ * `adoptSticky` の逆操作 (undo 用)。aiBranchId を元の branch に戻し、削除済みの
+ * 点線エッジを (あれば) 復元する。restoreAiBranchSnapshot の orphan 再リンクと
+ * 同型。branch が既に消えている場合 FK 制約で失敗しうるが、採用直後の undo を
+ * 想定しているため通常は branch が生きている。
+ */
+export async function reattachSticky(
+  stickyId: string,
+  branchId: string,
+  edge: MapEdge | null,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db
+    .update(mapStickies)
+    .set({ aiBranchId: branchId, updatedAt: now })
+    .where(eq(mapStickies.id, stickyId));
+  if (edge) {
+    await db.insert(mapEdges).values(edge).onConflictDoNothing();
+  }
+  recordMapEvent("sticky.reattach", stickyId, { branchId });
+}
+
+/**
+ * AI Branch の派生 Sticky を全件「採用」する (一括採用、コンテキストメニュー用)。
+ * 各 Sticky を adoptSticky で処理し、undo に必要な結果配列を返す。
+ */
+export async function adoptAllForBranch(branchId: string): Promise<
+  Array<{
+    sticky: MapSticky;
+    previousAiBranchId: string | null;
+    removedEdge: MapEdge | null;
+  }>
+> {
+  const derived = await db
+    .select()
+    .from(mapStickies)
+    .where(eq(mapStickies.aiBranchId, branchId));
+  const results: Array<{
+    sticky: MapSticky;
+    previousAiBranchId: string | null;
+    removedEdge: MapEdge | null;
+  }> = [];
+  for (const s of derived) {
+    results.push(await adoptSticky(s.id));
+  }
+  return results;
+}
+
+/**
  * Promote a Sticky to a structured entity (Scene/Note/Snippet/Codex).
  * - Creates the new entity with sticky title + body as content
  * - Updates the map_node_positions row in-place (same ID, new entity reference)
@@ -868,6 +993,7 @@ export async function createAiBranch(
         paletteId: DEFAULT_PALETTE_ID,
         colorSlot: DEFAULT_COLOR_SLOT,
         aiBranchId: branchId,
+        aiDerived: 1,
         sourceChatMessageId: null,
         createdAt: now,
         updatedAt: now,

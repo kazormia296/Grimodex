@@ -19,7 +19,15 @@ import { db } from "@/db/client";
 // Helper to build a chainable query mock.
 function makeMock(returnValue: unknown) {
   const chain: Record<string, unknown> = {};
-  const allMethods = ["from", "where", "limit", "values", "set", "orderBy"];
+  const allMethods = [
+    "from",
+    "where",
+    "limit",
+    "values",
+    "set",
+    "orderBy",
+    "onConflictDoNothing",
+  ];
   for (const m of allMethods) {
     chain[m] = vi.fn().mockReturnValue(chain);
   }
@@ -692,5 +700,160 @@ describe("mapApi — createAiBranch", () => {
     expect(result.stickies).toHaveLength(0);
     expect(result.positions).toHaveLength(1);
     expect(db.insert).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("mapApi — adoptSticky / reattachSticky / adoptAllForBranch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("branch 由来 Sticky を採用すると aiBranchId が null になり点線エッジが削除される", async () => {
+    const sticky = {
+      id: "s1",
+      boardId: "b1",
+      aiBranchId: "br1",
+      aiDerived: 1,
+    };
+    const stickyPos = { id: "pos-s1", boardId: "b1", stickyId: "s1" };
+    const branchPos = { id: "pos-br1", boardId: "b1", aiBranchId: "br1" };
+    const edge = {
+      id: "edge1",
+      boardId: "b1",
+      fromPositionId: "pos-br1",
+      toPositionId: "pos-s1",
+      style: "dashed",
+    };
+    const updated = { ...sticky, aiBranchId: null };
+
+    (db.select as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(makeMock([sticky])) // sticky lookup
+      .mockReturnValueOnce(makeMock([stickyPos])) // sticky position
+      .mockReturnValueOnce(makeMock([branchPos])) // branch position
+      .mockReturnValueOnce(makeMock([edge])); // dashed edge
+    (db.delete as ReturnType<typeof vi.fn>).mockReturnValue(makeMock([]));
+    (db.update as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([updated]),
+    );
+
+    const { adoptSticky } = await import("./mapApi");
+    const result = await adoptSticky("s1");
+
+    expect(result.sticky.aiBranchId).toBeNull();
+    expect(result.previousAiBranchId).toBe("br1");
+    expect(result.removedEdge?.id).toBe("edge1");
+    expect(db.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it("採用は ai_derived を変更しない (AI 由来 provenance を保持する)", async () => {
+    const sticky = {
+      id: "s2",
+      boardId: "b1",
+      aiBranchId: "br1",
+      aiDerived: 1,
+    };
+    const stickyPos = { id: "pos-s2", boardId: "b1", stickyId: "s2" };
+    const branchPos = { id: "pos-br1", boardId: "b1", aiBranchId: "br1" };
+
+    (db.select as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(makeMock([sticky]))
+      .mockReturnValueOnce(makeMock([stickyPos]))
+      .mockReturnValueOnce(makeMock([branchPos]))
+      .mockReturnValueOnce(makeMock([])); // no edge found
+    (db.update as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([{ ...sticky, aiBranchId: null }]),
+    );
+
+    const { adoptSticky } = await import("./mapApi");
+    await adoptSticky("s2");
+
+    const updateChain = (db.update as ReturnType<typeof vi.fn>).mock.results[0]
+      .value as { set: ReturnType<typeof vi.fn> };
+    const setArg = updateChain.set.mock.calls[0][0] as Record<string, unknown>;
+    expect("aiBranchId" in setArg).toBe(true);
+    expect(setArg.aiBranchId).toBeNull();
+    expect(setArg).not.toHaveProperty("aiDerived");
+  });
+
+  it("既に aiBranchId が null の Sticky は no-op (エッジ削除しない)", async () => {
+    const sticky = { id: "s3", boardId: "b1", aiBranchId: null, aiDerived: 0 };
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+      makeMock([sticky]),
+    );
+    (db.update as ReturnType<typeof vi.fn>).mockReturnValue(makeMock([sticky]));
+
+    const { adoptSticky } = await import("./mapApi");
+    const result = await adoptSticky("s3");
+
+    expect(result.removedEdge).toBeNull();
+    expect(result.previousAiBranchId).toBeNull();
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it("reattachSticky は aiBranchId を戻しエッジを復元する (undo)", async () => {
+    const edge = {
+      id: "edge1",
+      boardId: "b1",
+      fromPositionId: "pos-br1",
+      toPositionId: "pos-s1",
+      style: "dashed",
+    };
+    (db.update as ReturnType<typeof vi.fn>).mockReturnValue(makeMock([]));
+    (db.insert as ReturnType<typeof vi.fn>).mockReturnValue(makeMock([edge]));
+
+    const { reattachSticky } = await import("./mapApi");
+    await reattachSticky("s1", "br1", edge as never);
+
+    const updateChain = (db.update as ReturnType<typeof vi.fn>).mock.results[0]
+      .value as { set: ReturnType<typeof vi.fn> };
+    expect(updateChain.set.mock.calls[0][0]).toMatchObject({
+      aiBranchId: "br1",
+    });
+    expect(db.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it("reattachSticky は edge=null なら insert しない", async () => {
+    (db.update as ReturnType<typeof vi.fn>).mockReturnValue(makeMock([]));
+
+    const { reattachSticky } = await import("./mapApi");
+    await reattachSticky("s1", "br1", null);
+
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("adoptAllForBranch は branch の全派生 Sticky を採用する", async () => {
+    const sticky = {
+      id: "s1",
+      boardId: "b1",
+      aiBranchId: "br1",
+      aiDerived: 1,
+    };
+    const stickyPos = { id: "pos-s1", boardId: "b1", stickyId: "s1" };
+    const branchPos = { id: "pos-br1", boardId: "b1", aiBranchId: "br1" };
+    const edge = {
+      id: "edge1",
+      boardId: "b1",
+      fromPositionId: "pos-br1",
+      toPositionId: "pos-s1",
+      style: "dashed",
+    };
+
+    (db.select as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(makeMock([sticky])) // derived stickies of branch
+      .mockReturnValueOnce(makeMock([sticky])) // adoptSticky: sticky lookup
+      .mockReturnValueOnce(makeMock([stickyPos])) // sticky position
+      .mockReturnValueOnce(makeMock([branchPos])) // branch position
+      .mockReturnValueOnce(makeMock([edge])); // dashed edge
+    (db.delete as ReturnType<typeof vi.fn>).mockReturnValue(makeMock([]));
+    (db.update as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([{ ...sticky, aiBranchId: null }]),
+    );
+
+    const { adoptAllForBranch } = await import("./mapApi");
+    const results = await adoptAllForBranch("br1");
+
+    expect(results).toHaveLength(1);
+    expect(results[0].previousAiBranchId).toBe("br1");
+    expect(results[0].removedEdge?.id).toBe("edge1");
   });
 });

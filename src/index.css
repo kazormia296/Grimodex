@@ -1174,6 +1174,50 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   transform: scale(0.95);
 }
 
+/* AI Branch 由来 Sticky の採用 / 不採用ボタン (hover で出現)。
+   .map-branch-affordance と同じ pill/skeuomorphic トーンで揃える。 */
+.map-sticky-adopt-toolbar {
+  display: flex;
+  gap: 6px;
+}
+.map-sticky-adopt-btn,
+.map-sticky-reject-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--popover);
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+.map-sticky-adopt-btn {
+  color: var(--primary);
+}
+.map-sticky-reject-btn {
+  color: var(--destructive);
+}
+.map-sticky-adopt-btn:hover,
+.map-sticky-reject-btn:hover {
+  background: var(--accent);
+  transform: scale(1.05);
+}
+.map-sticky-adopt-btn:active,
+.map-sticky-reject-btn:active {
+  transform: scale(0.95);
+}
+
 /* Attribution decorations — color-mix blends semantic hue with content background,
    so light/dark and per-theme adaptation is automatic.
    AI = teal-green (hue 165°, "processed/machine"), Unknown = warm amber (hue 30°, "uncertain").

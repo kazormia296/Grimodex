@@ -2483,8 +2483,7 @@ fn test_migrate_authorship_spans_check_with_sticky_idempotent() {
     let conn = db.conn.lock().expect("lock");
     Database::migrate_authorship_spans_check_with_sticky(&conn)
         .expect("idempotent authorship spans check migrate");
-    Database::migrate_authorship_spans_check_with_sticky(&conn)
-        .expect("idempotent on second run");
+    Database::migrate_authorship_spans_check_with_sticky(&conn).expect("idempotent on second run");
     let cols: Vec<String> = conn
         .prepare("PRAGMA table_info(authorship_spans)")
         .expect("pragma")
@@ -2576,4 +2575,69 @@ fn test_migrate_authorship_spans_check_allows_sticky_only() {
         [],
     );
     assert!(dup_err.is_err(), "two owners must still fail CHECK");
+}
+
+/// Plan B: legacy map_stickies (no ai_derived column) must gain ai_derived,
+/// and existing branch-derived stickies (ai_branch_id IS NOT NULL) must be
+/// backfilled to 1 while plain stickies stay 0.
+#[test]
+fn test_migrate_map_stickies_ai_derived_backfill() {
+    let db = test_db();
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.pragma_update(None, "foreign_keys", false)
+            .expect("disable fk for legacy setup");
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS map_stickies;
+             CREATE TABLE map_stickies (
+                id TEXT PRIMARY KEY,
+                board_id TEXT NOT NULL,
+                title TEXT,
+                body TEXT NOT NULL DEFAULT '{}',
+                preview_text TEXT,
+                palette_id TEXT NOT NULL DEFAULT 'post-it-playful',
+                color_slot INTEGER NOT NULL DEFAULT 0,
+                ai_branch_id TEXT,
+                source_chat_message_id TEXT
+             );
+             INSERT INTO map_stickies (id, board_id, ai_branch_id)
+                VALUES ('s-branch', 'b1', 'branch-1');
+             INSERT INTO map_stickies (id, board_id, ai_branch_id)
+                VALUES ('s-plain', 'b1', NULL);",
+        )
+        .expect("create legacy map_stickies with data");
+    }
+
+    db.migrate().expect("migrate");
+
+    let conn = db.conn.lock().expect("lock");
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(map_stickies)")
+        .expect("pragma")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("map")
+        .filter_map(|r| r.ok())
+        .collect();
+    assert!(
+        cols.contains(&"ai_derived".to_string()),
+        "ai_derived column must be added"
+    );
+
+    let branch_derived: i64 = conn
+        .query_row(
+            "SELECT ai_derived FROM map_stickies WHERE id = 's-branch'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query branch sticky");
+    assert_eq!(branch_derived, 1, "branch-derived sticky backfilled to 1");
+
+    let plain: i64 = conn
+        .query_row(
+            "SELECT ai_derived FROM map_stickies WHERE id = 's-plain'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query plain sticky");
+    assert_eq!(plain, 0, "plain sticky stays 0");
 }
