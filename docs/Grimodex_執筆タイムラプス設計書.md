@@ -505,6 +505,7 @@ ON→OFF（`enabled === false`）:
 4. **replay 起点**: baseline snapshot があれば seed、無ければ空 doc（`buildReplayStart`、C1）。baseline は記録 ON 時に scene ごと anchorSequence=0 で焼く（`toggle.ts`）。
 5. **VP9 feature-detect**: `pickSupportedWebmMime`（vp9→vp8→webm）で対応 mime を選び、null ならパネルのボタンを無効化（A6）。
 6. **コミット**: A1→A6 / B1→B6 / C1 を green-build 単位で master 直 commit（`replayEngine`/`recorder`/`settings`/`toggle`/`frameProducer`/`exportTimelapse`/`videoExport`/`TimelapsePanel` ほか）。実機（macOS WKWebView / Linux WebKitGTK）での VP9 録画可否は未検証（要 MANUAL_TEST_CHECKLIST）。
+7. **【実機バグ修正】blob → hex/JSON TEXT 化**（commit 70687944）: recorder/snapshots は当初 `blob(mode:'buffer')` + `Buffer.from` を使っていたが、**webview に `Buffer` が無く（Node グローバル）、かつ drizzle sqlite-proxy 経由では BLOB が round-trip できない**（Rust の param 変換は文字列化のみ・BLOB 読み出しは `[blob N bytes]` プレースホルダ。embeddings だけ専用 Rust command で別経路）。結果 `recorder.flush` が `ReferenceError: Buffer is not defined` で全失敗し、**change_events が一度も書かれていなかった**（記録基盤が本番未動作だった）。修正: `change_events.prevHash/hash` を **hex TEXT**、`state_snapshots.payload` を **plain JSON TEXT**（gzip 廃止）に変更。インメモリのハッシュ計算は Uint8Array のまま、DB 境界のみ `bytesToHex`/`hexToBytes`。SQLite BLOB affinity 列は TEXT 値をそのまま保持するため migration 不要。ユニットは db をモックするため本バグを検出できなかった（修正後も同様 → 実機確認が必須）。
 
 ---
 
