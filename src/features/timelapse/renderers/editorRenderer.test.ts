@@ -3,7 +3,11 @@ import { describe, it, expect } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
-import { DEFAULT_THEME, renderDocToCanvas } from "./editorRenderer";
+import {
+  DEFAULT_THEME,
+  renderDocToCanvas,
+  type EditorRenderTheme,
+} from "./editorRenderer";
 
 interface PaintOp {
   type: "fillRect" | "fillText";
@@ -39,6 +43,20 @@ function makeMockCtx(charWidth = 8) {
   return { ctx, ops };
 }
 
+/** Paragraph with the first word ("Generated") marked source=ai. */
+function aiEditor() {
+  const editor = new Editor({
+    extensions: [StarterKit, AuthorshipMark],
+    content: "<p>Generated human added</p>",
+  });
+  const markType = editor.schema.marks["authorship"];
+  editor.commands.command(({ tr }) => {
+    tr.addMark(1, 10, markType.create({ source: "ai" }));
+    return true;
+  });
+  return editor;
+}
+
 describe("renderDocToCanvas", () => {
   it("paints the background and the document text", () => {
     const editor = new Editor({
@@ -62,16 +80,34 @@ describe("renderDocToCanvas", () => {
     editor.destroy();
   });
 
-  it("colours AuthorshipMark runs using the theme palette", () => {
-    const editor = new Editor({
-      extensions: [StarterKit, AuthorshipMark],
-      content: "<p>Generated human added</p>",
-    });
-    const markType = editor.schema.marks["authorship"];
-    editor.commands.command(({ tr }) => {
-      tr.addMark(1, 10, markType.create({ source: "ai" }));
-      return true;
-    });
+  it("tints AI runs with a background band when showAttribution is on, glyphs stay in the text colour", () => {
+    const editor = aiEditor();
+    const theme: EditorRenderTheme = {
+      ...DEFAULT_THEME,
+      showAttribution: true,
+    };
+    const { ctx, ops } = makeMockCtx();
+    renderDocToCanvas(
+      ctx as unknown as CanvasRenderingContext2D,
+      editor.state.doc,
+      600,
+      200,
+      theme,
+    );
+    // A background band is painted in the AI tint colour.
+    const aiBand = ops.find(
+      (o) => o.type === "fillRect" && o.fillStyle === theme.attributionAi,
+    );
+    expect(aiBand).toBeTruthy();
+    // No glyph is recoloured by provenance — all text uses theme.text.
+    const textOps = ops.filter((o) => o.type === "fillText");
+    expect(textOps.length).toBeGreaterThan(0);
+    for (const o of textOps) expect(o.fillStyle).toBe(theme.text);
+    editor.destroy();
+  });
+
+  it("does not tint when showAttribution is off (default theme)", () => {
+    const editor = aiEditor();
     const { ctx, ops } = makeMockCtx();
     renderDocToCanvas(
       ctx as unknown as CanvasRenderingContext2D,
@@ -79,20 +115,47 @@ describe("renderDocToCanvas", () => {
       600,
       200,
     );
-    const aiPaint = ops.find(
+    const tint = ops.find(
       (o) =>
-        o.type === "fillText" &&
-        typeof o.args[0] === "string" &&
-        (o.args[0] as string).includes("Generated"),
+        o.type === "fillRect" && o.fillStyle === DEFAULT_THEME.attributionAi,
     );
-    expect(aiPaint?.fillStyle).toBe(DEFAULT_THEME.ai);
-    const humanPaint = ops.find(
-      (o) =>
-        o.type === "fillText" &&
-        typeof o.args[0] === "string" &&
-        (o.args[0] as string).includes("added"),
+    expect(tint).toBeUndefined();
+    editor.destroy();
+  });
+
+  it("leaves human runs untinted even when showAttribution is on", () => {
+    const editor = new Editor({
+      extensions: [StarterKit, AuthorshipMark],
+      content: "<p>only human text</p>",
+    });
+    const markType = editor.schema.marks["authorship"];
+    editor.commands.command(({ tr }) => {
+      tr.addMark(
+        1,
+        editor.state.doc.content.size,
+        markType.create({
+          source: "human",
+        }),
+      );
+      return true;
+    });
+    const theme: EditorRenderTheme = {
+      ...DEFAULT_THEME,
+      showAttribution: true,
+    };
+    const { ctx, ops } = makeMockCtx();
+    renderDocToCanvas(
+      ctx as unknown as CanvasRenderingContext2D,
+      editor.state.doc,
+      600,
+      200,
+      theme,
     );
-    expect(humanPaint?.fillStyle).toBe(DEFAULT_THEME.text);
+    // Only the full-canvas background fillRect — no attribution band.
+    const nonBackgroundRects = ops.filter(
+      (o) => o.type === "fillRect" && o.fillStyle !== theme.background,
+    );
+    expect(nonBackgroundRects).toHaveLength(0);
     editor.destroy();
   });
 });

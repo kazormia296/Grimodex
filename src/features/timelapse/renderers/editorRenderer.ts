@@ -1,29 +1,37 @@
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
 /**
- * 執筆タイムラプス Editor canvas renderer (P7 minimum-viable).
+ * 執筆タイムラプス Editor canvas renderer (P7 + P1).
  *
- * Paints a ProseMirror doc as wrapped plain-text paragraphs on a 2D canvas,
- * with per-text-run colour tints driven by the AuthorshipMark attribute.
- * The output is intentionally schema-thin: paragraphs and text only, no
- * headings / lists / nested nodes / inline embeds. The frame producer for
- * video export is responsible for picking schemas it knows how to render.
+ * Paints a ProseMirror doc as wrapped plain-text paragraphs on a 2D canvas.
+ * Glyphs are drawn in a single `text` colour (matching the live editor, which
+ * does NOT recolour text by authorship); instead AuthorshipMark provenance is
+ * shown the same way the editor shows it — a **background tint behind AI /
+ * unknown runs**, gated by `showAttribution`, with human runs left untinted
+ * (see AttributionPlugin / index.css `.attribution-*`).
  *
- * Reasons we stay minimal here:
- * - Faithful PM → canvas layout for arbitrary schemas is a project on its
- *   own (text shaping, line break rules, decoration plugins).
- * - The timelapse goal is "show the prose evolving", not "pixel-match the
- *   editor UI". A clean monotype layout is sufficient and stable.
- *
- * The Map domain renderer is sketched separately (mapRenderer.ts) when needed.
+ * Schema coverage is still paragraph + text only (no headings / lists / nested
+ * nodes); structural fidelity is P2. Theme colours (background / text /
+ * attribution tints) and the editor font are supplied by the export path via
+ * `resolveEditorTheme` so the video matches the user's active theme rather than
+ * a hard-coded white/sans default.
  */
+
+export type AuthorshipSource = "ai" | "human" | "unknown" | null;
 
 export interface EditorRenderTheme {
   background: string;
+  /** Uniform glyph colour (live editor keeps text colour constant). */
   text: string;
-  human: string;
-  ai: string;
-  unknown: string;
+  /**
+   * Whether to paint authorship tints. Mirrors the live editor's
+   * `showAttribution` toggle so the timelapse matches what the writer saw.
+   */
+  showAttribution: boolean;
+  /** Background tint behind source=ai runs (resolved colour). */
+  attributionAi: string;
+  /** Background tint behind source=unknown runs (resolved colour). */
+  attributionUnknown: string;
   fontFamily: string;
   fontSizePx: number;
   lineHeightPx: number;
@@ -34,9 +42,11 @@ export interface EditorRenderTheme {
 export const DEFAULT_THEME: EditorRenderTheme = {
   background: "#ffffff",
   text: "#222222",
-  human: "#225",
-  ai: "#582",
-  unknown: "#666",
+  // Off by default: the bare default theme stays neutral. The export path
+  // supplies the live setting + resolved tint colours (P1 / resolveEditorTheme).
+  showAttribution: false,
+  attributionAi: "rgba(34, 197, 94, 0.18)",
+  attributionUnknown: "rgba(217, 119, 6, 0.16)",
   fontFamily: "ui-sans-serif, system-ui, sans-serif",
   fontSizePx: 16,
   lineHeightPx: 24,
@@ -46,7 +56,7 @@ export const DEFAULT_THEME: EditorRenderTheme = {
 
 interface Run {
   text: string;
-  color: string;
+  source: AuthorshipSource;
 }
 
 type Ctx2D = Pick<
@@ -54,12 +64,23 @@ type Ctx2D = Pick<
   "fillStyle" | "font" | "fillRect" | "fillText" | "measureText"
 >;
 
+/** Background tint for a run's source, or null if it should not be tinted. */
+function attributionTint(
+  source: AuthorshipSource,
+  theme: EditorRenderTheme,
+): string | null {
+  if (!theme.showAttribution) return null;
+  if (source === "ai") return theme.attributionAi;
+  if (source === "unknown") return theme.attributionUnknown;
+  // human (and untracked) is intentionally left untinted, matching the editor.
+  return null;
+}
+
 /**
  * Render `doc` into `ctx` at canvas size `width × height`.
  *
- * Lines are wrapped greedily using `ctx.measureText`. Text runs inside a
- * paragraph that have different AuthorshipMark sources are coloured per the
- * theme; spaces between runs are coloured by the trailing run for simplicity.
+ * Lines are wrapped greedily using `ctx.measureText`. Each text run carries its
+ * AuthorshipMark source so the painter can draw the provenance background tint.
  */
 export function renderDocToCanvas(
   ctx: Ctx2D,
@@ -84,18 +105,9 @@ export function renderDocToCanvas(
     block.forEach((child) => {
       if (!child.isText || !child.text) return;
       const mark = child.marks.find((m) => m.type.name === "authorship");
-      const source = (mark?.attrs.source as string | undefined) ?? null;
-      runs.push({
-        text: child.text,
-        color:
-          source === "ai"
-            ? theme.ai
-            : source === "human"
-              ? theme.human
-              : source === "unknown"
-                ? theme.unknown
-                : theme.text,
-      });
+      const source =
+        (mark?.attrs.source as AuthorshipSource | undefined) ?? null;
+      runs.push({ text: child.text, source });
     });
     if (runs.length === 0) {
       y += theme.lineHeightPx + theme.paragraphGapPx;
@@ -107,7 +119,7 @@ export function renderDocToCanvas(
       theme.paddingPx,
       y,
       contentWidth,
-      theme.lineHeightPx,
+      theme,
     );
     y += linesPainted * theme.lineHeightPx + theme.paragraphGapPx;
     if (y > height + theme.lineHeightPx) {
@@ -124,14 +136,17 @@ function paintParagraph(
   startX: number,
   startY: number,
   maxWidth: number,
-  lineHeight: number,
+  theme: EditorRenderTheme,
 ): number {
+  const lineHeight = theme.lineHeightPx;
+  const fontSize = theme.fontSizePx;
   let x = startX;
   let y = startY;
   let lines = 1;
   let firstOnLine = true;
 
   for (const run of runs) {
+    const tint = attributionTint(run.source, theme);
     const tokens = run.text.split(/(\s+)/).filter((t) => t.length > 0);
     for (const token of tokens) {
       const w = ctx.measureText(token).width;
@@ -146,7 +161,13 @@ function paintParagraph(
         // skip leading whitespace on a fresh line
         continue;
       }
-      ctx.fillStyle = run.color;
+      // Authorship tint = background band behind the run (incl. its spaces),
+      // drawn before the glyph so text stays readable. Brackets the glyph line.
+      if (tint) {
+        ctx.fillStyle = tint;
+        ctx.fillRect(x, y - fontSize * 0.85, w, fontSize * 1.15);
+      }
+      ctx.fillStyle = theme.text;
       ctx.fillText(token, x, y);
       x += w;
       firstOnLine = false;

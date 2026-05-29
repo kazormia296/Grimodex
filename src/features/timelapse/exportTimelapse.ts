@@ -15,6 +15,8 @@ import { createReplayCursor, type ReplayEvent } from "./replayEngine";
 import { buildFrameSchedule, makeDrawFrame } from "./frameProducer";
 import { captureCanvasToWebm } from "./videoExport";
 import { loadLatestSnapshot, type DecodedSnapshot } from "./snapshots";
+import { resolveEditorTheme } from "./resolveEditorTheme";
+import type { EditorRenderTheme } from "./renderers/editorRenderer";
 
 export interface SceneTimelapseOptions {
   projectId: string;
@@ -25,6 +27,8 @@ export interface SceneTimelapseOptions {
   targetDurationSec?: number;
   /** Override the WebM mime (A6 feature-detect supplies a supported one). */
   mimeType?: string;
+  /** Render theme. Default: resolveEditorTheme() from the live editor (P1). */
+  theme?: EditorRenderTheme;
 }
 
 export interface SceneTimelapseResult {
@@ -129,7 +133,16 @@ export async function produceSceneTimelapseWebm(
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("timelapse: 2D canvas context unavailable");
 
-  const drawFrame = makeDrawFrame({ cursor, ctx, width, height, schedule });
+  // 実エディタのテーマ・フォント・帰属表示を解決して描画に反映 (P1)。
+  const theme = opts.theme ?? resolveEditorTheme();
+  const drawFrame = makeDrawFrame({
+    cursor,
+    ctx,
+    width,
+    height,
+    schedule,
+    theme,
+  });
   const blob = await captureCanvasToWebm(canvas, {
     fps,
     drawFrame,
