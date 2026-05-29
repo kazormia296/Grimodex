@@ -1,7 +1,7 @@
 # Grimodex — 執筆タイムラプス設計書（動画エクスポート / P7）
 
 > 最終更新: 2026-05-29
-> ステータス: 設計中（未実装）。記録基盤（P2〜P5）は実装済み・本番稼働中。本書は **P7「Canvas ビジュアル再生 → WebM 動画エクスポート」** の設計。
+> ステータス: **P7 v1 実装済み**（2026-05-30、master 直 commit）。記録基盤（P2〜P5）は従前から本番稼働中。本書は P7「Canvas ビジュアル再生 → WebM 動画エクスポート」+ 記録 ON/OFF 制御（§15）の設計と実装記録（実装乖離は §16）。
 > 依存: Grimodex_統合DBスキーマ.md（`change_events` / `state_snapshots`）、Grimodex_Editorパネル設計書.md（doc.step 記録）、Grimodex_リビジョン履歴設計書.md（モーダルホストの先例）、Grimodex_エクスポートダイアログ設計書.md（save-to-disk パターン）
 
 実装ディレクトリ: `src/features/timelapse/`
@@ -113,7 +113,7 @@ ProseMirror の step を逆適用するには `step.invert(doc_{N-1})` が必要
 ### 4.5 baseline 戦略（推奨）
 
 1. **snapshots を production 配線する**: `recorder.flushNow` 経路で `shouldCreateSnapshot` を評価し、editor 系 entity ごとに `recordStateSnapshot({ projectId, domain:'editor', entityId: sceneId, anchorSequence, payload: doc.toJSON() })` を焼く。
-2. **encoding 不整合を解消**: schema 既定は `'zstd-json'`（`schema.ts:1563`）だが `recordStateSnapshot` は fflate gzip で `'gzip-json'` を書き、`loadLatestSnapshot` は gzip 前提で読む（`snapshots.ts:39,48,96`）。**encoding カラムを正とし**、読み側を encoding で分岐させる（既定値に依存しない）。snapshot payload の shape（`doc.toJSON()`）と version を本書で確定する。
+2. **encoding は既に整合（当初「不整合」と書いたが過大）**: `recordStateSnapshot` は `'gzip-json'` を書き `loadLatestSnapshot` も gzip で読むため write/read は一致している（`snapshots.ts:39,48,96`）。schema 既定 `'zstd-json'`（`schema.ts:1563`）は**未使用の latent risk のみ**。対応は「reader を `encoding` カラムで分岐させ gunzip 決め打ちをやめる」（将来 encoding を増やしたとき安全、低優先）。snapshot payload は `loadSceneContent` の **PM-JSON 文字列**（= `doc.toJSON()` 相当）をそのまま格納。**実装済み（C1）**。
 3. **既存シーンの一回焼き（v1 採用）**: 記録を ON にした時点で、現在の各シーン doc を baseline snapshot として焼く（§15 の ON/OFF 制御と連動）。以後の編集は replay 可能になる。
 4. replay 起点 = `loadLatestSnapshot(asOfSequence)` → 末尾の trailing steps を forward 適用。snapshot が無ければ空 doc から（= 新規シーンのみ正しい）。
 
@@ -350,7 +350,7 @@ async function saveWebmBlob(blob: Blob, filename: string): Promise<boolean> {
 | schema drift で過去 step 失敗（§6） | 古いシーンが replay 不能 | ログ警告。将来 schema version 保存 |
 | OFF→ON の wipe で過去記録を喪失（§15.6） | 意図せぬ履歴消去 | 仕様（連続性契約 §15.1）。UI で破棄を明示警告 |
 | wipe が非アトミック（2 回の DELETE, §15.8） | クラッシュ時に部分 wipe | 許容。必要なら単一 Tauri command 化 |
-| 再有効化時の chain head 取り残し（§15.5） | verifyChain 破綻（重大） | `resetRecorderChain()` を唯一の再有効化経路に |
+| 再有効化時の chain head 取り残し（§15.5） | 連続性契約違反（seq 非リセット / phantom 先頭 prevHash）。verifyChain 自体は通る（中） | `resetRecorderChain()` を唯一の再有効化経路に（実装済み B1） |
 
 ---
 
@@ -403,7 +403,9 @@ recorder の `enabled` は **global per-tab**（`recorder.ts:9-11`）。Tauri �
 - 無条件 `setRecorderEnabled(true)` を廃し、`getProjectSetting(projectId, 'timelapse.enabled')`（既定 `'true'`、`!== 'false'` で判定）を読んで `setRecorderEnabled(enabled)`。**enabled のときだけ** `initRecorderForProject` を呼ぶ。window/VITEST ガードと dynamic import は維持。
 - 順序不変: `setRecorderEnabled(true)` は `initRecorderForProject` より**前**（disabled だと init が tail を読まず projectId だけ設定して early-return, `recorder.ts:101-104`）。
 
-**【重大トラップ】再有効化での chain head 取り残し**: `initRecorderForProject` は同一 projectId の冪等ガード（`recorder.ts:105-107`）で **stale な initPromise を返す**。ON→OFF（`enabled` だけ false、`projectId`/`initPromise`/`lastSequence=42`/`lastHash=oldHead` は残る）→ DB wipe →`initRecorderForProject(samePid)` を呼んでも guard で短絡し tail SELECT を再実行せず、次の flush が **seq 43 / prevHash=old-head を空テーブルに書き込み → `verifyChain` 破綻**。
+**【トラップ（深刻度 中）】再有効化での chain head 取り残し**: `initRecorderForProject` は同一 projectId の冪等ガード（`recorder.ts:105-107`）で **stale な initPromise を返す**。ON→OFF（`enabled` だけ false、`projectId`/`initPromise`/`lastSequence=42`/`lastHash=oldHead` は残る）→ DB wipe →`initRecorderForProject(samePid)` を呼んでも guard で短絡し tail SELECT を再実行せず、次の flush が **seq 43 / prevHash=old-head を空テーブルに書き込む**。
+
+> 当初「`verifyChain` 破綻」と書いたが**不正確**。`verifyChain`（hashChain.ts:135-137）は先頭イベントの prevHash を genesis 照合せず**そのまま受理**するため、この記録でも検証自体は通ってしまう。実害は「sequence が 1 に戻らない / 新 chain の先頭 prevHash が削除済みイベントを指す phantom になる」という**連続性契約の意味論的不整合**。`resetRecorderChain` はクリーンな genesis 再開のため依然必須だが深刻度は「中」。
 
 → **production 用リセット primitive を新設**（`_resetRecorderForTests` は `enabled`/`projectId`/`sessionId` まで消すので不可）:
 
@@ -490,6 +492,19 @@ ON→OFF（`enabled === false`）:
 
 ### 将来枠（今は実装しない）
 - **自動 retention**: サイズ上限 / 期間上限（例: 古い側から間引き）。ただし**間引きは hash chain の連続性を壊す**（prevHash リンクが切れ verifyChain が破綻）ので、単純削除ではなく「古い区間を 1 つの baseline snapshot に畳んで chain を genesis から張り直す」compaction が必要 → 非自明。リビジョン履歴の 50 件プルーニング（チェーン無し）とは別物。現状の判断（§13）は「容量許容 + 手動パージ」で、自動 retention は保留。
+
+---
+
+## 16. 実装メモ（P7 v1、設計からの乖離）
+
+実装時に判明した事実に基づく設計からの差分。
+
+1. **save-only / AnimatedOverlay 不採用**: v1 はアプリ内プレビュー無し（§13 決定）のため大きな動画面が不要 → overlay は使わず、エクスポート UI を **`TimelapsePanel` に直接ホスト**（`src/features/timelapse/TimelapsePanel.tsx`）。パネル登録チェックリスト（§7.2）はそのまま採用。`useTimelapseStore` は不要だった。
+2. **settings store バイパス（重要）**: `useSettingsStore` は固定 `PROJECT_ID = "default-project"` に束縛され（`settingsStore.ts:28/43`）、recorder が使う実 `currentProjectId` と一致しない。`change_events` は実 projectId で書かれるため、`timelapse.enabled` は **settings store を経由せず `getProjectSetting`/`setProjectSetting` を実 projectId で直接読み書き**（B3 `toggle.ts` / B4 `loadProject` / B5 作成 / B6 `TimelapseSettings`）。`KEY_SCOPE`/`DEFAULT_SETTINGS` 登録（B2）は scope ドキュメント + テスト不変条件として保持。Settings トグルは **`ControlledToggle`（auto-persist する `SettingToggle` は失格）**。
+3. **frame schedule**: clamped-timestamp（既定 `maxIdle=2000ms`）で idle 圧縮し 30s/30fps にサンプル（§5.5 通り、`frameProducer.ts`）。
+4. **replay 起点**: baseline snapshot があれば seed、無ければ空 doc（`buildReplayStart`、C1）。baseline は記録 ON 時に scene ごと anchorSequence=0 で焼く（`toggle.ts`）。
+5. **VP9 feature-detect**: `pickSupportedWebmMime`（vp9→vp8→webm）で対応 mime を選び、null ならパネルのボタンを無効化（A6）。
+6. **コミット**: A1→A6 / B1→B6 / C1 を green-build 単位で master 直 commit（`replayEngine`/`recorder`/`settings`/`toggle`/`frameProducer`/`exportTimelapse`/`videoExport`/`TimelapsePanel` ほか）。実機（macOS WKWebView / Linux WebKitGTK）での VP9 録画可否は未検証（要 MANUAL_TEST_CHECKLIST）。
 
 ---
 
