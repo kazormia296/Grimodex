@@ -6,7 +6,23 @@ const queryMock = vi.hoisted(() => ({
 }));
 vi.mock("./queryEvents", () => queryMock);
 
-import { produceSceneTimelapseWebm, saveWebmBlob } from "./exportTimelapse";
+import { Editor } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
+import {
+  produceSceneTimelapseWebm,
+  saveWebmBlob,
+  buildReplayStart,
+} from "./exportTimelapse";
+import type { ReplayEvent } from "./replayEngine";
+
+function fakeEvents(seqs: number[]): ReplayEvent[] {
+  return seqs.map((sequence) => ({
+    domain: "editor",
+    opType: "doc.step",
+    payload: '{"steps":[]}',
+    sequence,
+  }));
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -60,5 +76,35 @@ describe("saveWebmBlob", () => {
       URL.createObjectURL = origCreate;
       URL.revokeObjectURL = origRevoke;
     }
+  });
+});
+
+describe("buildReplayStart", () => {
+  it("without a snapshot: empty doc + all events", () => {
+    const ed = new Editor({ extensions: [StarterKit], content: "<p>seed</p>" });
+    const { initialDoc, replayEvents } = buildReplayStart(
+      ed.schema,
+      fakeEvents([1, 2, 3]),
+      null,
+    );
+    expect(replayEvents).toHaveLength(3);
+    expect(initialDoc.textContent).toBe("");
+    ed.destroy();
+  });
+
+  it("with a snapshot: seeds the doc and replays only events after the anchor", () => {
+    const ed = new Editor({
+      extensions: [StarterKit],
+      content: "<p>baseline</p>",
+    });
+    const payload = ed.state.doc.toJSON();
+    const { initialDoc, replayEvents } = buildReplayStart(
+      ed.schema,
+      fakeEvents([1, 2, 3, 4]),
+      { payload, anchorSequence: 2 },
+    );
+    expect(initialDoc.textContent).toBe("baseline");
+    expect(replayEvents.map((e) => e.sequence)).toEqual([3, 4]);
+    ed.destroy();
   });
 });

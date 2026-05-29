@@ -9,10 +9,12 @@
  * (doc.step) のみ。
  */
 
+import { Node as ProseMirrorNode, type Schema } from "@tiptap/pm/model";
 import { loadSceneChangeEvents } from "./queryEvents";
-import { createReplayCursor } from "./replayEngine";
+import { createReplayCursor, type ReplayEvent } from "./replayEngine";
 import { buildFrameSchedule, makeDrawFrame } from "./frameProducer";
 import { captureCanvasToWebm } from "./videoExport";
+import { loadLatestSnapshot, type DecodedSnapshot } from "./snapshots";
 
 export interface SceneTimelapseOptions {
   projectId: string;
@@ -34,6 +36,42 @@ export interface SceneTimelapseResult {
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
 
+export interface ReplayStart<E extends ReplayEvent = ReplayEvent> {
+  initialDoc: ProseMirrorNode;
+  replayEvents: E[];
+}
+
+/**
+ * Decide the replay starting point (P7.7 / §4.5).
+ *
+ * With a baseline snapshot, seed the doc from it and replay only the events
+ * after its anchor sequence. Without one, start from an empty doc and replay
+ * everything — correct only for scenes that were empty when recording began.
+ * Throws if a snapshot payload can't be deserialised (caller falls back to
+ * the empty-doc path).
+ */
+export function buildReplayStart<E extends ReplayEvent>(
+  schema: Schema,
+  events: E[],
+  snapshot: Pick<DecodedSnapshot, "payload" | "anchorSequence"> | null,
+): ReplayStart<E> {
+  if (snapshot) {
+    const initialDoc = ProseMirrorNode.fromJSON(
+      schema,
+      snapshot.payload as never,
+    );
+    const replayEvents = events.filter(
+      (e) => e.sequence > snapshot.anchorSequence,
+    );
+    return { initialDoc, replayEvents };
+  }
+  const empty = schema.topNodeType.createAndFill();
+  if (!empty) {
+    throw new Error("timelapse: could not build an initial document");
+  }
+  return { initialDoc: empty, replayEvents: events };
+}
+
 /**
  * Render a scene's recorded writing into a WebM Blob. Throws if the scene has
  * no recorded editor steps, or if the runtime can't provide a 2D canvas.
@@ -51,17 +89,36 @@ export async function produceSceneTimelapseWebm(
   const { getEditorExtensions } = await import("@/features/editor/extensions");
   const { getSchema } = await import("@tiptap/core");
   const schema = getSchema(getEditorExtensions());
-  const initialDoc = schema.topNodeType.createAndFill();
-  if (!initialDoc) {
-    throw new Error("timelapse: could not build an initial document");
-  }
+
+  // Seed from the baseline snapshot if one was stamped (recording enable),
+  // else from an empty doc. Fall back to empty if the snapshot is unusable.
+  const snapshot = await loadLatestSnapshot({
+    projectId: opts.projectId,
+    domain: "editor",
+    entityId: opts.sceneId,
+  });
+  const start = (() => {
+    try {
+      return buildReplayStart(schema, events, snapshot);
+    } catch (err) {
+      console.warn(
+        "[timelapse] baseline snapshot unusable; replaying from empty doc",
+        err,
+      );
+      return buildReplayStart(schema, events, null);
+    }
+  })();
 
   const width = opts.width ?? DEFAULT_WIDTH;
   const height = opts.height ?? DEFAULT_HEIGHT;
   const fps = opts.fps ?? 30;
 
-  const cursor = createReplayCursor(schema, initialDoc, events);
-  const schedule = buildFrameSchedule(events, {
+  const cursor = createReplayCursor(
+    schema,
+    start.initialDoc,
+    start.replayEvents,
+  );
+  const schedule = buildFrameSchedule(start.replayEvents, {
     fps,
     targetDurationSec: opts.targetDurationSec,
   });

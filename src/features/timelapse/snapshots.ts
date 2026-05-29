@@ -93,7 +93,11 @@ export async function loadLatestSnapshot(opts: {
   const row = rows[0];
   if (!row) return null;
   const buf = toBytes(row.payload);
-  const json = strFromU8(gunzipSync(buf));
+  // The encoding column is authoritative. recordStateSnapshot writes
+  // 'gzip-json'; the schema default 'zstd-json' is unused. Decode per the
+  // stored encoding rather than assuming gzip.
+  const json =
+    row.encoding === "gzip-json" ? strFromU8(gunzipSync(buf)) : strFromU8(buf);
   let payload: unknown;
   try {
     payload = JSON.parse(json);
