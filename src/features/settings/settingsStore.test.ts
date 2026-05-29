@@ -68,6 +68,7 @@ describe("KEY_SCOPE routing invariants", () => {
       "ai.contextBudget.reserve",
       "tree.folderNaming",
       "tree.numberingScope",
+      "timelapse.enabled",
     ];
     for (const key of projects) {
       expect(KEY_SCOPE[key], `${key} should be project`).toBe("project");

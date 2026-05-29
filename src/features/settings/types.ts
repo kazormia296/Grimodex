@@ -140,6 +140,8 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "export.emphasisDotsStyle": "project",
   "export.sceneBreakStyle": "project",
   "export.sceneBreakCustom": "project",
+  // Timelapse — work-specific (project)
+  "timelapse.enabled": "project",
 };
 
 export const DEFAULT_SETTINGS: Record<string, string> = {
@@ -236,4 +238,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "map.defaultStickyPaletteId": "post-it-playful",
   "map.defaultStickyColorSlot": "0",
   "map.defaultEdgeStyle": "solid",
+  // Timelapse — record changes for this project (default on, preserves
+  // the previous always-on behaviour; legacy projects with no row read on).
+  "timelapse.enabled": "true",
 };
