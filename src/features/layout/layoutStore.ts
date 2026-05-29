@@ -67,6 +67,7 @@ import type {
 import { LAYOUT_SCHEMA_VERSION } from "./layoutTypes";
 import { dragTargetsEqual, type DragOverTarget } from "./layoutDnD";
 import type { PanelId } from "./panelIds";
+import { recordLayoutSnapshot } from "@/features/timelapse/captureLayout";
 
 export type { PanelId };
 export { PANEL_DRAG_TYPE } from "./panelIds";
@@ -385,6 +386,18 @@ function scheduleSave(get: () => LayoutStoreState) {
       } = get();
       const check = validateLayoutState(layout, { viewport: getViewport() });
       if (!check.valid) return;
+
+      // 執筆タイムラプス: 確定したレイアウト状態を forward-only 記録 (§17 P0)。
+      // scheduleSave は live ドラッグ(setRegionSizeLive)では呼ばれず、500ms
+      // デバウンスが burst を 1 スナップショットに畳むため volume bomb にならない。
+      // recorder は flush 時に payload を stringify するので clone を渡す
+      // (queue から flush までの間に layout が mutate しても記録が壊れない)。
+      recordLayoutSnapshot({
+        layout: cloneLayoutState(layout),
+        activePresetId,
+        hiddenStripePanels:
+          hiddenStripePanels.size > 0 ? [...hiddenStripePanels] : undefined,
+      });
 
       const current = await invoke<GlobalSettings>("get_global_settings");
       const persisted: PersistedLayout = {
