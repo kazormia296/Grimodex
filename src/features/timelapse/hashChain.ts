@@ -25,8 +25,9 @@ export interface EventForVerify {
   sessionId: string;
   sequence: number;
   timestamp: number;
-  prevHash: Uint8Array | Buffer;
-  hash: Uint8Array | Buffer;
+  // Hex string (from the DB) or raw bytes (in-memory / tests); toBytes handles both.
+  prevHash: Uint8Array | Buffer | string;
+  hash: Uint8Array | Buffer | string;
 }
 
 /** 32-byte zero hash used as the bootstrap prevHash for the very first event. */
@@ -175,7 +176,11 @@ export async function verifyChain(
   return { ok: true };
 }
 
-function toBytes(v: Uint8Array | Buffer | ArrayBuffer | unknown): Uint8Array {
+function toBytes(
+  v: Uint8Array | Buffer | ArrayBuffer | string | unknown,
+): Uint8Array {
+  // Hashes are stored as hex TEXT (the sqlite-proxy can't round-trip BLOBs).
+  if (typeof v === "string") return hexToBytes(v);
   if (v instanceof Uint8Array) return v;
   if (v instanceof ArrayBuffer) return new Uint8Array(v);
   // drizzle returns Node Buffer for blob columns; Buffer extends Uint8Array

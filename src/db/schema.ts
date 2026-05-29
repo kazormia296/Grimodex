@@ -1527,8 +1527,12 @@ export const changeEvents = sqliteTable(
     sessionId: text("session_id").notNull(),
     sequence: integer("sequence").notNull(),
     timestamp: integer("timestamp").notNull(),
-    prevHash: blob("prev_hash", { mode: "buffer" }).notNull(),
-    hash: blob("hash", { mode: "buffer" }).notNull(),
+    // sha256 hashes stored as hex TEXT. The drizzle sqlite-proxy cannot
+    // round-trip BLOBs (Rust returns a "[blob N bytes]" placeholder on read,
+    // and Buffer is undefined in the webview); hex avoids both. The DB column
+    // keeps BLOB affinity, which stores TEXT values verbatim.
+    prevHash: text("prev_hash").notNull(),
+    hash: text("hash").notNull(),
   },
   (t) => [
     index("idx_change_events_project_ts").on(t.projectId, t.timestamp),
@@ -1558,9 +1562,13 @@ export const stateSnapshots = sqliteTable(
     // change_events with sequence <= anchorSequence.
     anchorSequence: integer("anchor_sequence").notNull(),
     anchorTimestamp: integer("anchor_timestamp").notNull(),
-    /** zstd-compressed serialized snapshot blob (plan §6). */
-    payload: blob("payload", { mode: "buffer" }).notNull(),
-    encoding: text("encoding").notNull().default("zstd-json"),
+    /**
+     * Serialized snapshot stored as TEXT (the drizzle sqlite-proxy can't
+     * round-trip BLOBs). v1 stores plain JSON (`encoding: 'json'`); the column
+     * keeps BLOB affinity which holds TEXT verbatim.
+     */
+    payload: text("payload").notNull(),
+    encoding: text("encoding").notNull().default("json"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [

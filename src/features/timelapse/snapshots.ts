@@ -1,7 +1,6 @@
 import { db } from "@/db/client";
 import { stateSnapshots } from "@/db/schema";
 import { and, desc, eq, lte } from "drizzle-orm";
-import { gzipSync, gunzipSync, strToU8, strFromU8 } from "fflate";
 
 /**
  * 執筆タイムラプス state snapshots.
@@ -10,9 +9,10 @@ import { gzipSync, gunzipSync, strToU8, strFromU8 } from "fflate";
  * doc state and forward-replay only the trailing events. Plan §6 specifies
  * one per (projectId, domain, entityId) every ~1000 events or 1 hour.
  *
- * Encoding note: the plan calls for zstd but we use gzip via fflate (already
- * a dep). gzip is ~10% larger but avoids adding zstd-wasm; we keep an
- * `encoding` column so a future swap stays read-compatible.
+ * Storage: plain JSON TEXT (`encoding: 'json'`). The drizzle sqlite-proxy can't
+ * round-trip BLOBs (Rust returns a placeholder on read; Buffer is undefined in
+ * the webview), so compression is dropped for v1 — payloads are small (a scene
+ * doc is a few KB) and the column keeps BLOB affinity which holds TEXT verbatim.
  */
 
 const DEFAULT_EVENT_GAP = 1000;
@@ -25,7 +25,7 @@ export interface RecordSnapshotInput {
   entityId?: string | null;
   anchorSequence: number;
   anchorTimestamp: number;
-  /** Caller-defined payload. Stringified before compression. */
+  /** Caller-defined payload. Stringified before storage. */
   payload: unknown;
 }
 
@@ -36,7 +36,6 @@ export async function recordStateSnapshot(
     typeof input.payload === "string"
       ? input.payload
       : JSON.stringify(input.payload);
-  const compressed = gzipSync(strToU8(json));
   await db.insert(stateSnapshots).values({
     projectId: input.projectId,
     domain: input.domain,
@@ -44,8 +43,8 @@ export async function recordStateSnapshot(
     entityId: input.entityId ?? null,
     anchorSequence: input.anchorSequence,
     anchorTimestamp: input.anchorTimestamp,
-    payload: Buffer.from(compressed),
-    encoding: "gzip-json",
+    payload: json,
+    encoding: "json",
     createdAt: Date.now(),
   });
 }
@@ -92,17 +91,13 @@ export async function loadLatestSnapshot(opts: {
     .limit(1);
   const row = rows[0];
   if (!row) return null;
-  const buf = toBytes(row.payload);
-  // The encoding column is authoritative. recordStateSnapshot writes
-  // 'gzip-json'; the schema default 'zstd-json' is unused. Decode per the
-  // stored encoding rather than assuming gzip.
-  const json =
-    row.encoding === "gzip-json" ? strFromU8(gunzipSync(buf)) : strFromU8(buf);
+  // Payload is plain JSON TEXT (encoding 'json'). Fall back to the raw string
+  // if it somehow isn't valid JSON.
   let payload: unknown;
   try {
-    payload = JSON.parse(json);
+    payload = JSON.parse(row.payload);
   } catch {
-    payload = json;
+    payload = row.payload;
   }
   return {
     domain: row.domain,
@@ -129,23 +124,4 @@ export function shouldCreateSnapshot(args: {
   if (args.eventsSinceLast >= eventGap) return true;
   if (args.timeSinceLastMs >= timeGapMs) return true;
   return false;
-}
-
-function toBytes(v: unknown): Uint8Array {
-  if (v instanceof Uint8Array) return v;
-  if (v instanceof ArrayBuffer) return new Uint8Array(v);
-  if (
-    v &&
-    typeof v === "object" &&
-    "buffer" in (v as { buffer?: unknown }) &&
-    "byteLength" in (v as { byteLength?: unknown })
-  ) {
-    const view = v as {
-      buffer: ArrayBufferLike;
-      byteOffset: number;
-      byteLength: number;
-    };
-    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-  }
-  throw new Error("unsupported snapshot payload representation");
 }

@@ -60,10 +60,10 @@ describe("recordStateSnapshot + loadLatestSnapshot", () => {
     vi.clearAllMocks();
   });
 
-  it("round-trips a JSON payload via gzip", async () => {
-    let stored: { payload: Buffer; encoding: string } | null = null;
+  it("round-trips a JSON payload as plain text", async () => {
+    let stored: { payload: string; encoding: string } | null = null;
     dbInsertMock.mockImplementation(() => ({
-      values: (row: { payload: Buffer; encoding: string }) => {
+      values: (row: { payload: string; encoding: string }) => {
         stored = { payload: row.payload, encoding: row.encoding };
         return Promise.resolve();
       },
@@ -78,8 +78,10 @@ describe("recordStateSnapshot + loadLatestSnapshot", () => {
       payload: { doc: { type: "doc", content: [] } },
     });
     expect(stored).not.toBeNull();
-    expect((stored as unknown as { encoding: string }).encoding).toBe(
-      "gzip-json",
+    expect((stored as unknown as { encoding: string }).encoding).toBe("json");
+    // Stored as plain JSON TEXT (no compression / no Buffer).
+    expect(typeof (stored as unknown as { payload: string }).payload).toBe(
+      "string",
     );
 
     // Now make the SELECT chain return the row we just "stored" so the
@@ -97,8 +99,8 @@ describe("recordStateSnapshot + loadLatestSnapshot", () => {
                   entityId: "scene-a",
                   anchorSequence: 100,
                   anchorTimestamp: 1_700_000_000_000,
-                  payload: (stored as unknown as { payload: Buffer }).payload,
-                  encoding: "gzip-json",
+                  payload: (stored as unknown as { payload: string }).payload,
+                  encoding: "json",
                   createdAt: 0,
                 },
               ]),

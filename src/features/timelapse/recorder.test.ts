@@ -34,11 +34,11 @@ interface InsertedRow {
   sessionId: string;
   sequence: number;
   timestamp: number;
-  prevHash: Buffer;
-  hash: Buffer;
+  prevHash: string; // hex
+  hash: string; // hex
 }
 
-function setupDb(initialTail: { sequence: number; hash: Buffer } | null) {
+function setupDb(initialTail: { sequence: number; hash: string } | null) {
   dbSelectMock.mockImplementation(() => ({
     from: () => ({
       where: () => ({
@@ -76,9 +76,9 @@ describe("recorder", () => {
     expect(rows).toHaveLength(3);
     expect(rows.map((r) => r.sequence)).toEqual([1, 2, 3]);
 
-    // Each row's prevHash equals the previous row's hash.
+    // Each row's prevHash (hex) equals the previous row's hash.
     for (let i = 1; i < rows.length; i += 1) {
-      expect(rows[i].prevHash.equals(rows[i - 1].hash)).toBe(true);
+      expect(rows[i].prevHash).toBe(rows[i - 1].hash);
     }
 
     // verifyChain accepts the produced chain.
@@ -100,9 +100,9 @@ describe("recorder", () => {
   });
 
   it("resumes from the project tail when initializing", async () => {
-    // Pretend the project already has a hash at sequence 42.
-    const tailHash = Buffer.alloc(32, 0x7c);
-    const rows = setupDb({ sequence: 42, hash: tailHash });
+    // Pretend the project already has a hash at sequence 42 (hex TEXT).
+    const tailHex = "7c".repeat(32);
+    const rows = setupDb({ sequence: 42, hash: tailHex });
     await initRecorderForProject("p2");
     recordChangeEvent({
       domain: "snippet",
@@ -113,7 +113,7 @@ describe("recorder", () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0].sequence).toBe(43);
-    expect(rows[0].prevHash.equals(tailHash)).toBe(true);
+    expect(rows[0].prevHash).toBe(tailHex);
   });
 
   it("is a no-op when disabled", async () => {
@@ -134,11 +134,10 @@ describe("recorder", () => {
   });
 
   it("resetRecorderChain restarts at genesis on same-project re-enable", async () => {
-    // Bind to a project that already has a non-zero chain head (seq 42).
-    const tailHash = Buffer.alloc(32, 0x7c);
-    let tail: { sequence: number; hash: Buffer } | null = {
+    // Bind to a project that already has a non-zero chain head (seq 42, hex).
+    let tail: { sequence: number; hash: string } | null = {
       sequence: 42,
-      hash: tailHash,
+      hash: "7c".repeat(32),
     };
     dbSelectMock.mockImplementation(() => ({
       from: () => ({
@@ -172,8 +171,8 @@ describe("recorder", () => {
 
     expect(inserted).toHaveLength(2);
     expect(inserted[0].sequence).toBe(1);
-    expect(inserted[0].prevHash.equals(Buffer.alloc(32))).toBe(true); // GENESIS
-    expect(inserted[1].prevHash.equals(inserted[0].hash)).toBe(true);
+    expect(inserted[0].prevHash).toBe("0".repeat(64)); // GENESIS (32 zero bytes)
+    expect(inserted[1].prevHash).toBe(inserted[0].hash);
   });
 
   it("canonicalises top-level payload keys for stable hashing", async () => {

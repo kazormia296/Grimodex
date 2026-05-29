@@ -2,7 +2,12 @@
 import { describe, it, expect } from "vitest";
 import { unzipSync, strFromU8 } from "fflate";
 import { buildAuthorshipExportZip, eventsToChainJson } from "./zipExport";
-import { GENESIS_HASH, computeEventHash, verifyChain } from "./hashChain";
+import {
+  GENESIS_HASH,
+  computeEventHash,
+  verifyChain,
+  bytesToHex,
+} from "./hashChain";
 import type { ProjectAuthorshipReport } from "@/features/attribution/projectAuthorship";
 import type { ChangeEvent } from "@/db/schema";
 
@@ -44,8 +49,8 @@ async function buildEvents(count: number): Promise<ChangeEvent[]> {
     out.push({
       id: i,
       ...body,
-      prevHash: Buffer.from(prev),
-      hash: Buffer.from(hash),
+      prevHash: bytesToHex(prev),
+      hash: bytesToHex(hash),
     });
     prev = hash;
   }

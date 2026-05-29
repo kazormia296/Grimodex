@@ -6,7 +6,7 @@ import {
   exportAuthorshipJson,
 } from "@/features/attribution/exportReport";
 import { VERIFY_HTML_TEMPLATE } from "./verifyHtmlTemplate";
-import { bytesToHex } from "./hashChain";
+import { bytesToHex, hexToBytes } from "./hashChain";
 
 /**
  * 執筆タイムラプス zip export.
@@ -76,6 +76,8 @@ export function buildAuthorshipExportZip(
 }
 
 function toBytes(v: unknown): Uint8Array {
+  // Hashes round-trip as hex TEXT from the DB; raw bytes only in tests.
+  if (typeof v === "string") return hexToBytes(v);
   if (v instanceof Uint8Array) return v;
   if (v instanceof ArrayBuffer) return new Uint8Array(v);
   if (

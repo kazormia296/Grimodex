@@ -9,7 +9,7 @@ import {
 } from "./hashChain";
 import type { EventForVerify } from "./hashChain";
 
-function evBody(over: Partial<EventForVerify> = {}): {
+type EvBody = {
   projectId: string;
   sceneId: string | null;
   domain: string;
@@ -21,7 +21,8 @@ function evBody(over: Partial<EventForVerify> = {}): {
   sequence: number;
   timestamp: number;
   prevHash: Uint8Array;
-} {
+};
+function evBody(over: Partial<EvBody> = {}): EvBody {
   return {
     projectId: "p1",
     sceneId: null,

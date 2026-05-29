@@ -14,7 +14,13 @@
 import { db } from "@/db/client";
 import { changeEvents } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
-import { GENESIS_HASH, computeEventHash, type VerifyResult } from "./hashChain";
+import {
+  GENESIS_HASH,
+  computeEventHash,
+  bytesToHex,
+  hexToBytes,
+  type VerifyResult,
+} from "./hashChain";
 
 const FLUSH_DEBOUNCE_MS = 100;
 
@@ -122,7 +128,7 @@ export async function initRecorderForProject(projectId: string): Promise<void> {
     const head = last[0];
     if (head) {
       state.lastSequence = head.sequence;
-      state.lastHash = toUint8(head.hash);
+      state.lastHash = hexToBytes(head.hash);
     } else {
       state.lastSequence = 0;
       state.lastHash = GENESIS_HASH;
@@ -248,8 +254,8 @@ export async function flushNow(): Promise<void> {
         sessionId: body.sessionId,
         sequence: body.sequence,
         timestamp: body.timestamp,
-        prevHash: Buffer.from(prev),
-        hash: Buffer.from(hash),
+        prevHash: bytesToHex(prev),
+        hash: bytesToHex(hash),
       });
       prev = hash;
     }
@@ -282,25 +288,6 @@ function canonicalisePayload(p: unknown): string {
     return JSON.stringify(out);
   }
   return JSON.stringify(p);
-}
-
-function toUint8(v: unknown): Uint8Array {
-  if (v instanceof Uint8Array) return v;
-  if (v instanceof ArrayBuffer) return new Uint8Array(v);
-  if (
-    v &&
-    typeof v === "object" &&
-    "buffer" in (v as { buffer?: unknown }) &&
-    "byteLength" in (v as { byteLength?: unknown })
-  ) {
-    const view = v as {
-      buffer: ArrayBufferLike;
-      byteOffset: number;
-      byteLength: number;
-    };
-    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-  }
-  throw new Error("unsupported hash representation");
 }
 
 export type { VerifyResult };
