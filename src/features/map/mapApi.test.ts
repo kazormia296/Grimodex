@@ -527,6 +527,19 @@ describe("mapApi — show config", () => {
     const parsed = parseShowConfig(serializeShowConfig(show));
     expect(parsed).toEqual(show);
   });
+
+  it("新規ボード (空 showConfig) は notes / aiBranch をデフォルト表示する", async () => {
+    const { parseShowConfig } = await import("./mapApi");
+    const { DEFAULT_SHOW } = await import("./types");
+    // DEFAULT_SHOW は単一定義 (types.ts)。mapStore 初期 show と parseShowConfig
+    // のフォールバックが同じ定数を共有していることで、二重定義による
+    // notes/aiBranch のデフォルト食い違いが再発しないことを担保する。
+    expect(DEFAULT_SHOW.notes).toBe(true);
+    expect(DEFAULT_SHOW.aiBranch).toBe(true);
+    const fresh = parseShowConfig("{}");
+    expect(fresh.notes).toBe(true);
+    expect(fresh.aiBranch).toBe(true);
+  });
 });
 
 describe("mapApi — duplicateBoard", () => {

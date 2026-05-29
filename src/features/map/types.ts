@@ -58,7 +58,7 @@ export const DEFAULT_SHOW: ShowFlags = {
   scenes: true,
   codex: true,
   snippets: true,
-  notes: false,
+  notes: true,
   stickies: true,
   aiBranch: true,
   derivedEdges: true,

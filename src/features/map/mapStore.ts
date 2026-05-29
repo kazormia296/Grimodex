@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { GlobalSettings } from "@/features/workspace/store";
 import { parseShowConfig } from "./mapApi";
+import { DEFAULT_SHOW } from "./types";
 import type {
   MapMode,
   ShowFlags,
@@ -48,18 +49,6 @@ interface MapState {
 
 // Import here to avoid circular dep — autoArrange types live in layouts
 type AutoArrangeType = import("./layouts/autoArrange").AutoArrangeType;
-
-const DEFAULT_SHOW: ShowFlags = {
-  scenes: true,
-  codex: true,
-  snippets: true,
-  notes: false,
-  stickies: true,
-  aiBranch: false,
-  derivedEdges: true,
-  userEdges: true,
-  frames: true,
-};
 
 export const useMapStore = create<MapState>((set) => ({
   activeBoardId: null,
