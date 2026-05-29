@@ -9,7 +9,10 @@ export type Domain =
   | "grid"
   | "map"
   | "synopsis"
-  | "beat";
+  | "beat"
+  // P0 (§17): chat conversation flow + panel/layout/focus motion.
+  | "chat"
+  | "layout";
 
 /**
  * Fetch the project's change-event tail, ordered by sequence (ascending).

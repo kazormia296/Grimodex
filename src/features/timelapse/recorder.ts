@@ -31,7 +31,13 @@ type Domain =
   | "grid"
   | "map"
   | "synopsis"
-  | "beat";
+  | "beat"
+  // P0 (§17): forward-only capture of the chat conversation flow and the
+  // panel/layout/focus motion, so the timelapse video can show "writing in
+  // Grimodex" rather than bare prose. These domains carry no doc.step; their
+  // replay consumer is separate from the editor-body replayEngine.
+  | "chat"
+  | "layout";
 
 export interface RecordEventInput {
   domain: Domain;

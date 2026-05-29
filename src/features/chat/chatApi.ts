@@ -28,6 +28,11 @@ import type {
   ChatSummary,
   MessageRole,
 } from "./chatTypes";
+import {
+  recordChatMessageAdd,
+  recordChatMessageDelete,
+  recordChatMessagesDeleteFrom,
+} from "@/features/timelapse/captureChat";
 import type { CodexEntry } from "@/features/codex/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { sanitizeSceneContent } from "./contextBuilder";
@@ -446,11 +451,22 @@ export async function addMessage(
     .set({ updatedAt: now })
     .where(eq(chatSessions.id, sessionId));
 
+  // 執筆タイムラプス: 会話フローの forward-only 記録 (§17 P0)。fire-and-forget。
+  recordChatMessageAdd({
+    sessionId,
+    messageId: id,
+    role,
+    text: content,
+    model: extra?.model ?? null,
+    createdAt: now,
+  });
+
   return toMessage(rows[0]);
 }
 
 export async function deleteMessage(messageId: string): Promise<void> {
   await db.delete(chatMessages).where(eq(chatMessages.id, messageId));
+  recordChatMessageDelete({ messageId });
 }
 
 export async function deleteMessagesFrom(
@@ -465,6 +481,7 @@ export async function deleteMessagesFrom(
         gte(chatMessages.createdAt, fromCreatedAt),
       ),
     );
+  recordChatMessagesDeleteFrom({ sessionId, fromCreatedAt });
 }
 
 export async function updateMessageMetadata(

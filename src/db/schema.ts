@@ -1519,7 +1519,7 @@ export const changeEvents = sqliteTable(
     sceneId: text("scene_id").references(() => treeNodes.id, {
       onDelete: "set null",
     }),
-    domain: text("domain").notNull(), // 'editor'|'codex'|'snippet'|'grid'|'map'|'synopsis'|'beat'
+    domain: text("domain").notNull(), // 'editor'|'codex'|'snippet'|'grid'|'map'|'synopsis'|'beat'|'chat'|'layout'
     opType: text("op_type").notNull(),
     entityType: text("entity_type"),
     entityId: text("entity_id"),
