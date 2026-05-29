@@ -535,6 +535,7 @@
       "grid": "Grid",
       "matrix": "Matrix",
       "trash-bin": "Trash Bin",
+      "timelapse": "Timelapse",
       "command-center-results": "Search"
     },
     "preset": {
@@ -2128,7 +2129,17 @@
     "verifyBroken": "Chain broken at sequence {{seq}}: {{reason}}",
     "scrub": "Scrub through events",
     "scrubHint": "Drag the scrubber to inspect an event.",
-    "noEvents": "No change events recorded yet."
+    "noEvents": "No change events recorded yet.",
+    "exportTitle": "Export video",
+    "exportButton": "Export 30s video",
+    "exporting": "Exporting…",
+    "exportDone": "Timelapse video saved",
+    "exportFailed": "Failed to export the timelapse video",
+    "exportNoSteps": "No recorded writing for this scene yet",
+    "exportScene": "Scene: {{title}}",
+    "exportHint": "Exports this scene's writing as a 30s WebM video.",
+    "noScene": "Open a scene in the editor to export its timelapse.",
+    "videoUnsupported": "Video export isn't supported on this platform."
   },
   "phase": {
     "editTitle": "Edit Phase",

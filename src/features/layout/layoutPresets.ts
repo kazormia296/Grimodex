@@ -133,7 +133,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin"],
+              panels: ["trash-bin", "timelapse"],
               activePanel: null,
             },
           ],
@@ -202,7 +202,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["kouetsu", "trash-bin", "timeline"],
+              panels: ["kouetsu", "trash-bin", "timeline", "timelapse"],
               activePanel: null,
             },
           ],
@@ -280,7 +280,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin"],
+              panels: ["trash-bin", "timelapse"],
               activePanel: null,
             },
           ],
@@ -364,7 +364,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin"],
+              panels: ["trash-bin", "timelapse"],
               activePanel: null,
             },
           ],
@@ -448,7 +448,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin"],
+              panels: ["trash-bin", "timelapse"],
               activePanel: null,
             },
           ],

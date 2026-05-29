@@ -15,6 +15,7 @@ export type PanelId =
   | "grid"
   | "matrix"
   | "trash-bin"
+  | "timelapse"
   | "command-center-results";
 
 /** MIME type used to transfer panel IDs during external drag operations */

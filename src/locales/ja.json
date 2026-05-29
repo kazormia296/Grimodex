@@ -535,6 +535,7 @@
       "grid": "グリッド",
       "matrix": "マトリクス",
       "trash-bin": "ゴミ箱",
+      "timelapse": "タイムラプス",
       "command-center-results": "検索"
     },
     "preset": {
@@ -2137,7 +2138,17 @@
     "verifyBroken": "sequence {{seq}} でチェーン破綻: {{reason}}",
     "scrub": "event をスクラブ",
     "scrubHint": "スライダーを動かして event を見る",
-    "noEvents": "まだ change event は記録されていません"
+    "noEvents": "まだ change event は記録されていません",
+    "exportTitle": "動画を書き出し",
+    "exportButton": "30秒動画を書き出し",
+    "exporting": "書き出し中…",
+    "exportDone": "タイムラプス動画を保存しました",
+    "exportFailed": "タイムラプス動画の書き出しに失敗しました",
+    "exportNoSteps": "このシーンにはまだ記録された執筆がありません",
+    "exportScene": "シーン: {{title}}",
+    "exportHint": "このシーンの執筆を30秒の WebM 動画として書き出します。",
+    "noScene": "エディタでシーンを開くと書き出せます。",
+    "videoUnsupported": "この環境では動画書き出しに対応していません。"
   },
   "phase": {
     "editTitle": "フェーズを編集",

@@ -14,6 +14,7 @@ import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { GridPanel } from "@/features/grid/GridPanel";
 import { MatrixPanel } from "@/features/matrix/MatrixPanel";
 import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
+import { TimelapsePanel } from "@/features/timelapse/TimelapsePanel";
 import { CommandCenterResultsPanel } from "@/features/commandCenter/CommandCenterResultsPanel";
 import { SceneEditor } from "@/features/tree/SceneEditor";
 
@@ -36,5 +37,6 @@ export const PANEL_COMPONENT_MAP: Record<PanelId, FunctionComponent> = {
   grid: GridPanel,
   matrix: MatrixPanel,
   "trash-bin": TrashBinPanel,
+  timelapse: TimelapsePanel,
   "command-center-results": CommandCenterResultsPanel,
 };

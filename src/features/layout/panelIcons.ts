@@ -14,6 +14,7 @@ import {
   Columns3,
   Table2,
   Trash2,
+  Film,
   type LucideIcon,
 } from "lucide-react";
 
@@ -39,4 +40,5 @@ export const PANEL_ICON_MAP: Record<Exclude<PanelId, "editor">, LucideIcon> = {
   grid: Columns3,
   matrix: Table2,
   "trash-bin": Trash2,
+  timelapse: Film,
 };

@@ -22,6 +22,7 @@ export const PANEL_REGION_MAP: Record<
   grid: "center-bottom",
   matrix: "center-bottom",
   "trash-bin": "center-bottom",
+  timelapse: "center-bottom",
 };
 
 /** Keyboard shortcut hints for each panel */
@@ -63,4 +64,5 @@ export const TOGGLEABLE_PANELS: Exclude<PanelId, "editor">[] = [
   "grid",
   "matrix",
   "trash-bin",
+  "timelapse",
 ];
