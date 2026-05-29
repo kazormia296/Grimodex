@@ -132,6 +132,29 @@ export async function initRecorderForProject(projectId: string): Promise<void> {
 }
 
 /**
+ * Reset the in-memory chain head so the NEXT flush starts a fresh chain from
+ * genesis (sequence 1, prevHash = GENESIS_HASH). Used by the timelapse ON/OFF
+ * toggle after wiping a project's change_events: re-enabling must NOT continue
+ * the old chain.
+ *
+ * Critically this nulls `initPromise` so a subsequent `initRecorderForProject`
+ * for the SAME project does not short-circuit on its idempotency guard
+ * (L105-107) and actually re-reads the now-empty tail. `enabled` / `projectId`
+ * are left untouched — this is not a full teardown; the following
+ * `initRecorderForProject` will mint a fresh sessionId.
+ */
+export function resetRecorderChain(): void {
+  state.lastSequence = 0;
+  state.lastHash = GENESIS_HASH;
+  state.queue = [];
+  state.initPromise = null;
+  if (state.flushTimer) {
+    clearTimeout(state.flushTimer);
+    state.flushTimer = null;
+  }
+}
+
+/**
  * Public test hook: reset all in-memory state. Production code should not
  * call this — `initRecorderForProject` is the normal entry point.
  */

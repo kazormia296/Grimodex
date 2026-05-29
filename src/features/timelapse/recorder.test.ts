@@ -18,6 +18,7 @@ import {
   flushNow,
   initRecorderForProject,
   recordChangeEvent,
+  resetRecorderChain,
   setRecorderEnabled,
 } from "./recorder";
 import { verifyChain, type EventForVerify } from "./hashChain";
@@ -130,6 +131,49 @@ describe("recorder", () => {
     recordChangeEvent({ domain: "editor", opType: "step", payload: {} });
     await flushNow();
     expect(rows).toEqual([]);
+  });
+
+  it("resetRecorderChain restarts at genesis on same-project re-enable", async () => {
+    // Bind to a project that already has a non-zero chain head (seq 42).
+    const tailHash = Buffer.alloc(32, 0x7c);
+    let tail: { sequence: number; hash: Buffer } | null = {
+      sequence: 42,
+      hash: tailHash,
+    };
+    dbSelectMock.mockImplementation(() => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: () => Promise.resolve(tail ? [tail] : []),
+          }),
+        }),
+      }),
+    }));
+    const inserted: InsertedRow[] = [];
+    dbInsertMock.mockImplementation(() => ({
+      values: (rows: InsertedRow[]) => {
+        inserted.push(...rows);
+        return Promise.resolve();
+      },
+    }));
+
+    await initRecorderForProject("p");
+
+    // Simulate OFF -> ON: history wiped (tail now empty) + production reset.
+    // Without resetRecorderChain, initRecorderForProject's idempotency guard
+    // short-circuits and the next flush would write seq 43 / prevHash=old-head.
+    tail = null;
+    resetRecorderChain();
+    await initRecorderForProject("p");
+
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 2 } });
+    await flushNow();
+
+    expect(inserted).toHaveLength(2);
+    expect(inserted[0].sequence).toBe(1);
+    expect(inserted[0].prevHash.equals(Buffer.alloc(32))).toBe(true); // GENESIS
+    expect(inserted[1].prevHash.equals(inserted[0].hash)).toBe(true);
   });
 
   it("canonicalises top-level payload keys for stable hashing", async () => {
