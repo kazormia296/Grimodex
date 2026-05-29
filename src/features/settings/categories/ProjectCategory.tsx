@@ -9,6 +9,7 @@ import {
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingTextarea } from "../components/SettingTextarea";
+import { TimelapseSettings } from "./TimelapseSettings";
 import { getAllProjectSettings } from "../api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import type { PhaseResolutionMode } from "@/features/codex/phaseResolver";
@@ -313,6 +314,8 @@ export function ProjectCategory() {
           </select>
         </SettingRow>
       </SettingSection>
+
+      <TimelapseSettings />
 
       <SettingSection title={t("settings.project.aiPolicy", "AI使用ポリシー")}>
         <SettingRow
