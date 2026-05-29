@@ -2139,7 +2139,15 @@
     "exportScene": "Scene: {{title}}",
     "exportHint": "Exports this scene's writing as a 30s WebM video.",
     "noScene": "Open a scene in the editor to export its timelapse.",
-    "videoUnsupported": "Video export isn't supported on this platform."
+    "videoUnsupported": "Video export isn't supported on this platform.",
+    "scope": "Scope",
+    "scopeScene": "Current scene",
+    "scopeProject": "Whole project",
+    "exportProjectHint": "Exports the whole project's writing as one WebM video.",
+    "exportProjectNoSteps": "No recorded writing in this project yet",
+    "tabTextExport": "Text",
+    "tabVideoExport": "Timelapse video",
+    "movedToDialog": "Video export has moved to the Export dialog (Ctrl+Shift+E) → Timelapse video tab."
   },
   "phase": {
     "editTitle": "Edit Phase",

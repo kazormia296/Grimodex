@@ -26,6 +26,7 @@ import {
   type UserExportPreset,
 } from "./exportUserPresets";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { TimelapseExportSection } from "@/features/timelapse/TimelapseExportSection";
 
 // ────────────────────────────────────────────────────────────────────
 // 設定のロード/セーブ
@@ -189,6 +190,8 @@ export function ExportDialog({ open, onClose }: Props) {
   const [isExporting, setIsExporting] = useState(false);
   const [projectTitle, setProjectTitle] = useState("Untitled Project");
   const [projectLanguage, setProjectLanguage] = useState("ja");
+  // テキスト出力 / タイムラプス動画 の切り替え (#8)。
+  const [mode, setMode] = useState<"text" | "timelapse">("text");
 
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -360,10 +363,37 @@ export function ExportDialog({ open, onClose }: Props) {
       className="flex h-[780px] w-[1000px] min-h-[400px] min-w-[560px] max-h-[90vh] max-w-[90vw] resize flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
     >
       {/* ヘッダー */}
-      <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-2">
+      <div className="flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2">
         <h2 className="text-sm font-semibold text-foreground">
           {t("export.dialog.title")}
         </h2>
+        {/* モード切替: テキスト / タイムラプス動画 (#8) */}
+        <div
+          role="tablist"
+          className="inline-flex rounded-md border border-border p-0.5"
+        >
+          {(["text", "timelapse"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="tab"
+              aria-selected={mode === m}
+              onClick={() => setMode(m)}
+              className={`rounded px-2.5 py-1 text-xs transition-colors ${
+                mode === m
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent"
+              }`}
+            >
+              {t(
+                m === "text"
+                  ? "timelapse.tabTextExport"
+                  : "timelapse.tabVideoExport",
+              )}
+            </button>
+          ))}
+        </div>
+        <div className="flex-1" />
         <button
           type="button"
           onClick={onClose}
@@ -373,68 +403,82 @@ export function ExportDialog({ open, onClose }: Props) {
         </button>
       </div>
 
-      {/* ボディ: 左ペイン + 右ペイン */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* 左: シーン選択ツリー */}
-        <div className="w-1/2 min-w-[240px] overflow-hidden border-r border-border">
-          <ExportTree nodes={nodes} state={treeState} onChange={setTreeState} />
-        </div>
+      {/* ボディ: テキスト出力 = 左ペイン + 右ペイン / 動画 = タイムラプス書き出し */}
+      {mode === "text" ? (
+        <div className="flex flex-1 overflow-hidden">
+          {/* 左: シーン選択ツリー */}
+          <div className="w-1/2 min-w-[240px] overflow-hidden border-r border-border">
+            <ExportTree
+              nodes={nodes}
+              state={treeState}
+              onChange={setTreeState}
+            />
+          </div>
 
-        {/* 右: エクスポート設定 */}
-        <div className="min-w-[280px] flex-1 overflow-hidden">
-          <ExportSettingsPanel
-            settings={exportSettings}
-            onChange={handleSettingsChange}
-            nodes={nodes}
-            contentMap={contentMap}
-            checkedIds={treeState.checkedIds}
-            userPresets={userPresets}
-            onUserPresetsChange={handleUserPresetsChange}
-          />
+          {/* 右: エクスポート設定 */}
+          <div className="min-w-[280px] flex-1 overflow-hidden">
+            <ExportSettingsPanel
+              settings={exportSettings}
+              onChange={handleSettingsChange}
+              nodes={nodes}
+              contentMap={contentMap}
+              checkedIds={treeState.checkedIds}
+              userPresets={userPresets}
+              onUserPresetsChange={handleUserPresetsChange}
+            />
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="flex-1 overflow-auto">
+          <TimelapseExportSection projectTitle={projectTitle} />
+        </div>
+      )}
 
-      {/* フッター */}
-      <div className="flex flex-shrink-0 items-center gap-3 border-t border-border px-4 py-2">
-        <span className="text-xs text-muted-foreground">
-          {t("export.dialog.selectedScenes", { sceneCount, totalScenes })}
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {t("export.dialog.approxChars", {
-            count: charCount.toLocaleString(),
-          })}
-        </span>
-        <div className="flex-1" />
-        {/* コピーボタン */}
-        <button
-          type="button"
-          onClick={handleCopy}
-          disabled={sceneCount === 0}
-          className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {isCopied ? (
-            <>
-              <Check className="h-3.5 w-3.5 text-green-500" />
-              {t("export.dialog.copied")}
-            </>
-          ) : (
-            <>
-              <ClipboardCopy className="h-3.5 w-3.5" />
-              {t("export.dialog.copy")}
-            </>
-          )}
-        </button>
-        {/* エクスポートボタン */}
-        <button
-          type="button"
-          onClick={handleExport}
-          disabled={sceneCount === 0 || isExporting}
-          className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <Download className="h-3.5 w-3.5" />
-          {isExporting ? t("export.dialog.saving") : t("export.dialog.export")}
-        </button>
-      </div>
+      {/* フッター (テキスト出力時のみ。動画は TimelapseExportSection が自前の書き出しボタンを持つ) */}
+      {mode === "text" && (
+        <div className="flex flex-shrink-0 items-center gap-3 border-t border-border px-4 py-2">
+          <span className="text-xs text-muted-foreground">
+            {t("export.dialog.selectedScenes", { sceneCount, totalScenes })}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {t("export.dialog.approxChars", {
+              count: charCount.toLocaleString(),
+            })}
+          </span>
+          <div className="flex-1" />
+          {/* コピーボタン */}
+          <button
+            type="button"
+            onClick={handleCopy}
+            disabled={sceneCount === 0}
+            className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {isCopied ? (
+              <>
+                <Check className="h-3.5 w-3.5 text-green-500" />
+                {t("export.dialog.copied")}
+              </>
+            ) : (
+              <>
+                <ClipboardCopy className="h-3.5 w-3.5" />
+                {t("export.dialog.copy")}
+              </>
+            )}
+          </button>
+          {/* エクスポートボタン */}
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={sceneCount === 0 || isExporting}
+            className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Download className="h-3.5 w-3.5" />
+            {isExporting
+              ? t("export.dialog.saving")
+              : t("export.dialog.export")}
+          </button>
+        </div>
+      )}
     </AnimatedOverlay>
   );
 }
