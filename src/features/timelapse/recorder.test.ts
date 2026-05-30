@@ -198,4 +198,53 @@ describe("recorder", () => {
     await flushNow();
     expect(rows).toEqual([]);
   });
+
+  it('serialises undefined payload as "null" for stable hashing (L2)', async () => {
+    const rows = setupDb(null);
+    await initRecorderForProject("p-undef");
+    // undefined is a valid `unknown` payload; JSON.stringify(undefined) returns
+    // undefined (not a string), so the canonicaliser must coerce it to "null".
+    recordChangeEvent({ domain: "editor", opType: "step", payload: undefined });
+    await flushNow();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].payload).toBe("null");
+  });
+
+  it("re-queues events after flush failure so the retry succeeds (L1)", async () => {
+    dbSelectMock.mockImplementation(() => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: () => Promise.resolve([]),
+          }),
+        }),
+      }),
+    }));
+    let insertCount = 0;
+    const rows: InsertedRow[] = [];
+    dbInsertMock.mockImplementation(() => ({
+      values: (batch: InsertedRow[]) => {
+        insertCount++;
+        if (insertCount === 1) return Promise.reject(new Error("write failed"));
+        rows.push(...batch);
+        return Promise.resolve();
+      },
+    }));
+
+    await initRecorderForProject("p-retry");
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
+
+    // First flush fails; error must propagate to caller.
+    await expect(flushNow()).rejects.toThrow("write failed");
+
+    // Events must be re-queued by the catch block. The scheduleFlush() call in
+    // that same catch block is what arms the timer so the retry fires without
+    // a new event being recorded. Here we exercise the same code path the timer
+    // would take: a naked flushNow() with no new event must commit the batch.
+    await flushNow();
+
+    expect(insertCount).toBe(2);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].opType).toBe("step");
+  });
 });
