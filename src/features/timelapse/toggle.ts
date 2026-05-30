@@ -17,14 +17,14 @@
 
 import { db } from "@/db/client";
 import { changeEvents, stateSnapshots } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   flushNow,
   initRecorderForProject,
   resetRecorderChain,
   setRecorderEnabled,
 } from "./recorder";
-import { recordStateSnapshot } from "./snapshots";
+import { recordStateSnapshot, loadLatestSnapshot } from "./snapshots";
 import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
 import { listAllNodes, loadSceneContent } from "@/features/tree/api";
 
@@ -88,6 +88,55 @@ async function stampSceneBaselines(projectId: string): Promise<void> {
       );
     }
   }
+}
+
+/**
+ * Cheap existence probe: has this project recorded any editor body step?
+ * LIMIT 1 keeps it O(1) on the load path even for a large change_events table
+ * (a long novel's log can reach tens of MB — §6). "Genesis" for an editor
+ * baseline means specifically "no editor doc.step to double-apply", not "no
+ * events at all": a project may hold only layout/chat events yet still have
+ * content-bearing scenes that need baselining.
+ */
+async function hasEditorSteps(projectId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: changeEvents.id })
+    .from(changeEvents)
+    .where(
+      and(
+        eq(changeEvents.projectId, projectId),
+        eq(changeEvents.domain, "editor"),
+        eq(changeEvents.opType, "doc.step"),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * Default-ON wiring fix: bake genesis scene baselines without a toggle.
+ *
+ * `stampSceneBaselines` otherwise runs only on the explicit OFF→ON toggle /
+ * purge (`rearmFromGenesis`). Under the default-ON setting `loadProject`
+ * auto-enables recording, so a project that is never toggled gets no scene
+ * baselines — and a non-empty scene then can't be replayed in the timelapse
+ * export (it seeds from an empty doc and a step referencing the pre-existing
+ * content throws RangeError). Bake baselines once, at genesis (no recorded
+ * events yet), so the default-ON path matches the toggled path.
+ *
+ * Two guards keep this safe and idempotent:
+ *  - Skip when editor steps already exist: past genesis an anchorSequence=0
+ *    baseline would double-apply the already-recorded steps on top of a doc
+ *    that already includes them (positions go out of range — the very bug we
+ *    fix). Such projects can only be repaired by an explicit OFF→ON re-record.
+ *  - Skip when an editor baseline already exists: avoids duplicate rows when a
+ *    genesis project is reloaded before its first edit (e.g. after a toggle-ON).
+ */
+export async function ensureGenesisBaselines(projectId: string): Promise<void> {
+  if (await hasEditorSteps(projectId)) return; // past genesis
+  const existing = await loadLatestSnapshot({ projectId, domain: "editor" });
+  if (existing) return; // already baked (e.g. toggle-ON, then reload)
+  await stampSceneBaselines(projectId);
 }
 
 /** Re-arm the recorder on a freshly-wiped project and stamp baselines. */

@@ -95,7 +95,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         !(typeof process !== "undefined" && process.env?.VITEST)
       ) {
         void (async () => {
-          const { isTimelapseEnabled } =
+          const { isTimelapseEnabled, ensureGenesisBaselines } =
             await import("@/features/timelapse/toggle");
           const { flushNow, setRecorderEnabled, initRecorderForProject } =
             await import("@/features/timelapse/recorder");
@@ -111,6 +111,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           // §17 P0.4: 毎セッション開始時に現在のレイアウトを seed snapshot として
           // 焼き、replay の初期 UI 状態を確定させる (forward layout イベントの起点)。
           if (enabled) {
+            // default-ON 経路では明示トグルが無く scene baseline が焼かれない
+            // ため、genesis (記録履歴が空) のとき一度だけ焼く。これが無いと
+            // 記録 ON 前から本文のあるシーンが動画 export で replay 不能になる。
+            await ensureGenesisBaselines(projectId);
             const { seedWorkspaceSnapshot } =
               await import("@/features/timelapse/seedSession");
             await seedWorkspaceSnapshot(projectId);

@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { dbDelete, dbSelectWhere } = vi.hoisted(() => {
   const dbWhere = vi.fn(() => Promise.resolve());
   const dbDelete = vi.fn((_table: unknown) => ({ where: dbWhere }));
-  // countTimelapseEvents resolves db.select().from().where() to a rows array;
+  // Rows for the change_events probe (hasEditorSteps / countTimelapseEvents);
   // override per-test to simulate genesis (empty) vs recorded history.
   const dbSelectWhere = vi.fn(() => Promise.resolve([] as unknown[]));
   return { dbDelete, dbSelectWhere };
@@ -31,7 +31,16 @@ const treeMock = vi.hoisted(() => ({
 vi.mock("@/db/client", () => ({
   db: {
     delete: dbDelete,
-    select: () => ({ from: () => ({ where: dbSelectWhere }) }),
+    // `where()` is both awaitable (countTimelapseEvents) and chainable via
+    // `.limit()` (hasEditorSteps); both resolve to the same rows array.
+    select: () => ({
+      from: () => ({
+        where: () => {
+          const rows = dbSelectWhere();
+          return Object.assign(rows, { limit: () => rows });
+        },
+      }),
+    }),
   },
 }));
 vi.mock("./recorder", () => recorderMock);
