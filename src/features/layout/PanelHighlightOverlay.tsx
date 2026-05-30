@@ -59,10 +59,7 @@ export function getPanelRect(panelId: PanelId): Rect | null {
   }
 
   if (panelId === "editor") return null;
-  const region =
-    panelId === "codex"
-      ? "center-bottom"
-      : PANEL_REGION_MAP[panelId as Exclude<PanelId, "editor">];
+  const region = PANEL_REGION_MAP[panelId as Exclude<PanelId, "editor">];
   return estimateRegionRect(region);
 }
 

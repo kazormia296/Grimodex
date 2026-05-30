@@ -103,12 +103,38 @@ export function useFocusRects(
     measure();
 
     const container = document.querySelector("[data-layout-shell]");
-    const observer = new ResizeObserver(measure);
-    if (container) observer.observe(container);
+    const resizeObserver = new ResizeObserver(measure);
+    if (container) resizeObserver.observe(container);
     window.addEventListener("resize", measure);
 
+    // Re-measure when a slot panel enters or leaves the DOM.
+    // showPanel() is called in a useEffect (after paint), so the target panel
+    // may not exist yet when useFocusRects first measures on step entry.
+    // The ResizeObserver alone won't re-fire when the slot content swaps without
+    // changing the shell's dimensions, so we need this MutationObserver too.
+    function hasSlotPanel(nodes: NodeList): boolean {
+      for (const node of nodes) {
+        if (node instanceof Element && node.hasAttribute("data-slot-panel")) {
+          return true;
+        }
+      }
+      return false;
+    }
+    const mutationObserver = new MutationObserver((mutations) => {
+      for (const mut of mutations) {
+        if (hasSlotPanel(mut.addedNodes) || hasSlotPanel(mut.removedNodes)) {
+          measure();
+          return;
+        }
+      }
+    });
+    if (container) {
+      mutationObserver.observe(container, { childList: true, subtree: true });
+    }
+
     return () => {
-      observer.disconnect();
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
       window.removeEventListener("resize", measure);
     };
   }, [panelId, targets]);

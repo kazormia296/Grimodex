@@ -102,7 +102,7 @@ const ALL_STEPS: TourStepDef[] = [
     panelId: "editor",
     requires: null,
     passive: true,
-    slides: [{ id: "overview" }, { id: "beatNode" }],
+    slides: [{ id: "overview" }],
   },
   {
     key: "snippets",
@@ -137,7 +137,7 @@ const ALL_STEPS: TourStepDef[] = [
     panelId: "chat",
     requires: "chat",
     passive: true,
-    slides: [{ id: "overview" }, { id: "action" }],
+    slides: [{ id: "overview" }],
   },
   {
     key: "foreshadow",
