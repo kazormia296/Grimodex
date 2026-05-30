@@ -55,6 +55,7 @@ function isSceneChromeEvent(event: ChangeEvent, sceneId: string): boolean {
     "chat",
     "layout",
     "map",
+    "grid",
     "codex",
     "snippet",
   ]);
@@ -147,7 +148,7 @@ export function pickRenderTarget(
 
 function shouldSuppressCaption(
   event: ChangeEvent,
-  docStepKeysInWindow: Set<string>,
+  docStepKeysUpToFrame: Set<string>,
 ): boolean {
   if (event.opType === "doc.step") return true;
   if (isSceneEditorBodyStep(event)) return true;
@@ -157,14 +158,14 @@ function shouldSuppressCaption(
     event.opType === "entry.update" &&
     event.entityId
   ) {
-    if (docStepKeysInWindow.has(`codex:${event.entityId}`)) return true;
+    if (docStepKeysUpToFrame.has(`codex:${event.entityId}`)) return true;
   }
   if (
     event.domain === "snippet" &&
     event.opType === "snippet.update" &&
     event.entityId
   ) {
-    if (docStepKeysInWindow.has(`snippet:${event.entityId}`)) return true;
+    if (docStepKeysUpToFrame.has(`snippet:${event.entityId}`)) return true;
   }
   return false;
 }
@@ -182,11 +183,15 @@ function buildFrameCaptions(
     const windowEvents = events.filter(
       (e) => e.sequence > prevTarget && e.sequence <= current,
     );
-    const docStepKeys = docStepEntityKeys(windowEvents);
+    // Cumulative doc.step keys through this frame (not window-only) so
+    // entry.update after doc.step in an adjacent frame still suppresses diffs.
+    const docStepKeysUpToFrame = docStepEntityKeys(
+      events.filter((e) => e.sequence <= current && e.opType === "doc.step"),
+    );
     const captions: FormattedCaption[] = [];
 
     for (const ev of windowEvents) {
-      if (shouldSuppressCaption(ev, docStepKeys)) {
+      if (shouldSuppressCaption(ev, docStepKeysUpToFrame)) {
         if (ev.domain === "layout" && ev.opType === "layout.snapshot") {
           prevLayoutPanels = collectOpenPanels(parseEventPayload(ev));
         }

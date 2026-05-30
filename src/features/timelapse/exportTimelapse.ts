@@ -82,7 +82,6 @@ export function makeCompositeDrawFrame(opts: {
       plan.cursors,
       prevRenderKey,
     );
-    if (renderKey) prevRenderKey = renderKey;
 
     const cursor = advanceCursorForTarget(
       plan.cursors,
@@ -91,6 +90,7 @@ export function makeCompositeDrawFrame(opts: {
     );
 
     if (cursor && renderKey && !cursor.failure) {
+      prevRenderKey = renderKey;
       renderDocToCanvas(
         ctx,
         cursor.doc,

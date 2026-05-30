@@ -182,7 +182,57 @@ describe("buildCompositeTimelapsePlan", () => {
   });
 });
 
+function buildRowsWithCodexFailure(): Row[] {
+  const alphaSteps = stepsFor("Alpha");
+  return [
+    {
+      sequence: 1,
+      timestamp: 100,
+      sceneId: "sceneA",
+      domain: "editor",
+      opType: "doc.step",
+      payload: JSON.stringify({ steps: alphaSteps[0] }),
+    },
+    {
+      sequence: 2,
+      timestamp: 200,
+      sceneId: null,
+      domain: "codex",
+      opType: "doc.step",
+      entityId: "c1",
+      payload: JSON.stringify({
+        steps: [
+          {
+            stepType: "replace",
+            from: 999,
+            to: 999,
+            slice: { content: [{ type: "paragraph" }] },
+          },
+        ],
+      }),
+    },
+  ];
+}
+
 describe("makeCompositeDrawFrame", () => {
+  it("recovers previous scene doc after codex cursor failure on later frames", async () => {
+    load.mockResolvedValue(buildRowsWithCodexFailure() as never);
+    const plan = await buildCompositeTimelapsePlan({
+      projectId: "p",
+      fps: 4,
+      targetDurationSec: 1,
+    });
+    const { ctx, texts } = makeMockCtx();
+    const draw = makeCompositeDrawFrame({ plan, ctx, width: 400, height: 200 });
+    for (let f = 0; f < plan.schedule.length; f += 1) {
+      draw(f);
+    }
+    // Early frame has scene body; after codex failure, later frames must not stay blank.
+    expect(texts()).toContain("Alpha");
+    const alphaCount = (texts().match(/Alpha/g) ?? []).length;
+    expect(alphaCount).toBeGreaterThan(1);
+  });
+
   it("renders the active scene document as the timeline advances", async () => {
     load.mockResolvedValue(buildRows() as never);
     const plan = await buildCompositeTimelapsePlan({

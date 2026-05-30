@@ -167,6 +167,57 @@ describe("buildCompositeTimelapsePlan", () => {
     expect(plan.eventCount).toBe(1);
   });
 
+  it("scene mode includes project-wide grid chrome (sceneId null)", async () => {
+    load.mockResolvedValue([
+      ev({
+        sequence: 1,
+        domain: "grid",
+        opType: "note.create",
+        sceneId: null,
+        payload: JSON.stringify({ title: "n" }),
+      }),
+    ]);
+    const plan = await buildCompositeTimelapsePlan({
+      projectId: "p",
+      sceneId: "sceneX",
+      fps: 4,
+      targetDurationSec: 1,
+    });
+    expect(plan.eventCount).toBe(1);
+  });
+
+  it("suppresses codex entry.update when doc.step was in an earlier frame", async () => {
+    load.mockResolvedValue([
+      ev({
+        sequence: 1,
+        domain: "codex",
+        opType: "doc.step",
+        entityId: "c1",
+        payload: '{"steps":[]}',
+      }),
+      ev({
+        sequence: 2,
+        domain: "codex",
+        opType: "entry.update",
+        entityId: "c1",
+        payload: JSON.stringify({
+          fields: ["summary"],
+          diffs: { summary: { segments: [[1, "DUAL_RECORD_MARKER"]] } },
+        }),
+      }),
+    ]);
+    const plan = await buildCompositeTimelapsePlan({
+      projectId: "p",
+      fps: 2,
+      targetDurationSec: 1,
+    });
+    const allCaptionText = plan.frameCaptions
+      .flat()
+      .flatMap((c) => c.segments.map((s) => s.text))
+      .join("");
+    expect(allCaptionText).not.toContain("DUAL_RECORD_MARKER");
+  });
+
   it("scene mode throws when no scene body and no chrome", async () => {
     load.mockResolvedValue([
       ev({
