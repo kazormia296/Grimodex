@@ -1,10 +1,13 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { dbDelete } = vi.hoisted(() => {
+const { dbDelete, dbSelectWhere } = vi.hoisted(() => {
   const dbWhere = vi.fn(() => Promise.resolve());
   const dbDelete = vi.fn((_table: unknown) => ({ where: dbWhere }));
-  return { dbDelete };
+  // countTimelapseEvents resolves db.select().from().where() to a rows array;
+  // override per-test to simulate genesis (empty) vs recorded history.
+  const dbSelectWhere = vi.fn(() => Promise.resolve([] as unknown[]));
+  return { dbDelete, dbSelectWhere };
 });
 const recorderMock = vi.hoisted(() => ({
   flushNow: vi.fn(() => Promise.resolve()),
@@ -14,6 +17,7 @@ const recorderMock = vi.hoisted(() => ({
 }));
 const snapshotsMock = vi.hoisted(() => ({
   recordStateSnapshot: vi.fn(() => Promise.resolve()),
+  loadLatestSnapshot: vi.fn(() => Promise.resolve<unknown>(null)),
 }));
 const settingsMock = vi.hoisted(() => ({
   getProjectSetting: vi.fn(() => Promise.resolve<string | null>(null)),
@@ -27,7 +31,7 @@ const treeMock = vi.hoisted(() => ({
 vi.mock("@/db/client", () => ({
   db: {
     delete: dbDelete,
-    select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+    select: () => ({ from: () => ({ where: dbSelectWhere }) }),
   },
 }));
 vi.mock("./recorder", () => recorderMock);
@@ -43,6 +47,7 @@ import {
   setTimelapseEnabled,
   purgeTimelapseHistory,
   isTimelapseEnabled,
+  ensureGenesisBaselines,
 } from "./toggle";
 
 beforeEach(() => {
@@ -50,6 +55,8 @@ beforeEach(() => {
   settingsMock.getProjectSetting.mockResolvedValue(null);
   treeMock.listAllNodes.mockResolvedValue([]);
   treeMock.loadSceneContent.mockResolvedValue('{"type":"doc"}');
+  dbSelectWhere.mockResolvedValue([]);
+  snapshotsMock.loadLatestSnapshot.mockResolvedValue(null);
 });
 
 describe("setTimelapseEnabled", () => {
@@ -116,6 +123,56 @@ describe("isTimelapseEnabled", () => {
   it("is ON for 'true'", async () => {
     settingsMock.getProjectSetting.mockResolvedValue("true");
     expect(await isTimelapseEnabled("p1")).toBe(true);
+  });
+});
+
+describe("ensureGenesisBaselines", () => {
+  it("genesis (no events, no baseline): bakes anchor=0 baselines for scenes only", async () => {
+    dbSelectWhere.mockResolvedValue([]); // 0 recorded events
+    snapshotsMock.loadLatestSnapshot.mockResolvedValue(null); // no baseline yet
+    treeMock.listAllNodes.mockResolvedValue([
+      { id: "s1", nodeType: "scene" },
+      { id: "n1", nodeType: "note" },
+      { id: "s2", nodeType: "scene" },
+    ]);
+
+    await ensureGenesisBaselines("p1");
+
+    // Scenes only (note skipped), anchored at genesis.
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(2);
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "p1",
+        domain: "editor",
+        entityType: "scene",
+        entityId: "s1",
+        anchorSequence: 0,
+      }),
+    );
+  });
+
+  it("past genesis (events exist): does NOT bake — avoids double-applying recorded steps", async () => {
+    dbSelectWhere.mockResolvedValue([{ id: 1 }]); // >=1 recorded event
+    treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
+
+    await ensureGenesisBaselines("p1");
+
+    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("idempotent: genesis but an editor baseline already exists -> no re-bake", async () => {
+    dbSelectWhere.mockResolvedValue([]); // genesis
+    snapshotsMock.loadLatestSnapshot.mockResolvedValue({
+      domain: "editor",
+      entityId: "s1",
+      anchorSequence: 0,
+      payload: {},
+    });
+    treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
+
+    await ensureGenesisBaselines("p1");
+
+    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
   });
 });
 
