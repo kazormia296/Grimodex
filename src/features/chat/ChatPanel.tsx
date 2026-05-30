@@ -459,7 +459,12 @@ export function ChatPanel() {
       const title =
         content.replace(/\n/g, " ").slice(0, 30).trimEnd() || "Untitled";
       const snippet = await createSnippet(
-        { title, content, sourceChatMessageId: messageId },
+        {
+          title,
+          content,
+          sourceChatMessageId: messageId,
+          contentSource: msg.role === "assistant" ? "ai" : "human",
+        },
         { silent: true },
       );
       if (snippet) {

@@ -43,6 +43,7 @@ function makeTextFragmentItem(
         source: s.source,
         model: null,
         chatMessageId: null,
+        traceId: null,
         timestamp: null,
       })),
     },

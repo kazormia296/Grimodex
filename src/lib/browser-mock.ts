@@ -142,6 +142,18 @@ const SCHEMA_DDL = `
     is_summarized INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS generation_logs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')),
+    command_id TEXT,
+    instruction TEXT,
+    prompt_full TEXT,
+    model TEXT,
+    trace_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS chat_session_pinned_codex (
     session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
     codex_entry_id TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
@@ -178,6 +190,7 @@ const SCHEMA_DDL = `
     model TEXT,
     timestamp TEXT,
     chat_msg_id TEXT,
+    trace_id TEXT,
     phase_id TEXT,
     sticky_id TEXT
   );

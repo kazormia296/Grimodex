@@ -243,6 +243,43 @@ describe("useEditorStore", () => {
     });
   });
 
+  describe("insertFromSnippet", () => {
+    it("stamps sourceChatMessageId into authorship marks when present", () => {
+      const editor = makeEditor();
+      useEditorStore.getState().setEditor(editor);
+
+      const result = useEditorStore
+        .getState()
+        .insertFromSnippet(
+          "snippet-1",
+          "AIスニペット",
+          "ai",
+          null,
+          undefined,
+          "msg-source-1",
+        );
+
+      expect(result).toBe(true);
+      const chainInstance = (editor.chain as ReturnType<typeof vi.fn>).mock
+        .results[0].value;
+      expect(chainInstance.insertContentAt).toHaveBeenCalledWith(
+        expect.any(Number),
+        expect.arrayContaining([
+          expect.objectContaining({
+            marks: [
+              expect.objectContaining({
+                attrs: expect.objectContaining({
+                  source: "ai",
+                  chatMessageId: "msg-source-1",
+                }),
+              }),
+            ],
+          }),
+        ]),
+      );
+    });
+  });
+
   describe("clearInsertRange", () => {
     it("clears lastInsertRange", () => {
       useEditorStore.setState({

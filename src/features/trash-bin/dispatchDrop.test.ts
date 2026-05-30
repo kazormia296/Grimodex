@@ -40,6 +40,7 @@ function makeFragment(text: string): TrashItemData {
           source: "human",
           model: null,
           chatMessageId: null,
+          traceId: null,
           timestamp: null,
         },
       ],

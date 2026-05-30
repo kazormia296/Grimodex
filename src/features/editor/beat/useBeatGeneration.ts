@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/core";
 import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
+import { insertGenerationLog } from "@/features/attribution/generationLogApi";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { getProject } from "@/features/project/api";
@@ -281,6 +282,18 @@ export function useBeatGeneration(
             if (orphaned) return;
             releaseCleanup();
             setState({ status: "idle", error: null, cleanup: null });
+            void Promise.resolve(
+              insertGenerationLog({
+                kind: "beat",
+                commandId: beatType,
+                instruction: instructions,
+                sceneNodeId: sceneId,
+                model: resolvedModel ?? DEFAULT_MODEL,
+                traceId,
+              }),
+            ).catch((err: unknown) => {
+              console.warn("beat generation log failed", err);
+            });
             runRoleInference(editor, beatId, instructions).catch((err) => {
               console.warn("role inference failed", err);
             });

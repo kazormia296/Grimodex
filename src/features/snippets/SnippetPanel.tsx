@@ -219,6 +219,8 @@ export function SnippetPanel() {
             snippet.content,
             source,
             null,
+            undefined,
+            snippet.sourceChatMessageId,
           );
           if (success) {
             void incrementUsageCount(snippet.id);
@@ -284,6 +286,7 @@ export function SnippetPanel() {
         id: string;
         content: string;
         contentSource?: string | null;
+        sourceChatMessageId?: string | null;
       },
     ) => {
       e.dataTransfer.setData("text/plain", snippet.content);
@@ -294,6 +297,7 @@ export function SnippetPanel() {
           content: snippet.content,
           source: (snippet.contentSource as "ai" | "human") ?? "human",
           originalContent: null,
+          sourceChatMessageId: snippet.sourceChatMessageId ?? null,
         }),
       );
     },

@@ -290,6 +290,7 @@ describe("SnippetPanel", () => {
         content: "ドラッグ内容",
         source: "human",
         originalContent: null,
+        sourceChatMessageId: null,
       }),
     );
   });

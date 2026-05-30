@@ -11,6 +11,7 @@ import { generateInlineAi } from "./inlineAiApi";
 import type { InlineAiCommand, InlineAiContext } from "./inlineAiTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
+import { insertGenerationLog } from "@/features/attribution/generationLogApi";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -24,6 +25,8 @@ export function useInlineAiDiff(editor: Editor | null) {
   const lastCallRef = useRef<{
     command: InlineAiCommand;
     context: InlineAiContext;
+    traceId: string;
+    sceneNodeId: string | null;
   } | null>(null);
 
   useEffect(() => {
@@ -65,7 +68,9 @@ export function useInlineAiDiff(editor: Editor | null) {
   const generate = useCallback(
     async (command: InlineAiCommand, context: InlineAiContext) => {
       if (!editor) return;
-      lastCallRef.current = { command, context };
+      const traceId = crypto.randomUUID();
+      const sceneNodeId = useTreeStore.getState().activeSceneId || null;
+      lastCallRef.current = { command, context, traceId, sceneNodeId };
 
       const { from, to } = editor.state.selection;
       const isReplace = command.mode === "replace" && from !== to;
@@ -152,6 +157,9 @@ export function useInlineAiDiff(editor: Editor | null) {
     const state = useInlineAiStore.getState();
     const { generatedRange, originalRange, mode, model } = state;
     const authorshipType = editor.schema.marks["authorship"];
+    const lastCall = lastCallRef.current;
+    const traceId = lastCall?.traceId ?? null;
+    const resolvedModel = model ?? DEFAULT_MODEL;
 
     // 先に store を idle に戻す。これによって後続の実編集トランザクションが
     // filterTransaction を素通りし、通常の onUpdate 経路に乗ってオートセーブが
@@ -180,7 +188,8 @@ export function useInlineAiDiff(editor: Editor | null) {
                 newTo,
                 authorshipType.create({
                   source: "ai",
-                  model: model ?? DEFAULT_MODEL,
+                  model: resolvedModel,
+                  traceId,
                 }),
               );
             }
@@ -197,12 +206,30 @@ export function useInlineAiDiff(editor: Editor | null) {
               gTo,
               authorshipType.create({
                 source: "ai",
-                model: model ?? DEFAULT_MODEL,
+                model: resolvedModel,
+                traceId,
               }),
             );
             return true;
           })
           .run();
+      }
+
+      // generatedRange が無い時は mark が付かないので孤児ログを生まないよう
+      // 同条件で gate する。
+      if (lastCall && traceId && generatedRange) {
+        void Promise.resolve(
+          insertGenerationLog({
+            kind: "inline-ai",
+            commandId: lastCall.command.id,
+            instruction: lastCall.context.arg ?? null,
+            sceneNodeId: lastCall.sceneNodeId,
+            model: resolvedModel,
+            traceId,
+          }),
+        ).catch((err: unknown) => {
+          console.warn("inline AI generation log failed", err);
+        });
       }
     }
   }, [editor, dispatchDiffUpdate]);

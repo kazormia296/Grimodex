@@ -65,6 +65,7 @@ function extractSpans(
         source: (a.source as TrashSpan["source"]) ?? "human",
         model: (a.model as string | null) ?? null,
         chatMessageId: (a.chatMessageId as string | null) ?? null,
+        traceId: (a.traceId as string | null) ?? null,
         timestamp: (a.timestamp as string | null) ?? null,
       });
     } else {
@@ -73,6 +74,7 @@ function extractSpans(
         source: "human",
         model: null,
         chatMessageId: null,
+        traceId: null,
         timestamp: null,
       });
     }

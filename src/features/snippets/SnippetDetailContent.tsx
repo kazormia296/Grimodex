@@ -220,7 +220,14 @@ export function SnippetDetailContent({
   function handleInsertAtCursor() {
     const content = editor?.getHTML() ?? snippet.content;
     const source = (snippet.contentSource as "ai" | "human") ?? "human";
-    const success = insertFromSnippet(snippet.id, content, source, null);
+    const success = insertFromSnippet(
+      snippet.id,
+      content,
+      source,
+      null,
+      undefined,
+      snippet.sourceChatMessageId,
+    );
     if (success) {
       void incrementUsageCount(snippet.id);
       toast.success(t("snippets.inserted"));

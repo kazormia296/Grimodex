@@ -5,6 +5,7 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
+import { insertGenerationLog } from "@/features/attribution/generationLogApi";
 import { buildBeatMessages } from "./beatPromptBuilder";
 import {
   appendBeatChunk,
@@ -99,7 +100,21 @@ export async function generateBeatOnce(
           });
           if (!ok) release();
         },
-        onDone: () => release(),
+        onDone: () => {
+          release();
+          void Promise.resolve(
+            insertGenerationLog({
+              kind: "beat",
+              commandId: beatType,
+              instruction: instructions,
+              sceneNodeId: sceneId,
+              model: beatModel ?? DEFAULT_MODEL,
+              traceId,
+            }),
+          ).catch((err: unknown) => {
+            console.warn("beat generation log failed", err);
+          });
+        },
         onError: (message) => {
           release();
           toast.error(message);

@@ -54,6 +54,7 @@ const span = (text: string, source: TrashSpan["source"]): TrashSpan => ({
   source,
   model: null,
   chatMessageId: null,
+  traceId: null,
   timestamp: null,
 });
 

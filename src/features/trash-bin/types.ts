@@ -23,6 +23,7 @@ export interface TrashSpan {
   source: TrashSpanSource;
   model: string | null;
   chatMessageId: string | null;
+  traceId: string | null;
   timestamp: string | null;
 }
 

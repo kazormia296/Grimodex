@@ -27,6 +27,15 @@ import {
 } from "./exportUserPresets";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { TimelapseExportSection } from "@/features/timelapse/TimelapseExportSection";
+import {
+  buildProvenanceBreakdown,
+  type ProvenanceDisclosureReport,
+} from "@/features/attribution/provenance";
+import {
+  exportProvenanceDisclosureHtml,
+  exportProvenanceDisclosureJson,
+  exportProvenanceDisclosureMarkdown,
+} from "@/features/attribution/exportReport";
 
 // ────────────────────────────────────────────────────────────────────
 // 設定のロード/セーブ
@@ -190,8 +199,12 @@ export function ExportDialog({ open, onClose }: Props) {
   const [isExporting, setIsExporting] = useState(false);
   const [projectTitle, setProjectTitle] = useState("Untitled Project");
   const [projectLanguage, setProjectLanguage] = useState("ja");
-  // テキスト出力 / タイムラプス動画 の切り替え (#8)。
-  const [mode, setMode] = useState<"text" | "timelapse">("text");
+  // テキスト出力 / AI 使用開示 / タイムラプス動画 の切り替え。
+  const [mode, setMode] = useState<"text" | "authorship" | "timelapse">("text");
+  const [includePassageExcerpts, setIncludePassageExcerpts] = useState(false);
+  const [authorshipReport, setAuthorshipReport] =
+    useState<ProvenanceDisclosureReport | null>(null);
+  const [isLoadingAuthorship, setIsLoadingAuthorship] = useState(false);
 
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -309,8 +322,41 @@ export function ExportDialog({ open, onClose }: Props) {
     treeState.checkedIds,
   );
 
+  useEffect(() => {
+    if (!open || mode !== "authorship") return;
+    let cancelled = false;
+    setIsLoadingAuthorship(true);
+    buildProvenanceBreakdown(getCurrentProjectId(), {
+      includePassageExcerpts,
+    })
+      .then((report) => {
+        if (!cancelled) setAuthorshipReport(report);
+      })
+      .catch((err: unknown) => {
+        console.warn("authorship disclosure report failed", err);
+        if (!cancelled) setAuthorshipReport(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingAuthorship(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, mode, includePassageExcerpts]);
+
   // エクスポートコンテンツを生成
   function buildContent(): string {
+    if (mode === "authorship") {
+      if (!authorshipReport) return "";
+      switch (exportSettings.format) {
+        case "markdown":
+          return exportProvenanceDisclosureMarkdown(authorshipReport);
+        case "html":
+          return exportProvenanceDisclosureHtml(authorshipReport);
+        case "plaintext":
+          return exportProvenanceDisclosureJson(authorshipReport);
+      }
+    }
     return generateExport({
       nodes,
       contentMap,
@@ -323,7 +369,8 @@ export function ExportDialog({ open, onClose }: Props) {
 
   // コピーボタン
   async function handleCopy() {
-    if (sceneCount === 0) return;
+    if (mode === "text" && sceneCount === 0) return;
+    if (mode === "authorship" && !authorshipReport) return;
     try {
       const text = buildContent();
       await navigator.clipboard.writeText(text);
@@ -337,7 +384,9 @@ export function ExportDialog({ open, onClose }: Props) {
 
   // エクスポートボタン
   async function handleExport() {
-    if (sceneCount === 0 || isExporting) return;
+    if (mode === "text" && sceneCount === 0) return;
+    if (mode === "authorship" && !authorshipReport) return;
+    if (isExporting) return;
     setIsExporting(true);
     try {
       const content = buildContent();
@@ -372,7 +421,7 @@ export function ExportDialog({ open, onClose }: Props) {
           role="tablist"
           className="inline-flex rounded-md border border-border p-0.5"
         >
-          {(["text", "timelapse"] as const).map((m) => (
+          {(["text", "authorship", "timelapse"] as const).map((m) => (
             <button
               key={m}
               type="button"
@@ -388,7 +437,9 @@ export function ExportDialog({ open, onClose }: Props) {
               {t(
                 m === "text"
                   ? "timelapse.tabTextExport"
-                  : "timelapse.tabVideoExport",
+                  : m === "authorship"
+                    ? "attribution.report"
+                    : "timelapse.tabVideoExport",
               )}
             </button>
           ))}
@@ -403,7 +454,7 @@ export function ExportDialog({ open, onClose }: Props) {
         </button>
       </div>
 
-      {/* ボディ: テキスト出力 = 左ペイン + 右ペイン / 動画 = タイムラプス書き出し */}
+      {/* ボディ: テキスト出力 / AI 使用開示 / 動画 */}
       {mode === "text" ? (
         <div className="flex flex-1 overflow-hidden">
           {/* 左: シーン選択ツリー */}
@@ -428,29 +479,52 @@ export function ExportDialog({ open, onClose }: Props) {
             />
           </div>
         </div>
+      ) : mode === "authorship" ? (
+        <AuthorshipDisclosureSection
+          report={authorshipReport}
+          loading={isLoadingAuthorship}
+          includePassageExcerpts={includePassageExcerpts}
+          onIncludePassageExcerptsChange={setIncludePassageExcerpts}
+        />
       ) : (
         <div className="flex-1 overflow-auto">
           <TimelapseExportSection projectTitle={projectTitle} />
         </div>
       )}
 
-      {/* フッター (テキスト出力時のみ。動画は TimelapseExportSection が自前の書き出しボタンを持つ) */}
-      {mode === "text" && (
+      {/* フッター (動画は TimelapseExportSection が自前の書き出しボタンを持つ) */}
+      {mode !== "timelapse" && (
         <div className="flex flex-shrink-0 items-center gap-3 border-t border-border px-4 py-2">
-          <span className="text-xs text-muted-foreground">
-            {t("export.dialog.selectedScenes", { sceneCount, totalScenes })}
-          </span>
-          <span className="text-xs text-muted-foreground">
-            {t("export.dialog.approxChars", {
-              count: charCount.toLocaleString(),
-            })}
-          </span>
+          {mode === "text" ? (
+            <>
+              <span className="text-xs text-muted-foreground">
+                {t("export.dialog.selectedScenes", {
+                  sceneCount,
+                  totalScenes,
+                })}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {t("export.dialog.approxChars", {
+                  count: charCount.toLocaleString(),
+                })}
+              </span>
+            </>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              残存 AI: {(authorshipReport?.totals.ai ?? 0).toLocaleString()}{" "}
+              文字
+            </span>
+          )}
           <div className="flex-1" />
           {/* コピーボタン */}
           <button
             type="button"
             onClick={handleCopy}
-            disabled={sceneCount === 0}
+            disabled={
+              mode === "text"
+                ? sceneCount === 0
+                : !authorshipReport || isLoadingAuthorship
+            }
             className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isCopied ? (
@@ -469,7 +543,11 @@ export function ExportDialog({ open, onClose }: Props) {
           <button
             type="button"
             onClick={handleExport}
-            disabled={sceneCount === 0 || isExporting}
+            disabled={
+              mode === "text"
+                ? sceneCount === 0 || isExporting
+                : !authorshipReport || isLoadingAuthorship || isExporting
+            }
             className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Download className="h-3.5 w-3.5" />
@@ -480,5 +558,116 @@ export function ExportDialog({ open, onClose }: Props) {
         </div>
       )}
     </AnimatedOverlay>
+  );
+}
+
+function AuthorshipDisclosureSection({
+  report,
+  loading,
+  includePassageExcerpts,
+  onIncludePassageExcerptsChange,
+}: {
+  report: ProvenanceDisclosureReport | null;
+  loading: boolean;
+  includePassageExcerpts: boolean;
+  onIncludePassageExcerptsChange: (value: boolean) => void;
+}) {
+  const total = report?.totals.total ?? 0;
+  const ai = report?.totals.ai ?? 0;
+  const aiPct = total > 0 ? Math.round((ai / total) * 100) : 0;
+  const breakdown = report?.breakdown;
+
+  return (
+    <div className="flex-1 overflow-auto p-4">
+      <div className="mx-auto flex max-w-3xl flex-col gap-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">AI 使用開示</h3>
+            <p className="text-xs text-muted-foreground">
+              残存している authorship metadata に基づく出自レポートです。
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={includePassageExcerpts}
+              onChange={(e) =>
+                onIncludePassageExcerptsChange(e.currentTarget.checked)
+              }
+            />
+            抜粋を含める
+          </label>
+        </div>
+
+        {includePassageExcerpts && (
+          <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            per-passage 抜粋には未公開本文が含まれます。共有先に合わせて
+            出力前に確認してください。
+          </div>
+        )}
+
+        {loading ? (
+          <p className="text-sm text-muted-foreground">読み込み中...</p>
+        ) : !report || !breakdown ? (
+          <p className="text-sm text-muted-foreground">
+            レポートを作成できませんでした。
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-3">
+              <Metric label="総文字数" value={total.toLocaleString()} />
+              <Metric label="AI 文字数" value={ai.toLocaleString()} />
+              <Metric label="AI 比率" value={`${aiPct}%`} />
+            </div>
+
+            <div className="rounded border border-border">
+              {[
+                ["チャット", breakdown.chat],
+                ["slash", breakdown.inlineAi],
+                ["Beat", breakdown.beat],
+                ["消失", breakdown.orphanChat],
+                ["出自記録なし", breakdown.unknownAi],
+              ].map(([label, value]) => (
+                <div
+                  key={label}
+                  className="flex items-center justify-between border-b border-border px-3 py-2 text-sm last:border-b-0"
+                >
+                  <span>{label}</span>
+                  <span className="tabular-nums text-muted-foreground">
+                    {(value as number).toLocaleString()}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {report.passages && report.passages.length > 0 && (
+              <div className="rounded border border-border">
+                {report.passages.map((passage) => (
+                  <div
+                    key={passage.id}
+                    className="border-b border-border px-3 py-2 text-xs last:border-b-0"
+                  >
+                    <div className="text-muted-foreground">
+                      {passage.provenance.kind} /{" "}
+                      {passage.charCount.toLocaleString()} chars
+                    </div>
+                    <div className="mt-1">{passage.excerpt}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-border px-3 py-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold tabular-nums">{value}</div>
+    </div>
   );
 }

@@ -29,6 +29,7 @@ fn test_migrate_creates_all_tables() {
         "snippets",
         "chat_sessions",
         "chat_messages",
+        "generation_logs",
         "authorship_spans",
         "app_settings",
         "project_settings",
@@ -46,6 +47,65 @@ fn test_migrate_creates_all_tables() {
             )
             .expect("query");
         assert_eq!(rows.len(), 1, "table '{}' should exist", table);
+    }
+}
+
+#[test]
+fn test_migrate_generation_logs_and_trace_id_idempotent() {
+    let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+    db.migrate().expect("first migrate");
+    db.migrate().expect("second migrate");
+
+    let span_cols = db
+        .execute("PRAGMA table_info('authorship_spans')", &[], "all")
+        .expect("pragma authorship_spans");
+    let span_col_names: Vec<String> = span_cols
+        .iter()
+        .filter_map(|row| match &row["name"] {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        span_col_names.contains(&"trace_id".to_string()),
+        "authorship_spans.trace_id should exist"
+    );
+
+    let log_rows = db
+        .execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='generation_logs'",
+            &[],
+            "all",
+        )
+        .expect("query generation_logs");
+    assert_eq!(log_rows.len(), 1);
+
+    let log_cols = db
+        .execute("PRAGMA table_info('generation_logs')", &[], "all")
+        .expect("pragma generation_logs");
+    let log_col_names: Vec<String> = log_cols
+        .iter()
+        .filter_map(|row| match &row["name"] {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    for col in [
+        "id",
+        "project_id",
+        "scene_node_id",
+        "kind",
+        "command_id",
+        "instruction",
+        "prompt_full",
+        "model",
+        "trace_id",
+        "created_at",
+    ] {
+        assert!(
+            log_col_names.contains(&col.to_string()),
+            "generation_logs.{col} should exist"
+        );
     }
 }
 

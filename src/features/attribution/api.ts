@@ -59,6 +59,7 @@ export function spansToMarkData(
       source: s.source,
       model: s.model,
       chatMessageId: s.chatMsgId,
+      traceId: s.traceId,
       timestamp: s.timestamp,
     },
   }));
@@ -88,6 +89,7 @@ function extractDbSpans(
         source: mark.attrs.source as AuthorshipSource,
         model: mark.attrs.model ?? null,
         chatMsgId: mark.attrs.chatMessageId ?? null,
+        traceId: mark.attrs.traceId ?? null,
         timestamp: mark.attrs.timestamp ?? now,
       });
     }

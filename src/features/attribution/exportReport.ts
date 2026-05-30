@@ -5,6 +5,11 @@ import type {
   ProjectAuthorshipReport,
   SceneAuthorshipReport,
 } from "./projectAuthorship";
+import type {
+  ProvenanceDisclosureReport,
+  ProvenanceKind,
+  ResolvedPassage,
+} from "./provenance";
 
 /**
  * Export attribution stats as a Markdown report.
@@ -92,6 +97,12 @@ export function exportAuthorshipJson(report: ProjectAuthorshipReport): string {
   return `${JSON.stringify(report, null, 2)}\n`;
 }
 
+export function exportProvenanceDisclosureJson(
+  report: ProvenanceDisclosureReport,
+): string {
+  return `${JSON.stringify(report, null, 2)}\n`;
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -103,6 +114,100 @@ function escapeHtml(s: string): string {
 
 function pct(n: number, total: number): number {
   return total > 0 ? Math.round((n / total) * 100) : 0;
+}
+
+function provenanceKindLabel(kind: ProvenanceKind): string {
+  switch (kind) {
+    case "chat":
+      return "Chat";
+    case "inline-ai":
+      return "Slash";
+    case "beat":
+      return "Beat";
+    case "orphan-chat":
+      return "Deleted chat";
+    case "unknown":
+      return "Unknown AI";
+  }
+}
+
+function disclosureFootnote(report: ProvenanceDisclosureReport): string {
+  const orphan =
+    report.orphanChatCount > 0
+      ? ` ${report.orphanChatCount} passage(s) reference deleted chat messages.`
+      : "";
+  return `This disclosure reflects remaining AI-attributed spans at export time.${orphan} Legacy or manually inserted AI text without provenance is counted as Unknown AI.`;
+}
+
+export function exportProvenanceDisclosureMarkdown(
+  report: ProvenanceDisclosureReport,
+): string {
+  const t = report.totals;
+  const human = t.human + t.unmarked;
+  const lines = [
+    `# AI Usage Disclosure: ${report.projectTitle}`,
+    "",
+    `Generated: ${report.generatedAt}`,
+    "",
+    "## Summary",
+    "",
+    `| Source | Characters | Percentage |`,
+    `|--------|------------|------------|`,
+    `| Human / unmarked | ${human} | ${pct(human, t.total)}% |`,
+    `| AI | ${t.ai} | ${pct(t.ai, t.total)}% |`,
+    `| Unknown | ${t.unknown} | ${pct(t.unknown, t.total)}% |`,
+    `| Total | ${t.total} |  |`,
+    "",
+    "## AI Provenance",
+    "",
+    `| Kind | Characters | % of AI |`,
+    `|------|------------|---------|`,
+    `| Chat | ${report.breakdown.chat} | ${pct(report.breakdown.chat, t.ai)}% |`,
+    `| Slash | ${report.breakdown.inlineAi} | ${pct(report.breakdown.inlineAi, t.ai)}% |`,
+    `| Beat | ${report.breakdown.beat} | ${pct(report.breakdown.beat, t.ai)}% |`,
+    `| Deleted chat | ${report.breakdown.orphanChat} | ${pct(report.breakdown.orphanChat, t.ai)}% |`,
+    `| Unknown AI | ${report.breakdown.unknownAi} | ${pct(report.breakdown.unknownAi, t.ai)}% |`,
+    "",
+  ];
+
+  if (report.passages?.length) {
+    lines.push("## AI Passages", "");
+    for (const passage of report.passages) {
+      lines.push(
+        `- ${provenanceKindLabel(passage.provenance.kind)} (${passage.charCount} chars): ${passage.excerpt}`,
+      );
+    }
+    lines.push("");
+  }
+
+  lines.push(disclosureFootnote(report), "");
+  return lines.join("\n");
+}
+
+export function exportProvenanceDisclosureCsv(
+  report: ProvenanceDisclosureReport,
+): string {
+  const rows = [
+    ["Kind", "Characters"],
+    ["Chat", String(report.breakdown.chat)],
+    ["Slash", String(report.breakdown.inlineAi)],
+    ["Beat", String(report.breakdown.beat)],
+    ["Deleted chat", String(report.breakdown.orphanChat)],
+    ["Unknown AI", String(report.breakdown.unknownAi)],
+  ];
+  if (report.passages?.length) {
+    rows.push(["", ""]);
+    rows.push(["Passage kind", "Excerpt"]);
+    for (const passage of report.passages) {
+      rows.push([
+        provenanceKindLabel(passage.provenance.kind),
+        passage.excerpt,
+      ]);
+    }
+  }
+  return rows
+    .map((row) => row.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(","))
+    .join("\n");
 }
 
 /**
@@ -247,6 +352,66 @@ constitute legal proof of authorship; the tally reflects only what was attribute
 edit time. Unmarked text (typed before attribution tracking, or from imports) is
 counted toward the human total.
 </footer>
+</body>
+</html>
+`;
+}
+
+function renderPassageList(passages: ResolvedPassage[] | undefined): string {
+  if (!passages?.length) return "";
+  return `<section><h2>AI Passages</h2><ul>${passages
+    .map(
+      (p) =>
+        `<li><strong>${escapeHtml(provenanceKindLabel(p.provenance.kind))}</strong> (${p.charCount} chars): ${escapeHtml(p.excerpt)}</li>`,
+    )
+    .join("")}</ul></section>`;
+}
+
+export function exportProvenanceDisclosureHtml(
+  report: ProvenanceDisclosureReport,
+): string {
+  const t = report.totals;
+  const human = t.human + t.unmarked;
+  return `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<title>AI Usage Disclosure — ${escapeHtml(report.projectTitle)}</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; margin: 2rem auto; max-width: 840px; padding: 0 1rem; line-height: 1.5; }
+h1 { font-size: 1.4rem; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin: 1rem 0 2rem; }
+th, td { border-bottom: 1px solid #ddd; padding: 0.45rem 0.6rem; text-align: left; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+li { margin: 0.4rem 0; }
+footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #ddd; color: #777; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<h1>AI Usage Disclosure — ${escapeHtml(report.projectTitle)}</h1>
+<p>Generated ${escapeHtml(report.generatedAt)}</p>
+<h2>Summary</h2>
+<table>
+<tbody>
+<tr><th>Total characters</th><td class="num">${t.total}</td></tr>
+<tr><th>Human / unmarked</th><td class="num">${human} (${pct(human, t.total)}%)</td></tr>
+<tr><th>AI</th><td class="num">${t.ai} (${pct(t.ai, t.total)}%)</td></tr>
+<tr><th>Unknown</th><td class="num">${t.unknown} (${pct(t.unknown, t.total)}%)</td></tr>
+</tbody>
+</table>
+<h2>AI Provenance</h2>
+<table>
+<tbody>
+<tr><th>Chat</th><td class="num">${report.breakdown.chat}</td></tr>
+<tr><th>Slash</th><td class="num">${report.breakdown.inlineAi}</td></tr>
+<tr><th>Beat</th><td class="num">${report.breakdown.beat}</td></tr>
+<tr><th>Deleted chat</th><td class="num">${report.breakdown.orphanChat}</td></tr>
+<tr><th>Unknown AI</th><td class="num">${report.breakdown.unknownAi}</td></tr>
+</tbody>
+</table>
+${renderPassageList(report.passages)}
+<footer>${escapeHtml(disclosureFootnote(report))}</footer>
 </body>
 </html>
 `;

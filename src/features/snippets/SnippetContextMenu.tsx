@@ -75,6 +75,8 @@ export function SnippetContextMenu({
       snippet.content,
       source,
       null,
+      undefined,
+      snippet.sourceChatMessageId,
     );
     if (success) {
       void incrementUsageCount(snippet.id);

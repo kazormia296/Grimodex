@@ -13,8 +13,19 @@ vi.mock("./inlineAiApi", () => ({
   generateInlineAi: vi.fn(),
 }));
 
+const insertGenerationLogMock = vi.fn();
+vi.mock("@/features/attribution/generationLogApi", () => ({
+  insertGenerationLog: (...args: unknown[]) => insertGenerationLogMock(...args),
+}));
+
+vi.mock("@/features/project/api", () => ({
+  getProject: vi.fn(() => Promise.resolve({ language: "ja" })),
+}));
+
+import { generateInlineAi } from "./inlineAiApi";
 import { useInlineAiDiff } from "./useInlineAiDiff";
 import { useInlineAiStore } from "./inlineAiStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 
 const createdEditors: Editor[] = [];
 const hookUnmounts: Array<() => void> = [];
@@ -41,7 +52,7 @@ function getText(editor: Editor): string {
 function findAuthorshipAt(
   editor: Editor,
   pos: number,
-): { source: string; model?: string } | null {
+): { source: string; model?: string; traceId?: string | null } | null {
   const $pos = editor.state.doc.resolve(pos);
   const marks = $pos.marks();
   const mark = marks.find((m) => m.type.name === "authorship");
@@ -49,12 +60,15 @@ function findAuthorshipAt(
   return {
     source: mark.attrs.source as string,
     model: mark.attrs.model as string | undefined,
+    traceId: mark.attrs.traceId as string | null | undefined,
   };
 }
 
 describe("useInlineAiDiff", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     useInlineAiStore.getState().reset();
+    useTreeStore.setState({ activeSceneId: "scene-1", projectId: "project-1" });
   });
 
   afterEach(() => {
@@ -175,5 +189,57 @@ describe("useInlineAiDiff", () => {
     expect(getText(editor)).toBe("hello world");
     expect(findAuthorshipAt(editor, 2)).toBeNull();
     expect(useInlineAiStore.getState().status).toBe("idle");
+  });
+
+  it("accept: stamps traceId and writes a generation log", async () => {
+    vi.mocked(generateInlineAi).mockImplementation(
+      async (_command, _context, onChunk) => {
+        onChunk("BRAVE");
+        return {
+          text: "BRAVE",
+          model: "claude-sonnet-4-6",
+          stopReason: "end_turn",
+        };
+      },
+    );
+
+    const editor = makeEditor("<p>hello </p>");
+    editor.commands.setTextSelection(7);
+    const { result } = renderInlineAiDiffHook(editor);
+
+    await act(async () => {
+      await result.current.generate(
+        {
+          id: "continue",
+          label: "Continue",
+          description: "",
+          mode: "insert",
+          needsSelection: false,
+        },
+        {
+          projectTitle: "Project",
+          sceneTitle: "Scene",
+          sceneText: "hello ",
+          codexSummaries: "",
+          arg: "続きを書く",
+        },
+      );
+    });
+
+    act(() => result.current.accept());
+
+    const mark = findAuthorshipAt(editor, 8);
+    expect(mark?.source).toBe("ai");
+    expect(mark?.traceId).toEqual(expect.any(String));
+    expect(insertGenerationLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "inline-ai",
+        commandId: "continue",
+        instruction: "続きを書く",
+        sceneNodeId: "scene-1",
+        model: "claude-sonnet-4-6",
+        traceId: mark?.traceId,
+      }),
+    );
   });
 });

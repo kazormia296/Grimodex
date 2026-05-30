@@ -689,13 +689,18 @@ export function EditorPane({
           if (!snippetData) return false;
           event.preventDefault();
           try {
-            const { id, content, source, originalContent } = JSON.parse(
-              snippetData,
-            ) as {
+            const {
+              id,
+              content,
+              source,
+              originalContent,
+              sourceChatMessageId,
+            } = JSON.parse(snippetData) as {
               id: string;
               content: string;
               source: "ai" | "human";
               originalContent: string | null;
+              sourceChatMessageId?: string | null;
             };
             const coords = view.posAtCoords({
               left: event.clientX,
@@ -707,6 +712,7 @@ export function EditorPane({
               source,
               originalContent,
               coords?.pos,
+              sourceChatMessageId ?? null,
             );
             return true;
           } catch {

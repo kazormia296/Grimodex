@@ -320,7 +320,14 @@ export function EditorContextMenu({
     const source = (snippet.contentSource as "ai" | "human") ?? "human";
     const success = useEditorStore
       .getState()
-      .insertFromSnippet(snippet.id, snippet.content, source, null);
+      .insertFromSnippet(
+        snippet.id,
+        snippet.content,
+        source,
+        null,
+        undefined,
+        snippet.sourceChatMessageId,
+      );
     if (success) {
       void incrementSnippetUsage(snippet.id);
       toast.success(t("snippets.inserted"));

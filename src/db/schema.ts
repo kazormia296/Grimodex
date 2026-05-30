@@ -402,6 +402,36 @@ export const chatMessages = sqliteTable(
   ],
 );
 
+export const generationLogs = sqliteTable(
+  "generation_logs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneNodeId: text("scene_node_id").references(() => treeNodes.id, {
+      onDelete: "cascade",
+    }),
+    kind: text("kind", { enum: ["inline-ai", "beat"] }).notNull(),
+    commandId: text("command_id"),
+    instruction: text("instruction"),
+    promptFull: text("prompt_full"),
+    model: text("model"),
+    traceId: text("trace_id").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_generation_logs_project_trace").on(
+      table.projectId,
+      table.traceId,
+    ),
+    index("idx_generation_logs_scene").on(table.sceneNodeId),
+    uniqueIndex("uq_generation_logs_trace").on(table.traceId),
+  ],
+);
+
 export const chatSummaries = sqliteTable(
   "chat_summaries",
   {
@@ -506,6 +536,7 @@ export const authorshipSpans = sqliteTable(
     model: text("model"),
     timestamp: text("timestamp"),
     chatMsgId: text("chat_msg_id"),
+    traceId: text("trace_id"),
     phaseId: text("phase_id").references(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (): any => codexEntryPhases.id,
@@ -1586,6 +1617,8 @@ export const stateSnapshots = sqliteTable(
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
+export type GenerationLog = typeof generationLogs.$inferSelect;
+export type NewGenerationLog = typeof generationLogs.$inferInsert;
 export type CodexType = typeof codexTypes.$inferSelect;
 export type NewCodexType = typeof codexTypes.$inferInsert;
 export type CodexTag = typeof codexTags.$inferSelect;

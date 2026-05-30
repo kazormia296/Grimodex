@@ -24,6 +24,11 @@ vi.mock("@/features/project/api", () => ({
   getProject: vi.fn(() => Promise.resolve({ language: "ja" })),
 }));
 
+const insertGenerationLogMock = vi.fn();
+vi.mock("@/features/attribution/generationLogApi", () => ({
+  insertGenerationLog: (...args: unknown[]) => insertGenerationLogMock(...args),
+}));
+
 // Mock inference dependencies for C-7 tests.
 const inferMentionRolesMock = vi.fn();
 vi.mock("./inferMentionRoles", () => ({
@@ -82,6 +87,7 @@ function createEditorWithBeat(beatId: string) {
 describe("useBeatGeneration", () => {
   beforeEach(() => {
     listeners.clear();
+    insertGenerationLogMock.mockClear();
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
     // Reset call history AND return values for inference mocks between tests.
@@ -170,6 +176,16 @@ describe("useBeatGeneration", () => {
           expect.objectContaining({ role: "system" }),
           expect.objectContaining({ role: "user" }),
         ]),
+      }),
+    );
+    expect(insertGenerationLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "beat",
+        commandId: "free",
+        instruction: "雨の夜、廃社の前で立ち止まる朱音",
+        sceneNodeId: "scene-1",
+        model: "claude-sonnet-4-6",
+        traceId: expect.any(String),
       }),
     );
     editor.destroy();
@@ -347,6 +363,7 @@ async function runGeneration(
 describe("runRoleInference (C-7)", () => {
   beforeEach(() => {
     listeners.clear();
+    insertGenerationLogMock.mockClear();
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
     extractBeatMentionsMock.mockReset();

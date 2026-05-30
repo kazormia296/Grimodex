@@ -93,6 +93,7 @@ export const AUX_SCOPES = [
   "lint_term_dictionary",
   // owned by `body`
   "authorship_spans",
+  "generation_logs",
   "post_effect_annotations",
   "post_effect_annotation_relations",
   "scene_codex_pins",
@@ -128,6 +129,7 @@ export const AUX_SCOPE_OWNER: Record<AuxScope, RestoreScope> = {
   lint_ignored_diagnostics: "lint",
   lint_term_dictionary: "lint",
   authorship_spans: "body",
+  generation_logs: "body",
   post_effect_annotations: "body",
   post_effect_annotation_relations: "body",
   scene_codex_pins: "body",
@@ -166,6 +168,7 @@ export const AUX_TABLE: Record<AuxScope, string> = {
   lint_ignored_diagnostics: "lint_ignored_diagnostics",
   lint_term_dictionary: "lint_term_dictionary",
   authorship_spans: "authorship_spans",
+  generation_logs: "generation_logs",
   post_effect_annotations: "post_effect_annotations",
   post_effect_annotation_relations: "post_effect_annotation_relations",
   scene_codex_pins: "scene_codex_pins",

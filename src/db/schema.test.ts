@@ -13,6 +13,7 @@ import {
   snippets,
   chatSessions,
   chatMessages,
+  generationLogs,
   authorshipSpans,
   contentVersions,
   projectSnapshots,
@@ -552,6 +553,7 @@ describe("authorshipSpans schema", () => {
     expect(columns).toContain("model");
     expect(columns).toContain("timestamp");
     expect(columns).toContain("chatMsgId");
+    expect(columns).toContain("traceId");
     expect(columns).toContain("phaseId");
   });
 
@@ -598,6 +600,56 @@ describe("authorshipSpans schema", () => {
     });
     expect(executedQueries[0].params).toContain("codex-001");
     expect(executedQueries[0].params).toContain("ai");
+  });
+});
+
+describe("generationLogs schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(generationLogs)).toBe("generation_logs");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(generationLogs);
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        "id",
+        "projectId",
+        "sceneNodeId",
+        "kind",
+        "commandId",
+        "instruction",
+        "promptFull",
+        "model",
+        "traceId",
+        "createdAt",
+      ]),
+    );
+  });
+
+  it("generates valid insert query", async () => {
+    const executedQueries: { sql: string; params: unknown[] }[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, params, _method) => {
+        executedQueries.push({ sql, params });
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db.insert(generationLogs).values({
+      id: "log-001",
+      projectId: "project-001",
+      sceneNodeId: "scene-001",
+      kind: "inline-ai",
+      commandId: "continue",
+      instruction: "続けて",
+      model: "claude-sonnet-4-6",
+      traceId: "trace-001",
+    });
+
+    expect(executedQueries[0].sql).toContain("generation_logs");
+    expect(executedQueries[0].params).toContain("inline-ai");
+    expect(executedQueries[0].params).toContain("trace-001");
   });
 });
 

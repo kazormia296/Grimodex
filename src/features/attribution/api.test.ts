@@ -28,6 +28,7 @@ describe("spansToMarkData", () => {
         model: "anthropic/claude-sonnet-4-6",
         timestamp: "2026-03-31T00:00:00.000Z",
         chatMsgId: "msg-1",
+        traceId: "trace-1",
         phaseId: null,
         stickyId: null,
       },
@@ -43,6 +44,7 @@ describe("spansToMarkData", () => {
         model: null,
         timestamp: "2026-03-31T00:00:00.000Z",
         chatMsgId: null,
+        traceId: null,
         phaseId: null,
         stickyId: null,
       },
@@ -57,6 +59,7 @@ describe("spansToMarkData", () => {
     expect(markData[0].attrs.source).toBe("ai");
     expect(markData[0].attrs.model).toBe("anthropic/claude-sonnet-4-6");
     expect(markData[0].attrs.chatMessageId).toBe("msg-1");
+    expect(markData[0].attrs.traceId).toBe("trace-1");
 
     expect(markData[1].from).toBe(10);
     expect(markData[1].to).toBe(20);

@@ -7,6 +7,7 @@ const humanSpan = (text: string): TrashSpan => ({
   source: "human",
   model: null,
   chatMessageId: null,
+  traceId: null,
   timestamp: null,
 });
 
@@ -15,6 +16,7 @@ const aiSpan = (text: string): TrashSpan => ({
   source: "ai",
   model: "test-model",
   chatMessageId: null,
+  traceId: null,
   timestamp: null,
 });
 

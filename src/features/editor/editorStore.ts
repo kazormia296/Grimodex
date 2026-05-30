@@ -31,6 +31,7 @@ interface EditorState {
     source: "ai" | "human",
     originalContent: string | null,
     dropPos?: number,
+    sourceChatMessageId?: string | null,
   ) => boolean;
   insertFromPaste: (segments: AttributedSegment[]) => boolean;
   clearInsertRange: () => void;
@@ -165,6 +166,7 @@ export const useEditorStore = create<EditorState>()((set, get) => {
       source: "ai" | "human",
       originalContent: string | null,
       dropPos?: number,
+      sourceChatMessageId?: string | null,
     ) => {
       const { editor } = get();
       if (!editor) return false;
@@ -198,6 +200,8 @@ export const useEditorStore = create<EditorState>()((set, get) => {
               source: seg.source,
               timestamp: now,
               originalLength: seg.text.length,
+              chatMessageId:
+                seg.source === "ai" ? (sourceChatMessageId ?? null) : null,
             },
           },
         ],

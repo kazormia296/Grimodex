@@ -1,7 +1,8 @@
-import { useMemo, useCallback } from "react";
+import { useEffect, useMemo, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download } from "lucide-react";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { computeAttributionStats } from "./attributionStats";
 import { useAttributionStore } from "./attributionStore";
 import { ExportAgentTraceButton } from "./ExportAgentTraceButton";
@@ -14,6 +15,12 @@ import {
 } from "./exportReport";
 import type { FilterSource } from "./attributionStore";
 import { recordMark } from "@/lib/perfLog";
+import {
+  extractSpansFromDoc,
+  resolveProvenance,
+  type ProvenanceKind,
+  type ResolvedPassage,
+} from "./provenance";
 
 const UNKNOWN_MODEL_KEY = "__unknown_model__";
 
@@ -67,6 +74,7 @@ export function AttributionReport() {
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
+  const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const scope = useAttributionStore((s) => s.scope);
   const filterSource = useAttributionStore((s) => s.filterSource);
   const setScope = useAttributionStore((s) => s.setScope);
@@ -79,6 +87,65 @@ export function AttributionReport() {
     // doc の変化で再計算したいので明示的に依存に含める。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, editor, editor?.state.doc]);
+
+  const [passages, setPassages] = useState<ResolvedPassage[]>([]);
+  const [isLoadingPassages, setIsLoadingPassages] = useState(false);
+
+  const aiSpanSignal = useMemo(() => {
+    if (scope !== "scene" || !editor || !activeSceneId) return "";
+    return extractSpansFromDoc(editor.state.doc, activeSceneId)
+      .filter((s) => s.source === "ai")
+      .map((s) => `${s.from}:${s.to}:${s.traceId ?? ""}:${s.chatMsgId ?? ""}`)
+      .join("|");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, editor, activeSceneId, editor?.state.doc]);
+
+  useEffect(() => {
+    if (scope !== "scene" || !editor || !activeSceneId || !aiSpanSignal) {
+      setPassages([]);
+      setIsLoadingPassages(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingPassages(true);
+    const timer = setTimeout(() => {
+      const spans = extractSpansFromDoc(editor.state.doc, activeSceneId);
+      resolveProvenance(spans, (nodeId, from, to) => {
+        if (nodeId !== activeSceneId) return "";
+        return editor.state.doc.textBetween(from, to, " ", " ");
+      })
+        .then((next) => {
+          if (!cancelled) setPassages(next);
+        })
+        .catch((err: unknown) => {
+          console.warn("resolve provenance failed", err);
+          if (!cancelled) setPassages([]);
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoadingPassages(false);
+        });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [scope, editor, activeSceneId, aiSpanSignal]);
+
+  const handleJumpToPassage = useCallback((passage: ResolvedPassage) => {
+    useTreeStore.getState().setActiveScene(passage.nodeId);
+    setTimeout(() => {
+      const ed = useEditorStore.getState().editor;
+      ed?.chain()
+        .focus()
+        .setTextSelection({
+          from: passage.from,
+          to: passage.to,
+        })
+        .run();
+    }, 0);
+  }, []);
 
   const handleExportMd = useCallback(() => {
     if (!stats) return;
@@ -196,6 +263,27 @@ export function AttributionReport() {
             </div>
           )}
 
+          {(isLoadingPassages || passages.length > 0) && (
+            <div className="mt-1 border-t border-border pt-2">
+              <p className="mb-1 text-xs font-medium text-muted-foreground">
+                AI 使用箇所
+              </p>
+              {isLoadingPassages ? (
+                <p className="text-xs text-muted-foreground">読み込み中...</p>
+              ) : (
+                <div className="flex max-h-56 flex-col gap-1 overflow-auto">
+                  {passages.map((passage) => (
+                    <PassageRow
+                      key={passage.id}
+                      passage={passage}
+                      onJump={handleJumpToPassage}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex items-center justify-between pt-1 border-t border-border">
             <div className="flex gap-1">
               <ExportAgentTraceButton />
@@ -230,4 +318,66 @@ export function AttributionReport() {
     __perfStart,
   );
   return __renderResult;
+}
+
+function provenanceLabel(kind: ProvenanceKind): string {
+  switch (kind) {
+    case "chat":
+      return "チャット";
+    case "inline-ai":
+      return "slash";
+    case "beat":
+      return "Beat";
+    case "orphan-chat":
+      return "消失";
+    case "unknown":
+      return "出自記録なし";
+  }
+}
+
+function PassageRow({
+  passage,
+  onJump,
+}: {
+  passage: ResolvedPassage;
+  onJump: (passage: ResolvedPassage) => void;
+}) {
+  const provenance = passage.provenance;
+  const detail =
+    provenance.kind === "chat"
+      ? (provenance.precedingUserPrompt ??
+        provenance.chatMessage?.content ??
+        "")
+      : provenance.kind === "inline-ai" || provenance.kind === "beat"
+        ? [provenance.commandId, provenance.instruction]
+            .filter(Boolean)
+            .join(": ")
+        : provenance.kind === "orphan-chat"
+          ? "元チャット削除済"
+          : "既存本文または手動スニペット由来";
+
+  return (
+    <button
+      type="button"
+      onClick={() => onJump(passage)}
+      className="rounded border border-border px-2 py-1 text-left text-xs hover:bg-accent"
+    >
+      <div className="flex items-center gap-2">
+        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {provenanceLabel(provenance.kind)}
+        </span>
+        {passage.model && (
+          <span className="truncate text-[10px] text-muted-foreground">
+            {passage.model}
+          </span>
+        )}
+      </div>
+      <p className="mt-1 line-clamp-2 text-foreground">{passage.excerpt}</p>
+      {detail && (
+        <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+          {detail}
+        </p>
+      )}
+    </button>
+  );
 }

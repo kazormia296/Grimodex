@@ -274,6 +274,23 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session
                 ON chat_messages(session_id, created_at);
 
+            CREATE TABLE IF NOT EXISTS generation_logs (
+                id            TEXT PRIMARY KEY,
+                project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                kind          TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')),
+                command_id    TEXT,
+                instruction   TEXT,
+                prompt_full   TEXT,
+                model         TEXT,
+                trace_id      TEXT NOT NULL UNIQUE,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_generation_logs_project_trace
+                ON generation_logs(project_id, trace_id);
+            CREATE INDEX IF NOT EXISTS idx_generation_logs_scene
+                ON generation_logs(scene_node_id);
+
             CREATE TABLE IF NOT EXISTS chat_summaries (
                 id          TEXT PRIMARY KEY,
                 session_id  TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
@@ -333,6 +350,7 @@ impl Database {
                 model           TEXT,
                 timestamp       TEXT,
                 chat_msg_id     TEXT,
+                trace_id        TEXT,
                 phase_id        TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
                 -- Exactly one owning document
                 CHECK (
@@ -978,6 +996,27 @@ impl Database {
             "sticky_id",
             "TEXT REFERENCES map_stickies(id) ON DELETE CASCADE",
         )?;
+        Self::add_column_if_missing(&conn, "authorship_spans", "trace_id", "TEXT")?;
+
+        // AI provenance logs for forward capture of slash/Beat generation.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS generation_logs (
+                id            TEXT PRIMARY KEY,
+                project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                kind          TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')),
+                command_id    TEXT,
+                instruction   TEXT,
+                prompt_full   TEXT,
+                model         TEXT,
+                trace_id      TEXT NOT NULL UNIQUE,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_generation_logs_project_trace
+                ON generation_logs(project_id, trace_id);
+            CREATE INDEX IF NOT EXISTS idx_generation_logs_scene
+                ON generation_logs(scene_node_id);",
+        )?;
 
         // Extend authorship_spans CHECK to allow sticky_id as a 5th exclusive owner.
         Self::migrate_authorship_spans_check_with_sticky(&conn)?;
@@ -1592,6 +1631,10 @@ impl Database {
         let Some(create_sql) = create_sql else {
             return Ok(());
         };
+        // Keep additive provenance columns when rebuilding. Future rebuilds of
+        // authorship_spans must carry trace_id through both CREATE and SELECT.
+        Self::add_column_if_missing(conn, "authorship_spans", "trace_id", "TEXT")?;
+
         // Detect whether the existing CHECK already references sticky_id. The
         // additive ALTER TABLE only touches the column list, not CHECK clauses,
         // so a CHECK mentioning sticky_id is the marker of the new schema.
@@ -1615,6 +1658,7 @@ impl Database {
                 model           TEXT,
                 timestamp       TEXT,
                 chat_msg_id     TEXT,
+                trace_id        TEXT,
                 phase_id        TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
                 CHECK (
                     (CASE WHEN node_id         IS NOT NULL THEN 1 ELSE 0 END +
@@ -1627,9 +1671,9 @@ impl Database {
             );
             INSERT INTO authorship_spans_new
                 (id, node_id, codex_entry_id, snippet_id, detail_value_id, sticky_id,
-                 from_pos, to_pos, source, model, timestamp, chat_msg_id, phase_id)
+                 from_pos, to_pos, source, model, timestamp, chat_msg_id, trace_id, phase_id)
             SELECT id, node_id, codex_entry_id, snippet_id, detail_value_id, sticky_id,
-                   from_pos, to_pos, source, model, timestamp, chat_msg_id, phase_id
+                   from_pos, to_pos, source, model, timestamp, chat_msg_id, trace_id, phase_id
             FROM authorship_spans;
             DROP TABLE authorship_spans;
             ALTER TABLE authorship_spans_new RENAME TO authorship_spans;
