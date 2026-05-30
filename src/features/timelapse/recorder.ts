@@ -24,6 +24,14 @@ import {
 
 const FLUSH_DEBOUNCE_MS = 100;
 
+/**
+ * How many consecutive failed flushes to tolerate before dropping the in-flight
+ * batch. A genuinely unrecoverable insert (FK violation, disk full, ...) must
+ * not tight-loop forever; a sequence collision / transport blip heals in one
+ * retry via the DB-tail reconcile in `flushNow`.
+ */
+const MAX_FLUSH_RETRIES = 10;
+
 type Domain =
   | "editor"
   | "codex"
@@ -69,6 +77,8 @@ interface RecorderState {
   queue: PendingEvent[];
   flushTimer: ReturnType<typeof setTimeout> | null;
   flushPromise: Promise<void> | null;
+  /** Consecutive failed-flush count; gates retry backoff and the give-up cap. */
+  flushRetries: number;
   initPromise: Promise<void> | null;
 }
 
@@ -84,11 +94,37 @@ const state: RecorderState = {
   queue: [],
   flushTimer: null,
   flushPromise: null,
+  flushRetries: 0,
   initPromise: null,
 };
 
 function newSessionId(): string {
   return crypto.randomUUID();
+}
+
+/**
+ * Read the current chain tail (highest sequence + its hash) for a project, or
+ * null when the project has no events yet. Shared by init and the flush-failure
+ * reconcile path so both anchor to the same ground truth (the DB).
+ */
+async function readChainTail(
+  projectId: string,
+): Promise<{ sequence: number; hash: string } | null> {
+  const last = await db
+    .select({
+      sequence: changeEvents.sequence,
+      hash: changeEvents.hash,
+    })
+    .from(changeEvents)
+    .where(eq(changeEvents.projectId, projectId))
+    .orderBy(desc(changeEvents.sequence))
+    .limit(1);
+  return last[0] ?? null;
+}
+
+/** Exponential flush-retry backoff: 100, 200, 400, ... capped at 5s. */
+function flushBackoffMs(attempt: number): number {
+  return Math.min(FLUSH_DEBOUNCE_MS * 2 ** (attempt - 1), 5000);
 }
 
 /**
@@ -129,16 +165,7 @@ export async function initRecorderForProject(projectId: string): Promise<void> {
   state.queue = [];
 
   state.initPromise = (async () => {
-    const last = await db
-      .select({
-        sequence: changeEvents.sequence,
-        hash: changeEvents.hash,
-      })
-      .from(changeEvents)
-      .where(eq(changeEvents.projectId, projectId))
-      .orderBy(desc(changeEvents.sequence))
-      .limit(1);
-    const head = last[0];
+    const head = await readChainTail(projectId);
     if (head) {
       state.lastSequence = head.sequence;
       state.lastHash = hexToBytes(head.hash);
@@ -166,6 +193,7 @@ export function resetRecorderChain(): void {
   state.lastSequence = 0;
   state.lastHash = GENESIS_HASH;
   state.queue = [];
+  state.flushRetries = 0;
   state.initPromise = null;
   if (state.flushTimer) {
     clearTimeout(state.flushTimer);
@@ -193,6 +221,7 @@ export function _resetRecorderForTests(): void {
   state.lastSequence = 0;
   state.lastHash = GENESIS_HASH;
   state.queue = [];
+  state.flushRetries = 0;
   if (state.flushTimer) clearTimeout(state.flushTimer);
   state.flushTimer = null;
   state.flushPromise = null;
@@ -218,14 +247,14 @@ export function recordChangeEvent(input: RecordEventInput): void {
   scheduleFlush();
 }
 
-function scheduleFlush(): void {
+function scheduleFlush(delayMs: number = FLUSH_DEBOUNCE_MS): void {
   if (state.flushTimer) return;
   state.flushTimer = setTimeout(() => {
     state.flushTimer = null;
     void flushNow().catch((err) =>
       console.warn("[timelapse] flush failed", err),
     );
-  }, FLUSH_DEBOUNCE_MS);
+  }, delayMs);
 }
 
 /**
@@ -242,7 +271,8 @@ export async function flushNow(): Promise<void> {
       return;
     }
     if (state.initPromise) await state.initPromise;
-    if (!state.projectId) {
+    const projectId = state.projectId;
+    if (!projectId) {
       state.queue = [];
       return;
     }
@@ -252,13 +282,14 @@ export async function flushNow(): Promise<void> {
     state.queue = [];
 
     const rows: Array<typeof changeEvents.$inferInsert> = [];
+    const batchFirstSeq = state.lastSequence + 1;
     let seq = state.lastSequence;
     let prev = state.lastHash;
     for (const ev of batch) {
       seq += 1;
       const payloadStr = canonicalisePayload(ev.payload);
       const body = {
-        projectId: state.projectId,
+        projectId,
         sceneId: ev.sceneId,
         domain: ev.domain,
         opType: ev.opType,
@@ -292,11 +323,47 @@ export async function flushNow(): Promise<void> {
       await db.insert(changeEvents).values(rows);
       state.lastSequence = seq;
       state.lastHash = prev;
+      state.flushRetries = 0;
     } catch (err) {
-      // Re-queue on failure so the next tick retries; preserve order by
-      // prepending the original batch.
+      // The insert did not resolve cleanly. Do NOT blindly re-queue the same
+      // sequence numbers: on a UNIQUE collision (uq_change_events_project_seq)
+      // that loops forever, and on a "committed in SQLite but the proxy promise
+      // rejected" flush it would re-issue rows that already landed, which
+      // double-applies doc.step on replay. Reconcile against the DB tail
+      // (ground truth) instead.
+      //
+      // The desync that makes our seq collide is environmental: a second writer
+      // racing the per-project counter (HMR-duplicated module state, a stray
+      // `pnpm dev` tab, or multi-window — confirmed in the wild by interleaved
+      // session_ids), or a committed-but-rejected flush. The file header notes
+      // the true fix is a Rust-side allocator; this keeps the chain self-healing
+      // for the single-process path.
+      const tail = await readChainTail(projectId).catch(() => null);
+      if (tail) {
+        state.lastSequence = tail.sequence;
+        state.lastHash = hexToBytes(tail.hash);
+      }
+      if (tail && tail.sequence >= batchFirstSeq) {
+        // Slots [batchFirstSeq..seq] are already taken in the DB — our atomic
+        // insert actually landed, or another writer owns them. Drop the batch:
+        // the data is persisted (or owned), and re-queueing would collide
+        // forever. Self-healed, so resolve without surfacing the error.
+        state.flushRetries = 0;
+        return;
+      }
+      // Nothing of ours committed (transient error). Cap the attempts so a
+      // genuinely unrecoverable insert can't tight-loop, then re-queue with
+      // backoff. Preserve order by prepending the original batch.
+      state.flushRetries += 1;
+      if (state.flushRetries > MAX_FLUSH_RETRIES) {
+        console.warn(
+          `[timelapse] dropping ${batch.length} event(s) after ${MAX_FLUSH_RETRIES} failed flush attempts`,
+        );
+        state.flushRetries = 0;
+        return;
+      }
       state.queue = batch.concat(state.queue);
-      scheduleFlush(); // arm the debounce so the retry fires without waiting for a new event
+      scheduleFlush(flushBackoffMs(state.flushRetries));
       throw err;
     }
   })().finally(() => {

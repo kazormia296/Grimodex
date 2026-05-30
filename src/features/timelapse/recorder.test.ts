@@ -16,6 +16,7 @@ vi.mock("@/db/client", () => ({
 import {
   _resetRecorderForTests,
   flushNow,
+  getRecorderChainHead,
   initRecorderForProject,
   recordChangeEvent,
   resetRecorderChain,
@@ -246,5 +247,84 @@ describe("recorder", () => {
     expect(insertCount).toBe(2);
     expect(rows).toHaveLength(1);
     expect(rows[0].opType).toBe("step");
+  });
+
+  it("drops a batch whose sequence slots are already taken and re-anchors to the DB tail (regression: UNIQUE-collision flush loop)", async () => {
+    // init sees an empty tail -> lastSequence 0, the first event would be seq 1.
+    // After the insert "fails", the tail reflects a row that now owns seq 1
+    // (a second writer, or our own committed-but-rejected flush).
+    let tail: { sequence: number; hash: string } | null = null;
+    dbSelectMock.mockImplementation(() => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: () => Promise.resolve(tail ? [tail] : []),
+          }),
+        }),
+      }),
+    }));
+    let insertCalls = 0;
+    dbInsertMock.mockImplementation(() => ({
+      values: () => {
+        insertCalls++;
+        tail = { sequence: 1, hash: "ab".repeat(32) };
+        return Promise.reject(
+          new Error(
+            "UNIQUE constraint failed: change_events.project_id, change_events.sequence",
+          ),
+        );
+      },
+    }));
+
+    await initRecorderForProject("p-collide");
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
+
+    // The flush must self-heal: reconcile against the tail, see the slot is
+    // taken, drop the batch — and NOT throw / NOT re-issue the same seq forever.
+    await expect(flushNow()).resolves.toBeUndefined();
+    expect(insertCalls).toBe(1);
+    // Re-anchored to the DB tail; the dropped event is not re-issued.
+    expect(getRecorderChainHead()).toBe(1);
+
+    // No infinite retry: a follow-up flush issues no further insert.
+    await flushNow();
+    expect(insertCalls).toBe(1);
+  });
+
+  it("drops the batch and stops looping after MAX_FLUSH_RETRIES consecutive failures (regression: console-flood loop)", async () => {
+    vi.useFakeTimers();
+    try {
+      // Tail always empty -> the failure is treated as transient (re-queue),
+      // and the insert never recovers -> the retry cap must terminate the loop.
+      setupDb(null);
+      let calls = 0;
+      dbInsertMock.mockImplementation(() => ({
+        values: () => {
+          calls++;
+          return Promise.reject(new Error("boom"));
+        },
+      }));
+
+      await initRecorderForProject("p-cap");
+      recordChangeEvent({
+        domain: "editor",
+        opType: "step",
+        payload: { i: 1 },
+      });
+
+      // First MAX_FLUSH_RETRIES (=10) attempts re-queue and surface the error.
+      for (let i = 0; i < 10; i++) {
+        await expect(flushNow()).rejects.toThrow("boom");
+      }
+      // The next attempt exceeds the cap -> batch dropped, resolves quietly.
+      await expect(flushNow()).resolves.toBeUndefined();
+      expect(calls).toBe(11);
+
+      // Batch is gone: a further flush is a no-op (the loop has stopped).
+      await flushNow();
+      expect(calls).toBe(11);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
