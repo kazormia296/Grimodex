@@ -31,6 +31,9 @@ vi.mock("@/db/client", () => ({
   },
 }));
 vi.mock("./recorder", () => recorderMock);
+vi.mock("./seedSession", () => ({
+  seedWorkspaceSnapshot: vi.fn(() => Promise.resolve()),
+}));
 vi.mock("./snapshots", () => snapshotsMock);
 vi.mock("@/features/settings/api", () => settingsMock);
 vi.mock("@/features/tree/api", () => treeMock);

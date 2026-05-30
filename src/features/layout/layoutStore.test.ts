@@ -479,6 +479,14 @@ describe("useLayoutStore", () => {
 
     it("loadPresets restores builtinLayoutPresetOverrides", async () => {
       const state = buildDefaultLayoutState({ allInactive: true });
+      // Append (not prepend) so panels[0] stays "scenes": the sentinel
+      // activePanel must differ from the slot's first panel, otherwise
+      // stripUnknownPanels' orphan-fallback (-> panels[0]) would mask a wrong
+      // reset. "grid" is a registered panel, so sanitize must preserve it.
+      state.regions.left.slots[0].panels = [
+        ...state.regions.left.slots[0].panels,
+        "grid",
+      ];
       state.regions.left.slots[0].activePanel = "grid";
       mockInvoke.mockResolvedValue({
         recentWorkspaces: [],
