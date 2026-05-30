@@ -10,6 +10,7 @@ import { captureSnippetDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
 
 export type SnippetSourceFilter =
   | "all"
@@ -176,12 +177,22 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       return;
     }
 
+    // 本文 (content, ProseMirror JSON) の変更差分を timelapse に記録する。
+    const diffs: Record<string, BodyDiff> = {};
+    const nextContent = (data as { content?: unknown }).content;
+    if (typeof nextContent === "string") {
+      const d = computeDocDiff(before?.content ?? "", nextContent);
+      if (d) diffs.content = d;
+    }
     recordChangeEvent({
       domain: "snippet",
       opType: "snippet.update",
       entityType: "snippet",
       entityId: id,
-      payload: { fields: Object.keys(data) },
+      payload:
+        Object.keys(diffs).length > 0
+          ? { fields: Object.keys(data), diffs }
+          : { fields: Object.keys(data) },
     });
 
     if (!before) return;

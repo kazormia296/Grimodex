@@ -54,6 +54,10 @@ vi.mock("./search", () => ({
   searchCodexEntries: vi.fn(),
 }));
 
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: vi.fn(),
+}));
+
 import {
   listCodexEntries,
   createCodexEntry,
@@ -61,12 +65,25 @@ import {
   deleteCodexEntry,
 } from "./api";
 import { searchCodexEntries } from "./search";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 const mockListCodexEntries = vi.mocked(listCodexEntries);
 const mockCreateCodexEntry = vi.mocked(createCodexEntry);
 const mockUpdateCodexEntry = vi.mocked(updateCodexEntry);
 const mockDeleteCodexEntry = vi.mocked(deleteCodexEntry);
 const mockSearchCodexEntries = vi.mocked(searchCodexEntries);
+const mockRecord = vi.mocked(recordChangeEvent);
+
+function pmDoc(text: string): string {
+  return JSON.stringify({
+    type: "doc",
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+  });
+}
+
+function findCodexUpdateEvent() {
+  return mockRecord.mock.calls.find(([arg]) => arg.opType === "entry.update");
+}
 
 describe("codexStore", () => {
   beforeEach(() => {
@@ -356,6 +373,93 @@ describe("codexStore", () => {
         useCodexStore.getState().setSort(order);
         expect(useCodexStore.getState().sortOrder).toBe(order);
       }
+    });
+  });
+
+  describe("updateText timelapse capture", () => {
+    const baseEntry: CodexEntry = {
+      ...mockEntry,
+      content: pmDoc("old body"),
+      summary: "old sum",
+      notes: "old notes",
+    };
+
+    it("records entry.update with content + summary diffs, excluding notes", async () => {
+      useCodexStore.setState({ entries: [baseEntry] });
+      mockUpdateCodexEntry.mockResolvedValue({
+        ...baseEntry,
+        content: pmDoc("new body"),
+        summary: "new sum",
+        notes: "new notes",
+      });
+
+      await useCodexStore.getState().updateText("codex-1", {
+        content: pmDoc("new body"),
+        summary: "new sum",
+        notes: "new notes",
+      });
+
+      const call = findCodexUpdateEvent();
+      expect(call).toBeTruthy();
+      const payload = call![0].payload as {
+        fields: string[];
+        diffs: Record<string, { segments: [number, string][] }>;
+      };
+      expect([...payload.fields].sort()).toEqual(["content", "summary"]);
+      expect(payload.diffs.notes).toBeUndefined();
+
+      // content diff is over extracted text, not raw JSON
+      const cseg = payload.diffs.content.segments;
+      const cjoined = cseg.map(([, t]) => t).join("");
+      expect(cjoined).not.toContain("paragraph");
+      const cBefore = cseg
+        .filter(([op]) => op !== 1)
+        .map(([, t]) => t)
+        .join("");
+      const cAfter = cseg
+        .filter(([op]) => op !== -1)
+        .map(([, t]) => t)
+        .join("");
+      expect(cBefore).toBe("old body");
+      expect(cAfter).toBe("new body");
+
+      // summary diff is over plain text
+      const sseg = payload.diffs.summary.segments;
+      const sBefore = sseg
+        .filter(([op]) => op !== 1)
+        .map(([, t]) => t)
+        .join("");
+      const sAfter = sseg
+        .filter(([op]) => op !== -1)
+        .map(([, t]) => t)
+        .join("");
+      expect(sBefore).toBe("old sum");
+      expect(sAfter).toBe("new sum");
+    });
+
+    it("records nothing when only notes change", async () => {
+      useCodexStore.setState({ entries: [baseEntry] });
+      mockUpdateCodexEntry.mockResolvedValue({
+        ...baseEntry,
+        notes: "new notes",
+      });
+
+      await useCodexStore
+        .getState()
+        .updateText("codex-1", { notes: "new notes" });
+
+      expect(findCodexUpdateEvent()).toBeFalsy();
+    });
+
+    it("records nothing when a body field is set but unchanged", async () => {
+      useCodexStore.setState({ entries: [baseEntry] });
+      mockUpdateCodexEntry.mockResolvedValue(baseEntry);
+
+      await useCodexStore
+        .getState()
+        .updateText("codex-1", { content: pmDoc("old body") });
+
+      expect(findCodexUpdateEvent()).toBeFalsy();
     });
   });
 });

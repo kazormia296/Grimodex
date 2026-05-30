@@ -38,6 +38,7 @@ import { DEFAULT_SHOW } from "./types";
 import { DEFAULT_PALETTE_ID, DEFAULT_COLOR_SLOT } from "@/lib/stickyPalettes";
 import { seedAuthorshipMarksJson } from "@/features/attribution/seedAuthorshipMarks";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
 
 /**
  * 執筆タイムラプス: Map 系操作を統一窓口で capture する。drag 中の
@@ -613,6 +614,17 @@ export async function updateSticky(
   },
 ): Promise<MapSticky | undefined> {
   const now = new Date().toISOString();
+  // body を更新するときだけ、差分記録用に旧 body を 1 件読む (頻度の低い
+  // テキスト編集なので追加 SELECT は許容)。
+  let beforeBody: string | null | undefined;
+  if (update.body !== undefined) {
+    const existing = await db
+      .select({ body: mapStickies.body })
+      .from(mapStickies)
+      .where(eq(mapStickies.id, id))
+      .limit(1);
+    beforeBody = existing[0]?.body;
+  }
   const set: Partial<NewMapSticky> = { updatedAt: now };
   if ("title" in update) set.title = update.title ?? null;
   if (update.body !== undefined) {
@@ -626,7 +638,16 @@ export async function updateSticky(
     .set(set)
     .where(eq(mapStickies.id, id))
     .returning();
-  recordMapEvent("sticky.update", id, { fields: Object.keys(update) });
+  // 本文 (body, ProseMirror JSON) の変更差分を timelapse に記録する。
+  const diffs: Record<string, BodyDiff> = {};
+  if (update.body !== undefined) {
+    const d = computeDocDiff(beforeBody ?? "", update.body ?? "");
+    if (d) diffs.body = d;
+  }
+  recordMapEvent("sticky.update", id, {
+    fields: Object.keys(update),
+    ...(diffs.body ? { diffs } : {}),
+  });
   return rows[0];
 }
 

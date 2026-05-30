@@ -14,8 +14,22 @@ vi.mock("./search", () => ({
   searchSnippets: vi.fn(() => Promise.resolve([])),
 }));
 
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: vi.fn(),
+}));
+
 import * as snippetApi from "./api";
 import * as snippetSearch from "./search";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
+
+const mockRecord = vi.mocked(recordChangeEvent);
+
+function pmDoc(text: string): string {
+  return JSON.stringify({
+    type: "doc",
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+  });
+}
 
 const mockListSnippets = vi.mocked(snippetApi.listSnippets);
 const mockCreateSnippet = vi.mocked(snippetApi.createSnippet);
@@ -215,6 +229,65 @@ describe("snippetStore", () => {
       expect(useSnippetStore.getState().entries[0].title).toBe(
         "テストスニペット",
       );
+    });
+
+    it("records snippet.update with a content diff over extracted text", async () => {
+      const original = fakeSnippet({
+        id: "snippet-1",
+        content: pmDoc("alpha beta"),
+      });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockResolvedValue({
+        ...original,
+        content: pmDoc("alpha gamma"),
+      });
+
+      await useSnippetStore
+        .getState()
+        .update("snippet-1", { content: pmDoc("alpha gamma") });
+
+      const call = mockRecord.mock.calls.find(
+        ([arg]) => arg.opType === "snippet.update",
+      );
+      expect(call).toBeTruthy();
+      const payload = call![0].payload as {
+        fields: string[];
+        diffs?: { content?: { segments: [number, string][] } };
+      };
+      expect(payload.fields).toContain("content");
+      const segs = payload.diffs?.content?.segments;
+      expect(segs).toBeTruthy();
+      // diff is over extracted plain text, not raw JSON
+      const joined = segs!.map(([, t]) => t).join("");
+      expect(joined).not.toContain("paragraph");
+      // reconstruct both sides from the diff (segment boundaries are
+      // diff-match-patch's choice; reconstruction is the stable invariant)
+      const reconBefore = segs!
+        .filter(([op]) => op !== 1)
+        .map(([, t]) => t)
+        .join("");
+      const reconAfter = segs!
+        .filter(([op]) => op !== -1)
+        .map(([, t]) => t)
+        .join("");
+      expect(reconBefore).toBe("alpha beta");
+      expect(reconAfter).toBe("alpha gamma");
+    });
+
+    it("omits diffs when no content field changed", async () => {
+      const original = fakeSnippet({ id: "snippet-1" });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockResolvedValue({ ...original, title: "新題" });
+
+      await useSnippetStore.getState().update("snippet-1", { title: "新題" });
+
+      const call = mockRecord.mock.calls.find(
+        ([arg]) => arg.opType === "snippet.update",
+      );
+      expect(call).toBeTruthy();
+      const payload = call![0].payload as { fields: string[]; diffs?: unknown };
+      expect(payload.fields).toContain("title");
+      expect(payload.diffs).toBeUndefined();
     });
   });
 

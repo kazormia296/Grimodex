@@ -14,7 +14,21 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue({}),
 }));
 
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: vi.fn(),
+}));
+
 import { db } from "@/db/client";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
+
+const mockRecord = vi.mocked(recordChangeEvent);
+
+function pmDoc(text: string): string {
+  return JSON.stringify({
+    type: "doc",
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+  });
+}
 
 // Helper to build a chainable query mock.
 function makeMock(returnValue: unknown) {
@@ -868,5 +882,75 @@ describe("mapApi — adoptSticky / reattachSticky / adoptAllForBranch", () => {
     expect(results).toHaveLength(1);
     expect(results[0].previousAiBranchId).toBe("br1");
     expect(results[0].removedEdge?.id).toBe("edge1");
+  });
+});
+
+describe("mapApi — updateSticky timelapse capture", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("records sticky.update with a body diff over extracted text", async () => {
+    const updated = {
+      id: "s1",
+      boardId: "b1",
+      body: pmDoc("new body"),
+      previewText: "new body",
+    };
+    // 1st db call: SELECT old body. 2nd: UPDATE ... RETURNING.
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([{ body: pmDoc("old body") }]),
+    );
+    (db.update as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([updated]),
+    );
+
+    const { updateSticky } = await import("./mapApi");
+    await updateSticky("s1", { body: pmDoc("new body") });
+
+    const call = mockRecord.mock.calls.find(
+      ([arg]) => arg.opType === "sticky.update",
+    );
+    expect(call).toBeTruthy();
+    expect(call![0].domain).toBe("map");
+    const payload = call![0].payload as {
+      fields: string[];
+      diffs?: { body?: { segments: [number, string][] } };
+    };
+    expect(payload.fields).toContain("body");
+    const segs = payload.diffs?.body?.segments;
+    expect(segs).toBeTruthy();
+    // diff is over extracted plain text, not raw JSON
+    const joined = segs!.map(([, t]) => t).join("");
+    expect(joined).not.toContain("paragraph");
+    const reconBefore = segs!
+      .filter(([op]) => op !== 1)
+      .map(([, t]) => t)
+      .join("");
+    const reconAfter = segs!
+      .filter(([op]) => op !== -1)
+      .map(([, t]) => t)
+      .join("");
+    expect(reconBefore).toBe("old body");
+    expect(reconAfter).toBe("new body");
+  });
+
+  it("omits diffs when only non-body fields change", async () => {
+    (db.update as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([{ id: "s1", boardId: "b1" }]),
+    );
+
+    const { updateSticky } = await import("./mapApi");
+    await updateSticky("s1", { colorSlot: 2 });
+
+    const call = mockRecord.mock.calls.find(
+      ([arg]) => arg.opType === "sticky.update",
+    );
+    expect(call).toBeTruthy();
+    const payload = call![0].payload as { fields: string[]; diffs?: unknown };
+    expect(payload.fields).toContain("colorSlot");
+    expect(payload.diffs).toBeUndefined();
+    // body 未更新時は旧 body の SELECT を撃たない
+    expect(db.select).not.toHaveBeenCalled();
   });
 });

@@ -16,6 +16,11 @@ import { captureCodexDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import {
+  computeBodyDiff,
+  computeDocDiff,
+  type BodyDiff,
+} from "@/features/timelapse/bodyDiff";
 
 export type CodexSortOrder =
   | "category"
@@ -324,6 +329,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   },
 
   updateText: async (id, data) => {
+    const before = get().entries.find((e) => e.id === id);
     try {
       const updated = await updateCodexEntry(id, data);
       if (updated) {
@@ -338,6 +344,31 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         `updateText: ${rootCause(e)}`,
         errorDetail(e),
       );
+      return;
+    }
+
+    // 本文系 (content / summary) の変更差分を timelapse に記録する。notes は
+    // 対象外。差分が無ければイベントは出さない (純 notes 編集は従来通り無記録)。
+    // content は ProseMirror JSON なので抽出テキストで diff、summary はプレーン
+    // テキストなのでそのまま diff する。
+    const diffs: Record<string, BodyDiff> = {};
+    if ("content" in data) {
+      const d = computeDocDiff(before?.content ?? "", data.content ?? "");
+      if (d) diffs.content = d;
+    }
+    if ("summary" in data) {
+      const d = computeBodyDiff(before?.summary ?? "", data.summary ?? "");
+      if (d) diffs.summary = d;
+    }
+    const fields = Object.keys(diffs);
+    if (fields.length > 0) {
+      recordChangeEvent({
+        domain: "codex",
+        opType: "entry.update",
+        entityType: "codex_entry",
+        entityId: id,
+        payload: { fields, diffs },
+      });
     }
   },
 
