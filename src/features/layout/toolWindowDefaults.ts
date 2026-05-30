@@ -55,7 +55,6 @@ export const DEFAULT_SLOT_MAP: Record<
   kouetsu: "BR",
   foreshadow: "BR",
   "trash-bin": "BR",
-  timelapse: "BR",
 };
 
 export const SLOT_TO_REGION: Record<ToolWindowSlot, StripeRegion> = {

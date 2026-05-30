@@ -84,9 +84,57 @@ export function ensureLayoutStateV3(
   state: LayoutState | LayoutStateV2,
 ): LayoutState {
   if (isLayoutStateV2(state)) {
-    return migrateLayoutStateV2toV3(state);
+    return stripUnknownPanels(migrateLayoutStateV2toV3(state));
   }
-  return cloneLayoutState(state);
+  return stripUnknownPanels(cloneLayoutState(state));
+}
+
+/**
+ * Drop panels that are no longer registered (e.g. a removed tool window like
+ * `timelapse`) from a persisted layout, so stale ids can't reach the renderer —
+ * `panelIcons[id]` / `PANEL_COMPONENT_MAP[id]` would be `undefined` and crash.
+ *
+ * Surgical: every other customization is preserved. An orphaned `activePanel`
+ * falls back to the slot's first remaining panel (or null); slots / tool
+ * segments left empty are removed and the surviving ratios renormalized. The
+ * editor segment is always kept. Idempotent (re-running changes nothing).
+ *
+ * Mutates and returns `state` — callers (`ensureLayoutStateV3`) pass a fresh
+ * clone, so this never leaks into a shared object.
+ */
+function stripUnknownPanels(state: LayoutState): LayoutState {
+  const known = new Set<string>(TOOL_WINDOW_PANEL_IDS);
+
+  for (const regionId of ALL_REGIONS) {
+    const region = state.regions[regionId];
+    if (!region) continue;
+    for (const slot of region.slots) {
+      slot.panels = slot.panels.filter((p) => known.has(p));
+      if (slot.activePanel && !slot.panels.includes(slot.activePanel)) {
+        slot.activePanel = slot.panels[0] ?? null;
+      }
+    }
+    region.slots = normalizeSlotRatios(
+      region.slots.filter((s) => s.panels.length > 0),
+    );
+  }
+
+  for (const seg of state.center.segments) {
+    if (seg.kind === "tool") {
+      seg.panels = seg.panels.filter((p) => known.has(p));
+      if (seg.activePanel && !seg.panels.includes(seg.activePanel)) {
+        seg.activePanel = seg.panels[0] ?? null;
+      }
+    }
+  }
+  state.center.segments = normalizeCenterSegmentRatios(
+    state.center.segments.filter(
+      (s) => s.kind === "editor" || s.panels.length > 0,
+    ),
+    state.center.editorOpen,
+  );
+
+  return state;
 }
 
 export function buildDefaultLayoutState(
