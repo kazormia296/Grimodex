@@ -58,23 +58,36 @@ function makeMockCtx(charWidth = 8) {
 
 function render(
   html: string,
-  theme?: EditorRenderTheme,
-  extra: unknown[] = [],
+  opts: {
+    theme?: EditorRenderTheme;
+    extra?: unknown[];
+    width?: number;
+    height?: number;
+    focusPos?: number | null;
+  } = {},
 ) {
   const editor = new Editor({
-    extensions: [StarterKit, ...(extra as never[])],
+    extensions: [StarterKit, ...((opts.extra ?? []) as never[])],
     content: html,
   });
   const { ctx, ops } = makeMockCtx();
   renderDocToCanvas(
     ctx as unknown as CanvasRenderingContext2D,
     editor.state.doc,
-    600,
-    400,
-    theme,
+    opts.width ?? 600,
+    opts.height ?? 400,
+    opts.theme,
+    opts.focusPos,
   );
   editor.destroy();
   return ops;
+}
+
+function editorFor(html: string) {
+  return new Editor({
+    extensions: [StarterKit],
+    content: html,
+  });
 }
 
 const textOf = (ops: PaintOp[]) =>
@@ -198,5 +211,72 @@ describe("renderDocToCanvas", () => {
     const textOps = ops.filter((o) => o.type === "fillText");
     const ys = new Set(textOps.map((o) => o.args[2] as number));
     expect(ys.size).toBeGreaterThan(1);
+  });
+
+  it("scrolls a long document so the focused block is visible", () => {
+    const html = Array.from(
+      { length: 30 },
+      (_, i) => `<p>Paragraph${String(i + 1).padStart(2, "0")}</p>`,
+    ).join("");
+    const editor = editorFor(html);
+    const { ctx, ops } = makeMockCtx();
+
+    renderDocToCanvas(
+      ctx as unknown as CanvasRenderingContext2D,
+      editor.state.doc,
+      600,
+      120,
+      DEFAULT_THEME,
+      editor.state.doc.content.size,
+    );
+
+    const textOps = ops.filter((o) => o.type === "fillText");
+    expect(textOps.some((o) => o.args[0] === "Paragraph01")).toBe(false);
+    const last = textOps.find((o) => o.args[0] === "Paragraph30");
+    expect(last).toBeTruthy();
+    expect(last?.args[2]).toBeGreaterThanOrEqual(0);
+    expect(last?.args[2]).toBeLessThanOrEqual(120);
+    editor.destroy();
+  });
+
+  it("keeps long documents top-aligned when focus is not provided", () => {
+    const html = Array.from(
+      { length: 30 },
+      (_, i) => `<p>Paragraph${String(i + 1).padStart(2, "0")}</p>`,
+    ).join("");
+    const ops = render(html, { height: 120 });
+    const first = ops.find(
+      (o) => o.type === "fillText" && o.args[0] === "Paragraph01",
+    );
+    const last = ops.find(
+      (o) => o.type === "fillText" && o.args[0] === "Paragraph30",
+    );
+
+    expect(first?.args[2]).toBe(
+      DEFAULT_THEME.paddingPx + DEFAULT_THEME.fontSizePx,
+    );
+    expect(last).toBeUndefined();
+  });
+
+  it("does not scroll short documents even with a focus position", () => {
+    const editor = editorFor("<p>Short</p>");
+    const { ctx, ops } = makeMockCtx();
+
+    renderDocToCanvas(
+      ctx as unknown as CanvasRenderingContext2D,
+      editor.state.doc,
+      600,
+      400,
+      DEFAULT_THEME,
+      editor.state.doc.content.size,
+    );
+
+    const short = ops.find(
+      (o) => o.type === "fillText" && o.args[0] === "Short",
+    );
+    expect(short?.args[2]).toBe(
+      DEFAULT_THEME.paddingPx + DEFAULT_THEME.fontSizePx,
+    );
+    editor.destroy();
   });
 });

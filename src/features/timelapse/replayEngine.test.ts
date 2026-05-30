@@ -122,7 +122,7 @@ describe("replayEditorSteps", () => {
 function captureInserts(
   initial: string,
   inserts: string[],
-): { captured: ReplayEvent[]; finalJson: unknown } {
+): { captured: ReplayEvent[]; finalJson: unknown; finalSelectionTo: number } {
   const ed = makeEditor(initial);
   const captured: ReplayEvent[] = [];
   let seq = 0;
@@ -141,11 +141,67 @@ function captureInserts(
   ed.commands.focus("end");
   for (const t of inserts) ed.commands.insertContent(t);
   const finalJson = ed.state.doc.toJSON();
+  const finalSelectionTo = ed.state.selection.to;
   ed.destroy();
-  return { captured, finalJson };
+  return { captured, finalJson, finalSelectionTo };
 }
 
 describe("createReplayCursor", () => {
+  it("starts without an edit focus position", () => {
+    const base = makeEditor("<p>Hello</p>");
+    const cursor = createReplayCursor(base.schema, base.state.doc, []);
+    expect(cursor.focusPos).toBeNull();
+    base.destroy();
+  });
+
+  it("tracks the end position of the latest inserted content", () => {
+    const initial = "<p>Hello</p>";
+    const { captured, finalSelectionTo } = captureInserts(initial, [" world"]);
+    const base = makeEditor(initial);
+    const cursor = createReplayCursor(base.schema, base.state.doc, captured);
+
+    cursor.applyUntil(Number.POSITIVE_INFINITY);
+
+    expect(cursor.failure).toBeNull();
+    expect(cursor.focusPos).toBe(finalSelectionTo);
+    base.destroy();
+  });
+
+  it("keeps the edit focus position when applying mark-only steps", () => {
+    const recorder = makeEditor("<p>Hello</p>");
+    const captured: ReplayEvent[] = [];
+    let seq = 0;
+    recorder.on("transaction", ({ transaction }) => {
+      if (!transaction.docChanged) return;
+      seq += 1;
+      captured.push({
+        domain: "editor",
+        opType: "doc.step",
+        payload: JSON.stringify({
+          steps: transaction.steps.map((s) => s.toJSON()),
+        }),
+        sequence: seq,
+      });
+    });
+    recorder.commands.focus("end");
+    recorder.commands.insertContent(" world");
+    recorder.commands.selectAll();
+    recorder.commands.toggleBold();
+
+    const base = makeEditor("<p>Hello</p>");
+    const cursor = createReplayCursor(base.schema, base.state.doc, captured);
+
+    cursor.applyUntil(1);
+    const afterInsert = cursor.focusPos;
+    cursor.applyUntil(Number.POSITIVE_INFINITY);
+
+    expect(captured.length).toBeGreaterThanOrEqual(2);
+    expect(cursor.failure).toBeNull();
+    expect(cursor.focusPos).toBe(afterInsert);
+    recorder.destroy();
+    base.destroy();
+  });
+
   it("advancing to the end matches the one-shot replay", () => {
     const initial = "<p>Hello</p>";
     const { captured, finalJson } = captureInserts(initial, [

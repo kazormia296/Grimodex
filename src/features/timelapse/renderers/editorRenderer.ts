@@ -72,6 +72,13 @@ interface Inherited {
   italic: boolean;
 }
 
+interface BlockMeasurement {
+  posStart: number;
+  posEnd: number;
+  yTop: number;
+  yBottom: number;
+}
+
 type Ctx2D = Pick<
   CanvasRenderingContext2D,
   "fillStyle" | "font" | "fillRect" | "fillText" | "measureText"
@@ -112,22 +119,132 @@ export function renderDocToCanvas(
   width: number,
   height: number,
   theme: EditorRenderTheme = DEFAULT_THEME,
+  focusPos?: number | null,
 ): void {
   ctx.fillStyle = theme.background;
   ctx.fillRect(0, 0, width, height);
 
   const x = theme.paddingPx;
   const maxX = width - theme.paddingPx;
-  let y = theme.paddingPx + theme.fontSizePx;
+  const startY = theme.paddingPx + theme.fontSizePx;
   const base: Inherited = { color: theme.text, italic: false };
 
-  for (let bi = 0; bi < doc.childCount; bi += 1) {
+  if (focusPos == null) {
+    renderBlocksFrom(ctx, doc, theme, x, maxX, startY, base, 0, height);
+    return;
+  }
+
+  const measurements = measureBlocks(ctx, doc, theme, x, maxX, startY, base);
+  const offset = computeScrollOffset(measurements, focusPos, height);
+  if (offset === 0) {
+    renderBlocksFrom(ctx, doc, theme, x, maxX, startY, base, 0, height);
+    return;
+  }
+
+  const firstVisible = measurements.blocks.findIndex(
+    (block) => block.yBottom - offset > 0 && block.yTop - offset < height,
+  );
+  if (firstVisible === -1) return;
+
+  renderBlocksFrom(
+    ctx,
+    doc,
+    theme,
+    x,
+    maxX,
+    measurements.blocks[firstVisible].yTop - offset,
+    base,
+    firstVisible,
+    height,
+  );
+}
+
+function renderBlocksFrom(
+  ctx: Ctx2D,
+  doc: ProseMirrorNode,
+  theme: EditorRenderTheme,
+  x: number,
+  maxX: number,
+  startY: number,
+  base: Inherited,
+  startIndex: number,
+  height: number,
+): void {
+  let y = startY;
+  for (let bi = startIndex; bi < doc.childCount; bi += 1) {
     y = renderBlock(ctx, doc.child(bi), theme, x, maxX, y, base);
     if (y > height + theme.lineHeightPx) {
       // Past the canvas bottom — later content is clipped anyway.
       break;
     }
   }
+}
+
+function measureBlocks(
+  ctx: Ctx2D,
+  doc: ProseMirrorNode,
+  theme: EditorRenderTheme,
+  x: number,
+  maxX: number,
+  startY: number,
+  base: Inherited,
+): { blocks: BlockMeasurement[]; totalHeight: number } {
+  const measureCtx = makeNoPaintCtx(ctx);
+  const blocks: BlockMeasurement[] = [];
+  let y = startY;
+  let pos = 0;
+
+  for (let bi = 0; bi < doc.childCount; bi += 1) {
+    const node = doc.child(bi);
+    const yTop = y;
+    y = renderBlock(measureCtx, node, theme, x, maxX, y, base);
+    const posEnd = pos + node.nodeSize;
+    blocks.push({ posStart: pos, posEnd, yTop, yBottom: y });
+    pos = posEnd;
+  }
+
+  return { blocks, totalHeight: y };
+}
+
+function computeScrollOffset(
+  measured: { blocks: BlockMeasurement[]; totalHeight: number },
+  focusPos: number,
+  height: number,
+): number {
+  const maxOffset = Math.max(0, measured.totalHeight - height);
+  if (maxOffset === 0 || measured.blocks.length === 0) return 0;
+
+  const focused =
+    measured.blocks.find(
+      (block) => focusPos >= block.posStart && focusPos < block.posEnd,
+    ) ?? measured.blocks[measured.blocks.length - 1];
+  return clamp(focused.yTop - height / 2, 0, maxOffset);
+}
+
+function makeNoPaintCtx(ctx: Ctx2D): Ctx2D {
+  return {
+    set fillStyle(value: string | CanvasGradient | CanvasPattern) {
+      ctx.fillStyle = value;
+    },
+    get fillStyle() {
+      return ctx.fillStyle;
+    },
+    set font(value: string) {
+      ctx.font = value;
+    },
+    get font() {
+      return ctx.font;
+    },
+    fillRect() {},
+    fillText() {},
+    measureText(text: string) {
+      return ctx.measureText(text);
+    },
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 /**

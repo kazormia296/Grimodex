@@ -54,6 +54,8 @@ export interface ReplayCursor {
   readonly appliedSteps: number;
   /** Sequence of the most recently processed event (null before first advance). */
   readonly atSequence: number | null;
+  /** Latest changed position in the reconstructed document (null before edit). */
+  readonly focusPos: number | null;
   /** Set once an event fails to apply; halts further advancement. */
   readonly failure: ReplayFailure | null;
   /**
@@ -78,6 +80,7 @@ export function createReplayCursor(
   let applied = 0;
   let index = 0;
   let atSequence: number | null = null;
+  let focusPos: number | null = null;
   let failure: ReplayFailure | null = null;
 
   // Apply one event's steps onto `doc`. Returns false (and sets `failure`) on
@@ -133,6 +136,9 @@ export function createReplayCursor(
         return false;
       }
       doc = result.doc;
+      step.getMap().forEach((_oldStart, _oldEnd, _newStart, newEnd) => {
+        focusPos = Math.min(Math.max(0, newEnd), doc.content.size);
+      });
       applied += 1;
     }
     return true;
@@ -156,6 +162,9 @@ export function createReplayCursor(
     },
     get atSequence() {
       return atSequence;
+    },
+    get focusPos() {
+      return focusPos;
     },
     get failure() {
       return failure;

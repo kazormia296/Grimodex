@@ -109,7 +109,7 @@ export function makeDrawFrame(
           `rendering last coherent doc — ${cursor.failure.reason}`,
       );
     }
-    renderDocToCanvas(ctx, cursor.doc, width, height, theme);
+    renderDocToCanvas(ctx, cursor.doc, width, height, theme, cursor.focusPos);
     return false;
   };
 }
