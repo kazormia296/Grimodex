@@ -189,4 +189,14 @@ describe("renderDocToCanvas", () => {
     expect(textOf(ordered)).toContain("1.");
     expect(textOf(ordered)).toContain("First");
   });
+
+  it("wraps long CJK runs at the right margin", () => {
+    // charWidth=8, canvas width=600, paddingPx=32 (DEFAULT_THEME)
+    // → lineWidth = (600-32) - 32 = 536px → 67 chars fit per line.
+    // A 100-char run must produce two distinct y-coordinates.
+    const ops = render("<p>" + "あ".repeat(100) + "</p>");
+    const textOps = ops.filter((o) => o.type === "fillText");
+    const ys = new Set(textOps.map((o) => o.args[2] as number));
+    expect(ys.size).toBeGreaterThan(1);
+  });
 });

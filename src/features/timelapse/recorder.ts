@@ -112,6 +112,13 @@ export async function initRecorderForProject(projectId: string): Promise<void> {
   // avoid leaking timers / promises across test files.
   if (!state.enabled) {
     state.projectId = projectId;
+    // Clear any pending queue and timer so events from the prior project cannot
+    // flush into this (OFF) project after a switch.
+    if (state.flushTimer) {
+      clearTimeout(state.flushTimer);
+      state.flushTimer = null;
+    }
+    state.queue = [];
     return;
   }
   if (state.projectId === projectId && state.initPromise) {
@@ -228,6 +235,12 @@ function scheduleFlush(): void {
 export async function flushNow(): Promise<void> {
   if (state.flushPromise) return state.flushPromise;
   state.flushPromise = (async () => {
+    // Bail out immediately when the recorder is disabled so an OFF project is
+    // never contaminated by events that were queued for the previous project.
+    if (!state.enabled) {
+      state.queue = [];
+      return;
+    }
     if (state.initPromise) await state.initPromise;
     if (!state.projectId) {
       state.queue = [];
@@ -283,6 +296,7 @@ export async function flushNow(): Promise<void> {
       // Re-queue on failure so the next tick retries; preserve order by
       // prepending the original batch.
       state.queue = batch.concat(state.queue);
+      scheduleFlush(); // arm the debounce so the retry fires without waiting for a new event
       throw err;
     }
   })().finally(() => {
@@ -302,7 +316,9 @@ function canonicalisePayload(p: unknown): string {
     for (const k of keys) out[k] = (p as Record<string, unknown>)[k];
     return JSON.stringify(out);
   }
-  return JSON.stringify(p);
+  // JSON.stringify(undefined) returns undefined (not a string); coerce to
+  // "null" so the payload key is always present in the hash body.
+  return JSON.stringify(p) ?? "null";
 }
 
 export type { VerifyResult };

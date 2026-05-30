@@ -251,6 +251,10 @@ export async function buildProjectTimelapsePlan(opts: {
 
   const sceneIds = [...new Set(events.map((e) => e.sceneId))];
   const cursors = new Map<string, ReplayCursor>();
+  // Collect post-anchor events per scene so the frame schedule covers only the
+  // sequences that cursors can actually advance through (pre-anchor sequences
+  // are represented by the baseline snapshot, not by replay steps).
+  const schedulableEvents: ProjectStepEvent[] = [];
   for (const sceneId of sceneIds) {
     const sceneEvents = events.filter((e) => e.sceneId === sceneId);
     const snapshot = await loadLatestSnapshot({
@@ -266,13 +270,19 @@ export async function buildProjectTimelapsePlan(opts: {
         return buildReplayStart(schema, sceneEvents, null);
       }
     })();
+    schedulableEvents.push(...start.replayEvents);
     cursors.set(
       sceneId,
       createReplayCursor(schema, start.initialDoc, start.replayEvents),
     );
   }
+  // Sort merged post-anchor events by sequence for a coherent timeline.
+  // Fall back to all events when every snapshot covers all recorded steps.
+  schedulableEvents.sort((a, b) => a.sequence - b.sequence);
+  const scheduleBase =
+    schedulableEvents.length > 0 ? schedulableEvents : events;
 
-  const schedule = buildFrameSchedule(events, {
+  const schedule = buildFrameSchedule(scheduleBase, {
     fps: opts.fps,
     targetDurationSec: opts.targetDurationSec,
     ...(opts.maxIdleMs !== undefined ? { maxIdleMs: opts.maxIdleMs } : {}),

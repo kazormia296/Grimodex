@@ -95,6 +95,11 @@ async function rearmFromGenesis(projectId: string): Promise<void> {
   setRecorderEnabled(true);
   await initRecorderForProject(projectId); // re-reads now-empty tail -> genesis
   await stampSceneBaselines(projectId);
+  // Seed the workspace layout snapshot so forward layout events have an initial
+  // state to replay on top of (§17 P0.4). Mirrors the per-session seed in
+  // projectStore.loadProject so toggle-ON without a reload also anchors the UI.
+  const { seedWorkspaceSnapshot } = await import("./seedSession");
+  await seedWorkspaceSnapshot(projectId);
 }
 
 /**

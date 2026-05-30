@@ -253,19 +253,51 @@ function paintRuns(
   let y = startY;
   let lines = 1;
   let firstOnLine = true;
+  // Full available line width, used to detect oversized tokens that need
+  // character-level wrapping (e.g. CJK runs, very long words with no spaces).
+  const lineWidth = maxX - startX;
 
   for (const run of runs) {
     const tint = attributionTint(run.source, theme);
     const tokens = run.text.split(/(\s+)/).filter((t) => t.length > 0);
     for (const token of tokens) {
+      const isSpace = /^\s+$/.test(token);
       const w = ctx.measureText(token).width;
-      if (!firstOnLine && x + w > maxX && !/^\s+$/.test(token)) {
+
+      // Wrap before a non-space token that doesn't fit on the current line.
+      if (!isSpace && !firstOnLine && x + w > maxX) {
         y += lineHeight;
         x = startX;
         lines += 1;
         firstOnLine = true;
       }
-      if (firstOnLine && /^\s+$/.test(token)) continue;
+      // Skip leading whitespace at the start of a line.
+      if (firstOnLine && isSpace) continue;
+
+      // If the token is wider than a full line (e.g. a long CJK run with no
+      // spaces, or a very long word), paint it character by character so it
+      // wraps at the right margin instead of overflowing.
+      if (!isSpace && w > lineWidth) {
+        for (const ch of token) {
+          const cw = ctx.measureText(ch).width;
+          if (!firstOnLine && x + cw > maxX) {
+            y += lineHeight;
+            x = startX;
+            lines += 1;
+            firstOnLine = true;
+          }
+          if (tint) {
+            ctx.fillStyle = tint;
+            ctx.fillRect(x, y - fontSize * 0.85, cw, fontSize * 1.15);
+          }
+          ctx.fillStyle = style.color;
+          ctx.fillText(ch, x, y);
+          x += cw;
+          firstOnLine = false;
+        }
+        continue;
+      }
+
       if (tint) {
         ctx.fillStyle = tint;
         ctx.fillRect(x, y - fontSize * 0.85, w, fontSize * 1.15);

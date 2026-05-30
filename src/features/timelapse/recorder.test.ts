@@ -186,4 +186,16 @@ describe("recorder", () => {
     await flushNow();
     expect(rows[0].payload).toBe('{"a":1,"b":2}');
   });
+
+  it("discards queued events when disabled before flush (M1: flushNow enabled guard)", async () => {
+    const rows = setupDb(null);
+    await initRecorderForProject("p-off");
+    // Queue an event while still enabled.
+    recordChangeEvent({ domain: "editor", opType: "step", payload: {} });
+    // Disable the recorder (simulating a switch to an OFF project).
+    setRecorderEnabled(false);
+    // An explicit flush must not write the stale events to the OFF project.
+    await flushNow();
+    expect(rows).toEqual([]);
+  });
 });

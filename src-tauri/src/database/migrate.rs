@@ -1272,8 +1272,8 @@ impl Database {
                 session_id   TEXT NOT NULL,
                 sequence     INTEGER NOT NULL,
                 timestamp    INTEGER NOT NULL,
-                prev_hash    BLOB NOT NULL,
-                hash         BLOB NOT NULL
+                prev_hash    TEXT NOT NULL,
+                hash         TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_change_events_project_ts
                 ON change_events(project_id, timestamp);
@@ -1290,8 +1290,8 @@ impl Database {
                 entity_id         TEXT,
                 anchor_sequence   INTEGER NOT NULL,
                 anchor_timestamp  INTEGER NOT NULL,
-                payload           BLOB NOT NULL,
-                encoding          TEXT NOT NULL DEFAULT 'zstd-json',
+                payload           TEXT NOT NULL,
+                encoding          TEXT NOT NULL DEFAULT 'json',
                 created_at        INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_state_snap_project_seq

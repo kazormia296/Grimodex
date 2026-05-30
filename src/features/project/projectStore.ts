@@ -97,8 +97,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         void (async () => {
           const { isTimelapseEnabled } =
             await import("@/features/timelapse/toggle");
-          const { setRecorderEnabled, initRecorderForProject } =
+          const { flushNow, setRecorderEnabled, initRecorderForProject } =
             await import("@/features/timelapse/recorder");
+          // Drain the previous project's pending queue BEFORE calling
+          // setRecorderEnabled so the flush still runs with the old project's
+          // enabled=true state (flushNow is a no-op when the queue is empty).
+          await flushNow().catch(() => {});
           // setRecorderEnabled must precede init: when disabled, init only
           // binds projectId and skips the chain-tail read (recorder.ts).
           const enabled = await isTimelapseEnabled(projectId);

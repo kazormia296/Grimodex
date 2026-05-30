@@ -41,6 +41,7 @@ vi.mock("./exportTimelapse", () => exportMock);
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { TimelapseExportSection } from "./TimelapseExportSection";
+import { toast } from "sonner";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -125,5 +126,38 @@ describe("TimelapseExportSection", () => {
     await waitFor(() =>
       expect(exportMock.produceProjectTimelapseWebm).toHaveBeenCalled(),
     );
+  });
+
+  it("shows an error toast when the scene has no recorded steps", async () => {
+    exportMock.produceSceneTimelapseWebm.mockRejectedValueOnce(
+      new Error("timelapse: no recorded editor steps for this scene"),
+    );
+    render(<TimelapseExportSection />);
+    fireEvent.click(screen.getByTestId("timelapse-export-video"));
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledTimes(1),
+    );
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+  });
+
+  it("shows an error toast on a generic export failure", async () => {
+    exportMock.produceSceneTimelapseWebm.mockRejectedValueOnce(
+      new Error("internal error"),
+    );
+    render(<TimelapseExportSection />);
+    fireEvent.click(screen.getByTestId("timelapse-export-video"));
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledTimes(1),
+    );
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+  });
+
+  it("does not show a success toast when the save dialog is cancelled", async () => {
+    exportMock.saveWebmBlob.mockResolvedValueOnce(false);
+    render(<TimelapseExportSection />);
+    fireEvent.click(screen.getByTestId("timelapse-export-video"));
+    await waitFor(() => expect(exportMock.saveWebmBlob).toHaveBeenCalled());
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
   });
 });

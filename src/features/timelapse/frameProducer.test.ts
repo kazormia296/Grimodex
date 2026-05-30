@@ -52,6 +52,32 @@ describe("buildFrameSchedule", () => {
     expect(schedule[0]).toBe(5);
     expect(schedule[schedule.length - 1]).toBe(7);
   });
+
+  it("collapses long idle gaps: events after the gap get more frames with compression", () => {
+    // Burst at 0ms, then 5 s idle, then 100ms burst.
+    // With maxIdleMs=100 the idle collapses → event 2 fills ~40% of frames.
+    // With maxIdleMs=5000 (no effective compression) → event 2 appears in 0–1 frames.
+    const events = evs([
+      [1, 0],
+      [2, 5000],
+      [3, 5100],
+    ]);
+
+    const compressed = buildFrameSchedule(events, {
+      fps: 10,
+      targetDurationSec: 1,
+      maxIdleMs: 100,
+    });
+    const uncompressed = buildFrameSchedule(events, {
+      fps: 10,
+      targetDurationSec: 1,
+      maxIdleMs: 5000,
+    });
+
+    const seq2WithCap = compressed.filter((s) => s === 2).length;
+    const seq2NoCap = uncompressed.filter((s) => s === 2).length;
+    expect(seq2WithCap).toBeGreaterThan(seq2NoCap);
+  });
 });
 
 function mockCtx() {

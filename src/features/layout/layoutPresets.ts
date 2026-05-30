@@ -144,7 +144,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
         segments: [{ id: "ceditor", kind: "editor", sizeRatio: 1 }],
       },
     },
-    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin"],
+    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin", "timelapse"],
   },
   "builtin:plan": {
     icon: Network,
@@ -222,7 +222,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
         ],
       },
     },
-    hiddenStripePanels: ["trash-bin", "kouetsu", "attribution"],
+    hiddenStripePanels: ["trash-bin", "kouetsu", "attribution", "timelapse"],
   },
   "builtin:chat-main": {
     icon: MessageCircle,
@@ -300,7 +300,14 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
         ],
       },
     },
-    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin", "attribution"],
+    hiddenStripePanels: [
+      "map",
+      "grid",
+      "matrix",
+      "trash-bin",
+      "attribution",
+      "timelapse",
+    ],
   },
   "builtin:review": {
     icon: BookCheck,
@@ -384,7 +391,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
         ],
       },
     },
-    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin"],
+    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin", "timelapse"],
   },
   "builtin:codex-main": {
     icon: Library,
@@ -468,7 +475,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
         ],
       },
     },
-    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin"],
+    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin", "timelapse"],
   },
 };
 
