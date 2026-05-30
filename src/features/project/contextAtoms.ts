@@ -12,6 +12,7 @@
  */
 
 import { useTreeStore } from "@/features/tree/treeStore";
+import { isBodyWriteDisabled } from "@/features/ai-policy/parse";
 import { getProject } from "./api";
 
 export interface ProjectContext {
@@ -25,6 +26,9 @@ export interface ProjectContext {
   /** Phase 4: 著者手書きの outline。Chat L2 / Map system prompt の
    *  「プロジェクト概要」セクションに使われる想定。 */
   outline?: string | null;
+  /** AiPolicy で本文書き込み (bodyWrite) が無効か。Chat の L0 system prompt に
+   *  本文代筆抑止指示を出すかどうかの判定に使う (true のとき抑止)。 */
+  bodyWriteDisabled?: boolean;
 }
 
 /**
@@ -51,6 +55,7 @@ export async function fetchProjectContext(
       aiInstructions: project.aiInstructions,
       language: project.language,
       outline: project.outline,
+      bodyWriteDisabled: isBodyWriteDisabled(project.aiPolicy),
     };
   } catch {
     return null;

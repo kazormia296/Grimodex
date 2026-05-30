@@ -643,9 +643,15 @@ export function buildSystemPrompt(
   const layers: LayerBreakdown[] = [];
 
   // Base instruction (L0)。Agent モード時は agentInstruction を付加。
-  const baseText = input.agentMode
+  let baseText = input.agentMode
     ? `${s.baseText}\n\n${s.agentInstruction}`
     : s.baseText;
+  // AiPolicy で本文書き込みが無効なプロジェクトでは、チャットからの本文代筆を
+  // 抑止する指示を L0 に追加する (bodyWrite=ON のデフォルトでは何も足さない)。
+  // L0 は trim 対象外なので、この hard constraint は常に残る。
+  if (input.project?.bodyWriteDisabled) {
+    baseText += `\n\n${s.bodyWriteDisabledInstruction}`;
+  }
 
   // L1: Project info
   let l1Text = "";

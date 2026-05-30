@@ -60,6 +60,53 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain("丁寧な文体で");
     });
 
+    // bodyWrite=off (assist-off / review-only) のプロジェクトでは L0 に本文代筆
+    // 抑止指示を注入する。デフォルト (full) では何も足さず baseText は 2 文のまま。
+    const BODY_WRITE_OFF_ANCHOR = "本文（地の文）の代筆が無効";
+
+    it("injects the body-write-disabled instruction when bodyWriteDisabled", () => {
+      const scene: SceneContext = { id: "s", title: "t", content: "本文" };
+      const project: ProjectContext = {
+        title: "P",
+        bodyWriteDisabled: true,
+      };
+
+      const result = buildSystemPrompt({ scene, project });
+
+      expect(result.prompt).toContain(BODY_WRITE_OFF_ANCHOR);
+    });
+
+    it("does NOT inject the instruction when bodyWriteDisabled is false", () => {
+      const scene: SceneContext = { id: "s", title: "t", content: "本文" };
+      const project: ProjectContext = {
+        title: "P",
+        bodyWriteDisabled: false,
+      };
+
+      const result = buildSystemPrompt({ scene, project });
+
+      expect(result.prompt).not.toContain(BODY_WRITE_OFF_ANCHOR);
+    });
+
+    it("does NOT inject the instruction by default (flag undefined)", () => {
+      const scene: SceneContext = { id: "s", title: "t", content: "本文" };
+
+      const result = buildSystemPrompt({ scene, project: { title: "P" } });
+
+      expect(result.prompt).not.toContain(BODY_WRITE_OFF_ANCHOR);
+    });
+
+    it("coexists with the agent instruction in agent mode", () => {
+      const scene: SceneContext = { id: "s", title: "t", content: "本文" };
+      const project: ProjectContext = { title: "P", bodyWriteDisabled: true };
+
+      const result = buildSystemPrompt({ scene, project, agentMode: true });
+
+      // agentInstruction (ツール利用前提) と本文抑止指示の両方が共存する
+      expect(result.prompt).toContain("ツール");
+      expect(result.prompt).toContain(BODY_WRITE_OFF_ANCHOR);
+    });
+
     it("works without project context", () => {
       const scene: SceneContext = {
         id: "scene-1",

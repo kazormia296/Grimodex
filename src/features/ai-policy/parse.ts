@@ -39,3 +39,14 @@ export function parseAiPolicy(raw: string | null | undefined): AiPolicy {
 export function serializeAiPolicy(policy: AiPolicy): string {
   return JSON.stringify(policy);
 }
+
+/**
+ * 本文書き込み (bodyWrite) がポリシーで無効かどうか。
+ *
+ * 不正・未設定のポリシーは DEFAULT_AI_POLICY (bodyWrite: true) に倒れるため
+ * `false` (= 無効ではない / 代筆許可) を返す fail-open。チャット system prompt
+ * の本文代筆抑止指示を出すかどうかの判定に使う。
+ */
+export function isBodyWriteDisabled(raw: string | null | undefined): boolean {
+  return !parseAiPolicy(raw).toggles.bodyWrite;
+}

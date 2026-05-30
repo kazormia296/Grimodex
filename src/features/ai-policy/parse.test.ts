@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseAiPolicy, serializeAiPolicy } from "./parse";
+import { parseAiPolicy, serializeAiPolicy, isBodyWriteDisabled } from "./parse";
 import { DEFAULT_AI_POLICY } from "./types";
 import type { AiPolicy } from "./types";
 
@@ -45,6 +45,47 @@ describe("parseAiPolicy", () => {
     expect(result.toggles.chat).toBe(true);
     expect(result.toggles.bodyWrite).toBe(false);
     expect(result.toggles.analysis).toBe(false);
+  });
+});
+
+describe("isBodyWriteDisabled", () => {
+  const raw = (toggles: Partial<AiPolicy["toggles"]>, preset = "custom") =>
+    JSON.stringify({
+      preset,
+      toggles: { chat: true, bodyWrite: true, analysis: true, ...toggles },
+    });
+
+  it("assist-off (bodyWrite:false) → true", () => {
+    expect(isBodyWriteDisabled(raw({ bodyWrite: false }, "assist-off"))).toBe(
+      true,
+    );
+  });
+
+  it("full (bodyWrite:true) → false", () => {
+    expect(isBodyWriteDisabled(raw({ bodyWrite: true }, "full"))).toBe(false);
+  });
+
+  it("off preset (bodyWrite:false) → true", () => {
+    expect(
+      isBodyWriteDisabled(
+        JSON.stringify({
+          preset: "off",
+          toggles: { chat: false, bodyWrite: false, analysis: false },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("null → false (defaults to full / bodyWrite enabled)", () => {
+    expect(isBodyWriteDisabled(null)).toBe(false);
+  });
+
+  it("undefined → false", () => {
+    expect(isBodyWriteDisabled(undefined)).toBe(false);
+  });
+
+  it("garbage → false (fail-open to DEFAULT_AI_POLICY)", () => {
+    expect(isBodyWriteDisabled("not-json")).toBe(false);
   });
 });
 
