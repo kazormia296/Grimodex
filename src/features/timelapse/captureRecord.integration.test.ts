@@ -1,25 +1,21 @@
 // @vitest-environment happy-dom
 //
 // 統合テスト: capture アダプタ(captureChat/captureLayout) → 実 recorder(enabled)
-// → flush → db.insert の経路を end-to-end で検証する。unit テストは recorder を
-// vi.mock していたため「enabled で実際に行が落ちるか」「payload が TEXT 化されるか」
-// 「混在ドメインで hashChain が valid か」は未検証だった。forward-only の記録は
-// 壊れていても気付けず過去データが永久欠落するため(過去に commit 70687944 で
-// change_events が一度も書かれない事故)、この経路を gate する。
-//
-// 注意: ここは JS の db モックで insert を捕捉するだけで、実 Tauri の Rust proxy
-// (FK ON / drizzle TEXT round-trip) は検証しない。それは実機 smoke で確認する。
-// ただし全 capture アダプタは sceneId:null なので FK は exercise されない。
+// → flush → timelapse_append_batch の経路を end-to-end で検証する。
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { dbInsertMock, dbSelectMock } = vi.hoisted(() => ({
-  dbInsertMock: vi.fn(),
+const { invokeMock, dbSelectMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
   dbSelectMock: vi.fn(),
 }));
 
+vi.mock("@/lib/tauri", () => ({
+  invoke: invokeMock,
+}));
+
 vi.mock("@/db/client", () => ({
-  db: { insert: dbInsertMock, select: dbSelectMock },
+  db: { select: dbSelectMock },
 }));
 
 import {
@@ -30,10 +26,35 @@ import {
 } from "./recorder";
 import { recordChatMessageAdd, recordChatMessageDelete } from "./captureChat";
 import { recordLayoutSnapshot } from "./captureLayout";
-import { verifyChain, type EventForVerify } from "./hashChain";
+import {
+  bytesToHex,
+  computeEventHash,
+  GENESIS_HASH,
+  hexToBytes,
+  verifyChain,
+  type EventForVerify,
+} from "./hashChain";
 import type { LayoutState } from "@/features/layout/layoutTypes";
 
+interface CommandEvent {
+  eventUid: string;
+  sceneId: string | null;
+  domain: string;
+  opType: string;
+  entityType: string | null;
+  entityId: string | null;
+  payload: string;
+  timestamp: number;
+}
+
+interface AppendArgs {
+  projectId: string;
+  sessionId: string;
+  events: CommandEvent[];
+}
+
 interface InsertedRow {
+  eventUid: string;
   projectId: string;
   sceneId: string | null;
   domain: string;
@@ -48,7 +69,7 @@ interface InsertedRow {
   hash: string;
 }
 
-function setupDb(): InsertedRow[] {
+function setupCommand(): InsertedRow[] {
   dbSelectMock.mockImplementation(() => ({
     from: () => ({
       where: () => ({
@@ -56,14 +77,53 @@ function setupDb(): InsertedRow[] {
       }),
     }),
   }));
-  const inserted: InsertedRow[] = [];
-  dbInsertMock.mockImplementation(() => ({
-    values: (rows: InsertedRow[]) => {
-      inserted.push(...rows);
-      return Promise.resolve();
-    },
-  }));
-  return inserted;
+
+  const rows: InsertedRow[] = [];
+  let sequence = 0;
+  let prevHash = bytesToHex(GENESIS_HASH);
+  invokeMock.mockImplementation(async (cmd: string, args: AppendArgs) => {
+    expect(cmd).toBe("timelapse_append_batch");
+    for (const ev of args.events) {
+      sequence += 1;
+      const hash = bytesToHex(
+        await computeEventHash({
+          projectId: args.projectId,
+          sceneId: ev.sceneId,
+          domain: ev.domain,
+          opType: ev.opType,
+          entityType: ev.entityType,
+          entityId: ev.entityId,
+          payload: ev.payload,
+          sessionId: args.sessionId,
+          sequence,
+          timestamp: ev.timestamp,
+          prevHash: hexToBytes(prevHash),
+        }),
+      );
+      rows.push({
+        eventUid: ev.eventUid,
+        projectId: args.projectId,
+        sceneId: ev.sceneId,
+        domain: ev.domain,
+        opType: ev.opType,
+        entityType: ev.entityType,
+        entityId: ev.entityId,
+        payload: ev.payload,
+        sessionId: args.sessionId,
+        sequence,
+        timestamp: ev.timestamp,
+        prevHash,
+        hash,
+      });
+      prevHash = hash;
+    }
+    return {
+      insertedCount: args.events.length,
+      tailSequence: sequence,
+      tailHash: prevHash,
+    };
+  });
+  return rows;
 }
 
 const LAYOUT: LayoutState = {
@@ -82,8 +142,8 @@ describe("timelapse capture → recorder → flush (enabled, real adapters)", ()
     setRecorderEnabled(true);
   });
 
-  it("persists chat + layout events end-to-end with TEXT payload and a valid chain", async () => {
-    const rows = setupDb();
+  it("sends chat + layout events to the append command with TEXT payload and a valid chain", async () => {
+    const rows = setupCommand();
     await initRecorderForProject("proj");
 
     recordChatMessageAdd({
@@ -97,36 +157,39 @@ describe("timelapse capture → recorder → flush (enabled, real adapters)", ()
     recordChatMessageDelete({ messageId: "m1", sessionId: "s" });
     await flushNow();
 
-    // 3 行すべて落ちた (flush が throw して止まっていない)。
-    expect(rows).toHaveLength(3);
-    expect(rows.map((r) => r.domain)).toEqual(["chat", "layout", "chat"]);
-    expect(rows.map((r) => r.opType)).toEqual([
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    const [, args] = invokeMock.mock.calls[0] as [string, AppendArgs];
+    expect(args.events.map((r) => r.domain)).toEqual([
+      "chat",
+      "layout",
+      "chat",
+    ]);
+    expect(args.events.map((r) => r.opType)).toEqual([
       "chat.message.add",
       "layout.snapshot",
       "chat.message.delete",
     ]);
+    expect(args.events.every((r) => typeof r.eventUid === "string")).toBe(true);
+    expect(args.events[0]).not.toHaveProperty("sequence");
+    expect(args.events[0]).not.toHaveProperty("hash");
+
+    expect(rows).toHaveLength(3);
     expect(rows.map((r) => r.sequence)).toEqual([1, 2, 3]);
 
     for (const r of rows) {
-      // sceneId は必ず null (treeNodes FK 違反で flush 全停止する罠の回避)。
       expect(r.sceneId).toBeNull();
-      // payload は drizzle 互換の JSON TEXT。
       expect(typeof r.payload).toBe("string");
       expect(() => JSON.parse(r.payload)).not.toThrow();
     }
 
-    // chat.message.add は本文を inline 焼き込み (mutable な chat_messages を
-    // 参照していないので削除されても replay 可能)。
     const add = JSON.parse(rows[0].payload);
     expect(add.text).toBe("こんにちは");
     expect(add.role).toBe("user");
     expect(add.sessionId).toBe("s");
 
-    // layout.snapshot は full LayoutState を自己完結で保持。
     const layout = JSON.parse(rows[1].payload);
     expect(layout.layout).toEqual(LAYOUT);
 
-    // 混在ドメインでも hashChain は連続・valid。
     const asEvents: EventForVerify[] = rows.map((r) => ({
       projectId: r.projectId,
       sceneId: r.sceneId,

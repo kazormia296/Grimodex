@@ -1262,6 +1262,7 @@ impl Database {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS change_events (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_uid    TEXT,
                 project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 scene_id     TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
                 domain       TEXT NOT NULL,
@@ -1298,6 +1299,17 @@ impl Database {
                 ON state_snapshots(project_id, anchor_sequence);
             CREATE INDEX IF NOT EXISTS idx_state_snap_domain_seq
                 ON state_snapshots(project_id, domain, anchor_sequence);",
+        )?;
+        Self::add_column_if_missing(&conn, "change_events", "event_uid", "TEXT")?;
+        // The unique index MUST be created here, AFTER add_column_if_missing.
+        // On a pre-event_uid DB the column does not exist until that call, so an
+        // in-batch `CREATE INDEX ... (event_uid)` would fail with "no such
+        // column" (IF NOT EXISTS only suppresses duplicate index *names*, not
+        // column-resolution errors). All-NULL legacy event_uid values are safe:
+        // SQLite treats NULLs as distinct in a UNIQUE index.
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_uid
+                ON change_events(project_id, event_uid);",
         )?;
 
         // Sticky 採用/不採用 (Plan B): AI由来 provenance を branch 所属から分離。
@@ -1863,6 +1875,61 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    #[test]
+    fn migrate_backfills_event_uid_on_legacy_change_events() {
+        // Regression: a pre-event_uid install has change_events WITHOUT the
+        // event_uid column. migrate() must add the column and create the unique
+        // index in the right order — an in-batch index on the missing column
+        // used to fail with "no such column: event_uid" on every workspace open.
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE change_events (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id   TEXT NOT NULL,
+                    scene_id     TEXT,
+                    domain       TEXT NOT NULL,
+                    op_type      TEXT NOT NULL,
+                    entity_type  TEXT,
+                    entity_id    TEXT,
+                    payload      TEXT NOT NULL,
+                    session_id   TEXT NOT NULL,
+                    sequence     INTEGER NOT NULL,
+                    timestamp    INTEGER NOT NULL,
+                    prev_hash    TEXT NOT NULL,
+                    hash         TEXT NOT NULL
+                 );
+                 CREATE UNIQUE INDEX uq_change_events_project_seq
+                    ON change_events(project_id, sequence);",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        // Must not error on the legacy (pre-event_uid) table.
+        db.migrate().unwrap();
+
+        db.with_conn(|conn| {
+            let cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(change_events)")?
+                .query_map([], |row| row.get::<_, String>("name"))?
+                .collect::<Result<_, _>>()?;
+            assert!(
+                cols.iter().any(|c| c == "event_uid"),
+                "event_uid column should be backfilled"
+            );
+            let idx_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'uq_change_events_project_uid'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(idx_count, 1, "uq_change_events_project_uid should exist");
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

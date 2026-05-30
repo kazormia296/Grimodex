@@ -16,6 +16,12 @@ import type {
   AgentToolDefinition,
 } from "@/features/chat/agent/agentTypes";
 import { isScreenshotStagingActive } from "@/screenshot-scenes/screenshotMode";
+import {
+  bytesToHex,
+  computeEventHash,
+  GENESIS_HASH,
+  hexToBytes,
+} from "@/features/timelapse/hashChain";
 
 const SCHEMA_DDL = `
   CREATE TABLE IF NOT EXISTS projects (
@@ -198,6 +204,30 @@ const SCHEMA_DDL = `
     value TEXT NOT NULL,
     PRIMARY KEY (project_id, key)
   );
+  CREATE TABLE IF NOT EXISTS change_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_uid TEXT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+    domain TEXT NOT NULL,
+    op_type TEXT NOT NULL,
+    entity_type TEXT,
+    entity_id TEXT,
+    payload TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    timestamp INTEGER NOT NULL,
+    prev_hash TEXT NOT NULL,
+    hash TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_change_events_project_ts
+    ON change_events(project_id, timestamp);
+  CREATE INDEX IF NOT EXISTS idx_change_events_scene_ts
+    ON change_events(scene_id, timestamp);
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_seq
+    ON change_events(project_id, sequence);
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_uid
+    ON change_events(project_id, event_uid);
   CREATE TABLE IF NOT EXISTS codex_types (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -460,6 +490,17 @@ export interface BrowserMock {
   ) => Promise<T>;
 }
 
+interface TimelapseAppendEvent {
+  eventUid: string;
+  sceneId: string | null;
+  domain: string;
+  opType: string;
+  entityType: string | null;
+  entityId: string | null;
+  payload: string;
+  timestamp: number;
+}
+
 export async function createBrowserMock(): Promise<BrowserMock> {
   const SQL = await initSqlJs();
   const db: Database = new SQL.Database();
@@ -662,6 +703,132 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     return { rows: last };
   }
 
+  function queryOne(
+    sql: string,
+    params: SqlValue[],
+  ): Record<string, SqlValue> | null {
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    const row = stmt.step() ? stmt.getAsObject() : null;
+    stmt.free();
+    return row;
+  }
+
+  function readTimelapseTail(projectId: string): {
+    sequence: number;
+    hash: string;
+  } {
+    const row = queryOne(
+      "select sequence, hash from change_events where project_id = ? order by sequence desc limit 1",
+      [projectId],
+    );
+    if (!row) {
+      return { sequence: 0, hash: bytesToHex(GENESIS_HASH) };
+    }
+    return {
+      sequence: Number(row.sequence),
+      hash: String(row.hash),
+    };
+  }
+
+  function eventUidExists(projectId: string, eventUid: string): boolean {
+    return Boolean(
+      queryOne(
+        "select 1 as found from change_events where project_id = ? and event_uid = ? limit 1",
+        [projectId, eventUid],
+      ),
+    );
+  }
+
+  function liveSceneId(sceneId: string | null): string | null {
+    if (!sceneId) return null;
+    const row = queryOne(
+      "select 1 as found from tree_nodes where id = ? limit 1",
+      [sceneId],
+    );
+    return row ? sceneId : null;
+  }
+
+  async function handleTimelapseAppendBatch(
+    args: Record<string, unknown>,
+  ): Promise<{
+    insertedCount: number;
+    tailSequence: number;
+    tailHash: string;
+  }> {
+    const projectId = args.projectId as string;
+    const sessionId = args.sessionId as string;
+    const events = (args.events ?? []) as TimelapseAppendEvent[];
+
+    db.run("BEGIN IMMEDIATE");
+    try {
+      // Per-event idempotency (mirror of the Rust allocator): a committed-but-
+      // rejected flush can be re-sent merged with new events; skip the
+      // already-present uids and append only the genuinely-new suffix so the
+      // merged-in events are never dropped.
+      const firstUid = events[0]?.eventUid;
+      const firstPresent = firstUid
+        ? eventUidExists(projectId, firstUid)
+        : false;
+
+      let { sequence, hash: prevHash } = readTimelapseTail(projectId);
+      let insertedCount = 0;
+      for (const ev of events) {
+        if (firstPresent && eventUidExists(projectId, ev.eventUid)) continue;
+        sequence += 1;
+        const sceneId = liveSceneId(ev.sceneId);
+        const hash = bytesToHex(
+          await computeEventHash({
+            projectId,
+            sceneId,
+            domain: ev.domain,
+            opType: ev.opType,
+            entityType: ev.entityType,
+            entityId: ev.entityId,
+            payload: ev.payload,
+            sessionId,
+            sequence,
+            timestamp: ev.timestamp,
+            prevHash: hexToBytes(prevHash),
+          }),
+        );
+        db.run(
+          "insert into change_events (event_uid, project_id, scene_id, domain, op_type, entity_type, entity_id, payload, session_id, sequence, timestamp, prev_hash, hash) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          [
+            ev.eventUid,
+            projectId,
+            sceneId,
+            ev.domain,
+            ev.opType,
+            ev.entityType,
+            ev.entityId,
+            ev.payload,
+            sessionId,
+            sequence,
+            ev.timestamp,
+            prevHash,
+            hash,
+          ],
+        );
+        prevHash = hash;
+        insertedCount += 1;
+      }
+      db.run("COMMIT");
+      return {
+        insertedCount,
+        tailSequence: sequence,
+        tailHash: prevHash,
+      };
+    } catch (e) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        /* noop */
+      }
+      throw e;
+    }
+  }
+
   function handleGetGlobalSettings(): Record<string, unknown> {
     try {
       const raw = localStorage.getItem(GLOBAL_SETTINGS_KEY);
@@ -755,6 +922,8 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "timelapse_append_batch":
+        return (await handleTimelapseAppendBatch(args)) as T;
       case "get_ai_settings":
         return handleGetAiSettings() as T;
       case "save_ai_settings":

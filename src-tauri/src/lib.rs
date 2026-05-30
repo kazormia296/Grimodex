@@ -137,6 +137,7 @@ pub fn run() {
             commands::workspace::open_workspace,
             commands::db::db_execute,
             commands::db::db_execute_batch,
+            commands::timelapse::timelapse_append_batch,
             commands::ai::get_ai_settings,
             commands::ai::save_ai_settings,
             commands::ai::save_api_key,

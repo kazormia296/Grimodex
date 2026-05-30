@@ -8,6 +8,7 @@ import {
   verifyChain,
 } from "./hashChain";
 import type { EventForVerify } from "./hashChain";
+import hashVectors from "./hash-vectors.json";
 
 type EvBody = {
   projectId: string;
@@ -81,6 +82,16 @@ describe("hashChain", () => {
     const a = await computeEventHash(evBody({ payload: '{"a":1}' }));
     const b = await computeEventHash(evBody({ payload: '{"a":2}' }));
     expect(bytesToHex(a)).not.toBe(bytesToHex(b));
+  });
+
+  it("matches committed golden hash vectors", async () => {
+    for (const vector of hashVectors) {
+      const hash = await computeEventHash({
+        ...vector.body,
+        prevHash: hexToBytes(vector.body.prevHash),
+      });
+      expect(bytesToHex(hash), vector.name).toBe(vector.expectedHashHex);
+    }
   });
 
   it("verifyChain reports ok on a clean chain", async () => {

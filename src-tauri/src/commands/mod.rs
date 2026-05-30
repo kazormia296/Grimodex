@@ -22,6 +22,7 @@ pub(crate) mod onboarding;
 pub(crate) mod post_effect;
 #[cfg(feature = "semantic-embedding")]
 pub(crate) mod semantic;
+pub(crate) mod timelapse;
 pub(crate) mod trash_bin;
 pub(crate) mod workspace;
 

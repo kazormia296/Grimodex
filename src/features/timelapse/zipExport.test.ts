@@ -48,6 +48,7 @@ async function buildEvents(count: number): Promise<ChangeEvent[]> {
     const hash = await computeEventHash(body);
     out.push({
       id: i,
+      eventUid: null,
       ...body,
       prevHash: bytesToHex(prev),
       hash: bytesToHex(hash),

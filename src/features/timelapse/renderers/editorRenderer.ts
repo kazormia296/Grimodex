@@ -284,7 +284,6 @@ function paintRuns(
             y += lineHeight;
             x = startX;
             lines += 1;
-            firstOnLine = true;
           }
           if (tint) {
             ctx.fillStyle = tint;

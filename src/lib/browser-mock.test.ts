@@ -1,6 +1,10 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createBrowserMock } from "./browser-mock";
+import {
+  verifyChain,
+  type EventForVerify,
+} from "@/features/timelapse/hashChain";
 
 describe("createBrowserMock", () => {
   let mock: Awaited<ReturnType<typeof createBrowserMock>>;
@@ -101,6 +105,68 @@ describe("createBrowserMock", () => {
         },
       );
       expect(result.rows).toHaveLength(0);
+    });
+  });
+
+  describe("timelapse_append_batch", () => {
+    it("allocates sequence/hash rows in the browser mock and dedupes resend", async () => {
+      const events = [
+        {
+          eventUid: "uid-1",
+          sceneId: null,
+          domain: "editor",
+          opType: "step",
+          entityType: null,
+          entityId: null,
+          payload: '{"i":1}',
+          timestamp: 1700000000000,
+        },
+        {
+          eventUid: "uid-2",
+          sceneId: null,
+          domain: "chat",
+          opType: "chat.message.add",
+          entityType: null,
+          entityId: null,
+          payload: '{"text":"hi"}',
+          timestamp: 1700000000001,
+        },
+      ];
+
+      const first = await mock.invoke<{
+        insertedCount: number;
+        tailSequence: number;
+        tailHash: string;
+      }>("timelapse_append_batch", {
+        projectId: "default-project",
+        sessionId: "session-1",
+        events,
+      });
+      expect(first.insertedCount).toBe(2);
+      expect(first.tailSequence).toBe(2);
+
+      const second = await mock.invoke<{
+        insertedCount: number;
+        tailSequence: number;
+      }>("timelapse_append_batch", {
+        projectId: "default-project",
+        sessionId: "session-1",
+        events,
+      });
+      expect(second.insertedCount).toBe(0);
+      expect(second.tailSequence).toBe(2);
+
+      const result = await mock.invoke<{ rows: EventForVerify[] }>(
+        "db_execute",
+        {
+          sql: "select project_id as projectId, scene_id as sceneId, domain, op_type as opType, entity_type as entityType, entity_id as entityId, payload, session_id as sessionId, sequence, timestamp, prev_hash as prevHash, hash from change_events where project_id = ? order by sequence",
+          params: ["default-project"],
+          method: "all",
+        },
+      );
+      expect(result.rows).toHaveLength(2);
+      expect(result.rows.map((r) => r.sequence)).toEqual([1, 2]);
+      expect((await verifyChain(result.rows)).ok).toBe(true);
     });
   });
 

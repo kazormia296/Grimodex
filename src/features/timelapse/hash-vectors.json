@@ -1,0 +1,189 @@
+[
+  {
+    "name": "ascii",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": null,
+      "domain": "editor",
+      "opType": "fixture.ascii",
+      "entityType": null,
+      "entityId": null,
+      "payload": "{\"text\":\"hello\"}",
+      "sessionId": "session-fixture",
+      "sequence": 1,
+      "timestamp": 1700000000000,
+      "prevHash": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "expectedHashHex": "75e8baa69aba95a26894126b5fb2fac8cebd36983b218b2b6e0d2b6b9ebfe90d"
+  },
+  {
+    "name": "japanese",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": "scene-fixture",
+      "domain": "chat",
+      "opType": "fixture.japanese",
+      "entityType": "scene",
+      "entityId": "entity-fixture",
+      "payload": "{\"text\":\"こんにちは世界\"}",
+      "sessionId": "session-fixture",
+      "sequence": 2,
+      "timestamp": 1700000000001,
+      "prevHash": "75e8baa69aba95a26894126b5fb2fac8cebd36983b218b2b6e0d2b6b9ebfe90d"
+    },
+    "expectedHashHex": "435655e53cd237e85f323f636637634a35f2beaad126b7693ee7fa8051b76bc3"
+  },
+  {
+    "name": "emoji",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": null,
+      "domain": "layout",
+      "opType": "fixture.emoji",
+      "entityType": null,
+      "entityId": null,
+      "payload": "{\"text\":\"😀🚀\"}",
+      "sessionId": "session-fixture",
+      "sequence": 3,
+      "timestamp": 1700000000002,
+      "prevHash": "435655e53cd237e85f323f636637634a35f2beaad126b7693ee7fa8051b76bc3"
+    },
+    "expectedHashHex": "7028eb6978cce7c758ec8adb2a3bf74762975dc27b7ee1ea7d4e7b9bdde24b45"
+  },
+  {
+    "name": "quotes-backslash",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": "scene-fixture",
+      "domain": "editor",
+      "opType": "fixture.quotes-backslash",
+      "entityType": "scene",
+      "entityId": "entity-fixture",
+      "payload": "{\"text\":\"quote \\\" and slash \\\\\\\"}",
+      "sessionId": "session-fixture",
+      "sequence": 4,
+      "timestamp": 1700000000003,
+      "prevHash": "7028eb6978cce7c758ec8adb2a3bf74762975dc27b7ee1ea7d4e7b9bdde24b45"
+    },
+    "expectedHashHex": "fd5273af3aea6d34110d9d313cc00e7490be17eb2acf94c39952dd27b5aa90dc"
+  },
+  {
+    "name": "newline-tab",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": null,
+      "domain": "chat",
+      "opType": "fixture.newline-tab",
+      "entityType": null,
+      "entityId": null,
+      "payload": "{\"text\":\"line1\\n\\tline2\"}",
+      "sessionId": "session-fixture",
+      "sequence": 5,
+      "timestamp": 1700000000004,
+      "prevHash": "fd5273af3aea6d34110d9d313cc00e7490be17eb2acf94c39952dd27b5aa90dc"
+    },
+    "expectedHashHex": "0e3d79c5bb7ef4fba3d8ed28972b3556af7f9bf85b77336d75cd359d6ca0d77c"
+  },
+  {
+    "name": "controls",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": "scene-fixture",
+      "domain": "layout",
+      "opType": "fixture.controls",
+      "entityType": "scene",
+      "entityId": "entity-fixture",
+      "payload": "{\"text\":\"\\u0000\\u0001\\u0002\\u0003\\u0004\\u0005\\u0006\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u000f\\u0010\\u0011\\u0012\\u0013\\u0014\\u0015\\u0016\\u0017\\u0018\\u0019\\u001a\\u001b\\u001c\\u001d\\u001e\\u001f\u007f\"}",
+      "sessionId": "session-fixture",
+      "sequence": 6,
+      "timestamp": 1700000000005,
+      "prevHash": "0e3d79c5bb7ef4fba3d8ed28972b3556af7f9bf85b77336d75cd359d6ca0d77c"
+    },
+    "expectedHashHex": "760dec5616dacb677e388872faf353891ce5c533e466183311c26eeec7643ce3"
+  },
+  {
+    "name": "slash",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": null,
+      "domain": "editor",
+      "opType": "fixture.slash",
+      "entityType": null,
+      "entityId": null,
+      "payload": "{\"path\":\"/a/b/c\"}",
+      "sessionId": "session-fixture",
+      "sequence": 7,
+      "timestamp": 1700000000006,
+      "prevHash": "760dec5616dacb677e388872faf353891ce5c533e466183311c26eeec7643ce3"
+    },
+    "expectedHashHex": "d7f12cce239440e18493a7960967b9367e741421153657fc3f6863bee86c46ff"
+  },
+  {
+    "name": "u2028-u2029",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": "scene-fixture",
+      "domain": "chat",
+      "opType": "fixture.u2028-u2029",
+      "entityType": "scene",
+      "entityId": "entity-fixture",
+      "payload": "{\"text\":\"line\u2028para\u2029end\"}",
+      "sessionId": "session-fixture",
+      "sequence": 8,
+      "timestamp": 1700000000007,
+      "prevHash": "d7f12cce239440e18493a7960967b9367e741421153657fc3f6863bee86c46ff"
+    },
+    "expectedHashHex": "73336e8f8879cb411c61c6c862b2f391d8e85f4419ec1b189555b8023d458a52"
+  },
+  {
+    "name": "empty-payload",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": null,
+      "domain": "layout",
+      "opType": "fixture.empty-payload",
+      "entityType": null,
+      "entityId": null,
+      "payload": "",
+      "sessionId": "session-fixture",
+      "sequence": 9,
+      "timestamp": 1700000000008,
+      "prevHash": "73336e8f8879cb411c61c6c862b2f391d8e85f4419ec1b189555b8023d458a52"
+    },
+    "expectedHashHex": "6df55cbe6ce5bf79517f791b7c8fa6c83c9c2ed907ebfdabb9342377642b45bd"
+  },
+  {
+    "name": "null-string",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": "scene-fixture",
+      "domain": "editor",
+      "opType": "fixture.null-string",
+      "entityType": "scene",
+      "entityId": "entity-fixture",
+      "payload": "null",
+      "sessionId": "session-fixture",
+      "sequence": 10,
+      "timestamp": 1700000000009,
+      "prevHash": "6df55cbe6ce5bf79517f791b7c8fa6c83c9c2ed907ebfdabb9342377642b45bd"
+    },
+    "expectedHashHex": "2b28abd49019ad7dfcca48392e6f6101e94a2ab56429d50b2fb1e1aebadcf165"
+  },
+  {
+    "name": "raw-controls",
+    "body": {
+      "projectId": "proj-fixture",
+      "sceneId": null,
+      "domain": "editor",
+      "opType": "fixture.raw-controls",
+      "entityType": null,
+      "entityId": null,
+      "payload": "\u0001\u0002\u0007\b\t\n\u000b\f\r\u001f",
+      "sessionId": "session-fixture",
+      "sequence": 11,
+      "timestamp": 1700000000010,
+      "prevHash": "2b28abd49019ad7dfcca48392e6f6101e94a2ab56429d50b2fb1e1aebadcf165"
+    },
+    "expectedHashHex": "ad545b15d179c456d2a264b2c2559d9c0b7321c04da201ad579ef4f0c1f88ba1"
+  }
+]

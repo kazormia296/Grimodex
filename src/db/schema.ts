@@ -1513,6 +1513,7 @@ export const changeEvents = sqliteTable(
   "change_events",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
+    eventUid: text("event_uid"),
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
@@ -1538,6 +1539,7 @@ export const changeEvents = sqliteTable(
     index("idx_change_events_project_ts").on(t.projectId, t.timestamp),
     index("idx_change_events_scene_ts").on(t.sceneId, t.timestamp),
     uniqueIndex("uq_change_events_project_seq").on(t.projectId, t.sequence),
+    uniqueIndex("uq_change_events_project_uid").on(t.projectId, t.eventUid),
   ],
 );
 

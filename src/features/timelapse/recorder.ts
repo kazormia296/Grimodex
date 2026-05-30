@@ -2,33 +2,26 @@
  * 執筆タイムラプス recorder — append-only write window.
  *
  * All capture sites (Editor onTransaction, store actions, Map ops, ...) call
- * `recordChangeEvent()`. Events are queued in memory, sequence numbers and
- * hash chain are computed serially, then flushed in a single batched insert
- * every ~100ms.
- *
- * The recorder is GLOBAL per-tab. Tauri runs a single window so cross-tab
- * sequence collisions are not a concern. If we ever ship multi-window, the
- * sequence allocator needs to move into the Rust side.
+ * `recordChangeEvent()`. Events are queued in memory, then flushed through the
+ * Rust-side allocator every ~100ms. Rust is the single authority for sequence
+ * numbers, hash chaining, and insertion.
  */
 
 import { db } from "@/db/client";
 import { changeEvents } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
-import {
-  GENESIS_HASH,
-  computeEventHash,
-  bytesToHex,
-  hexToBytes,
-  type VerifyResult,
-} from "./hashChain";
+import { invoke } from "@/lib/tauri";
+import type { VerifyResult } from "./hashChain";
 
 const FLUSH_DEBOUNCE_MS = 100;
 
 /**
  * How many consecutive failed flushes to tolerate before dropping the in-flight
- * batch. A genuinely unrecoverable insert (FK violation, disk full, ...) must
- * not tight-loop forever; a sequence collision / transport blip heals in one
- * retry via the DB-tail reconcile in `flushNow`.
+ * batch. A genuinely unrecoverable insert (disk full, malformed row, ...) must
+ * not tight-loop forever. Sequence/hash allocation is now Rust-owned, so a
+ * resend after a transient or committed-but-rejected blip is idempotent — Rust
+ * skips already-present `eventUid`s and appends only the new suffix — so the
+ * retry just succeeds rather than colliding.
  */
 const MAX_FLUSH_RETRIES = 10;
 
@@ -63,7 +56,23 @@ export interface RecordEventInput {
 }
 
 interface PendingEvent extends Required<RecordEventInput> {
+  eventUid: string;
   timestamp: number;
+}
+
+interface TimelapseAppendEvent {
+  eventUid: string;
+  sceneId: string | null;
+  domain: Domain;
+  opType: string;
+  entityType: string | null;
+  entityId: string | null;
+  payload: string;
+  timestamp: number;
+}
+
+interface TimelapseAppendResult {
+  tailSequence: number;
 }
 
 interface RecorderState {
@@ -72,8 +81,6 @@ interface RecorderState {
   sessionId: string;
   /** Last allocated sequence for the current project (monotone). */
   lastSequence: number;
-  /** Most recently committed event hash (chain head). */
-  lastHash: Uint8Array;
   queue: PendingEvent[];
   flushTimer: ReturnType<typeof setTimeout> | null;
   flushPromise: Promise<void> | null;
@@ -90,7 +97,6 @@ const state: RecorderState = {
   projectId: null,
   sessionId: newSessionId(),
   lastSequence: 0,
-  lastHash: GENESIS_HASH,
   queue: [],
   flushTimer: null,
   flushPromise: null,
@@ -103,17 +109,15 @@ function newSessionId(): string {
 }
 
 /**
- * Read the current chain tail (highest sequence + its hash) for a project, or
- * null when the project has no events yet. Shared by init and the flush-failure
- * reconcile path so both anchor to the same ground truth (the DB).
+ * Read the current chain tail sequence for a project, or null when the project
+ * has no events yet. Hash restoration is Rust-owned at append time.
  */
 async function readChainTail(
   projectId: string,
-): Promise<{ sequence: number; hash: string } | null> {
+): Promise<{ sequence: number } | null> {
   const last = await db
     .select({
       sequence: changeEvents.sequence,
-      hash: changeEvents.hash,
     })
     .from(changeEvents)
     .where(eq(changeEvents.projectId, projectId))
@@ -139,8 +143,9 @@ export function setRecorderEnabled(enabled: boolean): void {
  * Bind the recorder to a project and resume the chain from the DB tail.
  *
  * Idempotent for the same projectId. Switching projects starts a fresh
- * in-memory session (sessionId changes) but stitches the chain to the prior
- * project's last hash transparently.
+ * in-memory session (sessionId changes). Rust reads the live DB tail again
+ * during each append, so this only caches the latest tail sequence for UI
+ * consumers.
  */
 export async function initRecorderForProject(projectId: string): Promise<void> {
   // When the recorder is disabled (typical in tests), don't touch the DB —
@@ -168,20 +173,16 @@ export async function initRecorderForProject(projectId: string): Promise<void> {
     const head = await readChainTail(projectId);
     if (head) {
       state.lastSequence = head.sequence;
-      state.lastHash = hexToBytes(head.hash);
     } else {
       state.lastSequence = 0;
-      state.lastHash = GENESIS_HASH;
     }
   })();
   return state.initPromise;
 }
 
 /**
- * Reset the in-memory chain head so the NEXT flush starts a fresh chain from
- * genesis (sequence 1, prevHash = GENESIS_HASH). Used by the timelapse ON/OFF
- * toggle after wiping a project's change_events: re-enabling must NOT continue
- * the old chain.
+ * Reset the in-memory chain head after wiping a project's change_events.
+ * The next Rust append reads the empty DB tail and starts from genesis.
  *
  * Critically this nulls `initPromise` so a subsequent `initRecorderForProject`
  * for the SAME project does not short-circuit on its idempotency guard
@@ -191,7 +192,6 @@ export async function initRecorderForProject(projectId: string): Promise<void> {
  */
 export function resetRecorderChain(): void {
   state.lastSequence = 0;
-  state.lastHash = GENESIS_HASH;
   state.queue = [];
   state.flushRetries = 0;
   state.initPromise = null;
@@ -219,7 +219,6 @@ export function _resetRecorderForTests(): void {
   state.projectId = null;
   state.sessionId = newSessionId();
   state.lastSequence = 0;
-  state.lastHash = GENESIS_HASH;
   state.queue = [];
   state.flushRetries = 0;
   if (state.flushTimer) clearTimeout(state.flushTimer);
@@ -236,6 +235,7 @@ export function _resetRecorderForTests(): void {
 export function recordChangeEvent(input: RecordEventInput): void {
   if (!state.enabled || !state.projectId) return;
   state.queue.push({
+    eventUid: crypto.randomUUID(),
     domain: input.domain,
     opType: input.opType,
     payload: input.payload,
@@ -281,79 +281,32 @@ export async function flushNow(): Promise<void> {
     const batch = state.queue;
     state.queue = [];
 
-    const rows: Array<typeof changeEvents.$inferInsert> = [];
-    const batchFirstSeq = state.lastSequence + 1;
-    let seq = state.lastSequence;
-    let prev = state.lastHash;
-    for (const ev of batch) {
-      seq += 1;
-      const payloadStr = canonicalisePayload(ev.payload);
-      const body = {
-        projectId,
-        sceneId: ev.sceneId,
-        domain: ev.domain,
-        opType: ev.opType,
-        entityType: ev.entityType,
-        entityId: ev.entityId,
-        payload: payloadStr,
-        sessionId: state.sessionId,
-        sequence: seq,
-        timestamp: ev.timestamp,
-        prevHash: prev,
-      };
-      const hash = await computeEventHash(body);
-      rows.push({
-        projectId: body.projectId,
-        sceneId: body.sceneId,
-        domain: body.domain,
-        opType: body.opType,
-        entityType: body.entityType,
-        entityId: body.entityId,
-        payload: body.payload,
-        sessionId: body.sessionId,
-        sequence: body.sequence,
-        timestamp: body.timestamp,
-        prevHash: bytesToHex(prev),
-        hash: bytesToHex(hash),
-      });
-      prev = hash;
-    }
+    const events: TimelapseAppendEvent[] = batch.map((ev) => ({
+      eventUid: ev.eventUid,
+      sceneId: ev.sceneId,
+      domain: ev.domain,
+      opType: ev.opType,
+      entityType: ev.entityType,
+      entityId: ev.entityId,
+      payload: canonicalisePayload(ev.payload),
+      timestamp: ev.timestamp,
+    }));
 
     try {
-      await db.insert(changeEvents).values(rows);
-      state.lastSequence = seq;
-      state.lastHash = prev;
+      const result = await invoke<TimelapseAppendResult>(
+        "timelapse_append_batch",
+        {
+          projectId,
+          sessionId: state.sessionId,
+          events,
+        },
+      );
+      state.lastSequence = result.tailSequence;
       state.flushRetries = 0;
     } catch (err) {
-      // The insert did not resolve cleanly. Do NOT blindly re-queue the same
-      // sequence numbers: on a UNIQUE collision (uq_change_events_project_seq)
-      // that loops forever, and on a "committed in SQLite but the proxy promise
-      // rejected" flush it would re-issue rows that already landed, which
-      // double-applies doc.step on replay. Reconcile against the DB tail
-      // (ground truth) instead.
-      //
-      // The desync that makes our seq collide is environmental: a second writer
-      // racing the per-project counter (HMR-duplicated module state, a stray
-      // `pnpm dev` tab, or multi-window — confirmed in the wild by interleaved
-      // session_ids), or a committed-but-rejected flush. The file header notes
-      // the true fix is a Rust-side allocator; this keeps the chain self-healing
-      // for the single-process path.
-      const tail = await readChainTail(projectId).catch(() => null);
-      if (tail) {
-        state.lastSequence = tail.sequence;
-        state.lastHash = hexToBytes(tail.hash);
-      }
-      if (tail && tail.sequence >= batchFirstSeq) {
-        // Slots [batchFirstSeq..seq] are already taken in the DB — our atomic
-        // insert actually landed, or another writer owns them. Drop the batch:
-        // the data is persisted (or owned), and re-queueing would collide
-        // forever. Self-healed, so resolve without surfacing the error.
-        state.flushRetries = 0;
-        return;
-      }
-      // Nothing of ours committed (transient error). Cap the attempts so a
-      // genuinely unrecoverable insert can't tight-loop, then re-queue with
-      // backoff. Preserve order by prepending the original batch.
+      // Rust owns sequence/hash allocation, so client-side UNIQUE collision
+      // reconciliation is gone. Retry the same eventUid batch: if the command
+      // committed but the transport rejected, Rust treats the resend as a no-op.
       state.flushRetries += 1;
       if (state.flushRetries > MAX_FLUSH_RETRIES) {
         console.warn(
