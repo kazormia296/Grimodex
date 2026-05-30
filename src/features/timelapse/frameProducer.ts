@@ -98,9 +98,17 @@ export function makeDrawFrame(
   opts: MakeDrawFrameOptions,
 ): (frameIndex: number) => boolean {
   const { cursor, ctx, width, height, schedule, theme } = opts;
+  let warned = false;
   return (frameIndex: number) => {
     if (frameIndex >= schedule.length) return true;
     cursor.applyUntil(schedule[frameIndex]);
+    if (cursor.failure && !warned) {
+      warned = true;
+      console.warn(
+        `[timelapse] replay halted at seq ${cursor.failure.failedAt}; ` +
+          `rendering last coherent doc — ${cursor.failure.reason}`,
+      );
+    }
     renderDocToCanvas(ctx, cursor.doc, width, height, theme);
     return false;
   };

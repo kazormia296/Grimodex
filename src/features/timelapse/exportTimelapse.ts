@@ -309,13 +309,22 @@ export function makeProjectDrawFrame(opts: {
   theme?: EditorRenderTheme;
 }): (frameIndex: number) => boolean {
   const { plan, ctx, width, height, theme } = opts;
+  const warnedScenes = new Set<string>();
   return (frameIndex: number) => {
     if (frameIndex >= plan.schedule.length) return true;
     const target = plan.schedule[frameIndex];
     const sceneId = pickActiveScene(plan.events, target);
     const cursor = sceneId ? plan.cursors.get(sceneId) : undefined;
-    if (cursor) {
+    if (cursor && sceneId) {
       cursor.applyUntil(target);
+      if (cursor.failure && !warnedScenes.has(sceneId)) {
+        warnedScenes.add(sceneId);
+        console.warn(
+          `[timelapse] scene ${sceneId} replay halted at seq ` +
+            `${cursor.failure.failedAt}; rendering last coherent doc — ` +
+            cursor.failure.reason,
+        );
+      }
       renderDocToCanvas(ctx, cursor.doc, width, height, theme);
     }
     return false;

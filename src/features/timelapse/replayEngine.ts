@@ -107,7 +107,24 @@ export function createReplayCursor(
         };
         return false;
       }
-      const result = step.apply(doc);
+      // step.apply normally signals failure via result.failed, but it can
+      // also *throw* — ProseMirror's ReplaceStep resolves the step's positions
+      // against `doc`, and resolve() throws RangeError("Position N out of
+      // range") when a recorded position exceeds the reconstructed doc (an
+      // un-seedable scene, or a chain gap from a dropped/conflicting batch).
+      // Route the throw into the same halt-on-failure contract so one bad
+      // slice degrades to "render the last coherent doc" instead of rejecting
+      // the whole export.
+      let result: ReturnType<Step["apply"]>;
+      try {
+        result = step.apply(doc);
+      } catch (e) {
+        failure = {
+          failedAt: ev.sequence,
+          reason: `step.apply threw: ${(e as Error).message}`,
+        };
+        return false;
+      }
       if (result.failed || !result.doc) {
         failure = {
           failedAt: ev.sequence,

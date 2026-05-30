@@ -91,6 +91,32 @@ describe("replayEditorSteps", () => {
     expect(result.failedAt).toBe(7);
     editor.destroy();
   });
+
+  it("reports failedAt when a step throws on apply (out-of-range position)", () => {
+    const editor = makeEditor("<p>x</p>");
+    const result = replayEditorSteps(editor.schema, editor.state.doc, [
+      {
+        domain: "editor",
+        opType: "doc.step",
+        payload: JSON.stringify({
+          steps: [
+            {
+              stepType: "replace",
+              from: 1519,
+              to: 1519,
+              structure: true,
+              slice: { content: [{ type: "text", text: "z" }] },
+            },
+          ],
+        }),
+        sequence: 11,
+      },
+    ]);
+    expect(result.failedAt).toBe(11);
+    expect(result.reason).toMatch(/out of range/);
+    expect(result.appliedSteps).toBe(0);
+    editor.destroy();
+  });
 });
 
 function captureInserts(
@@ -166,6 +192,41 @@ describe("createReplayCursor", () => {
     expect(advances).toBe(captured.length);
     expect(cursor.applyNext()).toBe(false);
     base.destroy();
+  });
+
+  it("records failure (does not throw) when a step position is out of range", () => {
+    // Reproduces the export crash: a recorded ReplaceStep whose position
+    // exceeds the reconstructed doc (un-seedable scene, or a chain gap from a
+    // dropped/conflicting batch). ProseMirror's step.apply *throws* RangeError
+    // here rather than returning result.failed, so the cursor must catch it and
+    // halt gracefully instead of rejecting the whole export.
+    const editor = makeEditor("<p>x</p>"); // doc.content.size === 3
+    const outOfRange: ReplayEvent = {
+      domain: "editor",
+      opType: "doc.step",
+      payload: JSON.stringify({
+        steps: [
+          {
+            stepType: "replace",
+            from: 1519,
+            to: 1519,
+            structure: true,
+            slice: { content: [{ type: "text", text: "z" }] },
+          },
+        ],
+      }),
+      sequence: 11,
+    };
+    const cursor = createReplayCursor(editor.schema, editor.state.doc, [
+      outOfRange,
+    ]);
+    expect(() => cursor.applyUntil(Number.POSITIVE_INFINITY)).not.toThrow();
+    expect(cursor.failure?.failedAt).toBe(11);
+    expect(cursor.failure?.reason).toMatch(/out of range/);
+    // Last coherent doc is preserved (nothing was applied).
+    expect(cursor.doc.toJSON()).toEqual(editor.state.doc.toJSON());
+    expect(cursor.applyNext()).toBe(false);
+    editor.destroy();
   });
 
   it("failure halts the cursor", () => {
