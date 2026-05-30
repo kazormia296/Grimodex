@@ -1,30 +1,26 @@
 /**
- * 執筆タイムラプス 動画エクスポート orchestrator (P7.3)。
- *
- * 既存ピースを繋ぐ: loadSceneChangeEvents → createReplayCursor →
- * buildFrameSchedule/makeDrawFrame → captureCanvasToWebm → saveWebmBlob。
- *
- * v1 の射程: 起点 doc は空 doc 固定。記録稼働後に空から書いたシーンのみ正しく
- * 復元される (baseline snapshot seek は C1/§4.5 で配線)。対象は editor 本文
- * (doc.step) のみ。
+ * 執筆タイムラプス 動画エクスポート orchestrator (P7.3 + P5 compositor).
  */
 
-import { Node as ProseMirrorNode, type Schema } from "@tiptap/pm/model";
-import type { ChangeEvent } from "@/db/schema";
-import { loadSceneChangeEvents, loadProjectChangeEvents } from "./queryEvents";
+import type { EditorRenderTheme } from "./renderers/editorRenderer";
 import {
-  createReplayCursor,
-  type ReplayEvent,
-  type ReplayCursor,
-} from "./replayEngine";
-import { buildFrameSchedule, makeDrawFrame } from "./frameProducer";
+  buildCompositeTimelapsePlan,
+  advanceCursorForTarget,
+  pickRenderTarget,
+  type CompositeTimelapsePlan,
+  type RenderTargetKey,
+} from "./compositeTimelapse";
 import { captureCanvasToWebm } from "./videoExport";
-import { loadLatestSnapshot, type DecodedSnapshot } from "./snapshots";
 import { resolveEditorTheme } from "./resolveEditorTheme";
-import {
-  renderDocToCanvas,
-  type EditorRenderTheme,
-} from "./renderers/editorRenderer";
+import { renderDocToCanvas } from "./renderers/editorRenderer";
+import { renderChromeOverlay, renderEmptyFrame } from "./chromeRenderer";
+
+export type { RenderTargetKey, CompositeTimelapsePlan };
+export { pickRenderTarget, buildCompositeTimelapsePlan } from "./compositeTimelapse";
+export { buildReplayStart } from "./replayStart";
+
+/** @deprecated Use CompositeTimelapsePlan */
+export type ProjectTimelapsePlan = CompositeTimelapsePlan;
 
 export interface SceneTimelapseOptions {
   projectId: string;
@@ -33,11 +29,8 @@ export interface SceneTimelapseOptions {
   height?: number;
   fps?: number;
   targetDurationSec?: number;
-  /** Clamp long idle gaps (§5.5 / P3). Default 2000ms. */
   maxIdleMs?: number;
-  /** Override the WebM mime (A6 feature-detect supplies a supported one). */
   mimeType?: string;
-  /** Render theme. Default: resolveEditorTheme() from the live editor (P1). */
   theme?: EditorRenderTheme;
 }
 
@@ -47,129 +40,6 @@ export interface SceneTimelapseResult {
   eventCount: number;
 }
 
-const DEFAULT_WIDTH = 1280;
-const DEFAULT_HEIGHT = 720;
-
-export interface ReplayStart<E extends ReplayEvent = ReplayEvent> {
-  initialDoc: ProseMirrorNode;
-  replayEvents: E[];
-}
-
-/**
- * Decide the replay starting point (P7.7 / §4.5).
- *
- * With a baseline snapshot, seed the doc from it and replay only the events
- * after its anchor sequence. Without one, start from an empty doc and replay
- * everything — correct only for scenes that were empty when recording began.
- * Throws if a snapshot payload can't be deserialised (caller falls back to
- * the empty-doc path).
- */
-export function buildReplayStart<E extends ReplayEvent>(
-  schema: Schema,
-  events: E[],
-  snapshot: Pick<DecodedSnapshot, "payload" | "anchorSequence"> | null,
-): ReplayStart<E> {
-  if (snapshot) {
-    const initialDoc = ProseMirrorNode.fromJSON(
-      schema,
-      snapshot.payload as never,
-    );
-    const replayEvents = events.filter(
-      (e) => e.sequence > snapshot.anchorSequence,
-    );
-    return { initialDoc, replayEvents };
-  }
-  const empty = schema.topNodeType.createAndFill();
-  if (!empty) {
-    throw new Error("timelapse: could not build an initial document");
-  }
-  return { initialDoc: empty, replayEvents: events };
-}
-
-/**
- * Render a scene's recorded writing into a WebM Blob. Throws if the scene has
- * no recorded editor steps, or if the runtime can't provide a 2D canvas.
- */
-export async function produceSceneTimelapseWebm(
-  opts: SceneTimelapseOptions,
-): Promise<SceneTimelapseResult> {
-  const rows = await loadSceneChangeEvents(opts.projectId, opts.sceneId);
-  const events = rows.filter((e) => e.opType === "doc.step");
-  if (events.length === 0) {
-    throw new Error("timelapse: no recorded editor steps for this scene");
-  }
-
-  // Live editor schema so Step.fromJSON resolves marks (e.g. authorship).
-  const { getEditorExtensions } = await import("@/features/editor/extensions");
-  const { getSchema } = await import("@tiptap/core");
-  const schema = getSchema(getEditorExtensions());
-
-  // Seed from the baseline snapshot if one was stamped (recording enable),
-  // else from an empty doc. Fall back to empty if the snapshot is unusable.
-  const snapshot = await loadLatestSnapshot({
-    projectId: opts.projectId,
-    domain: "editor",
-    entityId: opts.sceneId,
-  });
-  const start = (() => {
-    try {
-      return buildReplayStart(schema, events, snapshot);
-    } catch (err) {
-      console.warn(
-        "[timelapse] baseline snapshot unusable; replaying from empty doc",
-        err,
-      );
-      return buildReplayStart(schema, events, null);
-    }
-  })();
-
-  const width = opts.width ?? DEFAULT_WIDTH;
-  const height = opts.height ?? DEFAULT_HEIGHT;
-  const fps = opts.fps ?? 30;
-
-  const cursor = createReplayCursor(
-    schema,
-    start.initialDoc,
-    start.replayEvents,
-  );
-  const schedule = buildFrameSchedule(start.replayEvents, {
-    fps,
-    targetDurationSec: opts.targetDurationSec,
-    ...(opts.maxIdleMs !== undefined ? { maxIdleMs: opts.maxIdleMs } : {}),
-  });
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("timelapse: 2D canvas context unavailable");
-
-  // 実エディタのテーマ・フォント・帰属表示を解決して描画に反映 (P1)。
-  const theme = opts.theme ?? resolveEditorTheme();
-  const drawFrame = makeDrawFrame({
-    cursor,
-    ctx,
-    width,
-    height,
-    schedule,
-    theme,
-  });
-  const blob = await captureCanvasToWebm(canvas, {
-    fps,
-    drawFrame,
-    ...(opts.mimeType ? { mimeType: opts.mimeType } : {}),
-  });
-
-  return { blob, frameCount: schedule.length, eventCount: events.length };
-}
-
-// ────────────────────────────────────────────────────────────────────
-// プロジェクト全体タイムラプス (#9)。全シーンの本文編集(doc.step, sceneId 付き)を
-// timestamp 順に再生し、各フレームで「その時アクティブなシーン」(=直近 doc.step の
-// sceneId)の doc を描画する。シーンごとに baseline seed した cursor を持ち、全体で
-// 1 本の frame schedule を引く。chat/layout/クロームの合流は P5。
-// ────────────────────────────────────────────────────────────────────
-
 export interface ProjectTimelapseOptions {
   projectId: string;
   width?: number;
@@ -177,9 +47,7 @@ export interface ProjectTimelapseOptions {
   fps?: number;
   targetDurationSec?: number;
   maxIdleMs?: number;
-  /** Override the WebM mime (A6 feature-detect supplies a supported one). */
   mimeType?: string;
-  /** Render theme. Default: resolveEditorTheme() from the live editor (P1). */
   theme?: EditorRenderTheme;
 }
 
@@ -190,157 +58,77 @@ export interface ProjectTimelapseResult {
   sceneCount: number;
 }
 
-type ProjectStepEvent = ChangeEvent & { sceneId: string };
+const DEFAULT_WIDTH = 1280;
+const DEFAULT_HEIGHT = 720;
 
-export interface ProjectTimelapsePlan {
-  events: ProjectStepEvent[];
-  cursors: Map<string, ReplayCursor>;
-  schedule: number[];
-  sceneCount: number;
-  eventCount: number;
-}
-
-/**
- * Active scene at `targetSequence` = the sceneId of the last doc.step with
- * `sequence <= target`. `events` must be sequence-ascending (binary search).
- */
-export function pickActiveScene(
-  events: readonly Pick<ProjectStepEvent, "sequence" | "sceneId">[],
-  targetSequence: number,
-): string | null {
-  if (events.length === 0) return null;
-  let lo = 0;
-  let hi = events.length - 1;
-  let ans = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (events[mid].sequence <= targetSequence) {
-      ans = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return ans >= 0 ? events[ans].sceneId : events[0].sceneId;
-}
-
-/**
- * Build the whole-project replay plan: all body doc.step events (those with a
- * sceneId) sequence-ordered, one baseline-seeded cursor per scene, and a single
- * frame schedule over the merged timeline. No MediaRecorder dependency, so this
- * is unit-testable. Throws if the project has no recorded body steps.
- */
-export async function buildProjectTimelapsePlan(opts: {
-  projectId: string;
-  fps?: number;
-  targetDurationSec?: number;
-  maxIdleMs?: number;
-}): Promise<ProjectTimelapsePlan> {
-  const rows = await loadProjectChangeEvents(opts.projectId);
-  const events = rows.filter(
-    (e): e is ProjectStepEvent => e.opType === "doc.step" && e.sceneId !== null,
-  );
-  if (events.length === 0) {
-    throw new Error("timelapse: no recorded editor steps in this project");
-  }
-
-  // Live editor schema so Step.fromJSON resolves marks (e.g. authorship).
-  const { getEditorExtensions } = await import("@/features/editor/extensions");
-  const { getSchema } = await import("@tiptap/core");
-  const schema = getSchema(getEditorExtensions());
-
-  const sceneIds = [...new Set(events.map((e) => e.sceneId))];
-  const cursors = new Map<string, ReplayCursor>();
-  // Collect post-anchor events per scene so the frame schedule covers only the
-  // sequences that cursors can actually advance through (pre-anchor sequences
-  // are represented by the baseline snapshot, not by replay steps).
-  const schedulableEvents: ProjectStepEvent[] = [];
-  for (const sceneId of sceneIds) {
-    const sceneEvents = events.filter((e) => e.sceneId === sceneId);
-    const snapshot = await loadLatestSnapshot({
-      projectId: opts.projectId,
-      domain: "editor",
-      entityId: sceneId,
-    });
-    const start = (() => {
-      try {
-        return buildReplayStart(schema, sceneEvents, snapshot);
-      } catch (err) {
-        console.warn("[timelapse] baseline unusable for scene", sceneId, err);
-        return buildReplayStart(schema, sceneEvents, null);
-      }
-    })();
-    schedulableEvents.push(...start.replayEvents);
-    cursors.set(
-      sceneId,
-      createReplayCursor(schema, start.initialDoc, start.replayEvents),
-    );
-  }
-  // Sort merged post-anchor events by sequence for a coherent timeline.
-  // Fall back to all events when every snapshot covers all recorded steps.
-  schedulableEvents.sort((a, b) => a.sequence - b.sequence);
-  const scheduleBase =
-    schedulableEvents.length > 0 ? schedulableEvents : events;
-
-  const schedule = buildFrameSchedule(scheduleBase, {
-    fps: opts.fps,
-    targetDurationSec: opts.targetDurationSec,
-    ...(opts.maxIdleMs !== undefined ? { maxIdleMs: opts.maxIdleMs } : {}),
-  });
-
-  return {
-    events,
-    cursors,
-    schedule,
-    sceneCount: sceneIds.length,
-    eventCount: events.length,
-  };
-}
-
-/**
- * drawFrame for the whole-project video: pick the active scene for the frame's
- * target sequence, advance that scene's cursor (delta only), repaint.
- */
-export function makeProjectDrawFrame(opts: {
-  plan: ProjectTimelapsePlan;
+export function makeCompositeDrawFrame(opts: {
+  plan: CompositeTimelapsePlan;
   ctx: CanvasRenderingContext2D;
   width: number;
   height: number;
   theme?: EditorRenderTheme;
 }): (frameIndex: number) => boolean {
-  const { plan, ctx, width, height, theme } = opts;
-  const warnedScenes = new Set<string>();
+  const { plan, ctx, width, height } = opts;
+  const theme = opts.theme ?? resolveEditorTheme();
+  let prevRenderKey: RenderTargetKey | null = null;
+  const warnedKeys = new Set<string>();
+
   return (frameIndex: number) => {
     if (frameIndex >= plan.schedule.length) return true;
     const target = plan.schedule[frameIndex];
-    const sceneId = pickActiveScene(plan.events, target);
-    const cursor = sceneId ? plan.cursors.get(sceneId) : undefined;
-    if (cursor && sceneId) {
-      cursor.applyUntil(target);
-      if (cursor.failure && !warnedScenes.has(sceneId)) {
-        warnedScenes.add(sceneId);
+    const renderKey = pickRenderTarget(
+      plan.events,
+      target,
+      plan.cursors,
+      prevRenderKey,
+    );
+    if (renderKey) prevRenderKey = renderKey;
+
+    const cursor = advanceCursorForTarget(
+      plan.cursors,
+      renderKey,
+      target,
+    );
+
+    if (cursor && renderKey && !cursor.failure) {
+      renderDocToCanvas(
+        ctx,
+        cursor.doc,
+        width,
+        height,
+        theme,
+        cursor.focusPos,
+      );
+    } else {
+      if (cursor?.failure && renderKey && !warnedKeys.has(renderKey)) {
+        warnedKeys.add(renderKey);
         console.warn(
-          `[timelapse] scene ${sceneId} replay halted at seq ` +
-            `${cursor.failure.failedAt}; rendering last coherent doc — ` +
-            cursor.failure.reason,
+          `[timelapse] ${renderKey} replay halted at seq ${cursor.failure.failedAt}`,
         );
       }
-      renderDocToCanvas(ctx, cursor.doc, width, height, theme, cursor.focusPos);
+      renderEmptyFrame(ctx, width, height, theme);
     }
+
+    const captions = plan.frameCaptions[frameIndex] ?? [];
+    renderChromeOverlay(ctx, captions, width, height, theme);
     return false;
   };
 }
 
-/**
- * Render the whole project's recorded writing into a single WebM Blob (#9).
- * Throws if the project has no recorded editor steps, or if the runtime can't
- * provide a 2D canvas.
- */
-export async function produceProjectTimelapseWebm(
-  opts: ProjectTimelapseOptions,
-): Promise<ProjectTimelapseResult> {
-  const plan = await buildProjectTimelapsePlan(opts);
+/** @deprecated Use makeCompositeDrawFrame */
+export const makeProjectDrawFrame = makeCompositeDrawFrame;
 
+/** @deprecated Use buildCompositeTimelapsePlan */
+export const buildProjectTimelapsePlan = buildCompositeTimelapsePlan;
+
+async function produceTimelapseWebm(opts: {
+  plan: CompositeTimelapsePlan;
+  width?: number;
+  height?: number;
+  fps?: number;
+  mimeType?: string;
+  theme?: EditorRenderTheme;
+}): Promise<Blob> {
   const width = opts.width ?? DEFAULT_WIDTH;
   const height = opts.height ?? DEFAULT_HEIGHT;
   const fps = opts.fps ?? 30;
@@ -352,11 +140,65 @@ export async function produceProjectTimelapseWebm(
   if (!ctx) throw new Error("timelapse: 2D canvas context unavailable");
 
   const theme = opts.theme ?? resolveEditorTheme();
-  const drawFrame = makeProjectDrawFrame({ plan, ctx, width, height, theme });
-  const blob = await captureCanvasToWebm(canvas, {
+  const drawFrame = makeCompositeDrawFrame({
+    plan: opts.plan,
+    ctx,
+    width,
+    height,
+    theme,
+  });
+
+  return captureCanvasToWebm(canvas, {
     fps,
     drawFrame,
     ...(opts.mimeType ? { mimeType: opts.mimeType } : {}),
+  });
+}
+
+export async function produceSceneTimelapseWebm(
+  opts: SceneTimelapseOptions,
+): Promise<SceneTimelapseResult> {
+  const plan = await buildCompositeTimelapsePlan({
+    projectId: opts.projectId,
+    sceneId: opts.sceneId,
+    fps: opts.fps,
+    targetDurationSec: opts.targetDurationSec,
+    maxIdleMs: opts.maxIdleMs,
+  });
+
+  const blob = await produceTimelapseWebm({
+    plan,
+    width: opts.width,
+    height: opts.height,
+    fps: opts.fps,
+    mimeType: opts.mimeType,
+    theme: opts.theme,
+  });
+
+  return {
+    blob,
+    frameCount: plan.schedule.length,
+    eventCount: plan.eventCount,
+  };
+}
+
+export async function produceProjectTimelapseWebm(
+  opts: ProjectTimelapseOptions,
+): Promise<ProjectTimelapseResult> {
+  const plan = await buildCompositeTimelapsePlan({
+    projectId: opts.projectId,
+    fps: opts.fps,
+    targetDurationSec: opts.targetDurationSec,
+    maxIdleMs: opts.maxIdleMs,
+  });
+
+  const blob = await produceTimelapseWebm({
+    plan,
+    width: opts.width,
+    height: opts.height,
+    fps: opts.fps,
+    mimeType: opts.mimeType,
+    theme: opts.theme,
   });
 
   return {
@@ -367,11 +209,6 @@ export async function produceProjectTimelapseWebm(
   };
 }
 
-/**
- * Save a produced WebM Blob to disk. Mirrors the canonical save pattern
- * (saveZipBlob / useMapExport PNG): Tauri save dialog + binary writeFile,
- * with a browser download fallback. Returns false if the user cancels.
- */
 export async function saveWebmBlob(
   blob: Blob,
   filename: string,

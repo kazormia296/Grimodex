@@ -77,10 +77,11 @@ export function TimelapseExportSection({
       if (saved) toast.success(t("timelapse.exportDone"));
     } catch (err) {
       console.error("[timelapse] export failed", err);
-      const noSteps =
-        err instanceof Error && /no recorded editor steps/.test(err.message);
+      const noEvents =
+        err instanceof Error &&
+        /no change events|no recorded editor steps/.test(err.message);
       toast.error(
-        noSteps
+        noEvents
           ? t(
               scope === "project"
                 ? "timelapse.exportProjectNoSteps"

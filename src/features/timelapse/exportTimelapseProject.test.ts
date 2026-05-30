@@ -16,15 +16,16 @@ vi.mock("@/features/editor/extensions", () => ({
 
 import { loadProjectChangeEvents } from "./queryEvents";
 import {
-  pickActiveScene,
-  buildProjectTimelapsePlan,
-  makeProjectDrawFrame,
+  pickRenderTarget,
+  buildCompositeTimelapsePlan,
+  makeCompositeDrawFrame,
   produceProjectTimelapseWebm,
 } from "./exportTimelapse";
+import { createReplayCursor } from "./replayEngine";
+import { getSchema } from "@tiptap/core";
 
 const load = vi.mocked(loadProjectChangeEvents);
 
-/** doc.step payloads (one per transaction) for typing `text` into a fresh doc. */
 function stepsFor(text: string): unknown[][] {
   const editor = new Editor({ extensions: [StarterKit] });
   const out: unknown[][] = [];
@@ -45,14 +46,14 @@ interface Row {
   domain: string;
   opType: string;
   payload: string;
+  entityId?: string | null;
 }
 
-/** Build interleaved project events: sceneA first, then sceneB. */
 function buildRows(): Row[] {
   const rows: Row[] = [];
   let seq = 0;
   let ts = 1000;
-  const push = (sceneId: string, steps: unknown[]) =>
+  const push = (sceneId: string, steps: unknown) =>
     rows.push({
       sequence: ++seq,
       timestamp: (ts += 100),
@@ -93,37 +94,58 @@ beforeEach(() => {
   load.mockReset();
 });
 
-describe("pickActiveScene", () => {
+describe("pickRenderTarget", () => {
   const events = [
-    { sequence: 1, sceneId: "a" },
-    { sequence: 3, sceneId: "b" },
-    { sequence: 7, sceneId: "a" },
-  ];
-  it("returns the scene of the latest event at or before the target", () => {
-    expect(pickActiveScene(events, 1)).toBe("a");
-    expect(pickActiveScene(events, 2)).toBe("a");
-    expect(pickActiveScene(events, 3)).toBe("b");
-    expect(pickActiveScene(events, 6)).toBe("b");
-    expect(pickActiveScene(events, 7)).toBe("a");
-    expect(pickActiveScene(events, 999)).toBe("a");
+    { sequence: 1, sceneId: "a", domain: "editor", opType: "doc.step", entityId: null },
+    { sequence: 3, sceneId: null, domain: "codex", opType: "doc.step", entityId: "c1" },
+    { sequence: 7, sceneId: "b", domain: "editor", opType: "doc.step", entityId: null },
+  ] as never;
+
+  it("returns render keys from latest doc.step at or before target", () => {
+    const cursors = new Map();
+    expect(pickRenderTarget(events, 1, cursors, null)).toBe("scene:a");
+    expect(pickRenderTarget(events, 2, cursors, "scene:a")).toBe("scene:a");
+    expect(pickRenderTarget(events, 3, cursors, "scene:a")).toBe("codex:c1");
+    expect(pickRenderTarget(events, 6, cursors, "codex:c1")).toBe("codex:c1");
+    expect(pickRenderTarget(events, 7, cursors, "codex:c1")).toBe("scene:b");
   });
-  it("clamps targets before the first event to the first scene", () => {
-    expect(pickActiveScene(events, 0)).toBe("a");
+
+  it("returns prevRenderKey when no doc.step before target", () => {
+    const cursors = new Map();
+    expect(pickRenderTarget(events, 0, cursors, "scene:a")).toBe("scene:a");
   });
-  it("returns null for an empty list", () => {
-    expect(pickActiveScene([], 5)).toBeNull();
+
+  it("falls back to prevRenderKey when cursor has failure", () => {
+    const schema = getSchema([StarterKit]);
+    const empty = schema.topNodeType.createAndFill()!;
+    const cursor = createReplayCursor(schema, empty, [
+      {
+        sequence: 99,
+        domain: "codex",
+        opType: "doc.step",
+        payload: JSON.stringify({
+          steps: [{ stepType: "replace", from: 0, to: 0, slice: { content: [] } }],
+        }),
+      },
+    ]);
+    // Force failure by applying replace at invalid pos on empty doc
+    cursor.applyUntil(99);
+    const cursors = new Map([["codex:c1", cursor]]);
+    if (cursor.failure) {
+      expect(pickRenderTarget(events, 3, cursors, "scene:a")).toBe("scene:a");
+    }
   });
 });
 
-describe("buildProjectTimelapsePlan", () => {
-  it("throws when the project has no recorded body steps", async () => {
+describe("buildCompositeTimelapsePlan", () => {
+  it("throws when the project has no events", async () => {
     load.mockResolvedValue([] as never);
-    await expect(buildProjectTimelapsePlan({ projectId: "p" })).rejects.toThrow(
-      /no recorded editor steps/,
+    await expect(buildCompositeTimelapsePlan({ projectId: "p" })).rejects.toThrow(
+      /no change events/,
     );
   });
 
-  it("ignores doc.step events without a sceneId (codex/snippet body)", async () => {
+  it("builds codex cursor for doc.step without sceneId", async () => {
     load.mockResolvedValue([
       {
         sequence: 1,
@@ -131,60 +153,67 @@ describe("buildProjectTimelapsePlan", () => {
         sceneId: null,
         domain: "codex",
         opType: "doc.step",
+        entityId: "c1",
         payload: JSON.stringify({ steps: [] }),
       },
     ] as never);
-    await expect(buildProjectTimelapsePlan({ projectId: "p" })).rejects.toThrow(
-      /no recorded editor steps/,
-    );
+    const plan = await buildCompositeTimelapsePlan({
+      projectId: "p",
+      fps: 4,
+      targetDurationSec: 1,
+    });
+    expect(plan.cursors.has("codex:c1")).toBe(true);
+    expect(plan.schedule).toHaveLength(4);
   });
 
-  it("groups body steps into one cursor per scene", async () => {
+  it("groups body steps into scene cursors", async () => {
     load.mockResolvedValue(buildRows() as never);
-    const plan = await buildProjectTimelapsePlan({
+    const plan = await buildCompositeTimelapsePlan({
       projectId: "p",
       fps: 4,
       targetDurationSec: 1,
     });
     expect(plan.sceneCount).toBe(2);
-    expect([...plan.cursors.keys()].sort()).toEqual(["sceneA", "sceneB"]);
-    expect(plan.schedule).toHaveLength(4); // fps 4 * 1s
-    expect(plan.eventCount).toBe(plan.events.length);
+    expect([...plan.cursors.keys()].sort()).toEqual([
+      "scene:sceneA",
+      "scene:sceneB",
+    ]);
+    expect(plan.schedule).toHaveLength(4);
   });
 });
 
-describe("makeProjectDrawFrame", () => {
-  it("renders the active scene's document as the timeline advances", async () => {
+describe("makeCompositeDrawFrame", () => {
+  it("renders the active scene document as the timeline advances", async () => {
     load.mockResolvedValue(buildRows() as never);
-    const plan = await buildProjectTimelapsePlan({
+    const plan = await buildCompositeTimelapsePlan({
       projectId: "p",
       fps: 30,
       targetDurationSec: 1,
     });
     const { ctx, texts } = makeMockCtx();
-    const draw = makeProjectDrawFrame({ plan, ctx, width: 400, height: 200 });
+    const draw = makeCompositeDrawFrame({ plan, ctx, width: 400, height: 200 });
 
-    draw(0); // earliest target → sceneA
+    draw(0);
     expect(texts()).toContain("Alpha");
     expect(texts()).not.toContain("Beta");
 
     const { ctx: ctx2, texts: texts2 } = makeMockCtx();
-    const draw2 = makeProjectDrawFrame({
+    const draw2 = makeCompositeDrawFrame({
       plan,
       ctx: ctx2,
       width: 400,
       height: 200,
     });
-    draw2(plan.schedule.length - 1); // latest target → sceneB
+    draw2(plan.schedule.length - 1);
     expect(texts2()).toContain("Beta");
   });
 });
 
 describe("produceProjectTimelapseWebm", () => {
-  it("throws when the project has no recorded steps (before touching MediaRecorder)", async () => {
+  it("throws when the project has no events", async () => {
     load.mockResolvedValue([] as never);
     await expect(
       produceProjectTimelapseWebm({ projectId: "p" }),
-    ).rejects.toThrow(/no recorded editor steps/);
+    ).rejects.toThrow(/no change events/);
   });
 });

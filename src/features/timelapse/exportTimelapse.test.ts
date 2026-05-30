@@ -2,9 +2,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const queryMock = vi.hoisted(() => ({
-  loadSceneChangeEvents: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
+  loadProjectChangeEvents: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
 }));
-vi.mock("./queryEvents", () => queryMock);
+vi.mock("./queryEvents", () => ({
+  loadProjectChangeEvents: queryMock.loadProjectChangeEvents,
+  loadSceneChangeEvents: vi.fn(),
+}));
+vi.mock("./snapshots", () => ({
+  loadLatestSnapshot: vi.fn(async () => null),
+}));
+vi.mock("@/features/editor/extensions", () => ({
+  getEditorExtensions: () => {
+    const StarterKit = require("@tiptap/starter-kit").default;
+    return [StarterKit];
+  },
+}));
 
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -26,25 +38,58 @@ function fakeEvents(seqs: number[]): ReplayEvent[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  queryMock.loadSceneChangeEvents.mockResolvedValue([]);
+  queryMock.loadProjectChangeEvents.mockResolvedValue([]);
 });
 
 describe("produceSceneTimelapseWebm", () => {
-  it("throws when the scene has no recorded steps", async () => {
-    queryMock.loadSceneChangeEvents.mockResolvedValue([]);
+  it("throws when the scene has no exportable events", async () => {
+    queryMock.loadProjectChangeEvents.mockResolvedValue([]);
     await expect(
       produceSceneTimelapseWebm({ projectId: "p", sceneId: "s" }),
-    ).rejects.toThrow(/no recorded editor steps/);
+    ).rejects.toThrow(/no change events/);
   });
 
-  it("ignores non-doc.step events when deciding emptiness", async () => {
-    queryMock.loadSceneChangeEvents.mockResolvedValue([
-      { opType: "scene.create" },
-      { opType: "snippet.update" },
+  it("allows chrome-only scene plan without editor doc.step", async () => {
+    queryMock.loadProjectChangeEvents.mockResolvedValue([
+      {
+        sequence: 1,
+        timestamp: 1,
+        sceneId: null,
+        domain: "chat",
+        opType: "chat.message.add",
+        payload: JSON.stringify({ role: "user", text: "hi" }),
+      },
     ]);
-    await expect(
-      produceSceneTimelapseWebm({ projectId: "p", sceneId: "s" }),
-    ).rejects.toThrow(/no recorded editor steps/);
+    const { buildCompositeTimelapsePlan } = await import("./compositeTimelapse");
+    const plan = await buildCompositeTimelapsePlan({
+      projectId: "p",
+      sceneId: "s",
+      fps: 4,
+      targetDurationSec: 1,
+    });
+    expect(plan.eventCount).toBe(1);
+    expect(plan.frameCaptions.some((c) => c.length > 0)).toBe(true);
+  });
+
+  it("uses loadProjectChangeEvents for scene export", async () => {
+    queryMock.loadProjectChangeEvents.mockResolvedValue([
+      {
+        sequence: 1,
+        timestamp: 1,
+        sceneId: "s",
+        domain: "editor",
+        opType: "doc.step",
+        payload: '{"steps":[]}',
+      },
+    ]);
+    const { buildCompositeTimelapsePlan } = await import("./compositeTimelapse");
+    await buildCompositeTimelapsePlan({
+      projectId: "p1",
+      sceneId: "s",
+      fps: 4,
+      targetDurationSec: 1,
+    });
+    expect(queryMock.loadProjectChangeEvents).toHaveBeenCalledWith("p1");
   });
 });
 
