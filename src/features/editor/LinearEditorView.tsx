@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { LinearSceneBlock } from "./LinearSceneBlock";
@@ -34,14 +34,42 @@ export function LinearEditorView() {
   const [findOpen, setFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
 
-  // Sorted scene list (exclude notes, folders)
-  const scenes = useMemo(
-    () =>
-      nodes
-        .filter((n) => n.nodeType === "scene")
-        .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder)),
-    [nodes],
-  );
+  // sortOrder は同じ parentId 内でのみ比較可能な fractional-indexing key
+  // (各フォルダの最初の子は独立に "a0" を生成する)。グローバル sort だと
+  // 別フォルダのシーンが章をまたいで interleave するので、zipExport /
+  // exportEngine と同じく per-parent sort + DFS pre-order で flatten する。
+  // notes は意図的に除外 (LinearSceneBlock が scene 専用ロード経路のため)。
+  // DFS walk で到達できない孤児 scene (parentId が消失/循環) は末尾に append
+  // して旧フラット sort の「全 scene を必ず出す」保証を維持する。
+  const scenes = useMemo(() => {
+    const childrenByParent = new Map<string | null, TreeNodeData[]>();
+    for (const n of nodes) {
+      const arr = childrenByParent.get(n.parentId) ?? [];
+      arr.push(n);
+      childrenByParent.set(n.parentId, arr);
+    }
+    for (const arr of childrenByParent.values()) {
+      arr.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+    }
+    const out: TreeNodeData[] = [];
+    const guard = new Set<string>();
+    const walk = (parentId: string | null) => {
+      if (parentId !== null) {
+        if (guard.has(parentId)) return;
+        guard.add(parentId);
+      }
+      for (const n of childrenByParent.get(parentId) ?? []) {
+        if (n.nodeType === "scene") out.push(n);
+        else if (n.nodeType === "folder") walk(n.id);
+      }
+    };
+    walk(null);
+    const seen = new Set(out.map((n) => n.id));
+    const orphans = nodes
+      .filter((n) => n.nodeType === "scene" && !seen.has(n.id))
+      .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+    return orphans.length === 0 ? out : [...out, ...orphans];
+  }, [nodes]);
 
   // --- IntersectionObserver: mount/unmount ---
   useEffect(() => {
