@@ -3,7 +3,7 @@ members = ["crates/grimodex-mcp", "crates/grimodex-lint"]
 
 [package]
 name = "grimodex"
-version = "0.4.5"
+version = "0.4.6"
 description = "A Tauri App"
 authors = ["you"]
 license = "Elastic-2.0"
