@@ -16,7 +16,10 @@ import { renderDocToCanvas } from "./renderers/editorRenderer";
 import { renderChromeOverlay, renderEmptyFrame } from "./chromeRenderer";
 
 export type { RenderTargetKey, CompositeTimelapsePlan };
-export { pickRenderTarget, buildCompositeTimelapsePlan } from "./compositeTimelapse";
+export {
+  pickRenderTarget,
+  buildCompositeTimelapsePlan,
+} from "./compositeTimelapse";
 export { buildReplayStart } from "./replayStart";
 
 /** @deprecated Use CompositeTimelapsePlan */
@@ -83,22 +86,11 @@ export function makeCompositeDrawFrame(opts: {
       prevRenderKey,
     );
 
-    const cursor = advanceCursorForTarget(
-      plan.cursors,
-      renderKey,
-      target,
-    );
+    const cursor = advanceCursorForTarget(plan.cursors, renderKey, target);
 
     if (cursor && renderKey && !cursor.failure) {
       prevRenderKey = renderKey;
-      renderDocToCanvas(
-        ctx,
-        cursor.doc,
-        width,
-        height,
-        theme,
-        cursor.focusPos,
-      );
+      renderDocToCanvas(ctx, cursor.doc, width, height, theme, cursor.focusPos);
     } else {
       if (cursor?.failure && renderKey && !warnedKeys.has(renderKey)) {
         warnedKeys.add(renderKey);

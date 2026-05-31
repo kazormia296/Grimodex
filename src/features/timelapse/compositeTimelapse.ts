@@ -68,18 +68,29 @@ function filterEventsForScene(
 ): ChangeEvent[] {
   return rows.filter((e) => {
     if (isSceneEditorBodyStep(e) && e.sceneId !== sceneId) return false;
-    if (e.domain === "editor" && e.opType === "doc.step" && e.sceneId !== sceneId) {
+    if (
+      e.domain === "editor" &&
+      e.opType === "doc.step" &&
+      e.sceneId !== sceneId
+    ) {
       return false;
     }
     return isSceneChromeEvent(e, sceneId);
   });
 }
 
-function hasExportableContent(events: ChangeEvent[], sceneId?: string): boolean {
+function hasExportableContent(
+  events: ChangeEvent[],
+  sceneId?: string,
+): boolean {
   if (events.length === 0) return false;
   if (!sceneId) return true;
-  const hasSceneBody = events.some((e) => isSceneEditorBodyStep(e) && e.sceneId === sceneId);
-  const hasChrome = events.some((e) => isSceneChromeEvent(e, sceneId) && !isSceneEditorBodyStep(e));
+  const hasSceneBody = events.some(
+    (e) => isSceneEditorBodyStep(e) && e.sceneId === sceneId,
+  );
+  const hasChrome = events.some(
+    (e) => isSceneChromeEvent(e, sceneId) && !isSceneEditorBodyStep(e),
+  );
   return hasSceneBody || hasChrome;
 }
 
@@ -216,9 +227,7 @@ export async function buildCompositeTimelapsePlan(
   opts: BuildCompositePlanOptions,
 ): Promise<CompositeTimelapsePlan> {
   const rows = await loadProjectChangeEvents(opts.projectId);
-  const events = opts.sceneId
-    ? filterEventsForScene(rows, opts.sceneId)
-    : rows;
+  const events = opts.sceneId ? filterEventsForScene(rows, opts.sceneId) : rows;
 
   if (!hasExportableContent(events, opts.sceneId)) {
     throw new Error("timelapse: no change events to export");

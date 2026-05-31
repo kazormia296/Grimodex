@@ -60,7 +60,8 @@ describe("produceSceneTimelapseWebm", () => {
         payload: JSON.stringify({ role: "user", text: "hi" }),
       },
     ]);
-    const { buildCompositeTimelapsePlan } = await import("./compositeTimelapse");
+    const { buildCompositeTimelapsePlan } =
+      await import("./compositeTimelapse");
     const plan = await buildCompositeTimelapsePlan({
       projectId: "p",
       sceneId: "s",
@@ -82,7 +83,8 @@ describe("produceSceneTimelapseWebm", () => {
         payload: '{"steps":[]}',
       },
     ]);
-    const { buildCompositeTimelapsePlan } = await import("./compositeTimelapse");
+    const { buildCompositeTimelapsePlan } =
+      await import("./compositeTimelapse");
     await buildCompositeTimelapsePlan({
       projectId: "p1",
       sceneId: "s",

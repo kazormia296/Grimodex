@@ -11,7 +11,10 @@ const PADDING_Y = 10;
 const LINE_HEIGHT_RATIO = 1.35;
 const MAX_LINES = 3;
 
-function segmentColor(kind: CaptionSegment["kind"], theme: EditorRenderTheme): string {
+function segmentColor(
+  kind: CaptionSegment["kind"],
+  theme: EditorRenderTheme,
+): string {
   switch (kind) {
     case "add":
       return "#16a34a";

@@ -68,9 +68,13 @@ describe("pickRenderTarget", () => {
   it("returns scene or codex keys from latest doc.step", () => {
     const cursors = new Map();
     expect(pickRenderTarget(events, 1, cursors, null)).toBe("scene:sceneA");
-    expect(pickRenderTarget(events, 3, cursors, "scene:sceneA")).toBe("codex:c1");
+    expect(pickRenderTarget(events, 3, cursors, "scene:sceneA")).toBe(
+      "codex:c1",
+    );
     expect(pickRenderTarget(events, 4, cursors, "codex:c1")).toBe("codex:c1");
-    expect(pickRenderTarget(events, 5, cursors, "codex:c1")).toBe("scene:sceneB");
+    expect(pickRenderTarget(events, 5, cursors, "codex:c1")).toBe(
+      "scene:sceneB",
+    );
   });
 
   it("falls back to prevRenderKey when cursor has failure", () => {
@@ -87,9 +91,9 @@ describe("pickRenderTarget", () => {
     cursor.applyUntil(99);
     expect(cursor.failure).not.toBeNull();
     const cursors = new Map([["codex:c1", cursor]]);
-    expect(
-      pickRenderTarget(events, 3, cursors, "scene:sceneA"),
-    ).toBe("scene:sceneA");
+    expect(pickRenderTarget(events, 3, cursors, "scene:sceneA")).toBe(
+      "scene:sceneA",
+    );
   });
 
   it("returns prevRenderKey when no doc.step before target", () => {

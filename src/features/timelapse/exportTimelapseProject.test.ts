@@ -96,9 +96,27 @@ beforeEach(() => {
 
 describe("pickRenderTarget", () => {
   const events = [
-    { sequence: 1, sceneId: "a", domain: "editor", opType: "doc.step", entityId: null },
-    { sequence: 3, sceneId: null, domain: "codex", opType: "doc.step", entityId: "c1" },
-    { sequence: 7, sceneId: "b", domain: "editor", opType: "doc.step", entityId: null },
+    {
+      sequence: 1,
+      sceneId: "a",
+      domain: "editor",
+      opType: "doc.step",
+      entityId: null,
+    },
+    {
+      sequence: 3,
+      sceneId: null,
+      domain: "codex",
+      opType: "doc.step",
+      entityId: "c1",
+    },
+    {
+      sequence: 7,
+      sceneId: "b",
+      domain: "editor",
+      opType: "doc.step",
+      entityId: null,
+    },
   ] as never;
 
   it("returns render keys from latest doc.step at or before target", () => {
@@ -124,7 +142,9 @@ describe("pickRenderTarget", () => {
         domain: "codex",
         opType: "doc.step",
         payload: JSON.stringify({
-          steps: [{ stepType: "replace", from: 0, to: 0, slice: { content: [] } }],
+          steps: [
+            { stepType: "replace", from: 0, to: 0, slice: { content: [] } },
+          ],
         }),
       },
     ]);
@@ -140,9 +160,9 @@ describe("pickRenderTarget", () => {
 describe("buildCompositeTimelapsePlan", () => {
   it("throws when the project has no events", async () => {
     load.mockResolvedValue([] as never);
-    await expect(buildCompositeTimelapsePlan({ projectId: "p" })).rejects.toThrow(
-      /no change events/,
-    );
+    await expect(
+      buildCompositeTimelapsePlan({ projectId: "p" }),
+    ).rejects.toThrow(/no change events/);
   });
 
   it("builds codex cursor for doc.step without sceneId", async () => {

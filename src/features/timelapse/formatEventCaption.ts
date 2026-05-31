@@ -21,7 +21,9 @@ interface ParsedPayload {
   [key: string]: unknown;
 }
 
-export function parseEventPayload(event: Pick<ChangeEvent, "payload">): ParsedPayload {
+export function parseEventPayload(
+  event: Pick<ChangeEvent, "payload">,
+): ParsedPayload {
   try {
     return JSON.parse(event.payload) as ParsedPayload;
   } catch {
@@ -56,9 +58,7 @@ function formatDiffs(
 ): FormattedCaption | null {
   const keys = Object.keys(diffs);
   if (keys.length === 0) return null;
-  const segments: CaptionSegment[] = [
-    { text: `${prefix}: `, kind: "meta" },
-  ];
+  const segments: CaptionSegment[] = [{ text: `${prefix}: `, kind: "meta" }];
   for (const key of keys) {
     const d = diffs[key];
     if (!d?.segments?.length) continue;
@@ -72,10 +72,7 @@ function formatDiffs(
 export function collectOpenPanels(payload: ParsedPayload): string[] {
   const layout = payload.layout as
     | {
-        regions?: Record<
-          string,
-          { slots?: { activePanel?: string | null }[] }
-        >;
+        regions?: Record<string, { slots?: { activePanel?: string | null }[] }>;
         center?: {
           editorOpen?: boolean;
           segments?: { kind: string; activePanel?: string | null }[];
@@ -112,10 +109,14 @@ function formatLayoutSnapshot(
     }
     const parts: string[] = [];
     if (opened.length) {
-      parts.push(t("timelapse.caption.layoutOpened", { panels: opened.join(", ") }));
+      parts.push(
+        t("timelapse.caption.layoutOpened", { panels: opened.join(", ") }),
+      );
     }
     if (closed.length) {
-      parts.push(t("timelapse.caption.layoutClosed", { panels: closed.join(", ") }));
+      parts.push(
+        t("timelapse.caption.layoutClosed", { panels: closed.join(", ") }),
+      );
     }
     if (preset) {
       parts.push(t("timelapse.caption.layoutPreset", { preset }));
@@ -190,12 +191,18 @@ export function formatEventCaption(
   if (opType === "sticky.update" && domain === "map") {
     const diffs = payload.diffs as Record<string, BodyDiff> | undefined;
     if (diffs?.body) {
-      return formatDiffs({ body: diffs.body }, t("timelapse.caption.mapSticky"));
+      return formatDiffs(
+        { body: diffs.body },
+        t("timelapse.caption.mapSticky"),
+      );
     }
     const fields = payload.fields as string[] | undefined;
     if (fields?.length) {
       return metaLine(
-        t("timelapse.caption.mapFields", { op: opType, fields: fields.join(", ") }),
+        t("timelapse.caption.mapFields", {
+          op: opType,
+          fields: fields.join(", "),
+        }),
       );
     }
   }
@@ -231,7 +238,9 @@ export function formatEventCaption(
     }
     if (opType === "entry.delete") {
       return metaLine(
-        t("timelapse.caption.codexDelete", { name: String(payload.name ?? "") }),
+        t("timelapse.caption.codexDelete", {
+          name: String(payload.name ?? ""),
+        }),
       );
     }
   }
@@ -274,7 +283,8 @@ export function entityKeyForEvent(
   event: Pick<ChangeEvent, "domain" | "opType" | "entityId">,
 ): string | null {
   if (event.opType !== "doc.step") return null;
-  if (event.domain === "codex" && event.entityId) return `codex:${event.entityId}`;
+  if (event.domain === "codex" && event.entityId)
+    return `codex:${event.entityId}`;
   if (event.domain === "snippet" && event.entityId) {
     return `snippet:${event.entityId}`;
   }

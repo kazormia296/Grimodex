@@ -40,19 +40,24 @@ describe("formatEventCaption", () => {
 
   it("formats entry.update with diffs", () => {
     const diffs: Record<string, BodyDiff> = {
-      summary: { segments: [[-1, "old"], [1, "new"]] },
+      summary: {
+        segments: [
+          [-1, "old"],
+          [1, "new"],
+        ],
+      },
     };
     const cap = formatEventCaption({
       ...base,
       payload: JSON.stringify({ fields: ["summary"], diffs }),
     });
     expect(cap).not.toBeNull();
-    expect(cap!.segments.some((s) => s.kind === "del" && s.text === "old")).toBe(
-      true,
-    );
-    expect(cap!.segments.some((s) => s.kind === "add" && s.text === "new")).toBe(
-      true,
-    );
+    expect(
+      cap!.segments.some((s) => s.kind === "del" && s.text === "old"),
+    ).toBe(true);
+    expect(
+      cap!.segments.some((s) => s.kind === "add" && s.text === "new"),
+    ).toBe(true);
   });
 
   it("formats structural entry.update (fields only)", () => {
