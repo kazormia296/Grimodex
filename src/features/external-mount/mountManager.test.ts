@@ -290,7 +290,8 @@ describe("addExternalMount", () => {
   });
 
   it("persists non-zero charCount when reconciling an existing scene", async () => {
-    const rootId = "root-sync";
+    const rootId =
+      "root-sync" as `${string}-${string}-${string}-${string}-${string}`;
     const uuidSpy = vi.spyOn(crypto, "randomUUID").mockReturnValue(rootId);
 
     const markdown = "Resynced existing scene body.";
