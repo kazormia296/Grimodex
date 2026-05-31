@@ -1,11 +1,19 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
+import { Editor } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
 import {
   buildSceneLabelMap,
   excerptFromPmJson,
+  extractSpansFromDoc,
   resolveProvenanceFromLookups,
 } from "./provenance";
 import type { GenerationLogLookup, SpanRef } from "./provenance";
 import type { ProjectAuthorshipReport } from "./projectAuthorship";
+import { AuthorshipMark } from "./AuthorshipMark";
+import { RubyNode } from "@/features/editor/RubyNode";
+import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
+import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
 
 const span = (overrides: Partial<SpanRef>): SpanRef => ({
   id: "span-1",
@@ -282,5 +290,165 @@ describe("excerptFromPmJson", () => {
     const result = excerptFromPmJson(wrap([p(longText)]), 1, 201);
     expect(result.length).toBeLessThanOrEqual(120);
     expect(result.endsWith("...")).toBe(true);
+  });
+});
+
+describe("extractSpansFromDoc → excerptFromPmJson round-trip", () => {
+  // Systematic guard against off-by-one drift between the position writer
+  // (extractDbSpans / extractSpansFromDoc) and the position reader
+  // (excerptFromPmJson). The disclosure report shows excerpts verbatim, so
+  // a 1-char shift here would publish wrong text. Builds a doc with every
+  // PM-size variant the walker handles — leaf block, ruby atom, sceneBreak
+  // atom, empty paragraph, sceneBeat (text suppressed) — then asserts that
+  // every saved span maps back to the exact text we marked.
+  function build() {
+    const editor = new Editor({
+      extensions: [
+        StarterKit,
+        AuthorshipMark,
+        RubyNode,
+        SceneBreakNode,
+        SceneBeatNode,
+      ],
+    });
+    const tr = editor.state.tr;
+    const { schema } = editor;
+    const text = (s: string) => schema.text(s);
+    const para = (...children: ReturnType<typeof text>[]) =>
+      schema.nodes.paragraph.create(null, children);
+    const doc = schema.nodes.doc.create(null, [
+      para(
+        text("前"),
+        schema.nodes.ruby.create({ base: "漢", annotation: "かん" }),
+        text("後"),
+      ),
+      schema.nodes.paragraph.create(null),
+      schema.nodes.sceneBreak.create(),
+      para(text("本文")),
+      schema.nodes.sceneBeat.create(null, [text("構成意図")]),
+      para(text("末尾")),
+    ]);
+    tr.replaceWith(0, editor.state.doc.content.size, doc.content);
+    editor.view.dispatch(tr);
+    return editor;
+  }
+
+  function markRange(
+    editor: Editor,
+    from: number,
+    to: number,
+    source: "ai" | "human" | "unknown",
+  ): void {
+    const mark = editor.schema.marks["authorship"]!.create({ source });
+    editor.view.dispatch(
+      editor.state.tr
+        .setMeta("programmaticInsert", true)
+        .addMark(from, to, mark),
+    );
+  }
+
+  function findTextPos(
+    editor: Editor,
+    needle: string,
+  ): { from: number; to: number } {
+    let found: { from: number; to: number } | null = null;
+    editor.state.doc.descendants((node, pos) => {
+      if (found) return false;
+      if (node.isText && node.text === needle) {
+        found = { from: pos, to: pos + needle.length };
+        return false;
+      }
+    });
+    if (!found) throw new Error(`text "${needle}" not found`);
+    return found;
+  }
+
+  function excerptFor(editor: Editor, span: SpanRef): string {
+    const json = JSON.stringify(editor.state.doc.toJSON());
+    return excerptFromPmJson(json, span.from, span.to);
+  }
+
+  it("round-trips a plain paragraph span (PM doc opening +1 + paragraph opening +1)", () => {
+    const editor = build();
+    const { from, to } = findTextPos(editor, "本文");
+    markRange(editor, from, to, "ai");
+
+    const spans = extractSpansFromDoc(editor.state.doc, "scene-1");
+    expect(spans).toHaveLength(1);
+    expect(spans[0]).toMatchObject({ from, to, source: "ai" });
+    expect(excerptFor(editor, spans[0])).toBe("本文");
+    editor.destroy();
+  });
+
+  it("round-trips a span that ends adjacent to a ruby atom (size=1)", () => {
+    const editor = build();
+    const before = findTextPos(editor, "前");
+    const after = findTextPos(editor, "後");
+    // Mark "前" + ruby base + "後" as one continuous span. Ruby is an atom of
+    // size 1; walker should include base="漢" between the two text segments.
+    markRange(editor, before.from, after.to, "ai");
+
+    const spans = extractSpansFromDoc(editor.state.doc, "scene-1");
+    // extractSpansFromDoc yields one entry per text node; ruby atom is not
+    // text so it produces two spans flanking the ruby.
+    expect(spans).toHaveLength(2);
+    const joinedFrom = Math.min(...spans.map((s) => s.from));
+    const joinedTo = Math.max(...spans.map((s) => s.to));
+    expect(
+      excerptFor(editor, { ...spans[0], from: joinedFrom, to: joinedTo }),
+    ).toBe("前漢後");
+    editor.destroy();
+  });
+
+  it("round-trips a span across an empty paragraph and a sceneBreak atom", () => {
+    const editor = build();
+    const first = findTextPos(editor, "後");
+    const second = findTextPos(editor, "本文");
+    // Mark "後" and "本文" separately so we have two real spans; verify that
+    // each one round-trips independently, and that a synthetic span that
+    // brackets both still resolves to the concatenated prose (no leakage
+    // from the empty paragraph or sceneBreak in between).
+    markRange(editor, first.from, first.to, "ai");
+    markRange(editor, second.from, second.to, "ai");
+
+    const spans = extractSpansFromDoc(editor.state.doc, "scene-1");
+    expect(spans).toHaveLength(2);
+    expect(excerptFor(editor, spans[0])).toBe("後");
+    expect(excerptFor(editor, spans[1])).toBe("本文");
+
+    const bridged: SpanRef = { ...spans[0], from: first.from, to: second.to };
+    expect(excerptFor(editor, bridged)).toBe("後本文");
+    editor.destroy();
+  });
+
+  it("round-trips a span inside a sceneBeat by yielding an empty excerpt", () => {
+    const editor = build();
+    const beat = findTextPos(editor, "構成意図");
+    markRange(editor, beat.from, beat.to, "ai");
+
+    const spans = extractSpansFromDoc(editor.state.doc, "scene-1");
+    expect(spans).toHaveLength(1);
+    expect(spans[0]).toMatchObject({ from: beat.from, to: beat.to });
+    // sceneBeat text is suppressed from disclosure excerpts even though
+    // the span is real (this is why projectStats can see ai > body chars).
+    expect(excerptFor(editor, spans[0])).toBe("");
+    editor.destroy();
+  });
+
+  it("round-trips multiple non-contiguous spans without position drift", () => {
+    const editor = build();
+    const first = findTextPos(editor, "本文");
+    const second = findTextPos(editor, "末尾");
+    markRange(editor, first.from, first.to, "ai");
+    markRange(editor, second.from, second.to, "unknown");
+
+    const spans = extractSpansFromDoc(editor.state.doc, "scene-1");
+    expect(spans).toHaveLength(2);
+    const bySource = Object.fromEntries(
+      spans.map((s) => [s.source, s]),
+    ) as Record<string, SpanRef>;
+    expect(excerptFor(editor, bySource.ai)).toBe("本文");
+    expect(excerptFor(editor, bySource.unknown)).toBe("末尾");
+    editor.destroy();
   });
 });
