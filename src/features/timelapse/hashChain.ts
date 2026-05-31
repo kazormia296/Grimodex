@@ -72,7 +72,10 @@ export function canonicalSerializeEvent(body: {
 
 export async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   // `crypto.subtle.digest` returns ArrayBuffer; wrap into Uint8Array.
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    bytes as Uint8Array<ArrayBuffer>,
+  );
   return new Uint8Array(digest);
 }
 
