@@ -17,6 +17,14 @@ vi.mock("@/features/codex/typeApi", () => ({
   ensureBuiltinTypes: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/features/settings/migration", () => ({
+  seedProjectSettingsFromDefaults: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/features/settings/api", () => ({
+  setProjectSetting: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { reloadProjectData } from "./reloadProjectData";
 import { seedCodexTypesFromProject } from "./seedCodexTypes";
 import { ensureBuiltinTypes } from "@/features/codex/typeApi";

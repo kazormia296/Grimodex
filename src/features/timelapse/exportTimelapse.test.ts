@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import StarterKit from "@tiptap/starter-kit";
 
 const queryMock = vi.hoisted(() => ({
   loadProjectChangeEvents: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
@@ -12,14 +13,10 @@ vi.mock("./snapshots", () => ({
   loadLatestSnapshot: vi.fn(async () => null),
 }));
 vi.mock("@/features/editor/extensions", () => ({
-  getEditorExtensions: () => {
-    const StarterKit = require("@tiptap/starter-kit").default;
-    return [StarterKit];
-  },
+  getEditorExtensions: () => [StarterKit],
 }));
 
 import { Editor } from "@tiptap/core";
-import StarterKit from "@tiptap/starter-kit";
 import {
   produceSceneTimelapseWebm,
   saveWebmBlob,
