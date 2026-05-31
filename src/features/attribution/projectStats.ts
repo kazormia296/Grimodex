@@ -60,6 +60,11 @@ export async function loadProjectAttributionStats(
 
   for (const id of Object.keys(result)) {
     const r = result[id];
+    // treeNodes.charCount excludes sceneBeat-internal text, but
+    // authorshipSpans can still cover it. When ai+unknown exceed the
+    // body-only total, bump total so percentages stay <=100% across all
+    // consumers (UI rows, disclosure report, JSON/HTML/MD export).
+    if (r.ai + r.unknown > r.total) r.total = r.ai + r.unknown;
     r.human = Math.max(0, r.total - r.ai - r.unknown);
   }
 

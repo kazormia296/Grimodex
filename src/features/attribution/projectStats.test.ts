@@ -80,14 +80,36 @@ describe("loadProjectAttributionStats", () => {
     });
   });
 
-  it("clips human to zero when ai spans exceed char_count", async () => {
-    setupDb([span("s1", 0, 200, "ai")], [{ id: "s1", charCount: 100 }]);
+  it("bumps total to ai+unknown when spans exceed char_count", async () => {
+    // sceneBeat-internal text covered by authorship spans is not in
+    // treeNodes.charCount, so ai/unknown can outstrip the body-only total.
+    // The loader must bump total so downstream pct math stays <=100%.
+    setupDb(
+      [span("s1", 0, 200, "ai"), span("s1", 200, 230, "unknown")],
+      [{ id: "s1", charCount: 100 }],
+    );
 
     const result = await loadProjectAttributionStats(["s1"]);
 
-    expect(result.s1?.human).toBe(0);
     expect(result.s1?.ai).toBe(200);
-    expect(result.s1?.total).toBe(100);
+    expect(result.s1?.unknown).toBe(30);
+    expect(result.s1?.human).toBe(0);
+    expect(result.s1?.total).toBe(230);
+    // pct(ai, total) must be <=100% for every consumer of these stats.
+    expect((result.s1!.ai / result.s1!.total) * 100).toBeLessThanOrEqual(100);
+    expect((result.s1!.unknown / result.s1!.total) * 100).toBeLessThanOrEqual(
+      100,
+    );
+  });
+
+  it("leaves total untouched when ai+unknown fit within char_count", async () => {
+    setupDb([span("s1", 0, 200, "ai")], [{ id: "s1", charCount: 1000 }]);
+
+    const result = await loadProjectAttributionStats(["s1"]);
+
+    expect(result.s1?.total).toBe(1000);
+    expect(result.s1?.ai).toBe(200);
+    expect(result.s1?.human).toBe(800);
   });
 
   it("returns separate stats per scene", async () => {
