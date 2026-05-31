@@ -447,6 +447,7 @@ async function upsertSceneFromFile(
       ? mountFolderId
       : (folderIds.get(parentRel) ?? mountFolderId);
   const pmJson = JSON.stringify(markdownToPmJson(file.content));
+  const charCount = countSceneBodyCharsFromJson(pmJson);
   const node = await createNode({
     id: crypto.randomUUID(),
     projectId,
@@ -458,13 +459,14 @@ async function upsertSceneFromFile(
     sourceMtime: file.mtime,
     content: pmJson,
   });
-  await saveSceneContent(node.id, pmJson);
+  await saveSceneContent(node.id, { content: pmJson, charCount });
   scheduleSceneIndex(node.id);
 }
 
 async function syncFileCache(nodeId: string, file: ScannedFile): Promise<void> {
   const pmJson = JSON.stringify(markdownToPmJson(file.content));
-  await saveSceneContent(nodeId, pmJson);
+  const charCount = countSceneBodyCharsFromJson(pmJson);
+  await saveSceneContent(nodeId, { content: pmJson, charCount });
   await updateNode(nodeId, {
     sourceMtime: file.mtime,
     title: titleFromFilename(basename(file.relPath)),

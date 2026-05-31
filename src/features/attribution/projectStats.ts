@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { authorshipSpans } from "@/db/schema";
+import { authorshipSpans, treeNodes } from "@/db/schema";
 import { inArray } from "drizzle-orm";
 import type { AttributionStats } from "./attributionStats";
 
@@ -16,34 +16,34 @@ export async function loadProjectAttributionStats(
 ): Promise<Record<string, AttributionStats>> {
   if (sceneIds.length === 0) return {};
 
-  const spans = await db
-    .select()
-    .from(authorshipSpans)
-    .where(inArray(authorshipSpans.nodeId, sceneIds));
+  const [spans, nodes] = await Promise.all([
+    db
+      .select()
+      .from(authorshipSpans)
+      .where(inArray(authorshipSpans.nodeId, sceneIds)),
+    db
+      .select({ id: treeNodes.id, charCount: treeNodes.charCount })
+      .from(treeNodes)
+      .where(inArray(treeNodes.id, sceneIds)),
+  ]);
 
   const result: Record<string, AttributionStats> = {};
+  for (const n of nodes) {
+    result[n.id] = {
+      human: 0,
+      ai: 0,
+      unknown: 0,
+      unmarked: 0,
+      total: n.charCount,
+      modelBreakdown: {},
+    };
+  }
 
   for (const span of spans) {
     const id = span.nodeId;
-    if (!id) continue;
+    if (!id || !result[id]) continue;
     const len = span.toPos - span.fromPos;
-
-    if (!result[id]) {
-      result[id] = {
-        human: 0,
-        ai: 0,
-        unknown: 0,
-        unmarked: 0,
-        total: 0,
-        modelBreakdown: {},
-      };
-    }
-
-    result[id].total += len;
     switch (span.source) {
-      case "human":
-        result[id].human += len;
-        break;
       case "ai":
         result[id].ai += len;
         {
@@ -56,6 +56,11 @@ export async function loadProjectAttributionStats(
         result[id].unknown += len;
         break;
     }
+  }
+
+  for (const id of Object.keys(result)) {
+    const r = result[id];
+    r.human = Math.max(0, r.total - r.ai - r.unknown);
   }
 
   return result;

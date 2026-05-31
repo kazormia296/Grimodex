@@ -6,6 +6,7 @@ const {
   mockUpdateNode,
   mockListAllNodes,
   mockSaveSceneContent,
+  mockCreateNode,
   mockLoadTree,
   mockSetCharCount,
   mockUpsertSceneBodyMentions,
@@ -13,10 +14,12 @@ const {
   mockChatState,
   mockReadExternalFile,
   mockGetExternalFileMtime,
+  mockRegisterMount,
 } = vi.hoisted(() => ({
   mockUpdateNode: vi.fn().mockResolvedValue(undefined),
   mockListAllNodes: vi.fn(),
   mockSaveSceneContent: vi.fn().mockResolvedValue({ placedBeatPreview: null }),
+  mockCreateNode: vi.fn(),
   mockLoadTree: vi.fn().mockResolvedValue(undefined),
   mockSetCharCount: vi.fn(),
   mockUpsertSceneBodyMentions: vi.fn().mockResolvedValue(undefined),
@@ -31,6 +34,7 @@ const {
   mockGetExternalFileMtime: vi
     .fn()
     .mockResolvedValue("2026-05-24T12:00:00.000Z"),
+  mockRegisterMount: vi.fn().mockResolvedValue({ files: [], dirs: [] }),
 }));
 
 vi.mock("@/features/tree/api", async (importOriginal) => {
@@ -40,6 +44,7 @@ vi.mock("@/features/tree/api", async (importOriginal) => {
     updateNode: mockUpdateNode,
     listAllNodes: mockListAllNodes,
     saveSceneContent: mockSaveSceneContent,
+    createNode: mockCreateNode,
   };
 });
 
@@ -87,8 +92,15 @@ vi.mock("./api", () => ({
   getExternalFileMtime: (...args: unknown[]) =>
     mockGetExternalFileMtime(...args),
   unregisterMount: vi.fn().mockResolvedValue(undefined),
-  registerMount: vi.fn().mockResolvedValue({ files: [], dirs: [] }),
+  registerMount: (...args: unknown[]) => mockRegisterMount(...args),
   scanMount: vi.fn().mockResolvedValue({ files: [], dirs: [] }),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: vi.fn(),
+    warning: vi.fn(),
+  },
 }));
 
 const mockGetProjectSetting = vi.fn().mockResolvedValue(null);
@@ -100,7 +112,9 @@ vi.mock("@/features/settings/api", () => ({
 
 import { contentHash } from "./contentHash";
 import { markdownToPmJson } from "./markdownBridge";
+import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
 import {
+  addExternalMount,
   applyExternalContent,
   buildDbByUriMap,
   handleFileEvent,
@@ -111,6 +125,7 @@ import {
   _resetRecentDeletes,
 } from "./mountManager";
 import { useExternalRootStore } from "./externalRootStore";
+import { buildMountFolderUri, buildSourceUri } from "./sourceUri";
 
 function node(
   overrides: Partial<TreeNode> & Pick<TreeNode, "id" | "sourceUri">,
@@ -226,6 +241,106 @@ describe("hashForDiskContent vs hashForNodeContent", () => {
     const a = await hashForDiskContent("Hello world.\n");
     const b = await hashForDiskContent("Goodbye world.\n");
     expect(a).not.toBe(b);
+  });
+});
+
+describe("addExternalMount", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetProjectSetting.mockResolvedValue("[]");
+    mockListAllNodes.mockResolvedValue([]);
+    mockCreateNode.mockImplementation(async (params) =>
+      node({
+        id: params.id,
+        sourceUri: params.sourceUri ?? "",
+        nodeType: params.nodeType,
+        title: params.title,
+        parentId: params.parentId ?? null,
+      }),
+    );
+  });
+
+  it("persists non-zero charCount when mounting markdown files", async () => {
+    const markdown = "Mount body text.";
+    const pmJson = JSON.stringify(markdownToPmJson(markdown));
+    const expectedCharCount = countSceneBodyCharsFromJson(pmJson);
+
+    mockRegisterMount.mockResolvedValue({
+      dirs: [],
+      files: [
+        {
+          relPath: "chapter/01.md",
+          content: markdown,
+          mtime: "2026-05-24T12:00:00.000Z",
+          contentHash: await contentHash(markdown),
+        },
+      ],
+    });
+
+    await addExternalMount("/mnt/novel", "Novel");
+
+    expect(expectedCharCount).toBeGreaterThan(0);
+    expect(mockSaveSceneContent).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        content: pmJson,
+        charCount: expectedCharCount,
+      }),
+    );
+  });
+
+  it("persists non-zero charCount when reconciling an existing scene", async () => {
+    const rootId = "root-sync";
+    const uuidSpy = vi.spyOn(crypto, "randomUUID").mockReturnValue(rootId);
+
+    const markdown = "Resynced existing scene body.";
+    const pmJson = JSON.stringify(markdownToPmJson(markdown));
+    const expectedCharCount = countSceneBodyCharsFromJson(pmJson);
+    const sceneUri = buildSourceUri(rootId, "chapter/01.md");
+
+    mockListAllNodes.mockResolvedValue([
+      node({
+        id: "mount-folder",
+        nodeType: "folder",
+        sourceUri: buildMountFolderUri(rootId),
+        parentId: null,
+      }),
+      node({
+        id: "scene-existing",
+        sourceUri: sceneUri,
+        charCount: 0,
+        content: "{}",
+        parentId: "mount-folder",
+      }),
+    ]);
+
+    mockRegisterMount.mockResolvedValue({
+      dirs: [],
+      files: [
+        {
+          relPath: "chapter/01.md",
+          content: markdown,
+          mtime: "2026-05-24T12:00:00.000Z",
+          contentHash: await contentHash(markdown),
+        },
+      ],
+    });
+
+    await addExternalMount("/mnt/novel", "Novel");
+
+    expect(expectedCharCount).toBeGreaterThan(0);
+    expect(mockSaveSceneContent).toHaveBeenCalledWith(
+      "scene-existing",
+      expect.objectContaining({
+        content: pmJson,
+        charCount: expectedCharCount,
+      }),
+    );
+    expect(mockCreateNode).not.toHaveBeenCalledWith(
+      expect.objectContaining({ nodeType: "scene" }),
+    );
+
+    uuidSpy.mockRestore();
   });
 });
 
