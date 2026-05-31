@@ -131,6 +131,13 @@ function provenanceKindLabel(kind: ProvenanceKind): string {
   }
 }
 
+function passageDocumentLabel(passage: ResolvedPassage): string {
+  if (!passage.sceneTitle) return "";
+  return passage.chapterTitle
+    ? `${passage.chapterTitle} / ${passage.sceneTitle}`
+    : passage.sceneTitle;
+}
+
 function disclosureFootnote(report: ProvenanceDisclosureReport): string {
   const orphan =
     report.orphanChatCount > 0
@@ -173,8 +180,10 @@ export function exportProvenanceDisclosureMarkdown(
   if (report.passages?.length) {
     lines.push("## AI Passages", "");
     for (const passage of report.passages) {
+      const document = passageDocumentLabel(passage);
+      const location = document ? ` in ${document}` : "";
       lines.push(
-        `- ${provenanceKindLabel(passage.provenance.kind)} (${passage.charCount} chars): ${passage.excerpt}`,
+        `- ${provenanceKindLabel(passage.provenance.kind)}${location} (${passage.charCount} chars): ${passage.excerpt}`,
       );
     }
     lines.push("");
@@ -360,10 +369,13 @@ counted toward the human total.
 function renderPassageList(passages: ResolvedPassage[] | undefined): string {
   if (!passages?.length) return "";
   return `<section><h2>AI Passages</h2><ul>${passages
-    .map(
-      (p) =>
-        `<li><strong>${escapeHtml(provenanceKindLabel(p.provenance.kind))}</strong> (${p.charCount} chars): ${escapeHtml(p.excerpt)}</li>`,
-    )
+    .map((p) => {
+      const document = passageDocumentLabel(p);
+      const location = document
+        ? ` <span class="document">in ${escapeHtml(document)}</span>`
+        : "";
+      return `<li><strong>${escapeHtml(provenanceKindLabel(p.provenance.kind))}</strong>${location} (${p.charCount} chars): ${escapeHtml(p.excerpt)}</li>`;
+    })
     .join("")}</ul></section>`;
 }
 

@@ -8,7 +8,10 @@ import {
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import type { AuthorshipSource } from "./AuthorshipMark";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import type { AuthorshipTotals } from "./projectAuthorship";
+import type {
+  AuthorshipTotals,
+  ProjectAuthorshipReport,
+} from "./projectAuthorship";
 import { buildProjectAuthorshipReport } from "./projectAuthorship";
 
 export interface SpanRef {
@@ -66,6 +69,11 @@ export interface ResolvedPassage {
   excerpt: string;
   model: string | null;
   provenance: ResolvedProvenance;
+  /** Scene title looked up from the project report. Absent when the caller
+   * did not provide a label map (e.g. the scene-scope UI panel). */
+  sceneTitle?: string;
+  /** Chapter (top-most folder) title. `null` means the scene is unparented. */
+  chapterTitle?: string | null;
 }
 
 export interface ProvenanceLookups {
@@ -324,6 +332,50 @@ function sceneIdsFromTotals(report: {
   ];
 }
 
+export interface DocumentLabel {
+  sceneTitle: string;
+  /** `null` indicates the scene lives at the project root with no chapter folder. */
+  chapterTitle: string | null;
+}
+
+/**
+ * Build a sceneId → {sceneTitle, chapterTitle} lookup from a project
+ * authorship report so disclosure renderers can stamp "which document each
+ * passage came from" without re-querying the tree.
+ */
+export function buildSceneLabelMap(
+  report: ProjectAuthorshipReport,
+): Map<string, DocumentLabel> {
+  const map = new Map<string, DocumentLabel>();
+  for (const chapter of report.chapters) {
+    for (const scene of chapter.scenes) {
+      map.set(scene.id, {
+        sceneTitle: scene.title,
+        chapterTitle: chapter.title,
+      });
+    }
+  }
+  for (const scene of report.unparentedScenes) {
+    map.set(scene.id, { sceneTitle: scene.title, chapterTitle: null });
+  }
+  return map;
+}
+
+function attachDocumentLabels(
+  passages: ResolvedPassage[],
+  labels: Map<string, DocumentLabel>,
+): ResolvedPassage[] {
+  return passages.map((passage) => {
+    const entry = labels.get(passage.nodeId);
+    if (!entry) return passage;
+    return {
+      ...passage,
+      sceneTitle: entry.sceneTitle,
+      chapterTitle: entry.chapterTitle,
+    };
+  });
+}
+
 export async function buildProvenanceBreakdown(
   projectId: string,
   options: { includePassageExcerpts?: boolean } = {},
@@ -342,10 +394,15 @@ export async function buildProvenanceBreakdown(
     contentByScene = new Map(rows.map((row) => [row.id, row.content]));
   }
 
-  const passages = await resolveProvenance(spans, (nodeId, from, to) => {
+  const passagesRaw = await resolveProvenance(spans, (nodeId, from, to) => {
     if (!includePassageExcerpts) return "";
     return excerptFromPmJson(contentByScene.get(nodeId) ?? "", from, to);
   });
+
+  const passages = attachDocumentLabels(
+    passagesRaw,
+    buildSceneLabelMap(authorshipReport),
+  );
 
   const breakdown = emptyBreakdown();
   for (const passage of passages) addToBreakdown(breakdown, passage);

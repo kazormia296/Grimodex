@@ -601,8 +601,8 @@ function AuthorshipDisclosureSection({
 
         {includePassageExcerpts && (
           <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-            per-passage 抜粋には未公開本文が含まれます。共有先に合わせて
-            出力前に確認してください。
+            抜粋には AI 使用箇所の本文がそのまま含まれます。公開範囲について
+            注意してください。
           </div>
         )}
 

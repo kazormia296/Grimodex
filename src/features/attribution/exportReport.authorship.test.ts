@@ -1,7 +1,13 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from "vitest";
-import { exportAuthorshipJson, exportAuthorshipHtml } from "./exportReport";
+import {
+  exportAuthorshipJson,
+  exportAuthorshipHtml,
+  exportProvenanceDisclosureMarkdown,
+  exportProvenanceDisclosureHtml,
+} from "./exportReport";
 import type { ProjectAuthorshipReport } from "./projectAuthorship";
+import type { ProvenanceDisclosureReport, ResolvedPassage } from "./provenance";
 
 const sampleReport: ProjectAuthorshipReport = {
   projectId: "p1",
@@ -106,5 +112,90 @@ describe("exportAuthorshipHtml", () => {
     const out = exportAuthorshipHtml(reportWithOrphans);
     expect(out).toContain("(unparented scenes)");
     expect(out).toContain("Loose scene");
+  });
+});
+
+const passageWithChapter: ResolvedPassage = {
+  id: "span-a",
+  nodeId: "s1",
+  from: 1,
+  to: 8,
+  charCount: 7,
+  excerpt: "Hello world",
+  model: "claude-sonnet-4-6",
+  provenance: { kind: "inline-ai", traceId: "trace-1" },
+  sceneTitle: "Opening",
+  chapterTitle: "Prologue",
+};
+
+const passageUnparented: ResolvedPassage = {
+  id: "span-b",
+  nodeId: "s2",
+  from: 1,
+  to: 4,
+  charCount: 3,
+  excerpt: "abc",
+  model: null,
+  provenance: { kind: "chat" },
+  sceneTitle: "Loose scene",
+  chapterTitle: null,
+};
+
+const disclosureReport: ProvenanceDisclosureReport = {
+  projectId: "p1",
+  projectTitle: "Disclosure Sample",
+  generatedAt: "2026-05-31T00:00:00.000Z",
+  scope: "body-text-only",
+  totals: {
+    human: 200,
+    ai: 10,
+    unknown: 0,
+    unmarked: 0,
+    total: 210,
+    humanRatio: 200 / 210,
+  },
+  breakdown: {
+    chat: 3,
+    inlineAi: 7,
+    beat: 0,
+    orphanChat: 0,
+    unknownAi: 0,
+  },
+  orphanChatCount: 0,
+  passages: [passageWithChapter, passageUnparented],
+};
+
+describe("exportProvenanceDisclosureMarkdown", () => {
+  it("includes 'Chapter / Scene' for chaptered passages", () => {
+    const out = exportProvenanceDisclosureMarkdown(disclosureReport);
+    expect(out).toContain("Slash in Prologue / Opening");
+  });
+
+  it("includes scene title alone when the scene is unparented", () => {
+    const out = exportProvenanceDisclosureMarkdown(disclosureReport);
+    expect(out).toContain("Chat in Loose scene");
+    expect(out).not.toContain("null / Loose scene");
+  });
+});
+
+describe("exportProvenanceDisclosureHtml", () => {
+  it("includes 'Chapter / Scene' for chaptered passages", () => {
+    const out = exportProvenanceDisclosureHtml(disclosureReport);
+    expect(out).toContain("in Prologue / Opening");
+  });
+
+  it("escapes scene and chapter titles", () => {
+    const out = exportProvenanceDisclosureHtml({
+      ...disclosureReport,
+      passages: [
+        {
+          ...passageWithChapter,
+          sceneTitle: "<scene>",
+          chapterTitle: "<chap>",
+        },
+      ],
+    });
+    expect(out).toContain("&lt;chap&gt; / &lt;scene&gt;");
+    expect(out).not.toContain("<chap> / <scene>");
   });
 });

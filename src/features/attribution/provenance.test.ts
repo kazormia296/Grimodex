@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { excerptFromPmJson, resolveProvenanceFromLookups } from "./provenance";
+import {
+  buildSceneLabelMap,
+  excerptFromPmJson,
+  resolveProvenanceFromLookups,
+} from "./provenance";
 import type { GenerationLogLookup, SpanRef } from "./provenance";
+import type { ProjectAuthorshipReport } from "./projectAuthorship";
 
 const span = (overrides: Partial<SpanRef>): SpanRef => ({
   id: "span-1",
@@ -142,6 +147,49 @@ describe("resolveProvenanceFromLookups", () => {
       "trace-1",
     ]);
     expect(passages.map((p) => p.excerpt)).toEqual(["1-4", "8-12"]);
+  });
+});
+
+describe("buildSceneLabelMap", () => {
+  const emptyTotals = {
+    human: 0,
+    ai: 0,
+    unknown: 0,
+    unmarked: 0,
+    total: 0,
+    humanRatio: 0,
+  };
+  const report: ProjectAuthorshipReport = {
+    projectId: "p1",
+    projectTitle: "Title",
+    generatedAt: "2026-05-31T00:00:00.000Z",
+    scope: "body-text-only",
+    totals: emptyTotals,
+    chapters: [
+      {
+        id: "ch1",
+        title: "Prologue",
+        totals: emptyTotals,
+        scenes: [{ id: "s1", title: "Opening", totals: emptyTotals }],
+      },
+    ],
+    unparentedScenes: [{ id: "s2", title: "Loose scene", totals: emptyTotals }],
+  };
+
+  it("maps chaptered scenes to {sceneTitle, chapterTitle}", () => {
+    const labels = buildSceneLabelMap(report);
+    expect(labels.get("s1")).toEqual({
+      sceneTitle: "Opening",
+      chapterTitle: "Prologue",
+    });
+  });
+
+  it("marks unparented scenes with chapterTitle=null", () => {
+    const labels = buildSceneLabelMap(report);
+    expect(labels.get("s2")).toEqual({
+      sceneTitle: "Loose scene",
+      chapterTitle: null,
+    });
   });
 });
 
