@@ -67,7 +67,7 @@ function buildHeaders(
       break;
     case "openrouter":
       headers["Authorization"] = `Bearer ${apiKey}`;
-      headers["HTTP-Referer"] = "https://github.com/futurebassisdead/Grimodex";
+      headers["HTTP-Referer"] = "https://github.com/kazormia296/Grimodex";
       headers["X-Title"] = "Grimodex";
       break;
     case "openai":
@@ -163,7 +163,7 @@ export async function fetchModels(
   const headers: Record<string, string> = {};
   if (provider === "openrouter") {
     headers["Authorization"] = `Bearer ${apiKey}`;
-    headers["HTTP-Referer"] = "https://github.com/futurebassisdead/Grimodex";
+    headers["HTTP-Referer"] = "https://github.com/kazormia296/Grimodex";
     headers["X-Title"] = "Grimodex";
   } else if (provider === "openai") {
     headers["Authorization"] = `Bearer ${apiKey}`;

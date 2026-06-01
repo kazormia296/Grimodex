@@ -459,10 +459,7 @@ pub async fn fetch_models(
         AiProvider::OpenRouter => {
             req = req
                 .header("Authorization", format!("Bearer {api_key}"))
-                .header(
-                    "HTTP-Referer",
-                    "https://github.com/futurebassisdead/Grimodex",
-                )
+                .header("HTTP-Referer", "https://github.com/kazormia296/Grimodex")
                 .header("X-Title", "Grimodex");
         }
         AiProvider::OpenaiCompatible => {
@@ -652,10 +649,7 @@ pub async fn test_connection(
 
             if matches!(provider, AiProvider::OpenRouter) {
                 req = req
-                    .header(
-                        "HTTP-Referer",
-                        "https://github.com/futurebassisdead/Grimodex",
-                    )
+                    .header("HTTP-Referer", "https://github.com/kazormia296/Grimodex")
                     .header("X-Title", "Grimodex");
             }
 
@@ -1504,10 +1498,7 @@ fn openai_compat_request(
     }
     if matches!(params.provider, AiProvider::OpenRouter) {
         req = req
-            .header(
-                "HTTP-Referer",
-                "https://github.com/futurebassisdead/Grimodex",
-            )
+            .header("HTTP-Referer", "https://github.com/kazormia296/Grimodex")
             .header("X-Title", "Grimodex");
     }
     req.json(body)
@@ -1875,10 +1866,7 @@ pub async fn call_post_effect_api(
             }
             if matches!(settings.provider, AiProvider::OpenRouter) {
                 req = req
-                    .header(
-                        "HTTP-Referer",
-                        "https://github.com/futurebassisdead/Grimodex",
-                    )
+                    .header("HTTP-Referer", "https://github.com/kazormia296/Grimodex")
                     .header("X-Title", "Grimodex");
             }
             let resp = req.json(&body).send().await?.error_for_status()?;

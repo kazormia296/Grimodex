@@ -73,7 +73,7 @@ describe("sendChat", () => {
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toBe("/api/openrouter/chat/completions");
     expect(opts.headers["HTTP-Referer"]).toBe(
-      "https://github.com/futurebassisdead/Grimodex",
+      "https://github.com/kazormia296/Grimodex",
     );
     expect(opts.headers["X-Title"]).toBe("Grimodex");
   });
@@ -151,7 +151,7 @@ describe("fetchModels", () => {
     await fetchModels("openrouter", "sk-or");
     const [, opts] = mockFetch.mock.calls[0];
     expect(opts.headers["HTTP-Referer"]).toBe(
-      "https://github.com/futurebassisdead/Grimodex",
+      "https://github.com/kazormia296/Grimodex",
     );
   });
 });
