@@ -4,12 +4,11 @@ import { useKouetsuStore, type IssuesScope } from "./kouetsuStore";
 const SCOPES: Array<{ id: IssuesScope; label: string }> = [
   { id: "current", label: "現在シーン" },
   { id: "project", label: "プロジェクト" },
-  { id: "ignored", label: "除外" },
 ];
 
-export function IssuesScopeBar() {
-  const activeScope = useKouetsuStore((s) => s.activeIssuesScope);
-  const setScope = useKouetsuStore((s) => s.setActiveIssuesScope);
+export function EditorialScopeBar() {
+  const activeScope = useKouetsuStore((s) => s.activeEditorialScope);
+  const setScope = useKouetsuStore((s) => s.setActiveEditorialScope);
 
   return (
     <div className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/20 px-2 py-1 text-xs">

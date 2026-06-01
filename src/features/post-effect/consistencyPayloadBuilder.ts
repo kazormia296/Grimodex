@@ -27,6 +27,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexPayloadEntry } from "./types";
 import { TYPO_PROMPT_VERSION } from "./typoPayloadBuilder";
+import { REVIEW_PROMPT_VERSION } from "./reviewPayloadBuilder";
 
 // ---------------------------------------------------------------------------
 // Prompt versions (semver 定数)
@@ -297,7 +298,8 @@ export async function buildMultiPayload(
   effectType:
     | "consistency"
     | "intra_scene_consistency"
-    | "typo_detection" = "consistency",
+    | "typo_detection"
+    | "review" = "consistency",
 ): Promise<MultiPayloadResult> {
   const { nodes } = useTreeStore.getState();
   const sceneIds = getSceneIdsForScope(nodes, scopeType, scopeTargetId);
@@ -327,7 +329,9 @@ export async function buildMultiPayload(
       ? CONSISTENCY_PROMPT_VERSION
       : effectType === "typo_detection"
         ? TYPO_PROMPT_VERSION
-        : INTRA_CONSISTENCY_PROMPT_VERSION;
+        : effectType === "review"
+          ? REVIEW_PROMPT_VERSION
+          : INTRA_CONSISTENCY_PROMPT_VERSION;
 
   const inputHash = await computeInputHash({
     promptVersion,

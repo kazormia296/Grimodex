@@ -27,6 +27,7 @@ use crate::ai::{call_post_effect_api, get_api_key, read_ai_settings};
 const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.1";
 const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.0";
 const TYPO_PROMPT_VERSION: &str = "typo_detection_v1.0";
+const REVIEW_PROMPT_VERSION: &str = "review_v1.0";
 
 // システムプロンプト本文は FE catalog (src/prompts/ja/postEffect.ts) で管理し、
 // `StartPostEffectRunArgs.system_prompt` として IPC 経由で渡される。
@@ -209,6 +210,19 @@ fn dismiss_key_typo(scene_id: &str, found_text: &str, suggestion: &str) -> Strin
         scene_id,
         strong_normalize(found_text),
         strong_normalize(suggestion)
+    ))
+}
+
+/// dismiss_key (review): hash(scene_id + "|" + strong_normalize(title) + "|" + strong_normalize(found_text))
+///
+/// review は span 指摘 (found_text あり) と scene 全体所見 (found_text 空) の
+/// 両方があるため、title も key に含めて同一シーン内の別所見を区別する。
+fn dismiss_key_review(scene_id: &str, title: &str, found_text: &str) -> String {
+    sha256_hex(&format!(
+        "{}|{}|{}",
+        scene_id,
+        strong_normalize(title),
+        strong_normalize(found_text)
     ))
 }
 
@@ -2230,6 +2244,256 @@ async fn run_typo_task(
 }
 
 // ---------------------------------------------------------------------------
+// review run (編集者視点の診断レポート)
+// ---------------------------------------------------------------------------
+
+/// review チェックを 1 シーン分実行し、挿入したアノテーション数を返す。
+/// Codex 不使用・scene 本文のみ (typo と同形)。
+#[allow(clippy::too_many_arguments)]
+async fn process_review_scene(
+    app: &AppHandle,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    scene_text: &str,
+    system_prompt: &str,
+    ai_settings_path: &std::path::Path,
+    on_stage: impl Fn(f32, &str) + Send,
+) -> Result<usize, anyhow::Error> {
+    let ai_settings = read_ai_settings(ai_settings_path);
+    let api_key = match get_api_key(&ai_settings.provider) {
+        Ok(Some(k)) => k,
+        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
+        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
+    };
+
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        provider = %ai_settings.provider,
+        model = %ai_settings.model,
+        scene_chars = scene_text.chars().count(),
+        "[post_effect] review: calling AI"
+    );
+    let ai_start = std::time::Instant::now();
+    let raw_response =
+        call_post_effect_api(&ai_settings, &api_key, system_prompt, None, scene_text)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    run_id = run_id,
+                    scene_id = scene_id,
+                    elapsed_ms = ai_start.elapsed().as_millis(),
+                    error = %e,
+                    "[post_effect] review: AI call failed"
+                );
+                anyhow::anyhow!("AI 呼び出し失敗: {e}")
+            })?;
+
+    on_stage(0.5, "parsing");
+    let json_str = extract_json(&raw_response);
+    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] review: JSON parse FAILED"
+        );
+        anyhow::anyhow!("LLM 出力のパース失敗: {e}")
+    })?;
+
+    let findings = extract_array_field(&parsed, "findings").map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] review: JSON structure INVALID"
+        );
+        anyhow::anyhow!("LLM 出力の構造が不正: {e}")
+    })?;
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        findings_count = findings.len(),
+        "[post_effect] review: parsed findings"
+    );
+
+    // dedupe: 同じ scene 内で同じ (title + found_text) を 1 件にまとめる
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deduped: Vec<&Value> = findings
+        .iter()
+        .filter(|f| {
+            let title = strong_normalize(f["title"].as_str().unwrap_or(""));
+            let ft = strong_normalize(f["found_text"].as_str().unwrap_or(""));
+            if title.is_empty() && ft.is_empty() {
+                return false;
+            }
+            seen.insert(format!("{title}|{ft}"))
+        })
+        .collect();
+
+    on_stage(0.7, "saving");
+    let ws_state = app.state::<WorkspaceState>();
+    let count: usize = super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            let mut count = 0usize;
+
+            for finding in &deduped {
+                let title = finding["title"].as_str().unwrap_or("");
+                let reason = finding["reason"].as_str().unwrap_or("");
+                let found_text = finding["found_text"].as_str().unwrap_or("");
+                let found_context = finding["found_context"].as_str().unwrap_or("");
+                let severity = match finding["severity"].as_str().unwrap_or("suggestion") {
+                    "error" => "error",
+                    "warning" => "warning",
+                    "info" => "info",
+                    _ => "suggestion",
+                };
+
+                let dismiss_key = dismiss_key_review(scene_id, title, found_text);
+                if is_annotation_previously_closed(conn, "review", &[&dismiss_key]) {
+                    continue;
+                }
+
+                // found_text が空なら scene 全体所見 (位置特定なし = orphaned)
+                let (range_start, range_end, orphaned) = if found_text.is_empty() {
+                    (0i64, 0i64, true)
+                } else {
+                    match find_text_position(scene_text, found_text, found_context) {
+                        Some((s, e)) => (s as i64, e as i64, false),
+                        None => (0i64, 0i64, true),
+                    }
+                };
+
+                let new_id = Uuid::new_v4().to_string();
+                let content = if title.is_empty() { reason } else { title };
+                let metadata = serde_json::json!({
+                    "dismiss_key": dismiss_key,
+                    "llm_reason": reason,
+                    "found_text": found_text,
+                    "found_context": found_context,
+                    "detected_by_model": ai_settings.model,
+                    "orphaned": orphaned,
+                });
+
+                conn.execute(
+                    "INSERT INTO post_effect_annotations
+                        (id, project_id, run_id, anchor_type, scene_id,
+                         range_start, range_end, text_snapshot,
+                         category, severity, content, author_role,
+                         status, metadata, created_at, updated_at)
+                     VALUES (?, ?, ?, 'scene_range', ?,
+                             ?, ?, ?,
+                             'review', ?, ?, 'ai',
+                             'open', ?, datetime('now'), datetime('now'))",
+                    params![
+                        new_id,
+                        project_id,
+                        run_id,
+                        scene_id,
+                        range_start,
+                        range_end,
+                        if found_text.is_empty() {
+                            None
+                        } else {
+                            Some(found_text)
+                        },
+                        severity,
+                        content,
+                        metadata.to_string(),
+                    ],
+                )?;
+
+                let _ = app.emit(
+                    "post_effect:partial",
+                    PartialEvent {
+                        run_id,
+                        annotation_id: new_id,
+                    },
+                );
+                count += 1;
+            }
+
+            Ok(count)
+        })
+    })?;
+
+    Ok(count)
+}
+
+async fn run_review_task(
+    app: AppHandle,
+    run_id: String,
+    project_id: String,
+    scene_id: String,
+    scene_text: String,
+    system_prompt: String,
+    ai_settings_path: std::path::PathBuf,
+) {
+    let emit_err = |msg: &str| {
+        let _ = app.emit(
+            "post_effect:error",
+            ErrorEvent {
+                run_id: &run_id,
+                error: msg.to_string(),
+            },
+        );
+    };
+
+    let _ = app.emit(
+        "post_effect:progress",
+        ProgressEvent {
+            run_id: &run_id,
+            stage: "calling_ai",
+            progress: 0.1,
+            message: None,
+        },
+    );
+
+    match process_review_scene(
+        &app,
+        &run_id,
+        &project_id,
+        &scene_id,
+        &scene_text,
+        &system_prompt,
+        &ai_settings_path,
+        |p, s| {
+            let _ = app.emit(
+                "post_effect:progress",
+                ProgressEvent {
+                    run_id: &run_id,
+                    stage: s,
+                    progress: p,
+                    message: None,
+                },
+            );
+        },
+    )
+    .await
+    {
+        Ok(n) => {
+            finalize_run(&app, &run_id);
+            let _ = app.emit(
+                "post_effect:done",
+                DoneEvent {
+                    run_id: &run_id,
+                    annotation_count: n,
+                    summary: None,
+                },
+            );
+        }
+        Err(e) => {
+            emit_err(&e.to_string());
+            fail_run(&app, &run_id, &e.to_string());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Multi-scene run task
 // ---------------------------------------------------------------------------
 
@@ -2305,6 +2569,19 @@ async fn run_multi_task(
             }
             "typo_detection" => {
                 process_typo_scene(
+                    &app,
+                    &run_id,
+                    &project_id,
+                    &scene.scene_id,
+                    &scene.scene_text,
+                    &system_prompt,
+                    &ai_settings_path,
+                    |_p, _s| {},
+                )
+                .await
+            }
+            "review" => {
+                process_review_scene(
                     &app,
                     &run_id,
                     &project_id,
@@ -2437,7 +2714,7 @@ pub(crate) async fn start_post_effect_run(
     let effect_type = args.effect_type.as_str();
     let supported = matches!(
         effect_type,
-        "consistency" | "intra_scene_consistency" | "typo_detection"
+        "consistency" | "intra_scene_consistency" | "typo_detection" | "review"
     );
     if !supported {
         return Err(
@@ -2448,6 +2725,7 @@ pub(crate) async fn start_post_effect_run(
     let prompt_version = match effect_type {
         "consistency" => CONSISTENCY_PROMPT_VERSION,
         "typo_detection" => TYPO_PROMPT_VERSION,
+        "review" => REVIEW_PROMPT_VERSION,
         _ => INTRA_PROMPT_VERSION,
     };
     if args.prompt_version != prompt_version {
@@ -2559,6 +2837,18 @@ pub(crate) async fn start_post_effect_run(
                     )
                     .await;
                 }
+                "review" => {
+                    run_review_task(
+                        app,
+                        rid,
+                        project_id,
+                        scene_id,
+                        scene_text,
+                        system_prompt,
+                        ai_path,
+                    )
+                    .await;
+                }
                 _ => {
                     run_intra_task(
                         app,
@@ -2618,7 +2908,7 @@ pub(crate) async fn start_post_effect_run_multi(
     let effect_type = args.effect_type.as_str();
     let supported = matches!(
         effect_type,
-        "consistency" | "intra_scene_consistency" | "typo_detection"
+        "consistency" | "intra_scene_consistency" | "typo_detection" | "review"
     );
     if !supported {
         return Err(anyhow::anyhow!("effect_type '{}' は未実装です", effect_type).into());

@@ -89,6 +89,33 @@ export interface TypoAnnotationMeta {
   orphaned?: boolean;
 }
 
+/**
+ * review (編集者視点の診断レポート) annotation の metadata。
+ * `content` 側に見出し (title) を入れ、理由・位置情報は metadata に置く。
+ * span 指摘 (found_text あり) と scene 全体所見 (found_text 無し → orphaned) の両方を許容。
+ */
+export interface ReviewAnnotationMeta {
+  llm_reason?: string;
+  found_text?: string;
+  found_context?: string;
+  dismiss_key?: string;
+  dismiss_source?: "manual" | "run_completed" | "cascade";
+  detected_by_model?: string;
+  orphaned?: boolean;
+}
+
+/**
+ * pseudo_comment (読者ペルソナによる本文横コメント) annotation の metadata。
+ * persona はペルソナ名。スレッド返信は annotation.parent_id で表現する。
+ */
+export interface PseudoCommentAnnotationMeta {
+  persona?: string;
+  found_text?: string;
+  found_context?: string;
+  detected_by_model?: string;
+  orphaned?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Codex payload entry (frontend → Rust)
 // ---------------------------------------------------------------------------

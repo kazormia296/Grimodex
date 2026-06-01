@@ -20,7 +20,26 @@ import type { PostEffectAnnotation, PostEffectSeverity } from "./types";
 
 interface Props {
   sceneId: string;
+  /**
+   * 表示する annotation の絞り込み。未指定なら整合性 (consistency_anchor) のみ。
+   * review / pseudo_comment セクションは独自の filter を渡して使い分ける。
+   */
+  categoryFilter?: (a: PostEffectAnnotation) => boolean;
+  /** 1 件も無いときのメッセージ (既定: アノテーションなし) */
+  emptyLabel?: string;
 }
+
+/** 整合性 (consistency / intra は category=consistency_anchor) の既定 filter。 */
+const CONSISTENCY_FILTER = (a: PostEffectAnnotation) =>
+  a.category === "consistency_anchor";
+
+/** review セクション用 filter。 */
+export const REVIEW_FILTER = (a: PostEffectAnnotation) =>
+  a.category === "review";
+
+/** pseudo_comment セクション用 filter (親コメントのみ; 返信は parent_id でぶら下げる)。 */
+export const PSEUDO_COMMENT_FILTER = (a: PostEffectAnnotation) =>
+  a.category === "pseudo_comment" && a.parentId == null;
 
 const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
   error: <XCircle size={14} className="text-destructive shrink-0" />,
@@ -29,7 +48,7 @@ const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
   info: <Info size={14} className="text-muted-foreground shrink-0" />,
 };
 
-function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
+export function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
   const { focusedAnnotationId, setFocusedAnnotationId } = useAnnotationStore();
   const editor = useEditorStore((s) => s.editor);
   const focused = focusedAnnotationId === ann.id;
@@ -49,8 +68,12 @@ function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
 
   // consistency / typo の content は冗長な自動生成文 (例「entry.detail と矛盾: ...」)。
   // chip + 対比行 + reason 行が同じ情報を綺麗に持つので、それらが揃う種別は
-  // タイトル本文を抑制する。intra は対比情報が無いので content をタイトル表示。
-  const showTitle = parsed.kind === "intra";
+  // タイトル本文を抑制する。intra / review / pseudo_comment は対比情報が無いので
+  // content をタイトル表示する。
+  const showTitle =
+    parsed.kind === "intra" ||
+    parsed.kind === "review" ||
+    parsed.kind === "pseudo_comment";
 
   return (
     <div
@@ -131,7 +154,11 @@ function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
   );
 }
 
-export function PostEffectAnnotationPanel({ sceneId }: Props) {
+export function PostEffectAnnotationPanel({
+  sceneId,
+  categoryFilter,
+  emptyLabel = "アノテーションなし",
+}: Props) {
   const { annotationsByScene, setAnnotations } = useAnnotationStore();
   const allAnnotations = annotationsByScene.get(sceneId) ?? [];
 
@@ -143,9 +170,9 @@ export function PostEffectAnnotationPanel({ sceneId }: Props) {
       .catch(() => {});
   }, [sceneId, allAnnotations.length, setAnnotations]);
 
-  // 整合性 (consistency / intra) のみ。typo は TypoSection で別表示。
+  // 既定は整合性 (consistency_anchor) のみ。review / pseudo_comment は専用 filter を渡す。
   const annotations = allAnnotations.filter(
-    (a) => a.category !== "typo_anchor",
+    categoryFilter ?? CONSISTENCY_FILTER,
   );
 
   const open = annotations.filter((a) => a.status === "open");
@@ -157,7 +184,7 @@ export function PostEffectAnnotationPanel({ sceneId }: Props) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
         <Info size={18} />
-        <span>アノテーションなし</span>
+        <span>{emptyLabel}</span>
       </div>
     );
   }

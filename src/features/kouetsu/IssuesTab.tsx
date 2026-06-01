@@ -89,7 +89,7 @@ export function IssuesTab() {
       ? (annotationsByScene.get(activeSceneId) ?? [])
       : [];
   const consistencyCount = sceneAnnotations.filter(
-    (a) => a.status === "open" && a.category !== "typo_anchor",
+    (a) => a.status === "open" && a.category === "consistency_anchor",
   ).length;
   const typoAiCount = sceneAnnotations.filter(
     (a) => a.status === "open" && a.category === "typo_anchor",

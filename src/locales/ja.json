@@ -578,9 +578,9 @@
   },
   "kouetsu": {
     "tab": {
-      "issues": "Issues",
-      "editorial": "Editorial",
-      "comments": "Comments"
+      "issues": "指摘",
+      "editorial": "批評",
+      "comments": "コメント"
     }
   },
   "chat": {

@@ -2,19 +2,26 @@ import type {
   ConsistencyAnnotationMeta,
   IntraAnnotationMeta,
   PostEffectAnnotation,
+  PseudoCommentAnnotationMeta,
+  ReviewAnnotationMeta,
   TypoAnnotationMeta,
   TypoCategory,
 } from "./types";
 
 export interface ParsedAnnotationMeta {
-  /** typo (typo_ref あり) / consistency (codex_ref あり) / intra_scene (fallback) */
-  kind: "consistency" | "intra" | "typo";
+  /**
+   * typo (typo_ref あり) / consistency (codex_ref あり) / review / pseudo_comment
+   * （category で判定）/ intra_scene (fallback)
+   */
+  kind: "consistency" | "intra" | "typo" | "review" | "pseudo_comment";
   orphaned: boolean;
   detectedByModel?: string;
   llmReason?: string;
   confidence?: "high" | "medium" | "low";
   foundText?: string;
   foundContext?: string;
+  /** pseudo_comment only — ペルソナ名 */
+  persona?: string;
   /** consistency only */
   codex?: {
     entryId: string;
@@ -49,9 +56,39 @@ export function parseAnnotationMeta(
   ann: PostEffectAnnotation,
 ): ParsedAnnotationMeta {
   const meta = safeParseMetadata(ann);
-  if (!meta) return { kind: "intra", orphaned: false };
+  if (!meta) {
+    // metadata 無しでも category で review / pseudo_comment は判別する
+    if (ann.category === "review") return { kind: "review", orphaned: false };
+    if (ann.category === "pseudo_comment")
+      return { kind: "pseudo_comment", orphaned: false };
+    return { kind: "intra", orphaned: false };
+  }
 
   const orphaned = meta.orphaned === true;
+
+  // review / pseudo_comment は category で判定 (codex_ref / typo_ref を持たない)
+  if (ann.category === "review") {
+    const r = meta as Partial<ReviewAnnotationMeta>;
+    return {
+      kind: "review",
+      orphaned,
+      detectedByModel: r.detected_by_model,
+      llmReason: r.llm_reason,
+      foundText: r.found_text,
+      foundContext: r.found_context,
+    };
+  }
+  if (ann.category === "pseudo_comment") {
+    const p = meta as Partial<PseudoCommentAnnotationMeta>;
+    return {
+      kind: "pseudo_comment",
+      orphaned,
+      detectedByModel: p.detected_by_model,
+      foundText: p.found_text,
+      foundContext: p.found_context,
+      persona: p.persona,
+    };
+  }
 
   const typoRef = meta.typo_ref as TypoAnnotationMeta["typo_ref"] | undefined;
   if (typoRef && typeof typoRef === "object" && typoRef.found_text) {
