@@ -746,7 +746,7 @@ function formatAggregatedSceneSynopsis(
     ? `${header}\nSynopsis: ${synopsis}`
     : `${header}\n(synopsis 未記入)`;
   const beats = beatSection?.trim();
-  return beats ? `${base}${beats.trimEnd()}` : base;
+  return beats ? `${base}\n${beats}` : base;
 }
 
 function formatAggregatedSceneWithBody(
@@ -1691,6 +1691,7 @@ async function buildSceneContextPrompt(opts: {
         resolveCharacterName: (id) =>
           allEntries.find((e) => e.id === id)?.name ?? null,
         currentBeatId: null,
+        scenePovCharacterId: currentScene?.povCharacterId ?? null,
       });
     } catch {
       // 無視

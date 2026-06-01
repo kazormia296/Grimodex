@@ -1143,11 +1143,13 @@ describe("useChatStore", () => {
       );
       const partB = content.slice(content.indexOf("--- シーンB"));
       expect(partA).toContain("## このシーンの予定ビート");
+      expect(partA).toMatch(/(^|\n)## このシーンの予定ビート/);
       expect(partA).toContain("Placed #1");
       expect(partA).toContain("シーンAのビート");
       expect(partA).toContain("Unplaced");
       expect(partA).toContain("未配置ヒント");
       expect(partB).toContain("## このシーンの予定ビート");
+      expect(partB).toMatch(/(^|\n)## このシーンの予定ビート/);
       expect(partB).toContain("Placed #1");
       expect(partB).toContain("シーンBのビート");
       expect(partB).not.toContain("未配置ヒント");
@@ -1202,24 +1204,26 @@ describe("useChatStore", () => {
         layers: [],
       });
 
-      useChatStore.setState({
-        activeSceneId: "s1",
-        activeProjectId: "proj-1",
-        chatScope: "folder",
-        scopeAnchorId: "ch1",
-        includeBodies: false,
-      });
+      try {
+        useChatStore.setState({
+          activeSceneId: "s1",
+          activeProjectId: "proj-1",
+          chatScope: "folder",
+          scopeAnchorId: "ch1",
+          includeBodies: false,
+        });
 
-      await useChatStore.getState().refreshContextLayers();
+        await useChatStore.getState().refreshContextLayers();
 
-      const content =
-        mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.scene.content ?? "";
-      expect(content).not.toContain("予定ビート");
-      expect(mockLoadSceneFull.mock.calls.length).toBe(0);
-
-      useSettingsStore.setState((s) => ({
-        cache: { ...s.cache, "beat.injectIntoContext": "true" },
-      }));
+        const content =
+          mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.scene.content ?? "";
+        expect(content).not.toContain("予定ビート");
+        expect(mockLoadSceneFull.mock.calls.length).toBe(0);
+      } finally {
+        useSettingsStore.setState((s) => ({
+          cache: { ...s.cache, "beat.injectIntoContext": "true" },
+        }));
+      }
     });
 
     it("Tier 2 folder: unplaced beats still inject when scene content is not PM-JSON", async () => {
