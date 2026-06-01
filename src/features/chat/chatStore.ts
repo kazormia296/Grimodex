@@ -728,7 +728,9 @@ function buildChildrenByParentIndex(
 function formatAggregatedFolderSection(folder: TreeNodeData): string {
   const header = `=== ${folder.title} ===`;
   const outline = folder.synopsis?.trim();
-  return outline ? `${header}\nOutline: ${outline}` : `${header}\n(outline 未記入)`;
+  return outline
+    ? `${header}\nOutline: ${outline}`
+    : `${header}\n(outline 未記入)`;
 }
 
 function formatAggregatedSceneSynopsis(
@@ -755,6 +757,18 @@ function formatAggregatedSceneWithBody(
   return `${header}\n${synopsisLine}${body}`;
 }
 
+function formatTopLevelScenesSection(
+  scenes: TreeNodeData[],
+  activeSceneId: string | null,
+): string {
+  const header = `=== (top level) ===`;
+  const lines = scenes.map((s) => {
+    const isActive = s.id === activeSceneId;
+    return `- ${s.title}${isActive ? " [current edit]" : ""}`;
+  });
+  return `${header}\n${lines.join("\n")}`;
+}
+
 /** project スコープ: フォルダ見出し + 配下シーンを DFS (sortOrder) で組み立てる。 */
 function appendProjectGroupedParts(
   parentId: string | null,
@@ -766,6 +780,17 @@ function appendProjectGroupedParts(
   bodyBySceneId: Map<string, string>,
 ): void {
   const kids = childrenByParent.get(parentId) ?? [];
+
+  // foldersOnly では nested scene は親 folder の outline で代表されるが、
+  // top-level (parentId === null) の scene には親 folder が無く情報が消える。
+  // 擬似グループ `=== (top level) ===` で title 行のみ救済する。
+  if (parentId === null && mode === "foldersOnly") {
+    const topLevelScenes = kids.filter((n) => n.nodeType === "scene");
+    if (topLevelScenes.length > 0) {
+      parts.push(formatTopLevelScenesSection(topLevelScenes, activeSceneId));
+    }
+  }
+
   for (const n of kids) {
     if (n.nodeType === "scene") {
       if (mode === "foldersOnly") continue;
@@ -842,8 +867,7 @@ async function buildAggregatedScene(opts: {
     includeBodies &&
     descendants.length <= MAX_BODY_TIER_SCENES &&
     totalChars <= MAX_BODY_TIER_CHARS;
-  const canTier2 =
-    hasScenes && descendants.length <= MAX_SYNOPSIS_TIER_SCENES;
+  const canTier2 = hasScenes && descendants.length <= MAX_SYNOPSIS_TIER_SCENES;
 
   const tier1Preface =
     prefacePolicy === "folder"
@@ -889,14 +913,27 @@ async function buildAggregatedScene(opts: {
   }
 
   if (canTier1) {
+    // 1 scene のロード失敗が aggregate 全体を破棄しないよう、各 scene を
+    // 個別 try/catch で safe load する（失敗時は空文字扱い）。
+    const safeLoadSceneText = async (sceneId: string): Promise<string> => {
+      try {
+        return prosemirrorToText((await loadSceneContent(sceneId)) ?? "");
+      } catch (e) {
+        debugLog.warn(
+          "ChatStore",
+          `loadSceneContent failed in aggregate (sceneId=${sceneId})`,
+          errorDetail(e),
+        );
+        return "";
+      }
+    };
+
     if (isProjectGrouped) {
       const bodyBySceneId = new Map<string, string>();
       for (let i = 0; i < descendants.length; i += LOAD_CHUNK) {
         const slice = descendants.slice(i, i + LOAD_CHUNK);
         const loaded = await Promise.all(
-          slice.map(async (s) =>
-            prosemirrorToText((await loadSceneContent(s.id)) ?? ""),
-          ),
+          slice.map((s) => safeLoadSceneText(s.id)),
         );
         for (let j = 0; j < slice.length; j++) {
           bodyBySceneId.set(slice[j].id, loaded[j] ?? "");
@@ -921,9 +958,7 @@ async function buildAggregatedScene(opts: {
     for (let i = 0; i < ordered.length; i += LOAD_CHUNK) {
       const slice = ordered.slice(i, i + LOAD_CHUNK);
       const loaded = await Promise.all(
-        slice.map(async (s) =>
-          prosemirrorToText((await loadSceneContent(s.id)) ?? ""),
-        ),
+        slice.map((s) => safeLoadSceneText(s.id)),
       );
       for (let j = 0; j < slice.length; j++) {
         bodies[i + j] = loaded[j];
@@ -2030,6 +2065,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     const parts: string[] = [];
     let contextLoaded = false;
+    let needsMentionCleanup = false;
 
     try {
       if (effectiveSceneId) {
@@ -2065,13 +2101,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       } else if (chatScope === "folder" || chatScope === "project") {
         // folder / project: sendMessage / agent と同じく refreshContextLayers の
         // lastSystemPrompt を流用（空 scene で buildSystemPrompt しない）。
-        if (
-          options?.mentionedSceneIds &&
-          options.mentionedSceneIds.length > 0
-        ) {
+        // mentions 込みで refresh すると lastSystemPrompt に @scene pin が焼き込まれ、
+        // ユーザーが mention を消して送信した次回送信でも古い pin を吸う。Copy 後に
+        // mentions 無しで refresh し直して state を巻き戻す（後段の finally で実行）。
+        const hadMentions =
+          !!options?.mentionedSceneIds && options.mentionedSceneIds.length > 0;
+        if (hadMentions) {
           await get().refreshContextLayers({
-            mentionedSceneIds: options.mentionedSceneIds,
+            mentionedSceneIds: options!.mentionedSceneIds,
           });
+          needsMentionCleanup = true;
         } else if (!get().lastSystemPrompt) {
           await get().refreshContextLayers();
         }
@@ -2083,6 +2122,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }
     } catch (e) {
       console.error("[buildPromptForCopy] context fetch failed:", e);
+    }
+
+    if (needsMentionCleanup) {
+      // Copy 用に mentions 込みで焼き込んだ state を巻き戻す。失敗しても Copy 結果には
+      // 影響しないので個別 catch でログのみ。
+      try {
+        await get().refreshContextLayers();
+      } catch (e) {
+        console.error("[buildPromptForCopy] cleanup refresh failed:", e);
+      }
     }
 
     if (!contextLoaded) {

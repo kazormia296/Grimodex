@@ -277,7 +277,9 @@ describe("getAllProjectScenesInOrder", () => {
         sortOrder: "a0",
       }),
     ];
+    // 全ノードが循環 (a↔b) または循環内側 (s1 in a) で、parentId=null の root が無い。
+    // root 起点で DFS する getAllProjectScenesInOrder は何も拾わず [] を返すのが正。
     const result = getAllProjectScenesInOrder(nodes);
-    expect(result.length).toBeLessThanOrEqual(1);
+    expect(result).toEqual([]);
   });
 });
