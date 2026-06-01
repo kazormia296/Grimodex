@@ -577,6 +577,82 @@ describe("useChatStore", () => {
       expect(result).not.toContain("[system]");
       expect(result).toContain("[user]\nユーザー入力");
     });
+
+    it("buildPromptForCopy uses lastSystemPrompt for project scope instead of empty scene prompt", async () => {
+      mockBuildSystemPrompt.mockClear();
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        chatScope: "project",
+        scopeAnchorId: null,
+        lastSystemPrompt: "=== Act 1 ===\nOutline: 集約済みプロンプト",
+        messages: [],
+      });
+
+      const result = await useChatStore
+        .getState()
+        .buildPromptForCopy("ユーザー入力");
+
+      expect(result).toContain("[system]\n=== Act 1 ===");
+      expect(result).toContain("集約済みプロンプト");
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+    });
+
+    it("buildPromptForCopy refreshes context when lastSystemPrompt is empty in project scope", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const folder = {
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder" as const,
+        title: "Ch",
+        sortOrder: "a0",
+        synopsis: "章",
+        charCount: 0,
+      };
+      const scene = {
+        id: "s1",
+        parentId: "ch1",
+        nodeType: "scene" as const,
+        title: "S1",
+        sortOrder: "a0",
+        synopsis: "あらすじ",
+        charCount: 10,
+      };
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error stub
+        nodes: [folder, scene],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "refresh で組み立てたプロンプト",
+        totalTokens: 10,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        chatScope: "project",
+        scopeAnchorId: null,
+        lastSystemPrompt: "",
+        messages: [],
+        includeBodies: false,
+      });
+
+      const result = await useChatStore
+        .getState()
+        .buildPromptForCopy("コピー用");
+
+      expect(result).toContain("[system]\nrefresh で組み立てたプロンプト");
+      expect(mockBuildSystemPrompt).toHaveBeenCalled();
+    });
   });
 
   // --- G21: inputPinnedEntryIds ---

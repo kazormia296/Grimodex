@@ -2025,21 +2025,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       messages: prevMessages,
       inputPinnedEntryIds,
     } = get();
-    const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
+    const effectiveSceneId =
+      chatScope === "scene" && activeSceneId ? activeSceneId : null;
 
     const parts: string[] = [];
     let contextLoaded = false;
 
     try {
-      const [sceneCtx, projectCtx] = await Promise.all([
-        effectiveSceneId ? fetchSceneContext(effectiveSceneId) : null,
-        fetchProjectContext(activeProjectId),
-      ]);
-
-      if (sceneCtx || projectCtx) {
-        // Agent モードでも通常モードと同じコンテキスト（L1〜L4）を組む。
-        // 違いは送信時に AGENT_TOOLS が付くかどうかだけで、system prompt は共通。
+      if (effectiveSceneId) {
+        const [sceneCtx, projectCtx] = await Promise.all([
+          fetchSceneContext(effectiveSceneId),
+          fetchProjectContext(activeProjectId),
+        ]);
         if (sceneCtx) {
+          // Agent モードでも通常モードと同じコンテキスト（L1〜L4）を組む。
           const conversationMessages: ChatMessage[] = [
             ...prevMessages.filter((m) => !m.isSummarized),
             {
@@ -2061,37 +2060,31 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             mentionedSceneIds: options?.mentionedSceneIds,
           });
           parts.push(`[system]\n${prompt}`);
-        } else if (projectCtx) {
-          // Global chat: project context only (no scene)。@scene mention は
-          // tree から本文を読み込んで L3 mentionedScenes として注入する。
-          const mentionedScenes = await loadMentionedScenes(
-            options?.mentionedSceneIds,
-            null,
-          );
-          // Map overlay は scope と直交するため scene/folder/project の全経路で注入する。
-          const allEntriesForMap = await listCodexEntries(
-            getCurrentProjectId(),
-          );
-          const mapBoardMarkdown = await loadMapBoardMarkdown(allEntriesForMap);
-          const { prompt } = buildSystemPrompt({
-            scene: { id: "", title: "", content: "" },
-            project: projectCtx,
-            mentionedScenes:
-              mentionedScenes.length > 0 ? mentionedScenes : undefined,
-            lang: projectCtx.language ?? "ja",
-            agentMode,
-            mapBoardMarkdown,
-          });
-          parts.push(`[system]\n${prompt}`);
+          contextLoaded = true;
         }
-        contextLoaded = true;
+      } else if (chatScope === "folder" || chatScope === "project") {
+        // folder / project: sendMessage / agent と同じく refreshContextLayers の
+        // lastSystemPrompt を流用（空 scene で buildSystemPrompt しない）。
+        if (
+          options?.mentionedSceneIds &&
+          options.mentionedSceneIds.length > 0
+        ) {
+          await get().refreshContextLayers({
+            mentionedSceneIds: options.mentionedSceneIds,
+          });
+        } else if (!get().lastSystemPrompt) {
+          await get().refreshContextLayers();
+        }
+        const prompt = get().lastSystemPrompt;
+        if (prompt) {
+          parts.push(`[system]\n${prompt}`);
+          contextLoaded = true;
+        }
       }
     } catch (e) {
       console.error("[buildPromptForCopy] context fetch failed:", e);
     }
 
-    // シーン/プロジェクトコンテキストが取得できなかった場合は
-    // refreshContextLayers が計算済みの lastSystemPrompt をフォールバックとして使用
     if (!contextLoaded) {
       const fallback = get().lastSystemPrompt;
       if (fallback) {
