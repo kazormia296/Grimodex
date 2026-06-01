@@ -514,6 +514,34 @@ mod violation_has_valid_entry_id_tests {
 }
 
 #[cfg(test)]
+mod dismiss_key_review_tests {
+    use super::dismiss_key_review;
+
+    #[test]
+    fn stable_for_same_inputs() {
+        let a = dismiss_key_review("scene-1", "中盤が冗長", "そして彼は");
+        let b = dismiss_key_review("scene-1", "中盤が冗長", "そして彼は");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn differs_by_title_and_found_text() {
+        let base = dismiss_key_review("scene-1", "中盤が冗長", "そして彼は");
+        assert_ne!(base, dismiss_key_review("scene-1", "別の所見", "そして彼は"));
+        assert_ne!(base, dismiss_key_review("scene-1", "中盤が冗長", "別の本文"));
+        assert_ne!(base, dismiss_key_review("scene-2", "中盤が冗長", "そして彼は"));
+    }
+
+    #[test]
+    fn normalizes_punctuation_and_space() {
+        // strong_normalize により句読点・空白差は同一視される
+        let a = dismiss_key_review("s", "所見", "そして彼は");
+        let b = dismiss_key_review("s", "所見", " そして彼は。");
+        assert_eq!(a, b);
+    }
+}
+
+#[cfg(test)]
 mod detail_name_is_valid_tests {
     use super::detail_name_is_valid;
     use std::collections::{HashMap, HashSet};
