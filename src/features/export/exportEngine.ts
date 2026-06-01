@@ -391,6 +391,10 @@ function renderTable(node: PMNode, ctx: RenderCtx): string {
         .map((c) => renderNode(c, ctx))
         .join("")
         .trim()
+        // Backslash MUST be escaped before pipe — otherwise a literal `\|`
+        // becomes `\\|`, where `\\` consumes the backslash escape and `|`
+        // splits the cell. Order matters; `g` flag on both is required.
+        .replace(/\\/g, "\\\\")
         .replace(/\|/g, "\\|"),
     );
     return `| ${cells.join(" | ")} |`;

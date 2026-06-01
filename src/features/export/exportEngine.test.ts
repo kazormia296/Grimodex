@@ -1179,3 +1179,82 @@ describe("generateExport - synthetic-echo scene heading suppression", () => {
     expect(result).not.toContain("**概要**"); // bold 形式の echo も抑制
   });
 });
+
+// ────────────────────────────────────────────────────────────────────
+// table cell escaping (CodeQL js/incomplete-sanitization)
+// ────────────────────────────────────────────────────────────────────
+
+describe("generateExport - table cell escaping", () => {
+  function tableDoc(rows: string[][]): string {
+    return JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "table",
+          content: rows.map((cells, i) => ({
+            type: "tableRow",
+            content: cells.map((text) => ({
+              type: i === 0 ? "tableHeader" : "tableCell",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text }],
+                },
+              ],
+            })),
+          })),
+        },
+      ],
+    });
+  }
+
+  it("リテラル `|` は `\\|` に escape される", () => {
+    const s1 = makeScene("s1", "t");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: {
+        s1: tableDoc([
+          ["h1", "h2"],
+          ["a|b", "c"],
+        ]),
+      },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "markdown" }),
+    });
+    expect(result).toContain("| a\\|b | c |");
+  });
+
+  it("リテラル `\\` は `\\\\` に escape される（pipe escape の崩壊を防ぐ）", () => {
+    const s1 = makeScene("s1", "t");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: {
+        s1: tableDoc([
+          ["h1", "h2"],
+          ["a\\b", "c"],
+        ]),
+      },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "markdown" }),
+    });
+    expect(result).toContain("| a\\\\b | c |");
+  });
+
+  it("`\\|` (backslash の直後に pipe) は `\\\\\\|` になり、cell が早期 split しない", () => {
+    // 旧実装は `\\|` を出力 → `\\` で backslash escape が消費され `|` が cell split
+    // 新実装は backslash を先に escape して `\\\|` → `\\` (literal `\`) + `\|` (escaped `|`)
+    const s1 = makeScene("s1", "t");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: {
+        s1: tableDoc([
+          ["h1", "h2"],
+          ["a\\|b", "c"],
+        ]),
+      },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "markdown" }),
+    });
+    expect(result).toContain("| a\\\\\\|b | c |");
+  });
+});
