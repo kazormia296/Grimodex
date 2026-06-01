@@ -102,6 +102,44 @@ export function getDescendantScenesInOrder(
 }
 
 /**
+ * DFS pre-order でプロジェクト全体（`parentId === null` の top-level から）の
+ * シーンを sortOrder 順に返す。project スコープの synopsis 集約で使う。
+ *
+ * treeStore は単一プロジェクト前提のため projectId 引数は不要。
+ */
+export function getAllProjectScenesInOrder(
+  nodes: TreeNodeData[],
+): TreeNodeData[] {
+  const childrenByParent = new Map<string | null, TreeNodeData[]>();
+  for (const n of nodes) {
+    const key = n.parentId;
+    const arr = childrenByParent.get(key) ?? [];
+    arr.push(n);
+    childrenByParent.set(key, arr);
+  }
+  for (const arr of childrenByParent.values()) {
+    arr.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+  }
+  const out: TreeNodeData[] = [];
+  const guard = new Set<string>();
+  function walk(parentId: string) {
+    if (guard.has(parentId)) return;
+    guard.add(parentId);
+    const kids = childrenByParent.get(parentId) ?? [];
+    for (const n of kids) {
+      if (n.nodeType === "scene") out.push(n);
+      else if (n.nodeType === "folder") walk(n.id);
+    }
+  }
+  const roots = childrenByParent.get(null) ?? [];
+  for (const root of roots) {
+    if (root.nodeType === "scene") out.push(root);
+    else if (root.nodeType === "folder") walk(root.id);
+  }
+  return out;
+}
+
+/**
  * Walks the parent chain from `nodeId` toward the root and returns folder
  * ancestors in nearest-first order. Used by Chat scope picker and outline
  * walkers to identify Chapter/Act layers without hard-coding a depth scheme.

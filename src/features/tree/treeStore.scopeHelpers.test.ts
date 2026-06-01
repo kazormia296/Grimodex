@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   getAncestorFolders,
+  getAllProjectScenesInOrder,
   getDescendantScenesInOrder,
   type TreeNodeData,
 } from "./treeStore";
@@ -146,5 +147,137 @@ describe("getDescendantScenesInOrder", () => {
       }),
     ];
     expect(getDescendantScenesInOrder(nodes, "empty")).toEqual([]);
+  });
+});
+
+describe("getAllProjectScenesInOrder", () => {
+  it("returns empty array for empty nodes", () => {
+    expect(getAllProjectScenesInOrder([])).toEqual([]);
+  });
+
+  it("returns top-level scenes in sortOrder", () => {
+    const nodes: TreeNodeData[] = [
+      makeNode({
+        id: "s2",
+        parentId: null,
+        nodeType: "scene",
+        title: "S2",
+        sortOrder: "a1",
+      }),
+      makeNode({
+        id: "s1",
+        parentId: null,
+        nodeType: "scene",
+        title: "S1",
+        sortOrder: "a0",
+      }),
+    ];
+    expect(getAllProjectScenesInOrder(nodes).map((n) => n.id)).toEqual([
+      "s1",
+      "s2",
+    ]);
+  });
+
+  it("returns scenes from nested folders in DFS pre-order by sortOrder", () => {
+    const nodes: TreeNodeData[] = [
+      makeNode({
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder",
+        title: "Ch 1",
+        sortOrder: "a0",
+      }),
+      makeNode({
+        id: "s1",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "S1",
+        sortOrder: "a0",
+      }),
+      makeNode({
+        id: "sub",
+        parentId: "ch1",
+        nodeType: "folder",
+        title: "Sub",
+        sortOrder: "a1",
+      }),
+      makeNode({
+        id: "s2",
+        parentId: "sub",
+        nodeType: "scene",
+        title: "S2",
+        sortOrder: "a0",
+      }),
+      makeNode({
+        id: "s3",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "S3",
+        sortOrder: "a2",
+      }),
+    ];
+    expect(getAllProjectScenesInOrder(nodes).map((n) => n.id)).toEqual([
+      "s1",
+      "s2",
+      "s3",
+    ]);
+  });
+
+  it("interleaves top-level scenes and folder descendants by top-level sortOrder", () => {
+    const nodes: TreeNodeData[] = [
+      makeNode({
+        id: "rootScene",
+        parentId: null,
+        nodeType: "scene",
+        title: "Root Scene",
+        sortOrder: "a0",
+      }),
+      makeNode({
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder",
+        title: "Ch 1",
+        sortOrder: "a1",
+      }),
+      makeNode({
+        id: "s1",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "S1",
+        sortOrder: "a0",
+      }),
+    ];
+    expect(getAllProjectScenesInOrder(nodes).map((n) => n.id)).toEqual([
+      "rootScene",
+      "s1",
+    ]);
+  });
+
+  it("does not loop on cyclic folder parentId", () => {
+    const nodes: TreeNodeData[] = [
+      makeNode({
+        id: "a",
+        parentId: "b",
+        nodeType: "folder",
+        title: "A",
+        sortOrder: "a0",
+      }),
+      makeNode({
+        id: "b",
+        parentId: "a",
+        nodeType: "folder",
+        title: "B",
+        sortOrder: "a1",
+      }),
+      makeNode({
+        id: "s1",
+        parentId: "a",
+        nodeType: "scene",
+        title: "S1",
+        sortOrder: "a0",
+      }),
+    ];
+    const result = getAllProjectScenesInOrder(nodes);
+    expect(result.length).toBeLessThanOrEqual(1);
   });
 });

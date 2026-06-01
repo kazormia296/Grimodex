@@ -78,6 +78,7 @@ import type {
 import {
   useTreeStore,
   getAncestorFolders,
+  getAllProjectScenesInOrder,
   getDescendantScenesInOrder,
 } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
@@ -704,6 +705,300 @@ async function fetchProjectContext(
   projectId: string | null,
 ): Promise<ProjectContext | null> {
   return fetchProjectContextAtom(projectId);
+}
+
+type AggregatedPrefacePolicy = "folder" | "project";
+
+function buildChildrenByParentIndex(
+  nodes: TreeNodeData[],
+): Map<string | null, TreeNodeData[]> {
+  const childrenByParent = new Map<string | null, TreeNodeData[]>();
+  for (const n of nodes) {
+    const key = n.parentId;
+    const arr = childrenByParent.get(key) ?? [];
+    arr.push(n);
+    childrenByParent.set(key, arr);
+  }
+  for (const arr of childrenByParent.values()) {
+    arr.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+  }
+  return childrenByParent;
+}
+
+function formatAggregatedFolderSection(folder: TreeNodeData): string {
+  const header = `=== ${folder.title} ===`;
+  const outline = folder.synopsis?.trim();
+  return outline ? `${header}\nOutline: ${outline}` : `${header}\n(outline 未記入)`;
+}
+
+function formatAggregatedSceneSynopsis(
+  scene: TreeNodeData,
+  activeSceneId: string | null,
+): string {
+  const synopsis = scene.synopsis?.trim();
+  const isActive = scene.id === activeSceneId;
+  const header = `--- ${scene.title}${isActive ? " [current edit]" : ""} ---`;
+  return synopsis
+    ? `${header}\nSynopsis: ${synopsis}`
+    : `${header}\n(synopsis 未記入)`;
+}
+
+function formatAggregatedSceneWithBody(
+  scene: TreeNodeData,
+  body: string,
+  activeSceneId: string | null,
+): string {
+  const synopsis = scene.synopsis?.trim();
+  const isActive = scene.id === activeSceneId;
+  const header = `--- ${scene.title}${isActive ? " [current edit]" : ""} ---`;
+  const synopsisLine = synopsis ? `Synopsis: ${synopsis}\n\n` : "";
+  return `${header}\n${synopsisLine}${body}`;
+}
+
+/** project スコープ: フォルダ見出し + 配下シーンを DFS (sortOrder) で組み立てる。 */
+function appendProjectGroupedParts(
+  parentId: string | null,
+  childrenByParent: Map<string | null, TreeNodeData[]>,
+  guard: Set<string>,
+  parts: string[],
+  mode: "tier1" | "tier2" | "foldersOnly",
+  activeSceneId: string | null,
+  bodyBySceneId: Map<string, string>,
+): void {
+  const kids = childrenByParent.get(parentId) ?? [];
+  for (const n of kids) {
+    if (n.nodeType === "scene") {
+      if (mode === "foldersOnly") continue;
+      if (mode === "tier1") {
+        parts.push(
+          formatAggregatedSceneWithBody(
+            n,
+            (bodyBySceneId.get(n.id) ?? "").trim(),
+            activeSceneId,
+          ),
+        );
+      } else {
+        parts.push(formatAggregatedSceneSynopsis(n, activeSceneId));
+      }
+    } else if (n.nodeType === "folder") {
+      if (guard.has(n.id)) continue;
+      guard.add(n.id);
+      parts.push(formatAggregatedFolderSection(n));
+      appendProjectGroupedParts(
+        n.id,
+        childrenByParent,
+        guard,
+        parts,
+        mode,
+        activeSceneId,
+        bodyBySceneId,
+      );
+    }
+  }
+}
+
+/** folder / project スコープ共通の Tier 1/2 synopsis・本文集約。 */
+async function buildAggregatedScene(opts: {
+  anchorId: string;
+  anchorTitle: string;
+  descendants: TreeNodeData[];
+  includeBodies: boolean;
+  activeSceneId: string | null;
+  prefacePolicy: AggregatedPrefacePolicy;
+  allEntries: CodexEntry[];
+  /** project スコープのフォルダ階層グループ化に必須 */
+  allNodes?: TreeNodeData[];
+}): Promise<{
+  aggregatedScene: { id: string; title: string; content: string };
+  aggregatedDetected: CodexEntry[];
+} | null> {
+  const MAX_BODY_TIER_SCENES = 30;
+  const MAX_BODY_TIER_CHARS = 100_000;
+  const MAX_SYNOPSIS_TIER_SCENES = 200;
+  const LOAD_CHUNK = 8;
+
+  const {
+    anchorId,
+    anchorTitle,
+    descendants,
+    includeBodies,
+    activeSceneId,
+    prefacePolicy,
+    allEntries,
+    allNodes,
+  } = opts;
+
+  const isProjectGrouped = prefacePolicy === "project" && !!allNodes?.length;
+  const hasScenes = descendants.length > 0;
+
+  if (!hasScenes && !isProjectGrouped) return null;
+
+  const totalChars = descendants.reduce(
+    (sum, s) => sum + (s.charCount ?? 0),
+    0,
+  );
+  const canTier1 =
+    hasScenes &&
+    includeBodies &&
+    descendants.length <= MAX_BODY_TIER_SCENES &&
+    totalChars <= MAX_BODY_TIER_CHARS;
+  const canTier2 =
+    hasScenes && descendants.length <= MAX_SYNOPSIS_TIER_SCENES;
+
+  const tier1Preface =
+    prefacePolicy === "folder"
+      ? `[この章「${anchorTitle}」配下のシーンを reading order (sortOrder) で集約しています。各シーンは「--- {タイトル} ---」区切りで列挙され、Synopsis 行があるシーンはその要約、[current edit] マーカー付きが現在編集中のシーンです]`
+      : `[このプロジェクト「${anchorTitle}」の全シーンをフォルダ階層（=== フォルダ名 ===）ごとに集約しています。フォルダ見出しの Outline は各フォルダの synopsis、配下シーンは「--- {タイトル} ---」区切りで reading order に並び、[current edit] マーカー付きが現在編集中のシーンです]`;
+
+  const tier2Preface =
+    prefacePolicy === "folder"
+      ? `[この章「${anchorTitle}」配下のシーンを synopsis 単位で集約しています（eco モード: 本文は注入されていません）。各シーンは「--- {タイトル} ---」区切りで reading order に並んでおり、[current edit] マーカー付きが現在編集中のシーンです]`
+      : `[このプロジェクト「${anchorTitle}」の全シーンをフォルダ階層（=== フォルダ名 ===）ごとに synopsis 単位で集約しています（eco モード: 本文は注入されていません）。フォルダ見出しの Outline は各フォルダの synopsis、配下シーンは「--- {タイトル} ---」区切りです]`;
+
+  const tier3ProjectPreface = `[このプロジェクト「${anchorTitle}」はシーン数が多いため、フォルダ階層の Outline のみを注入しています（=== フォルダ名 ===）。個別シーンの synopsis / 本文は省略されています]`;
+
+  async function detectFromJoined(joined: string): Promise<CodexEntry[]> {
+    try {
+      const detectable = allEntries.filter(
+        (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
+      );
+      const matched = await findMentionedEntriesAsync(joined, detectable);
+      const matchedIds = new Set(matched.map((m) => m.id));
+      return detectable.filter((e) => matchedIds.has(e.id));
+    } catch {
+      return [];
+    }
+  }
+
+  function buildProjectParts(
+    mode: "tier1" | "tier2" | "foldersOnly",
+    bodyBySceneId: Map<string, string>,
+  ): string[] {
+    const parts: string[] = [];
+    const childrenByParent = buildChildrenByParentIndex(allNodes!);
+    appendProjectGroupedParts(
+      null,
+      childrenByParent,
+      new Set<string>(),
+      parts,
+      mode,
+      activeSceneId,
+      bodyBySceneId,
+    );
+    return parts;
+  }
+
+  if (canTier1) {
+    if (isProjectGrouped) {
+      const bodyBySceneId = new Map<string, string>();
+      for (let i = 0; i < descendants.length; i += LOAD_CHUNK) {
+        const slice = descendants.slice(i, i + LOAD_CHUNK);
+        const loaded = await Promise.all(
+          slice.map(async (s) =>
+            prosemirrorToText((await loadSceneContent(s.id)) ?? ""),
+          ),
+        );
+        for (let j = 0; j < slice.length; j++) {
+          bodyBySceneId.set(slice[j].id, loaded[j] ?? "");
+        }
+      }
+      const parts = buildProjectParts("tier1", bodyBySceneId);
+      if (parts.length === 0) return null;
+      const joined = `${tier1Preface}\n\n${parts.join("\n\n")}`;
+      const aggregatedDetected = await detectFromJoined(joined);
+      return {
+        aggregatedScene: {
+          id: anchorId,
+          title: anchorTitle,
+          content: joined,
+        },
+        aggregatedDetected,
+      };
+    }
+
+    const ordered = descendants;
+    const bodies: string[] = new Array(ordered.length);
+    for (let i = 0; i < ordered.length; i += LOAD_CHUNK) {
+      const slice = ordered.slice(i, i + LOAD_CHUNK);
+      const loaded = await Promise.all(
+        slice.map(async (s) =>
+          prosemirrorToText((await loadSceneContent(s.id)) ?? ""),
+        ),
+      );
+      for (let j = 0; j < slice.length; j++) {
+        bodies[i + j] = loaded[j];
+      }
+    }
+    const parts: string[] = [];
+    for (let i = 0; i < ordered.length; i++) {
+      parts.push(
+        formatAggregatedSceneWithBody(
+          ordered[i],
+          (bodies[i] ?? "").trim(),
+          activeSceneId,
+        ),
+      );
+    }
+    const joined = `${tier1Preface}\n\n${parts.join("\n\n")}`;
+    const aggregatedDetected = await detectFromJoined(joined);
+    return {
+      aggregatedScene: {
+        id: anchorId,
+        title: anchorTitle,
+        content: joined,
+      },
+      aggregatedDetected,
+    };
+  }
+
+  if (canTier2) {
+    if (isProjectGrouped) {
+      const parts = buildProjectParts("tier2", new Map());
+      if (parts.length === 0) return null;
+      const joined = `${tier2Preface}\n\n${parts.join("\n\n")}`;
+      const aggregatedDetected = await detectFromJoined(joined);
+      return {
+        aggregatedScene: {
+          id: anchorId,
+          title: anchorTitle,
+          content: joined,
+        },
+        aggregatedDetected,
+      };
+    }
+
+    const parts: string[] = [];
+    for (const scene of descendants) {
+      parts.push(formatAggregatedSceneSynopsis(scene, activeSceneId));
+    }
+    const joined = `${tier2Preface}\n\n${parts.join("\n\n")}`;
+    const aggregatedDetected = await detectFromJoined(joined);
+    return {
+      aggregatedScene: {
+        id: anchorId,
+        title: anchorTitle,
+        content: joined,
+      },
+      aggregatedDetected,
+    };
+  }
+
+  if (isProjectGrouped) {
+    const parts = buildProjectParts("foldersOnly", new Map());
+    if (parts.length === 0) return null;
+    const joined = `${tier3ProjectPreface}\n\n${parts.join("\n\n")}`;
+    const aggregatedDetected = await detectFromJoined(joined);
+    return {
+      aggregatedScene: {
+        id: anchorId,
+        title: anchorTitle,
+        content: joined,
+      },
+      aggregatedDetected,
+    };
+  }
+
+  return null;
 }
 
 // Module-level cleanup function for the active stream
@@ -2645,24 +2940,23 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         opts?.mentionedSceneIds,
         effectiveSceneId,
       );
-      // Folder スコープでは anchor folder + その祖先 folder の synopsis を
-      // chapter outlines として注入する（Phase 1: 子シーン本文は集約しない）。
-      // Project スコープでは空。outermost (root に近い) → innermost の順。
-      const folderScopeOutlines: Array<{ title: string; outline: string }> = [];
+      // Folder: anchor + 祖先 folder の synopsis（outermost first）。
+      // Project: フォルダ outline は L3 集約ブロックの === 見出し に含める（L2 重複回避）。
+      const scopeOutlines: Array<{ title: string; outline: string }> = [];
+      const allNodesForScope = useTreeStore.getState().nodes;
       if (chatScope === "folder" && scopeAnchorId) {
-        const allNodes = useTreeStore.getState().nodes;
-        const anchor = allNodes.find((n) => n.id === scopeAnchorId);
-        const ancestors = getAncestorFolders(allNodes, scopeAnchorId);
+        const anchor = allNodesForScope.find((n) => n.id === scopeAnchorId);
+        const ancestors = getAncestorFolders(allNodesForScope, scopeAnchorId);
         const chain = anchor ? [anchor, ...ancestors] : ancestors;
         for (const f of chain) {
           if (f.nodeType === "folder" && f.synopsis?.trim()) {
-            folderScopeOutlines.push({
+            scopeOutlines.push({
               title: f.title,
               outline: f.synopsis.trim(),
             });
           }
         }
-        folderScopeOutlines.reverse(); // outermost first
+        scopeOutlines.reverse(); // outermost first
       }
       // グローバルチャット: L1(project) + L4(pinned + always) のみ計算
       try {
@@ -2671,132 +2965,56 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           listCodexEntries(getCurrentProjectId()),
         ]);
 
-        // Phase 2 / 2.5: folder スコープでは 3 段階の集約 tier を持つ。
+        // Phase 2 / 2.5: folder / project スコープでは 3 段階の集約 tier。
         //   Tier 1 (body 集約): includeBodies=true かつ scene≤30 かつ chars≤100k
         //   Tier 2 (synopsis 集約): scene≤200。本文は注入せず title+synopsis のみ
-        //   Tier 3 (outline only): それ以上 — chapterOutlines (祖先 folder の synopsis) のみ
-        // includeBodies のデフォルトは folder スコープでは false なので、
-        // 初期状態は基本的に Tier 2（synopsis 集約）で動く。
-        const MAX_BODY_TIER_SCENES = 30;
-        const MAX_BODY_TIER_CHARS = 100_000;
-        const MAX_SYNOPSIS_TIER_SCENES = 200;
-        const LOAD_CHUNK = 8;
+        //   Tier 3 (outline only): それ以上 — scopeOutlines のみ
         let aggregatedScene: {
           id: string;
           title: string;
           content: string;
         } | null = null;
         let aggregatedDetected: CodexEntry[] = [];
+        const includeBodies = get().includeBodies;
         if (chatScope === "folder" && scopeAnchorId) {
-          const allNodes = useTreeStore.getState().nodes;
-          const anchorFolder = allNodes.find((n) => n.id === scopeAnchorId);
+          const anchorFolder = allNodesForScope.find(
+            (n) => n.id === scopeAnchorId,
+          );
           const descendants = getDescendantScenesInOrder(
-            allNodes,
+            allNodesForScope,
             scopeAnchorId,
           );
-          const totalChars = descendants.reduce(
-            (sum, s) => sum + (s.charCount ?? 0),
-            0,
-          );
-          const includeBodies = get().includeBodies;
-          const canTier1 =
-            includeBodies &&
-            descendants.length <= MAX_BODY_TIER_SCENES &&
-            totalChars <= MAX_BODY_TIER_CHARS;
-          const canTier2 = descendants.length <= MAX_SYNOPSIS_TIER_SCENES;
-
-          if (anchorFolder && descendants.length > 0 && canTier1) {
-            // Tier 1: body 集約。sortOrder = reading order を維持。閾値内なら
-            // trim は基本的に走らないので並び替えは不要。
-            const ordered = descendants;
-            const bodies: string[] = new Array(ordered.length);
-            for (let i = 0; i < ordered.length; i += LOAD_CHUNK) {
-              const slice = ordered.slice(i, i + LOAD_CHUNK);
-              const loaded = await Promise.all(
-                slice.map(async (s) =>
-                  prosemirrorToText((await loadSceneContent(s.id)) ?? ""),
-                ),
-              );
-              for (let j = 0; j < slice.length; j++) {
-                bodies[i + j] = loaded[j];
-              }
-            }
-            const parts: string[] = [];
-            for (let i = 0; i < ordered.length; i++) {
-              const scene = ordered[i];
-              const body = (bodies[i] ?? "").trim();
-              const synopsis = scene.synopsis?.trim();
-              const isActive = scene.id === activeSceneId;
-              const header = `--- ${scene.title}${isActive ? " [current edit]" : ""} ---`;
-              const synopsisLine = synopsis ? `Synopsis: ${synopsis}\n\n` : "";
-              parts.push(`${header}\n${synopsisLine}${body}`);
-            }
-            const preface = `[この章「${anchorFolder.title}」配下のシーンを reading order (sortOrder) で集約しています。各シーンは「--- {タイトル} ---」区切りで列挙され、Synopsis 行があるシーンはその要約、[current edit] マーカー付きが現在編集中のシーンです]`;
-            const joined = `${preface}\n\n${parts.join("\n\n")}`;
-            aggregatedScene = {
-              id: anchorFolder.id,
-              title: anchorFolder.title,
-              content: joined,
-            };
-            try {
-              const detectable = allEntries.filter(
-                (e) =>
-                  e.contextMode !== "hidden" && e.contextMode !== "suppress",
-              );
-              const matched = await findMentionedEntriesAsync(
-                joined,
-                detectable,
-              );
-              const matchedIds = new Set(matched.map((m) => m.id));
-              aggregatedDetected = detectable.filter((e) =>
-                matchedIds.has(e.id),
-              );
-            } catch {
-              // codex 検出失敗時は無視
-            }
-          } else if (anchorFolder && descendants.length > 0 && canTier2) {
-            // Tier 2: synopsis 集約。本文は読み込まず、各シーンの title +
-            // synopsis のみを reading order で並べる。トークン代を大幅に抑える。
-            // synopsis 未記入のシーンは title のみ表示し、執筆計画の穴も LLM に
-            // 見えるようにする。
-            const ordered = descendants;
-            const parts: string[] = [];
-            for (const scene of ordered) {
-              const synopsis = scene.synopsis?.trim();
-              const isActive = scene.id === activeSceneId;
-              const header = `--- ${scene.title}${isActive ? " [current edit]" : ""} ---`;
-              parts.push(
-                synopsis
-                  ? `${header}\nSynopsis: ${synopsis}`
-                  : `${header}\n(synopsis 未記入)`,
-              );
-            }
-            const preface = `[この章「${anchorFolder.title}」配下のシーンを synopsis 単位で集約しています（eco モード: 本文は注入されていません）。各シーンは「--- {タイトル} ---」区切りで reading order に並んでおり、[current edit] マーカー付きが現在編集中のシーンです]`;
-            const joined = `${preface}\n\n${parts.join("\n\n")}`;
-            aggregatedScene = {
-              id: anchorFolder.id,
-              title: anchorFolder.title,
-              content: joined,
-            };
-            try {
-              const detectable = allEntries.filter(
-                (e) =>
-                  e.contextMode !== "hidden" && e.contextMode !== "suppress",
-              );
-              const matched = await findMentionedEntriesAsync(
-                joined,
-                detectable,
-              );
-              const matchedIds = new Set(matched.map((m) => m.id));
-              aggregatedDetected = detectable.filter((e) =>
-                matchedIds.has(e.id),
-              );
-            } catch {
-              // codex 検出失敗時は無視
+          if (anchorFolder) {
+            const result = await buildAggregatedScene({
+              anchorId: anchorFolder.id,
+              anchorTitle: anchorFolder.title,
+              descendants,
+              includeBodies,
+              activeSceneId,
+              prefacePolicy: "folder",
+              allEntries,
+            });
+            if (result) {
+              aggregatedScene = result.aggregatedScene;
+              aggregatedDetected = result.aggregatedDetected;
             }
           }
-          // どちらの tier にも当てはまらない場合 (descendants > 200) は
-          // aggregatedScene = null のまま Tier 3 (outline only) で fall through。
+        } else if (chatScope === "project") {
+          const descendants = getAllProjectScenesInOrder(allNodesForScope);
+          const result = await buildAggregatedScene({
+            anchorId: activeProjectId ?? "",
+            anchorTitle: projectCtx?.title ?? "Project",
+            descendants,
+            includeBodies,
+            activeSceneId,
+            prefacePolicy: "project",
+            allEntries,
+            allNodes: allNodesForScope,
+          });
+          if (result) {
+            aggregatedScene = result.aggregatedScene;
+            aggregatedDetected = result.aggregatedDetected;
+          }
         }
 
         const globalAlwaysEntries = allEntries.filter(
@@ -2937,8 +3155,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               : undefined,
           pinnedSnippets:
             globalPinnedSnippets.length > 0 ? globalPinnedSnippets : undefined,
-          chapterOutlines:
-            folderScopeOutlines.length > 0 ? folderScopeOutlines : undefined,
+          chapterOutlines: scopeOutlines.length > 0 ? scopeOutlines : undefined,
           mentionedScenes:
             mentionedScenes.length > 0 ? mentionedScenes : undefined,
           lang: projectCtx?.language ?? "ja",
@@ -2953,7 +3170,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           detectedEntries: detectedNotPinned,
           alwaysEntries: alwaysNotDetected,
           projectOutline: projectCtx?.outline ?? undefined,
-          chapterOutlines: folderScopeOutlines,
+          chapterOutlines: scopeOutlines,
         });
       } catch {
         set({

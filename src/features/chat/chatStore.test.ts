@@ -1072,6 +1072,303 @@ describe("useChatStore", () => {
     });
   });
 
+  describe("refreshContextLayers project scope aggregation", () => {
+    function makeScene(
+      id: string,
+      parentId: string,
+      title: string,
+      sortOrder: string,
+      synopsis: string | null = null,
+      charCount = 100,
+    ) {
+      return {
+        id,
+        parentId,
+        nodeType: "scene" as const,
+        title,
+        sortOrder,
+        synopsis,
+        charCount,
+      };
+    }
+
+    function makeFolder(
+      id: string,
+      sortOrder: string,
+      synopsis: string | null = null,
+      title = id,
+    ) {
+      return {
+        id,
+        parentId: null,
+        nodeType: "folder" as const,
+        title,
+        sortOrder,
+        synopsis,
+        charCount: 0,
+      };
+    }
+
+    it("Tier 1: aggregates all project scenes with bodies when includeBodies=true", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const f1 = makeFolder("act1", "a0", null, "Act 1");
+      const f2 = makeFolder("act2", "a1", null, "Act 2");
+      const scenes = [
+        ...Array.from({ length: 5 }, (_, i) =>
+          makeScene(`s1-${i}`, "act1", `A${i}`, `a${i}`),
+        ),
+        ...Array.from({ length: 5 }, (_, i) =>
+          makeScene(`s2-${i}`, "act2", `B${i}`, `a${i}`),
+        ),
+      ];
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [f1, f2, ...scenes],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockImplementation((id) => Promise.resolve(`body:${id}`));
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "project-tier1-prompt",
+        totalTokens: 100,
+        layers: [],
+      });
+
+      useChatStore.getState().setChatScope("project");
+      useChatStore.setState({
+        activeSceneId: "s1-0",
+        activeProjectId: "proj-1",
+        includeBodies: true,
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect(args?.scene.title).toBe("テストプロジェクト");
+      const content = args?.scene.content ?? "";
+      expect(content).toContain("=== Act 1 ===");
+      expect(content).toContain("=== Act 2 ===");
+      expect(content.indexOf("=== Act 1 ===")).toBeLessThan(
+        content.indexOf("--- A0"),
+      );
+      expect(content.indexOf("=== Act 2 ===")).toBeLessThan(
+        content.indexOf("--- B0"),
+      );
+      expect(content).toContain("--- A0 [current edit] ---");
+      expect(content).toContain("body:s1-0");
+      expect(content).toContain("--- B0 ---");
+      expect(useChatStore.getState().lastSystemPrompt).toBe(
+        "project-tier1-prompt",
+      );
+    });
+
+    it("Tier 2: nests scenes under folder outline headers", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const act = {
+        ...makeFolder("act1", "a0", "第一幕の骨格", "Act 1"),
+        parentId: null,
+      };
+      const chapter = {
+        ...makeFolder("ch1", "a0", "第3章の意図", "Chapter 3"),
+        parentId: "act1",
+      };
+      const scene = makeScene("s1", "ch1", "クライマックス", "a0", "決戦");
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [act, chapter, scene],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "nested-prompt",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.getState().setChatScope("project");
+      useChatStore.setState({
+        activeProjectId: "proj-1",
+        includeBodies: false,
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      const content =
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.scene.content ?? "";
+      expect(content).toContain("=== Act 1 ===");
+      expect(content).toContain("Outline: 第一幕の骨格");
+      expect(content).toContain("=== Chapter 3 ===");
+      expect(content).toContain("Outline: 第3章の意図");
+      expect(content.indexOf("=== Chapter 3 ===")).toBeLessThan(
+        content.indexOf("--- クライマックス"),
+      );
+      expect(content).toContain("Synopsis: 決戦");
+    });
+
+    it("Tier 2: synopsis-only aggregate includes root-level scenes", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+      const { findMentionedEntriesAsync } =
+        await import("@/features/codex/rustMatcher");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockMatcher = vi.mocked(findMentionedEntriesAsync);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const rootScene = {
+        ...makeScene("root", "ch", "Opening", "a0", "ルートのあらすじ"),
+        parentId: null,
+      };
+
+      const folder = makeFolder("ch", "a1", null, "Chapter");
+      const folderScenes = Array.from({ length: 49 }, (_, i) =>
+        makeScene(
+          `s${i}`,
+          "ch",
+          `S${i}`,
+          `a${i.toString(36)}`,
+          i === 0 ? "最初のシーン" : null,
+        ),
+      );
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [rootScene, folder, ...folderScenes],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockMatcher.mockClear();
+      mockMatcher.mockResolvedValue([]);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "project-tier2-prompt",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.getState().setChatScope("project");
+      useChatStore.setState({
+        activeSceneId: "root",
+        activeProjectId: "proj-1",
+        includeBodies: false,
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      expect(mockLoadScene).not.toHaveBeenCalled();
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      const content = args?.scene.content ?? "";
+      expect(content).toContain("--- Opening [current edit] ---");
+      expect(content).toContain("Synopsis: ルートのあらすじ");
+      expect(content.indexOf("--- Opening")).toBeLessThan(
+        content.indexOf("=== Chapter ==="),
+      );
+      expect(content).toContain("Synopsis: 最初のシーン");
+      expect(content).toContain("(synopsis 未記入)");
+      expect(content).toContain("eco モード");
+      expect(useChatStore.getState().lastSystemPrompt).toBe(
+        "project-tier2-prompt",
+      );
+    });
+
+    it("Tier 3: outline only when scene count exceeds 200", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const f1 = makeFolder("act1", "a0", "Act one outline", "Act 1");
+      const f2 = makeFolder("act2", "a1", "Act two outline", "Act 2");
+      const scenes = Array.from({ length: 201 }, (_, i) =>
+        makeScene(`s${i}`, "act1", `S${i}`, `a${i.toString(36)}`),
+      );
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [f1, f2, ...scenes],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "project-tier3-prompt",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.getState().setChatScope("project");
+      useChatStore.setState({
+        activeProjectId: "proj-1",
+        includeBodies: false,
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      expect(mockLoadScene).not.toHaveBeenCalled();
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      const content = args?.scene.content ?? "";
+      expect(content).toContain("=== Act 1 ===");
+      expect(content).toContain("Outline: Act one outline");
+      expect(content).toContain("=== Act 2 ===");
+      expect(content).toContain("Outline: Act two outline");
+      expect(content).not.toContain("--- S0 ---");
+      expect(args?.chapterOutlines).toBeUndefined();
+    });
+
+    it("empty project: no aggregated scene content", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [makeFolder("empty", "a0")],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "empty-project-prompt",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.getState().setChatScope("project");
+      useChatStore.setState({ activeProjectId: "proj-1" });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect(args?.scene.content).toContain("=== empty ===");
+      expect(useChatStore.getState().lastSystemPrompt).toBe(
+        "empty-project-prompt",
+      );
+    });
+  });
+
   describe("setIncludeMapBoard (Map overlay)", () => {
     it("ON にすると includeMapBoard が true、boardId が反映される", () => {
       useChatStore

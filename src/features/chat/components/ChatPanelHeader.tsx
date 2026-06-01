@@ -37,7 +37,7 @@ interface ChatPanelHeaderProps {
   /** シーンをクリックしたとき: エディタ移動 + scope=scene を発火 */
   onSelectScene: (sceneId: string) => void;
   onNewSession: () => void;
-  /** 本文を context に含めるか (eco モード相当)。project では非表示 */
+  /** 本文を context に含めるか (eco モード相当)。project でも Tier 1 閾値内なら有効 */
   includeBodies: boolean;
   onToggleIncludeBodies: () => void;
   /**
@@ -283,37 +283,30 @@ export function ChatPanelHeader({
           )}
         </div>
 
-        {/* eco モード相当: 本文を context に含めるかのトグル。
-            project スコープでは元から本文集約しないので隠す。 */}
-        {chatScope !== "project" && (
-          <button
-            type="button"
-            onClick={onToggleIncludeBodies}
-            title={
-              includeBodies
-                ? t("chat.scope.bodiesOn")
-                : t("chat.scope.bodiesOff")
-            }
-            aria-pressed={includeBodies}
-            aria-label={
-              includeBodies
-                ? t("chat.scope.bodiesOn")
-                : t("chat.scope.bodiesOff")
-            }
-            className={[
-              "rounded p-0.5 transition-colors",
-              includeBodies
-                ? "text-primary hover:bg-accent"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            ].join(" ")}
-          >
-            {includeBodies ? (
-              <BookOpen className="h-3.5 w-3.5" />
-            ) : (
-              <Leaf className="h-3.5 w-3.5" />
-            )}
-          </button>
-        )}
+        {/* eco モード相当: 本文を context に含めるかのトグル */}
+        <button
+          type="button"
+          onClick={onToggleIncludeBodies}
+          title={
+            includeBodies ? t("chat.scope.bodiesOn") : t("chat.scope.bodiesOff")
+          }
+          aria-pressed={includeBodies}
+          aria-label={
+            includeBodies ? t("chat.scope.bodiesOn") : t("chat.scope.bodiesOff")
+          }
+          className={[
+            "rounded p-0.5 transition-colors",
+            includeBodies
+              ? "text-primary hover:bg-accent"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          ].join(" ")}
+        >
+          {includeBodies ? (
+            <BookOpen className="h-3.5 w-3.5" />
+          ) : (
+            <Leaf className="h-3.5 w-3.5" />
+          )}
+        </button>
 
         {/* Map overlay toggle: scope と直交。ON で active board 全体を L4 注入。 */}
         <button
