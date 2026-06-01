@@ -118,6 +118,21 @@ export async function updateRelationStatus(
   });
 }
 
+/** 疑似コメントへの返信を追加する (親の run_id / persona を継承)。 */
+export async function replyToAnnotation(params: {
+  parentId: string;
+  content: string;
+  authorRole?: "user" | "ai" | "system";
+}): Promise<PostEffectAnnotation> {
+  return invoke<PostEffectAnnotation>("reply_to_annotation", {
+    args: {
+      parent_id: params.parentId,
+      content: params.content,
+      author_role: params.authorRole ?? "user",
+    },
+  });
+}
+
 /** scene 保存時に AnnotationMark の位置を DB に同期する。 */
 export async function savePostEffectAnnotations(params: {
   projectId: string;

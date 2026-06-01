@@ -12,6 +12,7 @@ import {
 import { useKouetsuStore } from "./kouetsuStore";
 import { EditorialScopeBar } from "./EditorialScopeBar";
 import { ReviewSection } from "./sections/ReviewSection";
+import { PseudoCommentSection } from "./sections/PseudoCommentSection";
 
 function SectionHeader({
   title,
@@ -73,6 +74,15 @@ export function EditorialTab() {
           (a) => a.status === "open" && a.category === "review",
         ).length
       : 0;
+  const pseudoCount =
+    scope === "current" && activeSceneId
+      ? (annotationsByScene.get(activeSceneId) ?? []).filter(
+          (a) =>
+            a.status === "open" &&
+            a.category === "pseudo_comment" &&
+            a.parentId == null,
+        ).length
+      : 0;
 
   const toggle = (ref: ReturnType<typeof usePanelRef>, expanded: boolean) => {
     if (expanded) ref.current?.collapse();
@@ -124,12 +134,12 @@ export function EditorialTab() {
         >
           <SectionHeader
             title="疑似コメント"
-            count={0}
+            count={pseudoCount}
             expanded={pseudoExpanded}
             onToggle={() => toggle(pseudoRef, pseudoExpanded)}
           />
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <PlaceholderSection message="疑似コメントは準備中です" />
+            <PseudoCommentSection />
           </div>
         </ResizablePanel>
 

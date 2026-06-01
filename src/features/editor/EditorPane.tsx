@@ -94,6 +94,7 @@ import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
 import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
+import { PseudoCommentBubble } from "@/features/post-effect/PseudoCommentBubble";
 import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
 import { ForeshadowMarkHoverPopover } from "@/features/foreshadow/ForeshadowMarkHoverPopover";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
@@ -1932,6 +1933,10 @@ export function EditorPane({
                       editor={editor}
                       containerRef={editorContainerRef}
                     />
+                    <PseudoCommentBubble
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                    />
                     <EditorContextMenu
                       editor={editor}
                       containerRef={editorContainerRef}
@@ -2062,6 +2067,10 @@ export function EditorPane({
                       containerRef={editorContainerRef}
                     />
                     <CommentHoverPopover
+                      editor={editor}
+                      containerRef={editorContainerRef}
+                    />
+                    <PseudoCommentBubble
                       editor={editor}
                       containerRef={editorContainerRef}
                     />

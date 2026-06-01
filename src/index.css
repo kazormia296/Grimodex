@@ -969,6 +969,13 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .pe-annotation-severity-info {
   text-decoration-color: #94a3b8; /* slate-400 / muted */
 }
+/* pseudo_comment は severity 下線ではなくコメント色のハイライトにする。
+   severity rule の後に置いて下線を打ち消す (同 specificity で後勝ち)。 */
+.pe-annotation-pseudo_comment {
+  text-decoration-line: none;
+  background-color: rgb(129 140 248 / 0.16); /* indigo-400 tint */
+  border-radius: 2px;
+}
 
 /* CommentMark decoration — amber wavy underline when showComments is ON */
 .comment-deco {

@@ -28,6 +28,7 @@ const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.1";
 const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.0";
 const TYPO_PROMPT_VERSION: &str = "typo_detection_v1.0";
 const REVIEW_PROMPT_VERSION: &str = "review_v1.0";
+const PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_v1.0";
 
 // システムプロンプト本文は FE catalog (src/prompts/ja/postEffect.ts) で管理し、
 // `StartPostEffectRunArgs.system_prompt` として IPC 経由で渡される。
@@ -52,6 +53,9 @@ pub(crate) struct StartPostEffectRunArgs {
     scene_text: String,
     /// System prompt 本文。FE catalog (src/prompts/ja/postEffect.ts) から渡される。
     system_prompt: String,
+    /// pseudo_comment の読者ペルソナ名 (他 effect_type では None)。
+    #[serde(default)]
+    persona: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2494,6 +2498,226 @@ async fn run_review_task(
 }
 
 // ---------------------------------------------------------------------------
+// pseudo_comment run (読者ペルソナによる本文横コメント)
+// ---------------------------------------------------------------------------
+
+/// pseudo_comment チェックを 1 シーン分実行し、挿入したコメント数を返す。
+/// Codex 不使用・scene 本文のみ。persona は annotation.persona に格納する。
+#[allow(clippy::too_many_arguments)]
+async fn process_pseudo_comment_scene(
+    app: &AppHandle,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    scene_text: &str,
+    system_prompt: &str,
+    persona: Option<&str>,
+    ai_settings_path: &std::path::Path,
+    on_stage: impl Fn(f32, &str) + Send,
+) -> Result<usize, anyhow::Error> {
+    let ai_settings = read_ai_settings(ai_settings_path);
+    let api_key = match get_api_key(&ai_settings.provider) {
+        Ok(Some(k)) => k,
+        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
+        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
+    };
+
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        provider = %ai_settings.provider,
+        model = %ai_settings.model,
+        persona = persona.unwrap_or(""),
+        "[post_effect] pseudo_comment: calling AI"
+    );
+    let raw_response =
+        call_post_effect_api(&ai_settings, &api_key, system_prompt, None, scene_text)
+            .await
+            .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
+
+    on_stage(0.5, "parsing");
+    let json_str = extract_json(&raw_response);
+    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] pseudo_comment: JSON parse FAILED"
+        );
+        anyhow::anyhow!("LLM 出力のパース失敗: {e}")
+    })?;
+
+    let comments = extract_array_field(&parsed, "comments")
+        .map_err(|e| anyhow::anyhow!("LLM 出力の構造が不正: {e}"))?;
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        comments_count = comments.len(),
+        "[post_effect] pseudo_comment: parsed comments"
+    );
+
+    // dedupe: 同じ scene 内で同じ (found_text + content) を 1 件にまとめる
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deduped: Vec<&Value> = comments
+        .iter()
+        .filter(|c| {
+            let ft = strong_normalize(c["found_text"].as_str().unwrap_or(""));
+            let body = strong_normalize(c["content"].as_str().unwrap_or(""));
+            if body.is_empty() {
+                return false;
+            }
+            seen.insert(format!("{ft}|{body}"))
+        })
+        .collect();
+
+    on_stage(0.7, "saving");
+    let ws_state = app.state::<WorkspaceState>();
+    let count: usize = super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            let mut count = 0usize;
+
+            for comment in &deduped {
+                let body = comment["content"].as_str().unwrap_or("");
+                let found_text = comment["found_text"].as_str().unwrap_or("");
+                let found_context = comment["found_context"].as_str().unwrap_or("");
+
+                let (range_start, range_end, orphaned) = if found_text.is_empty() {
+                    (0i64, 0i64, true)
+                } else {
+                    match find_text_position(scene_text, found_text, found_context) {
+                        Some((s, e)) => (s as i64, e as i64, false),
+                        None => (0i64, 0i64, true),
+                    }
+                };
+
+                let new_id = Uuid::new_v4().to_string();
+                let metadata = serde_json::json!({
+                    "persona": persona,
+                    "found_text": found_text,
+                    "found_context": found_context,
+                    "detected_by_model": ai_settings.model,
+                    "orphaned": orphaned,
+                });
+
+                conn.execute(
+                    "INSERT INTO post_effect_annotations
+                        (id, project_id, run_id, anchor_type, scene_id,
+                         range_start, range_end, text_snapshot,
+                         category, persona, severity, content, author_role,
+                         status, metadata, created_at, updated_at)
+                     VALUES (?, ?, ?, 'scene_range', ?,
+                             ?, ?, ?,
+                             'pseudo_comment', ?, NULL, ?, 'ai',
+                             'open', ?, datetime('now'), datetime('now'))",
+                    params![
+                        new_id,
+                        project_id,
+                        run_id,
+                        scene_id,
+                        range_start,
+                        range_end,
+                        if found_text.is_empty() {
+                            None
+                        } else {
+                            Some(found_text)
+                        },
+                        persona,
+                        body,
+                        metadata.to_string(),
+                    ],
+                )?;
+
+                let _ = app.emit(
+                    "post_effect:partial",
+                    PartialEvent {
+                        run_id,
+                        annotation_id: new_id,
+                    },
+                );
+                count += 1;
+            }
+
+            Ok(count)
+        })
+    })?;
+
+    Ok(count)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_pseudo_comment_task(
+    app: AppHandle,
+    run_id: String,
+    project_id: String,
+    scene_id: String,
+    scene_text: String,
+    system_prompt: String,
+    persona: Option<String>,
+    ai_settings_path: std::path::PathBuf,
+) {
+    let emit_err = |msg: &str| {
+        let _ = app.emit(
+            "post_effect:error",
+            ErrorEvent {
+                run_id: &run_id,
+                error: msg.to_string(),
+            },
+        );
+    };
+
+    let _ = app.emit(
+        "post_effect:progress",
+        ProgressEvent {
+            run_id: &run_id,
+            stage: "calling_ai",
+            progress: 0.1,
+            message: None,
+        },
+    );
+
+    match process_pseudo_comment_scene(
+        &app,
+        &run_id,
+        &project_id,
+        &scene_id,
+        &scene_text,
+        &system_prompt,
+        persona.as_deref(),
+        &ai_settings_path,
+        |p, s| {
+            let _ = app.emit(
+                "post_effect:progress",
+                ProgressEvent {
+                    run_id: &run_id,
+                    stage: s,
+                    progress: p,
+                    message: None,
+                },
+            );
+        },
+    )
+    .await
+    {
+        Ok(n) => {
+            finalize_run(&app, &run_id);
+            let _ = app.emit(
+                "post_effect:done",
+                DoneEvent {
+                    run_id: &run_id,
+                    annotation_count: n,
+                    summary: None,
+                },
+            );
+        }
+        Err(e) => {
+            emit_err(&e.to_string());
+            fail_run(&app, &run_id, &e.to_string());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Multi-scene run task
 // ---------------------------------------------------------------------------
 
@@ -2714,7 +2938,11 @@ pub(crate) async fn start_post_effect_run(
     let effect_type = args.effect_type.as_str();
     let supported = matches!(
         effect_type,
-        "consistency" | "intra_scene_consistency" | "typo_detection" | "review"
+        "consistency"
+            | "intra_scene_consistency"
+            | "typo_detection"
+            | "review"
+            | "pseudo_comment"
     );
     if !supported {
         return Err(
@@ -2726,6 +2954,7 @@ pub(crate) async fn start_post_effect_run(
         "consistency" => CONSISTENCY_PROMPT_VERSION,
         "typo_detection" => TYPO_PROMPT_VERSION,
         "review" => REVIEW_PROMPT_VERSION,
+        "pseudo_comment" => PSEUDO_COMMENT_PROMPT_VERSION,
         _ => INTRA_PROMPT_VERSION,
     };
     if args.prompt_version != prompt_version {
@@ -2805,6 +3034,7 @@ pub(crate) async fn start_post_effect_run(
     let codex_json = args.codex_payload_json.clone();
     let scene_text = args.scene_text.clone();
     let system_prompt = args.system_prompt.clone();
+    let persona = args.persona.clone();
     let rid = run_id.clone();
 
     tokio::task::spawn(async move {
@@ -2845,6 +3075,19 @@ pub(crate) async fn start_post_effect_run(
                         scene_id,
                         scene_text,
                         system_prompt,
+                        ai_path,
+                    )
+                    .await;
+                }
+                "pseudo_comment" => {
+                    run_pseudo_comment_task(
+                        app,
+                        rid,
+                        project_id,
+                        scene_id,
+                        scene_text,
+                        system_prompt,
+                        persona,
                         ai_path,
                     )
                     .await;
@@ -3258,6 +3501,72 @@ pub(crate) fn update_annotation_status(
             let ann = conn.query_row(
                 "SELECT * FROM post_effect_annotations WHERE id = ?",
                 params![annotation_id],
+                row_to_annotation_value,
+            )?;
+            Ok(ann)
+        })
+    })
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ReplyToAnnotationArgs {
+    parent_id: String,
+    content: String,
+    author_role: String,
+}
+
+/// 疑似コメントへの返信を追加する (設計書 §4: 親の run_id を継承)。
+#[tauri::command]
+pub(crate) fn reply_to_annotation(
+    ws_state: State<'_, WorkspaceState>,
+    args: ReplyToAnnotationArgs,
+) -> Result<Value, AppError> {
+    super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            // 親の project_id / scene_id / run_id / persona を継承する
+            #[allow(clippy::type_complexity)]
+            let (project_id, scene_id, run_id, persona): (
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ) = conn.query_row(
+                "SELECT project_id, scene_id, run_id, persona
+                   FROM post_effect_annotations WHERE id = ?",
+                params![args.parent_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+
+            let author_role = match args.author_role.as_str() {
+                "user" | "ai" | "system" => args.author_role.as_str(),
+                _ => "user",
+            };
+            let new_id = Uuid::new_v4().to_string();
+            let metadata = serde_json::json!({ "persona": persona });
+            conn.execute(
+                "INSERT INTO post_effect_annotations
+                    (id, project_id, run_id, anchor_type, scene_id,
+                     category, persona, content, author_role, parent_id,
+                     status, metadata, created_at, updated_at)
+                 VALUES (?, ?, ?, 'scene_range', ?,
+                         'pseudo_comment', ?, ?, ?, ?,
+                         'open', ?, datetime('now'), datetime('now'))",
+                params![
+                    new_id,
+                    project_id,
+                    run_id,
+                    scene_id,
+                    persona,
+                    args.content,
+                    author_role,
+                    args.parent_id,
+                    metadata.to_string(),
+                ],
+            )?;
+
+            let ann = conn.query_row(
+                "SELECT * FROM post_effect_annotations WHERE id = ?",
+                params![new_id],
                 row_to_annotation_value,
             )?;
             Ok(ann)

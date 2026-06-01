@@ -148,6 +148,8 @@ export interface StartPostEffectRunRequest {
   scene_text: string;
   /** System prompt 本文。FE catalog (`src/prompts/ja/postEffect.ts`) から取得して渡す。 */
   system_prompt: string;
+  /** pseudo_comment の読者ペルソナ名 (他 effect_type では省略)。 */
+  persona?: string | null;
 }
 
 export interface StartPostEffectRunResult {

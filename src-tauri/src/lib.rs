@@ -199,6 +199,7 @@ pub fn run() {
             commands::post_effect::list_annotations_for_project,
             commands::post_effect::update_annotation_status,
             commands::post_effect::update_relation_status,
+            commands::post_effect::reply_to_annotation,
             commands::post_effect::save_post_effect_annotations,
             commands::onboarding::seed_sample_workspace,
             #[cfg(feature = "semantic-embedding")]
