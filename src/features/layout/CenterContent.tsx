@@ -245,7 +245,10 @@ export const CenterContent = memo(function CenterContent() {
                 onDrop={(e) => handleSlotDrop(segment.id, e)}
               >
                 {segment.activePanel && (
-                  <AnimatedSlotPanel panelId={segment.activePanel} />
+                  <AnimatedSlotPanel
+                    panelId={segment.activePanel}
+                    slotPanels={segment.panels}
+                  />
                 )}
               </div>
             )}

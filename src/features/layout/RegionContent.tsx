@@ -283,7 +283,10 @@ export const RegionContent = memo(function RegionContent({
               onDrop={(e) => handleSlotDrop(slot.id, e)}
             >
               {slot.activePanel && (
-                <AnimatedSlotPanel panelId={slot.activePanel} />
+                <AnimatedSlotPanel
+                  panelId={slot.activePanel}
+                  slotPanels={slot.panels}
+                />
               )}
             </div>
           </Fragment>

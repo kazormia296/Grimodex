@@ -107,11 +107,13 @@ export function useFocusRects(
     if (container) resizeObserver.observe(container);
     window.addEventListener("resize", measure);
 
-    // Re-measure when a slot panel enters or leaves the DOM.
+    // Re-measure when a slot panel enters/leaves the DOM, OR when the
+    // active-panel marker moves between keepalive siblings (AnimatedSlotPanel
+    // keeps inactive panels mounted and toggles `data-slot-panel` on the
+    // visible one, so childList alone misses the swap).
     // showPanel() is called in a useEffect (after paint), so the target panel
-    // may not exist yet when useFocusRects first measures on step entry.
-    // The ResizeObserver alone won't re-fire when the slot content swaps without
-    // changing the shell's dimensions, so we need this MutationObserver too.
+    // may not exist yet when useFocusRects first measures on step entry, and
+    // ResizeObserver won't re-fire when slot content swaps in place.
     function hasSlotPanel(nodes: NodeList): boolean {
       for (const node of nodes) {
         if (node instanceof Element && node.hasAttribute("data-slot-panel")) {
@@ -122,14 +124,29 @@ export function useFocusRects(
     }
     const mutationObserver = new MutationObserver((mutations) => {
       for (const mut of mutations) {
-        if (hasSlotPanel(mut.addedNodes) || hasSlotPanel(mut.removedNodes)) {
+        if (
+          mut.type === "attributes" &&
+          mut.attributeName === "data-slot-panel"
+        ) {
+          measure();
+          return;
+        }
+        if (
+          mut.type === "childList" &&
+          (hasSlotPanel(mut.addedNodes) || hasSlotPanel(mut.removedNodes))
+        ) {
           measure();
           return;
         }
       }
     });
     if (container) {
-      mutationObserver.observe(container, { childList: true, subtree: true });
+      mutationObserver.observe(container, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["data-slot-panel"],
+      });
     }
 
     return () => {
