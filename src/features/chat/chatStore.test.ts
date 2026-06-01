@@ -59,6 +59,9 @@ vi.mock("@/features/tree/treeStore", async (importOriginal) => {
 
 vi.mock("@/features/tree/api", () => ({
   loadSceneContent: vi.fn(() => Promise.resolve("シーン本文")),
+  loadSceneFull: vi.fn(() =>
+    Promise.resolve({ content: "{}", unplacedBeatsDoc: "[]" }),
+  ),
   getNode: vi.fn(() =>
     Promise.resolve({
       id: "scene-1",
@@ -1026,6 +1029,268 @@ describe("useChatStore", () => {
       expect(content).toContain("eco モード");
     });
 
+    it("Tier 2 folder: injects placed and unplaced beats into each scene part", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent, loadSceneFull } =
+        await import("@/features/tree/api");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockLoadSceneFull = vi.mocked(loadSceneFull);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const beatDoc = (beatId: string, text: string) =>
+        JSON.stringify({
+          type: "doc",
+          content: [
+            {
+              type: "sceneBeat",
+              attrs: {
+                id: beatId,
+                beatType: "dialogue",
+                pov: null,
+                collapsed: false,
+              },
+              content: [{ type: "text", text }],
+            },
+          ],
+        });
+      const unplacedDoc = JSON.stringify([
+        {
+          id: "u1",
+          beatType: "micro",
+          pov: null,
+          collapsed: false,
+          content: [{ type: "text", text: "未配置ヒント" }],
+        },
+      ]);
+
+      const folder = {
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder",
+        title: "Chapter",
+        sortOrder: "a0",
+        synopsis: "outline",
+        charCount: 0,
+      };
+      const sceneA = {
+        id: "sA",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "シーンA",
+        sortOrder: "a0",
+        synopsis: "Aのあらすじ",
+        charCount: 100,
+      };
+      const sceneB = {
+        id: "sB",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "シーンB",
+        sortOrder: "a1",
+        synopsis: "Bのあらすじ",
+        charCount: 100,
+      };
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [folder, sceneA, sceneB],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockLoadSceneFull.mockImplementation((id: string) => {
+        if (id === "sA") {
+          return Promise.resolve({
+            content: beatDoc("b1", "シーンAのビート"),
+            unplacedBeatsDoc: unplacedDoc,
+          });
+        }
+        if (id === "sB") {
+          return Promise.resolve({
+            content: beatDoc("b2", "シーンBのビート"),
+            unplacedBeatsDoc: "[]",
+          });
+        }
+        return Promise.resolve({ content: "{}", unplacedBeatsDoc: "[]" });
+      });
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "sA",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "folder",
+        scopeAnchorId: "ch1",
+        inputPinnedEntryIds: [],
+        includeBodies: false,
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      expect(mockLoadScene).not.toHaveBeenCalled();
+      const content =
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.scene.content ?? "";
+      const partA = content.slice(
+        content.indexOf("--- シーンA"),
+        content.indexOf("--- シーンB"),
+      );
+      const partB = content.slice(content.indexOf("--- シーンB"));
+      expect(partA).toContain("## このシーンの予定ビート");
+      expect(partA).toContain("Placed #1");
+      expect(partA).toContain("シーンAのビート");
+      expect(partA).toContain("Unplaced");
+      expect(partA).toContain("未配置ヒント");
+      expect(partB).toContain("## このシーンの予定ビート");
+      expect(partB).toContain("Placed #1");
+      expect(partB).toContain("シーンBのビート");
+      expect(partB).not.toContain("未配置ヒント");
+    });
+
+    it("Tier 2 folder: beat.injectIntoContext=false skips beats and loadSceneFull", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent, loadSceneFull } =
+        await import("@/features/tree/api");
+      const { useSettingsStore } =
+        await import("@/features/settings/settingsStore");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockLoadSceneFull = vi.mocked(loadSceneFull);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const folder = {
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder",
+        title: "Chapter",
+        sortOrder: "a0",
+        synopsis: null,
+        charCount: 0,
+      };
+      const scene = {
+        id: "s1",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "S1",
+        sortOrder: "a0",
+        synopsis: "syn",
+        charCount: 100,
+      };
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [folder, scene],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      useSettingsStore.setState((s) => ({
+        cache: { ...s.cache, "beat.injectIntoContext": "false" },
+      }));
+      mockLoadSceneFull.mockClear();
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "s1",
+        activeProjectId: "proj-1",
+        chatScope: "folder",
+        scopeAnchorId: "ch1",
+        includeBodies: false,
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      const content =
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.scene.content ?? "";
+      expect(content).not.toContain("予定ビート");
+      expect(mockLoadSceneFull.mock.calls.length).toBe(0);
+
+      useSettingsStore.setState((s) => ({
+        cache: { ...s.cache, "beat.injectIntoContext": "true" },
+      }));
+    });
+
+    it("Tier 2 folder: unplaced beats still inject when scene content is not PM-JSON", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneFull } = await import("@/features/tree/api");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadSceneFull = vi.mocked(loadSceneFull);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const folder = {
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder",
+        title: "Chapter",
+        sortOrder: "a0",
+        synopsis: null,
+        charCount: 0,
+      };
+      const scene = {
+        id: "s1",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "Legacy",
+        sortOrder: "a0",
+        synopsis: null,
+        charCount: 100,
+      };
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [folder, scene],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadSceneFull.mockResolvedValue({
+        content: "<p>old html</p>",
+        unplacedBeatsDoc: JSON.stringify([
+          {
+            id: "u1",
+            beatType: "micro",
+            pov: null,
+            collapsed: false,
+            content: [{ type: "text", text: "レガシー未配置" }],
+          },
+        ]),
+      });
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "s1",
+        activeProjectId: "proj-1",
+        chatScope: "folder",
+        scopeAnchorId: "ch1",
+        includeBodies: false,
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      const content =
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.scene.content ?? "";
+      expect(content).toContain("Unplaced");
+      expect(content).toContain("レガシー未配置");
+      expect(content).not.toContain("Placed #");
+    });
+
     it("falls back to Tier 3 (outline only) when scene count exceeds Tier 2 threshold (200)", async () => {
       const { listCodexEntries } = await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
@@ -1432,6 +1697,80 @@ describe("useChatStore", () => {
       expect(useChatStore.getState().lastSystemPrompt).toBe(
         "project-tier2-prompt",
       );
+    });
+
+    it("Tier 2 project-grouped: beat sections appear under each scene within folder hierarchy", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent, loadSceneFull } =
+        await import("@/features/tree/api");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockLoadSceneFull = vi.mocked(loadSceneFull);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const beatDoc = JSON.stringify({
+        type: "doc",
+        content: [
+          {
+            type: "sceneBeat",
+            attrs: {
+              id: "b1",
+              beatType: "dialogue",
+              pov: null,
+              collapsed: false,
+            },
+            content: [{ type: "text", text: "対決ビート" }],
+          },
+        ],
+      });
+
+      const act = {
+        ...makeFolder("act1", "a0", "第一幕", "Act 1"),
+        parentId: null,
+      };
+      const chapter = {
+        ...makeFolder("ch1", "a0", "第3章", "Chapter 3"),
+        parentId: "act1",
+      };
+      const scene = makeScene("s1", "ch1", "クライマックス", "a0", "決戦");
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [act, chapter, scene],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockLoadSceneFull.mockResolvedValue({
+        content: beatDoc,
+        unplacedBeatsDoc: "[]",
+      });
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "nested-beats-prompt",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.getState().setChatScope("project");
+      useChatStore.setState({
+        activeProjectId: "proj-1",
+        includeBodies: false,
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      const content =
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.scene.content ?? "";
+      const folderIdx = content.indexOf("=== Chapter 3 ===");
+      const sceneIdx = content.indexOf("--- クライマックス");
+      const beatsIdx = content.indexOf("## このシーンの予定ビート");
+      expect(folderIdx).toBeGreaterThanOrEqual(0);
+      expect(sceneIdx).toBeGreaterThan(folderIdx);
+      expect(beatsIdx).toBeGreaterThan(sceneIdx);
+      expect(content).toContain("Placed #1");
+      expect(content).toContain("対決ビート");
     });
 
     it("Tier 3: outline only when scene count exceeds 200", async () => {

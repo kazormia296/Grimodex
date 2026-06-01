@@ -82,7 +82,8 @@ import {
   getDescendantScenesInOrder,
 } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
-import { loadSceneContent, getNode } from "@/features/tree/api";
+import { loadSceneContent, loadSceneFull, getNode } from "@/features/tree/api";
+import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -736,13 +737,16 @@ function formatAggregatedFolderSection(folder: TreeNodeData): string {
 function formatAggregatedSceneSynopsis(
   scene: TreeNodeData,
   activeSceneId: string | null,
+  beatSection?: string,
 ): string {
   const synopsis = scene.synopsis?.trim();
   const isActive = scene.id === activeSceneId;
   const header = `--- ${scene.title}${isActive ? " [current edit]" : ""} ---`;
-  return synopsis
+  const base = synopsis
     ? `${header}\nSynopsis: ${synopsis}`
     : `${header}\n(synopsis 未記入)`;
+  const beats = beatSection?.trim();
+  return beats ? `${base}${beats.trimEnd()}` : base;
 }
 
 function formatAggregatedSceneWithBody(
@@ -778,6 +782,7 @@ function appendProjectGroupedParts(
   mode: "tier1" | "tier2" | "foldersOnly",
   activeSceneId: string | null,
   bodyBySceneId: Map<string, string>,
+  beatSectionBySceneId: Map<string, string>,
 ): void {
   const kids = childrenByParent.get(parentId) ?? [];
 
@@ -803,7 +808,13 @@ function appendProjectGroupedParts(
           ),
         );
       } else {
-        parts.push(formatAggregatedSceneSynopsis(n, activeSceneId));
+        parts.push(
+          formatAggregatedSceneSynopsis(
+            n,
+            activeSceneId,
+            beatSectionBySceneId.get(n.id),
+          ),
+        );
       }
     } else if (n.nodeType === "folder") {
       if (guard.has(n.id)) continue;
@@ -817,6 +828,7 @@ function appendProjectGroupedParts(
         mode,
         activeSceneId,
         bodyBySceneId,
+        beatSectionBySceneId,
       );
     }
   }
@@ -897,6 +909,7 @@ async function buildAggregatedScene(opts: {
   function buildProjectParts(
     mode: "tier1" | "tier2" | "foldersOnly",
     bodyBySceneId: Map<string, string>,
+    beatSectionBySceneId: Map<string, string>,
   ): string[] {
     const parts: string[] = [];
     const childrenByParent = buildChildrenByParentIndex(allNodes!);
@@ -908,6 +921,7 @@ async function buildAggregatedScene(opts: {
       mode,
       activeSceneId,
       bodyBySceneId,
+      beatSectionBySceneId,
     );
     return parts;
   }
@@ -939,7 +953,7 @@ async function buildAggregatedScene(opts: {
           bodyBySceneId.set(slice[j].id, loaded[j] ?? "");
         }
       }
-      const parts = buildProjectParts("tier1", bodyBySceneId);
+      const parts = buildProjectParts("tier1", bodyBySceneId, new Map());
       if (parts.length === 0) return null;
       const joined = `${tier1Preface}\n\n${parts.join("\n\n")}`;
       const aggregatedDetected = await detectFromJoined(joined);
@@ -987,8 +1001,57 @@ async function buildAggregatedScene(opts: {
   }
 
   if (canTier2) {
+    const injectBeats = useSettingsStore
+      .getState()
+      .getBoolean("beat.injectIntoContext", true);
+
+    const beatSectionBySceneId = new Map<string, string>();
+    if (injectBeats && descendants.length > 0) {
+      const resolveCharacterName = (id: string): string | null =>
+        allEntries.find((e) => e.id === id)?.name ?? null;
+
+      for (let i = 0; i < descendants.length; i += LOAD_CHUNK) {
+        const slice = descendants.slice(i, i + LOAD_CHUNK);
+        const loaded = await Promise.all(
+          slice.map((s) =>
+            loadSceneFull(s.id).catch(() => ({
+              content: "",
+              unplacedBeatsDoc: "[]",
+            })),
+          ),
+        );
+        for (let j = 0; j < slice.length; j++) {
+          const { content, unplacedBeatsDoc } = loaded[j];
+          let docJson: unknown = null;
+          if (content) {
+            try {
+              docJson = JSON.parse(content);
+            } catch {
+              /* keep null */
+            }
+          }
+          let unplacedBeats: UnplacedBeat[] = [];
+          try {
+            const parsed = JSON.parse(unplacedBeatsDoc);
+            if (Array.isArray(parsed)) unplacedBeats = parsed as UnplacedBeat[];
+          } catch {
+            /* empty */
+          }
+
+          const section = buildPendingBeatsSection({
+            sceneDocJson: docJson,
+            unplacedBeats,
+            resolveCharacterName,
+            currentBeatId: null,
+            scenePovCharacterId: slice[j].povCharacterId ?? null,
+          });
+          if (section) beatSectionBySceneId.set(slice[j].id, section);
+        }
+      }
+    }
+
     if (isProjectGrouped) {
-      const parts = buildProjectParts("tier2", new Map());
+      const parts = buildProjectParts("tier2", new Map(), beatSectionBySceneId);
       if (parts.length === 0) return null;
       const joined = `${tier2Preface}\n\n${parts.join("\n\n")}`;
       const aggregatedDetected = await detectFromJoined(joined);
@@ -1004,7 +1067,13 @@ async function buildAggregatedScene(opts: {
 
     const parts: string[] = [];
     for (const scene of descendants) {
-      parts.push(formatAggregatedSceneSynopsis(scene, activeSceneId));
+      parts.push(
+        formatAggregatedSceneSynopsis(
+          scene,
+          activeSceneId,
+          beatSectionBySceneId.get(scene.id),
+        ),
+      );
     }
     const joined = `${tier2Preface}\n\n${parts.join("\n\n")}`;
     const aggregatedDetected = await detectFromJoined(joined);
@@ -1019,7 +1088,7 @@ async function buildAggregatedScene(opts: {
   }
 
   if (isProjectGrouped) {
-    const parts = buildProjectParts("foldersOnly", new Map());
+    const parts = buildProjectParts("foldersOnly", new Map(), new Map());
     if (parts.length === 0) return null;
     const joined = `${tier3ProjectPreface}\n\n${parts.join("\n\n")}`;
     const aggregatedDetected = await detectFromJoined(joined);
