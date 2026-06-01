@@ -195,6 +195,7 @@ pub fn run() {
             commands::post_effect::abort_post_effect_run,
             commands::post_effect::list_post_effect_runs,
             commands::post_effect::get_post_effect_run,
+            commands::post_effect::list_scene_lens_for_project,
             commands::post_effect::list_annotations_for_scene,
             commands::post_effect::list_annotations_for_project,
             commands::post_effect::update_annotation_status,

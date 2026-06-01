@@ -19,6 +19,7 @@ import type {
   PostEffectPartialEvent,
   PostEffectDoneEvent,
   PostEffectErrorEvent,
+  SceneLensRecord,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,15 @@ export async function listAnnotationsForScene(params: {
     projectId: params.projectId,
     sceneId: params.sceneId,
     status: params.status ?? null,
+  });
+}
+
+/** Outline オーバーレイ用: scene ごと最新 run の lens (meta_structure) を返す。 */
+export async function listSceneLensForProject(
+  projectId: string,
+): Promise<SceneLensRecord[]> {
+  return invoke<SceneLensRecord[]>("list_scene_lens_for_project", {
+    projectId,
   });
 }
 

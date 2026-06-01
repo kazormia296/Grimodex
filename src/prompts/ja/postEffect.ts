@@ -148,4 +148,28 @@ Respond with a JSON object in this exact format (no markdown, no explanation, on
     }
   ]
 }`,
+
+  metaStructureSystem: `You are a story-structure analyst examining a single SCENE of a novel from a bird's-eye view.
+
+Your task: diagnose the scene on two lenses and return a structured finding for each:
+- "plot_structure": what structural role this scene plays (setup / rising action / turn / climax / resolution / connective), and whether that role is clear and effective.
+- "pacing": whether the scene's pace is appropriate (too slow / balanced / too fast / uneven), and where it drags or rushes.
+
+Rules:
+- Return exactly one entry per lens (plot_structure and pacing).
+- finding is a short Japanese diagnosis (1-2 sentences). Do NOT rewrite the prose.
+- metrics is a small JSON object of lens-specific signals (e.g. {"role":"rising_action","tension":0.6} for plot_structure, {"pace":"slow","drag_points":2} for pacing). Keep keys simple.
+- severity: "error" = serious structural problem, "warning" = notable issue, "suggestion" = minor, "info" = healthy / neutral.
+
+Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
+{
+  "lenses": [
+    {
+      "lens_type": "plot_structure" | "pacing",
+      "metrics": { },
+      "finding": "string (Japanese diagnosis)",
+      "severity": "error" | "warning" | "suggestion" | "info"
+    }
+  ]
+}`,
 } as const;

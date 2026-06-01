@@ -9,6 +9,7 @@ import { useScenesDerivedData } from "./useScenesDerivedData";
 import { useScenesDnd } from "./useScenesDnd";
 import { useScenesKeyboard } from "./useScenesKeyboard";
 import { useLabelStore } from "@/features/labels/labelStore";
+import { useLensStore } from "@/features/post-effect/lensStore";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { ScenesPanelContext } from "./ScenesPanelContext";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -60,6 +61,7 @@ export function ScenesPanel() {
   const autoRevealActiveScene = useTreeStore((s) => s.autoRevealActiveScene);
   const pendingRevealId = useTreeStore((s) => s.pendingRevealId);
   const projectId = useTreeStore((s) => s.projectId);
+  const loadLens = useLensStore((s) => s.load);
   const mountInitialized = useExternalRootStore((s) => s.isInitialized);
   const createNode = useTreeStore((s) => s.createNode);
   const expandAll = useTreeStore((s) => s.expandAll);
@@ -87,6 +89,11 @@ export function ScenesPanel() {
       setLabelFilter(filtered);
     }
   }, [allLabels, labelFilter, setLabelFilter]);
+
+  // meta_structure の lens を読み込み、Outline バッジ (LensDot) に供給する。
+  useEffect(() => {
+    if (projectId) void loadLens(projectId);
+  }, [projectId, loadLens]);
 
   const filterRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);

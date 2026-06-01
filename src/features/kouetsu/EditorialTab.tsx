@@ -13,6 +13,7 @@ import { useKouetsuStore } from "./kouetsuStore";
 import { EditorialScopeBar } from "./EditorialScopeBar";
 import { ReviewSection } from "./sections/ReviewSection";
 import { PseudoCommentSection } from "./sections/PseudoCommentSection";
+import { MetaStructureSection } from "./sections/MetaStructureSection";
 
 function SectionHeader({
   title,
@@ -45,14 +46,6 @@ function SectionHeader({
         </span>
       )}
     </button>
-  );
-}
-
-function PlaceholderSection({ message }: { message: string }) {
-  return (
-    <div className="flex h-full items-center justify-center px-4 py-6 text-center text-xs text-muted-foreground/70">
-      {message}
-    </div>
   );
 }
 
@@ -163,7 +156,7 @@ export function EditorialTab() {
             onToggle={() => toggle(metaRef, metaExpanded)}
           />
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <PlaceholderSection message="メタ構造レビューは準備中です" />
+            <MetaStructureSection />
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>

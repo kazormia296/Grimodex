@@ -213,6 +213,24 @@ export interface PostEffectErrorEvent {
 // Query responses
 // ---------------------------------------------------------------------------
 
+/**
+ * scene_lens_data の 1 レコード (meta_structure の俯瞰診断)。
+ * Rust の list_scene_lens_for_project が camelCase + metrics を parse 済み object で返す。
+ * `runCompletedAt` は stale 判定 (scene.updatedAt > runCompletedAt) 用。
+ */
+export interface SceneLensRecord {
+  id: string;
+  projectId: string;
+  runId: string;
+  targetId: string | null;
+  lensType: "plot_structure" | "pacing" | "character_arc" | "pov";
+  metrics: Record<string, unknown>;
+  finding: string | null;
+  severity: PostEffectSeverity;
+  createdAt: string;
+  runCompletedAt: string | null;
+}
+
 export interface AnnotationsForSceneResponse {
   annotations: PostEffectAnnotation[];
   /** Relations where at least one endpoint is in the returned annotations */

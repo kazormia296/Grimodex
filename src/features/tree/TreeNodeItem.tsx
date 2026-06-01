@@ -22,6 +22,7 @@ import { TreeContextMenu } from "./TreeContextMenu";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { LabelDots } from "@/features/labels/LabelDots";
+import { LensDot } from "./LensDot";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -436,6 +437,11 @@ export function TreeNodeItem({
                   {aiRatio}%
                 </span>
               )}
+
+            {/* メタ構造 lens バッジ */}
+            {node.nodeType === "scene" && !isEditing && (
+              <LensDot sceneId={node.id} updatedAt={node.updatedAt} />
+            )}
 
             {/* Word count */}
             {showWordCounts && !isEditing && (

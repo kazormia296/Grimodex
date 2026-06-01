@@ -29,6 +29,7 @@ const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.0";
 const TYPO_PROMPT_VERSION: &str = "typo_detection_v1.0";
 const REVIEW_PROMPT_VERSION: &str = "review_v1.0";
 const PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_v1.0";
+const META_STRUCTURE_PROMPT_VERSION: &str = "meta_structure_v1.0";
 
 // システムプロンプト本文は FE catalog (src/prompts/ja/postEffect.ts) で管理し、
 // `StartPostEffectRunArgs.system_prompt` として IPC 経由で渡される。
@@ -2718,6 +2719,176 @@ async fn run_pseudo_comment_task(
 }
 
 // ---------------------------------------------------------------------------
+// meta_structure run (プロット構造・ペーシングの俯瞰診断)
+// ---------------------------------------------------------------------------
+
+/// meta_structure を 1 シーン分実行し、挿入した lens 件数を返す。
+/// annotation ではなく scene_lens_data に書き込む。
+#[allow(clippy::too_many_arguments)]
+async fn process_meta_structure_scene(
+    app: &AppHandle,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    scene_text: &str,
+    system_prompt: &str,
+    ai_settings_path: &std::path::Path,
+    on_stage: impl Fn(f32, &str) + Send,
+) -> Result<usize, anyhow::Error> {
+    let ai_settings = read_ai_settings(ai_settings_path);
+    let api_key = match get_api_key(&ai_settings.provider) {
+        Ok(Some(k)) => k,
+        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
+        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
+    };
+
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        model = %ai_settings.model,
+        "[post_effect] meta_structure: calling AI"
+    );
+    let raw_response =
+        call_post_effect_api(&ai_settings, &api_key, system_prompt, None, scene_text)
+            .await
+            .map_err(|e| anyhow::anyhow!("AI 呼び出し失敗: {e}"))?;
+
+    on_stage(0.5, "parsing");
+    let json_str = extract_json(&raw_response);
+    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] meta_structure: JSON parse FAILED"
+        );
+        anyhow::anyhow!("LLM 出力のパース失敗: {e}")
+    })?;
+
+    let lenses = extract_array_field(&parsed, "lenses")
+        .map_err(|e| anyhow::anyhow!("LLM 出力の構造が不正: {e}"))?;
+
+    on_stage(0.7, "saving");
+    let ws_state = app.state::<WorkspaceState>();
+    let count: usize = super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            let mut count = 0usize;
+            for lens in &lenses {
+                // MVP は plot_structure / pacing のみ採用
+                let lens_type = match lens["lens_type"].as_str().unwrap_or("") {
+                    "plot_structure" => "plot_structure",
+                    "pacing" => "pacing",
+                    _ => continue,
+                };
+                let severity = match lens["severity"].as_str().unwrap_or("info") {
+                    "error" => "error",
+                    "warning" => "warning",
+                    "suggestion" => "suggestion",
+                    _ => "info",
+                };
+                let finding = lens["finding"].as_str().unwrap_or("");
+                let metrics = lens
+                    .get("metrics")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+
+                let new_id = Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT INTO scene_lens_data
+                        (id, project_id, run_id, target_id, lens_type,
+                         metrics, finding, severity, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+                    params![
+                        new_id,
+                        project_id,
+                        run_id,
+                        scene_id,
+                        lens_type,
+                        metrics.to_string(),
+                        finding,
+                        severity,
+                    ],
+                )?;
+                count += 1;
+            }
+            Ok(count)
+        })
+    })?;
+
+    Ok(count)
+}
+
+async fn run_meta_structure_task(
+    app: AppHandle,
+    run_id: String,
+    project_id: String,
+    scene_id: String,
+    scene_text: String,
+    system_prompt: String,
+    ai_settings_path: std::path::PathBuf,
+) {
+    let emit_err = |msg: &str| {
+        let _ = app.emit(
+            "post_effect:error",
+            ErrorEvent {
+                run_id: &run_id,
+                error: msg.to_string(),
+            },
+        );
+    };
+
+    let _ = app.emit(
+        "post_effect:progress",
+        ProgressEvent {
+            run_id: &run_id,
+            stage: "calling_ai",
+            progress: 0.1,
+            message: None,
+        },
+    );
+
+    match process_meta_structure_scene(
+        &app,
+        &run_id,
+        &project_id,
+        &scene_id,
+        &scene_text,
+        &system_prompt,
+        &ai_settings_path,
+        |p, s| {
+            let _ = app.emit(
+                "post_effect:progress",
+                ProgressEvent {
+                    run_id: &run_id,
+                    stage: s,
+                    progress: p,
+                    message: None,
+                },
+            );
+        },
+    )
+    .await
+    {
+        Ok(n) => {
+            finalize_run(&app, &run_id);
+            let _ = app.emit(
+                "post_effect:done",
+                DoneEvent {
+                    run_id: &run_id,
+                    annotation_count: n,
+                    summary: None,
+                },
+            );
+        }
+        Err(e) => {
+            emit_err(&e.to_string());
+            fail_run(&app, &run_id, &e.to_string());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Multi-scene run task
 // ---------------------------------------------------------------------------
 
@@ -2806,6 +2977,19 @@ async fn run_multi_task(
             }
             "review" => {
                 process_review_scene(
+                    &app,
+                    &run_id,
+                    &project_id,
+                    &scene.scene_id,
+                    &scene.scene_text,
+                    &system_prompt,
+                    &ai_settings_path,
+                    |_p, _s| {},
+                )
+                .await
+            }
+            "meta_structure" => {
+                process_meta_structure_scene(
                     &app,
                     &run_id,
                     &project_id,
@@ -2943,6 +3127,7 @@ pub(crate) async fn start_post_effect_run(
             | "typo_detection"
             | "review"
             | "pseudo_comment"
+            | "meta_structure"
     );
     if !supported {
         return Err(
@@ -2955,6 +3140,7 @@ pub(crate) async fn start_post_effect_run(
         "typo_detection" => TYPO_PROMPT_VERSION,
         "review" => REVIEW_PROMPT_VERSION,
         "pseudo_comment" => PSEUDO_COMMENT_PROMPT_VERSION,
+        "meta_structure" => META_STRUCTURE_PROMPT_VERSION,
         _ => INTRA_PROMPT_VERSION,
     };
     if args.prompt_version != prompt_version {
@@ -3092,6 +3278,18 @@ pub(crate) async fn start_post_effect_run(
                     )
                     .await;
                 }
+                "meta_structure" => {
+                    run_meta_structure_task(
+                        app,
+                        rid,
+                        project_id,
+                        scene_id,
+                        scene_text,
+                        system_prompt,
+                        ai_path,
+                    )
+                    .await;
+                }
                 _ => {
                     run_intra_task(
                         app,
@@ -3151,7 +3349,11 @@ pub(crate) async fn start_post_effect_run_multi(
     let effect_type = args.effect_type.as_str();
     let supported = matches!(
         effect_type,
-        "consistency" | "intra_scene_consistency" | "typo_detection" | "review"
+        "consistency"
+            | "intra_scene_consistency"
+            | "typo_detection"
+            | "review"
+            | "meta_structure"
     );
     if !supported {
         return Err(anyhow::anyhow!("effect_type '{}' は未実装です", effect_type).into());
@@ -3355,11 +3557,57 @@ pub(crate) fn get_post_effect_run(
                 r?
             };
 
+            let lens_data = {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM scene_lens_data WHERE run_id = ? ORDER BY created_at",
+                )?;
+                let r: Result<Vec<_>, _> =
+                    stmt.query_map(params![run_id], row_to_lens_value)?.collect();
+                r?
+            };
+
             let mut result = run;
             result["annotations"] = Value::Array(annotations);
             result["relations"] = Value::Array(relations);
-            result["lens_data"] = Value::Array(vec![]);
+            result["lens_data"] = Value::Array(lens_data);
             Ok(result)
+        })
+    })
+}
+
+/// Outline オーバーレイ用: scene ごとに最新 run の lens を返す。
+/// 各 lens に run の completed_at (`runCompletedAt`) を付け、stale 判定に使う。
+#[tauri::command]
+pub(crate) fn list_scene_lens_for_project(
+    ws_state: State<'_, WorkspaceState>,
+    project_id: String,
+) -> Result<Value, AppError> {
+    super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT l.*, r.completed_at AS run_completed_at
+                   FROM scene_lens_data l
+                   JOIN post_effect_runs r ON r.id = l.run_id
+                  WHERE l.project_id = ?1
+                    AND r.effect_type = 'meta_structure'
+                    AND r.status = 'completed'
+                    AND l.created_at = (
+                        SELECT MAX(l2.created_at) FROM scene_lens_data l2
+                         WHERE l2.target_id = l.target_id
+                           AND l2.lens_type = l.lens_type
+                           AND l2.project_id = l.project_id
+                    )
+                  ORDER BY l.created_at",
+            )?;
+            let rows: Result<Vec<Value>, _> = stmt
+                .query_map(params![project_id], |row| {
+                    let mut v = row_to_lens_value(row)?;
+                    v["runCompletedAt"] =
+                        serde_json::json!(row.get::<_, Option<String>>("run_completed_at")?);
+                    Ok(v)
+                })?
+                .collect();
+            Ok(Value::Array(rows?))
         })
     })
 }
@@ -3711,5 +3959,22 @@ fn row_to_relation_value(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "status":          row.get::<_, String>("status")?,
         "metadata":        metadata,
         "createdAt":       row.get::<_, String>("created_at")?,
+    }))
+}
+
+fn row_to_lens_value(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let metrics_str: String = row.get("metrics").unwrap_or_else(|_| "{}".into());
+    let metrics: Value =
+        serde_json::from_str(&metrics_str).unwrap_or(Value::Object(Default::default()));
+    Ok(serde_json::json!({
+        "id":         row.get::<_, String>("id")?,
+        "projectId":  row.get::<_, String>("project_id")?,
+        "runId":      row.get::<_, String>("run_id")?,
+        "targetId":   row.get::<_, Option<String>>("target_id")?,
+        "lensType":   row.get::<_, String>("lens_type")?,
+        "metrics":    metrics,
+        "finding":    row.get::<_, Option<String>>("finding")?,
+        "severity":   row.get::<_, String>("severity")?,
+        "createdAt":  row.get::<_, String>("created_at")?,
     }))
 }
