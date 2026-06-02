@@ -1082,6 +1082,91 @@ describe("useChatStore", () => {
       expect(content).toContain("eco モード");
     });
 
+    it("uses Tier 2 with a non-eco overflow note (not 'eco モード') when includeBodies=true but bodies exceed the size threshold", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+      const { findMentionedEntriesAsync } =
+        await import("@/features/codex/rustMatcher");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockMatcher = vi.mocked(findMentionedEntriesAsync);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const folder = {
+        id: "ch1",
+        parentId: null,
+        nodeType: "folder",
+        title: "Big Chapter",
+        sortOrder: "a0",
+        synopsis: "outline",
+        charCount: 0,
+      };
+      // シーン数は 2 (≤30) だが totalChars が 100_000 を超えるため Tier 1 から
+      // overflow して Tier 2 に落ちる。シーン数は少ないので「シーン数が多いため」
+      // 系の文言だと誤りになる経路を意図的に踏む。
+      const sceneA = {
+        id: "sA",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "シーンA",
+        sortOrder: "a0",
+        synopsis: "Aのあらすじ",
+        charCount: 60_000,
+      };
+      const sceneB = {
+        id: "sB",
+        parentId: "ch1",
+        nodeType: "scene",
+        title: "シーンB",
+        sortOrder: "a1",
+        synopsis: null,
+        charCount: 60_000,
+      };
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [folder, sceneA, sceneB],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockMatcher.mockClear();
+      mockMatcher.mockResolvedValue([]);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "sA",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "folder",
+        scopeAnchorId: "ch1",
+        inputPinnedEntryIds: [],
+        includeBodies: true, // eco は OFF。それでも overflow で Tier 2 に落ちる
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      // overflow でも本文ロードは走らない (synopsis 集約)
+      expect(mockLoadScene).not.toHaveBeenCalled();
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      const content = args?.scene.content ?? "";
+      // synopsis 集約として組み立てられている (Tier 2 に到達している証跡)
+      expect(content).toContain("--- シーンA [current edit] ---");
+      expect(content).toContain("Synopsis: Aのあらすじ");
+      expect(content).toContain("(synopsis 未記入)");
+      // eco モードではないので「eco モード」表記を出さない (本件の回帰 gate)
+      expect(content).not.toContain("eco モード");
+      // 代わりに本文省略理由を上限超過として伝える (本文が無いことはモデルに明示)
+      expect(content).toContain("本文集約の上限を超えた");
+      expect(content).toContain("本文は注入されていません");
+    });
+
     it("Tier 2 folder: injects placed and unplaced beats into each scene part", async () => {
       const { listCodexEntries } = await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");

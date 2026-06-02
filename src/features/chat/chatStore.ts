@@ -893,10 +893,20 @@ async function buildAggregatedScene(opts: {
       ? `[この章「${anchorTitle}」配下のシーンを reading order (sortOrder) で集約しています。各シーンは「--- {タイトル} ---」区切りで列挙され、Synopsis 行があるシーンはその要約、[current edit] マーカー付きが現在編集中のシーンです]`
       : `[このプロジェクト「${anchorTitle}」の全シーンをフォルダ階層（=== フォルダ名 ===）ごとに集約しています。フォルダ見出しの Outline は各フォルダの synopsis、配下シーンは「--- {タイトル} ---」区切りで reading order に並び、[current edit] マーカー付きが現在編集中のシーンです]`;
 
+  // Tier 2 は (a) eco モード (includeBodies=false) と (b) 本文集約の上限超過
+  // (includeBodies=true だが descendants.length > MAX_BODY_TIER_SCENES または
+  // totalChars > MAX_BODY_TIER_CHARS) の両方で到達する。(b) を「eco モード」と
+  // 表示するとユーザーがトグルを OFF にしても eco 表記が消えず誤解を招くため、
+  // 原因に応じて注記を切り替える (tier3ProjectPreface と同じ方針)。上限超過は
+  // シーン数 OR 文字数のどちらでも起きるので、原因はシーン数に限定せず中立に書く。
+  const tier2BodyNote = includeBodies
+    ? "シーン数または総文字数が本文集約の上限を超えたため、本文は注入されていません"
+    : "eco モード: 本文は注入されていません";
+
   const tier2Preface =
     prefacePolicy === "folder"
-      ? `[この章「${anchorTitle}」配下のシーンを synopsis 単位で集約しています（eco モード: 本文は注入されていません）。各シーンは「--- {タイトル} ---」区切りで reading order に並んでおり、[current edit] マーカー付きが現在編集中のシーンです]`
-      : `[このプロジェクト「${anchorTitle}」の全シーンをフォルダ階層（=== フォルダ名 ===）ごとに synopsis 単位で集約しています（eco モード: 本文は注入されていません）。フォルダ見出しの Outline は各フォルダの synopsis、配下シーンは「--- {タイトル} ---」区切りです]`;
+      ? `[この章「${anchorTitle}」配下のシーンを synopsis 単位で集約しています（${tier2BodyNote}）。各シーンは「--- {タイトル} ---」区切りで reading order に並んでおり、[current edit] マーカー付きが現在編集中のシーンです]`
+      : `[このプロジェクト「${anchorTitle}」の全シーンをフォルダ階層（=== フォルダ名 ===）ごとに synopsis 単位で集約しています（${tier2BodyNote}）。フォルダ見出しの Outline は各フォルダの synopsis、配下シーンは「--- {タイトル} ---」区切りです]`;
 
   // Tier 3 (foldersOnly) は「シーン多すぎ overflow」と「シーン 0 のフォルダのみ
   // プロジェクト」の両方で到達する。後者で「シーン数が多いため」preface を出すと
