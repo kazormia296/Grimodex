@@ -189,10 +189,6 @@ export const AUX_TABLE: Record<AuxScope, string> = {
  * scene-anchored children). So each predicate mirrors the *same parent set*
  * CASCADE clears — capture more than that and restore's re-INSERT collides
  * with rows that were never wiped.
- *
- * `lint_term_dictionary` has no `project_id` column (physically
- * workspace-global); it stays global here until a `project_id` migration
- * lands, at which point it becomes `project_id = ?` like the others.
  */
 export const AUX_PROJECT_FILTER: Record<
   AuxScope,
@@ -318,9 +314,7 @@ export const AUX_PROJECT_FILTER: Record<
       "(SELECT id FROM map_boards WHERE project_id = ?)))",
     binds: 5,
   },
-  // workspace-global: no project_id column. Captured/restored globally until
-  // the project_id migration (see termDictionary / migrate.rs).
-  lint_term_dictionary: { where: "1 = 1", binds: 0 },
+  lint_term_dictionary: { where: "project_id = ?", binds: 1 },
 };
 
 /**

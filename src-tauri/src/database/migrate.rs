@@ -826,6 +826,7 @@ impl Database {
             -- no-duplicate-variant across the table.
             CREATE TABLE IF NOT EXISTS lint_term_dictionary (
                 id         TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 preferred  TEXT NOT NULL,
                 variants   TEXT NOT NULL,
                 severity   TEXT NOT NULL DEFAULT 'warning',
@@ -839,6 +840,9 @@ impl Database {
                 ON lint_term_dictionary(preferred);
             CREATE INDEX IF NOT EXISTS idx_lint_term_dict_sort
                 ON lint_term_dictionary(sort_order);
+            -- idx_lint_term_dict_project is created in the additive section
+            -- below, AFTER add_column_if_missing adds project_id to existing
+            -- DBs (the column does not yet exist here on an upgraded DB).
 
             -- Lint event history (Phase 2-3 writes; schema only for now).
             -- Append-only event log for self-tuning suggestions like
@@ -1028,6 +1032,23 @@ impl Database {
         // 想定読者プロフィール (kouetsu 疑似コメント「ターゲット読者層」ペルソナの実体)。
         // 既存プロジェクトは NULL = 未設定 (ターゲット読者層ペルソナは選択不可)。
         Self::add_column_if_missing(&conn, "projects", "target_readers", "TEXT")?;
+
+        // lint_term_dictionary を project スコープ化 (project_id 追加)。旧 DB の
+        // 用語辞書はワークスペース共有だったため、最古プロジェクトへ寄せる。
+        // ALTER では FK/NOT NULL を付けられないため列は nullable で追加し、
+        // backfill 後に孤児行 (project が 1 つも無い DB) を掃除する。新規 DB は
+        // CREATE TABLE 側で NOT NULL FK 付きで作られる。
+        Self::add_column_if_missing(&conn, "lint_term_dictionary", "project_id", "TEXT")?;
+        conn.execute_batch(
+            "UPDATE lint_term_dictionary
+                SET project_id = (
+                    SELECT id FROM projects ORDER BY created_at ASC, rowid ASC LIMIT 1
+                )
+              WHERE project_id IS NULL;
+             DELETE FROM lint_term_dictionary WHERE project_id IS NULL;
+             CREATE INDEX IF NOT EXISTS idx_lint_term_dict_project
+                 ON lint_term_dictionary(project_id);",
+        )?;
 
         // Note AI context injection (Phase A): context_mode / aliases on tree_nodes.
         Self::migrate_tree_nodes_note_context(&conn)?;

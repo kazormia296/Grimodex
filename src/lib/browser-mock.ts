@@ -403,6 +403,18 @@ const SCHEMA_DDL = `
     entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS lint_term_dictionary (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    preferred TEXT NOT NULL,
+    variants TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'warning',
+    note TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS scene_codex_mentions (
     scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
     codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,

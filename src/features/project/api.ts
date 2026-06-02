@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { projects } from "@/db/schema";
+import { projects, lintTermDictionary } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
 export type Project = typeof projects.$inferSelect;
@@ -65,5 +65,11 @@ export async function updateProject(
 }
 
 export async function deleteProject(id: string): Promise<void> {
+  // lint_term_dictionary.project_id is FK-cascaded only on fresh DBs; on DBs
+  // upgraded via ALTER the column has no FK, so delete its rows explicitly to
+  // avoid orphans (harmless on fresh DBs — the rows are already gone).
+  await db
+    .delete(lintTermDictionary)
+    .where(eq(lintTermDictionary.projectId, id));
   await db.delete(projects).where(eq(projects.id, id));
 }

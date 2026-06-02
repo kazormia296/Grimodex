@@ -1080,6 +1080,9 @@ export const lintTermDictionary = sqliteTable(
   "lint_term_dictionary",
   {
     id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
     preferred: text("preferred").notNull(),
     variants: text("variants").notNull(),
     severity: text("severity").notNull().default("warning"),
@@ -1092,6 +1095,7 @@ export const lintTermDictionary = sqliteTable(
   (table) => [
     index("idx_lint_term_dict_preferred").on(table.preferred),
     index("idx_lint_term_dict_sort").on(table.sortOrder),
+    index("idx_lint_term_dict_project").on(table.projectId),
   ],
 );
 

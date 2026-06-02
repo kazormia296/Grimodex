@@ -236,8 +236,9 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
         const r = await dbExec<QueryResult>(
           `SELECT id, preferred, variants, severity, note, enabled, sort_order, created_at, updated_at
            FROM lint_term_dictionary
+           WHERE project_id = ?
            ORDER BY sort_order ASC, preferred ASC`,
-          [],
+          [getCurrentProjectId()],
           "all",
         );
         const aliases = await fetchCodexAliases();
@@ -304,10 +305,11 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       const sortOrder = (others[others.length - 1]?.sortOrder ?? -1) + 1;
       await dbExec(
         `INSERT INTO lint_term_dictionary
-           (id, preferred, variants, severity, note, enabled, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, project_id, preferred, variants, severity, note, enabled, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
+          getCurrentProjectId(),
           cleaned.preferred,
           JSON.stringify(cleaned.variants),
           cleaned.severity,
@@ -373,10 +375,11 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       const newVariants = source.variants.map((v) => `${v}_copy`);
       await dbExec(
         `INSERT INTO lint_term_dictionary
-           (id, preferred, variants, severity, note, enabled, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, project_id, preferred, variants, severity, note, enabled, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           newId,
+          getCurrentProjectId(),
           `${source.preferred}（コピー）`,
           JSON.stringify(newVariants),
           source.severity,

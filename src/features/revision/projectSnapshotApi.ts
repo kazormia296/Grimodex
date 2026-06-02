@@ -638,11 +638,9 @@ async function restoreStructural(
       params: [PROJECT_ID],
       method: "run",
     });
-    // lint_term_dictionary has no project_id column (workspace-global); wiped
-    // globally to match the global capture until the project_id migration.
     pushStmt({
-      sql: "DELETE FROM lint_term_dictionary",
-      params: [],
+      sql: "DELETE FROM lint_term_dictionary WHERE project_id = ?",
+      params: [PROJECT_ID],
       method: "run",
     });
   }
