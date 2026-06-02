@@ -13,7 +13,12 @@ export function ConsistencySection() {
   }
 
   if (scope === "ignored") {
-    return <DismissedAnnotationsView />;
+    return (
+      <DismissedAnnotationsView
+        category="consistency_anchor"
+        emptyLabel="無視した整合性チェック結果はありません"
+      />
+    );
   }
 
   // current scope

@@ -10,6 +10,15 @@ export function MetaStructureSection() {
     return <MetaStructureView scope="project" />;
   }
 
+  if (scope === "ignored") {
+    // メタ構造は scene_lens 由来で dismiss の概念を持たない (annotation ではない)。
+    return (
+      <div className="px-3 py-4 text-xs text-muted-foreground">
+        メタ構造に除外項目はありません
+      </div>
+    );
+  }
+
   if (!activeSceneId) {
     return (
       <div className="px-3 py-4 text-xs text-muted-foreground">

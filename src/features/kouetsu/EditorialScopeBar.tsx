@@ -4,6 +4,7 @@ import { useKouetsuStore, type IssuesScope } from "./kouetsuStore";
 const SCOPES: Array<{ id: IssuesScope; label: string }> = [
   { id: "current", label: "現在シーン" },
   { id: "project", label: "プロジェクト" },
+  { id: "ignored", label: "除外" },
 ];
 
 export function EditorialScopeBar() {

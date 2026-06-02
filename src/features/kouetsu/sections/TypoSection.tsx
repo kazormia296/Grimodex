@@ -13,8 +13,15 @@ export function TypoSection() {
   }
 
   if (scope === "ignored") {
-    // MVP: typo 専用 dismiss view は作らず、整合性と同じ DismissedAnnotationsView を流用
-    return <DismissedAnnotationsView />;
+    // 整合性と同じ DismissedAnnotationsView を category で絞って流用。
+    // category を渡さないと両セクションが byte 同一の全件リストを出し、
+    // 誤字側でも「無視した整合性チェック結果はありません」が漏れていた。
+    return (
+      <DismissedAnnotationsView
+        category="typo_anchor"
+        emptyLabel="無視した誤字脱字はありません"
+      />
+    );
   }
 
   // current scope

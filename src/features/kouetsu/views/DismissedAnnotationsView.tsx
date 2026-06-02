@@ -9,8 +9,10 @@ import {
 } from "@/features/post-effect/api";
 import type {
   PostEffectAnnotation,
+  PostEffectCategory,
   PostEffectSeverity,
 } from "@/features/post-effect/types";
+import { selectManuallyDismissed } from "@/features/kouetsu/dismissedAnnotations";
 
 const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
   error: <XCircle size={13} className="text-destructive shrink-0" />,
@@ -19,21 +21,14 @@ const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
   info: <Info size={13} className="text-muted-foreground shrink-0" />,
 };
 
-function isManualDismiss(ann: PostEffectAnnotation): boolean {
-  try {
-    const meta =
-      typeof ann.metadata === "string"
-        ? (JSON.parse(ann.metadata) as Record<string, unknown>)
-        : (ann.metadata as Record<string, unknown>);
-    const inner =
-      (meta.codex_ref as Record<string, unknown> | undefined) ?? meta;
-    return inner.dismiss_source === "manual";
-  } catch {
-    return false;
-  }
+interface Props {
+  /** このビューが扱う annotation category。整合性=consistency_anchor / 誤字脱字=typo_anchor。 */
+  category: PostEffectCategory;
+  /** 空状態の文言。section ごとに正しいラベルを出す (整合性向け文言の漏れを防ぐ)。 */
+  emptyLabel: string;
 }
 
-export function DismissedAnnotationsView() {
+export function DismissedAnnotationsView({ category, emptyLabel }: Props) {
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -47,11 +42,16 @@ export function DismissedAnnotationsView() {
   useEffect(() => {
     if (!projectId) return;
     setLoading(true);
+    // listAnnotationsForProject は category 引数を持たないため client 側で絞る。
+    // category で絞らないと各セクションが同一の全件リストを描画してしまう
+    // (byte 同一の重複)。判定ロジックは dismissedAnnotations.ts に抽出・unit test 済み。
     listAnnotationsForProject({ projectId, status: "dismissed" })
-      .then((resp) => setAnnotations(resp.annotations.filter(isManualDismiss)))
+      .then((resp) =>
+        setAnnotations(selectManuallyDismissed(resp.annotations, category)),
+      )
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [projectId]);
+  }, [projectId, category]);
 
   async function reopen(ann: PostEffectAnnotation) {
     try {
@@ -75,7 +75,7 @@ export function DismissedAnnotationsView() {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
         <Info size={16} />
-        <span>無視した整合性チェック結果はありません</span>
+        <span>{emptyLabel}</span>
       </div>
     );
   }
