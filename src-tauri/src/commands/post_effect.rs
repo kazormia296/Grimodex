@@ -3603,6 +3603,34 @@ pub(crate) fn get_post_effect_run(
     })
 }
 
+/// Outline オーバーレイ用クエリ。最新 run の lens を scene ごとに返す。
+///
+/// 最新判定の MAX(created_at) サブクエリは **外側と同じ母集団** (completed な
+/// meta_structure run) に scope しなければならない。lens 行は
+/// `process_meta_structure_scene` で run が completed になる **前** に INSERT
+/// されるため、再実行・キャンセル・クラッシュ復旧 (migrate.rs の running→failed)
+/// で残った failed/running run の新しい lens 行が、scope 漏れの MAX を汚染すると、
+/// 直前の completed run の行が `created_at = MAX` 条件から外れて当該シーンが
+/// overlay からサイレントに消える。サブクエリ側にも JOIN + status/effect_type
+/// 条件を入れて MAX を completed 行のみから取る。
+const SCENE_LENS_FOR_PROJECT_SQL: &str = "SELECT l.*, r.completed_at AS run_completed_at
+   FROM scene_lens_data l
+   JOIN post_effect_runs r ON r.id = l.run_id
+  WHERE l.project_id = ?1
+    AND r.effect_type = 'meta_structure'
+    AND r.status = 'completed'
+    AND l.created_at = (
+        SELECT MAX(l2.created_at)
+          FROM scene_lens_data l2
+          JOIN post_effect_runs r2 ON r2.id = l2.run_id
+         WHERE l2.target_id = l.target_id
+           AND l2.lens_type = l.lens_type
+           AND l2.project_id = l.project_id
+           AND r2.effect_type = 'meta_structure'
+           AND r2.status = 'completed'
+    )
+  ORDER BY l.created_at";
+
 /// Outline オーバーレイ用: scene ごとに最新 run の lens を返す。
 /// 各 lens に run の completed_at (`runCompletedAt`) を付け、stale 判定に使う。
 #[tauri::command]
@@ -3612,21 +3640,7 @@ pub(crate) fn list_scene_lens_for_project(
 ) -> Result<Value, AppError> {
     super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT l.*, r.completed_at AS run_completed_at
-                   FROM scene_lens_data l
-                   JOIN post_effect_runs r ON r.id = l.run_id
-                  WHERE l.project_id = ?1
-                    AND r.effect_type = 'meta_structure'
-                    AND r.status = 'completed'
-                    AND l.created_at = (
-                        SELECT MAX(l2.created_at) FROM scene_lens_data l2
-                         WHERE l2.target_id = l.target_id
-                           AND l2.lens_type = l.lens_type
-                           AND l2.project_id = l.project_id
-                    )
-                  ORDER BY l.created_at",
-            )?;
+            let mut stmt = conn.prepare(SCENE_LENS_FOR_PROJECT_SQL)?;
             let rows: Result<Vec<Value>, _> = stmt
                 .query_map(params![project_id], |row| {
                     let mut v = row_to_lens_value(row)?;
@@ -4005,4 +4019,113 @@ fn row_to_lens_value(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "severity":   row.get::<_, String>("severity")?,
         "createdAt":  row.get::<_, String>("created_at")?,
     }))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod list_scene_lens_for_project_tests {
+    use super::SCENE_LENS_FOR_PROJECT_SQL;
+    use rusqlite::{params, Connection};
+
+    fn open_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE post_effect_runs (
+                id           TEXT PRIMARY KEY,
+                effect_type  TEXT,
+                status       TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE scene_lens_data (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT,
+                run_id      TEXT,
+                target_id   TEXT,
+                lens_type   TEXT,
+                metrics     TEXT NOT NULL DEFAULT '{}',
+                finding     TEXT,
+                severity    TEXT NOT NULL DEFAULT 'info',
+                created_at  TEXT
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn add_run(conn: &Connection, id: &str, effect_type: &str, status: &str, completed_at: &str) {
+        conn.execute(
+            "INSERT INTO post_effect_runs (id, effect_type, status, completed_at)
+             VALUES (?, ?, ?, ?)",
+            params![id, effect_type, status, completed_at],
+        )
+        .unwrap();
+    }
+
+    fn add_lens(
+        conn: &Connection,
+        id: &str,
+        run_id: &str,
+        target_id: &str,
+        lens_type: &str,
+        created_at: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO scene_lens_data
+                (id, project_id, run_id, target_id, lens_type, finding, severity, created_at)
+             VALUES (?, 'p1', ?, ?, ?, 'f', 'info', ?)",
+            params![id, run_id, target_id, lens_type, created_at],
+        )
+        .unwrap();
+    }
+
+    /// SQL を走らせ、返ってきた lens 行の run_id 一覧を返す。
+    fn query_run_ids(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn.prepare(SCENE_LENS_FOR_PROJECT_SQL).unwrap();
+        stmt.query_map(params!["p1"], |row| row.get::<_, String>("run_id"))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn newer_failed_run_does_not_shadow_completed_lens() {
+        // 回帰ガード: completed run の lens が、後から失敗した re-run の
+        // 新しい lens 行 (MAX を汚染) によって overlay から消えてはならない。
+        let conn = open_db();
+        add_run(&conn, "rA", "meta_structure", "completed", "2026-01-01T00:00:00");
+        add_lens(&conn, "lA", "rA", "s1", "plot_structure", "2026-01-01T00:00:00");
+        // 後から走って失敗した re-run。lens 行は finalize 前に INSERT 済みで残る。
+        add_run(&conn, "rB", "meta_structure", "failed", "2026-01-02T00:00:00");
+        add_lens(&conn, "lB", "rB", "s1", "plot_structure", "2026-01-02T00:00:00");
+
+        assert_eq!(
+            query_run_ids(&conn),
+            vec!["rA".to_string()],
+            "completed run の lens のみ返るべき"
+        );
+    }
+
+    #[test]
+    fn running_rerun_does_not_shadow_completed_lens() {
+        // クラッシュ前 (running のまま) の re-run も同様に shadow してはならない。
+        let conn = open_db();
+        add_run(&conn, "rA", "meta_structure", "completed", "2026-01-01T00:00:00");
+        add_lens(&conn, "lA", "rA", "s1", "pacing", "2026-01-01T00:00:00");
+        add_run(&conn, "rB", "meta_structure", "running", "");
+        add_lens(&conn, "lB", "rB", "s1", "pacing", "2026-01-02T00:00:00");
+
+        assert_eq!(query_run_ids(&conn), vec!["rA".to_string()]);
+    }
+
+    #[test]
+    fn newest_completed_run_wins() {
+        // 正常系: 同一 scene+lens を 2 回 completed したら最新だけ返る。
+        let conn = open_db();
+        add_run(&conn, "rA", "meta_structure", "completed", "2026-01-01T00:00:00");
+        add_lens(&conn, "lA", "rA", "s1", "plot_structure", "2026-01-01T00:00:00");
+        add_run(&conn, "rB", "meta_structure", "completed", "2026-01-03T00:00:00");
+        add_lens(&conn, "lB", "rB", "s1", "plot_structure", "2026-01-03T00:00:00");
+
+        assert_eq!(query_run_ids(&conn), vec!["rB".to_string()]);
+    }
 }
