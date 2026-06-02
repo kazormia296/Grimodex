@@ -1486,6 +1486,23 @@ export function EditorPane({
             );
             markEnd("sceneLoad.loadAnchors.parallel");
 
+            // allSettled で 1 件の失敗は部分適用に留めるが、無音だと
+            // マーク欠落の原因が追えない。rejected は最低限ログに残す
+            // (旧直列 await は throw→unhandledrejection で console に出ていた)。
+            for (const [label, r] of [
+              ["authorshipSpans", spansR],
+              ["foreshadowAnchors", foreshadowR],
+              ["annotations", annotationR],
+            ] as const) {
+              if (r.status === "rejected") {
+                debugLog.error(
+                  "EditorPane",
+                  `sceneLoad.loadAnchors:${label} failed`,
+                  errorDetail(r.reason),
+                );
+              }
+            }
+
             if (!cancelled) {
               const spans = spansR.status === "fulfilled" ? spansR.value : [];
               const foreshadowMarks =

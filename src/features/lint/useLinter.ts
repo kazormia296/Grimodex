@@ -359,6 +359,11 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
     // Re-run lint immediately when the effective config changes
     // (per design: "設定変更 → 現在シーンを即座に再 Lint").
     const unsubscribeConfig = useLintConfigStore.subscribe(() => {
+      // 再有効化時に cursorOffset を即 refresh する。無効中は onSelectionUpdate が
+      // early-return して cursorOffset が stale 化しており、schedule(0) だけでは
+      // reverse-highlight が古いキャレット位置を指したまま次の selection 変更まで
+      // 直らない。onSelectionUpdate は enabled を再判定するので無効のままなら no-op。
+      onSelectionUpdate();
       schedule(0);
     });
 

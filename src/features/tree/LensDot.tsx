@@ -35,7 +35,16 @@ export function LensDot({
   const worst =
     SEVERITY_ORDER.find((sev) => lenses.some((l) => l.severity === sev)) ??
     "info";
-  const runCompletedAt = lenses[0]?.runCompletedAt ?? null;
+  // lens 行は created_at 昇順なので lenses[0] は最古。1 シーンが複数 run の
+  // lens (plot_structure / pacing が別 run など) を持つと最古 run の完了時刻で
+  // stale 判定され、最新診断より前の編集でも誤って薄表示になる。グループ内の
+  // 最新 runCompletedAt と比較する。
+  const runCompletedAt = lenses.reduce<string | null>((max, l) => {
+    const t = l.runCompletedAt ?? null;
+    if (!t) return max;
+    if (!max) return t;
+    return new Date(t).getTime() > new Date(max).getTime() ? t : max;
+  }, null);
   const stale =
     !!updatedAt &&
     !!runCompletedAt &&
