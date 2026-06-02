@@ -789,6 +789,13 @@ function appendProjectGroupedParts(
   // foldersOnly では nested scene は親 folder の outline で代表されるが、
   // top-level (parentId === null) の scene には親 folder が無く情報が消える。
   // 擬似グループ `=== (top level) ===` で title 行のみ救済する。
+  //
+  // 仕様 (意図的な簡略化): この救済セクションは同階層のフォルダ群より「前」に
+  // 一括で出すため、top-level scene と folder が混在する場合、top-level scene は
+  // sortOrder 上の位置ではなく先頭にまとまり reading order から逸脱する。これは
+  // foldersOnly (>200 シーンの overflow 時のみの title-only 表示) でしか起きず影響が
+  // 小さい一方、sortOrder 位置へのインライン展開は Tier 3 出力構造の変更でリスク>益。
+  // よってこの逸脱は許容する (回帰ではなく仕様)。
   if (parentId === null && mode === "foldersOnly") {
     const topLevelScenes = kids.filter((n) => n.nodeType === "scene");
     if (topLevelScenes.length > 0) {
