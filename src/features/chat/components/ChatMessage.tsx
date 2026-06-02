@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { memo, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Sparkles } from "lucide-react";
@@ -90,7 +90,7 @@ interface ChatMessageProps {
   onContextMenu?: (e: React.MouseEvent, msg: ChatMessageType) => void;
 }
 
-export function ChatMessage({
+function ChatMessageImpl({
   msg,
   isStreaming,
   onInsert,
@@ -303,3 +303,10 @@ export function ChatMessage({
   );
   return __renderResult;
 }
+
+// ストリーミング中は messages 配列が delta 毎に新参照になるが、確定済みの
+// 過去メッセージは msg 参照が保たれる。memo 化しておくと streaming bubble
+// 以外は再レンダー（= ReactMarkdown 再パース + codex matcher 再走査）を
+// スキップできる。前提として ChatPanel 側で渡すコールバックが安定参照で
+// あること（handleExtract*/handleSaveSnippet* は messages 依存を外し済み）。
+export const ChatMessage = memo(ChatMessageImpl);

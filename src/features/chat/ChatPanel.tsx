@@ -379,6 +379,7 @@ export function ChatPanel() {
   );
 
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Codex extraction dialog
   const [extractionDialog, setExtractionDialog] = useState<{
@@ -390,20 +391,27 @@ export function ChatPanel() {
 
   const createCodexEntry = useCodexStore((s) => s.create);
 
+  // NOTE: ChatMessage は memo 化されている。これらのハンドラを messages 依存に
+  // すると delta 毎に新参照になり memo が全 bubble で破綻するため、最新 messages
+  // は呼び出し時に getState() から読む（イベントハンドラなので call-time 読みで正)。
   const handleExtractCodexDetailed = useCallback(
     (messageId: string, selectedText: string | null) => {
-      const msg = messages.find((m) => m.id === messageId);
+      const msg = useChatStore
+        .getState()
+        .messages.find((m) => m.id === messageId);
       const content = selectedText ?? msg?.content ?? "";
       const messageRole =
         msg?.role === "user" ? ("user" as const) : ("assistant" as const);
       setExtractionDialog({ open: true, messageId, content, messageRole });
     },
-    [messages],
+    [],
   );
 
   const handleExtractCodexQuick = useCallback(
     async (messageId: string) => {
-      const msg = messages.find((m) => m.id === messageId);
+      const msg = useChatStore
+        .getState()
+        .messages.find((m) => m.id === messageId);
       if (!msg) return;
       const text = msg.content;
       const name =
@@ -422,7 +430,7 @@ export function ChatPanel() {
         useCodexStore.getState().requestSelectEntry(entry.id);
       }
     },
-    [messages, createCodexEntry],
+    [createCodexEntry],
   );
 
   // Snippet extraction dialog
@@ -437,7 +445,9 @@ export function ChatPanel() {
 
   const handleSaveSnippetDetailed = useCallback(
     (messageId: string, selectedText: string | null) => {
-      const msg = messages.find((m) => m.id === messageId);
+      const msg = useChatStore
+        .getState()
+        .messages.find((m) => m.id === messageId);
       const content = selectedText ?? msg?.content ?? "";
       const messageRole =
         msg?.role === "user" ? ("user" as const) : ("assistant" as const);
@@ -448,12 +458,14 @@ export function ChatPanel() {
         messageRole,
       });
     },
-    [messages],
+    [],
   );
 
   const handleSaveSnippetQuick = useCallback(
     async (messageId: string) => {
-      const msg = messages.find((m) => m.id === messageId);
+      const msg = useChatStore
+        .getState()
+        .messages.find((m) => m.id === messageId);
       if (!msg) return;
       const content = msg.content;
       const title =
@@ -475,14 +487,36 @@ export function ChatPanel() {
         useSnippetStore.getState().requestSelectEntry(snippet.id);
       }
     },
-    [messages, createSnippet],
+    [createSnippet],
   );
 
-  useEffect(() => {
-    if (typeof bottomRef.current?.scrollIntoView === "function") {
-      bottomRef.current.scrollIntoView({ behavior: "smooth" });
+  const scrollToBottom = useCallback(() => {
+    const node = bottomRef.current;
+    if (node && typeof node.scrollIntoView === "function") {
+      // smooth だと delta 毎に進行中アニメを cancel+restart してレイアウトを
+      // 強制するため auto。near-bottom ガードと併せてストリーミング中のカクつき
+      // と「上スクロールしても下端に引き戻される」UX バグを解消する。
+      node.scrollIntoView({ behavior: "auto" });
     }
-  }, [messages]);
+  }, []);
+
+  // ユーザーが既に最下部付近にいるときだけ追従する。上にスクロールして過去を
+  // 読んでいる最中は delta で引き戻さない。スクロールコンテナが無い環境
+  // (happy-dom 等) では従来どおり常に追従。
+  const isNearBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
+
+  useEffect(() => {
+    if (isNearBottom()) scrollToBottom();
+  }, [messages, isNearBottom, scrollToBottom]);
+
+  // セッション切替時は最新メッセージへ必ずジャンプ。
+  useEffect(() => {
+    scrollToBottom();
+  }, [activeSessionId, scrollToBottom]);
 
   const rawInsertFromChat = useEditorStore((s) => s.insertFromChat);
 
@@ -714,7 +748,10 @@ export function ChatPanel() {
         onDismissCacheInvalidated={dismissCacheInvalidated}
       />
 
-      <div className="flex-1 overflow-y-auto px-4 py-3">
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto px-4 py-3"
+      >
         {isLoadingMessages ? (
           <MessageBubbleSkeletonList testId="chat-messages-loading" />
         ) : messages.length === 0 ? (
