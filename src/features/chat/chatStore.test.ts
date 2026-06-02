@@ -368,6 +368,26 @@ describe("useChatStore", () => {
       expect(isStreaming).toBe(false);
     });
 
+    it("coalesces multiple text deltas into the final assistant content without dropping the tail", async () => {
+      // perf 所見#1b: onTextDelta は rAF でまとめて flush されるが、onDone で
+      // 同期 flush されるため最終 content は全 delta の連結と一致する。
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          callbacks.onTextDelta("あ");
+          callbacks.onTextDelta("い");
+          callbacks.onTextDelta("う");
+          callbacks.onDone({ stopReason: "end_turn" });
+          return () => {};
+        },
+      );
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const { messages } = useChatStore.getState();
+      expect(messages[1].role).toBe("assistant");
+      expect(messages[1].content).toBe("あいう");
+    });
+
     it("sets isStreaming to true during API call", async () => {
       let streamingDuringCall = false;
       mockSendChatMessageStream.mockImplementation(

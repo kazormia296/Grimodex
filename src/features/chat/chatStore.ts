@@ -1107,6 +1107,8 @@ async function buildAggregatedScene(opts: {
 
 // Module-level cleanup function for the active stream
 let _streamCleanup: (() => void) | null = null;
+// Stop 経路から coalesce バッファを同期 flush するためのフック（sendMessage が設定）。
+let _flushPendingDelta: (() => void) | null = null;
 // Debounce timer for refreshContextLayers when input-detected entry IDs change.
 // Token counting (WASM tiktoken) は同期で長文 scene でも数百 ms。打鍵が落ち着いてから走らせる。
 let _inputPinnedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2817,19 +2819,49 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
       // Start streaming — returns a Promise<cleanup_fn>
       await new Promise<void>((resolve, reject) => {
+        // delta coalesce: provider が 1:1 で emit する SSE delta(秒間 20〜40)を
+        // requestAnimationFrame でまとめて flush し、streaming bubble の
+        // ReactMarkdown 再パース頻度を frame rate に抑える（所見#1b）。
+        // onDone/onError/stop では必ず同期 flush して末尾を取りこぼさない。
+        let pendingDelta = "";
+        let flushHandle: number | null = null;
+        const flushDelta = () => {
+          if (flushHandle !== null) {
+            if (typeof cancelAnimationFrame === "function") {
+              cancelAnimationFrame(flushHandle);
+            }
+            flushHandle = null;
+          }
+          if (!pendingDelta) return;
+          const chunk = pendingDelta;
+          pendingDelta = "";
+          set((s) => {
+            const msgs = [...s.messages];
+            const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
+            if (idx >= 0) {
+              msgs[idx] = {
+                ...msgs[idx],
+                content: msgs[idx].content + chunk,
+              };
+            }
+            return { messages: msgs };
+          });
+        };
+        const scheduleFlush = () => {
+          if (flushHandle !== null) return;
+          if (typeof requestAnimationFrame !== "function") {
+            // 非ブラウザ環境(テスト等)は即時 flush にフォールバック（従来挙動）。
+            flushDelta();
+            return;
+          }
+          flushHandle = requestAnimationFrame(flushDelta);
+        };
+        _flushPendingDelta = flushDelta;
+
         const callbacks = {
           onTextDelta: (delta: string) => {
-            set((s) => {
-              const msgs = [...s.messages];
-              const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
-              if (idx >= 0) {
-                msgs[idx] = {
-                  ...msgs[idx],
-                  content: msgs[idx].content + delta,
-                };
-              }
-              return { messages: msgs };
-            });
+            pendingDelta += delta;
+            scheduleFlush();
           },
           onThinkingDelta: (delta: string) => {
             thinkingAccumulator += delta;
@@ -2839,6 +2871,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             inputTokens?: number;
             outputTokens?: number;
           }) => {
+            // 末尾の buffered delta を確定前に同期反映。
+            flushDelta();
+            _flushPendingDelta = null;
             const chatDurationMs = Math.round(
               performance.now() - chatStartTime,
             );
@@ -2958,6 +2993,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               });
           },
           onError: (message: string) => {
+            // エラー時も partial content を保持するため同期 flush。
+            flushDelta();
+            _flushPendingDelta = null;
             _streamCleanup?.();
             _streamCleanup = null;
             reject(new Error(message));
@@ -3384,6 +3422,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } else {
       void chatApi.abortChatStream().catch(() => {});
     }
+    // abort 前に buffered delta を確定（onDone/onError が来ない hard-abort 対策）。
+    _flushPendingDelta?.();
+    _flushPendingDelta = null;
     _streamCleanup?.();
     _streamCleanup = null;
     set({ isStreaming: false, agentProgress: null });
