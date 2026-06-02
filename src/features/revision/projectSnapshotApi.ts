@@ -20,6 +20,7 @@ import {
   AUX_SCOPES,
   AUX_SCOPE_OWNER,
   AUX_TABLE,
+  AUX_PROJECT_FILTER,
   AUX_BODY_DEPENDENCY,
   AUX_CODEX_DEPENDENCY,
   emptySkipReport,
@@ -287,17 +288,23 @@ export async function createProjectSnapshot(params: {
       .values(versionIds.map((versionId) => ({ snapshotId, versionId })));
   }
 
-  // Aux scopes: one JSON row per aux scope, capturing every row of the
-  // source table verbatim. Single-project app: SELECT * with no WHERE.
-  // Some aux tables may not exist in the current DB (browser-mock omits
-  // tables it doesn't need) — treat those as empty payloads rather than
-  // failing the whole snapshot.
+  // Aux scopes: one JSON row per aux scope, capturing the current project's
+  // rows of the source table verbatim. The per-scope WHERE predicate
+  // (AUX_PROJECT_FILTER) scopes the capture to PROJECT_ID, mirroring the set
+  // restore wipes — capturing other projects' rows would collide on restore's
+  // re-INSERT (their originals are never wiped). Some aux tables may not exist
+  // in the current DB (browser-mock omits tables it doesn't need) — treat
+  // those as empty payloads rather than failing the whole snapshot.
   const auxInserts: (typeof projectSnapshotAux.$inferInsert)[] = [];
   for (const scope of AUX_SCOPES) {
     const table = AUX_TABLE[scope];
+    const filter = AUX_PROJECT_FILTER[scope];
     let rows: RawRow[];
     try {
-      rows = await rawAll(`SELECT * FROM "${table}"`);
+      rows = await rawAll(
+        `SELECT * FROM "${table}" WHERE ${filter.where}`,
+        Array(filter.binds).fill(PROJECT_ID),
+      );
     } catch {
       // table likely doesn't exist in this DB; record an empty payload so
       // restore stays a no-op for this scope.
@@ -624,11 +631,15 @@ async function restoreStructural(
     });
   }
   if (scopes.has("lint")) {
+    // Scene-scoped: only wipe this project's ignored diagnostics so a restore
+    // can't clobber other projects' lint state (mirrors the scoped capture).
     pushStmt({
-      sql: "DELETE FROM lint_ignored_diagnostics",
-      params: [],
+      sql: "DELETE FROM lint_ignored_diagnostics WHERE scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?)",
+      params: [PROJECT_ID],
       method: "run",
     });
+    // lint_term_dictionary has no project_id column (workspace-global); wiped
+    // globally to match the global capture until the project_id migration.
     pushStmt({
       sql: "DELETE FROM lint_term_dictionary",
       params: [],

@@ -177,6 +177,153 @@ export const AUX_TABLE: Record<AuxScope, string> = {
 };
 
 /**
+ * Per-aux-scope WHERE predicate that scopes a capture `SELECT *` to the
+ * **current project**. `binds` is how many times the current project id must
+ * be bound (the predicate uses that many `?`).
+ *
+ * Invariant: for each table the captured set must equal the set restore
+ * *wipes* for the current project. Restore wipes via the project_id'd
+ * top-level DELETEs + CASCADE (`DELETE FROM map_boards WHERE project_id=?`
+ * clears all map_* children; `DELETE FROM codex_entries WHERE project_id=?`
+ * clears codex children; `DELETE FROM tree_nodes WHERE project_id=?` clears
+ * scene-anchored children). So each predicate mirrors the *same parent set*
+ * CASCADE clears — capture more than that and restore's re-INSERT collides
+ * with rows that were never wiped.
+ *
+ * `lint_term_dictionary` has no `project_id` column (physically
+ * workspace-global); it stays global here until a `project_id` migration
+ * lands, at which point it becomes `project_id = ?` like the others.
+ */
+export const AUX_PROJECT_FILTER: Record<
+  AuxScope,
+  { where: string; binds: number }
+> = {
+  // direct project_id
+  codex_types: { where: "project_id = ?", binds: 1 },
+  codex_tags: { where: "project_id = ?", binds: 1 },
+  codex_detail_definitions: { where: "project_id = ?", binds: 1 },
+  codex_relations: { where: "project_id = ?", binds: 1 },
+  generation_logs: { where: "project_id = ?", binds: 1 },
+  map_boards: { where: "project_id = ?", binds: 1 },
+  foreshadows: { where: "project_id = ?", binds: 1 },
+  labels: { where: "project_id = ?", binds: 1 },
+  // via codex_entries (entry_id / codex_entry_id → codex_entries.project_id)
+  codex_dismissed_relations: {
+    where: "entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?)",
+    binds: 1,
+  },
+  codex_quick_pins: {
+    where: "entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?)",
+    binds: 1,
+  },
+  codex_entry_tags: {
+    where: "entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?)",
+    binds: 1,
+  },
+  codex_detail_values: {
+    where: "entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?)",
+    binds: 1,
+  },
+  codex_entry_phases: {
+    where: "entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?)",
+    binds: 1,
+  },
+  // via codex_entry_phases → codex_entries
+  codex_phase_detail_overrides: {
+    where:
+      "phase_id IN (SELECT id FROM codex_entry_phases WHERE entry_id IN " +
+      "(SELECT id FROM codex_entries WHERE project_id = ?))",
+    binds: 1,
+  },
+  // via snippets
+  snippet_entry_tags: {
+    where: "snippet_id IN (SELECT id FROM snippets WHERE project_id = ?)",
+    binds: 1,
+  },
+  // via tree_nodes (scene_id / node_id → tree_nodes.project_id)
+  tree_node_labels: {
+    where: "node_id IN (SELECT id FROM tree_nodes WHERE project_id = ?)",
+    binds: 1,
+  },
+  scene_codex_pins: {
+    where: "scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?)",
+    binds: 1,
+  },
+  scene_codex_mentions: {
+    where: "scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?)",
+    binds: 1,
+  },
+  scene_beat_pov_cache: {
+    where: "scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?)",
+    binds: 1,
+  },
+  lint_ignored_diagnostics: {
+    where: "scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?)",
+    binds: 1,
+  },
+  // post_effect_annotations.scene_id is the only wipe path (CASCADE from
+  // tree_nodes). It also carries project_id, but a NULL-scene row (none in
+  // MVP — scene_range only) would be captured-not-wiped → collision; scope by
+  // scene to mirror the wipe set exactly.
+  post_effect_annotations: {
+    where: "scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?)",
+    binds: 1,
+  },
+  post_effect_annotation_relations: {
+    where:
+      "annotation_a_id IN (SELECT id FROM post_effect_annotations WHERE " +
+      "scene_id IN (SELECT id FROM tree_nodes WHERE project_id = ?))",
+    binds: 1,
+  },
+  // via foreshadows
+  foreshadow_setups: {
+    where: "foreshadow_id IN (SELECT id FROM foreshadows WHERE project_id = ?)",
+    binds: 1,
+  },
+  foreshadow_codex_links: {
+    where: "foreshadow_id IN (SELECT id FROM foreshadows WHERE project_id = ?)",
+    binds: 1,
+  },
+  // via map_boards
+  map_ai_branches: {
+    where: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)",
+    binds: 1,
+  },
+  map_stickies: {
+    where: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)",
+    binds: 1,
+  },
+  map_node_positions: {
+    where: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)",
+    binds: 1,
+  },
+  map_edges: {
+    where: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)",
+    binds: 1,
+  },
+  map_frames: {
+    where: "board_id IN (SELECT id FROM map_boards WHERE project_id = ?)",
+    binds: 1,
+  },
+  // exactly one of 5 anchors is non-null (SQL CHECK); a row belongs to the
+  // project when its non-null anchor does.
+  authorship_spans: {
+    where:
+      "(node_id IN (SELECT id FROM tree_nodes WHERE project_id = ?) " +
+      "OR codex_entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?) " +
+      "OR snippet_id IN (SELECT id FROM snippets WHERE project_id = ?) " +
+      "OR detail_value_id IN (SELECT id FROM codex_detail_values WHERE entry_id IN " +
+      "(SELECT id FROM codex_entries WHERE project_id = ?)) " +
+      "OR sticky_id IN (SELECT id FROM map_stickies WHERE board_id IN " +
+      "(SELECT id FROM map_boards WHERE project_id = ?)))",
+    binds: 5,
+  },
+  // workspace-global: no project_id column. Captured/restored globally until
+  // the project_id migration (see termDictionary / migrate.rs).
+  lint_term_dictionary: { where: "1 = 1", binds: 0 },
+};
+
+/**
  * For aux scopes whose owning scope is **not** `body` but whose rows
  * reference body entities (tree_nodes), how should restore handle a row
  * when body is excluded?

@@ -414,4 +414,107 @@ describe("projectSnapshotApi", () => {
       "lint",
     ]);
   });
+
+  it("captures only the current project's aux rows (project-scoped)", async () => {
+    const { db } = await import("@/db/client");
+    const { labels, projects, projectSnapshotAux } =
+      await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    await db.delete(labels);
+    const now = new Date().toISOString();
+    // labels.project_id is a FK; both projects must exist in the shared DB.
+    await db
+      .insert(projects)
+      .values([
+        { id: PROJECT_ID, title: "A", createdAt: now, updatedAt: now },
+        { id: "proj-b", title: "B", createdAt: now, updatedAt: now },
+      ])
+      .onConflictDoNothing();
+    // Two projects share one workspace DB. The snapshot of PROJECT_ID must
+    // not vacuum up proj-b's labels (would collide on restore re-INSERT).
+    await db.insert(labels).values([
+      {
+        id: "lbl-a",
+        projectId: PROJECT_ID,
+        name: "A-label",
+        color: "red",
+        sortOrder: 0,
+        createdAt: now,
+      },
+      {
+        id: "lbl-b",
+        projectId: "proj-b",
+        name: "B-label",
+        color: "blue",
+        sortOrder: 0,
+        createdAt: now,
+      },
+    ]);
+
+    const snap = await createProjectSnapshot({ name: "scoped-capture" });
+
+    const auxRows = await db
+      .select()
+      .from(projectSnapshotAux)
+      .where(eq(projectSnapshotAux.snapshotId, snap.id));
+    const labelsAux = auxRows.find((r) => r.scope === "labels");
+    const captured = (
+      JSON.parse(labelsAux?.payloadJson ?? '{"rows":[]}') as {
+        rows: { id: string }[];
+      }
+    ).rows.map((r) => r.id);
+    expect(captured).toContain("lbl-a");
+    expect(captured).not.toContain("lbl-b");
+
+    await db.delete(labels);
+  });
+
+  it("restore leaves another project's aux rows untouched", async () => {
+    const { db } = await import("@/db/client");
+    const { labels, projects } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    await db.delete(labels);
+    const now = new Date().toISOString();
+    await db
+      .insert(projects)
+      .values([
+        { id: PROJECT_ID, title: "A", createdAt: now, updatedAt: now },
+        { id: "proj-b", title: "B", createdAt: now, updatedAt: now },
+      ])
+      .onConflictDoNothing();
+    await db.insert(labels).values([
+      {
+        id: "lbl-a",
+        projectId: PROJECT_ID,
+        name: "A-label",
+        color: "red",
+        sortOrder: 0,
+        createdAt: now,
+      },
+      {
+        id: "lbl-b",
+        projectId: "proj-b",
+        name: "B-label",
+        color: "blue",
+        sortOrder: 0,
+        createdAt: now,
+      },
+    ]);
+
+    const snap = await createProjectSnapshot({ name: "scoped-restore" });
+    // Mutate the current project's labels after the snapshot.
+    await db.delete(labels).where(eq(labels.id, "lbl-a"));
+
+    await restoreProjectSnapshot(snap.id, "scoped-restore", {
+      scopes: new Set(["labels"]),
+    });
+
+    const remaining = await db.select().from(labels);
+    const ids = remaining.map((r) => r.id);
+    // proj-b survived the restore wipe; PROJECT_ID's label came back.
+    expect(ids).toContain("lbl-b");
+    expect(ids).toContain("lbl-a");
+
+    await db.delete(labels);
+  });
 });
