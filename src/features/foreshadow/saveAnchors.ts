@@ -87,19 +87,27 @@ export async function saveForeshadowAnchors(
   sceneId: string,
   doc: ProseMirrorNode,
 ): Promise<void> {
-  // FK sweep: filter out marks whose foreshadowId no longer exists in DB.
-  // Prevents FK constraint violation when a foreshadow is deleted while marks remain in doc.
-  const validIds = new Set(
-    (await db.select({ id: foreshadows.id }).from(foreshadows)).map(
-      (r) => r.id,
-    ),
-  );
-  const setups = extractSetupAnchors(sceneId, doc).filter((s) =>
-    validIds.has(s.foreshadowId),
-  );
-  const payoffs = extractPayoffAnchors(sceneId, doc).filter((p) =>
-    validIds.has(p.foreshadowId),
-  );
+  // Extract first. 大多数のシーンは伏線マークを持たないため、両方空なら FK sweep
+  // 用の全件 SELECT(SELECT id FROM foreshadows) はフィルタ対象が無く結果が使われない
+  // → スキップする。空配列のまま invoke は続行するので、Rust 側の orphan sweep
+  // (このシーンの既存 setup を isOrphan 化) は従来どおり走る（所見#8）。
+  // ※「両方空なら早期 return」は scene-clear 時の orphan sweep を飛ばすため不可。
+  const rawSetups = extractSetupAnchors(sceneId, doc);
+  const rawPayoffs = extractPayoffAnchors(sceneId, doc);
+
+  let setups = rawSetups;
+  let payoffs = rawPayoffs;
+  if (rawSetups.length > 0 || rawPayoffs.length > 0) {
+    // FK sweep: filter out marks whose foreshadowId no longer exists in DB.
+    // Prevents FK constraint violation when a foreshadow is deleted while marks remain in doc.
+    const validIds = new Set(
+      (await db.select({ id: foreshadows.id }).from(foreshadows)).map(
+        (r) => r.id,
+      ),
+    );
+    setups = rawSetups.filter((s) => validIds.has(s.foreshadowId));
+    payoffs = rawPayoffs.filter((p) => validIds.has(p.foreshadowId));
+  }
 
   if (isTauriRuntime()) {
     await invoke("foreshadow_save_anchors_for_scene", {

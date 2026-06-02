@@ -236,6 +236,26 @@ describe("saveForeshadowAnchors FK sweep", () => {
     editor.destroy();
   });
 
+  it("skips the full-table foreshadows SELECT when the doc has no marks, but still invokes for the orphan sweep", async () => {
+    // No setup/payoff marks → nothing to FK-filter → the全件 SELECT is wasted.
+    const editor = createTestEditor("<p>マーク無し本文</p>");
+
+    await saveForeshadowAnchors("scene-1", editor.state.doc);
+
+    // SELECT id FROM foreshadows must be skipped (perf 所見#8)…
+    expect(mockFrom).not.toHaveBeenCalled();
+    // …but the save still runs with empty arrays so the Rust-side orphan sweep
+    // (scene-clear case) is preserved.
+    expect(mockInvoke).toHaveBeenCalledOnce();
+    const payload = mockInvoke.mock.calls[0][1] as {
+      setups: unknown[];
+      payoffs: unknown[];
+    };
+    expect(payload.setups).toEqual([]);
+    expect(payload.payoffs).toEqual([]);
+    editor.destroy();
+  });
+
   it("passes docContentSize matching doc.content.size to invoke", async () => {
     mockFrom.mockResolvedValue([{ id: "f-valid" }]);
 
