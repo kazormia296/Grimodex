@@ -13,8 +13,13 @@ vi.mock("./panelComponents", () => ({
     {},
     {
       get: (_t, prop) =>
-        function StubPanel() {
-          return <div data-stub-panel={String(prop)} />;
+        function StubPanel(props: { isActive?: boolean }) {
+          return (
+            <div
+              data-stub-panel={String(prop)}
+              data-is-active={String(props.isActive)}
+            />
+          );
         },
     },
   ),
@@ -123,6 +128,30 @@ describe("AnimatedSlotPanel keepalive", () => {
     const stubs = container.querySelectorAll("[data-stub-panel]");
     expect(stubs).toHaveLength(1);
     expect(stubs[0].getAttribute("data-stub-panel")).toBe("codex");
+  });
+
+  it("passes isActive=true to the active panel and false to keepalive-hidden panels", () => {
+    // 案A の契約: keepalive で mount され続ける非アクティブパネルは isActive=false
+    // を受け取り、重い scene-reactive 処理を bail できる。アクティブは true。
+    const { container, rerender } = render(
+      <AnimatedSlotPanel
+        panelId="chat"
+        slotPanels={["chat", "codex"] as const}
+      />,
+    );
+    rerender(
+      <AnimatedSlotPanel
+        panelId="codex"
+        slotPanels={["chat", "codex"] as const}
+      />,
+    );
+    const chat = container.querySelector('[data-stub-panel="chat"]');
+    const codex = container.querySelector('[data-stub-panel="codex"]');
+    expect(chat).not.toBeNull();
+    expect(codex).not.toBeNull();
+    // chat は keepalive で残るが hidden → false、codex はアクティブ → true。
+    expect(chat!.getAttribute("data-is-active")).toBe("false");
+    expect(codex!.getAttribute("data-is-active")).toBe("true");
   });
 
   it("renders nothing while the slot has no active panel and was never opened", () => {

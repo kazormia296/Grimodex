@@ -79,7 +79,7 @@ export const AnimatedSlotPanel = memo(function AnimatedSlotPanel({
                 : chromeExitTransition(reduced)
             }
           >
-            <Component />
+            <Component isActive={isActive} />
           </motion.div>
         );
       })}

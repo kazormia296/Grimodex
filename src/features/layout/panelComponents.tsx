@@ -18,9 +18,13 @@ import { CommandCenterResultsPanel } from "@/features/commandCenter/CommandCente
 import { SceneEditor } from "@/features/tree/SceneEditor";
 
 import type { PanelId } from "./panelIds";
+import type { SlotPanelProps } from "./layoutTypes";
 
 /** SSoT for panel content components. */
-export const PANEL_COMPONENT_MAP: Record<PanelId, FunctionComponent> = {
+export const PANEL_COMPONENT_MAP: Record<
+  PanelId,
+  FunctionComponent<SlotPanelProps>
+> = {
   scenes: Sidebar,
   codex: CodexManagementPanel,
   "chat-history": ChatHistoryPanel,

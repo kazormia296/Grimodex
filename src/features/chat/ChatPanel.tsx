@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "motion/react";
 import { useReducedMotion } from "@/lib/animation";
@@ -58,7 +59,7 @@ interface ContextMenuState {
   y: number;
 }
 
-export function ChatPanel() {
+export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const reduced = useReducedMotion();
@@ -156,7 +157,11 @@ export function ChatPanel() {
 
   // スコープ切替 / シーン切替時にセッションを自動ロードし最新を選択 (P0-1)
   // scene スコープでシーン未確定の場合は何もしない。
+  // keepalive で hidden のときはシーン追従の load を bail し、再アクティブ化時に
+  // isActive deps 経由で最終シーンの値で 1 回再実行して catch up する
+  // (selectSession/loadSessions は replace-semantics なので中間シーンの残渣なし)。
   useEffect(() => {
+    if (!isActive) return;
     if (chatScope === "scene" && !treeActiveSceneId) return;
     let stale = false;
     const effectiveNodeId =
@@ -189,6 +194,7 @@ export function ChatPanel() {
       stale = true;
     };
   }, [
+    isActive,
     treeActiveSceneId,
     chatScope,
     scopeAnchorId,
@@ -196,9 +202,13 @@ export function ChatPanel() {
     selectSession,
   ]);
 
+  // hidden 中は context layer の再構築 (DB 読込 + prompt 再構築 + lastSystemPrompt
+  // 書込) を bail。再アクティブ化時に最終状態で 1 回再実行 (set は replace-semantics)。
   useEffect(() => {
+    if (!isActive) return;
     refreshContextLayers();
   }, [
+    isActive,
     treeActiveSceneId,
     activeSessionId,
     chatScope,
@@ -225,6 +235,7 @@ export function ChatPanel() {
   >([]);
 
   useEffect(() => {
+    if (!isActive) return;
     if (!activeSessionId) {
       setPinnedEntries([]);
       setPinnedSnippets([]);
@@ -237,8 +248,8 @@ export function ChatPanel() {
     setDismissedViaChildIds(new Set());
     // pinsVersion bumps after any refreshContextLayers run; including it
     // in deps lets us pick up Map / Codex / Sticky pin changes that
-    // happen outside this panel.
-  }, [activeSessionId, pinsVersion]);
+    // happen outside this panel. hidden 中は bail し再アクティブ化で catch up。
+  }, [isActive, activeSessionId, pinsVersion]);
 
   const pinnedIds = useMemo(
     () => new Set(pinnedEntries.map((e) => e.id)),

@@ -105,3 +105,19 @@ export interface PanelLocation {
   slotIndex: number;
   slot: SlotState;
 }
+
+/**
+ * PANEL_COMPONENT_MAP 経由で描画されるパネルコンテンツに渡る props。
+ *
+ * AnimatedSlotPanel の per-slot keepalive では、非アクティブなパネルも mount
+ * されたまま (inert + opacity 0) なので effect が裏で走り続ける。重いパネルは
+ * `isActive === false` の間だけシーン追従の重処理を bail し、再アクティブ化時に
+ * effect の deps 経由で自然に catch up する。
+ *
+ * 契約: **isActive 省略 (undefined) は active 扱い**。prop を渡さない描画サイト
+ * (SlotView の screenshot 経路等) を壊さないため、消費側のデフォルトは `= true`、
+ * bail 判定は必ず `isActive === false` (= 省略は active) で行うこと。
+ */
+export interface SlotPanelProps {
+  isActive?: boolean;
+}

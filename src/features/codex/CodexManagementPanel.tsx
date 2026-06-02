@@ -7,6 +7,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { Search, Plus } from "lucide-react";
+import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -467,7 +468,10 @@ function CategoryGroupedList({
 
 // --- Main Panel ---
 
-interface CodexManagementPanelProps {
+// SlotPanelProps を継承する。isActive 自体はこのパネルでは未使用だが、
+// PANEL_COMPONENT_MAP の FunctionComponent<SlotPanelProps> 型に対し
+// weak-type ルール (全 optional な型は共通プロパティ必須) を満たすために必要。
+interface CodexManagementPanelProps extends SlotPanelProps {
   /** For testing: force stack mode (normally detected from panel width) */
   initialStackMode?: boolean;
 }
