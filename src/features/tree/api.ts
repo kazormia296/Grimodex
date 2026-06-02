@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, inArray } from "drizzle-orm";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
 
@@ -266,4 +266,37 @@ export async function loadSceneFull(
     content: rows[0]?.content ?? "",
     unplacedBeatsDoc: rows[0]?.unplacedBeatsDoc ?? "[]",
   };
+}
+
+/**
+ * 複数シーンの content + unplacedBeatsDoc を 1 クエリで取得するバッチ版。
+ * loadSceneFull を N 連発すると 1 件ごとに IPC 往復 + drizzle sqlite-proxy の
+ * warmed microtask(~150ms/件)が積み上がり、Mutex<Connection> で直列化される。
+ * inArray で 1 往復に畳む(SQLite 変数上限を避けるため内部で 500 件ずつ分割)。
+ * 返却は id → {content, unplacedBeatsDoc} の Map。存在しない id は含まれない。
+ */
+export async function loadScenesFull(
+  sceneIds: string[],
+): Promise<Map<string, { content: string; unplacedBeatsDoc: string }>> {
+  const out = new Map<string, { content: string; unplacedBeatsDoc: string }>();
+  const CHUNK = 500;
+  for (let i = 0; i < sceneIds.length; i += CHUNK) {
+    const slice = sceneIds.slice(i, i + CHUNK);
+    if (slice.length === 0) continue;
+    const rows = await db
+      .select({
+        id: treeNodes.id,
+        content: treeNodes.content,
+        unplacedBeatsDoc: treeNodes.unplacedBeatsDoc,
+      })
+      .from(treeNodes)
+      .where(inArray(treeNodes.id, slice));
+    for (const r of rows) {
+      out.set(r.id, {
+        content: r.content ?? "",
+        unplacedBeatsDoc: r.unplacedBeatsDoc ?? "[]",
+      });
+    }
+  }
+  return out;
 }

@@ -57,18 +57,31 @@ vi.mock("@/features/tree/treeStore", async (importOriginal) => {
   };
 });
 
-vi.mock("@/features/tree/api", () => ({
-  loadSceneContent: vi.fn(() => Promise.resolve("シーン本文")),
-  loadSceneFull: vi.fn(() =>
+vi.mock("@/features/tree/api", () => {
+  const loadSceneFull = vi.fn((_id: string) =>
     Promise.resolve({ content: "{}", unplacedBeatsDoc: "[]" }),
-  ),
-  getNode: vi.fn(() =>
-    Promise.resolve({
-      id: "scene-1",
-      title: "テストシーン",
+  );
+  return {
+    loadSceneContent: vi.fn(() => Promise.resolve("シーン本文")),
+    loadSceneFull,
+    // バッチ版は per-scene の loadSceneFull mock に fan-out させ、既存テストの
+    // mockImplementation / mockResolvedValue / call-count アサートをそのまま活かす。
+    loadScenesFull: vi.fn(async (ids: string[]) => {
+      const map = new Map<
+        string,
+        { content: string; unplacedBeatsDoc: string }
+      >();
+      for (const id of ids) map.set(id, await loadSceneFull(id));
+      return map;
     }),
-  ),
-}));
+    getNode: vi.fn(() =>
+      Promise.resolve({
+        id: "scene-1",
+        title: "テストシーン",
+      }),
+    ),
+  };
+});
 
 vi.mock("@/features/project/api", () => ({
   getProject: vi.fn(() =>
@@ -1052,12 +1065,13 @@ describe("useChatStore", () => {
     it("Tier 2 folder: injects placed and unplaced beats into each scene part", async () => {
       const { listCodexEntries } = await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
-      const { loadSceneContent, loadSceneFull } =
+      const { loadSceneContent, loadSceneFull, loadScenesFull } =
         await import("@/features/tree/api");
 
       const mockListCodex = vi.mocked(listCodexEntries);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockLoadSceneFull = vi.mocked(loadSceneFull);
+      const mockLoadScenesFull = vi.mocked(loadScenesFull);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
       const beatDoc = (beatId: string, text: string) =>
@@ -1121,6 +1135,7 @@ describe("useChatStore", () => {
       });
       mockListCodex.mockResolvedValue([]);
       mockLoadScene.mockClear();
+      mockLoadScenesFull.mockClear();
       mockLoadSceneFull.mockImplementation((id: string) => {
         if (id === "sA") {
           return Promise.resolve({
@@ -1173,6 +1188,9 @@ describe("useChatStore", () => {
       expect(partB).toContain("Placed #1");
       expect(partB).toContain("シーンBのビート");
       expect(partB).not.toContain("未配置ヒント");
+      // descendant 数に関わらず本文取得は 1 バッチに畳まれる (N 往復回帰のガード)。
+      expect(mockLoadScenesFull).toHaveBeenCalledTimes(1);
+      expect(mockLoadScenesFull).toHaveBeenCalledWith(["sA", "sB"]);
     });
 
     it("Tier 2 folder: beat.injectIntoContext=false skips beats and loadSceneFull", async () => {

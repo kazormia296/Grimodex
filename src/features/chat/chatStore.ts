@@ -82,7 +82,7 @@ import {
   getDescendantScenesInOrder,
 } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
-import { loadSceneContent, loadSceneFull, getNode } from "@/features/tree/api";
+import { loadSceneContent, loadScenesFull, getNode } from "@/features/tree/api";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -1010,43 +1010,42 @@ async function buildAggregatedScene(opts: {
       const resolveCharacterName = (id: string): string | null =>
         allEntries.find((e) => e.id === id)?.name ?? null;
 
-      for (let i = 0; i < descendants.length; i += LOAD_CHUNK) {
-        const slice = descendants.slice(i, i + LOAD_CHUNK);
-        const loaded = await Promise.all(
-          slice.map((s) =>
-            loadSceneFull(s.id).catch(() => ({
-              content: "",
-              unplacedBeatsDoc: "[]",
-            })),
-          ),
-        );
-        for (let j = 0; j < slice.length; j++) {
-          const { content, unplacedBeatsDoc } = loaded[j];
-          let docJson: unknown = null;
-          if (content) {
-            try {
-              docJson = JSON.parse(content);
-            } catch {
-              /* keep null */
-            }
-          }
-          let unplacedBeats: UnplacedBeat[] = [];
-          try {
-            const parsed = JSON.parse(unplacedBeatsDoc);
-            if (Array.isArray(parsed)) unplacedBeats = parsed as UnplacedBeat[];
-          } catch {
-            /* empty */
-          }
+      // 旧実装は scene ごとに loadSceneFull を呼び、descendant 数だけ IPC 往復
+      // (各 ~150ms の drizzle microtask + Mutex<Connection> 直列) が発生していた。
+      // 1 クエリにバッチ化して往復を畳む。読み出しのみで beat surfacing の挙動は不変。
+      const loaded = await loadScenesFull(descendants.map((s) => s.id)).catch(
+        () => new Map<string, { content: string; unplacedBeatsDoc: string }>(),
+      );
 
-          const section = buildPendingBeatsSection({
-            sceneDocJson: docJson,
-            unplacedBeats,
-            resolveCharacterName,
-            currentBeatId: null,
-            scenePovCharacterId: slice[j].povCharacterId ?? null,
-          });
-          if (section) beatSectionBySceneId.set(slice[j].id, section);
+      for (const scene of descendants) {
+        const { content, unplacedBeatsDoc } = loaded.get(scene.id) ?? {
+          content: "",
+          unplacedBeatsDoc: "[]",
+        };
+        let docJson: unknown = null;
+        if (content) {
+          try {
+            docJson = JSON.parse(content);
+          } catch {
+            /* keep null */
+          }
         }
+        let unplacedBeats: UnplacedBeat[] = [];
+        try {
+          const parsed = JSON.parse(unplacedBeatsDoc);
+          if (Array.isArray(parsed)) unplacedBeats = parsed as UnplacedBeat[];
+        } catch {
+          /* empty */
+        }
+
+        const section = buildPendingBeatsSection({
+          sceneDocJson: docJson,
+          unplacedBeats,
+          resolveCharacterName,
+          currentBeatId: null,
+          scenePovCharacterId: scene.povCharacterId ?? null,
+        });
+        if (section) beatSectionBySceneId.set(scene.id, section);
       }
     }
 
