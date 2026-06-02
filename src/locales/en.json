@@ -2641,6 +2641,11 @@
     "off": {
       "label": "No AI",
       "desc": "Fully local writing mode. All AI features are off"
+    },
+    "disabledReason": {
+      "policy": "Disabled by AI policy",
+      "noModel": "No AI model selected",
+      "noProvider": "AI is not configured"
     }
   },
   "tour": {

@@ -2650,6 +2650,11 @@
     "off": {
       "label": "AI を使わない",
       "desc": "完全ローカル執筆モード。AI 機能はすべてオフ"
+    },
+    "disabledReason": {
+      "policy": "AIポリシーにより無効",
+      "noModel": "AIモデルが未選択です",
+      "noProvider": "AIが未設定です"
     }
   },
   "tour": {
