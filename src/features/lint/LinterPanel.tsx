@@ -716,88 +716,83 @@ function PanelHeader(props: {
     onApplyAll,
   } = props;
   return (
-    <div className="flex flex-col gap-1 border-b border-border bg-muted/30 px-2 py-1.5">
-      <div className="flex items-center gap-2">
-        <SeverityChip
-          label="🔴"
-          active={severityFilter.error}
-          count={counts.error}
-          colorClass="text-red-600"
-          onToggle={() =>
-            setSeverityFilter({
-              ...severityFilter,
-              error: !severityFilter.error,
-            })
-          }
+    <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-2 py-1.5">
+      <SeverityChip
+        label="🔴"
+        active={severityFilter.error}
+        count={counts.error}
+        colorClass="text-red-600"
+        onToggle={() =>
+          setSeverityFilter({
+            ...severityFilter,
+            error: !severityFilter.error,
+          })
+        }
+      />
+      <SeverityChip
+        label="⚠"
+        active={severityFilter.warning}
+        count={counts.warning}
+        colorClass="text-amber-600"
+        onToggle={() =>
+          setSeverityFilter({
+            ...severityFilter,
+            warning: !severityFilter.warning,
+          })
+        }
+      />
+      <SeverityChip
+        label="ⓘ"
+        active={severityFilter.info}
+        count={counts.info}
+        colorClass="text-blue-600"
+        onToggle={() =>
+          setSeverityFilter({
+            ...severityFilter,
+            info: !severityFilter.info,
+          })
+        }
+      />
+      <div className="flex min-w-0 flex-1 items-center gap-1 rounded border border-border bg-background px-1.5">
+        <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <input
+          type="text"
+          placeholder="rule_id / message で絞り込み"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="h-6 w-full min-w-0 bg-transparent text-xs outline-none"
         />
-        <SeverityChip
-          label="⚠"
-          active={severityFilter.warning}
-          count={counts.warning}
-          colorClass="text-amber-600"
-          onToggle={() =>
-            setSeverityFilter({
-              ...severityFilter,
-              warning: !severityFilter.warning,
-            })
-          }
-        />
-        <SeverityChip
-          label="ⓘ"
-          active={severityFilter.info}
-          count={counts.info}
-          colorClass="text-blue-600"
-          onToggle={() =>
-            setSeverityFilter({
-              ...severityFilter,
-              info: !severityFilter.info,
-            })
-          }
-        />
-        <div className="flex-1" />
-        {fixableCount > 0 && (
+        {query && (
           <button
             type="button"
-            onClick={onApplyAll}
-            title="フィルタ結果の Fix を一括適用"
-            className="flex h-6 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
+            onClick={() => setQuery("")}
+            className="shrink-0 text-muted-foreground hover:text-foreground"
           >
-            <Wrench className="h-3.5 w-3.5" /> 全 Fix ({fixableCount})
+            <X className="h-3.5 w-3.5" />
           </button>
         )}
-        <WarningsBadge warnings={warnings} />
-        <NotificationsList />
       </div>
-      <div className="flex items-center gap-2">
-        <div className="flex items-center gap-1 rounded border border-border bg-background px-1.5">
-          <Search className="h-3.5 w-3.5 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="rule_id / message で絞り込み"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="h-6 w-full bg-transparent text-xs outline-none"
-          />
-          {query && (
-            <button
-              type="button"
-              onClick={() => setQuery("")}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-        <select
-          value={groupMode}
-          onChange={(e) => setGroupMode(e.target.value as GroupMode)}
-          className="h-6 rounded border border-border bg-background px-1 text-xs"
+      <select
+        value={groupMode}
+        onChange={(e) => setGroupMode(e.target.value as GroupMode)}
+        className="h-6 shrink-0 rounded border border-border bg-background px-1 text-xs"
+      >
+        <option value="severity">Group: Severity</option>
+        <option value="rule">Group: Rule</option>
+        <option value="none">Group: なし</option>
+      </select>
+      {fixableCount > 0 && (
+        <button
+          type="button"
+          onClick={onApplyAll}
+          title="フィルタ結果の Fix を一括適用"
+          className="flex h-6 shrink-0 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
         >
-          <option value="severity">Group: Severity</option>
-          <option value="rule">Group: Rule</option>
-          <option value="none">Group: なし</option>
-        </select>
-      </div>
+          <Wrench className="h-3.5 w-3.5" /> 全 Fix ({fixableCount})
+        </button>
+      )}
+      <WarningsBadge warnings={warnings} />
+      <NotificationsList />
     </div>
   );
 }
@@ -1279,13 +1274,40 @@ function ProjectLinterView() {
               })
             }
           />
-          <div className="flex-1" />
+          <div className="flex min-w-0 flex-1 items-center gap-1 rounded border border-border bg-background px-1.5">
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="rule_id / message で絞り込み"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-6 w-full min-w-0 bg-transparent text-xs outline-none"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <select
+            value={groupMode}
+            onChange={(e) => setGroupMode(e.target.value as ProjectGroupMode)}
+            className="h-6 shrink-0 rounded border border-border bg-background px-1 text-xs"
+          >
+            <option value="scene">Group: Scene</option>
+            <option value="rule">Group: Rule</option>
+            <option value="severity">Group: Severity</option>
+          </select>
           {!isRunning && scenes.length > 0 && (
             <button
               type="button"
               onClick={() => setExportOpen(true)}
               title="レポートを書き出し"
-              className="flex h-6 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
+              className="flex h-6 shrink-0 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
             >
               <Download className="h-3.5 w-3.5" />
               Export
@@ -1295,7 +1317,7 @@ function ProjectLinterView() {
             <button
               type="button"
               onClick={cancel}
-              className="flex h-6 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
+              className="flex h-6 shrink-0 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
             >
               キャンセル
             </button>
@@ -1303,41 +1325,11 @@ function ProjectLinterView() {
             <button
               type="button"
               onClick={onStart}
-              className="flex h-6 items-center gap-1 rounded border border-primary bg-primary px-2 text-xs text-primary-foreground hover:opacity-90"
+              className="flex h-6 shrink-0 items-center gap-1 rounded border border-primary bg-primary px-2 text-xs text-primary-foreground hover:opacity-90"
             >
               全章 Lint
             </button>
           )}
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 rounded border border-border bg-background px-1.5">
-            <Search className="h-3.5 w-3.5 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="rule_id / message で絞り込み"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="h-6 w-full bg-transparent text-xs outline-none"
-            />
-            {query && (
-              <button
-                type="button"
-                onClick={() => setQuery("")}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
-          <select
-            value={groupMode}
-            onChange={(e) => setGroupMode(e.target.value as ProjectGroupMode)}
-            className="h-6 rounded border border-border bg-background px-1 text-xs"
-          >
-            <option value="scene">Group: Scene</option>
-            <option value="rule">Group: Rule</option>
-            <option value="severity">Group: Severity</option>
-          </select>
         </div>
         {isRunning && (
           <div className="flex flex-col gap-0.5">
