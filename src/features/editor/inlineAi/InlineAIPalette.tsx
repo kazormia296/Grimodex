@@ -3,7 +3,8 @@ import type { Editor } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
-import { getInlineAiCommands } from "./inlineAiCommands";
+import { getVisibleInlineAiCommands } from "./inlineAiCommands";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
 import type { InlineAiCommand } from "./inlineAiTypes";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
@@ -27,12 +28,15 @@ export function InlineAIPalette({
   onSubmit,
 }: InlineAIPaletteProps) {
   const { t, i18n } = useTranslation();
-  // Re-translate when locale changes. getInlineAiCommands() reads from i18next.t
-  // directly so eslint can't see the dependency — depend on language explicitly.
+  const bodyWriteGate = useAiGate("bodyWrite");
+  // Re-translate when locale changes. getVisibleInlineAiCommands() reads from
+  // i18next.t directly so eslint can't see the dependency — depend on language
+  // explicitly. bodyWrite ポリシーが OFF のときは AI 生成コマンドが除外されるため
+  // presentation を deps に含めて再評価する。
   const commands = useMemo(
-    () => getInlineAiCommands(),
+    () => getVisibleInlineAiCommands(),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [i18n.language],
+    [i18n.language, bodyWriteGate.presentation],
   );
   const [prompt, setPrompt] = useState("");
   const [selectedCommand, setSelectedCommand] = useState<InlineAiCommand>(
