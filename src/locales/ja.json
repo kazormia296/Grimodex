@@ -33,7 +33,6 @@
     "openOther": "他のフォルダを開く…",
     "newWorkspace": "新規ワークスペース",
     "startScreen": "スタート画面",
-    "projectSnapshot": "プロジェクトスナップショット…",
     "import": "インポート…",
     "importNovelcrafter": "Novelcrafterからインポート…",
     "fallback": "ワークスペース"
@@ -48,6 +47,9 @@
     },
     "zipExport": {
       "action": "プロジェクトを zip エクスポート…"
+    },
+    "snapshot": {
+      "action": "プロジェクトスナップショット…"
     },
     "create": {
       "action": "新規プロジェクト…",

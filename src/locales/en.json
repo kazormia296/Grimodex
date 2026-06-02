@@ -33,7 +33,6 @@
     "openOther": "Open Other Folder…",
     "newWorkspace": "New Workspace",
     "startScreen": "Start Screen",
-    "projectSnapshot": "Project Snapshot…",
     "import": "Import…",
     "importNovelcrafter": "Import from Novelcrafter…",
     "fallback": "Workspace"
@@ -48,6 +47,9 @@
     },
     "zipExport": {
       "action": "Export project as ZIP…"
+    },
+    "snapshot": {
+      "action": "Project Snapshot…"
     },
     "create": {
       "action": "New Project…",

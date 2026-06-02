@@ -11,9 +11,11 @@ import { CreateProjectDialog } from "./CreateProjectDialog";
 export function ProjectMenu({
   onOpenImport,
   onOpenZipExport,
+  onOpenSnapshot,
 }: {
   onOpenImport?: () => void;
   onOpenZipExport?: () => void;
+  onOpenSnapshot?: () => void;
 }) {
   const { t } = useTranslation();
   const currentProjectId = useCurrentProjectId();
@@ -191,6 +193,20 @@ export function ProjectMenu({
               >
                 <span className="w-4" />
                 {t("project.zipExport.action")}
+              </button>
+            )}
+            {onOpenSnapshot && (
+              <button
+                type="button"
+                data-testid="project-snapshot-open"
+                onClick={() => {
+                  setIsOpen(false);
+                  onOpenSnapshot();
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+              >
+                <span className="w-4" />
+                {t("project.snapshot.action")}
               </button>
             )}
           </div>

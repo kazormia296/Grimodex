@@ -127,4 +127,18 @@ describe("ProjectMenu", () => {
     fireEvent.click(screen.getByTestId("project-import-open"));
     expect(onOpenImport).toHaveBeenCalledOnce();
   });
+
+  it("calls onOpenSnapshot when the snapshot item is clicked", () => {
+    const onOpenSnapshot = vi.fn();
+    render(<ProjectMenu onOpenSnapshot={onOpenSnapshot} />);
+    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    fireEvent.click(screen.getByTestId("project-snapshot-open"));
+    expect(onOpenSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it("omits the snapshot item when onOpenSnapshot is not provided", () => {
+    render(<ProjectMenu />);
+    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    expect(screen.queryByTestId("project-snapshot-open")).toBeNull();
+  });
 });

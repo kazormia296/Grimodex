@@ -3,15 +3,7 @@ import { useTranslation } from "react-i18next";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
 
-// Dialog rendering is lifted to App.tsx (<main> level). WorkspaceMenu lives
-// inside <header class="glass-shell">, whose backdrop-filter creates a
-// containing block for position: fixed — rendering modals here would clip
-// their fixed inset-0 backdrop to the ~40px header strip.
-interface WorkspaceMenuProps {
-  onOpenSnapshot: () => void;
-}
-
-export function WorkspaceMenu({ onOpenSnapshot }: WorkspaceMenuProps) {
+export function WorkspaceMenu() {
   const { t } = useTranslation();
   const activeWorkspaceName = useWorkspaceStore((s) => s.activeWorkspaceName);
   const globalSettings = useWorkspaceStore((s) => s.globalSettings);
@@ -122,20 +114,6 @@ export function WorkspaceMenu({ onOpenSnapshot }: WorkspaceMenuProps) {
           >
             <span className="w-4" />
             {t("workspaceMenu.startScreen")}
-          </button>
-
-          <div className="my-1 border-t border-border" />
-
-          <button
-            type="button"
-            onClick={() => {
-              setIsOpen(false);
-              onOpenSnapshot();
-            }}
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-          >
-            <span className="w-4" />
-            {t("workspaceMenu.projectSnapshot")}
           </button>
         </div>
       )}
