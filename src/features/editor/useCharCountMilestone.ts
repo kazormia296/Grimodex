@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import confetti from "canvas-confetti";
 import { isReducedMotion, pulseHighlight } from "@/lib/gsap";
 
 const MILESTONES = [0.25, 0.5, 0.75, 1.0];
@@ -46,13 +45,14 @@ export function useCharCountMilestone(
         pulseHighlight(elementRef.current);
         if (m === 1.0) {
           const rect = elementRef.current.getBoundingClientRect();
-          confetti({
-            particleCount: 80,
-            spread: 60,
-            origin: {
-              x: (rect.left + rect.width / 2) / window.innerWidth,
-              y: rect.top / window.innerHeight,
-            },
+          const origin = {
+            x: (rect.left + rect.width / 2) / window.innerWidth,
+            y: rect.top / window.innerHeight,
+          };
+          // canvas-confetti は 100% 達成という稀なイベントでしか使わないので
+          // 起動時バンドルから外し、達成時に動的 import する（所見#11）。
+          void import("canvas-confetti").then(({ default: confetti }) => {
+            confetti({ particleCount: 80, spread: 60, origin });
           });
         }
         return; // fire at most one milestone per update

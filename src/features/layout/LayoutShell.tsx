@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useRef } from "react";
 import { motion } from "motion/react";
 import type { PanelId } from "./panelIds";
 import {
@@ -24,10 +24,19 @@ import {
 import { useLayoutStore } from "./layoutStore";
 import { useCardLayout } from "./cardLayout";
 import { useRegionSegments } from "./useRegionSegments";
-import { LayoutDnDHighlightOverlay } from "./LayoutDnDHighlightOverlay";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
+
+// gsap(+@gsap/react)を static import する drop-zone ハイライトを遅延化。常時 mount
+// だと D&D が一度も起きなくても起動時に gsap(~22KB gzip)が parse される（所見#11）。
+// 非ドラッグ時は元々 null を返すだけなので、draggingPanel での条件 mount は初回
+// ドラッグのチャンクロード遅延のみで挙動は不変。
+const LayoutDnDHighlightOverlay = lazy(() =>
+  import("./LayoutDnDHighlightOverlay").then((m) => ({
+    default: m.LayoutDnDHighlightOverlay,
+  })),
+);
 
 interface LayoutShellProps {
   /** Screenshot mode: hide stripes and show a single panel full-screen */
@@ -53,6 +62,7 @@ export const LayoutShell = memo(function LayoutShell({
 }: LayoutShellProps) {
   const segments = useRegionSegments();
   const layout = useLayoutStore((s) => s.layout);
+  const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const { crossfadeKey, animateEntry, reduced } = useLayoutPresetCrossfade();
 
   const leftOpen = regionIsOpen(layout.regions.left.slots);
@@ -149,7 +159,11 @@ export const LayoutShell = memo(function LayoutShell({
 
   return (
     <>
-      <LayoutDnDHighlightOverlay />
+      {draggingPanel && (
+        <Suspense fallback={null}>
+          <LayoutDnDHighlightOverlay />
+        </Suspense>
+      )}
       <StripeInsertIndicator />
       <LayoutPanelDragGhost />
       <motion.div

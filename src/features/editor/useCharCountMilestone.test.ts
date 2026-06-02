@@ -69,7 +69,7 @@ describe("useCharCountMilestone", () => {
     expect(confetti).not.toHaveBeenCalled();
   });
 
-  it("fires pulseHighlight and confetti when crossing 100% (target reached)", () => {
+  it("fires pulseHighlight and confetti when crossing 100% (target reached)", async () => {
     const ref = makeRef();
     const { rerender } = renderHook(
       ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
@@ -77,7 +77,8 @@ describe("useCharCountMilestone", () => {
     );
     rerender({ count: 1000 });
     expect(pulseHighlight).toHaveBeenCalledWith(ref.current);
-    expect(confetti).toHaveBeenCalled();
+    // confetti は動的 import 後(microtask)に発火する（起動時バンドルから除外）
+    await vi.waitFor(() => expect(confetti).toHaveBeenCalled());
   });
 
   it("does not fire again for a milestone already passed", () => {
@@ -126,7 +127,7 @@ describe("useCharCountMilestone", () => {
     expect(pulseHighlight).not.toHaveBeenCalled();
   });
 
-  it("still fires confetti when user types up to target from below-target document", () => {
+  it("still fires confetti when user types up to target from below-target document", async () => {
     const ref = makeRef();
     const { rerender } = renderHook(
       ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
@@ -134,7 +135,7 @@ describe("useCharCountMilestone", () => {
     );
     rerender({ count: 990 }); // content loads below target (0.25/0.5/0.75 seeded)
     rerender({ count: 1000 }); // user types to target
-    expect(confetti).toHaveBeenCalled();
+    await vi.waitFor(() => expect(confetti).toHaveBeenCalled());
   });
 
   it("does nothing when element ref is null", () => {
