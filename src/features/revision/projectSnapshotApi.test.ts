@@ -517,4 +517,164 @@ describe("projectSnapshotApi", () => {
 
     await db.delete(labels);
   });
+
+  it("every aux capture predicate references real columns (no typos)", async () => {
+    // The capture wraps each predicate in try/catch to tolerate tables that
+    // the mock DB omits — but that also masks a typo'd column as an empty
+    // payload, i.e. silent data loss on restore. Run each predicate (for the
+    // tables this DB has) and require it to resolve, so a bad column rejects
+    // loudly here instead.
+    const { AUX_SCOPES, AUX_TABLE, AUX_PROJECT_FILTER } =
+      await import("./projectSnapshotScopes");
+    const { invoke } = await import("@/lib/tauri");
+    let checked = 0;
+    for (const scope of AUX_SCOPES) {
+      const table = AUX_TABLE[scope];
+      const present = (await invoke("db_execute", {
+        sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        params: [table],
+        method: "all",
+      })) as { rows: unknown[] };
+      if (present.rows.length === 0) continue;
+      const filter = AUX_PROJECT_FILTER[scope];
+      await expect(
+        invoke("db_execute", {
+          sql: `SELECT * FROM "${table}" WHERE ${filter.where}`,
+          params: Array(filter.binds).fill("no-such-project"),
+          method: "all",
+        }),
+      ).resolves.toBeDefined();
+      checked++;
+    }
+    // Sanity: the mock has enough aux tables to make this meaningful.
+    expect(checked).toBeGreaterThanOrEqual(10);
+  });
+
+  it("scopes map_stickies via its board's project (via-parent subquery)", async () => {
+    const { db } = await import("@/db/client");
+    const { projects, mapBoards, mapStickies, projectSnapshotAux } =
+      await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const now = new Date().toISOString();
+    await db
+      .insert(projects)
+      .values([
+        { id: PROJECT_ID, title: "A", createdAt: now, updatedAt: now },
+        { id: "proj-b", title: "B", createdAt: now, updatedAt: now },
+      ])
+      .onConflictDoNothing();
+    await db.delete(mapStickies);
+    await db.delete(mapBoards);
+    await db.insert(mapBoards).values([
+      { id: "board-a", projectId: PROJECT_ID, createdAt: now, updatedAt: now },
+      { id: "board-b", projectId: "proj-b", createdAt: now, updatedAt: now },
+    ]);
+    // Raw insert: the mock's map_stickies omits some drizzle columns
+    // (e.g. ai_derived), so a full drizzle insert would reject. Seed only the
+    // columns the predicate cares about.
+    const { invoke } = await import("@/lib/tauri");
+    for (const [id, boardId] of [
+      ["stk-a", "board-a"],
+      ["stk-b", "board-b"],
+    ]) {
+      await invoke("db_execute", {
+        sql: "INSERT INTO map_stickies (id, board_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        params: [id, boardId, now, now],
+        method: "run",
+      });
+    }
+
+    const snap = await createProjectSnapshot({ name: "map-scoped" });
+    const aux = await db
+      .select()
+      .from(projectSnapshotAux)
+      .where(eq(projectSnapshotAux.snapshotId, snap.id));
+    const stickies = (
+      JSON.parse(
+        aux.find((r) => r.scope === "map_stickies")?.payloadJson ??
+          '{"rows":[]}',
+      ) as { rows: { id: string }[] }
+    ).rows.map((r) => r.id);
+    expect(stickies).toContain("stk-a");
+    expect(stickies).not.toContain("stk-b");
+
+    await db.delete(mapStickies);
+    await db.delete(mapBoards);
+  });
+
+  it("scopes authorship_spans by its anchor's project (5-way OR)", async () => {
+    const { db } = await import("@/db/client");
+    const { projects, codexEntries, authorshipSpans, projectSnapshotAux } =
+      await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const now = new Date().toISOString();
+    await db
+      .insert(projects)
+      .values([
+        { id: PROJECT_ID, title: "A", createdAt: now, updatedAt: now },
+        { id: "proj-b", title: "B", createdAt: now, updatedAt: now },
+      ])
+      .onConflictDoNothing();
+    await db.delete(authorshipSpans);
+    await db.delete(codexEntries);
+    await db.insert(codexEntries).values([
+      {
+        id: "cx-a",
+        projectId: PROJECT_ID,
+        type: "character",
+        name: "A",
+        contextMode: "mentioned",
+        childrenBudget: "compact",
+        content: "{}",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "cx-b",
+        projectId: "proj-b",
+        type: "character",
+        name: "B",
+        contextMode: "mentioned",
+        childrenBudget: "compact",
+        content: "{}",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    // Anchor one span to A's codex entry, one to B's — exercises the OR's
+    // codex_entry_id branch.
+    await db.insert(authorshipSpans).values([
+      {
+        id: "as-a",
+        codexEntryId: "cx-a",
+        fromPos: 0,
+        toPos: 1,
+        source: "human",
+      },
+      {
+        id: "as-b",
+        codexEntryId: "cx-b",
+        fromPos: 0,
+        toPos: 1,
+        source: "human",
+      },
+    ]);
+
+    const snap = await createProjectSnapshot({ name: "authorship-scoped" });
+    const aux = await db
+      .select()
+      .from(projectSnapshotAux)
+      .where(eq(projectSnapshotAux.snapshotId, snap.id));
+    const spans = (
+      JSON.parse(
+        aux.find((r) => r.scope === "authorship_spans")?.payloadJson ??
+          '{"rows":[]}',
+      ) as { rows: { id: string }[] }
+    ).rows.map((r) => r.id);
+    expect(spans).toContain("as-a");
+    expect(spans).not.toContain("as-b");
+
+    await db.delete(authorshipSpans);
+    await db.delete(codexEntries);
+  });
 });
