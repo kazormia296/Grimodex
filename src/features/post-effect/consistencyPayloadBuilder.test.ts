@@ -81,6 +81,8 @@ import {
   CONSISTENCY_PROMPT_VERSION,
   INTRA_CONSISTENCY_PROMPT_VERSION,
 } from "./consistencyPayloadBuilder";
+import { REVIEW_PROMPT_VERSION } from "./reviewPayloadBuilder";
+import { META_STRUCTURE_PROMPT_VERSION } from "./metaStructurePayloadBuilder";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
 // ---------------------------------------------------------------------------
@@ -322,5 +324,39 @@ describe("buildMultiPayload", () => {
       promptVersion: string;
     };
     expect(call.promptVersion).toBe(INTRA_CONSISTENCY_PROMPT_VERSION);
+  });
+
+  it("review では promptVersion に REVIEW_PROMPT_VERSION を使う", async () => {
+    mockGetState.mockReturnValue({
+      nodes: [makeNode("s1", "scene", null)],
+    });
+    mockComputeInputHash.mockResolvedValue("hash-r");
+
+    await buildMultiPayload("proj-1", "project", null, "gpt-4o-mini", "review");
+
+    const call = mockComputeInputHash.mock.calls[0][0] as {
+      promptVersion: string;
+    };
+    expect(call.promptVersion).toBe(REVIEW_PROMPT_VERSION);
+  });
+
+  it("meta_structure では promptVersion に META_STRUCTURE_PROMPT_VERSION を使う", async () => {
+    mockGetState.mockReturnValue({
+      nodes: [makeNode("s1", "scene", null)],
+    });
+    mockComputeInputHash.mockResolvedValue("hash-m");
+
+    await buildMultiPayload(
+      "proj-1",
+      "project",
+      null,
+      "gpt-4o-mini",
+      "meta_structure",
+    );
+
+    const call = mockComputeInputHash.mock.calls[0][0] as {
+      promptVersion: string;
+    };
+    expect(call.promptVersion).toBe(META_STRUCTURE_PROMPT_VERSION);
   });
 });
