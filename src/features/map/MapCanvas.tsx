@@ -569,19 +569,29 @@ export function MapCanvas() {
     [setUserEdges],
   );
 
+  // インライン .map() だと毎レンダー新参照になり、ノードドラッグ中(setNodes が
+  // pointermove 毎発火)に useMapEdges の useMemo を毎フレーム無効化 → codex matcher
+  // の RegExp 再コンパイル + 全 scene 再走査を ~60fps で繰り返す（所見#3）。
+  // codexRelations 自体が変わったときだけ作り直す。
+  const codexRelationsForEdges = useMemo(
+    () =>
+      codexRelations.map((r) => ({
+        id: r.id,
+        fromCodexId: r.fromCodexId,
+        toCodexId: r.toCodexId,
+        label: r.label,
+        relationType: r.relationType,
+      })),
+    [codexRelations],
+  );
+
   const edges = useMapEdges({
     codexEntries,
     treeNodes,
     snippetEntries,
     phasesByEntry,
     userEdges,
-    codexRelations: codexRelations.map((r) => ({
-      id: r.id,
-      fromCodexId: r.fromCodexId,
-      toCodexId: r.toCodexId,
-      label: r.label,
-      relationType: r.relationType,
-    })),
+    codexRelations: codexRelationsForEdges,
     positions,
     show,
     onUserEdgeLabelSave: handleUserEdgeLabelSave,
