@@ -509,14 +509,33 @@ export function ChatPanel() {
     return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }, []);
 
+  // セッション切替後、メッセージ load が完了した最初の render で必ず末尾へ
+  // ジャンプする。selectSession は activeSessionId を切り替えた瞬間に
+  // messages を空 + isLoadingMessages=true にし、load 完了時に messages と
+  // isLoadingMessages=false を 1 回の set で同時更新する (chatStore.selectSession)。
+  // そのため activeSessionId だけを deps にすると、本文到着前 (空) に
+  // ジャンプして以降の本文到着は near-bottom ガードに弾かれ、履歴のある
+  // セッションを開くたび先頭に着地する回帰になる。load 完了を待ってジャンプする。
+  const lastJumpedSessionRef = useRef<string | null>(null);
   useEffect(() => {
+    if (
+      activeSessionId !== lastJumpedSessionRef.current &&
+      !isLoadingMessages
+    ) {
+      lastJumpedSessionRef.current = activeSessionId;
+      scrollToBottom();
+      return;
+    }
+    // 同一セッション内の更新 (ストリーミング等) は、ユーザーが既に最下部付近に
+    // いるときだけ追従する。
     if (isNearBottom()) scrollToBottom();
-  }, [messages, isNearBottom, scrollToBottom]);
-
-  // セッション切替時は最新メッセージへ必ずジャンプ。
-  useEffect(() => {
-    scrollToBottom();
-  }, [activeSessionId, scrollToBottom]);
+  }, [
+    messages,
+    activeSessionId,
+    isLoadingMessages,
+    isNearBottom,
+    scrollToBottom,
+  ]);
 
   const rawInsertFromChat = useEditorStore((s) => s.insertFromChat);
 
