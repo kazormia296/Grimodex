@@ -1,23 +1,48 @@
 import { db } from "@/db/client";
 import { authorshipSpans } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
 import type { NewAuthorshipSpan, AuthorshipSpan } from "@/db/schema";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import type { AuthorshipSource } from "./AuthorshipMark";
 import { markStart, markEnd } from "@/lib/perfLog";
 
 /**
+ * 既存 spans の DELETE と新 spans の INSERT を 1 トランザクションで実行する。
+ *
+ * 以前は `db.delete(...)` と `db.insert(...)` を別々の IPC で行っていたため、両者の
+ * 間でクラッシュ/失敗すると spans が削除されたまま再挿入されず、そのシーンの帰属
+ * メタデータが全損する atomicity バグがあった。db_execute_batch(Rust 側 execute_batch_tx
+ * = BEGIN..COMMIT)で原子化する。SQL は drizzle のクエリビルダ .toSQL() から生成し、
+ * 生 SQL を手書きしない（規約準拠）。spans が空でも DELETE は実行し、scene-clear 時の
+ * 既存 spans 掃除を保つ。
+ */
+async function replaceAuthorshipSpansAtomic(
+  nodeId: string,
+  spans: NewAuthorshipSpan[],
+): Promise<void> {
+  const del = db
+    .delete(authorshipSpans)
+    .where(eq(authorshipSpans.nodeId, nodeId))
+    .toSQL();
+  const statements: { sql: string; params: unknown[]; method: string }[] = [
+    { sql: del.sql, params: del.params, method: "run" },
+  ];
+  if (spans.length > 0) {
+    const ins = db.insert(authorshipSpans).values(spans).toSQL();
+    statements.push({ sql: ins.sql, params: ins.params, method: "run" });
+  }
+  await invoke("db_execute_batch", { statements });
+}
+
+/**
  * Save authorship spans from a ProseMirror document to the database.
- * Replaces all existing spans for the given node.
+ * Replaces all existing spans for the given node (DELETE+INSERT を 1 tx で原子的に).
  */
 export async function saveAuthorshipSpans(
   nodeId: string,
   doc: ProseMirrorNode,
 ): Promise<void> {
-  markStart("saveAuthorship.delete");
-  await db.delete(authorshipSpans).where(eq(authorshipSpans.nodeId, nodeId));
-  markEnd("saveAuthorship.delete");
-
   markStart("saveAuthorship.extract");
   const spans = extractDbSpans(nodeId, doc);
   markEnd("saveAuthorship.extract");
@@ -25,12 +50,9 @@ export async function saveAuthorshipSpans(
   markStart(`saveAuthorship.spanCount.${spans.length}`);
   markEnd(`saveAuthorship.spanCount.${spans.length}`);
 
-  console.debug("[saveAuthorship] spans:", spans.length);
-  if (spans.length === 0) return;
-
-  markStart("saveAuthorship.insert");
-  await db.insert(authorshipSpans).values(spans);
-  markEnd("saveAuthorship.insert");
+  markStart("saveAuthorship.replaceAtomic");
+  await replaceAuthorshipSpansAtomic(nodeId, spans);
+  markEnd("saveAuthorship.replaceAtomic");
 }
 
 /**
@@ -137,10 +159,6 @@ export async function saveAuthorshipSpansWithHash(
   nodeId: string,
   doc: ProseMirrorNode,
 ): Promise<void> {
-  await db.delete(authorshipSpans).where(eq(authorshipSpans.nodeId, nodeId));
-
   const spans = extractDbSpans(nodeId, doc);
-  if (spans.length === 0) return;
-
-  await db.insert(authorshipSpans).values(spans);
+  await replaceAuthorshipSpansAtomic(nodeId, spans);
 }
