@@ -5,7 +5,6 @@ import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { extractMarksFromPmDoc } from "@/features/export/zipExport/marksExtractor";
 import { listAnnotationsForProject } from "@/features/post-effect/api";
 import {
   groupPseudoThreads,
@@ -14,11 +13,12 @@ import {
 } from "@/features/post-effect/PseudoCommentThread";
 import {
   buildCommentGroups,
-  humanCommentsFromMarks,
+  humanCommentsFromDoc,
   type Filter,
   type HumanComment,
   type SceneGroup,
 } from "./commentsAggregation";
+import { jumpToComment } from "./jumpToComment";
 
 async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
   const rows = await db
@@ -34,8 +34,7 @@ async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
 
   const out: HumanComment[] = [];
   for (const r of rows) {
-    const { marks } = extractMarksFromPmDoc(r.content ?? "{}");
-    out.push(...humanCommentsFromMarks(r.id, r.title, marks));
+    out.push(...humanCommentsFromDoc(r.id, r.title, r.content ?? "{}"));
   }
   return out;
 }
@@ -181,16 +180,22 @@ export function CommentsTab() {
                     <button
                       key={`h-${g.sceneId}-${i}`}
                       type="button"
-                      onClick={() =>
-                        useTreeStore.getState().setActiveScene(c.sceneId)
-                      }
+                      onClick={() => jumpToComment(c)}
+                      title="該当箇所を開いて選択"
                       className="flex items-start gap-1.5 rounded-md border border-border px-3 py-2 text-left text-sm hover:bg-accent/30"
                     >
                       <User
                         size={13}
                         className="mt-0.5 shrink-0 text-amber-500"
                       />
-                      <p className="leading-snug">{c.text}</p>
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <p className="leading-snug">{c.text}</p>
+                        {c.quote && (
+                          <blockquote className="border-l-2 border-muted-foreground/30 pl-2 text-xs text-muted-foreground line-clamp-2">
+                            {c.quote}
+                          </blockquote>
+                        )}
+                      </div>
                     </button>
                   ))}
                   {g.threads.map((t) => (

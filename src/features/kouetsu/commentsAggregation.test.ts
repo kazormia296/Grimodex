@@ -1,17 +1,28 @@
 import { describe, expect, it } from "vitest";
-import type { ExtractedMark } from "@/features/export/zipExport/marksExtractor";
 import type { PseudoThread } from "@/features/post-effect/PseudoCommentThread";
 import {
   buildCommentGroups,
-  humanCommentsFromMarks,
+  humanCommentsFromDoc,
   type HumanComment,
 } from "./commentsAggregation";
 
-function commentMark(
-  attrs: Record<string, unknown>,
-  type: ExtractedMark["type"] = "comment",
-): ExtractedMark {
-  return { type, from: 0, to: 1, attrs };
+function doc(...content: unknown[]): string {
+  return JSON.stringify({ type: "doc", content });
+}
+function para(...content: unknown[]) {
+  return { type: "paragraph", content };
+}
+function text(
+  value: string,
+  comment?: { text?: unknown; createdAt?: unknown },
+) {
+  return comment
+    ? {
+        type: "text",
+        text: value,
+        marks: [{ type: "comment", attrs: comment }],
+      }
+    : { type: "text", text: value };
 }
 
 function fakeThread(id: string, sceneId: string | null): PseudoThread {
@@ -21,56 +32,129 @@ function fakeThread(id: string, sceneId: string | null): PseudoThread {
   } as unknown as PseudoThread;
 }
 
-describe("humanCommentsFromMarks", () => {
-  it("maps comment marks, trimming text and carrying createdAt", () => {
-    const marks: ExtractedMark[] = [
-      commentMark({ text: "  hello  ", createdAt: "2026-01-01" }),
-    ];
-    const out = humanCommentsFromMarks("scene-1", "Scene One", marks);
-    expect(out).toEqual([
+describe("humanCommentsFromDoc", () => {
+  it("captures body (trimmed), quote, and createdAt", () => {
+    const json = doc(
+      para(
+        text("前 "),
+        text("ここが対象", { text: "  ここ変  ", createdAt: "2026-01-01" }),
+        text(" 後"),
+      ),
+    );
+    expect(humanCommentsFromDoc("scene-1", "Scene One", json)).toEqual([
       {
         sceneId: "scene-1",
         sceneTitle: "Scene One",
-        text: "hello",
+        text: "ここ変",
+        quote: "ここが対象",
         createdAt: "2026-01-01",
+        ordinal: 0,
       },
     ]);
   });
 
-  it("skips empty and whitespace-only text", () => {
-    const marks: ExtractedMark[] = [
-      commentMark({ text: "" }),
-      commentMark({ text: "   " }),
-      commentMark({ text: "\n\t " }),
-      commentMark({}),
-      commentMark({ text: "kept" }),
-    ];
-    const out = humanCommentsFromMarks("s", "t", marks);
-    expect(out.map((c) => c.text)).toEqual(["kept"]);
+  it("merges contiguous same-mark text nodes into one comment + quote", () => {
+    const json = doc(
+      para(
+        text("ab", { text: "n", createdAt: null }),
+        text("cd", { text: "n", createdAt: null }),
+      ),
+    );
+    const out = humanCommentsFromDoc("s", "t", json);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ text: "n", quote: "abcd", ordinal: 0 });
   });
 
-  it("skips non-comment marks", () => {
-    const marks: ExtractedMark[] = [
-      commentMark({ text: "auth" }, "authorship"),
-      commentMark({ text: "ann" }, "annotation"),
-      commentMark({ text: "real comment" }),
-    ];
-    const out = humanCommentsFromMarks("s", "t", marks);
-    expect(out.map((c) => c.text)).toEqual(["real comment"]);
+  it("keeps separate comments for differing mark attrs", () => {
+    const json = doc(para(text("x", { text: "a" }), text("y", { text: "b" })));
+    expect(
+      humanCommentsFromDoc("s", "t", json).map((c) => [c.text, c.quote]),
+    ).toEqual([
+      ["a", "x"],
+      ["b", "y"],
+    ]);
+  });
+
+  it("skips empty and whitespace-only bodies", () => {
+    const json = doc(
+      para(
+        text("x", { text: "" }),
+        text("y", { text: "   " }),
+        text("z", { text: "kept" }),
+      ),
+    );
+    expect(humanCommentsFromDoc("s", "t", json).map((c) => c.text)).toEqual([
+      "kept",
+    ]);
   });
 
   it("defaults createdAt to null when absent", () => {
-    const out = humanCommentsFromMarks("s", "t", [commentMark({ text: "x" })]);
-    expect(out[0].createdAt).toBeNull();
+    const json = doc(para(text("x", { text: "x" })));
+    expect(humanCommentsFromDoc("s", "t", json)[0].createdAt).toBeNull();
+  });
+
+  it("assigns incrementing ordinals to duplicate (text, createdAt) comments", () => {
+    const json = doc(
+      para(text("一回目", { text: "重複", createdAt: null })),
+      para(text("二回目", { text: "重複", createdAt: null })),
+    );
+    expect(
+      humanCommentsFromDoc("s", "t", json).map((c) => [
+        c.text,
+        c.quote,
+        c.ordinal,
+      ]),
+    ).toEqual([
+      ["重複", "一回目", 0],
+      ["重複", "二回目", 1],
+    ]);
+  });
+
+  it("ignores non-comment marks", () => {
+    const json = doc(
+      para({
+        type: "text",
+        text: "x",
+        marks: [{ type: "authorship", attrs: { source: "ai" } }],
+      }),
+    );
+    expect(humanCommentsFromDoc("s", "t", json)).toEqual([]);
+  });
+
+  it("returns [] for empty / invalid JSON", () => {
+    expect(humanCommentsFromDoc("s", "t", "{}")).toEqual([]);
+    expect(humanCommentsFromDoc("s", "t", "")).toEqual([]);
+    expect(humanCommentsFromDoc("s", "t", "not json")).toEqual([]);
   });
 });
 
 describe("buildCommentGroups", () => {
   const title = (id: string) => `title:${id}`;
   const human: HumanComment[] = [
-    { sceneId: "a", sceneTitle: "A", text: "h1", createdAt: null },
-    { sceneId: "a", sceneTitle: "A", text: "h2", createdAt: null },
-    { sceneId: "b", sceneTitle: "B", text: "h3", createdAt: null },
+    {
+      sceneId: "a",
+      sceneTitle: "A",
+      text: "h1",
+      quote: "",
+      createdAt: null,
+      ordinal: 0,
+    },
+    {
+      sceneId: "a",
+      sceneTitle: "A",
+      text: "h2",
+      quote: "",
+      createdAt: null,
+      ordinal: 0,
+    },
+    {
+      sceneId: "b",
+      sceneTitle: "B",
+      text: "h3",
+      quote: "",
+      createdAt: null,
+      ordinal: 0,
+    },
   ];
   const threads: PseudoThread[] = [
     fakeThread("t1", "a"),
