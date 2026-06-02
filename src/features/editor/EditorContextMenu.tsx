@@ -21,6 +21,7 @@ import { sanitiseRules } from "@/features/lint/lintDisableWalker";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import { useChatStore } from "@/features/chat/chatStore";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 
@@ -75,6 +76,7 @@ export function EditorContextMenu({
   const incrementSnippetUsage = useSnippetStore((s) => s.incrementUsageCount);
   const showAttribution = useAttributionStore((s) => s.showAttribution);
   const setPendingLookupText = useChatStore((s) => s.setPendingLookupText);
+  const chatGate = useAiGate("chat");
   const openForeshadowPicker = useCursorSettingsStore(
     (s) => s.openForeshadowPicker,
   );
@@ -540,13 +542,17 @@ export function EditorContextMenu({
             >
               {t("editor.contextMenu.saveAsSnippet")}
             </button>
-            <button
-              type="button"
-              className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
-              onClick={handleLookUpInChat}
-            >
-              {t("editor.contextMenu.lookUpInChat")}
-            </button>
+            {/* chat がポリシーで OFF のときは「チャットで調べる」を隠す
+                (composer が hide され指す先が無くなるため)。 */}
+            {chatGate.presentation !== "hidden" && (
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
+                onClick={handleLookUpInChat}
+              >
+                {t("editor.contextMenu.lookUpInChat")}
+              </button>
+            )}
             <button
               type="button"
               className="px-3 py-1.5 text-sm text-left hover:bg-primary hover:text-primary-foreground"
