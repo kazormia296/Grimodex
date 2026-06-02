@@ -3,8 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useAiCapability } from "./useAiCapability";
 
-vi.mock("@/features/settings/hooks/useProjectSettings", () => ({
-  useProjectSettings: vi.fn(),
+vi.mock("@/features/project/projectStore", () => ({
+  useCurrentProject: vi.fn(),
 }));
 
 vi.mock("@/features/chat/store", () => ({
@@ -12,13 +12,13 @@ vi.mock("@/features/chat/store", () => ({
   selectProviderReadiness: vi.fn(),
 }));
 
-import { useProjectSettings } from "@/features/settings/hooks/useProjectSettings";
+import { useCurrentProject } from "@/features/project/projectStore";
 import {
   useAiSettingsStore,
   selectProviderReadiness,
 } from "@/features/chat/store";
 
-const mockUseProjectSettings = vi.mocked(useProjectSettings);
+const mockUseCurrentProject = vi.mocked(useCurrentProject);
 const mockUseAiSettingsStore = vi.mocked(useAiSettingsStore);
 const mockSelectProviderReadiness = vi.mocked(selectProviderReadiness);
 
@@ -35,35 +35,28 @@ function setupMocks(
   mockSelectProviderReadiness.mockReturnValue(readiness);
 
   if (!projectLoaded) {
-    mockUseProjectSettings.mockReturnValue({
-      project: null,
-      isLoading: true,
-      updateField: vi.fn(),
-    });
+    // 同期キャッシュ未ロード = useCurrentProject が undefined → pending。
+    mockUseCurrentProject.mockReturnValue(undefined);
   } else {
-    mockUseProjectSettings.mockReturnValue({
-      project: {
-        id: "default-project",
-        title: "Test",
-        language: "ja",
-        phaseResolutionMode: "auto",
-        createdAt: "",
-        updatedAt: "",
-        genre: null,
-        pov: null,
-        tense: null,
-        styleGuide: null,
-        aiInstructions: null,
-        outline: null,
-        targetReaders: null,
-        aiPolicy: JSON.stringify({
-          preset: "custom",
-          toggles: policyToggles,
-        }),
-      },
-      isLoading: false,
-      updateField: vi.fn(),
-    });
+    mockUseCurrentProject.mockReturnValue({
+      id: "default-project",
+      title: "Test",
+      language: "ja",
+      phaseResolutionMode: "auto",
+      createdAt: "",
+      updatedAt: "",
+      genre: null,
+      pov: null,
+      tense: null,
+      styleGuide: null,
+      aiInstructions: null,
+      outline: null,
+      targetReaders: null,
+      aiPolicy: JSON.stringify({
+        preset: "custom",
+        toggles: policyToggles,
+      }),
+    } as never);
   }
 }
 
