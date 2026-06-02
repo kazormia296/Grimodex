@@ -281,11 +281,30 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
     };
     editor.on("transaction", onTransaction);
 
+    // offsetMap は doc が変わらない限り使い回す。PM doc は immutable なので
+    // 参照一致で「同じ doc」を判定できる。純カーソル移動(docChanged=false)では
+    // 全 doc 再走査を避け二分探索だけにする（所見#2）。
+    let cachedDoc: Parameters<typeof buildOffsetMap>[0] | null = null;
+    let cachedMap: ReturnType<typeof buildOffsetMap> | null = null;
+    const getOffsetMap = (doc: Parameters<typeof buildOffsetMap>[0]) => {
+      if (cachedDoc === doc && cachedMap) return cachedMap;
+      cachedMap = buildOffsetMap(doc);
+      cachedDoc = doc;
+      return cachedMap;
+    };
+
     // Track cursor position → scene offset for reverse highlight.
     const onSelectionUpdate = () => {
       if (!editor) return;
+      // Linter 無効/言語無効時は誰も cursorOffset を消費しない。debounced 経路
+      // (schedule 内 line 216) と対称化し、reverse-highlight 用の full-doc walk を
+      // 払わない。Linter を一度も開いていないユーザーが毎打鍵で負担していた（所見#2）。
+      const cfgStore = useLintConfigStore.getState();
+      const lang = resolveLintLanguage();
+      const effective = cfgStore.getEffective();
+      if (!effective.enabled || !effective.languages[lang]?.enabled) return;
       markStart("linter.selectionUpdate");
-      const map = buildOffsetMap(editor.state.doc);
+      const map = getOffsetMap(editor.state.doc);
       const head = editor.state.selection.head;
       const off = pmPosToStrOffset(map, head);
       useLintStore.getState().setCursorOffset(off);
