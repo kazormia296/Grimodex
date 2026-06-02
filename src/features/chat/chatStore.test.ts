@@ -401,6 +401,26 @@ describe("useChatStore", () => {
       expect(messages[1].content).toBe("あいう");
     });
 
+    it("flushes the coalesced tail on error so partial content is preserved", async () => {
+      // chatStore.ts onError は flushDelta() を同期実行し、rAF にバッファ済みの
+      // delta を取りこぼさず assistant メッセージに反映してから reject する。
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          callbacks.onTextDelta("途中ま");
+          callbacks.onTextDelta("で");
+          callbacks.onError("ストリーム中断");
+          return () => {};
+        },
+      );
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const { messages, error } = useChatStore.getState();
+      const assistant = messages.find((m) => m.role === "assistant");
+      expect(assistant?.content).toBe("途中まで");
+      expect(error).toBe("ストリーム中断");
+    });
+
     it("sets isStreaming to true during API call", async () => {
       let streamingDuringCall = false;
       mockSendChatMessageStream.mockImplementation(
