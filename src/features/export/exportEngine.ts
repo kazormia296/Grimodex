@@ -395,7 +395,13 @@ function renderTable(node: PMNode, ctx: RenderCtx): string {
         // becomes `\\|`, where `\\` consumes the backslash escape and `|`
         // splits the cell. Order matters; `g` flag on both is required.
         .replace(/\\/g, "\\\\")
-        .replace(/\|/g, "\\|"),
+        .replace(/\|/g, "\\|")
+        // Table cells cannot contain a raw newline: a hardBreak (`  \n` / `\n`)
+        // or a multi-paragraph cell would otherwise split the row / terminate
+        // the table early on re-parse. Collapse trailing-space + newline into
+        // an inline `<br>` (safe to run after the escapes — `<br>` has no
+        // backslash or pipe).
+        .replace(/ *\r?\n/g, "<br>"),
     );
     return `| ${cells.join(" | ")} |`;
   });

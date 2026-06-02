@@ -1257,4 +1257,130 @@ describe("generateExport - table cell escaping", () => {
     });
     expect(result).toContain("| a\\\\\\|b | c |");
   });
+
+  it("複数段落セルは改行が `<br>` になり行を壊さない", () => {
+    const s1 = makeScene("s1", "t");
+    const docJson = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "table",
+          content: [
+            {
+              type: "tableRow",
+              content: [
+                {
+                  type: "tableHeader",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "h1" }],
+                    },
+                  ],
+                },
+                {
+                  type: "tableHeader",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "h2" }],
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              type: "tableRow",
+              content: [
+                {
+                  type: "tableCell",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "p1" }],
+                    },
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "p2" }],
+                    },
+                  ],
+                },
+                {
+                  type: "tableCell",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "c" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: docJson },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "markdown" }),
+    });
+    expect(result).toContain("| p1<br>p2 | c |");
+    // 生の改行が残ると再パースで行が割れる/早期終了する
+    expect(result).not.toContain("p1\np2");
+  });
+
+  it("hardBreak を含むセルは `<br>` になり行を壊さない", () => {
+    const s1 = makeScene("s1", "t");
+    const docJson = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "table",
+          content: [
+            {
+              type: "tableRow",
+              content: [
+                {
+                  type: "tableHeader",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [{ type: "text", text: "h1" }],
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              type: "tableRow",
+              content: [
+                {
+                  type: "tableCell",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [
+                        { type: "text", text: "a" },
+                        { type: "hardBreak" },
+                        { type: "text", text: "b" },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: docJson },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "markdown" }),
+    });
+    expect(result).toContain("| a<br>b |");
+  });
 });
