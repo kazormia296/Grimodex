@@ -4,7 +4,11 @@ import type { PostEffectAnnotation } from "./types";
 
 /** テスト用の最小 annotation を作る。 */
 function ann(
-  partial: Partial<PostEffectAnnotation> & {
+  // metadata は Partial<PostEffectAnnotation> 由来の `string` と intersection
+  // すると `string & unknown = string` に再 narrow され object fixture を弾く。
+  // Omit してから unknown を足し、object も string も渡せるようにする
+  // (本文 30-33 行で string へ正規化している)。
+  partial: Omit<Partial<PostEffectAnnotation>, "metadata"> & {
     category: string;
     metadata?: unknown;
   },
