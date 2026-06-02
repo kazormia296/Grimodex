@@ -72,22 +72,42 @@ export function CommentsTab() {
     [scenes],
   );
 
+  // 人間コメントは CommentMark で doc 焼き込み → 集約には全シーン本文の
+  // JSON.parse + extractMarksFromPmDoc 走査が要る(重い)。annotation(疑似コメント)
+  // は専用テーブルからの軽量 SELECT。両者を分離して別々に再取得できるようにする。
+  const reloadHuman = useCallback(async () => {
+    if (!projectId) return;
+    setHuman(await loadHumanComments(projectId));
+  }, [projectId]);
+
+  // 疑似コメントの dismiss/返信は人間 CommentMark を変更し得ない(annotation テーブル
+  // のみ操作)。スレッド操作後に全シーン本文を再走査する loadHumanComments は完全な
+  // 無駄だったので annotation だけ silently 再取得する（所見#6）。loading スピナーも
+  // 出さず triage ループ(dismiss/返信連打)中のチラつきを防ぐ。
+  const reloadAnnotations = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const projAnns = await listAnnotationsForProject({
+        projectId,
+        status: "open",
+      });
+      setThreads(groupPseudoThreads(projAnns.annotations));
+    } catch (e) {
+      console.error("comments annotation reload error", e);
+    }
+  }, [projectId]);
+
   const reload = useCallback(async () => {
     if (!projectId) return;
     setLoading(true);
     try {
-      const [humanComments, projAnns] = await Promise.all([
-        loadHumanComments(projectId),
-        listAnnotationsForProject({ projectId, status: "open" }),
-      ]);
-      setHuman(humanComments);
-      setThreads(groupPseudoThreads(projAnns.annotations));
+      await Promise.all([reloadHuman(), reloadAnnotations()]);
     } catch (e) {
       console.error("comments aggregate load error", e);
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, reloadHuman, reloadAnnotations]);
 
   useEffect(() => {
     void reload();
@@ -217,7 +237,7 @@ export function CommentsTab() {
                     <PseudoCommentThread
                       key={t.root.id}
                       thread={t}
-                      onChanged={() => void reload()}
+                      onChanged={() => void reloadAnnotations()}
                       onJump={() =>
                         t.root.sceneId &&
                         useTreeStore.getState().setActiveScene(t.root.sceneId)
