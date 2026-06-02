@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { Download } from "lucide-react";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -70,7 +71,7 @@ function StatBar({
   );
 }
 
-export function AttributionReport() {
+export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
@@ -101,6 +102,10 @@ export function AttributionReport() {
   }, [scope, editor, activeSceneId, editor?.state.doc]);
 
   useEffect(() => {
+    // keepalive で hidden の間は provenance 解決 (async DB/trace lookup) を bail。
+    // passages はパネル local state なので stale のまま残し、再アクティブ化時に
+    // isActive deps 経由で現在シーンを 1 回再解決して catch up する。
+    if (!isActive) return;
     if (scope !== "scene" || !editor || !activeSceneId || !aiSpanSignal) {
       setPassages([]);
       setIsLoadingPassages(false);
@@ -131,7 +136,7 @@ export function AttributionReport() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [scope, editor, activeSceneId, aiSpanSignal]);
+  }, [isActive, scope, editor, activeSceneId, aiSpanSignal]);
 
   const handleJumpToPassage = useCallback((passage: ResolvedPassage) => {
     useTreeStore.getState().setActiveScene(passage.nodeId);
