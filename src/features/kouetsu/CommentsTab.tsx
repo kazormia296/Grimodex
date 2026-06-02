@@ -12,15 +12,13 @@ import {
   PseudoCommentThread,
   type PseudoThread,
 } from "@/features/post-effect/PseudoCommentThread";
-
-interface HumanComment {
-  sceneId: string;
-  sceneTitle: string;
-  text: string;
-  createdAt: string | null;
-}
-
-type Filter = "all" | "human" | "ai";
+import {
+  buildCommentGroups,
+  humanCommentsFromMarks,
+  type Filter,
+  type HumanComment,
+  type SceneGroup,
+} from "./commentsAggregation";
 
 async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
   const rows = await db
@@ -37,26 +35,9 @@ async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
   const out: HumanComment[] = [];
   for (const r of rows) {
     const { marks } = extractMarksFromPmDoc(r.content ?? "{}");
-    for (const m of marks) {
-      if (m.type !== "comment") continue;
-      const text = String(m.attrs.text ?? "").trim();
-      if (!text) continue;
-      out.push({
-        sceneId: r.id,
-        sceneTitle: r.title,
-        text,
-        createdAt: (m.attrs.createdAt as string | null) ?? null,
-      });
-    }
+    out.push(...humanCommentsFromMarks(r.id, r.title, marks));
   }
   return out;
-}
-
-interface SceneGroup {
-  sceneId: string;
-  sceneTitle: string;
-  human: HumanComment[];
-  threads: PseudoThread[];
 }
 
 export function CommentsTab() {
@@ -113,31 +94,10 @@ export function CommentsTab() {
     void reload();
   }, [reload]);
 
-  const groups = useMemo<SceneGroup[]>(() => {
-    const acc = new Map<string, SceneGroup>();
-    const ensure = (sceneId: string): SceneGroup => {
-      const g = acc.get(sceneId) ?? {
-        sceneId,
-        sceneTitle: sceneTitle(sceneId),
-        human: [],
-        threads: [],
-      };
-      acc.set(sceneId, g);
-      return g;
-    };
-    if (filter !== "ai") {
-      for (const c of human) ensure(c.sceneId).human.push(c);
-    }
-    if (filter !== "human") {
-      for (const t of threads) {
-        if (!t.root.sceneId) continue;
-        ensure(t.root.sceneId).threads.push(t);
-      }
-    }
-    return [...acc.values()].filter(
-      (g) => g.human.length > 0 || g.threads.length > 0,
-    );
-  }, [human, threads, filter, sceneTitle]);
+  const groups = useMemo<SceneGroup[]>(
+    () => buildCommentGroups(human, threads, filter, sceneTitle),
+    [human, threads, filter, sceneTitle],
+  );
 
   const totalCount = groups.reduce(
     (n, g) => n + g.human.length + g.threads.length,

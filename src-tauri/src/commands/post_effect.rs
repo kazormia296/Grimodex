@@ -1016,6 +1016,142 @@ mod is_annotation_previously_closed_tests {
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod reply_to_annotation_tests {
+    use super::{reply_to_annotation_inner, ReplyToAnnotationArgs};
+    use rusqlite::{params, Connection};
+
+    fn open_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE post_effect_annotations (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT,
+                run_id      TEXT,
+                anchor_type TEXT,
+                scene_id    TEXT,
+                range_start INTEGER,
+                range_end   INTEGER,
+                text_snapshot TEXT,
+                category    TEXT NOT NULL,
+                persona     TEXT,
+                severity    TEXT,
+                content     TEXT,
+                author_role TEXT,
+                parent_id   TEXT,
+                status      TEXT NOT NULL,
+                metadata    TEXT NOT NULL DEFAULT '{}',
+                created_at  TEXT,
+                updated_at  TEXT
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// 親 (pseudo_comment / open) を継承対象の 4 列込みで INSERT する。
+    /// persona は `Option` で渡し、NULL ケースもカバーできるようにする。
+    fn insert_parent(
+        conn: &Connection,
+        id: &str,
+        project_id: &str,
+        scene_id: Option<&str>,
+        run_id: Option<&str>,
+        persona: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO post_effect_annotations
+                (id, project_id, scene_id, run_id, anchor_type,
+                 category, persona, content, author_role, status, metadata)
+             VALUES (?, ?, ?, ?, 'scene_range',
+                     'pseudo_comment', ?, 'parent body', 'ai', 'open', '{}')",
+            params![id, project_id, scene_id, run_id, persona],
+        )
+        .unwrap();
+    }
+
+    fn args(parent_id: &str, content: &str, author_role: &str) -> ReplyToAnnotationArgs {
+        ReplyToAnnotationArgs {
+            parent_id: parent_id.to_string(),
+            content: content.to_string(),
+            author_role: author_role.to_string(),
+        }
+    }
+
+    // ---- (a) inheritance ----
+
+    #[test]
+    fn inherits_parent_fields() {
+        let conn = open_db();
+        insert_parent(
+            &conn,
+            "parent-1",
+            "proj-1",
+            Some("scene-7"),
+            Some("run-9"),
+            Some("校閲者A"),
+        );
+
+        let child = reply_to_annotation_inner(&conn, &args("parent-1", "返信本文", "user")).unwrap();
+
+        // Uuid はランダムなので返り値から child id を読み戻す
+        let child_id = child["id"].as_str().unwrap();
+        assert_ne!(child_id, "parent-1");
+
+        // 4 つの継承フィールドが親と一致
+        assert_eq!(child["projectId"].as_str(), Some("proj-1"));
+        assert_eq!(child["sceneId"].as_str(), Some("scene-7"));
+        assert_eq!(child["runId"].as_str(), Some("run-9"));
+        assert_eq!(child["persona"].as_str(), Some("校閲者A"));
+
+        // 親子リンク・固定値
+        assert_eq!(child["parentId"].as_str(), Some("parent-1"));
+        assert_eq!(child["status"].as_str(), Some("open"));
+        assert_eq!(child["category"].as_str(), Some("pseudo_comment"));
+        assert_eq!(child["content"].as_str(), Some("返信本文"));
+        assert_eq!(child["authorRole"].as_str(), Some("user"));
+
+        // metadata.persona も親 persona を反映
+        assert_eq!(child["metadata"]["persona"].as_str(), Some("校閲者A"));
+    }
+
+    // ---- (b) author_role fallback ----
+
+    fn author_role_for(input: &str) -> String {
+        let conn = open_db();
+        insert_parent(&conn, "p", "proj", Some("s"), Some("r"), Some("persona"));
+        let child = reply_to_annotation_inner(&conn, &args("p", "c", input)).unwrap();
+        child["authorRole"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn author_role_known_values_pass_through() {
+        assert_eq!(author_role_for("user"), "user");
+        assert_eq!(author_role_for("ai"), "ai");
+        assert_eq!(author_role_for("system"), "system");
+    }
+
+    #[test]
+    fn author_role_unknown_falls_back_to_user() {
+        assert_eq!(author_role_for("garbage"), "user");
+        assert_eq!(author_role_for(""), "user");
+    }
+
+    // ---- (c) NULL persona ----
+
+    #[test]
+    fn null_persona_parent_yields_null_child_persona() {
+        let conn = open_db();
+        insert_parent(&conn, "p", "proj", Some("s"), Some("r"), None);
+
+        let child = reply_to_annotation_inner(&conn, &args("p", "c", "user")).unwrap();
+
+        assert!(child["persona"].is_null());
+        assert!(child["metadata"]["persona"].is_null());
+    }
+}
+
 /// `idx` を直下の char 境界に丸める（`is_char_boundary` が安定 API なので自前実装）。
 /// stable Rust では `str::floor_char_boundary` がまだ unstable なため。
 fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
@@ -3805,6 +3941,62 @@ pub(crate) struct ReplyToAnnotationArgs {
     author_role: String,
 }
 
+/// `reply_to_annotation` の中核ロジック。
+/// 親の project_id / scene_id / run_id / persona を継承して子 annotation を
+/// INSERT し、read-back した Value を返す。コマンド本体から分離してテスト可能にする。
+fn reply_to_annotation_inner(
+    conn: &rusqlite::Connection,
+    args: &ReplyToAnnotationArgs,
+) -> anyhow::Result<Value> {
+    // 親の project_id / scene_id / run_id / persona を継承する
+    #[allow(clippy::type_complexity)]
+    let (project_id, scene_id, run_id, persona): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = conn.query_row(
+        "SELECT project_id, scene_id, run_id, persona
+           FROM post_effect_annotations WHERE id = ?",
+        params![args.parent_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+
+    let author_role = match args.author_role.as_str() {
+        "user" | "ai" | "system" => args.author_role.as_str(),
+        _ => "user",
+    };
+    let new_id = Uuid::new_v4().to_string();
+    let metadata = serde_json::json!({ "persona": persona });
+    conn.execute(
+        "INSERT INTO post_effect_annotations
+            (id, project_id, run_id, anchor_type, scene_id,
+             category, persona, content, author_role, parent_id,
+             status, metadata, created_at, updated_at)
+         VALUES (?, ?, ?, 'scene_range', ?,
+                 'pseudo_comment', ?, ?, ?, ?,
+                 'open', ?, datetime('now'), datetime('now'))",
+        params![
+            new_id,
+            project_id,
+            run_id,
+            scene_id,
+            persona,
+            args.content,
+            author_role,
+            args.parent_id,
+            metadata.to_string(),
+        ],
+    )?;
+
+    let ann = conn.query_row(
+        "SELECT * FROM post_effect_annotations WHERE id = ?",
+        params![new_id],
+        row_to_annotation_value,
+    )?;
+    Ok(ann)
+}
+
 /// 疑似コメントへの返信を追加する (設計書 §4: 親の run_id を継承)。
 #[tauri::command]
 pub(crate) fn reply_to_annotation(
@@ -3812,55 +4004,7 @@ pub(crate) fn reply_to_annotation(
     args: ReplyToAnnotationArgs,
 ) -> Result<Value, AppError> {
     super::with_db(&ws_state, |db| {
-        db.with_conn(|conn| {
-            // 親の project_id / scene_id / run_id / persona を継承する
-            #[allow(clippy::type_complexity)]
-            let (project_id, scene_id, run_id, persona): (
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            ) = conn.query_row(
-                "SELECT project_id, scene_id, run_id, persona
-                   FROM post_effect_annotations WHERE id = ?",
-                params![args.parent_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )?;
-
-            let author_role = match args.author_role.as_str() {
-                "user" | "ai" | "system" => args.author_role.as_str(),
-                _ => "user",
-            };
-            let new_id = Uuid::new_v4().to_string();
-            let metadata = serde_json::json!({ "persona": persona });
-            conn.execute(
-                "INSERT INTO post_effect_annotations
-                    (id, project_id, run_id, anchor_type, scene_id,
-                     category, persona, content, author_role, parent_id,
-                     status, metadata, created_at, updated_at)
-                 VALUES (?, ?, ?, 'scene_range', ?,
-                         'pseudo_comment', ?, ?, ?, ?,
-                         'open', ?, datetime('now'), datetime('now'))",
-                params![
-                    new_id,
-                    project_id,
-                    run_id,
-                    scene_id,
-                    persona,
-                    args.content,
-                    author_role,
-                    args.parent_id,
-                    metadata.to_string(),
-                ],
-            )?;
-
-            let ann = conn.query_row(
-                "SELECT * FROM post_effect_annotations WHERE id = ?",
-                params![new_id],
-                row_to_annotation_value,
-            )?;
-            Ok(ann)
-        })
+        db.with_conn(|conn| reply_to_annotation_inner(conn, &args))
     })
 }
 

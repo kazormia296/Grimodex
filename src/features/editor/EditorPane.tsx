@@ -88,6 +88,10 @@ import {
 } from "@/features/foreshadow/saveAnchors";
 import { saveAnnotationAnchors } from "@/features/post-effect/syncAnnotations";
 import { listAnnotationsForScene } from "@/features/post-effect/api";
+import {
+  clampMarkRange,
+  resolveAnchorLoads,
+} from "@/features/editor/anchorLoads";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
@@ -1486,27 +1490,24 @@ export function EditorPane({
             );
             markEnd("sceneLoad.loadAnchors.parallel");
 
+            // 結果解決(fulfilled→value / rejected→欠落値) と rejected の収集は
+            // resolveAnchorLoads(純関数) に切り出し。dispatch / clamp / store 書き込み
+            // / !cancelled ガードは下のとおり当コンポーネントに残す(部分適用維持)。
+            const { spans, foreshadowMarks, annotations, errors } =
+              resolveAnchorLoads(spansR, foreshadowR, annotationR);
+
             // allSettled で 1 件の失敗は部分適用に留めるが、無音だと
             // マーク欠落の原因が追えない。rejected は最低限ログに残す
             // (旧直列 await は throw→unhandledrejection で console に出ていた)。
-            for (const [label, r] of [
-              ["authorshipSpans", spansR],
-              ["foreshadowAnchors", foreshadowR],
-              ["annotations", annotationR],
-            ] as const) {
-              if (r.status === "rejected") {
-                debugLog.error(
-                  "EditorPane",
-                  `sceneLoad.loadAnchors:${label} failed`,
-                  errorDetail(r.reason),
-                );
-              }
+            for (const { label, reason } of errors) {
+              debugLog.error(
+                "EditorPane",
+                `sceneLoad.loadAnchors:${label} failed`,
+                errorDetail(reason),
+              );
             }
 
             if (!cancelled) {
-              const spans = spansR.status === "fulfilled" ? spansR.value : [];
-              const foreshadowMarks =
-                foreshadowR.status === "fulfilled" ? foreshadowR.value : [];
               const markData = spans.length > 0 ? spansToMarkData(spans) : [];
               const authorshipType = editor!.schema.marks["authorship"];
               const willApplyAuthorship =
@@ -1527,13 +1528,11 @@ export function EditorPane({
                     tr.setMeta("programmaticInsert", true);
                     if (willApplyAuthorship) {
                       for (const { from, to, attrs } of markData) {
-                        const docSize = tr.doc.content.size;
-                        const clampedFrom = Math.min(from, docSize);
-                        const clampedTo = Math.min(to, docSize);
-                        if (clampedFrom < clampedTo) {
+                        const r = clampMarkRange(from, to, tr.doc.content.size);
+                        if (r) {
                           tr.addMark(
-                            clampedFrom,
-                            clampedTo,
+                            r.from,
+                            r.to,
                             authorshipType!.create(attrs),
                           );
                         }
@@ -1550,10 +1549,8 @@ export function EditorPane({
                       } of foreshadowMarks) {
                         const markType = schema.marks[markName];
                         if (!markType) continue;
-                        const docSize = tr.doc.content.size;
-                        const cf = Math.min(from, docSize);
-                        const ct = Math.min(to, docSize);
-                        if (cf < ct) tr.addMark(cf, ct, markType.create(attrs));
+                        const r = clampMarkRange(from, to, tr.doc.content.size);
+                        if (r) tr.addMark(r.from, r.to, markType.create(attrs));
                       }
                     }
                     return true;
@@ -1567,8 +1564,10 @@ export function EditorPane({
 
             // Load and apply post-effect annotation anchors。store 書き込みは元
             // コードどおり無条件、editor へのマーク適用のみ !cancelled でガードする。
-            if (annotationR.status === "fulfilled") {
-              const annotationResp = annotationR.value;
+            // annotations は resolveAnchorLoads が fulfilled 時に response object、
+            // rejected 時に null を返すので、旧 annotationR.status==="fulfilled" と等価。
+            if (annotations) {
+              const annotationResp = annotations;
               useAnnotationStore.getState().setFocusedAnnotationId(null);
               useAnnotationStore
                 .getState()

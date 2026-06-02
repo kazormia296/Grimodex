@@ -11,12 +11,11 @@ import {
   ResizableHandle,
 } from "@/components/ui/resizable";
 import { useKouetsuStore } from "./kouetsuStore";
+import { deriveIssueCounts } from "./issueCounts";
 import { IssuesScopeBar } from "./IssuesScopeBar";
 import { LinterSection } from "./sections/LinterSection";
 import { ConsistencySection } from "./sections/ConsistencySection";
 import { TypoSection } from "./sections/TypoSection";
-
-const TYPO_RULE_ID = "ja/typo-confusable";
 
 function SectionHeader({
   title,
@@ -78,23 +77,16 @@ export function IssuesTab() {
 
   // typo Lint は誤字脱字セクションに別集計しつつ、校正セクションにも従来どおり含める
   // (Linter 全件パネルの一貫性を優先。MVP のトレードオフ)
-  const typoLintCount = useMemo(
-    () => diagnostics.filter((d) => d.rule_id === TYPO_RULE_ID).length,
-    [diagnostics],
+  const { linterCount, consistencyCount, typoCount } = useMemo(
+    () =>
+      deriveIssueCounts({
+        diagnostics,
+        annotationsByScene,
+        scope,
+        activeSceneId,
+      }),
+    [diagnostics, annotationsByScene, scope, activeSceneId],
   );
-  const linterCount = diagnostics.length;
-
-  const sceneAnnotations =
-    scope === "current" && activeSceneId
-      ? (annotationsByScene.get(activeSceneId) ?? [])
-      : [];
-  const consistencyCount = sceneAnnotations.filter(
-    (a) => a.status === "open" && a.category === "consistency_anchor",
-  ).length;
-  const typoAiCount = sceneAnnotations.filter(
-    (a) => a.status === "open" && a.category === "typo_anchor",
-  ).length;
-  const typoCount = typoLintCount + typoAiCount;
 
   const handleLinterToggle = () => {
     if (linterExpanded) {
