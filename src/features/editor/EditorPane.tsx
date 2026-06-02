@@ -1468,82 +1468,97 @@ export function EditorPane({
           if (!isCodexMode && !isSnippetMode) {
             useTreeStore.getState().setCharCount(nodeId, count);
 
-            markStart("sceneLoad.loadAuthorshipSpans");
-            const spans = await loadAuthorshipSpans(nodeId);
-            markEnd("sceneLoad.loadAuthorshipSpans");
-            if (!cancelled && spans.length > 0) {
-              markStart(`sceneLoad.spansToMarkData.${spans.length}`);
-              const markData = spansToMarkData(spans);
-              markEnd(`sceneLoad.spansToMarkData.${spans.length}`);
+            // 帰属/伏線/疑似コメントは互いにデータ依存の無い独立リード。直列 await
+            // だと各 IPC 往復 + drizzle warmed microtask(~150ms/件)が積み上がるので
+            // 並列化して往復レイテンシを重ねる（所見#4）。SQLite 実行自体は単一
+            // Mutex で直列化されるが、往復 + await microtask は隠せる。allSettled で
+            // 1 つの失敗が他のマーク適用を巻き込まないようにする(部分適用維持)。
+            markStart("sceneLoad.loadAnchors.parallel");
+            const [spansR, foreshadowR, annotationR] = await Promise.allSettled(
+              [
+                loadAuthorshipSpans(nodeId),
+                loadForeshadowAnchors(nodeId),
+                listAnnotationsForScene({
+                  projectId: useTreeStore.getState().projectId,
+                  sceneId: nodeId,
+                }),
+              ],
+            );
+            markEnd("sceneLoad.loadAnchors.parallel");
+
+            if (!cancelled) {
+              const spans = spansR.status === "fulfilled" ? spansR.value : [];
+              const foreshadowMarks =
+                foreshadowR.status === "fulfilled" ? foreshadowR.value : [];
+              const markData = spans.length > 0 ? spansToMarkData(spans) : [];
               const authorshipType = editor!.schema.marks["authorship"];
-              if (authorshipType) {
-                markStart(`sceneLoad.applyAuthorshipMarks.${markData.length}`);
+              const willApplyAuthorship =
+                markData.length > 0 && !!authorshipType;
+              const willApplyForeshadow =
+                foreshadowMarks.length > 0 && !!editor;
+
+              // 帰属マークと伏線マークは別 mark type・別 range で互いに干渉しない。
+              // 1 本の chain にまとめて view.dispatch を 2→1 に減らす(AnnotationPlugin
+              // の余分な full-doc walk も 1 回削減)。
+              if (willApplyAuthorship || willApplyForeshadow) {
+                markStart(
+                  `sceneLoad.applyAnchorMarks.${markData.length}+${foreshadowMarks.length}`,
+                );
                 editor!
                   .chain()
                   .command(({ tr }) => {
                     tr.setMeta("programmaticInsert", true);
-                    for (const { from, to, attrs } of markData) {
-                      const docSize = tr.doc.content.size;
-                      const clampedFrom = Math.min(from, docSize);
-                      const clampedTo = Math.min(to, docSize);
-                      if (clampedFrom < clampedTo) {
-                        tr.addMark(
-                          clampedFrom,
-                          clampedTo,
-                          authorshipType.create(attrs),
-                        );
+                    if (willApplyAuthorship) {
+                      for (const { from, to, attrs } of markData) {
+                        const docSize = tr.doc.content.size;
+                        const clampedFrom = Math.min(from, docSize);
+                        const clampedTo = Math.min(to, docSize);
+                        if (clampedFrom < clampedTo) {
+                          tr.addMark(
+                            clampedFrom,
+                            clampedTo,
+                            authorshipType!.create(attrs),
+                          );
+                        }
+                      }
+                    }
+                    if (willApplyForeshadow) {
+                      clearAllForeshadowMarks((fn) => fn(tr));
+                      const schema = tr.doc.type.schema;
+                      for (const {
+                        from,
+                        to,
+                        markName,
+                        attrs,
+                      } of foreshadowMarks) {
+                        const markType = schema.marks[markName];
+                        if (!markType) continue;
+                        const docSize = tr.doc.content.size;
+                        const cf = Math.min(from, docSize);
+                        const ct = Math.min(to, docSize);
+                        if (cf < ct) tr.addMark(cf, ct, markType.create(attrs));
                       }
                     }
                     return true;
                   })
                   .run();
-                markEnd(`sceneLoad.applyAuthorshipMarks.${markData.length}`);
+                markEnd(
+                  `sceneLoad.applyAnchorMarks.${markData.length}+${foreshadowMarks.length}`,
+                );
               }
             }
 
-            // Load and apply foreshadow anchors
-            markStart("sceneLoad.loadForeshadowAnchors");
-            const foreshadowMarks = await loadForeshadowAnchors(nodeId);
-            markEnd("sceneLoad.loadForeshadowAnchors");
-            if (!cancelled && foreshadowMarks.length > 0 && editor) {
-              markStart(
-                `sceneLoad.applyForeshadowMarks.${foreshadowMarks.length}`,
-              );
-              editor
-                .chain()
-                .command(({ tr }) => {
-                  tr.setMeta("programmaticInsert", true);
-                  clearAllForeshadowMarks((fn) => fn(tr));
-                  const schema = tr.doc.type.schema;
-                  for (const { from, to, markName, attrs } of foreshadowMarks) {
-                    const markType = schema.marks[markName];
-                    if (!markType) continue;
-                    const docSize = tr.doc.content.size;
-                    const cf = Math.min(from, docSize);
-                    const ct = Math.min(to, docSize);
-                    if (cf < ct) tr.addMark(cf, ct, markType.create(attrs));
-                  }
-                  return true;
-                })
-                .run();
-              markEnd(
-                `sceneLoad.applyForeshadowMarks.${foreshadowMarks.length}`,
-              );
-            }
-
-            // Load and apply post-effect annotation anchors
-            markStart("sceneLoad.loadAnnotationAnchors");
-            const annotationResp = await listAnnotationsForScene({
-              projectId: useTreeStore.getState().projectId,
-              sceneId: nodeId,
-            });
-            markEnd("sceneLoad.loadAnnotationAnchors");
-            useAnnotationStore.getState().setFocusedAnnotationId(null);
-            useAnnotationStore
-              .getState()
-              .setAnnotations(nodeId, annotationResp.annotations);
-            if (!cancelled && editor) {
-              applyAnnotationsToEditor(editor, annotationResp.annotations);
+            // Load and apply post-effect annotation anchors。store 書き込みは元
+            // コードどおり無条件、editor へのマーク適用のみ !cancelled でガードする。
+            if (annotationR.status === "fulfilled") {
+              const annotationResp = annotationR.value;
+              useAnnotationStore.getState().setFocusedAnnotationId(null);
+              useAnnotationStore
+                .getState()
+                .setAnnotations(nodeId, annotationResp.annotations);
+              if (!cancelled && editor) {
+                applyAnnotationsToEditor(editor, annotationResp.annotations);
+              }
             }
           }
         } finally {
