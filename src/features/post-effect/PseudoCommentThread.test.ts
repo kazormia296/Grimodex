@@ -50,6 +50,16 @@ describe("groupPseudoThreads", () => {
     expect(threads.map((t) => t.root.id)).toEqual(["open1"]);
   });
 
+  it("dismissed の返信は除外する (root dismiss と非対称にしない)", () => {
+    const threads = groupPseudoThreads([
+      a({ id: "root1", status: "open" }),
+      a({ id: "r-open", parentId: "root1", status: "open" }),
+      a({ id: "r-gone", parentId: "root1", status: "dismissed" }),
+    ]);
+    expect(threads).toHaveLength(1);
+    expect(threads[0]!.replies.map((r) => r.id)).toEqual(["r-open"]);
+  });
+
   it("pseudo_comment 以外のカテゴリは無視する", () => {
     const threads = groupPseudoThreads([
       a({ id: "rev", category: "review" }),

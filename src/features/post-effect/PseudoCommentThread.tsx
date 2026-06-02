@@ -12,7 +12,14 @@ export interface PseudoThread {
   replies: PostEffectAnnotation[];
 }
 
-/** flat な annotation 配列から pseudo_comment のスレッド (root + replies) を組み立てる。 */
+/**
+ * flat な annotation 配列から pseudo_comment のスレッド (root + replies) を組み立てる。
+ *
+ * dismiss は **スレッド単位** (UI 上「無視」ボタンは root にのみ存在し、root を
+ * dismissed にするとスレッドごと非表示)。返信を個別に dismiss する導線は無いが、
+ * backend cascade 等で返信が dismissed になった場合も root と同じ扱いで隠すよう
+ * replies 側も status で除外し、表示の非対称を防ぐ。
+ */
 export function groupPseudoThreads(
   annotations: PostEffectAnnotation[],
 ): PseudoThread[] {
@@ -31,7 +38,9 @@ export function groupPseudoThreads(
     .sort(sortByCreated)
     .map((root) => ({
       root,
-      replies: (repliesByParent.get(root.id) ?? []).sort(sortByCreated),
+      replies: (repliesByParent.get(root.id) ?? [])
+        .filter((r) => r.status !== "dismissed")
+        .sort(sortByCreated),
     }));
 }
 
