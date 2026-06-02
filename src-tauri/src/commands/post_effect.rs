@@ -529,9 +529,18 @@ mod dismiss_key_review_tests {
     #[test]
     fn differs_by_title_and_found_text() {
         let base = dismiss_key_review("scene-1", "中盤が冗長", "そして彼は");
-        assert_ne!(base, dismiss_key_review("scene-1", "別の所見", "そして彼は"));
-        assert_ne!(base, dismiss_key_review("scene-1", "中盤が冗長", "別の本文"));
-        assert_ne!(base, dismiss_key_review("scene-2", "中盤が冗長", "そして彼は"));
+        assert_ne!(
+            base,
+            dismiss_key_review("scene-1", "別の所見", "そして彼は")
+        );
+        assert_ne!(
+            base,
+            dismiss_key_review("scene-1", "中盤が冗長", "別の本文")
+        );
+        assert_ne!(
+            base,
+            dismiss_key_review("scene-2", "中盤が冗長", "そして彼は")
+        );
     }
 
     #[test]
@@ -1095,7 +1104,8 @@ mod reply_to_annotation_tests {
             Some("校閲者A"),
         );
 
-        let child = reply_to_annotation_inner(&conn, &args("parent-1", "返信本文", "user")).unwrap();
+        let child =
+            reply_to_annotation_inner(&conn, &args("parent-1", "返信本文", "user")).unwrap();
 
         // Uuid はランダムなので返り値から child id を読み戻す
         let child_id = child["id"].as_str().unwrap();
@@ -3515,11 +3525,7 @@ pub(crate) async fn start_post_effect_run_multi(
     let effect_type = args.effect_type.as_str();
     let supported = matches!(
         effect_type,
-        "consistency"
-            | "intra_scene_consistency"
-            | "typo_detection"
-            | "review"
-            | "meta_structure"
+        "consistency" | "intra_scene_consistency" | "typo_detection" | "review" | "meta_structure"
     );
     if !supported {
         return Err(anyhow::anyhow!("effect_type '{}' は未実装です", effect_type).into());
@@ -4238,11 +4244,37 @@ mod list_scene_lens_for_project_tests {
         // 回帰ガード: completed run の lens が、後から失敗した re-run の
         // 新しい lens 行 (MAX を汚染) によって overlay から消えてはならない。
         let conn = open_db();
-        add_run(&conn, "rA", "meta_structure", "completed", "2026-01-01T00:00:00");
-        add_lens(&conn, "lA", "rA", "s1", "plot_structure", "2026-01-01T00:00:00");
+        add_run(
+            &conn,
+            "rA",
+            "meta_structure",
+            "completed",
+            "2026-01-01T00:00:00",
+        );
+        add_lens(
+            &conn,
+            "lA",
+            "rA",
+            "s1",
+            "plot_structure",
+            "2026-01-01T00:00:00",
+        );
         // 後から走って失敗した re-run。lens 行は finalize 前に INSERT 済みで残る。
-        add_run(&conn, "rB", "meta_structure", "failed", "2026-01-02T00:00:00");
-        add_lens(&conn, "lB", "rB", "s1", "plot_structure", "2026-01-02T00:00:00");
+        add_run(
+            &conn,
+            "rB",
+            "meta_structure",
+            "failed",
+            "2026-01-02T00:00:00",
+        );
+        add_lens(
+            &conn,
+            "lB",
+            "rB",
+            "s1",
+            "plot_structure",
+            "2026-01-02T00:00:00",
+        );
 
         assert_eq!(
             query_run_ids(&conn),
@@ -4255,7 +4287,13 @@ mod list_scene_lens_for_project_tests {
     fn running_rerun_does_not_shadow_completed_lens() {
         // クラッシュ前 (running のまま) の re-run も同様に shadow してはならない。
         let conn = open_db();
-        add_run(&conn, "rA", "meta_structure", "completed", "2026-01-01T00:00:00");
+        add_run(
+            &conn,
+            "rA",
+            "meta_structure",
+            "completed",
+            "2026-01-01T00:00:00",
+        );
         add_lens(&conn, "lA", "rA", "s1", "pacing", "2026-01-01T00:00:00");
         add_run(&conn, "rB", "meta_structure", "running", "");
         add_lens(&conn, "lB", "rB", "s1", "pacing", "2026-01-02T00:00:00");
@@ -4267,10 +4305,36 @@ mod list_scene_lens_for_project_tests {
     fn newest_completed_run_wins() {
         // 正常系: 同一 scene+lens を 2 回 completed したら最新だけ返る。
         let conn = open_db();
-        add_run(&conn, "rA", "meta_structure", "completed", "2026-01-01T00:00:00");
-        add_lens(&conn, "lA", "rA", "s1", "plot_structure", "2026-01-01T00:00:00");
-        add_run(&conn, "rB", "meta_structure", "completed", "2026-01-03T00:00:00");
-        add_lens(&conn, "lB", "rB", "s1", "plot_structure", "2026-01-03T00:00:00");
+        add_run(
+            &conn,
+            "rA",
+            "meta_structure",
+            "completed",
+            "2026-01-01T00:00:00",
+        );
+        add_lens(
+            &conn,
+            "lA",
+            "rA",
+            "s1",
+            "plot_structure",
+            "2026-01-01T00:00:00",
+        );
+        add_run(
+            &conn,
+            "rB",
+            "meta_structure",
+            "completed",
+            "2026-01-03T00:00:00",
+        );
+        add_lens(
+            &conn,
+            "lB",
+            "rB",
+            "s1",
+            "plot_structure",
+            "2026-01-03T00:00:00",
+        );
 
         assert_eq!(query_run_ids(&conn), vec!["rB".to_string()]);
     }
