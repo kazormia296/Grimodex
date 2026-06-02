@@ -15,7 +15,7 @@ import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
-import { useAiCapability } from "@/features/ai-policy/useAiCapability";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import type { BeatType } from "./SceneBeatNode";
 import { BEAT_TYPES } from "./SceneBeatNode";
@@ -66,12 +66,12 @@ export function SceneBeatNodeView({
   );
   const { state, generate } = useBeatGeneration(editor, beatId ?? "", sceneId);
   const generating = state.status === "generating";
-  const bodyWriteCapability = useAiCapability("bodyWrite");
+  const bodyWriteGate = useAiGate("bodyWrite");
   const generateDisabled =
     !beatId ||
     !sceneId ||
     generating ||
-    bodyWriteCapability.state !== "enabled";
+    bodyWriteGate.presentation !== "enabled";
 
   const [showActionBar, setShowActionBar] = useState(false);
   const prevStatusRef = useRef(state.status);
@@ -108,17 +108,12 @@ export function SceneBeatNodeView({
   }, [beatId]);
 
   const generateTooltip =
-    bodyWriteCapability.state === "disabled"
-      ? bodyWriteCapability.reason === "policy"
-        ? "AIポリシーにより無効"
-        : bodyWriteCapability.reason === "no-model"
-          ? "AIモデルが未選択です"
-          : "AIが未設定です"
-      : !sceneId
-        ? t("editor.beat.generateDisabledHint")
-        : generating
-          ? t("editor.beat.generating")
-          : t("editor.beat.generate");
+    bodyWriteGate.tooltip ??
+    (!sceneId
+      ? t("editor.beat.generateDisabledHint")
+      : generating
+        ? t("editor.beat.generating")
+        : t("editor.beat.generate"));
 
   const allModels = useAiSettingsStore((s) => s.models);
   const loadModels = useAiSettingsStore((s) => s.loadModels);
@@ -594,28 +589,33 @@ export function SceneBeatNodeView({
               </ul>
             </AnimatedDropdown>
           </div>
-          <button
-            type="button"
-            data-testid="beat-generate-btn"
-            data-tour-target="beat-generate-btn"
-            disabled={generateDisabled}
-            onClick={generate}
-            aria-label={t("editor.beat.generate")}
-            title={generateTooltip}
-            className={`ml-auto inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] ${
-              generateDisabled ? "opacity-50" : "hover:bg-muted"
-            }`}
-          >
-            {generating ? (
-              <Loader2
-                data-testid="beat-generating-spinner"
-                className="h-3 w-3 animate-spin"
-              />
-            ) : (
-              <Zap className="h-3 w-3" />
-            )}
-            {t("editor.beat.generate")}
-          </button>
+          {/* bodyWrite がポリシーで OFF のときは生成ボタンを隠す（モード扱い）。
+              no-model / no-provider は disabled + tooltip で残す。model セレクタ等の
+              ノード本体は残す。 */}
+          {bodyWriteGate.presentation !== "hidden" && (
+            <button
+              type="button"
+              data-testid="beat-generate-btn"
+              data-tour-target="beat-generate-btn"
+              disabled={generateDisabled}
+              onClick={generate}
+              aria-label={t("editor.beat.generate")}
+              title={generateTooltip}
+              className={`ml-auto inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] ${
+                generateDisabled ? "opacity-50" : "hover:bg-muted"
+              }`}
+            >
+              {generating ? (
+                <Loader2
+                  data-testid="beat-generating-spinner"
+                  className="h-3 w-3 animate-spin"
+                />
+              ) : (
+                <Zap className="h-3 w-3" />
+              )}
+              {t("editor.beat.generate")}
+            </button>
+          )}
         </footer>
       )}
     </NodeViewWrapper>

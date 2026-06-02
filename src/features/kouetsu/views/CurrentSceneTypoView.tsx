@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
-import { useAiCapability } from "@/features/ai-policy/useAiCapability";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useLintStore } from "@/features/lint/lintStore";
@@ -63,7 +63,7 @@ interface Props {
 
 export function CurrentSceneTypoView({ sceneId }: Props) {
   const [running, setRunning] = useState(false);
-  const analysisCapability = useAiCapability("analysis");
+  const analysisGate = useAiGate("analysis");
   const { setAnnotations } = useAnnotationStore();
 
   useEffect(() => {
@@ -140,15 +140,9 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
     }
   }, [running, sceneId, setAnnotations]);
 
-  const disabled = running || analysisCapability.state !== "enabled";
+  const disabled = running || analysisGate.presentation !== "enabled";
   const triggerTitle =
-    analysisCapability.state === "disabled"
-      ? analysisCapability.reason === "policy"
-        ? "AIポリシーにより無効"
-        : analysisCapability.reason === "no-model"
-          ? "AIモデルが未選択です"
-          : "AIが未設定です"
-      : "現在シーンの誤字脱字チェックを実行";
+    analysisGate.tooltip ?? "現在シーンの誤字脱字チェックを実行";
 
   return (
     <div className="flex h-full flex-col">
@@ -156,24 +150,27 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
         <span className="text-xs text-muted-foreground">
           現在シーン誤字脱字
         </span>
-        <button
-          type="button"
-          disabled={disabled}
-          title={triggerTitle}
-          onClick={() => void run()}
-          className={cn(
-            "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
-            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-          )}
-        >
-          {running ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : (
-            <Sparkles size={12} />
-          )}
-          <span>AIチェック</span>
-        </button>
+        {/* analysis がポリシーで OFF のときは実行ボタンを隠す（パネルは残す）。 */}
+        {analysisGate.presentation !== "hidden" && (
+          <button
+            type="button"
+            disabled={disabled}
+            title={triggerTitle}
+            onClick={() => void run()}
+            className={cn(
+              "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
+              "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+            )}
+          >
+            {running ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Sparkles size={12} />
+            )}
+            <span>AIチェック</span>
+          </button>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <LocalTypoList />

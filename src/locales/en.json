@@ -591,6 +591,8 @@
   "chat": {
     "title": "AI Chat",
     "generating": "Generating…",
+    "aiOffNote": "AI chat is off for this project.",
+    "aiOffOpenSettings": "Open policy settings",
     "sendTitle": "Send / Right-click: copy prompt",
     "stopTitle": "Stop generation (Esc)",
     "stopAriaLabel": "Stop generation",

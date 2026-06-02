@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
-import { useAiCapability } from "@/features/ai-policy/useAiCapability";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -42,7 +42,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
   // 実体として注入する。targetReaders 空のとき同ペルソナは選択不可にする。
   const [genre, setGenre] = useState<string | null>(null);
   const [targetReaders, setTargetReaders] = useState<string | null>(null);
-  const analysisCapability = useAiCapability("analysis");
+  const analysisGate = useAiGate("analysis");
   const { setAnnotations } = useAnnotationStore();
   const annotationsByScene = useAnnotationStore((s) => s.annotationsByScene);
   const sceneAnnotations = annotationsByScene.get(sceneId) ?? [];
@@ -168,7 +168,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
     }
   }, [running, sceneId, persona, genre, targetReaders, reload]);
 
-  const disabled = running || analysisCapability.state !== "enabled";
+  const disabled = running || analysisGate.presentation !== "enabled";
 
   return (
     <div className="flex h-full flex-col">
@@ -197,28 +197,27 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
             );
           })}
         </select>
-        <button
-          type="button"
-          disabled={disabled}
-          title={
-            analysisCapability.state === "disabled"
-              ? "AIが利用できません"
-              : "選択したペルソナでコメントを生成"
-          }
-          onClick={() => void run()}
-          className={cn(
-            "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
-            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-          )}
-        >
-          {running ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : (
-            <Sparkles size={12} />
-          )}
-          <span>AIコメント</span>
-        </button>
+        {/* analysis がポリシーで OFF のときは生成ボタンを隠す（ペルソナ選択は残す）。 */}
+        {analysisGate.presentation !== "hidden" && (
+          <button
+            type="button"
+            disabled={disabled}
+            title={analysisGate.tooltip ?? "選択したペルソナでコメントを生成"}
+            onClick={() => void run()}
+            className={cn(
+              "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
+              "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+            )}
+          >
+            {running ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Sparkles size={12} />
+            )}
+            <span>AIコメント</span>
+          </button>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {threads.length === 0 ? (

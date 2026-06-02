@@ -12,9 +12,14 @@ import type { CodexEntry } from "@/features/codex/api";
 import { SceneBeatNode } from "./SceneBeatNode";
 import { GeneratedProseBlockNode } from "./GeneratedProseBlockNode";
 import { SceneBeatEditorContextProvider } from "./beat/SceneBeatEditorContext";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
 
-vi.mock("@/features/ai-policy/useAiCapability", () => ({
-  useAiCapability: vi.fn(() => ({ state: "enabled" })),
+vi.mock("@/features/ai-policy/useAiGate", () => ({
+  useAiGate: vi.fn(() => ({
+    presentation: "enabled",
+    tooltip: null,
+    capability: { state: "enabled" },
+  })),
 }));
 
 function makeCodex(partial: Partial<CodexEntry>): CodexEntry {
@@ -88,6 +93,12 @@ function HostEditor({
 describe("SceneBeatNodeView", () => {
   beforeEach(() => {
     useCodexStore.setState({ entries: [] });
+    // 既定は enabled。hide テストが mockReturnValue で上書きするので毎回戻す。
+    vi.mocked(useAiGate).mockReturnValue({
+      presentation: "enabled",
+      tooltip: null,
+      capability: { state: "enabled" },
+    });
   });
 
   it("renders the header with label and beat type chip", async () => {
@@ -168,6 +179,32 @@ describe("SceneBeatNodeView", () => {
     await waitFor(() => screen.getByText("Beat"));
     const btn = screen.getByTestId("beat-generate-btn") as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
+  });
+
+  it("hides the generate button when bodyWrite policy disables it (presentation=hidden)", async () => {
+    vi.mocked(useAiGate).mockReturnValue({
+      presentation: "hidden",
+      tooltip: null,
+      capability: { state: "disabled", reason: "policy" },
+    });
+    render(<HostEditor attrs={{}} sceneId="scene-1" />);
+    await waitFor(() => screen.getByText("Beat"));
+    // ボタンは描画されない（モード扱い）が、ノード本体（ラベル等）は残る。
+    expect(screen.queryByTestId("beat-generate-btn")).toBeNull();
+  });
+
+  it("keeps the generate button visible-but-disabled for no-provider", async () => {
+    vi.mocked(useAiGate).mockReturnValue({
+      presentation: "disabled",
+      tooltip: "AIが未設定です",
+      capability: { state: "disabled", reason: "no-provider" },
+    });
+    render(<HostEditor attrs={{}} sceneId="scene-1" />);
+    await waitFor(() => screen.getByText("Beat"));
+    const btn = screen.getByTestId("beat-generate-btn") as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe("AIが未設定です");
   });
 
   it("toggling the chevron updates collapsed attr", async () => {

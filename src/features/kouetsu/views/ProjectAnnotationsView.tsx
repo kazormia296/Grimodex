@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
-import { useAiCapability } from "@/features/ai-policy/useAiCapability";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -50,7 +50,7 @@ export function ProjectAnnotationsView() {
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
-  const analysisCapability = useAiCapability("analysis");
+  const analysisGate = useAiGate("analysis");
 
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
@@ -328,32 +328,27 @@ export function ProjectAnnotationsView() {
             </button>
           </div>
         </div>
-        <button
-          type="button"
-          disabled={runningAll || analysisCapability.state !== "enabled"}
-          onClick={() => void runMulti("both")}
-          title={
-            analysisCapability.state === "disabled"
-              ? analysisCapability.reason === "policy"
-                ? "AIポリシーにより無効"
-                : analysisCapability.reason === "no-model"
-                  ? "AIモデルが未選択です"
-                  : "AIが未設定です"
-              : "全シーンの整合性チェックを実行"
-          }
-          className={cn(
-            "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
-            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-            "disabled:cursor-not-allowed disabled:opacity-50",
-          )}
-        >
-          {runningAll ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : (
-            <Sparkles size={12} />
-          )}
-          <span>AIチェック</span>
-        </button>
+        {/* analysis がポリシーで OFF のときは実行ボタンを隠す（パネルは残す）。 */}
+        {analysisGate.presentation !== "hidden" && (
+          <button
+            type="button"
+            disabled={runningAll || analysisGate.presentation !== "enabled"}
+            onClick={() => void runMulti("both")}
+            title={analysisGate.tooltip ?? "全シーンの整合性チェックを実行"}
+            className={cn(
+              "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
+              "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+            )}
+          >
+            {runningAll ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Sparkles size={12} />
+            )}
+            <span>AIチェック</span>
+          </button>
+        )}
       </div>
 
       {loading ? (

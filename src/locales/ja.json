@@ -591,6 +591,8 @@
   "chat": {
     "title": "AIチャット",
     "generating": "生成中…",
+    "aiOffNote": "このプロジェクトではAIチャットがオフです。",
+    "aiOffOpenSettings": "ポリシー設定を開く",
     "sendTitle": "送信 / 右クリック: プロンプトをコピー",
     "stopTitle": "生成中断 (Esc)",
     "stopAriaLabel": "生成中断",

@@ -27,7 +27,7 @@ import { SessionsPanel } from "./components/SessionsPanel";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
 import { useAiSettingsStore } from "./store";
-import { useAiCapability } from "@/features/ai-policy/useAiCapability";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
@@ -63,7 +63,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const reduced = useReducedMotion();
-  const chatCapability = useAiCapability("chat");
+  const chatGate = useAiGate("chat");
   useMapBoardAutoActivate();
   const messages = useChatStore((s) => s.messages);
   const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
@@ -855,17 +855,41 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         />
       )}
 
-      <QuickActionStrip hidden={inputHasText} />
+      {chatGate.presentation === "hidden" ? (
+        // chat がポリシーで OFF: composer 自体を隠す（モード扱い）。履歴は残す。
+        // 「なぜ／変更」の導線として project 設定を開くリンクを置く
+        // (エディタヘッダの AiPolicyBadge と同じ open-settings イベント)。
+        <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+          {t("chat.aiOffNote")}{" "}
+          <button
+            type="button"
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent("open-settings", {
+                  detail: { category: "project" },
+                }),
+              )
+            }
+            className="underline hover:text-foreground"
+          >
+            {t("chat.aiOffOpenSettings")}
+          </button>
+        </div>
+      ) : (
+        <>
+          <QuickActionStrip hidden={inputHasText} />
 
-      <ChatInput
-        onSend={handleSend}
-        disabled={isStreaming}
-        policyDisabled={chatCapability.state !== "enabled"}
-        editorRef={chatEditorRef}
-        onMentionPin={(id) => handlePin(id, "codex")}
-        onDetectedEntries={handleDetectedEntries}
-        onHasTextChange={setInputHasText}
-      />
+          <ChatInput
+            onSend={handleSend}
+            disabled={isStreaming}
+            policyDisabled={chatGate.presentation !== "enabled"}
+            editorRef={chatEditorRef}
+            onMentionPin={(id) => handlePin(id, "codex")}
+            onDetectedEntries={handleDetectedEntries}
+            onHasTextChange={setInputHasText}
+          />
+        </>
+      )}
 
       <CodexExtractionDialog
         open={extractionDialog.open}
