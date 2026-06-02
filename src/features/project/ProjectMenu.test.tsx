@@ -62,6 +62,7 @@ beforeEach(() => {
         styleGuide: null,
         aiInstructions: null,
         outline: null,
+        targetReaders: null,
         phaseResolutionMode: "auto",
         aiPolicy:
           '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}',
@@ -78,6 +79,7 @@ beforeEach(() => {
         styleGuide: null,
         aiInstructions: null,
         outline: null,
+        targetReaders: null,
         phaseResolutionMode: "auto",
         aiPolicy:
           '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}',

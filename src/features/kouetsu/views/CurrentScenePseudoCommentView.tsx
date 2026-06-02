@@ -11,9 +11,13 @@ import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import {
   buildPseudoCommentPayload,
   buildPseudoCommentSystemPrompt,
+  personaRequiresTargetProfile,
   PSEUDO_COMMENT_PROMPT_VERSION,
+  PSEUDO_PERSONA_DEFS,
   PSEUDO_PERSONAS,
+  resolvePersonaBrief,
 } from "@/features/post-effect/pseudoCommentPayloadBuilder";
+import { fetchProjectContext } from "@/features/project/contextAtoms";
 import {
   listAnnotationsForScene,
   runPostEffect,
@@ -33,6 +37,10 @@ interface Props {
 export function CurrentScenePseudoCommentView({ sceneId }: Props) {
   const [running, setRunning] = useState(false);
   const [persona, setPersona] = useState<string>(PSEUDO_PERSONAS[0]);
+  // genre は全ペルソナの brief に、targetReaders は「ターゲット読者層」ペルソナの
+  // 実体として注入する。targetReaders 空のとき同ペルソナは選択不可にする。
+  const [genre, setGenre] = useState<string | null>(null);
+  const [targetReaders, setTargetReaders] = useState<string | null>(null);
   const analysisCapability = useAiCapability("analysis");
   const { setAnnotations } = useAnnotationStore();
   const annotationsByScene = useAnnotationStore((s) => s.annotationsByScene);
@@ -64,6 +72,31 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
     void reload();
   }, [reload, panelActive]);
 
+  // genre / 想定読者プロフィールを取得 (ペルソナ brief 注入 + ターゲット読者層の
+  // 選択可否判定)。パネル再アクティブ化時に取り直し、設定変更を拾う。
+  useEffect(() => {
+    if (!panelActive) return;
+    let cancelled = false;
+    void fetchProjectContext().then((ctx) => {
+      if (cancelled) return;
+      setGenre(ctx?.genre ?? null);
+      setTargetReaders(ctx?.targetReaders ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [panelActive]);
+
+  const hasTargetProfile = Boolean(targetReaders?.trim());
+
+  // 選択中ペルソナがプロフィール必須かつ未設定になったら一般読者へ戻す
+  // (設定をクリアした等のエッジケース)。判定はレジストリを単一の真実源にする。
+  useEffect(() => {
+    if (!hasTargetProfile && personaRequiresTargetProfile(persona)) {
+      setPersona(PSEUDO_PERSONAS[0]);
+    }
+  }, [hasTargetProfile, persona]);
+
   const run = useCallback(async () => {
     if (running) return;
     const projectId = useTreeStore.getState().projectId;
@@ -71,7 +104,14 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
     setRunning(true);
     try {
-      const payload = await buildPseudoCommentPayload(sceneId, model, persona);
+      // brief を 1 度だけ解決し、hash (payload) と system_prompt で同じものを使う。
+      const brief = resolvePersonaBrief(persona, { genre, targetReaders });
+      const payload = await buildPseudoCommentPayload(
+        sceneId,
+        model,
+        persona,
+        brief,
+      );
       const outcome = await new Promise<{
         ok: boolean;
         e?: PostEffectDoneEvent;
@@ -90,7 +130,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
             scene_text: payload.sceneText,
             system_prompt: buildPseudoCommentSystemPrompt(
               getPromptCatalog("ja").postEffect.pseudoCommentSystem,
-              persona,
+              brief,
             ),
             persona,
           },
@@ -124,7 +164,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
         description: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [running, sceneId, persona, reload]);
+  }, [running, sceneId, persona, genre, targetReaders, reload]);
 
   const disabled = running || analysisCapability.state !== "enabled";
 
@@ -136,11 +176,24 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
           onChange={(e) => setPersona(e.target.value)}
           className="rounded border border-border bg-background px-1.5 py-0.5 text-xs outline-none"
         >
-          {PSEUDO_PERSONAS.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
+          {PSEUDO_PERSONA_DEFS.map((d) => {
+            const locked =
+              Boolean(d.requiresTargetProfile) && !hasTargetProfile;
+            return (
+              <option
+                key={d.label}
+                value={d.label}
+                disabled={locked}
+                title={
+                  locked
+                    ? "プロジェクト設定で想定読者を入力すると選べます"
+                    : undefined
+                }
+              >
+                {locked ? `${d.label}（要・想定読者設定）` : d.label}
+              </option>
+            );
+          })}
         </select>
         <button
           type="button"

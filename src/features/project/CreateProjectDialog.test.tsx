@@ -27,6 +27,7 @@ const sampleProjects = [
     styleGuide: null,
     aiInstructions: null,
     outline: null,
+    targetReaders: null,
     phaseResolutionMode: "auto" as const,
     aiPolicy: "{}",
     createdAt: "",

@@ -4,6 +4,12 @@
  *
  * scene 本文のみ (Codex 不要)。persona を input_hash に含めるため、同じシーンでも
  * persona が違えば別 run / 別キャッシュになる。
+ *
+ * v2.0: ペルソナは bare label ではなく「読者スタンス」の brief を持つ。genre は
+ * 全ペルソナ共通の風味として、想定読者プロフィール (projects.targetReaders) は
+ * 「ターゲット読者層」ペルソナの実体として brief に注入される。brief は genre /
+ * プロフィールに依存するため input_hash にも畳み込む (設定変更でキャッシュが
+ * 古くならないように)。
  */
 
 import { db } from "@/db/client";
@@ -12,17 +18,111 @@ import { eq } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { computeInputHash, normalizeText } from "./canonicalize";
 
-export const PSEUDO_COMMENT_PROMPT_VERSION = "pseudo_comment_v1.0";
+export const PSEUDO_COMMENT_PROMPT_VERSION = "pseudo_comment_v2.0";
 
-/** 既定の読者ペルソナ一覧 (将来カスタム追加の余地を残す)。 */
-export const PSEUDO_PERSONAS = [
-  "一般読者",
-  "批評家",
-  "編集者",
-  "ターゲット層",
+/** brief 解決に必要なプロジェクト文脈。 */
+export interface PersonaBriefContext {
+  /** projects.genre (英語 enum or null)。全ペルソナ共通の風味。 */
+  genre?: string | null;
+  /** projects.targetReaders (想定読者プロフィール)。ターゲット読者層の実体。 */
+  targetReaders?: string | null;
+}
+
+/** 読者ペルソナの定義。label は UI 表示 & DB 保存 (annotation.persona) の安定キー。 */
+export interface PseudoPersonaDef {
+  label: string;
+  /** 想定読者プロフィール必須か。true かつ profile 空のとき UI で選択不可。 */
+  requiresTargetProfile?: boolean;
+  /** genre / targetReaders を織り込んだ brief を返す。 */
+  brief: (ctx: PersonaBriefContext) => string;
+}
+
+/** genre をプロンプト文に織り込む短句。未設定なら作品一般に丸める。 */
+function genrePhrase(genre?: string | null): string {
+  const g = genre?.trim();
+  return g ? `「${g}」というジャンル` : "この作品";
+}
+
+/**
+ * 読者ペルソナ・レジストリ (読者スタンスに統一)。
+ * 編集者は「作り手」視点でレビュー (reviewSystem) と重複・自己矛盾するため持たない。
+ */
+export const PSEUDO_PERSONA_DEFS: readonly PseudoPersonaDef[] = [
+  {
+    label: "一般読者",
+    brief: ({ genre }) =>
+      `${genrePhrase(genre)}を普通に読む、平均的な読者になりきってください。` +
+      `専門知識や前提は薄く、難しければ素直に「分からない」、面白ければ素直に乗ります。` +
+      `話についていけるか・続きが気になるかを率直に反応してください。`,
+  },
+  {
+    label: "コア読者",
+    brief: ({ genre }) =>
+      `${genrePhrase(genre)}を数多く読み込んできた、目の肥えた読者になりきってください。` +
+      `お約束・テンプレ・既視感に敏感で、ジャンルの「型」やお決まりの見せ場への期待値が高い。` +
+      `新鮮さや、約束された盛り上がりが満たされているかに反応してください。`,
+  },
+  {
+    label: "ライト/新規読者",
+    brief: ({ genre }) =>
+      `${genrePhrase(genre)}に不慣れ、あるいは軽い気持ちで読み始めた新規読者になりきってください。` +
+      `情報量の多さ・専門用語・固有名詞の洪水で離脱しやすく、` +
+      `とっつきにくさやつまずきポイントを率直に反応してください。`,
+  },
+  {
+    label: "辛口の批評家",
+    brief: () =>
+      `文学的な水準で評価的に読む、辛口の批評家になりきってください。` +
+      `安易な感動・ご都合主義・描写の弱さ・論理の穴を見つけにいきます。` +
+      `簡単には感心せず、物足りない点を遠慮なく指摘してください。`,
+  },
+  {
+    label: "ターゲット読者層",
+    requiresTargetProfile: true,
+    brief: ({ targetReaders }) => {
+      const profile = targetReaders?.trim();
+      if (!profile) {
+        // UI で選択不可のため通常は到達しない。防御的に一般読者へ縮退。
+        return (
+          `この作品が想定する読者層になりきってください。` +
+          `刺さるか・物足りないかを、その立場から率直に反応してください。`
+        );
+      }
+      return (
+        `この作品が想定する読者層になりきってください。想定読者の人物像は次の通りです:\n` +
+        `${profile}\n\n` +
+        `その読者にとって刺さるか・物足りないか・期待とズレていないかを、` +
+        `その立場から率直に反応してください。`
+      );
+    },
+  },
 ] as const;
 
+/** 既定の読者ペルソナ一覧 (label のみ。UI / 後方互換用)。 */
+export const PSEUDO_PERSONAS = PSEUDO_PERSONA_DEFS.map((d) => d.label);
+
 export type PseudoPersona = (typeof PSEUDO_PERSONAS)[number];
+
+/** persona がプロフィール必須か (UI の disable 判定用)。 */
+export function personaRequiresTargetProfile(persona: string): boolean {
+  return (
+    PSEUDO_PERSONA_DEFS.find((d) => d.label === persona)
+      ?.requiresTargetProfile ?? false
+  );
+}
+
+/**
+ * persona ラベルと文脈から、プロンプトへ注入する brief を解決する。
+ * 未知 persona (旧データの再実行・手入力) はラベルだけ注入する後方互換経路。
+ */
+export function resolvePersonaBrief(
+  persona: string,
+  ctx: PersonaBriefContext,
+): string {
+  const def = PSEUDO_PERSONA_DEFS.find((d) => d.label === persona);
+  if (!def) return `「${persona}」になりきってコメントしてください。`;
+  return def.brief(ctx);
+}
 
 export interface PseudoCommentPayloadResult {
   sceneText: string;
@@ -42,6 +142,7 @@ export async function buildPseudoCommentPayload(
   sceneId: string,
   model: string,
   persona: string,
+  brief: string,
 ): Promise<PseudoCommentPayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const inputHash = await computeInputHash({
@@ -49,15 +150,17 @@ export async function buildPseudoCommentPayload(
     model,
     effectType: "pseudo_comment",
     scene: normalizeText(sceneText),
-    scope: `scene:${sceneId}|persona:${persona}`,
+    // brief は genre / 想定読者プロフィールに依存するので scope に畳み込む。
+    // これらが変われば別キャッシュになる (設定編集後に古い結果を返さない)。
+    scope: `scene:${sceneId}|persona:${persona}|brief:${normalizeText(brief)}`,
   });
   return { sceneText, inputHash };
 }
 
-/** persona を埋め込んだ system prompt を組み立てる。 */
+/** brief を埋め込んだ system prompt を組み立てる。 */
 export function buildPseudoCommentSystemPrompt(
   basePrompt: string,
-  persona: string,
+  brief: string,
 ): string {
-  return `${basePrompt}\n\nREADER PERSONA: 「${persona}」になりきってコメントしてください。`;
+  return `${basePrompt}\n\nREADER PERSONA: ${brief}`;
 }

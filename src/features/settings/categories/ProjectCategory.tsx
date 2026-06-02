@@ -417,6 +417,21 @@ export function ProjectCategory() {
         </div>
         <div className="mb-4">
           <div className="mb-1 text-sm text-foreground">
+            {t("settings.project.targetReaders")}
+          </div>
+          <div className="text-xs text-muted-foreground mb-2">
+            {t("settings.project.targetReadersDesc")}
+          </div>
+          <SettingTextarea
+            value={project.targetReaders ?? ""}
+            onChange={(v) => updateField("targetReaders", v || null)}
+            placeholder={t("settings.project.targetReadersPlaceholder")}
+            maxLength={2000}
+            rows={4}
+          />
+        </div>
+        <div className="mb-4">
+          <div className="mb-1 text-sm text-foreground">
             {t("settings.project.styleGuide")}
           </div>
           <div className="text-xs text-muted-foreground mb-2">

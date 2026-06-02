@@ -50,6 +50,7 @@ describe("projects schema", () => {
     expect(columns).toContain("language");
     expect(columns).toContain("styleGuide");
     expect(columns).toContain("aiInstructions");
+    expect(columns).toContain("targetReaders");
     expect(columns).toContain("createdAt");
     expect(columns).toContain("updatedAt");
   });

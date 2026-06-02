@@ -16,6 +16,7 @@ impl Database {
                 style_guide            TEXT,
                 ai_instructions        TEXT,
                 outline                TEXT,
+                target_readers         TEXT,
                 phase_resolution_mode  TEXT NOT NULL DEFAULT 'reading'
                                          CHECK(phase_resolution_mode IN ('reading', 'story', 'auto')),
                 created_at             TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1023,6 +1024,10 @@ impl Database {
 
         // Foreshadow secret flag — existing records default false (backwards-compat)
         Self::add_column_if_missing(&conn, "foreshadows", "secret", "INTEGER NOT NULL DEFAULT 0")?;
+
+        // 想定読者プロフィール (kouetsu 疑似コメント「ターゲット読者層」ペルソナの実体)。
+        // 既存プロジェクトは NULL = 未設定 (ターゲット読者層ペルソナは選択不可)。
+        Self::add_column_if_missing(&conn, "projects", "target_readers", "TEXT")?;
 
         // Note AI context injection (Phase A): context_mode / aliases on tree_nodes.
         Self::migrate_tree_nodes_note_context(&conn)?;

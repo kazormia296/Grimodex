@@ -28,7 +28,9 @@ const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.1";
 const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.0";
 const TYPO_PROMPT_VERSION: &str = "typo_detection_v1.0";
 const REVIEW_PROMPT_VERSION: &str = "review_v1.0";
-const PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_v1.0";
+// v2.0: ペルソナを bare label から genre/想定読者プロフィールを織り込んだ
+// brief 注入へ刷新 (TS pseudoCommentPayloadBuilder と同期)。
+const PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_v2.0";
 const META_STRUCTURE_PROMPT_VERSION: &str = "meta_structure_v1.0";
 
 // システムプロンプト本文は FE catalog (src/prompts/ja/postEffect.ts) で管理し、

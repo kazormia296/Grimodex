@@ -23,6 +23,10 @@ export const projects = sqliteTable("projects", {
    * 著者が手書きするフィールド。L2 へ常時注入される。空欄可。
    * 対称概念として treeNodes.synopsis (folder 用) が chapter outline を担う。 */
   outline: text("outline"),
+  /** 想定読者プロフィール (free text)。校閲パネルの疑似コメント「ターゲット読者層」
+   * ペルソナの実体として、この層になりきって反応させるために注入される。空欄可
+   * (空のときターゲット読者層ペルソナは選択不可)。年齢層・読書傾向・期待など。 */
+  targetReaders: text("target_readers"),
   phaseResolutionMode: text("phase_resolution_mode", {
     enum: ["reading", "story", "auto"],
   })

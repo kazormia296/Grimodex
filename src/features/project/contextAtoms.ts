@@ -26,6 +26,9 @@ export interface ProjectContext {
   /** Phase 4: 著者手書きの outline。Chat L2 / Map system prompt の
    *  「プロジェクト概要」セクションに使われる想定。 */
   outline?: string | null;
+  /** 想定読者プロフィール。校閲 疑似コメント「ターゲット読者層」ペルソナの
+   *  brief に注入される (空のとき同ペルソナは選択不可)。 */
+  targetReaders?: string | null;
   /** AiPolicy で本文書き込み (bodyWrite) が無効か。Chat の L0 system prompt に
    *  本文代筆抑止指示を出すかどうかの判定に使う (true のとき抑止)。 */
   bodyWriteDisabled?: boolean;
@@ -55,6 +58,7 @@ export async function fetchProjectContext(
       aiInstructions: project.aiInstructions,
       language: project.language,
       outline: project.outline,
+      targetReaders: project.targetReaders,
       bodyWriteDisabled: isBodyWriteDisabled(project.aiPolicy),
     };
   } catch {

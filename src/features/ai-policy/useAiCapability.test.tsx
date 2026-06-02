@@ -55,6 +55,7 @@ function setupMocks(
         styleGuide: null,
         aiInstructions: null,
         outline: null,
+        targetReaders: null,
         aiPolicy: JSON.stringify({
           preset: "custom",
           toggles: policyToggles,

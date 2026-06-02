@@ -26,6 +26,7 @@ export async function createProject(
         | "styleGuide"
         | "aiInstructions"
         | "outline"
+        | "targetReaders"
       >
     >,
 ): Promise<Project> {
@@ -50,6 +51,7 @@ export async function updateProject(
       | "styleGuide"
       | "aiInstructions"
       | "outline"
+      | "targetReaders"
       | "aiPolicy"
     >
   >,
