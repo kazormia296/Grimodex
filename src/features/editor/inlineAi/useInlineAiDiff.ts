@@ -12,6 +12,7 @@ import type { InlineAiCommand, InlineAiContext } from "./inlineAiTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
 import { insertGenerationLog } from "@/features/attribution/generationLogApi";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -68,6 +69,10 @@ export function useInlineAiDiff(editor: Editor | null) {
   const generate = useCallback(
     async (command: InlineAiCommand, context: InlineAiContext) => {
       if (!editor) return;
+      // Defense: bodyWrite がポリシーで OFF なら本文生成を弾く。UI の hide とは
+      // 独立した実アクションのゲートで、slash / palette からの直接発火経路を
+      // 塞ぐ。store 変異 (startGeneration) より前に判定する。
+      if (blockIfPolicyOff("bodyWrite")) return;
       const traceId = crypto.randomUUID();
       const sceneNodeId = useTreeStore.getState().activeSceneId || null;
       lastCallRef.current = { command, context, traceId, sceneNodeId };

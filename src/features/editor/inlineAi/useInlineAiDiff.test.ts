@@ -26,6 +26,7 @@ import { generateInlineAi } from "./inlineAiApi";
 import { useInlineAiDiff } from "./useInlineAiDiff";
 import { useInlineAiStore } from "./inlineAiStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useProjectStore } from "@/features/project/projectStore";
 
 const createdEditors: Editor[] = [];
 const hookUnmounts: Array<() => void> = [];
@@ -69,6 +70,9 @@ describe("useInlineAiDiff", () => {
     vi.clearAllMocks();
     useInlineAiStore.getState().reset();
     useTreeStore.setState({ activeSceneId: "scene-1", projectId: "project-1" });
+    // policy 既定はクリア（projects 空 → fail-open=full）。bodyWrite ガードを
+    // 素通りさせ、既存テストの generate を従来どおり走らせる。
+    useProjectStore.setState({ currentProjectId: null, projects: [] });
   });
 
   afterEach(() => {
@@ -241,5 +245,48 @@ describe("useInlineAiDiff", () => {
         traceId: mark?.traceId,
       }),
     );
+  });
+
+  it("policy bypass: bodyWrite=off blocks generate before any API call", async () => {
+    // slash / palette からの直接発火（UI の disabled を経由しない経路）を
+    // 模す。defense が効いていれば generateInlineAi も startGeneration も
+    // 走らない。
+    useProjectStore.setState({
+      currentProjectId: "project-1",
+      projects: [
+        {
+          id: "project-1",
+          aiPolicy: JSON.stringify({
+            preset: "assist-off",
+            toggles: { chat: true, bodyWrite: false, analysis: true },
+          }),
+        },
+      ] as never,
+    });
+
+    const editor = makeEditor("<p>hello </p>");
+    editor.commands.setTextSelection(7);
+    const { result } = renderInlineAiDiffHook(editor);
+
+    await act(async () => {
+      await result.current.generate(
+        {
+          id: "continue",
+          label: "Continue",
+          description: "",
+          mode: "insert",
+          needsSelection: false,
+        },
+        {
+          projectTitle: "Project",
+          sceneTitle: "Scene",
+          sceneText: "hello ",
+          codexSummaries: "",
+        },
+      );
+    });
+
+    expect(generateInlineAi).not.toHaveBeenCalled();
+    expect(useInlineAiStore.getState().status).toBe("idle");
   });
 });

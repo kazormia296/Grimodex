@@ -45,6 +45,17 @@ const DISABLED_REASON_TOOLTIP_KEY: Record<
 };
 
 /**
+ * disabled の理由 → 表示文言の i18n キー。
+ * deriveAiGate（policy は hidden で tooltip 無し）とは別に、defense 層が
+ * policy ブロック時の toast 文言にも使うため、全 reason 分を公開する。
+ */
+export function aiDisabledReasonTooltipKey(
+  reason: "policy" | "no-model" | "no-provider",
+): string {
+  return DISABLED_REASON_TOOLTIP_KEY[reason];
+}
+
+/**
  * capability を「コントロールをどう見せるか」へ変換する pure 関数。
  *
  * - reason="policy"（ユーザが意図的に切った）→ hidden。

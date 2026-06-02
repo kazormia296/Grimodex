@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiCapability } from "@/features/ai-policy/useAiCapability";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import {
@@ -83,6 +84,7 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
   const run = useCallback(
     async (kind: RunKind) => {
       if (running) return;
+      if (blockIfPolicyOff("analysis")) return;
       const projectId = useTreeStore.getState().projectId;
       const model =
         useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";

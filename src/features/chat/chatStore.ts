@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import * as chatApi from "./chatApi";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 
@@ -2269,6 +2270,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     if (isStreaming) return;
     await ensureTokenizer();
     if (!content.trim()) return;
+    // Defense: chat がポリシーで OFF なら送信を弾く。Send ボタンは hide/disabled
+    // になるが、Enter / Cmd+Enter / regenerate / agent 再入は全てこの sendMessage
+    // に集約されるため、ここで塞げば UI を経由しない送信経路も封じられる。
+    // 最初の set() より前に判定する。
+    if (blockIfPolicyOff("chat")) return;
 
     const aiSettingsEarly = useAiSettingsStore.getState().settings;
     const chatModelEarly = aiSettingsEarly?.model ?? "";

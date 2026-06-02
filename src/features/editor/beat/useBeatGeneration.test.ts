@@ -47,6 +47,7 @@ import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNode";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useProjectStore } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -127,6 +128,9 @@ describe("useBeatGeneration", () => {
     });
     useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });
     useCodexStore.setState({ entries: [] });
+    // policy 既定はクリア（projects 空 → fail-open=full）。bodyWrite ガードを
+    // 素通りさせ、既存テストの generate を従来どおり走らせる。
+    useProjectStore.setState({ currentProjectId: null, projects: [] });
   });
 
   it("happy path: streams chunks into a generatedProseBlock and ends in idle state", async () => {
@@ -333,6 +337,34 @@ describe("useBeatGeneration", () => {
     expect(invokeMock).not.toHaveBeenCalled();
     editor.destroy();
   });
+
+  it("policy bypass: bodyWrite=off blocks generate before invoking the stream", async () => {
+    useProjectStore.setState({
+      currentProjectId: "p1",
+      projects: [
+        {
+          id: "p1",
+          aiPolicy: JSON.stringify({
+            preset: "assist-off",
+            toggles: { chat: true, bodyWrite: false, analysis: true },
+          }),
+        },
+      ] as never,
+    });
+
+    const editor = createEditorWithBeat("b1");
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+
+    await act(async () => {
+      await result.current.generate();
+    });
+
+    expect(result.current.state.status).toBe("idle");
+    expect(invokeMock).not.toHaveBeenCalled();
+    editor.destroy();
+  });
 });
 
 // Helper: run a full generate → stream-chunk → stream-done cycle.
@@ -398,6 +430,9 @@ describe("runRoleInference (C-7)", () => {
     });
     useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });
     useCodexStore.setState({ entries: [] });
+    // policy 既定はクリア（projects 空 → fail-open=full）。bodyWrite ガードを
+    // 素通りさせ、既存テストの generate を従来どおり走らせる。
+    useProjectStore.setState({ currentProjectId: null, projects: [] });
   });
 
   it("onDone 後に inferMentionRoles が呼ばれ、提案が store に保存される", async () => {

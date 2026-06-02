@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiCapability } from "@/features/ai-policy/useAiCapability";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { useLensStore } from "@/features/post-effect/lensStore";
 import {
   buildMultiPayload,
@@ -77,6 +78,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
 
   const runScene = useCallback(async () => {
     if (running || !sceneId) return;
+    if (blockIfPolicyOff("analysis")) return;
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
     setRunning(true);
@@ -122,6 +124,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
 
   const runProject = useCallback(async () => {
     if (running) return;
+    if (blockIfPolicyOff("analysis")) return;
     const { nodes } = useTreeStore.getState();
     if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
     const model =

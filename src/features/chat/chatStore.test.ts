@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useChatStore } from "./chatStore";
+import { useProjectStore } from "@/features/project/projectStore";
 import type { ChatMessage, ChatSession } from "./chatTypes";
 
 vi.mock("./chatApi", () => ({
@@ -213,6 +214,9 @@ describe("useChatStore", () => {
   beforeEach(() => {
     resetStore();
     vi.clearAllMocks();
+    // policy 既定はクリア（projects 空 → fail-open=full）。chat ガードを
+    // 素通りさせ、既存の sendMessage テストを従来どおり走らせる。
+    useProjectStore.setState({ currentProjectId: null, projects: [] });
   });
 
   // --- Session management tests ---
@@ -460,6 +464,29 @@ describe("useChatStore", () => {
       await useChatStore.getState().sendMessage("   ");
 
       expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+    });
+
+    it("policy bypass: chat=off blocks send before streaming or appending", async () => {
+      // Send ボタンは hide/disabled になるが、Enter / Cmd+Enter / regenerate /
+      // agent 再入は sendMessage に直行する。chat=off ならここで弾けていること。
+      useProjectStore.setState({
+        currentProjectId: "proj-1",
+        projects: [
+          {
+            id: "proj-1",
+            aiPolicy: JSON.stringify({
+              preset: "review-only",
+              toggles: { chat: false, bodyWrite: false, analysis: true },
+            }),
+          },
+        ] as never,
+      });
+      mockStreamResponse("返信");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toHaveLength(0);
     });
 
     it("passes full message history to API with system prompt prepended", async () => {
