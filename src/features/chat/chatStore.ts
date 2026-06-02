@@ -891,7 +891,14 @@ async function buildAggregatedScene(opts: {
       ? `[この章「${anchorTitle}」配下のシーンを synopsis 単位で集約しています（eco モード: 本文は注入されていません）。各シーンは「--- {タイトル} ---」区切りで reading order に並んでおり、[current edit] マーカー付きが現在編集中のシーンです]`
       : `[このプロジェクト「${anchorTitle}」の全シーンをフォルダ階層（=== フォルダ名 ===）ごとに synopsis 単位で集約しています（eco モード: 本文は注入されていません）。フォルダ見出しの Outline は各フォルダの synopsis、配下シーンは「--- {タイトル} ---」区切りです]`;
 
-  const tier3ProjectPreface = `[このプロジェクト「${anchorTitle}」はシーン数が多いため、フォルダ階層の Outline のみを注入しています（=== フォルダ名 ===）。個別シーンの synopsis / 本文は省略されています]`;
+  // Tier 3 (foldersOnly) は「シーン多すぎ overflow」と「シーン 0 のフォルダのみ
+  // プロジェクト」の両方で到達する。後者で「シーン数が多いため」preface を出すと
+  // モデルに誤情報を渡すので、scene 0 のときは中立な文面にする
+  // (Tier 3 で descendants.length > 0 になるのは overflow 時のみ)。
+  const tier3ProjectPreface =
+    descendants.length === 0
+      ? `[このプロジェクト「${anchorTitle}」のフォルダ階層の Outline（=== フォルダ名 ===）を注入しています。シーンはまだ作成されていません]`
+      : `[このプロジェクト「${anchorTitle}」はシーン数が多いため、フォルダ階層の Outline のみを注入しています（=== フォルダ名 ===）。個別シーンの synopsis / 本文は省略されています]`;
 
   async function detectFromJoined(joined: string): Promise<CodexEntry[]> {
     try {
