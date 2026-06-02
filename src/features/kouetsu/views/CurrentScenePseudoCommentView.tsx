@@ -7,6 +7,7 @@ import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiCapability } from "@/features/ai-policy/useAiCapability";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import {
   buildPseudoCommentPayload,
   buildPseudoCommentSystemPrompt,
@@ -37,6 +38,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
   const annotationsByScene = useAnnotationStore((s) => s.annotationsByScene);
   const sceneAnnotations = annotationsByScene.get(sceneId) ?? [];
   const threads = groupPseudoThreads(sceneAnnotations);
+  const panelActive = useKouetsuStore((s) => s.panelActive);
 
   useEffect(() => {
     if (!useAiSettingsStore.getState().settings) {
@@ -52,10 +54,15 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
     if (editor) applyAnnotationsToEditor(editor, resp.annotations);
   }, [sceneId, setAnnotations]);
 
-  // 初回 / シーン切替時に読み込む
+  // 初回 / シーン切替時に読み込む。KouetsuPanel が keepalive で hidden の間は
+  // bail する: reload の listAnnotations + setAnnotations + applyAnnotationsToEditor
+  // は EditorPane のシーンロード (annotations を editor/store に適用) と冗長で、
+  // hidden 中は EditorPane が editor を最新に保つ。再アクティブ化時に panelActive
+  // が deps 経由で false→true になり現在シーンで 1 回 catch up する。
   useEffect(() => {
+    if (!panelActive) return;
     void reload();
-  }, [reload]);
+  }, [reload, panelActive]);
 
   const run = useCallback(async () => {
     if (running) return;

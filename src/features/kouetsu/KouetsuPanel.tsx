@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useKouetsuStore, type KouetsuTab } from "./kouetsuStore";
@@ -5,6 +6,7 @@ import { IssuesTab } from "./IssuesTab";
 import { EditorialTab } from "./EditorialTab";
 import { CommentsTab } from "./CommentsTab";
 import { recordMark } from "@/lib/perfLog";
+import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 
 const TABS: { id: KouetsuTab; labelKey: string }[] = [
   { id: "issues", labelKey: "kouetsu.tab.issues" },
@@ -12,10 +14,17 @@ const TABS: { id: KouetsuTab; labelKey: string }[] = [
   { id: "comments", labelKey: "kouetsu.tab.comments" },
 ];
 
-export function KouetsuPanel() {
+export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const { activeTab, setActiveTab } = useKouetsuStore();
+  const setPanelActive = useKouetsuStore((s) => s.setPanelActive);
+
+  // keepalive で hidden の間、配下ビューの scene 追従処理を bail させるため
+  // パネルの active 状態を store に反映する (isActive 省略時は active 扱い)。
+  useEffect(() => {
+    setPanelActive(isActive);
+  }, [isActive, setPanelActive]);
 
   const __renderResult = (
     <div className="flex h-full flex-col" data-testid="kouetsu-panel">
