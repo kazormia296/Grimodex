@@ -72,8 +72,30 @@ describe("isManualDismiss", () => {
     ).toBe(true);
   });
 
-  it("prefers codex_ref.dismiss_source when codex_ref is present", () => {
-    // 整合性 annotation は codex 参照を codex_ref に畳むため、ネスト下を優先して見る。
+  it("regression: codex_ref を持つ整合性でも top-level の manual を拾う", () => {
+    // Rust は dismiss_source を top-level に書く。整合性 annotation は codex_ref を
+    // 持つが、旧実装は codex_ref 下だけを見て top-level の manual を取りこぼし、
+    // 整合性の除外ビューが常に空になっていた。top-level を権威として拾うこと。
+    expect(
+      isManualDismiss(
+        makeAnn("consistency_anchor", {
+          dismiss_source: "manual",
+          codex_ref: { detected_by_model: "gpt-4o" },
+        }),
+      ),
+    ).toBe(true);
+    // top-level が cascade (= 手動でない) なら、codex_ref に manual が無い限り false。
+    expect(
+      isManualDismiss(
+        makeAnn("consistency_anchor", {
+          dismiss_source: "cascade",
+          codex_ref: { detected_by_model: "gpt-4o" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("codex_ref 下の legacy な manual も許容する", () => {
     expect(
       isManualDismiss(
         makeAnn("consistency_anchor", {
@@ -81,15 +103,6 @@ describe("isManualDismiss", () => {
         }),
       ),
     ).toBe(true);
-    // codex_ref 下が manual でなければ top-level の manual は無視される (precedence 仕様)。
-    expect(
-      isManualDismiss(
-        makeAnn("consistency_anchor", {
-          dismiss_source: "manual",
-          codex_ref: { dismiss_source: "cascade" },
-        }),
-      ),
-    ).toBe(false);
   });
 
   it("returns false on malformed or null metadata", () => {

@@ -7,11 +7,13 @@ import type {
  * annotation が「手動で無視 (dismiss) された」ものかを判定する。
  *
  * dismiss_source は status 更新時に Rust 側 (update_annotation_status) が
- * metadata に立てる: 手動 dismiss = "manual" / cascade 連鎖 = "cascade"。
- * resolved では立たない。metadata は string(JSON) / object どちらの形でも来る。
+ * metadata の **top-level** に立てる: 手動 dismiss = "manual" / cascade 連鎖 =
+ * "cascade"。resolved では立たない。metadata は string(JSON) / object 両方来る。
  *
- * codex_ref が存在する場合はそのネスト下の dismiss_source を優先して見る
- * (整合性 annotation は codex 参照情報を codex_ref に畳んで持つため)。
+ * 旧実装は codex_ref があるとそのネスト下「だけ」を見ていたため、codex_ref を持つ
+ * 整合性 (consistency_anchor) annotation で top-level の "manual" を取りこぼし、
+ * 整合性の除外ビューが常に空になっていた。Rust の書き込み先である top-level を
+ * 権威とし、念のため codex_ref 下の legacy 値も許容する。
  */
 export function isManualDismiss(ann: PostEffectAnnotation): boolean {
   try {
@@ -19,9 +21,10 @@ export function isManualDismiss(ann: PostEffectAnnotation): boolean {
       typeof ann.metadata === "string"
         ? (JSON.parse(ann.metadata) as Record<string, unknown>)
         : (ann.metadata as Record<string, unknown>);
-    const inner =
-      (meta.codex_ref as Record<string, unknown> | undefined) ?? meta;
-    return inner.dismiss_source === "manual";
+    const codexRef = meta.codex_ref as Record<string, unknown> | undefined;
+    return (
+      meta.dismiss_source === "manual" || codexRef?.dismiss_source === "manual"
+    );
   } catch {
     return false;
   }
