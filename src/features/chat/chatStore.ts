@@ -522,6 +522,13 @@ interface ChatState {
      * UI 表示用の context bar 更新（プリビュー）には渡さず、sendMessage
      * 内部から folder/project スコープのプロンプト再構築時にだけ使う。 */
     mentionedSceneIds?: string[];
+    /**
+     * 一回限りの Agent mode override（サジェストチップ / 再試行ボタン）。
+     * 永続トグル get().agentMode と異なる agentMode で送信する経路から渡す。
+     * project スコープの集約 tier（push vs pull）判定にこの値が効くため、
+     * override 送信で lastSystemPrompt が永続トグル基準で組まれてしまうのを防ぐ。
+     * 省略時は get().agentMode にフォールバック。 */
+    agentModeOverride?: boolean;
   }) => Promise<void>;
   clearMessages: () => void;
   clearError: () => void;
@@ -906,6 +913,14 @@ async function buildAggregatedScene(opts: {
   allEntries: CodexEntry[];
   /** project スコープのフォルダ階層グループ化に必須 */
   allNodes?: TreeNodeData[];
+  /**
+   * Agent mode（Tool Use ループ）か。project スコープでは ON のとき
+   * synopsis 集約（Tier 2）を pull 委譲に切り替える: 事前注入は folder
+   * outline のみ（foldersOnly）に落とし、各シーンの synopsis / 本文は
+   * agent が get_chapter_summaries / get_scene / search_scenes で必要時だけ
+   * 取得する前提にする。クエリ無関係の全 synopsis ダンプを避けるのが目的。
+   */
+  agentMode: boolean;
 }): Promise<{
   aggregatedScene: { id: string; title: string; content: string };
   aggregatedDetected: CodexEntry[];
@@ -924,6 +939,7 @@ async function buildAggregatedScene(opts: {
     prefacePolicy,
     allEntries,
     allNodes,
+    agentMode,
   } = opts;
 
   const isProjectGrouped = prefacePolicy === "project" && !!allNodes?.length;
@@ -931,16 +947,26 @@ async function buildAggregatedScene(opts: {
 
   if (!hasScenes && !isProjectGrouped) return null;
 
+  // Agent mode の project スコープでは synopsis を push せず pull に委譲する。
+  // foldersOnly（Tier 3 相当の outline のみ）へ落とし、agent に取得ツールを案内する。
+  const agentPullProject = agentMode && isProjectGrouped;
+
   const totalChars = descendants.reduce(
     (sum, s) => sum + (s.charCount ?? 0),
     0,
   );
+  // Tier 1（本文集約）は agent mode でも維持する: includeBodies=true は
+  // ユーザーが小規模プロジェクトで明示的に本文を要求した操作なので尊重する
+  // （その規模なら本文を入れても安価）。pull 委譲は Tier 2 のみに適用する。
   const canTier1 =
     hasScenes &&
     includeBodies &&
     descendants.length <= MAX_BODY_TIER_SCENES &&
     totalChars <= MAX_BODY_TIER_CHARS;
-  const canTier2 = hasScenes && descendants.length <= MAX_SYNOPSIS_TIER_SCENES;
+  const canTier2 =
+    hasScenes &&
+    descendants.length <= MAX_SYNOPSIS_TIER_SCENES &&
+    !agentPullProject;
 
   const tier1Preface =
     prefacePolicy === "folder"
@@ -962,12 +988,13 @@ async function buildAggregatedScene(opts: {
       ? `[この章「${anchorTitle}」配下のシーンを synopsis 単位で集約しています（${tier2BodyNote}）。各シーンは「--- {タイトル} ---」区切りで reading order に並んでおり、[current edit] マーカー付きが現在編集中のシーンです]`
       : `[このプロジェクト「${anchorTitle}」の全シーンをフォルダ階層（=== フォルダ名 ===）ごとに synopsis 単位で集約しています（${tier2BodyNote}）。フォルダ見出しの Outline は各フォルダの synopsis、配下シーンは「--- {タイトル} ---」区切りです]`;
 
-  // Tier 3 (foldersOnly) は「シーン多すぎ overflow」と「シーン 0 のフォルダのみ
-  // プロジェクト」の両方で到達する。後者で「シーン数が多いため」preface を出すと
-  // モデルに誤情報を渡すので、scene 0 のときは中立な文面にする
-  // (Tier 3 で descendants.length > 0 になるのは overflow 時のみ)。
-  const tier3ProjectPreface =
-    descendants.length === 0
+  // Tier 3 (foldersOnly) は「agent mode の pull 委譲」「シーン多すぎ overflow」
+  // 「シーン 0 のフォルダのみプロジェクト」の 3 通りで到達する。原因ごとに preface を
+  // 切り替える: overflow で「シーン数が多いため」を出すと scene 0 や agent pull に
+  // 誤情報を渡すため。agent pull のときは「省略」ではなく「ツールで取得せよ」と案内する。
+  const tier3ProjectPreface = agentPullProject
+    ? `[このプロジェクト「${anchorTitle}」のフォルダ階層 Outline（=== フォルダ名 ===）のみを事前注入しています。個別シーンの synopsis / 本文はトークン節約のため事前注入していません。必要に応じて get_chapter_summaries（全シーンのあらすじ一覧）、list_chapters（章・シーン構成）、search_scenes（本文横断検索）、get_scene（個別シーンの本文）で取得してください]`
+    : descendants.length === 0
       ? `[このプロジェクト「${anchorTitle}」のフォルダ階層の Outline（=== フォルダ名 ===）を注入しています。シーンはまだ作成されていません]`
       : `[このプロジェクト「${anchorTitle}」はシーン数が多いため、フォルダ階層の Outline のみを注入しています（=== フォルダ名 ===）。個別シーンの synopsis / 本文は省略されています]`;
 
@@ -2528,6 +2555,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           // @scene mention は per-send の一時 pin として渡す。
           await get().refreshContextLayers({
             mentionedSceneIds: options?.mentionedSceneIds,
+            // 一回限り override で送るときも、その agentMode で集約 tier を組む
+            // （永続トグル基準で組むと pull 委譲が override 送信に効かない）。
+            agentModeOverride: agentModeForThisSend,
           });
           systemPromptForAgent = get().lastSystemPrompt;
           const dbPinned = sessionIdForPersist
@@ -3287,6 +3317,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       chatScope,
       scopeAnchorId,
     } = get();
+    // 一回限りの Agent mode override（送信経路から渡る）を優先。無ければ永続トグル。
+    const effectiveAgentMode = opts?.agentModeOverride ?? get().agentMode;
+    // synopsis の pull 委譲は「実際にツールループが走る」provider でのみ安全。
+    // CLI はツール無しで非 agent 経路に落ちる（useAgentPath の aiProvider !== "cli"）。
+    // CLI で pull 委譲すると outline + 使えない取得ツール指示 + synopsis 皆無となり、
+    // pull 委譲前（全 synopsis push）より文脈が悪化する。よって CLI では push を維持する。
+    const aiProvider = useAiSettingsStore.getState().settings?.provider;
+    const agentPullWillRunTools = effectiveAgentMode && aiProvider !== "cli";
     const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
     if (!effectiveSceneId) {
       // @scene mention の per-message pin (sendMessage 経由でのみ渡される)。
@@ -3326,6 +3364,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         //   Tier 1 (body 集約): includeBodies=true かつ scene≤30 かつ chars≤100k
         //   Tier 2 (synopsis 集約): scene≤200。本文は注入せず title+synopsis のみ
         //   Tier 3 (outline only): それ以上 — scopeOutlines のみ
+        // project スコープ + agent mode では Tier 2 を pull 委譲（outline only）に
+        // 切り替える（buildAggregatedScene 内 agentPullProject 参照）。
         let aggregatedScene: {
           id: string;
           title: string;
@@ -3350,6 +3390,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               activeSceneId,
               prefacePolicy: "folder",
               allEntries,
+              agentMode: agentPullWillRunTools,
             });
             if (result) {
               aggregatedScene = result.aggregatedScene;
@@ -3367,6 +3408,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             prefacePolicy: "project",
             allEntries,
             allNodes: allNodesForScope,
+            agentMode: agentPullWillRunTools,
           });
           if (result) {
             aggregatedScene = result.aggregatedScene;
@@ -3516,7 +3558,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           mentionedScenes:
             mentionedScenes.length > 0 ? mentionedScenes : undefined,
           lang: projectCtx?.language ?? "ja",
-          agentMode: get().agentMode,
+          agentMode: effectiveAgentMode,
           mapBoardMarkdown,
         });
 

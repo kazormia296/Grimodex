@@ -221,6 +221,13 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     chatScope,
     scopeAnchorId,
     includeBodies,
+    // agentMode は project スコープの集約 tier（push 全 synopsis vs pull 委譲）を
+    // 左右するため deps に含める。これが無いとトグルしても lastSystemPrompt /
+    // context bar が再構築されず、非 agent / CLI 送信は古い prompt を流用してしまう。
+    agentMode,
+    // provider も同様: pull 委譲は CLI（ツール無し）では無効化されるため、
+    // OpenRouter↔CLI の切替で集約 tier が変わる。切替時に再構築が要る。
+    aiSettings?.provider,
     includeMapBoard,
     mapBoardIdFromStore,
     allCodexEntries,

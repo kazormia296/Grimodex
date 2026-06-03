@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
 import { useChatStore } from "./chatStore";
@@ -456,5 +456,26 @@ describe("ChatPanel", () => {
     render(<ChatPanel />);
 
     expect(screen.getByTestId("message-actions-u1")).toBeInTheDocument();
+  });
+
+  // agentMode を切り替えたら context layer を再構築すること。これが無いと
+  // project スコープの pull 委譲（agent ON で synopsis を push しない）がトグル時に
+  // 反映されず、非 agent / CLI 送信が古い lastSystemPrompt を流用してしまう。
+  it("rebuilds context layers when agentMode is toggled", async () => {
+    const refreshSpy = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({
+      agentMode: false,
+      refreshContextLayers: refreshSpy,
+    });
+
+    render(<ChatPanel />);
+    await waitFor(() => expect(refreshSpy).toHaveBeenCalled());
+    const callsAfterMount = refreshSpy.mock.calls.length;
+
+    await act(async () => {
+      useChatStore.setState({ agentMode: true });
+    });
+
+    expect(refreshSpy.mock.calls.length).toBeGreaterThan(callsAfterMount);
   });
 });

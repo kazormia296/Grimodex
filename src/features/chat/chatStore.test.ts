@@ -2079,6 +2079,164 @@ describe("useChatStore", () => {
       expect(args?.chapterOutlines).toBeUndefined();
     });
 
+    it("agent mode: pull 委譲 — Tier 2 を outline only に落とし synopsis を push しない", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+      const { findMentionedEntriesAsync } =
+        await import("@/features/codex/rustMatcher");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockMatcher = vi.mocked(findMentionedEntriesAsync);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const folder = makeFolder("ch1", "a0", "第3章の意図", "Chapter 3");
+      const scene = makeScene("s1", "ch1", "クライマックス", "a0", "決戦");
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [folder, scene],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockMatcher.mockClear();
+      mockMatcher.mockResolvedValue([]);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "project-agent-pull-prompt",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.getState().setChatScope("project");
+      useChatStore.setState({
+        activeProjectId: "proj-1",
+        includeBodies: false,
+        agentMode: true,
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      // 本文ロードは走らない（outline only）
+      expect(mockLoadScene).not.toHaveBeenCalled();
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      const content = args?.scene.content ?? "";
+      // folder outline は残る
+      expect(content).toContain("=== Chapter 3 ===");
+      expect(content).toContain("Outline: 第3章の意図");
+      // 個別シーンの synopsis は push しない
+      expect(content).not.toContain("Synopsis: 決戦");
+      expect(content).not.toContain("--- クライマックス");
+      expect(content).not.toContain("eco モード");
+      // pull 取得ツールを案内する
+      expect(content).toContain("get_chapter_summaries");
+      // agentMode は buildSystemPrompt にも反映される
+      expect(args?.agentMode).toBe(true);
+    });
+
+    it("agent mode: 明示 includeBodies=true の小規模プロジェクトは Tier 1 本文を維持する", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const f1 = makeFolder("act1", "a0", null, "Act 1");
+      const scenes = Array.from({ length: 3 }, (_, i) =>
+        makeScene(`s${i}`, "act1", `A${i}`, `a${i}`),
+      );
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [f1, ...scenes],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockImplementation((id) => Promise.resolve(`body:${id}`));
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "project-agent-tier1-prompt",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.getState().setChatScope("project");
+      useChatStore.setState({
+        activeProjectId: "proj-1",
+        includeBodies: true,
+        agentMode: true,
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      const content = args?.scene.content ?? "";
+      // 明示的な本文要求は agent mode でも尊重し、pull 委譲しない
+      expect(content).toContain("body:s0");
+      expect(content).toContain("--- A0");
+      expect(content).not.toContain("get_chapter_summaries");
+    });
+
+    it("agent mode + CLI provider: ツール無しなので pull 委譲せず全 synopsis を push する", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { loadSceneContent } = await import("@/features/tree/api");
+      const { findMentionedEntriesAsync } =
+        await import("@/features/codex/rustMatcher");
+      const { useAiSettingsStore } = await import("./store");
+      const { DEFAULT_AI_SETTINGS } = await import("./types");
+
+      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockLoadScene = vi.mocked(loadSceneContent);
+      const mockMatcher = vi.mocked(findMentionedEntriesAsync);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+
+      const folder = makeFolder("ch1", "a0", "第3章の意図", "Chapter 3");
+      const scene = makeScene("s1", "ch1", "クライマックス", "a0", "決戦");
+
+      mockTreeState.mockReturnValue({
+        // @ts-expect-error テスト用 stub
+        nodes: [folder, scene],
+        projectId: "proj-1",
+      });
+      mockListCodex.mockResolvedValue([]);
+      mockLoadScene.mockClear();
+      mockMatcher.mockClear();
+      mockMatcher.mockResolvedValue([]);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "project-cli-prompt",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      // provider=CLI: ツールループが走らないので pull 委譲は無効化される。
+      useAiSettingsStore.setState({
+        settings: { ...DEFAULT_AI_SETTINGS, provider: "cli" },
+      });
+      try {
+        useChatStore.getState().setChatScope("project");
+        useChatStore.setState({
+          activeProjectId: "proj-1",
+          includeBodies: false,
+          agentMode: true,
+        });
+
+        await useChatStore.getState().refreshContextLayers();
+
+        const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+        const content = args?.scene.content ?? "";
+        // CLI では agent mode でも従来どおり全 synopsis を push する（回帰 gate）
+        expect(content).toContain("Synopsis: 決戦");
+        expect(content).toContain("eco モード");
+        expect(content).not.toContain("get_chapter_summaries");
+      } finally {
+        // 実ストアなので後続テストへ provider が漏れないよう戻す。
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
     it("empty project: no aggregated scene content", async () => {
       const { listCodexEntries } = await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
