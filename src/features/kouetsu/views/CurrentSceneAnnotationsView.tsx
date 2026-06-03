@@ -19,6 +19,8 @@ import {
   runPostEffect,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { PostEffectAnnotationPanel } from "@/features/post-effect/PostEffectAnnotationPanel";
 import type {
@@ -88,6 +90,9 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
       const projectId = useTreeStore.getState().projectId;
       const model =
         useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+      const customKouetsu = useSettingsStore
+        .getState()
+        .get("aiPrompt.custom.kouetsu", "");
       setRunning(true);
       try {
         async function startConsistency(): Promise<RunOutcome> {
@@ -96,6 +101,7 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
               projectId,
               sceneId,
               model,
+              customKouetsu,
             );
             return await new Promise<RunOutcome>((resolve) => {
               runPostEffect(
@@ -109,8 +115,10 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
                   input_hash: payload.inputHash,
                   codex_payload_json: payload.codexPayloadJson,
                   scene_text: payload.sceneText,
-                  system_prompt:
+                  system_prompt: appendKouetsuGuidance(
                     getPromptCatalog("ja").postEffect.consistencySystem,
+                    customKouetsu,
+                  ),
                 },
                 {
                   onDone: (e) =>
@@ -137,7 +145,11 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
 
         async function startIntra(): Promise<RunOutcome> {
           try {
-            const payload = await buildIntraPayload(sceneId, model);
+            const payload = await buildIntraPayload(
+              sceneId,
+              model,
+              customKouetsu,
+            );
             return await new Promise<RunOutcome>((resolve) => {
               runPostEffect(
                 {
@@ -150,7 +162,10 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
                   input_hash: payload.inputHash,
                   codex_payload_json: "[]",
                   scene_text: payload.sceneText,
-                  system_prompt: getPromptCatalog("ja").postEffect.intraSystem,
+                  system_prompt: appendKouetsuGuidance(
+                    getPromptCatalog("ja").postEffect.intraSystem,
+                    customKouetsu,
+                  ),
                 },
                 {
                   onDone: (e) => resolve({ kind: "ok", effect: "intra", e }),

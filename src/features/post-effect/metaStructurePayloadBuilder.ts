@@ -10,6 +10,7 @@ import { treeNodes } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { computeInputHash, normalizeText } from "./canonicalize";
+import { kouetsuScopeSuffix } from "./customInstruction";
 
 export const META_STRUCTURE_PROMPT_VERSION = "meta_structure_v1.0";
 
@@ -30,6 +31,7 @@ async function getScenePlainText(sceneId: string): Promise<string> {
 export async function buildMetaStructurePayload(
   sceneId: string,
   model: string,
+  customInstruction: string = "",
 ): Promise<MetaStructurePayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const inputHash = await computeInputHash({
@@ -37,7 +39,7 @@ export async function buildMetaStructurePayload(
     model,
     effectType: "meta_structure",
     scene: normalizeText(sceneText),
-    scope: `scene:${sceneId}`,
+    scope: `scene:${sceneId}${kouetsuScopeSuffix(customInstruction)}`,
   });
   return { sceneText, inputHash };
 }

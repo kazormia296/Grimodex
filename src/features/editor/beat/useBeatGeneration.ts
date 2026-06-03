@@ -240,6 +240,9 @@ export function useBeatGeneration(
       povName,
       pendingBeatsSection,
       lang: project?.language ?? "ja",
+      customInstruction: useSettingsStore
+        .getState()
+        .get("aiPrompt.custom.beat", ""),
     };
     const messages = buildBeatMessages(promptInput);
 

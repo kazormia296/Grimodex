@@ -27,6 +27,8 @@ import {
   runPostEffect,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { closeAnnotation } from "@/features/post-effect/closeAnnotation";
 import { applyTypoFixAndResolve } from "@/features/post-effect/typoFix";
@@ -78,9 +80,12 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
     const projectId = useTreeStore.getState().projectId;
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+    const customKouetsu = useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.kouetsu", "");
     setRunning(true);
     try {
-      const payload = await buildTypoPayload(sceneId, model);
+      const payload = await buildTypoPayload(sceneId, model, customKouetsu);
       const done = await new Promise<{
         ok: boolean;
         from_cache?: boolean;
@@ -98,7 +103,10 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
             input_hash: payload.inputHash,
             codex_payload_json: "[]",
             scene_text: payload.sceneText,
-            system_prompt: getPromptCatalog("ja").postEffect.typoSystem,
+            system_prompt: appendKouetsuGuidance(
+              getPromptCatalog("ja").postEffect.typoSystem,
+              customKouetsu,
+            ),
           },
           {
             onDone: (e) =>

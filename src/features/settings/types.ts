@@ -117,6 +117,12 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "beat.injectIntoContext": "project",
   "beat.inferRoles": "project",
   "beat.roleInferenceConfidenceThreshold": "project",
+  // AI prompt customization — 追記式カスタム指示 (project)
+  "aiPrompt.custom.chat": "project",
+  "aiPrompt.custom.kouetsu": "project",
+  "aiPrompt.custom.inline": "project",
+  "aiPrompt.custom.beat": "project",
+  "aiPrompt.custom.aiBranch": "project",
   // Keys — user preference (global)
   "keys.bindings": "global",
   // Data — user preference (global)
@@ -216,6 +222,12 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "beat.injectIntoContext": "true",
   "beat.inferRoles": "true",
   "beat.roleInferenceConfidenceThreshold": "0.7",
+  // AI prompt customization addenda — 空 = 組み込みプロンプトのまま (byte-identical)
+  "aiPrompt.custom.chat": "",
+  "aiPrompt.custom.kouetsu": "",
+  "aiPrompt.custom.inline": "",
+  "aiPrompt.custom.beat": "",
+  "aiPrompt.custom.aiBranch": "",
   // Keys
   "keys.bindings": "{}",
   // Data

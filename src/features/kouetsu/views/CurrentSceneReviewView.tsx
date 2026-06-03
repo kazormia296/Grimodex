@@ -17,6 +17,8 @@ import {
   runPostEffect,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import {
   PostEffectAnnotationPanel,
@@ -45,9 +47,12 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
     const projectId = useTreeStore.getState().projectId;
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+    const customKouetsu = useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.kouetsu", "");
     setRunning(true);
     try {
-      const payload = await buildReviewPayload(sceneId, model);
+      const payload = await buildReviewPayload(sceneId, model, customKouetsu);
       const outcome = await new Promise<{
         ok: boolean;
         e?: PostEffectDoneEvent;
@@ -64,7 +69,10 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
             input_hash: payload.inputHash,
             codex_payload_json: "[]",
             scene_text: payload.sceneText,
-            system_prompt: getPromptCatalog("ja").postEffect.reviewSystem,
+            system_prompt: appendKouetsuGuidance(
+              getPromptCatalog("ja").postEffect.reviewSystem,
+              customKouetsu,
+            ),
           },
           {
             onDone: (e) => resolve({ ok: true, e }),

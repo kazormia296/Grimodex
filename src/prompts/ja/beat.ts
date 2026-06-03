@@ -28,6 +28,10 @@ export function buildBeatSystemPromptJa(input: BeatPromptInput): string {
   }
   const guidance = beatTypeGuidanceJa(input.beatType);
   if (guidance) lines.push(guidance);
+  // ユーザー定義の追記指示 (aiPrompt.custom.beat)。空なら何も足さない。
+  if (input.customInstruction?.trim()) {
+    lines.push(`\n## 追加指示\n${input.customInstruction.trim()}`);
+  }
   return lines.join("\n");
 }
 

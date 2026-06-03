@@ -20,6 +20,8 @@ import {
   runPostEffectMulti,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { parseAnnotationMeta } from "@/features/post-effect/annotationMeta";
 import {
@@ -111,6 +113,9 @@ export function ProjectAnnotationsView() {
       if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
       const model =
         useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+      const customKouetsu = useSettingsStore
+        .getState()
+        .get("aiPrompt.custom.kouetsu", "");
       const activeSceneId = useTreeStore.getState().activeSceneId;
       setRunningAll(true);
 
@@ -130,7 +135,14 @@ export function ProjectAnnotationsView() {
               effect === "consistency"
                 ? CONSISTENCY_PROMPT_VERSION
                 : INTRA_CONSISTENCY_PROMPT_VERSION;
-            buildMultiPayload(projectId, "project", null, model, effectType)
+            buildMultiPayload(
+              projectId,
+              "project",
+              null,
+              model,
+              effectType,
+              customKouetsu,
+            )
               .then((payload) => {
                 if (payload.scenes.length === 0) {
                   resolve({
@@ -150,10 +162,12 @@ export function ProjectAnnotationsView() {
                     prompt_version: promptVersion,
                     input_hash: payload.inputHash,
                     scenes: payload.scenes,
-                    system_prompt:
+                    system_prompt: appendKouetsuGuidance(
                       effect === "consistency"
                         ? getPromptCatalog("ja").postEffect.consistencySystem
                         : getPromptCatalog("ja").postEffect.intraSystem,
+                      customKouetsu,
+                    ),
                   },
                   {
                     onDone: (e) => resolve({ kind: "ok", effect, e }),

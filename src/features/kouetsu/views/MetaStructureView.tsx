@@ -17,6 +17,8 @@ import {
 } from "@/features/post-effect/metaStructurePayloadBuilder";
 import { runPostEffect, runPostEffectMulti } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import type {
   PostEffectSeverity,
   SceneLensRecord,
@@ -81,9 +83,16 @@ export function MetaStructureView({ scope, sceneId }: Props) {
     if (blockIfPolicyOff("analysis")) return;
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+    const customKouetsu = useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.kouetsu", "");
     setRunning(true);
     try {
-      const payload = await buildMetaStructurePayload(sceneId, model);
+      const payload = await buildMetaStructurePayload(
+        sceneId,
+        model,
+        customKouetsu,
+      );
       const outcome = await new Promise<{ ok: boolean; error?: string }>(
         (resolve) => {
           runPostEffect(
@@ -97,8 +106,10 @@ export function MetaStructureView({ scope, sceneId }: Props) {
               input_hash: payload.inputHash,
               codex_payload_json: "[]",
               scene_text: payload.sceneText,
-              system_prompt:
+              system_prompt: appendKouetsuGuidance(
                 getPromptCatalog("ja").postEffect.metaStructureSystem,
+                customKouetsu,
+              ),
             },
             {
               onDone: () => resolve({ ok: true }),
@@ -129,6 +140,9 @@ export function MetaStructureView({ scope, sceneId }: Props) {
     if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+    const customKouetsu = useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.kouetsu", "");
     setRunning(true);
     try {
       const payload = await buildMultiPayload(
@@ -137,6 +151,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
         null,
         model,
         "meta_structure",
+        customKouetsu,
       );
       if (payload.scenes.length === 0) {
         setRunning(false);
@@ -154,8 +169,10 @@ export function MetaStructureView({ scope, sceneId }: Props) {
               prompt_version: META_STRUCTURE_PROMPT_VERSION,
               input_hash: payload.inputHash,
               scenes: payload.scenes,
-              system_prompt:
+              system_prompt: appendKouetsuGuidance(
                 getPromptCatalog("ja").postEffect.metaStructureSystem,
+                customKouetsu,
+              ),
             },
             {
               onDone: () => resolve({ ok: true }),

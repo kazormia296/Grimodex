@@ -24,6 +24,8 @@ import {
   runPostEffect,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import {
   groupPseudoThreads,
@@ -104,6 +106,9 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
     const projectId = useTreeStore.getState().projectId;
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+    const customKouetsu = useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.kouetsu", "");
     setRunning(true);
     try {
       // brief を 1 度だけ解決し、hash (payload) と system_prompt で同じものを使う。
@@ -113,6 +118,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
         model,
         persona,
         brief,
+        customKouetsu,
       );
       const outcome = await new Promise<{
         ok: boolean;
@@ -130,8 +136,13 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
             input_hash: payload.inputHash,
             codex_payload_json: "[]",
             scene_text: payload.sceneText,
+            // custom は区切り行の前 (appendKouetsuGuidance)、READER PERSONA は
+            // JSON スキーマの後 (buildPseudoCommentSystemPrompt) に入る。
             system_prompt: buildPseudoCommentSystemPrompt(
-              getPromptCatalog("ja").postEffect.pseudoCommentSystem,
+              appendKouetsuGuidance(
+                getPromptCatalog("ja").postEffect.pseudoCommentSystem,
+                customKouetsu,
+              ),
               brief,
             ),
             persona,

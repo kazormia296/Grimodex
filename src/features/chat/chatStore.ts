@@ -1917,6 +1917,9 @@ async function buildSceneContextPrompt(opts: {
     mentionedScenes: mentionedScenes.length > 0 ? mentionedScenes : undefined,
     lang: projectCtx?.language ?? "ja",
     agentMode: opts.agentMode,
+    customChatInstruction: useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.chat", ""),
     sessionStableCodexIds: opts.sessionStableCodexIds,
     alwaysEntryIds: alwaysNotPinned.map((e) => e.id),
     noteEntries,
@@ -3568,6 +3571,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           lang: projectCtx?.language ?? "ja",
           agentMode: effectiveAgentMode,
           mapBoardMarkdown,
+          customChatInstruction: useSettingsStore
+            .getState()
+            .get("aiPrompt.custom.chat", ""),
         });
 
         set({

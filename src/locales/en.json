@@ -362,6 +362,35 @@
           "label": "Inference confidence threshold",
           "description": "Only show suggestions above this confidence level"
         }
+      },
+      "promptCustom": {
+        "title": "AI Prompt Customization (append)",
+        "intro": "Appends your instructions after the built-in prompt. Leave blank for default behavior (for proofreading, text is inserted before the output-format spec, so the JSON structure stays fixed).",
+        "chat": {
+          "label": "Chat (always on)",
+          "description": "Tone, behavior, and persona of the AI chat. Never trimmed under context pressure. Put story premises/settings in the Project tab's \"AI instructions\".",
+          "placeholder": "e.g. Reply in the voice of a sarcastic detective."
+        },
+        "kouetsu": {
+          "label": "Proofreading",
+          "description": "Extra guidance applied to all 6 proofreading checks. The output format (JSON) is fixed and unchanged.",
+          "placeholder": "e.g. Focus on the vividness of action scenes and use of jargon."
+        },
+        "inline": {
+          "label": "Inline AI",
+          "description": "Extra guidance for in-editor commands (continue, rewrite, etc.).",
+          "placeholder": "e.g. Use vivid metaphors and keep sentences short."
+        },
+        "beat": {
+          "label": "Beat generation",
+          "description": "Extra guidance when generating prose from beats.",
+          "placeholder": "e.g. Keep dialogue snappy and narration concise."
+        },
+        "aiBranch": {
+          "label": "AI Branch (map)",
+          "description": "Extra guidance for idea-branching generation on the map.",
+          "placeholder": "e.g. Keep a dark tone and favor surprising twists."
+        }
       }
     },
     "project": {

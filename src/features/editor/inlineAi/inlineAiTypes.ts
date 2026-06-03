@@ -25,6 +25,11 @@ export interface InlineAiContext {
   selectedText?: string;
   cursorContext?: string;
   arg?: string;
+  /**
+   * ユーザー定義のインライン AI 追記指示 (project_settings: aiPrompt.custom.inline)。
+   * system prompt 末尾に追記される。空/未指定なら何も足さない。
+   */
+  customInstruction?: string;
 }
 
 export interface InlineAiState {

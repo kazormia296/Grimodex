@@ -12,6 +12,7 @@ import { treeNodes } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { computeInputHash, normalizeText } from "./canonicalize";
+import { kouetsuScopeSuffix } from "./customInstruction";
 
 export const TYPO_PROMPT_VERSION = "typo_detection_v1.0";
 
@@ -32,6 +33,7 @@ async function getScenePlainText(sceneId: string): Promise<string> {
 export async function buildTypoPayload(
   sceneId: string,
   model: string,
+  customInstruction: string = "",
 ): Promise<TypoPayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const inputHash = await computeInputHash({
@@ -39,7 +41,7 @@ export async function buildTypoPayload(
     model,
     effectType: "typo_detection",
     scene: normalizeText(sceneText),
-    scope: `scene:${sceneId}`,
+    scope: `scene:${sceneId}${kouetsuScopeSuffix(customInstruction)}`,
   });
   return { sceneText, inputHash };
 }

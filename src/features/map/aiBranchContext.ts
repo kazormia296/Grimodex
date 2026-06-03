@@ -11,6 +11,7 @@ import {
 } from "@/features/chat/chatApi";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { fetchProjectContext } from "@/features/project/contextAtoms";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { MapSticky, MapAiBranch } from "@/db/schema";
 
 /** 1500 文字を超える seed body は prompt 圧迫を避けるため切り詰める。
@@ -115,6 +116,10 @@ export async function fetchAiBranchProjectContext(
     synopsis: ctx.outline,
     styleGuide: ctx.styleGuide,
     aiInstructions: ctx.aiInstructions,
+    // ユーザー定義の AI Branch 追記指示 (project_settings)。空なら system に出ない。
+    customInstruction: useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.aiBranch", ""),
   };
 }
 

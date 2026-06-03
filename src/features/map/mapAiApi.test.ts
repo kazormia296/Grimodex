@@ -73,3 +73,47 @@ describe("generateAiBranchCards — LLM レスポンスのパース", () => {
     expect(cards[1].title).toBe("別タイトル");
   });
 });
+
+describe("generateAiBranchCards — customInstruction (aiPrompt.custom.aiBranch)", () => {
+  function lastSystemPrompt(): string {
+    const calls = (invoke as ReturnType<typeof vi.fn>).mock.calls;
+    const last = calls[calls.length - 1];
+    const payload = last[1] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    return payload.messages.find((m) => m.role === "system")!.content;
+  }
+
+  it("custom 非空なら system に「# ユーザー追加指示」として入る", async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "## a\nb" }],
+      stopReason: "end_turn",
+    });
+    const { generateAiBranchCards } = await import("./mapAiApi");
+    await generateAiBranchCards("テスト", 1, [], {
+      title: "P",
+      customInstruction: "意外性のある展開を優先して",
+    });
+    const sys = lastSystemPrompt();
+    expect(sys).toContain("# ユーザー追加指示");
+    expect(sys).toContain("意外性のある展開を優先して");
+  });
+
+  it("custom 空なら「# ユーザー追加指示」は出ず、aiInstructions の「# 追加指示」とは別建て", async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "## a\nb" }],
+      stopReason: "end_turn",
+    });
+    const { generateAiBranchCards } = await import("./mapAiApi");
+    await generateAiBranchCards("テスト", 1, [], {
+      title: "P",
+      aiInstructions: "横断的なプロジェクト指示",
+      customInstruction: "",
+    });
+    const sys = lastSystemPrompt();
+    expect(sys).not.toContain("# ユーザー追加指示");
+    // aiInstructions (横断的指示) は従来どおり「# 追加指示」として残る
+    expect(sys).toContain("# 追加指示");
+    expect(sys).toContain("横断的なプロジェクト指示");
+  });
+});

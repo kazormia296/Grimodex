@@ -25,6 +25,11 @@ export interface BeatPromptInput {
   pendingBeatsSection?: string;
   /** 執筆言語（project.language）。省略時は "ja" にフォールバック */
   lang?: string;
+  /**
+   * ユーザー定義のビート追記指示 (project_settings: aiPrompt.custom.beat)。
+   * system prompt 末尾に追記される。空/未指定なら何も足さない。
+   */
+  customInstruction?: string;
 }
 
 export function buildBeatSystemPrompt(input: BeatPromptInput): string {

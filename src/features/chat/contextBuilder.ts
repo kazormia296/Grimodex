@@ -208,6 +208,12 @@ export interface BuildSystemPromptInput {
    * 「事前注入を起点にしてツールは深掘り用」という運用前提を LLM に明示する。
    */
   agentMode?: boolean;
+  /**
+   * ユーザーがプロジェクトごとに設定する、チャット用の追記カスタム指示
+   * (project_settings: aiPrompt.custom.chat)。L0 baseText 末尾に追記され、
+   * trim 対象外なので常に効く。空文字/未指定なら何も追記しない (byte-identical)。
+   */
+  customChatInstruction?: string;
   /** Codex entry IDs fixed at session start — L4 cache marker boundary. */
   sessionStableCodexIds?: string[];
   /** context_mode=always entries (L4 trim: lowest removal priority). */
@@ -651,6 +657,13 @@ export function buildSystemPrompt(
   // L0 は trim 対象外なので、この hard constraint は常に残る。
   if (input.project?.bodyWriteDisabled) {
     baseText += `\n\n${s.bodyWriteDisabledInstruction}`;
+  }
+  // ユーザー定義のチャット追記指示 (口調・振る舞い・ペルソナ)。
+  // bodyWriteDisabledInstruction と同様 L0 末尾に置くことで trim 免除され常に効く。
+  // 空文字なら baseText は現行のまま (byte-identical / cache 非破壊)。
+  // agentInstruction の後ろに置き、組み込みツール運用規約を上書きする印象を避ける。
+  if (input.customChatInstruction?.trim()) {
+    baseText += `\n\n${input.customChatInstruction.trim()}`;
   }
 
   // L1: Project info

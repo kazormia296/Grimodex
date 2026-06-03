@@ -17,6 +17,7 @@ import { treeNodes } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { computeInputHash, normalizeText } from "./canonicalize";
+import { kouetsuScopeSuffix } from "./customInstruction";
 
 export const PSEUDO_COMMENT_PROMPT_VERSION = "pseudo_comment_v2.0";
 
@@ -143,6 +144,7 @@ export async function buildPseudoCommentPayload(
   model: string,
   persona: string,
   brief: string,
+  customInstruction: string = "",
 ): Promise<PseudoCommentPayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const inputHash = await computeInputHash({
@@ -152,7 +154,8 @@ export async function buildPseudoCommentPayload(
     scene: normalizeText(sceneText),
     // brief は genre / 想定読者プロフィールに依存するので scope に畳み込む。
     // これらが変われば別キャッシュになる (設定編集後に古い結果を返さない)。
-    scope: `scene:${sceneId}|persona:${persona}|brief:${normalizeText(brief)}`,
+    // custom (aiPrompt.custom.kouetsu) も同様に非空時のみ畳み込む。
+    scope: `scene:${sceneId}|persona:${persona}|brief:${normalizeText(brief)}${kouetsuScopeSuffix(customInstruction)}`,
   });
   return { sceneText, inputHash };
 }

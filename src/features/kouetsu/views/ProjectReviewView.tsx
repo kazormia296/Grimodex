@@ -16,6 +16,8 @@ import {
   runPostEffectMulti,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
 
@@ -59,6 +61,9 @@ export function ProjectReviewView() {
     if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+    const customKouetsu = useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.kouetsu", "");
     setRunningAll(true);
     try {
       const payload = await buildMultiPayload(
@@ -67,6 +72,7 @@ export function ProjectReviewView() {
         null,
         model,
         "review",
+        customKouetsu,
       );
       if (payload.scenes.length === 0) {
         setRunningAll(false);
@@ -84,7 +90,10 @@ export function ProjectReviewView() {
               prompt_version: REVIEW_PROMPT_VERSION,
               input_hash: payload.inputHash,
               scenes: payload.scenes,
-              system_prompt: getPromptCatalog("ja").postEffect.reviewSystem,
+              system_prompt: appendKouetsuGuidance(
+                getPromptCatalog("ja").postEffect.reviewSystem,
+                customKouetsu,
+              ),
             },
             {
               onDone: () => resolve({ ok: true }),

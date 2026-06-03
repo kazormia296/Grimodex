@@ -1,6 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -70,6 +71,9 @@ export async function generateBeatAlternative(
     sceneTextSoFar,
     povName,
     lang,
+    customInstruction: useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.beat", ""),
   });
 
   callbacks?.onStart?.();

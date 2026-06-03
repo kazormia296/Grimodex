@@ -1,6 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -71,6 +72,9 @@ export async function generateBeatOnce(
     sceneTextSoFar,
     povName,
     lang,
+    customInstruction: useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.beat", ""),
   });
 
   if (!ensureGeneratedBlock(editor, beatId)) return;

@@ -1,5 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import type { InlineAiContext } from "./inlineAiTypes";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 
 /** カーソル前後の抽出文字数（バイト換算ではなく PM 位置単位） */
 const CURSOR_BEFORE_CHARS = 500;
@@ -78,6 +79,10 @@ export function buildInlineAiContext(
     selectedText,
     cursorContext,
     arg,
+    // ユーザー定義のインライン追記指示 (project_settings)。両呼び出し点を1箇所でカバー。
+    customInstruction: useSettingsStore
+      .getState()
+      .get("aiPrompt.custom.inline", ""),
   };
 }
 

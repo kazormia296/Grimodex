@@ -68,6 +68,47 @@ describe("buildPseudoCommentPayload input_hash", () => {
     const b = await buildPseudoCommentPayload("s2", "m", "一般読者", "b");
     expect(a.inputHash).not.toBe(b.inputHash);
   });
+
+  it("custom 空なら custom 未指定と同じ input_hash (既存キャッシュ非破壊)", async () => {
+    mockScene("本文A");
+    const a = await buildPseudoCommentPayload("s1", "m", "一般読者", "b");
+    mockScene("本文A");
+    const b = await buildPseudoCommentPayload("s1", "m", "一般読者", "b", "");
+    mockScene("本文A");
+    const c = await buildPseudoCommentPayload(
+      "s1",
+      "m",
+      "一般読者",
+      "b",
+      "   \n ",
+    );
+    expect(b.inputHash).toBe(a.inputHash);
+    expect(c.inputHash).toBe(a.inputHash);
+  });
+
+  it("custom が非空なら input_hash が変わる / 内容が違えば別ハッシュ", async () => {
+    mockScene("本文A");
+    const base = await buildPseudoCommentPayload("s1", "m", "一般読者", "b");
+    mockScene("本文A");
+    const x = await buildPseudoCommentPayload(
+      "s1",
+      "m",
+      "一般読者",
+      "b",
+      "戦闘描写を重点的に",
+    );
+    mockScene("本文A");
+    const y = await buildPseudoCommentPayload(
+      "s1",
+      "m",
+      "一般読者",
+      "b",
+      "会話のテンポを見て",
+    );
+    expect(x.inputHash).not.toBe(base.inputHash);
+    expect(y.inputHash).not.toBe(base.inputHash);
+    expect(x.inputHash).not.toBe(y.inputHash);
+  });
 });
 
 describe("resolvePersonaBrief", () => {

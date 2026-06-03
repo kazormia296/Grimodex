@@ -107,6 +107,65 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain(BODY_WRITE_OFF_ANCHOR);
     });
 
+    // ユーザー定義のチャット追記指示 (aiPrompt.custom.chat) は L0 末尾に入る。
+    const CUSTOM_CHAT_ANCHOR = "皮肉屋の探偵の口調で答えてください";
+
+    it("appends customChatInstruction to L0 and exposes it in cacheSegments[0]", () => {
+      const scene: SceneContext = { id: "s", title: "t", content: "本文" };
+
+      const result = buildSystemPrompt({
+        scene,
+        project: { title: "P" },
+        customChatInstruction: CUSTOM_CHAT_ANCHOR,
+      });
+
+      expect(result.prompt).toContain(CUSTOM_CHAT_ANCHOR);
+      // L0 (baseText) は cacheSegments の先頭セグメントに含まれる
+      expect(result.cacheSegments?.[0]).toContain(CUSTOM_CHAT_ANCHOR);
+    });
+
+    it("is byte-identical when customChatInstruction is empty or whitespace", () => {
+      const scene: SceneContext = { id: "s", title: "t", content: "本文" };
+      const project: ProjectContext = { title: "P" };
+
+      const baseline = buildSystemPrompt({ scene, project });
+      const emptyStr = buildSystemPrompt({
+        scene,
+        project,
+        customChatInstruction: "",
+      });
+      const whitespace = buildSystemPrompt({
+        scene,
+        project,
+        customChatInstruction: "   \n  ",
+      });
+
+      expect(emptyStr.prompt).toBe(baseline.prompt);
+      expect(emptyStr.totalTokens).toBe(baseline.totalTokens);
+      expect(whitespace.prompt).toBe(baseline.prompt);
+      expect(whitespace.cacheSegments).toEqual(baseline.cacheSegments);
+    });
+
+    it("keeps customChatInstruction even under forced trim (L0 trim-exempt)", () => {
+      // 巨大な本文 + 極小 contextWindow で L1〜L3 にトリム圧をかけても、
+      // L0 の custom 指示は削られない。
+      const scene: SceneContext = {
+        id: "s",
+        title: "t",
+        content: "あ".repeat(20000),
+      };
+
+      const result = buildSystemPrompt({
+        scene,
+        project: { title: "P" },
+        customChatInstruction: CUSTOM_CHAT_ANCHOR,
+        contextWindow: 1000,
+        conversationTokens: 500,
+      });
+
+      expect(result.prompt).toContain(CUSTOM_CHAT_ANCHOR);
+    });
+
     it("works without project context", () => {
       const scene: SceneContext = {
         id: "scene-1",

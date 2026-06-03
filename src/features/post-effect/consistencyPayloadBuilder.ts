@@ -23,6 +23,7 @@ import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { computeInputHash, normalizeText } from "./canonicalize";
+import { kouetsuScopeSuffix } from "./customInstruction";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexPayloadEntry } from "./types";
@@ -217,6 +218,7 @@ export async function buildConsistencyPayload(
   projectId: string,
   sceneId: string,
   model: string,
+  customInstruction: string = "",
 ): Promise<ConsistencyPayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const codexPayload = await buildCodexPayload(projectId, sceneText);
@@ -227,7 +229,7 @@ export async function buildConsistencyPayload(
     effectType: "consistency",
     codex: codexPayload,
     scene: normalizeText(sceneText),
-    scope: `scene:${sceneId}`,
+    scope: `scene:${sceneId}${kouetsuScopeSuffix(customInstruction)}`,
   });
   return { codexPayload, codexPayloadJson, sceneText, inputHash };
 }
@@ -244,6 +246,7 @@ export interface IntraPayloadResult {
 export async function buildIntraPayload(
   sceneId: string,
   model: string,
+  customInstruction: string = "",
 ): Promise<IntraPayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const inputHash = await computeInputHash({
@@ -251,7 +254,7 @@ export async function buildIntraPayload(
     model,
     effectType: "intra_scene_consistency",
     scene: normalizeText(sceneText),
-    scope: `scene:${sceneId}`,
+    scope: `scene:${sceneId}${kouetsuScopeSuffix(customInstruction)}`,
   });
   return { sceneText, inputHash };
 }
@@ -302,6 +305,7 @@ export async function buildMultiPayload(
     | "typo_detection"
     | "review"
     | "meta_structure" = "consistency",
+  customInstruction: string = "",
 ): Promise<MultiPayloadResult> {
   const { nodes } = useTreeStore.getState();
   const sceneIds = getSceneIdsForScope(nodes, scopeType, scopeTargetId);
@@ -342,7 +346,7 @@ export async function buildMultiPayload(
     model,
     effectType,
     scene: scenes.map((s) => normalizeText(s.scene_text)).join("|"),
-    scope: `${scopeType}:${scopeTargetId ?? "all"}`,
+    scope: `${scopeType}:${scopeTargetId ?? "all"}${kouetsuScopeSuffix(customInstruction)}`,
   });
 
   return { scenes, inputHash };

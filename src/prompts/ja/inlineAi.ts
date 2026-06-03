@@ -13,6 +13,10 @@ export function buildInlineAiSystemPromptJa(
   if (ctx.codexSummaries) {
     lines.push(`\n## 関連設定\n${ctx.codexSummaries}`);
   }
+  // ユーザー定義の追記指示 (aiPrompt.custom.inline)。空なら何も足さない。
+  if (ctx.customInstruction?.trim()) {
+    lines.push(`\n## 追加指示\n${ctx.customInstruction.trim()}`);
+  }
   return lines.join("\n");
 }
 

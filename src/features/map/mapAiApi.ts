@@ -28,6 +28,12 @@ export interface AiBranchProjectContext {
   synopsis?: string | null;
   styleGuide?: string | null;
   aiInstructions?: string | null;
+  /**
+   * ユーザー定義の AI Branch 追記指示 (project_settings: aiPrompt.custom.aiBranch)。
+   * system prompt 末尾に「# ユーザー追加指示」として注入される。
+   * 既存の aiInstructions (「# 追加指示」, 横断的プロジェクト指示) とは別建て。
+   */
+  customInstruction?: string | null;
 }
 
 const TYPE_LABELS: Record<AiBranchSeed["type"], string> = {
@@ -74,6 +80,12 @@ function buildSystemPrompt(
       lines.push("");
       lines.push("# 追加指示");
       lines.push(project.aiInstructions.trim());
+    }
+
+    if (project.customInstruction && project.customInstruction.trim()) {
+      lines.push("");
+      lines.push("# ユーザー追加指示");
+      lines.push(project.customInstruction.trim());
     }
   }
 

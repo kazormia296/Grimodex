@@ -27,7 +27,17 @@ import { SettingSection } from "../components/SettingSection";
 import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
+import { SettingTextarea } from "../components/SettingTextarea";
 import { useSettingsStore } from "../settingsStore";
+
+/** AI プロンプト追記カスタマイズの対象スロット (project_settings の key 末尾)。 */
+const PROMPT_CUSTOM_SLOTS = [
+  "chat",
+  "kouetsu",
+  "inline",
+  "beat",
+  "aiBranch",
+] as const;
 
 const PROVIDER_LABELS: Record<AiProvider, string> = {
   openrouter: "OpenRouter",
@@ -1241,6 +1251,37 @@ export function AiCategory() {
               </span>
             </div>
           </SettingRow>
+        </div>
+      </SettingSection>
+
+      {/* AI プロンプト追記カスタマイズ (Phase 0) — 各機能の組み込みプロンプトに追記 */}
+      <SettingSection title={t("settings.ai.promptCustom.title")}>
+        <p className="mb-3 text-xs text-muted-foreground">
+          {t("settings.ai.promptCustom.intro")}
+        </p>
+        <div className="space-y-4">
+          {PROMPT_CUSTOM_SLOTS.map((slot) => {
+            const key = `aiPrompt.custom.${slot}`;
+            return (
+              <div key={slot}>
+                <div className="mb-1 text-sm">
+                  {t(`settings.ai.promptCustom.${slot}.label`)}
+                </div>
+                <div className="mb-1 text-xs text-muted-foreground">
+                  {t(`settings.ai.promptCustom.${slot}.description`)}
+                </div>
+                <SettingTextarea
+                  value={settingsStore.get(key, "")}
+                  onChange={(v) => settingsStore.set(key, v)}
+                  placeholder={t(
+                    `settings.ai.promptCustom.${slot}.placeholder`,
+                  )}
+                  rows={4}
+                  maxLength={2000}
+                />
+              </div>
+            );
+          })}
         </div>
       </SettingSection>
     </div>
