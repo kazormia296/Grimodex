@@ -29,6 +29,7 @@ vi.mock("@/features/chat/store", () => ({
     testConnection: vi.fn(),
     loadModels: vi.fn(),
   }),
+  isRagCapableProvider: (p: string) => p === "openrouter" || p === "anthropic",
 }));
 
 vi.mock("@/features/chat/types", () => ({
@@ -51,6 +52,9 @@ vi.mock("@/features/chat/agent/modelLimits", () => ({
 vi.mock("@/features/settings/settingsStore", () => {
   const cache: Record<string, string> = {
     "ai.modelWhitelist": "[]",
+    "ai.webSearch.domainMode": "off",
+    "ai.webSearch.domains": "[]",
+    "ai.webSearch.maxContentTokens": "",
     "ai.contextBudget.l1": "2",
     "ai.contextBudget.l2": "10",
     "ai.contextBudget.l3": "40",
@@ -102,5 +106,26 @@ describe("AiCategory — Beat セクション", () => {
     ).toBeTruthy();
     // Slider value: 0.7 * 100 = 70%
     expect(screen.getByText("70%")).toBeTruthy();
+  });
+});
+
+describe("AiCategory — Web 検索 (RAG) セクション", () => {
+  // モックの provider は anthropic（RAG 対応）。
+  it("RAG 対応プロバイダでドメイン制御セクションが描画される", () => {
+    render(<AiCategory />);
+    expect(screen.getByText("settings.ai.webSearch.title")).toBeTruthy();
+    expect(screen.getByText("settings.ai.webSearch.domainMode")).toBeTruthy();
+  });
+
+  it("Anthropic では OpenRouter 専用の content cap / exa 警告を出さない", () => {
+    render(<AiCategory />);
+    // content cap 行（OpenRouter(exa) 専用）は非表示。
+    expect(
+      screen.queryByText("settings.ai.webSearch.maxContentTokens"),
+    ).toBeNull();
+    // exa コスト/未検証の警告も Anthropic では出さない（検証済み・追加課金なし）。
+    expect(
+      screen.queryByText("settings.ai.webSearch.unverifiedNote"),
+    ).toBeNull();
   });
 });

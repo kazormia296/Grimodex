@@ -331,6 +331,22 @@
       "modelWhitelistDesc": "Only checked models appear in the chat panel. Leave all unchecked to show every model.",
       "modelWhitelistSearch": "Search models…",
       "modelWhitelistNoResults": "No models match your search",
+      "webSearch": {
+        "title": "Web search (RAG) domain control",
+        "providerNote": "Only effective with OpenRouter / Anthropic.",
+        "domainMode": "Domain filter",
+        "domainModeDesc": "Restrict search results with an allow or block list. Allow and block cannot be used together.",
+        "domainModeOff": "No filter",
+        "domainModeAllow": "Allow list (these only)",
+        "domainModeBlock": "Block list (everything except)",
+        "domains": "Target domains",
+        "domainsDesc": "One domain per line. No scheme needed (e.g. example.com, docs.example.com/blog). Subdomains are included automatically.",
+        "domainsPlaceholder": "example.com\ndocs.example.org",
+        "maxContentTokens": "Content cap (tokens)",
+        "maxContentTokensDesc": "OpenRouter (exa engine) only. Limits fetched content per page. Leave blank for the provider default.",
+        "allowEmptyWarning": "⚠ The allow list is empty — no filter is applied and the whole web is searched.",
+        "unverifiedNote": "⚠ These controls force the exa engine on OpenRouter ($0.005/search). The OpenRouter field names are unverified, so confirm they take effect via manual testing. Verified on Anthropic."
+      },
       "beat": {
         "title": "Beat AI Integration",
         "injectIntoContext": {

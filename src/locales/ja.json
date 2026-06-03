@@ -331,6 +331,22 @@
       "modelWhitelistDesc": "チェックしたモデルのみチャットパネルに表示します。未選択の場合はすべてのモデルを表示します。",
       "modelWhitelistSearch": "モデルを検索…",
       "modelWhitelistNoResults": "該当するモデルがありません",
+      "webSearch": {
+        "title": "Web 検索 (RAG) のドメイン制御",
+        "providerNote": "OpenRouter / Anthropic でのみ有効です。",
+        "domainMode": "ドメインフィルタ",
+        "domainModeDesc": "検索結果を許可リスト/拒否リストで絞り込みます。許可と拒否は同時に使えません。",
+        "domainModeOff": "フィルタなし",
+        "domainModeAllow": "許可リスト (これらのみ)",
+        "domainModeBlock": "拒否リスト (これら以外)",
+        "domains": "対象ドメイン",
+        "domainsDesc": "1 行に 1 ドメイン。スキームは不要 (例: example.com、docs.example.com/blog)。サブドメインは自動的に含まれます。",
+        "domainsPlaceholder": "example.com\ndocs.example.org",
+        "maxContentTokens": "コンテンツ上限 (tokens)",
+        "maxContentTokensDesc": "OpenRouter (exa エンジン) のみ。1 ページあたりの取得コンテンツを制限します。空欄でプロバイダ既定。",
+        "allowEmptyWarning": "⚠ 許可リストが空です。フィルタは適用されず全 Web を検索します。",
+        "unverifiedNote": "⚠ この設定は OpenRouter で exa エンジンを強制します ($0.005/検索)。OpenRouter 経路のフィールド名は未検証のため、実際に効くかは手動テストで確認してください。Anthropic では検証済みです。"
+      },
       "beat": {
         "title": "Beat AI 連携",
         "injectIntoContext": {

@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { useAiSettingsStore } from "@/features/chat/store";
+import {
+  useAiSettingsStore,
+  isRagCapableProvider,
+} from "@/features/chat/store";
+import { normalizeDomainList } from "@/features/chat/webSearchConfig";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 import {
   AI_PROVIDERS,
@@ -166,6 +170,10 @@ export function AiCategory() {
   const [localSettings, setLocalSettings] = useState(settings);
   const [showKey, setShowKey] = useState(false);
   const [whitelistFilter, setWhitelistFilter] = useState("");
+  // Web 検索ドメインの textarea バッファ（null = settingsStore から再同期）。
+  const [webSearchDomainsText, setWebSearchDomainsText] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     loadSettings();
@@ -1014,6 +1022,119 @@ export function AiCategory() {
           </div>
         )}
       </SettingSection>
+
+      {/* Web 検索 (RAG) ドメイン制御 (global) — RAG 対応プロバイダのみ表示 */}
+      {isRagCapableProvider(localSettings.provider) &&
+        (() => {
+          const mode = settingsStore.get("ai.webSearch.domainMode", "off");
+          const domainsJson = settingsStore.get("ai.webSearch.domains", "[]");
+          const domainsTextValue =
+            webSearchDomainsText ??
+            (() => {
+              try {
+                const a = JSON.parse(domainsJson);
+                return Array.isArray(a) ? a.join("\n") : "";
+              } catch {
+                return "";
+              }
+            })();
+          const persistDomains = () => {
+            // wire 側と同じ正規化を使い、表示と実際に送る値の乖離を防ぐ。
+            const arr = normalizeDomainList(domainsTextValue.split("\n"));
+            settingsStore.set("ai.webSearch.domains", JSON.stringify(arr));
+            // null に戻して次の描画で store の正規化済み値から再導出させる。
+            setWebSearchDomainsText(null);
+          };
+          // 正規化後に残るドメイン数（allow が空＝fail-open 判定に使う）。
+          const effectiveDomainCount = normalizeDomainList(
+            domainsTextValue.split("\n"),
+          ).length;
+          const maxTokensSet =
+            Number(settingsStore.get("ai.webSearch.maxContentTokens", "")) > 0;
+          // exa 強制・content cap・未検証警告は OpenRouter 経路のみ。Anthropic は
+          // native web_search でドメイン制御を検証済み（exa 非経由・追加課金なし）。
+          const isOpenRouter = localSettings.provider === "openrouter";
+          const forcesExa = isOpenRouter && (mode !== "off" || maxTokensSet);
+          return (
+            <SettingSection title={t("settings.ai.webSearch.title")}>
+              <p className="mb-2 text-xs text-muted-foreground">
+                {t("settings.ai.webSearch.providerNote")}
+              </p>
+              <SettingRow
+                label={t("settings.ai.webSearch.domainMode")}
+                description={t("settings.ai.webSearch.domainModeDesc")}
+              >
+                <select
+                  value={mode}
+                  onChange={(e) =>
+                    settingsStore.set("ai.webSearch.domainMode", e.target.value)
+                  }
+                  className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+                >
+                  <option value="off">
+                    {t("settings.ai.webSearch.domainModeOff")}
+                  </option>
+                  <option value="allow">
+                    {t("settings.ai.webSearch.domainModeAllow")}
+                  </option>
+                  <option value="block">
+                    {t("settings.ai.webSearch.domainModeBlock")}
+                  </option>
+                </select>
+              </SettingRow>
+              {mode !== "off" && (
+                <SettingRow
+                  label={t("settings.ai.webSearch.domains")}
+                  description={t("settings.ai.webSearch.domainsDesc")}
+                >
+                  <textarea
+                    value={domainsTextValue}
+                    onChange={(e) => setWebSearchDomainsText(e.target.value)}
+                    onBlur={persistDomains}
+                    rows={4}
+                    className="w-72 rounded-md border border-input bg-background px-2 py-1 text-sm font-mono focus:outline-none"
+                    placeholder={t("settings.ai.webSearch.domainsPlaceholder")}
+                  />
+                </SettingRow>
+              )}
+              {/* allow リストが空 = fail-open（全 Web 検索）の注意喚起。 */}
+              {mode === "allow" && effectiveDomainCount === 0 && (
+                <p className="-mt-1 mb-1 text-xs text-amber-600 dark:text-amber-500">
+                  {t("settings.ai.webSearch.allowEmptyWarning")}
+                </p>
+              )}
+              {/* content cap は OpenRouter(exa) 専用。Anthropic には対応フィールド無し。 */}
+              {isOpenRouter && (
+                <SettingRow
+                  label={t("settings.ai.webSearch.maxContentTokens")}
+                  description={t("settings.ai.webSearch.maxContentTokensDesc")}
+                >
+                  <input
+                    type="number"
+                    min={1}
+                    value={settingsStore.get(
+                      "ai.webSearch.maxContentTokens",
+                      "",
+                    )}
+                    onChange={(e) =>
+                      settingsStore.set(
+                        "ai.webSearch.maxContentTokens",
+                        e.target.value,
+                      )
+                    }
+                    className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                    placeholder="4000"
+                  />
+                </SettingRow>
+              )}
+              {forcesExa && (
+                <p className="mt-2 text-xs text-amber-600 dark:text-amber-500">
+                  {t("settings.ai.webSearch.unverifiedNote")}
+                </p>
+              )}
+            </SettingSection>
+          );
+        })()}
 
       <SettingScopeHeader title={t("settings.scopeProject")} />
       {/* Context budget */}

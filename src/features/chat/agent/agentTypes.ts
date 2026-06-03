@@ -56,6 +56,19 @@ export interface WebSearchConfig {
   agentic: boolean;
   maxResults?: number;
   maxUses?: number;
+  /**
+   * Phase 2: ドメイン allowlist（allow モード時のみ）。Anthropic native
+   * web_search / OpenRouter(exa) のドメイン制御に渡る。allowed と blocked は
+   * 排他（allow 優先）。
+   */
+  allowedDomains?: string[];
+  /** Phase 2: ドメイン blocklist（block モード時のみ）。 */
+  blockedDomains?: string[];
+  /**
+   * Phase 2: OpenRouter(exa) の 1 ページ content token 上限（未指定 = 既定）。
+   * Anthropic には対応フィールドが無いため Rust 側で無視される。
+   */
+  maxContentTokens?: number;
 }
 
 // LLMレスポンス（パース済み）

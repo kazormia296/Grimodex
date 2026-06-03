@@ -59,6 +59,10 @@ import {
 } from "./agent/modelLimits";
 import { useAiSettingsStore, isRagCapableProvider } from "./store";
 import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
+import {
+  buildWebSearchConfig,
+  parseWebSearchControls,
+} from "./webSearchConfig";
 import * as cliApi from "./cliApi";
 import { resolveAinoveristApiVariant } from "./aiNovelist";
 
@@ -2658,14 +2662,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           : [];
         // RAG ターンのみ Web 検索設定を Rust へ渡す。agentMode 併用時は
         // OpenRouter で server tool / 単独時は web plugin を選ばせる (agentic)。
-        const webSearchConfig: WebSearchConfig | null = ragActive
-          ? {
-              enabled: true,
-              agentic: agentModeForThisSend,
-              maxResults: 5,
-              maxUses: 3,
-            }
-          : null;
+        // Phase 2: 永続設定 (settingsStore の ai.webSearch.*) のドメイン制御 /
+        // content cap を載せる。
+        const settingsState = useSettingsStore.getState();
+        const webSearchConfig: WebSearchConfig | null = buildWebSearchConfig(
+          ragActive,
+          agentModeForThisSend,
+          parseWebSearchControls({
+            domainMode: settingsState.get("ai.webSearch.domainMode", "off"),
+            domainsJson: settingsState.get("ai.webSearch.domains", "[]"),
+            maxContentTokensRaw: settingsState.get(
+              "ai.webSearch.maxContentTokens",
+              "",
+            ),
+          }),
+        );
         // 中断フラグをこのターンの開始時にリセット（前ターンの取り残しを排除）。
         _agentAborted = false;
         const { toolCallRecords, finalThinkingBlocks, citations, cost } =

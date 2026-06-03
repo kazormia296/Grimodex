@@ -102,6 +102,10 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "ai.inlineModel": "global",
   "ai.sessionTitleModel": "global",
   "ai.modelWhitelist": "global",
+  // AI — Web 検索 (RAG) ドメイン制御ポリシー (global)
+  "ai.webSearch.domainMode": "global",
+  "ai.webSearch.domains": "global",
+  "ai.webSearch.maxContentTokens": "global",
   // AI — work-specific (project)
   "ai.contextBudget.l1": "project",
   "ai.contextBudget.l2": "project",
@@ -199,6 +203,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.inlineModel": "",
   "ai.sessionTitleModel": "",
   "ai.modelWhitelist": "[]",
+  "ai.webSearch.domainMode": "off",
+  "ai.webSearch.domains": "[]",
+  "ai.webSearch.maxContentTokens": "",
   "ai.contextBudget.l1": "2",
   "ai.contextBudget.l2": "10",
   "ai.contextBudget.l3": "40",

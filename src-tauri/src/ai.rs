@@ -695,6 +695,17 @@ pub struct WebSearchConfig {
     /// Anthropic native web_search の最大検索回数 (0 ならデフォルト 3)。
     #[serde(default)]
     pub max_uses: u32,
+    /// Phase 2: ドメイン allowlist (空なら無効)。Anthropic native /
+    /// OpenRouter(exa) のドメイン制御に渡る。blocked と排他で allowed を優先。
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    /// Phase 2: ドメイン blocklist (空なら無効)。
+    #[serde(default)]
+    pub blocked_domains: Vec<String>,
+    /// Phase 2: OpenRouter(exa) の 1 ページ content token 上限 (0 = 既定)。
+    /// Anthropic には対応フィールドが無いので送らない。
+    #[serde(default)]
+    pub max_content_tokens: u32,
 }
 
 impl WebSearchConfig {
@@ -714,6 +725,82 @@ impl WebSearchConfig {
         } else {
             self.max_uses
         }
+    }
+
+    /// 有効なドメインフィルタを返す (allowed 優先の排他)。
+    /// `Some((true, domains))` = allowlist, `Some((false, domains))` = blocklist,
+    /// `None` = フィルタなし。Anthropic は allowed/blocked 同時指定不可のため、
+    /// FE 側でも片方に倒しているが、ここでも防御的に allowed を優先する。
+    fn domain_filter(&self) -> Option<(bool, &[String])> {
+        if !self.allowed_domains.is_empty() {
+            Some((true, &self.allowed_domains))
+        } else if !self.blocked_domains.is_empty() {
+            Some((false, &self.blocked_domains))
+        } else {
+            None
+        }
+    }
+
+    /// OpenRouter で exa エンジンを強制すべきか。
+    /// ドメイン制御 or content cap が指定されたターンのみ true にし、それ以外は
+    /// auto (ネイティブ優先・パススルー課金) のままにする (コスト退行防止, §5-4)。
+    fn needs_exa_engine(&self) -> bool {
+        self.domain_filter().is_some() || self.max_content_tokens > 0
+    }
+}
+
+/// Anthropic native web_search サーバツール定義を組み立てる (Phase 1 + Phase 2)。
+/// `max_uses` でキャップし、ドメイン制御があれば `allowed_domains` /
+/// `blocked_domains` を付与する (排他)。Anthropic には content token 上限の
+/// フィールドが無いため `max_content_tokens` は載せない (dynamic filtering 任せ)。
+fn build_anthropic_web_search_tool(ws: &WebSearchConfig) -> serde_json::Value {
+    let mut tool = serde_json::json!({
+        "type": ANTHROPIC_WEB_SEARCH_TYPE,
+        "name": "web_search",
+        "max_uses": ws.uses_cap()
+    });
+    if let Some((is_allow, domains)) = ws.domain_filter() {
+        let key = if is_allow {
+            "allowed_domains"
+        } else {
+            "blocked_domains"
+        };
+        tool[key] = serde_json::json!(domains);
+    }
+    tool
+}
+
+/// OpenRouter web plugin / server tool に Phase 2 の制御 (engine=exa・ドメイン
+/// フィルタ・content token 上限) を付与する。`needs_exa_engine()` が true の
+/// ターンのみ呼ぶこと (Phase 1 = controls off のターンは未変更で auto のまま)。
+///
+/// ⚠️ live API 未検証 (egress firewall で openrouter.ai 到達不可)。フィールド名は
+/// 2026-06 時点のドキュメント二次情報に基づく最有力推定。手動 E2E で要確認:
+///   - `engine: "exa"` … auto→exa 強制でドメイン/サイズ制御を全モデルで一貫させる (§5-4)。
+///     plugin 側では確立した値だが、server tool オブジェクト上で有効かは未確認。
+///   - `allowed_domains` / `blocked_domains` … plugin 経路では `include_domains` /
+///     `exclude_domains` の別名の可能性。exa エンジン経路では allowed/blocked が有力。
+///   - `max_content_tokens` … server tool 経路では `search_context_size` の別名の可能性。
+///
+/// 注意: この関数は plugin (`{id:"web"}`) と server tool
+/// (`{type:"openrouter:web_search"}`) の構造の異なる 2 面に同一キーを載せる。
+/// 2 面でスキーマが分岐する場合、面ごとに分岐させる必要がある。OpenRouter が
+/// 未知フィールドを無視するなら「exa 課金は発生するがドメイン制御は黙殺」
+/// (誤った安心感)、strict 検証なら HTTP 400 で当該ターンが失敗する
+/// (send_with_429_retry は 429 のみリトライ、400 は素通り)。どちらに転ぶかは
+/// E2E でのみ確定する。修正が要る場合の変更点はこの関数 1 箇所に閉じている。
+fn apply_openrouter_web_controls(target: &mut serde_json::Value, ws: &WebSearchConfig) {
+    target["engine"] = serde_json::json!("exa");
+    if let Some((is_allow, domains)) = ws.domain_filter() {
+        let key = if is_allow {
+            "allowed_domains"
+        } else {
+            "blocked_domains"
+        };
+        target[key] = serde_json::json!(domains);
+    }
+    if ws.max_content_tokens > 0 {
+        target["max_content_tokens"] = serde_json::json!(ws.max_content_tokens);
     }
 }
 
@@ -1776,14 +1863,11 @@ pub async fn send_chat_with_tools(
 
             // RAG: native web_search サーバツールを追加 (max_uses でキャップ)。
             // Anthropic がサーバ側で検索→引用付き最終回答を返すため stop_reason は
-            // end_turn。クライアント executeTool は介在しない。
+            // end_turn。クライアント executeTool は介在しない。Phase 2: ドメイン制御
+            // (allowed/blocked) はツール定義に直接載る。
             if let Some(ws) = params.web_search.as_ref() {
                 if ws.enabled {
-                    anthropic_tools.push(serde_json::json!({
-                        "type": ANTHROPIC_WEB_SEARCH_TYPE,
-                        "name": "web_search",
-                        "max_uses": ws.uses_cap()
-                    }));
+                    anthropic_tools.push(build_anthropic_web_search_tool(ws));
                 }
             }
 
@@ -1906,23 +1990,32 @@ pub async fn send_chat_with_tools(
                 params.openrouter_provider_pin,
             );
 
-            // RAG: OpenRouter のみ Web 検索を注入 (Phase 1)。Agent モードは
-            // server tool (モデルが検索要否を判断)、非 Agent は web plugin
-            // (一発検索, engine 未指定 = auto)。引用は url_citation で統一。
+            // RAG: OpenRouter のみ Web 検索を注入。Agent モードは server tool
+            // (モデルが検索要否を判断)、非 Agent は web plugin (一発検索)。引用は
+            // url_citation で統一。Phase 2: ドメイン制御 / content cap が指定された
+            // ターンのみ engine=exa を強制し制御を載せる (それ以外は auto のまま)。
             if matches!(params.provider, AiProvider::OpenRouter) {
                 if let Some(ws) = params.web_search.as_ref() {
                     if ws.enabled {
+                        let force_exa = ws.needs_exa_engine();
                         if ws.agentic {
                             if let Some(arr) = body["tools"].as_array_mut() {
-                                arr.push(serde_json::json!({
-                                    "type": "openrouter:web_search"
-                                }));
+                                let mut tool =
+                                    serde_json::json!({ "type": "openrouter:web_search" });
+                                if force_exa {
+                                    apply_openrouter_web_controls(&mut tool, ws);
+                                }
+                                arr.push(tool);
                             }
                         } else {
-                            body["plugins"] = serde_json::json!([{
+                            let mut plugin = serde_json::json!({
                                 "id": "web",
                                 "max_results": ws.results_cap()
-                            }]);
+                            });
+                            if force_exa {
+                                apply_openrouter_web_controls(&mut plugin, ws);
+                            }
+                            body["plugins"] = serde_json::json!([plugin]);
                         }
                     }
                 }
@@ -3045,6 +3138,7 @@ mod tests {
             agentic: false,
             max_results: 0,
             max_uses: 0,
+            ..Default::default()
         };
         assert_eq!(cfg.results_cap(), 5);
         assert_eq!(cfg.uses_cap(), 3);
@@ -3053,8 +3147,153 @@ mod tests {
             agentic: true,
             max_results: 8,
             max_uses: 2,
+            ..Default::default()
         };
         assert_eq!(cfg2.results_cap(), 8);
         assert_eq!(cfg2.uses_cap(), 2);
+    }
+
+    // ── Phase 2: ドメイン制御 / content cap ─────────────────────────────────
+
+    #[test]
+    fn test_web_search_config_domain_filter_prefers_allowed() {
+        // allowed と blocked が両方あっても allowed を優先（Anthropic は両方同時不可）。
+        let cfg = WebSearchConfig {
+            enabled: true,
+            allowed_domains: vec!["a.com".into(), "b.org".into()],
+            blocked_domains: vec!["spam.example".into()],
+            ..Default::default()
+        };
+        let (is_allow, domains) = cfg.domain_filter().expect("filter present");
+        assert!(is_allow);
+        assert_eq!(domains, &["a.com".to_string(), "b.org".to_string()]);
+    }
+
+    #[test]
+    fn test_web_search_config_domain_filter_blocked_when_no_allowed() {
+        let cfg = WebSearchConfig {
+            enabled: true,
+            blocked_domains: vec!["spam.example".into()],
+            ..Default::default()
+        };
+        let (is_allow, domains) = cfg.domain_filter().expect("filter present");
+        assert!(!is_allow);
+        assert_eq!(domains, &["spam.example".to_string()]);
+    }
+
+    #[test]
+    fn test_web_search_config_domain_filter_none_when_empty() {
+        let cfg = WebSearchConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert!(cfg.domain_filter().is_none());
+    }
+
+    #[test]
+    fn test_web_search_config_needs_exa_engine() {
+        // 制御なし → auto のまま（exa 強制しない＝コスト退行防止）。
+        let plain = WebSearchConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert!(!plain.needs_exa_engine());
+        // ドメイン制御あり → exa 強制。
+        let with_domains = WebSearchConfig {
+            enabled: true,
+            blocked_domains: vec!["x.com".into()],
+            ..Default::default()
+        };
+        assert!(with_domains.needs_exa_engine());
+        // content cap あり → exa 強制。
+        let with_cap = WebSearchConfig {
+            enabled: true,
+            max_content_tokens: 4000,
+            ..Default::default()
+        };
+        assert!(with_cap.needs_exa_engine());
+    }
+
+    #[test]
+    fn test_build_anthropic_web_search_tool_basic() {
+        let cfg = WebSearchConfig {
+            enabled: true,
+            max_uses: 2,
+            // Anthropic には content cap が無いので渡しても無視されるべき。
+            max_content_tokens: 4000,
+            ..Default::default()
+        };
+        let tool = build_anthropic_web_search_tool(&cfg);
+        assert_eq!(tool["type"], ANTHROPIC_WEB_SEARCH_TYPE);
+        assert_eq!(tool["name"], "web_search");
+        assert_eq!(tool["max_uses"], 2);
+        assert!(tool.get("allowed_domains").is_none());
+        assert!(tool.get("blocked_domains").is_none());
+        // max_content_tokens は Anthropic ツールには絶対に付けない。
+        assert!(tool.get("max_content_tokens").is_none());
+    }
+
+    #[test]
+    fn test_build_anthropic_web_search_tool_allowed_only() {
+        let cfg = WebSearchConfig {
+            enabled: true,
+            allowed_domains: vec!["docs.example.com".into()],
+            blocked_domains: vec!["spam.example".into()],
+            ..Default::default()
+        };
+        let tool = build_anthropic_web_search_tool(&cfg);
+        assert_eq!(
+            tool["allowed_domains"],
+            serde_json::json!(["docs.example.com"])
+        );
+        // allowed があるとき blocked は送らない（排他制約）。
+        assert!(tool.get("blocked_domains").is_none());
+    }
+
+    #[test]
+    fn test_build_anthropic_web_search_tool_blocked() {
+        let cfg = WebSearchConfig {
+            enabled: true,
+            blocked_domains: vec!["spam.example".into()],
+            ..Default::default()
+        };
+        let tool = build_anthropic_web_search_tool(&cfg);
+        assert_eq!(tool["blocked_domains"], serde_json::json!(["spam.example"]));
+        assert!(tool.get("allowed_domains").is_none());
+    }
+
+    #[test]
+    fn test_apply_openrouter_web_controls_allowed_and_cap() {
+        let cfg = WebSearchConfig {
+            enabled: true,
+            allowed_domains: vec!["a.com".into()],
+            max_content_tokens: 3000,
+            ..Default::default()
+        };
+        let mut plugin = serde_json::json!({ "id": "web", "max_results": 5 });
+        apply_openrouter_web_controls(&mut plugin, &cfg);
+        assert_eq!(plugin["engine"], "exa");
+        assert_eq!(plugin["allowed_domains"], serde_json::json!(["a.com"]));
+        assert!(plugin.get("blocked_domains").is_none());
+        assert_eq!(plugin["max_content_tokens"], 3000);
+        // 既存フィールドは保持。
+        assert_eq!(plugin["id"], "web");
+        assert_eq!(plugin["max_results"], 5);
+    }
+
+    #[test]
+    fn test_apply_openrouter_web_controls_blocked_no_cap() {
+        let cfg = WebSearchConfig {
+            enabled: true,
+            blocked_domains: vec!["x.com".into()],
+            ..Default::default()
+        };
+        let mut tool = serde_json::json!({ "type": "openrouter:web_search" });
+        apply_openrouter_web_controls(&mut tool, &cfg);
+        assert_eq!(tool["engine"], "exa");
+        assert_eq!(tool["blocked_domains"], serde_json::json!(["x.com"]));
+        assert!(tool.get("allowed_domains").is_none());
+        // max_content_tokens=0 のときは付けない。
+        assert!(tool.get("max_content_tokens").is_none());
     }
 }
