@@ -43,6 +43,20 @@ import type {
   PinnedStickyEntryWithData,
 } from "./chatApi";
 import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
+import { stripToolProtocol } from "./toolProtocol";
+
+/**
+ * メッセージ全文を抽出 (Codex/Snippet) / エディタ挿入 / コピーに使う前の正規化。
+ * assistant 本文に混入した擬似ツール記法 (<tool_call>/<tool_response>) を除去し、
+ * ナレッジベースや本文への焼き込みを防ぐ。選択テキスト経路は描画 DOM 由来で
+ * 既に浄化済みのため対象外（呼び出し側で selectedText を優先する）。
+ */
+function wholeMessageContent(msg: ChatMessageType | undefined): string {
+  if (!msg) return "";
+  return msg.role === "assistant"
+    ? stripToolProtocol(msg.content)
+    : msg.content;
+}
 
 interface SnippetDialogState {
   open: boolean;
@@ -424,7 +438,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       const msg = useChatStore
         .getState()
         .messages.find((m) => m.id === messageId);
-      const content = selectedText ?? msg?.content ?? "";
+      const content = selectedText ?? wholeMessageContent(msg);
       const messageRole =
         msg?.role === "user" ? ("user" as const) : ("assistant" as const);
       setExtractionDialog({ open: true, messageId, content, messageRole });
@@ -438,7 +452,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         .getState()
         .messages.find((m) => m.id === messageId);
       if (!msg) return;
-      const text = msg.content;
+      const text = wholeMessageContent(msg);
       const name =
         text.replace(/\n/g, " ").slice(0, 30).trimEnd() || "Untitled";
       const entry = await createCodexEntry({
@@ -473,7 +487,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       const msg = useChatStore
         .getState()
         .messages.find((m) => m.id === messageId);
-      const content = selectedText ?? msg?.content ?? "";
+      const content = selectedText ?? wholeMessageContent(msg);
       const messageRole =
         msg?.role === "user" ? ("user" as const) : ("assistant" as const);
       setSnippetDialog({
@@ -492,7 +506,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         .getState()
         .messages.find((m) => m.id === messageId);
       if (!msg) return;
-      const content = msg.content;
+      const content = wholeMessageContent(msg);
       const title =
         content.replace(/\n/g, " ").slice(0, 30).trimEnd() || "Untitled";
       const snippet = await createSnippet(
@@ -628,7 +642,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       setContextMenu({
         messageId: msg.id,
         messageRole: msg.role === "user" ? "user" : "assistant",
-        messageContent: msg.content,
+        messageContent: wholeMessageContent(msg),
         selectedText,
         x: e.clientX,
         y: e.clientY,

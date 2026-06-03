@@ -26,7 +26,16 @@ vi.mock("react-i18next", () => ({
 }));
 vi.mock("@/lib/perfLog", () => ({ recordMark: vi.fn() }));
 
-vi.mock("./ChatMessageActions", () => ({ ChatMessageActions: () => null }));
+// Surface onInsert as a clickable button so we can assert the inserted text is
+// stripped of pseudo tool markup (editor-insert leak matters for a writing tool).
+vi.mock("./ChatMessageActions", () => ({
+  ChatMessageActions: ({ onInsert }: { onInsert?: () => void }) =>
+    onInsert ? (
+      <button type="button" data-testid="insert-btn" onClick={onInsert}>
+        insert
+      </button>
+    ) : null,
+}));
 vi.mock("./MessageBadge", () => ({ MessageBadge: () => null }));
 vi.mock("./ToolCallBlock", () => ({ ToolCallBlock: () => null }));
 vi.mock("./ThinkingBlock", () => ({ ThinkingBlock: () => null }));
@@ -78,15 +87,24 @@ const fakeMsg = (
   ...overrides,
 });
 
-function renderMsg(overrides: Partial<ChatMessageType> = {}) {
+function renderMsg(
+  overrides: Partial<ChatMessageType> = {},
+  onInsert: (content: string, id: string) => void = vi.fn(),
+) {
   return render(
     <ChatMessage
       msg={fakeMsg(overrides)}
       isStreaming={false}
-      onInsert={vi.fn()}
+      onInsert={onInsert}
     />,
   );
 }
+
+const LEAKED_CONTENT =
+  "検索を行います。\n" +
+  '<tool_call>\n{"name": "web_search", "arguments": {"query": "雨ざらし 意味"}}\n</tool_call>\n' +
+  '<tool_response>\n{"success": true, "results": []}\n</tool_response>\n' +
+  "検索結果をお伝えします。";
 
 describe("ChatMessage — コピー時の Authorship 伝搬", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -117,5 +135,45 @@ describe("ChatMessage — コピー時の Authorship 伝搬", () => {
       "m3",
       "claude-x",
     );
+  });
+});
+
+describe("ChatMessage — 擬似ツール記法の除去", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("assistant 本文の <tool_call>/<tool_response> はレンダーされず、回答だけが残る", () => {
+    renderMsg({ id: "m1", role: "assistant", content: LEAKED_CONTENT });
+    const bubble = screen.getByTestId("chat-message-m1");
+    expect(bubble.textContent).not.toContain("tool_call");
+    expect(bubble.textContent).not.toContain("tool_response");
+    expect(bubble.textContent).not.toContain("web_search");
+    expect(bubble.textContent).not.toContain('"success"');
+    expect(bubble.textContent).toContain("検索を行います。");
+    expect(bubble.textContent).toContain("検索結果をお伝えします。");
+  });
+
+  it("挿入 (onInsert) には記法除去後のテキストが渡る", () => {
+    const onInsert = vi.fn();
+    renderMsg(
+      { id: "m1", role: "assistant", content: LEAKED_CONTENT },
+      onInsert,
+    );
+    fireEvent.click(screen.getByTestId("insert-btn"));
+    expect(onInsert).toHaveBeenCalledTimes(1);
+    const inserted = onInsert.mock.calls[0][0] as string;
+    expect(inserted).not.toContain("<tool_call>");
+    expect(inserted).not.toContain("web_search");
+    expect(inserted).toContain("検索結果をお伝えします。");
+  });
+
+  it("user 本文は除去せず原文のまま扱う", () => {
+    const onInsert = vi.fn();
+    renderMsg(
+      { id: "m2", role: "user", content: "<tool_call>これは原文</tool_call>" },
+      onInsert,
+    );
+    const bubble = screen.getByTestId("chat-message-m2");
+    // user メッセージは加工せずそのまま（万一の貼り付け内容を壊さない）。
+    expect(bubble.textContent).toContain("これは原文");
   });
 });

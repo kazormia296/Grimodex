@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
 import { useChatStore } from "./chatStore";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { useCodexStore } from "@/features/codex/codexStore";
 
 // ChatInput を軽量なtextareaモックで置換（TipTapはhappy-domで動作不安定なため）
 vi.mock("./components/ChatInput", async () => {
@@ -420,6 +421,47 @@ describe("ChatPanel", () => {
       "a1",
       undefined,
     );
+  });
+
+  // 擬似ツール記法 (<tool_call>/<tool_response>) が Codex エントリ（=ナレッジ
+  // ベース）に焼き込まれないこと。全文抽出は wholeMessageContent 経由で浄化する。
+  it("strips pseudo tool-call markup before baking into a Codex entry (quick extract)", async () => {
+    const user = userEvent.setup();
+    const createSpy = vi.fn((_data: { name: string; summary: string }) =>
+      Promise.resolve({ id: "c1" }),
+    );
+    useCodexStore.setState({
+      create: createSpy as unknown as ReturnType<
+        typeof useCodexStore.getState
+      >["create"],
+    });
+
+    useChatStore.setState({
+      messages: [
+        {
+          id: "a1",
+          sessionId: "",
+          role: "assistant",
+          content:
+            "前置きの文章\n" +
+            '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>\n' +
+            '<tool_response>{"success":true}</tool_response>\n' +
+            "本当の回答本文",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    render(<ChatPanel />);
+
+    await user.click(screen.getByTestId("extract-codex-quick-a1"));
+
+    await waitFor(() => expect(createSpy).toHaveBeenCalledTimes(1));
+    const arg = createSpy.mock.calls[0][0];
+    expect(arg.summary).not.toContain("<tool_call>");
+    expect(arg.summary).not.toContain("<tool_response>");
+    expect(arg.summary).not.toContain("web_search");
+    expect(arg.summary).toContain("本当の回答本文");
   });
 
   it("does NOT show actions menu when assistant message is empty", () => {

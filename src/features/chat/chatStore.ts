@@ -59,6 +59,7 @@ import {
 } from "./agent/modelLimits";
 import { useAiSettingsStore, isRagCapableProvider } from "./store";
 import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
+import { stripToolProtocol } from "./toolProtocol";
 import {
   buildWebSearchConfig,
   parseWebSearchControls,
@@ -2605,7 +2606,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           if (msg.role === "user") {
             agentMsgs.push({ role: "user", content: msg.content });
           } else if (msg.role === "assistant") {
-            agentMsgs.push({ role: "assistant", content: msg.content });
+            // 過去ターンの assistant 本文に擬似ツール記法が混入していると、
+            // モデルがそれを few-shot として模倣し続ける。履歴を戻す前に除去。
+            agentMsgs.push({
+              role: "assistant",
+              content: stripToolProtocol(msg.content),
+            });
           }
         }
         agentMsgs.push({ role: "user", content });
@@ -3035,7 +3041,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       );
       const apiPayload = messagesForApi.map((m) => ({
         role: m.role,
-        content: m.content,
+        // assistant 履歴の擬似ツール記法を除去してからモデルへ戻す（模倣抑止）。
+        content:
+          m.role === "assistant" ? stripToolProtocol(m.content) : m.content,
       }));
       const chatStartTime = performance.now();
 

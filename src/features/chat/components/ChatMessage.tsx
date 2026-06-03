@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef } from "react";
+import { memo, useCallback, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Sparkles } from "lucide-react";
@@ -10,6 +10,7 @@ import { ChatMessageActions } from "./ChatMessageActions";
 import { CitationList } from "./CitationList";
 import { formatCost } from "../modelPricing";
 import { looksLikeMissingInfo } from "../agentSuggestion";
+import { stripToolProtocol } from "../toolProtocol";
 import { useChatStore } from "../chatStore";
 import { getModelCapabilities } from "../agent/modelLimits";
 import { useAiSettingsStore } from "../store";
@@ -116,7 +117,15 @@ function ChatMessageImpl({
   const isAssistant = msg.role === "assistant";
   const isUser = msg.role === "user";
   const isSummary = isSummaryMarker(msg);
-  const showActions = !isStreaming && msg.content.length > 0 && !isSummary;
+  // 一部モデルが本文に吐き出す擬似ツール記法 (<tool_call>/<tool_response>) を
+  // 描画・コピー・挿入・履歴の全消費前に除去する。生は DB に保持（可逆）。
+  // assistant 本文のみ対象（user 投稿やサマリは原文のまま）。
+  const safeContent = useMemo(
+    () =>
+      isAssistant && !isSummary ? stripToolProtocol(msg.content) : msg.content,
+    [isAssistant, isSummary, msg.content],
+  );
+  const showActions = !isStreaming && safeContent.length > 0 && !isSummary;
   const toolCalls =
     isAssistant && !isSummary ? parseToolCalls(msg.metadata) : [];
   const thinkingBlocks =
@@ -144,14 +153,14 @@ function ChatMessageImpl({
     toolCalls.length === 0 &&
     !!onRetryWithAgent &&
     getModelCapabilities(currentModel).supportsTools &&
-    looksLikeMissingInfo(msg.content);
+    looksLikeMissingInfo(safeContent);
 
   // G2 + G23: Copy with attribution MIME
   const handleCopy = useCallback(() => {
-    copyChatMessageWithAttribution(msg.content, msg.id, msg.model)
+    copyChatMessageWithAttribution(safeContent, msg.id, msg.model)
       .then(() => toast.success(t("chat.copied")))
       .catch(() => toast.error(t("chat.copyFailed")));
-  }, [msg.content, msg.id, msg.model, t]);
+  }, [safeContent, msg.id, msg.model, t]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     if (!showActions) return;
@@ -214,7 +223,7 @@ function ChatMessageImpl({
                 remarkPlugins={[remarkGfm]}
                 components={codexComponents}
               >
-                {msg.content}
+                {safeContent}
               </ReactMarkdown>
             </div>
             {citations.length > 0 && <CitationList citations={citations} />}
@@ -252,9 +261,9 @@ function ChatMessageImpl({
               <ChatMessageActions
                 messageId={msg.id}
                 messageRole="assistant"
-                onInsert={() => onInsert(msg.content, msg.id)}
+                onInsert={() => onInsert(safeContent, msg.id)}
                 onInsertHover={(hovering) =>
-                  hovering ? showGhostPreview(msg.content) : clearGhostPreview()
+                  hovering ? showGhostPreview(safeContent) : clearGhostPreview()
                 }
                 onExtractCodexQuick={onExtractCodexQuick}
                 onExtractCodexDetailed={onExtractCodexDetailed}
