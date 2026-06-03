@@ -1,13 +1,19 @@
 // @vitest-environment happy-dom
 //
-// useBeatDragDrop.onDragEnd の「geometry を使わない」3 分岐を happy-dom で gate する。
-// これらは posAtCoords を経由せず doc transaction / store 操作だけなので単体で検証可能。
-// （posAtCoords を使う placed-move 分岐だけは別途 *.browser.test.tsx で実 Chromium。）
+// useBeatDragDrop の happy-dom テスト。gate しているのは以下:
+//   (A) onDragEnd の「geometry を使わない」3 分岐 (reorder / placed→unplace / unplaced→place)。
+//       posAtCoords を経由せず doc transaction / store 操作だけなので単体検証可能。
+//       posAtCoords を使う placed-move 分岐は別途 *.browser.test.tsx (実 Chromium)。
+//   (B) collisionDetection の fallback seam (pointerWithin→rectIntersection)。合成 args で検証。
 //
-// バグ履歴: 50ccdb57 "Unplaced Beat の D&D 不具合を修正" が
-//   - unplaced 並べ替え (reorder 分岐) を新規配線
-//   - beat-editor-drop-zone の useDroppable 登録 / collision fallback
-// を入れた。reorder 分岐はこの時まで未配線だった = まさに回帰したい所。
+// バグ履歴 50ccdb57 "Unplaced Beat の D&D 不具合を修正" が入れたのは:
+//   1. unplaced 並べ替え (reorder 分岐) の新規配線        → (A) で gate
+//   2. collisionDetection の pointerWithin→rectIntersection fallback → (B) で gate
+//   3. useDroppable("beat-editor-drop-zone") の登録位置 (EditorDropDiv 抽出)
+//      → **非 gate (意図的)**。これは dnd-kit が pointer から over を解決できるかという
+//        構造/統合の問題で、合成 over を渡す本テストでは捕まらない。検証には実 DndContext +
+//        実ジェスチャ (programmatic には flaky) が要るため対象外とする。
+// → 「onDragEnd 全分岐を gate」ではなく「handler 分岐 + collision seam を gate / 登録位置は非対象」。
 import { describe, it, expect, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
@@ -15,7 +21,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNode";
-import type { DragEndEvent } from "@dnd-kit/core";
+import type { CollisionDetection, DragEndEvent } from "@dnd-kit/core";
 import { useBeatDragDrop } from "./useBeatDragDrop";
 import {
   useUnplacedBeatsStore,
@@ -148,5 +154,55 @@ describe("useBeatDragDrop.onDragEnd (happy-dom: 非 geometry 分岐)", () => {
 
     expect(beatIdsInDoc(editor)).toContain("ub1");
     expect(unplacedIds()).not.toContain("ub1");
+  });
+});
+
+// 50ccdb57 の collision fallback (pointerWithin が空でも rectIntersection で over を
+// 解決させる) を合成 args で gate する。grid の gridCollisionDetection と同型の純ロジック。
+function collisionArgs(
+  pointer: { x: number; y: number } | null,
+  collisionRect: DOMRect,
+  rects: Record<string, DOMRect>,
+): Parameters<CollisionDetection>[0] {
+  const droppableRects = new Map(Object.entries(rects));
+  const droppableContainers = Object.keys(rects).map((id) => ({ id }));
+  return {
+    active: { id: "drag", data: { current: {} } },
+    collisionRect,
+    droppableRects,
+    droppableContainers,
+    pointerCoordinates: pointer,
+  } as unknown as Parameters<CollisionDetection>[0];
+}
+
+describe("useBeatDragDrop.collisionDetection (50ccdb57 fallback seam)", () => {
+  function getCollisionDetection(): CollisionDetection {
+    const editorRef = { current: createEditor() };
+    const { result } = renderHook(() =>
+      useBeatDragDrop({ editorRef, nodeId: SCENE }),
+    );
+    return result.current.collisionDetection;
+  }
+
+  it("pointer が droppable 内なら pointerWithin の結果を返す", () => {
+    const cd = getCollisionDetection();
+    const out = cd(
+      collisionArgs({ x: 50, y: 50 }, new DOMRect(0, 0, 10, 10), {
+        "beat-editor-drop-zone": new DOMRect(0, 0, 100, 100),
+      }),
+    );
+    expect(out.map((c) => c.id)).toEqual(["beat-editor-drop-zone"]);
+  });
+
+  it("pointer が全 droppable の外でも rectIntersection で fallback して over を解決する", () => {
+    const cd = getCollisionDetection();
+    // pointer は rect の外。だが collisionRect(ドラッグ中の矩形) が droppable と重なる。
+    const out = cd(
+      collisionArgs({ x: 500, y: 500 }, new DOMRect(10, 10, 50, 50), {
+        "beat-editor-drop-zone": new DOMRect(0, 0, 100, 100),
+      }),
+    );
+    // fallback が無いと pointerWithin が空のまま over 解決できず [] になる
+    expect(out.map((c) => c.id)).toContain("beat-editor-drop-zone");
   });
 });
