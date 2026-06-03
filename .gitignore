@@ -33,3 +33,4 @@ docs/screenshots/generated/*.png
 
 # Vitest browser-mode attachments (per-run failure screenshots)
 .vitest-attachments/
+**/__screenshots__/
