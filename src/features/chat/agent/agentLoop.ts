@@ -8,6 +8,7 @@ import type {
   ResponseBlock,
   ThinkingBlock,
   ToolUseBlock,
+  Citation,
 } from "./agentTypes";
 import { ensureTokenizer } from "../contextBuilder";
 
@@ -59,6 +60,10 @@ export interface AgentLoopResult {
   toolCallRecords: ToolCallRecord[];
   /** 最終レスポンスの thinking ブロック（UI 表示・metadata 保存用） */
   finalThinkingBlocks: ThinkingBlock[];
+  /** 全レスポンスにまたがる Web 検索引用（URL 重複は畳む）。 */
+  citations: Citation[];
+  /** 全レスポンスのコスト合計（OpenRouter のみ実値、なければ null）。 */
+  cost: number | null;
 }
 
 function extractText(blocks: ResponseBlock[]): string {
@@ -119,13 +124,36 @@ export async function runAgentLoop(
   let totalTokens = 0;
   let limitMessageInserted = false;
 
+  // Web 検索 (RAG) の引用・コストを全レスポンスにまたがって蓄積する。
+  const citations: Citation[] = [];
+  let cost: number | null = null;
+  const accumulate = (resp: AgentLLMResponse) => {
+    if (resp.citations) {
+      for (const c of resp.citations) {
+        if (!citations.some((x) => x.url === c.url)) citations.push(c);
+      }
+    }
+    if (resp.cost != null) cost = (cost ?? 0) + resp.cost;
+  };
+  const result = (
+    finalText: string,
+    finalThinkingBlocks: ThinkingBlock[],
+  ): AgentLoopResult => ({
+    finalText,
+    toolCallRecords,
+    finalThinkingBlocks,
+    citations,
+    cost,
+  });
+
   while (true) {
     // 次の LLM 呼び出し前に中断確認（Stop 後に新ターンを発火させない）。
     if (options.shouldAbort?.()) {
-      return { finalText: "", toolCallRecords, finalThinkingBlocks: [] };
+      return result("", []);
     }
 
     const response = await sendToLLM(conversation, tools);
+    accumulate(response);
 
     // Collect any text blocks from this response
     const textContent = extractText(response.blocks);
@@ -137,38 +165,22 @@ export async function runAgentLoop(
       response.stopReason === "end_turn" ||
       response.stopReason === "max_tokens"
     ) {
-      return {
-        finalText: textContent,
-        toolCallRecords,
-        finalThinkingBlocks: currentThinkingBlocks,
-      };
+      return result(textContent, currentThinkingBlocks);
     }
 
     if (response.stopReason !== "tool_use") {
-      return {
-        finalText: textContent,
-        toolCallRecords,
-        finalThinkingBlocks: currentThinkingBlocks,
-      };
+      return result(textContent, currentThinkingBlocks);
     }
 
     // Process tool_use blocks
     const toolUses = extractToolUses(response.blocks);
     if (toolUses.length === 0) {
-      return {
-        finalText: textContent,
-        toolCallRecords,
-        finalThinkingBlocks: currentThinkingBlocks,
-      };
+      return result(textContent, currentThinkingBlocks);
     }
 
     // If limit was already inserted and LLM still wants tools, stop
     if (limitMessageInserted) {
-      return {
-        finalText: textContent,
-        toolCallRecords,
-        finalThinkingBlocks: currentThinkingBlocks,
-      };
+      return result(textContent, currentThinkingBlocks);
     }
 
     // Append assistant message with tool_uses (and thinking blocks) to conversation
@@ -204,30 +216,27 @@ export async function runAgentLoop(
         currentToolName: tu.name,
       });
 
-      const result = await executeTool(tu.name, tu.id, tu.input);
+      // helper `result()` と衝突しないよう ToolResult は toolRes 名で受ける。
+      const toolRes = await executeTool(tu.name, tu.id, tu.input);
 
       // ツール実行中に Stop / セッション切替が入った場合は、tool_result を
       // 積まずに即終了する（積むと次ターンの sendToLLM が再発火し暴走する）。
       if (options.shouldAbort?.()) {
-        return {
-          finalText: textContent,
-          toolCallRecords,
-          finalThinkingBlocks: currentThinkingBlocks,
-        };
+        return result(textContent, currentThinkingBlocks);
       }
 
-      totalTokens += result.tokensUsed;
+      totalTokens += toolRes.tokensUsed;
 
       const record: ToolCallRecord = {
-        name: result.name,
+        name: toolRes.name,
         params: tu.input,
-        resultSummary: result.summary,
-        tokensUsed: result.tokensUsed,
+        resultSummary: toolRes.summary,
+        tokensUsed: toolRes.tokensUsed,
       };
       toolCallRecords.push(record);
       onToolComplete?.(record);
 
-      toolResults.push(result);
+      toolResults.push(toolRes);
     }
 
     // Append tool results to conversation

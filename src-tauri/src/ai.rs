@@ -675,6 +675,48 @@ pub enum AiNovelistMode {
     Completion,
 }
 
+/// Web 検索 (RAG) 設定。FE の 🌐 トグルから渡される。
+/// Phase 1 では OpenRouter (web plugin / server tool) と Anthropic (native
+/// web_search) のみ対応。検索はプロバイダのサーバ側で実行され、結果と引用は
+/// 同一レスポンスで返る (自前の取得ループは無い)。
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchConfig {
+    /// 検索を有効化するか。
+    pub enabled: bool,
+    /// Agent モード併用時は true。OpenRouter では server tool
+    /// (`openrouter:web_search`) を、false では一発検索の web plugin を使う。
+    /// Anthropic は常に native web_search ツール (max_uses でキャップ)。
+    #[serde(default)]
+    pub agentic: bool,
+    /// OpenRouter web plugin の最大取得件数 (0 ならデフォルト 5)。
+    #[serde(default)]
+    pub max_results: u32,
+    /// Anthropic native web_search の最大検索回数 (0 ならデフォルト 3)。
+    #[serde(default)]
+    pub max_uses: u32,
+}
+
+impl WebSearchConfig {
+    /// 取得件数 (0 → デフォルト 5)。
+    fn results_cap(&self) -> u32 {
+        if self.max_results == 0 {
+            5
+        } else {
+            self.max_results
+        }
+    }
+
+    /// 検索回数 (0 → デフォルト 3)。
+    fn uses_cap(&self) -> u32 {
+        if self.max_uses == 0 {
+            3
+        } else {
+            self.max_uses
+        }
+    }
+}
+
 /// Parameters shared across all AI chat functions.
 pub struct ChatParams<'a> {
     pub provider: &'a AiProvider,
@@ -700,6 +742,8 @@ pub struct ChatParams<'a> {
     pub system_cache_segments: Option<Vec<String>>,
     /// AI のべりすと: "legacy" | "v1"。FE から渡される API 経路。
     pub api_variant: Option<String>,
+    /// Web 検索 (RAG) 設定。None または `enabled=false` なら検索を注入しない。
+    pub web_search: Option<WebSearchConfig>,
 }
 
 fn supports_prompt_cache(provider: &AiProvider, model: &str) -> bool {
@@ -981,6 +1025,8 @@ fn parse_ainoverist_response(result: &serde_json::Value) -> anyhow::Result<ChatR
         stop_reason,
         input_tokens,
         output_tokens,
+        citations: Vec::new(),
+        cost: None,
     })
 }
 
@@ -1235,6 +1281,22 @@ pub enum ThinkingConfig {
     },
 }
 
+/// Web 検索の引用 (共通正規化形)。各プロバイダの引用フォーマット差
+/// (Anthropic `web_search_result_location` / OpenRouter `url_citation`) を
+/// この形に吸収してから FE に渡す (設計書 §0-2 / §5-3 / §6-4)。
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Citation {
+    pub url: String,
+    pub title: String,
+    /// 回答中で引用された抜粋。
+    pub cited_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_date: Option<String>,
+}
+
 /// Structured response returned from `send_chat_with_tools`.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1243,6 +1305,35 @@ pub struct ChatResponse {
     pub stop_reason: String,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Web 検索の引用 (RAG 無効時は空)。
+    #[serde(default)]
+    pub citations: Vec<Citation>,
+    /// このリクエストの概算コスト (USD)。OpenRouter は `usage.cost` を
+    /// そのまま返す。直叩きは None (FE 側で modelPricing から概算)。
+    #[serde(default)]
+    pub cost: Option<f64>,
+}
+
+/// 同一 URL の重複を避けて引用を追加する (1 ソース = 1 エントリ)。
+fn push_unique_citation(citations: &mut Vec<Citation>, cit: Citation) {
+    if !cit.url.is_empty() && !citations.iter().any(|c| c.url == cit.url) {
+        citations.push(cit);
+    }
+}
+
+/// Anthropic `web_search_result_location` を共通形へ変換する。
+fn parse_anthropic_citation(c: &serde_json::Value) -> Option<Citation> {
+    let url = c["url"].as_str()?.to_string();
+    if url.is_empty() {
+        return None;
+    }
+    Some(Citation {
+        title: c["title"].as_str().unwrap_or("").to_string(),
+        cited_text: c["cited_text"].as_str().unwrap_or("").to_string(),
+        url,
+        snippet: None,
+        published_date: None,
+    })
 }
 
 fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatResponse> {
@@ -1251,6 +1342,7 @@ fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatRe
         .unwrap_or("end_turn")
         .to_string();
     let mut blocks = Vec::new();
+    let mut citations: Vec<Citation> = Vec::new();
 
     if let Some(content) = result["content"].as_array() {
         for block in content {
@@ -1259,6 +1351,16 @@ fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatRe
                     let text = block["text"].as_str().unwrap_or("").to_string();
                     if !text.is_empty() {
                         blocks.push(ResponseBlock::Text { content: text });
+                    }
+                    // web_search 使用時、text ブロックに citations 配列が付く。
+                    // server_tool_use / web_search_tool_result ブロックは
+                    // プロバイダがサーバ側で解決済みのため無視 (`_ =>`)。
+                    if let Some(cites) = block["citations"].as_array() {
+                        for c in cites {
+                            if let Some(cit) = parse_anthropic_citation(c) {
+                                push_unique_citation(&mut citations, cit);
+                            }
+                        }
                     }
                 }
                 Some("tool_use") => {
@@ -1290,6 +1392,9 @@ fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatRe
         stop_reason,
         input_tokens,
         output_tokens,
+        citations,
+        // Anthropic 直叩きは usage.cost を返さない。FE で modelPricing 概算。
+        cost: None,
     })
 }
 
@@ -1347,14 +1452,42 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
         }
     }
 
+    // OpenRouter web plugin / server tool は引用を `message.annotations` の
+    // `url_citation` 形式で統一して返す (web plugin / native どちらも同形)。
+    let mut citations: Vec<Citation> = Vec::new();
+    if let Some(annotations) = message["annotations"].as_array() {
+        for ann in annotations {
+            if ann["type"].as_str() != Some("url_citation") {
+                continue;
+            }
+            let uc = &ann["url_citation"];
+            if let Some(url) = uc["url"].as_str() {
+                push_unique_citation(
+                    &mut citations,
+                    Citation {
+                        url: url.to_string(),
+                        title: uc["title"].as_str().unwrap_or("").to_string(),
+                        cited_text: uc["content"].as_str().unwrap_or("").to_string(),
+                        snippet: None,
+                        published_date: None,
+                    },
+                );
+            }
+        }
+    }
+
     let input_tokens = result["usage"]["prompt_tokens"].as_u64();
     let output_tokens = result["usage"]["completion_tokens"].as_u64();
+    // OpenRouter は usage.cost (USD) を返す。他の OpenAI 互換は通常返さない。
+    let cost = result["usage"]["cost"].as_f64();
 
     Ok(ChatResponse {
         blocks,
         stop_reason,
         input_tokens,
         output_tokens,
+        citations,
+        cost,
     })
 }
 
@@ -1522,6 +1655,11 @@ fn split_system_messages(messages: &[(&str, &str)]) -> (String, Vec<serde_json::
 }
 
 /// Send a tool-aware chat request and return a structured response.
+/// Anthropic native web_search ツールのバージョン識別子。
+/// 設計書 §1 / §6-2 が指す最新版 (動的ドメインフィルタ対応)。
+/// 万一アカウントで未対応なら旧安定版 `web_search_20250305` に差し替える。
+const ANTHROPIC_WEB_SEARCH_TYPE: &str = "web_search_20260209";
+
 pub async fn send_chat_with_tools(
     params: &ChatParams<'_>,
     messages: &[AgentMessage],
@@ -1625,7 +1763,7 @@ pub async fn send_chat_with_tools(
             // Build Anthropic tool definitions (deterministic name order for prefix cache)
             let mut sorted_tools: Vec<_> = tools.iter().collect();
             sorted_tools.sort_by(|a, b| a.name.cmp(&b.name));
-            let anthropic_tools: Vec<serde_json::Value> = sorted_tools
+            let mut anthropic_tools: Vec<serde_json::Value> = sorted_tools
                 .iter()
                 .map(|t| {
                     serde_json::json!({
@@ -1635,6 +1773,19 @@ pub async fn send_chat_with_tools(
                     })
                 })
                 .collect();
+
+            // RAG: native web_search サーバツールを追加 (max_uses でキャップ)。
+            // Anthropic がサーバ側で検索→引用付き最終回答を返すため stop_reason は
+            // end_turn。クライアント executeTool は介在しない。
+            if let Some(ws) = params.web_search.as_ref() {
+                if ws.enabled {
+                    anthropic_tools.push(serde_json::json!({
+                        "type": ANTHROPIC_WEB_SEARCH_TYPE,
+                        "name": "web_search",
+                        "max_uses": ws.uses_cap()
+                    }));
+                }
+            }
 
             let mut body = serde_json::json!({
                 "model": params.model,
@@ -1754,6 +1905,28 @@ pub async fn send_chat_with_tools(
                 params.provider,
                 params.openrouter_provider_pin,
             );
+
+            // RAG: OpenRouter のみ Web 検索を注入 (Phase 1)。Agent モードは
+            // server tool (モデルが検索要否を判断)、非 Agent は web plugin
+            // (一発検索, engine 未指定 = auto)。引用は url_citation で統一。
+            if matches!(params.provider, AiProvider::OpenRouter) {
+                if let Some(ws) = params.web_search.as_ref() {
+                    if ws.enabled {
+                        if ws.agentic {
+                            if let Some(arr) = body["tools"].as_array_mut() {
+                                arr.push(serde_json::json!({
+                                    "type": "openrouter:web_search"
+                                }));
+                            }
+                        } else {
+                            body["plugins"] = serde_json::json!([{
+                                "id": "web",
+                                "max_results": ws.results_cap()
+                            }]);
+                        }
+                    }
+                }
+            }
 
             let req = openai_compat_request(&client, params, &body);
             let resp = send_with_429_retry(req, params.retry_429, 3)
@@ -2781,5 +2954,107 @@ mod tests {
             ResponseBlock::Text { content } => assert_eq!(content, "こんにちは！"),
             _ => panic!("expected Text"),
         }
+    }
+
+    #[test]
+    fn test_parse_anthropic_response_extracts_web_search_citations() {
+        // web_search 使用時: text ブロックに citations、加えて server_tool_use /
+        // web_search_tool_result ブロックが混在する。引用のみ抽出し、サーバツール
+        // ブロックは無視する (クライアント tool_use 扱いしない)。
+        let json = serde_json::json!({
+            "stop_reason": "end_turn",
+            "content": [
+                { "type": "server_tool_use", "id": "srv_1", "name": "web_search",
+                  "input": { "query": "Edo period currency" } },
+                { "type": "web_search_tool_result", "tool_use_id": "srv_1",
+                  "content": [{ "type": "web_search_result", "url": "https://x" }] },
+                {
+                    "type": "text",
+                    "text": "江戸時代の通貨は両でした。",
+                    "citations": [
+                        { "type": "web_search_result_location",
+                          "url": "https://example.com/edo",
+                          "title": "Edo currency",
+                          "cited_text": "一両は四千文に相当した" },
+                        // 同一 URL の重複は 1 件に畳む
+                        { "type": "web_search_result_location",
+                          "url": "https://example.com/edo",
+                          "title": "Edo currency",
+                          "cited_text": "別の抜粋" }
+                    ]
+                }
+            ],
+            "usage": { "input_tokens": 10, "output_tokens": 20 }
+        });
+        let resp = parse_anthropic_response(&json).unwrap();
+        assert_eq!(resp.stop_reason, "end_turn");
+        // server_tool_use は ResponseBlock::ToolUse にならない (text のみ)
+        assert_eq!(resp.blocks.len(), 1);
+        assert!(matches!(resp.blocks[0], ResponseBlock::Text { .. }));
+        assert_eq!(resp.citations.len(), 1);
+        assert_eq!(resp.citations[0].url, "https://example.com/edo");
+        assert_eq!(resp.citations[0].cited_text, "一両は四千文に相当した");
+        assert_eq!(resp.cost, None);
+    }
+
+    #[test]
+    fn test_parse_openai_response_extracts_url_citations_and_cost() {
+        // OpenRouter web plugin / server tool は annotations.url_citation で統一。
+        let json = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": "回答本文",
+                    "annotations": [
+                        { "type": "url_citation", "url_citation": {
+                            "url": "https://news.example/article",
+                            "title": "記事タイトル",
+                            "content": "引用抜粋",
+                            "start_index": 0, "end_index": 4 } },
+                        { "type": "url_citation", "url_citation": {
+                            "url": "https://news.example/article",
+                            "title": "記事タイトル",
+                            "content": "重複" } }
+                    ]
+                }
+            }],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 7, "cost": 0.0123 }
+        });
+        let resp = parse_openai_response(&json).unwrap();
+        assert_eq!(resp.citations.len(), 1);
+        assert_eq!(resp.citations[0].url, "https://news.example/article");
+        assert_eq!(resp.citations[0].cited_text, "引用抜粋");
+        assert_eq!(resp.cost, Some(0.0123));
+    }
+
+    #[test]
+    fn test_parse_openai_response_no_annotations_yields_empty_citations() {
+        let json = serde_json::json!({
+            "choices": [{ "finish_reason": "stop", "message": { "content": "hi" } }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        });
+        let resp = parse_openai_response(&json).unwrap();
+        assert!(resp.citations.is_empty());
+        assert_eq!(resp.cost, None);
+    }
+
+    #[test]
+    fn test_web_search_config_caps_default_when_zero() {
+        let cfg = WebSearchConfig {
+            enabled: true,
+            agentic: false,
+            max_results: 0,
+            max_uses: 0,
+        };
+        assert_eq!(cfg.results_cap(), 5);
+        assert_eq!(cfg.uses_cap(), 3);
+        let cfg2 = WebSearchConfig {
+            enabled: true,
+            agentic: true,
+            max_results: 8,
+            max_uses: 2,
+        };
+        assert_eq!(cfg2.results_cap(), 8);
+        assert_eq!(cfg2.uses_cap(), 2);
     }
 }

@@ -646,6 +646,18 @@
       "on": "Map board injected into context (click to turn off)",
       "off": "Inject Map board into context (click to turn on)"
     },
+    "webSearch": {
+      "label": "Web search",
+      "on": "Web search ON (click to turn off)",
+      "off": "Enable web search (click to turn on)",
+      "unavailable": "This provider does not support web search (OpenRouter / Anthropic only)",
+      "searching": "Searching the web…",
+      "sources_one": "{{count}} source",
+      "sources_other": "{{count}} sources"
+    },
+    "markdown": {
+      "image": "Image (click to open)"
+    },
     "quickActions": {
       "ariaLabel": "Quick actions",
       "scene": {

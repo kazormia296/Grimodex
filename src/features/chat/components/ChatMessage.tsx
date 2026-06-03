@@ -5,8 +5,10 @@ import { Sparkles } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage as ChatMessageType } from "../chatTypes";
-import type { ToolCallRecord } from "../agent/agentTypes";
+import type { ToolCallRecord, Citation } from "../agent/agentTypes";
 import { ChatMessageActions } from "./ChatMessageActions";
+import { CitationList } from "./CitationList";
+import { formatCost } from "../modelPricing";
 import { looksLikeMissingInfo } from "../agentSuggestion";
 import { useChatStore } from "../chatStore";
 import { getModelCapabilities } from "../agent/modelLimits";
@@ -33,6 +35,10 @@ interface ParsedMetadata {
     signature: string;
     summary?: string;
   }>;
+  /** Web 検索 (RAG) の引用ソース。 */
+  citations?: Citation[];
+  /** リクエストの概算コスト (USD)。OpenRouter のみ実値。 */
+  cost?: number;
 }
 
 function parseMetadata(metadata: string | null | undefined): ParsedMetadata {
@@ -115,6 +121,10 @@ function ChatMessageImpl({
     isAssistant && !isSummary ? parseToolCalls(msg.metadata) : [];
   const thinkingBlocks =
     isAssistant && !isSummary ? parseThinkingBlocks(msg.metadata) : [];
+  const parsedMeta =
+    isAssistant && !isSummary ? parseMetadata(msg.metadata) : {};
+  const citations = parsedMeta.citations ?? [];
+  const ragCost = parsedMeta.cost;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const codexComponents = useCodexMarkdownComponents();
@@ -207,8 +217,12 @@ function ChatMessageImpl({
                 {msg.content}
               </ReactMarkdown>
             </div>
+            {citations.length > 0 && <CitationList citations={citations} />}
             {/* G3: Meta info row */}
-            {(msg.model || msg.tokensOut != null || msg.durationMs != null) && (
+            {(msg.model ||
+              msg.tokensOut != null ||
+              msg.durationMs != null ||
+              ragCost != null) && (
               <div className="mt-1 text-[10px] text-muted-foreground/60">
                 {[
                   msg.model,
@@ -216,6 +230,7 @@ function ChatMessageImpl({
                   msg.durationMs != null
                     ? `${(msg.durationMs / 1000).toFixed(1)}s`
                     : null,
+                  ragCost != null ? formatCost(ragCost) : null,
                 ]
                   .filter(Boolean)
                   .join(" · ")}

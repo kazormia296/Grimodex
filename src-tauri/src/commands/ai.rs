@@ -94,6 +94,7 @@ fn build_chat_params<'a>(
     reasoning_enabled: Option<bool>,
     reasoning_effort: Option<String>,
     system_cache_segments: Option<Vec<String>>,
+    web_search: Option<ai::WebSearchConfig>,
 ) -> ai::ChatParams<'a> {
     ai::ChatParams {
         provider: &settings.provider,
@@ -110,6 +111,7 @@ fn build_chat_params<'a>(
         openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
         system_cache_segments,
         api_variant,
+        web_search,
     }
 }
 
@@ -149,6 +151,7 @@ pub(crate) async fn send_chat_message(
         reasoning_enabled,
         reasoning_effort,
         system_cache_segments,
+        None,
     );
     let result = ai::send_chat(
         &params,
@@ -208,6 +211,7 @@ pub(crate) async fn send_chat_message_stream(
         reasoning_enabled,
         reasoning_effort,
         system_cache_segments,
+        None,
     );
 
     let result = ai::send_chat_stream(
@@ -289,6 +293,7 @@ pub(crate) async fn send_inline_ai_stream(
         reasoning_enabled,
         reasoning_effort,
         None,
+        None,
     );
 
     let result = ai::send_chat_stream(
@@ -327,6 +332,7 @@ pub(crate) async fn send_agent_message(
     reasoning_effort: Option<String>,
     system_cache_segments: Option<Vec<String>>,
     api_variant: Option<String>,
+    web_search: Option<ai::WebSearchConfig>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
@@ -346,6 +352,7 @@ pub(crate) async fn send_agent_message(
         reasoning_enabled,
         reasoning_effort,
         system_cache_segments,
+        web_search,
     );
     let result = ai::send_chat_with_tools(&params, &messages, &tools).await?;
     Ok(result)

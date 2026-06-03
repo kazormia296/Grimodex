@@ -27,7 +27,7 @@ import { computeSpotlightCandidates } from "./spotlightSuggestion";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
-import { useAiSettingsStore } from "./store";
+import { useAiSettingsStore, isRagCapableProvider } from "./store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -92,6 +92,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const pendingUserQuestion = useChatStore((s) => s.pendingUserQuestion);
   const resolveUserQuestion = useChatStore((s) => s.resolveUserQuestion);
   const dismissUserQuestion = useChatStore((s) => s.dismissUserQuestion);
+  const ragSearching = useChatStore((s) => s.ragSearching);
   const loadSessions = useChatStore((s) => s.loadSessions);
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
@@ -104,6 +105,8 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const includeMapBoard = useChatStore((s) => s.includeMapBoard);
   const mapBoardIdFromStore = useChatStore((s) => s.mapBoardId);
   const setIncludeMapBoard = useChatStore((s) => s.setIncludeMapBoard);
+  const ragEnabled = useChatStore((s) => s.ragEnabled);
+  const setRagEnabled = useChatStore((s) => s.setRagEnabled);
   const [mapBoardTitle, setMapBoardTitle] = useState<string | null>(null);
   const syncInsertedToEditorMetadata = useChatStore(
     (s) => s.syncInsertedToEditorMetadata,
@@ -715,6 +718,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     });
   }, [includeMapBoard, resolvedMapBoardId, setIncludeMapBoard]);
 
+  // Web 検索 (RAG): OpenRouter / Anthropic のみ対応。他プロバイダではトグル無効。
+  const ragCapable = isRagCapableProvider(aiSettings?.provider);
+  const handleToggleRag = useCallback(() => {
+    setRagEnabled(!ragEnabled);
+  }, [ragEnabled, setRagEnabled]);
+
   const __renderResult = (
     <div className="glass-chat relative flex h-full flex-col bg-background">
       {/* メッセージリスト内の Codex ハイライトポップオーバー（単一インスタンス） */}
@@ -735,6 +744,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         includeMapBoard={includeMapBoard}
         mapBoardTitle={mapBoardTitle}
         onToggleIncludeMapBoard={handleToggleMapOverlay}
+        ragEnabled={ragEnabled}
+        ragDisabled={!ragCapable}
+        onToggleRag={handleToggleRag}
       />
 
       <ContextBar
@@ -843,7 +855,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
                 className="flex items-center gap-1 text-muted-foreground"
               >
                 <span className="animate-pulse text-xs">
-                  {t("chat.generating")}
+                  {ragSearching
+                    ? t("chat.webSearch.searching")
+                    : t("chat.generating")}
                 </span>
               </div>
             )}

@@ -57,7 +57,8 @@ import {
   getEffortForTask,
   resolveModelCapabilities,
 } from "./agent/modelLimits";
-import { useAiSettingsStore } from "./store";
+import { useAiSettingsStore, isRagCapableProvider } from "./store";
+import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
 import * as cliApi from "./cliApi";
 import { resolveAinoveristApiVariant } from "./aiNovelist";
 
@@ -84,6 +85,7 @@ import type {
   AskUserContent,
   AskUserSpec,
   ToolResult,
+  WebSearchConfig,
 } from "./agent/agentTypes";
 
 /**
@@ -426,6 +428,19 @@ interface ChatState {
   /** 内部: 全終了経路（Stop / セッション切替 / error）から pending を sentinel
    * 解決し、awaiting 中のループを確実に unblock する単一ファネル。 */
   _cancelPendingUserQuestion: () => void;
+
+  /**
+   * Web 検索 (RAG)。🌐 トグル。ON のターンはプロバイダのサーバサイド検索を
+   * 注入する: OpenRouter は web plugin (Agent OFF) / server tool (Agent ON)、
+   * Anthropic は native web_search。RAG ターンは agentMode に依らず構造化
+   * (非ストリーミング) パスに通す (引用パースを1経路に集約)。
+   * 対応外プロバイダ (ollama 等) では UI で非活性、送信時も isRagCapableProvider
+   * で二重ガードする。
+   */
+  ragEnabled: boolean;
+  setRagEnabled: (on: boolean) => void;
+  /** 進行中ターンが Web 検索を実行中か (UI の「検索中…」表示用、内部 transient)。 */
+  ragSearching: boolean;
 
   // Chat scope — Scene / Folder (Chapter or Act) / Project の3軸統一。
   // Globe トグルを置き換え、outline 階層に沿ってどこまで context に含めるかを
@@ -1923,6 +1938,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   agentMode: false,
   agentProgress: null,
   pendingUserQuestion: null,
+  ragEnabled: false,
+  ragSearching: false,
   chatScope: "scene",
   scopeAnchorId: null,
   includeBodies: true,
@@ -2335,9 +2352,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // ユーザーの永続トグルは変更しない。
     const agentModeForThisSend = options?.overrideAgentMode ?? get().agentMode;
     const aiProvider = useAiSettingsStore.getState().settings?.provider;
+    // RAG (Web 検索) が ON かつ対応プロバイダ (OpenRouter / Anthropic) のときは、
+    // agentMode の有無に関わらず構造化 (非ストリーミング) パスに通す。引用パースを
+    // send_agent_message の1経路に集約するため (設計判断)。
+    const ragActive = get().ragEnabled && isRagCapableProvider(aiProvider);
     // CLI は subprocess 専用。Agent モードでも HTTP の send_agent_message に落とすと
     // 空応答・無応答になるため、常に通常モードの sendCliChatStream へ回す。
-    const useAgentPath = agentModeForThisSend && aiProvider !== "cli";
+    const useAgentPath =
+      (agentModeForThisSend || ragActive) && aiProvider !== "cli";
 
     const sessionId = activeSessionId ?? "";
 
@@ -2361,6 +2383,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     set({
       messages: [...prevMessages, userMsg, assistantMsg],
       isStreaming: true,
+      ragSearching: ragActive,
       error: null,
     });
 
@@ -2514,6 +2537,29 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           ]);
         }
 
+        // RAG 有効ターンは Web 検索の安全指示を system 末尾へ付与する
+        // (本文をクエリに混入させない / 引用捏造の抑止 / 取得指示の無視)。
+        // 注意: Anthropic 直叩きは system を cacheSegments から再構築し system
+        // message 本文を無視する一方、OpenRouter は system message 本文を直接
+        // 使う。全経路に確実に届けるため両方へ付与する (どの経路も両方は読まず、
+        // 重複しない。segment は新規追加せず最終 segment へ連結し 4 block 制限を守る)。
+        if (ragActive) {
+          const ragInstruction = getPromptCatalog(projectCtx?.language ?? "ja")
+            .agentControl.webSearchInstruction;
+          systemPromptForAgent = systemPromptForAgent
+            ? `${systemPromptForAgent}\n\n${ragInstruction}`
+            : ragInstruction;
+          if (
+            systemCacheSegmentsForAgent &&
+            systemCacheSegmentsForAgent.length > 0
+          ) {
+            const segs = [...systemCacheSegmentsForAgent];
+            segs[segs.length - 1] =
+              `${segs[segs.length - 1]}\n\n${ragInstruction}`;
+            systemCacheSegmentsForAgent = segs;
+          }
+        }
+
         if (systemPromptForAgent) {
           agentMsgs.push({ role: "system", content: systemPromptForAgent });
         }
@@ -2604,58 +2650,106 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           return executeTool(name, toolCallId, params);
         };
 
-        const agentTools =
-          get().sessionAgentToolsSnapshot ?? snapshotAgentTools();
+        // クライアントツールは agentMode のときだけ渡す。RAG 単独 (agent OFF)
+        // ターンは tools=[] とし、Web 検索を一発注入 (OpenRouter web plugin /
+        // Anthropic native) で完結させる (plugin と function-tool の混在を避ける)。
+        const agentTools = agentModeForThisSend
+          ? (get().sessionAgentToolsSnapshot ?? snapshotAgentTools())
+          : [];
+        // RAG ターンのみ Web 検索設定を Rust へ渡す。agentMode 併用時は
+        // OpenRouter で server tool / 単独時は web plugin を選ばせる (agentic)。
+        const webSearchConfig: WebSearchConfig | null = ragActive
+          ? {
+              enabled: true,
+              agentic: agentModeForThisSend,
+              maxResults: 5,
+              maxUses: 3,
+            }
+          : null;
         // 中断フラグをこのターンの開始時にリセット（前ターンの取り残しを排除）。
         _agentAborted = false;
-        const { toolCallRecords, finalThinkingBlocks } = await runAgentLoop({
-          messages: agentMsgs,
-          tools: agentTools,
-          tokenBudget,
-          shouldAbort: () => _agentAborted,
-          callLimitMessage: agentControl.callLimitMessage,
-          tokenBudgetMessage: agentControl.tokenBudgetMessage,
-          userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
-          sendToLLM: (msgs, tools) =>
-            chatApi.sendAgentMessage(
-              msgs,
-              tools,
-              agentThinkingParams,
-              systemCacheSegmentsForAgent,
-              agentApiVariant,
-            ),
-          executeTool: guardedExecuteTool,
-          onProgress: (progress) => {
-            set({ agentProgress: progress });
-          },
-          onToolComplete: (record) => {
-            accToolCalls.push(record);
-            set((s) => {
-              const msgs = [...s.messages];
-              const last = msgs[msgs.length - 1];
-              if (last?.role === "assistant") {
-                msgs[msgs.length - 1] = {
-                  ...last,
-                  metadata: JSON.stringify({ tool_calls: accToolCalls }),
-                };
-              }
-              return { messages: msgs };
-            });
-          },
-          onTextChunk: (text) => {
-            set((s) => {
-              const msgs = [...s.messages];
-              const last = msgs[msgs.length - 1];
-              if (last?.role === "assistant") {
-                const prev = last.content;
-                msgs[msgs.length - 1] = {
-                  ...last,
-                  content: prev ? `${prev}\n\n${text}` : text,
-                };
-              }
-              return { messages: msgs };
-            });
-          },
+        const { toolCallRecords, finalThinkingBlocks, citations, cost } =
+          await runAgentLoop({
+            messages: agentMsgs,
+            tools: agentTools,
+            tokenBudget,
+            shouldAbort: () => _agentAborted,
+            callLimitMessage: agentControl.callLimitMessage,
+            tokenBudgetMessage: agentControl.tokenBudgetMessage,
+            userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
+            sendToLLM: (msgs, tools) =>
+              chatApi.sendAgentMessage(
+                msgs,
+                tools,
+                agentThinkingParams,
+                systemCacheSegmentsForAgent,
+                agentApiVariant,
+                webSearchConfig,
+              ),
+            executeTool: guardedExecuteTool,
+            onProgress: (progress) => {
+              set({ agentProgress: progress });
+            },
+            onToolComplete: (record) => {
+              accToolCalls.push(record);
+              set((s) => {
+                const msgs = [...s.messages];
+                const last = msgs[msgs.length - 1];
+                if (last?.role === "assistant") {
+                  msgs[msgs.length - 1] = {
+                    ...last,
+                    metadata: JSON.stringify({ tool_calls: accToolCalls }),
+                  };
+                }
+                return { messages: msgs };
+              });
+            },
+            onTextChunk: (text) => {
+              set((s) => {
+                const msgs = [...s.messages];
+                const last = msgs[msgs.length - 1];
+                if (last?.role === "assistant") {
+                  const prev = last.content;
+                  msgs[msgs.length - 1] = {
+                    ...last,
+                    content: prev ? `${prev}\n\n${text}` : text,
+                  };
+                }
+                return { messages: msgs };
+              });
+            },
+          });
+
+        // 引用の事後検証: 不正 URL を排除 + 本文中の裏付けなし URL を検出。
+        const safeCitations = sanitizeCitations(citations);
+        const answerForCheck =
+          get().messages[get().messages.length - 1]?.content ?? "";
+        const unbackedUrls = findUnbackedUrls(answerForCheck, safeCitations);
+        if (unbackedUrls.length > 0) {
+          debugLog.warn(
+            "ChatStore",
+            "RAG: 引用に裏付けのない URL を検出",
+            unbackedUrls.join(", "),
+          );
+        }
+
+        // tool_calls / thinking / 引用 / コストをまとめた最終 metadata。
+        // in-memory メッセージ (UI 即時表示) と DB 永続化で共有する。
+        const finalAgentMetadata = JSON.stringify({
+          tool_calls: toolCallRecords,
+          ...(finalThinkingBlocks.length > 0
+            ? { thinking_blocks: finalThinkingBlocks }
+            : {}),
+          ...(safeCitations.length > 0 ? { citations: safeCitations } : {}),
+          ...(cost != null ? { cost } : {}),
+        });
+        set((s) => {
+          const msgs = [...s.messages];
+          const last = msgs[msgs.length - 1];
+          if (last?.role === "assistant") {
+            msgs[msgs.length - 1] = { ...last, metadata: finalAgentMetadata };
+          }
+          return { messages: msgs };
         });
 
         // Persist
@@ -2679,12 +2773,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               lastMsg.content,
               {
                 id: assistantMsg.id,
-                metadata: JSON.stringify({
-                  tool_calls: toolCallRecords,
-                  ...(finalThinkingBlocks.length > 0
-                    ? { thinking_blocks: finalThinkingBlocks }
-                    : {}),
-                }),
+                metadata: finalAgentMetadata,
               },
             );
 
@@ -2741,7 +2830,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
         get()._cancelPendingUserQuestion();
         _agentAborted = false;
-        set({ isStreaming: false, agentProgress: null });
+        set({ isStreaming: false, agentProgress: null, ragSearching: false });
       }
       return;
     }
@@ -3481,6 +3570,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   setAgentMode: (on: boolean) => set({ agentMode: on }),
+  setRagEnabled: (on: boolean) => set({ ragEnabled: on }),
 
   // --- ask_user（ユーザーへの質問）の解決 ---
   resolveUserQuestion: (answer: AskUserContent) => {
@@ -3585,7 +3675,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     _streamCleanup?.();
     _streamCleanup = null;
     get()._cancelPendingUserQuestion();
-    set({ isStreaming: false, agentProgress: null });
+    set({ isStreaming: false, agentProgress: null, ragSearching: false });
   },
 
   // --- P2-2: メッセージ削除 ---

@@ -7,6 +7,7 @@ import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { createCodexMatcher } from "@/features/codex/codexMatcher";
 import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
+import { SAFE_COMPONENTS } from "@/features/chat/components/safeMarkdown";
 
 /**
  * ReactMarkdown の children ノードを再帰的に走査し、
@@ -44,7 +45,8 @@ export function useCodexMarkdownComponents(): Components {
   const enabled = useCodexHighlightStore((s) => s.enabled);
 
   return useMemo(() => {
-    if (!enabled || entries.length === 0) return {};
+    // Codex ハイライトが無効/該当なしでも、安全 markdown (a/img) は必ず適用する。
+    if (!enabled || entries.length === 0) return SAFE_COMPONENTS;
 
     const matcher = createCodexMatcher(entries);
 
@@ -101,6 +103,7 @@ export function useCodexMarkdownComponents(): Components {
     }
 
     return {
+      ...SAFE_COMPONENTS,
       p: ({ children }: { children: ReactNode }) => <p>{wrap(children)}</p>,
       li: ({ children }: { children: ReactNode }) => <li>{wrap(children)}</li>,
       h1: ({ children }: { children: ReactNode }) => <h1>{wrap(children)}</h1>,

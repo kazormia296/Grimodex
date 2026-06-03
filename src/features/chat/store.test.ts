@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useAiSettingsStore, selectProviderReadiness } from "./store";
+import {
+  useAiSettingsStore,
+  selectProviderReadiness,
+  isRagCapableProvider,
+} from "./store";
 import type { AiSettings, AiModel } from "./types";
 
 vi.mock("./api", () => ({
@@ -451,5 +455,21 @@ describe("selectProviderReadiness", () => {
     expect(selectProviderReadiness(useAiSettingsStore.getState())).toBe(
       "no-provider",
     );
+  });
+});
+
+describe("isRagCapableProvider", () => {
+  it("is true only for openrouter and anthropic (Phase 1)", () => {
+    expect(isRagCapableProvider("openrouter")).toBe(true);
+    expect(isRagCapableProvider("anthropic")).toBe(true);
+  });
+  it("is false for ollama and other providers (toggle disabled)", () => {
+    expect(isRagCapableProvider("ollama")).toBe(false);
+    expect(isRagCapableProvider("openai")).toBe(false);
+    expect(isRagCapableProvider("openai-compatible")).toBe(false);
+    expect(isRagCapableProvider("ai-novelist")).toBe(false);
+    expect(isRagCapableProvider("cli")).toBe(false);
+    expect(isRagCapableProvider(null)).toBe(false);
+    expect(isRagCapableProvider(undefined)).toBe(false);
   });
 });

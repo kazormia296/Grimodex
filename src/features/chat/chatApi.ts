@@ -114,6 +114,7 @@ import type {
   AgentMessagePayload,
   AgentLLMResponse,
   AgentToolDefinition,
+  WebSearchConfig,
 } from "./agent/agentTypes";
 import type { ThinkingParams } from "./agent/modelLimits";
 import { buildThinkingParams, getEffortForTask } from "./agent/modelLimits";
@@ -125,6 +126,7 @@ export async function sendAgentMessage(
   thinkingParams?: ThinkingParams,
   systemCacheSegments?: string[],
   apiVariant?: string | null,
+  webSearch?: WebSearchConfig | null,
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -135,6 +137,7 @@ export async function sendAgentMessage(
     reasoningEffort: thinkingParams?.reasoningEffort ?? null,
     systemCacheSegments: systemCacheSegments ?? null,
     apiVariant: apiVariant ?? null,
+    webSearch: webSearch ?? null,
   });
 }
 

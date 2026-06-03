@@ -646,6 +646,18 @@
       "on": "Map board 全体を context に注入中（クリックで OFF）",
       "off": "Map board を context に注入する（クリックで ON）"
     },
+    "webSearch": {
+      "label": "Web検索",
+      "on": "Web検索 ON（クリックで OFF）",
+      "off": "Web検索を有効にする（クリックで ON）",
+      "unavailable": "このプロバイダは Web検索に非対応です（OpenRouter / Anthropic のみ）",
+      "searching": "Web を検索中…",
+      "sources_one": "ソース {{count}} 件",
+      "sources_other": "ソース {{count}} 件"
+    },
+    "markdown": {
+      "image": "画像（クリックで開く）"
+    },
     "quickActions": {
       "ariaLabel": "クイックアクション",
       "scene": {

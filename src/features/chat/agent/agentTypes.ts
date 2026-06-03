@@ -39,10 +39,33 @@ export type ResponseBlock =
     }
   | { type: "thinking"; content: string; summary?: string; signature?: string };
 
+// Web 検索 (RAG) の引用。Rust `Citation` (camelCase) と対応。
+export interface Citation {
+  url: string;
+  title: string;
+  /** 回答中で引用された抜粋 (Rust cited_text)。 */
+  citedText: string;
+  snippet?: string;
+  publishedDate?: string;
+}
+
+// Web 検索 (RAG) 設定。Rust `WebSearchConfig` (camelCase) と対応。
+export interface WebSearchConfig {
+  enabled: boolean;
+  /** Agent モード併用時 true。OpenRouter で server tool / web plugin を出し分ける。 */
+  agentic: boolean;
+  maxResults?: number;
+  maxUses?: number;
+}
+
 // LLMレスポンス（パース済み）
 export interface AgentLLMResponse {
   blocks: ResponseBlock[];
   stopReason: "end_turn" | "tool_use" | "max_tokens";
+  /** Web 検索引用 (RAG 無効時は undefined/空)。 */
+  citations?: Citation[];
+  /** このリクエストの概算コスト (USD)。OpenRouter のみ実値、他は undefined。 */
+  cost?: number;
 }
 
 // アシスタントメッセージ内のtool_useブロック（多ターン会話用）

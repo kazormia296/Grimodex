@@ -4,6 +4,7 @@ import {
   ChevronDown,
   Plus,
   Globe,
+  Globe2,
   FolderTree,
   FileText,
   Check,
@@ -48,6 +49,13 @@ interface ChatPanelHeaderProps {
   /** Map ON のとき chip に表示する board title。null なら "Map" のみ。 */
   mapBoardTitle: string | null;
   onToggleIncludeMapBoard: () => void;
+  /** Web 検索 (RAG) トグルの状態。 */
+  ragEnabled: boolean;
+  /** RAG 非対応プロバイダ等で操作不可のとき true (トグルを無効化)。 */
+  ragDisabled: boolean;
+  /** 無効時のツールチップ理由文 (例: ollama は非対応)。 */
+  ragDisabledReason?: string;
+  onToggleRag: () => void;
 }
 
 interface TreeRow {
@@ -94,6 +102,10 @@ export function ChatPanelHeader({
   includeMapBoard,
   mapBoardTitle,
   onToggleIncludeMapBoard,
+  ragEnabled,
+  ragDisabled,
+  ragDisabledReason,
+  onToggleRag,
 }: ChatPanelHeaderProps) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
@@ -332,6 +344,36 @@ export function ChatPanelHeader({
           ) : (
             <span>{t("chat.mapOverlay.label")}</span>
           )}
+        </button>
+
+        {/* Web 検索 (RAG) toggle: ON でプロバイダのサーバサイド検索を注入。
+            非対応プロバイダ (ollama 等) では disabled。 */}
+        <button
+          type="button"
+          onClick={onToggleRag}
+          disabled={ragDisabled}
+          aria-pressed={ragEnabled}
+          aria-label={
+            ragEnabled ? t("chat.webSearch.on") : t("chat.webSearch.off")
+          }
+          title={
+            ragDisabled
+              ? (ragDisabledReason ?? t("chat.webSearch.unavailable"))
+              : ragEnabled
+                ? t("chat.webSearch.on")
+                : t("chat.webSearch.off")
+          }
+          className={[
+            "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
+            ragDisabled
+              ? "cursor-not-allowed text-muted-foreground/40"
+              : ragEnabled
+                ? "bg-primary/10 text-primary hover:bg-primary/15"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          ].join(" ")}
+        >
+          <Globe2 className="h-3 w-3 shrink-0" />
+          <span>{t("chat.webSearch.label")}</span>
         </button>
       </div>
 

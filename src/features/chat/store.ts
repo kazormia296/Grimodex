@@ -164,3 +164,13 @@ export function selectProviderReadiness(s: AiSettingsState): ProviderReadiness {
       return "no-provider";
   }
 }
+
+/** Web 検索 (RAG) に対応するプロバイダか。Phase 1 は OpenRouter (web plugin /
+ * server tool) と Anthropic (native web_search) のみ。他はサーバサイド検索を
+ * 持たない/未検証のため 🌐 トグルを非活性にする (ollama / openai-compatible /
+ * ai-novelist / cli、および直叩き OpenAI は defer)。 */
+export function isRagCapableProvider(
+  provider: AiSettings["provider"] | null | undefined,
+): boolean {
+  return provider === "openrouter" || provider === "anthropic";
+}

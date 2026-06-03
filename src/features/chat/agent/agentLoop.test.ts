@@ -6,7 +6,7 @@ vi.mock("../contextBuilder", () => ({
 }));
 
 import { runAgentLoop, type AgentLoopOptions } from "./agentLoop";
-import type { AgentLLMResponse, ToolResult } from "./agentTypes";
+import type { AgentLLMResponse, ToolResult, Citation } from "./agentTypes";
 
 function toolUseResponse(
   name: string,
@@ -154,5 +154,77 @@ describe("runAgentLoop", () => {
       (m) => "content" in m && m.content === "CALL_LIMIT",
     );
     expect(hasCallLimit).toBe(true);
+  });
+});
+
+// ── Web 検索 (RAG): 引用・コストの累積 ──────────────────────────────────────
+const cite = (url: string): Citation => ({ url, title: "t", citedText: "x" });
+
+/** responses を順に返す sendToLLM を持つ options を作る（baseOptions 流用）。 */
+function seqOptions(responses: AgentLLMResponse[]): AgentLoopOptions {
+  let i = 0;
+  return baseOptions({
+    sendToLLM: vi.fn(() => Promise.resolve(responses[i++])),
+    executeTool: vi.fn(async () =>
+      toolResult({ name: "search_codex", tokensUsed: 10 }),
+    ),
+  });
+}
+
+describe("runAgentLoop — web search citations/cost accumulation", () => {
+  it("returns citations and cost from a single end_turn response", async () => {
+    const res = await runAgentLoop(
+      seqOptions([
+        {
+          blocks: [{ type: "text", content: "answer" }],
+          stopReason: "end_turn",
+          citations: [cite("https://a.com")],
+          cost: 0.012,
+        },
+      ]),
+    );
+    expect(res.finalText).toBe("answer");
+    expect(res.citations.map((c) => c.url)).toEqual(["https://a.com"]);
+    expect(res.cost).toBe(0.012);
+  });
+
+  it("accumulates across iterations, dedupes citations by url, sums cost", async () => {
+    const res = await runAgentLoop(
+      seqOptions([
+        {
+          blocks: [
+            { type: "tool_use", id: "t1", name: "search_codex", input: {} },
+          ],
+          stopReason: "tool_use",
+          citations: [cite("https://a.com")],
+          cost: 0.01,
+        },
+        {
+          blocks: [{ type: "text", content: "final" }],
+          stopReason: "end_turn",
+          citations: [cite("https://a.com"), cite("https://b.com")],
+          cost: 0.02,
+        },
+      ]),
+    );
+    expect(res.finalText).toBe("final");
+    expect(res.citations.map((c) => c.url)).toEqual([
+      "https://a.com",
+      "https://b.com",
+    ]);
+    expect(res.cost).toBeCloseTo(0.03, 5);
+  });
+
+  it("leaves cost null and citations empty when none provided (non-RAG)", async () => {
+    const res = await runAgentLoop(
+      seqOptions([
+        {
+          blocks: [{ type: "text", content: "plain" }],
+          stopReason: "end_turn",
+        },
+      ]),
+    );
+    expect(res.citations).toEqual([]);
+    expect(res.cost).toBeNull();
   });
 });
