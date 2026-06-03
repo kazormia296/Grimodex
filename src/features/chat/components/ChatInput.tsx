@@ -1,6 +1,13 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import type { MutableRefObject } from "react";
-import { Send, Square, Wrench, ChevronDown, Sparkles, X } from "lucide-react";
+import {
+  Send,
+  Square,
+  ChevronDown,
+  Sparkles,
+  Lightbulb,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { useEditor, EditorContent, useEditorState } from "@tiptap/react";
@@ -145,9 +152,7 @@ export function ChatInput({
     selectedApiVariant,
   );
 
-  const [optionsOpen, setOptionsOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  const optionsRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
 
   // ポップアップ状態
@@ -311,11 +316,9 @@ export function ChatInput({
     editor.setEditable(!isStreaming);
   }, [editor, isStreaming]);
 
-  // 外部クリックでポップオーバーを閉じる
+  // 外部クリックでモデル選択ポップオーバーを閉じる
   useEffect(() => {
     function onOutside(e: MouseEvent) {
-      if (optionsRef.current && !optionsRef.current.contains(e.target as Node))
-        setOptionsOpen(false);
       if (modelRef.current && !modelRef.current.contains(e.target as Node))
         setModelOpen(false);
     }
@@ -530,56 +533,49 @@ export function ChatInput({
 
         {/* 下段ツール列（カード内） */}
         <div className="flex items-center gap-1 px-2 pb-1.5 pt-0.5">
-          {/* 🛠 オプションポップオーバー */}
-          <div className="relative" ref={optionsRef}>
-            <button
-              type="button"
-              onClick={() => setOptionsOpen((v) => !v)}
-              disabled={!canUseTools && !canThink}
-              title={t("chat.aiOptions")}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97] transition-transform duration-75"
-            >
-              <Wrench className="h-3 w-3" />
-            </button>
+          {/* Agent mode chip: ツール非対応モデルでは disabled + 理由ツールチップ */}
+          <button
+            type="button"
+            onClick={() => setAgentMode(!agentMode)}
+            disabled={!canUseTools}
+            aria-pressed={agentMode}
+            title={
+              !canUseTools ? t("chat.agentUnavailable") : t("chat.agentMode")
+            }
+            className={[
+              "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
+              !canUseTools
+                ? "cursor-not-allowed text-muted-foreground/40"
+                : agentMode
+                  ? "bg-primary/10 text-primary hover:bg-primary/15"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            ].join(" ")}
+          >
+            <Sparkles className="h-3 w-3 shrink-0" />
+            <span>{t("chat.agentMode")}</span>
+          </button>
 
-            {optionsOpen && (
-              <div className="absolute bottom-full left-0 z-20 mb-1 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md">
-                {/* Agent mode トグル */}
-                <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent">
-                  <input
-                    type="checkbox"
-                    checked={agentMode}
-                    onChange={(e) => setAgentMode(e.target.checked)}
-                    disabled={!canUseTools}
-                    className="h-3 w-3"
-                  />
-                  <span className={!canUseTools ? "opacity-40" : ""}>
-                    {t("chat.agentMode")}
-                  </span>
-                </label>
-
-                {/* Thinking トグル */}
-                <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent">
-                  <input
-                    type="checkbox"
-                    checked={aiSettings?.thinkingEnabled ?? true}
-                    onChange={handleToggleThinking}
-                    disabled={!canThink}
-                    className="h-3 w-3"
-                  />
-                  <span className={!canThink ? "opacity-40" : ""}>
-                    {t("chat.thinkingMode")}
-                  </span>
-                </label>
-
-                {/* RAG トグル (未実装) */}
-                <label className="flex cursor-not-allowed items-center gap-2 px-3 py-1.5 text-xs opacity-40">
-                  <input type="checkbox" disabled className="h-3 w-3" />
-                  {t("chat.ragUnimplemented")}
-                </label>
-              </div>
-            )}
-          </div>
+          {/* Thinking chip: Thinking 非対応モデルでは disabled + 理由ツールチップ */}
+          <button
+            type="button"
+            onClick={handleToggleThinking}
+            disabled={!canThink}
+            aria-pressed={aiSettings?.thinkingEnabled ?? true}
+            title={
+              !canThink ? t("chat.thinkingUnavailable") : t("chat.thinkingMode")
+            }
+            className={[
+              "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
+              !canThink
+                ? "cursor-not-allowed text-muted-foreground/40"
+                : (aiSettings?.thinkingEnabled ?? true)
+                  ? "bg-primary/10 text-primary hover:bg-primary/15"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            ].join(" ")}
+          >
+            <Lightbulb className="h-3 w-3 shrink-0" />
+            <span>{t("chat.thinkingMode")}</span>
+          </button>
 
           {/* モデル選択 chip */}
           <div className="relative" ref={modelRef}>
