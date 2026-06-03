@@ -242,6 +242,7 @@ export function MatrixTable({
         />
         <div
           ref={headerRef}
+          data-testid="mx-header"
           style={{ overflowX: "hidden", flex: 1, height: COL_HEADER_HEIGHT }}
         >
           <div
@@ -272,6 +273,7 @@ export function MatrixTable({
               return (
                 <div
                   key={vc.key}
+                  data-testid={`mx-colhead-${vc.index}`}
                   style={{
                     position: "absolute",
                     left: vc.start,
@@ -295,6 +297,7 @@ export function MatrixTable({
       {/* Scrollable body */}
       <div
         ref={containerRef}
+        data-testid="mx-body"
         className="overflow-auto"
         style={{ height: `calc(100% - ${COL_HEADER_HEIGHT}px)` }}
       >
@@ -372,6 +375,7 @@ export function MatrixTable({
                     return (
                       <div
                         key={vc.key}
+                        data-testid={`mx-cell-${vr.index}-${vc.index}`}
                         style={{
                           position: "absolute",
                           left: vc.start,
