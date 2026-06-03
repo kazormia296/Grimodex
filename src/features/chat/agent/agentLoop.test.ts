@@ -6,7 +6,21 @@ vi.mock("../contextBuilder", () => ({
 }));
 
 import { runAgentLoop, type AgentLoopOptions } from "./agentLoop";
-import type { AgentLLMResponse, ToolResult, Citation } from "./agentTypes";
+import type {
+  AgentLLMResponse,
+  AgentToolDefinition,
+  ToolResult,
+  Citation,
+} from "./agentTypes";
+
+/** テスト用の最小ツール定義（dispatch 宣言ゲートが参照するのは name のみ）。 */
+function tool(name: string): AgentToolDefinition {
+  return {
+    name,
+    description: name,
+    inputSchema: { type: "object", properties: {}, required: [] },
+  };
+}
 
 function toolUseResponse(
   name: string,
@@ -37,7 +51,9 @@ function toolResult(overrides: Partial<ToolResult> = {}): ToolResult {
 function baseOptions(over: Partial<AgentLoopOptions> = {}): AgentLoopOptions {
   return {
     messages: [{ role: "user", content: "hi" }],
-    tools: [],
+    // 既存テストが使うツール名を宣言しておく（dispatch 宣言ゲートが
+    // 未宣言ツールを拒否するため、宣言しないと実行されない）。
+    tools: [tool("search_codex"), tool("ask_user")],
     tokenBudget: 100_000,
     sendToLLM: vi.fn(),
     executeTool: vi.fn(async () => toolResult()),
@@ -154,6 +170,64 @@ describe("runAgentLoop", () => {
       (m) => "content" in m && m.content === "CALL_LIMIT",
     );
     expect(hasCallLimit).toBe(true);
+  });
+});
+
+// ── dispatch 宣言ゲート (security review F-2) ────────────────────────────────
+describe("runAgentLoop — declared-tools dispatch gate", () => {
+  // 実際の脅威を直接固定: get_scene は EXECUTORS に存在する実ツールだが、
+  // このターンで宣言していなければ実行されてはならない（未実装名だと既存の
+  // unknown-tool パスと区別できないため、あえて既存 executor 名でテストする）。
+  it("rejects an undeclared but real executor (get_scene) without calling executeTool", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(toolUseResponse("get_scene"))
+      .mockResolvedValueOnce(endResponse("recovered"));
+    const executeTool = vi.fn(async () => toolResult());
+
+    const res = await runAgentLoop(
+      baseOptions({
+        tools: [tool("search_codex")], // get_scene は宣言しない
+        sendToLLM,
+        executeTool,
+      }),
+    );
+
+    // executeTool は未宣言ツールについて一度も呼ばれない。
+    expect(executeTool).not.toHaveBeenCalled();
+    // ループは止まらず error tool_result を積んで次ターンへ進み回復する。
+    expect(sendToLLM).toHaveBeenCalledTimes(2);
+    expect(res.finalText).toBe("recovered");
+    // 拒否は error tool_result として次ターンの会話履歴に渡る。
+    const secondTurnMessages = sendToLLM.mock.calls[1]?.[0] ?? [];
+    const hasErrorToolResult = secondTurnMessages.some(
+      (m) =>
+        "content" in m &&
+        typeof m.content === "string" &&
+        m.content.includes("Tool not available this turn: get_scene"),
+    );
+    expect(hasErrorToolResult).toBe(true);
+  });
+
+  it("executes a declared tool normally (gate passes)", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(toolUseResponse("get_scene"))
+      .mockResolvedValueOnce(endResponse());
+    const executeTool = vi.fn(async () =>
+      toolResult({ name: "get_scene", tokensUsed: 3 }),
+    );
+
+    await runAgentLoop(
+      baseOptions({
+        tools: [tool("get_scene")], // 今度は宣言する
+        sendToLLM,
+        executeTool,
+      }),
+    );
+
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(executeTool).toHaveBeenCalledWith("get_scene", "tool-1", {});
   });
 });
 

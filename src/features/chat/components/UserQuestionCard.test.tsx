@@ -158,6 +158,15 @@ describe("UserQuestionCard", () => {
     expect(answer.answers[1].text).toBe("答え");
   });
 
+  it("shows the AI-generated label (discloses provider-controlled question source)", () => {
+    render(
+      <UserQuestionCard spec={single()} onSubmit={vi.fn()} onSkip={vi.fn()} />,
+    );
+    expect(
+      screen.getByText("chat.userQuestion.aiGenerated"),
+    ).toBeInTheDocument();
+  });
+
   it("calls onSkip when the skip button is pressed", () => {
     const onSkip = vi.fn();
     render(

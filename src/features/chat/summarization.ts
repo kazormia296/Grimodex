@@ -5,6 +5,7 @@ import type { ThinkingParams } from "./agent/modelLimits";
 import { getPromptCatalog } from "@/prompts/index";
 import { countTokens } from "./contextBuilder";
 import { buildHandoffMetaComment } from "./conversationHistory";
+import { stripToolProtocol } from "./toolProtocol";
 
 export {
   shouldSummarize,
@@ -26,10 +27,20 @@ export function createSummarizationPrompt(
     generation: number;
   },
 ): string {
+  // モデルへ渡る要約プロンプトに擬似ツール記法 (<tool_call> / <tool_response>) を
+  // 持ち込まない（security review F-4）。assistant 候補だけでなく、過去要約
+  // (previousSummary) も再混入経路になるため両方を strip する。
+  const cleaned = candidates.map((m) =>
+    m.role === "assistant"
+      ? { ...m, content: stripToolProtocol(m.content) }
+      : m,
+  );
   return getPromptCatalog(opts.lang ?? "ja").summarization.buildPrompt(
-    candidates,
+    cleaned,
     {
-      previousSummary: opts.previousSummary,
+      previousSummary: opts.previousSummary
+        ? stripToolProtocol(opts.previousSummary)
+        : opts.previousSummary,
       generation: opts.generation,
     },
   );

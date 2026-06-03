@@ -1060,6 +1060,10 @@ export function AiCategory() {
               <p className="mb-2 text-xs text-muted-foreground">
                 {t("settings.ai.webSearch.providerNote")}
               </p>
+              {/* 第三者送信の永続的・SR可読な開示（security review F-1）。 */}
+              <p className="mb-2 text-xs text-amber-600 dark:text-amber-500">
+                {t("settings.ai.webSearch.privacyNote")}
+              </p>
               <SettingRow
                 label={t("settings.ai.webSearch.domainMode")}
                 description={t("settings.ai.webSearch.domainModeDesc")}

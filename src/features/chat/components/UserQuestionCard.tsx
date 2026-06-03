@@ -216,6 +216,10 @@ export function UserQuestionCard({
       <div className="mb-2 flex items-center gap-2 text-xs font-medium text-primary">
         <span aria-hidden>❓</span>
         <span>{t("chat.userQuestion.title")}</span>
+        {/* AI が生成した質問であることを明示（provider 制御テキストの出所開示）。 */}
+        <span className="text-[10px] font-medium uppercase tracking-wide text-primary/60">
+          {t("chat.userQuestion.aiGenerated")}
+        </span>
         {isWizard && (
           <span className="ml-auto text-muted-foreground">
             {t("chat.userQuestion.step", {

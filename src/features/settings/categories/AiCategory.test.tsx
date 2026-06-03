@@ -117,6 +117,11 @@ describe("AiCategory — Web 検索 (RAG) セクション", () => {
     expect(screen.getByText("settings.ai.webSearch.domainMode")).toBeTruthy();
   });
 
+  it("第三者送信のプライバシー開示注記を常時表示する (F-1)", () => {
+    render(<AiCategory />);
+    expect(screen.getByText("settings.ai.webSearch.privacyNote")).toBeTruthy();
+  });
+
   it("Anthropic では OpenRouter 専用の content cap / exa 警告を出さない", () => {
     render(<AiCategory />);
     // content cap 行（OpenRouter(exa) 専用）は非表示。

@@ -334,6 +334,7 @@
       "webSearch": {
         "title": "Web search (RAG) domain control",
         "providerNote": "Only effective with OpenRouter / Anthropic.",
+        "privacyNote": "⚠ Enabling web search sends your search queries to a third-party search provider (via OpenRouter / Anthropic). The AI is instructed not to search your manuscript text verbatim, but this is not enforced.",
         "domainMode": "Domain filter",
         "domainModeDesc": "Restrict search results with an allow or block list. Allow and block cannot be used together.",
         "domainModeOff": "No filter",
@@ -611,6 +612,7 @@
     "aiOffOpenSettings": "Open policy settings",
     "userQuestion": {
       "title": "Question",
+      "aiGenerated": "AI-generated",
       "submit": "Answer",
       "skip": "Skip",
       "other": "Other",
@@ -668,6 +670,7 @@
       "off": "Enable web search (click to turn on)",
       "unavailable": "This provider does not support web search (OpenRouter / Anthropic only)",
       "searching": "Searching the web…",
+      "egressNote": "Search queries are sent to a third-party search provider.",
       "sources_one": "{{count}} source",
       "sources_other": "{{count}} sources"
     },

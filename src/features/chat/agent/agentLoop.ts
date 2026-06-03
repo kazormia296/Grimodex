@@ -124,6 +124,14 @@ export async function runAgentLoop(
   let totalTokens = 0;
   let limitMessageInserted = false;
 
+  // このターンで宣言したツール名の集合。プロバイダが返した tool_use を dispatch
+  // する前にこの集合と照合し、未宣言ツールの実行を拒否する。executeTool は
+  // EXECUTORS メンバーシップだけで dispatch するため、宣言していなくても
+  // EXECUTORS に存在するツールは実行されてしまう。read-only な現状では無害だが、
+  // 将来 mutating executor が追加されたときに「宣言ターン以外では発火しない」
+  // ことを構造的に保証するためのゲート（security review F-2）。
+  const declaredToolNames = new Set(tools.map((t) => t.name));
+
   // Web 検索 (RAG) の引用・コストを全レスポンスにまたがって蓄積する。
   const citations: Citation[] = [];
   let cost: number | null = null;
@@ -206,6 +214,31 @@ export async function runAgentLoop(
         userQuestionCalls++;
       } else {
         totalCalls++;
+      }
+
+      // 宣言ゲート: このターンで宣言していないツールは実行しない。skip すると
+      // tool_use に対応する tool_result が欠落し次ターンの API が壊れるため、
+      // error tool_result を返してペアリングを保つ（security review F-2）。
+      if (!declaredToolNames.has(tu.name)) {
+        const msg = `Tool not available this turn: ${tu.name}`;
+        const rejected: ToolResult = {
+          toolCallId: tu.id,
+          name: tu.name,
+          content: null,
+          summary: msg,
+          tokensUsed: 0,
+          error: msg,
+        };
+        const record: ToolCallRecord = {
+          name: tu.name,
+          params: tu.input,
+          resultSummary: msg,
+          tokensUsed: 0,
+        };
+        toolCallRecords.push(record);
+        onToolComplete?.(record);
+        toolResults.push(rejected);
+        continue;
       }
 
       onProgress({

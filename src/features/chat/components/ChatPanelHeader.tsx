@@ -356,12 +356,15 @@ export function ChatPanelHeader({
           aria-label={
             ragEnabled ? t("chat.webSearch.on") : t("chat.webSearch.off")
           }
+          // 第三者送信の開示は title (ホバー専用) に頼らず aria-describedby で
+          // スクリーンリーダー/タッチにも到達させる（security review F-1）。
+          aria-describedby={ragDisabled ? undefined : "rag-egress-note"}
           title={
             ragDisabled
               ? (ragDisabledReason ?? t("chat.webSearch.unavailable"))
-              : ragEnabled
-                ? t("chat.webSearch.on")
-                : t("chat.webSearch.off")
+              : `${
+                  ragEnabled ? t("chat.webSearch.on") : t("chat.webSearch.off")
+                }\n${t("chat.webSearch.egressNote")}`
           }
           className={[
             "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
@@ -375,6 +378,10 @@ export function ChatPanelHeader({
           <Globe2 className="h-3 w-3 shrink-0" />
           <span>{t("chat.webSearch.label")}</span>
         </button>
+        {/* aria-describedby の参照先。検索クエリが第三者へ送られる旨の開示。 */}
+        <span id="rag-egress-note" className="sr-only">
+          {t("chat.webSearch.egressNote")}
+        </span>
       </div>
 
       <div className="flex shrink-0 items-center gap-1">

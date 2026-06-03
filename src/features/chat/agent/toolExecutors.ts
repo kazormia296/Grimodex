@@ -928,7 +928,23 @@ type Executor = (
   params: Record<string, unknown>,
 ) => Promise<Omit<ToolResult, "toolCallId">>;
 
-const EXECUTORS: Record<string, Executor> = {
+/**
+ * ツール名 → executor の dispatch マップ。
+ *
+ * 契約（security review F-2）: **ここに載る executor は全て read-only でなければ
+ * ならない**。本文・DB を変更する mutating tool を追加する場合は、必ず次の 3 点を
+ * 同時に満たすこと:
+ *   1. `toolExecutors.test.ts` の read-only allowlist テストを更新する
+ *      （allowlist を更新しないとテストが落ちるので、追加が意識的になる）。
+ *   2. `agentLoop.ts` の declaredToolNames ゲートにより、その mutating tool が
+ *      宣言されたターンでのみ発火することを確認する。
+ *   3. AiPolicy bodyWrite ゲート（[[grimodex-bodywrite-chat-suppression]]）と連動させ、
+ *      bodyWrite=off のとき呼ばれない／無効化されることを保証する。
+ *
+ * `ask_user` は意図的にここに含めない（mutating ではなく、chatStore の
+ * guardedExecuteTool が UI 往復として横取りする）。
+ */
+export const EXECUTORS: Record<string, Executor> = {
   search_codex: searchCodex,
   list_codex_by_type: listCodexByType,
   get_codex_entry: getCodexEntry,
@@ -944,6 +960,8 @@ const EXECUTORS: Record<string, Executor> = {
   get_foreshadow_detail: getForeshadowDetail,
   get_scene_timeline_neighbors: getSceneTimelineNeighbors,
 };
+// 実行時の mutation を封じる（read-only 不変条件の defense-in-depth）。
+Object.freeze(EXECUTORS);
 
 /** Execute a named tool and return a ToolResult (always succeeds — errors are wrapped). */
 export async function executeTool(

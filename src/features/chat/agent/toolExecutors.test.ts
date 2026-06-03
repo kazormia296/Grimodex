@@ -45,7 +45,51 @@ vi.mock("../contextBuilder", () => ({
   countTokens: (s: string) => (s ? s.length : 0),
 }));
 
-import { executeTool } from "./toolExecutors";
+import { executeTool, EXECUTORS } from "./toolExecutors";
+import { getDeterministicAgentTools } from "./toolDefinitions";
+
+// ── read-only allowlist 不変条件 (security review F-2) ───────────────────────
+// EXECUTORS は read-only ツールのみで構成される契約。mutating executor を追加
+// すると下記 allowlist テストが落ち、agentLoop の宣言ゲート / AiPolicy bodyWrite
+// 連動の再確認を強制する。
+describe("EXECUTORS — read-only allowlist invariant", () => {
+  // 凍結された期待リスト。新ツール追加でここを更新する＝意識的な追加になる。
+  const EXPECTED_EXECUTOR_NAMES = [
+    "find_related_entries",
+    "get_chapter_summaries",
+    "get_codex_entry",
+    "get_foreshadow_detail",
+    "get_scene",
+    "get_scene_timeline_neighbors",
+    "list_chapters",
+    "list_codex_by_type",
+    "list_codex_tags",
+    "list_open_foreshadows",
+    "search_codex",
+    "search_codex_by_tags",
+    "search_scenes",
+    "search_snippets",
+  ];
+
+  it("matches the frozen read-only allowlist exactly", () => {
+    expect(Object.keys(EXECUTORS).sort()).toEqual(EXPECTED_EXECUTOR_NAMES);
+  });
+
+  it("covers every non-ask_user AGENT_TOOL and excludes ask_user", () => {
+    const executorNames = new Set(Object.keys(EXECUTORS));
+    const dataToolNames = getDeterministicAgentTools()
+      .map((t) => t.name)
+      .filter((n) => n !== "ask_user");
+    const missing = dataToolNames.filter((n) => !executorNames.has(n));
+    expect(missing).toEqual([]);
+    // ask_user は mutating ではないが executor を持たない（guardedExecuteTool が横取り）。
+    expect(executorNames.has("ask_user")).toBe(false);
+  });
+
+  it("is frozen against runtime mutation", () => {
+    expect(Object.isFrozen(EXECUTORS)).toBe(true);
+  });
+});
 
 describe("executeTool — Phase 3 dispatch", () => {
   beforeEach(() => {
