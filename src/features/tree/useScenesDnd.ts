@@ -11,6 +11,7 @@ import type {
   DragMoveEvent,
 } from "@dnd-kit/core";
 import { cmpKeys } from "./fractionalIndex";
+import { resolveTreeDropZone, type TreeDropPosition } from "./treeDropZone";
 import { canHaveChildren, useTreeStore } from "./treeStore";
 import type { TreeNodeData } from "./treeStore";
 import type { DropIndicator } from "./TreeNodeItem";
@@ -90,19 +91,13 @@ export function useScenesDnd({
 
       const overRect = over.rect;
       const pointerY = pointerYRef.current;
-      let position: "before" | "after" | "inside" = "after";
-      if (overRect) {
-        const isContainer = overNode.nodeType === "folder";
-        const relY = pointerY - overRect.top;
-        const h = overRect.height;
-        if (isContainer) {
-          if (relY < h * 0.25) position = "before";
-          else if (relY > h * 0.75) position = "after";
-          else position = "inside";
-        } else {
-          position = relY < h / 2 ? "before" : "after";
-        }
-      }
+      const position: TreeDropPosition = overRect
+        ? resolveTreeDropZone(
+            pointerY,
+            overRect,
+            overNode.nodeType === "folder",
+          )
+        : "after";
 
       let newParentId: string | null;
       let afterId: string | null;
@@ -181,17 +176,11 @@ export function useScenesDnd({
         return;
       }
       const pointerY = pointerYRef.current;
-      const isContainer = overNode.nodeType === "folder";
-      const relY = pointerY - overRect.top;
-      const h = overRect.height;
-      let position: "before" | "after" | "inside";
-      if (isContainer) {
-        if (relY < h * 0.25) position = "before";
-        else if (relY > h * 0.75) position = "after";
-        else position = "inside";
-      } else {
-        position = relY < h / 2 ? "before" : "after";
-      }
+      const position = resolveTreeDropZone(
+        pointerY,
+        overRect,
+        overNode.nodeType === "folder",
+      );
       setDropIndicator({ nodeId: overId, position });
     },
     [nodeMap, flatNodes],
