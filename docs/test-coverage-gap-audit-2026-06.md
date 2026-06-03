@@ -43,14 +43,17 @@
 | 2 | **MatrixTable** 列ヘッダー横スクロール同期 | browser-geometry（実装済 ✅ `MatrixTable.browser.test.tsx`） | 4d947fbe が**この invariant 専用の fix**。実装の要点: ① test-setup-browser の virtualizer global mock を **importOriginal で実物に上書き**（windowing assertion が番人）② sync を潰すと追従テストが落ちる差分検証済 ③ 測定用 `data-testid` を4つ追加。header rect.left == body rect.left をスクロール後も assert。 | **6** |
 | 3 | **useBeatDragDrop** onDragEnd 全分岐 | happy-dom×3 + browser-geometry×1（実装済 ✅ `useBeatDragDrop.test.ts` / `.browser.test.tsx`） | **層判定を訂正**: 当初「50ccdb57 で再発した geometry 分岐を browser で gate」としたが、`git show 50ccdb57` で確認すると同 commit が直したのは **unplaced reorder / useDroppable 登録 / collision fallback**（=`posAtCoords` を使わない側）。よって ① bug 履歴のある reorder/unplace/place-at-end の 3 分岐は **happy-dom** で gate（renderHook + 合成 DragEndEvent、reorder を潰すと落ちる差分検証済）② `posAtCoords` placed-move 分岐のみ **browser**（履歴無しの browser-only 新規カバレッジ。固定 pos を食わせると落ちる差分検証で beatOperations.test との非重複を確認）。 | **6** |
 
-## Tier B — やってよいが二次的 / 設計判断あり
+## Tier B — 完了（4/4 実装済）
 
-| # | 対象 | 層 | 備考 | 優先 |
-|---|------|----|------|------|
-| 5 | **ContextBar** pill overflow grouping | browser-geometry | **coverage INVERSION**: 既存テストは prod が到達しない count-fallback だけ gate、実トリガ（width overflow）は完全未カバー。ただし bug 履歴は無し。 | 5 |
-| 6 | **SpotlightOverlay** (onboarding) hole/card 配置 | browser-geometry | 3945498d 位置ずれ fix + MutationObserver timing workaround。初回限定・cosmetic なので優先は下げてよい。fixture 作りに手間。 | 6→低 |
-| 7 | **usePanelDropdownPointerDrag** dropdown→region drop | storybook-play | stripe-icon 経路は `CrossRegionMove` story で既に gate 済、これは**別 hook の別経路**。`elementFromPoint` が test-setup で null stub されており unit 不可。 | 5 |
-| 8 | **TrashBinPhysicsView** drag-to-panel pickup | storybook-play | hand-rolled pointer-capture drag（dnd-kit 非依存）、16 commits（5b860caa clamp 等）。ただし **full gesture は flaky risk**、verifier の層判定は advisor 未クロスチェック。慎重に。 | 7→要検討 |
+実装の総括: 監査の層判定を **2件で訂正**（#7 storybook-play→happy-dom、#8 storybook-play→hitTest happy-dom seam）。
+いずれも「最も決定的で安い層」を実測で選び、差分検証で gate 成立を確認。各々を honest にスコープ（browser 統合や flaky gesture は対象外と明記）。
+
+| # | 対象 | 確定した層 | gate（差分検証） |
+|---|------|-----------|-----------------|
+| 5 | **ContextBar** pill overflow grouping | browser-geometry ✅ `ContextBar.browser.test.tsx` | **coverage INVERSION** 是正。count fallback と反転する 2 ケース(中幅×6→group / 広幅×8→個別)を実幅で。width→count 差し替えで両方落ちる。col 潰れ(=fallback 再来)回避の中間幅を実測。 |
+| 6 | **SpotlightOverlay/カード配置** | happy-dom（純関数抽出）✅ `spotlight.test.ts` / `cardPlacement.test.ts` | onboarding テストゼロ→ buildFocusClipPath/boundingRect/computeCardStyle を gate。computeCardStyle は UI 依存から `cardPlacement.ts` へ挙動不変で抽出。**browser 実 rect 統合は ROI 低で defer**(幾何は pure 側で gate 済)。 |
+| 7 | **usePanelDropdownPointerDrag** dropdown→region drop | ~~storybook-play~~ → **happy-dom** ✅ `PanelToggleDropdown.test.tsx` | **層訂正**: 未カバーは drop 配線のみ(閾値/toggle/lock/target解決/実geometry着地は既存カバー)。browser専用 resolveDropTargetFromPoint だけ stub し gate。drop を潰すと当該テストだけ落ちる。 |
+| 8 | **TrashBinPhysicsView** pickup | ~~storybook-play~~ → **happy-dom seam** ✅ `dropTargetRegistry.test.ts` | **層訂正**: load-bearing な hitTest(containment + z-order)を合成 DOMRect で決定的に gate。.reverse() を外すと z-order 落ちる。**flaky な pointer gesture 本体は非対象**(回帰履歴も座標/クランプ側で hitTest 幾何には無し)。 |
 
 ## Tier C — まず happy-dom 純関数抽出（browser 化はその後・限定的）
 
