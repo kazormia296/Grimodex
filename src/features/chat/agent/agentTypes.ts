@@ -1,9 +1,14 @@
 // LLMに送るツールパラメータスキーマ (JSON Schema サブセット)
+// items / properties で再帰でき、ネストした array<object> を表現できる。
+// 既存ツール定義 (`items: { type: string }`) は本型のサブセットなので後方互換。
 export interface ToolParameterSchema {
   type: string;
-  description: string;
-  items?: { type: string };
+  /** ネストしたプロパティでは省略可。トップレベルは付けるのが望ましい。 */
+  description?: string;
+  items?: ToolParameterSchema;
   enum?: string[];
+  properties?: Record<string, ToolParameterSchema>;
+  required?: string[];
 }
 
 // LLMに送るツール定義
@@ -90,4 +95,46 @@ export interface AgentLoopProgress {
   tokensUsed: number;
   tokenBudget: number;
   currentToolName?: string;
+}
+
+// ── ask_user（ユーザーへの質問）ツール ───────────────────────────────────────
+
+/** 1 質問の回答形式。single=単一選択 / multi=複数選択 / text=自由記述。 */
+export type AskUserQuestionKind = "single" | "multi" | "text";
+
+/** 正規化済みの 1 質問仕様（normalizeAskUserSpec の出力）。 */
+export interface AskUserQuestionSpec {
+  question: string;
+  /** UI 用の短い見出し（任意）。 */
+  header?: string;
+  kind: AskUserQuestionKind;
+  /** single/multi の選択肢。text では空配列。 */
+  options: string[];
+  /** single/multi に「その他（自由記述）」を許すか。 */
+  allowFreeText: boolean;
+}
+
+/** 1 回の ask_user 呼び出しが内包する質問群。 */
+export interface AskUserSpec {
+  questions: AskUserQuestionSpec[];
+}
+
+/** 1 質問に対するユーザーの回答。 */
+export interface UserQuestionAnswer {
+  questionIndex: number;
+  header?: string;
+  question: string;
+  /** single/multi の選択結果（single は length<=1）。 */
+  selected?: string[];
+  /** text 回答、または single/multi の「その他」自由記述。 */
+  text?: string;
+}
+
+/** ask_user ツールが LLM に返す tool_result content。 */
+export interface AskUserContent {
+  answers: UserQuestionAnswer[];
+  /** ユーザーが回答せず棄却（Skip / Stop）した場合 true。 */
+  dismissed?: boolean;
+  /** dismissed 時に LLM へ渡す制御メッセージ。 */
+  note?: string;
 }

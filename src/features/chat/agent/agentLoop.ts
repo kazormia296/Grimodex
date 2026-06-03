@@ -12,6 +12,15 @@ import type {
 import { ensureTokenizer } from "../contextBuilder";
 
 const MAX_TOOL_CALLS = 10;
+/**
+ * ask_user（ユーザーへの質問）の 1 ターンあたり上限。データ取得ツールの
+ * MAX_TOOL_CALLS とは別カウント。適応的な多段質問を許しつつ、質問の連打／
+ * 無限ループを抑止する。
+ */
+const MAX_USER_QUESTIONS = 8;
+
+/** ユーザーへの質問ツール名（totalCalls から除外し別カウントする）。 */
+const ASK_USER_TOOL = "ask_user";
 
 export interface AgentLoopOptions {
   messages: AgentMessagePayload[];
@@ -29,9 +38,20 @@ export interface AgentLoopOptions {
   onProgress: (progress: AgentLoopProgress) => void;
   onToolComplete?: (record: ToolCallRecord) => void;
   onTextChunk: (text: string) => void;
+  /**
+   * 中断要求。ツール実行直後とループ先頭で参照し、true なら tool_result を
+   * 送らずに即 return する。Stop / セッション切替で立てる。stop が agent path
+   * (非ストリーミング invoke) を止められない問題への正攻法。
+   */
+  shouldAbort?: () => boolean;
   /** 言語別制御メッセージ（getPromptCatalog(lang).agentControl から渡す） */
   callLimitMessage: string;
   tokenBudgetMessage: string;
+  /**
+   * ユーザーへの質問回数上限に達したときの制御メッセージ。ask_user を公開しない
+   * 呼び出し元（Context Creator 等）では省略可。未指定時は callLimitMessage に倒す。
+   */
+  userQuestionLimitMessage?: string;
 }
 
 export interface AgentLoopResult {
@@ -95,10 +115,16 @@ export async function runAgentLoop(
   const conversation: AgentMessagePayload[] = [...options.messages];
   const toolCallRecords: ToolCallRecord[] = [];
   let totalCalls = 0;
+  let userQuestionCalls = 0;
   let totalTokens = 0;
   let limitMessageInserted = false;
 
   while (true) {
+    // 次の LLM 呼び出し前に中断確認（Stop 後に新ターンを発火させない）。
+    if (options.shouldAbort?.()) {
+      return { finalText: "", toolCallRecords, finalThinkingBlocks: [] };
+    }
+
     const response = await sendToLLM(conversation, tools);
 
     // Collect any text blocks from this response
@@ -162,7 +188,13 @@ export async function runAgentLoop(
     // Execute each tool
     const toolResults: ToolResult[] = [];
     for (const tu of toolUses) {
-      totalCalls++;
+      // ask_user はデータ取得予算 (MAX_TOOL_CALLS) を消費せず別枠でカウント。
+      // 適応的な多段質問が data fetch 予算を食い潰さないようにするため。
+      if (tu.name === ASK_USER_TOOL) {
+        userQuestionCalls++;
+      } else {
+        totalCalls++;
+      }
 
       onProgress({
         totalCalls,
@@ -173,6 +205,17 @@ export async function runAgentLoop(
       });
 
       const result = await executeTool(tu.name, tu.id, tu.input);
+
+      // ツール実行中に Stop / セッション切替が入った場合は、tool_result を
+      // 積まずに即終了する（積むと次ターンの sendToLLM が再発火し暴走する）。
+      if (options.shouldAbort?.()) {
+        return {
+          finalText: textContent,
+          toolCallRecords,
+          finalThinkingBlocks: currentThinkingBlocks,
+        };
+      }
+
       totalTokens += result.tokensUsed;
 
       const record: ToolCallRecord = {
@@ -208,11 +251,17 @@ export async function runAgentLoop(
     });
 
     // Check limits — insert system message then let LLM respond once more
-    if (totalCalls >= MAX_TOOL_CALLS || totalTokens >= tokenBudget) {
+    if (
+      totalCalls >= MAX_TOOL_CALLS ||
+      totalTokens >= tokenBudget ||
+      userQuestionCalls >= MAX_USER_QUESTIONS
+    ) {
       const limitMsg =
-        totalCalls >= MAX_TOOL_CALLS
-          ? options.callLimitMessage
-          : options.tokenBudgetMessage;
+        userQuestionCalls >= MAX_USER_QUESTIONS
+          ? (options.userQuestionLimitMessage ?? options.callLimitMessage)
+          : totalCalls >= MAX_TOOL_CALLS
+            ? options.callLimitMessage
+            : options.tokenBudgetMessage;
       conversation.push({ role: "user", content: limitMsg });
       limitMessageInserted = true;
     }

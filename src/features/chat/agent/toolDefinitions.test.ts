@@ -17,4 +17,17 @@ describe("toolDefinitions", () => {
     const again = snapshotAgentTools();
     expect(again[0]!.description).not.toBe("mutated");
   });
+
+  it("preserves ask_user's nested questions[] schema after sort + clone", () => {
+    const askUser = snapshotAgentTools().find((t) => t.name === "ask_user");
+    expect(askUser).toBeDefined();
+    const questions = askUser!.inputSchema.properties.questions;
+    expect(questions.type).toBe("array");
+    const itemProps = questions.items?.properties;
+    expect(itemProps).toBeDefined();
+    expect(itemProps!.question.type).toBe("string");
+    expect(itemProps!.kind.enum).toEqual(["single", "multi", "text"]);
+    expect(itemProps!.options.items?.type).toBe("string");
+    expect(questions.items?.required).toEqual(["question", "kind"]);
+  });
 });

@@ -284,6 +284,91 @@ describe("useChatStore", () => {
     });
   });
 
+  // ask_user の回答待ち中に起きる「非自発的キャンセル」経路の配線テスト。
+  // ループ自体の中断（shouldAbort → 再発火しない）は agentLoop.test.ts で gate
+  // 済み。ここではセッション切替 / Stop が回答待ちを残さず畳むことを保証する
+  // （切替時に pending を残すと別セッションへカードが漏れ、resolver もリークする）。
+  describe("ask_user cancellation wiring", () => {
+    const makePending = (sessionId: string | null) => ({
+      sessionId,
+      toolCallId: "tc-1",
+      spec: {
+        questions: [
+          {
+            question: "Q",
+            kind: "text" as const,
+            options: [],
+            allowFreeText: false,
+          },
+        ],
+      },
+      dismissNote: "DISMISS",
+    });
+
+    it("clears a pending question when switching to another session", async () => {
+      useChatStore.setState({ sessions: [session1, session2] });
+      mockListMessages.mockResolvedValueOnce([]);
+      useChatStore.setState({
+        activeSessionId: "session-1",
+        pendingUserQuestion: makePending("session-1"),
+      });
+
+      await useChatStore.getState().selectSession("session-2");
+
+      expect(useChatStore.getState().pendingUserQuestion).toBeNull();
+    });
+
+    it("clears a pending question when switching to null", async () => {
+      useChatStore.setState({
+        activeSessionId: "session-1",
+        pendingUserQuestion: makePending("session-1"),
+      });
+
+      await useChatStore.getState().selectSession(null);
+
+      expect(useChatStore.getState().pendingUserQuestion).toBeNull();
+    });
+
+    it("clears a pending question and stops streaming on stopGeneration", () => {
+      useChatStore.setState({
+        activeSessionId: "session-1",
+        isStreaming: true,
+        pendingUserQuestion: makePending("session-1"),
+      });
+
+      useChatStore.getState().stopGeneration();
+
+      const state = useChatStore.getState();
+      expect(state.pendingUserQuestion).toBeNull();
+      expect(state.isStreaming).toBe(false);
+    });
+
+    it("ignores a resolve targeting a different session (no-op)", () => {
+      useChatStore.setState({
+        activeSessionId: "session-2",
+        pendingUserQuestion: makePending("session-1"),
+      });
+
+      useChatStore.getState().resolveUserQuestion({ answers: [] });
+
+      // session 不一致 → 適用せず pending を残す。
+      expect(useChatStore.getState().pendingUserQuestion).not.toBeNull();
+    });
+
+    it("clears a pending question when the answering session matches", () => {
+      useChatStore.setState({
+        activeSessionId: "session-1",
+        pendingUserQuestion: makePending("session-1"),
+      });
+
+      useChatStore.getState().resolveUserQuestion({
+        answers: [{ questionIndex: 0, question: "Q", text: "A" }],
+      });
+
+      expect(useChatStore.getState().pendingUserQuestion).toBeNull();
+    });
+  });
+
   describe("createNewSession", () => {
     it("creates a session and selects it", async () => {
       mockCreateSession.mockResolvedValueOnce(session1);

@@ -18,6 +18,7 @@ import { ChatMessageContextMenu } from "./components/ChatMessageContextMenu";
 import { ChatPanelHeader } from "./components/ChatPanelHeader";
 import { ChatInput, restoreSceneMentionChips } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
+import { UserQuestionCard } from "./components/UserQuestionCard";
 import { QuickActionStrip } from "./components/QuickActionStrip";
 import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
@@ -88,6 +89,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentMode = useChatStore((s) => s.agentMode);
   const agentProgress = useChatStore((s) => s.agentProgress);
+  const pendingUserQuestion = useChatStore((s) => s.pendingUserQuestion);
+  const resolveUserQuestion = useChatStore((s) => s.resolveUserQuestion);
+  const dismissUserQuestion = useChatStore((s) => s.dismissUserQuestion);
   const loadSessions = useChatStore((s) => s.loadSessions);
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
@@ -824,7 +828,16 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
                   </motion.div>
                 ))}
             </AnimatePresence>
-            {isStreaming && (
+            {pendingUserQuestion &&
+              pendingUserQuestion.sessionId === activeSessionId && (
+                <UserQuestionCard
+                  key={pendingUserQuestion.toolCallId}
+                  spec={pendingUserQuestion.spec}
+                  onSubmit={resolveUserQuestion}
+                  onSkip={dismissUserQuestion}
+                />
+              )}
+            {isStreaming && !pendingUserQuestion && (
               <div
                 data-testid="streaming-indicator"
                 className="flex items-center gap-1 text-muted-foreground"
@@ -845,7 +858,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         </div>
       )}
 
-      {agentProgress && isStreaming && (
+      {agentProgress && isStreaming && !pendingUserQuestion && (
         <AgentProgressBar
           calls={agentProgress.totalCalls}
           maxCalls={agentProgress.maxCalls}

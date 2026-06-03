@@ -212,6 +212,55 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
       required: ["sceneId"],
     },
   },
+
+  // ── ユーザーへの質問 ──────────────────────────────────────────────────────
+  {
+    name: "ask_user",
+    description:
+      "Ask the user one or more questions and WAIT for their answer before continuing. The conversation pauses; the user replies inline, and their answer is returned to you as the tool result. Use this only to resolve a genuine fork you cannot settle yourself: an ambiguous instruction, a branching creative choice (e.g. which of two plot directions), or a confirmation before a consequential action. Do NOT ask when a sensible default exists, when the answer is inferable from context, or just to seem collaborative — unnecessary questions interrupt the writer's flow. Bundle related questions into a single call (the `questions` array) rather than asking one at a time. Prefer `single`/`multi` with concrete options over open `text` when the choices are knowable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        questions: {
+          type: "array",
+          description: "One or more questions to ask the user.",
+          items: {
+            type: "object",
+            properties: {
+              question: {
+                type: "string",
+                description: "The question text shown to the user.",
+              },
+              header: {
+                type: "string",
+                description:
+                  "Optional short label (a few words) used as the question's heading in the UI.",
+              },
+              kind: {
+                type: "string",
+                enum: ["single", "multi", "text"],
+                description:
+                  "Answer format: 'single' = pick one option, 'multi' = pick any number of options, 'text' = free-form text.",
+              },
+              options: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Choices for 'single'/'multi'. Required for those kinds; omit for 'text'.",
+              },
+              allowFreeText: {
+                type: "boolean",
+                description:
+                  "For 'single'/'multi', also offer an 'Other' field so the user can type an answer not in the options.",
+              },
+            },
+            required: ["question", "kind"],
+          },
+        },
+      },
+      required: ["questions"],
+    },
+  },
 ];
 
 /** Sort object keys recursively for deterministic JSON schema. */

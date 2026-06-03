@@ -46,6 +46,12 @@ import { runAgentLoop } from "./agent/agentLoop";
 import { executeTool } from "./agent/toolExecutors";
 import { snapshotAgentTools } from "./agent/toolDefinitions";
 import {
+  buildAskUserResult,
+  dismissedAskUserResult,
+  invalidAskUserResult,
+  normalizeAskUserSpec,
+} from "./agent/askUser";
+import {
   getToolTokenBudget,
   buildThinkingParams,
   getEffortForTask,
@@ -75,7 +81,25 @@ import type {
   ToolCallRecord,
   AgentLoopProgress,
   AgentToolDefinition,
+  AskUserContent,
+  AskUserSpec,
+  ToolResult,
 } from "./agent/agentTypes";
+
+/**
+ * 回答待ちのユーザー質問。renderable なデータのみを store state に置き、
+ * 実際の resolve クロージャは module-local (_resolveUserQuestion) に退避する
+ * （_streamCleanup / _flushPendingDelta と同じ流儀。シリアライズ不可な関数を
+ * Zustand state に入れない）。
+ */
+export interface PendingUserQuestion {
+  /** ask 発行時の activeSessionId（セッション未確立時は null）。回答適用時の整合性チェックに使う。 */
+  sessionId: string | null;
+  toolCallId: string;
+  spec: AskUserSpec;
+  /** dismiss / abort 時に LLM へ返す制御メッセージ（ask 時の言語で確定）。 */
+  dismissNote: string;
+}
 import {
   useTreeStore,
   getAncestorFolders,
@@ -392,6 +416,16 @@ interface ChatState {
   agentMode: boolean;
   agentProgress: AgentLoopProgress | null;
   setAgentMode: (on: boolean) => void;
+
+  // ask_user（ユーザーへの質問）— 回答待ち状態と解決アクション
+  pendingUserQuestion: PendingUserQuestion | null;
+  /** UI からの回答適用。session 不一致なら no-op。 */
+  resolveUserQuestion: (answer: AskUserContent) => void;
+  /** Skip（回答せず棄却）。dismissed sentinel で解決する。 */
+  dismissUserQuestion: () => void;
+  /** 内部: 全終了経路（Stop / セッション切替 / error）から pending を sentinel
+   * 解決し、awaiting 中のループを確実に unblock する単一ファネル。 */
+  _cancelPendingUserQuestion: () => void;
 
   // Chat scope — Scene / Folder (Chapter or Act) / Project の3軸統一。
   // Globe トグルを置き換え、outline 階層に沿ってどこまで context に含めるかを
@@ -1136,6 +1170,12 @@ let _flushPendingDelta: (() => void) | null = null;
 // Debounce timer for refreshContextLayers when input-detected entry IDs change.
 // Token counting (WASM tiktoken) は同期で長文 scene でも数百 ms。打鍵が落ち着いてから走らせる。
 let _inputPinnedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+// ask_user の遅延 Promise を解決するクロージャ（guardedExecuteTool が設定）。
+// シリアライズ不可なので state ではなく module-local に持つ。
+let _resolveUserQuestion: ((result: ToolResult) => void) | null = null;
+// agent ループの中断要求フラグ。Stop / セッション切替で true にし、runAgentLoop
+// の shouldAbort から参照する（stop が agent path を止められない問題への対処）。
+let _agentAborted = false;
 
 // ---------------------------------------------------------------------------
 // Shared scene context builder — used by both sendMessage and buildPromptForCopy
@@ -1882,6 +1922,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   inputPinnedEntryIds: [],
   agentMode: false,
   agentProgress: null,
+  pendingUserQuestion: null,
   chatScope: "scene",
   scopeAnchorId: null,
   includeBodies: true,
@@ -2012,6 +2053,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   selectSession: async (sessionId: string | null) => {
+    // セッションを切り替える前に、回答待ちの ask_user を sentinel 解決して
+    // resolver リーク・別セッションでのカード誤表示を防ぐ（null/切替の両分岐共通）。
+    get()._cancelPendingUserQuestion();
     if (sessionId === null) {
       set({
         activeSessionId: null,
@@ -2507,11 +2551,40 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // aliases が注入されているエントリ」に対して呼ばれた場合は、
         // executor (DB アクセス) を呼ばずスタブを返す。LLM はプロンプト
         // 指示に従わず再 fetch しがちなため、ランタイム側で受け止める。
+        const agentControl = getPromptCatalog(
+          projectCtx?.language ?? "ja",
+        ).agentControl;
+
         const guardedExecuteTool: typeof executeTool = async (
           name,
           toolCallId,
           params,
         ) => {
+          // ask_user: 遅延 Promise を返し、UI の回答で resolve されるまでループを
+          // 待機させる。resolve クロージャは module-local に退避し、renderable な
+          // 仕様のみ state に置く。
+          if (name === "ask_user") {
+            const spec = normalizeAskUserSpec(params);
+            if (!spec) {
+              return invalidAskUserResult(
+                toolCallId,
+                "ask_user requires a non-empty questions[] array.",
+              );
+            }
+            const sessionId = get().activeSessionId;
+            const dismissNote = agentControl.userDismissMessage;
+            return await new Promise<ToolResult>((resolve) => {
+              _resolveUserQuestion = resolve;
+              set({
+                pendingUserQuestion: {
+                  sessionId,
+                  toolCallId,
+                  spec,
+                  dismissNote,
+                },
+              });
+            });
+          }
           if (name === "get_codex_entry") {
             const id = String(params?.["id"] ?? "");
             if (id && fullyInjectedIds.has(id)) {
@@ -2531,17 +2604,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           return executeTool(name, toolCallId, params);
         };
 
-        const agentControl = getPromptCatalog(
-          projectCtx?.language ?? "ja",
-        ).agentControl;
         const agentTools =
           get().sessionAgentToolsSnapshot ?? snapshotAgentTools();
+        // 中断フラグをこのターンの開始時にリセット（前ターンの取り残しを排除）。
+        _agentAborted = false;
         const { toolCallRecords, finalThinkingBlocks } = await runAgentLoop({
           messages: agentMsgs,
           tools: agentTools,
           tokenBudget,
+          shouldAbort: () => _agentAborted,
           callLimitMessage: agentControl.callLimitMessage,
           tokenBudgetMessage: agentControl.tokenBudgetMessage,
+          userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
           sendToLLM: (msgs, tools) =>
             chatApi.sendAgentMessage(
               msgs,
@@ -2663,6 +2737,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
         set({ error: msg });
       } finally {
+        // 例外で抜けた場合も含め、回答待ちの ask_user を確実に解決して
+        // awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
+        get()._cancelPendingUserQuestion();
+        _agentAborted = false;
         set({ isStreaming: false, agentProgress: null });
       }
       return;
@@ -3403,6 +3481,51 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   setAgentMode: (on: boolean) => set({ agentMode: on }),
+
+  // --- ask_user（ユーザーへの質問）の解決 ---
+  resolveUserQuestion: (answer: AskUserContent) => {
+    const pending = get().pendingUserQuestion;
+    if (!pending) return;
+    // ask 発行時と別セッションに切り替わっていたら適用しない
+    // （切替時は _cancelPendingUserQuestion が既に sentinel 解決しているはず）。
+    if (pending.sessionId !== get().activeSessionId) {
+      return;
+    }
+    const result = buildAskUserResult(
+      pending.toolCallId,
+      answer,
+      pending.dismissNote,
+    );
+    _resolveUserQuestion?.(result);
+    _resolveUserQuestion = null;
+    set({ pendingUserQuestion: null });
+  },
+
+  dismissUserQuestion: () => {
+    get().resolveUserQuestion({ answers: [], dismissed: true });
+  },
+
+  _cancelPendingUserQuestion: () => {
+    if (_resolveUserQuestion) {
+      // 非自発的キャンセル（Stop / セッション切替 / error）の単一ファネル。
+      // Promise を sentinel 解決するだけでは、再開したループが tool_result を
+      // 積んで次ターンを発火し、別セッションへ stream を漏らす。ここで中断
+      // フラグも立て、resolve で再開したループが shouldAbort を見て即 return
+      // するようにする。自発的な Answer/dismiss は resolveUserQuestion 経由で
+      // この関数を通らないため、フラグは立たずループは正常継続する。
+      _agentAborted = true;
+      const pending = get().pendingUserQuestion;
+      _resolveUserQuestion(
+        dismissedAskUserResult(
+          pending?.toolCallId ?? "ask_user_cancelled",
+          pending?.dismissNote ?? "",
+        ),
+      );
+      _resolveUserQuestion = null;
+    }
+    if (get().pendingUserQuestion) set({ pendingUserQuestion: null });
+  },
+
   setChatScope: (scope, anchorId) => {
     // scope === "folder" のとき anchorId 必須。空指定なら scene に fallback。
     // includeBodies は scope ごとのデフォルトに揃え直す: scene=true, folder=false。
@@ -3442,6 +3565,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   // --- P2-1: ストリーミング中断 ---
   stopGeneration: () => {
+    // agent ループの中断を要求してから、回答待ちの ask_user を sentinel 解決する。
+    // フラグを先に立てるので、resolve で再開したループは shouldAbort を見て
+    // tool_result を送らずに即 return する（stop が agent path を止められない
+    // 問題への対処）。フラグ→resolve の順序が肝。
+    _agentAborted = true;
     // CLI subprocess と HTTP ベースのストリームは別系統なので、
     // 現在のプロバイダに合わせた abort を発火する。両方発火しても害は無いが、
     // CLI 用フラグはアプリ全体で 1 つしかないため不要な reset を避ける。
@@ -3456,6 +3584,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     _flushPendingDelta = null;
     _streamCleanup?.();
     _streamCleanup = null;
+    get()._cancelPendingUserQuestion();
     set({ isStreaming: false, agentProgress: null });
   },
 

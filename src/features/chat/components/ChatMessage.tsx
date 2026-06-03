@@ -13,6 +13,7 @@ import { getModelCapabilities } from "../agent/modelLimits";
 import { useAiSettingsStore } from "../store";
 import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
+import { AnsweredQuestionBlock } from "./AnsweredQuestionBlock";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { SummaryBlock } from "./SummaryBlock";
 import {
@@ -189,9 +190,13 @@ function ChatMessageImpl({
             )}
             {toolCalls.length > 0 && (
               <div className="mb-2 space-y-1">
-                {toolCalls.map((record, i) => (
-                  <ToolCallBlock key={i} record={record} />
-                ))}
+                {toolCalls.map((record, i) =>
+                  record.name === "ask_user" ? (
+                    <AnsweredQuestionBlock key={i} record={record} />
+                  ) : (
+                    <ToolCallBlock key={i} record={record} />
+                  ),
+                )}
               </div>
             )}
             <div className="prose prose-sm max-w-none dark:prose-invert">
