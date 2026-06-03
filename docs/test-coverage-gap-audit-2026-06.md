@@ -55,13 +55,15 @@
 | 7 | **usePanelDropdownPointerDrag** dropdown→region drop | ~~storybook-play~~ → **happy-dom** ✅ `PanelToggleDropdown.test.tsx` | **層訂正**: 未カバーは drop 配線のみ(閾値/toggle/lock/target解決/実geometry着地は既存カバー)。browser専用 resolveDropTargetFromPoint だけ stub し gate。drop を潰すと当該テストだけ落ちる。 |
 | 8 | **TrashBinPhysicsView** pickup | ~~storybook-play~~ → **happy-dom seam** ✅ `dropTargetRegistry.test.ts` | **層訂正**: load-bearing な hitTest(containment + z-order)を合成 DOMRect で決定的に gate。.reverse() を外すと z-order 落ちる。**flaky な pointer gesture 本体は非対象**(回帰履歴も座標/クランプ側で hitTest 幾何には無し)。 |
 
-## Tier C — まず happy-dom 純関数抽出（browser 化はその後・限定的）
+## Tier C — 純関数抽出 → happy-dom（#9/#10 実装済、#11 は ROI 判定で defer）
 
-| # | 対象 | 方針 | 優先 |
-|---|------|------|------|
-| 9 | **GridPanel** collision detection + axis-lock | `gridCollisionDetection`（純関数だが未 export・未テスト）を**先に export して happy-dom unit**。live-rect 収集 + scroll 補正の glue だけが browser。drivability 未証明なので seam 抽出推奨。candidate のバグ履歴は perf 由来で inflate 気味。 | 5 |
-| 10 | **Tree ScenesPanel** dnd | zone 閾値 / multiselect sequencing / cmpKeys は**全部 happy-dom 可**（grid が純関数で証明済）。browser が要るのは transform 配下の DragOverlay portal offset（49b19a9c）の 1 invariant のみ。大半は unit work。 | 5 |
-| 11 | **Codex / CodexPanel / Matrix** 共通 virtualization windowing | browser 化するなら 3 つまとめて parametrize。**global の virtualizer mock を local unmock 必須**（しないと theater）。own-logic は薄く lib 依存大。 | 4 |
+「純関数抽出 → happy-dom」を 2 件で実施（抽出は挙動不変・DRY 改善も兼ねる）。browser の irreducible slice は honest に非対象化。
+
+| # | 対象 | 結果 | gate（差分検証） |
+|---|------|------|-----------------|
+| 9 | **GridPanel** collision detection | happy-dom ✅ `gridCollisionDetection.ts` / `.test.ts` | 未 export だった `gridCollisionDetection` を抽出。gap-snap(20px 境界)/同列ガード/X-padding/rectIntersection fallback の選別を合成 args で gate。20px→<0 で snap 落ちる。**live-rect/scroll glue は非対象**(browser・drivability 未証明)。 |
+| 10 | **Tree ScenesPanel** dnd | happy-dom ✅ `treeDropZone.ts` / 3 テスト | 二重定義の zone 判定を `treeDropZone.ts` へ集約し閾値 gate。multiselect sequencing(cmpKeys 昇順 + prevAfterId 連鎖)を renderHook で gate(sort 潰しで落ちる)。cmpKeys(全 sort の基盤・未テスト)も gate。**dnd-kit の over 解決は非対象**。 |
+| 11 | virtualization windowing | **defer（ROI 判定）** | windowing 自体は @tanstack/react-virtual の挙動（=lib テスト）。app-owned は scroll-to-entry の `findIndex + scrollToIndex + onScrollComplete` の薄い glue のみ。最も layout-coupled な **Matrix の実 windowing は #2 の scroll-sync テストが既に依存・gate 済**。専用の codex windowing browser テストは大半が lib 再検証 = coverage theater に近く ROI 低 → 見送り。 |
 
 ## critic 由来・低信頼（敵対的 verify 未通過 → Tier 入りは要追加検証）
 
