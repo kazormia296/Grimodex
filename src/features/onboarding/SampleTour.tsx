@@ -1,10 +1,4 @@
-import {
-  useState,
-  useMemo,
-  useRef,
-  useEffect,
-  type CSSProperties,
-} from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "motion/react";
 import { useGSAP } from "@gsap/react";
@@ -17,12 +11,8 @@ import { DURATIONS, EASINGS } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
 import type { PanelId } from "@/features/layout/layoutStore";
-import {
-  SpotlightOverlay,
-  useFocusRects,
-  boundingRect,
-  type FocusRect,
-} from "./spotlight";
+import { SpotlightOverlay, useFocusRects, type FocusRect } from "./spotlight";
+import { computeCardStyle, CARD_WIDTH } from "./cardPlacement";
 import {
   useSceneOpenGate,
   useEditorWriteGate,
@@ -188,61 +178,6 @@ interface TourCardProps {
   onNext: () => void;
   onSkip: () => void;
   onCreateWorkspace: () => void;
-}
-
-const CARD_WIDTH = 384;
-const CARD_GAP = 16;
-const VIEWPORT_PAD = 16;
-const CARD_ESTIMATED_HEIGHT = 200;
-
-function computeCardStyle(
-  focusRects: FocusRect[],
-  vw: number,
-  vh: number,
-  isEnd: boolean,
-): CSSProperties {
-  const r = boundingRect(focusRects);
-  if (isEnd || !r || !vw || !vh) {
-    return isEnd
-      ? { left: "50%", top: "50%", transform: "translate(-50%, -50%)" }
-      : { left: "50%", bottom: 24, transform: "translateX(-50%)" };
-  }
-  const clampTop = (t: number) =>
-    Math.max(
-      VIEWPORT_PAD,
-      Math.min(t, vh - CARD_ESTIMATED_HEIGHT - VIEWPORT_PAD),
-    );
-  const clampLeft = (l: number) =>
-    Math.max(VIEWPORT_PAD, Math.min(l, vw - CARD_WIDTH - VIEWPORT_PAD));
-
-  // Right of panel
-  const rightX = r.left + r.width + CARD_GAP;
-  if (rightX + CARD_WIDTH + VIEWPORT_PAD <= vw) {
-    return { left: rightX, top: clampTop(r.top) };
-  }
-  // Left of panel
-  const leftX = r.left - CARD_GAP - CARD_WIDTH;
-  if (leftX >= VIEWPORT_PAD) {
-    return { left: leftX, top: clampTop(r.top) };
-  }
-  // Below panel
-  const belowY = r.top + r.height + CARD_GAP;
-  if (belowY + CARD_ESTIMATED_HEIGHT + VIEWPORT_PAD <= vh) {
-    return {
-      left: clampLeft(r.left + r.width / 2 - CARD_WIDTH / 2),
-      top: belowY,
-    };
-  }
-  // Above panel
-  const aboveY = r.top - CARD_GAP - CARD_ESTIMATED_HEIGHT;
-  if (aboveY >= VIEWPORT_PAD) {
-    return {
-      left: clampLeft(r.left + r.width / 2 - CARD_WIDTH / 2),
-      top: aboveY,
-    };
-  }
-  // Fallback: bottom-center
-  return { left: "50%", bottom: 24, transform: "translateX(-50%)" };
 }
 
 function TourCard({
