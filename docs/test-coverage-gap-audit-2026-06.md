@@ -40,8 +40,8 @@
 | # | 対象 | 層 | 根拠 | 優先 |
 |---|------|----|------|------|
 | 1 | **MapHeader** ボード rename/create/delete popover | ~~storybook-play~~ → **happy-dom**（実装済 ✅ `MapHeader.test.tsx`） | 「popover 即閉じ」が **2回再発**（38e56bba / 0a4f5c60、setTimeout 誤診の false-start も）。**verifier の「browser-only / storybook-play」判定は論証ベースで、差分検証により覆った**: create(onSelect) と rename(F2) は happy-dom で fix を外すと落ちる＝gate 成立。よって storybook 不要・happy-dom で確定。caveat: hover アイコン onClick 経路と delete 確認(autofocus input 無し)は happy-dom で即閉じを駆動/再現しない→ canonical Radix 経路で核を gate、delete は flow テスト止まり。 | **7** |
-| 2 | **MatrixTable** 列ヘッダー横スクロール同期 | browser-geometry | 4d947fbe が**この invariant 専用の fix**。`vitest.browser.config` は `@tanstack/react-virtual` を optimizeDeps に既に用意済。header rect.left == body rect.left をスクロール後も assert。clean な geometry。 | **6** |
-| 3 | **useBeatDragDrop** placed-beat の geometry→pos | browser-geometry | 50ccdb57 で 2 件の silent-no-op 再発（inner DndContext が droppable を見えない / pointerWithin→rectIntersection fallback）。`posAtCoords` を **measured rect から決定的に**解決して assert（full dnd drag は避ける）…**※geometry→pos が browser-only な点は論証ベース**。 | **6** |
+| 2 | **MatrixTable** 列ヘッダー横スクロール同期 | browser-geometry（実装済 ✅ `MatrixTable.browser.test.tsx`） | 4d947fbe が**この invariant 専用の fix**。実装の要点: ① test-setup-browser の virtualizer global mock を **importOriginal で実物に上書き**（windowing assertion が番人）② sync を潰すと追従テストが落ちる差分検証済 ③ 測定用 `data-testid` を4つ追加。header rect.left == body rect.left をスクロール後も assert。 | **6** |
+| 3 | **useBeatDragDrop** onDragEnd 全分岐 | happy-dom×3 + browser-geometry×1（実装済 ✅ `useBeatDragDrop.test.ts` / `.browser.test.tsx`） | **層判定を訂正**: 当初「50ccdb57 で再発した geometry 分岐を browser で gate」としたが、`git show 50ccdb57` で確認すると同 commit が直したのは **unplaced reorder / useDroppable 登録 / collision fallback**（=`posAtCoords` を使わない側）。よって ① bug 履歴のある reorder/unplace/place-at-end の 3 分岐は **happy-dom** で gate（renderHook + 合成 DragEndEvent、reorder を潰すと落ちる差分検証済）② `posAtCoords` placed-move 分岐のみ **browser**（履歴無しの browser-only 新規カバレッジ。固定 pos を食わせると落ちる差分検証で beatOperations.test との非重複を確認）。 | **6** |
 
 ## Tier B — やってよいが二次的 / 設計判断あり
 
