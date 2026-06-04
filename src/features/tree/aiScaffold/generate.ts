@@ -1,0 +1,268 @@
+/**
+ * AI による tree scaffold/再編プランの生成 (案B)。
+ *
+ * generateAiBranchCards (map/mapAiApi.ts) を踏襲した one-shot 生成 —
+ * system+user メッセージを組み `send_chat_message` を直接呼ぶ(contextBuilder/
+ * agent ループを bypass)。Rust 側に JSON schema 強制は無いため、堅牢な手パースで
+ * `AiTreePlan` を取り出す。安全性(存在/型/循環/scope)の最終防壁は
+ * applyPlan.ts の validateAiTreePlan 側にある。
+ */
+import { invoke } from "@/lib/tauri";
+import { cmpKeys } from "../fractionalIndex";
+import type { TreeNodeData, NodeType } from "../treeStore";
+import type { AiTreePlan, AiTreeOp } from "./types";
+import { TEMP_ID_PREFIX } from "./types";
+
+interface LLMResponsePayload {
+  blocks: Array<
+    | { type: "text"; content: string }
+    | { type: "tool_use"; id: string; name: string; input: unknown }
+    | { type: "thinking"; content: string }
+  >;
+  stopReason: string;
+}
+
+export interface OutlineNode {
+  id: string;
+  title: string;
+  nodeType: NodeType;
+  synopsis: string | null;
+  depth: number;
+}
+
+export interface ProjectPromptContext {
+  title?: string;
+  genre?: string | null;
+  pov?: string | null;
+  tense?: string | null;
+  styleGuide?: string | null;
+  aiInstructions?: string | null;
+}
+
+export interface GenerateTreePlanInput {
+  kind: "scaffold" | "reorganize";
+  /** ユーザーの依頼(プレミス / 再編指示)。 */
+  instruction: string;
+  /** synopsis 生成トグル。ON のとき各 scene/folder に 1 行あらすじを付ける。 */
+  withSynopsis: boolean;
+  /** scope の root 配下(null=プロジェクト全体)の既存アウトライン文脈。 */
+  outline: OutlineNode[];
+  /** scope の root。新規ノードはここ(またはその配下/新規 folder)に入る。 */
+  rootRef: string | null;
+  project?: ProjectPromptContext | null;
+}
+
+/**
+ * treeStore.nodes から DFS pre-order の OutlineNode 列を作る。rootRef が null なら
+ * top-level から、非 null ならその folder の配下(自身は含めない)を返す。
+ * 全 nodeType(folder/scene/note)を含み、各レベル sortOrder 順。
+ */
+export function buildOutlineContext(
+  nodes: TreeNodeData[],
+  rootRef: string | null,
+): OutlineNode[] {
+  const childrenByParent = new Map<string | null, TreeNodeData[]>();
+  for (const n of nodes) {
+    const arr = childrenByParent.get(n.parentId) ?? [];
+    arr.push(n);
+    childrenByParent.set(n.parentId, arr);
+  }
+  for (const arr of childrenByParent.values()) {
+    arr.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+  }
+  const out: OutlineNode[] = [];
+  const guard = new Set<string>();
+  const walk = (parentId: string | null, depth: number) => {
+    for (const n of childrenByParent.get(parentId) ?? []) {
+      if (guard.has(n.id)) continue;
+      guard.add(n.id);
+      out.push({
+        id: n.id,
+        title: n.title,
+        nodeType: n.nodeType,
+        synopsis: n.synopsis,
+        depth,
+      });
+      if (n.nodeType === "folder") walk(n.id, depth + 1);
+    }
+  };
+  walk(rootRef, 0);
+  return out;
+}
+
+function buildSystemPrompt(input: GenerateTreePlanInput): string {
+  const p = input.project;
+  const lines: string[] = [
+    "あなたは小説のアウトライン構成を支援する AI です。物語の世界観・既存構造を尊重し、章/シーン/フォルダの構成案を JSON で返してください。",
+  ];
+  if (p) {
+    const info: string[] = [];
+    if (p.title) info.push(`- タイトル: ${p.title}`);
+    if (p.genre) info.push(`- ジャンル: ${p.genre}`);
+    if (p.pov) info.push(`- 視点: ${p.pov}`);
+    if (p.tense) info.push(`- 時制: ${p.tense}`);
+    if (info.length > 0) {
+      lines.push("", "# プロジェクト情報", ...info);
+    }
+    if (p.styleGuide?.trim()) {
+      lines.push("", "# 文体ガイド", p.styleGuide.trim());
+    }
+    if (p.aiInstructions?.trim()) {
+      lines.push("", "# 追加指示", p.aiInstructions.trim());
+    }
+  }
+  return lines.join("\n");
+}
+
+const TYPE_LABEL: Record<NodeType, string> = {
+  folder: "フォルダ",
+  scene: "シーン",
+  note: "ノート",
+};
+
+function renderOutline(outline: OutlineNode[]): string {
+  if (outline.length === 0) return "(現在このスコープは空です)";
+  return outline
+    .map((n) => {
+      const indent = "  ".repeat(n.depth);
+      const syn = n.synopsis?.trim() ? ` — ${n.synopsis.trim()}` : "";
+      return `${indent}- [${TYPE_LABEL[n.nodeType]}] id=${n.id} "${n.title}"${syn}`;
+    })
+    .join("\n");
+}
+
+function buildUserPrompt(input: GenerateTreePlanInput): string {
+  const parts: string[] = [];
+
+  parts.push("# 既存アウトライン");
+  parts.push(
+    input.rootRef
+      ? "以下は対象フォルダ配下の現在の構成です。既存ノードを参照するときは id をそのまま使ってください。"
+      : "以下はプロジェクト全体の現在の構成です。既存ノードを参照するときは id をそのまま使ってください。",
+  );
+  parts.push("");
+  parts.push(renderOutline(input.outline));
+  parts.push("");
+
+  parts.push("# 依頼");
+  if (input.kind === "scaffold") {
+    parts.push(
+      "既存構成を踏まえ、新しい章/シーンの構成を**追加生成**してください。既存ノードの移動やリネームはしないでください。",
+    );
+  } else {
+    parts.push(
+      "既存構成を、より良い物語順序・グルーピングへ**再編**してください。必要に応じて新しいフォルダの作成・既存ノードの移動・リネームを行います。既存ノードを削除はできません。",
+    );
+  }
+  parts.push("");
+  parts.push(
+    `依頼内容: ${input.instruction.trim() || "(指定なし — 妥当な構成を提案)"}`,
+  );
+  parts.push("");
+
+  parts.push("# 出力形式 (厳守)");
+  parts.push(
+    '次の JSON だけを返してください(前後に説明文やコードフェンスを付けない): {"ops": [ ... ]}',
+  );
+  parts.push("各 op は以下のいずれか:");
+  parts.push(
+    '- 新規作成: {"op":"create","tempId":"tmp:任意の一意なラベル","parentRef":"親のid または tmp:ラベル または null(=トップ)","nodeType":"folder|scene|note","title":"タイトル"' +
+      (input.withSynopsis ? ',"synopsis":"1〜2文のあらすじ"' : "") +
+      ',"pos":{"afterRef":"直後に置く兄弟のid/tmp、先頭なら null、省略で末尾"}}',
+  );
+  parts.push(
+    '- 移動: {"op":"move","nodeId":"既存ノードのid","newParentRef":"親のid/tmp/null","pos":{"afterRef":...}}',
+  );
+  parts.push(
+    '- リネーム: {"op":"rename","nodeId":"既存ノードのid","title":"新タイトル"}',
+  );
+  parts.push("");
+  parts.push("# ルール");
+  parts.push(
+    "- folder だけが子(章配下のシーン等)を持てます。scene/note の配下にノードを作らないこと。",
+  );
+  parts.push(
+    `- 新規ノードの tempId は必ず "${TEMP_ID_PREFIX}" で始め、op 間で一意にすること。`,
+  );
+  parts.push(
+    "- 既存ノードを指すときは上のアウトラインの id を正確に使うこと(でっち上げ禁止)。",
+  );
+  if (input.kind === "scaffold") {
+    parts.push("- move / rename は使わないこと(create のみ)。");
+  }
+  if (input.withSynopsis) {
+    parts.push("- 各 scene には簡潔な synopsis を付けること。");
+  }
+
+  return parts.join("\n");
+}
+
+/** LLM 応答テキストから JSON を取り出す。コードフェンス除去 + 最初の {…最後の } 抽出。 */
+function extractJson(text: string): unknown {
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fence ? fence[1] : text;
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error("AI 応答から JSON を抽出できませんでした");
+  }
+  return JSON.parse(candidate.slice(start, end + 1));
+}
+
+/** 抽出 JSON を AiTreePlan 形に整える(個別 op の妥当性は validate が担保)。 */
+export function parseTreePlan(
+  text: string,
+  kind: AiTreePlan["kind"],
+): AiTreePlan {
+  const obj = extractJson(text) as { ops?: unknown };
+  if (!Array.isArray(obj.ops)) {
+    throw new Error("AI 応答に ops 配列がありません");
+  }
+  return { kind, ops: obj.ops as AiTreeOp[] };
+}
+
+/**
+ * synopsis 生成が無効(トグル OFF)のとき、AI が依頼外で付けてきた synopsis を
+ * 全 create op から除去する。synopsis は bodyWrite サーフェスなので、トグルを
+ * 唯一の権威にしないと bodyWrite gate(ON 時のみ要求)を素通りしてしまう。
+ */
+export function stripSynopsisIfDisabled(
+  plan: AiTreePlan,
+  withSynopsis: boolean,
+): AiTreePlan {
+  if (withSynopsis) return plan;
+  return {
+    ...plan,
+    ops: plan.ops.map((op) => {
+      if (op.op === "create" && op.synopsis != null) {
+        const { synopsis: _omit, ...rest } = op;
+        return rest;
+      }
+      return op;
+    }),
+  };
+}
+
+export async function generateAiTreePlan(
+  input: GenerateTreePlanInput,
+): Promise<AiTreePlan> {
+  const messages = [
+    { role: "system", content: buildSystemPrompt(input) },
+    { role: "user", content: buildUserPrompt(input) },
+  ];
+
+  const response = await invoke<LLMResponsePayload>("send_chat_message", {
+    messages,
+    thinking: null,
+    effort: null,
+    reasoningEnabled: null,
+    reasoningEffort: null,
+  });
+
+  const text = response.blocks
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; content: string }).content)
+    .join("\n");
+
+  return parseTreePlan(text, input.kind);
+}
