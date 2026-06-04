@@ -44,13 +44,15 @@ function baseProps(over: Partial<Props> = {}): Props {
 }
 
 describe("ChatPanelHeader — RAG egress disclosure (F-1)", () => {
-  it("links the RAG toggle to an SR-readable egress note via aria-describedby", () => {
+  it("links the RAG toggle to an SR-readable egress + injection note via aria-describedby", () => {
     render(<ChatPanelHeader {...baseProps({ ragEnabled: true })} />);
     const toggle = screen.getByRole("button", { name: "chat.webSearch.on" });
     expect(toggle.getAttribute("aria-describedby")).toBe("rag-egress-note");
 
+    // 第三者送信とプロンプトインジェクションの両方を開示する（F-1）。
     const note = document.getElementById("rag-egress-note");
-    expect(note?.textContent).toBe("chat.webSearch.egressNote");
+    expect(note?.textContent).toContain("chat.webSearch.egressNote");
+    expect(note?.textContent).toContain("chat.webSearch.injectionNote");
   });
 
   it("drops aria-describedby when the toggle is disabled", () => {

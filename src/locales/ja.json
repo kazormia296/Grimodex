@@ -334,7 +334,7 @@
       "webSearch": {
         "title": "Web 検索 (RAG) のドメイン制御",
         "providerNote": "OpenRouter / Anthropic でのみ有効です。",
-        "privacyNote": "⚠ Web 検索を有効にすると、検索クエリが第三者の検索プロバイダ（OpenRouter / Anthropic 経由）へ送信されます。本文そのものを検索しないよう AI に指示していますが、強制ではありません。",
+        "privacyNote": "⚠ Web 検索を有効にすると、検索クエリが第三者の検索プロバイダ（OpenRouter / Anthropic 経由）へ送信されます。本文そのものを検索しないよう AI に指示していますが、強制ではありません。また、取得した Web ページには AI を操作しようとする指示（プロンプトインジェクション）が紛れ込んでいることがあります。内容を鵜呑みにせず、特にエージェントモードと併用する際は出力を確認してください。",
         "domainMode": "ドメインフィルタ",
         "domainModeDesc": "検索結果を許可リスト/拒否リストで絞り込みます。許可と拒否は同時に使えません。",
         "domainModeOff": "フィルタなし",
@@ -706,6 +706,7 @@
       "unavailable": "このプロバイダは Web検索に非対応です（OpenRouter / Anthropic のみ）",
       "searching": "Web を検索中…",
       "egressNote": "検索クエリは第三者の検索プロバイダへ送信されます。",
+      "injectionNote": "取得した Web 内容に AI を操作する指示が紛れ込む場合があります。出力は確認してください。",
       "sources_one": "ソース {{count}} 件",
       "sources_other": "ソース {{count}} 件"
     },

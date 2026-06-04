@@ -334,7 +334,7 @@
       "webSearch": {
         "title": "Web search (RAG) domain control",
         "providerNote": "Only effective with OpenRouter / Anthropic.",
-        "privacyNote": "⚠ Enabling web search sends your search queries to a third-party search provider (via OpenRouter / Anthropic). The AI is instructed not to search your manuscript text verbatim, but this is not enforced.",
+        "privacyNote": "⚠ Enabling web search sends your search queries to a third-party search provider (via OpenRouter / Anthropic). The AI is instructed not to search your manuscript text verbatim, but this is not enforced. Also, fetched web pages may contain hidden instructions that try to manipulate the AI (prompt injection). Don't take results at face value, and review outputs especially when combined with agent mode.",
         "domainMode": "Domain filter",
         "domainModeDesc": "Restrict search results with an allow or block list. Allow and block cannot be used together.",
         "domainModeOff": "No filter",
@@ -706,6 +706,7 @@
       "unavailable": "This provider does not support web search (OpenRouter / Anthropic only)",
       "searching": "Searching the web…",
       "egressNote": "Search queries are sent to a third-party search provider.",
+      "injectionNote": "Fetched web content may contain instructions that try to manipulate the AI. Review the output.",
       "sources_one": "{{count}} source",
       "sources_other": "{{count}} sources"
     },

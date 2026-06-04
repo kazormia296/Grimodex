@@ -385,7 +385,9 @@ export function ChatPanelHeader({
               ? (ragDisabledReason ?? t("chat.webSearch.unavailable"))
               : `${
                   ragEnabled ? t("chat.webSearch.on") : t("chat.webSearch.off")
-                }\n${t("chat.webSearch.egressNote")}`
+                }\n${t("chat.webSearch.egressNote")}\n${t(
+                  "chat.webSearch.injectionNote",
+                )}`
           }
           className={[
             "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
@@ -399,9 +401,12 @@ export function ChatPanelHeader({
           <Globe2 className="h-3 w-3 shrink-0" />
           <span>{t("chat.webSearch.label")}</span>
         </button>
-        {/* aria-describedby の参照先。検索クエリが第三者へ送られる旨の開示。 */}
+        {/* aria-describedby の参照先。第三者送信(egress)＋取得内容による
+            プロンプトインジェクションの両方を SR/タッチへ開示（security review F-1）。 */}
         <span id="rag-egress-note" className="sr-only">
-          {t("chat.webSearch.egressNote")}
+          {`${t("chat.webSearch.egressNote")} ${t(
+            "chat.webSearch.injectionNote",
+          )}`}
         </span>
       </div>
 
