@@ -69,11 +69,27 @@
 
 completeness critic が拾った 3 件。**確定 10 と違い 14/24 を落とした verify gate を通していない**。着手前に同じ skeptical pass を要する。
 
-- **AnimatedRegionChrome clip-path**（MEMORY の 3回再発・framer `inset↔none` → box-shadow が border-box で clip）:
-  **現状ツールで assert 不可**。box-shadow / clip-path の clip は **paint-time** で `getBoundingClientRect` に出ず、
-  repo に視覚回帰 infra は**ゼロ**（`toMatchImageSnapshot`/`toHaveScreenshot`/percy/argos 全て不在を確認）。
-  → これは「browser-geometry の quick win」ではなく **pixel/screenshot 回帰基盤の新規導入を伴う大物**。安易に Tier A に入れない。
-  代替: un-portal/inset 値の **string 契約**（`layoutAnimation.test.ts` 拡張）で回帰ベクトルの一部だけ happy-dom gate するのが現実的。
+- **AnimatedRegionChrome clip-path** — **2026-06-04 解決（pixel infra **NO-GO** / browser computed-style gate **GO**）**。
+  実証で当初判定の前提を 3 点訂正:
+  1. **「3回再発」は誤帰属**。clip-path バグは機能導入コミット `929e4fca` 内で fix まで完結（同一コミットに
+     bug 値と `inset(-200px)` 回避策・解説コメント）＝ **開発時 1 回・本番再発ゼロ**。CLAUDE.md の「過去3回再発」は
+     Splitter / region overflow / stripe 整列の別系統であり、本バグではない（`layoutAnimation.ts` の履歴も単一コミット）。
+  2. **「現状ツールで assert 不可」は誤り**。視覚効果（影クリップ→region gap にグレー透け）が paint-time で
+     `getBoundingClientRect` に出ないのは事実だが、**原因**＝Framer の `none`→`inset(0 0 0 0)` 置換後の値は
+     **CSSOM に載り `getComputedStyle().clipPath` から parseable 文字列で読める**。「paint-time ⟹ assert 不可」の
+     推論が誤り。∴ pixel/screenshot 回帰基盤は不要。
+  3. 実証マトリクス（実 Chromium・**closed→open toggle**・settled t≥260ms）:
+     open=`none` → `inset(0px 0% 0px 0px)`（border-box クリップ＝バグ再現）/ open=`inset(-200px)` → `inset(-200px)`（全 offset 負＝非クリップ）。
+     happy-dom は WAAPI 補間を実行せず値を素通し（`none`→`none`）で置換を再現できない → **browser 必須**。
+     string 契約（happy-dom / `layoutAnimation.test.ts` 拡張）案は値 pin に留まり挙動を証明しないため不採用。
+  → **gate を実装**: `AnimatedRegionChrome.browser.test.tsx`（4 region × toggle 経路必須 × settled computed clip-path の
+     全 inset offset `< 0` を assert）。差分検証済（`REGION_OPEN_CLIP="none"` で 4/4 fail・`inset(-200px)` で 4/4 pass）。
+     既存 `vitest.browser.config.ts` の glob が自動取り込み、pixel baseline 不要で flake 源を増やさない。
+     **注意（gate を殺さない）**: `render(<X open />)` の mount-open は `AnimatePresence initial={false}` が enter 補間を
+     抑制し置換が起きないため、バグ値でも素通しする。必ず closed→open の rerender toggle で開くこと。
+  → **pixel/screenshot 回帰 infra の deferral**: 本バグ単体では正当化されない（dev 時 1 回・本番ゼロ・今 browser で安価 gate 済）。
+     **トリガー付き defer** — 「`getComputedStyle` で原因値を読めない真の paint-only 回帰が複数顕在化したら」pixel infra を再評価。
+     隣接候補の backdrop-filter は別件で dead-end 確認済（Chromium で屈折表現不可）のため母数は薄い。
 - **Timeline story-time drag**: critic は「未カバーの browser gap」と指摘したが、別の verifier は
   「happy-dom の rect=0 は**安定**なので `svgX=clientX` で決定的に drive 可能。off-by-one 再発（1ffe6249）も
   rect=0 で再現する」と**反証**。→ おそらく **unit gap**。browser が要るのは scroll 時の負 rect.left の sliver のみ。
