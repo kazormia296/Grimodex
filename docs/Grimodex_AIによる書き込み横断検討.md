@@ -9,7 +9,17 @@
 > - **policy 配線済**（`dcbd13fb` + Codex 追補）: on-demand **生成**経路に `bodyWrite` gate — `generateBeatOnce` / synopsis 生成3経路 / **Codex AI summary 生成（`DetailsTab.tsx`）**。→ §(b) の「ungated 生成」解消。
 > - **設計方針**: `bodyWrite=off` = 「AI にオンデマンドで本文を**生成**させない」。**配置**経路（snippet/paste/Foreshadow adopt）は chat 挿入の意図的 soft と一貫させ **gate せず**、出自は mark で可視化。→ §2(b) で ungated と記した snippet/paste/Foreshadow adopt は「配置経路ゆえ非 gate（意図）」が現状。
 > - **Map provenance 可視化 実装済**: §(c)状態2「書かれるが読まれない」を解消。`provenance.ts` に `buildMapProvenance(projectId)`（board→stickies→stickyId span を 2 段引きし AI 文字数を sticky 単位で集計）を新設し、`ProvenanceDisclosureReport.map` として **body-text-only の totals/breakdown とは別レーン**で公開。`exportReport.ts`（MD/HTML/CSV/JSON）と ExportDialog の開示プレビューに独立「Map AI Content」セクションを追加。**スキーマ変更・生成側は不変**（消費側のみ）。回帰: 本文集計が Map に汚染されない invariant + 集計 unit test。残注記: 採用後に編集された sticky は span 行が残り AI 文字数を過大計上しうる（[[grimodex-sticky-perspan-authorship]] と同根）。
-> - **未着手（defer）**: **synopsis 出自追跡** — schema 変更 + 記録 wiring + 新規 consumer の三重コストで案A 最低 ROI、本文でない派生フィールドゆえ body-text 比率に混ぜられず、列だけ足すと dead column 化。案B/C の構造帰属モデル確定後に本文外 provenance をまとめて設計する方が筋が良い（investigator 評価で defer 確定）。案B（tree への AI 書き込み）/案C（tool protocol 統一）。
+> - **未着手（defer）**: **synopsis 出自追跡** — schema 変更 + 記録 wiring + 新規 consumer の三重コストで案A 最低 ROI、本文でない派生フィールドゆえ body-text 比率に混ぜられず、列だけ足すと dead column 化。案B/C の構造帰属モデル確定後に本文外 provenance をまとめて設計する方が筋が良い（investigator 評価で defer 確定）。案C（tool protocol 統一）。
+
+> **実装状況（2026-06-04 案B = tree/アウトラインへの AI 書き込み / ローカル commit 未push）**:
+> §(d)「tree の縦の空白」を解消。AI に章/シーン/フォルダの **scaffold（新規生成）+ 既存再編（move/group/rename）** を解禁した。bespoke UI 経路のみ（agent `EXECUTORS` の F-2 read-only 契約は不変）。
+> - **コア executor** `src/features/tree/aiScaffold/{types,validate,placement,applyPlan}.ts`: AiTreePlan(create/move/rename IR) を validate（存在/型/循環/**scope**/**afterRef**/IR上限）→ `db_execute_batch` で 1 tx アトミック適用（`replaceAuthorshipSpansAtomic` 流儀の `.toSQL()`）→ **単一 composite undo**。undo は ON DELETE CASCADE 巻き添えを防ぐため「(先)既存ノード復元→(後)作成ノード leaf-first 削除」の非対称順序。reload は `treeStore.reloadTreeOrThrow`（loadTree の握りつぶしを回避し、失敗時は record/push へ進まない）。
+> - **scope 制約**（クリック文脈で AI 到達範囲を物理的に限定）と **afterRef 厳格化**（同一 parent sibling/self 検証 + gap ごと採番）は外部レビュー指摘で追加。
+> - **policy**: 新キー `structureWrite`（types/preset/parse/DEFAULT + schema.ts/migrate.rs/browser-mock/onboarding/ProjectCategory トグル）。後方互換は旧 JSON の欠損キーを stored preset から導出。synopsis 生成トグル ON 時は `structureWrite` + `bodyWrite` の二重 gate（synopsis 散文は既存 bodyWrite サーフェスのため）。
+> - **生成** `generate.ts`: `generateAiBranchCards` 踏襲の one-shot（`send_chat_message` 直叩き、堅牢な手 JSON パース）。アウトライン文脈は treeStore.nodes の DFS。
+> - **帰属**: `recordChangeEvent`(domain:'grid', opType:'tree.aiScaffold'|'tree.aiReorganize') に source/model/traceId/createdIds/movedIds/renamedIds を残す **監査証跡のみ**。`tree_nodes` への source 列追加は defer（scaffold は空 body で authorship span が無く、恒久可視マーカーは現状不要）。formatEventCaption に専用キャプション追加。
+> - **UI**: 空状態 + RootContextMenu + folder の TreeContextMenu に Sparkles エントリ。`AiTreeDialog`（shadcn Dialog + animation.ts）で指示文 + synopsis トグル → 即時適用。
+> - **テスト**: aiScaffold 39（validate/placement/applyPlan/generate）+ ai-policy 後方互換 + 既存 tree 回帰。循環 reject / scope 違反 reject / afterRef cross-parent reject / IR 上限 / reload 失敗で record しない / synopsis OFF 時の strip を gate。**cascade-safe undo は実 SQLite で実行検証**（Rust `database/tests.rs` の `test_ai_tree_group_undo_preserves_existing_scene` = restore-先順序で既存シーン生存、負コントロール `..._naive_undo_order_loses_existing_scene` = delete-先順序で巻き添え削除。`foreign_keys=ON` + `ON DELETE CASCADE` 下、省略列の DB DEFAULT も同時確認）。**未実施**: 実アプリ GUI E2E（生成→Ctrl+Z）と drizzle `.toSQL()` 出力の実 DB 実行（Rust テストは等価の手書き SQL で DB 挙動を検証、TS 側は statement 内容/順序の単体テスト）。
 
 ## 0. 検証済みの土台（要点）
 

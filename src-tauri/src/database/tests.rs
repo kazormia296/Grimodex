@@ -1266,6 +1266,140 @@ fn test_defer_foreign_keys_wipe_and_restore_round_trip() {
     assert_eq!(versions.len(), 1);
 }
 
+/// 案B (AI tree scaffold/再編) の最重要不変条件を実 SQLite で検証する。
+/// group(既存シーンを新規フォルダ配下へ移動)を単一 composite undo で巻き戻すとき、
+/// undo の statement 順序は「(先)既存ノード復元 → (後)作成ノード削除」でなければ
+/// `parent_id ... ON DELETE CASCADE`(migrate.rs:29)により既存シーンが巻き添え
+/// 削除される。restore-先 / delete-後 の順序で既存シーンが生存することを確認。
+/// applyPlan.ts buildUndoStatements がこの順序を組む。
+#[test]
+fn test_ai_tree_group_undo_preserves_existing_scene() {
+    let db = test_db();
+    let p = |s: &str| Value::String(s.into());
+
+    // 既存シーン S を root に作る。
+    db.execute(
+        "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, 'default-project', NULL, 'scene', 'Keep', 'a0', datetime('now'), datetime('now'))",
+        &[p("sc-keep")],
+        "run",
+    ).expect("insert existing scene");
+
+    // forward = group: 新フォルダ G 作成 + S を G 配下へ move。
+    // INSERT は content/unplaced_beats_doc/char_count を省略し DB DEFAULT に委ねる
+    // (buildForwardStatements と同じ列集合)。成功自体が NOT NULL 違反の不在を示す。
+    let forward = vec![
+        crate::database::BatchStatement {
+            sql: "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, 'default-project', NULL, 'folder', 'G', 'a1', datetime('now'), datetime('now'))".into(),
+            params: vec![p("g-new")],
+            method: "run".into(),
+        },
+        crate::database::BatchStatement {
+            sql: "UPDATE tree_nodes SET parent_id = ?, sort_order = 'a0', updated_at = datetime('now') WHERE id = ?".into(),
+            params: vec![p("g-new"), p("sc-keep")],
+            method: "run".into(),
+        },
+    ];
+    db.execute_batch_tx(&forward).expect("forward group");
+
+    // 省略列が DB DEFAULT で埋まり、NOT NULL 違反にならなかったことを確認。
+    let g = db
+        .execute(
+            "SELECT content FROM tree_nodes WHERE id = 'g-new'",
+            &[],
+            "get",
+        )
+        .expect("get g");
+    assert_eq!(g.len(), 1, "new folder should exist");
+    assert_ne!(
+        g[0]["content"],
+        Value::Null,
+        "omitted content column should fall back to its DB DEFAULT"
+    );
+
+    // cascade-safe undo: (先) S を root へ復元 → (後) G を削除。
+    let undo = vec![
+        crate::database::BatchStatement {
+            sql: "UPDATE tree_nodes SET parent_id = NULL, sort_order = 'a0', updated_at = datetime('now') WHERE id = ?".into(),
+            params: vec![p("sc-keep")],
+            method: "run".into(),
+        },
+        crate::database::BatchStatement {
+            sql: "DELETE FROM tree_nodes WHERE id = ?".into(),
+            params: vec![p("g-new")],
+            method: "run".into(),
+        },
+    ];
+    db.execute_batch_tx(&undo).expect("cascade-safe undo");
+
+    let keep = db
+        .execute(
+            "SELECT parent_id FROM tree_nodes WHERE id = 'sc-keep'",
+            &[],
+            "all",
+        )
+        .expect("query keep");
+    assert_eq!(
+        keep.len(),
+        1,
+        "existing scene must survive the cascade-safe undo"
+    );
+    assert_eq!(keep[0]["parent_id"], Value::Null, "scene restored to root");
+    let gone = db
+        .execute("SELECT id FROM tree_nodes WHERE id = 'g-new'", &[], "all")
+        .expect("query g");
+    assert_eq!(gone.len(), 0, "created folder removed");
+}
+
+/// 負のコントロール: undo を「(先)フォルダ削除」の順でやると ON DELETE CASCADE で
+/// 既存シーンが巻き添え削除されることを実 SQLite で示し、restore-先順序が必須で
+/// あることを裏付ける(applyPlan.ts が踏襲してはならない順序)。
+#[test]
+fn test_ai_tree_naive_undo_order_loses_existing_scene() {
+    let db = test_db();
+    let p = |s: &str| Value::String(s.into());
+
+    db.execute(
+        "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, 'default-project', NULL, 'scene', 'Keep', 'a0', datetime('now'), datetime('now'))",
+        &[p("sc-keep")],
+        "run",
+    ).expect("insert scene");
+    db.execute(
+        "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, 'default-project', NULL, 'folder', 'G', 'a1', datetime('now'), datetime('now'))",
+        &[p("g-new")],
+        "run",
+    ).expect("insert folder");
+    db.execute(
+        "UPDATE tree_nodes SET parent_id = ? WHERE id = ?",
+        &[p("g-new"), p("sc-keep")],
+        "run",
+    )
+    .expect("move scene into folder");
+
+    // 素朴な (誤った) undo 順: フォルダを先に削除 → cascade で sc-keep も消える。
+    let naive = vec![
+        crate::database::BatchStatement {
+            sql: "DELETE FROM tree_nodes WHERE id = ?".into(),
+            params: vec![p("g-new")],
+            method: "run".into(),
+        },
+        crate::database::BatchStatement {
+            sql: "UPDATE tree_nodes SET parent_id = NULL WHERE id = ?".into(),
+            params: vec![p("sc-keep")],
+            method: "run".into(),
+        },
+    ];
+    db.execute_batch_tx(&naive).expect("naive undo runs");
+
+    let keep = db
+        .execute("SELECT id FROM tree_nodes WHERE id = 'sc-keep'", &[], "all")
+        .expect("query");
+    assert_eq!(
+        keep.len(),
+        0,
+        "delete-first order cascade-deletes the existing scene — hence restore-first ordering is mandatory"
+    );
+}
+
 /// Simulates an existing DB that was migrated by an older binary: the buggy
 /// `delete_cv_on_*_delete` triggers are already installed. The next
 /// `migrate()` call must drop them and reinstall the snapshot-aware version

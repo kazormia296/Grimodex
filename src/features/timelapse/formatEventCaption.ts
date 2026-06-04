@@ -262,6 +262,20 @@ export function formatEventCaption(
     }
   }
 
+  if (
+    domain === "grid" &&
+    (opType === "tree.aiScaffold" || opType === "tree.aiReorganize")
+  ) {
+    const len = (v: unknown) => (Array.isArray(v) ? v.length : 0);
+    return metaLine(
+      t("timelapse.caption.aiTreeOp", {
+        created: len(payload.createdIds),
+        moved: len(payload.movedIds),
+        renamed: len(payload.renamedIds),
+      }),
+    );
+  }
+
   if (domain === "grid") {
     return metaLine(
       t("timelapse.caption.gridOp", {
