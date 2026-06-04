@@ -32,7 +32,13 @@ function setProjectPolicy(policy: AiPolicy | null) {
 function policyOf(toggles: Partial<AiPolicy["toggles"]>): AiPolicy {
   return {
     preset: "custom",
-    toggles: { chat: true, bodyWrite: true, analysis: true, ...toggles },
+    toggles: {
+      chat: true,
+      bodyWrite: true,
+      analysis: true,
+      structureWrite: true,
+      ...toggles,
+    },
   };
 }
 

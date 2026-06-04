@@ -10,6 +10,7 @@ import { AnimatedPopover } from "@/components/ui/animated-popover";
 import { DURATIONS, EASINGS } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
+import { parseAiPolicy } from "@/features/ai-policy/parse";
 import type { PanelId } from "@/features/layout/layoutStore";
 import { SpotlightOverlay, useFocusRects, type FocusRect } from "./spotlight";
 import { computeCardStyle, CARD_WIDTH } from "./cardPlacement";
@@ -354,19 +355,12 @@ export function SampleTour() {
     (s) => s.globalSettings?.defaultAiPolicy,
   );
 
-  // Parse AI policy toggles
-  const toggles = useMemo<AiPolicyToggles>(() => {
-    if (!defaultAiPolicy)
-      return { chat: true, bodyWrite: true, analysis: true };
-    try {
-      const p = JSON.parse(defaultAiPolicy) as {
-        toggles: AiPolicyToggles;
-      };
-      return p.toggles;
-    } catch {
-      return { chat: true, bodyWrite: true, analysis: true };
-    }
-  }, [defaultAiPolicy]);
+  // Parse AI policy toggles. parseAiPolicy が欠損/破損を DEFAULT(full) に倒し、
+  // 旧 JSON の structureWrite 欠損も stored preset から導出する。
+  const toggles = useMemo<AiPolicyToggles>(
+    () => parseAiPolicy(defaultAiPolicy ?? null).toggles,
+    [defaultAiPolicy],
+  );
 
   // Build filtered step list
   const steps = useMemo(

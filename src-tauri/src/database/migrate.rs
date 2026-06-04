@@ -969,13 +969,14 @@ impl Database {
         // 著者が手書きする物語全体の outline を保持し、AI コンテキスト L2 に常時注入される。
         Self::add_column_if_missing(&conn, "projects", "outline", "TEXT")?;
 
-        // AI Policy: プロジェクト単位の AI 使用方針 (chat/bodyWrite/analysis トグル)。
-        // デフォルトは Full プリセット (全機能有効)。
+        // AI Policy: プロジェクト単位の AI 使用方針 (chat/bodyWrite/analysis/structureWrite トグル)。
+        // デフォルトは Full プリセット (全機能有効)。既存 DB で structureWrite 欠損の行は
+        // フロントの parseAiPolicy が stored preset から導出するため migration は不要。
         Self::add_column_if_missing(
             &conn,
             "projects",
             "ai_policy",
-            "TEXT NOT NULL DEFAULT '{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}'",
+            "TEXT NOT NULL DEFAULT '{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true}}'",
         )?;
 
         // Onboarding: mark sample workspace projects so EditorScreen can

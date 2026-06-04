@@ -7,22 +7,25 @@ describe("expandPreset", () => {
       chat: true,
       bodyWrite: true,
       analysis: true,
+      structureWrite: true,
     });
   });
 
-  it("assist-off → bodyWrite false", () => {
+  it("assist-off → bodyWrite false, structureWrite stays true", () => {
     expect(expandPreset("assist-off")).toEqual({
       chat: true,
       bodyWrite: false,
       analysis: true,
+      structureWrite: true,
     });
   });
 
-  it("review-only → chat and bodyWrite false", () => {
+  it("review-only → only analysis", () => {
     expect(expandPreset("review-only")).toEqual({
       chat: false,
       bodyWrite: false,
       analysis: true,
+      structureWrite: false,
     });
   });
 
@@ -31,6 +34,7 @@ describe("expandPreset", () => {
       chat: false,
       bodyWrite: false,
       analysis: false,
+      structureWrite: false,
     });
   });
 
@@ -39,44 +43,75 @@ describe("expandPreset", () => {
       chat: true,
       bodyWrite: true,
       analysis: true,
+      structureWrite: true,
     });
   });
 });
 
 describe("inferPreset", () => {
   it("all true → full", () => {
-    expect(inferPreset({ chat: true, bodyWrite: true, analysis: true })).toBe(
-      "full",
-    );
+    expect(
+      inferPreset({
+        chat: true,
+        bodyWrite: true,
+        analysis: true,
+        structureWrite: true,
+      }),
+    ).toBe("full");
   });
 
   it("assist-off pattern", () => {
-    expect(inferPreset({ chat: true, bodyWrite: false, analysis: true })).toBe(
-      "assist-off",
-    );
+    expect(
+      inferPreset({
+        chat: true,
+        bodyWrite: false,
+        analysis: true,
+        structureWrite: true,
+      }),
+    ).toBe("assist-off");
   });
 
   it("review-only pattern", () => {
-    expect(inferPreset({ chat: false, bodyWrite: false, analysis: true })).toBe(
-      "review-only",
-    );
+    expect(
+      inferPreset({
+        chat: false,
+        bodyWrite: false,
+        analysis: true,
+        structureWrite: false,
+      }),
+    ).toBe("review-only");
   });
 
   it("all false → off", () => {
     expect(
-      inferPreset({ chat: false, bodyWrite: false, analysis: false }),
+      inferPreset({
+        chat: false,
+        bodyWrite: false,
+        analysis: false,
+        structureWrite: false,
+      }),
     ).toBe("off");
   });
 
-  it("undefined combination → custom", () => {
-    expect(inferPreset({ chat: true, bodyWrite: true, analysis: false })).toBe(
-      "custom",
-    );
+  it("full toggles but structureWrite off → custom", () => {
+    expect(
+      inferPreset({
+        chat: true,
+        bodyWrite: true,
+        analysis: true,
+        structureWrite: false,
+      }),
+    ).toBe("custom");
   });
 
-  it("another undefined combination → custom", () => {
-    expect(inferPreset({ chat: false, bodyWrite: true, analysis: false })).toBe(
-      "custom",
-    );
+  it("undefined combination → custom", () => {
+    expect(
+      inferPreset({
+        chat: true,
+        bodyWrite: true,
+        analysis: false,
+        structureWrite: true,
+      }),
+    ).toBe("custom");
   });
 });

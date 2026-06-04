@@ -35,7 +35,7 @@ export const projects = sqliteTable("projects", {
   aiPolicy: text("ai_policy")
     .notNull()
     .default(
-      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}',
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true}}',
     ),
   createdAt: text("created_at")
     .notNull()

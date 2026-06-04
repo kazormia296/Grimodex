@@ -397,6 +397,22 @@ export function ProjectCategory() {
             className="h-4 w-4 cursor-pointer rounded border-input"
           />
         </SettingRow>
+        <SettingRow
+          label={t("settings.project.aiPolicyStructureWrite", "構成編集")}
+          description={t(
+            "settings.project.aiPolicyStructureWriteDesc",
+            "AI による章/シーン構成の生成・再編",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={currentPolicy.toggles.structureWrite}
+            onChange={(e) =>
+              handleToggleChange("structureWrite", e.target.checked)
+            }
+            className="h-4 w-4 cursor-pointer rounded border-input"
+          />
+        </SettingRow>
       </SettingSection>
 
       <SettingSection title={t("settings.project.aiSettings")}>

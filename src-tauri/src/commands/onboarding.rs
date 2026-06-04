@@ -391,8 +391,7 @@ mod tests {
         let project_id = seed.project.id.clone();
         let now_dt = chrono::Utc::now().to_rfc3339();
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let ai_policy =
-            r#"{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}"#;
+        let ai_policy = r#"{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true}}"#;
 
         db.with_conn(|conn| {
             conn.execute(

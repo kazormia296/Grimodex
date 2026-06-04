@@ -1,4 +1,5 @@
 import { DEFAULT_AI_POLICY } from "./types";
+import { expandPreset } from "./preset";
 import type { AiPolicy, AiPolicyPreset, AiPolicyToggles } from "./types";
 
 const VALID_PRESETS = new Set<AiPolicyPreset>([
@@ -9,7 +10,13 @@ const VALID_PRESETS = new Set<AiPolicyPreset>([
   "custom",
 ]);
 
-function isValidToggles(v: unknown): v is AiPolicyToggles {
+// 後方互換: 旧 policy JSON は structureWrite を持たないため、ここは意図的に
+// 3 レガシーキー(chat/bodyWrite/analysis)の存在のみを要求する。structureWrite を
+// 必須にすると既存プロジェクトの policy が丸ごと DEFAULT に倒れて preset を失う。
+// 欠損 structureWrite は parseAiPolicy 内で stored preset から導出する。
+function isValidToggles(
+  v: unknown,
+): v is Pick<AiPolicyToggles, "chat" | "bodyWrite" | "analysis"> {
   if (typeof v !== "object" || v === null) return false;
   const obj = v as Record<string, unknown>;
   return "chat" in obj && "bodyWrite" in obj && "analysis" in obj;
@@ -23,12 +30,18 @@ export function parseAiPolicy(raw: string | null | undefined): AiPolicy {
     if (!VALID_PRESETS.has(preset)) return { ...DEFAULT_AI_POLICY };
     if (!isValidToggles(obj.toggles)) return { ...DEFAULT_AI_POLICY };
     const t = obj.toggles as unknown as Record<string, unknown>;
+    // 欠損 structureWrite(旧 JSON)は flat true/false でなく stored preset から導出する。
+    const structureWrite =
+      "structureWrite" in t
+        ? Boolean(t.structureWrite)
+        : expandPreset(preset).structureWrite;
     return {
       preset,
       toggles: {
         chat: Boolean(t.chat),
         bodyWrite: Boolean(t.bodyWrite),
         analysis: Boolean(t.analysis),
+        structureWrite,
       },
     };
   } catch {

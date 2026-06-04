@@ -5,7 +5,12 @@ import type { AiPolicy } from "./types";
 
 const VALID: AiPolicy = {
   preset: "assist-off",
-  toggles: { chat: true, bodyWrite: false, analysis: true },
+  toggles: {
+    chat: true,
+    bodyWrite: false,
+    analysis: true,
+    structureWrite: true,
+  },
 };
 
 describe("parseAiPolicy", () => {
@@ -45,6 +50,32 @@ describe("parseAiPolicy", () => {
     expect(result.toggles.chat).toBe(true);
     expect(result.toggles.bodyWrite).toBe(false);
     expect(result.toggles.analysis).toBe(false);
+  });
+});
+
+describe("parseAiPolicy — structureWrite backward-compat (Codex Medium-5)", () => {
+  it("derives structureWrite from stored preset when the key is missing (full → true)", () => {
+    const raw =
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}';
+    expect(parseAiPolicy(raw).toggles.structureWrite).toBe(true);
+  });
+
+  it("derives structureWrite from stored preset when the key is missing (off → false)", () => {
+    const raw =
+      '{"preset":"off","toggles":{"chat":false,"bodyWrite":false,"analysis":false}}';
+    expect(parseAiPolicy(raw).toggles.structureWrite).toBe(false);
+  });
+
+  it("keeps structureWrite ON for legacy assist-off (structure ≠ body write)", () => {
+    const raw =
+      '{"preset":"assist-off","toggles":{"chat":true,"bodyWrite":false,"analysis":true}}';
+    expect(parseAiPolicy(raw).toggles.structureWrite).toBe(true);
+  });
+
+  it("respects an explicit structureWrite value over the preset default", () => {
+    const raw =
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":false}}';
+    expect(parseAiPolicy(raw).toggles.structureWrite).toBe(false);
   });
 });
 
@@ -106,7 +137,12 @@ describe("serializeAiPolicy", () => {
     for (const preset of presets) {
       const policy: AiPolicy = {
         preset,
-        toggles: { chat: true, bodyWrite: false, analysis: true },
+        toggles: {
+          chat: true,
+          bodyWrite: false,
+          analysis: true,
+          structureWrite: true,
+        },
       };
       expect(parseAiPolicy(serializeAiPolicy(policy))).toEqual(policy);
     }

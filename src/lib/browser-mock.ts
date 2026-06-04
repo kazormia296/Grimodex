@@ -36,7 +36,7 @@ const SCHEMA_DDL = `
     outline TEXT,
     target_readers TEXT,
     phase_resolution_mode TEXT NOT NULL DEFAULT 'reading' CHECK(phase_resolution_mode IN ('reading', 'story', 'auto')),
-    ai_policy TEXT NOT NULL DEFAULT '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}',
+    ai_policy TEXT NOT NULL DEFAULT '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true}}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );

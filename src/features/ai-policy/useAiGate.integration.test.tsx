@@ -36,7 +36,12 @@ function setProviderReady(ready: boolean) {
   } as never);
 }
 
-const ALL_ON: AiPolicyToggles = { chat: true, bodyWrite: true, analysis: true };
+const ALL_ON: AiPolicyToggles = {
+  chat: true,
+  bodyWrite: true,
+  analysis: true,
+  structureWrite: true,
+};
 
 describe("useAiGate live chain (projectStore → presentation)", () => {
   beforeEach(() => {
@@ -48,7 +53,14 @@ describe("useAiGate live chain (projectStore → presentation)", () => {
     const { result } = renderHook(() => useAiGate("chat"));
     expect(result.current.presentation).toBe("enabled");
 
-    act(() => setPolicy({ chat: false, bodyWrite: true, analysis: true }));
+    act(() =>
+      setPolicy({
+        chat: false,
+        bodyWrite: true,
+        analysis: true,
+        structureWrite: true,
+      }),
+    );
     expect(result.current.presentation).toBe("hidden");
 
     act(() => setPolicy(ALL_ON));
@@ -67,7 +79,12 @@ describe("useAiGate live chain (projectStore → presentation)", () => {
   });
 
   it("per-feature independence: bodyWrite OFF hides bodyWrite, leaves analysis enabled", () => {
-    setPolicy({ chat: true, bodyWrite: false, analysis: true });
+    setPolicy({
+      chat: true,
+      bodyWrite: false,
+      analysis: true,
+      structureWrite: true,
+    });
     const { result: bodyWrite } = renderHook(() => useAiGate("bodyWrite"));
     const { result: analysis } = renderHook(() => useAiGate("analysis"));
     expect(bodyWrite.current.presentation).toBe("hidden");

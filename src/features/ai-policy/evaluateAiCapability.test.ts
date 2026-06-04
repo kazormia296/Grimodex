@@ -6,11 +6,22 @@ import type { AiCapability, AiFeature, AiPolicy } from "./types";
 function policyOf(toggles: Partial<AiPolicy["toggles"]> = {}): AiPolicy {
   return {
     preset: "custom",
-    toggles: { chat: true, bodyWrite: true, analysis: true, ...toggles },
+    toggles: {
+      chat: true,
+      bodyWrite: true,
+      analysis: true,
+      structureWrite: true,
+      ...toggles,
+    },
   };
 }
 
-const FEATURES: AiFeature[] = ["chat", "bodyWrite", "analysis"];
+const FEATURES: AiFeature[] = [
+  "chat",
+  "bodyWrite",
+  "analysis",
+  "structureWrite",
+];
 
 describe("evaluateAiCapability", () => {
   it("returns pending when policy is null (project not loaded)", () => {
