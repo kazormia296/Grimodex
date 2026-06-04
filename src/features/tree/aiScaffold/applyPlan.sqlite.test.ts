@@ -99,10 +99,7 @@ function groupFixture(): {
   };
   const plan: AiTreePlan = {
     kind: "reorganize",
-    ops: [
-      createOp,
-      { op: "move", nodeId: "sc-keep", newParentRef: "tmp:g" },
-    ],
+    ops: [createOp, { op: "move", nodeId: "sc-keep", newParentRef: "tmp:g" }],
   };
   return {
     plan,
@@ -133,10 +130,9 @@ describe("applyPlan drizzle SQL on real SQLite (browser-mock)", () => {
     );
     await mock.invoke("db_execute_batch", { statements: forward });
 
-    const mid = await rows(
-      "SELECT parent_id FROM tree_nodes WHERE id = ?",
-      ["sc-keep"],
-    );
+    const mid = await rows("SELECT parent_id FROM tree_nodes WHERE id = ?", [
+      "sc-keep",
+    ]);
     expect(mid).toHaveLength(1);
     expect(mid[0].parent_id).toBe("g-new");
 
@@ -147,10 +143,9 @@ describe("applyPlan drizzle SQL on real SQLite (browser-mock)", () => {
     );
     await mock.invoke("db_execute_batch", { statements: undo });
 
-    const keep = await rows(
-      "SELECT parent_id FROM tree_nodes WHERE id = ?",
-      ["sc-keep"],
-    );
+    const keep = await rows("SELECT parent_id FROM tree_nodes WHERE id = ?", [
+      "sc-keep",
+    ]);
     expect(keep).toHaveLength(1);
     expect(keep[0].parent_id).toBeNull();
 
@@ -215,12 +210,44 @@ describe("applyPlan drizzle SQL on real SQLite (browser-mock)", () => {
     await mock.invoke("db_execute_batch", { statements: forward });
 
     const row = await rows(
-      "SELECT content, unplaced_beats_doc, char_count FROM tree_nodes WHERE id = ?",
+      "SELECT content, unplaced_beats_doc, char_count, synopsis FROM tree_nodes WHERE id = ?",
       ["g-new"],
     );
     expect(row).toHaveLength(1);
     expect(row[0].content).toBe("{}");
     expect(row[0].unplaced_beats_doc).toBe("[]");
     expect(row[0].char_count).toBe(0);
+    // synopsis 省略アーム: INSERT に列が出ず DB default(NULL)に倒れる。
+    expect(row[0].synopsis).toBeNull();
+  });
+
+  it("drift guard: synopsis-present create writes the synopsis column", async () => {
+    // c.synopsis != null アーム: INSERT の列集合が動的に増える経路を実 SQLite で gate。
+    const createOp: CreateOp = {
+      op: "create",
+      tempId: "tmp:g",
+      parentRef: null,
+      nodeType: "folder",
+      title: "G",
+      synopsis: "起承転結の承",
+    };
+    const plan: AiTreePlan = {
+      kind: "scaffold",
+      ops: [createOp],
+    };
+    const forward = buildForwardStatements(
+      plan,
+      [createOp],
+      new Map([["tmp:g", "g-new"]]),
+      new Map([["g-new", { parentId: null, sortOrder: "a1" }]]),
+      PROJECT_ID,
+    );
+    await mock.invoke("db_execute_batch", { statements: forward });
+
+    const row = await rows("SELECT synopsis FROM tree_nodes WHERE id = ?", [
+      "g-new",
+    ]);
+    expect(row).toHaveLength(1);
+    expect(row[0].synopsis).toBe("起承転結の承");
   });
 });
