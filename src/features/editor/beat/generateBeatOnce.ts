@@ -7,6 +7,7 @@ import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
 import { insertGenerationLog } from "@/features/attribution/generationLogApi";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { buildBeatMessages } from "./beatPromptBuilder";
 import {
   appendBeatChunk,
@@ -27,6 +28,11 @@ export async function generateBeatOnce(
   beatId: string,
   sceneId: string,
 ): Promise<void> {
+  // On-demand body prose generation — gate on bodyWrite like its sibling
+  // useBeatGeneration.ts (the hook path). This fire-and-forget entry was the
+  // one Beat path missing the gate.
+  if (blockIfPolicyOff("bodyWrite")) return;
+
   const beat = findBeatById(editor, beatId);
   if (!beat) return;
 

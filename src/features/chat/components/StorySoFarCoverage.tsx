@@ -6,6 +6,7 @@ import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { loadSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { toast } from "sonner";
 
 /**
@@ -46,6 +47,7 @@ export function StorySoFarCoverage() {
   const coverage = totalPreceding === 0 ? 1 : withSynopsis / totalPreceding;
 
   const handleGenerateAll = useCallback(async () => {
+    if (blockIfPolicyOff("bodyWrite")) return;
     const missing = precedingScenes.filter((n) => !n.synopsis?.trim());
     setTotal(missing.length);
     setProgress(0);

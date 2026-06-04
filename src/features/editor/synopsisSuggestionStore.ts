@@ -4,6 +4,10 @@ import i18next from "i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneContent } from "@/features/tree/api";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
+import {
+  blockIfPolicyOff,
+  isAiFeatureBlockedByPolicy,
+} from "@/features/ai-policy/policyGuard";
 import { prosemirrorToText } from "@/lib/prosemirror";
 
 const TOAST_ID = "synopsis-suggestion";
@@ -23,6 +27,10 @@ export const useSynopsisSuggestionStore = create<SynopsisSuggestionState>(
   (set, get) => ({
     pendingSceneId: null,
     propose(sceneId) {
+      // Synopsis generation is on-demand AI body-write; when bodyWrite is off
+      // don't even offer the prompt (silent — blockIfPolicyOff would toast on
+      // every status transition). generate() keeps the hard gate as defense.
+      if (isAiFeatureBlockedByPolicy("bodyWrite")) return;
       set({ pendingSceneId: sceneId });
       toast(i18next.t("editor.status.synopsisEmpty"), {
         id: TOAST_ID,
@@ -43,6 +51,7 @@ export const useSynopsisSuggestionStore = create<SynopsisSuggestionState>(
       set({ pendingSceneId: null });
     },
     async generate() {
+      if (blockIfPolicyOff("bodyWrite")) return;
       const id = get().pendingSceneId;
       if (!id) return;
       set({ pendingSceneId: null });
