@@ -153,3 +153,75 @@ describe("executeTool — Phase 3 dispatch", () => {
     expect(result.error).toBe("Unknown tool: nope_does_not_exist");
   });
 });
+
+// ── project スコープ不変条件 (security audit XPROJ-1) ─────────────────────────
+// agent の read ツールはアクティブプロジェクトに限定されなければならない
+// (単一 grimodex.db に複数プロジェクトが同居するため、述語が欠けると別プロジェクト
+// の本文/設定資料/スニペットが漏れる)。raw-SQL 経路は SQL に project_id 述語と
+// 束縛パラメータが入ることを assert し、全 read ツールは projectId 未設定時に
+// fail-closed (DB を引かず "No active project") であることを assert する。
+// いずれかのツールから述語を外すと当該テストが落ちる差分検証。
+describe("project scoping — agent read tools (XPROJ-1)", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    mockTreeProjectId.mockReset();
+  });
+
+  // db_execute (raw SQL) に直接到達し、先行する Drizzle ゲートを持たないツール。
+  const RAW_SQL_TOOLS = [
+    { tool: "search_codex", params: { query: "ドラゴン" } },
+    { tool: "search_scenes", params: { query: "ドラゴン" } },
+    { tool: "search_snippets", params: { query: "ドラゴン" } },
+    { tool: "search_codex_by_tags", params: { tags: ["世界観"] } },
+    { tool: "list_codex_tags", params: {} },
+  ];
+
+  it.each(RAW_SQL_TOOLS)(
+    "$tool binds the active project_id into its SQL",
+    async ({ tool, params }) => {
+      mockTreeProjectId.mockReturnValue("proj-A");
+      mockInvoke.mockResolvedValue({ rows: [] });
+
+      const res = await executeTool(tool, "c", params);
+      expect(res.error).toBeUndefined();
+
+      const dbExecCalls = mockInvoke.mock.calls.filter(
+        (c) => c[0] === "db_execute",
+      );
+      expect(dbExecCalls.length).toBeGreaterThan(0);
+      const call = dbExecCalls[dbExecCalls.length - 1][1] as {
+        sql: string;
+        params: unknown[];
+      };
+      expect(call.sql).toContain("project_id");
+      expect(call.params).toContain("proj-A");
+    },
+  );
+
+  // raw-SQL + Drizzle 両系統の全 read ツール。projectId 未設定で必ず fail-closed。
+  const ALL_READ_TOOLS = [
+    ...RAW_SQL_TOOLS,
+    { tool: "find_related_entries", params: { id: "e1" } },
+    { tool: "list_codex_by_type", params: { type: "character" } },
+    { tool: "list_chapters", params: {} },
+    { tool: "get_chapter_summaries", params: {} },
+    { tool: "get_codex_entry", params: { id: "e1" } },
+    { tool: "get_scene", params: { id: "s1" } },
+  ];
+
+  it.each(ALL_READ_TOOLS)(
+    "$tool fails closed (no DB query) when no project is active",
+    async ({ tool, params }) => {
+      mockTreeProjectId.mockReturnValue(null);
+      mockInvoke.mockResolvedValue({ rows: [] });
+
+      const res = await executeTool(tool, "c", params);
+      expect(res.error).toBeUndefined();
+      expect(res.summary).toContain("No active project");
+      const dbExecCalls = mockInvoke.mock.calls.filter(
+        (c) => c[0] === "db_execute",
+      );
+      expect(dbExecCalls.length).toBe(0);
+    },
+  );
+});

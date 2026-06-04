@@ -111,6 +111,15 @@ async function searchCodex(
       tokensUsed: 0,
     };
 
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "search_codex",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
   // codex_fts は trigram tokenizer なので 3 codepoint 未満のトークンは
   // FTS で match できない。短いトークンが 1 つでも混じっていたら
   // LIKE-OR fallback に倒す。Agent が日本語の 2-3 文字語を渡す前提では
@@ -126,10 +135,10 @@ async function searchCodex(
       sql: `SELECT ce.id, ce.name, ce.type, ce.summary
             FROM codex_entries ce
             JOIN codex_fts fts ON ce.rowid = fts.rowid
-            WHERE codex_fts MATCH ?
+            WHERE codex_fts MATCH ? AND ce.project_id = ?
             ORDER BY fts.rank
             LIMIT 20`,
-      params: [ftsQuery],
+      params: [ftsQuery, projectId],
       method: "all",
     });
     rows = result.rows;
@@ -140,9 +149,9 @@ async function searchCodex(
     );
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT id, name, type, summary FROM codex_entries
-            WHERE ${clause}
+            WHERE project_id = ? AND (${clause})
             LIMIT 20`,
-      params: likeParams,
+      params: [projectId, ...likeParams],
       method: "all",
     });
     rows = result.rows;
@@ -167,6 +176,14 @@ async function listCodexByType(
   params: Record<string, unknown>,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const type = String(params["type"] ?? "").trim();
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "list_codex_by_type",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
   const rows = await db
     .select({
       id: codexEntries.id,
@@ -175,7 +192,9 @@ async function listCodexByType(
       tagsCache: codexEntries.tagsCache,
     })
     .from(codexEntries)
-    .where(eq(codexEntries.type, type));
+    .where(
+      and(eq(codexEntries.projectId, projectId), eq(codexEntries.type, type)),
+    );
 
   const content = rows.map((r) => ({
     id: r.id,
@@ -204,10 +223,19 @@ async function getCodexEntry(
       tokensUsed: 0,
     };
 
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "get_codex_entry",
+      content: null,
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
   const [entry] = await db
     .select()
     .from(codexEntries)
-    .where(eq(codexEntries.id, id));
+    .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
   if (!entry)
     return {
       name: "get_codex_entry",
@@ -279,20 +307,30 @@ async function listCodexTags(
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const typeFilter = params["type"] ? String(params["type"]) : undefined;
 
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "list_codex_tags",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
   const sql = typeFilter
     ? `SELECT ct.id, ct.name, ct.color, ct.type_filter, COUNT(cet.entry_id) as usage_count
        FROM codex_tags ct
        LEFT JOIN codex_entry_tags cet ON ct.id = cet.tag_id
-       WHERE ct.type_filter IS NULL OR ct.type_filter LIKE ?
+       WHERE ct.project_id = ? AND (ct.type_filter IS NULL OR ct.type_filter LIKE ?)
        GROUP BY ct.id
        ORDER BY usage_count DESC`
     : `SELECT ct.id, ct.name, ct.color, ct.type_filter, COUNT(cet.entry_id) as usage_count
        FROM codex_tags ct
        LEFT JOIN codex_entry_tags cet ON ct.id = cet.tag_id
+       WHERE ct.project_id = ?
        GROUP BY ct.id
        ORDER BY usage_count DESC`;
 
-  const queryParams = typeFilter ? [`%${typeFilter}%`] : [];
+  const queryParams = typeFilter ? [projectId, `%${typeFilter}%`] : [projectId];
   const result = await invoke<QueryResult>("db_execute", {
     sql,
     params: queryParams,
@@ -327,14 +365,23 @@ async function searchCodexByTags(
       tokensUsed: 0,
     };
 
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "search_codex_by_tags",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
   const placeholders = tags.map(() => "?").join(", ");
   const result = await invoke<QueryResult>("db_execute", {
     sql: `SELECT DISTINCT ce.id, ce.name, ce.type, ce.summary
           FROM codex_entries ce
           JOIN codex_entry_tags cet ON ce.id = cet.entry_id
           JOIN codex_tags ct ON cet.tag_id = ct.id
-          WHERE ct.name IN (${placeholders})`,
-    params: tags,
+          WHERE ce.project_id = ? AND ct.name IN (${placeholders})`,
+    params: [projectId, ...tags],
     method: "all",
   });
 
@@ -370,10 +417,19 @@ async function findRelatedEntries(
       tokensUsed: 0,
     };
 
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "find_related_entries",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
   const [source] = await db
     .select()
     .from(codexEntries)
-    .where(eq(codexEntries.id, id));
+    .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
   if (!source)
     return {
       name: "find_related_entries",
@@ -415,9 +471,9 @@ async function findRelatedEntries(
     "tags_cache",
   ]);
 
-  const sqlParams: unknown[] = [id, ...likeParams];
+  const sqlParams: unknown[] = [projectId, id, ...likeParams];
   let sql = `SELECT id, name, type, summary FROM codex_entries
-             WHERE id != ? AND (${clause})`;
+             WHERE project_id = ? AND id != ? AND (${clause})`;
   if (typeFilter) {
     sql += ` AND type = ?`;
     sqlParams.push(typeFilter);
@@ -450,6 +506,14 @@ async function findRelatedEntries(
 // ---------------------------------------------------------------------------
 
 async function listChapters(): Promise<Omit<ToolResult, "toolCallId">> {
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "list_chapters",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
   const nodes = await db
     .select({
       id: treeNodes.id,
@@ -460,7 +524,12 @@ async function listChapters(): Promise<Omit<ToolResult, "toolCallId">> {
       sortOrder: treeNodes.sortOrder,
     })
     .from(treeNodes)
-    .where(inArray(treeNodes.nodeType, ["part", "chapter", "scene"]));
+    .where(
+      and(
+        eq(treeNodes.projectId, projectId),
+        inArray(treeNodes.nodeType, ["part", "chapter", "scene"]),
+      ),
+    );
 
   // Sort by sortOrder for consistent output
   nodes.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
@@ -493,6 +562,15 @@ async function getScene(
       tokensUsed: 0,
     };
 
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "get_scene",
+      content: null,
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
   const [node] = await db
     .select({
       id: treeNodes.id,
@@ -500,7 +578,7 @@ async function getScene(
       nodeType: treeNodes.nodeType,
     })
     .from(treeNodes)
-    .where(eq(treeNodes.id, id));
+    .where(and(eq(treeNodes.id, id), eq(treeNodes.projectId, projectId)));
 
   if (!node || node.nodeType !== "scene") {
     return {
@@ -535,6 +613,15 @@ async function searchScenes(
       tokensUsed: 0,
     };
 
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "search_scenes",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
   // tree_nodes_fts は trigram。短トークンを含む場合は LIKE-OR fallback。
   const tokens = tokenizeQuery(query);
   const allTrigramFriendly =
@@ -548,9 +635,9 @@ async function searchScenes(
                    snippet(tree_nodes_fts, 1, '[', ']', '...', 40) as excerpt
             FROM tree_nodes tn
             JOIN tree_nodes_fts fts ON tn.rowid = fts.rowid
-            WHERE tree_nodes_fts MATCH ? AND tn.node_type = 'scene'
+            WHERE tree_nodes_fts MATCH ? AND tn.node_type = 'scene' AND tn.project_id = ?
             LIMIT 10`,
-      params: [ftsQuery],
+      params: [ftsQuery, projectId],
       method: "all",
     });
     rows = result.rows;
@@ -562,9 +649,9 @@ async function searchScenes(
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT id, title, SUBSTR(content, 1, 200) as excerpt
             FROM tree_nodes
-            WHERE node_type = 'scene' AND (${clause})
+            WHERE project_id = ? AND node_type = 'scene' AND (${clause})
             LIMIT 10`,
-      params: likeParams,
+      params: [projectId, ...likeParams],
       method: "all",
     });
     rows = result.rows;
@@ -600,6 +687,15 @@ async function searchSnippets(
       tokensUsed: 0,
     };
 
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "search_snippets",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
   // snippets_fts は trigram。短トークンを含む場合は LIKE-OR fallback。
   const tokens = tokenizeQuery(query);
   const allTrigramFriendly =
@@ -612,10 +708,10 @@ async function searchSnippets(
       sql: `SELECT s.id, s.title, s.tags_cache, SUBSTR(s.content, 1, 200) as preview
             FROM snippets s
             JOIN snippets_fts fts ON s.rowid = fts.rowid
-            WHERE snippets_fts MATCH ?
+            WHERE snippets_fts MATCH ? AND s.project_id = ?
             ORDER BY fts.rank
             LIMIT 10`,
-      params: [ftsQuery],
+      params: [ftsQuery, projectId],
       method: "all",
     });
     rows = result.rows;
@@ -627,9 +723,9 @@ async function searchSnippets(
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT id, title, tags_cache, SUBSTR(content, 1, 200) as preview
             FROM snippets
-            WHERE ${clause}
+            WHERE project_id = ? AND (${clause})
             LIMIT 10`,
-      params: likeParams,
+      params: [projectId, ...likeParams],
       method: "all",
     });
     rows = result.rows;
@@ -657,6 +753,14 @@ async function searchSnippets(
 // ---------------------------------------------------------------------------
 
 async function getChapterSummaries(): Promise<Omit<ToolResult, "toolCallId">> {
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "get_chapter_summaries",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
   const chapters = await db
     .select({
       id: treeNodes.id,
@@ -664,7 +768,12 @@ async function getChapterSummaries(): Promise<Omit<ToolResult, "toolCallId">> {
       sortOrder: treeNodes.sortOrder,
     })
     .from(treeNodes)
-    .where(eq(treeNodes.nodeType, "chapter"));
+    .where(
+      and(
+        eq(treeNodes.projectId, projectId),
+        eq(treeNodes.nodeType, "chapter"),
+      ),
+    );
 
   chapters.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
@@ -677,7 +786,9 @@ async function getChapterSummaries(): Promise<Omit<ToolResult, "toolCallId">> {
       sortOrder: treeNodes.sortOrder,
     })
     .from(treeNodes)
-    .where(eq(treeNodes.nodeType, "scene"));
+    .where(
+      and(eq(treeNodes.projectId, projectId), eq(treeNodes.nodeType, "scene")),
+    );
 
   const content = chapters.map((ch) => ({
     id: ch.id,

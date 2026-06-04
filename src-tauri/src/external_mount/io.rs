@@ -31,8 +31,23 @@ pub fn resolve_under_root(root: &Path, rel_path: &str) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// 単一テキストファイルの読込上限 (security audit RUST-DOS-01)。
+/// `fs::read_to_string` は infallible 確保のため、超巨大ファイルでは確保失敗が
+/// `handle_alloc_error` → `abort()`（panic strategy 非依存・catch 不能）となり、
+/// 同期コマンド経由ではプロセス全体を kill しうる。読込前に metadata でサイズを
+/// 検証し、上限超過の1ファイルだけをエラーで弾く。実運用の最大 .md を十分上回る値。
+const MAX_TEXT_FILE_BYTES: u64 = 32 * 1024 * 1024; // 32 MiB
+
 /// Read a UTF-8 text file, normalizing CRLF → LF.
 pub fn read_text_file(path: &Path) -> Result<String> {
+    let meta = fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    if meta.len() > MAX_TEXT_FILE_BYTES {
+        return Err(anyhow!(
+            "file too large to read ({} bytes, limit {MAX_TEXT_FILE_BYTES} bytes): {}",
+            meta.len(),
+            path.display()
+        ));
+    }
     let raw =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     Ok(raw.replace("\r\n", "\n"))

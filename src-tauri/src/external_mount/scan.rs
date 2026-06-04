@@ -106,7 +106,18 @@ fn walk(
                 continue;
             }
             let rel = rel_path_from_canonical(root, &path)?;
-            let content = read_text_file(&path)?;
+            // oversize / 読込失敗の1ファイルで scan 全体 (ひいてはプロセス) を
+            // 落とさず、該当ファイルだけ skip + warn する (security audit RUST-DOS-01)。
+            let content = match read_text_file(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        "skipping unreadable file during scan: {} ({e:#})",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
             let mtime = file_mtime_iso(&path)?;
             let hash = content_hash(&content);
             files.push(ScannedFile {

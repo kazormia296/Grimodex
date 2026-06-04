@@ -93,9 +93,9 @@ async function handleFile(file) {
     if (!Array.isArray(chain)) throw new Error('chain.json must be an array');
     const v = await verifyChain(chain);
     if (v.ok) {
-      result.innerHTML = '<div class="result ok"><strong>Chain OK.</strong><br/>' + chain.length + ' events verified end-to-end.</div>';
+      result.innerHTML = '<div class="result ok"><strong>Chain OK.</strong><br/>' + escapeHtml(String(chain.length)) + ' events verified end-to-end.</div>';
     } else {
-      result.innerHTML = '<div class="result bad"><strong>Chain broken at sequence ' + v.brokenAt + '.</strong><br/>' + escapeHtml(v.reason || '') + '</div>';
+      result.innerHTML = '<div class="result bad"><strong>Chain broken at sequence ' + escapeHtml(String(v.brokenAt)) + '.</strong><br/>' + escapeHtml(v.reason || '') + '</div>';
     }
   } catch (e) {
     result.innerHTML = '<div class="result bad"><strong>Could not read file.</strong><br/>' + escapeHtml(String(e.message || e)) + '</div>';

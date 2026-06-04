@@ -145,14 +145,42 @@ export function parseMarkdownSingle(text: string): MarkdownParseResult {
   };
 }
 
+/** zip import の展開後サイズ・エントリ数の上限 (zip-bomb / 過大 zip 対策, security audit PIO-3)。 */
+const MAX_MARKDOWN_TOTAL_BYTES = 256 * 1024 * 1024; // 256 MiB
+const MAX_MARKDOWN_ENTRIES = 50_000;
+
 /** Parse a ZIP containing .md files into a recursive folder tree. */
 export function parseMarkdownZip(zipBytes: Uint8Array): MarkdownParseResult {
-  const files = unzipSync(zipBytes);
+  // zip-bomb / 過大 zip による renderer のメモリ枯渇を防ぐため、.md エントリのみ
+  // 展開し、宣言サイズ・エントリ数に上限を課す (security audit PIO-3)。filter が
+  // false を返すエントリは展開されない (非 .md を materialize しない)。
+  let totalDeclared = 0;
+  let mdCount = 0;
+  const files = unzipSync(zipBytes, {
+    filter: (f) => {
+      const name = f.name;
+      if (!name.endsWith(".md") && !name.endsWith(".markdown")) return false;
+      if (name.includes("__MACOSX")) return false;
+      mdCount += 1;
+      totalDeclared += f.size;
+      if (mdCount > MAX_MARKDOWN_ENTRIES) {
+        throw new Error(
+          `ZIP 内の Markdown ファイルが多すぎます (上限 ${MAX_MARKDOWN_ENTRIES} 件)`,
+        );
+      }
+      if (totalDeclared > MAX_MARKDOWN_TOTAL_BYTES) {
+        throw new Error(
+          `ZIP の展開後サイズが上限 (${Math.round(
+            MAX_MARKDOWN_TOTAL_BYTES / (1024 * 1024),
+          )} MiB) を超えています`,
+        );
+      }
+      return true;
+    },
+  });
   const entries: MarkdownFileEntry[] = [];
 
   for (const [path, data] of Object.entries(files)) {
-    if (!path.endsWith(".md") && !path.endsWith(".markdown")) continue;
-    if (path.includes("__MACOSX")) continue;
     entries.push({
       relPath: path.replace(/\\/g, "/"),
       content: strFromU8(data),

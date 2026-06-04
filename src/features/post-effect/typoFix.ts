@@ -1,4 +1,5 @@
 import type { Editor } from "@tiptap/core";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { resolveAnnotationRange } from "./resolveAnnotationRange";
 import { updateAnnotationStatus } from "./api";
 import { useAnnotationStore } from "./annotationStore";
@@ -29,6 +30,10 @@ export async function applyTypoFixAndResolve(
   ann: PostEffectAnnotation,
 ): Promise<ApplyTypoFixResult> {
   if (!editor) return { applied: false };
+  // AI 提案テキストの本文適用は bodyWrite アクション。policy=off のプロジェクト
+  // では弾く (security audit AI-1)。決定論的な「ローカル検出」の applyFix は
+  // AI 出力ではないため別経路として gate しない。
+  if (blockIfPolicyOff("bodyWrite")) return { applied: false };
   const parsed = parseAnnotationMeta(ann);
   if (parsed.kind !== "typo" || !parsed.typo) return { applied: false };
   const suggestion = parsed.typo.suggestion;

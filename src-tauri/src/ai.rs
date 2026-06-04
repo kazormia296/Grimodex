@@ -2207,6 +2207,12 @@ fn openai_stream_delta_content(delta: &serde_json::Value) -> Option<String> {
 // G1: Streaming chat
 // ---------------------------------------------------------------------------
 
+/// SSE 蓄積バッファの上限 (security audit RUST-DOS-02)。frame separator を含まない
+/// ストリーム (バグ持ち / 悪意ある custom endpoint) で buf が無制限に増大し自プロセスの
+/// メモリを枯渇させるのを防ぐ defense-in-depth。正当な SSE フレーム最大を十分上回る値で、
+/// endpoint はユーザ設定 (semi-trusted) のため安全側に倒す。
+const MAX_SSE_BUFFER_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+
 /// SSE イベント境界。仕様は「空行」だが、`\r\n\r\n` と `\n\n` の両方を扱う。
 /// Windows 経由や一部プロキシでは CRLF のみになり `"\n\n"` 検出で永遠にバッファが進まないことがある。
 #[inline]
@@ -2319,6 +2325,14 @@ pub async fn send_chat_stream(
                 }
                 let bytes = chunk.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
                 buf.push_str(&String::from_utf8_lossy(&bytes));
+                // separator を含まないまま buf が上限を超えたら中断 (RUST-DOS-02)。
+                // separator があれば下の while で drain されるため、ここに到達する
+                // のは「complete frame が一つも無いのに肥大化した」病的ケースのみ。
+                if buf.len() > MAX_SSE_BUFFER_BYTES && find_sse_frame_separator(&buf).is_none() {
+                    return Err(anyhow::anyhow!(
+                        "SSE buffer exceeded {MAX_SSE_BUFFER_BYTES} bytes without a frame separator"
+                    ));
+                }
 
                 // Process complete SSE messages separated by \n\n or \r\n\r\n
                 while let Some((pos, sep_len)) = find_sse_frame_separator(&buf) {
@@ -2444,6 +2458,12 @@ pub async fn send_chat_stream(
                 }
                 let bytes = chunk.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
                 buf.push_str(&String::from_utf8_lossy(&bytes));
+                // separator を含まないまま buf が上限を超えたら中断 (RUST-DOS-02)。
+                if buf.len() > MAX_SSE_BUFFER_BYTES && find_sse_frame_separator(&buf).is_none() {
+                    return Err(anyhow::anyhow!(
+                        "SSE buffer exceeded {MAX_SSE_BUFFER_BYTES} bytes without a frame separator"
+                    ));
+                }
 
                 while let Some((pos, sep_len)) = find_sse_frame_separator(&buf) {
                     let chunk_str = buf[..pos].to_string();
