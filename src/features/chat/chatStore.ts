@@ -58,6 +58,7 @@ import {
   resolveModelCapabilities,
 } from "./agent/modelLimits";
 import { useAiSettingsStore, isRagCapableProvider } from "./store";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
 import { stripToolProtocol } from "./toolProtocol";
 import {
@@ -2718,57 +2719,63 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         );
         // 中断フラグをこのターンの開始時にリセット（前ターンの取り残しを排除）。
         _agentAborted = false;
-        const { toolCallRecords, finalThinkingBlocks, citations, cost } =
-          await runAgentLoop({
-            messages: agentMsgs,
-            tools: agentTools,
-            tokenBudget,
-            shouldAbort: () => _agentAborted,
-            callLimitMessage: agentControl.callLimitMessage,
-            tokenBudgetMessage: agentControl.tokenBudgetMessage,
-            userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
-            sendToLLM: (msgs, tools) =>
-              chatApi.sendAgentMessage(
-                msgs,
-                tools,
-                agentThinkingParams,
-                systemCacheSegmentsForAgent,
-                agentApiVariant,
-                webSearchConfig,
-              ),
-            executeTool: guardedExecuteTool,
-            onProgress: (progress) => {
-              set({ agentProgress: progress });
-            },
-            onToolComplete: (record) => {
-              accToolCalls.push(record);
-              set((s) => {
-                const msgs = [...s.messages];
-                const last = msgs[msgs.length - 1];
-                if (last?.role === "assistant") {
-                  msgs[msgs.length - 1] = {
-                    ...last,
-                    metadata: JSON.stringify({ tool_calls: accToolCalls }),
-                  };
-                }
-                return { messages: msgs };
-              });
-            },
-            onTextChunk: (text) => {
-              set((s) => {
-                const msgs = [...s.messages];
-                const last = msgs[msgs.length - 1];
-                if (last?.role === "assistant") {
-                  const prev = last.content;
-                  msgs[msgs.length - 1] = {
-                    ...last,
-                    content: prev ? `${prev}\n\n${text}` : text,
-                  };
-                }
-                return { messages: msgs };
-              });
-            },
-          });
+        const {
+          toolCallRecords,
+          finalThinkingBlocks,
+          citations,
+          cost,
+          tokensIn: agentTokensIn,
+          tokensOut: agentTokensOut,
+        } = await runAgentLoop({
+          messages: agentMsgs,
+          tools: agentTools,
+          tokenBudget,
+          shouldAbort: () => _agentAborted,
+          callLimitMessage: agentControl.callLimitMessage,
+          tokenBudgetMessage: agentControl.tokenBudgetMessage,
+          userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
+          sendToLLM: (msgs, tools) =>
+            chatApi.sendAgentMessage(
+              msgs,
+              tools,
+              agentThinkingParams,
+              systemCacheSegmentsForAgent,
+              agentApiVariant,
+              webSearchConfig,
+            ),
+          executeTool: guardedExecuteTool,
+          onProgress: (progress) => {
+            set({ agentProgress: progress });
+          },
+          onToolComplete: (record) => {
+            accToolCalls.push(record);
+            set((s) => {
+              const msgs = [...s.messages];
+              const last = msgs[msgs.length - 1];
+              if (last?.role === "assistant") {
+                msgs[msgs.length - 1] = {
+                  ...last,
+                  metadata: JSON.stringify({ tool_calls: accToolCalls }),
+                };
+              }
+              return { messages: msgs };
+            });
+          },
+          onTextChunk: (text) => {
+            set((s) => {
+              const msgs = [...s.messages];
+              const last = msgs[msgs.length - 1];
+              if (last?.role === "assistant") {
+                const prev = last.content;
+                msgs[msgs.length - 1] = {
+                  ...last,
+                  content: prev ? `${prev}\n\n${text}` : text,
+                };
+              }
+              return { messages: msgs };
+            });
+          },
+        });
 
         // 引用の事後検証: 不正 URL を排除 + 本文中の裏付けなし URL を検出。
         const safeCitations = sanitizeCitations(citations);
@@ -2817,15 +2824,32 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           const finalMessages = get().messages;
           const lastMsg = finalMessages[finalMessages.length - 1];
           if (lastMsg?.role === "assistant" && lastMsg.content) {
+            const agentModel =
+              useAiSettingsStore.getState().settings?.model ?? undefined;
             await chatApi.addMessage(
               sessionIdForPersist,
               "assistant",
               lastMsg.content,
               {
                 id: assistantMsg.id,
+                model: agentModel,
+                // N4: 従来エージェントターンは tokens_* が常に null だった。
+                // runAgentLoop が全ターン合算したトークンをここで埋める。
+                tokensIn: agentTokensIn ?? undefined,
+                tokensOut: agentTokensOut ?? undefined,
                 metadata: finalAgentMetadata,
               },
             );
+            // N4: エージェントターンの usage を台帳にも記録 (cost は OpenRouter 実値)。
+            void recordAiUsage({
+              surface: "agent",
+              model: agentModel,
+              tokensIn: agentTokensIn,
+              tokensOut: agentTokensOut,
+              costUsd: cost,
+              traceId: assistantMsg.id,
+              refId: assistantMsg.id,
+            });
 
             // セッションタイトル自動生成 (P1-2) — fire-and-forget
             const isFirstAgentResponse =
@@ -3118,6 +3142,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             stopReason: string;
             inputTokens?: number;
             outputTokens?: number;
+            cost?: number;
           }) => {
             // 末尾の buffered delta を確定前に同期反映。
             flushDelta();
@@ -3125,6 +3150,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             const chatDurationMs = Math.round(
               performance.now() - chatStartTime,
             );
+
+            // N4: 通常チャットの usage を台帳に記録 (chat_messages.tokens_* とは
+            // 別に、集計用の単一台帳に集約する。cost は OpenRouter streaming 実値)。
+            void recordAiUsage({
+              surface: "chat",
+              model: chatModel || undefined,
+              tokensIn: info.inputTokens,
+              tokensOut: info.outputTokens,
+              costUsd: info.cost ?? null,
+              durationMs: chatDurationMs,
+              traceId: assistantMsg.id,
+              refId: assistantMsg.id,
+            });
 
             // Build metadata: thinking blocks + stopped flag
             const metadataObj: Record<string, unknown> = {};

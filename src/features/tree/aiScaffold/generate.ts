@@ -8,6 +8,7 @@
  * applyPlan.ts の validateAiTreePlan 側にある。
  */
 import { invoke } from "@/lib/tauri";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { cmpKeys } from "../fractionalIndex";
 import type { TreeNodeData, NodeType } from "../treeStore";
 import type { AiTreePlan, AiTreeOp } from "./types";
@@ -20,6 +21,10 @@ interface LLMResponsePayload {
     | { type: "thinking"; content: string }
   >;
   stopReason: string;
+  // N4: 従来この型は token フィールドを宣言しておらず、IPC で届いていた usage が
+  // deserialization 時点で捨てられていた。台帳記録のため宣言する。
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface OutlineNode {
@@ -262,6 +267,13 @@ export async function generateAiTreePlan(
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
+  });
+
+  // N4: tree scaffold 生成の usage を台帳に記録する。
+  void recordAiUsage({
+    surface: "tree_scaffold",
+    tokensIn: response.inputTokens,
+    tokensOut: response.outputTokens,
   });
 
   const text = response.blocks

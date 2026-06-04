@@ -1,5 +1,27 @@
 import { describe, it, expect } from "vitest";
-import { getModelPricing, estimateInputCost, formatCost } from "./modelPricing";
+import {
+  getModelPricing,
+  estimateInputCost,
+  estimateTotalCost,
+  formatCost,
+} from "./modelPricing";
+
+describe("estimateTotalCost", () => {
+  it("sums input and output cost (sonnet 3/15 per 1M)", () => {
+    // 1M in * $3 + 1M out * $15 = $18
+    expect(
+      estimateTotalCost("claude-sonnet-4-6", 1_000_000, 1_000_000),
+    ).toBeCloseTo(18, 5);
+  });
+
+  it("returns null for an unknown model", () => {
+    expect(estimateTotalCost("unknown-model-x", 1000, 1000)).toBeNull();
+  });
+
+  it("returns 0 for zero tokens on a known model", () => {
+    expect(estimateTotalCost("claude-sonnet-4-6", 0, 0)).toBe(0);
+  });
+});
 
 describe("getModelPricing", () => {
   it("returns pricing for a bare Anthropic model id", () => {

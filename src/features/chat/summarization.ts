@@ -6,6 +6,7 @@ import { getPromptCatalog } from "@/prompts/index";
 import { countTokens } from "./contextBuilder";
 import { buildHandoffMetaComment } from "./conversationHistory";
 import { stripToolProtocol } from "./toolProtocol";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 
 export {
   shouldSummarize,
@@ -66,6 +67,12 @@ export async function runSummarization(
   const prompt = createSummarizationPrompt(candidates, opts);
   const result = await sendMessage([{ role: "user", content: prompt }], {
     effort: "low",
+  });
+  // N4: 要約生成 (L5) の usage を台帳に記録する (従来は API usage を捨てていた)。
+  void recordAiUsage({
+    surface: "summarization",
+    tokensIn: result.inputTokens,
+    tokensOut: result.outputTokens,
   });
   const trimmed = result.text.trim();
   const meta = buildHandoffMetaComment({

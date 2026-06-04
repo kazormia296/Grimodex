@@ -64,6 +64,10 @@ export interface AgentLoopResult {
   citations: Citation[];
   /** 全レスポンスのコスト合計（OpenRouter のみ実値、なければ null）。 */
   cost: number | null;
+  /** 全ターンの入力トークン合計（N4。取得不可なら null）。 */
+  tokensIn: number | null;
+  /** 全ターンの出力トークン合計（N4。取得不可なら null）。 */
+  tokensOut: number | null;
 }
 
 function extractText(blocks: ResponseBlock[]): string {
@@ -132,9 +136,12 @@ export async function runAgentLoop(
   // ことを構造的に保証するためのゲート（security review F-2）。
   const declaredToolNames = new Set(tools.map((t) => t.name));
 
-  // Web 検索 (RAG) の引用・コストを全レスポンスにまたがって蓄積する。
+  // Web 検索 (RAG) の引用・コスト・トークンを全レスポンスにまたがって蓄積する。
   const citations: Citation[] = [];
   let cost: number | null = null;
+  // N4: ツールループの全ターンの input/output トークンを合算する。
+  let tokensIn: number | null = null;
+  let tokensOut: number | null = null;
   const accumulate = (resp: AgentLLMResponse) => {
     if (resp.citations) {
       for (const c of resp.citations) {
@@ -142,6 +149,10 @@ export async function runAgentLoop(
       }
     }
     if (resp.cost != null) cost = (cost ?? 0) + resp.cost;
+    if (resp.inputTokens != null) tokensIn = (tokensIn ?? 0) + resp.inputTokens;
+    if (resp.outputTokens != null) {
+      tokensOut = (tokensOut ?? 0) + resp.outputTokens;
+    }
   };
   const result = (
     finalText: string,
@@ -152,6 +163,8 @@ export async function runAgentLoop(
     finalThinkingBlocks,
     citations,
     cost,
+    tokensIn,
+    tokensOut,
   });
 
   while (true) {

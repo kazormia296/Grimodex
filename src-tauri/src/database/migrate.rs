@@ -1395,6 +1395,38 @@ impl Database {
             [],
         )?;
 
+        // AI usage ledger (N4): append-only per-generation token/cost record
+        // spanning ALL AI generation surfaces (chat, agent, map branch, tree
+        // scaffold, beat, foreshadow, inline-ai, synopsis, session title,
+        // summarization, context creator). One row per LLM generation. Mirrors
+        // src/db/schema.ts aiUsage. tokens_in/tokens_out/cost_usd are nullable:
+        // streaming providers that do not opt into usage (and aborted streams)
+        // deliver no usage, but the row is still recorded so invocations are
+        // counted. scene_node_id is SET NULL (not CASCADE) on scene deletion so
+        // historical spend survives; project deletion CASCADEs the whole ledger.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ai_usage (
+                id            TEXT PRIMARY KEY,
+                project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface       TEXT NOT NULL,
+                scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                model         TEXT,
+                provider      TEXT,
+                tokens_in     INTEGER,
+                tokens_out    INTEGER,
+                cost_usd      REAL,
+                duration_ms   INTEGER,
+                trace_id      TEXT,
+                ref_id        TEXT,
+                metadata      TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_usage_project_created
+                ON ai_usage(project_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_ai_usage_project_surface
+                ON ai_usage(project_id, surface);",
+        )?;
+
         Ok(())
     }
 

@@ -9,6 +9,7 @@ import {
   CheckSquare,
   Info,
   Network,
+  Activity,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -22,6 +23,7 @@ export type SettingsCategory =
   | "codex"
   | "map"
   | "linter"
+  | "usage"
   | "about";
 
 export interface CategoryDef {
@@ -40,6 +42,7 @@ export const SETTINGS_CATEGORIES: CategoryDef[] = [
   { id: "codex", label: "Codex", Icon: BookOpen },
   { id: "map", label: "Map", Icon: Network },
   { id: "linter", label: "Linter", Icon: CheckSquare },
+  { id: "usage", label: "Usage", Icon: Activity },
   { id: "about", label: "About", Icon: Info },
 ];
 

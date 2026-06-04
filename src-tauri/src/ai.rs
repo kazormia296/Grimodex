@@ -2226,6 +2226,31 @@ fn find_sse_frame_separator(buf: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// ストリーミングで usage (トークン数 / OpenRouter は cost) を最終チャンクに
+/// 含めるようプロバイダにオプトインする (N4)。多くのプロバイダはストリーム時に
+/// デフォルトで usage を返さないため、これを設定しないと FE 側でトークンが常に
+/// null になる (= 既定構成の OpenRouter streaming でメインチャットの台帳が
+/// null トークン行になる)。読み取り側は防御的なので、未対応でも害は無い。
+///
+/// - OpenRouter: `usage: { include: true }` (ネイティブ。cost も返る)
+/// - OpenAI / OpenAI 互換: `stream_options: { include_usage: true }` (標準)
+/// - Ollama: 既定で usage を返すため何もしない (未知フィールドでの 400 を回避)
+/// - その他 (AI のべりすと v1 等): 対象外
+///
+/// NOTE: live verification は未実施 (実 OpenRouter/OpenAI への streaming 往復が
+/// 必要で unit test 不可)。E2E 検証は別途。
+fn apply_stream_usage_optin(body: &mut serde_json::Value, provider: &AiProvider) {
+    match provider {
+        AiProvider::OpenRouter => {
+            body["usage"] = serde_json::json!({ "include": true });
+        }
+        AiProvider::OpenAI | AiProvider::OpenaiCompatible => {
+            body["stream_options"] = serde_json::json!({ "include_usage": true });
+        }
+        _ => {}
+    }
+}
+
 pub async fn send_chat_stream(
     params: &ChatParams<'_>,
     messages: &[(&str, &str)],
@@ -2437,6 +2462,9 @@ pub async fn send_chat_stream(
                 params.openrouter_provider_pin,
             );
 
+            // N4: ストリーミングでも usage/cost を最終チャンクで受け取る。
+            apply_stream_usage_optin(&mut body, params.provider);
+
             let req = openai_compat_request(&client, params, &body);
             let resp = send_with_429_retry(req, params.retry_429, 3).await?;
             if !resp.status().is_success() {
@@ -2450,6 +2478,8 @@ pub async fn send_chat_stream(
             let mut stop_reason = "end_turn".to_string();
             let mut input_tokens: Option<u64> = None;
             let mut output_tokens: Option<u64> = None;
+            // OpenRouter は usage.cost を返す (他プロバイダは None → FE が概算)。
+            let mut cost: Option<f64> = None;
 
             while let Some(chunk) = stream.next().await {
                 if abort_flag.load(Ordering::Relaxed) {
@@ -2485,6 +2515,10 @@ pub async fn send_chat_stream(
                             }
                             if let Some(out) = json["usage"]["completion_tokens"].as_u64() {
                                 output_tokens = Some(out);
+                            }
+                            // OpenRouter: usage.cost (USD)。include:true 時のみ届く。
+                            if let Some(c) = json["usage"]["cost"].as_f64() {
+                                cost = Some(c);
                             }
 
                             // finish_reason
@@ -2546,6 +2580,7 @@ pub async fn send_chat_stream(
                     "stop_reason": stop_reason,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
+                    "cost": cost,
                 }),
             );
             Ok(())
@@ -2617,6 +2652,37 @@ mod tests {
         assert!(body.get("provider").is_none());
         apply_openrouter_provider_pin(&mut body, &AiProvider::Anthropic, Some("anthropic"));
         assert!(body.get("provider").is_none());
+    }
+
+    #[test]
+    fn apply_stream_usage_optin_openrouter_uses_usage_include() {
+        // N4: OpenRouter はネイティブの usage:{include:true} を使う (cost も返る)。
+        let mut body = serde_json::json!({ "model": "x", "stream": true });
+        apply_stream_usage_optin(&mut body, &AiProvider::OpenRouter);
+        assert_eq!(body["usage"]["include"], true);
+        assert!(body.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn apply_stream_usage_optin_openai_uses_stream_options() {
+        // OpenAI / OpenAI 互換は標準の stream_options.include_usage。
+        for provider in [AiProvider::OpenAI, AiProvider::OpenaiCompatible] {
+            let mut body = serde_json::json!({ "model": "x", "stream": true });
+            apply_stream_usage_optin(&mut body, &provider);
+            assert_eq!(body["stream_options"]["include_usage"], true);
+            assert!(body.get("usage").is_none());
+        }
+    }
+
+    #[test]
+    fn apply_stream_usage_optin_ollama_and_others_noop() {
+        // Ollama は既定で usage を返すため触らない (未知フィールドでの 400 回避)。
+        for provider in [AiProvider::Ollama, AiProvider::Anthropic, AiProvider::AiNovelist] {
+            let mut body = serde_json::json!({ "model": "x", "stream": true });
+            apply_stream_usage_optin(&mut body, &provider);
+            assert!(body.get("usage").is_none());
+            assert!(body.get("stream_options").is_none());
+        }
     }
 
     #[test]

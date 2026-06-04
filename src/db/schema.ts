@@ -436,6 +436,48 @@ export const generationLogs = sqliteTable(
   ],
 );
 
+/**
+ * AI usage ledger (N4): append-only per-generation token/cost record across
+ * ALL AI generation surfaces. One row per LLM generation. DDL authority lives
+ * in src-tauri/src/database/migrate.rs (ai_usage) — keep in lockstep by hand.
+ *
+ * tokens/cost are nullable: streaming providers that do not opt into usage and
+ * aborted streams deliver no usage, but the row is still recorded so the number
+ * of invocations is counted. `surface` is a free-text discriminator (see
+ * AiUsageSurface in src/features/ai-usage/recordAiUsage.ts); `costUsd` is the
+ * provider-reported cost (OpenRouter) when available, otherwise null and the UI
+ * estimates from tokens via modelPricing.
+ */
+export const aiUsage = sqliteTable(
+  "ai_usage",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    surface: text("surface").notNull(),
+    sceneNodeId: text("scene_node_id").references(() => treeNodes.id, {
+      onDelete: "set null",
+    }),
+    model: text("model"),
+    provider: text("provider"),
+    tokensIn: integer("tokens_in"),
+    tokensOut: integer("tokens_out"),
+    costUsd: real("cost_usd"),
+    durationMs: integer("duration_ms"),
+    traceId: text("trace_id"),
+    refId: text("ref_id"),
+    metadata: text("metadata"), // JSON
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_ai_usage_project_created").on(table.projectId, table.createdAt),
+    index("idx_ai_usage_project_surface").on(table.projectId, table.surface),
+  ],
+);
+
 export const chatSummaries = sqliteTable(
   "chat_summaries",
   {

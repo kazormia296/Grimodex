@@ -3,6 +3,7 @@ import type { Editor } from "@tiptap/core";
 import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { insertGenerationLog } from "@/features/attribution/generationLogApi";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { getProject } from "@/features/project/api";
@@ -285,10 +286,20 @@ export function useBeatGeneration(
               });
             }
           },
-          onDone: () => {
+          onDone: (info) => {
             if (orphaned) return;
             releaseCleanup();
             setState({ status: "idle", error: null, cleanup: null });
+            // N4: Beat 生成の usage を台帳に記録する。
+            void recordAiUsage({
+              surface: "beat",
+              model: resolvedModel ?? DEFAULT_MODEL,
+              tokensIn: info.inputTokens,
+              tokensOut: info.outputTokens,
+              costUsd: info.cost ?? null,
+              sceneNodeId: sceneId,
+              traceId,
+            });
             void Promise.resolve(
               insertGenerationLog({
                 kind: "beat",

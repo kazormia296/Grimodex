@@ -97,6 +97,24 @@ export function estimateInputCost(
 }
 
 /**
+ * input + output トークン数から合計コストを推定する (USD)。
+ * ai_usage 台帳の行から表示コストを出すのに使う。プロバイダが cost を
+ * 返さない (Anthropic 直叩き等) 行のフォールバック。未登録モデルは null。
+ */
+export function estimateTotalCost(
+  modelId: string | null | undefined,
+  tokensIn: number,
+  tokensOut: number,
+): number | null {
+  const p = getModelPricing(modelId);
+  if (!p) return null;
+  return (
+    (tokensIn / 1_000_000) * p.inputPerMillion +
+    (tokensOut / 1_000_000) * p.outputPerMillion
+  );
+}
+
+/**
  * USD 額を人間に読みやすい形式に整形する。
  * - $0.01 未満は "<$0.01"
  * - $1 未満は "$0.68" (小数点 2 桁)

@@ -10,6 +10,7 @@ import { AGENT_TOOLS } from "./agent/toolDefinitions";
 import { buildThinkingParams, getEffortForTask } from "./agent/modelLimits";
 import { sendAgentMessage } from "./chatApi";
 import type { AgentMessagePayload } from "./agent/agentTypes";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 
 export interface SuggestedEntry {
   id: string;
@@ -59,7 +60,7 @@ export async function runContextCreator(
 
   let finalText = "";
 
-  await runAgentLoop({
+  const loopResult = await runAgentLoop({
     messages,
     tools: CREATOR_TOOLS,
     tokenBudget: TOOL_TOKEN_BUDGET,
@@ -74,6 +75,15 @@ export async function runContextCreator(
     },
     callLimitMessage: "Tool call limit reached. Please summarize findings.",
     tokenBudgetMessage: "Token budget low. Please summarize findings.",
+  });
+
+  // N4: Context Creator のエージェント実行 usage を台帳に記録。
+  void recordAiUsage({
+    surface: "context_creator",
+    model,
+    tokensIn: loopResult.tokensIn,
+    tokensOut: loopResult.tokensOut,
+    costUsd: loopResult.cost,
   });
 
   return parseSuggestedEntries(finalText, pinnedIds);

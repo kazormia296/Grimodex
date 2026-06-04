@@ -1,4 +1,5 @@
 import { invoke } from "@/lib/tauri";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import type { AiBranchCard } from "./mapApi";
 
 interface LLMResponsePayload {
@@ -227,6 +228,13 @@ export async function generateAiBranchCards(
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
+  });
+
+  // N4: 従来 response の usage は捨てられていた。台帳に記録する。
+  void recordAiUsage({
+    surface: "map_branch",
+    tokensIn: response.inputTokens,
+    tokensOut: response.outputTokens,
   });
 
   const text = response.blocks

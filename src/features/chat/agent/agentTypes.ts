@@ -79,6 +79,13 @@ export interface AgentLLMResponse {
   citations?: Citation[];
   /** このリクエストの概算コスト (USD)。OpenRouter のみ実値、他は undefined。 */
   cost?: number;
+  /**
+   * このリクエストの入力 / 出力トークン数 (N4)。Rust ChatResponse は
+   * input_tokens/output_tokens を camelCase で返しており IPC で届いているが、
+   * 従来この型に宣言が無く捨てられていた。agentLoop でターン横断に蓄積する。
+   */
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 // アシスタントメッセージ内のtool_useブロック（多ターン会話用）

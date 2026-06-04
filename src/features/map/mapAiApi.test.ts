@@ -4,6 +4,13 @@ vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
 }));
 
+// N4: recordAiUsage は db.insert 経由で invoke("db_execute") を発火する。
+// このテストの invoke は bare vi.fn() なので drizzle proxy がハングする。
+// 台帳記録はここでの検証対象外なので no-op にして切り離す。
+vi.mock("@/features/ai-usage/recordAiUsage", () => ({
+  recordAiUsage: vi.fn(),
+}));
+
 import { invoke } from "@/lib/tauri";
 
 describe("generateAiBranchCards — LLM レスポンスのパース", () => {
@@ -77,8 +84,12 @@ describe("generateAiBranchCards — LLM レスポンスのパース", () => {
 describe("generateAiBranchCards — customInstruction (aiPrompt.custom.aiBranch)", () => {
   function lastSystemPrompt(): string {
     const calls = (invoke as ReturnType<typeof vi.fn>).mock.calls;
-    const last = calls[calls.length - 1];
-    const payload = last[1] as {
+    // N4: recordAiUsage が db_execute invoke を別途発火するため、
+    // send_chat_message 呼び出しを特定して取り出す。
+    const sendCall = [...calls]
+      .reverse()
+      .find((c) => c[0] === "send_chat_message");
+    const payload = sendCall![1] as {
       messages: Array<{ role: string; content: string }>;
     };
     return payload.messages.find((m) => m.role === "system")!.content;

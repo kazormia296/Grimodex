@@ -1,4 +1,5 @@
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import type { MentionRole } from "@/features/codex/CodexMentionExtension";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
@@ -65,6 +66,12 @@ export async function inferMentionRoles(
       { role: "user", content: prompt },
     ]);
     responseText = result.text;
+    // N4: 役割推論呼び出しの usage を台帳に記録する。
+    void recordAiUsage({
+      surface: "beat_role",
+      tokensIn: result.inputTokens,
+      tokensOut: result.outputTokens,
+    });
   } catch {
     return [];
   }

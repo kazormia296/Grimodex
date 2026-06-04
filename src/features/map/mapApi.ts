@@ -943,6 +943,8 @@ export async function createAiBranch(
       seedNodeIds: JSON.stringify(seedNodeIds),
       sessionId: options?.sessionId ?? null,
       model: options?.model ?? null,
+      // N4: トークン使用量は ai_usage 台帳 (surface='map_branch') に記録する。
+      // この列は読み手の無いレガシー placeholder のため null のまま据え置く。
       tokenUsage: null,
       createdAt: now,
       updatedAt: now,

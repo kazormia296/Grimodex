@@ -1,5 +1,6 @@
 import { invoke, listen } from "@/lib/tauri";
 import { db } from "@/db/client";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import {
   chatSessions,
   chatMessages,
@@ -103,6 +104,13 @@ export async function generateSynopsisFromContent(
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
+  });
+  // N4: あらすじ生成の usage を台帳に記録する。
+  void recordAiUsage({
+    surface: "synopsis",
+    tokensIn: response.inputTokens,
+    tokensOut: response.outputTokens,
+    projectId,
   });
   return response.blocks
     .filter((b) => b.type === "text")
@@ -208,6 +216,8 @@ interface StreamDonePayload {
   stop_reason: string;
   input_tokens?: number;
   output_tokens?: number;
+  /** N4: OpenRouter streaming の usage.cost (USD)。他プロバイダは null/欠落。 */
+  cost?: number;
 }
 
 interface StreamErrorPayload {
@@ -221,6 +231,7 @@ export interface StreamCallbacks {
     stopReason: string;
     inputTokens?: number;
     outputTokens?: number;
+    cost?: number;
   }) => void;
   onError: (message: string) => void;
 }
@@ -249,6 +260,7 @@ export async function sendChatMessageStream(
         stopReason: payload.stop_reason,
         inputTokens: payload.input_tokens,
         outputTokens: payload.output_tokens,
+        cost: payload.cost,
       });
     }),
     listen<StreamErrorPayload>("chat:stream-error", (payload) => {
@@ -314,6 +326,13 @@ export async function generateSessionTitle(
       effort: thinkingParams.effort ?? null,
       reasoningEnabled: thinkingParams.reasoningEnabled ?? null,
       reasoningEffort: thinkingParams.reasoningEffort ?? null,
+    });
+    // N4: セッションタイトル自動生成の usage を台帳に記録する。
+    void recordAiUsage({
+      surface: "session_title",
+      model,
+      tokensIn: response.inputTokens,
+      tokensOut: response.outputTokens,
     });
     const title = response.blocks
       .filter((b) => b.type === "text")

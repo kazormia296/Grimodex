@@ -30,6 +30,7 @@ fn test_migrate_creates_all_tables() {
         "chat_sessions",
         "chat_messages",
         "generation_logs",
+        "ai_usage",
         "authorship_spans",
         "app_settings",
         "project_settings",
@@ -48,6 +49,81 @@ fn test_migrate_creates_all_tables() {
             .expect("query");
         assert_eq!(rows.len(), 1, "table '{}' should exist", table);
     }
+}
+
+/// N4: ai_usage への insert→select round-trip。`src/features/ai-usage/
+/// recordAiUsage.ts` が drizzle 経由で書く「正確な列セット」を SQLite に直接
+/// 流して通ることを保証する。recordAiUsage は fail-open (記録失敗を握りつぶす)
+/// なので、schema.ts ↔ migrate.rs の列ドリフトはモック化された TS テストでは
+/// silent に機能を殺す。この test が唯一その drift を捕まえる。
+#[test]
+fn test_ai_usage_insert_roundtrip_matches_recordai_columns() {
+    let db = test_db();
+    // FK: ai_usage.project_id REFERENCES projects(id)
+    db.execute(
+        "INSERT INTO projects (id, title, created_at, updated_at) \
+         VALUES ('p1', 'P', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed project");
+
+    // recordAiUsage が書く列セットと完全一致させること。
+    db.execute(
+        "INSERT INTO ai_usage \
+         (id, project_id, surface, scene_node_id, model, provider, \
+          tokens_in, tokens_out, cost_usd, duration_ms, trace_id, ref_id, \
+          metadata, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            serde_json::json!("u1"),
+            serde_json::json!("p1"),
+            serde_json::json!("chat"),
+            Value::Null, // scene_node_id
+            serde_json::json!("claude-sonnet-4-6"),
+            serde_json::json!("openrouter"),
+            serde_json::json!(1000),   // tokens_in
+            serde_json::json!(500),    // tokens_out
+            serde_json::json!(0.0123), // cost_usd (REAL)
+            serde_json::json!(4200),   // duration_ms
+            serde_json::json!("trace-1"),
+            serde_json::json!("ref-1"),
+            Value::Null, // metadata
+            serde_json::json!("2026-06-05T00:00:00Z"),
+        ],
+        "run",
+    )
+    .expect("insert ai_usage row (column set must match migrate.rs DDL)");
+
+    let rows = db
+        .execute(
+            "SELECT surface, tokens_in, tokens_out, cost_usd \
+             FROM ai_usage WHERE project_id = ?",
+            &[serde_json::json!("p1")],
+            "all",
+        )
+        .expect("select ai_usage");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["surface"], serde_json::json!("chat"));
+    assert_eq!(rows[0]["tokens_in"], Value::Number(1000.into()));
+    assert_eq!(rows[0]["tokens_out"], Value::Number(500.into()));
+
+    // null トークン行 (streaming で usage 未到達) も記録できること。
+    db.execute(
+        "INSERT INTO ai_usage (id, project_id, surface, created_at) \
+         VALUES ('u2', 'p1', 'inline_ai', datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("insert unmetered ai_usage row");
+    let all = db
+        .execute(
+            "SELECT id FROM ai_usage WHERE project_id = ?",
+            &[serde_json::json!("p1")],
+            "all",
+        )
+        .expect("select all");
+    assert_eq!(all.len(), 2);
 }
 
 #[test]

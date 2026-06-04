@@ -78,10 +78,10 @@ export async function generateBeatAlternative(
 
   callbacks?.onStart?.();
 
-  const result = await streamInlineAiText(
-    messages,
-    beatModel ? { model: beatModel } : undefined,
-  );
+  const result = await streamInlineAiText(messages, {
+    model: beatModel ?? undefined,
+    usageSurface: "beat",
+  });
   if (!result.ok) {
     callbacks?.onError?.(result.error);
     return;

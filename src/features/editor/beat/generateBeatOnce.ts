@@ -7,6 +7,7 @@ import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
 import { insertGenerationLog } from "@/features/attribution/generationLogApi";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { buildBeatMessages } from "./beatPromptBuilder";
 import {
@@ -110,8 +111,18 @@ export async function generateBeatOnce(
           });
           if (!ok) release();
         },
-        onDone: () => {
+        onDone: (info) => {
           release();
+          // N4: Beat 生成 (one-shot) の usage を台帳に記録する。
+          void recordAiUsage({
+            surface: "beat",
+            model: beatModel ?? DEFAULT_MODEL,
+            tokensIn: info.inputTokens,
+            tokensOut: info.outputTokens,
+            costUsd: info.cost ?? null,
+            sceneNodeId: sceneId,
+            traceId,
+          });
           void Promise.resolve(
             insertGenerationLog({
               kind: "beat",

@@ -186,9 +186,13 @@ describe("generateSynopsisFromBeats", () => {
     });
     await promise;
 
-    // invoke が呼ばれたことを確認し、messages にすべてのビートが含まれる
-    expect(invokeMock).toHaveBeenCalledOnce();
-    const callArgs = invokeMock.mock.calls[0];
+    // invoke (send_inline_ai_stream) が呼ばれ、messages に全ビートが含まれる。
+    // N4: recordAiUsage が db_execute invoke を別途発火するため、呼び出し回数は
+    // 固定せず send_inline_ai_stream 呼び出しを特定して検証する。
+    const callArgs = invokeMock.mock.calls.find(
+      (c) => c[0] === "send_inline_ai_stream",
+    );
+    expect(callArgs).toBeDefined();
     const messagesArg = JSON.stringify(callArgs);
     expect(messagesArg).toContain("第一ビート");
     expect(messagesArg).toContain("第二ビート");

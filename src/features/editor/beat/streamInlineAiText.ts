@@ -1,4 +1,8 @@
 import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
+import {
+  recordAiUsage,
+  type AiUsageSurface,
+} from "@/features/ai-usage/recordAiUsage";
 
 export type InlineAiTextResult =
   | { ok: true; text: string }
@@ -14,7 +18,7 @@ export type InlineAiTextResult =
  */
 export function streamInlineAiText(
   messages: { role: string; content: string }[],
-  options?: { model?: string },
+  options?: { model?: string; usageSurface?: AiUsageSurface },
 ): Promise<InlineAiTextResult> {
   return new Promise((resolve) => {
     const buffer: string[] = [];
@@ -35,10 +39,22 @@ export function streamInlineAiText(
         onTextDelta: (delta) => {
           buffer.push(delta);
         },
-        onDone: () => settle({ ok: true, text: buffer.join("") }),
+        onDone: (info) => {
+          // N4: usageSurface 指定時、生成の usage を台帳に記録する。
+          if (options?.usageSurface) {
+            void recordAiUsage({
+              surface: options.usageSurface,
+              model: options.model,
+              tokensIn: info.inputTokens,
+              tokensOut: info.outputTokens,
+              costUsd: info.cost ?? null,
+            });
+          }
+          settle({ ok: true, text: buffer.join("") });
+        },
         onError: (message) => settle({ ok: false, error: message }),
       },
-      options,
+      { model: options?.model },
     )
       .then((c) => {
         if (settled) c();

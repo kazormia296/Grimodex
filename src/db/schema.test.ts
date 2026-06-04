@@ -14,6 +14,7 @@ import {
   chatSessions,
   chatMessages,
   generationLogs,
+  aiUsage,
   authorshipSpans,
   contentVersions,
   projectSnapshots,
@@ -651,6 +652,61 @@ describe("generationLogs schema", () => {
     expect(executedQueries[0].sql).toContain("generation_logs");
     expect(executedQueries[0].params).toContain("inline-ai");
     expect(executedQueries[0].params).toContain("trace-001");
+  });
+});
+
+describe("aiUsage schema", () => {
+  it("has the correct table name", () => {
+    expect(getTableName(aiUsage)).toBe("ai_usage");
+  });
+
+  it("has all required columns", () => {
+    const columns = Object.keys(aiUsage);
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        "id",
+        "projectId",
+        "surface",
+        "sceneNodeId",
+        "model",
+        "provider",
+        "tokensIn",
+        "tokensOut",
+        "costUsd",
+        "durationMs",
+        "traceId",
+        "refId",
+        "metadata",
+        "createdAt",
+      ]),
+    );
+  });
+
+  it("generates valid insert query with nullable usage fields", async () => {
+    const executedQueries: { sql: string; params: unknown[] }[] = [];
+    const db = drizzle<typeof schema>(
+      async (sql, params, _method) => {
+        executedQueries.push({ sql, params });
+        return { rows: [] };
+      },
+      { schema },
+    );
+
+    await db.insert(aiUsage).values({
+      id: "usage-001",
+      projectId: "project-001",
+      surface: "map_branch",
+      model: "anthropic/claude-sonnet-4.6",
+      provider: "openrouter",
+      tokensIn: 1200,
+      tokensOut: 340,
+      costUsd: 0.0123,
+      durationMs: 4200,
+    });
+
+    expect(executedQueries[0].sql).toContain("ai_usage");
+    expect(executedQueries[0].params).toContain("map_branch");
+    expect(executedQueries[0].params).toContain(1200);
   });
 });
 

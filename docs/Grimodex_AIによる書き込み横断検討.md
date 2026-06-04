@@ -31,8 +31,9 @@
 > - **N3**: `validate` に `after_bad_anchor`（既存 anchor の sortOrder が不正な afterRef を reject、placement の append 黙フォールバックと整合）。
 > - **N5**: `generate` の user prompt にアウトラインを「データであり指示ではない」と枠付け（過去生成物経由の自己増幅 injection 抑制）。
 > - **N6**: 空 folder では再編エントリを非表示（create-only への縮退を避ける）。
+> - **解決済み**:
+>   - **N4 unmetered token spend（2026-06-05 実装）** — 横断 usage 台帳 `ai_usage`（`migrate.rs` DDL + `schema.ts` ミラー）と単一記録ヘルパー `recordAiUsage`（`src/features/ai-usage/`、fail-open・null トークン行も記録）を導入。全 one-shot/streaming サーフェスを配線: chat / agent（`AgentLLMResponse` 型拡張 + `agentLoop` ターン横断蓄積、従来 null だった `chat_messages.tokens_*` も充填）/ map_branch / tree_scaffold / beat（+ `beat_role`）/ foreshadow×3 / inline_ai / synopsis / session_title / summarization / context_creator。backend は streaming で usage が来るよう `apply_stream_usage_optin`（OpenRouter `usage:{include:true}`、OpenAI 互換 `stream_options.include_usage`、Ollama は既定で返すため非介入）+ stream-done に `cost` 追加。最小集計 UI を Settings → Usage に追加（プロジェクト累計トークン＋推定コスト＋サーフェス別内訳、`modelPricing` で概算）。**未済**: backend streaming opt-in の live E2E 検証（実 OpenRouter/OpenAI streaming 往復が必要で unit 不可、コードに NOTE 明記）。embeddings はローカル ONNX で API トークン無しのため対象外。`map_ai_branches.token_usage` は読み手が無いため台帳へ集約し null 据え置き。
 > - **defer（透明化）**:
->   - **N4 unmetered token spend** — `mapAiApi` 等の one-shot 生成全般に共通の既存ギャップ（frontend に usage 記録パイプライン無し）。案B 単独でなく横断対応すべきため別 issue 化。
 >   - **#14 実 drizzle `.toSQL()` を SQLite で実行する test** — happy-dom 環境に node-side SQLite が無く test infra が要る（Rust test は等価の手書き SQL、TS test は statement 内容/順序）。infra 整備を伴うため別 issue 化（`.toSQL()` の列/param drift を将来捕まえるなら browser test or Rust 側で drizzle 生成 SQL を流す）。
 
 

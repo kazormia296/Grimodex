@@ -1,5 +1,6 @@
 import { db } from "@/db/client";
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { invoke } from "@/lib/tauri";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
@@ -1302,6 +1303,12 @@ export async function proposePastSetups(
   const response = await sendChatMessageWithThinking([
     { role: "user", content: prompt },
   ]);
+  // N4: 伏線 setup 提案生成の usage を台帳に記録する。
+  void recordAiUsage({
+    surface: "foreshadow",
+    tokensIn: response.inputTokens,
+    tokensOut: response.outputTokens,
+  });
   const jsonText = extractJsonObject(response.text);
   if (!jsonText) return [];
 
@@ -1342,6 +1349,12 @@ export async function evaluateSetupStrength(
   const response = await sendChatMessageWithThinking([
     { role: "user", content: prompt },
   ]);
+  // N4: 伏線 setup 評価生成の usage を台帳に記録する。
+  void recordAiUsage({
+    surface: "foreshadow",
+    tokensIn: response.inputTokens,
+    tokensOut: response.outputTokens,
+  });
 
   const jsonText = extractJsonObject(response.text);
   if (!jsonText) return null;
@@ -1424,6 +1437,12 @@ export async function auditChapter(
   const response = await sendChatMessageWithThinking([
     { role: "user", content: prompt },
   ]);
+  // N4: 章監査生成の usage を台帳に記録する。
+  void recordAiUsage({
+    surface: "foreshadow",
+    tokensIn: response.inputTokens,
+    tokensOut: response.outputTokens,
+  });
   const jsonText = extractJsonObject(response.text);
   if (!jsonText) return [];
 

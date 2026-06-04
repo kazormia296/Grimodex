@@ -10,6 +10,8 @@ interface StreamDonePayload {
   stop_reason: string;
   input_tokens: number | null;
   output_tokens: number | null;
+  /** N4: OpenRouter streaming の usage.cost (USD)。他プロバイダは null/欠落。 */
+  cost?: number | null;
 }
 
 interface StreamErrorPayload {
@@ -22,6 +24,7 @@ export interface InlineAiStreamCallbacks {
     stopReason: string;
     inputTokens: number | null;
     outputTokens: number | null;
+    cost?: number | null;
   }) => void;
   onError: (message: string) => void;
 }
@@ -48,6 +51,7 @@ export async function sendInlineAiStream(
         stopReason: event.payload.stop_reason,
         inputTokens: event.payload.input_tokens,
         outputTokens: event.payload.output_tokens,
+        cost: event.payload.cost,
       });
     }),
     listen<StreamErrorPayload>("inline-ai:stream-error", (event) => {

@@ -13,6 +13,7 @@ import { DataCategory } from "./categories/DataCategory";
 import { CodexCategory } from "./categories/CodexCategory";
 import { MapCategory } from "./categories/MapCategory";
 import { LinterCategory } from "./categories/LinterCategory";
+import { UsageCategory } from "./categories/UsageCategory";
 import { AboutCategory } from "./categories/AboutCategory";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 
@@ -42,6 +43,8 @@ function CategoryContent({ category }: { category: SettingsCategory }) {
       return <MapCategory />;
     case "linter":
       return <LinterCategory />;
+    case "usage":
+      return <UsageCategory />;
     case "about":
       return <AboutCategory />;
   }
