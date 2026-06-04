@@ -25,6 +25,7 @@ import {
   unsetForeshadowPayoffMarksByForeshadowIds,
 } from "./saveAnchors";
 import { createRevision } from "@/features/revision/api";
+import { aiAuthorshipAttrs } from "@/features/attribution/aiAuthorship";
 import type { ProposedSetup } from "./api";
 import { safeParseAiEvaluation } from "./types";
 import type { AuditCandidate } from "./types";
@@ -910,12 +911,21 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       // The saveForeshadowAnchors UPSERT will only update fromPos/toPos — metadata is preserved.
       await createForeshadowSetup(setupPayload);
 
-      // Insert text and apply foreshadowSetup mark in the editor
+      // Insert text and apply foreshadowSetup + authorship marks in the editor.
+      // The suggestedText is AI-generated (setupPayload.attribution === "ai"),
+      // so tag it source='ai'; without this the AuthorshipMark default 'human'
+      // would mis-count it in authorship_spans / loadBatchAiRatio. The
+      // programmaticInsert meta keeps AiEditedPlugin from splitting the mark.
       editor
         .chain()
+        .command(({ tr }) => {
+          tr.setMeta("programmaticInsert", true);
+          return true;
+        })
         .insertContentAt(from, suggestedText)
         .setTextSelection({ from, to: from + suggestedText.length })
         .setMark("foreshadowSetup", { setupId, foreshadowId })
+        .setMark("authorship", aiAuthorshipAttrs())
         .run();
 
       // Sync mark positions to DB (UPSERT preserves AI metadata)

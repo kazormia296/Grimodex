@@ -8,6 +8,7 @@ const {
   mockCreateRevision,
   mockLoadSetups,
   mockEditor,
+  chainResult,
 } = vi.hoisted(() => {
   const mockEditor = {
     state: {
@@ -18,6 +19,7 @@ const {
     getJSON: vi.fn().mockReturnValue({ type: "doc", content: [] }),
   };
   const chainResult = {
+    command: vi.fn().mockReturnThis(),
     insertContentAt: vi.fn().mockReturnThis(),
     setTextSelection: vi.fn().mockReturnThis(),
     setMark: vi.fn().mockReturnThis(),
@@ -32,6 +34,7 @@ const {
     mockCreateRevision: vi.fn().mockResolvedValue(null),
     mockLoadSetups: vi.fn().mockResolvedValue(undefined),
     mockEditor,
+    chainResult,
   };
 });
 
@@ -164,6 +167,22 @@ describe("adoptInsertedNewSetup", () => {
         entityId: "scene-ai",
         snapshotType: "auto",
       }),
+    );
+  });
+
+  it("挿入テキストを source='ai' の authorship mark でタグ付けする", async () => {
+    await useForeshadowStore.getState().adoptInsertedNewSetup("f-1", 0);
+
+    // programmaticInsert meta を立てる command が呼ばれる (AiEditedPlugin 回避)
+    expect(chainResult.command).toHaveBeenCalled();
+    // foreshadowSetup と authorship(source='ai') の両方が適用される
+    expect(chainResult.setMark).toHaveBeenCalledWith(
+      "foreshadowSetup",
+      expect.objectContaining({ foreshadowId: "f-1" }),
+    );
+    expect(chainResult.setMark).toHaveBeenCalledWith(
+      "authorship",
+      expect.objectContaining({ source: "ai" }),
     );
   });
 

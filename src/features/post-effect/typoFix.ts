@@ -1,5 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { aiAuthorshipAttrs } from "@/features/attribution/aiAuthorship";
 import { resolveAnnotationRange } from "./resolveAnnotationRange";
 import { updateAnnotationStatus } from "./api";
 import { useAnnotationStore } from "./annotationStore";
@@ -46,10 +47,23 @@ export async function applyTypoFixAndResolve(
   });
   if (!resolved) return { applied: false };
 
+  // The suggestion is AI-generated; tag the replacement source='ai' so it is
+  // not mis-counted as human in authorship_spans / loadBatchAiRatio. plain text
+  // occupies [from, from+suggestion.length) after the replace. programmaticInsert
+  // keeps AiEditedPlugin from splitting the mark on this transaction.
   editor
     .chain()
     .focus()
+    .command(({ tr }) => {
+      tr.setMeta("programmaticInsert", true);
+      return true;
+    })
     .insertContentAt({ from: resolved.from, to: resolved.to }, suggestion)
+    .setTextSelection({
+      from: resolved.from,
+      to: resolved.from + suggestion.length,
+    })
+    .setMark("authorship", aiAuthorshipAttrs())
     .run();
 
   try {

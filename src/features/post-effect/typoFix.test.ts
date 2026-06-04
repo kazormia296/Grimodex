@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
+import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { useAnnotationStore } from "./annotationStore";
 import { applyTypoFixAndResolve } from "./typoFix";
 import type { PostEffectAnnotation } from "./types";
@@ -12,7 +13,7 @@ vi.mock("./api", () => ({
 
 function makeEditor(text: string): Editor {
   const editor = new Editor({
-    extensions: [StarterKit],
+    extensions: [StarterKit, AuthorshipMark],
     content: {
       type: "doc",
       content: [{ type: "paragraph", content: [{ type: "text", text }] }],
@@ -86,6 +87,34 @@ describe("applyTypoFixAndResolve", () => {
     expect(editor.getText()).toBe("シミュレーションを実行");
     const stored = useAnnotationStore.getState().annotationsByScene.get("s1");
     expect(stored?.find((a) => a.id === "a1")?.status).toBe("resolved");
+    editor.destroy();
+  });
+
+  it("置換テキストに source='ai' の authorship mark を付与する", async () => {
+    const editor = makeEditor("シュミレーションを実行");
+    useAnnotationStore
+      .getState()
+      .setAnnotations("s1", [
+        ann("a1", "シュミレーション", "シミュレーション", 0, 8),
+      ]);
+
+    const result = await applyTypoFixAndResolve(
+      editor,
+      ann("a1", "シュミレーション", "シミュレーション", 0, 8),
+    );
+    expect(result.applied).toBe(true);
+
+    let aiMark: { attrs: Record<string, unknown> } | null = null;
+    editor.state.doc.descendants((node) => {
+      if (node.isText) {
+        const m = node.marks.find(
+          (mk) => mk.type.name === "authorship" && mk.attrs.source === "ai",
+        );
+        if (m) aiMark = m as unknown as { attrs: Record<string, unknown> };
+      }
+    });
+    expect(aiMark).not.toBeNull();
+    expect(aiMark!.attrs.source).toBe("ai");
     editor.destroy();
   });
 
