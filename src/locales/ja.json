@@ -2269,7 +2269,8 @@
       "layoutClosed": "閉じた: {{panels}}",
       "layoutPreset": "レイアウトプリセット: {{preset}}",
       "layoutState": "パネル: {{panels}}",
-      "gridOp": "ツリー {{op}}{{title}}"
+      "gridOp": "ツリー {{op}}{{title}}",
+      "aiTreeOp": "AI構成: 生成{{created}} 移動{{moved}} 改名{{renamed}}"
     }
   },
   "phase": {
@@ -2715,6 +2716,24 @@
     "modelLabel": "モデル",
     "loadModels": "モデルを取得",
     "connected": "接続済み"
+  },
+  "aiTree": {
+    "scaffoldTitle": "AI でアウトラインを生成",
+    "reorganizeTitle": "AI で構成を再編",
+    "scaffoldCta": "AI でアウトライン生成",
+    "scaffoldHere": "AI で構成を生成",
+    "reorganizeHere": "AI で構成を再編",
+    "scopeProject": "対象: プロジェクト全体",
+    "scopeFolder": "対象: {{title}}",
+    "scaffoldPrompt": "どんな構成を作りますか？(プレミス・要望)",
+    "reorganizePrompt": "どう再編しますか？(方針・要望)",
+    "scaffoldPlaceholder": "例: 起承転結の4章構成。各章に2〜3シーン。",
+    "reorganizePlaceholder": "例: 時系列順に並べ替え、回想を別フォルダにまとめる。",
+    "withSynopsis": "各シーンにあらすじも生成する",
+    "generate": "生成",
+    "generating": "生成中…",
+    "done": "生成 {{created}} / 移動 {{moved}} / リネーム {{renamed}}",
+    "failed": "AI 構成の生成に失敗しました。もう一度お試しください。"
   },
   "aiPolicy": {
     "full": {

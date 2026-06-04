@@ -2260,7 +2260,8 @@
       "layoutClosed": "Closed: {{panels}}",
       "layoutPreset": "Layout preset: {{preset}}",
       "layoutState": "Panels: {{panels}}",
-      "gridOp": "Grid {{op}}{{title}}"
+      "gridOp": "Grid {{op}}{{title}}",
+      "aiTreeOp": "AI structure: +{{created}} moved {{moved}} renamed {{renamed}}"
     }
   },
   "phase": {
@@ -2706,6 +2707,24 @@
     "modelLabel": "Model",
     "loadModels": "Load models",
     "connected": "Connected"
+  },
+  "aiTree": {
+    "scaffoldTitle": "Generate outline with AI",
+    "reorganizeTitle": "Reorganize structure with AI",
+    "scaffoldCta": "Generate outline with AI",
+    "scaffoldHere": "Generate structure with AI",
+    "reorganizeHere": "Reorganize with AI",
+    "scopeProject": "Scope: entire project",
+    "scopeFolder": "Scope: {{title}}",
+    "scaffoldPrompt": "What structure should I create? (premise / requests)",
+    "reorganizePrompt": "How should I reorganize? (approach / requests)",
+    "scaffoldPlaceholder": "e.g. A four-act structure with 2-3 scenes per act.",
+    "reorganizePlaceholder": "e.g. Reorder chronologically; group flashbacks into a folder.",
+    "withSynopsis": "Also generate a synopsis for each scene",
+    "generate": "Generate",
+    "generating": "Generating…",
+    "done": "Created {{created}} / Moved {{moved}} / Renamed {{renamed}}",
+    "failed": "AI structure generation failed. Please try again."
   },
   "aiPolicy": {
     "full": {

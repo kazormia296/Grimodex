@@ -12,6 +12,10 @@ import { useLabelStore } from "@/features/labels/labelStore";
 import { useLensStore } from "@/features/post-effect/lensStore";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { ScenesPanelContext } from "./ScenesPanelContext";
+import type { OpenAiTreeArgs } from "./ScenesPanelContext";
+import { AiTreeDialog } from "./aiScaffold/AiTreeDialog";
+import { Sparkles } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useTabStore } from "@/features/editor/tabStore";
 import { NodeIcon } from "./TreeNodeItem";
 import { StructureTemplatePicker } from "@/features/grid/StructureTemplatePicker";
@@ -98,8 +102,12 @@ export function ScenesPanel() {
   const filterRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
   const [manageLabelsOpen, setManageLabelsOpen] = useState(false);
+  const [aiTree, setAiTree] = useState<OpenAiTreeArgs | null>(null);
   const scenesPanelContextValue = useMemo(
-    () => ({ openManageLabels: () => setManageLabelsOpen(true) }),
+    () => ({
+      openManageLabels: () => setManageLabelsOpen(true),
+      openAiTree: (args: OpenAiTreeArgs) => setAiTree(args),
+    }),
     [],
   );
   const [deleteConfirm, setDeleteConfirm] = useState<string[] | null>(null);
@@ -308,6 +316,16 @@ export function ScenesPanel() {
                       projectId={projectId}
                       containerId={null}
                     />
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() =>
+                        setAiTree({ mode: "scaffold", rootRef: null })
+                      }
+                    >
+                      <Sparkles size={12} className="mr-1" />
+                      {t("aiTree.scaffoldCta", "AI でアウトライン生成")}
+                    </Button>
                   </div>
                 ) : (
                   <>
@@ -402,6 +420,16 @@ export function ScenesPanel() {
           open={manageLabelsOpen}
           onClose={() => setManageLabelsOpen(false)}
         />
+
+        {aiTree && (
+          <AiTreeDialog
+            open
+            onClose={() => setAiTree(null)}
+            mode={aiTree.mode}
+            rootRef={aiTree.rootRef}
+            rootTitle={aiTree.rootTitle}
+          />
+        )}
       </DndContext>
     </ScenesPanelContext.Provider>
   );

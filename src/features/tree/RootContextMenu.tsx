@@ -1,9 +1,12 @@
 import { useTranslation } from "react-i18next";
+import { Sparkles } from "lucide-react";
 import { useTabStore } from "@/features/editor/tabStore";
 import {
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
 } from "@/components/ui/context-menu";
+import { useScenesPanelContext } from "./ScenesPanelContext";
 import type { TreeNodeData, NodeType } from "./treeStore";
 
 export interface RootContextMenuProps {
@@ -19,6 +22,7 @@ export interface RootContextMenuProps {
  */
 export function RootContextMenu({ createNode }: RootContextMenuProps) {
   const { t } = useTranslation();
+  const scenesContext = useScenesPanelContext();
 
   return (
     <ContextMenuContent className="min-w-[192px]">
@@ -51,6 +55,19 @@ export function RootContextMenu({ createNode }: RootContextMenuProps) {
       >
         {t("scenes.addFolder")}
       </ContextMenuItem>
+      {scenesContext && (
+        <>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            onSelect={() =>
+              scenesContext.openAiTree({ mode: "scaffold", rootRef: null })
+            }
+          >
+            <Sparkles className="h-3 w-3 shrink-0" />
+            <span>{t("aiTree.scaffoldCta", "AI でアウトライン生成")}</span>
+          </ContextMenuItem>
+        </>
+      )}
     </ContextMenuContent>
   );
 }

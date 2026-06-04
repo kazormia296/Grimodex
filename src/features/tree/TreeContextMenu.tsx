@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { MapPin, Settings, Tag } from "lucide-react";
+import { MapPin, Settings, Tag, Sparkles } from "lucide-react";
 import { useTreeStore } from "./treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLabelStore } from "@/features/labels/labelStore";
@@ -244,6 +244,35 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
           >
             {t("tree.addFolder")}
           </ContextMenuItem>
+          {scenesContext && (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                onSelect={() =>
+                  scenesContext.openAiTree({
+                    mode: "scaffold",
+                    rootRef: node.id,
+                    rootTitle: node.title,
+                  })
+                }
+              >
+                <Sparkles className="h-3 w-3 shrink-0" />
+                <span>{t("aiTree.scaffoldHere", "AI で構成を生成")}</span>
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() =>
+                  scenesContext.openAiTree({
+                    mode: "reorganize",
+                    rootRef: node.id,
+                    rootTitle: node.title,
+                  })
+                }
+              >
+                <Sparkles className="h-3 w-3 shrink-0" />
+                <span>{t("aiTree.reorganizeHere", "AI で構成を再編")}</span>
+              </ContextMenuItem>
+            </>
+          )}
         </>
       )}
 
