@@ -272,6 +272,8 @@ interface TreeState {
 
   // Load full tree for a project
   loadTree: (projectId?: string) => Promise<void>;
+  /** loadTree と同じ再同期だが、失敗を握りつぶさず throw する版(AI batch executor 用)。 */
+  reloadTreeOrThrow: (projectId?: string) => Promise<void>;
 
   // Backward-compat API (used by ChatPanel, ExportAgentTraceButton, SceneEditor)
   loadScenes: (projectId: string, chapterId: string) => Promise<void>;
@@ -553,9 +555,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   pinnedCodexIds: [],
   pendingRenameId: null,
 
-  async loadTree(projectId = getCurrentProjectId()) {
+  async reloadTreeOrThrow(projectId = getCurrentProjectId()) {
+    // reload 失敗を throw する版。AI バッチ executor のように「DB commit 後の
+    // 再同期失敗を成功扱いにできない」呼び出し元が使う。loadTree はこれを
+    // try/catch で包んで従来どおり握りつぶす。
     set({ isLoading: true, projectId });
-    try {
+    {
       const raw = await api.listNodes(projectId);
       const nodes = raw.map(toNodeData);
       const sc = computeScenes(nodes);
@@ -610,6 +615,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       get()
         .loadPinnedCodexIds()
         .catch(() => {});
+    }
+  },
+
+  async loadTree(projectId = getCurrentProjectId()) {
+    try {
+      await get().reloadTreeOrThrow(projectId);
     } catch {
       set({ isLoading: false });
     }
