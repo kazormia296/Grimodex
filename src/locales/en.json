@@ -696,7 +696,8 @@
     "mapOverlay": {
       "label": "Map",
       "on": "Map board injected into context (click to turn off)",
-      "off": "Inject Map board into context (click to turn on)"
+      "off": "Inject Map board into context (click to turn on)",
+      "unavailable": "Show the Map panel to inject its board into the context"
     },
     "webSearch": {
       "label": "Web search",

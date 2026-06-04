@@ -696,7 +696,8 @@
     "mapOverlay": {
       "label": "Map",
       "on": "Map board 全体を context に注入中（クリックで OFF）",
-      "off": "Map board を context に注入する（クリックで ON）"
+      "off": "Map board を context に注入する（クリックで ON）",
+      "unavailable": "Map パネルを表示すると board を context に注入できます"
     },
     "webSearch": {
       "label": "Web検索",

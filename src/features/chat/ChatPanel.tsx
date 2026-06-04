@@ -715,6 +715,10 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   // のみ fetch する（OFF 時に余計な DB アクセスを発生させない）。
   const activeBoardIdForChip = useMapStore((s) => s.activeBoardId);
   const resolvedMapBoardId = mapBoardIdFromStore ?? activeBoardIdForChip;
+  // Map 注入トグルは Map panel が表示されている場合のみ有効。
+  // `useMapBoardAutoActivate` と同じ `isPanelActive("map")` 述語で gate し、
+  // overlay の auto-OFF と disabled 状態を一致させる。
+  const mapPanelActive = useLayoutStore((s) => s.isPanelActive("map"));
   useEffect(() => {
     if (!includeMapBoard || !resolvedMapBoardId) {
       setMapBoardTitle(null);
@@ -764,6 +768,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onToggleIncludeBodies={() => setIncludeBodies(!includeBodies)}
         includeMapBoard={includeMapBoard}
         mapBoardTitle={mapBoardTitle}
+        mapDisabled={!mapPanelActive}
         onToggleIncludeMapBoard={handleToggleMapOverlay}
         ragEnabled={ragEnabled}
         ragDisabled={!ragCapable}

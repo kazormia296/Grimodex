@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { ChatPanelHeader } from "./ChatPanelHeader";
 
 vi.mock("react-i18next", () => ({
@@ -34,6 +34,7 @@ function baseProps(over: Partial<Props> = {}): Props {
     onToggleIncludeBodies: vi.fn(),
     includeMapBoard: false,
     mapBoardTitle: null,
+    mapDisabled: false,
     onToggleIncludeMapBoard: vi.fn(),
     ragEnabled: false,
     ragDisabled: false,
@@ -60,5 +61,38 @@ describe("ChatPanelHeader — RAG egress disclosure (F-1)", () => {
     );
     const toggle = screen.getByRole("button", { name: "chat.webSearch.off" });
     expect(toggle.getAttribute("aria-describedby")).toBeNull();
+  });
+});
+
+describe("ChatPanelHeader — Map overlay toggle gated on Map panel visibility", () => {
+  it("disables the Map toggle when the Map panel is not shown", () => {
+    const onToggle = vi.fn();
+    render(
+      <ChatPanelHeader
+        {...baseProps({ mapDisabled: true, onToggleIncludeMapBoard: onToggle })}
+      />,
+    );
+    const toggle = screen.getByRole("button", {
+      name: "chat.mapOverlay.unavailable",
+    });
+    expect(toggle).toBeDisabled();
+    fireEvent.click(toggle);
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+
+  it("enables the Map toggle when the Map panel is shown", () => {
+    const onToggle = vi.fn();
+    render(
+      <ChatPanelHeader
+        {...baseProps({
+          mapDisabled: false,
+          onToggleIncludeMapBoard: onToggle,
+        })}
+      />,
+    );
+    const toggle = screen.getByRole("button", { name: "chat.mapOverlay.off" });
+    expect(toggle).not.toBeDisabled();
+    fireEvent.click(toggle);
+    expect(onToggle).toHaveBeenCalledTimes(1);
   });
 });

@@ -48,6 +48,12 @@ interface ChatPanelHeaderProps {
   includeMapBoard: boolean;
   /** Map ON のとき chip に表示する board title。null なら "Map" のみ。 */
   mapBoardTitle: string | null;
+  /**
+   * Map panel が表示されていないとき true。トグルを無効化する
+   * （`useMapBoardAutoActivate` が panel 非表示時に overlay を強制 OFF にするため、
+   *  同じ `isPanelActive("map")` 述語で gate して状態を一致させる）。
+   */
+  mapDisabled: boolean;
   onToggleIncludeMapBoard: () => void;
   /** Web 検索 (RAG) トグルの状態。 */
   ragEnabled: boolean;
@@ -101,6 +107,7 @@ export function ChatPanelHeader({
   onToggleIncludeBodies,
   includeMapBoard,
   mapBoardTitle,
+  mapDisabled,
   onToggleIncludeMapBoard,
   ragEnabled,
   ragDisabled,
@@ -320,22 +327,36 @@ export function ChatPanelHeader({
           )}
         </button>
 
-        {/* Map overlay toggle: scope と直交。ON で active board 全体を L4 注入。 */}
+        {/* Map overlay toggle: scope と直交。ON で active board 全体を L4 注入。
+            Map panel が非表示のときは無効化（mapDisabled を最初に評価する。
+            panel を閉じた直後の 1 render は includeMapBoard がまだ true のままで、
+            auto-activate effect が OFF にするまでラグがあるため）。 */}
         <button
           type="button"
           onClick={onToggleIncludeMapBoard}
+          disabled={mapDisabled}
           aria-pressed={includeMapBoard}
           aria-label={
-            includeMapBoard ? t("chat.mapOverlay.on") : t("chat.mapOverlay.off")
+            mapDisabled
+              ? t("chat.mapOverlay.unavailable")
+              : includeMapBoard
+                ? t("chat.mapOverlay.on")
+                : t("chat.mapOverlay.off")
           }
           title={
-            includeMapBoard ? t("chat.mapOverlay.on") : t("chat.mapOverlay.off")
+            mapDisabled
+              ? t("chat.mapOverlay.unavailable")
+              : includeMapBoard
+                ? t("chat.mapOverlay.on")
+                : t("chat.mapOverlay.off")
           }
           className={[
             "flex max-w-[160px] items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
-            includeMapBoard
-              ? "bg-primary/10 text-primary hover:bg-primary/15"
-              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            mapDisabled
+              ? "cursor-not-allowed text-muted-foreground/40"
+              : includeMapBoard
+                ? "bg-primary/10 text-primary hover:bg-primary/15"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
           ].join(" ")}
         >
           <MapIcon className="h-3 w-3 shrink-0" />
