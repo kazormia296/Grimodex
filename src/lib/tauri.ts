@@ -28,6 +28,10 @@ const SLOW_COMMANDS = new Set([
   "semantic_reindex_all",
   /** 中規模プロジェクトでは Aho-Corasick 構築に 10 秒超かかることがある */
   "codex_rebuild_matcher",
+  /** ネイティブ保存ダイアログを開いている間 invoke がブロックする。ユーザーが
+   *  保存先を選ぶまで分単位かかりうるので 10s では reject されてしまう。 */
+  "export_save_text",
+  "export_save_bytes",
 ]);
 
 let browserMock: BrowserMock | null = null;

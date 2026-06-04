@@ -10,6 +10,7 @@ import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getProject } from "@/features/project/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { saveTextFile } from "@/lib/exportFile";
 import {
   ExportTree,
   buildInitialTreeState,
@@ -145,31 +146,14 @@ async function saveFile(
 ): Promise<string | null> {
   const ext = FORMAT_EXT[format];
   const filename = `${defaultName}.${ext}`;
-
-  // Tauri 環境: OS ネイティブの保存ダイアログを開き、ユーザーが選んだパスへ書き込む。
-  // キャンセル時は path が null になるのでそのまま return。
-  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-    const path = await save({
-      defaultPath: filename,
-      filters: [FORMAT_FILTER[format]],
-    });
-    if (!path) return null;
-    await writeTextFile(path, content);
-    return path;
-  }
-
-  // ブラウザフォールバック (dev サーバー / vitest)。
-  const mime = FORMAT_MIME[format];
-  const blob = new Blob([content], { type: `${mime};charset=utf-8` });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-  return filename;
+  // 保存ダイアログは Rust 側で開かれ、renderer はパスを渡さない (security audit
+  // PIO-2)。非 Tauri は browser ダウンロードにフォールバック。
+  return saveTextFile(
+    filename,
+    FORMAT_FILTER[format],
+    content,
+    FORMAT_MIME[format],
+  );
 }
 
 // ────────────────────────────────────────────────────────────────────

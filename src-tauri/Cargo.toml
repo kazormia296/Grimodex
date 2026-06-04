@@ -38,6 +38,7 @@ tauri-plugin-window-state = "2"
 window-vibrancy = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
 rusqlite = { version = "0.40", features = ["bundled"] }
 thiserror = "2"
 anyhow = "1"

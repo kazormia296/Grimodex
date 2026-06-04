@@ -7,6 +7,7 @@ import {
   useCurrentProjectId,
   useCurrentProject,
 } from "@/features/project/projectStore";
+import { saveBinaryFile } from "@/lib/exportFile";
 import { buildArchive, defaultZipFilename } from "./zipExport/buildArchive";
 import {
   DEFAULT_ZIP_EXPORT_SETTINGS,
@@ -22,27 +23,14 @@ async function saveZipBlob(
   blob: Uint8Array,
   filename: string,
 ): Promise<boolean> {
-  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const { writeFile } = await import("@tauri-apps/plugin-fs");
-    const path = await save({
-      defaultPath: filename,
-      filters: [{ name: "ZIP", extensions: ["zip"] }],
-    });
-    if (!path) return false;
-    await writeFile(path, blob);
-    return true;
-  }
-
-  const url = URL.createObjectURL(
-    new Blob([blob as Uint8Array<ArrayBuffer>], { type: "application/zip" }),
+  // 保存ダイアログは Rust 側 (security audit PIO-2)。キャンセルは null。
+  const saved = await saveBinaryFile(
+    filename,
+    { name: "ZIP", extensions: ["zip"] },
+    blob,
+    "application/zip",
   );
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-  return true;
+  return saved !== null;
 }
 
 function ToggleRow({

@@ -17,6 +17,7 @@ import { useEditorStore } from "@/features/editor/editorStore";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { saveTextFile } from "@/lib/exportFile";
 import type { Diagnostic, RuleWarning, Severity } from "./types";
 import { useLintStore } from "./lintStore";
 import { useLintIgnoreStore } from "./lintIgnoreStore";
@@ -1575,22 +1576,15 @@ function ExportReportDialog({
     try {
       const content = renderReport(format, scenes, { includeExcerpt });
       const ext = extensionFor(format);
-      // Lazy-load Tauri dialog / fs — consistent with other export
-      // flows in the app and keeps the main bundle light for browser-
-      // mock test runs.
-      const { save: saveDialog } = await import("@tauri-apps/plugin-dialog");
-      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-      const path = await saveDialog({
-        defaultPath: `lint-report.${ext}`,
-        filters: [{ name: format.toUpperCase(), extensions: [ext] }],
-      });
-      if (!path) {
-        setSaving(false);
-        return;
-      }
-      await writeTextFile(path, content);
+      // 保存ダイアログは Rust 側で開かれ、renderer はパスを渡さない
+      // (security audit PIO-2)。キャンセル時は null。
+      const saved = await saveTextFile(
+        `lint-report.${ext}`,
+        { name: format.toUpperCase(), extensions: [ext] },
+        content,
+      );
       setSaving(false);
-      onClose();
+      if (saved !== null) onClose();
     } catch (e) {
       setError(String(e));
       setSaving(false);

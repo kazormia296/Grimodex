@@ -2,6 +2,7 @@
  * 執筆タイムラプス 動画エクスポート orchestrator (P7.3 + P5 compositor).
  */
 
+import { saveBinaryFile } from "@/lib/exportFile";
 import type { EditorRenderTheme } from "./renderers/editorRenderer";
 import {
   buildCompositeTimelapsePlan,
@@ -205,24 +206,13 @@ export async function saveWebmBlob(
   blob: Blob,
   filename: string,
 ): Promise<boolean> {
-  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const { writeFile } = await import("@tauri-apps/plugin-fs");
-    const path = await save({
-      defaultPath: filename,
-      filters: [{ name: "WebM", extensions: ["webm"] }],
-    });
-    if (!path) return false;
-    const buf = await blob.arrayBuffer();
-    await writeFile(path, new Uint8Array(buf));
-    return true;
-  }
-
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-  return true;
+  // 保存ダイアログは Rust 側 (security audit PIO-2)。キャンセルは null。
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const saved = await saveBinaryFile(
+    filename,
+    { name: "WebM", extensions: ["webm"] },
+    bytes,
+    "video/webm",
+  );
+  return saved !== null;
 }

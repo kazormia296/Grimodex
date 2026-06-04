@@ -1929,6 +1929,7 @@ version = "0.4.6"
 dependencies = [
  "aho-corasick",
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
  "futures",

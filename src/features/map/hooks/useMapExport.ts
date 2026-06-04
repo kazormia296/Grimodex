@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import type { Edge, Node } from "@xyflow/react";
 import { buildMapSVG, svgToPngBlob, buildMapJSON } from "../mapExport";
+import { saveTextFile, saveBinaryFile } from "@/lib/exportFile";
 import { toast } from "sonner";
 
 type ExportType = "svg" | "png" | "json";
@@ -20,43 +21,39 @@ export function useMapExport(
       const rfNodes = getNodes();
       const rfEdges = getEdges();
 
+      // 保存ダイアログは Rust 側で開かれ、renderer はパスを渡さない
+      // (security audit PIO-2)。非 Tauri は browser ダウンロード。
       if (type === "json") {
-        const { save } = await import("@tauri-apps/plugin-dialog");
-        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-        const path = await save({
-          defaultPath: "map.json",
-          filters: [{ name: "JSON", extensions: ["json"] }],
-        });
-        if (!path) return;
-        await writeTextFile(path, buildMapJSON(rfNodes, rfEdges));
+        await saveTextFile(
+          "map.json",
+          { name: "JSON", extensions: ["json"] },
+          buildMapJSON(rfNodes, rfEdges),
+          "application/json",
+        );
         return;
       }
 
       const svgContent = buildMapSVG(rfNodes, rfEdges);
 
       if (type === "svg") {
-        const { save } = await import("@tauri-apps/plugin-dialog");
-        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-        const path = await save({
-          defaultPath: "map.svg",
-          filters: [{ name: "SVG", extensions: ["svg"] }],
-        });
-        if (!path) return;
-        await writeTextFile(path, svgContent);
+        await saveTextFile(
+          "map.svg",
+          { name: "SVG", extensions: ["svg"] },
+          svgContent,
+          "image/svg+xml",
+        );
         return;
       }
 
       if (type === "png") {
-        const { save } = await import("@tauri-apps/plugin-dialog");
-        const { writeFile } = await import("@tauri-apps/plugin-fs");
-        const path = await save({
-          defaultPath: "map.png",
-          filters: [{ name: "PNG", extensions: ["png"] }],
-        });
-        if (!path) return;
         const blob = await svgToPngBlob(svgContent);
-        const buf = await blob.arrayBuffer();
-        await writeFile(path, new Uint8Array(buf));
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        await saveBinaryFile(
+          "map.png",
+          { name: "PNG", extensions: ["png"] },
+          bytes,
+          "image/png",
+        );
       }
     }
 

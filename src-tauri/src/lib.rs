@@ -135,6 +135,8 @@ pub fn run() {
             commands::workspace::save_global_settings,
             commands::workspace::validate_workspace_path,
             commands::workspace::open_workspace,
+            commands::export::export_save_text,
+            commands::export::export_save_bytes,
             commands::db::db_execute,
             commands::db::db_execute_batch,
             commands::timelapse::timelapse_append_batch,

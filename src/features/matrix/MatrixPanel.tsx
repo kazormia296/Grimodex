@@ -22,6 +22,7 @@ import { deriveRows } from "./lib/deriveRows";
 import { deriveColumns } from "./lib/deriveColumns";
 import { deriveCellMap } from "./lib/deriveCells";
 import { buildCsvString } from "./lib/exportCsv";
+import { saveTextFile } from "@/lib/exportFile";
 import type { CellSource } from "./lib/deriveCells";
 import { MatrixHeader } from "./MatrixHeader";
 import { MatrixTable } from "./MatrixTable";
@@ -328,15 +329,14 @@ export function MatrixPanel() {
   async function handleExportCsv() {
     try {
       const csv = buildCsvString(rows, columns, cellMap);
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-      const path = await save({
-        defaultPath: "matrix.csv",
-        filters: [{ name: "CSV", extensions: ["csv"] }],
-      });
-      if (!path) return;
-      await writeTextFile(path, csv);
-      toast.success("CSV をエクスポートしました");
+      // 保存ダイアログは Rust 側 (security audit PIO-2)。キャンセルは null。
+      const saved = await saveTextFile(
+        "matrix.csv",
+        { name: "CSV", extensions: ["csv"] },
+        csv,
+        "text/csv",
+      );
+      if (saved !== null) toast.success("CSV をエクスポートしました");
     } catch (err) {
       toast.error("エクスポートに失敗しました", { description: String(err) });
     }
