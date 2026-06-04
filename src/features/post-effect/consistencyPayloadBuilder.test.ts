@@ -101,6 +101,8 @@ function makeNode(
     nodeType,
     title: id,
     synopsis: null,
+
+    intent: null,
     sortOrder: id,
     status: null,
     storyTimeOrder: null,

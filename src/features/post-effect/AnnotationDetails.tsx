@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { clipValue, type ParsedAnnotationMeta } from "./annotationMeta";
-import type { TypoCategory } from "./types";
+import type { IntentDriftRelation, TypoCategory } from "./types";
 
 function openCodexEntry(id: string) {
   useLayoutStore.getState().showPanel("codex");
@@ -109,6 +109,38 @@ export function TypoChip({ category }: { category: TypoCategory }) {
       )}
     >
       {TYPO_CATEGORY_LABEL[category]}
+    </span>
+  );
+}
+
+const INTENT_RELATION_LABEL: Record<IntentDriftRelation, string> = {
+  contradicts: "矛盾",
+  absent: "欠落",
+  dilutes: "希薄",
+  ambiguous: "曖昧",
+};
+
+const INTENT_RELATION_TITLE: Record<IntentDriftRelation, string> = {
+  contradicts: "狙いと矛盾している",
+  absent: "狙いが本文に欠けている",
+  dilutes: "狙いはあるが希薄",
+  ambiguous: "狙いとの関係が曖昧",
+};
+
+/** intent_drift の「狙いとのズレ方」chip。raw enum でなく日本語ラベルで表示。 */
+export function IntentRelationChip({
+  relation,
+}: {
+  relation: IntentDriftRelation;
+}) {
+  return (
+    <span
+      title={`狙いズレ: ${INTENT_RELATION_TITLE[relation]}`}
+      className={cn(
+        "inline-flex shrink-0 items-center rounded border border-border/70 bg-muted/40 px-1.5 py-0 text-[10px] text-foreground/80",
+      )}
+    >
+      {INTENT_RELATION_LABEL[relation]}
     </span>
   );
 }

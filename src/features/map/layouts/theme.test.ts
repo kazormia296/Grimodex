@@ -18,6 +18,8 @@ function makeScene(
     nodeType: "scene",
     title: "Scene",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a",
     status: null,
     storyTimeOrder: null,

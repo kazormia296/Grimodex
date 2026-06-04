@@ -32,6 +32,7 @@ type Domain =
   | "grid"
   | "map"
   | "synopsis"
+  | "intent"
   | "beat"
   // P0 (§17): forward-only capture of the chat conversation flow and the
   // panel/layout/focus motion, so the timelapse video can show "writing in

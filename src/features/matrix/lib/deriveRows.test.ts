@@ -8,6 +8,8 @@ const BASE: Omit<
 > = {
   projectId: "default-project",
   synopsis: null,
+
+  intent: null,
   storyTimeOrder: null,
   charCount: 0,
   status: null,

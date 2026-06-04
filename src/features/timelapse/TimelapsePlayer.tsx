@@ -13,6 +13,7 @@ const ALL_DOMAINS = [
   "grid",
   "map",
   "synopsis",
+  "intent",
   "beat",
 ] as const;
 

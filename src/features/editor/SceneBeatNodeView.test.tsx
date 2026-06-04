@@ -304,6 +304,8 @@ describe("SceneBeatNodeView", () => {
             povCharacterId: null,
             locationId: null,
             synopsis: null,
+
+            intent: null,
             charCount: 0,
             createdAt: "",
             updatedAt: "",

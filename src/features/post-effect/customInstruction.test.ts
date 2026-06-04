@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
+  appendIntentGuidance,
   appendKouetsuGuidance,
+  intentScopeSuffix,
   kouetsuScopeSuffix,
   KOUETSU_JSON_DELIMITER,
 } from "./customInstruction";
@@ -13,6 +15,7 @@ const ALL_KOUETSU_SYSTEMS: Array<[string, string]> = [
   ["review", JA_POST_EFFECT.reviewSystem],
   ["pseudoComment", JA_POST_EFFECT.pseudoCommentSystem],
   ["metaStructure", JA_POST_EFFECT.metaStructureSystem],
+  ["intentDrift", JA_POST_EFFECT.intentDriftSystem],
 ];
 
 describe("appendKouetsuGuidance", () => {
@@ -43,14 +46,14 @@ describe("appendKouetsuGuidance", () => {
     expect(appendKouetsuGuidance(base, "なにか指示")).toBe(base);
   });
 
-  it("6 校閲プロンプトすべてが区切り行をちょうど1個持つ (回帰防止)", () => {
+  it("7 校閲プロンプトすべてが区切り行をちょうど1個持つ (回帰防止)", () => {
     for (const [name, prompt] of ALL_KOUETSU_SYSTEMS) {
       const occurrences = prompt.split(KOUETSU_JSON_DELIMITER).length - 1;
       expect(occurrences, `${name} の区切り行出現回数`).toBe(1);
     }
   });
 
-  it("6 校閲プロンプトすべてで非空 custom が安全に挿入される", () => {
+  it("7 校閲プロンプトすべてで非空 custom が安全に挿入される", () => {
     const custom = "テスト用の追加指示";
     for (const [name, prompt] of ALL_KOUETSU_SYSTEMS) {
       const result = appendKouetsuGuidance(prompt, custom);
@@ -63,6 +66,47 @@ describe("appendKouetsuGuidance", () => {
         result.indexOf(KOUETSU_JSON_DELIMITER),
       );
     }
+  });
+});
+
+describe("appendIntentGuidance", () => {
+  it("空 intent なら basePrompt と byte-identical", () => {
+    const base = JA_POST_EFFECT.intentDriftSystem;
+    expect(appendIntentGuidance(base, "")).toBe(base);
+    expect(appendIntentGuidance(base, "   \n  ")).toBe(base);
+  });
+
+  it("非空 intent は区切り行の前に狙い見出しと本文を挿入し JSON schema は末尾", () => {
+    const base = JA_POST_EFFECT.intentDriftSystem;
+    const intent = "読者に緊張感を与える";
+    const custom = "文体は硬めに";
+    const built = appendIntentGuidance(
+      appendKouetsuGuidance(base, custom),
+      intent,
+    );
+    expect(built).toContain(intent);
+    expect(built).toContain("## 作者の狙い（このシーンで達成したいこと）");
+    expect(built).toContain(custom);
+    expect(built).toContain("NOT a grader");
+    expect(built).toContain(KOUETSU_JSON_DELIMITER);
+    const delimIdx = built.indexOf(KOUETSU_JSON_DELIMITER);
+    expect(built.indexOf(intent)).toBeLessThan(delimIdx);
+    expect(built.indexOf(custom)).toBeLessThan(delimIdx);
+    expect(built.slice(delimIdx)).toBe(
+      base.slice(base.indexOf(KOUETSU_JSON_DELIMITER)),
+    );
+  });
+});
+
+describe("intentScopeSuffix", () => {
+  it("空/空白なら空文字", () => {
+    expect(intentScopeSuffix("")).toBe("");
+    expect(intentScopeSuffix("  \t ")).toBe("");
+  });
+
+  it("非空なら |intent: プレフィックス", () => {
+    expect(intentScopeSuffix("狙いA")).toBe("|intent:狙いA");
+    expect(intentScopeSuffix("  A   B  ")).toBe("|intent:A B");
   });
 });
 

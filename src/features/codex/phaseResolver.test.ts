@@ -22,6 +22,8 @@ function makeNode(
     nodeType: "scene",
     title: overrides.id,
     synopsis: null,
+
+    intent: null,
     sortOrder: "a0",
     status: null,
     storyTimeOrder: null,

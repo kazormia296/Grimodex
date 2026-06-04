@@ -30,6 +30,7 @@ describe("treeStore.setNodePreview — nodes[] is not mutated", () => {
           nodeType: "scene",
           title: "S1",
           synopsis: null,
+          intent: null,
           sortOrder: "a0",
           status: null,
           storyTimeOrder: null,

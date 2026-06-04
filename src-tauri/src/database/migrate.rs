@@ -30,6 +30,7 @@ impl Database {
                 node_type         TEXT NOT NULL CHECK(node_type IN ('folder','scene','note')),
                 title             TEXT NOT NULL DEFAULT 'Untitled',
                 synopsis          TEXT,
+                intent            TEXT,
                 sort_order        TEXT NOT NULL DEFAULT 'a0',
                 story_time_order  TEXT,
                 story_time_label  TEXT,
@@ -423,6 +424,7 @@ impl Database {
                 node_type          TEXT NOT NULL,
                 title              TEXT NOT NULL,
                 synopsis           TEXT,
+                intent             TEXT,
                 sort_order         TEXT NOT NULL,
                 story_time_order   TEXT,
                 story_time_label   TEXT,
@@ -1053,6 +1055,7 @@ impl Database {
 
         // Note AI context injection (Phase A): context_mode / aliases on tree_nodes.
         Self::migrate_tree_nodes_note_context(&conn)?;
+        Self::migrate_tree_nodes_intent(&conn)?;
 
         // Chat session pins: extend codex/snippet CHECK to include sticky (Phase D).
         Self::migrate_chat_session_pinned_add_sticky(&conn)?;
@@ -1110,7 +1113,7 @@ impl Database {
                 id              TEXT PRIMARY KEY,
                 project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 effect_type     TEXT NOT NULL
-                                  CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency','typo_detection')),
+                                  CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency','typo_detection','intent_drift')),
                 scope_type      TEXT NOT NULL
                                   CHECK(scope_type IN ('scene','folder','project')),
                 scope_target_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
@@ -1144,7 +1147,7 @@ impl Database {
                 range_end      INTEGER,
                 text_snapshot  TEXT,
                 category       TEXT NOT NULL
-                                  CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor','typo_anchor')),
+                                  CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor','typo_anchor','intent_anchor')),
                 persona        TEXT,
                 severity       TEXT CHECK(severity IS NULL OR severity IN ('info','suggestion','warning','error')),
                 content        TEXT NOT NULL,
@@ -1234,6 +1237,7 @@ impl Database {
         // 既存 DB の post_effect_runs / post_effect_annotations CHECK 制約に
         // typo_detection / typo_anchor を追加 (新 DB は上の CREATE TABLE で済)。
         Self::migrate_post_effect_typo_categories(&conn)?;
+        Self::migrate_post_effect_intent_categories(&conn)?;
 
         // PostEffect クラッシュリカバリ: プロセス強制終了等で running のまま残った run を
         // 起動時に failed へ落とす。idx_runs_running_scope の UNIQUE が次回起動を
@@ -1521,6 +1525,98 @@ impl Database {
             anyhow::bail!("integrity_check failed after typo CHECK widening: {integrity}");
         }
 
+        Ok(())
+    }
+
+    /// 既存 DB の post_effect CHECK に `intent_drift` / `intent_anchor` を追加する。
+    pub(super) fn migrate_post_effect_intent_categories(
+        conn: &Connection,
+    ) -> anyhow::Result<()> {
+        let runs_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'post_effect_runs'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        let anns_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'post_effect_annotations'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let runs_needs = runs_sql
+            .as_deref()
+            .is_some_and(|s| !s.contains("intent_drift"));
+        let anns_needs = anns_sql
+            .as_deref()
+            .is_some_and(|s| !s.contains("intent_anchor"));
+
+        if !runs_needs && !anns_needs {
+            return Ok(());
+        }
+
+        let current_version: i64 = conn.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+
+        conn.pragma_update(None, "writable_schema", true)?;
+
+        if runs_needs {
+            if let Some(old) = runs_sql {
+                let new = old.replace(
+                    "'typo_detection')",
+                    "'typo_detection','intent_drift')",
+                );
+                if new != old {
+                    conn.execute(
+                        "UPDATE sqlite_master SET sql = ?1 \
+                         WHERE type = 'table' AND name = 'post_effect_runs'",
+                        params![new],
+                    )?;
+                } else {
+                    tracing::warn!(
+                        "post_effect_runs CHECK constraint not in expected form; skipping intent_drift migration"
+                    );
+                }
+            }
+        }
+
+        if anns_needs {
+            if let Some(old) = anns_sql {
+                let new = old.replace(
+                    "'typo_anchor')",
+                    "'typo_anchor','intent_anchor')",
+                );
+                if new != old {
+                    conn.execute(
+                        "UPDATE sqlite_master SET sql = ?1 \
+                         WHERE type = 'table' AND name = 'post_effect_annotations'",
+                        params![new],
+                    )?;
+                } else {
+                    tracing::warn!(
+                        "post_effect_annotations CHECK constraint not in expected form; skipping intent_anchor migration"
+                    );
+                }
+            }
+        }
+
+        conn.pragma_update(None, "schema_version", current_version + 1)?;
+        conn.pragma_update(None, "writable_schema", false)?;
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            anyhow::bail!("integrity_check failed after intent CHECK widening: {integrity}");
+        }
+
+        Ok(())
+    }
+
+    /// One-shot migration: add scene intent column to tree_nodes and snapshot mirror.
+    pub(super) fn migrate_tree_nodes_intent(conn: &Connection) -> anyhow::Result<()> {
+        Self::add_column_if_missing(conn, "tree_nodes", "intent", "TEXT")?;
+        Self::add_column_if_missing(conn, "project_snapshot_tree_nodes", "intent", "TEXT")?;
         Ok(())
     }
 
@@ -2095,5 +2191,88 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    fn open_post_typo_post_effect_db() -> Connection {
+        let conn = open_legacy_post_effect_db();
+        Database::migrate_post_effect_typo_categories(&conn).expect("typo migration");
+        conn
+    }
+
+    #[test]
+    fn intent_categories_migration_widens_runs_check() {
+        let conn = open_post_typo_post_effect_db();
+        let before = conn.execute(
+            "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+             VALUES ('r-intent', 'p1', 'intent_drift', 'scene', 'm', 'v')",
+            [],
+        );
+        assert!(before.is_err(), "pre-intent schema should reject intent_drift");
+
+        Database::migrate_post_effect_intent_categories(&conn).expect("migration ok");
+
+        conn.execute(
+            "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+             VALUES ('r-intent', 'p1', 'intent_drift', 'scene', 'm', 'v')",
+            [],
+        )
+        .expect("intent_drift accepted after migration");
+    }
+
+    #[test]
+    fn intent_categories_migration_widens_annotations_check() {
+        let conn = open_post_typo_post_effect_db();
+        let before = conn.execute(
+            "INSERT INTO post_effect_annotations (id, project_id, category, content)
+             VALUES ('a-intent', 'p1', 'intent_anchor', 'x')",
+            [],
+        );
+        assert!(before.is_err(), "pre-intent schema should reject intent_anchor");
+
+        Database::migrate_post_effect_intent_categories(&conn).expect("migration ok");
+
+        conn.execute(
+            "INSERT INTO post_effect_annotations (id, project_id, category, content)
+             VALUES ('a-intent', 'p1', 'intent_anchor', 'x')",
+            [],
+        )
+        .expect("intent_anchor accepted after migration");
+    }
+
+    #[test]
+    fn intent_categories_migration_is_idempotent() {
+        let conn = open_post_typo_post_effect_db();
+        Database::migrate_post_effect_intent_categories(&conn).expect("first");
+        Database::migrate_post_effect_intent_categories(&conn).expect("second no-op");
+        Database::migrate_post_effect_intent_categories(&conn).expect("third no-op");
+
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
+    }
+
+    #[test]
+    fn tree_nodes_intent_column_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tree_nodes (id TEXT PRIMARY KEY, synopsis TEXT);
+             CREATE TABLE project_snapshot_tree_nodes (
+                snapshot_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                synopsis TEXT,
+                PRIMARY KEY (snapshot_id, node_id)
+             );",
+        )
+        .unwrap();
+
+        Database::migrate_tree_nodes_intent(&conn).expect("first");
+        Database::migrate_tree_nodes_intent(&conn).expect("second no-op");
+
+        conn.execute(
+            "INSERT INTO tree_nodes (id, intent) VALUES ('n1', '狙いテスト')",
+            [],
+        )
+        .expect("intent column writable");
     }
 }

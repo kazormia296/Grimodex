@@ -4,7 +4,7 @@
  *
  * 設計原則:
  * - 追記式のみ。組み込みプロンプトの JSON 出力スキーマ指示は不変。
- * - postEffect.ts の6プロンプトすべてが、出力スキーマ直前に一字一句同じ
+ * - postEffect.ts の7プロンプトすべてが、出力スキーマ直前に一字一句同じ
  *   「区切り行」を持つ。custom はこの行の *前* に挟むことで、JSON 形式指示が
  *   常に末尾に残り、出力契約を侵食しない。
  * - custom が空なら byte-identical (組み込みプロンプト・input_hash とも不変)。
@@ -15,7 +15,7 @@
 import { normalizeText } from "./canonicalize";
 
 /**
- * postEffect.ts の6プロンプト (consistency/typo/intra/review/pseudoComment/metaStructure)
+ * postEffect.ts の7プロンプト (consistency/typo/intra/review/pseudoComment/metaStructure/intentDrift)
  * すべてが共有する、出力スキーマ直前の区切り行。これより前に追記する。
  * 将来 postEffect をロケール別にする場合は、この検出も更新すること
  * (一致しなければ appendKouetsuGuidance は no-op になる = fail-safe)。
@@ -57,4 +57,38 @@ export function kouetsuScopeSuffix(custom: string): string {
   const trimmed = custom.trim();
   if (!trimmed) return "";
   return `|custom:${normalizeText(trimmed)}`;
+}
+
+/**
+ * intent_drift system prompt に作者のシーン狙いを挿入する。
+ * - intent が空/空白のみ → basePrompt をそのまま返す (byte-identical)。
+ * - 非空 → JSON 区切り行の前に「## 作者の狙い」枠で挿入。
+ */
+export function appendIntentGuidance(
+  basePrompt: string,
+  intent: string,
+): string {
+  const trimmed = intent.trim();
+  if (!trimmed) return basePrompt;
+
+  const idx = basePrompt.indexOf(KOUETSU_JSON_DELIMITER);
+  if (idx === -1) return basePrompt;
+
+  const before = basePrompt.slice(0, idx);
+  const after = basePrompt.slice(idx);
+  return (
+    `${before}## 作者の狙い（このシーンで達成したいこと）\n` +
+    `${trimmed}\n\n` +
+    `${after}`
+  );
+}
+
+/**
+ * input_hash の scope 文字列に畳み込む intent サフィックス。
+ * 非空のときだけ `|intent:<正規化テキスト>` を返す。
+ */
+export function intentScopeSuffix(intent: string): string {
+  const trimmed = intent.trim();
+  if (!trimmed) return "";
+  return `|intent:${normalizeText(trimmed)}`;
 }

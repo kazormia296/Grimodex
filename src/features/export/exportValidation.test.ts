@@ -10,6 +10,8 @@ function scene(id: string, title: string): TreeNodeData {
     nodeType: "scene",
     title,
     synopsis: null,
+
+    intent: null,
     sortOrder: "a0",
     status: null,
     storyTimeOrder: null,

@@ -55,6 +55,8 @@ const scene: TreeNodeData = {
   nodeType: "scene",
   title: "テストシーン",
   synopsis: null,
+
+  intent: null,
   sortOrder: "a0",
   status: "draft",
   storyTimeOrder: "a0",

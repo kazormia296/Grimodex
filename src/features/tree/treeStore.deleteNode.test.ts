@@ -55,6 +55,8 @@ const baseNode = {
   title: "F",
   sortOrder: "a0",
   synopsis: null,
+
+  intent: null,
   status: null,
   storyTimeOrder: null,
   storyTimeLabel: null,

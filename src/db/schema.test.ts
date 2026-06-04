@@ -93,6 +93,7 @@ describe("treeNodes schema", () => {
     expect(columns).toContain("nodeType");
     expect(columns).toContain("title");
     expect(columns).toContain("synopsis");
+    expect(columns).toContain("intent");
     expect(columns).toContain("sortOrder");
     expect(columns).toContain("status");
     expect(columns).toContain("content");

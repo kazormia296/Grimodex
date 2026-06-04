@@ -14,6 +14,8 @@ const updateNode = vi.mocked(api.updateNode);
 
 const DEFAULTS = {
   synopsis: null,
+
+  intent: null,
   status: null,
   storyTimeOrder: null,
   storyTimeLabel: null,

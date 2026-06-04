@@ -52,6 +52,8 @@ const NODE_DEFAULTS = {
   projectId: "p",
   parentId: null as string | null,
   synopsis: null,
+
+  intent: null,
   status: null,
   storyTimeOrder: null,
   storyTimeLabel: null,

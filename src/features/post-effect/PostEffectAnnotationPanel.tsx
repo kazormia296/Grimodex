@@ -13,6 +13,7 @@ import {
   ConfidenceBadge,
   ContrastRow,
   ExpandedDetails,
+  IntentRelationChip,
   TypoChip,
   TypoContrastRow,
 } from "./AnnotationDetails";
@@ -36,6 +37,10 @@ const CONSISTENCY_FILTER = (a: PostEffectAnnotation) =>
 /** review セクション用 filter。 */
 export const REVIEW_FILTER = (a: PostEffectAnnotation) =>
   a.category === "review";
+
+/** intent_drift セクション用 filter。 */
+export const INTENT_DRIFT_FILTER = (a: PostEffectAnnotation) =>
+  a.category === "intent_anchor";
 
 /** pseudo_comment セクション用 filter (親コメントのみ; 返信は parent_id でぶら下げる)。 */
 export const PSEUDO_COMMENT_FILTER = (a: PostEffectAnnotation) =>
@@ -73,6 +78,7 @@ export function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
   const showTitle =
     parsed.kind === "intra" ||
     parsed.kind === "review" ||
+    parsed.kind === "intent_drift" ||
     parsed.kind === "pseudo_comment";
 
   return (
@@ -98,6 +104,7 @@ export function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
         <div className="flex flex-1 flex-wrap items-center gap-1.5">
           {parsed.codex && <CodexChip codex={parsed.codex} />}
           {parsed.typo && <TypoChip category={parsed.typo.category} />}
+          {parsed.relation && <IntentRelationChip relation={parsed.relation} />}
           {parsed.confidence && <ConfidenceBadge level={parsed.confidence} />}
           {showTitle && (
             <p className="basis-full leading-snug">{ann.content}</p>

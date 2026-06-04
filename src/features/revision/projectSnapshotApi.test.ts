@@ -103,6 +103,31 @@ describe("projectSnapshotApi", () => {
     expect(list.find((s) => s.id === snap.id)?.isStructural).toBe(true);
   });
 
+  it("create→restore preserves scene intent", async () => {
+    await seedScene('{"type":"doc","content":[]}');
+    const { db } = await import("@/db/client");
+    const { treeNodes } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    await db
+      .update(treeNodes)
+      .set({ intent: "読者に緊張を与える" })
+      .where(eq(treeNodes.id, SCENE_ID));
+
+    const snap = await createProjectSnapshot({ name: "with-intent" });
+    await db
+      .update(treeNodes)
+      .set({ intent: null })
+      .where(eq(treeNodes.id, SCENE_ID));
+
+    await restoreProjectSnapshot(snap.id, "with-intent");
+
+    const rows = await db
+      .select({ intent: treeNodes.intent })
+      .from(treeNodes)
+      .where(eq(treeNodes.id, SCENE_ID));
+    expect(rows[0]?.intent).toBe("読者に緊張を与える");
+  });
+
   it("restores a snapshot and writes a safety snapshot", async () => {
     await seedScene('{"type":"doc","content":[{"type":"text","text":"v1"}]}');
     const target = await createProjectSnapshot({ name: "checkpoint" });

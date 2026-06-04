@@ -10,6 +10,8 @@ function makeScene(id: string): Parameters<typeof layoutFree>[0]["scenes"][0] {
     nodeType: "scene",
     title: "Scene",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a",
     status: null,
     storyTimeOrder: null,

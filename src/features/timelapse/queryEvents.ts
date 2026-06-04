@@ -9,6 +9,7 @@ export type Domain =
   | "grid"
   | "map"
   | "synopsis"
+  | "intent"
   | "beat"
   // P0 (§17): chat conversation flow + panel/layout/focus motion.
   | "chat"

@@ -179,6 +179,8 @@ describe("parseMarkdownSingle ↔ generateExport round-trip (synthetic-echo)", (
       nodeType,
       title,
       synopsis: null,
+
+      intent: null,
       sortOrder,
       status: null,
       storyTimeOrder: null,

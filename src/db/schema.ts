@@ -59,6 +59,7 @@ export const treeNodes = sqliteTable(
     nodeType: text("node_type").notNull(), // CHECK('folder' | 'scene' | 'note') enforced in SQL
     title: text("title").notNull().default("Untitled"),
     synopsis: text("synopsis"), // Scene only: plain text summary for storySoFar context injection
+    intent: text("intent"), // Scene only: author-declared goal for this scene (intent_drift opt-in)
     // reading-order 用の fractional-indexing キー（base62、辞書順比較）
     sortOrder: text("sort_order").notNull().default("a0"),
     // story-time 用の fractional-indexing キー（null の場合は未指定）
@@ -684,6 +685,7 @@ export const projectSnapshotTreeNodes = sqliteTable(
     nodeType: text("node_type").notNull(),
     title: text("title").notNull(),
     synopsis: text("synopsis"),
+    intent: text("intent"),
     sortOrder: text("sort_order").notNull(),
     storyTimeOrder: text("story_time_order"),
     storyTimeLabel: text("story_time_label"),
@@ -1601,7 +1603,7 @@ export const changeEvents = sqliteTable(
     sceneId: text("scene_id").references(() => treeNodes.id, {
       onDelete: "set null",
     }),
-    domain: text("domain").notNull(), // 'editor'|'codex'|'snippet'|'grid'|'map'|'synopsis'|'beat'|'chat'|'layout'
+    domain: text("domain").notNull(), // 'editor'|'codex'|'snippet'|'grid'|'map'|'synopsis'|'intent'|'beat'|'chat'|'layout'
     opType: text("op_type").notNull(),
     entityType: text("entity_type"),
     entityId: text("entity_id"),
@@ -1768,7 +1770,8 @@ export type PostEffectType =
   | "meta_structure"
   | "consistency"
   | "intra_scene_consistency"
-  | "typo_detection";
+  | "typo_detection"
+  | "intent_drift";
 export type PostEffectScopeType = "scene" | "folder" | "project";
 export type PostEffectRunStatus =
   | "running"
@@ -1782,7 +1785,8 @@ export type PostEffectCategory =
   | "consistency_anchor"
   | "foreshadow_anchor"
   | "theme_anchor"
-  | "typo_anchor";
+  | "typo_anchor"
+  | "intent_anchor";
 export type PostEffectSeverity = "info" | "suggestion" | "warning" | "error";
 export type PostEffectAuthorRole = "ai" | "user" | "system";
 export type PostEffectStatus = "open" | "resolved" | "dismissed";

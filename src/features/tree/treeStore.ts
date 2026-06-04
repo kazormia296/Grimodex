@@ -35,6 +35,7 @@ export interface TreeNodeData {
   nodeType: NodeType;
   title: string;
   synopsis: string | null;
+  intent: string | null;
   /** fractional-indexing 文字列キー（base62、辞書順比較） */
   sortOrder: string;
   status: string | null;
@@ -181,6 +182,7 @@ function toNodeData(n: ApiNode): TreeNodeData {
     nodeType: n.nodeType as NodeType,
     title: n.title,
     synopsis: n.synopsis ?? null,
+    intent: n.intent ?? null,
     sortOrder: n.sortOrder,
     status: n.status ?? null,
     storyTimeOrder: n.storyTimeOrder ?? null,
@@ -288,6 +290,7 @@ interface TreeState {
   updateNodeTitle: (id: string, title: string) => Promise<void>;
   deleteNode: (id: string) => Promise<void>;
   updateSynopsis: (id: string, synopsis: string) => Promise<void>;
+  updateIntent: (id: string, intent: string) => Promise<void>;
   setStatus: (id: string, status: SceneStatus) => Promise<void>;
   moveNode: (
     id: string,
@@ -1164,6 +1167,42 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             nodes: state.nodes.map((n) =>
               n.id === id ? { ...n, synopsis } : n,
             ),
+          }));
+        },
+      });
+    }
+  },
+
+  async updateIntent(id, intent) {
+    const oldIntent = get().nodes.find((n) => n.id === id)?.intent ?? null;
+    await api.updateNode(id, { intent });
+    set((state) => ({
+      nodes: state.nodes.map((n) => (n.id === id ? { ...n, intent } : n)),
+    }));
+    recordChangeEvent({
+      domain: "intent",
+      opType: "update",
+      entityType: "tree_node",
+      entityId: id,
+      sceneId: id,
+      payload: { before: oldIntent, after: intent },
+    });
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "intent 更新",
+        async undo() {
+          await api.updateNode(id, { intent: oldIntent ?? undefined });
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id ? { ...n, intent: oldIntent } : n,
+            ),
+          }));
+        },
+        async redo() {
+          await api.updateNode(id, { intent });
+          set((state) => ({
+            nodes: state.nodes.map((n) => (n.id === id ? { ...n, intent } : n)),
           }));
         },
       });

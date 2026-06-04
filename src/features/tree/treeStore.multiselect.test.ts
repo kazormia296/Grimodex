@@ -20,6 +20,7 @@ function resetStore() {
 }
 
 const NODE_DEFAULTS = {
+  intent: null,
   storyTimeOrder: null,
   storyTimeLabel: null,
   povCharacterId: null,

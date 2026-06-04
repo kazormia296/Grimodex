@@ -100,6 +100,8 @@ function makeScene(overrides: Partial<TreeNodeData> = {}): TreeNodeData {
     parentId: "folder-1",
     sortOrder: "a0",
     synopsis: null,
+
+    intent: null,
     status: null,
     storyTimeOrder: null,
     storyTimeLabel: null,

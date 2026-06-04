@@ -396,6 +396,8 @@ const mockSceneNodes: TreeNodeData[] = [
     nodeType: "scene",
     title: "Scene 1",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a0",
     status: "draft",
     storyTimeOrder: null,
@@ -414,6 +416,8 @@ const mockSceneNodes: TreeNodeData[] = [
     nodeType: "scene",
     title: "Scene 2",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a1",
     status: "draft",
     storyTimeOrder: null,
@@ -432,6 +436,8 @@ const mockSceneNodes: TreeNodeData[] = [
     nodeType: "scene",
     title: "Scene 3",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a2",
     status: "draft",
     storyTimeOrder: null,

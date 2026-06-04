@@ -22,6 +22,8 @@ function makeFolder(
     nodeType: "folder",
     title,
     synopsis: null,
+
+    intent: null,
     sortOrder,
     status: null,
     storyTimeOrder: null,
@@ -48,6 +50,8 @@ function makeScene(
     nodeType: "scene",
     title,
     synopsis: null,
+
+    intent: null,
     sortOrder,
     status: null,
     storyTimeOrder: null,
@@ -69,6 +73,8 @@ function makeNote(id: string, parentId: string | null = null): TreeNodeData {
     nodeType: "note",
     title: "note",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a0",
     status: null,
     storyTimeOrder: null,

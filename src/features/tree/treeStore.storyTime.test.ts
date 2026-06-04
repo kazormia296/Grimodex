@@ -35,6 +35,7 @@ vi.mock("@/store/globalHistoryStore", () => ({
 }));
 
 const NODE_DEFAULTS = {
+  intent: null,
   storyTimeOrder: null,
   storyTimeLabel: null,
   povCharacterId: null,

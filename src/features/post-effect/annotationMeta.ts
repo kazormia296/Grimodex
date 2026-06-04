@@ -4,6 +4,7 @@ import type {
   PostEffectAnnotation,
   PseudoCommentAnnotationMeta,
   ReviewAnnotationMeta,
+  IntentDriftAnnotationMeta,
   TypoAnnotationMeta,
   TypoCategory,
 } from "./types";
@@ -13,7 +14,13 @@ export interface ParsedAnnotationMeta {
    * typo (typo_ref あり) / consistency (codex_ref あり) / review / pseudo_comment
    * （category で判定）/ intra_scene (fallback)
    */
-  kind: "consistency" | "intra" | "typo" | "review" | "pseudo_comment";
+  kind:
+    | "consistency"
+    | "intra"
+    | "typo"
+    | "review"
+    | "intent_drift"
+    | "pseudo_comment";
   orphaned: boolean;
   detectedByModel?: string;
   llmReason?: string;
@@ -22,6 +29,8 @@ export interface ParsedAnnotationMeta {
   foundContext?: string;
   /** pseudo_comment only — ペルソナ名 */
   persona?: string;
+  /** intent_drift only */
+  relation?: IntentDriftAnnotationMeta["relation"];
   /** consistency only */
   codex?: {
     entryId: string;
@@ -59,6 +68,8 @@ export function parseAnnotationMeta(
   if (!meta) {
     // metadata 無しでも category で review / pseudo_comment は判別する
     if (ann.category === "review") return { kind: "review", orphaned: false };
+    if (ann.category === "intent_anchor")
+      return { kind: "intent_drift", orphaned: false };
     if (ann.category === "pseudo_comment")
       return { kind: "pseudo_comment", orphaned: false };
     return { kind: "intra", orphaned: false };
@@ -74,6 +85,18 @@ export function parseAnnotationMeta(
       orphaned,
       detectedByModel: r.detected_by_model,
       llmReason: r.llm_reason,
+      foundText: r.found_text,
+      foundContext: r.found_context,
+    };
+  }
+  if (ann.category === "intent_anchor") {
+    const r = meta as Partial<IntentDriftAnnotationMeta>;
+    return {
+      kind: "intent_drift",
+      orphaned,
+      detectedByModel: r.detected_by_model,
+      llmReason: r.llm_reason,
+      relation: r.relation,
       foundText: r.found_text,
       foundContext: r.found_context,
     };

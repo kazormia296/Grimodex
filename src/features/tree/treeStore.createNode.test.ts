@@ -14,6 +14,8 @@ vi.mock("./api", () => ({
 
 const DEFAULTS = {
   synopsis: null,
+
+  intent: null,
   status: null,
   storyTimeOrder: null,
   storyTimeLabel: null,

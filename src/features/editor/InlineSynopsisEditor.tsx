@@ -17,6 +17,9 @@ export interface InlineSynopsisEditorHandle {
 interface InlineSynopsisEditorProps {
   nodeId: string;
   synopsis: string | null;
+  /** When set, persists via this callback instead of updateSynopsis. */
+  onSave?: (text: string) => Promise<void>;
+  saveFailedLabel?: string;
   placeholder?: string;
   rows?: number;
   /** Called when edit state changes — host uses this to disable D&D */
@@ -36,6 +39,8 @@ export const InlineSynopsisEditor = forwardRef<
   {
     nodeId,
     synopsis,
+    onSave,
+    saveFailedLabel,
     placeholder,
     rows = 2,
     onEditingChange,
@@ -48,6 +53,10 @@ export const InlineSynopsisEditor = forwardRef<
 ) {
   const { t } = useTranslation();
   const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
+  const persist = useCallback(
+    (text: string) => (onSave ? onSave(text) : updateSynopsis(nodeId, text)),
+    [onSave, updateSynopsis, nodeId],
+  );
 
   const [isEditing, setIsEditing] = useState(alwaysEditing);
   const [editText, setEditText] = useState(synopsis ?? "");
@@ -86,11 +95,11 @@ export const InlineSynopsisEditor = forwardRef<
         const trimmed = editTextRef.current.trim();
         const original = (synopsisRef.current ?? "").trim();
         if (trimmed !== original) {
-          updateSynopsis(nodeId, trimmed).catch(() => {});
+          persist(trimmed).catch(() => {});
         }
       }
     };
-  }, [nodeId, updateSynopsis, alwaysEditing]);
+  }, [nodeId, persist, alwaysEditing]);
 
   const clearSaveTimer = useCallback(() => {
     if (saveTimerRef.current) {
@@ -105,17 +114,18 @@ export const InlineSynopsisEditor = forwardRef<
       const original = (synopsis ?? "").trim();
       if (trimmed === original) return;
       try {
-        await updateSynopsis(nodeId, trimmed);
+        await persist(trimmed);
       } catch {
         toast.error(
-          t("tree.synopsis.saveFailed", "Synopsis の保存に失敗しました"),
+          saveFailedLabel ??
+            t("tree.synopsis.saveFailed", "Synopsis の保存に失敗しました"),
         );
         // Keep in editing state on failure (re-focus textarea)
         setTimeout(() => textareaRef.current?.focus(), 0);
         throw new Error("save failed");
       }
     },
-    [nodeId, synopsis, updateSynopsis, t],
+    [synopsis, persist, saveFailedLabel, t],
   );
 
   const saveAndExit = useCallback(async () => {
@@ -157,11 +167,11 @@ export const InlineSynopsisEditor = forwardRef<
         const trimmed = value.trim();
         const original = (synopsis ?? "").trim();
         if (trimmed !== original) {
-          updateSynopsis(nodeId, trimmed).catch(() => {});
+          persist(trimmed).catch(() => {});
         }
       }, 1000);
     },
-    [nodeId, synopsis, updateSynopsis, clearSaveTimer],
+    [synopsis, persist, clearSaveTimer],
   );
 
   const handleKeyDown = useCallback(
@@ -187,20 +197,12 @@ export const InlineSynopsisEditor = forwardRef<
       const trimmed = editText.trim();
       const original = (synopsis ?? "").trim();
       if (trimmed !== original) {
-        updateSynopsis(nodeId, trimmed).catch(() => {});
+        persist(trimmed).catch(() => {});
       }
       return;
     }
     saveAndExit();
-  }, [
-    alwaysEditing,
-    editText,
-    synopsis,
-    nodeId,
-    updateSynopsis,
-    clearSaveTimer,
-    saveAndExit,
-  ]);
+  }, [alwaysEditing, editText, synopsis, persist, clearSaveTimer, saveAndExit]);
 
   const handleTriggerEvent = useCallback(
     (e: React.MouseEvent) => {

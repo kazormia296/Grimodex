@@ -65,6 +65,22 @@ describe("parseAnnotationMeta", () => {
     expect(parsed.foundText).toBeUndefined();
   });
 
+  it("category=intent_anchor を intent_drift として解決し relation を拾う", () => {
+    const parsed = parseAnnotationMeta(
+      ann({
+        category: "intent_anchor",
+        metadata: {
+          llm_reason: "狙いの緊張感が薄い",
+          relation: "dilutes",
+          found_text: "穏やかに",
+        },
+      }),
+    );
+    expect(parsed.kind).toBe("intent_drift");
+    expect(parsed.llmReason).toBe("狙いの緊張感が薄い");
+    expect(parsed.relation).toBe("dilutes");
+  });
+
   it("category=pseudo_comment を pseudo_comment として解決し persona を拾う", () => {
     const parsed = parseAnnotationMeta(
       ann({

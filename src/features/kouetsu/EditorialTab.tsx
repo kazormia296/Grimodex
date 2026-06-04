@@ -13,6 +13,7 @@ import { useKouetsuStore } from "./kouetsuStore";
 import { EditorialScopeBar } from "./EditorialScopeBar";
 import { ReviewSection } from "./sections/ReviewSection";
 import { PseudoCommentSection } from "./sections/PseudoCommentSection";
+import { IntentDriftSection } from "./sections/IntentDriftSection";
 import { MetaStructureSection } from "./sections/MetaStructureSection";
 
 function SectionHeader({
@@ -52,9 +53,11 @@ function SectionHeader({
 export function EditorialTab() {
   const [reviewExpanded, setReviewExpanded] = useState(true);
   const [pseudoExpanded, setPseudoExpanded] = useState(false);
+  const [intentExpanded, setIntentExpanded] = useState(false);
   const [metaExpanded, setMetaExpanded] = useState(false);
   const reviewRef = usePanelRef();
   const pseudoRef = usePanelRef();
+  const intentRef = usePanelRef();
   const metaRef = usePanelRef();
 
   const scope = useKouetsuStore((s) => s.activeEditorialScope);
@@ -76,6 +79,12 @@ export function EditorialTab() {
             a.parentId == null,
         ).length
       : 0;
+  const intentCount =
+    scope === "current" && activeSceneId
+      ? (annotationsByScene.get(activeSceneId) ?? []).filter(
+          (a) => a.status === "open" && a.category === "intent_anchor",
+        ).length
+      : 0;
 
   const toggle = (ref: ReturnType<typeof usePanelRef>, expanded: boolean) => {
     if (expanded) ref.current?.collapse();
@@ -95,7 +104,7 @@ export function EditorialTab() {
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="50%"
+          defaultSize="35%"
           onResize={() => {
             setReviewExpanded(!(reviewRef.current?.isCollapsed() ?? false));
           }}
@@ -119,7 +128,7 @@ export function EditorialTab() {
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="25%"
+          defaultSize="20%"
           onResize={() => {
             setPseudoExpanded(!(pseudoRef.current?.isCollapsed() ?? false));
           }}
@@ -139,11 +148,35 @@ export function EditorialTab() {
         <ResizableHandle horizontal withHandle />
 
         <ResizablePanel
-          panelRef={metaRef}
+          panelRef={intentRef}
           collapsible
           collapsedSize={32}
           minSize="15%"
           defaultSize="25%"
+          onResize={() => {
+            setIntentExpanded(!(intentRef.current?.isCollapsed() ?? false));
+          }}
+          className="flex flex-col overflow-hidden"
+        >
+          <SectionHeader
+            title="狙いズレ"
+            count={intentCount}
+            expanded={intentExpanded}
+            onToggle={() => toggle(intentRef, intentExpanded)}
+          />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <IntentDriftSection />
+          </div>
+        </ResizablePanel>
+
+        <ResizableHandle horizontal withHandle />
+
+        <ResizablePanel
+          panelRef={metaRef}
+          collapsible
+          collapsedSize={32}
+          minSize="15%"
+          defaultSize="20%"
           onResize={() => {
             setMetaExpanded(!(metaRef.current?.isCollapsed() ?? false));
           }}

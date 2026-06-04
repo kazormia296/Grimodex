@@ -88,6 +88,8 @@ describe("generateBeatAlternative", () => {
           nodeType: "scene",
           title: "第1話",
           synopsis: null,
+
+          intent: null,
           sortOrder: "a0",
           storyTimeOrder: null,
           storyTimeLabel: null,

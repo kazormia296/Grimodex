@@ -111,6 +111,7 @@ export async function updateNode(
       | "parentId"
       | "status"
       | "synopsis"
+      | "intent"
       | "storyTimeOrder"
       | "storyTimeLabel"
       | "povCharacterId"

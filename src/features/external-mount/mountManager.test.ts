@@ -136,6 +136,8 @@ function node(
     nodeType: "scene",
     title: "Scene",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a0",
     storyTimeOrder: null,
     storyTimeLabel: null,

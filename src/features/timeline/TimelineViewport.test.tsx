@@ -14,6 +14,8 @@ const mockScene: TreeNodeData = {
   nodeType: "scene",
   title: "Scene 1",
   synopsis: null,
+
+  intent: null,
   sortOrder: "a0",
   status: "draft",
   storyTimeOrder: null,

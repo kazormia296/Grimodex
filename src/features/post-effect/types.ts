@@ -104,6 +104,26 @@ export interface ReviewAnnotationMeta {
   orphaned?: boolean;
 }
 
+export type IntentDriftRelation =
+  | "contradicts"
+  | "absent"
+  | "dilutes"
+  | "ambiguous";
+
+/**
+ * intent_drift (狙いズレ指摘) annotation の metadata。
+ */
+export interface IntentDriftAnnotationMeta {
+  relation?: IntentDriftRelation;
+  llm_reason?: string;
+  found_text?: string;
+  found_context?: string;
+  dismiss_key?: string;
+  dismiss_source?: "manual" | "run_completed" | "cascade";
+  detected_by_model?: string;
+  orphaned?: boolean;
+}
+
 /**
  * pseudo_comment (読者ペルソナによる本文横コメント) annotation の metadata。
  * persona はペルソナ名。スレッド返信は annotation.parent_id で表現する。

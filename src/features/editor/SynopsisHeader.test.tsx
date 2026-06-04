@@ -10,6 +10,7 @@ const NODE_DEFAULTS = {
   sortOrder: "a1",
   status: null as null,
   synopsis: null as string | null,
+  intent: null as string | null,
   storyTimeOrder: null as string | null,
   storyTimeLabel: null as string | null,
   povCharacterId: null as string | null,

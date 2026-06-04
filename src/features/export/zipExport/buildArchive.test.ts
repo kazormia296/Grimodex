@@ -18,6 +18,8 @@ describe("buildArchive (fixture assembly)", () => {
         nodeType: "folder",
         title: "Chapter 1",
         synopsis: null,
+
+        intent: null,
         sortOrder: "a0",
         status: null,
         storyTimeOrder: null,
@@ -35,6 +37,8 @@ describe("buildArchive (fixture assembly)", () => {
         nodeType: "scene",
         title: "Opening",
         synopsis: null,
+
+        intent: null,
         sortOrder: "a0",
         status: null,
         storyTimeOrder: null,

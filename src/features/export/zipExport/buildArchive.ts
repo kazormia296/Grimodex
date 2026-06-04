@@ -57,6 +57,7 @@ function toTreeNodeData(row: typeof treeNodes.$inferSelect): TreeNodeData {
     nodeType: row.nodeType as TreeNodeData["nodeType"],
     title: row.title,
     synopsis: row.synopsis,
+    intent: row.intent ?? null,
     sortOrder: row.sortOrder,
     status: row.status,
     storyTimeOrder: row.storyTimeOrder,

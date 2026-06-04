@@ -11,6 +11,8 @@ const BASE_NODE: Omit<
 > = {
   projectId: "p1",
   synopsis: null,
+
+  intent: null,
   storyTimeOrder: null,
   charCount: 0,
   status: null,

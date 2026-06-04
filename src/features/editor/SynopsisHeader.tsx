@@ -4,6 +4,7 @@ import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { SynopsisArea } from "@/features/tree/SynopsisArea";
+import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { generateSynopsisFromBeats } from "@/features/editor/beat/generateSynopsisFromBeats";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
@@ -56,6 +57,7 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
   const nodes = useTreeStore((s) => s.nodes);
   const updatePovCharacter = useTreeStore((s) => s.updatePovCharacter);
   const updateLocation = useTreeStore((s) => s.updateLocation);
+  const updateIntent = useTreeStore((s) => s.updateIntent);
   const allCodexEntries = useCodexStore((s) => s.entries);
 
   const node = nodes.find((n) => n.id === sceneId);
@@ -176,6 +178,21 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
             </p>
           )}
           <SynopsisArea nodeId={sceneId} />
+          <div className="mt-2 border-t border-border/60 pt-2">
+            <span className="mb-1 block text-[10px] font-medium text-muted-foreground">
+              狙い（このシーンで達成したいこと）
+            </span>
+            <InlineSynopsisEditor
+              nodeId={sceneId}
+              synopsis={node?.intent ?? null}
+              onSave={(text) => updateIntent(sceneId, text)}
+              saveFailedLabel="狙いの保存に失敗しました"
+              alwaysEditing
+              rows={2}
+              placeholder="このシーンで読者に届けたいこと・達成したい効果"
+              textareaClassName="w-full resize-none rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
           {(characters.length > 0 || locations.length > 0) && (
             <div className="mt-1.5 flex flex-wrap gap-3">
               {characters.length > 0 && (

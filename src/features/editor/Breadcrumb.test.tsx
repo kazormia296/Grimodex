@@ -20,6 +20,8 @@ const NODES: TreeNodeData[] = [
     nodeType: "folder",
     title: "第一部",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a1",
     status: null,
     ...NODE_DEFAULTS,
@@ -31,6 +33,8 @@ const NODES: TreeNodeData[] = [
     nodeType: "folder",
     title: "第1章",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a1",
     status: null,
     ...NODE_DEFAULTS,
@@ -42,6 +46,8 @@ const NODES: TreeNodeData[] = [
     nodeType: "scene",
     title: "塔の麓",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a1",
     status: null,
     ...NODE_DEFAULTS,
@@ -53,6 +59,8 @@ const NODES: TreeNodeData[] = [
     nodeType: "folder",
     title: "第2章",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a2",
     status: null,
     ...NODE_DEFAULTS,
@@ -64,6 +72,8 @@ const NODES: TreeNodeData[] = [
     nodeType: "scene",
     title: "市場にて",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a1",
     status: null,
     ...NODE_DEFAULTS,
@@ -75,6 +85,8 @@ const NODES: TreeNodeData[] = [
     nodeType: "folder",
     title: "資料",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a3",
     status: null,
     ...NODE_DEFAULTS,
@@ -86,6 +98,8 @@ const NODES: TreeNodeData[] = [
     nodeType: "folder",
     title: "キャラクター設定",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a1",
     status: null,
     ...NODE_DEFAULTS,
@@ -97,6 +111,8 @@ const NODES: TreeNodeData[] = [
     nodeType: "note",
     title: "エララ設定",
     synopsis: null,
+
+    intent: null,
     sortOrder: "a1",
     status: null,
     ...NODE_DEFAULTS,

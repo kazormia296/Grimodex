@@ -19,6 +19,7 @@ function mkNode(p: {
     projectId: "proj-1",
     title: p.title ?? p.id,
     synopsis: p.synopsis ?? null,
+    intent: null,
     status: null,
     storyTimeOrder: null,
     storyTimeLabel: null,

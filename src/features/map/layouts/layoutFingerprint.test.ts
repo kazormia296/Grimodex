@@ -35,6 +35,8 @@ function makeScene(id: string): SceneLayoutInput {
     nodeType: "scene",
     title: id,
     synopsis: null,
+
+    intent: null,
     sortOrder: "a",
     status: null,
     storyTimeOrder: null,

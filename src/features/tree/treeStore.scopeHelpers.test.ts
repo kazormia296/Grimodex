@@ -18,6 +18,7 @@ function makeNode(
   return {
     projectId: "p",
     synopsis: null,
+    intent: null,
     status: null,
     storyTimeOrder: null,
     storyTimeLabel: null,

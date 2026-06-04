@@ -113,6 +113,8 @@ describe("useBeatGeneration", () => {
           nodeType: "scene",
           title: "第1話",
           synopsis: null,
+
+          intent: null,
           sortOrder: "a0",
           storyTimeOrder: null,
           storyTimeLabel: null,
@@ -415,6 +417,8 @@ describe("runRoleInference (C-7)", () => {
           nodeType: "scene",
           title: "第1話",
           synopsis: null,
+
+          intent: null,
           sortOrder: "a0",
           storyTimeOrder: null,
           storyTimeLabel: null,
