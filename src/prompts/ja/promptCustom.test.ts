@@ -106,8 +106,9 @@ describe("foreshadow prompt builders customInstruction", () => {
       codexSummary: "関連設定",
     };
     const base = buildProposePastSetupsPromptJa(input);
-    expect(buildProposePastSetupsPromptJa({ ...input, customInstruction: "" }))
-      .toBe(base);
+    expect(
+      buildProposePastSetupsPromptJa({ ...input, customInstruction: "" }),
+    ).toBe(base);
     expect(
       buildProposePastSetupsPromptJa({
         ...input,
