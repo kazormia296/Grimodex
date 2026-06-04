@@ -6,6 +6,7 @@ import type {
   SceneAuthorshipReport,
 } from "./projectAuthorship";
 import type {
+  MapProvenance,
   ProvenanceDisclosureReport,
   ProvenanceKind,
   ResolvedPassage,
@@ -116,6 +117,11 @@ function pct(n: number, total: number): number {
   return total > 0 ? Math.round((n / total) * 100) : 0;
 }
 
+/** Sanitize a Markdown table cell: collapse newlines, escape pipes. */
+function mdCell(s: string): string {
+  return s.replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
+}
+
 function provenanceKindLabel(kind: ProvenanceKind): string {
   switch (kind) {
     case "chat":
@@ -189,6 +195,24 @@ export function exportProvenanceDisclosureMarkdown(
     lines.push("");
   }
 
+  if (report.map && report.map.stickyCount > 0) {
+    const m = report.map;
+    lines.push(
+      "## Map AI Content",
+      "",
+      `${m.stickyCount} sticky note(s), ${m.totalAiChars} AI-authored characters. Listed separately — not part of the manuscript totals above. Counts reflect AI content at branch-adoption time and may overstate it if a sticky was later edited by hand.`,
+      "",
+      `| Board | Sticky | Characters |`,
+      `|-------|--------|------------|`,
+    );
+    for (const s of m.stickies) {
+      lines.push(
+        `| ${mdCell(s.boardTitle)} | ${mdCell(s.stickyTitle)} | ${s.charCount} |`,
+      );
+    }
+    lines.push("");
+  }
+
   lines.push(disclosureFootnote(report), "");
   return lines.join("\n");
 }
@@ -212,6 +236,13 @@ export function exportProvenanceDisclosureCsv(
         provenanceKindLabel(passage.provenance.kind),
         passage.excerpt,
       ]);
+    }
+  }
+  if (report.map && report.map.stickyCount > 0) {
+    rows.push(["", ""]);
+    rows.push(["Map board", "Map sticky", "Characters"]);
+    for (const s of report.map.stickies) {
+      rows.push([s.boardTitle, s.stickyTitle, String(s.charCount)]);
     }
   }
   return rows
@@ -379,6 +410,17 @@ function renderPassageList(passages: ResolvedPassage[] | undefined): string {
     .join("")}</ul></section>`;
 }
 
+function renderMapDisclosure(map: MapProvenance | undefined): string {
+  if (!map || map.stickyCount === 0) return "";
+  const rows = map.stickies
+    .map(
+      (s) =>
+        `<tr><td>${escapeHtml(s.boardTitle)}</td><td>${escapeHtml(s.stickyTitle)}</td><td class="num">${s.charCount}</td></tr>`,
+    )
+    .join("");
+  return `<section><h2>Map AI Content</h2><p>${map.stickyCount} sticky note(s), ${map.totalAiChars} AI-authored characters — separate from the manuscript totals. Counts reflect AI content at branch-adoption time and may overstate it if a sticky was later edited by hand.</p><table><thead><tr><th>Board</th><th>Sticky</th><th>Characters</th></tr></thead><tbody>${rows}</tbody></table></section>`;
+}
+
 export function exportProvenanceDisclosureHtml(
   report: ProvenanceDisclosureReport,
 ): string {
@@ -423,6 +465,7 @@ footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #ddd; color:
 </tbody>
 </table>
 ${renderPassageList(report.passages)}
+${renderMapDisclosure(report.map)}
 <footer>${escapeHtml(disclosureFootnote(report))}</footer>
 </body>
 </html>

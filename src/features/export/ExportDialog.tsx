@@ -640,6 +640,37 @@ function AuthorshipDisclosureSection({
                 ))}
               </div>
             )}
+
+            {report.map && report.map.stickyCount > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold">
+                  Map AI コンテンツ（本文集計とは別）
+                </h4>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  付箋 {report.map.stickyCount.toLocaleString()} 件 / AI 文字数{" "}
+                  {report.map.totalAiChars.toLocaleString()}
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  ※ AI Branch 採用時点の文字数です。採用後に手で編集した付箋は
+                  過大計上されることがあります。
+                </p>
+                <div className="mt-2 rounded border border-border">
+                  {report.map.stickies.map((s) => (
+                    <div
+                      key={s.stickyId}
+                      className="flex items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs last:border-b-0"
+                    >
+                      <span className="truncate">
+                        {s.boardTitle} / {s.stickyTitle}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {s.charCount.toLocaleString()} chars
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

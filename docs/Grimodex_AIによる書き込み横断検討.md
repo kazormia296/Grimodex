@@ -8,7 +8,8 @@
 > - **provenance 修正済**（`7b0b46bf`）: Foreshadow `adoptInsertedNewSetup` と 校閲 typo fix adopt の AI 挿入文に `source='ai'` authorship mark + `programmaticInsert` を付与（誤 human 計上を解消）。共通ヘルパ `attribution/aiAuthorship.ts`。→ §(c)状態3 解消。
 > - **policy 配線済**（`dcbd13fb` + Codex 追補）: on-demand **生成**経路に `bodyWrite` gate — `generateBeatOnce` / synopsis 生成3経路 / **Codex AI summary 生成（`DetailsTab.tsx`）**。→ §(b) の「ungated 生成」解消。
 > - **設計方針**: `bodyWrite=off` = 「AI にオンデマンドで本文を**生成**させない」。**配置**経路（snippet/paste/Foreshadow adopt）は chat 挿入の意図的 soft と一貫させ **gate せず**、出自は mark で可視化。→ §2(b) で ungated と記した snippet/paste/Foreshadow adopt は「配置経路ゆえ非 gate（意図）」が現状。
-> - **未着手（defer）**: Map provenance のレポート可視化（§(c)状態2 — sticky は scene 集計に fold 不可と確認、別途 report 機能）、synopsis 出自追跡（plain TEXT 列ゆえ schema 要）、案B（tree への AI 書き込み）/案C（tool protocol 統一）。
+> - **Map provenance 可視化 実装済**: §(c)状態2「書かれるが読まれない」を解消。`provenance.ts` に `buildMapProvenance(projectId)`（board→stickies→stickyId span を 2 段引きし AI 文字数を sticky 単位で集計）を新設し、`ProvenanceDisclosureReport.map` として **body-text-only の totals/breakdown とは別レーン**で公開。`exportReport.ts`（MD/HTML/CSV/JSON）と ExportDialog の開示プレビューに独立「Map AI Content」セクションを追加。**スキーマ変更・生成側は不変**（消費側のみ）。回帰: 本文集計が Map に汚染されない invariant + 集計 unit test。残注記: 採用後に編集された sticky は span 行が残り AI 文字数を過大計上しうる（[[grimodex-sticky-perspan-authorship]] と同根）。
+> - **未着手（defer）**: **synopsis 出自追跡** — schema 変更 + 記録 wiring + 新規 consumer の三重コストで案A 最低 ROI、本文でない派生フィールドゆえ body-text 比率に混ぜられず、列だけ足すと dead column 化。案B/C の構造帰属モデル確定後に本文外 provenance をまとめて設計する方が筋が良い（investigator 評価で defer 確定）。案B（tree への AI 書き込み）/案C（tool protocol 統一）。
 
 ## 0. 検証済みの土台（要点）
 

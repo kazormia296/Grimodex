@@ -5,6 +5,8 @@ import {
   exportAuthorshipHtml,
   exportProvenanceDisclosureMarkdown,
   exportProvenanceDisclosureHtml,
+  exportProvenanceDisclosureCsv,
+  exportProvenanceDisclosureJson,
 } from "./exportReport";
 import type { ProjectAuthorshipReport } from "./projectAuthorship";
 import type { ProvenanceDisclosureReport, ResolvedPassage } from "./provenance";
@@ -197,5 +199,86 @@ describe("exportProvenanceDisclosureHtml", () => {
     });
     expect(out).toContain("&lt;chap&gt; / &lt;scene&gt;");
     expect(out).not.toContain("<chap> / <scene>");
+  });
+});
+
+// Map AI content disclosure (security audit / 案A: Map provenance 可視化).
+const mapReport: ProvenanceDisclosureReport = {
+  ...disclosureReport,
+  map: {
+    totalAiChars: 42,
+    stickyCount: 2,
+    stickies: [
+      {
+        stickyId: "st1",
+        boardId: "b1",
+        boardTitle: "World",
+        stickyTitle: "Dragon lore",
+        charCount: 30,
+        model: "claude",
+      },
+      {
+        stickyId: "st2",
+        boardId: "b1",
+        boardTitle: "World",
+        stickyTitle: "Castle",
+        charCount: 12,
+        model: null,
+      },
+    ],
+  },
+};
+
+describe("provenance disclosure — Map AI content lane", () => {
+  it("omits the Map section when there is no map AI content", () => {
+    expect(exportProvenanceDisclosureMarkdown(disclosureReport)).not.toContain(
+      "Map AI Content",
+    );
+    expect(exportProvenanceDisclosureHtml(disclosureReport)).not.toContain(
+      "Map AI Content",
+    );
+  });
+
+  it("renders a separate Map section (Markdown) without touching body totals", () => {
+    const out = exportProvenanceDisclosureMarkdown(mapReport);
+    expect(out).toContain("## Map AI Content");
+    expect(out).toContain("| World | Dragon lore | 30 |");
+    expect(out).toContain("| World | Castle | 12 |");
+    expect(out).toContain("not part of the manuscript totals");
+    // INVARIANT: body Summary / Provenance numbers are unchanged by the Map lane.
+    const body = exportProvenanceDisclosureMarkdown(disclosureReport);
+    for (const line of [
+      "| AI | 10 | 5% |",
+      "| Chat | 3 | 30% |",
+      "| Slash | 7 | 70% |",
+    ]) {
+      expect(body).toContain(line);
+      expect(out).toContain(line);
+    }
+  });
+
+  it("renders a separate Map section (HTML), escaping labels", () => {
+    const out = exportProvenanceDisclosureHtml({
+      ...mapReport,
+      map: {
+        ...mapReport.map!,
+        stickies: [
+          { ...mapReport.map!.stickies[0], stickyTitle: "<b>evil</b>" },
+        ],
+        stickyCount: 1,
+      },
+    });
+    expect(out).toContain("<h2>Map AI Content</h2>");
+    expect(out).toContain("&lt;b&gt;evil&lt;/b&gt;");
+    expect(out).not.toContain("<b>evil</b>");
+  });
+
+  it("includes Map rows in CSV and the map field in JSON", () => {
+    const csv = exportProvenanceDisclosureCsv(mapReport);
+    expect(csv).toContain("Map board");
+    expect(csv).toContain("Dragon lore");
+    const parsed = JSON.parse(exportProvenanceDisclosureJson(mapReport));
+    expect(parsed.map.totalAiChars).toBe(42);
+    expect(parsed.totals.ai).toBe(10); // body totals untouched
   });
 });
