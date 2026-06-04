@@ -120,6 +120,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   // AI prompt customization — 追記式カスタム指示 (project)
   "aiPrompt.custom.chat": "project",
   "aiPrompt.custom.kouetsu": "project",
+  "aiPrompt.custom.foreshadow": "project",
   "aiPrompt.custom.inline": "project",
   "aiPrompt.custom.beat": "project",
   "aiPrompt.custom.aiBranch": "project",
@@ -225,6 +226,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // AI prompt customization addenda — 空 = 組み込みプロンプトのまま (byte-identical)
   "aiPrompt.custom.chat": "",
   "aiPrompt.custom.kouetsu": "",
+  "aiPrompt.custom.foreshadow": "",
   "aiPrompt.custom.inline": "",
   "aiPrompt.custom.beat": "",
   "aiPrompt.custom.aiBranch": "",

@@ -166,6 +166,28 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain(CUSTOM_CHAT_ANCHOR);
     });
 
+    it("keeps bodyWriteDisabled instruction after customChatInstruction so policy wins", () => {
+      const scene: SceneContext = { id: "s", title: "t", content: "本文" };
+      const project: ProjectContext = {
+        title: "P",
+        bodyWriteDisabled: true,
+      };
+
+      const result = buildSystemPrompt({
+        scene,
+        project,
+        customChatInstruction: CUSTOM_CHAT_ANCHOR,
+      });
+
+      expect(result.prompt.indexOf(CUSTOM_CHAT_ANCHOR)).toBeLessThan(
+        result.prompt.indexOf(BODY_WRITE_OFF_ANCHOR),
+      );
+      const baseSegment = result.cacheSegments?.[0] ?? "";
+      expect(baseSegment.indexOf(CUSTOM_CHAT_ANCHOR)).toBeLessThan(
+        baseSegment.indexOf(BODY_WRITE_OFF_ANCHOR),
+      );
+    });
+
     it("works without project context", () => {
       const scene: SceneContext = {
         id: "scene-1",

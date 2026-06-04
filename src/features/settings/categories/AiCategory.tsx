@@ -34,6 +34,7 @@ import { useSettingsStore } from "../settingsStore";
 const PROMPT_CUSTOM_SLOTS = [
   "chat",
   "kouetsu",
+  "foreshadow",
   "inline",
   "beat",
   "aiBranch",

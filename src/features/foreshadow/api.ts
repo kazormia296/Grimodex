@@ -4,6 +4,7 @@ import { invoke } from "@/lib/tauri";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getProject } from "@/features/project/api";
 import {
   foreshadows,
@@ -33,6 +34,10 @@ import { prosemirrorToText } from "@/lib/prosemirror";
 
 /** Max chars of a scene-prefix excerpt used when `foreshadows.notes` is empty. */
 const SETUP_EXCERPT_FALLBACK_MAX_CHARS = 200;
+
+function getForeshadowCustomInstruction(): string {
+  return useSettingsStore.getState().get("aiPrompt.custom.foreshadow", "");
+}
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -1291,6 +1296,7 @@ export async function proposePastSetups(
     payoffExcerpt: req.payoffExcerpt,
     sceneSummary,
     codexSummary,
+    customInstruction: getForeshadowCustomInstruction(),
   });
 
   const response = await sendChatMessageWithThinking([
@@ -1330,6 +1336,7 @@ export async function evaluateSetupStrength(
   ).foreshadow.buildEvaluateSetupStrengthPrompt({
     foreshadowIntent: req.foreshadowIntent,
     setupExcerpt: req.setupExcerpt,
+    customInstruction: getForeshadowCustomInstruction(),
   });
 
   const response = await sendChatMessageWithThinking([
@@ -1411,6 +1418,7 @@ export async function auditChapter(
     existingList,
     codexList,
     sceneTexts,
+    customInstruction: getForeshadowCustomInstruction(),
   });
 
   const response = await sendChatMessageWithThinking([

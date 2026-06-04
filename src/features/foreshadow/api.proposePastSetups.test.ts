@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { DEFAULT_SETTINGS } from "@/features/settings/types";
 
 const mockSendChatMessageWithThinking = vi.hoisted(() => vi.fn());
 
@@ -11,6 +13,7 @@ import { proposePastSetups, type ProposeRequest } from "./api";
 describe("proposePastSetups", () => {
   beforeEach(() => {
     mockSendChatMessageWithThinking.mockReset();
+    useSettingsStore.setState({ cache: { ...DEFAULT_SETTINGS } });
   });
 
   it("returns parsed candidates from JSON response", async () => {
@@ -68,5 +71,34 @@ describe("proposePastSetups", () => {
     };
 
     await expect(proposePastSetups(req)).resolves.toEqual([]);
+  });
+
+  it("includes foreshadow custom prompt instruction from settings", async () => {
+    useSettingsStore.setState({
+      cache: {
+        ...DEFAULT_SETTINGS,
+        "aiPrompt.custom.foreshadow": "小物描写を優先して伏線候補を作る",
+      },
+    });
+    mockSendChatMessageWithThinking.mockResolvedValue({
+      text: JSON.stringify({ candidates: [] }),
+      thinkingBlocks: [],
+    });
+
+    const req: ProposeRequest = {
+      intent: "意図",
+      payoffSceneId: "scene-9",
+      payoffExcerpt: "本文",
+      pastScenes: [],
+      relatedCodex: [],
+    };
+
+    await proposePastSetups(req);
+
+    const calledWith = mockSendChatMessageWithThinking.mock.calls[0]?.[0];
+    expect(calledWith).toBeDefined();
+    const prompt = calledWith[0].content as string;
+    expect(prompt).toContain("【追加指示】");
+    expect(prompt).toContain("小物描写を優先して伏線候補を作る");
   });
 });

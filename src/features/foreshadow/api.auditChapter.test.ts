@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { DEFAULT_SETTINGS } from "@/features/settings/types";
 
 const mockSendChatMessageWithThinking = vi.hoisted(() => vi.fn());
 
@@ -31,6 +33,7 @@ const BASE_REQ: ChapterAuditRequest = {
 describe("auditChapter", () => {
   beforeEach(() => {
     mockSendChatMessageWithThinking.mockReset();
+    useSettingsStore.setState({ cache: { ...DEFAULT_SETTINGS } });
   });
 
   it("returns parsed audit candidates from JSON response", async () => {
@@ -166,5 +169,26 @@ describe("auditChapter", () => {
 
     const result = await auditChapter(BASE_REQ);
     expect(result[0].similarToExistingForeshadowId).toBe("existing-fid");
+  });
+
+  it("includes foreshadow custom prompt instruction from settings", async () => {
+    useSettingsStore.setState({
+      cache: {
+        ...DEFAULT_SETTINGS,
+        "aiPrompt.custom.foreshadow": "伏線候補は過剰な説明を避ける",
+      },
+    });
+    mockSendChatMessageWithThinking.mockResolvedValue({
+      text: JSON.stringify({ candidates: [] }),
+      thinkingBlocks: [],
+    });
+
+    await auditChapter(BASE_REQ);
+
+    const calledWith = mockSendChatMessageWithThinking.mock.calls[0]?.[0];
+    expect(calledWith).toBeDefined();
+    const prompt = calledWith[0].content as string;
+    expect(prompt).toContain("【追加指示】");
+    expect(prompt).toContain("伏線候補は過剰な説明を避ける");
   });
 });

@@ -1,11 +1,18 @@
 import { JSON_ONLY } from "../shared/jsonContract";
 
+function customInstructionLines(customInstruction?: string): string[] {
+  const custom = customInstruction?.trim();
+  if (!custom) return [];
+  return ["", "【追加指示】", custom];
+}
+
 export function buildProposePastSetupsPromptJa(params: {
   intent: string;
   payoffSceneId: string;
   payoffExcerpt: string;
   sceneSummary: string;
   codexSummary: string;
+  customInstruction?: string;
 }): string {
   return [
     "あなたは小説編集アシスタントです。",
@@ -15,6 +22,7 @@ export function buildProposePastSetupsPromptJa(params: {
     '- 既存テキストに適切な箇所がある場合は kind="designated_existing" とし、existingExcerpt（該当テキスト抜粋）とfromPosHint/toPosHint（概算位置）を含めること。',
     '- 既存テキストに適切な箇所がない場合は kind="inserted_new" とし、suggestedInsertionPoint（「○○の段落の後」等）とsuggestedText（挿入推奨文）を必ず含めること。',
     "- 両方の kind を混在させて提案してよい。",
+    ...customInstructionLines(params.customInstruction),
     "",
     "JSON 形式:",
     '{"candidates":[{"sceneId":"...","kind":"designated_existing|inserted_new","existingExcerpt":"...","fromPosHint":1,"toPosHint":2,"suggestedInsertionPoint":"...","suggestedText":"...","rationale":"...","predictedStrength":"subtle|moderate|overt"}]}',
@@ -35,6 +43,7 @@ export function buildProposePastSetupsPromptJa(params: {
 export function buildEvaluateSetupStrengthPromptJa(params: {
   foreshadowIntent: string;
   setupExcerpt: string;
+  customInstruction?: string;
 }): string {
   return [
     "あなたは小説編集アシスタントです。",
@@ -50,6 +59,7 @@ export function buildEvaluateSetupStrengthPromptJa(params: {
     "- subtle: そのペルソナには伏線として気づかれにくい（自然に溶け込んでいる）",
     "- moderate: 気づく読者も気づかない読者もいる中程度の強さ",
     "- overt: そのペルソナには伏線だと明確に分かる（読者が意識する）",
+    ...customInstructionLines(params.customInstruction),
     "",
     'JSON形式: {"careful":{"strength":"subtle|moderate|overt","reasoning":"..."},"casual":{"strength":"...","reasoning":"..."},"skim":{"strength":"...","reasoning":"..."}}',
     JSON_ONLY,
@@ -64,6 +74,7 @@ export function buildAuditChapterPromptJa(params: {
   existingList: string;
   codexList: string;
   sceneTexts: string;
+  customInstruction?: string;
 }): string {
   return [
     "あなたは小説編集アシスタントです。",
@@ -76,6 +87,7 @@ export function buildAuditChapterPromptJa(params: {
     "- confidence: 確信できない場合は low、中程度は medium、明らかな場合のみ high",
     "- 確信できない候補は提案しない（偽陽性を避ける）",
     "- 各候補に evidenceSceneId と evidenceExcerpt（本文からの直接引用、20〜80字）が必須",
+    ...customInstructionLines(params.customInstruction),
     "",
     'JSON形式: {"candidates":[{"suggestedTitle":"...","suggestedIntent":"...","evidenceSceneId":"...","evidenceExcerpt":"...","rationale":"...","confidence":"low|medium|high","similarToExistingForeshadowId":"(省略可)"}]}',
     JSON_ONLY,

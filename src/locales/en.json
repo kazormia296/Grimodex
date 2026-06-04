@@ -376,6 +376,11 @@
           "description": "Extra guidance applied to all 6 proofreading checks. The output format (JSON) is fixed and unchanged.",
           "placeholder": "e.g. Focus on the vividness of action scenes and use of jargon."
         },
+        "foreshadow": {
+          "label": "Foreshadow AI",
+          "description": "Extra guidance for setup proposals, strength evaluation, and chapter foreshadowing audits.",
+          "placeholder": "e.g. Prefer subtle object details and avoid obvious exposition."
+        },
         "inline": {
           "label": "Inline AI",
           "description": "Extra guidance for in-editor commands (continue, rewrite, etc.).",

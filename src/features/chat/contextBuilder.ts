@@ -652,18 +652,19 @@ export function buildSystemPrompt(
   let baseText = input.agentMode
     ? `${s.baseText}\n\n${s.agentInstruction}`
     : s.baseText;
-  // AiPolicy で本文書き込みが無効なプロジェクトでは、チャットからの本文代筆を
-  // 抑止する指示を L0 に追加する (bodyWrite=ON のデフォルトでは何も足さない)。
-  // L0 は trim 対象外なので、この hard constraint は常に残る。
-  if (input.project?.bodyWriteDisabled) {
-    baseText += `\n\n${s.bodyWriteDisabledInstruction}`;
-  }
   // ユーザー定義のチャット追記指示 (口調・振る舞い・ペルソナ)。
   // bodyWriteDisabledInstruction と同様 L0 末尾に置くことで trim 免除され常に効く。
   // 空文字なら baseText は現行のまま (byte-identical / cache 非破壊)。
   // agentInstruction の後ろに置き、組み込みツール運用規約を上書きする印象を避ける。
   if (input.customChatInstruction?.trim()) {
     baseText += `\n\n${input.customChatInstruction.trim()}`;
+  }
+  // AiPolicy で本文書き込みが無効なプロジェクトでは、チャットからの本文代筆を
+  // 抑止する指示を L0 に追加する (bodyWrite=ON のデフォルトでは何も足さない)。
+  // L0 は trim 対象外なので、この hard constraint は常に残る。
+  // ユーザー custom より後ろに置き、自由文で policy が弱まらない順序にする。
+  if (input.project?.bodyWriteDisabled) {
+    baseText += `\n\n${s.bodyWriteDisabledInstruction}`;
   }
 
   // L1: Project info
