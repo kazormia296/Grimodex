@@ -172,11 +172,18 @@ export function validateAiTreePlan(
     return undefined; // rename は parent を変えない
   };
 
-  /** ref の親(snapshot or create.parentRef)を返す。afterRef の sibling 判定用。 */
-  const parentOfRef = (ref: NodeRef): NodeRef | null | undefined => {
-    if (isTempRef(ref)) return createByTempId.get(ref)?.parentRef;
-    return byId.get(ref)?.parentId ?? null;
-  };
+  // 各ノードの「最終 parent」を mixed namespace で持つ(既存 → create → move 上書き)。
+  // afterRef の最終 sibling 判定 (f) と循環検出 (c)(d) の両方で使う。move 対象を
+  // anchor にした自然な再編(新フォルダへ s1 を移動 → s2 を afterRef:s1 で同フォルダへ)
+  // を弾かないよう、afterRef の親は「現在」ではなく「最終」を見る(placement.ts と整合)。
+  const finalParentByRef = new Map<NodeRef, NodeRef | null>();
+  for (const n of nodes) finalParentByRef.set(n.id, n.parentId);
+  for (const c of createByTempId.values()) {
+    finalParentByRef.set(c.tempId, c.parentRef);
+  }
+  for (const op of plan.ops) {
+    if (op.op === "move") finalParentByRef.set(op.nodeId, op.newParentRef);
+  }
 
   // ── op ごとの (e)(a)(b)(f) 検証 ──────────────────────────────────
   plan.ops.forEach((op, i) => {
@@ -236,7 +243,7 @@ export function validateAiTreePlan(
       } else if (!refExists(afterRef)) {
         push("missing_after", `afterRef が存在しません: ${afterRef}`, i);
       } else {
-        const afterParent = parentOfRef(afterRef) ?? null;
+        const afterParent = finalParentByRef.get(afterRef) ?? null;
         if (afterParent !== parentRef) {
           push(
             "after_cross_parent",
@@ -249,14 +256,7 @@ export function validateAiTreePlan(
   });
 
   // ── (c)(d) 最終 forest 非循環 ────────────────────────────────────
-  // mixed namespace で parentOf を構築: 既存 → create → move 上書き。
-  const parentOf = new Map<NodeRef, NodeRef | null>();
-  for (const n of nodes) parentOf.set(n.id, n.parentId);
-  for (const c of createByTempId.values()) parentOf.set(c.tempId, c.parentRef);
-  for (const op of plan.ops) {
-    if (op.op === "move") parentOf.set(op.nodeId, op.newParentRef);
-  }
-  if (hasCycle(parentOf)) {
+  if (hasCycle(finalParentByRef)) {
     push("cycle", "操作の結果ツリーに循環が生じます");
   }
 

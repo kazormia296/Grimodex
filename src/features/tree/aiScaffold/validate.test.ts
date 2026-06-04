@@ -285,6 +285,42 @@ describe("validateAiTreePlan — afterRef strictness (Codex High-2)", () => {
     );
     expect(codes(r)).toContain("after_self");
   });
+
+  it("accepts afterRef whose anchor is moved into the same new folder in this batch", () => {
+    // 自然な再編: 新フォルダ G を作り、s1 を G へ移動 → s2 を afterRef:s1 で同 G へ。
+    // afterRef の判定は s1 の「最終」parent(=G)を見るので after_cross_parent で落ちない。
+    const tree = [
+      mkNode({ id: "F", nodeType: "folder", parentId: null, sortOrder: "a0" }),
+      mkNode({ id: "s1", nodeType: "scene", parentId: "F", sortOrder: "a0" }),
+      mkNode({ id: "s2", nodeType: "scene", parentId: "F", sortOrder: "a1" }),
+    ];
+    const plan: AiTreePlan = {
+      kind: "reorganize",
+      ops: [
+        {
+          op: "create",
+          tempId: "tmp:g",
+          parentRef: "F",
+          nodeType: "folder",
+          title: "G",
+        },
+        { op: "move", nodeId: "s1", newParentRef: "tmp:g" },
+        {
+          op: "move",
+          nodeId: "s2",
+          newParentRef: "tmp:g",
+          pos: { afterRef: "s1" },
+        },
+      ],
+    };
+    const r = validateAiTreePlan(
+      plan,
+      tree,
+      "proj-1",
+      scope(["create", "move", "rename"], "F", ["s1", "s2"]),
+    );
+    expect(r.ok).toBe(true);
+  });
 });
 
 describe("validateAiTreePlan — IR limits & existence (Codex Medium-4)", () => {
