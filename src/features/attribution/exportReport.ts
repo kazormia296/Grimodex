@@ -119,10 +119,7 @@ function pct(n: number, total: number): number {
 
 /** Sanitize a Markdown table cell: collapse newlines, escape backslashes and pipes. */
 function mdCell(s: string): string {
-  return s
-    .replace(/\r?\n/g, " ")
-    .replace(/\\/g, "\\\\")
-    .replace(/\|/g, "\\|");
+  return s.replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 
 function provenanceKindLabel(kind: ProvenanceKind): string {
