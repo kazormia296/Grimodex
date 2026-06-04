@@ -117,9 +117,12 @@ function pct(n: number, total: number): number {
   return total > 0 ? Math.round((n / total) * 100) : 0;
 }
 
-/** Sanitize a Markdown table cell: collapse newlines, escape pipes. */
+/** Sanitize a Markdown table cell: collapse newlines, escape backslashes and pipes. */
 function mdCell(s: string): string {
-  return s.replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
+  return s
+    .replace(/\r?\n/g, " ")
+    .replace(/\\/g, "\\\\")
+    .replace(/\|/g, "\\|");
 }
 
 function provenanceKindLabel(kind: ProvenanceKind): string {
