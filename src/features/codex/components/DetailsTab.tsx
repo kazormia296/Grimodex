@@ -8,6 +8,7 @@ import { DetailsSection } from "./DetailsSection";
 import { PhaseIndicator } from "./PhaseIndicator";
 import { extractPlainText } from "../prosemirrorTextExtractor";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { useTabStore } from "@/features/editor/tabStore";
 import { usePhaseStore } from "../phaseStore";
 import { useCodexStore } from "../codexStore";
@@ -292,6 +293,9 @@ export function DetailsTab({
               data-testid="codex-generate-summary"
               disabled={isGenerating}
               onClick={async () => {
+                // On-demand AI generation of persisted text → bodyWrite gate
+                // (same generateSynopsisFromContent primitive as scene synopsis).
+                if (blockIfPolicyOff("bodyWrite")) return;
                 setIsGenerating(true);
                 try {
                   const plainText = extractPlainText(entry.content ?? "{}");

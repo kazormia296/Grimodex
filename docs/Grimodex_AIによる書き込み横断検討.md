@@ -1,8 +1,14 @@
 # Grimodex_AIによる書き込み横断検討
 
-> 横断調査メモ（2026-06-04）。アウトライン・フォルダ構成・本文・Codex/Snippet・Map・Foreshadow・シノプシス・校閲を「AIが書き込む面」として3軸（エントリ点／ポリシーゲート／出自追跡）で棚卸しし、不整合と前進オプションを整理したもの。全主張は file:line で裏取り済み（multi-agent 調査 + 敵対的検証）。案A/B/C の前進オプションはまだ着手していない。
+> 横断調査メモ（2026-06-04）。アウトライン・フォルダ構成・本文・Codex/Snippet・Map・Foreshadow・シノプシス・校閲を「AIが書き込む面」として3軸（エントリ点／ポリシーゲート／出自追跡）で棚卸しし、不整合と前進オプションを整理したもの。全主張は file:line で裏取り済み（multi-agent 調査 + 敵対的検証）。**§2 不整合は調査時点（原状）の記述。実装状況は下の「実装状況」note を正とする。**
 
 > **更新（2026-06-04 master セキュリティ監査 / commit 69859522・AI-1）**: 本メモが「typo fix adopt は ungated」と記述した点は**超過済み** — `typoFix.ts applyTypoFixAndResolve` 先頭に `blockIfPolicyOff('bodyWrite')` を追加済（決定論ローカル applyFix は非 gate）。一方、**出自の誤計上（AI 本文が authorship mark 無しで `source='human'` 着地）は未解消**で、本メモ §(c)状態3・案A の typoFix/Foreshadow provenance 指摘は依然有効。詳細は [`docs/security/master-audit-2026-06.md`]。
+
+> **実装状況（2026-06-04 案A コア統一 / ローカル commit 未push）**:
+> - **provenance 修正済**（`7b0b46bf`）: Foreshadow `adoptInsertedNewSetup` と 校閲 typo fix adopt の AI 挿入文に `source='ai'` authorship mark + `programmaticInsert` を付与（誤 human 計上を解消）。共通ヘルパ `attribution/aiAuthorship.ts`。→ §(c)状態3 解消。
+> - **policy 配線済**（`dcbd13fb` + Codex 追補）: on-demand **生成**経路に `bodyWrite` gate — `generateBeatOnce` / synopsis 生成3経路 / **Codex AI summary 生成（`DetailsTab.tsx`）**。→ §(b) の「ungated 生成」解消。
+> - **設計方針**: `bodyWrite=off` = 「AI にオンデマンドで本文を**生成**させない」。**配置**経路（snippet/paste/Foreshadow adopt）は chat 挿入の意図的 soft と一貫させ **gate せず**、出自は mark で可視化。→ §2(b) で ungated と記した snippet/paste/Foreshadow adopt は「配置経路ゆえ非 gate（意図）」が現状。
+> - **未着手（defer）**: Map provenance のレポート可視化（§(c)状態2 — sticky は scene 集計に fold 不可と確認、別途 report 機能）、synopsis 出自追跡（plain TEXT 列ゆえ schema 要）、案B（tree への AI 書き込み）/案C（tool protocol 統一）。
 
 ## 0. 検証済みの土台（要点）
 
@@ -18,7 +24,7 @@
 | サーフェス | AI書き込み機構 (file:line) | エントリ点 | ポリシーゲート (キー) | 出自: 記録 | 出自: 集計到達 |
 |---|---|---|---|---|---|
 | **本文 (prose)** | inline-AI `useInlineAiDiff.ts:194,213`; Beat streaming `insertBeatStream.ts:126`; `generateBeatOnce.ts:25`; `insertFromChat editorStore.ts:63`; `insertFromSnippet :163`; `insertFromPaste :240` | bespoke UI | **HARD** `bodyWrite` (inline `useInlineAiDiff.ts:75`, Beat `useBeatGeneration.ts:170`) — ただし**穴3つ**: `generateBeatOnce`/chat挿入(SOFTのみ)/snippet・paste挿入は ungated | mark `source='ai'`+model+(inline/Beatは)traceId; chat挿入は+chatMessageId | **到達** (scene doc → `extractDbSpans api.ts:99` → `authorship_spans` nodeId行; traceId→`generation_logs`, chatMsgId→`chat_messages`) |
-| **Codex** | チャット抽出 dialog/quick `ChatPanel.tsx:436,449`; AI summary生成 `DetailsTab.tsx:290`→`chatApi.ts:84` | bespoke UI | **無し** (rg 0件) | `sourceChatMessageId` のみ(粗粒度, **ai/human 不可判別** — user抽出でも同列が埋まる; AI summary経由は付かない) | **非到達** (`summary` は plain TEXT列 `schema.ts:156`; `authorship_spans.codexEntryId` 列は在るが永続化呼出ゼロ=dead column) |
+| **Codex** | チャット抽出 dialog/quick `ChatPanel.tsx:436,449`; AI summary生成 `DetailsTab.tsx:294`→`chatApi.ts:84` | bespoke UI | AI summary生成は **HARD** `bodyWrite`（`DetailsTab.tsx` の onClick で `blockIfPolicyOff('bodyWrite')`、synopsis と同じ `generateSynopsisFromContent` 生成のため同一キーで統一）。チャット抽出（配置）は無し | `sourceChatMessageId` のみ(粗粒度, **ai/human 不可判別** — user抽出でも同列が埋まる; AI summary経由は付かない) | **非到達** (`summary` は plain TEXT列 `schema.ts:156`; `authorship_spans.codexEntryId` 列は在るが永続化呼出ゼロ=dead column) |
 | **Snippet** | チャット抽出 quick/detailed `ChatPanel.tsx:485,503`; Beat Alternative `generateBeatAlternative.ts:81-104` | bespoke UI | **無し** (チャット抽出); Beat Alt は `bodyWrite` **presentation のみ** `SceneBeatNodeView.tsx:74` (HARD gate 無し) | 行フラグ `contentSource='ai'` `schema.ts:318`+`sourceChatMessageId` (**Codexより強い行レベル二値**); Beat Alt は model/traceId を破棄 | **非到達** (`authorship_spans.snippetId` 列は在るが永続化呼出ゼロ; per-span 帰属は scene 挿入時に初めて発生) |
 | **Map (AI Branch)** | `generateAiBranchCards mapAiApi.ts:209`→`createAiBranch mapApi.ts:904`; `seedAuthorshipMarksJson :989` | bespoke UI (`buildSystemPrompt mapAiApi.ts:48` が contextBuilder/agent ループを bypass) | **無し** (`src/features/map/` に policy 参照 0件) — **意図的判断**[bodywrite-chat-suppression] | mark `source='ai'`+model + **stickyId-keyed `authorship_spans` 行 `mapApi.ts:1065-1079`** (lossy 射影を通らない直書き) | **非到達** (span は stickyId lane に隔離; `provenance.ts:272` は nodeId のみ, `projectStats.ts:23` も nodeId スコープ → **書かれるが読まれない**) |
 | **Foreshadow** | `adoptInsertedNewSetup foreshadowStore.ts:855-1017` (本文挿入 `:916`); designated/audit/evaluate はメタのみ | bespoke UI | **無し** (`src/features/foreshadow/` に policy 0件) | **無し** — `foreshadowSetup` mark のみ(source 属性なし), authorship mark/programmaticInsert 不付与 → **`source='human'` で着地** | **誤集計** (human として計上; foreshadow-local `attribution='ai'` 列はパネル表示専用) |
