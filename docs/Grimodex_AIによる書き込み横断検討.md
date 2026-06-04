@@ -13,13 +13,29 @@
 
 > **実装状況（2026-06-04 案B = tree/アウトラインへの AI 書き込み / ローカル commit 未push）**:
 > §(d)「tree の縦の空白」を解消。AI に章/シーン/フォルダの **scaffold（新規生成）+ 既存再編（move/group/rename）** を解禁した。bespoke UI 経路のみ（agent `EXECUTORS` の F-2 read-only 契約は不変）。
-> - **コア executor** `src/features/tree/aiScaffold/{types,validate,placement,applyPlan}.ts`: AiTreePlan(create/move/rename IR) を validate（存在/型/循環/**scope**/**afterRef**/IR上限）→ `db_execute_batch` で 1 tx アトミック適用（`replaceAuthorshipSpansAtomic` 流儀の `.toSQL()`）→ **単一 composite undo**。undo は ON DELETE CASCADE 巻き添えを防ぐため「(先)既存ノード復元→(後)作成ノード leaf-first 削除」の非対称順序。reload は `treeStore.reloadTreeOrThrow`（loadTree の握りつぶしを回避し、失敗時は record/push へ進まない）。
+> - **コア executor** `src/features/tree/aiScaffold/{types,validate,placement,applyPlan}.ts`: AiTreePlan(create/move/rename IR) を validate（存在/型/循環/**scope**/**afterRef**/IR上限）→ `db_execute_batch` で 1 tx アトミック適用（`replaceAuthorshipSpansAtomic` 流儀の `.toSQL()`）→ **単一 composite undo**。undo は ON DELETE CASCADE 巻き添えを防ぐため「(先)既存ノード復元→(後)作成ノード leaf-first 削除」の非対称順序。**reload は cosmetic な best-effort 再同期**（M1 改修）: commit 後は reload の成否に依らず `recordChangeEvent` + history push を必ず実行し、「確定したのに undo できない孤児変更」を残さない。reload 失敗は握りつぶし（`reloadTreeOrThrow` の catch で `isLoading` 解除 + 再 throw → executor 側で log 化）。
 > - **scope 制約**（クリック文脈で AI 到達範囲を物理的に限定）と **afterRef 厳格化**（同一 parent sibling/self 検証 + gap ごと採番）は外部レビュー指摘で追加。
 > - **policy**: 新キー `structureWrite`（types/preset/parse/DEFAULT + schema.ts/migrate.rs/browser-mock/onboarding/ProjectCategory トグル）。後方互換は旧 JSON の欠損キーを stored preset から導出。synopsis 生成トグル ON 時は `structureWrite` + `bodyWrite` の二重 gate（synopsis 散文は既存 bodyWrite サーフェスのため）。
 > - **生成** `generate.ts`: `generateAiBranchCards` 踏襲の one-shot（`send_chat_message` 直叩き、堅牢な手 JSON パース）。アウトライン文脈は treeStore.nodes の DFS。
 > - **帰属**: `recordChangeEvent`(domain:'grid', opType:'tree.aiScaffold'|'tree.aiReorganize') に source/model/traceId/createdIds/movedIds/renamedIds を残す **監査証跡のみ**。`tree_nodes` への source 列追加は defer（scaffold は空 body で authorship span が無く、恒久可視マーカーは現状不要）。formatEventCaption に専用キャプション追加。
 > - **UI**: 空状態 + RootContextMenu + folder の TreeContextMenu に Sparkles エントリ。`AiTreeDialog`（shadcn Dialog + animation.ts）で指示文 + synopsis トグル → 即時適用。
-> - **テスト**: aiScaffold 39（validate/placement/applyPlan/generate）+ ai-policy 後方互換 + 既存 tree 回帰。循環 reject / scope 違反 reject / afterRef cross-parent reject / IR 上限 / reload 失敗で record しない / synopsis OFF 時の strip を gate。**cascade-safe undo は実 SQLite で実行検証**（Rust `database/tests.rs` の `test_ai_tree_group_undo_preserves_existing_scene` = restore-先順序で既存シーン生存、負コントロール `..._naive_undo_order_loses_existing_scene` = delete-先順序で巻き添え削除。`foreign_keys=ON` + `ON DELETE CASCADE` 下、省略列の DB DEFAULT も同時確認）。**未実施**: 実アプリ GUI E2E（生成→Ctrl+Z）と drizzle `.toSQL()` 出力の実 DB 実行（Rust テストは等価の手書き SQL で DB 挙動を検証、TS 側は statement 内容/順序の単体テスト）。
+> - **テスト**: aiScaffold（validate/placement/applyPlan/generate）+ ai-policy 後方互換 + 既存 tree 回帰。循環 reject / scope 違反 reject / afterRef cross-parent reject / IR 上限 / **commit 失敗時のみ record/push しない（reload 失敗では record/push する=M1）** / synopsis OFF 時の strip を gate。**cascade-safe undo は実 SQLite で実行検証**（Rust `database/tests.rs` の `test_ai_tree_group_undo_preserves_existing_scene` = restore-先順序で既存シーン生存、負コントロール `..._naive_undo_order_loses_existing_scene` = delete-先順序で巻き添え削除。`foreign_keys=ON` + `ON DELETE CASCADE` 下、省略列の DB DEFAULT も同時確認）。**未実施**: 実アプリ GUI E2E（生成→Ctrl+Z）と drizzle `.toSQL()` 出力の実 DB 実行（Rust テストは等価の手書き SQL で DB 挙動を検証、TS 側は statement 内容/順序の単体テスト）。
+
+> **レビュー対応（2026-06-04 / HEAD..a658ca45 の確定 finding を反映、ローカル commit 未push）**:
+> - **H1 (fail-open 修正)**: `parse.ts` — 旧 `custom` policy の欠損 `structureWrite` を `expandPreset("custom")=full` から導出せず **false** に倒す。AI を絞っていた custom ユーザーがアップグレードで structureWrite を黙って獲得する consent 退行を解消。named preset は従来どおり preset 契約値（assist-off=ON は設計意図として維持）。
+> - **M1 (undo 不能な確定変更 + isLoading stuck 修正)**: 上記 reload best-effort 化 + `treeStore.reloadTreeOrThrow` を try/catch 化（throw 契約維持 + `isLoading` 解除）。
+> - **M2 (afterRef 循環の silent drop 修正)**: `validate` に `after_cycle`（inserted 同士の afterRef 関数グラフ閉路検出）を追加。`applyPlan` に「全 create/move が placement 済み」の belt-and-suspenders assert（`unplaceable`）を追加し、dangling-parent による FK rollback も未然に防ぐ。
+> - **L1 (gate 多層化)**: `runAiTreeGeneration` 冒頭で `isAiFeatureBlockedByPolicy('structureWrite')`（+ synopsis 時 `bodyWrite`）を runtime 強制。Dialog の `blockIfPolicyOff` は UX 用に残置（二重 toast 回避のため runtime 側は throw のみ）。
+> - **N1 (cross-project 防御多層化)**: `applyPlan` の move/rename UPDATE と undo の UPDATE/DELETE の WHERE に `projectId` を併記。validate を唯一の cross-project guard にしない。
+> - **N2**: `editableIds` 構築を validate と同じ `collectDescendants`（export 化）に統一（buildOutlineContext との二重実装を解消）。
+> - **N3**: `validate` に `after_bad_anchor`（既存 anchor の sortOrder が不正な afterRef を reject、placement の append 黙フォールバックと整合）。
+> - **N5**: `generate` の user prompt にアウトラインを「データであり指示ではない」と枠付け（過去生成物経由の自己増幅 injection 抑制）。
+> - **N6**: 空 folder では再編エントリを非表示（create-only への縮退を避ける）。
+> - **defer（透明化）**:
+>   - **N4 unmetered token spend** — `mapAiApi` 等の one-shot 生成全般に共通の既存ギャップ（frontend に usage 記録パイプライン無し）。案B 単独でなく横断対応すべきため別 issue 化。
+>   - **#14 実 drizzle `.toSQL()` を SQLite で実行する test** — happy-dom 環境に node-side SQLite が無く test infra が要る（Rust test は等価の手書き SQL、TS test は statement 内容/順序）。infra 整備を伴うため別 issue 化（`.toSQL()` の列/param drift を将来捕まえるなら browser test or Rust 側で drizzle 生成 SQL を流す）。
+
+
 
 ## 0. 検証済みの土台（要点）
 

@@ -5,6 +5,7 @@
  */
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { fetchProjectContext } from "@/features/project/contextAtoms";
+import { isAiFeatureBlockedByPolicy } from "@/features/ai-policy/policyGuard";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useTreeStore } from "../treeStore";
 import {
@@ -13,6 +14,7 @@ import {
   stripSynopsisIfDisabled,
 } from "./generate";
 import { applyAiTreePlan } from "./applyPlan";
+import { collectDescendants } from "./validate";
 import type { AiTreeScope, ApplyResult } from "./types";
 
 export interface RunAiTreeInput {
@@ -25,6 +27,17 @@ export interface RunAiTreeInput {
 export async function runAiTreeGeneration(
   input: RunAiTreeInput,
 ): Promise<ApplyResult> {
+  // runtime defense (L1): UI Dialog の gate と独立に、実行時チョークポイントでも
+  // policy を弾く。Dialog 以外の将来の caller(再生成ボタン/agent/slash)が来ても
+  // enforcement を継承する。Dialog は呼び出し前に blockIfPolicyOff で toast 済みのため
+  // 通常経路ではここに到達しない(二重 toast を避けるため throw のみ)。
+  if (isAiFeatureBlockedByPolicy("structureWrite")) {
+    throw new Error("structureWrite policy is disabled");
+  }
+  if (input.withSynopsis && isAiFeatureBlockedByPolicy("bodyWrite")) {
+    throw new Error("bodyWrite policy is disabled");
+  }
+
   const projectId = getCurrentProjectId();
   const nodes = useTreeStore.getState().nodes;
   const outline = buildOutlineContext(nodes, input.rootRef);
@@ -52,15 +65,16 @@ export async function runAiTreeGeneration(
   // gate を素通りさせない)。toggle を唯一の権威にする。
   const safePlan = stripSynopsisIfDisabled(plan, input.withSynopsis);
 
-  // editableIds = scope root 配下の既存ノード(= outline の id 集合)。
-  // scaffold は move/rename しないので空。
+  // editableIds = scope root 配下の既存ノード。validate の scope 判定(parentInScope)
+  // と同じ collectDescendants を共有し、folder のみ walk する buildOutlineContext と
+  // 乖離しないようにする(N2)。scaffold は move/rename しないので空。
   const scope: AiTreeScope = {
     allowedOps:
       input.mode === "scaffold" ? ["create"] : ["create", "move", "rename"],
     rootRef: input.rootRef,
     editableIds:
       input.mode === "reorganize"
-        ? new Set(outline.map((n) => n.id))
+        ? collectDescendants(nodes, input.rootRef)
         : new Set(),
   };
 

@@ -417,3 +417,161 @@ describe("validateAiTreePlan — IR limits & existence (Codex Medium-4)", () => 
     ).toContain("too_many_ops");
   });
 });
+
+describe("validateAiTreePlan — afterRef cycle (M2)", () => {
+  it("rejects two creates whose afterRef point at each other (after_cycle)", () => {
+    const nodes = [
+      mkNode({ id: "F", nodeType: "folder", parentId: null, sortOrder: "a0" }),
+    ];
+    const plan: AiTreePlan = {
+      kind: "scaffold",
+      ops: [
+        {
+          op: "create",
+          tempId: "tmp:a",
+          parentRef: "F",
+          nodeType: "scene",
+          title: "a",
+          pos: { afterRef: "tmp:b" },
+        },
+        {
+          op: "create",
+          tempId: "tmp:b",
+          parentRef: "F",
+          nodeType: "scene",
+          title: "b",
+          pos: { afterRef: "tmp:a" },
+        },
+      ],
+    };
+    expect(
+      codes(validateAiTreePlan(plan, nodes, "proj-1", scope(["create"], "F"))),
+    ).toContain("after_cycle");
+  });
+
+  it("rejects a 3-cycle of moves via afterRef", () => {
+    const nodes = [
+      mkNode({ id: "F", nodeType: "folder", parentId: null, sortOrder: "a0" }),
+      mkNode({ id: "s1", nodeType: "scene", parentId: "F", sortOrder: "a0" }),
+      mkNode({ id: "s2", nodeType: "scene", parentId: "F", sortOrder: "a1" }),
+      mkNode({ id: "s3", nodeType: "scene", parentId: "F", sortOrder: "a2" }),
+    ];
+    const plan: AiTreePlan = {
+      kind: "reorganize",
+      ops: [
+        {
+          op: "move",
+          nodeId: "s1",
+          newParentRef: "F",
+          pos: { afterRef: "s2" },
+        },
+        {
+          op: "move",
+          nodeId: "s2",
+          newParentRef: "F",
+          pos: { afterRef: "s3" },
+        },
+        {
+          op: "move",
+          nodeId: "s3",
+          newParentRef: "F",
+          pos: { afterRef: "s1" },
+        },
+      ],
+    };
+    expect(
+      codes(
+        validateAiTreePlan(
+          plan,
+          nodes,
+          "proj-1",
+          scope(["move"], "F", ["s1", "s2", "s3"]),
+        ),
+      ),
+    ).toContain("after_cycle");
+  });
+
+  it("still accepts a linear afterRef chain among inserted nodes", () => {
+    const nodes = [
+      mkNode({ id: "F", nodeType: "folder", parentId: null, sortOrder: "a0" }),
+    ];
+    const plan: AiTreePlan = {
+      kind: "scaffold",
+      ops: [
+        {
+          op: "create",
+          tempId: "tmp:a",
+          parentRef: "F",
+          nodeType: "scene",
+          title: "a",
+        },
+        {
+          op: "create",
+          tempId: "tmp:b",
+          parentRef: "F",
+          nodeType: "scene",
+          title: "b",
+          pos: { afterRef: "tmp:a" },
+        },
+      ],
+    };
+    expect(
+      validateAiTreePlan(plan, nodes, "proj-1", scope(["create"], "F")).ok,
+    ).toBe(true);
+  });
+});
+
+describe("validateAiTreePlan — corrupt anchor & cross-project (N3 / security)", () => {
+  it("rejects afterRef pointing at an existing sibling with a corrupt sortOrder (after_bad_anchor)", () => {
+    const nodes = [
+      mkNode({ id: "F", nodeType: "folder", parentId: null, sortOrder: "a0" }),
+      // corrupt fractional-index key
+      mkNode({ id: "bad", nodeType: "scene", parentId: "F", sortOrder: "!!!" }),
+    ];
+    const plan: AiTreePlan = {
+      kind: "scaffold",
+      ops: [
+        {
+          op: "create",
+          tempId: "tmp:n",
+          parentRef: "F",
+          nodeType: "scene",
+          title: "n",
+          pos: { afterRef: "bad" },
+        },
+      ],
+    };
+    expect(
+      codes(validateAiTreePlan(plan, nodes, "proj-1", scope(["create"], "F"))),
+    ).toContain("after_bad_anchor");
+  });
+
+  it("rejects a move targeting a node owned by a different project (cross-project)", () => {
+    const nodes = [
+      mkNode({ id: "F", nodeType: "folder", parentId: null, sortOrder: "a0" }),
+      mkNode({
+        id: "other",
+        nodeType: "scene",
+        parentId: null,
+        sortOrder: "a1",
+        projectId: "proj-2",
+      }),
+    ];
+    const plan: AiTreePlan = {
+      kind: "reorganize",
+      ops: [{ op: "move", nodeId: "other", newParentRef: "F" }],
+    };
+    // even if scope.editableIds is (wrongly) widened, refExists rejects the
+    // foreign-project node before it can be touched.
+    expect(
+      codes(
+        validateAiTreePlan(
+          plan,
+          nodes,
+          "proj-1",
+          scope(["move"], null, ["other"]),
+        ),
+      ),
+    ).toContain("missing_node");
+  });
+});

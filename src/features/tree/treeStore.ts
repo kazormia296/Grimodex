@@ -560,7 +560,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     // 再同期失敗を成功扱いにできない」呼び出し元が使う。loadTree はこれを
     // try/catch で包んで従来どおり握りつぶす。
     set({ isLoading: true, projectId });
-    {
+    try {
       const raw = await api.listNodes(projectId);
       const nodes = raw.map(toNodeData);
       const sc = computeScenes(nodes);
@@ -615,6 +615,11 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       get()
         .loadPinnedCodexIds()
         .catch(() => {});
+    } catch (e) {
+      // 失敗を握りつぶさず再 throw する契約は維持しつつ、isLoading を解除して
+      // 「読み込み中のまま固まる」スピナー stuck を防ぐ(直接呼び出し元向け)。
+      set({ isLoading: false });
+      throw e;
     }
   },
 

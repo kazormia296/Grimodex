@@ -30,11 +30,18 @@ export function parseAiPolicy(raw: string | null | undefined): AiPolicy {
     if (!VALID_PRESETS.has(preset)) return { ...DEFAULT_AI_POLICY };
     if (!isValidToggles(obj.toggles)) return { ...DEFAULT_AI_POLICY };
     const t = obj.toggles as unknown as Record<string, unknown>;
-    // 欠損 structureWrite(旧 JSON)は flat true/false でなく stored preset から導出する。
+    // 欠損 structureWrite(旧 JSON)の扱い。named preset は preset の契約値を採用する。
+    // ただし preset==="custom" は「どの named preset にも一致しない手組みトグル」で
+    // あり、structureWrite が存在しなかった当時に同意された値が無い。ここを
+    // expandPreset("custom")=full に倒すと、AI を絞っていた custom ユーザーが
+    // アップグレードで structureWrite を黙って獲得する fail-open になる(H1)。
+    // よって custom の欠損だけは保守的に false(=未許可)へ倒す。
     const structureWrite =
       "structureWrite" in t
         ? Boolean(t.structureWrite)
-        : expandPreset(preset).structureWrite;
+        : preset === "custom"
+          ? false
+          : expandPreset(preset).structureWrite;
     return {
       preset,
       toggles: {

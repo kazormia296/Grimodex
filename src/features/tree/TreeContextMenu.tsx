@@ -259,18 +259,21 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
                 <Sparkles className="h-3 w-3 shrink-0" />
                 <span>{t("aiTree.scaffoldHere", "AI で構成を生成")}</span>
               </ContextMenuItem>
-              <ContextMenuItem
-                onSelect={() =>
-                  scenesContext.openAiTree({
-                    mode: "reorganize",
-                    rootRef: node.id,
-                    rootTitle: node.title,
-                  })
-                }
-              >
-                <Sparkles className="h-3 w-3 shrink-0" />
-                <span>{t("aiTree.reorganizeHere", "AI で構成を再編")}</span>
-              </ContextMenuItem>
+              {/* 再編は子を持つ folder のみ。空 folder では create-only に縮退するため出さない (N6)。 */}
+              {allNodes.some((n) => n.parentId === node.id) && (
+                <ContextMenuItem
+                  onSelect={() =>
+                    scenesContext.openAiTree({
+                      mode: "reorganize",
+                      rootRef: node.id,
+                      rootTitle: node.title,
+                    })
+                  }
+                >
+                  <Sparkles className="h-3 w-3 shrink-0" />
+                  <span>{t("aiTree.reorganizeHere", "AI で構成を再編")}</span>
+                </ContextMenuItem>
+              )}
             </>
           )}
         </>

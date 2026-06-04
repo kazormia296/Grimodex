@@ -77,6 +77,20 @@ describe("parseAiPolicy — structureWrite backward-compat (Codex Medium-5)", ()
       '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":false}}';
     expect(parseAiPolicy(raw).toggles.structureWrite).toBe(false);
   });
+
+  it("does NOT grant structureWrite for a legacy custom policy missing the key (no fail-open on upgrade) [H1]", () => {
+    // 機能前に AI を手で絞った custom policy(どの named preset にも一致しないトグル組)。
+    // structureWrite が存在しなかった当時に同意は無いので、欠損は false へ倒す。
+    const raw =
+      '{"preset":"custom","toggles":{"chat":true,"bodyWrite":true,"analysis":false}}';
+    expect(parseAiPolicy(raw).toggles.structureWrite).toBe(false);
+  });
+
+  it("custom policy with explicit structureWrite:true is honored", () => {
+    const raw =
+      '{"preset":"custom","toggles":{"chat":true,"bodyWrite":false,"analysis":false,"structureWrite":true}}';
+    expect(parseAiPolicy(raw).toggles.structureWrite).toBe(true);
+  });
 });
 
 describe("isBodyWriteDisabled", () => {

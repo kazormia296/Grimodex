@@ -14,7 +14,7 @@
  */
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -87,10 +87,13 @@ export function buildForwardStatements(
     if (!pl) continue;
     // parentId は解決値を直接渡す。`?? undefined` 禁止(undefined は SET から
     // 落ち move-to-root が黙って無効化される — moveNode の教訓)。
+    // WHERE に projectId を併記し、validate を唯一の cross-project guard にしない(N1)。
     const q = db
       .update(treeNodes)
       .set({ parentId: pl.parentId, sortOrder: pl.sortOrder, updatedAt: now })
-      .where(eq(treeNodes.id, op.nodeId))
+      .where(
+        and(eq(treeNodes.id, op.nodeId), eq(treeNodes.projectId, projectId)),
+      )
       .toSQL();
     stmts.push(toStatement(q));
   }
@@ -100,7 +103,9 @@ export function buildForwardStatements(
     const q = db
       .update(treeNodes)
       .set({ title: op.title, updatedAt: now })
-      .where(eq(treeNodes.id, op.nodeId))
+      .where(
+        and(eq(treeNodes.id, op.nodeId), eq(treeNodes.projectId, projectId)),
+      )
       .toSQL();
     stmts.push(toStatement(q));
   }
@@ -112,6 +117,7 @@ export function buildForwardStatements(
 export function buildUndoStatements(
   beforeStates: BeforeState[],
   createdIdsTopo: string[],
+  projectId: string,
 ): BatchStatement[] {
   const now = new Date().toISOString();
   const stmts: BatchStatement[] = [];
@@ -125,7 +131,7 @@ export function buildUndoStatements(
         title: bs.title,
         updatedAt: now,
       })
-      .where(eq(treeNodes.id, bs.id))
+      .where(and(eq(treeNodes.id, bs.id), eq(treeNodes.projectId, projectId)))
       .toSQL();
     stmts.push(toStatement(q));
   }
@@ -133,7 +139,12 @@ export function buildUndoStatements(
   for (let i = createdIdsTopo.length - 1; i >= 0; i--) {
     const q = db
       .delete(treeNodes)
-      .where(eq(treeNodes.id, createdIdsTopo[i]))
+      .where(
+        and(
+          eq(treeNodes.id, createdIdsTopo[i]),
+          eq(treeNodes.projectId, projectId),
+        ),
+      )
       .toSQL();
     stmts.push(toStatement(q));
   }
@@ -178,6 +189,35 @@ export async function applyAiTreePlan(
     o.op === "rename" ? [o.nodeId] : [],
   );
 
+  // placement 取りこぼし防御 (M2): validate を通っても afterRef 循環等で配置不能な
+  // op が残れば、DB に触る前に弾く。validate.after_cycle が一次防壁だが、ここは
+  // 「validate 通過 ⟺ 全 create/move が配置済み」を保証する belt-and-suspenders
+  // (silent drop / dangling-parent による FK rollback を未然に防ぐ)。
+  const unplaceable = [...createdIds, ...movedIds].filter(
+    (id) => !placements.has(id),
+  );
+  if (unplaceable.length > 0) {
+    throw new AiTreePlanError([
+      {
+        code: "unplaceable",
+        message: `配置を解決できない op があります: ${unplaceable.join(", ")}`,
+      },
+    ]);
+  }
+
+  // store 再同期は cosmetic。commit 後の reload 失敗で確定変更や undo entry を失わない
+  // よう best-effort で握りつぶす。isLoading は reloadTreeOrThrow の catch で解除される。
+  const resyncTree = async () => {
+    try {
+      await useTreeStore.getState().reloadTreeOrThrow(ctx.projectId);
+    } catch (e) {
+      console.error(
+        "[aiTree] reload after apply failed; change is committed and undoable",
+        e,
+      );
+    }
+  };
+
   const runForwardBatch = async () => {
     const stmts = buildForwardStatements(
       plan,
@@ -186,15 +226,16 @@ export async function applyAiTreePlan(
       placements,
       ctx.projectId,
     );
+    // commit。失敗(reject)時はトランザクション rollback で何も適用されないので
+    // この throw は安全(下の record/push に進まない)。
     await invoke("db_execute_batch", { statements: stmts });
-    // throwing reload: 失敗時はここで throw し、record/push へ進まない(Medium-3)。
-    await useTreeStore.getState().reloadTreeOrThrow(ctx.projectId);
+    await resyncTree();
   };
 
   const runUndoBatch = async () => {
-    const stmts = buildUndoStatements(beforeStates, createdIds);
+    const stmts = buildUndoStatements(beforeStates, createdIds, ctx.projectId);
     await invoke("db_execute_batch", { statements: stmts });
-    await useTreeStore.getState().reloadTreeOrThrow(ctx.projectId);
+    await resyncTree();
     const tab = useTabStore.getState();
     for (const id of createdIds) {
       tab.closeTab(id);
@@ -205,6 +246,8 @@ export async function applyAiTreePlan(
   // ── forward 適用 ─────────────────────────────────────────────────
   await runForwardBatch();
 
+  // commit 後は変更が確定済み。reload の成否に依存せず record + undo push を必ず行い、
+  // 「確定したのに undo できない孤児変更 + isLoading stuck」を残さない(M1)。
   recordChangeEvent({
     domain: "grid",
     opType: plan.kind === "scaffold" ? "tree.aiScaffold" : "tree.aiReorganize",

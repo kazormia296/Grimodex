@@ -13,6 +13,7 @@
  *  (f) afterRef 厳格化       — 最終 parent の sibling である / self でない (Codex High-2)
  *  (c)(d) 最終 forest 非循環
  */
+import { generateKeyBetween } from "../fractionalIndex";
 import type { TreeNodeData } from "../treeStore";
 import {
   type AiTreePlan,
@@ -45,10 +46,24 @@ function typeAllowsChildren(nodeType: string): boolean {
   return nodeType === "folder";
 }
 
-/** rootId 配下(自身は除く)の既存ノード id 集合を BFS で収集。 */
-function collectDescendants(
+/** placement.isValidOrderKey と同義: 不正な fractional-indexing キーを検出。pure 化のため再宣言。 */
+function isValidOrderKey(key: string): boolean {
+  try {
+    generateKeyBetween(key, null);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * rootId 配下(自身は除く)の既存ノード id 集合を BFS で収集。rootId=null は
+ * 「プロジェクト全体(= 全ノード)」を意味する。scope 判定(validate)と editableIds
+ * 構築(runAiTreeGeneration)で同一ロジックを共有するため export する(N2: 二重実装の解消)。
+ */
+export function collectDescendants(
   nodes: TreeNodeData[],
-  rootId: string,
+  rootId: string | null,
 ): Set<string> {
   const childrenByParent = new Map<string | null, TreeNodeData[]>();
   for (const n of nodes) {
@@ -250,10 +265,28 @@ export function validateAiTreePlan(
             "afterRef が最終 parent の兄弟ではありません",
             i,
           );
+        } else if (
+          !isTempRef(afterRef) &&
+          !movedNodeIds.has(afterRef) &&
+          !isValidOrderKey(byId.get(afterRef)?.sortOrder ?? "")
+        ) {
+          // afterRef が既存 anchor だが sortOrder が壊れている。placement は無効キー
+          // anchor を弾いて末尾 append に黙ってフォールバックし、位置指定が無言で
+          // 無視される。validate で明示的に弾いて placement と整合させる(N3)。
+          push("after_bad_anchor", "afterRef の兄弟の並び順キーが不正です", i);
         }
       }
     }
   });
+
+  // ── (f2) afterRef 同士の循環検出 (M2) ────────────────────────────
+  // inserted(create/move)同士が afterRef で閉路を作ると placement が「根」を emit
+  // できず、その op を黙って drop する(createdIds/movedIds と実 INSERT/UPDATE が
+  // 食い違い、undo が存在しない行を参照する)。parent graph の hasCycle では捕まらない
+  // ため、afterRef の関数グラフを別途検査する。
+  if (hasAfterRefCycle(plan, createByTempId, movedNodeIds)) {
+    push("after_cycle", "afterRef の参照が循環しています");
+  }
 
   // ── (c)(d) 最終 forest 非循環 ────────────────────────────────────
   if (hasCycle(finalParentByRef)) {
@@ -265,6 +298,42 @@ export function validateAiTreePlan(
   // ── 成功: create を topological 順(親が先)に並べて返す ───────────
   const orderedCreates = topoSortCreates([...createByTempId.values()]);
   return { ok: true, orderedCreates, tempIds };
+}
+
+/**
+ * inserted(create/move)ops の afterRef は各 op 高々 1 辺の関数グラフ。閉路があると
+ * placement が根を emit できず drop するため、ここで検出して reject する。
+ */
+function hasAfterRefCycle(
+  plan: AiTreePlan,
+  createByTempId: Map<string, CreateOp>,
+  movedNodeIds: Set<string>,
+): boolean {
+  const insertedRefs = new Set<string>([
+    ...createByTempId.keys(),
+    ...movedNodeIds,
+  ]);
+  const edge = new Map<string, string>();
+  for (const op of plan.ops) {
+    if (op.op === "rename") continue; // rename は afterRef を持たない
+    const self = op.op === "create" ? op.tempId : op.nodeId;
+    const after = op.pos?.afterRef;
+    // afterRef が別の inserted op を指すときだけ辺を張る(anchor 行きは placement の根)。
+    if (after != null && insertedRefs.has(after)) edge.set(self, after);
+  }
+  const done = new Set<string>();
+  for (const start of edge.keys()) {
+    if (done.has(start)) continue;
+    const path = new Set<string>();
+    let cur: string | undefined = start;
+    while (cur != null && !done.has(cur)) {
+      if (path.has(cur)) return true; // back-edge → 閉路
+      path.add(cur);
+      cur = edge.get(cur);
+    }
+    for (const n of path) done.add(n);
+  }
+  return false;
 }
 
 /** colored DFS による閉路検出。parentOf は mixed namespace。 */

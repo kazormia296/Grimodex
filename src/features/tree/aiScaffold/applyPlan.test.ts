@@ -164,6 +164,7 @@ describe("buildUndoStatements — cascade safety (★)", () => {
     const stmts = buildUndoStatements(
       [{ id: "x1", parentId: null, sortOrder: "a0", title: "x1" }],
       ["G"],
+      "proj-1",
     );
     // restore UPDATE first, DELETE last
     expect(sqlKind(stmts[0].sql)).toBe("update");
@@ -176,10 +177,20 @@ describe("buildUndoStatements — cascade safety (★)", () => {
   });
 
   it("deletes created nodes leaf-first (reverse topo)", () => {
-    const stmts = buildUndoStatements([], ["parent", "child"]);
+    const stmts = buildUndoStatements([], ["parent", "child"], "proj-1");
     const deletes = stmts.filter((s) => sqlKind(s.sql) === "delete");
     expect(deletes[0].params).toContain("child");
     expect(deletes[1].params).toContain("parent");
+  });
+
+  it("scopes every undo statement to projectId (N1 defense)", () => {
+    const stmts = buildUndoStatements(
+      [{ id: "x1", parentId: null, sortOrder: "a0", title: "x1" }],
+      ["G"],
+      "proj-1",
+    );
+    // both the restore UPDATE and the DELETE carry the project id param
+    for (const s of stmts) expect(s.params).toContain("proj-1");
   });
 });
 
@@ -257,13 +268,24 @@ describe("applyAiTreePlan — orchestration", () => {
     expect(h.closeTab).toHaveBeenCalled();
   });
 
-  it("does NOT record or push when reload throws after commit (Medium-3)", async () => {
+  it("still records + pushes undo when reload fails AFTER commit (M1: committed change must stay undoable)", async () => {
     setGroupNodes();
     h.reloadImpl = vi.fn().mockRejectedValue(new Error("reload failed"));
-    await expect(applyAiTreePlan(groupPlan, ctx())).rejects.toThrow(
-      "reload failed",
-    );
+    // resync is best-effort: a post-commit reload failure must NOT reject the apply
+    // nor orphan the committed change.
+    const res = await applyAiTreePlan(groupPlan, ctx());
     expect(invoke).toHaveBeenCalledTimes(1); // forward batch committed
+    expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+    expect(h.pushed).toBeDefined();
+    expect(res.createdIds).toHaveLength(1);
+  });
+
+  it("does NOT record or push when the forward commit itself fails (rolled back)", async () => {
+    setGroupNodes();
+    (invoke as Mock).mockRejectedValueOnce(new Error("commit failed"));
+    await expect(applyAiTreePlan(groupPlan, ctx())).rejects.toThrow(
+      "commit failed",
+    );
     expect(recordChangeEvent).not.toHaveBeenCalled();
     expect(h.pushed).toBeUndefined();
   });
@@ -274,5 +296,112 @@ describe("applyAiTreePlan — orchestration", () => {
     await applyAiTreePlan(groupPlan, ctx());
     expect(h.pushed).toBeUndefined();
     expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("undo tolerates a reload failure after its commit (no throw → no history wipe) [M1]", async () => {
+    setGroupNodes();
+    await applyAiTreePlan(groupPlan, ctx());
+    (invoke as Mock).mockClear();
+    h.closeTab.mockClear();
+    h.reloadImpl = vi.fn().mockRejectedValue(new Error("reload failed"));
+    h.isReplaying = true;
+    // resyncTree swallows the reload error, so undo resolves; if it threw, the global
+    // history store would clear the whole undo/redo stack (finding #3/#4 worst case).
+    await expect(h.pushed!.undo()).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledTimes(1); // undo batch committed
+    expect(h.closeTab).toHaveBeenCalled(); // post-commit cleanup still ran
+  });
+
+  it("redo re-applies with the SAME created UUIDs (apply→undo→redo stable)", async () => {
+    setGroupNodes();
+    const res = await applyAiTreePlan(groupPlan, ctx());
+    const createdId = res.createdIds[0];
+    h.isReplaying = true;
+    await h.pushed!.undo();
+    (invoke as Mock).mockClear();
+    await h.pushed!.redo();
+    const redoStmts = (invoke as Mock).mock.calls[0][1].statements as {
+      sql: string;
+      params: unknown[];
+    }[];
+    // the re-INSERT of the created folder must reuse the original UUID, so a
+    // subsequent undo (which deletes by that id) still matches.
+    const insert = redoStmts.find((s) => sqlKind(s.sql) === "insert");
+    expect(insert?.params).toContain(createdId);
+  });
+
+  it("every reported created/moved id is backed by an emitted statement (no phantom ids)", async () => {
+    setGroupNodes();
+    const res = await applyAiTreePlan(groupPlan, ctx());
+    const stmts = (invoke as Mock).mock.calls[0][1].statements as {
+      params: unknown[];
+    }[];
+    const allParams = new Set(stmts.flatMap((s) => s.params));
+    for (const id of [...res.createdIds, ...res.movedIds]) {
+      expect(allParams.has(id)).toBe(true);
+    }
+  });
+
+  it("handles a node that is BOTH moved and renamed in one plan", async () => {
+    h.nodes = [
+      mkNode({ id: "f", nodeType: "folder", parentId: null, sortOrder: "a0" }),
+      mkNode({ id: "x1", nodeType: "scene", parentId: null, sortOrder: "a1" }),
+    ];
+    const plan: AiTreePlan = {
+      kind: "reorganize",
+      ops: [
+        { op: "move", nodeId: "x1", newParentRef: "f" },
+        { op: "rename", nodeId: "x1", title: "Renamed" },
+      ],
+    };
+    const res = await applyAiTreePlan(
+      plan,
+      ctx({ editableIds: new Set(["x1", "f"]) }),
+    );
+    expect(res.movedIds).toEqual(["x1"]);
+    expect(res.renamedIds).toEqual(["x1"]);
+    // undo restores parentId/sortOrder/title for x1 in a single before-state
+    h.isReplaying = true;
+    (invoke as Mock).mockClear();
+    await h.pushed!.undo();
+    const undoStmts = (invoke as Mock).mock.calls[0][1].statements as {
+      sql: string;
+      params: unknown[];
+    }[];
+    const restores = undoStmts.filter(
+      (s) => sqlKind(s.sql) === "update" && s.params.includes("x1"),
+    );
+    expect(restores.length).toBeGreaterThan(0);
+  });
+
+  it("rejects a mutual-afterRef plan (after_cycle) and writes nothing", async () => {
+    h.nodes = [
+      mkNode({ id: "f", nodeType: "folder", parentId: null, sortOrder: "a0" }),
+    ];
+    const plan: AiTreePlan = {
+      kind: "scaffold",
+      ops: [
+        {
+          op: "create",
+          tempId: "tmp:a",
+          parentRef: "f",
+          nodeType: "scene",
+          title: "a",
+          pos: { afterRef: "tmp:b" },
+        },
+        {
+          op: "create",
+          tempId: "tmp:b",
+          parentRef: "f",
+          nodeType: "scene",
+          title: "b",
+          pos: { afterRef: "tmp:a" },
+        },
+      ],
+    };
+    await expect(
+      applyAiTreePlan(plan, ctx({ allowedOps: ["create"], rootRef: "f" })),
+    ).rejects.toBeInstanceOf(AiTreePlanError);
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

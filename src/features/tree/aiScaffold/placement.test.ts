@@ -196,4 +196,32 @@ describe("assignNodePlacements", () => {
       cmpKeys(p.get("x1")!.sortOrder, p.get("x2")!.sortOrder),
     ).toBeLessThan(0);
   });
+
+  it("falls back to append when afterRef points at an anchor with a corrupt sort key", () => {
+    // validate now rejects this (after_bad_anchor), but placement is the last line:
+    // an invalid-key anchor is filtered out, so the insert degrades to append rather
+    // than being dropped. Pin that degradation so it stays placed (gets a key).
+    const tree = [
+      mkNode({ id: "F", nodeType: "folder", parentId: null, sortOrder: "a0" }),
+      mkNode({ id: "bad", nodeType: "scene", parentId: "F", sortOrder: "!!!" }),
+      mkNode({ id: "ok", nodeType: "scene", parentId: "F", sortOrder: "a1" }),
+    ];
+    const plan: AiTreePlan = {
+      kind: "scaffold",
+      ops: [
+        {
+          op: "create",
+          tempId: "tmp:n",
+          parentRef: "F",
+          nodeType: "scene",
+          title: "n",
+          pos: { afterRef: "bad" },
+        },
+      ],
+    };
+    const p = assignNodePlacements(plan, tree, new Map([["tmp:n", "N"]]));
+    expect(p.get("N")?.parentId).toBe("F");
+    // appended after the only valid anchor ("ok"=a1)
+    expect(cmpKeys(p.get("N")!.sortOrder, "a1")).toBeGreaterThan(0);
+  });
 });
