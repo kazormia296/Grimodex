@@ -809,7 +809,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}
         model={currentModel}
-        agentMode={agentMode}
         canUseCreator={false}
         projectOutline={projectOutline}
         chapterOutlines={chapterOutlines}

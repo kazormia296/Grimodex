@@ -16,7 +16,6 @@ import {
   Sparkles,
   Spotlight,
   Undo2,
-  Bot,
   ScrollText,
 } from "lucide-react";
 import {
@@ -100,7 +99,6 @@ interface ContextBarProps {
   contextLayers: LayerBreakdown[];
   systemPrompt: string;
   model: string;
-  agentMode?: boolean;
   canUseCreator?: boolean;
   /** Phase 4 後続: AI に注入される project outline 全文（trim 済み・空でない場合のみ） */
   projectOutline?: string;
@@ -135,7 +133,6 @@ export function ContextBar({
   contextLayers,
   systemPrompt,
   model,
-  agentMode = false,
   canUseCreator = false,
   projectOutline,
   chapterOutlines = EMPTY_CHAPTER_OUTLINES,
@@ -301,15 +298,7 @@ export function ContextBar({
           aria-expanded={!collapsed}
           className="flex w-full cursor-pointer items-center justify-between px-4 py-1 text-xs text-muted-foreground hover:bg-muted/30"
         >
-          <span className="flex items-center gap-1.5 font-medium">
-            Context
-            {agentMode && (
-              <span className="inline-flex items-center gap-0.5 rounded bg-violet-500/15 px-1.5 py-0.5 text-xs font-medium text-violet-600 dark:text-violet-400">
-                <Bot className="h-3 w-3" />
-                Agent
-              </span>
-            )}
-          </span>
+          <span className="flex items-center gap-1.5 font-medium">Context</span>
           <div className="flex items-center gap-2">
             {(summaryCount > 3 || maxSummaryGeneration > 3) &&
               onCreateLinkedSession && (

@@ -5,7 +5,10 @@ import {
   Square,
   ChevronDown,
   Sparkles,
+  Bot,
+  BotOff,
   Lightbulb,
+  LightbulbOff,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -551,7 +554,11 @@ export function ChatInput({
                   : "text-muted-foreground hover:bg-accent hover:text-foreground",
             ].join(" ")}
           >
-            <Sparkles className="h-3 w-3 shrink-0" />
+            {agentMode ? (
+              <Bot className="h-3 w-3 shrink-0" />
+            ) : (
+              <BotOff className="h-3 w-3 shrink-0" />
+            )}
             <span>{t("chat.agentMode")}</span>
           </button>
 
@@ -573,7 +580,11 @@ export function ChatInput({
                   : "text-muted-foreground hover:bg-accent hover:text-foreground",
             ].join(" ")}
           >
-            <Lightbulb className="h-3 w-3 shrink-0" />
+            {(aiSettings?.thinkingEnabled ?? true) ? (
+              <Lightbulb className="h-3 w-3 shrink-0" />
+            ) : (
+              <LightbulbOff className="h-3 w-3 shrink-0" />
+            )}
             <span>{t("chat.thinkingMode")}</span>
           </button>
 
