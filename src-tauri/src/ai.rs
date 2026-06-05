@@ -1298,10 +1298,13 @@ pub async fn send_chat(
             parse_anthropic_response(&result)
         }
         _ => {
-            let chat_messages: Vec<serde_json::Value> = messages
-                .iter()
-                .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
-                .collect();
+            // OpenRouter + Claude では system に cache_control を載せて prompt cache を効かせる。
+            let chat_messages = build_openai_chat_messages(
+                messages,
+                params.provider,
+                params.model,
+                params.system_cache_segments.as_deref(),
+            );
 
             let mut body = serde_json::json!({
                 "model": params.model,
@@ -1977,7 +1980,18 @@ pub async fn send_chat_with_tools(
             parse_anthropic_response(&result)
         }
         _ => {
-            // OpenAI-compatible format (OpenAI, OpenRouter, Ollama)
+            // OpenAI-compatible format (OpenAI, OpenRouter, Ollama)。
+            // OpenRouter + Claude では system に cache_control を載せて prompt cache を効かせる
+            // (チャット経路と同じ手法)。最初の system 1 つにのみ適用 (4 breakpoint 超過=400 を防ぐ)。
+            let system_cache_blocks = if supports_prompt_cache(params.provider, params.model) {
+                params
+                    .system_cache_segments
+                    .as_deref()
+                    .and_then(openai_system_cache_blocks)
+            } else {
+                None
+            };
+            let mut system_cache_applied = false;
             let mut openai_messages: Vec<serde_json::Value> = Vec::new();
             for msg in messages {
                 match msg {
@@ -1986,8 +2000,19 @@ pub async fn send_chat_with_tools(
                             .push(serde_json::json!({ "role": "user", "content": content }));
                     }
                     AgentMessage::System { content } => {
-                        openai_messages
-                            .push(serde_json::json!({ "role": "system", "content": content }));
+                        let blocks = if system_cache_applied {
+                            None
+                        } else {
+                            system_cache_blocks.as_ref()
+                        };
+                        if let Some(blocks) = blocks {
+                            system_cache_applied = true;
+                            openai_messages
+                                .push(serde_json::json!({ "role": "system", "content": blocks }));
+                        } else {
+                            openai_messages
+                                .push(serde_json::json!({ "role": "system", "content": content }));
+                        }
                     }
                     AgentMessage::Assistant {
                         content, tool_uses, ..
@@ -2809,7 +2834,10 @@ mod tests {
             "anthropic/claude-4.6-sonnet",
             Some(&segments),
         );
-        assert!(out[0]["content"].is_array(), "system content should be blocks");
+        assert!(
+            out[0]["content"].is_array(),
+            "system content should be blocks"
+        );
         assert_eq!(out[0]["content"][0]["text"], "L1");
         assert_eq!(out[0]["content"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(out[0]["content"][1]["text"], "L2");
