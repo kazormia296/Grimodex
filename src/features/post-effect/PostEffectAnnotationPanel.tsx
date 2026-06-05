@@ -17,7 +17,11 @@ import {
   TypoChip,
   TypoContrastRow,
 } from "./AnnotationDetails";
-import type { PostEffectAnnotation, PostEffectSeverity } from "./types";
+import type {
+  PostEffectAnnotation,
+  PostEffectSeverity,
+  PostEffectStatus,
+} from "./types";
 
 interface Props {
   sceneId: string;
@@ -53,17 +57,25 @@ const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
   info: <Info size={14} className="text-muted-foreground shrink-0" />,
 };
 
-export function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
+export function AnnotationItem({
+  ann,
+  onStatusChange,
+}: {
+  ann: PostEffectAnnotation;
+  onStatusChange?: (annotationId: string, status: PostEffectStatus) => void;
+}) {
   const { focusedAnnotationId, setFocusedAnnotationId } = useAnnotationStore();
   const editor = useEditorStore((s) => s.editor);
   const focused = focusedAnnotationId === ann.id;
 
   async function dismiss() {
     await closeAnnotation(ann, "dismissed", editor);
+    onStatusChange?.(ann.id, "dismissed");
   }
 
   async function resolve() {
     await closeAnnotation(ann, "resolved", editor);
+    onStatusChange?.(ann.id, "resolved");
   }
 
   const severity = (ann.severity ?? "info") as PostEffectSeverity;

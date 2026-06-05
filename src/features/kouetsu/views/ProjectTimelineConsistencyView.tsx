@@ -6,6 +6,8 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useEditorStore } from "@/features/editor/editorStore";
 import {
   buildTimelinePayload,
   TIMELINE_CONSISTENCY_PROMPT_VERSION,
@@ -16,6 +18,7 @@ import {
 } from "@/features/post-effect/timelineHygiene";
 import {
   listAnnotationsForProject,
+  listAnnotationsForScene,
   runPostEffectMulti,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
@@ -25,6 +28,7 @@ import {
 } from "@/features/post-effect/customInstruction";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
+import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
 
 /**
@@ -40,6 +44,7 @@ export function ProjectTimelineConsistencyView() {
 
   const projectId = useTreeStore((s) => s.projectId);
   const nodes = useTreeStore((s) => s.nodes);
+  const { setAnnotations: storeSetAnnotations } = useAnnotationStore();
 
   const titleById = useMemo(
     () => new Map(nodes.map((n) => [n.id, n.title] as const)),
@@ -85,6 +90,28 @@ export function ProjectTimelineConsistencyView() {
     }
   }, []);
 
+  const afterRunAll = useCallback(
+    async (activeSceneId: string | null) => {
+      if (activeSceneId) {
+        const resp = await listAnnotationsForScene({
+          projectId,
+          sceneId: activeSceneId,
+        });
+        storeSetAnnotations(activeSceneId, resp.annotations);
+        const editor = useEditorStore.getState().editor;
+        if (editor) applyAnnotationsToEditor(editor, resp.annotations);
+      }
+      const fresh = await listAnnotationsForProject({
+        projectId,
+        status: "open",
+      });
+      setAnnotations(
+        fresh.annotations.filter((a) => a.category === "timeline_anchor"),
+      );
+    },
+    [projectId, storeSetAnnotations],
+  );
+
   const runAll = useCallback(async () => {
     if (runningAll) return;
     if (blockIfPolicyOff("analysis")) return;
@@ -93,6 +120,7 @@ export function ProjectTimelineConsistencyView() {
     const customKouetsu = useSettingsStore
       .getState()
       .get("aiPrompt.custom.kouetsu", "");
+    const activeSceneId = useTreeStore.getState().activeSceneId;
     setRunningAll(true);
     try {
       const payload = await buildTimelinePayload(
@@ -135,7 +163,7 @@ export function ProjectTimelineConsistencyView() {
           ).catch((err) => resolve({ ok: false, error: String(err) }));
         },
       );
-      reload();
+      await afterRunAll(activeSceneId);
       setRunningAll(false);
       if (!outcome.ok) {
         toast.error("時系列チェックに失敗しました", {
@@ -149,7 +177,7 @@ export function ProjectTimelineConsistencyView() {
         description: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [runningAll, projectId, reload]);
+  }, [runningAll, projectId, afterRunAll]);
 
   const groups = useMemo(() => {
     const acc = new Map<
@@ -261,7 +289,16 @@ export function ProjectTimelineConsistencyView() {
               </div>
               <div className="flex flex-col gap-1 p-2">
                 {g.items.map((ann) => (
-                  <AnnotationItem key={ann.id} ann={ann} />
+                  <AnnotationItem
+                    key={ann.id}
+                    ann={ann}
+                    onStatusChange={(annotationId, status) => {
+                      if (status === "open") return;
+                      setAnnotations((prev) =>
+                        prev.filter((a) => a.id !== annotationId),
+                      );
+                    }}
+                  />
                 ))}
               </div>
             </div>
