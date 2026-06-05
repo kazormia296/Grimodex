@@ -826,9 +826,16 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         {isLoadingMessages ? (
           <MessageBubbleSkeletonList testId="chat-messages-loading" />
         ) : messages.length === 0 ? (
-          <p className="mt-8 text-center text-sm text-muted-foreground">
-            {t("chat.noMessages")}
-          </p>
+          <div className="mt-8 text-center">
+            <p className="text-sm text-muted-foreground">
+              {t("chat.noMessages")}
+            </p>
+            {/* AI ミス免責: 常設だと狭いパネルで邪魔なので空状態にのみ表示。
+                会話が始まると消える（期待値調整は開封時で十分）。 */}
+            <p className="mt-2 text-[11px] leading-tight text-muted-foreground/70">
+              {t("chat.disclaimer")}
+            </p>
+          </div>
         ) : (
           <div className="space-y-4" ref={(el) => setMessagesContainerEl(el)}>
             <AnimatePresence initial={false}>

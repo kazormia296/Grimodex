@@ -686,6 +686,7 @@
     "stopTitle": "Stop generation (Esc)",
     "stopAriaLabel": "Stop generation",
     "sendAriaLabel": "Send",
+    "disclaimer": "AI can generate inaccurate information. Verify anything important.",
     "noModel": "No model set",
     "loadingModels": "Loading models…",
     "changeModel": "Change model",

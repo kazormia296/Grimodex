@@ -686,6 +686,7 @@
     "stopTitle": "生成中断 (Esc)",
     "stopAriaLabel": "生成中断",
     "sendAriaLabel": "送信",
+    "disclaimer": "AI は誤った情報を生成することがあります。重要な内容はご確認ください。",
     "noModel": "モデル未設定",
     "loadingModels": "モデルを読み込み中…",
     "changeModel": "モデルを変更",
