@@ -29,6 +29,13 @@ export interface RecordAiUsageInput {
   provider?: string | null;
   tokensIn?: number | null;
   tokensOut?: number | null;
+  /**
+   * prompt cache 読込トークン (cache hit)。Anthropic 系のみ。null=キャッシュ未使用
+   * または streaming で usage が届かなかった。cache 効きの計測用 (N4)。
+   */
+  cacheReadTokens?: number | null;
+  /** prompt cache 書込トークン (cache write、コスト側)。節約ではないので表示で混同しない。 */
+  cacheWriteTokens?: number | null;
   /** プロバイダ報告コスト (USD)。OpenRouter のみ実値、他は null。 */
   costUsd?: number | null;
   durationMs?: number | null;
@@ -70,6 +77,8 @@ export async function recordAiUsage(input: RecordAiUsageInput): Promise<void> {
       provider: input.provider ?? settings?.provider ?? null,
       tokensIn: input.tokensIn ?? null,
       tokensOut: input.tokensOut ?? null,
+      cacheReadTokens: input.cacheReadTokens ?? null,
+      cacheWriteTokens: input.cacheWriteTokens ?? null,
       costUsd: input.costUsd ?? null,
       durationMs: input.durationMs ?? null,
       traceId: input.traceId ?? null,

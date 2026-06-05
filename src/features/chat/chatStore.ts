@@ -3143,6 +3143,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             inputTokens?: number;
             outputTokens?: number;
             cost?: number;
+            cacheReadTokens?: number;
+            cacheWriteTokens?: number;
           }) => {
             // 末尾の buffered delta を確定前に同期反映。
             flushDelta();
@@ -3159,6 +3161,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               tokensIn: info.inputTokens,
               tokensOut: info.outputTokens,
               costUsd: info.cost ?? null,
+              cacheReadTokens: info.cacheReadTokens,
+              cacheWriteTokens: info.cacheWriteTokens,
               durationMs: chatDurationMs,
               traceId: assistantMsg.id,
               refId: assistantMsg.id,

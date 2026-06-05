@@ -64,6 +64,32 @@ describe("recordAiUsage", () => {
     );
   });
 
+  it("records prompt-cache read/write tokens", async () => {
+    await recordAiUsage({
+      surface: "chat",
+      tokensIn: 1500,
+      tokensOut: 200,
+      cacheReadTokens: 1200,
+      cacheWriteTokens: 300,
+    });
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cacheReadTokens: 1200,
+        cacheWriteTokens: 300,
+      }),
+    );
+  });
+
+  it("defaults cache tokens to null when omitted", async () => {
+    await recordAiUsage({ surface: "chat", tokensIn: 1 });
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      }),
+    );
+  });
+
   it("records null tokens so the invocation is still counted", async () => {
     await recordAiUsage({ surface: "inline_ai" });
     expect(valuesMock).toHaveBeenCalledWith(

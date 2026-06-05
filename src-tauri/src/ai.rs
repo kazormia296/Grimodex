@@ -1401,6 +1401,33 @@ pub struct ChatResponse {
     pub cost: Option<f64>,
 }
 
+/// プロバイダ別の usage オブジェクトから prompt cache のトークン数を取り出す。
+/// 戻り値は `(cache_read_tokens, cache_write_tokens)`。
+///
+/// プロバイダごとに会計モデルが異なる (この差をここ 1 箇所に閉じ込める):
+/// - Anthropic 直叩き: `usage.cache_read_input_tokens` / `cache_creation_input_tokens`。
+///   `input_tokens` は **キャッシュ分を含まない** (合計 = input + read + creation)。
+/// - OpenRouter / OpenAI 互換: `usage.prompt_tokens_details.cached_tokens` /
+///   `cache_write_tokens`。`prompt_tokens` は **キャッシュ読込分を含む** (cached ⊆ prompt)。
+///
+/// `cache_write_tokens` (OpenAI 形) は実在が未確定なフィールドなので、欠落時は
+/// None で素通しする (read だけ取れれば計測の主信号としては十分)。
+fn extract_cache_tokens(
+    usage: &serde_json::Value,
+    provider: &AiProvider,
+) -> (Option<u64>, Option<u64>) {
+    if matches!(provider, AiProvider::Anthropic) {
+        let read = usage["cache_read_input_tokens"].as_u64();
+        let write = usage["cache_creation_input_tokens"].as_u64();
+        (read, write)
+    } else {
+        let details = &usage["prompt_tokens_details"];
+        let read = details["cached_tokens"].as_u64();
+        let write = details["cache_write_tokens"].as_u64();
+        (read, write)
+    }
+}
+
 /// 同一 URL の重複を避けて引用を追加する (1 ソース = 1 エントリ)。
 fn push_unique_citation(citations: &mut Vec<Citation>, cit: Citation) {
     if !cit.url.is_empty() && !citations.iter().any(|c| c.url == cit.url) {
@@ -2342,6 +2369,9 @@ pub async fn send_chat_stream(
             let mut stop_reason = "end_turn".to_string();
             let mut input_tokens: Option<u64> = None;
             let mut output_tokens: Option<u64> = None;
+            // N4: prompt cache 計測。Anthropic 直は message_start の usage に載る。
+            let mut cache_read_tokens: Option<u64> = None;
+            let mut cache_write_tokens: Option<u64> = None;
 
             while let Some(chunk) = stream.next().await {
                 if abort_flag.load(Ordering::Relaxed) {
@@ -2412,10 +2442,16 @@ pub async fn send_chat_stream(
                                     }
                                 }
                                 Some("message_start") => {
-                                    if let Some(inp) =
-                                        json["message"]["usage"]["input_tokens"].as_u64()
-                                    {
+                                    let usage = &json["message"]["usage"];
+                                    if let Some(inp) = usage["input_tokens"].as_u64() {
                                         input_tokens = Some(inp);
+                                    }
+                                    let (cr, cw) = extract_cache_tokens(usage, params.provider);
+                                    if cr.is_some() {
+                                        cache_read_tokens = cr;
+                                    }
+                                    if cw.is_some() {
+                                        cache_write_tokens = cw;
                                     }
                                 }
                                 _ => {}
@@ -2431,6 +2467,8 @@ pub async fn send_chat_stream(
                     "stop_reason": stop_reason,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
+                    "cache_read_tokens": cache_read_tokens,
+                    "cache_write_tokens": cache_write_tokens,
                 }),
             );
             Ok(())
@@ -2480,6 +2518,10 @@ pub async fn send_chat_stream(
             let mut output_tokens: Option<u64> = None;
             // OpenRouter は usage.cost を返す (他プロバイダは None → FE が概算)。
             let mut cost: Option<f64> = None;
+            // N4: prompt cache 計測。OpenRouter は最終 usage チャンクの
+            // prompt_tokens_details に載る (include:true 時のみ届く)。
+            let mut cache_read_tokens: Option<u64> = None;
+            let mut cache_write_tokens: Option<u64> = None;
 
             while let Some(chunk) = stream.next().await {
                 if abort_flag.load(Ordering::Relaxed) {
@@ -2515,6 +2557,14 @@ pub async fn send_chat_stream(
                             }
                             if let Some(out) = json["usage"]["completion_tokens"].as_u64() {
                                 output_tokens = Some(out);
+                            }
+                            // N4: prompt cache 読込/書込トークン (provider 別の形を吸収)。
+                            let (cr, cw) = extract_cache_tokens(&json["usage"], params.provider);
+                            if cr.is_some() {
+                                cache_read_tokens = cr;
+                            }
+                            if cw.is_some() {
+                                cache_write_tokens = cw;
                             }
                             // OpenRouter: usage.cost (USD)。include:true 時のみ届く。
                             if let Some(c) = json["usage"]["cost"].as_f64() {
@@ -2581,6 +2631,8 @@ pub async fn send_chat_stream(
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "cost": cost,
+                    "cache_read_tokens": cache_read_tokens,
+                    "cache_write_tokens": cache_write_tokens,
                 }),
             );
             Ok(())
@@ -2623,6 +2675,69 @@ mod tests {
         assert_eq!(
             openai_stream_delta_content(&delta).as_deref(),
             Some("plain")
+        );
+    }
+
+    #[test]
+    fn extract_cache_tokens_openrouter_reads_prompt_tokens_details() {
+        // OpenRouter / OpenAI 互換: prompt_tokens_details.cached_tokens / cache_write_tokens。
+        let usage = serde_json::json!({
+            "prompt_tokens": 1500,
+            "completion_tokens": 200,
+            "prompt_tokens_details": { "cached_tokens": 1200, "cache_write_tokens": 300 }
+        });
+        let (read, write) = extract_cache_tokens(&usage, &AiProvider::OpenRouter);
+        assert_eq!(read, Some(1200));
+        assert_eq!(write, Some(300));
+    }
+
+    #[test]
+    fn extract_cache_tokens_anthropic_reads_input_token_fields() {
+        // Anthropic 直: cache_read_input_tokens / cache_creation_input_tokens。
+        let usage = serde_json::json!({
+            "input_tokens": 50,
+            "output_tokens": 200,
+            "cache_read_input_tokens": 1200,
+            "cache_creation_input_tokens": 300
+        });
+        let (read, write) = extract_cache_tokens(&usage, &AiProvider::Anthropic);
+        assert_eq!(read, Some(1200));
+        assert_eq!(write, Some(300));
+    }
+
+    #[test]
+    fn extract_cache_tokens_does_not_cross_read_provider_shapes() {
+        // プロバイダ会計モデルの取り違え防止: Anthropic 形の usage を OpenRouter
+        // として読むと (prompt_tokens_details 不在で) None、その逆も None。
+        let anthropic_shape = serde_json::json!({
+            "cache_read_input_tokens": 1200,
+            "cache_creation_input_tokens": 300
+        });
+        assert_eq!(
+            extract_cache_tokens(&anthropic_shape, &AiProvider::OpenRouter),
+            (None, None)
+        );
+        let openai_shape = serde_json::json!({
+            "prompt_tokens_details": { "cached_tokens": 1200, "cache_write_tokens": 300 }
+        });
+        assert_eq!(
+            extract_cache_tokens(&openai_shape, &AiProvider::Anthropic),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn extract_cache_tokens_absent_yields_none() {
+        // キャッシュ未使用 (フィールド欠落) は None で素通し。
+        let usage = serde_json::json!({ "prompt_tokens": 100, "completion_tokens": 50 });
+        assert_eq!(
+            extract_cache_tokens(&usage, &AiProvider::OpenRouter),
+            (None, None)
+        );
+        let usage_anthropic = serde_json::json!({ "input_tokens": 100, "output_tokens": 50 });
+        assert_eq!(
+            extract_cache_tokens(&usage_anthropic, &AiProvider::Anthropic),
+            (None, None)
         );
     }
 
@@ -2677,7 +2792,11 @@ mod tests {
     #[test]
     fn apply_stream_usage_optin_ollama_and_others_noop() {
         // Ollama は既定で usage を返すため触らない (未知フィールドでの 400 回避)。
-        for provider in [AiProvider::Ollama, AiProvider::Anthropic, AiProvider::AiNovelist] {
+        for provider in [
+            AiProvider::Ollama,
+            AiProvider::Anthropic,
+            AiProvider::AiNovelist,
+        ] {
             let mut body = serde_json::json!({ "model": "x", "stream": true });
             apply_stream_usage_optin(&mut body, &provider);
             assert!(body.get("usage").is_none());

@@ -1420,6 +1420,8 @@ impl Database {
                 provider      TEXT,
                 tokens_in     INTEGER,
                 tokens_out    INTEGER,
+                cache_read_tokens  INTEGER,
+                cache_write_tokens INTEGER,
                 cost_usd      REAL,
                 duration_ms   INTEGER,
                 trace_id      TEXT,
@@ -1432,6 +1434,12 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_ai_usage_project_surface
                 ON ai_usage(project_id, surface);",
         )?;
+
+        // N4: prompt cache 計測列を ai_usage に追加。CREATE TABLE の直後に置くこと —
+        // 既存 DB は IF NOT EXISTS が no-op → ここで列を ALTER 追加、新規 DB は上の
+        // CREATE で列付きで作られ ここは no-op。CREATE より前に呼ぶと fresh DB で
+        // 「no such table」になる (add_column_if_missing は欠落テーブルを ALTER する)。
+        Self::migrate_ai_usage_cache_tokens(&conn)?;
 
         Ok(())
     }
@@ -1766,6 +1774,15 @@ impl Database {
             "UPDATE tree_nodes SET context_mode = 'mentioned'
              WHERE node_type = 'note' AND context_mode IS NULL;",
         )?;
+        Ok(())
+    }
+
+    /// One-shot migration: add prompt-cache token columns to ai_usage (N4).
+    /// 既存 DB の CREATE TABLE IF NOT EXISTS は列を足さないため明示 ADD COLUMN。
+    /// 既存行は NULL (= 当時はキャッシュ未計測) のまま、集計側で 0 扱い。
+    pub(super) fn migrate_ai_usage_cache_tokens(conn: &Connection) -> anyhow::Result<()> {
+        Self::add_column_if_missing(conn, "ai_usage", "cache_read_tokens", "INTEGER")?;
+        Self::add_column_if_missing(conn, "ai_usage", "cache_write_tokens", "INTEGER")?;
         Ok(())
     }
 
@@ -2201,6 +2218,32 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(idx_count, 1, "uq_change_events_project_uid should exist");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_fresh_db_creates_ai_usage_cache_columns() {
+        // Regression: migrate_ai_usage_cache_tokens は CREATE TABLE ai_usage の
+        // 直後で呼ぶ必要がある。CREATE より前で呼ぶと fresh DB では
+        // add_column_if_missing が存在しない ai_usage を ALTER しようとして
+        // "no such table: ai_usage" で migrate() ごと落ちる (fresh install のみ顕在化)。
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            let cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(ai_usage)")?
+                .query_map([], |row| row.get::<_, String>("name"))?
+                .collect::<Result<_, _>>()?;
+            assert!(
+                cols.iter().any(|c| c == "cache_read_tokens"),
+                "ai_usage.cache_read_tokens should exist on a fresh DB"
+            );
+            assert!(
+                cols.iter().any(|c| c == "cache_write_tokens"),
+                "ai_usage.cache_write_tokens should exist on a fresh DB"
+            );
             Ok(())
         })
         .unwrap();

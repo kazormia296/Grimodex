@@ -218,6 +218,10 @@ interface StreamDonePayload {
   output_tokens?: number;
   /** N4: OpenRouter streaming の usage.cost (USD)。他プロバイダは null/欠落。 */
   cost?: number;
+  /** N4: prompt cache 読込トークン (cache hit)。欠落=キャッシュ未使用/未到達。 */
+  cache_read_tokens?: number;
+  /** N4: prompt cache 書込トークン (cache write、コスト側)。 */
+  cache_write_tokens?: number;
 }
 
 interface StreamErrorPayload {
@@ -232,6 +236,8 @@ export interface StreamCallbacks {
     inputTokens?: number;
     outputTokens?: number;
     cost?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
   }) => void;
   onError: (message: string) => void;
 }
@@ -261,6 +267,8 @@ export async function sendChatMessageStream(
         inputTokens: payload.input_tokens,
         outputTokens: payload.output_tokens,
         cost: payload.cost,
+        cacheReadTokens: payload.cache_read_tokens,
+        cacheWriteTokens: payload.cache_write_tokens,
       });
     }),
     listen<StreamErrorPayload>("chat:stream-error", (payload) => {

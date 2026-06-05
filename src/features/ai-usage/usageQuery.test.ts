@@ -8,6 +8,8 @@ interface Row {
   tokensIn: number | null;
   tokensOut: number | null;
   costUsd: number | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
 }
 
 vi.mock("@/db/client", () => ({ db: { select: selectMock } }));
@@ -70,6 +72,46 @@ describe("getProjectUsageSummary", () => {
     expect(chat?.count).toBe(2);
     expect(chat?.costEstimated).toBe(true); // row 2 was estimated
     expect(chat?.costUsd).toBeCloseTo(0.041, 5);
+  });
+
+  it("aggregates prompt-cache read/write tokens (null treated as 0)", async () => {
+    setRows([
+      {
+        surface: "chat",
+        model: "claude-sonnet-4-6",
+        tokensIn: 1500,
+        tokensOut: 200,
+        costUsd: 0.02,
+        cacheReadTokens: 1200,
+        cacheWriteTokens: 300,
+      },
+      {
+        surface: "chat",
+        model: "claude-sonnet-4-6",
+        tokensIn: 800,
+        tokensOut: 100,
+        costUsd: 0.01,
+        cacheReadTokens: 600,
+        cacheWriteTokens: null,
+      },
+      {
+        surface: "agent",
+        model: "claude-sonnet-4-6",
+        tokensIn: 50,
+        tokensOut: 50,
+        costUsd: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+      },
+    ]);
+
+    const s = await getProjectUsageSummary("p1");
+    expect(s.totalCacheReadTokens).toBe(1800);
+    expect(s.totalCacheWriteTokens).toBe(300);
+
+    const chat = s.bySurface.find((x) => x.surface === "chat");
+    expect(chat?.cacheReadTokens).toBe(1800);
+    expect(chat?.cacheWriteTokens).toBe(300);
   });
 
   it("counts unmetered rows (no tokens, no cost) without adding cost", async () => {

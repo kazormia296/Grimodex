@@ -464,6 +464,8 @@ export const aiUsage = sqliteTable(
     provider: text("provider"),
     tokensIn: integer("tokens_in"),
     tokensOut: integer("tokens_out"),
+    cacheReadTokens: integer("cache_read_tokens"),
+    cacheWriteTokens: integer("cache_write_tokens"),
     costUsd: real("cost_usd"),
     durationMs: integer("duration_ms"),
     traceId: text("trace_id"),

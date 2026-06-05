@@ -18,6 +18,17 @@ function formatCostMaybeEstimated(usd: number, estimated: boolean): string {
   return `${estimated ? "≈" : ""}${formatCost(usd)}`;
 }
 
+/**
+ * prompt cache の「読込率」= read / (read + write)。1 に近いほどキャッシュが効いて
+ * いる (= 同じ prefix を読めている)。低い = 毎ターン書き直し。ただし provider 切替
+ * 由来か TTL(5分)切れ由来かはこの集計では区別できない (時系列を見る必要がある)。
+ */
+function cacheReadRatio(read: number, write: number): string {
+  const total = read + write;
+  if (total <= 0) return "—";
+  return `${Math.round((read / total) * 100)}%`;
+}
+
 export function UsageCategory() {
   const [summary, setSummary] = useState<ProjectUsageSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -107,6 +118,39 @@ export function UsageCategory() {
                 </SettingRow>
               )}
             </SettingSection>
+
+            {summary.totalCacheReadTokens + summary.totalCacheWriteTokens >
+              0 && (
+              <SettingSection title="プロンプトキャッシュ">
+                <SettingRow
+                  label="読込率"
+                  description="読込 / (読込+書込)。高いほどキャッシュが効いている。低い場合は provider 切替か TTL(5分)切れ — この集計では区別できません"
+                >
+                  <span className="text-sm tabular-nums text-foreground">
+                    {cacheReadRatio(
+                      summary.totalCacheReadTokens,
+                      summary.totalCacheWriteTokens,
+                    )}
+                  </span>
+                </SettingRow>
+                <SettingRow
+                  label="読込トークン"
+                  description="キャッシュから読めた入力 (節約側)"
+                >
+                  <span className="text-sm tabular-nums text-foreground">
+                    {formatTokens(summary.totalCacheReadTokens)}
+                  </span>
+                </SettingRow>
+                <SettingRow
+                  label="書込トークン"
+                  description="キャッシュへ書いた入力 (初回/期限切れ。コスト側で節約ではない)"
+                >
+                  <span className="text-sm tabular-nums text-foreground">
+                    {formatTokens(summary.totalCacheWriteTokens)}
+                  </span>
+                </SettingRow>
+              </SettingSection>
+            )}
 
             <SettingSection title="サーフェス別">
               {summary.bySurface.map((s) => (
