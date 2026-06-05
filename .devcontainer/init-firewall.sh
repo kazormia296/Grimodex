@@ -79,6 +79,7 @@ for domain in \
     "chatgpt.com" \
     "platform.openai.com" \
     "api.anthropic.com" \
+    "openrouter.ai" \
     "sentry.io" \
     "statsig.anthropic.com" \
     "statsig.com" \

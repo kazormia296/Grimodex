@@ -15,7 +15,8 @@
       "Bash(cd src-tauri && cargo clippy *)",
       "Bash(cd src-tauri && cargo fmt *)",
       "Bash(gh issue *)",
-      "Bash(gh pr *)"
+      "Bash(gh pr *)",
+      "WebFetch(domain:openrouter.ai)"
     ],
     "ask": [
       "Bash(git push *)",
