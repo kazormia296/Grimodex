@@ -871,6 +871,60 @@ fn build_system_payload(
     serde_json::Value::String(fallback.to_string())
 }
 
+/// cache_segments を OpenAI 互換の content block 配列 (各 block に cache_control) へ変換する。
+/// 空セグメントは除外。全部空なら None (plain string にフォールバック)。
+/// 上限 4 ブレークポイントは呼び出し側 (FE の L1–L4) が満たす前提。
+fn openai_system_cache_blocks(segments: &[String]) -> Option<Vec<serde_json::Value>> {
+    let blocks: Vec<serde_json::Value> = segments
+        .iter()
+        .filter(|s| !s.is_empty())
+        .map(|text| {
+            serde_json::json!({
+                "type": "text",
+                "text": text,
+                "cache_control": { "type": "ephemeral" }
+            })
+        })
+        .collect();
+    if blocks.is_empty() {
+        None
+    } else {
+        Some(blocks)
+    }
+}
+
+/// OpenAI 互換 (/chat/completions) 用に messages を `[{role, content}]` へ組み立てる。
+/// OpenRouter + Claude かつ cache_segments があるとき、最初の system メッセージの
+/// content を cache_control 付き text block 配列にして prompt cache を効かせる
+/// (OpenRouter は per-block cache_control を Anthropic / Bedrock / Vertex へ中継する)。
+/// それ以外は従来どおり content を plain string で送る。
+/// top-level cache_control は併用しない (explicit と automatic の衝突で 400 になるため)。
+fn build_openai_chat_messages(
+    messages: &[(&str, &str)],
+    provider: &AiProvider,
+    model: &str,
+    cache_segments: Option<&[String]>,
+) -> Vec<serde_json::Value> {
+    let cache_blocks = if supports_prompt_cache(provider, model) {
+        cache_segments.and_then(openai_system_cache_blocks)
+    } else {
+        None
+    };
+    let mut applied = false;
+    messages
+        .iter()
+        .map(|(role, content)| {
+            if *role == "system" && !applied {
+                if let Some(blocks) = &cache_blocks {
+                    applied = true;
+                    return serde_json::json!({ "role": "system", "content": blocks });
+                }
+            }
+            serde_json::json!({ "role": role, "content": content })
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // AI のべりすと専用パス
 //
@@ -2474,11 +2528,14 @@ pub async fn send_chat_stream(
             Ok(())
         }
         _ => {
-            // OpenAI-compatible format (OpenAI, OpenRouter, Ollama)
-            let chat_messages: Vec<serde_json::Value> = messages
-                .iter()
-                .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
-                .collect();
+            // OpenAI-compatible format (OpenAI, OpenRouter, Ollama)。
+            // OpenRouter + Claude では system に cache_control を載せて prompt cache を効かせる。
+            let chat_messages = build_openai_chat_messages(
+                messages,
+                params.provider,
+                params.model,
+                params.system_cache_segments.as_deref(),
+            );
 
             let mut body = serde_json::json!({
                 "model": params.model,
@@ -2739,6 +2796,73 @@ mod tests {
             extract_cache_tokens(&usage_anthropic, &AiProvider::Anthropic),
             (None, None)
         );
+    }
+
+    #[test]
+    fn build_openai_chat_messages_adds_cache_control_to_system_for_openrouter_claude() {
+        // OpenRouter + Claude + segments → system content を cache_control 付き block 配列に。
+        let msgs = [("system", "FULL_SYSTEM"), ("user", "hi")];
+        let segments = vec!["L1".to_string(), "L2".to_string()];
+        let out = build_openai_chat_messages(
+            &msgs,
+            &AiProvider::OpenRouter,
+            "anthropic/claude-4.6-sonnet",
+            Some(&segments),
+        );
+        assert!(out[0]["content"].is_array(), "system content should be blocks");
+        assert_eq!(out[0]["content"][0]["text"], "L1");
+        assert_eq!(out[0]["content"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(out[0]["content"][1]["text"], "L2");
+        assert_eq!(out[0]["content"][1]["cache_control"]["type"], "ephemeral");
+        // user は plain string のまま。
+        assert_eq!(out[1]["content"], "hi");
+        assert_eq!(out[1]["role"], "user");
+    }
+
+    #[test]
+    fn build_openai_chat_messages_plain_when_not_claude_or_no_segments() {
+        let msgs = [("system", "S"), ("user", "hi")];
+        let segs = vec!["L1".to_string()];
+        // 非 Claude モデル → cache_control 無し。
+        let out = build_openai_chat_messages(
+            &msgs,
+            &AiProvider::OpenRouter,
+            "openai/gpt-5.5",
+            Some(&segs),
+        );
+        assert_eq!(out[0]["content"], "S");
+        // Claude だが segments 無し → plain。
+        let out2 = build_openai_chat_messages(
+            &msgs,
+            &AiProvider::OpenRouter,
+            "anthropic/claude-4.6-sonnet",
+            None,
+        );
+        assert_eq!(out2[0]["content"], "S");
+        // 空 segments → plain (block 0 件)。
+        let empty: Vec<String> = vec![String::new()];
+        let out3 = build_openai_chat_messages(
+            &msgs,
+            &AiProvider::OpenRouter,
+            "anthropic/claude-4.6-sonnet",
+            Some(&empty),
+        );
+        assert_eq!(out3[0]["content"], "S");
+    }
+
+    #[test]
+    fn build_openai_chat_messages_only_first_system_gets_blocks() {
+        // system が複数あっても segments を載せるのは先頭 1 つだけ (二重適用を防ぐ)。
+        let msgs = [("system", "S1"), ("system", "S2"), ("user", "hi")];
+        let segs = vec!["L1".to_string()];
+        let out = build_openai_chat_messages(
+            &msgs,
+            &AiProvider::OpenRouter,
+            "anthropic/claude-4.6-sonnet",
+            Some(&segs),
+        );
+        assert!(out[0]["content"].is_array());
+        assert_eq!(out[1]["content"], "S2");
     }
 
     #[test]
