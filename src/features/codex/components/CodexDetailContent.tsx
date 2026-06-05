@@ -11,6 +11,7 @@ import {
   Microscope,
   CalendarClock,
   LineSquiggle,
+  AlertTriangle,
 } from "lucide-react";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { createRevision, pruneRevisions } from "@/features/revision/api";
@@ -35,6 +36,7 @@ import { MentionsTab } from "./MentionsTab";
 import { ResearchTab } from "./ResearchTab";
 import { TimelineTab } from "./TimelineTab";
 import { ForeshadowTab } from "./ForeshadowTab";
+import { ConsistencyTab } from "./ConsistencyTab";
 
 function getTabs() {
   return [
@@ -79,6 +81,12 @@ function getTabs() {
       label: i18next.t("codex.tab.foreshadow"),
       testId: "detail-tab-foreshadow",
       icon: LineSquiggle,
+    },
+    {
+      id: "consistency",
+      label: i18next.t("codex.tab.consistency"),
+      testId: "detail-tab-consistency",
+      icon: AlertTriangle,
     },
   ];
 }
@@ -423,6 +431,9 @@ export function CodexDetailContent({
         {activeTab === "timeline" && <TimelineTab entry={entry} />}
         {activeTab === "foreshadow" && (
           <ForeshadowTab codexEntryId={entry.id} />
+        )}
+        {activeTab === "consistency" && (
+          <ConsistencyTab codexEntryId={entry.id} />
         )}
       </div>
     </div>

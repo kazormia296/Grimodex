@@ -73,12 +73,13 @@ export function AnnotationItem({ ann }: { ann: PostEffectAnnotation }) {
 
   // consistency / typo の content は冗長な自動生成文 (例「entry.detail と矛盾: ...」)。
   // chip + 対比行 + reason 行が同じ情報を綺麗に持つので、それらが揃う種別は
-  // タイトル本文を抑制する。intra / review / pseudo_comment は対比情報が無いので
-  // content をタイトル表示する。
+  // タイトル本文を抑制する。intra / review / intent_drift / timeline / pseudo_comment は
+  // 対比行を持たない (relation chip のみ or 無し) ので content をタイトル表示する。
   const showTitle =
     parsed.kind === "intra" ||
     parsed.kind === "review" ||
     parsed.kind === "intent_drift" ||
+    parsed.kind === "timeline" ||
     parsed.kind === "pseudo_comment";
 
   return (

@@ -1771,7 +1771,8 @@ export type PostEffectType =
   | "consistency"
   | "intra_scene_consistency"
   | "typo_detection"
-  | "intent_drift";
+  | "intent_drift"
+  | "timeline_consistency";
 export type PostEffectScopeType = "scene" | "folder" | "project";
 export type PostEffectRunStatus =
   | "running"
@@ -1786,7 +1787,8 @@ export type PostEffectCategory =
   | "foreshadow_anchor"
   | "theme_anchor"
   | "typo_anchor"
-  | "intent_anchor";
+  | "intent_anchor"
+  | "timeline_anchor";
 export type PostEffectSeverity = "info" | "suggestion" | "warning" | "error";
 export type PostEffectAuthorRole = "ai" | "user" | "system";
 export type PostEffectStatus = "open" | "resolved" | "dismissed";

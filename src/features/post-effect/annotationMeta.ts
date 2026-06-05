@@ -5,6 +5,7 @@ import type {
   PseudoCommentAnnotationMeta,
   ReviewAnnotationMeta,
   IntentDriftAnnotationMeta,
+  TimelineAnnotationMeta,
   TypoAnnotationMeta,
   TypoCategory,
 } from "./types";
@@ -20,6 +21,7 @@ export interface ParsedAnnotationMeta {
     | "typo"
     | "review"
     | "intent_drift"
+    | "timeline"
     | "pseudo_comment";
   orphaned: boolean;
   detectedByModel?: string;
@@ -29,8 +31,10 @@ export interface ParsedAnnotationMeta {
   foundContext?: string;
   /** pseudo_comment only — ペルソナ名 */
   persona?: string;
-  /** intent_drift only */
-  relation?: IntentDriftAnnotationMeta["relation"];
+  /** intent_drift / timeline only */
+  relation?:
+    | IntentDriftAnnotationMeta["relation"]
+    | TimelineAnnotationMeta["relation"];
   /** consistency only */
   codex?: {
     entryId: string;
@@ -70,6 +74,8 @@ export function parseAnnotationMeta(
     if (ann.category === "review") return { kind: "review", orphaned: false };
     if (ann.category === "intent_anchor")
       return { kind: "intent_drift", orphaned: false };
+    if (ann.category === "timeline_anchor")
+      return { kind: "timeline", orphaned: false };
     if (ann.category === "pseudo_comment")
       return { kind: "pseudo_comment", orphaned: false };
     return { kind: "intra", orphaned: false };
@@ -93,6 +99,18 @@ export function parseAnnotationMeta(
     const r = meta as Partial<IntentDriftAnnotationMeta>;
     return {
       kind: "intent_drift",
+      orphaned,
+      detectedByModel: r.detected_by_model,
+      llmReason: r.llm_reason,
+      relation: r.relation,
+      foundText: r.found_text,
+      foundContext: r.found_context,
+    };
+  }
+  if (ann.category === "timeline_anchor") {
+    const r = meta as Partial<TimelineAnnotationMeta>;
+    return {
+      kind: "timeline",
       orphaned,
       detectedByModel: r.detected_by_model,
       llmReason: r.llm_reason,

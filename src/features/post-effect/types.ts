@@ -124,6 +124,27 @@ export interface IntentDriftAnnotationMeta {
   orphaned?: boolean;
 }
 
+export type TimelineRelation =
+  | "chronology"
+  | "causality"
+  | "contradiction"
+  | "ambiguous";
+
+/**
+ * timeline_consistency (物語内時系列の整合性指摘) annotation の metadata。
+ * 対象シーン本文 vs 確立済タイムライン要約のズレを指摘する。intent_drift と同型。
+ */
+export interface TimelineAnnotationMeta {
+  relation?: TimelineRelation;
+  llm_reason?: string;
+  found_text?: string;
+  found_context?: string;
+  dismiss_key?: string;
+  dismiss_source?: "manual" | "run_completed" | "cascade";
+  detected_by_model?: string;
+  orphaned?: boolean;
+}
+
 /**
  * pseudo_comment (読者ペルソナによる本文横コメント) annotation の metadata。
  * persona はペルソナ名。スレッド返信は annotation.parent_id で表現する。

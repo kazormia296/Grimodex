@@ -29,6 +29,9 @@ const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.0";
 const TYPO_PROMPT_VERSION: &str = "typo_detection_v1.0";
 const REVIEW_PROMPT_VERSION: &str = "review_v1.0";
 const INTENT_DRIFT_PROMPT_VERSION: &str = "intent_drift_v1.0";
+// timeline_consistency は multi (folder/project) スコープ専用。multi コマンドは
+// prompt_version を検証しない (TS が timelinePayloadBuilder で権威を持つ) ため、
+// Rust 側に prompt_version const は持たない。
 // v2.0: ペルソナを bare label から genre/想定読者プロフィールを織り込んだ
 // brief 注入へ刷新 (TS pseudoCommentPayloadBuilder と同期)。
 const PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_v2.0";
@@ -236,6 +239,16 @@ fn dismiss_key_review(scene_id: &str, title: &str, found_text: &str) -> String {
 
 /// dismiss_key (intent_drift): same shape as review (title + found_text per scene).
 fn dismiss_key_intent_drift(scene_id: &str, title: &str, found_text: &str) -> String {
+    sha256_hex(&format!(
+        "{}|{}|{}",
+        scene_id,
+        strong_normalize(title),
+        strong_normalize(found_text)
+    ))
+}
+
+/// dismiss_key (timeline_consistency): same shape as review/intent (title + found_text per scene).
+fn dismiss_key_timeline(scene_id: &str, title: &str, found_text: &str) -> String {
     sha256_hex(&format!(
         "{}|{}|{}",
         scene_id,
@@ -2854,6 +2867,180 @@ async fn run_intent_drift_task(
     }
 }
 
+/// timeline_consistency チェックを 1 シーン分実行し、挿入したアノテーション数を返す。
+///
+/// クロスシーンの整合性は run_multi_task のシーン fan-out で扱う。物語内時系列の
+/// 順序付き要約 (title / story_time_label / 概要) は TS 側で system_prompt に注入済で、
+/// このシーン本文がその確立済タイムラインと矛盾する箇所だけを findings として返させる。
+/// 1 シーン分の処理形は process_intent_drift_scene と同型 (scene_text + system_prompt)。
+#[allow(clippy::too_many_arguments)]
+async fn process_timeline_scene(
+    app: &AppHandle,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    scene_text: &str,
+    system_prompt: &str,
+    ai_settings_path: &std::path::Path,
+    on_stage: impl Fn(f32, &str) + Send,
+) -> Result<usize, anyhow::Error> {
+    let ai_settings = read_ai_settings(ai_settings_path);
+    let api_key = match get_api_key(&ai_settings.provider) {
+        Ok(Some(k)) => k,
+        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
+        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
+    };
+
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        provider = %ai_settings.provider,
+        model = %ai_settings.model,
+        scene_chars = scene_text.chars().count(),
+        "[post_effect] timeline_consistency: calling AI"
+    );
+    let ai_start = std::time::Instant::now();
+    let raw_response =
+        call_post_effect_api(&ai_settings, &api_key, system_prompt, None, scene_text)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    run_id = run_id,
+                    scene_id = scene_id,
+                    elapsed_ms = ai_start.elapsed().as_millis(),
+                    error = %e,
+                    "[post_effect] timeline_consistency: AI call failed"
+                );
+                anyhow::anyhow!("AI 呼び出し失敗: {e}")
+            })?;
+
+    on_stage(0.5, "parsing");
+    let json_str = extract_json(&raw_response);
+    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] timeline_consistency: JSON parse FAILED"
+        );
+        anyhow::anyhow!("LLM 出力のパース失敗: {e}")
+    })?;
+
+    let findings = extract_array_field(&parsed, "findings").map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] timeline_consistency: JSON structure INVALID"
+        );
+        anyhow::anyhow!("LLM 出力の構造が不正: {e}")
+    })?;
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        findings_count = findings.len(),
+        "[post_effect] timeline_consistency: parsed findings"
+    );
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deduped: Vec<&Value> = findings
+        .iter()
+        .filter(|f| {
+            let title = strong_normalize(f["title"].as_str().unwrap_or(""));
+            let ft = strong_normalize(f["found_text"].as_str().unwrap_or(""));
+            if title.is_empty() && ft.is_empty() {
+                return false;
+            }
+            seen.insert(format!("{title}|{ft}"))
+        })
+        .collect();
+
+    on_stage(0.7, "saving");
+    let ws_state = app.state::<WorkspaceState>();
+    let count: usize = super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            let mut count = 0usize;
+
+            for finding in &deduped {
+                let title = finding["title"].as_str().unwrap_or("");
+                let note = finding["note"].as_str().unwrap_or("");
+                let relation = finding["relation"].as_str().unwrap_or("ambiguous");
+                let found_text = finding["found_text"].as_str().unwrap_or("");
+                let found_context = finding["found_context"].as_str().unwrap_or("");
+
+                let dismiss_key = dismiss_key_timeline(scene_id, title, found_text);
+                if is_annotation_previously_closed(conn, "timeline_anchor", &[&dismiss_key]) {
+                    continue;
+                }
+
+                let (range_start, range_end, orphaned) = if found_text.is_empty() {
+                    (0i64, 0i64, true)
+                } else {
+                    match find_text_position(scene_text, found_text, found_context) {
+                        Some((s, e)) => (s as i64, e as i64, false),
+                        None => (0i64, 0i64, true),
+                    }
+                };
+
+                let new_id = Uuid::new_v4().to_string();
+                let content = if title.is_empty() { note } else { title };
+                let metadata = serde_json::json!({
+                    "dismiss_key": dismiss_key,
+                    "llm_reason": note,
+                    "relation": relation,
+                    "found_text": found_text,
+                    "found_context": found_context,
+                    "detected_by_model": ai_settings.model,
+                    "orphaned": orphaned,
+                });
+
+                conn.execute(
+                    "INSERT INTO post_effect_annotations
+                        (id, project_id, run_id, anchor_type, scene_id,
+                         range_start, range_end, text_snapshot,
+                         category, severity, content, author_role,
+                         status, metadata, created_at, updated_at)
+                     VALUES (?, ?, ?, 'scene_range', ?,
+                             ?, ?, ?,
+                             'timeline_anchor', 'info', ?, 'ai',
+                             'open', ?, datetime('now'), datetime('now'))",
+                    params![
+                        new_id,
+                        project_id,
+                        run_id,
+                        scene_id,
+                        range_start,
+                        range_end,
+                        if found_text.is_empty() {
+                            None
+                        } else {
+                            Some(found_text)
+                        },
+                        content,
+                        metadata.to_string(),
+                    ],
+                )?;
+
+                let _ = app.emit(
+                    "post_effect:partial",
+                    PartialEvent {
+                        run_id,
+                        annotation_id: new_id,
+                    },
+                );
+                count += 1;
+            }
+
+            Ok(count)
+        })
+    })?;
+
+    Ok(count)
+}
+
 async fn run_review_task(
     app: AppHandle,
     run_id: String,
@@ -3426,6 +3613,19 @@ async fn run_multi_task(
                 )
                 .await
             }
+            "timeline_consistency" => {
+                process_timeline_scene(
+                    &app,
+                    &run_id,
+                    &project_id,
+                    &scene.scene_id,
+                    &scene.scene_text,
+                    &system_prompt,
+                    &ai_settings_path,
+                    |_p, _s| {},
+                )
+                .await
+            }
             _ => {
                 process_intra_scene(
                     &app,
@@ -3788,7 +3988,12 @@ pub(crate) async fn start_post_effect_run_multi(
     let effect_type = args.effect_type.as_str();
     let supported = matches!(
         effect_type,
-        "consistency" | "intra_scene_consistency" | "typo_detection" | "review" | "meta_structure"
+        "consistency"
+            | "intra_scene_consistency"
+            | "typo_detection"
+            | "review"
+            | "meta_structure"
+            | "timeline_consistency"
     );
     if !supported {
         return Err(anyhow::anyhow!("effect_type '{}' は未実装です", effect_type).into());

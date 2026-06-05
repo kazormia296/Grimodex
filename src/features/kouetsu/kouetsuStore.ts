@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type KouetsuTab = "issues" | "editorial" | "comments";
+export type KouetsuTab = "issues" | "editorial" | "comments" | "blocker";
 export type IssuesScope = "current" | "project" | "ignored";
 export type ProjectGroupBy = "scene" | "codex";
 

@@ -1113,7 +1113,7 @@ impl Database {
                 id              TEXT PRIMARY KEY,
                 project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 effect_type     TEXT NOT NULL
-                                  CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency','typo_detection','intent_drift')),
+                                  CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency','typo_detection','intent_drift','timeline_consistency')),
                 scope_type      TEXT NOT NULL
                                   CHECK(scope_type IN ('scene','folder','project')),
                 scope_target_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
@@ -1147,7 +1147,7 @@ impl Database {
                 range_end      INTEGER,
                 text_snapshot  TEXT,
                 category       TEXT NOT NULL
-                                  CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor','typo_anchor','intent_anchor')),
+                                  CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor','typo_anchor','intent_anchor','timeline_anchor')),
                 persona        TEXT,
                 severity       TEXT CHECK(severity IS NULL OR severity IN ('info','suggestion','warning','error')),
                 content        TEXT NOT NULL,
@@ -1238,6 +1238,8 @@ impl Database {
         // typo_detection / typo_anchor を追加 (新 DB は上の CREATE TABLE で済)。
         Self::migrate_post_effect_typo_categories(&conn)?;
         Self::migrate_post_effect_intent_categories(&conn)?;
+        // intent migration の後でなければ .replace ターゲットがズレるので順序厳守。
+        Self::migrate_post_effect_timeline_categories(&conn)?;
 
         // PostEffect クラッシュリカバリ: プロセス強制終了等で running のまま残った run を
         // 起動時に failed へ落とす。idx_runs_running_scope の UNIQUE が次回起動を
@@ -1529,9 +1531,7 @@ impl Database {
     }
 
     /// 既存 DB の post_effect CHECK に `intent_drift` / `intent_anchor` を追加する。
-    pub(super) fn migrate_post_effect_intent_categories(
-        conn: &Connection,
-    ) -> anyhow::Result<()> {
+    pub(super) fn migrate_post_effect_intent_categories(conn: &Connection) -> anyhow::Result<()> {
         let runs_sql: Option<String> = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'post_effect_runs'",
@@ -1564,10 +1564,7 @@ impl Database {
 
         if runs_needs {
             if let Some(old) = runs_sql {
-                let new = old.replace(
-                    "'typo_detection')",
-                    "'typo_detection','intent_drift')",
-                );
+                let new = old.replace("'typo_detection')", "'typo_detection','intent_drift')");
                 if new != old {
                     conn.execute(
                         "UPDATE sqlite_master SET sql = ?1 \
@@ -1584,10 +1581,7 @@ impl Database {
 
         if anns_needs {
             if let Some(old) = anns_sql {
-                let new = old.replace(
-                    "'typo_anchor')",
-                    "'typo_anchor','intent_anchor')",
-                );
+                let new = old.replace("'typo_anchor')", "'typo_anchor','intent_anchor')");
                 if new != old {
                     conn.execute(
                         "UPDATE sqlite_master SET sql = ?1 \
@@ -1608,6 +1602,87 @@ impl Database {
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
         if integrity != "ok" {
             anyhow::bail!("integrity_check failed after intent CHECK widening: {integrity}");
+        }
+
+        Ok(())
+    }
+
+    /// 既存 DB の post_effect CHECK に `timeline_consistency` / `timeline_anchor` を追加する。
+    ///
+    /// intent migration の **後** に走るため、.replace のターゲットは intent 追加済の
+    /// CHECK 文字列 (`'intent_drift')` / `'intent_anchor')`) でなければならない。ズレると
+    /// 一致せず silent no-op (warn) になり、既存 DB が timeline effect を insert 不能になる。
+    pub(super) fn migrate_post_effect_timeline_categories(conn: &Connection) -> anyhow::Result<()> {
+        let runs_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'post_effect_runs'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        let anns_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'post_effect_annotations'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let runs_needs = runs_sql
+            .as_deref()
+            .is_some_and(|s| !s.contains("timeline_consistency"));
+        let anns_needs = anns_sql
+            .as_deref()
+            .is_some_and(|s| !s.contains("timeline_anchor"));
+
+        if !runs_needs && !anns_needs {
+            return Ok(());
+        }
+
+        let current_version: i64 = conn.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+
+        conn.pragma_update(None, "writable_schema", true)?;
+
+        if runs_needs {
+            if let Some(old) = runs_sql {
+                let new = old.replace("'intent_drift')", "'intent_drift','timeline_consistency')");
+                if new != old {
+                    conn.execute(
+                        "UPDATE sqlite_master SET sql = ?1 \
+                         WHERE type = 'table' AND name = 'post_effect_runs'",
+                        params![new],
+                    )?;
+                } else {
+                    tracing::warn!(
+                        "post_effect_runs CHECK constraint not in expected form; skipping timeline_consistency migration"
+                    );
+                }
+            }
+        }
+
+        if anns_needs {
+            if let Some(old) = anns_sql {
+                let new = old.replace("'intent_anchor')", "'intent_anchor','timeline_anchor')");
+                if new != old {
+                    conn.execute(
+                        "UPDATE sqlite_master SET sql = ?1 \
+                         WHERE type = 'table' AND name = 'post_effect_annotations'",
+                        params![new],
+                    )?;
+                } else {
+                    tracing::warn!(
+                        "post_effect_annotations CHECK constraint not in expected form; skipping timeline_anchor migration"
+                    );
+                }
+            }
+        }
+
+        conn.pragma_update(None, "schema_version", current_version + 1)?;
+        conn.pragma_update(None, "writable_schema", false)?;
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            anyhow::bail!("integrity_check failed after timeline CHECK widening: {integrity}");
         }
 
         Ok(())
@@ -2207,7 +2282,10 @@ mod tests {
              VALUES ('r-intent', 'p1', 'intent_drift', 'scene', 'm', 'v')",
             [],
         );
-        assert!(before.is_err(), "pre-intent schema should reject intent_drift");
+        assert!(
+            before.is_err(),
+            "pre-intent schema should reject intent_drift"
+        );
 
         Database::migrate_post_effect_intent_categories(&conn).expect("migration ok");
 
@@ -2227,7 +2305,10 @@ mod tests {
              VALUES ('a-intent', 'p1', 'intent_anchor', 'x')",
             [],
         );
-        assert!(before.is_err(), "pre-intent schema should reject intent_anchor");
+        assert!(
+            before.is_err(),
+            "pre-intent schema should reject intent_anchor"
+        );
 
         Database::migrate_post_effect_intent_categories(&conn).expect("migration ok");
 
@@ -2245,6 +2326,86 @@ mod tests {
         Database::migrate_post_effect_intent_categories(&conn).expect("first");
         Database::migrate_post_effect_intent_categories(&conn).expect("second no-op");
         Database::migrate_post_effect_intent_categories(&conn).expect("third no-op");
+
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
+    }
+
+    /// timeline migration は intent migration の後に走る前提なので、テストの
+    /// ベースラインも typo + intent を適用済の状態にする。
+    fn open_post_intent_post_effect_db() -> Connection {
+        let conn = open_post_typo_post_effect_db();
+        Database::migrate_post_effect_intent_categories(&conn).expect("intent migration");
+        conn
+    }
+
+    #[test]
+    fn timeline_categories_migration_widens_runs_check() {
+        let conn = open_post_intent_post_effect_db();
+        let before = conn.execute(
+            "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+             VALUES ('r-tl', 'p1', 'timeline_consistency', 'project', 'm', 'v')",
+            [],
+        );
+        assert!(
+            before.is_err(),
+            "pre-timeline schema should reject timeline_consistency"
+        );
+
+        Database::migrate_post_effect_timeline_categories(&conn).expect("migration ok");
+
+        conn.execute(
+            "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+             VALUES ('r-tl', 'p1', 'timeline_consistency', 'project', 'm', 'v')",
+            [],
+        )
+        .expect("timeline_consistency accepted after migration");
+    }
+
+    #[test]
+    fn timeline_categories_migration_widens_annotations_check() {
+        let conn = open_post_intent_post_effect_db();
+        let before = conn.execute(
+            "INSERT INTO post_effect_annotations (id, project_id, category, content)
+             VALUES ('a-tl', 'p1', 'timeline_anchor', 'x')",
+            [],
+        );
+        assert!(
+            before.is_err(),
+            "pre-timeline schema should reject timeline_anchor"
+        );
+
+        Database::migrate_post_effect_timeline_categories(&conn).expect("migration ok");
+
+        conn.execute(
+            "INSERT INTO post_effect_annotations (id, project_id, category, content)
+             VALUES ('a-tl', 'p1', 'timeline_anchor', 'x')",
+            [],
+        )
+        .expect("timeline_anchor accepted after migration");
+    }
+
+    #[test]
+    fn timeline_categories_migration_preserves_intent_and_is_idempotent() {
+        let conn = open_post_intent_post_effect_db();
+        Database::migrate_post_effect_timeline_categories(&conn).expect("first");
+        Database::migrate_post_effect_timeline_categories(&conn).expect("second no-op");
+
+        // 既存の intent_drift / intent_anchor が消えていないこと (CHECK 文字列の累積)。
+        conn.execute(
+            "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+             VALUES ('r-keep', 'p1', 'intent_drift', 'scene', 'm', 'v')",
+            [],
+        )
+        .expect("intent_drift still accepted");
+        conn.execute(
+            "INSERT INTO post_effect_annotations (id, project_id, category, content)
+             VALUES ('a-keep', 'p1', 'intent_anchor', 'x')",
+            [],
+        )
+        .expect("intent_anchor still accepted");
 
         let integrity: String = conn
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))

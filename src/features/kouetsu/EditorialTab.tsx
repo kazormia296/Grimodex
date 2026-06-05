@@ -15,6 +15,7 @@ import { ReviewSection } from "./sections/ReviewSection";
 import { PseudoCommentSection } from "./sections/PseudoCommentSection";
 import { IntentDriftSection } from "./sections/IntentDriftSection";
 import { MetaStructureSection } from "./sections/MetaStructureSection";
+import { TimelineConsistencySection } from "./sections/TimelineConsistencySection";
 
 function SectionHeader({
   title,
@@ -55,10 +56,12 @@ export function EditorialTab() {
   const [pseudoExpanded, setPseudoExpanded] = useState(false);
   const [intentExpanded, setIntentExpanded] = useState(false);
   const [metaExpanded, setMetaExpanded] = useState(false);
+  const [timelineExpanded, setTimelineExpanded] = useState(false);
   const reviewRef = usePanelRef();
   const pseudoRef = usePanelRef();
   const intentRef = usePanelRef();
   const metaRef = usePanelRef();
+  const timelineRef = usePanelRef();
 
   const scope = useKouetsuStore((s) => s.activeEditorialScope);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
@@ -104,7 +107,7 @@ export function EditorialTab() {
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="35%"
+          defaultSize="28%"
           onResize={() => {
             setReviewExpanded(!(reviewRef.current?.isCollapsed() ?? false));
           }}
@@ -128,7 +131,7 @@ export function EditorialTab() {
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="20%"
+          defaultSize="16%"
           onResize={() => {
             setPseudoExpanded(!(pseudoRef.current?.isCollapsed() ?? false));
           }}
@@ -152,7 +155,7 @@ export function EditorialTab() {
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="25%"
+          defaultSize="20%"
           onResize={() => {
             setIntentExpanded(!(intentRef.current?.isCollapsed() ?? false));
           }}
@@ -176,7 +179,7 @@ export function EditorialTab() {
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="20%"
+          defaultSize="16%"
           onResize={() => {
             setMetaExpanded(!(metaRef.current?.isCollapsed() ?? false));
           }}
@@ -190,6 +193,30 @@ export function EditorialTab() {
           />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <MetaStructureSection />
+          </div>
+        </ResizablePanel>
+
+        <ResizableHandle horizontal withHandle />
+
+        <ResizablePanel
+          panelRef={timelineRef}
+          collapsible
+          collapsedSize={32}
+          minSize="15%"
+          defaultSize="20%"
+          onResize={() => {
+            setTimelineExpanded(!(timelineRef.current?.isCollapsed() ?? false));
+          }}
+          className="flex flex-col overflow-hidden"
+        >
+          <SectionHeader
+            title="時系列"
+            count={0}
+            expanded={timelineExpanded}
+            onToggle={() => toggle(timelineRef, timelineExpanded)}
+          />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <TimelineConsistencySection />
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>

@@ -3,7 +3,11 @@ import { cn } from "@/lib/utils";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { clipValue, type ParsedAnnotationMeta } from "./annotationMeta";
-import type { IntentDriftRelation, TypoCategory } from "./types";
+import type {
+  IntentDriftRelation,
+  TimelineRelation,
+  TypoCategory,
+} from "./types";
 
 function openCodexEntry(id: string) {
   useLayoutStore.getState().showPanel("codex");
@@ -113,34 +117,45 @@ export function TypoChip({ category }: { category: TypoCategory }) {
   );
 }
 
-const INTENT_RELATION_LABEL: Record<IntentDriftRelation, string> = {
+// intent_drift / timeline_consistency 双方の relation を日本語ラベル + tooltip 化する。
+// kind ごとに別 chip にせず 1 つで扱う (値が衝突しない union のため)。
+const RELATION_LABEL: Record<IntentDriftRelation | TimelineRelation, string> = {
   contradicts: "矛盾",
   absent: "欠落",
   dilutes: "希薄",
   ambiguous: "曖昧",
+  chronology: "時系列",
+  causality: "因果",
+  contradiction: "矛盾",
 };
 
-const INTENT_RELATION_TITLE: Record<IntentDriftRelation, string> = {
+const RELATION_TITLE: Record<IntentDriftRelation | TimelineRelation, string> = {
   contradicts: "狙いと矛盾している",
   absent: "狙いが本文に欠けている",
   dilutes: "狙いはあるが希薄",
-  ambiguous: "狙いとの関係が曖昧",
+  ambiguous: "関係が曖昧",
+  chronology: "物語内時系列と矛盾",
+  causality: "因果関係と矛盾",
+  contradiction: "確立済の事実と矛盾",
 };
 
-/** intent_drift の「狙いとのズレ方」chip。raw enum でなく日本語ラベルで表示。 */
+/**
+ * intent_drift の「狙いとのズレ方」/ timeline の「時系列とのズレ方」chip。
+ * raw enum でなく日本語ラベルで表示。relation 値は両 effect で衝突しないので共用。
+ */
 export function IntentRelationChip({
   relation,
 }: {
-  relation: IntentDriftRelation;
+  relation: IntentDriftRelation | TimelineRelation;
 }) {
   return (
     <span
-      title={`狙いズレ: ${INTENT_RELATION_TITLE[relation]}`}
+      title={RELATION_TITLE[relation]}
       className={cn(
         "inline-flex shrink-0 items-center rounded border border-border/70 bg-muted/40 px-1.5 py-0 text-[10px] text-foreground/80",
       )}
     >
-      {INTENT_RELATION_LABEL[relation]}
+      {RELATION_LABEL[relation]}
     </span>
   );
 }

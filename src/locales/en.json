@@ -636,7 +636,28 @@
     "tab": {
       "issues": "Issues",
       "editorial": "Editorial",
-      "comments": "Comments"
+      "comments": "Comments",
+      "blocker": "Blockers"
+    },
+    "blocker": {
+      "empty": "Nothing needs attention",
+      "summary_one": "{{count}} item to address",
+      "summary_other": "{{count}} items to address",
+      "more_one": "{{count}} more",
+      "more_other": "{{count}} more",
+      "untitled": "(untitled)",
+      "kind": {
+        "foreshadow_critical_weak": "Critical foreshadowing is weak",
+        "foreshadow_orphan_payoff": "Payoff with no setup",
+        "foreshadow_needs_strengthening": "Foreshadowing needs strengthening",
+        "foreshadow_abandoned": "Abandoned foreshadowing",
+        "diagnostic_severe": "Unresolved structure diagnostics",
+        "diagnostic_stale": "Scenes edited since last diagnostic",
+        "scene_unplaced_beats": "Scenes with unplaced beats",
+        "scene_loose": "Unorganized scenes",
+        "scene_intent_empty": "Scenes with no intent set",
+        "trash_salvageable": "Salvageable fragments"
+      }
     }
   },
   "chat": {
@@ -1017,7 +1038,14 @@
       "mentions": "Mentions",
       "research": "Research",
       "timeline": "Timeline",
-      "foreshadow": "Foreshadow"
+      "foreshadow": "Foreshadow",
+      "consistency": "Consistency"
+    },
+    "consistencyTab": {
+      "empty": "No contradicting passages found",
+      "count_one": "{{count}} contradicting passage",
+      "count_other": "{{count}} contradicting passages",
+      "unknownScene": "Unknown scene"
     },
     "phaseIndicator": {
       "preview": "Preview",

@@ -92,3 +92,39 @@ export function intentScopeSuffix(intent: string): string {
   if (!trimmed) return "";
   return `|intent:${normalizeText(trimmed)}`;
 }
+
+/**
+ * timeline_consistency system prompt に「物語内時系列（昇順）」の要約を挿入する。
+ * - timeline が空 → basePrompt をそのまま返す。
+ * - 非空 → JSON 区切り行の前に文脈枠で挿入。各シーンを story-time 昇順に並べた
+ *   要約 (title / story_time_label / 概要) を渡し、対象シーン本文がこの確立済
+ *   タイムラインと矛盾する箇所だけを指摘させる。
+ */
+export function appendTimelineGuidance(
+  basePrompt: string,
+  timeline: string,
+): string {
+  const trimmed = timeline.trim();
+  if (!trimmed) return basePrompt;
+
+  const idx = basePrompt.indexOf(KOUETSU_JSON_DELIMITER);
+  if (idx === -1) return basePrompt;
+
+  const before = basePrompt.slice(0, idx);
+  const after = basePrompt.slice(idx);
+  return (
+    `${before}## 物語内時系列（story-time 昇順・確立済の事実）\n` +
+    `${trimmed}\n\n` +
+    `${after}`
+  );
+}
+
+/**
+ * input_hash の scope 文字列に畳み込む timeline サフィックス。
+ * 順序付き要約が変われば cache を破棄するため、正規化した全文を畳み込む。
+ */
+export function timelineScopeSuffix(timeline: string): string {
+  const trimmed = timeline.trim();
+  if (!trimmed) return "";
+  return `|timeline:${normalizeText(trimmed)}`;
+}

@@ -636,7 +636,28 @@
     "tab": {
       "issues": "指摘",
       "editorial": "批評",
-      "comments": "コメント"
+      "comments": "コメント",
+      "blocker": "ブロッカー"
+    },
+    "blocker": {
+      "empty": "対応が必要な項目はありません",
+      "summary_one": "対応候補 {{count}}件",
+      "summary_other": "対応候補 {{count}}件",
+      "more_one": "他 {{count}}件",
+      "more_other": "他 {{count}}件",
+      "untitled": "(無題)",
+      "kind": {
+        "foreshadow_critical_weak": "重要な伏線が弱い",
+        "foreshadow_orphan_payoff": "回収だけの伏線（布石なし）",
+        "foreshadow_needs_strengthening": "補強が必要な伏線",
+        "foreshadow_abandoned": "放棄された伏線",
+        "diagnostic_severe": "未解決の構造診断",
+        "diagnostic_stale": "診断後に編集されたシーン",
+        "scene_unplaced_beats": "未配置のビートがあるシーン",
+        "scene_loose": "未整理のシーン",
+        "scene_intent_empty": "狙い未設定のシーン",
+        "trash_salvageable": "復元候補の断片"
+      }
     }
   },
   "chat": {
@@ -1017,7 +1038,14 @@
       "mentions": "言及",
       "research": "リサーチ",
       "timeline": "タイムライン",
-      "foreshadow": "伏線"
+      "foreshadow": "伏線",
+      "consistency": "整合性"
+    },
+    "consistencyTab": {
+      "empty": "矛盾する本文の指摘はありません",
+      "count_one": "矛盾する本文の指摘 {{count}}件",
+      "count_other": "矛盾する本文の指摘 {{count}}件",
+      "unknownScene": "不明なシーン"
     },
     "phaseIndicator": {
       "preview": "プレビュー",

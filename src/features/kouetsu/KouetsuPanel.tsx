@@ -5,6 +5,7 @@ import { useKouetsuStore, type KouetsuTab } from "./kouetsuStore";
 import { IssuesTab } from "./IssuesTab";
 import { EditorialTab } from "./EditorialTab";
 import { CommentsTab } from "./CommentsTab";
+import { BlockerTab } from "./BlockerTab";
 import { recordMark } from "@/lib/perfLog";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 
@@ -12,6 +13,7 @@ const TABS: { id: KouetsuTab; labelKey: string }[] = [
   { id: "issues", labelKey: "kouetsu.tab.issues" },
   { id: "editorial", labelKey: "kouetsu.tab.editorial" },
   { id: "comments", labelKey: "kouetsu.tab.comments" },
+  { id: "blocker", labelKey: "kouetsu.tab.blocker" },
 ];
 
 export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
@@ -49,6 +51,7 @@ export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
         {activeTab === "issues" && <IssuesTab />}
         {activeTab === "editorial" && <EditorialTab />}
         {activeTab === "comments" && <CommentsTab />}
+        {activeTab === "blocker" && <BlockerTab />}
       </div>
     </div>
   );
