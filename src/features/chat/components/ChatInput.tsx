@@ -380,6 +380,8 @@ export function ChatInput({
 
   const handleToggleThinking = async () => {
     if (!aiSettings) return;
+    // 常時推論モデルは thinkingEnabled:false を書かせない（トグルは ON 固定）。
+    if (caps.supportsReasoning && caps.canDisableReasoning === false) return;
     await saveSettings({
       ...aiSettings,
       thinkingEnabled: !aiSettings.thinkingEnabled,
@@ -472,6 +474,11 @@ export function ChatInput({
     caps.supportsThinking ||
     caps.supportsAdaptiveThinking ||
     caps.supportsReasoning;
+  // 常時推論モデル（o-series / pre-5.1 gpt-5 等）はトグルを ON 固定・操作不可にする。
+  const reasoningLockedOn =
+    caps.supportsReasoning && caps.canDisableReasoning === false;
+  const effectiveThinkingEnabled =
+    reasoningLockedOn || (aiSettings?.thinkingEnabled ?? true);
 
   return (
     <div className="border-t border-border p-3">
@@ -562,25 +569,31 @@ export function ChatInput({
             <span>{t("chat.agentMode")}</span>
           </button>
 
-          {/* Thinking chip: Thinking 非対応モデルでは disabled + 理由ツールチップ */}
+          {/* Thinking chip: 非対応は disabled、常時推論は ON 固定 + 理由ツールチップ */}
           <button
             type="button"
             onClick={handleToggleThinking}
-            disabled={!canThink}
-            aria-pressed={aiSettings?.thinkingEnabled ?? true}
+            disabled={!canThink || reasoningLockedOn}
+            aria-pressed={effectiveThinkingEnabled}
             title={
-              !canThink ? t("chat.thinkingUnavailable") : t("chat.thinkingMode")
+              !canThink
+                ? t("chat.thinkingUnavailable")
+                : reasoningLockedOn
+                  ? t("chat.thinkingAlwaysOn")
+                  : t("chat.thinkingMode")
             }
             className={[
               "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
               !canThink
                 ? "cursor-not-allowed text-muted-foreground/40"
-                : (aiSettings?.thinkingEnabled ?? true)
-                  ? "bg-primary/10 text-primary hover:bg-primary/15"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                : reasoningLockedOn
+                  ? "cursor-not-allowed bg-primary/10 text-primary"
+                  : effectiveThinkingEnabled
+                    ? "bg-primary/10 text-primary hover:bg-primary/15"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
             ].join(" ")}
           >
-            {(aiSettings?.thinkingEnabled ?? true) ? (
+            {effectiveThinkingEnabled ? (
               <Lightbulb className="h-3 w-3 shrink-0" />
             ) : (
               <LightbulbOff className="h-3 w-3 shrink-0" />

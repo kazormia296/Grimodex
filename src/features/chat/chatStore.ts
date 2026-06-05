@@ -2632,6 +2632,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           aiSettings?.thinkingEnabled ?? true,
           aiSettings,
           agentApiVariant,
+          aiSettings?.reasoningEffortOverride ?? undefined,
         );
 
         // Accumulate tool calls for live metadata update
@@ -3065,6 +3066,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         aiSettings?.thinkingEnabled ?? true,
         aiSettings,
         chatApiVariant,
+        aiSettings?.reasoningEffortOverride ?? undefined,
       );
       const apiPayload = messagesForApi.map((m) => ({
         role: m.role,

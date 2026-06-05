@@ -23,6 +23,17 @@ export interface ModelCapabilities {
   supportsEffort: boolean;
   supportsMaxEffort: boolean; // Opus 4.6 限定
   supportsReasoning: boolean; // Ollama/OpenRouter 推論モデル用
+  /**
+   * reasoning を OFF にできるか。absent ⇒ 無効化可（既存 qwen3/deepseek-r1 互換）。
+   * false の場合は常時推論（o-series / pre-5.1 gpt-5 等）。UI トグルを ON 固定にし、
+   * disabling パラメータ（reasoning:{effort:"none"} 等）を一切送らない。
+   */
+  canDisableReasoning?: boolean;
+  /**
+   * 許可する reasoning effort 値。absent ⇒ low/medium/high 全許可。
+   * gpt-5-pro のような high 固定モデルは ["high"] にし、低 effort を 400 回避のため clamp する。
+   */
+  reasoningEffortValues?: Array<"low" | "medium" | "high">;
 }
 
 const DEFAULT_CAPABILITIES: ModelCapabilities = {
@@ -142,6 +153,137 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsMaxEffort: false,
     supportsReasoning: true,
   },
+  // OpenAI reasoning モデル（OpenRouter / OpenAI 直叩き両対応）。
+  // 注: バージョンのドットはダッシュで保持（normalizeModelVersion が "5.1"→"5-1" に正規化）。
+  // o-series は常時推論（reasoning OFF 不可）。
+  o3: {
+    contextWindow: 200_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+    canDisableReasoning: false,
+  },
+  "o3-mini": {
+    contextWindow: 200_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+    canDisableReasoning: false,
+  },
+  "o4-mini": {
+    contextWindow: 200_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+    canDisableReasoning: false,
+  },
+  // gpt-5 / gpt-5-mini は 5.1 より前 ⇒ reasoning_effort:"none" 非対応 ⇒ 常時推論扱い。
+  "gpt-5": {
+    contextWindow: 400_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+    canDisableReasoning: false,
+  },
+  "gpt-5-mini": {
+    contextWindow: 400_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+    canDisableReasoning: false,
+  },
+  // gpt-5.1 以降は reasoning_effort:"none" 対応 ⇒ toggleable（canDisableReasoning absent）。
+  "gpt-5-1": {
+    contextWindow: 400_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+  },
+  "gpt-5-2": {
+    contextWindow: 400_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+  },
+  "gpt-5-4": {
+    contextWindow: 1_050_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+  },
+  "gpt-5-4-mini": {
+    contextWindow: 400_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+  },
+  "gpt-5-4-nano": {
+    contextWindow: 400_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+  },
+  "gpt-5-5": {
+    contextWindow: 1_050_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+  },
+  // gpt-5-pro は high 固定。low/medium を送ると 400 になるため effort を high に clamp。
+  "gpt-5-pro": {
+    contextWindow: 400_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: true,
+    canDisableReasoning: false,
+    reasoningEffortValues: ["high"],
+  },
+  // gpt-5-chat は非 reasoning（明示ガード。startsWith で gpt-5 に巻き込まれないよう最長一致必須）。
+  "gpt-5-chat": {
+    contextWindow: 400_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning: false,
+  },
 };
 
 /** OpenRouter プレフィックス付きモデルの能力マッピング */
@@ -155,6 +297,20 @@ const OPENROUTER_PREFIXED: Record<string, string> = {
   "anthropic/claude-sonnet-4-5-20250929": "claude-sonnet-4-5-20250929",
   "qwen/qwen3": "qwen3",
   "deepseek/deepseek-r1": "deepseek-r1",
+  // OpenAI reasoning（ダッシュ保持。ドット入力は normalizeModelVersion 経由で解決）。
+  "openai/o3": "o3",
+  "openai/o3-mini": "o3-mini",
+  "openai/o4-mini": "o4-mini",
+  "openai/gpt-5": "gpt-5",
+  "openai/gpt-5-mini": "gpt-5-mini",
+  "openai/gpt-5-1": "gpt-5-1",
+  "openai/gpt-5-2": "gpt-5-2",
+  "openai/gpt-5-4": "gpt-5-4",
+  "openai/gpt-5-4-mini": "gpt-5-4-mini",
+  "openai/gpt-5-4-nano": "gpt-5-4-nano",
+  "openai/gpt-5-5": "gpt-5-5",
+  "openai/gpt-5-pro": "gpt-5-pro",
+  "openai/gpt-5-chat": "gpt-5-chat",
 };
 
 /**
@@ -184,12 +340,19 @@ export function getModelCapabilities(model: string): ModelCapabilities {
     if (caps !== DEFAULT_CAPABILITIES) return caps;
   }
 
-  // 日付サフィックス付きモデルへの対応 (例: "anthropic/claude-sonnet-4-6-20250514")
-  for (const [prefixed, canonical] of Object.entries(OPENROUTER_PREFIXED)) {
+  // 日付サフィックス付きモデルへの対応 (例: "anthropic/claude-sonnet-4-6-20250514")。
+  // 最長一致: "gpt-5-chat" を "gpt-5" より先に、"o3-mini" を "o3" より先に判定する。
+  const prefixedByLen = Object.entries(OPENROUTER_PREFIXED).sort(
+    ([a], [b]) => b.length - a.length,
+  );
+  for (const [prefixed, canonical] of prefixedByLen) {
     if (model.startsWith(prefixed) && MODEL_CAPABILITIES[canonical])
       return MODEL_CAPABILITIES[canonical];
   }
-  for (const key of Object.keys(MODEL_CAPABILITIES)) {
+  const keysByLen = Object.keys(MODEL_CAPABILITIES).sort(
+    (a, b) => b.length - a.length,
+  );
+  for (const key of keysByLen) {
     if (model.startsWith(key)) return MODEL_CAPABILITIES[key];
   }
 
@@ -278,6 +441,8 @@ export function resolveModelCapabilities(
     supportsThinking: false,
     supportsAdaptiveThinking: false,
     supportsEffort: false,
+    // bare な o3/gpt-5/qwen3 系 id を指すカスタム endpoint に reasoning が漏れるのを防ぐ。
+    supportsReasoning: false,
   };
 }
 
@@ -328,6 +493,25 @@ export interface ThinkingParams {
   reasoningEffort?: EffortLevel;
 }
 
+/**
+ * reasoning effort を許可値に丸める。
+ * - max は high 相当に正規化（OpenAI/OpenRouter の reasoning_effort に max は無い）。
+ * - allowed が指定され範囲外なら、許可リスト内の最高値を返す（例: gpt-5-pro ["high"] → 常に high）。
+ */
+export function clampReasoningEffort(
+  requested: EffortLevel,
+  allowed?: Array<"low" | "medium" | "high">,
+): EffortLevel {
+  const normalized: "low" | "medium" | "high" =
+    requested === "max" ? "high" : requested;
+  if (!allowed || allowed.length === 0) return normalized;
+  if (allowed.includes(normalized)) return normalized;
+  for (const lvl of ["high", "medium", "low"] as const) {
+    if (allowed.includes(lvl)) return lvl;
+  }
+  return normalized;
+}
+
 /** モデルとタスクに応じた thinking/effort パラメータを構築する（設計書 L627-647 準拠） */
 export function buildThinkingParams(
   model: string,
@@ -340,21 +524,32 @@ export function buildThinkingParams(
     aiNovelist?: unknown;
   } | null,
   apiVariant?: string | null,
+  effortOverride?: "low" | "medium" | "high",
 ): ThinkingParams {
-  if (!enabled) return {};
   const caps = settings
     ? resolveModelCapabilities(model, settings, apiVariant)
     : getModelCapabilities(model);
 
+  // 常時推論モデル（o-series / pre-5.1 gpt-5 等）は OFF でも推論する。
+  const alwaysOn = caps.supportsReasoning && caps.canDisableReasoning === false;
+  const effectiveEnabled = enabled || alwaysOn;
+  // effort 上書きは reasoning 分岐でのみ適用（Anthropic には漏らさない）。
+  const requestedReasoningEffort = effortOverride ?? taskEffort;
+  const reasoningEffort = clampReasoningEffort(
+    requestedReasoningEffort,
+    caps.reasoningEffortValues,
+  );
+
   if (caps.supportsAdaptiveThinking) {
     // Opus 4.6, Sonnet 4.6: adaptive thinking + effort
-    return {
-      thinking: { type: "adaptive", effort: taskEffort, display },
-    };
+    return enabled
+      ? { thinking: { type: "adaptive", effort: taskEffort, display } }
+      : {};
   }
 
   if (caps.supportsThinking) {
     // Opus 4.5, Sonnet 4.5 等: budget_tokens + effort
+    if (!enabled) return {};
     const budgetTokens = Math.floor(caps.contextWindow * 0.8 * 0.05);
     return {
       thinking: { type: "enabled", budget_tokens: budgetTokens, display },
@@ -363,15 +558,15 @@ export function buildThinkingParams(
   }
 
   if (caps.supportsReasoning) {
-    // Ollama/OpenRouter 推論モデル: reasoningEnabled/reasoningEffort
-    return {
-      reasoningEnabled: enabled,
-      reasoningEffort: enabled ? taskEffort : undefined,
-    };
+    // Ollama/OpenRouter/OpenAI 推論モデル: reasoningEnabled/reasoningEffort
+    if (effectiveEnabled) return { reasoningEnabled: true, reasoningEffort };
+    // toggleable OFF → 明示的に無効化（OpenRouter effort:"none" / OpenAI gpt-5.1+ none に到達）。
+    // always-on は effectiveEnabled=true なのでここに来ない（disabling を送らない）。
+    return { reasoningEnabled: false };
   }
 
   if (caps.supportsEffort) {
-    return { effort: taskEffort };
+    return enabled ? { effort: taskEffort } : {};
   }
 
   return {};

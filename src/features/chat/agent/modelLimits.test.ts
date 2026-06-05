@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildThinkingParams,
+  clampReasoningEffort,
   formatContextWindow,
   getEffortForTask,
   getModelCapabilities,
@@ -241,9 +242,9 @@ describe("buildThinkingParams", () => {
     expect(params.reasoningEffort).toBe("medium");
   });
 
-  it("qwen3 + enabled=false: reasoningEnabled=true だが reasoningEffort は undefined", () => {
+  it("qwen3 + enabled=false (toggleable): reasoningEnabled=false で明示無効化", () => {
     const params = buildThinkingParams("qwen3", "high", "summarized", false);
-    expect(params.reasoningEnabled).toBeUndefined();
+    expect(params.reasoningEnabled).toBe(false);
     expect(params.reasoningEffort).toBeUndefined();
   });
 
@@ -251,6 +252,143 @@ describe("buildThinkingParams", () => {
     const params = buildThinkingParams("qwen/qwen3-235b-a22b", "low");
     expect(params.reasoningEnabled).toBe(true);
     expect(params.reasoningEffort).toBe("low");
+  });
+});
+
+describe("OpenAI reasoning モデルの能力解決", () => {
+  it("o3: reasoning 対応・常時推論 (canDisableReasoning=false)", () => {
+    const caps = getModelCapabilities("o3");
+    expect(caps.supportsReasoning).toBe(true);
+    expect(caps.canDisableReasoning).toBe(false);
+    expect(caps.supportsTools).toBe(true);
+  });
+
+  it("openai/o3 (OpenRouter プレフィックス) を解決する", () => {
+    const caps = getModelCapabilities("openai/o3");
+    expect(caps.supportsReasoning).toBe(true);
+    expect(caps.canDisableReasoning).toBe(false);
+  });
+
+  it("o3-mini は o3 に誤マッチしない (最長一致)", () => {
+    const o3 = getModelCapabilities("o3");
+    const mini = getModelCapabilities("o3-mini");
+    // どちらも reasoning だが別エントリとして解決される。
+    expect(mini.supportsReasoning).toBe(true);
+    // o3-mini の dated 変種も o3-mini に解決する。
+    const dated = getModelCapabilities("openai/o3-mini-2025-01-31");
+    expect(dated.supportsReasoning).toBe(true);
+    expect(o3).not.toBe(undefined);
+  });
+
+  it("gpt-5 / gpt-5-mini は常時推論 (canDisableReasoning=false)", () => {
+    expect(getModelCapabilities("gpt-5").canDisableReasoning).toBe(false);
+    expect(getModelCapabilities("gpt-5-mini").canDisableReasoning).toBe(false);
+  });
+
+  it("gpt-5.1 (ドット表記) は toggleable reasoning", () => {
+    const caps = getModelCapabilities("gpt-5.1");
+    expect(caps.supportsReasoning).toBe(true);
+    expect(caps.canDisableReasoning).toBeUndefined();
+  });
+
+  it("gpt-5-pro は high 固定 (reasoningEffortValues=['high'])", () => {
+    const caps = getModelCapabilities("gpt-5-pro");
+    expect(caps.supportsReasoning).toBe(true);
+    expect(caps.canDisableReasoning).toBe(false);
+    expect(caps.reasoningEffortValues).toEqual(["high"]);
+  });
+
+  it("gpt-5-chat は非 reasoning (gpt-5 に巻き込まれない)", () => {
+    const caps = getModelCapabilities("gpt-5-chat");
+    expect(caps.supportsReasoning).toBe(false);
+    const dated = getModelCapabilities("openai/gpt-5-chat-2025-01-01");
+    expect(dated.supportsReasoning).toBe(false);
+  });
+
+  it("openai-compatible カスタム endpoint では reasoning を無効化する", () => {
+    const caps = resolveModelCapabilities(
+      "o3",
+      { provider: "openai-compatible", openaiCompatible: {} },
+      null,
+    );
+    expect(caps.supportsReasoning).toBe(false);
+  });
+});
+
+describe("clampReasoningEffort", () => {
+  it("allowed 未指定なら max を high に正規化、それ以外は素通し", () => {
+    expect(clampReasoningEffort("low")).toBe("low");
+    expect(clampReasoningEffort("high")).toBe("high");
+    expect(clampReasoningEffort("max")).toBe("high");
+  });
+  it("['high'] 固定なら low/medium も high に丸める", () => {
+    expect(clampReasoningEffort("low", ["high"])).toBe("high");
+    expect(clampReasoningEffort("medium", ["high"])).toBe("high");
+    expect(clampReasoningEffort("high", ["high"])).toBe("high");
+  });
+});
+
+describe("buildThinkingParams: OpenAI reasoning + effort 上書き", () => {
+  it("o3 ON: reasoningEnabled=true, effort=high", () => {
+    const params = buildThinkingParams("o3", "high");
+    expect(params.reasoningEnabled).toBe(true);
+    expect(params.reasoningEffort).toBe("high");
+  });
+
+  it("o3 (always-on) + enabled=false でも推論を維持する", () => {
+    const params = buildThinkingParams("o3", "high", "summarized", false);
+    expect(params.reasoningEnabled).toBe(true);
+    expect(params.reasoningEffort).toBe("high");
+  });
+
+  it("gpt-5.1 (toggleable) + enabled=false → reasoningEnabled=false", () => {
+    const params = buildThinkingParams(
+      "gpt-5.1",
+      "medium",
+      "summarized",
+      false,
+    );
+    expect(params.reasoningEnabled).toBe(false);
+  });
+
+  it("gpt-5-pro は task/override が low でも effort=high に clamp", () => {
+    const params = buildThinkingParams(
+      "gpt-5-pro",
+      "low",
+      "summarized",
+      true,
+      null,
+      null,
+      "low",
+    );
+    expect(params.reasoningEffort).toBe("high");
+  });
+
+  it("effortOverride が taskEffort に優先する", () => {
+    const params = buildThinkingParams(
+      "qwen3",
+      "high",
+      "summarized",
+      true,
+      null,
+      null,
+      "low",
+    );
+    expect(params.reasoningEffort).toBe("low");
+  });
+
+  it("effortOverride は Anthropic adaptive には漏れない", () => {
+    const params = buildThinkingParams(
+      "claude-opus-4-6",
+      "high",
+      "summarized",
+      true,
+      null,
+      null,
+      "low",
+    );
+    // adaptive は taskEffort をそのまま使う。
+    expect(params.thinking?.effort).toBe("high");
   });
 });
 

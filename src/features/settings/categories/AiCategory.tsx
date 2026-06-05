@@ -280,9 +280,22 @@ export function AiCategory() {
   }
 
   async function handleThinkingToggle() {
+    if (!localSettings) return;
+    // 常時推論モデルは thinkingEnabled:false を書かせない（トグルは ON 固定）。
+    const apiVariant = resolveAinoveristApiVariant(
+      localSettings.model,
+      models,
+      localSettings.modelApiVariant,
+    );
+    const caps = resolveModelCapabilities(
+      localSettings.model,
+      localSettings,
+      apiVariant,
+    );
+    if (caps.supportsReasoning && caps.canDisableReasoning === false) return;
     const updated = {
-      ...localSettings!,
-      thinkingEnabled: !localSettings!.thinkingEnabled,
+      ...localSettings,
+      thinkingEnabled: !localSettings.thinkingEnabled,
     };
     setLocalSettings(updated);
     await saveSettings(updated);
@@ -927,7 +940,7 @@ export function AiCategory() {
           );
         })()}
 
-        {/* Thinking toggle — thinking対応モデル選択時のみ表示 */}
+        {/* Thinking toggle + reasoning effort — thinking対応モデル選択時のみ表示 */}
         {localSettings.model &&
           (() => {
             const selectedApiVariant = resolveAinoveristApiVariant(
@@ -940,35 +953,84 @@ export function AiCategory() {
               localSettings,
               selectedApiVariant,
             );
-            return (
+            const canThink =
               caps.supportsAdaptiveThinking ||
               caps.supportsThinking ||
-              caps.supportsReasoning
+              caps.supportsReasoning;
+            if (!canThink) return null;
+            // 常時推論モデルはトグルを ON 固定・操作不可にする。
+            const reasoningLockedOn =
+              caps.supportsReasoning && caps.canDisableReasoning === false;
+            const thinkingOn =
+              reasoningLockedOn || localSettings.thinkingEnabled;
+            const effortValues = caps.reasoningEffortValues ?? [
+              "low",
+              "medium",
+              "high",
+            ];
+            return (
+              <>
+                <SettingRow
+                  label={t("settings.ai.thinkingMode")}
+                  description={
+                    reasoningLockedOn
+                      ? t("chat.thinkingAlwaysOn")
+                      : t("settings.ai.thinkingModeDesc")
+                  }
+                >
+                  <button
+                    type="button"
+                    onClick={handleThinkingToggle}
+                    disabled={reasoningLockedOn}
+                    aria-pressed={thinkingOn}
+                    title={
+                      reasoningLockedOn ? t("chat.thinkingAlwaysOn") : undefined
+                    }
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-70 ${
+                      thinkingOn ? "bg-primary" : "bg-muted-foreground/30"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                        thinkingOn ? "translate-x-4" : "translate-x-0.5"
+                      }`}
+                    />
+                  </button>
+                </SettingRow>
+                {caps.supportsReasoning && (
+                  <SettingRow
+                    label={t("settings.ai.reasoningEffort")}
+                    description={t("settings.ai.reasoningEffortDesc")}
+                  >
+                    <select
+                      value={localSettings.reasoningEffortOverride ?? ""}
+                      disabled={effortValues.length <= 1}
+                      onChange={async (e) => {
+                        const v = e.target.value;
+                        const updated = {
+                          ...localSettings!,
+                          reasoningEffortOverride:
+                            v === "" ? null : (v as "low" | "medium" | "high"),
+                        };
+                        setLocalSettings(updated);
+                        await saveSettings(updated);
+                      }}
+                      className="rounded-md border border-input bg-background px-2 py-1 text-sm disabled:opacity-50"
+                    >
+                      <option value="">
+                        {t("settings.ai.reasoningEffortAuto")}
+                      </option>
+                      {effortValues.map((lvl) => (
+                        <option key={lvl} value={lvl}>
+                          {lvl}
+                        </option>
+                      ))}
+                    </select>
+                  </SettingRow>
+                )}
+              </>
             );
-          })() && (
-            <SettingRow
-              label={t("settings.ai.thinkingMode")}
-              description={t("settings.ai.thinkingModeDesc")}
-            >
-              <button
-                type="button"
-                onClick={handleThinkingToggle}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
-                  localSettings.thinkingEnabled
-                    ? "bg-primary"
-                    : "bg-muted-foreground/30"
-                }`}
-              >
-                <span
-                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                    localSettings.thinkingEnabled
-                      ? "translate-x-4"
-                      : "translate-x-0.5"
-                  }`}
-                />
-              </button>
-            </SettingRow>
-          )}
+          })()}
 
         {/* OpenRouter provider pin (OpenRouter 選択時のみ) */}
         {localSettings.provider === "openrouter" && (

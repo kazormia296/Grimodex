@@ -216,6 +216,10 @@ pub struct AiSettings {
     /// 選択中モデルの API 経路 ("legacy" | "v1")。バックエンド専用呼び出しの fallback 用。
     #[serde(default, rename = "modelApiVariant")]
     pub model_api_variant: Option<String>,
+    /// reasoning effort 上書き ("low" | "medium" | "high")。
+    /// Rust は chat では読まないが、設定の save 往復で serde に捨てられないよう構造体に保持する。
+    #[serde(default)]
+    pub reasoning_effort_override: Option<String>,
 }
 
 impl AiSettings {
@@ -239,6 +243,7 @@ impl Default for AiSettings {
             cli: None,
             openrouter_provider_pin: None,
             model_api_variant: None,
+            reasoning_effort_override: None,
         }
     }
 }
@@ -362,9 +367,55 @@ fn is_ainoverist_v1(params: &ChatParams<'_>) -> bool {
 fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
     if is_ainoverist_v1(params) {
         ai_novelist::length_for(params.model)
+    } else if matches!(params.provider, AiProvider::OpenAI) {
+        // OpenAI 直叩き reasoning モデルは hidden reasoning も max_completion_tokens に
+        // 課金されるため、4096 では content が空 (finish_reason:length) になりうる。余裕を持たせる。
+        32_000
     } else {
         4096
     }
+}
+
+/// OpenAI-compatible body にトークン上限を挿入する。
+/// OpenAI 直叩きは reasoning モデルが `max_tokens` を 400 拒否するため `max_completion_tokens` を使う。
+/// OpenRouter は OpenAI モデルでも OpenRouter wire format なので `max_tokens` のままでよい。
+fn insert_chat_completion_token_limit(
+    body: &mut serde_json::Value,
+    provider: &AiProvider,
+    value: u32,
+) {
+    let key = if matches!(provider, AiProvider::OpenAI) {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
+    body[key] = serde_json::json!(value);
+}
+
+/// gpt-5.1 以降は `reasoning_effort:"none"` 対応。それ以前 (o3 / o4-mini / gpt-5 / gpt-5-mini) は非対応。
+/// gpt-5-pro (high 固定) と gpt-5-chat (非 reasoning) は対象外。ドット/ダッシュ両表記を許容。
+fn openai_model_supports_reasoning_none(model: &str) -> bool {
+    let m = model.strip_prefix("openai/").unwrap_or(model);
+    if m.starts_with("gpt-5-pro") || m.starts_with("gpt-5-chat") {
+        return false;
+    }
+    for sep in ['.', '-'] {
+        let prefix = format!("gpt-5{sep}");
+        if let Some(rest) = m.strip_prefix(&prefix) {
+            if let Some(first) = rest.chars().next() {
+                if first.is_ascii_digit() && first != '0' {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// gpt-5-pro は effort=high 固定。low/medium を送ると 400 になるため high に丸める。
+fn openai_model_requires_high_effort(model: &str) -> bool {
+    let m = model.strip_prefix("openai/").unwrap_or(model);
+    m.starts_with("gpt-5-pro")
 }
 
 /// Read AI settings from the given file path.
@@ -629,13 +680,20 @@ pub async fn test_connection(
                 "{}/chat/completions",
                 provider.openai_compat_base_url(endpoints, api_variant)
             );
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "model": model,
-                "max_tokens": 32,
                 "messages": [
                     { "role": "user", "content": "Reply with exactly: Connection OK" }
                 ]
             });
+            // OpenAI 直叩きは reasoning モデルだと 32 トークンでは hidden reasoning だけで
+            // 枯れる + `max_tokens` を 400 拒否するため、key/予算を分岐する。
+            let probe_limit = if matches!(provider, AiProvider::OpenAI) {
+                1024
+            } else {
+                32
+            };
+            insert_chat_completion_token_limit(&mut body, provider, probe_limit);
 
             let mut req = client.post(&url).header("content-type", "application/json");
 
@@ -1308,13 +1366,18 @@ pub async fn send_chat(
 
             let mut body = serde_json::json!({
                 "model": params.model,
-                "max_tokens": openai_max_tokens(params),
                 "messages": chat_messages,
             });
+            insert_chat_completion_token_limit(
+                &mut body,
+                params.provider,
+                openai_max_tokens(params),
+            );
             apply_reasoning_to_body(
                 &mut body,
                 params.provider,
                 params.api_variant.as_deref(),
+                params.model,
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
@@ -1593,15 +1656,18 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
         }
     }
 
-    // OpenRouter: message.reasoning_content フィールド
-    if let Some(reasoning) = message["reasoning_content"].as_str() {
-        if !reasoning.is_empty() {
-            blocks.push(ResponseBlock::Thinking {
-                content: reasoning.to_string(),
-                summary: None,
-                signature: None,
-            });
-        }
+    // OpenRouter は message.reasoning が canonical、reasoning_content は alias。
+    // 両方読み、空でない最初のものを採用する（重複 push を防ぐ）。
+    let reasoning_text = message["reasoning"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .or_else(|| message["reasoning_content"].as_str().filter(|s| !s.is_empty()));
+    if let Some(reasoning) = reasoning_text {
+        blocks.push(ResponseBlock::Thinking {
+            content: reasoning.to_string(),
+            summary: None,
+            signature: None,
+        });
     }
 
     if let Some(content) = message["content"].as_str() {
@@ -1662,11 +1728,12 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
     })
 }
 
-/// Ollama / OpenRouter / AI のべりすと v1 向け reasoning パラメータを適用する。
+/// Ollama / OpenRouter / OpenAI 直叩き / AI のべりすと v1 向け reasoning パラメータを適用する。
 fn apply_reasoning_to_body(
     body: &mut serde_json::Value,
     provider: &AiProvider,
     api_variant: Option<&str>,
+    model: &str,
     reasoning_enabled: Option<bool>,
     reasoning_effort: &Option<String>,
 ) {
@@ -1688,6 +1755,32 @@ fn apply_reasoning_to_body(
             } else {
                 body["reasoning"] = serde_json::json!({ "effort": "none" });
             }
+        }
+    }
+
+    // OpenAI 直叩き: reasoning_effort (文字列)。OpenRouter の reasoning オブジェクトとは別形式。
+    if matches!(provider, AiProvider::OpenAI) {
+        match reasoning_enabled {
+            Some(true) => {
+                let effort = match reasoning_effort.as_deref() {
+                    // TS 側 EffortLevel に xhigh/minimal は無い。max は high に丸める。
+                    Some("max") => "high",
+                    Some(e @ ("low" | "medium" | "high")) => e,
+                    _ => "medium",
+                };
+                // gpt-5-pro は high 固定 (low/medium は 400)。FE でも clamp するが Rust でも保険。
+                let effort = if openai_model_requires_high_effort(model) {
+                    "high"
+                } else {
+                    effort
+                };
+                body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
+            }
+            // OFF は none 対応モデル (gpt-5.1+) のみ。o3/gpt-5 等には disabling を送らない。
+            Some(false) if openai_model_supports_reasoning_none(model) => {
+                body["reasoning_effort"] = serde_json::Value::String("none".to_string());
+            }
+            _ => {}
         }
     }
 
@@ -2078,14 +2171,19 @@ pub async fn send_chat_with_tools(
 
             let mut body = serde_json::json!({
                 "model": params.model,
-                "max_tokens": openai_max_tokens(params),
                 "messages": openai_messages,
                 "tools": openai_tools
             });
+            insert_chat_completion_token_limit(
+                &mut body,
+                params.provider,
+                openai_max_tokens(params),
+            );
             apply_reasoning_to_body(
                 &mut body,
                 params.provider,
                 params.api_variant.as_deref(),
+                params.model,
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
@@ -2216,12 +2314,23 @@ pub async fn call_post_effect_api(
             );
             let mut body = serde_json::json!({
                 "model": settings.model,
-                "max_tokens": 4096,
                 "messages": [
                     { "role": "system", "content": system_prompt },
                     { "role": "user",   "content": user_blocks }
                 ]
             });
+            // OpenAI 直叩きは reasoning モデルが max_tokens を 400 拒否するため
+            // max_completion_tokens に切替 + 予算を確保する。
+            let post_effect_limit = if matches!(settings.provider, AiProvider::OpenAI) {
+                32_000
+            } else {
+                4096
+            };
+            insert_chat_completion_token_limit(
+                &mut body,
+                &settings.provider,
+                post_effect_limit,
+            );
             apply_openrouter_provider_pin(
                 &mut body,
                 &settings.provider,
@@ -2564,14 +2673,19 @@ pub async fn send_chat_stream(
 
             let mut body = serde_json::json!({
                 "model": params.model,
-                "max_tokens": openai_max_tokens(params),
                 "messages": chat_messages,
                 "stream": true,
             });
+            insert_chat_completion_token_limit(
+                &mut body,
+                params.provider,
+                openai_max_tokens(params),
+            );
             apply_reasoning_to_body(
                 &mut body,
                 params.provider,
                 params.api_variant.as_deref(),
+                params.model,
                 params.reasoning_enabled,
                 &params.reasoning_effort,
             );
@@ -2679,17 +2793,23 @@ pub async fn send_chat_stream(
                                 }
                             }
 
-                            // OpenRouter: reasoning_content フィールド
-                            if let Some(reasoning) = delta["reasoning_content"].as_str() {
-                                if !reasoning.is_empty() {
-                                    let _ = app_handle.emit(
-                                        &chunk_event,
-                                        serde_json::json!({
-                                            "delta": reasoning,
-                                            "block_type": "thinking"
-                                        }),
-                                    );
-                                }
+                            // OpenRouter は delta.reasoning が canonical、reasoning_content は alias。
+                            let reasoning_delta = delta["reasoning"]
+                                .as_str()
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| {
+                                    delta["reasoning_content"]
+                                        .as_str()
+                                        .filter(|s| !s.is_empty())
+                                });
+                            if let Some(reasoning) = reasoning_delta {
+                                let _ = app_handle.emit(
+                                    &chunk_event,
+                                    serde_json::json!({
+                                        "delta": reasoning,
+                                        "block_type": "thinking"
+                                    }),
+                                );
                             }
 
                             if let Some(content) = openai_stream_delta_content(delta) {
@@ -2981,6 +3101,7 @@ mod tests {
             cli: None,
             openrouter_provider_pin: None,
             model_api_variant: None,
+            reasoning_effort_override: Some("high".to_string()),
         };
 
         write_ai_settings(&path, &settings).expect("write");
@@ -2988,6 +3109,8 @@ mod tests {
 
         assert_eq!(loaded.provider, AiProvider::OpenAI);
         assert_eq!(loaded.model, "gpt-4o");
+        // save 往復で override が消えないこと（SHIP-BREAKER B）。
+        assert_eq!(loaded.reasoning_effort_override.as_deref(), Some("high"));
 
         cleanup(&path);
         fs::remove_dir_all(&dir).ok();
@@ -3146,6 +3269,7 @@ mod tests {
             &mut body,
             &AiProvider::AiNovelist,
             Some("v1"),
+            "spiko_ultra",
             Some(true),
             &Some("high".to_string()),
         );
@@ -3160,10 +3284,219 @@ mod tests {
             &mut body,
             &AiProvider::AiNovelist,
             Some("legacy"),
+            "spiko_ultra",
             Some(true),
             &Some("high".to_string()),
         );
         assert!(body.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_apply_reasoning_openrouter_on_off() {
+        // ON: effort 指定なし → medium
+        let mut body = serde_json::json!({});
+        apply_reasoning_to_body(
+            &mut body,
+            &AiProvider::OpenRouter,
+            None,
+            "openai/gpt-5",
+            Some(true),
+            &None,
+        );
+        assert_eq!(body["reasoning"], serde_json::json!({ "effort": "medium" }));
+
+        // ON: low/high passthrough, max → xhigh
+        for (input, expected) in [("low", "low"), ("high", "high"), ("max", "xhigh")] {
+            let mut body = serde_json::json!({});
+            apply_reasoning_to_body(
+                &mut body,
+                &AiProvider::OpenRouter,
+                None,
+                "qwen/qwen3",
+                Some(true),
+                &Some(input.to_string()),
+            );
+            assert_eq!(body["reasoning"]["effort"], expected);
+        }
+
+        // OFF (toggleable) → effort:none
+        let mut body = serde_json::json!({});
+        apply_reasoning_to_body(
+            &mut body,
+            &AiProvider::OpenRouter,
+            None,
+            "qwen/qwen3",
+            Some(false),
+            &None,
+        );
+        assert_eq!(body["reasoning"], serde_json::json!({ "effort": "none" }));
+    }
+
+    #[test]
+    fn test_apply_reasoning_openai_direct() {
+        // ON: passthrough、max → high
+        for (input, expected) in [
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("max", "high"),
+        ] {
+            let mut body = serde_json::json!({});
+            apply_reasoning_to_body(
+                &mut body,
+                &AiProvider::OpenAI,
+                None,
+                "gpt-5.1",
+                Some(true),
+                &Some(input.to_string()),
+            );
+            assert_eq!(body["reasoning_effort"], expected);
+            assert!(body.get("reasoning").is_none(), "OpenAI は reasoning object を使わない");
+        }
+
+        // OFF: gpt-5.1+ は none、それ以前/o3 はキー無し
+        let mut body = serde_json::json!({});
+        apply_reasoning_to_body(
+            &mut body,
+            &AiProvider::OpenAI,
+            None,
+            "gpt-5.1",
+            Some(false),
+            &None,
+        );
+        assert_eq!(body["reasoning_effort"], "none");
+
+        for model in ["gpt-5", "o3", "o4-mini"] {
+            let mut body = serde_json::json!({});
+            apply_reasoning_to_body(
+                &mut body,
+                &AiProvider::OpenAI,
+                None,
+                model,
+                Some(false),
+                &None,
+            );
+            assert!(
+                body.get("reasoning_effort").is_none(),
+                "{model}: none 非対応モデルに disabling を送ってはいけない"
+            );
+        }
+    }
+
+    #[test]
+    fn test_apply_reasoning_openai_gpt5_pro_clamps_high() {
+        for input in ["low", "medium", "high"] {
+            let mut body = serde_json::json!({});
+            apply_reasoning_to_body(
+                &mut body,
+                &AiProvider::OpenAI,
+                None,
+                "gpt-5-pro",
+                Some(true),
+                &Some(input.to_string()),
+            );
+            assert_eq!(body["reasoning_effort"], "high");
+        }
+    }
+
+    #[test]
+    fn test_openai_model_supports_reasoning_none() {
+        for m in ["gpt-5.1", "gpt-5-1", "gpt-5.4-mini", "openai/gpt-5.1", "gpt-5.2"] {
+            assert!(openai_model_supports_reasoning_none(m), "{m} は none 対応のはず");
+        }
+        for m in ["gpt-5", "gpt-5-mini", "o3", "o4-mini", "gpt-5-pro", "gpt-5-chat"] {
+            assert!(!openai_model_supports_reasoning_none(m), "{m} は none 非対応のはず");
+        }
+    }
+
+    #[test]
+    fn test_openai_model_requires_high_effort() {
+        assert!(openai_model_requires_high_effort("gpt-5-pro"));
+        assert!(openai_model_requires_high_effort("openai/gpt-5-pro"));
+        assert!(!openai_model_requires_high_effort("gpt-5.1"));
+        assert!(!openai_model_requires_high_effort("gpt-5"));
+    }
+
+    #[test]
+    fn test_insert_chat_completion_token_limit_key() {
+        let mut body = serde_json::json!({});
+        insert_chat_completion_token_limit(&mut body, &AiProvider::OpenAI, 32_000);
+        assert_eq!(body["max_completion_tokens"], 32_000);
+        assert!(body.get("max_tokens").is_none());
+
+        let mut body = serde_json::json!({});
+        insert_chat_completion_token_limit(&mut body, &AiProvider::OpenRouter, 4096);
+        assert_eq!(body["max_tokens"], 4096);
+        assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn test_parse_openai_response_reads_reasoning_field() {
+        // canonical `reasoning` フィールドから Thinking ブロックを取り出す。
+        let json = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": { "content": "本文", "reasoning": "考えた内容" }
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        });
+        let resp = parse_openai_response(&json).unwrap();
+        let thinking: Vec<_> = resp
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                ResponseBlock::Thinking { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, vec!["考えた内容".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_openai_response_reasoning_no_duplicate() {
+        // reasoning と reasoning_content が両方ある場合は reasoning を 1 つだけ採用。
+        let json = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": "本文",
+                    "reasoning": "canonical",
+                    "reasoning_content": "alias"
+                }
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        });
+        let resp = parse_openai_response(&json).unwrap();
+        let thinking: Vec<_> = resp
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                ResponseBlock::Thinking { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, vec!["canonical".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_openai_response_falls_back_to_reasoning_content() {
+        let json = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": { "content": "本文", "reasoning_content": "alias のみ" }
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        });
+        let resp = parse_openai_response(&json).unwrap();
+        let thinking: Vec<_> = resp
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                ResponseBlock::Thinking { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, vec!["alias のみ".to_string()]);
     }
 
     #[test]
