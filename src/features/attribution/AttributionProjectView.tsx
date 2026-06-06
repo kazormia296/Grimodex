@@ -11,7 +11,10 @@ import {
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useAttributionStore } from "./attributionStore";
-import { loadProjectAttributionStats } from "./projectStats";
+import {
+  loadProjectAttributionStats,
+  loadKnowledgeAttributionStats,
+} from "./projectStats";
 import { BreakdownBar } from "./BreakdownBar";
 import type { AttributionStats } from "./attributionStats";
 import { buildProjectAuthorshipReport } from "./projectAuthorship";
@@ -79,6 +82,7 @@ export function AttributionProjectView() {
   const [statsMap, setStatsMap] = useState<Record<string, AttributionStats>>(
     {},
   );
+  const [knowledgeAiChars, setKnowledgeAiChars] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [collapsedChapters, setCollapsedChapters] = useState<Set<string>>(
@@ -93,8 +97,15 @@ export function AttributionProjectView() {
   const load = useCallback(() => {
     if (sceneIds.length === 0) return;
     setIsLoading(true);
-    loadProjectAttributionStats(sceneIds)
-      .then((map) => setStatsMap(map))
+    Promise.all([
+      loadProjectAttributionStats(sceneIds),
+      loadKnowledgeAttributionStats(projectId),
+    ])
+      .then(([map, knowledge]) => {
+        setStatsMap(map);
+        const aiTotal = Object.values(knowledge).reduce((n, k) => n + k.ai, 0);
+        setKnowledgeAiChars(aiTotal);
+      })
       .catch(console.error)
       .finally(() => setIsLoading(false));
     // sceneIds is derived from sceneIdsKey for a stable string dependency
@@ -209,6 +220,11 @@ export function AttributionProjectView() {
           <RefreshCw className={`h-3 w-3 ${isLoading ? "animate-spin" : ""}`} />
           {t("attribution.refresh")}
         </button>
+        {knowledgeAiChars > 0 && (
+          <span className="text-xs text-muted-foreground">
+            Codex/Snippet AI: {knowledgeAiChars.toLocaleString()} chars
+          </span>
+        )}
       </div>
 
       <table className="w-full text-xs border-collapse">

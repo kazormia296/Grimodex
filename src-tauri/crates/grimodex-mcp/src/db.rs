@@ -867,13 +867,24 @@ pub fn get_attribution_report(
          WHERE a.node_id = ?1
          GROUP BY a.source ORDER BY char_count DESC"
     } else {
-        "SELECT a.source,
-                SUM(a.to_pos - a.from_pos) as char_count,
-                COUNT(*) as span_count
-         FROM authorship_spans a
-         JOIN tree_nodes tn ON tn.id = a.node_id
-         WHERE tn.project_id = ?1 AND a.node_id IS NOT NULL
-         GROUP BY a.source ORDER BY char_count DESC"
+        "SELECT source, SUM(char_count) as char_count, COUNT(*) as span_count
+         FROM (
+           SELECT a.source, (a.to_pos - a.from_pos) as char_count
+           FROM authorship_spans a
+           JOIN tree_nodes tn ON tn.id = a.node_id
+           WHERE tn.project_id = ?1 AND a.node_id IS NOT NULL
+           UNION ALL
+           SELECT a.source, (a.to_pos - a.from_pos) as char_count
+           FROM authorship_spans a
+           JOIN codex_entries ce ON ce.id = a.codex_entry_id
+           WHERE ce.project_id = ?1
+           UNION ALL
+           SELECT a.source, (a.to_pos - a.from_pos) as char_count
+           FROM authorship_spans a
+           JOIN snippets s ON s.id = a.snippet_id
+           WHERE s.project_id = ?1
+         )
+         GROUP BY source ORDER BY char_count DESC"
     };
 
     let mut stmt = conn.prepare(sql_global)?;

@@ -147,6 +147,7 @@ pub fn run() {
             commands::agent_writes::agent_propose_scene_body,
             commands::agent_writes::agent_accept_prose_stage,
             commands::agent_writes::agent_discard_prose_stage,
+            commands::agent_writes::agent_apply_undo_journal,
             commands::ai::get_ai_settings,
             commands::ai::save_ai_settings,
             commands::ai::save_api_key,

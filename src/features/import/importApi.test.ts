@@ -169,6 +169,7 @@ describe("importCodexEntries", () => {
 
     expect(mockResizeAndConvertToWebP).toHaveBeenCalledTimes(1);
     expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+      "default-project",
       entry.id,
       expect.objectContaining({ icon: "data:image/webp;base64,abc" }),
     );
@@ -184,6 +185,7 @@ describe("importCodexEntries", () => {
 
     expect(result.imported).toBe(1);
     expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+      "default-project",
       entry.id,
       expect.objectContaining({ icon: null }),
     );
@@ -215,7 +217,10 @@ describe("importCodexEntries", () => {
     expect(result.imported).toBe(0);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain("ロールバックエントリ");
-    expect(mockDeleteCodexEntry).toHaveBeenCalledWith("rollback-id");
+    expect(mockDeleteCodexEntry).toHaveBeenCalledWith(
+      "default-project",
+      "rollback-id",
+    );
   });
 
   it("ロールバックの deleteCodexEntry が失敗してもエラーは元の updateCodexEntry エラーのみ", async () => {

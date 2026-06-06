@@ -48,12 +48,12 @@ function invalidateHistoryForEntity(
     entityType === "codex_entry"
       ? "codex"
       : entityType === "snippet"
-        ? "snippet"
+        ? "snippets"
         : entityType === "tree_batch"
           ? "scenes"
           : null;
   if (!kind) return;
-  void history; // push stack lacks per-entry invalidation API; Phase 3 surfaces conflict instead.
+  history.invalidateForEntity(kind, entityId);
 }
 
 async function fanOut(events: ChangeEventRow[]): Promise<void> {
@@ -122,6 +122,9 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
         extStore.bumpReloadNonce(ev.entityId);
       }
     }
+    if (ev.entityType === "snippet" && ev.entityId) {
+      invalidateHistoryForEntity(ev.entityType, ev.entityId);
+    }
   }
 }
 
@@ -142,7 +145,11 @@ async function pollTick(): Promise<void> {
     )
     .orderBy(asc(changeEvents.sequence));
 
-  if (rows.length === 0) return;
+  if (rows.length === 0) {
+    const tail = await readTailSequence(projectId);
+    if (tail > state.cursor) state.cursor = tail;
+    return;
+  }
 
   try {
     await fanOut(rows);

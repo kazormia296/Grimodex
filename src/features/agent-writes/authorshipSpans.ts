@@ -1,5 +1,8 @@
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 
+export const LANE_SUMMARY_MODEL = "__lane_summary__";
+export const LANE_CONTENT_MODEL = "__lane_content__";
+
 export interface AgentAuthorshipSpanInput {
   fromPos: number;
   toPos: number;
@@ -7,6 +10,8 @@ export interface AgentAuthorshipSpanInput {
   model?: string | null;
   chatMsgId?: string | null;
   traceId?: string | null;
+  /** "summary" | "content" for partial codex updates */
+  lane?: "summary" | "content";
 }
 
 /**
@@ -27,9 +32,10 @@ export function syntheticAiSpans(
       fromPos: 0,
       toPos: len,
       source: "ai",
-      model: opts.model ?? null,
+      model: opts.model ?? LANE_SUMMARY_MODEL,
       chatMsgId: opts.chatMessageId ?? null,
       traceId: opts.traceId ?? null,
+      lane: "summary",
     },
   ];
 }
@@ -82,12 +88,16 @@ function walkPm(
         fromPos: pos,
         toPos: pos + len,
         source: "ai",
-        model: (mark.attrs.model as string | null) ?? opts.model ?? null,
+        model:
+          (mark.attrs.model as string | null) ??
+          opts.model ??
+          LANE_CONTENT_MODEL,
         chatMsgId:
           (mark.attrs.chatMessageId as string | null) ??
           opts.chatMessageId ??
           null,
         traceId: (mark.attrs.traceId as string | null) ?? opts.traceId ?? null,
+        lane: "content",
       });
     }
     return pos + len;

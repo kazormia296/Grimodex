@@ -1,6 +1,5 @@
 //! AI policy evaluation — mirrors TS `parseAiPolicy` decision vectors.
 
-use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 
@@ -71,8 +70,17 @@ fn preset_table(preset: &str) -> AiPolicyToggles {
 }
 
 pub fn parse_policy_json(raw: &str) -> anyhow::Result<AiPolicyToggles> {
-    let p: RawPolicy = serde_json::from_str(raw).context("parse ai_policy JSON")?;
+    let p: RawPolicy = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(_) => return Ok(preset_table("full")),
+    };
     let preset = p.preset.as_str();
+    if !matches!(
+        preset,
+        "full" | "assist-off" | "review-only" | "off" | "custom"
+    ) {
+        return Ok(preset_table("full"));
+    }
     let derived = preset_table(preset);
     let structure_write = p.toggles.structure_write.unwrap_or_else(|| {
         if preset == "custom" {
@@ -123,6 +131,46 @@ mod tests {
         )
         .unwrap();
         assert!(!toggles.knowledge_write);
+    }
+
+    #[test]
+    fn decision_vector_fixture_parity() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../src/features/ai-policy/policyDecisionVector.fixture.json"
+        ));
+        let cases: Vec<serde_json::Value> = serde_json::from_str(fixture).unwrap();
+        for case in cases {
+            let label = case["label"].as_str().unwrap();
+            let raw = case["raw"].as_str().unwrap();
+            let expected = &case["expected"];
+            let toggles = parse_policy_json(raw).unwrap();
+            assert_eq!(
+                toggles.chat,
+                expected["chat"].as_bool().unwrap(),
+                "{label} chat"
+            );
+            assert_eq!(
+                toggles.body_write,
+                expected["bodyWrite"].as_bool().unwrap(),
+                "{label} bodyWrite"
+            );
+            assert_eq!(
+                toggles.analysis,
+                expected["analysis"].as_bool().unwrap(),
+                "{label} analysis"
+            );
+            assert_eq!(
+                toggles.structure_write,
+                expected["structureWrite"].as_bool().unwrap(),
+                "{label} structureWrite"
+            );
+            assert_eq!(
+                toggles.knowledge_write,
+                expected["knowledgeWrite"].as_bool().unwrap(),
+                "{label} knowledgeWrite"
+            );
+        }
     }
 
     #[test]

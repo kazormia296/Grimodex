@@ -172,7 +172,8 @@ pub async fn propose_scene_body(
             None,
         ));
     }
-    if !server.policy.body_write {
+    let policy = server.reload_policy()?;
+    if !policy.body_write {
         return Err(ErrorData::invalid_params(
             "bodyWrite policy is off for this project",
             None,

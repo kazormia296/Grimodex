@@ -1493,7 +1493,7 @@ impl Database {
         Self::add_column_if_missing(conn, "tree_nodes", "version", "INTEGER NOT NULL DEFAULT 0")?;
 
         // Schema skew guard for headless MCP binaries (Phase 4 reads this).
-        const SCHEMA_VERSION: i32 = 1;
+        const SCHEMA_VERSION: i32 = grimodex_core::SCHEMA_VERSION;
         let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if current < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;

@@ -64,6 +64,7 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
       generatedRange: null,
       error: null,
       model: null,
+      stagingId: null,
       abortController,
     });
   },

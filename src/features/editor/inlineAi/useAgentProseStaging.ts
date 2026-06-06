@@ -51,6 +51,7 @@ export function useAgentProseStaging(
 
   useEffect(() => {
     if (!editor || !sceneId || !pending || pending.sceneId !== sceneId) return;
+    if (useInlineAiStore.getState().status !== "idle") return;
 
     const { stagingId, text, mode, replaceFrom, replaceTo } = pending;
     clearPending();

@@ -39,6 +39,8 @@ interface ProjectState {
   deleteProjectById: (projectId: string) => Promise<void>;
 }
 
+let loadProjectGeneration = 0;
+
 export const useProjectStore = create<ProjectState>()((set, get) => ({
   currentProjectId: null,
   projects: [],
@@ -67,6 +69,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   },
 
   loadProject: async (projectId) => {
+    const generation = ++loadProjectGeneration;
     const previousId = get().currentProjectId;
     if (
       typeof window !== "undefined" &&
@@ -143,12 +146,16 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         ) &&
         !(typeof process !== "undefined" && process.env?.VITEST)
       ) {
-        void import("@/features/concurrency/externalWriteFeed").then(
-          ({ startExternalWriteFeed }) =>
-            startExternalWriteFeed(projectId).catch((err) =>
-              console.warn("[externalWriteFeed] start failed", err),
-            ),
-        );
+        if (generation === loadProjectGeneration) {
+          void import("@/features/concurrency/externalWriteFeed").then(
+            ({ startExternalWriteFeed }) => {
+              if (generation !== loadProjectGeneration) return;
+              void startExternalWriteFeed(projectId).catch((err) =>
+                console.warn("[externalWriteFeed] start failed", err),
+              );
+            },
+          );
+        }
       }
     } catch (e) {
       // 切替失敗 — パネルがロードされていない Project を指したままにしない。

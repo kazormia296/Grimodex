@@ -15,6 +15,8 @@ export type HistoryKind =
 export interface HistoryCommand {
   kind: HistoryKind;
   label: string;
+  /** Entity id for per-entry invalidation on external writes. */
+  entityId?: string;
   undo: AsyncFn;
   redo: AsyncFn;
 }
@@ -31,6 +33,8 @@ interface HistoryState {
   undo: () => Promise<void>;
   redo: () => Promise<void>;
   clear: () => void;
+  /** Drop history entries targeting an entity after external mutation. */
+  invalidateForEntity: (kind: HistoryKind, entityId: string) => void;
 }
 
 export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
@@ -111,6 +115,21 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
       canUndo: false,
       canRedo: false,
       isReplaying: false,
+    });
+  },
+
+  invalidateForEntity(kind, entityId) {
+    set((state) => {
+      const matches = (c: HistoryCommand) =>
+        c.kind === kind && c.entityId === entityId;
+      const past = state.past.filter((c) => !matches(c));
+      const future = state.future.filter((c) => !matches(c));
+      return {
+        past,
+        future,
+        canUndo: past.length > 0,
+        canRedo: future.length > 0,
+      };
     });
   },
 }));

@@ -1933,6 +1933,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "futures",
+ "grimodex-core",
  "grimodex-lint",
  "hex",
  "keyring",
@@ -1966,6 +1967,7 @@ name = "grimodex-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "hex",
  "rusqlite",
  "serde",

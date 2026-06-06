@@ -14,6 +14,8 @@ pub struct GrimodexServer {
     pub project_id: String,
     pub readonly: bool,
     pub session_id: String,
+    /// Startup snapshot only; mutating tools call `reload_policy()`.
+    #[allow(dead_code)]
     pub policy: grimodex_core::policy::AiPolicyToggles,
 }
 
@@ -32,6 +34,16 @@ impl GrimodexServer {
             session_id,
             policy,
         }
+    }
+
+    /// Reload policy from DB on each mutating tool call (in-app toggles take effect).
+    pub fn reload_policy(&self) -> Result<grimodex_core::policy::AiPolicyToggles, ErrorData> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        grimodex_core::policy::load_policy(&conn, &self.project_id)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))
     }
 }
 
@@ -219,6 +231,15 @@ impl GrimodexServer {
         params: Parameters<tools::snippets::ListSnippetsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         tools::snippets::list_snippets(self, params.0).await
+    }
+
+    /// Create a new Snippet. Disabled in readonly mode. knowledgeWrite gate.
+    #[tool(description = "Create a new Snippet (saved text fragment). Disabled in readonly mode.")]
+    async fn create_snippet(
+        &self,
+        params: Parameters<tools::snippets::CreateSnippetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::snippets::create_snippet(self, params.0).await
     }
 
     /// Get authorship attribution report: how much text was written by human vs AI.

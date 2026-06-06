@@ -47,6 +47,8 @@ pub(crate) struct AgentCodexUpdatePayload {
     project_id: String,
     session_id: String,
     entry_id: String,
+    /// Client-observed version before this write (optimistic lock).
+    base_version: i64,
     name: Option<String>,
     summary: Option<String>,
     content: Option<String>,
@@ -55,6 +57,8 @@ pub(crate) struct AgentCodexUpdatePayload {
     chat_message_id: Option<String>,
     trace_id: Option<String>,
     authorship_spans: Option<Vec<AuthorshipSpanInput>>,
+    /// Per-span lane for partial updates: "summary" | "content".
+    authorship_span_lanes: Option<Vec<Option<String>>>,
 }
 
 #[derive(serde::Serialize)]
@@ -66,21 +70,50 @@ struct AgentWriteResult {
     undo_journal_id: String,
 }
 
-fn replace_codex_authorship_spans(
+const LANE_SUMMARY_MODEL: &str = "__lane_summary__";
+const LANE_CONTENT_MODEL: &str = "__lane_content__";
+
+fn lane_model(lane: Option<&str>, span_model: Option<&str>) -> Option<String> {
+    match lane {
+        Some("summary") => Some(LANE_SUMMARY_MODEL.to_string()),
+        Some("content") => Some(LANE_CONTENT_MODEL.to_string()),
+        _ => span_model.map(str::to_string),
+    }
+}
+
+fn merge_codex_authorship_spans(
     conn: &rusqlite::Connection,
     entry_id: &str,
     spans: &[AuthorshipSpanInput],
+    lanes: Option<&[Option<String>]>,
+    update_summary: bool,
+    update_content: bool,
     model: Option<&str>,
     chat_msg_id: Option<&str>,
     trace_id: Option<&str>,
 ) -> anyhow::Result<()> {
-    conn.execute(
-        "DELETE FROM authorship_spans WHERE codex_entry_id = ?1",
-        rusqlite::params![entry_id],
-    )?;
+    if update_summary && update_content {
+        conn.execute(
+            "DELETE FROM authorship_spans WHERE codex_entry_id = ?1",
+            rusqlite::params![entry_id],
+        )?;
+    } else if update_summary {
+        conn.execute(
+            "DELETE FROM authorship_spans WHERE codex_entry_id = ?1 AND model = ?2",
+            rusqlite::params![entry_id, LANE_SUMMARY_MODEL],
+        )?;
+    } else if update_content {
+        conn.execute(
+            "DELETE FROM authorship_spans WHERE codex_entry_id = ?1 AND (model IS NULL OR model != ?2)",
+            rusqlite::params![entry_id, LANE_SUMMARY_MODEL],
+        )?;
+    }
     let now = chrono::Utc::now().to_rfc3339();
-    for span in spans {
+    for (i, span) in spans.iter().enumerate() {
+        let span_lane = lanes.and_then(|l| l.get(i)).and_then(|x| x.as_deref());
         let span_id = uuid::Uuid::new_v4().to_string();
+        let resolved_model =
+            lane_model(span_lane, span.model.as_deref()).or_else(|| model.map(str::to_string));
         conn.execute(
             "INSERT INTO authorship_spans
              (id, codex_entry_id, from_pos, to_pos, source, model, chat_msg_id, trace_id, timestamp)
@@ -91,7 +124,7 @@ fn replace_codex_authorship_spans(
                 span.from_pos,
                 span.to_pos,
                 span.source,
-                span.model.as_deref().or(model),
+                resolved_model,
                 span.chat_msg_id.as_deref().or(chat_msg_id),
                 span.trace_id.as_deref().or(trace_id),
                 now,
@@ -157,10 +190,13 @@ fn agent_codex_create_impl(
                 ],
             )?;
 
-            replace_codex_authorship_spans(
+            merge_codex_authorship_spans(
                 conn,
                 &entry_id,
                 &payload.authorship_spans,
+                None,
+                true,
+                true,
                 payload.model.as_deref(),
                 payload
                     .chat_message_id
@@ -237,7 +273,7 @@ fn agent_codex_update_impl(
         conn.execute_batch("BEGIN IMMEDIATE")?;
 
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            let (base_version, before_row): (i64, String) = conn.query_row(
+            let (db_version, before_row): (i64, String) = conn.query_row(
                 "SELECT version, json_object(
                     'id', id, 'projectId', project_id, 'type', type, 'name', name,
                     'summary', summary, 'content', content, 'aliases', aliases,
@@ -246,6 +282,15 @@ fn agent_codex_update_impl(
                 rusqlite::params![payload.entry_id, payload.project_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
+            if db_version != payload.base_version {
+                anyhow::bail!(
+                    "Codex entry '{}' version conflict: expected {} but database has {}",
+                    payload.entry_id,
+                    payload.base_version,
+                    db_version
+                );
+            }
+            let base_version = payload.base_version;
 
             let mut sets = vec!["updated_at = ?1".to_string(), "version = version + 1".to_string()];
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now.clone())];
@@ -297,10 +342,13 @@ fn agent_codex_update_impl(
             let result_version = base_version + 1;
 
             if let Some(ref spans) = payload.authorship_spans {
-                replace_codex_authorship_spans(
+                merge_codex_authorship_spans(
                     conn,
                     &payload.entry_id,
                     spans,
+                    payload.authorship_span_lanes.as_deref(),
+                    payload.summary.is_some(),
+                    payload.content.is_some(),
                     payload.model.as_deref(),
                     payload.chat_message_id.as_deref(),
                     payload.trace_id.as_deref(),
@@ -981,4 +1029,57 @@ pub(crate) fn agent_discard_prose_stage(
     payload: AgentProseStageIdPayload,
 ) -> Result<Value, AppError> {
     with_db(&ws_state, |db| agent_discard_prose_stage_impl(db, payload))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentUndoJournalPayload {
+    pub project_id: String,
+    pub journal_id: String,
+    /// "undo" | "redo"
+    pub direction: String,
+}
+
+fn agent_undo_journal_impl(
+    db: &Database,
+    payload: AgentUndoJournalPayload,
+) -> anyhow::Result<Value> {
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<()> {
+            match payload.direction.as_str() {
+                "undo" => grimodex_core::undo_journal::revert_undo_journal_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &payload.journal_id,
+                )?,
+                "redo" => grimodex_core::undo_journal::apply_undo_journal_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &payload.journal_id,
+                )?,
+                other => anyhow::bail!("invalid undo direction: {other}"),
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(json!({ "ok": true }))
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+#[tauri::command]
+pub(crate) fn agent_apply_undo_journal(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentUndoJournalPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_undo_journal_impl(db, payload))
 }

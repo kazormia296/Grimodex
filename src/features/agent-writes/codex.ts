@@ -3,7 +3,6 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { deleteCodexEntry } from "@/features/codex/api";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { aiAuthorshipAttrs } from "@/features/attribution/aiAuthorship";
 import {
@@ -11,7 +10,9 @@ import {
   syntheticAiSpans,
   type AgentAuthorshipSpanInput,
 } from "./authorshipSpans";
+import { applyUndoJournal } from "./undoJournal";
 import type { CodexEntry } from "@/features/codex/api";
+import { getCodexEntryVersion } from "@/features/codex/version";
 
 export interface AgentCodexCreateInput {
   type: string;
@@ -58,6 +59,10 @@ function buildCodexAuthorshipSpans(
     spans.push(...extractAiSpansFromPmJson(input.content, opts));
   }
   return spans;
+}
+
+function spanLanes(spans: AgentAuthorshipSpanInput[]): Array<string | null> {
+  return spans.map((s) => s.lane ?? null);
 }
 
 /** Apply AI authorship marks to a PM JSON content string before persistence. */
@@ -157,28 +162,19 @@ export async function agentCreateCodexEntry(
   }
 
   if (!useGlobalHistoryStore.getState().isReplaying) {
-    const captured = { ...entry };
+    const journalId = result.undoJournalId;
+    const entityId = result.entityId;
     useGlobalHistoryStore.getState().push({
       kind: "codex",
       label: "Agent: Codex作成",
+      entityId,
       async undo() {
-        await deleteCodexEntry(projectId, captured.id);
-        useCodexStore.setState((s) => ({
-          entries: s.entries.filter((e) => e.id !== captured.id),
-        }));
+        await applyUndoJournal(journalId, "undo");
+        await useCodexStore.getState().loadEntries();
       },
       async redo() {
-        await agentCreateCodexEntry(
-          {
-            type: captured.type,
-            name: captured.name,
-            summary: captured.summary ?? undefined,
-            content: captured.content ?? undefined,
-            aliases: captured.aliases ?? undefined,
-            parentId: captured.parentId ?? undefined,
-          },
-          chatMessageId,
-        );
+        await applyUndoJournal(journalId, "redo");
+        await useCodexStore.getState().loadEntries();
       },
     });
   }
@@ -189,22 +185,32 @@ export async function agentCreateCodexEntry(
 export async function agentUpdateCodexEntry(
   input: AgentCodexUpdateInput,
   chatMessageId?: string | null,
+  options?: { restoreHuman?: boolean },
 ): Promise<CodexEntry> {
   if (blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
   }
 
   const projectId = getCurrentProjectId();
-  const content = input.content
-    ? markCodexContentAsAi(input.content, {
-        model: input.model,
-        chatMessageId,
-        traceId: input.traceId,
-      })
-    : undefined;
+  const before = useCodexStore
+    .getState()
+    .entries.find((e) => e.id === input.entryId);
+  if (!before) {
+    throw new Error(`Codex entry ${input.entryId} not found`);
+  }
+
+  const restoreHuman = options?.restoreHuman === true;
+  const content =
+    !restoreHuman && input.content
+      ? markCodexContentAsAi(input.content, {
+          model: input.model,
+          chatMessageId,
+          traceId: input.traceId,
+        })
+      : input.content;
 
   const authorshipSpans =
-    input.summary !== undefined || content !== undefined
+    !restoreHuman && (input.summary !== undefined || content !== undefined)
       ? buildCodexAuthorshipSpans(
           { summary: input.summary, content },
           {
@@ -215,23 +221,21 @@ export async function agentUpdateCodexEntry(
         )
       : undefined;
 
-  const before = useCodexStore
-    .getState()
-    .entries.find((e) => e.id === input.entryId);
-
   const result = await invoke<AgentWriteResult>("agent_codex_update", {
     payload: {
       projectId,
       sessionId: getRecorderSessionId(),
       entryId: input.entryId,
+      baseVersion: await getCodexEntryVersion(projectId, input.entryId),
       name: input.name ?? null,
       summary: input.summary ?? null,
       content: content ?? null,
       aliases: input.aliases ?? null,
-      model: input.model ?? null,
+      model: restoreHuman ? null : (input.model ?? null),
       chatMessageId: chatMessageId ?? null,
       traceId: input.traceId ?? null,
       authorshipSpans: authorshipSpans ?? null,
+      authorshipSpanLanes: authorshipSpans ? spanLanes(authorshipSpans) : null,
     },
   });
 
@@ -246,26 +250,20 @@ export async function agentUpdateCodexEntry(
     );
   }
 
-  if (before && !useGlobalHistoryStore.getState().isReplaying) {
-    const capturedBefore = { ...before };
-    const patch = { ...input };
+  if (!useGlobalHistoryStore.getState().isReplaying) {
+    const journalId = result.undoJournalId;
+    const entityId = input.entryId;
     useGlobalHistoryStore.getState().push({
       kind: "codex",
       label: "Agent: Codex更新",
+      entityId,
       async undo() {
-        await agentUpdateCodexEntry(
-          {
-            entryId: capturedBefore.id,
-            name: capturedBefore.name,
-            summary: capturedBefore.summary ?? undefined,
-            content: capturedBefore.content ?? undefined,
-            aliases: capturedBefore.aliases ?? undefined,
-          },
-          chatMessageId,
-        );
+        await applyUndoJournal(journalId, "undo");
+        await useCodexStore.getState().loadEntries();
       },
       async redo() {
-        await agentUpdateCodexEntry(patch, chatMessageId);
+        await applyUndoJournal(journalId, "redo");
+        await useCodexStore.getState().loadEntries();
       },
     });
   }

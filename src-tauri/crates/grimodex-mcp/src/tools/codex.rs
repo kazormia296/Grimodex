@@ -214,7 +214,8 @@ pub async fn create_codex_entry(
             None,
         ));
     }
-    if !server.policy.knowledge_write {
+    let policy = server.reload_policy()?;
+    if !policy.knowledge_write {
         return Err(ErrorData::invalid_params(
             "knowledgeWrite policy is off for this project",
             None,
@@ -258,21 +259,55 @@ pub async fn create_codex_entry(
     };
 
     let tags = params.tags.unwrap_or_default();
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let summary_text = summary.as_deref().unwrap_or("");
+    let mut spans = Vec::new();
+    if !summary_text.is_empty() {
+        spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
+            from_pos: 0,
+            to_pos: summary_text.len() as i64,
+            source: "ai".to_string(),
+            model: Some(grimodex_core::writes::LANE_SUMMARY_MODEL.to_string()),
+            chat_msg_id: None,
+            trace_id: None,
+            lane: Some("summary".to_string()),
+        });
+    }
+    if content_pm.len() > 2 {
+        spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
+            from_pos: 0,
+            to_pos: content_pm.len() as i64,
+            source: "ai".to_string(),
+            model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+            chat_msg_id: None,
+            trace_id: None,
+            lane: Some("content".to_string()),
+        });
+    }
 
     let conn = server
         .conn
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-    let new_id = db::create_codex_entry(
+    grimodex_core::writes::codex::tracked_codex_create(
         &conn,
-        db::CreateCodexInput {
+        grimodex_core::writes::codex::TrackedCodexCreateInput {
             project_id: &server.project_id,
+            session_id: &server.session_id,
+            surface: "mcp",
+            entry_id: &new_id,
             type_slug: &type_slug,
             name: &name,
+            summary: summary_text,
+            content: &content_pm,
             aliases: aliases_str.as_deref(),
-            summary: summary.as_deref(),
-            content_pm: &content_pm,
+            parent_id: None,
+            source_chat_message_id: None,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: &spans,
             tags: &tags,
         },
     )
@@ -315,7 +350,8 @@ pub async fn update_codex_entry(
             None,
         ));
     }
-    if !server.policy.knowledge_write {
+    let policy = server.reload_policy()?;
+    if !policy.knowledge_write {
         return Err(ErrorData::invalid_params(
             "knowledgeWrite policy is off for this project",
             None,
@@ -365,15 +401,66 @@ pub async fn update_codex_entry(
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-    db::update_codex_entry(
+    let base_version: i64 = conn
+        .query_row(
+            "SELECT version FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![params.entry_id, server.project_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| ErrorData::invalid_params("Codex entry not found in project", None))?;
+
+    let mut spans = Vec::new();
+    let mut lanes: Vec<Option<String>> = Vec::new();
+    if let Some(ref s) = summary {
+        if !s.is_empty() {
+            spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
+                from_pos: 0,
+                to_pos: s.len() as i64,
+                source: "ai".to_string(),
+                model: Some(grimodex_core::writes::LANE_SUMMARY_MODEL.to_string()),
+                chat_msg_id: None,
+                trace_id: None,
+                lane: Some("summary".to_string()),
+            });
+            lanes.push(Some("summary".to_string()));
+        }
+    }
+    if let Some(ref c) = content_pm {
+        if c.len() > 2 {
+            spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
+                from_pos: 0,
+                to_pos: c.len() as i64,
+                source: "ai".to_string(),
+                model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+                chat_msg_id: None,
+                trace_id: None,
+                lane: Some("content".to_string()),
+            });
+            lanes.push(Some("content".to_string()));
+        }
+    }
+    let span_ref = if spans.is_empty() {
+        None
+    } else {
+        Some(spans.as_slice())
+    };
+
+    grimodex_core::writes::codex::tracked_codex_update(
         &conn,
-        db::UpdateCodexInput {
-            entry_id: &params.entry_id,
+        grimodex_core::writes::codex::TrackedCodexUpdateInput {
             project_id: &server.project_id,
+            session_id: &server.session_id,
+            surface: "mcp",
+            entry_id: &params.entry_id,
+            expected_base_version: base_version,
             name: name.as_deref(),
-            aliases: aliases_str.as_deref(),
             summary: summary.as_deref(),
-            content_pm: content_pm.as_deref(),
+            content: content_pm.as_deref(),
+            aliases: aliases_str.as_deref(),
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: span_ref,
             tags: params.tags.as_deref(),
         },
     )
