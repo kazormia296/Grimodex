@@ -112,6 +112,7 @@ import {
   computeTypewriterScrollTop,
 } from "@/features/editor/useTypewriterScroll";
 import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
+import { useAgentProseStaging } from "@/features/editor/inlineAi/useAgentProseStaging";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import { SlashCommandPopup } from "@/features/editor/inlineAi/SlashCommandPopup";
@@ -1220,9 +1221,13 @@ export function EditorPane({
     });
     return () => cancelAnimationFrame(raf);
   }, [typewriterMode, mountedEditor, nodeId]);
-  const { generate, accept, reject, rejectOrAbort, retry } =
-    useInlineAiDiff(dbNativeEditor);
-  void reject;
+  const inlineAiDiff = useInlineAiDiff(dbNativeEditor);
+  const { generate, retry } = inlineAiDiff;
+  const { acceptWithStaging, rejectWithStaging } = useAgentProseStaging(
+    dbNativeEditor,
+    nodeId,
+    inlineAiDiff,
+  );
 
   useCursorOverlay(mountedEditor);
   useCharacterFade(mountedEditor);
@@ -2366,8 +2371,8 @@ export function EditorPane({
         />
       )}
       <InlineAIToolbar
-        onAccept={accept}
-        onReject={rejectOrAbort}
+        onAccept={acceptWithStaging}
+        onReject={rejectWithStaging}
         onRetry={retry}
       />
       <SlashCommandPopup />

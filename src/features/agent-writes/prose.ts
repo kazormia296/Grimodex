@@ -1,0 +1,150 @@
+import { and, desc, eq } from "drizzle-orm";
+import { db } from "@/db/client";
+import { proseStaging } from "@/db/schema";
+import { invoke } from "@/lib/tauri";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import type { PendingProseProposal } from "./proseStagingStore";
+
+export type ProseStagingMode = "append" | "insert" | "replace";
+
+export interface AgentProposeSceneBodyInput {
+  sceneId: string;
+  text: string;
+  mode?: ProseStagingMode;
+  replaceFrom?: number;
+  replaceTo?: number;
+  sourceSurface?: "in-app-agent" | "mcp";
+}
+
+export interface ProseStageResult {
+  stagingId: string;
+  sceneId: string;
+  status: string;
+}
+
+export interface ParsedProseProposal {
+  mode: ProseStagingMode;
+  text: string;
+  replaceFrom?: number;
+  replaceTo?: number;
+}
+
+export function parseProposedContent(raw: string): ParsedProseProposal {
+  try {
+    const parsed = JSON.parse(raw) as {
+      mode?: string;
+      text?: string;
+      replaceFrom?: number;
+      replaceTo?: number;
+    };
+    const mode =
+      parsed.mode === "replace" || parsed.mode === "insert"
+        ? parsed.mode
+        : "append";
+    return {
+      mode,
+      text: String(parsed.text ?? ""),
+      replaceFrom: parsed.replaceFrom,
+      replaceTo: parsed.replaceTo,
+    };
+  } catch {
+    return { mode: "append", text: raw };
+  }
+}
+
+function assertSceneAllowsProseStaging(sceneId: string): void {
+  const node = useTreeStore.getState().nodes.find((n) => n.id === sceneId);
+  if (node && isFileBackedNode(node.sourceUri)) {
+    throw new Error(
+      "file-backed scenes are excluded from agent prose staging (v1)",
+    );
+  }
+}
+
+export async function agentProposeSceneBody(
+  input: AgentProposeSceneBodyInput,
+): Promise<ProseStageResult> {
+  if (blockIfPolicyOff("bodyWrite")) {
+    throw new Error("bodyWrite policy is off");
+  }
+
+  assertSceneAllowsProseStaging(input.sceneId);
+
+  const projectId = getCurrentProjectId();
+  const mode = input.mode ?? "append";
+
+  return invoke<ProseStageResult>("agent_propose_scene_body", {
+    payload: {
+      projectId,
+      sessionId: getRecorderSessionId(),
+      sceneId: input.sceneId,
+      proposedContent: input.text,
+      mode,
+      sourceSurface: input.sourceSurface ?? "in-app-agent",
+      replaceFrom: input.replaceFrom ?? null,
+      replaceTo: input.replaceTo ?? null,
+    },
+  });
+}
+
+export async function agentAcceptProseStage(
+  stagingId: string,
+): Promise<ProseStageResult> {
+  const projectId = getCurrentProjectId();
+  return invoke<ProseStageResult>("agent_accept_prose_stage", {
+    payload: {
+      projectId,
+      sessionId: getRecorderSessionId(),
+      stagingId,
+    },
+  });
+}
+
+export async function agentDiscardProseStage(
+  stagingId: string,
+): Promise<ProseStageResult> {
+  const projectId = getCurrentProjectId();
+  return invoke<ProseStageResult>("agent_discard_prose_stage", {
+    payload: {
+      projectId,
+      sessionId: getRecorderSessionId(),
+      stagingId,
+    },
+  });
+}
+
+/** Load the latest proposed staging row for a scene (MCP / deferred review). */
+export async function loadLatestProposedProse(
+  sceneId: string,
+): Promise<PendingProseProposal | null> {
+  const projectId = getCurrentProjectId();
+  const rows = await db
+    .select()
+    .from(proseStaging)
+    .where(
+      and(
+        eq(proseStaging.projectId, projectId),
+        eq(proseStaging.sceneId, sceneId),
+        eq(proseStaging.status, "proposed"),
+      ),
+    )
+    .orderBy(desc(proseStaging.createdAt))
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) return null;
+
+  const parsed = parseProposedContent(row.proposedContent);
+  return {
+    stagingId: row.id,
+    sceneId: row.sceneId,
+    text: parsed.text,
+    mode: parsed.mode,
+    replaceFrom: parsed.replaceFrom,
+    replaceTo: parsed.replaceTo,
+  };
+}

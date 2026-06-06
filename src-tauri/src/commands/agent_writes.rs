@@ -685,3 +685,300 @@ pub(crate) fn agent_snippet_create(
 ) -> Result<Value, AppError> {
     with_db(&ws_state, |db| agent_snippet_create_impl(db, payload))
 }
+
+// ---------------------------------------------------------------------------
+// Prose staging (Phase 5 — accept/reject body writes)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentProposeSceneBodyPayload {
+    pub project_id: String,
+    pub session_id: String,
+    pub scene_id: String,
+    pub proposed_content: String,
+    /// "append" | "insert" | "replace"
+    pub mode: String,
+    pub source_surface: String,
+    pub replace_from: Option<i64>,
+    pub replace_to: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentProseStageIdPayload {
+    pub project_id: String,
+    pub session_id: String,
+    pub staging_id: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProseStageResult {
+    staging_id: String,
+    scene_id: String,
+    status: String,
+}
+
+fn is_file_backed_scene(source_uri: Option<&str>) -> bool {
+    match source_uri {
+        None => false,
+        Some(uri) if uri.ends_with("/.mount") => false,
+        Some(_) => true,
+    }
+}
+
+fn agent_propose_scene_body_impl(
+    db: &Database,
+    payload: AgentProposeSceneBodyPayload,
+) -> anyhow::Result<Value> {
+    let staging_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<ProseStageResult> {
+            let (base_version, source_uri): (i64, Option<String>) = conn.query_row(
+                "SELECT version, source_uri FROM tree_nodes
+                 WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+                rusqlite::params![payload.scene_id, payload.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+
+            if is_file_backed_scene(source_uri.as_deref()) {
+                anyhow::bail!("file-backed scenes are excluded from headless prose staging (v1)");
+            }
+
+            let content_json = json!({
+                "mode": payload.mode,
+                "text": payload.proposed_content,
+                "replaceFrom": payload.replace_from,
+                "replaceTo": payload.replace_to,
+            });
+
+            conn.execute(
+                "INSERT INTO prose_staging
+                 (id, project_id, scene_id, proposed_content, base_version, status,
+                  source_surface, source_session_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'proposed', ?6, ?7, ?8, ?8)",
+                rusqlite::params![
+                    staging_id,
+                    payload.project_id,
+                    payload.scene_id,
+                    content_json.to_string(),
+                    base_version,
+                    payload.source_surface,
+                    payload.session_id,
+                    now,
+                ],
+            )?;
+
+            let change_payload = json!({
+                "stagingId": staging_id,
+                "sceneId": payload.scene_id,
+                "mode": payload.mode,
+                "preview": payload.proposed_content.chars().take(200).collect::<String>(),
+            });
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: Some(payload.scene_id.clone()),
+                    domain: "prose".to_string(),
+                    op_type: "prose.propose".to_string(),
+                    entity_type: Some("prose_staging".to_string()),
+                    entity_id: Some(staging_id.clone()),
+                    payload: change_payload.to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(ProseStageResult {
+                staging_id: staging_id.clone(),
+                scene_id: payload.scene_id.clone(),
+                status: "proposed".to_string(),
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+fn agent_accept_prose_stage_impl(
+    db: &Database,
+    payload: AgentProseStageIdPayload,
+) -> anyhow::Result<Value> {
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<ProseStageResult> {
+            let (scene_id, status): (String, String) = conn.query_row(
+                "SELECT scene_id, status FROM prose_staging
+                 WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.staging_id, payload.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+
+            if status != "proposed" {
+                anyhow::bail!("staging entry is not in proposed status");
+            }
+
+            conn.execute(
+                "UPDATE prose_staging SET status = 'accepted', updated_at = ?1
+                 WHERE id = ?2 AND project_id = ?3",
+                rusqlite::params![now, payload.staging_id, payload.project_id],
+            )?;
+
+            let change_payload = json!({
+                "stagingId": payload.staging_id,
+                "sceneId": scene_id,
+            });
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: Some(scene_id.clone()),
+                    domain: "prose".to_string(),
+                    op_type: "prose.accept".to_string(),
+                    entity_type: Some("prose_staging".to_string()),
+                    entity_id: Some(payload.staging_id.clone()),
+                    payload: change_payload.to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(ProseStageResult {
+                staging_id: payload.staging_id.clone(),
+                scene_id,
+                status: "accepted".to_string(),
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+fn agent_discard_prose_stage_impl(
+    db: &Database,
+    payload: AgentProseStageIdPayload,
+) -> anyhow::Result<Value> {
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<ProseStageResult> {
+            let (scene_id, status): (String, String) = conn.query_row(
+                "SELECT scene_id, status FROM prose_staging
+                 WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.staging_id, payload.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+
+            if status != "proposed" {
+                anyhow::bail!("staging entry is not in proposed status");
+            }
+
+            conn.execute(
+                "UPDATE prose_staging SET status = 'discarded', updated_at = ?1
+                 WHERE id = ?2 AND project_id = ?3",
+                rusqlite::params![now, payload.staging_id, payload.project_id],
+            )?;
+
+            let change_payload = json!({
+                "stagingId": payload.staging_id,
+                "sceneId": scene_id,
+            });
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: Some(scene_id.clone()),
+                    domain: "prose".to_string(),
+                    op_type: "prose.discard".to_string(),
+                    entity_type: Some("prose_staging".to_string()),
+                    entity_id: Some(payload.staging_id.clone()),
+                    payload: change_payload.to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(ProseStageResult {
+                staging_id: payload.staging_id.clone(),
+                scene_id,
+                status: "discarded".to_string(),
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+#[tauri::command]
+pub(crate) fn agent_propose_scene_body(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentProposeSceneBodyPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_propose_scene_body_impl(db, payload))
+}
+
+#[tauri::command]
+pub(crate) fn agent_accept_prose_stage(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentProseStageIdPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_accept_prose_stage_impl(db, payload))
+}
+
+#[tauri::command]
+pub(crate) fn agent_discard_prose_stage(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentProseStageIdPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_discard_prose_stage_impl(db, payload))
+}

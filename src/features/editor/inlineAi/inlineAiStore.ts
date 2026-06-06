@@ -38,6 +38,7 @@ const INITIAL_STATE: InlineAiState = {
   generatedRange: null,
   error: null,
   model: null,
+  stagingId: null,
 };
 
 export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({

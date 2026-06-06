@@ -196,6 +196,26 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     },
   },
 
+  {
+    name: "propose_scene_body",
+    description:
+      "Propose plain-text body prose for a scene (staged accept/reject — does not apply until the user accepts in the editor). Requires bodyWrite policy. File-backed scenes are excluded.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sceneId: { type: "string", description: "Target scene UUID" },
+        text: { type: "string", description: "Plain-text prose to propose" },
+        mode: {
+          type: "string",
+          enum: ["append", "insert"],
+          description:
+            "append = end of scene; insert = current caret when scene is open",
+        },
+      },
+      required: ["sceneId", "text"],
+    },
+  },
+
   // ── Scenes系 ──────────────────────────────────────────────────────────────
   {
     name: "list_chapters",

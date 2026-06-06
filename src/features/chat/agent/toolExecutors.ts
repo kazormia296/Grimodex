@@ -23,6 +23,8 @@ import {
 } from "@/features/agent-writes/codex";
 import { agentCreateSnippet } from "@/features/agent-writes/snippet";
 import { agentApplyTreePlan } from "@/features/agent-writes/tree";
+import { agentProposeSceneBody } from "@/features/agent-writes/prose";
+import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
 import type { AiTreePlan } from "@/features/tree/aiScaffold/types";
 
 interface QueryResult<T = Record<string, unknown>> {
@@ -1257,12 +1259,61 @@ async function applyAiTreePlanTool(
   }
 }
 
+async function proposeSceneBodyTool(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const sceneId = String(params["sceneId"] ?? "").trim();
+  const text = String(params["text"] ?? "").trim();
+  if (!sceneId || !text) {
+    return {
+      name: "propose_scene_body",
+      content: null,
+      summary: "sceneId and text are required",
+      tokensUsed: 0,
+      error: "sceneId and text are required",
+    };
+  }
+  const rawMode = params["mode"];
+  const mode = rawMode === "insert" ? "insert" : "append";
+  try {
+    const result = await agentProposeSceneBody({ sceneId, text, mode });
+    useProseStagingStore.getState().enqueue({
+      stagingId: result.stagingId,
+      sceneId: result.sceneId,
+      text,
+      mode,
+    });
+    const content = {
+      stagingId: result.stagingId,
+      sceneId: result.sceneId,
+      status: result.status,
+    };
+    const json = JSON.stringify(content);
+    return {
+      name: "propose_scene_body",
+      content,
+      summary: `Proposed body prose for scene (${mode}); awaiting user accept/reject`,
+      tokensUsed: countTokens(json),
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: "propose_scene_body",
+      content: null,
+      summary: msg,
+      tokensUsed: 0,
+      error: msg,
+    };
+  }
+}
+
 /** Mutating tools — knowledgeWrite / structureWrite / bodyWrite gated per tool. */
 export const MUTATING_EXECUTORS: Record<string, Executor> = {
   create_codex_entry: createCodexEntryTool,
   update_codex_entry: updateCodexEntryTool,
   create_snippet: createSnippetTool,
   apply_ai_tree_plan: applyAiTreePlanTool,
+  propose_scene_body: proposeSceneBodyTool,
 };
 Object.freeze(MUTATING_EXECUTORS);
 

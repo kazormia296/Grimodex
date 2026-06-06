@@ -79,6 +79,7 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     "apply_ai_tree_plan",
     "create_codex_entry",
     "create_snippet",
+    "propose_scene_body",
     "update_codex_entry",
   ];
 

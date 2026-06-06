@@ -278,5 +278,77 @@ export function useInlineAiDiff(editor: Editor | null) {
     setTimeout(() => generate(command, context), 50);
   }, [generate, reject]);
 
-  return { generate, accept, reject, rejectOrAbort, retry };
+  /**
+   * Show pre-generated agent/MCP text in the diff UI (no streaming).
+   */
+  const showProvidedText = useCallback(
+    (
+      text: string,
+      opts: {
+        mode: "insert" | "replace";
+        stagingId?: string;
+        originalRange?: { from: number; to: number };
+        insertPos?: number;
+        model?: string;
+      },
+    ) => {
+      if (!editor) return;
+      if (blockIfPolicyOff("bodyWrite")) return;
+
+      const isReplace = opts.mode === "replace" && opts.originalRange != null;
+      const originalRange = isReplace ? opts.originalRange! : null;
+      const originalText =
+        isReplace && originalRange
+          ? editor.state.doc.textBetween(originalRange.from, originalRange.to)
+          : "";
+      const insertPos = isReplace
+        ? null
+        : (opts.insertPos ?? editor.state.selection.from);
+
+      useInlineAiStore.getState().startGeneration({
+        commandId: "agent-prose",
+        mode: isReplace ? "replace" : "insert",
+        originalRange,
+        originalText,
+        insertPos,
+        abortController: new AbortController(),
+      });
+      if (opts.stagingId) {
+        useInlineAiStore.setState({ stagingId: opts.stagingId });
+      }
+
+      const insertedFrom = isReplace
+        ? (originalRange?.to ?? editor.state.selection.to)
+        : (insertPos ?? editor.state.selection.from);
+      let insertedTo = insertedFrom;
+
+      if (text) {
+        insertChunkHistoryLess(editor, insertedTo, text);
+        insertedTo += text.length;
+      }
+
+      useInlineAiStore.getState().setGeneratedRange({
+        from: insertedFrom,
+        to: insertedTo,
+      });
+      useInlineAiStore.getState().finishGeneration(opts.model ?? DEFAULT_MODEL);
+      dispatchDiffUpdate(editor);
+    },
+    [editor, dispatchDiffUpdate, insertChunkHistoryLess],
+  );
+
+  const getActiveStagingId = useCallback(
+    () => useInlineAiStore.getState().stagingId,
+    [],
+  );
+
+  return {
+    generate,
+    accept,
+    reject,
+    rejectOrAbort,
+    retry,
+    showProvidedText,
+    getActiveStagingId,
+  };
 }

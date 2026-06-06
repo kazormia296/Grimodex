@@ -253,6 +253,17 @@ impl GrimodexServer {
     ) -> Result<CallToolResult, ErrorData> {
         tools::codex::update_codex_entry(self, params.0).await
     }
+
+    /// Propose plain-text scene body prose (staged accept/reject in app). bodyWrite gate.
+    #[tool(
+        description = "Propose plain-text body prose for a scene. Content is staged for user accept/reject in the app — not applied immediately. Disabled in readonly mode. File-backed scenes are excluded."
+    )]
+    async fn propose_scene_body(
+        &self,
+        params: Parameters<tools::scene::ProposeSceneBodyParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::scene::propose_scene_body(self, params.0).await
+    }
 }
 
 #[tool_handler]

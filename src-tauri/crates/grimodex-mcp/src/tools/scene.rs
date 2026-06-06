@@ -135,3 +135,158 @@ pub async fn read_scenes_batch(
         json,
     )]))
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProposeSceneBodyParams {
+    /// Target scene UUID.
+    pub scene_id: String,
+    /// Plain-text prose to stage for user accept/reject in the app.
+    pub text: String,
+    /// "append" (default) or "insert".
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProposeSceneBodyResult {
+    staging_id: String,
+    scene_id: String,
+    status: String,
+}
+
+fn is_file_backed_scene(source_uri: Option<&str>) -> bool {
+    match source_uri {
+        None => false,
+        Some(uri) if uri.ends_with("/.mount") => false,
+        Some(_) => true,
+    }
+}
+
+/// Stage plain-text body prose for accept/reject in the app (bodyWrite gate).
+pub async fn propose_scene_body(
+    server: &GrimodexServer,
+    params: ProposeSceneBodyParams,
+) -> Result<CallToolResult, ErrorData> {
+    if server.readonly {
+        return Err(ErrorData::invalid_params(
+            "Server is running in readonly mode; write tools are disabled",
+            None,
+        ));
+    }
+    if !server.policy.body_write {
+        return Err(ErrorData::invalid_params(
+            "bodyWrite policy is off for this project",
+            None,
+        ));
+    }
+
+    let text = params.text.trim();
+    if text.is_empty() {
+        return Err(ErrorData::invalid_params("text is required", None));
+    }
+
+    let mode = match params.mode.as_deref() {
+        Some("insert") => "insert",
+        _ => "append",
+    };
+
+    let staging_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let conn = server
+        .conn
+        .lock()
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+    let result = (|| -> Result<ProposeSceneBodyResult, ErrorData> {
+        let (base_version, source_uri): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT version, source_uri FROM tree_nodes
+                 WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+                rusqlite::params![params.scene_id, server.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| ErrorData::invalid_params("scene not found in project", None))?;
+
+        if is_file_backed_scene(source_uri.as_deref()) {
+            return Err(ErrorData::invalid_params(
+                "file-backed scenes are excluded from headless prose staging (v1)",
+                None,
+            ));
+        }
+
+        let content_json = serde_json::json!({
+            "mode": mode,
+            "text": text,
+        });
+
+        conn.execute(
+            "INSERT INTO prose_staging
+             (id, project_id, scene_id, proposed_content, base_version, status,
+              source_surface, source_session_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'proposed', 'mcp', ?6, ?7, ?7)",
+            rusqlite::params![
+                staging_id,
+                server.project_id,
+                params.scene_id,
+                content_json.to_string(),
+                base_version,
+                server.session_id,
+                now,
+            ],
+        )
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let change_payload = serde_json::json!({
+            "stagingId": staging_id,
+            "sceneId": params.scene_id,
+            "mode": mode,
+            "preview": text.chars().take(200).collect::<String>(),
+        });
+
+        grimodex_core::change_events::append_change_events_in_tx(
+            &conn,
+            &server.project_id,
+            &server.session_id,
+            &[grimodex_core::change_events::AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: Some(params.scene_id.clone()),
+                domain: "prose".to_string(),
+                op_type: "prose.propose".to_string(),
+                entity_type: Some("prose_staging".to_string()),
+                entity_id: Some(staging_id.clone()),
+                payload: change_payload.to_string(),
+                timestamp,
+            }],
+        )
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(ProposeSceneBodyResult {
+            staging_id: staging_id.clone(),
+            scene_id: params.scene_id.clone(),
+            status: "proposed".to_string(),
+        })
+    })();
+
+    match result {
+        Ok(res) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            let json = serde_json::to_string_pretty(&res)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                json,
+            )]))
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}

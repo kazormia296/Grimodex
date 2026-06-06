@@ -8,6 +8,8 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useExternalWriteStore } from "./externalWriteStore";
+import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
+import { loadLatestProposedProse } from "@/features/agent-writes/prose";
 
 const POLL_MS = 750;
 
@@ -87,6 +89,21 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
       });
     } else {
       extStore.bumpReloadNonce(sceneId);
+    }
+  }
+
+  const proseProposals = events.filter(
+    (e) => e.domain === "prose" && e.opType === "prose.propose" && e.sceneId,
+  );
+  const proseSceneIds = [...new Set(proseProposals.map((e) => e.sceneId!))];
+  for (const sceneId of proseSceneIds) {
+    try {
+      const proposal = await loadLatestProposedProse(sceneId);
+      if (proposal) {
+        useProseStagingStore.getState().enqueue(proposal);
+      }
+    } catch {
+      // ignore load failures; user can reopen scene to retry
     }
   }
 

@@ -48,4 +48,5 @@ export interface InlineAiState {
   generatedRange: { from: number; to: number } | null;
   error: string | null;
   model: string | null;
+  stagingId: string | null;
 }

@@ -1605,7 +1605,7 @@ export const changeEvents = sqliteTable(
     sceneId: text("scene_id").references(() => treeNodes.id, {
       onDelete: "set null",
     }),
-    domain: text("domain").notNull(), // 'editor'|'codex'|'snippet'|'grid'|'map'|'synopsis'|'intent'|'beat'|'chat'|'layout'
+    domain: text("domain").notNull(), // 'editor'|'codex'|'snippet'|'grid'|'map'|'synopsis'|'intent'|'beat'|'chat'|'layout'|'prose'
     opType: text("op_type").notNull(),
     entityType: text("entity_type"),
     entityId: text("entity_id"),
@@ -1664,6 +1664,34 @@ export const stateSnapshots = sqliteTable(
       t.projectId,
       t.domain,
       t.anchorSequence,
+    ),
+  ],
+);
+
+/** AI prose staging — accept/reject body writes (Phase 5). */
+export const proseStaging = sqliteTable(
+  "prose_staging",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    proposedContent: text("proposed_content").notNull(),
+    baseVersion: integer("base_version").notNull(),
+    status: text("status").notNull().default("proposed"),
+    sourceSurface: text("source_surface").notNull(),
+    sourceSessionId: text("source_session_id"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    index("idx_prose_staging_project_scene").on(
+      t.projectId,
+      t.sceneId,
+      t.status,
     ),
   ],
 );
