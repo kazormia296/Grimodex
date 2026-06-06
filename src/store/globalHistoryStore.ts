@@ -1,7 +1,5 @@
 import { create } from "zustand";
 import { isVersionConflictError } from "@/lib/versionConflict";
-import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
-import { useTabStore } from "@/features/editor/tabStore";
 
 type AsyncFn = () => Promise<void>;
 
@@ -26,36 +24,26 @@ export interface HistoryCommand {
 
 const MAX_HISTORY = 50;
 
-function domainForKind(kind: HistoryKind): string | null {
-  switch (kind) {
-    case "codex":
-      return "codex";
-    case "snippets":
-      return "snippet";
-    case "scenes":
-      return "grid";
-    default:
-      return null;
-  }
+/**
+ * Conflict surfacer registered by the concurrency layer (externalWriteFeed).
+ * Kept OUT of this low-level store on purpose: importing tabStore /
+ * externalWriteStore here forms a module-init cycle with projectStore→treeStore
+ * (treeStore's createStore calls getCurrentProjectId(), which reads
+ * useProjectStore before it is initialized → TDZ ReferenceError). Dependency
+ * injection via registration keeps globalHistoryStore free of feature-store
+ * imports. When no handler is registered, conflict surfacing is a no-op (the
+ * failed entry is still dropped from history by undo/redo).
+ */
+let undoConflictHandler: ((cmd: HistoryCommand) => void) | null = null;
+
+export function setUndoConflictHandler(
+  handler: ((cmd: HistoryCommand) => void) | null,
+): void {
+  undoConflictHandler = handler;
 }
 
 function surfaceUndoConflict(cmd: HistoryCommand): void {
-  const entityId = cmd.entityId;
-  const domain = domainForKind(cmd.kind);
-  if (!entityId || !domain) return;
-
-  const extStore = useExternalWriteStore.getState();
-  const dirtyTabIds = useTabStore.getState().dirtyTabIds;
-  if (dirtyTabIds.has(entityId)) {
-    extStore.pushConflict({
-      sceneId: entityId,
-      domain,
-      opType: "undo.version_conflict",
-      entityId,
-    });
-  } else {
-    extStore.bumpReloadNonce(entityId);
-  }
+  undoConflictHandler?.(cmd);
 }
 
 interface HistoryState {

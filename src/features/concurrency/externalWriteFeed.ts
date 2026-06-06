@@ -6,12 +6,58 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useTabStore } from "@/features/editor/tabStore";
-import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import {
+  useGlobalHistoryStore,
+  setUndoConflictHandler,
+  type HistoryCommand,
+  type HistoryKind,
+} from "@/store/globalHistoryStore";
 import { useExternalWriteStore } from "./externalWriteStore";
 import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
 import { loadLatestProposedProse } from "@/features/agent-writes/prose";
 
 const POLL_MS = 750;
+
+/**
+ * Surface a failed (version-conflict) undo/redo to the user. Defined here — not
+ * in globalHistoryStore — so the low-level history store need not import
+ * tabStore / externalWriteStore (which would form a module-init cycle with
+ * projectStore→treeStore; see setUndoConflictHandler in globalHistoryStore).
+ * Registered at module load: externalWriteFeed is imported by projectStore, so
+ * the handler is wired before any undo can run in the app.
+ */
+function domainForHistoryKind(kind: HistoryKind): string | null {
+  switch (kind) {
+    case "codex":
+      return "codex";
+    case "snippets":
+      return "snippet";
+    case "scenes":
+      return "grid";
+    default:
+      return null;
+  }
+}
+
+function handleUndoConflict(cmd: HistoryCommand): void {
+  const entityId = cmd.entityId;
+  const domain = domainForHistoryKind(cmd.kind);
+  if (!entityId || !domain) return;
+  const extStore = useExternalWriteStore.getState();
+  const dirtyTabIds = useTabStore.getState().dirtyTabIds;
+  if (dirtyTabIds.has(entityId)) {
+    extStore.pushConflict({
+      sceneId: entityId,
+      domain,
+      opType: "undo.version_conflict",
+      entityId,
+    });
+  } else {
+    extStore.bumpReloadNonce(entityId);
+  }
+}
+
+setUndoConflictHandler(handleUndoConflict);
 
 interface PollerState {
   projectId: string | null;

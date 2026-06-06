@@ -38,6 +38,7 @@ import {
   stopExternalWriteFeed,
 } from "./externalWriteFeed";
 import { useExternalWriteStore } from "./externalWriteStore";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 const ev = (
   partial: Partial<{
@@ -152,5 +153,58 @@ describe("externalWriteFeed fan-out", () => {
       "p1",
     );
     expect(useExternalWriteStore.getState().reloadNonce["snippet-2"]).toBe(1);
+  });
+});
+
+// Importing this module registers handleUndoConflict via setUndoConflictHandler
+// (a top-level side effect). These tests pin that the conflict-surfacing logic —
+// moved out of globalHistoryStore to break the projectStore↔treeStore import
+// cycle — still fires. (This file has been the site of two regressions across
+// three touches; the feature was previously asserted only by "body copied
+// correctly", never by a test.)
+describe("undo version-conflict surfacing (registered handler)", () => {
+  beforeEach(() => {
+    h.dirtyTabs = new Set();
+    useExternalWriteStore.getState().clear();
+    useGlobalHistoryStore.getState().clear();
+  });
+
+  function pushConflicting(entityId: string) {
+    useGlobalHistoryStore.getState().push({
+      kind: "codex",
+      label: "stale",
+      entityId,
+      undo: async () => {
+        throw new Error(
+          `codex entry '${entityId}' version 2 conflict during journal restore`,
+        );
+      },
+      redo: async () => {},
+    });
+  }
+
+  it("pushes a conflict banner when the entity's tab is dirty", async () => {
+    h.dirtyTabs.add("entry-1");
+    pushConflicting("entry-1");
+    await useGlobalHistoryStore.getState().undo();
+
+    const conflicts = useExternalWriteStore.getState().conflicts;
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({
+      sceneId: "entry-1",
+      domain: "codex",
+      opType: "undo.version_conflict",
+      entityId: "entry-1",
+    });
+    // Conflict drops only the failed entry; history is not wiped.
+    expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+  });
+
+  it("bumps reload nonce (no banner) when the entity's tab is clean", async () => {
+    pushConflicting("entry-2");
+    await useGlobalHistoryStore.getState().undo();
+
+    expect(useExternalWriteStore.getState().conflicts).toHaveLength(0);
+    expect(useExternalWriteStore.getState().reloadNonce["entry-2"]).toBe(1);
   });
 });
