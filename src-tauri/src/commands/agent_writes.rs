@@ -1055,9 +1055,45 @@ pub(crate) fn agent_discard_prose_stage(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentUndoJournalPayload {
     pub project_id: String,
+    pub session_id: String,
     pub journal_id: String,
     /// "undo" | "redo"
     pub direction: String,
+}
+
+fn undo_journal_change_event(
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    direction: &str,
+) -> anyhow::Result<(String, String, String, String)> {
+    let (domain, entity_type, create_op, delete_op, update_op) = match row.entity_kind.as_str() {
+        "codex_entry" => (
+            "codex",
+            "codex_entry",
+            "entry.create",
+            "entry.delete",
+            "entry.update",
+        ),
+        "snippet" => (
+            "snippet",
+            "snippet",
+            "snippet.create",
+            "snippet.delete",
+            "snippet.update",
+        ),
+        other => anyhow::bail!("undo_journal_change_event: unsupported entity_kind '{other}'"),
+    };
+    let op_type = match (direction, row.op_kind.as_str()) {
+        ("undo", "create") => delete_op,
+        ("redo", "create") => create_op,
+        ("undo", "update") | ("redo", "update") => update_op,
+        (dir, op) => anyhow::bail!("undo_journal_change_event: unsupported {dir}/{op}"),
+    };
+    Ok((
+        domain.to_string(),
+        entity_type.to_string(),
+        op_type.to_string(),
+        row.entity_id.clone(),
+    ))
 }
 
 fn agent_undo_journal_impl(
@@ -1068,6 +1104,11 @@ fn agent_undo_journal_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<()> {
+            let row = grimodex_core::undo_journal::load_undo_journal(
+                conn,
+                &payload.project_id,
+                &payload.journal_id,
+            )?;
             match payload.direction.as_str() {
                 "undo" => grimodex_core::undo_journal::revert_undo_journal_in_tx(
                     conn,
@@ -1081,6 +1122,30 @@ fn agent_undo_journal_impl(
                 )?,
                 other => anyhow::bail!("invalid undo direction: {other}"),
             }
+            let (domain, entity_type, op_type, entity_id) =
+                undo_journal_change_event(&row, &payload.direction)?;
+            let event_uid = uuid::Uuid::new_v4().to_string();
+            let timestamp = chrono::Utc::now().timestamp_millis();
+            let change_payload = json!({
+                "direction": payload.direction,
+                "opKind": row.op_kind,
+                "journalId": payload.journal_id,
+            });
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid,
+                    scene_id: None,
+                    domain,
+                    op_type,
+                    entity_type: Some(entity_type),
+                    entity_id: Some(entity_id),
+                    payload: change_payload.to_string(),
+                    timestamp,
+                }],
+            )?;
             Ok(())
         })();
         match result {

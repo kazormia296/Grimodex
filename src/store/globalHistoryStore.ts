@@ -1,4 +1,7 @@
 import { create } from "zustand";
+import { isVersionConflictError } from "@/lib/versionConflict";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
+import { useTabStore } from "@/features/editor/tabStore";
 
 type AsyncFn = () => Promise<void>;
 
@@ -22,6 +25,38 @@ export interface HistoryCommand {
 }
 
 const MAX_HISTORY = 50;
+
+function domainForKind(kind: HistoryKind): string | null {
+  switch (kind) {
+    case "codex":
+      return "codex";
+    case "snippets":
+      return "snippet";
+    case "scenes":
+      return "grid";
+    default:
+      return null;
+  }
+}
+
+function surfaceUndoConflict(cmd: HistoryCommand): void {
+  const entityId = cmd.entityId;
+  const domain = domainForKind(cmd.kind);
+  if (!entityId || !domain) return;
+
+  const extStore = useExternalWriteStore.getState();
+  const dirtyTabIds = useTabStore.getState().dirtyTabIds;
+  if (dirtyTabIds.has(entityId)) {
+    extStore.pushConflict({
+      sceneId: entityId,
+      domain,
+      opType: "undo.version_conflict",
+      entityId,
+    });
+  } else {
+    extStore.bumpReloadNonce(entityId);
+  }
+}
 
 interface HistoryState {
   past: HistoryCommand[];
@@ -61,14 +96,30 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     if (past.length === 0 || isReplaying) return;
     const cmd = past[past.length - 1];
     set({ isReplaying: true });
+    let versionConflict = false;
     try {
       await cmd.undo();
     } catch (err) {
-      get().clear();
-      throw err;
+      if (isVersionConflictError(err)) {
+        versionConflict = true;
+        surfaceUndoConflict(cmd);
+      } else {
+        get().clear();
+        throw err;
+      }
     } finally {
       set((state) => {
         if (state.isReplaying === false) return state;
+        if (versionConflict) {
+          const newPast = state.past.slice(0, -1);
+          return {
+            past: newPast,
+            future: state.future,
+            canUndo: newPast.length > 0,
+            canRedo: state.future.length > 0,
+            isReplaying: false,
+          };
+        }
         const newPast = state.past.slice(0, -1);
         const newFuture = [cmd, ...state.future];
         return {
@@ -87,14 +138,30 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     if (future.length === 0 || isReplaying) return;
     const cmd = future[0];
     set({ isReplaying: true });
+    let versionConflict = false;
     try {
       await cmd.redo();
     } catch (err) {
-      get().clear();
-      throw err;
+      if (isVersionConflictError(err)) {
+        versionConflict = true;
+        surfaceUndoConflict(cmd);
+      } else {
+        get().clear();
+        throw err;
+      }
     } finally {
       set((state) => {
         if (state.isReplaying === false) return state;
+        if (versionConflict) {
+          const newFuture = state.future.slice(1);
+          return {
+            past: state.past,
+            future: newFuture,
+            canUndo: state.past.length > 0,
+            canRedo: newFuture.length > 0,
+            isReplaying: false,
+          };
+        }
         const newFuture = state.future.slice(1);
         const newPast = [...state.past, cmd];
         return {

@@ -42,5 +42,38 @@
       "structureWrite": true,
       "knowledgeWrite": false
     }
+  },
+  {
+    "label": "unknown-preset",
+    "raw": "{\"preset\":\"bogus\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": true,
+      "analysis": true,
+      "structureWrite": true,
+      "knowledgeWrite": true
+    }
+  },
+  {
+    "label": "malformed-json",
+    "raw": "not-json",
+    "expected": {
+      "chat": true,
+      "bodyWrite": true,
+      "analysis": true,
+      "structureWrite": true,
+      "knowledgeWrite": true
+    }
+  },
+  {
+    "label": "partial-toggles-named-preset",
+    "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":true}}",
+    "expected": {
+      "chat": true,
+      "bodyWrite": true,
+      "analysis": true,
+      "structureWrite": true,
+      "knowledgeWrite": true
+    }
   }
 ]

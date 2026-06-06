@@ -15,6 +15,7 @@ pub struct AiPolicyToggles {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawPolicy {
+    #[allow(dead_code)]
     preset: String,
     toggles: RawToggles,
 }
@@ -69,19 +70,39 @@ fn preset_table(preset: &str) -> AiPolicyToggles {
     }
 }
 
+/// Mirrors TS `isValidToggles`: legacy policies must declare chat/bodyWrite/analysis.
+fn toggles_has_required_keys(toggles: &serde_json::Value) -> bool {
+    let Some(obj) = toggles.as_object() else {
+        return false;
+    };
+    obj.contains_key("chat") && obj.contains_key("bodyWrite") && obj.contains_key("analysis")
+}
+
 pub fn parse_policy_json(raw: &str) -> anyhow::Result<AiPolicyToggles> {
-    let p: RawPolicy = match serde_json::from_str(raw) {
+    let root: serde_json::Value = match serde_json::from_str(raw) {
         Ok(v) => v,
         Err(_) => return Ok(preset_table("full")),
     };
-    let preset = p.preset.as_str();
+    let preset = root
+        .get("preset")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if !matches!(
-        preset,
+        preset.as_str(),
         "full" | "assist-off" | "review-only" | "off" | "custom"
     ) {
         return Ok(preset_table("full"));
     }
-    let derived = preset_table(preset);
+    let toggles_val = root
+        .get("toggles")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    if !toggles_has_required_keys(&toggles_val) {
+        return Ok(preset_table("full"));
+    }
+    let p: RawPolicy = serde_json::from_value(root)?;
+    let derived = preset_table(&preset);
     let structure_write = p.toggles.structure_write.unwrap_or_else(|| {
         if preset == "custom" {
             false
@@ -131,6 +152,14 @@ mod tests {
         )
         .unwrap();
         assert!(!toggles.knowledge_write);
+    }
+
+    #[test]
+    fn partial_named_preset_toggles_fail_open_to_full() {
+        let toggles =
+            parse_policy_json(r#"{"preset":"assist-off","toggles":{"chat":true}}"#).unwrap();
+        assert!(toggles.body_write);
+        assert!(toggles.knowledge_write);
     }
 
     #[test]

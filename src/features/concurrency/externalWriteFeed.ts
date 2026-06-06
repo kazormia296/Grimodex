@@ -124,8 +124,36 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
     }
     if (ev.entityType === "snippet" && ev.entityId) {
       invalidateHistoryForEntity(ev.entityType, ev.entityId);
+      if (dirtyTabIds.has(ev.entityId)) {
+        extStore.pushConflict({
+          sceneId: ev.entityId,
+          domain: ev.domain,
+          opType: ev.opType,
+          entityId: ev.entityId,
+        });
+      } else {
+        extStore.bumpReloadNonce(ev.entityId);
+      }
     }
   }
+}
+
+async function fetchExternalRows(
+  projectId: string,
+  cursor: number,
+  sessionId: string,
+): Promise<ChangeEventRow[]> {
+  return db
+    .select()
+    .from(changeEvents)
+    .where(
+      and(
+        eq(changeEvents.projectId, projectId),
+        gt(changeEvents.sequence, cursor),
+        ne(changeEvents.sessionId, sessionId),
+      ),
+    )
+    .orderBy(asc(changeEvents.sequence));
 }
 
 async function pollTick(): Promise<void> {
@@ -133,22 +161,18 @@ async function pollTick(): Promise<void> {
   if (!projectId) return;
 
   const sessionId = getRecorderSessionId();
-  const rows = await db
-    .select()
-    .from(changeEvents)
-    .where(
-      and(
-        eq(changeEvents.projectId, projectId),
-        gt(changeEvents.sequence, state.cursor),
-        ne(changeEvents.sessionId, sessionId),
-      ),
-    )
-    .orderBy(asc(changeEvents.sequence));
+  let rows = await fetchExternalRows(projectId, state.cursor, sessionId);
 
   if (rows.length === 0) {
     const tail = await readTailSequence(projectId);
-    if (tail > state.cursor) state.cursor = tail;
-    return;
+    if (tail > state.cursor) {
+      // Re-fetch once: events may have landed between the first query and tail read.
+      rows = await fetchExternalRows(projectId, state.cursor, sessionId);
+      if (rows.length === 0) {
+        state.cursor = tail;
+      }
+    }
+    if (rows.length === 0) return;
   }
 
   try {

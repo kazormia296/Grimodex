@@ -210,6 +210,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         useGlobalHistoryStore.getState().push({
           kind: "codex",
           label: "Codex作成",
+          entityId: captured.id,
           async undo() {
             await deleteCodexEntry(captured.projectId, captured.id);
             set((state) => ({
@@ -306,6 +307,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     useGlobalHistoryStore.getState().push({
       kind: "codex",
       label: labelForPatch(data),
+      entityId: id,
       async undo() {
         const restored = await updateCodexEntry(
           getCurrentProjectId(),
@@ -410,6 +412,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       useGlobalHistoryStore.getState().push({
         kind: "codex",
         label: "Codex削除",
+        entityId: captured.id,
         async undo() {
           useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
           await createCodexEntry({

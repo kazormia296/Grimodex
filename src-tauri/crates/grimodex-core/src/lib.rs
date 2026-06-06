@@ -3,6 +3,7 @@
 pub const SCHEMA_VERSION: i32 = 1;
 
 pub mod change_events;
+pub mod pm_text;
 pub mod policy;
 pub mod snapshots;
 pub mod undo_journal;

@@ -119,4 +119,38 @@ describe("externalWriteFeed fan-out", () => {
     );
     expect(useExternalWriteStore.getState().reloadNonce["scene-2"]).toBe(1);
   });
+
+  it("pushes conflict for dirty snippet tab", async () => {
+    h.dirtyTabs.add("snippet-1");
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "snippet",
+          entityType: "snippet",
+          entityId: "snippet-1",
+          opType: "snippet.update",
+        }),
+      ],
+      "p1",
+    );
+    expect(useExternalWriteStore.getState().conflicts).toHaveLength(1);
+    expect(useExternalWriteStore.getState().conflicts[0].sceneId).toBe(
+      "snippet-1",
+    );
+  });
+
+  it("bumps reload nonce for clean snippet tab", async () => {
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "snippet",
+          entityType: "snippet",
+          entityId: "snippet-2",
+          opType: "snippet.create",
+        }),
+      ],
+      "p1",
+    );
+    expect(useExternalWriteStore.getState().reloadNonce["snippet-2"]).toBe(1);
+  });
 });

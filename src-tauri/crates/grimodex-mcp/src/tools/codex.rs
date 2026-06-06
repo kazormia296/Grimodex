@@ -265,7 +265,7 @@ pub async fn create_codex_entry(
     if !summary_text.is_empty() {
         spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
             from_pos: 0,
-            to_pos: summary_text.len() as i64,
+            to_pos: grimodex_core::pm_text::utf16_text_len(summary_text),
             source: "ai".to_string(),
             model: Some(grimodex_core::writes::LANE_SUMMARY_MODEL.to_string()),
             chat_msg_id: None,
@@ -273,10 +273,11 @@ pub async fn create_codex_entry(
             lane: Some("summary".to_string()),
         });
     }
-    if content_pm.len() > 2 {
+    let content_text_len = grimodex_core::pm_text::pm_doc_text_len(&content_pm);
+    if content_text_len > 0 {
         spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
             from_pos: 0,
-            to_pos: content_pm.len() as i64,
+            to_pos: content_text_len,
             source: "ai".to_string(),
             model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
             chat_msg_id: None,
@@ -415,7 +416,7 @@ pub async fn update_codex_entry(
         if !s.is_empty() {
             spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
                 from_pos: 0,
-                to_pos: s.len() as i64,
+                to_pos: grimodex_core::pm_text::utf16_text_len(s),
                 source: "ai".to_string(),
                 model: Some(grimodex_core::writes::LANE_SUMMARY_MODEL.to_string()),
                 chat_msg_id: None,
@@ -426,10 +427,11 @@ pub async fn update_codex_entry(
         }
     }
     if let Some(ref c) = content_pm {
-        if c.len() > 2 {
+        let content_text_len = grimodex_core::pm_text::pm_doc_text_len(c);
+        if content_text_len > 0 {
             spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
                 from_pos: 0,
-                to_pos: c.len() as i64,
+                to_pos: content_text_len,
                 source: "ai".to_string(),
                 model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
                 chat_msg_id: None,

@@ -117,10 +117,11 @@ pub async fn create_snippet(
     };
 
     let snippet_id = uuid::Uuid::new_v4().to_string();
-    let spans = if content_pm.len() > 2 {
+    let content_text_len = grimodex_core::pm_text::pm_doc_text_len(&content_pm);
+    let spans = if content_text_len > 0 {
         vec![grimodex_core::writes::codex::AuthorshipSpanInput {
             from_pos: 0,
-            to_pos: content_pm.len() as i64,
+            to_pos: content_text_len,
             source: "ai".to_string(),
             model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
             chat_msg_id: None,

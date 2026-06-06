@@ -115,6 +115,52 @@ describe("useGlobalHistoryStore", () => {
     expect(s.isReplaying).toBe(false);
   });
 
+  it("version conflict on undo drops only the failed entry and keeps history", async () => {
+    useGlobalHistoryStore.getState().push({
+      kind: "scenes",
+      label: "keep-me",
+      undo: async () => {},
+      redo: async () => {},
+    });
+    useGlobalHistoryStore.getState().push({
+      kind: "codex",
+      label: "stale",
+      entityId: "entry-1",
+      undo: async () => {
+        throw new Error(
+          "codex entry 'entry-1' version 2 conflict during journal restore",
+        );
+      },
+      redo: async () => {},
+    });
+    await useGlobalHistoryStore.getState().undo();
+    const s = useGlobalHistoryStore.getState();
+    expect(s.past).toHaveLength(1);
+    expect(s.past[0].label).toBe("keep-me");
+    expect(s.future).toEqual([]);
+    expect(s.canUndo).toBe(true);
+  });
+
+  it("version conflict on redo drops only the failed entry", async () => {
+    useGlobalHistoryStore.getState().push({
+      kind: "codex",
+      label: "stale",
+      entityId: "entry-2",
+      undo: async () => {},
+      redo: async () => {
+        throw new Error(
+          "Codex entry 'entry-2' version conflict: expected 1 but database has 3",
+        );
+      },
+    });
+    await useGlobalHistoryStore.getState().undo();
+    await useGlobalHistoryStore.getState().redo();
+    const s = useGlobalHistoryStore.getState();
+    expect(s.past).toEqual([]);
+    expect(s.future).toEqual([]);
+    expect(s.canRedo).toBe(false);
+  });
+
   it("redo throwing clears history and rethrows", async () => {
     useGlobalHistoryStore.getState().push({
       kind: "scenes",
