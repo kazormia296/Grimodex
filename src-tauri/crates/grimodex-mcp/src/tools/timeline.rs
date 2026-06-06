@@ -37,7 +37,7 @@ pub async fn get_scene_timeline_neighbors(
         .conn
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let neighbors = db::get_scene_timeline_neighbors(&conn, scene_id)
+    let neighbors = db::get_scene_timeline_neighbors(&conn, &server.project_id, scene_id)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let json = serde_json::to_string_pretty(&neighbors)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;

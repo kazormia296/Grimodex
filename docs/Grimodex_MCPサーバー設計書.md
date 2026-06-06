@@ -783,12 +783,16 @@ Grimodex 内蔵 Agent の read-only executor 14 種のうち、専用 MCP ツー
 - **章ノード**: 現行 DB の `tree_nodes.node_type` は `folder | scene | note`。
   チャット executor / 旧 docs の `chapter` / `part` は legacy 表現。
   MCP `get_chapter_summaries` は **`folder` を章として扱う**。
-- **`list_open_foreshadows`**: 内部で `derivedLabel` を計算するが、チャット executor
-  と同様に **最終 JSON には含めない**（`id`, `title`, `intent`, `loadBearing`, `setupCount` のみ）。
+- **`list_open_foreshadows`**: `derivedLabel`（seeded / needs_strengthening / critical_weak /
+  planned 等）を **JSON に含める**（`id`, `title`, `intent`, `loadBearing`, `setupCount`, `derivedLabel`）。
+  チャット executor は最終出力から `derivedLabel` を落とすが、toolDefinitions の宣言契約と伏線整理
+  ユースケースに合わせ MCP は返す。**意図的な差分**でありチャット出力との byte-for-byte parity は非対象。
 - **`get_foreshadow_detail` setup.strength**: チャットは `strength ?? aiStrength ?? null`。
   MCP も同じ（`careful.strength` は見ない）。
 - **`get_scene_timeline_neighbors`**: チャット executor は JS `cmpKeys` で全件ソート。
   MCP は `story_time_order COLLATE BINARY` の SQL 近傍クエリ（fractional key 文字列順は同等）。
+  なお **target scene は `server.project_id` で必ず絞る**（単一 DB に全プロジェクトを持つため、
+  他プロジェクトの scene_id でタイムラインを読まれないようにする XPROJ 防御）。
 
 ### 3.10 Linter 連携（Phase 1 で型のみ凍結）
 

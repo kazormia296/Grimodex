@@ -1264,22 +1264,24 @@ pub struct SceneTimelineNeighbors {
 /// Story-time neighbors via fractional key SQL ordering (BINARY COLLATE).
 pub fn get_scene_timeline_neighbors(
     conn: &Connection,
+    project_id: &str,
     scene_id: &str,
 ) -> Result<SceneTimelineNeighbors> {
+    // project_id で必ず絞る。MCP は単一 grimodex.db に全プロジェクトを持つため、
+    // 他プロジェクトの scene_id を渡してタイムラインを読まれないようにする (XPROJ 防御)。
     let target = conn.query_row(
-        "SELECT project_id, story_time_order, story_time_label FROM tree_nodes
-         WHERE id = ?1 AND node_type = 'scene'",
-        params![scene_id],
+        "SELECT story_time_order, story_time_label FROM tree_nodes
+         WHERE id = ?1 AND node_type = 'scene' AND project_id = ?2",
+        params![scene_id, project_id],
         |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(0)?,
                 row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
             ))
         },
     );
 
-    let (project_id, story_time_order, story_time_label) = match target {
+    let (story_time_order, story_time_label) = match target {
         Ok(v) => v,
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             return Ok(SceneTimelineNeighbors {
@@ -1444,9 +1446,14 @@ pub struct OpenForeshadowSummary {
     pub intent: String,
     pub load_bearing: Option<String>,
     pub setup_count: i64,
+    /// 派生ラベル (seeded / needs_strengthening / critical_weak / planned 等)。
+    /// チャット executor は出力から落とすが、宣言済みツール契約 (toolDefinitions の説明) と
+    /// 伏線整理ユースケースに合わせ MCP では返す (意図的な差分・docs に明記)。
+    pub derived_label: String,
 }
 
-/// Open foreshadows excluding secret/abandoned/payoff_confirmed. Chat executor omits derivedLabel.
+/// Open foreshadows excluding secret/abandoned/payoff_confirmed.
+/// derivedLabel はチャット出力では落ちるが、MCP では宣言契約どおり返す (意図的差分)。
 pub fn list_open_foreshadows(
     conn: &Connection,
     project_id: &str,
@@ -1536,7 +1543,7 @@ pub fn list_open_foreshadows(
                     abandoned,
                     load_bearing: load_bearing.clone(),
                 };
-                let _derived = derive_label(
+                let derived = derive_label(
                     &label_input,
                     setup_count,
                     weak_map.get(&id).copied().unwrap_or(false),
@@ -1548,6 +1555,7 @@ pub fn list_open_foreshadows(
                     intent: intent.unwrap_or_default(),
                     load_bearing,
                     setup_count,
+                    derived_label: derived.to_string(),
                 };
                 (summary, priority, updated_at)
             },
@@ -2656,7 +2664,7 @@ mod tests {
             [],
         )
         .unwrap();
-        let unset = get_scene_timeline_neighbors(&conn, "missing").unwrap();
+        let unset = get_scene_timeline_neighbors(&conn, "p1", "missing").unwrap();
         assert!(unset.previous.is_empty());
         let no_order = conn.execute(
             "INSERT INTO tree_nodes (id, project_id, node_type, title)
@@ -2664,15 +2672,45 @@ mod tests {
             [],
         );
         assert!(no_order.is_ok());
-        let empty_neighbors = get_scene_timeline_neighbors(&conn, "s0").unwrap();
+        let empty_neighbors = get_scene_timeline_neighbors(&conn, "p1", "s0").unwrap();
         assert!(empty_neighbors.previous.is_empty());
         assert!(empty_neighbors.next.is_empty());
-        let mid = get_scene_timeline_neighbors(&conn, "s2").unwrap();
+        let mid = get_scene_timeline_neighbors(&conn, "p1", "s2").unwrap();
         assert_eq!(mid.current_scene_story_time_label.as_deref(), Some("Day 2"));
         assert_eq!(mid.previous.len(), 1);
         assert_eq!(mid.previous[0].id, "s1");
         assert_eq!(mid.next.len(), 1);
         assert_eq!(mid.next[0].id, "s3");
+    }
+
+    #[test]
+    fn test_get_scene_timeline_neighbors_project_scope() {
+        // 他プロジェクトの scene_id を渡しても、サーバ project に属さないので空を返す (XPROJ 防御)。
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_project(&conn, "p2", "Other");
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, story_time_order, story_time_label)
+             VALUES ('b1', 'p2', 'scene', 'B1', 'a0', 'Day 1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, story_time_order, story_time_label)
+             VALUES ('b2', 'p2', 'scene', 'B2', 'a1', 'Day 2')",
+            [],
+        )
+        .unwrap();
+        // p1 にスコープして p2 の scene を引いても target が見つからず空。
+        let cross = get_scene_timeline_neighbors(&conn, "p1", "b1").unwrap();
+        assert!(cross.previous.is_empty());
+        assert!(cross.next.is_empty());
+        assert_eq!(cross.current_scene_story_time_label, None);
+        // p2 にスコープすれば p2 内の近傍だけ返る。
+        let in_scope = get_scene_timeline_neighbors(&conn, "p2", "b1").unwrap();
+        assert_eq!(in_scope.next.len(), 1);
+        assert_eq!(in_scope.next[0].id, "b2");
+        assert!(in_scope.previous.is_empty());
     }
 
     #[test]
@@ -2720,6 +2758,8 @@ mod tests {
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, "f-open");
         assert_eq!(open[0].setup_count, 1);
+        // derivedLabel を出力に載せる (critical / setup=1 / 非weak → "seeded")。
+        assert_eq!(open[0].derived_label, "seeded");
     }
 
     #[test]
