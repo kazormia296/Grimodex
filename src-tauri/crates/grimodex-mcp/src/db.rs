@@ -1188,6 +1188,9 @@ pub struct ChapterSummary {
     pub scenes: Vec<ChapterSummaryScene>,
 }
 
+/// (id, parent_id, title, synopsis, sort_order) for a scene tree node.
+type SceneSummaryRow = (String, Option<String>, String, Option<String>, String);
+
 /// Folder nodes are treated as chapters (current schema). Mirrors `getChapterSummaries` with folder.
 pub fn get_chapter_summaries(conn: &Connection, project_id: &str) -> Result<Vec<ChapterSummary>> {
     let mut folder_stmt = conn.prepare(
@@ -1206,7 +1209,7 @@ pub fn get_chapter_summaries(conn: &Connection, project_id: &str) -> Result<Vec<
          WHERE project_id = ?1 AND node_type = 'scene'
          ORDER BY sort_order",
     )?;
-    let scenes: Vec<(String, Option<String>, String, Option<String>, String)> = scene_stmt
+    let scenes: Vec<SceneSummaryRow> = scene_stmt
         .query_map(params![project_id], |row| {
             Ok((
                 row.get(0)?,
@@ -1452,6 +1455,17 @@ pub struct OpenForeshadowSummary {
     pub derived_label: String,
 }
 
+/// (id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at) for a foreshadow row.
+type OpenForeshadowRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    bool,
+    bool,
+    i64,
+);
+
 /// Open foreshadows excluding secret/abandoned/payoff_confirmed.
 /// derivedLabel はチャット出力では落ちるが、MCP では宣言契約どおり返す (意図的差分)。
 pub fn list_open_foreshadows(
@@ -1463,15 +1477,7 @@ pub fn list_open_foreshadows(
          FROM foreshadows
          WHERE project_id = ?1 AND payoff_confirmed = 0 AND abandoned = 0 AND secret = 0",
     )?;
-    let rows: Vec<(
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        bool,
-        bool,
-        i64,
-    )> = stmt
+    let rows: Vec<OpenForeshadowRow> = stmt
         .query_map(params![project_id], |row| {
             Ok((
                 row.get(0)?,
