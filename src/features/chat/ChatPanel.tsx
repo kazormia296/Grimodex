@@ -106,7 +106,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const pendingUserQuestion = useChatStore((s) => s.pendingUserQuestion);
   const resolveUserQuestion = useChatStore((s) => s.resolveUserQuestion);
   const dismissUserQuestion = useChatStore((s) => s.dismissUserQuestion);
-  const ragSearching = useChatStore((s) => s.ragSearching);
   const loadSessions = useChatStore((s) => s.loadSessions);
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
@@ -887,9 +886,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
                 className="flex items-center gap-1 text-muted-foreground"
               >
                 <span className="animate-pulse text-xs">
-                  {ragSearching
-                    ? t("chat.webSearch.searching")
-                    : t("chat.generating")}
+                  {t("chat.generating")}
                 </span>
               </div>
             )}

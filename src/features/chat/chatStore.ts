@@ -446,8 +446,6 @@ interface ChatState {
    */
   ragEnabled: boolean;
   setRagEnabled: (on: boolean) => void;
-  /** 進行中ターンが Web 検索を実行中か (UI の「検索中…」表示用、内部 transient)。 */
-  ragSearching: boolean;
 
   // Chat scope — Scene / Folder (Chapter or Act) / Project の3軸統一。
   // Globe トグルを置き換え、outline 階層に沿ってどこまで context に含めるかを
@@ -1979,7 +1977,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   agentProgress: null,
   pendingUserQuestion: null,
   ragEnabled: false,
-  ragSearching: false,
   chatScope: "scene",
   scopeAnchorId: null,
   includeBodies: true,
@@ -2423,7 +2420,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     set({
       messages: [...prevMessages, userMsg, assistantMsg],
       isStreaming: true,
-      ragSearching: ragActive,
       error: null,
     });
 
@@ -2920,7 +2916,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
         get()._cancelPendingUserQuestion();
         _agentAborted = false;
-        set({ isStreaming: false, agentProgress: null, ragSearching: false });
+        set({ isStreaming: false, agentProgress: null });
       }
       return;
     }
@@ -3801,7 +3797,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     _streamCleanup?.();
     _streamCleanup = null;
     get()._cancelPendingUserQuestion();
-    set({ isStreaming: false, agentProgress: null, ragSearching: false });
+    set({ isStreaming: false, agentProgress: null });
   },
 
   // --- P2-2: メッセージ削除 ---
