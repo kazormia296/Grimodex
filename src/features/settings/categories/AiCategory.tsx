@@ -13,7 +13,12 @@ import {
   OPENROUTER_PROVIDER_PINS,
   groupModelsByDeveloper,
 } from "@/features/chat/types";
-import type { AiProvider, CliKind, AiModel } from "@/features/chat/types";
+import type {
+  AiProvider,
+  CliKind,
+  AiModel,
+  ToolProtocolMode,
+} from "@/features/chat/types";
 import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
 import {
@@ -1060,6 +1065,32 @@ export function AiCategory() {
             </select>
           </SettingRow>
         )}
+
+        {/* Tool call protocol (HTTP OpenAI 互換プロバイダのみ。Anthropic / CLI は native 固定) */}
+        {localSettings.provider !== "anthropic" &&
+          localSettings.provider !== "cli" && (
+            <SettingRow
+              label="Tool call protocol"
+              description="Agent のツール呼び出し形式。auto は model 名に hermes を含む場合のみ Hermes 形式（本文 <tool_call>）として解釈。Qwen 等は hermes を明示選択。"
+            >
+              <select
+                value={localSettings.toolProtocolMode ?? "auto"}
+                onChange={async (e) => {
+                  const updated = {
+                    ...localSettings!,
+                    toolProtocolMode: e.target.value as ToolProtocolMode,
+                  };
+                  setLocalSettings(updated);
+                  await saveSettings(updated);
+                }}
+                className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              >
+                <option value="auto">auto（推奨）</option>
+                <option value="native">native</option>
+                <option value="hermes">hermes</option>
+              </select>
+            </SettingRow>
+          )}
 
         {/* Test connection (CLI は専用ボタンが上にあるためここでは非表示) */}
         {localSettings.provider !== "cli" && (

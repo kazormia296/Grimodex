@@ -3,13 +3,21 @@
  * Mirrors src-tauri/src/ai.rs logic using fetch() via Vite dev proxy.
  * Only used when running without Tauri (pnpm dev in browser).
  */
-import type { AiModel, AiProvider } from "@/features/chat/types";
+import type {
+  AiModel,
+  AiProvider,
+  ToolProtocolMode,
+} from "@/features/chat/types";
 import type {
   AgentMessagePayload,
   AgentLLMResponse,
   AgentToolDefinition,
   ResponseBlock,
 } from "@/features/chat/agent/agentTypes";
+import {
+  resolveToolProtocol,
+  parseHermesToolCalls,
+} from "@/features/chat/toolProtocolParse";
 
 interface ChatMessage {
   role: string;
@@ -306,36 +314,62 @@ function parseAnthropicAgentResponse(result: unknown): AgentLLMResponse {
   };
 }
 
-function parseOpenAIAgentResponse(result: unknown): AgentLLMResponse {
+function parseOpenAIAgentResponse(
+  result: unknown,
+  hermes?: { allowedNames: readonly string[] },
+): AgentLLMResponse {
   const r = result as Record<string, unknown>;
   const choices = r["choices"] as Record<string, unknown>[];
   const choice = choices?.[0] ?? {};
   const finishReason = (choice["finish_reason"] as string) ?? "stop";
-  const stopReason: AgentLLMResponse["stopReason"] =
+  let stopReason: AgentLLMResponse["stopReason"] =
     finishReason === "tool_calls" ? "tool_use" : "end_turn";
 
   const blocks: ResponseBlock[] = [];
   const message = (choice["message"] as Record<string, unknown>) ?? {};
 
   const content = message["content"] as string | undefined;
-  if (content) blocks.push({ type: "text", content });
+  const nativeToolCalls = (message["tool_calls"] as unknown[]) ?? [];
 
-  for (const tc of (message["tool_calls"] as unknown[]) ?? []) {
-    const t = tc as Record<string, unknown>;
-    const fn_ = (t["function"] as Record<string, unknown>) ?? {};
-    const argsStr = (fn_["arguments"] as string) ?? "{}";
-    let input: Record<string, unknown> = {};
-    try {
-      input = JSON.parse(argsStr);
-    } catch {
-      // keep empty
+  // 優先順は Rust parse_openai_response と同一: native tool_calls > 本文 Hermes。
+  if (nativeToolCalls.length > 0) {
+    if (content) blocks.push({ type: "text", content });
+    for (const tc of nativeToolCalls) {
+      const t = tc as Record<string, unknown>;
+      const fn_ = (t["function"] as Record<string, unknown>) ?? {};
+      const argsStr = (fn_["arguments"] as string) ?? "{}";
+      let input: Record<string, unknown> = {};
+      try {
+        input = JSON.parse(argsStr);
+      } catch {
+        // keep empty
+      }
+      blocks.push({
+        type: "tool_use",
+        id: (t["id"] as string) ?? "",
+        name: (fn_["name"] as string) ?? "",
+        input,
+      });
     }
-    blocks.push({
-      type: "tool_use",
-      id: (t["id"] as string) ?? "",
-      name: (fn_["name"] as string) ?? "",
-      input,
-    });
+  } else if (hermes) {
+    const { strippedText, calls } = parseHermesToolCalls(
+      content ?? "",
+      hermes.allowedNames,
+    );
+    if (strippedText) blocks.push({ type: "text", content: strippedText });
+    if (calls.length > 0) {
+      stopReason = "tool_use";
+      for (const c of calls) {
+        blocks.push({
+          type: "tool_use",
+          id: c.id,
+          name: c.name,
+          input: c.input,
+        });
+      }
+    }
+  } else if (content) {
+    blocks.push({ type: "text", content });
   }
 
   return { blocks, stopReason };
@@ -347,6 +381,7 @@ export async function sendChatWithTools(
   apiKey: string,
   messages: AgentMessagePayload[],
   tools: AgentToolDefinition[],
+  toolProtocolMode: ToolProtocolMode = "auto",
 ): Promise<AgentLLMResponse> {
   const headers = buildHeaders(provider, apiKey);
   const url = chatEndpoint(provider);
@@ -401,9 +436,14 @@ export async function sendChatWithTools(
   }
 
   const result = await resp.json();
-  return provider === "anthropic"
-    ? parseAnthropicAgentResponse(result)
-    : parseOpenAIAgentResponse(result);
+  if (provider === "anthropic") return parseAnthropicAgentResponse(result);
+  // Hermes 解決時のみ本文 <tool_call> を declared tool に対してパースする。
+  const resolved = resolveToolProtocol(provider, model, toolProtocolMode);
+  const hermes =
+    resolved === "hermes"
+      ? { allowedNames: tools.map((t) => t.name) }
+      : undefined;
+  return parseOpenAIAgentResponse(result, hermes);
 }
 
 export async function testConnection(

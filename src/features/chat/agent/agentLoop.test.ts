@@ -11,7 +11,9 @@ import type {
   AgentToolDefinition,
   ToolResult,
   Citation,
+  ResponseBlock,
 } from "./agentTypes";
+import { parseHermesToolCalls } from "../toolProtocolParse";
 
 /** テスト用の最小ツール定義（dispatch 宣言ゲートが参照するのは name のみ）。 */
 function tool(name: string): AgentToolDefinition {
@@ -300,5 +302,45 @@ describe("runAgentLoop — web search citations/cost accumulation", () => {
     );
     expect(res.citations).toEqual([]);
     expect(res.cost).toBeNull();
+  });
+});
+
+// ── Hermes インバウンド契約 (受信パーサ) ────────────────────────────────────
+// 実機なしで「本文 <tool_call> → 実 ToolUse → loop が turn-1 で終了しない」を
+// 証明する。critical step (Hermes 本文 → blocks) は実パーサ parseHermesToolCalls
+// を通すことで、parse_openai_response / parseOpenAIAgentResponse と同契約を担保。
+describe("runAgentLoop — Hermes inbound contract", () => {
+  /** parseOpenAIAgentResponse の Hermes 分岐と同じマッピングで応答を組む。 */
+  function hermesResponse(body: string, allowed: string[]): AgentLLMResponse {
+    const { strippedText, calls } = parseHermesToolCalls(body, allowed);
+    const blocks: ResponseBlock[] = [];
+    if (strippedText) blocks.push({ type: "text", content: strippedText });
+    for (const c of calls) {
+      blocks.push({ type: "tool_use", id: c.id, name: c.name, input: c.input });
+    }
+    return {
+      blocks,
+      stopReason: calls.length > 0 ? "tool_use" : "end_turn",
+    };
+  }
+
+  it("continues past turn 1 on a body <tool_call> and executes the tool", async () => {
+    const body =
+      '検索します。\n<tool_call>{"name":"search_codex","arguments":{"query":"朱音"}}</tool_call>';
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(hermesResponse(body, ["search_codex"]))
+      .mockResolvedValueOnce(endResponse("final"));
+    const executeTool = vi.fn(async () => toolResult({ name: "search_codex" }));
+
+    const res = await runAgentLoop(baseOptions({ sendToLLM, executeTool }));
+
+    // turn-1 で終了せず、合成 ID 付きでツールを実行し、2 ターン目で完了する。
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(executeTool).toHaveBeenCalledWith("search_codex", "hermes-0", {
+      query: "朱音",
+    });
+    expect(sendToLLM).toHaveBeenCalledTimes(2);
+    expect(res.finalText).toBe("final");
   });
 });

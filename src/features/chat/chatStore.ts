@@ -61,6 +61,7 @@ import { useAiSettingsStore, isRagCapableProvider } from "./store";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
 import { stripToolProtocol } from "./toolProtocol";
+import { isHermesProtocol } from "./toolProtocolParse";
 import {
   buildWebSearchConfig,
   parseWebSearchControls,
@@ -2583,8 +2584,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // 使う。全経路に確実に届けるため両方へ付与する (どの経路も両方は読まず、
         // 重複しない。segment は新規追加せず最終 segment へ連結し 4 block 制限を守る)。
         if (ragActive) {
-          const ragInstruction = getPromptCatalog(projectCtx?.language ?? "ja")
-            .agentControl.webSearchInstruction;
+          // Hermes プロトコル × agent mode（declared client tools あり）のときだけ
+          // Hermes 用 RAG 指示を使う。標準版は全 `<tool_call>` を禁止しており、Hermes の
+          // 正規ツール呼び出しと矛盾するため。RAG 単独（agent OFF=client tools なし）は
+          // 全面禁止のままで正しい。
+          const ragAgentControl = getPromptCatalog(
+            projectCtx?.language ?? "ja",
+          ).agentControl;
+          const useHermesRag =
+            agentModeForThisSend &&
+            isHermesProtocol(useAiSettingsStore.getState().settings);
+          const ragInstruction = useHermesRag
+            ? ragAgentControl.webSearchInstructionHermes
+            : ragAgentControl.webSearchInstruction;
           systemPromptForAgent = systemPromptForAgent
             ? `${systemPromptForAgent}\n\n${ragInstruction}`
             : ragInstruction;

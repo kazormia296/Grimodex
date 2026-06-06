@@ -10,6 +10,16 @@ export const AI_PROVIDERS = [
 
 export type AiProvider = (typeof AI_PROVIDERS)[number];
 
+/**
+ * Agent ループでツール呼び出しをどのプロトコルで授受するか。
+ * - `auto`: HTTP OpenAI 互換プロバイダで、model 名に `hermes` を含む場合のみ Hermes 扱い。
+ *   それ以外は native（OpenAI structured `tool_calls`）。
+ * - `native`: 常に OpenAI structured `tool_calls`。
+ * - `hermes`: 本文 `<tool_call>`/`<tool_response>` テキストプロトコル（Hermes/ChatML 系）。
+ * Anthropic / CLI など非 OpenAI 互換プロバイダでは常に native（resolve 側で無効化）。
+ */
+export type ToolProtocolMode = "auto" | "native" | "hermes";
+
 /** CLI エージェント種別 (Claude Code / Codex CLI / OpenCode) */
 export type CliKind = "claude" | "codex" | "opencode";
 
@@ -77,6 +87,11 @@ export interface AiSettings {
    * undefined / null ⇒ タスク既定（getEffortForTask）に従う。chat/agent でのみ適用。
    */
   reasoningEffortOverride?: "low" | "medium" | "high" | null;
+  /**
+   * Agent ツール呼び出しプロトコル。未設定 ⇒ "auto"。
+   * Hermes/ChatML 系モデルが本文に出す `<tool_call>` を実ツール呼び出しとして扱うため。
+   */
+  toolProtocolMode?: ToolProtocolMode;
 }
 
 /** OpenRouter provider pin の候補一覧（UI 用）。 */
@@ -93,6 +108,7 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   ollamaEndpoint: "http://localhost:11434",
   thinkingEnabled: true,
   openaiCompatible: DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
+  toolProtocolMode: "auto",
 };
 
 export interface AiModel {

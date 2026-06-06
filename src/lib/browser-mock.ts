@@ -3,7 +3,7 @@
 // @ts-ignore — sql.js/dist/sql-asm.js has no dedicated type declarations
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import type { Database, SqlValue } from "sql.js";
-import type { AiProvider } from "@/features/chat/types";
+import type { AiProvider, ToolProtocolMode } from "@/features/chat/types";
 import {
   sendChat,
   fetchModels,
@@ -679,7 +679,16 @@ export async function createBrowserMock(): Promise<BrowserMock> {
 
     const messages = args.messages as AgentMessagePayload[];
     const tools = args.tools as AgentToolDefinition[];
-    return sendChatWithTools(provider, model, apiKey, messages, tools);
+    const toolProtocolMode =
+      (settings.toolProtocolMode as ToolProtocolMode | undefined) ?? "auto";
+    return sendChatWithTools(
+      provider,
+      model,
+      apiKey,
+      messages,
+      tools,
+      toolProtocolMode,
+    );
   }
 
   function handleDbExecute(args: Record<string, unknown>): {

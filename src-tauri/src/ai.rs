@@ -33,6 +33,58 @@ pub enum AiProvider {
     Cli,
 }
 
+/// Agent ループでツール呼び出しを授受するプロトコル（ユーザー設定値）。
+/// `auto` は HTTP OpenAI 互換プロバイダで model 名に `hermes` を含む場合のみ Hermes。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolProtocolMode {
+    #[default]
+    Auto,
+    Native,
+    Hermes,
+}
+
+/// 解決後のツールプロトコル（曖昧さを排した二値）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResolvedToolProtocol {
+    Native,
+    Hermes,
+}
+
+/// provider / model / mode からツールプロトコルを解決する。
+/// TS [`resolveToolProtocol`](src/features/chat/toolProtocolParse.ts) と同一論理。
+/// provider ゲート最優先（HTTP OpenAI 互換以外は常に Native）、auto は model 名に
+/// `hermes` を含む場合のみ Hermes（qwen 等は対象外）。
+pub fn resolve_tool_protocol(
+    provider: &AiProvider,
+    model: &str,
+    mode: ToolProtocolMode,
+) -> ResolvedToolProtocol {
+    // HTTP OpenAI 互換プロバイダのみ Hermes 解決の対象。
+    let http_openai_compat = matches!(
+        provider,
+        AiProvider::OpenRouter
+            | AiProvider::OpenAI
+            | AiProvider::Ollama
+            | AiProvider::OpenaiCompatible
+            | AiProvider::AiNovelist
+    );
+    if !http_openai_compat {
+        return ResolvedToolProtocol::Native;
+    }
+    match mode {
+        ToolProtocolMode::Native => ResolvedToolProtocol::Native,
+        ToolProtocolMode::Hermes => ResolvedToolProtocol::Hermes,
+        ToolProtocolMode::Auto => {
+            if model.to_lowercase().contains("hermes") {
+                ResolvedToolProtocol::Hermes
+            } else {
+                ResolvedToolProtocol::Native
+            }
+        }
+    }
+}
+
 /// プロバイダごとに参照するユーザー設定 URL を集約する。
 /// Ollama は `ollama_endpoint`、OpenaiCompatible は `openai_compat_custom` を使う。
 /// それ以外のプロバイダは固定 URL でこの値を参照しない。
@@ -220,6 +272,9 @@ pub struct AiSettings {
     /// Rust は chat では読まないが、設定の save 往復で serde に捨てられないよう構造体に保持する。
     #[serde(default)]
     pub reasoning_effort_override: Option<String>,
+    /// Agent ツール呼び出しプロトコル（auto | native | hermes）。
+    #[serde(default)]
+    pub tool_protocol_mode: ToolProtocolMode,
 }
 
 impl AiSettings {
@@ -244,6 +299,7 @@ impl Default for AiSettings {
             openrouter_provider_pin: None,
             model_api_variant: None,
             reasoning_effort_override: None,
+            tool_protocol_mode: ToolProtocolMode::default(),
         }
     }
 }
@@ -889,6 +945,9 @@ pub struct ChatParams<'a> {
     pub api_variant: Option<String>,
     /// Web 検索 (RAG) 設定。None または `enabled=false` なら検索を注入しない。
     pub web_search: Option<WebSearchConfig>,
+    /// 解決済みツールプロトコル（native | hermes）。
+    /// Hermes のとき本文 `<tool_call>` を受信パースし、stop_reason を上書きする。
+    pub resolved_tool_protocol: ResolvedToolProtocol,
 }
 
 fn supports_prompt_cache(provider: &AiProvider, model: &str) -> bool {
@@ -1393,7 +1452,14 @@ pub async fn send_chat(
                 .await?
                 .error_for_status()?;
             let result: serde_json::Value = resp.json().await?;
-            parse_openai_response(&result)
+            // 非 tools chat: ToolUse は生成しない (allowed 空)。Hermes 時のみ本文タグを strip。
+            parse_openai_response(
+                &result,
+                &ParseOpenAIOptions {
+                    resolved_protocol: params.resolved_tool_protocol,
+                    allowed_tool_names: Vec::new(),
+                },
+            )
         }
     }
 }
@@ -1632,10 +1698,141 @@ fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatRe
     })
 }
 
-fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatResponse> {
+/// `parse_openai_response` の挙動を制御するオプション。
+struct ParseOpenAIOptions {
+    resolved_protocol: ResolvedToolProtocol,
+    /// Hermes パースで ToolUse 化を許可するツール名。空なら ToolUse を生成しない。
+    allowed_tool_names: Vec<String>,
+}
+
+impl Default for ParseOpenAIOptions {
+    fn default() -> Self {
+        Self {
+            resolved_protocol: ResolvedToolProtocol::Native,
+            allowed_tool_names: Vec::new(),
+        }
+    }
+}
+
+/// 本文から抽出した 1 件の Hermes ツール呼び出し。
+struct HermesToolCall {
+    id: String,
+    name: String,
+    input: serde_json::Value,
+}
+
+/// `<tag>…</tag>` ブロックをすべて除去。閉じタグ無しは以降を打ち切り
+/// (`strip_think_blocks` / TS `stripTagBlocks` と同セマンティクス)。
+fn strip_tag_blocks(text: &str, tag: &str) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(&open) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        match after.find(&close) {
+            Some(rel) => rest = &after[rel + close.len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 3 連以上の改行を 2 連へ畳む (TS `replace(/\n{3,}/g, "\n\n")` 相当)。
+fn collapse_blank_lines(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut run = 0usize;
+    for ch in s.chars() {
+        if ch == '\n' {
+            run += 1;
+            if run <= 2 {
+                out.push('\n');
+            }
+        } else {
+            run = 0;
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// 本文から `<tool_call>` / `<tool_response>` を除去し連続空行を畳んで trim。
+/// `stripToolProtocol` (TS) と同セマンティクス。
+fn strip_hermes_tool_blocks(text: &str) -> String {
+    let stripped = strip_tag_blocks(text, "tool_call");
+    let stripped = strip_tag_blocks(&stripped, "tool_response");
+    collapse_blank_lines(&stripped).trim().to_string()
+}
+
+/// `arguments` / `input` を object へ正規化 (object も stringified JSON も許容)。
+fn coerce_args(raw: &serde_json::Value) -> serde_json::Value {
+    let empty = || serde_json::Value::Object(Default::default());
+    match raw {
+        serde_json::Value::Object(_) => raw.clone(),
+        serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s)
+            .ok()
+            .filter(|v| v.is_object())
+            .unwrap_or_else(empty),
+        _ => empty(),
+    }
+}
+
+/// 本文から `<tool_call>{...}</tool_call>` を抽出する。
+/// - `name` が `allowed` に一致するものだけ合成 ID 付きで返す。
+/// - 壊れた JSON・未知ツール・未閉じタグは呼び出しにしない (タグは strip 側で除去)。
+/// - `arguments` / `input` 両キー対応。`arguments` が stringified JSON でも可。
+fn parse_hermes_tool_calls(content: &str, allowed: &[String]) -> (String, Vec<HermesToolCall>) {
+    let stripped = strip_hermes_tool_blocks(content);
+    let mut calls: Vec<HermesToolCall> = Vec::new();
+    if content.is_empty() || allowed.is_empty() {
+        return (stripped, calls);
+    }
+    let open = "<tool_call>";
+    let close = "</tool_call>";
+    let mut rest = content;
+    while let Some(start) = rest.find(open) {
+        let after = &rest[start + open.len()..];
+        let rel = match after.find(close) {
+            Some(r) => r,
+            None => break, // 未閉じ: 以降は捨てる。
+        };
+        let inner = after[..rel].trim();
+        rest = &after[rel + close.len()..];
+
+        let obj: serde_json::Value = match serde_json::from_str(inner) {
+            Ok(v) => v,
+            Err(_) => continue, // 壊れた JSON はスキップ。
+        };
+        let name = obj["name"].as_str().unwrap_or("");
+        if name.is_empty() || !allowed.iter().any(|n| n == name) {
+            continue;
+        }
+        let raw_args = if obj.get("arguments").is_some() {
+            &obj["arguments"]
+        } else {
+            &obj["input"]
+        };
+        calls.push(HermesToolCall {
+            id: format!("hermes-{}", calls.len()),
+            name: name.to_string(),
+            input: coerce_args(raw_args),
+        });
+    }
+    (stripped, calls)
+}
+
+fn parse_openai_response(
+    result: &serde_json::Value,
+    opts: &ParseOpenAIOptions,
+) -> anyhow::Result<ChatResponse> {
     let choice = &result["choices"][0];
     let finish_reason = choice["finish_reason"].as_str().unwrap_or("stop");
-    let stop_reason = if finish_reason == "tool_calls" {
+    let mut stop_reason = if finish_reason == "tool_calls" {
         "tool_use"
     } else {
         "end_turn"
@@ -1661,7 +1858,11 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
     let reasoning_text = message["reasoning"]
         .as_str()
         .filter(|s| !s.is_empty())
-        .or_else(|| message["reasoning_content"].as_str().filter(|s| !s.is_empty()));
+        .or_else(|| {
+            message["reasoning_content"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+        });
     if let Some(reasoning) = reasoning_text {
         blocks.push(ResponseBlock::Thinking {
             content: reasoning.to_string(),
@@ -1670,15 +1871,21 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
         });
     }
 
-    if let Some(content) = message["content"].as_str() {
+    let native_tool_calls = message["tool_calls"]
+        .as_array()
+        .filter(|arr| !arr.is_empty());
+    let content = message["content"].as_str().unwrap_or("");
+
+    // 本文 Text と ToolUse の決定。優先順:
+    //   1. native tool_calls があれば native のみ (本文 Hermes パースはスキップ=二重実行防止)
+    //   2. Hermes プロトコルなら本文 <tool_call> を抽出 (allowed 一致のみ ToolUse)
+    //   3. それ以外は本文をそのまま Text に
+    if let Some(tool_calls) = native_tool_calls {
         if !content.is_empty() {
             blocks.push(ResponseBlock::Text {
                 content: content.to_string(),
             });
         }
-    }
-
-    if let Some(tool_calls) = message["tool_calls"].as_array() {
         for tc in tool_calls {
             let id = tc["id"].as_str().unwrap_or("").to_string();
             let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
@@ -1687,6 +1894,26 @@ fn parse_openai_response(result: &serde_json::Value) -> anyhow::Result<ChatRespo
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             blocks.push(ResponseBlock::ToolUse { id, name, input });
         }
+    } else if opts.resolved_protocol == ResolvedToolProtocol::Hermes {
+        let (stripped, calls) = parse_hermes_tool_calls(content, &opts.allowed_tool_names);
+        if !stripped.is_empty() {
+            blocks.push(ResponseBlock::Text { content: stripped });
+        }
+        if !calls.is_empty() {
+            // finish_reason が "stop" でも、本文ツール呼び出しがあれば tool_use 扱い。
+            stop_reason = "tool_use".to_string();
+            for c in calls {
+                blocks.push(ResponseBlock::ToolUse {
+                    id: c.id,
+                    name: c.name,
+                    input: c.input,
+                });
+            }
+        }
+    } else if !content.is_empty() {
+        blocks.push(ResponseBlock::Text {
+            content: content.to_string(),
+        });
     }
 
     // OpenRouter web plugin / server tool は引用を `message.annotations` の
@@ -2230,7 +2457,14 @@ pub async fn send_chat_with_tools(
                 .await?
                 .error_for_status()?;
             let result: serde_json::Value = resp.json().await?;
-            parse_openai_response(&result)
+            // Hermes パース有効: 本文 <tool_call> のうち declared tool に一致するものを ToolUse 化。
+            parse_openai_response(
+                &result,
+                &ParseOpenAIOptions {
+                    resolved_protocol: params.resolved_tool_protocol,
+                    allowed_tool_names: tools.iter().map(|t| t.name.clone()).collect(),
+                },
+            )
         }
     }
 }
@@ -2326,11 +2560,7 @@ pub async fn call_post_effect_api(
             } else {
                 4096
             };
-            insert_chat_completion_token_limit(
-                &mut body,
-                &settings.provider,
-                post_effect_limit,
-            );
+            insert_chat_completion_token_limit(&mut body, &settings.provider, post_effect_limit);
             apply_openrouter_provider_pin(
                 &mut body,
                 &settings.provider,
@@ -3102,6 +3332,7 @@ mod tests {
             openrouter_provider_pin: None,
             model_api_variant: None,
             reasoning_effort_override: Some("high".to_string()),
+            tool_protocol_mode: ToolProtocolMode::default(),
         };
 
         write_ai_settings(&path, &settings).expect("write");
@@ -3351,7 +3582,10 @@ mod tests {
                 &Some(input.to_string()),
             );
             assert_eq!(body["reasoning_effort"], expected);
-            assert!(body.get("reasoning").is_none(), "OpenAI は reasoning object を使わない");
+            assert!(
+                body.get("reasoning").is_none(),
+                "OpenAI は reasoning object を使わない"
+            );
         }
 
         // OFF: gpt-5.1+ は none、それ以前/o3 はキー無し
@@ -3401,11 +3635,30 @@ mod tests {
 
     #[test]
     fn test_openai_model_supports_reasoning_none() {
-        for m in ["gpt-5.1", "gpt-5-1", "gpt-5.4-mini", "openai/gpt-5.1", "gpt-5.2"] {
-            assert!(openai_model_supports_reasoning_none(m), "{m} は none 対応のはず");
+        for m in [
+            "gpt-5.1",
+            "gpt-5-1",
+            "gpt-5.4-mini",
+            "openai/gpt-5.1",
+            "gpt-5.2",
+        ] {
+            assert!(
+                openai_model_supports_reasoning_none(m),
+                "{m} は none 対応のはず"
+            );
         }
-        for m in ["gpt-5", "gpt-5-mini", "o3", "o4-mini", "gpt-5-pro", "gpt-5-chat"] {
-            assert!(!openai_model_supports_reasoning_none(m), "{m} は none 非対応のはず");
+        for m in [
+            "gpt-5",
+            "gpt-5-mini",
+            "o3",
+            "o4-mini",
+            "gpt-5-pro",
+            "gpt-5-chat",
+        ] {
+            assert!(
+                !openai_model_supports_reasoning_none(m),
+                "{m} は none 非対応のはず"
+            );
         }
     }
 
@@ -3440,7 +3693,7 @@ mod tests {
             }],
             "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
         });
-        let resp = parse_openai_response(&json).unwrap();
+        let resp = parse_openai_response(&json, &ParseOpenAIOptions::default()).unwrap();
         let thinking: Vec<_> = resp
             .blocks
             .iter()
@@ -3450,6 +3703,197 @@ mod tests {
             })
             .collect();
         assert_eq!(thinking, vec!["考えた内容".to_string()]);
+    }
+
+    // ----- Hermes tool protocol -----
+
+    fn hermes_opts(allowed: &[&str]) -> ParseOpenAIOptions {
+        ParseOpenAIOptions {
+            resolved_protocol: ResolvedToolProtocol::Hermes,
+            allowed_tool_names: allowed.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn collect_tool_uses(resp: &ChatResponse) -> Vec<(String, String, serde_json::Value)> {
+        resp.blocks
+            .iter()
+            .filter_map(|b| match b {
+                ResponseBlock::ToolUse { id, name, input } => {
+                    Some((id.clone(), name.clone(), input.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn collect_text(resp: &ChatResponse) -> String {
+        resp.blocks
+            .iter()
+            .filter_map(|b| match b {
+                ResponseBlock::Text { content } => Some(content.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hermes_single_tool_call_is_parsed() {
+        let json = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": "検索します。\n<tool_call>{\"name\":\"search_codex\",\"arguments\":{\"query\":\"朱音\"}}</tool_call>"
+                }
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        });
+        let resp = parse_openai_response(&json, &hermes_opts(&["search_codex"])).unwrap();
+        // finish_reason が "stop" でも tool_use に上書きされる。
+        assert_eq!(resp.stop_reason, "tool_use");
+        let tus = collect_tool_uses(&resp);
+        assert_eq!(tus.len(), 1);
+        assert_eq!(tus[0].1, "search_codex");
+        assert_eq!(tus[0].2["query"], "朱音");
+        let text = collect_text(&resp);
+        assert!(text.contains("検索します"));
+        assert!(!text.contains("<tool_call>"));
+    }
+
+    #[test]
+    fn hermes_multiple_newline_and_input_key() {
+        let content = "<tool_call>\n{\"name\": \"search_codex\", \"arguments\": {\"query\": \"a\"}}\n</tool_call>\n<tool_call>{\"name\":\"get_codex_entry\",\"input\":{\"id\":\"x1\"}}</tool_call>";
+        let json = serde_json::json!({
+            "choices": [{ "finish_reason": "stop", "message": { "content": content } }],
+            "usage": {}
+        });
+        let resp = parse_openai_response(&json, &hermes_opts(&["search_codex", "get_codex_entry"]))
+            .unwrap();
+        let tus = collect_tool_uses(&resp);
+        let names: Vec<&str> = tus.iter().map(|t| t.1.as_str()).collect();
+        assert_eq!(names, vec!["search_codex", "get_codex_entry"]);
+        // `input` キーも `arguments` と同様に正規化される。
+        assert_eq!(tus[1].2["id"], "x1");
+        assert_eq!(resp.stop_reason, "tool_use");
+    }
+
+    #[test]
+    fn hermes_unknown_broken_and_empty_allowed_yield_no_tooluse_but_strip() {
+        let content = "前文\n<tool_call>{\"name\":\"unknown_tool\",\"arguments\":{}}</tool_call>\n<tool_call>{壊れた</tool_call>\n後文";
+        let json = serde_json::json!({
+            "choices": [{ "finish_reason": "stop", "message": { "content": content } }],
+            "usage": {}
+        });
+        // allowed=search_codex のみ → unknown も broken も ToolUse 化しない。
+        let resp = parse_openai_response(&json, &hermes_opts(&["search_codex"])).unwrap();
+        assert_eq!(collect_tool_uses(&resp).len(), 0);
+        assert_eq!(resp.stop_reason, "end_turn");
+        let text = collect_text(&resp);
+        assert!(text.contains("前文"));
+        assert!(text.contains("後文"));
+        assert!(!text.contains("<tool_call>"));
+
+        // allowed=[] (非 tools chat 経路) でも ToolUse なし + タグ除去。
+        let opts_empty = ParseOpenAIOptions {
+            resolved_protocol: ResolvedToolProtocol::Hermes,
+            allowed_tool_names: vec![],
+        };
+        let resp2 = parse_openai_response(&json, &opts_empty).unwrap();
+        assert_eq!(collect_tool_uses(&resp2).len(), 0);
+        assert!(!collect_text(&resp2).contains("<tool_call>"));
+    }
+
+    #[test]
+    fn hermes_native_tool_calls_take_precedence_over_body() {
+        let json = serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": "<tool_call>{\"name\":\"search_codex\",\"arguments\":{\"query\":\"body\"}}</tool_call>",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": { "name": "search_codex", "arguments": "{\"query\":\"native\"}" }
+                    }]
+                }
+            }],
+            "usage": {}
+        });
+        let resp = parse_openai_response(&json, &hermes_opts(&["search_codex"])).unwrap();
+        let tus = collect_tool_uses(&resp);
+        // native の 1 件のみ (本文 <tool_call> はパースしない=二重実行防止)。
+        assert_eq!(tus.len(), 1);
+        assert_eq!(tus[0].0, "call_1");
+        assert_eq!(tus[0].2["query"], "native");
+        assert_eq!(resp.stop_reason, "tool_use");
+    }
+
+    #[test]
+    fn resolve_tool_protocol_gate_and_auto() {
+        // provider ゲート: Anthropic / CLI は mode 無視で Native。
+        assert_eq!(
+            resolve_tool_protocol(
+                &AiProvider::Anthropic,
+                "nous-hermes",
+                ToolProtocolMode::Hermes
+            ),
+            ResolvedToolProtocol::Native
+        );
+        assert_eq!(
+            resolve_tool_protocol(&AiProvider::Cli, "hermes", ToolProtocolMode::Auto),
+            ResolvedToolProtocol::Native
+        );
+        // 明示。
+        assert_eq!(
+            resolve_tool_protocol(&AiProvider::OpenRouter, "gpt-4", ToolProtocolMode::Hermes),
+            ResolvedToolProtocol::Hermes
+        );
+        assert_eq!(
+            resolve_tool_protocol(
+                &AiProvider::OpenRouter,
+                "nousresearch/hermes-3",
+                ToolProtocolMode::Native
+            ),
+            ResolvedToolProtocol::Native
+        );
+        // auto: model 名に hermes を含むときのみ。
+        assert_eq!(
+            resolve_tool_protocol(
+                &AiProvider::OpenRouter,
+                "nousresearch/Hermes-3-Llama",
+                ToolProtocolMode::Auto
+            ),
+            ResolvedToolProtocol::Hermes
+        );
+        assert_eq!(
+            resolve_tool_protocol(
+                &AiProvider::OpenRouter,
+                "qwen/qwen-2.5-72b",
+                ToolProtocolMode::Auto
+            ),
+            ResolvedToolProtocol::Native
+        );
+    }
+
+    #[test]
+    fn hermes_tool_protocol_mode_serde_wire_boundary() {
+        // 保存設定 JSON (camelCase) → enum。send_agent_message が read_ai_settings で
+        // 読む wire 境界を担保する（store.test.ts は API 層 mock のため Rust serde 未通過）。
+        let with: AiSettings = serde_json::from_str(
+            r#"{"provider":"openrouter","model":"x","ollamaEndpoint":"http://localhost:11434","toolProtocolMode":"hermes"}"#,
+        )
+        .unwrap();
+        assert_eq!(with.tool_protocol_mode, ToolProtocolMode::Hermes);
+
+        // フィールド欠落 → default Auto（旧設定 JSON との後方互換）。
+        let without: AiSettings = serde_json::from_str(
+            r#"{"provider":"openrouter","model":"x","ollamaEndpoint":"http://localhost:11434"}"#,
+        )
+        .unwrap();
+        assert_eq!(without.tool_protocol_mode, ToolProtocolMode::Auto);
+
+        // serialize は camelCase + lowercase 値で出力する。
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["toolProtocolMode"], "hermes");
     }
 
     #[test]
@@ -3466,7 +3910,7 @@ mod tests {
             }],
             "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
         });
-        let resp = parse_openai_response(&json).unwrap();
+        let resp = parse_openai_response(&json, &ParseOpenAIOptions::default()).unwrap();
         let thinking: Vec<_> = resp
             .blocks
             .iter()
@@ -3487,7 +3931,7 @@ mod tests {
             }],
             "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
         });
-        let resp = parse_openai_response(&json).unwrap();
+        let resp = parse_openai_response(&json, &ParseOpenAIOptions::default()).unwrap();
         let thinking: Vec<_> = resp
             .blocks
             .iter()
@@ -3803,7 +4247,7 @@ mod tests {
             }],
             "usage": { "prompt_tokens": 5, "completion_tokens": 7, "cost": 0.0123 }
         });
-        let resp = parse_openai_response(&json).unwrap();
+        let resp = parse_openai_response(&json, &ParseOpenAIOptions::default()).unwrap();
         assert_eq!(resp.citations.len(), 1);
         assert_eq!(resp.citations[0].url, "https://news.example/article");
         assert_eq!(resp.citations[0].cited_text, "引用抜粋");
@@ -3816,7 +4260,7 @@ mod tests {
             "choices": [{ "finish_reason": "stop", "message": { "content": "hi" } }],
             "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
         });
-        let resp = parse_openai_response(&json).unwrap();
+        let resp = parse_openai_response(&json, &ParseOpenAIOptions::default()).unwrap();
         assert!(resp.citations.is_empty());
         assert_eq!(resp.cost, None);
     }

@@ -112,6 +112,11 @@ fn build_chat_params<'a>(
         system_cache_segments,
         api_variant,
         web_search,
+        resolved_tool_protocol: ai::resolve_tool_protocol(
+            &settings.provider,
+            &settings.model,
+            settings.tool_protocol_mode,
+        ),
     }
 }
 

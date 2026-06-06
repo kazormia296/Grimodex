@@ -5,6 +5,7 @@ import {
   isRagCapableProvider,
 } from "./store";
 import type { AiSettings, AiModel } from "./types";
+import { DEFAULT_AI_SETTINGS } from "./types";
 
 vi.mock("./api", () => ({
   getAiSettings: vi.fn(),
@@ -80,6 +81,25 @@ describe("useAiSettingsStore", () => {
       await useAiSettingsStore.getState().loadSettings();
 
       expect(useAiSettingsStore.getState().hasApiKey).toBe(false);
+    });
+  });
+
+  describe("toolProtocolMode", () => {
+    it("defaults to auto in DEFAULT_AI_SETTINGS", () => {
+      expect(DEFAULT_AI_SETTINGS.toolProtocolMode).toBe("auto");
+    });
+
+    it("round-trips an explicit hermes selection through saveSettings", async () => {
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+      const updated: AiSettings = {
+        ...defaultSettings,
+        toolProtocolMode: "hermes",
+      };
+      await useAiSettingsStore.getState().saveSettings(updated);
+      expect(mockSaveAiSettings).toHaveBeenCalledWith(updated);
+      expect(useAiSettingsStore.getState().settings?.toolProtocolMode).toBe(
+        "hermes",
+      );
     });
   });
 

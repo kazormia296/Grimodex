@@ -134,3 +134,12 @@ describe("AiCategory — Web 検索 (RAG) セクション", () => {
     ).toBeNull();
   });
 });
+
+describe("AiCategory — Tool call protocol", () => {
+  // モックの provider は anthropic（native 固定）。HTTP OpenAI 互換のみ表示する
+  // ゲートにより、Anthropic ではセレクトを出さない。
+  it("Anthropic では Tool call protocol セレクトを表示しない", () => {
+    render(<AiCategory />);
+    expect(screen.queryByText("Tool call protocol")).toBeNull();
+  });
+});
