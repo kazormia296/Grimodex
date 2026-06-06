@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/grimodex-mcp", "crates/grimodex-lint"]
+members = ["crates/grimodex-core", "crates/grimodex-mcp", "crates/grimodex-lint"]
 
 [package]
 name = "grimodex"

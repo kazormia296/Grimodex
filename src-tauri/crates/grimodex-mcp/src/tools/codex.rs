@@ -214,6 +214,12 @@ pub async fn create_codex_entry(
             None,
         ));
     }
+    if !server.policy.knowledge_write {
+        return Err(ErrorData::invalid_params(
+            "knowledgeWrite policy is off for this project",
+            None,
+        ));
+    }
 
     let name = sanitize::sanitize_name(&params.name)
         .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
@@ -306,6 +312,12 @@ pub async fn update_codex_entry(
     if server.readonly {
         return Err(ErrorData::invalid_params(
             "Server is running in readonly mode; write tools are disabled",
+            None,
+        ));
+    }
+    if !server.policy.knowledge_write {
+        return Err(ErrorData::invalid_params(
+            "knowledgeWrite policy is off for this project",
             None,
         ));
     }

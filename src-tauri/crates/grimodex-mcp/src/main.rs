@@ -47,21 +47,38 @@ async fn main() -> anyhow::Result<()> {
     // Open DB
     let conn = db::open_db(&db_path)?;
 
+    // Schema skew guard: mismatch → read-only降格
+    let user_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let mut readonly = cli.readonly;
+    if user_version != grimodex_core::SCHEMA_VERSION {
+        tracing::warn!(
+            user_version,
+            expected = grimodex_core::SCHEMA_VERSION,
+            "Schema version mismatch; forcing readonly mode"
+        );
+        readonly = true;
+    }
+
     // Resolve project_id
     let project_id = match cli.project {
         Some(id) => id,
         None => db::get_first_project_id(&conn)?,
     };
 
+    let policy = grimodex_core::policy::load_policy(&conn, &project_id)?;
+    let session_id = uuid::Uuid::new_v4().to_string();
+
     tracing::info!(
         project_id = %project_id,
         workspace = %cli.workspace.display(),
-        readonly = cli.readonly,
+        readonly,
+        session_id = %session_id,
+        knowledge_write = policy.knowledge_write,
         "Starting Grimodex MCP server"
     );
 
     // Build and run server
-    let handler = server::GrimodexServer::new(conn, project_id, cli.readonly);
+    let handler = server::GrimodexServer::new(conn, project_id, readonly, session_id, policy);
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let service = rmcp::serve_server(handler, (stdin, stdout)).await?;
     service.waiting().await?;

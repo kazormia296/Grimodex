@@ -12,17 +12,25 @@ use crate::tools;
 pub struct GrimodexServer {
     pub conn: Mutex<Connection>,
     pub project_id: String,
-    /// Used in Phase 3 to gate write tools.
-    #[allow(dead_code)]
     pub readonly: bool,
+    pub session_id: String,
+    pub policy: grimodex_core::policy::AiPolicyToggles,
 }
 
 impl GrimodexServer {
-    pub fn new(conn: Connection, project_id: String, readonly: bool) -> Self {
+    pub fn new(
+        conn: Connection,
+        project_id: String,
+        readonly: bool,
+        session_id: String,
+        policy: grimodex_core::policy::AiPolicyToggles,
+    ) -> Self {
         Self {
             conn: Mutex::new(conn),
             project_id,
             readonly,
+            session_id,
+            policy,
         }
     }
 }
