@@ -79,19 +79,19 @@ export function useAgentProseStaging(
 
   const acceptWithStaging = useCallback(async () => {
     const stagingId = diffApi.getActiveStagingId();
-    diffApi.accept();
     if (stagingId) {
       try {
         await agentAcceptProseStage(stagingId);
       } catch (err) {
         console.warn("[proseStaging] accept finalize failed", err);
+        return;
       }
     }
+    diffApi.accept();
   }, [diffApi]);
 
   const rejectWithStaging = useCallback(async () => {
     const stagingId = diffApi.getActiveStagingId();
-    diffApi.rejectOrAbort();
     if (stagingId) {
       try {
         await agentDiscardProseStage(stagingId);
@@ -99,6 +99,7 @@ export function useAgentProseStaging(
         console.warn("[proseStaging] discard finalize failed", err);
       }
     }
+    diffApi.rejectOrAbort();
   }, [diffApi]);
 
   return { acceptWithStaging, rejectWithStaging };

@@ -3,13 +3,13 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import { deleteSnippet } from "@/features/snippets/api";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import {
   extractAiSpansFromPmJson,
   type AgentAuthorshipSpanInput,
 } from "./authorshipSpans";
 import { markCodexContentAsAi } from "./codex";
+import { applyUndoJournal } from "./undoJournal";
 import type { Snippet } from "@/features/snippets/api";
 
 export interface AgentSnippetCreateInput {
@@ -24,6 +24,8 @@ export interface AgentSnippetCreateInput {
 interface AgentWriteResult {
   entityId: string;
   version: number;
+  changeEventUid: string;
+  undoJournalId: string;
 }
 
 export async function agentCreateSnippet(
@@ -78,25 +80,19 @@ export async function agentCreateSnippet(
   }
 
   if (!useGlobalHistoryStore.getState().isReplaying) {
-    const captured = { ...entry };
+    const journalId = result.undoJournalId;
+    const entityId = result.entityId;
     useGlobalHistoryStore.getState().push({
       kind: "snippets",
       label: "Agent: Snippet作成",
+      entityId,
       async undo() {
-        await deleteSnippet(projectId, captured.id);
-        useSnippetStore.setState((s) => ({
-          entries: s.entries.filter((e) => e.id !== captured.id),
-        }));
+        await applyUndoJournal(journalId, "undo");
+        await useSnippetStore.getState().loadEntries();
       },
       async redo() {
-        await agentCreateSnippet(
-          {
-            title: captured.title,
-            content: captured.content ?? undefined,
-            sceneId: captured.sceneId ?? undefined,
-          },
-          chatMessageId,
-        );
+        await applyUndoJournal(journalId, "redo");
+        await useSnippetStore.getState().loadEntries();
       },
     });
   }

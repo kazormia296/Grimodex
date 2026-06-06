@@ -5,7 +5,9 @@ use rusqlite::{params, Connection};
 use serde_json::json;
 
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
-use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
+use crate::undo_journal::{
+    insert_undo_journal_in_tx, snippet_create_after_snapshot, UndoJournalInsert,
+};
 use crate::writes::codex::AuthorshipSpanInput;
 use crate::writes::codex::WriteResult;
 
@@ -62,7 +64,7 @@ pub fn tracked_snippet_create(
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
-    let after_snapshot = json!({
+    let after_base = json!({
         "id": input.snippet_id,
         "projectId": input.project_id,
         "title": input.title,
@@ -99,6 +101,8 @@ pub fn tracked_snippet_create(
         )?;
 
         replace_snippet_spans(conn, input.snippet_id, input.authorship_spans)?;
+
+        let after_snapshot = snippet_create_after_snapshot(conn, input.snippet_id, &after_base)?;
 
         insert_undo_journal_in_tx(
             conn,

@@ -104,8 +104,8 @@ fn merge_codex_authorship_spans(
         )?;
     } else if update_content {
         conn.execute(
-            "DELETE FROM authorship_spans WHERE codex_entry_id = ?1 AND (model IS NULL OR model != ?2)",
-            rusqlite::params![entry_id, LANE_SUMMARY_MODEL],
+            "DELETE FROM authorship_spans WHERE codex_entry_id = ?1 AND model = ?2",
+            rusqlite::params![entry_id, LANE_CONTENT_MODEL],
         )?;
     }
     let now = chrono::Utc::now().to_rfc3339();
@@ -148,18 +148,6 @@ fn agent_codex_create_impl(
     let parent_id = payload.parent_id;
     let source_chat_message_id = payload.source_chat_message_id;
     let timestamp = chrono::Utc::now().timestamp_millis();
-
-    let after_snapshot = json!({
-        "id": entry_id,
-        "projectId": payload.project_id,
-        "type": payload.type_slug,
-        "name": payload.name,
-        "summary": summary,
-        "content": content,
-        "aliases": aliases,
-        "parentId": parent_id,
-        "version": 1,
-    });
 
     let change_payload = json!({
         "type": payload.type_slug,
@@ -205,6 +193,21 @@ fn agent_codex_create_impl(
                 payload.trace_id.as_deref(),
             )?;
 
+            let after_base: String = conn.query_row(
+                "SELECT json_object(
+                    'id', id, 'projectId', project_id, 'type', type, 'name', name,
+                    'summary', summary, 'content', content, 'aliases', aliases,
+                    'parentId', parent_id, 'version', version
+                 ) FROM codex_entries WHERE id = ?1",
+                rusqlite::params![entry_id],
+                |row| row.get(0),
+            )?;
+            let after_snapshot = grimodex_core::undo_journal::codex_update_after_snapshot(
+                conn,
+                &entry_id,
+                &after_base,
+            )?;
+
             insert_undo_journal_in_tx(
                 conn,
                 UndoJournalInsert {
@@ -215,7 +218,7 @@ fn agent_codex_create_impl(
                     entity_id: &entry_id,
                     op_kind: "create",
                     before_json: None,
-                    after_json: Some(&after_snapshot.to_string()),
+                    after_json: Some(&after_snapshot),
                     base_version: 0,
                     result_version: 1,
                     change_event_uid: Some(&event_uid),
@@ -273,7 +276,7 @@ fn agent_codex_update_impl(
         conn.execute_batch("BEGIN IMMEDIATE")?;
 
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            let (db_version, before_row): (i64, String) = conn.query_row(
+            let (db_version, before_base): (i64, String) = conn.query_row(
                 "SELECT version, json_object(
                     'id', id, 'projectId', project_id, 'type', type, 'name', name,
                     'summary', summary, 'content', content, 'aliases', aliases,
@@ -281,6 +284,11 @@ fn agent_codex_update_impl(
                  ) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
                 rusqlite::params![payload.entry_id, payload.project_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let before_row = grimodex_core::undo_journal::codex_update_before_snapshot(
+                conn,
+                &payload.entry_id,
+                &before_base,
             )?;
             if db_version != payload.base_version {
                 anyhow::bail!(
@@ -355,7 +363,7 @@ fn agent_codex_update_impl(
                 )?;
             }
 
-            let after_row: String = conn.query_row(
+            let after_base: String = conn.query_row(
                 "SELECT json_object(
                     'id', id, 'projectId', project_id, 'type', type, 'name', name,
                     'summary', summary, 'content', content, 'aliases', aliases,
@@ -363,6 +371,11 @@ fn agent_codex_update_impl(
                  ) FROM codex_entries WHERE id = ?1",
                 rusqlite::params![payload.entry_id],
                 |row| row.get(0),
+            )?;
+            let after_row = grimodex_core::undo_journal::codex_update_after_snapshot(
+                conn,
+                &payload.entry_id,
+                &after_base,
             )?;
 
             let fields: Vec<&str> = [
@@ -601,7 +614,7 @@ fn agent_snippet_create_impl(
     let content = payload.content.unwrap_or_else(|| "{}".to_string());
     let timestamp = chrono::Utc::now().timestamp_millis();
 
-    let after_snapshot = json!({
+    let after_base = json!({
         "id": snippet_id,
         "projectId": payload.project_id,
         "title": payload.title,
@@ -609,7 +622,8 @@ fn agent_snippet_create_impl(
         "sceneId": payload.scene_id,
         "contentSource": "ai",
         "version": 1,
-    });
+    })
+    .to_string();
 
     let change_payload = json!({
         "title": payload.title,
@@ -648,6 +662,12 @@ fn agent_snippet_create_impl(
                 payload.trace_id.as_deref(),
             )?;
 
+            let after_snapshot = grimodex_core::undo_journal::snippet_create_after_snapshot(
+                conn,
+                &snippet_id,
+                &after_base,
+            )?;
+
             insert_undo_journal_in_tx(
                 conn,
                 UndoJournalInsert {
@@ -658,7 +678,7 @@ fn agent_snippet_create_impl(
                     entity_id: &snippet_id,
                     op_kind: "create",
                     before_json: None,
-                    after_json: Some(&after_snapshot.to_string()),
+                    after_json: Some(&after_snapshot),
                     base_version: 0,
                     result_version: 1,
                     change_event_uid: Some(&event_uid),

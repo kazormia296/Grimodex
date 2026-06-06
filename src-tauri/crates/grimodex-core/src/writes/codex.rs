@@ -5,7 +5,10 @@ use rusqlite::{params, Connection};
 use serde_json::json;
 
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
-use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
+use crate::undo_journal::{
+    codex_update_after_snapshot, codex_update_before_snapshot, insert_undo_journal_in_tx,
+    UndoJournalInsert,
+};
 use crate::writes::{LANE_CONTENT_MODEL, LANE_SUMMARY_MODEL};
 
 #[derive(Debug, Clone)]
@@ -143,8 +146,8 @@ fn merge_codex_authorship_spans(
         )?;
     } else if update_content {
         conn.execute(
-            "DELETE FROM authorship_spans WHERE codex_entry_id = ?1 AND (model IS NULL OR model != ?2)",
-            params![entry_id, LANE_SUMMARY_MODEL],
+            "DELETE FROM authorship_spans WHERE codex_entry_id = ?1 AND model = ?2",
+            params![entry_id, LANE_CONTENT_MODEL],
         )?;
     }
 
@@ -231,7 +234,8 @@ pub fn tracked_codex_create_in_tx(
         input.trace_id,
     )?;
 
-    let after_snapshot = codex_snapshot_json(conn, input.entry_id)?;
+    let after_base = codex_snapshot_json(conn, input.entry_id)?;
+    let after_snapshot = codex_update_after_snapshot(conn, input.entry_id, &after_base)?;
     let change_payload = json!({
         "type": input.type_slug,
         "name": input.name,
@@ -288,7 +292,7 @@ pub fn tracked_codex_update_in_tx(
     timestamp: i64,
     now: &str,
 ) -> anyhow::Result<WriteResult> {
-    let (db_version, before_row): (i64, String) = conn
+    let (db_version, before_base): (i64, String) = conn
         .query_row(
             "SELECT version, json_object(
                 'id', id, 'projectId', project_id, 'type', type, 'name', name,
@@ -299,6 +303,8 @@ pub fn tracked_codex_update_in_tx(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .context("codex entry not found")?;
+
+    let before_row = codex_update_before_snapshot(conn, input.entry_id, &before_base)?;
 
     if db_version != input.expected_base_version {
         anyhow::bail!(
@@ -382,7 +388,8 @@ pub fn tracked_codex_update_in_tx(
         )?;
     }
 
-    let after_row = codex_snapshot_json(conn, input.entry_id)?;
+    let after_base = codex_snapshot_json(conn, input.entry_id)?;
+    let after_row = codex_update_after_snapshot(conn, input.entry_id, &after_base)?;
     let fields: Vec<&str> = [
         input.name.map(|_| "name"),
         input.summary.map(|_| "summary"),
