@@ -1407,10 +1407,7 @@ pub async fn send_chat(
             }
             apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 
-            let resp = anthropic_request(&client, params, &body)
-                .send()
-                .await?
-                .error_for_status()?;
+            let resp = anthropic_send(anthropic_request(&client, params, &body)).await?;
             let result: serde_json::Value = resp.json().await?;
             parse_anthropic_response(&result)
         }
@@ -2171,6 +2168,19 @@ fn apply_reasoning_to_body(
     }
 }
 
+/// Anthropic Messages API: effort は `output_config.effort` に置く (thinking 内 / top-level 不可)。
+fn set_output_config_effort(body: &mut serde_json::Value, effort: &str) {
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    let output_config = obj
+        .entry("output_config")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(oc) = output_config.as_object_mut() {
+        oc.insert("effort".into(), serde_json::json!(effort));
+    }
+}
+
 /// thinking / effort パラメータを Anthropic リクエストボディに適用する。
 fn apply_thinking_to_body(
     body: &mut serde_json::Value,
@@ -2182,14 +2192,12 @@ fn apply_thinking_to_body(
             effort: t_effort,
             display,
         }) => {
-            let mut thinking_obj = serde_json::json!({
-                "type": "adaptive",
-                "effort": t_effort
-            });
+            let mut thinking_obj = serde_json::json!({ "type": "adaptive" });
             if let Some(d) = display {
                 thinking_obj["display"] = serde_json::Value::String(d.clone());
             }
             body["thinking"] = thinking_obj;
+            set_output_config_effort(body, t_effort);
         }
         Some(ThinkingConfig::Enabled {
             budget_tokens,
@@ -2204,12 +2212,12 @@ fn apply_thinking_to_body(
             }
             body["thinking"] = thinking_obj;
             if let Some(e) = effort {
-                body["effort"] = serde_json::Value::String(e.clone());
+                set_output_config_effort(body, e);
             }
         }
         None => {
             if let Some(e) = effort {
-                body["effort"] = serde_json::Value::String(e.clone());
+                set_output_config_effort(body, e);
             }
         }
     }
@@ -2224,10 +2232,49 @@ fn apply_thinking_to_body(
 // 公開 API のシグネチャは変えない（挙動は完全に等価）。
 // ---------------------------------------------------------------------------
 
+/// Anthropic beta ヘッダー文字列を組み立てる (reqwest は同名ヘッダ上書きのためカンマ結合)。
+fn anthropic_beta_headers(params: &ChatParams<'_>) -> Option<String> {
+    let mut betas: Vec<&str> = Vec::new();
+    if params
+        .system_cache_segments
+        .as_ref()
+        .is_some_and(|s| s.iter().any(|x| !x.is_empty()))
+    {
+        betas.push("prompt-caching-2024-07-31");
+    }
+    // Adaptive 4.6 は interleaved thinking が GA。manual (budget_tokens) 4.5 のみ beta 要。
+    if matches!(params.thinking, Some(ThinkingConfig::Enabled { .. })) {
+        betas.push("interleaved-thinking-2025-05-14");
+    }
+    if betas.is_empty() {
+        None
+    } else {
+        Some(betas.join(","))
+    }
+}
+
+fn parse_anthropic_http_error(status: reqwest::StatusCode, body_text: &str) -> anyhow::Error {
+    let detail = serde_json::from_str::<serde_json::Value>(body_text)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(String::from))
+        .unwrap_or_else(|| body_text.to_string());
+    anyhow::anyhow!("AI request failed ({}): {}", status.as_u16(), detail.trim())
+}
+
+async fn anthropic_send(req: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
+    let resp = req.send().await?;
+    if resp.status().is_success() {
+        Ok(resp)
+    } else {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        Err(parse_anthropic_http_error(status, &body_text))
+    }
+}
+
 /// Build a POST request to Anthropic's `/messages` endpoint with required
-/// headers (`x-api-key`, `anthropic-version`, `content-type`) and the
-/// `anthropic-beta: interleaved-thinking-2025-05-14` header when
-/// `params.thinking` is set, then attach `body` as JSON.
+/// headers (`x-api-key`, `anthropic-version`, `content-type`) and optional
+/// `anthropic-beta` (prompt cache / interleaved thinking for manual mode).
 fn anthropic_request(
     client: &reqwest::Client,
     params: &ChatParams<'_>,
@@ -2239,8 +2286,8 @@ fn anthropic_request(
         .header("x-api-key", params.api_key)
         .header("anthropic-version", "2023-06-01")
         .header("content-type", "application/json");
-    if params.thinking.is_some() {
-        req = req.header("anthropic-beta", "interleaved-thinking-2025-05-14");
+    if let Some(betas) = anthropic_beta_headers(params) {
+        req = req.header("anthropic-beta", betas);
     }
     req.json(body)
 }
@@ -2439,10 +2486,7 @@ pub async fn send_chat_with_tools(
             // thinking / effort パラメータを追加
             apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 
-            let resp = anthropic_request(&client, params, &body)
-                .send()
-                .await?
-                .error_for_status()?;
+            let resp = anthropic_send(anthropic_request(&client, params, &body)).await?;
             let result: serde_json::Value = resp.json().await?;
             parse_anthropic_response(&result)
         }
@@ -2967,12 +3011,7 @@ pub async fn send_chat_stream(
             }
             apply_thinking_to_body(&mut body, &params.thinking, &params.effort);
 
-            let resp = anthropic_request(&client, params, &body).send().await?;
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body_text = resp.text().await.unwrap_or_default();
-                return Err(anyhow::anyhow!("HTTP {}: {}", status, body_text));
-            }
+            let resp = anthropic_send(anthropic_request(&client, params, &body)).await?;
 
             let mut stream = resp.bytes_stream();
             let mut buf = String::new();
@@ -4724,5 +4763,116 @@ mod tests {
         assert!(tool.get("allowed_domains").is_none());
         // max_content_tokens=0 のときは付けない。
         assert!(tool.get("max_content_tokens").is_none());
+    }
+
+    #[test]
+    fn apply_thinking_adaptive_maps_effort_to_output_config() {
+        let mut body = serde_json::json!({ "model": "claude-sonnet-4-6" });
+        super::apply_thinking_to_body(
+            &mut body,
+            &Some(ThinkingConfig::Adaptive {
+                effort: "high".to_string(),
+                display: Some("summarized".to_string()),
+            }),
+            &None,
+        );
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
+        assert!(body["thinking"].get("effort").is_none());
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert!(body.get("effort").is_none());
+    }
+
+    #[test]
+    fn apply_thinking_enabled_maps_effort_to_output_config() {
+        let mut body = serde_json::json!({ "model": "claude-opus-4-5" });
+        super::apply_thinking_to_body(
+            &mut body,
+            &Some(ThinkingConfig::Enabled {
+                budget_tokens: 8000,
+                display: None,
+            }),
+            &Some("medium".to_string()),
+        );
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 8000);
+        assert!(body["thinking"].get("effort").is_none());
+        assert_eq!(body["output_config"]["effort"], "medium");
+        assert!(body.get("effort").is_none());
+    }
+
+    #[test]
+    fn apply_thinking_effort_only_maps_to_output_config() {
+        let mut body = serde_json::json!({ "model": "claude-haiku-4-5-20251001" });
+        super::apply_thinking_to_body(&mut body, &None, &Some("low".to_string()));
+        assert!(body.get("thinking").is_none());
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert!(body.get("effort").is_none());
+    }
+
+    #[test]
+    fn anthropic_beta_headers_prompt_cache_and_manual_thinking() {
+        let settings = AiSettings::default();
+        let api_key = "sk-test";
+        let segments = vec!["seg1".to_string()];
+        let params = ChatParams {
+            provider: &AiProvider::Anthropic,
+            model: "claude-opus-4-5",
+            api_key,
+            endpoints: settings.endpoints(),
+            thinking: Some(ThinkingConfig::Enabled {
+                budget_tokens: 4000,
+                display: None,
+            }),
+            effort: Some("high".to_string()),
+            reasoning_enabled: None,
+            reasoning_effort: None,
+            extra_body: None,
+            retry_429: false,
+            ai_novelist_mode: AiNovelistMode::Chat,
+            openrouter_provider_pin: None,
+            system_cache_segments: Some(segments),
+            api_variant: None,
+            web_search: None,
+            resolved_tool_protocol: ResolvedToolProtocol::Native,
+        };
+        let betas = super::anthropic_beta_headers(&params).unwrap();
+        assert!(betas.contains("prompt-caching-2024-07-31"));
+        assert!(betas.contains("interleaved-thinking-2025-05-14"));
+    }
+
+    #[test]
+    fn anthropic_beta_headers_adaptive_no_interleaved_beta() {
+        let settings = AiSettings::default();
+        let params = ChatParams {
+            provider: &AiProvider::Anthropic,
+            model: "claude-sonnet-4-6",
+            api_key: "sk-test",
+            endpoints: settings.endpoints(),
+            thinking: Some(ThinkingConfig::Adaptive {
+                effort: "medium".to_string(),
+                display: None,
+            }),
+            effort: None,
+            reasoning_enabled: None,
+            reasoning_effort: None,
+            extra_body: None,
+            retry_429: false,
+            ai_novelist_mode: AiNovelistMode::Chat,
+            openrouter_provider_pin: None,
+            system_cache_segments: None,
+            api_variant: None,
+            web_search: None,
+            resolved_tool_protocol: ResolvedToolProtocol::Native,
+        };
+        assert!(super::anthropic_beta_headers(&params).is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_http_error_extracts_message() {
+        let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"effort: Extra inputs are not permitted"}}"#;
+        let err = super::parse_anthropic_http_error(reqwest::StatusCode::BAD_REQUEST, body);
+        assert!(err.to_string().contains("400"));
+        assert!(err.to_string().contains("Extra inputs are not permitted"));
     }
 }
