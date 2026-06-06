@@ -81,17 +81,30 @@ fn lane_model(lane: Option<&str>, span_model: Option<&str>) -> Option<String> {
     }
 }
 
+struct CodexSpanMerge<'a> {
+    spans: &'a [AuthorshipSpanInput],
+    lanes: Option<&'a [Option<String>]>,
+    update_summary: bool,
+    update_content: bool,
+    model: Option<&'a str>,
+    chat_msg_id: Option<&'a str>,
+    trace_id: Option<&'a str>,
+}
+
 fn merge_codex_authorship_spans(
     conn: &rusqlite::Connection,
     entry_id: &str,
-    spans: &[AuthorshipSpanInput],
-    lanes: Option<&[Option<String>]>,
-    update_summary: bool,
-    update_content: bool,
-    model: Option<&str>,
-    chat_msg_id: Option<&str>,
-    trace_id: Option<&str>,
+    merge: CodexSpanMerge<'_>,
 ) -> anyhow::Result<()> {
+    let CodexSpanMerge {
+        spans,
+        lanes,
+        update_summary,
+        update_content,
+        model,
+        chat_msg_id,
+        trace_id,
+    } = merge;
     if update_summary && update_content {
         conn.execute(
             "DELETE FROM authorship_spans WHERE codex_entry_id = ?1",
@@ -181,16 +194,18 @@ fn agent_codex_create_impl(
             merge_codex_authorship_spans(
                 conn,
                 &entry_id,
-                &payload.authorship_spans,
-                None,
-                true,
-                true,
-                payload.model.as_deref(),
-                payload
-                    .chat_message_id
-                    .as_deref()
-                    .or(source_chat_message_id.as_deref()),
-                payload.trace_id.as_deref(),
+                CodexSpanMerge {
+                    spans: &payload.authorship_spans,
+                    lanes: None,
+                    update_summary: true,
+                    update_content: true,
+                    model: payload.model.as_deref(),
+                    chat_msg_id: payload
+                        .chat_message_id
+                        .as_deref()
+                        .or(source_chat_message_id.as_deref()),
+                    trace_id: payload.trace_id.as_deref(),
+                },
             )?;
 
             let after_base: String = conn.query_row(
@@ -353,13 +368,15 @@ fn agent_codex_update_impl(
                 merge_codex_authorship_spans(
                     conn,
                     &payload.entry_id,
-                    spans,
-                    payload.authorship_span_lanes.as_deref(),
-                    payload.summary.is_some(),
-                    payload.content.is_some(),
-                    payload.model.as_deref(),
-                    payload.chat_message_id.as_deref(),
-                    payload.trace_id.as_deref(),
+                    CodexSpanMerge {
+                        spans,
+                        lanes: payload.authorship_span_lanes.as_deref(),
+                        update_summary: payload.summary.is_some(),
+                        update_content: payload.content.is_some(),
+                        model: payload.model.as_deref(),
+                        chat_msg_id: payload.chat_message_id.as_deref(),
+                        trace_id: payload.trace_id.as_deref(),
+                    },
                 )?;
             }
 
