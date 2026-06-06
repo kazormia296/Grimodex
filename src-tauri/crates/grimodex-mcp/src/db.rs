@@ -1714,38 +1714,54 @@ pub struct UpdateCodexInput<'a> {
 /// Create a new Codex entry. Returns the new entry's UUID.
 pub fn create_codex_entry(conn: &Connection, input: CreateCodexInput<'_>) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO codex_entries
-         (id, project_id, type, name, aliases, summary, content)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            id,
-            input.project_id,
-            input.type_slug,
-            input.name,
-            input.aliases,
-            input.summary,
-            input.content_pm
-        ],
-    )
-    .context("create_codex_entry insert failed")?;
-
-    link_codex_tags(conn, input.project_id, &id, input.tags)?;
-
-    Ok(id)
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> Result<()> {
+        conn.execute(
+            "INSERT INTO codex_entries
+             (id, project_id, type, name, aliases, summary, content)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                input.project_id,
+                input.type_slug,
+                input.name,
+                input.aliases,
+                input.summary,
+                input.content_pm
+            ],
+        )
+        .context("create_codex_entry insert failed")?;
+        link_codex_tags(conn, input.project_id, &id, input.tags)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(id)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
 
 /// Update fields of an existing Codex entry (only non-None fields are changed).
 pub fn update_codex_entry(conn: &Connection, input: UpdateCodexInput<'_>) -> Result<()> {
     let entry_id = input.entry_id;
-    // Verify entry exists
+    let project_id = input.project_id;
+    // Verify entry exists within project scope
     let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM codex_entries WHERE id = ?1)",
-        params![entry_id],
+        "SELECT EXISTS(SELECT 1 FROM codex_entries WHERE id = ?1 AND project_id = ?2)",
+        params![entry_id, project_id],
         |row| row.get(0),
     )?;
     if !exists {
-        anyhow::bail!("Codex entry '{}' not found", entry_id);
+        anyhow::bail!(
+            "Codex entry '{}' not found in project '{}'",
+            entry_id,
+            project_id
+        );
     }
 
     // Build dynamic SET clause and parameter list together.
@@ -1771,7 +1787,12 @@ pub fn update_codex_entry(conn: &Connection, input: UpdateCodexInput<'_>) -> Res
         values.push(rusqlite::types::Value::Text(c.to_string()));
     }
 
-    let sql = format!("UPDATE codex_entries SET {} WHERE id = ?1", sets.join(", "));
+    values.push(rusqlite::types::Value::Text(project_id.to_string()));
+    let project_param = values.len();
+    let sql = format!(
+        "UPDATE codex_entries SET {} WHERE id = ?1 AND project_id = ?{project_param}",
+        sets.join(", ")
+    );
     conn.execute(&sql, rusqlite::params_from_iter(values.iter()))
         .context("update_codex_entry failed")?;
 

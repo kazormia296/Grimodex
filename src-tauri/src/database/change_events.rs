@@ -13,14 +13,14 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AppendChangeEvent {
-    event_uid: String,
-    scene_id: Option<String>,
-    domain: String,
-    op_type: String,
-    entity_type: Option<String>,
-    entity_id: Option<String>,
-    payload: String,
-    timestamp: i64,
+    pub(crate) event_uid: String,
+    pub(crate) scene_id: Option<String>,
+    pub(crate) domain: String,
+    pub(crate) op_type: String,
+    pub(crate) entity_type: Option<String>,
+    pub(crate) entity_id: Option<String>,
+    pub(crate) payload: String,
+    pub(crate) timestamp: i64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -100,7 +100,7 @@ fn live_scene_id(conn: &Connection, scene_id: Option<&str>) -> anyhow::Result<Op
     Ok(exists.then(|| scene_id.to_string()))
 }
 
-fn append_change_events_in_tx(
+pub(crate) fn append_change_events_in_tx(
     conn: &Connection,
     project_id: &str,
     session_id: &str,

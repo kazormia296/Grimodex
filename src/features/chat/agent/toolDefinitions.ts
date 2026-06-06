@@ -103,6 +103,57 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     },
   },
 
+  // ── Codex write (knowledgeWrite policy) ───────────────────────────────────
+  {
+    name: "create_codex_entry",
+    description:
+      "Create a new Codex entry in the current project. Requires knowledgeWrite policy. Returns the new entry id, name, and type.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        type: {
+          type: "string",
+          description:
+            "Entry type slug (e.g. 'character', 'location', 'item', 'lore')",
+        },
+        name: { type: "string", description: "Display name" },
+        summary: {
+          type: "string",
+          description: "Optional short summary (plain text)",
+        },
+        content: {
+          type: "string",
+          description: "Optional ProseMirror JSON body string",
+        },
+        aliases: {
+          type: "string",
+          description: "Optional JSON string array of aliases",
+        },
+        parentId: {
+          type: "string",
+          description: "Optional parent entry UUID",
+        },
+      },
+      required: ["type", "name"],
+    },
+  },
+  {
+    name: "update_codex_entry",
+    description:
+      "Update fields of an existing Codex entry. Requires knowledgeWrite policy. Only provided fields are changed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Entry UUID" },
+        name: { type: "string" },
+        summary: { type: "string" },
+        content: { type: "string", description: "ProseMirror JSON body" },
+        aliases: { type: "string", description: "JSON string array" },
+      },
+      required: ["id"],
+    },
+  },
+
   // ── Scenes系 ──────────────────────────────────────────────────────────────
   {
     name: "list_chapters",

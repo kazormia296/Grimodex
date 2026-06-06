@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::database::Database;
 
+pub(crate) mod agent_writes;
 pub(crate) mod ai;
 pub(crate) mod cli_ai;
 pub(crate) mod db;

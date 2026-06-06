@@ -27,7 +27,7 @@ export async function restoreCodexEntry(
 
   let parentId: string | null = payload.parentId;
   if (parentId) {
-    const parent = await getCodexEntry(parentId);
+    const parent = await getCodexEntry(options.projectId, parentId);
     if (!parent) {
       parentId = null;
       brokenLinks.push("parent");
@@ -47,7 +47,7 @@ export async function restoreCodexEntry(
     });
     // body / icon / notes / contextMode / childrenBudget は createCodexEntry 経由で
     // 渡せないので updateCodexEntry で 2 段階に上書き。
-    await updateCodexEntry(newId, {
+    await updateCodexEntry(options.projectId, newId, {
       content: payload.body,
       icon: payload.icon ?? undefined,
       notes: payload.notes ?? undefined,

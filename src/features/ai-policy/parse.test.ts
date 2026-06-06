@@ -10,6 +10,7 @@ const VALID: AiPolicy = {
     bodyWrite: false,
     analysis: true,
     structureWrite: true,
+    knowledgeWrite: true,
   },
 };
 
@@ -134,6 +135,20 @@ describe("isBodyWriteDisabled", () => {
   });
 });
 
+describe("parseAiPolicy — knowledgeWrite", () => {
+  it("derives knowledgeWrite from stored preset when the key is missing (full → true)", () => {
+    const raw =
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true}}';
+    expect(parseAiPolicy(raw).toggles.knowledgeWrite).toBe(true);
+  });
+
+  it("custom policy missing knowledgeWrite → false (fail-closed)", () => {
+    const raw =
+      '{"preset":"custom","toggles":{"chat":true,"bodyWrite":true,"analysis":false,"structureWrite":true}}';
+    expect(parseAiPolicy(raw).toggles.knowledgeWrite).toBe(false);
+  });
+});
+
 describe("serializeAiPolicy", () => {
   it("produces parseable JSON", () => {
     const raw = serializeAiPolicy(DEFAULT_AI_POLICY);
@@ -156,6 +171,7 @@ describe("serializeAiPolicy", () => {
           bodyWrite: false,
           analysis: true,
           structureWrite: true,
+          knowledgeWrite: true,
         },
       };
       expect(parseAiPolicy(serializeAiPolicy(policy))).toEqual(policy);

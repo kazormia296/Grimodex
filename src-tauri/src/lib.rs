@@ -140,6 +140,8 @@ pub fn run() {
             commands::db::db_execute,
             commands::db::db_execute_batch,
             commands::timelapse::timelapse_append_batch,
+            commands::agent_writes::agent_codex_create,
+            commands::agent_writes::agent_codex_update,
             commands::ai::get_ai_settings,
             commands::ai::save_ai_settings,
             commands::ai::save_api_key,

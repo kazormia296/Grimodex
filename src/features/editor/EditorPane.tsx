@@ -54,6 +54,7 @@ import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
 import { getSnippet, updateSnippet } from "@/features/snippets/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { createRevision } from "@/features/revision/api";
@@ -392,7 +393,7 @@ export function EditorPane({
       }
     } else if (ctx === "snippet") {
       const content = ed.getHTML();
-      await updateSnippet(id, { content });
+      await updateSnippet(getCurrentProjectId(), id, { content });
       useSnippetStore.getState().update(id, { content });
     } else {
       const doc = ed.state.doc;
@@ -1351,7 +1352,7 @@ export function EditorPane({
         try {
           if (isCodexMode) {
             // Load codex entry content (ProseMirror JSON)
-            const entry = await getCodexEntry(nodeId);
+            const entry = await getCodexEntry(getCurrentProjectId(), nodeId);
             if (cancelled) return;
 
             // Load phases into store so TabBar and banner can display the phase label
@@ -1411,7 +1412,7 @@ export function EditorPane({
             editor!.commands.setContent(parsed, { emitUpdate: false });
             markEnd("sceneLoad.setContent.codex");
           } else if (isSnippetMode) {
-            const snippet = await getSnippet(nodeId);
+            const snippet = await getSnippet(getCurrentProjectId(), nodeId);
             if (cancelled) return;
             markStart("sceneLoad.setContent.snippet");
             editor!.commands.setContent(tiptapContentFromDb(snippet?.content), {

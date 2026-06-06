@@ -140,6 +140,11 @@ export function setRecorderEnabled(enabled: boolean): void {
   state.enabled = enabled;
 }
 
+/** Expose the current recorder session id for AI write primitives. */
+export function getRecorderSessionId(): string {
+  return state.sessionId;
+}
+
 /**
  * Bind the recorder to a project and resume the chain from the DB tail.
  *

@@ -50,6 +50,7 @@ mod execute;
 mod fts;
 mod integrity;
 mod migrate;
+pub(crate) mod undo_journal;
 
 #[cfg(test)]
 mod tests;

@@ -26,12 +26,13 @@ export async function listCodexEntries(
 }
 
 export async function getCodexEntry(
+  projectId: string,
   id: string,
 ): Promise<CodexEntry | undefined> {
   const rows = await db
     .select()
     .from(codexEntries)
-    .where(eq(codexEntries.id, id));
+    .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
   return rows[0];
 }
 
@@ -58,6 +59,7 @@ export async function createCodexEntry(
 }
 
 export async function updateCodexEntry(
+  projectId: string,
   id: string,
   data: Partial<
     Pick<
@@ -80,7 +82,7 @@ export async function updateCodexEntry(
   const rows = await db
     .update(codexEntries)
     .set({ ...data, updatedAt: new Date().toISOString() })
-    .where(eq(codexEntries.id, id))
+    .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)))
     .returning();
 
   // If name/aliases/excludedAliases changed, body-mention cache may be stale
@@ -95,8 +97,13 @@ export async function updateCodexEntry(
   return rows[0];
 }
 
-export async function deleteCodexEntry(id: string): Promise<void> {
-  await db.delete(codexEntries).where(eq(codexEntries.id, id));
+export async function deleteCodexEntry(
+  projectId: string,
+  id: string,
+): Promise<void> {
+  await db
+    .delete(codexEntries)
+    .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
 }
 
 export async function listCodexEntriesByMessageId(

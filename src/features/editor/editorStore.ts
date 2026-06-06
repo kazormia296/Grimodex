@@ -4,6 +4,7 @@ import { Fragment, Slice } from "@tiptap/pm/model";
 import { computeAttributedSegments } from "@/features/snippets/snippetDiff";
 import type { AttributedSegment } from "@/lib/clipboardAttribution";
 import { incrementSnippetUsageCount } from "@/features/snippets/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import * as chatApi from "@/features/chat/chatApi";
 
 export interface InsertRange {
@@ -226,7 +227,9 @@ export const useEditorStore = create<EditorState>()((set, get) => {
         },
       });
 
-      incrementSnippetUsageCount(snippetId).catch(() => {});
+      incrementSnippetUsageCount(getCurrentProjectId(), snippetId).catch(
+        () => {},
+      );
 
       if (highlightTimer) clearTimeout(highlightTimer);
       highlightTimer = setTimeout(() => {

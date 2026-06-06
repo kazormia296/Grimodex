@@ -11,6 +11,7 @@ function policyOf(toggles: Partial<AiPolicy["toggles"]> = {}): AiPolicy {
       bodyWrite: true,
       analysis: true,
       structureWrite: true,
+      knowledgeWrite: true,
       ...toggles,
     },
   };
@@ -21,6 +22,7 @@ const FEATURES: AiFeature[] = [
   "bodyWrite",
   "analysis",
   "structureWrite",
+  "knowledgeWrite",
 ];
 
 describe("evaluateAiCapability", () => {

@@ -211,7 +211,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           kind: "codex",
           label: "Codex作成",
           async undo() {
-            await deleteCodexEntry(captured.id);
+            await deleteCodexEntry(captured.projectId, captured.id);
             set((state) => ({
               entries: state.entries.filter((e) => e.id !== captured.id),
             }));
@@ -230,7 +230,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
             });
             // Apply remaining fields not accepted by createCodexEntry
-            await updateCodexEntry(captured.id, {
+            await updateCodexEntry(captured.projectId, captured.id, {
               content: captured.content ?? undefined,
               contextMode: captured.contextMode ?? undefined,
               icon: captured.icon ?? undefined,
@@ -267,7 +267,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     const before = get().entries.find((e) => e.id === id);
 
     try {
-      const updated = await updateCodexEntry(id, data);
+      const updated = await updateCodexEntry(getCurrentProjectId(), id, data);
       if (updated) {
         set((state) => ({
           entries: state.entries.map((e) => (e.id === id ? updated : e)),
@@ -308,6 +308,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       label: labelForPatch(data),
       async undo() {
         const restored = await updateCodexEntry(
+          getCurrentProjectId(),
           id,
           undoPatch as StructuralPatch,
         );
@@ -318,7 +319,11 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         }
       },
       async redo() {
-        const reapplied = await updateCodexEntry(id, redoPatch);
+        const reapplied = await updateCodexEntry(
+          getCurrentProjectId(),
+          id,
+          redoPatch,
+        );
         if (reapplied) {
           set((state) => ({
             entries: state.entries.map((e) => (e.id === id ? reapplied : e)),
@@ -331,7 +336,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   updateText: async (id, data) => {
     const before = get().entries.find((e) => e.id === id);
     try {
-      const updated = await updateCodexEntry(id, data);
+      const updated = await updateCodexEntry(getCurrentProjectId(), id, data);
       if (updated) {
         set((state) => ({
           entries: state.entries.map((e) => (e.id === id ? updated : e)),
@@ -375,7 +380,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   remove: async (id) => {
     const before = get().entries.find((e) => e.id === id);
     try {
-      await deleteCodexEntry(id);
+      await deleteCodexEntry(getCurrentProjectId(), id);
       await get().loadEntries();
     } catch (e) {
       toast.error(i18next.t("codex.store.deleteFailed"));
@@ -419,7 +424,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
             parentId: captured.parentId ?? undefined,
             sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
           });
-          await updateCodexEntry(captured.id, {
+          await updateCodexEntry(captured.projectId, captured.id, {
             content: captured.content ?? undefined,
             contextMode: captured.contextMode ?? undefined,
             icon: captured.icon ?? undefined,
@@ -429,7 +434,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           await get().loadEntries();
         },
         async redo() {
-          await deleteCodexEntry(captured.id);
+          await deleteCodexEntry(captured.projectId, captured.id);
           await get().loadEntries();
         },
       });

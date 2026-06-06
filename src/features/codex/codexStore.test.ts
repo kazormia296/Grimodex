@@ -259,9 +259,13 @@ describe("codexStore", () => {
 
       await useCodexStore.getState().update("codex-1", { name: "アリス改" });
 
-      expect(mockUpdateCodexEntry).toHaveBeenCalledWith("codex-1", {
-        name: "アリス改",
-      });
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+        {
+          name: "アリス改",
+        },
+      );
     });
 
     it("optimistically updates entries in store without reloading", async () => {
@@ -283,9 +287,13 @@ describe("codexStore", () => {
         .getState()
         .update("codex-1", { contextMode: "always" });
 
-      expect(mockUpdateCodexEntry).toHaveBeenCalledWith("codex-1", {
-        contextMode: "always",
-      });
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+        {
+          contextMode: "always",
+        },
+      );
     });
 
     it("supports updating content field", async () => {
@@ -296,9 +304,13 @@ describe("codexStore", () => {
         content: '{"type":"doc","content":[]}',
       });
 
-      expect(mockUpdateCodexEntry).toHaveBeenCalledWith("codex-1", {
-        content: '{"type":"doc","content":[]}',
-      });
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+        {
+          content: '{"type":"doc","content":[]}',
+        },
+      );
     });
 
     it("supports updating aliases field", async () => {
@@ -309,9 +321,13 @@ describe("codexStore", () => {
         .getState()
         .update("codex-1", { aliases: '["エララ","the apprentice"]' });
 
-      expect(mockUpdateCodexEntry).toHaveBeenCalledWith("codex-1", {
-        aliases: '["エララ","the apprentice"]',
-      });
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+        {
+          aliases: '["エララ","the apprentice"]',
+        },
+      );
     });
   });
 
@@ -323,7 +339,10 @@ describe("codexStore", () => {
 
       await useCodexStore.getState().remove("codex-1");
 
-      expect(mockDeleteCodexEntry).toHaveBeenCalledWith("codex-1");
+      expect(mockDeleteCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+      );
     });
   });
 

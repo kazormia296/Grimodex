@@ -41,6 +41,7 @@ const ALL_ON: AiPolicyToggles = {
   bodyWrite: true,
   analysis: true,
   structureWrite: true,
+  knowledgeWrite: true,
 };
 
 describe("useAiGate live chain (projectStore → presentation)", () => {
@@ -59,6 +60,7 @@ describe("useAiGate live chain (projectStore → presentation)", () => {
         bodyWrite: true,
         analysis: true,
         structureWrite: true,
+        knowledgeWrite: true,
       }),
     );
     expect(result.current.presentation).toBe("hidden");
@@ -84,6 +86,7 @@ describe("useAiGate live chain (projectStore → presentation)", () => {
       bodyWrite: false,
       analysis: true,
       structureWrite: true,
+      knowledgeWrite: true,
     });
     const { result: bodyWrite } = renderHook(() => useAiGate("bodyWrite"));
     const { result: analysis } = renderHook(() => useAiGate("analysis"));

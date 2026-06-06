@@ -1,0 +1,20 @@
+{
+  "changeEvent": {
+    "domain": "codex",
+    "opType": "entry.create",
+    "entityType": "codex_entry",
+    "payloadKeys": ["type", "name", "parentId"]
+  },
+  "authorshipSpan": {
+    "ownerLane": "codex_entry_id",
+    "requiredFields": ["from_pos", "to_pos", "source"],
+    "source": "ai"
+  },
+  "undoJournal": {
+    "entityKind": "codex_entry",
+    "opKind": "create",
+    "beforeJson": null,
+    "afterJsonKeys": ["id", "projectId", "type", "name", "version"]
+  },
+  "policyGate": "knowledgeWrite"
+}

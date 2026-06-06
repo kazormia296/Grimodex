@@ -37,6 +37,7 @@ function policyOf(toggles: Partial<AiPolicy["toggles"]>): AiPolicy {
       bodyWrite: true,
       analysis: true,
       structureWrite: true,
+      knowledgeWrite: true,
       ...toggles,
     },
   };

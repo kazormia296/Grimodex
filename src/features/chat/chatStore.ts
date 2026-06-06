@@ -1284,7 +1284,7 @@ async function loadMapBoardMarkdown(
     const fillSnippetTitle = (id: string): string | null => {
       const cached = snippetCache.get(id);
       if (cached !== undefined) return cached;
-      getSnippet(id)
+      getSnippet(getCurrentProjectId(), id)
         .then((s) => {
           if (s) snippetCache.set(id, s.title);
         })
@@ -1746,7 +1746,10 @@ async function buildSceneContextPrompt(opts: {
         };
       }
     } else if (activeTab?.contentType === "snippet") {
-      const snippet = await getSnippet(activeTab.nodeId).catch(() => undefined);
+      const snippet = await getSnippet(
+        getCurrentProjectId(),
+        activeTab.nodeId,
+      ).catch(() => undefined);
       if (snippet) {
         activeTabContent = {
           type: "snippet",

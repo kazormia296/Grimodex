@@ -17,6 +17,10 @@ import { countTokens } from "../contextBuilder";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { listOpenForeshadowsForContext } from "@/features/foreshadow/api";
 import type { ToolResult } from "./agentTypes";
+import {
+  agentCreateCodexEntry,
+  agentUpdateCodexEntry,
+} from "@/features/agent-writes/codex";
 
 interface QueryResult<T = Record<string, unknown>> {
   rows: T[];
@@ -1032,6 +1036,97 @@ async function getSceneTimelineNeighbors(
 }
 
 // ---------------------------------------------------------------------------
+// Mutating executors (knowledgeWrite policy gated)
+// ---------------------------------------------------------------------------
+
+async function createCodexEntryTool(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const type = String(params["type"] ?? "").trim();
+  const name = String(params["name"] ?? "").trim();
+  if (!type || !name) {
+    return {
+      name: "create_codex_entry",
+      content: null,
+      summary: "type and name are required",
+      tokensUsed: 0,
+      error: "type and name are required",
+    };
+  }
+  try {
+    const entry = await agentCreateCodexEntry({
+      type,
+      name,
+      summary: params["summary"] ? String(params["summary"]) : undefined,
+      content: params["content"] ? String(params["content"]) : undefined,
+      aliases: params["aliases"] ? String(params["aliases"]) : undefined,
+      parentId: params["parentId"] ? String(params["parentId"]) : undefined,
+    });
+    const content = { id: entry.id, name: entry.name, type: entry.type };
+    const json = JSON.stringify(content);
+    return {
+      name: "create_codex_entry",
+      content,
+      summary: `Created codex entry '${entry.name}' (${entry.type})`,
+      tokensUsed: countTokens(json),
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: "create_codex_entry",
+      content: null,
+      summary: msg,
+      tokensUsed: 0,
+      error: msg,
+    };
+  }
+}
+
+async function updateCodexEntryTool(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const id = String(params["id"] ?? "").trim();
+  if (!id) {
+    return {
+      name: "update_codex_entry",
+      content: null,
+      summary: "id is required",
+      tokensUsed: 0,
+      error: "id is required",
+    };
+  }
+  try {
+    const entry = await agentUpdateCodexEntry({
+      entryId: id,
+      name: params["name"] !== undefined ? String(params["name"]) : undefined,
+      summary:
+        params["summary"] !== undefined ? String(params["summary"]) : undefined,
+      content:
+        params["content"] !== undefined ? String(params["content"]) : undefined,
+      aliases:
+        params["aliases"] !== undefined ? String(params["aliases"]) : undefined,
+    });
+    const content = { id: entry.id, name: entry.name, type: entry.type };
+    const json = JSON.stringify(content);
+    return {
+      name: "update_codex_entry",
+      content,
+      summary: `Updated codex entry '${entry.name}'`,
+      tokensUsed: countTokens(json),
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: "update_codex_entry",
+      content: null,
+      summary: msg,
+      tokensUsed: 0,
+      error: msg,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch map
 // ---------------------------------------------------------------------------
 
@@ -1055,7 +1150,8 @@ type Executor = (
  * `ask_user` は意図的にここに含めない（mutating ではなく、chatStore の
  * guardedExecuteTool が UI 往復として横取りする）。
  */
-export const EXECUTORS: Record<string, Executor> = {
+/** Read-only tools — frozen allowlist (security review F-2). */
+export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   search_codex: searchCodex,
   list_codex_by_type: listCodexByType,
   get_codex_entry: getCodexEntry,
@@ -1070,6 +1166,19 @@ export const EXECUTORS: Record<string, Executor> = {
   list_open_foreshadows: () => listOpenForeshadows(),
   get_foreshadow_detail: getForeshadowDetail,
   get_scene_timeline_neighbors: getSceneTimelineNeighbors,
+};
+Object.freeze(READ_ONLY_EXECUTORS);
+
+/** Mutating tools — knowledgeWrite / structureWrite / bodyWrite gated per tool. */
+export const MUTATING_EXECUTORS: Record<string, Executor> = {
+  create_codex_entry: createCodexEntryTool,
+  update_codex_entry: updateCodexEntryTool,
+};
+Object.freeze(MUTATING_EXECUTORS);
+
+export const EXECUTORS: Record<string, Executor> = {
+  ...READ_ONLY_EXECUTORS,
+  ...MUTATING_EXECUTORS,
 };
 // 実行時の mutation を封じる（read-only 不変条件の defense-in-depth）。
 Object.freeze(EXECUTORS);

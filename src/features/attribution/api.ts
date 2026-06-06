@@ -17,14 +17,63 @@ import { markStart, markEnd } from "@/lib/perfLog";
  * 生 SQL を手書きしない（規約準拠）。spans が空でも DELETE は実行し、scene-clear 時の
  * 既存 spans 掃除を保つ。
  */
-async function replaceAuthorshipSpansAtomic(
-  nodeId: string,
+export type AuthorshipOwnerLane =
+  | { kind: "node"; nodeId: string }
+  | { kind: "codex"; codexEntryId: string }
+  | { kind: "snippet"; snippetId: string }
+  | { kind: "detail"; detailValueId: string; codexEntryId: string }
+  | { kind: "phase"; phaseId: string; codexEntryId: string };
+
+function ownerLaneWhere(lane: AuthorshipOwnerLane) {
+  switch (lane.kind) {
+    case "node":
+      return eq(authorshipSpans.nodeId, lane.nodeId);
+    case "codex":
+      return eq(authorshipSpans.codexEntryId, lane.codexEntryId);
+    case "snippet":
+      return eq(authorshipSpans.snippetId, lane.snippetId);
+    case "detail":
+      return eq(authorshipSpans.detailValueId, lane.detailValueId);
+    case "phase":
+      return eq(authorshipSpans.phaseId, lane.phaseId);
+  }
+}
+
+function spanWithOwnerLane(
+  lane: AuthorshipOwnerLane,
+  span: Omit<
+    NewAuthorshipSpan,
+    "nodeId" | "codexEntryId" | "snippetId" | "detailValueId" | "phaseId"
+  >,
+): NewAuthorshipSpan {
+  const base = { ...span };
+  switch (lane.kind) {
+    case "node":
+      return { ...base, nodeId: lane.nodeId };
+    case "codex":
+      return { ...base, codexEntryId: lane.codexEntryId };
+    case "snippet":
+      return { ...base, snippetId: lane.snippetId };
+    case "detail":
+      return {
+        ...base,
+        detailValueId: lane.detailValueId,
+        codexEntryId: lane.codexEntryId,
+      };
+    case "phase":
+      return {
+        ...base,
+        phaseId: lane.phaseId,
+        codexEntryId: lane.codexEntryId,
+      };
+  }
+}
+
+async function replaceAuthorshipSpansForLaneAtomic(
+  lane: AuthorshipOwnerLane,
   spans: NewAuthorshipSpan[],
 ): Promise<void> {
-  const del = db
-    .delete(authorshipSpans)
-    .where(eq(authorshipSpans.nodeId, nodeId))
-    .toSQL();
+  const del = db.delete(authorshipSpans).where(ownerLaneWhere(lane)).toSQL();
   const statements: { sql: string; params: unknown[]; method: string }[] = [
     { sql: del.sql, params: del.params, method: "run" },
   ];
@@ -33,6 +82,40 @@ async function replaceAuthorshipSpansAtomic(
     statements.push({ sql: ins.sql, params: ins.params, method: "run" });
   }
   await invoke("db_execute_batch", { statements });
+}
+
+async function replaceAuthorshipSpansAtomic(
+  nodeId: string,
+  spans: NewAuthorshipSpan[],
+): Promise<void> {
+  await replaceAuthorshipSpansForLaneAtomic({ kind: "node", nodeId }, spans);
+}
+
+/**
+ * Atomic replace helper for non-scene owner lanes (Codex/Snippet/Detail/Phase).
+ * Plain TEXT uses synthetic [0,len] spans; PM JSON should be marked before extraction.
+ */
+export async function replaceOwnerLaneAuthorshipSpans(
+  lane: AuthorshipOwnerLane,
+  spans: Omit<
+    NewAuthorshipSpan,
+    "nodeId" | "codexEntryId" | "snippetId" | "detailValueId" | "phaseId"
+  >[],
+): Promise<void> {
+  const now = new Date().toISOString();
+  const rows = spans.map((s) =>
+    spanWithOwnerLane(lane, {
+      id: s.id ?? crypto.randomUUID(),
+      fromPos: s.fromPos,
+      toPos: s.toPos,
+      source: s.source,
+      model: s.model ?? null,
+      chatMsgId: s.chatMsgId ?? null,
+      traceId: s.traceId ?? null,
+      timestamp: s.timestamp ?? now,
+    }),
+  );
+  await replaceAuthorshipSpansForLaneAtomic(lane, rows);
 }
 
 /**

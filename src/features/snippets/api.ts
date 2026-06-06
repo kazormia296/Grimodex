@@ -19,8 +19,14 @@ export async function listSnippets(
     .orderBy(desc(snippets.createdAt));
 }
 
-export async function getSnippet(id: string): Promise<Snippet | undefined> {
-  const rows = await db.select().from(snippets).where(eq(snippets.id, id));
+export async function getSnippet(
+  projectId: string,
+  id: string,
+): Promise<Snippet | undefined> {
+  const rows = await db
+    .select()
+    .from(snippets)
+    .where(and(eq(snippets.id, id), eq(snippets.projectId, projectId)));
   return rows[0];
 }
 
@@ -42,6 +48,7 @@ export async function createSnippet(
 }
 
 export async function updateSnippet(
+  projectId: string,
   id: string,
   data: Partial<
     Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
@@ -50,13 +57,18 @@ export async function updateSnippet(
   const rows = await db
     .update(snippets)
     .set({ ...data, updatedAt: new Date().toISOString() })
-    .where(eq(snippets.id, id))
+    .where(and(eq(snippets.id, id), eq(snippets.projectId, projectId)))
     .returning();
   return rows[0];
 }
 
-export async function deleteSnippet(id: string): Promise<void> {
-  await db.delete(snippets).where(eq(snippets.id, id));
+export async function deleteSnippet(
+  projectId: string,
+  id: string,
+): Promise<void> {
+  await db
+    .delete(snippets)
+    .where(and(eq(snippets.id, id), eq(snippets.projectId, projectId)));
 }
 
 export async function listSnippetsByMessageId(
@@ -68,9 +80,12 @@ export async function listSnippetsByMessageId(
     .where(eq(snippets.sourceChatMessageId, messageId));
 }
 
-export async function incrementSnippetUsageCount(id: string): Promise<void> {
+export async function incrementSnippetUsageCount(
+  projectId: string,
+  id: string,
+): Promise<void> {
   await db
     .update(snippets)
     .set({ usageCount: sql`${snippets.usageCount} + 1` })
-    .where(eq(snippets.id, id));
+    .where(and(eq(snippets.id, id), eq(snippets.projectId, projectId)));
 }

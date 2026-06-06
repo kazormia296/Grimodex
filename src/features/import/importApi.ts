@@ -366,7 +366,7 @@ export async function importCodexEntries(
       });
 
       try {
-        await updateCodexEntry(e.id, {
+        await updateCodexEntry(getCurrentProjectId(), e.id, {
           content: fieldValueToProseMirror(e.summary),
           icon: icon ?? null,
           contextMode: e.contextMode,
@@ -398,7 +398,7 @@ export async function importCodexEntries(
         // Roll back the created entry to avoid leaving partial data in the DB.
         // ON DELETE CASCADE removes codex_entry_tags and codex_detail_values.
         try {
-          await deleteCodexEntry(e.id);
+          await deleteCodexEntry(getCurrentProjectId(), e.id);
         } catch {
           // best-effort rollback
         }

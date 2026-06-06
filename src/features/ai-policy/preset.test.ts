@@ -8,15 +8,17 @@ describe("expandPreset", () => {
       bodyWrite: true,
       analysis: true,
       structureWrite: true,
+      knowledgeWrite: true,
     });
   });
 
-  it("assist-off → bodyWrite false, structureWrite stays true", () => {
+  it("assist-off → bodyWrite false, structureWrite and knowledgeWrite stay true", () => {
     expect(expandPreset("assist-off")).toEqual({
       chat: true,
       bodyWrite: false,
       analysis: true,
       structureWrite: true,
+      knowledgeWrite: true,
     });
   });
 
@@ -26,6 +28,7 @@ describe("expandPreset", () => {
       bodyWrite: false,
       analysis: true,
       structureWrite: false,
+      knowledgeWrite: false,
     });
   });
 
@@ -35,6 +38,7 @@ describe("expandPreset", () => {
       bodyWrite: false,
       analysis: false,
       structureWrite: false,
+      knowledgeWrite: false,
     });
   });
 
@@ -44,6 +48,7 @@ describe("expandPreset", () => {
       bodyWrite: true,
       analysis: true,
       structureWrite: true,
+      knowledgeWrite: true,
     });
   });
 });
@@ -56,6 +61,7 @@ describe("inferPreset", () => {
         bodyWrite: true,
         analysis: true,
         structureWrite: true,
+        knowledgeWrite: true,
       }),
     ).toBe("full");
   });
@@ -67,6 +73,7 @@ describe("inferPreset", () => {
         bodyWrite: false,
         analysis: true,
         structureWrite: true,
+        knowledgeWrite: true,
       }),
     ).toBe("assist-off");
   });
@@ -78,6 +85,7 @@ describe("inferPreset", () => {
         bodyWrite: false,
         analysis: true,
         structureWrite: false,
+        knowledgeWrite: false,
       }),
     ).toBe("review-only");
   });
@@ -89,6 +97,7 @@ describe("inferPreset", () => {
         bodyWrite: false,
         analysis: false,
         structureWrite: false,
+        knowledgeWrite: false,
       }),
     ).toBe("off");
   });
@@ -100,6 +109,7 @@ describe("inferPreset", () => {
         bodyWrite: true,
         analysis: true,
         structureWrite: false,
+        knowledgeWrite: true,
       }),
     ).toBe("custom");
   });
@@ -111,6 +121,7 @@ describe("inferPreset", () => {
         bodyWrite: true,
         analysis: false,
         structureWrite: true,
+        knowledgeWrite: true,
       }),
     ).toBe("custom");
   });

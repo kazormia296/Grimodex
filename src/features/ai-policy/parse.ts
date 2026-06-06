@@ -42,6 +42,12 @@ export function parseAiPolicy(raw: string | null | undefined): AiPolicy {
         : preset === "custom"
           ? false
           : expandPreset(preset).structureWrite;
+    const knowledgeWrite =
+      "knowledgeWrite" in t
+        ? Boolean(t.knowledgeWrite)
+        : preset === "custom"
+          ? false
+          : expandPreset(preset).knowledgeWrite;
     return {
       preset,
       toggles: {
@@ -49,6 +55,7 @@ export function parseAiPolicy(raw: string | null | undefined): AiPolicy {
         bodyWrite: Boolean(t.bodyWrite),
         analysis: Boolean(t.analysis),
         structureWrite,
+        knowledgeWrite,
       },
     };
   } catch {

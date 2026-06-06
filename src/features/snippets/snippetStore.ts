@@ -119,7 +119,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
           kind: "snippets",
           label: "Snippet作成",
           async undo() {
-            await snippetApi.deleteSnippet(captured.id);
+            await snippetApi.deleteSnippet(captured.projectId, captured.id);
             set((state) => ({
               entries: state.entries.filter((e) => e.id !== captured.id),
             }));
@@ -166,7 +166,11 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     const before = get().entries.find((e) => e.id === id);
 
     try {
-      const updated = await snippetApi.updateSnippet(id, data);
+      const updated = await snippetApi.updateSnippet(
+        getCurrentProjectId(),
+        id,
+        data,
+      );
       if (!updated) return;
       set((state) => ({
         entries: state.entries.map((e) => (e.id === id ? updated : e)),
@@ -209,8 +213,9 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       label: "Snippet更新",
       async undo() {
         const restored = await snippetApi.updateSnippet(
+          getCurrentProjectId(),
           id,
-          undoPatch as Parameters<typeof snippetApi.updateSnippet>[1],
+          undoPatch as Parameters<typeof snippetApi.updateSnippet>[2],
         );
         if (restored) {
           set((state) => ({
@@ -219,7 +224,11 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         }
       },
       async redo() {
-        const reapplied = await snippetApi.updateSnippet(id, data);
+        const reapplied = await snippetApi.updateSnippet(
+          getCurrentProjectId(),
+          id,
+          data,
+        );
         if (reapplied) {
           set((state) => ({
             entries: state.entries.map((e) => (e.id === id ? reapplied : e)),
@@ -232,7 +241,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   remove: async (id) => {
     const before = get().entries.find((e) => e.id === id);
     try {
-      await snippetApi.deleteSnippet(id);
+      await snippetApi.deleteSnippet(getCurrentProjectId(), id);
       set((state) => ({
         entries: state.entries.filter((e) => e.id !== id),
       }));
@@ -278,7 +287,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         set((state) => ({ entries: [...state.entries, captured] }));
       },
       async redo() {
-        await snippetApi.deleteSnippet(captured.id);
+        await snippetApi.deleteSnippet(captured.projectId, captured.id);
         set((state) => ({
           entries: state.entries.filter((e) => e.id !== captured.id),
         }));
@@ -288,7 +297,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
 
   incrementUsageCount: async (id: string) => {
     try {
-      await snippetApi.incrementSnippetUsageCount(id);
+      await snippetApi.incrementSnippetUsageCount(getCurrentProjectId(), id);
       set((state) => ({
         entries: state.entries.map((e) =>
           e.id === id ? { ...e, usageCount: (e.usageCount ?? 0) + 1 } : e,

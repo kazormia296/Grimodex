@@ -213,9 +213,13 @@ describe("snippetStore", () => {
 
       await useSnippetStore.getState().update("snippet-1", { title: "更新後" });
 
-      expect(mockUpdateSnippet).toHaveBeenCalledWith("snippet-1", {
-        title: "更新後",
-      });
+      expect(mockUpdateSnippet).toHaveBeenCalledWith(
+        "default-project",
+        "snippet-1",
+        {
+          title: "更新後",
+        },
+      );
       expect(useSnippetStore.getState().entries[0].title).toBe("更新後");
     });
 
@@ -300,7 +304,10 @@ describe("snippetStore", () => {
 
       await useSnippetStore.getState().remove("snippet-1");
 
-      expect(mockDeleteSnippet).toHaveBeenCalledWith("snippet-1");
+      expect(mockDeleteSnippet).toHaveBeenCalledWith(
+        "default-project",
+        "snippet-1",
+      );
       expect(useSnippetStore.getState().entries).toHaveLength(1);
       expect(useSnippetStore.getState().entries[0].id).toBe("snippet-2");
     });

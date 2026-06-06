@@ -1441,6 +1441,64 @@ impl Database {
         // 「no such table」になる (add_column_if_missing は欠落テーブルを ALTER する)。
         Self::migrate_ai_usage_cache_tokens(&conn)?;
 
+        Self::migrate_ai_write_infrastructure(&conn)?;
+
+        Ok(())
+    }
+
+    /// AI write infrastructure: undo-journal, entity version counters,
+    /// prose staging table, and PRAGMA user_version schema skew guard.
+    pub(super) fn migrate_ai_write_infrastructure(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS undo_journal (
+                id                  TEXT PRIMARY KEY,
+                project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface             TEXT NOT NULL,
+                entity_kind         TEXT NOT NULL,
+                entity_id           TEXT NOT NULL,
+                op_kind             TEXT NOT NULL,
+                before_json         TEXT,
+                after_json          TEXT,
+                base_version        INTEGER NOT NULL,
+                result_version      INTEGER NOT NULL,
+                change_event_uid    TEXT,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_undo_journal_project_entity
+                ON undo_journal(project_id, entity_kind, entity_id);
+            CREATE TABLE IF NOT EXISTS prose_staging (
+                id                  TEXT PRIMARY KEY,
+                project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                scene_id            TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                proposed_content    TEXT NOT NULL,
+                base_version        INTEGER NOT NULL,
+                status              TEXT NOT NULL DEFAULT 'proposed'
+                                      CHECK(status IN ('proposed','accepted','discarded')),
+                source_surface      TEXT NOT NULL,
+                source_session_id   TEXT,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_prose_staging_project_scene
+                ON prose_staging(project_id, scene_id, status);",
+        )?;
+
+        Self::add_column_if_missing(
+            conn,
+            "codex_entries",
+            "version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(conn, "snippets", "version", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::add_column_if_missing(conn, "tree_nodes", "version", "INTEGER NOT NULL DEFAULT 0")?;
+
+        // Schema skew guard for headless MCP binaries (Phase 4 reads this).
+        const SCHEMA_VERSION: i32 = 1;
+        let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current < SCHEMA_VERSION {
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
+
         Ok(())
     }
 

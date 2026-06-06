@@ -43,7 +43,10 @@ export async function restoreScene(
 
   // POV キャラクター参照の検証 (broken-link 検知のみ、復元はせず Scene 本体は作る)
   if (payload.povCharacterId) {
-    const exists = await getCodexEntry(payload.povCharacterId);
+    const exists = await getCodexEntry(
+      options.projectId,
+      payload.povCharacterId,
+    );
     if (!exists) brokenLinks.push("povCharacter");
   }
 

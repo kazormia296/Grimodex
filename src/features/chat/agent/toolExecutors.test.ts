@@ -45,7 +45,12 @@ vi.mock("../contextBuilder", () => ({
   countTokens: (s: string) => (s ? s.length : 0),
 }));
 
-import { executeTool, EXECUTORS } from "./toolExecutors";
+import {
+  executeTool,
+  EXECUTORS,
+  READ_ONLY_EXECUTORS,
+  MUTATING_EXECUTORS,
+} from "./toolExecutors";
 import { getDeterministicAgentTools } from "./toolDefinitions";
 
 // ── read-only allowlist 不変条件 (security review F-2) ───────────────────────
@@ -53,8 +58,7 @@ import { getDeterministicAgentTools } from "./toolDefinitions";
 // すると下記 allowlist テストが落ち、agentLoop の宣言ゲート / AiPolicy bodyWrite
 // 連動の再確認を強制する。
 describe("EXECUTORS — read-only allowlist invariant", () => {
-  // 凍結された期待リスト。新ツール追加でここを更新する＝意識的な追加になる。
-  const EXPECTED_EXECUTOR_NAMES = [
+  const EXPECTED_READ_ONLY_NAMES = [
     "find_related_entries",
     "get_chapter_summaries",
     "get_codex_entry",
@@ -71,8 +75,18 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     "search_snippets",
   ];
 
+  const EXPECTED_MUTATING_NAMES = ["create_codex_entry", "update_codex_entry"];
+
   it("matches the frozen read-only allowlist exactly", () => {
-    expect(Object.keys(EXECUTORS).sort()).toEqual(EXPECTED_EXECUTOR_NAMES);
+    expect(Object.keys(READ_ONLY_EXECUTORS).sort()).toEqual(
+      EXPECTED_READ_ONLY_NAMES,
+    );
+  });
+
+  it("matches the frozen mutating allowlist exactly", () => {
+    expect(Object.keys(MUTATING_EXECUTORS).sort()).toEqual(
+      EXPECTED_MUTATING_NAMES,
+    );
   });
 
   it("covers every non-ask_user AGENT_TOOL and excludes ask_user", () => {
@@ -82,11 +96,12 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
       .filter((n) => n !== "ask_user");
     const missing = dataToolNames.filter((n) => !executorNames.has(n));
     expect(missing).toEqual([]);
-    // ask_user は mutating ではないが executor を持たない（guardedExecuteTool が横取り）。
     expect(executorNames.has("ask_user")).toBe(false);
   });
 
   it("is frozen against runtime mutation", () => {
+    expect(Object.isFrozen(READ_ONLY_EXECUTORS)).toBe(true);
+    expect(Object.isFrozen(MUTATING_EXECUTORS)).toBe(true);
     expect(Object.isFrozen(EXECUTORS)).toBe(true);
   });
 });
