@@ -24,7 +24,7 @@ struct TreeNodeNested {
     title: String,
     synopsis: Option<String>,
     status: Option<String>,
-    sort_order: f64,
+    sort_order: String,
     children: Vec<TreeNodeNested>,
 }
 
@@ -52,6 +52,20 @@ pub async fn list_tree(
     )]))
 }
 
+pub async fn get_chapter_summaries(server: &GrimodexServer) -> Result<CallToolResult, ErrorData> {
+    let conn = server
+        .conn
+        .lock()
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let summaries = db::get_chapter_summaries(&conn, &server.project_id)
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&summaries)
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+        json,
+    )]))
+}
+
 fn build_tree(nodes: &[TreeNode], parent_id: Option<&str>) -> Vec<TreeNodeNested> {
     nodes
         .iter()
@@ -62,7 +76,7 @@ fn build_tree(nodes: &[TreeNode], parent_id: Option<&str>) -> Vec<TreeNodeNested
             title: n.title.clone(),
             synopsis: n.synopsis.clone(),
             status: n.status.clone(),
-            sort_order: n.sort_order,
+            sort_order: n.sort_order.clone(),
             children: build_tree(nodes, Some(&n.id)),
         })
         .collect()

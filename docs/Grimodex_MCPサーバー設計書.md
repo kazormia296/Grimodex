@@ -96,6 +96,8 @@ src-tauri/
 │   │       │   ├── tree.rs
 │   │       │   ├── scene.rs
 │   │       │   ├── codex.rs
+│   │       │   ├── foreshadow.rs
+│   │       │   ├── timeline.rs
 │   │       │   ├── search.rs
 │   │       │   ├── chat.rs
 │   │       │   ├── snippets.rs
@@ -738,11 +740,57 @@ Codex エントリの詳細を取得する。
 | `list_snippets` | R | o | スニペット一覧 |
 | `get_project_stats` | R | o | プロジェクト統計 |
 | `get_attribution_report` | R | o | 帰属レポート |
+| `list_codex_tags` | R | o | Codex タグ一覧（usageCount 付き） |
+| `search_codex_by_tags` | R | o | タグ OR 検索で Codex エントリ取得 |
+| `find_related_entries` | R | o | 起点エントリ名/別名から関連 Codex 探索 |
+| `get_chapter_summaries` | R | o | folder 単位のシーン synopsis 一覧 |
+| `list_open_foreshadows` | R | o | 未回収伏線一覧（secret 除外） |
+| `get_foreshadow_detail` | R | o | 単一伏線の詳細（setups / payoff） |
+| `get_scene_timeline_neighbors` | R | o | story-time 前後シーン（最大各3件） |
 | `write_scene` | W | v2 | シーン本文書き込み |
 | `create_scene` | W | v2 | シーン新規作成 |
 | `update_scene_metadata` | W | v2 | シーンメタデータ更新 |
 
-### 3.9 Linter 連携（Phase 1 で型のみ凍結）
+**`tools/list` 件数（現行）**: 読み取り 19 + 書き込み 2 = **21 ツール**。
+クラウド LLM クライアント（Claude Desktop / Claude Code / Hermes Agent 等）では
+**`--readonly` 付きで起動し、書き込み 2 ツールを無効化する**ことを推奨（19 read-only のみ公開）。
+
+### 3.9 In-app チャット executor との能力パリティ
+
+Grimodex 内蔵 Agent の read-only executor 14 種のうち、専用 MCP ツール名が
+異なるものは既存 MCP で近似可能。2026-06 時点で不足していた 7 種を
+専用ツールとして追加し、**意味的パリティ**を達成した。
+
+| chat executor | MCP の対応 |
+| --- | --- |
+| `search_codex` | `search_project(scope="codex")` |
+| `list_codex_by_type` | `list_codex_entries(type_slug=...)` |
+| `get_codex_entry` | `get_codex_entry(entry_id=...)` |
+| `list_chapters` | `list_tree(node_type=...)` |
+| `get_scene` | `read_scene(scene_id=...)` |
+| `search_scenes` | `search_project(scope="scenes")` |
+| `search_snippets` | `search_project(scope="snippets")` または `list_snippets(tag=...)` |
+| `list_codex_tags` | `list_codex_tags`（同名・新規） |
+| `search_codex_by_tags` | `search_codex_by_tags`（同名・新規） |
+| `find_related_entries` | `find_related_entries`（同名・新規） |
+| `get_chapter_summaries` | `get_chapter_summaries`（同名・新規） |
+| `list_open_foreshadows` | `list_open_foreshadows`（同名・新規） |
+| `get_foreshadow_detail` | `get_foreshadow_detail`（同名・新規） |
+| `get_scene_timeline_neighbors` | `get_scene_timeline_neighbors`（同名・新規） |
+
+**既知ドリフト（byte-for-byte 一致は要求しない）:**
+
+- **章ノード**: 現行 DB の `tree_nodes.node_type` は `folder | scene | note`。
+  チャット executor / 旧 docs の `chapter` / `part` は legacy 表現。
+  MCP `get_chapter_summaries` は **`folder` を章として扱う**。
+- **`list_open_foreshadows`**: 内部で `derivedLabel` を計算するが、チャット executor
+  と同様に **最終 JSON には含めない**（`id`, `title`, `intent`, `loadBearing`, `setupCount` のみ）。
+- **`get_foreshadow_detail` setup.strength**: チャットは `strength ?? aiStrength ?? null`。
+  MCP も同じ（`careful.strength` は見ない）。
+- **`get_scene_timeline_neighbors`**: チャット executor は JS `cmpKeys` で全件ソート。
+  MCP は `story_time_order COLLATE BINARY` の SQL 近傍クエリ（fractional key 文字列順は同等）。
+
+### 3.10 Linter 連携（Phase 1 で型のみ凍結）
 
 詳細は `docs/Grimodex_Linter設計書.md` §「MCP サーバー連携」を参照。
 実コマンド（`list_lint_diagnostics`, `run_lint`, `list_lint_rules`,
@@ -824,9 +872,71 @@ ProseMirror JSON 以外（プレーンテキスト）が入っていた場合は
 
 ## 6. 設定
 
-### .mcp.json
+### ビルド
 
-Claude Code 用の設定ファイル。プロジェクトルートまたはユーザーホームに配置。
+`grimodex-mcp` は Grimodex アプリ本体に同梱されない **standalone binary**。
+Hermes Agent / Claude Code 等から使う前にローカルで release ビルドする。
+
+```bash
+cd src-tauri
+cargo build --release -p grimodex-mcp
+# バイナリ: src-tauri/target/release/grimodex-mcp
+```
+
+起動例（DB 直読・書き込み無効）:
+
+```bash
+./target/release/grimodex-mcp \
+  --workspace /absolute/path/to/grimodex-workspace \
+  --readonly
+```
+
+`--project <ID>` は任意。省略時は `projects ORDER BY created_at LIMIT 1` の先頭を使用。
+
+### .mcp.json（Claude Code / Desktop）
+
+**クラウド LLM では `--readonly` を必ず付ける**（Codex 書き込み 2 ツールを無効化）。
+
+```json
+{
+  "mcpServers": {
+    "grimodex": {
+      "command": "/absolute/path/to/src-tauri/target/release/grimodex-mcp",
+      "args": [
+        "--workspace",
+        "/absolute/path/to/grimodex-workspace",
+        "--readonly"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+ローカルで Codex 書き込みも使う場合のみ、末尾の `"--readonly"` を外す。
+
+### Hermes Agent `mcp_servers`
+
+[Nous Hermes Agent](https://github.com/NousResearch/hermes-agent) 等の MCP クライアントでも
+同じ stdio 設定を使う。`command` / `--workspace` は **absolute path** を推奨。
+
+```yaml
+# 例: Hermes Agent 設定の mcp_servers 節（YAML 形式の場合）
+mcp_servers:
+  grimodex:
+    command: /absolute/path/to/src-tauri/target/release/grimodex-mcp
+    args:
+      - --workspace
+      - /absolute/path/to/grimodex-workspace
+      - --readonly
+    env: {}
+```
+
+接続後 `tools/list` が **21 ツール**（`--readonly` 時は write 2 種がエラー応答）を返すことを確認する。
+
+### .mcp.json（旧記載・非推奨例）
+
+readonly なしの最小例（クラウド利用では非推奨）:
 
 ```json
 {

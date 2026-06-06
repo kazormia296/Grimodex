@@ -96,6 +96,90 @@ pub async fn get_codex_entry(
     )]))
 }
 
+// ─── Chat executor parity read tools ─────────────────────────────────────────
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListCodexTagsParams {
+    /// Filter tags compatible with this Codex entry type (partial match on type_filter).
+    #[serde(rename = "type")]
+    pub type_filter: Option<String>,
+}
+
+pub async fn list_codex_tags(
+    server: &GrimodexServer,
+    params: ListCodexTagsParams,
+) -> Result<CallToolResult, ErrorData> {
+    let conn = server
+        .conn
+        .lock()
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let tags = db::list_codex_tags(&conn, &server.project_id, params.type_filter.as_deref())
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&tags)
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+        json,
+    )]))
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchCodexByTagsParams {
+    /// Tag names to match (OR). Empty array returns no results.
+    pub tags: Vec<String>,
+}
+
+pub async fn search_codex_by_tags(
+    server: &GrimodexServer,
+    params: SearchCodexByTagsParams,
+) -> Result<CallToolResult, ErrorData> {
+    let conn = server
+        .conn
+        .lock()
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let entries = db::search_codex_by_tags(&conn, &server.project_id, &params.tags)
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&entries)
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+        json,
+    )]))
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FindRelatedEntriesParams {
+    /// Source Codex entry ID.
+    pub id: String,
+    /// Optional Codex type slug filter.
+    #[serde(rename = "type")]
+    pub type_filter: Option<String>,
+}
+
+pub async fn find_related_entries(
+    server: &GrimodexServer,
+    params: FindRelatedEntriesParams,
+) -> Result<CallToolResult, ErrorData> {
+    let id = params.id.trim();
+    if id.is_empty() {
+        let json = serde_json::to_string_pretty(&Vec::<db::RelatedCodexEntry>::new())
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            json,
+        )]));
+    }
+    let conn = server
+        .conn
+        .lock()
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let entries =
+        db::find_related_entries(&conn, &server.project_id, id, params.type_filter.as_deref())
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&entries)
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+        json,
+    )]))
+}
+
 // ─── Phase 3: write tools ────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

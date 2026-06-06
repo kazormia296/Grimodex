@@ -29,7 +29,7 @@ pub struct TreeNode {
     pub node_type: String,
     pub title: String,
     pub synopsis: Option<String>,
-    pub sort_order: f64,
+    pub sort_order: String,
     pub status: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -952,6 +952,729 @@ pub fn get_attribution_report(
     })
 }
 
+// ─── Chat executor parity reads ─────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexTagSummary {
+    pub id: String,
+    pub name: String,
+    pub usage_count: i64,
+}
+
+/// Mirrors `toolExecutors.ts` `listCodexTags`.
+pub fn list_codex_tags(
+    conn: &Connection,
+    project_id: &str,
+    type_filter: Option<&str>,
+) -> Result<Vec<CodexTagSummary>> {
+    let (sql, filter_pattern) = if let Some(tf) = type_filter {
+        (
+            "SELECT ct.id, ct.name, COUNT(cet.entry_id) as usage_count
+             FROM codex_tags ct
+             LEFT JOIN codex_entry_tags cet ON ct.id = cet.tag_id
+             WHERE ct.project_id = ?1 AND (ct.type_filter IS NULL OR ct.type_filter LIKE ?2)
+             GROUP BY ct.id
+             ORDER BY usage_count DESC",
+            Some(format!("%{tf}%")),
+        )
+    } else {
+        (
+            "SELECT ct.id, ct.name, COUNT(cet.entry_id) as usage_count
+             FROM codex_tags ct
+             LEFT JOIN codex_entry_tags cet ON ct.id = cet.tag_id
+             WHERE ct.project_id = ?1
+             GROUP BY ct.id
+             ORDER BY usage_count DESC",
+            None,
+        )
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<CodexTagSummary> {
+        Ok(CodexTagSummary {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            usage_count: row.get(2)?,
+        })
+    };
+    let rows = if let Some(pattern) = filter_pattern {
+        stmt.query_map(params![project_id, pattern], map_row)?
+    } else {
+        stmt.query_map(params![project_id], map_row)?
+    };
+
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("list_codex_tags query failed")
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexTagSearchResult {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub entry_type: String,
+    pub summary: String,
+}
+
+/// Mirrors `toolExecutors.ts` `searchCodexByTags`.
+pub fn search_codex_by_tags(
+    conn: &Connection,
+    project_id: &str,
+    tags: &[String],
+) -> Result<Vec<CodexTagSearchResult>> {
+    if tags.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = tags.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT DISTINCT ce.id, ce.name, ce.type, ce.summary
+         FROM codex_entries ce
+         JOIN codex_entry_tags cet ON ce.id = cet.entry_id
+         JOIN codex_tags ct ON cet.tag_id = ct.id
+         WHERE ce.project_id = ? AND ct.name IN ({placeholders})"
+    );
+
+    let mut query_params: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Text(project_id.to_string())];
+    for tag in tags {
+        query_params.push(rusqlite::types::Value::Text(tag.clone()));
+    }
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(query_params.iter()), |row| {
+        Ok(CodexTagSearchResult {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            entry_type: row.get(2)?,
+            summary: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        })
+    })?;
+
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("search_codex_by_tags query failed")
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedCodexEntry {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub entry_type: String,
+    pub summary: String,
+}
+
+fn parse_codex_aliases_json(raw: Option<String>) -> Vec<String> {
+    let Some(json) = raw else {
+        return Vec::new();
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) else {
+        return Vec::new();
+    };
+    parsed
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn build_like_or_clause(tokens: &[String], columns: &[&str]) -> (String, Vec<String>) {
+    let per_token: Vec<String> = tokens
+        .iter()
+        .map(|_| {
+            format!(
+                "({})",
+                columns
+                    .iter()
+                    .map(|c| format!("{c} LIKE ?"))
+                    .collect::<Vec<_>>()
+                    .join(" OR ")
+            )
+        })
+        .collect();
+    let clause = per_token.join(" OR ");
+    let params = tokens
+        .iter()
+        .flat_map(|t| columns.iter().map(move |_| format!("%{t}%")))
+        .collect();
+    (clause, params)
+}
+
+/// Mirrors `toolExecutors.ts` `findRelatedEntries`. Searches name/summary/aliases/tags_cache only.
+pub fn find_related_entries(
+    conn: &Connection,
+    project_id: &str,
+    entry_id: &str,
+    type_filter: Option<&str>,
+) -> Result<Vec<RelatedCodexEntry>> {
+    let source = conn.query_row(
+        "SELECT name, aliases FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+        params![entry_id, project_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+    );
+
+    let (name, aliases_raw) = match source {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+
+    let alias_arr = parse_codex_aliases_json(aliases_raw);
+    let mut terms: Vec<String> = std::iter::once(name)
+        .chain(alias_arr)
+        .filter(|t| !t.trim().is_empty())
+        .collect();
+    terms.sort();
+    terms.dedup();
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let columns = ["name", "summary", "aliases", "tags_cache"];
+    let (like_clause, like_params) = build_like_or_clause(&terms, &columns);
+
+    let mut sql = format!(
+        "SELECT id, name, type, summary FROM codex_entries
+         WHERE project_id = ? AND id != ? AND ({like_clause})"
+    );
+    let mut query_params: Vec<rusqlite::types::Value> = vec![
+        rusqlite::types::Value::Text(project_id.to_string()),
+        rusqlite::types::Value::Text(entry_id.to_string()),
+    ];
+    for p in like_params {
+        query_params.push(rusqlite::types::Value::Text(p));
+    }
+    if let Some(tf) = type_filter {
+        if !tf.trim().is_empty() {
+            sql.push_str(" AND type = ?");
+            query_params.push(rusqlite::types::Value::Text(tf.to_string()));
+        }
+    }
+    sql.push_str(" LIMIT 20");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(query_params.iter()), |row| {
+        Ok(RelatedCodexEntry {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            entry_type: row.get(2)?,
+            summary: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        })
+    })?;
+
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("find_related_entries query failed")
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterSummaryScene {
+    pub id: String,
+    pub title: String,
+    pub synopsis: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterSummary {
+    pub id: String,
+    pub title: String,
+    pub scenes: Vec<ChapterSummaryScene>,
+}
+
+/// Folder nodes are treated as chapters (current schema). Mirrors `getChapterSummaries` with folder.
+pub fn get_chapter_summaries(conn: &Connection, project_id: &str) -> Result<Vec<ChapterSummary>> {
+    let mut folder_stmt = conn.prepare(
+        "SELECT id, title, sort_order FROM tree_nodes
+         WHERE project_id = ?1 AND node_type = 'folder'
+         ORDER BY sort_order",
+    )?;
+    let folders: Vec<(String, String, String)> = folder_stmt
+        .query_map(params![project_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut scene_stmt = conn.prepare(
+        "SELECT id, parent_id, title, synopsis, sort_order FROM tree_nodes
+         WHERE project_id = ?1 AND node_type = 'scene'
+         ORDER BY sort_order",
+    )?;
+    let scenes: Vec<(String, Option<String>, String, Option<String>, String)> = scene_stmt
+        .query_map(params![project_id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let summaries = folders
+        .into_iter()
+        .map(|(folder_id, folder_title, _sort)| {
+            let chapter_scenes: Vec<ChapterSummaryScene> = scenes
+                .iter()
+                .filter(|(_, parent_id, _, synopsis, _)| {
+                    parent_id.as_deref() == Some(folder_id.as_str())
+                        && synopsis.as_ref().is_some_and(|s| !s.trim().is_empty())
+                })
+                .map(|(id, _, title, synopsis, _)| ChapterSummaryScene {
+                    id: id.clone(),
+                    title: title.clone(),
+                    synopsis: synopsis.clone().unwrap_or_default(),
+                })
+                .collect();
+            ChapterSummary {
+                id: folder_id,
+                title: folder_title,
+                scenes: chapter_scenes,
+            }
+        })
+        .collect();
+
+    Ok(summaries)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineNeighbor {
+    pub id: String,
+    pub title: String,
+    pub story_time_label: Option<String>,
+    pub synopsis: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTimelineNeighbors {
+    pub current_scene_story_time_label: Option<String>,
+    pub previous: Vec<TimelineNeighbor>,
+    pub next: Vec<TimelineNeighbor>,
+}
+
+/// Story-time neighbors via fractional key SQL ordering (BINARY COLLATE).
+pub fn get_scene_timeline_neighbors(
+    conn: &Connection,
+    scene_id: &str,
+) -> Result<SceneTimelineNeighbors> {
+    let target = conn.query_row(
+        "SELECT project_id, story_time_order, story_time_label FROM tree_nodes
+         WHERE id = ?1 AND node_type = 'scene'",
+        params![scene_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        },
+    );
+
+    let (project_id, story_time_order, story_time_label) = match target {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return Ok(SceneTimelineNeighbors {
+                current_scene_story_time_label: None,
+                previous: Vec::new(),
+                next: Vec::new(),
+            });
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let Some(order_key) = story_time_order else {
+        return Ok(SceneTimelineNeighbors {
+            current_scene_story_time_label: story_time_label,
+            previous: Vec::new(),
+            next: Vec::new(),
+        });
+    };
+
+    let map_neighbor = |row: &rusqlite::Row<'_>| -> rusqlite::Result<TimelineNeighbor> {
+        Ok(TimelineNeighbor {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            story_time_label: row.get(2)?,
+            synopsis: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        })
+    };
+
+    let mut prev_stmt = conn.prepare(
+        "SELECT id, title, story_time_label, synopsis FROM tree_nodes
+         WHERE project_id = ?1 AND node_type = 'scene' AND id != ?2
+           AND story_time_order IS NOT NULL AND story_time_order < ?3
+         ORDER BY story_time_order COLLATE BINARY DESC
+         LIMIT 3",
+    )?;
+    let previous: Vec<TimelineNeighbor> = prev_stmt
+        .query_map(params![project_id, scene_id, order_key], map_neighbor)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut next_stmt = conn.prepare(
+        "SELECT id, title, story_time_label, synopsis FROM tree_nodes
+         WHERE project_id = ?1 AND node_type = 'scene' AND id != ?2
+           AND story_time_order IS NOT NULL AND story_time_order > ?3
+         ORDER BY story_time_order COLLATE BINARY ASC
+         LIMIT 3",
+    )?;
+    let next: Vec<TimelineNeighbor> = next_stmt
+        .query_map(params![project_id, scene_id, order_key], map_neighbor)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(SceneTimelineNeighbors {
+        current_scene_story_time_label: story_time_label,
+        previous,
+        next,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ForeshadowLabelInput {
+    payoff_confirmed: bool,
+    abandoned: bool,
+    load_bearing: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SetupLabelInput {
+    foreshadow_id: String,
+    is_orphan: bool,
+    strength: Option<String>,
+    ai_strength: Option<String>,
+    ai_reasoning: Option<String>,
+}
+
+fn is_valid_strength(s: &str) -> bool {
+    matches!(s, "subtle" | "moderate" | "overt")
+}
+
+fn is_persona_evaluation(v: &serde_json::Value) -> bool {
+    v.as_object().is_some_and(|o| {
+        o.get("strength")
+            .and_then(|s| s.as_str())
+            .is_some_and(is_valid_strength)
+            && o.get("reasoning").and_then(|r| r.as_str()).is_some()
+    })
+}
+
+/// Mirrors `safeParseAiEvaluation` in `src/features/foreshadow/types.ts`.
+pub fn safe_parse_ai_evaluation(json: Option<&str>) -> bool {
+    let Some(json) = json else {
+        return false;
+    };
+    if json.is_empty() {
+        return false;
+    }
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json) else {
+        return false;
+    };
+    let Some(obj) = parsed.as_object() else {
+        return false;
+    };
+    let (Some(careful), Some(casual), Some(skim)) =
+        (obj.get("careful"), obj.get("casual"), obj.get("skim"))
+    else {
+        return false;
+    };
+    is_persona_evaluation(careful) && is_persona_evaluation(casual) && is_persona_evaluation(skim)
+}
+
+fn effective_setup_strength(setup: &SetupLabelInput) -> Option<String> {
+    if let Some(s) = &setup.strength {
+        return Some(s.clone());
+    }
+    if let Some(reasoning) = setup.ai_reasoning.as_deref() {
+        if safe_parse_ai_evaluation(Some(reasoning)) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(reasoning) {
+                if let Some(strength) = parsed
+                    .get("careful")
+                    .and_then(|c| c.get("strength"))
+                    .and_then(|s| s.as_str())
+                {
+                    return Some(strength.to_string());
+                }
+            }
+        }
+    }
+    setup.ai_strength.clone()
+}
+
+fn is_setup_weak(setup: &SetupLabelInput) -> bool {
+    effective_setup_strength(setup).as_deref() == Some("subtle")
+}
+
+/// Mirrors `deriveLabel` in `src/features/foreshadow/deriveLabel.ts`.
+fn derive_label(f: &ForeshadowLabelInput, setup_count: i64, any_weak: bool) -> &'static str {
+    if f.abandoned {
+        return "abandoned";
+    }
+    if setup_count == 0 && f.payoff_confirmed {
+        return "orphan_payoff";
+    }
+    if setup_count == 0 {
+        return "planned";
+    }
+    if f.payoff_confirmed {
+        return "paid";
+    }
+    if any_weak {
+        match f.load_bearing.as_deref() {
+            Some("critical") => return "critical_weak",
+            Some("optional") => return "seeded",
+            _ => return "needs_strengthening",
+        }
+    }
+    "seeded"
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenForeshadowSummary {
+    pub id: String,
+    pub title: String,
+    pub intent: String,
+    pub load_bearing: Option<String>,
+    pub setup_count: i64,
+}
+
+/// Open foreshadows excluding secret/abandoned/payoff_confirmed. Chat executor omits derivedLabel.
+pub fn list_open_foreshadows(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<OpenForeshadowSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at
+         FROM foreshadows
+         WHERE project_id = ?1 AND payoff_confirmed = 0 AND abandoned = 0 AND secret = 0",
+    )?;
+    let rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        bool,
+        bool,
+        i64,
+    )> = stmt
+        .query_map(params![project_id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get::<_, i64>(4)? != 0,
+                row.get::<_, i64>(5)? != 0,
+                row.get(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let setup_sql = format!(
+        "SELECT foreshadow_id, is_orphan, strength, ai_strength, ai_reasoning
+         FROM foreshadow_setups WHERE foreshadow_id IN ({placeholders})"
+    );
+    let setup_params: Vec<rusqlite::types::Value> = ids
+        .iter()
+        .map(|id| rusqlite::types::Value::Text(id.clone()))
+        .collect();
+    let mut setup_stmt = conn.prepare(&setup_sql)?;
+    let setups: Vec<SetupLabelInput> = setup_stmt
+        .query_map(rusqlite::params_from_iter(setup_params.iter()), |row| {
+            Ok(SetupLabelInput {
+                foreshadow_id: row.get(0)?,
+                is_orphan: row.get::<_, i64>(1)? != 0,
+                strength: row.get(2)?,
+                ai_strength: row.get(3)?,
+                ai_reasoning: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut count_map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut weak_map: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    for s in &setups {
+        if s.is_orphan {
+            continue;
+        }
+        *count_map.entry(s.foreshadow_id.clone()).or_insert(0) += 1;
+        if is_setup_weak(s) {
+            weak_map.insert(s.foreshadow_id.clone(), true);
+        }
+    }
+
+    let load_bearing_priority = |lb: Option<&str>| -> i32 {
+        match lb {
+            Some("critical") => 0,
+            Some("supporting") => 1,
+            Some("optional") => 2,
+            _ => 3,
+        }
+    };
+
+    let mut summaries: Vec<(OpenForeshadowSummary, i32, i64)> = rows
+        .into_iter()
+        .map(
+            |(id, title, intent, load_bearing, payoff_confirmed, abandoned, updated_at)| {
+                let setup_count = count_map.get(&id).copied().unwrap_or(0);
+                let label_input = ForeshadowLabelInput {
+                    payoff_confirmed,
+                    abandoned,
+                    load_bearing: load_bearing.clone(),
+                };
+                let _derived = derive_label(
+                    &label_input,
+                    setup_count,
+                    weak_map.get(&id).copied().unwrap_or(false),
+                );
+                let priority = load_bearing_priority(load_bearing.as_deref());
+                let summary = OpenForeshadowSummary {
+                    id,
+                    title,
+                    intent: intent.unwrap_or_default(),
+                    load_bearing,
+                    setup_count,
+                };
+                (summary, priority, updated_at)
+            },
+        )
+        .collect();
+
+    summaries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| b.2.cmp(&a.2)));
+
+    Ok(summaries.into_iter().map(|(s, _, _)| s).collect())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeshadowPayoffScene {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeshadowSetupDetail {
+    pub scene_id: String,
+    pub scene_title: String,
+    pub kind: String,
+    pub strength: Option<String>,
+    pub attribution: String,
+    pub ai_rationale: String,
+    pub is_orphan: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeshadowDetail {
+    pub id: String,
+    pub title: String,
+    pub intent: String,
+    pub notes: String,
+    pub load_bearing: Option<String>,
+    pub payoff_confirmed: bool,
+    pub abandoned: bool,
+    pub payoff_scene: Option<ForeshadowPayoffScene>,
+    pub setups: Vec<ForeshadowSetupDetail>,
+}
+
+/// Single foreshadow detail scoped to project_id. Setup strength: strength ?? aiStrength ?? null.
+pub fn get_foreshadow_detail(
+    conn: &Connection,
+    project_id: &str,
+    foreshadow_id: &str,
+) -> Result<Option<ForeshadowDetail>> {
+    let row = conn.query_row(
+        "SELECT id, title, intent, notes, load_bearing, payoff_confirmed, abandoned, payoff_scene_id
+         FROM foreshadows WHERE id = ?1 AND project_id = ?2",
+        params![foreshadow_id, project_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)? != 0,
+                row.get::<_, i64>(6)? != 0,
+                row.get::<_, Option<String>>(7)?,
+            ))
+        },
+    );
+
+    let (id, title, intent, notes, load_bearing, payoff_confirmed, abandoned, payoff_scene_id) =
+        match row {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+
+    let payoff_scene = if let Some(psid) = payoff_scene_id {
+        conn.query_row(
+            "SELECT id, title FROM tree_nodes WHERE id = ?1",
+            params![psid],
+            |row| {
+                Ok(ForeshadowPayoffScene {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                })
+            },
+        )
+        .ok()
+    } else {
+        None
+    };
+
+    let mut setup_stmt = conn.prepare(
+        "SELECT fs.scene_id, fs.kind, fs.strength, fs.ai_strength, fs.attribution,
+                fs.ai_rationale, fs.is_orphan, tn.title
+         FROM foreshadow_setups fs
+         INNER JOIN tree_nodes tn ON fs.scene_id = tn.id
+         WHERE fs.foreshadow_id = ?1",
+    )?;
+    let setups: Vec<ForeshadowSetupDetail> = setup_stmt
+        .query_map(params![foreshadow_id], |row| {
+            let strength: Option<String> = row.get(2)?;
+            let ai_strength: Option<String> = row.get(3)?;
+            Ok(ForeshadowSetupDetail {
+                scene_id: row.get(0)?,
+                scene_title: row.get(7)?,
+                kind: row.get(1)?,
+                strength: strength.or(ai_strength),
+                attribution: row.get(4)?,
+                ai_rationale: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                is_orphan: row.get::<_, i64>(6)? != 0,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(Some(ForeshadowDetail {
+        id,
+        title,
+        intent: intent.unwrap_or_default(),
+        notes: notes.unwrap_or_default(),
+        load_bearing,
+        payoff_confirmed,
+        abandoned,
+        payoff_scene,
+        setups,
+    }))
+}
+
 // ─── Phase 3: write helpers ───────────────────────────────────────────────────
 
 pub struct CreateCodexInput<'a> {
@@ -1164,7 +1887,10 @@ mod tests {
                 node_type TEXT NOT NULL,
                 title TEXT NOT NULL DEFAULT 'Untitled',
                 synopsis TEXT,
-                sort_order REAL NOT NULL DEFAULT 0.0,
+                sort_order TEXT NOT NULL DEFAULT 'a0',
+                story_time_order TEXT,
+                story_time_label TEXT,
+                intent TEXT,
                 status TEXT DEFAULT 'outline',
                 content TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1291,6 +2017,39 @@ mod tests {
                 timestamp TEXT,
                 chat_msg_id TEXT,
                 phase_id TEXT
+            );
+            CREATE TABLE foreshadows (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                intent TEXT,
+                notes TEXT,
+                payoff_scene_id TEXT,
+                payoff_from_pos INTEGER,
+                payoff_to_pos INTEGER,
+                payoff_confirmed INTEGER NOT NULL DEFAULT 0,
+                abandoned INTEGER NOT NULL DEFAULT 0,
+                secret INTEGER NOT NULL DEFAULT 1,
+                load_bearing TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE foreshadow_setups (
+                id TEXT PRIMARY KEY,
+                foreshadow_id TEXT NOT NULL,
+                scene_id TEXT NOT NULL,
+                from_pos INTEGER NOT NULL DEFAULT 0,
+                to_pos INTEGER NOT NULL DEFAULT 0,
+                kind TEXT NOT NULL DEFAULT 'designated_existing',
+                strength TEXT,
+                ai_strength TEXT,
+                ai_reasoning TEXT,
+                attribution TEXT NOT NULL DEFAULT 'human',
+                ai_rationale TEXT,
+                last_evaluated_at INTEGER,
+                is_orphan INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
             );",
         )
         .unwrap();
@@ -1627,7 +2386,7 @@ mod tests {
         insert_scene(&conn, "s2", "p1", "S2", "outline");
         conn.execute(
             "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
-             VALUES ('f1', 'p1', 'folder', 'Ch1', 0.0)",
+             VALUES ('f1', 'p1', 'folder', 'Ch1', 'a0')",
             [],
         )
         .unwrap();
@@ -1738,5 +2497,275 @@ mod tests {
             },
         );
         assert!(result.is_err());
+    }
+
+    // ── Chat executor parity reads ───────────────────────────────────────────
+
+    #[test]
+    fn test_list_tree_nodes_text_sort_order() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, status)
+             VALUES ('s2', 'p1', 'scene', 'Second', 'b0', 'outline')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, status)
+             VALUES ('s1', 'p1', 'scene', 'First', 'a0', 'outline')",
+            [],
+        )
+        .unwrap();
+        let nodes = list_tree_nodes(&conn, "p1", &TreeFilter::default()).unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].sort_order, "a0");
+        assert_eq!(nodes[0].title, "First");
+    }
+
+    fn link_tag(conn: &Connection, project_id: &str, entry_id: &str, tag_name: &str) {
+        conn.execute(
+            "INSERT INTO codex_tags (id, project_id, name) VALUES (?1, ?2, ?3)",
+            params![format!("tag-{tag_name}"), project_id, tag_name],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO codex_entry_tags (entry_id, tag_id) VALUES (?1, ?2)",
+            params![entry_id, format!("tag-{tag_name}")],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_get_chapter_summaries_folder_scenes() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+             VALUES ('f1', 'p1', 'folder', 'Chapter 1', 'a0')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, synopsis, sort_order)
+             VALUES ('s1', 'p1', 'f1', 'scene', 'Scene A', 'Synopsis A', 'a0')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, synopsis, sort_order)
+             VALUES ('s2', 'p1', 'f1', 'scene', 'Scene B', '', 'a1')",
+            [],
+        )
+        .unwrap();
+        let summaries = get_chapter_summaries(&conn, "p1").unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].title, "Chapter 1");
+        assert_eq!(summaries[0].scenes.len(), 1);
+        assert_eq!(summaries[0].scenes[0].synopsis, "Synopsis A");
+    }
+
+    #[test]
+    fn test_list_codex_tags_with_type_filter() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_codex_entry(&conn, "e1", "p1", "Hero", "character");
+        conn.execute(
+            "INSERT INTO codex_tags (id, project_id, name, type_filter) VALUES ('t1', 'p1', 'main', 'character')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO codex_tags (id, project_id, name, type_filter) VALUES ('t2', 'p1', 'geo', 'location')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO codex_entry_tags (entry_id, tag_id) VALUES ('e1', 't1')",
+            [],
+        )
+        .unwrap();
+        let all = list_codex_tags(&conn, "p1", None).unwrap();
+        assert_eq!(all.len(), 2);
+        let filtered = list_codex_tags(&conn, "p1", Some("char")).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "main");
+        assert_eq!(filtered[0].usage_count, 1);
+    }
+
+    #[test]
+    fn test_search_codex_by_tags_or_distinct() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_codex_entry(&conn, "e1", "p1", "Alice", "character");
+        link_tag(&conn, "p1", "e1", "magic");
+        link_tag(&conn, "p1", "e1", "hero");
+        let empty = search_codex_by_tags(&conn, "p1", &[]).unwrap();
+        assert!(empty.is_empty());
+        let hits = search_codex_by_tags(&conn, "p1", &["magic".into(), "missing".into()]).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "Alice");
+    }
+
+    #[test]
+    fn test_find_related_entries_skips_content_only_match() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_codex_entry(&conn, "src", "p1", "Dragon", "lore");
+        conn.execute(
+            "UPDATE codex_entries SET aliases = ? WHERE id = 'src'",
+            params![r#"["Wyrm"]"#],
+        )
+        .unwrap();
+        insert_codex_entry(&conn, "hit", "p1", "Wyrm Cult", "lore");
+        conn.execute(
+            "UPDATE codex_entries SET summary = 'About Wyrm' WHERE id = 'hit'",
+            [],
+        )
+        .unwrap();
+        insert_codex_entry(&conn, "miss", "p1", "Unrelated", "lore");
+        conn.execute(
+            "UPDATE codex_entries SET content = 'secret Wyrm text' WHERE id = 'miss'",
+            [],
+        )
+        .unwrap();
+        let related = find_related_entries(&conn, "p1", "src", None).unwrap();
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].id, "hit");
+    }
+
+    #[test]
+    fn test_get_scene_timeline_neighbors_binary_order() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, synopsis, story_time_order, story_time_label)
+             VALUES ('s1', 'p1', 'scene', 'Early', 'E', 'a0', 'Day 1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, synopsis, story_time_order, story_time_label)
+             VALUES ('s2', 'p1', 'scene', 'Mid', 'M', 'a1', 'Day 2')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, synopsis, story_time_order, story_time_label)
+             VALUES ('s3', 'p1', 'scene', 'Late', 'L', 'b0', 'Day 3')",
+            [],
+        )
+        .unwrap();
+        let unset = get_scene_timeline_neighbors(&conn, "missing").unwrap();
+        assert!(unset.previous.is_empty());
+        let no_order = conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title)
+             VALUES ('s0', 'p1', 'scene', 'No time')",
+            [],
+        );
+        assert!(no_order.is_ok());
+        let empty_neighbors = get_scene_timeline_neighbors(&conn, "s0").unwrap();
+        assert!(empty_neighbors.previous.is_empty());
+        assert!(empty_neighbors.next.is_empty());
+        let mid = get_scene_timeline_neighbors(&conn, "s2").unwrap();
+        assert_eq!(mid.current_scene_story_time_label.as_deref(), Some("Day 2"));
+        assert_eq!(mid.previous.len(), 1);
+        assert_eq!(mid.previous[0].id, "s1");
+        assert_eq!(mid.next.len(), 1);
+        assert_eq!(mid.next[0].id, "s3");
+    }
+
+    #[test]
+    fn test_list_open_foreshadows_filters_and_setup_count() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_scene(&conn, "sc1", "p1", "Scene 1", "draft");
+        let now = 1_700_000_000_000_i64;
+        conn.execute(
+            "INSERT INTO foreshadows (id, project_id, title, intent, secret, load_bearing, created_at, updated_at)
+             VALUES ('f-open', 'p1', 'Open', 'hint', 0, 'critical', ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO foreshadows (id, project_id, title, secret, abandoned, created_at, updated_at)
+             VALUES ('f-secret', 'p1', 'Secret', 1, 0, ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO foreshadows (id, project_id, title, secret, abandoned, created_at, updated_at)
+             VALUES ('f-done', 'p1', 'Done', 0, 0, ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE foreshadows SET payoff_confirmed = 1 WHERE id = 'f-done'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO foreshadow_setups (id, foreshadow_id, scene_id, kind, is_orphan, created_at, updated_at)
+             VALUES ('su1', 'f-open', 'sc1', 'designated_existing', 0, ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO foreshadow_setups (id, foreshadow_id, scene_id, kind, is_orphan, created_at, updated_at)
+             VALUES ('su2', 'f-open', 'sc1', 'designated_existing', 1, ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        let open = list_open_foreshadows(&conn, "p1").unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, "f-open");
+        assert_eq!(open[0].setup_count, 1);
+    }
+
+    #[test]
+    fn test_safe_parse_ai_evaluation_port() {
+        assert!(!safe_parse_ai_evaluation(None));
+        assert!(!safe_parse_ai_evaluation(Some("not json")));
+        assert!(!safe_parse_ai_evaluation(Some(r#"{"careful": {}}"#)));
+        let valid = r#"{"careful":{"strength":"subtle","reasoning":"a"},"casual":{"strength":"moderate","reasoning":"b"},"skim":{"strength":"overt","reasoning":"c"}}"#;
+        assert!(safe_parse_ai_evaluation(Some(valid)));
+        let partial = r#"{"careful":{"strength":"subtle","reasoning":"a"},"casual":{"strength":"bad","reasoning":"b"},"skim":{"strength":"overt","reasoning":"c"}}"#;
+        assert!(!safe_parse_ai_evaluation(Some(partial)));
+    }
+
+    #[test]
+    fn test_get_foreshadow_detail_project_scope() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_project(&conn, "p2", "Other");
+        insert_scene(&conn, "sc1", "p1", "Payoff Scene", "draft");
+        let now = 1_700_000_000_000_i64;
+        conn.execute(
+            "INSERT INTO foreshadows (id, project_id, title, intent, notes, payoff_scene_id, secret, created_at, updated_at)
+             VALUES ('f1', 'p1', 'Thread', 'goal', 'note', 'sc1', 0, ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO foreshadows (id, project_id, title, secret, created_at, updated_at)
+             VALUES ('f2', 'p2', 'Other project', 0, ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO foreshadow_setups (id, foreshadow_id, scene_id, kind, strength, attribution, created_at, updated_at)
+             VALUES ('su1', 'f1', 'sc1', 'inserted_new', 'moderate', 'human', ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        assert!(get_foreshadow_detail(&conn, "p1", "f2").unwrap().is_none());
+        let detail = get_foreshadow_detail(&conn, "p1", "f1").unwrap().unwrap();
+        assert_eq!(detail.title, "Thread");
+        assert_eq!(detail.setups.len(), 1);
+        assert_eq!(detail.setups[0].scene_title, "Payoff Scene");
+        assert_eq!(
+            detail.payoff_scene.as_ref().map(|p| p.title.as_str()),
+            Some("Payoff Scene")
+        );
     }
 }

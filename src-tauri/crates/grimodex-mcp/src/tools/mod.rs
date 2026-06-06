@@ -1,9 +1,11 @@
 pub mod chat;
 pub mod codex;
+pub mod foreshadow;
 pub mod lint;
 pub mod project;
 pub mod scene;
 pub mod search;
 pub mod snippets;
 pub mod stats;
+pub mod timeline;
 pub mod tree;

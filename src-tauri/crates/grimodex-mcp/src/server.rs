@@ -98,6 +98,77 @@ impl GrimodexServer {
         tools::codex::get_codex_entry(self, params.0).await
     }
 
+    /// List Codex tags with usage counts. Optionally filter by compatible entry type.
+    #[tool(
+        description = "List Codex tags with usage counts. Optionally filter by compatible entry type (type_filter partial match)."
+    )]
+    async fn list_codex_tags(
+        &self,
+        params: Parameters<tools::codex::ListCodexTagsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::codex::list_codex_tags(self, params.0).await
+    }
+
+    /// Find Codex entries whose name/summary/aliases/tags match a source entry's name or aliases.
+    #[tool(
+        description = "Find Codex entries related to a source entry (name + aliases matched against other entries' name, summary, aliases, tags_cache). Optional type filter."
+    )]
+    async fn find_related_entries(
+        &self,
+        params: Parameters<tools::codex::FindRelatedEntriesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::codex::find_related_entries(self, params.0).await
+    }
+
+    /// Search Codex entries that have any of the given tags (OR match).
+    #[tool(
+        description = "Search Codex entries tagged with any of the given tag names (OR). Returns id, name, type, summary."
+    )]
+    async fn search_codex_by_tags(
+        &self,
+        params: Parameters<tools::codex::SearchCodexByTagsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::codex::search_codex_by_tags(self, params.0).await
+    }
+
+    /// Get folder-grouped scene synopses (folders treated as chapters).
+    #[tool(
+        description = "Get all folder (chapter) groupings with child scene synopses. Scenes without synopsis are omitted."
+    )]
+    async fn get_chapter_summaries(&self) -> Result<CallToolResult, ErrorData> {
+        tools::tree::get_chapter_summaries(self).await
+    }
+
+    /// List unresolved foreshadowing items (excludes secret, abandoned, payoff-confirmed).
+    #[tool(
+        description = "List open (unresolved) foreshadowing items: id, title, intent, loadBearing, setupCount. Sorted by loadBearing priority then updatedAt."
+    )]
+    async fn list_open_foreshadows(&self) -> Result<CallToolResult, ErrorData> {
+        tools::foreshadow::list_open_foreshadows(self).await
+    }
+
+    /// Get full detail for a single foreshadowing item including setups and payoff scene.
+    #[tool(
+        description = "Get foreshadow detail: title, intent, notes, loadBearing, payoff state, payoff scene, and setup list with scene titles."
+    )]
+    async fn get_foreshadow_detail(
+        &self,
+        params: Parameters<tools::foreshadow::GetForeshadowDetailParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::foreshadow::get_foreshadow_detail(self, params.0).await
+    }
+
+    /// Get previous/next scenes in story-time order for a scene.
+    #[tool(
+        description = "Get up to 3 previous and 3 next scenes by story_time_order fractional key for the given sceneId."
+    )]
+    async fn get_scene_timeline_neighbors(
+        &self,
+        params: Parameters<tools::timeline::GetSceneTimelineNeighborsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::timeline::get_scene_timeline_neighbors(self, params.0).await
+    }
+
     /// Search across scenes, Codex entries, snippets, and chat messages using full-text search.
     #[tool(
         description = "Search across scenes, Codex entries, snippets, and chat messages using full-text search. Scope: 'all'|'scenes'|'codex'|'snippets'|'chat'."
