@@ -1826,6 +1826,153 @@ fn parse_hermes_tool_calls(content: &str, allowed: &[String]) -> (String, Vec<He
     (stripped, calls)
 }
 
+// --- Hermes 送信側エンコード (Phase B) ---
+//
+// 背景 (実測): OpenRouter は tool 非対応エンドポイントのモデルに OpenAI `tools[]`
+// を送ると 404 "No endpoints found that support tool use" を返す。Hermes 系は
+// native tool 非対応ゆえ本文 <tool_call> を吐くので、Hermes 解決時は tools[] を
+// 送らず、ツール定義を <tools> system XML として注入する。
+
+/// assistant 履歴の tool use を `<tool_call>` テキストへエンコードする。
+fn format_hermes_tool_call(name: &str, input: &serde_json::Value) -> String {
+    format!(
+        "<tool_call>\n{}\n</tool_call>",
+        serde_json::json!({ "name": name, "arguments": input })
+    )
+}
+
+/// tool result を `<tool_response>` テキストへエンコードする。
+fn format_hermes_tool_response(name: &str, content: &str, is_error: bool) -> String {
+    let mut payload = serde_json::json!({ "name": name, "content": content });
+    if is_error {
+        payload["is_error"] = serde_json::json!(true);
+    }
+    format!("<tool_response>\n{payload}\n</tool_response>")
+}
+
+/// Nous Hermes 標準の function-calling system プロンプト断片を組む。
+/// `<tools>` に各ツールの JSON schema を列挙する。
+fn build_hermes_tools_preamble(tools: &[AgentToolDef]) -> String {
+    let lines: Vec<String> = tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.input_schema
+            })
+            .to_string()
+        })
+        .collect();
+    format!(
+        "You are a function calling AI model. You are provided with function signatures within \
+<tools></tools> XML tags. You may call one or more functions to assist with the user query. \
+Don't make assumptions about what values to plug into functions. \
+Here are the available tools:\n<tools>\n{}\n</tools>\n\
+For each function call, return a json object with the function name and arguments within \
+<tool_call></tool_call> XML tags, like:\n<tool_call>\n{{\"name\": <function-name>, \
+\"arguments\": <args-dict>}}\n</tool_call>\n\
+The tool result is returned within <tool_response></tool_response> tags. \
+Only call tools listed above.",
+        lines.join("\n")
+    )
+}
+
+/// Hermes プロトコル用に OpenAI 互換 messages 配列を組む (純関数・テスト対象)。
+/// - `tools[]` は body に載せない (caller が省略)。代わりに `<tools>` を最初の
+///   system へ注入 (system が無ければ先頭に system を追加)。
+/// - assistant の tool_uses を `<tool_call>` テキストへ、tool_result を
+///   role:"user" の `<tool_response>` テキストへ変換 (native tool_calls / role:"tool"
+///   は使わない=tools[] 不在で orphan になり弾かれるため)。
+fn build_hermes_openai_messages(
+    messages: &[AgentMessage],
+    tools: &[AgentToolDef],
+) -> Vec<serde_json::Value> {
+    let preamble = build_hermes_tools_preamble(tools);
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    // tool_use_id -> name (ToolResult の <tool_response> に name を載せるため)。
+    let mut name_by_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut preamble_applied = false;
+
+    for msg in messages {
+        match msg {
+            AgentMessage::User { content } => {
+                out.push(serde_json::json!({ "role": "user", "content": content }));
+            }
+            AgentMessage::System { content } => {
+                let merged = if !preamble_applied {
+                    preamble_applied = true;
+                    format!("{content}\n\n{preamble}")
+                } else {
+                    content.clone()
+                };
+                out.push(serde_json::json!({ "role": "system", "content": merged }));
+            }
+            AgentMessage::Assistant {
+                content, tool_uses, ..
+            } => {
+                for tu in tool_uses {
+                    name_by_id.insert(tu.id.clone(), tu.name.clone());
+                }
+                if tool_uses.is_empty() {
+                    out.push(serde_json::json!({ "role": "assistant", "content": content }));
+                } else {
+                    let mut text = content.clone();
+                    for tu in tool_uses {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(&format_hermes_tool_call(&tu.name, &tu.input));
+                    }
+                    out.push(serde_json::json!({ "role": "assistant", "content": text }));
+                }
+            }
+            AgentMessage::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                let name = name_by_id
+                    .get(tool_use_id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                out.push(serde_json::json!({
+                    "role": "user",
+                    "content": format_hermes_tool_response(name, content, *is_error)
+                }));
+            }
+        }
+    }
+
+    // system が一度も無ければ先頭に <tools> 入り system を追加する。
+    if !preamble_applied {
+        out.insert(
+            0,
+            serde_json::json!({ "role": "system", "content": preamble }),
+        );
+    }
+    out
+}
+
+/// AI リクエスト/レスポンス本文のデバッグログを有効化するか。
+/// 本文には小説本文 (私的テキスト) が含まれるため、env var で明示有効時のみ出力。
+fn ai_wire_log_enabled() -> bool {
+    std::env::var("GRIMODEX_AI_WIRE_LOG")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false)
+}
+
+/// ログ用に文字列を char 境界で切り詰める。
+fn truncate_for_log(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    let omitted = s.chars().count() - max;
+    format!("{head}…[+{omitted} chars]")
+}
+
 fn parse_openai_response(
     result: &serde_json::Value,
     opts: &ParseOpenAIOptions,
@@ -2303,104 +2450,117 @@ pub async fn send_chat_with_tools(
             // OpenAI-compatible format (OpenAI, OpenRouter, Ollama)。
             // OpenRouter + Claude では system に cache_control を載せて prompt cache を効かせる
             // (チャット経路と同じ手法)。最初の system 1 つにのみ適用 (4 breakpoint 超過=400 を防ぐ)。
-            let system_cache_blocks = if supports_prompt_cache(params.provider, params.model) {
-                params
-                    .system_cache_segments
-                    .as_deref()
-                    .and_then(openai_system_cache_blocks)
+            let is_hermes = matches!(params.resolved_tool_protocol, ResolvedToolProtocol::Hermes);
+
+            let openai_messages: Vec<serde_json::Value> = if is_hermes {
+                // Hermes: tools[] を送らず (tool 非対応エンドポイントで 404 になるため)、
+                // <tools> system XML + <tool_call>/<tool_response> テキストで授受する。
+                build_hermes_openai_messages(messages, tools)
             } else {
-                None
-            };
-            let mut system_cache_applied = false;
-            let mut openai_messages: Vec<serde_json::Value> = Vec::new();
-            for msg in messages {
-                match msg {
-                    AgentMessage::User { content } => {
-                        openai_messages
-                            .push(serde_json::json!({ "role": "user", "content": content }));
-                    }
-                    AgentMessage::System { content } => {
-                        let blocks = if system_cache_applied {
-                            None
-                        } else {
-                            system_cache_blocks.as_ref()
-                        };
-                        if let Some(blocks) = blocks {
-                            system_cache_applied = true;
-                            openai_messages
-                                .push(serde_json::json!({ "role": "system", "content": blocks }));
-                        } else {
-                            openai_messages
-                                .push(serde_json::json!({ "role": "system", "content": content }));
+                let system_cache_blocks = if supports_prompt_cache(params.provider, params.model) {
+                    params
+                        .system_cache_segments
+                        .as_deref()
+                        .and_then(openai_system_cache_blocks)
+                } else {
+                    None
+                };
+                let mut system_cache_applied = false;
+                let mut v: Vec<serde_json::Value> = Vec::new();
+                for msg in messages {
+                    match msg {
+                        AgentMessage::User { content } => {
+                            v.push(serde_json::json!({ "role": "user", "content": content }));
                         }
-                    }
-                    AgentMessage::Assistant {
-                        content, tool_uses, ..
-                    } => {
-                        if tool_uses.is_empty() {
-                            openai_messages.push(
-                                serde_json::json!({ "role": "assistant", "content": content }),
-                            );
-                        } else {
-                            let tool_calls: Vec<serde_json::Value> = tool_uses
-                                .iter()
-                                .map(|tu| {
-                                    serde_json::json!({
-                                        "id": tu.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": tu.name,
-                                            "arguments": tu.input.to_string()
-                                        }
-                                    })
-                                })
-                                .collect();
-                            let content_val = if content.is_empty() {
-                                serde_json::Value::Null
+                        AgentMessage::System { content } => {
+                            let blocks = if system_cache_applied {
+                                None
                             } else {
-                                serde_json::Value::String(content.clone())
+                                system_cache_blocks.as_ref()
                             };
-                            openai_messages.push(serde_json::json!({
-                                "role": "assistant",
-                                "content": content_val,
-                                "tool_calls": tool_calls
+                            if let Some(blocks) = blocks {
+                                system_cache_applied = true;
+                                v.push(serde_json::json!({ "role": "system", "content": blocks }));
+                            } else {
+                                v.push(serde_json::json!({ "role": "system", "content": content }));
+                            }
+                        }
+                        AgentMessage::Assistant {
+                            content, tool_uses, ..
+                        } => {
+                            if tool_uses.is_empty() {
+                                v.push(serde_json::json!({
+                                    "role": "assistant",
+                                    "content": content
+                                }));
+                            } else {
+                                let tool_calls: Vec<serde_json::Value> = tool_uses
+                                    .iter()
+                                    .map(|tu| {
+                                        serde_json::json!({
+                                            "id": tu.id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": tu.name,
+                                                "arguments": tu.input.to_string()
+                                            }
+                                        })
+                                    })
+                                    .collect();
+                                let content_val = if content.is_empty() {
+                                    serde_json::Value::Null
+                                } else {
+                                    serde_json::Value::String(content.clone())
+                                };
+                                v.push(serde_json::json!({
+                                    "role": "assistant",
+                                    "content": content_val,
+                                    "tool_calls": tool_calls
+                                }));
+                            }
+                        }
+                        AgentMessage::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => {
+                            v.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": tool_use_id,
+                                "content": content
                             }));
                         }
                     }
-                    AgentMessage::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } => {
-                        openai_messages.push(serde_json::json!({
-                            "role": "tool",
-                            "tool_call_id": tool_use_id,
-                            "content": content
-                        }));
-                    }
                 }
-            }
+                v
+            };
 
-            // Build OpenAI tool definitions
-            let openai_tools: Vec<serde_json::Value> = tools
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.input_schema
-                        }
-                    })
+            let mut body = if is_hermes {
+                // Hermes は tools[] を送らない。ツール定義は system の <tools> に注入済み。
+                serde_json::json!({
+                    "model": params.model,
+                    "messages": openai_messages
                 })
-                .collect();
-
-            let mut body = serde_json::json!({
-                "model": params.model,
-                "messages": openai_messages,
-                "tools": openai_tools
-            });
+            } else {
+                let openai_tools: Vec<serde_json::Value> = tools
+                    .iter()
+                    .map(|t| {
+                        serde_json::json!({
+                            "type": "function",
+                            "function": {
+                                "name": t.name,
+                                "description": t.description,
+                                "parameters": t.input_schema
+                            }
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "model": params.model,
+                    "messages": openai_messages,
+                    "tools": openai_tools
+                })
+            };
             insert_chat_completion_token_limit(
                 &mut body,
                 params.provider,
@@ -2452,11 +2612,44 @@ pub async fn send_chat_with_tools(
                 }
             }
 
+            // 観測性: GRIMODEX_AI_WIRE_LOG=1 のとき request/response 本文を tracing で出す
+            // (本文に小説テキストを含むため既定では出さない)。エラー時は body をエラーへ
+            // 載せる (OpenRouter の「No endpoints found that support tool use」等を可視化)。
+            if ai_wire_log_enabled() {
+                tracing::warn!(
+                    target: "ai_wire",
+                    "→ request (provider={:?} model={} hermes={}): {}",
+                    params.provider,
+                    params.model,
+                    is_hermes,
+                    truncate_for_log(&body.to_string(), 12000)
+                );
+            }
             let req = openai_compat_request(&client, params, &body);
-            let resp = send_with_429_retry(req, params.retry_429, 3)
-                .await?
-                .error_for_status()?;
-            let result: serde_json::Value = resp.json().await?;
+            let resp = send_with_429_retry(req, params.retry_429, 3).await?;
+            let status = resp.status();
+            let body_text = resp.text().await?;
+            if ai_wire_log_enabled() {
+                tracing::warn!(
+                    target: "ai_wire",
+                    "← response (status={}): {}",
+                    status,
+                    truncate_for_log(&body_text, 12000)
+                );
+            }
+            if !status.is_success() {
+                anyhow::bail!(
+                    "AI request failed (HTTP {}): {}",
+                    status,
+                    truncate_for_log(&body_text, 1500)
+                );
+            }
+            let result: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
+                anyhow::anyhow!(
+                    "AI response JSON parse failed: {e}; body: {}",
+                    truncate_for_log(&body_text, 500)
+                )
+            })?;
             // Hermes パース有効: 本文 <tool_call> のうち declared tool に一致するものを ToolUse 化。
             parse_openai_response(
                 &result,
@@ -3894,6 +4087,108 @@ mod tests {
         // serialize は camelCase + lowercase 値で出力する。
         let json = serde_json::to_value(&with).unwrap();
         assert_eq!(json["toolProtocolMode"], "hermes");
+    }
+
+    // ----- Hermes 送信側 (Phase B) -----
+
+    fn td(name: &str) -> AgentToolDef {
+        AgentToolDef {
+            name: name.to_string(),
+            description: format!("{name} desc"),
+            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    #[test]
+    fn hermes_outbound_omits_tools_and_injects_system_xml() {
+        let msgs = vec![
+            AgentMessage::System {
+                content: "システム指示".to_string(),
+            },
+            AgentMessage::User {
+                content: "質問".to_string(),
+            },
+        ];
+        let out = build_hermes_openai_messages(&msgs, &[td("search_codex")]);
+        let sys = out.iter().find(|m| m["role"] == "system").unwrap();
+        let sys_content = sys["content"].as_str().unwrap();
+        assert!(sys_content.contains("システム指示"));
+        assert!(sys_content.contains("<tools>"));
+        assert!(sys_content.contains("search_codex"));
+        // native tool 構造 (tool_calls / role:"tool") は一切出さない。
+        for m in &out {
+            assert!(m.get("tool_calls").is_none());
+            assert_ne!(m["role"], "tool");
+        }
+    }
+
+    #[test]
+    fn hermes_outbound_encodes_assistant_and_tool_result() {
+        let msgs = vec![
+            AgentMessage::System {
+                content: "S".to_string(),
+            },
+            AgentMessage::User {
+                content: "U".to_string(),
+            },
+            AgentMessage::Assistant {
+                content: "呼びます".to_string(),
+                tool_uses: vec![ToolUsePayload {
+                    id: "hermes-0".to_string(),
+                    name: "search_codex".to_string(),
+                    input: serde_json::json!({ "query": "朱音" }),
+                }],
+                thinking_blocks: vec![],
+            },
+            AgentMessage::ToolResult {
+                tool_use_id: "hermes-0".to_string(),
+                content: "{\"ok\":true}".to_string(),
+                is_error: false,
+            },
+        ];
+        let out = build_hermes_openai_messages(&msgs, &[td("search_codex")]);
+        // assistant は <tool_call> テキスト、tool_calls キー無し。
+        let asst = out.iter().find(|m| m["role"] == "assistant").unwrap();
+        let asst_content = asst["content"].as_str().unwrap();
+        assert!(asst_content.contains("<tool_call>"));
+        assert!(asst_content.contains("search_codex"));
+        assert!(asst_content.contains("朱音"));
+        assert!(asst.get("tool_calls").is_none());
+        // tool_result は role:"user" の <tool_response> (name 付き)。
+        let tr = out.iter().rev().find(|m| m["role"] == "user").unwrap();
+        let tr_content = tr["content"].as_str().unwrap();
+        assert!(tr_content.contains("<tool_response>"));
+        assert!(tr_content.contains("search_codex"));
+        assert!(tr_content.contains("ok"));
+    }
+
+    #[test]
+    fn hermes_outbound_tool_call_roundtrips_through_parser() {
+        let encoded = format_hermes_tool_call("search_codex", &serde_json::json!({ "query": "x" }));
+        let (_stripped, calls) = parse_hermes_tool_calls(&encoded, &["search_codex".to_string()]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "search_codex");
+        assert_eq!(calls[0].input["query"], "x");
+    }
+
+    #[test]
+    fn hermes_outbound_adds_system_when_absent() {
+        let out = build_hermes_openai_messages(
+            &[AgentMessage::User {
+                content: "U".to_string(),
+            }],
+            &[td("search_codex")],
+        );
+        assert_eq!(out[0]["role"], "system");
+        assert!(out[0]["content"].as_str().unwrap().contains("<tools>"));
+    }
+
+    #[test]
+    fn truncate_for_log_respects_char_boundary() {
+        assert_eq!(truncate_for_log("abc", 10), "abc");
+        let out = truncate_for_log("あいうえお", 2);
+        assert!(out.starts_with("あい"));
+        assert!(out.contains("+3 chars"));
     }
 
     #[test]

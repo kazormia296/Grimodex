@@ -17,6 +17,9 @@ import type {
 import {
   resolveToolProtocol,
   parseHermesToolCalls,
+  formatHermesToolCall,
+  formatHermesToolResponse,
+  buildHermesToolsPreamble,
 } from "@/features/chat/toolProtocolParse";
 
 interface ChatMessage {
@@ -282,6 +285,51 @@ function buildOpenAIMessages(
   return result;
 }
 
+/**
+ * Hermes 用 OpenAI 互換 messages（Rust `build_hermes_openai_messages` のパリティ）。
+ * tools[] は送らず <tools> system XML + <tool_call>/<tool_response> テキストで授受する。
+ */
+function buildHermesOpenAIMessages(
+  messages: AgentMessagePayload[],
+  tools: AgentToolDefinition[],
+): Record<string, unknown>[] {
+  const preamble = buildHermesToolsPreamble(tools);
+  const out: Record<string, unknown>[] = [];
+  const nameById = new Map<string, string>();
+  let preambleApplied = false;
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      out.push({ role: "user", content: msg.content });
+    } else if (msg.role === "system") {
+      const merged = preambleApplied
+        ? msg.content
+        : `${msg.content}\n\n${preamble}`;
+      preambleApplied = true;
+      out.push({ role: "system", content: merged });
+    } else if (msg.role === "assistant") {
+      for (const tu of msg.toolUses ?? []) nameById.set(tu.id, tu.name);
+      if (!msg.toolUses || msg.toolUses.length === 0) {
+        out.push({ role: "assistant", content: msg.content });
+      } else {
+        let text = msg.content;
+        for (const tu of msg.toolUses) {
+          if (text) text += "\n";
+          text += formatHermesToolCall(tu.name, tu.input);
+        }
+        out.push({ role: "assistant", content: text });
+      }
+    } else if (msg.role === "tool_result") {
+      const name = nameById.get(msg.toolUseId) ?? "";
+      out.push({
+        role: "user",
+        content: formatHermesToolResponse(name, msg.content, !!msg.isError),
+      });
+    }
+  }
+  if (!preambleApplied) out.unshift({ role: "system", content: preamble });
+  return out;
+}
+
 function parseAnthropicAgentResponse(result: unknown): AgentLLMResponse {
   const r = result as Record<string, unknown>;
   const stopReason = (r["stop_reason"] as string) ?? "end_turn";
@@ -386,6 +434,13 @@ export async function sendChatWithTools(
   const headers = buildHeaders(provider, apiKey);
   const url = chatEndpoint(provider);
 
+  // Rust parity: provider ゲート + auto/native/hermes を一度だけ解決し、
+  // 送信側 (tools[] 省略 + <tools> XML) と受信側パースの両方で使う。
+  const resolved: "native" | "hermes" =
+    provider === "anthropic"
+      ? "native"
+      : resolveToolProtocol(provider, model, toolProtocolMode);
+
   let body: Record<string, unknown>;
 
   if (provider === "anthropic") {
@@ -407,6 +462,14 @@ export async function sendChatWithTools(
       tools: anthropicTools,
     };
     if (systemContent) body["system"] = systemContent;
+  } else if (resolved === "hermes") {
+    // Hermes: tools[] を送らず (tool 非対応エンドポイントで 404 になるため)、
+    // <tools> system XML + <tool_call>/<tool_response> テキストで授受する。
+    body = {
+      model,
+      max_tokens: 4096,
+      messages: buildHermesOpenAIMessages(messages, tools),
+    };
   } else {
     const openaiTools = tools.map((t) => ({
       type: "function",
@@ -438,7 +501,6 @@ export async function sendChatWithTools(
   const result = await resp.json();
   if (provider === "anthropic") return parseAnthropicAgentResponse(result);
   // Hermes 解決時のみ本文 <tool_call> を declared tool に対してパースする。
-  const resolved = resolveToolProtocol(provider, model, toolProtocolMode);
   const hermes =
     resolved === "hermes"
       ? { allowedNames: tools.map((t) => t.name) }

@@ -5,6 +5,7 @@ import {
   parseHermesToolCalls,
   formatHermesToolCall,
   formatHermesToolResponse,
+  buildHermesToolsPreamble,
 } from "./toolProtocolParse";
 import { DEFAULT_AI_SETTINGS, type AiSettings } from "./types";
 
@@ -129,5 +130,24 @@ describe("format round-trip", () => {
     expect(out).toContain("<tool_response>");
     expect(out).toContain("</tool_response>");
     expect(out).toContain("search_codex");
+  });
+
+  it("buildHermesToolsPreamble lists each tool schema inside <tools>", () => {
+    const out = buildHermesToolsPreamble([
+      {
+        name: "search_codex",
+        description: "search the codex",
+        inputSchema: {
+          type: "object",
+          properties: { query: { type: "string" } },
+        },
+      },
+    ]);
+    expect(out).toContain("<tools>");
+    expect(out).toContain("</tools>");
+    expect(out).toContain("search_codex");
+    expect(out).toContain('"parameters"');
+    // 呼び出し形式の指示が含まれる。
+    expect(out).toContain("<tool_call>");
   });
 });
