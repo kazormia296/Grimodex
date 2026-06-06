@@ -124,16 +124,28 @@ fn span_lane_model(span: &AuthorshipSpanInput) -> Option<&str> {
     })
 }
 
+struct CodexSpanMerge<'a> {
+    spans: &'a [AuthorshipSpanInput],
+    update_summary: bool,
+    update_content: bool,
+    default_model: Option<&'a str>,
+    default_chat_msg_id: Option<&'a str>,
+    default_trace_id: Option<&'a str>,
+}
+
 fn merge_codex_authorship_spans(
     conn: &Connection,
     entry_id: &str,
-    spans: &[AuthorshipSpanInput],
-    update_summary: bool,
-    update_content: bool,
-    default_model: Option<&str>,
-    default_chat_msg_id: Option<&str>,
-    default_trace_id: Option<&str>,
+    merge: CodexSpanMerge<'_>,
 ) -> anyhow::Result<()> {
+    let CodexSpanMerge {
+        spans,
+        update_summary,
+        update_content,
+        default_model,
+        default_chat_msg_id,
+        default_trace_id,
+    } = merge;
     if update_summary && update_content {
         conn.execute(
             "DELETE FROM authorship_spans WHERE codex_entry_id = ?1",
@@ -226,12 +238,14 @@ pub fn tracked_codex_create_in_tx(
     merge_codex_authorship_spans(
         conn,
         input.entry_id,
-        input.authorship_spans,
-        true,
-        true,
-        input.model,
-        input.chat_message_id.or(input.source_chat_message_id),
-        input.trace_id,
+        CodexSpanMerge {
+            spans: input.authorship_spans,
+            update_summary: true,
+            update_content: true,
+            default_model: input.model,
+            default_chat_msg_id: input.chat_message_id.or(input.source_chat_message_id),
+            default_trace_id: input.trace_id,
+        },
     )?;
 
     let after_base = codex_snapshot_json(conn, input.entry_id)?;
@@ -379,12 +393,14 @@ pub fn tracked_codex_update_in_tx(
         merge_codex_authorship_spans(
             conn,
             input.entry_id,
-            spans,
-            input.summary.is_some(),
-            input.content.is_some(),
-            input.model,
-            input.chat_message_id,
-            input.trace_id,
+            CodexSpanMerge {
+                spans,
+                update_summary: input.summary.is_some(),
+                update_content: input.content.is_some(),
+                default_model: input.model,
+                default_chat_msg_id: input.chat_message_id,
+                default_trace_id: input.trace_id,
+            },
         )?;
     }
 
