@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Mutex;
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 pub struct BatchStatement {
     pub sql: String,
     pub params: Vec<Value>,

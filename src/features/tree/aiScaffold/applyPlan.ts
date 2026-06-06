@@ -18,7 +18,7 @@ import { and, eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { agentWriteBundle } from "@/features/agent-writes/bundle";
 import { useTreeStore } from "../treeStore";
 import { validateAiTreePlan, type ValidationError } from "./validate";
 import { assignNodePlacements, type NodePlacement } from "./placement";
@@ -226,9 +226,42 @@ export async function applyAiTreePlan(
       placements,
       ctx.projectId,
     );
-    // commit。失敗(reject)時はトランザクション rollback で何も適用されないので
-    // この throw は安全(下の record/push に進まない)。
-    await invoke("db_execute_batch", { statements: stmts });
+    const eventUid = crypto.randomUUID();
+    const traceEntityId = ctx.traceId ?? eventUid;
+    await agentWriteBundle({
+      projectId: ctx.projectId,
+      statements: stmts,
+      undoJournal: {
+        entityKind: "tree_batch",
+        entityId: traceEntityId,
+        opKind: plan.kind === "scaffold" ? "tree.scaffold" : "tree.reorganize",
+        beforeJson: JSON.stringify({ beforeStates, createdIds }),
+        afterJson: JSON.stringify({ createdIds, movedIds, renamedIds }),
+        baseVersion: 0,
+        resultVersion: 1,
+      },
+      changeEvent: {
+        eventUid,
+        sceneId: null,
+        domain: "grid",
+        opType:
+          plan.kind === "scaffold" ? "tree.aiScaffold" : "tree.aiReorganize",
+        entityType: "tree_batch",
+        entityId: traceEntityId,
+        payload: JSON.stringify({
+          source: ctx.source,
+          model: ctx.model,
+          traceId: ctx.traceId,
+          createdIds,
+          movedIds,
+          renamedIds,
+          synopsisGenerated: plan.ops.some(
+            (o) => o.op === "create" && o.synopsis != null,
+          ),
+        }),
+        timestamp: Date.now(),
+      },
+    });
     await resyncTree();
   };
 
@@ -246,26 +279,8 @@ export async function applyAiTreePlan(
   // ── forward 適用 ─────────────────────────────────────────────────
   await runForwardBatch();
 
-  // commit 後は変更が確定済み。reload の成否に依存せず record + undo push を必ず行い、
-  // 「確定したのに undo できない孤児変更 + isLoading stuck」を残さない(M1)。
-  recordChangeEvent({
-    domain: "grid",
-    opType: plan.kind === "scaffold" ? "tree.aiScaffold" : "tree.aiReorganize",
-    entityType: "tree_batch",
-    entityId: ctx.traceId,
-    sceneId: null,
-    payload: {
-      source: ctx.source,
-      model: ctx.model,
-      traceId: ctx.traceId,
-      createdIds,
-      movedIds,
-      renamedIds,
-      synopsisGenerated: plan.ops.some(
-        (o) => o.op === "create" && o.synopsis != null,
-      ),
-    },
-  });
+  // change_event + undo_journal は agentWriteBundle で同一 tx 済み。
+  // reload の成否に依存せず composite undo push を必ず行う(M1)。
 
   // ── 単一 composite undo を push(redo は forward を直接再実行=二重 push 回避) ──
   if (!useGlobalHistoryStore.getState().isReplaying) {

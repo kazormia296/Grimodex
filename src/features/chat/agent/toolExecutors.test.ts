@@ -75,7 +75,12 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     "search_snippets",
   ];
 
-  const EXPECTED_MUTATING_NAMES = ["create_codex_entry", "update_codex_entry"];
+  const EXPECTED_MUTATING_NAMES = [
+    "apply_ai_tree_plan",
+    "create_codex_entry",
+    "create_snippet",
+    "update_codex_entry",
+  ];
 
   it("matches the frozen read-only allowlist exactly", () => {
     expect(Object.keys(READ_ONLY_EXECUTORS).sort()).toEqual(

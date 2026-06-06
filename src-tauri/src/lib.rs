@@ -142,6 +142,8 @@ pub fn run() {
             commands::timelapse::timelapse_append_batch,
             commands::agent_writes::agent_codex_create,
             commands::agent_writes::agent_codex_update,
+            commands::agent_writes::agent_write_bundle,
+            commands::agent_writes::agent_snippet_create,
             commands::ai::get_ai_settings,
             commands::ai::save_ai_settings,
             commands::ai::save_api_key,

@@ -21,6 +21,9 @@ import {
   agentCreateCodexEntry,
   agentUpdateCodexEntry,
 } from "@/features/agent-writes/codex";
+import { agentCreateSnippet } from "@/features/agent-writes/snippet";
+import { agentApplyTreePlan } from "@/features/agent-writes/tree";
+import type { AiTreePlan } from "@/features/tree/aiScaffold/types";
 
 interface QueryResult<T = Record<string, unknown>> {
   rows: T[];
@@ -1169,10 +1172,97 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
 };
 Object.freeze(READ_ONLY_EXECUTORS);
 
+async function createSnippetTool(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const title = String(params["title"] ?? "").trim();
+  if (!title) {
+    return {
+      name: "create_snippet",
+      content: null,
+      summary: "title is required",
+      tokensUsed: 0,
+      error: "title is required",
+    };
+  }
+  try {
+    const snippet = await agentCreateSnippet({
+      title,
+      content: params["content"] ? String(params["content"]) : undefined,
+      sceneId: params["sceneId"] ? String(params["sceneId"]) : undefined,
+    });
+    const content = { id: snippet.id, title: snippet.title };
+    const json = JSON.stringify(content);
+    return {
+      name: "create_snippet",
+      content,
+      summary: `Created snippet '${snippet.title}'`,
+      tokensUsed: countTokens(json),
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: "create_snippet",
+      content: null,
+      summary: msg,
+      tokensUsed: 0,
+      error: msg,
+    };
+  }
+}
+
+async function applyAiTreePlanTool(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const kind = params["kind"];
+  const ops = params["ops"];
+  if (kind !== "scaffold" && kind !== "reorganize") {
+    return {
+      name: "apply_ai_tree_plan",
+      content: null,
+      summary: "kind must be scaffold or reorganize",
+      tokensUsed: 0,
+      error: "invalid kind",
+    };
+  }
+  if (!Array.isArray(ops)) {
+    return {
+      name: "apply_ai_tree_plan",
+      content: null,
+      summary: "ops must be an array",
+      tokensUsed: 0,
+      error: "invalid ops",
+    };
+  }
+  try {
+    const plan = { kind, ops } as AiTreePlan;
+    const result = await agentApplyTreePlan(plan);
+    const content = result;
+    const json = JSON.stringify(content);
+    return {
+      name: "apply_ai_tree_plan",
+      content,
+      summary: `Applied tree plan: ${result.createdIds.length} created, ${result.movedIds.length} moved, ${result.renamedIds.length} renamed`,
+      tokensUsed: countTokens(json),
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: "apply_ai_tree_plan",
+      content: null,
+      summary: msg,
+      tokensUsed: 0,
+      error: msg,
+    };
+  }
+}
+
 /** Mutating tools — knowledgeWrite / structureWrite / bodyWrite gated per tool. */
 export const MUTATING_EXECUTORS: Record<string, Executor> = {
   create_codex_entry: createCodexEntryTool,
   update_codex_entry: updateCodexEntryTool,
+  create_snippet: createSnippetTool,
+  apply_ai_tree_plan: applyAiTreePlanTool,
 };
 Object.freeze(MUTATING_EXECUTORS);
 

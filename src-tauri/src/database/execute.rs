@@ -66,7 +66,7 @@ impl Database {
         final_result
     }
 
-    fn execute_with_conn(
+    pub(crate) fn execute_with_conn(
         conn: &Connection,
         sql: &str,
         params: &[Value],

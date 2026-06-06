@@ -154,6 +154,48 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     },
   },
 
+  {
+    name: "create_snippet",
+    description:
+      "Create a new Snippet in the current project. Requires knowledgeWrite policy. Returns id and title.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Snippet title" },
+        content: {
+          type: "string",
+          description: "Optional ProseMirror JSON body",
+        },
+        sceneId: {
+          type: "string",
+          description: "Optional scene UUID to associate",
+        },
+      },
+      required: ["title"],
+    },
+  },
+  {
+    name: "apply_ai_tree_plan",
+    description:
+      "Apply a tree scaffold/reorganize plan (create/move/rename ops). Requires structureWrite policy; synopsis fields also require bodyWrite. Max 200 ops. Use temp IDs prefixed with 'tmp:' for new nodes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["scaffold", "reorganize"],
+          description: "Plan kind",
+        },
+        ops: {
+          type: "array",
+          description: "Array of create/move/rename operations",
+          items: { type: "object" },
+        },
+      },
+      required: ["kind", "ops"],
+    },
+  },
+
   // ── Scenes系 ──────────────────────────────────────────────────────────────
   {
     name: "list_chapters",

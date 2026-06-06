@@ -35,7 +35,7 @@ vi.mock("@/features/editor/tabStore", () => ({
   },
 }));
 vi.mock("@/features/timelapse/recorder", () => ({
-  recordChangeEvent: vi.fn(),
+  getRecorderSessionId: vi.fn().mockReturnValue("test-session"),
 }));
 vi.mock("@/store/globalHistoryStore", () => ({
   useGlobalHistoryStore: {
@@ -49,7 +49,6 @@ vi.mock("@/store/globalHistoryStore", () => ({
 }));
 
 import { invoke } from "@/lib/tauri";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 function mkNode(p: {
   id: string;
@@ -98,7 +97,6 @@ const sqlKind = (s: string) => s.trim().slice(0, 6).toLowerCase();
 
 beforeEach(() => {
   (invoke as Mock).mockClear().mockResolvedValue({});
-  (recordChangeEvent as Mock).mockClear();
   h.nodes = [];
   h.reloadImpl = vi.fn().mockResolvedValue(undefined);
   h.closeTab.mockClear();
@@ -235,7 +233,6 @@ describe("applyAiTreePlan — orchestration", () => {
       applyAiTreePlan(bad, ctx({ allowedOps: ["create"] })),
     ).rejects.toBeInstanceOf(AiTreePlanError);
     expect(invoke).not.toHaveBeenCalled();
-    expect(recordChangeEvent).not.toHaveBeenCalled();
     expect(h.pushed).toBeUndefined();
   });
 
@@ -243,13 +240,13 @@ describe("applyAiTreePlan — orchestration", () => {
     setGroupNodes();
     const res = await applyAiTreePlan(groupPlan, ctx());
     expect(invoke).toHaveBeenCalledTimes(1);
-    expect((invoke as Mock).mock.calls[0][0]).toBe("db_execute_batch");
+    expect((invoke as Mock).mock.calls[0][0]).toBe("agent_write_bundle");
     expect(h.reloadImpl).toHaveBeenCalledTimes(1);
-    expect(recordChangeEvent).toHaveBeenCalledTimes(1);
-    const ev = (recordChangeEvent as Mock).mock.calls[0][0];
-    expect(ev.opType).toBe("tree.aiReorganize");
-    expect(ev.payload.source).toBe("ai");
-    expect(ev.payload.movedIds).toEqual(["x1", "x2"]);
+    const bundlePayload = (invoke as Mock).mock.calls[0][1].payload;
+    expect(bundlePayload.changeEvent.opType).toBe("tree.aiReorganize");
+    const payload = JSON.parse(bundlePayload.changeEvent.payload);
+    expect(payload.source).toBe("ai");
+    expect(payload.movedIds).toEqual(["x1", "x2"]);
     expect(res.createdIds).toHaveLength(1);
     expect(h.pushed).toBeDefined();
   });
@@ -276,8 +273,8 @@ describe("applyAiTreePlan — orchestration", () => {
     // resync is best-effort: a post-commit reload failure must NOT reject the apply
     // nor orphan the committed change.
     const res = await applyAiTreePlan(groupPlan, ctx());
-    expect(invoke).toHaveBeenCalledTimes(1); // forward batch committed
-    expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledTimes(1); // forward bundle committed
+    expect((invoke as Mock).mock.calls[0][0]).toBe("agent_write_bundle");
     expect(h.pushed).toBeDefined();
     expect(res.createdIds).toHaveLength(1);
   });
@@ -288,7 +285,6 @@ describe("applyAiTreePlan — orchestration", () => {
     await expect(applyAiTreePlan(groupPlan, ctx())).rejects.toThrow(
       "commit failed",
     );
-    expect(recordChangeEvent).not.toHaveBeenCalled();
     expect(h.pushed).toBeUndefined();
   });
 
@@ -297,7 +293,8 @@ describe("applyAiTreePlan — orchestration", () => {
     h.isReplaying = true;
     await applyAiTreePlan(groupPlan, ctx());
     expect(h.pushed).toBeUndefined();
-    expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect((invoke as Mock).mock.calls[0][0]).toBe("agent_write_bundle");
   });
 
   it("undo tolerates a reload failure after its commit (no throw → no history wipe) [M1]", async () => {
@@ -322,7 +319,8 @@ describe("applyAiTreePlan — orchestration", () => {
     await h.pushed!.undo();
     (invoke as Mock).mockClear();
     await h.pushed!.redo();
-    const redoStmts = (invoke as Mock).mock.calls[0][1].statements as {
+    expect((invoke as Mock).mock.calls[0][0]).toBe("agent_write_bundle");
+    const redoStmts = (invoke as Mock).mock.calls[0][1].payload.statements as {
       sql: string;
       params: unknown[];
     }[];
@@ -335,7 +333,7 @@ describe("applyAiTreePlan — orchestration", () => {
   it("every reported created/moved id is backed by an emitted statement (no phantom ids)", async () => {
     setGroupNodes();
     const res = await applyAiTreePlan(groupPlan, ctx());
-    const stmts = (invoke as Mock).mock.calls[0][1].statements as {
+    const stmts = (invoke as Mock).mock.calls[0][1].payload.statements as {
       params: unknown[];
     }[];
     const allParams = new Set(stmts.flatMap((s) => s.params));

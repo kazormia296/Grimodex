@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::database::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use crate::database::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
-use crate::database::Database;
+use crate::database::{BatchStatement, Database};
 
 use super::{with_db, AppError, WorkspaceState};
 
@@ -381,6 +381,279 @@ fn agent_codex_update_impl(
     })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UndoJournalPayload {
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub op_kind: String,
+    pub before_json: Option<String>,
+    pub after_json: Option<String>,
+    pub base_version: i64,
+    pub result_version: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChangeEventPayload {
+    pub event_uid: String,
+    pub scene_id: Option<String>,
+    pub domain: String,
+    pub op_type: String,
+    pub entity_type: Option<String>,
+    pub entity_id: Option<String>,
+    pub payload: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentWriteBundlePayload {
+    pub project_id: String,
+    pub session_id: String,
+    pub surface: String,
+    pub statements: Vec<BatchStatement>,
+    pub undo_journal: UndoJournalPayload,
+    pub change_event: ChangeEventPayload,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentSnippetCreatePayload {
+    pub project_id: String,
+    pub session_id: String,
+    pub title: String,
+    pub content: Option<String>,
+    pub scene_id: Option<String>,
+    pub source_chat_message_id: Option<String>,
+    pub model: Option<String>,
+    pub chat_message_id: Option<String>,
+    pub trace_id: Option<String>,
+    pub authorship_spans: Vec<AuthorshipSpanInput>,
+}
+
+fn run_statements_in_tx(
+    conn: &rusqlite::Connection,
+    statements: &[BatchStatement],
+) -> anyhow::Result<()> {
+    for stmt in statements {
+        Database::execute_with_conn(conn, &stmt.sql, &stmt.params, &stmt.method)?;
+    }
+    Ok(())
+}
+
+fn replace_snippet_authorship_spans(
+    conn: &rusqlite::Connection,
+    snippet_id: &str,
+    spans: &[AuthorshipSpanInput],
+    model: Option<&str>,
+    chat_msg_id: Option<&str>,
+    trace_id: Option<&str>,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM authorship_spans WHERE snippet_id = ?1",
+        rusqlite::params![snippet_id],
+    )?;
+    let now = chrono::Utc::now().to_rfc3339();
+    for span in spans {
+        let span_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO authorship_spans
+             (id, snippet_id, from_pos, to_pos, source, model, chat_msg_id, trace_id, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                span_id,
+                snippet_id,
+                span.from_pos,
+                span.to_pos,
+                span.source,
+                span.model.as_deref().or(model),
+                span.chat_msg_id.as_deref().or(chat_msg_id),
+                span.trace_id.as_deref().or(trace_id),
+                now,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn agent_write_bundle_impl(
+    db: &Database,
+    payload: AgentWriteBundlePayload,
+) -> anyhow::Result<Value> {
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<AgentWriteResult> {
+            run_statements_in_tx(conn, &payload.statements)?;
+
+            insert_undo_journal_in_tx(
+                conn,
+                UndoJournalInsert {
+                    id: &undo_id,
+                    project_id: &payload.project_id,
+                    surface: &payload.surface,
+                    entity_kind: &payload.undo_journal.entity_kind,
+                    entity_id: &payload.undo_journal.entity_id,
+                    op_kind: &payload.undo_journal.op_kind,
+                    before_json: payload.undo_journal.before_json.as_deref(),
+                    after_json: payload.undo_journal.after_json.as_deref(),
+                    base_version: payload.undo_journal.base_version,
+                    result_version: payload.undo_journal.result_version,
+                    change_event_uid: Some(&payload.change_event.event_uid),
+                },
+            )?;
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: payload.change_event.event_uid.clone(),
+                    scene_id: payload.change_event.scene_id.clone(),
+                    domain: payload.change_event.domain.clone(),
+                    op_type: payload.change_event.op_type.clone(),
+                    entity_type: payload.change_event.entity_type.clone(),
+                    entity_id: payload.change_event.entity_id.clone(),
+                    payload: payload.change_event.payload.clone(),
+                    timestamp: payload.change_event.timestamp,
+                }],
+            )?;
+
+            Ok(AgentWriteResult {
+                entity_id: payload.undo_journal.entity_id.clone(),
+                version: payload.undo_journal.result_version,
+                change_event_uid: payload.change_event.event_uid.clone(),
+                undo_journal_id: undo_id,
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+fn agent_snippet_create_impl(
+    db: &Database,
+    payload: AgentSnippetCreatePayload,
+) -> anyhow::Result<Value> {
+    let snippet_id = uuid::Uuid::new_v4().to_string();
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let content = payload.content.unwrap_or_else(|| "{}".to_string());
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    let after_snapshot = json!({
+        "id": snippet_id,
+        "projectId": payload.project_id,
+        "title": payload.title,
+        "content": content,
+        "sceneId": payload.scene_id,
+        "contentSource": "ai",
+        "version": 1,
+    });
+
+    let change_payload = json!({
+        "title": payload.title,
+        "sceneId": payload.scene_id,
+    });
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<AgentWriteResult> {
+            conn.execute(
+                "INSERT INTO snippets
+                 (id, project_id, title, content, scene_id, content_source,
+                  source_chat_message_id, version, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'ai', ?6, 1, ?7, ?7)",
+                rusqlite::params![
+                    snippet_id,
+                    payload.project_id,
+                    payload.title,
+                    content,
+                    payload.scene_id,
+                    payload.source_chat_message_id,
+                    now,
+                ],
+            )?;
+
+            replace_snippet_authorship_spans(
+                conn,
+                &snippet_id,
+                &payload.authorship_spans,
+                payload.model.as_deref(),
+                payload
+                    .chat_message_id
+                    .as_deref()
+                    .or(payload.source_chat_message_id.as_deref()),
+                payload.trace_id.as_deref(),
+            )?;
+
+            insert_undo_journal_in_tx(
+                conn,
+                UndoJournalInsert {
+                    id: &undo_id,
+                    project_id: &payload.project_id,
+                    surface: "in-app-agent",
+                    entity_kind: "snippet",
+                    entity_id: &snippet_id,
+                    op_kind: "create",
+                    before_json: None,
+                    after_json: Some(&after_snapshot.to_string()),
+                    base_version: 0,
+                    result_version: 1,
+                    change_event_uid: Some(&event_uid),
+                },
+            )?;
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: payload.scene_id.clone(),
+                    domain: "snippet".to_string(),
+                    op_type: "snippet.create".to_string(),
+                    entity_type: Some("snippet".to_string()),
+                    entity_id: Some(snippet_id.clone()),
+                    payload: change_payload.to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(AgentWriteResult {
+                entity_id: snippet_id.clone(),
+                version: 1,
+                change_event_uid: event_uid,
+                undo_journal_id: undo_id,
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
 #[tauri::command]
 pub(crate) fn agent_codex_create(
     ws_state: tauri::State<'_, WorkspaceState>,
@@ -395,4 +668,20 @@ pub(crate) fn agent_codex_update(
     payload: AgentCodexUpdatePayload,
 ) -> Result<Value, AppError> {
     with_db(&ws_state, |db| agent_codex_update_impl(db, payload))
+}
+
+#[tauri::command]
+pub(crate) fn agent_write_bundle(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentWriteBundlePayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_write_bundle_impl(db, payload))
+}
+
+#[tauri::command]
+pub(crate) fn agent_snippet_create(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentSnippetCreatePayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_snippet_create_impl(db, payload))
 }
