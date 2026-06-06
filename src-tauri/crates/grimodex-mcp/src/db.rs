@@ -202,22 +202,24 @@ fn map_tree_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<TreeNode> {
     })
 }
 
-pub fn get_scene_meta(conn: &Connection, scene_id: &str) -> Result<TreeNode> {
+pub fn get_scene_meta(conn: &Connection, project_id: &str, scene_id: &str) -> Result<TreeNode> {
+    // `project_id` でスコープしないと、別プロジェクトの scene_id を渡すだけで
+    // クロスプロジェクト読み取りができてしまう（単一 DB に全プロジェクトを持つため）。
     conn.query_row(
         "SELECT id, project_id, parent_id, node_type, title, synopsis,
                 sort_order, status, created_at, updated_at
-         FROM tree_nodes WHERE id = ?1",
-        params![scene_id],
+         FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+        params![scene_id, project_id],
         map_tree_node,
     )
     .with_context(|| format!("Scene '{scene_id}' not found"))
 }
 
 /// Fetch the raw `content` column (ProseMirror JSON) for a scene.
-pub fn get_scene_content(conn: &Connection, scene_id: &str) -> Result<String> {
+pub fn get_scene_content(conn: &Connection, project_id: &str, scene_id: &str) -> Result<String> {
     conn.query_row(
-        "SELECT content FROM tree_nodes WHERE id = ?1",
-        params![scene_id],
+        "SELECT content FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+        params![scene_id, project_id],
         |row| row.get(0),
     )
     .with_context(|| format!("Scene content for '{scene_id}' not found"))
@@ -304,8 +306,14 @@ fn map_codex_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<CodexEntrySumm
     })
 }
 
-pub fn get_codex_entry_full(conn: &Connection, entry_id: &str) -> Result<CodexEntryFull> {
-    // Main entry
+pub fn get_codex_entry_full(
+    conn: &Connection,
+    project_id: &str,
+    entry_id: &str,
+) -> Result<CodexEntryFull> {
+    // Main entry。`e.project_id` でスコープしないと、別プロジェクトの entry_id を
+    // 渡すだけでクロスプロジェクト読み取りができてしまう。ここで早期 return する
+    // ため、後続の detail_values/phases/tags サブクエリもまとめてゲートされる。
     let summary = conn
         .query_row(
             "SELECT e.id, e.project_id, e.parent_id, COALESCE(ct.slug, e.type) as type_slug,
@@ -314,8 +322,8 @@ pub fn get_codex_entry_full(conn: &Connection, entry_id: &str) -> Result<CodexEn
                     e.children_budget, e.source_chat_message_id
              FROM codex_entries e
              LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
-             WHERE e.id = ?1",
-            params![entry_id],
+             WHERE e.id = ?1 AND e.project_id = ?2",
+            params![entry_id, project_id],
             |row| {
                 Ok((
                     CodexEntrySummary {
@@ -2037,8 +2045,21 @@ mod tests {
         let conn = make_simple_db();
         insert_project(&conn, "p1", "Novel");
         insert_scene(&conn, "s1", "p1", "Prologue", "outline");
-        let node = get_scene_meta(&conn, "s1").unwrap();
+        let node = get_scene_meta(&conn, "p1", "s1").unwrap();
         assert_eq!(node.title, "Prologue");
+    }
+
+    #[test]
+    fn test_get_scene_meta_cross_project_returns_error() {
+        // projA にスコープした接続が projB の scene_id を渡しても読めないこと。
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel A");
+        insert_project(&conn, "p2", "Novel B");
+        insert_scene(&conn, "s1", "p1", "Prologue", "outline");
+        // 正: 自プロジェクトでは読める
+        assert!(get_scene_meta(&conn, "p1", "s1").is_ok());
+        // 負: 別プロジェクトにスコープすると not found
+        assert!(get_scene_meta(&conn, "p2", "s1").is_err());
     }
 
     #[test]
@@ -2086,11 +2107,22 @@ mod tests {
         let conn = make_simple_db();
         insert_project(&conn, "p1", "Novel");
         insert_codex_entry(&conn, "e1", "p1", "Alice", "character");
-        let entry = get_codex_entry_full(&conn, "e1").unwrap();
+        let entry = get_codex_entry_full(&conn, "p1", "e1").unwrap();
         assert_eq!(entry.summary.name, "Alice");
         assert!(entry.detail_values.is_empty());
         assert!(entry.phases.is_empty());
         assert!(entry.tags.is_empty());
+    }
+
+    #[test]
+    fn test_get_codex_entry_full_cross_project_returns_error() {
+        // projA にスコープした接続が projB の entry_id を渡しても読めないこと。
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel A");
+        insert_project(&conn, "p2", "Novel B");
+        insert_codex_entry(&conn, "e1", "p1", "Alice", "character");
+        assert!(get_codex_entry_full(&conn, "p1", "e1").is_ok());
+        assert!(get_codex_entry_full(&conn, "p2", "e1").is_err());
     }
 
     #[test]
@@ -2103,15 +2135,31 @@ mod tests {
             [],
         )
         .unwrap();
-        let content = get_scene_content(&conn, "s1").unwrap();
+        let content = get_scene_content(&conn, "p1", "s1").unwrap();
         assert_eq!(content, "{\"type\":\"doc\"}");
     }
 
     #[test]
     fn test_get_scene_content_not_found() {
         let conn = make_simple_db();
-        let result = get_scene_content(&conn, "no-such-id");
+        let result = get_scene_content(&conn, "p1", "no-such-id");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_scene_content_cross_project_returns_error() {
+        // projA にスコープした接続が projB の scene_id で本文を読めないこと。
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel A");
+        insert_project(&conn, "p2", "Novel B");
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content, status)
+             VALUES ('s1', 'p1', 'scene', 'Prologue', '{\"type\":\"doc\"}', 'draft')",
+            [],
+        )
+        .unwrap();
+        assert!(get_scene_content(&conn, "p1", "s1").is_ok());
+        assert!(get_scene_content(&conn, "p2", "s1").is_err());
     }
 
     // ── Phase 2 tests ────────────────────────────────────────────────────────

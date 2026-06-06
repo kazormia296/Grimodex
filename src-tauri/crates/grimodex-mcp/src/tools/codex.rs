@@ -57,14 +57,14 @@ pub async fn get_codex_entry(
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
     let entries: Vec<CodexEntryFull> = if let Some(id) = &params.entry_id {
-        vec![db::get_codex_entry_full(&conn, id)
+        vec![db::get_codex_entry_full(&conn, &server.project_id, id)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?]
     } else if let Some(name) = &params.name {
         let summaries = db::find_codex_by_name(&conn, &server.project_id, name)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         summaries
             .iter()
-            .filter_map(|s| db::get_codex_entry_full(&conn, &s.id).ok())
+            .filter_map(|s| db::get_codex_entry_full(&conn, &server.project_id, &s.id).ok())
             .collect()
     } else {
         return Err(ErrorData::invalid_params(

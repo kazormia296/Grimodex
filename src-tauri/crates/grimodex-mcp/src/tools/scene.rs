@@ -43,7 +43,7 @@ struct SceneResult {
 }
 
 fn load_scene(conn: &Connection, node: &TreeNode) -> SceneResult {
-    let content = match db::get_scene_content(conn, &node.id) {
+    let content = match db::get_scene_content(conn, &node.project_id, &node.id) {
         Ok(raw) => {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
                 prosemirror_to_markdown(&v)
@@ -76,7 +76,7 @@ pub async fn read_scene(
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
     let nodes: Vec<TreeNode> = if let Some(id) = &params.scene_id {
-        vec![db::get_scene_meta(&conn, id)
+        vec![db::get_scene_meta(&conn, &server.project_id, id)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?]
     } else if let Some(title) = &params.title {
         db::find_scene_by_title(&conn, &server.project_id, title)
@@ -110,7 +110,7 @@ pub async fn read_scenes_batch(
     let nodes: Vec<TreeNode> = if let Some(ids) = &params.scene_ids {
         let ids: Vec<String> = ids.iter().take(50).cloned().collect();
         ids.iter()
-            .filter_map(|id| db::get_scene_meta(&conn, id).ok())
+            .filter_map(|id| db::get_scene_meta(&conn, &server.project_id, id).ok())
             .collect()
     } else {
         let filter = TreeFilter {
