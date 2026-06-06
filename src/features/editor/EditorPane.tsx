@@ -55,6 +55,8 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
 import { getSnippet, updateSnippet } from "@/features/snippets/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
+import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { createRevision } from "@/features/revision/api";
@@ -252,6 +254,9 @@ export function EditorPane({
     0,
   );
   useCharCountMilestone(charCount, targetCharCount, charCountRef);
+  const externalReloadNonce = useExternalWriteStore(
+    (s) => s.reloadNonce[nodeId] ?? 0,
+  );
   const [isDirty, setIsDirty] = useState(false);
   const [isSceneContentLoading, setIsSceneContentLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -1697,6 +1702,7 @@ export function EditorPane({
     isSnippetMode,
     overridePhaseId,
     groupIndex,
+    externalReloadNonce,
   ]);
 
   useEffect(() => {
@@ -1802,6 +1808,7 @@ export function EditorPane({
       {isFileBacked && !isCodexMode && !isSnippetMode && (
         <FileBackedSceneBanner />
       )}
+      <ExternalEditConflictBanner nodeId={nodeId} />
       {isNote && (
         <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
           <span className="font-medium">{t("editor.ribbon.noteEditing")}</span>

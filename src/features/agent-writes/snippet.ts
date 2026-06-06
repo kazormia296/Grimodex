@@ -5,7 +5,6 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { deleteSnippet } from "@/features/snippets/api";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { aiAuthorshipAttrs } from "@/features/attribution/aiAuthorship";
 import {
   extractAiSpansFromPmJson,
   type AgentAuthorshipSpanInput,
@@ -81,7 +80,7 @@ export async function agentCreateSnippet(
   if (!useGlobalHistoryStore.getState().isReplaying) {
     const captured = { ...entry };
     useGlobalHistoryStore.getState().push({
-      kind: "snippet",
+      kind: "snippets",
       label: "Agent: Snippet作成",
       async undo() {
         await deleteSnippet(projectId, captured.id);

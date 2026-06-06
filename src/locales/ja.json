@@ -2575,6 +2575,11 @@
       }
     }
   },
+  "externalWrite": {
+    "conflictBody": "別の AI セッションまたは MCP がこのコンテンツを変更しました。再読み込みするか、編集中の内容を保持してください。",
+    "keepMine": "編集中の内容を保持",
+    "reload": "DB から再読み込み"
+  },
   "externalMount": {
     "title": "外部 MD ルート",
     "description": "Markdown ファイルのフォルダをマウントします。ファイルと双方向同期し、Git 管理は外部で行います。",

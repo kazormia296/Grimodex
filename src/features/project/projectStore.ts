@@ -68,6 +68,18 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
 
   loadProject: async (projectId) => {
     const previousId = get().currentProjectId;
+    if (
+      typeof window !== "undefined" &&
+      !(
+        typeof import.meta !== "undefined" &&
+        (import.meta as { vitest?: boolean }).vitest
+      ) &&
+      !(typeof process !== "undefined" && process.env?.VITEST)
+    ) {
+      const { stopExternalWriteFeed } =
+        await import("@/features/concurrency/externalWriteFeed");
+      stopExternalWriteFeed();
+    }
     // reloadProjectData 内の各ストアは getCurrentProjectId() を読むため、
     // 再ロード前に currentProjectId を確定させておく必要がある。
     set({ currentProjectId: projectId });
@@ -121,6 +133,21 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           }
         })().catch((err) =>
           console.warn("[timelapse] recorder init failed", err),
+        );
+      }
+      if (
+        typeof window !== "undefined" &&
+        !(
+          typeof import.meta !== "undefined" &&
+          (import.meta as { vitest?: boolean }).vitest
+        ) &&
+        !(typeof process !== "undefined" && process.env?.VITEST)
+      ) {
+        void import("@/features/concurrency/externalWriteFeed").then(
+          ({ startExternalWriteFeed }) =>
+            startExternalWriteFeed(projectId).catch((err) =>
+              console.warn("[externalWriteFeed] start failed", err),
+            ),
         );
       }
     } catch (e) {
