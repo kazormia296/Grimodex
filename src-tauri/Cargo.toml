@@ -57,7 +57,7 @@ grimodex-core = { path = "crates/grimodex-core" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
-dirs = "5"
+dirs = "6"
 # 本文セマンティック検索 (temp/semantic-prose-search-context.md §2.3)。
 # ort: ONNX Runtime バインディング。download-binaries で初回ビルド時に prebuilt ORT を取得する。
 # tokenizers: HuggingFace tokenizers (ruri-v3 ONNX に同梱の tokenizer.json をロード)。
