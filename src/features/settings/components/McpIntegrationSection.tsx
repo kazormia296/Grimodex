@@ -19,23 +19,26 @@ interface McpConfigInfo {
  * doubles as the MCP server (`Grimodex mcp …`), so the snippet's `command`
  * is the OS-specific absolute path resolved by the `get_mcp_config` command.
  *
- * Two buttons rather than a toggle: each button *is* a concrete copy action
- * (it changes only the copied text), so neither implies a persistent app-mode
- * change. "This project" is the safe pinned default; "All projects" emits
- * `--all-projects` for local/trusted clients (whole-DB scope).
+ * Each button *is* a concrete copy action (changes only the copied text), so
+ * none implies a persistent app-mode change. Two axes:
+ * - scope (row): "this project" (pinned, `--project`) vs "all projects"
+ *   (`--all-projects`, whole-DB scope, local/trusted only).
+ * - write permission (button): "read-only" (`--readonly`, cloud-safe) vs
+ *   "per policy" (no `--readonly`; writes governed by the project's AI policy
+ *   `knowledgeWrite`/`bodyWrite`, same as the in-app AI).
  */
 export function McpIntegrationSection() {
   const { t } = useTranslation();
   const workspaceOpen = useWorkspaceStore((s) => s.activeWorkspacePath != null);
 
-  async function handleCopy(allProjects: boolean) {
+  async function handleCopy(allProjects: boolean, readonly: boolean) {
     try {
       const info = await invoke<McpConfigInfo>("get_mcp_config");
       const json = buildMcpConfigJson({
         command: info.command,
         workspace: info.workspace,
         projectId: getCurrentProjectId(),
-        readonly: true,
+        readonly,
         allProjects,
       });
       await navigator.clipboard.writeText(json);
@@ -48,33 +51,47 @@ export function McpIntegrationSection() {
   const buttonClass =
     "inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50";
 
+  const copyButtons = (allProjects: boolean) => (
+    <div className="flex flex-shrink-0 gap-2">
+      <button
+        type="button"
+        disabled={!workspaceOpen}
+        className={buttonClass}
+        onClick={() => handleCopy(allProjects, true)}
+      >
+        <Copy className="h-3.5 w-3.5" />
+        {t("settings.ai.mcp.copyReadonly")}
+      </button>
+      <button
+        type="button"
+        disabled={!workspaceOpen}
+        className={buttonClass}
+        onClick={() => handleCopy(allProjects, false)}
+      >
+        <Copy className="h-3.5 w-3.5" />
+        {t("settings.ai.mcp.copyPolicy")}
+      </button>
+    </div>
+  );
+
   return (
     <SettingSection title={t("settings.ai.mcp.title")}>
+      <p className="mb-3 text-xs text-muted-foreground">
+        {t("settings.ai.mcp.description")}
+      </p>
       <SettingRow
-        label={t("settings.ai.mcp.label")}
-        description={t("settings.ai.mcp.description")}
+        label={t("settings.ai.mcp.scopeProject")}
+        description={t("settings.ai.mcp.scopeProjectDesc")}
         disabled={!workspaceOpen}
       >
-        <div className="flex flex-shrink-0 gap-2">
-          <button
-            type="button"
-            disabled={!workspaceOpen}
-            className={buttonClass}
-            onClick={() => handleCopy(false)}
-          >
-            <Copy className="h-3.5 w-3.5" />
-            {t("settings.ai.mcp.copyProject")}
-          </button>
-          <button
-            type="button"
-            disabled={!workspaceOpen}
-            className={buttonClass}
-            onClick={() => handleCopy(true)}
-          >
-            <Copy className="h-3.5 w-3.5" />
-            {t("settings.ai.mcp.copyAllProjects")}
-          </button>
-        </div>
+        {copyButtons(false)}
+      </SettingRow>
+      <SettingRow
+        label={t("settings.ai.mcp.scopeAll")}
+        description={t("settings.ai.mcp.scopeAllDesc")}
+        disabled={!workspaceOpen}
+      >
+        {copyButtons(true)}
       </SettingRow>
     </SettingSection>
   );

@@ -281,11 +281,14 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 
 ## 29. MCP 連携（本体バイナリ統一）
 
-- [ ] 設定 → AI → **MCP 連携** に「MCP 設定をコピー」ボタンが表示される
+- [ ] 設定 → AI → **MCP 連携** に「この作品 / 全作品（ローカル用）」× 「読み取り専用 / ポリシー準拠」の
+      コピーボタンが表示される（トグルではなく各ボタン＝即時コピー）
 - [ ] ワークスペース未 open 時はボタンが disabled、open 時は有効
-- [ ] ボタン押下で `.mcp.json` がクリップボードへ。`command` が実 spawn 可能な本体パス
+- [ ] 「この作品・読み取り専用」押下で `.mcp.json` がクリップボードへ。`command` が実 spawn 可能な本体パス
       （macOS は `…/Contents/MacOS/Grimodex`、Linux AppImage は `$APPIMAGE` の元ファイル）、
       `args` が `["mcp","--workspace","<dir>","--project","<現在のID>","--readonly"]`
+- [ ] 「ポリシー準拠」押下では `--readonly` が**付かない**（書込は AI ポリシーに委譲）。
+      「全作品」押下では `--project` の代わりに `--all-projects` が入る
 - [ ] **統合パス（本体経由）**: `Grimodex mcp --workspace <ws> --readonly`（dev は
       `cargo run -- mcp …`）で stdio に `initialize` + `tools/list` を流し、現状 25 ツールが返る
       （プロジェクト管理 2 + read 19 + write 4）。GUI ウィンドウは開かない

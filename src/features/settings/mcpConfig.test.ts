@@ -69,4 +69,19 @@ describe("buildMcpConfigJson", () => {
     expect(args).not.toContain("--project");
     expect(args).toContain("--readonly");
   });
+
+  it("all-projects + per-policy: --all-projects, no --project, no --readonly", () => {
+    const args = JSON.parse(
+      buildMcpConfigJson({
+        command: "grimodex",
+        workspace: "/ws",
+        projectId: "proj-123",
+        allProjects: true,
+        readonly: false,
+      }),
+    ).mcpServers.grimodex.args;
+    expect(args).toContain("--all-projects");
+    expect(args).not.toContain("--project");
+    expect(args).not.toContain("--readonly");
+  });
 });

@@ -295,10 +295,13 @@
     "ai": {
       "mcp": {
         "title": "MCP 連携",
-        "label": "MCP 設定をコピー",
-        "description": "Claude Code / Hermes Agent などの外部 MCP クライアント用の .mcp.json をクリップボードにコピーします（本体バイナリを MCP サーバとして起動）。「この作品」は現在の作品のみ。「全作品」は select_project で全作品を切替できますが接続スコープが DB 全体に広がるため、ローカル/信頼クライアント専用です。",
-        "copyProject": "この作品",
-        "copyAllProjects": "全作品（ローカル用）",
+        "description": "Claude Code / Hermes Agent などの外部 MCP クライアント用の .mcp.json をクリップボードにコピーします（本体バイナリを MCP サーバとして起動）。スコープと書き込み権限を選んでコピーしてください。「読み取り専用」は --readonly 付きでクラウド向けの安全な既定。「ポリシー準拠」は --readonly を付けず、書き込みを各プロジェクトの AI ポリシー（knowledgeWrite/bodyWrite）に委ねます（ローカル/信頼クライアント向け）。",
+        "scopeProject": "この作品",
+        "scopeProjectDesc": "現在の作品のみ（--project で固定）",
+        "scopeAll": "全作品（ローカル用）",
+        "scopeAllDesc": "全プロジェクト。select_project で切替・接続スコープが DB 全体に広がるためローカル/信頼クライアント専用（--all-projects）",
+        "copyReadonly": "読み取り専用",
+        "copyPolicy": "ポリシー準拠（書込可）",
         "copySuccess": ".mcp.json をクリップボードにコピーしました",
         "copyFail": "MCP 設定の取得に失敗しました（ワークスペースが開かれていない可能性があります）"
       },

@@ -295,10 +295,13 @@
     "ai": {
       "mcp": {
         "title": "MCP Integration",
-        "label": "Copy MCP config",
-        "description": "Copy a .mcp.json to the clipboard for external MCP clients (Claude Code / Hermes Agent); the app binary runs as the MCP server. \"This project\" scopes to the current project. \"All projects\" can switch between every project via select_project, but widens the connection to the whole DB — local/trusted clients only.",
-        "copyProject": "This project",
-        "copyAllProjects": "All projects (local)",
+        "description": "Copy a .mcp.json to the clipboard for external MCP clients (Claude Code / Hermes Agent); the app binary runs as the MCP server. Pick a scope and write permission. \"Read-only\" adds --readonly (cloud-safe default). \"Per policy\" omits --readonly, leaving writes governed by the project's AI policy (knowledgeWrite/bodyWrite) — for local/trusted clients.",
+        "scopeProject": "This project",
+        "scopeProjectDesc": "Current project only (pinned via --project)",
+        "scopeAll": "All projects (local)",
+        "scopeAllDesc": "All projects. Switch via select_project; widens the connection to the whole DB, so local/trusted clients only (--all-projects)",
+        "copyReadonly": "Read-only",
+        "copyPolicy": "Per policy (writable)",
         "copySuccess": ".mcp.json copied to clipboard",
         "copyFail": "Failed to get MCP config (is a workspace open?)"
       },
