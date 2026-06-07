@@ -916,7 +916,7 @@ OS 別の本体バイナリパス（`command` に指定する spawn 対象）:
 | Linux (deb/rpm) | `/usr/bin/grimodex` |
 | Linux (AppImage) | AppImage ファイル自体（`Grimodex_x.y.z.AppImage`） |
 
-> アプリ内（設定 → データ → MCP 連携）の **「MCP 設定をコピー」** ボタンが、
+> アプリ内（設定 → AI → MCP 連携）の **「MCP 設定をコピー」** ボタンが、
 > 実行中の本体パス（`current_exe()` / AppImage は `$APPIMAGE`）と現在のワークスペース・
 > プロジェクト ID を埋めた `.mcp.json` をクリップボードへ出力する。手動でパスを
 > 探すより確実。

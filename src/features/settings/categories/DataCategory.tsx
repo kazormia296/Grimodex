@@ -13,7 +13,6 @@ import { SettingSlider } from "../components/SettingSlider";
 import { exportCodexJson } from "../exportUtils";
 import { IntegrityCheckSection } from "@/features/workspace/IntegrityCheckDialog";
 import { MountListDialog } from "@/features/external-mount/components/MountListDialog";
-import { McpIntegrationSection } from "../components/McpIntegrationSection";
 import {
   enqueueRescan,
   useRescanStore,
@@ -353,7 +352,6 @@ export function DataCategory() {
         <IntegrityCheckSection />
       </SettingSection>
 
-      <McpIntegrationSection />
       <MountListDialog
         open={mountDialogOpen}
         onClose={() => setMountDialogOpen(false)}

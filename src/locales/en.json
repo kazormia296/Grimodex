@@ -293,6 +293,15 @@
       "linearBeatDisplayHidden": "Hidden"
     },
     "ai": {
+      "mcp": {
+        "title": "MCP Integration",
+        "label": "Copy MCP config",
+        "description": "Copy a .mcp.json to the clipboard for external MCP clients (Claude Code / Hermes Agent); the app binary runs as the MCP server. \"This project\" scopes to the current project. \"All projects\" can switch between every project via select_project, but widens the connection to the whole DB — local/trusted clients only.",
+        "copyProject": "This project",
+        "copyAllProjects": "All projects (local)",
+        "copySuccess": ".mcp.json copied to clipboard",
+        "copyFail": "Failed to get MCP config (is a workspace open?)"
+      },
       "provider": "Provider",
       "ollamaLocal": "Ollama (local)",
       "endpoint": "Endpoint",
@@ -508,14 +517,6 @@
       "deleteProjectDesc": "This action cannot be undone",
       "deleteProjectNotImpl": "Not implemented (cancel)",
       "integrityCheck": "Integrity Check",
-      "mcp": {
-        "title": "MCP Integration",
-        "label": "Copy MCP config",
-        "description": "Copy a .mcp.json for external MCP clients (Claude Code / Hermes Agent). The app binary runs as the MCP server.",
-        "copy": "Copy",
-        "copySuccess": ".mcp.json copied to clipboard",
-        "copyFail": "Failed to get MCP config (is a workspace open?)"
-      },
       "ftsSuccess": "FTS index rebuilt",
       "ftsFail": "FTS rebuild failed",
       "vacuumSuccess": "Database optimized",

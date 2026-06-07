@@ -54,4 +54,19 @@ describe("buildMcpConfigJson", () => {
       expect(parsed.mcpServers.grimodex.args).not.toContain("--project");
     }
   });
+
+  it("emits --all-projects and drops --project when allProjects is set", () => {
+    const parsed = JSON.parse(
+      buildMcpConfigJson({
+        command: "grimodex",
+        workspace: "/ws",
+        projectId: "proj-123",
+        allProjects: true,
+      }),
+    );
+    const args = parsed.mcpServers.grimodex.args;
+    expect(args).toContain("--all-projects");
+    expect(args).not.toContain("--project");
+    expect(args).toContain("--readonly");
+  });
 });

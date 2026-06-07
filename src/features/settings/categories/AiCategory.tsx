@@ -29,6 +29,7 @@ import {
   resolveAinoveristApiVariant,
 } from "@/features/chat/aiNovelist";
 import { SettingSection } from "../components/SettingSection";
+import { McpIntegrationSection } from "../components/McpIntegrationSection";
 import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
@@ -1378,6 +1379,8 @@ export function AiCategory() {
           })}
         </div>
       </SettingSection>
+
+      <McpIntegrationSection />
     </div>
   );
 }

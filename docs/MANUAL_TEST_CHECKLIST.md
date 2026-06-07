@@ -281,7 +281,7 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 
 ## 29. MCP 連携（本体バイナリ統一）
 
-- [ ] 設定 → データ → **MCP 連携** に「MCP 設定をコピー」ボタンが表示される
+- [ ] 設定 → AI → **MCP 連携** に「MCP 設定をコピー」ボタンが表示される
 - [ ] ワークスペース未 open 時はボタンが disabled、open 時は有効
 - [ ] ボタン押下で `.mcp.json` がクリップボードへ。`command` が実 spawn 可能な本体パス
       （macOS は `…/Contents/MacOS/Grimodex`、Linux AppImage は `$APPIMAGE` の元ファイル）、

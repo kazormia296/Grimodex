@@ -13,11 +13,18 @@ export interface McpConfigParams {
   workspace: string;
   /**
    * Current project id. Pinning `--project` avoids the server falling back to
-   * the first project in a multi-project workspace. Omitted when falsy.
+   * the first project in a multi-project workspace. Omitted when falsy or when
+   * `allProjects` is set.
    */
   projectId?: string | null;
   /** Add `--readonly` (cloud-safe default: disables the write tools). */
   readonly?: boolean;
+  /**
+   * Emit `--all-projects` instead of pinning `--project`: one entry that can
+   * switch between every project via `select_project`. Widens scope to the
+   * whole DB — local/trusted clients only. Takes precedence over `projectId`.
+   */
+  allProjects?: boolean;
 }
 
 export function buildMcpConfigJson({
@@ -25,9 +32,12 @@ export function buildMcpConfigJson({
   workspace,
   projectId,
   readonly = true,
+  allProjects = false,
 }: McpConfigParams): string {
   const args = ["mcp", "--workspace", workspace];
-  if (projectId) {
+  if (allProjects) {
+    args.push("--all-projects");
+  } else if (projectId) {
     args.push("--project", projectId);
   }
   if (readonly) {
