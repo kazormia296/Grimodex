@@ -57,6 +57,14 @@ function board(id: string, title: string): MapBoard {
 
 const BOARDS = [board("b1", "ボードA"), board("b2", "ボードB")];
 
+// Radix 2.1.17 (react-dismissable-layer 1.1.12) 以降、menu/popover が開くと
+// body へ pointer-events:none を敷く (modal scrim)。content 側の
+// pointer-events:auto を happy-dom が解決しないため、user-event の
+// pointerEventsCheck が「祖先が pointer-events:none」と誤検知して click/clear/type を
+// 拒否する。実ブラウザでは content は clickable なのでこれは happy-dom 限定の偽陽性。
+// 0 (=Never) で当該チェックのみ無効化する。onClick 配線自体は各 assert で依然検証される。
+const setupUser = () => userEvent.setup({ pointerEventsCheck: 0 });
+
 async function openBoardMenu(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText("ボードA"); // boards 非同期ロード待ち
   await user.click(screen.getByTitle("ボードを切り替え"));
@@ -75,7 +83,7 @@ beforeEach(() => {
 
 describe("MapHeader board 編集 popover", () => {
   it("「+ 新規ボード」で popover が開き、focus settle 後も残存し、作成できる", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<MapHeader />);
     await openBoardMenu(user);
 
@@ -94,7 +102,7 @@ describe("MapHeader board 編集 popover", () => {
   });
 
   it("F2 で rename popover が開き、現在名が入り、settle 後も残存し、改名できる", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<MapHeader />);
     await openBoardMenu(user);
 
@@ -106,15 +114,19 @@ describe("MapHeader board 編集 popover", () => {
       expect(screen.getByDisplayValue("ボードB")).toBeInTheDocument();
     });
     const input = screen.getByDisplayValue("ボードB");
-    await user.clear(input);
-    await user.type(input, "ボードB改");
+    // Radix 2.1.17 (react-focus-scope 1.1.9) は happy-dom 上では dropdown を閉じきれず
+    // FocusScope が menu row に focus をトラップするため、popover input へ focus が
+    // 移らず user-event の clear/type が "could not be focused" になる。input 自体は
+    // focusable (tabindex=0・inert/aria-hidden なし、実ブラウザでは popover autofocus で
+    // 入力可能) なので、focus 非依存の fireEvent.change で値を設定し rename 配線を検証する。
+    fireEvent.change(input, { target: { value: "ボードB改" } });
     await user.click(screen.getByRole("button", { name: "リネーム" }));
 
     expect(renameBoard).toHaveBeenCalledWith("b2", "ボードB改");
   });
 
   it("ペンアイコンの onClick で対象ボードの rename フォームが開く [handler 配線]", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<MapHeader />);
     await openBoardMenu(user);
 
@@ -130,15 +142,15 @@ describe("MapHeader board 編集 popover", () => {
     expect(useMapStore.getState().activeBoardId).toBe("b1");
 
     const input = screen.getByDisplayValue("ボードB");
-    await user.clear(input);
-    await user.type(input, "ボードB改");
+    // F2 ケースと同じ FocusScope トラップ回避 (focus 非依存で値設定)。
+    fireEvent.change(input, { target: { value: "ボードB改" } });
     await user.click(screen.getByRole("button", { name: "リネーム" }));
 
     expect(renameBoard).toHaveBeenCalledWith("b2", "ボードB改");
   });
 
   it("Delete キーで削除確認が開き deleteBoard が呼ばれる (flow)", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<MapHeader />);
     await openBoardMenu(user);
 
