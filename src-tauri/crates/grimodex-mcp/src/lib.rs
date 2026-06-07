@@ -18,6 +18,11 @@ pub struct Cli {
     pub project: Option<String>,
     #[arg(long, help = "Read-only mode (disables write tools)")]
     pub readonly: bool,
+    #[arg(
+        long,
+        help = "Allow switching between all projects in the workspace via select_project (local/trusted clients only; widens scope to the whole DB)"
+    )]
+    pub all_projects: bool,
     #[arg(long, help = "Enable verbose logging")]
     pub verbose: bool,
 }
@@ -66,7 +71,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         readonly = true;
     }
 
-    // Resolve project_id
+    // Resolve the initial project. In --all-projects mode this is just the
+    // starting "current" project (the agent can switch via select_project);
+    // --project is honored as the initial selection when given.
     let project_id = match cli.project {
         Some(id) => id,
         None => db::get_first_project_id(&conn)?,
@@ -79,13 +86,21 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         project_id = %project_id,
         workspace = %cli.workspace.display(),
         readonly,
+        all_projects = cli.all_projects,
         session_id = %session_id,
         knowledge_write = policy.knowledge_write,
         "Starting Grimodex MCP server"
     );
 
     // Build and run server
-    let handler = server::GrimodexServer::new(conn, project_id, readonly, session_id, policy);
+    let handler = server::GrimodexServer::new(
+        conn,
+        project_id,
+        cli.all_projects,
+        readonly,
+        session_id,
+        policy,
+    );
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let service = rmcp::serve_server(handler, (stdin, stdout)).await?;
     service.waiting().await?;

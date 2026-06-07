@@ -41,7 +41,7 @@ pub async fn list_snippets(
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-    let raw = db::list_snippets(&conn, &server.project_id, params.tag.as_deref(), limit)
+    let raw = db::list_snippets(&conn, &server.project_id(), params.tag.as_deref(), limit)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
     drop(conn);
@@ -140,7 +140,7 @@ pub async fn create_snippet(
     grimodex_core::writes::snippet::tracked_snippet_create(
         &conn,
         grimodex_core::writes::snippet::TrackedSnippetCreateInput {
-            project_id: &server.project_id,
+            project_id: &server.project_id(),
             session_id: &server.session_id,
             surface: "mcp",
             snippet_id: &snippet_id,

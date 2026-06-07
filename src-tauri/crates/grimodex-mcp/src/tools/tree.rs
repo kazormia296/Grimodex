@@ -40,7 +40,7 @@ pub async fn list_tree(
         node_type: params.node_type,
         status: params.status,
     };
-    let nodes = db::list_tree_nodes(&conn, &server.project_id, &filter)
+    let nodes = db::list_tree_nodes(&conn, &server.project_id(), &filter)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
     // Build hierarchy (only makes sense when not filtering by type/status)
@@ -57,7 +57,7 @@ pub async fn get_chapter_summaries(server: &GrimodexServer) -> Result<CallToolRe
         .conn
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let summaries = db::get_chapter_summaries(&conn, &server.project_id)
+    let summaries = db::get_chapter_summaries(&conn, &server.project_id())
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let json = serde_json::to_string_pretty(&summaries)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;

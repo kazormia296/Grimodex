@@ -11,7 +11,15 @@ use crate::tools;
 
 pub struct GrimodexServer {
     pub conn: Mutex<Connection>,
-    pub project_id: String,
+    /// The project all tools currently scope to. Mutable so `--all-projects`
+    /// mode can switch it via `select_project`. In pinned mode (the default)
+    /// it never changes — `select_project` is rejected — so the per-connection
+    /// least-privilege scope (XPROJ defense) is preserved.
+    current_project: Mutex<String>,
+    /// When true, `select_project` is allowed and `list_projects` enumerates
+    /// the whole DB. Opt-in via `--all-projects` for local/trusted clients;
+    /// widens the connection to every project in the workspace.
+    pub all_projects: bool,
     pub readonly: bool,
     pub session_id: String,
     /// Startup snapshot only; mutating tools call `reload_policy()`.
@@ -23,32 +31,75 @@ impl GrimodexServer {
     pub fn new(
         conn: Connection,
         project_id: String,
+        all_projects: bool,
         readonly: bool,
         session_id: String,
         policy: grimodex_core::policy::AiPolicyToggles,
     ) -> Self {
         Self {
             conn: Mutex::new(conn),
-            project_id,
+            current_project: Mutex::new(project_id),
+            all_projects,
             readonly,
             session_id,
             policy,
         }
     }
 
-    /// Reload policy from DB on each mutating tool call (in-app toggles take effect).
+    /// The project id all tools currently scope to. Single source of truth —
+    /// every tool reads this instead of a fixed field, so a `select_project`
+    /// switch (all-projects mode) is picked up everywhere, and the scoping in
+    /// `db.rs` stays exactly as hardened. Recovers a poisoned lock rather than
+    /// panicking (`unwrap()` is banned).
+    pub fn project_id(&self) -> String {
+        self.current_project
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|poison| poison.into_inner().clone())
+    }
+
+    /// Switch the current project (all-projects mode only — callers must gate).
+    pub fn set_current_project(&self, project_id: String) {
+        match self.current_project.lock() {
+            Ok(mut g) => *g = project_id,
+            Err(poison) => *poison.into_inner() = project_id,
+        }
+    }
+
+    /// Reload policy from DB on each mutating tool call (in-app toggles take
+    /// effect). Reads the *current* project so write-gating follows
+    /// `select_project` in all-projects mode (not the startup project).
     pub fn reload_policy(&self) -> Result<grimodex_core::policy::AiPolicyToggles, ErrorData> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        grimodex_core::policy::load_policy(&conn, &self.project_id)
+        grimodex_core::policy::load_policy(&conn, &self.project_id())
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))
     }
 }
 
 #[tool_router]
 impl GrimodexServer {
+    /// List projects in the workspace. In pinned mode returns only the bound project.
+    #[tool(
+        description = "List projects in this workspace (id, title). In the default pinned mode only the single bound project is returned; with --all-projects every project is listed. Use select_project to switch the active project."
+    )]
+    async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
+        tools::project::list_projects(self).await
+    }
+
+    /// Switch the active project (requires --all-projects). Rejected in pinned mode.
+    #[tool(
+        description = "Switch the active project that subsequent tools scope to. Requires the server to be started with --all-projects; otherwise rejected (the connection is pinned to one project). The project_id must exist in this workspace."
+    )]
+    async fn select_project(
+        &self,
+        params: Parameters<tools::project::SelectProjectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::project::select_project(self, params.0).await
+    }
+
     /// Get basic project information (title, genre, language, etc.)
     #[tool(description = "Get basic project information (title, genre, language, etc.)")]
     async fn get_project(&self) -> Result<CallToolResult, ErrorData> {

@@ -22,6 +22,12 @@ pub struct Project {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectSummary {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TreeNode {
     pub id: String,
     pub project_id: String,
@@ -126,6 +132,35 @@ pub fn get_first_project_id(conn: &Connection) -> Result<String> {
         |row| row.get(0),
     )
     .context("No projects found in database")
+}
+
+/// All projects (id + title) in the workspace, oldest first. Backs
+/// `list_projects` in --all-projects mode.
+pub fn list_all_projects(conn: &Connection) -> Result<Vec<ProjectSummary>> {
+    let mut stmt = conn.prepare("SELECT id, title FROM projects ORDER BY created_at")?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ProjectSummary {
+                id: row.get(0)?,
+                title: row.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Title of a project by id, or `None` if no such project exists. Used by
+/// `select_project` to validate the target before switching the current project.
+pub fn fetch_project_title(conn: &Connection, project_id: &str) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    let title = conn
+        .query_row(
+            "SELECT title FROM projects WHERE id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(title)
 }
 
 // ─── Queries ──────────────────────────────────────────────────────────────────
@@ -2631,5 +2666,28 @@ mod tests {
             detail.payoff_scene.as_ref().map(|p| p.title.as_str()),
             Some("Payoff Scene")
         );
+    }
+
+    #[test]
+    fn test_list_all_projects_returns_all() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel A");
+        insert_project(&conn, "p2", "Novel B");
+        let projs = list_all_projects(&conn).unwrap();
+        assert_eq!(projs.len(), 2);
+        let titles: Vec<&str> = projs.iter().map(|p| p.title.as_str()).collect();
+        assert!(titles.contains(&"Novel A"));
+        assert!(titles.contains(&"Novel B"));
+    }
+
+    #[test]
+    fn test_fetch_project_title_some_and_none() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel A");
+        assert_eq!(
+            fetch_project_title(&conn, "p1").unwrap().as_deref(),
+            Some("Novel A")
+        );
+        assert_eq!(fetch_project_title(&conn, "missing").unwrap(), None);
     }
 }

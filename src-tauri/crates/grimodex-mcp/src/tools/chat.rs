@@ -35,7 +35,7 @@ pub async fn list_chat_sessions(
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-    let sessions = db::list_chat_sessions(&conn, &server.project_id, params.node_id.as_deref())
+    let sessions = db::list_chat_sessions(&conn, &server.project_id(), params.node_id.as_deref())
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
     let json = serde_json::to_string_pretty(&sessions)

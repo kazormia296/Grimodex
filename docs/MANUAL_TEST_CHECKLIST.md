@@ -287,8 +287,13 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
       （macOS は `…/Contents/MacOS/Grimodex`、Linux AppImage は `$APPIMAGE` の元ファイル）、
       `args` が `["mcp","--workspace","<dir>","--project","<現在のID>","--readonly"]`
 - [ ] **統合パス（本体経由）**: `Grimodex mcp --workspace <ws> --readonly`（dev は
-      `cargo run -- mcp …`）で stdio に `initialize` + `tools/list` を流し、現状 23 ツールが返る。
-      GUI ウィンドウは開かない
+      `cargo run -- mcp …`）で stdio に `initialize` + `tools/list` を流し、現状 25 ツールが返る
+      （プロジェクト管理 2 + read 19 + write 4）。GUI ウィンドウは開かない
+- [ ] **プロジェクトスコープ（既定=pinned）**: `list_projects` が **bound 1 件のみ**返す。
+      `select_project` を呼ぶと「pinned… start with --all-projects」エラー（他作品の id/title を漏らさない）
+- [ ] **`--all-projects`（ローカル/信頼用）**: 付けて起動すると `list_projects` が全作品を列挙、
+      `select_project(<別id>)` で切替成功。切替後に当該プロジェクトの read-by-id が読める。
+      存在しない id は not found。クラウド用途では付けない（付けるなら `--readonly` 併用）
 - [ ] **残置 standalone bin**: `cargo run -p grimodex-mcp -- --workspace <ws> --readonly` が
       従来どおり動く（repo-root `.mcp.json` の dev 設定も）
 - [ ] **write gate**: `--readonly` 時に write 2 ツール（create/update_codex_entry 等）がエラー応答

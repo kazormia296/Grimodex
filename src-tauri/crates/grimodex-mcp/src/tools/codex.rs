@@ -38,7 +38,7 @@ pub async fn list_codex_entries(
         type_slug: params.type_slug,
         tag: params.tag,
     };
-    let entries = db::list_codex_entries(&conn, &server.project_id, &filter)
+    let entries = db::list_codex_entries(&conn, &server.project_id(), &filter)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let json = serde_json::to_string_pretty(&entries)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -57,14 +57,14 @@ pub async fn get_codex_entry(
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
     let entries: Vec<CodexEntryFull> = if let Some(id) = &params.entry_id {
-        vec![db::get_codex_entry_full(&conn, &server.project_id, id)
+        vec![db::get_codex_entry_full(&conn, &server.project_id(), id)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?]
     } else if let Some(name) = &params.name {
-        let summaries = db::find_codex_by_name(&conn, &server.project_id, name)
+        let summaries = db::find_codex_by_name(&conn, &server.project_id(), name)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         summaries
             .iter()
-            .filter_map(|s| db::get_codex_entry_full(&conn, &server.project_id, &s.id).ok())
+            .filter_map(|s| db::get_codex_entry_full(&conn, &server.project_id(), &s.id).ok())
             .collect()
     } else {
         return Err(ErrorData::invalid_params(
@@ -113,7 +113,7 @@ pub async fn list_codex_tags(
         .conn
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let tags = db::list_codex_tags(&conn, &server.project_id, params.type_filter.as_deref())
+    let tags = db::list_codex_tags(&conn, &server.project_id(), params.type_filter.as_deref())
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let json = serde_json::to_string_pretty(&tags)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -136,7 +136,7 @@ pub async fn search_codex_by_tags(
         .conn
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let entries = db::search_codex_by_tags(&conn, &server.project_id, &params.tags)
+    let entries = db::search_codex_by_tags(&conn, &server.project_id(), &params.tags)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let json = serde_json::to_string_pretty(&entries)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -171,7 +171,7 @@ pub async fn find_related_entries(
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let entries =
-        db::find_related_entries(&conn, &server.project_id, id, params.type_filter.as_deref())
+        db::find_related_entries(&conn, &server.project_id(), id, params.type_filter.as_deref())
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let json = serde_json::to_string_pretty(&entries)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -294,7 +294,7 @@ pub async fn create_codex_entry(
     grimodex_core::writes::codex::tracked_codex_create(
         &conn,
         grimodex_core::writes::codex::TrackedCodexCreateInput {
-            project_id: &server.project_id,
+            project_id: &server.project_id(),
             session_id: &server.session_id,
             surface: "mcp",
             entry_id: &new_id,
@@ -405,7 +405,7 @@ pub async fn update_codex_entry(
     let base_version: i64 = conn
         .query_row(
             "SELECT version FROM codex_entries WHERE id = ?1 AND project_id = ?2",
-            rusqlite::params![params.entry_id, server.project_id],
+            rusqlite::params![params.entry_id, server.project_id()],
             |row| row.get(0),
         )
         .map_err(|_| ErrorData::invalid_params("Codex entry not found in project", None))?;
@@ -450,7 +450,7 @@ pub async fn update_codex_entry(
     grimodex_core::writes::codex::tracked_codex_update(
         &conn,
         grimodex_core::writes::codex::TrackedCodexUpdateInput {
-            project_id: &server.project_id,
+            project_id: &server.project_id(),
             session_id: &server.session_id,
             surface: "mcp",
             entry_id: &params.entry_id,

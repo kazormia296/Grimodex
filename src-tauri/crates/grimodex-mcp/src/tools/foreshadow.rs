@@ -13,7 +13,7 @@ pub async fn list_open_foreshadows(server: &GrimodexServer) -> Result<CallToolRe
         .conn
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let rows = db::list_open_foreshadows(&conn, &server.project_id)
+    let rows = db::list_open_foreshadows(&conn, &server.project_id())
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let json = serde_json::to_string_pretty(&rows)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -44,7 +44,7 @@ pub async fn get_foreshadow_detail(
         .conn
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let detail = db::get_foreshadow_detail(&conn, &server.project_id, id)
+    let detail = db::get_foreshadow_detail(&conn, &server.project_id(), id)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let json = serde_json::to_string_pretty(&detail)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;

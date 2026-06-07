@@ -76,10 +76,10 @@ pub async fn read_scene(
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
     let nodes: Vec<TreeNode> = if let Some(id) = &params.scene_id {
-        vec![db::get_scene_meta(&conn, &server.project_id, id)
+        vec![db::get_scene_meta(&conn, &server.project_id(), id)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?]
     } else if let Some(title) = &params.title {
-        db::find_scene_by_title(&conn, &server.project_id, title)
+        db::find_scene_by_title(&conn, &server.project_id(), title)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
     } else {
         return Err(ErrorData::invalid_params(
@@ -110,14 +110,14 @@ pub async fn read_scenes_batch(
     let nodes: Vec<TreeNode> = if let Some(ids) = &params.scene_ids {
         let ids: Vec<String> = ids.iter().take(50).cloned().collect();
         ids.iter()
-            .filter_map(|id| db::get_scene_meta(&conn, &server.project_id, id).ok())
+            .filter_map(|id| db::get_scene_meta(&conn, &server.project_id(), id).ok())
             .collect()
     } else {
         let filter = TreeFilter {
             node_type: Some("scene".to_string()),
             status: params.status.clone(),
         };
-        let mut all = db::list_tree_nodes(&conn, &server.project_id, &filter)
+        let mut all = db::list_tree_nodes(&conn, &server.project_id(), &filter)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         if let Some(pid) = &params.parent_id {
             all.retain(|n| n.parent_id.as_deref() == Some(pid.as_str()));
@@ -210,7 +210,7 @@ pub async fn propose_scene_body(
             .query_row(
                 "SELECT version, source_uri FROM tree_nodes
                  WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
-                rusqlite::params![params.scene_id, server.project_id],
+                rusqlite::params![params.scene_id, server.project_id()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|_| ErrorData::invalid_params("scene not found in project", None))?;
@@ -234,7 +234,7 @@ pub async fn propose_scene_body(
              VALUES (?1, ?2, ?3, ?4, ?5, 'proposed', 'mcp', ?6, ?7, ?7)",
             rusqlite::params![
                 staging_id,
-                server.project_id,
+                server.project_id(),
                 params.scene_id,
                 content_json.to_string(),
                 base_version,
@@ -253,7 +253,7 @@ pub async fn propose_scene_body(
 
         grimodex_core::change_events::append_change_events_in_tx(
             &conn,
-            &server.project_id,
+            &server.project_id(),
             &server.session_id,
             &[grimodex_core::change_events::AppendChangeEvent {
                 event_uid: event_uid.clone(),

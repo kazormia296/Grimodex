@@ -45,7 +45,7 @@ pub async fn search_project(
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-    let results = db::search_fts(&conn, &server.project_id, &params.query, scope, limit)
+    let results = db::search_fts(&conn, &server.project_id(), &params.query, scope, limit)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
     let json = serde_json::to_string_pretty(&results)

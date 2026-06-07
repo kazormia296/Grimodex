@@ -741,6 +741,8 @@ Codex エントリの詳細を取得する。
 
 | ツール名 | 読/書 | v1 | 概要 |
 |---------|------|-----|------|
+| `list_projects` | R | o | プロジェクト一覧（pinned 時は bound 1 件のみ・XPROJ） |
+| `select_project` | — | o | current project 切替（`--all-projects` 必須・pinned 時拒否） |
 | `get_project` | R | o | プロジェクト基本情報 |
 | `list_tree` | R | o | ツリー構造一覧 |
 | `read_scene` | R | o | シーン本文（Markdown） |
@@ -768,8 +770,10 @@ Codex エントリの詳細を取得する。
 | `create_scene` | W | v2 | シーン新規作成 |
 | `update_scene_metadata` | W | v2 | シーンメタデータ更新 |
 
-**`tools/list` 件数（現行）**: 読み取り 19 + 書き込み 4 = **23 ツール**
+**`tools/list` 件数（現行）**: プロジェクト管理 2（`list_projects` / `select_project`）
++ 読み取り 19 + 書き込み 4 = **25 ツール**
 （write 4 = create_codex_entry / update_codex_entry / create_snippet / propose_scene_body。
+`select_project` は DB を書かずセッションの current project を切替えるだけ。
 write_scene 等の scene 書き込みは v2 で未実装ゆえ tools/list に出ない）。
 クラウド LLM クライアント（Claude Desktop / Claude Code / Hermes Agent 等）では
 **`--readonly` 付きで起動する**ことを推奨。ただし `--readonly` は **call-time gate** であり、
@@ -984,7 +988,7 @@ mcp_servers:
     env: {}
 ```
 
-接続後 `tools/list` が **23 ツール**（read 19 + write 4）を返すことを確認する。write 4 種は
+接続後 `tools/list` が **25 ツール**（プロジェクト管理 2 + read 19 + write 4）を返すことを確認する。write 4 種は
 `--readonly` でも list には載るが、呼び出すと call-time でエラー応答する（list-time では隠れない）。
 
 ### .mcp.json（standalone dev bin / readonly なし・非推奨例）
@@ -1011,11 +1015,28 @@ grimodex-mcp [OPTIONS]
 
 Options:
   -w, --workspace <PATH>   Grimodex ワークスペースのパス（必須）
-  -p, --project <ID>       プロジェクトID（省略時は最初のプロジェクトを使用）
-      --readonly           書き込みツールを無効化
+  -p, --project <ID>       プロジェクトID（省略時は最初のプロジェクトを使用。
+                           --all-projects 時は初期 current として扱う）
+      --readonly           書き込みツールを無効化（call-time gate）
+      --all-projects       select_project でのプロジェクト切替を許可する。
+                           ローカル/信頼クライアント専用（接続スコープが DB 全体に広がる）
       --verbose            デバッグログを stderr に出力
   -h, --help               ヘルプ表示
 ```
+
+**プロジェクトスコープ（既定 = ピン留め）**:
+
+- 既定（`--all-projects` 無し）は **1 プロジェクトにピン留め**。全ツールが起動時の
+  project に固定スコープし、`select_project` は拒否、`list_projects` はそのピン留め
+  プロジェクト 1 件のみ返す（他プロジェクトの id/title を漏らさない）。`.mcp.json` の
+  エントリ＝「この AI にはこの 1 作品だけ」という監査可能なアクセス許可になる。
+- `--all-projects` は **明示オプトイン**。`select_project(project_id)` で current を
+  切り替えられ、`list_projects` が全プロジェクトを列挙する。接続スコープが DB 全体に
+  広がるため **ローカル/信頼クライアント専用**。クラウド用途では `--all-projects` を
+  付けない（付けるなら最低限 `--readonly` と併用）。
+- read-by-id 系はモードに関わらず常に **current project でスコープ**する（`--all-projects`
+  でも、別プロジェクトの id を読むには先に `select_project` で切り替える）。XPROJ 防御
+  （[[#3.9]]）は不変。
 
 ### 起動時の検証
 
@@ -1044,6 +1065,12 @@ Options:
   read-by-id 系ツールは `server.project_id` でスコープし、クライアントが渡す bare
   id で他プロジェクトを読めないようにすること（§3.9 XPROJ 防御参照）。新規 read-by-id
   ツールを足すときも project_id スコープを必須とする。
+- **`--all-projects` のスコープ拡大**: このフラグは接続を **DB 全体**（全プロジェクト）に
+  広げる明示オプトイン。`select_project` の許可ゲートは1箇所（pinned 時は拒否）に集約され、
+  既定のピン留め＝接続単位の最小権限は壊れない。ただし `--all-projects` を付けた接続は
+  全作品にアクセスし得るため **ローカル/信頼クライアント専用**。なおピン留めが守るのは
+  「どの作品を見せるか」であり、見せた作品の本文がクラウドへ exfil されること自体は
+  防げない（秘匿原稿はクラウド MCP に繋がない/ローカルモデルを使う）。
 
 ### 書き込み制限 (v1)
 
