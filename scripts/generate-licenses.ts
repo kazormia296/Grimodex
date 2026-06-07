@@ -406,8 +406,35 @@ const APACHE_2_0_LICENSE_TEXT = `                                 Apache License
    See the License for the specific language governing permissions and
    limitations under the License.`;
 
+const TOARU_EKI_SIGN_LICENSE_TEXT = `「とある駅の案内板っぽい？フォント」 (修正版)
+作者: 栃木那須・ユズノカ
+
+Codex 詳細パネルの名称入力欄の表示用に .ttf を Grimodex へ同梱している。
+作者より同梱・再配布について明示の許諾を得ている (2026年6月、作者回答に基づく)。
+
+許諾内容:
+- 商用利用: 可
+- ソフトウェアへの同梱・再配布: 可
+- 有償ソフトウェアでの配布: 可
+- クレジット表記: 任意 (必須ではない)
+
+制約:
+- 反社会的利用の禁止 (平和な活動での利用に限る)`;
+
 function gatherAssetLicenses(): LicenseEntry[] {
   return [
+    {
+      // Codex 詳細パネルの名称入力欄 (codex-detail-name) の表示用フォント。
+      // src/assets/fonts/toaru-eki-sign.ttf として同梱し、index.css の
+      // @font-face ("Toaru Eki Sign") から参照している。作者(栃木那須・ユズノカ氏)
+      // より同梱・再配布・有償配布いずれも許諾済み。クレジットは任意だが出典明示の
+      // ために掲載する。SPDX 識別子は存在しないため Custom 表記。
+      name: "とある駅の案内板っぽい？フォント (Toaru Eki Sign — station-sign style display font, bundled for the Codex name field)",
+      version: "修正版",
+      license:
+        "Custom (author-granted — free commercial, bundling & redistribution OK; credit optional)",
+      licenseText: TOARU_EKI_SIGN_LICENSE_TEXT,
+    },
     {
       name: "Cork001 (cork texture)",
       version: "1K-JPG",

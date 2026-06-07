@@ -1,6 +1,15 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Display font used only for the Codex detail name input (station-sign style). */
+@font-face {
+  font-family: "Toaru Eki Sign";
+  src: url("./assets/fonts/toaru-eki-sign.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 :root {

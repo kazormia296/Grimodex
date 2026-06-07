@@ -102772,6 +102772,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 </details>
 
+### とある駅の案内板っぽい？フォント (Toaru Eki Sign — station-sign style display font, bundled for the Codex name field) (修正版)
+
+- License: Custom (author-granted — free commercial, bundling & redistribution OK; credit optional)
+
+<details>
+<summary>License Text</summary>
+
+```
+「とある駅の案内板っぽい？フォント」 (修正版)
+作者: 栃木那須・ユズノカ
+
+Codex 詳細パネルの名称入力欄の表示用に .ttf を Grimodex へ同梱している。
+作者より同梱・再配布について明示の許諾を得ている (2026年6月、作者回答に基づく)。
+
+許諾内容:
+- 商用利用: 可
+- ソフトウェアへの同梱・再配布: 可
+- 有償ソフトウェアでの配布: 可
+- クレジット表記: 任意 (必須ではない)
+
+制約:
+- 反社会的利用の禁止 (平和な活動での利用に限る)
+```
+</details>
+
 ## Reference Implementations
 
 ### react-ide-workspace-layout (DnD UX pattern reference for layout stripe drag) (develop branch)

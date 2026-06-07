@@ -118,8 +118,11 @@ export function CodexEntryHeader({
             onFocus={handleFocus}
             onBlur={onNameCommit}
             onKeyDown={handleKeyDown}
-            className="-ml-1.5 block w-full rounded border border-transparent bg-transparent px-1.5 py-0.5 text-[26px] font-bold leading-[1.1] tracking-[-0.01em] text-foreground transition-colors hover:bg-accent/40 focus:border-transparent focus:bg-transparent focus:outline-none focus:ring-2 focus:ring-primary"
-            style={{ fontFamily: "inherit" }}
+            className="-ml-1.5 block w-full rounded border border-transparent bg-transparent px-1.5 py-0.5 text-[50px] leading-[1.1] tracking-[0.05em] text-foreground transition-colors hover:bg-accent/40 focus:border-transparent focus:bg-transparent focus:outline-none focus:ring-2 focus:ring-primary"
+            style={{
+              fontFamily:
+                '"Toaru Eki Sign", ui-sans-serif, system-ui, sans-serif',
+            }}
           />
 
           {/* Aliases row — individual chips if they fit, otherwise grouped chip */}
