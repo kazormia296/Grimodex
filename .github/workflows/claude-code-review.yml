@@ -15,11 +15,10 @@ permissions:
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    # dependabot がトリガーした run には repo secrets (CLAUDE_CODE_OAUTH_TOKEN) が
+    # 渡らず claude-review が必ず失敗するため除外する。人間が dependabot ブランチに
+    # push した synchronize は actor が pusher になるので、その場合は実行される。
+    if: ${{ github.actor != 'dependabot[bot]' }}
 
     runs-on: ubuntu-latest
     permissions:
