@@ -279,6 +279,26 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] Framer Motion clip-path 補間（open 側 inset(-200px)）
 - [ ] projectStore.test.ts のテスト分離問題（フルスイートでのみ落ちる、許容）
 
+## 29. MCP 連携（本体バイナリ統一）
+
+- [ ] 設定 → データ → **MCP 連携** に「MCP 設定をコピー」ボタンが表示される
+- [ ] ワークスペース未 open 時はボタンが disabled、open 時は有効
+- [ ] ボタン押下で `.mcp.json` がクリップボードへ。`command` が実 spawn 可能な本体パス
+      （macOS は `…/Contents/MacOS/Grimodex`、Linux AppImage は `$APPIMAGE` の元ファイル）、
+      `args` が `["mcp","--workspace","<dir>","--project","<現在のID>","--readonly"]`
+- [ ] **統合パス（本体経由）**: `Grimodex mcp --workspace <ws> --readonly`（dev は
+      `cargo run -- mcp …`）で stdio に `initialize` + `tools/list` を流し、現状 23 ツールが返る。
+      GUI ウィンドウは開かない
+- [ ] **残置 standalone bin**: `cargo run -p grimodex-mcp -- --workspace <ws> --readonly` が
+      従来どおり動く（repo-root `.mcp.json` の dev 設定も）
+- [ ] **write gate**: `--readonly` 時に write 2 ツール（create/update_codex_entry 等）がエラー応答
+- [ ] **XPROJ**: project A スコープのクライアントから project B の scene_id/entry_id を
+      read-by-id しても not found（本体統一でエンドユーザー到達面が増えた点に注意）
+- [ ] 🔴 **[要実機] Windows release**: GUI-subsystem 本体を実 MCP クライアントが spawn して
+      stdio で tools/list が取れる（debug=console は容易だが release を証明しない）
+- [ ] Linux headless: 本体は `libwebkit2gtk` を load-time リンクするため webkit 無し環境では
+      `mcp` サブコマンドが起動しない（lean bin を使う）ことを確認・記録
+
 ---
 
 ## 実施記録テンプレ

@@ -912,6 +912,17 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     return true;
   }
 
+  function handleGetMcpConfig(): { command: string; workspace: string } {
+    const settings = handleGetGlobalSettings();
+    const workspace = settings.lastActiveWorkspace as string | null;
+    if (!workspace) {
+      throw new Error("No workspace is open");
+    }
+    // Dev/browser preview has no real binary path; "grimodex" stands in for
+    // the installed app executable the native command would resolve.
+    return { command: "grimodex", workspace };
+  }
+
   function handleOpenWorkspace(args: Record<string, unknown>): {
     name: string;
     isExisting: boolean;
@@ -953,6 +964,8 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return handleValidateWorkspacePath() as T;
       case "open_workspace":
         return handleOpenWorkspace(args) as T;
+      case "get_mcp_config":
+        return handleGetMcpConfig() as T;
       case "set_window_vibrancy":
         return undefined as T;
       case "db_execute":

@@ -1518,11 +1518,11 @@ Linter の全体 ON/OFF はステータスバーには置かず、設定パネ�
 
 ## MCP サーバー連携
 
-Grimodex の MCP サーバー（`docs/Grimodex_MCPサーバー設計書.md` 参照、スタンドアロン Rust バイナリ `grimodex-mcp`）から Linter 結果を参照可能にする。主用途は外部 AI（Claude Desktop 等）にプロジェクトの原稿と Diagnostic を同時に提示し、修正提案を得ること。
+Grimodex の MCP サーバー（`docs/Grimodex_MCPサーバー設計書.md` 参照。**本体バイナリの `mcp` サブコマンドに統一**。`grimodex-mcp` crate の `[[bin]]` は dev/CI/headless 用に残置）から Linter 結果を参照可能にする。主用途は外部 AI（Claude Desktop 等）にプロジェクトの原稿と Diagnostic を同時に提示し、修正提案を得ること。
 
 ### Crate 構成（Phase 1 で決定）
 
-MCP サーバーは Tauri とは別プロセスのスタンドアロンバイナリのため、Linter コアを**共有ライブラリ crate**として切り出す必要がある:
+MCP サーバーは本体 GUI とは別プロセス（本体バイナリを `mcp` サブコマンドで spawn、または残置の standalone bin）として動くため、Linter コアを**共有ライブラリ crate**として切り出す必要がある:
 
 ```
 src-tauri/

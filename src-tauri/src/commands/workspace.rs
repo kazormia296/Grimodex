@@ -163,6 +163,56 @@ pub(crate) fn open_workspace(
     Ok(OpenWorkspaceResult { name, is_existing })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct McpConfigInfo {
+    /// Absolute path to spawn for the MCP server. Since the MCP server is now
+    /// unified into the app binary (`Grimodex mcp …` subcommand), this is the
+    /// installed app executable itself.
+    command: String,
+    /// The currently-open workspace directory (`--workspace` argument).
+    workspace: String,
+}
+
+/// Return the data an external MCP client needs to spawn this app as its
+/// MCP server: the absolute path to the app binary and the open workspace
+/// dir. The frontend assembles the `.mcp.json` snippet from this (adding the
+/// `mcp` subcommand, `--project`, and `--readonly`). Errors if no workspace
+/// is open.
+#[tauri::command]
+pub(crate) fn get_mcp_config(
+    ws_state: tauri::State<'_, WorkspaceState>,
+) -> Result<McpConfigInfo, AppError> {
+    let command = current_mcp_command_path()?;
+    let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let workspace = inner
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No workspace is open"))?
+        .path
+        .to_string_lossy()
+        .into_owned();
+    Ok(McpConfigInfo { command, workspace })
+}
+
+/// Resolve the absolute path an MCP client should spawn.
+///
+/// On Linux AppImage, `current_exe()` points inside the ephemeral mount
+/// (`/tmp/.mount_*/…`) which a client cannot re-spawn later, so prefer the
+/// `APPIMAGE` env var (the original AppImage file path) the runtime injects.
+/// Otherwise `current_exe()` is correct: macOS `…/Contents/MacOS/Grimodex`,
+/// deb/rpm `/usr/bin/grimodex`, Windows `…\Grimodex.exe`.
+fn current_mcp_command_path() -> Result<String, AppError> {
+    #[cfg(target_os = "linux")]
+    if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        return Ok(PathBuf::from(appimage).to_string_lossy().into_owned());
+    }
+
+    Ok(std::env::current_exe()
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .to_string_lossy()
+        .into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

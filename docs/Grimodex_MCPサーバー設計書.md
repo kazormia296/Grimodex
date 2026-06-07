@@ -46,9 +46,10 @@ Claude Code などの AI エージェントから自然言語で操作できる�
          │ stdio (JSON-RPC 2.0)
          │
 ┌────────▼─────────────┐
-│  grimodex-mcp        │
-│  (スタンドアロン     │
-│   Rust バイナリ)      │
+│  Grimodex 本体        │
+│  `mcp` サブコマンド   │
+│  = stdio MCP サーバ   │
+│  (GUI は開かない)     │
 └────────┬─────────────┘
          │ 直接アクセス
     ┌────┴────┐
@@ -57,11 +58,11 @@ Claude Code などの AI エージェントから自然言語で操作できる�
 │SQLite │ │ Content Dir  │
 │(WAL)  │ │ (.md files)  │
 └───────┘ └─────────────┘
-    ▲         ▲
-    │         │  ← 同じ DB / ディレクトリを共有
-┌───┴─────────┴──┐
+    ▲
+    │  ← GUI 起動時の本体と同じ DB を共有
+┌───┴────────────┐
 │  Grimodex      │
-│  (Tauri App)   │
+│  (Tauri GUI)   │
 └────────────────┘
 ```
 
@@ -69,7 +70,7 @@ Claude Code などの AI エージェントから自然言語で操作できる�
 
 | 決定事項 | 選択 | 理由 |
 |---------|------|------|
-| 配置形態 | スタンドアロンバイナリ | Grimodex 未起動でも動作、Claude Code から直接 spawn |
+| 配置形態 | 本体バイナリの `mcp` サブコマンド（統一） | 配布物は本体1つ（externalBin/サイドカー無し）。Grimodex GUI 未起動でも動作（クライアントが必要時に本体を spawn）。standalone `[[bin]]` は dev/CI/headless 用に残置 |
 | トランスポート | stdio | ローカル用途、設定がシンプル、MCP 標準 |
 | DB 同時アクセス | WAL モード + busy_timeout | 読み取り中心なら安全、書き込みは Codex のみ (v1) |
 | シーン書き込み | v1 では不可（読み取り専用） | エディタ内バッファとの競合を回避 |
@@ -85,10 +86,11 @@ src-tauri/
 ├── Cargo.toml          ← workspace root (members = ["crates/grimodex-mcp", "crates/grimodex-lint"])
 ├── src/                ← 既存の Tauri アプリ
 ├── crates/
-│   ├── grimodex-mcp/
-│   │   ├── Cargo.toml
+│   ├── grimodex-mcp/         ← lib + bin の二段構成
+│   │   ├── Cargo.toml        ← [lib] grimodex_mcp + [[bin]] grimodex-mcp
 │   │   └── src/
-│   │       ├── main.rs        ← エントリポイント (stdio server + ログ設定)
+│   │       ├── lib.rs         ← 本体 (pub Cli / run / run_blocking + ログ設定)
+│   │       ├── main.rs        ← standalone bin の薄い shim (run_blocking を呼ぶだけ)
 │   │       ├── server.rs      ← rmcp `ServerHandler` (`GrimodexServer`)
 │   │       ├── tools/
 │   │       │   ├── mod.rs
@@ -114,6 +116,19 @@ src-tauri/
 **将来拡張**: `database.rs`, `content.rs` 等を共有ライブラリクレート
 (`grimodex-core`) に抽出し、Tauri アプリと MCP サーバーの両方から
 参照する構成にする。v1 では MCP サーバー側に必要最低限のコードを複製している。
+
+### エントリポイント（本体統一）
+
+MCP サーバは **本体アプリバイナリの `mcp` サブコマンド**として起動する。本体
+`src-tauri/src/main.rs` が Tauri 初期化の**前**に argv を見て分岐し、
+`argv[1] == "mcp"` のとき `grimodex_mcp::run_blocking()` を呼んで stdio MCP
+サーバを実行し、`process::exit` する（GUI は開かない）。本体 `grimodex` クレートは
+`grimodex-mcp` に path 依存（一方向・循環なし）。
+
+`grimodex-mcp` の `[[bin]]`（standalone `grimodex-mcp` 実行ファイル）は **dev/CI/
+headless 用に残置**する。本体バイナリは `ort`（onnxruntime）と Linux では
+`libwebkit2gtk` を load-time でリンクするため、ビルドが速く headless でも起動できる
+lean bin を開発・テスト経路として温存する（[[#6 設定]] 参照）。
 
 ### DB 接続
 
@@ -733,8 +748,10 @@ Codex エントリの詳細を取得する。
 | `search_project` | R | o | FTS5 横断検索 |
 | `list_codex_entries` | R | o | Codex 一覧 |
 | `get_codex_entry` | R | o | Codex 詳細 |
-| `create_codex_entry` | W | o | Codex 新規作成 |
-| `update_codex_entry` | W | o | Codex 更新 |
+| `create_codex_entry` | W | o | Codex 新規作成（knowledgeWrite gate） |
+| `update_codex_entry` | W | o | Codex 更新（knowledgeWrite gate） |
+| `create_snippet` | W | o | Snippet 新規作成（knowledgeWrite gate） |
+| `propose_scene_body` | W | o | シーン本文を accept/reject 用にステージ（bodyWrite gate） |
 | `list_chat_sessions` | R | o | チャットセッション一覧 |
 | `read_chat_history` | R | o | チャット履歴取得 |
 | `list_snippets` | R | o | スニペット一覧 |
@@ -751,9 +768,13 @@ Codex エントリの詳細を取得する。
 | `create_scene` | W | v2 | シーン新規作成 |
 | `update_scene_metadata` | W | v2 | シーンメタデータ更新 |
 
-**`tools/list` 件数（現行）**: 読み取り 19 + 書き込み 2 = **21 ツール**。
+**`tools/list` 件数（現行）**: 読み取り 19 + 書き込み 4 = **23 ツール**
+（write 4 = create_codex_entry / update_codex_entry / create_snippet / propose_scene_body。
+write_scene 等の scene 書き込みは v2 で未実装ゆえ tools/list に出ない）。
 クラウド LLM クライアント（Claude Desktop / Claude Code / Hermes Agent 等）では
-**`--readonly` 付きで起動し、書き込み 2 ツールを無効化する**ことを推奨（19 read-only のみ公開）。
+**`--readonly` 付きで起動する**ことを推奨。ただし `--readonly` は **call-time gate** であり、
+write 4 ツールは tools/list には**載る**が、呼び出すと「readonly mode」エラーを返す
+（list-time で隠れるわけではない）。
 
 ### 3.9 In-app チャット executor との能力パリティ
 
@@ -878,37 +899,62 @@ ProseMirror JSON 以外（プレーンテキスト）が入っていた場合は
 
 ### ビルド
 
-`grimodex-mcp` は Grimodex アプリ本体に同梱されない **standalone binary**。
-Hermes Agent / Claude Code 等から使う前にローカルで release ビルドする。
+MCP サーバは **本体アプリバイナリに統一**されている。installer が配る Grimodex
+本体を `mcp` サブコマンド付きで起動すると stdio MCP サーバとして動作する（GUI は
+開かない・本体 GUI 未起動でも動く）。**別バイナリのビルドは不要**。
 
-```bash
-cd src-tauri
-cargo build --release -p grimodex-mcp
-# バイナリ: src-tauri/target/release/grimodex-mcp
-```
+OS 別の本体バイナリパス（`command` に指定する spawn 対象）:
+
+| OS | パス例 |
+|----|--------|
+| macOS | `/Applications/Grimodex.app/Contents/MacOS/Grimodex` |
+| Windows | `C:\Program Files\Grimodex\Grimodex.exe` |
+| Linux (deb/rpm) | `/usr/bin/grimodex` |
+| Linux (AppImage) | AppImage ファイル自体（`Grimodex_x.y.z.AppImage`） |
+
+> アプリ内（設定 → データ → MCP 連携）の **「MCP 設定をコピー」** ボタンが、
+> 実行中の本体パス（`current_exe()` / AppImage は `$APPIMAGE`）と現在のワークスペース・
+> プロジェクト ID を埋めた `.mcp.json` をクリップボードへ出力する。手動でパスを
+> 探すより確実。
 
 起動例（DB 直読・書き込み無効）:
 
 ```bash
-./target/release/grimodex-mcp \
+/Applications/Grimodex.app/Contents/MacOS/Grimodex \
+  mcp \
   --workspace /absolute/path/to/grimodex-workspace \
   --readonly
 ```
 
 `--project <ID>` は任意。省略時は `projects ORDER BY created_at LIMIT 1` の先頭を使用。
 
+**dev / CI / headless**: standalone `grimodex-mcp` バイナリ（`[[bin]]`）は残置している。
+本体バイナリは `ort`/`libwebkit2gtk` を load-time リンクするため、lean bin の方が
+ビルドが速く headless サーバでも起動できる。
+
+```bash
+cd src-tauri
+# lean standalone bin（従来どおり）
+cargo build --release -p grimodex-mcp     # → src-tauri/target/release/grimodex-mcp
+# 統合パスの dev 検証（本体経由・debug）
+cargo run -- mcp --workspace /abs/ws --readonly
+```
+
 ### .mcp.json（Claude Code / Desktop）
 
-**クラウド LLM では `--readonly` を必ず付ける**（Codex 書き込み 2 ツールを無効化）。
+**クラウド LLM では `--readonly` を必ず付ける**（write 4 ツールを call-time で無効化）。
 
 ```json
 {
   "mcpServers": {
     "grimodex": {
-      "command": "/absolute/path/to/src-tauri/target/release/grimodex-mcp",
+      "command": "/Applications/Grimodex.app/Contents/MacOS/Grimodex",
       "args": [
+        "mcp",
         "--workspace",
         "/absolute/path/to/grimodex-workspace",
+        "--project",
+        "<project-id>",
         "--readonly"
       ],
       "env": {}
@@ -917,6 +963,7 @@ cargo build --release -p grimodex-mcp
 }
 ```
 
+`command` は OS 別の本体バイナリパス（前掲表）。`args` 先頭は必ず `"mcp"`。
 ローカルで Codex 書き込みも使う場合のみ、末尾の `"--readonly"` を外す。
 
 ### Hermes Agent `mcp_servers`
@@ -928,25 +975,28 @@ cargo build --release -p grimodex-mcp
 # 例: Hermes Agent 設定の mcp_servers 節（YAML 形式の場合）
 mcp_servers:
   grimodex:
-    command: /absolute/path/to/src-tauri/target/release/grimodex-mcp
+    command: /Applications/Grimodex.app/Contents/MacOS/Grimodex
     args:
+      - mcp
       - --workspace
       - /absolute/path/to/grimodex-workspace
       - --readonly
     env: {}
 ```
 
-接続後 `tools/list` が **21 ツール**（`--readonly` 時は write 2 種がエラー応答）を返すことを確認する。
+接続後 `tools/list` が **23 ツール**（read 19 + write 4）を返すことを確認する。write 4 種は
+`--readonly` でも list には載るが、呼び出すと call-time でエラー応答する（list-time では隠れない）。
 
-### .mcp.json（旧記載・非推奨例）
+### .mcp.json（standalone dev bin / readonly なし・非推奨例）
 
-readonly なしの最小例（クラウド利用では非推奨）:
+dev で残置 standalone bin を直に指す最小例（`mcp` サブコマンドを**付けない**点に注意。
+クラウド利用では `--readonly` 無しは非推奨）:
 
 ```json
 {
   "mcpServers": {
     "grimodex": {
-      "command": "grimodex-mcp",
+      "command": "./src-tauri/target/release/grimodex-mcp",
       "args": ["--workspace", "/path/to/your/novel-project"],
       "env": {}
     }
@@ -988,6 +1038,12 @@ Options:
 - MCP サーバーは**ローカルのみ**で動作（stdio）。ネットワーク公開しない
 - API キーにはアクセスしない（keyring は Tauri 側のみ）
 - `--readonly` フラグで書き込みを完全に無効化可能
+- **本体統一に伴う到達面の変化**: MCP サーバは installer 済みの本体バイナリ
+  （`mcp` サブコマンド）として **エンドユーザーから到達可能**になった（旧: 別途
+  ビルドが必要な非同梱 bin）。単一 `grimodex.db` に全プロジェクトを持つため、
+  read-by-id 系ツールは `server.project_id` でスコープし、クライアントが渡す bare
+  id で他プロジェクトを読めないようにすること（§3.9 XPROJ 防御参照）。新規 read-by-id
+  ツールを足すときも project_id スコープを必須とする。
 
 ### 書き込み制限 (v1)
 

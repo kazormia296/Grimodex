@@ -508,6 +508,14 @@
       "deleteProjectDesc": "This action cannot be undone",
       "deleteProjectNotImpl": "Not implemented (cancel)",
       "integrityCheck": "Integrity Check",
+      "mcp": {
+        "title": "MCP Integration",
+        "label": "Copy MCP config",
+        "description": "Copy a .mcp.json for external MCP clients (Claude Code / Hermes Agent). The app binary runs as the MCP server.",
+        "copy": "Copy",
+        "copySuccess": ".mcp.json copied to clipboard",
+        "copyFail": "Failed to get MCP config (is a workspace open?)"
+      },
       "ftsSuccess": "FTS index rebuilt",
       "ftsFail": "FTS rebuild failed",
       "vacuumSuccess": "Database optimized",

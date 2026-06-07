@@ -508,6 +508,14 @@
       "deleteProjectDesc": "この操作は取り消せません",
       "deleteProjectNotImpl": "未実装（キャンセル）",
       "integrityCheck": "整合性チェック",
+      "mcp": {
+        "title": "MCP 連携",
+        "label": "MCP 設定をコピー",
+        "description": "Claude Code / Hermes Agent などの外部 MCP クライアント用の .mcp.json をコピーします（本体バイナリを MCP サーバとして起動）",
+        "copy": "コピー",
+        "copySuccess": ".mcp.json をクリップボードにコピーしました",
+        "copyFail": "MCP 設定の取得に失敗しました（ワークスペースが開かれていない可能性があります）"
+      },
       "ftsSuccess": "FTS インデックスを再構築しました",
       "ftsFail": "FTS 再構築に失敗しました",
       "vacuumSuccess": "データベースを最適化しました",
