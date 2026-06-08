@@ -10,7 +10,9 @@ export interface CodexMatchTarget {
   excludedAliases?: string[] | string | null;
 }
 
-function parseAliases(raw: string[] | string | null | undefined): string[] {
+export function parseAliases(
+  raw: string[] | string | null | undefined,
+): string[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
   try {

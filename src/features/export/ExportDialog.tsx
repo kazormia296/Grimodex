@@ -19,6 +19,7 @@ import {
 import type { ExportTreeState } from "./ExportTree";
 import { ExportSettingsPanel } from "./ExportSettingsPanel";
 import { generateExport } from "./exportEngine";
+import { currentCodexMentionResolver } from "@/features/codex/mentionNameResolver";
 import type { ExportSettings, ExportPresetId } from "./types";
 import { DEFAULT_EXPORT_SETTINGS, EXPORT_SETTING_KEYS } from "./types";
 import {
@@ -348,6 +349,7 @@ export function ExportDialog({ open, onClose }: Props) {
       settings: exportSettings,
       projectTitle,
       projectLanguage,
+      resolveMentionName: currentCodexMentionResolver(),
     });
   }
 

@@ -22,6 +22,9 @@ import { chatMessages, chatSessions } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexStore } from "../codexStore";
+import { prepareRenamePropagation } from "../rename/renameEngine";
+import { useRenamePropagationStore } from "../rename/renamePropagationStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { CodexEntry, CodexEntryType } from "../api";
 import type { ChildrenBudgetPreset } from "../childrenBudget";
 import { listEntryTags } from "../tagApi";
@@ -268,7 +271,29 @@ export function CodexDetailContent({
   const handleNameBlur = async () => {
     const trimmed = name.trim();
     if (trimmed && trimmed !== entry.name) {
+      const oldName = entry.name;
       await update(entry.id, { name: trimmed });
+      // Offer to propagate the rename to plain-text occurrences (Item C).
+      // id-keyed references (@mentions, relations, pins, AI context) already
+      // follow automatically; this covers prose / free-text the matcher finds.
+      try {
+        const result = await prepareRenamePropagation({
+          projectId: getCurrentProjectId(),
+          entryId: entry.id,
+          oldName,
+          newName: trimmed,
+        });
+        if (result.occurrences.length > 0) {
+          useRenamePropagationStore.getState().open({
+            entryId: entry.id,
+            oldName,
+            newName: trimmed,
+            result,
+          });
+        }
+      } catch (e) {
+        console.error("[codexRename] prepare failed", e);
+      }
     }
   };
 

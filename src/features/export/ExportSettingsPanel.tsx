@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ExportSettings } from "./types";
 import { generateExport } from "./exportEngine";
+import { currentCodexMentionResolver } from "@/features/codex/mentionNameResolver";
 import { ExportPresetPicker } from "./ExportPresetPicker";
 import { detectExportPreset } from "./exportPresets";
 import { validateExportRubyLengths } from "./exportValidation";
@@ -117,6 +118,7 @@ function ExportPreview({
           contentMap,
           checkedIds,
           settings,
+          resolveMentionName: currentCodexMentionResolver(),
         });
         setPreview(full.slice(0, 400));
       } catch {

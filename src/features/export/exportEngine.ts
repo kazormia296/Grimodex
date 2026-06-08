@@ -150,10 +150,25 @@ function renderSceneTitle(
 // ProseMirror JSON → テキスト変換
 // ────────────────────────────────────────────────────────────────────
 
+/**
+ * Resolve a codex/scene `@mention` node to the text that should appear in
+ * exported / written-back output. Receives the entry id and the label baked
+ * into the mention node at creation time; returns the display name.
+ *
+ * Default (no resolver supplied): the baked label is used verbatim. Callers
+ * with codex-store access inject a resolver that returns the *current* entry
+ * name (falling back to the label for deleted entries), so renames propagate
+ * to export output and file-backed disk content — mirroring the live editor
+ * display (Item A). Kept out of the pure engine via injection.
+ */
+export type MentionNameResolver = (id: string, fallbackLabel: string) => string;
+
 interface RenderCtx {
   settings: ExportSettings;
   resolvedRuby: RubyStyle;
   resolvedEmphasis: EmphasisDotsStyle;
+  /** Optional `@mention` → display-name resolver. See {@link MentionNameResolver}. */
+  resolveMentionName?: MentionNameResolver;
   /**
    * Mirrors `editor.markdownStrictLineBreaks`. When true, the parser ignores
    * the GFM "single-newline = hardBreak" shortcut and only honours the
@@ -245,6 +260,23 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
         (node.attrs?.annotation as string) ?? "",
         ctx.resolvedRuby,
       );
+
+    case "mention": {
+      // `@mention` is an inline atom: the display name lives in attrs (`label`),
+      // never as a child text node — so without this case it falls through to
+      // `default`, recurses into no children, and renders as "" (silent data
+      // loss on every export and every file-backed write-back). Emit the bare
+      // name (no `@`): prose reads naturally and, on the file-backed markdown
+      // round-trip, the name survives as plain text (markdown has no mention
+      // syntax). The matcher never sees this text — `getDocText`/`flatPmPos`
+      // skip mention atoms — so Item C's prose rewrite cannot touch it.
+      const id = (node.attrs?.id as string) ?? "";
+      const label = (node.attrs?.label as string | undefined) ?? "";
+      const fallback = label || id;
+      return ctx.resolveMentionName
+        ? ctx.resolveMentionName(id, fallback)
+        : fallback;
+    }
 
     case "sceneBeat":
       // Beat はプロンプトメタデータ — Export 時は完全除去
@@ -531,6 +563,8 @@ export interface ArchiveMarkdownOptions {
    *    flow, and diff-friendly bare `\n` is preferred for the publish format.
    */
   strictLineBreaks?: boolean;
+  /** Optional `@mention` → display-name resolver. See {@link MentionNameResolver}. */
+  resolveMentionName?: MentionNameResolver;
 }
 
 /** ProseMirror JSON document → GFM markdown (pure, for file-backed scenes). */
@@ -569,6 +603,7 @@ export function renderPmDocToArchiveMarkdown(
     resolvedRuby: rubyStyle,
     resolvedEmphasis: emphasisDotsStyle,
     strictLineBreaks: options.strictLineBreaks ?? false,
+    resolveMentionName: options.resolveMentionName,
   };
   return renderSceneContent(contentJson, ctx).trimEnd() + "\n";
 }
@@ -673,6 +708,8 @@ export interface GenerateExportInput {
   settings: ExportSettings;
   projectTitle?: string;
   projectLanguage?: string;
+  /** Optional `@mention` → display-name resolver. See {@link MentionNameResolver}. */
+  resolveMentionName?: MentionNameResolver;
 }
 
 /**
@@ -687,6 +724,7 @@ export function generateExport(input: GenerateExportInput): string {
     settings,
     projectTitle = "Untitled",
     projectLanguage = "ja",
+    resolveMentionName,
   } = input;
 
   const resolvedRuby: RubyStyle =
@@ -704,6 +742,7 @@ export function generateExport(input: GenerateExportInput): string {
     resolvedRuby,
     resolvedEmphasis,
     strictLineBreaks: false,
+    resolveMentionName,
   };
 
   // フラットなブロック列を構築

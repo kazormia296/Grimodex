@@ -6,6 +6,7 @@ import { useCodexHighlightStore } from "./codexHighlightStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
 import { markStart, markEnd } from "@/lib/perfLog";
+import { flattenDocForCodex } from "./codexDocFlatten";
 
 export const codexHighlightKey = new PluginKey("codexHighlight");
 
@@ -22,43 +23,9 @@ export function mapMatchesToDecorations(
 ): Decoration[] {
   if (matches.length === 0) return [];
 
-  // Build a flat-text-index → ProseMirror-position mapping by walking all
-  // text nodes. Text nodes within the same paragraph have contiguous PM
-  // positions; paragraph open/close tokens introduce gaps.
-  // Ruby atom nodes are also included: every character of the base text maps
-  // to the same PM node position (atoms have nodeSize=1).
-  // Block boundaries emit a single placeholder slot to mirror the "\n"
-  // injected by `getDocText` (see RubyNode.ts). The placeholder PM pos
-  // points at the block's open offset; matches will never overlap it
-  // because "\n" is filtered by char-class boundary checks.
-  const flatPmPos: number[] = [];
-  const flatIsRuby: boolean[] = [];
-  let firstBlock = true;
-  doc.descendants((node, pos) => {
-    if (node.type.name === "ruby") {
-      const base = (node.attrs.base as string) ?? "";
-      for (let i = 0; i < base.length; i++) {
-        flatPmPos.push(pos);
-        flatIsRuby.push(true);
-      }
-      return false;
-    }
-    if (node.isText) {
-      const len = node.text!.length;
-      for (let i = 0; i < len; i++) {
-        flatPmPos.push(pos + i);
-        flatIsRuby.push(false);
-      }
-      return;
-    }
-    if (node.isBlock) {
-      if (!firstBlock) {
-        flatPmPos.push(pos);
-        flatIsRuby.push(false);
-      }
-      firstBlock = false;
-    }
-  });
+  // Flat-text-offset → ProseMirror-position mapping (shared contract with the
+  // matcher and with rename propagation; see codexDocFlatten.ts).
+  const { flatPmPos, flatIsRuby } = flattenDocForCodex(doc);
 
   const sorted = [...matches].sort((a, b) => a.from - b.from);
   const decos: Decoration[] = [];

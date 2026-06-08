@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { generateExport } from "./exportEngine";
+import { generateExport, renderPmDocToMarkdown } from "./exportEngine";
 import { renderRubyText } from "./rubyFormats";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { ExportSettings, RubyStyle } from "./types";
@@ -1388,5 +1388,105 @@ describe("generateExport - table cell escaping", () => {
       settings: settings({ format: "markdown" }),
     });
     expect(result).toContain("| a<br>b |");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// @mention ノード (Item B: 消失バグ回帰ガード)
+// ────────────────────────────────────────────────────────────────────
+
+/** `@mention` インラインアトムの PM JSON。 */
+function mention(id: string, label?: string): object {
+  return {
+    type: "mention",
+    attrs: {
+      id,
+      label: label ?? null,
+      role: "mentioned",
+      kind: "codex",
+    },
+  };
+}
+
+/** mention を混在させた段落。 */
+function paraWith(...parts: object[]): object {
+  return { type: "paragraph", content: parts };
+}
+
+describe("generateExport - @mention ノード", () => {
+  it("resolver 無し → 焼き込み label を素の名前で出力 (空文字に落ちない)", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const docJson = doc(
+      paraWith(
+        { type: "text", text: "「やあ」と" },
+        mention("codex-akira", "アキラ"),
+        { type: "text", text: "が言った。" },
+      ),
+    );
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: docJson },
+      checkedIds: new Set(["s1"]),
+      settings: settings(),
+    });
+    expect(result).toBe("「やあ」とアキラが言った。\n");
+  });
+
+  it("resolver あり → 現在名に追従 (改名波及)", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const docJson = doc(
+      paraWith(mention("codex-akira", "アキラ"), {
+        type: "text",
+        text: "は振り向いた。",
+      }),
+    );
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: docJson },
+      checkedIds: new Set(["s1"]),
+      settings: settings(),
+      resolveMentionName: (id, fallback) =>
+        id === "codex-akira" ? "アキト" : fallback,
+    });
+    expect(result).toBe("アキトは振り向いた。\n");
+  });
+
+  it("label が無い mention → id にフォールバック", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const docJson = doc(paraWith(mention("codex-x")));
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: docJson },
+      checkedIds: new Set(["s1"]),
+      settings: settings(),
+    });
+    expect(result).toBe("codex-x\n");
+  });
+
+  it("resolver が未知 id にフォールバック値を返せば label を維持", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const docJson = doc(paraWith(mention("codex-deleted", "ナナ")));
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: docJson },
+      checkedIds: new Set(["s1"]),
+      settings: settings(),
+      // store にいない id は fallback(label)を返す resolver
+      resolveMentionName: (_id, fallback) => fallback,
+    });
+    expect(result).toBe("ナナ\n");
+  });
+});
+
+describe("renderPmDocToMarkdown - @mention (file-backed write-back)", () => {
+  it("mention が空文字に落ちず label のプレーンテキストとして残る", () => {
+    const docJson = doc(
+      paraWith(mention("codex-akira", "アキラ"), {
+        type: "text",
+        text: "の声がした。",
+      }),
+    );
+    const md = renderPmDocToMarkdown(docJson);
+    expect(md).toBe("アキラの声がした。\n");
   });
 });

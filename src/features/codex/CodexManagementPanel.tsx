@@ -28,6 +28,7 @@ import { EntryContextMenu } from "./components/EntryContextMenu";
 import { CategoryGroupHeader } from "./components/CategoryGroupHeader";
 import { TagFilterBar } from "./components/TagFilterBar";
 import { CodexCommandPalette } from "./components/CodexCommandPalette";
+import { RenamePropagationDialog } from "./rename/RenamePropagationDialog";
 import { AnimatePresence } from "motion/react";
 import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
 import { buildCrossReferenceReport } from "./crossReference";
@@ -1084,6 +1085,8 @@ export function CodexManagementPanel({
           />
         )}
       </AnimatePresence>
+
+      <RenamePropagationDialog />
 
       {isStackMode ? (
         <>

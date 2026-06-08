@@ -179,6 +179,61 @@ describe("mention role attribute (B-6)", () => {
   });
 });
 
+describe("mention NodeView — live name resolution (Item A)", () => {
+  beforeEach(() => {
+    useCodexStore.setState({
+      entries: [makeEntry({ id: "1", name: "ドロシー" })],
+    });
+  });
+
+  function mountWithMention() {
+    const editor = new Editor({
+      extensions: getEditorExtensions({ setMentionPopup: vi.fn() }),
+    });
+    editor.commands.insertContent({
+      type: "mention",
+      attrs: { id: "1", label: "ドロシー" },
+    });
+    return editor;
+  }
+
+  it("現在名を解決して表示する (焼き込み label ではなく store の name)", () => {
+    const editor = mountWithMention();
+    const span = editor.view.dom.querySelector(".mention");
+    expect(span?.textContent).toBe("@ドロシー");
+    editor.destroy();
+  });
+
+  it("改名すると DOM が追従する (doc は不変)", () => {
+    const editor = mountWithMention();
+    useCodexStore.setState({
+      entries: [makeEntry({ id: "1", name: "ドロシア" })],
+    });
+    const span = editor.view.dom.querySelector(".mention");
+    expect(span?.textContent).toBe("@ドロシア");
+    // 焼き込み label は書き換えない（doc 非変更）
+    let bakedLabel: string | null = null;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "mention") bakedLabel = node.attrs.label as string;
+    });
+    expect(bakedLabel).toBe("ドロシー");
+    editor.destroy();
+  });
+
+  it("store に無い id は焼き込み label にフォールバック", () => {
+    const editor = new Editor({
+      extensions: getEditorExtensions({ setMentionPopup: vi.fn() }),
+    });
+    editor.commands.insertContent({
+      type: "mention",
+      attrs: { id: "ghost", label: "消えた人物" },
+    });
+    const span = editor.view.dom.querySelector(".mention");
+    expect(span?.textContent).toBe("@消えた人物");
+    editor.destroy();
+  });
+});
+
 describe("getEditorExtensions — mention wiring", () => {
   it("does NOT register the mention extension when no setter is provided", () => {
     const editor = new Editor({ extensions: getEditorExtensions() });
