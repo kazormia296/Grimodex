@@ -13,8 +13,8 @@ pub async fn get_project(server: &GrimodexServer) -> Result<CallToolResult, Erro
         .conn
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let project = db::get_project(&conn, &pid)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let project =
+        db::get_project(&conn, &pid).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let json = serde_json::to_string_pretty(&project)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(

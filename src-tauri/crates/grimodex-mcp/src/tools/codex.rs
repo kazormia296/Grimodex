@@ -170,9 +170,13 @@ pub async fn find_related_entries(
         .conn
         .lock()
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let entries =
-        db::find_related_entries(&conn, &server.project_id(), id, params.type_filter.as_deref())
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let entries = db::find_related_entries(
+        &conn,
+        &server.project_id(),
+        id,
+        params.type_filter.as_deref(),
+    )
+    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     let json = serde_json::to_string_pretty(&entries)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
