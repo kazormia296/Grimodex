@@ -229,6 +229,28 @@ impl GrimodexServer {
         tools::foreshadow::get_foreshadow_detail(self, params.0).await
     }
 
+    /// Create a new foreshadowing item. Disabled in readonly mode. knowledgeWrite gate.
+    #[tool(
+        description = "Create a new foreshadowing (plant/payoff) item: title, optional intent, notes, load_bearing ('critical'|'supporting'|'optional'), and secret flag (defaults true). Disabled in readonly mode."
+    )]
+    async fn create_foreshadow(
+        &self,
+        params: Parameters<tools::foreshadow::CreateForeshadowParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::foreshadow::create_foreshadow(self, params.0).await
+    }
+
+    /// Update fields of an existing foreshadowing item. Only provided fields change. Disabled in readonly mode. knowledgeWrite gate.
+    #[tool(
+        description = "Update an existing foreshadowing item (title, intent, notes, load_bearing, payoff_confirmed, abandoned, secret). Only provided fields change. Scoped to the active project. Disabled in readonly mode."
+    )]
+    async fn update_foreshadow(
+        &self,
+        params: Parameters<tools::foreshadow::UpdateForeshadowParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::foreshadow::update_foreshadow(self, params.0).await
+    }
+
     /// Get previous/next scenes in story-time order for a scene.
     #[tool(
         description = "Get up to 3 previous and 3 next scenes by story_time_order fractional key for the given sceneId."
