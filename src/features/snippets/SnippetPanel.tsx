@@ -534,7 +534,7 @@ export function SnippetPanel() {
                                       "human",
                                   );
                                 }}
-                                className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-accent hover:text-accent-foreground group-hover:opacity-100 active:scale-[0.97] transition-transform duration-75"
+                                className="rounded p-0.5 text-muted-foreground opacity-0 transition-transform duration-75 hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100 group-focus-within:opacity-100 active:scale-[0.97]"
                               >
                                 <Copy className="h-3 w-3" />
                               </button>
@@ -546,7 +546,7 @@ export function SnippetPanel() {
                                   e.stopPropagation();
                                   initiateDelete(snippet.id);
                                 }}
-                                className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 active:scale-[0.97] transition-transform duration-75"
+                                className="rounded p-0.5 text-muted-foreground opacity-0 transition-transform duration-75 hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100 group-focus-within:opacity-100 active:scale-[0.97]"
                               >
                                 <Trash2 className="h-3 w-3" />
                               </button>
