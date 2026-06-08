@@ -13,10 +13,32 @@ import {
   type HistoryKind,
 } from "@/store/globalHistoryStore";
 import { useExternalWriteStore } from "./externalWriteStore";
-import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
+import {
+  useProseStagingStore,
+  type PendingProseProposal,
+} from "@/features/agent-writes/proseStagingStore";
 import { loadLatestProposedProse } from "@/features/agent-writes/prose";
 
 const POLL_MS = 750;
+
+/**
+ * Optional handler for incoming MCP/agent prose proposals (headless auto-apply).
+ * Injected via {@link setProseProposalHandler} so this low-level concurrency
+ * module need not import the heavy auto-apply graph (persistSceneBody → editor
+ * side-effects), mirroring the setUndoConflictHandler decoupling above. Returns
+ * true if it consumed the proposal (auto-applied) — then it is NOT enqueued into
+ * the human review UI; false falls back to the existing diff-UI enqueue.
+ */
+type ProseProposalHandler = (
+  proposal: PendingProseProposal,
+  projectId: string,
+) => boolean | Promise<boolean>;
+
+let proseProposalHandler: ProseProposalHandler | null = null;
+
+export function setProseProposalHandler(fn: ProseProposalHandler | null): void {
+  proseProposalHandler = fn;
+}
 
 /**
  * Surface a failed (version-conflict) undo/redo to the user. Defined here — not
@@ -145,9 +167,17 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   for (const sceneId of proseSceneIds) {
     try {
       const proposal = await loadLatestProposedProse(sceneId);
-      if (proposal) {
-        useProseStagingStore.getState().enqueue(proposal);
+      if (!proposal) continue;
+      if (proseProposalHandler) {
+        let consumed = false;
+        try {
+          consumed = await proseProposalHandler(proposal, projectId);
+        } catch (err) {
+          console.warn("[externalWriteFeed] prose auto-apply failed", err);
+        }
+        if (consumed) continue;
       }
+      useProseStagingStore.getState().enqueue(proposal);
     } catch {
       // ignore load failures; user can reopen scene to retry
     }

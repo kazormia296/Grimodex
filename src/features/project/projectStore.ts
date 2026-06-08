@@ -150,9 +150,20 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           void import("@/features/concurrency/externalWriteFeed").then(
             ({ startExternalWriteFeed }) => {
               if (generation !== loadProjectGeneration) return;
-              void startExternalWriteFeed(projectId).catch((err) =>
-                console.warn("[externalWriteFeed] start failed", err),
-              );
+              void startExternalWriteFeed(projectId)
+                .then(() => import("@/features/agent-writes/autoAcceptFeed"))
+                .then(
+                  ({ setupAutoAcceptProseConsumer, drainProposedProse }) => {
+                    if (generation !== loadProjectGeneration) return;
+                    // Register the live auto-apply handler (idempotent) and sweep
+                    // the proposed-prose backlog accumulated while closed.
+                    setupAutoAcceptProseConsumer();
+                    void drainProposedProse(projectId);
+                  },
+                )
+                .catch((err) =>
+                  console.warn("[externalWriteFeed] start failed", err),
+                );
             },
           );
         }

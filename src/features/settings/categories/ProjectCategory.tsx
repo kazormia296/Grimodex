@@ -39,6 +39,7 @@ export function ProjectCategory() {
     t("tree.defaultNote"),
   );
   const numberingScope = useSettingControl("tree.numberingScope", "project");
+  const autoAcceptBody = useSettingBoolean("ai.autoAcceptBodyProposals", false);
   const trashBinEnabled = useSettingBoolean("trashBin.enabled", true);
   const trashBinRetention = useSettingNumber("trashBin.retentionDays", 60);
 
@@ -411,6 +412,24 @@ export function ProjectCategory() {
               handleToggleChange("structureWrite", e.target.checked)
             }
             className="h-4 w-4 cursor-pointer rounded border-input"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.project.aiAutoAcceptBody",
+            "本文提案の自動適用（ヘッドレス）",
+          )}
+          description={t(
+            "settings.project.aiAutoAcceptBodyDesc",
+            "MCP/エージェントの本文提案を人間の承認なしで自動適用する（append のみ）。本文書き込みポリシーが ON のときのみ有効。",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={autoAcceptBody.value}
+            disabled={!currentPolicy.toggles.bodyWrite}
+            onChange={(e) => autoAcceptBody.setValue(e.target.checked)}
+            className="h-4 w-4 cursor-pointer rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
           />
         </SettingRow>
       </SettingSection>

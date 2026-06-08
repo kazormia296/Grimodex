@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { proseStaging } from "@/db/schema";
 import { invoke } from "@/lib/tauri";
@@ -147,4 +147,37 @@ export async function loadLatestProposedProse(
     replaceFrom: parsed.replaceFrom,
     replaceTo: parsed.replaceTo,
   };
+}
+
+/**
+ * Load every `proposed` staging row for a project (all scenes), oldest first.
+ * Used by the headless auto-apply consumer to drain the backlog accumulated
+ * while the app was closed (the change-event poller only sees rows newer than
+ * its start cursor, so pre-existing proposals would otherwise be missed).
+ */
+export async function loadAllProposedProse(
+  projectId: string,
+): Promise<PendingProseProposal[]> {
+  const rows = await db
+    .select()
+    .from(proseStaging)
+    .where(
+      and(
+        eq(proseStaging.projectId, projectId),
+        eq(proseStaging.status, "proposed"),
+      ),
+    )
+    .orderBy(asc(proseStaging.createdAt));
+
+  return rows.map((row) => {
+    const parsed = parseProposedContent(row.proposedContent);
+    return {
+      stagingId: row.id,
+      sceneId: row.sceneId,
+      text: parsed.text,
+      mode: parsed.mode,
+      replaceFrom: parsed.replaceFrom,
+      replaceTo: parsed.replaceTo,
+    };
+  });
 }
