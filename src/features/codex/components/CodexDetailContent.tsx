@@ -270,8 +270,15 @@ export function CodexDetailContent({
 
   const handleNameBlur = async () => {
     const trimmed = name.trim();
-    if (trimmed && trimmed !== entry.name) {
-      const oldName = entry.name;
+    // Read the live current name from the store, not the `entry` prop: the prop
+    // can lag a prior rename, which would make oldName the name from two edits
+    // ago. `update` keeps the store entry current, so this is always the value
+    // the user is editing away from.
+    const currentName =
+      useCodexStore.getState().entries.find((e) => e.id === entry.id)?.name ??
+      entry.name;
+    if (trimmed && trimmed !== currentName) {
+      const oldName = currentName;
       await update(entry.id, { name: trimmed });
       // Offer to propagate the rename to plain-text occurrences (Item C).
       // id-keyed references (@mentions, relations, pins, AI context) already

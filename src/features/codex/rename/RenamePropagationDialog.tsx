@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -56,17 +56,17 @@ export function RenamePropagationDialog() {
   const ambiguous = pending?.result.ambiguous ?? false;
 
   // Default selection: ambiguous → none; otherwise every non-ruby row.
+  // Re-initialised whenever a new rename session opens (idiomatic effect, not
+  // a render-phase setState which can wedge re-renders across sessions).
   const [checked, setChecked] = useState<Record<string, boolean>>({});
-  const [initializedFor, setInitializedFor] = useState<string | null>(null);
-  const sessionId = pending ? `${pending.entryId}:${pending.newName}` : null;
-  if (sessionId && sessionId !== initializedFor) {
+  useEffect(() => {
+    if (!pending) return;
     const init: Record<string, boolean> = {};
-    for (const o of occurrences) {
-      init[occKey(o)] = !ambiguous && !o.ruby;
+    for (const o of pending.result.occurrences) {
+      init[occKey(o)] = !pending.result.ambiguous && !o.ruby;
     }
     setChecked(init);
-    setInitializedFor(sessionId);
-  }
+  }, [pending]);
 
   const groups = useMemo<Group[]>(() => {
     const map = new Map<string, Group>();
@@ -117,8 +117,8 @@ export function RenamePropagationDialog() {
 
   return (
     <Dialog open={!!pending} onOpenChange={(o) => !o && close()}>
-      <DialogContent className="max-h-[80vh] max-w-2xl gap-3 overflow-hidden">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[85vh] w-full max-w-2xl flex-col gap-3 overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>
             「{pending?.oldName}」→「{pending?.newName}」を本文へ反映
           </DialogTitle>
@@ -129,7 +129,7 @@ export function RenamePropagationDialog() {
         </DialogHeader>
 
         {ambiguous && (
-          <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+          <div className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
             同名または別名が一致する別の Codex
             項目が存在します。どの項目を指すか
             自動判別できないため、既定ではすべてオフにしています。内容を確認のうえ
@@ -137,7 +137,7 @@ export function RenamePropagationDialog() {
           </div>
         )}
 
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
           <button className="hover:underline" onClick={() => setAll(true)}>
             すべて選択
           </button>
@@ -150,7 +150,7 @@ export function RenamePropagationDialog() {
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
           {groups.map((g) => (
             <div key={g.key} className="space-y-1">
-              <div className="sticky top-0 bg-background py-1 text-xs font-medium text-muted-foreground">
+              <div className="sticky top-0 z-10 bg-popover py-1 text-xs font-medium text-muted-foreground">
                 <span className="rounded bg-muted px-1.5 py-0.5">
                   {g.kindLabel}
                 </span>{" "}
@@ -192,7 +192,7 @@ export function RenamePropagationDialog() {
           ))}
         </div>
 
-        <DialogFooter className="items-center gap-2 sm:justify-between">
+        <DialogFooter className="shrink-0 items-center gap-2 sm:justify-between">
           <span className="text-xs text-muted-foreground">
             {selected.length} / {selectableCount} 件を選択中
           </span>
