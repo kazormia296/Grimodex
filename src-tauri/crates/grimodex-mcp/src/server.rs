@@ -350,7 +350,7 @@ impl GrimodexServer {
 
     /// Propose plain-text scene body prose (staged accept/reject in app). bodyWrite gate.
     #[tool(
-        description = "Propose plain-text body prose for a scene. Content is staged for user accept/reject in the app — not applied immediately. Disabled in readonly mode. File-backed scenes are excluded."
+        description = "Propose plain-text body prose for a scene. mode='append' (default) adds to the end; mode='insert' with anchor_text (a unique substring of an existing block, from read_scene) inserts before/after that block. Staged for user accept/reject in the app unless headless auto-apply is enabled. Disabled in readonly mode. File-backed scenes are excluded."
     )]
     async fn propose_scene_body(
         &self,

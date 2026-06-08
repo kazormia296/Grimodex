@@ -1,10 +1,10 @@
 import { setProseProposalHandler } from "@/features/concurrency/externalWriteFeed";
-import {
-  loadAllProposedProse,
-  type ProseStagingMode,
-} from "@/features/agent-writes/prose";
+import { loadAllProposedProse } from "@/features/agent-writes/prose";
 import { autoApplyProseProposal } from "@/features/agent-writes/autoApplyProse";
-import { isAutoAcceptEnabled } from "@/features/agent-writes/autoAcceptGate";
+import {
+  isAutoAcceptEnabled,
+  isHeadlessAppliable,
+} from "@/features/agent-writes/autoAcceptGate";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import type { PendingProseProposal } from "@/features/agent-writes/proseStagingStore";
 
@@ -23,8 +23,6 @@ import type { PendingProseProposal } from "@/features/agent-writes/proseStagingS
  *    the app was closed (the poller starts at the tail and never sees them).
  */
 
-const SUPPORTED_MODES: ReadonlySet<ProseStagingMode> = new Set(["append"]);
-
 // Guards against the poller and the backlog drain racing on the same row.
 const inFlight = new Set<string>();
 
@@ -34,7 +32,7 @@ const inFlight = new Set<string>();
  * should fall back to manual review (unsupported mode, file-backed, error).
  */
 async function applyOne(proposal: PendingProseProposal): Promise<boolean> {
-  if (!SUPPORTED_MODES.has(proposal.mode)) return false;
+  if (!isHeadlessAppliable(proposal)) return false;
   if (inFlight.has(proposal.stagingId)) return true;
   inFlight.add(proposal.stagingId);
   try {

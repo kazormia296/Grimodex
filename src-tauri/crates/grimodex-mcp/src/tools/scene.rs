@@ -142,8 +142,17 @@ pub struct ProposeSceneBodyParams {
     pub scene_id: String,
     /// Plain-text prose to stage for user accept/reject in the app.
     pub text: String,
-    /// "append" (default) or "insert".
+    /// "append" (default, end of scene) or "insert" (mid-scene; requires
+    /// anchor_text to be applied headlessly).
     pub mode: Option<String>,
+    /// For mode="insert": a UNIQUE substring of an existing block in the scene
+    /// (read it via read_scene). The prose is inserted before/after the block
+    /// containing it. If it matches zero or multiple blocks, the proposal is
+    /// left for manual review instead of guessing. Without it, an "insert"
+    /// proposal can only be placed by a human in the app (no headless cursor).
+    pub anchor_text: Option<String>,
+    /// "after" (default) or "before" the anchored block.
+    pub anchor_position: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,6 +199,16 @@ pub async fn propose_scene_body(
         _ => "append",
     };
 
+    let anchor_text = params
+        .anchor_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let anchor_position = match params.anchor_position.as_deref() {
+        Some("before") => "before",
+        _ => "after",
+    };
+
     let staging_id = uuid::Uuid::new_v4().to_string();
     let event_uid = uuid::Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -222,10 +241,18 @@ pub async fn propose_scene_body(
             ));
         }
 
-        let content_json = serde_json::json!({
-            "mode": mode,
-            "text": text,
-        });
+        let content_json = match anchor_text {
+            Some(at) => serde_json::json!({
+                "mode": mode,
+                "text": text,
+                "anchorText": at,
+                "anchorPosition": anchor_position,
+            }),
+            None => serde_json::json!({
+                "mode": mode,
+                "text": text,
+            }),
+        };
 
         conn.execute(
             "INSERT INTO prose_staging

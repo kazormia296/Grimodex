@@ -2,6 +2,22 @@ import { getProject } from "@/features/project/api";
 import { isBodyWriteDisabled } from "@/features/ai-policy/parse";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import type { PendingProseProposal } from "@/features/agent-writes/proseStagingStore";
+
+/**
+ * Whether a proposal can be applied headlessly (no live editor): `append`
+ * always; `insert` only when it carries a content anchor. `insert` without an
+ * anchor and `replace` need a live cursor / doc range, so they stay in the diff
+ * UI for manual review. Single source of truth for "auto-apply owns this" —
+ * used both by the consumer and the diff-UI suppression so they never disagree.
+ */
+export function isHeadlessAppliable(
+  proposal: Pick<PendingProseProposal, "mode" | "anchorText">,
+): boolean {
+  if (proposal.mode === "append") return true;
+  if (proposal.mode === "insert" && !!proposal.anchorText) return true;
+  return false;
+}
 
 /**
  * Headless body auto-apply gate: opt-in toggle (`ai.autoAcceptBodyProposals`,

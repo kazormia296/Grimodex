@@ -30,6 +30,8 @@ vi.mock("@/features/agent-writes/prose", () => ({
 }));
 vi.mock("@/features/agent-writes/autoAcceptGate", () => ({
   isAutoAcceptEnabled: h.isAutoAcceptEnabled,
+  isHeadlessAppliable: (p: { mode: string; anchorText?: string }) =>
+    p.mode === "append" || (p.mode === "insert" && !!p.anchorText),
 }));
 vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => "proj-1",
@@ -83,7 +85,7 @@ describe("useAgentProseStaging — diff-UI surfacing vs auto-apply", () => {
     await waitFor(() => expect(h.enqueue).toHaveBeenCalledTimes(1));
   });
 
-  it("always surfaces insert/replace (never auto-applied), without a gate check", async () => {
+  it("surfaces a non-anchored insert (never auto-applied), without a gate check", async () => {
     h.enabled = true;
     h.proposal = {
       stagingId: "s1",
@@ -94,5 +96,20 @@ describe("useAgentProseStaging — diff-UI surfacing vs auto-apply", () => {
     renderHook(() => useAgentProseStaging(null, "scene-1", diffApi));
     await waitFor(() => expect(h.enqueue).toHaveBeenCalledTimes(1));
     expect(h.isAutoAcceptEnabled).not.toHaveBeenCalled();
+  });
+
+  it("does NOT surface an anchored insert when auto-accept is enabled", async () => {
+    h.enabled = true;
+    h.proposal = {
+      stagingId: "s1",
+      sceneId: "scene-1",
+      text: "x",
+      mode: "insert",
+      anchorText: "somewhere",
+    };
+    renderHook(() => useAgentProseStaging(null, "scene-1", diffApi));
+    await waitFor(() => expect(h.isAutoAcceptEnabled).toHaveBeenCalled());
+    await flush();
+    expect(h.enqueue).not.toHaveBeenCalled();
   });
 });

@@ -8,6 +8,14 @@ export interface PendingProseProposal {
   mode: ProseStagingMode;
   replaceFrom?: number;
   replaceTo?: number;
+  /**
+   * Headless content-addressable anchor for `insert` mode: a unique substring
+   * of an existing block. The headless applier inserts the new prose
+   * before/after the block containing it (external agents have no live cursor,
+   * so position is specified by content, not a ProseMirror offset).
+   */
+  anchorText?: string;
+  anchorPosition?: "before" | "after";
 }
 
 interface ProseStagingState {

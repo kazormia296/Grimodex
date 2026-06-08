@@ -112,7 +112,7 @@ describe("auto-accept gate (live handler)", () => {
     expect(h.autoApplyProseProposal).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves insert/replace for human review (not consumed, not applied)", async () => {
+  it("leaves non-anchored insert/replace for human review (not consumed, not applied)", async () => {
     h.state.toggleOn = true;
     setupAutoAcceptProseConsumer();
     for (const mode of ["insert", "replace"] as const) {
@@ -120,6 +120,17 @@ describe("auto-accept gate (live handler)", () => {
       expect(consumed).toBe(false);
     }
     expect(h.autoApplyProseProposal).not.toHaveBeenCalled();
+  });
+
+  it("applies an anchored insert when fully enabled", async () => {
+    h.state.toggleOn = true;
+    setupAutoAcceptProseConsumer();
+    const consumed = await h.handler!(
+      proposal({ mode: "insert", anchorText: "somewhere" }),
+      "proj-1",
+    );
+    expect(consumed).toBe(true);
+    expect(h.autoApplyProseProposal).toHaveBeenCalledTimes(1);
   });
 });
 

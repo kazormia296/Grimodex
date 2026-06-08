@@ -87,6 +87,21 @@ function aiMarkedText(doc: ProseMirrorNode): string {
   return out;
 }
 
+const TWO_PARA = JSON.stringify({
+  type: "doc",
+  content: [
+    { type: "paragraph", content: [{ type: "text", text: "First alpha." }] },
+    { type: "paragraph", content: [{ type: "text", text: "Second beta." }] },
+  ],
+});
+
+/** Top-level block texts of a doc, in order. */
+function blockTexts(doc: ProseMirrorNode): string[] {
+  const out: string[] = [];
+  doc.forEach((n) => out.push(n.textContent));
+  return out;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   h.state.sceneContent = HELLO_DOC;
@@ -159,6 +174,66 @@ describe("autoApplyProseProposal — append", () => {
     await autoApplyProseProposal(proposal());
     expect(h.setLiveContent).toHaveBeenCalledTimes(1);
     expect(h.setLiveContent.mock.calls[0][0]).toBe("scene-1");
+  });
+});
+
+describe("autoApplyProseProposal — anchored insert", () => {
+  beforeEach(() => {
+    h.state.sceneContent = TWO_PARA;
+  });
+
+  it("inserts after the anchored block", async () => {
+    const result = await autoApplyProseProposal(
+      proposal({
+        mode: "insert",
+        anchorText: "alpha",
+        anchorPosition: "after",
+      }),
+    );
+    expect(result.applied).toBe(true);
+    const [, doc] = h.persistSceneBody.mock.calls[0];
+    expect(blockTexts(doc)).toEqual(["First alpha.", "World", "Second beta."]);
+    expect(aiMarkedText(doc)).toBe("World");
+  });
+
+  it("inserts before the anchored block", async () => {
+    const result = await autoApplyProseProposal(
+      proposal({
+        mode: "insert",
+        anchorText: "alpha",
+        anchorPosition: "before",
+      }),
+    );
+    expect(result.applied).toBe(true);
+    const [, doc] = h.persistSceneBody.mock.calls[0];
+    expect(blockTexts(doc)).toEqual(["World", "First alpha.", "Second beta."]);
+  });
+
+  it("defaults to inserting after when position is omitted", async () => {
+    const result = await autoApplyProseProposal(
+      proposal({ mode: "insert", anchorText: "beta" }),
+    );
+    expect(result.applied).toBe(true);
+    const [, doc] = h.persistSceneBody.mock.calls[0];
+    expect(blockTexts(doc)).toEqual(["First alpha.", "Second beta.", "World"]);
+  });
+
+  it("aborts when the anchor matches no block", async () => {
+    const result = await autoApplyProseProposal(
+      proposal({ mode: "insert", anchorText: "nonexistent" }),
+    );
+    expect(result).toEqual({ applied: false, reason: "anchor-not-found" });
+    expect(h.persistSceneBody).not.toHaveBeenCalled();
+    expect(h.agentAcceptProseStage).not.toHaveBeenCalled();
+  });
+
+  it("aborts when the anchor matches multiple blocks (ambiguous)", async () => {
+    // "a" appears in both "alpha" and "beta" → 2 matches → refuse to guess.
+    const result = await autoApplyProseProposal(
+      proposal({ mode: "insert", anchorText: "a" }),
+    );
+    expect(result).toEqual({ applied: false, reason: "anchor-ambiguous" });
+    expect(h.persistSceneBody).not.toHaveBeenCalled();
   });
 });
 

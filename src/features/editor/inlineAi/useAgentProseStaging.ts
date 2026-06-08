@@ -6,7 +6,10 @@ import {
   agentDiscardProseStage,
   loadLatestProposedProse,
 } from "@/features/agent-writes/prose";
-import { isAutoAcceptEnabled } from "@/features/agent-writes/autoAcceptGate";
+import {
+  isAutoAcceptEnabled,
+  isHeadlessAppliable,
+} from "@/features/agent-writes/autoAcceptGate";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useInlineAiStore } from "./inlineAiStore";
 
@@ -44,13 +47,14 @@ export function useAgentProseStaging(
     void loadLatestProposedProse(sceneId).then(async (proposal) => {
       if (cancelled || !proposal) return;
       if (useInlineAiStore.getState().status !== "idle") return;
-      // Headless auto-apply owns appendable proposals. If it is enabled, do NOT
-      // also surface them in the diff UI — the backlog drain / poller will apply
-      // them, and showing a diff for an already-applied (now 'accepted') row
-      // causes a double-apply and an "entry is not in proposed status" error on
-      // accept. insert/replace are never auto-applied, so they still surface.
+      // Headless auto-apply owns appendable / anchored-insert proposals. If it
+      // is enabled, do NOT also surface them in the diff UI — the backlog drain
+      // / poller will apply them, and showing a diff for an already-applied (now
+      // 'accepted') row causes a double-apply and an "entry is not in proposed
+      // status" error on accept. Non-anchored insert / replace are never
+      // auto-applied, so they still surface for manual placement.
       if (
-        proposal.mode === "append" &&
+        isHeadlessAppliable(proposal) &&
         (await isAutoAcceptEnabled(getCurrentProjectId()))
       ) {
         return;

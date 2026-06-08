@@ -31,6 +31,8 @@ export interface ParsedProseProposal {
   text: string;
   replaceFrom?: number;
   replaceTo?: number;
+  anchorText?: string;
+  anchorPosition?: "before" | "after";
 }
 
 export function parseProposedContent(raw: string): ParsedProseProposal {
@@ -40,16 +42,26 @@ export function parseProposedContent(raw: string): ParsedProseProposal {
       text?: string;
       replaceFrom?: number;
       replaceTo?: number;
+      anchorText?: string;
+      anchorPosition?: string;
     };
     const mode =
       parsed.mode === "replace" || parsed.mode === "insert"
         ? parsed.mode
         : "append";
+    const anchorText =
+      typeof parsed.anchorText === "string" && parsed.anchorText.length > 0
+        ? parsed.anchorText
+        : undefined;
+    const anchorPosition =
+      parsed.anchorPosition === "before" ? "before" : "after";
     return {
       mode,
       text: String(parsed.text ?? ""),
       replaceFrom: parsed.replaceFrom,
       replaceTo: parsed.replaceTo,
+      anchorText,
+      anchorPosition: anchorText ? anchorPosition : undefined,
     };
   } catch {
     return { mode: "append", text: raw };
@@ -146,6 +158,8 @@ export async function loadLatestProposedProse(
     mode: parsed.mode,
     replaceFrom: parsed.replaceFrom,
     replaceTo: parsed.replaceTo,
+    anchorText: parsed.anchorText,
+    anchorPosition: parsed.anchorPosition,
   };
 }
 
@@ -178,6 +192,8 @@ export async function loadAllProposedProse(
       mode: parsed.mode,
       replaceFrom: parsed.replaceFrom,
       replaceTo: parsed.replaceTo,
+      anchorText: parsed.anchorText,
+      anchorPosition: parsed.anchorPosition,
     };
   });
 }

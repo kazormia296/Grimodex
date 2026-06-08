@@ -21,11 +21,46 @@ export type AutoApplySkipReason =
   | "empty-text"
   | "scene-missing"
   | "file-backed"
-  | "content-unparseable";
+  | "content-unparseable"
+  | "anchor-not-found"
+  | "anchor-ambiguous";
 
 export interface AutoApplyOutcome {
   applied: boolean;
   reason?: AutoApplySkipReason;
+}
+
+export type AnchorResolve =
+  | { pos: number }
+  | { error: "anchor-not-found" | "anchor-ambiguous" };
+
+/**
+ * Resolve a content anchor to a top-level block boundary for headless insertion.
+ * Finds the single top-level block whose text contains `anchorText` and returns
+ * the position before/after it. Zero or multiple matches → an error (the caller
+ * must NOT guess; it leaves the proposal for manual review). Block boundaries
+ * are valid insertion points for the block paragraphs the applier builds.
+ */
+export function resolveAnchorInsertPos(
+  doc: ProseMirrorNode,
+  anchorText: string,
+  position: "before" | "after",
+): AnchorResolve {
+  const needle = anchorText.trim();
+  if (!needle) return { error: "anchor-not-found" };
+  let count = 0;
+  let offset = 0;
+  let size = 0;
+  doc.forEach((node, nodeOffset) => {
+    if (node.textContent.includes(needle)) {
+      count += 1;
+      offset = nodeOffset;
+      size = node.nodeSize;
+    }
+  });
+  if (count === 0) return { error: "anchor-not-found" };
+  if (count > 1) return { error: "anchor-ambiguous" };
+  return { pos: position === "before" ? offset : offset + size };
 }
 
 let cachedSchema: Schema | null = null;
@@ -84,9 +119,10 @@ function openSceneIds(): Set<string> {
  * the full side-effect cascade (authorship_spans, mentions, semantic re-index,
  * …) fires identically to a live save.
  *
- * v1 supports APPEND only. `insert` needs a live caret position and `replace`
- * needs live doc ranges, neither of which can be reconstructed headlessly, so
- * those rows are left `proposed` for a human to review in the diff UI.
+ * Supports `append` (end of scene) and anchored `insert` (mid-scene, positioned
+ * by `anchorText` content). Plain `insert` (live caret) and `replace` (live doc
+ * range) can't be reconstructed headlessly, so those rows are left `proposed`
+ * for a human to review in the diff UI.
  *
  * Ordering note: the staging row is finalized (`accepted`) BEFORE the body
  * write. This trades a recoverable lost-write (write fails after the flip → the
@@ -97,9 +133,14 @@ function openSceneIds(): Set<string> {
 export async function autoApplyProseProposal(
   proposal: PendingProseProposal,
 ): Promise<AutoApplyOutcome> {
-  const { stagingId, sceneId, text, mode } = proposal;
+  const { stagingId, sceneId, text, mode, anchorText } = proposal;
 
-  if (mode !== "append") return { applied: false, reason: "unsupported-mode" };
+  // Headless-appliable: append (end of scene) or anchored insert (mid-scene by
+  // content). Plain insert (live cursor) and replace (live range) are not.
+  const anchored = mode === "insert" && !!anchorText;
+  if (mode !== "append" && !anchored) {
+    return { applied: false, reason: "unsupported-mode" };
+  }
   if (!text.trim()) return { applied: false, reason: "empty-text" };
 
   const node = useTreeStore.getState().nodes.find((n) => n.id === sceneId);
@@ -114,12 +155,28 @@ export async function autoApplyProseProposal(
   // Fail safe: never replace unreadable-but-present prose with an empty doc.
   if (!doc) return { applied: false, reason: "content-unparseable" };
 
-  // Append the prose as new paragraph node(s) with the `authorship`
+  // Resolve the insertion position: end-of-doc for append, or the anchored
+  // block boundary for a content-anchored insert (fail safe on 0/multiple
+  // matches — never guess where to splice an unattended write).
+  let insertPos: number;
+  if (anchored) {
+    const resolved = resolveAnchorInsertPos(
+      doc,
+      anchorText!,
+      proposal.anchorPosition ?? "after",
+    );
+    if ("error" in resolved) return { applied: false, reason: resolved.error };
+    insertPos = resolved.pos;
+  } else {
+    insertPos = doc.content.size;
+  }
+
+  // Build the prose as new paragraph node(s) with the `authorship`
   // (source='ai') mark BAKED INTO the text nodes. Marking by node construction —
   // rather than insertText + an addMark range — guarantees the mark covers
-  // exactly the inserted text: inserting at the doc-end boundary remaps the
-  // position into the last block, which makes a `pos+text.length` range off by
-  // one. Splitting on "\n" turns a multi-paragraph draft into real paragraphs.
+  // exactly the inserted text (an inserted position can remap, making a
+  // `pos+text.length` range off by one). Splitting on "\n" turns a
+  // multi-paragraph draft into real paragraphs.
   const paragraphType = schema.nodes["paragraph"];
   if (!paragraphType) throw new Error("schema is missing a paragraph node");
   // model is unknown for an external MCP/agent write, so it is left null (honest
@@ -136,7 +193,7 @@ export async function autoApplyProseProposal(
 
   const state = EditorState.create({ schema, doc });
   const tr = state.tr;
-  tr.insert(state.doc.content.size, paragraphs);
+  tr.insert(insertPos, paragraphs);
   const nextDoc = state.apply(tr).doc;
 
   // Finalize first (cross-poll dedup guard — see ordering note above).
