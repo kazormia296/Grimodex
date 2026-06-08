@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import i18next from "i18next";
+import { toast } from "sonner";
 import {
   Trash2,
   ArrowLeft,
@@ -22,6 +23,7 @@ import { chatMessages, chatSessions } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexStore } from "../codexStore";
+import { parseAliases } from "../codexMatcher";
 import { prepareRenamePropagation } from "../rename/renameEngine";
 import { useRenamePropagationStore } from "../rename/renamePropagationStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -279,6 +281,21 @@ export function CodexDetailContent({
       entry.name;
     if (trimmed && trimmed !== currentName) {
       const oldName = currentName;
+      // Warn if another entry already uses the new name (as name or alias):
+      // both entries then match the same string, so future codex matching — and
+      // any prose rewritten to this name — becomes ambiguous.
+      const collision = useCodexStore
+        .getState()
+        .entries.find(
+          (e) =>
+            e.id !== entry.id &&
+            (e.name === trimmed || parseAliases(e.aliases).includes(trimmed)),
+        );
+      if (collision) {
+        toast.warning(
+          `「${trimmed}」は既に他の Codex 項目で使われています。本文マッチングが曖昧になります。`,
+        );
+      }
       await update(entry.id, { name: trimmed });
       // Offer to propagate the rename to plain-text occurrences (Item C).
       // id-keyed references (@mentions, relations, pins, AI context) already
