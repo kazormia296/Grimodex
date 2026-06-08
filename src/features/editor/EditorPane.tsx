@@ -14,7 +14,6 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
-import { scheduleWriteBack } from "@/features/external-mount/writeBack";
 import { FileBackedSceneBanner } from "@/features/external-mount/components/FileBackedSceneBanner";
 import { NoteContextControls } from "@/features/editor/NoteContextControls";
 import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
@@ -22,24 +21,15 @@ import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
 import { useTreeStore } from "@/features/tree/treeStore";
-import {
-  loadSceneFull,
-  savePlacedBeatPreviewOnly,
-  saveSceneContent,
-} from "@/features/tree/api";
-import { countSceneBodyChars } from "@/features/editor/charCountForBody";
+import { loadSceneFull, savePlacedBeatPreviewOnly } from "@/features/tree/api";
+import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import { countBeats } from "@/features/editor/beat/countBeats";
 import {
   extractPlacedBeatPreview,
   extractPlacedBeatPreviewFromDoc,
 } from "@/features/editor/beat/placedBeatPreview";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
-import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
-import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { extractBeatPovOverrides } from "@/features/editor/beat/extractBeatPovOverrides";
-import { upsertSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
-import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getCodexEntry } from "@/features/codex/api";
 import type {
@@ -80,16 +70,13 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useSettingNumber } from "@/features/settings/useSettingControl";
 import { useCharCountMilestone } from "@/features/editor/useCharCountMilestone";
 import {
-  saveAuthorshipSpans,
   loadAuthorshipSpans,
   spansToMarkData,
 } from "@/features/attribution/api";
 import {
-  saveForeshadowAnchors,
   loadForeshadowAnchors,
   clearAllForeshadowMarks,
 } from "@/features/foreshadow/saveAnchors";
-import { saveAnnotationAnchors } from "@/features/post-effect/syncAnnotations";
 import { listAnnotationsForScene } from "@/features/post-effect/api";
 import {
   clampMarkRange,
@@ -136,8 +123,6 @@ import { useLinter } from "@/features/lint/useLinter";
 import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { AiPolicyBadge } from "@/features/ai-policy/AiPolicyBadge";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
-import { useChatStore } from "@/features/chat/chatStore";
-import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
 import { findChunkInDoc } from "@/features/semantic-search/findChunkInDoc";
 import { debugLog, errorDetail } from "@/lib/debugLog";
@@ -402,153 +387,9 @@ export function EditorPane({
       await updateSnippet(getCurrentProjectId(), id, { content });
       useSnippetStore.getState().update(id, { content });
     } else {
-      const doc = ed.state.doc;
-      markStart("editor.coreSave.countChars");
-      const charCount = countSceneBodyChars(doc);
-      markEnd("editor.coreSave.countChars");
-      const beats = useUnplacedBeatsStore.getState().getBeats(id);
-      const unplacedBeatsDoc = JSON.stringify(beats);
-      markStart("editor.coreSave.getJSON");
-      const sceneJsonStr = JSON.stringify(ed.getJSON());
-      markEnd("editor.coreSave.getJSON");
-      markStart("editor.coreSave.invokeSave");
-      const { placedBeatPreview, unplacedBeatPreview } = await saveSceneContent(
-        id,
-        {
-          content: sceneJsonStr,
-          unplacedBeatsDoc,
-          charCount,
-        },
-      );
-      markEnd("editor.coreSave.invokeSave");
-
-      const fileBackedUri = useTreeStore
-        .getState()
-        .nodes.find((n) => n.id === id)?.sourceUri;
-      if (fileBackedUri && isFileBackedNode(fileBackedUri)) {
-        scheduleWriteBack(id, fileBackedUri, sceneJsonStr);
-        useTreeStore.getState().setCharCount(id, charCount);
-        scheduleSceneIndex(id);
-
-        // file-backed Scene でも schema 非依存の Codex 本文検出とチャット
-        // context 再構築は実行する。他の schema 依存処理
-        // (authorship/foreshadow/annotation/sceneBeat/aiRatio) は
-        // file-backed editor 拡張で外しているため空打ちになるのでスキップ。
-        const allEntries = useCodexStore.getState().entries;
-        if (allEntries.length > 0) {
-          setTimeout(() => {
-            markStart("editor.coreSave.bodyMentionUpsert");
-            upsertSceneBodyMentions(id, sceneJsonStr, allEntries)
-              .catch((e) => {
-                debugLog.error(
-                  "EditorPane",
-                  "upsertSceneBodyMentions failed (file-backed)",
-                  errorDetail(e),
-                );
-              })
-              .finally(() => {
-                markEnd("editor.coreSave.bodyMentionUpsert");
-              });
-          }, 0);
-        }
-        const chatState = useChatStore.getState();
-        if (chatState.activeSceneId === id) {
-          markStart("editor.coreSave.refreshContextLayers");
-          chatState
-            .refreshContextLayers()
-            .catch(() => {})
-            .finally(() => markEnd("editor.coreSave.refreshContextLayers"));
-        }
-
-        markEnd("editor.coreSave");
-        return;
-      }
-
-      markStart("editor.coreSave.treeMirror");
-      useTreeStore.getState().setNodePreview(id, {
-        placed: placedBeatPreview ?? null,
-        unplaced: unplacedBeatPreview ?? null,
-      });
-      markEnd("editor.coreSave.treeMirror");
-      markStart("editor.coreSave.saveAuthorship");
-      await saveAuthorshipSpans(id, ed.state.doc);
-      markEnd("editor.coreSave.saveAuthorship");
-      markStart("editor.coreSave.saveForeshadow");
-      await saveForeshadowAnchors(id, ed.state.doc);
-      markEnd("editor.coreSave.saveForeshadow");
-      markStart("editor.coreSave.saveAnnotations");
-      await saveAnnotationAnchors(
-        useTreeStore.getState().projectId,
-        id,
-        ed.state.doc,
-      );
-      markEnd("editor.coreSave.saveAnnotations");
-      markStart("editor.coreSave.extractBeatMentions");
-      const beatMentions = extractBeatMentions(doc);
-      markEnd("editor.coreSave.extractBeatMentions");
-      markStart("editor.coreSave.upsertBeatMentions");
-      upsertSceneBeatMentions(id, beatMentions)
-        .catch((e) => {
-          debugLog.error(
-            "EditorPane",
-            "upsertSceneBeatMentions failed",
-            errorDetail(e),
-          );
-        })
-        .finally(() => markEnd("editor.coreSave.upsertBeatMentions"));
-      markStart("editor.coreSave.extractBeatPovOverrides");
-      const beatPovOverrides = extractBeatPovOverrides(doc);
-      markEnd("editor.coreSave.extractBeatPovOverrides");
-      markStart("editor.coreSave.upsertBeatPovOverrides");
-      upsertSceneBeatPovOverrides(id, beatPovOverrides)
-        .catch((e) => {
-          debugLog.error(
-            "EditorPane",
-            "upsertSceneBeatPovOverrides failed",
-            errorDetail(e),
-          );
-        })
-        .finally(() => markEnd("editor.coreSave.upsertBeatPovOverrides"));
-      // Deferred body-mention scan — does not block the save response
-      const allEntries = useCodexStore.getState().entries;
-      if (allEntries.length > 0) {
-        markStart("editor.coreSave.bodyMentionGetJSON");
-        const docJsonStr = JSON.stringify(ed.getJSON());
-        markEnd("editor.coreSave.bodyMentionGetJSON");
-        setTimeout(() => {
-          markStart("editor.coreSave.bodyMentionUpsert");
-          upsertSceneBodyMentions(id, docJsonStr, allEntries)
-            .catch((e) => {
-              debugLog.error(
-                "EditorPane",
-                "upsertSceneBodyMentions failed",
-                errorDetail(e),
-              );
-            })
-            .finally(() => {
-              markEnd("editor.coreSave.bodyMentionUpsert");
-            });
-        }, 0);
-      }
-      markStart("editor.coreSave.refreshAiRatio");
-      useTreeStore
-        .getState()
-        .refreshAiRatio(id)
-        .catch(() => {})
-        .finally(() => markEnd("editor.coreSave.refreshAiRatio"));
-      const chatState = useChatStore.getState();
-      if (chatState.activeSceneId === id) {
-        markStart("editor.coreSave.refreshContextLayers");
-        chatState
-          .refreshContextLayers()
-          .catch(() => {})
-          .finally(() => markEnd("editor.coreSave.refreshContextLayers"));
-      }
-      // セマンティック検索の再インデックスを debounce 付きで予約する。
-      // 連続入力中は 2.5s おきに後ろへずれ、ユーザが手を止めてから 1 度だけ
-      // Rust 側 `semantic_index_scene` を呼ぶ。正しさは Rust 側 content_hash
-      // 再検証で担保される (§3.4)。
-      scheduleSceneIndex(id);
+      // 本文保存の全副作用カスケードは persistSceneBody が正本。
+      // ライブエディタもエージェントの off-screen 自動適用も同じ経路を通す。
+      await persistSceneBody(id, ed.state.doc);
     }
     markEnd("editor.coreSave");
   }, []);
