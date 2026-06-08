@@ -555,6 +555,46 @@ describe("CodexManagementPanel", () => {
     });
   });
 
+  // --- Keyboard navigation (ArrowUp/ArrowDown) keeps selection in view ---
+
+  describe("Keyboard navigation scroll-follow", () => {
+    it("scrolls the newly-selected entry into view on ArrowDown", async () => {
+      // Regression: ↓/↑ で選択を動かしても、選択中の項目が画面外に出たまま
+      // スクロールが追従しなかった。キーボード移動が scrollToEntryId 経由で
+      // リスト側のスクロール（category 既定パスは scrollIntoView）を発火する
+      // ことを固定する。happy-dom は実寸を持たないため「実際に見えるか」では
+      // なく配線（scroll 呼び出し）を gate する。
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+
+      // happy-dom は scrollIntoView を実装しないことがあるため明示的に差し込む。
+      const scrollSpy = vi.fn();
+      Element.prototype.scrollIntoView =
+        scrollSpy as unknown as typeof Element.prototype.scrollIntoView;
+
+      render(<CodexManagementPanel />);
+
+      await waitFor(() => {
+        expect(screen.getByText("アリス")).toBeInTheDocument();
+      });
+
+      // 先頭エントリを選択してから ↓ を押す（既定 sort は category）。
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
+      scrollSpy.mockClear();
+
+      screen.getByTestId("codex-management-panel").focus();
+      fireEvent.keyDown(document, { key: "ArrowDown" });
+
+      // 選択が次のエントリへ移り、その要素へスクロールが発火する。
+      await waitFor(() => {
+        expect(screen.getByTestId("codex-entry-codex-2")).toHaveClass(
+          "bg-accent",
+        );
+      });
+      expect(scrollSpy).toHaveBeenCalled();
+    });
+  });
+
   // --- Integration: Register → Search → Edit → Source reference ---
 
   describe("Integration: register → search → edit → source reference", () => {

@@ -109,7 +109,10 @@ function VirtualizedEntryList({
     if (!scrollToEntryId) return;
     const idx = entries.findIndex((e) => e.id === scrollToEntryId);
     if (idx !== -1) {
-      virtualizer.scrollToIndex(idx, { align: "start", behavior: "smooth" });
+      // "auto" scrolls the minimum amount (nearest edge) and no-ops when the
+      // target is already visible — matches the category list's block:"nearest"
+      // and avoids jumping the item to the top on every arrow-key press.
+      virtualizer.scrollToIndex(idx, { align: "auto", behavior: "smooth" });
     }
     onScrollComplete?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -725,7 +728,11 @@ export function CodexManagementPanel({
           e.key === "ArrowDown"
             ? Math.min(idx + 1, navigableEntries.length - 1)
             : Math.max(idx - 1, 0);
-        handleSelectEntry(navigableEntries[next]);
+        const nextEntry = navigableEntries[next];
+        handleSelectEntry(nextEntry);
+        // Keep the newly-selected entry in view (the list scrolls itself via
+        // scrollToEntryId; without this the selection can move off-screen).
+        setScrollToEntryId(nextEntry.id);
         e.preventDefault();
         return;
       }
