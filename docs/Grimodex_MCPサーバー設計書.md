@@ -765,16 +765,21 @@ Codex エントリの詳細を取得する。
 | `get_chapter_summaries` | R | o | folder 単位のシーン synopsis 一覧 |
 | `list_open_foreshadows` | R | o | 未回収伏線一覧（secret 除外） |
 | `get_foreshadow_detail` | R | o | 単一伏線の詳細（setups / payoff） |
+| `create_foreshadow` | W | o | 伏線新規作成（knowledgeWrite gate・secret 既定 true） |
+| `update_foreshadow` | W | o | 伏線更新（knowledgeWrite gate・project スコープ） |
 | `get_scene_timeline_neighbors` | R | o | story-time 前後シーン（最大各3件） |
 | `write_scene` | W | v2 | シーン本文書き込み |
 | `create_scene` | W | v2 | シーン新規作成 |
 | `update_scene_metadata` | W | v2 | シーンメタデータ更新 |
+| `semantic_search` | R | defer | セマンティック検索（§3.11・モデルパス解決が前提） |
 
 **`tools/list` 件数（現行）**: プロジェクト管理 2（`list_projects` / `select_project`）
-+ 読み取り 19 + 書き込み 4 = **25 ツール**
-（write 4 = create_codex_entry / update_codex_entry / create_snippet / propose_scene_body。
++ 読み取り 19 + 書き込み 6 = **27 ツール**
+（write 6 = create_codex_entry / update_codex_entry / create_snippet / propose_scene_body
+/ create_foreshadow / update_foreshadow。
 `select_project` は DB を書かずセッションの current project を切替えるだけ。
-write_scene 等の scene 書き込みは v2 で未実装ゆえ tools/list に出ない）。
+write_scene 等の scene 書き込みは v2 で未実装ゆえ tools/list に出ない。
+`semantic_search` は defer（§3.11）ゆえ tools/list に出ない）。
 クラウド LLM クライアント（Claude Desktop / Claude Code / Hermes Agent 等）では
 **`--readonly` 付きで起動する**ことを推奨。ただし `--readonly` は **call-time gate** であり、
 write 4 ツールは tools/list には**載る**が、呼び出すと「readonly mode」エラーを返す
@@ -827,6 +832,33 @@ Grimodex 内蔵 Agent の read-only executor 14 種のうち、専用 MCP ツー
 スキーマに対してコードを書けるよう、DTO 定義のみ Phase 1 で凍結済み
 （`tools/lint.rs` の `LintDiagnosticDto` 他）。
 座標系は LSP に合わせ `line` = 1-origin、`column` / `length` = 0-origin UTF-16 コードユニット。
+
+### 3.11 セマンティック検索ツール（defer 判断 / 2026-06-08）
+
+外部エージェントの retrieval を強化する `semantic_search`（読み取り専用）を MCP に
+出す案を検討したが、**「公開するだけ」では実装できない**ことが判明したため defer する。
+
+**フィージビリティの壁:**
+
+- `grimodex-mcp` クレートの依存は `grimodex-core` + rusqlite 等のみで、embedding 基盤
+  （`ort` / `tokenizers` / `ndarray`）も推論コード（`src-tauri/src/semantic/` = 本体
+  `grimodex_lib` 側、`semantic-embedding` feature gate）も**持たない**。
+- 本命のボトルネックは依存の重さではなく **スタンドアロン stdio バイナリでのモデルパス解決**。
+  仮に embedding コードを共有クレートへ抽出しても、MCP バイナリには `tauri::AppHandle` が
+  無く `model_int8.onnx` / `tokenizer.json` を**どこから読むか**が未解決のまま残る。
+- `ort` を MCP バイナリに足すと、CLAUDE.md が警告する libort_sys の glibc symbol mismatch
+  によるローカルリンク失敗が MCP 側にも再来する。
+
+**選択肢（採用＝A）:**
+
+| 案 | 内容 | 評価 |
+|----|------|------|
+| **A. defer（採用）** | 本ドキュメントに壁を記録し、別途設計で着手 | 最小リスク。foreshadow write を先に確定 |
+| B. フル抽出 | `src-tauri/src/semantic` を共有クレート化＋MCP に ort 追加＋モデルパスを env/config で解決 | 大規模・ビルド重・glibc/ort 痛が MCP に再来 |
+| C. アプリ委譲 | クエリ embedding を起動中アプリにローカル IPC で委譲 | アプリ起動中のみ動作・実行時結合とプロトコル追加が必要 |
+
+着手時は **案 B のモデルパス解決サブ問題**を先に潰すこと。詳細は
+`docs/Grimodex_セマンティック検索設計書.md`（本体側の embedding 経路）を参照。
 
 ---
 
@@ -1087,6 +1119,16 @@ Options:
     外部書き込みを安全にハンドリングできることを確認してから書き込みツールを有効化する
   - 暫定対応: MCP で Codex を更新した後、ユーザーに Grimodex 側で
     パネルを閉じて開き直す旨を返答メッセージに含める
+- 伏線（foreshadow）の書き込みは許可（条件付き）
+  - `create_foreshadow` / `update_foreshadow` は Codex と同じ `knowledgeWrite` gate
+    （伏線は構造化メタデータ＝知識のため新ポリシーキーを設けず流用）
+  - **XPROJ ハードニング**: 本体の `foreshadow_update_impl` は `WHERE id = ?` のみで
+    project スコープしない（アプリ内なら安全）。外部ライターである MCP では
+    cross-project 書き込みの穴になるため、MCP 版 `update_foreshadow` は
+    `WHERE id = ? AND project_id = ?` で必ず絞り、0 件なら not-found エラーを返す
+  - `secret` は create の任意パラメータ（既定 true）。既定固定だと
+    「作成したのに `list_open_foreshadows` に出ない」不整合になるため公開した
+  - payoff 位置アンカー（`payoff_from_pos` 等）はエディタ座標が必要なため MCP では非公開
 - DB の `busy_timeout` を 5000ms に設定し、`SQLITE_BUSY` をエラーとして返す
 
 ### コンテンツサニタイズ (Stored XSS 防止)
