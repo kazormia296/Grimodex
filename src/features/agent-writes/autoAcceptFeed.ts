@@ -1,12 +1,10 @@
-import { getProject } from "@/features/project/api";
-import { isBodyWriteDisabled } from "@/features/ai-policy/parse";
-import { useSettingsStore } from "@/features/settings/settingsStore";
 import { setProseProposalHandler } from "@/features/concurrency/externalWriteFeed";
 import {
   loadAllProposedProse,
   type ProseStagingMode,
 } from "@/features/agent-writes/prose";
 import { autoApplyProseProposal } from "@/features/agent-writes/autoApplyProse";
+import { isAutoAcceptEnabled } from "@/features/agent-writes/autoAcceptGate";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import type { PendingProseProposal } from "@/features/agent-writes/proseStagingStore";
 
@@ -29,22 +27,6 @@ const SUPPORTED_MODES: ReadonlySet<ProseStagingMode> = new Set(["append"]);
 
 // Guards against the poller and the backlog drain racing on the same row.
 const inFlight = new Set<string>();
-
-async function autoAcceptEnabled(projectId: string): Promise<boolean> {
-  if (
-    !useSettingsStore.getState().getBoolean("ai.autoAcceptBodyProposals", false)
-  ) {
-    return false;
-  }
-  try {
-    const project = await getProject(projectId);
-    if (isBodyWriteDisabled(project?.aiPolicy)) return false;
-  } catch (e) {
-    debugLog.warn("autoAcceptProse", "policy read failed", errorDetail(e));
-    return false;
-  }
-  return true;
-}
 
 /**
  * Apply one proposal. Returns true if the proposal was consumed (applied, or
@@ -78,14 +60,14 @@ export function setupAutoAcceptProseConsumer(): void {
   if (registered) return;
   registered = true;
   setProseProposalHandler(async (proposal, projectId) => {
-    if (!(await autoAcceptEnabled(projectId))) return false;
+    if (!(await isAutoAcceptEnabled(projectId))) return false;
     return applyOne(proposal);
   });
 }
 
 /** Sweep the proposed-prose backlog for a project (call on project open). */
 export async function drainProposedProse(projectId: string): Promise<void> {
-  if (!(await autoAcceptEnabled(projectId))) return;
+  if (!(await isAutoAcceptEnabled(projectId))) return;
   let proposals: PendingProseProposal[];
   try {
     proposals = await loadAllProposedProse(projectId);

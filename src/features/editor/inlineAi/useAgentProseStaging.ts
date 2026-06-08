@@ -6,6 +6,8 @@ import {
   agentDiscardProseStage,
   loadLatestProposedProse,
 } from "@/features/agent-writes/prose";
+import { isAutoAcceptEnabled } from "@/features/agent-writes/autoAcceptGate";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useInlineAiStore } from "./inlineAiStore";
 
 interface InlineAiDiffApi {
@@ -39,9 +41,21 @@ export function useAgentProseStaging(
   useEffect(() => {
     if (!sceneId) return;
     let cancelled = false;
-    void loadLatestProposedProse(sceneId).then((proposal) => {
+    void loadLatestProposedProse(sceneId).then(async (proposal) => {
       if (cancelled || !proposal) return;
       if (useInlineAiStore.getState().status !== "idle") return;
+      // Headless auto-apply owns appendable proposals. If it is enabled, do NOT
+      // also surface them in the diff UI — the backlog drain / poller will apply
+      // them, and showing a diff for an already-applied (now 'accepted') row
+      // causes a double-apply and an "entry is not in proposed status" error on
+      // accept. insert/replace are never auto-applied, so they still surface.
+      if (
+        proposal.mode === "append" &&
+        (await isAutoAcceptEnabled(getCurrentProjectId()))
+      ) {
+        return;
+      }
+      if (cancelled) return;
       enqueue(proposal);
     });
     return () => {
