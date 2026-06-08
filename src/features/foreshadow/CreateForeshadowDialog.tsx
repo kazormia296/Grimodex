@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { Field } from "@/components/ui/field";
 import type { ForeshadowLoadBearing } from "./types";
 
 interface CreateForeshadowDialogProps {
@@ -77,10 +78,10 @@ export function CreateForeshadowDialog({
       </h3>
 
       <div className="space-y-3" onKeyDown={handleKeyDown}>
-        <div>
-          <label className="mb-1 block text-xs text-muted-foreground">
-            {t("foreshadow.create.titleLabel")}
-          </label>
+        <Field
+          label={t("foreshadow.create.titleLabel")}
+          labelClassName="text-xs font-normal text-muted-foreground"
+        >
           <input
             data-testid="foreshadow-title-input"
             type="text"
@@ -89,12 +90,12 @@ export function CreateForeshadowDialog({
             placeholder={t("foreshadow.create.titlePlaceholder")}
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           />
-        </div>
+        </Field>
 
-        <div>
-          <label className="mb-1 block text-xs text-muted-foreground">
-            {t("foreshadow.create.intentLabel")}
-          </label>
+        <Field
+          label={t("foreshadow.create.intentLabel")}
+          labelClassName="text-xs font-normal text-muted-foreground"
+        >
           <textarea
             data-testid="foreshadow-intent-input"
             value={intent}
@@ -103,12 +104,12 @@ export function CreateForeshadowDialog({
             rows={3}
             className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           />
-        </div>
+        </Field>
 
-        <div>
-          <label className="mb-1 block text-xs text-muted-foreground">
-            {t("foreshadow.loadBearing.sectionLabel")}
-          </label>
+        <Field
+          label={t("foreshadow.loadBearing.sectionLabel")}
+          labelClassName="text-xs font-normal text-muted-foreground"
+        >
           <select
             data-testid="foreshadow-load-bearing"
             value={loadBearing ?? ""}
@@ -129,7 +130,7 @@ export function CreateForeshadowDialog({
               {t("foreshadow.loadBearing.optional")}
             </option>
           </select>
-        </div>
+        </Field>
       </div>
 
       <div className="mt-4 flex justify-end gap-2">

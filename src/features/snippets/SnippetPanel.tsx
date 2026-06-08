@@ -363,6 +363,7 @@ export function SnippetPanel() {
                   onClick={() => void handleNew()}
                   className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground active:scale-[0.97] transition-transform duration-75"
                   title={t("snippets.newSnippet")}
+                  aria-label={t("snippets.newSnippet")}
                 >
                   <Plus className="h-3.5 w-3.5" />
                 </button>
@@ -465,6 +466,17 @@ export function SnippetPanel() {
                       <div
                         key={snippet.id}
                         data-testid={`snippet-item-${snippet.id}`}
+                        // 選択状態を SR に伝える。aria-current は global 属性なので
+                        // role=generic な div でも許可される (aria-label は role=generic
+                        // では禁止のため付けない。可視名は下の <h4> が担う)。
+                        // このカードは nested ボタンを含むため role=option/button にできず
+                        // aria-selected も使えない。個別 Tab フォーカス化 + listbox 化は
+                        // Phase 2 (現状キーボードはコンテナの矢印/Enter/Delete 経由)。
+                        aria-current={
+                          selectedSnippet?.id === snippet.id
+                            ? "true"
+                            : undefined
+                        }
                         draggable="true"
                         onClick={() => {
                           setSelectedSnippet(snippet);
@@ -513,6 +525,7 @@ export function SnippetPanel() {
                               <button
                                 type="button"
                                 data-testid={`snippet-copy-${snippet.id}`}
+                                aria-label={t("common.copy")}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   copyWithAttribution(
@@ -528,6 +541,7 @@ export function SnippetPanel() {
                               <button
                                 type="button"
                                 data-testid={`snippet-delete-${snippet.id}`}
+                                aria-label={t("common.delete")}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   initiateDelete(snippet.id);

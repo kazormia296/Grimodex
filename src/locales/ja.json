@@ -5,6 +5,7 @@
     "cancel": "キャンセル",
     "save": "保存",
     "delete": "削除",
+    "copy": "コピー",
     "close": "閉じる",
     "add": "追加",
     "edit": "編集",
@@ -185,6 +186,14 @@
     "exportLabel": "エクスポート",
     "settingsTitle": "設定 (Ctrl+Alt+,)",
     "settingsLabel": "設定"
+  },
+  "a11y": {
+    "skipToContent": "本文へスキップ",
+    "resizeRegionLeft": "左パネルの幅を変更",
+    "resizeRegionRight": "右パネルの幅を変更",
+    "resizeRegionBottom": "下パネルの高さを変更",
+    "aiGenerating": "AI が応答を生成しています",
+    "aiGenerated": "AI の応答生成が完了しました"
   },
   "settings": {
     "title": "Settings",

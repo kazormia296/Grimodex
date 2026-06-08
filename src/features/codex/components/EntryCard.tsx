@@ -148,6 +148,9 @@ export function EntryCard({
         data-testid={`codex-entry-${entry.id}`}
         onClick={onSelect}
         onContextMenu={onContextMenu}
+        // aria-selected は role=button では許可されないため、選択中の項目を
+        // 表す role 非依存の aria-current を使う (SR は "現在の項目" と読む)。
+        aria-current={isSelected ? "true" : undefined}
         className={`w-full px-3 py-2 text-left hover:bg-accent ${isSelected ? "bg-accent" : ""}`}
       >
         <EntryCardBody entry={entry} searchQuery={searchQuery} />

@@ -1,6 +1,13 @@
 import "@testing-library/jest-dom/vitest";
 import "@/lib/i18n";
-import { vi } from "vitest";
+import { vi, expect } from "vitest";
+import * as axeMatchers from "vitest-axe/matchers";
+// vitest-axe 0.1.0 の extend-expect.js は 0 バイトの no-op のため、
+// matcher を手動登録する。型拡張 (toHaveNoViolations) は次行の side-effect
+// import (extend-expect.d.ts の Vi.Assertion augmentation) で得る。
+import "vitest-axe/extend-expect";
+
+expect.extend(axeMatchers);
 
 // Mock @tanstack/react-virtual for jsdom (no ResizeObserver / element dimensions)
 vi.mock("@tanstack/react-virtual", () => ({

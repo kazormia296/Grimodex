@@ -920,6 +920,7 @@ export function CodexManagementPanel({
           onChange={(e) => setSort(e.target.value as CodexSortOrder)}
           className="rounded border border-input bg-background px-1 py-0.5 text-[10px]"
           title={t("codex.sortOrderTitle")}
+          aria-label={t("codex.sortOrderTitle")}
         >
           {SORT_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>
@@ -933,6 +934,7 @@ export function CodexManagementPanel({
           onClick={() => void handleNewEntry()}
           className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
           title={t("codex.newEntry")}
+          aria-label={t("codex.newEntry")}
         >
           <Plus className="h-3.5 w-3.5" />
         </button>

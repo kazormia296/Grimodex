@@ -39,6 +39,8 @@ import {
 } from "@/lib/colorThemes";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
+import { LiveRegion } from "@/components/a11y/LiveRegion";
+import { useAiStreamingAnnouncer } from "@/features/chat/useAiStreamingAnnouncer";
 import i18next from "@/lib/i18n";
 import { useTranslation } from "react-i18next";
 import { WindowControls } from "@/components/WindowControls";
@@ -181,6 +183,7 @@ function App() {
   return (
     <>
       <Toaster position="bottom-right" richColors />
+      <LiveRegion />
       {view === "loading" && (
         <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background text-foreground">
           <TitleBar />
@@ -243,6 +246,9 @@ function EditorScreen() {
     s.getBoolean("display.glassSurfaceEditorChrome", true),
   );
   const isMac = isMacPlatform();
+
+  // AI 応答ストリームの開始/完了を SR へ読み上げる (a11y)。単一マウント。
+  useAiStreamingAnnouncer();
 
   useEffect(() => {
     void initializeExternalMounts().catch(() => {});
@@ -520,7 +526,7 @@ function EditorScreen() {
   }, []);
 
   return (
-    <main
+    <div
       className="app-shell flex h-screen flex-col"
       data-card={cardLayout ? "true" : undefined}
       data-glass-enabled={glassEnabled ? "true" : undefined}
@@ -533,6 +539,12 @@ function EditorScreen() {
       data-glass-gradient={glassBackdropGradient ? "true" : undefined}
       data-platform-mac={isMac ? "true" : undefined}
     >
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-50 focus:rounded focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow focus:outline-none focus:ring-2 focus:ring-ring"
+      >
+        {t("a11y.skipToContent")}
+      </a>
       <header
         className={cn(
           // py-2: ボタン上下に最低 8px の Tauri drag region 帯を確保する。
@@ -612,13 +624,17 @@ function EditorScreen() {
       {showSampleTour && <SampleTour />}
       <ReindexProgressToast />
       <ReloadConflictDialog />
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="flex min-h-0 flex-1 overflow-hidden outline-none"
+      >
         <LayoutShell
           hidden={!!getScreenshotPanelId()}
           screenshotPanelId={getScreenshotPanelId()}
         />
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }
 

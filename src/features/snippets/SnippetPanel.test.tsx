@@ -6,6 +6,7 @@ import type React from "react";
 import { SnippetPanel } from "./SnippetPanel";
 import { useSnippetStore } from "./snippetStore";
 import type { Snippet } from "./api";
+import { axe } from "@/test-utils/axe";
 
 vi.mock("@/lib/clipboardAttribution", () => ({
   copyWithAttribution: vi.fn(),
@@ -123,6 +124,31 @@ describe("SnippetPanel", () => {
   it("renders the panel with search input", () => {
     render(<SnippetPanel />);
     expect(screen.getByTestId("snippet-search-input")).toBeInTheDocument();
+  });
+
+  it("has no ARIA-attribute violations on the cards (aria-current allowed; no prohibited aria-label on the generic div)", async () => {
+    useSnippetStore.setState({
+      entries: [
+        fakeSnippet({ id: "s1" }),
+        fakeSnippet({ id: "s2", title: "別スニペット" }),
+      ],
+      selectedSnippet: fakeSnippet({ id: "s1" }),
+    });
+    const { container } = render(<SnippetPanel />);
+    // ARIA 属性の妥当性ルールに限定 (色コントラスト等の無関係な指摘で落とさない)。
+    const results = await axe(container, {
+      runOnly: {
+        type: "rule",
+        values: [
+          "aria-prohibited-attr",
+          "aria-allowed-attr",
+          "aria-required-attr",
+          "aria-roles",
+          "aria-valid-attr-value",
+        ],
+      },
+    });
+    expect(results).toHaveNoViolations();
   });
 
   it("renders the header with title and new button", () => {

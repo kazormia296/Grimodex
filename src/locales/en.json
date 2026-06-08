@@ -5,6 +5,7 @@
     "cancel": "Cancel",
     "save": "Save",
     "delete": "Delete",
+    "copy": "Copy",
     "close": "Close",
     "add": "Add",
     "edit": "Edit",
@@ -185,6 +186,14 @@
     "exportLabel": "Export",
     "settingsTitle": "Settings (Ctrl+Alt+,)",
     "settingsLabel": "Settings"
+  },
+  "a11y": {
+    "skipToContent": "Skip to content",
+    "resizeRegionLeft": "Resize left panel width",
+    "resizeRegionRight": "Resize right panel width",
+    "resizeRegionBottom": "Resize bottom panel height",
+    "aiGenerating": "AI is generating a response",
+    "aiGenerated": "AI finished generating a response"
   },
   "settings": {
     "title": "Settings",
