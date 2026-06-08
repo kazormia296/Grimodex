@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   persistSceneBody: vi.fn(async (_id: string, _doc: ProseMirrorNode) => {}),
   agentAcceptProseStage: vi.fn(async () => ({})),
   setLiveContent: vi.fn(),
+  recordChangeEvent: vi.fn(),
 }));
 
 vi.mock("@/features/tree/api", () => ({
@@ -46,6 +47,9 @@ vi.mock("@/features/editor/sceneContentStore", () => ({
 }));
 vi.mock("@/features/external-mount/externalRootStore", () => ({
   isFileBackedNode: () => h.state.fileBacked,
+}));
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: h.recordChangeEvent,
 }));
 
 import { autoApplyProseProposal } from "@/features/agent-writes/autoApplyProse";
@@ -102,6 +106,28 @@ describe("autoApplyProseProposal — append", () => {
     expect(doc.textContent).toContain("Hello");
     // The appended text — and only the appended text — must carry source='ai'.
     expect(aiMarkedText(doc)).toBe("World");
+  });
+
+  it("records the append as a doc.step so timelapse replay stays consistent", async () => {
+    await autoApplyProseProposal(proposal());
+    expect(h.recordChangeEvent).toHaveBeenCalledTimes(1);
+    const ev = h.recordChangeEvent.mock.calls[0][0] as {
+      domain: string;
+      opType: string;
+      sceneId: string;
+      payload: { steps: unknown[] };
+    };
+    expect(ev.domain).toBe("editor");
+    expect(ev.opType).toBe("doc.step");
+    expect(ev.sceneId).toBe("scene-1");
+    expect(Array.isArray(ev.payload.steps)).toBe(true);
+    expect(ev.payload.steps.length).toBeGreaterThan(0);
+  });
+
+  it("does not record a doc.step when the proposal is skipped", async () => {
+    h.state.sceneContent = '{"foo":"bar"}'; // unparseable → abort
+    await autoApplyProseProposal(proposal());
+    expect(h.recordChangeEvent).not.toHaveBeenCalled();
   });
 
   it("appends to an empty scene", async () => {
@@ -164,5 +190,25 @@ describe("autoApplyProseProposal — skips", () => {
     const result = await autoApplyProseProposal(proposal());
     expect(result).toEqual({ applied: false, reason: "file-backed" });
     expect(h.persistSceneBody).not.toHaveBeenCalled();
+  });
+
+  it("aborts (does NOT clobber) when existing content is non-empty but unparseable", async () => {
+    // Valid JSON the schema rejects — building an empty doc + persisting would
+    // destroy the real prose. Must leave the row untouched.
+    h.state.sceneContent = '{"foo":"bar"}';
+    const result = await autoApplyProseProposal(proposal());
+    expect(result).toEqual({ applied: false, reason: "content-unparseable" });
+    expect(h.persistSceneBody).not.toHaveBeenCalled();
+    expect(h.agentAcceptProseStage).not.toHaveBeenCalled();
+  });
+
+  it("treats empty-ish content ({} / []) as a fresh doc, not a clobber risk", async () => {
+    for (const empty of ["", "{}", "[]"]) {
+      vi.clearAllMocks();
+      h.state.sceneContent = empty;
+      const result = await autoApplyProseProposal(proposal());
+      expect(result.applied).toBe(true);
+      expect(h.persistSceneBody).toHaveBeenCalledTimes(1);
+    }
   });
 });

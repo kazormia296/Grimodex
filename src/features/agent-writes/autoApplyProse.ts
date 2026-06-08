@@ -5,6 +5,7 @@ import { getEditorExtensions } from "@/features/editor/extensions";
 import { loadSceneContent } from "@/features/tree/api";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import { agentAcceptProseStage } from "@/features/agent-writes/prose";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
@@ -19,7 +20,8 @@ export type AutoApplySkipReason =
   | "unsupported-mode"
   | "empty-text"
   | "scene-missing"
-  | "file-backed";
+  | "file-backed"
+  | "content-unparseable";
 
 export interface AutoApplyOutcome {
   applied: boolean;
@@ -38,13 +40,25 @@ function getDocSchema(): Schema {
   return cachedSchema;
 }
 
-function buildDoc(schema: Schema, raw: string): ProseMirrorNode {
+/**
+ * Build the scene doc to append to.
+ *
+ * Returns null when the stored content is non-empty but unparseable. The caller
+ * MUST abort then: this is an UNATTENDED writer, so building a fresh empty doc
+ * and persisting would silently DESTROY the existing (just unreadable-here)
+ * prose with no undo and no retry. Only genuinely empty content yields a fresh
+ * empty doc to append into.
+ */
+function buildDoc(schema: Schema, raw: string): ProseMirrorNode | null {
   const t = raw.trim();
-  if (t && t.startsWith("{")) {
+  const isEmpty = t === "" || t === "{}" || t === "[]";
+  if (!isEmpty) {
+    // non-JSON, or JSON the schema rejects → do NOT clobber; bail to the caller
+    if (!t.startsWith("{")) return null;
     try {
       return ProseMirrorNode.fromJSON(schema, JSON.parse(t));
     } catch {
-      // malformed stored content → fall through to an empty doc
+      return null;
     }
   }
   const empty = schema.topNodeType.createAndFill();
@@ -97,6 +111,8 @@ export async function autoApplyProseProposal(
   const schema = getDocSchema();
   const raw = await loadSceneContent(sceneId);
   const doc = buildDoc(schema, raw);
+  // Fail safe: never replace unreadable-but-present prose with an empty doc.
+  if (!doc) return { applied: false, reason: "content-unparseable" };
 
   // Append the prose as new paragraph node(s) with the `authorship`
   // (source='ai') mark BAKED INTO the text nodes. Marking by node construction —
@@ -127,6 +143,19 @@ export async function autoApplyProseProposal(
   await agentAcceptProseStage(stagingId);
 
   await persistSceneBody(sceneId, nextDoc);
+
+  // Timelapse: record the append as a doc.step so the writing-replay chain stays
+  // consistent. A live editor emits this via onTransaction; a headless write
+  // must record it explicitly or an unrecorded content jump desyncs replay at
+  // the next human edit (the cursor halts on the first unapplicable step).
+  recordChangeEvent({
+    domain: "editor",
+    opType: "doc.step",
+    sceneId,
+    entityType: "scene",
+    entityId: sceneId,
+    payload: { steps: tr.steps.map((s) => s.toJSON()) },
+  });
 
   // If the scene is open in a pane, mirror the persisted doc into the live
   // editor so its next autosave does not clobber this write (lost-update guard).
