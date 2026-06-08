@@ -135,7 +135,9 @@ describe("SnippetPanel", () => {
       selectedSnippet: fakeSnippet({ id: "s1" }),
     });
     const { container } = render(<SnippetPanel />);
-    // ARIA 属性の妥当性ルールに限定 (色コントラスト等の無関係な指摘で落とさない)。
+    // ARIA 属性 + nested-interactive に限定 (色コントラスト等の無関係な指摘で
+    // 落とさない)。nested-interactive: role="group" は構造ロールなので nested
+    // アクションボタンを含んでも違反にならないことを gate する。
     const results = await axe(container, {
       runOnly: {
         type: "rule",
@@ -145,10 +147,61 @@ describe("SnippetPanel", () => {
           "aria-required-attr",
           "aria-roles",
           "aria-valid-attr-value",
+          "nested-interactive",
         ],
       },
     });
     expect(results).toHaveNoViolations();
+  });
+
+  it("roving: ArrowDown moves DOM focus onto the card (role=group, named) so SR reaches it", async () => {
+    useSnippetStore.setState({
+      entries: [
+        fakeSnippet({ id: "s1", title: "最初のスニペット" }),
+        fakeSnippet({ id: "s2", title: "二番目のスニペット" }),
+      ],
+    });
+    const user = userEvent.setup();
+    render(<SnippetPanel />);
+
+    const card1 = screen.getByTestId("snippet-item-s1");
+    expect(card1).toHaveAttribute("role", "group");
+    expect(card1).toHaveAttribute("aria-label", "最初のスニペット");
+
+    screen.getByTestId("snippet-panel").focus();
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(card1);
+
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByTestId("snippet-item-s2"));
+  });
+
+  it("inline copy/delete buttons are removed from the Tab order (tabIndex -1)", () => {
+    useSnippetStore.setState({ entries: [fakeSnippet({ id: "s1" })] });
+    render(<SnippetPanel />);
+    expect(screen.getByTestId("snippet-copy-s1")).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+    expect(screen.getByTestId("snippet-delete-s1")).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+  });
+
+  it("Ctrl+C copies the focused snippet via an explicit keyboard handler", async () => {
+    const { copyWithAttribution } = await import("@/lib/clipboardAttribution");
+    useSnippetStore.setState({
+      entries: [
+        fakeSnippet({ id: "s1", content: "コピー対象", contentSource: "ai" }),
+      ],
+    });
+    const user = userEvent.setup();
+    render(<SnippetPanel />);
+    screen.getByTestId("snippet-panel").focus();
+    await user.keyboard("{ArrowDown}"); // focusedIndex -> 0
+    await user.keyboard("{Control>}c{/Control}");
+    expect(copyWithAttribution).toHaveBeenCalledWith("コピー対象", "ai");
   });
 
   it("renders the header with title and new button", () => {

@@ -105,6 +105,19 @@ export function SnippetPanel() {
     setFocusedIndex(-1);
   }, [sourceFilter, sortOrder]);
 
+  // 矢印移動でフォーカス中のカードへ実 DOM フォーカスを移す。カードは
+  // role="group" + aria-label=タイトル なので、スクリーンリーダーが
+  // 「<タイトル>, グループ」と読み上げる (DOM フォーカスがパネル root に
+  // 留まる従来モデルでは SR が各カードに到達できなかった)。カードは
+  // tabIndex=-1 で Tab 連打の tab-stop 爆発を避けつつ矢印で roving 到達する。
+  useEffect(() => {
+    if (focusedIndex < 0) return;
+    const el = listContainerRef.current?.querySelector<HTMLElement>(
+      `[data-snippet-index="${focusedIndex}"]`,
+    );
+    el?.focus();
+  }, [focusedIndex]);
+
   // 外部からの requestSelectEntry(id) によるエントリ選択
   useEffect(() => {
     if (!pendingEntryId) return;
@@ -248,6 +261,28 @@ export function SnippetPanel() {
         e.preventDefault();
         const snippet = filteredEntries[focusedIndex];
         if (snippet) setDeleteConfirmId(snippet.id);
+        return;
+      }
+
+      // Ctrl/Cmd+C: フォーカス中スニペットをコピー。インラインのコピーボタンは
+      // tabIndex=-1 にしたため、明示的なキーボード経路をここで保証する
+      // (カードの native copy イベントは webview 依存で不確実なため頼らない)。
+      // ただしテキスト選択中はネイティブのコピーを尊重する。
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.key.toLowerCase() === "c" &&
+        focusedIndex >= 0
+      ) {
+        const selection = window.getSelection?.();
+        if (selection && selection.toString().length > 0) return;
+        const snippet = filteredEntries[focusedIndex];
+        if (!snippet) return;
+        e.preventDefault();
+        copyWithAttribution(
+          snippet.content,
+          (snippet.contentSource as AuthorshipSource) ?? "human",
+        );
+        toast.success(t("snippets.copied"));
         return;
       }
 
@@ -466,17 +501,21 @@ export function SnippetPanel() {
                       <div
                         key={snippet.id}
                         data-testid={`snippet-item-${snippet.id}`}
-                        // 選択状態を SR に伝える。aria-current は global 属性なので
-                        // role=generic な div でも許可される (aria-label は role=generic
-                        // では禁止のため付けない。可視名は下の <h4> が担う)。
-                        // このカードは nested ボタンを含むため role=option/button にできず
-                        // aria-selected も使えない。個別 Tab フォーカス化 + listbox 化は
-                        // Phase 2 (現状キーボードはコンテナの矢印/Enter/Delete 経由)。
+                        data-snippet-index={idx}
+                        // role="group"(構造ロール)にすることで nested アクション
+                        // ボタンを含んでも nested-interactive 違反にならず、aria-label で
+                        // カード名を与えられる。矢印移動でこのカードへ DOM フォーカスが
+                        // 移り(上の effect)、SR が「<タイトル>, グループ」と読む。
+                        // aria-current で選択状態(role 非依存の global 属性)。
+                        // tabIndex=-1: Tab 連打の tab-stop 爆発を避け、矢印で roving 到達。
+                        role="group"
+                        aria-label={snippet.title}
                         aria-current={
                           selectedSnippet?.id === snippet.id
                             ? "true"
                             : undefined
                         }
+                        tabIndex={-1}
                         draggable="true"
                         onClick={() => {
                           setSelectedSnippet(snippet);
@@ -526,6 +565,9 @@ export function SnippetPanel() {
                                 type="button"
                                 data-testid={`snippet-copy-${snippet.id}`}
                                 aria-label={t("common.copy")}
+                                // タブ順から外す (カード自体が roving の到達点)。
+                                // キーボードでは Ctrl+C(カードの onCopy) で代替。
+                                tabIndex={-1}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   copyWithAttribution(
@@ -542,6 +584,8 @@ export function SnippetPanel() {
                                 type="button"
                                 data-testid={`snippet-delete-${snippet.id}`}
                                 aria-label={t("common.delete")}
+                                // タブ順から外す。キーボードでは Delete キーで代替。
+                                tabIndex={-1}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   initiateDelete(snippet.id);
@@ -556,6 +600,7 @@ export function SnippetPanel() {
                           {sceneName && (
                             <button
                               type="button"
+                              tabIndex={-1}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setActiveScene(snippet.sceneId!);
