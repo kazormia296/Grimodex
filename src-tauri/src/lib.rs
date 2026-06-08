@@ -138,6 +138,7 @@ pub fn run() {
             commands::workspace::get_mcp_config,
             commands::export::export_save_text,
             commands::export::export_save_bytes,
+            commands::fonts::list_system_fonts,
             commands::db::db_execute,
             commands::db::db_execute_batch,
             commands::timelapse::timelapse_append_batch,

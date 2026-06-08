@@ -17,6 +17,7 @@ pub(crate) mod cli_ai;
 pub(crate) mod db;
 pub(crate) mod export;
 pub(crate) mod external_mount;
+pub(crate) mod fonts;
 pub(crate) mod foreshadow;
 pub(crate) mod integrity;
 pub(crate) mod lint;

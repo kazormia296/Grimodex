@@ -5,6 +5,7 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
 import { SettingDropdown } from "../components/SettingDropdown";
+import { FontFamilySelect } from "../components/FontFamilySelect";
 import { useSettingBoolean } from "../useSettingControl";
 
 export function EditorCategory() {
@@ -22,16 +23,6 @@ export function EditorCategory() {
     { value: "normal", label: t("settings.editor.lineBreakNormal") },
     { value: "loose", label: t("settings.editor.lineBreakLoose") },
     { value: "auto", label: t("settings.editor.lineBreakAuto") },
-  ];
-
-  const FONT_FAMILY_OPTIONS = [
-    { value: "serif", label: t("settings.editor.fontDefault") },
-    { value: '"Noto Serif JP", serif', label: "Noto Serif JP" },
-    { value: '"Noto Sans JP", sans-serif', label: "Noto Sans JP" },
-    { value: '"BIZ UDMincho", serif', label: "BIZ UDMincho" },
-    { value: '"BIZ UDGothic", sans-serif', label: "BIZ UDGothic" },
-    { value: '"Source Han Serif JP", serif', label: "Source Han Serif" },
-    { value: "monospace", label: t("settings.editor.fontMono") },
   ];
 
   const { value: disableAll, setValue: setDisableAll } = useSettingBoolean(
@@ -86,9 +77,8 @@ export function EditorCategory() {
       <SettingScopeHeader title={t("settings.scopeGlobal")} />
       <SettingSection title={t("settings.editor.textDisplay")}>
         <SettingRow label={t("settings.editor.font")}>
-          <SettingDropdown
+          <FontFamilySelect
             settingKey="editor.fontFamily"
-            options={FONT_FAMILY_OPTIONS}
             defaultValue="serif"
           />
         </SettingRow>
