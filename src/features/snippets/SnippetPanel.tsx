@@ -59,7 +59,10 @@ export function SnippetPanel() {
   const nodes = useTreeStore((s) => s.nodes);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
 
-  const [selectedSnippet, setSelectedSnippet] = useState<Snippet | null>(null);
+  // 選択中スニペットはストアに持たせる。レイアウトプリセット切替で LayoutShell が
+  // パネル subtree を remount しても選択を保持するため（local state だと失われる）。
+  const selectedSnippet = useSnippetStore((s) => s.selectedSnippet);
+  const setSelectedSnippet = useSnippetStore((s) => s.setSelectedSnippet);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [gridCols, setGridCols] = useState(1);
   const [focusedIndex, setFocusedIndex] = useState(-1);
@@ -109,7 +112,7 @@ export function SnippetPanel() {
     if (!snippet) return;
     setSelectedSnippet(snippet);
     clearPendingEntry();
-  }, [pendingEntryId, entries, clearPendingEntry]);
+  }, [pendingEntryId, entries, clearPendingEntry, setSelectedSnippet]);
 
   const filteredEntries = useMemo(() => {
     let filtered = entries;
@@ -155,7 +158,7 @@ export function SnippetPanel() {
     } catch {
       // error toast shown by store
     }
-  }, [create, t]);
+  }, [create, t, setSelectedSnippet]);
 
   const handleKeyDown = useCallback(
     async (e: React.KeyboardEvent) => {
@@ -266,6 +269,7 @@ export function SnippetPanel() {
       search,
       incrementUsageCount,
       t,
+      setSelectedSnippet,
     ],
   );
 
@@ -325,7 +329,7 @@ export function SnippetPanel() {
     if (tabState.tabs.some((t) => t.nodeId === id)) tabState.closeTab(id);
     if (tabState.secondaryTabs.some((t) => t.nodeId === id))
       tabState.closeSecondaryTab(id);
-  }, [deleteConfirmId, remove]);
+  }, [deleteConfirmId, remove, setSelectedSnippet]);
 
   return (
     <div

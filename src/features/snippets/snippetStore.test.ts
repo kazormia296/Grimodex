@@ -61,6 +61,27 @@ describe("snippetStore", () => {
       entries: [],
       searchQuery: "",
       isLoading: false,
+      selectedSnippet: null,
+    });
+  });
+
+  describe("setSelectedSnippet", () => {
+    it("値を直接セットできる", () => {
+      const snippet = fakeSnippet({ id: "s1" });
+      useSnippetStore.getState().setSelectedSnippet(snippet);
+      expect(useSnippetStore.getState().selectedSnippet).toBe(snippet);
+      useSnippetStore.getState().setSelectedSnippet(null);
+      expect(useSnippetStore.getState().selectedSnippet).toBeNull();
+    });
+
+    it("updater 関数で前の選択を参照して更新できる", () => {
+      const snippet = fakeSnippet({ id: "s1" });
+      useSnippetStore.setState({ selectedSnippet: snippet });
+      // 同一 id なら解除、別 id なら維持する SnippetPanel の toggle 相当
+      useSnippetStore
+        .getState()
+        .setSelectedSnippet((prev) => (prev?.id === "s1" ? null : prev));
+      expect(useSnippetStore.getState().selectedSnippet).toBeNull();
     });
   });
 

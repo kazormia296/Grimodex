@@ -91,6 +91,7 @@ export async function reloadProjectData(projectId: string): Promise<void> {
       entries: [],
       searchQuery: "",
       pendingEntryId: null,
+      selectedSnippet: null,
     });
 
     useForeshadowStore.setState({

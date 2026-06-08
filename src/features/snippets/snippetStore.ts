@@ -26,6 +26,17 @@ interface SnippetState {
   sourceFilter: SnippetSourceFilter;
   sortOrder: SnippetSortOrder;
   pendingEntryId: string | null;
+  /**
+   * 現在 Snippet パネルで選択中のスニペット。レイアウトプリセット切替時に
+   * LayoutShell が `key={crossfadeKey}` でパネル subtree を remount するため、
+   * パネル内 local state だと選択が失われる。選択をストアに持たせて remount を
+   * 跨いで保持する。pendingEntryId（外部からの一発選択要求）とは別物。
+   * React の setState 同様、値だけでなく updater 関数も受け付ける。
+   */
+  selectedSnippet: Snippet | null;
+  setSelectedSnippet: (
+    next: Snippet | null | ((prev: Snippet | null) => Snippet | null),
+  ) => void;
 
   loadEntries: () => Promise<void>;
   search: (query: string) => Promise<void>;
@@ -60,6 +71,12 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   sourceFilter: "all",
   sortOrder: "recent",
   pendingEntryId: null,
+  selectedSnippet: null,
+  setSelectedSnippet: (next) =>
+    set((state) => ({
+      selectedSnippet:
+        typeof next === "function" ? next(state.selectedSnippet) : next,
+    })),
 
   setSourceFilter: (filter) => set({ sourceFilter: filter }),
   setSortOrder: (order) => set({ sortOrder: order }),

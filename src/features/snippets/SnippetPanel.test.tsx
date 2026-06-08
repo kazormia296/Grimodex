@@ -78,6 +78,7 @@ vi.mock("./snippetStore", async () => {
     isLoading: false,
     sourceFilter: "all" as const,
     sortOrder: "recent" as const,
+    selectedSnippet: null as Snippet | null,
     loadEntries: vi.fn(),
     search: vi.fn(),
     create: vi.fn(),
@@ -86,6 +87,7 @@ vi.mock("./snippetStore", async () => {
     incrementUsageCount: vi.fn(),
     setSourceFilter: vi.fn(),
     setSortOrder: vi.fn(),
+    setSelectedSnippet: vi.fn(),
   }));
   return { useSnippetStore: store };
 });
@@ -114,6 +116,7 @@ describe("SnippetPanel", () => {
       isLoading: false,
       sourceFilter: "all",
       sortOrder: "recent",
+      selectedSnippet: null,
     });
   });
 
@@ -401,5 +404,26 @@ describe("SnippetPanel", () => {
 
     await user.keyboard("{ArrowDown}");
     expect(screen.getByTestId("snippet-item-s2").className).toContain("ring-1");
+  });
+
+  it("preserves selection across remount (layout preset switch)", () => {
+    // レイアウトプリセット切替は LayoutShell が key={crossfadeKey} で
+    // パネル subtree を remount する。選択がストアに乗ったことで unmount →
+    // 再 mount を跨いでも保持されることを回帰として固定する。
+    const snippet = fakeSnippet({ id: "snippet-1" });
+    useSnippetStore.setState({ entries: [snippet], selectedSnippet: snippet });
+
+    const { unmount } = render(<SnippetPanel />);
+    expect(screen.getByTestId("snippet-detail-content")).toBeInTheDocument();
+
+    // preset 切替に相当する remount を再現
+    unmount();
+    render(<SnippetPanel />);
+
+    // placeholder ではなく detail がそのまま復帰する = 選択維持
+    expect(screen.getByTestId("snippet-detail-content")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("snippet-detail-placeholder"),
+    ).not.toBeInTheDocument();
   });
 });
