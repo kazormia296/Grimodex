@@ -84,6 +84,7 @@ export async function reloadProjectData(projectId: string): Promise<void> {
       searchQuery: "",
       filterType: null,
       pendingEntryId: null,
+      selectedEntry: null,
     });
 
     useSnippetStore.setState({

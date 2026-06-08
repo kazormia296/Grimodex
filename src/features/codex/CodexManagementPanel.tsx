@@ -502,7 +502,10 @@ export function CodexManagementPanel({
   const setFilterType = useCodexStore((s) => s.setFilterType);
   const setSort = useCodexStore((s) => s.setSort);
 
-  const [selectedEntry, setSelectedEntry] = useState<CodexEntry | null>(null);
+  // 選択中エントリはストアに持たせる。レイアウトプリセット切替で LayoutShell が
+  // パネル subtree を remount しても選択を保持するため（local state だと失われる）。
+  const selectedEntry = useCodexStore((s) => s.selectedEntry);
+  const setSelectedEntry = useCodexStore((s) => s.setSelectedEntry);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isStackMode, setIsStackMode] = useState(initialStackMode);
@@ -563,7 +566,13 @@ export function CodexManagementPanel({
     setScrollToEntryId(pendingEntryId);
     if (isStackMode) setShowDetail(true);
     clearPendingEntry();
-  }, [pendingEntryId, entries, isStackMode, clearPendingEntry]);
+  }, [
+    pendingEntryId,
+    entries,
+    isStackMode,
+    clearPendingEntry,
+    setSelectedEntry,
+  ]);
 
   useEffect(() => {
     ensureBuiltinTypes(getCurrentProjectId())
@@ -680,7 +689,7 @@ export function CodexManagementPanel({
       setSelectedEntry(entry);
       if (isStackMode) setShowDetail(true);
     },
-    [isStackMode],
+    [isStackMode, setSelectedEntry],
   );
 
   // Ctrl+K / Ctrl+F / ↑↓ / F2 / Delete shortcuts
@@ -782,7 +791,7 @@ export function CodexManagementPanel({
     setSelectedEntry(entry);
     setScrollToEntryId(entry.id);
     if (isStackMode) setShowDetail(true);
-  }, [create, isStackMode]);
+  }, [create, isStackMode, setSelectedEntry]);
 
   const confirmDelete = useCallback(async () => {
     const id = deleteConfirmId;
@@ -796,7 +805,7 @@ export function CodexManagementPanel({
     if (tabState.tabs.some((t) => t.nodeId === id)) tabState.closeTab(id);
     if (tabState.secondaryTabs.some((t) => t.nodeId === id))
       tabState.closeSecondaryTab(id);
-  }, [deleteConfirmId, remove, isStackMode]);
+  }, [deleteConfirmId, remove, isStackMode, setSelectedEntry]);
 
   const handleDelete = initiateDelete;
 
@@ -816,7 +825,7 @@ export function CodexManagementPanel({
       setScrollToEntryId(newEntry.id);
       if (isStackMode) setShowDetail(true);
     },
-    [create, entries, isStackMode],
+    [create, entries, isStackMode, setSelectedEntry],
   );
 
   const handleFindInScenes = useCallback(
@@ -839,7 +848,7 @@ export function CodexManagementPanel({
   const handleBack = useCallback(() => {
     setShowDetail(false);
     setSelectedEntry(null);
-  }, []);
+  }, [setSelectedEntry]);
 
   // M2: inline rename
   const handleRenameCommit = useCallback(
@@ -866,7 +875,7 @@ export function CodexManagementPanel({
       setSelectedEntry(entry);
       if (isStackMode) setShowDetail(true);
     },
-    [isStackMode],
+    [isStackMode, setSelectedEntry],
   );
 
   // Build type label map from loaded types (fallback to i18n)

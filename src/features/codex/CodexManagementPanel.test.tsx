@@ -182,6 +182,8 @@ describe("CodexManagementPanel", () => {
       searchQuery: "",
       filterType: null,
       isLoading: false,
+      selectedEntry: null,
+      pendingEntryId: null,
     });
   });
 
@@ -302,6 +304,34 @@ describe("CodexManagementPanel", () => {
 
       expect(screen.getByTestId("codex-detail-content")).toBeInTheDocument();
       expect(screen.getByDisplayValue("アリス")).toBeInTheDocument();
+    });
+
+    it("preserves selection across remount (layout preset switch)", async () => {
+      // レイアウトプリセット切替は LayoutShell が key={crossfadeKey} で
+      // パネル subtree を remount する。選択がストアに乗ったことで unmount →
+      // 再 mount を跨いでも保持されることを回帰として固定する。
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      const { unmount } = render(<CodexManagementPanel />);
+
+      await waitFor(() => {
+        expect(screen.getByText("アリス")).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
+      expect(screen.getByTestId("codex-detail-content")).toBeInTheDocument();
+
+      // preset 切替に相当する remount を再現
+      unmount();
+      render(<CodexManagementPanel />);
+
+      await waitFor(() => {
+        expect(screen.getByText("アリス")).toBeInTheDocument();
+      });
+      // placeholder ではなく detail がそのまま復帰する = 選択維持
+      expect(screen.getByTestId("codex-detail-content")).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("codex-detail-placeholder"),
+      ).not.toBeInTheDocument();
     });
 
     it("shows type badge and editable fields", async () => {

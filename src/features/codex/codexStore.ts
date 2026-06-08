@@ -83,6 +83,14 @@ interface CodexState {
   isLoading: boolean;
   pendingEntryId: string | null;
   /**
+   * 現在 Codex パネルで選択中のエントリ。レイアウトプリセット切替時に
+   * LayoutShell が `key={crossfadeKey}` でパネル subtree を remount するため、
+   * パネル内 local state だと選択が失われる。選択をストアに持たせて remount を
+   * 跨いで保持する。pendingEntryId（外部からの一発選択要求）とは別物。
+   */
+  selectedEntry: CodexEntry | null;
+  setSelectedEntry: (entry: CodexEntry | null) => void;
+  /**
    * Codex panel の wide mode 用 phase preview。entry id → phase id (`__base__` or実際の phase id)。
    * null（key 不在）は「auto-resolve に従う」を意味する。DetailsTab の PhaseIndicator から書き込み、
    * 同じ entry を内部 EditorPane が読む経路を媒介する。
@@ -129,6 +137,8 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   sortOrder: "category" as CodexSortOrder,
   isLoading: false,
   pendingEntryId: null,
+  selectedEntry: null,
+  setSelectedEntry: (entry) => set({ selectedEntry: entry }),
   previewPhaseByEntry: {},
 
   setPreviewPhase: (entryId, phaseId) => {
