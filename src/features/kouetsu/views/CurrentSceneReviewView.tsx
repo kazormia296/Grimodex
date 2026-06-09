@@ -17,7 +17,11 @@ import {
   runPostEffect,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
-import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
+import {
+  appendKouetsuGuidance,
+  appendStoryContextGuidance,
+} from "@/features/post-effect/customInstruction";
+import { selectStoryContext } from "@/features/post-effect/storyContext";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import {
@@ -50,9 +54,18 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
     const customKouetsu = useSettingsStore
       .getState()
       .get("aiPrompt.custom.kouetsu", "");
+    const storyContext = selectStoryContext(
+      useTreeStore.getState().nodes,
+      sceneId,
+    );
     setRunning(true);
     try {
-      const payload = await buildReviewPayload(sceneId, model, customKouetsu);
+      const payload = await buildReviewPayload(
+        sceneId,
+        model,
+        customKouetsu,
+        storyContext,
+      );
       const outcome = await new Promise<{
         ok: boolean;
         e?: PostEffectDoneEvent;
@@ -69,9 +82,12 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
             input_hash: payload.inputHash,
             codex_payload_json: "[]",
             scene_text: payload.sceneText,
-            system_prompt: appendKouetsuGuidance(
-              getPromptCatalog("ja").postEffect.reviewSystem,
-              customKouetsu,
+            system_prompt: appendStoryContextGuidance(
+              appendKouetsuGuidance(
+                getPromptCatalog("ja").postEffect.reviewSystem,
+                customKouetsu,
+              ),
+              storyContext,
             ),
           },
           {

@@ -17,7 +17,11 @@ import {
 } from "@/features/post-effect/metaStructurePayloadBuilder";
 import { runPostEffect, runPostEffectMulti } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
-import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
+import {
+  appendKouetsuGuidance,
+  appendStoryContextGuidance,
+} from "@/features/post-effect/customInstruction";
+import { selectStoryContext } from "@/features/post-effect/storyContext";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import type {
   PostEffectSeverity,
@@ -86,12 +90,17 @@ export function MetaStructureView({ scope, sceneId }: Props) {
     const customKouetsu = useSettingsStore
       .getState()
       .get("aiPrompt.custom.kouetsu", "");
+    const storyContext = selectStoryContext(
+      useTreeStore.getState().nodes,
+      sceneId,
+    );
     setRunning(true);
     try {
       const payload = await buildMetaStructurePayload(
         sceneId,
         model,
         customKouetsu,
+        storyContext,
       );
       const outcome = await new Promise<{ ok: boolean; error?: string }>(
         (resolve) => {
@@ -106,9 +115,12 @@ export function MetaStructureView({ scope, sceneId }: Props) {
               input_hash: payload.inputHash,
               codex_payload_json: "[]",
               scene_text: payload.sceneText,
-              system_prompt: appendKouetsuGuidance(
-                getPromptCatalog("ja").postEffect.metaStructureSystem,
-                customKouetsu,
+              system_prompt: appendStoryContextGuidance(
+                appendKouetsuGuidance(
+                  getPromptCatalog("ja").postEffect.metaStructureSystem,
+                  customKouetsu,
+                ),
+                storyContext,
               ),
             },
             {

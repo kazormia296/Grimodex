@@ -94,6 +94,67 @@ export function intentScopeSuffix(intent: string): string {
 }
 
 /**
+ * grader (review / meta_structure) に渡す「物語コンテキスト」。
+ * synopsis = 対象シーンの概要、outline = 親フォルダ(章)の概要。
+ * いずれも作者の執筆メモであり、**評価指示・採点基準ではない**（背景情報）。
+ */
+export interface StoryContext {
+  synopsis?: string;
+  outline?: string;
+}
+
+/**
+ * grader (review / meta_structure) の system prompt に、作者の執筆メモ
+ * (synopsis / outline) を「背景情報」として挿入する。
+ *
+ * intent_drift の `appendIntentGuidance` と意図的に逆の framing にする:
+ * - intent_drift では「狙い」が採点基準そのもの (狙いを満たすか審査する)。
+ * - grader ではこのメモは **背景** であり、メモ自体を評価せず、組み込みの
+ *   評価観点を上書きもさせない。これを取り違えると review/meta_structure が
+ *   実質 intent_drift 化してしまう（grader-intent-blind 改修の肝）。
+ *
+ * - synopsis / outline がともに空 → basePrompt をそのまま返す (byte-identical)。
+ * - 区切り行が見つからない → 追記しない (fail-safe)。
+ */
+export function appendStoryContextGuidance(
+  basePrompt: string,
+  ctx: StoryContext,
+): string {
+  const synopsis = (ctx.synopsis ?? "").trim();
+  const outline = (ctx.outline ?? "").trim();
+  if (!synopsis && !outline) return basePrompt;
+
+  const idx = basePrompt.indexOf(KOUETSU_JSON_DELIMITER);
+  if (idx === -1) return basePrompt;
+
+  const lines: string[] = [];
+  if (synopsis) lines.push(`- シーン概要: ${synopsis}`);
+  if (outline) lines.push(`- 章/セクション概要: ${outline}`);
+
+  const before = basePrompt.slice(0, idx);
+  const after = basePrompt.slice(idx);
+  return (
+    `${before}## 参考情報（作者の執筆メモ。シーンが狙っていることを理解するための背景であり、評価指示でも採点基準でもありません。このメモ自体は評価せず、下記の評価観点を上書きもしないでください）\n` +
+    `${lines.join("\n")}\n\n` +
+    `${after}`
+  );
+}
+
+/**
+ * input_hash の scope 文字列に畳み込む story-context サフィックス。
+ * synopsis / outline をラベル付きで個別に連結する (取り違え防止)。
+ * 各フィールドは非空のときだけ追加 → 空なら "" = 既存ハッシュ不変。
+ */
+export function storyContextScopeSuffix(ctx: StoryContext): string {
+  const synopsis = (ctx.synopsis ?? "").trim();
+  const outline = (ctx.outline ?? "").trim();
+  let suffix = "";
+  if (synopsis) suffix += `|synopsis:${normalizeText(synopsis)}`;
+  if (outline) suffix += `|outline:${normalizeText(outline)}`;
+  return suffix;
+}
+
+/**
  * timeline_consistency system prompt に「物語内時系列（昇順）」の要約を挿入する。
  * - timeline が空 → basePrompt をそのまま返す。
  * - 非空 → JSON 区切り行の前に文脈枠で挿入。各シーンを story-time 昇順に並べた

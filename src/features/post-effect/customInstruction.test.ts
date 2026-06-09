@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   appendIntentGuidance,
   appendKouetsuGuidance,
+  appendStoryContextGuidance,
   intentScopeSuffix,
   kouetsuScopeSuffix,
+  storyContextScopeSuffix,
   KOUETSU_JSON_DELIMITER,
 } from "./customInstruction";
 import { JA_POST_EFFECT } from "@/prompts/ja/postEffect";
@@ -124,5 +126,132 @@ describe("kouetsuScopeSuffix", () => {
 
   it("内容が違えば suffix も違う", () => {
     expect(kouetsuScopeSuffix("X")).not.toBe(kouetsuScopeSuffix("Y"));
+  });
+});
+
+describe("appendStoryContextGuidance", () => {
+  it("synopsis/outline とも空なら basePrompt と byte-identical", () => {
+    const base = JA_POST_EFFECT.reviewSystem;
+    expect(appendStoryContextGuidance(base, {})).toBe(base);
+    expect(
+      appendStoryContextGuidance(base, { synopsis: "  ", outline: "\n\t" }),
+    ).toBe(base);
+  });
+
+  it("synopsis を区切り行の前に背景枠として挿入し JSON schema は末尾に残す", () => {
+    const base = JA_POST_EFFECT.reviewSystem;
+    const synopsis = "主人公が決意を固める転換点";
+    const result = appendStoryContextGuidance(base, { synopsis });
+    const synIdx = result.indexOf(synopsis);
+    const delimIdx = result.indexOf(KOUETSU_JSON_DELIMITER);
+    expect(synIdx).toBeGreaterThanOrEqual(0);
+    expect(delimIdx).toBeGreaterThanOrEqual(0);
+    expect(synIdx).toBeLessThan(delimIdx);
+    // 区切り行以降 (= JSON スキーマ) は base と完全一致 (改変されない)
+    expect(result.slice(delimIdx)).toBe(
+      base.slice(base.indexOf(KOUETSU_JSON_DELIMITER)),
+    );
+  });
+
+  it("枠見出しが『評価指示でない』ことを明示する (rubric 化防止 = 機能の本体)", () => {
+    const result = appendStoryContextGuidance(JA_POST_EFFECT.reviewSystem, {
+      synopsis: "x",
+    });
+    // 背景情報であって採点基準ではないと framing で宣言している。
+    // この文言は intent_drift（狙い=採点基準）と grader（狙い=背景）を分ける肝。
+    expect(result).toContain("評価指示");
+  });
+
+  it("outline のみでも挿入される", () => {
+    const base = JA_POST_EFFECT.metaStructureSystem;
+    const outline = "第3章: 対立の激化";
+    const result = appendStoryContextGuidance(base, { outline });
+    expect(result).toContain(outline);
+    expect(result.indexOf(outline)).toBeLessThan(
+      result.indexOf(KOUETSU_JSON_DELIMITER),
+    );
+  });
+
+  it("synopsis と outline 両方を含める", () => {
+    const result = appendStoryContextGuidance(JA_POST_EFFECT.reviewSystem, {
+      synopsis: "シーン概要X",
+      outline: "章概要Y",
+    });
+    expect(result).toContain("シーン概要X");
+    expect(result).toContain("章概要Y");
+  });
+
+  it("区切り行が無い base には追記しない (fail-safe)", () => {
+    const base = "No delimiter here. Just freeform text.";
+    expect(appendStoryContextGuidance(base, { synopsis: "x" })).toBe(base);
+  });
+
+  it("kouetsu custom と共存しても区切り行は1個・両ブロックが前に来る", () => {
+    const base = JA_POST_EFFECT.reviewSystem;
+    const custom = "戦闘描写の臨場感を重点的に";
+    const synopsis = "このシーンの狙いZ";
+    const built = appendStoryContextGuidance(
+      appendKouetsuGuidance(base, custom),
+      {
+        synopsis,
+      },
+    );
+    expect(built).toContain(custom);
+    expect(built).toContain(synopsis);
+    const delimIdx = built.indexOf(KOUETSU_JSON_DELIMITER);
+    expect(built.indexOf(custom)).toBeLessThan(delimIdx);
+    expect(built.indexOf(synopsis)).toBeLessThan(delimIdx);
+    // 区切り行は依然ちょうど1個 (二重挿入や破壊が起きていない)
+    expect(built.split(KOUETSU_JSON_DELIMITER).length - 1).toBe(1);
+    // JSON スキーマ部は base と不変
+    expect(built.slice(delimIdx)).toBe(
+      base.slice(base.indexOf(KOUETSU_JSON_DELIMITER)),
+    );
+  });
+
+  it("review / meta_structure 両プロンプトで安全に挿入される", () => {
+    for (const base of [
+      JA_POST_EFFECT.reviewSystem,
+      JA_POST_EFFECT.metaStructureSystem,
+    ]) {
+      const result = appendStoryContextGuidance(base, {
+        synopsis: "S",
+        outline: "O",
+      });
+      expect(result).toContain("S");
+      expect(result).toContain("O");
+      expect(result.split(KOUETSU_JSON_DELIMITER).length - 1).toBe(1);
+    }
+  });
+});
+
+describe("storyContextScopeSuffix", () => {
+  it("空 ctx なら空文字 (既存ハッシュ不変)", () => {
+    expect(storyContextScopeSuffix({})).toBe("");
+    expect(storyContextScopeSuffix({ synopsis: "  ", outline: " \t" })).toBe(
+      "",
+    );
+  });
+
+  it("synopsis のみ → |synopsis: のみ (正規化)", () => {
+    expect(storyContextScopeSuffix({ synopsis: "  A   B  " })).toBe(
+      "|synopsis:A B",
+    );
+  });
+
+  it("outline のみ → |outline: のみ", () => {
+    expect(storyContextScopeSuffix({ outline: "XYZ" })).toBe("|outline:XYZ");
+  });
+
+  it("両方 → ラベル付きで連結する", () => {
+    expect(storyContextScopeSuffix({ synopsis: "A", outline: "C" })).toBe(
+      "|synopsis:A|outline:C",
+    );
+  });
+
+  it("synopsis と outline の取り違えが起きない (ラベルで分離)", () => {
+    expect(storyContextScopeSuffix({ synopsis: "A" })).not.toBe(
+      storyContextScopeSuffix({ outline: "A" }),
+    );
   });
 });

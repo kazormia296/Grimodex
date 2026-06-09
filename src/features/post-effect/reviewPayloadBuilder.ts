@@ -11,7 +11,11 @@ import { treeNodes } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { computeInputHash, normalizeText } from "./canonicalize";
-import { kouetsuScopeSuffix } from "./customInstruction";
+import {
+  kouetsuScopeSuffix,
+  storyContextScopeSuffix,
+  type StoryContext,
+} from "./customInstruction";
 
 export const REVIEW_PROMPT_VERSION = "review_v1.0";
 
@@ -33,6 +37,7 @@ export async function buildReviewPayload(
   sceneId: string,
   model: string,
   customInstruction: string = "",
+  storyContext: StoryContext = {},
 ): Promise<ReviewPayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const inputHash = await computeInputHash({
@@ -40,7 +45,7 @@ export async function buildReviewPayload(
     model,
     effectType: "review",
     scene: normalizeText(sceneText),
-    scope: `scene:${sceneId}${kouetsuScopeSuffix(customInstruction)}`,
+    scope: `scene:${sceneId}${kouetsuScopeSuffix(customInstruction)}${storyContextScopeSuffix(storyContext)}`,
   });
   return { sceneText, inputHash };
 }
