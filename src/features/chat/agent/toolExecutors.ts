@@ -862,10 +862,23 @@ async function getForeshadowDetail(
     };
   }
 
+  // XPROJ defense: scope the read-by-id to the active project. Without this,
+  // an injected agent could pass another project's foreshadow UUID and read its
+  // (secret) plot intent/notes/setups. Mirrors getCodexEntry / getScene.
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId) {
+    return {
+      name: "get_foreshadow_detail",
+      content: null,
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+  }
+
   const [fs] = await db
     .select()
     .from(foreshadows)
-    .where(eq(foreshadows.id, id));
+    .where(and(eq(foreshadows.id, id), eq(foreshadows.projectId, projectId)));
   if (!fs) {
     return {
       name: "get_foreshadow_detail",
@@ -945,6 +958,19 @@ async function getSceneTimelineNeighbors(
     };
   }
 
+  // XPROJ defense: scope the target lookup to the active project. The neighbor
+  // query below already filters by project, but an unscoped target lookup let a
+  // foreign sceneId read another project's storyTimeLabel + neighbor titles.
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId) {
+    return {
+      name: "get_scene_timeline_neighbors",
+      content: { previous: [], next: [], currentSceneStoryTimeLabel: null },
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+  }
+
   const [target] = await db
     .select({
       id: treeNodes.id,
@@ -953,7 +979,7 @@ async function getSceneTimelineNeighbors(
       storyTimeLabel: treeNodes.storyTimeLabel,
     })
     .from(treeNodes)
-    .where(eq(treeNodes.id, sceneId));
+    .where(and(eq(treeNodes.id, sceneId), eq(treeNodes.projectId, projectId)));
 
   if (!target || !target.storyTimeOrder) {
     return {

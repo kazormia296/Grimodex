@@ -51,6 +51,7 @@ import {
   READ_ONLY_EXECUTORS,
   MUTATING_EXECUTORS,
 } from "./toolExecutors";
+import { MUTATING_TOOL_NAMES } from "../toolProtocolParse";
 import { getDeterministicAgentTools } from "./toolDefinitions";
 
 // ── read-only allowlist 不変条件 (security review F-2) ───────────────────────
@@ -92,6 +93,14 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
   it("matches the frozen mutating allowlist exactly", () => {
     expect(Object.keys(MUTATING_EXECUTORS).sort()).toEqual(
       EXPECTED_MUTATING_NAMES,
+    );
+  });
+
+  it("MUTATING_TOOL_NAMES (Hermes write block) tracks MUTATING_EXECUTORS", () => {
+    // The Hermes body-channel block list must cover every mutating executor,
+    // or a new write tool could be invoked via injected <tool_call> body text.
+    expect([...MUTATING_TOOL_NAMES].sort()).toEqual(
+      Object.keys(MUTATING_EXECUTORS).sort(),
     );
   });
 
@@ -228,6 +237,8 @@ describe("project scoping — agent read tools (XPROJ-1)", () => {
     { tool: "get_chapter_summaries", params: {} },
     { tool: "get_codex_entry", params: { id: "e1" } },
     { tool: "get_scene", params: { id: "s1" } },
+    { tool: "get_foreshadow_detail", params: { id: "f1" } },
+    { tool: "get_scene_timeline_neighbors", params: { sceneId: "s1" } },
   ];
 
   it.each(ALL_READ_TOOLS)(
