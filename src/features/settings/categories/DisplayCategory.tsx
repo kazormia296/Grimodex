@@ -5,6 +5,7 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingToggle, ControlledToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
 import { SettingDropdown } from "../components/SettingDropdown";
+import { FontFamilySelect } from "../components/FontFamilySelect";
 import { useSettingBoolean, useSettingControl } from "../useSettingControl";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -136,6 +137,9 @@ export function DisplayCategory() {
       </SettingSection>
 
       <SettingSection title={t("settings.display.ui")}>
+        <SettingRow label={t("settings.display.uiFont")}>
+          <FontFamilySelect settingKey="display.uiFontFamily" />
+        </SettingRow>
         <SettingRow label={t("settings.display.uiLanguage")}>
           <select
             value={uiLanguage}

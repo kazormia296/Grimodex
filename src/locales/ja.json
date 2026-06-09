@@ -207,6 +207,7 @@
       "dark": "ダーク",
       "light": "ライト",
       "ui": "UI",
+      "uiFont": "UI フォント",
       "uiLanguage": "UI 言語",
       "uiScale": "UI スケール",
       "uiScaleDesc": "ウィンドウ全体のズーム (80〜150%)",

@@ -161,6 +161,20 @@ function App() {
     );
   }, [attributionOpacity]);
 
+  // Sync UI font setting → --ui-font CSS variable (アプリ全体の UI 書体)。
+  // index.css の --font-sans / body が var(--ui-font, ...) を参照する。
+  // cache は DEFAULT_SETTINGS で seed 済みなので workspace 未オープンでも効く。
+  const uiFontFamily = useSettingsStore((s) => s.get("display.uiFontFamily"));
+  useEffect(() => {
+    const html = document.documentElement;
+    const v = uiFontFamily.trim();
+    if (v) {
+      html.style.setProperty("--ui-font", v);
+    } else {
+      html.style.removeProperty("--ui-font");
+    }
+  }, [uiFontFamily]);
+
   useEffect(() => {
     initialize();
   }, [initialize]);

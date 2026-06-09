@@ -177,6 +177,12 @@
 }
 
 @theme inline {
+  /* UI 書体。--ui-font は App.tsx が display.uiFontFamily 設定から実行時に
+     html へ setProperty する。未設定時は同梱 M PLUS 1 → system stack に fallback。
+     これで font-sans utility (例: SceneBeatNodeView) も --ui-font に追従する。 */
+  --font-sans:
+    var(--ui-font, "M PLUS 1"), ui-sans-serif, system-ui, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -235,6 +241,12 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* UI 書体を継承テキストに適用 (font-sans utility を使わない大半の UI)。
+       エディタ本文は inline style (editor.fontFamily) が優先され独立。 */
+    font-family:
+      var(--ui-font, "M PLUS 1"), ui-sans-serif, system-ui, sans-serif,
+      "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
+      "Noto Color Emoji";
   }
 }
 

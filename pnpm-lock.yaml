@@ -17,6 +17,9 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.6)
+      '@fontsource/m-plus-1':
+        specifier: ^5.2.9
+        version: 5.2.9
       '@fontsource/noto-serif-jp':
         specifier: ^5.2.8
         version: 5.2.8
@@ -901,6 +904,9 @@ packages:
 
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
+
+  '@fontsource/m-plus-1@5.2.9':
+    resolution: {integrity: sha512-/QhKBcdfpfCPwlDVY4dBXQgQwlTGT5Un0HDFRMFcOJ7ZcV/X4cTjAlxl2LO8VyRyP6qJ8itoOU0czlCSUj9djQ==}
 
   '@fontsource/noto-serif-jp@5.2.8':
     resolution: {integrity: sha512-x+tGrrK+4t/hoHLxAl7Ry5nN8CVPermqz0fD7HtCXzBJSxzFKxNH9y+cuOD3gZW0tyKZ2CD7WvuAfHbISvjL5Q==}
@@ -5683,6 +5689,8 @@ snapshots:
       react-dom: 19.2.6(react@19.2.6)
 
   '@floating-ui/utils@0.2.11': {}
+
+  '@fontsource/m-plus-1@5.2.9': {}
 
   '@fontsource/noto-serif-jp@5.2.8': {}
 

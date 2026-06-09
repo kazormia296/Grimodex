@@ -3,21 +3,15 @@ import { useSettingControl } from "../useSettingControl";
 import { useSystemFonts } from "../hooks/useSystemFonts";
 import {
   buildFontOptions,
-  type BundledFont,
   type FontOption,
   type FontOptionGroup,
 } from "../buildFontOptions";
+import { BUNDLED_FONTS } from "../bundledFonts";
 
 interface FontFamilySelectProps {
   settingKey: string;
   defaultValue?: string;
 }
-
-/**
- * アプリに同梱しているフォント。main.tsx で fontsource 経由 (@font-face) を
- * import 済みのものだけをここに列挙する（webview で確実に解決される）。
- */
-const BUNDLED_FONTS: BundledFont[] = [{ family: "Noto Serif JP" }];
 
 /** optgroup の表示順。current（移行注入）を先頭に、長いシステム一覧を末尾に。 */
 const GROUP_ORDER: FontOptionGroup[] = [

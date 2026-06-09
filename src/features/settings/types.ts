@@ -84,6 +84,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.lineBreak": "project",
   "editor.paragraphIndent": "project",
   // Display — user preference (global)
+  "display.uiFontFamily": "global",
   "display.showWordCount": "global",
   "display.showAiBadge": "global",
   "display.reduceMotion": "global",
@@ -198,6 +199,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.showLineNumbers": "false",
   "editor.paragraphIndent": "0",
   // Display (theme, uiLanguage, uiScale are in GlobalSettings)
+  // 同梱 UI 書体 M PLUS 1 を既定に。fallback 無しは buildFontOptions の
+  // 同梱/列挙 option (quoteFamily) と一致させ重複表示を防ぐ。
+  "display.uiFontFamily": '"M PLUS 1"',
   "display.showWordCount": "true",
   "display.showAiBadge": "false",
   "display.reduceMotion": "false",

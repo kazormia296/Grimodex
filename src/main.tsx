@@ -13,6 +13,11 @@ import "@fontsource/noto-serif-jp/japanese-400.css";
 import "@fontsource/noto-serif-jp/japanese-700.css";
 import "@fontsource/noto-serif-jp/latin-400.css";
 import "@fontsource/noto-serif-jp/latin-700.css";
+// 同梱フォント: M PLUS 1 (OFL-1.1)。UI デフォルト書体 (--ui-font 経由)。
+import "@fontsource/m-plus-1/japanese-400.css";
+import "@fontsource/m-plus-1/japanese-700.css";
+import "@fontsource/m-plus-1/latin-400.css";
+import "@fontsource/m-plus-1/latin-700.css";
 import { ensureTokenizer } from "./features/chat/contextBuilder";
 
 window.addEventListener("unhandledrejection", (event) => {

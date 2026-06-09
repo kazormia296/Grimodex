@@ -207,6 +207,7 @@
       "dark": "Dark",
       "light": "Light",
       "ui": "UI",
+      "uiFont": "UI Font",
       "uiLanguage": "UI Language",
       "uiScale": "UI Scale",
       "uiScaleDesc": "Zoom level for the entire window (80–150%)",
