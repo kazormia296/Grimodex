@@ -5,6 +5,7 @@
  */
 
 import { unzipSync, strFromU8 } from "fflate";
+import { zipBombGuard } from "./zipGuard";
 import type { ImportedNode } from "./importTypes";
 import {
   extractEpisodeBody,
@@ -74,7 +75,8 @@ const KNOWN_ABOUT_KEYS = new Set([
 ]);
 
 export function parseKakuyomuZip(zipBytes: Uint8Array): KakuyomuParseResult {
-  const files = unzipSync(zipBytes);
+  // zip-bomb / 過大 zip による renderer の OOM/ハングを防ぐ (PIO-3)。
+  const files = unzipSync(zipBytes, { filter: zipBombGuard() });
   const warnings: string[] = [];
 
   const aboutBytes = files["about.txt"];

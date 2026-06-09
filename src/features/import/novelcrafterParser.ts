@@ -6,6 +6,7 @@
  */
 
 import { unzipSync, strFromU8 } from "fflate";
+import { zipBombGuard } from "./zipGuard";
 import yaml from "js-yaml";
 import type { ParsedChapter, ParsedScene } from "./importTypes";
 
@@ -117,7 +118,8 @@ const CODEX_DIRS = [
 // ─────────────────────────────────────────────────────────────────
 
 export function parseNovelcrafterZip(zipBytes: Uint8Array): ParseResult {
-  const files = unzipSync(zipBytes);
+  // zip-bomb / 過大 zip による renderer の OOM/ハングを防ぐ (PIO-3)。
+  const files = unzipSync(zipBytes, { filter: zipBombGuard() });
 
   const projectTitle = parseProjectTitle(files);
   const { entries } = parseCodexEntries(files);

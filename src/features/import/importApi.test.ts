@@ -528,12 +528,12 @@ describe("importChapters", () => {
 
 describe("importChatSessionsBatch", () => {
   const mockDbInsert = vi.mocked(db.insert);
+  let mockValues: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDbInsert.mockReturnValue({
-      values: vi.fn(async () => undefined),
-    } as never);
+    mockValues = vi.fn(async () => undefined);
+    mockDbInsert.mockReturnValue({ values: mockValues } as never);
   });
 
   function makeSession(
@@ -557,8 +557,13 @@ describe("importChatSessionsBatch", () => {
 
     expect(result.imported).toBe(1);
     expect(result.errors).toHaveLength(0);
-    // 1 insert for the session, 2 for messages
-    expect(mockDbInsert).toHaveBeenCalledTimes(3);
+    // 1 insert for the session, 1 batched insert for the messages (chunked).
+    expect(mockDbInsert).toHaveBeenCalledTimes(2);
+    // The message insert is batched: a single call carrying both rows, not one
+    // insert per message (DB-write-amplification DoS guard).
+    const messageInsert = mockValues.mock.calls[1][0];
+    expect(Array.isArray(messageInsert)).toBe(true);
+    expect(messageInsert).toHaveLength(2);
   });
 
   it("titleFromFrontmatter=true なら titleManual=1 で保存する", async () => {

@@ -616,17 +616,24 @@ export async function importChatSessionsBatch(
       // Generate strictly-increasing createdAt timestamps for messages so they
       // sort in the order they appeared in the chat file. Add one millisecond
       // per message to the session timestamp.
+      //
+      // Batch the inserts: a malicious export can pack a single chat file with
+      // hundreds of thousands of tiny messages, and one `db.insert` per message
+      // means one IPC round-trip + one implicit (WAL-fsync'd) transaction each —
+      // a DB-write-amplification DoS that hangs the renderer and holds the DB
+      // lock. Chunked multi-row inserts collapse that to one IPC per chunk.
       const baseMs = Date.parse(sessionCreated);
-      for (let mi = 0; mi < s.messages.length; mi++) {
-        const msg = s.messages[mi];
-        const ts = new Date(baseMs + mi).toISOString();
-        await db.insert(chatMessages).values({
-          id: crypto.randomUUID(),
-          sessionId: s.id,
-          role: msg.role,
-          content: msg.content,
-          createdAt: ts,
-        });
+      const rows = s.messages.map((msg, mi) => ({
+        id: crypto.randomUUID(),
+        sessionId: s.id,
+        role: msg.role,
+        content: msg.content,
+        createdAt: new Date(baseMs + mi).toISOString(),
+      }));
+      // Stay well under SQLite's bound-variable limit (5 cols × 100 = 500).
+      const CHUNK = 100;
+      for (let off = 0; off < rows.length; off += CHUNK) {
+        await db.insert(chatMessages).values(rows.slice(off, off + CHUNK));
       }
       imported++;
     } catch (err) {

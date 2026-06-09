@@ -162,7 +162,9 @@ export function parseMarkdownZip(zipBytes: Uint8Array): MarkdownParseResult {
       if (!name.endsWith(".md") && !name.endsWith(".markdown")) return false;
       if (name.includes("__MACOSX")) return false;
       mdCount += 1;
-      totalDeclared += f.size;
+      // size は圧縮後サイズ。alloc 量 (inflate の out バッファ) を bound するには
+      // 非圧縮サイズ originalSize を合算する必要がある。
+      totalDeclared += f.originalSize;
       if (mdCount > MAX_MARKDOWN_ENTRIES) {
         throw new Error(
           `ZIP 内の Markdown ファイルが多すぎます (上限 ${MAX_MARKDOWN_ENTRIES} 件)`,
