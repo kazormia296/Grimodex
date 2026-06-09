@@ -35,5 +35,6 @@ describe("bundled font defaults stay selectable", () => {
     expect(families).toContain("Noto Serif JP");
     expect(families).toContain("M PLUS 1");
     expect(families).toContain("LINE Seed JP");
+    expect(families).toContain("Noto Sans JP");
   });
 });

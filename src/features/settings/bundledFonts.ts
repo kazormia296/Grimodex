@@ -11,4 +11,5 @@ export const BUNDLED_FONTS: BundledFont[] = [
   { family: "Noto Serif JP" }, // 本文デフォルト (明朝)
   { family: "M PLUS 1" }, // UI デフォルト (ゴシック)
   { family: "LINE Seed JP" }, // 追加の UI 向け選択肢 (デフォルトではない)
+  { family: "Noto Sans JP" }, // 追加のゴシック選択肢 (デフォルトではない)
 ];

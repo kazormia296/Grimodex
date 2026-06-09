@@ -23,6 +23,11 @@ import "@fontsource/line-seed-jp/japanese-400.css";
 import "@fontsource/line-seed-jp/japanese-700.css";
 import "@fontsource/line-seed-jp/latin-400.css";
 import "@fontsource/line-seed-jp/latin-700.css";
+// 同梱フォント: Noto Sans JP (OFL-1.1)。デフォルトではなく追加の選択肢。
+import "@fontsource/noto-sans-jp/japanese-400.css";
+import "@fontsource/noto-sans-jp/japanese-700.css";
+import "@fontsource/noto-sans-jp/latin-400.css";
+import "@fontsource/noto-sans-jp/latin-700.css";
 import { ensureTokenizer } from "./features/chat/contextBuilder";
 
 window.addEventListener("unhandledrejection", (event) => {
