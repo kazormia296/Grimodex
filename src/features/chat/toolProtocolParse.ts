@@ -96,6 +96,32 @@ function coerceArgs(raw: unknown): Record<string, unknown> {
 }
 
 /**
+ * Mutating agent tools. The Hermes body-text `<tool_call>` channel (models
+ * without native function calling) MUST NOT be able to invoke these: a Web
+ * search result echoed into the assistant body as a `<tool_call>` is
+ * indistinguishable from a genuine model call, so allowing writes via that
+ * channel is an injection-driven write vector (and the only backstop, AiPolicy,
+ * fail-opens to all-writes-enabled on a fresh/empty project). Native providers
+ * carry tool calls in a structured field separate from body text, so they are
+ * unaffected. Callers building the Hermes allow-list filter these out.
+ *
+ * Must stay in sync with `MUTATING_EXECUTORS` in toolExecutors.ts — a test in
+ * toolExecutors.test.ts asserts the two never drift apart.
+ */
+export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "create_codex_entry",
+  "update_codex_entry",
+  "create_snippet",
+  "apply_ai_tree_plan",
+  "propose_scene_body",
+]);
+
+/** Hermes allow-list = declared tool names minus mutating ones (write block). */
+export function hermesAllowedToolNames(names: readonly string[]): string[] {
+  return names.filter((n) => !MUTATING_TOOL_NAMES.has(n));
+}
+
+/**
  * 本文中の `<tool_call>{...}</tool_call>` を抽出する。
  * - `name` が `allowedNames` に一致するものだけ `calls` に積む（合成 ID 付与）。
  * - 壊れた JSON・未知ツール・`<tool_response>` を含め、タグは strippedText から除去。

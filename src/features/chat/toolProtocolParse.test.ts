@@ -6,6 +6,8 @@ import {
   formatHermesToolCall,
   formatHermesToolResponse,
   buildHermesToolsPreamble,
+  hermesAllowedToolNames,
+  MUTATING_TOOL_NAMES,
 } from "./toolProtocolParse";
 import { DEFAULT_AI_SETTINGS, type AiSettings } from "./types";
 
@@ -50,6 +52,30 @@ describe("isHermesProtocol", () => {
     };
     expect(isHermesProtocol(s)).toBe(true);
     expect(isHermesProtocol({ ...s, toolProtocolMode: "native" })).toBe(false);
+  });
+});
+
+describe("hermesAllowedToolNames", () => {
+  it("drops mutating tools so body <tool_call> can't trigger writes", () => {
+    const declared = [
+      "search_codex",
+      "create_codex_entry",
+      "get_scene",
+      "propose_scene_body",
+      "apply_ai_tree_plan",
+    ];
+    const allowed = hermesAllowedToolNames(declared);
+    expect(allowed).toContain("search_codex");
+    expect(allowed).toContain("get_scene");
+    for (const m of MUTATING_TOOL_NAMES) expect(allowed).not.toContain(m);
+  });
+
+  it("a mutating body tool_call is not parsed into a call", () => {
+    const body =
+      '<tool_call>{"name":"create_codex_entry","arguments":{"name":"x"}}</tool_call>';
+    const allowed = hermesAllowedToolNames(["create_codex_entry"]);
+    const { calls } = parseHermesToolCalls(body, allowed);
+    expect(calls).toHaveLength(0);
   });
 });
 

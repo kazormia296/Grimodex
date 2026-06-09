@@ -20,6 +20,7 @@ import {
   formatHermesToolCall,
   formatHermesToolResponse,
   buildHermesToolsPreamble,
+  hermesAllowedToolNames,
 } from "@/features/chat/toolProtocolParse";
 
 interface ChatMessage {
@@ -501,9 +502,11 @@ export async function sendChatWithTools(
   const result = await resp.json();
   if (provider === "anthropic") return parseAnthropicAgentResponse(result);
   // Hermes 解決時のみ本文 <tool_call> を declared tool に対してパースする。
+  // mutating ツールは本文チャンネルからは発火させない (injection-driven write
+  // 防御。MUTATING_TOOL_NAMES 参照)。
   const hermes =
     resolved === "hermes"
-      ? { allowedNames: tools.map((t) => t.name) }
+      ? { allowedNames: hermesAllowedToolNames(tools.map((t) => t.name)) }
       : undefined;
   return parseOpenAIAgentResponse(result, hermes);
 }
