@@ -79,7 +79,7 @@ export function EditorCategory() {
         <SettingRow label={t("settings.editor.font")}>
           <FontFamilySelect
             settingKey="editor.fontFamily"
-            defaultValue="serif"
+            defaultValue={'"Noto Serif JP"'}
           />
         </SettingRow>
         <SettingRow label={t("settings.editor.fontSize")}>

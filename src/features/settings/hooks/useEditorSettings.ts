@@ -33,7 +33,7 @@ export interface EditorSettings {
 export function useEditorSettings(): EditorSettings {
   const store = useSettingsStore();
   return {
-    fontFamily: store.get("editor.fontFamily", "serif"),
+    fontFamily: store.get("editor.fontFamily", '"Noto Serif JP"'),
     fontSize: store.getNumber("editor.fontSize", 18),
     lineHeight: store.getNumber("editor.lineHeight", 2.0),
     maxContentWidth: store.getNumber("editor.maxContentWidth", 720),

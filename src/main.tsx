@@ -6,6 +6,13 @@ import { debugLog, errorDetail } from "./lib/debugLog";
 import "./lib/i18n";
 import "./lib/perfLog";
 import "./index.css";
+// 同梱フォント: Noto Serif JP (OFL-1.1)。本文デフォルト書体。fontsource が
+// subset 済み woff2 を提供し、Vite が build 時にバンドルする ('self' asset)。
+// 日本語 + Latin、Regular(400)/Bold(700)。@font-face family は "Noto Serif JP"。
+import "@fontsource/noto-serif-jp/japanese-400.css";
+import "@fontsource/noto-serif-jp/japanese-700.css";
+import "@fontsource/noto-serif-jp/latin-400.css";
+import "@fontsource/noto-serif-jp/latin-700.css";
 import { ensureTokenizer } from "./features/chat/contextBuilder";
 
 window.addEventListener("unhandledrejection", (event) => {

@@ -164,7 +164,9 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
 
 export const DEFAULT_SETTINGS: Record<string, string> = {
   // Editor
-  "editor.fontFamily": "serif",
+  // 同梱フォント Noto Serif JP を本文デフォルトに。fallback を付けない値は
+  // buildFontOptions の同梱/列挙 option (quoteFamily) と一致し、重複表示を避ける。
+  "editor.fontFamily": '"Noto Serif JP"',
   "editor.fontSize": "18",
   "editor.lineHeight": "2.0",
   "editor.maxContentWidth": "720",
