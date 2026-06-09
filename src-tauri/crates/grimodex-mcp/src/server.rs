@@ -9,6 +9,20 @@ use rusqlite::Connection;
 
 use crate::tools;
 
+/// Map an internal error to a generic MCP error, logging the full detail to the
+/// server log (stderr + file) instead of returning it to the client.
+///
+/// rusqlite/anyhow `Display` can carry SQL fragments, column/table names, schema
+/// details, and (for DB-open errors) absolute paths. Returning `e.to_string()`
+/// over the JSON-RPC wire let a (semi-)trusted but possibly prompt-injected MCP
+/// client map the internal schema / file layout for reconnaissance. The full
+/// error stays available to the operator via the log; the client only learns
+/// that an internal error occurred.
+pub(crate) fn internal_err(e: impl std::fmt::Display) -> ErrorData {
+    tracing::error!("grimodex-mcp internal error: {e}");
+    ErrorData::internal_error("internal error".to_string(), None)
+}
+
 pub struct GrimodexServer {
     pub conn: Mutex<Connection>,
     /// The project all tools currently scope to. Mutable so `--all-projects`
@@ -70,12 +84,8 @@ impl GrimodexServer {
     /// effect). Reads the *current* project so write-gating follows
     /// `select_project` in all-projects mode (not the startup project).
     pub fn reload_policy(&self) -> Result<grimodex_core::policy::AiPolicyToggles, ErrorData> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        grimodex_core::policy::load_policy(&conn, &self.project_id())
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))
+        let conn = self.conn.lock().map_err(internal_err)?;
+        grimodex_core::policy::load_policy(&conn, &self.project_id()).map_err(internal_err)
     }
 }
 

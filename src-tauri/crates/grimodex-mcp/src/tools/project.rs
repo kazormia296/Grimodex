@@ -5,18 +5,13 @@ use rmcp::ErrorData;
 use serde::Deserialize;
 
 use crate::db;
-use crate::server::GrimodexServer;
+use crate::server::{internal_err, GrimodexServer};
 
 pub async fn get_project(server: &GrimodexServer) -> Result<CallToolResult, ErrorData> {
     let pid = server.project_id();
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let project =
-        db::get_project(&conn, &pid).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let json = serde_json::to_string_pretty(&project)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
+    let project = db::get_project(&conn, &pid).map_err(internal_err)?;
+    let json = serde_json::to_string_pretty(&project).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -24,14 +19,9 @@ pub async fn get_project(server: &GrimodexServer) -> Result<CallToolResult, Erro
 
 pub async fn get_project_stats(server: &GrimodexServer) -> Result<CallToolResult, ErrorData> {
     let pid = server.project_id();
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let stats = db::get_project_stats(&conn, &pid)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let json = serde_json::to_string_pretty(&stats)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
+    let stats = db::get_project_stats(&conn, &pid).map_err(internal_err)?;
+    let json = serde_json::to_string_pretty(&stats).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -41,23 +31,17 @@ pub async fn get_project_stats(server: &GrimodexServer) -> Result<CallToolResult
 /// it never leaks other projects' ids/titles across the pin boundary (XPROJ).
 /// With --all-projects, enumerates the whole workspace.
 pub async fn list_projects(server: &GrimodexServer) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
     let summaries = if server.all_projects {
-        db::list_all_projects(&conn).map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+        db::list_all_projects(&conn).map_err(internal_err)?
     } else {
         let pid = server.project_id();
-        match db::fetch_project_title(&conn, &pid)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
-        {
+        match db::fetch_project_title(&conn, &pid).map_err(internal_err)? {
             Some(title) => vec![db::ProjectSummary { id: pid, title }],
             None => vec![],
         }
     };
-    let json = serde_json::to_string_pretty(&summaries)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&summaries).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -85,20 +69,16 @@ pub async fn select_project(
             None,
         ));
     }
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
     let title = db::fetch_project_title(&conn, &params.project_id)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+        .map_err(internal_err)?
         .ok_or_else(|| {
             ErrorData::invalid_params(format!("no such project: {}", params.project_id), None)
         })?;
     drop(conn);
     server.set_current_project(params.project_id.clone());
     let body = serde_json::json!({ "selected": params.project_id, "title": title });
-    let json = serde_json::to_string_pretty(&body)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&body).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))

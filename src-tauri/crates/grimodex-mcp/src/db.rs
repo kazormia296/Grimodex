@@ -806,30 +806,39 @@ pub fn list_chat_sessions(
 
 pub fn get_chat_messages(
     conn: &Connection,
+    project_id: &str,
     session_id: &str,
     anchors_only: bool,
     limit: u32,
 ) -> Result<Vec<ChatMessage>> {
+    // `project_id` でスコープしないと、別プロジェクトの session_id を渡すだけで
+    // クロスプロジェクトでチャット全履歴を読めてしまう (XPROJ read-by-id 防御)。
+    // chat_messages に project_id 列が無いため、所有プロジェクトを持つ
+    // chat_sessions へ JOIN して `cs.project_id` でゲートする。
     let sql = if anchors_only {
-        "SELECT id, session_id, role, content, model, metadata, is_starred, created_at
-         FROM chat_messages WHERE session_id = ?1 AND (
-           role = 'user'
-           OR json_extract(metadata, '$.insertedToEditor') = 1
-           OR json_extract(metadata, '$.insertedToEditor') = 'true'
-           OR (json_type(json_extract(metadata, '$.extractedCodex')) = 'array'
-               AND json_array_length(json_extract(metadata, '$.extractedCodex')) > 0)
-           OR (json_type(json_extract(metadata, '$.extractedSnippets')) = 'array'
-               AND json_array_length(json_extract(metadata, '$.extractedSnippets')) > 0)
+        "SELECT m.id, m.session_id, m.role, m.content, m.model, m.metadata, m.is_starred, m.created_at
+         FROM chat_messages m
+         JOIN chat_sessions cs ON cs.id = m.session_id
+         WHERE cs.project_id = ?1 AND m.session_id = ?2 AND (
+           m.role = 'user'
+           OR json_extract(m.metadata, '$.insertedToEditor') = 1
+           OR json_extract(m.metadata, '$.insertedToEditor') = 'true'
+           OR (json_type(json_extract(m.metadata, '$.extractedCodex')) = 'array'
+               AND json_array_length(json_extract(m.metadata, '$.extractedCodex')) > 0)
+           OR (json_type(json_extract(m.metadata, '$.extractedSnippets')) = 'array'
+               AND json_array_length(json_extract(m.metadata, '$.extractedSnippets')) > 0)
          )
-         ORDER BY created_at LIMIT ?2"
+         ORDER BY m.created_at LIMIT ?3"
     } else {
-        "SELECT id, session_id, role, content, model, metadata, is_starred, created_at
-         FROM chat_messages WHERE session_id = ?1
-         ORDER BY created_at LIMIT ?2"
+        "SELECT m.id, m.session_id, m.role, m.content, m.model, m.metadata, m.is_starred, m.created_at
+         FROM chat_messages m
+         JOIN chat_sessions cs ON cs.id = m.session_id
+         WHERE cs.project_id = ?1 AND m.session_id = ?2
+         ORDER BY m.created_at LIMIT ?3"
     };
     let mut stmt = conn.prepare(sql)?;
     let lim = limit.min(200) as i64;
-    let rows = stmt.query_map(params![session_id, lim], |row| {
+    let rows = stmt.query_map(params![project_id, session_id, lim], |row| {
         Ok(ChatMessage {
             id: row.get(0)?,
             session_id: row.get(1)?,
@@ -903,11 +912,15 @@ pub fn get_attribution_report(
 ) -> Result<AttributionReport> {
     // Total and by-source aggregation
     let sql_global = if scene_id.is_some() {
+        // node_id 単独だと別プロジェクトの scene_id を渡すだけで他プロジェクトの
+        // シーン帰属統計を読めてしまう。authorship_spans に project_id 列は無いため
+        // tree_nodes へ JOIN して `tn.project_id` でゲートする (XPROJ read 防御)。
         "SELECT a.source,
                 SUM(a.to_pos - a.from_pos) as char_count,
                 COUNT(*) as span_count
          FROM authorship_spans a
-         WHERE a.node_id = ?1
+         JOIN tree_nodes tn ON tn.id = a.node_id
+         WHERE a.node_id = ?1 AND tn.project_id = ?2
          GROUP BY a.source ORDER BY char_count DESC"
     } else {
         "SELECT source, SUM(char_count) as char_count, COUNT(*) as span_count
@@ -932,7 +945,7 @@ pub fn get_attribution_report(
 
     let mut stmt = conn.prepare(sql_global)?;
     let rows: Vec<AttributionSourceSummary> = if let Some(sid) = scene_id {
-        stmt.query_map(params![sid], |row| {
+        stmt.query_map(params![sid, project_id], |row| {
             Ok(AttributionSourceSummary {
                 source: row.get(0)?,
                 char_count: row.get(1)?,
@@ -2395,14 +2408,20 @@ mod tests {
             [],
         )
         .unwrap();
-        let all = get_chat_messages(&conn, "cs1", false, 100).unwrap();
+        let all = get_chat_messages(&conn, "p1", "cs1", false, 100).unwrap();
         assert_eq!(all.len(), 3);
-        let anchors = get_chat_messages(&conn, "cs1", true, 100).unwrap();
+        let anchors = get_chat_messages(&conn, "p1", "cs1", true, 100).unwrap();
         assert_eq!(anchors.len(), 2);
         assert!(anchors.iter().any(|m| m.id == "m1"));
         assert!(anchors.iter().any(|m| m.id == "m2"));
         let anchored = anchors.iter().find(|m| m.id == "m2").unwrap();
         assert!(anchored.metadata.is_some());
+
+        // XPROJ defense: querying cs1 (owned by p1) while scoped to another
+        // project must return nothing — the session_id alone must not leak
+        // another project's chat history.
+        let cross = get_chat_messages(&conn, "p2", "cs1", false, 100).unwrap();
+        assert!(cross.is_empty());
     }
 
     #[test]
@@ -2457,6 +2476,11 @@ mod tests {
         let scene_report = get_attribution_report(&conn, "p1", Some("s1")).unwrap();
         assert_eq!(scene_report.total_char_count, 160);
         assert!(scene_report.by_scene.is_empty()); // by_scene is empty when scene_id filter used
+
+        // XPROJ defense: s1 belongs to p1; scoping to another project must
+        // return nothing even though the scene_id is valid.
+        let cross = get_attribution_report(&conn, "p2", Some("s1")).unwrap();
+        assert_eq!(cross.total_char_count, 0);
     }
 
     #[test]

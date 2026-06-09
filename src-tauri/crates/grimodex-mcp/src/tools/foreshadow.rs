@@ -7,7 +7,7 @@ use schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::db;
-use crate::server::GrimodexServer;
+use crate::server::{internal_err, GrimodexServer};
 
 /// Allowed `load_bearing` values, identical to the canonical Tauri command and
 /// `deriveLabel.ts`. An unknown value would silently degrade in the app, so it
@@ -25,14 +25,9 @@ fn validate_load_bearing(value: Option<&str>) -> Result<(), ErrorData> {
 }
 
 pub async fn list_open_foreshadows(server: &GrimodexServer) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let rows = db::list_open_foreshadows(&conn, &server.project_id())
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let json = serde_json::to_string_pretty(&rows)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
+    let rows = db::list_open_foreshadows(&conn, &server.project_id()).map_err(internal_err)?;
+    let json = serde_json::to_string_pretty(&rows).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -56,14 +51,10 @@ pub async fn get_foreshadow_detail(
         )]));
     }
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let detail = db::get_foreshadow_detail(&conn, &server.project_id(), id)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let json = serde_json::to_string_pretty(&detail)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
+    let detail =
+        db::get_foreshadow_detail(&conn, &server.project_id(), id).map_err(internal_err)?;
+    let json = serde_json::to_string_pretty(&detail).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -110,35 +101,44 @@ pub async fn create_foreshadow(
         ));
     }
 
-    let title = params.title.trim();
-    if title.is_empty() {
-        return Err(ErrorData::invalid_params("title must not be empty", None));
-    }
+    // Sanitize the same way codex/snippet writes do (strip control chars, cap
+    // length). foreshadow writes previously passed these straight through, so a
+    // prompt-injected client could store a 50 MB blob or embedded NUL/C0 chars.
+    let title = crate::sanitize::sanitize_name(&params.title)
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+    let intent = params
+        .intent
+        .as_deref()
+        .map(crate::sanitize::sanitize_freetext)
+        .transpose()
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+    let notes = params
+        .notes
+        .as_deref()
+        .map(crate::sanitize::sanitize_freetext)
+        .transpose()
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
     validate_load_bearing(params.load_bearing.as_deref())?;
     let secret = params.secret.unwrap_or(true);
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
     let id = db::create_foreshadow(
         &conn,
         &server.project_id(),
-        title,
-        params.intent.as_deref(),
-        params.notes.as_deref(),
+        &title,
+        intent.as_deref(),
+        notes.as_deref(),
         params.load_bearing.as_deref(),
         secret,
     )
-    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    .map_err(internal_err)?;
 
     let result = CreateForeshadowResult {
         id: id.clone(),
         secret,
         message: format!("Foreshadow '{title}' created with id {id}"),
     };
-    let json = serde_json::to_string_pretty(&result)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&result).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -208,23 +208,40 @@ pub async fn update_foreshadow(
     }
     validate_load_bearing(params.load_bearing.as_deref())?;
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    // Same sanitization as create_foreshadow for any provided text field.
+    let title = params
+        .title
+        .as_deref()
+        .map(crate::sanitize::sanitize_name)
+        .transpose()
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+    let intent = params
+        .intent
+        .as_deref()
+        .map(crate::sanitize::sanitize_freetext)
+        .transpose()
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+    let notes = params
+        .notes
+        .as_deref()
+        .map(crate::sanitize::sanitize_freetext)
+        .transpose()
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+
+    let conn = server.conn.lock().map_err(internal_err)?;
     let affected = db::update_foreshadow(
         &conn,
         &server.project_id(),
         id,
-        params.title.as_deref(),
-        params.intent.as_deref(),
-        params.notes.as_deref(),
+        title.as_deref(),
+        intent.as_deref(),
+        notes.as_deref(),
         params.load_bearing.as_deref(),
         params.payoff_confirmed,
         params.abandoned,
         params.secret,
     )
-    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    .map_err(internal_err)?;
 
     if affected == 0 {
         return Err(ErrorData::invalid_params(
@@ -238,8 +255,7 @@ pub async fn update_foreshadow(
         updated: true,
         message: format!("Foreshadow {id} updated"),
     };
-    let json = serde_json::to_string_pretty(&result)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&result).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))

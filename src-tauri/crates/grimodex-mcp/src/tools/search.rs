@@ -6,7 +6,7 @@ use schemars;
 use serde::Deserialize;
 
 use crate::db;
-use crate::server::GrimodexServer;
+use crate::server::{internal_err, GrimodexServer};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchProjectParams {
@@ -40,16 +40,12 @@ pub async fn search_project(
 
     let limit = params.limit.unwrap_or(20).clamp(1, 50);
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     let results = db::search_fts(&conn, &server.project_id(), &params.query, scope, limit)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .map_err(internal_err)?;
 
-    let json = serde_json::to_string_pretty(&results)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&results).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))

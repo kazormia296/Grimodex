@@ -6,7 +6,7 @@ use schemars;
 use serde::Deserialize;
 
 use crate::db;
-use crate::server::GrimodexServer;
+use crate::server::{internal_err, GrimodexServer};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetAttributionReportParams {
@@ -18,17 +18,13 @@ pub async fn get_attribution_report(
     server: &GrimodexServer,
     params: GetAttributionReportParams,
 ) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     let report =
         db::get_attribution_report(&conn, &server.project_id(), params.scene_id.as_deref())
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            .map_err(internal_err)?;
 
-    let json = serde_json::to_string_pretty(&report)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&report).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))

@@ -9,7 +9,7 @@ use rusqlite::Connection;
 
 use crate::convert::prosemirror_to_markdown;
 use crate::db::{self, TreeFilter, TreeNode};
-use crate::server::GrimodexServer;
+use crate::server::{internal_err, GrimodexServer};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReadSceneParams {
@@ -70,17 +70,12 @@ pub async fn read_scene(
     server: &GrimodexServer,
     params: ReadSceneParams,
 ) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     let nodes: Vec<TreeNode> = if let Some(id) = &params.scene_id {
-        vec![db::get_scene_meta(&conn, &server.project_id(), id)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?]
+        vec![db::get_scene_meta(&conn, &server.project_id(), id).map_err(internal_err)?]
     } else if let Some(title) = &params.title {
-        db::find_scene_by_title(&conn, &server.project_id(), title)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+        db::find_scene_by_title(&conn, &server.project_id(), title).map_err(internal_err)?
     } else {
         return Err(ErrorData::invalid_params(
             "Provide either scene_id or title",
@@ -91,8 +86,7 @@ pub async fn read_scene(
     let results: Vec<SceneResult> = nodes.iter().map(|n| load_scene(&conn, n)).collect();
     drop(conn);
 
-    let json = serde_json::to_string_pretty(&results)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&results).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -102,10 +96,7 @@ pub async fn read_scenes_batch(
     server: &GrimodexServer,
     params: ReadScenesBatchParams,
 ) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     let nodes: Vec<TreeNode> = if let Some(ids) = &params.scene_ids {
         let ids: Vec<String> = ids.iter().take(50).cloned().collect();
@@ -117,8 +108,8 @@ pub async fn read_scenes_batch(
             node_type: Some("scene".to_string()),
             status: params.status.clone(),
         };
-        let mut all = db::list_tree_nodes(&conn, &server.project_id(), &filter)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let mut all =
+            db::list_tree_nodes(&conn, &server.project_id(), &filter).map_err(internal_err)?;
         if let Some(pid) = &params.parent_id {
             all.retain(|n| n.parent_id.as_deref() == Some(pid.as_str()));
         }
@@ -129,8 +120,7 @@ pub async fn read_scenes_batch(
     let results: Vec<SceneResult> = nodes.iter().map(|n| load_scene(&conn, n)).collect();
     drop(conn);
 
-    let json = serde_json::to_string_pretty(&results)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&results).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -193,6 +183,12 @@ pub async fn propose_scene_body(
     if text.is_empty() {
         return Err(ErrorData::invalid_params("text is required", None));
     }
+    // Cap staged prose at the same 1 MB limit codex/snippet content uses. With
+    // headless auto-apply on, this row is drained and written into the scene
+    // body unattended, so an unbounded MCP-supplied string would otherwise
+    // bloat the scene + change-event/timelapse chain with no guard.
+    crate::sanitize::validate_content_size(text)
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
     let mode = match params.mode.as_deref() {
         Some("insert") => "insert",
@@ -214,15 +210,12 @@ pub async fn propose_scene_body(
     let timestamp = chrono::Utc::now().timestamp_millis();
     let now = chrono::Utc::now().to_rfc3339();
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .map_err(internal_err)?;
     conn.execute_batch("BEGIN IMMEDIATE")
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .map_err(internal_err)?;
 
     let result = (|| -> Result<ProposeSceneBodyResult, ErrorData> {
         let (base_version, source_uri): (i64, Option<String>) = conn
@@ -269,7 +262,7 @@ pub async fn propose_scene_body(
                 now,
             ],
         )
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .map_err(internal_err)?;
 
         let change_payload = serde_json::json!({
             "stagingId": staging_id,
@@ -293,7 +286,7 @@ pub async fn propose_scene_body(
                 timestamp,
             }],
         )
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .map_err(internal_err)?;
 
         Ok(ProposeSceneBodyResult {
             staging_id: staging_id.clone(),
@@ -304,10 +297,8 @@ pub async fn propose_scene_body(
 
     match result {
         Ok(res) => {
-            conn.execute_batch("COMMIT")
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-            let json = serde_json::to_string_pretty(&res)
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            conn.execute_batch("COMMIT").map_err(internal_err)?;
+            let json = serde_json::to_string_pretty(&res).map_err(internal_err)?;
             Ok(CallToolResult::success(vec![rmcp::model::Content::text(
                 json,
             )]))

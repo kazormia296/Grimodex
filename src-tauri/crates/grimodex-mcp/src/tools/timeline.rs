@@ -6,7 +6,7 @@ use schemars;
 use serde::Deserialize;
 
 use crate::db;
-use crate::server::GrimodexServer;
+use crate::server::{internal_err, GrimodexServer};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetSceneTimelineNeighborsParams {
@@ -26,21 +26,16 @@ pub async fn get_scene_timeline_neighbors(
             previous: Vec::new(),
             next: Vec::new(),
         };
-        let json = serde_json::to_string_pretty(&empty)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let json = serde_json::to_string_pretty(&empty).map_err(internal_err)?;
         return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             json,
         )]));
     }
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
     let neighbors = db::get_scene_timeline_neighbors(&conn, &server.project_id(), scene_id)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let json = serde_json::to_string_pretty(&neighbors)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .map_err(internal_err)?;
+    let json = serde_json::to_string_pretty(&neighbors).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))

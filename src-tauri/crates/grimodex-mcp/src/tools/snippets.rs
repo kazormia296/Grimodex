@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::convert::prosemirror_to_markdown;
 use crate::db;
 use crate::sanitize;
-use crate::server::GrimodexServer;
+use crate::server::{internal_err, GrimodexServer};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListSnippetsParams {
@@ -36,13 +36,10 @@ pub async fn list_snippets(
 ) -> Result<CallToolResult, ErrorData> {
     let limit = params.limit.unwrap_or(50).clamp(1, 100);
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     let raw = db::list_snippets(&conn, &server.project_id(), params.tag.as_deref(), limit)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .map_err(internal_err)?;
 
     drop(conn);
 
@@ -67,8 +64,7 @@ pub async fn list_snippets(
         })
         .collect();
 
-    let json = serde_json::to_string_pretty(&results)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&results).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -132,10 +128,7 @@ pub async fn create_snippet(
         vec![]
     };
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     grimodex_core::writes::snippet::tracked_snippet_create(
         &conn,
@@ -151,14 +144,13 @@ pub async fn create_snippet(
             authorship_spans: &spans,
         },
     )
-    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    .map_err(internal_err)?;
 
     let result = CreateSnippetResult {
         id: snippet_id,
         title,
     };
-    let json = serde_json::to_string_pretty(&result)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&result).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))

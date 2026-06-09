@@ -6,7 +6,7 @@ use schemars;
 use serde::Deserialize;
 
 use crate::db;
-use crate::server::GrimodexServer;
+use crate::server::{internal_err, GrimodexServer};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListChatSessionsParams {
@@ -30,16 +30,12 @@ pub async fn list_chat_sessions(
     server: &GrimodexServer,
     params: ListChatSessionsParams,
 ) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     let sessions = db::list_chat_sessions(&conn, &server.project_id(), params.node_id.as_deref())
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .map_err(internal_err)?;
 
-    let json = serde_json::to_string_pretty(&sessions)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&sessions).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -56,16 +52,18 @@ pub async fn read_chat_history(
     }
     let limit = params.limit.unwrap_or(100).clamp(1, 200);
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
-    let messages = db::get_chat_messages(&conn, &params.session_id, anchors_only, limit)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let messages = db::get_chat_messages(
+        &conn,
+        &server.project_id(),
+        &params.session_id,
+        anchors_only,
+        limit,
+    )
+    .map_err(internal_err)?;
 
-    let json = serde_json::to_string_pretty(&messages)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&messages).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))

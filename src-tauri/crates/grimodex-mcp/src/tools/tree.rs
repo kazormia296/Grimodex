@@ -6,7 +6,7 @@ use schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::db::{self, TreeFilter, TreeNode};
-use crate::server::GrimodexServer;
+use crate::server::{internal_err, GrimodexServer};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListTreeParams {
@@ -32,35 +32,25 @@ pub async fn list_tree(
     server: &GrimodexServer,
     params: ListTreeParams,
 ) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
     let filter = TreeFilter {
         node_type: params.node_type,
         status: params.status,
     };
-    let nodes = db::list_tree_nodes(&conn, &server.project_id(), &filter)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let nodes = db::list_tree_nodes(&conn, &server.project_id(), &filter).map_err(internal_err)?;
 
     // Build hierarchy (only makes sense when not filtering by type/status)
     let nested = build_tree(&nodes, None);
-    let json = serde_json::to_string_pretty(&nested)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&nested).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
 }
 
 pub async fn get_chapter_summaries(server: &GrimodexServer) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let summaries = db::get_chapter_summaries(&conn, &server.project_id())
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let json = serde_json::to_string_pretty(&summaries)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
+    let summaries = db::get_chapter_summaries(&conn, &server.project_id()).map_err(internal_err)?;
+    let json = serde_json::to_string_pretty(&summaries).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))

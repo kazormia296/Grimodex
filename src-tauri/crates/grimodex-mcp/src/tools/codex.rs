@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::convert::prosemirror_to_markdown;
 use crate::db::{self, CodexEntryFull, CodexFilter};
 use crate::sanitize;
-use crate::server::GrimodexServer;
+use crate::server::{internal_err, GrimodexServer};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListCodexParams {
@@ -30,18 +30,14 @@ pub async fn list_codex_entries(
     server: &GrimodexServer,
     params: ListCodexParams,
 ) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
     let filter = CodexFilter {
         type_slug: params.type_slug,
         tag: params.tag,
     };
-    let entries = db::list_codex_entries(&conn, &server.project_id(), &filter)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let json = serde_json::to_string_pretty(&entries)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let entries =
+        db::list_codex_entries(&conn, &server.project_id(), &filter).map_err(internal_err)?;
+    let json = serde_json::to_string_pretty(&entries).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -51,17 +47,13 @@ pub async fn get_codex_entry(
     server: &GrimodexServer,
     params: GetCodexParams,
 ) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     let entries: Vec<CodexEntryFull> = if let Some(id) = &params.entry_id {
-        vec![db::get_codex_entry_full(&conn, &server.project_id(), id)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?]
+        vec![db::get_codex_entry_full(&conn, &server.project_id(), id).map_err(internal_err)?]
     } else if let Some(name) = &params.name {
-        let summaries = db::find_codex_by_name(&conn, &server.project_id(), name)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let summaries =
+            db::find_codex_by_name(&conn, &server.project_id(), name).map_err(internal_err)?;
         summaries
             .iter()
             .filter_map(|s| db::get_codex_entry_full(&conn, &server.project_id(), &s.id).ok())
@@ -89,8 +81,7 @@ pub async fn get_codex_entry(
         })
         .collect();
 
-    let json = serde_json::to_string_pretty(&entries)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&entries).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -109,14 +100,10 @@ pub async fn list_codex_tags(
     server: &GrimodexServer,
     params: ListCodexTagsParams,
 ) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
     let tags = db::list_codex_tags(&conn, &server.project_id(), params.type_filter.as_deref())
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let json = serde_json::to_string_pretty(&tags)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .map_err(internal_err)?;
+    let json = serde_json::to_string_pretty(&tags).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -132,14 +119,10 @@ pub async fn search_codex_by_tags(
     server: &GrimodexServer,
     params: SearchCodexByTagsParams,
 ) -> Result<CallToolResult, ErrorData> {
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
     let entries = db::search_codex_by_tags(&conn, &server.project_id(), &params.tags)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let json = serde_json::to_string_pretty(&entries)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        .map_err(internal_err)?;
+    let json = serde_json::to_string_pretty(&entries).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -161,24 +144,20 @@ pub async fn find_related_entries(
     let id = params.id.trim();
     if id.is_empty() {
         let json = serde_json::to_string_pretty(&Vec::<db::RelatedCodexEntry>::new())
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            .map_err(internal_err)?;
         return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             json,
         )]));
     }
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
     let entries = db::find_related_entries(
         &conn,
         &server.project_id(),
         id,
         params.type_filter.as_deref(),
     )
-    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    let json = serde_json::to_string_pretty(&entries)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    .map_err(internal_err)?;
+    let json = serde_json::to_string_pretty(&entries).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -290,10 +269,7 @@ pub async fn create_codex_entry(
         });
     }
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     grimodex_core::writes::codex::tracked_codex_create(
         &conn,
@@ -316,14 +292,13 @@ pub async fn create_codex_entry(
             tags: &tags,
         },
     )
-    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    .map_err(internal_err)?;
 
     let result = CreateCodexResult {
         id: new_id.clone(),
         message: format!("Codex entry '{}' created with id {}", name, new_id),
     };
-    let json = serde_json::to_string_pretty(&result)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let json = serde_json::to_string_pretty(&result).map_err(internal_err)?;
     Ok(CallToolResult::success(vec![rmcp::model::Content::text(
         json,
     )]))
@@ -401,10 +376,7 @@ pub async fn update_codex_entry(
         None
     };
 
-    let conn = server
-        .conn
-        .lock()
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let conn = server.conn.lock().map_err(internal_err)?;
 
     let base_version: i64 = conn
         .query_row(
@@ -470,7 +442,7 @@ pub async fn update_codex_entry(
             tags: params.tags.as_deref(),
         },
     )
-    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    .map_err(internal_err)?;
 
     let json = serde_json::json!({
         "id": params.entry_id,

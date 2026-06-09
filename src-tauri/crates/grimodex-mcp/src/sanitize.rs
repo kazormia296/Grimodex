@@ -67,11 +67,29 @@ pub fn validate_content_size(content: &str) -> Result<()> {
     Ok(())
 }
 
+/// Sanitize a free-text field (foreshadow intent/notes etc.): strip NUL/C0/C1
+/// control chars and cap at the 1 MB content limit. Unlike `sanitize_summary`
+/// this allows long bodies (notes can be lengthy) while still bounding the
+/// worst case so a prompt-injected client can't store a 50 MB blob or embed
+/// control characters that corrupt later plain-text extraction.
+pub fn sanitize_freetext(s: &str) -> Result<String> {
+    let cleaned = strip_control_chars(s).trim().to_string();
+    validate_content_size(&cleaned)?;
+    Ok(cleaned)
+}
+
 /// Wrap Markdown text as minimal ProseMirror JSON for storage.
 ///
 /// Splits by blank lines into paragraph nodes. Grimodex's TipTap is configured
 /// with tiptap-markdown so it can re-parse this format.
 pub fn markdown_to_prosemirror(md: &str) -> String {
+    // Strip NUL / C0 / C1 control chars (tab/newline/CR preserved) before
+    // splitting so codex/snippet content can't carry control characters into
+    // the stored ProseMirror doc, where they would corrupt later plain-text
+    // extraction, search tokenization, or export. name/summary/aliases are
+    // already stripped by their sanitizers; this closes the content path.
+    let md = strip_control_chars(md);
+    let md = md.as_str();
     if md.trim().is_empty() {
         return r#"{"type":"doc","content":[]}"#.to_string();
     }
