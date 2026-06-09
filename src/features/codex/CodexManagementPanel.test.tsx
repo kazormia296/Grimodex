@@ -324,8 +324,11 @@ describe("CodexManagementPanel", () => {
       unmount();
       render(<CodexManagementPanel />);
 
+      // 選択維持で detail が即復帰するため、名前 "アリス" は一覧 + detail header の
+      // 計測用 hidden span (aria-hidden) の 2 箇所に現れる。getByText だと多重一致で
+      // 落ちるので、一覧アイテムの testid で再描画完了を待つ。
       await waitFor(() => {
-        expect(screen.getByText("アリス")).toBeInTheDocument();
+        expect(screen.getByTestId("codex-entry-codex-1")).toBeInTheDocument();
       });
       // placeholder ではなく detail がそのまま復帰する = 選択維持
       expect(screen.getByTestId("codex-detail-content")).toBeInTheDocument();
@@ -352,6 +355,49 @@ describe("CodexManagementPanel", () => {
       expect(screen.getByTestId("codex-detail-tags")).toBeInTheDocument();
       // Type selector
       expect(screen.getByTestId("codex-detail-type")).toBeInTheDocument();
+    });
+
+    // 名前フィールドは <input> から自動フィット用 <textarea> に変わった。
+    // textarea 化で持ち込んだ 2 つの新挙動 (IME ガード / 改行畳み) を回帰として固定。
+    it("commits the name on Enter but ignores IME-composition Enter", async () => {
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+      await waitFor(() => {
+        expect(screen.getByText("アリス")).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
+
+      const nameField = screen.getByTestId(
+        "codex-detail-name",
+      ) as HTMLTextAreaElement;
+      nameField.focus();
+      expect(document.activeElement).toBe(nameField);
+
+      // 変換確定の Enter (isComposing) は commit/blur を起こさない。
+      fireEvent.keyDown(nameField, { key: "Enter", isComposing: true });
+      expect(document.activeElement).toBe(nameField);
+
+      // 通常の Enter は blur して commit する。
+      fireEvent.keyDown(nameField, { key: "Enter" });
+      expect(document.activeElement).not.toBe(nameField);
+    });
+
+    it("collapses pasted newlines in the name to a single line", async () => {
+      const user = userEvent.setup();
+      mockListCodexEntries.mockResolvedValue(mockEntries);
+      render(<CodexManagementPanel />);
+      await waitFor(() => {
+        expect(screen.getByText("アリス")).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId("codex-entry-codex-1"));
+
+      const nameField = screen.getByTestId(
+        "codex-detail-name",
+      ) as HTMLTextAreaElement;
+      // textarea は input と違い改行を保持するため、貼り付け改行をスペースに畳む。
+      fireEvent.change(nameField, { target: { value: "山田\n太郎" } });
+      expect(nameField.value).toBe("山田 太郎");
     });
 
     it("does not show a save button (auto-save is used instead)", async () => {

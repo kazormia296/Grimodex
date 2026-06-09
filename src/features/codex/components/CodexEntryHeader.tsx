@@ -10,6 +10,8 @@ import {
 import type { CodexEntry, CodexEntryType } from "../api";
 import type { CodexTag } from "../tagApi";
 import { useFitsInline } from "@/hooks/useFitsInline";
+import { useFitFontSize } from "@/hooks/useFitFontSize";
+import { useAutoGrowHeight } from "@/hooks/useAutoGrowHeight";
 import { AliasesChip } from "./AliasesChip";
 import { AliasesField } from "./AliasesField";
 import { EntryHeroAvatar } from "./EntryHeroAvatar";
@@ -24,6 +26,13 @@ const KICKER_ICON: Record<CodexEntryType, typeof UserIcon> = {
   item: Package,
   lore: BookOpen,
 };
+
+// 名前の駅名標サイズ。収まれば BASE のまま、はみ出すと MIN まで縮小し、
+// それでも収まらなければ折り返す。PADDING は textarea の text content box と
+// container 幅の差: px-1.5 (6px×2) + border-transparent (1px×2) = 14px。
+const NAME_BASE_PX = 50;
+const NAME_MIN_PX = 24;
+const NAME_PADDING_PX = 14;
 
 interface CodexEntryHeaderProps {
   entry: CodexEntry;
@@ -66,12 +75,28 @@ export function CodexEntryHeader({
   const KickerIcon = KICKER_ICON[type] ?? UserIcon;
   const originalName = useRef(name);
 
+  // 名前を 1 行に収まるよう自動縮小 (収まる時は NAME_BASE_PX のまま)。下限を割ると
+  // textarea の soft-wrap で折り返す。
+  const nameRef = useRef<HTMLTextAreaElement>(null);
+  const { containerRef, measureRef, fontSize } = useFitFontSize({
+    baseSizePx: NAME_BASE_PX,
+    minSizePx: NAME_MIN_PX,
+    horizontalPaddingPx: NAME_PADDING_PX,
+  });
+
+  // 折り返しで増えた行に合わせて textarea を縦に伸ばす。内容・フォントだけでなく
+  // 幅変化にも追従する必要がある (フォントが下限に張り付くと fontSize が変わらず
+  // 幅だけ縮むため、deps では捉えられず折り返しがクリップされる)。
+  useAutoGrowHeight(nameRef, `${name}|${fontSize}`);
+
   const handleFocus = useCallback(() => {
     originalName.current = name;
   }, [name]);
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // IME 変換確定の Enter (長い日本語名で頻出) を commit と誤認しない。
+      if (e.nativeEvent.isComposing) return;
       if (e.key === "Enter") {
         e.preventDefault();
         e.currentTarget.blur();
@@ -108,18 +133,39 @@ export function CodexEntryHeader({
           Chip rows live inside col 1 so they wrap/group at the avatar's left
           edge instead of extending under it. */}
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-6">
-        <div className="min-w-0">
-          <input
+        <div ref={containerRef} className="relative min-w-0">
+          {/* 計測専用: 常に BASE サイズ・1 行・max-content。可視 textarea とは独立
+              させて縮小⇄計測のフィードバックループを断つ。 */}
+          <span
+            ref={measureRef}
+            aria-hidden="true"
+            className="pointer-events-none invisible absolute left-0 top-0 whitespace-nowrap tracking-[0.05em]"
+            style={{
+              width: "max-content",
+              fontSize: `${NAME_BASE_PX}px`,
+              fontFamily:
+                '"Toaru Eki Sign", ui-sans-serif, system-ui, sans-serif',
+            }}
+          >
+            {name}
+          </span>
+          <textarea
+            ref={nameRef}
             data-testid="codex-detail-name"
-            type="text"
+            rows={1}
             value={name}
             placeholder={t("codex.namePlaceholder")}
-            onChange={(e) => onNameChange(e.target.value)}
+            // textarea は input と違いペーストの改行を保持する。タイトルは論理的に
+            // 1 行 (折り返しは見た目のみ) なので改行をスペースに畳む。
+            onChange={(e) =>
+              onNameChange(e.target.value.replace(/\r?\n/g, " "))
+            }
             onFocus={handleFocus}
             onBlur={onNameCommit}
             onKeyDown={handleKeyDown}
-            className="-ml-1.5 block w-full rounded border border-transparent bg-transparent px-1.5 py-0.5 text-[50px] leading-[1.1] tracking-[0.05em] text-foreground transition-colors hover:bg-accent/40 focus:border-transparent focus:bg-transparent focus:outline-none focus:ring-2 focus:ring-primary"
+            className="-ml-1.5 block w-full resize-none overflow-hidden rounded border border-transparent bg-transparent px-1.5 py-0.5 leading-[1.1] tracking-[0.05em] text-foreground transition-colors hover:bg-accent/40 focus:border-transparent focus:bg-transparent focus:outline-none focus:ring-2 focus:ring-primary"
             style={{
+              fontSize: `${fontSize}px`,
               fontFamily:
                 '"Toaru Eki Sign", ui-sans-serif, system-ui, sans-serif',
             }}
