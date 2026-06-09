@@ -2232,6 +2232,14 @@
     "focusSnippets": "Snippets パネルにフォーカス",
     "focusAttribution": "Attribution パネルにフォーカス",
     "focusChatHistory": "Chat History パネルにフォーカス",
+    "focusCodexQuick": "Codex Quick パネルにフォーカス",
+    "focusTimeline": "Timeline パネルにフォーカス",
+    "focusMap": "Map パネルにフォーカス",
+    "focusKouetsu": "校閲パネルにフォーカス",
+    "focusForeshadow": "伏線パネルにフォーカス",
+    "focusTrashBin": "ゴミ箱パネルにフォーカス",
+    "focusGrid": "Grid パネルにフォーカス",
+    "focusMatrix": "Matrix パネルにフォーカス",
     "openSettings": "Settings を開く",
     "splitVertical": "エディタを縦分割",
     "splitHorizontal": "エディタを横分割",
@@ -2239,6 +2247,7 @@
     "prevTab": "前のタブに移動",
     "find": "検索",
     "findReplace": "検索と置換",
+    "save": "保存",
     "inlineAiPalette": "インライン AI パレット"
   },
   "attribution": {

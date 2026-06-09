@@ -2,6 +2,10 @@ import { useEffect } from "react";
 import type { Editor } from "@tiptap/react";
 
 import { isMac, matchesMod } from "@/lib/platform";
+import {
+  getMergedBindings,
+  matchesBinding,
+} from "@/features/settings/keybindings";
 
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
@@ -25,16 +29,12 @@ interface UseEditorKeyboardArgs {
 }
 
 /**
- * Pane-scoped keyboard shortcuts:
- *   Ctrl+S       → save
- *   Ctrl+F       → find
- *   Ctrl+H       → find/replace
- *   Ctrl+Shift+H → revision history
- *   Ctrl+Shift+Space → inline AI palette
- *   Ctrl+K       → link dialog
- *   Ctrl+Shift+R → ruby dialog
+ * Pane-scoped keyboard shortcuts (only fire when focus is inside this pane):
+ *   save / find / findReplace / inlineAiPalette → user-configurable via
+ *     Settings → Keys (matched against the merged bindings registry).
+ *   revision history / link dialog / ruby dialog → fixed (not in the registry).
  *
- * Extracted from EditorPane verbatim — behaviour is unchanged.
+ * findReplace (Ctrl+H) is Windows/Linux only — ⌘H is macOS "Hide".
  */
 export function useEditorKeyboard({
   paneRef,
@@ -50,23 +50,21 @@ export function useEditorKeyboard({
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (!paneRef.current?.contains(document.activeElement)) return;
-      if (matchesMod(e) && e.key === "s" && !e.altKey && !e.shiftKey) {
+      // Configurable commands (Settings → Keys) match against the merged
+      // bindings; the editor-niche ones (history/link/ruby) stay hardcoded.
+      const merged = getMergedBindings();
+      const mac = isMac();
+      if (matchesBinding(e, merged.save ?? "", mac)) {
         e.preventDefault();
         handleManualSave();
-      } else if (matchesMod(e) && e.key === "f" && !e.altKey && !e.shiftKey) {
+      } else if (matchesBinding(e, merged.find ?? "", mac)) {
         e.preventDefault();
         setFindOpen(true);
         setFindShowReplace(false);
-      } else if (
-        !isMac() &&
-        e.ctrlKey &&
-        e.key === "h" &&
-        !e.altKey &&
-        !e.shiftKey
-      ) {
-        // Find/replace is Ctrl+H on Windows/Linux only. On macOS ⌘H is the
-        // system "Hide Application" shortcut and ⌥⌘F is taken by the foreshadow
-        // panel, so replace is reached via the find bar's toggle instead.
+      } else if (!mac && matchesBinding(e, merged.findReplace ?? "", mac)) {
+        // findReplace defaults to Ctrl+H, Windows/Linux only — ⌘H is the macOS
+        // "Hide Application" shortcut, so it is excluded on macOS (see
+        // CommandDef.macUnavailable). Replace is reached via the find bar toggle.
         e.preventDefault();
         setFindOpen(true);
         setFindShowReplace(true);
@@ -78,7 +76,7 @@ export function useEditorKeyboard({
           const content = JSON.stringify(ed.getJSON());
           useRevisionStore.getState().openHistory("scene", id, content);
         }
-      } else if (matchesMod(e) && e.shiftKey && e.key === " ") {
+      } else if (matchesBinding(e, merged.inlineAiPalette ?? "", mac)) {
         e.preventDefault();
         setPalettePreselect(null);
         setPaletteOpen(true);

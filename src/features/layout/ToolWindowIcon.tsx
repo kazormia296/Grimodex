@@ -1,6 +1,10 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/platform";
+import {
+  PANEL_COMMAND_ID,
+  useMergedBindings,
+} from "@/features/settings/keybindings";
 import { CSS_DURATIONS } from "@/lib/animation";
 import {
   ContextMenu,
@@ -64,7 +68,12 @@ export function ToolWindowIcon({
   });
 
   const label = t(`layout.panel.${panelId}`);
-  const shortcut = KEYBOARD_SHORTCUT_MAP[panelId];
+  // Prefer the live (possibly rebound) binding from the registry; fall back to
+  // the static hint for panels without a registered command.
+  const merged = useMergedBindings();
+  const cmdId = PANEL_COMMAND_ID[panelId];
+  const shortcut =
+    (cmdId ? merged[cmdId] : undefined) ?? KEYBOARD_SHORTCUT_MAP[panelId];
   const tooltip = shortcut ? `${label} (${formatShortcut(shortcut)})` : label;
 
   const axisLockedSwap =

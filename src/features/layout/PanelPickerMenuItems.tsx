@@ -3,6 +3,10 @@ import { Check, FileText, GripVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/platform";
 import {
+  PANEL_COMMAND_ID,
+  useMergedBindings,
+} from "@/features/settings/keybindings";
+import {
   ContextMenuGroup,
   ContextMenuItem,
   ContextMenuLabel,
@@ -65,6 +69,14 @@ export function PanelPickerMenuItems({
   showEditor = true,
 }: PanelPickerGroupsProps) {
   const { t } = useTranslation();
+  const merged = useMergedBindings();
+  // Live (possibly rebound) shortcut for a panel; falls back to the static hint.
+  const panelShortcut = (panelId: Exclude<PanelId, "editor">) => {
+    const cmdId = PANEL_COMMAND_ID[panelId];
+    return (
+      (cmdId ? merged[cmdId] : undefined) ?? KEYBOARD_SHORTCUT_MAP[panelId]
+    );
+  };
 
   const REGION_LABELS: Record<PanelRegion, string> = {
     left: t("layout.regionLeft"),
@@ -83,7 +95,7 @@ export function PanelPickerMenuItems({
             </ContextMenuLabel>
             {group.panels.map((panelId) => {
               const PanelIcon = PANEL_ICON_MAP[panelId];
-              const shortcut = KEYBOARD_SHORTCUT_MAP[panelId];
+              const shortcut = panelShortcut(panelId);
               return (
                 <ContextMenuItem
                   key={panelId}
@@ -158,7 +170,7 @@ export function PanelPickerMenuItems({
             const visible = isPanelActive(panelId);
             const canDrag = !layoutLocked;
             const PanelIcon = PANEL_ICON_MAP[panelId];
-            const shortcut = KEYBOARD_SHORTCUT_MAP[panelId];
+            const shortcut = panelShortcut(panelId);
             return (
               <div
                 key={panelId}

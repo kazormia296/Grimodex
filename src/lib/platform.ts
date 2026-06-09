@@ -55,6 +55,44 @@ export function shortcutKey(e: { code?: string; key: string }): string {
   return e.key.toLowerCase();
 }
 
+// Punctuation/whitespace KeyboardEvent.code → canonical key token. Letters and
+// digits are handled by regex in eventKeyToken; this covers the rest used by
+// bindings (and a few common extras).
+const CODE_KEY_TOKEN: Record<string, string> = {
+  Comma: ",",
+  Period: ".",
+  Slash: "/",
+  Backslash: "\\",
+  Space: "Space",
+  Tab: "Tab",
+  Enter: "Enter",
+  Minus: "-",
+  Equal: "=",
+  Semicolon: ";",
+  Quote: "'",
+  Backquote: "`",
+  BracketLeft: "[",
+  BracketRight: "]",
+};
+
+/**
+ * Canonical, layout-independent key token for an event — the value that appears
+ * as the last segment of a binding string ("S", "1", "Tab", "Space", ",").
+ *
+ * Like {@link shortcutKey} it reads `e.code` to dodge macOS ⌥ glyph composition,
+ * but returns the canonical token form (uppercase letters, named special keys)
+ * used by {@link matchesBinding} and the default bindings, rather than a
+ * lowercased char. Falls back to `e.key` for anything not enumerated.
+ */
+export function eventKeyToken(e: { code?: string; key: string }): string {
+  const code = e.code ?? "";
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) return letter[1];
+  const digit = /^Digit([0-9])$/.exec(code);
+  if (digit) return digit[1];
+  return CODE_KEY_TOKEN[code] ?? e.key;
+}
+
 // Apple's canonical modifier order is ⌃ ⌥ ⇧ ⌘, then the key, with no
 // separators. We render flags in this order regardless of input order.
 // "Ctrl"/"Mod"/"Cmd"/"Meta" all mean the primary modifier (⌘); only the
@@ -76,11 +114,11 @@ const MAC_ORDER: ReadonlyArray<{ symbol: string; tokens: string[] }> = [
  * `mac` is injectable for testing.
  */
 export function formatShortcut(binding: string, mac = isMac()): string {
-  // Non-macOS: render the Windows/Linux form. Bindings are authored with
-  // "Ctrl", but the explicit "Control" token (used where a shortcut must stay
-  // literal Control on macOS, e.g. Tab cycling) collapses back to "Ctrl" here
-  // so Windows/Linux still reads "Ctrl+Tab". Everything else is verbatim.
-  if (!mac) return binding.replace(/\bControl\b/g, "Ctrl");
+  // Non-macOS: render the Windows/Linux form. The primary-modifier tokens
+  // "Mod" (and the literal "Control" used where a shortcut stays Control on
+  // macOS, e.g. Tab cycling) both collapse to "Ctrl" here, so Windows/Linux
+  // reads "Ctrl+Tab". Bindings already authored as "Ctrl+…" pass through.
+  if (!mac) return binding.replace(/\b(?:Mod|Control)\b/g, "Ctrl");
 
   const parts = binding
     .split("+")

@@ -4,7 +4,10 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "./treeStore";
 import type { TreeNodeData } from "./treeStore";
-import { matchesMod } from "@/lib/platform";
+import {
+  getMergedBindings,
+  matchesBinding,
+} from "@/features/settings/keybindings";
 
 interface KeyboardArgs {
   flatNodes: TreeNodeData[];
@@ -123,7 +126,7 @@ export function useScenesKeyboard({
             initiateDelete(idsToDelete);
           }
         }
-      } else if (e.key === "f" && matchesMod(e)) {
+      } else if (matchesBinding(e, getMergedBindings().find ?? "")) {
         e.preventDefault();
         filterRef.current?.focus();
       }

@@ -15,7 +15,7 @@ import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
 import { ImportDialog } from "@/features/import/ImportDialog";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
-import { useLayoutStore, type PanelId } from "@/features/layout/layoutStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { LayoutShell } from "@/features/layout/LayoutShell";
 import {
   CommandCenterBar,
@@ -55,7 +55,12 @@ import {
 } from "@/features/project/projectStore";
 import { getProject } from "@/features/project/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
-import { isMac, matchesMod, shortcutKey } from "@/lib/platform";
+import { isMac, matchesMod } from "@/lib/platform";
+import {
+  PANEL_COMMANDS,
+  getMergedBindings,
+  matchesBinding,
+} from "@/features/settings/keybindings";
 import { invoke } from "@/lib/tauri";
 import { SampleTour } from "@/features/onboarding/SampleTour";
 import {
@@ -397,39 +402,45 @@ function EditorScreen() {
         return;
       }
 
-      if (!matchesMod(e) || !e.altKey) return;
+      // Configurable shortcuts (Settings → Keys). Panel focus/toggle, open
+      // settings and editor split are matched against the merged bindings so a
+      // user rebind takes effect at runtime. matchesBinding reads the physical
+      // key via e.code, so macOS ⌥ glyph composition does not break the lookup.
+      const merged = getMergedBindings();
+      const mac = isMac();
 
-      const keyMap: Record<string, PanelId | "settings"> = {
-        s: "scenes",
-        x: "codex",
-        h: "chat-history",
-        c: "chat",
-        n: "snippets",
-        a: "attribution",
-        q: "codex-quick",
-        l: "timeline",
-        m: "map",
-        t: "kouetsu",
-        f: "foreshadow",
-        b: "trash-bin",
-        ",": "settings",
-      };
+      for (const pc of PANEL_COMMANDS) {
+        if (matchesBinding(e, merged[pc.id] ?? "", mac)) {
+          e.preventDefault();
+          togglePanel(pc.panel);
+          if (pc.panel === "codex-quick") {
+            requestAnimationFrame(() => {
+              useLayoutStore.getState().showPanel("codex-quick");
+            });
+          }
+          return;
+        }
+      }
 
-      // shortcutKey() reads the physical key from e.code: on macOS ⌥ composes
-      // a glyph into e.key (⌥S → "ß"), which would miss this lookup.
-      const target = keyMap[shortcutKey(e)];
-      if (!target) return;
-
-      e.preventDefault();
-      if (target === "settings") {
+      if (matchesBinding(e, merged.openSettings ?? "", mac)) {
+        e.preventDefault();
         setSettingsInitialCategory("project");
         setShowSettings(true);
-      } else {
-        togglePanel(target);
-        if (target === "codex-quick") {
-          requestAnimationFrame(() => {
-            useLayoutStore.getState().showPanel("codex-quick");
-          });
+        return;
+      }
+
+      const splitDir = matchesBinding(e, merged.splitVertical ?? "", mac)
+        ? "right"
+        : matchesBinding(e, merged.splitHorizontal ?? "", mac)
+          ? "below"
+          : null;
+      if (splitDir) {
+        e.preventDefault();
+        const tabs = useTabStore.getState();
+        if (tabs.activeTabId) {
+          tabs.openInSecondaryGroupDirectional(tabs.activeTabId, splitDir);
+        } else {
+          tabs.createEmptySecondaryGroup(splitDir);
         }
       }
     },
@@ -489,7 +500,11 @@ function EditorScreen() {
   // Ctrl+Tab / Ctrl+Shift+Tab: switch tabs in the active editor group
   useEffect(() => {
     function onTabSwitch(e: KeyboardEvent) {
-      if (!e.ctrlKey || e.key !== "Tab") return;
+      const merged = getMergedBindings();
+      const mac = isMac();
+      const isPrev = matchesBinding(e, merged.prevTab ?? "", mac);
+      const isNext = matchesBinding(e, merged.nextTab ?? "", mac);
+      if (!isPrev && !isNext) return;
       e.preventDefault();
 
       const {
@@ -513,7 +528,7 @@ function EditorScreen() {
       );
       if (currentIdx === -1) return;
 
-      const nextIdx = e.shiftKey
+      const nextIdx = isPrev
         ? (currentIdx - 1 + currentTabs.length) % currentTabs.length
         : (currentIdx + 1) % currentTabs.length;
 

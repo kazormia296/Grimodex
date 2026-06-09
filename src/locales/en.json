@@ -2223,6 +2223,14 @@
     "focusSnippets": "Focus Snippets panel",
     "focusAttribution": "Focus Attribution panel",
     "focusChatHistory": "Focus Chat History panel",
+    "focusCodexQuick": "Focus Codex Quick panel",
+    "focusTimeline": "Focus Timeline panel",
+    "focusMap": "Focus Map panel",
+    "focusKouetsu": "Focus Review panel",
+    "focusForeshadow": "Focus Foreshadowing panel",
+    "focusTrashBin": "Focus Trash Bin panel",
+    "focusGrid": "Focus Grid panel",
+    "focusMatrix": "Focus Matrix panel",
     "openSettings": "Open Settings",
     "splitVertical": "Split editor vertically",
     "splitHorizontal": "Split editor horizontally",
@@ -2230,6 +2238,7 @@
     "prevTab": "Go to previous tab",
     "find": "Find",
     "findReplace": "Find and Replace",
+    "save": "Save",
     "inlineAiPalette": "Inline AI Palette"
   },
   "attribution": {

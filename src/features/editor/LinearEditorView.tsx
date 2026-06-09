@@ -8,7 +8,11 @@ import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
-import { isMac, matchesMod } from "@/lib/platform";
+import { isMac } from "@/lib/platform";
+import {
+  getMergedBindings,
+  matchesBinding,
+} from "@/features/settings/keybindings";
 import type { Editor } from "@tiptap/core";
 
 const DEFAULT_HEIGHT = 300;
@@ -271,18 +275,14 @@ export function LinearEditorView() {
   // --- Keyboard shortcuts ---
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (matchesMod(e) && e.key === "f" && !e.altKey && !e.shiftKey) {
+      const merged = getMergedBindings();
+      const mac = isMac();
+      if (matchesBinding(e, merged.find ?? "", mac)) {
         e.preventDefault();
         setFindOpen(true);
         setFindShowReplace(false);
-      } else if (
-        !isMac() &&
-        e.ctrlKey &&
-        e.key === "h" &&
-        !e.altKey &&
-        !e.shiftKey
-      ) {
-        // Find/replace is Ctrl+H on Windows/Linux only — ⌘H is macOS "Hide".
+      } else if (!mac && matchesBinding(e, merged.findReplace ?? "", mac)) {
+        // findReplace is Windows/Linux only — ⌘H is macOS "Hide".
         e.preventDefault();
         setFindOpen(true);
         setFindShowReplace(true);

@@ -2,7 +2,12 @@
  * @vitest-environment happy-dom
  */
 import { describe, expect, it } from "vitest";
-import { formatShortcut, matchesMod, shortcutKey } from "./platform";
+import {
+  eventKeyToken,
+  formatShortcut,
+  matchesMod,
+  shortcutKey,
+} from "./platform";
 
 describe("matchesMod", () => {
   it("uses Ctrl on non-macOS", () => {
@@ -36,6 +41,25 @@ describe("shortcutKey", () => {
   });
 });
 
+describe("eventKeyToken", () => {
+  it("returns uppercase letters from e.code, ignoring composed glyphs", () => {
+    expect(eventKeyToken({ code: "KeyS", key: "ß" })).toBe("S");
+    expect(eventKeyToken({ code: "KeyF", key: "f" })).toBe("F");
+  });
+  it("returns digits from e.code", () => {
+    expect(eventKeyToken({ code: "Digit1", key: "1" })).toBe("1");
+  });
+  it("maps named/punctuation codes to canonical tokens", () => {
+    expect(eventKeyToken({ code: "Space", key: " " })).toBe("Space");
+    expect(eventKeyToken({ code: "Tab", key: "Tab" })).toBe("Tab");
+    expect(eventKeyToken({ code: "Comma", key: "," })).toBe(",");
+    expect(eventKeyToken({ code: "Backslash", key: "\\" })).toBe("\\");
+  });
+  it("falls back to e.key for unenumerated codes", () => {
+    expect(eventKeyToken({ code: "ArrowUp", key: "ArrowUp" })).toBe("ArrowUp");
+  });
+});
+
 describe("formatShortcut — non-macOS returns the Windows/Linux form", () => {
   for (const binding of [
     "Ctrl+Alt+S",
@@ -50,9 +74,11 @@ describe("formatShortcut — non-macOS returns the Windows/Linux form", () => {
     });
   }
 
-  it("collapses the literal Control token back to Ctrl", () => {
+  it("collapses the Mod and literal Control tokens back to Ctrl", () => {
     expect(formatShortcut("Control+Tab", false)).toBe("Ctrl+Tab");
     expect(formatShortcut("Control+Shift+Tab", false)).toBe("Ctrl+Shift+Tab");
+    expect(formatShortcut("Mod+Alt+S", false)).toBe("Ctrl+Alt+S");
+    expect(formatShortcut("Mod+F", false)).toBe("Ctrl+F");
   });
 });
 
@@ -74,6 +100,9 @@ describe("formatShortcut — macOS canonical order ⌃⌥⇧⌘ + key, no separa
     ["Control+Tab", "⌃Tab"],
     ["Control+Shift+Tab", "⌃⇧Tab"],
     ["Meta+K", "⌘K"],
+    // "Mod" is the primary-modifier token used by the binding registry.
+    ["Mod+Alt+S", "⌥⌘S"],
+    ["Mod+Shift+Space", "⇧⌘Space"],
   ];
   for (const [input, expected] of cases) {
     it(`${input} → ${expected}`, () => {
