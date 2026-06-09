@@ -12,6 +12,17 @@ use super::path::{canonicalize_mount_root, rel_path_from_canonical};
 /// Maximum directory nesting depth while scanning a mount root.
 pub(crate) const MAX_SCAN_DEPTH: u32 = 64;
 
+/// Maximum number of `.md` files materialized in one scan. Mirrors the ZIP
+/// import limit (markdownParser `MAX_MARKDOWN_ENTRIES`). Without this, mounting
+/// an attacker-prepared folder with millions of small `.md` files exhausts
+/// memory while the whole `ScanResult` is held + JSON-serialized to the
+/// renderer (RUST-DOS: scan_root has no count/byte cap, only a per-file limit).
+pub(crate) const MAX_SCAN_FILES: usize = 50_000;
+
+/// Maximum cumulative `.md` content bytes materialized in one scan (256 MiB).
+/// Mirrors the ZIP import limit (markdownParser `MAX_MARKDOWN_TOTAL_BYTES`).
+pub(crate) const MAX_SCAN_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannedDir {
@@ -42,6 +53,7 @@ pub fn scan_root(root: &Path) -> Result<ScanResult> {
     let mut dirs = Vec::new();
     let mut files = Vec::new();
     let mut visited = HashSet::new();
+    let mut total_bytes: u64 = 0;
     walk(
         &canonical_root,
         &canonical_root,
@@ -49,12 +61,14 @@ pub fn scan_root(root: &Path) -> Result<ScanResult> {
         &mut visited,
         &mut dirs,
         &mut files,
+        &mut total_bytes,
     )?;
     dirs.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(ScanResult { dirs, files })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk(
     root: &Path,
     current: &Path,
@@ -62,6 +76,7 @@ fn walk(
     visited: &mut HashSet<DirVisitKey>,
     dirs: &mut Vec<ScannedDir>,
     files: &mut Vec<ScannedFile>,
+    total_bytes: &mut u64,
 ) -> Result<()> {
     if depth > MAX_SCAN_DEPTH {
         bail!(
@@ -100,10 +115,15 @@ fn walk(
                     rel_path: rel,
                 });
             }
-            walk(root, &path, depth + 1, visited, dirs, files)?;
+            walk(root, &path, depth + 1, visited, dirs, files, total_bytes)?;
         } else if file_type.is_file() {
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
+            }
+            // 累積上限 (件数 / バイト) を超えたら scan 全体を弾く。攻撃者フォルダの
+            // 大量/大サイズ .md でメモリ枯渇 → renderer 転送で DoS になるのを防ぐ。
+            if files.len() >= MAX_SCAN_FILES {
+                bail!("scan exceeded maximum of {MAX_SCAN_FILES} markdown files");
             }
             let rel = rel_path_from_canonical(root, &path)?;
             // oversize / 読込失敗の1ファイルで scan 全体 (ひいてはプロセス) を
@@ -118,6 +138,13 @@ fn walk(
                     continue;
                 }
             };
+            *total_bytes = total_bytes.saturating_add(content.len() as u64);
+            if *total_bytes > MAX_SCAN_TOTAL_BYTES {
+                bail!(
+                    "scan exceeded cumulative size limit of {} MiB",
+                    MAX_SCAN_TOTAL_BYTES / (1024 * 1024)
+                );
+            }
             let mtime = file_mtime_iso(&path)?;
             let hash = content_hash(&content);
             files.push(ScannedFile {

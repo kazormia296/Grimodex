@@ -96,6 +96,11 @@ pub(crate) fn external_mount_register(
     label: String,
 ) -> Result<ScanResult, AppError> {
     let root_path = PathBuf::from(&path);
+    // open_workspace と対称の defense-in-depth (PIO-1)。renderer 侵害時に
+    // `/`,`/etc`,`/home/victim` 等を mount root に登録され、external_mount_read_file
+    // で配下の任意ファイルを read される踏み台になるのを防ぐ。絶対パス必須・
+    // `..` 拒否・システムディレクトリ配下拒否。
+    crate::commands::workspace::reject_unsafe_workspace_path(&root_path)?;
     if !root_path.is_dir() {
         return Err(anyhow::anyhow!("mount path is not a directory: {path}").into());
     }

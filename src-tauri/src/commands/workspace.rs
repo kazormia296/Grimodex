@@ -42,7 +42,11 @@ pub(crate) fn validate_workspace_path(path: String) -> bool {
 /// のを防ぐ defense-in-depth (security audit PIO-1)。絶対パスを要求し `..` traversal と
 /// システムディレクトリ配下を拒否する。フォルダピッカは外部ドライブ等も返すため
 /// home 限定にはしない。
-fn reject_unsafe_workspace_path(ws_path: &Path) -> Result<(), AppError> {
+///
+/// `external_mount_register` も同じ guard を再利用する (renderer 侵害時に
+/// 任意のシステムロケーションを mount root にされ、配下を read される踏み台に
+/// なるのを防ぐ。エラー文言は "workspace path" 固定だが security 挙動は同一)。
+pub(crate) fn reject_unsafe_workspace_path(ws_path: &Path) -> Result<(), AppError> {
     if !ws_path.is_absolute() {
         return Err(
             anyhow::anyhow!("workspace path must be absolute: {}", ws_path.display()).into(),
