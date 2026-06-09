@@ -4,6 +4,7 @@ import { Loader2, MessageSquare, RefreshCw, User } from "lucide-react";
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
 import { cn } from "@/lib/utils";
+import { formatShortcut } from "@/lib/platform";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { listAnnotationsForProject } from "@/features/post-effect/api";
 import {
@@ -149,7 +150,7 @@ export function CommentsTab() {
             <MessageSquare size={18} />
             <span>コメントはありません</span>
             <span className="text-[10px] text-muted-foreground/70">
-              本文を選択して Ctrl+Shift+M で手動コメント、
+              本文を選択して {formatShortcut("Ctrl+Shift+M")} で手動コメント、
               <br />
               批評タブの疑似コメントもここに集約されます
             </span>

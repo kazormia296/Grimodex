@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Check, FileText, GripVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatShortcut } from "@/lib/platform";
 import {
   ContextMenuGroup,
   ContextMenuItem,
@@ -82,6 +83,7 @@ export function PanelPickerMenuItems({
             </ContextMenuLabel>
             {group.panels.map((panelId) => {
               const PanelIcon = PANEL_ICON_MAP[panelId];
+              const shortcut = KEYBOARD_SHORTCUT_MAP[panelId];
               return (
                 <ContextMenuItem
                   key={panelId}
@@ -90,9 +92,9 @@ export function PanelPickerMenuItems({
                 >
                   <PanelIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <span className="flex-1">{t(`layout.panel.${panelId}`)}</span>
-                  {KEYBOARD_SHORTCUT_MAP[panelId] && (
+                  {shortcut && (
                     <kbd className="rounded border border-border bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
-                      {KEYBOARD_SHORTCUT_MAP[panelId]}
+                      {formatShortcut(shortcut)}
                     </kbd>
                   )}
                 </ContextMenuItem>
@@ -156,6 +158,7 @@ export function PanelPickerMenuItems({
             const visible = isPanelActive(panelId);
             const canDrag = !layoutLocked;
             const PanelIcon = PANEL_ICON_MAP[panelId];
+            const shortcut = KEYBOARD_SHORTCUT_MAP[panelId];
             return (
               <div
                 key={panelId}
@@ -205,9 +208,9 @@ export function PanelPickerMenuItems({
                 <span className="flex-1 text-left">
                   {t(`layout.panel.${panelId}`)}
                 </span>
-                {KEYBOARD_SHORTCUT_MAP[panelId] && (
+                {shortcut && (
                   <kbd className="rounded border border-border bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
-                    {KEYBOARD_SHORTCUT_MAP[panelId]}
+                    {formatShortcut(shortcut)}
                   </kbd>
                 )}
               </div>

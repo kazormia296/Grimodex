@@ -62,14 +62,17 @@ export function getCommands(): CommandDef[] {
       defaultBinding: "Ctrl+Shift+\\",
     },
     {
+      // Tab cycling stays literal Control on macOS (⌘Tab is the OS app
+      // switcher), so use the "Control" token rather than the Mod-mapped
+      // "Ctrl". formatShortcut renders ⌃Tab on macOS / Ctrl+Tab elsewhere.
       id: "nextTab",
       label: i18next.t("keys.nextTab"),
-      defaultBinding: "Ctrl+Tab",
+      defaultBinding: "Control+Tab",
     },
     {
       id: "prevTab",
       label: i18next.t("keys.prevTab"),
-      defaultBinding: "Ctrl+Shift+Tab",
+      defaultBinding: "Control+Shift+Tab",
     },
     { id: "find", label: i18next.t("keys.find"), defaultBinding: "Ctrl+F" },
     {

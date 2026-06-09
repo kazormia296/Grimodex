@@ -34,6 +34,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { useCurrentProjectId } from "@/features/project/projectStore";
+import { formatShortcut } from "@/lib/platform";
 
 const ARRANGE_ITEMS: { type: AutoArrangeType; label: string }[] = [
   { type: "reading-order", label: "Grid: 読み順" },
@@ -260,7 +261,7 @@ export function MapHeader() {
                       type="button"
                       variant="ghost"
                       size="icon-xs"
-                      title="複製 (Ctrl+D)"
+                      title={`複製 (${formatShortcut("Ctrl+D")})`}
                       aria-label={`「${b.title}」を複製`}
                       className="h-5 w-5 text-muted-foreground hover:bg-accent/70 hover:text-foreground"
                       onClick={(e) => {
@@ -432,7 +433,9 @@ export function MapHeader() {
           <DropdownMenuContent align="end" className="min-w-[200px]">
             <DropdownMenuItem onSelect={() => setSearchVisible(true)}>
               ノードを検索
-              <DropdownMenuShortcut>Ctrl+F</DropdownMenuShortcut>
+              <DropdownMenuShortcut>
+                {formatShortcut("Ctrl+F")}
+              </DropdownMenuShortcut>
             </DropdownMenuItem>
 
             <DropdownMenuSeparator />

@@ -1,19 +1,10 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Minus, Square, Copy, X } from "lucide-react";
+import { isMac } from "@/lib/platform";
 
 function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
-
-function isMacPlatform(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const nav = navigator as Navigator & {
-    userAgentData?: { platform?: string };
-  };
-  const data = nav.userAgentData;
-  const platform = data?.platform ?? navigator.platform ?? "";
-  return /mac/i.test(platform);
 }
 
 export function WindowControls() {
@@ -21,7 +12,7 @@ export function WindowControls() {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    if (!isTauri() || isMacPlatform()) return;
+    if (!isTauri() || isMac()) return;
 
     let unlisten: (() => void) | undefined;
 
@@ -43,7 +34,7 @@ export function WindowControls() {
     };
   }, []);
 
-  if (!isTauri() || isMacPlatform()) return null;
+  if (!isTauri() || isMac()) return null;
 
   async function minimize() {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");

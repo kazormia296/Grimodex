@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { formatShortcut } from "@/lib/platform";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { StatusDot } from "@/features/tree/StatusDot";
@@ -75,7 +76,9 @@ export function TimelineContextMenu({ node, x, y, onClose, axisMode }: Props) {
       >
         <span>{label}</span>
         {shortcut && (
-          <span className="ml-6 text-muted-foreground">{shortcut}</span>
+          <span className="ml-6 text-muted-foreground">
+            {formatShortcut(shortcut)}
+          </span>
         )}
       </button>
     );

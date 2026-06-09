@@ -4,6 +4,7 @@ import { useTreeStore } from "./treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { resolveLabelColor } from "@/lib/labelPalette";
+import { formatShortcut } from "@/lib/platform";
 import { useScenesPanelContext } from "./ScenesPanelContext";
 import { StatusDot } from "./StatusDot";
 import type { TreeNodeData, SceneStatus } from "./treeStore";
@@ -125,7 +126,9 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
             }}
           >
             {t("tree.openInSide")}
-            <ContextMenuShortcut>Ctrl+Enter</ContextMenuShortcut>
+            <ContextMenuShortcut>
+              {formatShortcut("Ctrl+Enter")}
+            </ContextMenuShortcut>
           </ContextMenuItem>
           <ContextMenuSeparator />
         </>

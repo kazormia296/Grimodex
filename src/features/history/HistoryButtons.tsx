@@ -2,6 +2,7 @@ import { Undo2, Redo2 } from "lucide-react";
 import { toast } from "sonner";
 import i18next from "i18next";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { formatShortcut } from "@/lib/platform";
 
 export function HistoryButtons() {
   const past = useGlobalHistoryStore((s) => s.past);
@@ -12,12 +13,14 @@ export function HistoryButtons() {
   const undoLabel = past.length > 0 ? past[past.length - 1].label : null;
   const redoLabel = future.length > 0 ? future[0].label : null;
 
+  const undoKey = formatShortcut("Ctrl+Z");
+  const redoKey = formatShortcut("Ctrl+Shift+Z");
   const undoTitle = undoLabel
-    ? `${i18next.t("history.undo", "元に戻す")}: ${undoLabel} (Ctrl+Z)`
-    : i18next.t("history.undo", "元に戻す") + " (Ctrl+Z)";
+    ? `${i18next.t("history.undo", "元に戻す")}: ${undoLabel} (${undoKey})`
+    : i18next.t("history.undo", "元に戻す") + ` (${undoKey})`;
   const redoTitle = redoLabel
-    ? `${i18next.t("history.redo", "やり直し")}: ${redoLabel} (Ctrl+Shift+Z)`
-    : i18next.t("history.redo", "やり直し") + " (Ctrl+Shift+Z)";
+    ? `${i18next.t("history.redo", "やり直し")}: ${redoLabel} (${redoKey})`
+    : i18next.t("history.redo", "やり直し") + ` (${redoKey})`;
 
   const onUndo = () => {
     undo().catch(() => {

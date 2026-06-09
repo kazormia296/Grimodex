@@ -3,6 +3,7 @@ import type { Editor } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
+import { formatShortcut } from "@/lib/platform";
 import { getVisibleInlineAiCommands } from "./inlineAiCommands";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import type { InlineAiCommand } from "./inlineAiTypes";
@@ -94,7 +95,9 @@ export function InlineAIPalette({
           >
             <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Inline AI</span>
-              <span className="ml-auto opacity-60">Ctrl+Shift+Space</span>
+              <span className="ml-auto opacity-60">
+                {formatShortcut("Ctrl+Shift+Space")}
+              </span>
             </div>
 
             {/* Command selector */}

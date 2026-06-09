@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { formatShortcut } from "@/lib/platform";
 import { CSS_DURATIONS } from "@/lib/animation";
 import {
   ContextMenu,
@@ -64,7 +65,7 @@ export function ToolWindowIcon({
 
   const label = t(`layout.panel.${panelId}`);
   const shortcut = KEYBOARD_SHORTCUT_MAP[panelId];
-  const tooltip = shortcut ? `${label} (${shortcut})` : label;
+  const tooltip = shortcut ? `${label} (${formatShortcut(shortcut)})` : label;
 
   const axisLockedSwap =
     stripeSwapMode === "axis-locked" && stripeSwapSlotId === slotId;

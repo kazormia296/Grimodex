@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { formatShortcut, isMac } from "@/lib/platform";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin";
@@ -670,7 +671,8 @@ export function Toolbar({
           )}
           <OverflowItem
             label={t("editor.toolbar.findReplace")}
-            shortcut="Ctrl+H"
+            // Ctrl+H is Windows/Linux only — ⌘H is macOS "Hide", so no Mac hint.
+            shortcut={isMac() ? undefined : "Ctrl+H"}
             onClick={() => {
               onFindReplace();
               setOverflowOpen(false);
@@ -851,7 +853,9 @@ function OverflowItem({
         {label}
       </span>
       {shortcut && (
-        <span className="ml-4 text-muted-foreground">{shortcut}</span>
+        <span className="ml-4 text-muted-foreground">
+          {formatShortcut(shortcut)}
+        </span>
       )}
     </button>
   );

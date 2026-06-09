@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { formatShortcut } from "@/lib/platform";
 import { useSettingsStore } from "../settingsStore";
 import {
   getCommands,
@@ -128,6 +129,7 @@ export function KeysCategory() {
             const isCapturing = capturing === cmd.id;
             const isModified = storedOverrides[cmd.id] !== undefined;
             const hasConflict = conflicts[cmd.id];
+            const binding = bindings[cmd.id];
 
             return (
               <tr
@@ -157,7 +159,9 @@ export function KeysCategory() {
                     >
                       {isCapturing
                         ? t("settings.keys.pressKey")
-                        : (bindings[cmd.id] ?? t("common.unset"))}
+                        : binding
+                          ? formatShortcut(binding)
+                          : t("common.unset")}
                     </button>
                     {isModified && (
                       <button

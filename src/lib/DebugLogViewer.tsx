@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { X, Trash2, Copy, ClipboardCopy } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { formatShortcut } from "@/lib/platform";
 import { useDebugLogStore, type LogEntry, type LogLevel } from "./debugLog";
 
 const LEVEL_STYLES: Record<LogLevel, string> = {
@@ -71,7 +72,7 @@ export function DebugLogViewer() {
           type="button"
           onClick={() => setOpen(false)}
           className="rounded p-1 text-muted-foreground hover:text-foreground"
-          title="Close (Ctrl+Shift+D)"
+          title={`Close (${formatShortcut("Ctrl+Shift+D")})`}
         >
           <X className="h-3.5 w-3.5" />
         </button>

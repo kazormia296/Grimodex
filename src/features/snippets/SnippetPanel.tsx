@@ -20,6 +20,7 @@ import {
   copyWithAttribution,
   handleCopyWithAttribution,
 } from "@/lib/clipboardAttribution";
+import { matchesMod } from "@/lib/platform";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
 import { GridCardSkeletonList } from "@/components/ui/skeleton-patterns";
@@ -187,7 +188,7 @@ export function SnippetPanel() {
       }
 
       // Ctrl+V: paste from clipboard
-      if (e.ctrlKey && e.key === "v") {
+      if (matchesMod(e) && e.key === "v") {
         e.preventDefault();
         try {
           const text = await navigator.clipboard.readText();
@@ -204,7 +205,7 @@ export function SnippetPanel() {
       }
 
       // Ctrl+F: focus search
-      if (e.ctrlKey && e.key === "f") {
+      if (matchesMod(e) && e.key === "f") {
         e.preventDefault();
         searchInputRef.current?.focus();
         return;
@@ -224,7 +225,7 @@ export function SnippetPanel() {
         return;
       }
 
-      if (e.ctrlKey && e.key === "Enter" && focusedIndex >= 0) {
+      if (matchesMod(e) && e.key === "Enter" && focusedIndex >= 0) {
         e.preventDefault();
         const snippet = filteredEntries[focusedIndex];
         if (snippet) {

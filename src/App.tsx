@@ -55,6 +55,7 @@ import {
 } from "@/features/project/projectStore";
 import { getProject } from "@/features/project/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import { isMac, matchesMod, shortcutKey } from "@/lib/platform";
 import { invoke } from "@/lib/tauri";
 import { SampleTour } from "@/features/onboarding/SampleTour";
 import {
@@ -101,16 +102,6 @@ function applyTheme(theme: string, colorTheme?: string) {
   for (const prop of THEME_CSS_VARS) {
     html.style.setProperty(prop, palette[prop]);
   }
-}
-
-function isMacPlatform() {
-  if (typeof navigator === "undefined") return false;
-  const nav = navigator as Navigator & {
-    userAgentData?: { platform?: string };
-  };
-  const data = nav.userAgentData;
-  const platform = data?.platform ?? navigator.platform ?? "";
-  return /mac/i.test(platform);
 }
 
 function App() {
@@ -185,7 +176,7 @@ function App() {
   const toggleDebugLog = useDebugLogStore((s) => s.toggle);
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "d") {
+      if (matchesMod(e) && e.shiftKey && e.key.toLowerCase() === "d") {
         e.preventDefault();
         toggleDebugLog();
       }
@@ -259,7 +250,7 @@ function EditorScreen() {
   const glassSurfaceEditorChrome = useSettingsStore((s) =>
     s.getBoolean("display.glassSurfaceEditorChrome", true),
   );
-  const isMac = isMacPlatform();
+  const mac = isMac();
 
   // AI 応答ストリームの開始/完了を SR へ読み上げる (a11y)。単一マウント。
   useAiStreamingAnnouncer();
@@ -378,7 +369,7 @@ function EditorScreen() {
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       // Ctrl+Shift+E: エクスポートダイアログ開閉
-      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "e") {
+      if (matchesMod(e) && e.shiftKey && e.key.toLowerCase() === "e") {
         e.preventDefault();
         setShowExport((v) => !v);
         return;
@@ -387,7 +378,7 @@ function EditorScreen() {
       // Ctrl+Shift+F: 検索パネル (command-center-results) を開き、パネル内 input にフォーカス。
       // TipTap (features/editor/extensions.ts) が選択あり時に Mod-Shift-f を
       // foreshadow picker に使うため、defaultPrevented を尊重して二重発火を避ける。
-      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "f") {
+      if (matchesMod(e) && e.shiftKey && e.key.toLowerCase() === "f") {
         if (e.defaultPrevented) return;
         e.preventDefault();
         useLayoutStore.getState().showPanel("command-center-results");
@@ -397,7 +388,7 @@ function EditorScreen() {
 
       // Ctrl+Shift+P: VSCode コマンドパレット相当。CommandCenter バーに
       // focus を渡し、`> ` prefix で command mode に切替えて起動する。
-      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "p") {
+      if (matchesMod(e) && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
         const cc = useBarStore.getState();
         cc.setQuery("> ");
@@ -406,7 +397,7 @@ function EditorScreen() {
         return;
       }
 
-      if (!e.ctrlKey || !e.altKey) return;
+      if (!matchesMod(e) || !e.altKey) return;
 
       const keyMap: Record<string, PanelId | "settings"> = {
         s: "scenes",
@@ -424,7 +415,9 @@ function EditorScreen() {
         ",": "settings",
       };
 
-      const target = keyMap[e.key.toLowerCase()];
+      // shortcutKey() reads the physical key from e.code: on macOS ⌥ composes
+      // a glyph into e.key (⌥S → "ß"), which would miss this lookup.
+      const target = keyMap[shortcutKey(e)];
       if (!target) return;
 
       e.preventDefault();
@@ -551,7 +544,7 @@ function EditorScreen() {
       data-glass-popovers={glassSurfacePopovers ? "true" : undefined}
       data-glass-editor-chrome={glassSurfaceEditorChrome ? "true" : undefined}
       data-glass-gradient={glassBackdropGradient ? "true" : undefined}
-      data-platform-mac={isMac ? "true" : undefined}
+      data-platform-mac={mac ? "true" : undefined}
     >
       <a
         href="#main-content"
@@ -565,7 +558,7 @@ function EditorScreen() {
           // py-1 (4px) では狭すぎて掴みづらく、CommandCenterBar の opt-out と
           // 相まってウィンドウ移動できない事象が出ていた。
           "glass-shell flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2",
-          isMac && "pl-20",
+          mac && "pl-20",
           getScreenshotPanelId() && "no-screenshot",
         )}
         data-tauri-drag-region
@@ -610,7 +603,7 @@ function EditorScreen() {
           <Settings className="h-4 w-4" />
           <span className="text-sm">{t("app.settingsLabel")}</span>
         </button>
-        {!isMac && (
+        {!mac && (
           <>
             <div className="h-4 w-px bg-border" />
             <WindowControls />

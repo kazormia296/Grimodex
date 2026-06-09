@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
+import { formatShortcut, matchesMod } from "@/lib/platform";
 import { FloatingHandle } from "./FloatingHandle";
 import { NodeBranchToolbar } from "./NodeBranchToolbar";
 
@@ -565,7 +566,7 @@ function SynopsisEditor({
             cancelledRef.current = true;
             onCancel();
           }
-          if (e.key === "Enter" && e.ctrlKey) {
+          if (e.key === "Enter" && matchesMod(e)) {
             e.preventDefault();
             commit();
           }
@@ -598,7 +599,7 @@ function SynopsisEditor({
         }}
       >
         <span style={{ fontSize: 10, color: "var(--muted-foreground)" }}>
-          Ctrl+Enter で保存 · Esc でキャンセル
+          {formatShortcut("Ctrl+Enter")} で保存 · Esc でキャンセル
         </span>
       </div>
     </div>

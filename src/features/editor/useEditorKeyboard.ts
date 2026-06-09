@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import type { Editor } from "@tiptap/react";
 
+import { isMac, matchesMod } from "@/lib/platform";
+
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
@@ -48,18 +50,27 @@ export function useEditorKeyboard({
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (!paneRef.current?.contains(document.activeElement)) return;
-      if (e.ctrlKey && e.key === "s" && !e.altKey && !e.shiftKey) {
+      if (matchesMod(e) && e.key === "s" && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         handleManualSave();
-      } else if (e.ctrlKey && e.key === "f" && !e.altKey && !e.shiftKey) {
+      } else if (matchesMod(e) && e.key === "f" && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         setFindOpen(true);
         setFindShowReplace(false);
-      } else if (e.ctrlKey && e.key === "h" && !e.altKey && !e.shiftKey) {
+      } else if (
+        !isMac() &&
+        e.ctrlKey &&
+        e.key === "h" &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        // Find/replace is Ctrl+H on Windows/Linux only. On macOS ⌘H is the
+        // system "Hide Application" shortcut and ⌥⌘F is taken by the foreshadow
+        // panel, so replace is reached via the find bar's toggle instead.
         e.preventDefault();
         setFindOpen(true);
         setFindShowReplace(true);
-      } else if (e.ctrlKey && e.shiftKey && e.key === "H") {
+      } else if (matchesMod(e) && e.shiftKey && e.key === "H") {
         e.preventDefault();
         const id = saveSceneIdRef.current;
         const ed = editorRef.current;
@@ -67,14 +78,14 @@ export function useEditorKeyboard({
           const content = JSON.stringify(ed.getJSON());
           useRevisionStore.getState().openHistory("scene", id, content);
         }
-      } else if (e.ctrlKey && e.shiftKey && e.key === " ") {
+      } else if (matchesMod(e) && e.shiftKey && e.key === " ") {
         e.preventDefault();
         setPalettePreselect(null);
         setPaletteOpen(true);
-      } else if (e.ctrlKey && e.key === "k" && !e.altKey && !e.shiftKey) {
+      } else if (matchesMod(e) && e.key === "k" && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         toolbarActionsRef.current?.openLink();
-      } else if (e.ctrlKey && e.shiftKey && e.key === "R") {
+      } else if (matchesMod(e) && e.shiftKey && e.key === "R") {
         e.preventDefault();
         toolbarActionsRef.current?.openRuby();
       }
