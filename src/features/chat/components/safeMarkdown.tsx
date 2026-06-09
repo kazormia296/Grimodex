@@ -2,14 +2,15 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ImageOff } from "lucide-react";
 import type { Components } from "react-markdown";
+import { openExternalUrl } from "@/lib/safeUrl";
 
-/** クリック時のみ OS デフォルトブラウザで開く。自動ロードはしない。 */
+/**
+ * クリック時のみ OS デフォルトブラウザで開く。自動ロードはしない。
+ * スキームは http(s)/mailto に限定（javascript:/file:/data: は無視）。
+ * react-markdown の defaultUrlTransform に加えた二重防御 (単一点依存の回避)。
+ */
 export function openExternal(url: string) {
-  void import("@tauri-apps/plugin-opener")
-    .then(({ openUrl }) => openUrl(url))
-    .catch(() => {
-      // opener 不在 (テスト等) では無視。
-    });
+  openExternalUrl(url);
 }
 
 /**

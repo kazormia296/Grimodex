@@ -22,24 +22,43 @@
 /** 除去対象の擬似ツール記法タグ（観測済みのもののみ。必要なら拡張）。 */
 const TOOL_BLOCK_TAGS = ["tool_call", "tool_response"] as const;
 
-/** `<tag>…</tag>` ブロックをすべて除去する。閉じタグ無しは以降を打ち切り。 */
+/**
+ * 開き／閉じタグの寛容マッチャ。完全一致 `<tool_call>` だけだと、悪性 Web
+ * コンテンツ由来や Hermes/Qwen 系が吐く **大文字** (`<TOOL_CALL>`)・**属性付き**
+ * (`<tool_call type="x">`)・**タグ内空白** (`<tool_call >`) の変種が素通りして
+ * 表示・コピー・Codex/Snippet 抽出・要約に漏れる (d0766f59 緩和の回避)。
+ * case-insensitive + 任意属性を許容して取りこぼしを塞ぐ。
+ */
+function openTagRe(tag: string): RegExp {
+  // <tag>, <tag attr...>, <tag > を許容（属性は次の '>' まで）。
+  return new RegExp(`<${tag}(?:\\s[^>]*)?>`, "i");
+}
+function closeTagRe(tag: string): RegExp {
+  return new RegExp(`</${tag}\\s*>`, "i");
+}
+/** 任意位置にタグの開きがあるか（byte-identical 早期 return 判定用）。 */
+function hasAnyOpen(text: string, tag: string): boolean {
+  return new RegExp(`<${tag}(?:\\s|>|/)`, "i").test(text);
+}
+
+/** `<tag …>…</tag>` ブロックをすべて除去する。閉じタグ無しは以降を打ち切り。 */
 function stripTagBlocks(text: string, tag: string): string {
-  const open = `<${tag}>`;
-  const close = `</${tag}>`;
+  const open = openTagRe(tag);
+  const close = closeTagRe(tag);
   let out = "";
   let rest = text;
-  let idx = rest.indexOf(open);
-  while (idx !== -1) {
-    out += rest.slice(0, idx);
-    const after = rest.slice(idx);
-    const closeRel = after.indexOf(close);
-    if (closeRel === -1) {
+  let m = open.exec(rest);
+  while (m) {
+    out += rest.slice(0, m.index);
+    const after = rest.slice(m.index + m[0].length);
+    const closeM = close.exec(after);
+    if (!closeM) {
       // 閉じタグ無し: 開きタグ以降を破棄（strip_think_blocks と同セマンティクス）。
       rest = "";
       break;
     }
-    rest = after.slice(closeRel + close.length);
-    idx = rest.indexOf(open);
+    rest = after.slice(closeM.index + closeM[0].length);
+    m = open.exec(rest);
   }
   out += rest;
   return out;
@@ -51,7 +70,7 @@ function stripTagBlocks(text: string, tag: string): string {
  */
 export function stripToolProtocol(text: string): string {
   if (!text) return text;
-  const hasTag = TOOL_BLOCK_TAGS.some((tag) => text.includes(`<${tag}>`));
+  const hasTag = TOOL_BLOCK_TAGS.some((tag) => hasAnyOpen(text, tag));
   if (!hasTag) return text;
 
   let out = text;

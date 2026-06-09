@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Globe2 } from "lucide-react";
 import type { Citation } from "../agent/agentTypes";
+import { openExternalUrl } from "@/lib/safeUrl";
 
 interface CitationListProps {
   citations: Citation[];
@@ -26,13 +27,9 @@ export function CitationList({ citations }: CitationListProps) {
   const { t } = useTranslation();
   if (citations.length === 0) return null;
 
-  const open = (url: string) => {
-    void import("@tauri-apps/plugin-opener")
-      .then(({ openUrl }) => openUrl(url))
-      .catch(() => {
-        // opener 不在 (テスト等) では無視。
-      });
-  };
+  // http(s)/mailto に限定して OS ブラウザで開く（上流 sanitizeCitations に加えた
+  // 二重防御。citation URL は検索プロバイダ＝第三者由来のため単一点依存を避ける）。
+  const open = (url: string) => openExternalUrl(url);
 
   return (
     <div className="mt-2 border-t border-border/40 pt-1.5">
