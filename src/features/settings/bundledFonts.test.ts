@@ -29,10 +29,11 @@ describe("bundled font defaults stay selectable", () => {
     }
   });
 
-  it("bundles both a body (mincho) and a UI (gothic) face", () => {
+  it("bundles a body (mincho) and UI (gothic) faces", () => {
     expect(BUNDLED_FONTS.length).toBeGreaterThanOrEqual(2);
     const families = BUNDLED_FONTS.map((f) => f.family);
     expect(families).toContain("Noto Serif JP");
     expect(families).toContain("M PLUS 1");
+    expect(families).toContain("LINE Seed JP");
   });
 });
