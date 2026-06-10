@@ -1,11 +1,8 @@
 import { useTranslation } from "react-i18next";
 import { FolderPlus, FolderTree, Plus } from "lucide-react";
-import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
-import {
-  consolidateLooseIntoChapter,
-  convertLooseToChapter,
-} from "./looseBatchOps";
+import { useLooseColumnMenu } from "./useLooseColumnMenu";
+import type { LooseColumnVariant } from "./useLooseColumnMenu";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -17,13 +14,8 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 
-/** Either a loose (project-root) column or a folder-container scene column.
- *  Both share the "scenes living without a chapter wrapper" semantics — the
- *  context menu differs only by which structural ops are meaningful. */
-type Variant = "loose" | "container";
-
 interface Props {
-  variant: Variant;
+  variant: LooseColumnVariant;
   /** For `loose`: project root (null) or whichever ancestor holds these scenes.
    *  For `container`: the folder whose direct children are listed. */
   containerId: string | null;
@@ -41,28 +33,13 @@ export function GridLooseColumnContextMenu({
   children,
 }: Props) {
   const { t } = useTranslation();
-  const createNode = useTreeStore((s) => s.createNode);
-
-  async function addScene() {
-    await createNode({ nodeType: "scene", parentId: containerId });
-  }
-
-  async function handleConsolidate(chapterId: string) {
-    await consolidateLooseIntoChapter(
-      scenes.map((s) => s.id),
-      chapterId,
-    );
-  }
-
-  async function handleConvertToChapter() {
-    await convertLooseToChapter(
-      containerId,
-      scenes.map((s) => s.id),
-    );
-  }
-
-  const canConsolidate = scenes.length > 0 && chapters.length > 0;
-  const canConvert = variant === "loose" && scenes.length > 0;
+  const {
+    addScene,
+    handleConsolidate,
+    handleConvertToChapter,
+    canConsolidate,
+    canConvert,
+  } = useLooseColumnMenu({ variant, containerId, scenes, chapters });
 
   return (
     <ContextMenu>
