@@ -500,6 +500,110 @@ describe("ChatPanel", () => {
     expect(screen.getByTestId("message-actions-u1")).toBeInTheDocument();
   });
 
+  // --- 仮想化されたメッセージリスト ---
+  // happy-dom では virtualizer は全件レンダの mock (test-setup.ts) なので、
+  // ここでは「仮想化の配線」(コンテナ高さ・data-index 行・filter) と
+  // 「入場アニメの新規 append 限定化」を検証する。実際の windowing は
+  // ChatPanel.virtualization.browser.test.tsx が gate する。
+  describe("virtualized message list", () => {
+    const msg = (
+      id: string,
+      role: "user" | "assistant" | "system",
+      extra: Partial<import("./chatTypes").ChatMessage> = {},
+    ) => ({
+      id,
+      sessionId: "",
+      role,
+      content: `本文 ${id}`,
+      createdAt: new Date().toISOString(),
+      ...extra,
+    });
+
+    it("renders rows inside a virtualizer-sized container with data-index", () => {
+      useChatStore.setState({
+        messages: [msg("u1", "user"), msg("a1", "assistant")],
+      });
+
+      render(<ChatPanel />);
+
+      const list = screen.getByTestId("chat-virtual-list");
+      // 仮想化コンテナは getTotalSize() で明示的な高さを持つ
+      expect(list.style.height).toMatch(/^\d+px$/);
+      const rows = list.querySelectorAll("[data-index]");
+      expect(rows.length).toBe(2);
+    });
+
+    it("excludes system and summarized messages from virtual rows, keeping order", () => {
+      useChatStore.setState({
+        messages: [
+          msg("u1", "user"),
+          msg("sys1", "system"),
+          msg("a1", "assistant", { isSummarized: 1 }),
+          msg("a2", "assistant"),
+        ],
+      });
+
+      render(<ChatPanel />);
+
+      expect(screen.queryByTestId("chat-message-sys1")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("chat-message-a1")).not.toBeInTheDocument();
+      // 表示対象 (u1, a2) だけが行になり、index が詰まる
+      const u1Row = screen
+        .getByTestId("chat-message-u1")
+        .closest("[data-index]");
+      const a2Row = screen
+        .getByTestId("chat-message-a2")
+        .closest("[data-index]");
+      expect(u1Row?.getAttribute("data-index")).toBe("0");
+      expect(a2Row?.getAttribute("data-index")).toBe("1");
+    });
+
+    // 仮想化では行が scroll out/in で remount されるため、無条件の入場アニメは
+    // 過去メッセージの再生 (スクロールでビュンビュン飛ぶ) になる。
+    // 「この render で新たに追加された user メッセージ」だけが animate-in を持つ。
+    it("marks only newly appended user messages for entrance animation", async () => {
+      render(<ChatPanel />);
+
+      await act(async () => {
+        useChatStore.setState({ messages: [msg("u1", "user")] });
+      });
+      expect(
+        screen.getByTestId("chat-message-u1").closest("[data-animate-in]"),
+      ).not.toBeNull();
+
+      // 次の append で u1 は既知になり、assistant の a1 はそもそも対象外
+      await act(async () => {
+        useChatStore.setState({
+          messages: [msg("u1", "user"), msg("a1", "assistant")],
+        });
+      });
+      expect(
+        screen.getByTestId("chat-message-u1").closest("[data-animate-in]"),
+      ).toBeNull();
+      expect(
+        screen.getByTestId("chat-message-a1").closest("[data-animate-in]"),
+      ).toBeNull();
+    });
+
+    it("does not animate messages arriving from a session load", async () => {
+      useChatStore.setState({ isLoadingMessages: true });
+      render(<ChatPanel />);
+      expect(screen.getByTestId("chat-messages-loading")).toBeInTheDocument();
+
+      // selectSession と同じく、load 完了は messages + isLoadingMessages を
+      // 1 回の set で同時更新する
+      await act(async () => {
+        useChatStore.setState({
+          messages: [msg("u1", "user"), msg("u2", "user")],
+          isLoadingMessages: false,
+        });
+      });
+
+      expect(screen.getByTestId("chat-message-u1")).toBeInTheDocument();
+      expect(document.querySelectorAll("[data-animate-in]").length).toBe(0);
+    });
+  });
+
   // agentMode を切り替えたら context layer を再構築すること。これが無いと
   // project スコープの pull 委譲（agent ON で synopsis を push しない）がトグル時に
   // 反映されず、非 agent / CLI 送信が古い lastSystemPrompt を流用してしまう。
