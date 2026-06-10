@@ -14,7 +14,11 @@ const GLOW_COLOR = "oklch(0.55 0.22 264 / 0.45)";
 export function LayoutDnDHighlightOverlay() {
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const dragOverTarget = useLayoutStore((s) => s.dragOverTarget);
-  const layout = useLayoutStore((s) => s.layout);
+  // layout はドラッグ中の measure (getDropTargetRect) にしか使わないため、
+  // ドラッグ中だけ購読する。アイドル時に null へ落としておくと splitter
+  // live ドラッグ等の layout 変化で再レンダーされない
+  // (gate: layoutSubscriptions.rerender.test.tsx)。
+  const layout = useLayoutStore((s) => (s.draggingPanel ? s.layout : null));
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const [rect, setRect] = useState<DropTargetRect | null>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
@@ -27,6 +31,7 @@ export function LayoutDnDHighlightOverlay() {
       !draggingPanel ||
       layoutLocked ||
       !dragOverTarget ||
+      !layout ||
       dragOverTarget.type === "stripe-reorder"
     ) {
       setRect(null);
@@ -41,7 +46,8 @@ export function LayoutDnDHighlightOverlay() {
         setRect(null);
         return;
       }
-      setRect(getDropTargetRect(target, layout));
+      // effect 冒頭の early return が dragging 中 (= layout 非 null) を保証
+      setRect(getDropTargetRect(target, layout ?? undefined));
     }
 
     measure();

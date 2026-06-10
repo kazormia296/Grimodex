@@ -20,7 +20,9 @@ export function CenterStripeDropOverlay({
   slotIds,
   stripeEndInsertIndex,
 }: CenterStripeDropOverlayProps) {
-  const layout = useLayoutStore((s) => s.layout);
+  // layout は drag イベント時 (resolveTarget) にしか使わないので購読しない。
+  // 購読すると splitter live ドラッグ等の layout 変化のたびに再レンダー
+  // される (gate: layoutSubscriptions.rerender.test.tsx)。
   const movePanelToSlot = useLayoutStore((s) => s.movePanelToSlot);
   const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
   const reorderPanelInSlot = useLayoutStore((s) => s.reorderPanelInSlot);
@@ -43,7 +45,7 @@ export function CenterStripeDropOverlay({
       segments,
       slotIds,
       stripeEndInsertIndex,
-      layout,
+      useLayoutStore.getState().layout,
     ) ?? fallbackTarget;
 
   const handleDragOver = (e: React.DragEvent) => {

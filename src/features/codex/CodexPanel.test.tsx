@@ -18,6 +18,14 @@ vi.mock("./search", () => ({
   searchCodexEntries: vi.fn(() => Promise.resolve([])),
 }));
 
+// loadEntries は listCodexTypes も並列で呼ぶ。未 mock だと実 drizzle/invoke に
+// 落ちて settle が不定になり、未 await の mount ロードが次テストまで dangling
+// する (ensureEntriesLoaded の in-flight join が stale ロードに相乗りして
+// 偽陽性で落ちる)。DB API は必ず mock する。
+vi.mock("./typeApi", () => ({
+  listCodexTypes: vi.fn(() => Promise.resolve([])),
+}));
+
 import { listCodexEntries } from "./api";
 const mockListCodexEntries = vi.mocked(listCodexEntries);
 

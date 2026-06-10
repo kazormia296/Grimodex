@@ -495,7 +495,7 @@ export function CodexManagementPanel({
   const filterType = useCodexStore((s) => s.filterType);
   const sortOrder = useCodexStore((s) => s.sortOrder);
   const isLoading = useCodexStore((s) => s.isLoading);
-  const loadEntries = useCodexStore((s) => s.loadEntries);
+  const ensureEntriesLoaded = useCodexStore((s) => s.ensureEntriesLoaded);
   const pendingEntryId = useCodexStore((s) => s.pendingEntryId);
   const clearPendingEntry = useCodexStore((s) => s.clearPendingEntry);
   const searchStore = useCodexStore((s) => s.search);
@@ -558,8 +558,9 @@ export function CodexManagementPanel({
   }, []);
 
   useEffect(() => {
-    loadEntries();
-  }, [loadEntries]);
+    // mount eager load: 同時 mount のクエリ重複は store 側で dedup される
+    ensureEntriesLoaded();
+  }, [ensureEntriesLoaded]);
 
   // Handle external entry selection request (e.g. from CodexQuick panel click)
   useEffect(() => {

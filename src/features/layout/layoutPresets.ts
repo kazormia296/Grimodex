@@ -486,6 +486,11 @@ export function getBuiltinPresetHiddenPanels(id: string): ToolWindowPanelId[] {
   return definition ? [...definition.hiddenStripePanels] : [];
 }
 
+/**
+ * 契約: 常に fresh なオブジェクトを返す (override path は明示 clone、
+ * 非 override は clampLayoutStateForViewport が内部 clone した作業コピー)。
+ * 呼び出し側での追加 clone は不要。
+ */
 export function resolveBuiltinPresetState(
   id: string,
   viewport: { width: number; height: number },
@@ -520,7 +525,8 @@ export function getBuiltinPresets(
       id,
       name: i18next.t(PRESET_I18N_KEYS[id]),
       builtin: true as const,
-      state: cloneLayoutState(state),
+      // resolveBuiltinPresetState が fresh を保証するため再 clone しない
+      state,
       icon: PRESET_DEFINITIONS[id].icon,
     };
   });

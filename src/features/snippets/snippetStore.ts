@@ -9,6 +9,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureSnippetDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
 
@@ -39,6 +40,10 @@ interface SnippetState {
   ) => void;
 
   loadEntries: () => Promise<void>;
+  /** mount 用の dedup 付きロード。同一 projectId のロードが進行中なら
+   *  それに相乗りする。settle 後は毎回ロードする (remount での再フェッチ =
+   *  外部書き込み追従は維持)。 */
+  ensureEntriesLoaded: () => Promise<void>;
   search: (query: string) => Promise<void>;
   setSourceFilter: (filter: SnippetSourceFilter) => void;
   setSortOrder: (order: SnippetSortOrder) => void;
@@ -64,6 +69,9 @@ interface SnippetState {
   incrementUsageCount: (id: string) => Promise<void>;
 }
 
+// mount eager load の in-flight dedup (詳細は ensureEntriesLoaded の docs)
+const entriesLoadTracker = createInFlightTracker();
+
 export const useSnippetStore = create<SnippetState>()((set, get) => ({
   entries: [],
   searchQuery: "",
@@ -84,15 +92,27 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   clearPendingEntry: () => set({ pendingEntryId: null }),
 
   loadEntries: async () => {
-    set({ isLoading: true });
-    try {
-      const entries = await snippetApi.listSnippets(getCurrentProjectId());
-      set({ entries, isLoading: false });
-    } catch (e) {
-      set({ isLoading: false });
-      toast.error(i18next.t("snippets.store.loadFailed"));
-      debugLog.error("SnippetStore", "loadEntries", errorDetail(e));
-    }
+    const run = (async () => {
+      set({ isLoading: true });
+      try {
+        const entries = await snippetApi.listSnippets(getCurrentProjectId());
+        set({ entries, isLoading: false });
+      } catch (e) {
+        set({ isLoading: false });
+        toast.error(i18next.t("snippets.store.loadFailed"));
+        debugLog.error("SnippetStore", "loadEntries", errorDetail(e));
+      }
+    })();
+    // mutation 後の直接 loadEntries も in-flight として記録し、直後に
+    // mount する ensureEntriesLoaded がこの (最新の) ロードに相乗りする
+    entriesLoadTracker.track(getCurrentProjectId(), run);
+    return run;
+  },
+
+  ensureEntriesLoaded: () => {
+    const inFlight = entriesLoadTracker.peek(getCurrentProjectId());
+    if (inFlight) return inFlight;
+    return get().loadEntries();
   },
 
   search: async (query: string) => {

@@ -102,7 +102,9 @@ export function applyValidatedLayout(
   viewport?: { width: number; height: number },
 ): LayoutState {
   const vp = viewport ?? getViewport();
-  const clamped = clampLayoutStateForViewport(cloneLayoutState(layout), vp);
+  // clampLayoutStateForViewport は内部で clone してから作業するため、
+  // ここで事前に clone すると純粋な二重コピーになる (perf 2026-06-10)。
+  const clamped = clampLayoutStateForViewport(layout, vp);
   const result = validateLayoutState(clamped, { viewport: vp });
   if (result.valid) return clamped;
   return fallback;
@@ -429,17 +431,6 @@ function scheduleSave(get: () => LayoutStoreState) {
       /* ignore */
     }
   }, 500);
-}
-
-async function persistActivePresetId(id: string | null) {
-  try {
-    const current = await invoke<GlobalSettings>("get_global_settings");
-    await invoke("save_global_settings", {
-      settings: { ...current, activeLayoutPresetId: id },
-    });
-  } catch {
-    /* ignore */
-  }
 }
 
 async function persistPresets(
@@ -1455,10 +1446,17 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       activePresetId: null,
       hiddenStripePanels: new Set(),
     });
+    // activeLayoutPresetId は scheduleSave の全量書き込みに含まれる
     scheduleSave(get);
-    void persistActivePresetId(null);
   },
 
+  // 注: applyPreset では preset 原本 (override.state / custom.state) を
+  // そのまま ensureLayoutStateV3 に渡してよい — ensureLayoutStateV3 が
+  // clone してから strip するため原本は変異しない (エイリアス不変条件は
+  // layoutStore.test.ts の「perf 契約」describe が gate)。事前 clone は
+  // 純粋な二重コピーだった。activePresetId の永続化は scheduleSave の
+  // 全量書き込みに含まれるため、即時の persistActivePresetId は冗長な
+  // settings 二重書き込み (= get/save 全量 round-trip ×2) で廃止。
   applyPreset: (presetId) => {
     const vp = getViewport();
     if (isBuiltinPresetId(presetId)) {
@@ -1467,7 +1465,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       if (!builtin) return;
       set({
         layout: applyValidatedLayout(
-          ensureLayoutStateV3(cloneLayoutState(builtin)),
+          ensureLayoutStateV3(builtin),
           resetLayoutStateToDefault(),
           vp,
         ),
@@ -1477,7 +1475,6 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         ),
       });
       scheduleSave(get);
-      void persistActivePresetId(presetId);
       return;
     }
 
@@ -1485,7 +1482,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     if (custom) {
       set({
         layout: applyValidatedLayout(
-          ensureLayoutStateV3(cloneLayoutState(custom.state)),
+          ensureLayoutStateV3(custom.state),
           resetLayoutStateToDefault(),
           vp,
         ),
@@ -1493,7 +1490,6 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         hiddenStripePanels: new Set(custom.hiddenStripePanels ?? []),
       });
       scheduleSave(get);
-      void persistActivePresetId(presetId);
     }
   },
 
@@ -1511,8 +1507,8 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     };
     set({ builtinPresetOverrides, activePresetId: presetId });
     await persistBuiltinOverrides(builtinPresetOverrides);
+    // activeLayoutPresetId は scheduleSave の全量書き込みに含まれる
     scheduleSave(get);
-    void persistActivePresetId(presetId);
   },
 
   hasBuiltinPresetOverride: (presetId) =>

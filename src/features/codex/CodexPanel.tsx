@@ -278,7 +278,7 @@ export function CodexPanel() {
   const searchQuery = useCodexStore((s) => s.searchQuery);
   const filterType = useCodexStore((s) => s.filterType);
   const isLoading = useCodexStore((s) => s.isLoading);
-  const loadEntries = useCodexStore((s) => s.loadEntries);
+  const ensureEntriesLoaded = useCodexStore((s) => s.ensureEntriesLoaded);
   const search = useCodexStore((s) => s.search);
   const update = useCodexStore((s) => s.update);
   const remove = useCodexStore((s) => s.remove);
@@ -291,8 +291,9 @@ export function CodexPanel() {
   const trashDropRef = useDropTarget("codex-panel", "codex-panel");
 
   useEffect(() => {
-    loadEntries();
-  }, [loadEntries]);
+    // mount eager load: 同時 mount のクエリ重複は store 側で dedup される
+    ensureEntriesLoaded();
+  }, [ensureEntriesLoaded]);
 
   const handleSearchChange = useCallback(
     (value: string) => {

@@ -45,7 +45,7 @@ export function SnippetPanel() {
   const entries = useSnippetStore((s) => s.entries);
   const searchQuery = useSnippetStore((s) => s.searchQuery);
   const isLoading = useSnippetStore((s) => s.isLoading);
-  const loadEntries = useSnippetStore((s) => s.loadEntries);
+  const ensureEntriesLoaded = useSnippetStore((s) => s.ensureEntriesLoaded);
   const search = useSnippetStore((s) => s.search);
   const create = useSnippetStore((s) => s.create);
   const update = useSnippetStore((s) => s.update);
@@ -88,8 +88,9 @@ export function SnippetPanel() {
   );
 
   useEffect(() => {
-    loadEntries();
-  }, [loadEntries]);
+    // mount eager load: 同時 mount のクエリ重複は store 側で dedup される
+    ensureEntriesLoaded();
+  }, [ensureEntriesLoaded]);
 
   useEffect(() => {
     const el = listContainerRef.current;

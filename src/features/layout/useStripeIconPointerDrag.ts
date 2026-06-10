@@ -63,11 +63,14 @@ export function useStripeIconPointerDrag({
   const movePanelToSlot = useLayoutStore((s) => s.movePanelToSlot);
   const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
   const reorderPanelInSlot = useLayoutStore((s) => s.reorderPanelInSlot);
-  const layout = useLayoutStore((s) => s.layout);
+  // layout は pointer イベント時にしか使わないので購読しない。購読すると
+  // ストライプアイコン全数が splitter live ドラッグ等の layout 変化のたびに
+  // 再レンダーされる (gate: layoutSubscriptions.rerender.test.tsx)。
+  // 既存の dragOverTarget と同じく call-time に getState() で読む。
 
   const resolveTarget = useCallback(
     (clientX: number, clientY: number) => {
-      const prevTarget = useLayoutStore.getState().dragOverTarget;
+      const { dragOverTarget: prevTarget, layout } = useLayoutStore.getState();
       const direct = resolveDropTargetFromPoint(clientX, clientY, {
         draggingPanel: panelId,
         sourceSlotId: slotId,
@@ -110,7 +113,7 @@ export function useStripeIconPointerDrag({
         layout,
       );
     },
-    [layout, panelId, slotId],
+    [panelId, slotId],
   );
 
   const sessionRef = useRef<{
@@ -130,6 +133,7 @@ export function useStripeIconPointerDrag({
 
   const initAxisLockSession = useCallback(
     (startX: number, startY: number): AxisLockSession | null => {
+      const { layout } = useLayoutStore.getState();
       const panels = getSlotPanelIds(layout, region, slotId);
       if (!panels || panels.length <= 1) return null;
 
@@ -153,7 +157,7 @@ export function useStripeIconPointerDrag({
         axis,
       };
     },
-    [layout, panelId, region, slotId],
+    [panelId, region, slotId],
   );
 
   const recomputeAxisLock = useCallback(
