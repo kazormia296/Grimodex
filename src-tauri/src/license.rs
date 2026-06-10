@@ -127,8 +127,22 @@ pub(crate) fn benefit_matches(benefit_id: Option<&str>) -> bool {
 }
 
 fn benefit_matches_with(expected: &str, benefit_id: Option<&str>) -> bool {
-    let _ = (expected, benefit_id);
-    todo!("Phase 3: benefit 照合の実装")
+    expected.is_empty() || benefit_id == Some(expected)
+}
+
+/// Polar 用 HTTP クライアント。設計書 §5.4: connect 5s / total 15s を明示
+/// (既存 ai.rs の `Client::new()` は timeout 無設定なので踏襲しない)。
+fn polar_http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            // builder が失敗する環境 (TLS 初期化不能等) では timeout なしの
+            // default に倒す。unwrap で起動を殺すより fail-soft を優先。
+            .unwrap_or_default()
+    })
 }
 
 pub(crate) async fn polar_activate(key: &str) -> anyhow::Result<PolarActivation> {
@@ -146,13 +160,65 @@ pub(crate) async fn polar_deactivate(key: &str, activation_id: &str) -> anyhow::
     polar_deactivate_at(POLAR_BASE_URL, POLAR_ORGANIZATION_ID, key, activation_id).await
 }
 
+/// activate 応答 (200) のうち読むフィールドだけ。未知フィールドは無視。
+#[derive(serde::Deserialize)]
+struct ActivateResponse {
+    /// アクティベーション ID。
+    id: String,
+    #[serde(default)]
+    license_key: Option<ActivateLicenseKey>,
+}
+
+#[derive(serde::Deserialize)]
+struct ActivateLicenseKey {
+    #[serde(default)]
+    benefit_id: Option<String>,
+}
+
+/// validate 応答 (200, ValidatedLicenseKey) のうち読むフィールドだけ。
+#[derive(serde::Deserialize)]
+struct ValidateResponse {
+    /// "granted" | "revoked" | "disabled"
+    status: String,
+    #[serde(default)]
+    benefit_id: Option<String>,
+}
+
 async fn polar_activate_at(
     base_url: &str,
     organization_id: &str,
     key: &str,
 ) -> anyhow::Result<PolarActivation> {
-    let _ = (base_url, organization_id, key);
-    anyhow::bail!("Phase 3: activate の実装")
+    let url = format!("{base_url}/v1/customer-portal/license-keys/activate");
+    let body = serde_json::json!({
+        "key": key,
+        "organization_id": organization_id,
+        "label": activation_label(),
+    });
+    let res = polar_http_client()
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("ライセンスサーバーに接続できませんでした: {e}"))?;
+    match res.status().as_u16() {
+        200 => {
+            let parsed: ActivateResponse = res.json().await.map_err(|e| {
+                anyhow::anyhow!("ライセンスサーバーの応答を解釈できませんでした: {e}")
+            })?;
+            Ok(PolarActivation {
+                activation_id: parsed.id,
+                benefit_id: parsed.license_key.and_then(|lk| lk.benefit_id),
+            })
+        }
+        // 403 NotPermitted = アクティベーション上限到達 or 非サポート (公式仕様)
+        403 => anyhow::bail!(
+            "アクティベーション上限に達しています。設定画面から使っていない端末を解除してください"
+        ),
+        404 => anyhow::bail!("ライセンスキーが見つかりません。入力内容を確認してください"),
+        422 => anyhow::bail!("リクエスト形式が不正です（アプリの不具合の可能性があります）"),
+        s => anyhow::bail!("ライセンスサーバーがエラーを返しました (HTTP {s})"),
+    }
 }
 
 async fn polar_validate_at(
@@ -161,8 +227,39 @@ async fn polar_validate_at(
     key: &str,
     activation_id: &str,
 ) -> anyhow::Result<PolarValidateOutcome> {
-    let _ = (base_url, organization_id, key, activation_id);
-    anyhow::bail!("Phase 3: validate の実装")
+    let url = format!("{base_url}/v1/customer-portal/license-keys/validate");
+    let body = serde_json::json!({
+        "key": key,
+        "organization_id": organization_id,
+        "activation_id": activation_id,
+    });
+    let res = polar_http_client()
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("ライセンスサーバーに接続できませんでした: {e}"))?;
+    match res.status().as_u16() {
+        200 => {
+            let parsed: ValidateResponse = res.json().await.map_err(|e| {
+                anyhow::anyhow!("ライセンスサーバーの応答を解釈できませんでした: {e}")
+            })?;
+            // キー無効は HTTP エラーではなく status で表現される (公式仕様)。
+            // benefit 不一致 (§4.3: 別メジャーバージョンのキー) も無効扱い。
+            if parsed.status == "granted" && benefit_matches(parsed.benefit_id.as_deref()) {
+                Ok(PolarValidateOutcome::Valid {
+                    benefit_id: parsed.benefit_id,
+                })
+            } else {
+                Ok(PolarValidateOutcome::Invalid)
+            }
+        }
+        // キー不存在 = Polar の明示応答 (返金等でキーごと消えたケース)。
+        404 => Ok(PolarValidateOutcome::Invalid),
+        // 422 はこちらのリクエスト不正 (アプリのバグ)。5xx は Polar 障害。
+        // どちらもユーザーのキーを revoked に倒す理由にならない (設計書 §3)。
+        s => anyhow::bail!("ライセンスサーバーがエラーを返しました (HTTP {s})"),
+    }
 }
 
 async fn polar_deactivate_at(
@@ -171,8 +268,28 @@ async fn polar_deactivate_at(
     key: &str,
     activation_id: &str,
 ) -> anyhow::Result<()> {
-    let _ = (base_url, organization_id, key, activation_id);
-    anyhow::bail!("Phase 3: deactivate の実装")
+    let url = format!("{base_url}/v1/customer-portal/license-keys/deactivate");
+    let body = serde_json::json!({
+        "key": key,
+        "organization_id": organization_id,
+        "activation_id": activation_id,
+    });
+    let res = polar_http_client()
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("ライセンスサーバーに接続できませんでした: {e}"))?;
+    match res.status().as_u16() {
+        204 => Ok(()),
+        // サーバー側に既に存在しない activation = 目的は達成済み (冪等)。
+        // 返金等でキーごと消えていてもローカル破棄に進めるようにする。
+        404 => {
+            tracing::warn!("license: deactivate got 404 (already deactivated server-side)");
+            Ok(())
+        }
+        s => anyhow::bail!("ライセンスサーバーがエラーを返しました (HTTP {s})"),
+    }
 }
 
 #[cfg(test)]
@@ -450,9 +567,10 @@ mod polar_tests {
                 "organization_id": ORG,
                 "activation_id": ACT,
             })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({"status": "granted", "benefit_id": "b"}),
-            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"status": "granted", "benefit_id": "b"})),
+            )
             .mount(&server)
             .await;
         let outcome = polar_validate_at(&server.uri(), ORG, KEY, ACT).await;
@@ -494,8 +612,15 @@ mod polar_tests {
     async fn validate_500_is_comm_failure_not_invalid() {
         // Polar 障害でユーザーを締め出さない (設計書 §3 の重要な区別)。
         let server = MockServer::start().await;
-        mount_validate(&server, 500, serde_json::json!({"error": "InternalServerError"})).await;
-        assert!(polar_validate_at(&server.uri(), ORG, KEY, ACT).await.is_err());
+        mount_validate(
+            &server,
+            500,
+            serde_json::json!({"error": "InternalServerError"}),
+        )
+        .await;
+        assert!(polar_validate_at(&server.uri(), ORG, KEY, ACT)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -509,7 +634,9 @@ mod polar_tests {
             serde_json::json!({"error": "RequestValidationError", "detail": []}),
         )
         .await;
-        assert!(polar_validate_at(&server.uri(), ORG, KEY, ACT).await.is_err());
+        assert!(polar_validate_at(&server.uri(), ORG, KEY, ACT)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -572,6 +699,8 @@ mod polar_tests {
             .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
-        assert!(polar_deactivate_at(&server.uri(), ORG, KEY, ACT).await.is_err());
+        assert!(polar_deactivate_at(&server.uri(), ORG, KEY, ACT)
+            .await
+            .is_err());
     }
 }

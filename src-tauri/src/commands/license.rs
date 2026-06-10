@@ -81,6 +81,14 @@ pub(crate) async fn activate_license(
 ) -> Result<LicenseStateDto, AppError> {
     ensure_licensing_enabled()?;
     let activation = glue::polar_activate(&key).await?;
+    // §4.3: メジャーバージョン期待値との照合。期待値未設定 (Product 作成前) は
+    // 素通りする。v2 アプリに v1 キーを入れた場合ここで弾く。
+    if !glue::benefit_matches(activation.benefit_id.as_deref()) {
+        return Err(anyhow::anyhow!(
+            "このライセンスキーは別のメジャーバージョン用です（このバージョンでは利用できません）"
+        )
+        .into());
+    }
     let (now, today) = now_pair();
     let _guard = lock_license_file(&license_path)?;
     let mut file = core_license::read_license_file(&license_path.path);
