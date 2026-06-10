@@ -153,34 +153,144 @@ pub fn compute_snapshot(
     now_utc: DateTime<Utc>,
     today_local: &str,
 ) -> LicenseSnapshot {
-    let _ = (file, now_utc, today_local);
-    todo!("Phase 1: 状態機械の実装")
+    if let Some(lic) = &file.license {
+        if lic.revoked_at.is_some() {
+            return LicenseSnapshot {
+                status: LicenseStatus::Revoked,
+                trial_days_remaining: None,
+                grace_days_remaining: None,
+                needs_validation: false,
+            };
+        }
+        let validated = lic
+            .last_validated_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&Utc));
+        let Some(validated) = validated else {
+            // 検証時刻が欠損・不正でも締め出さない: grace 扱いで全機能を維持し、
+            // 次の validate 成功で正常へ戻す。
+            return LicenseSnapshot {
+                status: LicenseStatus::Grace,
+                trial_days_remaining: None,
+                grace_days_remaining: None,
+                needs_validation: true,
+            };
+        };
+        // 負の経過 (検証後に時計が巻き戻った) は licensed 扱い。
+        let elapsed = now_utc - validated;
+        if elapsed <= Duration::days(VALIDATE_INTERVAL_DAYS) {
+            return LicenseSnapshot {
+                status: LicenseStatus::Licensed,
+                trial_days_remaining: None,
+                grace_days_remaining: None,
+                needs_validation: elapsed >= Duration::days(VALIDATE_INTERVAL_DAYS),
+            };
+        }
+        if elapsed <= Duration::days(GRACE_DAYS) {
+            let remaining = (validated + Duration::days(GRACE_DAYS) - now_utc).num_days();
+            return LicenseSnapshot {
+                status: LicenseStatus::Grace,
+                trial_days_remaining: None,
+                grace_days_remaining: Some(remaining.max(0) as u32),
+                needs_validation: true,
+            };
+        }
+        return LicenseSnapshot {
+            status: LicenseStatus::LicenseStale,
+            trial_days_remaining: None,
+            grace_days_remaining: None,
+            needs_validation: true,
+        };
+    }
+
+    let used = file.trial_used_dates.len();
+    let used_today = file.trial_used_dates.iter().any(|d| d == today_local);
+    if used < TRIAL_DAYS || used_today {
+        LicenseSnapshot {
+            status: LicenseStatus::Trial,
+            trial_days_remaining: Some(TRIAL_DAYS.saturating_sub(used) as u32),
+            grace_days_remaining: None,
+            needs_validation: false,
+        }
+    } else {
+        LicenseSnapshot {
+            status: LicenseStatus::TrialExpired,
+            trial_days_remaining: Some(0),
+            grace_days_remaining: None,
+            needs_validation: false,
+        }
+    }
+}
+
+/// RFC3339 (秒精度、Z 表記) で統一的に文字列化する。
+fn to_rfc3339(t: DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// 初回起動の初期化 (`first_run_at` の設定)。変更があれば true。
 pub fn ensure_initialized(file: &mut LicenseFile, now_utc: DateTime<Utc>) -> bool {
-    let _ = (file, now_utc);
-    todo!("Phase 1: 初期化の実装")
+    if file.first_run_at.is_some() {
+        return false;
+    }
+    file.first_run_at = Some(to_rfc3339(now_utc));
+    true
 }
 
 /// 試用の使用日登録。アクティベート済み・登録済み・配列満杯 (= 試用切れ後)
 /// では何もしない。変更があれば true (書き戻しが必要)。
 pub fn register_usage_day(file: &mut LicenseFile, today_local: &str) -> bool {
-    let _ = (file, today_local);
-    todo!("Phase 1: 使用日登録の実装")
+    if file.license.is_some() {
+        return false;
+    }
+    if file.trial_used_dates.iter().any(|d| d == today_local) {
+        return false;
+    }
+    if file.trial_used_dates.len() >= TRIAL_DAYS {
+        return false;
+    }
+    file.trial_used_dates.push(today_local.to_string());
+    true
 }
 
 /// `last_seen_at` の単調更新。過去方向には動かさず、巻き戻し観測を報告する。
 pub fn update_last_seen(file: &mut LicenseFile, now_utc: DateTime<Utc>) -> LastSeenUpdate {
-    let _ = (file, now_utc);
-    todo!("Phase 1: last_seen 更新の実装")
+    let prev = file
+        .last_seen_at
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&Utc));
+    match prev {
+        Some(prev) if now_utc < prev => LastSeenUpdate {
+            changed: false,
+            rollback_detected: true,
+        },
+        Some(prev) if now_utc == prev => LastSeenUpdate {
+            changed: false,
+            rollback_detected: false,
+        },
+        _ => {
+            file.last_seen_at = Some(to_rfc3339(now_utc));
+            LastSeenUpdate {
+                changed: true,
+                rollback_detected: false,
+            }
+        }
+    }
 }
 
 /// activate 成功 → `licensed`。既存の revoked 状態は新しい有効キーで上書き
 /// される (設計書 §3: revoked ─ 別の有効キーで activate ─▶ licensed)。
 pub fn apply_activation(file: &mut LicenseFile, activation: NewActivation, now_utc: DateTime<Utc>) {
-    let _ = (file, activation, now_utc);
-    todo!("Phase 1: activate 遷移の実装")
+    let now = to_rfc3339(now_utc);
+    file.license = Some(ActivatedLicense {
+        key: activation.key,
+        activation_id: activation.activation_id,
+        benefit_id: activation.benefit_id,
+        activated_at: Some(now.clone()),
+        last_validated_at: Some(now),
+        revoked_at: None,
+    });
 }
 
 /// validate 成功 → `licensed`。`last_validated_at` / `benefit_id` を更新し、
@@ -191,22 +301,35 @@ pub fn apply_validate_success(
     benefit_id: Option<&str>,
     now_utc: DateTime<Utc>,
 ) -> bool {
-    let _ = (file, benefit_id, now_utc);
-    todo!("Phase 1: validate 成功遷移の実装")
+    let Some(lic) = file.license.as_mut() else {
+        return false;
+    };
+    lic.last_validated_at = Some(to_rfc3339(now_utc));
+    if let Some(benefit_id) = benefit_id {
+        lic.benefit_id = Some(benefit_id.to_string());
+    }
+    lic.revoked_at = None;
+    true
 }
 
 /// validate が明示的に「キー無効」を応答 → `revoked`。
 /// 通信失敗でこれを呼んではならない (呼び出し側の責務、設計書 §3)。
 pub fn apply_revoked(file: &mut LicenseFile, now_utc: DateTime<Utc>) -> bool {
-    let _ = (file, now_utc);
-    todo!("Phase 1: revoked 遷移の実装")
+    let Some(lic) = file.license.as_mut() else {
+        return false;
+    };
+    lic.revoked_at = Some(to_rfc3339(now_utc));
+    true
 }
 
 /// deactivate 成功 → ローカルのアクティベーション情報を破棄。
 /// `trial_used_dates` は保持する (試用日数が残っていれば trial に戻る、§4.2)。
 pub fn apply_deactivation(file: &mut LicenseFile) -> bool {
-    let _ = file;
-    todo!("Phase 1: deactivate 遷移の実装")
+    if file.license.is_none() {
+        return false;
+    }
+    file.license = None;
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -215,14 +338,20 @@ pub fn apply_deactivation(file: &mut LicenseFile) -> bool {
 
 /// 欠損・破損は default (= 試用初期状態) に倒す。Err は返さない (fail-soft)。
 pub fn read_license_file(path: &Path) -> LicenseFile {
-    let _ = path;
-    todo!("Phase 1: 読み込みの実装")
+    match std::fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => LicenseFile::default(),
+    }
 }
 
 /// 平文 pretty JSON で書き込む (設計書 §5.2、改竄対策なし)。
 pub fn write_license_file(path: &Path, file: &LicenseFile) -> anyhow::Result<()> {
-    let _ = (path, file);
-    todo!("Phase 1: 書き込みの実装")
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(file)?;
+    std::fs::write(path, json)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

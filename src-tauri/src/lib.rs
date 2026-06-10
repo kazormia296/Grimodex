@@ -18,8 +18,8 @@ use commands::external_mount::ExternalMountState;
 #[cfg(feature = "semantic-embedding")]
 use commands::semantic::SemanticEmbedderState;
 use commands::{
-    AiSettingsPath, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag, LogGuard,
-    PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
+    AiSettingsPath, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag, LicensePath,
+    LogGuard, PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
 };
 use external_mount::watch::ExternalMountWatchState;
 
@@ -85,6 +85,13 @@ pub fn run() {
             let ai_path = app_dir.join("ai-settings.json");
             app.manage(AiSettingsPath { path: ai_path });
 
+            // License file path (stays in AppData, alongside global-settings.json)
+            let license_path = app_dir.join("license.json");
+            app.manage(LicensePath {
+                path: license_path,
+                write_lock: Mutex::new(()),
+            });
+
             // Workspace state starts empty — frontend will call open_workspace
             app.manage(WorkspaceState {
                 inner: Mutex::new(None),
@@ -137,6 +144,12 @@ pub fn run() {
             commands::workspace::validate_workspace_path,
             commands::workspace::open_workspace,
             commands::workspace::get_mcp_config,
+            // ライセンス: licensing feature 無効でも常時登録 (get_license_state が
+            // licensing_enabled:false を返す契約。cfg で消すとフロントが invoke 不能)
+            commands::license::get_license_state,
+            commands::license::activate_license,
+            commands::license::revalidate_license,
+            commands::license::deactivate_license,
             commands::export::export_save_text,
             commands::export::export_save_bytes,
             commands::fonts::list_system_fonts,

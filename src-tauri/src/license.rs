@@ -35,13 +35,84 @@ pub(crate) struct LicenseStateDto {
 
 /// licensing 無効ビルド用の DTO。license.json には触れない (試用日を消費しない)。
 pub(crate) fn disabled_dto() -> LicenseStateDto {
-    todo!("Phase 1: disabled DTO の実装")
+    LicenseStateDto {
+        licensing_enabled: false,
+        status: "disabled".to_string(),
+        trial_days_remaining: None,
+        grace_days_remaining: None,
+        key_tail: None,
+        activated_at: None,
+        last_validated_at: None,
+    }
 }
 
 /// 状態スナップショットから DTO を組み立てる。
 pub(crate) fn build_dto(file: &LicenseFile, snapshot: &LicenseSnapshot) -> LicenseStateDto {
-    let _ = (file, snapshot);
-    todo!("Phase 1: DTO 構築の実装")
+    let lic = file.license.as_ref();
+    LicenseStateDto {
+        licensing_enabled: true,
+        status: snapshot.status.as_str().to_string(),
+        trial_days_remaining: snapshot.trial_days_remaining,
+        grace_days_remaining: snapshot.grace_days_remaining,
+        key_tail: lic.map(|l| key_tail(&l.key)),
+        activated_at: lic.and_then(|l| l.activated_at.clone()),
+        last_validated_at: lic.and_then(|l| l.last_validated_at.clone()),
+    }
+}
+
+/// キー末尾 4 文字 (4 文字未満ならキー全体)。char 境界で安全に切る。
+fn key_tail(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    let start = chars.len().saturating_sub(4);
+    chars[start..].iter().collect()
+}
+
+// ---------------------------------------------------------------------------
+// Polar クライアント (Phase 3 で reqwest 実装に置換するスタブ)
+//
+// 契約 (設計書 §3/§4.2):
+// - Err = 通信失敗 (ネットワーク不達・Polar 障害・5xx・タイムアウト)。
+//   呼び出し側は状態を変えない (fail-soft)。revoked に倒してはならない。
+// - validate の「キー無効」は Ok(PolarValidateOutcome::Invalid) で表現する。
+//   Polar が HTTP レベルで明示応答した場合のみここに入る。
+// - Phase 3 実装時の注意: reqwest は connect 5s / total 15s を明示設定
+//   (既存 ai.rs の Client::new() は timeout 無設定なので写経しない)。
+//   base URL はテスト差し替え可能にする (wiremock 前提、ai.rs の轍を踏まない)。
+// ---------------------------------------------------------------------------
+
+/// Polar activate 応答のうちアプリが保存するフィールド。
+pub(crate) struct PolarActivation {
+    pub(crate) activation_id: String,
+    pub(crate) benefit_id: Option<String>,
+}
+
+/// validate の明示応答。Err (通信失敗) とは厳密に区別する。
+// Phase 1 ではスタブが Err しか返さず variant が未構築のため allow。
+// Phase 3 の Polar 実装で構築されるようになったら外すこと。
+#[allow(dead_code)]
+pub(crate) enum PolarValidateOutcome {
+    /// Polar が有効と明示。
+    Valid { benefit_id: Option<String> },
+    /// Polar が「キー無効」を明示 (返金・失効・上限超過) → revoked へ。
+    Invalid,
+}
+
+pub(crate) async fn polar_activate(key: &str) -> anyhow::Result<PolarActivation> {
+    let _ = key;
+    anyhow::bail!("ライセンス認証サーバーとの連携は未実装です（Phase 3 で実装予定）")
+}
+
+pub(crate) async fn polar_validate(
+    key: &str,
+    activation_id: &str,
+) -> anyhow::Result<PolarValidateOutcome> {
+    let _ = (key, activation_id);
+    anyhow::bail!("ライセンス認証サーバーとの連携は未実装です（Phase 3 で実装予定）")
+}
+
+pub(crate) async fn polar_deactivate(key: &str, activation_id: &str) -> anyhow::Result<()> {
+    let _ = (key, activation_id);
+    anyhow::bail!("ライセンス認証サーバーとの連携は未実装です（Phase 3 で実装予定）")
 }
 
 #[cfg(test)]
