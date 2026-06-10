@@ -11,10 +11,12 @@ import { CreateProjectDialog } from "./CreateProjectDialog";
 export function ProjectMenu({
   onOpenImport,
   onOpenZipExport,
+  onOpenNovelExport,
   onOpenSnapshot,
 }: {
   onOpenImport?: () => void;
   onOpenZipExport?: () => void;
+  onOpenNovelExport?: () => void;
   onOpenSnapshot?: () => void;
 }) {
   const { t } = useTranslation();
@@ -193,6 +195,20 @@ export function ProjectMenu({
               >
                 <span className="w-4" />
                 {t("project.zipExport.action")}
+              </button>
+            )}
+            {onOpenNovelExport && (
+              <button
+                type="button"
+                data-testid="project-novel-export-open"
+                onClick={() => {
+                  setIsOpen(false);
+                  onOpenNovelExport();
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+              >
+                <span className="w-4" />
+                {t("project.novelExport.action")}
               </button>
             )}
             {onOpenSnapshot && (

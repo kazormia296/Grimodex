@@ -7,13 +7,19 @@ import { ImportTargetPanel } from "./importShared";
 import { NovelcrafterImportFlow } from "./flows/NovelcrafterImportFlow";
 import { KakuyomuImportFlow } from "./flows/KakuyomuImportFlow";
 import { MarkdownImportFlow } from "./flows/MarkdownImportFlow";
+import { NovelImportFlow } from "./flows/NovelImportFlow";
 
 interface Props {
   open: boolean;
   onClose: () => void;
 }
 
-const SOURCES: ImportSource[] = ["novelcrafter", "kakuyomu", "markdown"];
+const SOURCES: ImportSource[] = [
+  "novelcrafter",
+  "kakuyomu",
+  "markdown",
+  "novel",
+];
 
 const DIALOG_PANEL_CLASS =
   "flex h-[min(480px,85vh)] w-[520px] flex-col gap-4 overflow-hidden p-6";
@@ -60,6 +66,8 @@ export function ImportDialog({ open, onClose }: Props) {
         return t("import.source.kakuyomu");
       case "markdown":
         return t("import.source.markdown");
+      case "novel":
+        return t("import.source.novel");
     }
   };
 
@@ -134,6 +142,12 @@ export function ImportDialog({ open, onClose }: Props) {
               importTarget={importTarget}
               markdownMode={markdownMode}
               onMarkdownModeChange={setMarkdownMode}
+              onClose={handleClose}
+            />
+          )}
+          {source === "novel" && (
+            <NovelImportFlow
+              importTarget={importTarget}
               onClose={handleClose}
             />
           )}

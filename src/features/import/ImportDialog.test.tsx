@@ -4,7 +4,7 @@ import { defaultImportTarget } from "./importTarget";
 
 /** Mirror ImportDialog top-level source tabs. */
 function topLevelSources(): ImportSource[] {
-  return ["novelcrafter", "kakuyomu", "markdown"];
+  return ["novelcrafter", "kakuyomu", "markdown", "novel"];
 }
 
 /** Mirror MarkdownImportFlow mode tab accept rules. */
@@ -13,8 +13,13 @@ function acceptForMarkdownMode(mode: MarkdownImportMode): string {
 }
 
 describe("ImportDialog source config", () => {
-  it("exposes three top-level source tabs including unified markdown", () => {
-    expect(topLevelSources()).toEqual(["novelcrafter", "kakuyomu", "markdown"]);
+  it("exposes four top-level source tabs including unified markdown", () => {
+    expect(topLevelSources()).toEqual([
+      "novelcrafter",
+      "kakuyomu",
+      "markdown",
+      "novel",
+    ]);
   });
 
   it("maps markdown mode sub-tabs to file accept attributes", () => {
@@ -27,5 +32,6 @@ describe("ImportDialog source config", () => {
     expect(defaultImportTarget("kakuyomu")).toBe("newProject");
     expect(defaultImportTarget("markdown", "single")).toBe("currentProject");
     expect(defaultImportTarget("markdown", "multi")).toBe("newProject");
+    expect(defaultImportTarget("novel")).toBe("newProject");
   });
 });

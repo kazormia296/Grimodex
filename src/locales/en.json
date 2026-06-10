@@ -49,6 +49,9 @@
     "zipExport": {
       "action": "Export project as ZIP…"
     },
+    "novelExport": {
+      "action": "Export as AI Novelist file…"
+    },
     "snapshot": {
       "action": "Project Snapshot…"
     },
@@ -84,7 +87,8 @@
     "source": {
       "novelcrafter": "Novelcrafter",
       "kakuyomu": "Kakuyomu",
-      "markdown": "Markdown"
+      "markdown": "Markdown",
+      "novel": "AI Novelist"
     },
     "target": {
       "label": "Import destination",
@@ -149,7 +153,33 @@
       "overwrite": "Overwrite",
       "append": "Append",
       "skip": "Skip"
+    },
+    "novel": {
+      "dropzoneHint": "AI Novelist .novel file",
+      "invalidFile": "Please select a .novel file",
+      "tooLarge": "File is too large (max 32MB)",
+      "title": "Title",
+      "body": "Body: {{lines}} lines / {{chars}} characters",
+      "memoryFound": "Memory (long-term) present",
+      "footnoteFound": "Footnote / system message present",
+      "charBookEntries": "Character book: {{count}} entries",
+      "charBook": "Character book → Codex",
+      "applyAllTypes": "Apply to all:",
+      "ignoredSections": "Note: parameters, banned words, scripts and chat templates are not imported",
+      "metadataHintNewProject": "Memory → synopsis and footnote → AI instructions will be applied to the new project.",
+      "metadataHintCurrentProject": "Memory / footnote will be added as a memo note at the end of the tree without overwriting existing settings.",
+      "memoNoteTitle": "Memory/footnote of {{title}}",
+      "success": "Import complete: {{scenes}} scenes / {{entries}} Codex entries"
     }
+  },
+  "novelExport": {
+    "title": "Export as AI Novelist file",
+    "description": "Export selected scenes and Codex as an AI Novelist (.novel) file. Includes body text, memory (← synopsis), footnote (← AI instructions) and character book (← Codex).",
+    "stats": "Selected: {{scenes}} scenes / {{chars}} characters",
+    "export": "Export .novel",
+    "exporting": "Exporting…",
+    "success": "Export complete",
+    "failed": "Export failed: {{error}}"
   },
   "zipExport": {
     "title": "Export project as ZIP",

@@ -36,6 +36,7 @@ vi.mock("@/features/tree/api", () => ({
   createNode: vi.fn(async () => ({})),
   listNodes: vi.fn(async () => []),
   saveSceneContent: vi.fn(async () => undefined),
+  updateNode: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/db/client", () => {
@@ -61,13 +62,19 @@ import {
   upsertValue,
 } from "@/features/codex/detailApi";
 import { ensureBuiltinTypes } from "@/features/codex/typeApi";
-import { createNode, saveSceneContent } from "@/features/tree/api";
+import {
+  createNode,
+  listNodes,
+  saveSceneContent,
+  updateNode,
+} from "@/features/tree/api";
 import { db } from "@/db/client";
 import {
   importCodexEntries,
   importSnippets,
   importChapters,
   importChatSessionsBatch,
+  importMemoNote,
 } from "./importApi";
 import type {
   ParsedCodexEntry,
@@ -523,6 +530,51 @@ describe("importChapters", () => {
     const result = await importChapters(chapters);
     expect(result.errors[0]).toContain("失敗章");
     expect(result.imported).toBe(2); // chap-2 + scene-2
+  });
+});
+
+describe("importMemoNote", () => {
+  const mockCreateNode = vi.mocked(createNode);
+  const mockListNodes = vi.mocked(listNodes);
+  const mockUpdateNode = vi.mocked(updateNode);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCreateNode.mockResolvedValue({ id: "memo-1" } as never);
+    mockListNodes.mockResolvedValue([]);
+  });
+
+  it("note ノードを作成し contextMode を suppress に設定する", async () => {
+    await importMemoNote("メモリ/脚注", "メモリ本文\n\n脚注本文");
+
+    expect(mockCreateNode).toHaveBeenCalledTimes(1);
+    const arg = mockCreateNode.mock.calls[0]![0];
+    expect(arg.nodeType).toBe("note");
+    expect(arg.title).toBe("メモリ/脚注");
+    const doc = JSON.parse(arg.content!) as {
+      content: { content?: { text: string }[] }[];
+    };
+    expect(doc.content).toHaveLength(2);
+    expect(doc.content[0]!.content?.[0]?.text).toBe("メモリ本文");
+    expect(doc.content[1]!.content?.[0]?.text).toBe("脚注本文");
+
+    // AI 文脈への自動注入を防ぐ contract — 退避メモの存在意義そのもの
+    expect(mockUpdateNode).toHaveBeenCalledWith("memo-1", {
+      contextMode: "suppress",
+    });
+  });
+
+  it("既存ルートノードの末尾より後ろの sortOrder で追加する", async () => {
+    mockListNodes.mockResolvedValue([
+      { sortOrder: "a5" },
+      { sortOrder: "a1" },
+    ] as never);
+
+    await importMemoNote("t", "b");
+
+    const arg = mockCreateNode.mock.calls[0]![0];
+    // 未ソートの listNodes 結果でも最大キー "a5" の後ろに採番される
+    expect(arg.sortOrder! > "a5").toBe(true);
   });
 });
 

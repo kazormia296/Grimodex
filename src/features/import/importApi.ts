@@ -24,7 +24,12 @@ import {
   listCodexTypes,
   createCodexType,
 } from "@/features/codex/typeApi";
-import { createNode, listNodes, saveSceneContent } from "@/features/tree/api";
+import {
+  createNode,
+  listNodes,
+  saveSceneContent,
+  updateNode,
+} from "@/features/tree/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { db } from "@/db/client";
@@ -135,8 +140,11 @@ function topoSortEntries(entries: ParsedCodexEntry[]): ParsedCodexEntry[] {
 /**
  * Convert plain text to a minimal ProseMirror paragraph document.
  * Blank lines create paragraph breaks.
+ *
+ * Exported for tests that need to reproduce the production conversion path
+ * (e.g. .novel round-trip: charbook description → summary → codex content).
  */
-function fieldValueToProseMirror(text: string): string {
+export function fieldValueToProseMirror(text: string): string {
   if (!text.trim()) return "{}";
   const paragraphs: unknown[] = [];
   let paraLines: string[] = [];
@@ -201,14 +209,53 @@ export async function importProjectMetadata(meta: {
   title?: string;
   outline?: string;
   genre?: string;
+  aiInstructions?: string;
 }): Promise<void> {
   const projectId = getCurrentProjectId();
-  const patch: { title?: string; outline?: string; genre?: string } = {};
+  const patch: {
+    title?: string;
+    outline?: string;
+    genre?: string;
+    aiInstructions?: string;
+  } = {};
   if (meta.title) patch.title = meta.title;
   if (meta.outline) patch.outline = meta.outline;
   if (meta.genre) patch.genre = meta.genre;
+  if (meta.aiInstructions) patch.aiInstructions = meta.aiInstructions;
   if (Object.keys(patch).length === 0) return;
   await updateProject(projectId, patch);
+}
+
+/**
+ * Append a memo note node at the end of the root level.
+ *
+ * 既存プロジェクトへの追記インポートで、上書きできないメタ情報
+ * （.novel のメモリ/脚注など）の退避先。AI 文脈に勝手に注入されない
+ * よう contextMode は suppress にする。
+ */
+export async function importMemoNote(
+  title: string,
+  body: string,
+): Promise<void> {
+  const allRoots = (await listNodes(getCurrentProjectId(), null)).slice();
+  allRoots.sort((a, b) =>
+    a.sortOrder < b.sortOrder ? -1 : a.sortOrder > b.sortOrder ? 1 : 0,
+  );
+  const sortOrder = generateNKeysBetween(
+    allRoots.at(-1)?.sortOrder ?? null,
+    null,
+    1,
+  )[0]!;
+
+  const node = await createNode({
+    id: crypto.randomUUID(),
+    projectId: getCurrentProjectId(),
+    nodeType: "note",
+    title,
+    sortOrder,
+    content: fieldValueToProseMirror(body),
+  });
+  await updateNode(node.id, { contextMode: "suppress" });
 }
 
 /**

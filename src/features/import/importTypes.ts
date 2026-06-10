@@ -1,5 +1,5 @@
 /** Import source format selected in the unified import dialog. */
-export type ImportSource = "novelcrafter" | "kakuyomu" | "markdown";
+export type ImportSource = "novelcrafter" | "kakuyomu" | "markdown" | "novel";
 
 /** Markdown import input shape within the Markdown flow. */
 export type MarkdownImportMode = "single" | "multi";

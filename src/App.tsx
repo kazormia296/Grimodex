@@ -32,6 +32,7 @@ import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
 import { ZipExportDialog } from "@/features/export/ZipExportDialog";
+import { NovelExportDialog } from "@/features/export/NovelExportDialog";
 import {
   COLOR_THEMES,
   DEFAULT_COLOR_THEME,
@@ -218,6 +219,7 @@ function EditorScreen() {
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
   const [showZipExportDialog, setShowZipExportDialog] = useState(false);
+  const [showNovelExportDialog, setShowNovelExportDialog] = useState(false);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
@@ -583,6 +585,7 @@ function EditorScreen() {
         <ProjectMenu
           onOpenImport={() => setShowImportDialog(true)}
           onOpenZipExport={() => setShowZipExportDialog(true)}
+          onOpenNovelExport={() => setShowNovelExportDialog(true)}
           onOpenSnapshot={() => setShowSnapshotModal(true)}
         />
         <HistoryButtons />
@@ -634,6 +637,11 @@ function EditorScreen() {
       <ZipExportDialog
         open={showZipExportDialog}
         onClose={() => setShowZipExportDialog(false)}
+      />
+
+      <NovelExportDialog
+        open={showNovelExportDialog}
+        onClose={() => setShowNovelExportDialog(false)}
       />
       <ProjectSnapshotModal
         open={showSnapshotModal}

@@ -49,6 +49,9 @@
     "zipExport": {
       "action": "プロジェクトを zip エクスポート…"
     },
+    "novelExport": {
+      "action": "AIのべりすと形式でエクスポート…"
+    },
     "snapshot": {
       "action": "プロジェクトスナップショット…"
     },
@@ -84,7 +87,8 @@
     "source": {
       "novelcrafter": "Novelcrafter",
       "kakuyomu": "カクヨム",
-      "markdown": "Markdown"
+      "markdown": "Markdown",
+      "novel": "AIのべりすと"
     },
     "target": {
       "label": "インポート先",
@@ -149,7 +153,33 @@
       "overwrite": "上書き",
       "append": "末尾に追記",
       "skip": "反映しない"
+    },
+    "novel": {
+      "dropzoneHint": "AIのべりすとの .novel ファイル",
+      "invalidFile": ".novel ファイルを選択してください",
+      "tooLarge": "ファイルが大きすぎます（32MB 以下にしてください）",
+      "title": "作品タイトル",
+      "body": "本文: {{lines}} 行 / {{chars}} 文字",
+      "memoryFound": "メモリ（長期記憶）あり",
+      "footnoteFound": "脚注／システムメッセージあり",
+      "charBookEntries": "キャラクターブック: {{count}} 件",
+      "charBook": "キャラクターブック → Codex",
+      "applyAllTypes": "全てに適用:",
+      "ignoredSections": "※ パラメータ・禁止ワード・スクリプト・チャットテンプレートは取り込まれません",
+      "metadataHintNewProject": "メモリ → あらすじ、脚注 → AI への指示 として新規プロジェクトに反映されます。",
+      "metadataHintCurrentProject": "メモリ / 脚注は既存設定を上書きせず、メモノードとしてツリー末尾に追加されます。",
+      "memoNoteTitle": "{{title}} のメモリ/脚注",
+      "success": "インポート完了: シーン {{scenes}} / Codex {{entries}} 件"
     }
+  },
+  "novelExport": {
+    "title": "AIのべりすと形式でエクスポート",
+    "description": "選択したシーンと Codex を AIのべりすと (.novel) ファイルとして出力します。本文・メモリ（← あらすじ）・脚注（← AI への指示）・キャラクターブック（← Codex）が含まれます。",
+    "stats": "選択中: {{scenes}} シーン / {{chars}} 文字",
+    "export": ".novel をエクスポート",
+    "exporting": "エクスポート中…",
+    "success": "エクスポートしました",
+    "failed": "エクスポートに失敗しました: {{error}}"
   },
   "zipExport": {
     "title": "プロジェクトを zip エクスポート",
