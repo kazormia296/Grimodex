@@ -245,12 +245,23 @@ export function ScenesPanel() {
   const {
     sensors,
     draggingId,
-    dropIndicator,
     onDragStart,
     onDragMove,
     onDragEnd,
     onDragOver,
-  } = useScenesDnd({ nodeMap, childMap, flatNodes, moveNode });
+    onDragCancel,
+  } = useScenesDnd({
+    nodeMap,
+    childMap,
+    flatNodes,
+    moveNode,
+    containerRef: treeRef,
+  });
+
+  // Shift+Click 範囲選択用。prop で渡すと filter/expand のたびに配列参照が
+  // 変わり TreeNodeItem の memo が全行で破綻するため、ref 経由で最新を読む。
+  const flatNodesRef = useRef(flatNodes);
+  flatNodesRef.current = flatNodes;
 
   const activeNode = nodeMap[activeSceneId];
 
@@ -271,6 +282,7 @@ export function ScenesPanel() {
           onDragOver(e as unknown as DragMoveEvent);
         }}
         onDragEnd={onDragEnd}
+        onDragCancel={onDragCancel}
       >
         <div
           ref={trashDropRef}
@@ -347,9 +359,9 @@ export function ScenesPanel() {
                         showStatusDots={showStatusDots}
                         showLabelDots={showLabelDots}
                         showAiAttribution={showAiAttribution}
-                        dropIndicator={dropIndicator}
                         leafDescendantsByFolder={leafDescendantsByFolder}
-                        orderedNodes={flatNodes}
+                        orderedNodesRef={flatNodesRef}
+                        dragInProgress={draggingId !== null}
                       />
                     </ul>
                     <BottomDropZone />

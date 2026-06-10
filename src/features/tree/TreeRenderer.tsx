@@ -1,6 +1,6 @@
 import { Fragment } from "react";
+import type { RefObject } from "react";
 import { TreeNodeItem } from "./TreeNodeItem";
-import type { DropIndicator } from "./TreeNodeItem";
 import type { TreeNodeData } from "./treeStore";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { isNodeVisible } from "./treeVisibility";
@@ -22,11 +22,13 @@ export interface TreeRendererProps {
   showStatusDots: boolean;
   showLabelDots: boolean;
   showAiAttribution: boolean;
-  dropIndicator: DropIndicator | null;
   /** For folder ids, the flat list of leaf descendant ids — used by
    *  TreeNodeItem to compute its own running total via per-id selector. */
   leafDescendantsByFolder: Record<string, string[]>;
-  orderedNodes: TreeNodeData[];
+  /** Shift+Click 範囲選択用の可視ノード列。ref 渡し (TreeNodeItem 参照)。 */
+  orderedNodesRef: RefObject<TreeNodeData[]>;
+  /** ドラッグ中フラグ (クリック/リネーム抑止用)。 */
+  dragInProgress: boolean;
 }
 
 export function TreeRenderer({
@@ -46,9 +48,9 @@ export function TreeRenderer({
   showStatusDots,
   showLabelDots,
   showAiAttribution,
-  dropIndicator,
   leafDescendantsByFolder,
-  orderedNodes,
+  orderedNodesRef,
+  dragInProgress,
 }: TreeRendererProps) {
   const ids = childMap[parentId ?? "root"] ?? [];
   const query = filterQuery.toLowerCase();
@@ -67,48 +69,64 @@ export function TreeRenderer({
           labelFilter,
           nodeLabels,
         );
-        const isExpanded = expandedIds.includes(id) || (!!query && visible);
+        // フィルタ非表示ノードはここで mount 自体をスキップする。
+        // TreeNodeItem 内の return null だと useDraggable/useDroppable 等の
+        // 全 hook をノード数ぶん回してしまう (visible=false なら子孫も
+        // 全て不可視なので subtree ごと落として良い)。
+        if (!visible) return null;
+        const isFolder = node.nodeType === "folder";
+        // isExpanded は folder の開閉と検索時の自動展開にのみ意味がある。
+        // 葉にも `!!query && visible` を渡すと検索 1 文字目で全行の props が
+        // flip して memo が無効化されるため folder に限定する。
+        const isExpanded = isFolder && (expandedIds.includes(id) || !!query);
+        const itemProps = {
+          node,
+          depth,
+          isActive: node.id === activeSceneId,
+          isSelected: selectedIds.includes(id),
+          isExpanded,
+          leafDescendants: leafDescendantsByFolder[id],
+          showWordCounts,
+          showStatusDots,
+          showLabelDots,
+          showAiAttribution,
+          orderedNodesRef,
+          dragInProgress,
+          viewMode,
+        };
         return (
           <Fragment key={id}>
-            <TreeNodeItem
-              node={node}
-              depth={depth}
-              isActive={node.id === activeSceneId}
-              isSelected={selectedIds.includes(id)}
-              isExpanded={isExpanded}
-              isVisible={visible}
-              leafDescendants={leafDescendantsByFolder[id]}
-              showWordCounts={showWordCounts}
-              showStatusDots={showStatusDots}
-              showLabelDots={showLabelDots}
-              showAiAttribution={showAiAttribution}
-              dropIndicator={dropIndicator}
-              orderedNodes={orderedNodes}
-              viewMode={viewMode}
-            >
-              <TreeRenderer
-                parentId={id}
-                childMap={childMap}
-                nodeMap={nodeMap}
-                depth={depth + 1}
-                activeSceneId={activeSceneId}
-                selectedIds={selectedIds}
-                expandedIds={expandedIds}
-                filterQuery={filterQuery}
-                statusFilter={statusFilter}
-                labelFilter={labelFilter}
-                nodeLabels={nodeLabels}
-                viewMode={viewMode}
-                showWordCounts={showWordCounts}
-                showStatusDots={showStatusDots}
-                showLabelDots={showLabelDots}
-                showAiAttribution={showAiAttribution}
-                dropIndicator={dropIndicator}
-                leafDescendantsByFolder={leafDescendantsByFolder}
-                orderedNodes={orderedNodes}
-              />
-            </TreeNodeItem>
-            {viewMode === "outline" && node.nodeType === "scene" && visible && (
+            {/* children (再帰 JSX) は毎 render 新規参照になり memo を破る
+                ため、実際に使う folder にだけ渡す。葉は children 無しで
+                memo がフルに効く。 */}
+            {isFolder ? (
+              <TreeNodeItem {...itemProps}>
+                <TreeRenderer
+                  parentId={id}
+                  childMap={childMap}
+                  nodeMap={nodeMap}
+                  depth={depth + 1}
+                  activeSceneId={activeSceneId}
+                  selectedIds={selectedIds}
+                  expandedIds={expandedIds}
+                  filterQuery={filterQuery}
+                  statusFilter={statusFilter}
+                  labelFilter={labelFilter}
+                  nodeLabels={nodeLabels}
+                  viewMode={viewMode}
+                  showWordCounts={showWordCounts}
+                  showStatusDots={showStatusDots}
+                  showLabelDots={showLabelDots}
+                  showAiAttribution={showAiAttribution}
+                  leafDescendantsByFolder={leafDescendantsByFolder}
+                  orderedNodesRef={orderedNodesRef}
+                  dragInProgress={dragInProgress}
+                />
+              </TreeNodeItem>
+            ) : (
+              <TreeNodeItem {...itemProps} />
+            )}
+            {viewMode === "outline" && node.nodeType === "scene" && (
               <li
                 className="list-none"
                 style={{

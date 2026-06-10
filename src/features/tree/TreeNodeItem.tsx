@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, memo } from "react";
+import type { RefObject } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { useTranslation } from "react-i18next";
@@ -11,7 +12,7 @@ import {
   FolderPlus,
   GripVertical,
 } from "lucide-react";
-import { useDraggable, useDroppable, useDndContext } from "@dnd-kit/core";
+import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "./treeStore";
 import { StatusDot } from "./StatusDot";
@@ -80,7 +81,6 @@ interface TreeNodeItemProps {
   isSelected: boolean;
   isExpanded: boolean;
   children?: React.ReactNode;
-  isVisible: boolean;
   /** For folders, the flat list of leaf descendant ids whose charCount should
    *  be summed for the running total. Undefined for leaves. */
   leafDescendants?: string[];
@@ -88,28 +88,38 @@ interface TreeNodeItemProps {
   showStatusDots: boolean;
   showLabelDots: boolean;
   showAiAttribution: boolean;
-  dropIndicator: DropIndicator | null;
-  /** Ordered flat list of nodes for Shift+Click range selection */
-  orderedNodes: TreeNodeData[];
+  /** Ordered flat list of nodes for Shift+Click range selection.
+   *  ref 渡し (クリック時に .current を読む) なのは、filter/expand 毎に
+   *  配列参照が変わって memo が全行で破綻するのを防ぐため。 */
+  orderedNodesRef: RefObject<TreeNodeData[]>;
+  /** ドラッグ中はクリック/ダブルクリック/リネームを抑止する。
+   *  旧 useDndContext 購読は context 更新のたび全行を再レンダーするため
+   *  prop (drag 開始/終了の 2 回だけ変化) に置き換えた。 */
+  dragInProgress: boolean;
   /** Current view mode — synopsis tooltip shown only in "tree" mode */
   viewMode?: string;
 }
 
-export function TreeNodeItem({
+/** memo 化の前提: 全 props がスカラーか安定参照であること。
+ *  node/leafDescendants は useScenesDerivedData の useMemo 産物、
+ *  orderedNodesRef は ref。folder 行だけは children (毎 render 新規の
+ *  JSX element) を受けるため親の再レンダーに常に追従する (許容済み)。
+ *  ドロップ指示 (data-drop-*) は props でなく useScenesDnd が DOM 属性を
+ *  直接トグルし、ここでは data-[drop-*] variant で見た目だけ持つ。 */
+function TreeNodeItemImpl({
   node,
   depth,
   isActive,
   isSelected,
   isExpanded,
   children,
-  isVisible,
   leafDescendants,
   showWordCounts,
   showStatusDots,
   showLabelDots,
   showAiAttribution,
-  dropIndicator,
-  orderedNodes,
+  orderedNodesRef,
+  dragInProgress,
   viewMode,
 }: TreeNodeItemProps) {
   const __perfStart = performance.now();
@@ -142,9 +152,6 @@ export function TreeNodeItem({
 
   const isContainer = node.nodeType === "folder";
 
-  // Suppress rename/double-click while any drag is active
-  const { active: dndActive } = useDndContext();
-  const dragInProgress = dndActive !== null;
   const reduced = useReducedMotion();
   const fileBacked = isFileBackedNode(node.sourceUri);
 
@@ -170,20 +177,14 @@ export function TreeNodeItem({
     [setDragRef, setDropRef],
   );
 
-  const isDropBefore =
-    dropIndicator?.nodeId === node.id && dropIndicator.position === "before";
-  const isDropAfter =
-    dropIndicator?.nodeId === node.id && dropIndicator.position === "after";
-  const isDropInside =
-    dropIndicator?.nodeId === node.id && dropIndicator.position === "inside";
-
   // DragOverlay handles the visual ghost, so suppress transform on the original.
   // Only reduce opacity to show the "source" placeholder in place.
-  // paddingTop/Bottom creates a gap at the insert position instead of a thin indicator line.
+  // ドロップ指示の隙間 (before/after の padding) と inside の ring は
+  // useScenesDnd が書く data-drop-* 属性 + className の data-[drop-*]
+  // variant が担う。React の style オブジェクトに padding を含めると
+  // ドラッグ中の再レンダーで直書き属性側の見た目と競合するため持たない。
   const style = {
     opacity: isDragging ? 0.3 : 1,
-    paddingTop: isDropBefore ? 28 : 0,
-    paddingBottom: isDropAfter ? 28 : 0,
     transition: "padding 100ms ease-out",
   };
 
@@ -205,7 +206,9 @@ export function TreeNodeItem({
     (e: React.MouseEvent) => {
       if (node.nodeType === "scene" || node.nodeType === "note") {
         if (e.shiftKey) {
-          useTreeStore.getState().rangeSelectNode(node.id, orderedNodes);
+          useTreeStore
+            .getState()
+            .rangeSelectNode(node.id, orderedNodesRef.current ?? []);
         } else if (e.ctrlKey || e.metaKey) {
           useTreeStore.getState().selectNode(node.id, true);
         } else {
@@ -220,7 +223,7 @@ export function TreeNodeItem({
         toggleExpand(node.id);
       }
     },
-    [node, orderedNodes, setActiveScene, toggleExpand, focusEditorPanel],
+    [node, orderedNodesRef, setActiveScene, toggleExpand, focusEditorPanel],
   );
 
   const handleDoubleClick = useCallback(() => {
@@ -264,22 +267,29 @@ export function TreeNodeItem({
     [finishEdit, node.title],
   );
 
-  if (!isVisible) return null;
-
   const __renderResult = (
-    <li ref={setRef} style={style} className="list-none" data-node-id={node.id}>
+    <li
+      ref={setRef}
+      style={style}
+      // data-drop-before/after は useScenesDnd の applyDropIndicator が
+      // ドラッグ中に直接トグルする (28px の隙間で挿入位置を示す)
+      className="list-none data-[drop-before=true]:pt-7 data-[drop-after=true]:pb-7"
+      data-node-id={node.id}
+    >
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
+            data-node-row={node.id}
             className={cn(
               "group relative flex cursor-pointer items-center gap-0.5 rounded px-1 py-0.5 text-sm",
               "hover:bg-accent/50",
+              // data-drop-inside も applyDropIndicator が直接トグルする
+              "data-[drop-inside=true]:ring-1 data-[drop-inside=true]:ring-primary data-[drop-inside=true]:ring-inset",
               isActive && "bg-accent/70 font-medium",
               isActive &&
                 (node.nodeType === "scene" || node.nodeType === "note") &&
                 "border-l-2 border-primary",
               isSelected && !isActive && "bg-primary/20",
-              isDropInside && "ring-1 ring-primary ring-inset",
             )}
             style={{
               paddingLeft: `${depth * 12 + (isActive && (node.nodeType === "scene" || node.nodeType === "note") ? 2 : 4)}px`,
@@ -487,3 +497,8 @@ export function TreeNodeItem({
   );
   return __renderResult;
 }
+
+// 親 (ScenesPanel) はフィルタ/選択/ドラッグ状態など多くの store slice を
+// 購読して頻繁に再レンダーされる。memo で「props が実際に変わった行」だけに
+// 再レンダーを絞る (gate: TreeRenderer.perf.test.tsx)。
+export const TreeNodeItem = memo(TreeNodeItemImpl);
