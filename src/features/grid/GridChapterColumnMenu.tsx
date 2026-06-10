@@ -1,8 +1,5 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FolderOpen, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
-import { useTreeStore } from "@/features/tree/treeStore";
-import { useGridStore } from "./gridStore";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -11,14 +8,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { useChapterColumnMenu } from "./useChapterColumnMenu";
+import { ChapterColumnDeleteDialog } from "./ChapterColumnDeleteDialog";
 
 interface Props {
   folderId: string;
@@ -26,40 +17,21 @@ interface Props {
 
 /**
  * Hover-revealed kebab for chapter columns. 1:1 mirror of
- * `GridChapterColumnContextMenu`.
+ * `GridChapterColumnContextMenu` (shared logic lives in
+ * `useChapterColumnMenu`).
  */
 export function GridChapterColumnMenu({ folderId }: Props) {
   const { t } = useTranslation();
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  const folder = useTreeStore((s) => s.nodes.find((n) => n.id === folderId));
-  const projectId = useTreeStore((s) => s.projectId);
-  const createNode = useTreeStore((s) => s.createNode);
-  const setContainerId = useGridStore((s) => s.setContainerId);
-
-  function diveIn() {
-    void setContainerId(projectId, folderId);
-  }
-
-  async function addScene() {
-    await createNode({ nodeType: "scene", parentId: folderId });
-  }
-
-  function requestRename() {
-    useTreeStore.getState().setPendingRenameId(folderId);
-  }
-
-  async function commitDelete() {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await useTreeStore.getState().deleteNode(folderId);
-      setDeleteOpen(false);
-    } finally {
-      setBusy(false);
-    }
-  }
+  const {
+    diveIn,
+    addScene,
+    requestRename,
+    commitDelete,
+    deleteOpen,
+    setDeleteOpen,
+    busy,
+    folderTitle,
+  } = useChapterColumnMenu(folderId);
 
   return (
     <>
@@ -108,41 +80,13 @@ export function GridChapterColumnMenu({ folderId }: Props) {
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <DialogContent
-          className="max-w-sm"
-          onOpenAutoFocus={(e) => e.preventDefault()}
-        >
-          <DialogHeader>
-            <DialogTitle>
-              {t("grid.column.dialog.deleteTitle", "章を削除")}
-            </DialogTitle>
-            <DialogDescription>
-              {t(
-                "grid.column.dialog.deleteDescription",
-                "「{{title}}」と配下のすべてのシーンを削除します。元に戻せません。",
-                { title: folder?.title ?? "" },
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="ghost"
-              onClick={() => setDeleteOpen(false)}
-              disabled={busy}
-            >
-              {t("common.cancel", "キャンセル")}
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => void commitDelete()}
-              disabled={busy}
-            >
-              {t("common.delete", "削除")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ChapterColumnDeleteDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        folderTitle={folderTitle}
+        busy={busy}
+        onConfirm={() => void commitDelete()}
+      />
     </>
   );
 }
