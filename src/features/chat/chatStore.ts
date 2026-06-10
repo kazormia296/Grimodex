@@ -552,6 +552,8 @@ interface ChatState {
   _editingOldContent: string | null;
   /** autoリストから特定エントリを即時除去（ピン直後のBug#1修正用） */
   removeEntryFromAuto: (entryId: string) => void;
+  /** Codex anchor エントリ削除時に codex スコープを scene に戻す */
+  onCodexAnchorDeleted: (entryId: string) => void;
 
   /** C: エディタの「チャットで調べる」が pre-fill するテキスト（consumed-once） */
   pendingLookupText: string | null;
@@ -915,7 +917,7 @@ function appendProjectGroupedParts(
 }
 
 /** Codex スコープ: 選択エントリの最終状態 + 関連 L1 + relation 展開。 */
-async function buildCodexScopeBlocks(opts: {
+export async function buildCodexScopeBlocks(opts: {
   selectedEntryId: string;
   allEntries: CodexEntry[];
 }): Promise<{
@@ -2227,6 +2229,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       detectedEntries: state.detectedEntries.filter((e) => e.id !== entryId),
       alwaysEntries: state.alwaysEntries.filter((e) => e.id !== entryId),
     }));
+  },
+
+  onCodexAnchorDeleted: (entryId: string) => {
+    const { chatScope, scopeAnchorId } = get();
+    if (chatScope === "codex" && scopeAnchorId === entryId) {
+      set({ chatScope: "scene", scopeAnchorId: null, includeBodies: true });
+    }
   },
 
   setInputPinnedEntryIds: (ids: string[]) => {

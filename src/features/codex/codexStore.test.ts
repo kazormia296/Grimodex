@@ -58,6 +58,16 @@ vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: vi.fn(),
 }));
 
+const { mockOnCodexAnchorDeleted } = vi.hoisted(() => ({
+  mockOnCodexAnchorDeleted: vi.fn(),
+}));
+
+vi.mock("@/features/chat/chatStore", () => ({
+  useChatStore: {
+    getState: () => ({ onCodexAnchorDeleted: mockOnCodexAnchorDeleted }),
+  },
+}));
+
 import {
   listCodexEntries,
   createCodexEntry,
@@ -343,6 +353,16 @@ describe("codexStore", () => {
         "default-project",
         "codex-1",
       );
+    });
+
+    it("notifies chat store when codex anchor entry is deleted", async () => {
+      useCodexStore.setState({ entries: [mockEntry] });
+      mockDeleteCodexEntry.mockResolvedValue(undefined);
+      mockListCodexEntries.mockResolvedValue([]);
+
+      await useCodexStore.getState().remove("codex-1");
+
+      expect(mockOnCodexAnchorDeleted).toHaveBeenCalledWith("codex-1");
     });
   });
 

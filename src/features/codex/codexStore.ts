@@ -15,6 +15,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureCodexDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { useChatStore } from "@/features/chat/chatStore";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import {
@@ -417,6 +418,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     try {
       await deleteCodexEntry(getCurrentProjectId(), id);
       await get().loadEntries();
+      useChatStore.getState().onCodexAnchorDeleted(id);
     } catch (e) {
       toast.error(i18next.t("codex.store.deleteFailed"));
       debugLog.error("CodexStore", `remove: ${rootCause(e)}`, errorDetail(e));

@@ -123,6 +123,7 @@ const SCHEMA_DDL = `
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     node_id TEXT,
+    codex_anchor_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
     title TEXT NOT NULL DEFAULT 'New session',
     title_manual INTEGER NOT NULL DEFAULT 0,
     model TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
@@ -130,6 +131,10 @@ const SCHEMA_DDL = `
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+  CREATE INDEX IF NOT EXISTS idx_chat_sessions_node
+    ON chat_sessions(project_id, node_id);
+  CREATE INDEX IF NOT EXISTS idx_chat_sessions_codex_anchor
+    ON chat_sessions(project_id, codex_anchor_id);
   CREATE TABLE IF NOT EXISTS chat_messages (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,

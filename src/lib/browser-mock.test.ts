@@ -253,6 +253,16 @@ describe("createBrowserMock", () => {
         }),
       ).resolves.toBeDefined();
     });
+
+    it("provides chat_sessions.codex_anchor_id for listSessions queries", async () => {
+      await expect(
+        mock.invoke("db_execute", {
+          sql: "select codex_anchor_id from chat_sessions where id = ?",
+          params: ["chat-scene-1"],
+          method: "all",
+        }),
+      ).resolves.toBeDefined();
+    });
   });
 
   describe("screenshot staging", () => {

@@ -2464,6 +2464,33 @@ describe("useChatStore", () => {
     });
   });
 
+  describe("onCodexAnchorDeleted", () => {
+    it("falls back to scene scope when deleted entry matches codex anchor", () => {
+      useChatStore.setState({
+        chatScope: "codex",
+        scopeAnchorId: "codex-hero",
+        includeBodies: false,
+      });
+      useChatStore.getState().onCodexAnchorDeleted("codex-hero");
+      const s = useChatStore.getState();
+      expect(s.chatScope).toBe("scene");
+      expect(s.scopeAnchorId).toBeNull();
+      expect(s.includeBodies).toBe(true);
+    });
+
+    it("no-op when deleted entry does not match codex anchor", () => {
+      useChatStore.setState({
+        chatScope: "codex",
+        scopeAnchorId: "codex-hero",
+        includeBodies: false,
+      });
+      useChatStore.getState().onCodexAnchorDeleted("other-entry");
+      const s = useChatStore.getState();
+      expect(s.chatScope).toBe("codex");
+      expect(s.scopeAnchorId).toBe("codex-hero");
+    });
+  });
+
   describe("setIncludeMapBoard (Map overlay)", () => {
     it("ON にすると includeMapBoard が true、boardId が反映される", () => {
       useChatStore
