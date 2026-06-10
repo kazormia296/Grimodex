@@ -1,5 +1,6 @@
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { _clearCodexCrossMentionCaches } from "@/features/codex/codexCrossMentions";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useChatHistoryStore } from "@/features/chat/chatHistoryStore";
 import { useChatStore } from "@/features/chat/chatStore";
@@ -86,6 +87,7 @@ export async function reloadProjectData(projectId: string): Promise<void> {
       pendingEntryId: null,
       selectedEntry: null,
     });
+    _clearCodexCrossMentionCaches();
 
     useSnippetStore.setState({
       entries: [],

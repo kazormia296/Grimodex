@@ -393,6 +393,7 @@ function toMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
  * codexAnchorId = string → その Codex アンカーのセッションのみ
  */
 export async function listSessions(
+  projectId: string,
   nodeId?: string | null,
   codexAnchorId?: string | null,
 ): Promise<ChatSession[]> {
@@ -400,7 +401,12 @@ export async function listSessions(
     const rows = await db
       .select()
       .from(chatSessions)
-      .where(eq(chatSessions.codexAnchorId, codexAnchorId))
+      .where(
+        and(
+          eq(chatSessions.projectId, projectId),
+          eq(chatSessions.codexAnchorId, codexAnchorId),
+        ),
+      )
       .orderBy(desc(chatSessions.updatedAt));
     return rows.map(toSession);
   }
@@ -413,6 +419,7 @@ export async function listSessions(
             .from(chatSessions)
             .where(
               and(
+                eq(chatSessions.projectId, projectId),
                 isNull(chatSessions.nodeId),
                 isNull(chatSessions.codexAnchorId),
               ),
@@ -421,9 +428,18 @@ export async function listSessions(
         : db
             .select()
             .from(chatSessions)
-            .where(eq(chatSessions.nodeId, nodeId))
+            .where(
+              and(
+                eq(chatSessions.projectId, projectId),
+                eq(chatSessions.nodeId, nodeId),
+              ),
+            )
             .orderBy(desc(chatSessions.updatedAt))
-      : db.select().from(chatSessions).orderBy(desc(chatSessions.updatedAt));
+      : db
+          .select()
+          .from(chatSessions)
+          .where(eq(chatSessions.projectId, projectId))
+          .orderBy(desc(chatSessions.updatedAt));
   const rows = await query;
   return rows.map(toSession);
 }

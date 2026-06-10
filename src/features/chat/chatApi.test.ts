@@ -111,7 +111,7 @@ describe("chatApi - session/message persistence", () => {
       };
       mockSelectChain([session as unknown as Record<string, unknown>]);
 
-      const result = await listSessions("node-abc");
+      const result = await listSessions("proj-1", "node-abc");
 
       expect(mockDb.select).toHaveBeenCalled();
       expect(result).toHaveLength(1);
@@ -121,7 +121,7 @@ describe("chatApi - session/message persistence", () => {
 
     it("returns all sessions when no nodeId given", async () => {
       mockSelectChain([]);
-      const result = await listSessions();
+      const result = await listSessions("proj-1");
       expect(result).toHaveLength(0);
     });
 
@@ -139,7 +139,7 @@ describe("chatApi - session/message persistence", () => {
       };
       mockSelectChain([session as unknown as Record<string, unknown>]);
 
-      const result = await listSessions(null);
+      const result = await listSessions("proj-1", null);
 
       expect(mockDb.select).toHaveBeenCalled();
       expect(result).toHaveLength(1);

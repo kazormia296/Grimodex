@@ -7,7 +7,7 @@ import {
 import { extractPlainText } from "./prosemirrorTextExtractor";
 
 const plainTextCache = new Map<string, { stamp: string; text: string }>();
-let reverseMemo: { key: string; result: CodexEntry[] } | null = null;
+const reverseMemoMap = new Map<string, CodexEntry[]>();
 
 /** summary + content(PM JSON→plain) の走査用テキスト。updatedAt キーでメモ化 */
 export function getEntryScanText(entry: {
@@ -33,8 +33,10 @@ export function findReverseMentioningEntries(
     .map((c) => `${c.id}:${c.updatedAt}`)
     .join(",");
   const selectedAliases = parseAliases(selected.aliases);
-  const memoKey = `${selected.id}:${selected.name}:${selectedAliases.join(",")}:${candidateKey}`;
-  if (reverseMemo?.key === memoKey) return reverseMemo.result;
+  const excludedAliases = parseAliases(selected.excludedAliases);
+  const memoKey = `${selected.id}:${selected.name}:${selectedAliases.join(",")}:${excludedAliases.join(",")}:${candidateKey}`;
+  const cached = reverseMemoMap.get(memoKey);
+  if (cached !== undefined) return cached;
 
   const matcher = createCodexMatcher([selected]);
   const result: CodexEntry[] = [];
@@ -47,12 +49,12 @@ export function findReverseMentioningEntries(
       result.push(candidate);
     }
   }
-  reverseMemo = { key: memoKey, result };
+  reverseMemoMap.set(memoKey, result);
   return result;
 }
 
-/** @internal test helper */
+/** Clear all caches. Called on project switch and in tests. */
 export function _clearCodexCrossMentionCaches(): void {
   plainTextCache.clear();
-  reverseMemo = null;
+  reverseMemoMap.clear();
 }

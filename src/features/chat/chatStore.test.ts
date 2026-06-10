@@ -231,7 +231,11 @@ describe("useChatStore", () => {
 
       const state = useChatStore.getState();
       expect(state.sessions).toHaveLength(2);
-      expect(mockListSessions).toHaveBeenCalledWith("scene-1", undefined);
+      expect(mockListSessions).toHaveBeenCalledWith(
+        "proj-1",
+        "scene-1",
+        undefined,
+      );
     });
 
     it("loads all sessions when no nodeId given", async () => {
@@ -239,7 +243,11 @@ describe("useChatStore", () => {
 
       await useChatStore.getState().loadSessions();
 
-      expect(mockListSessions).toHaveBeenCalledWith(undefined, undefined);
+      expect(mockListSessions).toHaveBeenCalledWith(
+        "proj-1",
+        undefined,
+        undefined,
+      );
     });
 
     it("sets isLoadingSessions during load", async () => {
@@ -2423,7 +2431,11 @@ describe("useChatStore", () => {
     it("loadSessions passes codexAnchorId to chatApi", async () => {
       mockListSessions.mockResolvedValueOnce([]);
       await useChatStore.getState().loadSessions(undefined, "codex-1");
-      expect(mockListSessions).toHaveBeenCalledWith(undefined, "codex-1");
+      expect(mockListSessions).toHaveBeenCalledWith(
+        "proj-1",
+        undefined,
+        "codex-1",
+      );
     });
 
     it("ensureSession creates session with codexAnchorId in codex scope", async () => {

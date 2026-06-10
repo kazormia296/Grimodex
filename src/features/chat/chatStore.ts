@@ -2263,7 +2263,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   ) => {
     set({ isLoadingSessions: true });
     try {
-      const sessions = await chatApi.listSessions(nodeId, codexAnchorId);
+      const sessions = await chatApi.listSessions(
+        get().activeProjectId ?? getCurrentProjectId(),
+        nodeId,
+        codexAnchorId,
+      );
       set({ sessions, isLoadingSessions: false });
     } catch (e) {
       set({ isLoadingSessions: false });
