@@ -33,6 +33,31 @@ const localStorageMock = {
 globalThis.localStorage = localStorageMock;
 
 describe("getModelCapabilities", () => {
+  it("claude-fable-5: adaptive thinking, max effort, 1M context, 128k out", () => {
+    const caps = getModelCapabilities("claude-fable-5");
+    expect(caps.contextWindow).toBe(1_000_000);
+    expect(caps.maxOutputTokens).toBe(128_000);
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+    expect(caps.supportsMaxEffort).toBe(true);
+    expect(caps.supportsEffort).toBe(true);
+    expect(caps.supportsTools).toBe(true);
+  });
+
+  it("claude-opus-4-8: adaptive thinking, max effort, 1M context", () => {
+    const caps = getModelCapabilities("claude-opus-4-8");
+    expect(caps.contextWindow).toBe(1_000_000);
+    expect(caps.maxOutputTokens).toBe(128_000);
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+    expect(caps.supportsMaxEffort).toBe(true);
+  });
+
+  it("claude-opus-4-7: adaptive thinking, max effort, 1M context", () => {
+    const caps = getModelCapabilities("claude-opus-4-7");
+    expect(caps.contextWindow).toBe(1_000_000);
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+    expect(caps.supportsMaxEffort).toBe(true);
+  });
+
   it("claude-opus-4-6: adaptive thinking, max effort, 1M context", () => {
     const caps = getModelCapabilities("claude-opus-4-6");
     expect(caps.contextWindow).toBe(1_000_000);
@@ -42,10 +67,18 @@ describe("getModelCapabilities", () => {
     expect(caps.supportsTools).toBe(true);
   });
 
-  it("claude-sonnet-4-6: adaptive thinking, no max effort", () => {
+  it("claude-sonnet-4-6: adaptive thinking, no max effort, 1M context", () => {
     const caps = getModelCapabilities("claude-sonnet-4-6");
+    expect(caps.contextWindow).toBe(1_000_000);
     expect(caps.supportsAdaptiveThinking).toBe(true);
     expect(caps.supportsMaxEffort).toBe(false);
+  });
+
+  it("claude-haiku-4-5: thinking/effort 非対応", () => {
+    const caps = getModelCapabilities("claude-haiku-4-5-20251001");
+    expect(caps.supportsAdaptiveThinking).toBe(false);
+    expect(caps.supportsThinking).toBe(false);
+    expect(caps.supportsEffort).toBe(false);
   });
 
   it("claude-opus-4-5: budget_tokens thinking", () => {
@@ -70,13 +103,13 @@ describe("getModelCapabilities", () => {
   it("OpenRouter の日付サフィックス付きモデルを解決する (anthropic/)", () => {
     const caps = getModelCapabilities("anthropic/claude-sonnet-4-6-20250514");
     expect(caps.supportsAdaptiveThinking).toBe(true);
-    expect(caps.contextWindow).toBe(200_000);
+    expect(caps.contextWindow).toBe(1_000_000);
   });
 
   it("OpenRouter のドット表記モデルを解決する (4.6 → 4-6)", () => {
     const caps = getModelCapabilities("anthropic/claude-sonnet-4.6");
     expect(caps.supportsAdaptiveThinking).toBe(true);
-    expect(caps.contextWindow).toBe(200_000);
+    expect(caps.contextWindow).toBe(1_000_000);
   });
 
   it("OpenRouter のドット+日付サフィックスモデルを解決する", () => {
@@ -193,11 +226,17 @@ describe("buildThinkingParams", () => {
     expect(params.effort).toBeUndefined();
   });
 
-  it("budget_tokens モデル (Opus 4.5) は enabled + effort を返す", () => {
+  it("budget_tokens モデル (Opus 4.5) は enabled を返す（effort は supportsEffort=false のため省略）", () => {
     const params = buildThinkingParams("claude-opus-4-5", "medium");
     expect(params.thinking?.type).toBe("enabled");
     expect(params.thinking?.budget_tokens).toBeGreaterThan(0);
-    expect(params.effort).toBe("medium");
+    expect(params.effort).toBeUndefined();
+  });
+
+  it("budget_tokens モデル (Sonnet 4.5) は effort を付けない", () => {
+    const params = buildThinkingParams("claude-sonnet-4-5-20250929", "high");
+    expect(params.thinking?.type).toBe("enabled");
+    expect(params.effort).toBeUndefined();
   });
 
   it("display: omitted を指定できる", () => {
@@ -244,10 +283,10 @@ describe("buildThinkingParams", () => {
     expect(withFlag).toEqual(withDefault);
   });
 
-  it("effort 対応モデルは effort のみ返す", () => {
+  it("thinking/effort 非対応モデル (Haiku 4.5) は空を返す", () => {
     const params = buildThinkingParams("claude-haiku-4-5-20251001", "medium");
     expect(params.thinking).toBeUndefined();
-    expect(params.effort).toBe("medium");
+    expect(params.effort).toBeUndefined();
   });
 
   it("qwen3 (reasoning モデル): reasoningEnabled=true, reasoningEffort を返す", () => {

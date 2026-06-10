@@ -48,9 +48,10 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
 };
 
 const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
-  // Anthropic — Opus 4.6 (adaptive thinking + max effort)
-  "claude-opus-4-6": {
+  // Anthropic — Fable 5 (adaptive thinking + max effort)
+  "claude-fable-5": {
     contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
     supportsTools: true,
     supportsThinking: false,
     supportsAdaptiveThinking: true,
@@ -58,9 +59,43 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsMaxEffort: true,
     supportsReasoning: false,
   },
-  // Anthropic — Sonnet 4.6 (adaptive thinking)
+  // Anthropic — Opus 4.8 (adaptive thinking + max effort)
+  "claude-opus-4-8": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportsMaxEffort: true,
+    supportsReasoning: false,
+  },
+  // Anthropic — Opus 4.7 (adaptive thinking + max effort)
+  "claude-opus-4-7": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportsMaxEffort: true,
+    supportsReasoning: false,
+  },
+  // Anthropic — Opus 4.6 (adaptive thinking + max effort)
+  "claude-opus-4-6": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsTools: true,
+    supportsThinking: false,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportsMaxEffort: true,
+    supportsReasoning: false,
+  },
+  // Anthropic — Sonnet 4.6 (adaptive thinking, 1M context)
   "claude-sonnet-4-6": {
-    contextWindow: 200_000,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 64_000,
     supportsTools: true,
     supportsThinking: false,
     supportsAdaptiveThinking: true,
@@ -68,33 +103,34 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsMaxEffort: false,
     supportsReasoning: false,
   },
-  // Anthropic — Haiku 4.5 (no thinking)
+  // Anthropic — Haiku 4.5 (no thinking, effort 非対応)
   "claude-haiku-4-5-20251001": {
     contextWindow: 200_000,
+    maxOutputTokens: 64_000,
     supportsTools: true,
     supportsThinking: false,
     supportsAdaptiveThinking: false,
-    supportsEffort: true,
+    supportsEffort: false,
     supportsMaxEffort: false,
     supportsReasoning: false,
   },
-  // Anthropic — Opus 4.5 (budget_tokens thinking)
+  // Anthropic — Opus 4.5 (budget_tokens thinking, effort 非対応)
   "claude-opus-4-5": {
     contextWindow: 200_000,
     supportsTools: true,
     supportsThinking: true,
     supportsAdaptiveThinking: false,
-    supportsEffort: true,
+    supportsEffort: false,
     supportsMaxEffort: false,
     supportsReasoning: false,
   },
-  // Anthropic — Sonnet 4.5 (budget_tokens thinking)
+  // Anthropic — Sonnet 4.5 (budget_tokens thinking, effort 非対応)
   "claude-sonnet-4-5-20250929": {
     contextWindow: 200_000,
     supportsTools: true,
     supportsThinking: true,
     supportsAdaptiveThinking: false,
-    supportsEffort: true,
+    supportsEffort: false,
     supportsMaxEffort: false,
     supportsReasoning: false,
   },
@@ -291,6 +327,9 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
 const OPENROUTER_PREFIXED: Record<string, string> = {
   "openai/gpt-4o": "gpt-4o",
   "openai/gpt-4o-mini": "gpt-4o-mini",
+  "anthropic/claude-fable-5": "claude-fable-5",
+  "anthropic/claude-opus-4-8": "claude-opus-4-8",
+  "anthropic/claude-opus-4-7": "claude-opus-4-7",
   "anthropic/claude-opus-4-6": "claude-opus-4-6",
   "anthropic/claude-sonnet-4-6": "claude-sonnet-4-6",
   "anthropic/claude-haiku-4-5-20251001": "claude-haiku-4-5-20251001",
@@ -607,12 +646,12 @@ export function buildThinkingParams(
   }
 
   if (caps.supportsThinking) {
-    // Opus 4.5, Sonnet 4.5 等: budget_tokens + effort
+    // Opus 4.5, Sonnet 4.5 等: budget_tokens。effort は supportsEffort のモデルにのみ付ける。
     if (!enabled) return {};
     const budgetTokens = Math.floor(caps.contextWindow * 0.8 * 0.05);
     return {
       thinking: { type: "enabled", budget_tokens: budgetTokens, display },
-      effort: taskEffort,
+      ...(caps.supportsEffort ? { effort: taskEffort } : {}),
     };
   }
 
