@@ -10,7 +10,6 @@ import { CenterContent } from "./CenterContent";
 import { CenterStripe } from "./CenterStripe";
 import { EditorArea } from "./EditorArea";
 import { getBottomCorners, isCenterContentVisible } from "./layoutStateUtils";
-import { presetCrossfadeTransition } from "./layoutAnimation";
 import { RegionDock, SideRegionStripeColumn } from "./RegionDock";
 import { RegionContent } from "./RegionContent";
 import { RegionResizeSplitter } from "./RegionResizeSplitter";
@@ -63,7 +62,7 @@ export const LayoutShell = memo(function LayoutShell({
   const segments = useRegionSegments();
   const layout = useLayoutStore((s) => s.layout);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
-  const { crossfadeKey, animateEntry, reduced } = useLayoutPresetCrossfade();
+  const { crossfadeControls } = useLayoutPresetCrossfade();
 
   const leftOpen = regionIsOpen(layout.regions.left.slots);
   const rightOpen = regionIsOpen(layout.regions.right.slots);
@@ -166,13 +165,14 @@ export const LayoutShell = memo(function LayoutShell({
       )}
       <StripeInsertIndicator />
       <LayoutPanelDragGhost />
+      {/* key={crossfadeKey} による remount 方式は禁止 — 配下の全エディタ/パネルが
+          破棄・再生成されフリーズする。フェードは controls の opacity 再トリガーで
+          実現する（useLayoutPresetCrossfade 参照）。 */}
       <motion.div
-        key={crossfadeKey}
         data-layout-shell
         className="relative grid h-full w-full overflow-hidden"
-        initial={animateEntry && !reduced ? { opacity: 0 } : false}
-        animate={{ opacity: 1 }}
-        transition={presetCrossfadeTransition(reduced)}
+        initial={false}
+        animate={crossfadeControls}
         style={{
           gridTemplateColumns,
           gridTemplateRows,

@@ -153,15 +153,30 @@ export function ChatPanelHeader({
     return () => document.removeEventListener("mousedown", onOutside);
   }, [open]);
 
-  // Chat プリセット切替時に Project スコープを時限ポップオーバーで提案
+  // Chat プリセットへの切替時に Project スコープを時限ポップオーバーで提案。
+  // かつては LayoutShell がプリセット切替で subtree を remount していたため
+  // mount effect (deps []) で足りたが、remount 廃止後はパネルが生き残るので
+  // activePresetId の遷移そのものを契機にする。chatScope は発火時点の値だけ
+  // 見たい（scope 変更でヒントを再表示しない）ので ref で読む。
+  const chatScopeRef = useRef(chatScope);
+  chatScopeRef.current = chatScope;
+  const hintPrevPresetRef = useRef<string | null>(null);
   useEffect(() => {
+    const prev = hintPrevPresetRef.current;
+    hintPrevPresetRef.current = activePresetId;
     if (activePresetId !== "builtin:chat-main") return;
-    if (chatScope === "project") return;
+    if (prev === "builtin:chat-main") return;
+    if (chatScopeRef.current === "project") return;
     setScopeHint(true);
     const timer = setTimeout(() => setScopeHint(false), 6000);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => {
+      clearTimeout(timer);
+      setScopeHint(false);
+      // StrictMode の dev 二重発火で 2 回目の実行が「遷移なし」と誤認しない
+      // よう、cleanup では遷移前の値へ戻す。
+      hintPrevPresetRef.current = prev;
+    };
+  }, [activePresetId]);
 
   const handlePickScene = (sceneId: string) => {
     onSelectScene(sceneId);

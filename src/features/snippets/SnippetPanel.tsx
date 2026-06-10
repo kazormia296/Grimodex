@@ -60,8 +60,9 @@ export function SnippetPanel() {
   const nodes = useTreeStore((s) => s.nodes);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
 
-  // 選択中スニペットはストアに持たせる。レイアウトプリセット切替で LayoutShell が
-  // パネル subtree を remount しても選択を保持するため（local state だと失われる）。
+  // 選択中スニペットはストアに持たせる。プリセット切替で配置から外れたり
+  // パネルを閉じたりして subtree が unmount されても選択を保持するため
+  // （local state だと失われる）。
   const selectedSnippet = useSnippetStore((s) => s.selectedSnippet);
   const setSelectedSnippet = useSnippetStore((s) => s.setSelectedSnippet);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);

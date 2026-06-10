@@ -486,8 +486,8 @@ describe("SnippetPanel", () => {
   });
 
   it("preserves selection across remount (layout preset switch)", () => {
-    // レイアウトプリセット切替は LayoutShell が key={crossfadeKey} で
-    // パネル subtree を remount する。選択がストアに乗ったことで unmount →
+    // レイアウトプリセット切替でパネルが配置から外れる（または閉じられる）
+    // と subtree は unmount される。選択がストアに乗ったことで unmount →
     // 再 mount を跨いでも保持されることを回帰として固定する。
     const snippet = fakeSnippet({ id: "snippet-1" });
     useSnippetStore.setState({ entries: [snippet], selectedSnippet: snippet });

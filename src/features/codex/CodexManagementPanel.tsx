@@ -505,8 +505,9 @@ export function CodexManagementPanel({
   const setFilterType = useCodexStore((s) => s.setFilterType);
   const setSort = useCodexStore((s) => s.setSort);
 
-  // 選択中エントリはストアに持たせる。レイアウトプリセット切替で LayoutShell が
-  // パネル subtree を remount しても選択を保持するため（local state だと失われる）。
+  // 選択中エントリはストアに持たせる。プリセット切替で配置から外れたり
+  // パネルを閉じたりして subtree が unmount されても選択を保持するため
+  // （local state だと失われる）。
   const selectedEntry = useCodexStore((s) => s.selectedEntry);
   const setSelectedEntry = useCodexStore((s) => s.setSelectedEntry);
   const [showCommandPalette, setShowCommandPalette] = useState(false);

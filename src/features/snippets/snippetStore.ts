@@ -27,10 +27,10 @@ interface SnippetState {
   sortOrder: SnippetSortOrder;
   pendingEntryId: string | null;
   /**
-   * 現在 Snippet パネルで選択中のスニペット。レイアウトプリセット切替時に
-   * LayoutShell が `key={crossfadeKey}` でパネル subtree を remount するため、
-   * パネル内 local state だと選択が失われる。選択をストアに持たせて remount を
-   * 跨いで保持する。pendingEntryId（外部からの一発選択要求）とは別物。
+   * 現在 Snippet パネルで選択中のスニペット。レイアウトプリセット切替で配置
+   * から外れたりパネルを閉じたりするとパネル subtree は unmount され、パネル
+   * 内 local state だと選択が失われる。選択をストアに持たせて unmount を跨い
+   * で保持する。pendingEntryId（外部からの一発選択要求）とは別物。
    * React の setState 同様、値だけでなく updater 関数も受け付ける。
    */
   selectedSnippet: Snippet | null;

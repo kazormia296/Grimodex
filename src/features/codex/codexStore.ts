@@ -83,10 +83,10 @@ interface CodexState {
   isLoading: boolean;
   pendingEntryId: string | null;
   /**
-   * 現在 Codex パネルで選択中のエントリ。レイアウトプリセット切替時に
-   * LayoutShell が `key={crossfadeKey}` でパネル subtree を remount するため、
-   * パネル内 local state だと選択が失われる。選択をストアに持たせて remount を
-   * 跨いで保持する。pendingEntryId（外部からの一発選択要求）とは別物。
+   * 現在 Codex パネルで選択中のエントリ。レイアウトプリセット切替で配置から
+   * 外れたりパネルを閉じたりするとパネル subtree は unmount され、パネル内
+   * local state だと選択が失われる。選択をストアに持たせて unmount を跨いで
+   * 保持する。pendingEntryId（外部からの一発選択要求）とは別物。
    */
   selectedEntry: CodexEntry | null;
   setSelectedEntry: (entry: CodexEntry | null) => void;
