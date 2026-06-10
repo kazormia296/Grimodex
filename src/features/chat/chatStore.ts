@@ -130,6 +130,7 @@ import {
   getChildrenFromArray,
   buildChildrenContext,
   computeChildrenTokenBudget,
+  collectBudgetedDescendantIds,
 } from "@/features/codex/childrenBudget";
 import type { ChatMessage, ChatSession, MessageRole } from "./chatTypes";
 import {
@@ -2039,11 +2040,18 @@ async function buildSceneContextPrompt(opts: {
       const relations = await listCodexRelations(projectIdForRel).catch(
         () => [],
       );
+      // Descendants already surfaced via childrenContext (the 階層/親子 path)
+      // must not be re-injected as relation blocks, or an entry that is both a
+      // hierarchy child and a typed-relation neighbor would appear twice in L4.
+      const relExcludeIds = new Set([
+        ...l4SeedIds,
+        ...collectBudgetedDescendantIds(l4SeedIds, allEntries),
+      ]);
       const expanded = expandCodexRelationsBFS(
         [...l4SeedIds],
         relations,
         allEntries,
-        l4SeedIds,
+        relExcludeIds,
       );
       relationCodexEntries = expanded.length > 0 ? expanded : undefined;
     }

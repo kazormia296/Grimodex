@@ -4,6 +4,7 @@ import {
   getDescendantsBFS,
   buildChildrenContext,
   computeChildrenTokenBudget,
+  collectBudgetedDescendantIds,
   BUDGET_RATIOS,
 } from "./childrenBudget";
 import type { CodexEntry } from "./api";
@@ -136,6 +137,46 @@ describe("getDescendantsBFS", () => {
     const entries = [ROOT, CHILD_A];
     const descendants = getDescendantsBFS("root", entries);
     expect(descendants.map((e) => e.id)).not.toContain("root");
+  });
+});
+
+describe("collectBudgetedDescendantIds", () => {
+  it("returns descendants of seeds with an active children budget", () => {
+    const entries = [ROOT, CHILD_A, CHILD_B, GRANDCHILD, UNRELATED];
+    const ids = collectBudgetedDescendantIds(["root"], entries);
+    expect([...ids].sort()).toEqual(["childA", "childB", "grand"]);
+  });
+
+  it("excludes nothing for a seed whose budget is 'none'", () => {
+    const mutedRoot = { ...ROOT, childrenBudget: "none" as const };
+    const entries = [mutedRoot, CHILD_A, CHILD_B, GRANDCHILD];
+    const ids = collectBudgetedDescendantIds(["root"], entries);
+    expect(ids.size).toBe(0);
+  });
+
+  it("defaults a missing budget to active (compact) and still collects", () => {
+    // childrenBudget undefined → treated as "compact" (matches the L4 builder).
+    const noBudget = { ...ROOT } as Partial<CodexEntry>;
+    delete noBudget.childrenBudget;
+    const entries = [noBudget as CodexEntry, CHILD_A];
+    const ids = collectBudgetedDescendantIds(["root"], entries);
+    expect([...ids]).toEqual(["childA"]);
+  });
+
+  it("unions descendants across multiple seeds and ignores unknown seeds", () => {
+    const entries = [ROOT, CHILD_A, CHILD_B, GRANDCHILD, UNRELATED];
+    const ids = collectBudgetedDescendantIds(
+      ["root", "childA", "ghost"],
+      entries,
+    );
+    // root → childA/childB/grand, childA → grand (deduped), ghost → nothing.
+    expect([...ids].sort()).toEqual(["childA", "childB", "grand"]);
+  });
+
+  it("returns an empty set when seeds are leaves", () => {
+    const entries = [ROOT, CHILD_A, GRANDCHILD];
+    const ids = collectBudgetedDescendantIds(["grand"], entries);
+    expect(ids.size).toBe(0);
   });
 });
 

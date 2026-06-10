@@ -63,6 +63,30 @@ export function getDescendantsBFS(
 }
 
 /**
+ * Collect descendant ids already surfaced via childrenContext — i.e. the
+ * descendants of every seed whose children budget is active (preset !== "none").
+ * Used to exclude them from formal-relation (codex_relations) expansion so an
+ * entry that is both a hierarchy child AND a typed-relation neighbor is not
+ * injected into the L4 context twice (once as childrenContext, once as a
+ * relation block). Seeds with budget "none" contribute no descendants.
+ */
+export function collectBudgetedDescendantIds(
+  seedIds: Iterable<string>,
+  allEntries: CodexEntry[],
+): Set<string> {
+  const byId = new Map(allEntries.map((e) => [e.id, e]));
+  const ids = new Set<string>();
+  for (const seedId of seedIds) {
+    const seed = byId.get(seedId);
+    if ((seed?.childrenBudget ?? "compact") === "none") continue;
+    for (const d of getDescendantsBFS(seedId, allEntries)) {
+      ids.add(d.id);
+    }
+  }
+  return ids;
+}
+
+/**
  * Build context string for descendants within a token budget.
  * Returns empty string if preset is 'none' or budget is 0.
  */

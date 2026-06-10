@@ -108,6 +108,90 @@ describe("boardToReactFlow", () => {
     expect(edges.some((e) => e.id === "codex-relation:rel-1")).toBe(true);
   });
 
+  const hierarchyPair = [
+    {
+      id: "p",
+      name: "Kingdom",
+      type: "lore",
+      parentId: null,
+      summary: null,
+      tagsCache: null,
+    },
+    {
+      id: "c",
+      name: "Knights",
+      type: "faction",
+      parentId: "p",
+      summary: null,
+      tagsCache: null,
+    },
+  ];
+
+  it("draws a gray parent-derived edge for the parentId hierarchy", () => {
+    const edges = buildMapEdgesFromData({
+      codexEntries: hierarchyPair,
+      treeNodes: [],
+      snippetEntries: [],
+      phasesByEntry: {},
+      userEdges: [],
+      positions: [],
+      show: { ...DEFAULT_SHOW, derivedEdges: true },
+    });
+
+    expect(edges.some((e) => e.id === "derived:c->p")).toBe(true);
+  });
+
+  it("suppresses the parent-derived edge when a typed relation connects the same pair", () => {
+    const edges = buildMapEdgesFromData({
+      codexEntries: hierarchyPair,
+      treeNodes: [],
+      snippetEntries: [],
+      phasesByEntry: {},
+      userEdges: [],
+      positions: [],
+      show: { ...DEFAULT_SHOW, derivedEdges: true },
+      codexRelations: [
+        {
+          id: "rel-pc",
+          fromCodexId: "p",
+          toCodexId: "c",
+          label: "配下",
+          relationType: "custom",
+        },
+      ],
+    });
+
+    // The labeled typed relation is kept...
+    expect(edges.some((e) => e.id === "codex-relation:rel-pc")).toBe(true);
+    // ...and the redundant unlabeled parent edge is dropped (no overlap).
+    expect(edges.some((e) => e.id === "derived:c->p")).toBe(false);
+  });
+
+  it("suppresses the parent-derived edge regardless of typed relation direction", () => {
+    const edges = buildMapEdgesFromData({
+      codexEntries: hierarchyPair,
+      treeNodes: [],
+      snippetEntries: [],
+      phasesByEntry: {},
+      userEdges: [],
+      positions: [],
+      show: { ...DEFAULT_SHOW, derivedEdges: true },
+      // Relation runs child -> parent (opposite of the parent edge direction).
+      codexRelations: [
+        {
+          id: "rel-cp",
+          fromCodexId: "c",
+          toCodexId: "p",
+          label: "所属",
+          relationType: "custom",
+        },
+      ],
+    });
+
+    expect(edges.some((e) => e.id === "codex-relation:rel-cp")).toBe(true);
+    expect(edges.some((e) => e.id === "derived:c->p")).toBe(false);
+  });
+
   it("builds derived codex mention edges when enabled", () => {
     const edges = buildMapEdgesFromData({
       codexEntries,

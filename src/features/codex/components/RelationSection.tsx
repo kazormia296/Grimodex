@@ -270,7 +270,12 @@ export function RelationSection({ entry }: RelationSectionProps) {
 
   return (
     <div className="space-y-3 border-t border-border pt-3">
-      <h3 className="text-xs font-semibold">{t("codex.relation.title")}</h3>
+      <div>
+        <h3 className="text-xs font-semibold">{t("codex.relation.title")}</h3>
+        <p className="mt-0.5 text-[10px] text-muted-foreground">
+          {t("codex.relation.hierarchyDesc")}
+        </p>
+      </div>
 
       {/* Parent */}
       <div>

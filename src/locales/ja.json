@@ -1006,7 +1006,8 @@
       "selectPlaceholder": "— 選択 —"
     },
     "relation": {
-      "title": "リレーション",
+      "title": "階層（親子）",
+      "hierarchyDesc": "包含・所属を表す親子関係（1エントリ1親）",
       "parent": "親エントリ",
       "addChild": "子を追加",
       "children": "子エントリ",
@@ -1016,7 +1017,8 @@
       "suggestions": "提案",
       "addAsChild": "子として追加",
       "dismiss": "却下",
-      "typedTitle": "正式リレーション",
+      "typedTitle": "関係（対人）",
+      "typedDesc": "友人・敵などの対人/対物の関係（複数可・方向あり）",
       "typedRemove": "リレーションを削除",
       "typedRemoved": "リレーションを削除しました",
       "addTitle": "関係を追加",

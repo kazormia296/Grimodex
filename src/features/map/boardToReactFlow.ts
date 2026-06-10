@@ -100,7 +100,30 @@ export function buildMapEdgesFromData(input: {
   const totalVisible = codexEntries.length + treeNodes.length;
 
   if (show.derivedEdges && totalVisible <= 200) {
+    const visibleCodexIds = new Set(codexEntries.map((e) => e.id));
+    // A typed codex relation (drawn below as a labeled edge) is more
+    // informative than the unlabeled gray parent-derived edge. When both
+    // connect the same unordered pair, suppress the parent edge so the Map
+    // doesn't render two overlapping edges between the same two nodes.
+    const normalizePair = (a: string, b: string) =>
+      a < b ? `${a}|${b}` : `${b}|${a}`;
+    const typedRelationPairs = new Set(
+      codexRelations
+        .filter(
+          (r) =>
+            visibleCodexIds.has(r.fromCodexId) &&
+            visibleCodexIds.has(r.toCodexId),
+        )
+        .map((r) => normalizePair(r.fromCodexId, r.toCodexId)),
+    );
+
     for (const e of codexEntries.filter((entry) => entry.parentId != null)) {
+      if (
+        e.parentId != null &&
+        typedRelationPairs.has(normalizePair(e.id, e.parentId))
+      ) {
+        continue;
+      }
       derived.push({
         id: `derived:${e.id}->${e.parentId}`,
         source: `codex:${e.parentId}`,
@@ -114,7 +137,6 @@ export function buildMapEdgesFromData(input: {
     const visibleSceneIds = new Set(
       treeNodes.filter((n) => n.nodeType === "scene").map((n) => n.id),
     );
-    const visibleCodexIds = new Set(codexEntries.map((e) => e.id));
 
     for (const [entryId, phases] of Object.entries(phasesByEntry)) {
       if (!visibleCodexIds.has(entryId)) continue;

@@ -119,7 +119,14 @@ export function CodexTypedRelationsSection({
 
   return (
     <div className="space-y-2 border-t border-border pt-3">
-      <SectionLabel>{t("codex.relation.typedTitle")}</SectionLabel>
+      <div>
+        <h3 className="text-xs font-semibold">
+          {t("codex.relation.typedTitle")}
+        </h3>
+        <p className="mt-0.5 text-[10px] text-muted-foreground">
+          {t("codex.relation.typedDesc")}
+        </p>
+      </div>
 
       {relations.length > 0 && (
         <ul className="space-y-1">

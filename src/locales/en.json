@@ -1006,7 +1006,8 @@
       "selectPlaceholder": "— Select —"
     },
     "relation": {
-      "title": "Relations",
+      "title": "Hierarchy (parent/child)",
+      "hierarchyDesc": "Containment & membership as parent-child (one parent per entry)",
       "parent": "Parent entry",
       "addChild": "Add child",
       "children": "Child entries",
@@ -1016,7 +1017,8 @@
       "suggestions": "Suggestions",
       "addAsChild": "Add as child",
       "dismiss": "Dismiss",
-      "typedTitle": "Formal relations",
+      "typedTitle": "Relations (interpersonal)",
+      "typedDesc": "Interpersonal/object relations like friend or enemy (multiple, directional)",
       "typedRemove": "Remove relation",
       "typedRemoved": "Relation removed",
       "addTitle": "Add relation",

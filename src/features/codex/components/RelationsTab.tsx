@@ -22,13 +22,17 @@ export function RelationsTab({
 
   return (
     <div className="space-y-3">
-      <RelationSection entry={entry} />
+      {/* 階層（親子）— 親子関係と、子エントリの AI 文脈注入量をまとめる */}
+      <div className="space-y-3">
+        <RelationSection entry={entry} />
+        <ChildrenBudgetSelector
+          value={childrenBudget}
+          onChange={onChildrenBudgetChange}
+          hasChildren={hasChildren}
+        />
+      </div>
+      {/* 関係（対人） */}
       <CodexTypedRelationsSection entry={entry} />
-      <ChildrenBudgetSelector
-        value={childrenBudget}
-        onChange={onChildrenBudgetChange}
-        hasChildren={hasChildren}
-      />
     </div>
   );
 }
