@@ -233,8 +233,8 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_node
                 ON chat_sessions(project_id, node_id);
-            CREATE INDEX IF NOT EXISTS idx_chat_sessions_codex_anchor
-                ON chat_sessions(project_id, codex_anchor_id);
+            -- idx_chat_sessions_codex_anchor is created AFTER add_column_if_missing
+            -- below (upgraded DBs lack codex_anchor_id until that ALTER runs).
 
             -- Normalized pin table: one row per pinned codex entry / snippet
             -- per session. Replaces the former chat_sessions.pinned_codex
@@ -2530,6 +2530,59 @@ mod tests {
     }
 
     #[test]
+    fn migrate_legacy_chat_sessions_without_codex_anchor_id() {
+        // Regression: upgraded DBs have chat_sessions without codex_anchor_id.
+        // migrate() must not CREATE INDEX on the missing column in the initial
+        // batch — that used to fail with "no such column: codex_anchor_id" on
+        // every workspace open.
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT 't',
+                    language TEXT NOT NULL DEFAULT 'ja',
+                    phase_resolution_mode TEXT NOT NULL DEFAULT 'reading',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 CREATE TABLE chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    node_id TEXT,
+                    title TEXT NOT NULL DEFAULT 'New session',
+                    title_manual INTEGER NOT NULL DEFAULT 0,
+                    model TEXT NOT NULL DEFAULT 'm',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 CREATE INDEX idx_chat_sessions_node ON chat_sessions(project_id, node_id);",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        db.migrate().unwrap();
+
+        db.with_conn(|conn| {
+            let cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(chat_sessions)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<_, _>>()?;
+            assert!(cols.iter().any(|c| c == "codex_anchor_id"));
+
+            let index_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_chat_sessions_codex_anchor'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(index_count, 1);
+            Ok(())
+        })
+        .unwrap();
+    }
+
     #[test]
     fn chat_sessions_codex_anchor_id_migration_adds_column_and_index() {
         let conn = Connection::open_in_memory().unwrap();
@@ -2582,6 +2635,7 @@ mod tests {
         assert_eq!(index_count, 1);
     }
 
+    #[test]
     fn tree_nodes_intent_column_migration_is_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
