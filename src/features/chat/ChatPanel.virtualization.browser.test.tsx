@@ -63,7 +63,13 @@ vi.mock("./chatApi", () => ({
 }));
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  act,
+  fireEvent,
+} from "@testing-library/react";
 import { ChatPanel } from "./ChatPanel";
 import { useChatStore } from "./chatStore";
 import { useAiSettingsStore } from "./store";
@@ -191,8 +197,12 @@ describe("ChatPanel virtualization (real Chromium)", () => {
       expect(distanceFromBottom(scroller)).toBeLessThan(120);
     });
 
-    // 先頭まで戻って履歴を読む
+    // 先頭まで戻って履歴を読む。scrollTop 直接代入だと Chromium の scroll
+    // イベント配送タイミング次第で stick フラグ更新と totalSize effect の
+    // 順序がレースするため、明示 dispatch で stick=false を確定させる
+    // (実イベントと二重発火しても handleListScroll は冪等)。
     scroller.scrollTop = 0;
+    fireEvent.scroll(scroller);
     await waitFor(() => {
       expect(screen.getByTestId("chat-message-m0")).toBeInTheDocument();
     });

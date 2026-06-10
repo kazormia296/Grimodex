@@ -437,14 +437,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     overscan: 6,
     // id キーで測定キャッシュを安定させる (index キーだと削除で全行ズレる)
     getItemKey: (index) => visibleMessages[index]?.id ?? index,
-    // チャット UI の末尾アンカー: 最下部から 120px 以内 (旧 isNearBottom と
-    // 同じ閾値) に居る間は、新規 append (followOnAppend) もストリーミングで
-    // 末尾 bubble が伸びる resize (anchorTo: "end" の at-end 補正) も
-    // virtualizer が自動で末尾に追従する。上にスクロールして履歴を読んで
-    // いる間はどちらも発動しない。
-    anchorTo: "end",
-    followOnAppend: true,
-    scrollEndThreshold: 120,
+    // anchorTo: "end" / followOnAppend は使わない: virtual-core の at-end
+    // scrollTop 補正は React が sized div の height を再レンダーする前に走る
+    // ため旧 height でクランプされ、その時点の scroll イベントが
+    // stickToBottomRef を false に倒して末尾追従が恒久停止する競合がある
+    // (browser test 3 が gate)。末尾追従は下の stick + totalSize effect に
+    // 一本化する。
   });
 
   // 仮想化では行が scroll out/in のたびに remount するため、AnimatePresence や
@@ -464,24 +462,40 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     entranceAnim.prevMessages !== visibleMessages ||
     entranceAnim.prevLoading !== isLoadingMessages
   ) {
-    const canAnimate =
-      entranceAnim.prevMessages !== null && !entranceAnim.prevLoading;
-    let animateIds: ReadonlySet<string>;
-    if (canAnimate) {
-      const prevIds = new Set(entranceAnim.prevMessages!.map((m) => m.id));
-      animateIds = new Set(
-        visibleMessages
-          .filter((m) => m.role === "user" && !prevIds.has(m.id))
-          .map((m) => m.id),
-      );
-    } else {
-      animateIds = new Set();
+    const prev = entranceAnim.prevMessages;
+    // ストリーミング delta は「同一 id 列のまま末尾 content だけが伸びる」更新。
+    // チャット操作に長さ不変のまま中間 id が入れ替わる経路は無いので、
+    // 長さ + 先頭/末尾 id の O(1) 比較で検出し、O(n) の id 差分も
+    // render-phase setState (= 二重 render) も毎 delta で踏まないようにする。
+    // prevMessages は古い参照のまま残るが、id 列が同じなので次の差分計算は
+    // 壊れない (gate: ChatPanel.virtualization.test.tsx の render 回数 assert)。
+    const isPureDelta =
+      prev !== null &&
+      entranceAnim.prevLoading === isLoadingMessages &&
+      prev.length === visibleMessages.length &&
+      prev.length > 0 &&
+      prev[0].id === visibleMessages[0].id &&
+      prev[prev.length - 1].id ===
+        visibleMessages[visibleMessages.length - 1].id;
+    if (!isPureDelta) {
+      const canAnimate = prev !== null && !entranceAnim.prevLoading;
+      let animateIds: ReadonlySet<string>;
+      if (canAnimate) {
+        const prevIds = new Set(prev!.map((m) => m.id));
+        animateIds = new Set(
+          visibleMessages
+            .filter((m) => m.role === "user" && !prevIds.has(m.id))
+            .map((m) => m.id),
+        );
+      } else {
+        animateIds = new Set();
+      }
+      setEntranceAnim({
+        prevMessages: visibleMessages,
+        prevLoading: isLoadingMessages,
+        animateIds,
+      });
     }
-    setEntranceAnim({
-      prevMessages: visibleMessages,
-      prevLoading: isLoadingMessages,
-      animateIds,
-    });
   }
 
   // Codex extraction dialog
@@ -603,23 +617,33 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     }
   }, []);
 
-  // 末尾追従の意図 = 「最後の scroll イベント時点で最下部 120px 以内に居たか」。
-  // コンテンツの伸長 (動的測定の確定・ストリーミング delta) は scroll イベントを
-  // 発火しないため、ユーザーが上にスクロールしない限り true のまま保たれる。
-  // 旧 isNearBottom (effect 時点の距離判定) だと、伸長が 120px を超えた時点で
-  // 追従が外れてドリフトが蓄積する。
+  // 末尾追従 (stick) の更新規則:
+  //   - 最下部 120px 以内に入ったら ON (旧 isNearBottom と同じ閾値)
+  //   - 「上方向への移動 かつ 120px 超」のときだけ OFF
+  //   - 下方向の移動で 120px 超のままでも維持する
+  // 最後の条件が肝: ストリーミング中は自前の再アンカー (scrollIntoView) が
+  // 測定途中の旧 height に短着地して distance>120 の scroll イベントを発火
+  // しうる。distance だけで OFF にすると自分のスクロールで追従を殺して
+  // ドリフトが恒久化する (browser test 3 が gate)。上方向はユーザーの
+  // 履歴読みだけなので、方向で意図を分離できる。
   const stickToBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
   const handleListScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    stickToBottomRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distance < 120) {
+      stickToBottomRef.current = true;
+    } else if (el.scrollTop < lastScrollTopRef.current) {
+      stickToBottomRef.current = false;
+    }
+    lastScrollTopRef.current = el.scrollTop;
   }, []);
 
   // 動的測定で totalSize が確定 / 伸長するたび、追従中なら末尾へ貼り直す。
-  // virtualizer の at-end 補正 (anchorTo: "end") は scrollTop 補正の瞬間に
-  // sized div の height がまだ旧値でクランプされうるため、render 後 (= DOM
-  // 高さが新しい) の effect での再アンカーが収束の正本。
+  // render 後 (= sized div の height が新しい) の effect で再アンカーするのが
+  // 唯一の追従機構。新規 append (count 変化) もストリーミング伸長 (測定変化)
+  // もどちらも totalSize に現れるのでこの 1 本で覆える。
   const totalSize = virtualizer.getTotalSize();
   useEffect(() => {
     if (stickToBottomRef.current) scrollToBottom();
@@ -633,11 +657,10 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   // ジャンプして履歴のあるセッションを開くたび先頭に着地する回帰になる。
   // load 完了を待ってジャンプする。
   //
-  // ジャンプ先は推定 totalSize 由来でズレうるが、着地が「末尾 120px 以内」で
-  // ありさえすれば、以降の動的測定差分は virtualizer の at-end 補正
-  // (anchorTo: "end") が末尾に貼り直すので収束する。同一セッション内の
-  // ストリーミング追従も followOnAppend / at-end 補正に任せる (旧実装の
-  // messages 依存 isNearBottom 追従 effect は廃止)。
+  // ジャンプ先は推定 totalSize 由来でズレうるが、stick を立てておけば以降の
+  // 動的測定差分は totalSize effect の再アンカーで収束する。同一セッション内の
+  // ストリーミング追従も同 effect に任せる (旧実装の messages 依存
+  // isNearBottom 追従 effect は廃止)。
   const lastJumpedSessionRef = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -920,7 +943,10 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
               data-testid="chat-virtual-list"
               className="relative w-full"
               style={{ height: `${virtualizer.getTotalSize()}px` }}
-              ref={(el) => setMessagesContainerEl(el)}
+              // ref はインライン関数にしない: render 毎に identity が変わると
+              // React が commit 毎に null→el で呼び直し、setState(null) 経由の
+              // 余剰 render が毎 delta に乗る (gate: virtualization.test.tsx)
+              ref={setMessagesContainerEl}
             >
               {virtualizer.getVirtualItems().map((vItem) => {
                 const msg = visibleMessages[vItem.index];
@@ -963,6 +989,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
                 );
               })}
             </div>
+            {/* 質問カード / streaming indicator はスペーサ外の通常フロー。
+                高さは virtualizer の totalSize に乗らないが、scrollToBottom
+                が bottomRef (全兄弟の後) に着地するため末尾はズレない。 */}
             {pendingUserQuestion &&
               pendingUserQuestion.sessionId === activeSessionId && (
                 <UserQuestionCard
