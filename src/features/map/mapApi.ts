@@ -26,6 +26,7 @@ import {
   type NewAuthorshipSpan,
 } from "@/db/schema";
 import { eq, and, isNotNull, inArray } from "drizzle-orm";
+import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { generateKeyBetween } from "@/features/tree/fractionalIndex";
 import type {
   NodeRefType,
@@ -355,6 +356,28 @@ export async function listNodePositions(
     .where(eq(mapNodePositions.boardId, boardId));
 }
 
+/** Find an existing position row on a board by one node-ref column.
+ *  The redundant isNotNull keeps the generated SQL identical to the
+ *  original per-column queries — eq already excludes NULL, do not remove. */
+async function findExistingPosition(
+  boardId: string,
+  column: SQLiteColumn,
+  value: string,
+): Promise<MapNodePosition | undefined> {
+  const rows = await db
+    .select()
+    .from(mapNodePositions)
+    .where(
+      and(
+        eq(mapNodePositions.boardId, boardId),
+        isNotNull(column),
+        eq(column, value),
+      ),
+    )
+    .limit(1);
+  return rows[0];
+}
+
 export async function upsertNodePosition(data: {
   boardId: string;
   nodeRefType: NodeRefType;
@@ -370,70 +393,35 @@ export async function upsertNodePosition(data: {
 
   let existing: MapNodePosition | undefined;
   if (data.treeNodeId) {
-    const rows = await db
-      .select()
-      .from(mapNodePositions)
-      .where(
-        and(
-          eq(mapNodePositions.boardId, data.boardId),
-          isNotNull(mapNodePositions.treeNodeId),
-          eq(mapNodePositions.treeNodeId, data.treeNodeId),
-        ),
-      )
-      .limit(1);
-    existing = rows[0];
+    existing = await findExistingPosition(
+      data.boardId,
+      mapNodePositions.treeNodeId,
+      data.treeNodeId,
+    );
   } else if (data.codexEntryId) {
-    const rows = await db
-      .select()
-      .from(mapNodePositions)
-      .where(
-        and(
-          eq(mapNodePositions.boardId, data.boardId),
-          isNotNull(mapNodePositions.codexEntryId),
-          eq(mapNodePositions.codexEntryId, data.codexEntryId),
-        ),
-      )
-      .limit(1);
-    existing = rows[0];
+    existing = await findExistingPosition(
+      data.boardId,
+      mapNodePositions.codexEntryId,
+      data.codexEntryId,
+    );
   } else if (data.snippetId) {
-    const rows = await db
-      .select()
-      .from(mapNodePositions)
-      .where(
-        and(
-          eq(mapNodePositions.boardId, data.boardId),
-          isNotNull(mapNodePositions.snippetId),
-          eq(mapNodePositions.snippetId, data.snippetId),
-        ),
-      )
-      .limit(1);
-    existing = rows[0];
+    existing = await findExistingPosition(
+      data.boardId,
+      mapNodePositions.snippetId,
+      data.snippetId,
+    );
   } else if (data.stickyId) {
-    const rows = await db
-      .select()
-      .from(mapNodePositions)
-      .where(
-        and(
-          eq(mapNodePositions.boardId, data.boardId),
-          isNotNull(mapNodePositions.stickyId),
-          eq(mapNodePositions.stickyId, data.stickyId),
-        ),
-      )
-      .limit(1);
-    existing = rows[0];
+    existing = await findExistingPosition(
+      data.boardId,
+      mapNodePositions.stickyId,
+      data.stickyId,
+    );
   } else if (data.aiBranchId) {
-    const rows = await db
-      .select()
-      .from(mapNodePositions)
-      .where(
-        and(
-          eq(mapNodePositions.boardId, data.boardId),
-          isNotNull(mapNodePositions.aiBranchId),
-          eq(mapNodePositions.aiBranchId, data.aiBranchId),
-        ),
-      )
-      .limit(1);
-    existing = rows[0];
+    existing = await findExistingPosition(
+      data.boardId,
+      mapNodePositions.aiBranchId,
+      data.aiBranchId,
+    );
   }
 
   if (existing) {
