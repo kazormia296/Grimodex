@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTranslation } from "react-i18next";
-import { motion, AnimatePresence } from "motion/react";
+import { motion } from "motion/react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useReducedMotion } from "@/lib/animation";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
@@ -419,6 +420,70 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
+  // 描画対象メッセージ (system / 要約済みを除外)。仮想化の count と
+  // getItemKey の正本になるので、render 毎の filter 再生成を避けて memo する。
+  const visibleMessages = useMemo(
+    () => messages.filter((m) => m.role !== "system" && !m.isSummarized),
+    [messages],
+  );
+
+  // メッセージ一覧の仮想化 (perf 2026-06-10: 非仮想化・全件 ReactMarkdown・
+  // isStreaming トグルで全件再描画の解消)。高さは行ごとにまちまちなので
+  // measureElement による動的測定に任せ、estimateSize は初期推定のみ。
+  const virtualizer = useVirtualizer({
+    count: visibleMessages.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 120,
+    overscan: 6,
+    // id キーで測定キャッシュを安定させる (index キーだと削除で全行ズレる)
+    getItemKey: (index) => visibleMessages[index]?.id ?? index,
+    // チャット UI の末尾アンカー: 最下部から 120px 以内 (旧 isNearBottom と
+    // 同じ閾値) に居る間は、新規 append (followOnAppend) もストリーミングで
+    // 末尾 bubble が伸びる resize (anchorTo: "end" の at-end 補正) も
+    // virtualizer が自動で末尾に追従する。上にスクロールして履歴を読んで
+    // いる間はどちらも発動しない。
+    anchorTo: "end",
+    followOnAppend: true,
+    scrollEndThreshold: 120,
+  });
+
+  // 仮想化では行が scroll out/in のたびに remount するため、AnimatePresence や
+  // 無条件 initial では過去メッセージの入場アニメが再生されてしまう。
+  // 「直前の messages からこの render で新規 append された user メッセージ」
+  // だけに入場アニメを付ける。messages の遷移ごとに 1 回だけ確定させ、無関係な
+  // 再レンダー (pinsVersion 等の非同期更新) では維持したいので、render 中の
+  // 派生 state 調整 (adjust-state-on-render) で持つ。セッション読込直後
+  // (prevLoading) は一括ロードなので全件アニメ無し (従来の AnimatePresence
+  // initial={false} と同じ見え方)。
+  const [entranceAnim, setEntranceAnim] = useState<{
+    prevMessages: ChatMessageType[] | null;
+    prevLoading: boolean;
+    animateIds: ReadonlySet<string>;
+  }>({ prevMessages: null, prevLoading: true, animateIds: new Set() });
+  if (
+    entranceAnim.prevMessages !== visibleMessages ||
+    entranceAnim.prevLoading !== isLoadingMessages
+  ) {
+    const canAnimate =
+      entranceAnim.prevMessages !== null && !entranceAnim.prevLoading;
+    let animateIds: ReadonlySet<string>;
+    if (canAnimate) {
+      const prevIds = new Set(entranceAnim.prevMessages!.map((m) => m.id));
+      animateIds = new Set(
+        visibleMessages
+          .filter((m) => m.role === "user" && !prevIds.has(m.id))
+          .map((m) => m.id),
+      );
+    } else {
+      animateIds = new Set();
+    }
+    setEntranceAnim({
+      prevMessages: visibleMessages,
+      prevLoading: isLoadingMessages,
+      animateIds,
+    });
+  }
+
   // Codex extraction dialog
   const [extractionDialog, setExtractionDialog] = useState<{
     open: boolean;
@@ -532,28 +597,47 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     const node = bottomRef.current;
     if (node && typeof node.scrollIntoView === "function") {
       // smooth だと delta 毎に進行中アニメを cancel+restart してレイアウトを
-      // 強制するため auto。near-bottom ガードと併せてストリーミング中のカクつき
+      // 強制するため auto。stick ガードと併せてストリーミング中のカクつき
       // と「上スクロールしても下端に引き戻される」UX バグを解消する。
       node.scrollIntoView({ behavior: "auto" });
     }
   }, []);
 
-  // ユーザーが既に最下部付近にいるときだけ追従する。上にスクロールして過去を
-  // 読んでいる最中は delta で引き戻さない。スクロールコンテナが無い環境
-  // (happy-dom 等) では従来どおり常に追従。
-  const isNearBottom = useCallback(() => {
+  // 末尾追従の意図 = 「最後の scroll イベント時点で最下部 120px 以内に居たか」。
+  // コンテンツの伸長 (動的測定の確定・ストリーミング delta) は scroll イベントを
+  // 発火しないため、ユーザーが上にスクロールしない限り true のまま保たれる。
+  // 旧 isNearBottom (effect 時点の距離判定) だと、伸長が 120px を超えた時点で
+  // 追従が外れてドリフトが蓄積する。
+  const stickToBottomRef = useRef(true);
+  const handleListScroll = useCallback(() => {
     const el = scrollContainerRef.current;
-    if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (!el) return;
+    stickToBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }, []);
+
+  // 動的測定で totalSize が確定 / 伸長するたび、追従中なら末尾へ貼り直す。
+  // virtualizer の at-end 補正 (anchorTo: "end") は scrollTop 補正の瞬間に
+  // sized div の height がまだ旧値でクランプされうるため、render 後 (= DOM
+  // 高さが新しい) の effect での再アンカーが収束の正本。
+  const totalSize = virtualizer.getTotalSize();
+  useEffect(() => {
+    if (stickToBottomRef.current) scrollToBottom();
+  }, [totalSize, scrollToBottom]);
 
   // セッション切替後、メッセージ load が完了した最初の render で必ず末尾へ
   // ジャンプする。selectSession は activeSessionId を切り替えた瞬間に
   // messages を空 + isLoadingMessages=true にし、load 完了時に messages と
   // isLoadingMessages=false を 1 回の set で同時更新する (chatStore.selectSession)。
   // そのため activeSessionId だけを deps にすると、本文到着前 (空) に
-  // ジャンプして以降の本文到着は near-bottom ガードに弾かれ、履歴のある
-  // セッションを開くたび先頭に着地する回帰になる。load 完了を待ってジャンプする。
+  // ジャンプして履歴のあるセッションを開くたび先頭に着地する回帰になる。
+  // load 完了を待ってジャンプする。
+  //
+  // ジャンプ先は推定 totalSize 由来でズレうるが、着地が「末尾 120px 以内」で
+  // ありさえすれば、以降の動的測定差分は virtualizer の at-end 補正
+  // (anchorTo: "end") が末尾に貼り直すので収束する。同一セッション内の
+  // ストリーミング追従も followOnAppend / at-end 補正に任せる (旧実装の
+  // messages 依存 isNearBottom 追従 effect は廃止)。
   const lastJumpedSessionRef = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -561,19 +645,10 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       !isLoadingMessages
     ) {
       lastJumpedSessionRef.current = activeSessionId;
+      stickToBottomRef.current = true;
       scrollToBottom();
-      return;
     }
-    // 同一セッション内の更新 (ストリーミング等) は、ユーザーが既に最下部付近に
-    // いるときだけ追従する。
-    if (isNearBottom()) scrollToBottom();
-  }, [
-    messages,
-    activeSessionId,
-    isLoadingMessages,
-    isNearBottom,
-    scrollToBottom,
-  ]);
+  }, [activeSessionId, isLoadingMessages, scrollToBottom]);
 
   const rawInsertFromChat = useEditorStore((s) => s.insertFromChat);
 
@@ -820,6 +895,8 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
       <div
         ref={scrollContainerRef}
+        data-testid="chat-scroll-container"
+        onScroll={handleListScroll}
         className="flex-1 overflow-y-auto px-4 py-3"
       >
         {isLoadingMessages ? (
@@ -836,41 +913,56 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
             </p>
           </div>
         ) : (
-          <div className="space-y-4" ref={(el) => setMessagesContainerEl(el)}>
-            <AnimatePresence initial={false}>
-              {messages
-                .filter((msg) => msg.role !== "system" && !msg.isSummarized)
-                .map((msg) => (
-                  <motion.div
+          <>
+            {/* 行は absolute + translateY 配置なので、行間 (旧 space-y-4) は
+                各行の pb-4 として測定高さに含める */}
+            <div
+              data-testid="chat-virtual-list"
+              className="relative w-full"
+              style={{ height: `${virtualizer.getTotalSize()}px` }}
+              ref={(el) => setMessagesContainerEl(el)}
+            >
+              {virtualizer.getVirtualItems().map((vItem) => {
+                const msg = visibleMessages[vItem.index];
+                if (!msg) return null;
+                const animateIn = entranceAnim.animateIds.has(msg.id);
+                return (
+                  <div
                     key={msg.id}
-                    initial={
-                      msg.role === "user" ? { opacity: 0, x: 20 } : false
-                    }
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0 }}
-                    transition={
-                      reduced
-                        ? { duration: 0 }
-                        : { type: "spring", stiffness: 260, damping: 22 }
-                    }
+                    data-index={vItem.index}
+                    ref={virtualizer.measureElement}
+                    className="absolute left-0 top-0 w-full pb-4"
+                    style={{ transform: `translateY(${vItem.start}px)` }}
                   >
-                    <ChatMessage
-                      msg={msg}
-                      isStreaming={isStreaming}
-                      onInsert={insertFromChat}
-                      onExtractCodexQuick={handleExtractCodexQuick}
-                      onExtractCodexDetailed={handleExtractCodexDetailed}
-                      onSaveSnippetQuick={handleSaveSnippetQuick}
-                      onSaveSnippetDetailed={handleSaveSnippetDetailed}
-                      onEdit={handleEditMessage}
-                      onDelete={handleDeleteMessage}
-                      onRegenerate={handleRegenerate}
-                      onRetryWithAgent={handleRetryWithAgent}
-                      onContextMenu={handleContextMenu}
-                    />
-                  </motion.div>
-                ))}
-            </AnimatePresence>
+                    <motion.div
+                      data-animate-in={animateIn || undefined}
+                      initial={animateIn ? { opacity: 0, x: 20 } : false}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={
+                        reduced
+                          ? { duration: 0 }
+                          : { type: "spring", stiffness: 260, damping: 22 }
+                      }
+                    >
+                      <ChatMessage
+                        msg={msg}
+                        isStreaming={isStreaming}
+                        onInsert={insertFromChat}
+                        onExtractCodexQuick={handleExtractCodexQuick}
+                        onExtractCodexDetailed={handleExtractCodexDetailed}
+                        onSaveSnippetQuick={handleSaveSnippetQuick}
+                        onSaveSnippetDetailed={handleSaveSnippetDetailed}
+                        onEdit={handleEditMessage}
+                        onDelete={handleDeleteMessage}
+                        onRegenerate={handleRegenerate}
+                        onRetryWithAgent={handleRetryWithAgent}
+                        onContextMenu={handleContextMenu}
+                      />
+                    </motion.div>
+                  </div>
+                );
+              })}
+            </div>
             {pendingUserQuestion &&
               pendingUserQuestion.sessionId === activeSessionId && (
                 <UserQuestionCard
@@ -890,7 +982,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
                 </span>
               </div>
             )}
-          </div>
+          </>
         )}
         <div ref={bottomRef} />
       </div>
