@@ -604,7 +604,9 @@
       "developerMessage": {
         "title": "開発者からのメッセージ",
         "description": "規約ではない、開発者からの言葉"
-      }
+      },
+      "licensingEnabled": "ライセンス機構あり",
+      "licensingDisabled": "ライセンス機構なし（ベータ）"
     }
   },
   "layout": {

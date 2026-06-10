@@ -67,7 +67,7 @@ const COPY = {
       title_ja: ["全部、", "あなたの machine の中。"],
       title_en: "All on your machine.",
       body_ja:
-        "原稿は SQLite にローカル保存。アカウントは要らない。ネットに出るのは、あなたが押した AI 呼び出しの瞬間だけ。",
+        "原稿は SQLite にローカル保存。アカウントは要らない。通信が起きるのは、あなたが押した AI 呼び出しと、ライセンス確認の小さな ping だけ。",
       body_en:
         "Manuscripts live in local SQLite. No account. The network only sees the AI calls you trigger yourself.",
     },
@@ -122,7 +122,7 @@ const COPY = {
     {
       q_ja: "オフラインで動く？",
       q_en: "Does it work offline?",
-      a_ja: "編集は完全オフライン。AI 呼び出しの時だけネットに出る。",
+      a_ja: "編集は完全オフライン。ネットに出るのは AI 呼び出しとライセンス確認だけ。",
       a_en: "Editing is fully offline. The network is only touched when you fire an AI call.",
     },
     {

@@ -604,7 +604,9 @@
       "developerMessage": {
         "title": "Message from the developer",
         "description": "Not a terms document — words from the developer (Japanese only)"
-      }
+      },
+      "licensingEnabled": "Licensing enabled",
+      "licensingDisabled": "No licensing (beta)"
     }
   },
   "layout": {

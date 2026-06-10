@@ -3,12 +3,16 @@ import { GitBranch, ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { useLicenseStore } from "@/features/license/store";
 
 const GITHUB_URL = "https://github.com/kazormia296/Grimodex";
 
 export function AppInfoHeader() {
   const { t } = useTranslation();
   const [version, setVersion] = useState<string | null>(null);
+  // ライセンス機構の有無 (ライセンス認証設計書 §9.1)。リリースビルドの
+  // feature 指定ミスを目視確認できるようにする。
+  const licensingEnabled = useLicenseStore((s) => s.licensingEnabled);
 
   useEffect(() => {
     getVersion()
@@ -25,6 +29,11 @@ export function AppInfoHeader() {
             {version != null && <span>v{version}</span>}
             <span className="inline-block rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">
               Elastic-2.0
+            </span>
+            <span className="inline-block rounded bg-muted px-1.5 py-0.5 text-[10px]">
+              {licensingEnabled
+                ? t("settings.about.licensingEnabled")
+                : t("settings.about.licensingDisabled")}
             </span>
           </div>
         </div>

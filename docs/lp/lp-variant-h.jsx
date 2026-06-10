@@ -1645,7 +1645,7 @@ function LPVariantH() {
       pain: "クラウドに原稿を預けたくない。",
       title: "ローカルファースト。",
       en: "Local-first, account-free.",
-      body: "原稿は SQLite にローカル保存。アカウント不要。ネットに出るのは、自分で呼んだ AI 呼び出しのみ。ローカルLLMも対応。",
+      body: "原稿は SQLite にローカル保存。アカウント不要。通信が起きるのは、自分で呼んだ AI と、ライセンス確認の小さな ping だけ。ローカルLLMも対応。",
       chip: "LOCAL",
       moveTag: "(INFRA)",
     },
