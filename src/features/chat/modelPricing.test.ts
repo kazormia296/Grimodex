@@ -1,10 +1,29 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import {
   getModelPricing,
   estimateInputCost,
   estimateTotalCost,
   formatCost,
 } from "./modelPricing";
+import {
+  __resetDynamicModelCapsForTests,
+  registerDynamicModelCaps,
+} from "./agent/dynamicModelCaps";
+
+const lsStore: Record<string, string> = {};
+// @ts-expect-error – test stub
+globalThis.localStorage = {
+  getItem: (k: string) => lsStore[k] ?? null,
+  setItem: (k: string, v: string) => {
+    lsStore[k] = v;
+  },
+  removeItem: (k: string) => {
+    delete lsStore[k];
+  },
+  clear: () => {
+    for (const k of Object.keys(lsStore)) delete lsStore[k];
+  },
+};
 
 describe("estimateTotalCost", () => {
   it("sums input and output cost (sonnet 3/15 per 1M)", () => {
@@ -27,8 +46,8 @@ describe("getModelPricing", () => {
   it("returns pricing for a bare Anthropic model id", () => {
     const p = getModelPricing("claude-opus-4-7");
     expect(p).not.toBeNull();
-    expect(p?.inputPerMillion).toBe(15);
-    expect(p?.outputPerMillion).toBe(75);
+    expect(p?.inputPerMillion).toBe(5);
+    expect(p?.outputPerMillion).toBe(25);
   });
 
   it("strips OpenRouter prefix (anthropic/...)", () => {
@@ -40,8 +59,8 @@ describe("getModelPricing", () => {
 
   it("strips :beta / :online suffix", () => {
     expect(getModelPricing("anthropic/claude-opus-4-7:beta")).toEqual({
-      inputPerMillion: 15,
-      outputPerMillion: 75,
+      inputPerMillion: 5,
+      outputPerMillion: 25,
     });
   });
 
@@ -66,8 +85,8 @@ describe("getModelPricing", () => {
 
   it("strips -latest suffix", () => {
     expect(getModelPricing("claude-opus-4-7-latest")).toEqual({
-      inputPerMillion: 15,
-      outputPerMillion: 75,
+      inputPerMillion: 5,
+      outputPerMillion: 25,
     });
   });
 
@@ -88,9 +107,9 @@ describe("getModelPricing", () => {
 
 describe("estimateInputCost", () => {
   it("computes USD per 1M tokens", () => {
-    // claude-opus-4-7: $15 / 1M tokens. 45,000 tokens = $0.675
+    // claude-opus-4-7: $5 / 1M tokens. 45,000 tokens = $0.225
     const cost = estimateInputCost("claude-opus-4-7", 45_000);
-    expect(cost).toBeCloseTo(0.675, 3);
+    expect(cost).toBeCloseTo(0.225, 3);
   });
 
   it("returns null when model is unknown", () => {
@@ -121,5 +140,44 @@ describe("formatCost", () => {
   it("rounds amounts >=$10 to integer", () => {
     expect(formatCost(15.4)).toBe("$15");
     expect(formatCost(150.7)).toBe("$151");
+  });
+});
+
+describe("getModelPricing: 動的レジストリ優先", () => {
+  beforeEach(() => {
+    __resetDynamicModelCapsForTests();
+    (globalThis.localStorage as { clear: () => void }).clear();
+  });
+  afterEach(() => {
+    __resetDynamicModelCapsForTests();
+    (globalThis.localStorage as { clear: () => void }).clear();
+  });
+
+  it("動的レジストリの pricing が手動テーブルより優先される", () => {
+    registerDynamicModelCaps([
+      {
+        id: "anthropic/claude-sonnet-4-6",
+        name: "Claude Sonnet 4.6",
+        contextLength: 1_000_000,
+        supportedParameters: ["tools"],
+        pricingPrompt: "0.000004", // $4/1M (手動テーブルの $3 より高い)
+        pricingCompletion: "0.000020",
+      },
+    ]);
+    const p = getModelPricing("anthropic/claude-sonnet-4-6");
+    expect(p?.inputPerMillion).toBeCloseTo(4.0);
+    expect(p?.outputPerMillion).toBeCloseTo(20.0);
+  });
+
+  it("動的データがない場合は手動テーブルにフォールバックする", () => {
+    const p = getModelPricing("claude-opus-4-8");
+    expect(p?.inputPerMillion).toBe(5);
+    expect(p?.outputPerMillion).toBe(25);
+  });
+
+  it("Fable 5 の手動テーブル fallback 価格", () => {
+    const p = getModelPricing("claude-fable-5");
+    expect(p?.inputPerMillion).toBe(10);
+    expect(p?.outputPerMillion).toBe(50);
   });
 });

@@ -1,4 +1,6 @@
-// LAST_UPDATED: 2026-05-11
+import { getDynamicModelMeta } from "./agent/dynamicModelCaps";
+
+// LAST_UPDATED: 2026-06-10
 /**
  * 主要 AI モデルの推定料金テーブル（USD / 1M tokens）。
  *
@@ -8,16 +10,12 @@
  * # 仕様
  * - **input** / **output** それぞれ 100 万トークン単価 (USD) を保持。
  * - OpenRouter prefix (`anthropic/claude-...`) と bare ID の両方に対応 (`normalizeModelId`)。
- * - 価格は手作業で同期。確証の無いモデルはテーブルに入れず null を返す
- *   (UI では token 数のみ表示にフォールバック)。
- * - 将来的には OpenRouter API からの動的取得に置き換えたい
- *   (memo: project_dynamic_model_caps.md)。
+ * - getModelPricing は OpenRouter 動的レジストリ（dynamicModelCaps）を優先照会し、
+ *   未登録時のみ手動テーブルにフォールバックする。
  *
- * # 対象スコープ
- * 公式公開価格で確証が取れる主要モデルだけ。Claude 4.x は出荷時点で 3-Opus と
- * 同じティア構造 ($15/$75 Opus、$3/$15 Sonnet) を踏襲しているため Sonnet 帯まで
- * 採用。Haiku 4.x、xAI、Gemini 2.5、o1/o3、gpt-4.5 系は変動 / 確証不足のため
- * 意図的に未収録。
+ * # 手動テーブルの対象スコープ
+ * Anthropic 直叩き等、動的データが得られないプロバイダ向けの静的 fallback。
+ * 確証の無いモデルはテーブルに入れず null を返す（UI では token 数のみ表示）。
  */
 
 export interface ModelPricing {
@@ -28,16 +26,20 @@ export interface ModelPricing {
 }
 
 /**
- * "正規化済みキー" → 料金 のテーブル。
- * キーは小文字、provider prefix なしのモデル名。
+ * 手動同期の静的 fallback テーブル。
+ * OpenRouter 動的レジストリにヒットしない場合のみ参照する。
+ * キーは小文字、provider prefix なし。
  */
 const PRICING: Record<string, ModelPricing> = {
-  // Anthropic Claude 4.x — 出荷時点で 3-Opus と同じ tier 構造
-  "claude-opus-4-7": { inputPerMillion: 15, outputPerMillion: 75 },
-  "claude-opus-4-6": { inputPerMillion: 15, outputPerMillion: 75 },
-  "claude-opus-4-5": { inputPerMillion: 15, outputPerMillion: 75 },
+  // Anthropic Claude 4.x (Anthropic 直叩き用 fallback)
+  "claude-fable-5": { inputPerMillion: 10, outputPerMillion: 50 },
+  "claude-opus-4-8": { inputPerMillion: 5, outputPerMillion: 25 },
+  "claude-opus-4-7": { inputPerMillion: 5, outputPerMillion: 25 },
+  "claude-opus-4-6": { inputPerMillion: 5, outputPerMillion: 25 },
+  "claude-opus-4-5": { inputPerMillion: 5, outputPerMillion: 25 },
   "claude-sonnet-4-6": { inputPerMillion: 3, outputPerMillion: 15 },
   "claude-sonnet-4-5": { inputPerMillion: 3, outputPerMillion: 15 },
+  "claude-haiku-4-5": { inputPerMillion: 1, outputPerMillion: 5 },
   // Claude 3.x 系
   "claude-3-5-sonnet": { inputPerMillion: 3, outputPerMillion: 15 },
   "claude-3-5-haiku": { inputPerMillion: 0.8, outputPerMillion: 4 },
@@ -74,11 +76,19 @@ function normalizeModelId(id: string): string {
 
 /**
  * モデル ID から料金を引く。未登録モデルは null。
+ * OpenRouter 動的レジストリ（inPerM/outPerM）→ 手動テーブル の順で解決する。
  */
 export function getModelPricing(
   modelId: string | null | undefined,
 ): ModelPricing | null {
   if (!modelId) return null;
+
+  // OpenRouter 動的レジストリを優先参照
+  const dyn = getDynamicModelMeta(modelId);
+  if (dyn?.inPerM != null && dyn.outPerM != null) {
+    return { inputPerMillion: dyn.inPerM, outputPerMillion: dyn.outPerM };
+  }
+
   const key = normalizeModelId(modelId);
   return PRICING[key] ?? null;
 }
