@@ -108,8 +108,9 @@ describe("sendChat", () => {
 describe("fetchModels", () => {
   it("returns static list for Anthropic", async () => {
     const models = await fetchModels("anthropic", "sk-test");
-    expect(models).toHaveLength(2);
-    expect(models[0].id).toBe("claude-sonnet-4-6");
+    expect(models).toHaveLength(6);
+    expect(models[0].id).toBe("claude-fable-5");
+    expect(models[4].id).toBe("claude-sonnet-4-6");
     expect(mockFetch).not.toHaveBeenCalled();
   });
 

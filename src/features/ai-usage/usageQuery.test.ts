@@ -51,7 +51,7 @@ describe("getProjectUsageSummary", () => {
         tokensOut: 1000,
         costUsd: null,
       },
-      // different surface, estimated (opus 15/75): 100/1e6*15 + 100/1e6*75 = 0.009
+      // different surface, estimated (opus 5/25): 100/1e6*5 + 100/1e6*25 = 0.003
       {
         surface: "map_branch",
         model: "claude-opus-4-7",
@@ -66,7 +66,7 @@ describe("getProjectUsageSummary", () => {
     expect(s.totalTokensIn).toBe(3100);
     expect(s.totalTokensOut).toBe(1600);
     expect(s.anyCostEstimated).toBe(true);
-    expect(s.totalCostUsd).toBeCloseTo(0.02 + 0.021 + 0.009, 5);
+    expect(s.totalCostUsd).toBeCloseTo(0.02 + 0.021 + 0.003, 5);
 
     const chat = s.bySurface.find((x) => x.surface === "chat");
     expect(chat?.count).toBe(2);
