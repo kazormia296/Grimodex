@@ -28,6 +28,10 @@ devtools = ["tauri/devtools"]
 # `cargo test --no-default-features` で off にすれば chunker などの pure-logic テストが
 # onnxruntime バイナリ無しで走る (Tauri ビルド時に download-binaries が dl)。
 semantic-embedding = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
+# ライセンス認証機構 (ライセンス認証設計書 §9.1)。ベータ配布ビルドでは無効のまま
+# (= 全ゲート素通り・License UI 非表示)。1.0 リリースビルドのみ --features licensing。
+# 無効でもコマンドは登録され、get_license_state が licensing_enabled:false を返す。
+licensing = []
 
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api"] }

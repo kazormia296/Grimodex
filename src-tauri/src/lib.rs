@@ -5,6 +5,7 @@ mod codex_matching;
 mod commands;
 mod database;
 mod external_mount;
+mod license;
 mod lint_logging;
 mod semantic;
 mod workspace;
