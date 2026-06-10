@@ -98,6 +98,9 @@ pub(crate) struct LicensePath {
     /// 並行しうるため、これが無いと lost update が起きる。
     /// ガードは絶対に await を跨がないこと (std::sync::MutexGuard は !Send)。
     pub(crate) write_lock: Mutex<()>,
+    /// validate の in-flight フラグ。手動再検証とバックグラウンドサイクルが
+    /// 同時に Polar へ validate を二重送信するのを防ぐ。
+    pub(crate) validate_in_flight: std::sync::atomic::AtomicBool,
 }
 
 // ---------------------------------------------------------------------------

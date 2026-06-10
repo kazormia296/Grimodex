@@ -19,6 +19,7 @@ const INITIAL = {
   activatedAt: null,
   lastValidatedAt: null,
   initialized: false,
+  staleConfirmed: false,
 } as const;
 
 function trialDto(): LicenseStateDto {
@@ -78,6 +79,78 @@ describe("license/store", () => {
     const s = useLicenseStore.getState();
     expect(s.status).toBe("trial");
     expect(s.initialized).toBe(true);
+  });
+
+  it("activate は activate_license を呼び応答 DTO を反映する", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      ...trialDto(),
+      status: "licensed",
+      keyTail: "5678",
+    });
+    await useLicenseStore.getState().activate("GRIM-KEY-5678");
+    expect(mockInvoke).toHaveBeenCalledWith("activate_license", {
+      key: "GRIM-KEY-5678",
+    });
+    const s = useLicenseStore.getState();
+    expect(s.status).toBe("licensed");
+    expect(s.keyTail).toBe("5678");
+    expect(s.initialized).toBe(true);
+  });
+
+  it("activate 失敗は reject し状態を変えない (UI がエラー文言を表示する契約)", async () => {
+    mockInvoke.mockRejectedValueOnce("ライセンスキーが見つかりません");
+    await expect(
+      useLicenseStore.getState().activate("BAD-KEY"),
+    ).rejects.toBeTruthy();
+    expect(useLicenseStore.getState().status).toBe("disabled");
+  });
+
+  it("deactivate は deactivate_license を呼び応答 DTO を反映する", async () => {
+    mockInvoke.mockResolvedValueOnce(trialDto());
+    await useLicenseStore.getState().deactivate();
+    expect(mockInvoke).toHaveBeenCalledWith("deactivate_license");
+    expect(useLicenseStore.getState().status).toBe("trial");
+  });
+
+  it("revalidate は revalidate_license を呼び応答 DTO を反映する", async () => {
+    mockInvoke.mockResolvedValueOnce({ ...trialDto(), status: "licensed" });
+    await useLicenseStore.getState().revalidate();
+    expect(mockInvoke).toHaveBeenCalledWith("revalidate_license");
+    expect(useLicenseStore.getState().status).toBe("licensed");
+  });
+
+  it("refresh の license_stale は未確認のまま（§3 前方ジャンプ対策）", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      ...trialDto(),
+      status: "license_stale",
+    });
+    await useLicenseStore.getState().refresh();
+    const s = useLicenseStore.getState();
+    expect(s.status).toBe("license_stale");
+    expect(s.staleConfirmed).toBe(false);
+  });
+
+  it("applyValidatedState の license_stale は確認済みになる", () => {
+    useLicenseStore
+      .getState()
+      .applyValidatedState({ ...trialDto(), status: "license_stale" });
+    expect(useLicenseStore.getState().staleConfirmed).toBe(true);
+    // stale 以外なら確認フラグは下りる
+    useLicenseStore
+      .getState()
+      .applyValidatedState({ ...trialDto(), status: "licensed" });
+    expect(useLicenseStore.getState().staleConfirmed).toBe(false);
+  });
+
+  it("revalidate 失敗は staleConfirmed を立てて reject する", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      ...trialDto(),
+      status: "license_stale",
+    });
+    await useLicenseStore.getState().refresh();
+    mockInvoke.mockRejectedValueOnce("サーバーに接続できません");
+    await expect(useLicenseStore.getState().revalidate()).rejects.toBeTruthy();
+    expect(useLicenseStore.getState().staleConfirmed).toBe(true);
   });
 
   it("applyState は DTO を反映し initialized を立てる", () => {

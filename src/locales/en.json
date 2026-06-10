@@ -3054,6 +3054,42 @@
     }
   },
   "license": {
-    "writeBlocked": "Editing is locked without a valid license (reading, search, and export remain available)"
+    "writeBlocked": "Editing is locked without a valid license (reading, search, and export remain available)",
+    "settings": {
+      "statusLabel": "License status",
+      "status": {
+        "trial": "Trial — {{days}} days left (only days you write count)",
+        "trialLast": "Today is the last day of your trial",
+        "trialExpired": "Trial has ended. A license unlocks all features",
+        "licensed": "Licensed (key ending in {{tail}})",
+        "grace": "Offline grace period ({{days}} days left) — revalidates automatically when online",
+        "stale": "License needs revalidation (no server contact for an extended period)",
+        "revoked": "This license has been revoked (refund, expiry, etc.)"
+      },
+      "explainRestricted": "Reading, search, export, backup, and restore all remain available.",
+      "lastValidated": "Last validated: {{date}}",
+      "activateTitle": "Activate license key",
+      "keyPlaceholder": "Enter license key",
+      "activate": "Activate",
+      "activating": "Verifying…",
+      "activated": "License activated",
+      "deactivateTitle": "Deactivate this device",
+      "deactivateDescription": "Deactivate here to use the license on another device (limit: 5). Remaining trial days are restored.",
+      "deactivate": "Deactivate this device",
+      "deactivateConfirm": "Click to confirm deactivation",
+      "deactivated": "This device has been deactivated",
+      "revalidate": "Revalidate now",
+      "revalidated": "License revalidated",
+      "purchase": "Purchase a license (opens external site)"
+    },
+    "badge": {
+      "trial": "{{days}} trial days left",
+      "trialTitle": "Trial days remaining (click for license settings)",
+      "grace": "Offline grace period — revalidates automatically when online"
+    },
+    "banner": {
+      "restricted": "Editing is locked without a valid license — reading and exporting are always available.",
+      "openSettings": "Open license settings"
+    }
   }
 }

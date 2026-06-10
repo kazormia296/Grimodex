@@ -8,6 +8,7 @@ import {
   BookOpen,
   CheckSquare,
   Info,
+  KeyRound,
   Network,
   Activity,
 } from "lucide-react";
@@ -24,6 +25,7 @@ export type SettingsCategory =
   | "map"
   | "linter"
   | "usage"
+  | "license"
   | "about";
 
 export interface CategoryDef {
@@ -43,6 +45,8 @@ export const SETTINGS_CATEGORIES: CategoryDef[] = [
   { id: "map", label: "Map", Icon: Network },
   { id: "linter", label: "Linter", Icon: CheckSquare },
   { id: "usage", label: "Usage", Icon: Activity },
+  // License は licensing 無効ビルドでは CategoryNav が非表示にする (設計書 §9.1)
+  { id: "license", label: "License", Icon: KeyRound },
   { id: "about", label: "About", Icon: Info },
 ];
 

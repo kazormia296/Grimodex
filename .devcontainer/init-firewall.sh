@@ -72,6 +72,8 @@ done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
 # Resolve and add other allowed domains
 # lindera.dev / *.pyke.io: Grimodex の Rust ビルド依存。lindera-unidic の build.rs が
 # lindera.dev から UniDic 辞書を、ort-sys が cdn.pyke.io から ONNX Runtime prebuilt を取得する。
+# *.polar.sh: ライセンス認証 (Phase 3)。docs = API 仕様の突き合わせ、
+# api = customer-portal 系エンドポイントの応答形実測（認証不要）。
 for domain in \
     "registry.npmjs.org" \
     "auth.openai.com" \
@@ -93,7 +95,10 @@ for domain in \
     "sh.rustup.rs" \
     "lindera.dev" \
     "cdn.pyke.io" \
-    "parcel.pyke.io"; do
+    "parcel.pyke.io" \
+    "polar.sh" \
+    "docs.polar.sh" \
+    "api.polar.sh"; do
     echo "Resolving $domain..."
     ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then

@@ -114,6 +114,8 @@ import { getDocText } from "@/features/editor/RubyNode";
 import { useLinter } from "@/features/lint/useLinter";
 import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
 import { AiPolicyBadge } from "@/features/ai-policy/AiPolicyBadge";
+import { LicenseBadge } from "@/features/license/LicenseBadge";
+import { LicenseRestrictionBanner } from "@/features/license/LicenseRestrictionBanner";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
 import { findChunkInDoc } from "@/features/semantic-search/findChunkInDoc";
@@ -1589,6 +1591,7 @@ export function EditorPane({
         sceneId={isCodexMode || isSnippetMode ? undefined : nodeId}
         nodeType={activeNode?.nodeType}
       />
+      <LicenseRestrictionBanner />
       {isFileBacked && !isCodexMode && !isSnippetMode && (
         <FileBackedSceneBanner />
       )}
@@ -1967,6 +1970,7 @@ export function EditorPane({
         {/* Right: stats + save state + history */}
         <div className="flex flex-shrink-0 items-center gap-3">
           <AiPolicyBadge />
+          <LicenseBadge />
           <StatusBarIndicator />
           {showAttribution && aiRatio > 0 && (
             <button

@@ -121,28 +121,43 @@ pub(crate) fn activation_label() -> String {
     format!("Grimodex on {os}")
 }
 
-/// §4.3 benefit_id 照合。期待値が未設定 (ベータ〜Product 作成前) は素通り。
-pub(crate) fn benefit_matches(benefit_id: Option<&str>) -> bool {
-    benefit_matches_with(POLAR_EXPECTED_BENEFIT_ID, benefit_id)
+/// §4.3 benefit_id 照合。**「存在して不一致」のときのみ** true (= 弾く)。
+/// 欠損 (None) は照合せず通す — 応答仕様の揺れで正規キーを弾かない・
+/// 曖昧ケースを revoked に倒さない (fail-soft、コミット前レビュー確定指摘)。
+/// 期待値が未設定 (ベータ〜Product 作成前) も素通り。
+pub(crate) fn benefit_mismatch(benefit_id: Option<&str>) -> bool {
+    benefit_mismatch_with(POLAR_EXPECTED_BENEFIT_ID, benefit_id)
 }
 
-fn benefit_matches_with(expected: &str, benefit_id: Option<&str>) -> bool {
-    expected.is_empty() || benefit_id == Some(expected)
+fn benefit_mismatch_with(expected: &str, benefit_id: Option<&str>) -> bool {
+    if expected.is_empty() {
+        return false;
+    }
+    match benefit_id {
+        Some(b) => b != expected,
+        None => false,
+    }
 }
 
 /// Polar 用 HTTP クライアント。設計書 §5.4: connect 5s / total 15s を明示
 /// (既存 ai.rs の `Client::new()` は timeout 無設定なので踏襲しない)。
-fn polar_http_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            // builder が失敗する環境 (TLS 初期化不能等) では timeout なしの
-            // default に倒す。unwrap で起動を殺すより fail-soft を優先。
-            .unwrap_or_default()
-    })
+///
+/// 初期化失敗 (TLS 初期化不能等の壊れた環境) は Err = 通信失敗扱いに倒す。
+/// reqwest の `Client::default()` は内部で `build().expect()` するため
+/// フォールバックにならない (panic する) — Option キャッシュで本物の
+/// fail-soft にする (コミット前レビュー確定指摘)。
+fn polar_http_client() -> anyhow::Result<&'static reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("HTTP クライアントの初期化に失敗しました"))
 }
 
 pub(crate) async fn polar_activate(key: &str) -> anyhow::Result<PolarActivation> {
@@ -195,7 +210,7 @@ async fn polar_activate_at(
         "organization_id": organization_id,
         "label": activation_label(),
     });
-    let res = polar_http_client()
+    let res = polar_http_client()?
         .post(&url)
         .json(&body)
         .send()
@@ -233,7 +248,7 @@ async fn polar_validate_at(
         "organization_id": organization_id,
         "activation_id": activation_id,
     });
-    let res = polar_http_client()
+    let res = polar_http_client()?
         .post(&url)
         .json(&body)
         .send()
@@ -245,8 +260,9 @@ async fn polar_validate_at(
                 anyhow::anyhow!("ライセンスサーバーの応答を解釈できませんでした: {e}")
             })?;
             // キー無効は HTTP エラーではなく status で表現される (公式仕様)。
-            // benefit 不一致 (§4.3: 別メジャーバージョンのキー) も無効扱い。
-            if parsed.status == "granted" && benefit_matches(parsed.benefit_id.as_deref()) {
+            // benefit が「存在して不一致」(§4.3: 別メジャーバージョンのキー) も
+            // 無効扱い。欠損は照合スキップ (granted を信頼、fail-soft)。
+            if parsed.status == "granted" && !benefit_mismatch(parsed.benefit_id.as_deref()) {
                 Ok(PolarValidateOutcome::Valid {
                     benefit_id: parsed.benefit_id,
                 })
@@ -274,7 +290,7 @@ async fn polar_deactivate_at(
         "organization_id": organization_id,
         "activation_id": activation_id,
     });
-    let res = polar_http_client()
+    let res = polar_http_client()?
         .post(&url)
         .json(&body)
         .send()
@@ -415,15 +431,17 @@ mod polar_tests {
     #[test]
     fn benefit_check_skipped_when_expected_unset() {
         // Product 作成前 (期待値 = 空) は照合を素通り (設計書 §4.3)。
-        assert!(benefit_matches_with("", Some("any-benefit")));
-        assert!(benefit_matches_with("", None));
+        assert!(!benefit_mismatch_with("", Some("any-benefit")));
+        assert!(!benefit_mismatch_with("", None));
     }
 
     #[test]
-    fn benefit_check_enforced_when_expected_set() {
-        assert!(benefit_matches_with("ben-v1", Some("ben-v1")));
-        assert!(!benefit_matches_with("ben-v1", Some("ben-v2")));
-        assert!(!benefit_matches_with("ben-v1", None));
+    fn benefit_check_rejects_only_present_mismatch() {
+        assert!(!benefit_mismatch_with("ben-v1", Some("ben-v1")));
+        assert!(benefit_mismatch_with("ben-v1", Some("ben-v2")));
+        // 欠損 (None) は照合スキップ — 曖昧ケースを revoked に倒さない
+        // (fail-soft、コミット前レビュー確定指摘)。
+        assert!(!benefit_mismatch_with("ben-v1", None));
     }
 
     // -- activate -------------------------------------------------------------

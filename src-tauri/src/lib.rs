@@ -90,7 +90,24 @@ pub fn run() {
             app.manage(LicensePath {
                 path: license_path,
                 write_lock: Mutex::new(()),
+                validate_in_flight: std::sync::atomic::AtomicBool::new(false),
             });
+
+            // ライセンスのバックグラウンド再検証 (ライセンス認証設計書 §5.4)。
+            // 起動直後 + 6 時間ごとに「最終検証から 7 日以上」をチェックして
+            // validate を投げ、結果を license:state_changed イベントで push する。
+            // licensing feature 無効ビルドではサイクル先頭で即 return する。
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // 起動処理 (workspace open 等) との競合を避けて少し待つ。
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    loop {
+                        commands::license::run_validate_cycle(&handle).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(6 * 60 * 60)).await;
+                    }
+                });
+            }
 
             // Workspace state starts empty — frontend will call open_workspace
             app.manage(WorkspaceState {

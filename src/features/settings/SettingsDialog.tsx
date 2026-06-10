@@ -14,6 +14,7 @@ import { CodexCategory } from "./categories/CodexCategory";
 import { MapCategory } from "./categories/MapCategory";
 import { LinterCategory } from "./categories/LinterCategory";
 import { UsageCategory } from "./categories/UsageCategory";
+import { LicenseCategory } from "./categories/LicenseCategory";
 import { AboutCategory } from "./categories/AboutCategory";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 
@@ -45,6 +46,8 @@ function CategoryContent({ category }: { category: SettingsCategory }) {
       return <LinterCategory />;
     case "usage":
       return <UsageCategory />;
+    case "license":
+      return <LicenseCategory />;
     case "about":
       return <AboutCategory />;
   }

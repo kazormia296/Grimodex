@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import { SETTINGS_CATEGORIES, type SettingsCategory } from "./types";
+import { useLicenseStore } from "@/features/license/store";
 
 interface CategoryNavProps {
   active: SettingsCategory;
@@ -7,9 +8,14 @@ interface CategoryNavProps {
 }
 
 export function CategoryNav({ active, onChange }: CategoryNavProps) {
+  // licensing 無効ビルド (ベータ) では License カテゴリを出さない (設計書 §9.1)。
+  const licensingEnabled = useLicenseStore((s) => s.licensingEnabled);
+  const categories = SETTINGS_CATEGORIES.filter(
+    ({ id }) => id !== "license" || licensingEnabled,
+  );
   return (
     <nav className="flex w-[120px] flex-shrink-0 flex-col gap-0.5 border-r border-border p-2">
-      {SETTINGS_CATEGORIES.map(({ id, label, Icon }) => (
+      {categories.map(({ id, label, Icon }) => (
         <button
           key={id}
           type="button"

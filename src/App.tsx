@@ -28,6 +28,7 @@ import { useExternalMountListener } from "@/features/external-mount/useExternalM
 import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
 import { useLicenseStore } from "@/features/license/store";
+import { useLicenseStateListener } from "@/features/license/useLicenseStateListener";
 import { useDebugLogStore } from "@/lib/debugLog";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
@@ -125,6 +126,7 @@ function App() {
   // semantic_reindex_all の進行状況 event を購読 (App 起動中ずっと 1 度だけ)。
   useReindexProgressListener();
   useExternalMountListener();
+  useLicenseStateListener();
 
   // Sync uiLanguage setting → i18next
   useEffect(() => {

@@ -15,23 +15,28 @@ import type { LicenseStatus } from "./types";
  * blockIfPolicyOff の隣に置く。DB 層 api.ts には置かない（importApi.ts が
  * create 系を共有しており、インポート・復元を巻き込むため）。
  */
-const RESTRICTED_STATUSES: ReadonlySet<LicenseStatus> = new Set([
-  "trial_expired",
-  "license_stale",
-  "revoked",
-]);
-
 export function isRestrictedLicenseState(
   licensingEnabled: boolean,
   status: LicenseStatus,
+  staleConfirmed: boolean,
 ): boolean {
-  return licensingEnabled && RESTRICTED_STATUSES.has(status);
+  if (!licensingEnabled) return false;
+  if (status === "trial_expired" || status === "revoked") return true;
+  // license_stale はローカル時計だけで確定させない。validate を 1 回試行して
+  // 失敗を確認する（staleConfirmed）まで制限を発動しない — 時計の前方ジャンプ
+  // で誤ってロックしないため（設計書 §3、コミット前レビュー確定指摘）。
+  if (status === "license_stale") return staleConfirmed;
+  return false;
 }
 
 /** store の同期キャッシュで「書き込み制限中か」を返す（React 外から呼べる）。 */
 export function isWriteRestrictedByLicense(): boolean {
   const s = useLicenseStore.getState();
-  return isRestrictedLicenseState(s.licensingEnabled, s.status);
+  return isRestrictedLicenseState(
+    s.licensingEnabled,
+    s.status,
+    s.staleConfirmed,
+  );
 }
 
 /**
@@ -47,7 +52,7 @@ export function blockIfUnlicensed(): boolean {
 /** エディタ editable 等のリアクティブ購読用フック。 */
 export function useLicenseWriteRestricted(): boolean {
   return useLicenseStore((s) =>
-    isRestrictedLicenseState(s.licensingEnabled, s.status),
+    isRestrictedLicenseState(s.licensingEnabled, s.status, s.staleConfirmed),
   );
 }
 
