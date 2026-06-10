@@ -20,6 +20,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { BUILTIN_CODEX_TYPES } from "@/features/codex/api";
 import { listCodexTypes, type CodexType } from "@/features/codex/typeApi";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import {
   ImportDropzone,
   ImportErrorList,
@@ -105,6 +106,7 @@ export function NovelImportFlow({ importTarget, onClose }: Props) {
 
   const runImport = useCallback(async () => {
     if (!plan) return;
+    if (blockIfUnlicensed()) return;
     setPhase("importing");
     setErrors([]);
     const allErrors: string[] = [];

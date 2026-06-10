@@ -582,8 +582,12 @@ export function MatrixTable({
               <ScenePopover
                 anchorX={popover.x}
                 anchorY={popover.y}
-                onConfirm={(synopsis) => void commitAddScene(synopsis, false)}
-                onAddAnother={(synopsis) => void commitAddScene(synopsis, true)}
+                onConfirm={(synopsis) =>
+                  void commitAddScene(synopsis, false).catch(() => {})
+                }
+                onAddAnother={(synopsis) =>
+                  void commitAddScene(synopsis, true).catch(() => {})
+                }
                 onClose={closeAll}
               />
             )}

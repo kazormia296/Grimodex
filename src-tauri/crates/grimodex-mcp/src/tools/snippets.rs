@@ -94,6 +94,7 @@ pub async fn create_snippet(
             None,
         ));
     }
+    server.ensure_license_allows_write()?;
     let policy = server.reload_policy()?;
     if !policy.knowledge_write {
         return Err(ErrorData::invalid_params(

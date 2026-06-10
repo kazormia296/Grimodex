@@ -23,6 +23,10 @@ import {
   computeDocDiff,
   type BodyDiff,
 } from "@/features/timelapse/bodyDiff";
+import {
+  blockIfUnlicensed,
+  LICENSE_WRITE_RESTRICTED_ERROR,
+} from "@/features/license/gate";
 
 export type CodexSortOrder =
   | "category"
@@ -227,6 +231,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   },
 
   create: async (data) => {
+    if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
     try {
       const id = crypto.randomUUID();
       const entry = await createCodexEntry({

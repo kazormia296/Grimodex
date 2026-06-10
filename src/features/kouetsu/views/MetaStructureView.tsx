@@ -6,6 +6,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { useLensStore } from "@/features/post-effect/lensStore";
 import {
   buildMultiPayload,
@@ -85,6 +86,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
   const runScene = useCallback(async () => {
     if (running || !sceneId) return;
     if (blockIfPolicyOff("analysis")) return;
+    if (blockIfUnlicensed()) return;
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
     const customKouetsu = useSettingsStore
@@ -148,6 +150,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
   const runProject = useCallback(async () => {
     if (running) return;
     if (blockIfPolicyOff("analysis")) return;
+    if (blockIfUnlicensed()) return;
     const { nodes } = useTreeStore.getState();
     if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
     const model =

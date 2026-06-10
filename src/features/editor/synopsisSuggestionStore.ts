@@ -8,6 +8,7 @@ import {
   blockIfPolicyOff,
   isAiFeatureBlockedByPolicy,
 } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { prosemirrorToText } from "@/lib/prosemirror";
 
 const TOAST_ID = "synopsis-suggestion";
@@ -52,6 +53,7 @@ export const useSynopsisSuggestionStore = create<SynopsisSuggestionState>(
     },
     async generate() {
       if (blockIfPolicyOff("bodyWrite")) return;
+      if (blockIfUnlicensed()) return;
       const id = get().pendingSceneId;
       if (!id) return;
       set({ pendingSceneId: null });

@@ -1233,7 +1233,7 @@ export function GridPanel() {
           {(chapters.length > 0 || looseScenes.length > 0) && (
             <button
               type="button"
-              onClick={() => void addChapter()}
+              onClick={() => void addChapter().catch(() => {})}
               className="flex shrink-0 items-center justify-center self-stretch min-h-[8rem] w-14 rounded-lg border border-dashed border-border bg-transparent text-muted-foreground hover:text-foreground hover:bg-accent/30 hover:border-foreground/40 transition-colors font-mono text-[11px] tracking-widest"
               style={{ writingMode: "vertical-rl" }}
               title={t("grid.header.newChapter", "章を追加")}

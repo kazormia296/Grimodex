@@ -59,6 +59,7 @@ vi.mock("@tiptap/react", () => {
       commands: {
         setContent: vi.fn(),
       },
+      setEditable: vi.fn(),
       destroy: vi.fn(),
     }),
     EditorContent,

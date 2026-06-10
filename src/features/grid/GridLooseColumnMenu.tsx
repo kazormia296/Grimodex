@@ -88,7 +88,7 @@ export function GridLooseColumnMenu({
         className="min-w-[200px]"
         onClick={(e) => e.stopPropagation()}
       >
-        <DropdownMenuItem onSelect={() => void addScene()}>
+        <DropdownMenuItem onSelect={() => void addScene().catch(() => {})}>
           <Plus className="h-3.5 w-3.5" />
           {t("grid.column.contextMenu.addScene", "シーンを追加")}
         </DropdownMenuItem>

@@ -47,6 +47,7 @@ import {
 } from "@/features/codex/tagApi";
 import type { CodexTag } from "@/features/codex/tagApi";
 import { useFitsInline } from "@/hooks/useFitsInline";
+import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
@@ -93,6 +94,7 @@ export function SnippetDetailContent({
   });
 
   useAttribution(editor);
+  useLicenseEditableSync(editor);
   useCodexHighlight(editor, { skipMatchedIds: true });
   useTrashBinCapture(editor, { kind: "snippet", id: snippet.id });
 

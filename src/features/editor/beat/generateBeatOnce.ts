@@ -9,6 +9,7 @@ import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming
 import { insertGenerationLog } from "@/features/attribution/generationLogApi";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { buildBeatMessages } from "./beatPromptBuilder";
 import {
   appendBeatChunk,
@@ -33,6 +34,7 @@ export async function generateBeatOnce(
   // useBeatGeneration.ts (the hook path). This fire-and-forget entry was the
   // one Beat path missing the gate.
   if (blockIfPolicyOff("bodyWrite")) return;
+  if (blockIfUnlicensed()) return;
 
   const beat = findBeatById(editor, beatId);
   if (!beat) return;

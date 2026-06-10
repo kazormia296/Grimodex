@@ -190,6 +190,19 @@ mod tests {
     }
 
     #[test]
+    fn app_identifier_matches_tauri_conf() {
+        // MCP が dirs::data_dir()/{APP_IDENTIFIER} で license.json を解決する
+        // 前提の保証 (ライセンス認証設計書 §5.1)。identifier を変えたら
+        // grimodex_core::license::APP_IDENTIFIER も追従させること。
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses");
+        assert_eq!(
+            conf["identifier"].as_str(),
+            Some(grimodex_core::license::APP_IDENTIFIER)
+        );
+    }
+
+    #[test]
     fn disabled_dto_reports_disabled() {
         let dto = disabled_dto();
         assert!(!dto.licensing_enabled);

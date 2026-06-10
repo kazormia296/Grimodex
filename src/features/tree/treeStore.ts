@@ -2,6 +2,10 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
 import * as api from "./api";
+import {
+  blockIfUnlicensed,
+  LICENSE_WRITE_RESTRICTED_ERROR,
+} from "@/features/license/gate";
 import type { TreeNode as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -640,6 +644,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async createScene() {
+    if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
     const { projectId, nodes } = get();
     const chapterNode = nodes.find((n) => n.id === DEFAULT_CHAPTER_ID);
     const siblings = nodes.filter(
@@ -675,6 +680,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async createNote() {
+    if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
     const { projectId, nodes } = get();
     const chapterNode = nodes.find((n) => n.id === DEFAULT_CHAPTER_ID);
     const siblings = nodes.filter(
@@ -784,6 +790,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   // --- New tree operations ---
   async createNode({ nodeType, parentId, afterId, title }) {
+    if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
     const { projectId, nodes } = get();
     const siblings = nodes.filter((n) => n.parentId === parentId);
     const sortOrder = nextSortOrder(siblings, afterId);

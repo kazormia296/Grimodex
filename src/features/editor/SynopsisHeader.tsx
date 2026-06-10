@@ -8,6 +8,7 @@ import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { generateSynopsisFromBeats } from "@/features/editor/beat/generateSynopsisFromBeats";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { useTranslation } from "react-i18next";
 
 interface SynopsisHeaderProps {
@@ -82,6 +83,7 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
   const doGenerateFromBeats = useCallback(() => {
     if (!editor) return;
     if (blockIfPolicyOff("bodyWrite")) return;
+    if (blockIfUnlicensed()) return;
     setConfirmOverwrite(false);
     setIsGenerating(true);
     generateSynopsisFromBeats(editor, sceneId, {

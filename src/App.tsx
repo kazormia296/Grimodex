@@ -27,6 +27,7 @@ import { useReindexProgressListener } from "@/features/semantic-search/useReinde
 import { useExternalMountListener } from "@/features/external-mount/useExternalMountListener";
 import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
+import { useLicenseStore } from "@/features/license/store";
 import { useDebugLogStore } from "@/lib/debugLog";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
@@ -264,6 +265,12 @@ function EditorScreen() {
 
   useEffect(() => {
     void initializeExternalMounts().catch(() => {});
+  }, []);
+
+  // ライセンス状態の初期化（refresh は内部 catch 済みで reject しない）。
+  // 取得まで・失敗時はゲートが fail-open なので執筆は止まらない。
+  useEffect(() => {
+    void useLicenseStore.getState().refresh();
   }, []);
 
   useEffect(() => {

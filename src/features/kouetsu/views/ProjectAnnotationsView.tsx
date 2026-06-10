@@ -6,6 +6,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import {
@@ -108,6 +109,7 @@ export function ProjectAnnotationsView() {
     async (kind: "consistency" | "intra" | "both") => {
       if (runningAll) return;
       if (blockIfPolicyOff("analysis")) return;
+      if (blockIfUnlicensed()) return;
       // シーンが無いプロジェクトは静かに終了 (旧 runAll と同じ挙動)
       const { nodes } = useTreeStore.getState();
       if (getSceneIdsForScope(nodes, "project", null).length === 0) return;

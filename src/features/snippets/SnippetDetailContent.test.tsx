@@ -25,6 +25,7 @@ const stableEditor = {
   commands: { setContent: setContentMock },
   on: onMock,
   off: offMock,
+  setEditable: vi.fn(),
   destroy: destroyMock,
 };
 

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { runAiTreeGeneration } from "./runAiTreeGeneration";
 
 export interface AiTreeDialogProps {
@@ -50,6 +51,7 @@ export function AiTreeDialog({
     // gate: 構造編集は structureWrite。synopsis 生成を伴う場合は bodyWrite も要求。
     if (blockIfPolicyOff("structureWrite")) return;
     if (withSynopsis && blockIfPolicyOff("bodyWrite")) return;
+    if (blockIfUnlicensed()) return;
 
     setBusy(true);
     try {

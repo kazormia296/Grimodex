@@ -1,5 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { aiAuthorshipAttrs } from "@/features/attribution/aiAuthorship";
 import { resolveAnnotationRange } from "./resolveAnnotationRange";
 import { updateAnnotationStatus } from "./api";
@@ -35,6 +36,7 @@ export async function applyTypoFixAndResolve(
   // では弾く (security audit AI-1)。決定論的な「ローカル検出」の applyFix は
   // AI 出力ではないため別経路として gate しない。
   if (blockIfPolicyOff("bodyWrite")) return { applied: false };
+  if (blockIfUnlicensed()) return { applied: false };
   const parsed = parseAnnotationMeta(ann);
   if (parsed.kind !== "typo" || !parsed.typo) return { applied: false };
   const suggestion = parsed.typo.suggestion;

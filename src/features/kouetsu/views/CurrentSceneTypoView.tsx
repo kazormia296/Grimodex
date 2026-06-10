@@ -15,6 +15,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useLintStore } from "@/features/lint/lintStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
@@ -77,6 +78,7 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
   const run = useCallback(async () => {
     if (running) return;
     if (blockIfPolicyOff("analysis")) return;
+    if (blockIfUnlicensed()) return;
     const projectId = useTreeStore.getState().projectId;
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";

@@ -26,6 +26,7 @@ import {
   createAiEditedPlugin,
 } from "@/features/attribution/AiEditedPlugin";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
+import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 
 export interface StickyNodeData {
@@ -143,6 +144,7 @@ function StickyBodyEditor({
     },
   });
   useTrashBinCapture(editor, { kind: "sticky", id: stickyId });
+  useLicenseEditableSync(editor);
 
   // Register AiEditedPlugin so text the human types inside an AI-seeded span
   // loses its "ai" authorship mark (becomes human). This is what lets copy

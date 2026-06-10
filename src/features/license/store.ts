@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { invoke } from "@/lib/tauri";
 import type { LicenseStateDto } from "./types";
 
 /**
@@ -12,7 +13,7 @@ import type { LicenseStateDto } from "./types";
  * 状態が取れるまで・取得に失敗した場合にゲートで執筆を止めない（fail-soft 原則）。
  */
 export interface LicenseStoreState extends LicenseStateDto {
-  /** `refresh()` が一度でも成功したか。 */
+  /** 状態の取得に一度でも成功したか。 */
   initialized: boolean;
   /** `get_license_state` を呼んで状態を反映する。失敗しても reject しない。 */
   refresh: () => Promise<void>;
@@ -20,7 +21,7 @@ export interface LicenseStoreState extends LicenseStateDto {
   applyState: (dto: LicenseStateDto) => void;
 }
 
-export const useLicenseStore = create<LicenseStoreState>()(() => ({
+export const useLicenseStore = create<LicenseStoreState>()((set) => ({
   licensingEnabled: false,
   status: "disabled",
   trialDaysRemaining: null,
@@ -30,9 +31,16 @@ export const useLicenseStore = create<LicenseStoreState>()(() => ({
   lastValidatedAt: null,
   initialized: false,
   refresh: async () => {
-    throw new Error("Phase 2: 未実装");
+    try {
+      const dto = await invoke<LicenseStateDto>("get_license_state");
+      set({ ...dto, initialized: true });
+    } catch (error) {
+      // fail-soft: 取得失敗でゲートを閉じない。既得状態（または fail-open の
+      // 初期値）を維持する。
+      console.warn("license: get_license_state failed", error);
+    }
   },
-  applyState: () => {
-    throw new Error("Phase 2: 未実装");
+  applyState: (dto) => {
+    set({ ...dto, initialized: true });
   },
 }));

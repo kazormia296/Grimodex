@@ -86,7 +86,7 @@ export function GridChapterColumnMenu({ folderId }: Props) {
             {t("grid.column.contextMenu.diveIn", "中を表示")}
           </DropdownMenuItem>
 
-          <DropdownMenuItem onSelect={() => void addScene()}>
+          <DropdownMenuItem onSelect={() => void addScene().catch(() => {})}>
             <Plus className="h-3.5 w-3.5" />
             {t("grid.column.contextMenu.addScene", "シーンを追加")}
           </DropdownMenuItem>

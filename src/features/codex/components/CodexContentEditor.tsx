@@ -11,6 +11,7 @@ import {
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
+import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 
 // Sentinel group index — distinguishes mini-editor updates from pane 0 / pane 1
 const CODEX_MINI_GROUP = 99;
@@ -71,6 +72,7 @@ export function CodexContentEditor({
   });
 
   useAttribution(editor);
+  useLicenseEditableSync(editor);
   useCodexHighlight(editor, {
     excludeEntryIds: entryId ? [entryId] : [],
     skipMatchedIds: true,

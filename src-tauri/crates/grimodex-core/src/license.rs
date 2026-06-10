@@ -24,6 +24,13 @@ pub const VALIDATE_INTERVAL_DAYS: i64 = 7;
 /// 最終検証成功からのオフライン猶予。超過で `LicenseStale`。
 pub const GRACE_DAYS: i64 = 30;
 
+/// Tauri の bundle identifier (tauri.conf.json の `identifier`)。
+/// MCP サーバーが Tauri AppHandle なしで license.json のパスを解決するための
+/// 正本 — `dirs::data_dir()/{APP_IDENTIFIER}/license.json` が Tauri の
+/// `app_data_dir()` と同一パスになる。tauri.conf.json との一致は
+/// src-tauri/src/license.rs の unit test が保証する。
+pub const APP_IDENTIFIER: &str = "com.miyakey.grimodex";
+
 /// `{app_data_dir}/license.json` のディスク上スキーマ。キーは snake_case
 /// (Polar API のペイロード命名と揃える)。フロントへ返す DTO は別構造体で
 /// camelCase (src-tauri 側) — ディスクと IPC の命名を混ぜない。
@@ -103,6 +110,15 @@ impl LicenseStatus {
             LicenseStatus::LicenseStale => "license_stale",
             LicenseStatus::Revoked => "revoked",
         }
+    }
+
+    /// 閲覧・エクスポート専用モードか (設計書 §6 のゲート対象状態)。
+    /// フロントの gate.ts / MCP の write ツールゲートと同じ判定表。
+    pub fn is_write_restricted(&self) -> bool {
+        matches!(
+            self,
+            LicenseStatus::TrialExpired | LicenseStatus::LicenseStale | LicenseStatus::Revoked
+        )
     }
 }
 
@@ -802,6 +818,18 @@ mod tests {
         // 2 回目は no-op。
         assert!(!ensure_initialized(&mut file, utc("2026-09-09T00:00:00Z")));
         assert_eq!(file.first_run_at.as_deref(), Some(NOW));
+    }
+
+    // -- write 制限の判定表 -------------------------------------------------------
+
+    #[test]
+    fn write_restriction_table() {
+        assert!(!LicenseStatus::Trial.is_write_restricted());
+        assert!(!LicenseStatus::Licensed.is_write_restricted());
+        assert!(!LicenseStatus::Grace.is_write_restricted());
+        assert!(LicenseStatus::TrialExpired.is_write_restricted());
+        assert!(LicenseStatus::LicenseStale.is_write_restricted());
+        assert!(LicenseStatus::Revoked.is_write_restricted());
     }
 
     // -- IO (workspace.rs の global-settings テストパターン) ---------------------

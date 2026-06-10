@@ -13,6 +13,7 @@ import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import { BEAT_TYPES } from "@/features/editor/SceneBeatNode";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
 import type { Editor as TiptapEditor } from "@tiptap/core";
+import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 
 interface UnplacedBeatItemProps {
   sceneId: string;
@@ -68,6 +69,8 @@ export function UnplacedBeatItem({
       : { type: "doc", content: [{ type: "paragraph" }] },
     onUpdate: handleUpdate,
   });
+
+  useLicenseEditableSync(editor);
 
   const handlePlaceAtEnd = useCallback(() => {
     if (mainEditor) placeBeatAtEnd(mainEditor, sceneId, beat);

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Editor } from "@tiptap/core";
 import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { insertGenerationLog } from "@/features/attribution/generationLogApi";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -169,6 +170,7 @@ export function useBeatGeneration(
     // Defense: bodyWrite がポリシーで OFF なら Beat 生成を弾く。生成ボタンは
     // hide されるが、その判定とは独立に実アクションを最上部でゲートする。
     if (blockIfPolicyOff("bodyWrite")) return;
+    if (blockIfUnlicensed()) return;
 
     const beat = findBeatById(editor, beatId);
     if (!beat) return;

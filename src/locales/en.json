@@ -3052,5 +3052,8 @@
         }
       }
     }
+  },
+  "license": {
+    "writeBlocked": "Editing is locked without a valid license (reading, search, and export remain available)"
   }
 }

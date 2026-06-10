@@ -12,6 +12,10 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
+import {
+  blockIfUnlicensed,
+  LICENSE_WRITE_RESTRICTED_ERROR,
+} from "@/features/license/gate";
 
 export type SnippetSourceFilter =
   | "all"
@@ -133,6 +137,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   },
 
   create: async (data, options) => {
+    if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
     try {
       const id = crypto.randomUUID();
       const created = await snippetApi.createSnippet({

@@ -9,6 +9,10 @@ import {
 } from "./api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { ensureBuiltinTypes } from "@/features/codex/typeApi";
+import {
+  blockIfUnlicensed,
+  LICENSE_WRITE_RESTRICTED_ERROR,
+} from "@/features/license/gate";
 
 interface CreateProjectInput {
   title: string;
@@ -176,6 +180,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   },
 
   createNewProject: async (input) => {
+    if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
     const created = await createProjectRow({
       id: crypto.randomUUID(),
       title: input.title.trim(),

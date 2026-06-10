@@ -1,4 +1,6 @@
 import type { Editor } from "@tiptap/core";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -26,6 +28,12 @@ export async function generateBeatAlternative(
   sceneId: string,
   callbacks?: GenerateBeatAlternativeCallbacks,
 ): Promise<void> {
+  // 兄弟経路 (generateBeatOnce / useBeatGeneration) と同じ L0 ゲート。
+  // ここに無いと制限中でも AI 課金だけ走り、保存 (snippetStore.create) で
+  // throw して結果が捨てられる。
+  if (blockIfPolicyOff("bodyWrite")) return;
+  if (blockIfUnlicensed()) return;
+
   const beat = findBeatById(editor, beatId);
   if (!beat) return;
 

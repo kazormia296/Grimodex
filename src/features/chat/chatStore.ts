@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import * as chatApi from "./chatApi";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 
@@ -2561,6 +2562,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // に集約されるため、ここで塞げば UI を経由しない送信経路も封じられる。
     // 最初の set() より前に判定する。
     if (blockIfPolicyOff("chat")) return;
+    if (blockIfUnlicensed()) return;
 
     const aiSettingsEarly = useAiSettingsStore.getState().settings;
     const chatModelEarly = aiSettingsEarly?.model ?? "";

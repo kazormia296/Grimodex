@@ -87,6 +87,36 @@ impl GrimodexServer {
         let conn = self.conn.lock().map_err(internal_err)?;
         grimodex_core::policy::load_policy(&conn, &self.project_id()).map_err(internal_err)
     }
+
+    /// ライセンスゲート (ライセンス認証設計書 §6)。write 系ツールは制限状態
+    /// (trial_expired / license_stale / revoked) で拒否する。read 系ツールは
+    /// 常時許可 (Phase 2 決定)。呼び出しごとに license.json を読み直す —
+    /// アプリ側での再アクティベートを MCP の再起動なしで反映するため
+    /// (`reload_policy` と同じ思想。write 呼び出しは低頻度なので I/O は許容)。
+    ///
+    /// licensing feature 無効ビルド (ベータ) では常に許可。fail-soft:
+    /// license.json の欠損・破損・パス解決不能は許可側に倒す (read 側が
+    /// default = 試用初期状態を返すため)。
+    pub fn ensure_license_allows_write(&self) -> Result<(), ErrorData> {
+        if !cfg!(feature = "licensing") {
+            return Ok(());
+        }
+        let Some(path) = crate::license_gate::license_file_path() else {
+            return Ok(());
+        };
+        let file = grimodex_core::license::read_license_file(&path);
+        let now = chrono::Utc::now();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let snapshot = grimodex_core::license::compute_snapshot(&file, now, &today);
+        if snapshot.status.is_write_restricted() {
+            return Err(ErrorData::invalid_params(
+                "License is not active (trial expired, validation stale, or revoked); \
+                 write tools are disabled. Read tools remain available.",
+                None,
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[tool_router]

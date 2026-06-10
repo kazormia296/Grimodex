@@ -131,6 +131,7 @@ import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
 import type { TrashOrigin } from "@/features/trash-bin/types";
+import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -759,6 +760,7 @@ export function EditorPane({
   );
 
   const editorViewReady = useEditorViewReady(editor);
+  useLicenseEditableSync(editor);
   /** Editor handle safe for PM view access (plugins, dom listeners, dispatch). */
   const mountedEditor =
     editorViewReady && isEditorViewReady(editor) ? editor : null;

@@ -21,6 +21,7 @@ import type { ParseResult } from "../novelcrafterParser";
 import type { ImportProgress } from "../importApi";
 import { listCodexTypes } from "@/features/codex/typeApi";
 import type { CodexType } from "@/features/codex/typeApi";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { TagMappingSection } from "../TagMappingSection";
 import {
   ConflictResolutionSection,
@@ -136,6 +137,7 @@ export function NovelcrafterImportFlow({ importTarget, onClose }: Props) {
   const runImport = useCallback(
     async (tagOptions?: TagImportOptions) => {
       if (!parsed) return;
+      if (blockIfUnlicensed()) return;
       setPhase("importing");
       setErrors([]);
 

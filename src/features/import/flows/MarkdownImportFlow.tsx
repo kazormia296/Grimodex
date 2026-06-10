@@ -19,6 +19,7 @@ import type { ImportProgress } from "../importApi";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { getProject } from "@/features/project/api";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import {
   ImportDropzone,
   ImportErrorList,
@@ -171,6 +172,7 @@ export function MarkdownImportFlow({
 
   const runImport = useCallback(async () => {
     if (!parsed) return;
+    if (blockIfUnlicensed()) return;
     setPhase("importing");
     setErrors([]);
 

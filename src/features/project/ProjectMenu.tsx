@@ -7,6 +7,7 @@ import {
   useCurrentProject,
 } from "./projectStore";
 import { CreateProjectDialog } from "./CreateProjectDialog";
+import { isLicenseRestrictedError } from "@/features/license/gate";
 
 export function ProjectMenu({
   onOpenImport,
@@ -80,9 +81,13 @@ export function ProjectMenu({
         seedTypeSlugs: data.seedTypeSlugs,
       });
       toast.success(t("project.create.success"));
-    } catch {
-      toast.error(t("project.create.failed"));
-      throw new Error("create failed");
+    } catch (e) {
+      // ライセンス制限の拒否は gate 側が理由 toast を表示済み。
+      // 「失敗しました」を重ねると編集ロックを障害と誤認させるため出さない。
+      if (!isLicenseRestrictedError(e)) {
+        toast.error(t("project.create.failed"));
+      }
+      throw new Error("create failed", { cause: e });
     }
   }
 

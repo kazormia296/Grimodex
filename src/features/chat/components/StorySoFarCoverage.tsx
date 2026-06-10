@@ -7,6 +7,7 @@ import { loadSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { toast } from "sonner";
 
 /**
@@ -48,6 +49,7 @@ export function StorySoFarCoverage() {
 
   const handleGenerateAll = useCallback(async () => {
     if (blockIfPolicyOff("bodyWrite")) return;
+    if (blockIfUnlicensed()) return;
     const missing = precedingScenes.filter((n) => !n.synopsis?.trim());
     setTotal(missing.length);
     setProgress(0);

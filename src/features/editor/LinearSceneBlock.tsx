@@ -28,6 +28,7 @@ import { extractBeatPovOverrides } from "@/features/editor/beat/extractBeatPovOv
 import { upsertSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 
 interface LinearSceneBlockProps {
   sceneId: string;
@@ -203,6 +204,7 @@ function MountedSceneBlock({
   // CodexQuick: only update matchedIds for the active scene
   useCodexHighlight(editor, isActive ? undefined : { skipMatchedIds: true });
   useAttribution(editor);
+  useLicenseEditableSync(editor);
   useCharacterFade(editor);
 
   // Load content

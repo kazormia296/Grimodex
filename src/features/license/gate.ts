@@ -1,3 +1,6 @@
+import { toast } from "sonner";
+import i18next from "@/lib/i18n";
+import { useLicenseStore } from "./store";
 import type { LicenseStatus } from "./types";
 
 /**
@@ -12,18 +15,23 @@ import type { LicenseStatus } from "./types";
  * blockIfPolicyOff の隣に置く。DB 層 api.ts には置かない（importApi.ts が
  * create 系を共有しており、インポート・復元を巻き込むため）。
  */
+const RESTRICTED_STATUSES: ReadonlySet<LicenseStatus> = new Set([
+  "trial_expired",
+  "license_stale",
+  "revoked",
+]);
+
 export function isRestrictedLicenseState(
   licensingEnabled: boolean,
   status: LicenseStatus,
 ): boolean {
-  void licensingEnabled;
-  void status;
-  throw new Error("Phase 2: 未実装");
+  return licensingEnabled && RESTRICTED_STATUSES.has(status);
 }
 
 /** store の同期キャッシュで「書き込み制限中か」を返す（React 外から呼べる）。 */
 export function isWriteRestrictedByLicense(): boolean {
-  throw new Error("Phase 2: 未実装");
+  const s = useLicenseStore.getState();
+  return isRestrictedLicenseState(s.licensingEnabled, s.status);
 }
 
 /**
@@ -31,10 +39,28 @@ export function isWriteRestrictedByLicense(): boolean {
  * チョークポイントは `if (blockIfUnlicensed()) return;` の形で早期 return する。
  */
 export function blockIfUnlicensed(): boolean {
-  throw new Error("Phase 2: 未実装");
+  if (!isWriteRestrictedByLicense()) return false;
+  toast.error(i18next.t("license.writeBlocked"));
+  return true;
 }
 
 /** エディタ editable 等のリアクティブ購読用フック。 */
 export function useLicenseWriteRestricted(): boolean {
-  throw new Error("Phase 2: 未実装");
+  return useLicenseStore((s) =>
+    isRestrictedLicenseState(s.licensingEnabled, s.status),
+  );
+}
+
+/**
+ * 作成系 store メソッドのゲートが throw するエラーメッセージ（正本）。
+ * 戻り値が Promise<Entity> のため早期 return できず throw で拒否する契約。
+ */
+export const LICENSE_WRITE_RESTRICTED_ERROR = "license: write restricted";
+
+/**
+ * e がライセンス制限による拒否か。gate が toast 済みなので、呼び出し側の
+ * catch はこれを見て汎用の「失敗しました」トーストを重ねないこと。
+ */
+export function isLicenseRestrictedError(e: unknown): boolean {
+  return e instanceof Error && e.message === LICENSE_WRITE_RESTRICTED_ERROR;
 }

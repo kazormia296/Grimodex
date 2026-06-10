@@ -22,6 +22,7 @@ vi.mock("@tiptap/react", () => ({
   useEditor: vi.fn().mockReturnValue({
     commands: { focus: vi.fn() },
     getJSON: vi.fn().mockReturnValue({ type: "doc", content: [] }),
+    setEditable: vi.fn(),
   }),
   EditorContent: () => <div data-testid="tiptap-editor" />,
 }));

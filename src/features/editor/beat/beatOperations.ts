@@ -1,4 +1,9 @@
 import type { Editor } from "@tiptap/core";
+import { blockIfUnlicensed } from "@/features/license/gate";
+// ライセンスゲートは本モジュールの各関数先頭で一括 enforcement する。
+// TipTap の editable:false はユーザー DOM 入力しか止めず、commands/dispatch に
+// よるプログラム的書き込み（配置ボタン・D&D・SceneBeatNodeView）は素通りする
+// ため、エディタ側のゲートだけでは本文編集を塞げない（設計書 §13.2）。
 import { BEAT_STREAM_META } from "@/features/editor/GeneratedProseBlockNode";
 import { findBeatById, findGeneratedBlockForBeat } from "./insertBeatStream";
 import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
@@ -13,6 +18,7 @@ import type { BeatType } from "@/features/editor/SceneBeatNode";
  * Returns true if a beat was found and removed.
  */
 export function deleteBeatOnly(editor: Editor, beatId: string): boolean {
+  if (blockIfUnlicensed()) return false;
   const beat = findBeatById(editor, beatId);
   if (!beat) return false;
   const { tr } = editor.state;
@@ -27,6 +33,7 @@ export function deleteBeatOnly(editor: Editor, beatId: string): boolean {
  * the immediate next sibling). Done in one transaction so undo is one step.
  */
 export function deleteBeatAndProse(editor: Editor, beatId: string): boolean {
+  if (blockIfUnlicensed()) return false;
   const beat = findBeatById(editor, beatId);
   if (!beat) return false;
   const block = findGeneratedBlockForBeat(editor, beatId);
@@ -52,6 +59,7 @@ export function deleteBeatAndProse(editor: Editor, beatId: string): boolean {
  * is the beat's content fragment.
  */
 export function convertBeatToText(editor: Editor, beatId: string): boolean {
+  if (blockIfUnlicensed()) return false;
   const beat = findBeatById(editor, beatId);
   if (!beat) return false;
   const beatNode = editor.state.doc.nodeAt(beat.beatPos);
@@ -72,6 +80,7 @@ export function convertBeatToText(editor: Editor, beatId: string): boolean {
  * The caller should then invoke generate() to stream new content.
  */
 export function replaceBeatBlock(editor: Editor, beatId: string): boolean {
+  if (blockIfUnlicensed()) return false;
   const block = findGeneratedBlockForBeat(editor, beatId);
   if (!block) return false;
 
@@ -97,6 +106,7 @@ export function replaceBeatBlock(editor: Editor, beatId: string): boolean {
  * is removed. Returns false if the beat is not found or there is nothing to clear.
  */
 export function clearBeatContent(editor: Editor, beatId: string): boolean {
+  if (blockIfUnlicensed()) return false;
   const beat = findBeatById(editor, beatId);
   if (!beat) return false;
 
@@ -143,6 +153,7 @@ export function placeBeatAtEnd(
     content: { type?: string; text?: string; [key: string]: unknown }[];
   },
 ): boolean {
+  if (blockIfUnlicensed()) return false;
   const beatJSON = {
     type: "sceneBeat",
     attrs: {
@@ -169,6 +180,7 @@ export function unplaceBeat(
   beatId: string,
   sceneId: string,
 ): boolean {
+  if (blockIfUnlicensed()) return false;
   const beat = findBeatById(editor, beatId);
   if (!beat) return false;
   const beatNode = editor.state.doc.nodeAt(beat.beatPos);
@@ -202,6 +214,7 @@ export function moveBeatToPosition(
   beatId: string,
   targetPos: number,
 ): boolean {
+  if (blockIfUnlicensed()) return false;
   const beat = findBeatById(editor, beatId);
   if (!beat) return false;
 

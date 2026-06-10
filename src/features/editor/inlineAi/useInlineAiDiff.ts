@@ -13,6 +13,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
 import { insertGenerationLog } from "@/features/attribution/generationLogApi";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -73,6 +74,7 @@ export function useInlineAiDiff(editor: Editor | null) {
       // 独立した実アクションのゲートで、slash / palette からの直接発火経路を
       // 塞ぐ。store 変異 (startGeneration) より前に判定する。
       if (blockIfPolicyOff("bodyWrite")) return;
+      if (blockIfUnlicensed()) return;
       const traceId = crypto.randomUUID();
       const sceneNodeId = useTreeStore.getState().activeSceneId || null;
       lastCallRef.current = { command, context, traceId, sceneNodeId };
@@ -294,6 +296,7 @@ export function useInlineAiDiff(editor: Editor | null) {
     ) => {
       if (!editor) return;
       if (blockIfPolicyOff("bodyWrite")) return;
+      if (blockIfUnlicensed()) return;
 
       const isReplace = opts.mode === "replace" && opts.originalRange != null;
       const originalRange = isReplace ? opts.originalRange! : null;

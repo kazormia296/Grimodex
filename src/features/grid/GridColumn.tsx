@@ -366,7 +366,7 @@ export function GridColumn({
 
           <button
             className="flex items-center gap-1 px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 border-t transition-colors rounded-b-lg"
-            onClick={() => void addScene()}
+            onClick={() => void addScene().catch(() => {})}
           >
             <Plus className="h-3 w-3" />
             {t("grid.column.newScene", "シーンを追加")}

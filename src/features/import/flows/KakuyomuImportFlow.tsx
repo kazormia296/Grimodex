@@ -8,6 +8,7 @@ import type { ImportProgress } from "../importApi";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { getProject } from "@/features/project/api";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { countFoldersInTree, countScenesInTree } from "../markdownParser";
 import {
   ImportDropzone,
@@ -73,6 +74,7 @@ export function KakuyomuImportFlow({ importTarget, onClose }: Props) {
 
   const runImport = useCallback(async () => {
     if (!parsed) return;
+    if (blockIfUnlicensed()) return;
     setPhase("importing");
     setErrors([]);
     const allErrors = [...parsed.warnings];

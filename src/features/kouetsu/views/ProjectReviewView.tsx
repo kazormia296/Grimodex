@@ -6,6 +6,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import {
   buildMultiPayload,
   getSceneIdsForScope,
@@ -57,6 +58,7 @@ export function ProjectReviewView() {
   const runAll = useCallback(async () => {
     if (runningAll) return;
     if (blockIfPolicyOff("analysis")) return;
+    if (blockIfUnlicensed()) return;
     const { nodes } = useTreeStore.getState();
     if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
     const model =
