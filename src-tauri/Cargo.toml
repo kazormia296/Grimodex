@@ -90,3 +90,8 @@ ndarray = { version = "0.17", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# Polar クライアントのモックテスト (ライセンス認証設計書 §10)。
+# base URL を注入可能にした polar_*_at 関数に MockServer を当てる。
+wiremock = "0.6"
