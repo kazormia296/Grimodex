@@ -1,16 +1,11 @@
 import type { Editor } from "@tiptap/core";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
-import { useTreeStore } from "@/features/tree/treeStore";
-import { useWorkspaceStore } from "@/features/workspace/store";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { getProject } from "@/features/project/api";
-import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { streamInlineAiText } from "./streamInlineAiText";
 import { buildBeatMessages } from "./beatPromptBuilder";
-import { findBeatById } from "./insertBeatStream";
-import type { BeatType } from "@/features/editor/SceneBeatNode";
+import { buildBeatContextForGeneration } from "./buildBeatContext";
 
 interface GenerateBeatAlternativeCallbacks {
   onStart?: () => void;
@@ -34,51 +29,23 @@ export async function generateBeatAlternative(
   if (blockIfPolicyOff("bodyWrite")) return;
   if (blockIfUnlicensed()) return;
 
-  const beat = findBeatById(editor, beatId);
-  if (!beat) return;
-
-  const beatNode = editor.state.doc.nodeAt(beat.beatPos);
-  if (!beatNode) return;
-
-  const instructions = beatNode.textContent;
-  if (instructions.trim().length === 0) return;
-
-  const beatType = (beatNode.attrs.beatType ?? "free") as BeatType;
-  const beatPov = (beatNode.attrs.pov ?? null) as string | null;
-  const beatModel = (beatNode.attrs.model as string | null) ?? null;
-
-  const node = useTreeStore.getState().nodes.find((n) => n.id === sceneId);
-  const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
-  const sceneTitle = node?.title ?? "";
-  const codexEntries = useCodexStore.getState().entries;
-  let project;
-  try {
-    project = await getProject(useTreeStore.getState().projectId);
-  } catch {
-    // ignore
-  }
-  const lang = project?.language ?? "ja";
-
-  const povCharId = beatPov ?? node?.povCharacterId ?? null;
-  const povName = povCharId
-    ? (codexEntries.find((e) => e.id === povCharId)?.name ?? null)
-    : null;
-
-  const sceneTextSoFar = editor.state.doc.textBetween(
-    0,
-    beat.beatPos,
-    "\n",
-    " ",
+  const ctxResult = await buildBeatContextForGeneration(
+    editor,
+    beatId,
+    sceneId,
   );
+  if (!ctxResult.ok) return;
+  const ctx = ctxResult.ctx;
+  const { instructions, beatType, beatModel } = ctx;
 
   const messages = buildBeatMessages({
     instructions,
     beatType,
-    projectTitle,
-    sceneTitle,
-    sceneTextSoFar,
-    povName,
-    lang,
+    projectTitle: ctx.projectTitle,
+    sceneTitle: ctx.sceneTitle,
+    sceneTextSoFar: ctx.sceneTextSoFar,
+    povName: ctx.povName,
+    lang: ctx.lang,
     customInstruction: useSettingsStore
       .getState()
       .get("aiPrompt.custom.beat", ""),
