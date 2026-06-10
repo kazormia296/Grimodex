@@ -88,6 +88,7 @@ export function QuickActionStrip({ hidden = false }: QuickActionStripProps) {
   const nodes = useTreeStore((s) => s.nodes);
 
   const actions = useMemo<QuickActionItem[]>(() => {
+    if (chatScope === "codex") return [];
     if (chatScope === "scene") return SCENE_ACTIONS;
     if (chatScope === "project") return PROJECT_ACTIONS;
     // folder スコープ: 親なしの root folder = Act 系、それ以外 = Chapter 系

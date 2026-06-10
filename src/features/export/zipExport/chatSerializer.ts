@@ -9,7 +9,7 @@ import type {
 } from "@/features/chat/chatApi";
 
 export interface ChatSessionExport {
-  schemaVersion: 1;
+  schemaVersion: 2;
   session: {
     id: string;
     title: string;
@@ -17,6 +17,7 @@ export interface ChatSessionExport {
     createdAt: string;
     updatedAt: string;
     nodeId: string | null;
+    codexAnchorId: string | null;
   };
   pinnedCodex: Array<{
     id: string;
@@ -65,7 +66,7 @@ export function serializeChatSession(
   pinnedSnippets: PinnedSnippetEntryWithData[],
 ): ChatSessionExport {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     session: {
       id: session.id,
       title: session.title,
@@ -73,6 +74,7 @@ export function serializeChatSession(
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       nodeId: session.nodeId,
+      codexAnchorId: session.codexAnchorId,
     },
     pinnedCodex: [
       ...pinnedCodex.map((e) => ({

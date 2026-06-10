@@ -175,11 +175,13 @@ export function ChatInput({
 
   const placeholder = isStreaming
     ? t("chat.placeholderStreaming")
-    : chatScope === "project"
-      ? t("chat.placeholderGlobal")
-      : chatScope === "folder"
-        ? t("chat.placeholderFolder", { kind: t("chat.scope.chapter") })
-        : t("chat.placeholderScene");
+    : chatScope === "codex"
+      ? t("chat.placeholderCodex")
+      : chatScope === "project"
+        ? t("chat.placeholderGlobal")
+        : chatScope === "folder"
+          ? t("chat.placeholderFolder", { kind: t("chat.scope.chapter") })
+          : t("chat.placeholderScene");
 
   const handleSubmit = useCallback(
     (markdown: string) => {

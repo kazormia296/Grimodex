@@ -103,6 +103,7 @@ export function resolveCodexState(
   baseDetails: Map<string, string | null>, // definitionId → value
   currentSceneId: string | null,
   sceneOrder: Map<string, number>,
+  options?: { applyAllPhases?: boolean },
 ): ResolvedCodexState {
   // Base stateから初期化
   const state: ResolvedCodexState = {
@@ -113,15 +114,20 @@ export function resolveCodexState(
     appliedPhaseIds: [],
   };
 
-  // currentSceneId=null → Baseのみ返す
-  if (currentSceneId === null) {
+  const applyAllPhases = options?.applyAllPhases === true;
+
+  // currentSceneId=null → Baseのみ返す（applyAllPhases 時は全 valid phase を適用）
+  if (currentSceneId === null && !applyAllPhases) {
     return state;
   }
 
-  // currentSceneIdがsceneOrderにない（シーン削除済み） → Baseを返す
-  const currentOrder = sceneOrder.get(currentSceneId);
-  if (currentOrder === undefined) {
-    return state;
+  let currentOrder: number | undefined;
+  if (!applyAllPhases) {
+    // currentSceneIdがsceneOrderにない（シーン削除済み） → Baseを返す
+    currentOrder = sceneOrder.get(currentSceneId!);
+    if (currentOrder === undefined) {
+      return state;
+    }
   }
 
   // anchorNodeIdがnullまたはsceneOrderにないフェーズをフィルタリングしてソート
@@ -136,10 +142,12 @@ export function resolveCodexState(
       return orderA - orderB;
     });
 
-  // currentScene順以下のフェーズを順番に適用
+  // currentScene順以下のフェーズを順番に適用（applyAllPhases 時は gating なし）
   for (const phase of validPhases) {
-    const anchorOrder = sceneOrder.get(phase.anchorNodeId!)!;
-    if (anchorOrder > currentOrder) break;
+    if (!applyAllPhases) {
+      const anchorOrder = sceneOrder.get(phase.anchorNodeId!)!;
+      if (anchorOrder > currentOrder!) break;
+    }
 
     // summaryOverrideがnon-null → summaryを上書き
     if (phase.summaryOverride !== null) {

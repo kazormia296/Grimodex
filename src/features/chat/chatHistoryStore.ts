@@ -31,7 +31,7 @@ export function filterAndSortSessions(
     if (sceneFilter !== null) {
       if (s.nodeId !== sceneFilter) return false;
     } else if (projectScopeOnly) {
-      if (s.nodeId !== null) return false;
+      if (s.nodeId !== null || s.codexAnchorId !== null) return false;
     }
     if (hasExtractionsOnly && s.codexCount + s.snippetCount === 0) return false;
     return true;
@@ -61,39 +61,64 @@ export interface SceneNode {
 export interface SessionGroup {
   groupLabel: string;
   nodeId: string | null;
+  codexAnchorId: string | null;
   sessions: SessionWithStats[];
 }
 
 /**
- * Pure function: group sessions by scene.
+ * Pure function: group sessions by scope (scene/folder, project, codex).
  * Exported for unit testing.
  */
-export function groupSessionsByScene(
+export function groupSessionsByScope(
   sessions: SessionWithStats[],
   nodeMap: Record<string, SceneNode>,
+  codexEntryMap: Record<string, { name: string }> = {},
 ): SessionGroup[] {
-  const groupMap = new Map<string | null, SessionWithStats[]>();
+  const groupMap = new Map<string, SessionWithStats[]>();
 
   for (const session of sessions) {
-    const key = session.nodeId;
+    let key: string;
+    if (session.codexAnchorId) {
+      key = `codex:${session.codexAnchorId}`;
+    } else if (session.nodeId) {
+      key = `scene:${session.nodeId}`;
+    } else {
+      key = "project";
+    }
     if (!groupMap.has(key)) groupMap.set(key, []);
     groupMap.get(key)!.push(session);
   }
 
   const groups: SessionGroup[] = [];
-  for (const [nodeId, groupSessions] of groupMap) {
-    const groupLabel =
-      nodeId === null ? "Project scope" : (nodeMap[nodeId]?.title ?? nodeId);
-    groups.push({ groupLabel, nodeId, sessions: groupSessions });
+  for (const [key, groupSessions] of groupMap) {
+    let groupLabel: string;
+    let nodeId: string | null = null;
+    let codexAnchorId: string | null = null;
+    if (key.startsWith("codex:")) {
+      codexAnchorId = key.slice(6);
+      const entry = codexEntryMap[codexAnchorId];
+      groupLabel = entry ? `Codex: ${entry.name}` : `Codex: ${codexAnchorId}`;
+    } else if (key.startsWith("scene:")) {
+      nodeId = key.slice(6);
+      groupLabel = nodeMap[nodeId]?.title ?? nodeId;
+    } else {
+      groupLabel = "Project scope";
+    }
+    groups.push({ groupLabel, nodeId, codexAnchorId, sessions: groupSessions });
   }
 
-  // Sort groups: scene groups first (in insertion order), project scope last
+  // Sort: scene groups first, project scope, codex groups last
   return groups.sort((a, b) => {
-    if (a.nodeId === null) return 1;
-    if (b.nodeId === null) return -1;
+    if (a.codexAnchorId && !b.codexAnchorId) return 1;
+    if (!a.codexAnchorId && b.codexAnchorId) return -1;
+    if (a.nodeId === null && b.nodeId !== null && !a.codexAnchorId) return 1;
+    if (a.nodeId !== null && b.nodeId === null && !b.codexAnchorId) return -1;
     return 0;
   });
 }
+
+/** @deprecated use groupSessionsByScope */
+export const groupSessionsByScene = groupSessionsByScope;
 
 // --- Zustand store ---
 

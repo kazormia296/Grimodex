@@ -37,6 +37,7 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type {
@@ -185,16 +186,15 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     if (!isActive) return;
     if (chatScope === "scene" && !treeActiveSceneId) return;
     let stale = false;
-    const effectiveNodeId =
-      chatScope === "scene"
-        ? treeActiveSceneId || undefined
-        : chatScope === "folder"
-          ? (scopeAnchorId ?? undefined)
-          : null;
+    const { nodeId: effectiveNodeId, codexAnchorId } = resolveScopeSessionKey(
+      chatScope,
+      treeActiveSceneId,
+      scopeAnchorId,
+    );
     (async () => {
       markStart("chatPanel.loadSessions");
       try {
-        await loadSessions(effectiveNodeId);
+        await loadSessions(effectiveNodeId, codexAnchorId);
       } finally {
         markEnd("chatPanel.loadSessions");
       }
@@ -782,7 +782,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   );
 
   const handleScopeChange = useCallback(
-    (scope: "scene" | "folder" | "project", anchorId?: string | null) => {
+    (scope: ChatScope, anchorId?: string | null) => {
       setChatScope(scope, anchorId);
     },
     [setChatScope],
@@ -799,13 +799,17 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   }, []);
 
   const handleNewSession = useCallback(() => {
-    const nodeId =
-      chatScope === "scene"
-        ? chatSceneId || undefined
-        : chatScope === "folder"
-          ? (scopeAnchorId ?? undefined)
-          : undefined;
-    createNewSession(getCurrentProjectId(), "New session", nodeId);
+    const { nodeId, codexAnchorId } = resolveScopeSessionKey(
+      chatScope,
+      chatSceneId,
+      scopeAnchorId,
+    );
+    createNewSession(
+      getCurrentProjectId(),
+      "New session",
+      nodeId === null ? undefined : nodeId,
+      codexAnchorId,
+    );
   }, [createNewSession, chatScope, scopeAnchorId, chatSceneId]);
 
   // Map overlay chip 表示用の board title 取得。includeMapBoard が ON のとき

@@ -221,6 +221,79 @@ describe("resolveCodexState", () => {
     expect(result.appliedPhaseIds).toEqual([]);
   });
 
+  it("applyAllPhases: null sceneId でも全 valid phase を適用", () => {
+    const phase1 = makePhase({
+      id: "p1",
+      entryId: "e1",
+      anchorNodeId: "scene-1",
+      summaryOverride: "After phase 1",
+    });
+    const phase2 = makePhase({
+      id: "p2",
+      entryId: "e1",
+      anchorNodeId: "scene-2",
+      summaryOverride: "After phase 2",
+    });
+    const result = resolveCodexState(
+      BASE_ENTRY,
+      [phase2, phase1],
+      new Map(),
+      new Map(),
+      null,
+      sceneOrder,
+      { applyAllPhases: true },
+    );
+    expect(result.summary).toBe("After phase 2");
+    expect(result.appliedPhaseIds).toEqual(["p1", "p2"]);
+  });
+
+  it("applyAllPhases: anchor 不在 phase は除外", () => {
+    const phase = makePhase({
+      id: "p1",
+      entryId: "e1",
+      anchorNodeId: "scene-deleted",
+      summaryOverride: "Should skip",
+    });
+    const result = resolveCodexState(
+      BASE_ENTRY,
+      [phase],
+      new Map(),
+      new Map(),
+      null,
+      sceneOrder,
+      { applyAllPhases: true },
+    );
+    expect(result.summary).toBe("Base summary");
+    expect(result.appliedPhaseIds).toEqual([]);
+  });
+
+  it("applyAllPhases 未指定時は既存の null=Base の挙動を維持", () => {
+    const phase = makePhase({
+      id: "p1",
+      entryId: "e1",
+      anchorNodeId: "scene-1",
+      summaryOverride: "Phase summary",
+    });
+    const withOption = resolveCodexState(
+      BASE_ENTRY,
+      [phase],
+      new Map(),
+      new Map(),
+      null,
+      sceneOrder,
+      { applyAllPhases: false },
+    );
+    const withoutOption = resolveCodexState(
+      BASE_ENTRY,
+      [phase],
+      new Map(),
+      new Map(),
+      null,
+      sceneOrder,
+    );
+    expect(withOption).toEqual(withoutOption);
+  });
+
   it("currentSceneIdがsceneOrderにない（シーン削除済み）→ Baseを返す", () => {
     const phase = makePhase({
       id: "p1",

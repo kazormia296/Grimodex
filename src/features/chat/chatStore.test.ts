@@ -176,6 +176,7 @@ const session1: ChatSession = {
   id: "session-1",
   projectId: "proj-1",
   nodeId: "scene-1",
+  codexAnchorId: null,
   title: "会話1",
   titleManual: 0,
   model: "openrouter/anthropic/claude-sonnet-4.6",
@@ -187,6 +188,7 @@ const session2: ChatSession = {
   id: "session-2",
   projectId: "proj-1",
   nodeId: "scene-1",
+  codexAnchorId: null,
   title: "会話2",
   titleManual: 0,
   model: "openrouter/anthropic/claude-sonnet-4.6",
@@ -229,7 +231,7 @@ describe("useChatStore", () => {
 
       const state = useChatStore.getState();
       expect(state.sessions).toHaveLength(2);
-      expect(mockListSessions).toHaveBeenCalledWith("scene-1");
+      expect(mockListSessions).toHaveBeenCalledWith("scene-1", undefined);
     });
 
     it("loads all sessions when no nodeId given", async () => {
@@ -237,7 +239,7 @@ describe("useChatStore", () => {
 
       await useChatStore.getState().loadSessions();
 
-      expect(mockListSessions).toHaveBeenCalledWith(undefined);
+      expect(mockListSessions).toHaveBeenCalledWith(undefined, undefined);
     });
 
     it("sets isLoadingSessions during load", async () => {
@@ -382,6 +384,7 @@ describe("useChatStore", () => {
         "proj-1",
         "会話1",
         "scene-1",
+        undefined,
       );
       expect(state.sessions).toContainEqual(session1);
       expect(state.activeSessionId).toBe("session-1");
@@ -2398,6 +2401,66 @@ describe("useChatStore", () => {
       expect(useChatStore.getState().lastSystemPrompt).toBe(
         "project-tier1-partial-fail",
       );
+    });
+  });
+
+  describe("setChatScope codex", () => {
+    it("sets codex scope with anchor and includeBodies=false", () => {
+      useChatStore.getState().setChatScope("codex", "codex-hero");
+      const s = useChatStore.getState();
+      expect(s.chatScope).toBe("codex");
+      expect(s.scopeAnchorId).toBe("codex-hero");
+      expect(s.includeBodies).toBe(false);
+    });
+
+    it("falls back to scene when codex anchor is missing", () => {
+      useChatStore.getState().setChatScope("codex");
+      const s = useChatStore.getState();
+      expect(s.chatScope).toBe("scene");
+      expect(s.includeBodies).toBe(true);
+    });
+
+    it("loadSessions passes codexAnchorId to chatApi", async () => {
+      mockListSessions.mockResolvedValueOnce([]);
+      await useChatStore.getState().loadSessions(undefined, "codex-1");
+      expect(mockListSessions).toHaveBeenCalledWith(undefined, "codex-1");
+    });
+
+    it("ensureSession creates session with codexAnchorId in codex scope", async () => {
+      mockCreateSession.mockResolvedValueOnce({
+        ...session1,
+        id: "new-codex-session",
+        nodeId: null,
+        codexAnchorId: "codex-hero",
+      });
+      useChatStore.setState({
+        activeSessionId: null,
+        chatScope: "codex",
+        scopeAnchorId: "codex-hero",
+        activeProjectId: "proj-1",
+      });
+      const id = await useChatStore.getState().ensureSession();
+      expect(mockCreateSession).toHaveBeenCalledWith(
+        "proj-1",
+        "New session",
+        undefined,
+        "codex-hero",
+      );
+      expect(id).toBe("new-codex-session");
+    });
+
+    it("setActiveSceneId keeps codex scope session anchor", async () => {
+      useChatStore.setState({
+        chatScope: "codex",
+        scopeAnchorId: "codex-hero",
+        activeSessionId: "session-codex",
+        activeSceneId: "scene-old",
+      });
+      useChatStore.getState().setActiveSceneId("scene-new");
+      const s = useChatStore.getState();
+      expect(s.chatScope).toBe("codex");
+      expect(s.scopeAnchorId).toBe("codex-hero");
+      expect(s.activeSessionId).toBe("session-codex");
     });
   });
 

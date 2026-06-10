@@ -239,6 +239,7 @@ export async function buildArchive(
         id: sessionRow.id,
         projectId: sessionRow.projectId,
         nodeId: sessionRow.nodeId,
+        codexAnchorId: sessionRow.codexAnchorId,
         title: sessionRow.title,
         titleManual: sessionRow.titleManual,
         model: sessionRow.model,
@@ -265,7 +266,9 @@ export async function buildArchive(
       const dir =
         session.nodeId != null
           ? `chats/${sceneSlugById(scenePathById, session.nodeId) ?? session.nodeId}`
-          : "chats/_orphan";
+          : session.codexAnchorId != null
+            ? `chats/_codex/${session.codexAnchorId}`
+            : "chats/_orphan";
       addFile(
         files,
         `${dir}/${session.id}.json`,

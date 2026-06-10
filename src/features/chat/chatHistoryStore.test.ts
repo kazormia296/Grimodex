@@ -12,6 +12,7 @@ function makeSession(
   return {
     projectId: "proj-1",
     nodeId: null,
+    codexAnchorId: null,
     title: "Session",
     titleManual: 0,
     model: "claude",
@@ -93,8 +94,17 @@ describe("filterAndSortSessions", () => {
     expect(result.map((s) => s.id)).toEqual(["s3", "s1", "s4"]);
   });
 
-  it("filters by projectScopeOnly (nodeId === null)", () => {
-    const result = filterAndSortSessions(sessions, {
+  it("filters by projectScopeOnly (nodeId === null && codexAnchorId === null)", () => {
+    const withCodex = [
+      ...sessions,
+      makeSession({
+        id: "s-codex",
+        nodeId: null,
+        codexAnchorId: "codex-1",
+        title: "Codex chat",
+      }),
+    ];
+    const result = filterAndSortSessions(withCodex, {
       ...defaultFilters,
       projectScopeOnly: true,
     });
@@ -163,12 +173,36 @@ describe("groupSessionsByScene", () => {
     expect(labels).toContain("Project scope");
   });
 
-  it("places project-scope sessions (nodeId=null) in Project scope group", () => {
+  it("places project-scope sessions (nodeId=null, codexAnchorId=null) in Project scope group", () => {
     const filtered = filterAndSortSessions(sessions, defaultFilters);
     const groups = groupSessionsByScene(filtered, nodeMap);
-    const projectGroup = groups.find((g) => g.nodeId === null);
+    const projectGroup = groups.find(
+      (g) => g.nodeId === null && g.codexAnchorId === null,
+    );
     expect(projectGroup).toBeDefined();
     expect(projectGroup!.sessions.map((s) => s.id)).toContain("s3");
+  });
+
+  it("groups codex-scoped sessions separately from project scope", () => {
+    const withCodex = [
+      ...sessions,
+      makeSession({
+        id: "s-codex",
+        nodeId: null,
+        codexAnchorId: "codex-hero",
+        title: "Hero chat",
+      }),
+    ];
+    const groups = groupSessionsByScene(withCodex, nodeMap, {
+      "codex-hero": { name: "Hero" },
+    });
+    const codexGroup = groups.find((g) => g.codexAnchorId === "codex-hero");
+    expect(codexGroup?.groupLabel).toBe("Codex: Hero");
+    const projectGroup = groups.find(
+      (g) => g.nodeId === null && g.codexAnchorId === null,
+    );
+    expect(projectGroup?.sessions.map((s) => s.id)).toContain("s3");
+    expect(projectGroup?.sessions.map((s) => s.id)).not.toContain("s-codex");
   });
 
   it("groups multiple sessions under the same scene", () => {

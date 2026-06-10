@@ -10,6 +10,7 @@ import {
   Check,
   Circle,
   BookOpen,
+  BookMarked,
   Leaf,
   Map as MapIcon,
 } from "lucide-react";
@@ -17,8 +18,9 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-
-type ChatScope = "scene" | "folder" | "project";
+import { useCodexStore } from "@/features/codex/codexStore";
+import type { ChatScope } from "../chatScope";
+import { CodexScopePickerSection } from "./CodexScopePickerSection";
 
 interface ChatPanelHeaderProps {
   sessionsPanelOpen: boolean;
@@ -116,10 +118,16 @@ export function ChatPanelHeader({
 }: ChatPanelHeaderProps) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
+  const codexEntries = useCodexStore((s) => s.entries);
 
   const rows = useMemo(() => flattenTree(nodes), [nodes]);
 
   const currentLabel = useMemo(() => {
+    if (chatScope === "codex") {
+      const entry = codexEntries.find((e) => e.id === scopeAnchorId);
+      if (!entry) return t("chat.scope.project");
+      return `${t("chat.scope.codex")}: ${entry.name}`;
+    }
     if (chatScope === "project") return t("chat.scope.project");
     if (chatScope === "folder") {
       const folder = nodes.find((n) => n.id === scopeAnchorId);
@@ -132,7 +140,7 @@ export function ChatPanelHeader({
     const scene = nodes.find((n) => n.id === chatSceneId);
     if (!scene) return t("chat.scope.scene");
     return `${t("chat.scope.scene")}: ${scene.title}`;
-  }, [chatScope, scopeAnchorId, chatSceneId, nodes, t]);
+  }, [chatScope, scopeAnchorId, chatSceneId, nodes, codexEntries, t]);
 
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -191,6 +199,10 @@ export function ChatPanelHeader({
     onScopeChange("project");
     setOpen(false);
   };
+  const handlePickCodex = (id: string) => {
+    onScopeChange("codex", id);
+    setOpen(false);
+  };
 
   return (
     <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
@@ -211,6 +223,8 @@ export function ChatPanelHeader({
               <Globe className="mr-1 h-3 w-3 shrink-0 text-primary" />
             ) : chatScope === "folder" ? (
               <FolderTree className="mr-1 h-3 w-3 shrink-0 text-primary" />
+            ) : chatScope === "codex" ? (
+              <BookMarked className="mr-1 h-3 w-3 shrink-0 text-primary" />
             ) : (
               <FileText className="mr-1 h-3 w-3 shrink-0 text-primary" />
             )}
@@ -313,6 +327,11 @@ export function ChatPanelHeader({
                   );
                 })}
               </div>
+
+              <CodexScopePickerSection
+                selectedId={chatScope === "codex" ? scopeAnchorId : null}
+                onPick={handlePickCodex}
+              />
             </div>
           )}
         </div>
@@ -320,19 +339,33 @@ export function ChatPanelHeader({
         {/* eco モード相当: 本文を context に含めるかのトグル */}
         <button
           type="button"
-          onClick={onToggleIncludeBodies}
+          onClick={() => {
+            if (chatScope === "codex") return;
+            onToggleIncludeBodies();
+          }}
+          disabled={chatScope === "codex"}
           title={
-            includeBodies ? t("chat.scope.bodiesOn") : t("chat.scope.bodiesOff")
+            chatScope === "codex"
+              ? t("chat.scope.bodiesUnavailableCodex")
+              : includeBodies
+                ? t("chat.scope.bodiesOn")
+                : t("chat.scope.bodiesOff")
           }
           aria-pressed={includeBodies}
           aria-label={
-            includeBodies ? t("chat.scope.bodiesOn") : t("chat.scope.bodiesOff")
+            chatScope === "codex"
+              ? t("chat.scope.bodiesUnavailableCodex")
+              : includeBodies
+                ? t("chat.scope.bodiesOn")
+                : t("chat.scope.bodiesOff")
           }
           className={[
             "rounded p-0.5 transition-colors",
-            includeBodies
-              ? "text-primary hover:bg-accent"
-              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            chatScope === "codex"
+              ? "cursor-not-allowed text-muted-foreground/40"
+              : includeBodies
+                ? "text-primary hover:bg-accent"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
           ].join(" ")}
         >
           {includeBodies ? (

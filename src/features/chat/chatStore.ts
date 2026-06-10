@@ -150,8 +150,16 @@ import {
   listDetailOverridesByPhaseIds,
 } from "@/features/codex/phaseApi";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
-import { resolveCodexState } from "@/features/codex/phaseResolver";
+import {
+  resolveCodexState,
+  formatTimelineContext,
+} from "@/features/codex/phaseResolver";
 import type { ResolvedCodexState } from "@/features/codex/phaseResolver";
+import {
+  getEntryScanText,
+  findReverseMentioningEntries,
+} from "@/features/codex/codexCrossMentions";
+import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getSnippet } from "@/features/snippets/api";
@@ -186,6 +194,7 @@ import { expandCodexRelationsBFS } from "@/features/codex/relationExpansion";
 async function resolveEntriesForContext(
   entries: CodexEntry[],
   effectiveSceneId: string | null,
+  opts?: { applyAllPhases?: boolean },
 ): Promise<{
   resolved: Map<string, ResolvedCodexState>;
   phases: Map<string, CodexEntryPhase[]>;
@@ -261,6 +270,7 @@ async function resolveEntriesForContext(
         baseDetails,
         effectiveSceneId,
         globalSceneOrder,
+        opts,
       ),
     );
   }
@@ -405,12 +415,16 @@ interface ChatState {
   setInputPinnedEntryIds: (ids: string[]) => void;
 
   // Session actions
-  loadSessions: (nodeId?: string | null) => Promise<void>;
+  loadSessions: (
+    nodeId?: string | null,
+    codexAnchorId?: string | null,
+  ) => Promise<void>;
   selectSession: (sessionId: string | null) => Promise<void>;
   createNewSession: (
     projectId: string,
     title: string,
     nodeId?: string,
+    codexAnchorId?: string,
   ) => Promise<void>;
   /**
    * 現在のシーン/グローバルモードに紐づくセッションを保証する。
@@ -447,20 +461,17 @@ interface ChatState {
   ragEnabled: boolean;
   setRagEnabled: (on: boolean) => void;
 
-  // Chat scope — Scene / Folder (Chapter or Act) / Project の3軸統一。
+  // Chat scope — Scene / Folder (Chapter or Act) / Project / Codex の4軸統一。
   // Globe トグルを置き換え、outline 階層に沿ってどこまで context に含めるかを
   // ユーザーが選択する。scope === "folder" のとき scopeAnchorId は対象 folder id。
-  chatScope: "scene" | "folder" | "project";
+  chatScope: ChatScope;
   scopeAnchorId: string | null;
   /**
-   * scope を更新する。folder スコープに切り替えるときは anchorId 必須。
+   * scope を更新する。folder / codex スコープに切り替えるときは anchorId 必須。
    * scope 軸自体は sticky で、tree active scene の変動では動かない。
    * includeBodies は scope に応じてデフォルトにリセットされる。
    */
-  setChatScope: (
-    scope: "scene" | "folder" | "project",
-    anchorId?: string | null,
-  ) => void;
+  setChatScope: (scope: ChatScope, anchorId?: string | null) => void;
 
   /**
    * Map overlay: アクティブな Map board 全体を L4 に注入するかどうか。
@@ -901,6 +912,149 @@ function appendProjectGroupedParts(
       );
     }
   }
+}
+
+/** Codex スコープ: 選択エントリの最終状態 + 関連 L1 + relation 展開。 */
+async function buildCodexScopeBlocks(opts: {
+  selectedEntryId: string;
+  allEntries: CodexEntry[];
+}): Promise<{
+  selectedPinned: import("./contextBuilder").PinnedCodexContext;
+  relatedMentioned: CodexEntry[];
+  relationExpanded: CodexContext[];
+} | null> {
+  const { selectedEntryId, allEntries } = opts;
+  const selected = allEntries.find((e) => e.id === selectedEntryId);
+  if (!selected) return null;
+
+  const L4_TOTAL_BUDGET = 60_000;
+  const { resolved, phases: phasesMap } = await resolveEntriesForContext(
+    [selected],
+    null,
+    { applyAllPhases: true },
+  );
+  const resolvedState = resolved.get(selected.id);
+  if (!resolvedState) return null;
+
+  const phases = phasesMap.get(selected.id) ?? [];
+  const globalSceneOrder = usePhaseStore.getState().globalSceneOrder;
+  const allNodes = useTreeStore.getState().nodes;
+
+  const validPhases = phases
+    .filter((phase) => {
+      if (phase.anchorNodeId === null) return false;
+      return globalSceneOrder.has(phase.anchorNodeId);
+    })
+    .sort((a, b) => {
+      const orderA = globalSceneOrder.get(a.anchorNodeId!)!;
+      const orderB = globalSceneOrder.get(b.anchorNodeId!)!;
+      return orderA - orderB;
+    });
+
+  const timelinePhases = validPhases.map((phase) => {
+    const anchorNode = allNodes.find((n) => n.id === phase.anchorNodeId);
+    return {
+      label: phase.label,
+      anchorTitle: anchorNode?.title ?? phase.anchorNodeId!,
+      summaryOverride: phase.summaryOverride,
+    };
+  });
+
+  const finalContent = extractPlainText(resolvedState.content) || "";
+  const timelineText =
+    timelinePhases.length > 0
+      ? formatTimelineContext(
+          {
+            name: selected.name,
+            type: selected.type,
+            summary: resolvedState.summary,
+          },
+          timelinePhases,
+          resolvedState,
+        )
+      : "";
+  const fullContent =
+    timelineText.length > 0
+      ? `${finalContent}\n\n${timelineText}`
+      : finalContent;
+
+  const lastPhaseId =
+    resolvedState.appliedPhaseIds[resolvedState.appliedPhaseIds.length - 1];
+  const lastPhase = lastPhaseId
+    ? phases.find((p) => p.id === lastPhaseId)
+    : undefined;
+
+  const childrenCtx = buildChildrenCtxForEntry(
+    selected,
+    allEntries,
+    L4_TOTAL_BUDGET,
+    new Set([selected.id]),
+  );
+  const aliases = parseAliases(selected.aliases);
+  const tags = parseTags(selected.tagsCache);
+
+  const selectedPinned: import("./contextBuilder").PinnedCodexContext = {
+    id: selected.id,
+    type: selected.type,
+    name: selected.name,
+    summary: resolvedState.summary ?? "",
+    fullContent: fullContent || undefined,
+    withChildren: false,
+    ...(aliases ? { aliases } : {}),
+    ...(tags ? { tags } : {}),
+    ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
+    ...(lastPhase ? { phaseLabel: lastPhase.label } : {}),
+  };
+
+  const detectable = allEntries.filter(
+    (e) =>
+      e.id !== selected.id &&
+      e.contextMode !== "hidden" &&
+      e.contextMode !== "suppress",
+  );
+  const scanText = getEntryScanText(selected);
+  const forwardMatched = await findMentionedEntriesAsync(scanText, detectable);
+  const selectedTarget = {
+    id: selected.id,
+    name: selected.name,
+    type: selected.type,
+    aliases: selected.aliases,
+    excludedAliases: selected.excludedAliases,
+  };
+  const reverseMatched = findReverseMentioningEntries(
+    selectedTarget,
+    detectable,
+  );
+
+  const relatedIdSet = new Set<string>();
+  const relatedMentioned: CodexEntry[] = [];
+  for (const entry of [...forwardMatched, ...reverseMatched]) {
+    if (entry.id === selected.id || relatedIdSet.has(entry.id)) continue;
+    relatedIdSet.add(entry.id);
+    const full = allEntries.find((e) => e.id === entry.id);
+    if (full) relatedMentioned.push(full);
+  }
+
+  const projectId = getCurrentProjectId();
+  const relations = await listCodexRelations(projectId).catch(() => []);
+  const excludeIds = new Set([selected.id, ...relatedIdSet]);
+  const relationExpanded = expandCodexRelationsBFS(
+    [selected.id],
+    relations,
+    allEntries,
+    excludeIds,
+    { maxDepth: 1 },
+  ).map(({ contentFallback: _cf, ...rest }) => rest);
+
+  const enrichedPinned = (
+    await enrichWithCustomDetails([selectedPinned], allEntries)
+  )[0]!;
+
+  return {
+    selectedPinned: enrichedPinned,
+    relatedMentioned,
+    relationExpanded,
+  };
 }
 
 /** folder / project スコープ共通の Tier 1/2 synopsis・本文集約。 */
@@ -2029,17 +2183,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } = get();
     const ref = sessions.find((s) => s.id === activeSessionId);
     const projectId = activeProjectId ?? getCurrentProjectId();
-    const nodeId =
-      chatScope === "project"
-        ? undefined
-        : chatScope === "folder"
-          ? undefined
-          : activeSceneId || undefined;
+    const { nodeId, codexAnchorId } = resolveScopeSessionKey(
+      chatScope,
+      activeSceneId,
+      get().scopeAnchorId,
+    );
     try {
       const session = await chatApi.createSession(
         projectId,
         ref ? `Linked: ${ref.title}` : "New session",
-        nodeId,
+        nodeId === null ? undefined : nodeId,
+        codexAnchorId,
       );
       set((state) => ({
         sessions: [session, ...state.sessions],
@@ -2094,10 +2248,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   // --- Session management ---
 
-  loadSessions: async (nodeId?: string | null) => {
+  loadSessions: async (
+    nodeId?: string | null,
+    codexAnchorId?: string | null,
+  ) => {
     set({ isLoadingSessions: true });
     try {
-      const sessions = await chatApi.listSessions(nodeId);
+      const sessions = await chatApi.listSessions(nodeId, codexAnchorId);
       set({ sessions, isLoadingSessions: false });
     } catch (e) {
       set({ isLoadingSessions: false });
@@ -2156,9 +2313,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     projectId: string,
     title: string,
     nodeId?: string,
+    codexAnchorId?: string,
   ) => {
     try {
-      const session = await chatApi.createSession(projectId, title, nodeId);
+      const session = await chatApi.createSession(
+        projectId,
+        title,
+        nodeId,
+        codexAnchorId,
+      );
       set((state) => ({
         sessions: [session, ...state.sessions],
         activeSessionId: session.id,
@@ -2184,17 +2347,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       scopeAnchorId,
     } = get();
     if (activeSessionId) return activeSessionId;
-    const effectiveNodeId =
-      chatScope === "scene"
-        ? (activeSceneId ?? undefined)
-        : chatScope === "folder"
-          ? (scopeAnchorId ?? undefined)
-          : undefined;
+    const { nodeId, codexAnchorId } = resolveScopeSessionKey(
+      chatScope,
+      activeSceneId,
+      scopeAnchorId,
+    );
     try {
       const session = await chatApi.createSession(
         activeProjectId ?? getCurrentProjectId(),
         "New session",
-        effectiveNodeId,
+        nodeId === null ? undefined : nodeId,
+        codexAnchorId,
       );
       set((state) => ({
         sessions: [session, ...state.sessions],
@@ -2292,8 +2455,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           parts.push(`[system]\n${prompt}`);
           contextLoaded = true;
         }
-      } else if (chatScope === "folder" || chatScope === "project") {
-        // folder / project: sendMessage / agent と同じく refreshContextLayers の
+      } else if (
+        chatScope === "folder" ||
+        chatScope === "project" ||
+        chatScope === "codex"
+      ) {
+        // folder / project / codex: sendMessage / agent と同じく refreshContextLayers の
         // lastSystemPrompt を流用（空 scene で buildSystemPrompt しない）。
         // mentions 込みで refresh すると lastSystemPrompt に @scene pin が焼き込まれ、
         // ユーザーが mention を消して送信した次回送信でも古い pin を吸う。Copy 後に
@@ -2428,17 +2595,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // -----------------------------------------------------------------------
     let sessionIdForPersist = activeSessionId;
     if (!sessionIdForPersist) {
-      const effectiveNodeId =
-        chatScope === "scene"
-          ? (effectiveSceneId ?? undefined)
-          : chatScope === "folder"
-            ? (scopeAnchorId ?? undefined)
-            : undefined;
+      const { nodeId, codexAnchorId } = resolveScopeSessionKey(
+        chatScope,
+        effectiveSceneId,
+        scopeAnchorId,
+      );
       try {
         const session = await chatApi.createSession(
           activeProjectId ?? getCurrentProjectId(),
           "New session",
-          effectiveNodeId ?? undefined,
+          nodeId === null ? undefined : nodeId,
+          codexAnchorId,
         );
         sessionIdForPersist = session.id;
         set((state) => ({
@@ -2570,9 +2737,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 .listPinnedCodexEntries(sessionIdForPersist)
                 .catch(() => [])
             : [];
+          const { chatScope: scopeForInject, scopeAnchorId: anchorForInject } =
+            get();
           fullyInjectedIds = new Set([
             ...dbPinned.map((e) => e.id),
             ...get().inputPinnedEntryIds,
+            ...(scopeForInject === "codex" && anchorForInject
+              ? [anchorForInject]
+              : []),
           ]);
         }
 
@@ -3426,6 +3598,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           listCodexEntries(getCurrentProjectId()),
         ]);
 
+        const codexBlocks =
+          chatScope === "codex" && scopeAnchorId
+            ? await buildCodexScopeBlocks({
+                selectedEntryId: scopeAnchorId,
+                allEntries,
+              })
+            : null;
+
         // Phase 2 / 2.5: folder / project スコープでは 3 段階の集約 tier。
         //   Tier 1 (body 集約): includeBodies=true かつ scene≤30 かつ chars≤100k
         //   Tier 2 (synopsis 集約): scene≤200。本文は注入せず title+synopsis のみ
@@ -3569,10 +3749,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           };
           return [ctx];
         });
-        const mergedGlobalPinnedCodex = await enrichWithCustomDetails(
+        let mergedGlobalPinnedCodex = await enrichWithCustomDetails(
           [...globalPinnedCodex, ...extraPinned],
           allEntries,
         );
+        if (codexBlocks?.selectedPinned) {
+          const withoutSelected = mergedGlobalPinnedCodex.filter(
+            (e) => e.id !== codexBlocks.selectedPinned.id,
+          );
+          mergedGlobalPinnedCodex = [
+            codexBlocks.selectedPinned,
+            ...withoutSelected,
+          ];
+        }
         const mergedGlobalPinnedIdSet = new Set(
           mergedGlobalPinnedCodex.map((e) => e.id),
         );
@@ -3581,10 +3770,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           (e) => !mergedGlobalPinnedIdSet.has(e.id),
         );
         // Phase 2: 集約した detected をピン重複を除外して合流。
+        // Codex スコープ: 関連 mention も detected 相当で合流。
         // L5 light 入り口の `codexEntries` に detected → always の順で乗せる。
-        const detectedNotPinned = aggregatedDetected.filter(
-          (e) => !mergedGlobalPinnedIdSet.has(e.id),
-        );
+        const relatedNotPinned =
+          codexBlocks?.relatedMentioned.filter(
+            (e) => !mergedGlobalPinnedIdSet.has(e.id),
+          ) ?? [];
+        const detectedNotPinned = [
+          ...aggregatedDetected.filter(
+            (e) => !mergedGlobalPinnedIdSet.has(e.id),
+          ),
+          ...relatedNotPinned,
+        ];
         const detectedIdSet = new Set(detectedNotPinned.map((e) => e.id));
         const alwaysNotDetected = alwaysNotPinned.filter(
           (e) => !detectedIdSet.has(e.id),
@@ -3623,6 +3820,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           chapterOutlines: scopeOutlines.length > 0 ? scopeOutlines : undefined,
           mentionedScenes:
             mentionedScenes.length > 0 ? mentionedScenes : undefined,
+          relationCodexEntries:
+            codexBlocks?.relationExpanded &&
+            codexBlocks.relationExpanded.length > 0
+              ? codexBlocks.relationExpanded
+              : undefined,
           lang: projectCtx?.language ?? "ja",
           agentMode: effectiveAgentMode,
           mapBoardMarkdown,
@@ -3739,8 +3941,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   setChatScope: (scope, anchorId) => {
-    // scope === "folder" のとき anchorId 必須。空指定なら scene に fallback。
-    // includeBodies は scope ごとのデフォルトに揃え直す: scene=true, folder=false。
+    // scope === "folder" / "codex" のとき anchorId 必須。空指定なら scene に fallback。
+    // includeBodies は scope ごとのデフォルトに揃え直す: scene=true, folder/codex=false。
     // project では本文集約しないので値自体は影響しないが false に揃える。
     if (scope === "folder") {
       if (!anchorId) {
@@ -3749,6 +3951,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }
       set({
         chatScope: "folder",
+        scopeAnchorId: anchorId,
+        includeBodies: false,
+      });
+      return;
+    }
+    if (scope === "codex") {
+      if (!anchorId) {
+        set({ chatScope: "scene", scopeAnchorId: null, includeBodies: true });
+        return;
+      }
+      set({
+        chatScope: "codex",
         scopeAnchorId: anchorId,
         includeBodies: false,
       });

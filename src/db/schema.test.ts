@@ -444,6 +444,7 @@ describe("chatSessions schema", () => {
     expect(columns).toContain("id");
     expect(columns).toContain("projectId");
     expect(columns).toContain("nodeId");
+    expect(columns).toContain("codexAnchorId");
     expect(columns).toContain("title");
     expect(columns).toContain("titleManual");
     expect(columns).toContain("model");

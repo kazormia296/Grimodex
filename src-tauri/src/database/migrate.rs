@@ -221,10 +221,11 @@ impl Database {
                 ON snippet_entry_tags(tag_id);
 
             CREATE TABLE IF NOT EXISTS chat_sessions (
-                id           TEXT PRIMARY KEY,
-                project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                node_id      TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, -- chat history survives scene deletion
-                title        TEXT NOT NULL DEFAULT 'New session',
+                id               TEXT PRIMARY KEY,
+                project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                node_id          TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, -- chat history survives scene deletion
+                codex_anchor_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                title            TEXT NOT NULL DEFAULT 'New session',
                 title_manual INTEGER NOT NULL DEFAULT 0,
                 model        TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
                 created_at   TEXT NOT NULL DEFAULT (datetime('now')),
@@ -232,6 +233,8 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_node
                 ON chat_sessions(project_id, node_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_sessions_codex_anchor
+                ON chat_sessions(project_id, codex_anchor_id);
 
             -- Normalized pin table: one row per pinned codex entry / snippet
             -- per session. Replaces the former chat_sessions.pinned_codex
@@ -1443,6 +1446,18 @@ impl Database {
 
         Self::migrate_ai_write_infrastructure(&conn)?;
 
+        // Codex-scoped chat sessions: anchor to a codex entry (node_id stays NULL).
+        Self::add_column_if_missing(
+            &conn,
+            "chat_sessions",
+            "codex_anchor_id",
+            "TEXT REFERENCES codex_entries(id) ON DELETE SET NULL",
+        )?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_chat_sessions_codex_anchor
+                ON chat_sessions(project_id, codex_anchor_id);",
+        )?;
+
         Ok(())
     }
 
@@ -2515,6 +2530,58 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn chat_sessions_codex_anchor_id_migration_adds_column_and_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             CREATE TABLE codex_entries (id TEXT PRIMARY KEY);
+             CREATE TABLE chat_sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                node_id TEXT,
+                title TEXT NOT NULL DEFAULT 'New session',
+                title_manual INTEGER NOT NULL DEFAULT 0,
+                model TEXT NOT NULL DEFAULT 'm',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+
+        Database::add_column_if_missing(
+            &conn,
+            "chat_sessions",
+            "codex_anchor_id",
+            "TEXT REFERENCES codex_entries(id) ON DELETE SET NULL",
+        )
+        .expect("add codex_anchor_id");
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_chat_sessions_codex_anchor
+                ON chat_sessions(project_id, codex_anchor_id);",
+        )
+        .unwrap();
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(chat_sessions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(columns.iter().any(|c| c == "codex_anchor_id"));
+
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_chat_sessions_codex_anchor'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+    }
+
     fn tree_nodes_intent_column_migration_is_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(

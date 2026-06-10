@@ -6,8 +6,9 @@ import { useChatStore } from "./chatStore";
 import {
   useChatHistoryStore,
   filterAndSortSessions,
-  groupSessionsByScene,
+  groupSessionsByScope,
 } from "./chatHistoryStore";
+import { useCodexStore } from "@/features/codex/codexStore";
 import { SessionCard } from "./components/SessionCard";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -67,6 +68,7 @@ export function ChatHistoryPanel() {
   const selectSession = useChatStore((s) => s.selectSession);
 
   const nodes = useTreeStore((s) => s.nodes);
+  const codexEntries = useCodexStore((s) => s.entries);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -141,10 +143,17 @@ export function ChatHistoryPanel() {
     [sessions, sceneFilter, hasExtractionsOnly, projectScopeOnly, sortMode],
   );
 
-  // Group sessions by scene
+  const codexEntryMap = useMemo(() => {
+    const map: Record<string, { name: string }> = {};
+    for (const e of codexEntries) {
+      map[e.id] = { name: e.name };
+    }
+    return map;
+  }, [codexEntries]);
+
   const sessionGroups = useMemo(
-    () => groupSessionsByScene(filteredSessions, nodeMap),
-    [filteredSessions, nodeMap],
+    () => groupSessionsByScope(filteredSessions, nodeMap, codexEntryMap),
+    [filteredSessions, nodeMap, codexEntryMap],
   );
 
   // Search results grouped by session
@@ -155,6 +164,7 @@ export function ChatHistoryPanel() {
       {
         sessionTitle: string;
         nodeId: string | null;
+        codexAnchorId: string | null;
         hits: typeof searchResults;
       }
     >();
@@ -163,6 +173,7 @@ export function ChatHistoryPanel() {
         bySession.set(hit.sessionId, {
           sessionTitle: hit.sessionTitle,
           nodeId: hit.nodeId,
+          codexAnchorId: hit.codexAnchorId,
           hits: [],
         });
       }
@@ -306,9 +317,13 @@ export function ChatHistoryPanel() {
                   onClick={() => handleSessionClick(sessionId)}
                   className="mb-1 w-full text-left text-[10px] font-semibold text-muted-foreground hover:text-foreground"
                 >
-                  {group.nodeId
-                    ? (nodeMap[group.nodeId]?.title ?? group.nodeId)
-                    : "Project scope"}{" "}
+                  {group.codexAnchorId
+                    ? codexEntryMap[group.codexAnchorId]?.name
+                      ? `Codex: ${codexEntryMap[group.codexAnchorId]!.name}`
+                      : `Codex: ${group.codexAnchorId}`
+                    : group.nodeId
+                      ? (nodeMap[group.nodeId]?.title ?? group.nodeId)
+                      : "Project scope"}{" "}
                   › {group.sessionTitle}
                   <span className="ml-1 font-normal opacity-60">
                     ({group.hits.length})
@@ -349,7 +364,14 @@ export function ChatHistoryPanel() {
               </p>
             )}
             {sessionGroups.map((group) => (
-              <div key={group.nodeId ?? "project-scope"} className="mb-3">
+              <div
+                key={
+                  group.codexAnchorId
+                    ? `codex-${group.codexAnchorId}`
+                    : (group.nodeId ?? "project-scope")
+                }
+                className="mb-3"
+              >
                 {/* Group header */}
                 {group.nodeId ? (
                   <button

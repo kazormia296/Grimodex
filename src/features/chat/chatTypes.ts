@@ -57,6 +57,7 @@ export interface ChatSession {
   id: string;
   projectId: string;
   nodeId: string | null;
+  codexAnchorId: string | null;
   title: string;
   titleManual: number;
   model: string;

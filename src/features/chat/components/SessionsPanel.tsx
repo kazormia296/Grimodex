@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { useChatStore } from "@/features/chat/chatStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { resolveScopeSessionKey } from "../chatScope";
 import * as chatApi from "@/features/chat/chatApi";
 import type { ChatSession } from "@/features/chat/chatTypes";
 import { SessionRowSkeletonList } from "@/components/ui/skeleton-patterns";
@@ -164,20 +165,17 @@ export function SessionsPanel({
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
   const { t } = useTranslation();
 
-  // scope に応じて nodeId を解決: scene → activeSceneId, folder → anchor,
-  // project → null (nodeId IS NULL のセッション一覧)
-  const effectiveNodeId =
-    chatScope === "scene"
-      ? activeSceneId || undefined
-      : chatScope === "folder"
-        ? (scopeAnchorId ?? undefined)
-        : null;
+  const sessionKey = resolveScopeSessionKey(
+    chatScope,
+    activeSceneId,
+    scopeAnchorId,
+  );
 
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    loadSessions(effectiveNodeId);
-  }, [effectiveNodeId, loadSessions]);
+    loadSessions(sessionKey.nodeId, sessionKey.codexAnchorId);
+  }, [sessionKey.nodeId, sessionKey.codexAnchorId, loadSessions]);
 
   const handleSelect = useCallback(
     (sessionId: string) => {
@@ -191,13 +189,13 @@ export function SessionsPanel({
     async (sessionId: string, newTitle: string) => {
       try {
         await chatApi.updateSessionTitle(sessionId, newTitle);
-        await loadSessions(effectiveNodeId);
+        await loadSessions(sessionKey.nodeId, sessionKey.codexAnchorId);
       } catch (e) {
         debugLog.error("SessionsPanel", "rename failed", errorDetail(e));
         toast.error(t("chat.sessionRenameFailed"));
       }
     },
-    [effectiveNodeId, loadSessions, t],
+    [sessionKey.nodeId, sessionKey.codexAnchorId, loadSessions, t],
   );
 
   const handleDelete = useCallback(
@@ -206,13 +204,19 @@ export function SessionsPanel({
       if (!confirmed) return;
       try {
         await deleteSession(sessionId);
-        await loadSessions(effectiveNodeId);
+        await loadSessions(sessionKey.nodeId, sessionKey.codexAnchorId);
       } catch (e) {
         debugLog.error("SessionsPanel", "delete failed", errorDetail(e));
         toast.error(t("chat.deleteSessionFailed"));
       }
     },
-    [effectiveNodeId, deleteSession, loadSessions, t],
+    [
+      sessionKey.nodeId,
+      sessionKey.codexAnchorId,
+      deleteSession,
+      loadSessions,
+      t,
+    ],
   );
 
   const handleCreate = useCallback(async () => {
@@ -220,24 +224,18 @@ export function SessionsPanel({
       await createNewSession(
         getCurrentProjectId(),
         "New session",
-        // project scope → undefined（DB で nodeId IS NULL になる）
-        chatScope === "scene"
-          ? activeSceneId || undefined
-          : chatScope === "folder"
-            ? (scopeAnchorId ?? undefined)
-            : undefined,
+        sessionKey.nodeId === null ? undefined : sessionKey.nodeId,
+        sessionKey.codexAnchorId,
       );
-      await loadSessions(effectiveNodeId);
+      await loadSessions(sessionKey.nodeId, sessionKey.codexAnchorId);
       onClose();
     } catch (e) {
       debugLog.error("SessionsPanel", "create failed", errorDetail(e));
       toast.error(t("chat.createSessionFailed"));
     }
   }, [
-    activeSceneId,
-    chatScope,
-    scopeAnchorId,
-    effectiveNodeId,
+    sessionKey.nodeId,
+    sessionKey.codexAnchorId,
     createNewSession,
     loadSessions,
     onClose,

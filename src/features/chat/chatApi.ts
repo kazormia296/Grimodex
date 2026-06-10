@@ -360,6 +360,7 @@ function toSession(row: typeof chatSessions.$inferSelect): ChatSession {
     id: row.id,
     projectId: row.projectId,
     nodeId: row.nodeId,
+    codexAnchorId: row.codexAnchorId,
     title: row.title,
     titleManual: row.titleManual,
     model: row.model,
@@ -387,19 +388,35 @@ function toMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
 
 /**
  * nodeId = string  → そのシーンのセッションのみ
- * nodeId = null    → nodeId IS NULL (プロジェクトスコープ) のセッションのみ
+ * nodeId = null    → nodeId IS NULL かつ codex_anchor_id IS NULL (プロジェクトスコープ)
  * nodeId = undefined → 全セッション
+ * codexAnchorId = string → その Codex アンカーのセッションのみ
  */
 export async function listSessions(
   nodeId?: string | null,
+  codexAnchorId?: string | null,
 ): Promise<ChatSession[]> {
+  if (codexAnchorId !== undefined && codexAnchorId !== null) {
+    const rows = await db
+      .select()
+      .from(chatSessions)
+      .where(eq(chatSessions.codexAnchorId, codexAnchorId))
+      .orderBy(desc(chatSessions.updatedAt));
+    return rows.map(toSession);
+  }
+
   const query =
     nodeId !== undefined
       ? nodeId === null
         ? db
             .select()
             .from(chatSessions)
-            .where(isNull(chatSessions.nodeId))
+            .where(
+              and(
+                isNull(chatSessions.nodeId),
+                isNull(chatSessions.codexAnchorId),
+              ),
+            )
             .orderBy(desc(chatSessions.updatedAt))
         : db
             .select()
@@ -415,6 +432,7 @@ export async function createSession(
   projectId: string,
   title: string,
   nodeId?: string,
+  codexAnchorId?: string,
 ): Promise<ChatSession> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -425,6 +443,7 @@ export async function createSession(
       projectId,
       title,
       nodeId: nodeId ? nodeId : null,
+      codexAnchorId: codexAnchorId ?? null,
       createdAt: now,
       updatedAt: now,
     })
