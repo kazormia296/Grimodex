@@ -139,6 +139,10 @@ jobs:
         working-directory: src-tauri
         run: cargo check --workspace
 
+      - name: cargo check (licensing feature)
+        working-directory: src-tauri
+        run: cargo check --workspace --features licensing
+
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy --workspace --all-targets -- -D warnings
