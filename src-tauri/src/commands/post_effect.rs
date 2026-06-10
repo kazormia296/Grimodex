@@ -3533,6 +3533,86 @@ fn finalize_run(app: &AppHandle, run_id: &str) {
     });
 }
 
+/// キャッシュ照合と running 行 INSERT の結果。
+enum EnsureRunOutcome {
+    /// 同一 input_hash の completed run が存在し再利用する（既存 run_id）
+    Cached(String),
+    /// 新規に running 行を INSERT した（新規 run_id）
+    Created(String),
+}
+
+/// start_post_effect_run / start_post_effect_run_multi が共有する
+/// 「completed run のキャッシュ照合 → ミス時に running 行 INSERT」。
+/// SQL 文字列とバインド順序は挙動保存のため元実装から変更していない。
+/// run_id の生成はキャッシュミス確定後（ヒット時は生成しない）。
+#[allow(clippy::too_many_arguments)]
+fn ensure_post_effect_run(
+    ws_state: &State<'_, WorkspaceState>,
+    project_id: &str,
+    effect_type: &str,
+    scope_type: &str,
+    scope_target_id: Option<&str>,
+    model: &str,
+    prompt_version: &str,
+    input_hash: &str,
+) -> Result<EnsureRunOutcome, AppError> {
+    let cached_run_id: Option<String> = super::with_db(ws_state, |db| {
+        db.with_conn(|conn| {
+            let result = conn.query_row(
+                "SELECT id FROM post_effect_runs
+                  WHERE project_id = ?
+                    AND effect_type = ?
+                    AND scope_type = ?
+                    AND COALESCE(scope_target_id, '') = COALESCE(?, '')
+                    AND input_hash = ?
+                    AND status = 'completed'
+                  ORDER BY started_at DESC
+                  LIMIT 1",
+                params![
+                    project_id,
+                    effect_type,
+                    scope_type,
+                    scope_target_id,
+                    input_hash,
+                ],
+                |row: &rusqlite::Row<'_>| row.get::<_, String>(0),
+            );
+            Ok(result.ok())
+        })
+    })?;
+
+    if let Some(existing_id) = cached_run_id {
+        return Ok(EnsureRunOutcome::Cached(existing_id));
+    }
+
+    // run 行を INSERT (UNIQUE 制約でも重複 running をブロック)
+    let run_id = Uuid::new_v4().to_string();
+
+    super::with_db(ws_state, |db| {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, scope_target_id,
+                     model, prompt_version, input_hash, status, started_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', datetime('now'))",
+                params![
+                    run_id,
+                    project_id,
+                    effect_type,
+                    scope_type,
+                    scope_target_id,
+                    model,
+                    prompt_version,
+                    input_hash,
+                ],
+            )?;
+            Ok(())
+        })
+    })?;
+
+    Ok(EnsureRunOutcome::Created(run_id))
+}
+
 // ---------------------------------------------------------------------------
 // Tauri コマンド
 // ---------------------------------------------------------------------------
@@ -3584,64 +3664,25 @@ pub(crate) async fn start_post_effect_run(
         );
     }
 
-    // キャッシュチェック: 同一 input_hash の completed run があれば再利用
-    let cached_run_id: Option<String> = super::with_db(&ws_state, |db| {
-        db.with_conn(|conn| {
-            let result = conn.query_row(
-                "SELECT id FROM post_effect_runs
-                  WHERE project_id = ?
-                    AND effect_type = ?
-                    AND scope_type = ?
-                    AND COALESCE(scope_target_id, '') = COALESCE(?, '')
-                    AND input_hash = ?
-                    AND status = 'completed'
-                  ORDER BY started_at DESC
-                  LIMIT 1",
-                params![
-                    args.project_id,
-                    args.effect_type,
-                    args.scope_type,
-                    args.scope_target_id.as_deref(),
-                    args.input_hash,
-                ],
-                |row: &rusqlite::Row<'_>| row.get::<_, String>(0),
-            );
-            Ok(result.ok())
-        })
-    })?;
-
-    if let Some(existing_id) = cached_run_id {
-        return Ok(StartPostEffectRunResult {
-            run_id: existing_id,
-            from_cache: true,
-        });
-    }
-
-    // run 行を INSERT (UNIQUE 制約でも重複 running をブロック)
-    let run_id = Uuid::new_v4().to_string();
-    let run_id_clone = run_id.clone();
-
-    super::with_db(&ws_state, |db| {
-        db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO post_effect_runs
-                    (id, project_id, effect_type, scope_type, scope_target_id,
-                     model, prompt_version, input_hash, status, started_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', datetime('now'))",
-                params![
-                    run_id_clone,
-                    args.project_id,
-                    args.effect_type,
-                    args.scope_type,
-                    args.scope_target_id.as_deref(),
-                    args.model,
-                    args.prompt_version,
-                    args.input_hash,
-                ],
-            )?;
-            Ok(())
-        })
-    })?;
+    // キャッシュチェック + running 行 INSERT (ensure_post_effect_run に集約)
+    let run_id = match ensure_post_effect_run(
+        &ws_state,
+        &args.project_id,
+        &args.effect_type,
+        &args.scope_type,
+        args.scope_target_id.as_deref(),
+        &args.model,
+        &args.prompt_version,
+        &args.input_hash,
+    )? {
+        EnsureRunOutcome::Cached(existing_id) => {
+            return Ok(StartPostEffectRunResult {
+                run_id: existing_id,
+                from_cache: true,
+            });
+        }
+        EnsureRunOutcome::Created(run_id) => run_id,
+    };
 
     // scene_id は scope_target_id から取得 (scope_type='scene' のみ Phase 1b 対応)
     let scene_id = args.scope_target_id.clone().unwrap_or_default();
@@ -3805,63 +3846,25 @@ pub(crate) async fn start_post_effect_run_multi(
         return Err(anyhow::anyhow!("effect_type '{}' は未実装です", effect_type).into());
     }
 
-    // キャッシュチェック: 同一 input_hash の completed run があれば再利用
-    let cached_run_id: Option<String> = super::with_db(&ws_state, |db| {
-        db.with_conn(|conn| {
-            let result = conn.query_row(
-                "SELECT id FROM post_effect_runs
-                  WHERE project_id = ?
-                    AND effect_type = ?
-                    AND scope_type = ?
-                    AND COALESCE(scope_target_id, '') = COALESCE(?, '')
-                    AND input_hash = ?
-                    AND status = 'completed'
-                  ORDER BY started_at DESC
-                  LIMIT 1",
-                params![
-                    args.project_id,
-                    args.effect_type,
-                    args.scope_type,
-                    args.scope_target_id.as_deref(),
-                    args.input_hash,
-                ],
-                |row: &rusqlite::Row<'_>| row.get::<_, String>(0),
-            );
-            Ok(result.ok())
-        })
-    })?;
-
-    if let Some(existing_id) = cached_run_id {
-        return Ok(StartPostEffectRunResult {
-            run_id: existing_id,
-            from_cache: true,
-        });
-    }
-
-    let run_id = Uuid::new_v4().to_string();
-    let run_id_clone = run_id.clone();
-
-    super::with_db(&ws_state, |db| {
-        db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO post_effect_runs
-                    (id, project_id, effect_type, scope_type, scope_target_id,
-                     model, prompt_version, input_hash, status, started_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', datetime('now'))",
-                params![
-                    run_id_clone,
-                    args.project_id,
-                    args.effect_type,
-                    args.scope_type,
-                    args.scope_target_id.as_deref(),
-                    args.model,
-                    args.prompt_version,
-                    args.input_hash,
-                ],
-            )?;
-            Ok(())
-        })
-    })?;
+    // キャッシュチェック + running 行 INSERT (ensure_post_effect_run に集約)
+    let run_id = match ensure_post_effect_run(
+        &ws_state,
+        &args.project_id,
+        &args.effect_type,
+        &args.scope_type,
+        args.scope_target_id.as_deref(),
+        &args.model,
+        &args.prompt_version,
+        &args.input_hash,
+    )? {
+        EnsureRunOutcome::Cached(existing_id) => {
+            return Ok(StartPostEffectRunResult {
+                run_id: existing_id,
+                from_cache: true,
+            });
+        }
+        EnsureRunOutcome::Created(run_id) => run_id,
+    };
 
     let app = app_handle.clone();
     let ai_path = ai_settings_path.path.clone();
