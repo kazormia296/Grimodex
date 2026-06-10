@@ -117,6 +117,8 @@ export function SceneBeatNodeView({
 
   const allModels = useAiSettingsStore((s) => s.models);
   const loadModels = useAiSettingsStore((s) => s.loadModels);
+  // 動的 capability レジストリ更新時に再レンダリングをトリガーする
+  useAiSettingsStore((s) => s.modelCapsRevision);
   const modelWhitelistRaw = useSettingsStore((s) => s.get("ai.modelWhitelist"));
   const availableModels = useMemo(() => {
     try {

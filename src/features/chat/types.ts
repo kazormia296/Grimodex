@@ -116,6 +116,12 @@ export interface AiModel {
   name: string;
   /** AI のべりすと: "legacy" | "v1" */
   apiVariant?: "legacy" | "v1";
+  // OpenRouter /models から取得したメタデータ（他プロバイダでは未設定）
+  contextLength?: number;
+  maxCompletionTokens?: number;
+  supportedParameters?: string[];
+  pricingPrompt?: string;
+  pricingCompletion?: string;
 }
 
 /**

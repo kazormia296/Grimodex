@@ -315,6 +315,66 @@ pub struct AiModel {
         skip_serializing_if = "Option::is_none"
     )]
     pub api_variant: Option<String>,
+    /// OpenRouter: context window in tokens (context_length)
+    #[serde(
+        default,
+        rename = "contextLength",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub context_length: Option<u64>,
+    /// OpenRouter: max completion tokens (top_provider.max_completion_tokens)
+    #[serde(
+        default,
+        rename = "maxCompletionTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_completion_tokens: Option<u64>,
+    /// OpenRouter: supported parameter names (supported_parameters[])
+    #[serde(
+        default,
+        rename = "supportedParameters",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub supported_parameters: Option<Vec<String>>,
+    /// OpenRouter: pricing.prompt (USD per token as string)
+    #[serde(
+        default,
+        rename = "pricingPrompt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pricing_prompt: Option<String>,
+    /// OpenRouter: pricing.completion (USD per token as string)
+    #[serde(
+        default,
+        rename = "pricingCompletion",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pricing_completion: Option<String>,
+}
+
+/// Parse a single OpenRouter model entry from the /api/v1/models response.
+fn parse_openrouter_model(m: &serde_json::Value) -> Option<AiModel> {
+    let id = m["id"].as_str()?;
+    let name = m["name"].as_str().unwrap_or(id);
+    let context_length = m["context_length"].as_u64();
+    let max_completion_tokens = m["top_provider"]["max_completion_tokens"].as_u64();
+    let supported_parameters = m["supported_parameters"].as_array().map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect::<Vec<_>>()
+    });
+    let pricing_prompt = m["pricing"]["prompt"].as_str().map(|s| s.to_string());
+    let pricing_completion = m["pricing"]["completion"].as_str().map(|s| s.to_string());
+    Some(AiModel {
+        id: id.to_string(),
+        name: name.to_string(),
+        api_variant: None,
+        context_length,
+        max_completion_tokens,
+        supported_parameters,
+        pricing_prompt,
+        pricing_completion,
+    })
 }
 
 fn legacy_ainoverist_model(id: &str, name: &str) -> AiModel {
@@ -322,6 +382,11 @@ fn legacy_ainoverist_model(id: &str, name: &str) -> AiModel {
         id: id.to_string(),
         name: name.to_string(),
         api_variant: Some("legacy".to_string()),
+        context_length: None,
+        max_completion_tokens: None,
+        supported_parameters: None,
+        pricing_prompt: None,
+        pricing_completion: None,
     }
 }
 
@@ -330,6 +395,11 @@ fn v1_ainoverist_model(id: &str, name: &str) -> AiModel {
         id: id.to_string(),
         name: name.to_string(),
         api_variant: Some("v1".to_string()),
+        context_length: None,
+        max_completion_tokens: None,
+        supported_parameters: None,
+        pricing_prompt: None,
+        pricing_completion: None,
     }
 }
 
@@ -532,14 +602,64 @@ pub async fn fetch_models(
         AiProvider::Anthropic => {
             return Ok(vec![
                 AiModel {
+                    id: "claude-fable-5".to_string(),
+                    name: "Claude Fable 5".to_string(),
+                    api_variant: None,
+                    context_length: None,
+                    max_completion_tokens: None,
+                    supported_parameters: None,
+                    pricing_prompt: None,
+                    pricing_completion: None,
+                },
+                AiModel {
+                    id: "claude-opus-4-8".to_string(),
+                    name: "Claude Opus 4.8".to_string(),
+                    api_variant: None,
+                    context_length: None,
+                    max_completion_tokens: None,
+                    supported_parameters: None,
+                    pricing_prompt: None,
+                    pricing_completion: None,
+                },
+                AiModel {
+                    id: "claude-opus-4-7".to_string(),
+                    name: "Claude Opus 4.7".to_string(),
+                    api_variant: None,
+                    context_length: None,
+                    max_completion_tokens: None,
+                    supported_parameters: None,
+                    pricing_prompt: None,
+                    pricing_completion: None,
+                },
+                AiModel {
+                    id: "claude-opus-4-6".to_string(),
+                    name: "Claude Opus 4.6".to_string(),
+                    api_variant: None,
+                    context_length: None,
+                    max_completion_tokens: None,
+                    supported_parameters: None,
+                    pricing_prompt: None,
+                    pricing_completion: None,
+                },
+                AiModel {
                     id: "claude-sonnet-4-6".to_string(),
                     name: "Claude Sonnet 4.6".to_string(),
                     api_variant: None,
+                    context_length: None,
+                    max_completion_tokens: None,
+                    supported_parameters: None,
+                    pricing_prompt: None,
+                    pricing_completion: None,
                 },
                 AiModel {
                     id: "claude-haiku-4-5-20251001".to_string(),
                     name: "Claude Haiku 4.5".to_string(),
                     api_variant: None,
+                    context_length: None,
+                    max_completion_tokens: None,
+                    supported_parameters: None,
+                    pricing_prompt: None,
+                    pricing_completion: None,
                 },
             ]);
         }
@@ -596,12 +716,28 @@ pub async fn fetch_models(
                         id: name.to_string(),
                         name: name.to_string(),
                         api_variant: None,
+                        context_length: None,
+                        max_completion_tokens: None,
+                        supported_parameters: None,
+                        pricing_prompt: None,
+                        pricing_completion: None,
                     })
                 })
                 .collect()
         }
+        AiProvider::OpenRouter => {
+            // OpenRouter returns { "data": [{ "id", "name", "context_length",
+            //   "top_provider": { "max_completion_tokens" }, "supported_parameters",
+            //   "pricing": { "prompt", "completion" } }] }
+            body["data"]
+                .as_array()
+                .unwrap_or(&vec![])
+                .iter()
+                .filter_map(parse_openrouter_model)
+                .collect()
+        }
         _ => {
-            // OpenAI/OpenRouter return { "data": [{ "id": "...", "name": "..." }] }
+            // OpenAI / OpenaiCompatible: { "data": [{ "id": "...", "name": "..." }] }
             body["data"]
                 .as_array()
                 .unwrap_or(&vec![])
@@ -616,6 +752,11 @@ pub async fn fetch_models(
                         id: id.to_string(),
                         name: name.to_string(),
                         api_variant: None,
+                        context_length: None,
+                        max_completion_tokens: None,
+                        supported_parameters: None,
+                        pricing_prompt: None,
+                        pricing_completion: None,
                     })
                 })
                 .collect()
@@ -4951,5 +5092,104 @@ mod tests {
         let err = super::parse_anthropic_http_error(reqwest::StatusCode::BAD_REQUEST, body);
         assert!(err.to_string().contains("400"));
         assert!(err.to_string().contains("Extra inputs are not permitted"));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_openrouter_model
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_openrouter_model_full() {
+        let m = serde_json::json!({
+            "id": "anthropic/claude-sonnet-4.6",
+            "name": "Claude Sonnet 4.6",
+            "context_length": 1000000,
+            "top_provider": { "max_completion_tokens": 64000 },
+            "supported_parameters": ["tools", "reasoning", "temperature"],
+            "pricing": { "prompt": "0.000003", "completion": "0.000015" }
+        });
+        let model = super::parse_openrouter_model(&m).unwrap();
+        assert_eq!(model.id, "anthropic/claude-sonnet-4.6");
+        assert_eq!(model.name, "Claude Sonnet 4.6");
+        assert_eq!(model.context_length, Some(1_000_000));
+        assert_eq!(model.max_completion_tokens, Some(64_000));
+        let params = model.supported_parameters.as_ref().unwrap();
+        assert!(params.contains(&"tools".to_string()));
+        assert!(params.contains(&"reasoning".to_string()));
+        assert_eq!(model.pricing_prompt.as_deref(), Some("0.000003"));
+        assert_eq!(model.pricing_completion.as_deref(), Some("0.000015"));
+    }
+
+    #[test]
+    fn parse_openrouter_model_missing_optional_fields() {
+        let m = serde_json::json!({
+            "id": "anthropic/claude-opus-4-6",
+            "name": "Claude Opus 4.6"
+        });
+        let model = super::parse_openrouter_model(&m).unwrap();
+        assert_eq!(model.id, "anthropic/claude-opus-4-6");
+        assert_eq!(model.context_length, None);
+        assert_eq!(model.max_completion_tokens, None);
+        assert_eq!(model.supported_parameters, None);
+        assert_eq!(model.pricing_prompt, None);
+    }
+
+    #[test]
+    fn parse_openrouter_model_context_length_null() {
+        let m = serde_json::json!({
+            "id": "anthropic/claude-haiku-4-5",
+            "context_length": null
+        });
+        let model = super::parse_openrouter_model(&m).unwrap();
+        assert_eq!(model.context_length, None);
+    }
+
+    #[test]
+    fn parse_openrouter_model_top_provider_missing() {
+        let m = serde_json::json!({
+            "id": "some/model",
+            "context_length": 32768
+        });
+        let model = super::parse_openrouter_model(&m).unwrap();
+        assert_eq!(model.context_length, Some(32_768));
+        assert_eq!(model.max_completion_tokens, None);
+    }
+
+    #[test]
+    fn parse_openrouter_model_non_string_parameters_skipped() {
+        let m = serde_json::json!({
+            "id": "some/model",
+            "supported_parameters": ["tools", 42, null, "reasoning"]
+        });
+        let model = super::parse_openrouter_model(&m).unwrap();
+        let params = model.supported_parameters.as_ref().unwrap();
+        assert_eq!(params, &["tools".to_string(), "reasoning".to_string()]);
+    }
+
+    #[test]
+    fn parse_openrouter_model_missing_id_returns_none() {
+        let m = serde_json::json!({ "name": "No ID Model" });
+        assert!(super::parse_openrouter_model(&m).is_none());
+    }
+
+    #[test]
+    fn aimodel_serde_roundtrip_camel_case_none_omitted() {
+        let model = super::AiModel {
+            id: "anthropic/claude-opus-4-6".to_string(),
+            name: "Claude Opus 4.6".to_string(),
+            api_variant: None,
+            context_length: Some(1_000_000),
+            max_completion_tokens: Some(128_000),
+            supported_parameters: Some(vec!["reasoning".to_string()]),
+            pricing_prompt: None,
+            pricing_completion: None,
+        };
+        let json = serde_json::to_value(&model).unwrap();
+        // camelCase rename
+        assert_eq!(json["contextLength"], 1_000_000);
+        assert_eq!(json["maxCompletionTokens"], 128_000);
+        // None フィールドは出力されない (skip_serializing_if)
+        assert!(json.get("apiVariant").is_none());
+        assert!(json.get("pricingPrompt").is_none());
     }
 }

@@ -35,6 +35,7 @@ import { ContextCreatorButton } from "./ContextCreatorButton";
 import { ContextCreatorDialog } from "./ContextCreatorDialog";
 import { runContextCreator, type SuggestedEntry } from "../contextCreatorApi";
 import { useChatStore } from "../chatStore";
+import { useAiSettingsStore } from "../store";
 import {
   getModelCapabilities,
   formatContextWindow,
@@ -144,6 +145,8 @@ export function ContextBar({
 }: ContextBarProps) {
   const { t } = useTranslation();
   const reduced = useReducedMotion();
+  // 動的 capability レジストリ更新時に contextWindow 表示を再計算する
+  useAiSettingsStore((s) => s.modelCapsRevision);
   const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);

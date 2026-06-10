@@ -826,6 +826,11 @@ fn known_claude_models() -> Vec<crate::ai::AiModel> {
         id: id.to_string(),
         name: name.to_string(),
         api_variant: None,
+        context_length: None,
+        max_completion_tokens: None,
+        supported_parameters: None,
+        pricing_prompt: None,
+        pricing_completion: None,
     })
     .collect()
 }
@@ -853,6 +858,11 @@ fn parse_codex_models_json(raw: &str) -> anyhow::Result<Vec<crate::ai::AiModel>>
             id: m.slug.clone(),
             name: m.display_name.unwrap_or(m.slug),
             api_variant: None,
+            context_length: None,
+            max_completion_tokens: None,
+            supported_parameters: None,
+            pricing_prompt: None,
+            pricing_completion: None,
         })
         .collect())
 }
@@ -869,6 +879,11 @@ fn parse_opencode_models_stdout(raw: &str) -> Vec<crate::ai::AiModel> {
                 id,
                 name,
                 api_variant: None,
+                context_length: None,
+                max_completion_tokens: None,
+                supported_parameters: None,
+                pricing_prompt: None,
+                pricing_completion: None,
             }
         })
         .collect()

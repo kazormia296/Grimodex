@@ -129,6 +129,8 @@ export function ChatInput({
   const saveSettings = useAiSettingsStore((s) => s.saveSettings);
   const allModels = useAiSettingsStore((s) => s.models);
   const loadModels = useAiSettingsStore((s) => s.loadModels);
+  // 動的 capability レジストリ更新時に caps を再計算する
+  useAiSettingsStore((s) => s.modelCapsRevision);
   const modelWhitelistRaw = useSettingsStore((s) => s.get("ai.modelWhitelist"));
   const models = (() => {
     try {

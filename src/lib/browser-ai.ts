@@ -200,6 +200,28 @@ export async function fetchModels(
 
   // OpenAI / OpenRouter
   const data = body?.data ?? [];
+  if (provider === "openrouter") {
+    return data.map(
+      (m: {
+        id: string;
+        name?: string;
+        context_length?: number;
+        top_provider?: { max_completion_tokens?: number };
+        supported_parameters?: unknown[];
+        pricing?: { prompt?: string; completion?: string };
+      }) => ({
+        id: m.id,
+        name: m.name ?? m.id,
+        contextLength: m.context_length,
+        maxCompletionTokens: m.top_provider?.max_completion_tokens,
+        supportedParameters: (m.supported_parameters ?? []).filter(
+          (p): p is string => typeof p === "string",
+        ),
+        pricingPrompt: m.pricing?.prompt,
+        pricingCompletion: m.pricing?.completion,
+      }),
+    );
+  }
   return data.map((m: { id: string; name?: string }) => ({
     id: m.id,
     name: m.name ?? m.id,

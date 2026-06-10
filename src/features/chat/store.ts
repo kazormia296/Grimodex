@@ -4,6 +4,10 @@ import * as cliApi from "./cliApi";
 import { resolveAinoveristApiVariant } from "./aiNovelist";
 import type { AiSettings, AiModel, ConnectionTestResult } from "./types";
 import { DEFAULT_AI_SETTINGS } from "./types";
+import {
+  registerDynamicModelCaps,
+  isDynamicCapsStale,
+} from "./agent/dynamicModelCaps";
 
 export interface AiSettingsState {
   settings: AiSettings | null;
@@ -14,6 +18,8 @@ export interface AiSettingsState {
   connectionTestResult: ConnectionTestResult | null;
   models: AiModel[];
   isLoadingModels: boolean;
+  /** OpenRouter 動的 capability レジストリの更新カウンタ。購読するとキャップ変更で再レンダリングされる。 */
+  modelCapsRevision: number;
 
   loadSettings: () => Promise<void>;
   saveSettings: (settings: AiSettings) => Promise<void>;
@@ -21,6 +27,29 @@ export interface AiSettingsState {
   deleteApiKey: () => Promise<void>;
   testConnection: () => Promise<void>;
   loadModels: () => Promise<void>;
+}
+
+// in-flight ガード（多重発火防止）
+let capsRefreshInFlight = false;
+
+async function maybeRefreshDynamicCaps(): Promise<void> {
+  if (capsRefreshInFlight) return;
+  if (!isDynamicCapsStale()) return;
+  capsRefreshInFlight = true;
+  try {
+    const { settings } = useAiSettingsStore.getState();
+    if (settings?.provider !== "openrouter") return;
+    const models = await api.listAiModels("openrouter");
+    registerDynamicModelCaps(models);
+    useAiSettingsStore.setState((s) => ({
+      models,
+      modelCapsRevision: s.modelCapsRevision + 1,
+    }));
+  } catch {
+    // network error — silent fail, use stale/hardcoded caps
+  } finally {
+    capsRefreshInFlight = false;
+  }
 }
 
 export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
@@ -31,6 +60,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   connectionTestResult: null,
   models: [],
   isLoadingModels: false,
+  modelCapsRevision: 0,
 
   loadSettings: async () => {
     const settings = await api.getAiSettings();
@@ -41,6 +71,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       cliBinaryAvailable = path !== null;
     }
     set({ settings, hasApiKey: key !== null, cliBinaryAvailable });
+    void maybeRefreshDynamicCaps();
   },
 
   saveSettings: async (settings: AiSettings) => {
@@ -124,7 +155,16 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       // それ以外は Rust 側 fetch_models に委譲
       // (Anthropic / AiNovelist は静的リストを返す、OpenAI 互換は API を叩く)
       const models = await api.listAiModels(settings.provider);
-      set({ models, isLoadingModels: false });
+      if (settings.provider === "openrouter") {
+        registerDynamicModelCaps(models);
+        set({
+          models,
+          isLoadingModels: false,
+          modelCapsRevision: get().modelCapsRevision + 1,
+        });
+      } else {
+        set({ models, isLoadingModels: false });
+      }
     } catch {
       set({ models: [], isLoadingModels: false });
     }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildThinkingParams,
   clampReasoningEffort,
@@ -9,6 +9,28 @@ import {
   modelSupportsTools,
   resolveModelCapabilities,
 } from "./modelLimits";
+import {
+  __resetDynamicModelCapsForTests,
+  registerDynamicModelCaps,
+} from "./dynamicModelCaps";
+import type { AiModel } from "../types";
+
+// localStorage スタブ（dynamicModelCaps が参照する）
+const lsStore: Record<string, string> = {};
+const localStorageMock = {
+  getItem: (k: string) => lsStore[k] ?? null,
+  setItem: (k: string, v: string) => {
+    lsStore[k] = v;
+  },
+  removeItem: (k: string) => {
+    delete lsStore[k];
+  },
+  clear: () => {
+    for (const k of Object.keys(lsStore)) delete lsStore[k];
+  },
+};
+// @ts-expect-error – test stub
+globalThis.localStorage = localStorageMock;
 
 describe("getModelCapabilities", () => {
   it("claude-opus-4-6: adaptive thinking, max effort, 1M context", () => {
@@ -396,4 +418,134 @@ describe("formatContextWindow", () => {
   it("1M", () => expect(formatContextWindow(1_000_000)).toBe("1M"));
   it("200k", () => expect(formatContextWindow(200_000)).toBe("200k"));
   it("8192", () => expect(formatContextWindow(8_192)).toBe("8.192k"));
+});
+
+// ---------------------------------------------------------------------------
+// 動的レジストリ統合テスト
+// ---------------------------------------------------------------------------
+
+function makeOpenRouterModel(
+  id: string,
+  extra: Partial<AiModel> = {},
+): AiModel {
+  return {
+    id,
+    name: id,
+    contextLength: 100_000,
+    maxCompletionTokens: 8_192,
+    supportedParameters: ["tools"],
+    ...extra,
+  };
+}
+
+describe("動的 capability レジストリ統合", () => {
+  beforeEach(() => {
+    __resetDynamicModelCapsForTests();
+    localStorageMock.clear();
+  });
+  afterEach(() => {
+    __resetDynamicModelCapsForTests();
+    localStorageMock.clear();
+  });
+
+  it("レジストリ空のとき既存の hardcoded テストが全て通る (回帰)", () => {
+    // 動的レジストリが空でも、既存ロジックは変わらない
+    const caps = getModelCapabilities("claude-opus-4-6");
+    expect(caps.contextWindow).toBe(1_000_000);
+    expect(caps.supportsAdaptiveThinking).toBe(true);
+  });
+
+  it("登録後: anthropic/claude-sonnet-4.6 → 1M context + supportsReasoning", () => {
+    registerDynamicModelCaps([
+      makeOpenRouterModel("anthropic/claude-sonnet-4.6", {
+        contextLength: 1_000_000,
+        maxCompletionTokens: 64_000,
+        supportedParameters: ["tools", "reasoning"],
+      }),
+    ]);
+    const caps = getModelCapabilities("anthropic/claude-sonnet-4.6");
+    expect(caps.contextWindow).toBe(1_000_000);
+    expect(caps.maxOutputTokens).toBe(64_000);
+    expect(caps.supportsReasoning).toBe(true);
+    expect(caps.supportsThinking).toBe(false);
+    expect(caps.supportsAdaptiveThinking).toBe(false);
+    expect(caps.supportsEffort).toBe(false);
+  });
+
+  it("未知 Opus id が 8k fallback から脱出する", () => {
+    registerDynamicModelCaps([
+      makeOpenRouterModel("anthropic/claude-opus-99-9", {
+        contextLength: 1_000_000,
+        supportedParameters: ["tools", "reasoning"],
+      }),
+    ]);
+    const caps = getModelCapabilities("anthropic/claude-opus-99-9");
+    expect(caps.contextWindow).toBe(1_000_000);
+    expect(caps.supportsReasoning).toBe(true);
+  });
+
+  it("openai/o3 の canDisableReasoning=false を継承する", () => {
+    registerDynamicModelCaps([
+      makeOpenRouterModel("openai/o3", {
+        contextLength: 200_000,
+        supportedParameters: ["tools", "reasoning"],
+      }),
+    ]);
+    const caps = getModelCapabilities("openai/o3");
+    expect(caps.supportsReasoning).toBe(true);
+    expect(caps.canDisableReasoning).toBe(false);
+  });
+
+  it("openrouter provider: adaptive thinking → supportsReasoning に変換 (offline fallback)", () => {
+    // 動的レジストリ空 → hardcoded anthropic/claude-opus-4-6 は supportsAdaptiveThinking=true
+    const caps = resolveModelCapabilities("anthropic/claude-opus-4-6", {
+      provider: "openrouter",
+    });
+    expect(caps.supportsAdaptiveThinking).toBe(false);
+    expect(caps.supportsThinking).toBe(false);
+    expect(caps.supportsEffort).toBe(false);
+    expect(caps.supportsReasoning).toBe(true);
+  });
+
+  it("openrouter provider: non-thinking モデルは変換しない", () => {
+    const caps = resolveModelCapabilities("openai/gpt-4o", {
+      provider: "openrouter",
+    });
+    expect(caps.supportsReasoning).toBe(false);
+    expect(caps.supportsTools).toBe(true);
+  });
+
+  it("buildThinkingParams: Claude via OpenRouter → reasoning wire format", () => {
+    // 動的データあり（supportsReasoning=true）
+    registerDynamicModelCaps([
+      makeOpenRouterModel("anthropic/claude-opus-4-6", {
+        contextLength: 1_000_000,
+        supportedParameters: ["tools", "reasoning"],
+      }),
+    ]);
+    const params = buildThinkingParams(
+      "anthropic/claude-opus-4-6",
+      "high",
+      "summarized",
+      true,
+      { provider: "openrouter" },
+    );
+    expect(params.reasoningEnabled).toBe(true);
+    expect(params.reasoningEffort).toBe("high");
+    expect(params.thinking).toBeUndefined();
+  });
+
+  it("buildThinkingParams: Claude via OpenRouter offline fallback → reasoning wire format", () => {
+    // 動的レジストリ空でも resolveModelCapabilities の変換で reasoning が返る
+    const params = buildThinkingParams(
+      "anthropic/claude-opus-4-6",
+      "medium",
+      "summarized",
+      true,
+      { provider: "openrouter" },
+    );
+    expect(params.reasoningEnabled).toBe(true);
+    expect(params.reasoningEffort).toBe("medium");
+    expect(params.thinking).toBeUndefined();
+  });
 });

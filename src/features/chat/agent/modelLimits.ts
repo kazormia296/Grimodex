@@ -4,6 +4,7 @@ import {
   AINOVERIST_V1_MODEL_CAPS,
   isAinoveristV1Model,
 } from "../aiNovelist";
+import { getDynamicModelMeta, type DynamicModelMeta } from "./dynamicModelCaps";
 
 /** モデルの能力情報 */
 export type EffortLevel = "low" | "medium" | "high" | "max";
@@ -322,11 +323,10 @@ function normalizeModelVersion(model: string): string {
 }
 
 /**
- * モデルの能力情報を取得する。
+ * ハードコード表のみでモデル能力を解決する内部関数。
  * 完全一致 → バージョン正規化後に再試行 → プレフィックス前方一致（日付サフィックス対応）
- * の順で解決し、未知のモデルはデフォルト値を返す。
  */
-export function getModelCapabilities(model: string): ModelCapabilities {
+function resolveHardcoded(model: string): ModelCapabilities {
   if (MODEL_CAPABILITIES[model]) return MODEL_CAPABILITIES[model];
 
   const resolved = OPENROUTER_PREFIXED[model];
@@ -336,7 +336,7 @@ export function getModelCapabilities(model: string): ModelCapabilities {
   // ドット→ダッシュ正規化後に再試行 ("anthropic/claude-sonnet-4.6" → "anthropic/claude-sonnet-4-6")
   const normalized = normalizeModelVersion(model);
   if (normalized !== model) {
-    const caps = getModelCapabilities(normalized);
+    const caps = resolveHardcoded(normalized);
     if (caps !== DEFAULT_CAPABILITIES) return caps;
   }
 
@@ -357,6 +357,48 @@ export function getModelCapabilities(model: string): ModelCapabilities {
   }
 
   return DEFAULT_CAPABILITIES;
+}
+
+/**
+ * 動的メタデータとハードコード能力をマージする。
+ * supportsThinking/supportsAdaptiveThinking/supportsEffort/supportsMaxEffort は
+ * 常に false（OpenRouter は unified reasoning param に一本化）。
+ * canDisableReasoning/reasoningEffortValues はハードコード側が
+ * supportsReasoning===true のときのみ継承する（o-series ロック・gpt-5-pro clamp 維持）。
+ */
+function mergeDynamicCaps(
+  dyn: DynamicModelMeta,
+  hardcoded: ModelCapabilities,
+): ModelCapabilities {
+  const supportsReasoning = dyn.reasoning;
+  const inheritNuance = supportsReasoning && hardcoded.supportsReasoning;
+  return {
+    contextWindow: dyn.ctx ?? hardcoded.contextWindow,
+    maxOutputTokens: dyn.out ?? hardcoded.maxOutputTokens,
+    supportsTools: dyn.tools,
+    supportsThinking: false,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsReasoning,
+    canDisableReasoning: inheritNuance
+      ? hardcoded.canDisableReasoning
+      : undefined,
+    reasoningEffortValues: inheritNuance
+      ? hardcoded.reasoningEffortValues
+      : undefined,
+  };
+}
+
+/**
+ * モデルの能力情報を取得する。
+ * 動的レジストリ（OpenRouter /models から登録）→ ハードコード表 の順で解決する。
+ * 未知のモデルはデフォルト値を返す。
+ */
+export function getModelCapabilities(model: string): ModelCapabilities {
+  const dyn = getDynamicModelMeta(model);
+  if (dyn) return mergeDynamicCaps(dyn, resolveHardcoded(model));
+  return resolveHardcoded(model);
 }
 
 /**
@@ -426,6 +468,23 @@ export function resolveModelCapabilities(
       supportsEffort: false,
       supportsReasoning: false,
     };
+  }
+
+  // OpenRouter: 動的レジストリが空のときの offline fallback。
+  // ハードコード表の Claude thinking/adaptive 能力を unified reasoning param に変換する
+  // （`base` が動的レジストリから来ている場合はすでに変換済みなので no-op）。
+  if (settings.provider === "openrouter") {
+    if (base.supportsThinking || base.supportsAdaptiveThinking) {
+      return {
+        ...base,
+        supportsThinking: false,
+        supportsAdaptiveThinking: false,
+        supportsEffort: false,
+        supportsMaxEffort: false,
+        supportsReasoning: true,
+      };
+    }
+    return base;
   }
 
   if (settings.provider !== "openai-compatible") return base;
