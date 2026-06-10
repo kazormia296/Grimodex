@@ -81,6 +81,7 @@ vi.mock("./snippetStore", async () => {
     sortOrder: "recent" as const,
     selectedSnippet: null as Snippet | null,
     loadEntries: vi.fn(),
+    ensureEntriesLoaded: vi.fn(),
     search: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
@@ -259,11 +260,11 @@ describe("SnippetPanel", () => {
     expect(setSortOrder).toHaveBeenCalledWith("oldest");
   });
 
-  it("calls loadEntries on mount", () => {
-    const loadEntries = vi.fn();
-    useSnippetStore.setState({ loadEntries });
+  it("calls ensureEntriesLoaded on mount (同時 mount のクエリ重複を dedup する経路)", () => {
+    const ensureEntriesLoaded = vi.fn();
+    useSnippetStore.setState({ ensureEntriesLoaded });
     render(<SnippetPanel />);
-    expect(loadEntries).toHaveBeenCalled();
+    expect(ensureEntriesLoaded).toHaveBeenCalled();
   });
 
   it("shows empty state when no snippets", () => {

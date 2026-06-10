@@ -950,3 +950,134 @@ describe("layout store property invariants", () => {
     expect(minRatio).toBeGreaterThan(0.05);
   });
 });
+
+// perf レビュー 2026-06-10 残項目の契約 gate:
+// - applyPreset は settings 全量書き込みを 1 回に畳む (scheduleSave が
+//   activeLayoutPresetId を含むため、即時の persistActivePresetId は冗長)
+// - structuredClone 連鎖の上限 (冗長 clone の再発防止)
+// - clone 削減後も preset 原本と live layout がエイリアスしない
+describe("applyPreset の perf 契約", () => {
+  function makeCustomPreset(id: string) {
+    return {
+      id,
+      name: id,
+      state: buildDefaultLayoutState({ allInactive: true }),
+    };
+  }
+
+  beforeEach(() => {
+    useLayoutStore.setState({
+      layout: buildDefaultLayoutState({ allInactive: true }),
+      layoutLocked: false,
+      draggingPanel: null,
+      dragOverTarget: null,
+      panelDragSource: null,
+      activePresetId: null,
+      customPresets: [],
+      builtinPresetOverrides: {},
+      initialized: false,
+      hiddenStripePanels: new Set(),
+    });
+    vi.clearAllMocks();
+    mockInvoke.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("applyPreset は settings を 1 回だけ書き込む (debounce 後・activeLayoutPresetId を含む)", async () => {
+    vi.useFakeTimers();
+    useLayoutStore.setState({ customPresets: [makeCustomPreset("c1")] });
+
+    useLayoutStore.getState().applyPreset("c1");
+    await vi.runAllTimersAsync();
+
+    const saves = mockInvoke.mock.calls.filter(
+      ([cmd]) => cmd === "save_global_settings",
+    );
+    expect(saves).toHaveLength(1);
+    const payload = saves[0][1] as {
+      settings: { activeLayoutPresetId?: string | null };
+    };
+    expect(payload.settings.activeLayoutPresetId).toBe("c1");
+  });
+
+  it("builtin preset 適用も settings 書き込みは 1 回", async () => {
+    vi.useFakeTimers();
+
+    useLayoutStore.getState().applyPreset("builtin:plan");
+    await vi.runAllTimersAsync();
+
+    const saves = mockInvoke.mock.calls.filter(
+      ([cmd]) => cmd === "save_global_settings",
+    );
+    expect(saves).toHaveLength(1);
+    const payload = saves[0][1] as {
+      settings: { activeLayoutPresetId?: string | null };
+    };
+    expect(payload.settings.activeLayoutPresetId).toBe("builtin:plan");
+  });
+
+  it("applyPreset の structuredClone は custom で 2 回以下", () => {
+    useLayoutStore.setState({ customPresets: [makeCustomPreset("c1")] });
+    const spy = vi.spyOn(globalThis, "structuredClone");
+
+    useLayoutStore.getState().applyPreset("c1");
+
+    // 必要なのは「原本からの分離 (ensureLayoutStateV3)」と「clamp 用の
+    // 作業コピー (clampLayoutStateForViewport)」のみ。それ以上は冗長連鎖。
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(2);
+    spy.mockRestore();
+  });
+
+  it("applyPreset の structuredClone は builtin (override 有無とも) で 3 回以下", () => {
+    const spy = vi.spyOn(globalThis, "structuredClone");
+
+    useLayoutStore.getState().applyPreset("builtin:plan");
+    const plainCount = spy.mock.calls.length;
+    expect(plainCount).toBeLessThanOrEqual(3);
+
+    // override 付き builtin
+    useLayoutStore.getState().saveCurrentAsBuiltinPreset("builtin:plan");
+    spy.mockClear();
+    useLayoutStore.getState().applyPreset("builtin:plan");
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(3);
+    spy.mockRestore();
+  });
+
+  it("custom preset の原本は適用後の layout 操作でエイリアス汚染されない", () => {
+    const original = buildDefaultLayoutState({ allInactive: true });
+    useLayoutStore.setState({
+      customPresets: [
+        {
+          id: "c1",
+          name: "c1",
+          state: buildDefaultLayoutState({ allInactive: true }),
+        },
+      ],
+    });
+
+    useLayoutStore.getState().applyPreset("c1");
+    useLayoutStore.getState().togglePanel("scenes");
+    useLayoutStore.getState().setRegionSize("left", 333, VIEWPORT);
+
+    expect(useLayoutStore.getState().customPresets[0].state).toEqual(original);
+  });
+
+  it("builtin override の原本も適用後の layout 操作でエイリアス汚染されない", () => {
+    useLayoutStore.getState().togglePanel("scenes");
+    useLayoutStore.getState().saveCurrentAsBuiltinPreset("builtin:plan");
+    const savedSnapshot = structuredClone(
+      useLayoutStore.getState().builtinPresetOverrides["builtin:plan"]!.state,
+    );
+
+    useLayoutStore.getState().applyPreset("builtin:plan");
+    useLayoutStore.getState().togglePanel("codex");
+    useLayoutStore.getState().setRegionSize("left", 333, VIEWPORT);
+
+    expect(
+      useLayoutStore.getState().builtinPresetOverrides["builtin:plan"]!.state,
+    ).toEqual(savedSnapshot);
+  });
+});
