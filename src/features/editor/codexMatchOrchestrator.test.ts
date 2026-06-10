@@ -27,8 +27,14 @@ const ENTRIES: CodexMatchTarget[] = [
   { id: "c1", name: "太郎", type: "character" },
 ];
 
-function makeEditor() {
+/**
+ * Fake editor with MUTABLE doc text (`_setText`). scheduleMatch extracts the
+ * doc text lazily at debounce-fire time, so tests vary content by mutating
+ * the doc between schedule and fire.
+ */
+function makeEditor(initialText = "太郎は走った") {
   const dispatched: unknown[] = [];
+  let text = initialText;
   const tr = {
     setMeta: vi.fn().mockReturnThis(),
   };
@@ -36,21 +42,26 @@ function makeEditor() {
     state: {
       tr,
       doc: {
-        textContent: "太郎は走った",
         descendants: (
           cb: (
             node: { isText: boolean; text: string; type: { name: string } },
             pos: number,
           ) => void,
         ) => {
-          cb({ isText: true, text: "太郎は走った", type: { name: "text" } }, 0);
+          cb({ isText: true, text, type: { name: "text" } }, 0);
         },
       },
     },
     view: { dispatch: vi.fn((t) => dispatched.push(t)) },
     isDestroyed: false,
     _dispatched: dispatched,
-  } as unknown as Editor & { _dispatched: unknown[] };
+    _setText: (next: string) => {
+      text = next;
+    },
+  } as unknown as Editor & {
+    _dispatched: unknown[];
+    _setText: (next: string) => void;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +79,7 @@ describe("scheduleMatch", () => {
 
   it("dispatches codexHighlightResult after debounce", async () => {
     const editor = makeEditor();
-    scheduleMatch("太郎は走った", editor, ENTRIES, [], 150);
+    scheduleMatch(editor, ENTRIES, [], 150);
 
     // Before debounce fires — no dispatch yet
     expect(editor.view.dispatch).not.toHaveBeenCalled();
@@ -80,11 +91,26 @@ describe("scheduleMatch", () => {
     expect(editor.view.dispatch).toHaveBeenCalledTimes(1);
   });
 
-  it("debounces: only the last call fires", async () => {
-    const editor = makeEditor();
-    scheduleMatch("text1", editor, ENTRIES, [], 150);
-    scheduleMatch("text2", editor, ENTRIES, [], 150);
-    scheduleMatch("text3", editor, ENTRIES, [], 150);
+  it("extracts doc text lazily at fire time, not at schedule time (perf gate)", async () => {
+    // タイピング経路の perf 契約: schedule 時に full-doc walk しない。
+    // schedule 後に doc が変わった場合、fire 時の最新テキストで match する。
+    const editor = makeEditor("schedule時のテキスト");
+    scheduleMatch(editor, ENTRIES, [], 150);
+
+    editor._setText("fire時のテキスト");
+    await vi.runAllTimersAsync();
+
+    expect(matchText).toHaveBeenCalledTimes(1);
+    expect(matchText).toHaveBeenCalledWith("fire時のテキスト", ENTRIES, []);
+  });
+
+  it("debounces: only the last call fires, with the latest doc text", async () => {
+    const editor = makeEditor("text1");
+    scheduleMatch(editor, ENTRIES, [], 150);
+    editor._setText("text2");
+    scheduleMatch(editor, ENTRIES, [], 150);
+    editor._setText("text3");
+    scheduleMatch(editor, ENTRIES, [], 150);
 
     await vi.runAllTimersAsync();
 
@@ -112,14 +138,15 @@ describe("scheduleMatch", () => {
       ];
     });
 
-    const editor = makeEditor();
+    const editor = makeEditor("text1");
 
     // Call 1 fires its timer (debounce=0); matchText("text1") is now awaiting firstPending
-    scheduleMatch("text1", editor, ENTRIES, [], 0);
+    scheduleMatch(editor, ENTRIES, [], 0);
     await vi.runAllTimersAsync();
 
     // Supersede with call 2 — version incremented; call 1's result will be stale
-    scheduleMatch("text2", editor, ENTRIES, [], 0);
+    editor._setText("text2");
+    scheduleMatch(editor, ENTRIES, [], 0);
     await vi.runAllTimersAsync(); // matchText("text2") resolves → dispatch
 
     // Resolve call 1 — version mismatch → must NOT dispatch again
@@ -131,19 +158,21 @@ describe("scheduleMatch", () => {
     expect(editor.view.dispatch).toHaveBeenCalledTimes(1);
   });
 
-  it("does not dispatch if editor is destroyed", async () => {
+  it("does not match nor dispatch if editor is destroyed", async () => {
     const editor = makeEditor();
     (editor as unknown as { isDestroyed: boolean }).isDestroyed = true;
 
-    scheduleMatch("text", editor, ENTRIES, [], 0);
+    scheduleMatch(editor, ENTRIES, [], 0);
     await vi.runAllTimersAsync();
 
+    // Early return before text extraction — matchText is never reached
+    expect(matchText).not.toHaveBeenCalled();
     expect(editor.view.dispatch).not.toHaveBeenCalled();
   });
 
   it("passes excludeEntryIds to matchText", async () => {
-    const editor = makeEditor();
-    scheduleMatch("text", editor, ENTRIES, ["c1"], 0);
+    const editor = makeEditor("text");
+    scheduleMatch(editor, ENTRIES, ["c1"], 0);
     await vi.runAllTimersAsync();
 
     expect(matchText).toHaveBeenCalledWith("text", ENTRIES, ["c1"]);
@@ -152,7 +181,7 @@ describe("scheduleMatch", () => {
   it("updates matchedEntryIds when skipMatchedIds is false (default)", async () => {
     useCodexHighlightStore.setState({ matchedEntryIds: [] });
     const editor = makeEditor();
-    scheduleMatch("太郎は走った", editor, ENTRIES, [], 0, false);
+    scheduleMatch(editor, ENTRIES, [], 0, false);
     await vi.runAllTimersAsync();
 
     expect(useCodexHighlightStore.getState().matchedEntryIds).toEqual(["c1"]);
@@ -161,7 +190,7 @@ describe("scheduleMatch", () => {
   it("does NOT update matchedEntryIds when skipMatchedIds is true", async () => {
     useCodexHighlightStore.setState({ matchedEntryIds: [] });
     const editor = makeEditor();
-    scheduleMatch("太郎は走った", editor, ENTRIES, [], 0, true);
+    scheduleMatch(editor, ENTRIES, [], 0, true);
     await vi.runAllTimersAsync();
 
     // dispatch still fires (decorations), but matchedEntryIds stays empty

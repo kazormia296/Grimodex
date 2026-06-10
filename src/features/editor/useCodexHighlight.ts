@@ -12,7 +12,6 @@ import {
 } from "./CodexHighlightPlugin";
 import { resolveCodexColor } from "@/lib/resolveCodexColors";
 import { rebuildAndSchedule, scheduleMatch } from "./codexMatchOrchestrator";
-import { getDocText } from "./RubyNode";
 
 interface CodexHighlightOptions {
   excludeEntryIds?: string[];
@@ -91,9 +90,7 @@ export function useCodexHighlight(
       if (editor && !editor.isDestroyed && editor.state) {
         const targets = targetsRef.current;
         if (targets.length > 0) {
-          const text = getDocText(editor.state.doc);
           scheduleMatch(
-            text,
             editor,
             targets,
             excludeRef.current,
@@ -180,9 +177,9 @@ export function useCodexHighlight(
       if (editor.isDestroyed || !editor.state) return;
       const targets = targetsRef.current;
       if (targets.length === 0) return;
-      const text = getDocText(editor.state.doc);
+      // 全文テキスト抽出は scheduleMatch が debounce 発火時に行う。ここで
+      // 同期実行するとキーストロークごとに O(doc) を払うことになる。
       scheduleMatch(
-        text,
         editor,
         targets,
         excludeRef.current,

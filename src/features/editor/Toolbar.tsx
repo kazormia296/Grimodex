@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
+import { useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
@@ -136,18 +137,34 @@ export function Toolbar({
     (s) => s.toggleShowAnnotations,
   );
 
-  // Force re-render when editor selection/state changes so isActive() is accurate
-  const [, setEditorTick] = useState(0);
-  useEffect(() => {
-    if (!editor) return;
-    const update = () => setEditorTick((t) => t + 1);
-    editor.on("selectionUpdate", update);
-    editor.on("transaction", update);
-    return () => {
-      editor.off("selectionUpdate", update);
-      editor.off("transaction", update);
-    };
-  }, [editor]);
+  // isActive 系のボタン状態だけを selector で抽出する。useEditorState は
+  // deepEqual 比較なので、フラグが実際に変わったときだけ Toolbar が再レンダー
+  // される。旧実装（transaction/selectionUpdate ごとに tick state を進める）は
+  // 平文タイピング中も毎キーストロークで 862 行の full re-render を起こしていた。
+  // 注意: editor が null→非null に変わった直後は最初の transaction まで
+  // active が初期値のまま（EditorPane は空 content でマウント→即 setContent
+  // が transaction を出すため実害なし。非空 content マウントを導入するなら要再検証）。
+  const active = useEditorState({
+    editor,
+    selector: ({ editor: e }) =>
+      e
+        ? {
+            bold: e.isActive("bold"),
+            italic: e.isActive("italic"),
+            underline: e.isActive("underline"),
+            strike: e.isActive("strike"),
+            emphasisDots: e.isActive("emphasisDots"),
+            heading1: e.isActive("heading", { level: 1 }),
+            heading2: e.isActive("heading", { level: 2 }),
+            heading3: e.isActive("heading", { level: 3 }),
+            bulletList: e.isActive("bulletList"),
+            orderedList: e.isActive("orderedList"),
+            blockquote: e.isActive("blockquote"),
+            ruby: e.isActive("ruby"),
+            link: e.isActive("link"),
+          }
+        : null,
+  });
 
   // Measure right group width so overflow calculation can account for it
   useEffect(() => {
@@ -322,35 +339,35 @@ export function Toolbar({
           <div ref={unit1Ref} className="flex items-center gap-0.5">
             <ToolbarButton
               label={t("editor.toolbar.bold")}
-              active={editor.isActive("bold")}
+              active={active?.bold}
               onClick={() => editor.chain().focus().toggleBold().run()}
             >
               <strong>B</strong>
             </ToolbarButton>
             <ToolbarButton
               label={t("editor.toolbar.italic")}
-              active={editor.isActive("italic")}
+              active={active?.italic}
               onClick={() => editor.chain().focus().toggleItalic().run()}
             >
               <em>I</em>
             </ToolbarButton>
             <ToolbarButton
               label={t("editor.toolbar.underline")}
-              active={editor.isActive("underline")}
+              active={active?.underline}
               onClick={() => editor.chain().focus().toggleUnderline().run()}
             >
               <span className="underline">U</span>
             </ToolbarButton>
             <ToolbarButton
               label={t("editor.toolbar.strikethrough")}
-              active={editor.isActive("strike")}
+              active={active?.strike}
               onClick={() => editor.chain().focus().toggleStrike().run()}
             >
               <span className="line-through">S</span>
             </ToolbarButton>
             <ToolbarButton
               label={t("editor.toolbar.emphasisDots")}
-              active={editor.isActive("emphasisDots")}
+              active={active?.emphasisDots}
               onClick={() =>
                 editor.chain().focus().toggleMark("emphasisDots").run()
               }
@@ -365,7 +382,7 @@ export function Toolbar({
               <Sep />
               <ToolbarButton
                 label={t("editor.toolbar.heading1")}
-                active={editor.isActive("heading", { level: 1 })}
+                active={active?.heading1}
                 onClick={() =>
                   editor.chain().focus().toggleHeading({ level: 1 }).run()
                 }
@@ -374,7 +391,7 @@ export function Toolbar({
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.heading2")}
-                active={editor.isActive("heading", { level: 2 })}
+                active={active?.heading2}
                 onClick={() =>
                   editor.chain().focus().toggleHeading({ level: 2 }).run()
                 }
@@ -383,7 +400,7 @@ export function Toolbar({
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.heading3")}
-                active={editor.isActive("heading", { level: 3 })}
+                active={active?.heading3}
                 onClick={() =>
                   editor.chain().focus().toggleHeading({ level: 3 }).run()
                 }
@@ -399,21 +416,21 @@ export function Toolbar({
               <Sep />
               <ToolbarButton
                 label={t("editor.toolbar.bulletList")}
-                active={editor.isActive("bulletList")}
+                active={active?.bulletList}
                 onClick={() => editor.chain().focus().toggleBulletList().run()}
               >
                 ≡
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.orderedList")}
-                active={editor.isActive("orderedList")}
+                active={active?.orderedList}
                 onClick={() => editor.chain().focus().toggleOrderedList().run()}
               >
                 1.
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.blockquote")}
-                active={editor.isActive("blockquote")}
+                active={active?.blockquote}
                 onClick={() => editor.chain().focus().toggleBlockquote().run()}
               >
                 ❝
@@ -433,7 +450,7 @@ export function Toolbar({
               <Sep />
               <ToolbarButton
                 label={t("editor.toolbar.ruby")}
-                active={rubyOpen || editor.isActive("ruby")}
+                active={rubyOpen || !!active?.ruby}
                 onClick={openRuby}
                 allowFocus
               >
@@ -441,7 +458,7 @@ export function Toolbar({
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.link")}
-                active={editor.isActive("link") || linkOpen}
+                active={!!active?.link || linkOpen}
                 onClick={openLink}
                 allowFocus
               >

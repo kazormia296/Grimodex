@@ -32,11 +32,15 @@ function getState(editor: Editor): OrchestratorState {
  * Dispatches a transaction with "codexHighlightResult" meta when the match
  * completes. Stale results (superseded by a newer call) are discarded.
  *
+ * Doc text is extracted lazily when the debounce FIRES, not at call time —
+ * per-keystroke callers (transaction handler) must not pay a full-doc walk
+ * per character. Fire-time extraction is also fresher: the doc at fire time
+ * already includes keystrokes that arrived during the debounce window.
+ *
  * @param skipMatchedIds - When true, skip updating the global matchedEntryIds
  *   store (e.g. for mini-editors that should not affect CodexQuick).
  */
 export function scheduleMatch(
-  text: string,
   editor: Editor,
   entries: CodexMatchTarget[],
   excludeEntryIds: string[] = [],
@@ -57,6 +61,8 @@ export function scheduleMatch(
     state.timer = null;
     void (async () => {
       try {
+        if (editor.isDestroyed || !editor.state) return;
+        const text = getDocText(editor.state.doc);
         const matches = await matchText(text, entries, excludeEntryIds);
         // Discard stale result
         if (state.version !== myVersion) return;
@@ -98,6 +104,5 @@ export async function rebuildAndSchedule(
     return;
   }
   await rebuildMatcher(entries);
-  const text = getDocText(editor.state.doc);
-  scheduleMatch(text, editor, entries, excludeEntryIds, 0, skipMatchedIds);
+  scheduleMatch(editor, entries, excludeEntryIds, 0, skipMatchedIds);
 }

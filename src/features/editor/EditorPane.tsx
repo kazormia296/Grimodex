@@ -2,12 +2,6 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Clock, BookOpen, Files } from "lucide-react";
-import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
-import {
-  countWords,
-  manuscriptPages,
-  readingMinutes,
-} from "@/features/editor/charCountStats";
 import { cn } from "@/lib/utils";
 import { tiptapContentFromDb } from "@/lib/prosemirror";
 import { useEditor, EditorContent } from "@tiptap/react";
@@ -23,7 +17,7 @@ import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneFull, savePlacedBeatPreviewOnly } from "@/features/tree/api";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
-import { countBeats } from "@/features/editor/beat/countBeats";
+import { EditorStatsFooter } from "@/features/editor/EditorStatsFooter";
 import {
   extractPlacedBeatPreview,
   extractPlacedBeatPreviewFromDoc,
@@ -67,8 +61,6 @@ import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { useSettingNumber } from "@/features/settings/useSettingControl";
-import { useCharCountMilestone } from "@/features/editor/useCharCountMilestone";
 import {
   loadAuthorshipSpans,
   spansToMarkData,
@@ -183,15 +175,6 @@ interface EditorPaneProps {
  * Supports both scene/note content (Markdown via Tauri) and codex entry content (ProseMirror JSON via DB).
  */
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-4">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{value}</span>
-    </div>
-  );
-}
-
 export function EditorPane({
   nodeId,
   contentType,
@@ -217,29 +200,9 @@ export function EditorPane({
     to: number;
     scrollTop: number;
   } | null>(null);
-  const [charCount, setCharCount] = useState(0);
-  const [, setWordCount] = useState(0);
-  const [beatTotal, setBeatTotal] = useState(0);
-  const [beatGenerated, setBeatGenerated] = useState(0);
-  // Debounce footer stats and tree-store charCount sync. These are display-only
-  // and don't need to update on every keystroke; settling 200ms after typing
-  // stops avoids a full doc walk + four React re-renders + a store notification
-  // (which fans out to every TreeNodeItem leaf selector) per character.
-  const statSyncTimeoutRef = useRef<number | null>(null);
-  useEffect(() => {
-    return () => {
-      if (statSyncTimeoutRef.current != null) {
-        window.clearTimeout(statSyncTimeoutRef.current);
-        statSyncTimeoutRef.current = null;
-      }
-    };
-  }, []);
-  const charCountRef = useRef<HTMLSpanElement>(null);
-  const { value: targetCharCount } = useSettingNumber(
-    "editor.targetCharCount",
-    0,
-  );
-  useCharCountMilestone(charCount, targetCharCount, charCountRef);
+  // count 系 state (charCount/beat) は EditorStatsFooter に分離済み。本体に
+  // 置くとタイピング休止ごとの stat 更新で 2200 行ペイン全体が再レンダー
+  // されるため、footer が editor の update イベントを自前購読して再計算する。
   const externalReloadNonce = useExternalWriteStore(
     (s) => s.reloadNonce[nodeId] ?? 0,
   );
@@ -310,8 +273,6 @@ export function EditorPane({
   } = useBeatDragDrop({ editorRef, nodeId });
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-  const [charCountPopoverOpen, setCharCountPopoverOpen] = useState(false);
-  const charCountContainerRef = useRef<HTMLDivElement>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
   const [verticalPreviewOpen, setVerticalPreviewOpen] = useState(false);
@@ -326,6 +287,9 @@ export function EditorPane({
   setIsDirtyRef.current = setIsDirty;
 
   const saveSceneIdRef = useRef(nodeId);
+  // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
+  // stable getter（inline arrow だと footer の購読が毎レンダー再構築される）。
+  const getStatsSceneId = useCallback(() => saveSceneIdRef.current, []);
   // Tracks the contentType of whatever doc is currently loaded into the editor.
   // Updated atomically with `saveSceneIdRef` inside switchScene so that
   // pending autosave flushes route to the same backend the in-editor content
@@ -631,29 +595,9 @@ export function EditorPane({
           }
         }
 
-        // Debounce stats: footer counts and tree-store charCount sync don't
-        // need to update on every keystroke. The doc walk + setState x4 +
-        // store fan-out happens once per typing burst instead of per char.
-        if (statSyncTimeoutRef.current != null) {
-          window.clearTimeout(statSyncTimeoutRef.current);
-        }
-        statSyncTimeoutRef.current = window.setTimeout(() => {
-          statSyncTimeoutRef.current = null;
-          markStart("editor.statSync");
-          const text = getDocText(e.state.doc);
-          const count = text.length;
-          setCharCount(count);
-          setWordCount(
-            text.trim() === "" ? 0 : text.trim().split(/\s+/).length,
-          );
-          const bc = countBeats(e.state.doc);
-          setBeatTotal(bc.total);
-          setBeatGenerated(bc.generated);
-          if (sid && !isCodexMode && !isSnippetMode) {
-            useTreeStore.getState().setCharCount(sid, count);
-          }
-          markEnd("editor.statSync");
-        }, 200);
+        // 文字数/Beat 統計と tree-store charCount 同期は EditorStatsFooter が
+        // editor の update イベント経由で 200ms debounce 再計算する（本体の
+        // state に置くとペイン全体が再レンダーされるため分離した）。
         markEnd("editor.onUpdate");
       },
       onTransaction({ editor: e, transaction }) {
@@ -1309,21 +1253,13 @@ export function EditorPane({
             setIsSceneContentLoading(false);
           }
 
-          const text = getDocText(editor!.state.doc);
-          const count = text.length;
-          setCharCount(count);
-          setWordCount(
-            text.trim() === "" ? 0 : text.trim().split(/\s+/).length,
-          );
-          const bc = countBeats(editor!.state.doc);
-          setBeatTotal(bc.total);
-          setBeatGenerated(bc.generated);
+          // 表示用の count 系は EditorStatsFooter が isLoading の false 遷移で
+          // 再計算・tree 同期する。ここでは auto-draft 判定用の空判定だけ行う。
+          const count = getDocText(editor!.state.doc).length;
           setIsDirty(false);
           wasEmptyRef.current = count === 0;
 
           if (!isCodexMode && !isSnippetMode) {
-            useTreeStore.getState().setCharCount(nodeId, count);
-
             // 帰属/伏線/疑似コメントは互いにデータ依存の無い独立リード。直列 await
             // だと各 IPC 往復 + drizzle warmed microtask(~150ms/件)が積み上がるので
             // 並列化して往復レイテンシを重ねる（所見#4）。SQLite 実行自体は単一
@@ -2040,122 +1976,12 @@ export function EditorPane({
               AI: {aiRatio}%
             </button>
           )}
-          {beatTotal > 0 && (
-            <span
-              data-testid="beat-stats"
-              className="tabular-nums text-muted-foreground"
-            >
-              Beats: {beatTotal}
-              {beatGenerated > 0 && ` (${beatGenerated} generated)`}
-            </span>
-          )}
-          <div ref={charCountContainerRef} className="relative">
-            <button
-              type="button"
-              ref={charCountRef as React.RefObject<HTMLButtonElement>}
-              data-testid="char-count"
-              onClick={() => setCharCountPopoverOpen((v) => !v)}
-              title={i18next.t("editor.status.charCountDetails")}
-              className="flex items-center gap-1.5 tabular-nums hover:text-foreground"
-            >
-              <span>{charCount.toLocaleString()} chars</span>
-              {targetCharCount > 0 && (
-                <>
-                  <span className="text-muted-foreground">
-                    / {targetCharCount.toLocaleString()}
-                  </span>
-                  <span
-                    className="relative h-1 w-12 overflow-hidden rounded-full bg-muted"
-                    aria-hidden
-                  >
-                    <span
-                      className={cn(
-                        "absolute inset-y-0 left-0 transition-[width] duration-200",
-                        charCount >= targetCharCount
-                          ? "bg-emerald-500"
-                          : "bg-primary",
-                      )}
-                      style={{
-                        width: `${Math.min(100, (charCount / targetCharCount) * 100)}%`,
-                      }}
-                    />
-                  </span>
-                  {charCount > targetCharCount && (
-                    <span className="text-rose-500">
-                      +{(charCount - targetCharCount).toLocaleString()}
-                    </span>
-                  )}
-                </>
-              )}
-            </button>
-            <AnimatedDropdown
-              open={charCountPopoverOpen}
-              onClose={() => setCharCountPopoverOpen(false)}
-              containerRef={charCountContainerRef}
-              className="absolute bottom-6 right-0 z-50 min-w-[220px] rounded-md border border-border bg-popover px-3 py-2 text-xs shadow-md"
-            >
-              {(() => {
-                const text = editor ? getDocText(editor.state.doc) : "";
-                const wc = countWords(text);
-                const pages = manuscriptPages(charCount);
-                const minutes = readingMinutes(charCount);
-                return (
-                  <div className="flex flex-col gap-1.5 tabular-nums">
-                    <Stat
-                      label={i18next.t("editor.status.chars")}
-                      value={charCount.toLocaleString()}
-                    />
-                    <Stat
-                      label={i18next.t("editor.status.words")}
-                      value={wc.toLocaleString()}
-                    />
-                    <Stat
-                      label={i18next.t("editor.status.manuscriptPages")}
-                      value={i18next.t("editor.status.manuscriptPagesValue", {
-                        n: pages.toFixed(1),
-                      })}
-                    />
-                    <Stat
-                      label={i18next.t("editor.status.readingTime")}
-                      value={i18next.t("editor.status.readingTimeValue", {
-                        n: minutes,
-                      })}
-                    />
-                    {targetCharCount > 0 && (
-                      <>
-                        <div className="my-1 border-t border-border" />
-                        <Stat
-                          label={i18next.t("editor.status.goal")}
-                          value={`${targetCharCount.toLocaleString()} chars`}
-                        />
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="relative h-1 flex-1 overflow-hidden rounded-full bg-muted"
-                            aria-hidden
-                          >
-                            <span
-                              className={cn(
-                                "absolute inset-y-0 left-0",
-                                charCount >= targetCharCount
-                                  ? "bg-emerald-500"
-                                  : "bg-primary",
-                              )}
-                              style={{
-                                width: `${Math.min(100, (charCount / targetCharCount) * 100)}%`,
-                              }}
-                            />
-                          </span>
-                          <span className="w-10 text-right text-muted-foreground">
-                            {Math.round((charCount / targetCharCount) * 100)}%
-                          </span>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                );
-              })()}
-            </AnimatedDropdown>
-          </div>
+          <EditorStatsFooter
+            editor={editor}
+            getSyncSceneId={getStatsSceneId}
+            syncToTree={!isCodexMode && !isSnippetMode}
+            isLoading={isSceneContentLoading}
+          />
           {isSaving ? (
             <span className="opacity-50">Saving...</span>
           ) : isDirty ? (
