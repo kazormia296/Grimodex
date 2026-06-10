@@ -1012,7 +1012,26 @@
       "dismiss": "Dismiss",
       "typedTitle": "Formal relations",
       "typedRemove": "Remove relation",
-      "typedRemoved": "Relation removed"
+      "typedRemoved": "Relation removed",
+      "addTitle": "Add relation",
+      "add": "Add",
+      "targetLabel": "Target entry",
+      "targetPlaceholder": "Select an entry…",
+      "targetRequired": "Select a target entry",
+      "directionOutgoing": "This entry → target",
+      "directionIncoming": "Target → this entry",
+      "labelPlaceholder": "Relation label (e.g. close friend)",
+      "labelRequired": "Enter a label",
+      "duplicate": "This relation already exists",
+      "created": "Relation added",
+      "presets": {
+        "friend": "Friend",
+        "family": "Family",
+        "lover": "Lover",
+        "enemy": "Enemy",
+        "mentor": "Mentor",
+        "servant": "Master/servant"
+      }
     },
     "research": {
       "notesLabel": "Notes",

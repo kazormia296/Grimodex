@@ -16,6 +16,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { listCodexRelations } from "@/features/codex/codexRelationApi";
 import type { CodexRelationRow } from "@/features/codex/codexRelationApi";
+import { subscribeCodexRelationsChanged } from "@/features/codex/codexRelationEvents";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useMapStore } from "./mapStore";
@@ -221,6 +222,15 @@ export function MapCanvas() {
   useEffect(() => {
     void refreshCodexRelations();
   }, [refreshCodexRelations]);
+
+  // Codex パネルからの relation 作成/削除を受けて derived relation overlay を更新する
+  // (相関図 board 自体は snapshot なので影響しない)。
+  useEffect(() => {
+    if (!projectId) return;
+    return subscribeCodexRelationsChanged(projectId, () => {
+      void refreshCodexRelations();
+    });
+  }, [projectId, refreshCodexRelations]);
 
   // Stable projection of userEdges for layout/auto-arrange hooks. Without this
   // memo, the inline `.map()` would yield a fresh array every render, and the

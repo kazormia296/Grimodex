@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/popover";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import { formatShortcut } from "@/lib/platform";
+import { CorrelationDialog } from "./CorrelationDialog";
 
 const ARRANGE_ITEMS: { type: AutoArrangeType; label: string }[] = [
   { type: "reading-order", label: "Grid: 読み順" },
@@ -89,6 +90,7 @@ export function MapHeader() {
   const projectId = useCurrentProjectId();
 
   const [boards, setBoards] = useState<MapBoard[]>([]);
+  const [correlationOpen, setCorrelationOpen] = useState(false);
   const activeBoard = boards.find((b) => b.id === activeBoardId);
 
   const [editingBoard, setEditingBoard] = useState<EditingBoardState>(null);
@@ -492,6 +494,13 @@ export function MapHeader() {
 
             <DropdownMenuSeparator />
 
+            <DropdownMenuLabel>生成</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => setCorrelationOpen(true)}>
+              人物相関図を生成
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
+
             <DropdownMenuLabel>エクスポート</DropdownMenuLabel>
             {EXPORT_ITEMS.map((item) => (
               <DropdownMenuItem
@@ -504,6 +513,18 @@ export function MapHeader() {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {correlationOpen && (
+        <CorrelationDialog
+          projectId={projectId}
+          onGenerated={async (boardId) => {
+            await reloadBoards();
+            setActiveBoardId(boardId);
+            setCorrelationOpen(false);
+          }}
+          onClose={() => setCorrelationOpen(false)}
+        />
+      )}
     </div>
   );
 }

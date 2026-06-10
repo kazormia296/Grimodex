@@ -1012,7 +1012,26 @@
       "dismiss": "却下",
       "typedTitle": "正式リレーション",
       "typedRemove": "リレーションを削除",
-      "typedRemoved": "リレーションを削除しました"
+      "typedRemoved": "リレーションを削除しました",
+      "addTitle": "関係を追加",
+      "add": "追加",
+      "targetLabel": "対象エントリ",
+      "targetPlaceholder": "エントリを選択…",
+      "targetRequired": "対象エントリを選択してください",
+      "directionOutgoing": "このエントリ → 対象",
+      "directionIncoming": "対象 → このエントリ",
+      "labelPlaceholder": "関係ラベル（例: 親友）",
+      "labelRequired": "ラベルを入力してください",
+      "duplicate": "同じ関係が既に存在します",
+      "created": "リレーションを追加しました",
+      "presets": {
+        "friend": "友人",
+        "family": "家族",
+        "lover": "恋人",
+        "enemy": "敵",
+        "mentor": "師弟",
+        "servant": "主従"
+      }
     },
     "research": {
       "notesLabel": "ノート",

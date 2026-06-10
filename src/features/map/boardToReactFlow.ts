@@ -41,6 +41,7 @@ export interface BoardCodexEntry {
   parentId?: string | null;
   summary?: string | null;
   tagsCache?: string | null;
+  icon?: string | null;
 }
 
 export interface BoardTreeNode {
@@ -347,6 +348,7 @@ export function buildMapNodesFromData(input: BoardToReactFlowInput): Node[] {
             summary: e.summary ?? "",
             color: "#534AB7",
             tagsCache: e.tagsCache ?? null,
+            icon: e.icon ?? null,
             colorBy,
           },
         };

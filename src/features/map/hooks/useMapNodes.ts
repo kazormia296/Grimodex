@@ -389,6 +389,7 @@ export function useMapNodes({
                 summary: e.summary ?? "",
                 color: "#534AB7",
                 tagsCache: e.tagsCache ?? null,
+                icon: e.icon ?? null,
                 colorBy,
                 onOpen: () => {
                   useLayoutStore.getState().showPanel("codex");

@@ -24,10 +24,16 @@ export interface CrossReferenceEntry {
   scenes: SceneMention[];
 }
 
+/** 互換 wrapper: hidden global の projectId を解決して projectId 明示版へ委譲する。 */
 export async function buildCrossReferenceReport(): Promise<
   CrossReferenceEntry[]
 > {
-  const projectId = getCurrentProjectId();
+  return buildCrossReferenceReportForProject(getCurrentProjectId());
+}
+
+export async function buildCrossReferenceReportForProject(
+  projectId: string,
+): Promise<CrossReferenceEntry[]> {
   const entries = await listCodexEntries(projectId);
   if (entries.length === 0) return [];
 

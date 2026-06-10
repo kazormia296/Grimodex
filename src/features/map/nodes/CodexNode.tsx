@@ -2,6 +2,7 @@ import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { parseTags } from "@/features/codex/components/EntryCard";
 import { TagPill } from "@/features/codex/components/TagPill";
+import { EntryIcon } from "@/features/codex/components/EntryIcon";
 import { FloatingHandle } from "./FloatingHandle";
 import { NodeBranchToolbar } from "./NodeBranchToolbar";
 
@@ -11,6 +12,7 @@ export interface CodexNodeData {
   summary?: string;
   color?: string;
   tagsCache?: string | null;
+  icon?: string | null;
   colorBy?: "none" | "status";
   onOpen?: () => void;
   onBranchFrom?: (dir: "left" | "right") => void;
@@ -74,15 +76,27 @@ export const CodexNode = memo(function CodexNode({
 
       <div
         style={{
-          fontWeight: 600,
-          color: "var(--card-foreground)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          minWidth: 0,
         }}
-        title={d.name}
       >
-        {d.name}
+        <EntryIcon icon={d.icon} entryType={d.type} size={24} />
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontWeight: 600,
+            color: "var(--card-foreground)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={d.name}
+        >
+          {d.name}
+        </span>
       </div>
 
       <div
