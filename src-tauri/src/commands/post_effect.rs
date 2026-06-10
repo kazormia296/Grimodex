@@ -1793,27 +1793,15 @@ async fn process_consistency_scene(
     Ok(count)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_consistency_task(
-    app: AppHandle,
-    run_id: String,
-    project_id: String,
-    scene_id: String,
-    codex_payload_json: String,
-    scene_text: String,
-    system_prompt: String,
-    ai_settings_path: std::path::PathBuf,
-) {
-    let emit_err = |msg: &str| {
-        let _ = app.emit(
-            "post_effect:error",
-            ErrorEvent {
-                run_id: &run_id,
-                error: msg.to_string(),
-            },
-        );
-    };
-
+/// 7 つの単一シーン run_*_task が共有するスケルトン: "calling_ai" の初回
+/// progress を emit → effect 固有の process を await → 成功時は finalize_run +
+/// done(summary: None)、失敗時は error emit + fail_run。
+/// run_multi_task は構造が異なる（fan-out / abort / per-scene 進捗）ため対象外。
+async fn run_effect_task<F, Fut>(app: AppHandle, run_id: String, process: F)
+where
+    F: FnOnce(AppHandle, String) -> Fut,
+    Fut: std::future::Future<Output = Result<usize, anyhow::Error>>,
+{
     let _ = app.emit(
         "post_effect:progress",
         ProgressEvent {
@@ -1824,29 +1812,7 @@ async fn run_consistency_task(
         },
     );
 
-    match process_consistency_scene(
-        &app,
-        &run_id,
-        &project_id,
-        &scene_id,
-        &codex_payload_json,
-        &scene_text,
-        &system_prompt,
-        &ai_settings_path,
-        |p, s| {
-            let _ = app.emit(
-                "post_effect:progress",
-                ProgressEvent {
-                    run_id: &run_id,
-                    stage: s,
-                    progress: p,
-                    message: None,
-                },
-            );
-        },
-    )
-    .await
-    {
+    match process(app.clone(), run_id.clone()).await {
         Ok(n) => {
             finalize_run(&app, &run_id);
             let _ = app.emit(
@@ -1859,10 +1825,54 @@ async fn run_consistency_task(
             );
         }
         Err(e) => {
-            emit_err(&e.to_string());
+            let _ = app.emit(
+                "post_effect:error",
+                ErrorEvent {
+                    run_id: &run_id,
+                    error: e.to_string(),
+                },
+            );
             fail_run(&app, &run_id, &e.to_string());
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_consistency_task(
+    app: AppHandle,
+    run_id: String,
+    project_id: String,
+    scene_id: String,
+    codex_payload_json: String,
+    scene_text: String,
+    system_prompt: String,
+    ai_settings_path: std::path::PathBuf,
+) {
+    run_effect_task(app, run_id, |app, run_id| async move {
+        process_consistency_scene(
+            &app,
+            &run_id,
+            &project_id,
+            &scene_id,
+            &codex_payload_json,
+            &scene_text,
+            &system_prompt,
+            &ai_settings_path,
+            |p, s| {
+                let _ = app.emit(
+                    "post_effect:progress",
+                    ProgressEvent {
+                        run_id: &run_id,
+                        stage: s,
+                        progress: p,
+                        message: None,
+                    },
+                );
+            },
+        )
+        .await
+    })
+    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2117,64 +2127,30 @@ async fn run_intra_task(
     system_prompt: String,
     ai_settings_path: std::path::PathBuf,
 ) {
-    let emit_err = |msg: &str| {
-        let _ = app.emit(
-            "post_effect:error",
-            ErrorEvent {
-                run_id: &run_id,
-                error: msg.to_string(),
+    run_effect_task(app, run_id, |app, run_id| async move {
+        process_intra_scene(
+            &app,
+            &run_id,
+            &project_id,
+            &scene_id,
+            &scene_text,
+            &system_prompt,
+            &ai_settings_path,
+            |p, s| {
+                let _ = app.emit(
+                    "post_effect:progress",
+                    ProgressEvent {
+                        run_id: &run_id,
+                        stage: s,
+                        progress: p,
+                        message: None,
+                    },
+                );
             },
-        );
-    };
-
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "calling_ai",
-            progress: 0.1,
-            message: None,
-        },
-    );
-
-    match process_intra_scene(
-        &app,
-        &run_id,
-        &project_id,
-        &scene_id,
-        &scene_text,
-        &system_prompt,
-        &ai_settings_path,
-        |p, s| {
-            let _ = app.emit(
-                "post_effect:progress",
-                ProgressEvent {
-                    run_id: &run_id,
-                    stage: s,
-                    progress: p,
-                    message: None,
-                },
-            );
-        },
-    )
-    .await
-    {
-        Ok(n) => {
-            finalize_run(&app, &run_id);
-            let _ = app.emit(
-                "post_effect:done",
-                DoneEvent {
-                    run_id: &run_id,
-                    annotation_count: n,
-                    summary: None,
-                },
-            );
-        }
-        Err(e) => {
-            emit_err(&e.to_string());
-            fail_run(&app, &run_id, &e.to_string());
-        }
-    }
+        )
+        .await
+    })
+    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2388,64 +2364,30 @@ async fn run_typo_task(
     system_prompt: String,
     ai_settings_path: std::path::PathBuf,
 ) {
-    let emit_err = |msg: &str| {
-        let _ = app.emit(
-            "post_effect:error",
-            ErrorEvent {
-                run_id: &run_id,
-                error: msg.to_string(),
+    run_effect_task(app, run_id, |app, run_id| async move {
+        process_typo_scene(
+            &app,
+            &run_id,
+            &project_id,
+            &scene_id,
+            &scene_text,
+            &system_prompt,
+            &ai_settings_path,
+            |p, s| {
+                let _ = app.emit(
+                    "post_effect:progress",
+                    ProgressEvent {
+                        run_id: &run_id,
+                        stage: s,
+                        progress: p,
+                        message: None,
+                    },
+                );
             },
-        );
-    };
-
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "calling_ai",
-            progress: 0.1,
-            message: None,
-        },
-    );
-
-    match process_typo_scene(
-        &app,
-        &run_id,
-        &project_id,
-        &scene_id,
-        &scene_text,
-        &system_prompt,
-        &ai_settings_path,
-        |p, s| {
-            let _ = app.emit(
-                "post_effect:progress",
-                ProgressEvent {
-                    run_id: &run_id,
-                    stage: s,
-                    progress: p,
-                    message: None,
-                },
-            );
-        },
-    )
-    .await
-    {
-        Ok(n) => {
-            finalize_run(&app, &run_id);
-            let _ = app.emit(
-                "post_effect:done",
-                DoneEvent {
-                    run_id: &run_id,
-                    annotation_count: n,
-                    summary: None,
-                },
-            );
-        }
-        Err(e) => {
-            emit_err(&e.to_string());
-            fail_run(&app, &run_id, &e.to_string());
-        }
-    }
+        )
+        .await
+    })
+    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2807,64 +2749,30 @@ async fn run_intent_drift_task(
     system_prompt: String,
     ai_settings_path: std::path::PathBuf,
 ) {
-    let emit_err = |msg: &str| {
-        let _ = app.emit(
-            "post_effect:error",
-            ErrorEvent {
-                run_id: &run_id,
-                error: msg.to_string(),
+    run_effect_task(app, run_id, |app, run_id| async move {
+        process_intent_drift_scene(
+            &app,
+            &run_id,
+            &project_id,
+            &scene_id,
+            &scene_text,
+            &system_prompt,
+            &ai_settings_path,
+            |p, s| {
+                let _ = app.emit(
+                    "post_effect:progress",
+                    ProgressEvent {
+                        run_id: &run_id,
+                        stage: s,
+                        progress: p,
+                        message: None,
+                    },
+                );
             },
-        );
-    };
-
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "calling_ai",
-            progress: 0.1,
-            message: None,
-        },
-    );
-
-    match process_intent_drift_scene(
-        &app,
-        &run_id,
-        &project_id,
-        &scene_id,
-        &scene_text,
-        &system_prompt,
-        &ai_settings_path,
-        |p, s| {
-            let _ = app.emit(
-                "post_effect:progress",
-                ProgressEvent {
-                    run_id: &run_id,
-                    stage: s,
-                    progress: p,
-                    message: None,
-                },
-            );
-        },
-    )
-    .await
-    {
-        Ok(n) => {
-            finalize_run(&app, &run_id);
-            let _ = app.emit(
-                "post_effect:done",
-                DoneEvent {
-                    run_id: &run_id,
-                    annotation_count: n,
-                    summary: None,
-                },
-            );
-        }
-        Err(e) => {
-            emit_err(&e.to_string());
-            fail_run(&app, &run_id, &e.to_string());
-        }
-    }
+        )
+        .await
+    })
+    .await;
 }
 
 /// timeline_consistency チェックを 1 シーン分実行し、挿入したアノテーション数を返す。
@@ -3050,64 +2958,30 @@ async fn run_review_task(
     system_prompt: String,
     ai_settings_path: std::path::PathBuf,
 ) {
-    let emit_err = |msg: &str| {
-        let _ = app.emit(
-            "post_effect:error",
-            ErrorEvent {
-                run_id: &run_id,
-                error: msg.to_string(),
+    run_effect_task(app, run_id, |app, run_id| async move {
+        process_review_scene(
+            &app,
+            &run_id,
+            &project_id,
+            &scene_id,
+            &scene_text,
+            &system_prompt,
+            &ai_settings_path,
+            |p, s| {
+                let _ = app.emit(
+                    "post_effect:progress",
+                    ProgressEvent {
+                        run_id: &run_id,
+                        stage: s,
+                        progress: p,
+                        message: None,
+                    },
+                );
             },
-        );
-    };
-
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "calling_ai",
-            progress: 0.1,
-            message: None,
-        },
-    );
-
-    match process_review_scene(
-        &app,
-        &run_id,
-        &project_id,
-        &scene_id,
-        &scene_text,
-        &system_prompt,
-        &ai_settings_path,
-        |p, s| {
-            let _ = app.emit(
-                "post_effect:progress",
-                ProgressEvent {
-                    run_id: &run_id,
-                    stage: s,
-                    progress: p,
-                    message: None,
-                },
-            );
-        },
-    )
-    .await
-    {
-        Ok(n) => {
-            finalize_run(&app, &run_id);
-            let _ = app.emit(
-                "post_effect:done",
-                DoneEvent {
-                    run_id: &run_id,
-                    annotation_count: n,
-                    summary: None,
-                },
-            );
-        }
-        Err(e) => {
-            emit_err(&e.to_string());
-            fail_run(&app, &run_id, &e.to_string());
-        }
-    }
+        )
+        .await
+    })
+    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -3269,65 +3143,31 @@ async fn run_pseudo_comment_task(
     persona: Option<String>,
     ai_settings_path: std::path::PathBuf,
 ) {
-    let emit_err = |msg: &str| {
-        let _ = app.emit(
-            "post_effect:error",
-            ErrorEvent {
-                run_id: &run_id,
-                error: msg.to_string(),
+    run_effect_task(app, run_id, |app, run_id| async move {
+        process_pseudo_comment_scene(
+            &app,
+            &run_id,
+            &project_id,
+            &scene_id,
+            &scene_text,
+            &system_prompt,
+            persona.as_deref(),
+            &ai_settings_path,
+            |p, s| {
+                let _ = app.emit(
+                    "post_effect:progress",
+                    ProgressEvent {
+                        run_id: &run_id,
+                        stage: s,
+                        progress: p,
+                        message: None,
+                    },
+                );
             },
-        );
-    };
-
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "calling_ai",
-            progress: 0.1,
-            message: None,
-        },
-    );
-
-    match process_pseudo_comment_scene(
-        &app,
-        &run_id,
-        &project_id,
-        &scene_id,
-        &scene_text,
-        &system_prompt,
-        persona.as_deref(),
-        &ai_settings_path,
-        |p, s| {
-            let _ = app.emit(
-                "post_effect:progress",
-                ProgressEvent {
-                    run_id: &run_id,
-                    stage: s,
-                    progress: p,
-                    message: None,
-                },
-            );
-        },
-    )
-    .await
-    {
-        Ok(n) => {
-            finalize_run(&app, &run_id);
-            let _ = app.emit(
-                "post_effect:done",
-                DoneEvent {
-                    run_id: &run_id,
-                    annotation_count: n,
-                    summary: None,
-                },
-            );
-        }
-        Err(e) => {
-            emit_err(&e.to_string());
-            fail_run(&app, &run_id, &e.to_string());
-        }
-    }
+        )
+        .await
+    })
+    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -3440,64 +3280,30 @@ async fn run_meta_structure_task(
     system_prompt: String,
     ai_settings_path: std::path::PathBuf,
 ) {
-    let emit_err = |msg: &str| {
-        let _ = app.emit(
-            "post_effect:error",
-            ErrorEvent {
-                run_id: &run_id,
-                error: msg.to_string(),
+    run_effect_task(app, run_id, |app, run_id| async move {
+        process_meta_structure_scene(
+            &app,
+            &run_id,
+            &project_id,
+            &scene_id,
+            &scene_text,
+            &system_prompt,
+            &ai_settings_path,
+            |p, s| {
+                let _ = app.emit(
+                    "post_effect:progress",
+                    ProgressEvent {
+                        run_id: &run_id,
+                        stage: s,
+                        progress: p,
+                        message: None,
+                    },
+                );
             },
-        );
-    };
-
-    let _ = app.emit(
-        "post_effect:progress",
-        ProgressEvent {
-            run_id: &run_id,
-            stage: "calling_ai",
-            progress: 0.1,
-            message: None,
-        },
-    );
-
-    match process_meta_structure_scene(
-        &app,
-        &run_id,
-        &project_id,
-        &scene_id,
-        &scene_text,
-        &system_prompt,
-        &ai_settings_path,
-        |p, s| {
-            let _ = app.emit(
-                "post_effect:progress",
-                ProgressEvent {
-                    run_id: &run_id,
-                    stage: s,
-                    progress: p,
-                    message: None,
-                },
-            );
-        },
-    )
-    .await
-    {
-        Ok(n) => {
-            finalize_run(&app, &run_id);
-            let _ = app.emit(
-                "post_effect:done",
-                DoneEvent {
-                    run_id: &run_id,
-                    annotation_count: n,
-                    summary: None,
-                },
-            );
-        }
-        Err(e) => {
-            emit_err(&e.to_string());
-            fail_run(&app, &run_id, &e.to_string());
-        }
-    }
+        )
+        .await
+    })
+    .await;
 }
 
 // ---------------------------------------------------------------------------
