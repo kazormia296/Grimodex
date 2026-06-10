@@ -2,15 +2,13 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Clock, BookOpen, Files } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { tiptapContentFromDb } from "@/lib/prosemirror";
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { FileBackedSceneBanner } from "@/features/external-mount/components/FileBackedSceneBanner";
 import { NoteContextControls } from "@/features/editor/NoteContextControls";
-import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
 import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
@@ -50,7 +48,6 @@ import { parseClipboardHtml } from "@/lib/clipboardAttribution";
 import { useInsertHighlight } from "@/features/editor/InsertHighlight";
 import { useGhostPreview } from "@/features/editor/useGhostPreview";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
-import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -77,14 +74,6 @@ import {
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { VerticalPreview } from "@/features/editor/VerticalPreview";
-import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
-import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
-import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
-import { PseudoCommentBubble } from "@/features/post-effect/PseudoCommentBubble";
-import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
-import { ForeshadowMarkHoverPopover } from "@/features/foreshadow/ForeshadowMarkHoverPopover";
-import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
-import { EditorBodyWithLoading } from "@/features/editor/EditorContentSkeleton";
 import { useFocusMode } from "@/features/editor/useFocusMode";
 import {
   useTypewriterScroll,
@@ -124,7 +113,7 @@ import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
 import { DndContext, DragOverlay } from "@dnd-kit/core";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
-import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
+import { EditorContentArea } from "@/features/editor/EditorContentArea";
 import { useBeatDragDrop } from "@/features/editor/useBeatDragDrop";
 import { useEditorKeyboard } from "@/features/editor/useEditorKeyboard";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
@@ -1650,124 +1639,30 @@ export function EditorPane({
               minSize="40%"
               className="flex flex-col overflow-hidden"
             >
-              <FindReplaceBar
+              <EditorContentArea
                 editor={editor}
-                open={findOpen}
-                showReplace={findShowReplace}
-                onClose={() => setFindOpen(false)}
+                editorContainerRef={editorContainerRef}
+                toolbarActionsRef={toolbarActionsRef}
+                findOpen={findOpen}
+                findShowReplace={findShowReplace}
+                setFindOpen={setFindOpen}
+                showForeshadowMarks={showForeshadowMarks}
+                focusModeHideBeats={focusModeHideBeats}
+                focusMode={focusMode}
+                typewriterMode={typewriterMode}
+                filterSource={filterSource}
+                editorSettings={editorSettings}
+                editorTitle={editorTitle}
+                loadedPhaseLabel={loadedPhaseLabel}
+                titleEditing={titleEditing}
+                titleDraft={titleDraft}
+                setTitleDraft={setTitleDraft}
+                handleTitleSave={handleTitleSave}
+                handleTitleCancel={handleTitleCancel}
+                handleTitleEditStart={handleTitleEditStart}
+                isSceneContentLoading={isSceneContentLoading}
+                sceneId={nodeId}
               />
-              <EditorDropDiv
-                outerRef={editorContainerRef}
-                data-show-foreshadow-marks={
-                  showForeshadowMarks ? "true" : "false"
-                }
-                data-focus-hide-beats={
-                  focusModeHideBeats && focusMode ? "true" : undefined
-                }
-                className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
-                onClick={(e) => {
-                  if (e.target === e.currentTarget) {
-                    editor?.commands.focus();
-                  }
-                }}
-              >
-                <div
-                  className={cn(
-                    editorSettings.showLineNumbers && "editor-line-numbers",
-                  )}
-                  style={
-                    {
-                      fontFamily: editorSettings.fontFamily,
-                      fontSize: `${editorSettings.fontSize}px`,
-                      lineHeight: editorSettings.lineHeight,
-                      maxWidth: `${editorSettings.maxContentWidth}px`,
-                      margin: "0 auto",
-                      wordBreak:
-                        editorSettings.wordBreak as React.CSSProperties["wordBreak"],
-                      lineBreak:
-                        editorSettings.lineBreak as React.CSSProperties["lineBreak"],
-                      "--editor-paragraph-indent": `${editorSettings.paragraphIndent}em`,
-                    } as React.CSSProperties
-                  }
-                >
-                  {editorTitle && (
-                    <div
-                      className="mb-6 border-b border-border/40 pb-4"
-                      style={{
-                        fontSize: `${Math.round(editorSettings.fontSize * 1.6)}px`,
-                      }}
-                    >
-                      {titleEditing ? (
-                        <input
-                          // eslint-disable-next-line jsx-a11y/no-autofocus
-                          autoFocus
-                          type="text"
-                          value={titleDraft}
-                          onChange={(e) => setTitleDraft(e.target.value)}
-                          onBlur={handleTitleSave}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              handleTitleSave();
-                            } else if (e.key === "Escape") {
-                              e.preventDefault();
-                              handleTitleCancel();
-                            }
-                          }}
-                          className="w-full bg-transparent font-semibold text-content-foreground/60 outline-none placeholder:text-content-foreground/30"
-                          style={{ fontFamily: "inherit", fontSize: "inherit" }}
-                        />
-                      ) : (
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          onClick={handleTitleEditStart}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === "F2")
-                              handleTitleEditStart();
-                          }}
-                          className="cursor-text select-none font-semibold text-content-foreground/60 hover:text-content-foreground/80"
-                        >
-                          {editorTitle}
-                        </div>
-                      )}
-                      {loadedPhaseLabel && (
-                        <div
-                          className="mt-1 text-sm font-normal text-purple-500/70"
-                          style={{ fontSize: `${editorSettings.fontSize}px` }}
-                        >
-                          [{loadedPhaseLabel}]
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <EditorBodyWithLoading isLoading={isSceneContentLoading}>
-                    <SceneBeatEditorContextProvider value={{ sceneId: nodeId }}>
-                      <EditorContent editor={editor} />
-                    </SceneBeatEditorContextProvider>
-                    <CodexPopover editor={editor} />
-                    <CommentAddPopover editor={editor} />
-                    <ForeshadowMarkPopover editor={editor} />
-                    <ForeshadowMarkHoverPopover
-                      editor={editor}
-                      containerRef={editorContainerRef}
-                    />
-                    <CommentHoverPopover
-                      editor={editor}
-                      containerRef={editorContainerRef}
-                    />
-                    <PseudoCommentBubble
-                      editor={editor}
-                      containerRef={editorContainerRef}
-                    />
-                    <EditorContextMenu
-                      editor={editor}
-                      containerRef={editorContainerRef}
-                      toolbarActionsRef={toolbarActionsRef}
-                    />
-                  </EditorBodyWithLoading>
-                </div>
-              </EditorDropDiv>
             </ResizablePanel>
             <ResizableHandle withHandle />
             <ResizablePanel
@@ -1787,124 +1682,30 @@ export function EditorPane({
         ) : (
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              <FindReplaceBar
+              <EditorContentArea
                 editor={editor}
-                open={findOpen}
-                showReplace={findShowReplace}
-                onClose={() => setFindOpen(false)}
+                editorContainerRef={editorContainerRef}
+                toolbarActionsRef={toolbarActionsRef}
+                findOpen={findOpen}
+                findShowReplace={findShowReplace}
+                setFindOpen={setFindOpen}
+                showForeshadowMarks={showForeshadowMarks}
+                focusModeHideBeats={focusModeHideBeats}
+                focusMode={focusMode}
+                typewriterMode={typewriterMode}
+                filterSource={filterSource}
+                editorSettings={editorSettings}
+                editorTitle={editorTitle}
+                loadedPhaseLabel={loadedPhaseLabel}
+                titleEditing={titleEditing}
+                titleDraft={titleDraft}
+                setTitleDraft={setTitleDraft}
+                handleTitleSave={handleTitleSave}
+                handleTitleCancel={handleTitleCancel}
+                handleTitleEditStart={handleTitleEditStart}
+                isSceneContentLoading={isSceneContentLoading}
+                sceneId={nodeId}
               />
-              <EditorDropDiv
-                outerRef={editorContainerRef}
-                data-show-foreshadow-marks={
-                  showForeshadowMarks ? "true" : "false"
-                }
-                data-focus-hide-beats={
-                  focusModeHideBeats && focusMode ? "true" : undefined
-                }
-                className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
-                onClick={(e) => {
-                  if (e.target === e.currentTarget) {
-                    editor?.commands.focus();
-                  }
-                }}
-              >
-                <div
-                  className={cn(
-                    editorSettings.showLineNumbers && "editor-line-numbers",
-                  )}
-                  style={
-                    {
-                      fontFamily: editorSettings.fontFamily,
-                      fontSize: `${editorSettings.fontSize}px`,
-                      lineHeight: editorSettings.lineHeight,
-                      maxWidth: `${editorSettings.maxContentWidth}px`,
-                      margin: "0 auto",
-                      wordBreak:
-                        editorSettings.wordBreak as React.CSSProperties["wordBreak"],
-                      lineBreak:
-                        editorSettings.lineBreak as React.CSSProperties["lineBreak"],
-                      "--editor-paragraph-indent": `${editorSettings.paragraphIndent}em`,
-                    } as React.CSSProperties
-                  }
-                >
-                  {editorTitle && (
-                    <div
-                      className="mb-6 border-b border-border/40 pb-4"
-                      style={{
-                        fontSize: `${Math.round(editorSettings.fontSize * 1.6)}px`,
-                      }}
-                    >
-                      {titleEditing ? (
-                        <input
-                          // eslint-disable-next-line jsx-a11y/no-autofocus
-                          autoFocus
-                          type="text"
-                          value={titleDraft}
-                          onChange={(e) => setTitleDraft(e.target.value)}
-                          onBlur={handleTitleSave}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              handleTitleSave();
-                            } else if (e.key === "Escape") {
-                              e.preventDefault();
-                              handleTitleCancel();
-                            }
-                          }}
-                          className="w-full bg-transparent font-semibold text-content-foreground/60 outline-none placeholder:text-content-foreground/30"
-                          style={{ fontFamily: "inherit", fontSize: "inherit" }}
-                        />
-                      ) : (
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          onClick={handleTitleEditStart}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === "F2")
-                              handleTitleEditStart();
-                          }}
-                          className="cursor-text select-none font-semibold text-content-foreground/60 hover:text-content-foreground/80"
-                        >
-                          {editorTitle}
-                        </div>
-                      )}
-                      {loadedPhaseLabel && (
-                        <div
-                          className="mt-1 text-sm font-normal text-purple-500/70"
-                          style={{ fontSize: `${editorSettings.fontSize}px` }}
-                        >
-                          [{loadedPhaseLabel}]
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <EditorBodyWithLoading isLoading={isSceneContentLoading}>
-                    <SceneBeatEditorContextProvider value={{ sceneId: nodeId }}>
-                      <EditorContent editor={editor} />
-                    </SceneBeatEditorContextProvider>
-                    <CodexPopover editor={editor} />
-                    <CommentAddPopover editor={editor} />
-                    <ForeshadowMarkPopover editor={editor} />
-                    <ForeshadowMarkHoverPopover
-                      editor={editor}
-                      containerRef={editorContainerRef}
-                    />
-                    <CommentHoverPopover
-                      editor={editor}
-                      containerRef={editorContainerRef}
-                    />
-                    <PseudoCommentBubble
-                      editor={editor}
-                      containerRef={editorContainerRef}
-                    />
-                    <EditorContextMenu
-                      editor={editor}
-                      containerRef={editorContainerRef}
-                      toolbarActionsRef={toolbarActionsRef}
-                    />
-                  </EditorBodyWithLoading>
-                </div>
-              </EditorDropDiv>
             </div>
           </div>
         )}

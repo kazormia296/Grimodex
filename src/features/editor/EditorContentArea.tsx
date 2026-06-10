@@ -1,0 +1,194 @@
+import { cn } from "@/lib/utils";
+import { EditorContent } from "@tiptap/react";
+import type { Editor } from "@tiptap/react";
+import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
+import type { ToolbarActions } from "@/features/editor/Toolbar";
+import { CodexPopover } from "@/features/editor/CodexPopover";
+import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
+import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
+import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
+import { PseudoCommentBubble } from "@/features/post-effect/PseudoCommentBubble";
+import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
+import { ForeshadowMarkHoverPopover } from "@/features/foreshadow/ForeshadowMarkHoverPopover";
+import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
+import { EditorBodyWithLoading } from "@/features/editor/EditorContentSkeleton";
+import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
+import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
+import type { FilterSource } from "@/features/attribution/attributionStore";
+
+interface EditorContentAreaProps {
+  editor: Editor | null;
+  editorContainerRef: React.MutableRefObject<HTMLDivElement | null>;
+  toolbarActionsRef: React.MutableRefObject<ToolbarActions | null>;
+  findOpen: boolean;
+  findShowReplace: boolean;
+  setFindOpen: (open: boolean) => void;
+  showForeshadowMarks: boolean;
+  focusModeHideBeats: boolean;
+  focusMode: boolean;
+  typewriterMode: boolean;
+  filterSource: FilterSource;
+  editorSettings: EditorSettings;
+  editorTitle: string;
+  loadedPhaseLabel: string | null;
+  titleEditing: boolean;
+  titleDraft: string;
+  setTitleDraft: (value: string) => void;
+  handleTitleSave: () => void;
+  handleTitleCancel: () => void;
+  handleTitleEditStart: () => void;
+  isSceneContentLoading: boolean;
+  sceneId: string;
+}
+
+/**
+ * Editor body shared by both EditorPane layout branches (meta panel visible /
+ * hidden). Render-only: all state stays in EditorPane and flows in via props.
+ * Must be rendered as a descendant of EditorPane's beat DndContext so that
+ * EditorDropDiv's useDroppable resolves against it.
+ */
+export function EditorContentArea({
+  editor,
+  editorContainerRef,
+  toolbarActionsRef,
+  findOpen,
+  findShowReplace,
+  setFindOpen,
+  showForeshadowMarks,
+  focusModeHideBeats,
+  focusMode,
+  typewriterMode,
+  filterSource,
+  editorSettings,
+  editorTitle,
+  loadedPhaseLabel,
+  titleEditing,
+  titleDraft,
+  setTitleDraft,
+  handleTitleSave,
+  handleTitleCancel,
+  handleTitleEditStart,
+  isSceneContentLoading,
+  sceneId,
+}: EditorContentAreaProps) {
+  return (
+    <>
+      <FindReplaceBar
+        editor={editor}
+        open={findOpen}
+        showReplace={findShowReplace}
+        onClose={() => setFindOpen(false)}
+      />
+      <EditorDropDiv
+        outerRef={editorContainerRef}
+        data-show-foreshadow-marks={showForeshadowMarks ? "true" : "false"}
+        data-focus-hide-beats={
+          focusModeHideBeats && focusMode ? "true" : undefined
+        }
+        className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            editor?.commands.focus();
+          }
+        }}
+      >
+        <div
+          className={cn(
+            editorSettings.showLineNumbers && "editor-line-numbers",
+          )}
+          style={
+            {
+              fontFamily: editorSettings.fontFamily,
+              fontSize: `${editorSettings.fontSize}px`,
+              lineHeight: editorSettings.lineHeight,
+              maxWidth: `${editorSettings.maxContentWidth}px`,
+              margin: "0 auto",
+              wordBreak:
+                editorSettings.wordBreak as React.CSSProperties["wordBreak"],
+              lineBreak:
+                editorSettings.lineBreak as React.CSSProperties["lineBreak"],
+              "--editor-paragraph-indent": `${editorSettings.paragraphIndent}em`,
+            } as React.CSSProperties
+          }
+        >
+          {editorTitle && (
+            <div
+              className="mb-6 border-b border-border/40 pb-4"
+              style={{
+                fontSize: `${Math.round(editorSettings.fontSize * 1.6)}px`,
+              }}
+            >
+              {titleEditing ? (
+                <input
+                  // eslint-disable-next-line jsx-a11y/no-autofocus
+                  autoFocus
+                  type="text"
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onBlur={handleTitleSave}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleTitleSave();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      handleTitleCancel();
+                    }
+                  }}
+                  className="w-full bg-transparent font-semibold text-content-foreground/60 outline-none placeholder:text-content-foreground/30"
+                  style={{ fontFamily: "inherit", fontSize: "inherit" }}
+                />
+              ) : (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={handleTitleEditStart}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === "F2")
+                      handleTitleEditStart();
+                  }}
+                  className="cursor-text select-none font-semibold text-content-foreground/60 hover:text-content-foreground/80"
+                >
+                  {editorTitle}
+                </div>
+              )}
+              {loadedPhaseLabel && (
+                <div
+                  className="mt-1 text-sm font-normal text-purple-500/70"
+                  style={{ fontSize: `${editorSettings.fontSize}px` }}
+                >
+                  [{loadedPhaseLabel}]
+                </div>
+              )}
+            </div>
+          )}
+          <EditorBodyWithLoading isLoading={isSceneContentLoading}>
+            <SceneBeatEditorContextProvider value={{ sceneId: sceneId }}>
+              <EditorContent editor={editor} />
+            </SceneBeatEditorContextProvider>
+            <CodexPopover editor={editor} />
+            <CommentAddPopover editor={editor} />
+            <ForeshadowMarkPopover editor={editor} />
+            <ForeshadowMarkHoverPopover
+              editor={editor}
+              containerRef={editorContainerRef}
+            />
+            <CommentHoverPopover
+              editor={editor}
+              containerRef={editorContainerRef}
+            />
+            <PseudoCommentBubble
+              editor={editor}
+              containerRef={editorContainerRef}
+            />
+            <EditorContextMenu
+              editor={editor}
+              containerRef={editorContainerRef}
+              toolbarActionsRef={toolbarActionsRef}
+            />
+          </EditorBodyWithLoading>
+        </div>
+      </EditorDropDiv>
+    </>
+  );
+}
