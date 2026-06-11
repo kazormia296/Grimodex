@@ -1,13 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock deps so executors can be dispatched without a real Tauri / DB runtime.
-const { mockInvoke, mockListOpenForeshadows, mockTreeProjectId } = vi.hoisted(
-  () => ({
-    mockInvoke: vi.fn(),
-    mockListOpenForeshadows: vi.fn(),
-    mockTreeProjectId: vi.fn<() => string | null>(),
-  }),
-);
+const {
+  mockInvoke,
+  mockListOpenForeshadows,
+  mockTreeProjectId,
+  mockAgentCreateForeshadow,
+  mockAgentUpdateForeshadow,
+} = vi.hoisted(() => ({
+  mockInvoke: vi.fn(),
+  mockListOpenForeshadows: vi.fn(),
+  mockTreeProjectId: vi.fn<() => string | null>(),
+  mockAgentCreateForeshadow: vi.fn(),
+  mockAgentUpdateForeshadow: vi.fn(),
+}));
+
+vi.mock("@/features/agent-writes/foreshadow", () => ({
+  agentCreateForeshadow: mockAgentCreateForeshadow,
+  agentUpdateForeshadow: mockAgentUpdateForeshadow,
+}));
 
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
 
@@ -78,9 +89,11 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
   const EXPECTED_MUTATING_NAMES = [
     "apply_ai_tree_plan",
     "create_codex_entry",
+    "create_foreshadow",
     "create_snippet",
     "propose_scene_body",
     "update_codex_entry",
+    "update_foreshadow",
   ];
 
   it("matches the frozen read-only allowlist exactly", () => {
@@ -180,6 +193,84 @@ describe("executeTool — Phase 3 dispatch", () => {
   it("unknown tool dispatches to the not-found branch", async () => {
     const result = await executeTool("nope_does_not_exist", "call-5", {});
     expect(result.error).toBe("Unknown tool: nope_does_not_exist");
+  });
+});
+
+// ── foreshadow write executors（knowledgeWrite gated, tracked path）──────────
+describe("foreshadow write executors", () => {
+  beforeEach(() => {
+    mockAgentCreateForeshadow.mockReset();
+    mockAgentUpdateForeshadow.mockReset();
+  });
+
+  it("create_foreshadow requires title (error result, no write)", async () => {
+    const result = await executeTool("create_foreshadow", "call-f1", {});
+    expect(result.error).toBeTruthy();
+    expect(mockAgentCreateForeshadow).not.toHaveBeenCalled();
+  });
+
+  it("create_foreshadow returns id/title/secret on success", async () => {
+    mockAgentCreateForeshadow.mockResolvedValue({
+      id: "f1",
+      title: "刻印の謎",
+      secret: true,
+    });
+    const result = await executeTool("create_foreshadow", "call-f2", {
+      title: "刻印の謎",
+      intent: "後で回収",
+      loadBearing: "critical",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.content).toMatchObject({
+      id: "f1",
+      title: "刻印の謎",
+      secret: true,
+    });
+    expect(mockAgentCreateForeshadow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "刻印の謎",
+        intent: "後で回収",
+        loadBearing: "critical",
+      }),
+    );
+  });
+
+  it("create_foreshadow wraps agent-write failures as error results", async () => {
+    mockAgentCreateForeshadow.mockRejectedValue(
+      new Error("knowledgeWrite policy is off"),
+    );
+    const result = await executeTool("create_foreshadow", "call-f3", {
+      title: "x",
+    });
+    expect(result.error).toBe("knowledgeWrite policy is off");
+  });
+
+  it("update_foreshadow requires id (error result, no write)", async () => {
+    const result = await executeTool("update_foreshadow", "call-f4", {
+      title: "renamed",
+    });
+    expect(result.error).toBeTruthy();
+    expect(mockAgentUpdateForeshadow).not.toHaveBeenCalled();
+  });
+
+  it("update_foreshadow passes boolean patch fields through", async () => {
+    mockAgentUpdateForeshadow.mockResolvedValue({
+      id: "f1",
+      title: "刻印の謎",
+      payoffConfirmed: true,
+      abandoned: false,
+    });
+    const result = await executeTool("update_foreshadow", "call-f5", {
+      id: "f1",
+      payoffConfirmed: true,
+    });
+    expect(result.error).toBeUndefined();
+    expect(mockAgentUpdateForeshadow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        foreshadowId: "f1",
+        payoffConfirmed: true,
+      }),
+    );
   });
 });
 

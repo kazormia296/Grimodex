@@ -1193,6 +1193,52 @@ pub(crate) fn agent_apply_undo_journal(
     with_db(&ws_state, |db| agent_undo_journal_impl(db, payload))
 }
 
+// ---------------------------------------------------------------------------
+// Foreshadow writes — thin adapters over grimodex-core's tracked writers
+// (the same path the MCP foreshadow tools use, surface differs).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentForeshadowCreatePayload {
+    project_id: String,
+    session_id: String,
+    title: String,
+    intent: Option<String>,
+    notes: Option<String>,
+    load_bearing: Option<String>,
+    secret: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentForeshadowUpdatePayload {
+    project_id: String,
+    session_id: String,
+    foreshadow_id: String,
+    title: Option<String>,
+    intent: Option<String>,
+    notes: Option<String>,
+    load_bearing: Option<String>,
+    payoff_confirmed: Option<bool>,
+    abandoned: Option<bool>,
+    secret: Option<bool>,
+}
+
+fn agent_foreshadow_create_impl(
+    _db: &Database,
+    _payload: AgentForeshadowCreatePayload,
+) -> anyhow::Result<Value> {
+    anyhow::bail!("unimplemented")
+}
+
+fn agent_foreshadow_update_impl(
+    _db: &Database,
+    _payload: AgentForeshadowUpdatePayload,
+) -> anyhow::Result<Value> {
+    anyhow::bail!("unimplemented")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1336,10 +1382,11 @@ mod tests {
             // authorshipSpan contract
             let span_fixture = &fixture["authorshipSpan"];
             let owner_lane = span_fixture["ownerLane"].as_str().unwrap();
-            let owner: Option<String> =
-                conn.query_row(&format!("SELECT {owner_lane} FROM authorship_spans"), [], |r| {
-                    r.get(0)
-                })?;
+            let owner: Option<String> = conn.query_row(
+                &format!("SELECT {owner_lane} FROM authorship_spans"),
+                [],
+                |r| r.get(0),
+            )?;
             assert!(owner.is_some(), "in-app span owner lane drifted");
             let source: String =
                 conn.query_row("SELECT source FROM authorship_spans", [], |r| r.get(0))?;
@@ -1458,5 +1505,137 @@ mod tests {
         let (_, _, op_type, _) =
             undo_journal_change_event(&journal_row("foreshadow", "update"), "undo").unwrap();
         assert_eq!(op_type, "foreshadow.update");
+    }
+
+    #[test]
+    fn foreshadow_create_in_app_is_tracked() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+
+        let res = agent_foreshadow_create_impl(
+            &db,
+            AgentForeshadowCreatePayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                title: "刻印の謎".to_string(),
+                intent: Some("後段で回収".to_string()),
+                notes: None,
+                load_bearing: Some("critical".to_string()),
+                secret: true,
+            },
+        )
+        .unwrap();
+        // camelCase AgentWriteResult shape (same contract codex/snippet return).
+        let entity_id = res["entityId"].as_str().expect("entityId").to_string();
+        assert!(res["undoJournalId"].as_str().is_some());
+        assert!(res["changeEventUid"].as_str().is_some());
+
+        db.with_conn(|conn| {
+            let (title, secret): (String, i64) = conn.query_row(
+                "SELECT title, secret FROM foreshadows WHERE id = ?1",
+                rusqlite::params![entity_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!(title, "刻印の謎");
+            assert_eq!(secret, 1);
+            let (domain, op_type, session): (String, String, String) = conn.query_row(
+                "SELECT domain, op_type, session_id FROM change_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            assert_eq!(domain, "foreshadow");
+            assert_eq!(op_type, "foreshadow.create");
+            assert_eq!(session, "sess");
+            let surface: String =
+                conn.query_row("SELECT surface FROM undo_journal", [], |r| r.get(0))?;
+            assert_eq!(surface, "in-app-agent");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn foreshadow_update_in_app_patches_and_tracks() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow_row(&db, &project_id);
+
+        agent_foreshadow_update_impl(
+            &db,
+            AgentForeshadowUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                foreshadow_id: foreshadow_id.clone(),
+                title: None,
+                intent: None,
+                notes: None,
+                load_bearing: None,
+                payoff_confirmed: Some(true),
+                abandoned: None,
+                secret: None,
+            },
+        )
+        .unwrap();
+
+        db.with_conn(|conn| {
+            let payoff: i64 = conn.query_row(
+                "SELECT payoff_confirmed FROM foreshadows WHERE id = ?1",
+                rusqlite::params![foreshadow_id],
+                |r| r.get(0),
+            )?;
+            assert_eq!(payoff, 1);
+            let op_type: String =
+                conn.query_row("SELECT op_type FROM change_events", [], |r| r.get(0))?;
+            assert_eq!(op_type, "foreshadow.update");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn foreshadow_update_in_app_not_found_errors_and_writes_nothing() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+
+        let res = agent_foreshadow_update_impl(
+            &db,
+            AgentForeshadowUpdatePayload {
+                project_id,
+                session_id: "sess".to_string(),
+                foreshadow_id: "ghost".to_string(),
+                title: Some("x".to_string()),
+                intent: None,
+                notes: None,
+                load_bearing: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+            },
+        );
+        assert!(res.is_err());
+        db.with_conn(|conn| {
+            let n: i64 = conn.query_row("SELECT COUNT(*) FROM change_events", [], |r| r.get(0))?;
+            assert_eq!(n, 0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn insert_foreshadow_row(db: &Database, project_id: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp_millis();
+        db.execute(
+            "INSERT INTO foreshadows (id, project_id, title, payoff_confirmed, abandoned, secret, created_at, updated_at)
+             VALUES (?, ?, 'Seed', 0, 0, 0, ?, ?)",
+            &[
+                Value::String(id.clone()),
+                Value::String(project_id.to_string()),
+                Value::Number(now.into()),
+                Value::Number(now.into()),
+            ],
+            "run",
+        )
+        .expect("insert foreshadow");
+        id
     }
 }
