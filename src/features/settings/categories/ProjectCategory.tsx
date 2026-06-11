@@ -414,7 +414,7 @@ export function ProjectCategory() {
           )}
           description={t(
             "settings.project.aiAutoAcceptBodyDesc",
-            "MCP/エージェントの本文提案を人間の承認なしで自動適用する（append のみ）。本文書き込みポリシーが ON のときのみ有効。",
+            "MCP/エージェントの本文提案を人間の承認なしで自動適用する。対象は末尾への追記と、一意なアンカー位置を指定した本文途中への挿入。置換とアンカー無しの挿入は常に手動レビューに回る。本文書き込みポリシーが ON のときのみ有効。",
           )}
         >
           <input
