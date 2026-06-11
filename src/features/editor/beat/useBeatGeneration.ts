@@ -5,19 +5,16 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { insertGenerationLog } from "@/features/attribution/generationLogApi";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
-import { useTreeStore } from "@/features/tree/treeStore";
-import { useWorkspaceStore } from "@/features/workspace/store";
-import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { buildBeatMessages, type BeatPromptInput } from "./beatPromptBuilder";
+import { buildBeatContextForGeneration } from "./buildBeatContext";
 import {
   appendBeatChunk,
   ensureGeneratedBlock,
   findBeatById,
   findGeneratedBlockForBeat,
 } from "./insertBeatStream";
-import type { BeatType } from "@/features/editor/SceneBeatNode";
 import { useUnplacedBeatsStore } from "./unplacedBeatsStore";
 import { buildPendingBeatsSection } from "./pendingBeatsContext";
 import { inferMentionRoles } from "./inferMentionRoles";
@@ -172,44 +169,21 @@ export function useBeatGeneration(
     if (blockIfPolicyOff("bodyWrite")) return;
     if (blockIfUnlicensed()) return;
 
-    const beat = findBeatById(editor, beatId);
-    if (!beat) return;
-
-    const beatNode = editor.state.doc.nodeAt(beat.beatPos);
-    if (!beatNode) return;
-
-    const instructions = beatNode.textContent;
-    if (instructions.trim().length === 0) {
-      setState({
-        status: "error",
-        error: "Beat has no instructions",
-        cleanup: null,
-      });
+    const result = await buildBeatContextForGeneration(editor, beatId, sceneId);
+    if (!result.ok) {
+      // Only the missing-instructions case surfaces as an error; a vanished
+      // beat (deleted mid-flight) stays silent like before.
+      if (result.reason === "empty-instructions") {
+        setState({
+          status: "error",
+          error: "Beat has no instructions",
+          cleanup: null,
+        });
+      }
       return;
     }
-
-    const beatType = (beatNode.attrs.beatType ?? "free") as BeatType;
-    const beatPov = (beatNode.attrs.pov ?? null) as string | null;
-
-    // Resolve scene + project context from stores.
-    const node = useTreeStore.getState().nodes.find((n) => n.id === sceneId);
-    const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
-    const sceneTitle = node?.title ?? "";
-    const codexEntries = useCodexStore.getState().entries;
-
-    // POV: beat override > scene POV > null.
-    const povCharId = beatPov ?? node?.povCharacterId ?? null;
-    const povName = povCharId
-      ? (codexEntries.find((e) => e.id === povCharId)?.name ?? null)
-      : null;
-
-    // sceneTextSoFar: doc text from start to the beat position (exclusive).
-    const sceneTextSoFar = editor.state.doc.textBetween(
-      0,
-      beat.beatPos,
-      "\n",
-      " ",
-    );
+    const ctx = result.ctx;
+    const { instructions, beatType, node, codexEntries } = ctx;
 
     // C-2: Build "pending beats" section if injection is enabled.
     const injectEnabled = useSettingsStore
@@ -228,21 +202,15 @@ export function useBeatGeneration(
       });
     }
 
-    let project;
-    try {
-      project = await getProject(useTreeStore.getState().projectId);
-    } catch {
-      // ignore
-    }
     const promptInput: BeatPromptInput = {
       instructions,
       beatType,
-      projectTitle,
-      sceneTitle,
-      sceneTextSoFar,
-      povName,
+      projectTitle: ctx.projectTitle,
+      sceneTitle: ctx.sceneTitle,
+      sceneTextSoFar: ctx.sceneTextSoFar,
+      povName: ctx.povName,
       pendingBeatsSection,
-      lang: project?.language ?? "ja",
+      lang: ctx.lang,
       customInstruction: useSettingsStore
         .getState()
         .get("aiPrompt.custom.beat", ""),
@@ -256,7 +224,7 @@ export function useBeatGeneration(
     cleanupRef.current?.();
     cleanupRef.current = null;
 
-    const beatModel = (beatNode.attrs.model as string | null) ?? null;
+    const beatModel = ctx.beatModel;
     const resolvedModel = beatModel || null;
 
     const traceId = crypto.randomUUID();

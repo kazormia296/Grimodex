@@ -1,11 +1,8 @@
 import { useTranslation } from "react-i18next";
 import { FolderPlus, FolderTree, MoreVertical, Plus } from "lucide-react";
-import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
-import {
-  consolidateLooseIntoChapter,
-  convertLooseToChapter,
-} from "./looseBatchOps";
+import { useLooseColumnMenu } from "./useLooseColumnMenu";
+import type { LooseColumnVariant } from "./useLooseColumnMenu";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -19,10 +16,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-type Variant = "loose" | "container";
-
 interface Props {
-  variant: Variant;
+  variant: LooseColumnVariant;
   /** Loose: project root id (or null). Container: the folder id whose direct
    *  scenes are listed. */
   containerId: string | null;
@@ -33,8 +28,9 @@ interface Props {
 /**
  * Hover-revealed kebab for loose (project-root orphan scenes) and
  * dive-in container scene columns. 1:1 mirror of
- * `GridLooseColumnContextMenu` — replaces the hand-rolled menu that
- * previously lived inline in both components.
+ * `GridLooseColumnContextMenu` (shared logic lives in `useLooseColumnMenu`)
+ * — replaces the hand-rolled menu that previously lived inline in both
+ * components.
  */
 export function GridLooseColumnMenu({
   variant,
@@ -43,28 +39,13 @@ export function GridLooseColumnMenu({
   chapters,
 }: Props) {
   const { t } = useTranslation();
-  const createNode = useTreeStore((s) => s.createNode);
-
-  async function addScene() {
-    await createNode({ nodeType: "scene", parentId: containerId });
-  }
-
-  async function handleConsolidate(chapterId: string) {
-    await consolidateLooseIntoChapter(
-      scenes.map((s) => s.id),
-      chapterId,
-    );
-  }
-
-  async function handleConvertToChapter() {
-    await convertLooseToChapter(
-      containerId,
-      scenes.map((s) => s.id),
-    );
-  }
-
-  const canConsolidate = scenes.length > 0 && chapters.length > 0;
-  const canConvert = variant === "loose" && scenes.length > 0;
+  const {
+    addScene,
+    handleConsolidate,
+    handleConvertToChapter,
+    canConsolidate,
+    canConvert,
+  } = useLooseColumnMenu({ variant, containerId, scenes, chapters });
 
   // Nothing to show beyond addScene — skip the kebab entirely.
   if (!canConsolidate && !canConvert && scenes.length === 0) return null;

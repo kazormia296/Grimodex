@@ -115,8 +115,10 @@ describe("generateBeatAlternative", () => {
       onDone,
     });
 
-    // Wait a tick for listener registration
-    await Promise.resolve();
+    // Wait for listener registration. A macrotask hop flushes the whole
+    // microtask chain (buildBeatContextForGeneration → streamInlineAiText)
+    // regardless of how many awaits precede the listen() call.
+    await new Promise((r) => setTimeout(r, 0));
 
     emit("inline-ai:stream-chunk", {
       delta: "代替案テキスト",
@@ -147,7 +149,7 @@ describe("generateBeatAlternative", () => {
     const editor = createEditorWithBeat("b1", "決断シーン");
 
     const promise = generateBeatAlternative(editor, "b1", "scene-1");
-    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
 
     const longText =
       "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめも";
@@ -175,7 +177,7 @@ describe("generateBeatAlternative", () => {
     const promise = generateBeatAlternative(editor, "b1", "scene-1", {
       onError,
     });
-    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
 
     emit("inline-ai:stream-error", { message: "API error" });
 
