@@ -3,6 +3,10 @@ import { treeNodes } from "@/db/schema";
 import { eq, and, isNull, inArray } from "drizzle-orm";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
+import {
+  trackSceneContentWrite,
+  awaitPendingSceneContentWrite,
+} from "@/features/tree/pendingSceneWrites";
 
 /**
  * Derive `unplaced_beat_preview` from a serialized `unplacedBeatsDoc` JSON
@@ -179,27 +183,38 @@ export async function saveSceneContent(
       ? deriveUnplacedPreview(payload.unplacedBeatsDoc)
       : undefined;
 
-  await db
-    .update(treeNodes)
-    .set({
-      content: payload.content,
-      ...(payload.unplacedBeatsDoc !== undefined && {
-        unplacedBeatsDoc: payload.unplacedBeatsDoc,
-        unplacedBeatPreview,
-      }),
-      ...(payload.charCount !== undefined && {
-        charCount: payload.charCount,
-      }),
-      placedBeatPreview,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(treeNodes.id, sceneId));
+  // Promise.resolve で drizzle の thenable を即 1 回だけ実行に固定してから
+  // track する（thenable のまま 2 箇所で await すると UPDATE が二重実行される）。
+  // track はこの関数の最初の await より前 = 呼び出しと同期で行うこと。unmount
+  // cleanup からの fire-and-forget flush でも、直後の load が pending を見える。
+  const write = Promise.resolve(
+    db
+      .update(treeNodes)
+      .set({
+        content: payload.content,
+        ...(payload.unplacedBeatsDoc !== undefined && {
+          unplacedBeatsDoc: payload.unplacedBeatsDoc,
+          unplacedBeatPreview,
+        }),
+        ...(payload.charCount !== undefined && {
+          charCount: payload.charCount,
+        }),
+        placedBeatPreview,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(treeNodes.id, sceneId)),
+  );
+  trackSceneContentWrite(sceneId, write);
+  await write;
 
   return { placedBeatPreview, unplacedBeatPreview };
 }
 
 /** Load ProseMirror JSON content for a scene from the DB. Returns empty string if not found. */
 export async function loadSceneContent(sceneId: string): Promise<string> {
+  // 未着の content 書き込み (unmount flush 等の fire-and-forget) を追い越して
+  // 編集前の行を読まないよう、pending write を待ってから SELECT する。
+  await awaitPendingSceneContentWrite(sceneId);
   const rows = await db
     .select({ content: treeNodes.content })
     .from(treeNodes)
@@ -256,6 +271,8 @@ export async function savePlacedBeatPreviewOnly(
 export async function loadSceneFull(
   sceneId: string,
 ): Promise<{ content: string; unplacedBeatsDoc: string }> {
+  // loadSceneContent と同じ read-after-write バリア (pendingSceneWrites 参照)。
+  await awaitPendingSceneContentWrite(sceneId);
   const rows = await db
     .select({
       content: treeNodes.content,
