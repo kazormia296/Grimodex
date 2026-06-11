@@ -386,12 +386,13 @@ pub fn get_codex_entry_full(
 
     let (base_summary, content, notes, icon, children_budget, source_chat_message_id) = summary;
 
-    // Detail values
+    // Detail values — チャット注入/アプリ内 Agent ツールと同じく
+    // include_in_context=1 のみ公開する
     let mut stmt = conn.prepare(
         "SELECT d.name, d.field_type, v.value
          FROM codex_detail_values v
          JOIN codex_detail_definitions d ON d.id = v.definition_id
-         WHERE v.entry_id = ?1
+         WHERE v.entry_id = ?1 AND d.include_in_context = 1
          ORDER BY d.sort_order",
     )?;
     let detail_values: Vec<CodexDetailValue> = stmt
