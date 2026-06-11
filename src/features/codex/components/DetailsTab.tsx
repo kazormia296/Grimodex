@@ -392,7 +392,19 @@ export function DetailsTab({
       </div>
 
       {/* Custom Details */}
-      <DetailsSection entry={entry} />
+      <DetailsSection
+        entry={entry}
+        activePhase={
+          !isPreviewMode && activePhase
+            ? { id: activePhase.id, label: activePhase.label }
+            : null
+        }
+        previewDetailValues={
+          isPreviewMode
+            ? (previewResolvedState?.detailValues ?? new Map())
+            : null
+        }
+      />
     </div>
   );
 }

@@ -1027,6 +1027,8 @@
       "aiContextDisabled": "AIコンテキストに含めない（クリックで有効化）",
       "selectReference": "参照先を選択...",
       "optionsLabel": "選択肢（1行に1つ）",
+      "overrideForPhase": "フェーズ「{{label}}」で上書き",
+      "overrideRemove": "上書きを解除（Baseに戻す）",
       "referenceCrossProject": "別プロジェクトのエントリは参照できません",
       "addField": "フィールドを追加",
       "manageFields": "フィールドを管理",

@@ -1027,6 +1027,8 @@
       "aiContextDisabled": "Not in AI context (click to enable)",
       "selectReference": "Select an entry...",
       "optionsLabel": "Options (one per line)",
+      "overrideForPhase": "Override for phase \"{{label}}\"",
+      "overrideRemove": "Remove override (revert to base)",
       "referenceCrossProject": "Cannot reference an entry from another project",
       "addField": "Add field",
       "manageFields": "Manage fields",
