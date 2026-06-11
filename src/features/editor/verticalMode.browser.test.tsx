@@ -9,8 +9,9 @@
  *   「ブロック軸あふれ=横スクロール」に解決される
  * - Chromium の vertical-rl scrollLeft 符号規約（0 起点・負方向）=
  *   get/setLogicalScrollOffset の前提 canary
- * - node-island（scene-beat / scene-break / generated-prose-block / table）の
+ * - node-island（scene-beat / scene-break / table / pre / taskList）の
  *   horizontal-tb リセットと寸法潰れ検知
+ * - generated-prose-block（Beat 生成の本編プロセ）は島ではなく vertical-rl 継承
  * - 行番号ガター padding-inline-start の軸マップ
  */
 import { describe, it, expect } from "vitest";
@@ -214,7 +215,7 @@ describe("縦書きMODE: ルビ", () => {
 });
 
 describe("縦書きMODE: node-island の horizontal-tb リセット", () => {
-  it("島は横書きを保ち、寸法が潰れない", () => {
+  it("島は横書きを保ち寸法が潰れない・生成プロセは縦書きを継承する", () => {
     // CSS セレクタ → computed style の契約検証なので素の DOM で十分
     render(
       <div
@@ -229,8 +230,8 @@ describe("縦書きMODE: node-island の horizontal-tb リセット", () => {
           <div className="scene-break" data-testid="island-break">
             ※ ※ ※
           </div>
-          <div className="generated-prose-block" data-testid="island-prose">
-            生成プローズ
+          <div className="generated-prose-block" data-testid="generated-prose">
+            <p data-testid="generated-prose-p">生成プローズ（本編文章）</p>
           </div>
           <table data-testid="island-table">
             <tbody>
@@ -256,7 +257,6 @@ describe("縦書きMODE: node-island の horizontal-tb リセット", () => {
     for (const id of [
       "island-beat",
       "island-break",
-      "island-prose",
       "island-table",
       "island-pre",
       "island-tasklist",
@@ -270,6 +270,15 @@ describe("縦書きMODE: node-island の horizontal-tb リセット", () => {
       const rect = el.getBoundingClientRect();
       expect(rect.width, `${id} width`).toBeGreaterThan(0);
       expect(rect.height, `${id} height`).toBeGreaterThan(0);
+    }
+    // generated-prose-block は Beat 生成の本編プロセを包む永続ノードなので
+    // 島リセットの対象外 — 親の vertical-rl を継承する（縦書きリニアで
+    // AI 生成シーンだけ横書きで mount される回帰の gate）。
+    for (const id of ["generated-prose", "generated-prose-p"]) {
+      const el = document.querySelector(`[data-testid='${id}']`) as HTMLElement;
+      expect(getComputedStyle(el).writingMode, `${id} writing-mode`).toBe(
+        "vertical-rl",
+      );
     }
     // taskList li の flex 軸が水平に戻る (checkbox と本文が横並び)
     const label = document.querySelector(

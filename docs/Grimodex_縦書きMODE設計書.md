@@ -41,9 +41,13 @@ per-project トグル（`editor.verticalMode`、project_settings KV）で TipTap
      fadeIn は opacity のみなので両モード有効。
 
 5. **node-island は horizontal-tb リセット**
-   scene-beat / scene-break / generated-prose-block / table / pre（コードブロック）/
+   scene-beat / scene-break / table / pre（コードブロック）/
    taskList（ul ごとリセットで nested にも継承）。
    browser test（verticalMode.browser.test.tsx）が寸法潰れと flex 軸を gate。
+   generated-prose-block は当初島に含めていたが、Beat 生成の**本編プロセ**を
+   doc に永続ラップするノードで横読み UI チャンクではない — 島にすると
+   AI 生成シーンが縦書きリニアで丸ごと横書きで mount される（実バグ報告で発覚）。
+   vertical-rl 継承へ変更し、同 browser test が縦書き継承側も gate する。
 
 6. **per-scene スクロール保存は論理オフセット**
    EditorPane の savedEditorStateRef は `scrollOffset`（論理値）を保存。

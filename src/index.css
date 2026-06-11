@@ -1113,10 +1113,13 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
  * (same reset as .vertical-preview table). pre = code blocks and
  * taskList (flex row checkbox + body, GFM file-backed scenes) are
  * horizontal-reading structures too; resetting the taskList ul lets the
- * nested lists inherit the reset. */
+ * nested lists inherit the reset.
+ * generated-prose-block is deliberately NOT in this list: it wraps Beat
+ * 生成の本編プロセ (novel prose persisted in the doc), so it must inherit
+ * vertical-rl — resetting it made AI-drafted scenes render horizontally
+ * in vertical linear mode. */
 .editor-vertical .tiptap [data-type="scene-beat"],
 .editor-vertical .tiptap .scene-break,
-.editor-vertical .tiptap .generated-prose-block,
 .editor-vertical .tiptap table,
 .editor-vertical .tiptap pre,
 .editor-vertical .tiptap ul[data-type="taskList"] {
