@@ -768,13 +768,14 @@ Codex エントリの詳細を取得する。
 | `create_foreshadow` | W | o | 伏線新規作成（knowledgeWrite gate・secret 既定 true） |
 | `update_foreshadow` | W | o | 伏線更新（knowledgeWrite gate・project スコープ） |
 | `get_scene_timeline_neighbors` | R | o | story-time 前後シーン（最大各3件） |
+| `get_writing_context` | R | o | curated context 一発集約（project / 章outline / storySoFar / シーン本文MD+intent / timeline近傍 / シーン伏線+未回収伏線(secret除外) / codex mention+always。cap超過はdropped数で報告） |
 | `write_scene` | W | v2 | シーン本文書き込み |
 | `create_scene` | W | v2 | シーン新規作成 |
 | `update_scene_metadata` | W | v2 | シーンメタデータ更新 |
 | `semantic_search` | R | defer | セマンティック検索（§3.11・モデルパス解決が前提） |
 
 **`tools/list` 件数（現行）**: プロジェクト管理 2（`list_projects` / `select_project`）
-+ 読み取り 19 + 書き込み 6 = **27 ツール**
++ 読み取り 20 + 書き込み 6 = **28 ツール**
 （write 6 = create_codex_entry / update_codex_entry / create_snippet / propose_scene_body
 / create_foreshadow / update_foreshadow。
 `select_project` は DB を書かずセッションの current project を切替えるだけ。

@@ -60,7 +60,7 @@ pub struct ChapterOutline {
     pub outline: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorySynopsis {
     pub scene_id: String,
@@ -140,11 +140,330 @@ pub struct WritingContext {
 /// resolve to a scene **in this project** (cross-project ids and folder ids
 /// are indistinguishable from missing — XPROJ defense).
 pub(crate) fn build_writing_context(
-    _conn: &Connection,
-    _project_id: &str,
-    _scene_id: &str,
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
 ) -> Result<Option<WritingContext>> {
-    anyhow::bail!("unimplemented")
+    // Scene lookup doubles as the project-scope gate: get_scene_meta filters
+    // by project_id, so foreign and missing ids both land here.
+    let scene_meta = match db::get_scene_meta(conn, project_id, scene_id) {
+        Ok(node) if node.node_type == "scene" => node,
+        Ok(_) | Err(_) => return Ok(None),
+    };
+
+    let project = db::get_project(conn, project_id)?;
+    let all_nodes = db::list_tree_nodes(conn, project_id, &TreeFilter::default())?;
+
+    let chapter_outlines = collect_chapter_outlines(&all_nodes, &scene_meta);
+    let (story_so_far, story_so_far_dropped) = collect_story_so_far(&all_nodes, scene_id);
+
+    // Scene extras not carried by TreeNode (intent), plus the body.
+    let intent: Option<String> = conn
+        .query_row(
+            "SELECT intent FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![scene_id, project_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(None);
+    let content = load_scene_markdown(conn, project_id, scene_id);
+
+    let timeline_neighbors = db::get_scene_timeline_neighbors(conn, project_id, scene_id)?;
+    let scene_foreshadows = collect_scene_foreshadows(conn, project_id, scene_id)?;
+    let open_foreshadows = db::list_open_foreshadows(conn, project_id)?;
+
+    // Mention scan covers title + synopsis + intent + body so codex resolves
+    // even while the scene body is still an empty draft.
+    let scan_text = [
+        scene_meta.title.as_str(),
+        scene_meta.synopsis.as_deref().unwrap_or(""),
+        intent.as_deref().unwrap_or(""),
+        content.as_str(),
+    ]
+    .join("\n");
+    let codex = collect_codex_layer(conn, project_id, &scan_text)?;
+
+    Ok(Some(WritingContext {
+        project: ProjectContextInfo {
+            title: project.title,
+            genre: project.genre,
+            pov: project.pov,
+            tense: project.tense,
+            language: project.language,
+            style_guide: project.style_guide,
+            ai_instructions: project.ai_instructions,
+        },
+        chapter_outlines,
+        story_so_far,
+        story_so_far_dropped,
+        scene: SceneContext {
+            id: scene_meta.id,
+            title: scene_meta.title,
+            synopsis: scene_meta.synopsis,
+            status: scene_meta.status,
+            intent,
+            content,
+        },
+        timeline_neighbors,
+        scene_foreshadows,
+        open_foreshadows,
+        codex,
+    }))
+}
+
+/// Scene body as Markdown (ProseMirror JSON → Markdown, plain-text fallback) —
+/// same conversion read_scene uses. Missing content degrades to "".
+fn load_scene_markdown(conn: &Connection, project_id: &str, scene_id: &str) -> String {
+    match db::get_scene_content(conn, project_id, scene_id) {
+        Ok(raw) => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                prosemirror_to_markdown(&v)
+            } else {
+                raw
+            }
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// Ancestor folder outlines (= non-empty synopsis), outermost first. Mirrors
+/// the in-app chat "chapter outlines" walk.
+fn collect_chapter_outlines(all_nodes: &[TreeNode], scene: &TreeNode) -> Vec<ChapterOutline> {
+    let by_id: std::collections::HashMap<&str, &TreeNode> =
+        all_nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let mut path = Vec::new();
+    let mut cursor = scene.parent_id.as_deref();
+    while let Some(pid) = cursor {
+        let Some(parent) = by_id.get(pid) else { break };
+        if parent.node_type == "folder" {
+            if let Some(syn) = parent.synopsis.as_deref() {
+                if !syn.trim().is_empty() {
+                    path.push(ChapterOutline {
+                        title: parent.title.clone(),
+                        outline: syn.trim().to_string(),
+                    });
+                }
+            }
+        }
+        cursor = parent.parent_id.as_deref();
+    }
+    path.reverse(); // outermost first
+    path
+}
+
+/// Preceding scenes in reading order (tree DFS: siblings by sort_order, which
+/// `list_tree_nodes` already provides) that carry a synopsis, oldest first.
+/// Capped to the most recent MAX_STORY_SO_FAR; the dropped count is reported.
+fn collect_story_so_far(all_nodes: &[TreeNode], scene_id: &str) -> (Vec<StorySynopsis>, usize) {
+    // Children grouped by parent. `list_tree_nodes` is ORDER BY sort_order, so
+    // pushing in iteration order keeps each sibling list sorted.
+    let mut children: std::collections::HashMap<Option<&str>, Vec<&TreeNode>> =
+        std::collections::HashMap::new();
+    for node in all_nodes {
+        children
+            .entry(node.parent_id.as_deref())
+            .or_default()
+            .push(node);
+    }
+
+    let mut reading_order: Vec<&TreeNode> = Vec::new();
+    let mut stack: Vec<&TreeNode> = children
+        .get(&None)
+        .map(|roots| roots.iter().rev().copied().collect())
+        .unwrap_or_default();
+    while let Some(node) = stack.pop() {
+        if node.node_type == "scene" {
+            reading_order.push(node);
+        }
+        if let Some(kids) = children.get(&Some(node.id.as_str())) {
+            stack.extend(kids.iter().rev().copied());
+        }
+    }
+
+    let Some(pos) = reading_order.iter().position(|n| n.id == scene_id) else {
+        return (Vec::new(), 0);
+    };
+    let preceding: Vec<StorySynopsis> = reading_order[..pos]
+        .iter()
+        .filter_map(|n| {
+            let syn = n.synopsis.as_deref()?.trim();
+            if syn.is_empty() {
+                return None;
+            }
+            Some(StorySynopsis {
+                scene_id: n.id.clone(),
+                title: n.title.clone(),
+                synopsis: syn.to_string(),
+            })
+        })
+        .collect();
+
+    let dropped = preceding.len().saturating_sub(MAX_STORY_SO_FAR);
+    (preceding[dropped..].to_vec(), dropped)
+}
+
+/// Foreshadows planted (setup rows) or resolved (payoff_scene_id) in this
+/// scene. Secret and abandoned foreshadows are excluded — this payload goes to
+/// an external AI, and `secret` exists precisely to keep a twist out of AI
+/// context. Scoping runs through foreshadows.project_id (XPROJ).
+fn collect_scene_foreshadows(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> Result<Vec<SceneForeshadowRef>> {
+    let mut refs = Vec::new();
+
+    let mut setup_stmt = conn.prepare(
+        "SELECT f.id, f.title, f.intent, f.load_bearing, s.kind
+         FROM foreshadow_setups s
+         JOIN foreshadows f ON f.id = s.foreshadow_id
+         WHERE s.scene_id = ?1 AND f.project_id = ?2
+           AND f.secret = 0 AND f.abandoned = 0
+         ORDER BY s.created_at",
+    )?;
+    let setups = setup_stmt.query_map(rusqlite::params![scene_id, project_id], |row| {
+        Ok(SceneForeshadowRef {
+            foreshadow_id: row.get(0)?,
+            title: row.get(1)?,
+            intent: row.get(2)?,
+            load_bearing: row.get(3)?,
+            role: "setup".to_string(),
+            kind: row.get(4)?,
+        })
+    })?;
+    for r in setups {
+        refs.push(r?);
+    }
+
+    let mut payoff_stmt = conn.prepare(
+        "SELECT id, title, intent, load_bearing
+         FROM foreshadows
+         WHERE payoff_scene_id = ?1 AND project_id = ?2
+           AND secret = 0 AND abandoned = 0",
+    )?;
+    let payoffs = payoff_stmt.query_map(rusqlite::params![scene_id, project_id], |row| {
+        Ok(SceneForeshadowRef {
+            foreshadow_id: row.get(0)?,
+            title: row.get(1)?,
+            intent: row.get(2)?,
+            load_bearing: row.get(3)?,
+            role: "payoff".to_string(),
+            kind: None,
+        })
+    })?;
+    for r in payoffs {
+        refs.push(r?);
+    }
+
+    Ok(refs)
+}
+
+/// Codex row as needed for the context layer (CodexEntrySummary lacks
+/// excluded_aliases and content, so this is a dedicated scoped query).
+struct CodexScanRow {
+    id: String,
+    name: String,
+    type_slug: String,
+    aliases: Option<String>,
+    excluded_aliases: Option<String>,
+    summary: Option<String>,
+    content: String,
+    context_mode: String,
+}
+
+fn parse_alias_list(raw: Option<&str>) -> Vec<String> {
+    raw.and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default()
+}
+
+/// Mention detection + always-include codex entries.
+///
+/// Detection is a plain substring scan of name + aliases (≥ MIN_CANDIDATE_CHARS
+/// chars, minus excluded_aliases) — a deliberate approximation of the app's
+/// boundary-aware matcher; for Japanese prose substring containment is the
+/// signal that matters. `hidden`/`suppress` entries never match; `always`
+/// entries are appended without a mention, deduped against the mentioned set.
+fn collect_codex_layer(
+    conn: &Connection,
+    project_id: &str,
+    scan_text: &str,
+) -> Result<CodexContextLayer> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, type, aliases, excluded_aliases, summary, content, context_mode
+         FROM codex_entries WHERE project_id = ?1 ORDER BY name",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![project_id], |row| {
+        Ok(CodexScanRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            type_slug: row.get(2)?,
+            aliases: row.get(3)?,
+            excluded_aliases: row.get(4)?,
+            summary: row.get(5)?,
+            content: row.get(6)?,
+            context_mode: row.get(7)?,
+        })
+    })?;
+
+    let mut mentioned = Vec::new();
+    let mut always = Vec::new();
+    for row in rows {
+        let row = row?;
+        if row.context_mode == "hidden" || row.context_mode == "suppress" {
+            continue;
+        }
+        let aliases = parse_alias_list(row.aliases.as_deref());
+        let excluded: std::collections::HashSet<String> =
+            parse_alias_list(row.excluded_aliases.as_deref())
+                .into_iter()
+                .collect();
+        let is_mentioned = std::iter::once(row.name.as_str())
+            .chain(aliases.iter().map(String::as_str))
+            .map(str::trim)
+            .any(|cand| {
+                cand.chars().count() >= MIN_CANDIDATE_CHARS
+                    && !excluded.contains(cand)
+                    && scan_text.contains(cand)
+            });
+
+        if is_mentioned {
+            mentioned.push(to_context_entry(row, aliases));
+        } else if row.context_mode == "always" {
+            always.push(to_context_entry(row, aliases));
+        }
+    }
+
+    let mentioned_dropped = mentioned.len().saturating_sub(MAX_MENTIONED_CODEX);
+    mentioned.truncate(MAX_MENTIONED_CODEX);
+    let always_dropped = always.len().saturating_sub(MAX_ALWAYS_CODEX);
+    always.truncate(MAX_ALWAYS_CODEX);
+
+    Ok(CodexContextLayer {
+        mentioned,
+        always,
+        mentioned_dropped,
+        always_dropped,
+    })
+}
+
+fn to_context_entry(row: CodexScanRow, aliases: Vec<String>) -> CodexContextEntry {
+    let summary = match row.summary.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => {
+            // Fall back to a content prefix so an entry without a summary
+            // still carries usable context.
+            let text = serde_json::from_str::<serde_json::Value>(&row.content)
+                .map(|v| prosemirror_to_markdown(&v))
+                .unwrap_or_default();
+            text.trim().chars().take(CONTENT_FALLBACK_CHARS).collect()
+        }
+    };
+    CodexContextEntry {
+        id: row.id,
+        name: row.name,
+        type_slug: row.type_slug,
+        summary,
+        aliases,
+    }
 }
 
 pub async fn get_writing_context(
@@ -165,15 +484,6 @@ pub async fn get_writing_context(
         json,
     )]))
 }
-
-// Keep imports referenced by the (not yet written) implementation so the red
-// skeleton compiles warning-clean enough to run tests.
-#[allow(unused_imports)]
-use prosemirror_to_markdown as _pm2md;
-#[allow(unused_imports)]
-use TreeFilter as _tf;
-#[allow(unused_imports)]
-use TreeNode as _tn;
 
 #[cfg(test)]
 mod tests {

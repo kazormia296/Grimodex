@@ -388,6 +388,17 @@ impl GrimodexServer {
         tools::codex::update_codex_entry(self, params.0).await
     }
 
+    /// One-shot curated writing context for a scene (read-only aggregate).
+    #[tool(
+        description = "Get a one-shot curated writing context for a scene: project info, chapter outlines, story-so-far synopses (reading order), the scene itself as Markdown (with synopsis/status/intent), story-time neighbors, foreshadows planted or resolved in the scene, project-wide open foreshadows, and Codex entries mentioned in the scene plus always-include entries. Call this FIRST before drafting or analyzing prose for a scene — it replaces a dozen individual read calls. Read-only; secret foreshadows are excluded; hard caps report dropped counts."
+    )]
+    async fn get_writing_context(
+        &self,
+        params: Parameters<tools::context::GetWritingContextParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::context::get_writing_context(self, params.0).await
+    }
+
     /// Propose plain-text scene body prose (staged accept/reject in app). bodyWrite gate.
     #[tool(
         description = "Propose plain-text body prose for a scene. mode='append' (default) adds to the end; mode='insert' with anchor_text (a unique substring of an existing block, from read_scene) inserts before/after that block. Staged for user accept/reject in the app unless headless auto-apply is enabled. Disabled in readonly mode. File-backed scenes are excluded."
