@@ -180,6 +180,7 @@ function ReferenceField({
       <AnimatePresence>
         {pickerOpen && (
           <CodexCommandPalette
+            projectId={projectId}
             onSelect={(selected) => void handleSelect(selected)}
             onClose={() => setPickerOpen(false)}
           />

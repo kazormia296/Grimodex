@@ -9,6 +9,8 @@ import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 interface CodexCommandPaletteProps {
   onSelect: (entry: CodexEntry) => void;
   onClose: () => void;
+  /** 検索をこのプロジェクトに限定する（FTS インデックスは全プロジェクト共有） */
+  projectId?: string;
   /** @deprecated No longer needed — labels are resolved via i18n internally */
   typeLabels?: Record<string, string>;
 }
@@ -16,6 +18,7 @@ interface CodexCommandPaletteProps {
 export function CodexCommandPalette({
   onSelect,
   onClose,
+  projectId,
 }: CodexCommandPaletteProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -38,16 +41,19 @@ export function CodexCommandPalette({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
-  const handleSearch = useCallback(async (value: string) => {
-    setQuery(value);
-    if (value.trim() === "") {
-      setResults([]);
-      return;
-    }
-    const { searchCodexEntries } = await import("../search");
-    const entries = await searchCodexEntries(value);
-    setResults(entries);
-  }, []);
+  const handleSearch = useCallback(
+    async (value: string) => {
+      setQuery(value);
+      if (value.trim() === "") {
+        setResults([]);
+        return;
+      }
+      const { searchCodexEntries } = await import("../search");
+      const entries = await searchCodexEntries(value, projectId);
+      setResults(entries);
+    },
+    [projectId],
+  );
 
   return (
     <div

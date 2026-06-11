@@ -1099,6 +1099,7 @@ export function CodexManagementPanel({
       <AnimatePresence>
         {showCommandPalette && (
           <CodexCommandPalette
+            projectId={getCurrentProjectId()}
             onSelect={handleCommandSelect}
             onClose={() => setShowCommandPalette(false)}
             typeLabels={typeLabels}

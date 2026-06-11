@@ -148,6 +148,7 @@ export function CodexQuickSection() {
       <AnimatePresence>
         {showPinPalette && (
           <CodexCommandPalette
+            projectId={getCurrentProjectId()}
             onSelect={(entry) => {
               togglePinnedCodex(entry.id);
               setShowPinPalette(false);

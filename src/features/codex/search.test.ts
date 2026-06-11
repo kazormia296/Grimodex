@@ -15,28 +15,79 @@ beforeEach(() => {
 });
 
 describe("searchCodexEntries", () => {
-  const fakeEntry: CodexEntry = {
+  // db_execute の raw 行は DB カラム名 (snake_case) キーで返る。
+  // camelCase の CodexEntry をそのまま返す mock は実態とズレるので禁止。
+  const fakeRow = {
     id: "codex-1",
-    projectId: "proj-1",
-    parentId: null,
+    project_id: "proj-1",
+    parent_id: null,
     type: "character",
     name: "山田太郎",
     summary: "主人公キャラ",
     content: "{}",
     icon: null,
     aliases: "[]",
-    excludedAliases: "[]",
-    tagsCache: "主人公",
-    contextMode: "mentioned",
-    childrenBudget: "compact",
-    sourceChatMessageId: null,
+    excluded_aliases: "[]",
+    tags_cache: "主人公",
+    context_mode: "mentioned",
+    children_budget: "compact",
+    source_chat_message_id: null,
     notes: null,
-    createdAt: "2025-01-01T00:00:00Z",
-    updatedAt: "2025-01-01T00:00:00Z",
+    created_at: "2025-01-01T00:00:00Z",
+    updated_at: "2025-01-01T00:00:00Z",
   };
 
+  it("maps raw snake_case rows to camelCase CodexEntry", async () => {
+    mockInvoke.mockResolvedValue({ rows: [fakeRow] });
+
+    const results = await searchCodexEntries("山田太郎");
+
+    const entry: CodexEntry = results[0];
+    expect(entry.projectId).toBe("proj-1");
+    expect(entry.tagsCache).toBe("主人公");
+    expect(entry.contextMode).toBe("mentioned");
+    expect(entry.sourceChatMessageId).toBeNull();
+    expect(entry).not.toHaveProperty("project_id");
+  });
+
+  it("scopes MATCH queries to the given project", async () => {
+    mockInvoke.mockResolvedValue({ rows: [] });
+
+    await searchCodexEntries("山田太郎", "proj-1");
+
+    expect(mockInvoke).toHaveBeenCalledWith("db_execute", {
+      sql: expect.stringContaining("project_id"),
+      params: ["山田太郎", "proj-1"],
+      method: "all",
+    });
+  });
+
+  it("scopes LIKE queries to the given project", async () => {
+    mockInvoke.mockResolvedValue({ rows: [] });
+
+    await searchCodexEntries("太郎", "proj-1");
+
+    expect(mockInvoke).toHaveBeenCalledWith("db_execute", {
+      sql: expect.stringContaining("project_id"),
+      params: ["%太郎%", "%太郎%", "%太郎%", "proj-1"],
+      method: "all",
+    });
+  });
+
+  it("stays unscoped when projectId is omitted", async () => {
+    mockInvoke.mockResolvedValue({ rows: [] });
+
+    await searchCodexEntries("山田太郎");
+
+    expect(mockInvoke).toHaveBeenCalledWith("db_execute", {
+      sql: expect.not.stringContaining("project_id"),
+      params: ["山田太郎"],
+      method: "all",
+    });
+  });
+
   it("uses MATCH for queries with 3+ characters", async () => {
-    mockInvoke.mockResolvedValue({ rows: [fakeEntry] });
+    mockInvoke.mockResolvedValue({ rows: [fakeRow] });
 
     const results = await searchCodexEntries("山田太郎");
 
@@ -50,7 +101,7 @@ describe("searchCodexEntries", () => {
   });
 
   it("uses LIKE for queries with fewer than 3 characters", async () => {
-    mockInvoke.mockResolvedValue({ rows: [fakeEntry] });
+    mockInvoke.mockResolvedValue({ rows: [fakeRow] });
 
     const results = await searchCodexEntries("太郎");
 

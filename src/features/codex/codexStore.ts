@@ -220,7 +220,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         );
         set({ entries, isLoading: false });
       } else {
-        const entries = await searchCodexEntries(query);
+        const entries = await searchCodexEntries(query, getCurrentProjectId());
         set({ entries, isLoading: false });
       }
     } catch (e) {

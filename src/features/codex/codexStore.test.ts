@@ -157,7 +157,11 @@ describe("codexStore", () => {
 
       await useCodexStore.getState().search("アリス");
 
-      expect(mockSearchCodexEntries).toHaveBeenCalledWith("アリス");
+      // 検索は現在プロジェクトにスコープされる（cross-project 行が store に入らない）
+      expect(mockSearchCodexEntries).toHaveBeenCalledWith(
+        "アリス",
+        expect.any(String),
+      );
       expect(useCodexStore.getState().entries).toEqual([mockEntry]);
       expect(useCodexStore.getState().searchQuery).toBe("アリス");
     });
