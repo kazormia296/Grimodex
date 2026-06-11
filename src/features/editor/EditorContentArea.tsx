@@ -13,6 +13,7 @@ import { ForeshadowMarkHoverPopover } from "@/features/foreshadow/ForeshadowMark
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { EditorBodyWithLoading } from "@/features/editor/EditorContentSkeleton";
 import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
+import { buildEditorContentStyle } from "@/features/editor/editorLayout";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import type { FilterSource } from "@/features/attribution/attributionStore";
 
@@ -96,20 +97,7 @@ export function EditorContentArea({
           className={cn(
             editorSettings.showLineNumbers && "editor-line-numbers",
           )}
-          style={
-            {
-              fontFamily: editorSettings.fontFamily,
-              fontSize: `${editorSettings.fontSize}px`,
-              lineHeight: editorSettings.lineHeight,
-              maxWidth: `${editorSettings.maxContentWidth}px`,
-              margin: "0 auto",
-              wordBreak:
-                editorSettings.wordBreak as React.CSSProperties["wordBreak"],
-              lineBreak:
-                editorSettings.lineBreak as React.CSSProperties["lineBreak"],
-              "--editor-paragraph-indent": `${editorSettings.paragraphIndent}em`,
-            } as React.CSSProperties
-          }
+          style={buildEditorContentStyle(editorSettings)}
         >
           {editorTitle && (
             <div

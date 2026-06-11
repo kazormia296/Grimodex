@@ -628,38 +628,47 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   outline: none;
   overflow-wrap: break-word;
 
+  /* Logical (writing-mode aware) properties so the same rules serve both
+     horizontal-tb and the vertical-rl editing mode. Identical computed
+     values in horizontal writing. */
   h1 {
     font-size: 2em;
     font-weight: bold;
-    margin: 0.67em 0;
+    margin-block: 0.67em;
+    margin-inline: 0;
     color: var(--content-foreground);
   }
   h2 {
     font-size: 1.5em;
     font-weight: bold;
-    margin: 0.83em 0;
+    margin-block: 0.83em;
+    margin-inline: 0;
     color: var(--content-foreground);
   }
   h3 {
     font-size: 1.17em;
     font-weight: bold;
-    margin: 1em 0;
+    margin-block: 1em;
+    margin-inline: 0;
     color: var(--content-foreground);
   }
 
   ul {
     list-style: disc;
-    padding-left: 1.5em;
-    margin: 1em 0;
+    padding-inline-start: 1.5em;
+    margin-block: 1em;
+    margin-inline: 0;
   }
   ol {
     list-style: decimal;
-    padding-left: 1.5em;
-    margin: 1em 0;
+    padding-inline-start: 1.5em;
+    margin-block: 1em;
+    margin-inline: 0;
   }
 
   p {
-    margin: 0.5em 0;
+    margin-block: 0.5em;
+    margin-inline: 0;
   }
 }
 
@@ -675,10 +684,11 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 }
 
 /* Line numbers (paragraph-level counter) — toggled by editor.showLineNumbers.
-   Numbers render in the left gutter via absolute-positioned ::before, so the
-   wrapper reserves padding-left to keep numbers from overlapping body text. */
+   Numbers render in the inline-start gutter (left when horizontal, top when
+   vertical) via absolute-positioned ::before, so the wrapper reserves
+   padding-inline-start to keep numbers from overlapping body text. */
 .editor-line-numbers {
-  padding-left: 2.5em;
+  padding-inline-start: 2.5em;
 }
 .editor-line-numbers .tiptap {
   counter-reset: editor-line;
@@ -702,9 +712,9 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .editor-line-numbers .tiptap > ol::before {
   content: counter(editor-line);
   position: absolute;
-  left: -2.5em;
-  width: 2em;
-  text-align: right;
+  inset-inline-start: -2.5em;
+  inline-size: 2em;
+  text-align: end;
   color: var(--muted-foreground);
   opacity: 0.5;
   font-size: 0.85em;
@@ -716,17 +726,19 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 
 .tiptap {
   blockquote {
-    border-left: 3px solid var(--content-border);
-    padding-left: 1em;
-    margin: 1em 0;
+    border-inline-start: 3px solid var(--content-border);
+    padding-inline-start: 1em;
+    margin-block: 1em;
+    margin-inline: 0;
     color: var(--content-foreground-muted);
     font-style: italic;
   }
 
   hr {
     border: none;
-    border-top: 1px solid var(--content-border);
-    margin: 1.5em 0;
+    border-block-start: 1px solid var(--content-border);
+    margin-block: 1.5em;
+    margin-inline: 0;
   }
 
   a {
@@ -1030,15 +1042,15 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   text-decoration-color: #9ca3af;
 }
 
-/* Block-level disable marker — a subtle left border on the block.
+/* Block-level disable marker — a subtle inline-start border on the block.
  * Uses same colour as the inline `--all` variant so the author reads
  * them as one family. */
 .tiptap [data-lint-disabled] {
-  border-left: 2px solid #9ca3af;
-  padding-left: 0.5em;
+  border-inline-start: 2px solid #9ca3af;
+  padding-inline-start: 0.5em;
 }
 .dark .tiptap [data-lint-disabled] {
-  border-left-color: #6b7280;
+  border-inline-start-color: #6b7280;
 }
 
 /* Gutter dot — small circle pinned to the inline-start edge of any
@@ -1057,8 +1069,8 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .lint-disable-gutter::before {
   content: "";
   position: absolute;
-  left: -0.85em;
-  top: 0.45em;
+  inset-inline-start: -0.85em;
+  inset-block-start: 0.45em;
   width: 0.45em;
   height: 0.45em;
   border-radius: 50%;

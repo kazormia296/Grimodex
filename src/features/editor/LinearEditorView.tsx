@@ -8,6 +8,7 @@ import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
+import { buildEditorMeasureStyle } from "@/features/editor/editorLayout";
 import { isMac } from "@/lib/platform";
 import {
   getMergedBindings,
@@ -315,10 +316,7 @@ export function LinearEditorView() {
       >
         <div
           ref={editorContainerRef}
-          style={{
-            maxWidth: `${editorSettings.maxContentWidth}px`,
-            margin: "0 auto",
-          }}
+          style={buildEditorMeasureStyle(editorSettings.maxContentWidth)}
         >
           {scenes.map((scene, i) => (
             <div key={scene.id}>

@@ -15,6 +15,7 @@ import {
   spansToMarkData,
 } from "@/features/attribution/api";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
+import { buildEditorContentStyle } from "@/features/editor/editorLayout";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { getDocText } from "@/features/editor/RubyNode";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
@@ -287,20 +288,7 @@ function MountedSceneBlock({
     <div ref={containerRef}>
       <div
         className={cn(editorSettings.showLineNumbers && "editor-line-numbers")}
-        style={
-          {
-            fontFamily: editorSettings.fontFamily,
-            fontSize: `${editorSettings.fontSize}px`,
-            lineHeight: editorSettings.lineHeight,
-            maxWidth: `${editorSettings.maxContentWidth}px`,
-            margin: "0 auto",
-            wordBreak:
-              editorSettings.wordBreak as React.CSSProperties["wordBreak"],
-            lineBreak:
-              editorSettings.lineBreak as React.CSSProperties["lineBreak"],
-            "--editor-paragraph-indent": `${editorSettings.paragraphIndent}em`,
-          } as React.CSSProperties
-        }
+        style={buildEditorContentStyle(editorSettings)}
       >
         {title && (
           <div
