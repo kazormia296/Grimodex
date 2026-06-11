@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useLinearEditorStore } from "./linearEditorStore";
@@ -7,6 +8,18 @@ import { Toolbar } from "@/features/editor/Toolbar";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
+import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
+import { MentionPopup } from "@/features/chat/components/MentionPopup";
+import type {
+  CodexMentionPopupState,
+  MentionItem,
+  MentionRole,
+} from "@/features/codex/CodexMentionExtension";
+import {
+  ResizablePanelGroup,
+  ResizablePanel,
+  ResizableHandle,
+} from "@/components/ui/resizable";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import {
   buildEditorMeasureStyle,
@@ -35,6 +48,7 @@ export function LinearEditorView() {
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
   const focusedEditor = useLinearEditorStore((s) => s.focusedEditor);
+  const focusedSceneId = useLinearEditorStore((s) => s.focusedSceneId);
   const pendingScrollToId = useLinearEditorStore((s) => s.pendingScrollToId);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -44,11 +58,27 @@ export function LinearEditorView() {
   const activeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Capture the active scene at mount time before any observer overwrites it
   const initialActiveSceneIdRef = useRef(activeSceneId);
+  // プログラムスクロール (タブ切替ナビ / 初期スクロール) の進行中ターゲット。
+  // 進行中はスクロール由来の active 検出を止める — placeholder 高さ確定で
+  // 着地点がズレる途中経過を「ユーザーが見ているシーン」と誤認すると、
+  // setActiveScene → openPreview が無関係なプレビュータブを開いてしまう。
+  const navigatingRef = useRef<string | null>(null);
+  const navCleanupRef = useRef<(() => void) | null>(null);
 
   const [mountedSet, setMountedSet] = useState<Set<string>>(new Set());
   const [activeId, setActiveId] = useState<string | null>(activeSceneId);
+  // IntersectionObserver を activeId 変更のたびに張り替えないための ref ミラー
+  // (張り替えの瞬間に交差イベントを取りこぼし、スクロール中の active 同期が
+  // 不安定になる)。
+  const activeIdRef = useRef<string | null>(activeSceneId);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
   const [findOpen, setFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
+  const [mentionPopup, setMentionPopupState] =
+    useState<CodexMentionPopupState | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
 
   // sortOrder は同じ parentId 内でのみ比較可能な fractional-indexing key
   // (各フォルダの最初の子は独立に "a0" を生成する)。グローバル sort だと
@@ -125,15 +155,21 @@ export function LinearEditorView() {
   }, [scenes, verticalMode]);
 
   // --- IntersectionObserver: active scene detection ---
+  // activeId は ref で参照する (deps に入れると active が変わるたびに observer
+  // を張り替え、その瞬間の交差イベントを取りこぼしてスクロール中の
+  // タブ名/チャットの追従が不安定になる)。
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
 
     const observer = new IntersectionObserver(
       (_entries) => {
+        // プログラムスクロール進行中の途中経過は active にしない
+        if (navigatingRef.current) return;
         if (activeDebounceRef.current) clearTimeout(activeDebounceRef.current);
 
         activeDebounceRef.current = setTimeout(() => {
+          if (navigatingRef.current) return;
           // Find the visible scene closest to the block-start edge of the
           // scroll container (top when horizontal, right when vertical).
           const containerRect = container.getBoundingClientRect();
@@ -149,7 +185,7 @@ export function LinearEditorView() {
             verticalMode,
           );
 
-          if (closestId && closestId !== activeId) {
+          if (closestId && closestId !== activeIdRef.current) {
             setActiveId(closestId);
             isScrollDetectionRef.current = true;
             useTreeStore.getState().setActiveScene(closestId);
@@ -170,7 +206,7 @@ export function LinearEditorView() {
       observer.disconnect();
       if (activeDebounceRef.current) clearTimeout(activeDebounceRef.current);
     };
-  }, [scenes, activeId, verticalMode]);
+  }, [scenes, verticalMode]);
 
   // Placeholder sizes were measured along one writing mode's block axis —
   // toggling vertical mode invalidates them.
@@ -178,71 +214,113 @@ export function LinearEditorView() {
     heightMapRef.current.clear();
   }, [verticalMode]);
 
-  // --- Initial scroll: jump to active scene on mount ---
-  // At mount time, all scenes are short placeholders so the container may not
-  // be scrollable yet (scrollHeight === clientHeight). We use a ResizeObserver
-  // on the inner content to re-attempt scrolling each time content grows
-  // (editors mount and load their text). Stops after 2s to avoid indefinite observation.
-  useEffect(() => {
-    const targetId = initialActiveSceneIdRef.current;
-    if (!targetId) return;
+  // --- Programmatic navigation: scroll a scene to the block-start edge ---
+  // 一発の scrollIntoView では足りない: 未マウントシーンは placeholder の
+  // 推定高さで並んでいるため、着地後に IO mount → 実高さ確定 → ターゲットが
+  // ズレる。ResizeObserver + rAF でターゲットを block-start に再アンカーし
+  // 続け、高さが安定したら終了する (初期スクロールの retry パターンを一般化)。
+  // 進行中は navigatingRef で active 検出を抑止 — 途中経過のシーンを active に
+  // すると openPreview が無関係なプレビュータブを開く。
+  const navigateToScene = useCallback((targetId: string) => {
     const container = scrollRef.current;
     const content = editorContainerRef.current;
     if (!container || !content) return;
 
-    let done = false;
+    // 進行中のナビゲーションは置き換える
+    navCleanupRef.current?.();
+    navigatingRef.current = targetId;
 
-    function scrollToTarget() {
+    let done = false;
+    let stableTicks = 0;
+    let rafId = 0;
+    let observer: ResizeObserver | null = null;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    const finish = () => {
       if (done) return;
-      // Mount-only effect: read the mode at call time, not from a closure.
+      done = true;
+      observer?.disconnect();
+      cancelAnimationFrame(rafId);
+      if (timeout) clearTimeout(timeout);
+      if (navigatingRef.current === targetId) navigatingRef.current = null;
+      if (navCleanupRef.current === cleanup) navCleanupRef.current = null;
+    };
+    const cleanup = finish;
+
+    const step = () => {
+      if (done) return;
+      // call-time read — モード切替を跨いでも正しい軸で動く
       const vertical = useSettingsStore
         .getState()
         .getBoolean("editor.verticalMode", false);
-      if (!canScrollBlockAxis(container!, vertical)) return;
-      const target = container!.querySelector(`[data-scene-id="${targetId}"]`);
-      if (!target) return;
-      const containerRect = container!.getBoundingClientRect();
-      const targetRect = target.getBoundingClientRect();
-      const offset = getBlockStartOffset(containerRect, targetRect, vertical);
-      // Already at target
-      if (Math.abs(offset) < 2) {
-        done = true;
+      const target = container.querySelector(`[data-scene-id="${targetId}"]`);
+      if (!target) {
+        finish();
         return;
       }
-      setLogicalScrollOffset(
-        container!,
-        getLogicalScrollOffset(container!, vertical) + offset,
+      const containerRect = container.getBoundingClientRect();
+      const offset = getBlockStartOffset(
+        containerRect,
+        target.getBoundingClientRect(),
         vertical,
       );
-      // Verify target actually reached the block-start edge of the container.
-      // If the content isn't long enough yet, the scroll can't reach far enough
-      // and we must NOT mark done — ResizeObserver will retry when content grows.
-      const afterRect = target.getBoundingClientRect();
-      const remaining = Math.abs(
-        getBlockStartOffset(containerRect, afterRect, vertical),
-      );
-      if (remaining < 5) done = true;
-    }
+      if (Math.abs(offset) < 2) {
+        // 着地済み — 高さ変動が続く間は維持し、安定したら終了
+        stableTicks += 1;
+        return;
+      }
+      const before = getLogicalScrollOffset(container, vertical);
+      setLogicalScrollOffset(container, before + offset, vertical);
+      const after = getLogicalScrollOffset(container, vertical);
+      if (after === before) {
+        // スクロールが動かない: コンテンツ末尾でこれ以上寄せられない。
+        // ただしまだスクロール可能になっていない起動直後は、コンテンツの
+        // 成長を待つ (ResizeObserver が再試行する)。
+        if (canScrollBlockAxis(container, vertical)) {
+          stableTicks += 1;
+        }
+      } else {
+        stableTicks = 0;
+      }
+    };
 
-    // Try immediately in case content is already tall enough
-    scrollToTarget();
-    if (done) return;
-
-    // Otherwise wait for content to grow
-    const observer = new ResizeObserver(() => {
-      scrollToTarget();
-      if (done) observer.disconnect();
-    });
+    // コンテンツの成長 (シーン mount で高さ確定) のたびに再アンカー
+    observer = new ResizeObserver(() => step());
     observer.observe(content);
 
-    // Safety: stop after 2s regardless
-    const timeout = setTimeout(() => observer.disconnect(), 2000);
+    const tick = () => {
+      if (done) return;
+      step();
+      if (stableTicks >= 3) {
+        finish();
+        return;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    step();
+    rafId = requestAnimationFrame(tick);
 
+    // Safety: stop after 2s regardless
+    timeout = setTimeout(finish, 2000);
+
+    navCleanupRef.current = cleanup;
+  }, []);
+
+  // Unmount: stop any in-flight navigation
+  useEffect(() => {
     return () => {
-      observer.disconnect();
-      clearTimeout(timeout);
+      navCleanupRef.current?.();
     };
   }, []);
+
+  // --- Initial scroll: jump to active scene on mount ---
+  // At mount time, all scenes are short placeholders so the container may not
+  // be scrollable yet — navigateToScene's grow-retry handles it.
+  useEffect(() => {
+    const targetId = initialActiveSceneIdRef.current;
+    if (!targetId) return;
+    navigateToScene(targetId);
+  }, [navigateToScene]);
 
   // --- External navigation: scroll to scene ---
   useEffect(() => {
@@ -253,29 +331,15 @@ export function LinearEditorView() {
     if (activeSceneId === activeId) return;
 
     setActiveId(activeSceneId);
-    const container = scrollRef.current;
-    if (!container) return;
-    const target = container.querySelector(
-      `[data-scene-id="${activeSceneId}"]`,
-    );
-    if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  }, [activeSceneId, activeId]);
+    navigateToScene(activeSceneId);
+  }, [activeSceneId, activeId, navigateToScene]);
 
   // --- Consume pendingScrollToId ---
   useEffect(() => {
     if (!pendingScrollToId) return;
     useLinearEditorStore.getState().setPendingScrollToId(null);
-    const container = scrollRef.current;
-    if (!container) return;
-    const target = container.querySelector(
-      `[data-scene-id="${pendingScrollToId}"]`,
-    );
-    if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  }, [pendingScrollToId]);
+    navigateToScene(pendingScrollToId);
+  }, [pendingScrollToId, navigateToScene]);
 
   // --- Height change callback ---
   const handleHeightChange = useCallback((sceneId: string, height: number) => {
@@ -292,6 +356,45 @@ export function LinearEditorView() {
       isScrollDetectionRef.current = false;
     });
   }, []);
+
+  // --- Scene meta panel (EditorPane と同じ設定キー・レイアウト永続化) ---
+  const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
+  const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;
+  const isPanelVisible = sceneMetaPanelOpen && activeId != null;
+  const handleTogglePanel = useCallback(() => {
+    useSettingsStore
+      .getState()
+      .set("editor.sceneMetaPanelOpen", String(!sceneMetaPanelOpen));
+  }, [sceneMetaPanelOpen]);
+  const handlePanelLayoutChanged = useCallback(
+    (layout: Record<string, number>) => {
+      const w = layout["scene-meta"];
+      if (w !== undefined) {
+        useSettingsStore
+          .getState()
+          .set("editor.sceneMetaPanelWidth", String(Math.round(w)));
+      }
+    },
+    [],
+  );
+  const setMentionPopup = useCallback((s: CodexMentionPopupState | null) => {
+    setMentionPopupState(s);
+    setMentionIndex(0);
+  }, []);
+  const handleMentionSelect = useCallback(
+    (item: MentionItem) => {
+      mentionPopup?.command?.(item);
+      setMentionPopupState(null);
+    },
+    [mentionPopup],
+  );
+  const handleMentionSelectWithRole = useCallback(
+    (item: MentionItem, role: MentionRole) => {
+      mentionPopup?.command?.(item, role);
+      setMentionPopupState(null);
+    },
+    [mentionPopup],
+  );
 
   // --- Keyboard shortcuts ---
   useEffect(() => {
@@ -313,6 +416,36 @@ export function LinearEditorView() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // パネル開閉で branch が変わっても scroll container ツリーを remount しない
+  // よう JSX を共有する (remount = 全シーン再ロード + スクロール位置喪失)。
+  const scrollContainer = (
+    <div
+      ref={scrollRef}
+      className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
+    >
+      <div
+        ref={editorContainerRef}
+        style={buildEditorMeasureStyle(editorSettings.maxContentWidth)}
+      >
+        {scenes.map((scene, i) => (
+          <div key={scene.id}>
+            {i > 0 && <div className="editor-scene-separator" />}
+            <LinearSceneBlock
+              sceneId={scene.id}
+              isMounted={mountedSet.has(scene.id)}
+              isActive={scene.id === activeId}
+              placeholderHeight={
+                heightMapRef.current.get(scene.id) ?? DEFAULT_HEIGHT
+              }
+              onHeightChange={handleHeightChange}
+              onFocus={handleFocus}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <Toolbar
@@ -323,6 +456,10 @@ export function LinearEditorView() {
         }}
         onVerticalPreview={() => {}}
         actionsRef={undefined}
+        panelOpen={sceneMetaPanelOpen}
+        onTogglePanel={handleTogglePanel}
+        sceneId={activeId ?? undefined}
+        nodeType="scene"
       />
       <FindReplaceBar
         editor={focusedEditor}
@@ -330,33 +467,54 @@ export function LinearEditorView() {
         showReplace={findShowReplace}
         onClose={() => setFindOpen(false)}
       />
-      <div
-        ref={scrollRef}
-        className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
-      >
-        <div
-          ref={editorContainerRef}
-          style={buildEditorMeasureStyle(editorSettings.maxContentWidth)}
+      {isPanelVisible ? (
+        <ResizablePanelGroup
+          orientation="horizontal"
+          className="min-h-0 flex-1"
+          onLayoutChanged={handlePanelLayoutChanged}
         >
-          {scenes.map((scene, i) => (
-            <div key={scene.id}>
-              {i > 0 && <div className="editor-scene-separator" />}
-              <LinearSceneBlock
-                sceneId={scene.id}
-                isMounted={mountedSet.has(scene.id)}
-                isActive={scene.id === activeId}
-                placeholderHeight={
-                  heightMapRef.current.get(scene.id) ?? DEFAULT_HEIGHT
-                }
-                onHeightChange={handleHeightChange}
-                onFocus={handleFocus}
-              />
-            </div>
-          ))}
-        </div>
-      </div>
+          <ResizablePanel
+            id="editor-main"
+            minSize="40%"
+            className="flex flex-col overflow-hidden"
+          >
+            {scrollContainer}
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel
+            id="scene-meta"
+            minSize="15%"
+            maxSize="50%"
+            defaultSize={`${sceneMetaPanelWidth}%`}
+            className="flex flex-col overflow-hidden"
+          >
+            <SceneMetaPanel
+              sceneId={activeId!}
+              // editor は「active シーンの editor」のみ渡す。スクロールで
+              // active が focused と乖離したまま渡すと、Beat 挿入等が
+              // 別シーンの doc に書き込まれてしまう。
+              editor={focusedSceneId === activeId ? focusedEditor : null}
+              setMentionPopup={setMentionPopup}
+            />
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      ) : (
+        scrollContainer
+      )}
       <CodexPopover editor={focusedEditor} />
       <EditorContextMenu editor={focusedEditor} containerRef={scrollRef} />
+      {mentionPopup &&
+        createPortal(
+          <MentionPopup
+            items={mentionPopup.items}
+            selectedIndex={mentionIndex}
+            onSelect={handleMentionSelect}
+            onChangeIndex={setMentionIndex}
+            clientRect={mentionPopup.clientRect}
+            onSelectWithRole={handleMentionSelectWithRole}
+          />,
+          document.body,
+        )}
     </div>
   );
 }

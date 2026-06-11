@@ -225,6 +225,36 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     expect(mockPersist).not.toHaveBeenCalled();
   });
 
+  it("ロード完了まで skeleton を表示し、完了後に本文と文字数を出す", async () => {
+    let resolveLoad!: (v: {
+      content: string;
+      unplacedBeatsDoc: string;
+    }) => void;
+    mockLoadSceneFull.mockReturnValue(
+      new Promise((res) => {
+        resolveLoad = res;
+      }),
+    );
+    const { container } = renderBlock();
+
+    // ロード中: skeleton が出て、本文/文字数 ("0 chars") は invisible で隠れる
+    // (textContent には残るので可視性はクラスで assert する)
+    expect(
+      container.querySelector("[data-testid='editor-content-loading']"),
+    ).not.toBeNull();
+    const hiddenWrap = container.querySelector(".invisible");
+    expect(hiddenWrap).not.toBeNull();
+    expect(hiddenWrap!.textContent).toContain("0 chars");
+
+    resolveLoad({ content: MENTION_CONTENT, unplacedBeatsDoc: "[]" });
+    await waitFor(() => {
+      expect(
+        container.querySelector("[data-testid='editor-content-loading']"),
+      ).toBeNull();
+    });
+    expect(container.textContent).toContain("chars");
+  });
+
   it("setEditable の doc 未変更 'update' では autosave が arm されない", async () => {
     // TipTap の setEditable は既定で 'update' を emit する (steps 空)。
     // これが schedule を arm すると「編集していないのに保存」が走り、

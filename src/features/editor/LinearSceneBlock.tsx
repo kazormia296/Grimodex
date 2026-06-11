@@ -24,6 +24,7 @@ import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { getDocText } from "@/features/editor/RubyNode";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
+import { EditorContentSkeleton } from "@/features/editor/EditorContentSkeleton";
 import i18next from "@/lib/i18n";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
@@ -53,6 +54,7 @@ export function LinearSceneBlock({
         <MountedSceneBlock
           sceneId={sceneId}
           isActive={isActive}
+          placeholderHeight={placeholderHeight}
           onHeightChange={onHeightChange}
           onFocus={onFocus}
         />
@@ -66,6 +68,8 @@ export function LinearSceneBlock({
 interface MountedSceneBlockProps {
   sceneId: string;
   isActive: boolean;
+  /** ロード中に skeleton を placeholder と同寸で出すための推定 block size。 */
+  placeholderHeight: number;
   onHeightChange: (sceneId: string, height: number) => void;
   onFocus: (sceneId: string, editor: Editor) => void;
 }
@@ -73,6 +77,7 @@ interface MountedSceneBlockProps {
 function MountedSceneBlock({
   sceneId,
   isActive,
+  placeholderHeight,
   onHeightChange,
   onFocus,
 }: MountedSceneBlockProps) {
@@ -92,6 +97,9 @@ function MountedSceneBlock({
   // false 始まりだと空 doc がそのまま DB に書き込まれる。
   const loadFailedRef = useRef(true);
   const [charCount, setCharCount] = useState(0);
+  // ロード完了まで skeleton を placeholder と同寸で表示する (空エディタ +
+  // 「0 chars」の一瞬の表示と、高さ崩壊によるスクロールのガタつきを防ぐ)。
+  const [isLoading, setIsLoading] = useState(true);
 
   // EditorPane と同じスキーマ選択。file-backed scene に full schema を使うと
   // (逆方向も同様に) 未知ノードで setContent が空 doc に化ける。
@@ -257,6 +265,7 @@ function MountedSceneBlock({
         if (!cancelled) {
           loadFailedRef.current = true;
           editor!.setEditable(false, false);
+          setIsLoading(false);
           debugLog.error(
             "LinearSceneBlock",
             `load failed ${sceneId.slice(0, 8)}`,
@@ -272,6 +281,7 @@ function MountedSceneBlock({
       const text = getDocText(editor!.state.doc);
       const count = text.length;
       setCharCount(count);
+      setIsLoading(false);
       wasEmptyRef.current = count === 0;
       useTreeStore.getState().setCharCount(sceneId, count);
 
@@ -354,13 +364,27 @@ function MountedSceneBlock({
           </div>
         )}
         <div
-          data-linear-beat-display={editorSettings.linearBeatDisplay}
-          className={filterSource ? `attribution-filter-${filterSource}` : ""}
+          className="relative"
+          style={isLoading ? { blockSize: placeholderHeight } : undefined}
         >
-          <EditorContent editor={editor} />
-        </div>
-        <div className="mt-2 text-right text-xs text-muted-foreground/50">
-          {charCount.toLocaleString()} chars
+          {isLoading && (
+            <div className="absolute inset-0 z-10 overflow-hidden bg-content-background">
+              <EditorContentSkeleton />
+            </div>
+          )}
+          <div className={cn(isLoading && "invisible")}>
+            <div
+              data-linear-beat-display={editorSettings.linearBeatDisplay}
+              className={
+                filterSource ? `attribution-filter-${filterSource}` : ""
+              }
+            >
+              <EditorContent editor={editor} />
+            </div>
+            <div className="mt-2 text-right text-xs text-muted-foreground/50">
+              {charCount.toLocaleString()} chars
+            </div>
+          </div>
         </div>
       </div>
     </div>

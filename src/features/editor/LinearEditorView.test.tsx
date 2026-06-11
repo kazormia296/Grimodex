@@ -25,8 +25,30 @@ vi.mock("@/features/editor/CodexPopover", () => ({
 vi.mock("@/features/editor/EditorContextMenu", () => ({
   EditorContextMenu: () => null,
 }));
+const settingsOverride = vi.hoisted(
+  () => ({ current: {} }) as { current: Record<string, unknown> },
+);
 vi.mock("@/features/settings/hooks/useEditorSettings", () => ({
-  useEditorSettings: () => ({ maxContentWidth: 800 }),
+  useEditorSettings: () => ({
+    maxContentWidth: 800,
+    sceneMetaPanelOpen: false,
+    sceneMetaPanelWidth: 25,
+    ...settingsOverride.current,
+  }),
+}));
+vi.mock("@/features/editor/SceneMetaPanel", () => ({
+  SceneMetaPanel: ({ sceneId }: { sceneId: string }) => (
+    <div data-testid="scene-meta-panel" data-scene={sceneId} />
+  ),
+}));
+vi.mock("@/components/ui/resizable", () => ({
+  ResizablePanelGroup: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  ResizablePanel: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  ResizableHandle: () => null,
 }));
 
 // happy-dom には IntersectionObserver / ResizeObserver が無いので minimal stub
@@ -78,6 +100,7 @@ function makeNode(
 
 beforeEach(() => {
   useTreeStore.setState({ nodes: [], activeSceneId: "" });
+  settingsOverride.current = {};
 });
 
 describe("LinearEditorView — scene ordering", () => {
@@ -209,5 +232,32 @@ describe("LinearEditorView — scene ordering", () => {
     expect(order).toContain("cyc-scene");
     expect(order[0]).toBe("A1");
     expect(order).toHaveLength(3);
+  });
+});
+
+describe("LinearEditorView — scene meta panel", () => {
+  it("sceneMetaPanelOpen=true かつ active シーンがあれば詳細パネルを出す", () => {
+    settingsOverride.current = { sceneMetaPanelOpen: true };
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+
+    const { container } = render(<LinearEditorView />);
+    const panel = container.querySelector("[data-testid='scene-meta-panel']");
+    expect(panel).not.toBeNull();
+    expect((panel as HTMLElement).dataset.scene).toBe("S1");
+  });
+
+  it("sceneMetaPanelOpen=false ならパネルを出さない", () => {
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+
+    const { container } = render(<LinearEditorView />);
+    expect(
+      container.querySelector("[data-testid='scene-meta-panel']"),
+    ).toBeNull();
   });
 });
