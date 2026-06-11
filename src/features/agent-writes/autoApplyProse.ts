@@ -3,6 +3,7 @@ import { Node as ProseMirrorNode, type Schema } from "@tiptap/pm/model";
 import { EditorState } from "@tiptap/pm/state";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { loadSceneContent } from "@/features/tree/api";
+import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import { agentAcceptProseStage } from "@/features/agent-writes/prose";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
@@ -150,6 +151,11 @@ export async function autoApplyProseProposal(
   }
 
   const schema = getDocSchema();
+  // Flush any pending debounced autosave BEFORE reading the DB: if the scene is
+  // open with unsaved live edits, appending to the stale DB body and resyncing
+  // (below) would silently drop the user's latest typing. saveScene is a no-op
+  // when no editor is mounted (the scene cannot be dirty then).
+  await saveScene(sceneId);
   const raw = await loadSceneContent(sceneId);
   const doc = buildDoc(schema, raw);
   // Fail safe: never replace unreadable-but-present prose with an empty doc.

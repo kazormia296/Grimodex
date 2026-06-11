@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
     fileBacked: false,
   },
   loadSceneContent: vi.fn(async () => h.state.sceneContent),
+  saveScene: vi.fn(async (_id: string) => {}),
   persistSceneBody: vi.fn(async (_id: string, _doc: ProseMirrorNode) => {}),
   agentAcceptProseStage: vi.fn(async () => ({})),
   setLiveContent: vi.fn(),
@@ -25,6 +26,9 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@/features/tree/api", () => ({
   loadSceneContent: h.loadSceneContent,
+}));
+vi.mock("@/features/editor/editorSaveRegistry", () => ({
+  saveScene: h.saveScene,
 }));
 vi.mock("@/features/editor/persistSceneBody", () => ({
   persistSceneBody: h.persistSceneBody,
@@ -174,6 +178,62 @@ describe("autoApplyProseProposal — append", () => {
     await autoApplyProseProposal(proposal());
     expect(h.setLiveContent).toHaveBeenCalledTimes(1);
     expect(h.setLiveContent.mock.calls[0][0]).toBe("scene-1");
+  });
+});
+
+describe("autoApplyProseProposal — unsaved live-edit flush", () => {
+  it("flushes the scene's pending save BEFORE reading the DB body", async () => {
+    const order: string[] = [];
+    h.saveScene.mockImplementationOnce(async () => {
+      order.push("flush");
+    });
+    h.loadSceneContent.mockImplementationOnce(async () => {
+      order.push("load");
+      return h.state.sceneContent;
+    });
+    const result = await autoApplyProseProposal(proposal());
+    expect(result.applied).toBe(true);
+    expect(h.saveScene).toHaveBeenCalledWith("scene-1");
+    expect(order).toEqual(["flush", "load"]);
+  });
+
+  it("appends onto the flushed body, not the stale DB row", async () => {
+    // Simulate an open editor holding unsaved typing: the flush persists the
+    // newer doc into the DB, and the append must build on THAT, not on the
+    // pre-flush HELLO_DOC — otherwise the resync clobbers the user's edit.
+    h.saveScene.mockImplementationOnce(async () => {
+      h.state.sceneContent = JSON.stringify({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "Hello edited" }],
+          },
+        ],
+      });
+    });
+    const result = await autoApplyProseProposal(proposal());
+    expect(result.applied).toBe(true);
+    const [, doc] = h.persistSceneBody.mock.calls[0];
+    expect(blockTexts(doc)).toEqual(["Hello edited", "World"]);
+    expect(aiMarkedText(doc)).toBe("World");
+  });
+
+  it("proceeds with the DB body when no editor is mounted (no-op flush)", async () => {
+    const result = await autoApplyProseProposal(proposal());
+    expect(result.applied).toBe(true);
+    const [, doc] = h.persistSceneBody.mock.calls[0];
+    expect(blockTexts(doc)).toEqual(["Hello", "World"]);
+  });
+
+  it("does not flush proposals gated before the body read", async () => {
+    h.state.fileBacked = true;
+    await autoApplyProseProposal(proposal());
+    expect(h.saveScene).not.toHaveBeenCalled();
+
+    h.state.fileBacked = false;
+    await autoApplyProseProposal(proposal({ text: "  " }));
+    expect(h.saveScene).not.toHaveBeenCalled();
   });
 });
 
