@@ -33,9 +33,11 @@ interface DndArgs {
 }
 
 function escapeAttr(id: string): string {
+  // フォールバックは CSS 文字列のメタ文字 (\ と ") を両方エスケープする。
+  // " だけ置換すると \ を含む id でセレクタが破綻する (CodeQL alert #4)。
   return typeof CSS !== "undefined" && typeof CSS.escape === "function"
     ? CSS.escape(id)
-    : id.replace(/"/g, '\\"');
+    : id.replace(/[\\"]/g, "\\$&");
 }
 
 /** Encapsulates @dnd-kit handlers, sensors, and live drop indicator state for
