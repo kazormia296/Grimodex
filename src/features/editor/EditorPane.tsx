@@ -571,6 +571,12 @@ export function EditorPane({
       },
       onUpdate({ editor: e, transaction }) {
         if (isApplyingExternalUpdate.current) return;
+        // TipTap は setEditable 等の「doc 未変更」イベントでも 'update' を
+        // emit する (transaction.steps が空)。これを保存に流すと、未ロードの
+        // 空 doc に pending が arm され本文消失の引き金になる (実機で
+        // useLicenseEditableSync の mount 同期がこれを踏んでいた)。
+        // 実際に doc が変わった transaction だけを保存系に通す。
+        if (!transaction.docChanged) return;
         // インライン AI の生成中・diff 表示中はオートセーブを止める。
         // Accept/Reject が呼ばれて idle に戻った時点で reset + dispatch によって
         // 再度 onUpdate が走り、その時に通常の schedule が実行される。

@@ -155,6 +155,9 @@ function MountedSceneBlock({
       },
       onUpdate({ editor: e, transaction }) {
         if (isApplyingExternalUpdate.current) return;
+        // setEditable 等の doc 未変更 'update' を保存に流さない
+        // (EditorPane.onUpdate と同じガード — 詳細はそちらのコメント参照)。
+        if (!transaction.docChanged) return;
         if (loadFailedRef.current) {
           // 調査ログ: 未ロード窓で doc を変更している犯人の特定用。
           // 保存自体は coreSave 側 guard で skip される。
@@ -253,7 +256,7 @@ function MountedSceneBlock({
       } catch (e) {
         if (!cancelled) {
           loadFailedRef.current = true;
-          editor!.setEditable(false);
+          editor!.setEditable(false, false);
           debugLog.error(
             "LinearSceneBlock",
             `load failed ${sceneId.slice(0, 8)}`,

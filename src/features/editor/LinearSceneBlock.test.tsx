@@ -225,6 +225,27 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     expect(mockPersist).not.toHaveBeenCalled();
   });
 
+  it("setEditable の doc 未変更 'update' では autosave が arm されない", async () => {
+    // TipTap の setEditable は既定で 'update' を emit する (steps 空)。
+    // これが schedule を arm すると「編集していないのに保存」が走り、
+    // 未ロード窓では本文消失の引き金になる (実機で useLicenseEditableSync の
+    // mount 同期が踏んでいた経路)。docChanged ゲートの回帰テスト。
+    mockLoadSceneFull.mockResolvedValue({
+      content: MENTION_CONTENT,
+      unplacedBeatsDoc: "[]",
+    });
+    const { unmount } = renderBlock();
+    await waitFor(() => {
+      expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
+    });
+
+    // doc を変えずに 'update' を emit (license 同期と同じ呼び方)
+    lastEditor().setEditable(false);
+    lastEditor().setEditable(true);
+    unmount();
+    expect(mockPersist).not.toHaveBeenCalled();
+  });
+
   it("ロード完了前に autosave が arm されても unmount flush は空 doc を保存しない", async () => {
     // ロードを解決しないことで「未ロード窓」を固定する。実機ログでは
     // EditorPane 側の同型の穴 (mount 直後の空エディタ + ロード前に arm された
