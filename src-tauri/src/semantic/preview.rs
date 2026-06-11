@@ -85,7 +85,13 @@ pub fn slice_context_verified(
     scene_title: String,
     indexed_chunk: Option<&str>,
 ) -> PreviewContext {
-    let ctx = slice_context(plain_text, char_start, char_end, padding, scene_title.clone());
+    let ctx = slice_context(
+        plain_text,
+        char_start,
+        char_end,
+        padding,
+        scene_title.clone(),
+    );
     let Some(expected) = indexed_chunk.filter(|s| !s.is_empty()) else {
         return ctx;
     };
