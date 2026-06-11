@@ -22,6 +22,11 @@ import {
   agentUpdateCodexEntry,
 } from "@/features/agent-writes/codex";
 import { agentCreateSnippet } from "@/features/agent-writes/snippet";
+import {
+  agentCreateForeshadow,
+  agentUpdateForeshadow,
+  type AgentForeshadowLoadBearing,
+} from "@/features/agent-writes/foreshadow";
 import { agentApplyTreePlan } from "@/features/agent-writes/tree";
 import { agentProposeSceneBody } from "@/features/agent-writes/prose";
 import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
@@ -1359,10 +1364,118 @@ async function proposeSceneBodyTool(
   }
 }
 
+async function createForeshadowTool(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const title = String(params["title"] ?? "").trim();
+  if (!title) {
+    return {
+      name: "create_foreshadow",
+      content: null,
+      summary: "title is required",
+      tokensUsed: 0,
+      error: "title is required",
+    };
+  }
+  try {
+    const item = await agentCreateForeshadow({
+      title,
+      intent: params["intent"] ? String(params["intent"]) : undefined,
+      notes: params["notes"] ? String(params["notes"]) : undefined,
+      loadBearing: params["loadBearing"]
+        ? (String(params["loadBearing"]) as AgentForeshadowLoadBearing)
+        : undefined,
+      secret:
+        typeof params["secret"] === "boolean" ? params["secret"] : undefined,
+    });
+    const content = { id: item.id, title: item.title, secret: item.secret };
+    const json = JSON.stringify(content);
+    return {
+      name: "create_foreshadow",
+      content,
+      summary: `Created foreshadow '${item.title}'${item.secret ? " (secret)" : ""}`,
+      tokensUsed: countTokens(json),
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: "create_foreshadow",
+      content: null,
+      summary: msg,
+      tokensUsed: 0,
+      error: msg,
+    };
+  }
+}
+
+async function updateForeshadowTool(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const id = String(params["id"] ?? "").trim();
+  if (!id) {
+    return {
+      name: "update_foreshadow",
+      content: null,
+      summary: "id is required",
+      tokensUsed: 0,
+      error: "id is required",
+    };
+  }
+  try {
+    const item = await agentUpdateForeshadow({
+      foreshadowId: id,
+      title:
+        params["title"] !== undefined ? String(params["title"]) : undefined,
+      intent:
+        params["intent"] !== undefined ? String(params["intent"]) : undefined,
+      notes:
+        params["notes"] !== undefined ? String(params["notes"]) : undefined,
+      loadBearing:
+        params["loadBearing"] !== undefined
+          ? (String(params["loadBearing"]) as AgentForeshadowLoadBearing)
+          : undefined,
+      payoffConfirmed:
+        typeof params["payoffConfirmed"] === "boolean"
+          ? params["payoffConfirmed"]
+          : undefined,
+      abandoned:
+        typeof params["abandoned"] === "boolean"
+          ? params["abandoned"]
+          : undefined,
+      secret:
+        typeof params["secret"] === "boolean" ? params["secret"] : undefined,
+    });
+    const content = {
+      id: item.id,
+      title: item.title,
+      payoffConfirmed: item.payoffConfirmed,
+      abandoned: item.abandoned,
+    };
+    const json = JSON.stringify(content);
+    return {
+      name: "update_foreshadow",
+      content,
+      summary: `Updated foreshadow '${item.title}'`,
+      tokensUsed: countTokens(json),
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: "update_foreshadow",
+      content: null,
+      summary: msg,
+      tokensUsed: 0,
+      error: msg,
+    };
+  }
+}
+
 /** Mutating tools — knowledgeWrite / structureWrite / bodyWrite gated per tool. */
 export const MUTATING_EXECUTORS: Record<string, Executor> = {
   create_codex_entry: createCodexEntryTool,
   update_codex_entry: updateCodexEntryTool,
+  create_foreshadow: createForeshadowTool,
+  update_foreshadow: updateForeshadowTool,
   create_snippet: createSnippetTool,
   apply_ai_tree_plan: applyAiTreePlanTool,
   propose_scene_body: proposeSceneBodyTool,

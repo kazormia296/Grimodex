@@ -177,6 +177,8 @@ pub fn run() {
             commands::agent_writes::agent_codex_update,
             commands::agent_writes::agent_write_bundle,
             commands::agent_writes::agent_snippet_create,
+            commands::agent_writes::agent_foreshadow_create,
+            commands::agent_writes::agent_foreshadow_update,
             commands::agent_writes::agent_propose_scene_body,
             commands::agent_writes::agent_accept_prose_stage,
             commands::agent_writes::agent_discard_prose_stage,

@@ -154,6 +154,62 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     },
   },
 
+  // ── Foreshadow write (knowledgeWrite policy) ──────────────────────────────
+  {
+    name: "create_foreshadow",
+    description:
+      "Create a new foreshadowing (plant/payoff) item. Requires knowledgeWrite policy. secret defaults to true — secret items are hidden from list_open_foreshadows and AI context until the author reveals them; pass secret=false if you need to read it back later in this conversation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short title of the plant" },
+        intent: {
+          type: "string",
+          description: "What this plant sets up and how it should pay off",
+        },
+        notes: { type: "string", description: "Optional working notes" },
+        loadBearing: {
+          type: "string",
+          enum: ["critical", "supporting", "optional"],
+          description: "How load-bearing the plant is for the plot",
+        },
+        secret: {
+          type: "boolean",
+          description: "Hide from AI context (default true)",
+        },
+      },
+      required: ["title"],
+    },
+  },
+  {
+    name: "update_foreshadow",
+    description:
+      "Update an existing foreshadowing item (rename, refine intent/notes, set loadBearing, mark payoffConfirmed when the payoff landed, or abandoned). Requires knowledgeWrite policy. Only provided fields change.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Foreshadow UUID" },
+        title: { type: "string" },
+        intent: { type: "string" },
+        notes: { type: "string" },
+        loadBearing: {
+          type: "string",
+          enum: ["critical", "supporting", "optional"],
+        },
+        payoffConfirmed: {
+          type: "boolean",
+          description: "Mark the payoff as landed",
+        },
+        abandoned: {
+          type: "boolean",
+          description: "Mark the plant as abandoned",
+        },
+        secret: { type: "boolean" },
+      },
+      required: ["id"],
+    },
+  },
+
   {
     name: "create_snippet",
     description:

@@ -1225,18 +1225,81 @@ pub(crate) struct AgentForeshadowUpdatePayload {
     secret: Option<bool>,
 }
 
+fn agent_write_result_json(res: grimodex_core::writes::WriteResult) -> anyhow::Result<Value> {
+    Ok(serde_json::to_value(AgentWriteResult {
+        entity_id: res.entity_id,
+        version: res.version,
+        change_event_uid: res.change_event_uid,
+        undo_journal_id: res.undo_journal_id,
+    })?)
+}
+
 fn agent_foreshadow_create_impl(
-    _db: &Database,
-    _payload: AgentForeshadowCreatePayload,
+    db: &Database,
+    payload: AgentForeshadowCreatePayload,
 ) -> anyhow::Result<Value> {
-    anyhow::bail!("unimplemented")
+    let foreshadow_id = uuid::Uuid::new_v4().to_string();
+    db.with_conn(|conn| {
+        let res = grimodex_core::writes::foreshadow::tracked_foreshadow_create(
+            conn,
+            grimodex_core::writes::foreshadow::TrackedForeshadowCreateInput {
+                project_id: &payload.project_id,
+                session_id: &payload.session_id,
+                surface: "in-app-agent",
+                foreshadow_id: &foreshadow_id,
+                title: &payload.title,
+                intent: payload.intent.as_deref(),
+                notes: payload.notes.as_deref(),
+                load_bearing: payload.load_bearing.as_deref(),
+                secret: payload.secret,
+            },
+        )?;
+        agent_write_result_json(res)
+    })
 }
 
 fn agent_foreshadow_update_impl(
-    _db: &Database,
-    _payload: AgentForeshadowUpdatePayload,
+    db: &Database,
+    payload: AgentForeshadowUpdatePayload,
 ) -> anyhow::Result<Value> {
-    anyhow::bail!("unimplemented")
+    db.with_conn(|conn| {
+        grimodex_core::writes::foreshadow::tracked_foreshadow_update(
+            conn,
+            grimodex_core::writes::foreshadow::TrackedForeshadowUpdateInput {
+                project_id: &payload.project_id,
+                session_id: &payload.session_id,
+                surface: "in-app-agent",
+                foreshadow_id: &payload.foreshadow_id,
+                patch: grimodex_core::writes::foreshadow::ForeshadowPatch {
+                    title: payload.title.as_deref(),
+                    intent: payload.intent.as_deref(),
+                    notes: payload.notes.as_deref(),
+                    load_bearing: payload.load_bearing.as_deref(),
+                    payoff_confirmed: payload.payoff_confirmed,
+                    abandoned: payload.abandoned,
+                    secret: payload.secret,
+                },
+            },
+        )?
+        .ok_or_else(|| anyhow::anyhow!("foreshadow not found in project"))
+        .and_then(agent_write_result_json)
+    })
+}
+
+#[tauri::command]
+pub(crate) fn agent_foreshadow_create(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentForeshadowCreatePayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_foreshadow_create_impl(db, payload))
+}
+
+#[tauri::command]
+pub(crate) fn agent_foreshadow_update(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentForeshadowUpdatePayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_foreshadow_update_impl(db, payload))
 }
 
 #[cfg(test)]

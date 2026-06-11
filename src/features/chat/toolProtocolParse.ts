@@ -111,6 +111,8 @@ function coerceArgs(raw: unknown): Record<string, unknown> {
 export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   "create_codex_entry",
   "update_codex_entry",
+  "create_foreshadow",
+  "update_foreshadow",
   "create_snippet",
   "apply_ai_tree_plan",
   "propose_scene_body",

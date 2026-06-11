@@ -1879,6 +1879,8 @@ fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatRe
 const HERMES_BLOCKED_TOOL_NAMES: &[&str] = &[
     "create_codex_entry",
     "update_codex_entry",
+    "create_foreshadow",
+    "update_foreshadow",
     "create_snippet",
     "apply_ai_tree_plan",
     "propose_scene_body",

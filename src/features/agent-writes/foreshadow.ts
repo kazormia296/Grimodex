@@ -2,7 +2,16 @@
  * Agent foreshadow writes — chat-agent counterpart of the MCP foreshadow
  * tools, on the same tracked path (tracked_foreshadow_create/update:
  * entity + undo_journal + change_event in one tx, surface "in-app-agent").
+ * Mirrors the codex/snippet agent-write shape: knowledgeWrite gate →
+ * tracked invoke → store reload → globalHistory undo push.
  */
+import { invoke } from "@/lib/tauri";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { applyUndoJournal } from "./undoJournal";
 import type { ForeshadowRow } from "@/features/foreshadow/types";
 
 export type AgentForeshadowLoadBearing = "critical" | "supporting" | "optional";
@@ -27,14 +36,121 @@ export interface AgentForeshadowUpdateInput {
   secret?: boolean;
 }
 
-export async function agentCreateForeshadow(
-  _input: AgentForeshadowCreateInput,
+interface AgentWriteResult {
+  entityId: string;
+  version: number;
+  changeEventUid: string;
+  undoJournalId: string;
+}
+
+const LOAD_BEARING_VALUES: ReadonlySet<string> = new Set([
+  "critical",
+  "supporting",
+  "optional",
+]);
+
+function assertLoadBearing(value: string | undefined): void {
+  if (value !== undefined && !LOAD_BEARING_VALUES.has(value)) {
+    throw new Error(
+      `loadBearing must be one of critical|supporting|optional, got '${value}'`,
+    );
+  }
+}
+
+async function reloadAndFind(
+  projectId: string,
+  entityId: string,
 ): Promise<ForeshadowRow> {
-  throw new Error("unimplemented");
+  await useForeshadowStore.getState().load(projectId);
+  const item = useForeshadowStore
+    .getState()
+    .items.find((i) => i.id === entityId);
+  if (!item) {
+    throw new Error(`Foreshadow ${entityId} not found after reload`);
+  }
+  return item;
+}
+
+function pushUndo(label: string, projectId: string, result: AgentWriteResult) {
+  if (useGlobalHistoryStore.getState().isReplaying) return;
+  const journalId = result.undoJournalId;
+  useGlobalHistoryStore.getState().push({
+    kind: "foreshadow",
+    label,
+    entityId: result.entityId,
+    async undo() {
+      await applyUndoJournal(journalId, "undo");
+      await useForeshadowStore.getState().load(projectId);
+    },
+    async redo() {
+      await applyUndoJournal(journalId, "redo");
+      await useForeshadowStore.getState().load(projectId);
+    },
+  });
+}
+
+export async function agentCreateForeshadow(
+  input: AgentForeshadowCreateInput,
+): Promise<ForeshadowRow> {
+  if (blockIfPolicyOff("knowledgeWrite")) {
+    throw new Error("knowledgeWrite policy is off");
+  }
+  assertLoadBearing(input.loadBearing);
+
+  const projectId = getCurrentProjectId();
+  const result = await invoke<AgentWriteResult>("agent_foreshadow_create", {
+    payload: {
+      projectId,
+      sessionId: getRecorderSessionId(),
+      title: input.title,
+      intent: input.intent ?? null,
+      notes: input.notes ?? null,
+      loadBearing: input.loadBearing ?? null,
+      secret: input.secret ?? true,
+    },
+  });
+
+  const item = await reloadAndFind(projectId, result.entityId);
+  pushUndo("Agent: 伏線作成", projectId, result);
+  return item;
 }
 
 export async function agentUpdateForeshadow(
-  _input: AgentForeshadowUpdateInput,
+  input: AgentForeshadowUpdateInput,
 ): Promise<ForeshadowRow> {
-  throw new Error("unimplemented");
+  if (blockIfPolicyOff("knowledgeWrite")) {
+    throw new Error("knowledgeWrite policy is off");
+  }
+  assertLoadBearing(input.loadBearing);
+  const hasPatch =
+    input.title !== undefined ||
+    input.intent !== undefined ||
+    input.notes !== undefined ||
+    input.loadBearing !== undefined ||
+    input.payoffConfirmed !== undefined ||
+    input.abandoned !== undefined ||
+    input.secret !== undefined;
+  if (!hasPatch) {
+    throw new Error("no fields provided to update");
+  }
+
+  const projectId = getCurrentProjectId();
+  const result = await invoke<AgentWriteResult>("agent_foreshadow_update", {
+    payload: {
+      projectId,
+      sessionId: getRecorderSessionId(),
+      foreshadowId: input.foreshadowId,
+      title: input.title ?? null,
+      intent: input.intent ?? null,
+      notes: input.notes ?? null,
+      loadBearing: input.loadBearing ?? null,
+      payoffConfirmed: input.payoffConfirmed ?? null,
+      abandoned: input.abandoned ?? null,
+      secret: input.secret ?? null,
+    },
+  });
+
+  const item = await reloadAndFind(projectId, result.entityId);
+  pushUndo("Agent: 伏線更新", projectId, result);
+  return item;
 }
