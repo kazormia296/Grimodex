@@ -28,6 +28,8 @@ import type { MentionPopupState } from "../extensions/ChatMentionExtension";
 import type { CommandPopupState } from "../extensions/ChatSlashCommandExtension";
 import { MentionPopup } from "./MentionPopup";
 import { ChatCommandPopup } from "./ChatCommandPopup";
+import { ReasoningEffortChip } from "./ReasoningEffortChip";
+import type { ReasoningEffortValue } from "./ReasoningEffortChip";
 import type { MentionItem } from "@/features/codex/CodexMentionExtension";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { shouldSuggestAgentMode } from "../agentSuggestion";
@@ -392,6 +394,13 @@ export function ChatInput({
     });
   };
 
+  const handleChangeReasoningEffort = async (
+    value: ReasoningEffortValue | null,
+  ) => {
+    if (!aiSettings) return;
+    await saveSettings({ ...aiSettings, reasoningEffortOverride: value });
+  };
+
   // @メンション選択: エントリ挿入 + (codex のみ) 自動ピン
   // scene mention は送信時に metadata 経由で per-message pin されるので
   // ここでは何もしない。
@@ -604,6 +613,19 @@ export function ChatInput({
             )}
             <span>{t("chat.thinkingMode")}</span>
           </button>
+
+          {/* Reasoning effort chip: reasoning モデルのみ。設定ページと同じ
+              reasoningEffortOverride を読み書きする。
+              cli は送信経路 (sendCliChatStream) が thinking/effort パラメータを
+              渡さないため、表示してもデッドコントロールになる → 出さない */}
+          {aiSettings?.provider !== "cli" && caps.supportsReasoning && (
+            <ReasoningEffortChip
+              value={aiSettings?.reasoningEffortOverride ?? null}
+              options={caps.reasoningEffortValues ?? ["low", "medium", "high"]}
+              thinkingEnabled={effectiveThinkingEnabled}
+              onChange={handleChangeReasoningEffort}
+            />
+          )}
 
           {/* モデル選択 chip */}
           <div className="relative" ref={modelRef}>
