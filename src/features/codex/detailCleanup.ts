@@ -7,24 +7,30 @@ import {
 import { extractPlainText } from "./prosemirrorTextExtractor";
 
 /**
- * デティール値が「未入力」かを判定する。
+ * デティール値をプレーンテキスト化する。
  * text フィールドは PM JSON で保存されるため、parse できた object は
- * テキスト抽出で空判定する。parse できない生文字列（dropdown の選択値・
- * codex_reference の ID）は trim 非空なら入力済みとして必ず残す —
+ * テキスト抽出する。parse できない生文字列（dropdown の選択値・
+ * codex_reference の ID）はそのまま返す —
  * extractPlainText は invalid JSON に "" を返すので直接は使えない。
+ * AI 文脈への注入（chat/校閲）と空判定の正本。
  */
-export function isDetailValueEmpty(value: string | null): boolean {
-  if (value == null) return true;
+export function detailValueToPlainText(value: string | null): string {
+  if (value == null) return "";
   const trimmed = value.trim();
-  if (trimmed === "") return true;
+  if (trimmed === "") return "";
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    return false;
+    return value;
   }
-  if (typeof parsed !== "object" || parsed === null) return false;
-  return extractPlainText(trimmed) === "";
+  if (typeof parsed !== "object" || parsed === null) return value;
+  return extractPlainText(trimmed);
+}
+
+/** デティール値が「未入力」かを判定する */
+export function isDetailValueEmpty(value: string | null): boolean {
+  return detailValueToPlainText(value).trim() === "";
 }
 
 async function partitionEmptyDefinitions(

@@ -24,6 +24,8 @@ interface CodexContentEditorProps {
   onExternalSync?: (content: string) => void;
   /** フェーズプレビュー用: 非nullの場合このコンテンツをエディタに適用（読み取り専用） */
   externalContent?: string | null;
+  /** カスタムデティール等の短文向け: 1行分の最小高さから内容に応じて成長 */
+  compact?: boolean;
 }
 
 function parseContent(raw: string): object | "" {
@@ -41,6 +43,7 @@ export function CodexContentEditor({
   entryId,
   onExternalSync,
   externalContent,
+  compact = false,
 }: CodexContentEditorProps) {
   const isApplyingExternalUpdate = useRef(false);
   const onExternalSyncRef = useRef(onExternalSync);
@@ -149,7 +152,12 @@ export function CodexContentEditor({
     <>
       <div
         data-testid="codex-content-editor"
-        className="min-h-[80px] rounded-md border border-input bg-background px-2 py-1.5 text-sm [&_.ProseMirror]:min-h-[60px] [&_.ProseMirror]:outline-none"
+        data-compact={compact || undefined}
+        className={
+          compact
+            ? "min-h-[34px] rounded-md border border-input bg-background px-2 py-1.5 text-sm [&_.ProseMirror]:min-h-[1.25rem] [&_.ProseMirror]:outline-none"
+            : "min-h-[80px] rounded-md border border-input bg-background px-2 py-1.5 text-sm [&_.ProseMirror]:min-h-[60px] [&_.ProseMirror]:outline-none"
+        }
       >
         <EditorContent editor={editor} />
       </div>

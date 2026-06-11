@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, Settings, Plus } from "lucide-react";
+import { Bot, Settings, Plus, X } from "lucide-react";
+import { AnimatePresence } from "motion/react";
+import { toast } from "sonner";
 import { useAutoSave } from "@/hooks/useAutoSave";
-import type { CodexEntry } from "../api";
+import { getCodexEntry, type CodexEntry } from "../api";
 import type {
   CodexDetailDefinition,
   DetailValueWithDefinition,
@@ -14,6 +16,7 @@ import {
   updateDefinition,
 } from "../detailApi";
 import { CodexContentEditor } from "./CodexContentEditor";
+import { CodexCommandPalette } from "./CodexCommandPalette";
 import { ManageFieldsDialog } from "./ManageFieldsDialog";
 import { FormFieldSkeletonList } from "@/components/ui/skeleton-patterns";
 import { useProjectStore } from "@/features/project/projectStore";
@@ -36,6 +39,7 @@ function TextField({ definition, initialValue, entryId }: TextFieldProps) {
   return (
     <div data-testid={`detail-field-${definition.id}`} className="space-y-1">
       <CodexContentEditor
+        compact
         content={currentValue || "{}"}
         onContentChange={(val) => {
           setCurrentValue(val);
@@ -94,6 +98,97 @@ function DropdownField({
   );
 }
 
+interface ReferenceFieldProps {
+  definition: CodexDetailDefinition;
+  initialValue: string;
+  entryId: string;
+  projectId: string;
+}
+
+function ReferenceField({
+  definition,
+  initialValue,
+  entryId,
+  projectId,
+}: ReferenceFieldProps) {
+  const { t } = useTranslation();
+  const [refId, setRefId] = useState(initialValue);
+  const [resolvedName, setResolvedName] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // 保存されているのは entry ID。表示用に名前を解決する。
+  // 未解決時は上書きしない（選択直後の楽観表示を消さないため。
+  // refId の変更経路は選択/クリアのみなので stale 化しない）
+  useEffect(() => {
+    if (!refId) {
+      setResolvedName(null);
+      return;
+    }
+    let cancelled = false;
+    void getCodexEntry(projectId, refId).then((entry) => {
+      if (!cancelled && entry) setResolvedName(entry.name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [refId, projectId]);
+
+  const handleSelect = async (selected: CodexEntry) => {
+    // パレットの FTS5 検索は project スコープを持たないため、ここで弾く
+    if (selected.projectId !== projectId) {
+      toast.error(t("codex.detail.referenceCrossProject"));
+      return;
+    }
+    setRefId(selected.id);
+    setResolvedName(selected.name);
+    setPickerOpen(false);
+    await upsertValue(entryId, definition.id, selected.id);
+  };
+
+  const handleClear = async () => {
+    setRefId("");
+    setResolvedName(null);
+    await upsertValue(entryId, definition.id, "");
+  };
+
+  return (
+    <div
+      data-testid={`detail-field-${definition.id}`}
+      className="flex items-center gap-1"
+    >
+      <button
+        type="button"
+        data-testid={`detail-field-ref-${definition.id}`}
+        onClick={() => setPickerOpen(true)}
+        className={`min-w-0 flex-1 truncate rounded-md border border-input bg-background px-2 py-1.5 text-left text-sm hover:bg-accent ${
+          refId ? "" : "text-muted-foreground"
+        }`}
+      >
+        {refId ? (resolvedName ?? refId) : t("codex.detail.selectReference")}
+      </button>
+      {refId && (
+        <button
+          type="button"
+          data-testid={`detail-field-ref-clear-${definition.id}`}
+          onClick={() => void handleClear()}
+          className="rounded p-1 text-muted-foreground hover:bg-accent"
+          title={t("common.delete")}
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+      <AnimatePresence>
+        {pickerOpen && (
+          <CodexCommandPalette
+            onSelect={(selected) => void handleSelect(selected)}
+            onClose={() => setPickerOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 interface DetailFieldRowProps {
   entryId: string;
   definition: CodexDetailDefinition;
@@ -146,21 +241,12 @@ function DetailFieldRow({
         />
       )}
       {definition.fieldType === "codex_reference" && (
-        <div
-          data-testid={`detail-field-${definition.id}`}
-          className="text-xs text-muted-foreground"
-        >
-          <input
-            data-testid={`detail-field-ref-${definition.id}`}
-            type="text"
-            defaultValue={currentValue}
-            onBlur={async (e) => {
-              await upsertValue(entryId, definition.id, e.target.value);
-            }}
-            placeholder={t("codex.detail.entryIdPlaceholder")}
-            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-          />
-        </div>
+        <ReferenceField
+          definition={definition}
+          initialValue={currentValue}
+          entryId={entryId}
+          projectId={definition.projectId}
+        />
       )}
     </div>
   );

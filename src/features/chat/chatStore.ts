@@ -147,6 +147,7 @@ import {
   listContextDetailsByEntryIds,
   listRawDetailValuesByEntryIds,
 } from "@/features/codex/detailApi";
+import { detailValueToPlainText } from "@/features/codex/detailCleanup";
 import {
   listPhasesByEntryIds,
   listDetailOverridesByPhaseIds,
@@ -348,12 +349,16 @@ async function enrichWithCustomDetails<T extends CodexContext>(
   >();
   for (const d of details) {
     if (d.value == null) continue;
-    let resolved = d.value;
-    // codex_reference: resolve entry ID → name
+    let resolved: string;
     if (d.fieldType === "codex_reference") {
+      // codex_reference: resolve entry ID → name
       const ref = allEntries.find((e) => e.id === d.value);
       resolved = ref ? ref.name : d.value;
+    } else {
+      // text 値は PM JSON で保存されている。生 JSON を注入しない
+      resolved = detailValueToPlainText(d.value);
     }
+    if (resolved.trim() === "") continue;
     const arr = byEntryId.get(d.entryId) ?? [];
     arr.push({ fieldName: d.fieldName, value: resolved });
     byEntryId.set(d.entryId, arr);

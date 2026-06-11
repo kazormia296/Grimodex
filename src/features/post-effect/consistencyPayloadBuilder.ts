@@ -20,6 +20,7 @@ import {
 import { resolveCodexState } from "@/features/codex/phaseResolver";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
+import { detailValueToPlainText } from "@/features/codex/detailCleanup";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { computeInputHash, normalizeText } from "./canonicalize";
@@ -174,7 +175,9 @@ async function buildCodexPayload(
       const meta = detailsByEntry.get(entry.id)?.get(defId);
       const name = meta?.name ?? defId;
       const val = resolvedVal ?? meta?.value ?? null;
-      if (val !== null && val !== "") detailValues.push({ name, value: val });
+      // text 値は PM JSON で保存されている。生 JSON を payload に入れない
+      const plain = detailValueToPlainText(val);
+      if (plain.trim() !== "") detailValues.push({ name, value: plain });
     }
 
     result.push({
