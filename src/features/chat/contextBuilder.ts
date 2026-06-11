@@ -310,8 +310,15 @@ export interface SystemPromptResult {
   totalTokens: number;
   layers: LayerBreakdown[];
   trimmedLayers?: string[];
-  /** Anthropic cache_control segments (L1–L4 boundaries). */
+  /** Anthropic cache_control segments (L1–L4 boundaries)。stable な内容のみ。 */
   cacheSegments?: string[];
+  /**
+   * cacheSegments の後ろに cache_control 無しで送る揮発層。
+   * セッション途中で言及された non-stable L4 エントリ + L5 (会話要約) + L6
+   * (コマンド指示)。cacheSegments を使うプロバイダは system message 本文
+   * (= prompt) を破棄するため、ここに乗せないと L5/L6 が届かない。
+   */
+  volatileTail?: string;
 }
 
 // tiktoken (WASM) を o200k_base ranks + lite ランタイムだけ動的 import する。
@@ -868,6 +875,7 @@ export function buildSystemPrompt(
   let l4Text = "";
   const l4StableIds = new Set(input.sessionStableCodexIds ?? []);
   let l4StableSegment = "";
+  const l4VolatileLines: string[] = [];
   const hasPinnedSnippets =
     input.pinnedSnippets && input.pinnedSnippets.length > 0;
   const hasPinnedStickies =
@@ -935,6 +943,8 @@ export function buildSystemPrompt(
       const isStable = l4StableIds.size === 0 || l4StableIds.has(entry.id);
       if (isStable) {
         stableLines.push(blockText);
+      } else {
+        l4VolatileLines.push(blockText);
       }
     }
     const alwaysNoteIdSet = new Set(input.alwaysNoteIds ?? []);
@@ -964,6 +974,8 @@ export function buildSystemPrompt(
       lines.push(blockText);
       if (l4StableIds.size === 0 || l4StableIds.has(note.id)) {
         stableLines.push(blockText);
+      } else {
+        l4VolatileLines.push(blockText);
       }
     }
     for (const snippet of input.pinnedSnippets ?? []) {
@@ -971,6 +983,8 @@ export function buildSystemPrompt(
       lines.push(snippetBlock);
       if (l4StableIds.size === 0 || l4StableIds.has(snippet.id)) {
         stableLines.push(snippetBlock);
+      } else {
+        l4VolatileLines.push(snippetBlock);
       }
     }
     for (const sticky of input.pinnedStickies ?? []) {
@@ -987,6 +1001,8 @@ export function buildSystemPrompt(
       lines.push(stickyBlock);
       if (l4StableIds.size === 0 || l4StableIds.has(sticky.id)) {
         stableLines.push(stickyBlock);
+      } else {
+        l4VolatileLines.push(stickyBlock);
       }
     }
     // Map overlay: board 全体を 1 ブロックとして L4 に注入（pri = PINNED）
@@ -1060,6 +1076,22 @@ export function buildSystemPrompt(
     }
   }
 
+  // 非 stable な L4 ブロック (セッション途中で言及された codex 等) のうち trim を
+  // 生き残ったものを volatileTail 用に抽出する。stable segment は byte 安定性の
+  // ため意図的に trim を通さないが、揮発側は予算を尊重して trim 後を正とする。
+  let l4VolatileSegment = "";
+  if (l4StableSegment && l4VolatileLines.length > 0) {
+    const presentBlocks = new Set(
+      effectiveL4.split(/(?=<!-- l4pri:\d+ -->)/).map((b) => b.trimEnd()),
+    );
+    const keptVolatile = l4VolatileLines.filter((b) =>
+      presentBlocks.has(b.trimEnd()),
+    );
+    if (keptVolatile.length > 0) {
+      l4VolatileSegment = stripL4Markers(keptVolatile.join("\n"));
+    }
+  }
+
   // trim 後 (or trim をスキップした場合の素の l4Text) から marker を strip。
   // ここで落とすことで l4Tokens / prompt / cacheSegments 全てが marker レスになる。
   effectiveL4 = stripL4Markers(effectiveL4);
@@ -1125,6 +1157,12 @@ export function buildSystemPrompt(
     l4StableSegment || effectiveL4,
   ].filter((seg) => seg.trim().length > 0);
 
+  // cacheSegments を使うプロバイダ向けの揮発層。cacheSegments の直後に
+  // cache_control 無しブロックとして送られる (4 breakpoint 制限を消費しない)。
+  const volatileTail = [l4VolatileSegment, effectiveL5, effectiveL6]
+    .filter((seg) => seg.trim().length > 0)
+    .join("\n");
+
   // 結合後の全文を再 tokenize しない: 各 layer 合計 + join した \n 6 個分 (BPE で各 1 token)
   const totalTokens =
     baseTokens +
@@ -1142,8 +1180,15 @@ export function buildSystemPrompt(
     layers,
     ...(trimmedLayers ? { trimmedLayers } : {}),
     cacheSegments,
+    ...(volatileTail ? { volatileTail } : {}),
   };
 }
+
+// CJK 全角記号・かな・統合漢字・互換漢字・Ext B 以降 (astral 面)。
+// heuristic 専用: o200k で CJK はほぼ 1 文字 ≒ 1 トークンになるため、
+// length/2 では日本語本文のトークン数を半分に過小評価し予算超過を招く。
+const CJK_CHAR_RE =
+  /[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef\u{20000}-\u{2ffff}]/gu;
 
 export function countTokens(text: string): number {
   if (!text) return 0;
@@ -1153,15 +1198,17 @@ export function countTokens(text: string): number {
   if (encoder) {
     result = encoder.encode(text).length;
   } else {
-    // ensureTokenizer() 未 await のフォールバック。Trim 計算が破綻しない程度の概算
-    // （日本語・英語混在で 1 トークン ≒ 2 文字を仮定）。
+    // ensureTokenizer() 未 await のフォールバック。Trim 計算が破綻しない程度の
+    // 概算 (CJK ≒ 1 トークン/文字、それ以外 ≒ 1 トークン/3 文字)。過大評価側に
+    // 倒し、heuristic 経路でコンテキスト窓を溢れさせない。
     if (!_heuristicWarned) {
       _heuristicWarned = true;
       console.warn(
         "[contextBuilder] countTokens called before ensureTokenizer(); using heuristic.",
       );
     }
-    result = Math.ceil(text.length / 2);
+    const cjkCount = text.match(CJK_CHAR_RE)?.length ?? 0;
+    result = Math.ceil(cjkCount + (text.length - cjkCount) / 3);
   }
   if (_tokenCache.size >= _TOKEN_CACHE_MAX) {
     _tokenCache.delete(_tokenCache.keys().next().value!);

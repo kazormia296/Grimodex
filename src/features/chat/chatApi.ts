@@ -135,6 +135,7 @@ export async function sendAgentMessage(
   systemCacheSegments?: string[],
   apiVariant?: string | null,
   webSearch?: WebSearchConfig | null,
+  systemVolatileTail?: string,
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -146,6 +147,7 @@ export async function sendAgentMessage(
     systemCacheSegments: systemCacheSegments ?? null,
     apiVariant: apiVariant ?? null,
     webSearch: webSearch ?? null,
+    systemVolatileTail: systemVolatileTail ?? null,
   });
 }
 
@@ -166,6 +168,7 @@ export async function sendChatMessageWithThinking(
   thinkingParams?: ThinkingParams,
   systemCacheSegments?: string[],
   apiVariant?: string | null,
+  systemVolatileTail?: string,
 ): Promise<ChatMessageResult> {
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
@@ -175,6 +178,7 @@ export async function sendChatMessageWithThinking(
     reasoningEffort: thinkingParams?.reasoningEffort ?? null,
     systemCacheSegments: systemCacheSegments ?? null,
     apiVariant: apiVariant ?? null,
+    systemVolatileTail: systemVolatileTail ?? null,
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
@@ -252,6 +256,7 @@ export async function sendChatMessageStream(
   callbacks: StreamCallbacks,
   systemCacheSegments?: string[],
   apiVariant?: string | null,
+  systemVolatileTail?: string,
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
@@ -289,6 +294,7 @@ export async function sendChatMessageStream(
     reasoningEffort: thinkingParams?.reasoningEffort ?? null,
     systemCacheSegments: systemCacheSegments ?? null,
     apiVariant: apiVariant ?? null,
+    systemVolatileTail: systemVolatileTail ?? null,
   }).catch((e: unknown) => {
     // Error is also emitted as chat:stream-error from Rust, but handle here too
     const msg = e instanceof Error ? e.message : String(e);

@@ -680,6 +680,41 @@ describe("useChatStore", () => {
       expect(contextTokenCount).toBe(100);
     });
 
+    it("excludes scene body from the actual send when includeBodies=false (eco)", async () => {
+      // refreshContextLayers だけでなく実送信でも本文が除外されること
+      // (UI 表示と送信内容の一致)。
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 10,
+        layers: [],
+      });
+      mockStreamResponse("回答");
+      useChatStore.setState({ includeBodies: false });
+
+      await useChatStore.getState().sendMessage("質問");
+
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect(args?.scene.content).toBe("");
+    });
+
+    it("passes volatileTail through to sendChatMessageStream", async () => {
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 10,
+        layers: [],
+        cacheSegments: ["seg1"],
+        volatileTail: "L5 要約",
+      });
+      mockStreamResponse("回答");
+
+      await useChatStore.getState().sendMessage("質問");
+
+      const callArgs = mockSendChatMessageStream.mock.calls[0];
+      // (messages, thinking, callbacks, systemCacheSegments, apiVariant, systemVolatileTail)
+      expect(callArgs[3]).toEqual(["seg1"]);
+      expect(callArgs[5]).toBe("L5 要約");
+    });
+
     it("sets activeSceneId and updates context", () => {
       useChatStore.getState().setActiveSceneId("scene-2");
 
@@ -1123,6 +1158,12 @@ describe("useChatStore", () => {
       // 検出された codex が detectedEntries に乗っている
       const state = useChatStore.getState();
       expect(state.detectedEntries.map((e) => e.id)).toEqual(["char1"]);
+
+      // folder/project スコープでも trimToFit が効くよう、モデル能力と会話
+      // トークンが渡される (contextWindow と conversationTokens の両方が
+      // 揃わないと buildSystemPrompt はトリムしない)。
+      expect(args?.contextWindow).toBeGreaterThan(0);
+      expect(args?.conversationTokens).toBeDefined();
     });
 
     it("uses Tier 2 (synopsis-only aggregate) when includeBodies=false even within Tier 1 size", async () => {

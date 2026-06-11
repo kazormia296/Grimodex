@@ -1082,6 +1082,12 @@ pub struct ChatParams<'a> {
     pub openrouter_provider_pin: Option<&'a str>,
     /// Chat L1–L4 boundary segments for Anthropic `cache_control` markers.
     pub system_cache_segments: Option<Vec<String>>,
+    /// cache_segments の後ろに cache_control 無しで送る揮発層
+    /// (非 stable L4 + L5 会話要約 + L6 コマンド指示)。cache_segments を使う
+    /// プロバイダは system message 本文 (fallback) を破棄するため、ここに
+    /// 乗せないと揮発層がモデルへ届かない。cache_segments 不使用経路では
+    /// fallback (= prompt 全文) が揮発層を含むので付与不要。
+    pub system_volatile_tail: Option<String>,
     /// AI のべりすと: "legacy" | "v1"。FE から渡される API 経路。
     pub api_variant: Option<String>,
     /// Web 検索 (RAG) 設定。None または `enabled=false` なら検索を注入しない。
@@ -1097,15 +1103,19 @@ fn supports_prompt_cache(provider: &AiProvider, model: &str) -> bool {
 }
 
 /// Build Anthropic/OpenRouter-Claude system payload with optional cache markers.
+/// `volatile_tail` は cache_control 無しの末尾ブロックとして付く (L5 会話要約等)。
+/// fallback (= prompt 全文) には揮発層が既に含まれるため、fallback 経路では付けない。
 fn build_system_payload(
     provider: &AiProvider,
     model: &str,
     fallback: &str,
     cache_segments: Option<&[String]>,
+    volatile_tail: Option<&str>,
 ) -> serde_json::Value {
+    let tail = volatile_tail.filter(|t| !t.is_empty());
     if let Some(segments) = cache_segments {
         if supports_prompt_cache(provider, model) {
-            let blocks: Vec<serde_json::Value> = segments
+            let mut blocks: Vec<serde_json::Value> = segments
                 .iter()
                 .filter(|s| !s.is_empty())
                 .map(|text| {
@@ -1118,10 +1128,19 @@ fn build_system_payload(
                 .collect();
             if !blocks.is_empty() {
                 // AUDIT POINT: Chat cache_control at L1/L2/L3/L4 boundaries (4 segments max).
+                if let Some(tail) = tail {
+                    blocks.push(serde_json::json!({ "type": "text", "text": tail }));
+                }
                 return serde_json::Value::Array(blocks);
             }
         }
-        let joined = segments.join("\n");
+        let mut joined = segments.join("\n");
+        if let Some(tail) = tail {
+            if !joined.is_empty() {
+                joined.push('\n');
+            }
+            joined.push_str(tail);
+        }
         if !joined.is_empty() {
             return serde_json::Value::String(joined);
         }
@@ -1162,9 +1181,20 @@ fn build_openai_chat_messages(
     provider: &AiProvider,
     model: &str,
     cache_segments: Option<&[String]>,
+    volatile_tail: Option<&str>,
 ) -> Vec<serde_json::Value> {
     let cache_blocks = if supports_prompt_cache(provider, model) {
-        cache_segments.and_then(openai_system_cache_blocks)
+        cache_segments
+            .and_then(openai_system_cache_blocks)
+            .map(|mut blocks| {
+                // 揮発層 (非 stable L4 + L5/L6) は cache_control 無しで後置。
+                // blocks 置換時は元の system 本文 (= prompt 全文) が捨てられる
+                // ため、ここに乗せないと揮発層が届かない。
+                if let Some(tail) = volatile_tail.filter(|t| !t.is_empty()) {
+                    blocks.push(serde_json::json!({ "type": "text", "text": tail }));
+                }
+                blocks
+            })
     } else {
         None
     };
@@ -1542,6 +1572,7 @@ pub async fn send_chat(
                 params.model,
                 &system_content,
                 params.system_cache_segments.as_deref(),
+                params.system_volatile_tail.as_deref(),
             );
             if !system_content.is_empty() || params.system_cache_segments.is_some() {
                 body["system"] = system_payload;
@@ -1559,6 +1590,7 @@ pub async fn send_chat(
                 params.provider,
                 params.model,
                 params.system_cache_segments.as_deref(),
+                params.system_volatile_tail.as_deref(),
             );
 
             let mut body = serde_json::json!({
@@ -2648,6 +2680,7 @@ pub async fn send_chat_with_tools(
                     params.model,
                     &system_content,
                     params.system_cache_segments.as_deref(),
+                    params.system_volatile_tail.as_deref(),
                 );
             }
             // thinking / effort パラメータを追加
@@ -2673,6 +2706,17 @@ pub async fn send_chat_with_tools(
                         .system_cache_segments
                         .as_deref()
                         .and_then(openai_system_cache_blocks)
+                        .map(|mut blocks| {
+                            // 揮発層は cache_control 無しで後置 (チャット経路と同じ理由)。
+                            if let Some(tail) = params
+                                .system_volatile_tail
+                                .as_deref()
+                                .filter(|t| !t.is_empty())
+                            {
+                                blocks.push(serde_json::json!({ "type": "text", "text": tail }));
+                            }
+                            blocks
+                        })
                 } else {
                     None
                 };
@@ -3174,6 +3218,7 @@ pub async fn send_chat_stream(
                 params.model,
                 &system_content,
                 params.system_cache_segments.as_deref(),
+                params.system_volatile_tail.as_deref(),
             );
             if !system_content.is_empty() || params.system_cache_segments.is_some() {
                 body["system"] = system_payload;
@@ -3300,6 +3345,7 @@ pub async fn send_chat_stream(
                 params.provider,
                 params.model,
                 params.system_cache_segments.as_deref(),
+                params.system_volatile_tail.as_deref(),
             );
 
             let mut body = serde_json::json!({
@@ -3584,6 +3630,7 @@ mod tests {
             &AiProvider::OpenRouter,
             "anthropic/claude-4.6-sonnet",
             Some(&segments),
+            Some("TAIL"),
         );
         assert!(
             out[0]["content"].is_array(),
@@ -3593,21 +3640,62 @@ mod tests {
         assert_eq!(out[0]["content"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(out[0]["content"][1]["text"], "L2");
         assert_eq!(out[0]["content"][1]["cache_control"]["type"], "ephemeral");
+        // 揮発層 (L5 等) は cache_control 無しの末尾 block として届く。
+        assert_eq!(out[0]["content"][2]["text"], "TAIL");
+        assert!(out[0]["content"][2].get("cache_control").is_none());
         // user は plain string のまま。
         assert_eq!(out[1]["content"], "hi");
         assert_eq!(out[1]["role"], "user");
     }
 
     #[test]
+    fn build_system_payload_appends_volatile_tail_without_cache_control() {
+        // Anthropic + segments + tail → blocks 末尾に cache_control 無し block。
+        let segments = vec!["SEG1".to_string(), "SEG2".to_string()];
+        let out = build_system_payload(
+            &AiProvider::Anthropic,
+            "claude-sonnet-4-6",
+            "FULL",
+            Some(&segments),
+            Some("L5_SUMMARY"),
+        );
+        let blocks = out.as_array().expect("blocks array");
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(blocks[1]["cache_control"]["type"], "ephemeral");
+        assert_eq!(blocks[2]["text"], "L5_SUMMARY");
+        assert!(blocks[2].get("cache_control").is_none());
+        // tail が空なら従来どおり segments のみ。
+        let out2 = build_system_payload(
+            &AiProvider::Anthropic,
+            "claude-sonnet-4-6",
+            "FULL",
+            Some(&segments),
+            Some(""),
+        );
+        assert_eq!(out2.as_array().unwrap().len(), 2);
+        // segments 無し → fallback (prompt 全文が揮発層を含むため tail は付けない)。
+        let out3 = build_system_payload(
+            &AiProvider::Anthropic,
+            "claude-sonnet-4-6",
+            "FULL",
+            None,
+            Some("L5_SUMMARY"),
+        );
+        assert_eq!(out3, serde_json::Value::String("FULL".to_string()));
+    }
+
+    #[test]
     fn build_openai_chat_messages_plain_when_not_claude_or_no_segments() {
         let msgs = [("system", "S"), ("user", "hi")];
         let segs = vec!["L1".to_string()];
-        // 非 Claude モデル → cache_control 無し。
+        // 非 Claude モデル → cache_control 無し (tail があっても plain のまま)。
         let out = build_openai_chat_messages(
             &msgs,
             &AiProvider::OpenRouter,
             "openai/gpt-5.5",
             Some(&segs),
+            Some("TAIL"),
         );
         assert_eq!(out[0]["content"], "S");
         // Claude だが segments 無し → plain。
@@ -3615,6 +3703,7 @@ mod tests {
             &msgs,
             &AiProvider::OpenRouter,
             "anthropic/claude-4.6-sonnet",
+            None,
             None,
         );
         assert_eq!(out2[0]["content"], "S");
@@ -3625,6 +3714,7 @@ mod tests {
             &AiProvider::OpenRouter,
             "anthropic/claude-4.6-sonnet",
             Some(&empty),
+            None,
         );
         assert_eq!(out3[0]["content"], "S");
     }
@@ -3639,6 +3729,7 @@ mod tests {
             &AiProvider::OpenRouter,
             "anthropic/claude-4.6-sonnet",
             Some(&segs),
+            None,
         );
         assert!(out[0]["content"].is_array());
         assert_eq!(out[1]["content"], "S2");
@@ -5050,6 +5141,7 @@ mod tests {
             ai_novelist_mode: AiNovelistMode::Chat,
             openrouter_provider_pin: None,
             system_cache_segments: Some(segments),
+            system_volatile_tail: None,
             api_variant: None,
             web_search: None,
             resolved_tool_protocol: ResolvedToolProtocol::Native,
@@ -5079,6 +5171,7 @@ mod tests {
             ai_novelist_mode: AiNovelistMode::Chat,
             openrouter_provider_pin: None,
             system_cache_segments: None,
+            system_volatile_tail: None,
             api_variant: None,
             web_search: None,
             resolved_tool_protocol: ResolvedToolProtocol::Native,

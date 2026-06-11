@@ -1538,6 +1538,74 @@ describe("contextBuilder", () => {
         expect(seg).not.toMatch(/<!-- l4pri:\d+ -->/);
       }
     });
+
+    // cacheSegments を使うプロバイダは system message 本文 (= prompt) を破棄する
+    // ため、L5/L6 と非 stable L4 は volatileTail に乗らないとモデルへ届かない。
+    describe("volatileTail", () => {
+      const scene: SceneContext = { id: "s1", title: "Scene", content: "body" };
+
+      it("carries L5 conversation summary and L6 command instruction", () => {
+        const result = buildSystemPrompt({
+          scene,
+          conversationSummary: "これまでの要約テキスト",
+          commandInstruction: "コマンド指示テキスト",
+        });
+        expect(result.volatileTail).toContain("これまでの要約テキスト");
+        expect(result.volatileTail).toContain("コマンド指示テキスト");
+        // prompt (非 cache プロバイダ向け全文) にも同じ内容が含まれる
+        expect(result.prompt).toContain("これまでの要約テキスト");
+        expect(result.prompt).toContain("コマンド指示テキスト");
+        // cache 対象 segment には混ざらない
+        for (const seg of result.cacheSegments ?? []) {
+          expect(seg).not.toContain("これまでの要約テキスト");
+        }
+      });
+
+      it("is absent when there is no volatile content", () => {
+        const result = buildSystemPrompt({ scene });
+        expect(result.volatileTail).toBeUndefined();
+      });
+
+      it("carries non-stable L4 entries that are excluded from the stable segment", () => {
+        const result = buildSystemPrompt({
+          scene,
+          codexEntries: [
+            { id: "stable-1", type: "character", name: "Alice", summary: "a" },
+            { id: "new-1", type: "character", name: "Newcomer", summary: "n" },
+          ],
+          sessionStableCodexIds: ["stable-1"],
+        });
+        const l4Segment =
+          result.cacheSegments?.[result.cacheSegments.length - 1] ?? "";
+        expect(l4Segment).toContain("Alice");
+        expect(l4Segment).not.toContain("Newcomer");
+        expect(result.volatileTail).toContain("Newcomer");
+        expect(result.volatileTail).not.toContain("Alice");
+        expect(result.volatileTail).not.toMatch(/<!-- l4pri:\d+ -->/);
+      });
+
+      it("drops non-stable L4 entries that were removed by trimToFit", () => {
+        const longSummary = "長い説明。".repeat(400);
+        const result = buildSystemPrompt({
+          scene,
+          codexEntries: [
+            { id: "stable-1", type: "character", name: "Alice", summary: "a" },
+            {
+              id: "new-1",
+              type: "character",
+              name: "Newcomer",
+              summary: longSummary,
+            },
+          ],
+          sessionStableCodexIds: ["stable-1"],
+          contextWindow: 800,
+          maxOutputTokens: 100,
+          conversationTokens: 0,
+        });
+        // L4 トリムで非 stable ブロックが落ちたら tail にも復活しない
+        expect(result.volatileTail ?? "").not.toContain("Newcomer");
+      });
+    });
   });
 
   describe("computeL4Priority", () => {

@@ -1398,6 +1398,7 @@ interface SceneContextPayload {
   fullyInjectedIds: string[];
   stableCodexIds: string[];
   cacheSegments?: string[];
+  volatileTail?: string;
   /** Phase 4 後続: ContextBar chip 表示用の outline 値。注入されたものと同一。 */
   projectOutline: string | undefined;
   chapterOutlines: Array<{ title: string; outline: string }>;
@@ -2112,6 +2113,7 @@ async function buildSceneContextPrompt(opts: {
     fullyInjectedIds: pinnedCodexEntries.map((e) => e.id),
     stableCodexIds: [...new Set(stableCodexIds)],
     cacheSegments: promptResult.cacheSegments,
+    volatileTail: promptResult.volatileTail,
     projectOutline: projectCtx?.outline?.trim()
       ? projectCtx.outline
       : undefined,
@@ -2659,6 +2661,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           : null;
         const projectCtx = await fetchProjectContext(activeProjectId);
 
+        // scene scope の eco モード: refreshContextLayers と同じく実送信でも
+        // 本文を除外する (UI 表示と送信内容を一致させる)。
+        if (sceneCtx && !get().includeBodies) {
+          sceneCtx.content = "";
+        }
+
         // 通常モードと同じく、@言及/CodexHighlight 経由でメッセージ内に検出された
         // Codex エントリを送信時に自動 Spotlight する。
         // listCodexEntries の結果は buildSceneContextPrompt に prefetchedEntries
@@ -2707,6 +2715,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const agentMsgs: AgentMessagePayload[] = [];
         let systemPromptForAgent = "";
         let systemCacheSegmentsForAgent: string[] | undefined;
+        let systemVolatileTailForAgent: string | undefined;
         // Spotlight された (= L4 に full body + custom details + aliases が
         // 揃って注入された) エントリの ID 集合。`get_codex_entry` が
         // この集合の ID で呼ばれた場合は executor を呼ばずスタブを返す
@@ -2732,6 +2741,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           });
           systemPromptForAgent = ctxResult.prompt;
           systemCacheSegmentsForAgent = ctxResult.cacheSegments;
+          systemVolatileTailForAgent = ctxResult.volatileTail;
           fullyInjectedIds = new Set(ctxResult.fullyInjectedIds);
           if (get().sessionStableCodexIds.length === 0) {
             set({ sessionStableCodexIds: ctxResult.stableCodexIds });
@@ -2773,10 +2783,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         // RAG 有効ターンは Web 検索の安全指示を system 末尾へ付与する
         // (本文をクエリに混入させない / 引用捏造の抑止 / 取得指示の無視)。
-        // 注意: Anthropic 直叩きは system を cacheSegments から再構築し system
-        // message 本文を無視する一方、OpenRouter は system message 本文を直接
-        // 使う。全経路に確実に届けるため両方へ付与する (どの経路も両方は読まず、
-        // 重複しない。segment は新規追加せず最終 segment へ連結し 4 block 制限を守る)。
+        // 注意: Anthropic 直叩きは system を cacheSegments + volatileTail から
+        // 再構築し system message 本文を無視する一方、OpenRouter (非 Claude) は
+        // system message 本文を直接使う。全経路に確実に届けるため prompt と
+        // volatileTail の両方へ付与する (どの経路も両方は読まず、重複しない。
+        // cache 対象 segment に混ぜるとトグルのたびに cache を割るため tail に置く)。
         if (ragActive) {
           // Hermes プロトコル × agent mode（declared client tools あり）のときだけ
           // Hermes 用 RAG 指示を使う。標準版は全 `<tool_call>` を禁止しており、Hermes の
@@ -2798,11 +2809,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             systemCacheSegmentsForAgent &&
             systemCacheSegmentsForAgent.length > 0
           ) {
-            const segs = [...systemCacheSegmentsForAgent];
-            segs[segs.length - 1] =
-              `${segs[segs.length - 1]}\n\n${ragInstruction}`;
-            systemCacheSegmentsForAgent = segs;
+            systemVolatileTailForAgent = systemVolatileTailForAgent
+              ? `${systemVolatileTailForAgent}\n\n${ragInstruction}`
+              : ragInstruction;
           }
+          // PromptPreview / Copy が実送信内容 (RAG 指示込み) を表示できるよう更新。
+          set({ lastSystemPrompt: systemPromptForAgent });
         }
 
         if (systemPromptForAgent) {
@@ -2949,6 +2961,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               systemCacheSegmentsForAgent,
               agentApiVariant,
               webSearchConfig,
+              systemVolatileTailForAgent,
             ),
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
@@ -3125,6 +3138,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         : null;
       const projectCtx = await fetchProjectContext(activeProjectId);
 
+      // scene scope の eco モード: refreshContextLayers と同じく実送信でも
+      // 本文を除外する (UI 表示と送信内容を一致させる)。
+      if (sceneCtx && !get().includeBodies) {
+        sceneCtx.content = "";
+      }
+
       const aiSettings = useAiSettingsStore.getState().settings;
       const chatModel = aiSettings?.model ?? "";
       const chatApiVariant = getChatApiVariant(chatModel);
@@ -3156,6 +3175,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ];
 
       let systemCacheSegments: string[] | undefined;
+      let systemVolatileTail: string | undefined;
 
       if (sceneCtx) {
         const allEntries = await listCodexEntries(getCurrentProjectId());
@@ -3222,6 +3242,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           set({ sessionStableCodexIds: ctxResult.stableCodexIds });
         }
         systemCacheSegments = ctxResult.cacheSegments;
+        systemVolatileTail = ctxResult.volatileTail;
 
         set({
           contextTokenCount: ctxResult.totalTokens,
@@ -3516,6 +3537,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               callbacks,
               systemCacheSegments,
               chatApiVariant,
+              systemVolatileTail,
             );
 
         streamPromise
@@ -3823,6 +3845,23 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         // Map overlay: scope と直交するため folder/project 経路でも注入する。
         const mapBoardMarkdown = await loadMapBoardMarkdown(allEntries);
+
+        // folder/project/codex スコープも scene 経路と同様に trimToFit を効かせる。
+        // contextWindow/conversationTokens を渡さないと buildSystemPrompt は
+        // トリムせず、Tier1 集約 (最大 100k 文字) が小窓モデルの窓を溢れさせる。
+        // sendMessage の folder/project 送信は lastSystemPrompt を流用するため、
+        // ここでトリムしておけば実送信もトリム済みになる。
+        const aiSettingsForTrim = useAiSettingsStore.getState().settings;
+        const modelForTrim = aiSettingsForTrim?.model ?? "";
+        const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
+          modelForTrim,
+          aiSettingsForTrim,
+          getChatApiVariant(modelForTrim),
+        );
+        const conversationTokens = get()
+          .messages.filter((m) => m.role !== "system" && !m.isSummarized)
+          .reduce((sum, m) => sum + countTokens(m.content), 0);
+
         const promptResult = buildSystemPrompt({
           scene: aggregatedScene
             ? {
@@ -3854,6 +3893,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           customChatInstruction: useSettingsStore
             .getState()
             .get("aiPrompt.custom.chat", ""),
+          contextWindow,
+          maxOutputTokens,
+          conversationTokens,
         });
 
         set({
