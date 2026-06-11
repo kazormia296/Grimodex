@@ -134,19 +134,23 @@ describe("resolvePresetFields", () => {
 });
 
 describe("applyDetailPreset", () => {
+  const echoDefinition = (
+    data: Parameters<typeof createDefinition>[0],
+  ): CodexDetailDefinition => ({
+    id: data.id,
+    projectId: data.projectId,
+    typeSlug: data.typeSlug,
+    name: data.name,
+    fieldType: data.fieldType ?? "text",
+    fieldConfig: data.fieldConfig ?? null,
+    sortOrder: data.sortOrder ?? 0,
+    includeInContext: data.includeInContext ?? 0,
+    createdAt: "2026-01-01T00:00:00Z",
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCreate.mockImplementation(async (data) => ({
-      id: data.id,
-      projectId: data.projectId,
-      typeSlug: data.typeSlug,
-      name: data.name,
-      fieldType: data.fieldType ?? "text",
-      fieldConfig: data.fieldConfig ?? null,
-      sortOrder: data.sortOrder ?? 0,
-      includeInContext: data.includeInContext ?? 0,
-      createdAt: "2026-01-01T00:00:00Z",
-    }));
+    mockCreate.mockImplementation(async (data) => echoDefinition(data));
   });
 
   it("inserts every resolved field when none exist yet", async () => {
@@ -225,5 +229,34 @@ describe("applyDetailPreset", () => {
     expect(mockCreate).not.toHaveBeenCalled();
     expect(result.added).toEqual([]);
     expect(result.skipped).toBe(existing.length);
+  });
+
+  it("folds a concurrent UNIQUE violation into skipped", async () => {
+    mockList.mockResolvedValue([]);
+    mockCreate.mockImplementation(async (data) => {
+      if (data.name === "年齢") {
+        throw new Error(
+          "UNIQUE constraint failed: codex_detail_definitions.project_id, codex_detail_definitions.type_slug, codex_detail_definitions.name",
+        );
+      }
+      return echoDefinition(data);
+    });
+
+    const result = await applyDetailPreset("proj-1", "character", null);
+
+    expect(result.skipped).toBe(1);
+    expect(result.added.map((d) => d.name)).not.toContain("年齢");
+    expect(result.added.length).toBe(
+      resolvePresetFields("character", null).length - 1,
+    );
+  });
+
+  it("rethrows non-UNIQUE errors", async () => {
+    mockList.mockResolvedValue([]);
+    mockCreate.mockRejectedValue(new Error("database is locked"));
+
+    await expect(
+      applyDetailPreset("proj-1", "character", null),
+    ).rejects.toThrow("database is locked");
   });
 });

@@ -243,6 +243,12 @@ describe("ManageFieldsDialog", () => {
       expect(getPresetSelect().value).toBe("");
     });
 
+    it("matches the project genre case-insensitively", async () => {
+      render(<ManageFieldsDialog {...defaultProps} projectGenre="fantasy" />);
+      await waitFor(() => getPresetSelect());
+      expect(getPresetSelect().value).toBe("Fantasy");
+    });
+
     it("applies the selected genre preset and reloads definitions", async () => {
       const user = userEvent.setup();
       mockApplyPreset.mockResolvedValue({

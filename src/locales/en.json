@@ -1039,7 +1039,8 @@
       "presetPickerLabel": "Field preset",
       "presetBase": "Basic set",
       "presetApply": "Apply preset",
-      "presetApplied": "Added {{count}} fields from the preset",
+      "presetApplied_one": "Added {{count}} field from the preset",
+      "presetApplied_other": "Added {{count}} fields from the preset",
       "presetAppliedSkipped": "Added {{added}} fields from the preset ({{skipped}} skipped as existing)",
       "presetNoneAdded": "All preset fields already exist"
     },

@@ -281,10 +281,12 @@ export function ManageFieldsDialog({
   const [deletingDef, setDeletingDef] = useState<CodexDetailDefinition | null>(
     null,
   );
-  const presetDefault =
-    projectGenre && (PRESET_GENRES as readonly string[]).includes(projectGenre)
-      ? projectGenre
-      : "";
+  // sample project 等は genre を小文字 ("fantasy") で保存しているため緩く照合
+  const presetDefault = projectGenre
+    ? (PRESET_GENRES.find(
+        (g) => g.toLowerCase() === projectGenre.toLowerCase(),
+      ) ?? "")
+    : "";
   const [presetGenre, setPresetGenre] = useState(presetDefault);
   const [presetBusy, setPresetBusy] = useState(false);
 

@@ -158,18 +158,29 @@ export async function applyDetailPreset(
       continue;
     }
     sortOrder += 1.0;
-    const def = await createDefinition({
-      id: crypto.randomUUID(),
-      projectId,
-      typeSlug,
-      name: field.name,
-      fieldType: field.fieldType,
-      fieldConfig: field.options
-        ? JSON.stringify({ options: field.options })
-        : null,
-      sortOrder,
-      includeInContext: field.includeInContext ? 1 : 0,
-    });
+    let def: CodexDetailDefinition;
+    try {
+      def = await createDefinition({
+        id: crypto.randomUUID(),
+        projectId,
+        typeSlug,
+        name: field.name,
+        fieldType: field.fieldType,
+        fieldConfig: field.options
+          ? JSON.stringify({ options: field.options })
+          : null,
+        sortOrder,
+        includeInContext: field.includeInContext ? 1 : 0,
+      });
+    } catch (err) {
+      // 並行ライター (別ウィンドウ/MCP) との TOCTOU で UNIQUE に
+      // 当たったら冪等スキップに畳む。それ以外は失敗として伝播。
+      if (String(err).includes("UNIQUE")) {
+        skipped += 1;
+        continue;
+      }
+      throw err;
+    }
     added.push(def);
     existingNames.add(field.name);
   }
