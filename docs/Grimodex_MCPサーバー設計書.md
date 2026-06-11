@@ -765,8 +765,8 @@ Codex エントリの詳細を取得する。
 | `get_chapter_summaries` | R | o | folder 単位のシーン synopsis 一覧 |
 | `list_open_foreshadows` | R | o | 未回収伏線一覧（secret 除外） |
 | `get_foreshadow_detail` | R | o | 単一伏線の詳細（setups / payoff） |
-| `create_foreshadow` | W | o | 伏線新規作成（knowledgeWrite gate・secret 既定 true） |
-| `update_foreshadow` | W | o | 伏線更新（knowledgeWrite gate・project スコープ） |
+| `create_foreshadow` | W | o | 伏線新規作成（knowledgeWrite gate・secret 既定 true・tracked: undo_journal+change_event を 1tx 記録） |
+| `update_foreshadow` | W | o | 伏線更新（knowledgeWrite gate・project スコープ・tracked 同上。undo は updated_at 楽観ガードの versionless 設計） |
 | `get_scene_timeline_neighbors` | R | o | story-time 前後シーン（最大各3件） |
 | `get_writing_context` | R | o | curated context 一発集約（project / 章outline / storySoFar / シーン本文MD+intent / timeline近傍 / シーン伏線+未回収伏線(secret除外) / codex mention+always。cap超過はdropped数で報告） |
 | `write_scene` | W | v2 | シーン本文書き込み |
