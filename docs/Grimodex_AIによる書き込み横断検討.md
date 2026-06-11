@@ -36,6 +36,15 @@
 > - **defer（透明化）**:
 >   - ~~**#14 実 drizzle `.toSQL()` を SQLite で実行する test**~~ **実施済** — `src/features/tree/aiScaffold/applyPlan.sqlite.test.ts`（既存 `createBrowserMock` / sql.js asm、happy-dom）。Rust 手書き SQL テストに加え、drizzle 生成 SQL の列/param がミラー SQLite で実行可能であることを gate。`migrate.rs` ↔ `browser-mock.ts SCHEMA_DDL` drift はスコープ外（フォローアップ可）。
 
+> **実装状況（2026-06-11 横断レビュー / multi-agent 調査・主張11件全て敵対的裏取り済み）**: 本メモの §0「agent tool protocol は完全 read-only」・§2(a)・案C「時期尚早」は **ai-write Phase 0-5 + agent-writes Phase で超過済み**。以下が現状の正:
+> - **in-app agent に MUTATING_EXECUTORS 5個が実装済み**（`toolExecutors.ts:1363`）: `create_codex_entry` / `update_codex_entry` / `create_snippet` / `apply_ai_tree_plan` / `propose_scene_body`。三重ゲート = ①各 agent-writes ヘルパ先頭の `blockIfPolicyOff`（knowledgeWrite / structureWrite / bodyWrite）②`declaredToolNames` ゲート（宣言ターンのみ発火）③Hermes 本文 tool_call チャネルから mutating 5個を除外（`ai.rs:1879 HERMES_BLOCKED_TOOL_NAMES`、injection 駆動書き込み対策）。F-2「完全 read-only」契約は「mutating は専用 allowlist + 三重ゲート経由のみ」契約に置換された。
+> - **policy キーは5個**（chat / bodyWrite / analysis / structureWrite / knowledgeWrite — `ai-policy/types.ts`）。付録の「3キー」記載は stale。
+> - **本文は二相**: `propose_scene_body` は `prose_staging` に積むだけで、人間が diff UI で accept/reject するのが既定。**opt-in headless 自動適用**（`ai.autoAcceptBodyProposals`[project-scope, default off] AND bodyWrite ON、`autoAcceptGate.ts`）は append と一意アンカー指定 insert のみ着地、replace / アンカー無し insert は常に手動レビュー。エージェント設計書の「書き込みはユーザー確認必須」は「opt-in トグルが確認の代替」という設計判断（本ノートで明文化）。
+> - **外部 MCP（grimodex-mcp）は28ツール**（read 21 / write 5 / staging 1 / meta 1）。write は 3段ゲート（readonly → license → `reload_policy` 都度DB読み）。**foreshadow create/update は MCP 専用かつ完全 untracked**（change_event / authorship / undo_journal 皆無の生 INSERT/UPDATE、in-app 正本も同様）— chat への伏線 write 解禁はこの tracked 化が前提条件。
+> - **意図的非対称（穴ではなく設計）**: chat 版 `propose_scene_body` は anchorText を伝播せず（`toolExecutors.ts:1314-1330`）、chat agent の headless 着地は append のみ。MCP は anchored-insert も headless 着地できる。chat（一般執筆者の主入口）で本文途中の無確認改変を開かない UX 防衛線として**現状維持を採用** — 対称化（S工数）は可能だが意図的にやらない。再提案時はこのノートを参照。
+> - **確定した残ギャップ（優先順）**: (1) `get_writing_context` 集約 read tool（外部へ curated context を一発提供、書き込み拡充より高ROI・MCP設計書側に検討記録） (2) foreshadow write の tracked 化（M） (3) `codexCreate.fixture.json` の parity test 配線（参照テストゼロ＝in-app↔MCP ミラー実装のドリフトを CI が検出しない）（M） (4) 設定トグル文言の実装乖離は **fix 済**（`5ed8ab98`）。
+> - **§0 / §1表 / §2(a) / 案C の記述は上記により歴史的記録**。以降の現状参照はこのノートを正とする。
+
 
 
 ## 0. 検証済みの土台（要点）
