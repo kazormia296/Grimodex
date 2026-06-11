@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ManageFieldsDialog } from "./ManageFieldsDialog";
 import type { CodexDetailDefinition } from "@/features/codex/detailApi";
@@ -252,6 +252,145 @@ describe("ManageFieldsDialog", () => {
     await user.click(screen.getByTestId("manage-field-delete-def-1"));
     await user.click(screen.getByTestId("manage-field-delete-cancel-button"));
     expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  describe("dropdown options editing", () => {
+    const openAddForm = async (user: ReturnType<typeof userEvent.setup>) => {
+      await waitFor(() => screen.getByTestId("manage-fields-add-button"));
+      await user.click(screen.getByTestId("manage-fields-add-button"));
+    };
+
+    it("shows the options textarea only for the dropdown type", async () => {
+      const user = userEvent.setup();
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await openAddForm(user);
+
+      expect(
+        screen.queryByTestId("manage-field-options-input"),
+      ).not.toBeInTheDocument();
+
+      await user.selectOptions(
+        screen.getByTestId("manage-field-type-select"),
+        "dropdown",
+      );
+      expect(
+        screen.getByTestId("manage-field-options-input"),
+      ).toBeInTheDocument();
+    });
+
+    it("creates a dropdown definition with trimmed deduped options", async () => {
+      const user = userEvent.setup();
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await openAddForm(user);
+
+      await user.type(screen.getByTestId("manage-field-name-input"), "役職");
+      await user.selectOptions(
+        screen.getByTestId("manage-field-type-select"),
+        "dropdown",
+      );
+      fireEvent.change(screen.getByTestId("manage-field-options-input"), {
+        target: { value: " 主役 \n脇役\n\n主役" },
+      });
+      await user.click(screen.getByTestId("manage-field-save-button"));
+
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+      const data = mockCreate.mock.calls[0][0];
+      expect(data.fieldType).toBe("dropdown");
+      expect(JSON.parse(data.fieldConfig as string)).toEqual({
+        options: ["主役", "脇役"],
+      });
+    });
+
+    it("does not save a dropdown without any options", async () => {
+      const user = userEvent.setup();
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await openAddForm(user);
+
+      await user.type(screen.getByTestId("manage-field-name-input"), "役職");
+      await user.selectOptions(
+        screen.getByTestId("manage-field-type-select"),
+        "dropdown",
+      );
+      await user.click(screen.getByTestId("manage-field-save-button"));
+
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("keeps fieldConfig null for text fields", async () => {
+      const user = userEvent.setup();
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await openAddForm(user);
+
+      await user.type(screen.getByTestId("manage-field-name-input"), "身長");
+      await user.click(screen.getByTestId("manage-field-save-button"));
+
+      const data = mockCreate.mock.calls[0][0];
+      expect(data.fieldConfig ?? null).toBeNull();
+    });
+
+    it("prefills existing options in the edit form", async () => {
+      const user = userEvent.setup();
+      mockListDefs.mockResolvedValue([
+        makeDefinition("def-1", "役職", "dropdown", {
+          fieldConfig: JSON.stringify({ options: ["主役", "脇役"] }),
+        }),
+      ]);
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-field-edit-def-1"));
+      await user.click(screen.getByTestId("manage-field-edit-def-1"));
+
+      const textarea = screen.getByTestId(
+        "manage-field-edit-options-def-1",
+      ) as HTMLTextAreaElement;
+      expect(textarea.value).toBe("主役\n脇役");
+    });
+
+    it("saves edited options as fieldConfig JSON", async () => {
+      const user = userEvent.setup();
+      mockListDefs.mockResolvedValue([
+        makeDefinition("def-1", "役職", "dropdown", {
+          fieldConfig: JSON.stringify({ options: ["主役"] }),
+        }),
+      ]);
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-field-edit-def-1"));
+      await user.click(screen.getByTestId("manage-field-edit-def-1"));
+
+      fireEvent.change(screen.getByTestId("manage-field-edit-options-def-1"), {
+        target: { value: "主役\n敵役" },
+      });
+      await user.click(screen.getByTestId("manage-field-edit-save-def-1"));
+
+      expect(mockUpdate).toHaveBeenCalledWith(
+        "def-1",
+        expect.objectContaining({
+          fieldConfig: JSON.stringify({ options: ["主役", "敵役"] }),
+        }),
+      );
+    });
+
+    it("clears fieldConfig when the type changes away from dropdown", async () => {
+      const user = userEvent.setup();
+      mockListDefs.mockResolvedValue([
+        makeDefinition("def-1", "役職", "dropdown", {
+          fieldConfig: JSON.stringify({ options: ["主役"] }),
+        }),
+      ]);
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-field-edit-def-1"));
+      await user.click(screen.getByTestId("manage-field-edit-def-1"));
+
+      await user.selectOptions(
+        screen.getByTestId("manage-field-edit-type-def-1"),
+        "text",
+      );
+      await user.click(screen.getByTestId("manage-field-edit-save-def-1"));
+
+      expect(mockUpdate).toHaveBeenCalledWith(
+        "def-1",
+        expect.objectContaining({ fieldType: "text", fieldConfig: null }),
+      );
+    });
   });
 
   describe("preset picker", () => {
