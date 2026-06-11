@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 
 vi.mock("@/components/ui/animated-popover", () => ({
   AnimatedPopover: ({
@@ -199,5 +199,82 @@ describe("PinEntryDialog", () => {
       />,
     );
     expect(screen.getByText("アリス")).toBeDefined();
+  });
+
+  describe("selectionMode='single'", () => {
+    const seedEntries = () => {
+      const entry = {
+        id: "e1",
+        name: "アリス",
+        type: "character",
+        tagsCache: null,
+      };
+      mockCodexStore.mockImplementation((sel) =>
+        sel({
+          entries: [entry],
+          loadEntries: vi.fn(),
+          sortOrder: "recent",
+          setSort: vi.fn(),
+        }),
+      );
+      (
+        useCodexStore as unknown as {
+          getState: { mockReturnValue: (v: unknown) => void };
+        }
+      ).getState.mockReturnValue({ entries: [entry], loadEntries: vi.fn() });
+      return entry;
+    };
+
+    it("checkbox を出さず、行クリックで onSelect(entry) を1回呼ぶ", () => {
+      seedEntries();
+      const onSelect = vi.fn();
+      render(
+        <PinEntryDialog
+          open={true}
+          selectionMode="single"
+          onSelect={onSelect}
+          onClose={noop}
+          tabs={["codex"]}
+        />,
+      );
+
+      expect(screen.queryByRole("checkbox")).toBeNull();
+      fireEvent.click(screen.getByText("アリス"));
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(onSelect).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "e1", name: "アリス" }),
+      );
+    });
+
+    it("multi (default) では checkbox 行のまま", () => {
+      seedEntries();
+      render(
+        <PinEntryDialog
+          open={true}
+          pinnedIds={new Set()}
+          onPin={noop}
+          onUnpin={noop}
+          onClose={noop}
+          tabs={["codex"]}
+        />,
+      );
+      expect(screen.getByRole("checkbox")).toBeDefined();
+    });
+
+    it("selectedId の行をハイライトする", () => {
+      seedEntries();
+      render(
+        <PinEntryDialog
+          open={true}
+          selectionMode="single"
+          selectedId="e1"
+          onSelect={noop}
+          onClose={noop}
+          tabs={["codex"]}
+        />,
+      );
+      const row = screen.getByTestId("pin-entry-pick-e1");
+      expect(row.getAttribute("data-selected")).toBe("true");
+    });
   });
 });

@@ -73,40 +73,51 @@ vi.mock("@/features/codex/api", async (importOriginal) => {
   return { ...actual, getCodexEntry: vi.fn() };
 });
 
-vi.mock("@/features/codex/components/CodexCommandPalette", () => ({
-  CodexCommandPalette: ({
+vi.mock("@/features/codex/components/PinEntryDialog", () => ({
+  PinEntryDialog: ({
+    open,
+    selectionMode,
+    tabs,
     onSelect,
     onClose,
   }: {
-    onSelect: (entry: unknown) => void;
+    open: boolean;
+    selectionMode?: string;
+    tabs?: string[];
+    onSelect?: (entry: unknown) => void;
     onClose: () => void;
-  }) => (
-    <div data-testid="mock-codex-palette">
-      <button
-        data-testid="mock-palette-pick-same"
-        onClick={() =>
-          onSelect({
-            id: "ref-9",
-            projectId: "proj-1",
-            name: "ボブ",
-            type: "character",
-          })
-        }
-      />
-      <button
-        data-testid="mock-palette-pick-cross"
-        onClick={() =>
-          onSelect({
-            id: "ref-x",
-            projectId: "proj-OTHER",
-            name: "外部",
-            type: "character",
-          })
-        }
-      />
-      <button data-testid="mock-palette-close" onClick={onClose} />
-    </div>
-  ),
+  }) =>
+    open ? (
+      <div
+        data-testid="mock-pin-entry-dialog"
+        data-selection-mode={selectionMode}
+        data-tabs={(tabs ?? []).join(",")}
+      >
+        <button
+          data-testid="mock-palette-pick-same"
+          onClick={() =>
+            onSelect?.({
+              id: "ref-9",
+              projectId: "proj-1",
+              name: "ボブ",
+              type: "character",
+            })
+          }
+        />
+        <button
+          data-testid="mock-palette-pick-cross"
+          onClick={() =>
+            onSelect?.({
+              id: "ref-x",
+              projectId: "proj-OTHER",
+              name: "外部",
+              type: "character",
+            })
+          }
+        />
+        <button data-testid="mock-palette-close" onClick={onClose} />
+      </div>
+    ) : null,
 }));
 
 import {
@@ -308,19 +319,22 @@ describe("DetailsSection", () => {
       expect(await screen.findByText(/entry-9/)).toBeInTheDocument();
     });
 
-    it("opens the picker and saves the selected entry id", async () => {
+    it("opens the Spotlight-style picker and saves the selected entry id", async () => {
       const user = userEvent.setup();
       mockListDefs.mockResolvedValue([refDefinition()]);
 
       render(<DetailsSection entry={mockEntry} />);
       await user.click(await screen.findByTestId("detail-field-ref-def-ref"));
 
-      expect(screen.getByTestId("mock-codex-palette")).toBeInTheDocument();
+      const picker = screen.getByTestId("mock-pin-entry-dialog");
+      // Spotlight (PinEntryDialog) と同形式: 単一選択 + codex タブのみ
+      expect(picker.getAttribute("data-selection-mode")).toBe("single");
+      expect(picker.getAttribute("data-tabs")).toBe("codex");
       await user.click(screen.getByTestId("mock-palette-pick-same"));
 
       expect(mockUpsert).toHaveBeenCalledWith("entry-1", "def-ref", "ref-9");
       expect(
-        screen.queryByTestId("mock-codex-palette"),
+        screen.queryByTestId("mock-pin-entry-dialog"),
       ).not.toBeInTheDocument();
       // 選択直後から名前が表示される
       expect(screen.getByText("ボブ")).toBeInTheDocument();
