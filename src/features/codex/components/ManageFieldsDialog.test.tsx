@@ -47,7 +47,10 @@ import {
   updateDefinition,
   deleteDefinition,
 } from "@/features/codex/detailApi";
-import { applyDetailPreset } from "@/features/codex/detailPresets";
+import {
+  applyDetailPreset,
+  resolvePresetFields,
+} from "@/features/codex/detailPresets";
 import {
   listEmptyDetailFields,
   deleteEmptyDetailFields,
@@ -281,7 +284,40 @@ describe("ManageFieldsDialog", () => {
       expect(getPresetSelect().value).toBe("Fantasy");
     });
 
-    it("applies the selected genre preset and reloads definitions", async () => {
+    it("shows a portaled preview of the preset fields instead of applying immediately", async () => {
+      const user = userEvent.setup();
+      render(<ManageFieldsDialog {...defaultProps} projectGenre="Fantasy" />);
+      await waitFor(() => screen.getByTestId("manage-fields-preset-apply"));
+
+      await user.click(screen.getByTestId("manage-fields-preset-apply"));
+
+      expect(mockApplyPreset).not.toHaveBeenCalled();
+      const confirm = screen.getByTestId("manage-fields-preset-confirm-dialog");
+      // 基本セット + ジャンル追加の中身が見える
+      expect(confirm).toHaveTextContent("役割");
+      expect(confirm).toHaveTextContent("種族");
+      // dropdown は選択肢も見える
+      expect(confirm).toHaveTextContent("主人公");
+      // AnimatedOverlay (z-50, body portal) より上に出すための stacking 契約
+      expect(confirm.parentElement).toBe(document.body);
+      expect(confirm.className).toContain("z-[60]");
+    });
+
+    it("marks fields that already exist as skipped in the preview", async () => {
+      const user = userEvent.setup();
+      mockListDefs.mockResolvedValue([
+        makeDefinition("def-1", "役割", "dropdown"),
+      ]);
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-fields-preset-apply"));
+
+      await user.click(screen.getByTestId("manage-fields-preset-apply"));
+
+      const skip = screen.getByTestId("manage-fields-preset-skip");
+      expect(skip).toHaveTextContent("役割");
+    });
+
+    it("applies the selected genre preset after confirming and reloads definitions", async () => {
       const user = userEvent.setup();
       mockApplyPreset.mockResolvedValue({
         added: [makeDefinition("preset-1", "役割", "dropdown")],
@@ -292,6 +328,9 @@ describe("ManageFieldsDialog", () => {
       expect(mockListDefs).toHaveBeenCalledTimes(1);
 
       await user.click(screen.getByTestId("manage-fields-preset-apply"));
+      await user.click(
+        screen.getByTestId("manage-fields-preset-confirm-button"),
+      );
 
       expect(mockApplyPreset).toHaveBeenCalledWith(
         "proj-1",
@@ -299,6 +338,9 @@ describe("ManageFieldsDialog", () => {
         "Fantasy",
       );
       await waitFor(() => expect(mockListDefs).toHaveBeenCalledTimes(2));
+      expect(
+        screen.queryByTestId("manage-fields-preset-confirm-dialog"),
+      ).not.toBeInTheDocument();
     });
 
     it("applies the base set as a null genre", async () => {
@@ -307,6 +349,9 @@ describe("ManageFieldsDialog", () => {
       await waitFor(() => screen.getByTestId("manage-fields-preset-apply"));
 
       await user.click(screen.getByTestId("manage-fields-preset-apply"));
+      await user.click(
+        screen.getByTestId("manage-fields-preset-confirm-button"),
+      );
 
       expect(mockApplyPreset).toHaveBeenCalledWith("proj-1", "character", null);
     });
@@ -318,12 +363,50 @@ describe("ManageFieldsDialog", () => {
 
       await user.selectOptions(getPresetSelect(), "Mystery");
       await user.click(screen.getByTestId("manage-fields-preset-apply"));
+      await user.click(
+        screen.getByTestId("manage-fields-preset-confirm-button"),
+      );
 
       expect(mockApplyPreset).toHaveBeenCalledWith(
         "proj-1",
         "character",
         "Mystery",
       );
+    });
+
+    it("does not apply when the preview is cancelled", async () => {
+      const user = userEvent.setup();
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-fields-preset-apply"));
+
+      await user.click(screen.getByTestId("manage-fields-preset-apply"));
+      await user.click(
+        screen.getByTestId("manage-fields-preset-cancel-button"),
+      );
+
+      expect(mockApplyPreset).not.toHaveBeenCalled();
+      expect(
+        screen.queryByTestId("manage-fields-preset-confirm-dialog"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows only a toast when every preset field already exists", async () => {
+      const user = userEvent.setup();
+      const baseNames = resolvePresetFields("character", null).map(
+        (f) => f.name,
+      );
+      mockListDefs.mockResolvedValue(
+        baseNames.map((name, i) => makeDefinition(`def-${i}`, name)),
+      );
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-fields-preset-apply"));
+
+      await user.click(screen.getByTestId("manage-fields-preset-apply"));
+
+      expect(
+        screen.queryByTestId("manage-fields-preset-confirm-dialog"),
+      ).not.toBeInTheDocument();
+      expect(mockApplyPreset).not.toHaveBeenCalled();
     });
   });
 
