@@ -72,6 +72,35 @@ function codepointLength(s: string): number {
   return [...s].length;
 }
 
+const EXCERPT_MAX_CHARS = 200;
+
+/**
+ * ProseMirror JSON 本文から plain text の抜粋を作る。tree_nodes.content /
+ * snippets.content は生 JSON なので、SQL 側の snippet()/SUBSTR では構造 JSON が
+ * そのまま LLM に渡ってしまう（get_scene の prosemirrorToText と非対称だった）。
+ * 最初に一致した検索トークンを中心に切り出し、切断した側へ "..." を付ける。
+ * どのトークンも本文に無い場合は先頭からの抜粋になる。
+ */
+function plainTextExcerpt(content: unknown, tokens: string[]): string {
+  const raw = typeof content === "string" ? content : "";
+  if (!raw) return "";
+  const plain = prosemirrorToText(raw).replace(/\s+/g, " ").trim();
+  if (plain.length <= EXCERPT_MAX_CHARS) return plain;
+  let hit = -1;
+  for (const t of tokens) {
+    const idx = plain.indexOf(t);
+    if (idx >= 0 && (hit < 0 || idx < hit)) hit = idx;
+  }
+  const start =
+    hit < 0 ? 0 : Math.max(0, hit - Math.floor(EXCERPT_MAX_CHARS / 2));
+  const end = Math.min(plain.length, start + EXCERPT_MAX_CHARS);
+  return (
+    (start > 0 ? "..." : "") +
+    plain.slice(start, end) +
+    (end < plain.length ? "..." : "")
+  );
+}
+
 /**
  * トークン群を FTS5 の "phrase OR phrase" 形に変換する。
  *
@@ -640,8 +669,7 @@ async function searchScenes(
   if (allTrigramFriendly) {
     const ftsQuery = ftsPhraseOrQuery(tokens);
     const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT tn.id, tn.title,
-                   snippet(tree_nodes_fts, 1, '[', ']', '...', 40) as excerpt
+      sql: `SELECT tn.id, tn.title, tn.content
             FROM tree_nodes tn
             JOIN tree_nodes_fts fts ON tn.rowid = fts.rowid
             WHERE tree_nodes_fts MATCH ? AND tn.node_type = 'scene' AND tn.project_id = ?
@@ -656,7 +684,7 @@ async function searchScenes(
       ["title", "content"],
     );
     const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT id, title, SUBSTR(content, 1, 200) as excerpt
+      sql: `SELECT id, title, content
             FROM tree_nodes
             WHERE project_id = ? AND node_type = 'scene' AND (${clause})
             LIMIT 10`,
@@ -669,7 +697,7 @@ async function searchScenes(
   const content = rows.map((r) => ({
     id: r["id"],
     title: r["title"],
-    excerpt: r["excerpt"] ?? "",
+    excerpt: plainTextExcerpt(r["content"], tokens),
   }));
   const json = JSON.stringify(content);
   return {
@@ -714,7 +742,7 @@ async function searchSnippets(
   if (allTrigramFriendly) {
     const ftsQuery = ftsPhraseOrQuery(tokens);
     const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT s.id, s.title, s.tags_cache, SUBSTR(s.content, 1, 200) as preview
+      sql: `SELECT s.id, s.title, s.tags_cache, s.content
             FROM snippets s
             JOIN snippets_fts fts ON s.rowid = fts.rowid
             WHERE snippets_fts MATCH ? AND s.project_id = ?
@@ -730,7 +758,7 @@ async function searchSnippets(
       ["title", "content", "tags_cache"],
     );
     const result = await invoke<QueryResult>("db_execute", {
-      sql: `SELECT id, title, tags_cache, SUBSTR(content, 1, 200) as preview
+      sql: `SELECT id, title, tags_cache, content
             FROM snippets
             WHERE project_id = ? AND (${clause})
             LIMIT 10`,
@@ -743,10 +771,8 @@ async function searchSnippets(
   const content = rows.map((r) => ({
     id: r["id"],
     title: r["title"],
-    tags: r["tags_cache"]
-      ? (JSON.parse(r["tags_cache"] as string) as string[])
-      : [],
-    preview: r["preview"] ?? "",
+    tags: parseTagsCacheNames(r["tags_cache"] as string | null),
+    preview: plainTextExcerpt(r["content"], tokens),
   }));
   const json = JSON.stringify(content);
   return {

@@ -32,11 +32,10 @@ vi.mock("@/db/client", () => {
 });
 
 // Heavy imports unrelated to the dispatcher branches we exercise.
+// @/lib/prosemirror は依存なしの純関数なので実装をそのまま使う
+// （search 系の excerpt plain-text 化を実変換で検証するため）。
 vi.mock("@/features/tree/api", () => ({
   loadSceneContent: vi.fn(),
-}));
-vi.mock("@/lib/prosemirror", () => ({
-  prosemirrorToText: vi.fn(),
 }));
 vi.mock("@/features/codex/prosemirrorTextExtractor", () => ({
   extractPlainText: vi.fn(),
@@ -181,6 +180,90 @@ describe("executeTool — Phase 3 dispatch", () => {
   it("unknown tool dispatches to the not-found branch", async () => {
     const result = await executeTool("nope_does_not_exist", "call-5", {});
     expect(result.error).toBe("Unknown tool: nope_does_not_exist");
+  });
+});
+
+// ── search 結果の整形契約 ─────────────────────────────────────────────────────
+// tree_nodes.content / snippets.content は ProseMirror JSON。excerpt/preview は
+// plain text に変換してから LLM に渡し、tags は {name,color}[] でなく name の
+// string[] にする（listCodexByType と同経路）。
+describe("search result shaping — plain-text excerpts & tag names", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    mockTreeProjectId.mockReset();
+    mockTreeProjectId.mockReturnValue("p1");
+  });
+
+  const pmDoc = (text: string) =>
+    JSON.stringify({
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+    });
+
+  it("search_scenes (FTS path) returns a plain-text excerpt, not raw ProseMirror JSON", async () => {
+    mockInvoke.mockResolvedValue({
+      rows: [
+        { id: "s1", title: "T", content: pmDoc("ドラゴンが火を吹いた。") },
+      ],
+    });
+    const res = await executeTool("search_scenes", "c", { query: "ドラゴン" });
+    const [row] = res.content as Array<{ excerpt: string }>;
+    expect(row.excerpt).toBe("ドラゴンが火を吹いた。");
+    expect(row.excerpt).not.toContain('"type"');
+  });
+
+  it("search_scenes (LIKE fallback) also plain-texts the excerpt", async () => {
+    mockInvoke.mockResolvedValue({
+      rows: [{ id: "s1", title: "T", content: pmDoc("火を吹いた。") }],
+    });
+    const res = await executeTool("search_scenes", "c", { query: "火" });
+    const [row] = res.content as Array<{ excerpt: string }>;
+    expect(row.excerpt).toBe("火を吹いた。");
+  });
+
+  it("search_scenes centers the excerpt around the first matched token", async () => {
+    const long = "あ".repeat(300) + "ドラゴン" + "い".repeat(300);
+    mockInvoke.mockResolvedValue({
+      rows: [{ id: "s1", title: "T", content: pmDoc(long) }],
+    });
+    const res = await executeTool("search_scenes", "c", { query: "ドラゴン" });
+    const [row] = res.content as Array<{ excerpt: string }>;
+    expect(row.excerpt).toContain("ドラゴン");
+    expect(row.excerpt.startsWith("...")).toBe(true);
+    expect(row.excerpt.endsWith("...")).toBe(true);
+    expect(row.excerpt.length).toBeLessThanOrEqual(206);
+  });
+
+  it("search_scenes tolerates NULL content", async () => {
+    mockInvoke.mockResolvedValue({
+      rows: [{ id: "s1", title: "T", content: null }],
+    });
+    const res = await executeTool("search_scenes", "c", { query: "ドラゴン" });
+    const [row] = res.content as Array<{ excerpt: string }>;
+    expect(row.excerpt).toBe("");
+  });
+
+  it("search_snippets returns tag names (string[]) and a plain-text preview", async () => {
+    mockInvoke.mockResolvedValue({
+      rows: [
+        {
+          id: "n1",
+          title: "雨",
+          tags_cache: JSON.stringify([
+            { name: "伏線", color: "#fff" },
+            { name: "終盤", color: null },
+          ]),
+          content: pmDoc("雨の描写。"),
+        },
+      ],
+    });
+    const res = await executeTool("search_snippets", "c", {
+      query: "雨の描写",
+    });
+    const [row] = res.content as Array<{ tags: string[]; preview: string }>;
+    expect(row.tags).toEqual(["伏線", "終盤"]);
+    expect(row.preview).toBe("雨の描写。");
+    expect(row.preview).not.toContain('"type"');
   });
 });
 

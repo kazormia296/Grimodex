@@ -1,13 +1,16 @@
 import { describe, it, expect, vi } from "vitest";
 
 // ensureTokenizer は WASM ロードを伴うのでスタブ化（ループのロジックだけ検証する）。
+// countTokens は 1 char = 1 token の決定的スタブ（truncation 計算を検証可能にする）。
 vi.mock("../contextBuilder", () => ({
   ensureTokenizer: vi.fn(async () => {}),
+  countTokens: (s: string) => (s ? s.length : 0),
 }));
 
 import { runAgentLoop, type AgentLoopOptions } from "./agentLoop";
 import type {
   AgentLLMResponse,
+  AgentMessagePayload,
   AgentToolDefinition,
   ToolResult,
   Citation,
@@ -172,6 +175,85 @@ describe("runAgentLoop", () => {
       (m) => "content" in m && m.content === "CALL_LIMIT",
     );
     expect(hasCallLimit).toBe(true);
+  });
+});
+
+// ── tool_result content の整形（not-found 格上げ / 個別サイズ上限）──────────────
+describe("runAgentLoop — tool_result content shaping", () => {
+  /** 2 ターン目に LLM へ渡った tool_result メッセージを取り出す。 */
+  function secondTurnToolResult(
+    sendToLLM: ReturnType<typeof vi.fn<AgentLoopOptions["sendToLLM"]>>,
+  ): Extract<AgentMessagePayload, { role: "tool_result" }> | undefined {
+    const messages = sendToLLM.mock.calls[1]?.[0] ?? [];
+    return messages.find(
+      (m): m is Extract<AgentMessagePayload, { role: "tool_result" }> =>
+        m.role === "tool_result",
+    );
+  }
+
+  it("promotes summary to content when a tool returns null (not-found)", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(toolUseResponse("search_codex"))
+      .mockResolvedValueOnce(endResponse());
+    const executeTool = vi.fn(async () =>
+      toolResult({ content: null, summary: "Scene not found" }),
+    );
+
+    await runAgentLoop(baseOptions({ sendToLLM, executeTool }));
+
+    const tr = secondTurnToolResult(sendToLLM);
+    expect(tr?.content).toBe("Scene not found");
+    expect(tr?.content).not.toBe("null");
+    expect(tr?.isError).toBe(false);
+  });
+
+  it("falls back to an explicit not-found message when summary is empty", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(toolUseResponse("search_codex"))
+      .mockResolvedValueOnce(endResponse());
+    const executeTool = vi.fn(async () =>
+      toolResult({ content: null, summary: "" }),
+    );
+
+    await runAgentLoop(baseOptions({ sendToLLM, executeTool }));
+
+    expect(secondTurnToolResult(sendToLLM)?.content).toBe(
+      "No result (not found).",
+    );
+  });
+
+  it("keeps small results intact (no truncation)", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(toolUseResponse("search_codex"))
+      .mockResolvedValueOnce(endResponse());
+    const executeTool = vi.fn(async () => toolResult());
+
+    await runAgentLoop(baseOptions({ sendToLLM, executeTool }));
+
+    expect(secondTurnToolResult(sendToLLM)?.content).toBe('{"ok":true}');
+  });
+
+  it("truncates an oversized tool_result to 25% of tokenBudget with a marker", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(toolUseResponse("search_codex"))
+      .mockResolvedValueOnce(endResponse());
+    // JSON 化すると 411 chars (= スタブで 411 tokens)。budget 100 → cap 25。
+    const executeTool = vi.fn(async () =>
+      toolResult({ content: { text: "x".repeat(400) }, tokensUsed: 1 }),
+    );
+
+    await runAgentLoop(
+      baseOptions({ sendToLLM, executeTool, tokenBudget: 100 }),
+    );
+
+    const content = secondTurnToolResult(sendToLLM)?.content ?? "";
+    expect(content).toContain("...[truncated: 元 411 tokens]");
+    expect(content.startsWith('{"text":"' + "x".repeat(16))).toBe(true);
+    expect(content.length).toBeLessThan(100);
   });
 });
 

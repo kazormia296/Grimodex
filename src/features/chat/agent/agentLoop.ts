@@ -10,9 +10,15 @@ import type {
   ToolUseBlock,
   Citation,
 } from "./agentTypes";
-import { ensureTokenizer } from "../contextBuilder";
+import { ensureTokenizer, countTokens } from "../contextBuilder";
 
 const MAX_TOOL_CALLS = 10;
+/**
+ * 1 件の tool_result が会話に積めるトークン上限（tokenBudget に対する割合）。
+ * budget 判定は結果追加後にしか走らないため、巨大な get_scene 一発で
+ * 文脈窓を溢れさせない事前ガードとして個別結果を切り詰める。
+ */
+const TOOL_RESULT_TOKEN_CAP_RATIO = 0.25;
 /**
  * ask_user（ユーザーへの質問）の 1 ターンあたり上限。データ取得ツールの
  * MAX_TOOL_CALLS とは別カウント。適応的な多段質問を許しつつ、質問の連打／
@@ -286,10 +292,30 @@ export async function runAgentLoop(
     }
 
     // Append tool results to conversation
+    const toolResultTokenCap = Math.max(
+      1,
+      Math.floor(tokenBudget * TOOL_RESULT_TOKEN_CAP_RATIO),
+    );
     for (const tr of toolResults) {
-      const content = tr.error
-        ? `Error: ${tr.error}`
-        : JSON.stringify(tr.content);
+      // not-found 系は content:null + summary に理由を載せて返ってくる。
+      // JSON.stringify(null) の literal "null" を LLM に渡さず summary を会話へ
+      // 格上げする（summary も空なら明示の not-found メッセージ）。
+      let content: string;
+      if (tr.error) {
+        content = `Error: ${tr.error}`;
+      } else if (tr.content == null) {
+        content = tr.summary || "No result (not found).";
+      } else {
+        content = JSON.stringify(tr.content);
+      }
+      const contentTokens = countTokens(content);
+      if (contentTokens > toolResultTokenCap) {
+        const keepChars = Math.max(
+          1,
+          Math.floor((content.length * toolResultTokenCap) / contentTokens),
+        );
+        content = `${content.slice(0, keepChars)}...[truncated: 元 ${contentTokens} tokens]`;
+      }
       conversation.push({
         role: "tool_result",
         toolUseId: tr.toolCallId,
