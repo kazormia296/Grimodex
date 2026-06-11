@@ -21,6 +21,7 @@ import {
 } from "@/features/post-effect/pseudoCommentPayloadBuilder";
 import { fetchProjectContext } from "@/features/project/contextAtoms";
 import {
+  flushPendingSceneSaves,
   listAnnotationsForScene,
   runPostEffect,
 } from "@/features/post-effect/api";
@@ -113,6 +114,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
       .get("aiPrompt.custom.kouetsu", "");
     setRunning(true);
     try {
+      await flushPendingSceneSaves(sceneId);
       // brief を 1 度だけ解決し、hash (payload) と system_prompt で同じものを使う。
       const brief = resolvePersonaBrief(persona, { genre, targetReaders });
       const payload = await buildPseudoCommentPayload(

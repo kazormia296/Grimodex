@@ -18,6 +18,7 @@ import {
   type TimelineHygieneFinding,
 } from "@/features/post-effect/timelineHygiene";
 import {
+  flushPendingSceneSaves,
   listAnnotationsForProject,
   listAnnotationsForScene,
   runPostEffectMulti,
@@ -125,6 +126,7 @@ export function ProjectTimelineConsistencyView() {
     const activeSceneId = useTreeStore.getState().activeSceneId;
     setRunningAll(true);
     try {
+      await flushPendingSceneSaves();
       const payload = await buildTimelinePayload(
         "project",
         null,

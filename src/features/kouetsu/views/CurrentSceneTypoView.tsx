@@ -24,6 +24,7 @@ import {
   TYPO_PROMPT_VERSION,
 } from "@/features/post-effect/typoPayloadBuilder";
 import {
+  flushPendingSceneSaves,
   listAnnotationsForScene,
   runPostEffect,
 } from "@/features/post-effect/api";
@@ -87,6 +88,7 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
       .get("aiPrompt.custom.kouetsu", "");
     setRunning(true);
     try {
+      await flushPendingSceneSaves(sceneId);
       const payload = await buildTypoPayload(sceneId, model, customKouetsu);
       const done = await new Promise<{
         ok: boolean;

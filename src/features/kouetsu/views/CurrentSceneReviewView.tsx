@@ -14,6 +14,7 @@ import {
   REVIEW_PROMPT_VERSION,
 } from "@/features/post-effect/reviewPayloadBuilder";
 import {
+  flushPendingSceneSaves,
   listAnnotationsForScene,
   runPostEffect,
 } from "@/features/post-effect/api";
@@ -62,6 +63,7 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
     );
     setRunning(true);
     try {
+      await flushPendingSceneSaves(sceneId);
       const payload = await buildReviewPayload(
         sceneId,
         model,

@@ -13,6 +13,7 @@ import {
 } from "@/features/post-effect/consistencyPayloadBuilder";
 import { REVIEW_PROMPT_VERSION } from "@/features/post-effect/reviewPayloadBuilder";
 import {
+  flushPendingSceneSaves,
   listAnnotationsForProject,
   runPostEffectMulti,
 } from "@/features/post-effect/api";
@@ -68,6 +69,7 @@ export function ProjectReviewView() {
       .get("aiPrompt.custom.kouetsu", "");
     setRunningAll(true);
     try {
+      await flushPendingSceneSaves();
       const payload = await buildMultiPayload(
         projectId,
         "project",

@@ -14,6 +14,7 @@ import {
   INTENT_DRIFT_PROMPT_VERSION,
 } from "@/features/post-effect/intentDriftPayloadBuilder";
 import {
+  flushPendingSceneSaves,
   listAnnotationsForScene,
   runPostEffect,
 } from "@/features/post-effect/api";
@@ -60,6 +61,7 @@ export function CurrentSceneIntentDriftView({ sceneId }: Props) {
       .get("aiPrompt.custom.kouetsu", "");
     setRunning(true);
     try {
+      await flushPendingSceneSaves(sceneId);
       const payload = await buildIntentDriftPayload(
         sceneId,
         model,

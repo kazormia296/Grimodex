@@ -23,6 +23,29 @@ import type {
 } from "./types";
 
 // ---------------------------------------------------------------------------
+// Editor flush
+// ---------------------------------------------------------------------------
+
+/**
+ * run 起動前に未保存（autosave デバウンス中）の本文を DB へ flush する。
+ * PayloadBuilder は treeNodes.content（DB）を読むため、これを挟まないと
+ * 直近の編集が scene_text と input_hash の両方から漏れる。
+ * sceneId 省略時は開いている dirty タブ全部（split 両グループ）を flush する。
+ */
+export async function flushPendingSceneSaves(sceneId?: string): Promise<void> {
+  const { saveScene } = await import("@/features/editor/editorSaveRegistry");
+  if (sceneId !== undefined) {
+    await saveScene(sceneId);
+    return;
+  }
+  // tabStore は layoutStore/i18n を引き込むため、本モジュールを import する
+  // 純関数モジュールの test graph を汚さないよう遅延 import に留める。
+  const { useTabStore } = await import("@/features/editor/tabStore");
+  const ids = [...useTabStore.getState().dirtyTabIds];
+  await Promise.all(ids.map((id) => saveScene(id)));
+}
+
+// ---------------------------------------------------------------------------
 // Run lifecycle
 // ---------------------------------------------------------------------------
 

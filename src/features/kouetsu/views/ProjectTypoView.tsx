@@ -22,6 +22,7 @@ import {
 } from "@/features/post-effect/consistencyPayloadBuilder";
 import { TYPO_PROMPT_VERSION } from "@/features/post-effect/typoPayloadBuilder";
 import {
+  flushPendingSceneSaves,
   listAnnotationsForProject,
   listAnnotationsForScene,
   runPostEffectMulti,
@@ -119,6 +120,7 @@ export function ProjectTypoView() {
     setRunningAll(true);
 
     try {
+      await flushPendingSceneSaves();
       const payload = await buildMultiPayload(
         projectId,
         "project",

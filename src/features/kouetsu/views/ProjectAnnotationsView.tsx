@@ -16,6 +16,7 @@ import {
   INTRA_CONSISTENCY_PROMPT_VERSION,
 } from "@/features/post-effect/consistencyPayloadBuilder";
 import {
+  flushPendingSceneSaves,
   listAnnotationsForProject,
   listAnnotationsForScene,
   runPostEffectMulti,
@@ -122,6 +123,7 @@ export function ProjectAnnotationsView() {
       setRunningAll(true);
 
       try {
+        await flushPendingSceneSaves();
         // runPostEffectMulti は starter() 完了で即 resolve するため、terminal を
         // 待つには手動 Promise を組む。onError も resolve して Promise.all が
         // 片方失敗で全体 reject されないようにする。

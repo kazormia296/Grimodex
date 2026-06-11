@@ -16,7 +16,11 @@ import {
   buildMetaStructurePayload,
   META_STRUCTURE_PROMPT_VERSION,
 } from "@/features/post-effect/metaStructurePayloadBuilder";
-import { runPostEffect, runPostEffectMulti } from "@/features/post-effect/api";
+import {
+  flushPendingSceneSaves,
+  runPostEffect,
+  runPostEffectMulti,
+} from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
 import {
   appendKouetsuGuidance,
@@ -98,6 +102,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
     );
     setRunning(true);
     try {
+      await flushPendingSceneSaves(sceneId);
       const payload = await buildMetaStructurePayload(
         sceneId,
         model,
@@ -160,6 +165,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
       .get("aiPrompt.custom.kouetsu", "");
     setRunning(true);
     try {
+      await flushPendingSceneSaves();
       const payload = await buildMultiPayload(
         projectId,
         "project",

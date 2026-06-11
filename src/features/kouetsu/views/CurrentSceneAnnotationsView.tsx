@@ -16,6 +16,7 @@ import {
   INTRA_CONSISTENCY_PROMPT_VERSION,
 } from "@/features/post-effect/consistencyPayloadBuilder";
 import {
+  flushPendingSceneSaves,
   listAnnotationsForScene,
   runPostEffect,
 } from "@/features/post-effect/api";
@@ -97,6 +98,7 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
         .get("aiPrompt.custom.kouetsu", "");
       setRunning(true);
       try {
+        await flushPendingSceneSaves(sceneId);
         async function startConsistency(): Promise<RunOutcome> {
           try {
             const payload = await buildConsistencyPayload(

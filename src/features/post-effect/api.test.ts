@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // listen / invoke の型と mock を hoist
-const { mockListen, mockInvoke } = vi.hoisted(() => ({
+const { mockListen, mockInvoke, mockDirtyTabIds } = vi.hoisted(() => ({
   mockListen: vi.fn(),
   mockInvoke: vi.fn(),
+  mockDirtyTabIds: new Set<string>(),
 }));
 
 vi.mock("@/lib/tauri", () => ({
@@ -12,7 +13,18 @@ vi.mock("@/lib/tauri", () => ({
   invoke: mockInvoke,
 }));
 
-import { runPostEffect } from "./api";
+// 実 tabStore は layoutStore/treeStore まで引き込むため最小 stub にする
+vi.mock("@/features/editor/tabStore", () => ({
+  useTabStore: {
+    getState: () => ({ dirtyTabIds: mockDirtyTabIds }),
+  },
+}));
+
+import { flushPendingSceneSaves, runPostEffect } from "./api";
+import {
+  registerSaveHandler,
+  unregisterSaveHandler,
+} from "@/features/editor/editorSaveRegistry";
 
 type Handler = (event: { payload: unknown }) => void | Promise<void>;
 type EventChannel =
@@ -50,6 +62,46 @@ function fireEvent(channel: EventChannel, payload: unknown) {
     }
   }
 }
+
+describe("flushPendingSceneSaves", () => {
+  afterEach(() => {
+    unregisterSaveHandler("scene-a");
+    unregisterSaveHandler("scene-b");
+    mockDirtyTabIds.clear();
+  });
+
+  it("sceneId 指定時は dirty 状態に関係なく登録済み save handler を await する", async () => {
+    const save = vi.fn(async () => {});
+    registerSaveHandler("scene-a", save);
+
+    await flushPendingSceneSaves("scene-a");
+
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("sceneId のシーンが開いていない（handler 未登録）なら no-op で resolve する", async () => {
+    await expect(flushPendingSceneSaves("scene-a")).resolves.toBeUndefined();
+  });
+
+  it("引数なしは dirty なタブだけを flush する", async () => {
+    const saveA = vi.fn(async () => {});
+    const saveB = vi.fn(async () => {});
+    registerSaveHandler("scene-a", saveA);
+    registerSaveHandler("scene-b", saveB);
+    mockDirtyTabIds.add("scene-a");
+
+    await flushPendingSceneSaves();
+
+    expect(saveA).toHaveBeenCalledTimes(1);
+    expect(saveB).not.toHaveBeenCalled();
+  });
+
+  it("dirty タブの handler が未登録でも throw しない", async () => {
+    mockDirtyTabIds.add("scene-a");
+
+    await expect(flushPendingSceneSaves()).resolves.toBeUndefined();
+  });
+});
 
 describe("runPostEffect 自動 cleanup", () => {
   const baseReq = {
