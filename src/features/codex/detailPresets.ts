@@ -82,7 +82,7 @@ export const GENRE_DETAIL_PRESETS: Readonly<
     lore: [text("科学的設定・根拠")],
   },
   Mystery: {
-    character: [text("アリバイ"), text("隠している秘密")],
+    character: [text("アリバイ")],
     location: [text("構造・見取り")],
     item: [text("手がかりとしての意味")],
   },
