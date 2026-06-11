@@ -1940,9 +1940,43 @@ pub(crate) mod tests {
                 genre TEXT, pov TEXT, tense TEXT,
                 language TEXT NOT NULL DEFAULT 'ja',
                 style_guide TEXT, ai_instructions TEXT,
+                ai_policy TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE TABLE undo_journal (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                surface TEXT NOT NULL,
+                entity_kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                op_kind TEXT NOT NULL,
+                before_json TEXT,
+                after_json TEXT,
+                base_version INTEGER NOT NULL,
+                result_version INTEGER NOT NULL,
+                change_event_uid TEXT
+            );
+            CREATE TABLE change_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_uid TEXT,
+                project_id TEXT NOT NULL,
+                scene_id TEXT,
+                domain TEXT NOT NULL,
+                op_type TEXT NOT NULL,
+                entity_type TEXT,
+                entity_id TEXT,
+                payload TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                prev_hash TEXT NOT NULL,
+                hash TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX uq_change_events_project_seq
+                ON change_events(project_id, sequence);
+            CREATE UNIQUE INDEX uq_change_events_project_uid
+                ON change_events(project_id, event_uid);
             CREATE TABLE tree_nodes (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,

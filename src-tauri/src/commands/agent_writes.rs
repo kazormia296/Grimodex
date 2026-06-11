@@ -1185,3 +1185,41 @@ pub(crate) fn agent_apply_undo_journal(
 ) -> Result<Value, AppError> {
     with_db(&ws_state, |db| agent_undo_journal_impl(db, payload))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::undo_journal_change_event;
+
+    fn journal_row(entity_kind: &str, op_kind: &str) -> grimodex_core::undo_journal::UndoJournalRow {
+        grimodex_core::undo_journal::UndoJournalRow {
+            id: "j1".to_string(),
+            project_id: "p1".to_string(),
+            entity_kind: entity_kind.to_string(),
+            entity_id: "f1".to_string(),
+            op_kind: op_kind.to_string(),
+            before_json: None,
+            after_json: None,
+            base_version: 0,
+            result_version: 1,
+        }
+    }
+
+    #[test]
+    fn undo_journal_change_event_supports_foreshadow() {
+        // Undoing a create emits a delete-shaped event; redo re-emits create.
+        let (domain, entity_type, op_type, entity_id) =
+            undo_journal_change_event(&journal_row("foreshadow", "create"), "undo").unwrap();
+        assert_eq!(domain, "foreshadow");
+        assert_eq!(entity_type, "foreshadow");
+        assert_eq!(op_type, "foreshadow.delete");
+        assert_eq!(entity_id, "f1");
+
+        let (_, _, op_type, _) =
+            undo_journal_change_event(&journal_row("foreshadow", "create"), "redo").unwrap();
+        assert_eq!(op_type, "foreshadow.create");
+
+        let (_, _, op_type, _) =
+            undo_journal_change_event(&journal_row("foreshadow", "update"), "undo").unwrap();
+        assert_eq!(op_type, "foreshadow.update");
+    }
+}

@@ -265,7 +265,9 @@ pub async fn update_foreshadow(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_load_bearing;
+    use super::*;
+    use crate::db::tests::make_simple_db;
+    use crate::server::GrimodexServer;
 
     #[test]
     fn validate_load_bearing_accepts_known_and_none() {
@@ -279,5 +281,132 @@ mod tests {
     fn validate_load_bearing_rejects_unknown() {
         assert!(validate_load_bearing(Some("urgent")).is_err());
         assert!(validate_load_bearing(Some("")).is_err());
+    }
+
+    /// Writable server over the shared fixture. NULL ai_policy → fail-open
+    /// full toggles (knowledge_write on), licensing feature off in tests.
+    fn make_writable_server() -> GrimodexServer {
+        let conn = make_simple_db();
+        conn.execute(
+            "INSERT INTO projects (id, title) VALUES ('p1', 'Novel')",
+            [],
+        )
+        .unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        GrimodexServer::new(
+            conn,
+            "p1".to_string(),
+            false,
+            false,
+            "sess-mcp".to_string(),
+            policy,
+        )
+    }
+
+    #[tokio::test]
+    async fn create_foreshadow_tool_is_tracked() {
+        let server = make_writable_server();
+        create_foreshadow(
+            &server,
+            CreateForeshadowParams {
+                title: "Planted clue".to_string(),
+                intent: Some("sets up the reveal".to_string()),
+                notes: None,
+                load_bearing: Some("critical".to_string()),
+                secret: Some(false),
+            },
+        )
+        .await
+        .unwrap();
+
+        let conn = server.conn.lock().unwrap();
+        // Entity row landed.
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM foreshadows", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        // Tracked: change_event with the MCP session, journal with surface=mcp.
+        let (domain, op_type, session_id): (String, String, String) = conn
+            .query_row(
+                "SELECT domain, op_type, session_id FROM change_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(domain, "foreshadow");
+        assert_eq!(op_type, "foreshadow.create");
+        assert_eq!(session_id, "sess-mcp");
+        let surface: String = conn
+            .query_row("SELECT surface FROM undo_journal", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(surface, "mcp");
+    }
+
+    #[tokio::test]
+    async fn update_foreshadow_tool_is_tracked() {
+        let server = make_writable_server();
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO foreshadows
+                 (id, project_id, title, secret, created_at, updated_at)
+                 VALUES ('f1', 'p1', 'Original', 1, 1000, 1000)",
+                [],
+            )
+            .unwrap();
+        }
+
+        update_foreshadow(
+            &server,
+            UpdateForeshadowParams {
+                id: "f1".to_string(),
+                title: Some("Renamed".to_string()),
+                intent: None,
+                notes: None,
+                load_bearing: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let conn = server.conn.lock().unwrap();
+        let title: String = conn
+            .query_row("SELECT title FROM foreshadows WHERE id = 'f1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(title, "Renamed");
+        let op_type: String = conn
+            .query_row("SELECT op_type FROM change_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(op_type, "foreshadow.update");
+    }
+
+    #[tokio::test]
+    async fn update_foreshadow_tool_unknown_id_writes_nothing() {
+        let server = make_writable_server();
+        let res = update_foreshadow(
+            &server,
+            UpdateForeshadowParams {
+                id: "ghost".to_string(),
+                title: Some("X".to_string()),
+                intent: None,
+                notes: None,
+                load_bearing: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+            },
+        )
+        .await;
+        assert!(res.is_err());
+        let conn = server.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM change_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }

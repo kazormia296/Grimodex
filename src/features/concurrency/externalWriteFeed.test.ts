@@ -4,6 +4,7 @@ const h = vi.hoisted(() => ({
   reloadTree: vi.fn().mockResolvedValue(undefined),
   loadCodex: vi.fn().mockResolvedValue(undefined),
   loadSnippets: vi.fn().mockResolvedValue(undefined),
+  loadForeshadows: vi.fn().mockResolvedValue(undefined),
   dirtyTabs: new Set<string>(),
 }));
 
@@ -30,6 +31,12 @@ vi.mock("@/features/snippets/snippetStore", () => ({
 vi.mock("@/features/editor/tabStore", () => ({
   useTabStore: {
     getState: () => ({ dirtyTabIds: h.dirtyTabs, setTabDirty: vi.fn() }),
+  },
+}));
+
+vi.mock("@/features/foreshadow/foreshadowStore", () => ({
+  useForeshadowStore: {
+    getState: () => ({ load: h.loadForeshadows }),
   },
 }));
 
@@ -84,6 +91,21 @@ describe("externalWriteFeed fan-out", () => {
   it("reloads tree on grid domain events", async () => {
     await processExternalEventsForTest([ev({ domain: "grid" })], "p1");
     expect(h.reloadTree).toHaveBeenCalledWith("p1");
+  });
+
+  it("reloads foreshadow store on foreshadow domain events", async () => {
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "foreshadow",
+          opType: "foreshadow.create",
+          entityType: "foreshadow",
+          entityId: "f1",
+        }),
+      ],
+      "p1",
+    );
+    expect(h.loadForeshadows).toHaveBeenCalledWith("p1");
   });
 
   it("pushes conflict for dirty editor scene", async () => {

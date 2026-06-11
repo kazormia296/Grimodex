@@ -1,4 +1,5 @@
 pub mod codex;
+pub mod foreshadow;
 pub mod snippet;
 
 pub use codex::WriteResult;
