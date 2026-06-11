@@ -1878,8 +1878,22 @@ pub(crate) mod tests {
                 intent TEXT,
                 status TEXT DEFAULT 'outline',
                 content TEXT NOT NULL DEFAULT '{}',
+                version INTEGER NOT NULL DEFAULT 1,
+                source_uri TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE prose_staging (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                scene_id TEXT NOT NULL,
+                proposed_content TEXT NOT NULL,
+                base_version INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                source_surface TEXT NOT NULL,
+                source_session_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );
             CREATE TABLE codex_types (
                 id TEXT PRIMARY KEY,

@@ -1195,7 +1195,234 @@ pub(crate) fn agent_apply_undo_journal(
 
 #[cfg(test)]
 mod tests {
-    use super::undo_journal_change_event;
+    use super::*;
+    use crate::database::Database;
+    use std::path::Path;
+
+    /// Same contract snapshots the grimodex-core (MCP path) tests assert —
+    /// this is the in-app mirror side of the parity gate.
+    const CODEX_FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/features/agent-writes/parity/codexCreate.fixture.json"
+    ));
+    const PROSE_FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/features/agent-writes/parity/proseStaging.fixture.json"
+    ));
+
+    fn test_db() -> Database {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        db.migrate().expect("migrate");
+        db
+    }
+
+    fn insert_project(db: &Database) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO projects (id, title) VALUES (?, 'Test')",
+            &[Value::String(id.clone())],
+            "run",
+        )
+        .expect("insert project");
+        id
+    }
+
+    fn insert_scene(db: &Database, project_id: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order)
+             VALUES (?, ?, 'scene', 'Scene', '{}', 'a0')",
+            &[
+                Value::String(id.clone()),
+                Value::String(project_id.to_string()),
+            ],
+            "run",
+        )
+        .expect("insert scene");
+        id
+    }
+
+    fn json_keys(v: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    fn fixture_keys(v: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap().to_string())
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn codex_create_matches_parity_fixture_in_app() {
+        let fixture: serde_json::Value = serde_json::from_str(CODEX_FIXTURE).unwrap();
+        let db = test_db();
+        let project_id = insert_project(&db);
+
+        agent_codex_create_impl(
+            &db,
+            AgentCodexCreatePayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                type_slug: "character".to_string(),
+                name: "Alice".to_string(),
+                summary: Some("summary".to_string()),
+                content: None,
+                aliases: None,
+                parent_id: None,
+                source_chat_message_id: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: vec![AuthorshipSpanInput {
+                    from_pos: 0,
+                    to_pos: 7,
+                    source: fixture["authorshipSpan"]["source"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                    model: None,
+                    chat_msg_id: None,
+                    trace_id: None,
+                }],
+            },
+        )
+        .unwrap();
+
+        db.with_conn(|conn| {
+            // changeEvent contract
+            let ce = &fixture["changeEvent"];
+            let (domain, op_type, entity_type, payload): (String, String, String, String) = conn
+                .query_row(
+                    "SELECT domain, op_type, entity_type, payload FROM change_events",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?;
+            assert_eq!(domain, ce["domain"].as_str().unwrap());
+            assert_eq!(op_type, ce["opType"].as_str().unwrap());
+            assert_eq!(entity_type, ce["entityType"].as_str().unwrap());
+            let payload: serde_json::Value = serde_json::from_str(&payload)?;
+            assert_eq!(
+                json_keys(&payload),
+                fixture_keys(&ce["payloadKeys"]),
+                "in-app change_event payload keys drifted from the parity fixture"
+            );
+
+            // undoJournal contract
+            let uj = &fixture["undoJournal"];
+            let (entity_kind, op_kind, before, after): (String, String, Option<String>, String) =
+                conn.query_row(
+                    "SELECT entity_kind, op_kind, before_json, after_json FROM undo_journal",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?;
+            assert_eq!(entity_kind, uj["entityKind"].as_str().unwrap());
+            assert_eq!(op_kind, uj["opKind"].as_str().unwrap());
+            assert!(uj["beforeJson"].is_null() == before.is_none());
+            let after: serde_json::Value = serde_json::from_str(&after)?;
+            for key in fixture_keys(&uj["afterJsonKeys"]) {
+                assert!(
+                    after.get(&key).is_some(),
+                    "in-app after_json is missing fixture key '{key}'"
+                );
+            }
+
+            // authorshipSpan contract
+            let span_fixture = &fixture["authorshipSpan"];
+            let owner_lane = span_fixture["ownerLane"].as_str().unwrap();
+            let owner: Option<String> =
+                conn.query_row(&format!("SELECT {owner_lane} FROM authorship_spans"), [], |r| {
+                    r.get(0)
+                })?;
+            assert!(owner.is_some(), "in-app span owner lane drifted");
+            let source: String =
+                conn.query_row("SELECT source FROM authorship_spans", [], |r| r.get(0))?;
+            assert_eq!(source, span_fixture["source"].as_str().unwrap());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn prose_propose_matches_parity_fixture_in_app() {
+        let fixture: serde_json::Value = serde_json::from_str(PROSE_FIXTURE).unwrap();
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+
+        let surface = "in-app-agent";
+        assert!(
+            fixture["sourceSurfaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s.as_str() == Some(surface)),
+            "surface '{surface}' must be declared in the parity fixture"
+        );
+
+        agent_propose_scene_body_impl(
+            &db,
+            AgentProposeSceneBodyPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                scene_id: scene_id.clone(),
+                proposed_content: "new prose".to_string(),
+                mode: "append".to_string(),
+                source_surface: surface.to_string(),
+                replace_from: None,
+                replace_to: None,
+            },
+        )
+        .unwrap();
+
+        db.with_conn(|conn| {
+            let (status, source_surface, content): (String, String, String) = conn.query_row(
+                "SELECT status, source_surface, proposed_content FROM prose_staging",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            assert_eq!(status, fixture["status"].as_str().unwrap());
+            assert_eq!(source_surface, surface);
+
+            // proposed_content keys: required keys present, every key known.
+            let content: serde_json::Value = serde_json::from_str(&content)?;
+            let keys = json_keys(&content);
+            let required = fixture_keys(&fixture["proposedContent"]["requiredKeys"]);
+            let optional = fixture_keys(&fixture["proposedContent"]["optionalKeys"]);
+            for key in &required {
+                assert!(keys.contains(key), "required key '{key}' missing: {keys:?}");
+            }
+            for key in &keys {
+                assert!(
+                    required.contains(key) || optional.contains(key),
+                    "in-app proposed_content emits unknown key '{key}' — \
+                     update the parity fixture AND the MCP consumer contract together"
+                );
+            }
+
+            // changeEvent contract
+            let ce = &fixture["changeEvent"];
+            let (domain, op_type, entity_type, payload): (String, String, String, String) = conn
+                .query_row(
+                    "SELECT domain, op_type, entity_type, payload FROM change_events",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?;
+            assert_eq!(domain, ce["domain"].as_str().unwrap());
+            assert_eq!(op_type, ce["opType"].as_str().unwrap());
+            assert_eq!(entity_type, ce["entityType"].as_str().unwrap());
+            let payload: serde_json::Value = serde_json::from_str(&payload)?;
+            assert_eq!(json_keys(&payload), fixture_keys(&ce["payloadKeys"]));
+            Ok(())
+        })
+        .unwrap();
+    }
 
     fn journal_row(
         entity_kind: &str,

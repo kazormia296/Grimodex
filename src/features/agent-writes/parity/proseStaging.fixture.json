@@ -1,0 +1,15 @@
+{
+  "status": "proposed",
+  "proposedContent": {
+    "requiredKeys": ["mode", "text"],
+    "optionalKeys": ["anchorText", "anchorPosition", "replaceFrom", "replaceTo"]
+  },
+  "changeEvent": {
+    "domain": "prose",
+    "opType": "prose.propose",
+    "entityType": "prose_staging",
+    "payloadKeys": ["stagingId", "sceneId", "mode", "preview"]
+  },
+  "policyGate": "bodyWrite",
+  "sourceSurfaces": ["mcp", "in-app-agent"]
+}

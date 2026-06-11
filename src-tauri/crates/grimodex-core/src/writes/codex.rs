@@ -504,3 +504,214 @@ pub fn tracked_codex_update(
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Contract snapshot shared with the in-app mirror (agent_writes.rs) and
+    /// the TS executor layer. Editing the fixture must break every side that
+    /// no longer matches — that is the point.
+    const FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../src/features/agent-writes/parity/codexCreate.fixture.json"
+    ));
+
+    fn setup_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, title TEXT NOT NULL);
+             CREATE TABLE codex_entries (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                aliases TEXT,
+                summary TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '{}',
+                parent_id TEXT,
+                source_chat_message_id TEXT,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE authorship_spans (
+                id TEXT PRIMARY KEY,
+                codex_entry_id TEXT,
+                snippet_id TEXT,
+                from_pos INTEGER NOT NULL,
+                to_pos INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                model TEXT,
+                chat_msg_id TEXT,
+                trace_id TEXT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE undo_journal (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                surface TEXT NOT NULL,
+                entity_kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                op_kind TEXT NOT NULL,
+                before_json TEXT,
+                after_json TEXT,
+                base_version INTEGER NOT NULL,
+                result_version INTEGER NOT NULL,
+                change_event_uid TEXT
+             );
+             CREATE TABLE change_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_uid TEXT,
+                project_id TEXT NOT NULL,
+                scene_id TEXT,
+                domain TEXT NOT NULL,
+                op_type TEXT NOT NULL,
+                entity_type TEXT,
+                entity_id TEXT,
+                payload TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                prev_hash TEXT NOT NULL,
+                hash TEXT NOT NULL
+             );
+             CREATE UNIQUE INDEX uq_change_events_project_seq
+                ON change_events(project_id, sequence);
+             CREATE UNIQUE INDEX uq_change_events_project_uid
+                ON change_events(project_id, event_uid);",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO projects (id, title) VALUES ('p1', 'Test')", [])
+            .unwrap();
+        conn
+    }
+
+    fn json_keys(v: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    fn fixture_keys(v: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap().to_string())
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn tracked_codex_create_matches_parity_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+        let conn = setup_conn();
+
+        let spans = [AuthorshipSpanInput {
+            from_pos: 0,
+            to_pos: 7,
+            source: fixture["authorshipSpan"]["source"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            model: None,
+            chat_msg_id: None,
+            trace_id: None,
+            lane: Some("summary".to_string()),
+        }];
+        tracked_codex_create(
+            &conn,
+            TrackedCodexCreateInput {
+                project_id: "p1",
+                session_id: "sess",
+                surface: "test",
+                entry_id: "e1",
+                type_slug: "character",
+                name: "Alice",
+                summary: "summary",
+                content: "{}",
+                aliases: None,
+                parent_id: None,
+                source_chat_message_id: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: &spans,
+                tags: &[],
+            },
+        )
+        .unwrap();
+
+        // --- changeEvent contract ---
+        let ce = &fixture["changeEvent"];
+        let (domain, op_type, entity_type, payload): (String, String, String, String) = conn
+            .query_row(
+                "SELECT domain, op_type, entity_type, payload FROM change_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(domain, ce["domain"].as_str().unwrap());
+        assert_eq!(op_type, ce["opType"].as_str().unwrap());
+        assert_eq!(entity_type, ce["entityType"].as_str().unwrap());
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(
+            json_keys(&payload),
+            fixture_keys(&ce["payloadKeys"]),
+            "change_event payload keys drifted from the parity fixture"
+        );
+
+        // --- undoJournal contract ---
+        let uj = &fixture["undoJournal"];
+        let (entity_kind, op_kind, before, after): (String, String, Option<String>, String) = conn
+            .query_row(
+                "SELECT entity_kind, op_kind, before_json, after_json FROM undo_journal",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(entity_kind, uj["entityKind"].as_str().unwrap());
+        assert_eq!(op_kind, uj["opKind"].as_str().unwrap());
+        assert!(
+            uj["beforeJson"].is_null() == before.is_none(),
+            "beforeJson nullability drifted"
+        );
+        let after: serde_json::Value = serde_json::from_str(&after).unwrap();
+        for key in fixture_keys(&uj["afterJsonKeys"]) {
+            assert!(
+                after.get(&key).is_some(),
+                "after_json is missing fixture key '{key}'"
+            );
+        }
+
+        // --- authorshipSpan contract ---
+        let span_fixture = &fixture["authorshipSpan"];
+        let owner_lane = span_fixture["ownerLane"].as_str().unwrap();
+        let owner: Option<String> = conn
+            .query_row(
+                &format!("SELECT {owner_lane} FROM authorship_spans"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner.as_deref(), Some("e1"), "span owner lane drifted");
+        for field in fixture_keys(&span_fixture["requiredFields"]) {
+            let present: bool = conn
+                .query_row(
+                    &format!("SELECT {field} IS NOT NULL FROM authorship_spans"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(present, "span required field '{field}' is null");
+        }
+        let source: String = conn
+            .query_row("SELECT source FROM authorship_spans", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source, span_fixture["source"].as_str().unwrap());
+    }
+}

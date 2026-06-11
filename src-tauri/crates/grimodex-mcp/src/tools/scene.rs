@@ -310,3 +310,177 @@ pub async fn propose_scene_body(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::tests::make_simple_db;
+    use crate::server::GrimodexServer;
+
+    /// Same contract snapshot the in-app mirror (agent_writes.rs) asserts.
+    const PROSE_FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../src/features/agent-writes/parity/proseStaging.fixture.json"
+    ));
+
+    fn make_writable_server(ai_policy: Option<&str>) -> GrimodexServer {
+        let conn = make_simple_db();
+        conn.execute(
+            "INSERT INTO projects (id, title, ai_policy) VALUES ('p1', 'Novel', ?1)",
+            rusqlite::params![ai_policy],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s1', 'p1', 'scene', 'Scene')",
+            [],
+        )
+        .unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        GrimodexServer::new(
+            conn,
+            "p1".to_string(),
+            false,
+            false,
+            "sess-mcp".to_string(),
+            policy,
+        )
+    }
+
+    fn json_keys(v: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    fn fixture_keys(v: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap().to_string())
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    #[tokio::test]
+    async fn propose_scene_body_matches_parity_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(PROSE_FIXTURE).unwrap();
+        let server = make_writable_server(None);
+        assert!(
+            fixture["sourceSurfaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s.as_str() == Some("mcp")),
+            "surface 'mcp' must be declared in the parity fixture"
+        );
+
+        // append + anchored insert — both shapes the MCP writer can emit.
+        propose_scene_body(
+            &server,
+            ProposeSceneBodyParams {
+                scene_id: "s1".to_string(),
+                text: "appended prose".to_string(),
+                mode: None,
+                anchor_text: None,
+                anchor_position: None,
+            },
+        )
+        .await
+        .unwrap();
+        propose_scene_body(
+            &server,
+            ProposeSceneBodyParams {
+                scene_id: "s1".to_string(),
+                text: "inserted prose".to_string(),
+                mode: Some("insert".to_string()),
+                anchor_text: Some("unique anchor".to_string()),
+                anchor_position: Some("before".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let conn = server.conn.lock().unwrap();
+        let required = fixture_keys(&fixture["proposedContent"]["requiredKeys"]);
+        let optional = fixture_keys(&fixture["proposedContent"]["optionalKeys"]);
+        let mut stmt = conn
+            .prepare("SELECT status, source_surface, proposed_content FROM prose_staging")
+            .unwrap();
+        let rows: Vec<(String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        for (status, surface, content) in &rows {
+            assert_eq!(status, fixture["status"].as_str().unwrap());
+            assert_eq!(surface, "mcp");
+            let content: serde_json::Value = serde_json::from_str(content).unwrap();
+            let keys = json_keys(&content);
+            for key in &required {
+                assert!(keys.contains(key), "required key '{key}' missing: {keys:?}");
+            }
+            for key in &keys {
+                assert!(
+                    required.contains(key) || optional.contains(key),
+                    "MCP proposed_content emits unknown key '{key}' — \
+                     update the parity fixture AND the in-app mirror together"
+                );
+            }
+        }
+
+        // changeEvent contract (two events, same shape).
+        let ce = &fixture["changeEvent"];
+        let mut stmt = conn
+            .prepare("SELECT domain, op_type, entity_type, payload FROM change_events")
+            .unwrap();
+        let events: Vec<(String, String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        for (domain, op_type, entity_type, payload) in &events {
+            assert_eq!(domain, ce["domain"].as_str().unwrap());
+            assert_eq!(op_type, ce["opType"].as_str().unwrap());
+            assert_eq!(entity_type, ce["entityType"].as_str().unwrap());
+            let payload: serde_json::Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(json_keys(&payload), fixture_keys(&ce["payloadKeys"]));
+        }
+    }
+
+    #[tokio::test]
+    async fn propose_scene_body_respects_fixture_policy_gate() {
+        let fixture: serde_json::Value = serde_json::from_str(PROSE_FIXTURE).unwrap();
+        let gate = fixture["policyGate"].as_str().unwrap();
+        // Build a custom policy with exactly the fixture's gate turned off.
+        let mut toggles = serde_json::json!({
+            "chat": true, "bodyWrite": true, "analysis": true,
+            "structureWrite": true, "knowledgeWrite": true,
+        });
+        toggles[gate] = serde_json::Value::Bool(false);
+        let policy_json =
+            serde_json::json!({ "preset": "custom", "toggles": toggles }).to_string();
+
+        let server = make_writable_server(Some(&policy_json));
+        let res = propose_scene_body(
+            &server,
+            ProposeSceneBodyParams {
+                scene_id: "s1".to_string(),
+                text: "blocked".to_string(),
+                mode: None,
+                anchor_text: None,
+                anchor_position: None,
+            },
+        )
+        .await;
+        assert!(res.is_err(), "fixture gate '{gate}'=off must block the write");
+        let conn = server.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM prose_staging", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+}

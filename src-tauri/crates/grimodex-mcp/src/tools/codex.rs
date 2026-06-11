@@ -455,3 +455,66 @@ pub async fn update_codex_entry(
         json,
     )]))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::tests::make_simple_db;
+    use crate::server::GrimodexServer;
+
+    /// The shape contract is asserted on the grimodex-core path (which this
+    /// tool calls directly); here we gate the tool-layer policy key against
+    /// the same parity fixture.
+    const CODEX_FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../src/features/agent-writes/parity/codexCreate.fixture.json"
+    ));
+
+    #[tokio::test]
+    async fn create_codex_entry_respects_fixture_policy_gate() {
+        let fixture: serde_json::Value = serde_json::from_str(CODEX_FIXTURE).unwrap();
+        let gate = fixture["policyGate"].as_str().unwrap();
+        let mut toggles = serde_json::json!({
+            "chat": true, "bodyWrite": true, "analysis": true,
+            "structureWrite": true, "knowledgeWrite": true,
+        });
+        toggles[gate] = serde_json::Value::Bool(false);
+        let policy_json =
+            serde_json::json!({ "preset": "custom", "toggles": toggles }).to_string();
+
+        let conn = make_simple_db();
+        conn.execute(
+            "INSERT INTO projects (id, title, ai_policy) VALUES ('p1', 'Novel', ?1)",
+            rusqlite::params![policy_json],
+        )
+        .unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        let server = GrimodexServer::new(
+            conn,
+            "p1".to_string(),
+            false,
+            false,
+            "sess-mcp".to_string(),
+            policy,
+        );
+
+        let res = create_codex_entry(
+            &server,
+            CreateCodexEntryParams {
+                type_slug: "character".to_string(),
+                name: "Alice".to_string(),
+                aliases: None,
+                summary: None,
+                content: None,
+                tags: None,
+            },
+        )
+        .await;
+        assert!(res.is_err(), "fixture gate '{gate}'=off must block the write");
+        let conn = server.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM codex_entries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+}
