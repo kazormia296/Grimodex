@@ -416,8 +416,6 @@ export function LinearEditorView() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // パネル開閉で branch が変わっても scroll container ツリーを remount しない
-  // よう JSX を共有する (remount = 全シーン再ロード + スクロール位置喪失)。
   const scrollContainer = (
     <div
       ref={scrollRef}
@@ -467,40 +465,43 @@ export function LinearEditorView() {
         showReplace={findShowReplace}
         onClose={() => setFindOpen(false)}
       />
-      {isPanelVisible ? (
-        <ResizablePanelGroup
-          orientation="horizontal"
-          className="min-h-0 flex-1"
-          onLayoutChanged={handlePanelLayoutChanged}
+      {/* Group は常時マウントし、パネル側だけ条件描画する。三項分岐で親を
+          差し替えると scroll container ごと remount され、全シーンの
+          unmount flush + 再ロードとスクロール位置喪失が起きる。 */}
+      <ResizablePanelGroup
+        orientation="horizontal"
+        className="min-h-0 flex-1"
+        onLayoutChanged={handlePanelLayoutChanged}
+      >
+        <ResizablePanel
+          id="editor-main"
+          minSize="40%"
+          className="flex flex-col overflow-hidden"
         >
-          <ResizablePanel
-            id="editor-main"
-            minSize="40%"
-            className="flex flex-col overflow-hidden"
-          >
-            {scrollContainer}
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel
-            id="scene-meta"
-            minSize="15%"
-            maxSize="50%"
-            defaultSize={`${sceneMetaPanelWidth}%`}
-            className="flex flex-col overflow-hidden"
-          >
-            <SceneMetaPanel
-              sceneId={activeId!}
-              // editor は「active シーンの editor」のみ渡す。スクロールで
-              // active が focused と乖離したまま渡すと、Beat 挿入等が
-              // 別シーンの doc に書き込まれてしまう。
-              editor={focusedSceneId === activeId ? focusedEditor : null}
-              setMentionPopup={setMentionPopup}
-            />
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      ) : (
-        scrollContainer
-      )}
+          {scrollContainer}
+        </ResizablePanel>
+        {isPanelVisible && (
+          <>
+            <ResizableHandle withHandle />
+            <ResizablePanel
+              id="scene-meta"
+              minSize="15%"
+              maxSize="50%"
+              defaultSize={`${sceneMetaPanelWidth}%`}
+              className="flex flex-col overflow-hidden"
+            >
+              <SceneMetaPanel
+                sceneId={activeId!}
+                // editor は「active シーンの editor」のみ渡す。スクロールで
+                // active が focused と乖離したまま渡すと、Beat 挿入等が
+                // 別シーンの doc に書き込まれてしまう。
+                editor={focusedSceneId === activeId ? focusedEditor : null}
+                setMentionPopup={setMentionPopup}
+              />
+            </ResizablePanel>
+          </>
+        )}
+      </ResizablePanelGroup>
       <CodexPopover editor={focusedEditor} />
       <EditorContextMenu editor={focusedEditor} containerRef={scrollRef} />
       {mentionPopup &&
