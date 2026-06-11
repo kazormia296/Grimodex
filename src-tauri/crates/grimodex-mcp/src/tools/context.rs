@@ -312,12 +312,16 @@ fn collect_scene_foreshadows(
 ) -> Result<Vec<SceneForeshadowRef>> {
     let mut refs = Vec::new();
 
+    // Orphaned setups (text region deleted) are skipped — same predicate
+    // list_open_foreshadows uses for setup counting. A foreshadow planted
+    // multiple times in one scene still yields ONE context entry (the
+    // earliest setup's kind wins), otherwise it spams the payload.
     let mut setup_stmt = conn.prepare(
         "SELECT f.id, f.title, f.intent, f.load_bearing, s.kind
          FROM foreshadow_setups s
          JOIN foreshadows f ON f.id = s.foreshadow_id
          WHERE s.scene_id = ?1 AND f.project_id = ?2
-           AND f.secret = 0 AND f.abandoned = 0
+           AND f.secret = 0 AND f.abandoned = 0 AND s.is_orphan = 0
          ORDER BY s.created_at",
     )?;
     let setups = setup_stmt.query_map(rusqlite::params![scene_id, project_id], |row| {
@@ -330,8 +334,12 @@ fn collect_scene_foreshadows(
             kind: row.get(4)?,
         })
     })?;
+    let mut seen_setup_ids = std::collections::HashSet::new();
     for r in setups {
-        refs.push(r?);
+        let r = r?;
+        if seen_setup_ids.insert(r.foreshadow_id.clone()) {
+            refs.push(r);
+        }
     }
 
     let mut payoff_stmt = conn.prepare(
@@ -1091,6 +1099,62 @@ mod tests {
         let open_ids: Vec<&str> = ctx.open_foreshadows.iter().map(|f| f.id.as_str()).collect();
         assert!(open_ids.contains(&"f1"));
         assert!(!open_ids.contains(&"f2"), "secret leaked into open list");
+    }
+
+    #[test]
+    fn scene_foreshadows_dedupe_multiple_setups_and_skip_orphans() {
+        let conn = make_simple_db();
+        seed_project(&conn, "p1", "N");
+        seed_node(&conn, "s1", "p1", None, "scene", "S1", None, "a0", "{}");
+        // Same foreshadow planted twice in the same scene + one orphaned setup
+        // (its text region was deleted) → exactly ONE context entry.
+        // Live repro: 印形の歪み appeared 3x in a real get_writing_context call.
+        seed_foreshadow(&conn, "f1", "p1", "印形の歪み", false);
+        seed_setup(&conn, "su1", "f1", "s1");
+        seed_setup(&conn, "su2", "f1", "s1");
+        conn.execute(
+            "INSERT INTO foreshadow_setups
+             (id, foreshadow_id, scene_id, is_orphan, created_at, updated_at)
+             VALUES ('su3', 'f1', 's1', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        let ctx = build_writing_context(&conn, "p1", "s1").unwrap().unwrap();
+        let f1_setups: Vec<_> = ctx
+            .scene_foreshadows
+            .iter()
+            .filter(|f| f.foreshadow_id == "f1" && f.role == "setup")
+            .collect();
+        assert_eq!(
+            f1_setups.len(),
+            1,
+            "duplicate setups must collapse to one entry: {:?}",
+            ctx.scene_foreshadows
+        );
+    }
+
+    #[test]
+    fn scene_foreshadows_orphan_only_setup_is_excluded() {
+        let conn = make_simple_db();
+        seed_project(&conn, "p1", "N");
+        seed_node(&conn, "s1", "p1", None, "scene", "S1", None, "a0", "{}");
+        // The ONLY setup in this scene is orphaned → foreshadow must not appear.
+        seed_foreshadow(&conn, "f1", "p1", "消えた段落の伏線", false);
+        conn.execute(
+            "INSERT INTO foreshadow_setups
+             (id, foreshadow_id, scene_id, is_orphan, created_at, updated_at)
+             VALUES ('su1', 'f1', 's1', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        let ctx = build_writing_context(&conn, "p1", "s1").unwrap().unwrap();
+        assert!(
+            ctx.scene_foreshadows.is_empty(),
+            "orphaned setup must be excluded (list_open_foreshadows parity): {:?}",
+            ctx.scene_foreshadows
+        );
     }
 
     // ---------------- timeline neighbors ----------------
