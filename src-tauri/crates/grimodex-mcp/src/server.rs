@@ -326,7 +326,7 @@ impl GrimodexServer {
 
     /// Read the message history of a chat session. Filter by anchor messages or limit count.
     #[tool(
-        description = "Read the message history of a chat session. Use anchors_only=true to return user messages and Tier-2 anchor AI messages (inserted to editor, Codex/Snippet extracted). starred_only is deprecated (maps to anchors_only). Response includes metadata."
+        description = "Read the message history of a chat session. Returns the most recent `limit` messages in chronological order. Use anchors_only=true to return user messages and Tier-2 anchor AI messages (inserted to editor, Codex/Snippet extracted). starred_only is deprecated (maps to anchors_only). Response includes metadata."
     )]
     async fn read_chat_history(
         &self,

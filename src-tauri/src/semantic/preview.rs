@@ -73,6 +73,44 @@ pub fn slice_context(
     }
 }
 
+/// index 時の char offset は本文編集で stale になりうる。`indexed_chunk`
+/// (scene_chunks.text) と切り出し結果を照合し、ズレていたら現本文から
+/// チャンク本文を探し直す。見つからない (大きく編集済み) 場合は、別箇所の
+/// 無関係なテキストを見せるより index 時のチャンク本文をそのまま返す。
+pub fn slice_context_verified(
+    plain_text: &str,
+    char_start: usize,
+    char_end: usize,
+    padding: usize,
+    scene_title: String,
+    indexed_chunk: Option<&str>,
+) -> PreviewContext {
+    let ctx = slice_context(plain_text, char_start, char_end, padding, scene_title.clone());
+    let Some(expected) = indexed_chunk.filter(|s| !s.is_empty()) else {
+        return ctx;
+    };
+    if ctx.chunk == expected {
+        return ctx;
+    }
+    if let Some(byte_pos) = plain_text.find(expected) {
+        let start_chars = plain_text[..byte_pos].chars().count();
+        let len_chars = expected.chars().count();
+        return slice_context(
+            plain_text,
+            start_chars,
+            start_chars + len_chars,
+            padding,
+            scene_title,
+        );
+    }
+    PreviewContext {
+        before: String::new(),
+        chunk: expected.to_string(),
+        after: String::new(),
+        scene_title,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::slice_context;
@@ -150,5 +188,48 @@ mod tests {
         assert_eq!(ctx.before, "");
         assert_eq!(ctx.chunk, "cd");
         assert_eq!(ctx.after, "");
+    }
+
+    #[test]
+    fn verified_returns_slice_when_offsets_match() {
+        let text = "the quick brown fox";
+        let ctx = super::slice_context_verified(text, 10, 15, 4, "T".into(), Some("brown"));
+        assert_eq!(ctx.chunk, "brown");
+        assert_eq!(ctx.before, "ick ");
+    }
+
+    #[test]
+    fn verified_relocates_chunk_when_offsets_are_stale() {
+        // 先頭に 6 文字挿入され offset が 6 ズレた状況。
+        let text = "[NEW] the quick brown fox";
+        let ctx = super::slice_context_verified(text, 10, 15, 4, "T".into(), Some("brown"));
+        assert_eq!(ctx.chunk, "brown");
+        assert_eq!(ctx.after, " fox");
+    }
+
+    #[test]
+    fn verified_falls_back_to_indexed_text_when_chunk_no_longer_exists() {
+        let text = "completely rewritten body";
+        let ctx = super::slice_context_verified(text, 10, 15, 4, "T".into(), Some("brown"));
+        assert_eq!(ctx.chunk, "brown");
+        assert_eq!(ctx.before, "");
+        assert_eq!(ctx.after, "");
+    }
+
+    #[test]
+    fn verified_without_indexed_chunk_behaves_like_slice_context() {
+        let text = "abcdef";
+        let ctx = super::slice_context_verified(text, 2, 4, 0, "T".into(), None);
+        assert_eq!(ctx.chunk, "cd");
+    }
+
+    #[test]
+    fn verified_relocates_multibyte_chunk() {
+        let text = "序文。吾輩は猫である。名前はまだ無い。";
+        // 「吾輩は猫である。」は char 3..11 だが、stale offset (0..8) を渡す。
+        let ctx =
+            super::slice_context_verified(text, 0, 8, 2, "T".into(), Some("吾輩は猫である。"));
+        assert_eq!(ctx.chunk, "吾輩は猫である。");
+        assert_eq!(ctx.before, "文。");
     }
 }

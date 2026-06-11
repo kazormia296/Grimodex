@@ -815,26 +815,33 @@ pub fn get_chat_messages(
     // クロスプロジェクトでチャット全履歴を読めてしまう (XPROJ read-by-id 防御)。
     // chat_messages に project_id 列が無いため、所有プロジェクトを持つ
     // chat_sessions へ JOIN して `cs.project_id` でゲートする。
+    //
+    // limit は「直近 N 件」: 内側で新しい順に切ってから時系列順へ並べ直す。
+    // 古い順に LIMIT すると長い会話で直近のやり取りが欠落する。
     let sql = if anchors_only {
-        "SELECT m.id, m.session_id, m.role, m.content, m.model, m.metadata, m.is_starred, m.created_at
-         FROM chat_messages m
-         JOIN chat_sessions cs ON cs.id = m.session_id
-         WHERE cs.project_id = ?1 AND m.session_id = ?2 AND (
-           m.role = 'user'
-           OR json_extract(m.metadata, '$.insertedToEditor') = 1
-           OR json_extract(m.metadata, '$.insertedToEditor') = 'true'
-           OR (json_type(json_extract(m.metadata, '$.extractedCodex')) = 'array'
-               AND json_array_length(json_extract(m.metadata, '$.extractedCodex')) > 0)
-           OR (json_type(json_extract(m.metadata, '$.extractedSnippets')) = 'array'
-               AND json_array_length(json_extract(m.metadata, '$.extractedSnippets')) > 0)
-         )
-         ORDER BY m.created_at LIMIT ?3"
+        "SELECT * FROM (
+           SELECT m.id, m.session_id, m.role, m.content, m.model, m.metadata, m.is_starred, m.created_at
+           FROM chat_messages m
+           JOIN chat_sessions cs ON cs.id = m.session_id
+           WHERE cs.project_id = ?1 AND m.session_id = ?2 AND (
+             m.role = 'user'
+             OR json_extract(m.metadata, '$.insertedToEditor') = 1
+             OR json_extract(m.metadata, '$.insertedToEditor') = 'true'
+             OR (json_type(json_extract(m.metadata, '$.extractedCodex')) = 'array'
+                 AND json_array_length(json_extract(m.metadata, '$.extractedCodex')) > 0)
+             OR (json_type(json_extract(m.metadata, '$.extractedSnippets')) = 'array'
+                 AND json_array_length(json_extract(m.metadata, '$.extractedSnippets')) > 0)
+           )
+           ORDER BY m.created_at DESC, m.id DESC LIMIT ?3
+         ) ORDER BY created_at, id"
     } else {
-        "SELECT m.id, m.session_id, m.role, m.content, m.model, m.metadata, m.is_starred, m.created_at
-         FROM chat_messages m
-         JOIN chat_sessions cs ON cs.id = m.session_id
-         WHERE cs.project_id = ?1 AND m.session_id = ?2
-         ORDER BY m.created_at LIMIT ?3"
+        "SELECT * FROM (
+           SELECT m.id, m.session_id, m.role, m.content, m.model, m.metadata, m.is_starred, m.created_at
+           FROM chat_messages m
+           JOIN chat_sessions cs ON cs.id = m.session_id
+           WHERE cs.project_id = ?1 AND m.session_id = ?2
+           ORDER BY m.created_at DESC, m.id DESC LIMIT ?3
+         ) ORDER BY created_at, id"
     };
     let mut stmt = conn.prepare(sql)?;
     let lim = limit.min(200) as i64;
@@ -2422,6 +2429,36 @@ mod tests {
         // another project's chat history.
         let cross = get_chat_messages(&conn, "p2", "cs1", false, 100).unwrap();
         assert!(cross.is_empty());
+    }
+
+    #[test]
+    fn test_get_chat_messages_limit_keeps_most_recent() {
+        // limit は「直近 N 件を時系列順」: 古い順 LIMIT だと長い会話で
+        // 直近のやり取りが欠落する (外部 LLM が古い文脈しか見えなくなる)。
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        conn.execute(
+            "INSERT INTO chat_sessions (id, project_id, title) VALUES ('cs1', 'p1', 'Session')",
+            [],
+        )
+        .unwrap();
+        for i in 1..=5 {
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content, created_at)
+                 VALUES (?1, 'cs1', 'user', ?2, ?3)",
+                params![
+                    format!("m{i}"),
+                    format!("msg {i}"),
+                    format!("2026-01-0{i}T00:00:00Z")
+                ],
+            )
+            .unwrap();
+        }
+        let recent = get_chat_messages(&conn, "p1", "cs1", false, 2).unwrap();
+        assert_eq!(recent.len(), 2);
+        // 直近 2 件 (m4, m5) が時系列順で返る
+        assert_eq!(recent[0].id, "m4");
+        assert_eq!(recent[1].id, "m5");
     }
 
     #[test]

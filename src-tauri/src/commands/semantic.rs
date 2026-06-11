@@ -325,7 +325,7 @@ pub(crate) async fn semantic_chunk_context(
     char_end: usize,
     padding: usize,
 ) -> Result<crate::semantic::preview::PreviewContext, AppError> {
-    use crate::semantic::preview::{slice_context, PreviewContext};
+    use crate::semantic::preview::{slice_context_verified, PreviewContext};
     let result =
         tauri::async_runtime::spawn_blocking(move || -> Result<PreviewContext, AppError> {
             let ws_state = app.state::<WorkspaceState>();
@@ -337,6 +337,20 @@ pub(crate) async fn semantic_chunk_context(
                          WHERE id = ? AND node_type = 'scene'",
                             rusqlite::params![scene_id],
                             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                        )
+                        .ok();
+                    Ok(v)
+                })?;
+
+                // index 時のチャンク本文。本文が再 index 前に編集されていると
+                // char offset がズレるため、照合・探し直しに使う。
+                let indexed_chunk: Option<String> = db.with_conn(|conn| {
+                    let v = conn
+                        .query_row(
+                            "SELECT text FROM scene_chunks \
+                         WHERE scene_id = ? AND char_start = ? AND char_end = ?",
+                            rusqlite::params![scene_id, char_start as i64, char_end as i64],
+                            |row| row.get::<_, String>(0),
                         )
                         .ok();
                     Ok(v)
@@ -359,12 +373,13 @@ pub(crate) async fn semantic_chunk_context(
                 let paragraphs = crate::semantic::chunker::extract_paragraph_texts(&doc);
                 let plain_text = paragraphs.join("\n");
 
-                Ok(slice_context(
+                Ok(slice_context_verified(
                     &plain_text,
                     char_start,
                     char_end,
                     padding,
                     scene_title,
+                    indexed_chunk.as_deref(),
                 ))
             })
         })

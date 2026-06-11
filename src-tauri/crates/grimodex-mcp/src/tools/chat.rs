@@ -22,7 +22,8 @@ pub struct ReadChatHistoryParams {
     pub anchors_only: Option<bool>,
     /// Deprecated: use `anchors_only`. When true, maps to `anchors_only=true`.
     pub starred_only: Option<bool>,
-    /// Maximum messages to return (1-200, default: 100).
+    /// Maximum messages to return (1-200, default: 100). Returns the most
+    /// recent N messages in chronological order.
     pub limit: Option<u32>,
 }
 
