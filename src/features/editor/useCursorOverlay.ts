@@ -23,9 +23,9 @@ export function useCursorOverlay(editor: Editor | null) {
   const cursorBlink = useSettingsStore((s) =>
     s.getBoolean("editor.cursorBlink", true),
   );
-  // The overlay computes pixel positions with a horizontal-writing bias model,
-  // so vertical mode forces it off (effective value only — the user's
-  // smoothCaret setting is untouched) and the native caret takes over.
+  // Writing mode は plugin 内で call-time 読み (getVertical)。縦書きでは
+  // キャレットを横棒で描き、行跨ぎ affinity を X 軸で解決する。モード切替は
+  // 下の effect の meta dispatch で再描画される。
   const verticalMode = useSettingsStore((s) =>
     s.getBoolean("editor.verticalMode", false),
   );
@@ -36,10 +36,11 @@ export function useCursorOverlay(editor: Editor | null) {
     editor.registerPlugin(
       createCursorOverlayPlugin(
         () =>
-          useSettingsStore.getState().getBoolean("editor.smoothCaret", true) &&
-          !useSettingsStore.getState().getBoolean("editor.verticalMode", false),
+          useSettingsStore.getState().getBoolean("editor.smoothCaret", true),
         () =>
           useSettingsStore.getState().getBoolean("editor.cursorBlink", true),
+        () =>
+          useSettingsStore.getState().getBoolean("editor.verticalMode", false),
       ),
     );
     return () => {

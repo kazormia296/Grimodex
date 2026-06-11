@@ -2,7 +2,12 @@
 
 import type { EditorView } from "@tiptap/pm/view";
 
-export type Coords = { left: number; top: number; bottom: number };
+export type Coords = {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+};
 
 /**
  * Convert viewport-relative coordinates to container-relative pixel offsets.
@@ -18,6 +23,55 @@ export function toContainerRelative(
     top: coords.top - containerRect.top,
     height: coords.bottom - coords.top,
   };
+}
+
+/**
+ * coordsAtPos のキャレット矩形 → overlay div の box。
+ * 横書き: 縦棒 (width=thickness, height=行高)。
+ * 縦書き (vertical-rl): coordsAtPos は文字幅ぶんの水平な矩形を返すので
+ * 横棒 (width=文字幅, height=thickness)。
+ */
+export function caretBox(
+  coords: Coords,
+  containerRect: { left: number; top: number },
+  vertical: boolean,
+  thickness = 2,
+): { left: number; top: number; width: number; height: number } {
+  const left = coords.left - containerRect.left;
+  const top = coords.top - containerRect.top;
+  if (vertical) {
+    return {
+      left,
+      top,
+      width: Math.max(coords.right - coords.left, thickness),
+      height: thickness,
+    };
+  }
+  return {
+    left,
+    top,
+    width: thickness,
+    height: Math.max(coords.bottom - coords.top, thickness),
+  };
+}
+
+/**
+ * 行スタック軸の content 座標 (読み進み方向が正になるよう正規化)。
+ * 横書き: 行は下に積まれる → y (top 基準 + scrollTop 補正)。
+ * 縦書き (vertical-rl): 行は左に積まれる → x を負号で反転
+ * (scrollLeft は Chromium の 0 起点・負方向規約: content 座標 =
+ * viewportX - rect.left + scrollLeft、を反転して前方=増加に揃える)。
+ * resolveVerticalBias の "down=前方" 規約にそのまま流せる。
+ */
+export function lineAxisContentCoord(
+  coords: { left: number; top: number },
+  containerRect: { left: number; top: number },
+  scroll: { scrollLeft: number; scrollTop: number },
+  vertical: boolean,
+): number {
+  return vertical
+    ? -(coords.left - containerRect.left + scroll.scrollLeft)
+    : coords.top - containerRect.top + scroll.scrollTop;
 }
 
 /**

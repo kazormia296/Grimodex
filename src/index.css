@@ -1164,6 +1164,8 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 
 .typewriter-cursor {
   position: absolute;
+  /* width/height は CursorOverlayPlugin が writing-mode に応じて inline で
+   * 設定する (横書き: 縦棒 2px 幅、縦書き: 横棒 2px 高)。 */
   width: 2px;
   background-color: var(--content-foreground);
   pointer-events: none;
@@ -1172,6 +1174,7 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   transition:
     left 80ms cubic-bezier(0.22, 1, 0.36, 1),
     top 80ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 80ms cubic-bezier(0.22, 1, 0.36, 1),
     height 80ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 

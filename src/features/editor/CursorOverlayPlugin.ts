@@ -2,9 +2,10 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { EditorState } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import {
+  caretBox,
+  lineAxisContentCoord,
   resolveCoords,
   resolveVerticalBias,
-  toContainerRelative,
 } from "./cursorCoords";
 
 export const cursorOverlayKey = new PluginKey("cursorOverlay");
@@ -25,6 +26,7 @@ export const cursorOverlayKey = new PluginKey("cursorOverlay");
 export function createCursorOverlayPlugin(
   getEnabled: () => boolean,
   getBlink: () => boolean = () => true,
+  getVertical: () => boolean = () => false,
 ): Plugin {
   let overlayView: CursorOverlayView | null = null;
 
@@ -32,7 +34,12 @@ export function createCursorOverlayPlugin(
     key: cursorOverlayKey,
 
     view(editorView) {
-      overlayView = new CursorOverlayView(editorView, getEnabled, getBlink);
+      overlayView = new CursorOverlayView(
+        editorView,
+        getEnabled,
+        getBlink,
+        getVertical,
+      );
       return overlayView;
     },
 
@@ -114,21 +121,23 @@ class CursorOverlayView {
    */
   private bias: -1 | 1 = 1;
   /**
-   * Y coordinate of the most recent mousedown (viewport-relative).
+   * Coordinates of the most recent mousedown (viewport-relative).
    * Used once in the next updateCursor call to resolve wrap affinity,
-   * then cleared.
+   * then cleared. The axis read depends on writing mode (Y when horizontal,
+   * X when vertical-rl).
    */
-  private pendingClickY: number | null = null;
+  private pendingClick: { x: number; y: number } | null = null;
   /**
-   * Wrapper-content-relative top of the last rendered cursor position.
-   * Stored as `viewportY - wrapperRect.top + wrapper.scrollTop` so
-   * the value is stable across scroll changes.
+   * Wrapper-content-relative line-axis coordinate of the last rendered
+   * cursor position (lineAxisContentCoord — forward-positive in both
+   * writing modes), stable across scroll changes.
    */
-  private prevTop: number | null = null;
+  private prevLineCoord: number | null = null;
   /**
-   * Set by ArrowUp/Down in updateBiasFromKey, consumed by updateCursor.
-   * When non-null, updateCursor resolves bias by comparing candidate
-   * coordinates against prevTop rather than using the preserved bias.
+   * Set by line-crossing keys in updateBiasFromKey, consumed by
+   * updateCursor. When non-null, updateCursor resolves bias by comparing
+   * candidate coordinates against prevLineCoord rather than using the
+   * preserved bias. "down" = forward (next line), "up" = backward.
    */
   private pendingVertical: "up" | "down" | null = null;
 
@@ -136,6 +145,7 @@ class CursorOverlayView {
     private view: EditorView,
     private getEnabled: () => boolean,
     private getBlink: () => boolean,
+    private getVertical: () => boolean = () => false,
   ) {
     const wrapper = view.dom.parentElement;
     if (!wrapper) throw new Error("CursorOverlayView: editor has no parent");
@@ -177,25 +187,34 @@ class CursorOverlayView {
   }
 
   updateBiasFromKey(event: KeyboardEvent) {
+    // 行を跨ぐキーと行内移動キーは writing-mode で入れ替わる:
+    // 横書きは ↑/↓ が行跨ぎ・←/→ が行内、縦書き (vertical-rl) は ←/→ が
+    // 行跨ぎ (← = 次の行 = 前方)・↑/↓ が行内。
+    const vertical = this.getVertical();
+    const prevLineKey = vertical ? "ArrowRight" : "ArrowUp";
+    const nextLineKey = vertical ? "ArrowLeft" : "ArrowDown";
     switch (event.key) {
       case "End":
       case "Backspace":
         this.bias = -1;
         this.pendingVertical = null;
         break;
-      case "Home":
-      case "ArrowLeft":
-      case "ArrowRight":
-        this.bias = 1;
-        this.pendingVertical = null;
-        break;
-      case "ArrowUp":
+      case prevLineKey:
       case "PageUp":
         this.pendingVertical = "up";
         break;
-      case "ArrowDown":
+      case nextLineKey:
       case "PageDown":
         this.pendingVertical = "down";
+        break;
+      case "Home":
+      case "ArrowLeft":
+      case "ArrowRight":
+      case "ArrowUp":
+      case "ArrowDown":
+        // 上の case で拾われなかった矢印 = 行内移動
+        this.bias = 1;
+        this.pendingVertical = null;
         break;
       default:
         if (IGNORE_KEYS.has(event.key)) break;
@@ -206,11 +225,12 @@ class CursorOverlayView {
   }
 
   /**
-   * For mouse clicks: store the click Y so updateCursor can compare it
-   * against the two candidate line positions at a wrap boundary.
+   * For mouse clicks: store the click coordinates so updateCursor can
+   * compare them against the two candidate line positions at a wrap
+   * boundary (Y axis when horizontal, X axis when vertical-rl).
    */
   updateBiasFromClick(_view: EditorView, event: MouseEvent) {
-    this.pendingClickY = event.clientY;
+    this.pendingClick = { x: event.clientX, y: event.clientY };
     this.pendingVertical = null;
     this.bias = 1; // will be refined in updateCursor if wrap point
   }
@@ -241,20 +261,30 @@ class CursorOverlayView {
     this.prevDocSize = docSize;
 
     const { from } = view.state.selection;
+    const vertical = this.getVertical();
 
-    // For mouse clicks: refine bias using click Y vs. the two candidate
-    // line positions at a soft-wrap boundary.
-    if (this.pendingClickY !== null) {
-      const clickY = this.pendingClickY;
-      this.pendingClickY = null;
+    // For mouse clicks: refine bias using the click position vs. the two
+    // candidate line positions at a soft-wrap boundary. The line axis is
+    // Y when horizontal, X when vertical-rl (lines stack leftward).
+    if (this.pendingClick !== null) {
+      const click = this.pendingClick;
+      this.pendingClick = null;
       try {
         const endCoords = view.coordsAtPos(from, -1);
         const startCoords = view.coordsAtPos(from, 1);
-        if (Math.abs(endCoords.top - startCoords.top) > 2) {
-          const endMid = (endCoords.top + endCoords.bottom) / 2;
-          const startMid = (startCoords.top + startCoords.bottom) / 2;
-          const distToEnd = Math.abs(clickY - endMid);
-          const distToStart = Math.abs(clickY - startMid);
+        const lineGap = vertical
+          ? Math.abs(endCoords.left - startCoords.left)
+          : Math.abs(endCoords.top - startCoords.top);
+        if (lineGap > 2) {
+          const mid = (c: {
+            left: number;
+            right: number;
+            top: number;
+            bottom: number;
+          }) => (vertical ? (c.left + c.right) / 2 : (c.top + c.bottom) / 2);
+          const clickCoord = vertical ? click.x : click.y;
+          const distToEnd = Math.abs(clickCoord - mid(endCoords));
+          const distToStart = Math.abs(clickCoord - mid(startCoords));
           this.bias = distToEnd <= distToStart ? -1 : 1;
         }
       } catch {
@@ -262,17 +292,25 @@ class CursorOverlayView {
       }
     }
 
-    // Resolve wrap affinity after ArrowUp/Down using previous Y position.
-    // Coordinates are converted to wrapper-content-relative to stay stable
-    // across scrolls that may occur between the previous and current frame.
-    if (this.pendingVertical !== null && this.prevTop !== null) {
+    // Resolve wrap affinity after line-crossing keys using the previous
+    // line-axis position. Coordinates are converted to a forward-positive
+    // wrapper-content-relative axis (lineAxisContentCoord) so the same
+    // resolveVerticalBias logic works for both writing modes and stays
+    // stable across scrolls between frames.
+    if (this.pendingVertical !== null && this.prevLineCoord !== null) {
       try {
-        const endTop = this.toContentY(view.coordsAtPos(from, -1).top);
-        const startTop = this.toContentY(view.coordsAtPos(from, 1).top);
+        const endCoord = this.toContentLineCoord(
+          view.coordsAtPos(from, -1),
+          vertical,
+        );
+        const startCoord = this.toContentLineCoord(
+          view.coordsAtPos(from, 1),
+          vertical,
+        );
         const resolved = resolveVerticalBias(
-          endTop,
-          startTop,
-          this.prevTop,
+          endCoord,
+          startCoord,
+          this.prevLineCoord,
           this.pendingVertical,
         );
         if (resolved !== null) this.bias = resolved;
@@ -290,16 +328,18 @@ class CursorOverlayView {
       return;
     }
 
-    this.prevTop = this.toContentY(coords.top);
+    this.prevLineCoord = this.toContentLineCoord(coords, vertical);
 
-    const pos = toContainerRelative(
+    const box = caretBox(
       coords,
       this.wrapper.getBoundingClientRect(),
+      vertical,
     );
     this.el.style.visibility = "visible";
-    this.el.style.left = `${pos.left}px`;
-    this.el.style.top = `${pos.top}px`;
-    this.el.style.height = `${pos.height}px`;
+    this.el.style.left = `${box.left}px`;
+    this.el.style.top = `${box.top}px`;
+    this.el.style.width = `${box.width}px`;
+    this.el.style.height = `${box.height}px`;
 
     // Restart blink: solid for one frame, then resume blinking.
     // When blink is disabled, keep the cursor solid (no class added).
@@ -324,12 +364,19 @@ class CursorOverlayView {
     }
   }
 
-  /** Convert a viewport-relative Y to wrapper-content-relative Y. */
-  private toContentY(viewportY: number): number {
-    return (
-      viewportY -
-      this.wrapper.getBoundingClientRect().top +
-      this.wrapper.scrollTop
+  /**
+   * Convert viewport coords to a wrapper-content-relative line-axis
+   * coordinate (forward-positive in both writing modes).
+   */
+  private toContentLineCoord(
+    coords: { left: number; top: number },
+    vertical: boolean,
+  ): number {
+    return lineAxisContentCoord(
+      coords,
+      this.wrapper.getBoundingClientRect(),
+      this.wrapper,
+      vertical,
     );
   }
 }

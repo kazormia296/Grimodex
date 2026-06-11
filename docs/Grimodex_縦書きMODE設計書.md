@@ -32,15 +32,27 @@ per-project トグル（`editor.verticalMode`、project_settings KV）で TipTap
    browser test に canary あり（崩れたら即検知）。
 
 4. **縦書き非対応機能は「実効 OFF」（設定値は書き換えない）**
-   - smoothCaret（CursorOverlayPlugin）: 水平 bias モデルで縦書き全壊のため
-     getEnabled getter に `&& !verticalMode` を AND → native キャレット委譲。
-     OFF 時に caretColor が復帰する契約は unit test で gate。
    - typewriter scroll: Y 軸固定計算のため `effectiveTypewriter` で gate
      （useTypewriterScroll + EditorPane の即時センタリング effect の両方）。
    - characterFadeOut: coordsAtPos→fixed ゴーストのグリフ向きがズレるため実効 OFF。
      fadeIn は opacity のみなので両モード有効。
+   - smoothCaret は v1 で実効 OFF だったが **論理軸化して縦書き対応済み**
+     （ユーザー要望）。CursorOverlayPlugin に getVertical を注入し、
+     (a) キャレット箱: 縦書きでは横棒 width=文字幅/height=2px（caretBox）、
+     (b) 行跨ぎ affinity: 行スタック軸を前方=増加に正規化して
+     resolveVerticalBias を両モード共用（lineAxisContentCoord、vertical-rl
+     の負方向 scrollLeft も吸収）、(c) キー意味の入替: 縦書きでは ←/→ が
+     行跨ぎ・↑/↓ が行内、(d) クリック affinity は X 軸比較。
+     純関数は cursorCoords.test.ts で gate、実機 QA は IME + 行跨ぎ移動。
 
-5. **node-island は horizontal-tb リセット**
+5. **縦書きのスクロール/ハイライト調整（ユーザー要望で追補）**
+   - マウスホイール縦回転 → 読み進み方向（横）スクロール変換
+     （useVerticalWheelScroll、非 passive listener。トラックパッド横/
+     Shift+wheel/ctrl ズームは奪わない）。タブエディタ・リニア両方に配線。
+   - Codex ハイライト背景の padding は論理 `padding-inline: 2px`
+     （物理 `padding: 0 2px` は縦書きで行の太さ方向に効いて横幅が太る）。
+
+6. **node-island は horizontal-tb リセット**
    scene-beat / scene-break / table / pre（コードブロック）/
    taskList（ul ごとリセットで nested にも継承）。
    browser test（verticalMode.browser.test.tsx）が寸法潰れと flex 軸を gate。
@@ -49,7 +61,7 @@ per-project トグル（`editor.verticalMode`、project_settings KV）で TipTap
    AI 生成シーンが縦書きリニアで丸ごと横書きで mount される（実バグ報告で発覚）。
    vertical-rl 継承へ変更し、同 browser test が縦書き継承側も gate する。
 
-6. **per-scene スクロール保存は論理オフセット**
+7. **per-scene スクロール保存は論理オフセット**
    EditorPane の savedEditorStateRef は `scrollOffset`（論理値）を保存。
    縦書きトグル時は保存済みオフセットと heightMap（Linear placeholder）を破棄して
    軸跨ぎ復元事故を防ぐ（カーソル位置 from/to は論理なので保持）。
@@ -69,7 +81,7 @@ per-project トグル（`editor.verticalMode`、project_settings KV）で TipTap
 ## v1 の既知制限（意図的 defer）
 
 - 縦中横（text-combine-upright）未対応 — 半角数字/欧文は mixed で横倒し
-- typewriter / smoothCaret / characterFadeOut の縦書き対応版
+- typewriter / characterFadeOut の縦書き対応版（smoothCaret は対応済み）
 - popup 群（Codex/Comment/Foreshadow/Slash 等）の出現方向最適化 —
   viewport 座標なので機能はするが「下に出す」前提が縦組みでは不自然
 - maxContentWidth の設定ラベル（縦書きでは「行長（高さ）」の意味になる）

@@ -42,10 +42,13 @@ export function mapMatchesToDecorations(
       tx: "#888888",
       fg: "#888888",
     };
+    // padding は論理プロパティで「テキスト進行方向の前後 2px」を指定する。
+    // 物理 `padding: 0 2px` だと縦書き (vertical-rl) で左右 = 行の太さ方向に
+    // 効いてしまい、ハイライト行だけ横幅が太って見える。
     const inlineStyle =
       highlightStyle === "underline"
         ? `text-decoration: underline; text-decoration-color: ${colors.fg}; text-underline-offset: 3px`
-        : `background-color: ${colors.hl}; color: ${colors.tx}; border-radius: 3px; padding: 0 2px`;
+        : `background-color: ${colors.hl}; color: ${colors.tx}; border-radius: 3px; padding-inline: 2px`;
 
     // Check if the match is entirely within a single ruby atom.
     // All flat chars must map to the same PM position (the atom's pos).

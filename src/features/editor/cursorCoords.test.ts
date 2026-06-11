@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  caretBox,
+  lineAxisContentCoord,
   toContainerRelative,
   resolveCoords,
   resolveVerticalBias,
@@ -12,7 +14,7 @@ import type { EditorView } from "@tiptap/pm/view";
 // ---------------------------------------------------------------------------
 describe("toContainerRelative", () => {
   it("converts viewport coords to container-relative offsets", () => {
-    const coords: Coords = { left: 150, top: 300, bottom: 320 };
+    const coords: Coords = { left: 150, right: 152, top: 300, bottom: 320 };
     const containerRect = { left: 50, top: 100 };
     expect(toContainerRelative(coords, containerRect)).toEqual({
       left: 100,
@@ -22,7 +24,7 @@ describe("toContainerRelative", () => {
   });
 
   it("handles zero container offset", () => {
-    const coords: Coords = { left: 80, top: 40, bottom: 60 };
+    const coords: Coords = { left: 80, right: 82, top: 40, bottom: 60 };
     expect(toContainerRelative(coords, { left: 0, top: 0 })).toEqual({
       left: 80,
       top: 40,
@@ -31,7 +33,7 @@ describe("toContainerRelative", () => {
   });
 
   it("produces negative offsets when coords are above/left of container", () => {
-    const coords: Coords = { left: 10, top: 20, bottom: 40 };
+    const coords: Coords = { left: 10, right: 12, top: 20, bottom: 40 };
     expect(toContainerRelative(coords, { left: 50, top: 100 })).toEqual({
       left: -40,
       top: -80,
@@ -93,8 +95,8 @@ describe("resolveVerticalBias", () => {
 // resolveCoords
 // ---------------------------------------------------------------------------
 
-const lineEnd: Coords = { left: 200, top: 100, bottom: 120 };
-const lineStart: Coords = { left: 10, top: 124, bottom: 144 };
+const lineEnd: Coords = { left: 200, right: 202, top: 100, bottom: 120 };
+const lineStart: Coords = { left: 10, right: 12, top: 124, bottom: 144 };
 
 function makeView(
   coordsAtPos: (_pos: number, side?: number) => Coords,
@@ -129,5 +131,96 @@ describe("resolveCoords", () => {
     });
     resolveCoords(view, 42, 1);
     expect(positions[0]).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// caretBox (縦書きスムースキャレットの幾何)
+// ---------------------------------------------------------------------------
+describe("caretBox", () => {
+  const rect = { left: 50, top: 100 };
+
+  it("横書き: 縦棒 (width=thickness, height=行高)", () => {
+    const coords: Coords = { left: 150, right: 152, top: 300, bottom: 324 };
+    expect(caretBox(coords, rect, false)).toEqual({
+      left: 100,
+      top: 200,
+      width: 2,
+      height: 24,
+    });
+  });
+
+  it("縦書き: 横棒 (width=文字幅, height=thickness)", () => {
+    // vertical-rl の coordsAtPos は top≈bottom・left..right=文字幅 の
+    // 平たい矩形を返す
+    const coords: Coords = { left: 400, right: 424, top: 300, bottom: 302 };
+    expect(caretBox(coords, rect, true)).toEqual({
+      left: 350,
+      top: 200,
+      width: 24,
+      height: 2,
+    });
+  });
+
+  it("幅/高さゼロの矩形でも thickness を下限に保つ", () => {
+    const flat: Coords = { left: 400, right: 400, top: 300, bottom: 300 };
+    expect(caretBox(flat, rect, true).width).toBe(2);
+    expect(caretBox(flat, rect, false).height).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lineAxisContentCoord (行スタック軸の content 座標・前方=増加)
+// ---------------------------------------------------------------------------
+describe("lineAxisContentCoord", () => {
+  const rect = { left: 50, top: 100 };
+
+  it("横書き: y 軸 + scrollTop 補正で前方(下)=増加", () => {
+    const scroll = { scrollLeft: 0, scrollTop: 30 };
+    expect(
+      lineAxisContentCoord({ left: 0, top: 300 }, rect, scroll, false),
+    ).toBe(230);
+    // 次の行 (より下) は大きい値
+    expect(
+      lineAxisContentCoord({ left: 0, top: 330 }, rect, scroll, false),
+    ).toBeGreaterThan(
+      lineAxisContentCoord({ left: 0, top: 300 }, rect, scroll, false),
+    );
+  });
+
+  it("縦書き: x 軸を反転して前方(左)=増加", () => {
+    const scroll = { scrollLeft: 0, scrollTop: 0 };
+    const line0 = lineAxisContentCoord(
+      { left: 500, top: 0 },
+      rect,
+      scroll,
+      true,
+    );
+    const line1 = lineAxisContentCoord(
+      { left: 460, top: 0 },
+      rect,
+      scroll,
+      true,
+    );
+    // 次の行 (より左) が大きい値 = resolveVerticalBias の "down" 規約に一致
+    expect(line1).toBeGreaterThan(line0);
+  });
+
+  it("縦書き: Chromium の負方向 scrollLeft を跨いで安定", () => {
+    // 前方へ d スクロールすると scrollLeft は -d、glyph の viewport x は +d。
+    // content 座標は変わらない。
+    const before = lineAxisContentCoord(
+      { left: 500, top: 0 },
+      rect,
+      { scrollLeft: 0, scrollTop: 0 },
+      true,
+    );
+    const after = lineAxisContentCoord(
+      { left: 540, top: 0 },
+      rect,
+      { scrollLeft: -40, scrollTop: 0 },
+      true,
+    );
+    expect(after).toBe(before);
   });
 });

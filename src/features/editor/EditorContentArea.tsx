@@ -14,6 +14,7 @@ import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { EditorBodyWithLoading } from "@/features/editor/EditorContentSkeleton";
 import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
 import { buildEditorContentStyle } from "@/features/editor/editorLayout";
+import { useVerticalWheelScroll } from "@/features/editor/useVerticalWheelScroll";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import type { FilterSource } from "@/features/attribution/attributionStore";
 
@@ -72,6 +73,8 @@ export function EditorContentArea({
   isSceneContentLoading,
   sceneId,
 }: EditorContentAreaProps) {
+  // 縦書きではホイールの縦回転を読み進み方向 (横) のスクロールに変換する
+  useVerticalWheelScroll(editorContainerRef, editorSettings.verticalMode);
   return (
     <>
       <FindReplaceBar
