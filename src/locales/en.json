@@ -276,6 +276,9 @@
     "editor": {
       "textDisplay": "Text Display",
       "paragraphStyle": "Paragraph Style",
+      "writingDirection": "Writing Direction",
+      "verticalMode": "Vertical writing",
+      "verticalModeDesc": "Edit this work in vertical writing mode (right to left). Typewriter mode and smooth caret are disabled while vertical.",
       "font": "Font",
       "fontSize": "Font Size",
       "lineHeight": "Line Height",

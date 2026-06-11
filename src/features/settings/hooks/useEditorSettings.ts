@@ -28,6 +28,7 @@ export interface EditorSettings {
   showBreadcrumb: boolean;
   showLineNumbers: boolean;
   paragraphIndent: number;
+  verticalMode: boolean;
 }
 
 export function useEditorSettings(): EditorSettings {
@@ -66,5 +67,6 @@ export function useEditorSettings(): EditorSettings {
     showBreadcrumb: store.getBoolean("editor.showBreadcrumb", true),
     showLineNumbers: store.getBoolean("editor.showLineNumbers", false),
     paragraphIndent: store.getNumber("editor.paragraphIndent", 0),
+    verticalMode: store.getBoolean("editor.verticalMode", false),
   };
 }

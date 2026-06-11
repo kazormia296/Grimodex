@@ -276,6 +276,9 @@
     "editor": {
       "textDisplay": "テキスト表示",
       "paragraphStyle": "段落スタイル",
+      "writingDirection": "書字方向",
+      "verticalMode": "縦書きで編集",
+      "verticalModeDesc": "この作品のエディタを縦書き（右から左）で表示します。タイプライターモードとスムースキャレットは縦書き中は無効になります。",
       "font": "フォント",
       "fontSize": "フォントサイズ",
       "lineHeight": "行間",

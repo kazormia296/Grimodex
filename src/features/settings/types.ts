@@ -87,6 +87,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.wordBreak": "project",
   "editor.lineBreak": "project",
   "editor.paragraphIndent": "project",
+  "editor.verticalMode": "project",
   // Display — user preference (global)
   "display.uiFontFamily": "global",
   "display.showWordCount": "global",
@@ -202,6 +203,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.showBreadcrumb": "true",
   "editor.showLineNumbers": "false",
   "editor.paragraphIndent": "0",
+  "editor.verticalMode": "false",
   // Display (theme, uiLanguage, uiScale are in GlobalSettings)
   // 同梱 UI 書体 M PLUS 1 を既定に。fallback 無しは buildFontOptions の
   // 同梱/列挙 option (quoteFamily) と一致させ重複表示を防ぐ。

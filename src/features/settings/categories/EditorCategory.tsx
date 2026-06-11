@@ -248,6 +248,17 @@ export function EditorCategory() {
       </SettingSection>
 
       <SettingScopeHeader title={t("settings.scopeProject")} />
+      <SettingSection title={t("settings.editor.writingDirection")}>
+        <SettingRow
+          label={t("settings.editor.verticalMode")}
+          description={t("settings.editor.verticalModeDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.verticalMode"
+            defaultValue={false}
+          />
+        </SettingRow>
+      </SettingSection>
       <SettingSection title={t("settings.editor.paragraphStyle")}>
         <SettingRow
           label={t("settings.editor.paragraphIndent")}
