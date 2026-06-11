@@ -73,6 +73,38 @@ vi.mock("@/features/codex/api", async (importOriginal) => {
   return { ...actual, getCodexEntry: vi.fn() };
 });
 
+const { mockUpsertOverride, mockDeleteOverride, phaseStoreState } = vi.hoisted(
+  () => ({
+    mockUpsertOverride: vi.fn(),
+    mockDeleteOverride: vi.fn(),
+    phaseStoreState: {
+      detailOverrides: {} as Record<
+        string,
+        Array<{ phaseId: string; definitionId: string; value: string | null }>
+      >,
+    },
+  }),
+);
+
+vi.mock("@/features/codex/phaseStore", () => ({
+  usePhaseStore: Object.assign(
+    vi.fn((sel: (s: unknown) => unknown) =>
+      sel({
+        detailOverrides: phaseStoreState.detailOverrides,
+        upsertDetailOverride: mockUpsertOverride,
+        deleteDetailOverride: mockDeleteOverride,
+      }),
+    ),
+    {
+      getState: vi.fn(() => ({
+        detailOverrides: phaseStoreState.detailOverrides,
+        upsertDetailOverride: mockUpsertOverride,
+        deleteDetailOverride: mockDeleteOverride,
+      })),
+    },
+  ),
+}));
+
 vi.mock("@/features/codex/components/PinEntryDialog", () => ({
   PinEntryDialog: ({
     open,
@@ -144,6 +176,7 @@ describe("DetailsSection", () => {
       value: "test",
     });
     mockGetEntry.mockResolvedValue(undefined);
+    phaseStoreState.detailOverrides = {};
   });
 
   it("shows 'No fields' message when no definitions exist", async () => {
@@ -285,6 +318,133 @@ describe("DetailsSection", () => {
     const editor = within(field).getByTestId("codex-content-editor");
     expect(editor.dataset.compact).toBe("true");
     expect(editor.className).not.toContain("min-h-[80px]");
+  });
+
+  describe("phase override editing", () => {
+    const textDef = () => makeDefinition("def-1", "種族", "text");
+    const baseValue = () => makeValueWithDef("def-1", "種族", "text", "人間");
+    const PHASE = { id: "ph1", label: "第二幕" };
+
+    it("shows resolved values read-only in preview mode", async () => {
+      mockListDefs.mockResolvedValue([textDef()]);
+      mockListValues.mockResolvedValue([baseValue()]);
+
+      render(
+        <DetailsSection
+          entry={mockEntry}
+          previewDetailValues={new Map([["def-1", "吸血鬼"]])}
+        />,
+      );
+
+      const preview = await screen.findByTestId("detail-field-preview-def-1");
+      expect(preview).toHaveTextContent("吸血鬼");
+      expect(
+        screen.queryByTestId("codex-content-editor"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("falls back to the base value in preview when no override applies", async () => {
+      mockListDefs.mockResolvedValue([textDef()]);
+      mockListValues.mockResolvedValue([baseValue()]);
+
+      render(
+        <DetailsSection entry={mockEntry} previewDetailValues={new Map()} />,
+      );
+
+      const preview = await screen.findByTestId("detail-field-preview-def-1");
+      expect(preview).toHaveTextContent("人間");
+    });
+
+    it("creates a phase override seeded from the base value", async () => {
+      const user = userEvent.setup();
+      mockListDefs.mockResolvedValue([textDef()]);
+      mockListValues.mockResolvedValue([baseValue()]);
+
+      render(<DetailsSection entry={mockEntry} activePhase={PHASE} />);
+
+      await user.click(
+        await screen.findByTestId("detail-field-override-add-def-1"),
+      );
+
+      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "人間");
+    });
+
+    it("edits an existing phase override instead of the base value", async () => {
+      mockListDefs.mockResolvedValue([textDef()]);
+      mockListValues.mockResolvedValue([baseValue()]);
+      phaseStoreState.detailOverrides = {
+        ph1: [{ phaseId: "ph1", definitionId: "def-1", value: "吸血鬼" }],
+      };
+
+      render(<DetailsSection entry={mockEntry} activePhase={PHASE} />);
+
+      const input = (await screen.findByTestId(
+        "detail-field-override-input-def-1",
+      )) as HTMLInputElement;
+      expect(input.value).toBe("吸血鬼");
+      // 上書き編集中は base エディタを出さない
+      expect(
+        screen.queryByTestId("codex-content-editor"),
+      ).not.toBeInTheDocument();
+
+      fireEvent.change(input, { target: { value: "真祖" } });
+      fireEvent.blur(input);
+
+      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-1", "真祖");
+      expect(mockUpsert).not.toHaveBeenCalled();
+    });
+
+    it("removes a phase override and reverts to the base editor", async () => {
+      const user = userEvent.setup();
+      mockListDefs.mockResolvedValue([textDef()]);
+      mockListValues.mockResolvedValue([baseValue()]);
+      phaseStoreState.detailOverrides = {
+        ph1: [{ phaseId: "ph1", definitionId: "def-1", value: "吸血鬼" }],
+      };
+
+      render(<DetailsSection entry={mockEntry} activePhase={PHASE} />);
+
+      await user.click(
+        await screen.findByTestId("detail-field-override-remove-def-1"),
+      );
+
+      expect(mockDeleteOverride).toHaveBeenCalledWith("ph1", "def-1");
+    });
+
+    it("renders a dropdown override with the field options", async () => {
+      mockListDefs.mockResolvedValue([
+        makeDefinition("def-2", "立場", "dropdown", {
+          fieldConfig: JSON.stringify({ options: ["味方", "敵"] }),
+        }),
+      ]);
+      mockListValues.mockResolvedValue([]);
+      phaseStoreState.detailOverrides = {
+        ph1: [{ phaseId: "ph1", definitionId: "def-2", value: "味方" }],
+      };
+
+      render(<DetailsSection entry={mockEntry} activePhase={PHASE} />);
+
+      const select = (await screen.findByTestId(
+        "detail-field-override-select-def-2",
+      )) as HTMLSelectElement;
+      expect(select.value).toBe("味方");
+
+      fireEvent.change(select, { target: { value: "敵" } });
+
+      expect(mockUpsertOverride).toHaveBeenCalledWith("ph1", "def-2", "敵");
+    });
+
+    it("offers no override controls without an active phase", async () => {
+      mockListDefs.mockResolvedValue([textDef()]);
+      mockListValues.mockResolvedValue([baseValue()]);
+
+      render(<DetailsSection entry={mockEntry} />);
+
+      await screen.findByTestId("detail-field-def-1");
+      expect(
+        screen.queryByTestId("detail-field-override-add-def-1"),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe("codex_reference field", () => {
