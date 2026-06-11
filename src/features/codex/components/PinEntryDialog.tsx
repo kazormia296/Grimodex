@@ -51,6 +51,9 @@ function PinCodexList({
   onPin,
   onUnpin,
   onToggleChildren,
+  selectionMode = "multi",
+  selectedId,
+  onSelect,
 }: {
   entries: CodexEntry[];
   allEntries: CodexEntry[];
@@ -59,6 +62,9 @@ function PinCodexList({
   onPin: (id: string) => void;
   onUnpin: (id: string) => void;
   onToggleChildren?: (id: string, withChildren: boolean) => void;
+  selectionMode?: "multi" | "single";
+  selectedId?: string | null;
+  onSelect?: (entry: CodexEntry) => void;
 }) {
   const { t } = useTranslation();
 
@@ -67,6 +73,30 @@ function PinCodexList({
       <p className="py-4 text-center text-xs text-muted-foreground">
         {t("codex.noResults")}
       </p>
+    );
+  }
+
+  if (selectionMode === "single") {
+    return (
+      <div className="max-h-52 overflow-y-auto">
+        {entries.map((entry) => {
+          const isSelected = selectedId === entry.id;
+          return (
+            <button
+              key={entry.id}
+              type="button"
+              data-testid={`pin-entry-pick-${entry.id}`}
+              data-selected={isSelected || undefined}
+              onClick={() => onSelect?.(entry)}
+              className={`block w-full border-b border-border px-2 py-1.5 text-left last:border-0 hover:bg-accent ${
+                isSelected ? "bg-accent" : ""
+              }`}
+            >
+              <EntryCardBody entry={entry} />
+            </button>
+          );
+        })}
+      </div>
     );
   }
 
@@ -163,11 +193,14 @@ function PinSnippetList({
   );
 }
 
+const EMPTY_PIN_SET: Set<string> = new Set();
+
 export interface PinEntryDialogProps {
   open: boolean;
-  pinnedIds: Set<string>;
-  onPin: (entryId: string, type?: "codex" | "snippet") => void;
-  onUnpin: (entryId: string) => void;
+  /** multi モードのチェック状態。single モードでは不要 */
+  pinnedIds?: Set<string>;
+  onPin?: (entryId: string, type?: "codex" | "snippet") => void;
+  onUnpin?: (entryId: string) => void;
   onClose: () => void;
   containerRef?: React.RefObject<HTMLElement | null>;
   /**
@@ -183,11 +216,16 @@ export interface PinEntryDialogProps {
   withChildrenIds?: Set<string>;
   pinnedSnippetIds?: Set<string>;
   onToggleChildren?: (entryId: string, withChildren: boolean) => void;
+  /** single: checkbox の代わりに行クリックで onSelect(entry) を呼ぶ（codex タブのみ対応） */
+  selectionMode?: "multi" | "single";
+  onSelect?: (entry: CodexEntry) => void;
+  /** single モードで現在の選択をハイライト */
+  selectedId?: string | null;
 }
 
 export function PinEntryDialog({
   open,
-  pinnedIds,
+  pinnedIds = EMPTY_PIN_SET,
   onPin,
   onUnpin,
   onClose,
@@ -198,6 +236,9 @@ export function PinEntryDialog({
   withChildrenIds,
   pinnedSnippetIds,
   onToggleChildren,
+  selectionMode = "multi",
+  onSelect,
+  selectedId,
 }: PinEntryDialogProps) {
   const { t } = useTranslation();
   const showSnippetTab = tabs.includes("snippet");
@@ -511,9 +552,12 @@ export function PinEntryDialog({
                 allEntries={entries}
                 pinnedIds={pinnedIds}
                 withChildrenIds={withChildrenIds}
-                onPin={(id) => onPin(id, "codex")}
-                onUnpin={onUnpin}
+                onPin={(id) => onPin?.(id, "codex")}
+                onUnpin={(id) => onUnpin?.(id)}
                 onToggleChildren={onToggleChildren}
+                selectionMode={selectionMode}
+                selectedId={selectedId}
+                onSelect={onSelect}
               />
             </>
           )
@@ -571,8 +615,8 @@ export function PinEntryDialog({
               <PinSnippetList
                 snippets={filteredSnippetEntries}
                 pinnedSnippetIds={pinnedSnippetIds ?? new Set()}
-                onPin={(id) => onPin(id, "snippet")}
-                onUnpin={onUnpin}
+                onPin={(id) => onPin?.(id, "snippet")}
+                onUnpin={(id) => onUnpin?.(id)}
               />
             </>
           )

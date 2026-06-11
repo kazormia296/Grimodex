@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Bot, Settings, Plus, X } from "lucide-react";
-import { AnimatePresence } from "motion/react";
 import { toast } from "sonner";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { getCodexEntry, type CodexEntry } from "../api";
@@ -16,7 +15,7 @@ import {
   updateDefinition,
 } from "../detailApi";
 import { CodexContentEditor } from "./CodexContentEditor";
-import { CodexCommandPalette } from "./CodexCommandPalette";
+import { PinEntryDialog } from "./PinEntryDialog";
 import { ManageFieldsDialog } from "./ManageFieldsDialog";
 import { FormFieldSkeletonList } from "@/components/ui/skeleton-patterns";
 import { useProjectStore } from "@/features/project/projectStore";
@@ -115,6 +114,7 @@ function ReferenceField({
   const [refId, setRefId] = useState(initialValue);
   const [resolvedName, setResolvedName] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const anchorRef = useRef<HTMLDivElement>(null);
 
   // 保存されているのは entry ID。表示用に名前を解決する。
   // 未解決時は上書きしない（選択直後の楽観表示を消さないため。
@@ -153,6 +153,7 @@ function ReferenceField({
 
   return (
     <div
+      ref={anchorRef}
       data-testid={`detail-field-${definition.id}`}
       className="flex items-center gap-1"
     >
@@ -177,15 +178,16 @@ function ReferenceField({
           <X className="h-3 w-3" />
         </button>
       )}
-      <AnimatePresence>
-        {pickerOpen && (
-          <CodexCommandPalette
-            projectId={projectId}
-            onSelect={(selected) => void handleSelect(selected)}
-            onClose={() => setPickerOpen(false)}
-          />
-        )}
-      </AnimatePresence>
+      <PinEntryDialog
+        open={pickerOpen}
+        anchorRef={anchorRef}
+        tabs={["codex"]}
+        selectionMode="single"
+        selectedId={refId || null}
+        title={definition.name}
+        onSelect={(selected) => void handleSelect(selected)}
+        onClose={() => setPickerOpen(false)}
+      />
     </div>
   );
 }
