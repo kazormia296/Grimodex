@@ -30,17 +30,25 @@ vi.mock("@/features/codex/detailApi", () => ({
   deleteDefinition: vi.fn(),
 }));
 
+vi.mock("@/features/codex/detailPresets", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/features/codex/detailPresets")>();
+  return { ...actual, applyDetailPreset: vi.fn() };
+});
+
 import {
   listDefinitionsByType,
   createDefinition,
   updateDefinition,
   deleteDefinition,
 } from "@/features/codex/detailApi";
+import { applyDetailPreset } from "@/features/codex/detailPresets";
 
 const mockListDefs = vi.mocked(listDefinitionsByType);
 const mockCreate = vi.mocked(createDefinition);
 const mockUpdate = vi.mocked(updateDefinition);
 const mockDelete = vi.mocked(deleteDefinition);
+const mockApplyPreset = vi.mocked(applyDetailPreset);
 
 const defaultProps = {
   projectId: "proj-1",
@@ -57,6 +65,7 @@ describe("ManageFieldsDialog", () => {
     mockCreate.mockResolvedValue(makeDefinition("new-def", "新フィールド"));
     mockUpdate.mockResolvedValue(makeDefinition("def-1", "更新名"));
     mockDelete.mockResolvedValue(undefined);
+    mockApplyPreset.mockResolvedValue({ added: [], skipped: 0 });
   });
 
   it("does not render dialog when open=false", () => {
@@ -208,5 +217,75 @@ describe("ManageFieldsDialog", () => {
     await user.click(screen.getByTestId("manage-field-delete-def-1"));
     await user.click(screen.getByTestId("manage-field-delete-cancel-button"));
     expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  describe("preset picker", () => {
+    const getPresetSelect = () =>
+      screen.getByTestId("manage-fields-preset-select") as HTMLSelectElement;
+
+    it("renders a preset select with base option and preset genres", async () => {
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => getPresetSelect());
+      const values = Array.from(getPresetSelect().options).map((o) => o.value);
+      expect(values[0]).toBe("");
+      expect(values).toContain("Fantasy");
+    });
+
+    it("defaults the selection to the project genre", async () => {
+      render(<ManageFieldsDialog {...defaultProps} projectGenre="Mystery" />);
+      await waitFor(() => getPresetSelect());
+      expect(getPresetSelect().value).toBe("Mystery");
+    });
+
+    it("falls back to the base set when the project genre has no preset", async () => {
+      render(<ManageFieldsDialog {...defaultProps} projectGenre="Other" />);
+      await waitFor(() => getPresetSelect());
+      expect(getPresetSelect().value).toBe("");
+    });
+
+    it("applies the selected genre preset and reloads definitions", async () => {
+      const user = userEvent.setup();
+      mockApplyPreset.mockResolvedValue({
+        added: [makeDefinition("preset-1", "役割", "dropdown")],
+        skipped: 0,
+      });
+      render(<ManageFieldsDialog {...defaultProps} projectGenre="Fantasy" />);
+      await waitFor(() => screen.getByTestId("manage-fields-preset-apply"));
+      expect(mockListDefs).toHaveBeenCalledTimes(1);
+
+      await user.click(screen.getByTestId("manage-fields-preset-apply"));
+
+      expect(mockApplyPreset).toHaveBeenCalledWith(
+        "proj-1",
+        "character",
+        "Fantasy",
+      );
+      await waitFor(() => expect(mockListDefs).toHaveBeenCalledTimes(2));
+    });
+
+    it("applies the base set as a null genre", async () => {
+      const user = userEvent.setup();
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-fields-preset-apply"));
+
+      await user.click(screen.getByTestId("manage-fields-preset-apply"));
+
+      expect(mockApplyPreset).toHaveBeenCalledWith("proj-1", "character", null);
+    });
+
+    it("lets the user pick a different genre before applying", async () => {
+      const user = userEvent.setup();
+      render(<ManageFieldsDialog {...defaultProps} projectGenre="Fantasy" />);
+      await waitFor(() => getPresetSelect());
+
+      await user.selectOptions(getPresetSelect(), "Mystery");
+      await user.click(screen.getByTestId("manage-fields-preset-apply"));
+
+      expect(mockApplyPreset).toHaveBeenCalledWith(
+        "proj-1",
+        "character",
+        "Mystery",
+      );
+    });
   });
 });
