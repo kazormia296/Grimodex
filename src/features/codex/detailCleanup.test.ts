@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   isDetailValueEmpty,
+  detailValueToPlainText,
   listEmptyDetailFields,
   deleteEmptyDetailFields,
 } from "./detailCleanup";
@@ -71,6 +72,29 @@ describe("isDetailValueEmpty", () => {
   it("treats JSON-parsable scalars as non-empty raw values", () => {
     expect(isDetailValueEmpty("123")).toBe(false);
     expect(isDetailValueEmpty("true")).toBe(false);
+  });
+});
+
+describe("detailValueToPlainText", () => {
+  it("returns empty string for null and empty input", () => {
+    expect(detailValueToPlainText(null)).toBe("");
+    expect(detailValueToPlainText("")).toBe("");
+  });
+
+  it("extracts plain text from ProseMirror doc JSON", () => {
+    expect(detailValueToPlainText(FILLED_DOC)).toBe("180cm");
+    expect(detailValueToPlainText(EMPTY_DOC)).toBe("");
+    expect(detailValueToPlainText("{}")).toBe("");
+  });
+
+  it("passes raw strings (dropdown values, reference ids) through unchanged", () => {
+    expect(detailValueToPlainText("主人公")).toBe("主人公");
+    expect(detailValueToPlainText("entry-abc-123")).toBe("entry-abc-123");
+  });
+
+  it("passes JSON-parsable scalars through unchanged", () => {
+    expect(detailValueToPlainText("123")).toBe("123");
+    expect(detailValueToPlainText("true")).toBe("true");
   });
 });
 

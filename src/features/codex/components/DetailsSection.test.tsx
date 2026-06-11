@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DetailsSection } from "./DetailsSection";
 import type { CodexEntry } from "@/features/codex/api";
@@ -68,15 +68,58 @@ vi.mock("@/features/codex/detailApi", () => ({
   upsertValue: vi.fn(),
 }));
 
+vi.mock("@/features/codex/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/features/codex/api")>();
+  return { ...actual, getCodexEntry: vi.fn() };
+});
+
+vi.mock("@/features/codex/components/CodexCommandPalette", () => ({
+  CodexCommandPalette: ({
+    onSelect,
+    onClose,
+  }: {
+    onSelect: (entry: unknown) => void;
+    onClose: () => void;
+  }) => (
+    <div data-testid="mock-codex-palette">
+      <button
+        data-testid="mock-palette-pick-same"
+        onClick={() =>
+          onSelect({
+            id: "ref-9",
+            projectId: "proj-1",
+            name: "ボブ",
+            type: "character",
+          })
+        }
+      />
+      <button
+        data-testid="mock-palette-pick-cross"
+        onClick={() =>
+          onSelect({
+            id: "ref-x",
+            projectId: "proj-OTHER",
+            name: "外部",
+            type: "character",
+          })
+        }
+      />
+      <button data-testid="mock-palette-close" onClick={onClose} />
+    </div>
+  ),
+}));
+
 import {
   listDefinitionsByType,
   listValuesByEntry,
   upsertValue,
 } from "@/features/codex/detailApi";
+import { getCodexEntry } from "@/features/codex/api";
 
 const mockListDefs = vi.mocked(listDefinitionsByType);
 const mockListValues = vi.mocked(listValuesByEntry);
 const mockUpsert = vi.mocked(upsertValue);
+const mockGetEntry = vi.mocked(getCodexEntry);
 
 describe("DetailsSection", () => {
   beforeEach(() => {
@@ -89,6 +132,7 @@ describe("DetailsSection", () => {
       definitionId: "def-1",
       value: "test",
     });
+    mockGetEntry.mockResolvedValue(undefined);
   });
 
   it("shows 'No fields' message when no definitions exist", async () => {
@@ -220,5 +264,98 @@ describe("DetailsSection", () => {
 
     await user.click(screen.getByTestId("details-manage-button"));
     expect(screen.getByTestId("manage-fields-dialog")).toBeInTheDocument();
+  });
+
+  it("renders text detail editors in compact mode", async () => {
+    mockListDefs.mockResolvedValue([makeDefinition("def-1", "身長", "text")]);
+    render(<DetailsSection entry={mockEntry} />);
+
+    const field = await screen.findByTestId("detail-field-def-1");
+    const editor = within(field).getByTestId("codex-content-editor");
+    expect(editor.dataset.compact).toBe("true");
+    expect(editor.className).not.toContain("min-h-[80px]");
+  });
+
+  describe("codex_reference field", () => {
+    const refDefinition = () =>
+      makeDefinition("def-ref", "所有者", "codex_reference");
+
+    it("shows the referenced entry name instead of the raw id", async () => {
+      mockListDefs.mockResolvedValue([refDefinition()]);
+      mockListValues.mockResolvedValue([
+        makeValueWithDef("def-ref", "所有者", "codex_reference", "entry-9"),
+      ]);
+      mockGetEntry.mockResolvedValue({
+        ...mockEntry,
+        id: "entry-9",
+        name: "ボブ",
+      });
+
+      render(<DetailsSection entry={mockEntry} />);
+
+      expect(await screen.findByText("ボブ")).toBeInTheDocument();
+    });
+
+    it("falls back to the raw id when the entry cannot be resolved", async () => {
+      mockListDefs.mockResolvedValue([refDefinition()]);
+      mockListValues.mockResolvedValue([
+        makeValueWithDef("def-ref", "所有者", "codex_reference", "entry-9"),
+      ]);
+      mockGetEntry.mockResolvedValue(undefined);
+
+      render(<DetailsSection entry={mockEntry} />);
+
+      expect(await screen.findByText(/entry-9/)).toBeInTheDocument();
+    });
+
+    it("opens the picker and saves the selected entry id", async () => {
+      const user = userEvent.setup();
+      mockListDefs.mockResolvedValue([refDefinition()]);
+
+      render(<DetailsSection entry={mockEntry} />);
+      await user.click(await screen.findByTestId("detail-field-ref-def-ref"));
+
+      expect(screen.getByTestId("mock-codex-palette")).toBeInTheDocument();
+      await user.click(screen.getByTestId("mock-palette-pick-same"));
+
+      expect(mockUpsert).toHaveBeenCalledWith("entry-1", "def-ref", "ref-9");
+      expect(
+        screen.queryByTestId("mock-codex-palette"),
+      ).not.toBeInTheDocument();
+      // 選択直後から名前が表示される
+      expect(screen.getByText("ボブ")).toBeInTheDocument();
+    });
+
+    it("ignores selections from another project", async () => {
+      const user = userEvent.setup();
+      mockListDefs.mockResolvedValue([refDefinition()]);
+
+      render(<DetailsSection entry={mockEntry} />);
+      await user.click(await screen.findByTestId("detail-field-ref-def-ref"));
+      await user.click(screen.getByTestId("mock-palette-pick-cross"));
+
+      expect(mockUpsert).not.toHaveBeenCalled();
+    });
+
+    it("clears the reference with the clear button", async () => {
+      const user = userEvent.setup();
+      mockListDefs.mockResolvedValue([refDefinition()]);
+      mockListValues.mockResolvedValue([
+        makeValueWithDef("def-ref", "所有者", "codex_reference", "entry-9"),
+      ]);
+      mockGetEntry.mockResolvedValue({
+        ...mockEntry,
+        id: "entry-9",
+        name: "ボブ",
+      });
+
+      render(<DetailsSection entry={mockEntry} />);
+      await screen.findByText("ボブ");
+
+      await user.click(screen.getByTestId("detail-field-ref-clear-def-ref"));
+
+      expect(mockUpsert).toHaveBeenCalledWith("entry-1", "def-ref", "");
+      expect(screen.queryByText("ボブ")).not.toBeInTheDocument();
+    });
   });
 });
