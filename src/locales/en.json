@@ -2533,6 +2533,9 @@
   "autoSave": {
     "failed": "Auto-save failed: {{reason}}"
   },
+  "sceneLoad": {
+    "failed": "Failed to load scene content (saving paused for this scene): {{reason}}"
+  },
   "debugLog": {
     "logCopied": "Logs copied",
     "lineCopied": "Line copied"

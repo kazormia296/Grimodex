@@ -2537,6 +2537,9 @@
   "autoSave": {
     "failed": "自動保存に失敗しました: {{reason}}"
   },
+  "sceneLoad": {
+    "failed": "本文の読み込みに失敗しました（このシーンの保存は停止中）: {{reason}}"
+  },
   "debugLog": {
     "logCopied": "ログをコピーしました",
     "lineCopied": "行をコピーしました"

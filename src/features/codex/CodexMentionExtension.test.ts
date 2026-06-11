@@ -235,9 +235,12 @@ describe("mention NodeView — live name resolution (Item A)", () => {
 });
 
 describe("getEditorExtensions — mention wiring", () => {
-  it("does NOT register the mention extension when no setter is provided", () => {
+  it("registers the mention NODE even when no setter is provided (schema parity)", () => {
+    // ノード型が無いと mention 入り doc の setContent が TipTap の silent
+    // fallback で空 doc に化けて本文消失する (LinearSceneBlock で実害)。
+    // popup 未配線サーフェスにもノード型だけは常に登録する。
     const editor = new Editor({ extensions: getEditorExtensions() });
-    expect(editor.schema.nodes["mention"]).toBeUndefined();
+    expect(editor.schema.nodes["mention"]).toBeDefined();
     editor.destroy();
   });
 

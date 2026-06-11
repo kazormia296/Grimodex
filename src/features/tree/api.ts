@@ -7,6 +7,7 @@ import {
   trackSceneContentWrite,
   awaitPendingSceneContentWrite,
 } from "@/features/tree/pendingSceneWrites";
+import { debugLog } from "@/lib/debugLog";
 
 /**
  * Derive `unplaced_beat_preview` from a serialized `unplacedBeatsDoc` JSON
@@ -182,6 +183,14 @@ export async function saveSceneContent(
     payload.unplacedBeatsDoc !== undefined
       ? deriveUnplacedPreview(payload.unplacedBeatsDoc)
       : undefined;
+
+  // 本文消失系の調査用 catch-all: content を書く全 writer がここを通る。
+  // 「いつ・どの scene に・何バイトの content が書かれたか」を残す。
+  debugLog.debug(
+    "SceneAPI",
+    `write ${sceneId.slice(0, 8)}`,
+    JSON.stringify({ contentLen: payload.content.length }),
+  );
 
   // Promise.resolve で drizzle の thenable を即 1 回だけ実行に固定してから
   // track する（thenable のまま 2 箇所で await すると UPDATE が二重実行される）。

@@ -1,16 +1,20 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
+import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
+import { loadSceneFull } from "@/features/tree/api";
+import { persistSceneBody } from "@/features/editor/persistSceneBody";
+import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import {
-  saveAuthorshipSpans,
   loadAuthorshipSpans,
   spansToMarkData,
 } from "@/features/attribution/api";
@@ -19,16 +23,10 @@ import { buildEditorContentStyle } from "@/features/editor/editorLayout";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { getDocText } from "@/features/editor/RubyNode";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
-import { debugLog, errorDetail } from "@/lib/debugLog";
+import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
+import i18next from "@/lib/i18n";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
-import { useChatStore } from "@/features/chat/chatStore";
-import { extractBeatMentions } from "@/features/editor/beat/extractBeatMentions";
-import { upsertSceneBeatMentions } from "@/features/editor/beat/mentionApi";
-import { extractBeatPovOverrides } from "@/features/editor/beat/extractBeatPovOverrides";
-import { upsertSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
-import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
-import { useCodexStore } from "@/features/codex/codexStore";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 
 interface LinearSceneBlockProps {
@@ -87,53 +85,42 @@ function MountedSceneBlock({
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   const isApplyingExternalUpdate = useRef(false);
   const wasEmptyRef = useRef(false);
+  // 「ロードに成功した本物の doc」以外は保存禁止 — 空/欠損 doc の autosave が
+  // DB の本文を上書きする本文消失の最終防衛線。**初期値は true**: mount 直後は
+  // content:"" の空 doc で、ロード完了前に scroll-out で unmount されると
+  // useAutoSave の cleanup flush が走る。pending が arm されていた場合、
+  // false 始まりだと空 doc がそのまま DB に書き込まれる。
+  const loadFailedRef = useRef(true);
   const [charCount, setCharCount] = useState(0);
+
+  // EditorPane と同じスキーマ選択。file-backed scene に full schema を使うと
+  // (逆方向も同様に) 未知ノードで setContent が空 doc に化ける。
+  const isFileBacked = isFileBackedNode(activeNode?.sourceUri);
+  const editorExtensions = useMemo(
+    () =>
+      isFileBacked ? getFileBackedEditorExtensions() : getEditorExtensions(),
+    [isFileBacked],
+  );
 
   const coreSave = useCallback(async () => {
     const ed = editorRef.current;
     if (!ed) return;
-    await saveSceneContent(sceneId, JSON.stringify(ed.getJSON()));
-    await saveAuthorshipSpans(sceneId, ed.state.doc);
-    upsertSceneBeatMentions(sceneId, extractBeatMentions(ed.state.doc)).catch(
-      (e) => {
-        debugLog.error(
-          "LinearSceneBlock",
-          "upsertSceneBeatMentions failed",
-          errorDetail(e),
-        );
-      },
-    );
-    upsertSceneBeatPovOverrides(
-      sceneId,
-      extractBeatPovOverrides(ed.state.doc),
-    ).catch((e) => {
-      debugLog.error(
+    if (loadFailedRef.current) {
+      debugLog.warn(
         "LinearSceneBlock",
-        "upsertSceneBeatPovOverrides failed",
-        errorDetail(e),
+        `save skipped: load failed ${sceneId.slice(0, 8)}`,
       );
-    });
-    setTimeout(() => {
-      const allEntries = useCodexStore.getState().entries;
-      if (allEntries.length > 0) {
-        const docJsonStr = JSON.stringify(ed.getJSON());
-        upsertSceneBodyMentions(sceneId, docJsonStr, allEntries).catch((e) => {
-          debugLog.error(
-            "LinearSceneBlock",
-            "upsertSceneBodyMentions failed",
-            errorDetail(e),
-          );
-        });
-      }
-    }, 0);
-    useTreeStore
-      .getState()
-      .refreshAiRatio(sceneId)
-      .catch(() => {});
-    const chatState = useChatStore.getState();
-    if (chatState.activeSceneId === sceneId) {
-      void chatState.refreshContextLayers();
+      return;
     }
+    debugLog.info(
+      "LinearSceneBlock",
+      `save ${sceneId.slice(0, 8)}`,
+      JSON.stringify({ docLen: getDocText(ed.state.doc).length }),
+    );
+    // 本文保存の全副作用カスケード (file-backed writeBack / foreshadow・
+    // annotation anchor / beat キャッシュ / 帰属 / semantic index) は
+    // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
+    await persistSceneBody(sceneId, ed.state.doc);
   }, [sceneId]);
 
   const saveFn = useCallback(async () => {
@@ -149,62 +136,67 @@ function MountedSceneBlock({
     editorSettings.autoSaveDelay,
   );
 
-  const editor = useEditor({
-    extensions: getEditorExtensions(),
-    content: "",
-    editorProps: {
-      attributes: {
-        role: "textbox",
-        "aria-multiline": "true",
+  const editor = useEditor(
+    {
+      extensions: editorExtensions,
+      content: "",
+      editorProps: {
+        attributes: {
+          role: "textbox",
+          "aria-multiline": "true",
+        },
+      },
+      onDestroy() {
+        // このシーンがフォーカスを持っていた場合、破棄時に参照をリセットする
+        const state = useLinearEditorStore.getState();
+        if (state.focusedSceneId === sceneId) {
+          state.setFocusedEditor(null, null);
+        }
+      },
+      onUpdate({ editor: e }) {
+        if (isApplyingExternalUpdate.current) return;
+        schedule();
+        const text = getDocText(e.state.doc);
+        const count = text.length;
+        setCharCount(count);
+        useTreeStore.getState().setCharCount(sceneId, count);
+
+        // Auto-transition outline → draft
+        const nodeStatus = useTreeStore
+          .getState()
+          .nodes.find((n) => n.id === sceneId)?.status as
+          | SceneStatus
+          | null
+          | undefined;
+        if (
+          shouldAutoDraftTransition(
+            count,
+            wasEmptyRef.current,
+            nodeStatus ?? null,
+          )
+        ) {
+          wasEmptyRef.current = false;
+          useTreeStore
+            .getState()
+            .setStatus(sceneId, "draft")
+            .catch(() => {});
+        }
+      },
+      onFocus() {
+        const ed = editorRef.current;
+        if (ed) onFocus(sceneId, ed);
       },
     },
-    onDestroy() {
-      // このシーンがフォーカスを持っていた場合、破棄時に参照をリセットする
-      const state = useLinearEditorStore.getState();
-      if (state.focusedSceneId === sceneId) {
-        state.setFocusedEditor(null, null);
-      }
-    },
-    onUpdate({ editor: e }) {
-      if (isApplyingExternalUpdate.current) return;
-      schedule();
-      const text = getDocText(e.state.doc);
-      const count = text.length;
-      setCharCount(count);
-      useTreeStore.getState().setCharCount(sceneId, count);
-
-      // Auto-transition outline → draft
-      const nodeStatus = useTreeStore
-        .getState()
-        .nodes.find((n) => n.id === sceneId)?.status as
-        | SceneStatus
-        | null
-        | undefined;
-      if (
-        shouldAutoDraftTransition(
-          count,
-          wasEmptyRef.current,
-          nodeStatus ?? null,
-        )
-      ) {
-        wasEmptyRef.current = false;
-        useTreeStore
-          .getState()
-          .setStatus(sceneId, "draft")
-          .catch(() => {});
-      }
-    },
-    onFocus() {
-      const ed = editorRef.current;
-      if (ed) onFocus(sceneId, ed);
-    },
-  });
+    [editorExtensions],
+  );
 
   editorRef.current = editor;
 
   // CodexQuick: only update matchedIds for the active scene
   useCodexHighlight(editor, isActive ? undefined : { skipMatchedIds: true });
-  useAttribution(editor);
+  // EditorPane と同じく帰属系は DB-native 限定 (file-backed schema に
+  // authorship mark が無い)。
+  useAttribution(isFileBacked ? null : editor);
   useLicenseEditableSync(editor);
   useCharacterFade(editor);
 
@@ -217,10 +209,47 @@ function MountedSceneBlock({
       cancel();
       isApplyingExternalUpdate.current = true;
       try {
-        const content = await loadSceneContent(sceneId);
+        const full = await loadSceneFull(sceneId);
         if (cancelled) return;
+        const content = full.content;
+        // persistSceneBody が unplacedBeatsDoc を store から読んで書き戻す
+        // ため、保存前に必ず store へロードしておく (空のままだと beat 消失)。
+        try {
+          const beats = JSON.parse(full.unplacedBeatsDoc);
+          useUnplacedBeatsStore.getState().setBeats(sceneId, beats, "load");
+        } catch {
+          useUnplacedBeatsStore.getState().setBeats(sceneId, [], "load");
+        }
         const parsed = content && content !== "{}" ? JSON.parse(content) : "";
-        editor!.commands.setContent(parsed, { emitUpdate: false });
+        // errorOnInvalidContent: スキーマ未知ノードを TipTap の silent
+        // fallback (console.warn + 空 doc) に流さず throw させる。silent に
+        // 流すと次の autosave が空 doc を DB に書き戻して本文が消える。
+        editor!.commands.setContent(parsed, {
+          emitUpdate: false,
+          errorOnInvalidContent: true,
+        });
+        loadFailedRef.current = false;
+        debugLog.info(
+          "LinearSceneBlock",
+          `load ${sceneId.slice(0, 8)}`,
+          JSON.stringify({
+            dbLen: content.length,
+            docLen: getDocText(editor!.state.doc).length,
+            fileBacked: isFileBacked,
+          }),
+        );
+      } catch (e) {
+        if (!cancelled) {
+          loadFailedRef.current = true;
+          editor!.setEditable(false);
+          debugLog.error(
+            "LinearSceneBlock",
+            `load failed ${sceneId.slice(0, 8)}`,
+            errorDetail(e),
+          );
+          toast.error(i18next.t("sceneLoad.failed", { reason: rootCause(e) }));
+        }
+        return;
       } finally {
         isApplyingExternalUpdate.current = false;
       }
@@ -269,7 +298,7 @@ function MountedSceneBlock({
     return () => {
       cancelled = true;
     };
-  }, [sceneId, editor, cancel]);
+  }, [sceneId, editor, cancel, isFileBacked]);
 
   // Report block-axis size changes. contentBoxSize is logical (resolved
   // against the element's writing-mode), so the same code measures height

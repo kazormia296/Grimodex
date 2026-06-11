@@ -112,7 +112,8 @@ import { LicenseRestrictionBanner } from "@/features/license/LicenseRestrictionB
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
 import { findChunkInDoc } from "@/features/semantic-search/findChunkInDoc";
-import { debugLog, errorDetail } from "@/lib/debugLog";
+import { toast } from "sonner";
+import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
@@ -310,6 +311,15 @@ export function EditorPane({
   // Prevent feedback loop when applying external content sync.
   const isApplyingExternalUpdate = useRef(false);
 
+  // 「ロードに成功した本物の doc」以外は保存禁止 — 空/欠損 doc の autosave が
+  // DB (file-backed なら writeBack でファイル) を上書きする本文消失の最終防衛線。
+  // **初期値は true**: mount 直後のエディタは content:"" の空 doc であり、
+  // switchScene 冒頭の flush() はロードより前に走る。ここが false だと、
+  // ロード前の窓で何かが autosave を arm しただけで空 doc が DB に保存される
+  // (実際に起きた「リニアモード解除で本文全消失」の正体)。
+  // switchScene 開始でも悲観的に true、コンテンツ適用成功時のみ false。
+  const loadFailedRef = useRef(true);
+
   // Auto-draft: true when scene was empty at load time
   const wasEmptyRef = useRef(false);
 
@@ -331,6 +341,13 @@ export function EditorPane({
     const id = saveSceneIdRef.current;
     const ed = editorRef.current;
     if (!id || !ed) return;
+    if (loadFailedRef.current) {
+      debugLog.warn(
+        "EditorPane",
+        `save skipped: load failed ${id.slice(0, 8)}`,
+      );
+      return;
+    }
     markStart("editor.coreSave");
     // Branch on the ref, not the closure-captured prop, so a pending autosave
     // flush always saves to the backend matching the doc currently in the
@@ -1171,6 +1188,10 @@ export function EditorPane({
         // pending edits to the scene backend, even though the prop has already
         // flipped to the new tab's contentType.
         saveContentTypeRef.current = contentType;
+        // ここから新コンテンツの適用が成功するまで、エディタ内の doc は
+        // 保存禁止 (coreSave が skip)。途中失敗した doc を autosave が
+        // 書き戻すと本文消失になるため。
+        loadFailedRef.current = true;
 
         // Hold the external-update guard for the entire scene-switch sequence
         // (setContent + authorship load + foreshadow load). Releasing it earlier
@@ -1237,7 +1258,10 @@ export function EditorPane({
               rawContent && rawContent !== "{}" ? JSON.parse(rawContent) : "";
             markEnd("sceneLoad.parseContent.codex");
             markStart("sceneLoad.setContent.codex");
-            editor!.commands.setContent(parsed, { emitUpdate: false });
+            editor!.commands.setContent(parsed, {
+              emitUpdate: false,
+              errorOnInvalidContent: true,
+            });
             markEnd("sceneLoad.setContent.codex");
           } else if (isSnippetMode) {
             const snippet = await getSnippet(getCurrentProjectId(), nodeId);
@@ -1258,8 +1282,22 @@ export function EditorPane({
               content && content !== "{}" ? JSON.parse(content) : "";
             markEnd(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
             markStart(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
-            editor!.commands.setContent(parsed, { emitUpdate: false });
+            // errorOnInvalidContent: スキーマ未知ノードを TipTap の silent
+            // fallback (空 doc 化) に流さず throw → 下の catch で保存停止。
+            editor!.commands.setContent(parsed, {
+              emitUpdate: false,
+              errorOnInvalidContent: true,
+            });
             markEnd(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
+            debugLog.info(
+              "EditorPane",
+              `load ${nodeId.slice(0, 8)}`,
+              JSON.stringify({
+                dbLen: content?.length ?? 0,
+                docLen: getDocText(editor!.state.doc).length,
+                fileBacked: isFileBacked,
+              }),
+            );
             try {
               const beats = JSON.parse(unplacedBeatsDoc);
               useUnplacedBeatsStore.getState().setBeats(nodeId, beats, "load");
@@ -1281,6 +1319,10 @@ export function EditorPane({
               }
             }
           }
+
+          // 3 ブランチとも setContent 成功 = エディタ内 doc はロード済み本物。
+          // ここで初めて保存を解禁する。
+          loadFailedRef.current = false;
 
           if (!cancelled) {
             setIsSceneContentLoading(false);
@@ -1503,6 +1545,17 @@ export function EditorPane({
       } catch (err) {
         if (!cancelled) {
           setIsSceneContentLoading(false);
+          // loadFailedRef は true のまま = この doc は保存されない。無言で
+          // rethrow すると「空のエディタが出て本文が消えた」ようにしか見えない
+          // ため、ログ + トーストで可視化する。
+          debugLog.error(
+            "EditorPane",
+            `switchScene failed ${nodeId.slice(0, 8)}`,
+            errorDetail(err),
+          );
+          toast.error(
+            i18next.t("sceneLoad.failed", { reason: rootCause(err) }),
+          );
         }
         throw err;
       } finally {

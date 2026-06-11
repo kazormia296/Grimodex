@@ -34,6 +34,7 @@ export { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin"
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import {
   createCodexMentionExtension,
+  createCodexMentionNodeExtension,
   type CodexMentionPopupState,
 } from "@/features/codex/CodexMentionExtension";
 import i18next from "@/lib/i18n";
@@ -199,8 +200,15 @@ export function getEditorExtensions(
     AnnotationDecorationExtension,
   ];
 
+  // mention の「ノード型」は常に登録する。popup 未配線のサーフェス
+  // (LinearSceneBlock / timelapse schema 等) でノード型が欠けると、mention を
+  // 含む doc の setContent が TipTap の silent fallback で空 doc に化けて
+  // 本文消失する (スキーマ非対称)。`@` サジェスト UI (suggestion plugin) だけ
+  // が setMentionPopup の有無で切り替わる。
   if (options.setMentionPopup) {
     extensions.push(createCodexMentionExtension(options.setMentionPopup));
+  } else {
+    extensions.push(createCodexMentionNodeExtension());
   }
 
   return extensions;

@@ -171,6 +171,59 @@ export interface CodexMentionExtensionOptions {
  *
  * `extraItems` を渡すと codex 以外のアイテム（chat 用の scene 等）を混ぜられる。
  */
+/**
+ * Mention ノードの HTML シリアライズ（createCodexMentionExtension /
+ * createCodexMentionNodeExtension で共有 — 同一 doc が同一 HTML になる契約）。
+ */
+function renderMentionHTML({
+  options: opts,
+  node,
+}: {
+  options: {
+    HTMLAttributes: Record<string, unknown>;
+    suggestion: { char?: string };
+  };
+  node: ProseMirrorNode;
+}) {
+  const kind = (node.attrs.kind as MentionKind) ?? "codex";
+  const baseAttrs: Record<string, string> = {
+    ...(opts.HTMLAttributes as Record<string, string>),
+    "data-entry-id": node.attrs.id,
+    "data-role": (node.attrs.role as MentionRole) ?? "mentioned",
+  };
+  if (kind !== "codex") baseAttrs["data-kind"] = kind;
+  return [
+    "span",
+    baseAttrs,
+    `${opts.suggestion.char ?? "@"}${node.attrs.label ?? node.attrs.id}`,
+  ] as const;
+}
+
+/**
+ * Mention の「ノード型 + NodeView だけ」の variant — `@` サジェスト無し。
+ *
+ * suggestion plugin の onKeyDown は active 中 Enter/矢印を無条件で奪うため、
+ * popup UI を配線しないサーフェス (LinearSceneBlock 等) にフル拡張を noop
+ * setter で渡すのは不可。一方ノード型を登録しないと、mention を含む doc の
+ * setContent が TipTap の silent fallback で **空 doc に化けて本文消失**する
+ * (スキーマ非対称バグ)。schema 名 "mention"・属性・NodeView・renderHTML は
+ * フル拡張と同一なので doc の互換性は完全。
+ */
+const MentionNodeOnly = MentionWithRole.extend({
+  addProseMirrorPlugins() {
+    return [];
+  },
+});
+
+export function createCodexMentionNodeExtension() {
+  return MentionNodeOnly.configure({
+    HTMLAttributes: {
+      class: "mention",
+    },
+    renderHTML: renderMentionHTML,
+  });
+}
+
 export function createCodexMentionExtension(
   setPopup: (state: CodexMentionPopupState | null) => void,
   options?: CodexMentionExtensionOptions,
@@ -202,20 +255,7 @@ export function createCodexMentionExtension(
     HTMLAttributes: {
       class: "mention",
     },
-    renderHTML({ options: opts, node }) {
-      const kind = (node.attrs.kind as MentionKind) ?? "codex";
-      const baseAttrs: Record<string, string> = {
-        ...opts.HTMLAttributes,
-        "data-entry-id": node.attrs.id,
-        "data-role": (node.attrs.role as MentionRole) ?? "mentioned",
-      };
-      if (kind !== "codex") baseAttrs["data-kind"] = kind;
-      return [
-        "span",
-        baseAttrs,
-        `${opts.suggestion.char}${node.attrs.label ?? node.attrs.id}`,
-      ];
-    },
+    renderHTML: renderMentionHTML,
     suggestion: {
       char: "@",
       async items({ query }: { query: string }) {
