@@ -3,13 +3,19 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { getProject } from "@/features/project/api";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 // NOTE: findBeatById must come from "./insertBeatStream" — generateBeatOnce's
 // tests mock that module and assert the call goes through the mock.
 import { findBeatById } from "./insertBeatStream";
+import { extractBeatMentions } from "./extractBeatMentions";
+import { extractBeatTextFromNode } from "./listPlacedBeats";
 import type { BeatType } from "@/features/editor/SceneBeatNode";
 
 type TreeNode = ReturnType<typeof useTreeStore.getState>["nodes"][number];
 type CodexEntries = ReturnType<typeof useCodexStore.getState>["entries"];
+
+/** codexSummaries の合計文字数上限（inline AI の CODEX_SUMMARIES_LIMIT と同水準） */
+const CODEX_SUMMARIES_LIMIT = 3000;
 
 export interface BeatGenerationContext {
   beatPos: number;
@@ -21,9 +27,35 @@ export interface BeatGenerationContext {
   sceneTextSoFar: string;
   povName: string | null;
   lang: string;
+  /** 検出 codex の `- name: summary` 行（inline AI の codexSummaries と同形式）。 */
+  codexSummaries: string;
   /** Scene tree node — useBeatGeneration needs it for the pending-beats section. */
   node: TreeNode | undefined;
   codexEntries: CodexEntries;
+}
+
+/**
+ * matchedIds の codex を `- name: summary` 行に整形する（合計 3000 字 cap、
+ * summary 空のエントリは除外）。inline AI の buildCodexSummaries と同じ規則。
+ */
+export function buildBeatCodexSummaries(
+  matchedIds: readonly string[],
+  entries: ReadonlyArray<{ id: string; name: string; summary: string | null }>,
+): string {
+  if (matchedIds.length === 0) return "";
+  const idSet = new Set(matchedIds);
+  const lines: string[] = [];
+  let total = 0;
+  for (const entry of entries) {
+    if (!idSet.has(entry.id)) continue;
+    const summary = (entry.summary ?? "").trim();
+    if (!summary) continue;
+    const line = `- ${entry.name}: ${summary}`;
+    if (total + line.length + 1 > CODEX_SUMMARIES_LIMIT) break;
+    lines.push(line);
+    total += line.length + 1;
+  }
+  return lines.join("\n");
 }
 
 export type BuildBeatContextResult =
@@ -51,7 +83,7 @@ export async function buildBeatContextForGeneration(
   const beatNode = editor.state.doc.nodeAt(beat.beatPos);
   if (!beatNode) return { ok: false, reason: "no-beat" };
 
-  const instructions = beatNode.textContent;
+  const instructions = extractBeatTextFromNode(beatNode);
   if (instructions.trim().length === 0) {
     return { ok: false, reason: "empty-instructions" };
   }
@@ -84,6 +116,17 @@ export async function buildBeatContextForGeneration(
     " ",
   );
 
+  // 検出 codex = シーン本文の自動検出 (inline AI と同じソース) ∪ この beat の
+  // @mention（mention は atom で本文検出に乗らないため明示的に拾う）。
+  const matchedIds = new Set(useCodexHighlightStore.getState().matchedEntryIds);
+  for (const mention of extractBeatMentions(editor.state.doc)) {
+    if (mention.beatId === beatId) matchedIds.add(mention.codexId);
+  }
+  const codexSummaries = buildBeatCodexSummaries(
+    [...matchedIds],
+    codexEntries ?? [],
+  );
+
   return {
     ok: true,
     ctx: {
@@ -96,6 +139,7 @@ export async function buildBeatContextForGeneration(
       sceneTextSoFar,
       povName,
       lang,
+      codexSummaries,
       node,
       codexEntries,
     },

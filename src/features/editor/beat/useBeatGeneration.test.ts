@@ -50,6 +50,8 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import type { CodexEntry } from "@/features/codex/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { findGeneratedBlockForBeat, findBeatById } from "./insertBeatStream";
 import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
@@ -130,9 +132,70 @@ describe("useBeatGeneration", () => {
     });
     useWorkspaceStore.setState({ activeWorkspaceName: "テスト作品" });
     useCodexStore.setState({ entries: [] });
+    useCodexHighlightStore.setState({ matchedEntryIds: [] });
     // policy 既定はクリア（projects 空 → fail-open=full）。bodyWrite ガードを
     // 素通りさせ、既存テストの generate を従来どおり走らせる。
     useProjectStore.setState({ currentProjectId: null, projects: [] });
+  });
+
+  it("検出 codex の summary が system prompt の 関連設定 に注入される", async () => {
+    useCodexStore.setState({
+      entries: [
+        {
+          id: "char-akane",
+          projectId: "p1",
+          parentId: null,
+          type: "character",
+          name: "朱音",
+          summary: "主人公。雨を嫌う。",
+          content: "{}",
+          icon: null,
+          aliases: "[]",
+          excludedAliases: "[]",
+          tagsCache: null,
+          contextMode: "mentioned",
+          childrenBudget: "compact",
+          sourceChatMessageId: null,
+          notes: null,
+          createdAt: "2024-01-01T00:00:00Z",
+          updatedAt: "2024-01-01T00:00:00Z",
+        } as CodexEntry,
+      ],
+    });
+    useCodexHighlightStore.setState({ matchedEntryIds: ["char-akane"] });
+
+    const editor = createEditorWithBeat("b1");
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+
+    let pending: Promise<void>;
+    await act(async () => {
+      pending = result.current.generate();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("generating"));
+
+    const call = invokeMock.mock.calls.find(
+      (c) => c[0] === "send_inline_ai_stream",
+    );
+    expect(call).toBeDefined();
+    const messages = (
+      call![1] as { messages: { role: string; content: string }[] }
+    ).messages;
+    const system = messages.find((m) => m.role === "system");
+    expect(system?.content).toContain("## 関連設定");
+    expect(system?.content).toContain("- 朱音: 主人公。雨を嫌う。");
+
+    await act(async () => {
+      emit("inline-ai:stream-done", {
+        stop_reason: "end_turn",
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      await pending!;
+    });
+    editor.destroy();
   });
 
   it("happy path: streams chunks into a generatedProseBlock and ends in idle state", async () => {

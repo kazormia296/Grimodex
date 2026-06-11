@@ -253,6 +253,49 @@ describe("buildPendingBeatsSection", () => {
     expect(result).toContain("ビート2");
   });
 
+  it("Unplaced beat 内の @mention を @名前 として直列化する", () => {
+    const beat: UnplacedBeat = {
+      id: "u1",
+      beatType: "free",
+      pov: null,
+      collapsed: false,
+      content: [
+        { type: "mention", attrs: { id: "char-1", label: "主人公" } },
+        { type: "text", text: " が裏切る" },
+      ],
+    };
+    const result = buildPendingBeatsSection({
+      ...base,
+      unplacedBeats: [beat],
+      currentBeatId: null,
+    });
+    expect(result).toContain("@主人公 が裏切る");
+  });
+
+  it("Placed beat 内の @mention を @名前 として直列化する", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "sceneBeat",
+          attrs: { id: "b1", beatType: "free", pov: null, collapsed: false },
+          content: [
+            { type: "text", text: "ここで " },
+            { type: "mention", attrs: { id: "char-2", label: "朱音" } },
+            { type: "text", text: " と再会" },
+          ],
+        },
+      ],
+    };
+    const result = buildPendingBeatsSection({
+      sceneDocJson: doc,
+      unplacedBeats: [],
+      resolveCharacterName: noResolver,
+      currentBeatId: null,
+    });
+    expect(result).toContain("ここで @朱音 と再会");
+  });
+
   it("セクションヘッダは ## このシーンの予定ビート で始まる", () => {
     const doc = makeDocJson(makeSceneBeatJson("b1", "ビート1"));
     const result = buildPendingBeatsSection({

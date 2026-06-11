@@ -16,9 +16,12 @@ import {
   proposePastSetups,
   createForeshadowSetup,
   auditChapter as auditChapterApi,
+  detectRelatedCodex,
   type SceneForeshadowInfo,
 } from "./api";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
+import { saveScene } from "@/features/editor/editorSaveRegistry";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import {
   saveForeshadowAnchors,
@@ -705,14 +708,21 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     }));
 
     try {
+      // DB content を読む前に、編集中シーンの debounce 未 flush 保存を確定させる
+      // (ChatPanel.handleSend と同じ仕組み)。
+      const activeSceneId = useSceneStore.getState().activeSceneId;
+      if (activeSceneId) await saveScene(activeSceneId);
+
       const nodes = useSceneStore.getState().nodes;
       const payoffNode = nodes.find((n) => n.id === foreshadow.payoffSceneId);
-      const sceneNodes = nodes.filter(
-        (n) =>
-          n.nodeType === "scene" &&
-          n.id !== foreshadow.payoffSceneId &&
-          (payoffNode ? n.sortOrder < payoffNode.sortOrder : true),
-      );
+      const sceneNodes = nodes
+        .filter(
+          (n) =>
+            n.nodeType === "scene" &&
+            n.id !== foreshadow.payoffSceneId &&
+            (payoffNode ? n.sortOrder < payoffNode.sortOrder : true),
+        )
+        .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
 
       const pastScenes = await Promise.all(
         sceneNodes.slice(0, 30).map(async (n, idx) => {
@@ -730,12 +740,16 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       const payoffContent = await loadSceneContent(foreshadow.payoffSceneId);
       const payoffText = prosemirrorToText(payoffContent);
 
+      const relatedCodex = await detectRelatedCodex(
+        [payoffText, ...pastScenes.map((s) => s.excerpt)].join("\n"),
+      );
+
       const results = await proposePastSetups({
         intent: foreshadow.intent ?? foreshadow.title,
         payoffSceneId: foreshadow.payoffSceneId,
         payoffExcerpt: payoffText.slice(0, 1000),
         pastScenes,
-        relatedCodex: [],
+        relatedCodex,
       });
 
       set((s) => ({
@@ -1034,6 +1048,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     }));
 
     try {
+      // DB content を読む前に、編集中シーンの debounce 未 flush 保存を確定させる
+      // (ChatPanel.handleSend と同じ仕組み)。
+      const activeSceneId = useSceneStore.getState().activeSceneId;
+      if (activeSceneId) await saveScene(activeSceneId);
+
       const nodes = useSceneStore.getState().nodes;
       const sceneNodes = nodes
         .filter((n) => n.nodeType === "scene" && n.parentId === chapterId)
@@ -1047,6 +1066,10 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         }),
       );
 
+      const relatedCodex = await detectRelatedCodex(
+        scenes.map((s) => s.bodyText).join("\n"),
+      );
+
       const { items } = get();
       const candidates = await auditChapterApi({
         chapterId,
@@ -1056,7 +1079,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           title: f.title,
           intent: f.intent,
         })),
-        relatedCodex: [],
+        relatedCodex,
       });
 
       set((s) => ({

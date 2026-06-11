@@ -211,6 +211,7 @@ export function useBeatGeneration(
       povName: ctx.povName,
       pendingBeatsSection,
       lang: ctx.lang,
+      codexSummaries: ctx.codexSummaries,
       customInstruction: useSettingsStore
         .getState()
         .get("aiPrompt.custom.beat", ""),

@@ -1,5 +1,8 @@
 import type { UnplacedBeat } from "./unplacedBeatsStore";
-import { listPlacedBeatsFromJson } from "./listPlacedBeats";
+import {
+  extractBeatTextFromJson,
+  listPlacedBeatsFromJson,
+} from "./listPlacedBeats";
 
 const MAX_INSTRUCTIONS_LENGTH = 200;
 
@@ -26,9 +29,7 @@ function truncate(text: string): string {
 }
 
 function extractUnplacedText(content: UnplacedBeat["content"]): string {
-  return (content ?? [])
-    .map((n) => (n.type === "text" ? (n.text ?? "") : ""))
-    .join("");
+  return extractBeatTextFromJson(content ?? []);
 }
 
 /**

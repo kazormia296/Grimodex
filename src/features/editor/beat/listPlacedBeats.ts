@@ -29,15 +29,56 @@ type JsonNode = {
   text?: string;
 };
 
-function extractTextFromJsonContent(nodes: JsonNode[] | undefined): string {
+function mentionToText(attrs: Record<string, unknown> | undefined): string {
+  // renderHTML と同じ展開規則: `@${label ?? id}`（label は挿入時に焼き込まれた
+  // 表示名、欠損時は entry id にフォールバック）。
+  const a = attrs ?? {};
+  const label =
+    typeof a.label === "string" && a.label
+      ? a.label
+      : typeof a.id === "string"
+        ? a.id
+        : "";
+  return `@${label}`;
+}
+
+/**
+ * Beat 指示テキストを PM-JSON inline content から組み立てる。mention は
+ * atom（text 子を持たない）なので、素朴な text 連結では名前ごと脱落する —
+ * `@名前` に展開して LLM コンテキストに残す。
+ */
+export function extractBeatTextFromJson(
+  nodes: readonly unknown[] | undefined,
+): string {
   if (!nodes) return "";
   return nodes
-    .map((n) =>
-      n.type === "text"
-        ? (n.text ?? "")
-        : extractTextFromJsonContent(n.content),
-    )
+    .map((raw) => {
+      const n = raw as JsonNode;
+      if (n.type === "text") return n.text ?? "";
+      if (n.type === "mention") return mentionToText(n.attrs);
+      return extractBeatTextFromJson(n.content);
+    })
     .join("");
+}
+
+/**
+ * `extractBeatTextFromJson` の live PM doc 版。`node.textContent` は
+ * mention atom を空文字にするため使わない。
+ */
+export function extractBeatTextFromNode(node: PMNode): string {
+  let text = "";
+  node.descendants((child) => {
+    if (child.isText) {
+      text += child.text ?? "";
+      return false;
+    }
+    if (child.type.name === "mention") {
+      text += mentionToText(child.attrs);
+      return false;
+    }
+    return true;
+  });
+  return text;
 }
 
 function isBeatType(value: unknown): value is BeatType {
@@ -82,7 +123,7 @@ export function listPlacedBeatsFromJson(docJson: unknown): PlacedBeatInfo[] {
           beatId,
           beatPos: pos,
           index: results.length + 1,
-          instructions: extractTextFromJsonContent(node.content),
+          instructions: extractBeatTextFromJson(node.content),
           beatType: isBeatType(attrs.beatType) ? attrs.beatType : "free",
           povCharacterId: typeof attrs.pov === "string" ? attrs.pov : null,
         });
@@ -113,7 +154,7 @@ export function listPlacedBeats(doc: PMNode): PlacedBeatInfo[] {
           beatId: attrs.id,
           beatPos: pos,
           index: results.length + 1,
-          instructions: node.textContent,
+          instructions: extractBeatTextFromNode(node),
           beatType: isBeatType(attrs.beatType) ? attrs.beatType : "free",
           povCharacterId: attrs.pov ?? null,
         });

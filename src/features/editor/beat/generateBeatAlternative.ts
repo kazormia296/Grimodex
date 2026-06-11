@@ -46,6 +46,7 @@ export async function generateBeatAlternative(
     sceneTextSoFar: ctx.sceneTextSoFar,
     povName: ctx.povName,
     lang: ctx.lang,
+    codexSummaries: ctx.codexSummaries,
     customInstruction: useSettingsStore
       .getState()
       .get("aiPrompt.custom.beat", ""),

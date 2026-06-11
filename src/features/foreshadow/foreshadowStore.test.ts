@@ -57,6 +57,9 @@ vi.mock("./api", () => ({
   deleteSetup: vi.fn(),
   reanchorOrphanSetup: vi.fn(),
   reinsertOrphanSetup: vi.fn(),
+  proposePastSetups: vi.fn(),
+  auditChapter: vi.fn(),
+  detectRelatedCodex: vi.fn(),
 }));
 
 vi.mock("@/features/editor/editorStore", () => ({
@@ -65,6 +68,19 @@ vi.mock("@/features/editor/editorStore", () => ({
 
 vi.mock("@/features/tree/store", () => ({
   useSceneStore: { getState: vi.fn() },
+}));
+
+vi.mock("@/features/tree/api", () => ({
+  loadSceneContent: vi.fn(),
+  saveSceneContent: vi.fn(),
+}));
+
+vi.mock("@/features/editor/editorSaveRegistry", () => ({
+  saveScene: vi.fn(),
+}));
+
+vi.mock("@/lib/prosemirror", () => ({
+  prosemirrorToText: vi.fn((s: string) => s),
 }));
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
@@ -85,7 +101,12 @@ import {
   deleteSetup,
   reanchorOrphanSetup,
   reinsertOrphanSetup,
+  proposePastSetups,
+  auditChapter,
+  detectRelatedCodex,
 } from "./api";
+import { loadSceneContent } from "@/features/tree/api";
+import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
 
@@ -96,6 +117,11 @@ const mockListSetups = vi.mocked(listSetups);
 const mockDeleteSetup = vi.mocked(deleteSetup);
 const mockReanchorOrphanSetup = vi.mocked(reanchorOrphanSetup);
 const mockReinsertOrphanSetup = vi.mocked(reinsertOrphanSetup);
+const mockProposePastSetups = vi.mocked(proposePastSetups);
+const mockAuditChapter = vi.mocked(auditChapter);
+const mockDetectRelatedCodex = vi.mocked(detectRelatedCodex);
+const mockLoadSceneContent = vi.mocked(loadSceneContent);
+const mockSaveScene = vi.mocked(saveScene);
 const mockUseEditorStore = vi.mocked(useEditorStore);
 const mockUseSceneStore = vi.mocked(useSceneStore);
 
@@ -566,6 +592,173 @@ describe("foreshadowStore", () => {
       expect(
         useForeshadowStore.getState().setupsByForeshadowId["f-1"]?.[0]?.id,
       ).toBe("s-old");
+    });
+  });
+
+  // ── proposeSetups ─────────────────────────────────────────────────
+
+  describe("proposeSetups", () => {
+    function makeSceneNode(
+      id: string,
+      sortOrder: string,
+      parentId: string | null = null,
+    ) {
+      return {
+        id,
+        nodeType: "scene",
+        title: `title-${id}`,
+        sortOrder,
+        parentId,
+      };
+    }
+
+    beforeEach(() => {
+      useForeshadowStore.setState({
+        items: [
+          {
+            ...makeRow({ id: "f-1", payoffSceneId: "scene-payoff" }),
+            label: "planned",
+            setupCount: 0,
+          },
+        ],
+        proposeResults: {},
+      });
+      mockLoadSceneContent.mockImplementation(
+        async (id: string) => `body-${id}`,
+      );
+      mockDetectRelatedCodex.mockResolvedValue([]);
+      mockProposePastSetups.mockResolvedValue([]);
+      mockSaveScene.mockResolvedValue(undefined);
+    });
+
+    it("pastScenes を sortOrder 順に整列し、orderIndex に実際の物語順を渡す", async () => {
+      // nodes 配列の並び（topological 順相当）は sortOrder 昇順ではない
+      mockUseSceneStore.getState.mockReturnValue({
+        nodes: [
+          makeSceneNode("scene-c", "a2"),
+          makeSceneNode("scene-a", "a0"),
+          makeSceneNode("scene-payoff", "a3"),
+          makeSceneNode("scene-b", "a1"),
+        ],
+        activeSceneId: null,
+      } as never);
+
+      await useForeshadowStore.getState().proposeSetups("f-1");
+
+      const req = mockProposePastSetups.mock.calls[0][0];
+      expect(
+        req.pastScenes.map((s) => ({
+          sceneId: s.sceneId,
+          orderIndex: s.orderIndex,
+        })),
+      ).toEqual([
+        { sceneId: "scene-a", orderIndex: 1 },
+        { sceneId: "scene-b", orderIndex: 2 },
+        { sceneId: "scene-c", orderIndex: 3 },
+      ]);
+    });
+
+    it("検出した relatedCodex を空配列でなく実エントリで渡す", async () => {
+      mockUseSceneStore.getState.mockReturnValue({
+        nodes: [
+          makeSceneNode("scene-a", "a0"),
+          makeSceneNode("scene-payoff", "a3"),
+        ],
+        activeSceneId: null,
+      } as never);
+      mockDetectRelatedCodex.mockResolvedValue([
+        { id: "c-1", name: "朱音", summary: "主人公" },
+      ]);
+
+      await useForeshadowStore.getState().proposeSetups("f-1");
+
+      expect(mockDetectRelatedCodex).toHaveBeenCalledWith(
+        expect.stringContaining("body-scene-payoff"),
+      );
+      expect(mockDetectRelatedCodex).toHaveBeenCalledWith(
+        expect.stringContaining("body-scene-a"),
+      );
+      const req = mockProposePastSetups.mock.calls[0][0];
+      expect(req.relatedCodex).toEqual([
+        { id: "c-1", name: "朱音", summary: "主人公" },
+      ]);
+    });
+
+    it("実行前に active scene の保存を flush する (DB 読みより先)", async () => {
+      mockUseSceneStore.getState.mockReturnValue({
+        nodes: [
+          makeSceneNode("scene-a", "a0"),
+          makeSceneNode("scene-payoff", "a3"),
+        ],
+        activeSceneId: "scene-a",
+      } as never);
+
+      await useForeshadowStore.getState().proposeSetups("f-1");
+
+      expect(mockSaveScene).toHaveBeenCalledWith("scene-a");
+      expect(mockSaveScene.mock.invocationCallOrder[0]).toBeLessThan(
+        mockLoadSceneContent.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("activeSceneId が無ければ flush しない", async () => {
+      mockUseSceneStore.getState.mockReturnValue({
+        nodes: [makeSceneNode("scene-payoff", "a3")],
+        activeSceneId: null,
+      } as never);
+
+      await useForeshadowStore.getState().proposeSetups("f-1");
+
+      expect(mockSaveScene).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── auditChapter ──────────────────────────────────────────────────
+
+  describe("auditChapter", () => {
+    function makeChapterScene(id: string, sortOrder: string) {
+      return {
+        id,
+        nodeType: "scene",
+        title: `title-${id}`,
+        sortOrder,
+        parentId: "ch-1",
+      };
+    }
+
+    beforeEach(() => {
+      useForeshadowStore.setState({ items: [], auditResults: {} });
+      mockLoadSceneContent.mockImplementation(
+        async (id: string) => `body-${id}`,
+      );
+      mockDetectRelatedCodex.mockResolvedValue([]);
+      mockAuditChapter.mockResolvedValue([]);
+      mockSaveScene.mockResolvedValue(undefined);
+    });
+
+    it("実行前に active scene の保存を flush し、検出 relatedCodex を渡す", async () => {
+      mockUseSceneStore.getState.mockReturnValue({
+        nodes: [makeChapterScene("s-2", "a1"), makeChapterScene("s-1", "a0")],
+        activeSceneId: "s-1",
+      } as never);
+      mockDetectRelatedCodex.mockResolvedValue([
+        { id: "c-1", name: "王家の印章", summary: "失われた紋章" },
+      ]);
+
+      await useForeshadowStore.getState().auditChapter("ch-1");
+
+      expect(mockSaveScene).toHaveBeenCalledWith("s-1");
+      expect(mockSaveScene.mock.invocationCallOrder[0]).toBeLessThan(
+        mockLoadSceneContent.mock.invocationCallOrder[0],
+      );
+      expect(mockDetectRelatedCodex).toHaveBeenCalledWith(
+        expect.stringContaining("body-s-1"),
+      );
+      const req = mockAuditChapter.mock.calls[0][0];
+      expect(req.relatedCodex).toEqual([
+        { id: "c-1", name: "王家の印章", summary: "失われた紋章" },
+      ]);
+      expect(req.scenes.map((s) => s.sceneId)).toEqual(["s-1", "s-2"]);
     });
   });
 });

@@ -23,6 +23,11 @@ export interface BeatPromptInput {
    * Empty string or undefined → omitted from prompt.
    */
   pendingBeatsSection?: string;
+  /**
+   * 検出 codex の `- name: summary` 行（buildBeatCodexSummaries の出力）。
+   * inline AI の codexSummaries と同形式。空/未指定なら省略。
+   */
+  codexSummaries?: string;
   /** 執筆言語（project.language）。省略時は "ja" にフォールバック */
   lang?: string;
   /**

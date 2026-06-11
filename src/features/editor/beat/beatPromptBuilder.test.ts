@@ -40,6 +40,25 @@ describe("buildBeatSystemPrompt", () => {
       "100",
     );
   });
+
+  it("codexSummaries があるとき ## 関連設定 として注入する", () => {
+    const sys = buildBeatSystemPrompt({
+      ...BASE,
+      codexSummaries: "- 朱音: 主人公。雨を嫌う。",
+    });
+    expect(sys).toContain("## 関連設定");
+    expect(sys).toContain("- 朱音: 主人公。雨を嫌う。");
+  });
+
+  it("codexSummaries が空/未指定なら 関連設定 セクションを出さない", () => {
+    expect(buildBeatSystemPrompt(BASE)).not.toContain("関連設定");
+    expect(
+      buildBeatSystemPrompt({ ...BASE, codexSummaries: "" }),
+    ).not.toContain("関連設定");
+    expect(
+      buildBeatSystemPrompt({ ...BASE, codexSummaries: "   " }),
+    ).not.toContain("関連設定");
+  });
 });
 
 describe("buildBeatUserPrompt", () => {

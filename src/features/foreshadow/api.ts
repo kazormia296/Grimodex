@@ -1,6 +1,9 @@
 import { db } from "@/db/client";
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { invoke } from "@/lib/tauri";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
@@ -1254,6 +1257,44 @@ interface ProposeResponse {
   candidates: ProposedSetup[];
 }
 
+/** relatedCodex のエントリ数上限（prompt 側の slice(0, 20) と同じ）。 */
+const RELATED_CODEX_MAX_ENTRIES = 20;
+/** relatedCodex の合計文字数上限（inline AI の codexSummaries と同水準）。 */
+const RELATED_CODEX_CHAR_LIMIT = 3000;
+
+/**
+ * シーン本文テキストから言及されている codex エントリを検出して
+ * relatedCodex 形式（id/name/summary）に整形する。chat の auto-detect と
+ * 同じ text ベースのマッチング（editor 非依存）。summary 空のエントリは
+ * prompt で `- name: ` にしかならないため除外する。
+ */
+export async function detectRelatedCodex(
+  text: string,
+): Promise<ProposeRequest["relatedCodex"]> {
+  if (!text.trim()) return [];
+  const entries = useCodexStore.getState().entries;
+  const detectable = entries.filter(
+    (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
+  );
+  const matched = await findMentionedEntriesAsync(text, detectable);
+  const byId = new Map(detectable.map((e) => [e.id, e]));
+
+  const result: ProposeRequest["relatedCodex"] = [];
+  let total = 0;
+  for (const m of matched) {
+    const entry = byId.get(m.id);
+    if (!entry) continue;
+    const summary = (entry.summary ?? "").trim();
+    if (!summary) continue;
+    const line = `- ${entry.name}: ${summary}`;
+    if (total + line.length + 1 > RELATED_CODEX_CHAR_LIMIT) break;
+    result.push({ id: entry.id, name: entry.name, summary });
+    if (result.length >= RELATED_CODEX_MAX_ENTRIES) break;
+    total += line.length + 1;
+  }
+  return result;
+}
+
 function isValidCandidate(candidate: unknown): candidate is ProposedSetup {
   const c = candidate as Partial<ProposedSetup>;
   return (
@@ -1269,6 +1310,9 @@ function isValidCandidate(candidate: unknown): candidate is ProposedSetup {
 export async function proposePastSetups(
   req: ProposeRequest,
 ): Promise<ProposedSetup[]> {
+  // 分析・提案系の LLM 呼び出し — kouetsu views と同じく analysis で gate する
+  // (presentation から独立した correctness 層、policyGuard.ts 参照)。
+  if (blockIfPolicyOff("analysis")) return [];
   let _project;
   try {
     _project = await getProject(useTreeStore.getState().projectId);
@@ -1332,6 +1376,7 @@ export interface EvaluateStrengthRequest {
 export async function evaluateSetupStrength(
   req: EvaluateStrengthRequest,
 ): Promise<AiEvaluation | null> {
+  if (blockIfPolicyOff("analysis")) return null;
   let _project;
   try {
     _project = await getProject(useTreeStore.getState().projectId);
@@ -1392,6 +1437,7 @@ function isValidAuditCandidate(c: unknown): c is AuditCandidate {
 export async function auditChapter(
   req: ChapterAuditRequest,
 ): Promise<AuditCandidate[]> {
+  if (blockIfPolicyOff("analysis")) return [];
   let _auditProject;
   try {
     _auditProject = await getProject(useTreeStore.getState().projectId);
