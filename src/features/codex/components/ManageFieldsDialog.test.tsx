@@ -199,6 +199,25 @@ describe("ManageFieldsDialog", () => {
     ).toBeInTheDocument();
   });
 
+  it("stacks the delete confirmation above the portaled dialog", async () => {
+    // AnimatedOverlay は body へ portal される (z-50)。確認ダイアログが
+    // インライン z-50 のままだと DOM 順で負けて裏に隠れる regression を gate。
+    const user = userEvent.setup();
+    mockListDefs.mockResolvedValue([makeDefinition("def-1", "身長", "text")]);
+    render(<ManageFieldsDialog {...defaultProps} />);
+    await waitFor(() => screen.getByTestId("manage-field-delete-def-1"));
+    await user.click(screen.getByTestId("manage-field-delete-def-1"));
+
+    const confirm = screen.getByTestId("manage-field-delete-confirm-dialog");
+    const backdrop = screen.getByTestId("animated-overlay-backdrop");
+    expect(confirm.parentElement).toBe(document.body);
+    const bodyChildren = Array.from(document.body.children);
+    expect(bodyChildren.indexOf(confirm)).toBeGreaterThan(
+      bodyChildren.indexOf(backdrop),
+    );
+    expect(confirm.className).toContain("z-[60]");
+  });
+
   it("calls deleteDefinition after confirming delete", async () => {
     const user = userEvent.setup();
     mockListDefs.mockResolvedValue([makeDefinition("def-1", "身長", "text")]);

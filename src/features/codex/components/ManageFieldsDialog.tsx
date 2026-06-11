@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { X, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -215,10 +216,12 @@ function DeleteConfirmDialog({
   onConfirm,
   onCancel,
 }: DeleteConfirmProps) {
-  return (
+  // 親の ManageFieldsDialog (AnimatedOverlay) は body へ portal された z-50。
+  // その上に確実に重ねるため、こちらも body へ portal して z-[60] にする。
+  return createPortal(
     <div
       data-testid="manage-field-delete-confirm-dialog"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
       onClick={onCancel}
     >
       <div
@@ -251,7 +254,8 @@ function DeleteConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

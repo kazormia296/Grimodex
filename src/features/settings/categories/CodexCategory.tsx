@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { Plus, Pencil, Trash2, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -452,47 +453,50 @@ export function CodexCategory() {
         </div>
       </SettingSection>
 
-      {/* Delete Confirm */}
-      {deletingType && (
-        <div
-          data-testid="codex-type-delete-confirm"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-          onClick={() => setDeletingType(null)}
-        >
+      {/* Delete Confirm — SettingsDialog (AnimatedOverlay) は body へ portal
+          された z-50 のため、その上に重ねるには portal + z-[60] が必要 */}
+      {deletingType &&
+        createPortal(
           <div
-            className="w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
-            onClick={(e) => e.stopPropagation()}
+            data-testid="codex-type-delete-confirm"
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+            onClick={() => setDeletingType(null)}
           >
-            <h4 className="mb-2 text-sm font-semibold">
-              {t("settings.codex.deleteType")}
-            </h4>
-            <p className="mb-4 text-xs text-muted-foreground">
-              {t("settings.codex.deleteTypeDesc", {
-                label: deletingType.label,
-                slug: deletingType.slug,
-              })}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                data-testid="codex-type-delete-cancel"
-                onClick={() => setDeletingType(null)}
-                className="rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
-              >
-                {t("common.cancel")}
-              </button>
-              <button
-                type="button"
-                data-testid="codex-type-delete-confirm-button"
-                onClick={() => void handleDeleteConfirm()}
-                className="rounded bg-destructive px-3 py-1 text-xs text-destructive-foreground"
-              >
-                {t("common.delete")}
-              </button>
+            <div
+              className="w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h4 className="mb-2 text-sm font-semibold">
+                {t("settings.codex.deleteType")}
+              </h4>
+              <p className="mb-4 text-xs text-muted-foreground">
+                {t("settings.codex.deleteTypeDesc", {
+                  label: deletingType.label,
+                  slug: deletingType.slug,
+                })}
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  data-testid="codex-type-delete-cancel"
+                  onClick={() => setDeletingType(null)}
+                  className="rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
+                >
+                  {t("common.cancel")}
+                </button>
+                <button
+                  type="button"
+                  data-testid="codex-type-delete-confirm-button"
+                  onClick={() => void handleDeleteConfirm()}
+                  className="rounded bg-destructive px-3 py-1 text-xs text-destructive-foreground"
+                >
+                  {t("common.delete")}
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
