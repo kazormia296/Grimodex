@@ -2282,6 +2282,33 @@ mod tests {
     }
 
     #[test]
+    fn test_get_codex_entry_full_filters_details_by_include_in_context() {
+        // チャット注入・アプリ内 Agent ツール (toolExecutors) と同じく
+        // include_in_context=1 の detail のみ返す（外部 MCP だけ全件返す非対称の解消）
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_codex_entry(&conn, "e1", "p1", "Alice", "character");
+        conn.execute(
+            "INSERT INTO codex_detail_definitions \
+             (id, project_id, type_slug, name, field_type, include_in_context) \
+             VALUES ('d1', 'p1', 'character', '年齢', 'text', 1), \
+                    ('d2', 'p1', 'character', '秘密', 'text', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO codex_detail_values (id, entry_id, definition_id, value) \
+             VALUES ('v1', 'e1', 'd1', '17'), ('v2', 'e1', 'd2', '実は吸血鬼')",
+            [],
+        )
+        .unwrap();
+
+        let entry = get_codex_entry_full(&conn, "p1", "e1").unwrap();
+        assert_eq!(entry.detail_values.len(), 1);
+        assert_eq!(entry.detail_values[0].definition_name, "年齢");
+    }
+
+    #[test]
     fn test_get_codex_entry_full_cross_project_returns_error() {
         // projA にスコープした接続が projB の entry_id を渡しても読めないこと。
         let conn = make_simple_db();
