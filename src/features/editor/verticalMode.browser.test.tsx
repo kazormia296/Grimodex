@@ -244,7 +244,7 @@ describe("縦書きMODE: node-island の horizontal-tb リセット", () => {
           </pre>
           <ul data-type="taskList" data-testid="island-tasklist">
             <li data-testid="island-taskitem">
-              <label>
+              <label aria-label="タスク完了">
                 <input type="checkbox" />
               </label>
               <div>タスク本文</div>
