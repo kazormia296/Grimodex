@@ -120,6 +120,10 @@ export function Toolbar({
 
   const { value: showLineNumbers, setValue: setShowLineNumbers } =
     useSettingBoolean("editor.showLineNumbers", false);
+  const { value: verticalMode, setValue: setVerticalMode } = useSettingBoolean(
+    "editor.verticalMode",
+    false,
+  );
 
   const { showAttribution, toggleAttribution } = useAttributionStore();
   const {
@@ -500,8 +504,16 @@ export function Toolbar({
             label={t("editor.toolbar.typewriterMode")}
             active={typewriterMode}
             onClick={toggleTypewriterMode}
+            disabled={verticalMode}
           >
             TW
+          </ToolbarButton>
+          <ToolbarButton
+            label={t("editor.toolbar.verticalMode")}
+            active={verticalMode}
+            onClick={() => setVerticalMode(!verticalMode)}
+          >
+            縦
           </ToolbarButton>
           <Sep />
           {/* Overlays: 帰属 / コメント / 伏線 / 校閲 (peAnnotation) */}

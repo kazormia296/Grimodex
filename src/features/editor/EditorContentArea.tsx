@@ -86,7 +86,7 @@ export function EditorContentArea({
         data-focus-hide-beats={
           focusModeHideBeats && focusMode ? "true" : undefined
         }
-        className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
+        className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${editorSettings.verticalMode ? " editor-vertical" : ""}${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
         onClick={(e) => {
           if (e.target === e.currentTarget) {
             editor?.commands.focus();

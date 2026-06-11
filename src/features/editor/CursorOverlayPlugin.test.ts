@@ -184,3 +184,62 @@ describe("CursorOverlayPlugin – wrapper re-parenting", () => {
     newWrapper.remove();
   });
 });
+
+/**
+ * getEnabled が false を返したら native キャレットへ確実に委譲する契約。
+ * 縦書きMODE (editor.verticalMode) は useCursorOverlay でこの getter を
+ * 実効 OFF に倒すため、caretColor 復帰が漏れると縦書き中にキャレットが
+ * 完全に見えなくなる。
+ */
+describe("CursorOverlayPlugin – disable hands back the native caret", () => {
+  it("restores caretColor and hides the overlay when getEnabled flips false", () => {
+    const wrapper = document.createElement("div");
+    wrapper.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 600,
+        width: 800,
+        height: 600,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    Object.defineProperty(wrapper, "scrollTop", { value: 0, writable: true });
+    document.body.appendChild(wrapper);
+
+    let enabled = true;
+    const state = EditorState.create({
+      doc: schema.nodes.doc.create({}, [
+        schema.nodes.paragraph.create({}, [schema.text("hello")]),
+      ]),
+      plugins: [createCursorOverlayPlugin(() => enabled)],
+    });
+    const view = new EditorView(wrapper, { state });
+    view.coordsAtPos = vi.fn().mockReturnValue({
+      left: 50,
+      top: 20,
+      bottom: 40,
+    });
+    view.hasFocus = vi.fn().mockReturnValue(true);
+
+    const cursor = wrapper.querySelector(
+      ".typewriter-cursor",
+    ) as HTMLDivElement;
+    expect(cursor).not.toBeNull();
+
+    // Enabled: the overlay owns the caret (native caret made transparent).
+    view.dispatch(view.state.tr.insertText("a", 1, 1));
+    expect(view.dom.style.caretColor).toBe("transparent");
+
+    // Disabled (e.g. vertical mode toggled on): native caret restored.
+    enabled = false;
+    view.dispatch(view.state.tr.insertText("b", 1, 1));
+    expect(view.dom.style.caretColor).toBe("");
+    expect(cursor.style.visibility).toBe("hidden");
+
+    view.destroy();
+    wrapper.remove();
+  });
+});

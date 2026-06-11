@@ -25,6 +25,12 @@ export function useCharacterFade(editor: Editor | null) {
   const fadeOut = useSettingsStore((s) =>
     s.getBoolean("editor.characterFadeOut", false),
   );
+  // Fade-out paints fixed-position ghost glyphs from coordsAtPos with a
+  // horizontal glyph orientation, so it is effectively off while vertical.
+  // Fade-in is a pure opacity decoration and works in both modes.
+  const verticalMode = useSettingsStore((s) =>
+    s.getBoolean("editor.verticalMode", false),
+  );
 
   useEffect(() => {
     if (!editor) return;
@@ -34,10 +40,12 @@ export function useCharacterFade(editor: Editor | null) {
       ),
     );
     editor.registerPlugin(
-      createCharacterFadeOutPlugin(() =>
-        useSettingsStore
-          .getState()
-          .getBoolean("editor.characterFadeOut", false),
+      createCharacterFadeOutPlugin(
+        () =>
+          useSettingsStore
+            .getState()
+            .getBoolean("editor.characterFadeOut", false) &&
+          !useSettingsStore.getState().getBoolean("editor.verticalMode", false),
       ),
     );
     return () => {
@@ -59,5 +67,5 @@ export function useCharacterFade(editor: Editor | null) {
     const { tr } = editor.state;
     tr.setMeta(characterFadeOutKey, { type: "consumed" });
     editor.view.dispatch(tr);
-  }, [editor, fadeOut]);
+  }, [editor, fadeOut, verticalMode]);
 }

@@ -2140,6 +2140,7 @@
       "reviewMarks": "校閲アノテーション表示",
       "focusMode": "フォーカスモード",
       "typewriterMode": "タイプライターモード",
+      "verticalMode": "縦書きで編集（この作品）",
       "sceneMetaPanel": "シーン情報パネル",
       "moreOptions": "その他のオプション",
       "findReplace": "検索と置換",

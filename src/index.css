@@ -1088,6 +1088,27 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   background-color: #9ca3af;
 }
 
+/* Vertical writing live-edit mode (editor.verticalMode, per-project) —
+ * applied to the editor scroll container (EditorDropDiv / LinearEditorView)
+ * so the scroll axis flips and writing-mode inherits down to .tiptap, where
+ * the logical properties above resolve against vertical-rl. */
+.editor-vertical {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-feature-settings: "vpal";
+}
+.editor-vertical .tiptap ruby rt {
+  font-size: 0.5em;
+}
+/* Node islands stay horizontal UI chunks inside the vertical flow
+ * (same reset as .vertical-preview table). */
+.editor-vertical .tiptap [data-type="scene-beat"],
+.editor-vertical .tiptap .scene-break,
+.editor-vertical .tiptap .generated-prose-block,
+.editor-vertical .tiptap table {
+  writing-mode: horizontal-tb;
+}
+
 /* Vertical writing preview (Task 5.2) */
 .vertical-preview {
   writing-mode: vertical-rl;

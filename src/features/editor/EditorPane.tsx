@@ -79,6 +79,10 @@ import {
   useTypewriterScroll,
   computeTypewriterScrollTop,
 } from "@/features/editor/useTypewriterScroll";
+import {
+  getLogicalScrollOffset,
+  setLogicalScrollOffset,
+} from "@/features/editor/editorLayout";
 import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { useAgentProseStaging } from "@/features/editor/inlineAi/useAgentProseStaging";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
@@ -147,6 +151,12 @@ const STATUS_COLORS: Record<SceneStatus, string> = {
   final: "text-blue-400",
 };
 
+/** Read the vertical-mode flag at call time — scroll save/restore runs inside
+ *  async effects and editor callbacks where a captured value could be stale. */
+function isVerticalModeNow(): boolean {
+  return useSettingsStore.getState().getBoolean("editor.verticalMode", false);
+}
+
 interface EditorPaneProps {
   nodeId: string;
   contentType: TabContentType;
@@ -180,9 +190,11 @@ export function EditorPane({
   const isSnippetMode = contentType === "snippet";
   const prevSceneIdRef = useRef(nodeId);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
-  // Per-scene editor state: cursor position + scroll (session-only, no persistence)
+  // Per-scene editor state: cursor position + scroll (session-only, no persistence).
+  // scrollOffset is the logical block-axis offset (scrollTop when horizontal,
+  // -scrollLeft when vertical) — see editorLayout.getLogicalScrollOffset.
   const savedEditorStateRef = useRef<
-    Map<string, { from: number; to: number; scrollTop: number }>
+    Map<string, { from: number; to: number; scrollOffset: number }>
   >(new Map());
   // Pending cursor/scroll restore for lazy application on next editor focus.
   // Set when the scene switch was triggered from the Scenes panel (no focus steal).
@@ -190,7 +202,7 @@ export function EditorPane({
   const pendingCursorRestoreRef = useRef<{
     from: number;
     to: number;
-    scrollTop: number;
+    scrollOffset: number;
   } | null>(null);
   // count 系 state (charCount/beat) は EditorStatsFooter に分離済み。本体に
   // 置くとタイピング休止ごとの stat 更新で 2200 行ペイン全体が再レンダー
@@ -742,7 +754,11 @@ export function EditorPane({
             ed.commands.setTextSelection({ from, to });
           }
           if (editorContainerRef.current) {
-            editorContainerRef.current.scrollTop = pending.scrollTop;
+            setLogicalScrollOffset(
+              editorContainerRef.current,
+              pending.scrollOffset,
+              isVerticalModeNow(),
+            );
           }
         }
       },
@@ -971,11 +987,16 @@ export function EditorPane({
     [],
   );
 
-  useTypewriterScroll(editor, typewriterMode, editorContainerRef);
+  // Typewriter scroll is Y-axis only — disabled while vertical writing is on
+  // (the setting itself is left untouched so it comes back on mode exit).
+  const verticalMode = editorSettings.verticalMode;
+  const effectiveTypewriter = typewriterMode && !verticalMode;
+  useTypewriterScroll(editor, effectiveTypewriter, editorContainerRef);
 
   // When typewriter mode is toggled (on or off), scroll immediately to center
   // the cursor to prevent a visual jump from the 50vh padding being added/removed.
   useEffect(() => {
+    if (verticalMode) return;
     if (!editorContainerRef.current || !isEditorViewReady(mountedEditor))
       return;
     const container = editorContainerRef.current;
@@ -998,7 +1019,21 @@ export function EditorPane({
       container.scrollTo({ top: Math.max(0, target), behavior: "auto" });
     });
     return () => cancelAnimationFrame(raf);
-  }, [typewriterMode, mountedEditor, nodeId]);
+  }, [effectiveTypewriter, verticalMode, mountedEditor, nodeId]);
+
+  // Saved scroll offsets belong to one writing mode's block axis — toggling
+  // vertical mode invalidates them (cursor positions stay; they are logical).
+  useEffect(() => {
+    for (const [id, st] of savedEditorStateRef.current) {
+      savedEditorStateRef.current.set(id, { ...st, scrollOffset: 0 });
+    }
+    if (pendingCursorRestoreRef.current) {
+      pendingCursorRestoreRef.current = {
+        ...pendingCursorRestoreRef.current,
+        scrollOffset: 0,
+      };
+    }
+  }, [verticalMode]);
   const inlineAiDiff = useInlineAiDiff(dbNativeEditor);
   const { generate, retry } = inlineAiDiff;
   const { acceptWithStaging, rejectWithStaging } = useAgentProseStaging(
@@ -1117,7 +1152,12 @@ export function EditorPane({
             savedEditorStateRef.current.set(prevId, {
               from,
               to,
-              scrollTop: editorContainerRef.current?.scrollTop ?? 0,
+              scrollOffset: editorContainerRef.current
+                ? getLogicalScrollOffset(
+                    editorContainerRef.current,
+                    isVerticalModeNow(),
+                  )
+                : 0,
             });
           }
           await flush();
@@ -1362,9 +1402,11 @@ export function EditorPane({
           isApplyingExternalUpdate.current = false;
         }
 
-        // Reset scroll to top after scene load; saved state will be restored below.
+        // Reset scroll to the start edge after scene load; saved state will be
+        // restored below. Both axes so the reset is writing-mode independent.
         if (editorContainerRef.current) {
           editorContainerRef.current.scrollTop = 0;
+          editorContainerRef.current.scrollLeft = 0;
         }
 
         prevSceneIdRef.current = nodeId;
@@ -1440,7 +1482,11 @@ export function EditorPane({
                   ed.chain().focus().setTextSelection({ from, to }).run();
                 }
                 if (editorContainerRef.current) {
-                  editorContainerRef.current.scrollTop = saved.scrollTop;
+                  setLogicalScrollOffset(
+                    editorContainerRef.current,
+                    saved.scrollOffset,
+                    isVerticalModeNow(),
+                  );
                 }
               });
             } else {
@@ -1449,7 +1495,7 @@ export function EditorPane({
               pendingCursorRestoreRef.current = {
                 from: saved.from,
                 to: saved.to,
-                scrollTop: saved.scrollTop,
+                scrollOffset: saved.scrollOffset,
               };
             }
           }
@@ -1652,7 +1698,7 @@ export function EditorPane({
                 showForeshadowMarks={showForeshadowMarks}
                 focusModeHideBeats={focusModeHideBeats}
                 focusMode={focusMode}
-                typewriterMode={typewriterMode}
+                typewriterMode={effectiveTypewriter}
                 filterSource={filterSource}
                 editorSettings={editorSettings}
                 editorTitle={editorTitle}
@@ -1695,7 +1741,7 @@ export function EditorPane({
                 showForeshadowMarks={showForeshadowMarks}
                 focusModeHideBeats={focusModeHideBeats}
                 focusMode={focusMode}
-                typewriterMode={typewriterMode}
+                typewriterMode={effectiveTypewriter}
                 filterSource={filterSource}
                 editorSettings={editorSettings}
                 editorTitle={editorTitle}

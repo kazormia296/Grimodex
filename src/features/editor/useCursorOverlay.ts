@@ -23,6 +23,12 @@ export function useCursorOverlay(editor: Editor | null) {
   const cursorBlink = useSettingsStore((s) =>
     s.getBoolean("editor.cursorBlink", true),
   );
+  // The overlay computes pixel positions with a horizontal-writing bias model,
+  // so vertical mode forces it off (effective value only — the user's
+  // smoothCaret setting is untouched) and the native caret takes over.
+  const verticalMode = useSettingsStore((s) =>
+    s.getBoolean("editor.verticalMode", false),
+  );
 
   // Register plugin once per editor instance
   useEffect(() => {
@@ -30,7 +36,8 @@ export function useCursorOverlay(editor: Editor | null) {
     editor.registerPlugin(
       createCursorOverlayPlugin(
         () =>
-          useSettingsStore.getState().getBoolean("editor.smoothCaret", true),
+          useSettingsStore.getState().getBoolean("editor.smoothCaret", true) &&
+          !useSettingsStore.getState().getBoolean("editor.verticalMode", false),
         () =>
           useSettingsStore.getState().getBoolean("editor.cursorBlink", true),
       ),
@@ -40,11 +47,11 @@ export function useCursorOverlay(editor: Editor | null) {
     };
   }, [editor]);
 
-  // Force update cycle when either toggle changes
+  // Force update cycle when any toggle changes
   useEffect(() => {
     if (!isEditorViewReady(editor)) return;
     const { tr } = editor.state;
     tr.setMeta(cursorOverlayKey, true);
     editor.view.dispatch(tr);
-  }, [editor, cursorAnimation, cursorBlink]);
+  }, [editor, cursorAnimation, cursorBlink, verticalMode]);
 }

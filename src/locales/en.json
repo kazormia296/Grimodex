@@ -2136,6 +2136,7 @@
       "reviewMarks": "Show review annotations",
       "focusMode": "Focus mode",
       "typewriterMode": "Typewriter mode",
+      "verticalMode": "Vertical writing (this work)",
       "sceneMetaPanel": "Scene info panel",
       "moreOptions": "More options",
       "findReplace": "Find and replace",
