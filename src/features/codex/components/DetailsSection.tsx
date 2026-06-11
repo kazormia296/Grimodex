@@ -16,6 +16,7 @@ import {
 import { CodexContentEditor } from "./CodexContentEditor";
 import { ManageFieldsDialog } from "./ManageFieldsDialog";
 import { FormFieldSkeletonList } from "@/components/ui/skeleton-patterns";
+import { useProjectStore } from "@/features/project/projectStore";
 
 interface TextFieldProps {
   definition: CodexDetailDefinition;
@@ -175,6 +176,9 @@ export function DetailsSection({ entry }: DetailsSectionProps) {
   const [valuesMap, setValuesMap] = useState<Map<string, string>>(new Map());
   const [isLoading, setIsLoading] = useState(true);
   const [isManageOpen, setIsManageOpen] = useState(false);
+  const projectGenre = useProjectStore(
+    (s) => s.projects.find((p) => p.id === entry.projectId)?.genre ?? null,
+  );
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -264,6 +268,7 @@ export function DetailsSection({ entry }: DetailsSectionProps) {
         projectId={entry.projectId}
         typeSlug={entry.type}
         typeLabel={entry.type}
+        projectGenre={projectGenre}
         open={isManageOpen}
         onClose={() => {
           setIsManageOpen(false);

@@ -18,6 +18,7 @@ import { expandPreset, inferPreset } from "@/features/ai-policy/preset";
 import type { AiFeature, AiPolicyPreset } from "@/features/ai-policy/types";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { PROJECT_ID } from "@/features/project/constants";
+import { GENRE_VALUES } from "@/features/project/genreOptions";
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -56,15 +57,7 @@ export function ProjectCategory() {
 
   const GENRE_OPTIONS = [
     { value: "", label: t("settings.project.unselected") },
-    { value: "Fantasy", label: "Fantasy" },
-    { value: "Sci-Fi", label: "Sci-Fi" },
-    { value: "Mystery", label: "Mystery" },
-    { value: "Horror", label: "Horror" },
-    { value: "Romance", label: "Romance" },
-    { value: "Thriller", label: "Thriller" },
-    { value: "Literary", label: "Literary" },
-    { value: "Historical", label: "Historical" },
-    { value: "Other", label: "Other" },
+    ...GENRE_VALUES.map((value) => ({ value, label: value })),
   ];
 
   const POV_OPTIONS = [

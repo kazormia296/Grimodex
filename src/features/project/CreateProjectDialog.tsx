@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import type { Project } from "./api";
+import { GENRE_VALUES } from "./genreOptions";
 import { listCodexTypes, type CodexType } from "@/features/codex/typeApi";
 
 export interface CreateProjectFormData {
@@ -28,18 +29,7 @@ const LANGUAGE_OPTIONS = [
   { value: "ko", label: "한국어" },
 ];
 
-const GENRE_OPTIONS = [
-  "",
-  "Fantasy",
-  "Sci-Fi",
-  "Mystery",
-  "Horror",
-  "Romance",
-  "Thriller",
-  "Literary",
-  "Historical",
-  "Other",
-];
+const GENRE_OPTIONS = ["", ...GENRE_VALUES];
 
 export function CreateProjectDialog({
   open,

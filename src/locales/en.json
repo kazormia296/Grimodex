@@ -1035,7 +1035,13 @@
       "contentLabel": "Description",
       "customDetailsTitle": "Custom Details",
       "showBaseContent": "Show base description",
-      "selectPlaceholder": "— Select —"
+      "selectPlaceholder": "— Select —",
+      "presetPickerLabel": "Field preset",
+      "presetBase": "Basic set",
+      "presetApply": "Apply preset",
+      "presetApplied": "Added {{count}} fields from the preset",
+      "presetAppliedSkipped": "Added {{added}} fields from the preset ({{skipped}} skipped as existing)",
+      "presetNoneAdded": "All preset fields already exist"
     },
     "relation": {
       "title": "Hierarchy (parent/child)",

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Pencil, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import type { CodexDetailDefinition } from "../detailApi";
 import {
@@ -9,6 +10,7 @@ import {
   updateDefinition,
   deleteDefinition,
 } from "../detailApi";
+import { PRESET_GENRES, applyDetailPreset } from "../detailPresets";
 
 // --- Field type labels ---
 const FIELD_TYPE_OPTIONS = [
@@ -260,6 +262,8 @@ interface ManageFieldsDialogProps {
   typeLabel: string;
   open: boolean;
   onClose: () => void;
+  /** プリセットピッカーの初期選択に使う projects.genre の値 */
+  projectGenre?: string | null;
 }
 
 export function ManageFieldsDialog({
@@ -268,6 +272,7 @@ export function ManageFieldsDialog({
   typeLabel,
   open,
   onClose,
+  projectGenre,
 }: ManageFieldsDialogProps) {
   const { t } = useTranslation();
   const [definitions, setDefinitions] = useState<CodexDetailDefinition[]>([]);
@@ -276,6 +281,12 @@ export function ManageFieldsDialog({
   const [deletingDef, setDeletingDef] = useState<CodexDetailDefinition | null>(
     null,
   );
+  const presetDefault =
+    projectGenre && (PRESET_GENRES as readonly string[]).includes(projectGenre)
+      ? projectGenre
+      : "";
+  const [presetGenre, setPresetGenre] = useState(presetDefault);
+  const [presetBusy, setPresetBusy] = useState(false);
 
   const load = useCallback(async () => {
     const defs = await listDefinitionsByType(projectId, typeSlug);
@@ -283,8 +294,42 @@ export function ManageFieldsDialog({
   }, [projectId, typeSlug]);
 
   useEffect(() => {
-    if (open) void load();
-  }, [open, load]);
+    if (open) {
+      void load();
+      setPresetGenre(presetDefault);
+    }
+  }, [open, load, presetDefault]);
+
+  const handleApplyPreset = async () => {
+    if (presetBusy) return;
+    setPresetBusy(true);
+    try {
+      const result = await applyDetailPreset(
+        projectId,
+        typeSlug,
+        presetGenre || null,
+      );
+      await load();
+      if (result.added.length === 0) {
+        toast.info(t("codex.detail.presetNoneAdded"));
+      } else if (result.skipped > 0) {
+        toast.success(
+          t("codex.detail.presetAppliedSkipped", {
+            added: result.added.length,
+            skipped: result.skipped,
+          }),
+        );
+      } else {
+        toast.success(
+          t("codex.detail.presetApplied", { count: result.added.length }),
+        );
+      }
+    } catch {
+      toast.error(t("common.error", "エラーが発生しました"));
+    } finally {
+      setPresetBusy(false);
+    }
+  };
 
   const handleAddSave = (def: CodexDetailDefinition) => {
     setDefinitions((prev) => [...prev, def]);
@@ -390,7 +435,7 @@ export function ManageFieldsDialog({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t border-border px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3">
           <button
             type="button"
             data-testid="manage-fields-add-button"
@@ -399,11 +444,36 @@ export function ManageFieldsDialog({
           >
             + Add field
           </button>
+          <div className="flex items-center gap-1">
+            <select
+              data-testid="manage-fields-preset-select"
+              aria-label={t("codex.detail.presetPickerLabel")}
+              value={presetGenre}
+              onChange={(e) => setPresetGenre(e.target.value)}
+              className="rounded-md border border-input bg-background px-1.5 py-1 text-xs"
+            >
+              <option value="">{t("codex.detail.presetBase")}</option>
+              {PRESET_GENRES.map((genre) => (
+                <option key={genre} value={genre}>
+                  {genre}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              data-testid="manage-fields-preset-apply"
+              onClick={() => void handleApplyPreset()}
+              disabled={presetBusy}
+              className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
+            >
+              {t("codex.detail.presetApply")}
+            </button>
+          </div>
           <button
             type="button"
             data-testid="manage-fields-close-button-footer"
             onClick={onClose}
-            className="rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
+            className="ml-auto rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
           >
             Close
           </button>

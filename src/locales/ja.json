@@ -1035,7 +1035,13 @@
       "contentLabel": "説明",
       "customDetailsTitle": "カスタム詳細",
       "showBaseContent": "ベースの説明を表示",
-      "selectPlaceholder": "— 選択 —"
+      "selectPlaceholder": "— 選択 —",
+      "presetPickerLabel": "フィールドプリセット",
+      "presetBase": "基本セット",
+      "presetApply": "プリセットを適用",
+      "presetApplied": "プリセットからフィールドを{{count}}件追加しました",
+      "presetAppliedSkipped": "プリセットからフィールドを{{added}}件追加しました（既存の{{skipped}}件はスキップ）",
+      "presetNoneAdded": "プリセットのフィールドはすべて追加済みです"
     },
     "relation": {
       "title": "階層（親子）",
