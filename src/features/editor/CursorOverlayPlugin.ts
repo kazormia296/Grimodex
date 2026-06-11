@@ -5,6 +5,7 @@ import {
   caretBox,
   lineAxisContentCoord,
   resolveCoords,
+  resolveCoordsVertical,
   resolveVerticalBias,
 } from "./cursorCoords";
 
@@ -322,7 +323,13 @@ class CursorOverlayView {
       this.pendingVertical = null;
     }
 
-    const coords = resolveCoords(view, from, this.bias);
+    // 縦書きは DOM Range ベースのリゾルバで列幅とインライン位置を再構成する
+    // (PM の coordsAtPos は flattenV で横書き前提に潰すため)。失敗時は
+    // flatten 版へフォールバック (点になるが非表示よりまし)。
+    const coords = vertical
+      ? (resolveCoordsVertical(view, from, this.bias) ??
+        resolveCoords(view, from, this.bias))
+      : resolveCoords(view, from, this.bias);
     if (!coords) {
       this.hide();
       return;

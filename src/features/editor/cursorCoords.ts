@@ -134,3 +134,99 @@ export function resolveCoords(
     return null;
   }
 }
+
+/**
+ * 縦書き (vertical-rl) 用のキャレット座標リゾルバ。
+ *
+ * prosemirror-view の coordsAtPos は flattenV (横書き前提) で矩形を
+ * 「left=right のゼロ幅縦線」に潰すため、縦書きでは列幅もインライン位置も
+ * 失われる (そのまま描くと 2×2 の点になる)。ここでは DOM Range から隣接
+ * 文字の素の ClientRect を取り、
+ *   - x 範囲 = 文字列 (列) の幅 = キャレット横棒の長さ
+ *   - y      = 挿入点 (bias=1 は直後文字の上端、-1 は直前文字の下端)
+ * の平たい矩形 (top=bottom=y) を再構成する。caretBox(vertical) にそのまま
+ * 渡せる形。失敗時は null (呼び出し側で flatten 版へフォールバック)。
+ */
+export function resolveCoordsVertical(
+  view: EditorView,
+  pos: number,
+  bias: -1 | 1,
+): Coords | null {
+  try {
+    const { node, offset } = view.domAtPos(pos);
+
+    const flat = (
+      r: { left: number; right: number; top: number; bottom: number },
+      edge: "top" | "bottom",
+    ): Coords => {
+      const y = edge === "top" ? r.top : r.bottom;
+      return { left: r.left, right: r.right, top: y, bottom: y };
+    };
+    const usable = (r: { width: number; height: number }) =>
+      r.width > 0 || r.height > 0;
+
+    if (node.nodeType === 3) {
+      const text = node as Text;
+      const len = text.data.length;
+      const charRect = (i: number): DOMRect | null => {
+        if (i < 0 || i >= len) return null;
+        const range = text.ownerDocument!.createRange();
+        range.setStart(text, i);
+        range.setEnd(text, i + 1);
+        const r = range.getBoundingClientRect();
+        return usable(r) ? r : null;
+      };
+      // bias=1 (行頭側) = 直後の文字の inline-start (top)。
+      // bias=-1 (行末側) = 直前の文字の inline-end (bottom)。
+      // 端 (段落頭/末) は反対側の文字で代替する。
+      const after = () => {
+        const r = charRect(offset);
+        return r ? flat(r, "top") : null;
+      };
+      const before = () => {
+        const r = charRect(offset - 1);
+        return r ? flat(r, "bottom") : null;
+      };
+      const c = bias >= 0 ? (after() ?? before()) : (before() ?? after());
+      if (c) return c;
+      const parent = text.parentElement;
+      return parent ? flat(parent.getBoundingClientRect(), "top") : null;
+    }
+
+    if (node.nodeType === 1) {
+      const el = node as Element;
+      const rectOfChild = (n: Node): DOMRect | null => {
+        if (n.nodeType === 1) {
+          const r = (n as Element).getBoundingClientRect();
+          return usable(r) ? r : null;
+        }
+        if (n.nodeType === 3) {
+          const range = n.ownerDocument!.createRange();
+          range.selectNodeContents(n);
+          const r = range.getBoundingClientRect();
+          return usable(r) ? r : null;
+        }
+        return null;
+      };
+      const beforeNode = offset > 0 ? el.childNodes[offset - 1] : null;
+      const afterNode =
+        offset < el.childNodes.length ? el.childNodes[offset] : null;
+      const after = () => {
+        const r = afterNode ? rectOfChild(afterNode) : null;
+        return r ? flat(r, "top") : null;
+      };
+      const before = () => {
+        const r = beforeNode ? rectOfChild(beforeNode) : null;
+        return r ? flat(r, "bottom") : null;
+      };
+      const c = bias >= 0 ? (after() ?? before()) : (before() ?? after());
+      if (c) return c;
+      // 子が無い (空段落) / 子の rect が取れない (<br> 等): 自身の列 rect
+      return flat(el.getBoundingClientRect(), "top");
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}

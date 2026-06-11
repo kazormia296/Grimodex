@@ -4,6 +4,7 @@ import {
   lineAxisContentCoord,
   toContainerRelative,
   resolveCoords,
+  resolveCoordsVertical,
   resolveVerticalBias,
   type Coords,
 } from "./cursorCoords";
@@ -222,5 +223,112 @@ describe("lineAxisContentCoord", () => {
       true,
     );
     expect(after).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveCoordsVertical (縦書きキャレットの DOM Range 再構成)
+// ---------------------------------------------------------------------------
+
+/** charRects[i] = i 文字目の ClientRect を返す fake Text ノード */
+function makeFakeText(
+  charRects: Array<{
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+  }>,
+) {
+  let start = 0;
+  const node = {
+    nodeType: 3,
+    data: "あ".repeat(charRects.length),
+    parentElement: {
+      getBoundingClientRect: () => ({
+        left: 0,
+        right: 24,
+        top: 0,
+        bottom: 400,
+        width: 24,
+        height: 400,
+      }),
+    },
+    ownerDocument: {
+      createRange: () => ({
+        setStart: (_n: unknown, i: number) => {
+          start = i;
+        },
+        setEnd: () => {},
+        getBoundingClientRect: () => {
+          const r = charRects[start];
+          return {
+            ...r,
+            width: r.right - r.left,
+            height: r.bottom - r.top,
+          };
+        },
+      }),
+    },
+  };
+  return node;
+}
+
+function makeVerticalView(node: unknown, offset: number): EditorView {
+  return { domAtPos: () => ({ node, offset }) } as unknown as EditorView;
+}
+
+describe("resolveCoordsVertical", () => {
+  // 縦書きの 1 文字 = 列幅 24px・文字送り 24px の正方形セル
+  const char0 = { left: 400, right: 424, top: 100, bottom: 124 };
+  const char1 = { left: 400, right: 424, top: 124, bottom: 148 };
+
+  it("bias=1: 直後の文字の上端に列幅の平たい矩形を返す", () => {
+    const view = makeVerticalView(makeFakeText([char0, char1]), 1);
+    expect(resolveCoordsVertical(view, 5, 1)).toEqual({
+      left: 400,
+      right: 424,
+      top: 124,
+      bottom: 124,
+    });
+  });
+
+  it("bias=-1: 直前の文字の下端に返す", () => {
+    const view = makeVerticalView(makeFakeText([char0, char1]), 1);
+    expect(resolveCoordsVertical(view, 5, -1)).toEqual({
+      left: 400,
+      right: 424,
+      top: 124,
+      bottom: 124,
+    });
+  });
+
+  it("段落末 (直後の文字なし) は直前の文字の下端で代替する", () => {
+    const view = makeVerticalView(makeFakeText([char0, char1]), 2);
+    expect(resolveCoordsVertical(view, 5, 1)).toEqual({
+      left: 400,
+      right: 424,
+      top: 148,
+      bottom: 148,
+    });
+  });
+
+  it("caretBox に渡すと列幅の横棒になる", () => {
+    const view = makeVerticalView(makeFakeText([char0, char1]), 0);
+    const coords = resolveCoordsVertical(view, 5, 1)!;
+    expect(caretBox(coords, { left: 0, top: 0 }, true)).toEqual({
+      left: 400,
+      top: 100,
+      width: 24,
+      height: 2,
+    });
+  });
+
+  it("domAtPos が throw したら null (呼び出し側でフォールバック)", () => {
+    const view = {
+      domAtPos: () => {
+        throw new Error("atom");
+      },
+    } as unknown as EditorView;
+    expect(resolveCoordsVertical(view, 5, 1)).toBeNull();
   });
 });
