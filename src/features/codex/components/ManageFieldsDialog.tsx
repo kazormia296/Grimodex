@@ -29,6 +29,39 @@ const FIELD_TYPE_OPTIONS = [
   { value: "codex_reference", label: "Codex Reference" },
 ];
 
+/** textarea の生入力を選択肢配列へ（trim・空行除去・重複排除） */
+function parseOptionsInput(raw: string): string[] {
+  const seen = new Set<string>();
+  const options: string[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    options.push(trimmed);
+  }
+  return options;
+}
+
+function optionsToFieldConfig(
+  fieldType: string,
+  raw: string,
+): string | null | undefined {
+  if (fieldType !== "dropdown") return null;
+  const options = parseOptionsInput(raw);
+  // dropdown は選択肢必須（空 options の機能不全フィールドを作らせない）
+  if (options.length === 0) return undefined;
+  return JSON.stringify({ options });
+}
+
+function fieldConfigToOptionsText(fieldConfig: string | null): string {
+  try {
+    const config = JSON.parse(fieldConfig ?? "{}") as { options?: string[] };
+    return (config.options ?? []).join("\n");
+  } catch {
+    return "";
+  }
+}
+
 // --- Inline Add Form ---
 interface AddFormProps {
   projectId: string;
@@ -49,15 +82,19 @@ function AddForm({
   const [name, setName] = useState("");
   const [fieldType, setFieldType] = useState("text");
   const [includeInContext, setIncludeInContext] = useState(false);
+  const [optionsText, setOptionsText] = useState("");
 
   const handleSave = async () => {
     if (!name.trim()) return;
+    const fieldConfig = optionsToFieldConfig(fieldType, optionsText);
+    if (fieldConfig === undefined) return;
     const def = await createDefinition({
       id: crypto.randomUUID(),
       projectId,
       typeSlug,
       name: name.trim(),
       fieldType,
+      fieldConfig,
       includeInContext: includeInContext ? 1 : 0,
       sortOrder: maxSortOrder + 1.0,
     });
@@ -97,6 +134,20 @@ function AddForm({
           ))}
         </select>
       </div>
+      {fieldType === "dropdown" && (
+        <div>
+          <label className="mb-0.5 block text-xs font-medium">
+            {t("codex.detail.optionsLabel")}
+          </label>
+          <textarea
+            data-testid="manage-field-options-input"
+            value={optionsText}
+            onChange={(e) => setOptionsText(e.target.value)}
+            rows={3}
+            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+          />
+        </div>
+      )}
       <label className="flex items-center gap-2 text-xs">
         <input
           data-testid="manage-field-context-checkbox"
@@ -136,17 +187,24 @@ interface EditFormProps {
 }
 
 function EditForm({ definition, onSave, onCancel }: EditFormProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState(definition.name);
   const [fieldType, setFieldType] = useState(definition.fieldType);
   const [includeInContext, setIncludeInContext] = useState(
     definition.includeInContext === 1,
   );
+  const [optionsText, setOptionsText] = useState(() =>
+    fieldConfigToOptionsText(definition.fieldConfig),
+  );
 
   const handleSave = async () => {
     if (!name.trim()) return;
+    const fieldConfig = optionsToFieldConfig(fieldType, optionsText);
+    if (fieldConfig === undefined) return;
     const updated = await updateDefinition(definition.id, {
       name: name.trim(),
       fieldType,
+      fieldConfig,
       includeInContext: includeInContext ? 1 : 0,
     });
     if (updated) onSave(updated);
@@ -182,6 +240,20 @@ function EditForm({ definition, onSave, onCancel }: EditFormProps) {
           ))}
         </select>
       </div>
+      {fieldType === "dropdown" && (
+        <div>
+          <label className="mb-0.5 block text-xs font-medium">
+            {t("codex.detail.optionsLabel")}
+          </label>
+          <textarea
+            data-testid={`manage-field-edit-options-${definition.id}`}
+            value={optionsText}
+            onChange={(e) => setOptionsText(e.target.value)}
+            rows={3}
+            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+          />
+        </div>
+      )}
       <label className="flex items-center gap-2 text-xs">
         <input
           data-testid={`manage-field-edit-context-${definition.id}`}
