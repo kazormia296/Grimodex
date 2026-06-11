@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 import * as schema from "@/db/schema";
 import { codexDetailDefinitions, codexDetailValues } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 
 function createQueryCapture() {
   const queries: { sql: string; params: unknown[]; method: string }[] = [];
@@ -106,6 +106,21 @@ describe("detailApi query generation", () => {
   });
 
   describe("values", () => {
+    it("lists values by definition ids", async () => {
+      const { db, queries } = createQueryCapture();
+      await db
+        .select({
+          definitionId: codexDetailValues.definitionId,
+          value: codexDetailValues.value,
+        })
+        .from(codexDetailValues)
+        .where(inArray(codexDetailValues.definitionId, ["def-1", "def-2"]));
+      expect(queries).toHaveLength(1);
+      expect(queries[0].sql).toContain("codex_detail_values");
+      expect(queries[0].sql).toContain("definition_id");
+      expect(queries[0].params).toEqual(["def-1", "def-2"]);
+    });
+
     it("lists values by entryId with definition join", async () => {
       const { db, queries } = createQueryCapture();
       await db

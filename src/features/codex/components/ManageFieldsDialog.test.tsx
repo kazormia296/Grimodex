@@ -36,6 +36,11 @@ vi.mock("@/features/codex/detailPresets", async (importOriginal) => {
   return { ...actual, applyDetailPreset: vi.fn() };
 });
 
+vi.mock("@/features/codex/detailCleanup", () => ({
+  listEmptyDetailFields: vi.fn(),
+  deleteEmptyDetailFields: vi.fn(),
+}));
+
 import {
   listDefinitionsByType,
   createDefinition,
@@ -43,12 +48,18 @@ import {
   deleteDefinition,
 } from "@/features/codex/detailApi";
 import { applyDetailPreset } from "@/features/codex/detailPresets";
+import {
+  listEmptyDetailFields,
+  deleteEmptyDetailFields,
+} from "@/features/codex/detailCleanup";
 
 const mockListDefs = vi.mocked(listDefinitionsByType);
 const mockCreate = vi.mocked(createDefinition);
 const mockUpdate = vi.mocked(updateDefinition);
 const mockDelete = vi.mocked(deleteDefinition);
 const mockApplyPreset = vi.mocked(applyDetailPreset);
+const mockListEmpty = vi.mocked(listEmptyDetailFields);
+const mockDeleteEmpty = vi.mocked(deleteEmptyDetailFields);
 
 const defaultProps = {
   projectId: "proj-1",
@@ -66,6 +77,8 @@ describe("ManageFieldsDialog", () => {
     mockUpdate.mockResolvedValue(makeDefinition("def-1", "更新名"));
     mockDelete.mockResolvedValue(undefined);
     mockApplyPreset.mockResolvedValue({ added: [], skipped: 0 });
+    mockListEmpty.mockResolvedValue([]);
+    mockDeleteEmpty.mockResolvedValue({ deleted: [], kept: 0 });
   });
 
   it("does not render dialog when open=false", () => {
@@ -311,6 +324,86 @@ describe("ManageFieldsDialog", () => {
         "character",
         "Mystery",
       );
+    });
+  });
+
+  describe("empty fields cleanup", () => {
+    it("does not open a confirm when there are no empty fields", async () => {
+      const user = userEvent.setup();
+      mockListEmpty.mockResolvedValue([]);
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-fields-cleanup-button"));
+
+      await user.click(screen.getByTestId("manage-fields-cleanup-button"));
+
+      expect(mockListEmpty).toHaveBeenCalledWith("proj-1", "character");
+      expect(
+        screen.queryByTestId("manage-fields-cleanup-confirm-dialog"),
+      ).not.toBeInTheDocument();
+      expect(mockDeleteEmpty).not.toHaveBeenCalled();
+    });
+
+    it("opens a portaled confirm listing the empty fields", async () => {
+      const user = userEvent.setup();
+      mockListEmpty.mockResolvedValue([
+        makeDefinition("def-1", "身長"),
+        makeDefinition("def-2", "種族"),
+      ]);
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-fields-cleanup-button"));
+
+      await user.click(screen.getByTestId("manage-fields-cleanup-button"));
+
+      const confirm = await screen.findByTestId(
+        "manage-fields-cleanup-confirm-dialog",
+      );
+      expect(confirm).toHaveTextContent("身長");
+      expect(confirm).toHaveTextContent("種族");
+      // AnimatedOverlay (z-50, body portal) より上に出すための stacking 契約
+      expect(confirm.parentElement).toBe(document.body);
+      expect(confirm.className).toContain("z-[60]");
+    });
+
+    it("deletes empty fields and reloads the list on confirm", async () => {
+      const user = userEvent.setup();
+      mockListEmpty.mockResolvedValue([makeDefinition("def-1", "身長")]);
+      mockDeleteEmpty.mockResolvedValue({
+        deleted: [makeDefinition("def-1", "身長")],
+        kept: 2,
+      });
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-fields-cleanup-button"));
+      expect(mockListDefs).toHaveBeenCalledTimes(1);
+
+      await user.click(screen.getByTestId("manage-fields-cleanup-button"));
+      await screen.findByTestId("manage-fields-cleanup-confirm-dialog");
+      await user.click(
+        screen.getByTestId("manage-fields-cleanup-confirm-button"),
+      );
+
+      expect(mockDeleteEmpty).toHaveBeenCalledWith("proj-1", "character");
+      await waitFor(() => expect(mockListDefs).toHaveBeenCalledTimes(2));
+      expect(
+        screen.queryByTestId("manage-fields-cleanup-confirm-dialog"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not delete when the confirm is cancelled", async () => {
+      const user = userEvent.setup();
+      mockListEmpty.mockResolvedValue([makeDefinition("def-1", "身長")]);
+      render(<ManageFieldsDialog {...defaultProps} />);
+      await waitFor(() => screen.getByTestId("manage-fields-cleanup-button"));
+
+      await user.click(screen.getByTestId("manage-fields-cleanup-button"));
+      await screen.findByTestId("manage-fields-cleanup-confirm-dialog");
+      await user.click(
+        screen.getByTestId("manage-fields-cleanup-cancel-button"),
+      );
+
+      expect(mockDeleteEmpty).not.toHaveBeenCalled();
+      expect(
+        screen.queryByTestId("manage-fields-cleanup-confirm-dialog"),
+      ).not.toBeInTheDocument();
     });
   });
 });
