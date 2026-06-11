@@ -461,8 +461,7 @@ mod tests {
             "structureWrite": true, "knowledgeWrite": true,
         });
         toggles[gate] = serde_json::Value::Bool(false);
-        let policy_json =
-            serde_json::json!({ "preset": "custom", "toggles": toggles }).to_string();
+        let policy_json = serde_json::json!({ "preset": "custom", "toggles": toggles }).to_string();
 
         let server = make_writable_server(Some(&policy_json));
         let res = propose_scene_body(
@@ -476,7 +475,10 @@ mod tests {
             },
         )
         .await;
-        assert!(res.is_err(), "fixture gate '{gate}'=off must block the write");
+        assert!(
+            res.is_err(),
+            "fixture gate '{gate}'=off must block the write"
+        );
         let conn = server.conn.lock().unwrap();
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM prose_staging", [], |r| r.get(0))
