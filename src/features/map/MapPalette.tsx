@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AiGatePresentation } from "@/features/ai-policy/evaluateAiCapability";
 
 type PaletteMode = "default" | "frame" | "connect";
 type PickerEntityType = "scene" | "note" | "codex" | "snippet";
@@ -9,6 +10,8 @@ interface MapPaletteProps {
   onAddSticky: () => void;
   onOpenPicker: (type: PickerEntityType) => void;
   onOpenAiBranch: () => void;
+  aiBranchPresentation: AiGatePresentation;
+  aiBranchTooltip: string | null;
 }
 
 const PICKER_ITEMS: { type: PickerEntityType; label: string }[] = [
@@ -24,6 +27,8 @@ export function MapPalette({
   onAddSticky,
   onOpenPicker,
   onOpenAiBranch,
+  aiBranchPresentation,
+  aiBranchTooltip,
 }: MapPaletteProps) {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -73,11 +78,16 @@ export function MapPalette({
         title="付箋を追加 (S)"
       />
 
-      <PaletteButton
-        label="✦ AI Branch"
-        onClick={onOpenAiBranch}
-        title="AI Branchを生成"
-      />
+      {/* policy で chat OFF のときはボタンごと隠す（provider/model 未設定は
+          disabled 表示で設定導線を残す）。kouetsu views と同じ gate 規約。 */}
+      {aiBranchPresentation !== "hidden" && (
+        <PaletteButton
+          label="✦ AI Branch"
+          onClick={onOpenAiBranch}
+          disabled={aiBranchPresentation === "disabled"}
+          title={aiBranchTooltip ?? "AI Branchを生成"}
+        />
+      )}
 
       {/* [▾ Add…] dropdown */}
       <div ref={addMenuRef} style={{ position: "relative" }}>

@@ -100,6 +100,8 @@ import {
   findNonOverlappingBranchPosition,
   type Rect as BranchRect,
 } from "./branchPlacement";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { findPosByNodeId, buildUpsertArgs } from "./utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "./types";
 import type { MapEdge, MapFrame } from "@/db/schema";
@@ -187,6 +189,9 @@ export function MapCanvas() {
   } = useReactFlow();
 
   const reducedMotion = useReducedMotion();
+
+  // AI Branch はチャット相当の自由生成 LLM 呼び出しなので chat トグルで gate。
+  const aiBranchGate = useAiGate("chat");
 
   const {
     boardId,
@@ -1531,6 +1536,7 @@ export function MapCanvas() {
   const handleAiBranchConfirm = useCallback(
     async (prompt: string, count: 3 | 5 | 8) => {
       if (!boardId || !aiBranchDialog) return;
+      if (blockIfPolicyOff("chat")) return;
       const dialogState = aiBranchDialog;
       setAiBranchDialog(null);
       setGeneratingAiBranch({
@@ -1829,7 +1835,8 @@ export function MapCanvas() {
               : () => handleBranchFromNode(contextMenu.nodeId, "right")
           }
           onOpenAiBranch={
-            contextMenu.nodeId.startsWith("frame:")
+            contextMenu.nodeId.startsWith("frame:") ||
+            aiBranchGate.presentation === "hidden"
               ? undefined
               : () => handleOpenAiBranch(contextMenu.nodeId)
           }
@@ -1897,6 +1904,8 @@ export function MapCanvas() {
         }}
         onOpenPicker={setPickerType}
         onOpenAiBranch={handleOpenAiBranch}
+        aiBranchPresentation={aiBranchGate.presentation}
+        aiBranchTooltip={aiBranchGate.tooltip}
       />
 
       {aiBranchDialog && boardId && (

@@ -1,7 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
 
+const { mockBlockIfPolicyOff } = vi.hoisted(() => ({
+  mockBlockIfPolicyOff: vi.fn(() => false),
+}));
+
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
+}));
+
+vi.mock("@/features/ai-policy/policyGuard", () => ({
+  blockIfPolicyOff: mockBlockIfPolicyOff,
 }));
 
 // N4: recordAiUsage は db.insert 経由で invoke("db_execute") を発火する。
@@ -78,6 +86,34 @@ describe("generateAiBranchCards — LLM レスポンスのパース", () => {
 
     expect(cards[0].title).toBe("タイトルだけ");
     expect(cards[1].title).toBe("別タイトル");
+  });
+});
+
+describe("generateAiBranchCards — AiPolicy gate (chat)", () => {
+  it("chat policy が off なら throw し、send_chat_message を呼ばない", async () => {
+    mockBlockIfPolicyOff.mockReturnValueOnce(true);
+    (invoke as ReturnType<typeof vi.fn>).mockClear();
+
+    const { generateAiBranchCards } = await import("./mapAiApi");
+    await expect(generateAiBranchCards("テスト", 3)).rejects.toThrow(
+      "chat policy is off",
+    );
+
+    expect(mockBlockIfPolicyOff).toHaveBeenCalledWith("chat");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("chat policy が on なら gate を通過して send_chat_message に進む", async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "## a\nb" }],
+      stopReason: "end_turn",
+    });
+
+    const { generateAiBranchCards } = await import("./mapAiApi");
+    const cards = await generateAiBranchCards("テスト", 1);
+
+    expect(mockBlockIfPolicyOff).toHaveBeenCalledWith("chat");
+    expect(cards).toHaveLength(1);
   });
 });
 

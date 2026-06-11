@@ -1,4 +1,5 @@
 import { invoke } from "@/lib/tauri";
+import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import type { AiBranchCard } from "./mapApi";
 
@@ -214,6 +215,10 @@ export async function generateAiBranchCards(
   project: AiBranchProjectContext | null = null,
   spotlight: AiBranchSeed[] = [],
 ): Promise<AiBranchCard[]> {
+  if (blockIfPolicyOff("chat")) {
+    throw new Error("chat policy is off");
+  }
+
   const systemPrompt = buildSystemPrompt(project, spotlight);
   const userPrompt = buildUserPrompt(prompt, count, seeds);
 
