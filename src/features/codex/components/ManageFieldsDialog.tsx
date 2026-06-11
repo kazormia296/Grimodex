@@ -11,7 +11,12 @@ import {
   updateDefinition,
   deleteDefinition,
 } from "../detailApi";
-import { PRESET_GENRES, applyDetailPreset } from "../detailPresets";
+import {
+  PRESET_GENRES,
+  applyDetailPreset,
+  resolvePresetFields,
+  type DetailFieldPreset,
+} from "../detailPresets";
 import {
   listEmptyDetailFields,
   deleteEmptyDetailFields,
@@ -263,6 +268,91 @@ function DeleteConfirmDialog({
   );
 }
 
+// --- Preset Confirm Dialog ---
+interface PresetConfirmProps {
+  toAdd: DetailFieldPreset[];
+  toSkip: DetailFieldPreset[];
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+function PresetConfirmDialog({
+  toAdd,
+  toSkip,
+  onConfirm,
+  onCancel,
+}: PresetConfirmProps) {
+  const { t } = useTranslation();
+  // portal された親 (z-50) の上に重ねるため body へ portal して z-[60]
+  return createPortal(
+    <div
+      data-testid="manage-fields-preset-confirm-dialog"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+      onClick={onCancel}
+    >
+      <div
+        className="w-96 rounded-lg border border-border bg-background p-4 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h4 className="mb-2 text-sm font-semibold">
+          {t("codex.detail.presetConfirmTitle")}
+        </h4>
+        <p className="mb-1 text-xs font-medium">
+          {t("codex.detail.presetConfirmAdd", { count: toAdd.length })}
+        </p>
+        <ul className="mb-3 max-h-48 overflow-y-auto text-xs space-y-0.5">
+          {toAdd.map((field) => (
+            <li key={field.name} className="flex items-baseline gap-1.5">
+              <span>・{field.name}</span>
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {field.fieldType}
+              </span>
+              {field.options && (
+                <span className="truncate text-[10px] text-muted-foreground">
+                  {field.options.join(" / ")}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+        {toSkip.length > 0 && (
+          <div data-testid="manage-fields-preset-skip" className="mb-3">
+            <p className="mb-1 text-xs font-medium text-muted-foreground">
+              {t("codex.detail.presetConfirmSkip", { count: toSkip.length })}
+            </p>
+            <ul className="max-h-24 overflow-y-auto text-xs text-muted-foreground space-y-0.5">
+              {toSkip.map((field) => (
+                <li key={field.name} className="truncate">
+                  ・{field.name}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            data-testid="manage-fields-preset-cancel-button"
+            onClick={onCancel}
+            className="rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
+          >
+            {t("common.cancel")}
+          </button>
+          <button
+            type="button"
+            data-testid="manage-fields-preset-confirm-button"
+            onClick={onConfirm}
+            className="rounded bg-primary px-3 py-1 text-xs text-primary-foreground hover:bg-primary/90"
+          >
+            {t("codex.detail.presetApply")}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // --- Cleanup Confirm Dialog ---
 interface CleanupConfirmProps {
   targets: CodexDetailDefinition[];
@@ -359,6 +449,10 @@ export function ManageFieldsDialog({
     : "";
   const [presetGenre, setPresetGenre] = useState(presetDefault);
   const [presetBusy, setPresetBusy] = useState(false);
+  const [presetPreview, setPresetPreview] = useState<{
+    toAdd: DetailFieldPreset[];
+    toSkip: DetailFieldPreset[];
+  } | null>(null);
   const [cleanupTargets, setCleanupTargets] = useState<
     CodexDetailDefinition[] | null
   >(null);
@@ -376,7 +470,22 @@ export function ManageFieldsDialog({
     }
   }, [open, load, presetDefault]);
 
+  const handlePresetPreview = () => {
+    const resolved = resolvePresetFields(typeSlug, presetGenre || null);
+    const existingNames = new Set(definitions.map((d) => d.name));
+    const toAdd = resolved.filter((f) => !existingNames.has(f.name));
+    if (toAdd.length === 0) {
+      toast.info(t("codex.detail.presetNoneAdded"));
+      return;
+    }
+    setPresetPreview({
+      toAdd,
+      toSkip: resolved.filter((f) => existingNames.has(f.name)),
+    });
+  };
+
   const handleApplyPreset = async () => {
+    setPresetPreview(null);
     if (presetBusy) return;
     setPresetBusy(true);
     try {
@@ -568,7 +677,7 @@ export function ManageFieldsDialog({
             <button
               type="button"
               data-testid="manage-fields-preset-apply"
-              onClick={() => void handleApplyPreset()}
+              onClick={handlePresetPreview}
               disabled={presetBusy}
               className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent disabled:opacity-50"
             >
@@ -600,6 +709,15 @@ export function ManageFieldsDialog({
           definitionName={deletingDef.name}
           onConfirm={() => void handleDeleteConfirm()}
           onCancel={() => setDeletingDef(null)}
+        />
+      )}
+
+      {presetPreview && (
+        <PresetConfirmDialog
+          toAdd={presetPreview.toAdd}
+          toSkip={presetPreview.toSkip}
+          onConfirm={() => void handleApplyPreset()}
+          onCancel={() => setPresetPreview(null)}
         />
       )}
 
