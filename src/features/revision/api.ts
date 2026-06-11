@@ -1,29 +1,12 @@
 import { db } from "@/db/client";
 import { contentVersions, projectSnapshotEntries } from "@/db/schema";
-import { eq, and, desc, max, sql, inArray } from "drizzle-orm";
+import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import type { ContentVersion } from "@/db/schema";
 
 export type EntityType = "scene" | "note" | "codex_entry" | "snippet";
 export type SnapshotType = "auto" | "manual";
 
 export type RevisionMeta = Omit<ContentVersion, "content">;
-
-/** Get next version number for an entity. */
-async function nextVersionNumber(
-  entityType: EntityType,
-  entityId: string,
-): Promise<number> {
-  const rows = await db
-    .select({ max: max(contentVersions.versionNumber) })
-    .from(contentVersions)
-    .where(
-      and(
-        eq(contentVersions.entityType, entityType),
-        eq(contentVersions.entityId, entityId),
-      ),
-    );
-  return (rows[0]?.max ?? 0) + 1;
-}
 
 /** Get the latest revision's content for an entity. */
 export async function getLatestRevisionContent(
@@ -57,7 +40,10 @@ export async function createRevision(params: {
   const latest = await getLatestRevisionContent(entityType, entityId);
   if (latest === content) return null;
 
-  const versionNumber = await nextVersionNumber(entityType, entityId);
+  // 採番は INSERT 内のサブクエリで原子的に行う。JS 側で max+1 を先読みすると
+  // 並走する saveFn (flush 二重発火等) が同じ番号を計算して UNIQUE
+  // (entity_type, entity_id, version_number) 衝突になり、リビジョンが
+  // 保存されない (実機で auto-revision が全滅していた)。
   const now = new Date().toISOString();
   const rows = await db
     .insert(contentVersions)
@@ -66,7 +52,12 @@ export async function createRevision(params: {
       entityType,
       entityId,
       content,
-      versionNumber,
+      versionNumber: sql<number>`(
+        select coalesce(max(${contentVersions.versionNumber}), 0) + 1
+        from ${contentVersions}
+        where ${contentVersions.entityType} = ${entityType}
+          and ${contentVersions.entityId} = ${entityId}
+      )`,
       snapshotType,
       createdAt: now,
     })

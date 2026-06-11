@@ -380,6 +380,17 @@ export function EditorPane({
   }, []);
 
   const saveFn = useCallback(async () => {
+    if (loadFailedRef.current) {
+      // coreSave 側でも skip するが、ここで弾かないと後続の auto-revision が
+      // 未ロードの空 doc を getJSON してリビジョン履歴に書き込んでしまう
+      // (実機ログで確認: save skipped 直後に空 doc の revision insert)。
+      // dirty 解除も「保存していないのに消す」ことになるので丸ごと skip する。
+      debugLog.warn(
+        "EditorPane",
+        `saveFn skipped: load failed ${saveSceneIdRef.current?.slice(0, 8) ?? ""}`,
+      );
+      return;
+    }
     setIsSaving(true);
     try {
       await coreSave();
@@ -558,12 +569,24 @@ export function EditorPane({
           }
         },
       },
-      onUpdate({ editor: e }) {
+      onUpdate({ editor: e, transaction }) {
         if (isApplyingExternalUpdate.current) return;
         // インライン AI の生成中・diff 表示中はオートセーブを止める。
         // Accept/Reject が呼ばれて idle に戻った時点で reset + dispatch によって
         // 再度 onUpdate が走り、その時に通常の schedule が実行される。
         if (useInlineAiStore.getState().status !== "idle") return;
+        if (loadFailedRef.current) {
+          // 調査ログ: 未ロード窓 (mount〜コンテンツ適用成功の間) で doc を
+          // 変更している犯人の特定用。保存自体は saveFn 側 guard で skip される。
+          debugLog.warn(
+            "EditorPane",
+            `doc changed while unloaded ${saveSceneIdRef.current?.slice(0, 8) ?? ""}`,
+            JSON.stringify(transaction.steps.map((s) => s.toJSON())).slice(
+              0,
+              300,
+            ),
+          );
+        }
         markStart("editor.onUpdate");
         markStart("editor.onUpdate.schedule");
         schedule();
@@ -922,6 +945,8 @@ export function EditorPane({
   const handleManualSave = useCallback(async () => {
     await flush();
     if (isCodexMode || isSnippetMode) return; // Codex/snippet entries: no revision on manual save
+    // 未ロード doc は手動保存リビジョンにも残さない (空 doc 汚染防止)
+    if (loadFailedRef.current) return;
     const id = saveSceneIdRef.current;
     const ed = editorRef.current;
     if (!id || !ed) return;
@@ -1139,6 +1164,13 @@ export function EditorPane({
     const unsubscribe = useUnplacedBeatsStore
       .getState()
       .subscribe(nodeId, () => {
+        if (loadFailedRef.current) {
+          // 調査ログ: 未ロード窓で autosave を arm する経路の特定用。
+          debugLog.warn(
+            "EditorPane",
+            `beats changed while unloaded ${nodeId.slice(0, 8)}`,
+          );
+        }
         schedule();
         setIsDirtyRef.current(true);
         const beats = useUnplacedBeatsStore.getState().getBeats(nodeId);

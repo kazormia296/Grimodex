@@ -153,8 +153,20 @@ function MountedSceneBlock({
           state.setFocusedEditor(null, null);
         }
       },
-      onUpdate({ editor: e }) {
+      onUpdate({ editor: e, transaction }) {
         if (isApplyingExternalUpdate.current) return;
+        if (loadFailedRef.current) {
+          // 調査ログ: 未ロード窓で doc を変更している犯人の特定用。
+          // 保存自体は coreSave 側 guard で skip される。
+          debugLog.warn(
+            "LinearSceneBlock",
+            `doc changed while unloaded ${sceneId.slice(0, 8)}`,
+            JSON.stringify(transaction.steps.map((s) => s.toJSON())).slice(
+              0,
+              300,
+            ),
+          );
+        }
         schedule();
         const text = getDocText(e.state.doc);
         const count = text.length;
