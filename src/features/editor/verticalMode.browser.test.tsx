@@ -239,6 +239,17 @@ describe("縦書きMODE: node-island の horizontal-tb リセット", () => {
               </tr>
             </tbody>
           </table>
+          <pre data-testid="island-pre">
+            <code>const code = "horizontal";</code>
+          </pre>
+          <ul data-type="taskList" data-testid="island-tasklist">
+            <li data-testid="island-taskitem">
+              <label>
+                <input type="checkbox" />
+              </label>
+              <div>タスク本文</div>
+            </li>
+          </ul>
         </div>
       </div>,
     );
@@ -247,13 +258,34 @@ describe("縦書きMODE: node-island の horizontal-tb リセット", () => {
       "island-break",
       "island-prose",
       "island-table",
+      "island-pre",
+      "island-tasklist",
+      // li は ul からの継承でリセットされる (nested taskList も同様)
+      "island-taskitem",
     ]) {
       const el = document.querySelector(`[data-testid='${id}']`) as HTMLElement;
-      expect(getComputedStyle(el).writingMode).toBe("horizontal-tb");
+      expect(getComputedStyle(el).writingMode, `${id} writing-mode`).toBe(
+        "horizontal-tb",
+      );
       const rect = el.getBoundingClientRect();
       expect(rect.width, `${id} width`).toBeGreaterThan(0);
       expect(rect.height, `${id} height`).toBeGreaterThan(0);
     }
+    // taskList li の flex 軸が水平に戻る (checkbox と本文が横並び)
+    const label = document.querySelector(
+      "[data-testid='island-taskitem'] > label",
+    ) as HTMLElement;
+    const body = document.querySelector(
+      "[data-testid='island-taskitem'] > div",
+    ) as HTMLElement;
+    expect(label.getBoundingClientRect().left).toBeLessThan(
+      body.getBoundingClientRect().left,
+    );
+    expect(
+      Math.abs(
+        label.getBoundingClientRect().top - body.getBoundingClientRect().top,
+      ),
+    ).toBeLessThan(label.getBoundingClientRect().height + 1);
   });
 });
 

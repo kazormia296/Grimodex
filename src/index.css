@@ -1110,11 +1110,16 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   font-size: 0.5em;
 }
 /* Node islands stay horizontal UI chunks inside the vertical flow
- * (same reset as .vertical-preview table). */
+ * (same reset as .vertical-preview table). pre = code blocks and
+ * taskList (flex row checkbox + body, GFM file-backed scenes) are
+ * horizontal-reading structures too; resetting the taskList ul lets the
+ * nested lists inherit the reset. */
 .editor-vertical .tiptap [data-type="scene-beat"],
 .editor-vertical .tiptap .scene-break,
 .editor-vertical .tiptap .generated-prose-block,
-.editor-vertical .tiptap table {
+.editor-vertical .tiptap table,
+.editor-vertical .tiptap pre,
+.editor-vertical .tiptap ul[data-type="taskList"] {
   writing-mode: horizontal-tb;
 }
 
