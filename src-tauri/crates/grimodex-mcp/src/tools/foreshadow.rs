@@ -122,15 +122,23 @@ pub async fn create_foreshadow(
     validate_load_bearing(params.load_bearing.as_deref())?;
     let secret = params.secret.unwrap_or(true);
 
+    // Tracked write: one tx = entity row + undo_journal(surface='mcp') +
+    // change_event(domain 'foreshadow'), closing the last untracked AI write.
+    let id = uuid::Uuid::new_v4().to_string();
     let conn = server.conn.lock().map_err(internal_err)?;
-    let id = db::create_foreshadow(
+    grimodex_core::writes::foreshadow::tracked_foreshadow_create(
         &conn,
-        &server.project_id(),
-        &title,
-        intent.as_deref(),
-        notes.as_deref(),
-        params.load_bearing.as_deref(),
-        secret,
+        grimodex_core::writes::foreshadow::TrackedForeshadowCreateInput {
+            project_id: &server.project_id(),
+            session_id: &server.session_id,
+            surface: "mcp",
+            foreshadow_id: &id,
+            title: &title,
+            intent: intent.as_deref(),
+            notes: notes.as_deref(),
+            load_bearing: params.load_bearing.as_deref(),
+            secret,
+        },
     )
     .map_err(internal_err)?;
 
@@ -231,21 +239,27 @@ pub async fn update_foreshadow(
         .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
     let conn = server.conn.lock().map_err(internal_err)?;
-    let affected = db::update_foreshadow(
+    let result = grimodex_core::writes::foreshadow::tracked_foreshadow_update(
         &conn,
-        &server.project_id(),
-        id,
-        title.as_deref(),
-        intent.as_deref(),
-        notes.as_deref(),
-        params.load_bearing.as_deref(),
-        params.payoff_confirmed,
-        params.abandoned,
-        params.secret,
+        grimodex_core::writes::foreshadow::TrackedForeshadowUpdateInput {
+            project_id: &server.project_id(),
+            session_id: &server.session_id,
+            surface: "mcp",
+            foreshadow_id: id,
+            patch: grimodex_core::writes::foreshadow::ForeshadowPatch {
+                title: title.as_deref(),
+                intent: intent.as_deref(),
+                notes: notes.as_deref(),
+                load_bearing: params.load_bearing.as_deref(),
+                payoff_confirmed: params.payoff_confirmed,
+                abandoned: params.abandoned,
+                secret: params.secret,
+            },
+        },
     )
     .map_err(internal_err)?;
 
-    if affected == 0 {
+    if result.is_none() {
         return Err(ErrorData::invalid_params(
             "Foreshadow not found in this project",
             None,

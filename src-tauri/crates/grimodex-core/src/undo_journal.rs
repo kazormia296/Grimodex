@@ -156,6 +156,78 @@ fn insert_codex_from_snap(conn: &Connection, snap: &serde_json::Value) -> anyhow
     Ok(())
 }
 
+/// Restore a foreshadow row from a snapshot. Versionless optimistic guard:
+/// `foreshadows` has no version column, so the journal stores updated_at
+/// millis in base/result_version and restores guard on updated_at equality
+/// (see writes::foreshadow module docs).
+fn restore_foreshadow_fields(
+    conn: &Connection,
+    snap: &serde_json::Value,
+    entity_id: &str,
+    project_id: &str,
+    target_updated_at: i64,
+    expected_current_updated_at: i64,
+) -> anyhow::Result<()> {
+    let updated = conn.execute(
+        "UPDATE foreshadows SET title = ?1, intent = ?2, notes = ?3,
+         payoff_scene_id = ?4, payoff_from_pos = ?5, payoff_to_pos = ?6,
+         payoff_confirmed = ?7, abandoned = ?8, secret = ?9, load_bearing = ?10,
+         updated_at = ?11
+         WHERE id = ?12 AND project_id = ?13 AND updated_at = ?14",
+        params![
+            snap["title"].as_str().unwrap_or(""),
+            snap["intent"].as_str(),
+            snap["notes"].as_str(),
+            snap["payoffSceneId"].as_str(),
+            snap["payoffFromPos"].as_i64(),
+            snap["payoffToPos"].as_i64(),
+            snap["payoffConfirmed"].as_i64().unwrap_or(0),
+            snap["abandoned"].as_i64().unwrap_or(0),
+            snap["secret"].as_i64().unwrap_or(1),
+            snap["loadBearing"].as_str(),
+            target_updated_at,
+            entity_id,
+            project_id,
+            expected_current_updated_at,
+        ],
+    )?;
+    if updated == 0 {
+        anyhow::bail!(
+            "foreshadow '{}' updated_at {} conflict during journal restore",
+            entity_id,
+            expected_current_updated_at
+        );
+    }
+    Ok(())
+}
+
+fn insert_foreshadow_from_snap(conn: &Connection, snap: &serde_json::Value) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO foreshadows
+         (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos,
+          payoff_to_pos, payoff_confirmed, abandoned, secret, load_bearing,
+          created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            snap["id"].as_str().unwrap_or(""),
+            snap["projectId"].as_str().unwrap_or(""),
+            snap["title"].as_str().unwrap_or("Untitled"),
+            snap["intent"].as_str(),
+            snap["notes"].as_str(),
+            snap["payoffSceneId"].as_str(),
+            snap["payoffFromPos"].as_i64(),
+            snap["payoffToPos"].as_i64(),
+            snap["payoffConfirmed"].as_i64().unwrap_or(0),
+            snap["abandoned"].as_i64().unwrap_or(0),
+            snap["secret"].as_i64().unwrap_or(1),
+            snap["loadBearing"].as_str(),
+            snap["createdAt"].as_i64().unwrap_or(0),
+            snap["updatedAt"].as_i64().unwrap_or(0),
+        ],
+    )?;
+    Ok(())
+}
+
 fn insert_snippet_from_snap(conn: &Connection, snap: &serde_json::Value) -> anyhow::Result<()> {
     let id = snap["id"].as_str().unwrap_or("");
     let project = snap["projectId"].as_str().unwrap_or("");
@@ -237,6 +309,40 @@ pub fn revert_undo_journal_in_tx(
             }
             other => anyhow::bail!("revert_undo_journal: unsupported snippet op_kind '{other}'"),
         },
+        "foreshadow" => match row.op_kind.as_str() {
+            "create" => {
+                // Guard on updated_at (= result_version): refuse to delete a
+                // row someone edited after the tracked create.
+                let deleted = conn.execute(
+                    "DELETE FROM foreshadows
+                     WHERE id = ?1 AND project_id = ?2 AND updated_at = ?3",
+                    params![row.entity_id, project_id, row.result_version],
+                )?;
+                if deleted == 0 {
+                    anyhow::bail!(
+                        "revert create: foreshadow '{}' updated_at {} not found (edited or removed)",
+                        row.entity_id,
+                        row.result_version
+                    );
+                }
+            }
+            "update" => {
+                let before = row
+                    .before_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("revert update: missing before_json"))?;
+                let snap: serde_json::Value = serde_json::from_str(before)?;
+                restore_foreshadow_fields(
+                    conn,
+                    &snap,
+                    &row.entity_id,
+                    project_id,
+                    row.base_version,
+                    row.result_version,
+                )?;
+            }
+            other => anyhow::bail!("revert_undo_journal: unsupported foreshadow op_kind '{other}'"),
+        },
         other => anyhow::bail!("revert_undo_journal: unsupported entity_kind '{other}'"),
     }
     Ok(())
@@ -286,6 +392,32 @@ pub fn apply_undo_journal_in_tx(
                 insert_snippet_from_snap(conn, &snap)?;
             }
             other => anyhow::bail!("apply_undo_journal: unsupported snippet op_kind '{other}'"),
+        },
+        "foreshadow" => match row.op_kind.as_str() {
+            "create" => {
+                let after = row
+                    .after_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("apply create: missing after_json"))?;
+                let snap: serde_json::Value = serde_json::from_str(after)?;
+                insert_foreshadow_from_snap(conn, &snap)?;
+            }
+            "update" => {
+                let after = row
+                    .after_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("apply update: missing after_json"))?;
+                let snap: serde_json::Value = serde_json::from_str(after)?;
+                restore_foreshadow_fields(
+                    conn,
+                    &snap,
+                    &row.entity_id,
+                    project_id,
+                    row.result_version,
+                    row.base_version,
+                )?;
+            }
+            other => anyhow::bail!("apply_undo_journal: unsupported foreshadow op_kind '{other}'"),
         },
         other => anyhow::bail!("apply_undo_journal: unsupported entity_kind '{other}'"),
     }

@@ -138,6 +138,14 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   if (domains.has("snippet")) {
     await useSnippetStore.getState().loadEntries();
   }
+  if (domains.has("foreshadow")) {
+    // Dynamic import: foreshadowStore pulls in the editor/scene graph, and
+    // this low-level module is imported early — an eager import here would
+    // regrow the module-init chain that broke browser-mode vi.mock linking.
+    const { useForeshadowStore } =
+      await import("@/features/foreshadow/foreshadowStore");
+    await useForeshadowStore.getState().load(projectId);
+  }
 
   const editorEvents = events.filter(
     (e) => e.domain === "editor" && e.sceneId != null,

@@ -58,28 +58,256 @@ pub struct TrackedForeshadowUpdateInput<'a> {
     pub patch: ForeshadowPatch<'a>,
 }
 
+/// Full-row snapshot for undo_journal (camelCase keys, like codex/snippet).
+fn foreshadow_snapshot(
+    conn: &Connection,
+    project_id: &str,
+    foreshadow_id: &str,
+) -> anyhow::Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT json_object(
+            'id', id, 'projectId', project_id, 'title', title,
+            'intent', intent, 'notes', notes,
+            'payoffSceneId', payoff_scene_id,
+            'payoffFromPos', payoff_from_pos, 'payoffToPos', payoff_to_pos,
+            'payoffConfirmed', payoff_confirmed, 'abandoned', abandoned,
+            'secret', secret, 'loadBearing', load_bearing,
+            'createdAt', created_at, 'updatedAt', updated_at
+         ) FROM foreshadows WHERE id = ?1 AND project_id = ?2",
+        params![foreshadow_id, project_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 pub fn tracked_foreshadow_create(
-    _conn: &Connection,
-    _input: TrackedForeshadowCreateInput<'_>,
+    conn: &Connection,
+    input: TrackedForeshadowCreateInput<'_>,
 ) -> anyhow::Result<WriteResult> {
-    anyhow::bail!("unimplemented")
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let change_payload = json!({
+        "title": input.title,
+        "loadBearing": input.load_bearing,
+        "secret": input.secret,
+    })
+    .to_string();
+
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> anyhow::Result<WriteResult> {
+        conn.execute(
+            "INSERT INTO foreshadows
+             (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos,
+              payoff_to_pos, payoff_confirmed, abandoned, secret, load_bearing,
+              created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, 0, 0, ?6, ?7, ?8, ?8)",
+            params![
+                input.foreshadow_id,
+                input.project_id,
+                input.title,
+                input.intent,
+                input.notes,
+                input.secret as i64,
+                input.load_bearing,
+                now,
+            ],
+        )?;
+
+        let after_snapshot = foreshadow_snapshot(conn, input.project_id, input.foreshadow_id)?
+            .ok_or_else(|| anyhow::anyhow!("foreshadow row missing right after insert"))?;
+
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: &undo_id,
+                project_id: input.project_id,
+                surface: input.surface,
+                entity_kind: "foreshadow",
+                entity_id: input.foreshadow_id,
+                op_kind: "create",
+                before_json: None,
+                after_json: Some(&after_snapshot),
+                base_version: 0,
+                result_version: now,
+                change_event_uid: Some(&event_uid),
+            },
+        )?;
+
+        append_change_events_in_tx(
+            conn,
+            input.project_id,
+            input.session_id,
+            &[AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "foreshadow".to_string(),
+                op_type: "foreshadow.create".to_string(),
+                entity_type: Some("foreshadow".to_string()),
+                entity_id: Some(input.foreshadow_id.to_string()),
+                payload: change_payload,
+                timestamp: now,
+            }],
+        )?;
+
+        Ok(WriteResult {
+            entity_id: input.foreshadow_id.to_string(),
+            version: now,
+            change_event_uid: event_uid,
+            undo_journal_id: undo_id,
+        })
+    })();
+
+    match result {
+        Ok(res) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(res)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+    .context("tracked_foreshadow_create")
 }
 
 /// Returns `Ok(None)` when the foreshadow does not exist **in this project**
 /// (cross-project ids are indistinguishable from missing — XPROJ defense).
 /// Nothing is written in that case.
 pub fn tracked_foreshadow_update(
-    _conn: &Connection,
-    _input: TrackedForeshadowUpdateInput<'_>,
+    conn: &Connection,
+    input: TrackedForeshadowUpdateInput<'_>,
 ) -> anyhow::Result<Option<WriteResult>> {
-    anyhow::bail!("unimplemented")
-}
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp_millis();
 
-// Referenced by the implementation (kept so the red skeleton compiles).
-#[allow(unused_imports)]
-use append_change_events_in_tx as _a;
-#[allow(unused_imports)]
-use insert_undo_journal_in_tx as _b;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> anyhow::Result<Option<WriteResult>> {
+        // Snapshot doubles as the existence + project-scope check, taken
+        // before mutation (codex update_before_snapshot discipline).
+        let Some(before_snapshot) =
+            foreshadow_snapshot(conn, input.project_id, input.foreshadow_id)?
+        else {
+            return Ok(None);
+        };
+        let before: serde_json::Value = serde_json::from_str(&before_snapshot)?;
+        let base_updated_at = before["updatedAt"].as_i64().unwrap_or(0);
+
+        let p = &input.patch;
+        let mut fields: Vec<&str> = Vec::new();
+        let mut sets: Vec<&str> = Vec::new();
+        let mut vals: Vec<rusqlite::types::Value> = Vec::new();
+        use rusqlite::types::Value as V;
+        if let Some(v) = p.title {
+            fields.push("title");
+            sets.push("title = ?");
+            vals.push(V::Text(v.to_string()));
+        }
+        if let Some(v) = p.intent {
+            fields.push("intent");
+            sets.push("intent = ?");
+            vals.push(V::Text(v.to_string()));
+        }
+        if let Some(v) = p.notes {
+            fields.push("notes");
+            sets.push("notes = ?");
+            vals.push(V::Text(v.to_string()));
+        }
+        if let Some(v) = p.load_bearing {
+            fields.push("loadBearing");
+            sets.push("load_bearing = ?");
+            vals.push(V::Text(v.to_string()));
+        }
+        if let Some(v) = p.payoff_confirmed {
+            fields.push("payoffConfirmed");
+            sets.push("payoff_confirmed = ?");
+            vals.push(V::Integer(v as i64));
+        }
+        if let Some(v) = p.abandoned {
+            fields.push("abandoned");
+            sets.push("abandoned = ?");
+            vals.push(V::Integer(v as i64));
+        }
+        if let Some(v) = p.secret {
+            fields.push("secret");
+            sets.push("secret = ?");
+            vals.push(V::Integer(v as i64));
+        }
+        anyhow::ensure!(!sets.is_empty(), "empty patch (tool layer must guard)");
+
+        sets.push("updated_at = ?");
+        vals.push(V::Integer(now));
+        vals.push(V::Text(input.foreshadow_id.to_string()));
+        vals.push(V::Text(input.project_id.to_string()));
+        let sql = format!(
+            "UPDATE foreshadows SET {} WHERE id = ? AND project_id = ?",
+            sets.join(", ")
+        );
+        let affected = conn.execute(&sql, rusqlite::params_from_iter(vals.iter()))?;
+        anyhow::ensure!(affected == 1, "foreshadow row vanished mid-transaction");
+
+        let after_snapshot = foreshadow_snapshot(conn, input.project_id, input.foreshadow_id)?
+            .ok_or_else(|| anyhow::anyhow!("foreshadow row missing right after update"))?;
+
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: &undo_id,
+                project_id: input.project_id,
+                surface: input.surface,
+                entity_kind: "foreshadow",
+                entity_id: input.foreshadow_id,
+                op_kind: "update",
+                before_json: Some(&before_snapshot),
+                after_json: Some(&after_snapshot),
+                base_version: base_updated_at,
+                result_version: now,
+                change_event_uid: Some(&event_uid),
+            },
+        )?;
+
+        append_change_events_in_tx(
+            conn,
+            input.project_id,
+            input.session_id,
+            &[AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "foreshadow".to_string(),
+                op_type: "foreshadow.update".to_string(),
+                entity_type: Some("foreshadow".to_string()),
+                entity_id: Some(input.foreshadow_id.to_string()),
+                payload: json!({ "fields": fields }).to_string(),
+                timestamp: now,
+            }],
+        )?;
+
+        Ok(Some(WriteResult {
+            entity_id: input.foreshadow_id.to_string(),
+            version: now,
+            change_event_uid: event_uid,
+            undo_journal_id: undo_id,
+        }))
+    })();
+
+    match result {
+        Ok(res) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(res)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+    .context("tracked_foreshadow_update")
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

@@ -1764,118 +1764,6 @@ pub fn get_foreshadow_detail(
     }))
 }
 
-/// Create a foreshadow row scoped to `project_id`. Mirrors the canonical
-/// `commands::foreshadow::foreshadow_create_impl` (millisecond timestamps,
-/// uuid v4 id, `payoff_confirmed`/`abandoned` cleared on create). Unlike the
-/// canonical writer, `secret` is a caller parameter (defaulted to `true` at the
-/// tool layer) so an external client can create a *visible* foreshadow and see
-/// it via `list_open_foreshadows` in the same session. Returns the new id.
-pub fn create_foreshadow(
-    conn: &Connection,
-    project_id: &str,
-    title: &str,
-    intent: Option<&str>,
-    notes: Option<&str>,
-    load_bearing: Option<&str>,
-    secret: bool,
-) -> Result<String> {
-    let now = chrono::Utc::now().timestamp_millis();
-    let id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO foreshadows
-         (id, project_id, title, intent, notes, payoff_scene_id, payoff_from_pos, payoff_to_pos,
-          payoff_confirmed, abandoned, secret, load_bearing, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, 0, 0, ?6, ?7, ?8, ?8)",
-        params![
-            id,
-            project_id,
-            title,
-            intent,
-            notes,
-            secret as i64,
-            load_bearing,
-            now
-        ],
-    )?;
-    Ok(id)
-}
-
-/// Update selected fields of a foreshadow. Always scoped by `project_id` in the
-/// WHERE clause (the canonical app-side writer is *not* project-scoped — safe
-/// in-app, but for the external MCP surface this closes a cross-project write
-/// hole). Only `Some` fields are changed. Returns rows affected (0 = no row in
-/// this project, i.e. not found or belongs to another project).
-#[allow(clippy::too_many_arguments)]
-pub fn update_foreshadow(
-    conn: &Connection,
-    project_id: &str,
-    id: &str,
-    title: Option<&str>,
-    intent: Option<&str>,
-    notes: Option<&str>,
-    load_bearing: Option<&str>,
-    payoff_confirmed: Option<bool>,
-    abandoned: Option<bool>,
-    secret: Option<bool>,
-) -> Result<usize> {
-    use rusqlite::types::Value as V;
-    let now = chrono::Utc::now().timestamp_millis();
-    let mut sets: Vec<&str> = Vec::new();
-    let mut vals: Vec<V> = Vec::new();
-
-    if let Some(v) = title {
-        sets.push("title = ?");
-        vals.push(V::Text(v.to_string()));
-    }
-    if let Some(v) = intent {
-        sets.push("intent = ?");
-        vals.push(V::Text(v.to_string()));
-    }
-    if let Some(v) = notes {
-        sets.push("notes = ?");
-        vals.push(V::Text(v.to_string()));
-    }
-    if let Some(v) = load_bearing {
-        sets.push("load_bearing = ?");
-        vals.push(V::Text(v.to_string()));
-    }
-    if let Some(v) = payoff_confirmed {
-        sets.push("payoff_confirmed = ?");
-        vals.push(V::Integer(v as i64));
-    }
-    if let Some(v) = abandoned {
-        sets.push("abandoned = ?");
-        vals.push(V::Integer(v as i64));
-    }
-    if let Some(v) = secret {
-        sets.push("secret = ?");
-        vals.push(V::Integer(v as i64));
-    }
-
-    // Tool layer guarantees at least one field; guard defensively so an empty
-    // patch reports existence (scoped) rather than corrupting the SQL.
-    if sets.is_empty() {
-        let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM foreshadows WHERE id = ?1 AND project_id = ?2",
-            params![id, project_id],
-            |row| row.get(0),
-        )?;
-        return Ok(n as usize);
-    }
-
-    sets.push("updated_at = ?");
-    vals.push(V::Integer(now));
-    vals.push(V::Text(id.to_string()));
-    vals.push(V::Text(project_id.to_string()));
-
-    let sql = format!(
-        "UPDATE foreshadows SET {} WHERE id = ? AND project_id = ?",
-        sets.join(", ")
-    );
-    let affected = conn.execute(&sql, rusqlite::params_from_iter(vals.iter()))?;
-    Ok(affected)
-}
-
 pub fn get_project_stats(conn: &Connection, project_id: &str) -> Result<ProjectStats> {
     let scene_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM tree_nodes WHERE project_id = ?1 AND node_type = 'scene'",
@@ -2922,22 +2810,29 @@ pub(crate) mod tests {
         .ok()
     }
 
+    /// Create via the tracked writer (grimodex-core) and verify the MCP
+    /// read side consumes the row — the raw db.rs writers were removed when
+    /// foreshadow writes moved onto the tracked path.
     #[test]
-    fn test_create_foreshadow_visible_when_not_secret() {
+    fn test_tracked_create_visible_when_not_secret() {
         let conn = make_simple_db();
         insert_project(&conn, "p1", "Novel");
-        let id = create_foreshadow(
+        let res = grimodex_core::writes::foreshadow::tracked_foreshadow_create(
             &conn,
-            "p1",
-            "Planted clue",
-            Some("sets up the reveal"),
-            None,
-            Some("critical"),
-            false,
+            grimodex_core::writes::foreshadow::TrackedForeshadowCreateInput {
+                project_id: "p1",
+                session_id: "sess",
+                surface: "mcp",
+                foreshadow_id: "f1",
+                title: "Planted clue",
+                intent: Some("sets up the reveal"),
+                notes: None,
+                load_bearing: Some("critical"),
+                secret: false,
+            },
         )
         .unwrap();
-        // Created in p1 with the expected fields.
-        let (title, secret, payoff, abandoned, lb) = fs_row(&conn, &id).unwrap();
+        let (title, secret, payoff, abandoned, lb) = fs_row(&conn, &res.entity_id).unwrap();
         assert_eq!(title, "Planted clue");
         assert_eq!(secret, 0);
         assert_eq!(payoff, 0);
@@ -2946,90 +2841,32 @@ pub(crate) mod tests {
         // Non-secret + unresolved → appears in the open list (coherent round-trip).
         let open = list_open_foreshadows(&conn, "p1").unwrap();
         assert_eq!(open.len(), 1);
-        assert_eq!(open[0].id, id);
+        assert_eq!(open[0].id, res.entity_id);
     }
 
     #[test]
-    fn test_create_foreshadow_secret_hidden_from_open_list() {
+    fn test_tracked_create_secret_hidden_from_open_list() {
         let conn = make_simple_db();
         insert_project(&conn, "p1", "Novel");
-        let id = create_foreshadow(&conn, "p1", "Hidden plant", None, None, None, true).unwrap();
-        assert_eq!(fs_row(&conn, &id).unwrap().1, 1); // secret
-                                                      // Secret items are excluded from the open list, but still readable by id.
+        grimodex_core::writes::foreshadow::tracked_foreshadow_create(
+            &conn,
+            grimodex_core::writes::foreshadow::TrackedForeshadowCreateInput {
+                project_id: "p1",
+                session_id: "sess",
+                surface: "mcp",
+                foreshadow_id: "f1",
+                title: "Hidden plant",
+                intent: None,
+                notes: None,
+                load_bearing: None,
+                secret: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(fs_row(&conn, "f1").unwrap().1, 1); // secret
+                                                       // Secret items are excluded from the open list, but still readable by id.
         assert!(list_open_foreshadows(&conn, "p1").unwrap().is_empty());
-        assert!(get_foreshadow_detail(&conn, "p1", &id).unwrap().is_some());
-    }
-
-    #[test]
-    fn test_update_foreshadow_partial_fields() {
-        let conn = make_simple_db();
-        insert_project(&conn, "p1", "Novel");
-        let id = create_foreshadow(&conn, "p1", "Original", None, None, None, false).unwrap();
-        let affected = update_foreshadow(
-            &conn,
-            "p1",
-            &id,
-            Some("Renamed"),
-            None,
-            None,
-            Some("supporting"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(affected, 1);
-        let (title, _secret, _payoff, _abandoned, lb) = fs_row(&conn, &id).unwrap();
-        assert_eq!(title, "Renamed");
-        assert_eq!(lb.as_deref(), Some("supporting"));
-    }
-
-    #[test]
-    fn test_update_foreshadow_payoff_confirmed_drops_from_open() {
-        let conn = make_simple_db();
-        insert_project(&conn, "p1", "Novel");
-        let id = create_foreshadow(&conn, "p1", "Thread", None, None, None, false).unwrap();
-        assert_eq!(list_open_foreshadows(&conn, "p1").unwrap().len(), 1);
-        let affected = update_foreshadow(
-            &conn,
-            "p1",
-            &id,
-            None,
-            None,
-            None,
-            None,
-            Some(true),
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(affected, 1);
-        assert!(list_open_foreshadows(&conn, "p1").unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_update_foreshadow_cross_project_rejected() {
-        let conn = make_simple_db();
-        insert_project(&conn, "p1", "Novel");
-        insert_project(&conn, "p2", "Other");
-        let id = create_foreshadow(&conn, "p1", "Owned by p1", None, None, None, false).unwrap();
-        // Attempt to update p1's item while scoped to p2 → no row touched.
-        let affected = update_foreshadow(
-            &conn,
-            "p2",
-            &id,
-            Some("hijacked"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(affected, 0);
-        // Original title is untouched.
-        assert_eq!(fs_row(&conn, &id).unwrap().0, "Owned by p1");
+        assert!(get_foreshadow_detail(&conn, "p1", "f1").unwrap().is_some());
     }
 
     #[test]

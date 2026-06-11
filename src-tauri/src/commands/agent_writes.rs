@@ -1097,6 +1097,13 @@ fn undo_journal_change_event(
             "snippet.delete",
             "snippet.update",
         ),
+        "foreshadow" => (
+            "foreshadow",
+            "foreshadow",
+            "foreshadow.create",
+            "foreshadow.delete",
+            "foreshadow.update",
+        ),
         other => anyhow::bail!("undo_journal_change_event: unsupported entity_kind '{other}'"),
     };
     let op_type = match (direction, row.op_kind.as_str()) {
@@ -1190,7 +1197,10 @@ pub(crate) fn agent_apply_undo_journal(
 mod tests {
     use super::undo_journal_change_event;
 
-    fn journal_row(entity_kind: &str, op_kind: &str) -> grimodex_core::undo_journal::UndoJournalRow {
+    fn journal_row(
+        entity_kind: &str,
+        op_kind: &str,
+    ) -> grimodex_core::undo_journal::UndoJournalRow {
         grimodex_core::undo_journal::UndoJournalRow {
             id: "j1".to_string(),
             project_id: "p1".to_string(),
