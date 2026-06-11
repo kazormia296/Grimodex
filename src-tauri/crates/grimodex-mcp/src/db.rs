@@ -1925,12 +1925,13 @@ pub fn get_project_stats(conn: &Connection, project_id: &str) -> Result<ProjectS
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use rusqlite::Connection;
 
     /// Simpler in-memory DB with just enough tables for our tests.
-    fn make_simple_db() -> Connection {
+    /// pub(crate): tools/context.rs のテストも同じ fixture を使う（DDL 二重化を避ける）。
+    pub(crate) fn make_simple_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE projects (

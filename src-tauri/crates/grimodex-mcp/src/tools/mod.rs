@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod codex;
+pub mod context;
 pub mod foreshadow;
 pub mod lint;
 pub mod project;
