@@ -1042,7 +1042,14 @@
       "presetApplied_one": "Added {{count}} field from the preset",
       "presetApplied_other": "Added {{count}} fields from the preset",
       "presetAppliedSkipped": "Added {{added}} fields from the preset ({{skipped}} skipped as existing)",
-      "presetNoneAdded": "All preset fields already exist"
+      "presetNoneAdded": "All preset fields already exist",
+      "deleteEmptyFields": "Delete empty fields",
+      "deleteEmptyNone": "No empty fields to delete",
+      "deleteEmptyConfirmTitle": "Delete empty fields?",
+      "deleteEmptyConfirmBody_one": "This deletes {{count}} field definition with no values. Fields with values are not affected.",
+      "deleteEmptyConfirmBody_other": "This deletes {{count}} field definitions with no values. Fields with values are not affected.",
+      "deleteEmptyDone_one": "Deleted {{count}} empty field",
+      "deleteEmptyDone_other": "Deleted {{count}} empty fields"
     },
     "relation": {
       "title": "Hierarchy (parent/child)",

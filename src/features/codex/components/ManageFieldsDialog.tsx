@@ -12,6 +12,10 @@ import {
   deleteDefinition,
 } from "../detailApi";
 import { PRESET_GENRES, applyDetailPreset } from "../detailPresets";
+import {
+  listEmptyDetailFields,
+  deleteEmptyDetailFields,
+} from "../detailCleanup";
 
 // --- Field type labels ---
 const FIELD_TYPE_OPTIONS = [
@@ -259,6 +263,68 @@ function DeleteConfirmDialog({
   );
 }
 
+// --- Cleanup Confirm Dialog ---
+interface CleanupConfirmProps {
+  targets: CodexDetailDefinition[];
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+function CleanupConfirmDialog({
+  targets,
+  onConfirm,
+  onCancel,
+}: CleanupConfirmProps) {
+  const { t } = useTranslation();
+  // DeleteConfirmDialog 同様、portal された親 (z-50) の上に重ねるため
+  // body へ portal して z-[60]
+  return createPortal(
+    <div
+      data-testid="manage-fields-cleanup-confirm-dialog"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+      onClick={onCancel}
+    >
+      <div
+        className="w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h4 className="mb-2 text-sm font-semibold">
+          {t("codex.detail.deleteEmptyConfirmTitle")}
+        </h4>
+        <p className="mb-2 text-xs text-muted-foreground">
+          {t("codex.detail.deleteEmptyConfirmBody", { count: targets.length })}
+        </p>
+        <ul className="mb-4 max-h-32 overflow-y-auto text-xs">
+          {targets.map((d) => (
+            <li key={d.id} className="truncate">
+              ・{d.name}
+            </li>
+          ))}
+        </ul>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            data-testid="manage-fields-cleanup-cancel-button"
+            onClick={onCancel}
+            className="rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
+          >
+            {t("common.cancel")}
+          </button>
+          <button
+            type="button"
+            data-testid="manage-fields-cleanup-confirm-button"
+            onClick={onConfirm}
+            className="rounded bg-destructive px-3 py-1 text-xs text-destructive-foreground hover:bg-destructive/90"
+          >
+            {t("common.delete")}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // --- Main Dialog ---
 interface ManageFieldsDialogProps {
   projectId: string;
@@ -293,6 +359,10 @@ export function ManageFieldsDialog({
     : "";
   const [presetGenre, setPresetGenre] = useState(presetDefault);
   const [presetBusy, setPresetBusy] = useState(false);
+  const [cleanupTargets, setCleanupTargets] = useState<
+    CodexDetailDefinition[] | null
+  >(null);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
 
   const load = useCallback(async () => {
     const defs = await listDefinitionsByType(projectId, typeSlug);
@@ -334,6 +404,36 @@ export function ManageFieldsDialog({
       toast.error(t("common.error", "エラーが発生しました"));
     } finally {
       setPresetBusy(false);
+    }
+  };
+
+  const handleCleanupClick = async () => {
+    if (cleanupBusy) return;
+    setCleanupBusy(true);
+    try {
+      const targets = await listEmptyDetailFields(projectId, typeSlug);
+      if (targets.length === 0) {
+        toast.info(t("codex.detail.deleteEmptyNone"));
+      } else {
+        setCleanupTargets(targets);
+      }
+    } catch {
+      toast.error(t("common.error", "エラーが発生しました"));
+    } finally {
+      setCleanupBusy(false);
+    }
+  };
+
+  const handleCleanupConfirm = async () => {
+    setCleanupTargets(null);
+    try {
+      const result = await deleteEmptyDetailFields(projectId, typeSlug);
+      await load();
+      toast.success(
+        t("codex.detail.deleteEmptyDone", { count: result.deleted.length }),
+      );
+    } catch {
+      toast.error(t("common.error", "エラーが発生しました"));
     }
   };
 
@@ -477,6 +577,15 @@ export function ManageFieldsDialog({
           </div>
           <button
             type="button"
+            data-testid="manage-fields-cleanup-button"
+            onClick={() => void handleCleanupClick()}
+            disabled={cleanupBusy}
+            className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-destructive disabled:opacity-50"
+          >
+            {t("codex.detail.deleteEmptyFields")}
+          </button>
+          <button
+            type="button"
             data-testid="manage-fields-close-button-footer"
             onClick={onClose}
             className="ml-auto rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
@@ -491,6 +600,14 @@ export function ManageFieldsDialog({
           definitionName={deletingDef.name}
           onConfirm={() => void handleDeleteConfirm()}
           onCancel={() => setDeletingDef(null)}
+        />
+      )}
+
+      {cleanupTargets && (
+        <CleanupConfirmDialog
+          targets={cleanupTargets}
+          onConfirm={() => void handleCleanupConfirm()}
+          onCancel={() => setCleanupTargets(null)}
         />
       )}
     </>

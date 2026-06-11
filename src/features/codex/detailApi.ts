@@ -125,6 +125,19 @@ export async function listRawDetailValuesByEntryIds(
   return rows;
 }
 
+export async function listValuesByDefinitionIds(
+  definitionIds: string[],
+): Promise<Array<{ definitionId: string; value: string | null }>> {
+  if (definitionIds.length === 0) return [];
+  return db
+    .select({
+      definitionId: codexDetailValues.definitionId,
+      value: codexDetailValues.value,
+    })
+    .from(codexDetailValues)
+    .where(inArray(codexDetailValues.definitionId, definitionIds));
+}
+
 export async function listValuesByEntry(
   entryId: string,
 ): Promise<DetailValueWithDefinition[]> {

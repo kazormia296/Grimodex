@@ -1041,7 +1041,12 @@
       "presetApply": "プリセットを適用",
       "presetApplied": "プリセットからフィールドを{{count}}件追加しました",
       "presetAppliedSkipped": "プリセットからフィールドを{{added}}件追加しました（既存の{{skipped}}件はスキップ）",
-      "presetNoneAdded": "プリセットのフィールドはすべて追加済みです"
+      "presetNoneAdded": "プリセットのフィールドはすべて追加済みです",
+      "deleteEmptyFields": "未入力を一括削除",
+      "deleteEmptyNone": "未入力のフィールドはありません",
+      "deleteEmptyConfirmTitle": "未入力のフィールドを削除しますか？",
+      "deleteEmptyConfirmBody": "値が入力されていない{{count}}件のフィールド定義を削除します。入力済みのフィールドには影響しません。",
+      "deleteEmptyDone": "未入力のフィールドを{{count}}件削除しました"
     },
     "relation": {
       "title": "階層（親子）",
