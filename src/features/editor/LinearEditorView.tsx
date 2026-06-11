@@ -8,7 +8,16 @@ import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
-import { buildEditorMeasureStyle } from "@/features/editor/editorLayout";
+import {
+  buildEditorMeasureStyle,
+  canScrollBlockAxis,
+  getBlockStartOffset,
+  getLinearRootMargin,
+  getLogicalScrollOffset,
+  pickActiveSceneId,
+  setLogicalScrollOffset,
+} from "@/features/editor/editorLayout";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { isMac } from "@/lib/platform";
 import {
   getMergedBindings,
@@ -21,6 +30,7 @@ const DEBOUNCE_ACTIVE_MS = 100;
 
 export function LinearEditorView() {
   const editorSettings = useEditorSettings();
+  const verticalMode = editorSettings.verticalMode;
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
@@ -105,14 +115,14 @@ export function LinearEditorView() {
           return changed ? next : prev;
         });
       },
-      { root: container, rootMargin: "200% 0px" },
+      { root: container, rootMargin: getLinearRootMargin(verticalMode) },
     );
 
     const sentinels = container.querySelectorAll("[data-scene-id]");
     sentinels.forEach((el) => observer.observe(el));
 
     return () => observer.disconnect();
-  }, [scenes]);
+  }, [scenes, verticalMode]);
 
   // --- IntersectionObserver: active scene detection ---
   useEffect(() => {
@@ -124,26 +134,20 @@ export function LinearEditorView() {
         if (activeDebounceRef.current) clearTimeout(activeDebounceRef.current);
 
         activeDebounceRef.current = setTimeout(() => {
-          // Find the visible scene closest to the top of the scroll container
+          // Find the visible scene closest to the block-start edge of the
+          // scroll container (top when horizontal, right when vertical).
           const containerRect = container.getBoundingClientRect();
-          let closestId: string | null = null;
-          let closestDist = Infinity;
-
-          const visibleEls = container.querySelectorAll("[data-scene-id]");
-          for (const el of visibleEls) {
-            const rect = el.getBoundingClientRect();
-            // Only consider elements at least partially visible
-            if (
-              rect.bottom < containerRect.top ||
-              rect.top > containerRect.bottom
-            )
-              continue;
-            const dist = Math.abs(rect.top - containerRect.top);
-            if (dist < closestDist) {
-              closestDist = dist;
-              closestId = (el as HTMLElement).dataset.sceneId ?? null;
-            }
-          }
+          const items = Array.from(
+            container.querySelectorAll("[data-scene-id]"),
+          ).map((el) => ({
+            id: (el as HTMLElement).dataset.sceneId ?? "",
+            rect: el.getBoundingClientRect(),
+          }));
+          const closestId = pickActiveSceneId(
+            containerRect,
+            items,
+            verticalMode,
+          );
 
           if (closestId && closestId !== activeId) {
             setActiveId(closestId);
@@ -166,7 +170,13 @@ export function LinearEditorView() {
       observer.disconnect();
       if (activeDebounceRef.current) clearTimeout(activeDebounceRef.current);
     };
-  }, [scenes, activeId]);
+  }, [scenes, activeId, verticalMode]);
+
+  // Placeholder sizes were measured along one writing mode's block axis —
+  // toggling vertical mode invalidates them.
+  useEffect(() => {
+    heightMapRef.current.clear();
+  }, [verticalMode]);
 
   // --- Initial scroll: jump to active scene on mount ---
   // At mount time, all scenes are short placeholders so the container may not
@@ -184,23 +194,33 @@ export function LinearEditorView() {
 
     function scrollToTarget() {
       if (done) return;
-      if (container!.scrollHeight <= container!.clientHeight) return;
+      // Mount-only effect: read the mode at call time, not from a closure.
+      const vertical = useSettingsStore
+        .getState()
+        .getBoolean("editor.verticalMode", false);
+      if (!canScrollBlockAxis(container!, vertical)) return;
       const target = container!.querySelector(`[data-scene-id="${targetId}"]`);
       if (!target) return;
       const containerRect = container!.getBoundingClientRect();
       const targetRect = target.getBoundingClientRect();
-      const offset = targetRect.top - containerRect.top;
+      const offset = getBlockStartOffset(containerRect, targetRect, vertical);
       // Already at target
       if (Math.abs(offset) < 2) {
         done = true;
         return;
       }
-      container!.scrollTop += offset;
-      // Verify target actually reached the top of the container.
-      // If the content isn't tall enough yet, scrollTop can't reach far enough
+      setLogicalScrollOffset(
+        container!,
+        getLogicalScrollOffset(container!, vertical) + offset,
+        vertical,
+      );
+      // Verify target actually reached the block-start edge of the container.
+      // If the content isn't long enough yet, the scroll can't reach far enough
       // and we must NOT mark done — ResizeObserver will retry when content grows.
       const afterRect = target.getBoundingClientRect();
-      const remaining = Math.abs(afterRect.top - containerRect.top);
+      const remaining = Math.abs(
+        getBlockStartOffset(containerRect, afterRect, vertical),
+      );
       if (remaining < 5) done = true;
     }
 
@@ -312,7 +332,7 @@ export function LinearEditorView() {
       />
       <div
         ref={scrollRef}
-        className="glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4"
+        className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${verticalMode ? " editor-vertical" : ""}`}
       >
         <div
           ref={editorContainerRef}
@@ -320,7 +340,7 @@ export function LinearEditorView() {
         >
           {scenes.map((scene, i) => (
             <div key={scene.id}>
-              {i > 0 && <div className="my-6 border-t border-border/50" />}
+              {i > 0 && <div className="editor-scene-separator" />}
               <LinearSceneBlock
                 sceneId={scene.id}
                 isMounted={mountedSet.has(scene.id)}

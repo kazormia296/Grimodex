@@ -1088,6 +1088,15 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   background-color: #9ca3af;
 }
 
+/* Linear view scene separator — block-axis rule (horizontal line between
+ * scenes when horizontal writing, vertical line between columns when
+ * vertical). Replaces the physical `my-6 border-t border-border/50`. */
+.editor-scene-separator {
+  margin-block: 1.5rem;
+  border-block-start: 1px solid
+    color-mix(in oklab, var(--border) 50%, transparent);
+}
+
 /* Vertical writing live-edit mode (editor.verticalMode, per-project) —
  * applied to the editor scroll container (EditorDropDiv / LinearEditorView)
  * so the scroll axis flips and writing-mode inherits down to .tiptap, where

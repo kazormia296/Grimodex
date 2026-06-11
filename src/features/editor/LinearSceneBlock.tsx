@@ -59,7 +59,7 @@ export function LinearSceneBlock({
           onFocus={onFocus}
         />
       ) : (
-        <div style={{ height: placeholderHeight }} />
+        <div style={{ blockSize: placeholderHeight }} />
       )}
     </div>
   );
@@ -271,13 +271,20 @@ function MountedSceneBlock({
     };
   }, [sceneId, editor, cancel]);
 
-  // Report height changes
+  // Report block-axis size changes. contentBoxSize is logical (resolved
+  // against the element's writing-mode), so the same code measures height
+  // when horizontal and width when vertical — matching the placeholder's
+  // blockSize style.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        onHeightChange(sceneId, entry.contentRect.height);
+        const size = entry.contentBoxSize?.[0];
+        onHeightChange(
+          sceneId,
+          size ? size.blockSize : entry.contentRect.height,
+        );
       }
     });
     observer.observe(el);
