@@ -161,6 +161,8 @@ const ALIEN_CONTENT = JSON.stringify({
   content: [{ type: "node-from-the-future" }],
 });
 
+import { useLinearEditorStore } from "./linearEditorStore";
+
 function lastEditor(): Editor {
   return createdEditors[createdEditors.length - 1] as Editor;
 }
@@ -223,6 +225,29 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     lastEditor().commands.insertContentAt(0, "x");
     unmount();
     expect(mockPersist).not.toHaveBeenCalled();
+  });
+
+  it("mount で editor registry に登録され、unmount で解除される", async () => {
+    // Toolbar / SceneMetaPanel が「active シーンの editor」をフォーカス無しで
+    // 引くための registry (フォーカス依存だとリニア入場直後にツールバーが
+    // 消える)。
+    mockLoadSceneFull.mockResolvedValue({
+      content: MENTION_CONTENT,
+      unplacedBeatsDoc: "[]",
+    });
+    const { unmount } = renderBlock();
+    await waitFor(() => {
+      expect(
+        useLinearEditorStore.getState().editorsById["scene-0001"],
+      ).toBeDefined();
+    });
+    expect(useLinearEditorStore.getState().editorsById["scene-0001"]).toBe(
+      lastEditor(),
+    );
+    unmount();
+    expect(
+      useLinearEditorStore.getState().editorsById["scene-0001"],
+    ).toBeUndefined();
   });
 
   it("ロード完了まで skeleton を表示し、完了後に本文と文字数を出す", async () => {

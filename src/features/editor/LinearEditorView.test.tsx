@@ -14,7 +14,9 @@ vi.mock("./LinearSceneBlock", () => ({
 }));
 
 vi.mock("@/features/editor/Toolbar", () => ({
-  Toolbar: () => <div data-testid="toolbar" />,
+  Toolbar: ({ editor }: { editor: unknown }) => (
+    <div data-testid="toolbar" data-has-editor={editor ? "true" : "false"} />
+  ),
 }));
 vi.mock("@/features/editor/FindReplaceBar", () => ({
   FindReplaceBar: () => null,
@@ -69,6 +71,8 @@ vi.stubGlobal("IntersectionObserver", StubIntersectionObserver);
 vi.stubGlobal("ResizeObserver", StubResizeObserver);
 
 import { LinearEditorView } from "./LinearEditorView";
+import { useLinearEditorStore } from "./linearEditorStore";
+import type { Editor } from "@tiptap/core";
 
 const NODE_DEFAULTS = {
   projectId: "p",
@@ -100,6 +104,12 @@ function makeNode(
 
 beforeEach(() => {
   useTreeStore.setState({ nodes: [], activeSceneId: "" });
+  useLinearEditorStore.setState({
+    focusedEditor: null,
+    focusedSceneId: null,
+    pendingScrollToId: null,
+    editorsById: {},
+  });
   settingsOverride.current = {};
 });
 
@@ -259,5 +269,36 @@ describe("LinearEditorView — scene meta panel", () => {
     expect(
       container.querySelector("[data-testid='scene-meta-panel']"),
     ).toBeNull();
+  });
+});
+
+describe("LinearEditorView — toolbar editor 供給", () => {
+  it("フォーカス無しでも active シーンの editor が Toolbar に渡る", () => {
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+    useLinearEditorStore.getState().registerEditor("S1", {} as Editor);
+
+    const { container } = render(<LinearEditorView />);
+    expect(
+      container
+        .querySelector("[data-testid='toolbar']")
+        ?.getAttribute("data-has-editor"),
+    ).toBe("true");
+  });
+
+  it("active シーンの editor が未登録なら focusedEditor にフォールバックする", () => {
+    useTreeStore.setState({
+      nodes: [makeNode({ id: "S1" })],
+      activeSceneId: "S1",
+    });
+
+    const { container } = render(<LinearEditorView />);
+    expect(
+      container
+        .querySelector("[data-testid='toolbar']")
+        ?.getAttribute("data-has-editor"),
+    ).toBe("false");
   });
 });

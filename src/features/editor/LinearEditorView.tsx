@@ -48,8 +48,8 @@ export function LinearEditorView() {
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
   const focusedEditor = useLinearEditorStore((s) => s.focusedEditor);
-  const focusedSceneId = useLinearEditorStore((s) => s.focusedSceneId);
   const pendingScrollToId = useLinearEditorStore((s) => s.pendingScrollToId);
+  const editorsById = useLinearEditorStore((s) => s.editorsById);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -357,6 +357,12 @@ export function LinearEditorView() {
     });
   }, []);
 
+  // active シーンの editor (フォーカス不要)。Toolbar / FindReplaceBar /
+  // SceneMetaPanel に常時供給する — focusedEditor だとクリックするまで null で
+  // ツールバーが消える (Toolbar は editor 無しのとき null を返す)。
+  const activeEditor =
+    (activeId ? editorsById[activeId] : null) ?? focusedEditor;
+
   // --- Scene meta panel (EditorPane と同じ設定キー・レイアウト永続化) ---
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
   const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;
@@ -447,7 +453,7 @@ export function LinearEditorView() {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <Toolbar
-        editor={focusedEditor}
+        editor={activeEditor}
         onFindReplace={() => {
           setFindOpen(true);
           setFindShowReplace(true);
@@ -460,7 +466,7 @@ export function LinearEditorView() {
         nodeType="scene"
       />
       <FindReplaceBar
-        editor={focusedEditor}
+        editor={activeEditor}
         open={findOpen}
         showReplace={findShowReplace}
         onClose={() => setFindOpen(false)}
@@ -492,10 +498,9 @@ export function LinearEditorView() {
             >
               <SceneMetaPanel
                 sceneId={activeId!}
-                // editor は「active シーンの editor」のみ渡す。スクロールで
-                // active が focused と乖離したまま渡すと、Beat 挿入等が
-                // 別シーンの doc に書き込まれてしまう。
-                editor={focusedSceneId === activeId ? focusedEditor : null}
+                // registry から「active シーンの editor」を直接引く。
+                // focusedEditor だと別シーンの doc に Beat が誤挿入されうる。
+                editor={activeId ? (editorsById[activeId] ?? null) : null}
                 setMentionPopup={setMentionPopup}
               />
             </ResizablePanel>

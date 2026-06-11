@@ -215,6 +215,16 @@ function MountedSceneBlock({
 
   editorRef.current = editor;
 
+  // active シーンの editor を Toolbar / SceneMetaPanel がフォーカス無しで
+  // 参照できるよう registry へ登録する (linearEditorStore.editorsById)。
+  useEffect(() => {
+    if (!editor) return;
+    useLinearEditorStore.getState().registerEditor(sceneId, editor);
+    return () => {
+      useLinearEditorStore.getState().unregisterEditor(sceneId, editor);
+    };
+  }, [sceneId, editor]);
+
   // CodexQuick: only update matchedIds for the active scene
   useCodexHighlight(editor, isActive ? undefined : { skipMatchedIds: true });
   // EditorPane と同じく帰属系は DB-native 限定 (file-backed schema に
