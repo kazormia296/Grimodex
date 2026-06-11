@@ -956,6 +956,7 @@
         "L2": "Story so far",
         "L3": "Current scene",
         "L4": "Codex & settings",
+        "RAG": "Related scenes (semantic)",
         "L5": "Conversation summary",
         "L6": "Command instruction"
       }

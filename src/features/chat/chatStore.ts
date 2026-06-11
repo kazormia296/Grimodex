@@ -61,6 +61,11 @@ import {
 import { useAiSettingsStore, isRagCapableProvider } from "./store";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
+import {
+  buildSemanticRecallQuery,
+  fetchSemanticRecall,
+  type SemanticRecallChunk,
+} from "./semanticRecall";
 import { stripToolProtocol } from "./toolProtocol";
 import { isHermesProtocol } from "./toolProtocolParse";
 import {
@@ -1512,6 +1517,10 @@ async function buildSceneContextPrompt(opts: {
    * 注入される (eco モードでも必ず注入)。 */
   mentionedSceneIds?: string[];
   sessionStableCodexIds?: string[];
+  /** semantic recall (Layer4 RAG) のクエリ seed に使う直近ユーザー発話。
+   * 送信経路 (sendMessage) でのみ渡される。未指定 (プレビュー / コピー経路)
+   * なら semantic 検索は走らない — 打鍵毎の embedder 呼び出しを避けるため。 */
+  semanticRecallSeedMessage?: string;
 }): Promise<SceneContextPayload> {
   const {
     sceneCtx,
@@ -1982,18 +1991,46 @@ async function buildSceneContextPrompt(opts: {
   // すべて DB アクセスのみで in-memory store に依存しない。個別に try/catch して
   // フォールバックで空にすることで、データが無くても既存挙動は維持される。
   const projectIdForFs = useTreeStore.getState().projectId;
+
+  // semantic recall (Layer4 RAG): 送信経路でのみ seed が渡る。設定 OFF /
+  // seed 無し (プレビュー・コピー経路) / projectId 不明なら何もしない。
+  // seed の本文は DB 保存値 (sceneCtx.content) ベース — eco モードで本文が
+  // 空のときはユーザー発話のみで検索する。失敗は fetchSemanticRecall 内で
+  // 空配列フォールバック済み (feature 無効ビルド / 未 index)。
+  const semanticRecallEnabled = useSettingsStore
+    .getState()
+    .getBoolean("ai.semanticRecall", true);
+  const recallQuery =
+    semanticRecallEnabled && opts.semanticRecallSeedMessage
+      ? buildSemanticRecallQuery({
+          userMessage: opts.semanticRecallSeedMessage,
+          sceneBody: sceneCtx.content,
+        })
+      : "";
+
   markStart("buildSceneCtx.fetchLabelsAndForeshadow");
-  const [sceneLabelRows, sceneForeshadow, openForeshadowRows] =
-    await Promise.all([
-      listNodeLabels(sceneCtx.id).catch(() => []),
-      getSceneForeshadowContext(sceneCtx.id).catch(() => ({
-        setups: [],
-        payoffs: [],
-      })),
-      projectIdForFs
-        ? listOpenForeshadowsForContext(projectIdForFs).catch(() => [])
-        : Promise.resolve([]),
-    ]);
+  const [
+    sceneLabelRows,
+    sceneForeshadow,
+    openForeshadowRows,
+    semanticRecallChunks,
+  ] = await Promise.all([
+    listNodeLabels(sceneCtx.id).catch(() => []),
+    getSceneForeshadowContext(sceneCtx.id).catch(() => ({
+      setups: [],
+      payoffs: [],
+    })),
+    projectIdForFs
+      ? listOpenForeshadowsForContext(projectIdForFs).catch(() => [])
+      : Promise.resolve([]),
+    recallQuery && projectIdForFs
+      ? fetchSemanticRecall({
+          projectId: projectIdForFs,
+          query: recallQuery,
+          excludeSceneIds: [sceneCtx.id, ...(opts.mentionedSceneIds ?? [])],
+        })
+      : Promise.resolve([] as SemanticRecallChunk[]),
+  ]);
   markEnd("buildSceneCtx.fetchLabelsAndForeshadow");
   const sceneLabels = sceneLabelRows.map((l) => l.name);
   const openForeshadowsInput =
@@ -2099,6 +2136,13 @@ async function buildSceneContextPrompt(opts: {
     noteEntries,
     alwaysNoteIds,
     relationCodexEntries,
+    semanticRecall:
+      semanticRecallChunks.length > 0
+        ? semanticRecallChunks.map((c) => ({
+            sceneTitle: c.sceneTitle,
+            chunkText: c.chunkText,
+          }))
+        : undefined,
   });
   markEnd("buildSceneCtx.buildSystemPrompt");
 
@@ -2743,6 +2787,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             agentMode: true,
             mentionedSceneIds: options?.mentionedSceneIds,
             sessionStableCodexIds: get().sessionStableCodexIds,
+            semanticRecallSeedMessage: content,
           });
           systemPromptForAgent = ctxResult.prompt;
           systemCacheSegmentsForAgent = ctxResult.cacheSegments;
@@ -3241,6 +3286,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           prefetchedEntries: allEntries,
           mentionedSceneIds: options?.mentionedSceneIds,
           sessionStableCodexIds: get().sessionStableCodexIds,
+          semanticRecallSeedMessage: content,
         });
 
         if (get().sessionStableCodexIds.length === 0) {

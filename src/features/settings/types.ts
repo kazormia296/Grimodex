@@ -120,6 +120,9 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   // bodyWrite policy is on), proposed prose-staging rows are applied without a
   // human accept. Default off — does not change the human-in-the-loop contract.
   "ai.autoAcceptBodyProposals": "project",
+  // Semantic recall (Layer4 RAG): drafting チャットへ過去シーンの意味検索
+  // 抜粋を自動注入する (project)
+  "ai.semanticRecall": "project",
   "ai.contextBudget.l1": "project",
   "ai.contextBudget.l2": "project",
   "ai.contextBudget.l3": "project",
@@ -233,6 +236,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.webSearch.domains": "[]",
   "ai.webSearch.maxContentTokens": "",
   "ai.autoAcceptBodyProposals": "false",
+  "ai.semanticRecall": "true",
   "ai.contextBudget.l1": "2",
   "ai.contextBudget.l2": "10",
   "ai.contextBudget.l3": "40",

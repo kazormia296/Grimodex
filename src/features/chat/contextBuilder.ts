@@ -85,6 +85,9 @@ export interface TrimInput {
   l4Text: string;
   l5Text: string;
   l6Text: string;
+  /** semantic recall (Layer4 RAG) セクション。投機的文脈のため、予算超過時は
+   * 既存レイヤーより先に削られる (trim 順の先頭)。未指定は空文字と等価。 */
+  ragText?: string;
 }
 
 export interface TrimResult {
@@ -224,6 +227,13 @@ export interface BuildSystemPromptInput {
   alwaysNoteIds?: string[];
   /** Phase Cb: Codex entries discovered via relation BFS (L4 pri 1). */
   relationCodexEntries?: CodexContext[];
+  /**
+   * semantic recall (Layer4 RAG): 意味検索で見つけた過去シーンの抜粋。
+   * クエリ (直近ユーザー発話 + 現在シーン本文末尾) 依存で毎ターン変わるため、
+   * cacheSegments には混ぜず prompt + volatileTail にのみ配置される。
+   * trim では既存レイヤーより先に削られる。空配列 / undefined はセクション省略。
+   */
+  semanticRecall?: Array<{ sceneTitle: string; chunkText: string }>;
 }
 
 export interface LayerBudgets {
@@ -314,9 +324,10 @@ export interface SystemPromptResult {
   cacheSegments?: string[];
   /**
    * cacheSegments の後ろに cache_control 無しで送る揮発層。
-   * セッション途中で言及された non-stable L4 エントリ + L5 (会話要約) + L6
-   * (コマンド指示)。cacheSegments を使うプロバイダは system message 本文
-   * (= prompt) を破棄するため、ここに乗せないと L5/L6 が届かない。
+   * セッション途中で言及された non-stable L4 エントリ + semantic recall
+   * (RAG / クエリ毎に変動) + L5 (会話要約) + L6 (コマンド指示)。
+   * cacheSegments を使うプロバイダは system message 本文 (= prompt) を
+   * 破棄するため、ここに乗せないと これらが届かない。
    */
   volatileTail?: string;
 }
@@ -592,8 +603,25 @@ function trimL5Text(_text: string, _targetTokens: number): string {
   return "";
 }
 
+/** semantic recall (RAG): 末尾 (低スコア側) の抜粋ブロックから丸ごと削る。
+ * 抜粋が 1 つも残らない場合はヘッダだけ残しても無意味なので空にする。 */
+function trimRagText(text: string, targetTokens: number): string {
+  if (countTokens(text) <= targetTokens) return text;
+  if (targetTokens <= 0) return "";
+
+  // 先頭ブロック = ヘッダ + intro、以降 = `### ` 始まりの各抜粋
+  const blocks = text.split(/\n(?=### )/);
+  let kept = blocks.slice(1);
+  while (kept.length > 1) {
+    kept = kept.slice(0, -1);
+    const candidate = [blocks[0], ...kept].join("\n");
+    if (countTokens(candidate) <= targetTokens) return candidate;
+  }
+  return "";
+}
+
 // ---------------------------------------------------------------------------
-// trimToFit: budget超過時にL5→L4→L2→L3→L1の順でトリム
+// trimToFit: budget超過時にRAG→L5→L4→L2→L3→L1の順でトリム
 // ---------------------------------------------------------------------------
 
 export function trimToFit(layers: TrimInput, budget: number): TrimResult {
@@ -604,7 +632,8 @@ export function trimToFit(layers: TrimInput, budget: number): TrimResult {
     countTokens(t.l3Text) +
     countTokens(t.l4Text) +
     countTokens(t.l5Text) +
-    countTokens(t.l6Text);
+    countTokens(t.l6Text) +
+    countTokens(t.ragText ?? "");
 
   const total = sumTokens(layers);
   if (total <= budget) {
@@ -614,12 +643,15 @@ export function trimToFit(layers: TrimInput, budget: number): TrimResult {
   const trimmedLayers: string[] = [];
   const texts = { ...layers };
 
-  // Trim order: L5 → L4 → L2 → L3 → L1
+  // Trim order: RAG → L5 → L4 → L2 → L3 → L1
+  // RAG (semantic recall) は自動検索による投機的文脈なので、ユーザーが明示的に
+  // 構成した既存レイヤーより先に犠牲にする。
   const trimOrder: Array<{
     key: keyof TrimInput;
     name: string;
     fn: (text: string, target: number) => string;
   }> = [
+    { key: "ragText", name: "RAG", fn: trimRagText },
     { key: "l5Text", name: "L5", fn: trimL5Text },
     { key: "l4Text", name: "L4", fn: trimL4Text },
     { key: "l2Text", name: "L2", fn: trimL2Text },
@@ -631,12 +663,13 @@ export function trimToFit(layers: TrimInput, budget: number): TrimResult {
     const currentTotal = sumTokens(texts);
     if (currentTotal <= budget) break;
 
+    const current = texts[key] ?? "";
     const excess = currentTotal - budget;
-    const layerTokens = countTokens(texts[key]);
+    const layerTokens = countTokens(current);
     const targetTokens = Math.max(0, layerTokens - excess);
 
-    const trimmed = fn(texts[key], targetTokens);
-    if (trimmed !== texts[key]) {
+    const trimmed = fn(current, targetTokens);
+    if (trimmed !== current) {
       texts[key] = trimmed;
       trimmedLayers.push(name);
     }
@@ -1017,6 +1050,24 @@ export function buildSystemPrompt(
     l4StableSegment = stripL4Markers(stableLines.join("\n"));
   }
 
+  // semantic recall (Layer4 RAG): 意味検索による過去シーン抜粋。クエリ
+  // (直近ユーザー発話 + 現在シーン本文末尾) 依存で毎ターン変わるため、
+  // cacheSegments (byte 安定領域) には絶対に入れない。prompt (cache 非対応
+  // プロバイダの fallback 用) と volatileTail (cache 対応プロバイダ用) の
+  // 両方に配置することで全プロバイダに届ける。
+  let ragText = "";
+  if (input.semanticRecall && input.semanticRecall.length > 0) {
+    const ragLines: string[] = [
+      s.headers.semanticRecall,
+      s.semanticRecallIntro,
+    ];
+    for (const chunk of input.semanticRecall) {
+      ragLines.push(`${s.headers.semanticRecallScene}${chunk.sceneTitle}`);
+      ragLines.push(chunk.chunkText);
+    }
+    ragText = ragLines.join("\n");
+  }
+
   // L5: G17 会話要約（Progressive Summarization）
   const l5Text = input.conversationSummary
     ? `${s.headers.conversationSummary}\n${input.conversationSummary}`
@@ -1034,6 +1085,7 @@ export function buildSystemPrompt(
   let effectiveL4 = l4Text;
   let effectiveL5 = l5Text;
   let effectiveL6 = l6Text;
+  let effectiveRag = ragText;
   const exclude = input.excludeLayers ?? [];
   if (exclude.includes("L1")) effectiveL1 = "";
   if (exclude.includes("L2")) effectiveL2 = "";
@@ -1041,6 +1093,7 @@ export function buildSystemPrompt(
   if (exclude.includes("L4")) effectiveL4 = "";
   if (exclude.includes("L5")) effectiveL5 = "";
   if (exclude.includes("L6")) effectiveL6 = "";
+  if (exclude.includes("RAG")) effectiveRag = "";
 
   let trimmedLayers: string[] | undefined;
 
@@ -1063,6 +1116,7 @@ export function buildSystemPrompt(
       l4Text: effectiveL4,
       l5Text: effectiveL5,
       l6Text: effectiveL6,
+      ragText: effectiveRag,
     };
     const result = trimToFit(trimInput, budget);
     effectiveL1 = result.trimmedTexts.l1Text;
@@ -1071,6 +1125,7 @@ export function buildSystemPrompt(
     effectiveL4 = result.trimmedTexts.l4Text;
     effectiveL5 = result.trimmedTexts.l5Text;
     effectiveL6 = result.trimmedTexts.l6Text;
+    effectiveRag = result.trimmedTexts.ragText ?? "";
     if (result.trimmedLayers.length > 0) {
       trimmedLayers = result.trimmedLayers;
     }
@@ -1102,6 +1157,7 @@ export function buildSystemPrompt(
   const l2Tokens = countTokens(effectiveL2);
   const l3Tokens = countTokens(effectiveL3);
   const l4Tokens = countTokens(effectiveL4);
+  const ragTokens = effectiveRag ? countTokens(effectiveRag) : 0;
   const l5Tokens = effectiveL5 ? countTokens(effectiveL5) : 0;
   const l6Tokens = effectiveL6 ? countTokens(effectiveL6) : 0;
 
@@ -1125,6 +1181,13 @@ export function buildSystemPrompt(
     label: i18next.t("chat.context.layer.L4"),
     used: l4Tokens,
   });
+  if (effectiveRag) {
+    layers.push({
+      layer: "RAG",
+      label: i18next.t("chat.context.layer.RAG"),
+      used: ragTokens,
+    });
+  }
   if (effectiveL5) {
     layers.push({
       layer: "L5",
@@ -1146,6 +1209,7 @@ export function buildSystemPrompt(
     effectiveL2,
     effectiveL3,
     effectiveL4,
+    effectiveRag,
     effectiveL5,
     effectiveL6,
   ].join("\n");
@@ -1159,20 +1223,27 @@ export function buildSystemPrompt(
 
   // cacheSegments を使うプロバイダ向けの揮発層。cacheSegments の直後に
   // cache_control 無しブロックとして送られる (4 breakpoint 制限を消費しない)。
-  const volatileTail = [l4VolatileSegment, effectiveL5, effectiveL6]
+  // semantic recall (RAG) はクエリ依存で毎ターン変わるため必ずこちら側。
+  const volatileTail = [
+    l4VolatileSegment,
+    effectiveRag,
+    effectiveL5,
+    effectiveL6,
+  ]
     .filter((seg) => seg.trim().length > 0)
     .join("\n");
 
-  // 結合後の全文を再 tokenize しない: 各 layer 合計 + join した \n 6 個分 (BPE で各 1 token)
+  // 結合後の全文を再 tokenize しない: 各 layer 合計 + join した \n 7 個分 (BPE で各 1 token)
   const totalTokens =
     baseTokens +
     l1Tokens +
     l2Tokens +
     l3Tokens +
     l4Tokens +
+    ragTokens +
     l5Tokens +
     l6Tokens +
-    6;
+    7;
 
   return {
     prompt,

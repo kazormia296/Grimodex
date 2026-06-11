@@ -41,6 +41,7 @@ export function ProjectCategory() {
   );
   const numberingScope = useSettingControl("tree.numberingScope", "project");
   const autoAcceptBody = useSettingBoolean("ai.autoAcceptBodyProposals", false);
+  const semanticRecall = useSettingBoolean("ai.semanticRecall", true);
   const trashBinEnabled = useSettingBoolean("trashBin.enabled", true);
   const trashBinRetention = useSettingNumber("trashBin.retentionDays", 60);
 
@@ -423,6 +424,23 @@ export function ProjectCategory() {
             disabled={!currentPolicy.toggles.bodyWrite}
             onChange={(e) => autoAcceptBody.setValue(e.target.checked)}
             className="h-4 w-4 cursor-pointer rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.project.aiSemanticRecall",
+            "関連シーンの自動注入（意味検索）",
+          )}
+          description={t(
+            "settings.project.aiSemanticRecallDesc",
+            "チャット送信時に、いま書いている内容と意味的に関連する過去シーンの抜粋を検索してAIの文脈に自動注入する。インデックス未作成のプロジェクトでは何も注入されない。",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={semanticRecall.value}
+            onChange={(e) => semanticRecall.setValue(e.target.checked)}
+            className="h-4 w-4 cursor-pointer rounded border-input"
           />
         </SettingRow>
       </SettingSection>

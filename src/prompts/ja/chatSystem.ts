@@ -119,7 +119,19 @@ export const JA_CHAT_SYSTEM = {
     mentionedSceneHeader: "### シーン: ",
     /** L3: mentionedScenes 配下のシーン本文サブヘッダ */
     mentionedSceneBody: "\n本文:\n",
+    /** semantic recall (Layer4 RAG): 意味検索で見つけた過去シーン抜粋の
+     * セクションヘッダ。クエリ毎に内容が変わるため cacheSegments には
+     * 入れず、prompt + volatileTail にのみ配置される。 */
+    semanticRecall: "\n## 関連する過去シーン (自動検索)",
+    /** semanticRecall 配下の各抜粋タイトル行 */
+    semanticRecallScene: "### 抜粋: ",
   },
+
+  /** semanticRecall セクション冒頭の運用説明。抜粋は断片であり、設定の
+   * 正本は Codex 側にあることを明示して誤った全文扱いを防ぐ。 */
+  semanticRecallIntro:
+    "以下は現在の執筆内容と意味的に関連する過去シーンの抜粋です（自動検索・断片）。" +
+    "呼応や整合性の参考にしてください。設定情報の正本は上記の設定情報セクションです。",
 
   labels: {
     title: "タイトル",
