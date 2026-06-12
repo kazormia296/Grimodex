@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Copy,
   Download,
+  NotebookPen,
   Plus,
   Trash2,
   Upload,
@@ -228,8 +229,12 @@ export function TermDictionaryTab() {
                       {row.variants.join(", ")}
                     </span>
                     {row.note && (
-                      <span className="ml-2 text-[10px] text-muted-foreground/70">
-                        📝 {row.note}
+                      <span className="ml-2 inline-flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                        <NotebookPen
+                          className="h-2.5 w-2.5 shrink-0"
+                          aria-hidden
+                        />
+                        {row.note}
                       </span>
                     )}
                   </td>

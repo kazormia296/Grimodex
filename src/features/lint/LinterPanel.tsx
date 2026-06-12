@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   AlertCircle,
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  Circle,
   Download,
   EyeOff,
   Info,
@@ -199,12 +201,15 @@ function WarningsBadge({ warnings }: { warnings: RuleWarning[] }) {
 
 function SeverityChip({
   label,
+  ariaLabel,
   active,
   count,
   colorClass,
   onToggle,
 }: {
-  label: string;
+  /** 重大度アイコン。アクセシブルネームは ariaLabel が担う。 */
+  label: ReactNode;
+  ariaLabel: string;
   active: boolean;
   count: number;
   colorClass: string;
@@ -214,6 +219,7 @@ function SeverityChip({
     <button
       type="button"
       onClick={onToggle}
+      aria-label={`${ariaLabel} ${count}`}
       className={`flex h-6 items-center gap-1 rounded border px-1.5 text-xs transition-colors ${
         active
           ? `${colorClass} border-current`
@@ -719,7 +725,8 @@ function PanelHeader(props: {
   return (
     <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-2 py-1.5">
       <SeverityChip
-        label="🔴"
+        label={<Circle className="h-3 w-3 fill-current" aria-hidden />}
+        ariaLabel="エラー"
         active={severityFilter.error}
         count={counts.error}
         colorClass="text-red-600"
@@ -731,7 +738,8 @@ function PanelHeader(props: {
         }
       />
       <SeverityChip
-        label="⚠"
+        label={<AlertTriangle className="h-3 w-3" aria-hidden />}
+        ariaLabel="警告"
         active={severityFilter.warning}
         count={counts.warning}
         colorClass="text-amber-600"
@@ -743,7 +751,8 @@ function PanelHeader(props: {
         }
       />
       <SeverityChip
-        label="ⓘ"
+        label={<Info className="h-3 w-3" aria-hidden />}
+        ariaLabel="情報"
         active={severityFilter.info}
         count={counts.info}
         colorClass="text-blue-600"
@@ -1240,7 +1249,8 @@ function ProjectLinterView() {
       <div className="flex flex-col gap-1 border-b border-border bg-muted/30 px-2 py-1.5">
         <div className="flex items-center gap-2">
           <SeverityChip
-            label="🔴"
+            label={<Circle className="h-3 w-3 fill-current" aria-hidden />}
+            ariaLabel="エラー"
             active={severityFilter.error}
             count={counts.error}
             colorClass="text-red-600"
@@ -1252,7 +1262,8 @@ function ProjectLinterView() {
             }
           />
           <SeverityChip
-            label="⚠"
+            label={<AlertTriangle className="h-3 w-3" aria-hidden />}
+            ariaLabel="警告"
             active={severityFilter.warning}
             count={counts.warning}
             colorClass="text-amber-600"
@@ -1264,7 +1275,8 @@ function ProjectLinterView() {
             }
           />
           <SeverityChip
-            label="ⓘ"
+            label={<Info className="h-3 w-3" aria-hidden />}
+            ariaLabel="情報"
             active={severityFilter.info}
             count={counts.info}
             colorClass="text-blue-600"
