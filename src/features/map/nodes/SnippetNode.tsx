@@ -1,3 +1,4 @@
+import { Scissors } from "lucide-react";
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
@@ -41,7 +42,7 @@ export const SnippetNode = memo(function SnippetNode({
           overflow: "hidden",
         }}
       >
-        <span style={{ fontSize: 13, flexShrink: 0 }}>✂</span>
+        <Scissors size={13} aria-hidden style={{ flexShrink: 0 }} />
         <span
           style={{
             fontSize: 11,

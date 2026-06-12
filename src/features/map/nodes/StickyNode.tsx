@@ -7,6 +7,7 @@ import {
   useMemo,
   type CSSProperties,
 } from "react";
+import { Check, X } from "lucide-react";
 import { motion } from "motion/react";
 import { NodeToolbar, Position, type NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
@@ -334,7 +335,8 @@ export const StickyNode = memo(function StickyNode({
             }}
             className="map-sticky-adopt-btn"
           >
-            ✓ 採用
+            <Check size={11} strokeWidth={3} aria-hidden />
+            採用
           </button>
           <button
             type="button"
@@ -346,7 +348,8 @@ export const StickyNode = memo(function StickyNode({
             }}
             className="map-sticky-reject-btn"
           >
-            ✕ 不採用
+            <X size={11} aria-hidden />
+            不採用
           </button>
         </NodeToolbar>
       )}

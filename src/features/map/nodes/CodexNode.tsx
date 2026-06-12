@@ -1,3 +1,4 @@
+import { Pencil } from "lucide-react";
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { parseTags } from "@/features/codex/components/EntryCard";
@@ -71,7 +72,7 @@ export const CodexNode = memo(function CodexNode({
           d.onOpen?.();
         }}
       >
-        ✎
+        <Pencil size={11} aria-hidden />
       </button>
 
       <div

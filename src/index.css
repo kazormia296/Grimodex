@@ -1476,16 +1476,17 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   background-blend-mode: multiply;
 }
 
-/* Edit-affordance indicator (✎). Fades in after 500ms hover. Now rendered
-   as a real <button> so single click also opens the entity (in addition to
-   the double-click on the node body itself). pointer-events は hover 中だけ
-   有効化して非ホバー時の誤クリックを防ぐ。 */
+/* Edit-affordance indicator (lucide Pencil). Fades in after 500ms hover.
+   Now rendered as a real <button> so single click also opens the entity
+   (in addition to the double-click on the node body itself). pointer-events
+   は hover 中だけ有効化して非ホバー時の誤クリックを防ぐ。 */
 .map-edit-indicator {
   position: absolute;
   top: 4px;
   right: 6px;
-  font-size: 11px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 2px 4px;
   background: transparent;
   border: none;

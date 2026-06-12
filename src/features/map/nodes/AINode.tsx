@@ -1,3 +1,4 @@
+import { AlertTriangle, Pencil, Sparkles } from "lucide-react";
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
@@ -30,7 +31,7 @@ export const AINode = memo(function AINode({ data, selected }: NodeProps) {
             d.onOpenChat?.();
           }}
         >
-          ✎
+          <Pencil size={11} aria-hidden />
         </button>
       )}
       <div
@@ -69,7 +70,12 @@ export const AINode = memo(function AINode({ data, selected }: NodeProps) {
             paddingBottom: 4,
           }}
         >
-          <span style={{ fontSize: 13 }}>✨</span>
+          <Sparkles
+            size={13}
+            color="#92400E"
+            aria-hidden
+            style={{ flexShrink: 0 }}
+          />
           <span
             style={{
               fontWeight: 600,
@@ -88,9 +94,9 @@ export const AINode = memo(function AINode({ data, selected }: NodeProps) {
           {!hasSession && (
             <span
               title="Chatセッションが削除されました"
-              style={{ fontSize: 10, color: "#D97706" }}
+              style={{ display: "inline-flex", color: "#D97706" }}
             >
-              ⚠
+              <AlertTriangle size={12} aria-hidden />
             </span>
           )}
         </div>

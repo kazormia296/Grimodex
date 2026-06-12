@@ -1,3 +1,4 @@
+import { Pencil, StickyNote } from "lucide-react";
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
@@ -33,7 +34,7 @@ export const NoteNode = memo(function NoteNode({
           d.onOpen?.();
         }}
       >
-        ✎
+        <Pencil size={11} aria-hidden />
       </button>
       <div
         onDoubleClick={(e) => {
@@ -64,7 +65,7 @@ export const NoteNode = memo(function NoteNode({
             marginBottom: 3,
           }}
         >
-          <span style={{ fontSize: 13 }}>📝</span>
+          <StickyNote size={13} aria-hidden style={{ flexShrink: 0 }} />
           <span
             style={{
               fontWeight: 600,

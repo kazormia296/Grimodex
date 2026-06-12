@@ -1,3 +1,4 @@
+import { Pencil } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { formatShortcut, matchesMod } from "@/lib/platform";
@@ -662,7 +663,7 @@ export const SceneNode = memo(function SceneNode({
           handleOpen();
         }}
       >
-        ✎
+        <Pencil size={11} aria-hidden />
       </button>
 
       {d.variant === "compact" && (

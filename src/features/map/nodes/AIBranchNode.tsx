@@ -1,3 +1,4 @@
+import { AlertTriangle, Sparkles } from "lucide-react";
 import { memo, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
@@ -100,7 +101,12 @@ export const AIBranchNode = memo(function AIBranchNode({
             marginBottom: 4,
           }}
         >
-          <span style={{ fontSize: 13 }}>✨</span>
+          <Sparkles
+            size={13}
+            color="#1E40AF"
+            aria-hidden
+            style={{ flexShrink: 0 }}
+          />
           <span
             style={{
               fontWeight: 600,
@@ -119,9 +125,9 @@ export const AIBranchNode = memo(function AIBranchNode({
           {!hasSession && (
             <span
               title="Chatセッションが削除されました"
-              style={{ fontSize: 10, color: "#3B82F6" }}
+              style={{ display: "inline-flex", color: "#3B82F6" }}
             >
-              ⚠
+              <AlertTriangle size={12} aria-hidden />
             </span>
           )}
         </div>
