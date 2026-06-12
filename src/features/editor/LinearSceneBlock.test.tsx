@@ -567,12 +567,15 @@ describe("LinearSceneBlock: 文字数同期の debounce (perf 契約)", () => {
     unmount();
   });
 
-  it("pending の debounce タイマーは unmount で破棄され、エラーを出さない", async () => {
+  it("pending の debounce タイマーは unmount 後に charCount 同期を発火しない", async () => {
+    // console.error 監視は React 19 が unmount 後 setState に警告を出さない
+    // ためヴァキュアス (mutation レビューで確認)。「unmount 後に tree 同期が
+    // 走らない」を直接 assert する — cleanup の clearTimeout と isDestroyed
+    // ガードの両方が消えたときに確実に落ちる。
     mockLoadSceneFull.mockResolvedValue({
       content: MENTION_CONTENT,
       unplacedBeatsDoc: "[]",
     });
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { unmount } = render(
       <LinearSceneBlock
         sceneId="scene-0001"
@@ -586,6 +589,9 @@ describe("LinearSceneBlock: 文字数同期の debounce (perf 契約)", () => {
     await waitFor(() => {
       expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
     });
+    const origSetCharCount = useTreeStore.getState().setCharCount;
+    const mockSetCharCount = vi.fn();
+    useTreeStore.setState({ setCharCount: mockSetCharCount as never });
     vi.useFakeTimers();
     try {
       lastEditor().commands.insertContentAt(1, "あ");
@@ -593,10 +599,10 @@ describe("LinearSceneBlock: 文字数同期の debounce (perf 契約)", () => {
       act(() => {
         vi.advanceTimersByTime(300);
       });
-      expect(errorSpy).not.toHaveBeenCalled();
+      expect(mockSetCharCount).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
-      errorSpy.mockRestore();
+      useTreeStore.setState({ setCharCount: origSetCharCount as never });
     }
   });
 });
