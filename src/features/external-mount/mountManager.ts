@@ -602,8 +602,19 @@ async function applyExternalContent(
     await chatState.refreshContextLayers().catch(() => {});
   }
 
+  // 取り込んだ内容を表示中の live editor (タブ EditorPane / リニア
+  // LinearSceneBlock) に反映する。リニアはタブを持たないので tab リスト
+  // だけのゲートでは取りこぼし、editor の古い doc が次の autosave で
+  // 取り込み分を上書きしてしまう。
   const { useTabStore } = await import("@/features/editor/tabStore");
-  if (useTabStore.getState().tabs.some((t) => t.nodeId === nodeId)) {
+  const { useLinearEditorStore } =
+    await import("@/features/editor/linearEditorStore");
+  const tabState = useTabStore.getState();
+  const hasLiveEditor =
+    tabState.tabs.some((t) => t.nodeId === nodeId) ||
+    tabState.secondaryTabs.some((t) => t.nodeId === nodeId) ||
+    nodeId in useLinearEditorStore.getState().editorsById;
+  if (hasLiveEditor) {
     window.dispatchEvent(
       new CustomEvent("external-mount:reload-scene", {
         detail: { sceneId: nodeId, content: pmJson },

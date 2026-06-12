@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
   state: {
     sceneContent: "" as string,
     treeNodes: [] as Array<{ id: string; sourceUri?: string }>,
-    openTabs: [] as Array<{ nodeId: string }>,
+    liveSubscribers: [] as string[],
     fileBacked: false,
   },
   loadSceneContent: vi.fn(async () => h.state.sceneContent),
@@ -39,15 +39,12 @@ vi.mock("@/features/agent-writes/prose", () => ({
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: { getState: () => ({ nodes: h.state.treeNodes }) },
 }));
-vi.mock("@/features/editor/tabStore", () => ({
-  useTabStore: {
-    getState: () => ({ tabs: h.state.openTabs, secondaryTabs: [] }),
-  },
-}));
 vi.mock("@/features/editor/sceneContentStore", () => ({
   useSceneContentStore: {
     getState: () => ({ setLiveContent: h.setLiveContent }),
   },
+  hasLiveContentSubscriber: (id: string) =>
+    h.state.liveSubscribers.includes(id),
 }));
 vi.mock("@/features/external-mount/externalRootStore", () => ({
   isFileBackedNode: () => h.state.fileBacked,
@@ -110,7 +107,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.state.sceneContent = HELLO_DOC;
   h.state.treeNodes = [{ id: "scene-1", sourceUri: undefined }];
-  h.state.openTabs = [];
+  h.state.liveSubscribers = [];
   h.state.fileBacked = false;
 });
 
@@ -170,11 +167,12 @@ describe("autoApplyProseProposal — append", () => {
     expect(order).toEqual(["accept", "persist"]);
   });
 
-  it("resyncs the live editor only when the scene is open", async () => {
+  it("resyncs only when a live editor subscribes (tab pane or linear block)", async () => {
     await autoApplyProseProposal(proposal());
     expect(h.setLiveContent).not.toHaveBeenCalled();
 
-    h.state.openTabs = [{ nodeId: "scene-1" }];
+    // タブ/リニアを問わず「購読している live editor がいる」ことが条件。
+    h.state.liveSubscribers = ["scene-1"];
     await autoApplyProseProposal(proposal());
     expect(h.setLiveContent).toHaveBeenCalledTimes(1);
     expect(h.setLiveContent.mock.calls[0][0]).toBe("scene-1");

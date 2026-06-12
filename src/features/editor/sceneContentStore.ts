@@ -46,6 +46,18 @@ export function hasOtherLiveContentSubscriber(sceneId: string): boolean {
   return !!cbs && cbs.size > 1;
 }
 
+/** True if ANY live editor is subscribed for the given scene — an EditorPane
+ *  tab (which always self-subscribes), a mounted linear-mode block, or a
+ *  Codex/Snippet mini-editor. Headless writers (agent auto-apply, rename
+ *  propagation) use this to decide whether a post-write `setLiveContent`
+ *  resync has an audience. A tab-list check is wrong for this: linear-mode
+ *  editors have no tab, and an unsynced live editor's next autosave would
+ *  clobber the headless write. */
+export function hasLiveContentSubscriber(sceneId: string): boolean {
+  const cbs = subscribers.get(sceneId);
+  return !!cbs && cbs.size > 0;
+}
+
 export const useSceneContentStore = create<SceneContentState>()((set) => ({
   liveContent: {},
 

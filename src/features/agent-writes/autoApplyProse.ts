@@ -8,8 +8,10 @@ import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import { agentAcceptProseStage } from "@/features/agent-writes/prose";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useTabStore } from "@/features/editor/tabStore";
-import { useSceneContentStore } from "@/features/editor/sceneContentStore";
+import {
+  useSceneContentStore,
+  hasLiveContentSubscriber,
+} from "@/features/editor/sceneContentStore";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import type { PendingProseProposal } from "@/features/agent-writes/proseStagingStore";
 
@@ -100,14 +102,6 @@ function buildDoc(schema: Schema, raw: string): ProseMirrorNode | null {
   const empty = schema.topNodeType.createAndFill();
   if (!empty) throw new Error("failed to build empty ProseMirror doc");
   return empty;
-}
-
-function openSceneIds(): Set<string> {
-  const s = useTabStore.getState();
-  return new Set([
-    ...s.tabs.map((t) => t.nodeId),
-    ...s.secondaryTabs.map((t) => t.nodeId),
-  ]);
 }
 
 /**
@@ -220,9 +214,11 @@ export async function autoApplyProseProposal(
     payload: { steps: tr.steps.map((s) => s.toJSON()) },
   });
 
-  // If the scene is open in a pane, mirror the persisted doc into the live
-  // editor so its next autosave does not clobber this write (lost-update guard).
-  if (openSceneIds().has(sceneId)) {
+  // If any live editor shows this scene (tab pane or linear-mode block),
+  // mirror the persisted doc into it so its next autosave does not clobber
+  // this write (lost-update guard). Subscriber check, NOT a tab-list check:
+  // linear-mode editors have no tab.
+  if (hasLiveContentSubscriber(sceneId)) {
     useSceneContentStore
       .getState()
       .setLiveContent(sceneId, nextDoc.toJSON(), RESYNC_GROUP);

@@ -67,7 +67,17 @@ vi.mock("@/features/project/projectStore", () => ({
 
 vi.mock("@/features/editor/tabStore", () => ({
   useTabStore: {
-    getState: () => ({ tabs: [], dirtyTabIds: new Set<string>() }),
+    getState: () => ({
+      tabs: [],
+      secondaryTabs: [],
+      dirtyTabIds: new Set<string>(),
+    }),
+  },
+}));
+
+vi.mock("@/features/editor/linearEditorStore", () => ({
+  useLinearEditorStore: {
+    getState: () => ({ editorsById: {} }),
   },
 }));
 

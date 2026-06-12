@@ -305,6 +305,10 @@ export async function loadSceneFull(
 export async function loadScenesFull(
   sceneIds: string[],
 ): Promise<Map<string, { content: string; unplacedBeatsDoc: string }>> {
+  // 単発の loadSceneContent / loadSceneFull と同じ read-after-write バリア
+  // (pendingSceneWrites 参照)。pending の無い id は即解決するので、バッチでも
+  // 追加コストは実質ゼロ。
+  await Promise.all(sceneIds.map((id) => awaitPendingSceneContentWrite(id)));
   const out = new Map<string, { content: string; unplacedBeatsDoc: string }>();
   const CHUNK = 500;
   for (let i = 0; i < sceneIds.length; i += CHUNK) {

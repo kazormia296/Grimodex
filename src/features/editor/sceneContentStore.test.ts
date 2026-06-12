@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   useSceneContentStore,
   subscribeLiveContentRafCoalesced,
+  hasLiveContentSubscriber,
 } from "./sceneContentStore";
 
 function resetStore() {
@@ -70,6 +71,17 @@ describe("sceneContentStore", () => {
     expect(
       useSceneContentStore.getState().liveContent["scene-1"],
     ).toBeUndefined();
+  });
+
+  it("hasLiveContentSubscriber は購読者が 1 人でもいれば true (headless writer の resync ゲート)", () => {
+    expect(hasLiveContentSubscriber("scene-sub")).toBe(false);
+    const unsub = useSceneContentStore
+      .getState()
+      .subscribe("scene-sub", () => {});
+    expect(hasLiveContentSubscriber("scene-sub")).toBe(true);
+    expect(hasLiveContentSubscriber("other")).toBe(false);
+    unsub();
+    expect(hasLiveContentSubscriber("scene-sub")).toBe(false);
   });
 
   it("passes sourceGroupIndex to subscribers so they can skip their own updates", () => {

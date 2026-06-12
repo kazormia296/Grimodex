@@ -112,6 +112,20 @@ vi.mock("@/features/external-mount/externalRootStore", () => ({
   isFileBackedNode: isFileBackedNodeMock,
 }));
 
+// tabStore は layoutStore→codexStore の eager 連鎖を引き込むため最小モック。
+// dirty 配線 (setTabDirty 呼び出し) はこの spy で assert する。
+const mockSetTabDirty = vi.hoisted(() => vi.fn());
+vi.mock("@/features/editor/tabStore", () => ({
+  useTabStore: {
+    getState: () => ({ setTabDirty: mockSetTabDirty }),
+  },
+}));
+// conflict バナーは i18n + tabStore に依存するので描画だけ落とす
+// (バナー自体の挙動は ExternalEditConflictBanner 側の責務)。
+vi.mock("@/features/editor/ExternalEditConflictBanner", () => ({
+  ExternalEditConflictBanner: () => null,
+}));
+
 class StubResizeObserver {
   observe() {}
   unobserve() {}
@@ -162,6 +176,9 @@ const ALIEN_CONTENT = JSON.stringify({
 });
 
 import { useLinearEditorStore } from "./linearEditorStore";
+import { saveScene } from "@/features/editor/editorSaveRegistry";
+import { useSceneContentStore } from "@/features/editor/sceneContentStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
 function lastEditor(): Editor {
   return createdEditors[createdEditors.length - 1] as Editor;
@@ -184,8 +201,10 @@ beforeEach(() => {
   mockLoadSceneFull.mockReset();
   mockPersist.mockClear();
   mockToastError.mockClear();
+  mockSetTabDirty.mockClear();
   isFileBackedNodeMock.mockReturnValue(false);
   createdEditors.length = 0;
+  useExternalWriteStore.getState().clear();
 });
 
 describe("LinearSceneBlock: 本文消失ガード", () => {
@@ -329,5 +348,136 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     });
     expect(lastEditor().schema.nodes.taskList).toBeDefined();
     expect(mockToastError).not.toHaveBeenCalled();
+  });
+});
+
+// リニアモードが flush/dirty/resync インフラ (editorSaveRegistry /
+// dirtyTabIds / sceneContentStore / reload-scene / reloadNonce) に乗っている
+// ことの回帰テスト。未配線だと: agent 書き込み・Codex 改名波及が stale DB を
+// read-modify-write して直近編集を消す / 外部ファイル変更が未保存編集を
+// サイレント上書きする / 取り込み・resync が editor doc に届かず次の autosave
+// が外部変更を巻き戻す — いずれも本文消失級 (2026-06-12 横断レビュー)。
+describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
+  async function renderLoaded() {
+    mockLoadSceneFull.mockResolvedValue({
+      content: MENTION_CONTENT,
+      unplacedBeatsDoc: "[]",
+    });
+    const utils = renderBlock();
+    await waitFor(() => {
+      expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
+    });
+    return utils;
+  }
+
+  it("saveScene(sceneId) で外部から flush できる (editorSaveRegistry 配線)", async () => {
+    const { unmount } = await renderLoaded();
+    const { registeredSaveHandlerIds } =
+      await import("@/features/editor/editorSaveRegistry");
+    expect(registeredSaveHandlerIds()).toContain("scene-0001");
+
+    lastEditor().commands.insertContentAt(1, "追記");
+    await saveScene("scene-0001");
+    expect(mockPersist).toHaveBeenCalledWith("scene-0001", expect.anything());
+
+    unmount();
+    expect(registeredSaveHandlerIds()).not.toContain("scene-0001");
+  });
+
+  it("編集で dirty を立て、保存成功と unmount で解除する (dirtyTabIds 配線)", async () => {
+    const { unmount } = await renderLoaded();
+    expect(mockSetTabDirty).not.toHaveBeenCalledWith("scene-0001", true);
+
+    lastEditor().commands.insertContentAt(1, "追記");
+    expect(mockSetTabDirty).toHaveBeenCalledWith("scene-0001", true);
+
+    mockSetTabDirty.mockClear();
+    await saveScene("scene-0001");
+    expect(mockSetTabDirty).toHaveBeenCalledWith("scene-0001", false);
+
+    mockSetTabDirty.mockClear();
+    unmount();
+    expect(mockSetTabDirty).toHaveBeenCalledWith("scene-0001", false);
+  });
+
+  it("保存スキップ時 (未ロード窓) は dirty を解除しない", async () => {
+    mockLoadSceneFull.mockReturnValue(new Promise(() => {}));
+    renderBlock();
+    await waitFor(() => {
+      expect(createdEditors.length).toBeGreaterThan(0);
+    });
+    await saveScene("scene-0001");
+    expect(mockPersist).not.toHaveBeenCalled();
+    expect(mockSetTabDirty).not.toHaveBeenCalledWith("scene-0001", false);
+  });
+
+  it("setLiveContent (agent 書き込み/改名波及の resync) を editor doc に反映する", async () => {
+    await renderLoaded();
+    const RESYNC_GROUP = -1; // autoApplyProse / renameEngine の sentinel
+    useSceneContentStore.getState().setLiveContent(
+      "scene-0001",
+      {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "エージェントが追記した本文" }],
+          },
+        ],
+      },
+      RESYNC_GROUP,
+    );
+    // rAF coalesce 越しに doc が追従する
+    await waitFor(() => {
+      expect(getDocText(lastEditor().state.doc)).toContain(
+        "エージェントが追記した本文",
+      );
+    });
+    // emitUpdate:false なので resync 自体は autosave を arm しない
+    expect(mockPersist).not.toHaveBeenCalled();
+  });
+
+  it("external-mount:reload-scene で取り込み内容を反映し dirty を解除する", async () => {
+    await renderLoaded();
+    const RELOADED = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "外部エディタで書き換えた本文" }],
+        },
+      ],
+    });
+    mockSetTabDirty.mockClear();
+    window.dispatchEvent(
+      new CustomEvent("external-mount:reload-scene", {
+        detail: { sceneId: "scene-0001", content: RELOADED },
+      }),
+    );
+    await waitFor(() => {
+      expect(getDocText(lastEditor().state.doc)).toContain(
+        "外部エディタで書き換えた本文",
+      );
+    });
+    expect(mockSetTabDirty).toHaveBeenCalledWith("scene-0001", false);
+  });
+
+  it("別シーン宛の reload-scene は無視する", async () => {
+    await renderLoaded();
+    window.dispatchEvent(
+      new CustomEvent("external-mount:reload-scene", {
+        detail: { sceneId: "other-scene", content: "{}" },
+      }),
+    );
+    expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
+  });
+
+  it("reloadNonce が進んだら DB から再ロードする (外部 write feed 配線)", async () => {
+    await renderLoaded();
+    expect(mockLoadSceneFull).toHaveBeenCalledTimes(1);
+    useExternalWriteStore.getState().bumpReloadNonce("scene-0001");
+    await waitFor(() => {
+      expect(mockLoadSceneFull).toHaveBeenCalledTimes(2);
+    });
   });
 });

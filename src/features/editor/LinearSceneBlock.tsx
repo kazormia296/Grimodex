@@ -9,6 +9,14 @@ import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneFull } from "@/features/tree/api";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
+import {
+  registerSaveHandler,
+  unregisterSaveHandler,
+} from "@/features/editor/editorSaveRegistry";
+import { useTabStore } from "@/features/editor/tabStore";
+import { subscribeLiveContentRafCoalesced } from "@/features/editor/sceneContentStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
+import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
@@ -31,6 +39,11 @@ import i18next from "@/lib/i18n";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
+
+// sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
+// (autoApplyProse / renameEngine) の -1 と衝突しない値であること — 一致すると
+// subscribeLiveContentRafCoalesced が「自分の broadcast」とみなして捨てる。
+const LINEAR_LIVE_GROUP = 2;
 
 interface LinearSceneBlockProps {
   sceneId: string;
@@ -87,6 +100,13 @@ function MountedSceneBlock({
   const filterSource = useAttributionStore((s) => s.filterSource);
   const activeNode = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
   const title = activeNode?.title ?? "";
+  // 外部 write feed (別プロセスの MCP 等) が「dirty でない scene の外部更新」
+  // を検知すると nonce を進める。dep に入れて DB から再ロードする
+  // (EditorPane の externalReloadNonce と同じ契約)。conflict バナーの
+  // "Reload" もこの nonce 経由で再ロードに到達する。
+  const externalReloadNonce = useExternalWriteStore(
+    (s) => s.reloadNonce[sceneId] ?? 0,
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
@@ -131,6 +151,8 @@ function MountedSceneBlock({
     // annotation anchor / beat キャッシュ / 帰属 / semantic index) は
     // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
     await persistSceneBody(sceneId, ed.state.doc);
+    // 保存成功時のみ dirty 解除 (失敗時は saveFn の catch 側に飛ぶので残る)。
+    useTabStore.getState().setTabDirty(sceneId, false);
   }, [sceneId]);
 
   const saveFn = useCallback(async () => {
@@ -181,6 +203,11 @@ function MountedSceneBlock({
           );
         }
         schedule();
+        // 未保存編集の検出は dirtyTabIds が正本 (external-mount の conflict
+        // 検出・post-effect/チャットの flush 列挙が参照する)。リニアはタブを
+        // 持たないが、この Set に乗らないと外部変更が未保存編集をサイレントに
+        // 上書きする。解除は coreSave 成功時と unmount cleanup。
+        useTabStore.getState().setTabDirty(sceneId, true);
         const text = getDocText(e.state.doc);
         const count = text.length;
         setCharCount(count);
@@ -227,6 +254,82 @@ function MountedSceneBlock({
     };
   }, [sceneId, editor]);
 
+  // saveScene(sceneId) で外部から flush 可能にする (EditorPane と同じ契約)。
+  // これが無いと agent 書き込み (autoApplyProse) / Codex 改名波及 /
+  // post-effect・チャット送信前 flush がリニアの未保存編集を flush できず、
+  // stale な DB 本文を read-modify-write して直近編集を消す。
+  useEffect(() => {
+    registerSaveHandler(sceneId, saveFn);
+    return () => unregisterSaveHandler(sceneId, saveFn);
+  }, [sceneId, saveFn]);
+
+  // unmount 時に dirty を確実に解除する (EditorPane の cleanup と同じ)。
+  // unmount flush (useAutoSave cleanup) が保存を引き受けるため、残った
+  // dirty フラグは「閉じたエディタの幽霊 dirty」になる。
+  useEffect(() => {
+    return () => useTabStore.getState().setTabDirty(sceneId, false);
+  }, [sceneId]);
+
+  // agent 書き込み / Codex 改名波及の resync (setLiveContent) を受信して
+  // editor doc を追従させる。受信しないと editor が古い doc を保持し続け、
+  // 次の autosave が agent/改名の書き込みを上書きして消す (lost update)。
+  useEffect(() => {
+    if (!editor) return;
+    return subscribeLiveContentRafCoalesced(
+      sceneId,
+      LINEAR_LIVE_GROUP,
+      (next) => {
+        isApplyingExternalUpdate.current = true;
+        try {
+          editor.commands.setContent(
+            next as Parameters<typeof editor.commands.setContent>[0],
+            { emitUpdate: false },
+          );
+        } finally {
+          isApplyingExternalUpdate.current = false;
+        }
+        const count = getDocText(editor.state.doc).length;
+        setCharCount(count);
+        useTreeStore.getState().setCharCount(sceneId, count);
+      },
+    );
+  }, [sceneId, editor]);
+
+  // 外部ファイル変更の取り込み反映 (EditorPane と同じリスナー)。これが無いと
+  // file-backed scene の外部編集取り込み後も editor が古い doc を保持し、
+  // 次の編集の autosave が取り込んだ外部変更を上書きして消す。
+  // dispatch 元 (applyExternalContent) は dirty でないときしか発火しないので
+  // pending autosave の cancel で編集を失うことはない。
+  useEffect(() => {
+    function onExternalReload(e: Event) {
+      const detail = (e as CustomEvent<{ sceneId: string; content: string }>)
+        .detail;
+      const ed = editorRef.current;
+      if (detail.sceneId !== sceneId || !ed) return;
+      cancel();
+      isApplyingExternalUpdate.current = true;
+      try {
+        const parsed =
+          detail.content && detail.content !== "{}"
+            ? JSON.parse(detail.content)
+            : "";
+        ed.commands.setContent(parsed, { emitUpdate: false });
+        useTabStore.getState().setTabDirty(sceneId, false);
+      } finally {
+        isApplyingExternalUpdate.current = false;
+      }
+      const count = getDocText(ed.state.doc).length;
+      setCharCount(count);
+      useTreeStore.getState().setCharCount(sceneId, count);
+    }
+    window.addEventListener("external-mount:reload-scene", onExternalReload);
+    return () =>
+      window.removeEventListener(
+        "external-mount:reload-scene",
+        onExternalReload,
+      );
+  }, [sceneId, cancel]);
+
   // CodexQuick: only update matchedIds for the active scene
   useCodexHighlight(editor, isActive ? undefined : { skipMatchedIds: true });
   // EditorPane と同じく帰属系は DB-native 限定 (file-backed schema に
@@ -246,6 +349,10 @@ function MountedSceneBlock({
 
     async function load() {
       cancel();
+      // 再走 (reloadNonce bump) 中の in-flight 窓でも保存を禁止する。
+      // 初回 mount は初期値 true なので no-op。ロード成功時のみ false に戻る。
+      // 「未ロード/再ロード窓の保存禁止」は本文消失の最終防衛線 (59ab7c94)。
+      loadFailedRef.current = true;
       isApplyingExternalUpdate.current = true;
       try {
         const full = await loadSceneFull(sceneId);
@@ -339,7 +446,7 @@ function MountedSceneBlock({
     return () => {
       cancelled = true;
     };
-  }, [sceneId, editor, cancel, isFileBacked]);
+  }, [sceneId, editor, cancel, isFileBacked, externalReloadNonce]);
 
   // Report block-axis size changes. contentBoxSize is logical (resolved
   // against the element's writing-mode), so the same code measures height
@@ -363,6 +470,10 @@ function MountedSceneBlock({
 
   return (
     <div ref={containerRef}>
+      {/* 外部 write conflict の解決 UI (タブモードは EditorPane が表示)。
+          conflict が無ければ null を返すだけ。Reload は reloadNonce 経由で
+          上の load effect に届く。 */}
+      <ExternalEditConflictBanner nodeId={sceneId} />
       <div
         className={cn(editorSettings.showLineNumbers && "editor-line-numbers")}
         style={buildEditorContentStyle(editorSettings)}

@@ -442,7 +442,7 @@ export function EditorPane({
   // Register this pane's save function so the tab context menu can trigger it
   useEffect(() => {
     registerSaveHandler(nodeId, saveFn);
-    return () => unregisterSaveHandler(nodeId);
+    return () => unregisterSaveHandler(nodeId, saveFn);
   }, [nodeId, saveFn]);
 
   // Sync isDirty to the tab store for unsaved-changes detection

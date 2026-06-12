@@ -19,10 +19,15 @@ import {
   type BatchStatement,
 } from "@/features/agent-writes/bundle";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useSceneContentStore } from "@/features/editor/sceneContentStore";
-import { saveScene } from "@/features/editor/editorSaveRegistry";
+import {
+  useSceneContentStore,
+  hasLiveContentSubscriber,
+} from "@/features/editor/sceneContentStore";
+import {
+  saveScene,
+  registeredSaveHandlerIds,
+} from "@/features/editor/editorSaveRegistry";
 import { listNodes } from "@/features/tree/api";
 import { listCodexEntries, type CodexEntry } from "../api";
 import { listCodexRelations } from "../codexRelationApi";
@@ -225,15 +230,6 @@ export async function gatherRenameSources(
   return sources;
 }
 
-/** Currently-open node ids (both editor groups). */
-function openNodeIds(): Set<string> {
-  const s = useTabStore.getState();
-  return new Set([
-    ...s.tabs.map((t) => t.nodeId),
-    ...s.secondaryTabs.map((t) => t.nodeId),
-  ]);
-}
-
 export interface PrepareRenameParams {
   projectId: string;
   entryId: string;
@@ -253,9 +249,12 @@ export async function prepareRenamePropagation(
     return { occurrences: [], ambiguous: false };
   }
 
-  // Flush every open editor so the DB (which gather reads) reflects unsaved edits.
+  // Flush every live editor so the DB (which gather reads) reflects unsaved
+  // edits. The save registry covers tab panes AND linear-mode blocks — a tab
+  // list would miss linear editors, whose stale DB body would then be renamed
+  // and written back over the user's latest typing.
   await Promise.all(
-    [...openNodeIds()].map((id) => saveScene(id).catch(() => {})),
+    registeredSaveHandlerIds().map((id) => saveScene(id).catch(() => {})),
   );
 
   const [sources, allTargets] = await Promise.all([
@@ -441,8 +440,10 @@ export async function applyRenamePropagation(
   const now = new Date().toISOString();
   const forward: BatchStatement[] = [];
   const undo: BatchStatement[] = [];
-  // Open scene/codex bodies → new & old JSON for live-editor resync per direction.
-  const open = openNodeIds();
+  // Live scene/codex bodies → new & old JSON for live-editor resync per
+  // direction. Subscriber check, NOT a tab-list check: linear-mode editors
+  // have no tab but must still be resynced or their next autosave clobbers
+  // the propagated rename.
   const liveNew = new Map<string, object>();
   const liveOld = new Map<string, object>();
   let applied = 0;
@@ -462,7 +463,7 @@ export async function applyRenamePropagation(
       const nextJson = res.doc.toJSON();
       newValue = JSON.stringify(nextJson);
       applied += res.applied;
-      if (open.has(source.refId)) {
+      if (hasLiveContentSubscriber(source.refId)) {
         liveNew.set(source.refId, nextJson);
         liveOld.set(source.refId, JSON.parse(oldValue));
       }

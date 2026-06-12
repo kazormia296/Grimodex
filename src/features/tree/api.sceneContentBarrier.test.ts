@@ -44,7 +44,12 @@ vi.mock("@/db/client", () => ({
   },
 }));
 
-import { saveSceneContent, loadSceneContent, loadSceneFull } from "./api";
+import {
+  saveSceneContent,
+  loadSceneContent,
+  loadSceneFull,
+  loadScenesFull,
+} from "./api";
 
 const DOC = JSON.stringify({
   type: "doc",
@@ -99,6 +104,23 @@ describe("scene content の read-after-write バリア", () => {
     state.resolveUpdate!();
     const result = await load;
     expect(result.content).toBe(DOC);
+    expect(state.events.indexOf("select:executed")).toBeGreaterThan(
+      state.events.indexOf("update:resolved"),
+    );
+    await save;
+  });
+
+  it("loadScenesFull (バッチ版) も同じバリアで待つ", async () => {
+    state.rows = [{ id: "s1", content: DOC, unplacedBeatsDoc: "[]" }];
+    const save = saveSceneContent("s1", DOC);
+    const load = loadScenesFull(["s1", "s2"]);
+
+    await flushTasks();
+    expect(state.events).not.toContain("select:executed");
+
+    state.resolveUpdate!();
+    const result = await load;
+    expect(result.get("s1")?.content).toBe(DOC);
     expect(state.events.indexOf("select:executed")).toBeGreaterThan(
       state.events.indexOf("update:resolved"),
     );
