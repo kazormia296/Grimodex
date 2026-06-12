@@ -1542,8 +1542,10 @@ async function buildSceneContextPrompt(opts: {
    * 送信経路 (sendMessage) でのみ渡される。未指定 (プレビュー / コピー経路)
    * なら semantic 検索は走らない — 打鍵毎の embedder 呼び出しを避けるため。 */
   semanticRecallSeedMessage?: string;
-  /** ユーザーが × で auto 注入から除外したエントリ ID。always エントリの
-   * 再収集から取り除く（mentioned/pinned 経路には影響しない）。 */
+  /** ユーザーが × で auto 注入から除外したエントリ ID。always 再収集と
+   * mentioned（自動検出）の両方から取り除く — UI の × は detected/always を
+   * 区別せず付くため、片方だけ除外すると detected の × が次の refresh で
+   * 即復活する。pinned 経路には影響しない（pin は除外を解除する）。 */
   excludedAutoEntryIds?: string[];
 }): Promise<SceneContextPayload> {
   const {
@@ -1622,7 +1624,12 @@ async function buildSceneContextPrompt(opts: {
   );
   markEnd("buildSceneCtx.findMentionedEntriesAsync");
 
-  const mentioned = mentionedAll.filter((e) => e.type !== "note");
+  // × で除外されたエントリは検出経路からも外す（注入・ピル両方）。
+  // 本文に語が残る限り再検出されるため、ここで弾かないと excludeEntryFromAuto
+  // 直後の refresh で detected ピルが即復活する。
+  const mentioned = mentionedAll.filter(
+    (e) => e.type !== "note" && !excludedAutoIds.has(e.id),
+  );
   const mentionedNotes = mentionedAll.filter((e) => e.type === "note");
 
   const mentionedIds = new Set(mentioned.map((e) => e.id));
@@ -2539,7 +2546,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set((state) => ({
         sessions: state.sessions.filter((s) => s.id !== sessionId),
         ...(activeSessionId === sessionId
-          ? { activeSessionId: null, messages: [] }
+          ? {
+              activeSessionId: null,
+              messages: [],
+              // 他のセッションライフサイクル操作（select/create）と同じく
+              // auto 除外をクリアする。残すと削除直後の refresh や送信時の
+              // auto-create セッションに前セッションの除外がリークする。
+              excludedAutoEntryIds: [],
+            }
           : {}),
       }));
     } catch (e) {
@@ -4023,13 +4037,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // Phase 2: 集約した detected をピン重複を除外して合流。
         // Codex スコープ: 関連 mention も detected 相当で合流。
         // L5 light 入り口の `codexEntries` に detected → always の順で乗せる。
+        // scene 経路と同様、× で除外されたエントリは detected/related からも
+        // 外す（ピル即復活と注入の両方を止める）。
         const relatedNotPinned =
           codexBlocks?.relatedMentioned.filter(
-            (e) => !mergedGlobalPinnedIdSet.has(e.id),
+            (e) =>
+              !mergedGlobalPinnedIdSet.has(e.id) &&
+              !excludedAutoIdSet.has(e.id),
           ) ?? [];
         const detectedNotPinned = [
           ...aggregatedDetected.filter(
-            (e) => !mergedGlobalPinnedIdSet.has(e.id),
+            (e) =>
+              !mergedGlobalPinnedIdSet.has(e.id) &&
+              !excludedAutoIdSet.has(e.id),
           ),
           ...relatedNotPinned,
         ];

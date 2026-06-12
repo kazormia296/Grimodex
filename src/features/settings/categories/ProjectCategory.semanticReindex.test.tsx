@@ -16,15 +16,9 @@ const toastMock = vi.hoisted(() => ({
   success: vi.fn(),
   error: vi.fn(),
 }));
-const progressClear = vi.hoisted(() => vi.fn());
 
 vi.mock("@/features/semantic-search/api", () => apiMock);
 vi.mock("sonner", () => ({ toast: toastMock }));
-vi.mock("@/features/semantic-search/reindexProgressStore", () => ({
-  useReindexProgressStore: {
-    getState: () => ({ clear: progressClear }),
-  },
-}));
 vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => "proj-test",
 }));
@@ -61,10 +55,15 @@ vi.mock("./TimelapseSettings", () => ({
 }));
 
 import { ProjectCategory } from "./ProjectCategory";
+import {
+  useReindexProgressStore,
+  _resetReindexProgressForTests,
+} from "@/features/semantic-search/reindexProgressStore";
 
 beforeEach(() => {
   vi.clearAllMocks();
   apiMock.semanticReindexAll.mockResolvedValue(42);
+  _resetReindexProgressForTests();
 });
 
 describe("ProjectCategory semantic reindex", () => {
@@ -104,14 +103,36 @@ describe("ProjectCategory semantic reindex", () => {
     );
   });
 
+  // 多重起動ガードはコンポーネントローカルだと設定パネルの閉じ開き
+  // (再マウント) で外れる。グローバル store (running) で持続することを gate。
+  it("再マウントしても実行中ガードが持続する", async () => {
+    apiMock.semanticReindexAll.mockImplementation(
+      () => new Promise<number>(() => {}),
+    );
+    const first = render(<ProjectCategory />);
+    fireEvent.click(screen.getByRole("button", { name: "再構築" }));
+    await waitFor(() =>
+      expect(useReindexProgressStore.getState().running).toBe(true),
+    );
+    first.unmount();
+
+    render(<ProjectCategory />);
+    const btn = screen.getByRole("button", { name: "再構築中…" });
+    expect(btn).toBeDisabled();
+    fireEvent.click(btn);
+    expect(apiMock.semanticReindexAll).toHaveBeenCalledTimes(1);
+  });
+
   it("失敗時は progress 表示を片付けて error toast を出す", async () => {
     apiMock.semanticReindexAll.mockRejectedValueOnce(new Error("boom"));
+    const clearSpy = vi.spyOn(useReindexProgressStore.getState(), "clear");
     render(<ProjectCategory />);
     const btn = screen.getByRole("button", { name: "再構築" });
 
     fireEvent.click(btn);
 
     await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
-    expect(progressClear).toHaveBeenCalled();
+    expect(clearSpy).toHaveBeenCalled();
+    expect(useReindexProgressStore.getState().running).toBe(false);
   });
 });

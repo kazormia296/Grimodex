@@ -23,6 +23,12 @@ interface ReindexProgressState {
   current: ReindexProgressPayload | null;
   /** done=true を受けたかどうか。Toast 内の完了テキスト切替に使う。 */
   finished: boolean;
+  /** semantic_reindex_all の invoke が in-flight かどうか。呼び出し側
+   * (設定の再構築ボタン) が invoke 前後に set する。コンポーネントローカル
+   * state だと設定パネルの閉じ開き (再マウント) で多重起動ガードが外れる
+   * ため、グローバル store に置く。 */
+  running: boolean;
+  setRunning: (running: boolean) => void;
   setProgress: (payload: ReindexProgressPayload) => void;
   clear: () => void;
 }
@@ -36,6 +42,8 @@ export const useReindexProgressStore = create<ReindexProgressState>()(
     active: false,
     current: null,
     finished: false,
+    running: false,
+    setRunning: (running) => set({ running }),
     setProgress: (payload) => {
       if (clearTimer !== null) {
         clearTimeout(clearTimer);
@@ -73,5 +81,6 @@ export function _resetReindexProgressForTests(): void {
     active: false,
     current: null,
     finished: false,
+    running: false,
   });
 }

@@ -89,6 +89,21 @@ describe("typography settings gating", () => {
     expect(editor.state.doc.textContent).toBe("強調は‘ここ’だけ");
   });
 
+  // apostrophe（語中の ’）は閉じグリフと同一文字のため、素朴にパリティを
+  // 数えると開きを相殺してしまい、空白を挟んだ本来の閉じが開きに化ける
+  // （`'can't '` → `‘can’t ‘`）。語中 close はパリティから除外する。
+  it("smartQuotes ON: word-internal apostrophe does not poison pairing", () => {
+    setSettings({ "editor.smartQuotes": "true" });
+    typeText(editor, "'can't '");
+    expect(editor.state.doc.textContent).toBe("‘can’t ’");
+  });
+
+  it("smartQuotes ON: apostrophe inside a quoted phrase keeps the close", () => {
+    setSettings({ "editor.smartQuotes": "true" });
+    typeText(editor, "'don't go' she said");
+    expect(editor.state.doc.textContent).toBe("‘don’t go’ she said");
+  });
+
   it("smartDashes ON: converts -- to em dash", () => {
     setSettings({ "editor.smartDashes": "true" });
     typeText(editor, "--");

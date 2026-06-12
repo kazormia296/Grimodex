@@ -2977,5 +2977,81 @@ describe("useChatStore", () => {
       await useChatStore.getState().selectSession(null);
       expect(useChatStore.getState().excludedAutoEntryIds).toEqual([]);
     });
+
+    it("アクティブセッションの削除でも除外はクリアされる", async () => {
+      useChatStore.setState({
+        sessions: [
+          {
+            id: "sess-del",
+            projectId: "proj-1",
+            nodeId: "scene-1",
+            title: "t",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          } as never,
+        ],
+        activeSessionId: "sess-del",
+        excludedAutoEntryIds: ["always-1"],
+      });
+      await useChatStore.getState().deleteSession("sess-del");
+      expect(useChatStore.getState().excludedAutoEntryIds).toEqual([]);
+    });
+
+    // × は detected/always を区別せず付く UI のため、除外は検出経路にも
+    // 効かせる。always だけ弾くと detected の × が直後の refresh で即復活する。
+    it("scene スコープ: 除外した detected エントリも再検出で復活しない", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      const { findMentionedEntriesAsync } =
+        await import("@/features/codex/rustMatcher");
+      const detEntry = {
+        ...alwaysEntry,
+        id: "det-1",
+        name: "検出キャラ",
+        contextMode: "mentioned",
+      };
+      vi.mocked(listCodexEntries).mockResolvedValue([detEntry] as never);
+      vi.mocked(findMentionedEntriesAsync).mockImplementation(() =>
+        Promise.resolve([
+          {
+            id: "det-1",
+            name: "検出キャラ",
+            type: "character",
+            aliases: null,
+            excludedAliases: null,
+          },
+        ] as never),
+      );
+
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        inputPinnedEntryIds: [],
+      });
+
+      try {
+        await useChatStore.getState().refreshContextLayers();
+        expect(
+          useChatStore.getState().detectedEntries.map((e) => e.id),
+        ).toContain("det-1");
+
+        useChatStore.getState().excludeEntryFromAuto("det-1");
+        await useChatStore.getState().refreshContextLayers();
+
+        const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+        expect((args?.codexEntries ?? []).map((e) => e.id)).not.toContain(
+          "det-1",
+        );
+        expect(
+          useChatStore.getState().detectedEntries.map((e) => e.id),
+        ).not.toContain("det-1");
+      } finally {
+        vi.mocked(findMentionedEntriesAsync).mockImplementation(() =>
+          Promise.resolve([]),
+        );
+      }
+    });
   });
 });

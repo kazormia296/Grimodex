@@ -44,6 +44,8 @@ const CLOSE_SINGLE = "’"; // ’
 const OPENING_CONTEXT =
   /[\s{[(<'"\u2018\u201C\u3000-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]$/;
 
+const WORD_CHAR = /[A-Za-z0-9_]/;
+
 /**
  * 開き/閉じを文脈で決める smart quote ルール。
  *
@@ -53,8 +55,18 @@ const OPENING_CONTEXT =
  * 未クローズの開きクォートが手前にあれば閉じ、無ければ直前文字で
  * 開き/閉じ（apostrophe）を決める。英語の挙動（行頭・空白後は開き、
  * 語中の ' は apostrophe）は上流と一致する。
+ *
+ * single quote は apostrophe（don’t 等の語中 ’）が閉じグリフと同一文字の
+ * ため、素朴に数えるとパリティが汚染される（例: `'don't ` の後の ' が
+ * 開き扱いになる）。語中（英数字に両側を挟まれた）の close グリフは
+ * クォートの閉じとして数えない（skipWordInternalCloses）。
  */
-function smartQuoteRule(find: RegExp, open: string, close: string): InputRule {
+function smartQuoteRule(
+  find: RegExp,
+  open: string,
+  close: string,
+  opts?: { skipWordInternalCloses?: boolean },
+): InputRule {
   return new InputRule({
     find,
     handler: ({ state, range }) => {
@@ -66,9 +78,19 @@ function smartQuoteRule(find: RegExp, open: string, close: string): InputRule {
         "￼",
       );
       let unclosed = 0;
-      for (const ch of before) {
-        if (ch === open) unclosed += 1;
-        else if (ch === close && unclosed > 0) unclosed -= 1;
+      for (let i = 0; i < before.length; i++) {
+        const ch = before[i];
+        if (ch === open) {
+          unclosed += 1;
+        } else if (ch === close && unclosed > 0) {
+          const isWordInternal =
+            i > 0 &&
+            i + 1 < before.length &&
+            WORD_CHAR.test(before[i - 1]) &&
+            WORD_CHAR.test(before[i + 1]);
+          if (opts?.skipWordInternalCloses && isWordInternal) continue;
+          unclosed -= 1;
+        }
       }
       const prev = before.slice(-1);
       const opening =
@@ -88,7 +110,9 @@ const SettingGatedTypographyRules = Extension.create({
         "editor.smartQuotes",
       ),
       gateBySetting(
-        smartQuoteRule(/'$/, OPEN_SINGLE, CLOSE_SINGLE),
+        smartQuoteRule(/'$/, OPEN_SINGLE, CLOSE_SINGLE, {
+          skipWordInternalCloses: true,
+        }),
         "editor.smartQuotes",
       ),
       gateBySetting(emDash(), "editor.smartDashes"),

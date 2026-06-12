@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useProjectSettings } from "../hooks/useProjectSettings";
@@ -111,14 +110,18 @@ export function ProjectCategory() {
     toast.success(t("settings.project.saveAsDefaultsDone"));
   }
 
-  const [reindexRunning, setReindexRunning] = useState(false);
+  // 多重起動ガードはグローバル store に置く — コンポーネントローカル state
+  // だと設定パネルの閉じ開きやカテゴリ切替（再マウント）でガードが外れ、
+  // 全件再構築を二重起動できてしまう。
+  const reindexRunning = useReindexProgressStore((s) => s.running);
+  const setReindexRunning = useReindexProgressStore((s) => s.setRunning);
 
   // 意味検索インデックスの全件再構築。インデックスへの投入は通常シーン保存時の
   // 逐次更新（scheduleSceneIndex）だけなので、機能追加前から存在する・編集して
   // いないシーンは未インデックスのまま＝関連シーン注入が一切効かない。
   // 進行状況は Rust 側 progress event → ReindexProgressToast（App.tsx 常設）が表示。
   async function handleSemanticReindex() {
-    if (reindexRunning) return;
+    if (useReindexProgressStore.getState().running) return;
     setReindexRunning(true);
     try {
       const chunks = await semanticReindexAll(getCurrentProjectId());
