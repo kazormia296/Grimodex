@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { render, waitFor, act } from "@testing-library/react";
 import type { Editor } from "@tiptap/core";
 import { getDocText } from "@/features/editor/RubyNode";
 
@@ -178,6 +178,7 @@ const ALIEN_CONTENT = JSON.stringify({
 });
 
 import { useLinearEditorStore } from "./linearEditorStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
@@ -498,5 +499,104 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     await waitFor(() => {
       expect(mockLoadSceneFull).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+// perf 契約: タイピング中の文字数同期は 200ms trailing debounce で 1 回に
+// 畳む (EditorStatsFooter と同じ)。毎打鍵で getDocText の O(doc) 全文走査と
+// setCharCount によるブロック全体再レンダーを払わない — EditorPane では
+// 5675145c で除去済みの固定費がリニア経路に残っていた回帰の gate。
+describe("LinearSceneBlock: 文字数同期の debounce (perf 契約)", () => {
+  it("打鍵バーストを 1 回の charCount 同期に畳み、200ms 休止後に表示へ反映する", async () => {
+    mockLoadSceneFull.mockResolvedValue({
+      content: MENTION_CONTENT,
+      unplacedBeatsDoc: "[]",
+    });
+    const { container, unmount } = render(
+      <LinearSceneBlock
+        sceneId="scene-0001"
+        isMounted={true}
+        isActive={false}
+        placeholderHeight={300}
+        onHeightChange={() => {}}
+        onFocus={() => {}}
+      />,
+    );
+    await waitFor(() => {
+      expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
+    });
+    const loadedCount = getDocText(lastEditor().state.doc).length;
+    expect(container.textContent).toContain(
+      `${loadedCount.toLocaleString()} chars`,
+    );
+
+    const origSetCharCount = useTreeStore.getState().setCharCount;
+    const mockSetCharCount = vi.fn();
+    useTreeStore.setState({ setCharCount: mockSetCharCount as never });
+    vi.useFakeTimers();
+    try {
+      // 200ms 窓内の連打: tree 同期はまだ走らず、表示も据え置き
+      act(() => {
+        lastEditor().commands.insertContentAt(1, "あ");
+        vi.advanceTimersByTime(100);
+        lastEditor().commands.insertContentAt(1, "い");
+        vi.advanceTimersByTime(100);
+        lastEditor().commands.insertContentAt(1, "う");
+      });
+      expect(mockSetCharCount).not.toHaveBeenCalled();
+      expect(container.textContent).toContain(
+        `${loadedCount.toLocaleString()} chars`,
+      );
+
+      // 休止 200ms で 1 回だけ full-doc walk + 同期
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(mockSetCharCount).toHaveBeenCalledTimes(1);
+      expect(mockSetCharCount).toHaveBeenCalledWith(
+        "scene-0001",
+        loadedCount + 3,
+      );
+      expect(container.textContent).toContain(
+        `${(loadedCount + 3).toLocaleString()} chars`,
+      );
+    } finally {
+      vi.useRealTimers();
+      useTreeStore.setState({ setCharCount: origSetCharCount as never });
+    }
+    unmount();
+  });
+
+  it("pending の debounce タイマーは unmount で破棄され、エラーを出さない", async () => {
+    mockLoadSceneFull.mockResolvedValue({
+      content: MENTION_CONTENT,
+      unplacedBeatsDoc: "[]",
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { unmount } = render(
+      <LinearSceneBlock
+        sceneId="scene-0001"
+        isMounted={true}
+        isActive={false}
+        placeholderHeight={300}
+        onHeightChange={() => {}}
+        onFocus={() => {}}
+      />,
+    );
+    await waitFor(() => {
+      expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
+    });
+    vi.useFakeTimers();
+    try {
+      lastEditor().commands.insertContentAt(1, "あ");
+      unmount();
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
   });
 });
