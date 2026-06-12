@@ -515,8 +515,8 @@ mod tests {
         assert_eq!(after["secret"], 0);
         assert_eq!(base_v, 0);
         assert_eq!(result_v, row_updated_at(&conn, "f1"));
-        assert_eq!(res.undo_journal_id.is_empty(), false);
-        assert_eq!(res.change_event_uid.is_empty(), false);
+        assert!(!res.undo_journal_id.is_empty());
+        assert!(!res.change_event_uid.is_empty());
     }
 
     #[test]
