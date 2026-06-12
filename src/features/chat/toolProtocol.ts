@@ -28,23 +28,26 @@ const TOOL_BLOCK_TAGS = ["tool_call", "tool_response"] as const;
  * (`<tool_call type="x">`)・**タグ内空白** (`<tool_call >`) の変種が素通りして
  * 表示・コピー・Codex/Snippet 抽出・要約に漏れる (d0766f59 緩和の回避)。
  * case-insensitive + 任意属性を許容して取りこぼしを塞ぐ。
+ *
+ * ストリーミング中はアクティブメッセージの delta 毎に呼ばれるため、RegExp は
+ * モジュール定数として一度だけコンパイルする。全て非 global フラグで
+ * lastIndex 状態を持たず、インスタンス共有は安全。
  */
-function openTagRe(tag: string): RegExp {
-  // <tag>, <tag attr...>, <tag > を許容（属性は次の '>' まで）。
-  return new RegExp(`<${tag}(?:\\s[^>]*)?>`, "i");
+interface TagMatchers {
+  /** <tag>, <tag attr...>, <tag > を許容（属性は次の '>' まで）。 */
+  open: RegExp;
+  close: RegExp;
+  /** 任意位置にタグの開きがあるか（byte-identical 早期 return 判定用）。 */
+  hasOpen: RegExp;
 }
-function closeTagRe(tag: string): RegExp {
-  return new RegExp(`</${tag}\\s*>`, "i");
-}
-/** 任意位置にタグの開きがあるか（byte-identical 早期 return 判定用）。 */
-function hasAnyOpen(text: string, tag: string): boolean {
-  return new RegExp(`<${tag}(?:\\s|>|/)`, "i").test(text);
-}
+const TAG_MATCHERS: readonly TagMatchers[] = TOOL_BLOCK_TAGS.map((tag) => ({
+  open: new RegExp(`<${tag}(?:\\s[^>]*)?>`, "i"),
+  close: new RegExp(`</${tag}\\s*>`, "i"),
+  hasOpen: new RegExp(`<${tag}(?:\\s|>|/)`, "i"),
+}));
 
 /** `<tag …>…</tag>` ブロックをすべて除去する。閉じタグ無しは以降を打ち切り。 */
-function stripTagBlocks(text: string, tag: string): string {
-  const open = openTagRe(tag);
-  const close = closeTagRe(tag);
+function stripTagBlocks(text: string, { open, close }: TagMatchers): string {
   let out = "";
   let rest = text;
   let m = open.exec(rest);
@@ -70,12 +73,12 @@ function stripTagBlocks(text: string, tag: string): string {
  */
 export function stripToolProtocol(text: string): string {
   if (!text) return text;
-  const hasTag = TOOL_BLOCK_TAGS.some((tag) => hasAnyOpen(text, tag));
+  const hasTag = TAG_MATCHERS.some((m) => m.hasOpen.test(text));
   if (!hasTag) return text;
 
   let out = text;
-  for (const tag of TOOL_BLOCK_TAGS) {
-    out = stripTagBlocks(out, tag);
+  for (const m of TAG_MATCHERS) {
+    out = stripTagBlocks(out, m);
   }
   // 除去で生じた連続空行を 1 段に畳んで前後をトリム。
   return out.replace(/\n{3,}/g, "\n\n").trim();

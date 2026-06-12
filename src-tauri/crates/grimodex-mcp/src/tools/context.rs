@@ -16,7 +16,7 @@
 use anyhow::Result;
 use rmcp::model::CallToolResult;
 use rmcp::ErrorData;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use schemars;
 use serde::{Deserialize, Serialize};
 
@@ -374,7 +374,6 @@ struct CodexScanRow {
     aliases: Option<String>,
     excluded_aliases: Option<String>,
     summary: Option<String>,
-    content: String,
     context_mode: String,
 }
 
@@ -395,8 +394,13 @@ fn collect_codex_layer(
     project_id: &str,
     scan_text: &str,
 ) -> Result<CodexContextLayer> {
+    // content (PM JSON 全文) はここでは意図的に SELECT しない — summary 空の
+    // **選抜行** のフォールバック (200 字) にしか使われないのに、project 内
+    // 全エントリ分を毎回 String にマテリアライズするとコーパスサイズに比例
+    // した無駄な読み出しになる。必要になった行だけ to_context_entry が
+    // PK 指定で個別に引く。
     let mut stmt = conn.prepare(
-        "SELECT id, name, type, aliases, excluded_aliases, summary, content, context_mode
+        "SELECT id, name, type, aliases, excluded_aliases, summary, context_mode
          FROM codex_entries WHERE project_id = ?1 ORDER BY name",
     )?;
     let rows = stmt.query_map(rusqlite::params![project_id], |row| {
@@ -407,8 +411,7 @@ fn collect_codex_layer(
             aliases: row.get(3)?,
             excluded_aliases: row.get(4)?,
             summary: row.get(5)?,
-            content: row.get(6)?,
-            context_mode: row.get(7)?,
+            context_mode: row.get(6)?,
         })
     })?;
 
@@ -434,9 +437,9 @@ fn collect_codex_layer(
             });
 
         if is_mentioned {
-            mentioned.push(to_context_entry(row, aliases));
+            mentioned.push((row, aliases));
         } else if row.context_mode == "always" {
-            always.push(to_context_entry(row, aliases));
+            always.push((row, aliases));
         }
     }
 
@@ -444,6 +447,15 @@ fn collect_codex_layer(
     mentioned.truncate(MAX_MENTIONED_CODEX);
     let always_dropped = always.len().saturating_sub(MAX_ALWAYS_CODEX);
     always.truncate(MAX_ALWAYS_CODEX);
+
+    let mentioned = mentioned
+        .into_iter()
+        .map(|(row, aliases)| to_context_entry(conn, row, aliases))
+        .collect::<Result<Vec<_>>>()?;
+    let always = always
+        .into_iter()
+        .map(|(row, aliases)| to_context_entry(conn, row, aliases))
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(CodexContextLayer {
         mentioned,
@@ -453,25 +465,39 @@ fn collect_codex_layer(
     })
 }
 
-fn to_context_entry(row: CodexScanRow, aliases: Vec<String>) -> CodexContextEntry {
+fn to_context_entry(
+    conn: &Connection,
+    row: CodexScanRow,
+    aliases: Vec<String>,
+) -> Result<CodexContextEntry> {
     let summary = match row.summary.as_deref().map(str::trim) {
         Some(s) if !s.is_empty() => s.to_string(),
         _ => {
             // Fall back to a content prefix so an entry without a summary
-            // still carries usable context.
-            let text = serde_json::from_str::<serde_json::Value>(&row.content)
+            // still carries usable context. content の読み出しはこの分岐
+            // (選抜行 × summary 空) に限定する。スキャンと別クエリなので
+            // 行が消えている可能性に optional で備える (空フォールバック)。
+            let content: Option<String> = conn
+                .query_row(
+                    "SELECT content FROM codex_entries WHERE id = ?1",
+                    rusqlite::params![row.id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let text = content
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
                 .map(|v| prosemirror_to_markdown(&v))
                 .unwrap_or_default();
             text.trim().chars().take(CONTENT_FALLBACK_CHARS).collect()
         }
     };
-    CodexContextEntry {
+    Ok(CodexContextEntry {
         id: row.id,
         name: row.name,
         type_slug: row.type_slug,
         summary,
         aliases,
-    }
+    })
 }
 
 pub async fn get_writing_context(

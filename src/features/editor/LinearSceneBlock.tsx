@@ -120,6 +120,9 @@ function MountedSceneBlock({
   // false 始まりだと空 doc がそのまま DB に書き込まれる。
   const loadFailedRef = useRef(true);
   const [charCount, setCharCount] = useState(0);
+  // タイピング中の文字数同期 debounce タイマー (EditorStatsFooter と同じ
+  // 200ms trailing)。
+  const statTimerRef = useRef<number | null>(null);
   // ロード完了まで skeleton を placeholder と同寸で表示する (空エディタ +
   // 「0 chars」の一瞬の表示と、高さ崩壊によるスクロールのガタつきを防ぐ)。
   const [isLoading, setIsLoading] = useState(true);
@@ -209,31 +212,43 @@ function MountedSceneBlock({
         // 持たないが、この Set に乗らないと外部変更が未保存編集をサイレントに
         // 上書きする。解除は coreSave 成功時と unmount cleanup。
         useTabStore.getState().setTabDirty(sceneId, true);
-        const text = getDocText(e.state.doc);
-        const count = text.length;
-        setCharCount(count);
-        useTreeStore.getState().setCharCount(sceneId, count);
 
-        // Auto-transition outline → draft
-        const nodeStatus = useTreeStore
-          .getState()
-          .nodes.find((n) => n.id === sceneId)?.status as
-          | SceneStatus
-          | null
-          | undefined;
-        if (
-          shouldAutoDraftTransition(
-            count,
-            wasEmptyRef.current,
-            nodeStatus ?? null,
-          )
-        ) {
-          wasEmptyRef.current = false;
-          useTreeStore
-            .getState()
-            .setStatus(sceneId, "draft")
-            .catch(() => {});
+        // Auto-transition outline → draft: wasEmptyRef が true の間だけ
+        // 全文 walk する (EditorPane.onUpdate と同じ制限 — 一度本文を観測
+        // したらこの分岐は恒久 skip)。
+        if (wasEmptyRef.current) {
+          const count = getDocText(e.state.doc).length;
+          if (count > 0) {
+            wasEmptyRef.current = false;
+            const nodeStatus = useTreeStore
+              .getState()
+              .nodes.find((n) => n.id === sceneId)?.status as
+              | SceneStatus
+              | null
+              | undefined;
+            if (shouldAutoDraftTransition(count, true, nodeStatus ?? null)) {
+              useTreeStore
+                .getState()
+                .setStatus(sceneId, "draft")
+                .catch(() => {});
+            }
+          }
         }
+
+        // 文字数表示と tree store の charCount 同期は 200ms trailing debounce
+        // で 1 回だけ full-doc walk + setState する (EditorStatsFooter と同じ
+        // perf 契約)。毎打鍵で getDocText の O(doc) 走査と setCharCount による
+        // ブロック全体の再レンダーを払わない。
+        if (statTimerRef.current != null) {
+          window.clearTimeout(statTimerRef.current);
+        }
+        statTimerRef.current = window.setTimeout(() => {
+          statTimerRef.current = null;
+          if (e.isDestroyed) return;
+          const count = getDocText(e.state.doc).length;
+          setCharCount(count);
+          useTreeStore.getState().setCharCount(sceneId, count);
+        }, 200);
       },
       onFocus() {
         const ed = editorRef.current;
@@ -306,6 +321,16 @@ function MountedSceneBlock({
   useEffect(() => {
     return () => useTabStore.getState().setTabDirty(sceneId, false);
   }, [sceneId]);
+
+  // 打鍵 debounce タイマーの後始末 (unmount 後の setState を防ぐ)。
+  useEffect(() => {
+    return () => {
+      if (statTimerRef.current != null) {
+        window.clearTimeout(statTimerRef.current);
+        statTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // agent 書き込み / Codex 改名波及の resync (setLiveContent) を受信して
   // editor doc を追従させる。受信しないと editor が古い doc を保持し続け、

@@ -215,6 +215,22 @@ export function parseBinding(binding: string): ParsedBinding {
   };
 }
 
+/**
+ * matchesBinding 用の parse 結果キャッシュ。グローバル keydown ハンドラが
+ * 素のタイピング中も registry 全件 (~20 バインディング) を照合するため、
+ * split+Set 構築を文字列毎に一度きりへ抑える。キーは merged bindings 由来の
+ * 文字列（defaults + ユーザー上書き）で有界。
+ */
+const parsedBindingCache = new Map<string, ParsedBinding>();
+function parseBindingCached(binding: string): ParsedBinding {
+  let p = parsedBindingCache.get(binding);
+  if (p === undefined) {
+    p = parseBinding(binding);
+    parsedBindingCache.set(binding, p);
+  }
+  return p;
+}
+
 /** Re-emit a binding in canonical token order, for stable equality comparison. */
 export function canonicalizeBinding(binding: string): string {
   const p = parseBinding(binding);
@@ -238,7 +254,7 @@ export function matchesBinding(
   binding: string,
   mac = isMac(),
 ): boolean {
-  const p = parseBinding(binding);
+  const p = parseBindingCached(binding);
   if (!p.key) return false;
   const needMeta = mac ? p.mod : false;
   const needCtrl = mac ? p.control : p.mod || p.control;
@@ -278,10 +294,26 @@ export function parseStoredOverrides(stored: string): Record<string, string> {
   return {};
 }
 
-/** Merged bindings (defaults + stored overrides), read synchronously. */
+/**
+ * Merged bindings (defaults + stored overrides), read synchronously.
+ *
+ * グローバル/ペインの keydown ハンドラ計3箇所から素のタイピング中も毎打鍵
+ * 呼ばれるため、stored 文字列をキーにメモ化する（settingsStore.cache の値は
+ * set されるまで同一参照なので比較は実質ポインタ比較）。JSON.parse + 全キー
+ * spread は rebind 時のみ。戻り値は共有されるので呼び出し側で変更しないこと。
+ */
+let mergedBindingsStoredKey: string | null = null;
+let mergedBindingsCache: Record<string, string> | null = null;
 export function getMergedBindings(): Record<string, string> {
   const stored = useSettingsStore.getState().get("keys.bindings", "{}");
-  return { ...DEFAULT_KEYBINDINGS, ...parseStoredOverrides(stored) };
+  if (mergedBindingsCache === null || stored !== mergedBindingsStoredKey) {
+    mergedBindingsStoredKey = stored;
+    mergedBindingsCache = {
+      ...DEFAULT_KEYBINDINGS,
+      ...parseStoredOverrides(stored),
+    };
+  }
+  return mergedBindingsCache;
 }
 
 /** Reactive merged bindings for display in React components. */

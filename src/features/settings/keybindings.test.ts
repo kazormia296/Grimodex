@@ -258,6 +258,21 @@ describe("getMergedBindings — store override round-trip (the live wiring)", ()
     setStoredBindings("not json");
     expect(getMergedBindings().focusScenes).toBe("Mod+Alt+S");
   });
+
+  // perf 契約: keydown 毎に呼ばれるホットパスなので、rebind が無い限り
+  // JSON.parse + spread を再実行しない（同一オブジェクトを返す）。
+  // rebind 時は新オブジェクトに切り替わり、即座に実効化する。
+  it("memoizes the merged object until keys.bindings changes", () => {
+    setStoredBindings(JSON.stringify({ find: "Mod+J" }));
+    const a = getMergedBindings();
+    const b = getMergedBindings();
+    expect(b).toBe(a);
+
+    setStoredBindings(JSON.stringify({ find: "Mod+G" }));
+    const c = getMergedBindings();
+    expect(c).not.toBe(a);
+    expect(c.find).toBe("Mod+G");
+  });
 });
 
 describe("DEFAULT_KEYBINDINGS", () => {
