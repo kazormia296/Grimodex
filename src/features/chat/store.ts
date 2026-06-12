@@ -2,8 +2,21 @@ import { create } from "zustand";
 import * as api from "./api";
 import * as cliApi from "./cliApi";
 import { resolveAinoveristApiVariant } from "./aiNovelist";
-import type { AiSettings, AiModel, ConnectionTestResult } from "./types";
+import type {
+  AiProvider,
+  AiSettings,
+  AiModel,
+  ConnectionTestResult,
+} from "./types";
 import { DEFAULT_AI_SETTINGS } from "./types";
+
+/** API キー不要で接続テストできるプロバイダ。
+ * Rust 側 resolve_api_key (commands/ai.rs) のキー省略可否と一致させること。 */
+const KEYLESS_TEST_PROVIDERS = new Set<AiProvider>([
+  "ollama",
+  "openai-compatible",
+  "cli",
+]);
 import {
   registerDynamicModelCaps,
   isDynamicCapsStale,
@@ -109,7 +122,8 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
 
   testConnection: async () => {
     const { settings, hasApiKey, models } = get();
-    if (!settings || !hasApiKey || !settings.model) return;
+    if (!settings || !settings.model) return;
+    if (!hasApiKey && !KEYLESS_TEST_PROVIDERS.has(settings.provider)) return;
 
     set({ isTestingConnection: true, connectionTestResult: null });
     try {

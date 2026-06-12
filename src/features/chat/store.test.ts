@@ -196,6 +196,58 @@ describe("useAiSettingsStore", () => {
       await useAiSettingsStore.getState().testConnection();
       expect(mockTestAiConnection).not.toHaveBeenCalled();
     });
+
+    it("does nothing for keyed providers without an API key", async () => {
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, model: "gpt-4" },
+        hasApiKey: false,
+      });
+
+      await useAiSettingsStore.getState().testConnection();
+
+      expect(mockTestAiConnection).not.toHaveBeenCalled();
+    });
+
+    // 回帰: ollama は API キー不要。hasApiKey=false でサイレント return すると
+    // ボタンを押しても何も表示されない (UI 側は keyless プロバイダでボタン有効)。
+    it("runs for ollama without an API key", async () => {
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, provider: "ollama", model: "llama3" },
+        hasApiKey: false,
+      });
+      mockTestAiConnection.mockResolvedValueOnce("Connection OK");
+
+      await useAiSettingsStore.getState().testConnection();
+
+      expect(mockTestAiConnection).toHaveBeenCalledTimes(1);
+      const state = useAiSettingsStore.getState();
+      expect(state.isTestingConnection).toBe(false);
+      expect(state.connectionTestResult).toEqual({
+        success: true,
+        message: "Connection OK",
+      });
+    });
+
+    it("runs for openai-compatible without an API key", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "openai-compatible",
+          model: "local-model",
+          openaiCompatible: { baseUrl: "http://localhost:8080/v1" },
+        },
+        hasApiKey: false,
+      });
+      mockTestAiConnection.mockResolvedValueOnce("OK");
+
+      await useAiSettingsStore.getState().testConnection();
+
+      expect(mockTestAiConnection).toHaveBeenCalledTimes(1);
+      expect(useAiSettingsStore.getState().connectionTestResult).toEqual({
+        success: true,
+        message: "OK",
+      });
+    });
   });
 
   describe("loadModels", () => {
