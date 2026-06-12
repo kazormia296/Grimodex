@@ -987,8 +987,10 @@ export async function createBrowserMock(): Promise<BrowserMock> {
       case "save_api_key":
         handleSaveApiKey(args);
         return undefined as T;
-      case "get_api_key":
-        return handleGetApiKey(args) as T;
+      case "has_api_key":
+        // 本物の IPC と同様、キー本体は renderer に渡さず有無のみ返す。
+        // (mock 内部の AI 呼び出しは handleGetApiKey で localStorage を直接読む)
+        return (handleGetApiKey(args) !== null) as T;
       case "delete_api_key":
         handleDeleteApiKey(args);
         return undefined as T;

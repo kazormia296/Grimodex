@@ -177,17 +177,18 @@ describe("createBrowserMock", () => {
         key: "sk-test-123",
       });
 
-      const key = await mock.invoke<string | null>("get_api_key", {
+      // has_api_key exposes only presence, never the plaintext key.
+      const present = await mock.invoke<boolean>("has_api_key", {
         provider: "openai",
       });
-      expect(key).toBe("sk-test-123");
+      expect(present).toBe(true);
 
-      // Create a new mock instance — key should survive
+      // Create a new mock instance — presence should survive
       const mock2 = await createBrowserMock();
-      const key2 = await mock2.invoke<string | null>("get_api_key", {
+      const present2 = await mock2.invoke<boolean>("has_api_key", {
         provider: "openai",
       });
-      expect(key2).toBe("sk-test-123");
+      expect(present2).toBe(true);
     });
 
     it("deletes API key from localStorage", async () => {
@@ -197,10 +198,10 @@ describe("createBrowserMock", () => {
       });
       await mock.invoke("delete_api_key", { provider: "anthropic" });
 
-      const key = await mock.invoke<string | null>("get_api_key", {
+      const present = await mock.invoke<boolean>("has_api_key", {
         provider: "anthropic",
       });
-      expect(key).toBeNull();
+      expect(present).toBe(false);
     });
   });
 

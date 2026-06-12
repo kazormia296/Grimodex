@@ -16,8 +16,12 @@ export async function saveApiKey(
   await invoke("save_api_key", { provider, key });
 }
 
-export async function getApiKey(provider: AiProvider): Promise<string | null> {
-  return invoke<string | null>("get_api_key", { provider });
+/**
+ * キーの有無だけを問い合わせる。プレーンテキストのキーは renderer に渡さない
+ * (実送信のキー解決は Rust 側が担う) ため、フロントは真偽値のみ必要とする。
+ */
+export async function hasApiKey(provider: AiProvider): Promise<boolean> {
+  return invoke<boolean>("has_api_key", { provider });
 }
 
 export async function deleteApiKey(provider: AiProvider): Promise<void> {

@@ -11,7 +11,7 @@ vi.mock("./api", () => ({
   getAiSettings: vi.fn(),
   saveAiSettings: vi.fn(),
   saveApiKey: vi.fn(),
-  getApiKey: vi.fn(),
+  hasApiKey: vi.fn(),
   deleteApiKey: vi.fn(),
   testAiConnection: vi.fn(),
   listAiModels: vi.fn(),
@@ -28,7 +28,7 @@ import * as cliApi from "./cliApi";
 const mockGetAiSettings = vi.mocked(api.getAiSettings);
 const mockSaveAiSettings = vi.mocked(api.saveAiSettings);
 const mockSaveApiKey = vi.mocked(api.saveApiKey);
-const mockGetApiKey = vi.mocked(api.getApiKey);
+const mockHasApiKey = vi.mocked(api.hasApiKey);
 const mockDeleteApiKey = vi.mocked(api.deleteApiKey);
 const mockTestAiConnection = vi.mocked(api.testAiConnection);
 const mockListAiModels = vi.mocked(api.listAiModels);
@@ -65,7 +65,7 @@ describe("useAiSettingsStore", () => {
   describe("loadSettings", () => {
     it("loads settings and checks for API key", async () => {
       mockGetAiSettings.mockResolvedValueOnce(defaultSettings);
-      mockGetApiKey.mockResolvedValueOnce("sk-test");
+      mockHasApiKey.mockResolvedValueOnce(true);
 
       await useAiSettingsStore.getState().loadSettings();
 
@@ -76,7 +76,7 @@ describe("useAiSettingsStore", () => {
 
     it("sets hasApiKey to false when no key exists", async () => {
       mockGetAiSettings.mockResolvedValueOnce(defaultSettings);
-      mockGetApiKey.mockResolvedValueOnce(null);
+      mockHasApiKey.mockResolvedValueOnce(false);
 
       await useAiSettingsStore.getState().loadSettings();
 
@@ -299,7 +299,7 @@ describe("useAiSettingsStore", () => {
 
     it("detects CLI binary when provider is cli", async () => {
       mockGetAiSettings.mockResolvedValueOnce(cliSettings);
-      mockGetApiKey.mockResolvedValueOnce(null);
+      mockHasApiKey.mockResolvedValueOnce(false);
       mockDetectCliBinary.mockResolvedValueOnce("/usr/local/bin/claude");
 
       await useAiSettingsStore.getState().loadSettings();
@@ -310,7 +310,7 @@ describe("useAiSettingsStore", () => {
 
     it("sets cliBinaryAvailable=false when binary not found", async () => {
       mockGetAiSettings.mockResolvedValueOnce(cliSettings);
-      mockGetApiKey.mockResolvedValueOnce(null);
+      mockHasApiKey.mockResolvedValueOnce(false);
       mockDetectCliBinary.mockResolvedValueOnce(null);
 
       await useAiSettingsStore.getState().loadSettings();
@@ -320,7 +320,7 @@ describe("useAiSettingsStore", () => {
 
     it("does not call detectCliBinary for non-CLI providers", async () => {
       mockGetAiSettings.mockResolvedValueOnce(defaultSettings);
-      mockGetApiKey.mockResolvedValueOnce("sk-key");
+      mockHasApiKey.mockResolvedValueOnce(true);
 
       await useAiSettingsStore.getState().loadSettings();
 

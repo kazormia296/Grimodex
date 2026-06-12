@@ -77,13 +77,13 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
 
   loadSettings: async () => {
     const settings = await api.getAiSettings();
-    const key = await api.getApiKey(settings.provider);
+    const keyPresent = await api.hasApiKey(settings.provider);
     let cliBinaryAvailable: boolean | null = null;
     if (settings.provider === "cli") {
       const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
       cliBinaryAvailable = path !== null;
     }
-    set({ settings, hasApiKey: key !== null, cliBinaryAvailable });
+    set({ settings, hasApiKey: keyPresent, cliBinaryAvailable });
     void maybeRefreshDynamicCaps();
   },
 

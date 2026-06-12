@@ -394,9 +394,13 @@ pub(crate) fn save_api_key(provider: ai::AiProvider, key: String) -> Result<(), 
     Ok(())
 }
 
+/// キーの「有無」だけを返す。プレーンテキストのキーを renderer に渡さないことで、
+/// 万一の renderer 侵害 (XSS) 時に最も価値の高い IPC exfil 標的を構造的に消す。
+/// 実送信のキー解決は Rust 側 `resolve_api_key` が一手に担うため、フロントは
+/// 設定済みかどうかの真偽値しか必要としない。
 #[tauri::command]
-pub(crate) fn get_api_key(provider: ai::AiProvider) -> Result<Option<String>, AppError> {
-    Ok(ai::get_api_key(&provider)?)
+pub(crate) fn has_api_key(provider: ai::AiProvider) -> Result<bool, AppError> {
+    Ok(ai::get_api_key(&provider)?.is_some())
 }
 
 #[tauri::command]

@@ -186,7 +186,7 @@ pub fn run() {
             commands::ai::get_ai_settings,
             commands::ai::save_ai_settings,
             commands::ai::save_api_key,
-            commands::ai::get_api_key,
+            commands::ai::has_api_key,
             commands::ai::delete_api_key,
             commands::ai::list_ai_models,
             commands::ai::test_ai_connection,

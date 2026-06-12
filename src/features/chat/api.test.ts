@@ -11,7 +11,7 @@ import {
   getAiSettings,
   saveAiSettings,
   saveApiKey,
-  getApiKey,
+  hasApiKey,
   deleteApiKey,
   testAiConnection,
   listAiModels,
@@ -68,22 +68,22 @@ describe("chat/api", () => {
     });
   });
 
-  describe("getApiKey", () => {
-    it("returns the key when it exists", async () => {
-      mockInvoke.mockResolvedValueOnce("sk-or-test-123");
+  describe("hasApiKey", () => {
+    it("returns true when a key exists (without exposing the key)", async () => {
+      mockInvoke.mockResolvedValueOnce(true);
 
-      const result = await getApiKey("openrouter");
-      expect(mockInvoke).toHaveBeenCalledWith("get_api_key", {
+      const result = await hasApiKey("openrouter");
+      expect(mockInvoke).toHaveBeenCalledWith("has_api_key", {
         provider: "openrouter",
       });
-      expect(result).toBe("sk-or-test-123");
+      expect(result).toBe(true);
     });
 
-    it("returns null when no key exists", async () => {
-      mockInvoke.mockResolvedValueOnce(null);
+    it("returns false when no key exists", async () => {
+      mockInvoke.mockResolvedValueOnce(false);
 
-      const result = await getApiKey("openai");
-      expect(result).toBeNull();
+      const result = await hasApiKey("openai");
+      expect(result).toBe(false);
     });
   });
 
