@@ -423,6 +423,9 @@ interface ChatState {
   // G15: auto-detected and always-mode entries (excluding pinned)
   detectedEntries: CodexEntry[];
   alwaysEntries: CodexEntry[];
+  /** ユーザーが × で auto 注入から除外したエントリ ID（セッション内のみ保持、
+   * セッション切替・新規作成でクリア）。always 再収集のフィルタに使う。 */
+  excludedAutoEntryIds: string[];
 
   // G21: input-typed entries detected by CodexHighlight (in-memory, pre-send)
   inputPinnedEntryIds: string[];
@@ -568,6 +571,13 @@ interface ChatState {
   _editingOldContent: string | null;
   /** autoリストから特定エントリを即時除去（ピン直後のBug#1修正用） */
   removeEntryFromAuto: (entryId: string) => void;
+  /** コンテキストバーの × による auto 注入からの除外。表示配列の除去に
+   * 加えて excludedAutoEntryIds に記録する — always エントリは毎ビルドで
+   * allEntries から無条件再収集されるため、表示除去だけでは次の refresh で
+   * プロンプト・ピルとも復活する。 */
+  excludeEntryFromAuto: (entryId: string) => void;
+  /** auto 除外の解除（pin など、ユーザーがエントリを再び使い始めた経路で呼ぶ） */
+  clearAutoExclusion: (entryId: string) => void;
   /** Codex anchor エントリ削除時に codex スコープを scene に戻す */
   onCodexAnchorDeleted: (entryId: string) => void;
   /** Snippet anchor 削除時に snippet スコープを scene に戻す */
@@ -1527,6 +1537,9 @@ async function buildSceneContextPrompt(opts: {
    * 送信経路 (sendMessage) でのみ渡される。未指定 (プレビュー / コピー経路)
    * なら semantic 検索は走らない — 打鍵毎の embedder 呼び出しを避けるため。 */
   semanticRecallSeedMessage?: string;
+  /** ユーザーが × で auto 注入から除外したエントリ ID。always エントリの
+   * 再収集から取り除く（mentioned/pinned 経路には影響しない）。 */
+  excludedAutoEntryIds?: string[];
 }): Promise<SceneContextPayload> {
   const {
     sceneCtx,
@@ -1559,8 +1572,9 @@ async function buildSceneContextPrompt(opts: {
   const detectableCodex = allEntries.filter(
     (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
   );
+  const excludedAutoIds = new Set(opts.excludedAutoEntryIds ?? []);
   const alwaysCodexEntries = allEntries.filter(
-    (e) => e.contextMode === "always",
+    (e) => e.contextMode === "always" && !excludedAutoIds.has(e.id),
   );
   const detectableNotes = noteNodes.filter((n) => {
     const mode = n.contextMode ?? "mentioned";
@@ -2194,6 +2208,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   chapterOutlines: [],
   detectedEntries: [],
   alwaysEntries: [],
+  excludedAutoEntryIds: [],
   inputPinnedEntryIds: [],
   agentMode: false,
   agentProgress: null,
@@ -2273,6 +2288,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionStableCodexIds: [],
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
+        excludedAutoEntryIds: [],
       }));
       if (ref) {
         const linkMsg = await chatApi.addMessage(
@@ -2296,6 +2312,31 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       detectedEntries: state.detectedEntries.filter((e) => e.id !== entryId),
       alwaysEntries: state.alwaysEntries.filter((e) => e.id !== entryId),
     }));
+  },
+
+  excludeEntryFromAuto: (entryId: string) => {
+    set((state) => ({
+      excludedAutoEntryIds: state.excludedAutoEntryIds.includes(entryId)
+        ? state.excludedAutoEntryIds
+        : [...state.excludedAutoEntryIds, entryId],
+      detectedEntries: state.detectedEntries.filter((e) => e.id !== entryId),
+      alwaysEntries: state.alwaysEntries.filter((e) => e.id !== entryId),
+    }));
+    // 除外を lastSystemPrompt に即時反映する（× の直後に送信しても
+    // 旧プロンプト経由で注入されないように）。
+    void get().refreshContextLayers();
+  },
+
+  clearAutoExclusion: (entryId: string) => {
+    set((state) =>
+      state.excludedAutoEntryIds.includes(entryId)
+        ? {
+            excludedAutoEntryIds: state.excludedAutoEntryIds.filter(
+              (id) => id !== entryId,
+            ),
+          }
+        : state,
+    );
   },
 
   onCodexAnchorDeleted: (entryId: string) => {
@@ -2365,6 +2406,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         maxSummaryGeneration: 0,
         sessionStableCodexIds: [],
         sessionAgentToolsSnapshot: null,
+        excludedAutoEntryIds: [],
       });
       return;
     }
@@ -2390,6 +2432,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionStableCodexIds: [],
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
+        excludedAutoEntryIds: [],
       });
     } catch (e) {
       set({ isLoadingMessages: false });
@@ -2422,6 +2465,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionStableCodexIds: [],
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
+        excludedAutoEntryIds: [],
       }));
     } catch (e) {
       toast.error(i18next.t("chat.createSessionFailed"));
@@ -2543,6 +2587,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             conversationMessages,
             agentMode,
             mentionedSceneIds: options?.mentionedSceneIds,
+            excludedAutoEntryIds: get().excludedAutoEntryIds,
           });
           parts.push(`[system]\n${prompt}`);
           contextLoaded = true;
@@ -2809,6 +2854,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             mentionedSceneIds: options?.mentionedSceneIds,
             sessionStableCodexIds: get().sessionStableCodexIds,
             semanticRecallSeedMessage: content,
+            excludedAutoEntryIds: get().excludedAutoEntryIds,
           });
           systemPromptForAgent = ctxResult.prompt;
           systemCacheSegmentsForAgent = ctxResult.cacheSegments;
@@ -3308,6 +3354,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           mentionedSceneIds: options?.mentionedSceneIds,
           sessionStableCodexIds: get().sessionStableCodexIds,
           semanticRecallSeedMessage: content,
+          excludedAutoEntryIds: get().excludedAutoEntryIds,
         });
 
         if (get().sessionStableCodexIds.length === 0) {
@@ -3793,8 +3840,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }
         }
 
+        // scene 経路 (buildSceneContextPrompt) と同様、× で除外された
+        // always エントリは再収集しない。この経路は buildSceneContextPrompt
+        // を通らずインラインで always を組むため、ここでも直接フィルタする。
+        const excludedAutoIdSet = new Set(get().excludedAutoEntryIds);
         const globalAlwaysEntries = allEntries.filter(
-          (e) => e.contextMode === "always",
+          (e) => e.contextMode === "always" && !excludedAutoIdSet.has(e.id),
         );
 
         const L4_TOTAL_BUDGET = 60_000;
@@ -4043,6 +4094,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         conversationMessages: get().messages.filter((m) => !m.isSummarized),
         agentMode: get().agentMode,
         mentionedSceneIds: opts?.mentionedSceneIds,
+        excludedAutoEntryIds: get().excludedAutoEntryIds,
       });
 
       set({

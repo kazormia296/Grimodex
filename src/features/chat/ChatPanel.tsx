@@ -121,6 +121,8 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
   const refreshContextLayers = useChatStore((s) => s.refreshContextLayers);
   const removeEntryFromAuto = useChatStore((s) => s.removeEntryFromAuto);
+  const excludeEntryFromAuto = useChatStore((s) => s.excludeEntryFromAuto);
+  const clearAutoExclusion = useChatStore((s) => s.clearAutoExclusion);
   const setInputPinnedEntryIds = useChatStore((s) => s.setInputPinnedEntryIds);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentMode = useChatStore((s) => s.agentMode);
@@ -357,6 +359,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       await chatApi.pinCodexEntry(sessionId, entryId, false, "manual", type);
       // Bug#1: ピン直後にautoリストから即時除去
       removeEntryFromAuto(entryId);
+      // ピン＝ユーザーがエントリを再び使い始めた合図。過去に × で auto 除外
+      // されていても解除し、後で「autoに戻す」したときに再表示されるようにする。
+      clearAutoExclusion(entryId);
       const [updatedCodex, updatedSnippets] = await Promise.all([
         chatApi.listPinnedCodexEntries(sessionId),
         chatApi.listPinnedSnippetEntries(sessionId),
@@ -365,7 +370,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       setPinnedSnippets(updatedSnippets);
       await refreshContextLayers();
     },
-    [ensureSession, removeEntryFromAuto, refreshContextLayers],
+    [
+      ensureSession,
+      removeEntryFromAuto,
+      clearAutoExclusion,
+      refreshContextLayers,
+    ],
   );
 
   const handleUnpin = useCallback(
@@ -385,27 +395,30 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   // 手動ピンをautoに戻す: unpin後にコンテキスト再構築してautoリストへ即時反映
   const handleReturnToAuto = useCallback(
     async (entryId: string) => {
+      clearAutoExclusion(entryId);
       await handleUnpin(entryId);
       await refreshContextLayers();
     },
-    [handleUnpin, refreshContextLayers],
+    [clearAutoExclusion, handleUnpin, refreshContextLayers],
   );
 
-  // ピンエントリをコンテキストから完全除去: unpin + autoリストからも即時除去
+  // ピンエントリをコンテキストから完全除去: unpin + auto 注入からも除外。
+  // always エントリは表示配列の除去だけでは次の refresh で復活するため、
+  // excludeEntryFromAuto で除外 ID を記録する。
   const handleRemoveFromContext = useCallback(
     async (entryId: string) => {
       await handleUnpin(entryId);
-      removeEntryFromAuto(entryId);
+      excludeEntryFromAuto(entryId);
     },
-    [handleUnpin, removeEntryFromAuto],
+    [handleUnpin, excludeEntryFromAuto],
   );
 
-  // autoエントリをコンテキストから即時除去（DBへの書き込みなし）
+  // autoエントリをコンテキストから除去（DBへの書き込みなし・セッション内で持続）
   const handleRemoveAuto = useCallback(
     (entryId: string) => {
-      removeEntryFromAuto(entryId);
+      excludeEntryFromAuto(entryId);
     },
-    [removeEntryFromAuto],
+    [excludeEntryFromAuto],
   );
 
   // ピン除去の統合ハンドラ:

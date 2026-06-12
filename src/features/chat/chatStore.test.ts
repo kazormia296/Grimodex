@@ -107,6 +107,18 @@ vi.mock("@/features/codex/codexMatcher", () => ({
   findMentionedEntries: vi.fn(() => []),
 }));
 
+// phase/detail API は drizzle (db_execute IPC) 直なので test 環境では失敗する。
+// 「フェーズ・詳細なし」の素通り挙動をモックで再現する。
+vi.mock("@/features/codex/phaseApi", () => ({
+  listPhasesByEntryIds: vi.fn(() => Promise.resolve([])),
+  listDetailOverridesByPhaseIds: vi.fn(() => Promise.resolve([])),
+}));
+
+vi.mock("@/features/codex/detailApi", () => ({
+  listContextDetailsByEntryIds: vi.fn(() => Promise.resolve([])),
+  listRawDetailValuesByEntryIds: vi.fn(() => Promise.resolve([])),
+}));
+
 vi.mock("@/features/codex/rustMatcher", () => ({
   findMentionedEntriesAsync: vi.fn(() => Promise.resolve([])),
 }));
@@ -2763,6 +2775,137 @@ describe("useChatStore", () => {
       const s = useChatStore.getState();
       expect(s.includeMapBoard).toBe(true);
       expect(s.mapBoardId).toBe("b2");
+    });
+  });
+
+  // コンテキストバーの × で always エントリを外しても、always は毎ビルドで
+  // allEntries から無条件再収集されるため、表示配列の除去だけでは次の
+  // refresh でプロンプト・ピルとも復活していた（B3 回帰ガード）。
+  describe("excludeEntryFromAuto (always エントリの auto 除外)", () => {
+    const now = "2026-01-01T00:00:00Z";
+    const alwaysEntry = {
+      id: "always-1",
+      projectId: "proj-1",
+      parentId: null,
+      type: "character",
+      name: "常時キャラ",
+      aliases: null,
+      excludedAliases: null,
+      summary: "always-summary",
+      content: "{}",
+      icon: null,
+      tagsCache: null,
+      contextMode: "always",
+      childrenBudget: "compact",
+      sourceChatMessageId: null,
+      notes: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    beforeEach(() => {
+      useChatStore.setState({
+        excludedAutoEntryIds: [],
+        detectedEntries: [],
+        alwaysEntries: [],
+        // 先行 describe (setIncludeMapBoard) の残留 state で scene 経路が
+        // Map 読み込みに入り refresh ごと失敗するのを防ぐ
+        includeMapBoard: false,
+        mapBoardId: null,
+      });
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "p",
+        totalTokens: 0,
+        layers: [],
+      });
+    });
+
+    it("scene スコープ: 除外した always は refresh 後も注入・ピル復活しない", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      vi.mocked(listCodexEntries).mockResolvedValue([alwaysEntry] as never);
+
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        inputPinnedEntryIds: [],
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+      let args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect((args?.codexEntries ?? []).map((e) => e.id)).toContain("always-1");
+      expect(useChatStore.getState().alwaysEntries.map((e) => e.id)).toContain(
+        "always-1",
+      );
+
+      useChatStore.getState().excludeEntryFromAuto("always-1");
+      // excludeEntryFromAuto 内部の refresh は fire-and-forget なので、
+      // 「次の refresh でも復活しない」ことを明示的な再実行で assert する
+      await useChatStore.getState().refreshContextLayers();
+
+      args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect((args?.codexEntries ?? []).map((e) => e.id)).not.toContain(
+        "always-1",
+      );
+      expect(
+        useChatStore.getState().alwaysEntries.map((e) => e.id),
+      ).not.toContain("always-1");
+    });
+
+    it("project スコープ (グローバル経路): 除外 always はインライン再収集からも外れる", async () => {
+      const { listCodexEntries } = await import("@/features/codex/api");
+      vi.mocked(listCodexEntries).mockResolvedValue([alwaysEntry] as never);
+      vi.mocked(chatApi.listPinnedCodexEntries).mockResolvedValue([]);
+
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: "session-1",
+        chatScope: "project",
+        scopeAnchorId: null,
+        inputPinnedEntryIds: [],
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+      let args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect((args?.codexEntries ?? []).map((e) => e.id)).toContain("always-1");
+
+      useChatStore.getState().excludeEntryFromAuto("always-1");
+      await useChatStore.getState().refreshContextLayers();
+
+      args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect((args?.codexEntries ?? []).map((e) => e.id)).not.toContain(
+        "always-1",
+      );
+      expect(
+        useChatStore.getState().alwaysEntries.map((e) => e.id),
+      ).not.toContain("always-1");
+    });
+
+    it("clearAutoExclusion は該当 ID のみ解除する", () => {
+      useChatStore.setState({ excludedAutoEntryIds: ["a", "b"] });
+      useChatStore.getState().clearAutoExclusion("a");
+      expect(useChatStore.getState().excludedAutoEntryIds).toEqual(["b"]);
+    });
+
+    it("excludeEntryFromAuto は冪等で、表示配列からも即時除去する", () => {
+      useChatStore.setState({
+        alwaysEntries: [alwaysEntry as never],
+        detectedEntries: [],
+      });
+      useChatStore.getState().excludeEntryFromAuto("always-1");
+      useChatStore.getState().excludeEntryFromAuto("always-1");
+      const s = useChatStore.getState();
+      expect(s.excludedAutoEntryIds).toEqual(["always-1"]);
+      expect(s.alwaysEntries).toEqual([]);
+    });
+
+    it("セッション切替で除外はクリアされる (セッション内スコープ)", async () => {
+      useChatStore.setState({ excludedAutoEntryIds: ["always-1"] });
+      await useChatStore.getState().selectSession(null);
+      expect(useChatStore.getState().excludedAutoEntryIds).toEqual([]);
     });
   });
 });
