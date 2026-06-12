@@ -408,6 +408,49 @@ export function sanitizeSceneContent(html: string): string {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Prompt-injection hardening: data-layer wrapper tags
+// ---------------------------------------------------------------------------
+
+/**
+ * 各データレイヤーを包む予約タグ。baseText の「タグで囲まれたブロックは
+ * 参照用の作品データ」宣言と対になる。L0/L6 は指示レイヤーなので包まない。
+ * `##` 見出しはデータ内で偽装可能 (シーン本文/Codex content は Markdown) な
+ * ため、セキュリティ境界はこのタグが担い、内部の `##` ヘッダは書式として温存する。
+ * trim 関数群は `##` ヘッダ形式に依存するため、ラップは必ず trim 後に行うこと。
+ */
+export const PROMPT_DATA_TAGS = {
+  l1: "project_info",
+  l2: "story_so_far",
+  l3: "current_scene",
+  l4: "codex_entries",
+  rag: "related_scenes",
+  l5: "conversation_summary",
+} as const;
+
+// 予約タグ名の開閉タグ風文字列 (大文字小文字・空白変種を含む) を導く `<`。
+// データ内に閉じタグが混入するとブロック境界の終了を偽装できるため、`<` の
+// 直後に `\` を挿入して無害化する。挿入後は `<` の次が `\` になり再マッチ
+// しない (冪等)。`<note>` `<sticky>` `<map>` は予約外なので素通しになる。
+const RESERVED_TAG_RE =
+  /<(?=\s*\/?\s*(?:project_info|story_so_far|current_scene|codex_entries|related_scenes|conversation_summary)\b)/gi;
+
+/** データ内の予約タグ偽装をエスケープする (`</current_scene>` → `<\/current_scene>`)。 */
+export function escapeReservedTags(text: string): string {
+  return text.replace(RESERVED_TAG_RE, "<\\");
+}
+
+/**
+ * trim 済みのレイヤーテキストを予約タグで包む。空白のみなら空文字を返し、
+ * 空レイヤーに `<story_so_far></story_so_far>` のような空ブロックを出さない。
+ */
+export function wrapDataLayer(text: string, tag: string): string {
+  if (!text.trim()) return "";
+  const escaped = escapeReservedTags(text);
+  const body = escaped.startsWith("\n") ? escaped.slice(1) : escaped;
+  return `\n<${tag}>\n${body}\n</${tag}>`;
+}
+
 function deduplicateById(entries: CodexContext[]): CodexContext[] {
   const seen = new Set<string>();
   return entries.filter((e) => {
@@ -1090,7 +1133,12 @@ export function buildSystemPrompt(
   if (exclude.includes("L1")) effectiveL1 = "";
   if (exclude.includes("L2")) effectiveL2 = "";
   if (exclude.includes("L3")) effectiveL3 = "";
-  if (exclude.includes("L4")) effectiveL4 = "";
+  if (exclude.includes("L4")) {
+    effectiveL4 = "";
+    // stable segment は trim 前に構築済みのため、ここで空にしないと
+    // cacheSegments (l4StableSegment || effectiveL4) 経由で L4 が残ってしまう
+    l4StableSegment = "";
+  }
   if (exclude.includes("L5")) effectiveL5 = "";
   if (exclude.includes("L6")) effectiveL6 = "";
   if (exclude.includes("RAG")) effectiveRag = "";
@@ -1106,8 +1154,34 @@ export function buildSystemPrompt(
       input.contextWindow,
       input.maxOutputTokens,
     );
+    // タグラッパーと境界リマインダーは trim 後に付加されるため、その分を
+    // 予算から先に差し引く。定数文字列なので countTokens はキャッシュヒットする。
+    // 空レイヤーはラッパーを出さないので非空レイヤーぶんだけ予約する。
+    // RAG は trim で最初に丸ごと消える投機的レイヤーなので予約しない
+    // (生き残るのは予算に余裕がある時だけで、超過 ~10 tok は
+    // responseReservation の余裕内に収まる)。
+    const wrapperOverhead = (tag: string) =>
+      countTokens(`\n<${tag}>\n\n</${tag}>`);
+    let hardeningOverhead = countTokens(s.dataBoundaryReminder) + 1;
+    if (effectiveL1.trim())
+      hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l1);
+    if (effectiveL2.trim())
+      hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l2);
+    if (effectiveL3.trim())
+      hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l3);
+    if (effectiveL4.trim()) {
+      hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l4);
+      // stable/volatile 分割時は codex_entries ブロックが 2 つになる
+      if (l4VolatileLines.length > 0)
+        hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l4);
+    }
+    if (effectiveL5.trim())
+      hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l5);
     const budget =
-      input.contextWindow - responseReservation - input.conversationTokens;
+      input.contextWindow -
+      responseReservation -
+      input.conversationTokens -
+      hardeningOverhead;
     const trimInput: TrimInput = {
       baseText,
       l1Text: effectiveL1,
@@ -1150,6 +1224,35 @@ export function buildSystemPrompt(
   // trim 後 (or trim をスキップした場合の素の l4Text) から marker を strip。
   // ここで落とすことで l4Tokens / prompt / cacheSegments 全てが marker レスになる。
   effectiveL4 = stripL4Markers(effectiveL4);
+
+  // インジェクション対策: trim と stable/volatile 抽出 (どちらも生文字列の照合・
+  // regex に依存) が終わったこの時点で、各データレイヤーを予約タグで包み、
+  // データ内の予約タグ偽装をエスケープする。以降のトークン計算・prompt・
+  // cacheSegments・volatileTail はすべてタグ込みの実送信値になる。
+  // L4 は stable/volatile が別位置に配置されるため、それぞれ完結したブロックとして包む。
+  effectiveL1 = wrapDataLayer(effectiveL1, PROMPT_DATA_TAGS.l1);
+  effectiveL2 = wrapDataLayer(effectiveL2, PROMPT_DATA_TAGS.l2);
+  effectiveL3 = wrapDataLayer(effectiveL3, PROMPT_DATA_TAGS.l3);
+  effectiveL4 = wrapDataLayer(effectiveL4, PROMPT_DATA_TAGS.l4);
+  l4StableSegment = wrapDataLayer(l4StableSegment, PROMPT_DATA_TAGS.l4);
+  l4VolatileSegment = wrapDataLayer(l4VolatileSegment, PROMPT_DATA_TAGS.l4);
+  effectiveRag = wrapDataLayer(effectiveRag, PROMPT_DATA_TAGS.rag);
+  effectiveL5 = wrapDataLayer(effectiveL5, PROMPT_DATA_TAGS.l5);
+
+  // サンドイッチ: 全データレイヤーの直後・L6 (正当な指示) の前に境界リマインダー
+  // を置く。データレイヤーが 1 つも無ければ付けない。l4StableSegment は trim を
+  // 通らないため、effectiveL4 が trim で空になっても cache 経路にデータが残る
+  // ケースを拾う。
+  const hasDataLayers = [
+    effectiveL1,
+    effectiveL2,
+    effectiveL3,
+    effectiveL4,
+    l4StableSegment,
+    effectiveRag,
+    effectiveL5,
+  ].some((seg) => seg.trim().length > 0);
+  const reminderText = hasDataLayers ? s.dataBoundaryReminder : "";
 
   // 各 layer のトークン数を 1 度だけ計算 (cache hit でも text 全長 hash コストを避ける)
   const baseTokens = countTokens(baseText);
@@ -1211,6 +1314,7 @@ export function buildSystemPrompt(
     effectiveL4,
     effectiveRag,
     effectiveL5,
+    ...(reminderText ? [reminderText] : []),
     effectiveL6,
   ].join("\n");
 
@@ -1228,12 +1332,15 @@ export function buildSystemPrompt(
     l4VolatileSegment,
     effectiveRag,
     effectiveL5,
+    reminderText,
     effectiveL6,
   ]
     .filter((seg) => seg.trim().length > 0)
     .join("\n");
 
-  // 結合後の全文を再 tokenize しない: 各 layer 合計 + join した \n 7 個分 (BPE で各 1 token)
+  // 結合後の全文を再 tokenize しない: 各 layer 合計 + join した \n 分 (BPE で各 1 token)。
+  // リマインダーが入ると join 要素が 1 つ増えるため \n も 1 個分加算する。
+  const reminderTokens = reminderText ? countTokens(reminderText) : 0;
   const totalTokens =
     baseTokens +
     l1Tokens +
@@ -1243,7 +1350,8 @@ export function buildSystemPrompt(
     ragTokens +
     l5Tokens +
     l6Tokens +
-    7;
+    reminderTokens +
+    (reminderText ? 8 : 7);
 
   return {
     prompt,
