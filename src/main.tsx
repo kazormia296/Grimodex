@@ -6,6 +6,7 @@ import { debugLog, errorDetail } from "./lib/debugLog";
 import { matchesMod } from "./lib/platform";
 import "./lib/i18n";
 import "./lib/perfLog";
+import "./lib/imeLog";
 import "./index.css";
 // 同梱フォント: Noto Serif JP (OFL-1.1)。本文デフォルト書体。fontsource が
 // subset 済み woff2 を提供し、Vite が build 時にバンドルする ('self' asset)。

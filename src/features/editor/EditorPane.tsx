@@ -52,6 +52,7 @@ import { useAttribution } from "@/features/attribution/useAttribution";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
+import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
@@ -1091,6 +1092,7 @@ export function EditorPane({
   );
 
   useCursorOverlay(mountedEditor);
+  useImeDiagnostics(mountedEditor);
   useCharacterFade(mountedEditor);
   useAttribution(dbNativeEditor);
 

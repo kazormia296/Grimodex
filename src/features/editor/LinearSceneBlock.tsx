@@ -13,6 +13,7 @@ import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
+import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import {
@@ -236,6 +237,7 @@ function MountedSceneBlock({
   // スムースキャレット (EditorPane と同じ overlay)。focus 中の block でのみ
   // 表示される (overlay は view.hasFocus() でゲートされる)。
   useCursorOverlay(editor);
+  useImeDiagnostics(editor);
 
   // Load content
   useEffect(() => {
