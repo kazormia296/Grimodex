@@ -34,6 +34,7 @@ describe("buildEditorContentStyle / buildEditorMeasureStyle", () => {
     wordBreak: "normal",
     lineBreak: "strict",
     paragraphIndent: 1,
+    paragraphSpacing: 8,
   };
 
   it("emits logical properties for the line-length cap and centering", () => {
@@ -54,6 +55,9 @@ describe("buildEditorContentStyle / buildEditorMeasureStyle", () => {
     expect(style.wordBreak).toBe("normal");
     expect(style.lineBreak).toBe("strict");
     expect(style["--editor-paragraph-indent"]).toBe("1em");
+    // editor.paragraphSpacing 設定の配線漏れ再発防止（設定UIのみ存在し
+    // 本文に届かないバグの regression gate）
+    expect(style["--editor-paragraph-spacing"]).toBe("8px");
   });
 
   it("measure style is the subset used by the linear outer wrapper", () => {

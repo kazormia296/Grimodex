@@ -38,6 +38,7 @@ const CONTENT_SETTINGS = {
   wordBreak: "normal",
   lineBreak: "strict",
   paragraphIndent: 0,
+  paragraphSpacing: 8,
 };
 
 const LONG_TEXT = "長い本文のテスト行。".repeat(20);

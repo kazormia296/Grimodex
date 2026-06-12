@@ -21,6 +21,7 @@ export type EditorContentStyleSettings = Pick<
   | "wordBreak"
   | "lineBreak"
   | "paragraphIndent"
+  | "paragraphSpacing"
 >;
 
 /** Line-length cap + centering only (LinearEditorView outer wrapper). */
@@ -46,6 +47,7 @@ export function buildEditorContentStyle(
     wordBreak: s.wordBreak as React.CSSProperties["wordBreak"],
     lineBreak: s.lineBreak as React.CSSProperties["lineBreak"],
     "--editor-paragraph-indent": `${s.paragraphIndent}em`,
+    "--editor-paragraph-spacing": `${s.paragraphSpacing}px`,
   } as React.CSSProperties;
 }
 

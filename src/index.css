@@ -667,7 +667,10 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   }
 
   p {
-    margin-block: 0.5em;
+    /* 本文エディタは editor.paragraphSpacing 設定（px）を反映。変数は
+       buildEditorContentStyle がラッパーに設定する。Sticky 等の本文外
+       tiptap サーフェスは変数未設定なので fallback の 0.5em のまま。 */
+    margin-block: var(--editor-paragraph-spacing, 0.5em);
     margin-inline: 0;
   }
 }
