@@ -1712,10 +1712,13 @@ pub fn get_foreshadow_detail(
             Err(e) => return Err(e.into()),
         };
 
+    // The payoff FK and setup scene_ids are resolved against tree_nodes; both
+    // must stay project-scoped so an anomalous cross-project FK (manual DB edit
+    // / import bug) cannot leak a foreign scene's title via this gated tool.
     let payoff_scene = if let Some(psid) = payoff_scene_id {
         conn.query_row(
-            "SELECT id, title FROM tree_nodes WHERE id = ?1",
-            params![psid],
+            "SELECT id, title FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+            params![psid, project_id],
             |row| {
                 Ok(ForeshadowPayoffScene {
                     id: row.get(0)?,
@@ -1733,10 +1736,10 @@ pub fn get_foreshadow_detail(
                 fs.ai_rationale, fs.is_orphan, tn.title
          FROM foreshadow_setups fs
          INNER JOIN tree_nodes tn ON fs.scene_id = tn.id
-         WHERE fs.foreshadow_id = ?1",
+         WHERE fs.foreshadow_id = ?1 AND tn.project_id = ?2",
     )?;
     let setups: Vec<ForeshadowSetupDetail> = setup_stmt
-        .query_map(params![foreshadow_id], |row| {
+        .query_map(params![foreshadow_id, project_id], |row| {
             let strength: Option<String> = row.get(2)?;
             let ai_strength: Option<String> = row.get(3)?;
             Ok(ForeshadowSetupDetail {
@@ -2803,6 +2806,50 @@ pub(crate) mod tests {
         assert_eq!(
             detail.payoff_scene.as_ref().map(|p| p.title.as_str()),
             Some("Payoff Scene")
+        );
+    }
+
+    /// A foreshadow scoped to p1 whose payoff_scene_id / setup scene_id point at
+    /// a tree_node in *another* project (anomalous FK from a manual DB edit or
+    /// import bug) must NOT leak that foreign scene's title. The parent row is
+    /// gated by project_id, but the secondary tree_nodes reads were not — this
+    /// guards the XPROJ scoping of those two follow-up reads.
+    #[test]
+    fn test_get_foreshadow_detail_cross_project_fk_no_leak() {
+        let conn = make_simple_db();
+        insert_project(&conn, "p1", "Novel");
+        insert_project(&conn, "p2", "Other");
+        // Foreign scene lives in p2.
+        insert_scene(&conn, "foreign", "p2", "Secret Foreign Scene", "draft");
+        let now = 1_700_000_000_000_i64;
+        // f1 is owned by p1 but its payoff FK points at the p2 scene.
+        conn.execute(
+            "INSERT INTO foreshadows (id, project_id, title, intent, notes, payoff_scene_id, secret, created_at, updated_at)
+             VALUES ('f1', 'p1', 'Thread', 'goal', 'note', 'foreign', 0, ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        // A setup of f1 also references the p2 scene.
+        conn.execute(
+            "INSERT INTO foreshadow_setups (id, foreshadow_id, scene_id, kind, strength, attribution, created_at, updated_at)
+             VALUES ('su1', 'f1', 'foreign', 'inserted_new', 'moderate', 'human', ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+
+        let detail = get_foreshadow_detail(&conn, "p1", "f1").unwrap().unwrap();
+        assert_eq!(detail.title, "Thread");
+        // The foreign payoff scene title must not leak.
+        assert!(
+            detail.payoff_scene.is_none(),
+            "cross-project payoff scene title leaked: {:?}",
+            detail.payoff_scene
+        );
+        // The setup pointing at the foreign scene must be dropped, not surfaced.
+        assert!(
+            detail.setups.is_empty(),
+            "cross-project setup leaked foreign scene title: {:?}",
+            detail.setups
         );
     }
 
