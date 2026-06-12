@@ -2322,7 +2322,8 @@
         "actor": "Actor",
         "target": "Target"
       }
-    }
+    },
+    "linearUnsupported": "AI commands are not yet supported in linear mode. Run them in the normal editor."
   },
   "keys": {
     "focusScenes": "Focus Scenes panel",

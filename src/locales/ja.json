@@ -2326,7 +2326,8 @@
         "actor": "行動者",
         "target": "対象"
       }
-    }
+    },
+    "linearUnsupported": "AIコマンドはリニアモードでは未対応です。通常モードのエディタで実行してください。"
   },
   "keys": {
     "focusScenes": "Scenes パネルにフォーカス",

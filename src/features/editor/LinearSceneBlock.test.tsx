@@ -12,13 +12,19 @@ import { getDocText } from "@/features/editor/RubyNode";
 //   消失経路だったため、これが最終防衛線。
 // - file-backed scene は EditorPane と同じ縮小スキーマ (taskList あり) を使う。
 
-const { mockLoadSceneFull, mockPersist, mockToastError, createdEditors } =
-  vi.hoisted(() => ({
-    mockLoadSceneFull: vi.fn(),
-    mockPersist: vi.fn().mockResolvedValue(undefined),
-    mockToastError: vi.fn(),
-    createdEditors: [] as unknown[],
-  }));
+const {
+  mockLoadSceneFull,
+  mockPersist,
+  mockToastError,
+  mockToastInfo,
+  createdEditors,
+} = vi.hoisted(() => ({
+  mockLoadSceneFull: vi.fn(),
+  mockPersist: vi.fn().mockResolvedValue(undefined),
+  mockToastError: vi.fn(),
+  mockToastInfo: vi.fn(),
+  createdEditors: [] as unknown[],
+}));
 
 // 実 Editor (headless) を使う: スキーマ選択と setContent の挙動こそが
 // テスト対象。useEditor / EditorContent (PM view の DOM mount) だけ
@@ -69,7 +75,7 @@ vi.mock("@/features/license/useLicenseEditableSync", () => ({
   useLicenseEditableSync: vi.fn(),
 }));
 vi.mock("sonner", () => ({
-  toast: { error: mockToastError },
+  toast: { error: mockToastError, info: mockToastInfo },
 }));
 
 // 実装は本物の useAutoSave を使いつつ、テストから pending を arm できるよう
@@ -203,6 +209,7 @@ beforeEach(() => {
   mockLoadSceneFull.mockReset();
   mockPersist.mockClear();
   mockToastError.mockClear();
+  mockToastInfo.mockClear();
   mockSetTabDirty.mockClear();
   isFileBackedNodeMock.mockReturnValue(false);
   createdEditors.length = 0;
@@ -498,5 +505,55 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     await waitFor(() => {
       expect(mockLoadSceneFull).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+// B1 回帰ガード: リニアモードで / コマンドが効かなかった件の実行配線。
+// SlashCommandExtension は extensions 共有でリニアでも発火していたが、
+// CustomEvent を受けて実行するリスナーが EditorPane 専用だった。
+describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
+  async function renderLoaded() {
+    mockLoadSceneFull.mockResolvedValue({
+      content: MENTION_CONTENT,
+      unplacedBeatsDoc: "[]",
+    });
+    const utils = renderBlock();
+    await waitFor(() => {
+      expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
+    });
+    return utils;
+  }
+
+  function dispatchSlashCommand(command: Record<string, unknown>) {
+    const ed = lastEditor();
+    ed.view.dom.dispatchEvent(
+      new CustomEvent("inlineai:slash-command", {
+        detail: { command },
+        bubbles: true,
+      }),
+    );
+  }
+
+  it("insert-node (sceneBeat) は editor に Beat ノードを挿入する", async () => {
+    await renderLoaded();
+
+    dispatchSlashCommand({ id: "sceneBeat", kind: "insert-node" });
+
+    const beats: string[] = [];
+    lastEditor().state.doc.descendants((node) => {
+      if (node.type.name === "sceneBeat") beats.push(node.attrs.id);
+    });
+    expect(beats).toHaveLength(1);
+    expect(mockToastInfo).not.toHaveBeenCalled();
+  });
+
+  it("AI 生成系コマンドは未対応 toast を出し本文に書き込まない", async () => {
+    await renderLoaded();
+    const before = getDocText(lastEditor().state.doc);
+
+    dispatchSlashCommand({ id: "continue", mode: "insert" });
+
+    expect(mockToastInfo).toHaveBeenCalled();
+    expect(getDocText(lastEditor().state.doc)).toBe(before);
   });
 });

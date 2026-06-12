@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { render, act } from "@testing-library/react";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 
 // LinearSceneBlock は TipTap / API / 多数の hooks に依存して mount コストが高い。
@@ -72,6 +72,7 @@ vi.stubGlobal("ResizeObserver", StubResizeObserver);
 
 import { LinearEditorView } from "./LinearEditorView";
 import { useLinearEditorStore } from "./linearEditorStore";
+import { useSlashCommandStore } from "./inlineAi/slashCommandStore";
 import type { Editor } from "@tiptap/core";
 
 const NODE_DEFAULTS = {
@@ -300,5 +301,42 @@ describe("LinearEditorView — toolbar editor 供給", () => {
         .querySelector("[data-testid='toolbar']")
         ?.getAttribute("data-has-editor"),
     ).toBe("false");
+  });
+});
+
+// B1 回帰ガード: SlashCommandPopup は EditorPane にしかマウントされておらず、
+// リニアモード (SceneEditor が LinearEditorView だけを描画) では
+// SlashCommandExtension が store.open しても描画するコンポーネントが無く、
+// サジェストが一切出なかった。
+describe("LinearEditorView — スラッシュコマンドポップアップ", () => {
+  it("slashCommandStore が open になるとサジェストが描画される", () => {
+    useTreeStore.setState({ nodes: [makeNode({ id: "S1" })] });
+    render(<LinearEditorView />);
+
+    expect(document.body.textContent).not.toContain("/continue");
+
+    act(() => {
+      useSlashCommandStore.getState().open({
+        items: [
+          {
+            id: "continue",
+            label: "続きを書く",
+            description: "",
+            mode: "insert",
+            needsSelection: false,
+          } as never,
+        ],
+        query: "",
+        rect: { top: 0, left: 0, bottom: 20 },
+        commandFn: () => {},
+      });
+    });
+
+    // Popup は document.body へ portal される
+    expect(document.body.textContent).toContain("/continue");
+
+    act(() => {
+      useSlashCommandStore.getState().close();
+    });
   });
 });

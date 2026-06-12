@@ -10,6 +10,7 @@ import { CodexPopover } from "@/features/editor/CodexPopover";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
 import { MentionPopup } from "@/features/chat/components/MentionPopup";
+import { SlashCommandPopup } from "@/features/editor/inlineAi/SlashCommandPopup";
 import type {
   CodexMentionPopupState,
   MentionItem,
@@ -512,6 +513,11 @@ export function LinearEditorView() {
       </ResizablePanelGroup>
       <CodexPopover editor={focusedEditor} />
       <EditorContextMenu editor={focusedEditor} containerRef={scrollRef} />
+      {/* / コマンドのサジェスト。グローバル store (useSlashCommandStore) を
+          読む消費者なのでビュー全体で 1 個マウントすれば全ブロックに効く。
+          これが無いと SlashCommandExtension は store.open するのに描画する
+          コンポーネントが存在せず、リニアモードでだけサジェストが出ない。 */}
+      <SlashCommandPopup />
       {mentionPopup &&
         createPortal(
           <MentionPopup

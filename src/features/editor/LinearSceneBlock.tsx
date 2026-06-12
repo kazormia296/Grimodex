@@ -36,6 +36,7 @@ import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransitio
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { EditorContentSkeleton } from "@/features/editor/EditorContentSkeleton";
 import i18next from "@/lib/i18n";
+import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
@@ -253,6 +254,42 @@ function MountedSceneBlock({
       useLinearEditorStore.getState().unregisterEditor(sceneId, editor);
     };
   }, [sceneId, editor]);
+
+  // SlashCommandExtension が dispatch する inlineai:slash-command の実行配線。
+  // CustomEvent は各エディタの view.dom に対して dispatch されるため、各
+  // ブロックは自分のエディタのイベントだけを受ける (EditorPane と同じ経路)。
+  // 構造挿入 (insert-node) は AI パイプライン不要なのでそのまま実行する。
+  // AI 生成系は inline-AI 差分スタック (palette / diff / staging) がリニアに
+  // 未配線のため、通常モードへの誘導 toast を出す — 本文サーフェスへの
+  // 書き込み経路を検証なしで持ち込まない (content-loss 系の前科があるため
+  // 別タスクで QA 込みで移植する)。
+  useEffect(() => {
+    if (!editor) return;
+    const ed = editor;
+    let dom: HTMLElement;
+    try {
+      dom = ed.view.dom;
+    } catch {
+      return;
+    }
+    function onSlashCommand(e: Event) {
+      const cmd = (e as CustomEvent).detail?.command as
+        | InlineAiCommand
+        | undefined;
+      if (!cmd) return;
+      if (cmd.kind === "insert-node") {
+        if (cmd.id === "sceneBeat") {
+          ed.chain().focus().insertSceneBeat().run();
+        }
+        return;
+      }
+      toast.info(i18next.t("inlineAi.linearUnsupported"));
+    }
+    dom.addEventListener("inlineai:slash-command", onSlashCommand);
+    return () => {
+      dom.removeEventListener("inlineai:slash-command", onSlashCommand);
+    };
+  }, [editor]);
 
   // saveScene(sceneId) で外部から flush 可能にする (EditorPane と同じ契約)。
   // これが無いと agent 書き込み (autoApplyProse) / Codex 改名波及 /
