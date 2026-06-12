@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useProjectSettings } from "../hooks/useProjectSettings";
@@ -18,6 +19,9 @@ import { expandPreset, inferPreset } from "@/features/ai-policy/preset";
 import type { AiFeature, AiPolicyPreset } from "@/features/ai-policy/types";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { PROJECT_ID } from "@/features/project/constants";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import { semanticReindexAll } from "@/features/semantic-search/api";
+import { useReindexProgressStore } from "@/features/semantic-search/reindexProgressStore";
 import { GENRE_VALUES } from "@/features/project/genreOptions";
 
 const LANGUAGE_OPTIONS = [
@@ -105,6 +109,38 @@ export function ProjectCategory() {
     const all = await getAllProjectSettings(PROJECT_ID);
     await updateProjectDefaults(all);
     toast.success(t("settings.project.saveAsDefaultsDone"));
+  }
+
+  const [reindexRunning, setReindexRunning] = useState(false);
+
+  // 意味検索インデックスの全件再構築。インデックスへの投入は通常シーン保存時の
+  // 逐次更新（scheduleSceneIndex）だけなので、機能追加前から存在する・編集して
+  // いないシーンは未インデックスのまま＝関連シーン注入が一切効かない。
+  // 進行状況は Rust 側 progress event → ReindexProgressToast（App.tsx 常設）が表示。
+  async function handleSemanticReindex() {
+    if (reindexRunning) return;
+    setReindexRunning(true);
+    try {
+      const chunks = await semanticReindexAll(getCurrentProjectId());
+      toast.success(
+        t("settings.project.semanticReindexDone", {
+          defaultValue: "インデックスを再構築しました（{{count}} チャンク）",
+          count: chunks,
+        }),
+      );
+    } catch (e) {
+      // 失敗時は呼び出し側が progress 表示を片付ける契約（reindexProgressStore）
+      useReindexProgressStore.getState().clear();
+      toast.error(
+        t(
+          "settings.project.semanticReindexFailed",
+          "インデックスの再構築に失敗しました",
+        ),
+      );
+      console.error("[semanticReindex]", e);
+    } finally {
+      setReindexRunning(false);
+    }
   }
 
   if (isLoading || !project) {
@@ -458,6 +494,27 @@ export function ProjectCategory() {
             onChange={(e) => semanticRecall.setValue(e.target.checked)}
             className="h-4 w-4 cursor-pointer rounded border-input"
           />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.project.semanticReindex",
+            "意味検索インデックスの再構築",
+          )}
+          description={t(
+            "settings.project.semanticReindexDesc",
+            "プロジェクト内の全シーンを再インデックスする。インデックスはシーン保存時にしか更新されないため、既存プロジェクトで初めて関連シーン注入を使うときはここから構築する。進行状況は画面右下に表示される。",
+          )}
+        >
+          <button
+            type="button"
+            onClick={handleSemanticReindex}
+            disabled={reindexRunning}
+            className="rounded-md border border-border px-3 py-1 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {reindexRunning
+              ? t("settings.project.semanticReindexRunning", "再構築中…")
+              : t("settings.project.semanticReindexButton", "再構築")}
+          </button>
         </SettingRow>
       </SettingSection>
 

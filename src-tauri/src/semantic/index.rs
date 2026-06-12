@@ -246,43 +246,43 @@ pub fn list_scene_ids_in_project(db: &Database, project_id: &str) -> Result<Vec<
 // オーケストレーション (Embedder を借りるため feature gate)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// シーン content と initial hash を読み出す (DB lock は読み出しの間だけ)。
+/// `None` = 該当 id が scene でない / 存在しない。
+pub fn read_scene_for_index(db: &Database, scene_id: &str) -> Result<Option<(String, String)>> {
+    let row: Option<String> = db.with_conn(|conn| {
+        let v = conn
+            .query_row(
+                "SELECT content FROM tree_nodes WHERE id = ? AND node_type = 'scene'",
+                params![scene_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        Ok(v)
+    })?;
+    Ok(row.map(|c| {
+        let h = compute_content_hash(&c);
+        (c, h)
+    }))
+}
+
+/// content を parse → chunk → embed して upsert 用 payload を作る。
+/// DB に一切触れない純 CPU 処理 — ONNX 推論は scene あたり秒単位かかりうる
+/// ため、呼び出し側は workspace lock (with_db) の外で呼ぶこと。
+/// 推論中に本文が変わっても、後段の `upsert_scene_chunks` が TX 内で
+/// initial hash を再確認して負けた側を捨てるので整合は保たれる。
 #[cfg(feature = "semantic-embedding")]
-pub fn index_scene(
-    db: &Database,
+pub fn embed_scene_payloads(
     embedder: &mut crate::semantic::embedding::Embedder,
     scene_id: &str,
-    model_id: &str,
-) -> Result<UpsertOutcome> {
-    use crate::semantic::chunker::{chunk_scene, ChunkerConfig, CHUNKER_VERSION};
+    content: &str,
+) -> Result<Vec<ChunkPayload>> {
+    use crate::semantic::chunker::{chunk_scene, ChunkerConfig};
     use anyhow::anyhow;
 
-    // 1) シーン content の読み出しと initial hash 算出 (DB lock を短く保つ)
-    let (content, initial_hash) = {
-        let row: Option<String> = db.with_conn(|conn| {
-            let v = conn
-                .query_row(
-                    "SELECT content FROM tree_nodes WHERE id = ? AND node_type = 'scene'",
-                    params![scene_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .ok();
-            Ok(v)
-        })?;
-        match row {
-            Some(c) => {
-                let h = compute_content_hash(&c);
-                (c, h)
-            }
-            None => return Ok(UpsertOutcome::SkippedNotScene),
-        }
-    };
-
-    // 2) parse + chunk
-    let doc: serde_json::Value = serde_json::from_str(&content)
+    let doc: serde_json::Value = serde_json::from_str(content)
         .map_err(|e| anyhow!("scene_id={scene_id} content JSON parse error: {e}"))?;
     let chunks = chunk_scene(&doc, &ChunkerConfig::default())?;
 
-    // 3) 各チャンクを embed して LE bytes に変換
     let embedding_dim = embedder.embedding_dim();
     let mut payloads = Vec::with_capacity(chunks.len());
     for chunk in &chunks {
@@ -305,8 +305,27 @@ pub fn index_scene(
             embedding: bytes,
         });
     }
+    Ok(payloads)
+}
 
-    // 4) TX 内で hash 再確認しつつ upsert
+/// 読み出し → embed → upsert を一括で行う合成版。テストや「lock 分割が
+/// 不要な呼び出し側」用。Tauri command 側は workspace lock を embed 中に
+/// 保持しないよう、`read_scene_for_index` / `embed_scene_payloads` /
+/// `upsert_scene_chunks` を個別に呼ぶ (commands/semantic.rs 参照)。
+#[cfg(feature = "semantic-embedding")]
+pub fn index_scene(
+    db: &Database,
+    embedder: &mut crate::semantic::embedding::Embedder,
+    scene_id: &str,
+    model_id: &str,
+) -> Result<UpsertOutcome> {
+    use crate::semantic::chunker::CHUNKER_VERSION;
+
+    let Some((content, initial_hash)) = read_scene_for_index(db, scene_id)? else {
+        return Ok(UpsertOutcome::SkippedNotScene);
+    };
+    let payloads = embed_scene_payloads(embedder, scene_id, &content)?;
+    let embedding_dim = embedder.embedding_dim();
     upsert_scene_chunks(
         db,
         scene_id,

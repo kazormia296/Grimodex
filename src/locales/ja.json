@@ -527,7 +527,13 @@
       "saveAsDefaults": "現在の設定をデフォルト雛形として保存",
       "saveAsDefaultsDesc": "ツリー・エクスポート・AI 予算等の作品設定を、今後新規作成するプロジェクトの初期値として保存します。",
       "saveAsDefaultsButton": "保存",
-      "saveAsDefaultsDone": "デフォルト雛形を保存しました"
+      "saveAsDefaultsDone": "デフォルト雛形を保存しました",
+      "semanticReindex": "意味検索インデックスの再構築",
+      "semanticReindexDesc": "プロジェクト内の全シーンを再インデックスする。インデックスはシーン保存時にしか更新されないため、既存プロジェクトで初めて関連シーン注入を使うときはここから構築する。進行状況は画面右下に表示される。",
+      "semanticReindexButton": "再構築",
+      "semanticReindexRunning": "再構築中…",
+      "semanticReindexDone": "インデックスを再構築しました（{{count}} チャンク）",
+      "semanticReindexFailed": "インデックスの再構築に失敗しました"
     },
     "keys": {
       "search": "キーバインドを検索…",

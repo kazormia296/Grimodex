@@ -527,7 +527,13 @@
       "saveAsDefaults": "Save current settings as default template",
       "saveAsDefaultsDesc": "Saves work-specific settings (tree, export, AI budget, etc.) as the initial values for newly created projects.",
       "saveAsDefaultsButton": "Save",
-      "saveAsDefaultsDone": "Default template saved"
+      "saveAsDefaultsDone": "Default template saved",
+      "semanticReindex": "Rebuild semantic search index",
+      "semanticReindexDesc": "Re-indexes every scene in the project. The index is only updated when a scene is saved, so build it here when enabling related-scene injection on an existing project. Progress is shown at the bottom right.",
+      "semanticReindexButton": "Rebuild",
+      "semanticReindexRunning": "Rebuilding…",
+      "semanticReindexDone": "Index rebuilt ({{count}} chunks)",
+      "semanticReindexFailed": "Failed to rebuild the index"
     },
     "keys": {
       "search": "Search keybindings…",

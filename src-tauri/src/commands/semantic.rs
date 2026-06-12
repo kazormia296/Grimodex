@@ -29,7 +29,8 @@ use tauri::{Emitter, Manager};
 
 use crate::semantic::embedding::{Embedder, EMBEDDING_DIM_RURI_V3_30M, MODEL_ID_RURI_V3_30M};
 use crate::semantic::index::{
-    collect_index_status, index_scene, list_scene_ids_in_project, IndexStatusReport, UpsertOutcome,
+    collect_index_status, embed_scene_payloads, list_scene_ids_in_project, read_scene_for_index,
+    upsert_scene_chunks, IndexStatusReport, UpsertOutcome,
 };
 use crate::semantic::search::{run_search, SearchCache, SearchHit};
 
@@ -108,6 +109,37 @@ fn load_embedder(app: &tauri::AppHandle) -> anyhow::Result<Embedder> {
 ///
 /// upsert 成功時は `SearchCache` の該当 scene を invalidate して、
 /// 次回 `semantic_search` で新しい chunks が読まれるようにする。
+/// 1 scene のインデックス更新を「読み出し → embed → upsert」に分割し、
+/// workspace lock (with_db) を読み出しと upsert の間だけ保持する版。
+/// `semantic::index::index_scene` の合成と同じ結果になるが、ONNX 推論中に
+/// lock を持たない点だけが違う (semantic-index-db-lock 対策)。
+fn index_scene_split_lock(
+    ws_state: &tauri::State<'_, WorkspaceState>,
+    embedder: &mut Embedder,
+    scene_id: &str,
+    model_id: &str,
+) -> Result<UpsertOutcome, AppError> {
+    let Some((content, initial_hash)) = with_db(ws_state, |db| read_scene_for_index(db, scene_id))?
+    else {
+        return Ok(UpsertOutcome::SkippedNotScene);
+    };
+    // ここは lock 外: 推論中も他コマンドの DB アクセスを止めない
+    let payloads = embed_scene_payloads(embedder, scene_id, &content)?;
+    let embedding_dim = embedder.embedding_dim();
+    let outcome = with_db(ws_state, |db| {
+        upsert_scene_chunks(
+            db,
+            scene_id,
+            &initial_hash,
+            &payloads,
+            model_id,
+            embedding_dim,
+            crate::semantic::chunker::CHUNKER_VERSION,
+        )
+    })?;
+    Ok(outcome)
+}
+
 #[tauri::command]
 pub(crate) async fn semantic_index_scene(
     app: tauri::AppHandle,
@@ -129,9 +161,12 @@ pub(crate) async fn semantic_index_scene(
         }
         let embedder = guard.as_mut().expect("just ensured Some");
 
-        let outcome = with_db(&ws_state, |db| {
-            index_scene(db, embedder, &scene_id, &model_id)
-        })?;
+        // workspace lock (with_db) は読み出しと upsert の間だけ保持する。
+        // ONNX 推論 (embed) は scene あたり秒単位かかりうるため、lock を
+        // 跨いで持つと並行する db_execute が 10s timeout する
+        // (semantic-index-db-lock)。推論中の本文変更は upsert 側の
+        // hash 再確認が race を吸収する。
+        let outcome = index_scene_split_lock(&ws_state, embedder, &scene_id, &model_id)?;
 
         // Indexed のときだけ cache を捨てる。Skipped* は DB を触っていないので
         // 既存キャッシュは有効。
@@ -275,9 +310,10 @@ pub(crate) async fn semantic_reindex_all(
 
         let mut total: usize = 0;
         for (i, scene_id) in scene_ids.iter().enumerate() {
-            let outcome = with_db(&ws_state, |db| {
-                index_scene(db, embedder, scene_id, &model_id)
-            })?;
+            // scene ごとに lock 分割版を使う: embed 中に workspace lock を
+            // 持たないので、全件再構築の最中でも autosave 等の db_execute が
+            // 各 scene の読み出し/upsert の隙間で通る。
+            let outcome = index_scene_split_lock(&ws_state, embedder, scene_id, &model_id)?;
             if let UpsertOutcome::Indexed(n) = outcome {
                 cache.invalidate(scene_id)?;
                 total += n;
