@@ -9,16 +9,21 @@
  *   「ブロック軸あふれ=横スクロール」に解決される
  * - Chromium の vertical-rl scrollLeft 符号規約（0 起点・負方向）=
  *   get/setLogicalScrollOffset の前提 canary
- * - node-island（scene-beat / scene-break / table / pre / taskList）の
+ * - node-island（scene-break / table / pre / taskList）の
  *   horizontal-tb リセットと寸法潰れ検知
  * - generated-prose-block（Beat 生成の本編プロセ）は島ではなく vertical-rl 継承
+ * - scene-beat（配置済み Beat）は島ではなく縦書きフローに参加する —
+ *   wrapper が vertical-rl 継承・論理プロパティ（border-s / margin-block /
+ *   beat-divider）の軸マップ・ポップオーバー（.beat-popover）の横書き維持
  * - 行番号ガター padding-inline-start の軸マップ
  */
 import { describe, it, expect } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { render, waitFor, fireEvent } from "@testing-library/react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { RubyNode } from "./RubyNode";
+import { SceneBeatNode } from "./SceneBeatNode";
+import { GeneratedProseBlockNode } from "./GeneratedProseBlockNode";
 import {
   buildEditorContentStyle,
   getLogicalScrollOffset,
@@ -224,9 +229,6 @@ describe("縦書きMODE: node-island の horizontal-tb リセット", () => {
       >
         <div className="tiptap" style={{ blockSize: "100%" }}>
           <p>縦書き本文</p>
-          <div data-type="scene-beat" data-testid="island-beat">
-            ビート UI
-          </div>
           <div className="scene-break" data-testid="island-break">
             ※ ※ ※
           </div>
@@ -255,7 +257,6 @@ describe("縦書きMODE: node-island の horizontal-tb リセット", () => {
       </div>,
     );
     for (const id of [
-      "island-beat",
       "island-break",
       "island-table",
       "island-pre",
@@ -295,6 +296,132 @@ describe("縦書きMODE: node-island の horizontal-tb リセット", () => {
         label.getBoundingClientRect().top - body.getBoundingClientRect().top,
       ),
     ).toBeLessThan(label.getBoundingClientRect().height + 1);
+  });
+});
+
+function BeatEditorFixture({ vertical }: { vertical: boolean }) {
+  const editor = useEditor({
+    extensions: [StarterKit, SceneBeatNode, GeneratedProseBlockNode],
+    content: {
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "前の本文。" }] },
+        {
+          type: "sceneBeat",
+          attrs: {
+            id: "beat-v1",
+            collapsed: false,
+            beatType: "free",
+            pov: null,
+          },
+          content: [{ type: "text", text: "ビートの構成意図テキスト" }],
+        },
+        { type: "paragraph", content: [{ type: "text", text: "後の本文。" }] },
+      ],
+    },
+  });
+  return (
+    <div
+      data-testid="beat-scroll-container"
+      className={`overflow-auto p-4${vertical ? " editor-vertical" : ""}`}
+      style={{ width: 800, height: 500 }}
+    >
+      <EditorContent editor={editor} />
+    </div>
+  );
+}
+
+async function waitForBeatNode(): Promise<HTMLElement> {
+  return await waitFor(() => {
+    const el = document.querySelector(
+      '[data-type="scene-beat"]',
+    ) as HTMLElement | null;
+    expect(el).toBeTruthy();
+    return el!;
+  });
+}
+
+describe("縦書きMODE: Beat ノードの縦書き表示", () => {
+  it("scene-beat は島ではなく vertical-rl を継承し、縦帯としてレイアウトされる", async () => {
+    render(<BeatEditorFixture vertical />);
+    const beat = await waitForBeatNode();
+    const cs = getComputedStyle(beat);
+    expect(cs.writingMode).toBe("vertical-rl");
+    const rect = beat.getBoundingClientRect();
+    expect(rect.width).toBeGreaterThan(0);
+    expect(rect.height).toBeGreaterThan(0);
+    // 縦帯: インライン軸（行長）が縦 → 高さがセクション積層幅より大きい
+    expect(rect.height).toBeGreaterThan(rect.width);
+    // border-s-4 のアクセントストライプが縦書きでは上端（inline-start）に解決
+    expect(cs.borderTopWidth).toBe("4px");
+    expect(cs.borderLeftWidth).toBe("0px");
+    // margin-block がブロック軸（左右）に解決され、隣の本文列と分離される
+    expect(cs.marginLeft).toBe("8px");
+    expect(cs.marginRight).toBe("8px");
+    expect(cs.marginTop).toBe("0px");
+  });
+
+  it("ヘッダー（block-start）が右端・フッター（block-end）が左端に並び、区切り線が右辺に解決される", async () => {
+    render(<BeatEditorFixture vertical />);
+    const beat = await waitForBeatNode();
+    const header = beat.querySelector("header") as HTMLElement;
+    const footer = beat.querySelector("footer") as HTMLElement;
+    expect(header).toBeTruthy();
+    expect(footer).toBeTruthy();
+    // vertical-rl のブロック軸は右→左: header が footer より右に来る
+    expect(header.getBoundingClientRect().left).toBeGreaterThan(
+      footer.getBoundingClientRect().right - 1,
+    );
+    // beat-divider（border-block-start）は縦書きでは右辺ボーダーに解決
+    const fcs = getComputedStyle(footer);
+    expect(fcs.borderRightWidth).toBe("1px");
+    expect(fcs.borderTopWidth).toBe("0px");
+  });
+
+  it("ポップオーバーは横書きのままトリガーの左（block-end）側に開く", async () => {
+    render(<BeatEditorFixture vertical />);
+    const beat = await waitForBeatNode();
+    const chip = beat.querySelector(
+      '[data-testid="beat-type-chip"]',
+    ) as HTMLElement;
+    fireEvent.click(chip);
+    const menu = await waitFor(() => {
+      const el = beat.querySelector(".beat-popover") as HTMLElement | null;
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(getComputedStyle(menu).writingMode).toBe("horizontal-tb");
+    const menuRect = menu.getBoundingClientRect();
+    const chipRect = chip.getBoundingClientRect();
+    // トリガーの左側に展開（block-end 方向 = まだ読んでいない側）
+    expect(menuRect.right).toBeLessThanOrEqual(chipRect.left + 1);
+    // min-w が潰れない（縦帯の極小 containing block でも実用幅を保つ）
+    expect(menuRect.width).toBeGreaterThanOrEqual(119);
+  });
+
+  it("横書きでは従来どおり（回帰）: horizontal-tb・ストライプ左辺・メニューは下に開く", async () => {
+    render(<BeatEditorFixture vertical={false} />);
+    const beat = await waitForBeatNode();
+    const cs = getComputedStyle(beat);
+    expect(cs.writingMode).toBe("horizontal-tb");
+    expect(cs.borderLeftWidth).toBe("4px");
+    expect(cs.borderTopWidth).toBe("0px");
+    expect(cs.marginTop).toBe("8px");
+    expect(cs.marginBottom).toBe("8px");
+    expect(cs.marginLeft).toBe("0px");
+    const chip = beat.querySelector(
+      '[data-testid="beat-type-chip"]',
+    ) as HTMLElement;
+    fireEvent.click(chip);
+    const menu = await waitFor(() => {
+      const el = beat.querySelector(".beat-popover") as HTMLElement | null;
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    const menuRect = menu.getBoundingClientRect();
+    const chipRect = chip.getBoundingClientRect();
+    // top-6 (= トリガー直下) に開く。mount アニメ (y:-4) のぶん緩めに見る
+    expect(menuRect.top).toBeGreaterThanOrEqual(chipRect.top + 18);
   });
 });
 
