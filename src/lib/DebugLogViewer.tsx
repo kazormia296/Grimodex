@@ -1,10 +1,16 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Trash2, Copy, ClipboardCopy } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/platform";
 import { useDebugLogStore, type LogEntry, type LogLevel } from "./debugLog";
+import {
+  disableImeLog,
+  enableImeLog,
+  isImeLogEnabled,
+  openImeTestPage,
+} from "./imeLog";
 
 const LEVEL_STYLES: Record<LogLevel, string> = {
   debug: "text-muted-foreground",
@@ -17,6 +23,9 @@ export function DebugLogViewer() {
   const { t } = useTranslation();
   const { entries, isOpen, setOpen, clear } = useDebugLogStore();
   const bottomRef = useRef<HTMLDivElement>(null);
+  // devtools コンソールが開けない production ビルドでの IME 実機 QA 導線。
+  // 状態の正本は imeLog 側 (localStorage) — ここはトグル表示のミラー。
+  const [imeLogOn, setImeLogOn] = useState(isImeLogEnabled);
 
   useEffect(() => {
     if (isOpen) {
@@ -52,6 +61,34 @@ export function DebugLogViewer() {
           ({entries.length} entries)
         </span>
         <div className="flex-1" />
+        <button
+          type="button"
+          onClick={() => {
+            if (isImeLogEnabled()) {
+              disableImeLog();
+            } else {
+              enableImeLog();
+            }
+            setImeLogOn(isImeLogEnabled());
+          }}
+          className={cn(
+            "rounded border border-border px-1.5 py-0.5 text-[10px]",
+            imeLogOn
+              ? "text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+          title="IME 変換診断ログ (縦書き実機QA用・enableImeLog() と同じ)"
+        >
+          IME診断 {imeLogOn ? "ON" : "OFF"}
+        </button>
+        <button
+          type="button"
+          onClick={openImeTestPage}
+          className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+          title="素の contenteditable で IME 挙動を切り分ける診断ページへ移動 (SPA を離れるため未保存の編集は保存してから)"
+        >
+          IMEテスト
+        </button>
         <button
           type="button"
           onClick={copyAll}
