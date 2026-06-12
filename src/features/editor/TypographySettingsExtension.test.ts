@@ -67,6 +67,28 @@ describe("typography settings gating", () => {
     expect(editor.state.doc.textContent).toBe("“ ‘");
   });
 
+  // 上流 Typography の open ルールは英語専用の区切りクラス（空白・括弧等）
+  // しか見ないため、日本語文字の直後の " が常に閉じグリフになっていた。
+  // 開きは「CJK 直後も開き文脈」、閉じは「段落内の未クローズ開きがあれば
+  // 閉じ」のパリティ判定で決める（B6 回帰ガード）。
+  it("smartQuotes ON: opens after Japanese text and closes by pairing", () => {
+    setSettings({ "editor.smartQuotes": "true" });
+    typeText(editor, '彼は"こんにちは"と言った');
+    expect(editor.state.doc.textContent).toBe("彼は“こんにちは”と言った");
+  });
+
+  it("smartQuotes ON: keeps English behavior (word-final close, apostrophe)", () => {
+    setSettings({ "editor.smartQuotes": "true" });
+    typeText(editor, `He said "don't panic"`);
+    expect(editor.state.doc.textContent).toBe("He said “don’t panic”");
+  });
+
+  it("smartQuotes ON: single quotes pair in Japanese context", () => {
+    setSettings({ "editor.smartQuotes": "true" });
+    typeText(editor, "強調は'ここ'だけ");
+    expect(editor.state.doc.textContent).toBe("強調は‘ここ’だけ");
+  });
+
   it("smartDashes ON: converts -- to em dash", () => {
     setSettings({ "editor.smartDashes": "true" });
     typeText(editor, "--");

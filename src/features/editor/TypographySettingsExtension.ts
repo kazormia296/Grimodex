@@ -1,12 +1,6 @@
 import { Extension, InputRule } from "@tiptap/core";
 import type { Extensions } from "@tiptap/core";
-import Typography, {
-  closeDoubleQuote,
-  closeSingleQuote,
-  emDash,
-  openDoubleQuote,
-  openSingleQuote,
-} from "@tiptap/extension-typography";
+import Typography, { emDash } from "@tiptap/extension-typography";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 
 /**
@@ -34,17 +28,69 @@ function gateBySetting(rule: InputRule, settingKey: string): InputRule {
   });
 }
 
+const OPEN_DOUBLE = "“"; // “
+const CLOSE_DOUBLE = "”"; // ”
+const OPEN_SINGLE = "‘"; // ‘
+const CLOSE_SINGLE = "’"; // ’
+
+/**
+ * 直前文字がこのクラスなら「開き」文脈（行頭も開き扱い）。
+ * 上流 Typography の openDoubleQuote と同じ区切りクラス
+ * （空白・開き括弧・先行クォート）に加えて CJK（和文約物・かな・漢字・
+ * 全角形）を含める。上流の規則は英語専用の区切りクラスしか見ないため、
+ * 日本語文字の直後に " を打つと open ルールが外れて常に閉じグリフに
+ * なっていた。
+ */
+const OPENING_CONTEXT =
+  /[\s{[(<'"\u2018\u201C\u3000-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]$/;
+
+/**
+ * 開き/閉じを文脈で決める smart quote ルール。
+ *
+ * 上流 Typography のような「直前文字クラスだけ」の判定は日本語で破綻する:
+ * 開きも閉じも直前は CJK 文字になるため、クラスに CJK を足すと今度は
+ * 閉じが打てなくなる。そこで段落内の開閉パリティを優先する —
+ * 未クローズの開きクォートが手前にあれば閉じ、無ければ直前文字で
+ * 開き/閉じ（apostrophe）を決める。英語の挙動（行頭・空白後は開き、
+ * 語中の ' は apostrophe）は上流と一致する。
+ */
+function smartQuoteRule(find: RegExp, open: string, close: string): InputRule {
+  return new InputRule({
+    find,
+    handler: ({ state, range }) => {
+      const $pos = state.doc.resolve(range.from);
+      const before = $pos.parent.textBetween(
+        0,
+        $pos.parentOffset,
+        undefined,
+        "￼",
+      );
+      let unclosed = 0;
+      for (const ch of before) {
+        if (ch === open) unclosed += 1;
+        else if (ch === close && unclosed > 0) unclosed -= 1;
+      }
+      const prev = before.slice(-1);
+      const opening =
+        unclosed === 0 && (prev === "" || OPENING_CONTEXT.test(prev));
+      state.tr.insertText(opening ? open : close, range.from, range.to);
+    },
+  });
+}
+
 const SettingGatedTypographyRules = Extension.create({
   name: "typographySettings",
 
   addInputRules() {
     return [
-      ...[
-        openDoubleQuote(),
-        closeDoubleQuote(),
-        openSingleQuote(),
-        closeSingleQuote(),
-      ].map((rule) => gateBySetting(rule, "editor.smartQuotes")),
+      gateBySetting(
+        smartQuoteRule(/"$/, OPEN_DOUBLE, CLOSE_DOUBLE),
+        "editor.smartQuotes",
+      ),
+      gateBySetting(
+        smartQuoteRule(/'$/, OPEN_SINGLE, CLOSE_SINGLE),
+        "editor.smartQuotes",
+      ),
       gateBySetting(emDash(), "editor.smartDashes"),
     ];
   },
