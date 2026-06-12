@@ -86,6 +86,10 @@ per-project トグル（`editor.verticalMode`、project_settings KV）で TipTap
   viewport 座標なので機能はするが「下に出す」前提が縦組みでは不自然
 - maxContentWidth の設定ラベル（縦書きでは「行長（高さ）」の意味になる）
 - CharacterFadeOut の縦書き対応
+- IME 候補ウィンドウは完全な縦組みにならない（WebView の制約・許容済み）。
+  位置はキャレット近傍に出る（Windows 実機確認済 2026-06-12）。MS-IME は
+  予測候補グリフを 90 度回転描画するが IME 側の挙動で制御不可。
+  詳細は「IME 変換対応の方針」参照。
 
 ## IME 変換対応の方針（2026-06-12 検討確定）
 
@@ -94,10 +98,13 @@ Grimodex のスタック（Tauri WebView + TipTap/PM）に当てはめた確定�
 
 ### 外的制約（アプリからは動かせない）
 
-- **候補ウィンドウの縦書き化は不可能**。候補窓は OS の IME が描き、縦書きの
-  通知（IMM32 の lfOrientation=2700 / TSF の TSATTRID_Text_VerticalWriting）は
-  ネイティブ実装の責務。WebView 内からは IMM32/TSF に触れず、Chromium は
-  この属性を送らない。**「横向き候補窓がキャレット付近に出る」が上限**。
+- **候補ウィンドウの描画はアプリから制御不可能**。候補窓は OS の IME が描き、
+  WebView 内からは IMM32/TSF に触れない。位置・向き・回転は IME 実装次第。
+  ※当初「Chromium は縦書き属性（TSATTRID_Text_VerticalWriting）を送らない」と
+  推定していたが **実機観察で否定**: WebView2 + MS-IME は縦書きを検知し
+  予測候補のグリフを 90 度回転描画した（= 縦書き情報は TSF 経由で IME に
+  届いている。ただし窓レイアウトは横のままで完全な縦組み候補窓ではない）。
+  **「候補窓がキャレット付近に出る」が上限**という結論自体は変わらない。
 - **未確定文字列（下線部分）は追加実装ゼロで縦になる**。contenteditable では
   ブラウザが DOM 内に描くため writing-mode に追従する。既存の composition
   処理（CursorOverlayPlugin の overlay 凍結 → 確定後再描画）も writing-mode
@@ -162,6 +169,13 @@ QA ビルドは `pnpm tauri build` に devtools feature 付与を推奨（コン
       キャレットに候補窓が追従するか。文節変換・再変換・確定直後 undo。
       安全弁 = per-project トグルで即横書きに戻せること。
       手順・判定基準・診断ツールは上の「IME 変換対応の方針」を参照。
+      **2026-06-12 Windows 実機（位置確認）: 合格**。予測候補（imeLog #66）・
+      カタカナ候補（#71）・変換候補リスト（#83）いずれもキャレット直近
+      （dom rect 直下/隣接）に出現、決定表の「許容」に該当。位置は IME に
+      よって多少異なるが可読位置。MS-IME は予測候補グリフを 90 度回転描画
+      （上記のとおり IME 側挙動・実害なし）。スクショ = temp/ime（dpr=1）。
+      残: 再変換・確定直後 undo・行末/左端/スクロール後の位置バリエーション・
+      macOS WKWebView。
 - [ ] scrollLeft 符号のエンジン差: WKWebView / WebKitGTK 実機で
       get/setLogicalScrollOffset の前提（0 起点・負方向）を確認。
 - [ ] 句読点・括弧・長音の縦書き字形（vert/vpal）: Noto Serif JP + 任意フォント。
