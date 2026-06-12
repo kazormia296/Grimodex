@@ -50,7 +50,6 @@ export function LinearEditorView() {
 
   const focusedEditor = useLinearEditorStore((s) => s.focusedEditor);
   const pendingScrollToId = useLinearEditorStore((s) => s.pendingScrollToId);
-  const editorsById = useLinearEditorStore((s) => s.editorsById);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -68,6 +67,14 @@ export function LinearEditorView() {
 
   const [mountedSet, setMountedSet] = useState<Set<string>>(new Set());
   const [activeId, setActiveId] = useState<string | null>(activeSceneId);
+  // editorsById 全体を購読すると、スクロールでブロックが mount/unmount する
+  // たび (register/unregister の spread 差し替え) に view 全体が再レンダーされ
+  // scenes.map が全シーン分再実行される。active シーンの editor だけを引く
+  // selector なら、active 以外の登録/解除では出力同一 (Object.is) で
+  // 再レンダーされない。
+  const activeRegisteredEditor = useLinearEditorStore((s) =>
+    activeId !== null ? (s.editorsById[activeId] ?? null) : null,
+  );
   // IntersectionObserver を activeId 変更のたびに張り替えないための ref ミラー
   // (張り替えの瞬間に交差イベントを取りこぼし、スクロール中の active 同期が
   // 不安定になる)。
@@ -361,8 +368,7 @@ export function LinearEditorView() {
   // active シーンの editor (フォーカス不要)。Toolbar / FindReplaceBar /
   // SceneMetaPanel に常時供給する — focusedEditor だとクリックするまで null で
   // ツールバーが消える (Toolbar は editor 無しのとき null を返す)。
-  const activeEditor =
-    (activeId ? editorsById[activeId] : null) ?? focusedEditor;
+  const activeEditor = activeRegisteredEditor ?? focusedEditor;
 
   // 縦書きではホイールの縦回転を読み進み方向 (横) のスクロールに変換する
   useVerticalWheelScroll(scrollRef, verticalMode);
@@ -503,7 +509,7 @@ export function LinearEditorView() {
                 sceneId={activeId!}
                 // registry から「active シーンの editor」を直接引く。
                 // focusedEditor だと別シーンの doc に Beat が誤挿入されうる。
-                editor={activeId ? (editorsById[activeId] ?? null) : null}
+                editor={activeRegisteredEditor}
                 setMentionPopup={setMentionPopup}
               />
             </ResizablePanel>
