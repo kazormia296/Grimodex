@@ -165,26 +165,26 @@ export function resolveCoordsVertical(
     const usable = (r: { width: number; height: number }) =>
       r.width > 0 || r.height > 0;
 
+    const charRectOf = (text: Text, i: number): DOMRect | null => {
+      if (i < 0 || i >= text.data.length) return null;
+      const range = text.ownerDocument!.createRange();
+      range.setStart(text, i);
+      range.setEnd(text, i + 1);
+      const r = range.getBoundingClientRect();
+      return usable(r) ? r : null;
+    };
+
     if (node.nodeType === 3) {
       const text = node as Text;
-      const len = text.data.length;
-      const charRect = (i: number): DOMRect | null => {
-        if (i < 0 || i >= len) return null;
-        const range = text.ownerDocument!.createRange();
-        range.setStart(text, i);
-        range.setEnd(text, i + 1);
-        const r = range.getBoundingClientRect();
-        return usable(r) ? r : null;
-      };
       // bias=1 (行頭側) = 直後の文字の inline-start (top)。
       // bias=-1 (行末側) = 直前の文字の inline-end (bottom)。
       // 端 (段落頭/末) は反対側の文字で代替する。
       const after = () => {
-        const r = charRect(offset);
+        const r = charRectOf(text, offset);
         return r ? flat(r, "top") : null;
       };
       const before = () => {
-        const r = charRect(offset - 1);
+        const r = charRectOf(text, offset - 1);
         return r ? flat(r, "bottom") : null;
       };
       const c = bias >= 0 ? (after() ?? before()) : (before() ?? after());
@@ -195,15 +195,20 @@ export function resolveCoordsVertical(
 
     if (node.nodeType === 1) {
       const el = node as Element;
-      const rectOfChild = (n: Node): DOMRect | null => {
+      // 子ノードの「端の 1 文字ぶん」の rect。複数行に折り返した text の
+      // 全体 rect (selectNodeContents / getBoundingClientRect) は段落全幅に
+      // 広がるため、そのまま使うと段落末 (End キー等で domAtPos が要素 +
+      // 子インデックスを返すケース) でキャレットが段落全体に伸びる。
+      // text は端の 1 文字まで掘り、element (ruby/mention 等の atom) は
+      // 1 セルなので自身の rect を使う。
+      const boundaryRect = (n: Node, side: "start" | "end"): DOMRect | null => {
+        if (n.nodeType === 3) {
+          const t = n as Text;
+          if (t.data.length === 0) return null;
+          return charRectOf(t, side === "start" ? 0 : t.data.length - 1);
+        }
         if (n.nodeType === 1) {
           const r = (n as Element).getBoundingClientRect();
-          return usable(r) ? r : null;
-        }
-        if (n.nodeType === 3) {
-          const range = n.ownerDocument!.createRange();
-          range.selectNodeContents(n);
-          const r = range.getBoundingClientRect();
           return usable(r) ? r : null;
         }
         return null;
@@ -212,11 +217,11 @@ export function resolveCoordsVertical(
       const afterNode =
         offset < el.childNodes.length ? el.childNodes[offset] : null;
       const after = () => {
-        const r = afterNode ? rectOfChild(afterNode) : null;
+        const r = afterNode ? boundaryRect(afterNode, "start") : null;
         return r ? flat(r, "top") : null;
       };
       const before = () => {
-        const r = beforeNode ? rectOfChild(beforeNode) : null;
+        const r = beforeNode ? boundaryRect(beforeNode, "end") : null;
         return r ? flat(r, "bottom") : null;
       };
       const c = bias >= 0 ? (after() ?? before()) : (before() ?? after());

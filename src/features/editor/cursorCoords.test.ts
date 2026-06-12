@@ -332,3 +332,56 @@ describe("resolveCoordsVertical", () => {
     expect(resolveCoordsVertical(view, 5, 1)).toBeNull();
   });
 });
+
+describe("resolveCoordsVertical — 段落末 (要素 + 子インデックス)", () => {
+  const char0 = { left: 400, right: 424, top: 100, bottom: 124 };
+  const char1 = { left: 400, right: 424, top: 124, bottom: 148 };
+
+  it("折り返しテキスト全体ではなく最終文字の rect を使う (段落全幅キャレットの回帰)", () => {
+    // End キーで段落末に移動すると domAtPos は {要素, offset=子数} を返す。
+    // 直前の子 = 複数列に折り返した text ノードの全体 rect を使うと
+    // キャレットが段落全幅の横棒になる (実機報告)。端の 1 文字まで掘る。
+    const text = makeFakeText([char0, char1]);
+    const para = {
+      nodeType: 1,
+      childNodes: [text],
+      getBoundingClientRect: () => ({
+        left: 376,
+        right: 424,
+        top: 100,
+        bottom: 400,
+        width: 48,
+        height: 300,
+      }),
+    };
+    const view = makeVerticalView(para, 1);
+    expect(resolveCoordsVertical(view, 5, -1)).toEqual({
+      left: 400,
+      right: 424,
+      top: 148,
+      bottom: 148,
+    });
+  });
+
+  it("空段落は自身の列 rect の上端に出す", () => {
+    const para = {
+      nodeType: 1,
+      childNodes: [],
+      getBoundingClientRect: () => ({
+        left: 400,
+        right: 424,
+        top: 100,
+        bottom: 400,
+        width: 24,
+        height: 300,
+      }),
+    };
+    const view = makeVerticalView(para, 0);
+    expect(resolveCoordsVertical(view, 5, 1)).toEqual({
+      left: 400,
+      right: 424,
+      top: 100,
+      bottom: 100,
+    });
+  });
+});
