@@ -26,6 +26,9 @@ const SLOW_COMMANDS = new Set([
   "start_post_effect_run",
   /** 全 scene の再インデックスは scene 数 × Embedder 推論時間で分単位になりうる */
   "semantic_reindex_all",
+  /** embedder コールド時 (初回 ONNX ロード) は 1 scene でも 10s を超えうる。
+   *  reindex_all だけ入っていた非対称の解消 (semantic-index-db-lock #2)。 */
+  "semantic_index_scene",
   /** 中規模プロジェクトでは Aho-Corasick 構築に 10 秒超かかることがある */
   "codex_rebuild_matcher",
   /** ネイティブ保存ダイアログを開いている間 invoke がブロックする。ユーザーが
