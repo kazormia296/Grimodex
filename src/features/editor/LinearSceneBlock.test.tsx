@@ -104,6 +104,8 @@ vi.mock("@/features/settings/hooks/useEditorSettings", () => ({
     wordBreak: "normal",
     lineBreak: "auto",
     paragraphIndent: 0,
+    paragraphSpacing: 8,
+    spellCheck: false,
   }),
 }));
 
@@ -297,6 +299,23 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
       ).toBeNull();
     });
     expect(container.textContent).toContain("chars");
+  });
+
+  it("editor.spellCheck 設定が本文ラッパーの spellcheck 属性に届く", async () => {
+    // 設定UIのみ存在し contenteditable に届かなかった配線漏れの regression
+    // gate。spellcheck は属性継承するため、ラッパー div に付けば中の
+    // contenteditable に効く。
+    mockLoadSceneFull.mockResolvedValue({
+      content: MENTION_CONTENT,
+      unplacedBeatsDoc: "[]",
+    });
+    const { container } = renderBlock();
+    await waitFor(() => {
+      expect(container.querySelector("div[spellcheck]")).not.toBeNull();
+    });
+    expect(
+      container.querySelector("div[spellcheck]")!.getAttribute("spellcheck"),
+    ).toBe("false");
   });
 
   it("setEditable の doc 未変更 'update' では autosave が arm されない", async () => {

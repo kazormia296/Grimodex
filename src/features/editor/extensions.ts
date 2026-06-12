@@ -7,7 +7,6 @@ import TableHeader from "@tiptap/extension-table-header";
 import TableCell from "@tiptap/extension-table-cell";
 import Placeholder from "@tiptap/extension-placeholder";
 import CharacterCount from "@tiptap/extension-character-count";
-import Typography from "@tiptap/extension-typography";
 import Paragraph from "@tiptap/extension-paragraph";
 import { defaultMarkdownSerializer } from "prosemirror-markdown";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
@@ -19,6 +18,7 @@ import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNo
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
+import { getTypographyExtensions } from "@/features/editor/TypographySettingsExtension";
 import { createLintDecorationPlugin } from "@/features/editor/LintDecorationPlugin";
 import { createLintDisableGutterPlugin } from "@/features/editor/LintDisableGutterPlugin";
 import { LintDisableMark } from "@/features/editor/LintDisableMark";
@@ -170,7 +170,8 @@ export function getEditorExtensions(
       placeholder: () => i18next.t("editor.placeholder"),
     }),
     CharacterCount,
-    Typography,
+    // smartQuotes/smartDashes 設定で実行時ゲートされる Typography 構成
+    ...getTypographyExtensions(),
     // Table
     Table.configure({ resizable: false }),
     TableRow,

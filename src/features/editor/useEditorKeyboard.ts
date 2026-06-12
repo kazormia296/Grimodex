@@ -6,6 +6,7 @@ import {
   getMergedBindings,
   matchesBinding,
 } from "@/features/settings/keybindings";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
@@ -77,6 +78,15 @@ export function useEditorKeyboard({
           useRevisionStore.getState().openHistory("scene", id, content);
         }
       } else if (matchesBinding(e, merged.inlineAiPalette ?? "", mac)) {
+        // editor.inlineAiShortcut トグル — OFF ならパレットを開かず
+        // preventDefault もしない（既定動作に委ねる）。
+        if (
+          !useSettingsStore
+            .getState()
+            .getBoolean("editor.inlineAiShortcut", true)
+        ) {
+          return;
+        }
         e.preventDefault();
         setPalettePreselect(null);
         setPaletteOpen(true);

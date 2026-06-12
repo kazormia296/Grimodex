@@ -1,6 +1,7 @@
 import { Extension } from "@tiptap/core";
 import Suggestion from "@tiptap/suggestion";
 import type { SuggestionOptions } from "@tiptap/suggestion";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { filterCommands, getInlineAiCommands } from "./inlineAiCommands";
 import type { InlineAiCommand } from "./inlineAiTypes";
 import {
@@ -40,6 +41,15 @@ export const SlashCommandExtension = Extension.create<{
         char: "/",
         startOfLine: false,
         allow({ state, range }) {
+          // editor.inlineAiCommand トグル。"/" 入力のたびに評価されるので
+          // 実行時参照ならエディタ再生成なしで設定変更が効く。
+          if (
+            !useSettingsStore
+              .getState()
+              .getBoolean("editor.inlineAiCommand", true)
+          ) {
+            return false;
+          }
           const $from = state.doc.resolve(range.from);
           const textBefore = $from.parent.textBetween(
             0,

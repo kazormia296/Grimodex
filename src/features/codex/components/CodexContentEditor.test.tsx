@@ -84,4 +84,15 @@ describe("CodexContentEditor", () => {
 
     expect(capturedContent.mock.calls[0][0]).toBe("");
   });
+
+  it("editor.spellCheck 設定 (default false) がラッパーの spellcheck 属性に届く", () => {
+    // 設定UIのみ存在し contenteditable に届かなかった配線漏れの regression
+    // gate。属性が無いとブラウザ既定 (=有効) にフォールバックする。
+    const { getByTestId } = render(
+      <CodexContentEditor content="" onContentChange={vi.fn()} />,
+    );
+    expect(getByTestId("codex-content-editor").getAttribute("spellcheck")).toBe(
+      "false",
+    );
+  });
 });

@@ -106,11 +106,15 @@ vi.mock("@/features/revision/api", () => ({
   pruneRevisions: vi.fn(),
 }));
 
-vi.mock("@/features/settings/settingsStore", () => ({
-  useSettingsStore: {
-    getState: () => ({ getNumber: () => 5 }),
-  },
-}));
+vi.mock("@/features/settings/settingsStore", () => {
+  // zustand 形: hook として呼べて getState も持つ（spellCheck は hook 経由、
+  // revision 設定は getState 経由で読まれる）
+  const state = { getNumber: () => 5, getBoolean: () => false };
+  const useSettingsStore = (selector: (s: typeof state) => unknown) =>
+    selector(state);
+  useSettingsStore.getState = () => state;
+  return { useSettingsStore };
+});
 
 vi.mock("@/features/codex/tagApi", () => ({
   listSnippetEntryTags: vi.fn(() => Promise.resolve([])),
@@ -224,6 +228,15 @@ describe("SnippetDetailContent — コピー時の source 伝搬", () => {
         onDelete={vi.fn()}
       />,
     );
+
+  it("editor.spellCheck 設定 (default false) が本文ラッパーの spellcheck 属性に届く", () => {
+    // 設定UIのみ存在し contenteditable に届かなかった配線漏れの regression
+    // gate。属性が無いとブラウザ既定 (=有効) にフォールバックする。
+    const { container } = renderDetail({});
+    const el = container.querySelector("div[spellcheck]");
+    expect(el).not.toBeNull();
+    expect(el!.getAttribute("spellcheck")).toBe("false");
+  });
 
   it("AI snippet のコピーボタンは source='ai' で copyWithAttribution を呼ぶ", () => {
     const { getByTestId } = renderDetail({ contentSource: "ai" });

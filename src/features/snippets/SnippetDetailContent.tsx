@@ -75,6 +75,9 @@ export function SnippetDetailContent({
   const insertFromSnippet = useEditorStore((s) => s.insertFromSnippet);
   const incrementUsageCount = useSnippetStore((s) => s.incrementUsageCount);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
+  const spellCheck = useSettingsStore((s) =>
+    s.getBoolean("editor.spellCheck", false),
+  );
 
   const [title, setTitle] = useState(snippet.title);
   const [selectedTags, setSelectedTags] = useState<CodexTag[]>([]);
@@ -397,7 +400,11 @@ export function SnippetDetailContent({
               {t("snippets.detail.openInEditor")}
             </button>
           </div>
-          <div className="rounded-md border border-input bg-background p-2">
+          <div
+            className="rounded-md border border-input bg-background p-2"
+            // contenteditable は spellcheck 属性を祖先から継承する
+            spellCheck={spellCheck}
+          >
             <EditorContent editor={editor} />
           </div>
           <CodexPopover editor={editor} />

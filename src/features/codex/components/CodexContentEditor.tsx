@@ -12,6 +12,7 @@ import { CodexPopover } from "@/features/editor/CodexPopover";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
 import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 
 // Sentinel group index — distinguishes mini-editor updates from pane 0 / pane 1
 const CODEX_MINI_GROUP = 99;
@@ -50,6 +51,10 @@ export function CodexContentEditor({
   onExternalSyncRef.current = onExternalSync;
   const contentRef = useRef(content);
   contentRef.current = content;
+
+  const spellCheck = useSettingsStore((s) =>
+    s.getBoolean("editor.spellCheck", false),
+  );
 
   const parsedContent = parseContent(content);
 
@@ -153,6 +158,8 @@ export function CodexContentEditor({
       <div
         data-testid="codex-content-editor"
         data-compact={compact || undefined}
+        // contenteditable は spellcheck 属性を祖先から継承する
+        spellCheck={spellCheck}
         className={
           compact
             ? "min-h-[34px] rounded-md border border-input bg-background px-2 py-1.5 text-sm [&_.ProseMirror]:min-h-[1.25rem] [&_.ProseMirror]:outline-none"

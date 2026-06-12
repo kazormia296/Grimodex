@@ -101,6 +101,8 @@ export function EditorContentArea({
             editorSettings.showLineNumbers && "editor-line-numbers",
           )}
           style={buildEditorContentStyle(editorSettings)}
+          // contenteditable は spellcheck 属性を祖先から継承する
+          spellCheck={editorSettings.spellCheck}
         >
           {editorTitle && (
             <div
