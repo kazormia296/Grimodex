@@ -1,6 +1,6 @@
 # Grimodex 縦書きライブ編集 MODE 設計書
 
-最終更新: 2026-06-11（v1 実装完了時点）
+最終更新: 2026-06-12（IME 変換対応の方針 + 診断ツール追記）
 
 ## 概要
 
@@ -87,11 +87,81 @@ per-project トグル（`editor.verticalMode`、project_settings KV）で TipTap
 - maxContentWidth の設定ラベル（縦書きでは「行長（高さ）」の意味になる）
 - CharacterFadeOut の縦書き対応
 
+## IME 変換対応の方針（2026-06-12 検討確定）
+
+外部調査（IMM32/TSF・TATEditor/Mery の対応実態・EditContext API）の結論を
+Grimodex のスタック（Tauri WebView + TipTap/PM）に当てはめた確定事項。
+
+### 外的制約（アプリからは動かせない）
+
+- **候補ウィンドウの縦書き化は不可能**。候補窓は OS の IME が描き、縦書きの
+  通知（IMM32 の lfOrientation=2700 / TSF の TSATTRID_Text_VerticalWriting）は
+  ネイティブ実装の責務。WebView 内からは IMM32/TSF に触れず、Chromium は
+  この属性を送らない。**「横向き候補窓がキャレット付近に出る」が上限**。
+- **未確定文字列（下線部分）は追加実装ゼロで縦になる**。contenteditable では
+  ブラウザが DOM 内に描くため writing-mode に追従する。既存の composition
+  処理（CursorOverlayPlugin の overlay 凍結 → 確定後再描画）も writing-mode
+  非依存でそのまま正しい。
+- **EditContext API は不採用**。位置制御の Web 標準（Chromium 121+）だが、
+  contenteditable の既定編集動作をオプトアウトする設計のため ProseMirror の
+  入力パイプラインと根本非互換。WKWebView 未対応も致命的。再検討しない。
+
+### フォールバック階段
+
+1. **現状容認（本命）**: 実機 QA で候補窓がキャレット近傍に出るなら追加実装
+   ゼロ。「候補窓は横向き」を既知制限に追記して完了。
+2. **横書き入力プロキシ（致命的なズレ時のみ・設計スケッチ）**: 確定までは
+   非表示の horizontal-tb 入力面に focus を保持して composition をそちらで
+   行い、未確定文字列は縦書き doc 内へ widget decoration でゴースト表示、
+   compositionend で PM transaction として挿入。主コストは selection 同期と
+   既存 decoration（lint/comment/find）との共存。ネイティブ勢の「候補窓
+   位置ずらし」に相当する Web 版の最終手段。
+3. **安全弁（実装済み）**: per-project トグルで即横書きに戻せる。
+
+### 診断ツール（実装済み・QA の判定材料）
+
+- `enableImeLog()`（devtools）または **Ctrl+Shift+D → DebugLogViewer ヘッダの
+  「IME診断」トグル**（production でも可）。localStorage 永続だがオリジン
+  分離のため dev / production ビルドでは別々に enable が必要。
+- 有効中は composition{start,update,end} ごとに DOM selection 矩形（エンジンが
+  OS に伝える位置の源泉）/ アプリ認識キャレット矩形（resolveCoordsVertical）/
+  PM coordsAtPos（flattenV）/ 論理スクロール / dpr / screenX,Y を記録し、
+  画面に **赤枠 = DOM selection / 青枠 = app caret** のオーバーレイと左下の
+  数値ラベルを描く（候補窓のスクリーンショットに写し込んで突き合わせる）。
+- `dumpImeLog()` で JSON 回収（リングバッファ 300 件）。DebugLogViewer の
+  Copy all でも detail に JSON 全文が入る。
+- **`/ime-test.html`**（DebugLogViewer「IMEテスト」ボタンから遷移）:
+  PM を介さない素の contenteditable + vertical-rl。本体エディタとの差で
+  PM 起因 / WebView 起因を切り分ける。SPA を離れるため**保存してから開く**。
+
+### 実機 QA 手順（Windows: MS-IME / Google日本語入力 / 任意で ATOK）
+
+QA ビルドは `pnpm tauri build` に devtools feature 付与を推奨（コンソール保険）。
+
+1. 縦書き ON + IME診断 ON →「きしゃのきしゃはきしゃできしゃした」を入力。
+2. Space 変換 → Shift+←/→ で文節移動しつつ、各文節での候補窓位置を
+   スクリーンショット（オーバーレイの赤枠/青枠/ラベルを写し込む）。
+3. 確定 → Ctrl+Z（確定直後 undo）→ 変換キーで再変換。
+4. 位置バリエーション: 行頭 / 行末（折返し境界）/ 画面左端近くの列 /
+   スクロール後（論理オフセット > 0）。
+5. 同操作を `/ime-test.html` でも再現し、`dumpImeLog()` の JSON を保存。
+6. macOS（WKWebView）でも同手順（scrollLeft 符号チェックと同時に）。
+
+### 決定表（観察 → 次アクション）
+
+| 観察結果                                         | 判定          | 次アクション                   |
+| ------------------------------------------------ | ------------- | ------------------------------ |
+| 候補窓がキャレット近傍（横向きでも可読位置）     | 許容          | 既知制限に追記して完了         |
+| 画面隅/前回位置/ウィンドウ外、ime-test.html も同 | WebView 制約  | フォールバック 2 の設計着手    |
+| ime-test.html は正常、本体エディタのみズレ       | アプリ起因    | imeLog の rect 突合せで個別修正 |
+| 未確定文字列が縦にならない                       | CSS 継承バグ  | node-island リセット等の修正   |
+
 ## 実機 QA ゲート（コードで検証不能・リリース判定チェックリスト）
 
 - [ ] **IME 変換窓**（最重要）: Windows WebView2 / macOS WKWebView で縦書き
       キャレットに候補窓が追従するか。文節変換・再変換・確定直後 undo。
       安全弁 = per-project トグルで即横書きに戻せること。
+      手順・判定基準・診断ツールは上の「IME 変換対応の方針」を参照。
 - [ ] scrollLeft 符号のエンジン差: WKWebView / WebKitGTK 実機で
       get/setLogicalScrollOffset の前提（0 起点・負方向）を確認。
 - [ ] 句読点・括弧・長音の縦書き字形（vert/vpal）: Noto Serif JP + 任意フォント。
@@ -109,6 +179,9 @@ per-project トグル（`editor.verticalMode`、project_settings KV）で TipTap
 ## 関連ファイル
 
 - `src/features/editor/editorLayout.ts` — 論理レイアウト純関数（+ unit test）
+- `src/lib/imeLog.ts` — IME 診断ログ基盤（enableImeLog/dumpImeLog、+ unit test）
+- `src/features/editor/ImeDiagnosticsPlugin.ts` — composition 記録 + 矩形オーバーレイ（+ unit test）
+- `public/ime-test.html` / `public/ime-test.js` — 素の contenteditable 切り分けページ
 - `src/features/editor/verticalMode.browser.test.tsx` — 縦書き幾何 gate
 - `src/features/editor/linearVerticalGeometry.browser.test.tsx` — Linear スクロール幾何 gate
 - `src/index.css` — `.editor-vertical` ブロック + 論理プロパティ化された prose CSS
