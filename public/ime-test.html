@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IME 診断 — 素の contenteditable (Grimodex)</title>
+    <!--
+      縦書き IME 実機 QA の切り分けページ。ProseMirror を介さない素の
+      contenteditable で候補ウィンドウの位置を観察し、本体エディタでの
+      ズレが PM 起因か WebView 起因かを判定する。
+      手順は docs/Grimodex_縦書きMODE設計書.md「IME 変換対応の方針」を参照。
+
+      CSP 注意: production では tauri.conf.json の script-src 'self' が
+      この HTML にも注入される。インライン script / インラインイベント
+      ハンドラは禁止 — 配線は必ず外部の ime-test.js で行う。
+      (インライン style は style-src 'unsafe-inline' で許可されている)
+    -->
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #16161a;
+        color: #e8e8e8;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        overflow: hidden;
+      }
+      header {
+        padding: 8px 12px;
+        border-bottom: 1px solid #333;
+        flex: none;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 6px;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .controls button {
+        font: 12px system-ui, sans-serif;
+        padding: 3px 10px;
+        background: #2a2a30;
+        color: #e8e8e8;
+        border: 1px solid #555;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .controls a {
+        font-size: 12px;
+        color: #8ab4f8;
+      }
+      #env {
+        margin: 6px 0 0;
+        font: 10px/1.4 monospace;
+        color: #999;
+        word-break: break-all;
+      }
+      main {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+      #editor {
+        flex: 1;
+        margin: 12px;
+        padding: 16px;
+        border: 1px solid #444;
+        border-radius: 4px;
+        background: #1e1e24;
+        font-family: "Noto Serif JP", serif;
+        font-size: 16px;
+        line-height: 1.9;
+        overflow: auto;
+        outline: none;
+      }
+      #editor.vertical {
+        writing-mode: vertical-rl;
+      }
+      #log {
+        flex: none;
+        width: 44%;
+        margin: 12px 12px 12px 0;
+        padding: 8px;
+        border: 1px solid #444;
+        border-radius: 4px;
+        overflow: auto;
+        font: 10px/1.5 monospace;
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: #b8e0b8;
+      }
+      #footer {
+        flex: none;
+        padding: 4px 12px 8px;
+        font: 10px/1.4 monospace;
+        color: #999;
+      }
+      /* selection rect の可視化 (viewport 座標の fixed 枠) */
+      #sel-rect {
+        position: fixed;
+        box-sizing: border-box;
+        border: 1.5px solid rgba(255, 64, 64, 0.9);
+        background: rgba(255, 64, 64, 0.08);
+        pointer-events: none;
+        display: none;
+        z-index: 2147483647;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>IME 診断 — 素の contenteditable (ProseMirror なし)</h1>
+      <div class="controls">
+        <button id="toggle-mode" type="button">横書きに切替</button>
+        <button id="clear-log" type="button">ログ消去</button>
+        <button id="select-log" type="button">ログ全選択</button>
+        <a href="/">← Grimodex に戻る</a>
+      </div>
+      <p id="env"></p>
+    </header>
+    <main>
+      <div id="editor" class="vertical" contenteditable="true" spellcheck="false">
+        <p>吾輩は猫である。名前はまだ無い。</p>
+        <p>
+          どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所で
+          ニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて
+          人間というものを見た。しかもあとで聞くとそれは書生という人間中で
+          一番獰悪な種族であったそうだ。
+        </p>
+        <p>ここをクリックして日本語を入力 → 変換 → 文節移動してください。</p>
+      </div>
+      <pre id="log"></pre>
+    </main>
+    <div id="footer">
+      <span id="status"></span>
+    </div>
+    <div id="sel-rect"></div>
+    <script src="/ime-test.js"></script>
+  </body>
+</html>
