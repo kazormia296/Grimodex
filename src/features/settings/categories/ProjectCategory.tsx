@@ -409,6 +409,22 @@ export function ProjectCategory() {
           />
         </SettingRow>
         <SettingRow
+          label={t("settings.project.aiPolicyKnowledgeWrite", "知識書き込み")}
+          description={t(
+            "settings.project.aiPolicyKnowledgeWriteDesc",
+            "AI による Codex・伏線・スニペットの自律的な作成・更新",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={currentPolicy.toggles.knowledgeWrite}
+            onChange={(e) =>
+              handleToggleChange("knowledgeWrite", e.target.checked)
+            }
+            className="h-4 w-4 cursor-pointer rounded border-input"
+          />
+        </SettingRow>
+        <SettingRow
           label={t(
             "settings.project.aiAutoAcceptBody",
             "本文提案の自動適用（ヘッドレス）",

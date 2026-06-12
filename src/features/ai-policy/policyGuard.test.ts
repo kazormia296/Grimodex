@@ -88,3 +88,32 @@ describe("blockIfPolicyOff", () => {
     expect(mockToastError).not.toHaveBeenCalled();
   });
 });
+
+describe("new-project default backstop (security F-6)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // schema.ts / migrate.rs の新規デフォルトと同じトグルセット。
+  const newProjectDefault = (): AiPolicy => ({
+    preset: "custom",
+    toggles: {
+      chat: true,
+      bodyWrite: true,
+      analysis: true,
+      structureWrite: false,
+      knowledgeWrite: false,
+    },
+  });
+
+  it("blocks autonomous knowledge/structure writes by default", () => {
+    setProjectPolicy(newProjectDefault());
+    expect(isAiFeatureBlockedByPolicy("knowledgeWrite")).toBe(true);
+    expect(isAiFeatureBlockedByPolicy("structureWrite")).toBe(true);
+  });
+
+  it("still allows chat / analysis / bodyWrite by default", () => {
+    setProjectPolicy(newProjectDefault());
+    expect(isAiFeatureBlockedByPolicy("chat")).toBe(false);
+    expect(isAiFeatureBlockedByPolicy("analysis")).toBe(false);
+    expect(isAiFeatureBlockedByPolicy("bodyWrite")).toBe(false);
+  });
+});

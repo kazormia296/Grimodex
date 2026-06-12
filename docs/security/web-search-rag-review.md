@@ -39,6 +39,16 @@
 - **影響評価**: tool_result role の唯一の生成元は `executeTool` 出力（`agentLoop.ts:243-252`）で、擬似タグが本物のツール出力として再分類される経路は存在しない。よって特権シンク③には到達せず、**few-shot模倣による品質劣化のみ**。traceComplete=false の note。
 - **推奨**: 要約候補組み立て時とサマリ再注入時に `stripToolProtocol` を噛ませると描画/履歴境界と整合。優先度: 低。
 
+### F-6. native `tool_calls` 経路の mutating フィルタ非対称（local モデルの injection-driven write）— **本PRで修正済み**
+- **追記日**: 2026-06-12（F-2 が予見した「mutating executor 着地後」のリスクが、bodyWrite/knowledgeWrite 機能の出荷で現実化した別経路）。Web検索とは独立に成立する。
+- **事実（修正前）**: OpenAI 互換経路には tool_call チャネルが2本ある。Hermes 本文 `<tool_call>` 経路（`ai.rs` `parse_hermes_tool_calls`）は `HERMES_BLOCKED_TOOL_NAMES`（mutating 7個）を allow-list 除外していたが、**native `tool_calls` フィールド経路（`parse_openai_response` の native 分岐）は `allowed_tool_names` を一切参照せず無条件 ToolUse 化**していた。当時のコードコメントは「Native はツール呼び出しが構造化フィールドにあるので unaffected」と前提していたが、弱い local モデルが injection で native tool_call を *emit* するケースでこの前提は崩れる。
+- **トレース（成立）**: 低信頼 provider（Ollama / openai-compatible / ai-novelist）+ Native 解決（model 名に `hermes` を含まない native-tool モデル）+ 間接プロンプトインジェクション（`.novel` import 等で read 面に仕込まれた untrusted content が `get_scene`/`get_codex_entry` の未サニタイズ tool_result としてモデルへ）→ モデルが native `tool_calls` に `create_codex_entry`/`apply_ai_tree_plan` 等を emit → native 分岐で ToolUse 化 → FE `executeTool` で実行 → DB write。**web検索も Hermes も不要**。declaredToolNames ゲート（F-2 の対策、`agentLoop.ts`）は mutating ツールが agent モードで常時宣言されるため通過し防御にならない。出口の `blockIfPolicyOff` も新規/import プロジェクトの default-full で素通り（二重 fail-open）。
+- **重大度（Medium-High）**: integrity のみ（undo journal で可逆・AI authorship マーク付き・cross-project でない・exfil 不在）。confidentiality/availability への波及なし。だが今日成立する実害トレース。
+- **修正（本PR）**:
+  - **(A 入口)** `ParseOpenAIOptions.block_mutating_on_native` を追加し、native 分岐で `HERMES_BLOCKED_TOOL_NAMES`（両チャネル共通の唯一の真実源を再利用）を silent drop。`is_low_trust_native_provider`（Ollama/openai-compatible/ai-novelist のみ）で **local 限定**にゲートし、frontier（OpenRouter/OpenAI native）の正規 agent write は維持。全 drop 時は `stop_reason` を `end_turn` に戻す。Rust 側にドリフト凍結テスト追加。
+  - **(B 出口)** 新規/import プロジェクトの default ai_policy を `knowledgeWrite`/`structureWrite` OFF（`{"preset":"custom",...}`、`schema.ts` `.default()` + `migrate.rs` SQL DEFAULT 一致）に厳格化。chat/analysis/本文提案(staged) は維持。欠落していた `knowledgeWrite` 設定トグルを `ProjectCategory` に追加し再有効化可能に。fallback `DEFAULT_AI_POLICY`（既存プロジェクト遡及）は据え置き。
+- **残存リスク**: A は local-only スコープのため **OpenRouter 経由の弱いモデル（qwen 等）は入口側で未保護**。新規/import プロジェクトは B（provider 非依存の出口 backstop）でカバーするが、**既存プロジェクト（full policy）＋ OpenRouter-qwen** の組み合わせは残存。将来課題: provider ではなくモデル信頼度での判別、または mutating write の HITL/staging 化。
+
 ---
 
 ## 3. 既知事項の確認（開示済み・出荷ブロッカーではない）

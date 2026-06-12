@@ -85,6 +85,19 @@ pub fn resolve_tool_protocol(
     }
 }
 
+/// native tool_calls 経路で mutating ツール（`HERMES_BLOCKED_TOOL_NAMES`）を破棄
+/// すべき低信頼プロバイダ。間接プロンプトインジェクションで弱い local 小型モデルが
+/// native tool_call を捏造 emit するケースを構造的に遮断する（Hermes 本文経路と対称）。
+/// TS `isRagCapableProvider`（openrouter/anthropic のみ信頼）の補集合のうち local/未検証
+/// な OpenAI 互換系に限定し、frontier（OpenRouter/OpenAI native）は除外して正規の
+/// agent 書き込みを維持する。
+fn is_low_trust_native_provider(p: &AiProvider) -> bool {
+    matches!(
+        p,
+        AiProvider::Ollama | AiProvider::OpenaiCompatible | AiProvider::AiNovelist
+    )
+}
+
 /// プロバイダごとに参照するユーザー設定 URL を集約する。
 /// Ollama は `ollama_endpoint`、OpenaiCompatible は `openai_compat_custom` を使う。
 /// それ以外のプロバイダは固定 URL でこの値を参照しない。
@@ -1628,6 +1641,7 @@ pub async fn send_chat(
                 &ParseOpenAIOptions {
                     resolved_protocol: params.resolved_tool_protocol,
                     allowed_tool_names: Vec::new(),
+                    block_mutating_on_native: false,
                 },
             )
         }
@@ -1872,9 +1886,17 @@ fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatRe
 /// `<tool_call>` channel. A Web-search result echoed into the assistant body as
 /// a `<tool_call>` is indistinguishable from a genuine model call, so allowing
 /// writes there is an injection-driven write vector (and the only backstop,
-/// AiPolicy, fail-opens to all-writes on a fresh project). Native providers
-/// carry tool calls in a structured field separate from body text, so they are
-/// unaffected. Must stay in sync with `MUTATING_TOOL_NAMES` in
+/// AiPolicy, fail-opens to all-writes on a fresh project).
+///
+/// The same list is reused for the **native** `tool_calls` channel, but only for
+/// low-trust providers (`is_low_trust_native_provider`). Native providers carry
+/// tool calls in a structured field separate from body text, so a frontier model
+/// is largely safe; but a weak local model can be coerced by indirect injection
+/// into *emitting* a native mutating tool_call, so for local/unverified
+/// OpenAI-compatible providers we block these names on the native path too
+/// (see `ParseOpenAIOptions::block_mutating_on_native`).
+///
+/// Must stay in sync with `MUTATING_TOOL_NAMES` in
 /// src/features/chat/toolProtocolParse.ts.
 const HERMES_BLOCKED_TOOL_NAMES: &[&str] = &[
     "create_codex_entry",
@@ -1901,6 +1923,10 @@ struct ParseOpenAIOptions {
     resolved_protocol: ResolvedToolProtocol,
     /// Hermes パースで ToolUse 化を許可するツール名。空なら ToolUse を生成しない。
     allowed_tool_names: Vec<String>,
+    /// native `tool_calls` 経路で mutating ツール（`HERMES_BLOCKED_TOOL_NAMES`）を
+    /// ToolUse 化せず破棄するか。低信頼プロバイダ（`is_low_trust_native_provider`）
+    /// のときだけ true。frontier では false=従来どおり全許可。
+    block_mutating_on_native: bool,
 }
 
 impl Default for ParseOpenAIOptions {
@@ -1908,6 +1934,7 @@ impl Default for ParseOpenAIOptions {
         Self {
             resolved_protocol: ResolvedToolProtocol::Native,
             allowed_tool_names: Vec::new(),
+            block_mutating_on_native: false,
         }
     }
 }
@@ -2231,13 +2258,25 @@ fn parse_openai_response(
                 content: content.to_string(),
             });
         }
+        let mut native_tool_uses = 0usize;
         for tc in tool_calls {
             let id = tc["id"].as_str().unwrap_or("").to_string();
             let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+            // 低信頼プロバイダでは native channel の mutating ツールも破棄する
+            // (Hermes 本文経路 ai.rs:parse_hermes_tool_calls と対称の silent drop)。
+            if opts.block_mutating_on_native && HERMES_BLOCKED_TOOL_NAMES.contains(&name.as_str()) {
+                continue;
+            }
             let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
             let input: serde_json::Value = serde_json::from_str(args_str)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             blocks.push(ResponseBlock::ToolUse { id, name, input });
+            native_tool_uses += 1;
+        }
+        // 全 tool_call が drop され ToolUse が 0 になったら、tool_use 昇格を取り消す
+        // (finish_reason="tool_calls" 由来の stop_reason="tool_use" を end_turn に戻す)。
+        if native_tool_uses == 0 {
+            stop_reason = "end_turn".to_string();
         }
     } else if opts.resolved_protocol == ResolvedToolProtocol::Hermes {
         let (stripped, calls) = parse_hermes_tool_calls(content, &opts.allowed_tool_names);
@@ -2910,11 +2949,13 @@ pub async fn send_chat_with_tools(
             // Hermes パース有効: 本文 <tool_call> のうち declared tool に一致するものを
             // ToolUse 化。ただし mutating ツールは本文チャンネルから除外する
             // (injection-driven write 防御。HERMES_BLOCKED_TOOL_NAMES 参照)。
+            // 低信頼プロバイダでは native tool_calls 経路でも同じ mutating ブロックをかける。
             parse_openai_response(
                 &result,
                 &ParseOpenAIOptions {
                     resolved_protocol: params.resolved_tool_protocol,
                     allowed_tool_names: hermes_allowed_tool_names(tools),
+                    block_mutating_on_native: is_low_trust_native_provider(params.provider),
                 },
             )
         }
@@ -4205,6 +4246,7 @@ mod tests {
         ParseOpenAIOptions {
             resolved_protocol: ResolvedToolProtocol::Hermes,
             allowed_tool_names: allowed.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         }
     }
 
@@ -4297,6 +4339,7 @@ mod tests {
         let opts = ParseOpenAIOptions {
             resolved_protocol: ResolvedToolProtocol::Hermes,
             allowed_tool_names: hermes_allowed_tool_names(&tools),
+            ..Default::default()
         };
         let resp = parse_openai_response(&json, &opts).unwrap();
         assert!(collect_tool_uses(&resp).is_empty());
@@ -4339,6 +4382,7 @@ mod tests {
         let opts_empty = ParseOpenAIOptions {
             resolved_protocol: ResolvedToolProtocol::Hermes,
             allowed_tool_names: vec![],
+            ..Default::default()
         };
         let resp2 = parse_openai_response(&json, &opts_empty).unwrap();
         assert_eq!(collect_tool_uses(&resp2).len(), 0);
@@ -4368,6 +4412,112 @@ mod tests {
         assert_eq!(tus[0].0, "call_1");
         assert_eq!(tus[0].2["query"], "native");
         assert_eq!(resp.stop_reason, "tool_use");
+    }
+
+    // ----- native channel mutating block (low-trust providers / security F-6) -----
+
+    fn native_opts(block_mutating_on_native: bool) -> ParseOpenAIOptions {
+        ParseOpenAIOptions {
+            resolved_protocol: ResolvedToolProtocol::Native,
+            block_mutating_on_native,
+            ..Default::default()
+        }
+    }
+
+    /// native `tool_calls` を持つ OpenAI 互換レスポンス JSON を組む。
+    fn native_tool_calls_json(calls: &[(&str, &str)]) -> serde_json::Value {
+        let tcs: Vec<serde_json::Value> = calls
+            .iter()
+            .map(|(id, name)| {
+                serde_json::json!({
+                    "id": id,
+                    "type": "function",
+                    "function": { "name": name, "arguments": "{\"name\":\"x\"}" }
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": { "content": "", "tool_calls": tcs }
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        })
+    }
+
+    #[test]
+    fn native_mutating_tool_call_blocked_on_low_trust() {
+        // 間接インジェクションで弱い local モデルが native の create_codex_entry を
+        // emit しても、低信頼プロバイダでは ToolUse 化されず破棄される。
+        let json = native_tool_calls_json(&[("c1", "create_codex_entry")]);
+        let resp = parse_openai_response(&json, &native_opts(true)).unwrap();
+        assert!(collect_tool_uses(&resp).is_empty());
+        // 全 skip で tool_use 昇格を取り消し end_turn に戻す。
+        assert_eq!(resp.stop_reason, "end_turn");
+    }
+
+    #[test]
+    fn native_read_only_tool_call_survives_low_trust() {
+        // read-only ツールは低信頼プロバイダでも通る（過剰ブロック回帰防止）。
+        let json = native_tool_calls_json(&[("c1", "search_codex")]);
+        let resp = parse_openai_response(&json, &native_opts(true)).unwrap();
+        let tus = collect_tool_uses(&resp);
+        assert_eq!(tus.len(), 1);
+        assert_eq!(tus[0].1, "search_codex");
+        assert_eq!(resp.stop_reason, "tool_use");
+    }
+
+    #[test]
+    fn native_mutating_tool_call_allowed_on_frontier() {
+        // frontier（block=false）では native の mutating ツールが従来どおり通る。
+        let json = native_tool_calls_json(&[("c1", "create_codex_entry")]);
+        let resp = parse_openai_response(&json, &native_opts(false)).unwrap();
+        let tus = collect_tool_uses(&resp);
+        assert_eq!(tus.len(), 1);
+        assert_eq!(tus[0].1, "create_codex_entry");
+        assert_eq!(resp.stop_reason, "tool_use");
+    }
+
+    #[test]
+    fn native_mixed_calls_drops_only_mutating_on_low_trust() {
+        let json = native_tool_calls_json(&[("c1", "create_codex_entry"), ("c2", "search_codex")]);
+        let resp = parse_openai_response(&json, &native_opts(true)).unwrap();
+        let tus = collect_tool_uses(&resp);
+        assert_eq!(tus.len(), 1);
+        assert_eq!(tus[0].1, "search_codex");
+        assert_eq!(resp.stop_reason, "tool_use");
+    }
+
+    #[test]
+    fn is_low_trust_native_provider_set() {
+        assert!(is_low_trust_native_provider(&AiProvider::Ollama));
+        assert!(is_low_trust_native_provider(&AiProvider::OpenaiCompatible));
+        assert!(is_low_trust_native_provider(&AiProvider::AiNovelist));
+        assert!(!is_low_trust_native_provider(&AiProvider::OpenRouter));
+        assert!(!is_low_trust_native_provider(&AiProvider::OpenAI));
+        assert!(!is_low_trust_native_provider(&AiProvider::Anthropic));
+        assert!(!is_low_trust_native_provider(&AiProvider::Cli));
+    }
+
+    #[test]
+    fn hermes_blocked_tool_names_are_frozen() {
+        // 両チャネル(Hermes 本文 + 低信頼 native)の唯一の真実源。TS 側
+        // MUTATING_TOOL_NAMES (src/features/chat/toolProtocolParse.ts) /
+        // MUTATING_EXECUTORS (src/features/chat/agent/toolExecutors.ts) とドリフト
+        // したら、両言語を一緒に更新すること。
+        let mut got: Vec<&str> = HERMES_BLOCKED_TOOL_NAMES.to_vec();
+        got.sort_unstable();
+        let mut want = vec![
+            "apply_ai_tree_plan",
+            "create_codex_entry",
+            "create_foreshadow",
+            "create_snippet",
+            "propose_scene_body",
+            "update_codex_entry",
+            "update_foreshadow",
+        ];
+        want.sort_unstable();
+        assert_eq!(got, want);
     }
 
     #[test]

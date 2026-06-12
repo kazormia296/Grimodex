@@ -975,14 +975,17 @@ impl Database {
         // 著者が手書きする物語全体の outline を保持し、AI コンテキスト L2 に常時注入される。
         Self::add_column_if_missing(&conn, "projects", "outline", "TEXT")?;
 
-        // AI Policy: プロジェクト単位の AI 使用方針 (chat/bodyWrite/analysis/structureWrite トグル)。
-        // デフォルトは Full プリセット (全機能有効)。既存 DB で structureWrite 欠損の行は
-        // フロントの parseAiPolicy が stored preset から導出するため migration は不要。
+        // AI Policy: プロジェクト単位の AI 使用方針 (chat/bodyWrite/analysis/structureWrite/
+        // knowledgeWrite トグル)。新規/import プロジェクトの既定は autonomous な直接書き込み
+        // 2 軸 (knowledgeWrite/structureWrite) を OFF にした安全側 (security F-6)。chat/
+        // analysis/本文提案(staged)は維持。drizzle 側 schema.ts の .default() が実際の新規
+        // insert を支配し、この SQL DEFAULT は fresh DB / 非 drizzle insert 用に一致させる。
+        // 既存 DB で列が既にある場合この DEFAULT は遡及せず、欠損キーは parseAiPolicy が補完。
         Self::add_column_if_missing(
             &conn,
             "projects",
             "ai_policy",
-            "TEXT NOT NULL DEFAULT '{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true}}'",
+            "TEXT NOT NULL DEFAULT '{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":false,\"knowledgeWrite\":false}}'",
         )?;
 
         // Onboarding: mark sample workspace projects so EditorScreen can

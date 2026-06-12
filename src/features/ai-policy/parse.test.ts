@@ -149,6 +149,26 @@ describe("parseAiPolicy — knowledgeWrite", () => {
   });
 });
 
+describe("parseAiPolicy — new-project default (security F-6 backstop)", () => {
+  // src/db/schema.ts の aiPolicy .default() と src-tauri/.../migrate.rs の SQL DEFAULT
+  // と一字一句一致させること。autonomous な直接書き込み 2 軸だけ既定 OFF。
+  const NEW_PROJECT_DEFAULT =
+    '{"preset":"custom","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":false,"knowledgeWrite":false}}';
+
+  it("disables knowledgeWrite and structureWrite by default", () => {
+    const t = parseAiPolicy(NEW_PROJECT_DEFAULT).toggles;
+    expect(t.knowledgeWrite).toBe(false);
+    expect(t.structureWrite).toBe(false);
+  });
+
+  it("keeps chat / analysis / bodyWrite on (core UX preserved)", () => {
+    const t = parseAiPolicy(NEW_PROJECT_DEFAULT).toggles;
+    expect(t.chat).toBe(true);
+    expect(t.analysis).toBe(true);
+    expect(t.bodyWrite).toBe(true);
+  });
+});
+
 describe("serializeAiPolicy", () => {
   it("produces parseable JSON", () => {
     const raw = serializeAiPolicy(DEFAULT_AI_POLICY);

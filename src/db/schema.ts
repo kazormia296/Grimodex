@@ -32,10 +32,16 @@ export const projects = sqliteTable("projects", {
   })
     .notNull()
     .default("auto"),
+  /** 新規/import プロジェクトの既定 AI ポリシー。chat/analysis/本文提案(staged)は
+   * 有効のまま、AI が自律的に直接 DB へ書き込む 2 軸 (knowledgeWrite=Codex/伏線/
+   * Snippet, structureWrite=tree scaffold) だけ既定で OFF にする。間接プロンプト
+   * インジェクションで誘発された書き込みの出口バックストップ (security F-6)。
+   * ユーザーは設定 > AI 使用ポリシーで再有効化できる。fallback の DEFAULT_AI_POLICY
+   * (parse 時, 全 true) とは別物で、そちらは既存プロジェクトを遡及変更しないため据え置き。 */
   aiPolicy: text("ai_policy")
     .notNull()
     .default(
-      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true}}',
+      '{"preset":"custom","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":false,"knowledgeWrite":false}}',
     ),
   createdAt: text("created_at")
     .notNull()
