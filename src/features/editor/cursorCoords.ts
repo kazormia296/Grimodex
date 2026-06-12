@@ -195,12 +195,14 @@ export function resolveCoordsVertical(
 
     if (node.nodeType === 1) {
       const el = node as Element;
-      // 子ノードの「端の 1 文字ぶん」の rect。複数行に折り返した text の
-      // 全体 rect (selectNodeContents / getBoundingClientRect) は段落全幅に
-      // 広がるため、そのまま使うと段落末 (End キー等で domAtPos が要素 +
-      // 子インデックスを返すケース) でキャレットが段落全体に伸びる。
-      // text は端の 1 文字まで掘り、element (ruby/mention 等の atom) は
-      // 1 セルなので自身の rect を使う。
+      // 子ノードの「端の 1 文字ぶん」の rect。複数列に折り返した inline
+      // (text そのもの・mark/decoration の span 等) の全体 rect は段落全幅に
+      // 広がるため、そのまま使うとキャレットが段落全体に伸びる (段落端で
+      // domAtPos が要素 + 子インデックスを返すケース = Home/End で実害)。
+      // 本文 text は authorship/コメント等の mark span に包まれているのが
+      // 常態なので、span は端の子へ再帰して 1 文字まで掘る。
+      // ruby (rt へ掘ると注釈側の rect になる) と contenteditable=false の
+      // atom (mention NodeView 等) は 1 セルなので自身の rect を使う。
       const boundaryRect = (n: Node, side: "start" | "end"): DOMRect | null => {
         if (n.nodeType === 3) {
           const t = n as Text;
@@ -208,7 +210,19 @@ export function resolveCoordsVertical(
           return charRectOf(t, side === "start" ? 0 : t.data.length - 1);
         }
         if (n.nodeType === 1) {
-          const r = (n as Element).getBoundingClientRect();
+          const el = n as Element;
+          const isAtomCell =
+            el.tagName === "RUBY" ||
+            el.getAttribute?.("contenteditable") === "false";
+          if (!isAtomCell) {
+            const kids = el.childNodes;
+            for (let i = 0; i < kids.length; i++) {
+              const k = side === "start" ? kids[i] : kids[kids.length - 1 - i];
+              const r = boundaryRect(k, side);
+              if (r) return r;
+            }
+          }
+          const r = el.getBoundingClientRect();
           return usable(r) ? r : null;
         }
         return null;

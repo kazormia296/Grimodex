@@ -385,3 +385,132 @@ describe("resolveCoordsVertical — 段落末 (要素 + 子インデックス)",
     });
   });
 });
+
+describe("resolveCoordsVertical — mark span 包み (authorship 等)", () => {
+  const char0 = { left: 400, right: 424, top: 100, bottom: 124 };
+  const char1 = { left: 400, right: 424, top: 124, bottom: 148 };
+  const fullParaRect = {
+    left: 376,
+    right: 424,
+    top: 100,
+    bottom: 400,
+    width: 48,
+    height: 300,
+  };
+
+  function makeSpan(children: unknown[], rect = fullParaRect) {
+    return {
+      nodeType: 1,
+      tagName: "SPAN",
+      getAttribute: () => null,
+      childNodes: children,
+      getBoundingClientRect: () => rect,
+    };
+  }
+
+  it("End (段落末): span の全幅 rect ではなく中の最終文字まで掘る", () => {
+    // 本文は authorship mark の span に包まれている。折り返した span の
+    // getBoundingClientRect は段落全幅 → そのまま使うと巨大キャレット
+    // (実機報告: 最終行 End で段落全体の下部に表示)。
+    const span = makeSpan([makeFakeText([char0, char1])]);
+    const para = {
+      nodeType: 1,
+      childNodes: [span],
+      getBoundingClientRect: () => fullParaRect,
+    };
+    const view = makeVerticalView(para, 1);
+    expect(resolveCoordsVertical(view, 5, -1)).toEqual({
+      left: 400,
+      right: 424,
+      top: 148,
+      bottom: 148,
+    });
+  });
+
+  it("Home (段落頭): span の中の先頭文字まで掘る", () => {
+    const span = makeSpan([makeFakeText([char0, char1])]);
+    const para = {
+      nodeType: 1,
+      childNodes: [span],
+      getBoundingClientRect: () => fullParaRect,
+    };
+    const view = makeVerticalView(para, 0);
+    expect(resolveCoordsVertical(view, 5, 1)).toEqual({
+      left: 400,
+      right: 424,
+      top: 100,
+      bottom: 100,
+    });
+  });
+
+  it("ネストした span も端の文字まで再帰する", () => {
+    const inner = makeSpan([makeFakeText([char0, char1])]);
+    const outer = makeSpan([inner]);
+    const para = {
+      nodeType: 1,
+      childNodes: [outer],
+      getBoundingClientRect: () => fullParaRect,
+    };
+    const view = makeVerticalView(para, 1);
+    expect(resolveCoordsVertical(view, 5, -1)!.top).toBe(148);
+  });
+
+  it("ruby は rt へ掘らず自身の 1 セル rect を使う", () => {
+    const rubyRect = {
+      left: 400,
+      right: 424,
+      top: 100,
+      bottom: 148,
+      width: 24,
+      height: 48,
+    };
+    const ruby = {
+      nodeType: 1,
+      tagName: "RUBY",
+      getAttribute: () => null,
+      // rt の注釈 text (掘ってしまうと半分サイズの間違った rect になる)
+      childNodes: [
+        makeFakeText([{ left: 424, right: 436, top: 100, bottom: 112 }]),
+      ],
+      getBoundingClientRect: () => rubyRect,
+    };
+    const para = {
+      nodeType: 1,
+      childNodes: [ruby],
+      getBoundingClientRect: () => fullParaRect,
+    };
+    const view = makeVerticalView(para, 1);
+    expect(resolveCoordsVertical(view, 5, -1)).toEqual({
+      left: 400,
+      right: 424,
+      top: 148,
+      bottom: 148,
+    });
+  });
+
+  it("contenteditable=false の atom (mention) も自身の rect を使う", () => {
+    const cellRect = {
+      left: 400,
+      right: 424,
+      top: 100,
+      bottom: 172,
+      width: 24,
+      height: 72,
+    };
+    const mention = {
+      nodeType: 1,
+      tagName: "SPAN",
+      getAttribute: (name: string) =>
+        name === "contenteditable" ? "false" : null,
+      childNodes: [makeFakeText([{ left: 0, right: 1, top: 0, bottom: 1 }])],
+      getBoundingClientRect: () => cellRect,
+    };
+    const para = {
+      nodeType: 1,
+      childNodes: [mention],
+      getBoundingClientRect: () => fullParaRect,
+    };
+    const view = makeVerticalView(para, 1);
+    expect(resolveCoordsVertical(view, 5, -1)!.top).toBe(172);
+  });
+});
