@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle } from "lucide-react";
+import { Check, CheckCircle } from "lucide-react";
 import { useAiSettingsStore } from "@/features/chat/store";
 import type { AiProvider } from "@/features/chat/types";
 import { DEFAULT_AI_SETTINGS } from "@/features/chat/types";
@@ -204,15 +204,24 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
       {connectionTestResult && (
         <p
           className={[
-            "text-center text-xs",
+            "flex items-center justify-center gap-1 text-center text-xs",
             connectionTestResult.success
               ? "text-emerald-500"
               : "text-destructive",
           ].join(" ")}
         >
-          {connectionTestResult.success
-            ? t("preflight.testSuccess")
-            : connectionTestResult.message}
+          {connectionTestResult.success ? (
+            <>
+              <Check
+                className="h-3.5 w-3.5 shrink-0"
+                strokeWidth={3}
+                aria-hidden
+              />
+              {t("preflight.testSuccess")}
+            </>
+          ) : (
+            connectionTestResult.message
+          )}
         </p>
       )}
 

@@ -357,7 +357,7 @@
       "ollamaLocal": "Ollama (local)",
       "endpoint": "Endpoint",
       "apiKey": "API Key",
-      "keySet": "Set ✓",
+      "keySet": "Set",
       "showKey": "Show",
       "hideKey": "Hide",
       "saveKey": "Save",
@@ -397,7 +397,7 @@
       "webSearch": {
         "title": "Web search (RAG) domain control",
         "providerNote": "Only effective with OpenRouter / Anthropic.",
-        "privacyNote": "⚠ Enabling web search sends your search queries to a third-party search provider (via OpenRouter / Anthropic). The AI is instructed not to search your manuscript text verbatim, but this is not enforced. Also, fetched web pages may contain hidden instructions that try to manipulate the AI (prompt injection). Don't take results at face value, and review outputs especially when combined with agent mode.",
+        "privacyNote": "Enabling web search sends your search queries to a third-party search provider (via OpenRouter / Anthropic). The AI is instructed not to search your manuscript text verbatim, but this is not enforced. Also, fetched web pages may contain hidden instructions that try to manipulate the AI (prompt injection). Don't take results at face value, and review outputs especially when combined with agent mode.",
         "domainMode": "Domain filter",
         "domainModeDesc": "Restrict search results with an allow or block list. Allow and block cannot be used together.",
         "domainModeOff": "No filter",
@@ -408,8 +408,8 @@
         "domainsPlaceholder": "example.com\ndocs.example.org",
         "maxContentTokens": "Content cap (tokens)",
         "maxContentTokensDesc": "OpenRouter (exa engine) only. Limits fetched content per page. Leave blank for the provider default.",
-        "allowEmptyWarning": "⚠ The allow list is empty — no filter is applied and the whole web is searched.",
-        "unverifiedNote": "⚠ These controls force the exa engine on OpenRouter ($0.005/search). The OpenRouter field names are unverified, so confirm they take effect via manual testing. Verified on Anthropic."
+        "allowEmptyWarning": "The allow list is empty — no filter is applied and the whole web is searched.",
+        "unverifiedNote": "These controls force the exa engine on OpenRouter ($0.005/search). The OpenRouter field names are unverified, so confirm they take effect via manual testing. Verified on Anthropic."
       },
       "beat": {
         "title": "Beat AI Integration",
@@ -2880,7 +2880,7 @@
     "setupLaterConfirm": "No provider configured — AI features will start as Off. You can set it up later in Settings > AI.",
     "testConnection": "Test Connection",
     "testing": "Testing…",
-    "testSuccess": "✓ Connection successful",
+    "testSuccess": "Connection successful",
     "selectProvider": "Select provider",
     "apiKey": "API Key",
     "saveKey": "Save",

@@ -1,3 +1,4 @@
+import { AlertTriangle, Check, X } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -745,8 +746,13 @@ export function AiCategory() {
             >
               {hasApiKey ? (
                 <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground">
+                  <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
                     {t("settings.ai.keySet")}
+                    <Check
+                      className="h-3.5 w-3.5 shrink-0"
+                      strokeWidth={3}
+                      aria-hidden
+                    />
                   </span>
                   <button
                     type="button"
@@ -1114,14 +1120,22 @@ export function AiCategory() {
             </button>
             {connectionTestResult && (
               <p
-                className={`mt-1.5 text-sm ${
+                className={`mt-1.5 flex items-center gap-1 text-sm ${
                   connectionTestResult.success
                     ? "text-green-600"
                     : "text-destructive"
                 }`}
               >
-                {connectionTestResult.success ? "✓ " : "✗ "}
-                {connectionTestResult.message}
+                {connectionTestResult.success ? (
+                  <Check
+                    className="h-3.5 w-3.5 shrink-0"
+                    strokeWidth={3}
+                    aria-hidden
+                  />
+                ) : (
+                  <X className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                )}
+                <span>{connectionTestResult.message}</span>
               </p>
             )}
           </div>
@@ -1166,8 +1180,12 @@ export function AiCategory() {
                 {t("settings.ai.webSearch.providerNote")}
               </p>
               {/* 第三者送信の永続的・SR可読な開示（security review F-1）。 */}
-              <p className="mb-2 text-xs text-amber-600 dark:text-amber-500">
-                {t("settings.ai.webSearch.privacyNote")}
+              <p className="mb-2 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-500">
+                <AlertTriangle
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                  aria-hidden
+                />
+                <span>{t("settings.ai.webSearch.privacyNote")}</span>
               </p>
               <SettingRow
                 label={t("settings.ai.webSearch.domainMode")}
@@ -1208,8 +1226,12 @@ export function AiCategory() {
               )}
               {/* allow リストが空 = fail-open（全 Web 検索）の注意喚起。 */}
               {mode === "allow" && effectiveDomainCount === 0 && (
-                <p className="-mt-1 mb-1 text-xs text-amber-600 dark:text-amber-500">
-                  {t("settings.ai.webSearch.allowEmptyWarning")}
+                <p className="-mt-1 mb-1 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-500">
+                  <AlertTriangle
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                    aria-hidden
+                  />
+                  <span>{t("settings.ai.webSearch.allowEmptyWarning")}</span>
                 </p>
               )}
               {/* content cap は OpenRouter(exa) 専用。Anthropic には対応フィールド無し。 */}
@@ -1237,8 +1259,12 @@ export function AiCategory() {
                 </SettingRow>
               )}
               {forcesExa && (
-                <p className="mt-2 text-xs text-amber-600 dark:text-amber-500">
-                  {t("settings.ai.webSearch.unverifiedNote")}
+                <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-500">
+                  <AlertTriangle
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                    aria-hidden
+                  />
+                  <span>{t("settings.ai.webSearch.unverifiedNote")}</span>
                 </p>
               )}
             </SettingSection>

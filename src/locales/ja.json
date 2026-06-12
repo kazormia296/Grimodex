@@ -357,7 +357,7 @@
       "ollamaLocal": "Ollama (ローカル)",
       "endpoint": "エンドポイント",
       "apiKey": "API キー",
-      "keySet": "設定済み ✓",
+      "keySet": "設定済み",
       "showKey": "表示",
       "hideKey": "隠す",
       "saveKey": "保存",
@@ -397,7 +397,7 @@
       "webSearch": {
         "title": "Web 検索 (RAG) のドメイン制御",
         "providerNote": "OpenRouter / Anthropic でのみ有効です。",
-        "privacyNote": "⚠ Web 検索を有効にすると、検索クエリが第三者の検索プロバイダ（OpenRouter / Anthropic 経由）へ送信されます。本文そのものを検索しないよう AI に指示していますが、強制ではありません。また、取得した Web ページには AI を操作しようとする指示（プロンプトインジェクション）が紛れ込んでいることがあります。内容を鵜呑みにせず、特にエージェントモードと併用する際は出力を確認してください。",
+        "privacyNote": "Web 検索を有効にすると、検索クエリが第三者の検索プロバイダ（OpenRouter / Anthropic 経由）へ送信されます。本文そのものを検索しないよう AI に指示していますが、強制ではありません。また、取得した Web ページには AI を操作しようとする指示（プロンプトインジェクション）が紛れ込んでいることがあります。内容を鵜呑みにせず、特にエージェントモードと併用する際は出力を確認してください。",
         "domainMode": "ドメインフィルタ",
         "domainModeDesc": "検索結果を許可リスト/拒否リストで絞り込みます。許可と拒否は同時に使えません。",
         "domainModeOff": "フィルタなし",
@@ -408,8 +408,8 @@
         "domainsPlaceholder": "example.com\ndocs.example.org",
         "maxContentTokens": "コンテンツ上限 (tokens)",
         "maxContentTokensDesc": "OpenRouter (exa エンジン) のみ。1 ページあたりの取得コンテンツを制限します。空欄でプロバイダ既定。",
-        "allowEmptyWarning": "⚠ 許可リストが空です。フィルタは適用されず全 Web を検索します。",
-        "unverifiedNote": "⚠ この設定は OpenRouter で exa エンジンを強制します ($0.005/検索)。OpenRouter 経路のフィールド名は未検証のため、実際に効くかは手動テストで確認してください。Anthropic では検証済みです。"
+        "allowEmptyWarning": "許可リストが空です。フィルタは適用されず全 Web を検索します。",
+        "unverifiedNote": "この設定は OpenRouter で exa エンジンを強制します ($0.005/検索)。OpenRouter 経路のフィールド名は未検証のため、実際に効くかは手動テストで確認してください。Anthropic では検証済みです。"
       },
       "beat": {
         "title": "Beat AI 連携",
@@ -2884,7 +2884,7 @@
     "setupLaterConfirm": "プロバイダ未設定のため、AI 機能はオフで開始します。設定 > AI から後で設定できます。",
     "testConnection": "接続テスト",
     "testing": "テスト中…",
-    "testSuccess": "✓ 接続成功",
+    "testSuccess": "接続成功",
     "selectProvider": "プロバイダを選択",
     "apiKey": "API キー",
     "saveKey": "保存",
