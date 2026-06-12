@@ -409,6 +409,11 @@ interface ChatState {
   contextTokenCount: number;
   contextLayers: LayerBreakdown[];
   lastSystemPrompt: string;
+  /** lastSystemPrompt がどのスコープ構成（scope/anchor/scene/session）で
+   * 構築されたかの識別キー（contextPromptKey）。null = 未構築。
+   * sendMessage の非 scene 分岐が「スコープ切替直後の即送信」で前の構成の
+   * プロンプトを流用しないための照合に使う。 */
+  lastSystemPromptKey: string | null;
   /**
    * Monotonic counter bumped each time refreshContextLayers completes.
    * Subscribers (e.g. ContextBar's pinnedStickies list) can watch this to
@@ -2190,6 +2195,26 @@ async function buildSceneContextPrompt(opts: {
   };
 }
 
+/**
+ * lastSystemPrompt の構築時スコープ構成を表すキー。送信側はこれを現在の
+ * 構成と照合し、不一致なら refreshContextLayers を await してから流用する。
+ * ChatPanel の refresh effect は非同期のため、スコープ切替直後の即送信では
+ * 前の構成で組まれた lastSystemPrompt が残っていることがある。
+ */
+export function contextPromptKey(
+  s: Pick<
+    ChatState,
+    "chatScope" | "scopeAnchorId" | "activeSceneId" | "activeSessionId"
+  >,
+): string {
+  return [
+    s.chatScope,
+    s.scopeAnchorId ?? "",
+    s.activeSceneId,
+    s.activeSessionId ?? "",
+  ].join("\u0000");
+}
+
 export const useChatStore = create<ChatState>()((set, get) => ({
   sessions: [],
   activeSessionId: null,
@@ -2203,6 +2228,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   contextTokenCount: 0,
   contextLayers: [],
   lastSystemPrompt: "",
+  lastSystemPromptKey: null,
   pinsVersion: 0,
   projectOutline: undefined,
   chapterOutlines: [],
@@ -2610,8 +2636,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             mentionedSceneIds: options!.mentionedSceneIds,
           });
           needsMentionCleanup = true;
-        } else if (!get().lastSystemPrompt) {
-          await get().refreshContextLayers();
+        } else {
+          // sendMessage の非 scene 分岐と同じ stale 判定（空 or スコープ構成
+          // 不一致なら再構築）。コピーが実送信と違うプロンプトを出さないように。
+          const builtKey = get().lastSystemPromptKey;
+          if (
+            !get().lastSystemPrompt ||
+            (builtKey !== null && builtKey !== contextPromptKey(get()))
+          ) {
+            await get().refreshContextLayers();
+          }
         }
         const prompt = get().lastSystemPrompt;
         if (prompt) {
@@ -2867,6 +2901,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             contextTokenCount: ctxResult.totalTokens,
             contextLayers: ctxResult.layers,
             lastSystemPrompt: ctxResult.prompt,
+            lastSystemPromptKey: contextPromptKey(get()),
             detectedEntries: ctxResult.detectedEntries,
             alwaysEntries: ctxResult.alwaysEntries,
           });
@@ -3367,6 +3402,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextTokenCount: ctxResult.totalTokens,
           contextLayers: ctxResult.layers,
           lastSystemPrompt: ctxResult.prompt,
+          lastSystemPromptKey: contextPromptKey(get()),
           detectedEntries: ctxResult.detectedEntries,
           alwaysEntries: ctxResult.alwaysEntries,
           cacheInvalidatedReason: null,
@@ -3383,14 +3419,23 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       } else {
         // シーンコンテキストなし（グローバルチャットまたはシーン未選択）:
         // @scene mention があるときは lastSystemPrompt を一時 pin 付きで再構築する。
-        // 無いときは既に計算済みの lastSystemPrompt をそのまま流用する。
-        if (
-          options?.mentionedSceneIds &&
-          options.mentionedSceneIds.length > 0
-        ) {
-          await get().refreshContextLayers({
-            mentionedSceneIds: options.mentionedSceneIds,
-          });
+        // それ以外でも、計算済み lastSystemPrompt が空、または現在と異なる
+        // スコープ構成で組まれている場合（スコープ切替直後の即送信で
+        // ChatPanel の refresh effect が未完了のレース）は、同期的に再構築
+        // してから流用する。キー未記録 (null) はテスト等の手動 setState を
+        // 尊重して照合をスキップする。
+        const hasMentions =
+          !!options?.mentionedSceneIds && options.mentionedSceneIds.length > 0;
+        const builtKey = get().lastSystemPromptKey;
+        const promptStale =
+          !get().lastSystemPrompt ||
+          (builtKey !== null && builtKey !== contextPromptKey(get()));
+        if (hasMentions || promptStale) {
+          await get().refreshContextLayers(
+            hasMentions
+              ? { mentionedSceneIds: options?.mentionedSceneIds }
+              : undefined,
+          );
         }
         const fallbackPrompt = get().lastSystemPrompt;
         if (fallbackPrompt) {
@@ -3719,6 +3764,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       chatScope,
       scopeAnchorId,
     } = get();
+    // 構築開始時点のスコープ構成キー。完了時に lastSystemPrompt とペアで保存し、
+    // 送信側の stale 判定（構成が変わったプロンプトの流用防止）に使う。
+    const promptKey = contextPromptKey({
+      chatScope,
+      scopeAnchorId,
+      activeSceneId,
+      activeSessionId,
+    });
     // 一回限りの Agent mode override（送信経路から渡る）を優先。無ければ永続トグル。
     const effectiveAgentMode = opts?.agentModeOverride ?? get().agentMode;
     // synopsis の pull 委譲は「実際にツールループが走る」provider でのみ安全。
@@ -4055,6 +4108,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextTokenCount: promptResult.totalTokens,
           contextLayers: promptResult.layers,
           lastSystemPrompt: promptResult.prompt,
+          lastSystemPromptKey: promptKey,
           detectedEntries: detectedNotPinned,
           alwaysEntries: alwaysNotDetected,
           projectOutline: projectCtx?.outline ?? undefined,
@@ -4101,6 +4155,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         contextTokenCount: ctxResult.totalTokens,
         contextLayers: ctxResult.layers,
         lastSystemPrompt: ctxResult.prompt,
+        lastSystemPromptKey: promptKey,
         detectedEntries: ctxResult.detectedEntries,
         alwaysEntries: ctxResult.alwaysEntries,
         projectOutline: ctxResult.projectOutline,

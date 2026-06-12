@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useChatStore } from "./chatStore";
+import { useChatStore, contextPromptKey } from "./chatStore";
 import { useProjectStore } from "@/features/project/projectStore";
 import type { ChatMessage, ChatSession } from "./chatTypes";
 
@@ -171,6 +171,11 @@ function resetStore() {
     activeSceneId: "scene-1",
     activeProjectId: "proj-1",
     contextTokenCount: 0,
+    // スコープ/プロンプトキーはテスト間で漏れると stale 判定や copy 経路の
+    // 分岐が前のテストの構成で動いてしまうため必ず初期化する
+    chatScope: "scene",
+    scopeAnchorId: null,
+    lastSystemPromptKey: null,
   });
 }
 
@@ -773,12 +778,77 @@ describe("useChatStore", () => {
         activeProjectId: null,
         lastSystemPrompt: "",
       });
+      // 空プロンプトは送信前に同期 refresh を試みる（B2: スコープ切替直後の
+      // 即送信レース対策）。再構築しても空なら従来どおり system 無しで送る。
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "",
+        totalTokens: 0,
+        layers: [],
+      });
       mockStreamResponse("回答");
 
       await useChatStore.getState().sendMessage("テスト");
 
       const passedMessages = mockSendChatMessageStream.mock.calls[0][0];
       expect(passedMessages[0].role).toBe("user");
+    });
+
+    // B2 回帰ガード: スコープ切替直後の即送信は、前のスコープ構成で組まれた
+    // lastSystemPrompt（stale）を流用せず、同期的に再構築してから送る。
+    it("sendMessage rebuilds when lastSystemPrompt was built for a different scope", async () => {
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: "session-1",
+        chatScope: "project",
+        scopeAnchorId: null,
+        lastSystemPrompt: "OLD PROMPT (scene scope)",
+        lastSystemPromptKey: contextPromptKey({
+          chatScope: "scene",
+          scopeAnchorId: null,
+          activeSceneId: "old-scene",
+          activeSessionId: "session-1",
+        }),
+        includeMapBoard: false,
+        mapBoardId: null,
+      });
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "NEW PROMPT (project scope)",
+        totalTokens: 0,
+        layers: [],
+      });
+      mockStreamResponse("回答");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const passedMessages = mockSendChatMessageStream.mock.calls[0][0];
+      expect(passedMessages[0].role).toBe("system");
+      expect(passedMessages[0].content).toBe("NEW PROMPT (project scope)");
+    });
+
+    it("sendMessage reuses lastSystemPrompt built for the current scope (no rebuild)", async () => {
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: "session-1",
+        chatScope: "project",
+        scopeAnchorId: null,
+        lastSystemPrompt: "CURRENT PROMPT",
+        includeMapBoard: false,
+        mapBoardId: null,
+      });
+      useChatStore.setState({
+        lastSystemPromptKey: contextPromptKey(useChatStore.getState()),
+      });
+      mockStreamResponse("回答");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const passedMessages = mockSendChatMessageStream.mock.calls[0][0];
+      expect(passedMessages[0].role).toBe("system");
+      expect(passedMessages[0].content).toBe("CURRENT PROMPT");
+      // 構成が一致しているので再構築は走らない
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
     });
 
     it("buildPromptForCopy uses lastSystemPrompt as fallback when no scene", async () => {
