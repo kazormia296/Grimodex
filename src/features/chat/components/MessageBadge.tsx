@@ -28,6 +28,28 @@ interface DropdownState {
   left: number;
 }
 
+/**
+ * messageId → 抽出バッジデータのモジュールキャッシュ。
+ *
+ * ChatPanel の仮想化 (3ab21233) でメッセージ行は scroll out/in のたびに
+ * remount するため、素朴に mount 毎フェッチすると履歴スクロールの往復で
+ * codex+snippet 各 1 本の DB クエリ (Tauri IPC) がバーストする。codex/snippet
+ * ストアの ID 集合キーで検証し、抽出の追加/削除 (= ID 集合の変化、削除反映は
+ * 0c27e08e の契約) では従来どおり再フェッチする。挿入順 eviction で上限。
+ */
+interface BadgeCacheEntry {
+  codexKey: string;
+  snippetKey: string;
+  data: BadgeData | null;
+}
+const badgeCache = new Map<string, BadgeCacheEntry>();
+const BADGE_CACHE_MAX = 300;
+
+/** Test-only: reset the module cache between tests. */
+export function _clearMessageBadgeCache(): void {
+  badgeCache.clear();
+}
+
 function openCodexEntry(id: string) {
   useLayoutStore.getState().showPanel("codex");
   useCodexStore.getState().requestSelectEntry(id);
@@ -53,19 +75,42 @@ export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
   );
 
   useEffect(() => {
+    // remount (仮想化の scroll in) / ストア不変の再実行はキャッシュで返し、
+    // DB クエリを発行しない。ID 集合が変わった (抽出追加/削除/プロジェクト
+    // 切替) ときだけミスして再フェッチする。
+    const cached = badgeCache.get(messageId);
+    if (
+      cached &&
+      cached.codexKey === codexEntryIdKey &&
+      cached.snippetKey === snippetEntryIdKey
+    ) {
+      setData(cached.data);
+      return;
+    }
     let cancelled = false;
     async function load() {
       const [codexEntries, snippetEntries] = await Promise.all([
         listCodexEntriesByMessageId(messageId),
         listSnippetsByMessageId(messageId),
       ]);
-      if (!cancelled) {
-        setData(
-          codexEntries.length > 0 || snippetEntries.length > 0
-            ? { codexEntries, snippetEntries }
-            : null,
-        );
+      const data =
+        codexEntries.length > 0 || snippetEntries.length > 0
+          ? { codexEntries, snippetEntries }
+          : null;
+      // キャッシュはリクエスト時点のキーで記録する。解決までにストアが
+      // 変わっていれば dep 変化で effect が再走し、キー不一致で再フェッチ
+      // される。cancelled でも結果自体はそのキーに対して有効なので記録する。
+      badgeCache.delete(messageId);
+      if (badgeCache.size >= BADGE_CACHE_MAX) {
+        const oldest = badgeCache.keys().next().value;
+        if (oldest !== undefined) badgeCache.delete(oldest);
       }
+      badgeCache.set(messageId, {
+        codexKey: codexEntryIdKey,
+        snippetKey: snippetEntryIdKey,
+        data,
+      });
+      if (!cancelled) setData(data);
     }
     void load();
     return () => {
