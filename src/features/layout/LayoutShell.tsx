@@ -28,6 +28,7 @@ import {
   type ZoomRegion,
 } from "./layoutMetrics";
 import { useLayoutStore } from "./layoutStore";
+import { ZoomRestoreBar } from "./ZoomRestoreBar";
 import { useCardLayout } from "./cardLayout";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
@@ -163,7 +164,7 @@ export const LayoutShell = memo(function LayoutShell({
   const gridTemplateRows = useMemo(
     () =>
       zoomRegion !== null
-        ? buildZoomGridTemplateRows(zoomRegion, hasBottom)
+        ? buildZoomGridTemplateRows(zoomRegion, hasBottom, metrics.gapRowPx)
         : buildLayoutGridTemplateRows(metrics, hasBottom),
     [metrics, hasBottom, zoomRegion],
   );
@@ -246,6 +247,14 @@ export const LayoutShell = memo(function LayoutShell({
         >
           <CenterStripe />
         </div>
+
+        {/* zoom 中の復帰バー。CenterStripe と同じ grid area に重ねる
+            （CenterStripe 側は visibility:hidden + inert で休眠中）。 */}
+        {zoomRegion !== null && maximizedPanelId !== null && (
+          <div style={{ gridArea: "cstripe" }} className="min-h-0 min-w-0">
+            <ZoomRestoreBar panelId={maximizedPanelId} />
+          </div>
+        )}
 
         {hasLeft && (
           <div

@@ -272,15 +272,20 @@ export function buildZoomGridTemplateColumns(zoom: ZoomRegion): string {
 }
 
 /**
- * zoom 中の行テンプレート。center stripe 行と gap 行は 0px。bottom zoom は
- * bottom 行のみ、それ以外は main 行のみを 1fr にする。
+ * zoom 中の行テンプレート。center stripe 行は ZoomRestoreBar（復帰バー）用に
+ * 通常時と同じ高さで残し、gap 行も維持する（カードレイアウトの呼吸を保つ）。
+ * bottom zoom は bottom 行のみ、それ以外は main 行のみを 1fr にする。
  */
 export function buildZoomGridTemplateRows(
   zoom: ZoomRegion,
   hasBottom: boolean,
+  gapRowPx: number,
 ): string {
-  if (zoom === "bottom") return "0px 0px 0px minmax(0, 1fr)";
-  const rows = ["0px", "0px", "minmax(0, 1fr)"];
+  const rows = [`${STRIPE_SIZE}px`, `${gapRowPx}px`];
+  if (zoom === "bottom") {
+    return [...rows, "0px", "minmax(0, 1fr)"].join(" ");
+  }
+  rows.push("minmax(0, 1fr)");
   if (hasBottom) rows.push("0px");
   return rows.join(" ");
 }

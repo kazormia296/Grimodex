@@ -360,18 +360,18 @@ describe("layoutMetrics", () => {
   });
 
   describe("buildZoomGridTemplateRows", () => {
-    it("frees only the main row for non-bottom zoom", () => {
-      expect(buildZoomGridTemplateRows("left", false)).toBe(
-        "0px 0px minmax(0, 1fr)",
+    it("keeps the restore-bar row and frees only the main row for non-bottom zoom", () => {
+      expect(buildZoomGridTemplateRows("left", false, 0)).toBe(
+        `${STRIPE_SIZE}px 0px minmax(0, 1fr)`,
       );
-      expect(buildZoomGridTemplateRows("center", true)).toBe(
-        "0px 0px minmax(0, 1fr) 0px",
+      expect(buildZoomGridTemplateRows("center", true, STRIPE_GAP_PX)).toBe(
+        `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px minmax(0, 1fr) 0px`,
       );
     });
 
-    it("frees only the bottom row for bottom zoom", () => {
-      expect(buildZoomGridTemplateRows("bottom", true)).toBe(
-        "0px 0px 0px minmax(0, 1fr)",
+    it("keeps the restore-bar row and frees only the bottom row for bottom zoom", () => {
+      expect(buildZoomGridTemplateRows("bottom", true, STRIPE_GAP_PX)).toBe(
+        `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 0px minmax(0, 1fr)`,
       );
     });
   });

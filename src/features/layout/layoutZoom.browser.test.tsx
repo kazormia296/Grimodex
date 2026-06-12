@@ -46,6 +46,9 @@ import type { LayoutState, ToolWindowPanelId } from "./layoutTypes";
 const SHELL_SIZE = { width: 1200, height: 800 };
 // cardLayout の外周 padding + パネル間ギャップぶんの許容差。
 const CHROME_TOLERANCE_PX = 48;
+// zoom 中は上端に復帰バー行（STRIPE_SIZE）+ gap 行が残るため、高さ方向は
+// その分を追加で許容する。
+const ZOOM_TOP_CHROME_PX = 48;
 
 function setLayout(mutate: (layout: LayoutState) => void) {
   const layout = buildDefaultLayoutState({ allInactive: true });
@@ -113,7 +116,9 @@ function clearMaximize() {
 
 function expectFillsShell(rect: DOMRect, shellRect: DOMRect) {
   expect(rect.width).toBeGreaterThan(shellRect.width - CHROME_TOLERANCE_PX);
-  expect(rect.height).toBeGreaterThan(shellRect.height - CHROME_TOLERANCE_PX);
+  expect(rect.height).toBeGreaterThan(
+    shellRect.height - CHROME_TOLERANCE_PX - ZOOM_TOP_CHROME_PX,
+  );
   expect(rect.left).toBeGreaterThanOrEqual(shellRect.left - 0.5);
   expect(rect.right).toBeLessThanOrEqual(shellRect.right + 0.5);
   expect(rect.top).toBeGreaterThanOrEqual(shellRect.top - 0.5);
@@ -181,9 +186,24 @@ describe("panel zoom geometry invariants (real Chromium)", () => {
     expect(getComputedStyle(editorSegment).visibility).toBe("hidden");
     expect(container.querySelector("[data-editor-area]")).not.toBeNull();
 
-    // 3. 解除で元の幾何へ復帰（±2px）
-    clearMaximize();
+    // 復帰バーが常時見える解除アフォーダンスとして出ている
+    const restoreBar = container.querySelector<HTMLElement>(
+      "[data-zoom-restore-bar]",
+    )!;
+    expect(restoreBar).not.toBeNull();
+    expect(getComputedStyle(restoreBar).visibility).toBe("visible");
+    expect(restoreBar.getBoundingClientRect().height).toBeGreaterThan(4);
+
+    // 3. 復帰ボタンのクリックで解除し、元の幾何へ復帰（±2px）
+    const restoreButton = container.querySelector<HTMLElement>(
+      '[data-testid="zoom-restore-button"]',
+    )!;
+    act(() => {
+      restoreButton.click();
+    });
     await settleFrames();
+    expect(useLayoutStore.getState().maximizedPanelId).toBeNull();
+    expect(container.querySelector("[data-zoom-restore-bar]")).toBeNull();
     const restored = slot0.getBoundingClientRect();
     expect(Math.abs(restored.left - baselineSlot0.left)).toBeLessThan(2);
     expect(Math.abs(restored.top - baselineSlot0.top)).toBeLessThan(2);

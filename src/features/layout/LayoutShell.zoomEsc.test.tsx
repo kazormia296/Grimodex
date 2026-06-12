@@ -9,7 +9,7 @@
  * を gate する。zoom 幾何そのものは layoutZoom.browser.test.tsx が担当。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, act } from "@testing-library/react";
+import { render, act, fireEvent } from "@testing-library/react";
 import type { PanelId } from "./panelIds";
 
 vi.mock("@/lib/tauri", () => ({
@@ -98,6 +98,22 @@ describe("LayoutShell zoom Esc dismissal", () => {
     renderMaximized();
     dispatchEscape({ isComposing: true });
     expect(useLayoutStore.getState().maximizedPanelId).toBe("editor");
+  });
+
+  it("zoom 中は復帰バーが出て、ボタンクリックで解除する", () => {
+    const { container } = renderMaximized();
+    const button = container.querySelector<HTMLElement>(
+      '[data-testid="zoom-restore-button"]',
+    );
+    expect(button).not.toBeNull();
+    fireEvent.click(button!);
+    expect(useLayoutStore.getState().maximizedPanelId).toBeNull();
+    expect(container.querySelector("[data-zoom-restore-bar]")).toBeNull();
+  });
+
+  it("zoom していないときは復帰バーを出さない", () => {
+    const { container } = render(<LayoutShell />);
+    expect(container.querySelector("[data-zoom-restore-bar]")).toBeNull();
   });
 
   it("zoom していないときは Escape を消費しない", () => {
