@@ -9,6 +9,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureSnippetDeletion } from "@/features/trash-bin/captureHooks";
 import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { notifySnippetDeleted } from "./anchorNotify";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
@@ -166,6 +167,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
             set((state) => ({
               entries: state.entries.filter((e) => e.id !== captured.id),
             }));
+            notifySnippetDeleted(captured.id);
           },
           async redo() {
             await snippetApi.createSnippet({
@@ -289,6 +291,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       set((state) => ({
         entries: state.entries.filter((e) => e.id !== id),
       }));
+      notifySnippetDeleted(id);
     } catch (e) {
       toast.error(i18next.t("snippets.store.deleteFailed"));
       debugLog.error("SnippetStore", "remove", errorDetail(e));
@@ -336,6 +339,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         set((state) => ({
           entries: state.entries.filter((e) => e.id !== captured.id),
         }));
+        notifySnippetDeleted(captured.id);
       },
     });
   },

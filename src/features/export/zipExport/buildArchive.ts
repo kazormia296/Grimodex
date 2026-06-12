@@ -240,6 +240,7 @@ export async function buildArchive(
         projectId: sessionRow.projectId,
         nodeId: sessionRow.nodeId,
         codexAnchorId: sessionRow.codexAnchorId,
+        snippetAnchorId: sessionRow.snippetAnchorId,
         title: sessionRow.title,
         titleManual: sessionRow.titleManual,
         model: sessionRow.model,
@@ -268,7 +269,9 @@ export async function buildArchive(
           ? `chats/${sceneSlugById(scenePathById, session.nodeId) ?? session.nodeId}`
           : session.codexAnchorId != null
             ? `chats/_codex/${session.codexAnchorId}`
-            : "chats/_orphan";
+            : session.snippetAnchorId != null
+              ? `chats/_snippet/${session.snippetAnchorId}`
+              : "chats/_orphan";
       addFile(
         files,
         `${dir}/${session.id}.json`,

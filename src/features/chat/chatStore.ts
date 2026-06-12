@@ -171,6 +171,8 @@ import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getSnippet } from "@/features/snippets/api";
+import type { Snippet } from "@/features/snippets/api";
+import { setSnippetDeletedHandler } from "@/features/snippets/anchorNotify";
 import { listPinnedSnippetEntries, listPinnedStickyEntries } from "./chatApi";
 import { useMapStore } from "@/features/map/mapStore";
 import {
@@ -430,6 +432,7 @@ interface ChatState {
   loadSessions: (
     nodeId?: string | null,
     codexAnchorId?: string | null,
+    snippetAnchorId?: string | null,
   ) => Promise<void>;
   selectSession: (sessionId: string | null) => Promise<void>;
   createNewSession: (
@@ -437,6 +440,7 @@ interface ChatState {
     title: string,
     nodeId?: string,
     codexAnchorId?: string,
+    snippetAnchorId?: string,
   ) => Promise<void>;
   /**
    * 現在のシーン/グローバルモードに紐づくセッションを保証する。
@@ -473,13 +477,13 @@ interface ChatState {
   ragEnabled: boolean;
   setRagEnabled: (on: boolean) => void;
 
-  // Chat scope — Scene / Folder (Chapter or Act) / Project / Codex の4軸統一。
+  // Chat scope — Scene / Folder (Chapter or Act) / Project / Codex / Snippet の5軸統一。
   // Globe トグルを置き換え、outline 階層に沿ってどこまで context に含めるかを
   // ユーザーが選択する。scope === "folder" のとき scopeAnchorId は対象 folder id。
   chatScope: ChatScope;
   scopeAnchorId: string | null;
   /**
-   * scope を更新する。folder / codex スコープに切り替えるときは anchorId 必須。
+   * scope を更新する。folder / codex / snippet スコープに切り替えるときは anchorId 必須。
    * scope 軸自体は sticky で、tree active scene の変動では動かない。
    * includeBodies は scope に応じてデフォルトにリセットされる。
    */
@@ -566,6 +570,8 @@ interface ChatState {
   removeEntryFromAuto: (entryId: string) => void;
   /** Codex anchor エントリ削除時に codex スコープを scene に戻す */
   onCodexAnchorDeleted: (entryId: string) => void;
+  /** Snippet anchor 削除時に snippet スコープを scene に戻す */
+  onSnippetAnchorDeleted: (snippetId: string) => void;
 
   /** C: エディタの「チャットで調べる」が pre-fill するテキスト（consumed-once） */
   pendingLookupText: string | null;
@@ -2245,7 +2251,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } = get();
     const ref = sessions.find((s) => s.id === activeSessionId);
     const projectId = activeProjectId ?? getCurrentProjectId();
-    const { nodeId, codexAnchorId } = resolveScopeSessionKey(
+    const { nodeId, codexAnchorId, snippetAnchorId } = resolveScopeSessionKey(
       chatScope,
       activeSceneId,
       get().scopeAnchorId,
@@ -2256,6 +2262,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         ref ? `Linked: ${ref.title}` : "New session",
         nodeId === null ? undefined : nodeId,
         codexAnchorId,
+        snippetAnchorId,
       );
       set((state) => ({
         sessions: [session, ...state.sessions],
@@ -2298,6 +2305,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
   },
 
+  onSnippetAnchorDeleted: (snippetId: string) => {
+    const { chatScope, scopeAnchorId } = get();
+    if (chatScope === "snippet" && scopeAnchorId === snippetId) {
+      set({ chatScope: "scene", scopeAnchorId: null, includeBodies: true });
+    }
+  },
+
   setInputPinnedEntryIds: (ids: string[]) => {
     const { isStreaming, inputPinnedEntryIds } = get();
     if (isStreaming) return;
@@ -2320,6 +2334,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   loadSessions: async (
     nodeId?: string | null,
     codexAnchorId?: string | null,
+    snippetAnchorId?: string | null,
   ) => {
     set({ isLoadingSessions: true });
     try {
@@ -2327,6 +2342,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         get().activeProjectId ?? getCurrentProjectId(),
         nodeId,
         codexAnchorId,
+        snippetAnchorId,
       );
       set({ sessions, isLoadingSessions: false });
     } catch (e) {
@@ -2387,6 +2403,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     title: string,
     nodeId?: string,
     codexAnchorId?: string,
+    snippetAnchorId?: string,
   ) => {
     try {
       const session = await chatApi.createSession(
@@ -2394,6 +2411,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         title,
         nodeId,
         codexAnchorId,
+        snippetAnchorId,
       );
       set((state) => ({
         sessions: [session, ...state.sessions],
@@ -2420,7 +2438,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       scopeAnchorId,
     } = get();
     if (activeSessionId) return activeSessionId;
-    const { nodeId, codexAnchorId } = resolveScopeSessionKey(
+    const { nodeId, codexAnchorId, snippetAnchorId } = resolveScopeSessionKey(
       chatScope,
       activeSceneId,
       scopeAnchorId,
@@ -2431,6 +2449,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         "New session",
         nodeId === null ? undefined : nodeId,
         codexAnchorId,
+        snippetAnchorId,
       );
       set((state) => ({
         sessions: [session, ...state.sessions],
@@ -2531,9 +2550,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       } else if (
         chatScope === "folder" ||
         chatScope === "project" ||
-        chatScope === "codex"
+        chatScope === "codex" ||
+        chatScope === "snippet"
       ) {
-        // folder / project / codex: sendMessage / agent と同じく refreshContextLayers の
+        // folder / project / codex / snippet: sendMessage / agent と同じく refreshContextLayers の
         // lastSystemPrompt を流用（空 scene で buildSystemPrompt しない）。
         // mentions 込みで refresh すると lastSystemPrompt に @scene pin が焼き込まれ、
         // ユーザーが mention を消して送信した次回送信でも古い pin を吸う。Copy 後に
@@ -2669,7 +2689,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // -----------------------------------------------------------------------
     let sessionIdForPersist = activeSessionId;
     if (!sessionIdForPersist) {
-      const { nodeId, codexAnchorId } = resolveScopeSessionKey(
+      const { nodeId, codexAnchorId, snippetAnchorId } = resolveScopeSessionKey(
         chatScope,
         effectiveSceneId,
         scopeAnchorId,
@@ -2680,6 +2700,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           "New session",
           nodeId === null ? undefined : nodeId,
           codexAnchorId,
+          snippetAnchorId,
         );
         sessionIdForPersist = session.id;
         set((state) => ({
@@ -3702,6 +3723,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               })
             : null;
 
+        // Snippet スコープ: anchor snippet を取得して L4 pinnedSnippets の
+        // 先頭へ注入する（下の globalPinnedSnippets マージ参照）。
+        let snippetAnchor: Snippet | undefined;
+        if (chatScope === "snippet" && scopeAnchorId) {
+          try {
+            snippetAnchor = await getSnippet(
+              getCurrentProjectId(),
+              scopeAnchorId,
+            );
+          } catch {
+            snippetAnchor = undefined;
+          }
+        }
+
         // Phase 2 / 2.5: folder / project スコープでは 3 段階の集約 tier。
         //   Tier 1 (body 集約): includeBodies=true かつ scene≤30 かつ chars≤100k
         //   Tier 2 (synopsis 集約): scene≤200。本文は注入せず title+synopsis のみ
@@ -3818,6 +3853,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             title: s.title,
             content: extractPlainText(s.content) || s.title,
           }));
+        }
+
+        // Snippet スコープ: anchor snippet を pinnedSnippets の先頭に固定注入。
+        // session pin にも同じ snippet がある場合は重複させない (codex スコープの
+        // selectedPinned 先頭マージと同型)。
+        if (snippetAnchor) {
+          const anchorCtx: PinnedSnippetContext = {
+            id: snippetAnchor.id,
+            title: snippetAnchor.title,
+            content:
+              extractPlainText(snippetAnchor.content) || snippetAnchor.title,
+          };
+          globalPinnedSnippets = [
+            anchorCtx,
+            ...globalPinnedSnippets.filter((s) => s.id !== anchorCtx.id),
+          ];
         }
 
         // G21: include input-typed detected entries not yet pinned to DB
@@ -4057,28 +4108,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   setChatScope: (scope, anchorId) => {
-    // scope === "folder" / "codex" のとき anchorId 必須。空指定なら scene に fallback。
-    // includeBodies は scope ごとのデフォルトに揃え直す: scene=true, folder/codex=false。
+    // scope === "folder" / "codex" / "snippet" のとき anchorId 必須。空指定なら scene に fallback。
+    // includeBodies は scope ごとのデフォルトに揃え直す: scene=true, それ以外=false。
     // project では本文集約しないので値自体は影響しないが false に揃える。
-    if (scope === "folder") {
+    if (scope === "folder" || scope === "codex" || scope === "snippet") {
       if (!anchorId) {
         set({ chatScope: "scene", scopeAnchorId: null, includeBodies: true });
         return;
       }
       set({
-        chatScope: "folder",
-        scopeAnchorId: anchorId,
-        includeBodies: false,
-      });
-      return;
-    }
-    if (scope === "codex") {
-      if (!anchorId) {
-        set({ chatScope: "scene", scopeAnchorId: null, includeBodies: true });
-        return;
-      }
-      set({
-        chatScope: "codex",
+        chatScope: scope,
         scopeAnchorId: anchorId,
         includeBodies: false,
       });
@@ -4256,3 +4295,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
   setActiveProjectId: (id: string | null) => set({ activeProjectId: id }),
 }));
+
+// Snippet 削除 → snippet スコープを scene へ戻す。snippetStore からの直接 import は
+// module graph 汚染になるため leaf DI (anchorNotify) 経由で受ける。
+setSnippetDeletedHandler((id) =>
+  useChatStore.getState().onSnippetAnchorDeleted(id),
+);

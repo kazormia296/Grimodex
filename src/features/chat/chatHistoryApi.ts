@@ -27,6 +27,7 @@ export interface MessageSearchHit {
   sessionTitle: string;
   nodeId: string | null;
   codexAnchorId: string | null;
+  snippetAnchorId: string | null;
   role: MessageRole;
   content: string;
   highlightedContent: string;
@@ -40,6 +41,7 @@ function toSession(row: typeof chatSessions.$inferSelect): ChatSession {
     projectId: row.projectId,
     nodeId: row.nodeId,
     codexAnchorId: row.codexAnchorId,
+    snippetAnchorId: row.snippetAnchorId,
     title: row.title,
     titleManual: row.titleManual,
     model: row.model,
@@ -194,6 +196,7 @@ export async function searchChatMessages(
     session_title: string;
     node_id: string | null;
     codex_anchor_id: string | null;
+    snippet_anchor_id: string | null;
     role: string;
     content: string;
     highlighted_content: string;
@@ -208,6 +211,7 @@ export async function searchChatMessages(
       s.title       AS session_title,
       s.node_id,
       s.codex_anchor_id,
+      s.snippet_anchor_id,
       m.role,
       m.content,
       snippet(chat_messages_fts, 0, '\x01', '\x02', '...', 20) AS highlighted_content,
@@ -235,6 +239,7 @@ export async function searchChatMessages(
     sessionTitle: row.session_title,
     nodeId: row.node_id,
     codexAnchorId: row.codex_anchor_id,
+    snippetAnchorId: row.snippet_anchor_id,
     role: row.role as MessageRole,
     content: row.content,
     highlightedContent: row.highlighted_content,

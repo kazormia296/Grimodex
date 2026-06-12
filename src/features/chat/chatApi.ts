@@ -367,6 +367,7 @@ function toSession(row: typeof chatSessions.$inferSelect): ChatSession {
     projectId: row.projectId,
     nodeId: row.nodeId,
     codexAnchorId: row.codexAnchorId,
+    snippetAnchorId: row.snippetAnchorId,
     title: row.title,
     titleManual: row.titleManual,
     model: row.model,
@@ -394,14 +395,16 @@ function toMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
 
 /**
  * nodeId = string  → そのシーンのセッションのみ
- * nodeId = null    → nodeId IS NULL かつ codex_anchor_id IS NULL (プロジェクトスコープ)
+ * nodeId = null    → nodeId IS NULL かつ codex/snippet anchor も NULL (プロジェクトスコープ)
  * nodeId = undefined → 全セッション
  * codexAnchorId = string → その Codex アンカーのセッションのみ
+ * snippetAnchorId = string → その Snippet アンカーのセッションのみ
  */
 export async function listSessions(
   projectId: string,
   nodeId?: string | null,
   codexAnchorId?: string | null,
+  snippetAnchorId?: string | null,
 ): Promise<ChatSession[]> {
   if (codexAnchorId !== undefined && codexAnchorId !== null) {
     const rows = await db
@@ -411,6 +414,20 @@ export async function listSessions(
         and(
           eq(chatSessions.projectId, projectId),
           eq(chatSessions.codexAnchorId, codexAnchorId),
+        ),
+      )
+      .orderBy(desc(chatSessions.updatedAt));
+    return rows.map(toSession);
+  }
+
+  if (snippetAnchorId !== undefined && snippetAnchorId !== null) {
+    const rows = await db
+      .select()
+      .from(chatSessions)
+      .where(
+        and(
+          eq(chatSessions.projectId, projectId),
+          eq(chatSessions.snippetAnchorId, snippetAnchorId),
         ),
       )
       .orderBy(desc(chatSessions.updatedAt));
@@ -428,6 +445,7 @@ export async function listSessions(
                 eq(chatSessions.projectId, projectId),
                 isNull(chatSessions.nodeId),
                 isNull(chatSessions.codexAnchorId),
+                isNull(chatSessions.snippetAnchorId),
               ),
             )
             .orderBy(desc(chatSessions.updatedAt))
@@ -455,6 +473,7 @@ export async function createSession(
   title: string,
   nodeId?: string,
   codexAnchorId?: string,
+  snippetAnchorId?: string,
 ): Promise<ChatSession> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -466,6 +485,7 @@ export async function createSession(
       title,
       nodeId: nodeId ? nodeId : null,
       codexAnchorId: codexAnchorId ?? null,
+      snippetAnchorId: snippetAnchorId ?? null,
       createdAt: now,
       updatedAt: now,
     })

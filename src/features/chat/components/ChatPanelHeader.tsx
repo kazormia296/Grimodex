@@ -11,6 +11,7 @@ import {
   Circle,
   BookOpen,
   BookMarked,
+  NotepadText,
   Leaf,
   Map as MapIcon,
 } from "lucide-react";
@@ -19,8 +20,23 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
 import type { ChatScope } from "../chatScope";
 import { CodexScopePickerSection } from "./CodexScopePickerSection";
+import { SnippetScopePickerSection } from "./SnippetScopePickerSection";
+
+type PickerTab = "scene" | "codex" | "snippet";
+
+const PICKER_TABS: { value: PickerTab; labelKey: string }[] = [
+  { value: "scene", labelKey: "chat.scope.tabScene" },
+  { value: "codex", labelKey: "chat.scope.tabCodex" },
+  { value: "snippet", labelKey: "chat.scope.tabSnippet" },
+];
+
+function scopeToPickerTab(scope: ChatScope): PickerTab {
+  if (scope === "codex" || scope === "snippet") return scope;
+  return "scene";
+}
 
 interface ChatPanelHeaderProps {
   sessionsPanelOpen: boolean;
@@ -119,14 +135,29 @@ export function ChatPanelHeader({
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const codexEntries = useCodexStore((s) => s.entries);
+  const snippetEntries = useSnippetStore((s) => s.entries);
+  const ensureSnippetsLoaded = useSnippetStore((s) => s.ensureEntriesLoaded);
 
   const rows = useMemo(() => flattenTree(nodes), [nodes]);
+
+  // snippet スコープのラベル解決にタイトルが要る。Snippet パネル未訪問だと
+  // store が空のままなので、scope が snippet の間はロードを保証する。
+  useEffect(() => {
+    if (chatScope === "snippet") void ensureSnippetsLoaded();
+  }, [chatScope, ensureSnippetsLoaded]);
 
   const currentLabel = useMemo(() => {
     if (chatScope === "codex") {
       const entry = codexEntries.find((e) => e.id === scopeAnchorId);
       if (!entry) return t("chat.scope.project");
       return `${t("chat.scope.codex")}: ${entry.name}`;
+    }
+    if (chatScope === "snippet") {
+      const snippet = snippetEntries.find((s) => s.id === scopeAnchorId);
+      // 未ロード/削除済みでも snippet スコープ表示は維持する
+      // (codex と違い entries は lazy load のため project へ化けさせない)。
+      if (!snippet) return t("chat.scope.snippet");
+      return `${t("chat.scope.snippet")}: ${snippet.title}`;
     }
     if (chatScope === "project") return t("chat.scope.project");
     if (chatScope === "folder") {
@@ -140,9 +171,18 @@ export function ChatPanelHeader({
     const scene = nodes.find((n) => n.id === chatSceneId);
     if (!scene) return t("chat.scope.scene");
     return `${t("chat.scope.scene")}: ${scene.title}`;
-  }, [chatScope, scopeAnchorId, chatSceneId, nodes, codexEntries, t]);
+  }, [
+    chatScope,
+    scopeAnchorId,
+    chatSceneId,
+    nodes,
+    codexEntries,
+    snippetEntries,
+    t,
+  ]);
 
   const [open, setOpen] = useState(false);
+  const [pickerTab, setPickerTab] = useState<PickerTab>("scene");
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [scopeHint, setScopeHint] = useState(false);
   const activePresetId = useLayoutStore((s) => s.activePresetId);
@@ -186,6 +226,12 @@ export function ChatPanelHeader({
     };
   }, [activePresetId]);
 
+  const handleToggleOpen = () => {
+    // 開くたびに現在のスコープに対応するタブへ同期する
+    // (codex/snippet スコープ中は該当タブ、tree 系スコープは Scene タブ)。
+    if (!open) setPickerTab(scopeToPickerTab(chatScope));
+    setOpen(!open);
+  };
   const handlePickScene = (sceneId: string) => {
     onSelectScene(sceneId);
     onScopeChange("scene");
@@ -203,6 +249,17 @@ export function ChatPanelHeader({
     onScopeChange("codex", id);
     setOpen(false);
   };
+  const handlePickSnippet = (id: string) => {
+    onScopeChange("snippet", id);
+    setOpen(false);
+  };
+
+  // codex / snippet スコープは本文集約が無いため eco トグルは無効。
+  const bodiesUnavailable = chatScope === "codex" || chatScope === "snippet";
+  const bodiesUnavailableLabel =
+    chatScope === "snippet"
+      ? t("chat.scope.bodiesUnavailableSnippet")
+      : t("chat.scope.bodiesUnavailableCodex");
 
   return (
     <div
@@ -217,7 +274,7 @@ export function ChatPanelHeader({
         <div className="relative min-w-0" ref={dropdownRef}>
           <button
             type="button"
-            onClick={() => setOpen((v) => !v)}
+            onClick={handleToggleOpen}
             className="flex max-w-[200px] items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
             title={t("chat.scope.picker")}
             aria-label={t("chat.scope.picker")}
@@ -228,6 +285,8 @@ export function ChatPanelHeader({
               <FolderTree className="mr-1 h-3 w-3 shrink-0 text-primary" />
             ) : chatScope === "codex" ? (
               <BookMarked className="mr-1 h-3 w-3 shrink-0 text-primary" />
+            ) : chatScope === "snippet" ? (
+              <NotepadText className="mr-1 h-3 w-3 shrink-0 text-primary" />
             ) : (
               <FileText className="mr-1 h-3 w-3 shrink-0 text-primary" />
             )}
@@ -263,78 +322,117 @@ export function ChatPanelHeader({
           )}
 
           {open && (
-            <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover shadow-lg">
-              {/* Project (root) */}
-              <button
-                type="button"
-                onClick={handlePickProject}
-                className={[
-                  "flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs",
-                  chatScope === "project"
-                    ? "bg-accent font-medium text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                ].join(" ")}
+            <div className="absolute left-0 top-full z-50 mt-1 w-72 overflow-hidden rounded-md border border-border bg-popover shadow-lg">
+              {/* Spotlight (PinEntryDialog) 形式のタブバー。aria は ImportDialog の
+                  tablist パターンに合わせる。 */}
+              <div
+                role="tablist"
+                aria-label={t("chat.scope.picker")}
+                className="flex border-b border-border"
               >
-                <Globe className="h-3.5 w-3.5 shrink-0" />
-                <span className="flex-1">{t("chat.scope.project")}</span>
-                {chatScope === "project" && (
-                  <Check className="h-3 w-3 shrink-0" />
-                )}
-              </button>
-
-              <div className="max-h-72 overflow-y-auto py-1">
-                {rows.length === 0 && (
-                  <p className="px-3 py-2 text-xs text-muted-foreground">
-                    {t("chat.noScenes")}
-                  </p>
-                )}
-                {rows.map(({ node, depth }) => {
-                  const isFolder = node.nodeType === "folder";
-                  if (!isFolder && node.nodeType !== "scene") return null;
-                  const isSelected = isFolder
-                    ? chatScope === "folder" && scopeAnchorId === node.id
-                    : chatScope === "scene" && chatSceneId === node.id;
-                  const isEditorActive =
-                    !isFolder && editorActiveSceneId === node.id;
-                  return (
-                    <button
-                      key={node.id}
-                      type="button"
-                      onClick={() =>
-                        isFolder
-                          ? handlePickFolder(node.id)
-                          : handlePickScene(node.id)
-                      }
-                      style={{ paddingLeft: 12 + depth * 12 }}
-                      className={[
-                        "flex w-full items-center gap-1.5 py-1 pr-3 text-left text-xs",
-                        isSelected
-                          ? "bg-accent font-medium text-foreground"
-                          : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                      ].join(" ")}
-                    >
-                      {isFolder ? (
-                        <FolderTree className="h-3 w-3 shrink-0 opacity-70" />
-                      ) : (
-                        <FileText className="h-3 w-3 shrink-0 opacity-70" />
-                      )}
-                      <span className="flex-1 truncate">{node.title}</span>
-                      {isEditorActive && (
-                        <Circle
-                          className="h-2 w-2 shrink-0 fill-primary text-primary"
-                          aria-label={t("chat.scope.editorHere")}
-                        />
-                      )}
-                      {isSelected && <Check className="h-3 w-3 shrink-0" />}
-                    </button>
-                  );
-                })}
+                {PICKER_TABS.map((tab) => (
+                  <button
+                    key={tab.value}
+                    type="button"
+                    role="tab"
+                    aria-selected={pickerTab === tab.value}
+                    onClick={() => setPickerTab(tab.value)}
+                    className={[
+                      "flex-1 px-3 py-1.5 text-xs font-medium transition-colors",
+                      pickerTab === tab.value
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background text-muted-foreground hover:bg-accent",
+                    ].join(" ")}
+                  >
+                    {t(tab.labelKey)}
+                  </button>
+                ))}
               </div>
 
-              <CodexScopePickerSection
-                selectedId={chatScope === "codex" ? scopeAnchorId : null}
-                onPick={handlePickCodex}
-              />
+              {pickerTab === "scene" && (
+                <>
+                  {/* Project (root) */}
+                  <button
+                    type="button"
+                    onClick={handlePickProject}
+                    className={[
+                      "flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs",
+                      chatScope === "project"
+                        ? "bg-accent font-medium text-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                    ].join(" ")}
+                  >
+                    <Globe className="h-3.5 w-3.5 shrink-0" />
+                    <span className="flex-1">{t("chat.scope.project")}</span>
+                    {chatScope === "project" && (
+                      <Check className="h-3 w-3 shrink-0" />
+                    )}
+                  </button>
+
+                  <div className="max-h-72 overflow-y-auto py-1">
+                    {rows.length === 0 && (
+                      <p className="px-3 py-2 text-xs text-muted-foreground">
+                        {t("chat.noScenes")}
+                      </p>
+                    )}
+                    {rows.map(({ node, depth }) => {
+                      const isFolder = node.nodeType === "folder";
+                      if (!isFolder && node.nodeType !== "scene") return null;
+                      const isSelected = isFolder
+                        ? chatScope === "folder" && scopeAnchorId === node.id
+                        : chatScope === "scene" && chatSceneId === node.id;
+                      const isEditorActive =
+                        !isFolder && editorActiveSceneId === node.id;
+                      return (
+                        <button
+                          key={node.id}
+                          type="button"
+                          onClick={() =>
+                            isFolder
+                              ? handlePickFolder(node.id)
+                              : handlePickScene(node.id)
+                          }
+                          style={{ paddingLeft: 12 + depth * 12 }}
+                          className={[
+                            "flex w-full items-center gap-1.5 py-1 pr-3 text-left text-xs",
+                            isSelected
+                              ? "bg-accent font-medium text-foreground"
+                              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                          ].join(" ")}
+                        >
+                          {isFolder ? (
+                            <FolderTree className="h-3 w-3 shrink-0 opacity-70" />
+                          ) : (
+                            <FileText className="h-3 w-3 shrink-0 opacity-70" />
+                          )}
+                          <span className="flex-1 truncate">{node.title}</span>
+                          {isEditorActive && (
+                            <Circle
+                              className="h-2 w-2 shrink-0 fill-primary text-primary"
+                              aria-label={t("chat.scope.editorHere")}
+                            />
+                          )}
+                          {isSelected && <Check className="h-3 w-3 shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {pickerTab === "codex" && (
+                <CodexScopePickerSection
+                  selectedId={chatScope === "codex" ? scopeAnchorId : null}
+                  onPick={handlePickCodex}
+                />
+              )}
+
+              {pickerTab === "snippet" && (
+                <SnippetScopePickerSection
+                  selectedId={chatScope === "snippet" ? scopeAnchorId : null}
+                  onPick={handlePickSnippet}
+                />
+              )}
             </div>
           )}
         </div>
@@ -343,28 +441,28 @@ export function ChatPanelHeader({
         <button
           type="button"
           onClick={() => {
-            if (chatScope === "codex") return;
+            if (bodiesUnavailable) return;
             onToggleIncludeBodies();
           }}
-          disabled={chatScope === "codex"}
+          disabled={bodiesUnavailable}
           title={
-            chatScope === "codex"
-              ? t("chat.scope.bodiesUnavailableCodex")
+            bodiesUnavailable
+              ? bodiesUnavailableLabel
               : includeBodies
                 ? t("chat.scope.bodiesOn")
                 : t("chat.scope.bodiesOff")
           }
           aria-pressed={includeBodies}
           aria-label={
-            chatScope === "codex"
-              ? t("chat.scope.bodiesUnavailableCodex")
+            bodiesUnavailable
+              ? bodiesUnavailableLabel
               : includeBodies
                 ? t("chat.scope.bodiesOn")
                 : t("chat.scope.bodiesOff")
           }
           className={[
             "rounded p-0.5 transition-colors",
-            chatScope === "codex"
+            bodiesUnavailable
               ? "cursor-not-allowed text-muted-foreground/40"
               : includeBodies
                 ? "text-primary hover:bg-accent"

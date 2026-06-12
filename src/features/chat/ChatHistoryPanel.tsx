@@ -9,6 +9,7 @@ import {
   groupSessionsByScope,
 } from "./chatHistoryStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { SessionCard } from "./components/SessionCard";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -69,6 +70,7 @@ export function ChatHistoryPanel() {
 
   const nodes = useTreeStore((s) => s.nodes);
   const codexEntries = useCodexStore((s) => s.entries);
+  const snippetEntries = useSnippetStore((s) => s.entries);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -151,9 +153,23 @@ export function ChatHistoryPanel() {
     return map;
   }, [codexEntries]);
 
+  const snippetEntryMap = useMemo(() => {
+    const map: Record<string, { title: string }> = {};
+    for (const s of snippetEntries) {
+      map[s.id] = { title: s.title };
+    }
+    return map;
+  }, [snippetEntries]);
+
   const sessionGroups = useMemo(
-    () => groupSessionsByScope(filteredSessions, nodeMap, codexEntryMap),
-    [filteredSessions, nodeMap, codexEntryMap],
+    () =>
+      groupSessionsByScope(
+        filteredSessions,
+        nodeMap,
+        codexEntryMap,
+        snippetEntryMap,
+      ),
+    [filteredSessions, nodeMap, codexEntryMap, snippetEntryMap],
   );
 
   // Search results grouped by session
@@ -165,6 +181,7 @@ export function ChatHistoryPanel() {
         sessionTitle: string;
         nodeId: string | null;
         codexAnchorId: string | null;
+        snippetAnchorId: string | null;
         hits: typeof searchResults;
       }
     >();
@@ -174,6 +191,7 @@ export function ChatHistoryPanel() {
           sessionTitle: hit.sessionTitle,
           nodeId: hit.nodeId,
           codexAnchorId: hit.codexAnchorId,
+          snippetAnchorId: hit.snippetAnchorId,
           hits: [],
         });
       }
@@ -324,9 +342,13 @@ export function ChatHistoryPanel() {
                     ? codexEntryMap[group.codexAnchorId]?.name
                       ? `Codex: ${codexEntryMap[group.codexAnchorId]!.name}`
                       : `Codex: ${group.codexAnchorId}`
-                    : group.nodeId
-                      ? (nodeMap[group.nodeId]?.title ?? group.nodeId)
-                      : "Project scope"}{" "}
+                    : group.snippetAnchorId
+                      ? snippetEntryMap[group.snippetAnchorId]?.title
+                        ? `Snippet: ${snippetEntryMap[group.snippetAnchorId]!.title}`
+                        : `Snippet: ${group.snippetAnchorId}`
+                      : group.nodeId
+                        ? (nodeMap[group.nodeId]?.title ?? group.nodeId)
+                        : "Project scope"}{" "}
                   › {group.sessionTitle}
                   <span className="ml-1 font-normal opacity-60">
                     ({group.hits.length})
@@ -371,7 +393,9 @@ export function ChatHistoryPanel() {
                 key={
                   group.codexAnchorId
                     ? `codex-${group.codexAnchorId}`
-                    : (group.nodeId ?? "project-scope")
+                    : group.snippetAnchorId
+                      ? `snippet-${group.snippetAnchorId}`
+                      : (group.nodeId ?? "project-scope")
                 }
                 className="mb-3"
               >

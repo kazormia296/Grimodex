@@ -31,7 +31,12 @@ export function filterAndSortSessions(
     if (sceneFilter !== null) {
       if (s.nodeId !== sceneFilter) return false;
     } else if (projectScopeOnly) {
-      if (s.nodeId !== null || s.codexAnchorId !== null) return false;
+      if (
+        s.nodeId !== null ||
+        s.codexAnchorId !== null ||
+        s.snippetAnchorId !== null
+      )
+        return false;
     }
     if (hasExtractionsOnly && s.codexCount + s.snippetCount === 0) return false;
     return true;
@@ -62,17 +67,19 @@ export interface SessionGroup {
   groupLabel: string;
   nodeId: string | null;
   codexAnchorId: string | null;
+  snippetAnchorId: string | null;
   sessions: SessionWithStats[];
 }
 
 /**
- * Pure function: group sessions by scope (scene/folder, project, codex).
+ * Pure function: group sessions by scope (scene/folder, project, codex, snippet).
  * Exported for unit testing.
  */
 export function groupSessionsByScope(
   sessions: SessionWithStats[],
   nodeMap: Record<string, SceneNode>,
   codexEntryMap: Record<string, { name: string }> = {},
+  snippetEntryMap: Record<string, { title: string }> = {},
 ): SessionGroup[] {
   const groupMap = new Map<string, SessionWithStats[]>();
 
@@ -80,6 +87,8 @@ export function groupSessionsByScope(
     let key: string;
     if (session.codexAnchorId) {
       key = `codex:${session.codexAnchorId}`;
+    } else if (session.snippetAnchorId) {
+      key = `snippet:${session.snippetAnchorId}`;
     } else if (session.nodeId) {
       key = `scene:${session.nodeId}`;
     } else {
@@ -94,25 +103,40 @@ export function groupSessionsByScope(
     let groupLabel: string;
     let nodeId: string | null = null;
     let codexAnchorId: string | null = null;
+    let snippetAnchorId: string | null = null;
     if (key.startsWith("codex:")) {
       codexAnchorId = key.slice(6);
       const entry = codexEntryMap[codexAnchorId];
       groupLabel = entry ? `Codex: ${entry.name}` : `Codex: ${codexAnchorId}`;
+    } else if (key.startsWith("snippet:")) {
+      snippetAnchorId = key.slice(8);
+      const snippet = snippetEntryMap[snippetAnchorId];
+      groupLabel = snippet
+        ? `Snippet: ${snippet.title}`
+        : `Snippet: ${snippetAnchorId}`;
     } else if (key.startsWith("scene:")) {
       nodeId = key.slice(6);
       groupLabel = nodeMap[nodeId]?.title ?? nodeId;
     } else {
       groupLabel = "Project scope";
     }
-    groups.push({ groupLabel, nodeId, codexAnchorId, sessions: groupSessions });
+    groups.push({
+      groupLabel,
+      nodeId,
+      codexAnchorId,
+      snippetAnchorId,
+      sessions: groupSessions,
+    });
   }
 
-  // Sort: scene groups first, project scope, codex groups last
+  // Sort: scene groups first, project scope, anchored (codex/snippet) groups last
+  const isAnchored = (g: SessionGroup) =>
+    g.codexAnchorId !== null || g.snippetAnchorId !== null;
   return groups.sort((a, b) => {
-    if (a.codexAnchorId && !b.codexAnchorId) return 1;
-    if (!a.codexAnchorId && b.codexAnchorId) return -1;
-    if (a.nodeId === null && b.nodeId !== null && !a.codexAnchorId) return 1;
-    if (a.nodeId !== null && b.nodeId === null && !b.codexAnchorId) return -1;
+    if (isAnchored(a) && !isAnchored(b)) return 1;
+    if (!isAnchored(a) && isAnchored(b)) return -1;
+    if (a.nodeId === null && b.nodeId !== null && !isAnchored(a)) return 1;
+    if (a.nodeId !== null && b.nodeId === null && !isAnchored(b)) return -1;
     return 0;
   });
 }

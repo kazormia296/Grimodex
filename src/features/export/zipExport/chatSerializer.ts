@@ -18,6 +18,7 @@ export interface ChatSessionExport {
     updatedAt: string;
     nodeId: string | null;
     codexAnchorId: string | null;
+    snippetAnchorId: string | null;
   };
   pinnedCodex: Array<{
     id: string;
@@ -75,6 +76,7 @@ export function serializeChatSession(
       updatedAt: session.updatedAt,
       nodeId: session.nodeId,
       codexAnchorId: session.codexAnchorId,
+      snippetAnchorId: session.snippetAnchorId,
     },
     pinnedCodex: [
       ...pinnedCodex.map((e) => ({

@@ -1,38 +1,31 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BookMarked, Check } from "lucide-react";
-import { useCodexStore } from "@/features/codex/codexStore";
+import { NotepadText, Check } from "lucide-react";
+import { useSnippetStore } from "@/features/snippets/snippetStore";
 
-interface CodexScopePickerSectionProps {
+interface SnippetScopePickerSectionProps {
   selectedId: string | null;
   onPick: (id: string) => void;
 }
 
-export function CodexScopePickerSection({
+export function SnippetScopePickerSection({
   selectedId,
   onPick,
-}: CodexScopePickerSectionProps) {
+}: SnippetScopePickerSectionProps) {
   const { t } = useTranslation();
-  const entries = useCodexStore((s) => s.entries);
+  const entries = useSnippetStore((s) => s.entries);
+  const ensureEntriesLoaded = useSnippetStore((s) => s.ensureEntriesLoaded);
   const [query, setQuery] = useState("");
+
+  // Snippet パネル未訪問だと entries が空のままなので、タブ表示時にロードを保証する
+  useEffect(() => {
+    ensureEntriesLoaded();
+  }, [ensureEntriesLoaded]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return entries;
-    return entries.filter((e) => {
-      if (e.name.toLowerCase().includes(q)) return true;
-      try {
-        const aliases = JSON.parse(e.aliases ?? "[]") as unknown;
-        if (Array.isArray(aliases)) {
-          return aliases.some(
-            (a) => typeof a === "string" && a.toLowerCase().includes(q),
-          );
-        }
-      } catch {
-        /* ignore */
-      }
-      return false;
-    });
+    return entries.filter((e) => e.title.toLowerCase().includes(q));
   }, [entries, query]);
 
   return (
@@ -41,23 +34,23 @@ export function CodexScopePickerSection({
         type="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder={t("chat.scope.codexSearch")}
+        placeholder={t("chat.scope.snippetSearch")}
         className="mb-2 w-full rounded border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground"
-        aria-label={t("chat.scope.codexSearch")}
+        aria-label={t("chat.scope.snippetSearch")}
       />
       <div className="max-h-48 overflow-y-auto">
         {filtered.length === 0 && (
           <p className="py-2 text-xs text-muted-foreground">
-            {t("chat.scope.noCodexEntries")}
+            {t("chat.scope.noSnippets")}
           </p>
         )}
-        {filtered.map((entry) => {
-          const isSelected = selectedId === entry.id;
+        {filtered.map((snippet) => {
+          const isSelected = selectedId === snippet.id;
           return (
             <button
-              key={entry.id}
+              key={snippet.id}
               type="button"
-              onClick={() => onPick(entry.id)}
+              onClick={() => onPick(snippet.id)}
               className={[
                 "flex w-full items-center gap-1.5 py-1 pr-1 text-left text-xs",
                 isSelected
@@ -65,11 +58,8 @@ export function CodexScopePickerSection({
                   : "text-muted-foreground hover:bg-accent hover:text-foreground",
               ].join(" ")}
             >
-              <BookMarked className="h-3 w-3 shrink-0 opacity-70" />
-              <span className="flex-1 truncate">{entry.name}</span>
-              <span className="shrink-0 text-[10px] opacity-60">
-                {entry.type}
-              </span>
+              <NotepadText className="h-3 w-3 shrink-0 opacity-70" />
+              <span className="flex-1 truncate">{snippet.title}</span>
               {isSelected && <Check className="h-3 w-3 shrink-0" />}
             </button>
           );

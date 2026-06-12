@@ -174,8 +174,17 @@ export function SessionsPanel({
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    loadSessions(sessionKey.nodeId, sessionKey.codexAnchorId);
-  }, [sessionKey.nodeId, sessionKey.codexAnchorId, loadSessions]);
+    loadSessions(
+      sessionKey.nodeId,
+      sessionKey.codexAnchorId,
+      sessionKey.snippetAnchorId,
+    );
+  }, [
+    sessionKey.nodeId,
+    sessionKey.codexAnchorId,
+    sessionKey.snippetAnchorId,
+    loadSessions,
+  ]);
 
   const handleSelect = useCallback(
     (sessionId: string) => {

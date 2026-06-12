@@ -370,6 +370,11 @@ export const chatSessions = sqliteTable(
       (): any => codexEntries.id,
       { onDelete: "set null" },
     ),
+    snippetAnchorId: text("snippet_anchor_id").references(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- forward ref breaks circular inference
+      (): any => snippets.id,
+      { onDelete: "set null" },
+    ),
     title: text("title").notNull().default("New session"),
     titleManual: integer("title_manual").notNull().default(0),
     model: text("model")
@@ -387,6 +392,10 @@ export const chatSessions = sqliteTable(
     index("idx_chat_sessions_codex_anchor").on(
       table.projectId,
       table.codexAnchorId,
+    ),
+    index("idx_chat_sessions_snippet_anchor").on(
+      table.projectId,
+      table.snippetAnchorId,
     ),
   ],
 );

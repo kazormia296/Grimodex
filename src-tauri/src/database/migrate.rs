@@ -225,6 +225,7 @@ impl Database {
                 project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 node_id          TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, -- chat history survives scene deletion
                 codex_anchor_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                snippet_anchor_id TEXT REFERENCES snippets(id) ON DELETE SET NULL,
                 title            TEXT NOT NULL DEFAULT 'New session',
                 title_manual INTEGER NOT NULL DEFAULT 0,
                 model        TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
@@ -1456,6 +1457,18 @@ impl Database {
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_chat_sessions_codex_anchor
                 ON chat_sessions(project_id, codex_anchor_id);",
+        )?;
+
+        // Snippet-scoped chat sessions: anchor to a snippet (codex_anchor_id と同型)。
+        Self::add_column_if_missing(
+            &conn,
+            "chat_sessions",
+            "snippet_anchor_id",
+            "TEXT REFERENCES snippets(id) ON DELETE SET NULL",
+        )?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_chat_sessions_snippet_anchor
+                ON chat_sessions(project_id, snippet_anchor_id);",
         )?;
 
         Ok(())

@@ -186,15 +186,15 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     if (!isActive) return;
     if (chatScope === "scene" && !treeActiveSceneId) return;
     let stale = false;
-    const { nodeId: effectiveNodeId, codexAnchorId } = resolveScopeSessionKey(
-      chatScope,
-      treeActiveSceneId,
-      scopeAnchorId,
-    );
+    const {
+      nodeId: effectiveNodeId,
+      codexAnchorId,
+      snippetAnchorId,
+    } = resolveScopeSessionKey(chatScope, treeActiveSceneId, scopeAnchorId);
     (async () => {
       markStart("chatPanel.loadSessions");
       try {
-        await loadSessions(effectiveNodeId, codexAnchorId);
+        await loadSessions(effectiveNodeId, codexAnchorId, snippetAnchorId);
       } finally {
         markEnd("chatPanel.loadSessions");
       }
@@ -799,7 +799,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   }, []);
 
   const handleNewSession = useCallback(() => {
-    const { nodeId, codexAnchorId } = resolveScopeSessionKey(
+    const { nodeId, codexAnchorId, snippetAnchorId } = resolveScopeSessionKey(
       chatScope,
       chatSceneId,
       scopeAnchorId,
@@ -809,6 +809,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       "New session",
       nodeId === null ? undefined : nodeId,
       codexAnchorId,
+      snippetAnchorId,
     );
   }, [createNewSession, chatScope, scopeAnchorId, chatSceneId]);
 
