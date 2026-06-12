@@ -4,6 +4,7 @@ import {
   getEntryScanText,
   findReverseMentioningEntries,
   _clearCodexCrossMentionCaches,
+  _reverseMemoSize,
 } from "./codexCrossMentions";
 import { extractPlainText } from "./prosemirrorTextExtractor";
 
@@ -91,5 +92,32 @@ describe("findReverseMentioningEntries", () => {
     const a = findReverseMentioningEntries(selected, candidates);
     const b = findReverseMentioningEntries(selected, candidates);
     expect(a).toBe(b);
+  });
+
+  // perf 契約: memoKey は候補の updatedAt を含むため編集ごとに新キーになる。
+  // 上限なしだと Codex スコープ利用中の編集 1 回 = 1 キーで unbounded に
+  // 蓄積する (clear はプロジェクト切替時のみ) ので、eviction で抑える。
+  it("bounds the memo map under repeated candidate edits (no unbounded growth)", () => {
+    const selected = { id: "hero", name: "Alice", type: "character" };
+    for (let i = 0; i < 200; i++) {
+      const candidates = [
+        makeEntry({
+          id: "c1",
+          name: "World",
+          summary: "Alice",
+          content: "{}",
+          updatedAt: `2024-01-01T00:00:${String(i % 60).padStart(2, "0")}.${i}Z`,
+        }),
+      ];
+      findReverseMentioningEntries(selected, candidates);
+    }
+    expect(_reverseMemoSize()).toBeLessThanOrEqual(64);
+    // eviction 後も正しい結果を返す (correctness はキャッシュに依存しない)
+    const candidates = [
+      makeEntry({ id: "c1", name: "World", summary: "Alice", content: "{}" }),
+    ];
+    expect(
+      findReverseMentioningEntries(selected, candidates).map((e) => e.id),
+    ).toEqual(["c1"]);
   });
 });
