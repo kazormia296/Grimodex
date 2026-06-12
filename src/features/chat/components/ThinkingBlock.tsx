@@ -1,3 +1,4 @@
+import { Brain } from "lucide-react";
 import { useState } from "react";
 
 interface ThinkingBlockProps {
@@ -17,7 +18,7 @@ export function ThinkingBlock({ content, summary }: ThinkingBlockProps) {
         onClick={() => setExpanded((v) => !v)}
         className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left hover:bg-muted/50"
       >
-        <span className="shrink-0">💭</span>
+        <Brain className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="font-medium text-muted-foreground">Thinking...</span>
         <span className="ml-auto shrink-0 text-muted-foreground">
           {expanded ? "▲" : "▼"}

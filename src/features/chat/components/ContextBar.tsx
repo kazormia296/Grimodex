@@ -10,6 +10,7 @@ import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { useTranslation } from "react-i18next";
 import {
   X,
+  AlertTriangle,
   BookOpen,
   ChevronDown,
   ChevronUp,
@@ -311,11 +312,12 @@ export function ContextBar({
                     e.stopPropagation();
                     onCreateLinkedSession();
                   }}
-                  className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 hover:bg-amber-500/25 dark:text-amber-300"
+                  className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 hover:bg-amber-500/25 dark:text-amber-300"
                   title={t("chat.context.multiSummaryWarning", {
                     count: Math.max(summaryCount, maxSummaryGeneration),
                   })}
                 >
+                  <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
                   {t("chat.context.multiSummaryWarning", {
                     count: Math.max(summaryCount, maxSummaryGeneration),
                   })}
@@ -328,7 +330,7 @@ export function ContextBar({
                   e.stopPropagation();
                   onDismissCacheInvalidated?.();
                 }}
-                className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300"
+                className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300"
                 title={
                   cacheInvalidatedReason === "model"
                     ? t("chat.context.cacheRebuiltModel")
@@ -337,6 +339,7 @@ export function ContextBar({
                       : t("chat.context.cacheRebuiltBudget")
                 }
               >
+                <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
                 {t("chat.context.cacheRebuilt")}{" "}
                 {cacheInvalidatedReason === "model"
                   ? t("chat.context.cacheRebuiltModel")

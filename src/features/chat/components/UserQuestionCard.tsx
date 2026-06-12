@@ -1,3 +1,4 @@
+import { CircleHelp } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { motion } from "motion/react";
@@ -214,7 +215,7 @@ export function UserQuestionCard({
       className="rounded-lg border border-primary/40 bg-muted/40 p-3 text-sm shadow-sm"
     >
       <div className="mb-2 flex items-center gap-2 text-xs font-medium text-primary">
-        <span aria-hidden>❓</span>
+        <CircleHelp className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span>{t("chat.userQuestion.title")}</span>
         {/* AI が生成した質問であることを明示（provider 制御テキストの出所開示）。 */}
         <span className="text-[10px] font-medium uppercase tracking-wide text-primary/60">

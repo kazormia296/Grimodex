@@ -1,3 +1,4 @@
+import { ClipboardList } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -16,7 +17,10 @@ export function SummaryBlock({ summary }: SummaryBlockProps) {
         onClick={() => setExpanded((v) => !v)}
         className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left hover:bg-amber-100/20 dark:hover:bg-amber-800/20"
       >
-        <span className="shrink-0 text-amber-600 dark:text-amber-400">📋</span>
+        <ClipboardList
+          className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+          aria-hidden
+        />
         <span className="font-medium text-amber-700 dark:text-amber-300">
           {t("chat.conversationSummary")}
         </span>

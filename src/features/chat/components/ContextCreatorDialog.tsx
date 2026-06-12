@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2 } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import type { SuggestedEntry } from "../contextCreatorApi";
 
 interface ContextCreatorDialogProps {
@@ -112,8 +112,9 @@ export function ContextCreatorDialog({
           type="button"
           onClick={onClose}
           className="text-xs text-muted-foreground hover:text-foreground"
+          aria-label={t("common.close")}
         >
-          ✕
+          <X className="h-3 w-3" aria-hidden />
         </button>
       </div>
 

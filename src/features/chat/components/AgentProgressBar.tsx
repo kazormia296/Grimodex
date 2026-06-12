@@ -1,3 +1,4 @@
+import { Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 interface AgentProgressBarProps {
@@ -22,8 +23,9 @@ export function AgentProgressBar({
   return (
     <div className="border-t border-border bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground">
       <div className="flex items-center gap-3">
-        <span className="shrink-0">
-          🔧 {calls}/{maxCalls} calls
+        <span className="inline-flex shrink-0 items-center gap-1">
+          <Wrench className="h-3 w-3 shrink-0" aria-hidden />
+          {calls}/{maxCalls} calls
         </span>
         <div className="flex flex-1 items-center gap-1.5">
           <div className="h-1 flex-1 overflow-hidden rounded-full bg-border">

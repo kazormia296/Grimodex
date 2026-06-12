@@ -1,3 +1,4 @@
+import { Wrench } from "lucide-react";
 import { useState } from "react";
 import type { ToolCallRecord } from "../agent/agentTypes";
 
@@ -15,7 +16,7 @@ export function ToolCallBlock({ record }: ToolCallBlockProps) {
         onClick={() => setExpanded((v) => !v)}
         className="flex w-full items-start gap-1.5 px-2 py-1.5 text-left hover:bg-muted/60"
       >
-        <span className="mt-px shrink-0">🔧</span>
+        <Wrench className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="font-mono font-medium text-foreground">
           {record.name}
         </span>

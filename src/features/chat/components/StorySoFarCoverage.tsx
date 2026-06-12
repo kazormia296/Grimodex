@@ -1,3 +1,4 @@
+import { AlertTriangle } from "lucide-react";
 import { useState, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -107,7 +108,8 @@ export function StorySoFarCoverage() {
         className="flex items-center gap-1 rounded-full bg-yellow-500/15 px-2 py-0.5 text-xs text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/25"
         title={t("chat.storySoFar.coverageTitle")}
       >
-        ⚠ storySoFar: {coverageLabel}
+        <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
+        storySoFar: {coverageLabel}
       </button>
 
       {open && (

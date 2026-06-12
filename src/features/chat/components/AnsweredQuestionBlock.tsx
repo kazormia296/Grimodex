@@ -1,3 +1,4 @@
+import { CircleHelp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
   AskUserQuestionSpec,
@@ -45,8 +46,11 @@ export function AnsweredQuestionBlock({ record }: AnsweredQuestionBlockProps) {
   // フォールバック: 構造復元できない場合は生 summary を簡素表示。
   if (!parsed) {
     return (
-      <div className="my-1 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
-        ❓ {t("chat.userQuestion.title")} — {record.resultSummary}
+      <div className="my-1 flex items-center gap-1.5 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
+        <CircleHelp className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span>
+          {t("chat.userQuestion.title")} — {record.resultSummary}
+        </span>
       </div>
     );
   }
@@ -57,7 +61,7 @@ export function AnsweredQuestionBlock({ record }: AnsweredQuestionBlockProps) {
   return (
     <div className="my-1 rounded border border-border bg-muted/40 text-xs">
       <div className="flex items-center gap-1.5 px-2 py-1.5">
-        <span aria-hidden>❓</span>
+        <CircleHelp className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="font-medium text-foreground">
           {t("chat.userQuestion.title")}
         </span>

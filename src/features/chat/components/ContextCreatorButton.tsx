@@ -25,7 +25,8 @@ export function ContextCreatorButton({
       className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
       aria-label={t("chat.contextCreator.ariaLabel")}
     >
-      <Sparkles className="h-3 w-3" />✦ AI
+      <Sparkles className="h-3 w-3" aria-hidden />
+      AI
     </button>
   );
 }

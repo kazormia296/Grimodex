@@ -1,3 +1,4 @@
+import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { LayerBreakdown } from "../contextBuilder";
 import { estimateInputCost, formatCost } from "../modelPricing";
@@ -54,8 +55,9 @@ export function PromptPreviewModal({
           type="button"
           onClick={onClose}
           className="rounded p-1 text-muted-foreground hover:bg-accent"
+          aria-label={t("common.close")}
         >
-          ✕
+          <X className="h-4 w-4" aria-hidden />
         </button>
       </div>
 
