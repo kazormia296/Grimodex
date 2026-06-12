@@ -193,8 +193,18 @@ pub fn compute_snapshot(
                 needs_validation: true,
             };
         };
+        // 時計巻き戻しによるオフライン無期限延命を防ぐ: 単調更新される
+        // last_seen_at を下限に取り、有効「現在時刻」を max(now_utc, last_seen_at)
+        // とする。前方ジャンプは now_utc のまま (fail-soft を維持) で、過去への
+        // 巻き戻しだけが grace/stale 遷移を先送りできなくなる。
+        let effective_now = file
+            .last_seen_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&Utc))
+            .map_or(now_utc, |seen| now_utc.max(seen));
         // 負の経過 (検証後に時計が巻き戻った) は licensed 扱い。
-        let elapsed = now_utc - validated;
+        let elapsed = effective_now - validated;
         if elapsed <= Duration::days(VALIDATE_INTERVAL_DAYS) {
             return LicenseSnapshot {
                 status: LicenseStatus::Licensed,
@@ -204,7 +214,7 @@ pub fn compute_snapshot(
             };
         }
         if elapsed <= Duration::days(GRACE_DAYS) {
-            let remaining = (validated + Duration::days(GRACE_DAYS) - now_utc).num_days();
+            let remaining = (validated + Duration::days(GRACE_DAYS) - effective_now).num_days();
             return LicenseSnapshot {
                 status: LicenseStatus::Grace,
                 trial_days_remaining: None,
@@ -579,6 +589,38 @@ mod tests {
     fn future_validated_at_stays_licensed() {
         // 検証後に時計が巻き戻った (経過が負) → licensed 維持 (fail-soft)。
         let file = licensed_file("2026-09-20T00:00:00Z");
+        let snap = compute_snapshot(&file, utc(NOW), TODAY);
+        assert_eq!(snap.status, LicenseStatus::Licensed);
+    }
+
+    #[test]
+    fn clock_rollback_cannot_extend_window_via_last_seen() {
+        // 検証から 45 日が実時間で経過 (last_seen_at が単調記録) した後、
+        // 攻撃者が時計を検証直後 (経過 1 分) まで巻き戻しても、effective_now が
+        // last_seen_at で下限化され grace(>30日) → stale に正しく遷移する。
+        let mut file = licensed_file("2026-08-01T00:00:00Z");
+        file.last_seen_at = Some("2026-09-15T00:00:00Z".to_string()); // 実時間の高水位 (45日後)
+        let snap = compute_snapshot(&file, utc("2026-08-01T00:01:00Z"), "2026-08-01");
+        assert_eq!(snap.status, LicenseStatus::LicenseStale);
+        assert!(snap.needs_validation);
+    }
+
+    #[test]
+    fn last_seen_in_past_does_not_change_legit_licensed() {
+        // last_seen_at が now 以下なら clamp は no-op: 通常運用 (実時間進行) に影響なし。
+        let mut file = licensed_file(NOW);
+        file.last_seen_at = Some("2026-09-08T11:00:00Z".to_string()); // now の 1 時間前
+        let snap = compute_snapshot(&file, utc(NOW), TODAY);
+        assert_eq!(snap.status, LicenseStatus::Licensed);
+        assert!(!snap.needs_validation);
+    }
+
+    #[test]
+    fn forward_jump_keeps_failsoft_for_negative_elapsed() {
+        // last_seen_at があっても、検証時刻が未来 (巻き戻し検証) なら licensed 維持。
+        // effective_now=max(now,last_seen) でも validated 超なら elapsed<=0 で licensed。
+        let mut file = licensed_file("2026-09-20T00:00:00Z");
+        file.last_seen_at = Some("2026-09-08T00:00:00Z".to_string());
         let snap = compute_snapshot(&file, utc(NOW), TODAY);
         assert_eq!(snap.status, LicenseStatus::Licensed);
     }
