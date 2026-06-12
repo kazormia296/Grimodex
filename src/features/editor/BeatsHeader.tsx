@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
-import { ChevronDown, ChevronRight, Plus, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, Pin, Plus, Sparkles } from "lucide-react";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { useDroppable } from "@dnd-kit/core";
@@ -162,7 +162,8 @@ export function BeatsHeader({
           >
             {beats.length > 0 ? (
               <>
-                <p className="mb-0.5 text-[10px] font-medium text-muted-foreground">
+                <p className="mb-0.5 flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+                  <Pin className="h-2.5 w-2.5 shrink-0" aria-hidden />
                   {t("editor.beat.panel.unplacedHeading")}
                 </p>
                 <SortableContext

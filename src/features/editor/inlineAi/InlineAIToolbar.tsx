@@ -1,3 +1,4 @@
+import { Check, X } from "lucide-react";
 import { useEffect } from "react";
 import { useInlineAiStore } from "./inlineAiStore";
 
@@ -51,7 +52,8 @@ export function InlineAIToolbar({
         onClick={onAccept}
         className="flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium text-green-600 hover:bg-green-50 disabled:opacity-40 dark:hover:bg-green-950"
       >
-        ✓ Accept
+        <Check className="h-3 w-3" strokeWidth={3} aria-hidden />
+        Accept
         {!isGenerating && (
           <kbd className="ml-0.5 rounded border border-border px-1 text-xs text-muted-foreground">
             Tab
@@ -64,7 +66,8 @@ export function InlineAIToolbar({
         onClick={onReject}
         className="flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-950"
       >
-        ✕ Reject
+        <X className="h-3 w-3" aria-hidden />
+        Reject
         <kbd className="ml-0.5 rounded border border-border px-1 text-xs text-muted-foreground">
           Esc
         </kbd>

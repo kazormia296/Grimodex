@@ -1,3 +1,4 @@
+import { Check, X } from "lucide-react";
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { useEditorState } from "@tiptap/react";
@@ -788,9 +789,10 @@ export function Toolbar({
             <button
               type="button"
               onClick={() => setRubyOpen(false)}
+              aria-label={t("common.close")}
               className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
             >
-              ✕
+              <X className="h-3 w-3" aria-hidden />
             </button>
           </div>,
           document.body,
@@ -828,9 +830,10 @@ export function Toolbar({
             <button
               type="button"
               onClick={() => setLinkOpen(false)}
+              aria-label={t("common.close")}
               className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
             >
-              ✕
+              <X className="h-3 w-3" aria-hidden />
             </button>
           </div>,
           document.body,
@@ -872,11 +875,11 @@ function OverflowItem({
           <span
             aria-hidden
             className={cn(
-              "inline-block w-3 text-center",
+              "inline-flex w-3 items-center justify-center",
               checked ? "opacity-100" : "opacity-0",
             )}
           >
-            ✓
+            <Check className="h-3 w-3" strokeWidth={3} />
           </span>
         )}
         {label}

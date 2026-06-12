@@ -1,3 +1,4 @@
+import { Check } from "lucide-react";
 import { forwardRef } from "react";
 import { cn } from "@/lib/utils";
 import type { SceneStatus } from "./treeStore";
@@ -7,7 +8,7 @@ const STATUS_STYLES: Record<SceneStatus, string> = {
   draft: "bg-[#EF9F27]",
   complete: "bg-[#1D9E75]",
   revision: "bg-[#7F77DD]",
-  final: "bg-[#1D9E75] after:content-['✓']",
+  final: "bg-[#1D9E75]",
 };
 
 const STATUS_LABELS: Record<SceneStatus, string> = {
@@ -32,13 +33,17 @@ export const StatusDot = forwardRef<HTMLButtonElement, StatusDotProps>(
         title={STATUS_LABELS[s] ?? s}
         onClick={onClick}
         className={cn(
-          "flex h-3 w-3 flex-shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white",
+          "flex h-3 w-3 flex-shrink-0 items-center justify-center rounded-full",
           STATUS_STYLES[s] ?? STATUS_STYLES.outline,
           onClick && "cursor-pointer hover:opacity-80",
           className,
         )}
         {...rest}
-      />
+      >
+        {s === "final" && (
+          <Check className="h-2 w-2 text-white" strokeWidth={4} aria-hidden />
+        )}
+      </button>
     );
   },
 );

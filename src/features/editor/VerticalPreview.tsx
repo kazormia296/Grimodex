@@ -1,3 +1,4 @@
+import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useEditorStore } from "./editorStore";
@@ -64,7 +65,7 @@ export function VerticalPreview({ open, onClose }: VerticalPreviewProps) {
           className="text-muted-foreground hover:text-foreground"
           onClick={onClose}
         >
-          ✕
+          <X className="h-4 w-4" aria-hidden />
         </button>
       </div>
       <div

@@ -1,3 +1,4 @@
+import { Sparkles } from "lucide-react";
 import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "./treeStore";
@@ -77,7 +78,14 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
             title={t("tree.synopsis.generateTitle")}
             className="flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
           >
-            {isGenerating ? t("tree.synopsis.generating") : "✦ Generate"}
+            {isGenerating ? (
+              t("tree.synopsis.generating")
+            ) : (
+              <>
+                <Sparkles className="h-3 w-3" aria-hidden />
+                Generate
+              </>
+            )}
           </button>
         )}
       </div>

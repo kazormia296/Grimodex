@@ -1,3 +1,4 @@
+import { MapPin } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/core";
 import { useTranslation } from "react-i18next";
@@ -46,7 +47,8 @@ export function PlacedBeatList({ editor }: PlacedBeatListProps) {
 
   return (
     <div className="mt-1">
-      <p className="mb-0.5 text-[10px] font-medium text-muted-foreground">
+      <p className="mb-0.5 flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+        <MapPin className="h-2.5 w-2.5 shrink-0" aria-hidden />
         {t("editor.beat.panel.placedHeading")}
       </p>
       <ul className="space-y-0.5">
