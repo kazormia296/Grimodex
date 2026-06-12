@@ -1,3 +1,4 @@
+import { Check } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -331,7 +332,11 @@ export function TagSelector({
                   />
                   <span className="flex-1 truncate">{tag.name}</span>
                   {selectedIds.has(tag.id) && (
-                    <span className="text-[10px] text-primary">✓</span>
+                    <Check
+                      className="h-3 w-3 shrink-0 text-primary"
+                      strokeWidth={3}
+                      aria-hidden
+                    />
                   )}
                 </button>
               ))}

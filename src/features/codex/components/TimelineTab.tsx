@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Clock,
+  FileText,
   MapPin,
   Pencil,
   Trash2,
@@ -416,8 +417,9 @@ export function TimelineTab({ entry }: TimelineTabProps) {
                     </p>
                   )}
                   {phase.contentOverride != null && (
-                    <p className="text-[11px] text-muted-foreground">
-                      <span className="text-foreground/60">content →</span> 📝
+                    <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                      <span className="text-foreground/60">content →</span>
+                      <FileText className="h-3 w-3 shrink-0" aria-hidden />
                       {t("codex.timeline.contentOverride")}
                     </p>
                   )}

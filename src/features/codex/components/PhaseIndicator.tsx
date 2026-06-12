@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, X } from "lucide-react";
+import { ChevronDown, Clock, X } from "lucide-react";
 import type { CodexEntry } from "../api";
 import type { CodexEntryPhase } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
@@ -102,7 +102,10 @@ export function PhaseIndicator({
           onClick={() => setDropdownOpen((v) => !v)}
           className="flex flex-1 items-center gap-1.5 text-left"
         >
-          <span className="text-xs text-muted-foreground">⏱</span>
+          <Clock
+            className="h-3 w-3 shrink-0 text-muted-foreground"
+            aria-hidden
+          />
           <span className="flex-1 truncate text-xs font-medium">
             Phase: {currentLabel}
           </span>

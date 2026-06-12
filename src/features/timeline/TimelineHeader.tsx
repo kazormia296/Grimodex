@@ -1,3 +1,4 @@
+import { Clock, MapPin } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTimelineStore } from "./timelineStore";
 import type { AxisMode, SpacingMode } from "./timelineStore";
@@ -79,8 +80,9 @@ export function TimelineHeader({
 
       {/* Coverage indicator: scheduled/total for story-time mode */}
       {scheduledCount !== null ? (
-        <span className="text-muted-foreground">
-          {t("timeline.coverage", "📍{{scheduled}}/{{total}}", {
+        <span className="inline-flex items-center gap-1 text-muted-foreground">
+          <MapPin className="h-3 w-3 shrink-0" aria-hidden />
+          {t("timeline.coverage", "{{scheduled}}/{{total}}", {
             scheduled: scheduledCount,
             total: sceneCount,
           })}
@@ -105,7 +107,7 @@ export function TimelineHeader({
           className={`rounded px-1.5 py-0.5 text-xs ${display.showPhasePins ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}
           title={t("timeline.togglePhasePins", "フェーズピン表示")}
         >
-          ⏱
+          <Clock className="h-3 w-3" aria-hidden />
         </button>
         <button
           onClick={onToggleInspector}

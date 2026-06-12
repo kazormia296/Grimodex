@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { Clock, X } from "lucide-react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -122,7 +122,7 @@ export function TimelineInspector({
           </span>
           {anchoredPhases.map((p, i) => (
             <div key={i} className="flex items-center gap-1 text-foreground/80">
-              <span>⏱</span>
+              <Clock className="h-3 w-3 shrink-0" aria-hidden />
               <span>
                 {p.entryName}: {p.label}
               </span>
