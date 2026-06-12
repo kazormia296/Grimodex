@@ -419,6 +419,10 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // 末尾追従 (stick) フラグ。更新規則は handleListScroll のコメント参照。
+  // virtualizer の補正述語からも読むため宣言だけ先に置く。
+  const stickToBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
 
   // 描画対象メッセージ (system / 要約済みを除外)。仮想化の count と
   // getItemKey の正本になるので、render 毎の filter 再生成を避けて memo する。
@@ -444,6 +448,23 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     // (browser test 3 が gate)。末尾追従は下の stick + totalSize effect に
     // 一本化する。
   });
+
+  // 末尾追従中は virtual-core 内蔵の「サイズ変化時 scrollTop 補正」を無効化
+  // する (オプションではなくインスタンス公開フィールド)。isStreaming トグルで
+  // 表示中の全 bubble が一斉に縮む (ChatMessage の showActions) と、デフォルト
+  // 述語が負 delta を scrollTo で反映して scrollTop が上方向に動き、その
+  // scroll イベントを handleListScroll がユーザーの上スクロールと誤認して
+  // stick を恒久 OFF にするレースがある (遅いマシンで顕在化、browser test 3
+  // が gate)。追従中のアンカー権威は下の totalSize effect ただ一つ。
+  // 非追従中 (履歴読み) は読書位置の安定のためデフォルト相当の補正を残す。
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
+    item,
+    _delta,
+    instance,
+  ) =>
+    !stickToBottomRef.current &&
+    item.start < (instance.scrollOffset ?? 0) &&
+    instance.scrollDirection !== "backward";
 
   // 仮想化では行が scroll out/in のたびに remount するため、AnimatePresence や
   // 無条件 initial では過去メッセージの入場アニメが再生されてしまう。
@@ -626,8 +647,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   // しうる。distance だけで OFF にすると自分のスクロールで追従を殺して
   // ドリフトが恒久化する (browser test 3 が gate)。上方向はユーザーの
   // 履歴読みだけなので、方向で意図を分離できる。
-  const stickToBottomRef = useRef(true);
-  const lastScrollTopRef = useRef(0);
+  // (ref の宣言は virtualizer の補正述語から参照するため上方にある)
   const handleListScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -646,6 +666,15 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   // もどちらも totalSize に現れるのでこの 1 本で覆える。
   const totalSize = virtualizer.getTotalSize();
   useEffect(() => {
+    // 保険: 実際は最下部近傍に居るのに stick が倒れていたら立て直す。
+    // プログラム起因 scroll の誤検知が補正述語の無効化をすり抜けても、
+    // 次の伸長で追従に復帰できる (恒久停止だけは構造的に防ぐ)。
+    if (!stickToBottomRef.current) {
+      const el = scrollContainerRef.current;
+      if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
+        stickToBottomRef.current = true;
+      }
+    }
     if (stickToBottomRef.current) scrollToBottom();
   }, [totalSize, scrollToBottom]);
 
@@ -925,7 +954,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         ref={scrollContainerRef}
         data-testid="chat-scroll-container"
         onScroll={handleListScroll}
-        className="flex-1 overflow-y-auto px-4 py-3"
+        // overflow-anchor: ブラウザ自身の scroll anchoring も stick 判定を汚す
+        // プログラム起因 scrollTop 移動源になるため切る (アンカーは自前管理)
+        className="flex-1 overflow-y-auto px-4 py-3 [overflow-anchor:none]"
       >
         {isLoadingMessages ? (
           <MessageBubbleSkeletonList testId="chat-messages-loading" />
