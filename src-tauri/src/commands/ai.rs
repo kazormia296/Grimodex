@@ -441,6 +441,21 @@ pub(crate) async fn test_ai_connection(
 mod tests {
     use super::*;
 
+    // 回帰ガード: post_effect (校閲系 AI チェック) はこの関数でキーを解決する。
+    // Ollama/Cli は keyring に触れず空文字を返すこと — get_api_key 直叩きに
+    // 戻すと「API キーが設定されていません」でローカル LLM が全滅する。
+    #[test]
+    fn resolve_api_key_ollama_requires_no_key() {
+        let key = resolve_api_key(&ai::AiProvider::Ollama).unwrap();
+        assert_eq!(key, "");
+    }
+
+    #[test]
+    fn resolve_api_key_cli_requires_no_key() {
+        let key = resolve_api_key(&ai::AiProvider::Cli).unwrap();
+        assert_eq!(key, "");
+    }
+
     #[test]
     fn build_ai_novelist_extra_body_v1_multilingual_mode() {
         let settings = ai::AiSettings {

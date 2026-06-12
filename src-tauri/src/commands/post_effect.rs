@@ -14,9 +14,10 @@ use std::collections::HashMap;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
+use super::ai::resolve_api_key;
 use super::PostEffectAbortFlag;
 use super::{AiSettingsPath, AppError, WorkspaceState};
-use crate::ai::{call_post_effect_api, get_api_key, read_ai_settings};
+use crate::ai::{call_post_effect_api, read_ai_settings};
 
 // ---------------------------------------------------------------------------
 // プロンプトバージョン定数 — FE 側 (consistencyPayloadBuilder.ts /
@@ -1440,11 +1441,9 @@ async fn process_consistency_scene(
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
-    let api_key = match get_api_key(&ai_settings.provider) {
-        Ok(Some(k)) => k,
-        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
-        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
-    };
+    // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
+    // チャット経路と同じ resolve_api_key に判定を一元化する。
+    let api_key = resolve_api_key(&ai_settings.provider)?;
 
     tracing::info!(
         run_id = run_id,
@@ -1893,11 +1892,9 @@ async fn process_intra_scene(
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
-    let api_key = match get_api_key(&ai_settings.provider) {
-        Ok(Some(k)) => k,
-        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
-        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
-    };
+    // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
+    // チャット経路と同じ resolve_api_key に判定を一元化する。
+    let api_key = resolve_api_key(&ai_settings.provider)?;
 
     tracing::info!(
         run_id = run_id,
@@ -2170,11 +2167,9 @@ async fn process_typo_scene(
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
-    let api_key = match get_api_key(&ai_settings.provider) {
-        Ok(Some(k)) => k,
-        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
-        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
-    };
+    // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
+    // チャット経路と同じ resolve_api_key に判定を一元化する。
+    let api_key = resolve_api_key(&ai_settings.provider)?;
 
     tracing::info!(
         run_id = run_id,
@@ -2408,11 +2403,9 @@ async fn process_review_scene(
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
-    let api_key = match get_api_key(&ai_settings.provider) {
-        Ok(Some(k)) => k,
-        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
-        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
-    };
+    // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
+    // チャット経路と同じ resolve_api_key に判定を一元化する。
+    let api_key = resolve_api_key(&ai_settings.provider)?;
 
     tracing::info!(
         run_id = run_id,
@@ -2584,11 +2577,9 @@ async fn process_intent_drift_scene(
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
-    let api_key = match get_api_key(&ai_settings.provider) {
-        Ok(Some(k)) => k,
-        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
-        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
-    };
+    // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
+    // チャット経路と同じ resolve_api_key に判定を一元化する。
+    let api_key = resolve_api_key(&ai_settings.provider)?;
 
     tracing::info!(
         run_id = run_id,
@@ -2793,11 +2784,9 @@ async fn process_timeline_scene(
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
-    let api_key = match get_api_key(&ai_settings.provider) {
-        Ok(Some(k)) => k,
-        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
-        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
-    };
+    // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
+    // チャット経路と同じ resolve_api_key に判定を一元化する。
+    let api_key = resolve_api_key(&ai_settings.provider)?;
 
     tracing::info!(
         run_id = run_id,
@@ -3003,11 +2992,9 @@ async fn process_pseudo_comment_scene(
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
-    let api_key = match get_api_key(&ai_settings.provider) {
-        Ok(Some(k)) => k,
-        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
-        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
-    };
+    // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
+    // チャット経路と同じ resolve_api_key に判定を一元化する。
+    let api_key = resolve_api_key(&ai_settings.provider)?;
 
     tracing::info!(
         run_id = run_id,
@@ -3188,11 +3175,9 @@ async fn process_meta_structure_scene(
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
     let ai_settings = read_ai_settings(ai_settings_path);
-    let api_key = match get_api_key(&ai_settings.provider) {
-        Ok(Some(k)) => k,
-        Ok(None) => return Err(anyhow::anyhow!("API キーが設定されていません")),
-        Err(e) => return Err(anyhow::anyhow!("API キー取得失敗: {e}")),
-    };
+    // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
+    // チャット経路と同じ resolve_api_key に判定を一元化する。
+    let api_key = resolve_api_key(&ai_settings.provider)?;
 
     tracing::info!(
         run_id = run_id,
