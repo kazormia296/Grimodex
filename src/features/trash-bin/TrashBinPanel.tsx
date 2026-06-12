@@ -136,7 +136,10 @@ export function TrashBinPanel() {
   return (
     <div className="flex h-full flex-col" aria-label={t("trashBin.title")}>
       {confirmDialog}
-      <header className="flex items-center gap-2 border-b border-border px-3 py-2">
+      <header
+        data-panel-header
+        className="flex items-center gap-2 border-b border-border px-3 py-2"
+      >
         <h2 className="text-sm font-semibold">{t("trashBin.title")}</h2>
         <span className="text-xs text-muted-foreground">
           {t("trashBin.count", { count: sortedItems.length })}

@@ -35,7 +35,10 @@ export function TimelineHeader({
   const toggleDisplay = useTimelineStore((s) => s.toggleDisplay);
 
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
+    <div
+      data-panel-header
+      className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs"
+    >
       <span className="font-semibold text-foreground">
         {t("layout.panel.timeline", "Timeline")}
       </span>

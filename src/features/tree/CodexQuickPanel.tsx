@@ -25,7 +25,10 @@ export function CodexQuickPanel() {
   const __renderResult = (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="flex flex-shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
+      <div
+        data-panel-header
+        className="flex flex-shrink-0 items-center gap-1 border-b border-border px-2 py-1.5"
+      >
         <span className="flex-1 text-xs font-semibold text-foreground">
           Codex Quick
         </span>

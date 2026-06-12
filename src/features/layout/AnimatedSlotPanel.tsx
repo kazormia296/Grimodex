@@ -5,6 +5,7 @@ import { useReducedMotion } from "@/lib/animation";
 import type { ToolWindowPanelId } from "./layoutTypes";
 import { chromeEnterTransition, chromeExitTransition } from "./layoutAnimation";
 import { PANEL_COMPONENT_MAP } from "./panelComponents";
+import { PanelChromeMenu } from "./PanelChromeMenu";
 import { useLayoutStore } from "./layoutStore";
 
 interface AnimatedSlotPanelProps {
@@ -61,26 +62,30 @@ export const AnimatedSlotPanel = memo(function AnimatedSlotPanel({
         if (!Component) return null;
         const isActive = id === panelId;
         return (
-          <motion.div
-            key={id}
-            data-slot-panel={isActive ? id : undefined}
-            data-animated-slot-panel={id}
-            aria-hidden={!isActive}
-            inert={!isActive}
-            className={cn(
-              "gx-panel glass-region-panel absolute inset-0 flex min-h-0 min-w-0 flex-col overflow-hidden",
-              isDragging && isActive && "gx-panel--dragging",
-            )}
-            initial={false}
-            animate={{ opacity: isActive ? 1 : 0 }}
-            transition={
-              isActive
-                ? chromeEnterTransition(reduced)
-                : chromeExitTransition(reduced)
-            }
-          >
-            <Component isActive={isActive} />
-          </motion.div>
+          // PanelChromeMenu はヘッダー帯 (data-panel-header) 限定の
+          // 右クリックメニュー + dblclick 最大化をイベント委譲で付ける。
+          // 非アクティブ層は inert なので実質アクティブ panel のみ反応する。
+          <PanelChromeMenu key={id} panelId={id}>
+            <motion.div
+              data-slot-panel={isActive ? id : undefined}
+              data-animated-slot-panel={id}
+              aria-hidden={!isActive}
+              inert={!isActive}
+              className={cn(
+                "gx-panel glass-region-panel absolute inset-0 flex min-h-0 min-w-0 flex-col overflow-hidden",
+                isDragging && isActive && "gx-panel--dragging",
+              )}
+              initial={false}
+              animate={{ opacity: isActive ? 1 : 0 }}
+              transition={
+                isActive
+                  ? chromeEnterTransition(reduced)
+                  : chromeExitTransition(reduced)
+              }
+            >
+              <Component isActive={isActive} />
+            </motion.div>
+          </PanelChromeMenu>
         );
       })}
     </>

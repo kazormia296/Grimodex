@@ -2,6 +2,7 @@ import { memo, useEffect, useRef } from "react";
 import { motion } from "motion/react";
 import { SceneEditor } from "@/features/tree/SceneEditor";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+import { PanelChromeMenu } from "./PanelChromeMenu";
 import { registerEditorFocusHandler, useLayoutStore } from "./layoutStore";
 
 /** Central editor cell — always mounted when center band exists. */
@@ -36,20 +37,24 @@ export const EditorArea = memo(function EditorArea() {
   }, [editorOpen]);
 
   return (
-    <motion.div
-      ref={containerRef}
-      data-editor-area
-      tabIndex={-1}
-      initial={reduced ? false : { opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={
-        reduced
-          ? { duration: 0 }
-          : { duration: DURATIONS.normal, ease: EASINGS.easeOut }
-      }
-      className="gx-panel gx-panel--flat glass-region-panel h-full min-h-0 w-full min-w-0 overflow-hidden outline-none"
-    >
-      <SceneEditor />
-    </motion.div>
+    // PanelChromeMenu: TabBar 行 (data-panel-header) の右クリックメニュー +
+    // dblclick 最大化。エディタ本文には届かない（ヘッダー帯限定の委譲）。
+    <PanelChromeMenu panelId="editor">
+      <motion.div
+        ref={containerRef}
+        data-editor-area
+        tabIndex={-1}
+        initial={reduced ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={
+          reduced
+            ? { duration: 0 }
+            : { duration: DURATIONS.normal, ease: EASINGS.easeOut }
+        }
+        className="gx-panel gx-panel--flat glass-region-panel h-full min-h-0 w-full min-w-0 overflow-hidden outline-none"
+      >
+        <SceneEditor />
+      </motion.div>
+    </PanelChromeMenu>
   );
 });

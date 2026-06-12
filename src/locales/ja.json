@@ -695,6 +695,11 @@
         "BL": "下 左",
         "BR": "下 右"
       }
+    },
+    "panelMenu": {
+      "collapse": "折りたたむ",
+      "maximize": "最大化",
+      "restore": "元のサイズに戻す"
     }
   },
   "kouetsu": {

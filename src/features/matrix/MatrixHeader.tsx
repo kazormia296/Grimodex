@@ -110,7 +110,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
   return (
     <div className="shrink-0 border-b">
       {/* Main row */}
-      <div className="flex items-center gap-2 px-3 py-2">
+      <div data-panel-header className="flex items-center gap-2 px-3 py-2">
         <span className="text-sm font-semibold">Matrix</span>
         <div className="flex-1" />
 

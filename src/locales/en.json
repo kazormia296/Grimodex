@@ -695,6 +695,11 @@
         "BL": "Bottom Left",
         "BR": "Bottom Right"
       }
+    },
+    "panelMenu": {
+      "collapse": "Collapse",
+      "maximize": "Maximize",
+      "restore": "Restore size"
     }
   },
   "kouetsu": {

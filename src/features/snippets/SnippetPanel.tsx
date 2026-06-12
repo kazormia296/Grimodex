@@ -386,7 +386,10 @@ export function SnippetPanel() {
             className="flex h-full flex-col"
           >
             {/* Header */}
-            <div className="flex items-center justify-between border-b border-border px-3 py-2">
+            <div
+              data-panel-header
+              className="flex items-center justify-between border-b border-border px-3 py-2"
+            >
               <span className="text-sm font-semibold">Snippets</span>
               <div className="flex items-center gap-1">
                 <span

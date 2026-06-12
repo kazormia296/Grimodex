@@ -407,7 +407,10 @@ export function ForeshadowPanel() {
       data-droptarget-id="foreshadow-panel"
       className="flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
     >
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+      <div
+        data-panel-header
+        className="flex items-center justify-between border-b border-border px-3 py-2"
+      >
         <span className="text-xs font-semibold text-foreground">
           {t("foreshadow.panel.title")}
           {items.length > 0 && (

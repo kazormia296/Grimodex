@@ -166,7 +166,7 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
 
   const __renderResult = (
     <div className="flex flex-col gap-3 p-3" data-testid="attribution-report">
-      <div className="flex items-center justify-between">
+      <div data-panel-header className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">{t("attribution.report")}</h3>
         <div className="flex gap-1">
           {(["scene", "project"] as const).map((s) => (

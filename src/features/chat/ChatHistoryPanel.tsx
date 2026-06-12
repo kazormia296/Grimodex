@@ -188,7 +188,10 @@ export function ChatHistoryPanel() {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-3 py-2">
+      <div
+        data-panel-header
+        className="flex flex-shrink-0 items-center justify-between border-b border-border px-3 py-2"
+      >
         <span className="text-xs font-semibold text-foreground">
           Chat history
         </span>

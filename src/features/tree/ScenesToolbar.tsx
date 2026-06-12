@@ -27,7 +27,10 @@ export function ScenesToolbar({ onCreate, onToggleAll }: ScenesToolbarProps) {
   const { t } = useTranslation();
 
   return (
-    <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-2 py-1.5">
+    <div
+      data-panel-header
+      className="flex flex-shrink-0 items-center justify-between border-b border-border px-2 py-1.5"
+    >
       <span className="text-xs font-semibold text-foreground">Scenes</span>
       <div className="flex items-center gap-0.5">
         <DropdownMenu>

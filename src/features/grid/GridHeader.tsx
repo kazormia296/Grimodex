@@ -75,7 +75,7 @@ export function GridHeader({
 
   return (
     <div className="shrink-0 border-b">
-      <div className="flex items-center gap-2 px-3 py-2">
+      <div data-panel-header className="flex items-center gap-2 px-3 py-2">
         <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
           {t("grid.header.kicker", "Grid")}
         </span>

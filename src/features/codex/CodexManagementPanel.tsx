@@ -904,6 +904,7 @@ export function CodexManagementPanel({
   const header = (
     <div
       data-testid="codex-header"
+      data-panel-header
       className="flex items-center justify-between border-b border-border px-3 py-2"
     >
       <span data-testid="codex-header-title" className="text-sm font-semibold">

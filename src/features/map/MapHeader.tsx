@@ -144,6 +144,7 @@ export function MapHeader() {
 
   return (
     <div
+      data-panel-header
       style={{
         display: "flex",
         alignItems: "center",

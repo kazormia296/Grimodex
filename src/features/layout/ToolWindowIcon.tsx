@@ -52,6 +52,9 @@ export function ToolWindowIcon({
   const Icon = PANEL_ICON_MAP[panelId];
   const movePanelToRegion = useLayoutStore((s) => s.movePanelToRegion);
   const removePanelFromStripe = useLayoutStore((s) => s.removePanelFromStripe);
+  const showPanel = useLayoutStore((s) => s.showPanel);
+  const toggleMaximizePanel = useLayoutStore((s) => s.toggleMaximizePanel);
+  const isMaximized = useLayoutStore((s) => s.maximizedPanelId === panelId);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const stripeSwapMode = useLayoutStore((s) => s.stripeSwapMode);
   const stripeSwapSlotId = useLayoutStore((s) => s.stripeSwapSlotId);
@@ -131,6 +134,20 @@ export function ToolWindowIcon({
       </ContextMenuTrigger>
 
       <ContextMenuContent>
+        <ContextMenuItem
+          data-testid={`ctx-maximize-${panelId}`}
+          onSelect={() => {
+            // 折りたたみ中は先に表示してから zoom（showPanel の layout 変更で
+            // 既存 zoom は自動解除されるため、順序はこのままでよい）。
+            if (!active) showPanel(panelId);
+            toggleMaximizePanel(panelId);
+          }}
+        >
+          {isMaximized
+            ? t("layout.panelMenu.restore")
+            : t("layout.panelMenu.maximize")}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
         <ContextMenuSub>
           <ContextMenuSubTrigger
             data-testid={`ctx-move-to-${panelId}`}

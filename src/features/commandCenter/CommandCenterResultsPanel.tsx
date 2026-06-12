@@ -62,7 +62,10 @@ export function CommandCenterResultsPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border bg-background/40 px-3 py-2">
+      <div
+        data-panel-header
+        className="border-b border-border bg-background/40 px-3 py-2"
+      >
         <div className="relative">
           <Icon
             className={cn(
