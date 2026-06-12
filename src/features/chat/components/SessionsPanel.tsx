@@ -198,13 +198,23 @@ export function SessionsPanel({
     async (sessionId: string, newTitle: string) => {
       try {
         await chatApi.updateSessionTitle(sessionId, newTitle);
-        await loadSessions(sessionKey.nodeId, sessionKey.codexAnchorId);
+        await loadSessions(
+          sessionKey.nodeId,
+          sessionKey.codexAnchorId,
+          sessionKey.snippetAnchorId,
+        );
       } catch (e) {
         debugLog.error("SessionsPanel", "rename failed", errorDetail(e));
         toast.error(t("chat.sessionRenameFailed"));
       }
     },
-    [sessionKey.nodeId, sessionKey.codexAnchorId, loadSessions, t],
+    [
+      sessionKey.nodeId,
+      sessionKey.codexAnchorId,
+      sessionKey.snippetAnchorId,
+      loadSessions,
+      t,
+    ],
   );
 
   const handleDelete = useCallback(
@@ -213,7 +223,11 @@ export function SessionsPanel({
       if (!confirmed) return;
       try {
         await deleteSession(sessionId);
-        await loadSessions(sessionKey.nodeId, sessionKey.codexAnchorId);
+        await loadSessions(
+          sessionKey.nodeId,
+          sessionKey.codexAnchorId,
+          sessionKey.snippetAnchorId,
+        );
       } catch (e) {
         debugLog.error("SessionsPanel", "delete failed", errorDetail(e));
         toast.error(t("chat.deleteSessionFailed"));
@@ -222,6 +236,7 @@ export function SessionsPanel({
     [
       sessionKey.nodeId,
       sessionKey.codexAnchorId,
+      sessionKey.snippetAnchorId,
       deleteSession,
       loadSessions,
       t,
@@ -235,8 +250,13 @@ export function SessionsPanel({
         "New session",
         sessionKey.nodeId === null ? undefined : sessionKey.nodeId,
         sessionKey.codexAnchorId,
+        sessionKey.snippetAnchorId,
       );
-      await loadSessions(sessionKey.nodeId, sessionKey.codexAnchorId);
+      await loadSessions(
+        sessionKey.nodeId,
+        sessionKey.codexAnchorId,
+        sessionKey.snippetAnchorId,
+      );
       onClose();
     } catch (e) {
       debugLog.error("SessionsPanel", "create failed", errorDetail(e));
@@ -245,6 +265,7 @@ export function SessionsPanel({
   }, [
     sessionKey.nodeId,
     sessionKey.codexAnchorId,
+    sessionKey.snippetAnchorId,
     createNewSession,
     loadSessions,
     onClose,
