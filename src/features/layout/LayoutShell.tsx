@@ -28,6 +28,7 @@ import {
   type ZoomRegion,
 } from "./layoutMetrics";
 import { useLayoutStore } from "./layoutStore";
+import { useZoomReveal } from "./useZoomReveal";
 import { ZoomRestoreBar } from "./ZoomRestoreBar";
 import { useCardLayout } from "./cardLayout";
 import { useRegionSegments } from "./useRegionSegments";
@@ -71,6 +72,7 @@ export const LayoutShell = memo(function LayoutShell({
   const layout = useLayoutStore((s) => s.layout);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const { crossfadeControls } = useLayoutPresetCrossfade();
+  const shellRef = useRef<HTMLDivElement>(null);
 
   const leftOpen = regionIsOpen(layout.regions.left.slots);
   const rightOpen = regionIsOpen(layout.regions.right.slots);
@@ -97,6 +99,9 @@ export const LayoutShell = memo(function LayoutShell({
     if (location?.slot.activePanel !== maximizedPanelId) return null;
     return location.region;
   }, [maximizedPanelId, layout, centerBandVisible]);
+
+  // 最大化突入時の clip-path reveal（ズームっぽい展開演出）。
+  useZoomReveal(zoomRegion, layout, shellRef);
 
   // Esc で zoom 解除。階層的 Esc として一番外側に置く:
   // - isComposing: IME 変換キャンセルの Escape を奪わない（CodexEntryHeader
@@ -229,6 +234,7 @@ export const LayoutShell = memo(function LayoutShell({
           破棄・再生成されフリーズする。フェードは controls の opacity 再トリガーで
           実現する（useLayoutPresetCrossfade 参照）。 */}
       <motion.div
+        ref={shellRef}
         data-layout-shell
         className="relative grid h-full w-full overflow-hidden"
         initial={false}
@@ -277,6 +283,7 @@ export const LayoutShell = memo(function LayoutShell({
 
         {hasLeft && (
           <div
+            data-zoom-cell="left"
             style={cellStyle({ gridArea: "lcontent" }, cellHidden("left"))}
             {...hiddenCellProps(cellHidden("left"))}
             className="min-h-0 min-w-0"
@@ -305,6 +312,7 @@ export const LayoutShell = memo(function LayoutShell({
 
         {centerBandVisible && (
           <div
+            data-zoom-cell="center"
             style={cellStyle({ gridArea: "editor" }, cellHidden("center"))}
             {...hiddenCellProps(cellHidden("center"))}
             className="min-h-0 min-w-0"
@@ -324,6 +332,7 @@ export const LayoutShell = memo(function LayoutShell({
 
         {hasRight && (
           <div
+            data-zoom-cell="right"
             style={cellStyle({ gridArea: "rcontent" }, cellHidden("right"))}
             {...hiddenCellProps(cellHidden("right"))}
             className="min-h-0 min-w-0"
@@ -359,6 +368,7 @@ export const LayoutShell = memo(function LayoutShell({
 
         {hasBottom && (
           <div
+            data-zoom-cell="bottom"
             style={cellStyle({ gridArea: "bottom" }, cellHidden("bottom"))}
             {...hiddenCellProps(cellHidden("bottom"))}
             className="flex min-h-0 min-w-0 flex-col"

@@ -26,6 +26,7 @@ describe("useLayoutPresetCrossfade", () => {
       layout: buildDefaultLayoutState({ allInactive: true }),
       activePresetId: "builtin:default",
       layoutLocked: false,
+      maximizedPanelId: null,
     });
   });
 
@@ -42,6 +43,27 @@ describe("useLayoutPresetCrossfade", () => {
       useLayoutStore.setState({ activePresetId: "builtin:chat-main" });
     });
 
+    expect(setSpy).toHaveBeenCalledWith({ opacity: 0 });
+    expect(startSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ opacity: 1 }),
+    );
+  });
+
+  it("does not fade on zoom enter (reveal が担当) but fades on zoom exit", () => {
+    const { result } = renderHook(() => useLayoutPresetCrossfade());
+    const setSpy = vi.spyOn(result.current.crossfadeControls, "set");
+    const startSpy = vi.spyOn(result.current.crossfadeControls, "start");
+
+    // 突入（null→panel）: clip-path reveal 側が演出するためフェードなし
+    act(() => {
+      useLayoutStore.setState({ maximizedPanelId: "scenes" });
+    });
+    expect(setSpy).not.toHaveBeenCalled();
+
+    // 解除（panel→null）: フェードで復帰
+    act(() => {
+      useLayoutStore.setState({ maximizedPanelId: null });
+    });
     expect(setSpy).toHaveBeenCalledWith({ opacity: 0 });
     expect(startSpy).toHaveBeenCalledWith(
       expect.objectContaining({ opacity: 1 }),

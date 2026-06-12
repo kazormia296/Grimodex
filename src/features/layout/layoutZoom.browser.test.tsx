@@ -12,7 +12,7 @@
  * happy-dom は flex/grid の実寸を計算しないため、このスイートは実ブラウザ必須。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, act } from "@testing-library/react";
+import { render, act, waitFor } from "@testing-library/react";
 import type { PanelId } from "./panelIds";
 import { LayoutStoryPanelStub } from "./stories/LayoutStoryPanelStub";
 
@@ -312,6 +312,40 @@ describe("panel zoom geometry invariants (real Chromium)", () => {
     await settleFrames();
     expect(getComputedStyle(editorSegment).visibility).toBe("visible");
     expect(container.querySelector("[data-editor-area]")).toBe(editorNode);
+  });
+
+  it("zoom 突入時に対象セルへ clip-path reveal が走り、完了後に残留しない", async () => {
+    setLayout((layout) => {
+      setSlots(layout, "left", [
+        { id: "l0", panels: ["scenes"], activePanel: "scenes" },
+      ]);
+    });
+    const { container } = renderShell();
+    await settleFrames();
+
+    const cell = container.querySelector<HTMLElement>(
+      '[data-zoom-cell="left"]',
+    )!;
+    maximize("scenes");
+
+    // reveal 開始直後は対象セルに inline clip-path（First 矩形の inset）が乗る
+    const startClip = cell.style.clipPath;
+    expect(startClip).toContain("inset(");
+
+    // 実際に進行する（開始値でスタックしない）。inset の 1値/4値構造
+    // 不一致で文字列補間が discrete に落ちる回帰の gate。
+    await new Promise((r) => setTimeout(r, 100));
+    expect(cell.style.clipPath).not.toBe(startClip);
+
+    // アニメ完了で inline clip-path は除去される（残留 clip の禁止）
+    await waitFor(() => expect(cell.style.clipPath).toBe(""), {
+      timeout: 2000,
+    });
+
+    // 解除後も残留しない
+    clearMaximize();
+    await settleFrames();
+    expect(cell.style.clipPath).toBe("");
   });
 
   it("bottom zoom: bottom パネルが全面化し、bottom stripe と他 region は不可視", async () => {

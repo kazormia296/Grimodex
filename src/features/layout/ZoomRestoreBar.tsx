@@ -1,5 +1,12 @@
 import { useTranslation } from "react-i18next";
+import { motion } from "motion/react";
 import { Minimize2 } from "lucide-react";
+import {
+  DURATIONS,
+  EASINGS,
+  useReducedMotion,
+  VARIANTS,
+} from "@/lib/animation";
 import { getPanelTitle, useLayoutStore } from "./layoutStore";
 import type { PanelId } from "./panelIds";
 
@@ -19,12 +26,20 @@ interface ZoomRestoreBarProps {
 export function ZoomRestoreBar({ panelId }: ZoomRestoreBarProps) {
   const { t } = useTranslation();
   const clearMaximize = useLayoutStore((s) => s.clearMaximize);
+  const reduced = useReducedMotion();
 
   return (
-    <div
+    <motion.div
       data-zoom-restore-bar
       className="flex h-full min-w-0 items-center justify-between px-2"
       onDoubleClick={clearMaximize}
+      initial={reduced ? false : VARIANTS.fadeIn.initial}
+      animate={VARIANTS.fadeIn.animate}
+      transition={
+        reduced
+          ? { duration: 0 }
+          : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
+      }
     >
       <span className="truncate text-xs font-semibold text-foreground">
         {getPanelTitle(panelId)}
@@ -40,6 +55,6 @@ export function ZoomRestoreBar({ panelId }: ZoomRestoreBarProps) {
         <Minimize2 className="h-3.5 w-3.5" />
         {t("layout.panelMenu.restore")}
       </button>
-    </div>
+    </motion.div>
   );
 }
