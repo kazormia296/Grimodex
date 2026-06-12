@@ -16,13 +16,19 @@
  */
 
 /** True when running on macOS (navigator-based; safe outside the browser). */
+let isMacCache: boolean | null = null;
 export function isMac(): boolean {
+  // keydown ハンドラの毎打鍵パスから呼ばれる。プロセス生存中に OS は
+  // 変わらないので初回評価をキャッシュする（テストは mac 引数を明示注入
+  // するためこのキャッシュを踏まない）。
+  if (isMacCache !== null) return isMacCache;
   if (typeof navigator === "undefined") return false;
   const nav = navigator as Navigator & {
     userAgentData?: { platform?: string };
   };
   const platform = nav.userAgentData?.platform ?? navigator.platform ?? "";
-  return /mac/i.test(platform);
+  isMacCache = /mac/i.test(platform);
+  return isMacCache;
 }
 
 /**
