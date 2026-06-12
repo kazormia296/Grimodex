@@ -2570,6 +2570,7 @@ mod tests {
                 .query_map([], |row| row.get::<_, String>(1))?
                 .collect::<Result<_, _>>()?;
             assert!(cols.iter().any(|c| c == "codex_anchor_id"));
+            assert!(cols.iter().any(|c| c == "snippet_anchor_id"));
 
             let index_count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master
@@ -2578,9 +2579,69 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(index_count, 1);
+
+            let snippet_index_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_chat_sessions_snippet_anchor'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(snippet_index_count, 1);
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn chat_sessions_snippet_anchor_id_migration_adds_column_and_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             CREATE TABLE snippets (id TEXT PRIMARY KEY);
+             CREATE TABLE chat_sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                node_id TEXT,
+                title TEXT NOT NULL DEFAULT 'New session',
+                title_manual INTEGER NOT NULL DEFAULT 0,
+                model TEXT NOT NULL DEFAULT 'm',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+
+        Database::add_column_if_missing(
+            &conn,
+            "chat_sessions",
+            "snippet_anchor_id",
+            "TEXT REFERENCES snippets(id) ON DELETE SET NULL",
+        )
+        .expect("add snippet_anchor_id");
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_chat_sessions_snippet_anchor
+                ON chat_sessions(project_id, snippet_anchor_id);",
+        )
+        .unwrap();
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(chat_sessions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(columns.iter().any(|c| c == "snippet_anchor_id"));
+
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_chat_sessions_snippet_anchor'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
     }
 
     #[test]

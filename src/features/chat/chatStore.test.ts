@@ -99,6 +99,10 @@ vi.mock("@/features/codex/api", () => ({
   listCodexEntries: vi.fn(() => Promise.resolve([])),
 }));
 
+vi.mock("@/features/snippets/api", () => ({
+  getSnippet: vi.fn(() => Promise.resolve(undefined)),
+}));
+
 vi.mock("@/features/codex/codexMatcher", () => ({
   findMentionedEntries: vi.fn(() => []),
 }));
@@ -177,6 +181,7 @@ const session1: ChatSession = {
   projectId: "proj-1",
   nodeId: "scene-1",
   codexAnchorId: null,
+  snippetAnchorId: null,
   title: "会話1",
   titleManual: 0,
   model: "openrouter/anthropic/claude-sonnet-4.6",
@@ -189,6 +194,7 @@ const session2: ChatSession = {
   projectId: "proj-1",
   nodeId: "scene-1",
   codexAnchorId: null,
+  snippetAnchorId: null,
   title: "会話2",
   titleManual: 0,
   model: "openrouter/anthropic/claude-sonnet-4.6",
@@ -235,6 +241,7 @@ describe("useChatStore", () => {
         "proj-1",
         "scene-1",
         undefined,
+        undefined,
       );
     });
 
@@ -245,6 +252,7 @@ describe("useChatStore", () => {
 
       expect(mockListSessions).toHaveBeenCalledWith(
         "proj-1",
+        undefined,
         undefined,
         undefined,
       );
@@ -392,6 +400,7 @@ describe("useChatStore", () => {
         "proj-1",
         "会話1",
         "scene-1",
+        undefined,
         undefined,
       );
       expect(state.sessions).toContainEqual(session1);
@@ -2476,6 +2485,7 @@ describe("useChatStore", () => {
         "proj-1",
         undefined,
         "codex-1",
+        undefined,
       );
     });
 
@@ -2498,6 +2508,7 @@ describe("useChatStore", () => {
         "New session",
         undefined,
         "codex-hero",
+        undefined,
       );
       expect(id).toBe("new-codex-session");
     });
@@ -2514,6 +2525,178 @@ describe("useChatStore", () => {
       expect(s.chatScope).toBe("codex");
       expect(s.scopeAnchorId).toBe("codex-hero");
       expect(s.activeSessionId).toBe("session-codex");
+    });
+  });
+
+  describe("setChatScope snippet", () => {
+    it("sets snippet scope with anchor and includeBodies=false", () => {
+      useChatStore.getState().setChatScope("snippet", "snip-1");
+      const s = useChatStore.getState();
+      expect(s.chatScope).toBe("snippet");
+      expect(s.scopeAnchorId).toBe("snip-1");
+      expect(s.includeBodies).toBe(false);
+    });
+
+    it("falls back to scene when snippet anchor is missing", () => {
+      useChatStore.getState().setChatScope("snippet");
+      const s = useChatStore.getState();
+      expect(s.chatScope).toBe("scene");
+      expect(s.includeBodies).toBe(true);
+    });
+
+    it("loadSessions passes snippetAnchorId to chatApi", async () => {
+      mockListSessions.mockResolvedValueOnce([]);
+      await useChatStore.getState().loadSessions(undefined, undefined, "sn-1");
+      expect(mockListSessions).toHaveBeenCalledWith(
+        "proj-1",
+        undefined,
+        undefined,
+        "sn-1",
+      );
+    });
+
+    it("ensureSession creates session with snippetAnchorId in snippet scope", async () => {
+      mockCreateSession.mockResolvedValueOnce({
+        ...session1,
+        id: "new-snippet-session",
+        nodeId: null,
+        snippetAnchorId: "snip-1",
+      });
+      useChatStore.setState({
+        activeSessionId: null,
+        chatScope: "snippet",
+        scopeAnchorId: "snip-1",
+        activeProjectId: "proj-1",
+      });
+      const id = await useChatStore.getState().ensureSession();
+      expect(mockCreateSession).toHaveBeenCalledWith(
+        "proj-1",
+        "New session",
+        undefined,
+        undefined,
+        "snip-1",
+      );
+      expect(id).toBe("new-snippet-session");
+    });
+
+    it("setActiveSceneId keeps snippet scope session anchor", async () => {
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-1",
+        activeSessionId: "session-snippet",
+        activeSceneId: "scene-old",
+      });
+      useChatStore.getState().setActiveSceneId("scene-new");
+      const s = useChatStore.getState();
+      expect(s.chatScope).toBe("snippet");
+      expect(s.scopeAnchorId).toBe("snip-1");
+      expect(s.activeSessionId).toBe("session-snippet");
+    });
+  });
+
+  describe("onSnippetAnchorDeleted", () => {
+    it("falls back to scene scope when deleted snippet matches anchor", () => {
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-1",
+        includeBodies: false,
+      });
+      useChatStore.getState().onSnippetAnchorDeleted("snip-1");
+      const s = useChatStore.getState();
+      expect(s.chatScope).toBe("scene");
+      expect(s.scopeAnchorId).toBeNull();
+      expect(s.includeBodies).toBe(true);
+    });
+
+    it("no-op when deleted snippet does not match anchor", () => {
+      useChatStore.setState({
+        chatScope: "snippet",
+        scopeAnchorId: "snip-1",
+        includeBodies: false,
+      });
+      useChatStore.getState().onSnippetAnchorDeleted("other-snippet");
+      const s = useChatStore.getState();
+      expect(s.chatScope).toBe("snippet");
+      expect(s.scopeAnchorId).toBe("snip-1");
+    });
+  });
+
+  describe("refreshContextLayers snippet scope", () => {
+    it("injects the anchor snippet at the head of pinnedSnippets", async () => {
+      const { getSnippet } = await import("@/features/snippets/api");
+      vi.mocked(getSnippet).mockResolvedValueOnce({
+        id: "snip-1",
+        projectId: "proj-1",
+        title: "設定メモ",
+        content: '{"type":"doc"}',
+        tagsCache: null,
+        contentSource: null,
+        sceneId: null,
+        sourceChatMessageId: null,
+        usageCount: 0,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      });
+
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: "session-1",
+        chatScope: "snippet",
+        scopeAnchorId: "snip-1",
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      expect(mockBuildSystemPrompt).toHaveBeenCalled();
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      const pinnedSnippets = args?.pinnedSnippets ?? [];
+      expect(pinnedSnippets.length).toBeGreaterThan(0);
+      expect(pinnedSnippets[0].id).toBe("snip-1");
+      expect(pinnedSnippets[0].title).toBe("設定メモ");
+      // extractPlainText は "" を返す mock → content は title へフォールバック
+      expect(pinnedSnippets[0].content).toBe("設定メモ");
+    });
+
+    it("does not duplicate the anchor when it is also session-pinned", async () => {
+      const { getSnippet } = await import("@/features/snippets/api");
+      vi.mocked(getSnippet).mockResolvedValueOnce({
+        id: "snip-1",
+        projectId: "proj-1",
+        title: "設定メモ",
+        content: '{"type":"doc"}',
+        tagsCache: null,
+        contentSource: null,
+        sceneId: null,
+        sourceChatMessageId: null,
+        usageCount: 0,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      });
+      vi.mocked(chatApi.listPinnedSnippetEntries).mockResolvedValueOnce([
+        {
+          id: "snip-1",
+          title: "設定メモ",
+          content: '{"type":"doc"}',
+          pinnedType: "snippet",
+          pinSource: "manual",
+        } as never,
+      ]);
+
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: "session-1",
+        chatScope: "snippet",
+        scopeAnchorId: "snip-1",
+      });
+
+      await useChatStore.getState().refreshContextLayers();
+
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      const pinnedSnippets = args?.pinnedSnippets ?? [];
+      const ids = pinnedSnippets.map((s) => s.id);
+      expect(ids.filter((id) => id === "snip-1")).toHaveLength(1);
     });
   });
 

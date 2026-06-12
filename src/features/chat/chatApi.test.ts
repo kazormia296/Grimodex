@@ -18,6 +18,7 @@ vi.mock("@/db/schema", () => ({
     id: "id",
     nodeId: "nodeId",
     codexAnchorId: "codexAnchorId",
+    snippetAnchorId: "snippetAnchorId",
     updatedAt: "updatedAt",
     projectId: "projectId",
   },
@@ -103,6 +104,7 @@ describe("chatApi - session/message persistence", () => {
         projectId: "proj-1",
         nodeId: "node-abc",
         codexAnchorId: null,
+        snippetAnchorId: null,
         title: "会話1",
         titleManual: 0,
         model: "openrouter/anthropic/claude-sonnet-4.6",
@@ -131,6 +133,7 @@ describe("chatApi - session/message persistence", () => {
         projectId: "proj-1",
         nodeId: null,
         codexAnchorId: null,
+        snippetAnchorId: null,
         title: "プロジェクト会話",
         titleManual: 0,
         model: "openrouter/anthropic/claude-sonnet-4.6",
@@ -145,6 +148,44 @@ describe("chatApi - session/message persistence", () => {
       expect(result).toHaveLength(1);
       expect(result[0].nodeId).toBeNull();
     });
+
+    it("project scope (nodeId=null) excludes codex- and snippet-anchored sessions", async () => {
+      const { isNull } = await import("drizzle-orm");
+      mockSelectChain([]);
+
+      await listSessions("proj-1", null);
+
+      const isNullCols = vi.mocked(isNull).mock.calls.map((c) => c[0]);
+      expect(isNullCols).toContain("codexAnchorId");
+      expect(isNullCols).toContain("snippetAnchorId");
+    });
+
+    it("returns snippet-anchored sessions when snippetAnchorId given", async () => {
+      const session: ChatSession = {
+        id: "session-snip",
+        projectId: "proj-1",
+        nodeId: null,
+        codexAnchorId: null,
+        snippetAnchorId: "snip-1",
+        title: "Snippet 会話",
+        titleManual: 0,
+        model: "openrouter/anthropic/claude-sonnet-4.6",
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      };
+      mockSelectChain([session as unknown as Record<string, unknown>]);
+
+      const result = await listSessions(
+        "proj-1",
+        undefined,
+        undefined,
+        "snip-1",
+      );
+
+      expect(mockDb.select).toHaveBeenCalled();
+      expect(result).toHaveLength(1);
+      expect(result[0].snippetAnchorId).toBe("snip-1");
+    });
   });
 
   describe("createSession", () => {
@@ -154,6 +195,7 @@ describe("chatApi - session/message persistence", () => {
         projectId: "proj-1",
         nodeId: "node-1",
         codexAnchorId: null,
+        snippetAnchorId: null,
         title: "新しい会話",
         titleManual: 0,
         model: "openrouter/anthropic/claude-sonnet-4.6",
@@ -176,6 +218,7 @@ describe("chatApi - session/message persistence", () => {
         projectId: "proj-1",
         nodeId: null,
         codexAnchorId: null,
+        snippetAnchorId: null,
         title: "フリー会話",
         titleManual: 0,
         model: "openrouter/anthropic/claude-sonnet-4.6",
@@ -186,6 +229,38 @@ describe("chatApi - session/message persistence", () => {
 
       const result = await createSession("proj-1", "フリー会話");
       expect(result.nodeId).toBeNull();
+    });
+
+    it("creates a snippet-anchored session", async () => {
+      const row = {
+        id: "session-snip",
+        projectId: "proj-1",
+        nodeId: null,
+        codexAnchorId: null,
+        snippetAnchorId: "snip-1",
+        title: "Snippet 会話",
+        titleManual: 0,
+        model: "openrouter/anthropic/claude-sonnet-4.6",
+        createdAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z",
+      };
+      const chain = mockInsertChain([row]);
+
+      const result = await createSession(
+        "proj-1",
+        "Snippet 会話",
+        undefined,
+        undefined,
+        "snip-1",
+      );
+
+      expect(result.snippetAnchorId).toBe("snip-1");
+      const values = vi.mocked(chain.values).mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(values.snippetAnchorId).toBe("snip-1");
+      expect(values.codexAnchorId).toBeNull();
     });
   });
 

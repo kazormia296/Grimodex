@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   filterAndSortSessions,
   groupSessionsByScene,
+  groupSessionsByScope,
 } from "./chatHistoryStore";
 import type { SessionWithStats } from "./chatHistoryApi";
 
@@ -13,6 +14,7 @@ function makeSession(
     projectId: "proj-1",
     nodeId: null,
     codexAnchorId: null,
+    snippetAnchorId: null,
     title: "Session",
     titleManual: 0,
     model: "claude",
@@ -111,6 +113,23 @@ describe("filterAndSortSessions", () => {
     expect(result.map((s) => s.id)).toEqual(["s3"]);
   });
 
+  it("projectScopeOnly excludes snippet-anchored sessions", () => {
+    const withSnippet = [
+      ...sessions,
+      makeSession({
+        id: "s-snippet",
+        nodeId: null,
+        snippetAnchorId: "snip-1",
+        title: "Snippet chat",
+      }),
+    ];
+    const result = filterAndSortSessions(withSnippet, {
+      ...defaultFilters,
+      projectScopeOnly: true,
+    });
+    expect(result.map((s) => s.id)).toEqual(["s3"]);
+  });
+
   it("sceneFilter and projectScopeOnly are mutually exclusive: sceneFilter takes precedence", () => {
     const result = filterAndSortSessions(sessions, {
       ...defaultFilters,
@@ -203,6 +222,46 @@ describe("groupSessionsByScene", () => {
     );
     expect(projectGroup?.sessions.map((s) => s.id)).toContain("s3");
     expect(projectGroup?.sessions.map((s) => s.id)).not.toContain("s-codex");
+  });
+
+  it("groups snippet-scoped sessions separately with a Snippet label", () => {
+    const withSnippet = [
+      ...sessions,
+      makeSession({
+        id: "s-snippet",
+        nodeId: null,
+        snippetAnchorId: "snip-1",
+        title: "Snippet chat",
+      }),
+    ];
+    const groups = groupSessionsByScope(
+      withSnippet,
+      nodeMap,
+      {},
+      { "snip-1": { title: "世界観メモ" } },
+    );
+    const snippetGroup = groups.find((g) => g.snippetAnchorId === "snip-1");
+    expect(snippetGroup?.groupLabel).toBe("Snippet: 世界観メモ");
+    const projectGroup = groups.find(
+      (g) =>
+        g.nodeId === null &&
+        g.codexAnchorId === null &&
+        g.snippetAnchorId === null,
+    );
+    expect(projectGroup?.sessions.map((s) => s.id)).toContain("s3");
+    expect(projectGroup?.sessions.map((s) => s.id)).not.toContain("s-snippet");
+  });
+
+  it("falls back to the snippet id label when not in snippetEntryMap", () => {
+    const withSnippet = [
+      makeSession({
+        id: "s-snippet",
+        nodeId: null,
+        snippetAnchorId: "snip-x",
+      }),
+    ];
+    const groups = groupSessionsByScope(withSnippet, {}, {}, {});
+    expect(groups[0]?.groupLabel).toBe("Snippet: snip-x");
   });
 
   it("groups multiple sessions under the same scene", () => {

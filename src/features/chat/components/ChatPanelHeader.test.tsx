@@ -19,6 +19,47 @@ vi.mock("@/features/layout/layoutStore", () => ({
     sel({ activePresetId: mockActivePresetId }),
 }));
 
+const mockCodexEntries = [
+  {
+    id: "c1",
+    name: "Alice",
+    type: "character",
+    aliases: null,
+  },
+];
+vi.mock("@/features/codex/codexStore", () => ({
+  useCodexStore: (sel: (s: { entries: unknown[] }) => unknown) =>
+    sel({ entries: mockCodexEntries }),
+}));
+
+const mockSnippets = [
+  {
+    id: "s1",
+    projectId: "proj-1",
+    title: "Snip A",
+    content: "{}",
+    tagsCache: null,
+    contentSource: null,
+    sceneId: null,
+    sourceChatMessageId: null,
+    usageCount: 0,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  },
+];
+vi.mock("@/features/snippets/snippetStore", () => ({
+  useSnippetStore: Object.assign(
+    (sel: (s: Record<string, unknown>) => unknown) =>
+      sel({ entries: mockSnippets, ensureEntriesLoaded: vi.fn() }),
+    {
+      getState: () => ({
+        entries: mockSnippets,
+        ensureEntriesLoaded: vi.fn(),
+      }),
+    },
+  ),
+}));
+
 type Props = React.ComponentProps<typeof ChatPanelHeader>;
 
 function baseProps(over: Partial<Props> = {}): Props {
@@ -90,6 +131,112 @@ describe("ChatPanelHeader — scope hint on chat-main preset transition", () => 
     mockActivePresetId = "builtin:default";
     rerender(<ChatPanelHeader {...baseProps({ chatScope: "scene" })} />);
     expect(screen.queryByText("chat.scopeHint.message")).toBeNull();
+  });
+});
+
+describe("ChatPanelHeader — scope dropdown tabs (Spotlight 形式)", () => {
+  function openDropdown() {
+    fireEvent.click(screen.getByRole("button", { name: "chat.scope.picker" }));
+  }
+
+  it("opens with a Scene/Codex/Snippet tablist, Scene tab active for tree scopes", () => {
+    render(<ChatPanelHeader {...baseProps({ chatScope: "scene" })} />);
+    openDropdown();
+
+    expect(screen.getByRole("tablist")).toBeInTheDocument();
+    const sceneTab = screen.getByRole("tab", { name: "chat.scope.tabScene" });
+    expect(
+      screen.getByRole("tab", { name: "chat.scope.tabCodex" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "chat.scope.tabSnippet" }),
+    ).toBeInTheDocument();
+    expect(sceneTab.getAttribute("aria-selected")).toBe("true");
+
+    // Scene タブには Project スコープボタンが含まれる
+    expect(
+      screen.getByRole("button", { name: /chat\.scope\.project/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("Codex tab lists codex entries and picking one fires onScopeChange('codex', id)", () => {
+    const onScopeChange = vi.fn();
+    render(
+      <ChatPanelHeader {...baseProps({ chatScope: "scene", onScopeChange })} />,
+    );
+    openDropdown();
+
+    fireEvent.click(screen.getByRole("tab", { name: "chat.scope.tabCodex" }));
+    fireEvent.click(screen.getByText("Alice"));
+
+    expect(onScopeChange).toHaveBeenCalledWith("codex", "c1");
+  });
+
+  it("Snippet tab lists snippets and picking one fires onScopeChange('snippet', id)", () => {
+    const onScopeChange = vi.fn();
+    render(
+      <ChatPanelHeader {...baseProps({ chatScope: "scene", onScopeChange })} />,
+    );
+    openDropdown();
+
+    fireEvent.click(screen.getByRole("tab", { name: "chat.scope.tabSnippet" }));
+    fireEvent.click(screen.getByText("Snip A"));
+
+    expect(onScopeChange).toHaveBeenCalledWith("snippet", "s1");
+  });
+
+  it("opens on the Snippet tab when scope is already snippet", () => {
+    render(
+      <ChatPanelHeader
+        {...baseProps({ chatScope: "snippet", scopeAnchorId: "s1" })}
+      />,
+    );
+    openDropdown();
+
+    const snippetTab = screen.getByRole("tab", {
+      name: "chat.scope.tabSnippet",
+    });
+    expect(snippetTab.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("opens on the Codex tab when scope is already codex", () => {
+    render(
+      <ChatPanelHeader
+        {...baseProps({ chatScope: "codex", scopeAnchorId: "c1" })}
+      />,
+    );
+    openDropdown();
+
+    const codexTab = screen.getByRole("tab", { name: "chat.scope.tabCodex" });
+    expect(codexTab.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("shows the snippet title in the trigger label for snippet scope", () => {
+    render(
+      <ChatPanelHeader
+        {...baseProps({ chatScope: "snippet", scopeAnchorId: "s1" })}
+      />,
+    );
+    expect(screen.getByText("chat.scope.snippet: Snip A")).toBeInTheDocument();
+  });
+
+  it("disables the includeBodies toggle in snippet scope", () => {
+    const onToggle = vi.fn();
+    render(
+      <ChatPanelHeader
+        {...baseProps({
+          chatScope: "snippet",
+          scopeAnchorId: "s1",
+          onToggleIncludeBodies: onToggle,
+        })}
+      />,
+    );
+    const toggle = screen.getByRole("button", {
+      name: "chat.scope.bodiesUnavailableSnippet",
+    });
+    expect(toggle).toBeDisabled();
+    fireEvent.click(toggle);
+    expect(onToggle).not.toHaveBeenCalled();
   });
 });
 
