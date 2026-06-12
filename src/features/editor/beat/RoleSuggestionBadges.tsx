@@ -72,7 +72,7 @@ function BadgeItem({
         open={open}
         onClose={() => setOpen(false)}
         containerRef={containerRef}
-        className="absolute left-0 top-6 z-50 min-w-[200px] rounded-md border border-border bg-popover p-2 shadow-md"
+        className="beat-popover absolute left-0 top-6 z-50 min-w-[200px] rounded-md border border-border bg-popover p-2 shadow-md"
       >
         <p className="mb-2 text-xs text-muted-foreground">
           {t("editor.beat.roleSuggestion.prompt", {

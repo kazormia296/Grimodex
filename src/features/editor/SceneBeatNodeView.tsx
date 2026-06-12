@@ -230,7 +230,9 @@ export function SceneBeatNodeView({
       data-type="scene-beat"
       data-beat-id={beatId ?? undefined}
       data-collapsed={collapsed ? "true" : undefined}
-      className="my-2 rounded-md border-l-4 border-yellow-400/70 bg-yellow-50/40 dark:bg-yellow-900/10"
+      // 縦書きモード対応: 物理でなく論理プロパティで書く（border-s = 横書き左
+      // / 縦書き上端）。block 軸 margin は index.css の margin-block 規則。
+      className="rounded-md border-s-4 border-yellow-400/70 bg-yellow-50/40 dark:bg-yellow-900/10"
     >
       <header
         contentEditable={false}
@@ -277,7 +279,7 @@ export function SceneBeatNodeView({
             open={typeMenuOpen}
             onClose={() => setTypeMenuOpen(false)}
             containerRef={typeMenuRef}
-            className="absolute left-0 top-6 z-50 min-w-[120px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
+            className="beat-popover absolute left-0 top-6 z-50 min-w-[120px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
             <ul role="menu" className="m-0! list-none! p-0! text-xs">
               {BEAT_TYPES.map((bt) => (
@@ -322,7 +324,7 @@ export function SceneBeatNodeView({
             open={povMenuOpen}
             onClose={() => setPovMenuOpen(false)}
             containerRef={povMenuRef}
-            className="absolute left-0 top-6 z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
+            className="beat-popover absolute left-0 top-6 z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
             <ul role="menu" className="m-0! list-none! p-0! text-xs">
               <li>
@@ -363,7 +365,7 @@ export function SceneBeatNodeView({
         {editor && beatId && (
           <RoleSuggestionBadges editor={editor} beatId={beatId} />
         )}
-        <div ref={menuContainerRef} className="relative ml-auto">
+        <div ref={menuContainerRef} className="relative ms-auto">
           <button
             type="button"
             data-testid="beat-menu-btn"
@@ -380,7 +382,7 @@ export function SceneBeatNodeView({
             open={menuOpen}
             onClose={() => setMenuOpen(false)}
             containerRef={menuContainerRef}
-            className="absolute right-0 top-6 z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
+            className="beat-popover absolute right-0 top-6 z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
             <ul role="menu" className="m-0! list-none! p-0! text-xs">
               <li>
@@ -485,7 +487,7 @@ export function SceneBeatNodeView({
         <div
           contentEditable={false}
           data-testid="beat-error"
-          className="border-t border-red-200/50 bg-red-50/30 px-2 py-1 font-sans text-xs text-red-700 dark:bg-red-900/10 dark:text-red-300"
+          className="beat-divider border-red-200/50 bg-red-50/30 px-2 py-1 font-sans text-xs text-red-700 dark:bg-red-900/10 dark:text-red-300"
         >
           {state.error}
         </div>
@@ -509,9 +511,9 @@ export function SceneBeatNodeView({
         <div
           contentEditable={false}
           data-testid="beat-action-bar"
-          className="flex select-none items-center gap-1 border-t border-yellow-200/50 bg-yellow-50/60 px-2 py-1 font-sans text-xs dark:bg-yellow-900/15 dark:border-yellow-800/30"
+          className="beat-divider flex select-none items-center gap-1 border-yellow-200/50 bg-yellow-50/60 px-2 py-1 font-sans text-xs dark:bg-yellow-900/15 dark:border-yellow-800/30"
         >
-          <span className="mr-1 text-muted-foreground/60">
+          <span className="me-1 text-muted-foreground/60">
             {t("editor.beat.generating")}
           </span>
           <button
@@ -543,7 +545,7 @@ export function SceneBeatNodeView({
       {!collapsed && (
         <footer
           contentEditable={false}
-          className="flex select-none items-center gap-1.5 border-t border-yellow-200/50 px-2 py-1 font-sans text-xs text-muted-foreground dark:border-yellow-800/30"
+          className="beat-divider flex select-none items-center gap-1.5 border-yellow-200/50 px-2 py-1 font-sans text-xs text-muted-foreground dark:border-yellow-800/30"
         >
           <div ref={modelMenuRef} className="relative">
             <button
@@ -561,7 +563,7 @@ export function SceneBeatNodeView({
               open={modelMenuOpen}
               onClose={() => setModelMenuOpen(false)}
               containerRef={modelMenuRef}
-              className="absolute bottom-6 left-0 z-50 max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md font-sans"
+              className="beat-popover absolute bottom-6 left-0 z-50 max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md font-sans"
             >
               <ul role="menu" className="m-0! list-none! p-0! text-xs">
                 <li>
@@ -603,7 +605,7 @@ export function SceneBeatNodeView({
               onClick={generate}
               aria-label={t("editor.beat.generate")}
               title={generateTooltip}
-              className={`ml-auto inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] ${
+              className={`ms-auto inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] ${
                 generateDisabled ? "opacity-50" : "hover:bg-muted"
               }`}
             >
