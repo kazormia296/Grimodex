@@ -3,8 +3,19 @@
 //!
 //! 設計書 §CLI プロバイダ（サブスクリプション流用） に従い、目的を「サブスク
 //! (Claude Pro / ChatGPT Plus 等) 流用による API コスト削減」に限定する。
-//! 各 CLI の起動オプションでツール (ファイル R/W / shell / WebSearch) を全 OFF
-//! にして、実質「テキスト応答だけを返す HTTP API」相当に縛る。
+//! 各 CLI の起動オプションでツールを可能な限り OFF にし、実質「テキスト応答
+//! だけを返す HTTP API」相当に縛る。
+//!
+//! ツール無効化の到達度は CLI ごとに非対称な点に注意（過大評価しないこと）:
+//! - Claude Code: `--allowed-tools ""` で R/W・shell・WebSearch を全 OFF。
+//! - OpenCode: `OPENCODE_PERMISSION` deny list で read/edit/bash/webfetch 等を全 deny。
+//! - Codex CLI: `exec --sandbox read-only` で **書き込み・ネットワークは遮断** されるが
+//!   **ローカルファイル読み取りは残る**（Codex はコーディングエージェントで read を
+//!   個別 OFF にするフラグを持たない）。read-only ゆえ silent exfil 経路は無いが、
+//!   プロンプトインジェクション (悪意ある AI 応答 / 細工された .novel import) で
+//!   sandbox root 内ファイルを「チャットに復唱させる」読み取りは原理上可能。
+//!   さらなる封じ込め (cwd の隔離 / 追加フラグ) は Codex CLI の実バイナリ挙動の
+//!   実機検証が前提のため別タスク（build_command の Codex 分岐参照）。
 //!
 //! Claude Code / OpenAI Codex CLI (`codex exec --json`) / OpenCode (`run --format json`)
 //! の NDJSON を `CliEvent` に正規化する。
@@ -962,6 +973,11 @@ fn build_command(kind: CliKind, opts: &CliRunOpts) -> Command {
             }
         }
         CliKind::Codex => {
+            // read-only sandbox: 書き込み・ネットワークは遮断されるが、ローカル
+            // ファイル読み取りは残る（Claude の --allowed-tools "" / OpenCode の
+            // deny list と非対称）。read を個別 OFF にする Codex フラグは無いため、
+            // ここはモジュール docstring の「残存能力」注記が正本。cwd 隔離等の
+            // 追加封じ込めは Codex CLI 実機検証後に別途。
             cmd.arg("exec")
                 .arg("--json")
                 .arg("--sandbox")
