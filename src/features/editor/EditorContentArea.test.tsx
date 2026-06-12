@@ -88,7 +88,6 @@ function makeSettings(spellCheck: boolean): EditorSettings {
     linearBeatDisplay: "normal",
     sceneMetaPanelOpen: false,
     sceneMetaPanelWidth: 20,
-    showBreadcrumb: false,
     showLineNumbers: false,
     paragraphIndent: 0,
     verticalMode: false,

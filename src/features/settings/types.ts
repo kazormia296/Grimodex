@@ -80,7 +80,6 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.sceneMetaPanelOpen": "global",
   "editor.sceneMetaPanelWidth": "global",
   "editor.linearBeatDisplay": "global",
-  "editor.showBreadcrumb": "global",
   "editor.showLineNumbers": "global",
   // Editor — work-specific (project)
   "editor.targetCharCount": "project",
@@ -203,7 +202,6 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.sceneMetaPanelOpen": "true",
   "editor.sceneMetaPanelWidth": "20",
   "editor.linearBeatDisplay": "collapsed",
-  "editor.showBreadcrumb": "true",
   "editor.showLineNumbers": "false",
   "editor.paragraphIndent": "0",
   "editor.verticalMode": "false",

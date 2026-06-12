@@ -1113,7 +1113,7 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   font-size: 0.5em;
 }
 /* Node islands stay horizontal UI chunks inside the vertical flow
- * (same reset as .vertical-preview table). pre = code blocks and
+ * (writing-mode reset back to horizontal-tb). pre = code blocks and
  * taskList (flex row checkbox + body, GFM file-backed scenes) are
  * horizontal-reading structures too; resetting the taskList ul lets the
  * nested lists inherit the reset.
@@ -1148,30 +1148,6 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .editor-vertical .tiptap [data-type="scene-beat"] .beat-popover {
   writing-mode: horizontal-tb;
   inset: 0 calc(100% + 0.25rem) auto auto;
-}
-
-/* Vertical writing preview (Task 5.2) */
-.vertical-preview {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  font-feature-settings: "vpal";
-  line-height: 2;
-}
-.vertical-preview p {
-  margin: 0 0.5em;
-}
-.vertical-preview h1,
-.vertical-preview h2,
-.vertical-preview h3 {
-  font-weight: bold;
-  margin: 0 1em;
-}
-.vertical-preview ruby rt {
-  font-size: 0.5em;
-}
-.vertical-preview table {
-  writing-mode: horizontal-tb;
-  margin: 1em 0;
 }
 
 /* Typewriter cursor effect */

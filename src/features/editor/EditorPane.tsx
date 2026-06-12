@@ -74,7 +74,6 @@ import {
 } from "@/features/editor/anchorLoads";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
-import { VerticalPreview } from "@/features/editor/VerticalPreview";
 import { useFocusMode } from "@/features/editor/useFocusMode";
 import {
   useTypewriterScroll,
@@ -281,7 +280,6 @@ export function EditorPane({
   const [titleDraft, setTitleDraft] = useState("");
   const [findOpen, setFindOpen] = useState(false);
   const [findShowReplace, setFindShowReplace] = useState(false);
-  const [verticalPreviewOpen, setVerticalPreviewOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [palettePreselect, setPalettePreselect] =
     useState<InlineAiCommand | null>(null);
@@ -1712,7 +1710,6 @@ export function EditorPane({
           setFindOpen(true);
           setFindShowReplace(true);
         }}
-        onVerticalPreview={() => setVerticalPreviewOpen(true)}
         actionsRef={toolbarActionsRef}
         panelOpen={sceneMetaPanelOpen}
         onTogglePanel={handleTogglePanel}
@@ -1952,10 +1949,6 @@ export function EditorPane({
           </button>
         </div>
       </div>
-      <VerticalPreview
-        open={verticalPreviewOpen}
-        onClose={() => setVerticalPreviewOpen(false)}
-      />
       {editor && (
         <InlineAIPalette
           editor={editor}

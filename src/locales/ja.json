@@ -2159,8 +2159,6 @@
       "moreOptions": "その他のオプション",
       "findReplace": "検索と置換",
       "targetWordCount": "目標文字数...",
-      "verticalPreview": "縦書きプレビュー",
-      "showBreadcrumb": "ブレッドクラムを表示",
       "showLineNumbers": "行番号を表示",
       "rubyBase": "ベース",
       "rubyAnnotation": "ふりがな"
@@ -2560,9 +2558,6 @@
   },
   "dialog": {
     "workspacePathPrompt": "ワークスペースのパスを入力してください:"
-  },
-  "verticalPreview": {
-    "title": "縦書きプレビュー"
   },
   "revision": {
     "loadFailed": "リビジョンの読み込みに失敗しました",

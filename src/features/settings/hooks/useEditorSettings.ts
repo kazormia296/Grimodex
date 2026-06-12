@@ -25,7 +25,6 @@ export interface EditorSettings {
   linearBeatDisplay: "normal" | "collapsed" | "hidden";
   sceneMetaPanelOpen: boolean;
   sceneMetaPanelWidth: number;
-  showBreadcrumb: boolean;
   showLineNumbers: boolean;
   paragraphIndent: number;
   verticalMode: boolean;
@@ -64,7 +63,6 @@ export function useEditorSettings(): EditorSettings {
       | "hidden",
     sceneMetaPanelOpen: store.getBoolean("editor.sceneMetaPanelOpen", true),
     sceneMetaPanelWidth: store.getNumber("editor.sceneMetaPanelWidth", 20),
-    showBreadcrumb: store.getBoolean("editor.showBreadcrumb", true),
     showLineNumbers: store.getBoolean("editor.showLineNumbers", false),
     paragraphIndent: store.getNumber("editor.paragraphIndent", 0),
     verticalMode: store.getBoolean("editor.verticalMode", false),

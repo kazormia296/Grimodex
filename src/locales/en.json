@@ -2155,8 +2155,6 @@
       "moreOptions": "More options",
       "findReplace": "Find and replace",
       "targetWordCount": "Target word count...",
-      "verticalPreview": "Vertical preview",
-      "showBreadcrumb": "Show breadcrumb",
       "showLineNumbers": "Show line numbers",
       "rubyBase": "Base",
       "rubyAnnotation": "Reading"
@@ -2556,9 +2554,6 @@
   },
   "dialog": {
     "workspacePathPrompt": "Enter workspace path:"
-  },
-  "verticalPreview": {
-    "title": "Vertical Preview"
   },
   "revision": {
     "loadFailed": "Failed to load revision",

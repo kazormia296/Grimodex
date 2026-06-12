@@ -39,11 +39,7 @@ describe("Toolbar typing-path re-renders", () => {
           counter.commits++;
         }}
       >
-        <Toolbar
-          editor={editor as never}
-          onFindReplace={() => {}}
-          onVerticalPreview={() => {}}
-        />
+        <Toolbar editor={editor as never} onFindReplace={() => {}} />
       </Profiler>,
     );
     return counter;

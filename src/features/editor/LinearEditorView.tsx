@@ -462,7 +462,6 @@ export function LinearEditorView() {
           setFindOpen(true);
           setFindShowReplace(true);
         }}
-        onVerticalPreview={() => {}}
         actionsRef={undefined}
         panelOpen={sceneMetaPanelOpen}
         onTogglePanel={handleTogglePanel}

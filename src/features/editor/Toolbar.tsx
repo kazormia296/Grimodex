@@ -63,7 +63,6 @@ export interface ToolbarActions {
 interface ToolbarProps {
   editor: Editor | null;
   onFindReplace: () => void;
-  onVerticalPreview: () => void;
   actionsRef?: React.RefObject<ToolbarActions | null>;
   panelOpen?: boolean;
   onTogglePanel?: () => void;
@@ -74,7 +73,6 @@ interface ToolbarProps {
 export function Toolbar({
   editor,
   onFindReplace,
-  onVerticalPreview,
   actionsRef,
   panelOpen,
   onTogglePanel,
@@ -115,9 +113,6 @@ export function Toolbar({
 
   const { value: targetCharCount, setValue: setTargetCharCount } =
     useSettingNumber("editor.targetCharCount", 0);
-
-  const { value: showBreadcrumb, setValue: setShowBreadcrumb } =
-    useSettingBoolean("editor.showBreadcrumb", true);
 
   const { value: showLineNumbers, setValue: setShowLineNumbers } =
     useSettingBoolean("editor.showLineNumbers", false);
@@ -723,19 +718,7 @@ export function Toolbar({
               className="ml-2 w-20 rounded border border-input bg-background px-1.5 py-0.5 text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
-          <OverflowItem
-            label={t("editor.toolbar.verticalPreview")}
-            onClick={() => {
-              onVerticalPreview();
-              setOverflowOpen(false);
-            }}
-          />
           <div className="my-1 border-t border-border" />
-          <OverflowItem
-            label={t("editor.toolbar.showBreadcrumb")}
-            checked={showBreadcrumb}
-            onClick={() => setShowBreadcrumb(!showBreadcrumb)}
-          />
           <OverflowItem
             label={t("editor.toolbar.showLineNumbers")}
             checked={showLineNumbers}

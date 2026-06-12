@@ -5,7 +5,6 @@ import { TabBar } from "@/features/editor/TabBar";
 import { Breadcrumb } from "@/features/editor/Breadcrumb";
 import { EditorPane } from "@/features/editor/EditorPane";
 import { useTabStore } from "@/features/editor/tabStore";
-import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { LinearEditorView } from "@/features/editor/LinearEditorView";
 import { RevisionHistoryModal } from "@/features/revision/RevisionHistoryModal";
 import { AsciiSplash } from "@/features/editor/AsciiSplash";
@@ -160,7 +159,6 @@ export function SceneEditor() {
   );
 
   const isDraggingTab = useTabStore((s) => s.isDraggingTab);
-  const showBreadcrumb = useEditorSettings().showBreadcrumb;
 
   useEffect(() => {
     function onDragEnd() {
@@ -212,7 +210,7 @@ export function SceneEditor() {
   if (isLinearMode) {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden">
-        {showBreadcrumb && <Breadcrumb />}
+        <Breadcrumb />
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <TabBar groupIndex={0} />
           <div className="relative flex flex-1 flex-col overflow-hidden">
