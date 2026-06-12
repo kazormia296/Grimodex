@@ -67,17 +67,21 @@ export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
   const [dropdown, setDropdown] = useState<DropdownState | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  // キーは id だけでなく updatedAt も含める: バッジのドロップダウンは fetch
+  // スナップショットの name/title を表示するため、id 集合のみだと rename 後も
+  // キャッシュにヒットし続けて旧ラベルが残る (旧実装は remount 毎の無条件
+  // 再フェッチで拾えていた)。updatedAt 込みなら編集で必ずミスして再読みする。
   const codexEntryIdKey = useCodexStore((s) =>
-    s.entries.map((e) => e.id).join(","),
+    s.entries.map((e) => `${e.id}:${e.updatedAt}`).join(","),
   );
   const snippetEntryIdKey = useSnippetStore((s) =>
-    s.entries.map((e) => e.id).join(","),
+    s.entries.map((e) => `${e.id}:${e.updatedAt}`).join(","),
   );
 
   useEffect(() => {
     // remount (仮想化の scroll in) / ストア不変の再実行はキャッシュで返し、
-    // DB クエリを発行しない。ID 集合が変わった (抽出追加/削除/プロジェクト
-    // 切替) ときだけミスして再フェッチする。
+    // DB クエリを発行しない。ID 集合や updatedAt が変わった (抽出追加/削除/
+    // 編集/プロジェクト切替) ときだけミスして再フェッチする。
     const cached = badgeCache.get(messageId);
     if (
       cached &&

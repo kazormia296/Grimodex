@@ -77,12 +77,13 @@ import { MessageBadge, _clearMessageBadgeCache } from "./MessageBadge";
 import { useCodexStore } from "@/features/codex/codexStore";
 
 const CODEX_ENTRY = { id: "e1", name: "アリス" };
+const STORE_ENTRY = { id: "e1", updatedAt: "2026-01-01T00:00:00Z" };
 
 beforeEach(() => {
   _clearMessageBadgeCache();
   mockListCodex.mockReset().mockResolvedValue([CODEX_ENTRY]);
   mockListSnippets.mockReset().mockResolvedValue([]);
-  useCodexStore.setState({ entries: [{ id: "e1" }] as never });
+  useCodexStore.setState({ entries: [STORE_ENTRY] as never });
 });
 
 function renderBadge(messageId = "m1") {
@@ -134,6 +135,25 @@ describe("MessageBadge: remount キャッシュ (perf 契約)", () => {
     });
     await waitFor(() => {
       expect(screen.queryByTestId("badge-codex-m1")).toBeNull();
+    });
+  });
+
+  it("エントリ編集 (updatedAt 変化) で再フェッチする — rename のラベル stale 防止", async () => {
+    // バッジは fetch スナップショットの name を表示するため、ID 集合のみを
+    // キーにすると rename 後もキャッシュにヒットし旧ラベルが残る (旧実装は
+    // remount 毎の無条件再フェッチで拾えていた)。updatedAt 込みキーの gate。
+    renderBadge();
+    await waitFor(() => {
+      expect(screen.getByTestId("badge-codex-m1")).toBeDefined();
+    });
+    expect(mockListCodex).toHaveBeenCalledTimes(1);
+
+    mockListCodex.mockResolvedValue([{ id: "e1", name: "アリス改" }]);
+    useCodexStore.setState({
+      entries: [{ id: "e1", updatedAt: "2026-01-02T00:00:00Z" }] as never,
+    });
+    await waitFor(() => {
+      expect(mockListCodex).toHaveBeenCalledTimes(2);
     });
   });
 
