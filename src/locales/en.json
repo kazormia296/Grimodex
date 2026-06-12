@@ -533,7 +533,8 @@
       "semanticReindexButton": "Rebuild",
       "semanticReindexRunning": "Rebuilding…",
       "semanticReindexDone": "Index rebuilt ({{count}} chunks)",
-      "semanticReindexFailed": "Failed to rebuild the index"
+      "semanticReindexFailed": "Failed to rebuild the index",
+      "semanticIndexStatus": "{{scenes}} scenes / {{chunks}} chunks"
     },
     "keys": {
       "search": "Search keybindings…",

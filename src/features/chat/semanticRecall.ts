@@ -1,4 +1,5 @@
 import { semanticSearch, type SemanticSearchHit } from "../semantic-search/api";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 
 /**
  * Layer4 RAG (semantic recall): drafting チャットの文脈に、意味検索で見つけた
@@ -96,8 +97,28 @@ export async function fetchSemanticRecall(args: {
     projectId: args.projectId,
     query: args.query,
     limit: SEMANTIC_RECALL_FETCH_LIMIT,
-  }).catch(() => [] as SemanticSearchHit[]);
-  return selectSemanticRecallChunks(hits, {
+  }).catch((e) => {
+    // 空配列フォールバック (送信を妨げない契約) は維持しつつ、原因を
+    // デバッグログに残す — 無言だと「未 index / feature 無効 / IPC timeout」
+    // のどれで注入されないのか切り分け不能になる。
+    debugLog.warn(
+      "SemanticRecall",
+      "search failed (empty fallback)",
+      errorDetail(e),
+    );
+    return [] as SemanticSearchHit[];
+  });
+  const selected = selectSemanticRecallChunks(hits, {
     excludeSceneIds: args.excludeSceneIds,
   });
+  // 注入判定の可観測性: 生ヒット数 / 足切り(スコア下限・除外シーン)後の
+  // 注入数 / トップスコア。閾値が実データに合っているかはこの行で見る。
+  const topScore =
+    hits.length > 0 ? Math.max(...hits.map((h) => h.score)) : null;
+  debugLog.info(
+    "SemanticRecall",
+    `hits=${hits.length} injected=${selected.length} minScore=${SEMANTIC_RECALL_MIN_SCORE}`,
+    topScore !== null ? `topScore=${topScore.toFixed(3)}` : "no hits",
+  );
+  return selected;
 }

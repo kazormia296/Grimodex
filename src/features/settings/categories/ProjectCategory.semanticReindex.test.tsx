@@ -11,6 +11,16 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 const apiMock = vi.hoisted(() => ({
   semanticReindexAll: vi.fn(() => Promise.resolve(42)),
+  semanticIndexStatus: vi.fn(() =>
+    Promise.resolve({
+      indexedChunkCount: 12,
+      staleChunkCount: 0,
+      indexedSceneCount: 3,
+      currentModelId: "ruri-v3-30m",
+      currentEmbeddingDim: 256,
+      currentChunkerVersion: "v1",
+    }),
+  ),
 }));
 const toastMock = vi.hoisted(() => ({
   success: vi.fn(),
@@ -77,6 +87,16 @@ describe("ProjectCategory semantic reindex", () => {
       expect(apiMock.semanticReindexAll).toHaveBeenCalledWith("proj-test"),
     );
     await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+  });
+
+  // 「再構築したのに注入されない」の切り分け用。0 件ならインデックス側、
+  // 非 0 なら検索/スコア側の問題と即断できる。
+  it("インデックス状態（シーン数/チャンク数）を表示する", async () => {
+    render(<ProjectCategory />);
+    await waitFor(() =>
+      expect(apiMock.semanticIndexStatus).toHaveBeenCalledWith("proj-test"),
+    );
+    await screen.findByText("3 シーン / 12 チャンク");
   });
 
   it("実行中はボタンが disabled になり二重起動しない", async () => {

@@ -533,7 +533,8 @@
       "semanticReindexButton": "再構築",
       "semanticReindexRunning": "再構築中…",
       "semanticReindexDone": "インデックスを再構築しました（{{count}} チャンク）",
-      "semanticReindexFailed": "インデックスの再構築に失敗しました"
+      "semanticReindexFailed": "インデックスの再構築に失敗しました",
+      "semanticIndexStatus": "{{scenes}} シーン / {{chunks}} チャンク"
     },
     "keys": {
       "search": "キーバインドを検索…",

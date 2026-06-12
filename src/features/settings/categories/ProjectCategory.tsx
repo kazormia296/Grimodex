@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useProjectSettings } from "../hooks/useProjectSettings";
@@ -19,7 +20,11 @@ import type { AiFeature, AiPolicyPreset } from "@/features/ai-policy/types";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { PROJECT_ID } from "@/features/project/constants";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { semanticReindexAll } from "@/features/semantic-search/api";
+import {
+  semanticIndexStatus,
+  semanticReindexAll,
+  type SemanticIndexStatus,
+} from "@/features/semantic-search/api";
 import { useReindexProgressStore } from "@/features/semantic-search/reindexProgressStore";
 import { GENRE_VALUES } from "@/features/project/genreOptions";
 
@@ -116,6 +121,21 @@ export function ProjectCategory() {
   const reindexRunning = useReindexProgressStore((s) => s.running);
   const setReindexRunning = useReindexProgressStore((s) => s.setRunning);
 
+  // インデックス状態（インデックス済みシーン数/チャンク数）。「再構築した
+  // のに注入されない」の切り分けに必須 — 0 件ならインデックス側、非 0 なら
+  // 検索/スコア側の問題と即断できる。Embedder ロード不要の軽量クエリ。
+  const [indexStatus, setIndexStatus] = useState<SemanticIndexStatus | null>(
+    null,
+  );
+  const refreshIndexStatus = useCallback(() => {
+    semanticIndexStatus(getCurrentProjectId())
+      .then(setIndexStatus)
+      .catch(() => setIndexStatus(null));
+  }, []);
+  useEffect(() => {
+    refreshIndexStatus();
+  }, [refreshIndexStatus]);
+
   // 意味検索インデックスの全件再構築。インデックスへの投入は通常シーン保存時の
   // 逐次更新（scheduleSceneIndex）だけなので、機能追加前から存在する・編集して
   // いないシーンは未インデックスのまま＝関連シーン注入が一切効かない。
@@ -143,6 +163,7 @@ export function ProjectCategory() {
       console.error("[semanticReindex]", e);
     } finally {
       setReindexRunning(false);
+      refreshIndexStatus();
     }
   }
 
@@ -508,16 +529,27 @@ export function ProjectCategory() {
             "プロジェクト内の全シーンを再インデックスする。インデックスはシーン保存時にしか更新されないため、既存プロジェクトで初めて関連シーン注入を使うときはここから構築する。進行状況は画面右下に表示される。",
           )}
         >
-          <button
-            type="button"
-            onClick={handleSemanticReindex}
-            disabled={reindexRunning}
-            className="rounded-md border border-border px-3 py-1 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {reindexRunning
-              ? t("settings.project.semanticReindexRunning", "再構築中…")
-              : t("settings.project.semanticReindexButton", "再構築")}
-          </button>
+          <div className="flex items-center gap-3">
+            {indexStatus && (
+              <span className="text-xs text-muted-foreground">
+                {t("settings.project.semanticIndexStatus", {
+                  defaultValue: "{{scenes}} シーン / {{chunks}} チャンク",
+                  scenes: indexStatus.indexedSceneCount,
+                  chunks: indexStatus.indexedChunkCount,
+                })}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleSemanticReindex}
+              disabled={reindexRunning}
+              className="rounded-md border border-border px-3 py-1 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {reindexRunning
+                ? t("settings.project.semanticReindexRunning", "再構築中…")
+                : t("settings.project.semanticReindexButton", "再構築")}
+            </button>
+          </div>
         </SettingRow>
       </SettingSection>
 
