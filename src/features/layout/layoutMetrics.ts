@@ -254,6 +254,37 @@ export function buildLayoutGridTemplateAreas(
   return `${cstripe} ${gapRow} ${main} ${bottom}`;
 }
 
+/** 視覚 zoom（パネル最大化）対象の grid 領域。 */
+export type ZoomRegion = RegionId | "center";
+
+/**
+ * zoom 中の 9 列テンプレート。対象 region の content 列だけを 1fr にし、他は
+ * すべて 0px に潰す。cell は unmount しない — LayoutShell 側で
+ * visibility:hidden + inert を併用して paint / hit を止める。
+ * center / bottom は中央列を使う（bottom zoom の行全幅化は
+ * grid-template-areas 側で bottomCorners を両 true にして行う）。
+ */
+export function buildZoomGridTemplateColumns(zoom: ZoomRegion): string {
+  const columns = Array.from({ length: 9 }, () => "0px");
+  const targetIndex = zoom === "left" ? 2 : zoom === "right" ? 6 : 4;
+  columns[targetIndex] = "minmax(0, 1fr)";
+  return columns.join(" ");
+}
+
+/**
+ * zoom 中の行テンプレート。center stripe 行と gap 行は 0px。bottom zoom は
+ * bottom 行のみ、それ以外は main 行のみを 1fr にする。
+ */
+export function buildZoomGridTemplateRows(
+  zoom: ZoomRegion,
+  hasBottom: boolean,
+): string {
+  if (zoom === "bottom") return "0px 0px 0px minmax(0, 1fr)";
+  const rows = ["0px", "0px", "minmax(0, 1fr)"];
+  if (hasBottom) rows.push("0px");
+  return rows.join(" ");
+}
+
 export function sideLayoutChromePx(
   metrics: Pick<
     LayoutGridMetrics,

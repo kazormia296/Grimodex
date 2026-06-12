@@ -524,12 +524,23 @@ export interface LayoutStoreState {
   >;
   initialized: boolean;
   hiddenStripePanels: Set<ToolWindowPanelId>;
+  /**
+   * 視覚 zoom（最大化）対象パネル。transient — scheduleSave の明示列挙に
+   * 含めないため永続化されない。LayoutState は一切変更せず、LayoutShell 側が
+   * grid template の差し替えだけで全面表示する（DOM identity 保持）。
+   * layout 参照が変わる mutation（パネル開閉/プリセット/リサイズ/DnD）で
+   * 自動解除される（store 定義直後の subscribe 参照）。
+   */
+  maximizedPanelId: PanelId | null;
 
   togglePanel: (panel: PanelId) => void;
   showPanel: (panel: PanelId) => void;
   isPanelActive: (panel: PanelId) => boolean;
   requestEditorFocus: () => void;
   setEditorOpen: (open: boolean) => void;
+  /** 対象パネルが表示中のときのみ視覚 zoom をトグルする（非表示は no-op）。 */
+  toggleMaximizePanel: (panel: PanelId) => void;
+  clearMaximize: () => void;
 
   movePanelToSlot: (
     panel: PanelId,
@@ -653,6 +664,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   builtinPresetOverrides: {},
   initialized: false,
   hiddenStripePanels: new Set<ToolWindowPanelId>(),
+  maximizedPanelId: null,
 
   setEditorOpen: (open) => {
     const vp = getViewport();
@@ -794,6 +806,28 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   requestEditorFocus: () => {
     scheduleEditorFocus();
+  },
+
+  toggleMaximizePanel: (panel) => {
+    set((state) => {
+      if (state.maximizedPanelId === panel) return { maximizedPanelId: null };
+      // 非表示パネルの zoom は無意味（zoom 対象セルが空になる）なので拒否する。
+      if (panel === "editor") {
+        if (!state.layout.center.editorOpen) return state;
+      } else {
+        const location = findPanelLocation(
+          state.layout,
+          panel as ToolWindowPanelId,
+        );
+        if (location?.slot.activePanel !== panel) return state;
+      }
+      return { maximizedPanelId: panel };
+    });
+  },
+
+  clearMaximize: () => {
+    if (get().maximizedPanelId === null) return;
+    set({ maximizedPanelId: null });
   },
 
   movePanelToSlot: (panel, region, slotId) => {
@@ -1609,5 +1643,18 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     }
   },
 }));
+
+// 視覚 zoom（最大化）はレイアウト操作で自動解除する。全 mutation が layout の
+// 参照を必ず差し替えること（no-op パスは state をそのまま返し参照不変）を利用
+// し、togglePanel/applyPreset/リサイズ/DnD 等への個別配線なしで網羅する。
+// reclampForViewport も layout 参照を差し替えるため、カードレイアウト設定の
+// トグルでも zoom は解除される（chrome 量が変わるレイアウト変更なので仕様）。
+// setState はここで maximizedPanelId のみ変えるため再帰発火しない
+// （2回目の呼び出しでは layout 参照が同一）。
+useLayoutStore.subscribe((state, prev) => {
+  if (state.maximizedPanelId !== null && state.layout !== prev.layout) {
+    useLayoutStore.setState({ maximizedPanelId: null });
+  }
+});
 
 export { getBuiltinPresets };

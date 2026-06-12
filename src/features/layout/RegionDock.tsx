@@ -66,6 +66,17 @@ function BottomRegionDock({
   const hasOpen = useLayoutStore((s) =>
     s.layout.regions.bottom.slots.some((slot) => slot.activePanel !== null),
   );
+  // 視覚 zoom の対象が bottom region 内パネルのとき、content の固定高さを
+  // 解いて grid cell（1fr 化された bottom 行）全体まで伸ばし、icon stripe を
+  // 0 高さ + 不可視にする（unmount はしない）。bottom は stripe が grid
+  // セル内側に同居する唯一の region なのでここで処理する。
+  const bottomZoomed = useLayoutStore((s) => {
+    const id = s.maximizedPanelId;
+    if (id === null || id === "editor") return false;
+    return s.layout.regions.bottom.slots.some(
+      (slot) => slot.activePanel === id,
+    );
+  });
   const cardLayout = useCardLayout();
 
   return (
@@ -74,19 +85,31 @@ function BottomRegionDock({
       className="flex min-h-0 w-full flex-1 flex-col"
       // content と icon stripe の間の stripe-gap。bottomDockPx が同じ
       // 値をドック高さに加算しているので overflow しない。
-      style={{ gap: cardLayout ? "var(--gx-stripe-gap)" : undefined }}
+      style={{
+        gap: cardLayout && !bottomZoomed ? "var(--gx-stripe-gap)" : undefined,
+      }}
     >
       <AnimatedRegionChrome
         region="bottom"
         open={hasOpen}
-        style={{ height: regionSize, flexShrink: 0 }}
+        style={
+          bottomZoomed
+            ? { flexGrow: 1, minHeight: 0 }
+            : { height: regionSize, flexShrink: 0 }
+        }
         className="flex min-h-0 w-full min-w-0 flex-col"
       >
         <RegionContent region="bottom" orientation={contentOrientation} />
       </AnimatedRegionChrome>
 
       <div
-        style={{ height: STRIPE_SIZE, flexShrink: 0 }}
+        style={
+          bottomZoomed
+            ? { height: 0, flexShrink: 0, visibility: "hidden" }
+            : { height: STRIPE_SIZE, flexShrink: 0 }
+        }
+        aria-hidden={bottomZoomed || undefined}
+        inert={bottomZoomed || undefined}
         className="w-full min-h-0 shrink-0"
       >
         <RegionStripe

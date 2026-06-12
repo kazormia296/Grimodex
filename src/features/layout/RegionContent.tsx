@@ -58,8 +58,20 @@ export const RegionContent = memo(function RegionContent({
     Boolean(draggingPanel && !layoutLocked),
   );
 
+  const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
+
   const openSlots = slots.filter((s) => s.activePanel !== null);
   const slotFlexGrow = normalizeFlexGrow(openSlots.map((s) => s.sizeRatio));
+
+  // 視覚 zoom: 対象 slot がこの region にあるときだけ、対象を全面化し
+  // 非対象 slot / splitter を 0 サイズ + 不可視にする（unmount はしない）。
+  // zoom が他 region のときは null（この region の cell 自体が LayoutShell
+  // 側で不可視化される）。
+  const zoomActive = maximizedPanelId !== null;
+  const zoomedSlotId =
+    maximizedPanelId !== null
+      ? (openSlots.find((s) => s.activePanel === maximizedPanelId)?.id ?? null)
+      : null;
 
   const getLayoutBudgetPx = useCallback(() => {
     const el = containerRef.current;
@@ -185,7 +197,9 @@ export const RegionContent = memo(function RegionContent({
       )}
     >
       {openSlots.map((slot, index) => {
-        const sizeStyle =
+        const slotZoomHidden =
+          zoomedSlotId !== null && slot.id !== zoomedSlotId;
+        const sizeStyle: React.CSSProperties =
           orientation === "vertical"
             ? {
                 flexGrow: slotFlexGrow[index],
@@ -199,6 +213,10 @@ export const RegionContent = memo(function RegionContent({
                 flexShrink: 0,
                 minWidth: 0,
               };
+        if (zoomedSlotId !== null) {
+          sizeStyle.flexGrow = slot.id === zoomedSlotId ? 1 : 0;
+          if (slotZoomHidden) sizeStyle.visibility = "hidden";
+        }
 
         return (
           <Fragment key={slot.id}>
@@ -207,18 +225,24 @@ export const RegionContent = memo(function RegionContent({
                 // `flex` で SplitterHandle を cross-axis stretch させる。
                 // 通常 block 配置だと SplitterChrome の height: 100% が
                 // 親 (SplitterHandle, height:auto) を参照できず潰れる。
-                // 明示寸法は main-axis のみ与える。
+                // 明示寸法は main-axis のみ与える。zoom 中はギャップごと
+                // 0 サイズ + 不可視（splitter はマウント維持、dev の
+                // ヒット領域 assertion は disabled で抑止）。
                 className="relative flex shrink-0"
                 style={
-                  orientation === "horizontal"
-                    ? { width: PANEL_GAP_PX }
-                    : { height: PANEL_GAP_PX }
+                  zoomedSlotId !== null
+                    ? orientation === "horizontal"
+                      ? { width: 0, visibility: "hidden" }
+                      : { height: 0, visibility: "hidden" }
+                    : orientation === "horizontal"
+                      ? { width: PANEL_GAP_PX }
+                      : { height: PANEL_GAP_PX }
                 }
               >
                 <Splitter
                   orientation={orientation}
                   thickness={PANEL_GAP_PX}
-                  disabled={layoutLocked}
+                  disabled={layoutLocked || zoomActive}
                   onDrag={(delta) => {
                     const prevSlot = openSlots[index - 1];
                     const layoutBudgetPx = getLayoutBudgetPx();
@@ -277,6 +301,8 @@ export const RegionContent = memo(function RegionContent({
               data-drop-slot={slot.id}
               data-drop-region={region}
               style={sizeStyle}
+              aria-hidden={slotZoomHidden || undefined}
+              inert={slotZoomHidden || undefined}
               className="relative flex min-h-0 min-w-0 flex-col"
               onDragOver={(e) => handleSlotDragOver(slot.id, e)}
               onDragLeave={handleSlotDragLeave}

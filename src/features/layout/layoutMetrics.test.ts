@@ -5,6 +5,8 @@ import {
   buildLayoutGridTemplateAreas,
   buildLayoutGridTemplateColumns,
   buildLayoutGridTemplateRows,
+  buildZoomGridTemplateColumns,
+  buildZoomGridTemplateRows,
   computeLayoutGridMetrics,
   regionContentPx,
   sideDockPx,
@@ -336,6 +338,41 @@ describe("layoutMetrics", () => {
         right: true,
       });
       expect(areas).not.toContain("bottom");
+    });
+  });
+
+  describe("buildZoomGridTemplateColumns", () => {
+    it("keeps the 9-column shape and frees only the target content column", () => {
+      expect(buildZoomGridTemplateColumns("left")).toBe(
+        "0px 0px minmax(0, 1fr) 0px 0px 0px 0px 0px 0px",
+      );
+      expect(buildZoomGridTemplateColumns("right")).toBe(
+        "0px 0px 0px 0px 0px 0px minmax(0, 1fr) 0px 0px",
+      );
+      expect(buildZoomGridTemplateColumns("center")).toBe(
+        "0px 0px 0px 0px minmax(0, 1fr) 0px 0px 0px 0px",
+      );
+      // bottom は bottom 行が areas 側で全幅化されるため中央列に 1fr を置く。
+      expect(buildZoomGridTemplateColumns("bottom")).toBe(
+        "0px 0px 0px 0px minmax(0, 1fr) 0px 0px 0px 0px",
+      );
+    });
+  });
+
+  describe("buildZoomGridTemplateRows", () => {
+    it("frees only the main row for non-bottom zoom", () => {
+      expect(buildZoomGridTemplateRows("left", false)).toBe(
+        "0px 0px minmax(0, 1fr)",
+      );
+      expect(buildZoomGridTemplateRows("center", true)).toBe(
+        "0px 0px minmax(0, 1fr) 0px",
+      );
+    });
+
+    it("frees only the bottom row for bottom zoom", () => {
+      expect(buildZoomGridTemplateRows("bottom", true)).toBe(
+        "0px 0px 0px minmax(0, 1fr)",
+      );
     });
   });
 });

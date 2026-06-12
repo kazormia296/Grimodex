@@ -44,6 +44,8 @@ export const CenterContent = memo(function CenterContent() {
     Boolean(draggingPanel && !layoutLocked),
   );
 
+  const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
+
   const visibleSegments = center.segments.filter((segment) =>
     centerSegmentVisible(segment, center.editorOpen),
   );
@@ -51,6 +53,20 @@ export const CenterContent = memo(function CenterContent() {
   const segmentFlexGrow = normalizeFlexGrow(
     visibleSegments.map((s) => s.sizeRatio),
   );
+
+  // 視覚 zoom: 対象が center band 内（editor / tool segment）のときだけ
+  // 対象 segment を全面化し、非対象 segment / splitter を 0 サイズ +
+  // 不可視にする（unmount はしない — visibleSegments のフィルタ条件は
+  // 変えない。editor unmount 回避の要）。
+  const zoomActive = maximizedPanelId !== null;
+  const zoomedSegmentId =
+    maximizedPanelId === null
+      ? null
+      : maximizedPanelId === "editor"
+        ? (visibleSegments.find((s) => s.kind === "editor")?.id ?? null)
+        : (visibleSegments.find(
+            (s) => s.kind === "tool" && s.activePanel === maximizedPanelId,
+          )?.id ?? null);
 
   const getLayoutBudgetPx = useCallback(() => {
     const el = containerRef.current;
@@ -165,15 +181,25 @@ export const CenterContent = memo(function CenterContent() {
       className="relative flex h-full min-h-0 w-full min-w-0 flex-row"
     >
       {visibleSegments.map((segment, index) => {
+        const segmentZoomHidden =
+          zoomedSegmentId !== null && segment.id !== zoomedSegmentId;
         const minWidth =
           segment.kind === "editor" ? MIN_EDITOR_SIZE : MIN_SLOT_SIZE;
-        const sizeStyle = {
+        const sizeStyle: React.CSSProperties = {
           flexGrow: segmentFlexGrow[index],
           flexBasis: 0,
           flexShrink: 0,
           minWidth,
           minHeight: 0,
         };
+        if (zoomedSegmentId !== null) {
+          sizeStyle.flexGrow = segment.id === zoomedSegmentId ? 1 : 0;
+          if (segmentZoomHidden) {
+            // minWidth (MIN_EDITOR_SIZE 等) が残ると 0 幅に潰れないため必ず 0 に。
+            sizeStyle.minWidth = 0;
+            sizeStyle.visibility = "hidden";
+          }
+        }
 
         return (
           <Fragment key={segment.id}>
@@ -181,14 +207,20 @@ export const CenterContent = memo(function CenterContent() {
               <div
                 // `flex` で SplitterHandle を cross-axis stretch させる。
                 // block 配置だと SplitterChrome の height: 100% が親を
-                // 参照できず潰れる。
+                // 参照できず潰れる。zoom 中はギャップごと 0 サイズ + 不可視
+                // （splitter はマウント維持、dev のヒット領域 assertion は
+                // disabled で抑止）。
                 className="relative flex shrink-0"
-                style={{ width: PANEL_GAP_PX }}
+                style={
+                  zoomedSegmentId !== null
+                    ? { width: 0, visibility: "hidden" }
+                    : { width: PANEL_GAP_PX }
+                }
               >
                 <Splitter
                   orientation="horizontal"
                   thickness={PANEL_GAP_PX}
-                  disabled={layoutLocked}
+                  disabled={layoutLocked || zoomActive}
                   onDrag={(delta) => {
                     const prevSegment = visibleSegments[index - 1];
                     const layoutBudgetPx = getLayoutBudgetPx();
@@ -225,6 +257,8 @@ export const CenterContent = memo(function CenterContent() {
                 data-center-segment={segment.id}
                 data-center-segment-kind="editor"
                 style={sizeStyle}
+                aria-hidden={segmentZoomHidden || undefined}
+                inert={segmentZoomHidden || undefined}
                 className={cn(
                   "relative flex min-h-0 min-w-0 flex-col",
                   !center.editorOpen && "hidden",
@@ -239,6 +273,8 @@ export const CenterContent = memo(function CenterContent() {
                 data-center-segment={segment.id}
                 data-center-segment-kind="tool"
                 style={sizeStyle}
+                aria-hidden={segmentZoomHidden || undefined}
+                inert={segmentZoomHidden || undefined}
                 className="relative flex min-h-0 min-w-0 flex-col"
                 onDragOver={(e) => handleSlotDragOver(segment.id, e)}
                 onDragLeave={handleSlotDragLeave}
