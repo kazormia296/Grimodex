@@ -1,3 +1,4 @@
+import { X } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { useTranslation } from "react-i18next";
@@ -475,7 +476,7 @@ export function RevisionHistoryModal() {
             className="text-muted-foreground hover:text-foreground transition-colors"
             onClick={closeHistory}
           >
-            ✕
+            <X className="h-4 w-4" aria-hidden />
           </button>
         </div>
 

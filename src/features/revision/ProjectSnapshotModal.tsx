@@ -1,3 +1,4 @@
+import { Star, X } from "lucide-react";
 import { useState, useEffect } from "react";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { toast } from "sonner";
@@ -341,7 +342,7 @@ export function ProjectSnapshotModal({
             className="text-muted-foreground hover:text-foreground transition-colors"
             onClick={onClose}
           >
-            ✕
+            <X className="h-4 w-4" aria-hidden />
           </button>
         </div>
 
@@ -424,8 +425,12 @@ export function ProjectSnapshotModal({
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <span className="font-medium block truncate">
-                      ★ {snap.name}
+                    <span className="flex items-center gap-1 font-medium">
+                      <Star
+                        className="h-3.5 w-3.5 shrink-0 fill-current"
+                        aria-hidden
+                      />
+                      <span className="truncate">{snap.name}</span>
                     </span>
                     {snap.description && (
                       <span className="text-xs text-muted-foreground block truncate">

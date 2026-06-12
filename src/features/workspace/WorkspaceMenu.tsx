@@ -1,3 +1,4 @@
+import { Check } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { openFolderDialog } from "@/lib/dialog";
@@ -65,7 +66,11 @@ export function WorkspaceMenu() {
       {isOpen && (
         <div className="absolute left-0 top-full z-50 mt-1 min-w-56 rounded-md border border-border bg-popover py-1 shadow-lg">
           <div className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground">
-            <span>✓</span>
+            <Check
+              className="h-3.5 w-3.5 shrink-0"
+              strokeWidth={3}
+              aria-hidden
+            />
             <span className="truncate font-medium text-foreground">
               {activeWorkspaceName}
             </span>

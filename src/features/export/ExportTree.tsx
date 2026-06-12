@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, ChevronDown, Folder } from "lucide-react";
+import { Check, ChevronRight, ChevronDown, Folder, Minus } from "lucide-react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 
@@ -86,8 +86,12 @@ function TriStateCheckbox({
       onClick={onChange}
       className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border border-border bg-background text-xs transition-colors hover:bg-accent"
     >
-      {state === "all" && <span className="text-primary leading-none">✓</span>}
-      {state === "some" && <span className="text-primary leading-none">−</span>}
+      {state === "all" && (
+        <Check className="h-3 w-3 text-primary" strokeWidth={3} aria-hidden />
+      )}
+      {state === "some" && (
+        <Minus className="h-3 w-3 text-primary" aria-hidden />
+      )}
     </button>
   );
 }
@@ -108,7 +112,9 @@ function SceneCheckbox({
       onClick={onChange}
       className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border border-border bg-background text-xs transition-colors hover:bg-accent"
     >
-      {checked && <span className="text-primary leading-none">✓</span>}
+      {checked && (
+        <Check className="h-3 w-3 text-primary" strokeWidth={3} aria-hidden />
+      )}
     </button>
   );
 }

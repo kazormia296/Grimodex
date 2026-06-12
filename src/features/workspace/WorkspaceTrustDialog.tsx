@@ -1,3 +1,4 @@
+import { AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useWorkspaceStore } from "./store";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
@@ -16,7 +17,10 @@ export function WorkspaceTrustDialog() {
       className="mx-4 w-full max-w-md rounded-lg border border-border bg-background p-6 shadow-lg"
     >
       <div className="mb-4 flex items-start gap-3">
-        <span className="mt-0.5 text-xl text-yellow-500">⚠</span>
+        <AlertTriangle
+          className="mt-0.5 h-5 w-5 shrink-0 text-yellow-500"
+          aria-hidden
+        />
         <h2 className="text-base font-semibold text-foreground">
           {t("workspace.trustTitle")}
         </h2>

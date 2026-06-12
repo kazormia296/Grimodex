@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowRight,
+  Check,
   ChevronDown,
   ChevronRight,
   Loader2,
@@ -602,7 +603,11 @@ export function ForeshadowPanel() {
                         className="rounded px-1 py-0.5 text-[10px] text-destructive hover:bg-destructive/10"
                         aria-label={t("common.confirm", "確認")}
                       >
-                        ✓
+                        <Check
+                          className="h-3 w-3"
+                          strokeWidth={3}
+                          aria-hidden
+                        />
                       </button>
                       <button
                         type="button"
@@ -610,7 +615,7 @@ export function ForeshadowPanel() {
                         className="rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
                         aria-label={t("common.cancel", "キャンセル")}
                       >
-                        ✗
+                        <X className="h-3 w-3" aria-hidden />
                       </button>
                     </div>
                   ) : (

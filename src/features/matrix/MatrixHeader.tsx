@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Search, X, MoreVertical } from "lucide-react";
+import { Check, Pencil, Search, X, MoreVertical } from "lucide-react";
 import { useMatrixStore } from "./matrixStore";
 import type { ShowMode } from "./lib/deriveColumns";
 import type { DisplayMode, SortMode } from "./matrixStore";
@@ -177,7 +177,11 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
                   }}
                 >
                   {displayMode === m.value && (
-                    <span className="text-primary">✓</span>
+                    <Check
+                      className="h-3 w-3 shrink-0 text-primary"
+                      strokeWidth={3}
+                      aria-hidden
+                    />
                   )}
                   {displayMode !== m.value && <span className="w-3" />}
                   {m.label}
@@ -193,7 +197,11 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
                 onClick={() => setHideEmptyRows(!hideEmptyRows)}
               >
                 <span>
-                  {hideEmptyRows ? "✓" : <span className="w-3 inline-block" />}
+                  {hideEmptyRows ? (
+                    <Check className="h-3 w-3" strokeWidth={3} aria-hidden />
+                  ) : (
+                    <span className="w-3 inline-block" />
+                  )}
                 </span>
                 空セルを非表示
               </button>
@@ -204,7 +212,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
               >
                 <span>
                   {onlyUneditedRows ? (
-                    "✓"
+                    <Check className="h-3 w-3" strokeWidth={3} aria-hidden />
                   ) : (
                     <span className="w-3 inline-block" />
                   )}
@@ -297,7 +305,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
                     renameCustomSet(activeCustomSetId, name.trim());
                 }}
               >
-                ✎
+                <Pencil className="h-3 w-3" aria-hidden />
               </button>
               <button
                 type="button"

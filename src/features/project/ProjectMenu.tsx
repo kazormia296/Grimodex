@@ -1,3 +1,4 @@
+import { Check } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -138,8 +139,10 @@ export function ProjectMenu({
                   onClick={() => void handleSwitch(project.id)}
                   className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-sm hover:text-accent-foreground"
                 >
-                  <span className="w-4 shrink-0">
-                    {project.id === currentProjectId ? "✓" : ""}
+                  <span className="inline-flex w-4 shrink-0 items-center">
+                    {project.id === currentProjectId && (
+                      <Check className="h-3 w-3" strokeWidth={3} aria-hidden />
+                    )}
                   </span>
                   <span className="truncate">{project.title}</span>
                 </button>

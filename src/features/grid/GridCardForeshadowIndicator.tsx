@@ -1,3 +1,4 @@
+import { Check, Pin } from "lucide-react";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
@@ -72,8 +73,18 @@ export function GridCardForeshadowIndicator({ sceneId, compact }: Props) {
       <span
         className={`inline-block h-2 w-2 rounded-full shrink-0 ${dot.bg}`}
       />
-      {!compact && setupCount > 0 && <span>📌{setupCount}</span>}
-      {!compact && payoffCount > 0 && <span>✓{payoffCount}</span>}
+      {!compact && setupCount > 0 && (
+        <span className="inline-flex items-center gap-0.5">
+          <Pin className="h-2.5 w-2.5 shrink-0" aria-hidden />
+          {setupCount}
+        </span>
+      )}
+      {!compact && payoffCount > 0 && (
+        <span className="inline-flex items-center gap-0.5">
+          <Check className="h-2.5 w-2.5 shrink-0" strokeWidth={3} aria-hidden />
+          {payoffCount}
+        </span>
+      )}
     </button>
   );
 }

@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Copy,
   FilePlus,
+  FileText,
   MapPin,
   Pencil,
   TextCursorInput,
@@ -252,9 +253,10 @@ export function SnippetContextMenu({
             onClick={handleGoToScene}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
           >
-            <span className="h-3.5 w-3.5 shrink-0 text-muted-foreground">
-              📄
-            </span>
+            <FileText
+              className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+              aria-hidden
+            />
             {t("snippets.contextMenu.goToScene")}
           </button>
         )}
