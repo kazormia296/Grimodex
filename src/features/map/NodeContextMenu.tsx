@@ -1,3 +1,4 @@
+import { Sparkles } from "lucide-react";
 import type { PromoteTargetType } from "./mapApi";
 import { getPalette, DEFAULT_PALETTE_ID } from "@/lib/stickyPalettes";
 import {
@@ -223,7 +224,8 @@ export function NodeContextMenu({
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={onOpenAiBranch}>
-                  ✦ AI Branch を生成…
+                  <Sparkles className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                  AI Branch を生成…
                 </DropdownMenuItem>
               </>
             )}

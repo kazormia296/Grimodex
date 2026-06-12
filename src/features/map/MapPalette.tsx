@@ -1,4 +1,6 @@
+import { Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { AiGatePresentation } from "@/features/ai-policy/evaluateAiCapability";
 
 type PaletteMode = "default" | "frame" | "connect";
@@ -82,7 +84,8 @@ export function MapPalette({
           disabled 表示で設定導線を残す）。kouetsu views と同じ gate 規約。 */}
       {aiBranchPresentation !== "hidden" && (
         <PaletteButton
-          label="✦ AI Branch"
+          icon={<Sparkles size={12} aria-hidden />}
+          label="AI Branch"
           onClick={onOpenAiBranch}
           disabled={aiBranchPresentation === "disabled"}
           title={aiBranchTooltip ?? "AI Branchを生成"}
@@ -193,12 +196,15 @@ export function MapPalette({
 }
 
 function PaletteButton({
+  icon,
   label,
   onClick,
   disabled,
   active,
   title,
 }: {
+  /** ラベル左に置く装飾アイコン。アクセシブルネームは label が担う。 */
+  icon?: ReactNode;
   label: string;
   onClick?: () => void;
   disabled?: boolean;
@@ -211,6 +217,9 @@ function PaletteButton({
       disabled={disabled}
       title={title}
       style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
         padding: "4px 10px",
         fontSize: 12,
         borderRadius: 4,
@@ -232,6 +241,7 @@ function PaletteButton({
         fontWeight: active ? 600 : 400,
       }}
     >
+      {icon}
       {label}
     </button>
   );

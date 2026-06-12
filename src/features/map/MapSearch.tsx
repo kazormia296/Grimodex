@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Node } from "@xyflow/react";
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 
 interface SearchResult {
   nodeId: string;
@@ -120,16 +120,18 @@ export function MapSearch({ nodes, onFocus, onClose }: MapSearchProps) {
         />
         <button
           onClick={onClose}
+          aria-label="閉じる"
           style={{
+            display: "inline-flex",
+            alignItems: "center",
             background: "none",
             border: "none",
             cursor: "pointer",
             color: "var(--muted-foreground)",
-            fontSize: 14,
             padding: "0 2px",
           }}
         >
-          ✕
+          <X size={14} aria-hidden />
         </button>
       </div>
 

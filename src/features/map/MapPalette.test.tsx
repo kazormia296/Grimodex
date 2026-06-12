@@ -26,7 +26,7 @@ function renderPalette(
 describe("MapPalette — AI Branch gate presentation", () => {
   it("enabled なら AI Branch ボタンが押せる", () => {
     const { onOpenAiBranch } = renderPalette("enabled");
-    const button = screen.getByRole("button", { name: "✦ AI Branch" });
+    const button = screen.getByRole("button", { name: "AI Branch" });
     expect(button).not.toBeDisabled();
     fireEvent.click(button);
     expect(onOpenAiBranch).toHaveBeenCalledTimes(1);
@@ -34,7 +34,7 @@ describe("MapPalette — AI Branch gate presentation", () => {
 
   it("hidden (policy off) なら AI Branch ボタンを描画しない", () => {
     renderPalette("hidden");
-    expect(screen.queryByRole("button", { name: "✦ AI Branch" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "AI Branch" })).toBeNull();
   });
 
   it("disabled (provider/model 未設定) なら disabled 表示で tooltip を出す", () => {
@@ -42,7 +42,7 @@ describe("MapPalette — AI Branch gate presentation", () => {
       "disabled",
       "AIプロバイダが未設定です",
     );
-    const button = screen.getByRole("button", { name: "✦ AI Branch" });
+    const button = screen.getByRole("button", { name: "AI Branch" });
     expect(button).toBeDisabled();
     expect(button.getAttribute("title")).toBe("AIプロバイダが未設定です");
     fireEvent.click(button);
@@ -51,7 +51,7 @@ describe("MapPalette — AI Branch gate presentation", () => {
 
   it("pending なら表示したまま押せる (ちらつき防止)", () => {
     renderPalette("pending");
-    const button = screen.getByRole("button", { name: "✦ AI Branch" });
+    const button = screen.getByRole("button", { name: "AI Branch" });
     expect(button).not.toBeDisabled();
   });
 });
