@@ -60,6 +60,26 @@ function wholeMessageContent(msg: ChatMessageType | undefined): string {
     : msg.content;
 }
 
+/**
+ * チャットのシーンスコープ選択からエディタへシーンを同期する。
+ * Editor パネルが表示されている場合のみ、ツリーや他のパネルと同じ
+ * navigation 経路で対象シーンを開く（tab を pinned で開いて active 化＋
+ * Editor パネルを前面化）。非表示時はレイアウトに触れない —
+ * openPinned は内部で ensureEditorVisible を呼ぶため、ガード外に出すと
+ * 非表示の Editor が強制表示されてしまう。
+ *
+ * tree の active scene 更新はレイアウト非接触の純粋な state set。
+ * その変化を ChatPanel の mirror effect が chatStore.activeSceneId に
+ * 伝播するため、Editor 非表示でもチャットの scene anchor は追従する。
+ */
+export function selectSceneFromChat(sceneId: string): void {
+  if (useLayoutStore.getState().isPanelActive("editor")) {
+    useTabStore.getState().openPinned(sceneId);
+    useLayoutStore.getState().showPanel("editor");
+  }
+  useTreeStore.getState().setActiveScene(sceneId);
+}
+
 interface SnippetDialogState {
   open: boolean;
   messageId: string;
@@ -818,13 +838,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   );
 
   const handleSelectScene = useCallback((sceneId: string) => {
-    // ツリーや他のパネルと同じ navigation 経路で対象シーンを開く:
-    // 1) tab を pinned で開いて active 化、2) Editor パネルを前面化、
-    // 3) tree の active scene を更新（その変化を ChatPanel の mirror effect が
-    //    chatStore.activeSceneId に伝播する）。
-    useTabStore.getState().openPinned(sceneId);
-    useLayoutStore.getState().showPanel("editor");
-    useTreeStore.getState().setActiveScene(sceneId);
+    selectSceneFromChat(sceneId);
   }, []);
 
   const handleNewSession = useCallback(() => {

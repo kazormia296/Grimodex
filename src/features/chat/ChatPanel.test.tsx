@@ -1,9 +1,12 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ChatPanel } from "./ChatPanel";
+import { ChatPanel, selectSceneFromChat } from "./ChatPanel";
 import { useChatStore } from "./chatStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
+import { useTabStore } from "@/features/editor/tabStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 
@@ -623,5 +626,74 @@ describe("ChatPanel", () => {
     });
 
     expect(refreshSpy.mock.calls.length).toBeGreaterThan(callsAfterMount);
+  });
+});
+
+// シーンスコープのシーン選択は Editor パネル可視時のみエディタへナビゲート
+// する。非表示時に openPinned / showPanel("editor") を呼ぶと Editor が強制
+// 表示される（openPinned は内部で ensureEditorVisible を呼ぶため両方の経路を
+// ガードする必要がある）。scene anchor の同期（treeStore.setActiveScene）は
+// 可視状態に関係なく行う。
+describe("selectSceneFromChat", () => {
+  let originalOpenPinned: ReturnType<typeof useTabStore.getState>["openPinned"];
+  let originalShowPanel: ReturnType<
+    typeof useLayoutStore.getState
+  >["showPanel"];
+  let originalEditorOpen: boolean;
+  let originalActiveSceneId: ReturnType<
+    typeof useTreeStore.getState
+  >["activeSceneId"];
+
+  const setEditorVisible = (visible: boolean) => {
+    useLayoutStore.setState((s) => ({
+      layout: {
+        ...s.layout,
+        center: { ...s.layout.center, editorOpen: visible },
+      },
+    }));
+  };
+
+  beforeEach(() => {
+    originalOpenPinned = useTabStore.getState().openPinned;
+    originalShowPanel = useLayoutStore.getState().showPanel;
+    originalEditorOpen = useLayoutStore.getState().layout.center.editorOpen;
+    originalActiveSceneId = useTreeStore.getState().activeSceneId;
+  });
+
+  afterEach(() => {
+    useTabStore.setState({ openPinned: originalOpenPinned });
+    useLayoutStore.setState({ showPanel: originalShowPanel });
+    setEditorVisible(originalEditorOpen);
+    useTreeStore.setState({ activeSceneId: originalActiveSceneId });
+  });
+
+  it("does not force the editor panel open when it is hidden", () => {
+    const openPinned = vi.fn();
+    const showPanel = vi.fn();
+    useTabStore.setState({ openPinned });
+    useLayoutStore.setState({ showPanel });
+    setEditorVisible(false);
+
+    selectSceneFromChat("scene-hidden");
+
+    expect(openPinned).not.toHaveBeenCalled();
+    expect(showPanel).not.toHaveBeenCalled();
+    expect(useLayoutStore.getState().layout.center.editorOpen).toBe(false);
+    // scene anchor の同期は可視状態に関係なく行われる
+    expect(useTreeStore.getState().activeSceneId).toBe("scene-hidden");
+  });
+
+  it("navigates the editor to the scene when the panel is visible", () => {
+    const openPinned = vi.fn();
+    const showPanel = vi.fn();
+    useTabStore.setState({ openPinned });
+    useLayoutStore.setState({ showPanel });
+    setEditorVisible(true);
+
+    selectSceneFromChat("scene-visible");
+
+    expect(openPinned).toHaveBeenCalledWith("scene-visible");
+    expect(showPanel).toHaveBeenCalledWith("editor");
+    expect(useTreeStore.getState().activeSceneId).toBe("scene-visible");
   });
 });
