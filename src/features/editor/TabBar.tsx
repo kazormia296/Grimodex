@@ -337,10 +337,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   }
 
   return (
-    <div
-      data-panel-header
-      className="glass-editor-chrome flex items-center border-b border-border bg-background"
-    >
+    <div className="glass-editor-chrome flex items-center border-b border-border bg-background">
       {/* Scrollable tab list */}
       <div
         ref={scrollRef}

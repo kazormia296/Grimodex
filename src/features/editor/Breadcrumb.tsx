@@ -150,7 +150,13 @@ export function Breadcrumb() {
   // menu of the hidden segments. Keep the first and last segments visible.
   // Apply per-segment truncate so individual long titles still ellipsize.
   return (
-    <div className="flex min-w-0 items-center border-b border-border px-3 py-1 text-xs text-muted-foreground">
+    // data-panel-header: エディタの chrome ジェスチャ帯（dblclick=最大化 /
+    // 右クリック=パネルメニュー）。TabBar はタブ自体が dblclick を持つため
+    // ジェスチャ対象はパンくず行に限定する。
+    <div
+      data-panel-header
+      className="flex min-w-0 items-center border-b border-border px-3 py-1 text-xs text-muted-foreground"
+    >
       {path.map((segment, i) => {
         const isLast = i === path.length - 1;
         const isFirst = i === 0;
