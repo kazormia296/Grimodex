@@ -87,7 +87,8 @@ pub enum CliEvent {
 ///   **`/Applications` / `~/Applications` の `.app`**（`Contents/MacOS/<CLI名>`）。
 /// - **Linux 追加**: **`/snap/bin`**、`~/.nix-profile/bin`。
 /// - **Windows**: `where.exe` → **`%LocalAppData%` 配下の定番・ベンダー・浅い走査**
-///   （PATH に無い GUI/ユーザ領域インストール向け）→ PowerShell → Scoop / npm 等。
+///   （PATH に無い GUI/ユーザ領域インストール向け）→ PowerShell →
+///   **`~/.local/bin`**（Claude Code 等ネイティブインストーラの既定先）→ Scoop / npm 等。
 pub async fn detect_binary(kind: CliKind) -> Option<String> {
     #[cfg(unix)]
     {
@@ -422,6 +423,17 @@ fn windows_cli_exe_leaf(bin_name: &str) -> String {
     format!("{bin_name}.exe")
 }
 
+/// `~/.local/bin` 配下の CLI 実体候補（Windows フォールバック用）。
+/// Claude Code 等のネイティブインストーラは全 OS でここに実体を置くが、
+/// Windows では PATH 登録が任意のため where.exe / Get-Command では拾えない
+/// ことがある。`.exe` 実体と拡張子無しのシム/ラッパの両方を候補にする。
+/// Unix 側は `detect_binary_unix` が既に `.local/bin` をカバーしている。
+#[cfg(any(windows, test))]
+fn home_local_bin_candidates(home: &std::path::Path, bin_name: &str) -> Vec<PathBuf> {
+    let dir = home.join(".local").join("bin");
+    vec![dir.join(format!("{bin_name}.exe")), dir.join(bin_name)]
+}
+
 /// `%LocalAppData%\Programs\<name>\<name>.exe` 等（Electron / ユーザ単位インストールでよくある）
 #[cfg(windows)]
 fn find_exe_under_local_programs(local: &std::path::Path, bin_name: &str) -> Option<PathBuf> {
@@ -637,6 +649,15 @@ async fn detect_binary_windows(kind: CliKind) -> Option<String> {
     }
 
     if let Some(home) = dirs::home_dir() {
+        // 公式ネイティブインストーラの既定先 ~/.local/bin を scoop シムより
+        // 優先する（PATH 登録済みなら冒頭の where.exe が先着するため、
+        // ここに来るのは PATH 未登録ケースのみ）。
+        for candidate in home_local_bin_candidates(&home, bin_name) {
+            if candidate.is_file() {
+                return candidate.to_str().map(str::to_string);
+            }
+        }
+
         let scoop = home
             .join("scoop")
             .join("shims")
@@ -1193,5 +1214,18 @@ mod list_models_tests {
     #[test]
     fn known_claude_models_is_non_empty() {
         assert!(!known_claude_models().is_empty());
+    }
+
+    /// Windows の自動検出フォールバックが Claude Code ネイティブ
+    /// インストーラの既定先 `~/.local/bin` を含むこと（PATH 未登録の
+    /// `%USERPROFILE%\.local\bin\claude.exe` が検出漏れした回帰のガード）。
+    /// 候補列挙は OS 非依存の純関数なので Linux CI でも検証できる。
+    #[test]
+    fn home_local_bin_candidates_cover_native_installer_layout() {
+        let home = std::path::Path::new("/home/user");
+        let dir = home.join(".local").join("bin");
+        let candidates = home_local_bin_candidates(home, "claude");
+        assert!(candidates.contains(&dir.join("claude.exe")));
+        assert!(candidates.contains(&dir.join("claude")));
     }
 }
