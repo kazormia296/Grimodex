@@ -26,7 +26,9 @@
 
 set -euo pipefail
 
-MODEL_CHOICE="${1:-granite}"
+# 既定は bge: ホスト calibration で granite に勝ち SPEC_EN に採用済み。
+# granite を試したい場合のみ引数で指定 (その場合 SPEC_EN の編集が要る)。
+MODEL_CHOICE="${1:-bge}"
 
 case "$MODEL_CHOICE" in
   granite)
@@ -129,20 +131,21 @@ DONE (export + golden + calibration + conf). Remaining manual steps:
 
 EOF
 
-if [ "$MODEL_CHOICE" = "bge" ]; then
+if [ "$MODEL_CHOICE" = "granite" ]; then
 cat <<EOF
-2. bge was chosen → update src-tauri/src/semantic/spec.rs SPEC_EN:
+2. granite was chosen → update src-tauri/src/semantic/spec.rs SPEC_EN
+   (bge is the committed default, so granite requires these edits):
        model_id: "$MODEL_ID",
        dir_name: "$DIR_NAME",
        embedding_dim: 384,
-       needs_token_type_ids: $NEEDS_TTI,   // bge is plain BERT
+       pooling: Pooling::Cls,                // granite ST config is cls
+       needs_token_type_ids: $NEEDS_TTI,     // granite is ModernBERT (2 inputs)
        golden_fixture: "$FIXTURE",
-   (granite is the SPEC_EN default; bge requires these edits.)
 
 EOF
 else
 cat <<EOF
-2. granite matches the SPEC_EN default — no spec.rs change needed.
+2. bge matches the committed SPEC_EN default — no spec.rs change needed.
 
 EOF
 fi
