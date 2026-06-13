@@ -23,6 +23,7 @@ vi.mock("@/db/schema", () => ({
     projectId: "projectId",
   },
   chatMessages: { id: "id", sessionId: "sessionId", createdAt: "createdAt" },
+  chatMessagePrompts: { messageId: "messageId" },
   codexEntries: { id: "id" },
   chatSessionPinnedCodex: {
     sessionId: "sessionId",
@@ -52,6 +53,8 @@ import {
   addMessage,
   updateSessionTitle,
   unpinStickyEntry,
+  saveMessagePrompt,
+  getMessagePrompt,
 } from "./chatApi";
 import type { ChatSession } from "./chatTypes";
 
@@ -363,5 +366,85 @@ describe("chatApi - session/message persistence", () => {
 
       expect(mockDb.delete).toHaveBeenCalled();
     });
+  });
+});
+
+describe("chatApi - message prompt snapshot", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("saveMessagePrompt upserts the snapshot keyed to the message id", async () => {
+    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
+    mockDb.insert.mockReturnValue({ values } as never);
+
+    await saveMessagePrompt("msg-1", {
+      systemPrompt: "SYSTEM PROMPT BODY",
+      layers: [{ layer: "L1", label: "Project", used: 10 } as never],
+      totalTokens: 42,
+      model: "openrouter/anthropic/claude-sonnet-4.6",
+    });
+
+    expect(mockDb.insert).toHaveBeenCalled();
+    const inserted = values.mock.calls[0][0] as Record<string, unknown>;
+    expect(inserted.messageId).toBe("msg-1");
+    expect(inserted.systemPrompt).toBe("SYSTEM PROMPT BODY");
+    expect(inserted.totalTokens).toBe(42);
+    expect(JSON.parse(inserted.layers as string)).toHaveLength(1);
+    // 同一メッセージの再送で最新内容に上書きされる (upsert) こと。
+    expect(onConflictDoUpdate).toHaveBeenCalled();
+    const conflictArg = onConflictDoUpdate.mock.calls[0][0] as {
+      set: Record<string, unknown>;
+    };
+    expect(conflictArg.set.systemPrompt).toBe("SYSTEM PROMPT BODY");
+  });
+
+  it("getMessagePrompt returns the parsed snapshot", async () => {
+    const where = vi.fn().mockResolvedValue([
+      {
+        messageId: "msg-1",
+        systemPrompt: "BODY",
+        layers: JSON.stringify([{ layer: "L1", label: "Project", used: 5 }]),
+        totalTokens: 7,
+        model: "m",
+      },
+    ]);
+    const from = vi.fn().mockReturnValue({ where });
+    mockDb.select.mockReturnValue({ from } as never);
+
+    const snap = await getMessagePrompt("msg-1");
+    expect(snap).not.toBeNull();
+    expect(snap?.systemPrompt).toBe("BODY");
+    expect(snap?.layers).toHaveLength(1);
+    expect(snap?.totalTokens).toBe(7);
+    expect(snap?.model).toBe("m");
+  });
+
+  it("getMessagePrompt returns null for an unrecorded (pre-feature) message", async () => {
+    const where = vi.fn().mockResolvedValue([]);
+    const from = vi.fn().mockReturnValue({ where });
+    mockDb.select.mockReturnValue({ from } as never);
+
+    const snap = await getMessagePrompt("missing");
+    expect(snap).toBeNull();
+  });
+
+  it("getMessagePrompt tolerates malformed layers JSON", async () => {
+    const where = vi.fn().mockResolvedValue([
+      {
+        messageId: "msg-1",
+        systemPrompt: "BODY",
+        layers: "{not json",
+        totalTokens: null,
+        model: null,
+      },
+    ]);
+    const from = vi.fn().mockReturnValue({ where });
+    mockDb.select.mockReturnValue({ from } as never);
+
+    const snap = await getMessagePrompt("msg-1");
+    expect(snap?.layers).toEqual([]);
+    expect(snap?.totalTokens).toBeNull();
   });
 });

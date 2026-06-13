@@ -3220,6 +3220,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             id: userMsg.id,
             ...(userMetadata ? { metadata: userMetadata } : {}),
           });
+          // 過去メッセージのプロンプト確認用スナップショット (fire-and-forget)。
+          // systemPromptForAgent は RAG 指示追記後の最終送信文字列。
+          if (systemPromptForAgent) {
+            void chatApi
+              .saveMessagePrompt(userMsg.id, {
+                systemPrompt: systemPromptForAgent,
+                layers: get().contextLayers,
+                totalTokens: get().contextTokenCount,
+                model: useAiSettingsStore.getState().settings?.model ?? null,
+              })
+              .catch((e) =>
+                debugLog.warn("ChatStore", "saveMessagePrompt", errorDetail(e)),
+              );
+          }
           const finalMessages = get().messages;
           const lastMsg = finalMessages[finalMessages.length - 1];
           if (lastMsg?.role === "assistant" && lastMsg.content) {
@@ -3355,6 +3369,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
       let systemCacheSegments: string[] | undefined;
       let systemVolatileTail: string | undefined;
+      // 過去メッセージのプロンプト確認用: このターンで実際に送った system
+      // プロンプトを退避し、persist 時に userMsg.id へひも付けて保存する。
+      // 空 = この経路では system メッセージを送らなかった (スナップショット不要)。
+      let sentSystemPrompt = "";
 
       if (sceneCtx) {
         const allEntries = await listCodexEntries(getCurrentProjectId());
@@ -3434,6 +3452,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           alwaysEntries: ctxResult.alwaysEntries,
           cacheInvalidatedReason: null,
         });
+        sentSystemPrompt = ctxResult.prompt;
 
         const systemMsg: ChatMessage = {
           id: "system",
@@ -3474,6 +3493,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             createdAt: new Date().toISOString(),
           };
           messagesForApi.unshift(fallbackSystemMsg);
+          sentSystemPrompt = fallbackPrompt;
         }
       }
 
@@ -3627,6 +3647,24 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 id: userMsg.id,
                 ...(userMetadata ? { metadata: userMetadata } : {}),
               });
+              // 過去メッセージのプロンプト確認用スナップショット (fire-and-forget)。
+              // user メッセージ行が存在してから FK 付きで保存する。
+              if (sentSystemPrompt) {
+                void chatApi
+                  .saveMessagePrompt(userMsg.id, {
+                    systemPrompt: sentSystemPrompt,
+                    layers: get().contextLayers,
+                    totalTokens: get().contextTokenCount,
+                    model: chatModel || null,
+                  })
+                  .catch((e) =>
+                    debugLog.warn(
+                      "ChatStore",
+                      "saveMessagePrompt",
+                      errorDetail(e),
+                    ),
+                  );
+              }
               if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
                 await chatApi.addMessage(
                   sessionIdForPersist,

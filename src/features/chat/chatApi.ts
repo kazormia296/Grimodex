@@ -4,6 +4,7 @@ import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import {
   chatSessions,
   chatMessages,
+  chatMessagePrompts,
   chatSummaries,
   chatSummaryMessages,
   chatSessionPinnedCodex,
@@ -36,7 +37,7 @@ import {
 } from "@/features/timelapse/captureChat";
 import type { CodexEntry } from "@/features/codex/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import { sanitizeSceneContent } from "./contextBuilder";
+import { sanitizeSceneContent, type LayerBreakdown } from "./contextBuilder";
 import { getPromptCatalog } from "@/prompts/index";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
@@ -594,6 +595,79 @@ export async function updateMessageMetadata(
     .update(chatMessages)
     .set({ metadata: JSON.stringify(merged) })
     .where(eq(chatMessages.id, messageId));
+}
+
+/** 過去メッセージのプロンプト確認用スナップショット (chat_message_prompts)。 */
+export interface MessagePromptSnapshot {
+  systemPrompt: string;
+  layers: LayerBreakdown[];
+  totalTokens: number | null;
+  model: string | null;
+}
+
+function parseSnapshotLayers(raw: string | null): LayerBreakdown[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as LayerBreakdown[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 送信時に確定したシステムプロンプトを userMsg.id にひも付けて保存する。
+ * 再生成 / 編集再送で同一 ID が来たら最新の送信内容で上書きする (最後に送った
+ * 内容を正とする)。fire-and-forget 前提なので失敗は呼び出し側で握りつぶす。
+ */
+export async function saveMessagePrompt(
+  messageId: string,
+  snapshot: {
+    systemPrompt: string;
+    layers: LayerBreakdown[];
+    totalTokens: number | null;
+    model: string | null;
+  },
+): Promise<void> {
+  const layersJson = JSON.stringify(snapshot.layers ?? []);
+  await db
+    .insert(chatMessagePrompts)
+    .values({
+      messageId,
+      systemPrompt: snapshot.systemPrompt,
+      layers: layersJson,
+      totalTokens: snapshot.totalTokens ?? null,
+      model: snapshot.model ?? null,
+      createdAt: new Date().toISOString(),
+    })
+    .onConflictDoUpdate({
+      target: chatMessagePrompts.messageId,
+      set: {
+        systemPrompt: snapshot.systemPrompt,
+        layers: layersJson,
+        totalTokens: snapshot.totalTokens ?? null,
+        model: snapshot.model ?? null,
+        createdAt: new Date().toISOString(),
+      },
+    });
+}
+
+/** 遅延取得: プレビューを開いたときだけ呼ぶ。未記録 (旧メッセージ) は null。 */
+export async function getMessagePrompt(
+  messageId: string,
+): Promise<MessagePromptSnapshot | null> {
+  const rows = await db
+    .select()
+    .from(chatMessagePrompts)
+    .where(eq(chatMessagePrompts.messageId, messageId));
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    systemPrompt: row.systemPrompt,
+    layers: parseSnapshotLayers(row.layers),
+    totalTokens: row.totalTokens,
+    model: row.model,
+  };
 }
 
 export async function updateSessionTitle(

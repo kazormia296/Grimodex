@@ -431,6 +431,30 @@ export const chatMessages = sqliteTable(
   ],
 );
 
+/**
+ * Per-message prompt snapshot: the finalized system prompt (incl. RAG /
+ * related_scenes / injected context) actually sent for a chat turn, captured
+ * at send time and keyed to the triggering USER message. Lets the user open any
+ * past message and see the exact prompt that produced the reply — reconstruction
+ * cannot recover it because RAG is nondeterministic and codex/scene state mutates
+ * after send. Stored in a side-table (not chat_messages.metadata) so the heavy
+ * prompt text stays out of the listMessages full-row load and is fetched lazily
+ * only when the preview modal opens. DDL authority lives in
+ * src-tauri/src/database/migrate.rs (chat_message_prompts) — keep in lockstep.
+ */
+export const chatMessagePrompts = sqliteTable("chat_message_prompts", {
+  messageId: text("message_id")
+    .primaryKey()
+    .references(() => chatMessages.id, { onDelete: "cascade" }),
+  systemPrompt: text("system_prompt").notNull(),
+  layers: text("layers"), // JSON LayerBreakdown[]
+  totalTokens: integer("total_tokens"),
+  model: text("model"),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
 export const generationLogs = sqliteTable(
   "generation_logs",
   {

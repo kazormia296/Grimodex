@@ -280,6 +280,21 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session
                 ON chat_messages(session_id, created_at);
 
+            -- Per-message prompt snapshot: the finalized system prompt actually
+            -- sent for a chat turn, keyed to the triggering user message. Side-table
+            -- (kept out of chat_messages.metadata) so the heavy prompt text stays out
+            -- of the listMessages full-row load and is fetched lazily on demand.
+            -- Mirrors src/db/schema.ts chatMessagePrompts. CASCADE drops the snapshot
+            -- when the message (or its session) is deleted.
+            CREATE TABLE IF NOT EXISTS chat_message_prompts (
+                message_id    TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+                system_prompt TEXT NOT NULL,
+                layers        TEXT,
+                total_tokens  INTEGER,
+                model         TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS generation_logs (
                 id            TEXT PRIMARY KEY,
                 project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -2333,6 +2348,59 @@ mod tests {
                 cols.iter().any(|c| c == "cache_write_tokens"),
                 "ai_usage.cache_write_tokens should exist on a fresh DB"
             );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_fresh_db_creates_chat_message_prompts() {
+        // Per-message prompt snapshot side-table must exist on a fresh DB.
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='chat_message_prompts'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(exists, 1, "chat_message_prompts table should exist");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn chat_message_prompt_snapshot_cascades_on_message_and_session_delete() {
+        // FK CASCADE: deleting a message (or its session) removes the snapshot.
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id) VALUES ('p1');
+                 INSERT INTO chat_sessions (id, project_id) VALUES ('s1', 'p1');
+                 INSERT INTO chat_messages (id, session_id, role, content)
+                     VALUES ('m1', 's1', 'user', 'hi'), ('m2', 's1', 'user', 'yo');
+                 INSERT INTO chat_message_prompts (message_id, system_prompt)
+                     VALUES ('m1', 'SYS-1'), ('m2', 'SYS-2');",
+            )?;
+
+            // Deleting one message drops only its snapshot.
+            conn.execute("DELETE FROM chat_messages WHERE id = 'm1'", [])?;
+            let after_msg: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM chat_message_prompts WHERE message_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(after_msg, 0, "snapshot should cascade on message delete");
+
+            // Deleting the session drops the remaining snapshot too.
+            conn.execute("DELETE FROM chat_sessions WHERE id = 's1'", [])?;
+            let remaining: i64 =
+                conn.query_row("SELECT COUNT(*) FROM chat_message_prompts", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(remaining, 0, "snapshot should cascade on session delete");
             Ok(())
         })
         .unwrap();

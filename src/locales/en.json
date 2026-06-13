@@ -900,7 +900,8 @@
       "saveSnippetDetailed": "Save as Snippet (detailed)",
       "regenerate": "Regenerate",
       "edit": "Edit",
-      "delete": "Delete"
+      "delete": "Delete",
+      "viewPrompt": "View prompt"
     },
     "contextMenu": {
       "insertSelectionToEditor": "Insert selection to editor",
@@ -980,7 +981,9 @@
         "L5": "Conversation summary",
         "L6": "Command instruction"
       },
-      "promptPreviewLoading": "Building prompt…"
+      "promptPreviewLoading": "Building prompt…",
+      "promptSnapshotMissing": "No sent-prompt record for this message (it was sent before this feature was added).",
+      "promptSnapshotError": "Failed to load the prompt record"
     },
     "conversationSummary": "Conversation summary",
     "sessionMenu": "Session menu",

@@ -900,7 +900,8 @@
       "saveSnippetDetailed": "Snippetとして保存（詳細）",
       "regenerate": "再生成",
       "edit": "編集",
-      "delete": "削除"
+      "delete": "削除",
+      "viewPrompt": "プロンプトを表示"
     },
     "contextMenu": {
       "insertSelectionToEditor": "選択テキストをエディタに挿入",
@@ -980,7 +981,9 @@
         "L5": "会話要約",
         "L6": "コマンド指示"
       },
-      "promptPreviewLoading": "プロンプトを構築中…"
+      "promptPreviewLoading": "プロンプトを構築中…",
+      "promptSnapshotMissing": "このメッセージには送信プロンプトの記録がありません（この機能の追加より前に送信されたメッセージです）。",
+      "promptSnapshotError": "プロンプト記録の読み込みに失敗しました"
     },
     "conversationSummary": "会話要約",
     "sessionMenu": "セッションメニュー",

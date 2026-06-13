@@ -95,6 +95,7 @@ interface ChatMessageProps {
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
   onRetryWithAgent?: (messageId: string) => void;
+  onViewPrompt?: (messageId: string) => void;
   onContextMenu?: (e: React.MouseEvent, msg: ChatMessageType) => void;
 }
 
@@ -110,6 +111,7 @@ function ChatMessageImpl({
   onDelete,
   onRegenerate,
   onRetryWithAgent,
+  onViewPrompt,
   onContextMenu,
 }: ChatMessageProps) {
   const __perfStart = performance.now();
@@ -313,6 +315,7 @@ function ChatMessageImpl({
                 messageRole="user"
                 onEdit={onEdit}
                 onDelete={onDelete}
+                onViewPrompt={onViewPrompt}
               />
             )}
           </>

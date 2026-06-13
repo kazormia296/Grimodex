@@ -24,6 +24,8 @@ import { QuickActionStrip } from "./components/QuickActionStrip";
 import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 import { ContextBar } from "./components/ContextBar";
+import { PromptPreviewModal } from "./components/PromptPreviewModal";
+import { getModelCapabilities } from "./agent/modelLimits";
 import { computeSpotlightCandidates } from "./spotlightSuggestion";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CodexPopover } from "@/features/editor/CodexPopover";
@@ -43,6 +45,7 @@ import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type {
   PinnedSnippetEntryWithData,
   PinnedStickyEntryWithData,
+  MessagePromptSnapshot,
 } from "./chatApi";
 import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
 import { stripToolProtocol } from "./toolProtocol";
@@ -790,6 +793,28 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
+  // 過去メッセージのプロンプト表示: 送信時に保存したスナップショットを遅延取得。
+  const [promptViewOpen, setPromptViewOpen] = useState(false);
+  const [promptViewSnapshot, setPromptViewSnapshot] =
+    useState<MessagePromptSnapshot | null>(null);
+
+  const handleViewPrompt = useCallback(
+    (messageId: string) => {
+      chatApi
+        .getMessagePrompt(messageId)
+        .then((snap) => {
+          if (!snap) {
+            toast.info(t("chat.context.promptSnapshotMissing"));
+            return;
+          }
+          setPromptViewSnapshot(snap);
+          setPromptViewOpen(true);
+        })
+        .catch(() => toast.error(t("chat.context.promptSnapshotError")));
+    },
+    [t],
+  );
+
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, msg: ChatMessageType) => {
       const sel = window.getSelection();
@@ -1045,6 +1070,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
                         onDelete={handleDeleteMessage}
                         onRegenerate={handleRegenerate}
                         onRetryWithAgent={handleRetryWithAgent}
+                        onViewPrompt={handleViewPrompt}
                         onContextMenu={handleContextMenu}
                       />
                     </motion.div>
@@ -1207,6 +1233,21 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
           onEdit={handleEditMessage}
           onDelete={handleDeleteMessage}
           onRegenerate={handleRegenerate}
+        />
+      )}
+
+      {promptViewOpen && promptViewSnapshot && (
+        <PromptPreviewModal
+          systemPrompt={promptViewSnapshot.systemPrompt}
+          layers={promptViewSnapshot.layers}
+          totalTokens={promptViewSnapshot.totalTokens ?? 0}
+          model={promptViewSnapshot.model ?? undefined}
+          contextWindow={
+            promptViewSnapshot.model
+              ? getModelCapabilities(promptViewSnapshot.model).contextWindow
+              : 0
+          }
+          onClose={() => setPromptViewOpen(false)}
         />
       )}
     </div>
