@@ -110,15 +110,18 @@ pub static SPEC_JA: EmbeddingModelSpec = EmbeddingModelSpec {
 pub const CHUNKER_VERSION_EN: &str = "semantic-prose-chunker-en-v1";
 
 /// English spec. Concrete model finalised by the host calibration step; values
-/// track the recommended granite-embedding-small-english-r2 (ModernBERT,
-/// 384-dim, CLS pooling, no prefix, no token_type_ids).
+/// track granite-embedding-small-english-r2 (ModernBERT, 384-dim, no prefix,
+/// no token_type_ids). Pooling is **mean** — the model card mentions CLS for a
+/// sibling model, but this checkpoint's sentence-transformers config uses mean
+/// pooling (confirmed by the auto-detected `pooling` field in the golden
+/// fixture). The Rust pool must match what ST used or the golden test fails.
 pub static SPEC_EN: EmbeddingModelSpec = EmbeddingModelSpec {
     model_id: "ibm-granite/granite-embedding-small-english-r2",
     dir_name: "granite-small-en-r2",
     embedding_dim: 384,
     query_prefix: "",
     document_prefix: "",
-    pooling: Pooling::Cls,
+    pooling: Pooling::MeanWithMask,
     needs_token_type_ids: false,
     chunker_version: CHUNKER_VERSION_EN,
     model_id_suffix: "@local/model_int8.onnx/en-v1",

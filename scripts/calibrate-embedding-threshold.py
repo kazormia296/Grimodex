@@ -101,29 +101,70 @@ def main() -> int:
     def pct(a, p):
         return float(np.percentile(a, p))
 
-    rel_p10, rel_p25, rel_p50 = pct(related, 10), pct(related, 25), pct(related, 50)
-    unr_p50, unr_p95, unr_p99 = (
-        pct(unrelated, 50),
-        pct(unrelated, 95),
-        pct(unrelated, 99),
-    )
-    recommended = max(unr_p99 + 0.05, 0.0)
-    margin = rel_p25 - unr_p99
+    # ── Retrieval quality (the metric that actually matters for RAG) ──────
+    # For each query, rank ALL docs by cosine. The "true" doc is index i.
+    # Recall@k = fraction of queries whose true doc is within the top-k.
+    # MRR = mean reciprocal rank of the true doc. These are threshold-free and
+    # robust to the high absolute baseline of homogeneous prose.
+    ranks = []
+    for i in range(n):
+        order = np.argsort(-sim[i])  # doc indices, best first
+        rank = int(np.where(order == i)[0][0]) + 1  # 1-based rank of true doc
+        ranks.append(rank)
+    ranks = np.array(ranks)
+    recall_at_1 = float(np.mean(ranks <= 1))
+    recall_at_3 = float(np.mean(ranks <= 3))
+    mrr = float(np.mean(1.0 / ranks))
+
+    # ── Threshold sweep: related-recall vs unrelated false-positive-rate ──
+    # Pick the operating point maximising (recall - fp_rate) = Youden's J.
+    lo = float(min(related.min(), unrelated.min()))
+    hi = float(max(related.max(), unrelated.max()))
+    best_t, best_j, best_recall, best_fp = 0.0, -1.0, 0.0, 1.0
+    sweep_rows = []
+    t = lo
+    while t <= hi + 1e-9:
+        recall = float(np.mean(related >= t))
+        fp = float(np.mean(unrelated >= t))
+        j = recall - fp
+        sweep_rows.append((t, recall, fp))
+        if j > best_j:
+            best_j, best_t, best_recall, best_fp = j, t, recall, fp
+        t += 0.02
 
     print(f"model: {args.model_id}")
     print(f"pairs: {n} related, {len(unrelated)} unrelated (cross-paired)")
-    print("related   cosine  p10={:.3f}  p25={:.3f}  p50={:.3f}".format(
-        rel_p10, rel_p25, rel_p50
-    ))
-    print("unrelated cosine  p50={:.3f}  p95={:.3f}  p99={:.3f}".format(
-        unr_p50, unr_p95, unr_p99
-    ))
-    print(f"separation margin (rel_p25 - unr_p99): {margin:+.3f}")
-    print(f"RECOMMENDED SEMANTIC_RECALL_MIN_SCORE: {recommended:.2f}")
-    if margin <= 0:
+    print(
+        "related   cosine  p10={:.3f}  p25={:.3f}  p50={:.3f}".format(
+            pct(related, 10), pct(related, 25), pct(related, 50)
+        )
+    )
+    print(
+        "unrelated cosine  p50={:.3f}  p95={:.3f}  p99={:.3f}".format(
+            pct(unrelated, 50), pct(unrelated, 95), pct(unrelated, 99)
+        )
+    )
+    print()
+    print("RETRIEVAL (rank of the true doc among all docs per query):")
+    print(
+        f"  Recall@1={recall_at_1:.2f}  Recall@3={recall_at_3:.2f}  MRR={mrr:.3f}"
+        f"  (worst rank={int(ranks.max())}/{n})"
+    )
+    print()
+    print("THRESHOLD SWEEP (related recall vs unrelated false-positive rate):")
+    for tv, rc, fp in sweep_rows:
+        mark = "  <- best (recall-fp)" if abs(tv - best_t) < 1e-9 else ""
+        print(f"  t={tv:.2f}  recall={rc:.2f}  fp={fp:.3f}{mark}")
+    print()
+    print(
+        f"RECOMMENDED SEMANTIC_RECALL_MIN_SCORE: {best_t:.2f} "
+        f"(recall={best_recall:.2f}, fp={best_fp:.3f})"
+    )
+    if recall_at_3 < 0.7:
         print(
-            "  WARNING: negative/zero margin — related and unrelated overlap; "
-            "this model may be a poor fit for the corpus or the corpus is noisy."
+            "  WARNING: Recall@3 < 0.70 — this model struggles to rank the right "
+            "passage on this corpus. Consider the other model, or treat the "
+            "corpus as too homogeneous/small to be conclusive."
         )
     return 0
 
