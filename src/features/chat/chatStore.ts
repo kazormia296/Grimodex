@@ -64,6 +64,7 @@ import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
 import {
   buildSemanticRecallQuery,
   fetchSemanticRecall,
+  SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS,
   type SemanticRecallChunk,
 } from "./semanticRecall";
 import { stripToolProtocol } from "./toolProtocol";
@@ -415,14 +416,17 @@ interface ChatState {
    * プロンプトを流用しないための照合に使う。 */
   lastSystemPromptKey: string | null;
   /**
-   * 直近の「実際に送信した」system プロンプトのスナップショット。
-   * lastSystemPrompt はライブプレビュー用で、送信直後に seed 無しの
-   * refreshContextLayers で上書きされるため related_scenes（semantic RAG）が
-   * 消える。RAG はメッセージ依存で送信時のみ計算されるので、送信プロンプトを
-   * 確認するにはこの退避が要る。null = 未送信。 */
-  lastSentSystemPrompt: string | null;
-  lastSentLayers: LayerBreakdown[];
-  lastSentTokens: number;
+   * プレビュー専用のプロンプト再構築。related_scenes（semantic RAG）は
+   * メッセージ依存で送信時のみ計算され、ライブの lastSystemPrompt には
+   * 含まれない。プレビューを開いたときにこれを呼ぶと、現在のシーン本文と
+   * 直近ユーザー発話を seed に意味検索を1回走らせ、RAG 込みのプロンプトを
+   * 組んで返す（store は変更しない）。scene スコープ以外は RAG 対象外なので
+   * ライブ値をそのまま返す。 */
+  buildPreviewPrompt: () => Promise<{
+    prompt: string;
+    layers: LayerBreakdown[];
+    totalTokens: number;
+  }>;
   /**
    * Monotonic counter bumped each time refreshContextLayers completes.
    * Subscribers (e.g. ContextBar's pinnedStickies list) can watch this to
@@ -2245,9 +2249,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   contextLayers: [],
   lastSystemPrompt: "",
   lastSystemPromptKey: null,
-  lastSentSystemPrompt: null,
-  lastSentLayers: [],
-  lastSentTokens: 0,
   pinsVersion: 0,
   projectOutline: undefined,
   chapterOutlines: [],
@@ -2452,11 +2453,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionStableCodexIds: [],
         sessionAgentToolsSnapshot: null,
         excludedAutoEntryIds: [],
-        // 別セッションの「前回送信」スナップショットが残ると紛らわしいので
-        // セッション境界でクリアする（次の送信まで前回送信ビューは出ない）。
-        lastSentSystemPrompt: null,
-        lastSentLayers: [],
-        lastSentTokens: 0,
       });
       return;
     }
@@ -2483,9 +2479,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
         excludedAutoEntryIds: [],
-        lastSentSystemPrompt: null,
-        lastSentLayers: [],
-        lastSentTokens: 0,
       });
     } catch (e) {
       set({ isLoadingMessages: false });
@@ -2936,11 +2929,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             contextLayers: ctxResult.layers,
             lastSystemPrompt: ctxResult.prompt,
             lastSystemPromptKey: contextPromptKey(get()),
-            // 送信プロンプトのスナップショット（related_scenes 込み）。非 agent
-            // 経路と同じく、後続 refresh の上書きから守るため別フィールドに退避。
-            lastSentSystemPrompt: ctxResult.prompt,
-            lastSentLayers: ctxResult.layers,
-            lastSentTokens: ctxResult.totalTokens,
             detectedEntries: ctxResult.detectedEntries,
             alwaysEntries: ctxResult.alwaysEntries,
           });
@@ -3442,11 +3430,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextLayers: ctxResult.layers,
           lastSystemPrompt: ctxResult.prompt,
           lastSystemPromptKey: contextPromptKey(get()),
-          // 送信プロンプトのスナップショット（related_scenes 込み）。後続の
-          // seed 無し refresh で lastSystemPrompt が上書きされてもこれは残す。
-          lastSentSystemPrompt: ctxResult.prompt,
-          lastSentLayers: ctxResult.layers,
-          lastSentTokens: ctxResult.totalTokens,
           detectedEntries: ctxResult.detectedEntries,
           alwaysEntries: ctxResult.alwaysEntries,
           cacheInvalidatedReason: null,
@@ -4214,6 +4197,72 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       });
     } catch {
       // コンテキスト計算失敗は無視（送信時に再計算される）
+    }
+  },
+
+  buildPreviewPrompt: async () => {
+    const {
+      activeSceneId,
+      activeProjectId,
+      activeSessionId,
+      chatScope,
+      lastSystemPrompt,
+      contextLayers,
+      contextTokenCount,
+    } = get();
+    // ライブ値フォールバック（RAG 非対象スコープ / 取得失敗時）。
+    const live = {
+      prompt: lastSystemPrompt,
+      layers: contextLayers,
+      totalTokens: contextTokenCount,
+    };
+    // semantic recall は scene スコープ限定。それ以外は RAG が無いので
+    // ライブの lastSystemPrompt がそのまま実送信内容と一致する。
+    const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
+    if (!effectiveSceneId) return live;
+
+    try {
+      await ensureTokenizer();
+      const [sceneCtx, projectCtx] = await Promise.all([
+        fetchSceneContext(effectiveSceneId),
+        fetchProjectContext(activeProjectId),
+      ]);
+      if (!sceneCtx) return live;
+
+      // 検索 seed: 直近ユーザー発話（実送信のクエリに最も近い）→無ければ
+      // 現在シーン本文の末尾。eco ブランク前の本文から取る（seed は注入では
+      // なくクエリなので、本文非表示モードでも関連シーンは引ける）。
+      const lastUserMessage = [...get().messages]
+        .reverse()
+        .find((m) => m.role === "user" && !m.isSummarized)?.content;
+      const seed =
+        lastUserMessage?.trim() ||
+        sceneCtx.content.slice(-SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS);
+
+      // eco モード（本文非注入）は実送信と揃えて本文を空にする。
+      if (!get().includeBodies) {
+        sceneCtx.content = "";
+      }
+
+      const ctxResult = await buildSceneContextPrompt({
+        sceneCtx,
+        projectCtx,
+        activeSessionId,
+        effectiveSceneId,
+        inputPinnedEntryIds: get().inputPinnedEntryIds,
+        conversationMessages: get().messages.filter((m) => !m.isSummarized),
+        agentMode: get().agentMode,
+        excludedAutoEntryIds: get().excludedAutoEntryIds,
+        // これがプレビューに related_scenes を含める鍵。送信経路と同じ seed 経由。
+        semanticRecallSeedMessage: seed,
+      });
+      return {
+        prompt: ctxResult.prompt,
+        layers: ctxResult.layers,
+        totalTokens: ctxResult.totalTokens,
+      };
+    } catch {
+      return live;
     }
   },
 

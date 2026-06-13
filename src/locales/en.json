@@ -980,10 +980,7 @@
         "L5": "Conversation summary",
         "L6": "Command instruction"
       },
-      "promptViewLive": "Live",
-      "promptViewLastSent": "Last sent",
-      "promptViewLastSentHint": "The prompt actually sent. related_scenes (semantic search) is based on that send’s message.",
-      "promptViewLiveHint": "Preview of the current context. related_scenes is added at send time and does not appear here."
+      "promptPreviewLoading": "Building prompt…"
     },
     "conversationSummary": "Conversation summary",
     "sessionMenu": "Session menu",

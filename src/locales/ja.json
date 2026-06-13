@@ -980,10 +980,7 @@
         "L5": "会話要約",
         "L6": "コマンド指示"
       },
-      "promptViewLive": "ライブ",
-      "promptViewLastSent": "前回送信",
-      "promptViewLastSentHint": "実際に送信したプロンプト。related_scenes（意味検索）はこの送信時のメッセージに基づきます。",
-      "promptViewLiveHint": "現在の文脈のプレビュー。related_scenes は送信時に追加されるためここには出ません。"
+      "promptPreviewLoading": "プロンプトを構築中…"
     },
     "conversationSummary": "会話要約",
     "sessionMenu": "セッションメニュー",

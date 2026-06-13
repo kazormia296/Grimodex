@@ -123,6 +123,14 @@ vi.mock("@/features/codex/rustMatcher", () => ({
   findMentionedEntriesAsync: vi.fn(() => Promise.resolve([])),
 }));
 
+// semantic 検索は drizzle/IPC 直なので test では既定で空。buildPreviewPrompt の
+// テストでだけ mockResolvedValueOnce でヒットを差し込む。
+vi.mock("@/features/semantic-search/api", () => ({
+  semanticSearch: vi.fn(() => Promise.resolve([])),
+  semanticIndexStatus: vi.fn(() => Promise.resolve(null)),
+  semanticReindexAll: vi.fn(() => Promise.resolve(0)),
+}));
+
 import * as chatApi from "./chatApi";
 import type { StreamCallbacks } from "./chatApi";
 import * as contextBuilder from "./contextBuilder";
@@ -1880,6 +1888,95 @@ describe("useChatStore", () => {
       expect(args?.scene.content).toBe("");
       // 一方 synopsis は残り、scene.title も残る
       expect(args?.scene.title).toBe("テストシーン");
+    });
+  });
+
+  // プレビューは開いた瞬間に意味検索を1回走らせ related_scenes 込みで
+  // プロンプトを組む（ライブの lastSystemPrompt には RAG が含まれないため）。
+  describe("buildPreviewPrompt", () => {
+    it("scene スコープ: 意味検索を seed 付きで走らせ related_scenes を含めて返す", async () => {
+      const { getNode } = await import("@/features/tree/api");
+      const { semanticSearch } = await import("@/features/semantic-search/api");
+      const mockSearch = vi.mocked(semanticSearch);
+      vi.mocked(getNode).mockResolvedValue({
+        id: "scene-1",
+        title: "テストシーン",
+      } as never);
+      mockSearch.mockResolvedValueOnce([
+        {
+          sceneId: "other-scene",
+          sceneTitle: "過去シーン",
+          chunkText: "関連する過去の抜粋",
+          charStart: 0,
+          charEnd: 10,
+          score: 0.92,
+          dialogueRatio: 0,
+        },
+      ] as never);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "PREVIEW PROMPT",
+        totalTokens: 7,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        inputPinnedEntryIds: [],
+        includeBodies: true,
+        messages: [
+          {
+            id: "u1",
+            sessionId: "",
+            role: "user",
+            content: "次の展開を相談したい",
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      });
+
+      const result = await useChatStore.getState().buildPreviewPrompt();
+
+      // 直近ユーザー発話を seed に検索が走る
+      expect(mockSearch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "proj-1",
+          query: expect.stringContaining("次の展開を相談したい"),
+        }),
+      );
+      // related_scenes が buildSystemPrompt に渡る
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      expect(args?.semanticRecall).toBeDefined();
+      expect(args?.semanticRecall?.[0]?.chunkText).toContain("関連する過去");
+      expect(result.prompt).toBe("PREVIEW PROMPT");
+    });
+
+    it("非 scene スコープ: 検索せずライブ値を返す", async () => {
+      const { semanticSearch } = await import("@/features/semantic-search/api");
+      const mockSearch = vi.mocked(semanticSearch);
+      mockSearch.mockClear();
+
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        chatScope: "project",
+        scopeAnchorId: null,
+        lastSystemPrompt: "LIVE PROJECT PROMPT",
+        contextLayers: [],
+        contextTokenCount: 99,
+      });
+
+      const result = await useChatStore.getState().buildPreviewPrompt();
+
+      expect(mockSearch).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        prompt: "LIVE PROJECT PROMPT",
+        layers: [],
+        totalTokens: 99,
+      });
     });
   });
 

@@ -100,10 +100,6 @@ interface ContextBarProps {
   contextTokenCount: number;
   contextLayers: LayerBreakdown[];
   systemPrompt: string;
-  /** 直近の実送信プロンプト（related_scenes 込み）。プレビューの「前回送信」用。 */
-  sentSystemPrompt?: string | null;
-  sentLayers?: LayerBreakdown[];
-  sentTokens?: number;
   model: string;
   canUseCreator?: boolean;
   /** Phase 4 後続: AI に注入される project outline 全文（trim 済み・空でない場合のみ） */
@@ -138,9 +134,6 @@ export function ContextBar({
   contextTokenCount,
   contextLayers,
   systemPrompt,
-  sentSystemPrompt,
-  sentLayers,
-  sentTokens,
   model,
   canUseCreator = false,
   projectOutline,
@@ -157,6 +150,27 @@ export function ContextBar({
   useAiSettingsStore((s) => s.modelCapsRevision);
   const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  // プレビューを開いたときに related_scenes（意味検索）込みでプロンプトを
+  // 組み直した結果。null = まだ構築前（ライブ値で代替表示）。
+  const [previewData, setPreviewData] = useState<{
+    prompt: string;
+    layers: LayerBreakdown[];
+    totalTokens: number;
+  } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const buildPreviewPrompt = useChatStore((s) => s.buildPreviewPrompt);
+
+  // プレビューを開く: related_scenes はメッセージ依存で送信時のみ計算される
+  // ため、開いた瞬間に1回検索を走らせて RAG 込みのプロンプトを構築する。
+  const openPreview = useCallback(() => {
+    setPreviewData(null);
+    setPreviewLoading(true);
+    setPreviewOpen(true);
+    void buildPreviewPrompt()
+      .then((data) => setPreviewData(data))
+      .finally(() => setPreviewLoading(false));
+  }, [buildPreviewPrompt]);
+
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const pinContainerRef = useRef<HTMLDivElement>(null);
@@ -367,7 +381,7 @@ export function ContextBar({
                       data-tour-target="chat-tokens-badge"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setPreviewOpen(true);
+                        openPreview();
                       }}
                       className="rounded bg-muted px-1.5 py-0.5 text-xs hover:bg-accent"
                       title={
@@ -835,14 +849,12 @@ export function ContextBar({
 
       {previewOpen && (
         <PromptPreviewModal
-          systemPrompt={systemPrompt}
-          layers={contextLayers}
-          totalTokens={contextTokenCount}
-          sentSystemPrompt={sentSystemPrompt}
-          sentLayers={sentLayers}
-          sentTokens={sentTokens}
+          systemPrompt={previewData?.prompt ?? systemPrompt}
+          layers={previewData?.layers ?? contextLayers}
+          totalTokens={previewData?.totalTokens ?? contextTokenCount}
           model={model}
           contextWindow={contextWindow}
+          loading={previewLoading}
           onClose={() => setPreviewOpen(false)}
         />
       )}
@@ -850,26 +862,12 @@ export function ContextBar({
   );
 }
 
-/** chatStore から systemPrompt / 前回送信スナップショットを取得するラッパー */
+/** chatStore から systemPrompt を取得するためのラッパー */
 export function ContextBarConnected(
-  props: Omit<
-    ContextBarProps,
-    "systemPrompt" | "sentSystemPrompt" | "sentLayers" | "sentTokens"
-  >,
+  props: Omit<ContextBarProps, "systemPrompt">,
 ) {
   const systemPrompt = useChatStore((s) => s.lastSystemPrompt);
-  const sentSystemPrompt = useChatStore((s) => s.lastSentSystemPrompt);
-  const sentLayers = useChatStore((s) => s.lastSentLayers);
-  const sentTokens = useChatStore((s) => s.lastSentTokens);
-  return (
-    <ContextBar
-      {...props}
-      systemPrompt={systemPrompt}
-      sentSystemPrompt={sentSystemPrompt}
-      sentLayers={sentLayers}
-      sentTokens={sentTokens}
-    />
-  );
+  return <ContextBar {...props} systemPrompt={systemPrompt} />;
 }
 
 interface OutlineChipProps {

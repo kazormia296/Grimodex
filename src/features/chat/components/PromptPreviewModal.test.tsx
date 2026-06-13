@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { PromptPreviewModal } from "./PromptPreviewModal";
 
 // i18n は defaultValue を返す薄いスタブ（キー解決に依存しない）。
@@ -19,48 +19,32 @@ vi.mock("@/components/ui/animated-overlay", () => ({
   ),
 }));
 
-describe("PromptPreviewModal: ライブ/前回送信 切替", () => {
-  it("未送信のときはトグルを出さずライブのみ表示", () => {
+describe("PromptPreviewModal", () => {
+  it("構築済みプロンプト（related_scenes 込み）を表示する", () => {
     render(
       <PromptPreviewModal
-        systemPrompt="LIVE PROMPT"
+        systemPrompt="SYSTEM PROMPT with related_scenes excerpt"
         layers={[]}
-        totalTokens={0}
+        totalTokens={20}
         onClose={() => {}}
       />,
     );
-    expect(screen.getByText("LIVE PROMPT")).toBeInTheDocument();
-    expect(screen.queryByText("前回送信")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("SYSTEM PROMPT with related_scenes excerpt"),
+    ).toBeInTheDocument();
   });
 
-  it("送信スナップショットがあるとトグルが出て、前回送信に related_scenes を表示できる", () => {
+  it("loading 中はプレースホルダを出し、本文は出さない", () => {
     render(
       <PromptPreviewModal
-        systemPrompt="LIVE PROMPT (no related_scenes)"
+        systemPrompt="should not show yet"
         layers={[]}
-        totalTokens={10}
-        sentSystemPrompt="SENT PROMPT with related_scenes excerpt"
-        sentLayers={[]}
-        sentTokens={20}
+        totalTokens={0}
+        loading
         onClose={() => {}}
       />,
     );
-
-    // 既定はライブ
-    expect(
-      screen.getByText("LIVE PROMPT (no related_scenes)"),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("SENT PROMPT with related_scenes excerpt"),
-    ).not.toBeInTheDocument();
-
-    // 前回送信へ切替
-    fireEvent.click(screen.getByText("前回送信"));
-    expect(
-      screen.getByText("SENT PROMPT with related_scenes excerpt"),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("LIVE PROMPT (no related_scenes)"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByText("プロンプトを構築中…")).toBeInTheDocument();
+    expect(screen.queryByText("should not show yet")).not.toBeInTheDocument();
   });
 });
