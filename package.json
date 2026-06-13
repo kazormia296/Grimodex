@@ -29,6 +29,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@fontsource/line-seed-jp": "^5.2.2",
+    "@fontsource/literata": "^5.2.8",
     "@fontsource/m-plus-1": "^5.2.9",
     "@fontsource/noto-sans-jp": "^5.2.9",
     "@fontsource/noto-serif-jp": "^5.2.8",
