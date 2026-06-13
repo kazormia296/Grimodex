@@ -30,7 +30,10 @@ import {
   saveSceneContent,
   updateNode,
 } from "@/features/tree/api";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  getCurrentProjectId,
+  getCurrentProjectLanguage,
+} from "@/features/project/projectStore";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { db } from "@/db/client";
 import { chatSessions, chatMessages } from "@/db/schema";
@@ -275,7 +278,7 @@ export async function importCodexEntries(
   const sorted = topoSortEntries(entries);
 
   // ── Phase 0: ensure builtin types exist ───────────────────────────────────
-  await ensureBuiltinTypes(getCurrentProjectId());
+  await ensureBuiltinTypes(getCurrentProjectId(), getCurrentProjectLanguage());
 
   // ── Phase 0.5: resolve tag→type mappings ─────────────────────────────────
   const tagNameToTypeSlug = new Map<string, string>();

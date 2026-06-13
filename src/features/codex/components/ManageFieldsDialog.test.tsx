@@ -475,6 +475,7 @@ describe("ManageFieldsDialog", () => {
         "proj-1",
         "character",
         "Fantasy",
+        "ja",
       );
       await waitFor(() => expect(mockListDefs).toHaveBeenCalledTimes(2));
       expect(
@@ -492,7 +493,12 @@ describe("ManageFieldsDialog", () => {
         screen.getByTestId("manage-fields-preset-confirm-button"),
       );
 
-      expect(mockApplyPreset).toHaveBeenCalledWith("proj-1", "character", null);
+      expect(mockApplyPreset).toHaveBeenCalledWith(
+        "proj-1",
+        "character",
+        null,
+        "ja",
+      );
     });
 
     it("lets the user pick a different genre before applying", async () => {
@@ -510,6 +516,7 @@ describe("ManageFieldsDialog", () => {
         "proj-1",
         "character",
         "Mystery",
+        "ja",
       );
     });
 

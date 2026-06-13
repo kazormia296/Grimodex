@@ -116,7 +116,138 @@ export const GENRE_DETAIL_PRESETS: Readonly<
   },
 };
 
-/** 追加フィールドを持つジャンル（ピッカーの選択肢） */
+/**
+ * 英語版・全ジャンル共通の基本セット。フィールド名/選択肢は DB に焼き込まれ
+ * AI コンテキスト (contextBuilder の `fieldName: value`) にも流れるため、
+ * en プロジェクトでは英語で焼き込む。ja とは別オブジェクトにして ja を不変に保つ。
+ */
+export const BASE_DETAIL_PRESETS_EN: DetailPresetsByType = {
+  character: [
+    dropdown("Role", [
+      "Protagonist",
+      "Major character",
+      "Supporting",
+      "Antagonist",
+      "Background",
+    ]),
+    text("Age"),
+    text("Appearance"),
+    text("Personality"),
+    text("Voice & speech style"),
+    text("Motivation & goals"),
+  ],
+  location: [
+    dropdown("Importance", [
+      "Main setting",
+      "Secondary setting",
+      "Mentioned only",
+    ]),
+    text("Geography & location"),
+    text("Atmosphere"),
+    text("Inhabitants & factions"),
+    text("Sensory details"),
+  ],
+  item: [
+    text("Appearance"),
+    text("Owner"),
+    text("Abilities & function"),
+    text("Origin & history"),
+  ],
+  lore: [
+    dropdown("Category", [
+      "History",
+      "Culture & customs",
+      "Organizations & factions",
+      "Laws & rules",
+      "Other",
+    ]),
+    dropdown("In-world awareness", [
+      "Common knowledge",
+      "Known to few",
+      "Hidden/secret",
+    ]),
+    text("Related characters"),
+    text("Impact on the story"),
+  ],
+};
+
+/** 英語版・ジャンル別の追加フィールド。キーは ja 版と同一 (GenreValue)。 */
+export const GENRE_DETAIL_PRESETS_EN: Readonly<
+  Partial<Record<GenreValue, DetailPresetsByType>>
+> = {
+  Fantasy: {
+    character: [text("Species/race"), text("Magic & special abilities")],
+    location: [text("Ruling power")],
+    item: [
+      dropdown("Rarity", ["Common", "Rare", "Legendary", "One of a kind"]),
+    ],
+    lore: [text("Magic & supernatural rules")],
+  },
+  "Sci-Fi": {
+    character: [
+      text("Affiliation & origin"),
+      text("Augmentations & modifications"),
+    ],
+    location: [text("Technology level")],
+    item: [text("Operating principle")],
+    lore: [text("Scientific premise & rationale")],
+  },
+  Mystery: {
+    character: [text("Alibi")],
+    location: [text("Layout & floor plan")],
+    item: [text("Significance as a clue")],
+  },
+  Horror: {
+    character: [text("Fears & trauma")],
+    location: [text("Signs of the uncanny")],
+    item: [text("Curse/taboo")],
+    lore: [text("Rules of the supernatural")],
+  },
+  Romance: {
+    character: [
+      text("View on romance"),
+      text("Current feelings toward the other"),
+    ],
+    location: [text("Shared memories")],
+  },
+  Thriller: {
+    character: [text("Organization"), text("Skills & expertise")],
+    location: [text("Security & danger level")],
+    item: [text("How it was obtained")],
+  },
+  Literary: {
+    character: [text("Inner conflict"), text("What they symbolize")],
+    location: [text("Symbolism")],
+    lore: [text("Relation to the theme")],
+  },
+  Historical: {
+    character: [
+      dropdown("Relation to history", [
+        "Real figure",
+        "Based on a real person",
+        "Fictional",
+      ]),
+      text("Status & class"),
+    ],
+    location: [text("Historical accuracy notes")],
+    item: [text("Historical accuracy notes")],
+  },
+};
+
+/** project 言語に対応する基本/ジャンル別プリセット集合 (en 以外は ja)。 */
+function presetsForLang(lang?: string | null): {
+  base: DetailPresetsByType;
+  byGenre: Readonly<Partial<Record<GenreValue, DetailPresetsByType>>>;
+} {
+  return lang?.startsWith("en")
+    ? { base: BASE_DETAIL_PRESETS_EN, byGenre: GENRE_DETAIL_PRESETS_EN }
+    : { base: BASE_DETAIL_PRESETS, byGenre: GENRE_DETAIL_PRESETS };
+}
+
+/**
+ * 追加フィールドを持つジャンル（ピッカーの選択肢）。ja/en で同一キーなので
+ * 言語非依存。
+ */
 export const PRESET_GENRES: readonly GenreValue[] = Object.keys(
   GENRE_DETAIL_PRESETS,
 ) as GenreValue[];
@@ -124,11 +255,12 @@ export const PRESET_GENRES: readonly GenreValue[] = Object.keys(
 export function resolvePresetFields(
   typeSlug: string,
   genre: string | null,
+  lang?: string | null,
 ): DetailFieldPreset[] {
-  const base = BASE_DETAIL_PRESETS[typeSlug] ?? [];
-  const extras =
-    (genre && GENRE_DETAIL_PRESETS[genre as GenreValue]?.[typeSlug]) || [];
-  return [...base, ...extras];
+  const { base, byGenre } = presetsForLang(lang);
+  const baseFields = base[typeSlug] ?? [];
+  const extras = (genre && byGenre[genre as GenreValue]?.[typeSlug]) || [];
+  return [...baseFields, ...extras];
 }
 
 export interface ApplyDetailPresetResult {
@@ -144,8 +276,9 @@ export async function applyDetailPreset(
   projectId: string,
   typeSlug: string,
   genre: string | null,
+  lang?: string | null,
 ): Promise<ApplyDetailPresetResult> {
-  const fields = resolvePresetFields(typeSlug, genre);
+  const fields = resolvePresetFields(typeSlug, genre, lang);
   const existing = await listDefinitionsByType(projectId, typeSlug);
   const existingNames = new Set(existing.map((d) => d.name));
   let sortOrder = Math.max(0, ...existing.map((d) => d.sortOrder));

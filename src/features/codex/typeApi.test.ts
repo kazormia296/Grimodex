@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/sqlite-proxy";
 import * as schema from "@/db/schema";
 import { codexTypes } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { builtinLabelRelabel } from "./typeApi";
 
 function createQueryCapture() {
   const queries: { sql: string; params: unknown[]; method: string }[] = [];
@@ -97,5 +98,50 @@ describe("typeApi query generation", () => {
     await db.select().from(codexTypes).where(eq(codexTypes.slug, "character"));
     expect(queries).toHaveLength(1);
     expect(queries[0].params).toContain("character");
+  });
+});
+
+describe("builtinLabelRelabel (en builtin type labels)", () => {
+  const CJK = /[぀-ヿ㐀-鿿ｦ-ﾟ]/;
+  // (slug, trigger/legacy ja default label) → expected English label.
+  // 焼き込み元の DB トリガ (migrate.rs seed_builtin_codex_types) は常に ja を書く。
+  const cases: Array<[string, string, string]> = [
+    ["character", "キャラクター", "Character"],
+    ["location", "場所", "Location"],
+    ["item", "アイテム", "Item"],
+    ["lore", "伝承", "Lore & Worldbuilding"], // trigger's ja label
+    ["lore", "設定・世界観", "Lore & Worldbuilding"], // legacy TS ja label
+  ];
+
+  it("relabels uncustomized ja-default builtins to English for en projects", () => {
+    for (const [slug, jaLabel, enLabel] of cases) {
+      const result = builtinLabelRelabel(slug, jaLabel, "en");
+      expect(result, `${slug}: ${jaLabel}`).toBe(enLabel);
+      // gate: the English label must not leak CJK into en DB rows / AI prompt.
+      expect(CJK.test(enLabel!), `en label CJK: ${enLabel}`).toBe(false);
+    }
+    expect(builtinLabelRelabel("character", "キャラクター", "en-US")).toBe(
+      "Character",
+    );
+  });
+
+  it("does not relabel for ja / other / omitted languages", () => {
+    expect(builtinLabelRelabel("character", "キャラクター", "ja")).toBeNull();
+    expect(builtinLabelRelabel("character", "キャラクター", "zh")).toBeNull();
+    expect(
+      builtinLabelRelabel("character", "キャラクター", undefined),
+    ).toBeNull();
+  });
+
+  it("does not clobber a user-customized builtin label", () => {
+    expect(builtinLabelRelabel("character", "People", "en")).toBeNull();
+    expect(builtinLabelRelabel("location", "Places & Realms", "en")).toBeNull();
+  });
+
+  it("is idempotent: an already-English label is not re-relabeled", () => {
+    expect(builtinLabelRelabel("character", "Character", "en")).toBeNull();
+    expect(
+      builtinLabelRelabel("lore", "Lore & Worldbuilding", "en"),
+    ).toBeNull();
   });
 });

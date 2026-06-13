@@ -21,6 +21,7 @@ import {
   listEmptyDetailFields,
   deleteEmptyDetailFields,
 } from "../detailCleanup";
+import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 
 // --- Field type labels ---
 const FIELD_TYPE_OPTIONS = [
@@ -543,7 +544,12 @@ export function ManageFieldsDialog({
   }, [open, load, presetDefault]);
 
   const handlePresetPreview = () => {
-    const resolved = resolvePresetFields(typeSlug, presetGenre || null);
+    // プリセットのフィールド名/選択肢は project 言語でシードする (en=英語)。
+    const resolved = resolvePresetFields(
+      typeSlug,
+      presetGenre || null,
+      getCurrentProjectLanguage(),
+    );
     const existingNames = new Set(definitions.map((d) => d.name));
     const toAdd = resolved.filter((f) => !existingNames.has(f.name));
     if (toAdd.length === 0) {
@@ -565,6 +571,7 @@ export function ManageFieldsDialog({
         projectId,
         typeSlug,
         presetGenre || null,
+        getCurrentProjectLanguage(),
       );
       await load();
       if (result.added.length === 0) {

@@ -38,7 +38,10 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { EditorPane } from "@/features/editor/EditorPane";
 import { useMatrixStore } from "@/features/matrix/matrixStore";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  getCurrentProjectId,
+  getCurrentProjectLanguage,
+} from "@/features/project/projectStore";
 
 // Fallback colors for when types haven't loaded yet
 const FALLBACK_TYPE_COLORS: Record<string, string> = {
@@ -580,7 +583,7 @@ export function CodexManagementPanel({
   ]);
 
   useEffect(() => {
-    ensureBuiltinTypes(getCurrentProjectId())
+    ensureBuiltinTypes(getCurrentProjectId(), getCurrentProjectLanguage())
       .then(() => listCodexTypes(getCurrentProjectId()))
       .then(setCodexTypes)
       .catch(() => setCodexTypes([]));

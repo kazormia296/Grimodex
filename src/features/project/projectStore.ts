@@ -198,7 +198,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       tense: input.tense || undefined,
     });
     try {
-      await ensureBuiltinTypes(created.id);
+      // 組み込み Codex タイプを project 言語でシード (en=英語ラベル)。
+      await ensureBuiltinTypes(created.id, created.language);
       const { seedProjectSettingsFromDefaults } =
         await import("@/features/settings/migration");
       await seedProjectSettingsFromDefaults(created.id);

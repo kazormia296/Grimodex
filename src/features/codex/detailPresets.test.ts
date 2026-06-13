@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   BASE_DETAIL_PRESETS,
+  BASE_DETAIL_PRESETS_EN,
   GENRE_DETAIL_PRESETS,
+  GENRE_DETAIL_PRESETS_EN,
   PRESET_GENRES,
   resolvePresetFields,
   applyDetailPreset,
@@ -101,6 +103,99 @@ describe("detailPresets registry", () => {
         expect(new Set(names).size).toBe(names.length);
       }
     }
+  });
+});
+
+describe("English presets (en projects)", () => {
+  // 焼き込み + AI コンテキスト貫通のため、en data に CJK が残っていると
+  // 英語プロジェクトの DB/プロンプトに日本語が漏れる。全文字を検査して gate。
+  const CJK = /[぀-ヿ㐀-鿿ｦ-ﾟ]/;
+
+  function allEnLists(): ReadonlyArray<readonly DetailFieldPreset[]> {
+    const genreLists = Object.values(GENRE_DETAIL_PRESETS_EN)
+      .filter((byType): byType is NonNullable<typeof byType> => byType != null)
+      .flatMap((byType) => Object.values(byType));
+    return [...Object.values(BASE_DETAIL_PRESETS_EN), ...genreLists];
+  }
+
+  it("mirrors the ja base structure: same type keys", () => {
+    expect(Object.keys(BASE_DETAIL_PRESETS_EN).sort()).toEqual(
+      Object.keys(BASE_DETAIL_PRESETS).sort(),
+    );
+    for (const slug of BUILTIN_SLUGS) {
+      expect(BASE_DETAIL_PRESETS_EN[slug]?.length).toBe(
+        BASE_DETAIL_PRESETS[slug]?.length,
+      );
+    }
+  });
+
+  it("mirrors the ja genre structure: same genre + type keys and field counts", () => {
+    expect(Object.keys(GENRE_DETAIL_PRESETS_EN).sort()).toEqual(
+      Object.keys(GENRE_DETAIL_PRESETS).sort(),
+    );
+    for (const genre of Object.keys(GENRE_DETAIL_PRESETS) as Array<
+      keyof typeof GENRE_DETAIL_PRESETS
+    >) {
+      const ja = GENRE_DETAIL_PRESETS[genre]!;
+      const en = GENRE_DETAIL_PRESETS_EN[genre]!;
+      expect(Object.keys(en).sort()).toEqual(Object.keys(ja).sort());
+      for (const slug of Object.keys(ja)) {
+        expect(en[slug]?.length).toBe(ja[slug]?.length);
+      }
+    }
+  });
+
+  it("contains no leftover Japanese in field names or dropdown options", () => {
+    for (const list of allEnLists()) {
+      for (const field of list) {
+        expect(CJK.test(field.name), `name: ${field.name}`).toBe(false);
+        for (const opt of field.options ?? []) {
+          expect(CJK.test(opt), `option: ${opt}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("resolves en presets when lang starts with 'en'", () => {
+    expect(resolvePresetFields("character", null, "en")).toEqual(
+      BASE_DETAIL_PRESETS_EN.character,
+    );
+    expect(resolvePresetFields("character", null, "en-US")).toEqual(
+      BASE_DETAIL_PRESETS_EN.character,
+    );
+    const fantasy = resolvePresetFields("item", "Fantasy", "en");
+    expect(fantasy.map((f) => f.name)).toContain("Rarity");
+  });
+
+  it("keeps ja presets for ja / omitted lang (unchanged behavior)", () => {
+    expect(resolvePresetFields("character", null)).toEqual(
+      BASE_DETAIL_PRESETS.character,
+    );
+    expect(resolvePresetFields("character", null, "ja")).toEqual(
+      BASE_DETAIL_PRESETS.character,
+    );
+    expect(resolvePresetFields("character", null, "zh")).toEqual(
+      BASE_DETAIL_PRESETS.character,
+    );
+  });
+
+  it("applyDetailPreset seeds the en field set for en projects", async () => {
+    mockList.mockResolvedValue([]);
+    mockCreate.mockImplementation(async (data) => ({
+      id: data.id,
+      projectId: data.projectId,
+      typeSlug: data.typeSlug,
+      name: data.name,
+      fieldType: data.fieldType ?? "text",
+      fieldConfig: data.fieldConfig ?? null,
+      sortOrder: data.sortOrder ?? 0,
+      includeInContext: data.includeInContext ?? 0,
+      createdAt: "2026-01-01T00:00:00Z",
+    }));
+    const result = await applyDetailPreset("proj-1", "character", null, "en");
+    expect(result.added.map((d) => d.name)).toEqual(
+      BASE_DETAIL_PRESETS_EN.character.map((f) => f.name),
+    );
   });
 });
 

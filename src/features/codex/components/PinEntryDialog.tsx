@@ -23,7 +23,10 @@ import { sortEntries, CODEX_SORT_OPTIONS } from "@/features/codex/codexSort";
 import { TagFilterBar } from "@/features/codex/components/TagFilterBar";
 import type { CodexType } from "@/features/codex/typeApi";
 import { listCodexTypes, ensureBuiltinTypes } from "@/features/codex/typeApi";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  getCurrentProjectId,
+  getCurrentProjectLanguage,
+} from "@/features/project/projectStore";
 
 const DIALOG_CODEX_SORT_OPTIONS = CODEX_SORT_OPTIONS.filter(
   (o) => o.value !== "most-referenced",
@@ -276,7 +279,7 @@ export function PinEntryDialog({
     if (useCodexStore.getState().entries.length === 0) loadEntries();
     if (showSnippetTab && useSnippetStore.getState().entries.length === 0)
       loadSnippets();
-    ensureBuiltinTypes(getCurrentProjectId())
+    ensureBuiltinTypes(getCurrentProjectId(), getCurrentProjectLanguage())
       .then(() => listCodexTypes(getCurrentProjectId()))
       .then(setCodexTypes)
       .catch(() => setCodexTypes([]));

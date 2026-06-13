@@ -12,7 +12,10 @@ import { CodexCommandPalette } from "@/features/codex/components/CodexCommandPal
 import { AnimatePresence } from "motion/react";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import { listCodexTypes, ensureBuiltinTypes } from "@/features/codex/typeApi";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  getCurrentProjectId,
+  getCurrentProjectLanguage,
+} from "@/features/project/projectStore";
 import type { CodexEntry } from "@/features/codex/api";
 import type { CodexType } from "@/features/codex/typeApi";
 
@@ -26,7 +29,7 @@ export function CodexQuickSection() {
   const [codexTypes, setCodexTypes] = useState<CodexType[]>([]);
 
   useEffect(() => {
-    ensureBuiltinTypes(getCurrentProjectId())
+    ensureBuiltinTypes(getCurrentProjectId(), getCurrentProjectLanguage())
       .then(() => listCodexTypes(getCurrentProjectId()))
       .then(setCodexTypes)
       .catch(() => setCodexTypes([]));

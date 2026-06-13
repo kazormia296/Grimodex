@@ -14,7 +14,10 @@ import {
   codexTypeHasEntries,
 } from "@/features/codex/typeApi";
 import { useWorkspaceStore } from "@/features/workspace/store";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  getCurrentProjectId,
+  getCurrentProjectLanguage,
+} from "@/features/project/projectStore";
 import {
   COLOR_THEMES,
   DEFAULT_COLOR_THEME,
@@ -340,7 +343,10 @@ export function CodexCategory() {
     : null;
 
   const load = useCallback(async () => {
-    await ensureBuiltinTypes(getCurrentProjectId());
+    await ensureBuiltinTypes(
+      getCurrentProjectId(),
+      getCurrentProjectLanguage(),
+    );
     const list = await listCodexTypes(getCurrentProjectId());
     setTypes(list);
   }, []);

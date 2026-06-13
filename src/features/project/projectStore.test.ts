@@ -96,7 +96,10 @@ describe("useProjectStore", () => {
         useProjectStore.getState().projects.some((p) => p.id === created.id),
       ).toBe(true);
       expect(mockedReload).toHaveBeenCalledWith(created.id);
-      expect(mockedEnsureBuiltin).toHaveBeenCalledWith(created.id);
+      expect(mockedEnsureBuiltin).toHaveBeenCalledWith(
+        created.id,
+        created.language,
+      );
     });
 
     it("seeds selected codex types from the source project", async () => {

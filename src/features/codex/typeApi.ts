@@ -4,13 +4,19 @@ import { eq, and } from "drizzle-orm";
 
 export type CodexType = typeof codexTypes.$inferSelect;
 
-const BUILTIN_TYPES: Array<{
+interface BuiltinType {
   slug: string;
   label: string;
   color: string;
   paletteIndex: number;
   sortOrder: number;
-}> = [
+}
+
+// 組み込み 4 タイプ。slug は言語非依存の安定キー (FK)。label のみ project
+// 言語でシードし分ける (en プロジェクトは英語、それ以外は日本語)。
+// 既存プロジェクトは ensureBuiltinTypes が同 slug を skip するため relabel
+// されない (migration 不要・rename 可)。
+const BUILTIN_TYPES: BuiltinType[] = [
   {
     slug: "character",
     label: "キャラクター",
@@ -41,7 +47,57 @@ const BUILTIN_TYPES: Array<{
   },
 ];
 
-export async function ensureBuiltinTypes(projectId: string): Promise<void> {
+// 英語ラベル版 (slug/color/paletteIndex/sortOrder は ja と同一)。
+const BUILTIN_TYPES_EN: BuiltinType[] = [
+  { ...BUILTIN_TYPES[0], label: "Character" },
+  { ...BUILTIN_TYPES[1], label: "Location" },
+  { ...BUILTIN_TYPES[2], label: "Item" },
+  { ...BUILTIN_TYPES[3], label: "Lore & Worldbuilding" },
+];
+
+/** project 言語に対応する組み込みタイプ集合 (en 以外は ja)。 */
+function builtinTypesForLang(lang?: string | null): BuiltinType[] {
+  return lang?.startsWith("en") ? BUILTIN_TYPES_EN : BUILTIN_TYPES;
+}
+
+// DB トリガ (src-tauri/.../migrate.rs: seed_builtin_codex_types) は project
+// INSERT 時に **言語非依存で常に日本語ラベル** で builtin タイプを seed する
+// (character=キャラクター/location=場所/item=アイテム/lore=伝承)。legacy TS は
+// lore に "設定・世界観" を使っていた。en プロジェクトではこの ja 既定ラベルを
+// en へ relabel しないと BUILTIN_TYPES_EN が反映されない。
+const JA_DEFAULT_BUILTIN_LABELS: Record<string, readonly string[]> = {
+  character: ["キャラクター"],
+  location: ["場所"],
+  item: ["アイテム"],
+  lore: ["伝承", "設定・世界観"],
+};
+
+/**
+ * en プロジェクトで、トリガが ja で seed した **未カスタマイズ** の builtin
+ * ラベルを en へ relabel すべきか判定する純関数。relabel する場合は新ラベル、
+ * しない場合は null を返す。
+ * - lang が en 系でない → null (ja 挙動不変)
+ * - 既に en ラベル → null (冪等)
+ * - 現ラベルが ja 既定でない (= ユーザがリネーム済み) → null (上書きしない)
+ */
+export function builtinLabelRelabel(
+  slug: string,
+  currentLabel: string,
+  lang?: string | null,
+): string | null {
+  if (!lang?.startsWith("en")) return null;
+  const enLabel = BUILTIN_TYPES_EN.find((t) => t.slug === slug)?.label;
+  if (!enLabel || currentLabel === enLabel) return null;
+  return (JA_DEFAULT_BUILTIN_LABELS[slug] ?? []).includes(currentLabel)
+    ? enLabel
+    : null;
+}
+
+export async function ensureBuiltinTypes(
+  projectId: string,
+  lang?: string | null,
+): Promise<void> {
+  const builtinTypes = builtinTypesForLang(lang);
   const existing = await db
     .select()
     .from(codexTypes)
@@ -50,7 +106,7 @@ export async function ensureBuiltinTypes(projectId: string): Promise<void> {
   const existingMap = new Map(existing.map((t) => [t.slug, t]));
   const existingSlugs = new Set(existing.map((t) => t.slug));
 
-  for (const bt of BUILTIN_TYPES) {
+  for (const bt of builtinTypes) {
     if (!existingSlugs.has(bt.slug)) {
       await db.insert(codexTypes).values({
         id: crypto.randomUUID(),
@@ -64,13 +120,25 @@ export async function ensureBuiltinTypes(projectId: string): Promise<void> {
         createdAt: new Date().toISOString(),
       });
     } else {
-      // Migrate existing builtins that lack a palette index
       const existing_ = existingMap.get(bt.slug);
-      if (existing_ && existing_.paletteIndex === null) {
-        await db
-          .update(codexTypes)
-          .set({ paletteIndex: bt.paletteIndex })
-          .where(eq(codexTypes.id, existing_.id));
+      if (existing_) {
+        const updates: { paletteIndex?: number; label?: string } = {};
+        // Migrate existing builtins that lack a palette index
+        if (existing_.paletteIndex === null) {
+          updates.paletteIndex = bt.paletteIndex;
+        }
+        // en: トリガが書いた ja 既定ラベルを en へ relabel (未カスタマイズのみ)。
+        // 既存プロジェクトは ja 既定でなければ温存される (migration 不要・rename 可)。
+        if (existing_.isBuiltin === 1) {
+          const relabel = builtinLabelRelabel(bt.slug, existing_.label, lang);
+          if (relabel !== null) updates.label = relabel;
+        }
+        if (Object.keys(updates).length > 0) {
+          await db
+            .update(codexTypes)
+            .set(updates)
+            .where(eq(codexTypes.id, existing_.id));
+        }
       }
     }
   }
