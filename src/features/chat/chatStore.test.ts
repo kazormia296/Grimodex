@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useChatStore, contextPromptKey } from "./chatStore";
+import { useAiSettingsStore, DEFAULT_AI_SETTINGS } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
 import type { ChatMessage, ChatSession } from "./chatTypes";
 
@@ -186,6 +187,11 @@ function resetStore() {
     chatScope: "scene",
     scopeAnchorId: null,
     lastSystemPromptKey: null,
+    // prefix cache バッジ系も毎テスト初期化する。これらは resetStore で戻さないと
+    // sendMessage 冒頭のモデル一致判定が前テストの残留値で分岐し、後続テストへ
+    // 漏れる (cache badge テスト群の afterEach だけに依存させない)。
+    _lastCachedModel: null,
+    cacheInvalidatedReason: null,
   });
 }
 
@@ -639,6 +645,111 @@ describe("useChatStore", () => {
       expect(passedMessages[1].content).toBe("前の質問");
       expect(passedMessages[2].content).toBe("前の回答");
       expect(passedMessages[3].content).toBe("新しい質問");
+    });
+  });
+
+  describe("cacheInvalidatedReason (prefix cache rebuilt badge)", () => {
+    afterEach(() => {
+      // モデル / バッジ state は resetStore が触らないため、テスト間で漏れると
+      // 後続 send 系テストの分岐に影響する。明示的に初期状態へ戻す。
+      useAiSettingsStore.setState({ settings: null });
+      useChatStore.setState({
+        _lastCachedModel: null,
+        cacheInvalidatedReason: null,
+      });
+    });
+
+    it("flags 'model' and keeps it through the turn when the model changed since last send", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "model-B",
+        },
+      });
+      useChatStore.setState({
+        _lastCachedModel: "model-A",
+        cacheInvalidatedReason: null,
+      });
+      mockStreamResponse("ok");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      // 以前は scene 経路のコンテキスト再構築 set() が同一ターン内で null に
+      // 戻していたため scene 送信ではバッジが一切見えなかった。クリアを冒頭へ
+      // 一元化したのでバッジは自分のターンを生き残る。
+      expect(useChatStore.getState().cacheInvalidatedReason).toBe("model");
+      expect(useChatStore.getState()._lastCachedModel).toBe("model-B");
+    });
+
+    it("clears a stale badge on the next send when the model is unchanged", async () => {
+      // バグ再現: agent / RAG / global 経路には後段クリアが無く、モデル変更後に
+      // 立てたバッジが同一モデルで送り続けても消えなかった。冒頭の一致判定で
+      // 消灯を一元化したので、同一モデルの次送信で必ず消える。
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "model-A",
+        },
+      });
+      useChatStore.setState({
+        _lastCachedModel: "model-A",
+        cacheInvalidatedReason: "model",
+      });
+      mockStreamResponse("ok");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      expect(useChatStore.getState().cacheInvalidatedReason).toBeNull();
+    });
+
+    it("does not flag when the current model is empty (no model selected)", async () => {
+      // プロバイダチップ再クリック等で model が "" になった送信では、キャッシュの
+      // 概念が無いのでバッジを立てない (誤点灯防止)。
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "",
+        },
+      });
+      useChatStore.setState({
+        _lastCachedModel: "model-A",
+        cacheInvalidatedReason: null,
+      });
+      mockStreamResponse("ok");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      expect(useChatStore.getState().cacheInvalidatedReason).toBeNull();
+    });
+
+    it("clears a stale badge on a non-scene (global) send where the old in-turn clear never ran", async () => {
+      // 本バグの本丸: scene 以外のスコープ (project/folder/codex/snippet) は
+      // 旧コードの唯一のクリア箇所 (scene コンテキスト再構築 set()) を通らず、
+      // バッジが居座り続けた。冒頭一元化が non-scene 経路でも効くことを直接 gate
+      // する (scene 経路だけの 3 テストでは本丸経路に網がかからないため)。
+      useChatStore.setState({
+        activeSceneId: "",
+        chatScope: "project",
+        scopeAnchorId: null,
+        lastSystemPrompt: "フォールバックプロンプト",
+        _lastCachedModel: "model-A",
+        cacheInvalidatedReason: "model",
+      });
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "model-A",
+        },
+      });
+      mockStreamResponse("ok");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      expect(useChatStore.getState().cacheInvalidatedReason).toBeNull();
     });
   });
 

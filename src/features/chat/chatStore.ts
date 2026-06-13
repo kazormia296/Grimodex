@@ -2754,8 +2754,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     const aiSettingsEarly = useAiSettingsStore.getState().settings;
     const chatModelEarly = aiSettingsEarly?.model ?? "";
-    if (get()._lastCachedModel && get()._lastCachedModel !== chatModelEarly) {
+    // モデルが前回送信から変わっていれば prefix cache が無効化されるため
+    // バッジを立て、変わっていなければ消灯する。消灯をここで一元化するのが要点:
+    // agent / RAG / グローバルスコープ経路には後段のコンテキスト再構築 (=従来の
+    // 唯一のクリア箇所) が無く、ここで揃えないとバッジが「1ターン」を超えて
+    // 居座り続ける (同一モデルで送り続けても消えない)。chatModelEarly が空の
+    // ときはモデル未選択でキャッシュの概念が無いので立てない。
+    if (
+      get()._lastCachedModel &&
+      chatModelEarly &&
+      get()._lastCachedModel !== chatModelEarly
+    ) {
       set({ cacheInvalidatedReason: "model" });
+    } else {
+      set({ cacheInvalidatedReason: null });
     }
     if (!get().sessionAgentToolsSnapshot) {
       set({ sessionAgentToolsSnapshot: snapshotAgentTools() });
@@ -3463,7 +3475,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           detectedEntries: ctxResult.detectedEntries,
           alwaysEntries: ctxResult.alwaysEntries,
           scopeAnchor: null,
-          cacheInvalidatedReason: null,
+          // cacheInvalidatedReason はここではクリアしない: モデル変更で立てた
+          // バッジを同一ターン内 (=変更直後の送信) で消してしまい、scene 経路だけ
+          // バッジが見えなくなる非対称を生むため。消灯は sendMessage 冒頭の
+          // モデル一致判定に一元化した。
         });
         sentSystemPrompt = ctxResult.prompt;
 
