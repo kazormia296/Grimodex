@@ -39,6 +39,7 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 - Rust: unwrap()禁止、thiserror/anyhow使用（詳細は src-tauri/CLAUDE.md）
 - アニメ: duration/easing は `src/lib/animation.ts` の `DURATIONS`/`EASINGS`/`VARIANTS` 経由（べた書き禁止、詳細は /polish-motion）
 - React/TS詳細は src/CLAUDE.md を参照
+- やり取り・設計ドキュメント・実装計画はすべて日本語で書く
 
 ## アーキテクチャ原則
 
@@ -65,11 +66,3 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 
 変更済みファイル一覧、テスト状態、現フェーズ・タスク番号、
 アーキテクチャ決定事項（ARCHITECTURE.md参照）を必ず保持すること。
-
-## コンテキスト圧迫時の行動規範
-
-- コードを読まずに書かない
-- 検証を省略しない
-- 焦りを自覚したら「コンテキスト残量が少ないため区切ります」と宣言する
-
-- ユーザーとのやり取り、設計ドキュメント、実装計画はすべて日本語で書くこと
