@@ -61,8 +61,3 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 | 「デバッグ」「修正」                           | /debug-issue       | デバッグフロー   |
 | 「Tauriコマンド」「invoke」                    | /add-tauri-command | IPC一括追加      |
 | 「アニメ」「トランジション」「動き」「磨いて」 | /polish-motion     | UIモーション規律 |
-
-## Compact時の保持事項
-
-変更済みファイル一覧、テスト状態、現フェーズ・タスク番号、
-アーキテクチャ決定事項（ARCHITECTURE.md参照）を必ず保持すること。
