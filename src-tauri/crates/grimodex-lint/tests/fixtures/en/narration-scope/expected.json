@@ -1,0 +1,11 @@
+[
+  {
+    "rule_id": "en/filter-words",
+    "severity": "info",
+    "message": "Filter word “noticed” can distance the reader; consider showing the perception directly",
+    "range": {
+      "start": 25,
+      "end": 32
+    }
+  }
+]

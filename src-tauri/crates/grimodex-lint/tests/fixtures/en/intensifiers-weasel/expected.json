@@ -1,0 +1,11 @@
+[
+  {
+    "rule_id": "en/intensifiers-weasel",
+    "severity": "info",
+    "message": "Weak intensifier “very”; consider a stronger word or cutting it",
+    "range": {
+      "start": 7,
+      "end": 11
+    }
+  }
+]

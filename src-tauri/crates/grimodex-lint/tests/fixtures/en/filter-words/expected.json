@@ -1,0 +1,11 @@
+[
+  {
+    "rule_id": "en/filter-words",
+    "severity": "info",
+    "message": "Filter word “saw” can distance the reader; consider showing the perception directly",
+    "range": {
+      "start": 4,
+      "end": 7
+    }
+  }
+]

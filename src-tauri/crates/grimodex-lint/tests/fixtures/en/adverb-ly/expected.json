@@ -1,0 +1,11 @@
+[
+  {
+    "rule_id": "en/adverb-ly",
+    "severity": "info",
+    "message": "Adverb “slowly”; a stronger verb is often better than verb + -ly",
+    "range": {
+      "start": 9,
+      "end": 15
+    }
+  }
+]

@@ -23,8 +23,10 @@ fn regex() -> &'static Regex {
         // period, a closing double quote (straight or curly), whitespace, then
         // the first one or two words of the following clause.
         #[allow(clippy::expect_used)]
-        Regex::new(r#"\.(["\u{201D}])\s+([A-Za-z][A-Za-z'\u{2019}]*)(?:\s+([A-Za-z][A-Za-z'\u{2019}]*))?"#)
-            .expect("static dialogue-punctuation regex must compile")
+        Regex::new(
+            r#"\.(["\u{201D}])\s+([A-Za-z][A-Za-z'\u{2019}]*)(?:\s+([A-Za-z][A-Za-z'\u{2019}]*))?"#,
+        )
+        .expect("static dialogue-punctuation regex must compile")
     })
 }
 

@@ -104,6 +104,23 @@ export const BUILTIN_DEFAULT_CONFIG: LintFullConfig = {
     "en/dialogue-punctuation": { enabled: true },
     "en/unclosed-quote": { enabled: true },
     "en/apostrophe": { enabled: true },
+    // P1: style rules. 記号系の sentence-length のみ既定 ON、ほかは
+    // 「新スタイルルールは OFF で開始、安定後に昇格」方針で既定 OFF。
+    "en/sentence-length": {
+      enabled: true,
+      options: { warnAtWords: 35, errorAtWords: 60 },
+    },
+    "en/filter-words": { enabled: false },
+    "en/adverb-ly": { enabled: false },
+    "en/intensifiers-weasel": { enabled: false },
+    "en/word-repetition": {
+      enabled: false,
+      options: { distance_words: 30, min_length: 4 },
+    },
+    "en/sentence-starters": {
+      enabled: false,
+      options: { threshold: 3 },
+    },
   },
   inlineDisable: { multiBlockPolicy: "ask" },
 };
