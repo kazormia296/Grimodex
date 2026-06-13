@@ -18,6 +18,7 @@ import {
   Spotlight,
   Undo2,
   ScrollText,
+  Crosshair,
 } from "lucide-react";
 import {
   Popover,
@@ -67,6 +68,15 @@ type ViaChild = {
 };
 
 interface ContextBarProps {
+  /**
+   * codex/snippet スコープのアンカー (= この会話の主題)。固定・削除不可の
+   * 専用チップとして先頭付近に表示し、プロンプトの <focus_subject> 注入対象と
+   * 一致させる。scene/folder/project スコープでは null。
+   */
+  scopeAnchor?:
+    | { kind: "codex"; id: string; name: string }
+    | { kind: "snippet"; id: string; title: string }
+    | null;
   pinnedEntries: PinnedCodexEntryWithData[];
   /** G15: auto-detected entries (excluding pinned) */
   detectedEntries?: CodexEntry[];
@@ -114,6 +124,7 @@ interface ContextBarProps {
 }
 
 export function ContextBar({
+  scopeAnchor = null,
   pinnedEntries,
   detectedEntries = [],
   alwaysEntries = [],
@@ -287,6 +298,14 @@ export function ContextBar({
   const l3 = contextLayers.find((l) => l.layer === "L3");
   const sceneTokens = l3?.used ?? 0;
 
+  // codex/snippet スコープのアンカー (この会話の主題) を表す固定チップのラベル。
+  // ヘッダのスコープピッカーと同じ語彙 (chat.scope.codex / chat.scope.snippet)。
+  const scopeAnchorLabel = scopeAnchor
+    ? scopeAnchor.kind === "codex"
+      ? `${t("chat.scope.codex")}: ${scopeAnchor.name}`
+      : `${t("chat.scope.snippet")}: ${scopeAnchor.title}`
+    : null;
+
   const contextWindow = model ? getModelCapabilities(model).contextWindow : 0;
   const ctxWindowLabel = model ? formatContextWindow(contextWindow) : null;
   const windowFillPct =
@@ -450,6 +469,12 @@ export function ContextBar({
                 {contextLayers.find((l) => l.layer === "L1" && l.used > 0) && (
                   <span className="px-1.5 py-0.5">Project</span>
                 )}
+                {scopeAnchorLabel && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5">
+                    <span className="inline-block h-3 w-3" />
+                    {scopeAnchorLabel}
+                  </span>
+                )}
                 {sceneTokens > 0 && (
                   <span className="px-1.5 py-0.5">
                     Scene: {sceneTokens.toLocaleString()}
@@ -522,6 +547,28 @@ export function ContextBar({
                     title={t("chat.context.projectInfo")}
                   >
                     Project
+                  </span>
+                )}
+                {/* スコープアンカー: codex/snippet スコープの主題を表す固定チップ。
+                    削除ボタンは持たない (スコープピッカーが管理主体)。session pin と
+                    視覚的に区別するため primary アクセントで強調する。 */}
+                {scopeAnchorLabel && (
+                  <span
+                    data-testid="scope-anchor-chip"
+                    className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                    title={scopeAnchorLabel}
+                  >
+                    {scopeAnchor?.kind === "snippet" ? (
+                      <ScrollText
+                        className="h-3 w-3 shrink-0"
+                        strokeWidth={3}
+                      />
+                    ) : (
+                      <Crosshair className="h-3 w-3 shrink-0" strokeWidth={3} />
+                    )}
+                    <span className="max-w-[160px] truncate">
+                      {scopeAnchorLabel}
+                    </span>
                   </span>
                 )}
                 {/* L3: Scene + トークン数 */}
@@ -814,7 +861,16 @@ export function ContextBar({
                 <PinCodexDialog
                   open={pinOpen}
                   containerRef={pinContainerRef}
-                  pinnedIds={new Set(pinnedEntries.map((e) => e.id))}
+                  // スコープアンカーは既に <focus_subject> で文脈内なので、Pin
+                  // ダイアログでも「ピン済み」扱いにして重複手動ピンを防ぐ。
+                  pinnedIds={
+                    new Set([
+                      ...pinnedEntries.map((e) => e.id),
+                      ...(scopeAnchor?.kind === "codex"
+                        ? [scopeAnchor.id]
+                        : []),
+                    ])
+                  }
                   withChildrenIds={
                     new Set(
                       pinnedEntries
@@ -822,7 +878,11 @@ export function ContextBar({
                         .map((e) => e.id),
                     )
                   }
-                  pinnedSnippetIds={pinnedSnippetIds}
+                  pinnedSnippetIds={
+                    scopeAnchor?.kind === "snippet"
+                      ? new Set([...pinnedSnippetIds, scopeAnchor.id])
+                      : pinnedSnippetIds
+                  }
                   onPin={onPinEntry}
                   onUnpin={onUnpinEntry}
                   onToggleChildren={onTogglePinChildren}

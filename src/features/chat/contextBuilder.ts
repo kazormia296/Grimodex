@@ -136,6 +136,18 @@ export interface BuildSystemPromptInput {
     title: string;
     content: string; // plain text
   };
+  /**
+   * スコープ対象 (Codex/Snippet スコープのアンカー)。`<focus_subject>` ブロックとして
+   * L3 スロットの直後・L4 の前に注入し、「この会話の主題」を LLM へ明示する。
+   * codex は Spotlight (pinned) 相当の構造化レンダリング (タグ/カスタム詳細/全文/子)
+   * を行うため CodexContext をそのまま渡す。snippet は title + 抽出プレーンテキスト。
+   * trim 対象外で常に注入されるため、呼び出し側は当該アンカーを L4 の pinned 配列
+   * (pinnedCodexEntries / pinnedSnippets) から除外して重複させないこと。
+   * 未指定なら何も注入しない。
+   */
+  focusSubject?:
+    | { kind: "codex"; entry: CodexContext }
+    | { kind: "snippet"; name: string; body: string };
   /** C-3: 「予定ビート」セクション文字列（buildPendingBeatsSection の結果）。Synopsis 後・本文前に注入。 */
   pendingBeatsSection?: string;
   /** Phase 1: 現在シーンに紐づくラベル名一覧。L3 のタイトル行に
@@ -423,6 +435,7 @@ export const PROMPT_DATA_TAGS = {
   l1: "project_info",
   l2: "story_so_far",
   l3: "current_scene",
+  focus: "focus_subject",
   l4: "codex_entries",
   rag: "related_scenes",
   l5: "conversation_summary",
@@ -433,7 +446,7 @@ export const PROMPT_DATA_TAGS = {
 // 直後に `\` を挿入して無害化する。挿入後は `<` の次が `\` になり再マッチ
 // しない (冪等)。`<note>` `<sticky>` `<map>` は予約外なので素通しになる。
 const RESERVED_TAG_RE =
-  /<(?=\s*\/?\s*(?:project_info|story_so_far|current_scene|codex_entries|related_scenes|conversation_summary)\b)/gi;
+  /<(?=\s*\/?\s*(?:project_info|story_so_far|current_scene|focus_subject|codex_entries|related_scenes|conversation_summary)\b)/gi;
 
 /** データ内の予約タグ偽装をエスケープする (`</current_scene>` → `<\/current_scene>`)。 */
 export function escapeReservedTags(text: string): string {
@@ -845,12 +858,22 @@ export function buildSystemPrompt(
     input.sceneLabels && input.sceneLabels.length > 0
       ? ` [${input.sceneLabels.join(", ")}]`
       : "";
-  l3Text += `${s.headers.currentScene}\n${s.labels.title}: ${input.scene.title}${labelSuffix}`;
-  if (input.scene.storyTimeLabel?.trim()) {
-    l3Text += `\n${s.labels.storyTimeLabel}: ${input.scene.storyTimeLabel.trim()}`;
-  }
-  if (input.scene.synopsis) {
-    l3Text += `\n${s.labels.synopsis}: ${input.scene.synopsis}`;
+  // 現在シーンが実在するときのみ「## 現在のシーン」見出し + タイトル + 派生情報を注入。
+  // codex/snippet スコープは scene={id:"",title:"",content:""} を渡すため、ここを
+  // ガードしないと wrapDataLayer が非空白の見出し文字列を検出し、空の
+  // <current_scene> ブロックを毎回出力してしまう。folder/project スコープの集約
+  // 擬似シーンは非空の id+title を持つのでこのガードを通過し従来どおり保持される。
+  const hasRealScene = Boolean(
+    input.scene.id || input.scene.title.trim() || input.scene.content,
+  );
+  if (hasRealScene) {
+    l3Text += `${s.headers.currentScene}\n${s.labels.title}: ${input.scene.title}${labelSuffix}`;
+    if (input.scene.storyTimeLabel?.trim()) {
+      l3Text += `\n${s.labels.storyTimeLabel}: ${input.scene.storyTimeLabel.trim()}`;
+    }
+    if (input.scene.synopsis) {
+      l3Text += `\n${s.labels.synopsis}: ${input.scene.synopsis}`;
+    }
   }
   // C-3: 「予定ビート」セクションを Synopsis 後・本文前に注入
   if (
@@ -923,6 +946,46 @@ export function buildSystemPrompt(
     l3Text += `${s.headers.referencingContent}\n${s.labels.contentType}: ${typeLabel}\n${s.labels.contentTitle}: ${input.activeTabContent.title}\n${s.labels.contentBody}: ${input.activeTabContent.content}`;
   }
 
+  // Codex エントリ 1 件分の本文行を組む共通ロジック。L4 (mentioned/pinned/always)
+  // と <focus_subject> (codex スコープのアンカー = Spotlight 相当) の両方で使う。
+  // includePinnedExtras=true で Spotlight 専用の追加情報 (タグ / カスタム詳細) も出す。
+  const buildCodexEntryLines = (
+    entry: CodexContext,
+    includePinnedExtras: boolean,
+  ): string[] => {
+    const label = s.typeLabels[entry.type] ?? entry.type;
+    const displaySummary = entry.summary.trim() || entry.contentFallback || "";
+    const phaseSuffix = entry.phaseLabel ? ` [${entry.phaseLabel}]` : "";
+    const out = [
+      `- **${entry.name}**${phaseSuffix} (${label})`,
+      `  ${s.labels.codexId}: ${entry.id}`,
+    ];
+    if (entry.relationVia) {
+      out.push(`  ${s.labels.codexRelation}: ${entry.relationVia}`);
+    }
+    if (entry.aliases && entry.aliases.length > 0) {
+      out.push(`  ${s.labels.codexAliases}: ${entry.aliases.join(", ")}`);
+    }
+    if (displaySummary) {
+      out.push(`  ${s.labels.codexSummary}: ${displaySummary}`);
+    }
+    if (includePinnedExtras && entry.tags?.length) {
+      out.push(`  ${s.labels.codexTags}: ${entry.tags.join(", ")}`);
+    }
+    if (includePinnedExtras && entry.customDetails?.length) {
+      for (const detail of entry.customDetails) {
+        out.push(`  - ${detail.fieldName}: ${detail.value}`);
+      }
+    }
+    if (entry.fullContent) {
+      out.push(`  ${s.labels.codexFullContent}:\n${entry.fullContent}`);
+    }
+    if (entry.childrenContext) {
+      out.push(entry.childrenContext);
+    }
+    return out;
+  };
+
   // L4: Codex entries
   // Build pinned entries with children injected (full content, budget ignored)
   const pinnedChildIds = new Set<string>();
@@ -968,52 +1031,18 @@ export function buildSystemPrompt(
     const lines = [s.headers.codexSection];
     const stableLines = [s.headers.codexSection];
     for (const entry of allCodex) {
-      const label = s.typeLabels[entry.type] ?? entry.type;
-      const displaySummary =
-        entry.summary.trim() || entry.contentFallback || "";
-      const phaseSuffix = entry.phaseLabel ? ` [${entry.phaseLabel}]` : "";
       const priority = computeL4Priority({
         isChild: pinnedChildIds.has(entry.id),
         isAlways: alwaysEntryIdSet.has(entry.id),
         isPinned: pinnedIds.has(entry.id),
         hasRelationVia: Boolean(entry.relationVia),
       });
+      // relationVia は HTML コメントでなく通常行として可視注入する
+      // (コメントを無視する LLM でも traversal 方向が届くように)。
       const blockLines = [
         `<!-- l4pri:${priority} -->`,
-        `- **${entry.name}**${phaseSuffix} (${label})`,
-        `  ${s.labels.codexId}: ${entry.id}`,
+        ...buildCodexEntryLines(entry, pinnedIds.has(entry.id)),
       ];
-      if (entry.relationVia) {
-        // 旧実装は `<!-- via: ... -->` で HTML コメント注入していたが、
-        // (1) コメント構文ぶんの token を浪費し、(2) 一部 LLM はコメントを
-        // 無視するため traversal 方向の手掛かりが届かないことがあった。
-        // 通常行として可視注入する。
-        blockLines.push(`  ${s.labels.codexRelation}: ${entry.relationVia}`);
-      }
-      if (entry.aliases && entry.aliases.length > 0) {
-        blockLines.push(
-          `  ${s.labels.codexAliases}: ${entry.aliases.join(", ")}`,
-        );
-      }
-      if (displaySummary) {
-        blockLines.push(`  ${s.labels.codexSummary}: ${displaySummary}`);
-      }
-      if (pinnedIds.has(entry.id) && entry.tags?.length) {
-        blockLines.push(`  ${s.labels.codexTags}: ${entry.tags.join(", ")}`);
-      }
-      if (pinnedIds.has(entry.id) && entry.customDetails?.length) {
-        for (const detail of entry.customDetails) {
-          blockLines.push(`  - ${detail.fieldName}: ${detail.value}`);
-        }
-      }
-      if (entry.fullContent) {
-        blockLines.push(
-          `  ${s.labels.codexFullContent}:\n${entry.fullContent}`,
-        );
-      }
-      if (entry.childrenContext) {
-        blockLines.push(entry.childrenContext);
-      }
       const blockText = blockLines.join("\n");
       lines.push(blockText);
       const isStable = l4StableIds.size === 0 || l4StableIds.has(entry.id);
@@ -1121,6 +1150,35 @@ export function buildSystemPrompt(
     ? `${s.headers.commandInstruction}\n${input.commandInstruction}`
     : "";
 
+  // <focus_subject>: Codex/Snippet スコープのアンカー (= この会話の主題)。
+  // L3 スロットの直後・L4 の前に置き、フル本文を持たせて主題を強く明示する。
+  // L4 側からは当該アンカーを除外済みの前提 (呼び出し側責務) なので重複しない。
+  // trim 対象外で常に注入されるため、予算は hardeningOverhead 側で予約する。
+  let focusText = "";
+  if (input.focusSubject) {
+    const fs = input.focusSubject;
+    if (fs.kind === "codex") {
+      // Spotlight (pinned) 相当: 同じ codex エントリ描画 (タグ/カスタム詳細/全文/子) を
+      // includePinnedExtras=true で出す。種別は名前行の `(キャラクター)` 等で伝わる。
+      focusText = [
+        s.headers.focusSubject,
+        s.focusSubjectIntro,
+        ...buildCodexEntryLines(fs.entry, true),
+      ].join("\n");
+    } else if (fs.name.trim() || fs.body.trim()) {
+      const focusLines = [
+        s.headers.focusSubject,
+        s.focusSubjectIntro,
+        `${s.labels.contentType}: Snippet`,
+        `${s.labels.contentTitle}: ${fs.name}`,
+      ];
+      if (fs.body.trim()) {
+        focusLines.push(`${s.labels.contentBody}:\n${fs.body.trim()}`);
+      }
+      focusText = focusLines.join("\n");
+    }
+  }
+
   // Apply excludeLayers: set specified layers to empty string
   let effectiveL1 = l1Text;
   let effectiveL2 = l2Text;
@@ -1169,6 +1227,11 @@ export function buildSystemPrompt(
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l2);
     if (effectiveL3.trim())
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l3);
+    // focus は trimToFit に渡さず常に注入するため、ラッパー + 本文ぶんを丸ごと
+    // 予算から先取りして他レイヤーの trim 余地を確保する。
+    if (focusText.trim())
+      hardeningOverhead +=
+        wrapperOverhead(PROMPT_DATA_TAGS.focus) + countTokens(focusText);
     if (effectiveL4.trim()) {
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l4);
       // stable/volatile 分割時は codex_entries ブロックが 2 つになる
@@ -1233,6 +1296,7 @@ export function buildSystemPrompt(
   effectiveL1 = wrapDataLayer(effectiveL1, PROMPT_DATA_TAGS.l1);
   effectiveL2 = wrapDataLayer(effectiveL2, PROMPT_DATA_TAGS.l2);
   effectiveL3 = wrapDataLayer(effectiveL3, PROMPT_DATA_TAGS.l3);
+  const effectiveFocus = wrapDataLayer(focusText, PROMPT_DATA_TAGS.focus);
   effectiveL4 = wrapDataLayer(effectiveL4, PROMPT_DATA_TAGS.l4);
   l4StableSegment = wrapDataLayer(l4StableSegment, PROMPT_DATA_TAGS.l4);
   l4VolatileSegment = wrapDataLayer(l4VolatileSegment, PROMPT_DATA_TAGS.l4);
@@ -1247,6 +1311,7 @@ export function buildSystemPrompt(
     effectiveL1,
     effectiveL2,
     effectiveL3,
+    effectiveFocus,
     effectiveL4,
     l4StableSegment,
     effectiveRag,
@@ -1259,6 +1324,7 @@ export function buildSystemPrompt(
   const l1Tokens = countTokens(effectiveL1);
   const l2Tokens = countTokens(effectiveL2);
   const l3Tokens = countTokens(effectiveL3);
+  const focusTokens = effectiveFocus ? countTokens(effectiveFocus) : 0;
   const l4Tokens = countTokens(effectiveL4);
   const ragTokens = effectiveRag ? countTokens(effectiveRag) : 0;
   const l5Tokens = effectiveL5 ? countTokens(effectiveL5) : 0;
@@ -1279,6 +1345,13 @@ export function buildSystemPrompt(
     label: i18next.t("chat.context.layer.L3"),
     used: l3Tokens,
   });
+  if (effectiveFocus) {
+    layers.push({
+      layer: "FOCUS",
+      label: i18next.t("chat.context.layer.FOCUS"),
+      used: focusTokens,
+    });
+  }
   layers.push({
     layer: "L4",
     label: i18next.t("chat.context.layer.L4"),
@@ -1311,6 +1384,7 @@ export function buildSystemPrompt(
     effectiveL1,
     effectiveL2,
     effectiveL3,
+    effectiveFocus,
     effectiveL4,
     effectiveRag,
     effectiveL5,
@@ -1318,10 +1392,17 @@ export function buildSystemPrompt(
     effectiveL6,
   ].join("\n");
 
+  // focus は L3 と同じ stable 領域。Rust 側は cache_control を 4 breakpoint まで
+  // しか張れない (ai.rs build_system_payload) ため、別セグメントにせず L3 スロットへ
+  // 統合する。実運用では effectiveL3 (scene スコープ) と effectiveFocus
+  // (codex/snippet スコープ) は排他だが、両在しても 1 セグメントに収めて上限を守る。
+  const l3CacheSegment = [effectiveL3, effectiveFocus]
+    .filter((seg) => seg.trim().length > 0)
+    .join("\n");
   const cacheSegments = [
     `${baseText}${effectiveL1}`,
     effectiveL2,
-    effectiveL3,
+    l3CacheSegment,
     l4StableSegment || effectiveL4,
   ].filter((seg) => seg.trim().length > 0);
 
@@ -1346,12 +1427,14 @@ export function buildSystemPrompt(
     l1Tokens +
     l2Tokens +
     l3Tokens +
+    focusTokens +
     l4Tokens +
     ragTokens +
     l5Tokens +
     l6Tokens +
     reminderTokens +
-    (reminderText ? 8 : 7);
+    // prompt 配列に effectiveFocus を 1 要素追加したぶん join の \n が 1 個増える。
+    (reminderText ? 9 : 8);
 
   return {
     prompt,

@@ -120,6 +120,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const chapterOutlines = useChatStore((s) => s.chapterOutlines);
   const detectedEntries = useChatStore((s) => s.detectedEntries);
   const alwaysEntries = useChatStore((s) => s.alwaysEntries);
+  const scopeAnchor = useChatStore((s) => s.scopeAnchor);
   const systemPrompt = useChatStore((s) => s.lastSystemPrompt);
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
   const refreshContextLayers = useChatStore((s) => s.refreshContextLayers);
@@ -959,6 +960,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       />
 
       <ContextBar
+        scopeAnchor={scopeAnchor}
         pinnedEntries={[...pinnedEntries, ...inputPinnedEntries]}
         pinnedSnippets={pinnedSnippets}
         pinnedStickies={pinnedStickies}

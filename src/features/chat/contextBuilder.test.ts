@@ -1967,4 +1967,163 @@ describe("prompt injection hardening", () => {
       expect(result.prompt).toContain("</sticky>");
     });
   });
+
+  // codex/snippet スコープ: 現在シーンが無いとき <current_scene> を省略し、
+  // 代わりにアンカーを <focus_subject> ブロックへ昇格する挙動の回帰テスト。
+  describe("buildSystemPrompt — empty current_scene & focus_subject", () => {
+    const TAG = PROMPT_DATA_TAGS;
+
+    // baseText が予約タグ名を列挙で含むため、開きタグ `<current_scene>` は
+    // ブロック非出力でも常に出現する。ブロックの有無は閉じタグ
+    // `</current_scene>` (wrapDataLayer が出力する) で判定する。
+    it("omits the <current_scene> block when there is no real scene", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+      });
+      expect(result.prompt).not.toContain(`</${TAG.l3}>`);
+      // 空の見出しだけが残っていないこと
+      expect(result.prompt).not.toContain(JA_CHAT_SYSTEM.headers.currentScene);
+    });
+
+    it("still emits <current_scene> for a real scene", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "s1", title: "見出しあり", content: "本文" },
+      });
+      expect(result.prompt).toContain(`</${TAG.l3}>`);
+      expect(result.prompt).toContain("見出しあり");
+    });
+
+    it("emits <current_scene> for a folder/project aggregated pseudo-scene", () => {
+      // 集約擬似シーンは非空の id+title を持つのでガードを通過して保持される。
+      const result = buildSystemPrompt({
+        scene: {
+          id: "agg-folder-1",
+          title: "第1章（集約）",
+          content: "",
+        },
+      });
+      expect(result.prompt).toContain(`</${TAG.l3}>`);
+      expect(result.prompt).toContain("第1章（集約）");
+    });
+
+    it("injects a codex focusSubject as a <focus_subject> block before <codex_entries>", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        focusSubject: {
+          kind: "codex",
+          entry: {
+            id: "hero-1",
+            type: "character",
+            name: "主人公アレン",
+            summary: "概要文",
+            fullContent: "辺境出身の剣士。寡黙だが面倒見が良い。",
+          },
+        },
+        // 実際の codex_entries ブロックを作って順序を検証する
+        codexEntries: [
+          { id: "c1", type: "character", name: "脇役ボブ", summary: "概要" },
+        ],
+      });
+      expect(result.prompt).toContain(`</${TAG.focus}>`);
+      expect(result.prompt).toContain("主人公アレン");
+      expect(result.prompt).toContain("辺境出身の剣士");
+      // <current_scene> ブロックは出さず、focus が L4 より前に来ること。
+      // baseText は予約タグ名を列挙で含むので閉じタグ位置で順序判定する。
+      expect(result.prompt).not.toContain(`</${TAG.l3}>`);
+      const focusIdx = result.prompt.indexOf(`</${TAG.focus}>`);
+      const codexIdx = result.prompt.indexOf(`</${TAG.l4}>`);
+      expect(focusIdx).toBeGreaterThanOrEqual(0);
+      expect(codexIdx).toBeGreaterThanOrEqual(0);
+      expect(focusIdx).toBeLessThan(codexIdx);
+    });
+
+    it("does not duplicate the scoped codex body in <codex_entries> (anchor lives only in focus)", () => {
+      // 呼び出し側はアンカーを pinnedCodexEntries から除外する契約。focus にだけ本文が乗る。
+      const result = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        focusSubject: {
+          kind: "codex",
+          entry: {
+            id: "x-1",
+            type: "lore",
+            name: "ユニーク主題X",
+            summary: "概要",
+            fullContent: "本文ボディABC",
+          },
+        },
+      });
+      const occurrences = result.prompt.split("ユニーク主題X").length - 1;
+      expect(occurrences).toBe(1);
+    });
+
+    it("renders the codex focusSubject with Spotlight-equivalent fields (tags / custom details / full content)", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        focusSubject: {
+          kind: "codex",
+          entry: {
+            id: "hero-2",
+            type: "character",
+            name: "焦点キャラ",
+            summary: "概要テキスト",
+            aliases: ["別名A"],
+            tags: ["主要", "剣士"],
+            customDetails: [{ fieldName: "年齢", value: "17" }],
+            fullContent: "全文ボディ詳細",
+          },
+        },
+      });
+      const focusStart = result.prompt.indexOf(`<${TAG.focus}>`);
+      const focusEnd = result.prompt.indexOf(`</${TAG.focus}>`);
+      const block = result.prompt.slice(focusStart, focusEnd);
+      // L4 pinned と同じ構造化フィールドが focus ブロック内に出ること
+      expect(block).toContain("焦点キャラ");
+      expect(block).toContain("hero-2"); // id
+      expect(block).toContain("別名A"); // aliases
+      expect(block).toContain("概要テキスト"); // summary
+      expect(block).toContain("主要, 剣士"); // tags (Spotlight extras)
+      expect(block).toContain("年齢: 17"); // custom details (Spotlight extras)
+      expect(block).toContain("全文ボディ詳細"); // fullContent
+    });
+
+    it("injects a snippet focusSubject body into the <focus_subject> block", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        focusSubject: {
+          kind: "snippet",
+          name: "雨の描写メモ",
+          body: "鉛色の空から糸のような雨が降り続いていた。",
+        },
+      });
+      expect(result.prompt).toContain(`</${TAG.focus}>`);
+      expect(result.prompt).toContain("雨の描写メモ");
+      expect(result.prompt).toContain("鉛色の空から糸のような雨");
+    });
+
+    it("adds a FOCUS layer breakdown when a focusSubject is present", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        focusSubject: {
+          kind: "codex",
+          entry: {
+            id: "f-1",
+            type: "character",
+            name: "主題",
+            summary: "本文",
+          },
+        },
+      });
+      const focusLayer = result.layers.find((l) => l.layer === "FOCUS");
+      expect(focusLayer).toBeDefined();
+      expect(focusLayer!.used).toBeGreaterThan(0);
+    });
+
+    it("emits no <focus_subject> block when focusSubject is absent", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "s1", title: "t", content: "本文" },
+      });
+      expect(result.prompt).not.toContain(`</${TAG.focus}>`);
+      expect(result.layers.find((l) => l.layer === "FOCUS")).toBeUndefined();
+    });
+  });
 });

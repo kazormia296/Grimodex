@@ -976,6 +976,7 @@
         "L1": "Project info",
         "L2": "Story so far",
         "L3": "Current scene",
+        "FOCUS": "Conversation focus",
         "L4": "Codex & settings",
         "RAG": "Related scenes (semantic)",
         "L5": "Conversation summary",

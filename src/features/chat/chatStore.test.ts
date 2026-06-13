@@ -2803,7 +2803,9 @@ describe("useChatStore", () => {
   });
 
   describe("refreshContextLayers snippet scope", () => {
-    it("injects the anchor snippet at the head of pinnedSnippets", async () => {
+    // アンカーは L4 pinnedSnippets ではなく <focus_subject> (focusSubject) 経由で
+    // フル本文注入する。scopeAnchor ストアフィールドにも反映され ContextBar に出る。
+    it("injects the anchor snippet body via focusSubject, not pinnedSnippets", async () => {
       const { getSnippet } = await import("@/features/snippets/api");
       vi.mocked(getSnippet).mockResolvedValueOnce({
         id: "snip-1",
@@ -2831,15 +2833,26 @@ describe("useChatStore", () => {
 
       expect(mockBuildSystemPrompt).toHaveBeenCalled();
       const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
+      // focusSubject にアンカーが乗る
+      const focus = args?.focusSubject;
+      expect(focus).toBeDefined();
+      expect(focus?.kind).toBe("snippet");
+      if (focus?.kind === "snippet") {
+        expect(focus.name).toBe("設定メモ");
+      }
+      // L4 pinnedSnippets には載らない (重複回避)
       const pinnedSnippets = args?.pinnedSnippets ?? [];
-      expect(pinnedSnippets.length).toBeGreaterThan(0);
-      expect(pinnedSnippets[0].id).toBe("snip-1");
-      expect(pinnedSnippets[0].title).toBe("設定メモ");
-      // extractPlainText は "" を返す mock → content は title へフォールバック
-      expect(pinnedSnippets[0].content).toBe("設定メモ");
+      expect(pinnedSnippets.find((s) => s.id === "snip-1")).toBeUndefined();
+      // ContextBar 用の scopeAnchor も設定される
+      const anchor = useChatStore.getState().scopeAnchor;
+      expect(anchor).toEqual({
+        kind: "snippet",
+        id: "snip-1",
+        title: "設定メモ",
+      });
     });
 
-    it("does not duplicate the anchor when it is also session-pinned", async () => {
+    it("removes the anchor from pinnedSnippets even when it is also session-pinned (focus owns it)", async () => {
       const { getSnippet } = await import("@/features/snippets/api");
       vi.mocked(getSnippet).mockResolvedValueOnce({
         id: "snip-1",
@@ -2876,8 +2889,9 @@ describe("useChatStore", () => {
 
       const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
       const pinnedSnippets = args?.pinnedSnippets ?? [];
-      const ids = pinnedSnippets.map((s) => s.id);
-      expect(ids.filter((id) => id === "snip-1")).toHaveLength(1);
+      // session pin と重複するアンカーは L4 から除外され、focus 側にだけ存在する
+      expect(pinnedSnippets.filter((s) => s.id === "snip-1")).toHaveLength(0);
+      expect(args?.focusSubject?.kind).toBe("snippet");
     });
   });
 

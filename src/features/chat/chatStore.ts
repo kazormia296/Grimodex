@@ -441,6 +441,16 @@ interface ChatState {
   // G15: auto-detected and always-mode entries (excluding pinned)
   detectedEntries: CodexEntry[];
   alwaysEntries: CodexEntry[];
+  /**
+   * codex/snippet スコープのアンカー (= この会話の主題)。ContextBar に固定チップ
+   * として表示し、プロンプトの <focus_subject> 注入対象と一致させる。
+   * scene/folder/project スコープでは null。refreshContextLayers が両分岐で
+   * 必ず再設定するため、スコープ切替時に stale 化しない。
+   */
+  scopeAnchor:
+    | { kind: "codex"; id: string; name: string }
+    | { kind: "snippet"; id: string; title: string }
+    | null;
   /** ユーザーが × で auto 注入から除外したエントリ ID（セッション内のみ保持、
    * セッション切替・新規作成でクリア）。always 再収集のフィルタに使う。 */
   excludedAutoEntryIds: string[];
@@ -2254,6 +2264,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   chapterOutlines: [],
   detectedEntries: [],
   alwaysEntries: [],
+  scopeAnchor: null,
   excludedAutoEntryIds: [],
   inputPinnedEntryIds: [],
   agentMode: false,
@@ -2931,6 +2942,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             lastSystemPromptKey: contextPromptKey(get()),
             detectedEntries: ctxResult.detectedEntries,
             alwaysEntries: ctxResult.alwaysEntries,
+            scopeAnchor: null,
           });
         } else if (projectCtx) {
           // グローバルチャット: refreshContextLayers が事前に組んだ
@@ -3450,6 +3462,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           lastSystemPromptKey: contextPromptKey(get()),
           detectedEntries: ctxResult.detectedEntries,
           alwaysEntries: ctxResult.alwaysEntries,
+          scopeAnchor: null,
           cacheInvalidatedReason: null,
         });
         sentSystemPrompt = ctxResult.prompt;
@@ -4024,20 +4037,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }));
         }
 
-        // Snippet スコープ: anchor snippet を pinnedSnippets の先頭に固定注入。
-        // session pin にも同じ snippet がある場合は重複させない (codex スコープの
-        // selectedPinned 先頭マージと同型)。
+        // Snippet スコープ: anchor snippet は <focus_subject> へフル本文を注入する
+        // (buildSystemPrompt focusSubject 参照) ため、L4 の pinnedSnippets からは
+        // 除外して重複させない。session pin に同一 snippet があっても focus を優先。
         if (snippetAnchor) {
-          const anchorCtx: PinnedSnippetContext = {
-            id: snippetAnchor.id,
-            title: snippetAnchor.title,
-            content:
-              extractPlainText(snippetAnchor.content) || snippetAnchor.title,
-          };
-          globalPinnedSnippets = [
-            anchorCtx,
-            ...globalPinnedSnippets.filter((s) => s.id !== anchorCtx.id),
-          ];
+          globalPinnedSnippets = globalPinnedSnippets.filter(
+            (sn) => sn.id !== snippetAnchor.id,
+          );
         }
 
         // G21: include input-typed detected entries not yet pinned to DB
@@ -4070,17 +4076,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           allEntries,
         );
         if (codexBlocks?.selectedPinned) {
-          const withoutSelected = mergedGlobalPinnedCodex.filter(
+          // codex スコープのアンカーは <focus_subject> へフル本文を注入するため、
+          // L4 の pinnedCodexEntries からは除外して重複させない。
+          mergedGlobalPinnedCodex = mergedGlobalPinnedCodex.filter(
             (e) => e.id !== codexBlocks.selectedPinned.id,
           );
-          mergedGlobalPinnedCodex = [
-            codexBlocks.selectedPinned,
-            ...withoutSelected,
-          ];
         }
         const mergedGlobalPinnedIdSet = new Set(
           mergedGlobalPinnedCodex.map((e) => e.id),
         );
+        // スコープアンカー (focus_subject 側に注入済み) は detected / related /
+        // always のどの L4 経路にも復活させない。pinned 集合へ id を足して二重防御。
+        if (codexBlocks?.selectedPinned) {
+          mergedGlobalPinnedIdSet.add(codexBlocks.selectedPinned.id);
+        }
 
         const alwaysNotPinned = globalAlwaysEntries.filter(
           (e) => !mergedGlobalPinnedIdSet.has(e.id),
@@ -4139,6 +4148,33 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           .messages.filter((m) => m.role !== "system" && !m.isSummarized)
           .reduce((sum, m) => sum + countTokens(m.content), 0);
 
+        // codex/snippet スコープのアンカー: プロンプトの <focus_subject> へ注入し
+        // (focusSubject)、同じ対象を ContextBar 固定チップへ反映する
+        // (scopeAnchorState)。L4 からは上で除外済みなので重複しない。
+        let focusSubject:
+          | { kind: "codex"; entry: import("./contextBuilder").CodexContext }
+          | { kind: "snippet"; name: string; body: string }
+          | undefined;
+        let scopeAnchorState: ChatState["scopeAnchor"] = null;
+        if (codexBlocks?.selectedPinned) {
+          // selectedPinned は enrichWithCustomDetails 済みのフル PinnedCodexContext。
+          // Spotlight (pinned) 相当の構造化レンダリングで <focus_subject> へ渡す。
+          const sel = codexBlocks.selectedPinned;
+          focusSubject = { kind: "codex", entry: sel };
+          scopeAnchorState = { kind: "codex", id: sel.id, name: sel.name };
+        } else if (snippetAnchor) {
+          focusSubject = {
+            kind: "snippet",
+            name: snippetAnchor.title,
+            body: extractPlainText(snippetAnchor.content),
+          };
+          scopeAnchorState = {
+            kind: "snippet",
+            id: snippetAnchor.id,
+            title: snippetAnchor.title,
+          };
+        }
+
         const promptResult = buildSystemPrompt({
           scene: aggregatedScene
             ? {
@@ -4164,6 +4200,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             codexBlocks.relationExpanded.length > 0
               ? codexBlocks.relationExpanded
               : undefined,
+          focusSubject,
           lang: projectCtx?.language ?? "ja",
           agentMode: effectiveAgentMode,
           mapBoardMarkdown,
@@ -4182,6 +4219,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           lastSystemPromptKey: promptKey,
           detectedEntries: detectedNotPinned,
           alwaysEntries: alwaysNotDetected,
+          scopeAnchor: scopeAnchorState,
           projectOutline: projectCtx?.outline ?? undefined,
           chapterOutlines: scopeOutlines,
         });
@@ -4189,6 +4227,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         set({
           contextTokenCount: 0,
           contextLayers: [],
+          scopeAnchor: null,
           projectOutline: undefined,
           chapterOutlines: [],
         });
@@ -4229,6 +4268,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         lastSystemPromptKey: promptKey,
         detectedEntries: ctxResult.detectedEntries,
         alwaysEntries: ctxResult.alwaysEntries,
+        scopeAnchor: null,
         projectOutline: ctxResult.projectOutline,
         chapterOutlines: ctxResult.chapterOutlines,
         pinsVersion: get().pinsVersion + 1,
