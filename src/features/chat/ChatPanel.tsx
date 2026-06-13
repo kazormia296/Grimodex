@@ -118,6 +118,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const detectedEntries = useChatStore((s) => s.detectedEntries);
   const alwaysEntries = useChatStore((s) => s.alwaysEntries);
   const systemPrompt = useChatStore((s) => s.lastSystemPrompt);
+  const sentSystemPrompt = useChatStore((s) => s.lastSentSystemPrompt);
+  const sentLayers = useChatStore((s) => s.lastSentLayers);
+  const sentTokens = useChatStore((s) => s.lastSentTokens);
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
   const refreshContextLayers = useChatStore((s) => s.refreshContextLayers);
   const removeEntryFromAuto = useChatStore((s) => s.removeEntryFromAuto);
@@ -966,6 +969,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         contextTokenCount={contextTokenCount}
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}
+        sentSystemPrompt={sentSystemPrompt}
+        sentLayers={sentLayers}
+        sentTokens={sentTokens}
         model={currentModel}
         canUseCreator={false}
         projectOutline={projectOutline}

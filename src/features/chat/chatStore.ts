@@ -415,6 +415,15 @@ interface ChatState {
    * プロンプトを流用しないための照合に使う。 */
   lastSystemPromptKey: string | null;
   /**
+   * 直近の「実際に送信した」system プロンプトのスナップショット。
+   * lastSystemPrompt はライブプレビュー用で、送信直後に seed 無しの
+   * refreshContextLayers で上書きされるため related_scenes（semantic RAG）が
+   * 消える。RAG はメッセージ依存で送信時のみ計算されるので、送信プロンプトを
+   * 確認するにはこの退避が要る。null = 未送信。 */
+  lastSentSystemPrompt: string | null;
+  lastSentLayers: LayerBreakdown[];
+  lastSentTokens: number;
+  /**
    * Monotonic counter bumped each time refreshContextLayers completes.
    * Subscribers (e.g. ContextBar's pinnedStickies list) can watch this to
    * pick up pins/unpins triggered from outside ChatPanel (Map / Codex).
@@ -2236,6 +2245,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   contextLayers: [],
   lastSystemPrompt: "",
   lastSystemPromptKey: null,
+  lastSentSystemPrompt: null,
+  lastSentLayers: [],
+  lastSentTokens: 0,
   pinsVersion: 0,
   projectOutline: undefined,
   chapterOutlines: [],
@@ -2440,6 +2452,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionStableCodexIds: [],
         sessionAgentToolsSnapshot: null,
         excludedAutoEntryIds: [],
+        // 別セッションの「前回送信」スナップショットが残ると紛らわしいので
+        // セッション境界でクリアする（次の送信まで前回送信ビューは出ない）。
+        lastSentSystemPrompt: null,
+        lastSentLayers: [],
+        lastSentTokens: 0,
       });
       return;
     }
@@ -2466,6 +2483,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
         excludedAutoEntryIds: [],
+        lastSentSystemPrompt: null,
+        lastSentLayers: [],
+        lastSentTokens: 0,
       });
     } catch (e) {
       set({ isLoadingMessages: false });
@@ -2916,6 +2936,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             contextLayers: ctxResult.layers,
             lastSystemPrompt: ctxResult.prompt,
             lastSystemPromptKey: contextPromptKey(get()),
+            // 送信プロンプトのスナップショット（related_scenes 込み）。非 agent
+            // 経路と同じく、後続 refresh の上書きから守るため別フィールドに退避。
+            lastSentSystemPrompt: ctxResult.prompt,
+            lastSentLayers: ctxResult.layers,
+            lastSentTokens: ctxResult.totalTokens,
             detectedEntries: ctxResult.detectedEntries,
             alwaysEntries: ctxResult.alwaysEntries,
           });
@@ -3417,6 +3442,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           contextLayers: ctxResult.layers,
           lastSystemPrompt: ctxResult.prompt,
           lastSystemPromptKey: contextPromptKey(get()),
+          // 送信プロンプトのスナップショット（related_scenes 込み）。後続の
+          // seed 無し refresh で lastSystemPrompt が上書きされてもこれは残す。
+          lastSentSystemPrompt: ctxResult.prompt,
+          lastSentLayers: ctxResult.layers,
+          lastSentTokens: ctxResult.totalTokens,
           detectedEntries: ctxResult.detectedEntries,
           alwaysEntries: ctxResult.alwaysEntries,
           cacheInvalidatedReason: null,

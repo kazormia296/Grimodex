@@ -100,6 +100,10 @@ interface ContextBarProps {
   contextTokenCount: number;
   contextLayers: LayerBreakdown[];
   systemPrompt: string;
+  /** 直近の実送信プロンプト（related_scenes 込み）。プレビューの「前回送信」用。 */
+  sentSystemPrompt?: string | null;
+  sentLayers?: LayerBreakdown[];
+  sentTokens?: number;
   model: string;
   canUseCreator?: boolean;
   /** Phase 4 後続: AI に注入される project outline 全文（trim 済み・空でない場合のみ） */
@@ -134,6 +138,9 @@ export function ContextBar({
   contextTokenCount,
   contextLayers,
   systemPrompt,
+  sentSystemPrompt,
+  sentLayers,
+  sentTokens,
   model,
   canUseCreator = false,
   projectOutline,
@@ -831,6 +838,9 @@ export function ContextBar({
           systemPrompt={systemPrompt}
           layers={contextLayers}
           totalTokens={contextTokenCount}
+          sentSystemPrompt={sentSystemPrompt}
+          sentLayers={sentLayers}
+          sentTokens={sentTokens}
           model={model}
           contextWindow={contextWindow}
           onClose={() => setPreviewOpen(false)}
@@ -840,12 +850,26 @@ export function ContextBar({
   );
 }
 
-/** chatStore から systemPrompt を取得するためのラッパー */
+/** chatStore から systemPrompt / 前回送信スナップショットを取得するラッパー */
 export function ContextBarConnected(
-  props: Omit<ContextBarProps, "systemPrompt">,
+  props: Omit<
+    ContextBarProps,
+    "systemPrompt" | "sentSystemPrompt" | "sentLayers" | "sentTokens"
+  >,
 ) {
   const systemPrompt = useChatStore((s) => s.lastSystemPrompt);
-  return <ContextBar {...props} systemPrompt={systemPrompt} />;
+  const sentSystemPrompt = useChatStore((s) => s.lastSentSystemPrompt);
+  const sentLayers = useChatStore((s) => s.lastSentLayers);
+  const sentTokens = useChatStore((s) => s.lastSentTokens);
+  return (
+    <ContextBar
+      {...props}
+      systemPrompt={systemPrompt}
+      sentSystemPrompt={sentSystemPrompt}
+      sentLayers={sentLayers}
+      sentTokens={sentTokens}
+    />
+  );
 }
 
 interface OutlineChipProps {

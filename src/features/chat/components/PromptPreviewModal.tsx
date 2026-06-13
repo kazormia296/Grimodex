@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { LayerBreakdown } from "../contextBuilder";
 import { estimateInputCost, formatCost } from "../modelPricing";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { cn } from "@/lib/utils";
 
 interface PromptPreviewModalProps {
   systemPrompt: string;
@@ -12,6 +14,11 @@ interface PromptPreviewModalProps {
   model?: string;
   /** モデルのコンテキストウィンドウ (tokens)。0 / 省略時は fill bar 行も省略 */
   contextWindow?: number;
+  /** 直近の実送信プロンプト（related_scenes など送信時のみ計算される内容を
+   * 含む）。null = 未送信。存在するとライブ/前回送信の切替が出る。 */
+  sentSystemPrompt?: string | null;
+  sentLayers?: LayerBreakdown[];
+  sentTokens?: number;
   onClose: () => void;
 }
 
@@ -21,15 +28,32 @@ export function PromptPreviewModal({
   totalTokens,
   model,
   contextWindow,
+  sentSystemPrompt,
+  sentLayers,
+  sentTokens,
   onClose,
 }: PromptPreviewModalProps) {
   const { t } = useTranslation();
+  // related_scenes（意味検索）はメッセージ依存で送信時のみ計算されるため、
+  // ライブプレビューには映らない。実際に送信した内容を確認できるよう、
+  // 前回送信のスナップショットがあれば切替を出す。
+  const hasSent = sentSystemPrompt != null;
+  const [showSent, setShowSent] = useState(false);
+  const viewingSent = hasSent && showSent;
+
+  const displaySystemPrompt = viewingSent
+    ? (sentSystemPrompt ?? "")
+    : systemPrompt;
+  const displayLayers = viewingSent ? (sentLayers ?? []) : layers;
+  const displayTotalTokens = viewingSent ? (sentTokens ?? 0) : totalTokens;
   const estimatedCost =
-    model && totalTokens > 0 ? estimateInputCost(model, totalTokens) : null;
+    model && displayTotalTokens > 0
+      ? estimateInputCost(model, displayTotalTokens)
+      : null;
   const costLabel = estimatedCost !== null ? formatCost(estimatedCost) : null;
   const fillPct =
     contextWindow && contextWindow > 0
-      ? Math.min(100, Math.round((totalTokens / contextWindow) * 100))
+      ? Math.min(100, Math.round((displayTotalTokens / contextWindow) * 100))
       : null;
   const fillTone =
     fillPct === null
@@ -62,8 +86,51 @@ export function PromptPreviewModal({
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* ライブ / 前回送信 の切替。送信したことがある場合のみ表示。
+            related_scenes（意味検索）は送信時のみ計算されライブには映らない。 */}
+        {hasSent && (
+          <div>
+            <div className="inline-flex rounded-md border border-border p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setShowSent(false)}
+                className={cn(
+                  "rounded px-2 py-1",
+                  !showSent
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-accent",
+                )}
+              >
+                {t("chat.context.promptViewLive", "ライブ")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSent(true)}
+                className={cn(
+                  "rounded px-2 py-1",
+                  showSent
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-accent",
+                )}
+              >
+                {t("chat.context.promptViewLastSent", "前回送信")}
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              {viewingSent
+                ? t(
+                    "chat.context.promptViewLastSentHint",
+                    "実際に送信したプロンプト。related_scenes（意味検索）はこの送信時のメッセージに基づきます。",
+                  )
+                : t(
+                    "chat.context.promptViewLiveHint",
+                    "現在の文脈のプレビュー。related_scenes は送信時に追加されるためここには出ません。",
+                  )}
+            </p>
+          </div>
+        )}
         {/* レイヤー別内訳テーブル */}
-        {layers.length > 0 && (
+        {displayLayers.length > 0 && (
           <div>
             <h3 className="mb-2 text-xs font-semibold text-muted-foreground uppercase">
               {t("chat.context.layerBreakdown")}
@@ -79,10 +146,10 @@ export function PromptPreviewModal({
                 </tr>
               </thead>
               <tbody>
-                {layers.map((layer) => {
+                {displayLayers.map((layer) => {
                   const pct =
-                    totalTokens > 0
-                      ? Math.round((layer.used / totalTokens) * 100)
+                    displayTotalTokens > 0
+                      ? Math.round((layer.used / displayTotalTokens) * 100)
                       : 0;
                   return (
                     <tr key={layer.layer} className="border-b border-border/40">
@@ -114,7 +181,7 @@ export function PromptPreviewModal({
                 <tr className="font-semibold">
                   <td className="py-1 pr-4">{t("chat.context.totalRow")}</td>
                   <td className="py-1 pr-4 text-right tabular-nums">
-                    {totalTokens.toLocaleString()}
+                    {displayTotalTokens.toLocaleString()}
                   </td>
                   <td />
                 </tr>
@@ -169,7 +236,7 @@ export function PromptPreviewModal({
             {t("chat.context.fullPrompt")}
           </h3>
           <pre className="whitespace-pre-wrap rounded bg-muted p-3 text-xs text-foreground">
-            {systemPrompt || t("chat.context.emptyPrompt")}
+            {displaySystemPrompt || t("chat.context.emptyPrompt")}
           </pre>
         </div>
       </div>
