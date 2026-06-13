@@ -112,8 +112,8 @@ pub const CHUNKER_VERSION_EN: &str = "semantic-prose-chunker-en-v1";
 /// English spec — finalised to bge-small-en-v1.5 by the host calibration
 /// (scripts/calibrate-embedding-threshold.py, 36-pair corpus). bge beat
 /// granite on Recall@3 (0.89 vs 0.81), MRR (0.78 vs 0.75) and the operating
-/// point (recall 0.86 @ fp 0.048 vs 0.81 @ 0.101), and is smaller (~34MB int8)
-/// + MIT. It is a plain BERT: **CLS pooling** (confirmed via the ST Pooling
+/// point (recall 0.86 @ fp 0.048 vs 0.81 @ 0.101), and is smaller (~34MB int8) +
+/// MIT. It is a plain BERT: **CLS pooling** (confirmed via the ST Pooling
 /// config `pooling_mode='cls'`) and it needs a (zeroed) `token_type_ids`
 /// input. No query/document prefix. RAG threshold: SEMANTIC_RECALL_MIN_SCORE_EN
 /// = 0.51 (semanticRecall.ts).
