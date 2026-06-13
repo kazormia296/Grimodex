@@ -203,6 +203,7 @@ describe("useInlineAiDiff", () => {
           text: "BRAVE",
           model: "claude-sonnet-4-6",
           stopReason: "end_turn",
+          promptText: "[system]\nSYS\n\n[user]\nUSR",
         };
       },
     );
@@ -243,6 +244,7 @@ describe("useInlineAiDiff", () => {
         sceneNodeId: "scene-1",
         model: "claude-sonnet-4-6",
         traceId: mark?.traceId,
+        promptFull: "[system]\nSYS\n\n[user]\nUSR",
       }),
     );
   });

@@ -27,6 +27,8 @@ vi.mock("@/features/project/api", () => ({
 const insertGenerationLogMock = vi.fn();
 vi.mock("@/features/attribution/generationLogApi", () => ({
   insertGenerationLog: (...args: unknown[]) => insertGenerationLogMock(...args),
+  serializePromptMessages: (msgs?: { role: string; content: string }[]) =>
+    (msgs ?? []).map((m) => `[${m.role}]\n${m.content}`).join("\n\n"),
 }));
 
 // Mock inference dependencies for C-7 tests.

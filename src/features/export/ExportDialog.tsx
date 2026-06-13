@@ -187,6 +187,10 @@ export function ExportDialog({ open, onClose }: Props) {
   // テキスト出力 / AI 使用開示 / タイムラプス動画 の切り替え。
   const [mode, setMode] = useState<"text" | "authorship" | "timelapse">("text");
   const [includePassageExcerpts, setIncludePassageExcerpts] = useState(false);
+  // 制作過程開示: 各AI使用箇所に「入力(発話/指示)＋出力」を、さらにサブトグルで
+  // 送信プロンプト全文を同梱する。
+  const [includePrompts, setIncludePrompts] = useState(false);
+  const [includeFullSystemPrompt, setIncludeFullSystemPrompt] = useState(false);
   const [authorshipReport, setAuthorshipReport] =
     useState<ProvenanceDisclosureReport | null>(null);
   const [isLoadingAuthorship, setIsLoadingAuthorship] = useState(false);
@@ -313,6 +317,8 @@ export function ExportDialog({ open, onClose }: Props) {
     setIsLoadingAuthorship(true);
     buildProvenanceBreakdown(getCurrentProjectId(), {
       includePassageExcerpts,
+      includePrompts,
+      includeFullSystemPrompt,
     })
       .then((report) => {
         if (!cancelled) setAuthorshipReport(report);
@@ -327,7 +333,13 @@ export function ExportDialog({ open, onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [open, mode, includePassageExcerpts]);
+  }, [
+    open,
+    mode,
+    includePassageExcerpts,
+    includePrompts,
+    includeFullSystemPrompt,
+  ]);
 
   // エクスポートコンテンツを生成
   function buildContent(): string {
@@ -471,6 +483,10 @@ export function ExportDialog({ open, onClose }: Props) {
           loading={isLoadingAuthorship}
           includePassageExcerpts={includePassageExcerpts}
           onIncludePassageExcerptsChange={setIncludePassageExcerpts}
+          includePrompts={includePrompts}
+          onIncludePromptsChange={setIncludePrompts}
+          includeFullSystemPrompt={includeFullSystemPrompt}
+          onIncludeFullSystemPromptChange={setIncludeFullSystemPrompt}
         />
       ) : (
         <div className="flex-1 overflow-auto">
@@ -552,11 +568,19 @@ function AuthorshipDisclosureSection({
   loading,
   includePassageExcerpts,
   onIncludePassageExcerptsChange,
+  includePrompts,
+  onIncludePromptsChange,
+  includeFullSystemPrompt,
+  onIncludeFullSystemPromptChange,
 }: {
   report: ProvenanceDisclosureReport | null;
   loading: boolean;
   includePassageExcerpts: boolean;
   onIncludePassageExcerptsChange: (value: boolean) => void;
+  includePrompts: boolean;
+  onIncludePromptsChange: (value: boolean) => void;
+  includeFullSystemPrompt: boolean;
+  onIncludeFullSystemPromptChange: (value: boolean) => void;
 }) {
   const total = report?.totals.total ?? 0;
   const ai = report?.totals.ai ?? 0;
@@ -573,22 +597,47 @@ function AuthorshipDisclosureSection({
               残存している authorship metadata に基づく出自レポートです。
             </p>
           </div>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={includePassageExcerpts}
-              onChange={(e) =>
-                onIncludePassageExcerptsChange(e.currentTarget.checked)
-              }
-            />
-            抜粋を含める
-          </label>
+          <div className="flex flex-col items-end gap-1.5 text-xs text-muted-foreground">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={includePassageExcerpts}
+                onChange={(e) =>
+                  onIncludePassageExcerptsChange(e.currentTarget.checked)
+                }
+              />
+              抜粋を含める
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={includePrompts}
+                onChange={(e) =>
+                  onIncludePromptsChange(e.currentTarget.checked)
+                }
+              />
+              制作過程（プロンプト入出力）を含める
+            </label>
+            {includePrompts && (
+              <label className="flex items-center gap-2 pl-4">
+                <input
+                  type="checkbox"
+                  checked={includeFullSystemPrompt}
+                  onChange={(e) =>
+                    onIncludeFullSystemPromptChange(e.currentTarget.checked)
+                  }
+                />
+                完全な送信プロンプトも含める
+              </label>
+            )}
+          </div>
         </div>
 
-        {includePassageExcerpts && (
+        {(includePassageExcerpts || includePrompts) && (
           <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-            抜粋には AI 使用箇所の本文がそのまま含まれます。公開範囲について
-            注意してください。
+            {includeFullSystemPrompt
+              ? "送信プロンプト全文には、他シーンの本文・設定資料・RAG 抜粋が含まれることがあります。開示ファイルの公開範囲に十分注意してください。"
+              : "AI 使用箇所の本文・プロンプトがそのまま含まれます。公開範囲について注意してください。"}
           </div>
         )}
 
@@ -637,7 +686,29 @@ function AuthorshipDisclosureSection({
                       {passage.provenance.kind} /{" "}
                       {passage.charCount.toLocaleString()} chars
                     </div>
-                    <div className="mt-1">{passage.excerpt}</div>
+                    {passage.disclosure ? (
+                      <div className="mt-1 flex flex-col gap-1">
+                        <div>
+                          <span className="font-semibold">入力:</span>{" "}
+                          {passage.disclosure.userPrompt || "（記録なし）"}
+                        </div>
+                        <div>
+                          <span className="font-semibold">出力:</span>{" "}
+                          {passage.disclosure.output || "（空）"}
+                        </div>
+                        {includeFullSystemPrompt && (
+                          <div className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-2 text-muted-foreground">
+                            <span className="font-semibold">
+                              送信プロンプト:
+                            </span>{" "}
+                            {passage.disclosure.sentSystemPrompt ||
+                              "（未記録）"}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mt-1">{passage.excerpt}</div>
+                    )}
                   </div>
                 ))}
               </div>

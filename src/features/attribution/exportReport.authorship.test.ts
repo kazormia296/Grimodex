@@ -282,3 +282,123 @@ describe("provenance disclosure — Map AI content lane", () => {
     expect(parsed.totals.ai).toBe(10); // body totals untouched
   });
 });
+
+// Process disclosure (制作過程開示): per-passage prompt + output.
+const chatPassageWithPrompt: ResolvedPassage = {
+  id: "span-chat",
+  nodeId: "s1",
+  from: 1,
+  to: 6,
+  charCount: 5,
+  excerpt: "hello",
+  model: "claude-sonnet-4-6",
+  provenance: { kind: "chat" },
+  sceneTitle: "Opening",
+  chapterTitle: "Prologue",
+  disclosure: {
+    userPrompt: "続きを書いて <script>x</script>",
+    output: "hello <b>world</b>",
+    sentSystemPrompt: "[system]\nYou are <inject>\n\n[user]\n続き",
+    layers: [{ layer: "L1", label: "Project", used: 100 }],
+    promptRecorded: true,
+  },
+};
+
+const slashPassageNoPrompt: ResolvedPassage = {
+  id: "span-slash",
+  nodeId: "s1",
+  from: 8,
+  to: 12,
+  charCount: 4,
+  excerpt: "abcd",
+  model: null,
+  provenance: { kind: "inline-ai", traceId: "t1" },
+  sceneTitle: "Opening",
+  chapterTitle: "Prologue",
+  disclosure: {
+    userPrompt: "続きを書く",
+    output: "abcd",
+    sentSystemPrompt: null,
+    layers: null,
+    promptRecorded: false,
+  },
+};
+
+const processReportFull: ProvenanceDisclosureReport = {
+  ...disclosureReport,
+  includePrompts: true,
+  includeFullSystemPrompt: true,
+  passages: [chatPassageWithPrompt, slashPassageNoPrompt],
+};
+
+const processReportLean: ProvenanceDisclosureReport = {
+  ...disclosureReport,
+  includePrompts: true,
+  passages: [chatPassageWithPrompt, slashPassageNoPrompt],
+};
+
+describe("process disclosure — Markdown", () => {
+  it("renders per-passage input/output under a process-disclosure heading", () => {
+    const out = exportProvenanceDisclosureMarkdown(processReportLean);
+    expect(out).toContain("## AI Passages (process disclosure)");
+    expect(out).toContain("**入力 (Input):**");
+    expect(out).toContain("**出力 (Output):**");
+    // Indented code block keeps arbitrary text (incl. angle brackets) verbatim.
+    expect(out).toContain("    続きを書いて <script>x</script>");
+    expect(out).toContain("    hello <b>world</b>");
+  });
+
+  it("omits the full prompt block unless includeFullSystemPrompt is set", () => {
+    const out = exportProvenanceDisclosureMarkdown(processReportLean);
+    expect(out).not.toContain("送信プロンプト全文");
+  });
+
+  it("includes the full prompt block (and marks unrecorded ones) when requested", () => {
+    const out = exportProvenanceDisclosureMarkdown(processReportFull);
+    expect(out).toContain("**送信プロンプト全文 (Full prompt):**");
+    // Every line of the multi-line prompt is indented into the code block.
+    expect(out).toContain("    [system]\n    You are <inject>");
+    // slash passage has no captured prompt → marked as unrecorded.
+    expect(out).toContain("    (未記録)");
+  });
+
+  it("adds the cooperative-disclosure caveat to the footnote", () => {
+    const out = exportProvenanceDisclosureMarkdown(processReportFull);
+    expect(out).toContain("not tamper-proof third-party verification");
+    expect(out).toContain("generated before this feature");
+  });
+
+  it("falls back to the plain passage list when prompts are not included", () => {
+    const out = exportProvenanceDisclosureMarkdown(disclosureReport);
+    expect(out).not.toContain("process disclosure");
+    expect(out).not.toContain("**入力 (Input):**");
+  });
+});
+
+describe("process disclosure — HTML", () => {
+  it("escapes prompt and output content (no raw injection)", () => {
+    const out = exportProvenanceDisclosureHtml(processReportFull);
+    expect(out).toContain("AI Passages (process disclosure)");
+    expect(out).toContain("&lt;script&gt;");
+    expect(out).not.toContain("<script>x</script>");
+    expect(out).toContain("&lt;b&gt;world&lt;/b&gt;");
+    expect(out).toContain("&lt;inject&gt;");
+    expect(out).not.toContain("<inject>");
+  });
+
+  it("shows (未記録) for passages without a captured full prompt", () => {
+    const out = exportProvenanceDisclosureHtml(processReportFull);
+    expect(out).toContain("(未記録)");
+  });
+});
+
+describe("process disclosure — JSON carries the disclosure payload", () => {
+  it("includes per-passage disclosure objects", () => {
+    const parsed = JSON.parse(
+      exportProvenanceDisclosureJson(processReportFull),
+    );
+    expect(parsed.includePrompts).toBe(true);
+    expect(parsed.passages[0].disclosure.userPrompt).toContain("続きを書いて");
+    expect(parsed.passages[1].disclosure.promptRecorded).toBe(false);
+  });
+});

@@ -29,6 +29,10 @@ export function useInlineAiDiff(editor: Editor | null) {
     context: InlineAiContext;
     traceId: string;
     sceneNodeId: string | null;
+    /** Full prompt sent to the model, captured on a successful generation so
+     * the process-disclosure export can show it. Set after generateInlineAi
+     * resolves; absent on abort/error. */
+    promptText?: string;
   } | null>(null);
 
   useEffect(() => {
@@ -130,6 +134,13 @@ export function useInlineAiDiff(editor: Editor | null) {
           abortController.signal,
           lang,
         );
+
+        // 成功した生成の実送信プロンプトを捕捉する (accept 時の generation log
+        // に promptFull として載せる)。後発の generate が lastCallRef を差し替え
+        // ていれば書かない。
+        if (lastCallRef.current?.traceId === traceId) {
+          lastCallRef.current.promptText = result.promptText;
+        }
 
         // Toolbar からの早押し abort が先に店じまいを終えているケースは
         // ここで再遷移させない（reset 後だった場合に idle → diffShown と
@@ -233,6 +244,7 @@ export function useInlineAiDiff(editor: Editor | null) {
             sceneNodeId: lastCall.sceneNodeId,
             model: resolvedModel,
             traceId,
+            promptFull: lastCall.promptText ?? null,
           }),
         ).catch((err: unknown) => {
           console.warn("inline AI generation log failed", err);

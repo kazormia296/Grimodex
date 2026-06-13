@@ -2,7 +2,10 @@ import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
-import { insertGenerationLog } from "@/features/attribution/generationLogApi";
+import {
+  insertGenerationLog,
+  serializePromptMessages,
+} from "@/features/attribution/generationLogApi";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
@@ -94,6 +97,7 @@ export async function generateBeatOnce(
               sceneNodeId: sceneId,
               model: beatModel ?? DEFAULT_MODEL,
               traceId,
+              promptFull: serializePromptMessages(messages),
             }),
           ).catch((err: unknown) => {
             console.warn("beat generation log failed", err);

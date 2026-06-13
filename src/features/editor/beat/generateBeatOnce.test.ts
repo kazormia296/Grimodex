@@ -32,6 +32,8 @@ vi.mock("@/features/editor/inlineAi/inlineAiStreaming", () => ({
 }));
 vi.mock("@/features/attribution/generationLogApi", () => ({
   insertGenerationLog: vi.fn(),
+  serializePromptMessages: (msgs?: { role: string; content: string }[]) =>
+    (msgs ?? []).map((m) => `[${m.role}]\n${m.content}`).join("\n\n"),
 }));
 vi.mock("./beatPromptBuilder", () => ({ buildBeatMessages: vi.fn() }));
 

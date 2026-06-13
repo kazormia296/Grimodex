@@ -3,7 +3,10 @@ import type { Editor } from "@tiptap/core";
 import { sendInlineAiStream } from "@/features/editor/inlineAi/inlineAiStreaming";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
-import { insertGenerationLog } from "@/features/attribution/generationLogApi";
+import {
+  insertGenerationLog,
+  serializePromptMessages,
+} from "@/features/attribution/generationLogApi";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -279,6 +282,7 @@ export function useBeatGeneration(
                 sceneNodeId: sceneId,
                 model: resolvedModel ?? DEFAULT_MODEL,
                 traceId,
+                promptFull: serializePromptMessages(messages),
               }),
             ).catch((err: unknown) => {
               console.warn("beat generation log failed", err);

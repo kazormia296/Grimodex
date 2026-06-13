@@ -2,6 +2,7 @@ import type { InlineAiCommand, InlineAiContext } from "./inlineAiTypes";
 import { sendInlineAiStream, abortInlineAiStream } from "./inlineAiStreaming";
 import { getPromptCatalog } from "@/prompts/index";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
+import { serializePromptMessages } from "@/features/attribution/generationLogApi";
 
 export function buildSystemPrompt(
   command: InlineAiCommand,
@@ -32,7 +33,12 @@ export async function generateInlineAi(
   onChunk: (chunk: string) => void,
   signal?: AbortSignal,
   lang = "ja",
-): Promise<{ text: string; model: string; stopReason: string }> {
+): Promise<{
+  text: string;
+  model: string;
+  stopReason: string;
+  promptText: string;
+}> {
   const messages = [
     { role: "system", content: buildSystemPrompt(command, context, lang) },
     { role: "user", content: buildUserPrompt(command, context, lang) },
@@ -99,5 +105,6 @@ export async function generateInlineAi(
     text: accumulated,
     model: "claude-sonnet-4-6",
     stopReason: result.stopReason,
+    promptText: serializePromptMessages(messages),
   };
 }

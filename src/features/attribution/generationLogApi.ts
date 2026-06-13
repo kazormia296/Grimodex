@@ -9,6 +9,23 @@ export interface InsertGenerationLogInput {
   sceneNodeId?: string | null;
   model?: string | null;
   traceId: string;
+  /** Full prompt (system + user) actually sent to the model. Populates the
+   * process-disclosure export for slash/beat generations. Chat carries its own
+   * snapshot via chat_message_prompts, so this is only wired for inline-ai/beat.
+   * Legacy rows are null (the column was never populated before this). */
+  promptFull?: string | null;
+}
+
+/**
+ * Serialize the prompt messages actually sent to the model into a single
+ * disclosure-ready string, stored in generation_logs.promptFull. Lets the
+ * process-disclosure export show the full prompt input for slash/beat
+ * generations.
+ */
+export function serializePromptMessages(
+  messages: { role: string; content: string }[],
+): string {
+  return messages.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
 }
 
 function isUniqueTraceError(err: unknown): boolean {
@@ -34,7 +51,7 @@ export async function insertGenerationLog(
       kind: input.kind,
       commandId: input.commandId ?? null,
       instruction: input.instruction ?? null,
-      promptFull: null,
+      promptFull: input.promptFull ?? null,
       model: input.model ?? null,
       traceId: input.traceId,
       createdAt: new Date().toISOString(),

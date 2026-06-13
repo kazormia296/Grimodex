@@ -122,6 +122,19 @@ function mdCell(s: string): string {
   return s.replace(/\r?\n/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 
+/**
+ * Render arbitrary text (prompt / output) as a Markdown indented code block.
+ * 4-space indentation is robust against backticks and pipes that would break
+ * fenced blocks or table cells. A blank line must precede the block.
+ */
+function mdIndentBlock(text: string | null, emptyLabel = "(記録なし)"): string {
+  const body = text && text.length ? text : emptyLabel;
+  return body
+    .split("\n")
+    .map((line) => `    ${line}`)
+    .join("\n");
+}
+
 function provenanceKindLabel(kind: ProvenanceKind): string {
   switch (kind) {
     case "chat":
@@ -149,7 +162,10 @@ function disclosureFootnote(report: ProvenanceDisclosureReport): string {
     report.orphanChatCount > 0
       ? ` ${report.orphanChatCount} passage(s) reference deleted chat messages.`
       : "";
-  return `This disclosure reflects remaining AI-attributed spans at export time.${orphan} Legacy or manually inserted AI text without provenance is counted as Unknown AI.`;
+  const prompts = report.includePrompts
+    ? " Slash/Beat passages generated before this feature was added have no recorded full prompt. These records are stored locally and are user-editable — this is a cooperative disclosure aid, not tamper-proof third-party verification."
+    : "";
+  return `This disclosure reflects remaining AI-attributed spans at export time.${orphan} Legacy or manually inserted AI text without provenance is counted as Unknown AI.${prompts}`;
 }
 
 export function exportProvenanceDisclosureMarkdown(
@@ -184,15 +200,45 @@ export function exportProvenanceDisclosureMarkdown(
   ];
 
   if (report.passages?.length) {
-    lines.push("## AI Passages", "");
-    for (const passage of report.passages) {
-      const document = passageDocumentLabel(passage);
-      const location = document ? ` in ${document}` : "";
-      lines.push(
-        `- ${provenanceKindLabel(passage.provenance.kind)}${location} (${passage.charCount} chars): ${passage.excerpt}`,
-      );
+    if (report.includePrompts) {
+      // Process disclosure: one subsection per passage with prompt + output.
+      lines.push("## AI Passages (process disclosure)", "");
+      for (const passage of report.passages) {
+        const document = passageDocumentLabel(passage);
+        const location = document ? ` in ${document}` : "";
+        const d = passage.disclosure;
+        lines.push(
+          `### ${provenanceKindLabel(passage.provenance.kind)}${location} (${passage.charCount} chars)`,
+          "",
+          "**入力 (Input):**",
+          "",
+          mdIndentBlock(d?.userPrompt ?? null),
+          "",
+          "**出力 (Output):**",
+          "",
+          mdIndentBlock(d?.output ?? null, "(empty)"),
+          "",
+        );
+        if (report.includeFullSystemPrompt) {
+          lines.push(
+            "**送信プロンプト全文 (Full prompt):**",
+            "",
+            mdIndentBlock(d?.sentSystemPrompt ?? null, "(未記録)"),
+            "",
+          );
+        }
+      }
+    } else {
+      lines.push("## AI Passages", "");
+      for (const passage of report.passages) {
+        const document = passageDocumentLabel(passage);
+        const location = document ? ` in ${document}` : "";
+        lines.push(
+          `- ${provenanceKindLabel(passage.provenance.kind)}${location} (${passage.charCount} chars): ${passage.excerpt}`,
+        );
+      }
+      lines.push("");
     }
-    lines.push("");
   }
 
   if (report.map && report.map.stickyCount > 0) {
@@ -397,17 +443,42 @@ counted toward the human total.
 `;
 }
 
-function renderPassageList(passages: ResolvedPassage[] | undefined): string {
+function renderPassageList(report: ProvenanceDisclosureReport): string {
+  const passages = report.passages;
   if (!passages?.length) return "";
-  return `<section><h2>AI Passages</h2><ul>${passages
+  const promptBlock = (
+    label: string,
+    text: string | null,
+    emptyLabel: string,
+  ) =>
+    `<p class="dlabel">${escapeHtml(label)}</p><pre><code>${escapeHtml(
+      text && text.length ? text : emptyLabel,
+    )}</code></pre>`;
+  const items = passages
     .map((p) => {
       const document = passageDocumentLabel(p);
       const location = document
         ? ` <span class="document">in ${escapeHtml(document)}</span>`
         : "";
-      return `<li><strong>${escapeHtml(provenanceKindLabel(p.provenance.kind))}</strong>${location} (${p.charCount} chars): ${escapeHtml(p.excerpt)}</li>`;
+      const head = `<strong>${escapeHtml(provenanceKindLabel(p.provenance.kind))}</strong>${location} (${p.charCount} chars)`;
+      if (report.includePrompts && p.disclosure) {
+        const d = p.disclosure;
+        const full = report.includeFullSystemPrompt
+          ? promptBlock(
+              "送信プロンプト全文 (Full prompt)",
+              d.sentSystemPrompt,
+              "(未記録)",
+            )
+          : "";
+        return `<li>${head}${promptBlock("入力 (Input)", d.userPrompt, "(記録なし)")}${promptBlock("出力 (Output)", d.output, "(empty)")}${full}</li>`;
+      }
+      return `<li>${head}: ${escapeHtml(p.excerpt)}</li>`;
     })
-    .join("")}</ul></section>`;
+    .join("");
+  const heading = report.includePrompts
+    ? "AI Passages (process disclosure)"
+    : "AI Passages";
+  return `<section><h2>${heading}</h2><ul>${items}</ul></section>`;
 }
 
 function renderMapDisclosure(map: MapProvenance | undefined): string {
@@ -438,7 +509,10 @@ h1 { font-size: 1.4rem; }
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin: 1rem 0 2rem; }
 th, td { border-bottom: 1px solid #ddd; padding: 0.45rem 0.6rem; text-align: left; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
-li { margin: 0.4rem 0; }
+li { margin: 0.8rem 0; }
+.dlabel { font-weight: 600; font-size: 0.8rem; margin: 0.5rem 0 0.2rem; }
+pre { white-space: pre-wrap; word-break: break-word; background: #f6f6f6; padding: 0.5rem 0.7rem; border-radius: 4px; font-size: 0.8rem; overflow-x: auto; }
+@media (prefers-color-scheme: dark) { pre { background: #1a1a1a; } }
 footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #ddd; color: #777; font-size: 0.8rem; }
 </style>
 </head>
@@ -464,7 +538,7 @@ footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #ddd; color:
 <tr><th>Unknown AI</th><td class="num">${report.breakdown.unknownAi}</td></tr>
 </tbody>
 </table>
-${renderPassageList(report.passages)}
+${renderPassageList(report)}
 ${renderMapDisclosure(report.map)}
 <footer>${escapeHtml(disclosureFootnote(report))}</footer>
 </body>

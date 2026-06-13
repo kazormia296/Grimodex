@@ -15,6 +15,8 @@ import type {
   ProjectAuthorshipReport,
 } from "./projectAuthorship";
 import { buildProjectAuthorshipReport } from "./projectAuthorship";
+import { getMessagePrompt } from "@/features/chat/chatApi";
+import type { LayerBreakdown } from "@/features/chat/contextBuilder";
 
 export interface SpanRef {
   id: string;
@@ -34,6 +36,9 @@ export interface GenerationLogLookup {
   commandId: string | null;
   instruction: string | null;
   model: string | null;
+  /** Full prompt sent to the model. Null for generations made before
+   * promptFull capture was wired (legacy rows). */
+  promptFull?: string | null;
 }
 
 export interface ChatMessageLookup {
@@ -60,6 +65,29 @@ export interface ResolvedProvenance {
   model?: string | null;
   chatMessage?: ChatMessageLookup;
   precedingUserPrompt?: string | null;
+  /** Full prompt sent for inline-ai/beat passages. Null for legacy rows. */
+  promptFull?: string | null;
+}
+
+/**
+ * Per-passage process-disclosure payload: the prompt that produced this AI
+ * passage and its output. Attached by `buildProvenanceBreakdown` only when
+ * `includePrompts` is requested. Lets the export show "what was asked / what
+ * the AI produced" for contest 制作過程開示 requirements.
+ */
+export interface PassageDisclosure {
+  /** What the author asked: chat → the preceding user utterance; inline-ai/beat
+   * → the instruction. Null when not recoverable. */
+  userPrompt: string | null;
+  /** The AI output that became this body span (full text, not truncated). */
+  output: string;
+  /** Full sent prompt. chat → the system-prompt snapshot; inline-ai/beat → the
+   * captured promptFull. Null when not requested or not recorded. */
+  sentSystemPrompt: string | null;
+  /** Context-layer token breakdown for chat passages (snapshot). Null otherwise. */
+  layers: LayerBreakdown[] | null;
+  /** True when a full prompt was requested AND available for this passage. */
+  promptRecorded: boolean;
 }
 
 export interface ResolvedPassage {
@@ -76,6 +104,9 @@ export interface ResolvedPassage {
   sceneTitle?: string;
   /** Chapter (top-most folder) title. `null` means the scene is unparented. */
   chapterTitle?: string | null;
+  /** Process-disclosure payload (prompt + output). Present only when the
+   * report was built with `includePrompts`. */
+  disclosure?: PassageDisclosure;
 }
 
 export interface ProvenanceLookups {
@@ -128,6 +159,12 @@ export interface ProvenanceDisclosureReport {
   /** Present only when the project has AI-authored map content. Independent of
    * `totals`/`breakdown` (which remain body-text-only). */
   map?: MapProvenance;
+  /** When true, each passage carries a `disclosure` payload (prompt + output)
+   * and renderers emit the process-disclosure sections. */
+  includePrompts?: boolean;
+  /** When true, the full sent prompt is included in each passage's disclosure
+   * (heavier; may contain other scenes' context). */
+  includeFullSystemPrompt?: boolean;
 }
 
 export type ExcerptFor = (
@@ -156,6 +193,7 @@ export async function resolveProvenanceFromLookups(
             commandId: log.commandId,
             instruction: log.instruction,
             model: log.model,
+            promptFull: log.promptFull ?? null,
           }
         : { kind: "unknown", traceId: span.traceId };
     } else if (span.chatMsgId) {
@@ -207,6 +245,7 @@ export async function resolveProvenance(
             commandId: generationLogs.commandId,
             instruction: generationLogs.instruction,
             model: generationLogs.model,
+            promptFull: generationLogs.promptFull,
           })
           .from(generationLogs)
           .where(inArray(generationLogs.traceId, traceIds as string[]))
@@ -245,11 +284,17 @@ export async function resolveProvenance(
   );
 }
 
-export async function loadPrecedingUserPrompt(
+/**
+ * The most recent user message before a given (assistant) message in the same
+ * session — i.e. the turn that produced it. Returns its id and content so the
+ * process-disclosure path can both show the utterance and fetch the sent-prompt
+ * snapshot (`chat_message_prompts` is keyed by the user message id).
+ */
+export async function loadPrecedingUserMessage(
   message: Pick<ChatMessageLookup, "sessionId" | "createdAt">,
-): Promise<string | null> {
+): Promise<{ id: string; content: string } | null> {
   const rows = await db
-    .select({ content: chatMessages.content })
+    .select({ id: chatMessages.id, content: chatMessages.content })
     .from(chatMessages)
     .where(
       and(
@@ -261,7 +306,14 @@ export async function loadPrecedingUserPrompt(
     .orderBy(desc(chatMessages.createdAt))
     .limit(1);
 
-  return rows[0]?.content ?? null;
+  const row = rows[0];
+  return row ? { id: row.id, content: row.content } : null;
+}
+
+export async function loadPrecedingUserPrompt(
+  message: Pick<ChatMessageLookup, "sessionId" | "createdAt">,
+): Promise<string | null> {
+  return (await loadPrecedingUserMessage(message))?.content ?? null;
 }
 
 export function extractSpansFromDoc(
@@ -501,17 +553,77 @@ function attachDocumentLabels(
   });
 }
 
+/**
+ * Build the process-disclosure payload (prompt + output) for one passage.
+ * - chat: userPrompt = the preceding user utterance; full prompt (when asked)
+ *   = the sent-prompt snapshot keyed by that user message id.
+ * - inline-ai/beat: userPrompt = the instruction; full prompt = captured
+ *   promptFull (null for generations made before capture was wired).
+ * - orphan-chat/unknown: only the output text is recoverable.
+ */
+async function buildPassageDisclosure(
+  passage: ResolvedPassage,
+  contentByScene: Map<string, string>,
+  includeFullSystemPrompt: boolean,
+): Promise<PassageDisclosure> {
+  const output = fullTextFromPmJson(
+    contentByScene.get(passage.nodeId) ?? "",
+    passage.from,
+    passage.to,
+  );
+  const prov = passage.provenance;
+
+  let userPrompt: string | null = null;
+  let sentSystemPrompt: string | null = null;
+  let layers: LayerBreakdown[] | null = null;
+
+  if (prov.kind === "chat") {
+    userPrompt = prov.precedingUserPrompt ?? null;
+    if (includeFullSystemPrompt && prov.chatMessage) {
+      // chat_message_prompts is keyed by the *user* message id, so hop from
+      // the assistant message (chatMsgId) back to the turn that produced it.
+      const userMsg = await loadPrecedingUserMessage(prov.chatMessage);
+      const snapshot = userMsg ? await getMessagePrompt(userMsg.id) : null;
+      sentSystemPrompt = snapshot?.systemPrompt ?? null;
+      layers = snapshot?.layers ?? null;
+    }
+  } else if (prov.kind === "inline-ai" || prov.kind === "beat") {
+    userPrompt = prov.instruction ?? null;
+    if (includeFullSystemPrompt) {
+      sentSystemPrompt = prov.promptFull ?? null;
+    }
+  }
+
+  return {
+    userPrompt,
+    output,
+    sentSystemPrompt,
+    layers,
+    promptRecorded: sentSystemPrompt !== null,
+  };
+}
+
 export async function buildProvenanceBreakdown(
   projectId: string,
-  options: { includePassageExcerpts?: boolean } = {},
+  options: {
+    includePassageExcerpts?: boolean;
+    includePrompts?: boolean;
+    includeFullSystemPrompt?: boolean;
+  } = {},
 ): Promise<ProvenanceDisclosureReport> {
   const authorshipReport = await buildProjectAuthorshipReport(projectId);
   const sceneIds = sceneIdsFromTotals(authorshipReport);
   const spans = await extractSpansFromDb(sceneIds);
   const includePassageExcerpts = options.includePassageExcerpts === true;
+  const includePrompts = options.includePrompts === true;
+  const includeFullSystemPrompt =
+    includePrompts && options.includeFullSystemPrompt === true;
+  // Prompts need the scene bodies too (for full output text), so load content
+  // whenever either excerpts or prompts are requested.
+  const needContent = includePassageExcerpts || includePrompts;
 
   let contentByScene = new Map<string, string>();
-  if (includePassageExcerpts && sceneIds.length > 0) {
+  if (needContent && sceneIds.length > 0) {
     const rows = await db
       .select({ id: treeNodes.id, content: treeNodes.content })
       .from(treeNodes)
@@ -520,14 +632,27 @@ export async function buildProvenanceBreakdown(
   }
 
   const passagesRaw = await resolveProvenance(spans, (nodeId, from, to) => {
-    if (!includePassageExcerpts) return "";
+    if (!needContent) return "";
     return excerptFromPmJson(contentByScene.get(nodeId) ?? "", from, to);
   });
 
-  const passages = attachDocumentLabels(
+  let passages = attachDocumentLabels(
     passagesRaw,
     buildSceneLabelMap(authorshipReport),
   );
+
+  if (includePrompts) {
+    passages = await Promise.all(
+      passages.map(async (passage) => ({
+        ...passage,
+        disclosure: await buildPassageDisclosure(
+          passage,
+          contentByScene,
+          includeFullSystemPrompt,
+        ),
+      })),
+    );
+  }
 
   const breakdown = emptyBreakdown();
   for (const passage of passages) addToBreakdown(breakdown, passage);
@@ -545,8 +670,10 @@ export async function buildProvenanceBreakdown(
     breakdown,
     orphanChatCount: passages.filter((p) => p.provenance.kind === "orphan-chat")
       .length,
-    ...(includePassageExcerpts && { passages }),
+    ...((includePassageExcerpts || includePrompts) && { passages }),
     ...(map.stickyCount > 0 && { map }),
+    ...(includePrompts && { includePrompts: true }),
+    ...(includeFullSystemPrompt && { includeFullSystemPrompt: true }),
   };
 }
 
@@ -635,6 +762,25 @@ export function excerptFromPmJson(
       .replace(/\s+/g, " ")
       .trim();
     return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Full span text for the process-disclosure "output" — same extraction as
+ * `excerptFromPmJson` but without the 120-char truncation or whitespace
+ * collapsing, so the disclosure shows the AI output verbatim.
+ */
+export function fullTextFromPmJson(
+  contentJson: string,
+  from: number,
+  to: number,
+): string {
+  if (!contentJson || contentJson === "{}") return "";
+  try {
+    const doc = JSON.parse(contentJson) as PMNodeJson;
+    return textBetweenPmPositions(doc, from, to).trim();
   } catch {
     return "";
   }
