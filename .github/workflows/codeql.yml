@@ -1,10 +1,12 @@
 name: CodeQL
 
 # advanced setup。GitHub の default setup を置き換える。
-# 目的: Rust 抽出時に Tauri の FFI クレート(glib / webkit2gtk / javascriptcore /
-# soup3 / ort 等)の build script を pkg-config で解決させ、call target 解決率を
-# 閾値(50%)以上に引き上げる。default setup は system 依存を入れられず、これが
-# "Low Rust analysis quality" 警告の主因だった。
+# 目的: Rust の解析品質("Low Rust analysis quality"警告)の改善。
+#
+# 経緯: system 依存(libwebkit2gtk 等)の投入では call target 解決率は 48% から
+# 動かなかった(主因は FFI ではなく proc-macro 展開と依存本体の非抽出)。そこで
+# extractor オプション extract_dependencies_as_source=true で依存の全ソースを
+# 抽出し、call target が閾値(50%)を超えるか検証する。
 #
 # 注意: このワークフローを有効にするにはリポジトリ設定で CodeQL の default setup を
 # 無効化する必要がある(default と advanced は併用不可)。
@@ -24,12 +26,16 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       security-events: write
       packages: read
       actions: read
       contents: read
+    env:
+      # Rust extractor のみ反応する(他言語では no-op)。依存の全ソースを抽出して
+      # trait/impl 解決を補い call target 解決率の向上を狙う実験設定。抽出は重くなる。
+      CODEQL_EXTRACTOR_RUST_OPTION_EXTRACT_DEPENDENCIES_AS_SOURCE: "true"
     strategy:
       fail-fast: false
       matrix:
