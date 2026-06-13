@@ -1,34 +1,35 @@
 ---
 name: implement-feature
 description: >
-  機能を実装する。計画→TDD→実装→検証の順で進める。
+  機能を実装する。手順は superpowers の方法論スキルに委譲し、ここでは
+  プロジェクト固有の制約と検証だけを足す。
   Use when: 新機能の追加、既存機能の拡張、「実装して」「作って」「追加して」
   と言われたとき。UIコンポーネント、DB操作、Tauri Command追加を含む。
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, MultiEdit
 argument-hint: [feature-description]
 ---
 
-以下の手順で「$1」を実装してください。
+「$1」を実装する。
 
-## Phase 1: 探索
-1. 関連コードを探索し、影響範囲を把握する
-2. 既存のパターン（類似機能の実装方法）を確認する
+## 方法論は superpowers に委譲する（薄い独自手順で上書きしないこと）
 
-## Phase 2: TDD（コンテキスト汚染を防ぐ）
-3. **テストファイルを先に作成する**
-   - 正常系・異常系・エッジケースをカバー
-   - 実装の詳細を仮定せず、公開APIの振る舞いをテストする
-4. テストが失敗することを確認してコミットする
+このスキルは入口にすぎない。各フェーズは対応する superpowers スキルを起動し、
+そのまま劣化させずに従う:
 
-## Phase 3: 実装
-5. テストを通過するよう実装する
-6. **実装中にテストファイルを変更しない**
+1. `superpowers:brainstorming` — 着手前に意図・要件・設計を確定する
+2. `superpowers:writing-plans` — 多段タスクなら計画を書く
+3. `superpowers:test-driven-development` — 実装前にテストを書く（test-first / red→green）
+4. `superpowers:verification-before-completion` — 「完了」と言う前に検証する
 
-## Phase 4: 検証
-7. `pnpm test` で全テスト通過を確認
-8. `npx tsc --noEmit` で型チェック通過を確認
-9. `pnpm lint:fix` でLint修正
-10. Rust変更がある場合 `cd src-tauri && cargo check && cargo test`
-11. 変更をコミットする
+## このプロジェクト固有で必ず守ること
 
-各ステップの結果を簡潔に報告すること。
+- 探索時、Tauri IPC が絡むなら Rust 側とフロント側の両方を確認する。
+  IPC コマンド追加なら `/add-tauri-command` の 4 点同時更新に従う。
+- 状態管理: グローバル=Zustand / 局所=Jotai。DB は Drizzle 経由（生 SQL 禁止）。
+- 検証コマンド（verification-before-completion の証拠として出力を確認する）:
+  - `pnpm test`
+  - `npx tsc --noEmit`
+  - `pnpm lint:fix`
+  - Rust 変更時: `cd src-tauri && cargo check && cargo test --no-default-features`
+  - レイアウト変更時（CenterStripe/RegionStripe/Splitter/LayoutShell 周辺）: `pnpm test:browser`
+- コミットは変更ファイルを個別 `git add`（`git add -A` 禁止）、master 直 commit 運用。

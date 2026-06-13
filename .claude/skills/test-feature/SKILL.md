@@ -1,23 +1,25 @@
 ---
 name: test-feature
 description: >
-  指定された機能のテストを作成し実行する。
+  既存コードにテストを追加・実行する（test-after）。新規実装の test-first は
+  superpowers:test-driven-development / implement-feature 側で行う。
   Use when: 「テストして」「テスト書いて」「カバレッジ足りない」と言われたとき。
-  既存コードにテストを追加する場合や、テスト結果の確認に使う。
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash
 argument-hint: [feature-or-file-path]
 ---
 
-「$1」のテストを作成・実行してください。
+「$1」のテストを作成・実行する。
 
-1. 対象コードを読み、テストすべきケースを洗い出す
-2. 正常系・異常系・エッジケースをカバーするテストを作成
-3. テストファイルはソースと同階層に *.test.ts として配置
-4. Rustコードの場合は src-tauri 内に #[cfg(test)] モジュール
-5. `pnpm test` / `cargo test` を実行し、結果を報告
-6. 失敗がある場合、テストコードに問題がないか確認してから修正
+## まず使い分け
 
-カバレッジの観点:
-- 主要な分岐がすべてテストされているか
-- エラーハンドリングが検証されているか
-- Tauri IPC境界の型安全性
+- これから実装する機能のテスト → `superpowers:test-driven-development`（test-first）に従う。本スキルは使わない。
+- 既存コードへのカバレッジ追加（test-after） → 以下に従う。
+
+## 手順（既存コードのカバレッジ追加）
+
+1. 対象コードを読み、正常系・異常系・エッジケース・主要分岐・エラーハンドリングを洗い出す
+2. テストは Vitest でソースと同階層に `*.test.ts(x)`。Rust は `src-tauri` 内 `#[cfg(test)]` モジュール
+3. レイアウト/幾何の assert は happy-dom 不可（flex/grid 実寸を計算しない）→ `*.browser.test.tsx` を書く
+4. Tauri IPC 境界は型安全性も検証する
+5. `pnpm test` /（Rust）`cd src-tauri && cargo test --no-default-features` を実行し結果を報告
+6. 失敗時はまずテストコード側の誤りを疑ってから直す
