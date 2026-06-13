@@ -45,6 +45,9 @@ pub fn build_ruleset(language: Language) -> (Vec<Box<dyn LintRule>>, Vec<RuleWar
             rules.push(Box::new(en::ellipsis::EllipsisRule));
             rules.push(Box::new(en::em_dash::EmDashRule));
             rules.push(Box::new(en::straight_quotes::StraightQuotesRule));
+            rules.push(Box::new(en::apostrophe::ApostropheRule));
+            rules.push(Box::new(en::dialogue_punctuation::DialoguePunctuationRule));
+            rules.push(Box::new(en::unclosed_quote::UnclosedQuoteRule));
             rules.push(Box::new(codex::name_inconsistency::NameInconsistencyRule));
             rules.push(Box::new(project::term_consistency::TermConsistencyRule));
         }

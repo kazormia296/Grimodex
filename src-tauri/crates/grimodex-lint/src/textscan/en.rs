@@ -74,6 +74,14 @@ pub fn contains_said_verb(text: &str) -> bool {
     said_verb_regex().is_match(text)
 }
 
+static SAID_VERB_SET: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
+
+/// Is `word` exactly a reporting verb (case-insensitive)?
+pub fn is_said_verb(word: &str) -> bool {
+    let set = SAID_VERB_SET.get_or_init(|| EN_SAID_VERBS.iter().copied().collect());
+    set.contains(word.to_ascii_lowercase().as_str())
+}
+
 /// dialogue-tag heuristic: a short narration run that contains a reporting
 /// verb. Mirrors the Japanese `is_dialogue_tag` shape.
 pub fn is_dialogue_tag_en(text: &str, max_chars: usize) -> bool {

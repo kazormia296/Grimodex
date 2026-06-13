@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::dialogue::{analyze_dialogue, DialogueScope};
 use crate::error::LintError;
 use crate::morph::tokenize_blocks;
 use crate::rule::{
@@ -85,6 +86,21 @@ pub fn lint(
     // has no effect (design §「Codex Alias との衝突」).
     let term_dictionary = resolve_term_dictionary(&config.term_dictionary, config, &mut warnings);
 
+    // Compute dialogue spans once if any enabled English rule narrows its
+    // scope to narration / dialogue. Japanese never triggers this.
+    let needs_dialogue = language == Language::English
+        && rules.iter().any(|r| {
+            let enabled = config.rule(r.id()).map(|c| c.enabled).unwrap_or(true);
+            enabled
+                && r.supported_languages().contains(&language)
+                && r.dialogue_scope() != DialogueScope::Anywhere
+        });
+    let dialogue = if needs_dialogue {
+        Some(analyze_dialogue(blocks))
+    } else {
+        None
+    };
+
     let ctx = LintContext {
         config,
         block_tokens: block_tokens.as_deref(),
@@ -113,10 +129,22 @@ pub fn lint(
             continue;
         }
         let produced = rule.check(&input, &ctx);
+        let scope = rule.dialogue_scope();
         // Discard diagnostics shadowed by a matching disable directive.
         // Design: directives run **pre-emit**, so disabled diagnostics
         // never reach the Linter panel, editor decoration or status bar.
         for d in produced {
+            // Dialogue-scope filter: narration-only rules skip text inside
+            // quoted dialogue, dialogue-only rules require it. Inactive when
+            // `dialogue` is None (no scoped rule enabled / Japanese).
+            if let Some(dlg) = &dialogue {
+                let inside = dlg.overlaps(&d.range);
+                match scope {
+                    DialogueScope::NarrationOnly if inside => continue,
+                    DialogueScope::DialogueOnly if !inside => continue,
+                    _ => {}
+                }
+            }
             if !is_disabled(&d, &resolved_disables) {
                 diagnostics.push(d);
             }

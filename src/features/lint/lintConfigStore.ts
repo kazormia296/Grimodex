@@ -100,6 +100,10 @@ export const BUILTIN_DEFAULT_CONFIG: LintFullConfig = {
     "en/em-dash": { enabled: true },
     "en/ellipsis": { enabled: true },
     "en/double-space": { enabled: true },
+    // P0: fiction-specific punctuation. High precision → 既定 ON.
+    "en/dialogue-punctuation": { enabled: true },
+    "en/unclosed-quote": { enabled: true },
+    "en/apostrophe": { enabled: true },
   },
   inlineDisable: { multiBlockPolicy: "ask" },
 };

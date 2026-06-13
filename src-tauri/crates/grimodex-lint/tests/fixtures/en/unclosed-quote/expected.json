@@ -1,0 +1,11 @@
+[
+  {
+    "rule_id": "en/unclosed-quote",
+    "severity": "warning",
+    "message": "Opening quote has no matching closing quote",
+    "range": {
+      "start": 10,
+      "end": 30
+    }
+  }
+]
