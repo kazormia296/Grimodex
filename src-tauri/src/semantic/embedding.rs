@@ -27,6 +27,8 @@ use ort::session::Session;
 use ort::value::TensorRef;
 use tokenizers::Tokenizer;
 
+use crate::semantic::spec::{EmbeddingModelSpec, Pooling};
+
 /// ruri-v3 の検索クエリ用 prefix。検索時の入力に付与する。
 pub const QUERY_PREFIX: &str = "検索クエリ: ";
 /// ruri-v3 の検索対象文書用 prefix。インデックス時のチャンクに付与する。
@@ -42,13 +44,17 @@ pub const EMBEDDING_DIM_RURI_V3_30M: usize = 256;
 pub struct Embedder {
     tokenizer: Tokenizer,
     session: Session,
-    embedding_dim: usize,
+    spec: &'static EmbeddingModelSpec,
 }
 
 impl Embedder {
-    /// 量子化 ONNX と tokenizer.json を読み込む。
-    /// `embedding_dim` はモデルカード由来 (30m なら 256)。
-    pub fn load(model_path: &Path, tokenizer_path: &Path, embedding_dim: usize) -> Result<Self> {
+    /// 量子化 ONNX と tokenizer.json を読み込む。`spec` がモデルの次元・prefix・
+    /// pooling・token_type_ids 要否を決める (言語ごとに切替)。
+    pub fn load(
+        model_path: &Path,
+        tokenizer_path: &Path,
+        spec: &'static EmbeddingModelSpec,
+    ) -> Result<Self> {
         let tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| anyhow!("failed to load tokenizer at {:?}: {e}", tokenizer_path))?;
         let session = Session::builder()
@@ -58,21 +64,22 @@ impl Embedder {
         Ok(Self {
             tokenizer,
             session,
-            embedding_dim,
+            spec,
         })
     }
 
-    /// 検索クエリを「検索クエリ: 」prefix 込みで埋め込み、L2 正規化済み f32 を返す。
+    /// 検索クエリを spec の query prefix 込みで埋め込み、L2 正規化済み f32 を返す。
+    /// prefix が空文字のモデル (granite / bge) では prefix 無しになる。
     /// `Session::run` が `&mut self` を要求するため Embedder 自体も `&mut`。Tauri 配線時は
-    /// `Mutex<Embedder>` 等で包む前提 (Step 6)。
+    /// `Mutex<Embedder>` 等で包む前提。
     pub fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
-        let prefixed = format!("{QUERY_PREFIX}{text}");
+        let prefixed = format!("{}{}", self.spec.query_prefix, text);
         self.embed_prefixed(&prefixed)
     }
 
-    /// 文書チャンクを「検索文書: 」prefix 込みで埋め込み、L2 正規化済み f32 を返す。
+    /// 文書チャンクを spec の document prefix 込みで埋め込み、L2 正規化済み f32 を返す。
     pub fn embed_document(&mut self, text: &str) -> Result<Vec<f32>> {
-        let prefixed = format!("{DOCUMENT_PREFIX}{text}");
+        let prefixed = format!("{}{}", self.spec.document_prefix, text);
         self.embed_prefixed(&prefixed)
     }
 
@@ -97,11 +104,21 @@ impl Embedder {
             Array2::<i64>::from_shape_vec((1, seq_len), mask.iter().map(|&m| m as i64).collect())?;
 
         // ort 2.x: TensorRef::from_array_view でゼロコピー入力を作る。
-        // ModernBERT 系なので token_type_ids は渡さない (§2.2)。
-        let outputs = self.session.run(ort::inputs![
-            "input_ids" => TensorRef::from_array_view(&input_ids)?,
-            "attention_mask" => TensorRef::from_array_view(&attention_mask)?,
-        ])?;
+        // ModernBERT 系 (ruri / granite) は input_ids + attention_mask の 2 入力。
+        // 素の BERT 系 (bge / e5) は token_type_ids (全 0) を加えた 3 入力を要求する。
+        let outputs = if self.spec.needs_token_type_ids {
+            let token_type_ids = Array2::<i64>::zeros((1, seq_len));
+            self.session.run(ort::inputs![
+                "input_ids" => TensorRef::from_array_view(&input_ids)?,
+                "attention_mask" => TensorRef::from_array_view(&attention_mask)?,
+                "token_type_ids" => TensorRef::from_array_view(&token_type_ids)?,
+            ])?
+        } else {
+            self.session.run(ort::inputs![
+                "input_ids" => TensorRef::from_array_view(&input_ids)?,
+                "attention_mask" => TensorRef::from_array_view(&attention_mask)?,
+            ])?
+        };
 
         // per-token の hidden state を取り出す。出力名はエクスポート方式で揺れる:
         //   - `last_hidden_state`: HuggingFace optimum の feature-extraction task で出すと
@@ -147,20 +164,23 @@ impl Embedder {
                 "ONNX seq_len {out_seq_len} != tokenizer seq_len {seq_len}"
             ));
         }
-        if hidden_dim != self.embedding_dim {
+        if hidden_dim != self.spec.embedding_dim {
             return Err(anyhow!(
                 "ONNX hidden_dim {hidden_dim} != configured embedding_dim {}",
-                self.embedding_dim
+                self.spec.embedding_dim
             ));
         }
 
-        let mut pooled = mean_pool_with_mask(data, mask, hidden_dim);
+        let mut pooled = match self.spec.pooling {
+            Pooling::MeanWithMask => mean_pool_with_mask(data, mask, hidden_dim),
+            Pooling::Cls => cls_pool(data, hidden_dim),
+        };
         l2_normalize_in_place(&mut pooled);
         Ok(pooled)
     }
 
     pub fn embedding_dim(&self) -> usize {
-        self.embedding_dim
+        self.spec.embedding_dim
     }
 }
 
@@ -199,6 +219,16 @@ pub fn mean_pool_with_mask(hidden: &[f32], mask: &[u32], hidden_dim: usize) -> V
         }
     }
     sum
+}
+
+/// CLS pooling: 先頭トークン (index 0) の hidden state をそのまま返す。
+/// bge / granite 系の SentenceTransformer 既定 pooling と一致する。
+/// `hidden` は [seq_len, hidden_dim] row-major flat。
+pub fn cls_pool(hidden: &[f32], hidden_dim: usize) -> Vec<f32> {
+    if hidden.len() < hidden_dim {
+        return vec![0.0; hidden_dim];
+    }
+    hidden[..hidden_dim].to_vec()
 }
 
 /// in-place L2 正規化。零ベクトルはそのまま (NaN 回避)。
@@ -379,6 +409,28 @@ mod tests {
     fn embedding_dim_30m_is_256() {
         assert_eq!(EMBEDDING_DIM_RURI_V3_30M, 256);
     }
+
+    // ── cls_pool ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn cls_pool_returns_first_token() {
+        // seq_len=3, hidden_dim=2 → 先頭トークン [1,2] を返す。
+        let hidden = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        assert_eq!(cls_pool(&hidden, 2), vec![1.0, 2.0]);
+    }
+
+    // ── SPEC_JA ↔ legacy consts のドリフト防止 ───────────────────────────
+    // spec.rs は `--no-default-features` でも build できるよう ja 値をリテラルで
+    // 持つ。ここ (feature 内) で両者の一致を locks する。
+
+    #[test]
+    fn spec_ja_matches_legacy_consts() {
+        use crate::semantic::spec::SPEC_JA;
+        assert_eq!(SPEC_JA.model_id, MODEL_ID_RURI_V3_30M);
+        assert_eq!(SPEC_JA.embedding_dim, EMBEDDING_DIM_RURI_V3_30M);
+        assert_eq!(SPEC_JA.query_prefix, QUERY_PREFIX);
+        assert_eq!(SPEC_JA.document_prefix, DOCUMENT_PREFIX);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -391,9 +443,8 @@ mod tests {
 
 #[cfg(test)]
 mod golden {
-    use super::{
-        cosine_similarity, Embedder, DOCUMENT_PREFIX, EMBEDDING_DIM_RURI_V3_30M, QUERY_PREFIX,
-    };
+    use super::{cosine_similarity, Embedder};
+    use crate::semantic::spec::{EmbeddingModelSpec, Pooling, SPEC_EN, SPEC_JA};
     use serde::Deserialize;
     use std::fs;
     use std::path::PathBuf;
@@ -403,6 +454,9 @@ mod golden {
         embedding_dim: usize,
         query_prefix: String,
         document_prefix: String,
+        /// schema_version 2 で追加。v1 fixture には無いので Option。
+        #[serde(default)]
+        pooling: Option<String>,
         samples: Vec<GoldenSample>,
     }
 
@@ -421,23 +475,17 @@ mod golden {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     }
 
-    fn fixture_path() -> PathBuf {
-        manifest_dir().join("tests/fixtures/ruri_v3_30m_golden.json")
-    }
-
-    fn resources_dir() -> PathBuf {
-        manifest_dir().join("resources/semantic/ruri-v3-30m")
+    fn pooling_label(p: Pooling) -> &'static str {
+        match p {
+            Pooling::MeanWithMask => "mean",
+            Pooling::Cls => "cls",
+        }
     }
 
     /// 存在する model ファイルを優先順 (fp32 → 量子化) に**全部** 返す。
     /// 各要素の `quantized` が true なら gate を緩めて評価する。
-    /// 両方置けば段階A (fp32 vs Python) と段階B 相当 (量子化 vs Python proxy) を両方走らせる。
-    fn locate_models() -> Vec<(PathBuf, bool)> {
-        let dir = resources_dir();
+    fn locate_models(dir: &std::path::Path) -> Vec<(PathBuf, bool)> {
         let mut found = Vec::new();
-        // fp32 → fp16 → int8 → ... の優先順を保つ。
-        // 同一精度帯の別ファイル名 (例: model_int8.onnx と model_quantized.onnx) が両方
-        // 置かれていれば両方検証する。重複モデルの可能性はあるが冗長コストは小さい。
         let candidates: &[(&str, bool)] = &[
             ("model.onnx", false),
             ("model_fp16.onnx", false),
@@ -455,61 +503,52 @@ mod golden {
         found
     }
 
-    #[test]
-    fn rust_pipeline_matches_python_golden() {
-        let fixture = fixture_path();
-        let tokenizer = resources_dir().join("tokenizer.json");
-        let models = locate_models();
+    /// 1 spec 分の fixture + ONNX を検証する。fixture/model が無ければ skip して
+    /// 失敗 0 件で返す (CI/サンドボックスでは silent skip)。
+    fn verify_spec(spec: &'static EmbeddingModelSpec) -> Vec<String> {
+        let fixture = manifest_dir()
+            .join("tests/fixtures")
+            .join(spec.golden_fixture);
+        let dir = manifest_dir()
+            .join("resources/semantic")
+            .join(spec.dir_name);
+        let tokenizer = dir.join("tokenizer.json");
+        let models = locate_models(&dir);
 
         if !fixture.exists() || !tokenizer.exists() || models.is_empty() {
             eprintln!(
-                "[golden test skipped] missing inputs. fixture={} tokenizer={} models_found={}",
+                "[golden {}] skipped (fixture={} tokenizer={} models={})",
+                spec.dir_name,
                 fixture.exists(),
                 tokenizer.exists(),
                 models.len()
             );
-            eprintln!("To enable:");
-            eprintln!("  1. python3 scripts/generate-ruri-golden.py");
-            eprintln!(
-                "  2. Place ONNX + tokenizer.json under \
-                 src-tauri/resources/semantic/ruri-v3-30m/"
-            );
-            return;
+            return Vec::new();
         }
 
         let raw = fs::read_to_string(&fixture).expect("read fixture");
         let golden: GoldenDoc = serde_json::from_str(&raw).expect("parse fixture");
         assert_eq!(
-            golden.embedding_dim, EMBEDDING_DIM_RURI_V3_30M,
-            "fixture dim != crate constant; fixture and model out of sync"
+            golden.embedding_dim, spec.embedding_dim,
+            "fixture dim != spec dim for {}; fixture and model out of sync",
+            spec.dir_name
         );
-        assert_eq!(golden.query_prefix, QUERY_PREFIX);
-        assert_eq!(golden.document_prefix, DOCUMENT_PREFIX);
+        assert_eq!(golden.query_prefix, spec.query_prefix);
+        assert_eq!(golden.document_prefix, spec.document_prefix);
+        if let Some(p) = &golden.pooling {
+            assert_eq!(
+                p,
+                pooling_label(spec.pooling),
+                "fixture pooling != spec pooling for {}",
+                spec.dir_name
+            );
+        }
 
-        eprintln!(
-            "[golden test] {} model(s) to verify against Python golden",
-            models.len()
-        );
-
-        // モデルごとに Embedder をロードして全サンプルを検証。
-        // fp32 が落ちたら panic させてそこで止める方が原因切り分けは早いが、
-        // 量子化版だけの問題を見落とすのを避けるため、各モデルの検証結果を一旦
-        // 集めてから最後にまとめてエラーにする。
         let mut failures: Vec<String> = Vec::new();
         for (model_path, is_quantized) in &models {
-            // 段階A: fp32 で Python と一致 (>= 0.9999)。
-            // 段階B: 量子化は Python 比 0.99 を緩いゲートとして使う (proxy)。
-            //        真の段階B (量子化 vs fp32) は fp32 が >= 0.9999 を満たす前提で
-            //        三角不等式的に保証される。
             let threshold: f32 = if *is_quantized { 0.99 } else { 0.9999 };
-            eprintln!(
-                "[golden test] -- model={:?} quantized={} threshold={}",
-                model_path, is_quantized, threshold
-            );
-
-            let mut embedder = Embedder::load(model_path, &tokenizer, golden.embedding_dim)
+            let mut embedder = Embedder::load(model_path, &tokenizer, spec)
                 .unwrap_or_else(|e| panic!("load Embedder for {model_path:?}: {e}"));
-
             let mut worst_cos: f32 = 1.0;
             for sample in &golden.samples {
                 let actual = embedder
@@ -520,13 +559,7 @@ mod golden {
                             sample.text, model_path
                         )
                     });
-                assert_eq!(
-                    actual.len(),
-                    sample.embedding.len(),
-                    "dim mismatch for {:?} on {:?}",
-                    sample.text,
-                    model_path
-                );
+                assert_eq!(actual.len(), sample.embedding.len());
                 let cos = cosine_similarity(&actual, &sample.embedding);
                 worst_cos = worst_cos.min(cos);
                 if cos < threshold {
@@ -537,10 +570,19 @@ mod golden {
                 }
             }
             eprintln!(
-                "[golden test]    worst cosine across samples: {worst_cos} (threshold {threshold})"
+                "[golden {}] model={:?} quantized={} worst_cos={worst_cos} (>= {threshold})",
+                spec.dir_name, model_path, is_quantized
             );
         }
+        failures
+    }
 
+    #[test]
+    fn rust_pipeline_matches_python_golden() {
+        let mut failures = Vec::new();
+        for spec in [&SPEC_JA, &SPEC_EN] {
+            failures.extend(verify_spec(spec));
+        }
         assert!(
             failures.is_empty(),
             "golden test failed for {} sample(s):\n{}",

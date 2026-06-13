@@ -12,10 +12,13 @@ import {
   buildSemanticRecallQuery,
   selectSemanticRecallChunks,
   fetchSemanticRecall,
+  recallParamsForLang,
   SEMANTIC_RECALL_MIN_SCORE,
+  SEMANTIC_RECALL_MIN_SCORE_EN,
   SEMANTIC_RECALL_MAX_CHUNKS,
   SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS,
   SEMANTIC_RECALL_MAX_CHUNK_CHARS,
+  SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN,
 } from "./semanticRecall";
 
 function makeHit(over: Partial<SemanticSearchHit> = {}): SemanticSearchHit {
@@ -143,6 +146,29 @@ describe("selectSemanticRecallChunks", () => {
 
   it("returns an empty array for no hits", () => {
     expect(selectSemanticRecallChunks([], { excludeSceneIds: [] })).toEqual([]);
+  });
+});
+
+describe("recallParamsForLang", () => {
+  it("ja uses the ruri baseline params", () => {
+    expect(recallParamsForLang("ja")).toEqual({
+      minScore: SEMANTIC_RECALL_MIN_SCORE,
+      maxChunkChars: SEMANTIC_RECALL_MAX_CHUNK_CHARS,
+    });
+  });
+
+  it("en uses the English model params with a wider chunk cap", () => {
+    expect(recallParamsForLang("en")).toEqual({
+      minScore: SEMANTIC_RECALL_MIN_SCORE_EN,
+      maxChunkChars: SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN,
+    });
+    expect(SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN).toBeGreaterThan(
+      SEMANTIC_RECALL_MAX_CHUNK_CHARS,
+    );
+  });
+
+  it("unknown languages fall back to ja params", () => {
+    expect(recallParamsForLang("zh").minScore).toBe(SEMANTIC_RECALL_MIN_SCORE);
   });
 });
 
