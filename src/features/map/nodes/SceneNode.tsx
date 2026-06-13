@@ -1,5 +1,6 @@
 import { Pencil } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { NodeProps } from "@xyflow/react";
 import { formatShortcut, matchesMod } from "@/lib/platform";
 import { FloatingHandle } from "./FloatingHandle";
@@ -49,6 +50,7 @@ function CompactScene({
   selected: boolean;
   borderColor: string;
 }) {
+  const { t } = useTranslation();
   const statusColor =
     STATUS_COLORS[d.status ?? "outline"] ?? STATUS_COLORS.outline;
 
@@ -116,7 +118,7 @@ function CompactScene({
             fontSize: 11,
           }}
         >
-          {d.wordCount.toLocaleString()} chars
+          {d.wordCount.toLocaleString()} {t("common.unitChars")}
         </div>
       )}
     </div>
@@ -140,6 +142,7 @@ function CardScene({
   onSynopsisDoubleClick: () => void;
   onOpen: () => void;
 }) {
+  const { t } = useTranslation();
   const statusColor =
     STATUS_COLORS[d.status ?? "outline"] ?? STATUS_COLORS.outline;
   const statusCode = STATUS_CODES[d.status ?? "outline"] ?? "OU";
@@ -294,7 +297,9 @@ function CardScene({
         }}
       >
         <span style={{ fontSize: 10, color: "var(--muted-foreground)" }}>
-          {d.wordCount != null ? `${d.wordCount.toLocaleString()}字` : ""}
+          {d.wordCount != null
+            ? `${d.wordCount.toLocaleString()} ${t("common.unitChars")}`
+            : ""}
         </span>
         <button
           onPointerDown={(e) => e.stopPropagation()}

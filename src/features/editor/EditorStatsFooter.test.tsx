@@ -5,6 +5,7 @@ import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { EditorStatsFooter } from "./EditorStatsFooter";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useProjectStore } from "@/features/project/projectStore";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(async () => ({})),
@@ -23,6 +24,9 @@ describe("EditorStatsFooter", () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+    // 言語別テストが project store を汚さないように毎回クリアする
+    // (projects:[] → useCurrentProject() undefined → 既定の文字数パス)。
+    useProjectStore.setState({ projects: [] });
   });
 
   it("seeds counts when loading completes", () => {
@@ -35,7 +39,30 @@ describe("EditorStatsFooter", () => {
         isLoading={false}
       />,
     );
-    expect(screen.getByTestId("char-count").textContent).toContain("5 chars");
+    expect(screen.getByTestId("char-count").textContent).toContain("5 字");
+    editor.destroy();
+  });
+
+  it("uses word count (not char count) as the primary metric for en projects", () => {
+    // en プロジェクト + ja UI (i18n 既定) のクロスケース: 主役は語数、単位語は
+    // UI 言語 (ja→「語」)。これが char ではなく word を主役にしている配線の gate。
+    useProjectStore.setState({
+      currentProjectId: "p-en",
+      projects: [{ id: "p-en", language: "en" } as never],
+    });
+    // "one two three four five" = 5 words / 23 chars。char 配線なら "23 字" になる。
+    const editor = createTestEditor("<p>one two three four five</p>");
+    render(
+      <EditorStatsFooter
+        editor={editor as never}
+        getSyncSceneId={() => "scene-1"}
+        syncToTree={false}
+        isLoading={false}
+      />,
+    );
+    const text = screen.getByTestId("char-count").textContent ?? "";
+    expect(text).toContain("5 語");
+    expect(text).not.toContain("字");
     editor.destroy();
   });
 
@@ -49,18 +76,18 @@ describe("EditorStatsFooter", () => {
         isLoading={false}
       />,
     );
-    expect(screen.getByTestId("char-count").textContent).toContain("0 chars");
+    expect(screen.getByTestId("char-count").textContent).toContain("0 字");
 
     act(() => {
       editor.commands.insertContent("こんにちは");
     });
     // debounce 未経過: まだ更新されない
-    expect(screen.getByTestId("char-count").textContent).toContain("0 chars");
+    expect(screen.getByTestId("char-count").textContent).toContain("0 字");
 
     act(() => {
       vi.advanceTimersByTime(200);
     });
-    expect(screen.getByTestId("char-count").textContent).toContain("5 chars");
+    expect(screen.getByTestId("char-count").textContent).toContain("5 字");
     editor.destroy();
   });
 
@@ -180,21 +207,21 @@ describe("EditorStatsFooter", () => {
     );
     rerender(<EditorStatsFooter editor={editorB as never} {...props} />);
     // 差し替えで B の値に再シードされる
-    expect(screen.getByTestId("char-count").textContent).toContain("5 chars");
+    expect(screen.getByTestId("char-count").textContent).toContain("5 字");
 
     // 旧 editor A への編集はもう反映されない
     act(() => {
       editorA.commands.insertContent("xxxxxxxxxx");
       vi.advanceTimersByTime(200);
     });
-    expect(screen.getByTestId("char-count").textContent).toContain("5 chars");
+    expect(screen.getByTestId("char-count").textContent).toContain("5 字");
 
     // 新 editor B への編集は反映される
     act(() => {
       editorB.commands.insertContent("か");
       vi.advanceTimersByTime(200);
     });
-    expect(screen.getByTestId("char-count").textContent).toContain("6 chars");
+    expect(screen.getByTestId("char-count").textContent).toContain("6 字");
     editorA.destroy();
     editorB.destroy();
   });
@@ -238,7 +265,7 @@ describe("EditorStatsFooter", () => {
         isLoading={true}
       />,
     );
-    expect(screen.getByTestId("char-count").textContent).toContain("0 chars");
+    expect(screen.getByTestId("char-count").textContent).toContain("0 字");
 
     rerender(
       <EditorStatsFooter
@@ -248,7 +275,7 @@ describe("EditorStatsFooter", () => {
         isLoading={false}
       />,
     );
-    expect(screen.getByTestId("char-count").textContent).toContain("3 chars");
+    expect(screen.getByTestId("char-count").textContent).toContain("3 字");
     editor.destroy();
   });
 });

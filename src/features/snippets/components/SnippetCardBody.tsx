@@ -1,8 +1,10 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import type { Snippet } from "@/features/snippets/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 
 export function SnippetCardBody({ snippet }: { snippet: Snippet }) {
+  const { t } = useTranslation();
   const plainText = useMemo(
     () => prosemirrorToText(snippet.content),
     [snippet.content],
@@ -23,7 +25,7 @@ export function SnippetCardBody({ snippet }: { snippet: Snippet }) {
           </span>
         ) : null}
         <span className="text-[10px] text-muted-foreground">
-          {plainText.length} chars
+          {plainText.length} {t("common.unitChars")}
         </span>
       </div>
     </>

@@ -275,6 +275,6 @@ describe("GridSceneCard", () => {
         display={DEFAULT_DISPLAY}
       />,
     );
-    expect(screen.getByText("9,999 chars")).toBeDefined();
+    expect(screen.getByText("9,999 字")).toBeDefined();
   });
 });

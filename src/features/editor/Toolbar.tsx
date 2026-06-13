@@ -15,6 +15,8 @@ import {
 } from "@/features/settings/useSettingControl";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { ANNOTATION_REBUILD_META } from "@/features/post-effect/AnnotationPlugin";
+import { useCurrentProject } from "@/features/project/projectStore";
+import { primaryCountUnit } from "@/features/editor/charCountStats";
 
 function ToolbarButton({
   active,
@@ -113,6 +115,9 @@ export function Toolbar({
 
   const { value: targetCharCount, setValue: setTargetCharCount } =
     useSettingNumber("editor.targetCharCount", 0);
+  // 目標値ラベルの単位語は一次メトリクス (= PROJECT 言語) に従う。フッタの
+  // 目標行 (EditorStatsFooter) と単位を一致させる (同じ targetCharCount 値)。
+  const targetUnit = primaryCountUnit(useCurrentProject()?.language);
 
   const { value: showLineNumbers, setValue: setShowLineNumbers } =
     useSettingBoolean("editor.showLineNumbers", false);
@@ -704,7 +709,13 @@ export function Toolbar({
             }}
           />
           <div className="flex items-center justify-between px-3 py-1 text-xs text-foreground">
-            <span>{t("editor.toolbar.targetWordCount")}</span>
+            <span>
+              {t(
+                targetUnit === "word"
+                  ? "editor.toolbar.targetWordCount"
+                  : "editor.toolbar.targetCharCount",
+              )}
+            </span>
             <input
               type="number"
               min={0}

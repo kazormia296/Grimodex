@@ -291,14 +291,15 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     );
     const { container } = renderBlock();
 
-    // ロード中: skeleton が出て、本文/文字数 ("0 chars") は invisible で隠れる
-    // (textContent には残るので可視性はクラスで assert する)
+    // ロード中: skeleton が出て、本文/文字数 ("0 字") は invisible で隠れる
+    // (textContent には残るので可視性はクラスで assert する。project 言語
+    // 未設定 → 文字数単位 "字" が i18n で出る)
     expect(
       container.querySelector("[data-testid='editor-content-loading']"),
     ).not.toBeNull();
     const hiddenWrap = container.querySelector(".invisible");
     expect(hiddenWrap).not.toBeNull();
-    expect(hiddenWrap!.textContent).toContain("0 chars");
+    expect(hiddenWrap!.textContent).toContain("0 字");
 
     resolveLoad({ content: MENTION_CONTENT, unplacedBeatsDoc: "[]" });
     await waitFor(() => {
@@ -306,7 +307,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
         container.querySelector("[data-testid='editor-content-loading']"),
       ).toBeNull();
     });
-    expect(container.textContent).toContain("chars");
+    expect(container.textContent).toContain("字");
   });
 
   it("editor.spellCheck 設定が本文ラッパーの spellcheck 属性に届く", async () => {
@@ -584,7 +585,7 @@ describe("LinearSceneBlock: 文字数同期の debounce (perf 契約)", () => {
     });
     const loadedCount = getDocText(lastEditor().state.doc).length;
     expect(container.textContent).toContain(
-      `${loadedCount.toLocaleString()} chars`,
+      `${loadedCount.toLocaleString()} 字`,
     );
 
     const origSetCharCount = useTreeStore.getState().setCharCount;
@@ -602,7 +603,7 @@ describe("LinearSceneBlock: 文字数同期の debounce (perf 契約)", () => {
       });
       expect(mockSetCharCount).not.toHaveBeenCalled();
       expect(container.textContent).toContain(
-        `${loadedCount.toLocaleString()} chars`,
+        `${loadedCount.toLocaleString()} 字`,
       );
 
       // 休止 200ms で 1 回だけ full-doc walk + 同期
@@ -615,7 +616,7 @@ describe("LinearSceneBlock: 文字数同期の debounce (perf 契約)", () => {
         loadedCount + 3,
       );
       expect(container.textContent).toContain(
-        `${(loadedCount + 3).toLocaleString()} chars`,
+        `${(loadedCount + 3).toLocaleString()} 字`,
       );
     } finally {
       vi.useRealTimers();

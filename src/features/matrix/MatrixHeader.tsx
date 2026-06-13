@@ -19,7 +19,7 @@ const SHOW_MODES: { value: ShowMode; label: string; disabled?: boolean }[] = [
 const SORT_MODES: { value: SortMode; label: string }[] = [
   { value: "reading", label: "Reading order" },
   { value: "story-time", label: "Story-time order" },
-  { value: "word-count", label: "Word count" },
+  { value: "word-count", label: "Character count" },
   { value: "last-edited", label: "Last edited" },
 ];
 

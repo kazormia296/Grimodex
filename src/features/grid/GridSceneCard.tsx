@@ -343,7 +343,7 @@ function GridSceneCardImpl({
               />
             )}
             <span className="text-[10px] text-muted-foreground/60 ml-auto">
-              {liveCharCount.toLocaleString()} chars
+              {liveCharCount.toLocaleString()} {t("common.unitChars")}
             </span>
           </div>
         </div>

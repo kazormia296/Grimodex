@@ -3,12 +3,15 @@ import i18next from "i18next";
 import type { Editor } from "@tiptap/react";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
 import {
+  countUnitLabelKey,
   countWords,
   manuscriptPages,
+  primaryCountUnit,
   readingMinutes,
 } from "@/features/editor/charCountStats";
 import { countBeats } from "@/features/editor/beat/countBeats";
 import { useCharCountMilestone } from "@/features/editor/useCharCountMilestone";
+import { useCurrentProject } from "@/features/project/projectStore";
 import { useSettingNumber } from "@/features/settings/useSettingControl";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getDocText } from "@/features/editor/RubyNode";
@@ -48,17 +51,22 @@ export function EditorStatsFooter({
   isLoading,
 }: EditorStatsFooterProps) {
   const [charCount, setCharCount] = useState(0);
+  const [wordCount, setWordCount] = useState(0);
   const [beatTotal, setBeatTotal] = useState(0);
   const [beatGenerated, setBeatGenerated] = useState(0);
   const [popoverOpen, setPopoverOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const charCountRef = useRef<HTMLButtonElement>(null);
   const timerRef = useRef<number | null>(null);
-  const { value: targetCharCount } = useSettingNumber(
-    "editor.targetCharCount",
-    0,
-  );
-  useCharCountMilestone(charCount, targetCharCount, charCountRef);
+  // 一次メトリクスは PROJECT 言語で決める (en=語数 / それ以外=文字数)。
+  // tree へ同期する charCount は常に文字数のまま (永続列の意味を変えない)。
+  const lang = useCurrentProject()?.language;
+  const unit = primaryCountUnit(lang);
+  const primaryCount = unit === "word" ? wordCount : charCount;
+  const unitLabel = i18next.t(countUnitLabelKey(unit));
+  const { value: targetCount } = useSettingNumber("editor.targetCharCount", 0);
+  // 目標値は project スコープ設定なので、単位は一次メトリクスに従って解釈する。
+  useCharCountMilestone(primaryCount, targetCount, charCountRef);
 
   // props を ref に逃がし、毎レンダーの identity 変化で update 購読が
   // 再構築されないようにする。
@@ -66,11 +74,15 @@ export function EditorStatsFooter({
   getSyncSceneIdRef.current = getSyncSceneId;
   const syncToTreeRef = useRef(syncToTree);
   syncToTreeRef.current = syncToTree;
+  // recompute は [] deps なので lang を ref 経由で読む (stale closure 回避)。
+  const langRef = useRef(lang);
+  langRef.current = lang;
 
   const recompute = useCallback((e: Editor) => {
     const text = getDocText(e.state.doc);
     const count = text.length;
     setCharCount(count);
+    setWordCount(countWords(text, langRef.current));
     const bc = countBeats(e.state.doc);
     setBeatTotal(bc.total);
     setBeatGenerated(bc.generated);
@@ -130,11 +142,13 @@ export function EditorStatsFooter({
           title={i18next.t("editor.status.charCountDetails")}
           className="flex items-center gap-1.5 tabular-nums hover:text-foreground"
         >
-          <span>{charCount.toLocaleString()} chars</span>
-          {targetCharCount > 0 && (
+          <span>
+            {primaryCount.toLocaleString()} {unitLabel}
+          </span>
+          {targetCount > 0 && (
             <>
               <span className="text-muted-foreground">
-                / {targetCharCount.toLocaleString()}
+                / {targetCount.toLocaleString()}
               </span>
               <span
                 className="relative h-1 w-12 overflow-hidden rounded-full bg-muted"
@@ -143,18 +157,18 @@ export function EditorStatsFooter({
                 <span
                   className={cn(
                     "absolute inset-y-0 left-0 transition-[width] duration-200",
-                    charCount >= targetCharCount
+                    primaryCount >= targetCount
                       ? "bg-emerald-500"
                       : "bg-primary",
                   )}
                   style={{
-                    width: `${Math.min(100, (charCount / targetCharCount) * 100)}%`,
+                    width: `${Math.min(100, (primaryCount / targetCount) * 100)}%`,
                   }}
                 />
               </span>
-              {charCount > targetCharCount && (
+              {primaryCount > targetCount && (
                 <span className="text-rose-500">
-                  +{(charCount - targetCharCount).toLocaleString()}
+                  +{(primaryCount - targetCount).toLocaleString()}
                 </span>
               )}
             </>
@@ -168,24 +182,45 @@ export function EditorStatsFooter({
         >
           {(() => {
             const text = editor ? getDocText(editor.state.doc) : "";
-            const wc = countWords(text);
-            const pages = manuscriptPages(charCount);
-            const minutes = readingMinutes(charCount);
+            const wc = countWords(text, lang);
+            // 原稿用紙換算・読了時間は一次メトリクスから算出する
+            // (en=語数ベース / それ以外=文字数ベース)。
+            const pages = manuscriptPages(primaryCount, lang);
+            const minutes = readingMinutes(primaryCount, lang);
+            const charsRow = (
+              <Stat
+                label={i18next.t("editor.status.chars")}
+                value={charCount.toLocaleString()}
+              />
+            );
+            const wordsRow = (
+              <Stat
+                label={i18next.t("editor.status.words")}
+                value={wc.toLocaleString()}
+              />
+            );
             return (
               <div className="flex flex-col gap-1.5 tabular-nums">
-                <Stat
-                  label={i18next.t("editor.status.chars")}
-                  value={charCount.toLocaleString()}
-                />
-                <Stat
-                  label={i18next.t("editor.status.words")}
-                  value={wc.toLocaleString()}
-                />
+                {/* 一次メトリクスを先頭に出す (en=語数 / それ以外=文字数)。 */}
+                {unit === "word" ? (
+                  <>
+                    {wordsRow}
+                    {charsRow}
+                  </>
+                ) : (
+                  <>
+                    {charsRow}
+                    {wordsRow}
+                  </>
+                )}
                 <Stat
                   label={i18next.t("editor.status.manuscriptPages")}
-                  value={i18next.t("editor.status.manuscriptPagesValue", {
-                    n: pages.toFixed(1),
-                  })}
+                  value={i18next.t(
+                    unit === "word"
+                      ? "editor.status.manuscriptPagesValueWords"
+                      : "editor.status.manuscriptPagesValueChars",
+                    { n: pages.toFixed(1) },
+                  )}
                 />
                 <Stat
                   label={i18next.t("editor.status.readingTime")}
@@ -193,12 +228,12 @@ export function EditorStatsFooter({
                     n: minutes,
                   })}
                 />
-                {targetCharCount > 0 && (
+                {targetCount > 0 && (
                   <>
                     <div className="my-1 border-t border-border" />
                     <Stat
                       label={i18next.t("editor.status.goal")}
-                      value={`${targetCharCount.toLocaleString()} chars`}
+                      value={`${targetCount.toLocaleString()} ${unitLabel}`}
                     />
                     <div className="flex items-center gap-2">
                       <span
@@ -208,17 +243,17 @@ export function EditorStatsFooter({
                         <span
                           className={cn(
                             "absolute inset-y-0 left-0",
-                            charCount >= targetCharCount
+                            primaryCount >= targetCount
                               ? "bg-emerald-500"
                               : "bg-primary",
                           )}
                           style={{
-                            width: `${Math.min(100, (charCount / targetCharCount) * 100)}%`,
+                            width: `${Math.min(100, (primaryCount / targetCount) * 100)}%`,
                           }}
                         />
                       </span>
                       <span className="w-10 text-right text-muted-foreground">
-                        {Math.round((charCount / targetCharCount) * 100)}%
+                        {Math.round((primaryCount / targetCount) * 100)}%
                       </span>
                     </div>
                   </>

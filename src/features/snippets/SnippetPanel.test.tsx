@@ -324,7 +324,7 @@ describe("SnippetPanel", () => {
       entries: [fakeSnippet({ id: "s1", content: "Hello" })],
     });
     render(<SnippetPanel />);
-    expect(screen.getByText("5 chars")).toBeInTheDocument();
+    expect(screen.getByText("5 字")).toBeInTheDocument();
   });
 
   it("calls search when typing in search input", async () => {

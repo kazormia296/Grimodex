@@ -2,6 +2,8 @@
   "common": {
     "loading": "読み込み中…",
     "loadingContent": "読み込み中…",
+    "unitChars": "字",
+    "unitWords": "語",
     "cancel": "キャンセル",
     "save": "保存",
     "delete": "削除",
@@ -2170,7 +2172,8 @@
       "sceneMetaPanel": "シーン情報パネル",
       "moreOptions": "その他のオプション",
       "findReplace": "検索と置換",
-      "targetWordCount": "目標文字数...",
+      "targetWordCount": "目標単語数...",
+      "targetCharCount": "目標文字数...",
       "showLineNumbers": "行番号を表示",
       "rubyBase": "ベース",
       "rubyAnnotation": "ふりがな"
@@ -2193,7 +2196,8 @@
       "chars": "文字数",
       "words": "単語数",
       "manuscriptPages": "原稿用紙換算",
-      "manuscriptPagesValue": "{{n}} 枚（400字詰め）",
+      "manuscriptPagesValueChars": "{{n}} 枚（400字詰め）",
+      "manuscriptPagesValueWords": "{{n}} 枚（250語）",
       "readingTime": "推定読了時間",
       "readingTimeValue": "約{{n}}分",
       "goal": "目標"

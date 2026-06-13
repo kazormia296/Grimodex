@@ -33,6 +33,11 @@ import { useCurrentProject } from "@/features/project/projectStore";
 import { buildEditorContentStyle } from "@/features/editor/editorLayout";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { getDocText } from "@/features/editor/RubyNode";
+import {
+  countUnitLabelKey,
+  countWords,
+  primaryCountUnit,
+} from "@/features/editor/charCountStats";
 import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransition";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { EditorContentSkeleton } from "@/features/editor/EditorContentSkeleton";
@@ -99,7 +104,8 @@ function MountedSceneBlock({
   onFocus,
 }: MountedSceneBlockProps) {
   const editorSettings = useEditorSettings();
-  const isEnglish = useCurrentProject()?.language === "en";
+  const lang = useCurrentProject()?.language;
+  const isEnglish = lang === "en";
   const filterSource = useAttributionStore((s) => s.filterSource);
   const activeNode = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
   const title = activeNode?.title ?? "";
@@ -532,6 +538,22 @@ function MountedSceneBlock({
     return () => observer.disconnect();
   }, [sceneId, onHeightChange]);
 
+  // 一次メトリクスは PROJECT 言語で決める (en=語数 / それ以外=文字数)。
+  // tree 同期する charCount は常に文字数のまま。語数は表示時に live doc から導出
+  // (charCount を本文変化の proxy として再計算; ja では算出しない)。
+  const primaryUnit = primaryCountUnit(lang);
+  // charCount (debounce で更新される文字数) を本文変化の proxy 兼空判定に使う:
+  // 空 doc は語数 0 で countWords をスキップでき、charCount 変化で再計算が走る。
+  const wordCount = useMemo(
+    () =>
+      primaryUnit === "word" && editor && charCount > 0
+        ? countWords(getDocText(editor.state.doc), lang)
+        : 0,
+    [primaryUnit, lang, editor, charCount],
+  );
+  const primaryCount = primaryUnit === "word" ? wordCount : charCount;
+  const primaryUnitLabel = i18next.t(countUnitLabelKey(primaryUnit));
+
   return (
     <div ref={containerRef}>
       {/* 外部 write conflict の解決 UI (タブモードは EditorPane が表示)。
@@ -578,7 +600,7 @@ function MountedSceneBlock({
               <EditorContent editor={editor} />
             </div>
             <div className="mt-2 text-right text-xs text-muted-foreground/50">
-              {charCount.toLocaleString()} chars
+              {primaryCount.toLocaleString()} {primaryUnitLabel}
             </div>
           </div>
         </div>

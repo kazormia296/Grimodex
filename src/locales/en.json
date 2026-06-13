@@ -2,6 +2,8 @@
   "common": {
     "loading": "Loading…",
     "loadingContent": "Loading…",
+    "unitChars": "chars",
+    "unitWords": "words",
     "cancel": "Cancel",
     "save": "Save",
     "delete": "Delete",
@@ -241,7 +243,7 @@
       "uiLanguage": "UI Language",
       "uiScale": "UI Scale",
       "uiScaleDesc": "Zoom level for the entire window (80–150%)",
-      "showWordCount": "Show word count in scene tree",
+      "showWordCount": "Show character count in scene tree",
       "showAiBadge": "Show AI attribution badge in scene tree",
       "animations": "Animations",
       "reduceMotion": "Reduce motion",
@@ -2167,6 +2169,7 @@
       "moreOptions": "More options",
       "findReplace": "Find and replace",
       "targetWordCount": "Target word count...",
+      "targetCharCount": "Target character count...",
       "showLineNumbers": "Show line numbers",
       "rubyBase": "Base",
       "rubyAnnotation": "Reading"
@@ -2189,7 +2192,8 @@
       "chars": "Characters",
       "words": "Words",
       "manuscriptPages": "Manuscript pages",
-      "manuscriptPagesValue": "{{n}} pages (400 chars)",
+      "manuscriptPagesValueChars": "{{n}} pages (400 chars)",
+      "manuscriptPagesValueWords": "{{n}} pages (250 words)",
       "readingTime": "Reading time",
       "readingTimeValue": "~{{n}} min",
       "goal": "Goal"
@@ -2760,7 +2764,7 @@
   "scenes": {
     "sortManual": "Manual",
     "sortTitle": "By title",
-    "sortWordcount": "By word count",
+    "sortWordcount": "By character count",
     "sortStatus": "By status",
     "filterAll": "Show all",
     "noSynopsis": "No synopsis",
@@ -2773,7 +2777,7 @@
     "removeFilter": "Click to remove filter",
     "clearFilters": "Clear all",
     "showLabel": "Show",
-    "showWordCount": "Word count",
+    "showWordCount": "Character count",
     "showStatusDots": "Status dots",
     "showLabelDots": "Label dots",
     "showAiBadge": "AI attribution badge",

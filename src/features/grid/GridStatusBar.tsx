@@ -28,7 +28,9 @@ export function GridStatusBar({
       <span>
         {t("grid.status.scenes", "{{count}} シーン", { count: totalScenes })}
       </span>
-      <span>{totalCharCount.toLocaleString()} chars</span>
+      <span>
+        {totalCharCount.toLocaleString()} {t("common.unitChars")}
+      </span>
     </div>
   );
 }
