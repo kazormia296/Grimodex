@@ -680,7 +680,14 @@ function trimRagText(text: string, targetTokens: number): string {
 // trimToFit: budget超過時にRAG→L5→L4→L2→L3→L1の順でトリム
 // ---------------------------------------------------------------------------
 
-export function trimToFit(layers: TrimInput, budget: number): TrimResult {
+export function trimToFit(
+  layers: TrimInput,
+  budget: number,
+  markers: { l1: L1TrimMarkers; l3: L3TrimMarkers } = {
+    l1: JA_L1_TRIM_MARKERS,
+    l3: JA_L3_TRIM_MARKERS,
+  },
+): TrimResult {
   const sumTokens = (t: TrimInput) =>
     countTokens(t.baseText) +
     countTokens(t.l1Text) +
@@ -711,8 +718,8 @@ export function trimToFit(layers: TrimInput, budget: number): TrimResult {
     { key: "l5Text", name: "L5", fn: trimL5Text },
     { key: "l4Text", name: "L4", fn: trimL4Text },
     { key: "l2Text", name: "L2", fn: trimL2Text },
-    { key: "l3Text", name: "L3", fn: trimL3Text },
-    { key: "l1Text", name: "L1", fn: trimL1Text },
+    { key: "l3Text", name: "L3", fn: (t, n) => trimL3Text(t, n, markers.l3) },
+    { key: "l1Text", name: "L1", fn: (t, n) => trimL1Text(t, n, markers.l1) },
   ];
 
   for (const { key, name, fn } of trimOrder) {
@@ -1255,7 +1262,9 @@ export function buildSystemPrompt(
       l6Text: effectiveL6,
       ragText: effectiveRag,
     };
-    const result = trimToFit(trimInput, budget);
+    // 言語別 trim マーカーを渡す: en では L1/L3 のヘッダが英語になるため、
+    // ja 既定の regex では一致せず trim が効かない (s = lang の chatSystem)。
+    const result = trimToFit(trimInput, budget, s.trimMarkers);
     effectiveL1 = result.trimmedTexts.l1Text;
     effectiveL2 = result.trimmedTexts.l2Text;
     effectiveL3 = result.trimmedTexts.l3Text;
