@@ -252,18 +252,23 @@ export function formatTimelineContext(
     summaryOverride: string | null;
   }[],
   latestResolved: ResolvedCodexState,
+  /** project 言語。en 系のとき見出し/プレースホルダを英語化 (lang 省略=ja 不変)。 */
+  lang?: string | null,
 ): string {
+  const isEn = lang?.startsWith("en") ?? false;
   const lines: string[] = [];
 
   lines.push(`# ${entry.name} (${entry.type})`);
-  lines.push(`現在の状態: ${latestResolved.summary ?? "(未設定)"}`);
+  lines.push(
+    `${isEn ? "Current state" : "現在の状態"}: ${latestResolved.summary ?? (isEn ? "(unset)" : "(未設定)")}`,
+  );
 
   if (phases.length > 0) {
     lines.push("");
-    lines.push("## 変遷");
+    lines.push(isEn ? "## Changes" : "## 変遷");
     for (const phase of phases) {
       lines.push(
-        `- [${phase.label}] @ ${phase.anchorTitle}: ${phase.summaryOverride ?? "(変更なし)"}`,
+        `- [${phase.label}] @ ${phase.anchorTitle}: ${phase.summaryOverride ?? (isEn ? "(no change)" : "(変更なし)")}`,
       );
     }
   }

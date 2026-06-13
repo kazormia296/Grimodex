@@ -36,72 +36,180 @@ export interface AiBranchProjectContext {
    * 既存の aiInstructions (「# 追加指示」, 横断的プロジェクト指示) とは別建て。
    */
   customInstruction?: string | null;
+  /** project 言語 (ja/en/...). en 系のときプロンプトを英語で組む。 */
+  language?: string | null;
 }
 
-const TYPE_LABELS: Record<AiBranchSeed["type"], string> = {
-  scene: "シーン",
-  note: "ノート",
-  codex: "Codex",
-  sticky: "Sticky",
-  snippet: "スニペット",
-  ai_branch: "AI Branch",
+// 生成カードは本文として board に書き込まれるため、プロンプトの言語は PROJECT
+// 言語に従う (en プロジェクトで日本語指示の下に英語以外のカードが生成されるのを防ぐ)。
+const TYPE_LABELS: Record<"ja" | "en", Record<AiBranchSeed["type"], string>> = {
+  ja: {
+    scene: "シーン",
+    note: "ノート",
+    codex: "Codex",
+    sticky: "Sticky",
+    snippet: "スニペット",
+    ai_branch: "AI Branch",
+  },
+  en: {
+    scene: "Scene",
+    note: "Note",
+    codex: "Codex",
+    sticky: "Sticky",
+    snippet: "Snippet",
+    ai_branch: "AI Branch",
+  },
 };
+
+interface MapAiStrings {
+  intro: string;
+  projectInfo: string;
+  title: (v: string) => string;
+  genre: (v: string) => string;
+  pov: (v: string) => string;
+  tense: (v: string) => string;
+  synopsis: string;
+  styleGuide: string;
+  addl: string;
+  userAddl: string;
+  spotlight: string;
+  spotlightDesc: string;
+  untitled: string;
+  seedNodes: string;
+  seedDesc: string;
+  task: string;
+  taskDesc: (count: number) => string;
+  theme: (v: string) => string;
+  outputFormat: string;
+  outputDesc: (count: number) => string;
+  outputTitle: string;
+  outputBody: string;
+  outputTail: string;
+  padTitle: (n: number) => string;
+}
+
+const STRINGS: Record<"ja" | "en", MapAiStrings> = {
+  ja: {
+    intro:
+      "あなたは小説執筆を支援する AI アシスタントです。読者の興味を引き、物語の世界観を尊重したアイデアを提案してください。",
+    projectInfo: "# プロジェクト情報",
+    title: (v) => `- タイトル: ${v}`,
+    genre: (v) => `- ジャンル: ${v}`,
+    pov: (v) => `- 視点: ${v}`,
+    tense: (v) => `- 時制: ${v}`,
+    synopsis: "# プロジェクト概要",
+    styleGuide: "# 文体ガイド",
+    addl: "# 追加指示",
+    userAddl: "# ユーザー追加指示",
+    spotlight: "# 常時参照する設定 (Spotlight)",
+    spotlightDesc:
+      "以下はユーザーが Chat で pin した「常時参照したい世界観要素」です。回答にあたって尊重してください。",
+    untitled: "(無題)",
+    seedNodes: "# 種ノード",
+    seedDesc:
+      "以下のノードを「種」として、関連するアイデアを派生させてください。",
+    task: "# 課題",
+    taskDesc: (count) =>
+      `以下のテーマについて、異なる視点から ${count} 個のアイデアを生成してください。種ノードがある場合は、その内容を踏まえて関連性のあるアイデアにしてください。`,
+    theme: (v) => `テーマ: ${v}`,
+    outputFormat: "# 出力形式",
+    outputDesc: (count) =>
+      `各アイデアは次の形式で出力してください（必ず ${count} 個、区切りは "---" のみ）:`,
+    outputTitle: "## タイトル",
+    outputBody: "本文テキスト",
+    outputTail: '最後の区切り "---" は不要です。余分な説明は不要です。',
+    padTitle: (n) => `アイデア ${n}`,
+  },
+  en: {
+    intro:
+      "You are an AI assistant that supports novel writing. Propose ideas that engage the reader and respect the story's world. Write all ideas in English.",
+    projectInfo: "# Project Information",
+    title: (v) => `- Title: ${v}`,
+    genre: (v) => `- Genre: ${v}`,
+    pov: (v) => `- POV: ${v}`,
+    tense: (v) => `- Tense: ${v}`,
+    synopsis: "# Project Synopsis",
+    styleGuide: "# Style Guide",
+    addl: "# Additional Instructions",
+    userAddl: "# User Additional Instructions",
+    spotlight: "# Always-Referenced Settings (Spotlight)",
+    spotlightDesc:
+      "The following are world elements the user pinned in Chat to always reference. Respect them in your answer.",
+    untitled: "(untitled)",
+    seedNodes: "# Seed Nodes",
+    seedDesc:
+      "Use the following nodes as seeds and derive related ideas from them.",
+    task: "# Task",
+    taskDesc: (count) =>
+      `Generate ${count} ideas about the following theme from different perspectives. If seed nodes are given, make the ideas relevant to their content.`,
+    theme: (v) => `Theme: ${v}`,
+    outputFormat: "# Output Format",
+    outputDesc: (count) =>
+      `Output each idea in the following format (exactly ${count}, separated only by "---"):`,
+    outputTitle: "## Title",
+    outputBody: "Body text",
+    outputTail:
+      'No trailing "---" is needed. Do not add any extra explanation.',
+    padTitle: (n) => `Idea ${n}`,
+  },
+};
+
+function langKey(project: AiBranchProjectContext | null): "ja" | "en" {
+  return project?.language?.startsWith("en") ? "en" : "ja";
+}
 
 function buildSystemPrompt(
   project: AiBranchProjectContext | null,
   spotlight: AiBranchSeed[],
 ): string {
-  const lines: string[] = [
-    "あなたは小説執筆を支援する AI アシスタントです。読者の興味を引き、物語の世界観を尊重したアイデアを提案してください。",
-  ];
+  const lang = langKey(project);
+  const S = STRINGS[lang];
+  const labels = TYPE_LABELS[lang];
+  const lines: string[] = [S.intro];
 
   if (project) {
-    const info: string[] = [`- タイトル: ${project.title}`];
-    if (project.genre) info.push(`- ジャンル: ${project.genre}`);
-    if (project.pov) info.push(`- 視点: ${project.pov}`);
-    if (project.tense) info.push(`- 時制: ${project.tense}`);
+    const info: string[] = [S.title(project.title)];
+    if (project.genre) info.push(S.genre(project.genre));
+    if (project.pov) info.push(S.pov(project.pov));
+    if (project.tense) info.push(S.tense(project.tense));
     if (info.length > 0) {
       lines.push("");
-      lines.push("# プロジェクト情報");
+      lines.push(S.projectInfo);
       lines.push(...info);
     }
 
     if (project.synopsis && project.synopsis.trim()) {
       lines.push("");
-      lines.push("# プロジェクト概要");
+      lines.push(S.synopsis);
       lines.push(project.synopsis.trim());
     }
 
     if (project.styleGuide && project.styleGuide.trim()) {
       lines.push("");
-      lines.push("# 文体ガイド");
+      lines.push(S.styleGuide);
       lines.push(project.styleGuide.trim());
     }
 
     if (project.aiInstructions && project.aiInstructions.trim()) {
       lines.push("");
-      lines.push("# 追加指示");
+      lines.push(S.addl);
       lines.push(project.aiInstructions.trim());
     }
 
     if (project.customInstruction && project.customInstruction.trim()) {
       lines.push("");
-      lines.push("# ユーザー追加指示");
+      lines.push(S.userAddl);
       lines.push(project.customInstruction.trim());
     }
   }
 
   if (spotlight.length > 0) {
     lines.push("");
-    lines.push("# 常時参照する設定 (Spotlight)");
-    lines.push(
-      "以下はユーザーが Chat で pin した「常時参照したい世界観要素」です。回答にあたって尊重してください。",
-    );
+    lines.push(S.spotlight);
+    lines.push(S.spotlightDesc);
     lines.push("");
     spotlight.forEach((s, i) => {
-      lines.push(
-        `## ${i + 1}. [${TYPE_LABELS[s.type]}] ${s.title || "(無題)"}`,
-      );
+      lines.push(`## ${i + 1}. [${labels[s.type]}] ${s.title || S.untitled}`);
       if (s.body && s.body.trim()) {
         lines.push(s.body.trim());
       }
@@ -118,19 +226,18 @@ function buildUserPrompt(
   userPrompt: string,
   count: number,
   seeds: AiBranchSeed[],
+  lang: "ja" | "en",
 ): string {
+  const S = STRINGS[lang];
+  const labels = TYPE_LABELS[lang];
   const parts: string[] = [];
 
   if (seeds.length > 0) {
-    parts.push("# 種ノード");
-    parts.push(
-      "以下のノードを「種」として、関連するアイデアを派生させてください。",
-    );
+    parts.push(S.seedNodes);
+    parts.push(S.seedDesc);
     parts.push("");
     seeds.forEach((s, i) => {
-      parts.push(
-        `## ${i + 1}. [${TYPE_LABELS[s.type]}] ${s.title || "(無題)"}`,
-      );
+      parts.push(`## ${i + 1}. [${labels[s.type]}] ${s.title || S.untitled}`);
       if (s.body && s.body.trim()) {
         parts.push(s.body.trim());
       }
@@ -138,29 +245,29 @@ function buildUserPrompt(
     });
   }
 
-  parts.push("# 課題");
-  parts.push(
-    `以下のテーマについて、異なる視点から ${count} 個のアイデアを生成してください。種ノードがある場合は、その内容を踏まえて関連性のあるアイデアにしてください。`,
-  );
+  parts.push(S.task);
+  parts.push(S.taskDesc(count));
   parts.push("");
-  parts.push(`テーマ: ${userPrompt}`);
+  parts.push(S.theme(userPrompt));
   parts.push("");
-  parts.push("# 出力形式");
-  parts.push(
-    `各アイデアは次の形式で出力してください（必ず ${count} 個、区切りは "---" のみ）:`,
-  );
+  parts.push(S.outputFormat);
+  parts.push(S.outputDesc(count));
   parts.push("");
-  parts.push("## タイトル");
-  parts.push("本文テキスト");
+  parts.push(S.outputTitle);
+  parts.push(S.outputBody);
   parts.push("");
   parts.push("---");
   parts.push("");
-  parts.push('最後の区切り "---" は不要です。余分な説明は不要です。');
+  parts.push(S.outputTail);
 
   return parts.join("\n");
 }
 
-function parseCards(text: string, count: number): AiBranchCard[] {
+function parseCards(
+  text: string,
+  count: number,
+  lang: "ja" | "en",
+): AiBranchCard[] {
   const segments = text
     .split(/\n---\n|\n---$/)
     .map((s) => s.trim())
@@ -200,7 +307,7 @@ function parseCards(text: string, count: number): AiBranchCard[] {
   // Pad with empty cards if LLM returned fewer than requested
   while (cards.length < count) {
     cards.push({
-      title: `アイデア ${cards.length + 1}`,
+      title: STRINGS[lang].padTitle(cards.length + 1),
       body: '{"type":"doc","content":[]}',
     });
   }
@@ -219,8 +326,9 @@ export async function generateAiBranchCards(
     throw new Error("chat policy is off");
   }
 
+  const lang = langKey(project);
   const systemPrompt = buildSystemPrompt(project, spotlight);
-  const userPrompt = buildUserPrompt(prompt, count, seeds);
+  const userPrompt = buildUserPrompt(prompt, count, seeds, lang);
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -247,5 +355,5 @@ export async function generateAiBranchCards(
     .map((b) => (b as { type: "text"; content: string }).content)
     .join("\n");
 
-  return parseCards(text, count);
+  return parseCards(text, count, lang);
 }

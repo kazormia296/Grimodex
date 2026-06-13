@@ -173,6 +173,13 @@ pub(crate) fn seed_sample_workspace(
     let now_dt = chrono::Utc::now().to_rfc3339();
     let now_ms = chrono::Utc::now().timestamp_millis();
 
+    // 同梱サンプル (v1.json) のコンテンツ (エントリ名/本文/章タイトル) は日本語固定。
+    // ここで project.language にユーザー選択言語 (例 en) を入れると、Codex の
+    // builtin タイプラベルだけが en へ relabel され「英語ラベル + 日本語本文」の
+    // 半端な状態になる。英語サンプル (v1_en.json) を用意するまではサンプルを ja
+    // 固定にして内部整合を保つ (新規プロジェクトはユーザー選択言語を尊重)。
+    let _ = &language; // FE から渡るが現状サンプルは同梱コンテンツ (ja) に従う
+    let sample_language = "ja";
     db.with_conn(|conn| {
         // Project
         // Migration pre-inserts "default-project"; replace it with sample data.
@@ -184,7 +191,7 @@ pub(crate) fn seed_sample_workspace(
                 project_id,
                 seed.project.title,
                 seed.project.genre,
-                language,
+                sample_language,
                 seed.project.ai_instructions,
                 ai_policy,
                 now_dt,

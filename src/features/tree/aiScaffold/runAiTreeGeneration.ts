@@ -57,6 +57,8 @@ export async function runAiTreeGeneration(
           tense: projectCtx.tense,
           styleGuide: projectCtx.styleGuide,
           aiInstructions: projectCtx.aiInstructions,
+          // en プロジェクトはスキャフォールドプロンプトを英語で組む。
+          language: projectCtx.language,
         }
       : null,
   });

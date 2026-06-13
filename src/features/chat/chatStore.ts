@@ -976,12 +976,14 @@ function appendProjectGroupedParts(
 export async function buildCodexScopeBlocks(opts: {
   selectedEntryId: string;
   allEntries: CodexEntry[];
+  /** project 言語 (timeline 文脈の見出し英語化に使用)。 */
+  lang?: string | null;
 }): Promise<{
   selectedPinned: import("./contextBuilder").PinnedCodexContext;
   relatedMentioned: CodexEntry[];
   relationExpanded: CodexContext[];
 } | null> {
-  const { selectedEntryId, allEntries } = opts;
+  const { selectedEntryId, allEntries, lang } = opts;
   const selected = allEntries.find((e) => e.id === selectedEntryId);
   if (!selected) return null;
 
@@ -1029,6 +1031,7 @@ export async function buildCodexScopeBlocks(opts: {
           },
           timelinePhases,
           resolvedState,
+          lang,
         )
       : "";
   const fullContent =
@@ -3913,6 +3916,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             ? await buildCodexScopeBlocks({
                 selectedEntryId: scopeAnchorId,
                 allEntries,
+                lang: projectCtx?.language,
               })
             : null;
 

@@ -544,7 +544,7 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   // so a fresh workspace stays empty (mirrors src-tauri/src/database.rs).
   const now = new Date().toISOString();
   db.run(
-    "INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at) VALUES ('default-project', '無題のプロジェクト', 'ja', ?, ?)",
+    "INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at) VALUES ('default-project', 'Untitled Project', 'ja', ?, ?)",
     [now, now],
   );
 

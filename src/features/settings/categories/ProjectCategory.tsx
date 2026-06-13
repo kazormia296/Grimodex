@@ -245,7 +245,12 @@ export function ProjectCategory() {
         <SettingRow label={t("settings.project.language")}>
           <select
             value={project.language}
-            onChange={(e) => updateField("language", e.target.value)}
+            onChange={(e) =>
+              // 言語変更で embedding spec (model_id/dim/chunker) が変わり既存
+              // チャンクが全 stale になる。DB 書込後に index status を取り直して
+              // staleChunkCount を表面化する (下の再構築バナー)。
+              updateField("language", e.target.value, refreshIndexStatus)
+            }
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           >
             {LANGUAGE_OPTIONS.map((o) => (
@@ -536,6 +541,16 @@ export function ProjectCategory() {
                   defaultValue: "{{scenes}} シーン / {{chunks}} チャンク",
                   scenes: indexStatus.indexedSceneCount,
                   chunks: indexStatus.indexedChunkCount,
+                })}
+              </span>
+            )}
+            {indexStatus && indexStatus.staleChunkCount > 0 && (
+              // 言語変更等でモデル/次元/チャンカが変わると既存チャンクが stale 化し
+              // 関連シーン注入が無言で空になる。再構築を促す。
+              <span className="text-xs text-amber-600 dark:text-amber-400">
+                {t("settings.project.semanticIndexStale", {
+                  defaultValue: "{{count}} チャンクが再構築待ち",
+                  count: indexStatus.staleChunkCount,
                 })}
               </span>
             )}

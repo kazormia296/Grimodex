@@ -890,9 +890,12 @@ impl Database {
                   VALUES (new.id || '-main-board', new.id, 'Main', 0.0, 'free', 0, 0, 1.0, '{}', 'none', datetime('now'), datetime('now'));
             END;
 
-            -- Seed default project (folder is no longer auto-created so the workspace can stay empty)
+            -- Seed default project (folder is no longer auto-created so the workspace can stay empty).
+            -- Title uses the language-neutral schema default 'Untitled Project' (a placeholder
+            -- the user renames) so an English user landing on the bootstrap project does not see
+            -- a hardcoded Japanese title. Language stays the documented 'ja' fallback.
             INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
-              VALUES ('default-project', '無題のプロジェクト', 'ja', datetime('now'), datetime('now'));",
+              VALUES ('default-project', 'Untitled Project', 'ja', datetime('now'), datetime('now'));",
         )?;
 
         // Foreshadow register tables (added post-initial schema)

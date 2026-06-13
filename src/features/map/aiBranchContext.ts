@@ -116,6 +116,8 @@ export async function fetchAiBranchProjectContext(
     synopsis: ctx.outline,
     styleGuide: ctx.styleGuide,
     aiInstructions: ctx.aiInstructions,
+    // en プロジェクトは AI Branch プロンプトを英語で組む。
+    language: ctx.language,
     // ユーザー定義の AI Branch 追記指示 (project_settings)。空なら system に出ない。
     customInstruction: useSettingsStore
       .getState()

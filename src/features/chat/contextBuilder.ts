@@ -2,15 +2,10 @@ import type { Tiktoken } from "tiktoken/lite/init";
 import i18next from "@/lib/i18n";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
-import {
-  formatTimelineContext,
-  type ResolvedCodexState,
-} from "@/features/codex/phaseResolver";
 import type { L1TrimMarkers, L3TrimMarkers } from "@/prompts/shared/types";
 import {
   JA_L1_TRIM_MARKERS,
   JA_L3_TRIM_MARKERS,
-  JA_TYPE_LABELS,
 } from "@/prompts/ja/chatSystem";
 import { getPromptCatalog } from "@/prompts/index";
 import { recordMark } from "@/lib/perfLog";
@@ -475,7 +470,6 @@ function deduplicateById(entries: CodexContext[]): CodexContext[] {
 
 // Re-export for backward compatibility
 export type { L1TrimMarkers, L3TrimMarkers };
-export { JA_TYPE_LABELS };
 
 // ---------------------------------------------------------------------------
 // Layer trim helpers
@@ -749,6 +743,13 @@ export function buildSystemPrompt(
   input: BuildSystemPromptInput,
 ): SystemPromptResult {
   const s = getPromptCatalog(input.lang ?? "ja").chatSystem;
+  // 伏線ブロックのラベルは catalog (lang 対応) だが、括弧/引用符/件 のタイポグラフィは
+  // 従来ハードコード日本語だった。en では straight quote / 半角括弧 / 件なし にする
+  // (ja は byte 不変 = 既存プロンプトキャッシュ温存)。
+  const isEnLang = input.lang?.startsWith("en") ?? false;
+  const fsQuote = (t: string) => (isEnLang ? `"${t}"` : `「${t}」`);
+  const fsParen = (t: string) => (isEnLang ? `(${t})` : `（${t}）`);
+  const fsCountSuffix = isEnLang ? "" : "件";
   const layers: LayerBreakdown[] = [];
 
   // Base instruction (L0)。Agent モード時は agentInstruction を付加。
@@ -805,9 +806,11 @@ export function buildSystemPrompt(
         else if (fs.loadBearing === "optional")
           meta.push(s.labels.foreshadowOptional);
         if (fs.setupCount > 0)
-          meta.push(`${s.labels.foreshadowSetup}: ${fs.setupCount}件`);
-        const metaSuffix = meta.length > 0 ? `（${meta.join(", ")}）` : "";
-        fsLines.push(`- 「${fs.title}」${intentSuffix}${metaSuffix}`);
+          meta.push(
+            `${s.labels.foreshadowSetup}: ${fs.setupCount}${fsCountSuffix}`,
+          );
+        const metaSuffix = meta.length > 0 ? fsParen(meta.join(", ")) : "";
+        fsLines.push(`- ${fsQuote(fs.title)}${intentSuffix}${metaSuffix}`);
       }
       return fsLines.join("\n");
     };
@@ -903,7 +906,7 @@ export function buildSystemPrompt(
         if (setup.strength) meta.push(`strength: ${setup.strength}`);
         const metaSuffix = meta.length > 0 ? ` [${meta.join(", ")}]` : "";
         lines.push(
-          `- ${s.labels.foreshadowSetup}: 「${setup.title}」${intentSuffix}${metaSuffix}`,
+          `- ${s.labels.foreshadowSetup}: ${fsQuote(setup.title)}${intentSuffix}${metaSuffix}`,
         );
         if (setup.excerpt?.trim()) {
           lines.push(`  excerpt: ${setup.excerpt.trim()}`);
@@ -912,14 +915,16 @@ export function buildSystemPrompt(
       for (const payoff of fs.payoffs) {
         const intentSuffix = payoff.intent ? ` — ${payoff.intent}` : "";
         const setupSuffix = payoff.setupSceneTitle
-          ? `（${s.labels.foreshadowSetup}: 「${payoff.setupSceneTitle}」）`
+          ? fsParen(
+              `${s.labels.foreshadowSetup}: ${fsQuote(payoff.setupSceneTitle)}`,
+            )
           : "";
         const meta: string[] = [];
         if (payoff.derivedLabel) meta.push(`label: ${payoff.derivedLabel}`);
         if (payoff.strength) meta.push(`strength: ${payoff.strength}`);
         const metaSuffix = meta.length > 0 ? ` [${meta.join(", ")}]` : "";
         lines.push(
-          `- ${s.labels.foreshadowPayoff}: 「${payoff.title}」${intentSuffix}${setupSuffix}${metaSuffix}`,
+          `- ${s.labels.foreshadowPayoff}: ${fsQuote(payoff.title)}${intentSuffix}${setupSuffix}${metaSuffix}`,
         );
         if (payoff.excerpt?.trim()) {
           lines.push(`  excerpt: ${payoff.excerpt.trim()}`);
@@ -1533,36 +1538,4 @@ export function buildStorySoFar(
   }
 
   return "";
-}
-
-/**
- * プロジェクトスコープ用: タイムライン付きCodexエントリフォーマット
- */
-export function formatTimelineEntry(
-  entry: CodexContext,
-  phases: {
-    label: string;
-    anchorTitle: string;
-    summaryOverride: string | null;
-  }[],
-): string {
-  if (phases.length > 0) {
-    const latestResolved: ResolvedCodexState = {
-      summary: entry.summary || null,
-      content: "",
-      contextMode: "mentioned",
-      detailValues: new Map(),
-      appliedPhaseIds: [],
-    };
-    return formatTimelineContext(
-      { name: entry.name, type: entry.type, summary: entry.summary || null },
-      phases,
-      latestResolved,
-    );
-  }
-  // フェーズなし: 通常フォーマット
-  const typeLabels = JA_TYPE_LABELS;
-  const label = typeLabels[entry.type] ?? entry.type;
-  const displaySummary = entry.summary.trim() || entry.contentFallback || "";
-  return `- **${entry.name}** (${label}): ${displaySummary}`;
 }

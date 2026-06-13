@@ -635,6 +635,41 @@ describe("formatTimelineContext", () => {
     expect(output).toContain("現在の状態: (未設定)");
   });
 
+  it("lang=en → 見出し/プレースホルダが英語化 (ja 文字は出ない)", () => {
+    const phases = [
+      {
+        label: "intro",
+        anchorTitle: "Ch.1",
+        summaryOverride: "first appearance",
+      },
+      { label: "change", anchorTitle: "Ch.3", summaryOverride: null },
+    ];
+    const resolvedNoSummary = { ...resolved, summary: null };
+    const output = formatTimelineContext(
+      entry,
+      phases,
+      resolvedNoSummary,
+      "en",
+    );
+    expect(output).toContain("Current state: (unset)");
+    expect(output).toContain("## Changes");
+    expect(output).toContain("- [change] @ Ch.3: (no change)");
+    // ja 見出し/プレースホルダは en では出ない
+    expect(output).not.toContain("現在の状態");
+    expect(output).not.toContain("変遷");
+    expect(output).not.toContain("未設定");
+    expect(output).not.toContain("変更なし");
+  });
+
+  it("lang 省略 / ja は従来の日本語出力 (byte 不変)", () => {
+    expect(formatTimelineContext(entry, [], resolved)).toBe(
+      "# アリス (character)\n現在の状態: 現在の状態サマリー",
+    );
+    expect(formatTimelineContext(entry, [], resolved, "ja")).toBe(
+      "# アリス (character)\n現在の状態: 現在の状態サマリー",
+    );
+  });
+
   it("フォーマット全体が正しい構造を持つ（フェーズあり）", () => {
     const phases = [
       { label: "成長", anchorTitle: "第2話", summaryOverride: "成長後" },

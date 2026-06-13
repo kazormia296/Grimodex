@@ -5,6 +5,7 @@ import {
   useCurrentProjectId,
   useProjectStore,
 } from "@/features/project/projectStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 
 export function useProjectSettings() {
   const [project, setProject] = useState<Project | null>(null);
@@ -29,12 +30,18 @@ export function useProjectSettings() {
     (
       field: keyof Omit<Project, "id" | "createdAt" | "updatedAt">,
       value: string | null,
+      /** DB 書込 (debounce) 確定後に発火。言語切替後の index status 再取得用。 */
+      onPersist?: () => void,
     ) => {
       setProject((prev) => (prev ? { ...prev, [field]: value } : prev));
 
-      // 執筆言語が変わったら <html lang> をすぐ更新
+      // 執筆言語が変わったら loadProject と同じ reconcile を即時に行う:
+      // <html lang> (S1) 更新 + settings cache の言語デフォルト再適用
+      // (applyProjectLanguage)。これをしないと en の書体/行間/スマートクォート等が
+      // project 再読込まで ja のまま残る。
       if (field === "language" && value) {
         document.documentElement.lang = value;
+        useSettingsStore.getState().applyProjectLanguage(value);
       }
 
       // Debounced DB write per field
@@ -47,6 +54,8 @@ export function useProjectSettings() {
         });
         void useProjectStore.getState().refreshProjects();
         timers.current.delete(field);
+        // DB 書込後 (Rust の project_language JOIN が新言語を返す) に発火。
+        onPersist?.();
       }, 300);
       timers.current.set(field, timer);
     },
