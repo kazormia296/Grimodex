@@ -1,0 +1,84 @@
+name: CodeQL
+
+# advanced setup。GitHub の default setup を置き換える。
+# 目的: Rust 抽出時に Tauri の FFI クレート(glib / webkit2gtk / javascriptcore /
+# soup3 / ort 等)の build script を pkg-config で解決させ、call target 解決率を
+# 閾値(50%)以上に引き上げる。default setup は system 依存を入れられず、これが
+# "Low Rust analysis quality" 警告の主因だった。
+#
+# 注意: このワークフローを有効にするにはリポジトリ設定で CodeQL の default setup を
+# 無効化する必要がある(default と advanced は併用不可)。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "30 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Rust の FFI クレートの build script が pkg-config でシステムライブラリを
+      # 解決できるようにする。ci.yml の rust ジョブと同一の依存リスト。
+      - name: システム依存ライブラリのインストール (Rust)
+        if: matrix.language == 'rust'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+        env:
+          DEBIAN_FRONTEND: noninteractive
+
+      - name: Rust ツールチェーン (Rust)
+        if: matrix.language == 'rust'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Rust 依存キャッシュ (Rust)
+        if: matrix.language == 'rust'
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: src-tauri
+
+      - name: CodeQL 初期化
+        uses: github/codeql-action/init@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: CodeQL 解析
+        uses: github/codeql-action/analyze@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+        with:
+          category: "/language:${{ matrix.language }}"
