@@ -17,6 +17,7 @@ pub mod morph;
 pub mod offset;
 pub mod rule;
 pub mod rules;
+pub mod textscan;
 
 pub use engine::{lint, LintResponse, MAX_INPUT_BYTES};
 pub use error::LintError;
