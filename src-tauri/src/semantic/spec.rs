@@ -109,23 +109,25 @@ pub static SPEC_JA: EmbeddingModelSpec = EmbeddingModelSpec {
 /// changes never restage Japanese scenes.
 pub const CHUNKER_VERSION_EN: &str = "semantic-prose-chunker-en-v1";
 
-/// English spec. Concrete model finalised by the host calibration step; values
-/// track granite-embedding-small-english-r2 (ModernBERT, 384-dim, no prefix,
-/// no token_type_ids). Pooling is **mean** — the model card mentions CLS for a
-/// sibling model, but this checkpoint's sentence-transformers config uses mean
-/// pooling (confirmed by the auto-detected `pooling` field in the golden
-/// fixture). The Rust pool must match what ST used or the golden test fails.
+/// English spec — finalised to bge-small-en-v1.5 by the host calibration
+/// (scripts/calibrate-embedding-threshold.py, 36-pair corpus). bge beat
+/// granite on Recall@3 (0.89 vs 0.81), MRR (0.78 vs 0.75) and the operating
+/// point (recall 0.86 @ fp 0.048 vs 0.81 @ 0.101), and is smaller (~34MB int8)
+/// + MIT. It is a plain BERT: **CLS pooling** (confirmed via the ST Pooling
+/// config `pooling_mode='cls'`) and it needs a (zeroed) `token_type_ids`
+/// input. No query/document prefix. RAG threshold: SEMANTIC_RECALL_MIN_SCORE_EN
+/// = 0.51 (semanticRecall.ts).
 pub static SPEC_EN: EmbeddingModelSpec = EmbeddingModelSpec {
-    model_id: "ibm-granite/granite-embedding-small-english-r2",
-    dir_name: "granite-small-en-r2",
+    model_id: "BAAI/bge-small-en-v1.5",
+    dir_name: "bge-small-en-v15",
     embedding_dim: 384,
     query_prefix: "",
     document_prefix: "",
-    pooling: Pooling::MeanWithMask,
-    needs_token_type_ids: false,
+    pooling: Pooling::Cls,
+    needs_token_type_ids: true,
     chunker_version: CHUNKER_VERSION_EN,
     model_id_suffix: "@local/model_int8.onnx/en-v1",
-    golden_fixture: "granite_small_en_r2_golden.json",
+    golden_fixture: "bge_small_en_v15_golden.json",
 };
 
 /// Pick the model spec for a project language. Anything that is not English
@@ -161,12 +163,21 @@ mod tests {
     #[test]
     fn spec_selection_by_language() {
         assert_eq!(spec_for_language("ja").dir_name, "ruri-v3-30m");
-        assert_eq!(spec_for_language("en").dir_name, "granite-small-en-r2");
+        assert_eq!(spec_for_language("en").dir_name, "bge-small-en-v15");
         assert_eq!(spec_for_language("zh").dir_name, "ruri-v3-30m");
     }
 
     #[test]
     fn en_uses_independent_chunker_version() {
         assert_ne!(SPEC_EN.chunker_version, SPEC_JA.chunker_version);
+    }
+
+    #[test]
+    fn en_spec_matches_calibrated_bge() {
+        // bge-small-en-v1.5: plain BERT → CLS pooling + token_type_ids.
+        assert_eq!(SPEC_EN.model_id, "BAAI/bge-small-en-v1.5");
+        assert_eq!(SPEC_EN.pooling, Pooling::Cls);
+        assert!(SPEC_EN.needs_token_type_ids);
+        assert_eq!(SPEC_EN.embedding_dim, 384);
     }
 }

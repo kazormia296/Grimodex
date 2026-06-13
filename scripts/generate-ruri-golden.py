@@ -85,17 +85,31 @@ def resolve_revision(model_id: str, revision: str | None) -> str | None:
 
 def detect_pooling(model) -> str:
     """ST モデルの Pooling モジュールから pooling 種別 (mean / cls) を検出する。
-    判定できなければ 'mean' を返す (ruri 既定)。"""
-    try:
-        for module in model._modules.values():
-            if module.__class__.__name__ == "Pooling":
-                if getattr(module, "pooling_mode_cls_token", False):
-                    return "cls"
-                if getattr(module, "pooling_mode_mean_tokens", False):
-                    return "mean"
-        return "mean"
-    except Exception:
-        return "mean"
+    新しい ST は get_config_dict()['pooling_mode'] ('cls'/'mean'/...) を持ち、
+    古い版は pooling_mode_* の bool 属性を持つ。検出できなければ黙って既定に
+    倒さず raise する (誤ラベルで golden test を欺かないため)。"""
+    for module in model:  # SentenceTransformer はモジュールを順に yield する
+        if type(module).__name__ != "Pooling":
+            continue
+        mode = None
+        try:
+            mode = module.get_config_dict().get("pooling_mode")
+        except Exception:
+            mode = None
+        if mode == "cls":
+            return "cls"
+        if mode == "mean":
+            return "mean"
+        if mode:
+            raise RuntimeError(
+                f"unsupported pooling_mode '{mode}' (Rust supports only cls/mean)"
+            )
+        # 古い ST: bool フラグ
+        if getattr(module, "pooling_mode_cls_token", False):
+            return "cls"
+        if getattr(module, "pooling_mode_mean_tokens", False):
+            return "mean"
+    raise RuntimeError("could not detect a Pooling module / mode from the model")
 
 
 def main() -> int:

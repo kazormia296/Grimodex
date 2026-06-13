@@ -23,12 +23,13 @@ export interface SemanticRecallChunk {
 /** スコア下限。ruri-v3 の正規化内積 [-1,1] で無関係チャンクは 0 近傍に集まる。 */
 export const SEMANTIC_RECALL_MIN_SCORE = 0.5;
 /**
- * 英語モデル (granite / bge 系) 用のスコア下限。CLS pooling・正規化内積の分布が
- * ruri と異なり、無関係ペアが高めに座る傾向がある。
- * TODO(en): `scripts/calibrate-embedding-threshold.py` の出力で確定する。
- * 採用モデル確定までは保守的に ja と同値の placeholder。
+ * 英語モデル (bge-small-en-v1.5, CLS pooling) 用のスコア下限。
+ * `scripts/calibrate-embedding-threshold.py`(36ペアコーパス)で確定した値:
+ * t=0.51 で related 再現率 0.86 / unrelated 誤検出率 0.048 が (recall-fp) 最大点。
+ * 同一作品内の散文は汎用英語モデルでもベースライン類似度が高いため、ja の
+ * 0.5 とは別系統の絶対値になる。実プロジェクトのログで微調整余地あり。
  */
-export const SEMANTIC_RECALL_MIN_SCORE_EN = 0.5;
+export const SEMANTIC_RECALL_MIN_SCORE_EN = 0.51;
 /** プロンプトに注入する抜粋の上限件数。 */
 export const SEMANTIC_RECALL_MAX_CHUNKS = 3;
 /** 現在シーン・@mention シーン・低スコアの間引きを見込んだ取得件数。 */
