@@ -95,6 +95,14 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       if (p?.language && typeof document !== "undefined") {
         document.documentElement.lang = p.language;
       }
+      if (p?.language) {
+        // Re-point settings defaults at the project's language (en gets
+        // Literata / 1.6 line-height / smart quotes etc. for *unset* keys).
+        // Dynamic import keeps projectStore free of a settings-store cycle.
+        const { useSettingsStore } =
+          await import("@/features/settings/settingsStore");
+        useSettingsStore.getState().applyProjectLanguage(p.language);
+      }
       if (p?.phaseResolutionMode) {
         usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
       }

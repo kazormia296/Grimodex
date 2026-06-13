@@ -29,6 +29,7 @@ import {
   spansToMarkData,
 } from "@/features/attribution/api";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
+import { useCurrentProject } from "@/features/project/projectStore";
 import { buildEditorContentStyle } from "@/features/editor/editorLayout";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { getDocText } from "@/features/editor/RubyNode";
@@ -98,6 +99,7 @@ function MountedSceneBlock({
   onFocus,
 }: MountedSceneBlockProps) {
   const editorSettings = useEditorSettings();
+  const isEnglish = useCurrentProject()?.language === "en";
   const filterSource = useAttributionStore((s) => s.filterSource);
   const activeNode = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
   const title = activeNode?.title ?? "";
@@ -537,7 +539,10 @@ function MountedSceneBlock({
           上の load effect に届く。 */}
       <ExternalEditConflictBanner nodeId={sceneId} />
       <div
-        className={cn(editorSettings.showLineNumbers && "editor-line-numbers")}
+        className={cn(
+          editorSettings.showLineNumbers && "editor-line-numbers",
+          isEnglish && "editor-en-typography",
+        )}
         style={buildEditorContentStyle(editorSettings)}
         // contenteditable は spellcheck 属性を祖先から継承する
         spellCheck={editorSettings.spellCheck}

@@ -448,5 +448,111 @@ function RuleOptions({
     );
   }
 
+  if (ruleId === "en/sentence-length") {
+    const warnAtWords = Number(options.warnAtWords ?? 35);
+    const errorAtWords = Number(options.errorAtWords ?? 60);
+    return (
+      <div className="flex items-center gap-3 pl-6 text-xs text-muted-foreground">
+        <label className="flex items-center gap-1">
+          Warn
+          <input
+            type="number"
+            min={1}
+            max={300}
+            value={warnAtWords}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { warnAtWords: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-14 rounded border border-border bg-background px-1 text-right"
+          />
+          words
+        </label>
+        <label className="flex items-center gap-1">
+          Error
+          <input
+            type="number"
+            min={1}
+            max={300}
+            value={errorAtWords}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { errorAtWords: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-14 rounded border border-border bg-background px-1 text-right"
+          />
+          words
+        </label>
+      </div>
+    );
+  }
+
+  if (ruleId === "en/word-repetition") {
+    const distanceWords = Number(options.distance_words ?? 30);
+    const minLength = Number(options.min_length ?? 4);
+    return (
+      <div className="flex items-center gap-3 pl-6 text-xs text-muted-foreground flex-wrap">
+        <label className="flex items-center gap-1">
+          Window
+          <input
+            type="number"
+            min={2}
+            max={200}
+            value={distanceWords}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { distance_words: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-16 rounded border border-border bg-background px-1 text-right"
+          />
+          words
+        </label>
+        <label className="flex items-center gap-1">
+          Min length
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={minLength}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { min_length: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-12 rounded border border-border bg-background px-1 text-right"
+          />
+          chars
+        </label>
+      </div>
+    );
+  }
+
+  if (ruleId === "en/sentence-starters") {
+    const threshold = Number(options.threshold ?? 3);
+    return (
+      <div className="flex items-center gap-2 pl-6 text-xs text-muted-foreground">
+        <label className="flex items-center gap-1">
+          Flag after
+          <input
+            type="number"
+            min={2}
+            max={10}
+            value={threshold}
+            onChange={(e) =>
+              onSetRule(ruleId, {
+                options: { threshold: Number(e.target.value) },
+              })
+            }
+            className="h-6 w-12 rounded border border-border bg-background px-1 text-right"
+          />
+          repeats
+        </label>
+      </div>
+    );
+  }
+
   return null;
 }

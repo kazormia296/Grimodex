@@ -22,6 +22,14 @@ export interface SemanticRecallChunk {
 
 /** スコア下限。ruri-v3 の正規化内積 [-1,1] で無関係チャンクは 0 近傍に集まる。 */
 export const SEMANTIC_RECALL_MIN_SCORE = 0.5;
+/**
+ * 英語モデル (bge-small-en-v1.5, CLS pooling) 用のスコア下限。
+ * `scripts/calibrate-embedding-threshold.py`(36ペアコーパス)で確定した値:
+ * t=0.51 で related 再現率 0.86 / unrelated 誤検出率 0.048 が (recall-fp) 最大点。
+ * 同一作品内の散文は汎用英語モデルでもベースライン類似度が高いため、ja の
+ * 0.5 とは別系統の絶対値になる。実プロジェクトのログで微調整余地あり。
+ */
+export const SEMANTIC_RECALL_MIN_SCORE_EN = 0.51;
 /** プロンプトに注入する抜粋の上限件数。 */
 export const SEMANTIC_RECALL_MAX_CHUNKS = 3;
 /** 現在シーン・@mention シーン・低スコアの間引きを見込んだ取得件数。 */
@@ -30,6 +38,31 @@ export const SEMANTIC_RECALL_FETCH_LIMIT = 12;
 export const SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS = 500;
 /** 1 チャンクあたりの注入文字数上限 (超過分は切り詰めて省略記号を付す)。 */
 export const SEMANTIC_RECALL_MAX_CHUNK_CHARS = 600;
+/** 英語は文字あたり情報量が低いので 1 チャンクの注入上限を広げる。 */
+export const SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN = 900;
+
+/**
+ * 現在のプロジェクト言語に応じた recall パラメータ。言語は projectStore が
+ * `document.documentElement.lang` に反映する (lint と同じソース)。
+ */
+export function recallParamsForLang(lang?: string): {
+  minScore: number;
+  maxChunkChars: number;
+} {
+  const resolved =
+    lang ??
+    (typeof document !== "undefined" ? document.documentElement.lang : "ja");
+  if (resolved.startsWith("en")) {
+    return {
+      minScore: SEMANTIC_RECALL_MIN_SCORE_EN,
+      maxChunkChars: SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN,
+    };
+  }
+  return {
+    minScore: SEMANTIC_RECALL_MIN_SCORE,
+    maxChunkChars: SEMANTIC_RECALL_MAX_CHUNK_CHARS,
+  };
+}
 
 /**
  * 検索クエリ seed を組み立てる。ユーザー発話が「何を書こうとしているか」、
@@ -108,8 +141,11 @@ export async function fetchSemanticRecall(args: {
     );
     return [] as SemanticSearchHit[];
   });
+  const params = recallParamsForLang();
   const selected = selectSemanticRecallChunks(hits, {
     excludeSceneIds: args.excludeSceneIds,
+    minScore: params.minScore,
+    maxChunkChars: params.maxChunkChars,
   });
   // 注入判定の可観測性: 生ヒット数 / 足切り(スコア下限・除外シーン)後の
   // 注入数 / トップスコア。閾値が実データに合っているかはこの行で見る。
@@ -117,7 +153,7 @@ export async function fetchSemanticRecall(args: {
     hits.length > 0 ? Math.max(...hits.map((h) => h.score)) : null;
   debugLog.info(
     "SemanticRecall",
-    `hits=${hits.length} injected=${selected.length} minScore=${SEMANTIC_RECALL_MIN_SCORE}`,
+    `hits=${hits.length} injected=${selected.length} minScore=${params.minScore}`,
     topScore !== null ? `topScore=${topScore.toFixed(3)}` : "no hits",
   );
   return selected;

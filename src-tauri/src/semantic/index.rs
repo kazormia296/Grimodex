@@ -275,13 +275,21 @@ pub fn embed_scene_payloads(
     embedder: &mut crate::semantic::embedding::Embedder,
     scene_id: &str,
     content: &str,
+    spec: &'static crate::semantic::spec::EmbeddingModelSpec,
 ) -> Result<Vec<ChunkPayload>> {
-    use crate::semantic::chunker::{chunk_scene, ChunkerConfig};
+    use crate::semantic::chunker::{chunk_scene, CHUNKER_VERSION};
+    use crate::semantic::chunker_en::chunk_scene_en;
     use anyhow::anyhow;
 
     let doc: serde_json::Value = serde_json::from_str(content)
         .map_err(|e| anyhow!("scene_id={scene_id} content JSON parse error: {e}"))?;
-    let chunks = chunk_scene(&doc, &ChunkerConfig::default())?;
+    // 言語別チャンカー: ja=ruri 既定の chunk_scene、en=chunk_scene_en。
+    let config = spec.chunker_config();
+    let chunks = if spec.chunker_version == CHUNKER_VERSION {
+        chunk_scene(&doc, &config)?
+    } else {
+        chunk_scene_en(&doc, &config)?
+    };
 
     let embedding_dim = embedder.embedding_dim();
     let mut payloads = Vec::with_capacity(chunks.len());
@@ -318,13 +326,12 @@ pub fn index_scene(
     embedder: &mut crate::semantic::embedding::Embedder,
     scene_id: &str,
     model_id: &str,
+    spec: &'static crate::semantic::spec::EmbeddingModelSpec,
 ) -> Result<UpsertOutcome> {
-    use crate::semantic::chunker::CHUNKER_VERSION;
-
     let Some((content, initial_hash)) = read_scene_for_index(db, scene_id)? else {
         return Ok(UpsertOutcome::SkippedNotScene);
     };
-    let payloads = embed_scene_payloads(embedder, scene_id, &content)?;
+    let payloads = embed_scene_payloads(embedder, scene_id, &content, spec)?;
     let embedding_dim = embedder.embedding_dim();
     upsert_scene_chunks(
         db,
@@ -333,8 +340,39 @@ pub fn index_scene(
         &payloads,
         model_id,
         embedding_dim,
-        CHUNKER_VERSION,
+        spec.chunker_version,
     )
+}
+
+/// プロジェクトの言語 (`projects.language`) を読む。行が無ければ "ja"。
+/// 非 gated: spec 選択を embedding feature 無しでも行えるようにする。
+pub fn project_language(db: &Database, project_id: &str) -> Result<String> {
+    db.with_conn(|conn| {
+        let lang: Option<String> = conn
+            .query_row(
+                "SELECT language FROM projects WHERE id = ?",
+                params![project_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        Ok(lang.unwrap_or_else(|| "ja".to_string()))
+    })
+}
+
+/// scene_id からそのプロジェクトの言語を引く (tree_nodes → projects JOIN)。
+pub fn project_language_for_scene(db: &Database, scene_id: &str) -> Result<String> {
+    db.with_conn(|conn| {
+        let lang: Option<String> = conn
+            .query_row(
+                "SELECT p.language FROM projects p \
+                 JOIN tree_nodes tn ON tn.project_id = p.id \
+                 WHERE tn.id = ?",
+                params![scene_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        Ok(lang.unwrap_or_else(|| "ja".to_string()))
+    })
 }
 
 #[cfg(test)]

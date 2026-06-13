@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { KEY_SCOPE, DEFAULT_SETTINGS } from "./types";
+import { useSettingsStore } from "./settingsStore";
 
 // Routing correctness is guaranteed by KEY_SCOPE:
 // - persistSetting() in settingsStore delegates to the correct store based on KEY_SCOPE
@@ -89,5 +90,78 @@ describe("KEY_SCOPE routing invariants", () => {
     expect(DEFAULT_SETTINGS["display.glassSurfaceChat"]).toBe("true");
     expect(DEFAULT_SETTINGS["display.glassSurfacePopovers"]).toBe("true");
     expect(DEFAULT_SETTINGS["display.glassSurfaceEditorChrome"]).toBe("true");
+  });
+});
+
+function resetStore(projectLanguage: string) {
+  useSettingsStore.setState({
+    layers: { legacy: {}, project: {}, global: {} },
+    projectLanguage: "__init__",
+    _timers: new Map(),
+  });
+  // Force a cache rebuild for the requested language.
+  useSettingsStore.getState().applyProjectLanguage(projectLanguage);
+}
+
+describe("settingsStore language-linked defaults", () => {
+  beforeEach(() => resetStore("ja"));
+
+  it("ja uses the baseline DEFAULT_SETTINGS", () => {
+    const g = useSettingsStore.getState().get;
+    expect(g("editor.lineHeight")).toBe(DEFAULT_SETTINGS["editor.lineHeight"]);
+    expect(g("editor.fontFamily")).toBe(DEFAULT_SETTINGS["editor.fontFamily"]);
+    expect(g("editor.smartQuotes")).toBe("false");
+  });
+
+  it("en overrides only unset keys", () => {
+    useSettingsStore.getState().applyProjectLanguage("en");
+    const s = useSettingsStore.getState();
+    expect(s.get("editor.fontFamily")).toBe('"Literata"');
+    expect(s.get("editor.lineHeight")).toBe("1.6");
+    expect(s.getBoolean("editor.smartQuotes")).toBe(true);
+    expect(s.getBoolean("editor.spellCheck")).toBe(true);
+    expect(s.get("editor.paragraphIndent")).toBe("1");
+    expect(s.get("editor.paragraphSpacing")).toBe("0");
+    // A key with no override stays at the baseline default.
+    expect(s.get("editor.fontSize")).toBe(DEFAULT_SETTINGS["editor.fontSize"]);
+  });
+
+  it("an explicit user value wins over the language default", () => {
+    useSettingsStore.setState({
+      layers: {
+        legacy: {},
+        project: {},
+        global: { "editor.lineHeight": "3.0" },
+      },
+      projectLanguage: "__x__",
+    });
+    useSettingsStore.getState().applyProjectLanguage("en");
+    expect(useSettingsStore.getState().get("editor.lineHeight")).toBe("3.0");
+    useSettingsStore.getState().applyProjectLanguage("ja");
+    expect(useSettingsStore.getState().get("editor.lineHeight")).toBe("3.0");
+  });
+
+  it("switching language back to ja restores baseline defaults", () => {
+    useSettingsStore.getState().applyProjectLanguage("en");
+    expect(useSettingsStore.getState().get("editor.lineHeight")).toBe("1.6");
+    useSettingsStore.getState().applyProjectLanguage("ja");
+    expect(useSettingsStore.getState().get("editor.lineHeight")).toBe("2.0");
+  });
+
+  describe("set() write-through survives a language switch", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+
+    it("keeps a freshly-set value after applyProjectLanguage", () => {
+      resetStore("en");
+      useSettingsStore.getState().set("editor.lineHeight", "2.5");
+      expect(useSettingsStore.getState().get("editor.lineHeight")).toBe("2.5");
+      // Language switch rebuilds the cache; the pending value must persist.
+      useSettingsStore.getState().applyProjectLanguage("ja");
+      expect(useSettingsStore.getState().get("editor.lineHeight")).toBe("2.5");
+    });
   });
 });

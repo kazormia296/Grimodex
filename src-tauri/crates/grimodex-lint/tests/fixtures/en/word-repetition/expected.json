@@ -1,0 +1,11 @@
+[
+  {
+    "rule_id": "en/word-repetition",
+    "severity": "info",
+    "message": "“shadow” repeats within 30 words",
+    "range": {
+      "start": 23,
+      "end": 29
+    }
+  }
+]

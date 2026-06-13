@@ -1,14 +1,30 @@
 import { create } from "zustand";
 import * as api from "./api";
-import { DEFAULT_SETTINGS, KEY_SCOPE } from "./types";
+import {
+  DEFAULT_SETTINGS,
+  KEY_SCOPE,
+  LANGUAGE_DEFAULT_OVERRIDES,
+} from "./types";
 import { PROJECT_ID } from "@/features/project/constants";
+
+type Layer = Record<string, string>;
 
 interface SettingsState {
   cache: Record<string, string>;
+  /**
+   * Raw persisted layers, kept so the effective cache can be rebuilt when the
+   * project language changes (which swaps the default fallback).
+   * Precedence low→high: DEFAULT < language override < legacy < project < global.
+   */
+  layers: { legacy: Layer; project: Layer; global: Layer };
+  /** Current project language; selects the LANGUAGE_DEFAULT_OVERRIDES entry. */
+  projectLanguage: string;
   isLoaded: boolean;
   _timers: Map<string, ReturnType<typeof setTimeout>>;
 
   loadAll: () => Promise<void>;
+  /** Re-point the default fallback at the given language and rebuild. */
+  applyProjectLanguage: (language: string) => void;
   get: (key: string, defaultValue?: string) => string;
   getNumber: (key: string, defaultValue?: number) => number;
   getBoolean: (key: string, defaultValue?: boolean) => boolean;
@@ -31,8 +47,33 @@ async function persistSetting(key: string, value: string): Promise<void> {
   }
 }
 
+// Which in-memory layer a write belongs to (mirrors persistSetting routing).
+function layerForKey(key: string): keyof SettingsState["layers"] {
+  const scope = KEY_SCOPE[key];
+  if (scope === "global") return "global";
+  if (scope === "project") return "project";
+  return "legacy";
+}
+
+function buildCache(
+  layers: SettingsState["layers"],
+  projectLanguage: string,
+): Record<string, string> {
+  const langDefaults = LANGUAGE_DEFAULT_OVERRIDES[projectLanguage] ?? {};
+  // Precedence: DEFAULT < language override < legacy < project < global.
+  return {
+    ...DEFAULT_SETTINGS,
+    ...langDefaults,
+    ...layers.legacy,
+    ...layers.project,
+    ...layers.global,
+  };
+}
+
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
   cache: { ...DEFAULT_SETTINGS },
+  layers: { legacy: {}, project: {}, global: {} },
+  projectLanguage: "ja",
   isLoaded: false,
   _timers: new Map(),
 
@@ -45,17 +86,29 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     const globalPrefs =
       workspaceModule.useWorkspaceStore.getState().globalSettings
         ?.userPreferences ?? {};
-    // Precedence: DEFAULT < app_settings(legacy) < project_settings < userPreferences
-    set((s) => ({
-      cache: {
-        ...DEFAULT_SETTINGS,
-        ...legacyAll,
-        ...projectAll,
-        ...globalPrefs,
-      },
-      isLoaded: true,
-      _timers: s._timers,
-    }));
+    set((s) => {
+      const layers = {
+        legacy: legacyAll,
+        project: projectAll,
+        global: globalPrefs,
+      };
+      return {
+        layers,
+        cache: buildCache(layers, s.projectLanguage),
+        isLoaded: true,
+        _timers: s._timers,
+      };
+    });
+  },
+
+  applyProjectLanguage: (language: string) => {
+    set((s) => {
+      if (language === s.projectLanguage) return s;
+      return {
+        projectLanguage: language,
+        cache: buildCache(s.layers, language),
+      };
+    });
   },
 
   get: (key: string, defaultValue?: string) => {
@@ -81,7 +134,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   },
 
   set: (key: string, value: string) => {
-    set((s) => ({ cache: { ...s.cache, [key]: value } }));
+    // Write through to the matching layer so a later language switch (which
+    // rebuilds the cache) preserves this explicit value.
+    set((s) => {
+      const which = layerForKey(key);
+      const layers = {
+        ...s.layers,
+        [which]: { ...s.layers[which], [key]: value },
+      };
+      return { layers, cache: buildCache(layers, s.projectLanguage) };
+    });
 
     const state = get();
     const existing = state._timers.get(key);

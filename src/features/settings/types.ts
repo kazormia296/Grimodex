@@ -285,3 +285,29 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // the previous always-on behaviour; legacy projects with no row read on).
   "timelapse.enabled": "true",
 };
+
+/**
+ * Per-language overrides for the *defaults* only.
+ *
+ * When a project's `language` matches a key here, these values replace the
+ * baseline `DEFAULT_SETTINGS` as the fallback — but an explicit user setting
+ * still wins (precedence in settingsStore: DEFAULT < language override < user
+ * layers). So no migration is needed: existing projects keep whatever they
+ * set, and only *unset* keys pick up the language-appropriate default.
+ *
+ * `ja` has no entry (the baseline `DEFAULT_SETTINGS` is already Japanese-tuned).
+ */
+export const LANGUAGE_DEFAULT_OVERRIDES: Record<
+  string,
+  Record<string, string>
+> = {
+  en: {
+    "editor.fontFamily": '"Literata"', // bundled latin serif (incl. italic)
+    "editor.lineHeight": "1.6", // 2.0 is too airy for Latin prose
+    "editor.smartQuotes": "true", // curly quotes are standard in English
+    "editor.smartDashes": "true", // -- → em dash
+    "editor.spellCheck": "true", // browser dict via document.lang=en
+    "editor.paragraphIndent": "1", // first-line indent (em), English convention
+    "editor.paragraphSpacing": "0", // indent instead of blank-line spacing
+  },
+};

@@ -1,0 +1,19 @@
+[
+  {
+    "rule_id": "en/dialogue-punctuation",
+    "severity": "warning",
+    "message": "Dialogue before a tag should end with a comma, not a period",
+    "range": {
+      "start": 6,
+      "end": 8
+    },
+    "fix": {
+      "label": "Replace with a comma",
+      "replacement": ",”",
+      "range": {
+        "start": 6,
+        "end": 8
+      }
+    }
+  }
+]

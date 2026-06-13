@@ -198,13 +198,15 @@ pub fn split_sentences_ja(text: &str) -> Vec<&str> {
     out
 }
 
+/// 1 チャンク化単位。`chunker_en` も同じ Unit を組み立てて `pack_units` に
+/// 渡すため pub(crate)。
 #[derive(Debug, Clone)]
-struct Unit {
-    text: String,
-    plain_text_start: usize,
-    plain_text_end: usize,
-    total_chars: usize,
-    dialogue_chars: usize,
+pub(crate) struct Unit {
+    pub(crate) text: String,
+    pub(crate) plain_text_start: usize,
+    pub(crate) plain_text_end: usize,
+    pub(crate) total_chars: usize,
+    pub(crate) dialogue_chars: usize,
 }
 
 /// シーン doc → SceneChunk 列。
@@ -295,7 +297,7 @@ fn build_units(paragraphs: &[String], config: &ChunkerConfig) -> Vec<Unit> {
     units
 }
 
-fn pack_units(units: &[Unit], config: &ChunkerConfig) -> Vec<SceneChunk> {
+pub(crate) fn pack_units(units: &[Unit], config: &ChunkerConfig) -> Vec<SceneChunk> {
     if units.is_empty() {
         return Vec::new();
     }

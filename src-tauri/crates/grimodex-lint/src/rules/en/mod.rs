@@ -1,4 +1,13 @@
+pub mod adverb_ly;
+pub mod apostrophe;
+pub mod dialogue_punctuation;
 pub mod double_space;
 pub mod ellipsis;
 pub mod em_dash;
+pub mod filter_words;
+pub mod intensifiers_weasel;
+pub mod sentence_length;
+pub mod sentence_starters;
 pub mod straight_quotes;
+pub mod unclosed_quote;
+pub mod word_repetition;

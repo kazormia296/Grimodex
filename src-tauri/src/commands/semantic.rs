@@ -21,18 +21,21 @@
 
 #![cfg(feature = "semantic-embedding")]
 
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
-use crate::semantic::embedding::{Embedder, EMBEDDING_DIM_RURI_V3_30M, MODEL_ID_RURI_V3_30M};
+use crate::semantic::embedding::Embedder;
 use crate::semantic::index::{
-    collect_index_status, embed_scene_payloads, list_scene_ids_in_project, read_scene_for_index,
-    upsert_scene_chunks, IndexStatusReport, UpsertOutcome,
+    collect_index_status, embed_scene_payloads, list_scene_ids_in_project, project_language,
+    project_language_for_scene, read_scene_for_index, upsert_scene_chunks, IndexStatusReport,
+    UpsertOutcome,
 };
 use crate::semantic::search::{run_search, SearchCache, SearchHit};
+use crate::semantic::spec::{spec_for_language, EmbeddingModelSpec};
 
 use super::{with_db, AppError, WorkspaceState};
 
@@ -61,45 +64,56 @@ const REINDEX_PROGRESS_EVENT: &str = "semantic:reindex_progress";
 /// `inner` は `Mutex<Option<Embedder>>`。初回 invoke 時のみ ONNX 推論セッションを
 /// 構築して `Some(...)` を入れる。以降は同じセッションを使い回す。
 pub(crate) struct SemanticEmbedderState {
-    pub(crate) inner: Mutex<Option<Embedder>>,
+    /// dir_name (= spec.dir_name) ごとに Embedder を保持。ja/en プロジェクトを
+    /// 同一セッションで交互に使ってもそれぞれのモデルを使い回せる。
+    pub(crate) inner: Mutex<HashMap<&'static str, Embedder>>,
 }
 
-/// 同梱モデルディレクトリを解決する。
+/// spec に対応する同梱モデルディレクトリを解決する。
 ///
 /// 探索順:
-/// 1. `app.path().resource_dir()` 配下 (`tauri.conf.json#bundle.resources` で
-///    同梱したファイルの置き場)。tauri build で installer に同梱され、
-///    tauri dev 経由でも target/debug/ にコピーされる。
-/// 2. それが見つからない場合は `CARGO_MANIFEST_DIR/resources/semantic/ruri-v3-30m`
+/// 1. `app.path().resource_dir()/resources/semantic/{spec.dir_name}` (bundle 同梱)。
+/// 2. 見つからなければ `CARGO_MANIFEST_DIR/resources/semantic/{spec.dir_name}`
 ///    にフォールバック (cargo test や非 Tauri 経路の救済)。
 ///
-/// model_int8.onnx の存在で判定する: resource_dir に空のディレクトリだけある
-/// 過渡的な状態でも、CARGO_MANIFEST_DIR にフォールバックする。
-fn resolve_ruri_dir(app: &tauri::AppHandle) -> PathBuf {
-    let rel = Path::new("resources/semantic/ruri-v3-30m");
+/// model_int8.onnx の存在で判定する。
+fn resolve_model_dir(app: &tauri::AppHandle, spec: &EmbeddingModelSpec) -> PathBuf {
+    let rel = PathBuf::from("resources/semantic").join(spec.dir_name);
     if let Ok(base) = app.path().resource_dir() {
-        let candidate = base.join(rel);
+        let candidate = base.join(&rel);
         if candidate.join("model_int8.onnx").exists() {
             return candidate;
         }
     }
     // dev / test の安全網。
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
 
-/// `scene_chunks.model_id` 列に書く識別子。
-/// モデル変更時の stale 判定 (§3.4) に使うため曖昧な名前にしない。
-fn current_model_id() -> String {
-    format!("{}@local/model_int8.onnx/prefix-v1", MODEL_ID_RURI_V3_30M)
-}
-
-/// model_int8.onnx + tokenizer.json から Embedder を構築。
+/// model_int8.onnx + tokenizer.json から spec のモデルを構築。
 /// model 不在の dev 環境ではここで Err を返し、コマンドはエラー文字列を返却する。
-fn load_embedder(app: &tauri::AppHandle) -> anyhow::Result<Embedder> {
-    let dir = resolve_ruri_dir(app);
+fn load_embedder(
+    app: &tauri::AppHandle,
+    spec: &'static EmbeddingModelSpec,
+) -> anyhow::Result<Embedder> {
+    let dir = resolve_model_dir(app, spec);
     let model_path = dir.join("model_int8.onnx");
     let tokenizer_path = dir.join("tokenizer.json");
-    Embedder::load(&model_path, &tokenizer_path, EMBEDDING_DIM_RURI_V3_30M)
+    Embedder::load(&model_path, &tokenizer_path, spec)
+}
+
+/// spec の Embedder を HashMap から取り出す (無ければ lazy load して挿入)。
+fn ensure_embedder<'a>(
+    app: &tauri::AppHandle,
+    spec: &'static EmbeddingModelSpec,
+    guard: &'a mut HashMap<&'static str, Embedder>,
+) -> Result<&'a mut Embedder, AppError> {
+    if !guard.contains_key(spec.dir_name) {
+        let e = load_embedder(app, spec)?;
+        guard.insert(spec.dir_name, e);
+    }
+    Ok(guard
+        .get_mut(spec.dir_name)
+        .expect("embedder just inserted"))
 }
 
 /// シーン 1 件をインデックス再構築する。
@@ -118,13 +132,14 @@ fn index_scene_split_lock(
     embedder: &mut Embedder,
     scene_id: &str,
     model_id: &str,
+    spec: &'static EmbeddingModelSpec,
 ) -> Result<UpsertOutcome, AppError> {
     let Some((content, initial_hash)) = with_db(ws_state, |db| read_scene_for_index(db, scene_id))?
     else {
         return Ok(UpsertOutcome::SkippedNotScene);
     };
     // ここは lock 外: 推論中も他コマンドの DB アクセスを止めない
-    let payloads = embed_scene_payloads(embedder, scene_id, &content)?;
+    let payloads = embed_scene_payloads(embedder, scene_id, &content, spec)?;
     let embedding_dim = embedder.embedding_dim();
     let outcome = with_db(ws_state, |db| {
         upsert_scene_chunks(
@@ -134,7 +149,7 @@ fn index_scene_split_lock(
             &payloads,
             model_id,
             embedding_dim,
-            crate::semantic::chunker::CHUNKER_VERSION,
+            spec.chunker_version,
         )
     })?;
     Ok(outcome)
@@ -145,28 +160,30 @@ pub(crate) async fn semantic_index_scene(
     app: tauri::AppHandle,
     scene_id: String,
 ) -> Result<usize, AppError> {
-    let model_id = current_model_id();
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<usize, AppError> {
         let ws_state = app.state::<WorkspaceState>();
         let emb_state = app.state::<SemanticEmbedderState>();
         let cache = app.state::<SearchCache>();
 
-        // Embedder lazy load (初回のみコスト)。
+        // 言語 → spec を embedder lock 取得前に確定 (with_db は scoped に
+        // workspace lock を取り即解放するので embedder→workspace の順序は保たれる)。
+        let language = with_db(&ws_state, |db| project_language_for_scene(db, &scene_id))?;
+        let spec = spec_for_language(&language);
+        let model_id = spec.full_model_id();
+
+        // Embedder lazy load (spec ごと・初回のみコスト)。
         let mut guard = emb_state
             .inner
             .lock()
             .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
-        if guard.is_none() {
-            *guard = Some(load_embedder(&app)?);
-        }
-        let embedder = guard.as_mut().expect("just ensured Some");
+        let embedder = ensure_embedder(&app, spec, &mut guard)?;
 
         // workspace lock (with_db) は読み出しと upsert の間だけ保持する。
         // ONNX 推論 (embed) は scene あたり秒単位かかりうるため、lock を
         // 跨いで持つと並行する db_execute が 10s timeout する
         // (semantic-index-db-lock)。推論中の本文変更は upsert 側の
         // hash 再確認が race を吸収する。
-        let outcome = index_scene_split_lock(&ws_state, embedder, &scene_id, &model_id)?;
+        let outcome = index_scene_split_lock(&ws_state, embedder, &scene_id, &model_id, spec)?;
 
         // Indexed のときだけ cache を捨てる。Skipped* は DB を触っていないので
         // 既存キャッシュは有効。
@@ -199,7 +216,6 @@ pub(crate) async fn semantic_search(
     scene_scope: Option<String>,
     description_mode: Option<bool>,
 ) -> Result<Vec<SearchHit>, AppError> {
-    let model_id = current_model_id();
     let description_mode = description_mode.unwrap_or(false);
     let result =
         tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SearchHit>, AppError> {
@@ -207,16 +223,18 @@ pub(crate) async fn semantic_search(
             let emb_state = app.state::<SemanticEmbedderState>();
             let cache = app.state::<SearchCache>();
 
+            // 言語 → spec を embedder lock 前に確定。
+            let language = with_db(&ws_state, |db| project_language(db, &project_id))?;
+            let spec = spec_for_language(&language);
+            let model_id = spec.full_model_id();
+
             // Embedder lazy load + クエリ埋め込み。検索クエリ prefix は embed_query
-            // 側で付与される (semantic/embedding.rs::QUERY_PREFIX)。
+            // 側で spec.query_prefix が付与される。
             let mut guard = emb_state
                 .inner
                 .lock()
                 .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
-            if guard.is_none() {
-                *guard = Some(load_embedder(&app)?);
-            }
-            let embedder = guard.as_mut().expect("just ensured Some");
+            let embedder = ensure_embedder(&app, spec, &mut guard)?;
             let query_embedding = embedder.embed_query(&query)?;
             let embedding_dim = embedder.embedding_dim();
             // Embedder を握り続ける必要は無いのでロック解放。スコアリング中に
@@ -234,7 +252,7 @@ pub(crate) async fn semantic_search(
                     description_mode,
                     &model_id,
                     embedding_dim,
-                    crate::semantic::chunker::CHUNKER_VERSION,
+                    spec.chunker_version,
                 )
             })?;
             Ok(hits)
@@ -254,17 +272,18 @@ pub(crate) async fn semantic_index_status(
     app: tauri::AppHandle,
     project_id: String,
 ) -> Result<IndexStatusReport, AppError> {
-    let model_id = current_model_id();
     let result =
         tauri::async_runtime::spawn_blocking(move || -> Result<IndexStatusReport, AppError> {
             let ws_state = app.state::<WorkspaceState>();
             let report = with_db(&ws_state, |db| {
+                let language = project_language(db, &project_id)?;
+                let spec = spec_for_language(&language);
                 collect_index_status(
                     db,
                     &project_id,
-                    &model_id,
-                    EMBEDDING_DIM_RURI_V3_30M,
-                    crate::semantic::chunker::CHUNKER_VERSION,
+                    &spec.full_model_id(),
+                    spec.embedding_dim,
+                    spec.chunker_version,
                 )
             })?;
             Ok(report)
@@ -287,13 +306,15 @@ pub(crate) async fn semantic_reindex_all(
     app: tauri::AppHandle,
     project_id: String,
 ) -> Result<usize, AppError> {
-    let model_id = current_model_id();
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<usize, AppError> {
         let ws_state = app.state::<WorkspaceState>();
         let emb_state = app.state::<SemanticEmbedderState>();
         let cache = app.state::<SearchCache>();
 
-        // 対象 scene 一覧を先に確定 (途中の追加・削除に巻き込まれないため)
+        // 言語 → spec を確定 + 対象 scene 一覧を先に確定。
+        let language = with_db(&ws_state, |db| project_language(db, &project_id))?;
+        let spec = spec_for_language(&language);
+        let model_id = spec.full_model_id();
         let scene_ids: Vec<String> =
             with_db(&ws_state, |db| list_scene_ids_in_project(db, &project_id))?;
         let total_scenes = scene_ids.len();
@@ -303,17 +324,14 @@ pub(crate) async fn semantic_reindex_all(
             .inner
             .lock()
             .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
-        if guard.is_none() {
-            *guard = Some(load_embedder(&app)?);
-        }
-        let embedder = guard.as_mut().expect("just ensured Some");
+        let embedder = ensure_embedder(&app, spec, &mut guard)?;
 
         let mut total: usize = 0;
         for (i, scene_id) in scene_ids.iter().enumerate() {
             // scene ごとに lock 分割版を使う: embed 中に workspace lock を
             // 持たないので、全件再構築の最中でも autosave 等の db_execute が
             // 各 scene の読み出し/upsert の隙間で通る。
-            let outcome = index_scene_split_lock(&ws_state, embedder, scene_id, &model_id)?;
+            let outcome = index_scene_split_lock(&ws_state, embedder, scene_id, &model_id, spec)?;
             if let UpsertOutcome::Indexed(n) = outcome {
                 cache.invalidate(scene_id)?;
                 total += n;

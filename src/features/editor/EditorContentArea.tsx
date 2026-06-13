@@ -17,6 +17,7 @@ import { buildEditorContentStyle } from "@/features/editor/editorLayout";
 import { useVerticalWheelScroll } from "@/features/editor/useVerticalWheelScroll";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import type { FilterSource } from "@/features/attribution/attributionStore";
+import { useCurrentProject } from "@/features/project/projectStore";
 
 interface EditorContentAreaProps {
   editor: Editor | null;
@@ -73,6 +74,9 @@ export function EditorContentArea({
   isSceneContentLoading,
   sceneId,
 }: EditorContentAreaProps) {
+  // 英語プロジェクトでは段落スタイルを英文組版 (first-line indent + 先頭段落
+  // 例外) に切り替える。クラス付与方式 (editor-vertical と同じ流儀)。
+  const isEnglish = useCurrentProject()?.language === "en";
   // 縦書きではホイールの縦回転を読み進み方向 (横) のスクロールに変換する
   useVerticalWheelScroll(editorContainerRef, editorSettings.verticalMode);
   return (
@@ -99,6 +103,7 @@ export function EditorContentArea({
         <div
           className={cn(
             editorSettings.showLineNumbers && "editor-line-numbers",
+            isEnglish && "editor-en-typography",
           )}
           style={buildEditorContentStyle(editorSettings)}
           // contenteditable は spellcheck 属性を祖先から継承する

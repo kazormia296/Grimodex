@@ -30,6 +30,13 @@ import "@fontsource/noto-sans-jp/japanese-400.css";
 import "@fontsource/noto-sans-jp/japanese-700.css";
 import "@fontsource/noto-sans-jp/latin-400.css";
 import "@fontsource/noto-sans-jp/latin-700.css";
+// 同梱フォント: Literata (OFL-1.1)。英語プロジェクトの本文デフォルト書体
+// (Google Play Books の長文読書向け serif)。latin のみ (和文サブセット不要)。
+// italic は必須: 英語小説の強調・内的独白表現で faux italic を避ける。
+import "@fontsource/literata/latin-400.css";
+import "@fontsource/literata/latin-700.css";
+import "@fontsource/literata/latin-400-italic.css";
+import "@fontsource/literata/latin-700-italic.css";
 import { ensureTokenizer } from "./features/chat/contextBuilder";
 
 window.addEventListener("unhandledrejection", (event) => {

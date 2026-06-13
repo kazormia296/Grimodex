@@ -11,13 +11,16 @@
     clippy::indexing_slicing
 )]
 
+pub mod dialogue;
 pub mod engine;
 pub mod error;
 pub mod morph;
 pub mod offset;
 pub mod rule;
 pub mod rules;
+pub mod textscan;
 
+pub use dialogue::{analyze_dialogue, DialogueAnalysis, DialogueScope};
 pub use engine::{lint, LintResponse, MAX_INPUT_BYTES};
 pub use error::LintError;
 pub use rule::{

@@ -11,9 +11,11 @@
 //! - `search`: in-memory cache + 総当たりコサイン + dialogue_ratio 減点 (Step 7、別セッションで追加予定)。
 
 pub(crate) mod chunker;
+pub(crate) mod chunker_en;
 pub(crate) mod index;
 pub(crate) mod preview;
 pub(crate) mod search;
+pub(crate) mod spec;
 
 #[cfg(feature = "semantic-embedding")]
 pub(crate) mod embedding;

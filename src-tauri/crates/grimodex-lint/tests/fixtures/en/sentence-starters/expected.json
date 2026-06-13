@@ -1,0 +1,11 @@
+[
+  {
+    "rule_id": "en/sentence-starters",
+    "severity": "info",
+    "message": "3 sentences in a row begin with “She”",
+    "range": {
+      "start": 22,
+      "end": 25
+    }
+  }
+]

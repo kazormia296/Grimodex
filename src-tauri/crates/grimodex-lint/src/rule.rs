@@ -283,6 +283,15 @@ pub trait LintRule: Send + Sync {
         false
     }
 
+    /// Where this rule's diagnostics may land relative to dialogue. The
+    /// engine filters them post-hoc: `NarrationOnly` rules drop diagnostics
+    /// that fall inside quoted dialogue, `DialogueOnly` keeps only those. The
+    /// dialogue analysis is computed once per request (English only) when any
+    /// enabled rule returns a non-`Anywhere` scope. Default: `Anywhere`.
+    fn dialogue_scope(&self) -> crate::dialogue::DialogueScope {
+        crate::dialogue::DialogueScope::Anywhere
+    }
+
     /// Block kinds this rule applies to. The engine skips any block whose
     /// kind is not in this list. Default: all five block kinds.
     fn supported_block_kinds(&self) -> &'static [BlockKind] {

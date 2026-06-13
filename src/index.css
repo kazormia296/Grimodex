@@ -686,6 +686,19 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   text-indent: var(--editor-paragraph-indent, 0);
 }
 
+/* English manuscript convention: the opening paragraph of a section (the very
+   first, or the one right after a heading / hr / blockquote) carries no
+   first-line indent. Scoped to .editor-en-typography so Japanese projects and
+   other tiptap surfaces (Sticky, beat editors) are untouched. The indent on
+   subsequent paragraphs comes from --editor-paragraph-indent (1em for en). */
+.editor-en-typography .tiptap > p:first-child,
+.editor-en-typography
+  .tiptap
+  > :is(h1, h2, h3, h4, h5, h6, hr, blockquote)
+  + p {
+  text-indent: 0;
+}
+
 /* Line numbers (paragraph-level counter) — toggled by editor.showLineNumbers.
    Numbers render in the inline-start gutter (left when horizontal, top when
    vertical) via absolute-positioned ::before, so the wrapper reserves

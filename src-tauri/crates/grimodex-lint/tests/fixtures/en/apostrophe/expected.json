@@ -1,0 +1,53 @@
+[
+  {
+    "rule_id": "en/apostrophe",
+    "severity": "warning",
+    "message": "Use a typographic apostrophe (’) in contractions and possessives",
+    "range": {
+      "start": 3,
+      "end": 4
+    },
+    "fix": {
+      "label": "Replace with ’",
+      "replacement": "’",
+      "range": {
+        "start": 3,
+        "end": 4
+      }
+    }
+  },
+  {
+    "rule_id": "en/apostrophe",
+    "severity": "warning",
+    "message": "Use a typographic apostrophe (’) in contractions and possessives",
+    "range": {
+      "start": 14,
+      "end": 15
+    },
+    "fix": {
+      "label": "Replace with ’",
+      "replacement": "’",
+      "range": {
+        "start": 14,
+        "end": 15
+      }
+    }
+  },
+  {
+    "rule_id": "en/apostrophe",
+    "severity": "warning",
+    "message": "Use a typographic apostrophe (’) in contractions and possessives",
+    "range": {
+      "start": 30,
+      "end": 31
+    },
+    "fix": {
+      "label": "Replace with ’",
+      "replacement": "’",
+      "range": {
+        "start": 30,
+        "end": 31
+      }
+    }
+  }
+]

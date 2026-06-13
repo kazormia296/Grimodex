@@ -109,7 +109,11 @@ def quantize_int8(out_dir: Path, source_onnx: Path) -> Path:
 
     sys.stderr.write(f"[quantize] preparing dynamic int8 quantization of {source_onnx.name}...\n")
     quantizer = ORTQuantizer.from_pretrained(out_dir, file_name=source_onnx.name)
-    qconfig = AutoQuantizationConfig.avx2(is_static=False, per_channel=False)
+    # per_channel=True: 重みをチャネル別スケールで量子化し精度を保つ。per-tensor
+    # (False) だと bge 等の素の BERT は cosine が 0.97 台まで落ち golden 0.99 を
+    # 割る。ruri (ModernBERT) は per-tensor でも通るが per-channel でも問題ない。
+    # サイズ増はスケール値ぶんで僅か。
+    qconfig = AutoQuantizationConfig.avx2(is_static=False, per_channel=True)
 
     # optimum は出力名に suffix を付ける。"int8" → model_int8.onnx
     quantizer.quantize(save_dir=out_dir, quantization_config=qconfig, file_suffix="int8")
@@ -193,6 +197,30 @@ def main() -> int:
             if path.suffix == ".onnx":
                 sys.stderr.write(f"  sha256={sha256_of(path)}")
             sys.stderr.write("\n")
+
+    # ONNX graph 入力名を表示する。Rust 側はモデルに合わせて feed する入力を
+    # 決める必要がある: ruri / granite (ModernBERT) は input_ids + attention_mask
+    # の 2 入力だが、bge / e5 (素の BERT) は token_type_ids を加えた 3 入力に
+    # なる。採用判断 (どちらのモデルを使うか) の材料として明示する。
+    int8 = out_dir / "model_int8.onnx"
+    probe = int8 if int8.exists() else (out_dir / "model.onnx")
+    if probe.exists():
+        try:
+            import onnx  # type: ignore
+
+            graph = onnx.load(str(probe)).graph
+            names = [i.name for i in graph.input]
+            sys.stderr.write(f"\n[export] {probe.name} graph inputs: {names}\n")
+            if "token_type_ids" in names:
+                sys.stderr.write(
+                    "[export] NOTE: this model expects token_type_ids — the Rust\n"
+                    "         embedder must feed a zeros tensor for it (set\n"
+                    "         EmbeddingModelSpec.needs_token_type_ids = true).\n"
+                )
+        except ImportError:
+            sys.stderr.write(
+                "\n[export] (install `onnx` to print graph input names)\n"
+            )
 
     sys.stderr.write(
         "\n[export] done. Next: run `python3 scripts/generate-ruri-golden.py`,\n"

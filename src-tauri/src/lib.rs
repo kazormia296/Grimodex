@@ -139,10 +139,11 @@ pub fn run() {
                 flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
 
-            // Semantic search: ruri-v3 ONNX Embedder. Lazy load on first invoke.
+            // Semantic search: per-language ONNX Embedders (ja=ruri / en=...).
+            // Lazy load on first invoke, keyed by model dir name.
             #[cfg(feature = "semantic-embedding")]
             app.manage(SemanticEmbedderState {
-                inner: std::sync::Mutex::new(None),
+                inner: std::sync::Mutex::new(std::collections::HashMap::new()),
             });
 
             // Semantic search: in-memory embedding cache (scene_id -> Vec<f32>).
