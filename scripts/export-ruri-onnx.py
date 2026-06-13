@@ -109,7 +109,11 @@ def quantize_int8(out_dir: Path, source_onnx: Path) -> Path:
 
     sys.stderr.write(f"[quantize] preparing dynamic int8 quantization of {source_onnx.name}...\n")
     quantizer = ORTQuantizer.from_pretrained(out_dir, file_name=source_onnx.name)
-    qconfig = AutoQuantizationConfig.avx2(is_static=False, per_channel=False)
+    # per_channel=True: 重みをチャネル別スケールで量子化し精度を保つ。per-tensor
+    # (False) だと bge 等の素の BERT は cosine が 0.97 台まで落ち golden 0.99 を
+    # 割る。ruri (ModernBERT) は per-tensor でも通るが per-channel でも問題ない。
+    # サイズ増はスケール値ぶんで僅か。
+    qconfig = AutoQuantizationConfig.avx2(is_static=False, per_channel=True)
 
     # optimum は出力名に suffix を付ける。"int8" → model_int8.onnx
     quantizer.quantize(save_dir=out_dir, quantization_config=qconfig, file_suffix="int8")
