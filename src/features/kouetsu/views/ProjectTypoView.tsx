@@ -29,6 +29,7 @@ import {
 } from "@/features/post-effect/api";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { getPromptCatalog } from "@/prompts/index";
+import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { applyTypoFixAndResolve } from "@/features/post-effect/typoFix";
@@ -111,6 +112,7 @@ export function ProjectTypoView() {
     if (blockIfUnlicensed()) return;
     const { nodes } = useTreeStore.getState();
     if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
+    const lang = getCurrentProjectLanguage();
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
     const customKouetsu = useSettingsStore
@@ -150,7 +152,7 @@ export function ProjectTypoView() {
             input_hash: payload.inputHash,
             scenes: payload.scenes,
             system_prompt: appendKouetsuGuidance(
-              getPromptCatalog("ja").postEffect.typoSystem,
+              getPromptCatalog(lang).postEffect.typoSystem,
               customKouetsu,
             ),
           },

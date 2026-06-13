@@ -44,6 +44,7 @@ import {
   buildSynopsisFromContentPromptEn,
   buildSessionTitlePromptEn,
 } from "./en/chatApi";
+import { EN_POST_EFFECT } from "./en/postEffect";
 
 const JA_CATALOG = {
   chatSystem: JA_CHAT_SYSTEM,
@@ -75,14 +76,19 @@ const JA_CATALOG = {
     buildSynopsisFromContentPrompt: buildSynopsisFromContentPromptJa,
     buildSessionTitlePrompt: buildSessionTitlePromptJa,
   },
-  postEffect: JA_POST_EFFECT,
+  // ja/en の postEffect は `as const` で互いに異なる文字列リテラル型になるため、
+  // string 値へ widen してどちらの言語セットも代入可能にする (中身は不変)。
+  postEffect: JA_POST_EFFECT as PostEffectPrompts,
 };
+
+/** postEffect の各 system prompt を string 値に widen した形 (ja/en 共通)。 */
+export type PostEffectPrompts = { [K in keyof typeof JA_POST_EFFECT]: string };
 
 export type PromptCatalog = typeof JA_CATALOG;
 
-// 完全な英語カタログ。チャット/Beat/インライン AI/伏線/chatApi/agentControl を
-// 英語版に差し替える。postEffect (校閲) は別フェーズ対応のため JA のまま据え置く
-// (kouetsu views も getPromptCatalog("ja") 固定なので整合)。
+// 完全な英語カタログ。チャット/Beat/インライン AI/伏線/chatApi/agentControl/
+// 校閲(postEffect) を英語版に差し替える。typo カテゴリは英語向け(spelling/
+// grammar/punctuation)を ja の5種に union 済 (Rust allow-list / FE TypoCategory)。
 const EN_CATALOG: PromptCatalog = {
   chatSystem: EN_CHAT_SYSTEM,
   agentControl: EN_AGENT_CONTROL,
@@ -113,7 +119,7 @@ const EN_CATALOG: PromptCatalog = {
     buildSynopsisFromContentPrompt: buildSynopsisFromContentPromptEn,
     buildSessionTitlePrompt: buildSessionTitlePromptEn,
   },
-  postEffect: JA_POST_EFFECT,
+  postEffect: EN_POST_EFFECT,
 };
 
 const _warned = new Set<string>();

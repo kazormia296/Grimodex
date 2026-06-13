@@ -2259,9 +2259,11 @@ async fn process_typo_scene(
                 let suggestion = issue["suggestion"].as_str().unwrap_or("");
                 let raw_category = issue["category"].as_str().unwrap_or("other");
                 let category_label = match raw_category {
-                    "okurigana" | "missing-particle" | "homophone" | "missing-char" | "other" => {
-                        raw_category
-                    }
+                    // Japanese categories + shared + English (spelling/grammar/
+                    // punctuation) — en projects emit the English set, ja the
+                    // Japanese set; both are accepted (FE TypoCategory union).
+                    "okurigana" | "missing-particle" | "homophone" | "missing-char"
+                    | "spelling" | "grammar" | "punctuation" | "other" => raw_category,
                     _ => "other",
                 };
                 let confidence = issue["confidence"].as_str().unwrap_or("medium");

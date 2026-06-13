@@ -22,6 +22,7 @@ import {
   runPostEffectMulti,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 import {
   appendKouetsuGuidance,
   appendStoryContextGuidance,
@@ -91,6 +92,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
     if (running || !sceneId) return;
     if (blockIfPolicyOff("analysis")) return;
     if (blockIfUnlicensed()) return;
+    const lang = getCurrentProjectLanguage();
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
     const customKouetsu = useSettingsStore
@@ -124,7 +126,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
               scene_text: payload.sceneText,
               system_prompt: appendStoryContextGuidance(
                 appendKouetsuGuidance(
-                  getPromptCatalog("ja").postEffect.metaStructureSystem,
+                  getPromptCatalog(lang).postEffect.metaStructureSystem,
                   customKouetsu,
                 ),
                 storyContext,
@@ -158,6 +160,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
     if (blockIfUnlicensed()) return;
     const { nodes } = useTreeStore.getState();
     if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
+    const lang = getCurrentProjectLanguage();
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
     const customKouetsu = useSettingsStore
@@ -191,7 +194,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
               input_hash: payload.inputHash,
               scenes: payload.scenes,
               system_prompt: appendKouetsuGuidance(
-                getPromptCatalog("ja").postEffect.metaStructureSystem,
+                getPromptCatalog(lang).postEffect.metaStructureSystem,
                 customKouetsu,
               ),
             },

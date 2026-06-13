@@ -24,6 +24,7 @@ import {
   runPostEffectMulti,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 import {
   appendKouetsuGuidance,
   appendTimelineGuidance,
@@ -118,6 +119,7 @@ export function ProjectTimelineConsistencyView() {
     if (runningAll) return;
     if (blockIfPolicyOff("analysis")) return;
     if (blockIfUnlicensed()) return;
+    const lang = getCurrentProjectLanguage();
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
     const customKouetsu = useSettingsStore
@@ -154,7 +156,7 @@ export function ProjectTimelineConsistencyView() {
               scenes: payload.scenes,
               system_prompt: appendTimelineGuidance(
                 appendKouetsuGuidance(
-                  getPromptCatalog("ja").postEffect.timelineConsistencySystem,
+                  getPromptCatalog(lang).postEffect.timelineConsistencySystem,
                   customKouetsu,
                 ),
                 payload.timelineContext,

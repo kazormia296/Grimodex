@@ -101,6 +101,10 @@ const TYPO_CATEGORY_LABEL: Record<TypoCategory, string> = {
   "missing-particle": "助詞",
   homophone: "同音異義",
   "missing-char": "脱字",
+  // English typo categories (UI チップ文言は別途 i18n フェーズで英語化)
+  spelling: "スペル",
+  grammar: "文法",
+  punctuation: "句読点",
   other: "誤字",
 };
 

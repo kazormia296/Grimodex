@@ -13,13 +13,14 @@ import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import {
   buildPseudoCommentPayload,
   buildPseudoCommentSystemPrompt,
+  personaDefsForLang,
   personaRequiresTargetProfile,
+  personasForLang,
   PSEUDO_COMMENT_PROMPT_VERSION,
-  PSEUDO_PERSONA_DEFS,
-  PSEUDO_PERSONAS,
   resolvePersonaBrief,
 } from "@/features/post-effect/pseudoCommentPayloadBuilder";
 import { fetchProjectContext } from "@/features/project/contextAtoms";
+import { useCurrentProject } from "@/features/project/projectStore";
 import {
   flushPendingSceneSaves,
   listAnnotationsForScene,
@@ -40,8 +41,12 @@ interface Props {
 }
 
 export function CurrentScenePseudoCommentView({ sceneId }: Props) {
+  // project 言語で読者ペルソナ集合 (ja/en) と校閲プロンプトを切替える。
+  const lang = useCurrentProject()?.language ?? "ja";
+  const personaDefs = personaDefsForLang(lang);
+  const personas = personasForLang(lang);
   const [running, setRunning] = useState(false);
-  const [persona, setPersona] = useState<string>(PSEUDO_PERSONAS[0]);
+  const [persona, setPersona] = useState<string>(personas[0]);
   // genre は全ペルソナの brief に、targetReaders は「ターゲット読者層」ペルソナの
   // 実体として注入する。targetReaders 空のとき同ペルソナは選択不可にする。
   const [genre, setGenre] = useState<string | null>(null);
@@ -94,13 +99,18 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
 
   const hasTargetProfile = Boolean(targetReaders?.trim());
 
-  // 選択中ペルソナがプロフィール必須かつ未設定になったら一般読者へ戻す
-  // (設定をクリアした等のエッジケース)。判定はレジストリを単一の真実源にする。
+  // 選択中ペルソナが (a) 現在の言語のペルソナ集合に存在しない (lang 切替) か、
+  // (b) プロフィール必須かつ未設定 になったら、その言語の先頭ペルソナへ戻す。
+  // 判定はレジストリ (personaDefsForLang) を単一の真実源にする。
   useEffect(() => {
-    if (!hasTargetProfile && personaRequiresTargetProfile(persona)) {
-      setPersona(PSEUDO_PERSONAS[0]);
+    const list = personasForLang(lang);
+    if (
+      !list.includes(persona) ||
+      (!hasTargetProfile && personaRequiresTargetProfile(persona, lang))
+    ) {
+      setPersona(list[0]);
     }
-  }, [hasTargetProfile, persona]);
+  }, [hasTargetProfile, persona, lang]);
 
   const run = useCallback(async () => {
     if (running) return;
@@ -116,7 +126,11 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
     try {
       await flushPendingSceneSaves(sceneId);
       // brief を 1 度だけ解決し、hash (payload) と system_prompt で同じものを使う。
-      const brief = resolvePersonaBrief(persona, { genre, targetReaders });
+      const brief = resolvePersonaBrief(
+        persona,
+        { genre, targetReaders },
+        lang,
+      );
       const payload = await buildPseudoCommentPayload(
         sceneId,
         model,
@@ -144,7 +158,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
             // JSON スキーマの後 (buildPseudoCommentSystemPrompt) に入る。
             system_prompt: buildPseudoCommentSystemPrompt(
               appendKouetsuGuidance(
-                getPromptCatalog("ja").postEffect.pseudoCommentSystem,
+                getPromptCatalog(lang).postEffect.pseudoCommentSystem,
                 customKouetsu,
               ),
               brief,
@@ -181,7 +195,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
         description: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [running, sceneId, persona, genre, targetReaders, reload]);
+  }, [running, sceneId, persona, genre, targetReaders, reload, lang]);
 
   const disabled = running || analysisGate.presentation !== "enabled";
 
@@ -193,7 +207,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
           onChange={(e) => setPersona(e.target.value)}
           className="rounded border border-border bg-background px-1.5 py-0.5 text-xs outline-none"
         >
-          {PSEUDO_PERSONA_DEFS.map((d) => {
+          {personaDefs.map((d) => {
             const locked =
               Boolean(d.requiresTargetProfile) && !hasTargetProfile;
             return (

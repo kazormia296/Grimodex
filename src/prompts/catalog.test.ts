@@ -11,6 +11,8 @@ import { buildGenerateBeatsMessagesEn } from "./en/beatGenerate";
 import { buildSummarizationPromptEn } from "./en/summarization";
 import { JA_CHAT_SYSTEM } from "./ja/chatSystem";
 import { JA_POST_EFFECT } from "./ja/postEffect";
+import { EN_POST_EFFECT } from "./en/postEffect";
+import { KOUETSU_JSON_DELIMITER } from "@/features/post-effect/customInstruction";
 
 describe("getPromptCatalog en wiring", () => {
   const en = getPromptCatalog("en");
@@ -71,10 +73,38 @@ describe("getPromptCatalog en wiring", () => {
     );
   });
 
-  it("postEffect intentionally stays Japanese (kouetsu is a separate phase)", () => {
-    // The kouetsu views hardcode getPromptCatalog("ja").postEffect, so the en
-    // catalog deliberately keeps the ja postEffect to stay consistent until the
-    // LLM-proofreading phase wires en there.
-    expect(en.postEffect).toBe(JA_POST_EFFECT);
+  it("postEffect resolves per language (en gets the English kouetsu prompts)", () => {
+    // The kouetsu views now call getPromptCatalog(lang).postEffect, so the en
+    // catalog must expose the English postEffect set while ja stays Japanese.
+    // EN_POST_EFFECT is a *separate* object from JA_POST_EFFECT so ja annotation
+    // caches (input_hash is project-scoped and does not see the prompt body)
+    // stay valid — never collapse these back to one shared object.
+    expect(en.postEffect).toBe(EN_POST_EFFECT);
+    expect(getPromptCatalog("ja").postEffect).toBe(JA_POST_EFFECT);
+    expect(en.postEffect).not.toBe(JA_POST_EFFECT);
+  });
+
+  it("every en postEffect prompt contains the JSON delimiter verbatim", () => {
+    // appendKouetsuGuidance / appendIntentGuidance / appendStoryContextGuidance /
+    // appendTimelineGuidance all splice at KOUETSU_JSON_DELIMITER via indexOf.
+    // If an en prompt drifts from the exact delimiter string they silently no-op
+    // (guidance/context is dropped), so pin its presence in all 8 keys.
+    const keys = [
+      "consistencySystem",
+      "typoSystem",
+      "intraSystem",
+      "reviewSystem",
+      "intentDriftSystem",
+      "timelineConsistencySystem",
+      "pseudoCommentSystem",
+      "metaStructureSystem",
+    ] as const;
+    for (const key of keys) {
+      const prompt = EN_POST_EFFECT[key];
+      const occurrences = prompt.split(KOUETSU_JSON_DELIMITER).length - 1;
+      expect(occurrences, `${key} must contain the JSON delimiter once`).toBe(
+        1,
+      );
+    }
   });
 });

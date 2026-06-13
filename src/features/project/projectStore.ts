@@ -255,6 +255,19 @@ export function getCurrentProjectId(): string {
   return useProjectStore.getState().currentProjectId ?? FALLBACK_PROJECT_ID;
 }
 
+/**
+ * Current Project language for non-React modules (post-effect run callbacks
+ * read this imperatively alongside model/projectId). Falls back to "ja" so
+ * existing projects without an explicit language keep Japanese prompts.
+ */
+export function getCurrentProjectLanguage(): string {
+  const id = useProjectStore.getState().currentProjectId;
+  return (
+    useProjectStore.getState().projects.find((p) => p.id === id)?.language ??
+    "ja"
+  );
+}
+
 /** Current Project id hook for React components. */
 export function useCurrentProjectId(): string {
   return useProjectStore((s) => s.currentProjectId) ?? FALLBACK_PROJECT_ID;

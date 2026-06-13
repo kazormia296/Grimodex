@@ -18,6 +18,7 @@ import {
   runPostEffectMulti,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
@@ -62,6 +63,7 @@ export function ProjectReviewView() {
     if (blockIfUnlicensed()) return;
     const { nodes } = useTreeStore.getState();
     if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
+    const lang = getCurrentProjectLanguage();
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
     const customKouetsu = useSettingsStore
@@ -95,7 +97,7 @@ export function ProjectReviewView() {
               input_hash: payload.inputHash,
               scenes: payload.scenes,
               system_prompt: appendKouetsuGuidance(
-                getPromptCatalog("ja").postEffect.reviewSystem,
+                getPromptCatalog(lang).postEffect.reviewSystem,
                 customKouetsu,
               ),
             },

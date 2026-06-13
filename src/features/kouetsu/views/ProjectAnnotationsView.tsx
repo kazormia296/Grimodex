@@ -22,6 +22,7 @@ import {
   runPostEffectMulti,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
+import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
@@ -114,6 +115,7 @@ export function ProjectAnnotationsView() {
       // シーンが無いプロジェクトは静かに終了 (旧 runAll と同じ挙動)
       const { nodes } = useTreeStore.getState();
       if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
+      const lang = getCurrentProjectLanguage();
       const model =
         useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
       const customKouetsu = useSettingsStore
@@ -168,8 +170,8 @@ export function ProjectAnnotationsView() {
                     scenes: payload.scenes,
                     system_prompt: appendKouetsuGuidance(
                       effect === "consistency"
-                        ? getPromptCatalog("ja").postEffect.consistencySystem
-                        : getPromptCatalog("ja").postEffect.intraSystem,
+                        ? getPromptCatalog(lang).postEffect.consistencySystem
+                        : getPromptCatalog(lang).postEffect.intraSystem,
                       customKouetsu,
                     ),
                   },

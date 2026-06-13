@@ -44,6 +44,12 @@ function genrePhrase(genre?: string | null): string {
   return g ? `「${g}」というジャンル` : "この作品";
 }
 
+/** English counterpart of genrePhrase. */
+function genrePhraseEn(genre?: string | null): string {
+  const g = genre?.trim();
+  return g ? `the "${g}" genre` : "this work";
+}
+
 /**
  * 読者ペルソナ・レジストリ (読者スタンスに統一)。
  * 編集者は「作り手」視点でレビュー (reviewSystem) と重複・自己矛盾するため持たない。
@@ -99,15 +105,85 @@ export const PSEUDO_PERSONA_DEFS: readonly PseudoPersonaDef[] = [
   },
 ] as const;
 
-/** 既定の読者ペルソナ一覧 (label のみ。UI / 後方互換用)。 */
+/**
+ * 英語ペルソナ・レジストリ。label は英語で、ja とは別の安定キー集合にする
+ * (既存 ja プロジェクトの annotation.persona キーを温存しつつ、en プロジェクトは
+ * 英語キーで新規開始する)。brief も英語で書き下す。
+ */
+export const PSEUDO_PERSONA_DEFS_EN: readonly PseudoPersonaDef[] = [
+  {
+    label: "General Reader",
+    brief: ({ genre }) =>
+      `Become an average reader of ${genrePhraseEn(genre)} reading at a normal pace. ` +
+      `You have little specialist knowledge or prior context: if something is hard you simply say "I don't get it," and if it's fun you go along with it. ` +
+      `React honestly to whether you can follow the story and whether you want to read on.`,
+  },
+  {
+    label: "Core Reader",
+    brief: ({ genre }) =>
+      `Become a seasoned, discerning reader who has read a great deal of ${genrePhraseEn(genre)}. ` +
+      `You are sensitive to conventions, tropes, and déjà vu, with high expectations for the genre's signature beats and set pieces. ` +
+      `React to whether the scene feels fresh and whether its promised payoffs land.`,
+  },
+  {
+    label: "Light/New Reader",
+    brief: ({ genre }) =>
+      `Become a newcomer who is unfamiliar with ${genrePhraseEn(genre)}, or who started reading on a whim. ` +
+      `You drop off easily when overwhelmed by information density, jargon, or a flood of proper nouns. ` +
+      `React honestly to anything that feels hard to get into or that trips you up.`,
+  },
+  {
+    label: "Harsh Critic",
+    brief: () =>
+      `Become a harsh critic who reads evaluatively at a literary standard. ` +
+      `You go looking for cheap sentiment, contrivance, weak description, and holes in the logic. ` +
+      `You are not easily impressed; point out what falls short without holding back.`,
+  },
+  {
+    label: "Target Audience",
+    requiresTargetProfile: true,
+    brief: ({ targetReaders }) => {
+      const profile = targetReaders?.trim();
+      if (!profile) {
+        // Normally unreachable (disabled in the UI). Defensive fallback.
+        return (
+          `Become the reader this work is aimed at. ` +
+          `React honestly, from that standpoint, to whether it lands or falls short.`
+        );
+      }
+      return (
+        `Become the reader this work is aimed at. The intended reader profile is:\n` +
+        `${profile}\n\n` +
+        `From that standpoint, react honestly to whether it lands, falls short, or misses the reader's expectations.`
+      );
+    },
+  },
+] as const;
+
+/** project 言語に対応するペルソナ定義集合を返す (en 以外は ja)。 */
+export function personaDefsForLang(
+  lang?: string | null,
+): readonly PseudoPersonaDef[] {
+  return lang?.startsWith("en") ? PSEUDO_PERSONA_DEFS_EN : PSEUDO_PERSONA_DEFS;
+}
+
+/** project 言語に対応するペルソナ label 一覧 (UI のデフォルト/ドロップダウン用)。 */
+export function personasForLang(lang?: string | null): string[] {
+  return personaDefsForLang(lang).map((d) => d.label);
+}
+
+/** 既定の読者ペルソナ一覧 (ja label のみ。UI / 後方互換用)。 */
 export const PSEUDO_PERSONAS = PSEUDO_PERSONA_DEFS.map((d) => d.label);
 
 export type PseudoPersona = (typeof PSEUDO_PERSONAS)[number];
 
-/** persona がプロフィール必須か (UI の disable 判定用)。 */
-export function personaRequiresTargetProfile(persona: string): boolean {
+/** persona がプロフィール必須か (UI の disable 判定用)。lang で集合を切替。 */
+export function personaRequiresTargetProfile(
+  persona: string,
+  lang?: string | null,
+): boolean {
   return (
-    PSEUDO_PERSONA_DEFS.find((d) => d.label === persona)
+    personaDefsForLang(lang).find((d) => d.label === persona)
       ?.requiresTargetProfile ?? false
   );
 }
@@ -115,13 +191,19 @@ export function personaRequiresTargetProfile(persona: string): boolean {
 /**
  * persona ラベルと文脈から、プロンプトへ注入する brief を解決する。
  * 未知 persona (旧データの再実行・手入力) はラベルだけ注入する後方互換経路。
+ * lang で参照するペルソナ集合を切替える (ja/en)。
  */
 export function resolvePersonaBrief(
   persona: string,
   ctx: PersonaBriefContext,
+  lang?: string | null,
 ): string {
-  const def = PSEUDO_PERSONA_DEFS.find((d) => d.label === persona);
-  if (!def) return `「${persona}」になりきってコメントしてください。`;
+  const def = personaDefsForLang(lang).find((d) => d.label === persona);
+  if (!def) {
+    return lang?.startsWith("en")
+      ? `Become "${persona}" and leave reader comments.`
+      : `「${persona}」になりきってコメントしてください。`;
+  }
   return def.brief(ctx);
 }
 

@@ -68,10 +68,16 @@ export interface IntraAnnotationMeta {
 }
 
 export type TypoCategory =
+  // Japanese typo categories
   | "okurigana"
   | "missing-particle"
-  | "homophone"
   | "missing-char"
+  // English typo categories
+  | "spelling"
+  | "grammar"
+  | "punctuation"
+  // shared
+  | "homophone"
   | "other";
 
 export interface TypoAnnotationMeta {
