@@ -61,3 +61,4 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 | 「デバッグ」「修正」                           | /debug-issue       | デバッグフロー   |
 | 「Tauriコマンド」「invoke」                    | /add-tauri-command | IPC一括追加      |
 | 「アニメ」「トランジション」「動き」「磨いて」 | /polish-motion     | UIモーション規律 |
+| 「バージョン上げて」「リリースタグ」           | /bump-version      | 版上げ+commit+tag |
