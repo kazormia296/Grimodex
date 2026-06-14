@@ -1127,6 +1127,7 @@
       "totalRow": "合計",
       "fullPrompt": "プロンプト全文",
       "emptyPrompt": "（プロンプトなし）",
+      "outgoingMessage": "送信メッセージ",
       "layer": {
         "L1": "プロジェクト情報",
         "L2": "これまでの物語",

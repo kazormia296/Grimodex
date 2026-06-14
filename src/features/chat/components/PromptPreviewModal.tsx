@@ -14,6 +14,8 @@ interface PromptPreviewModalProps {
   contextWindow?: number;
   /** related_scenes 込みのプレビュー再構築中。true の間はプレースホルダを出す。 */
   loading?: boolean;
+  /** 「これから送る入力メッセージ」。空 / 未指定なら送信メッセージ行を描画しない。 */
+  userMessage?: string;
   onClose: () => void;
 }
 
@@ -24,6 +26,7 @@ export function PromptPreviewModal({
   model,
   contextWindow,
   loading = false,
+  userMessage,
   onClose,
 }: PromptPreviewModalProps) {
   const { t } = useTranslation();
@@ -188,6 +191,18 @@ export function PromptPreviewModal({
                 {systemPrompt || t("chat.context.emptyPrompt")}
               </pre>
             </div>
+
+            {/* これから送る入力メッセージ */}
+            {userMessage && userMessage.trim() && (
+              <div>
+                <h3 className="mb-2 text-xs font-semibold text-muted-foreground uppercase">
+                  {t("chat.context.outgoingMessage", "送信メッセージ")}
+                </h3>
+                <pre className="whitespace-pre-wrap rounded bg-muted p-3 text-xs text-foreground">
+                  {userMessage}
+                </pre>
+              </div>
+            )}
           </>
         )}
       </div>

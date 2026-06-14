@@ -167,6 +167,7 @@ export function ContextBar({
     prompt: string;
     layers: LayerBreakdown[];
     totalTokens: number;
+    userMessage: string;
   } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const buildPreviewPrompt = useChatStore((s) => s.buildPreviewPrompt);
@@ -912,6 +913,7 @@ export function ContextBar({
           systemPrompt={previewData?.prompt ?? systemPrompt}
           layers={previewData?.layers ?? contextLayers}
           totalTokens={previewData?.totalTokens ?? contextTokenCount}
+          userMessage={previewData?.userMessage ?? ""}
           model={model}
           contextWindow={contextWindow}
           loading={previewLoading}

@@ -1127,6 +1127,7 @@
       "totalRow": "Total",
       "fullPrompt": "Full prompt",
       "emptyPrompt": "(No prompt)",
+      "outgoingMessage": "Outgoing message",
       "layer": {
         "L1": "Project info",
         "L2": "Story so far",

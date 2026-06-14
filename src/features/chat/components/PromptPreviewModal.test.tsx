@@ -47,4 +47,17 @@ describe("PromptPreviewModal", () => {
     expect(screen.getByText("プロンプトを構築中…")).toBeInTheDocument();
     expect(screen.queryByText("should not show yet")).not.toBeInTheDocument();
   });
+
+  it("userMessage を渡すと送信メッセージを描画する", () => {
+    render(
+      <PromptPreviewModal
+        systemPrompt="SYS"
+        layers={[]}
+        totalTokens={0}
+        userMessage="これから送る入力"
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByText("これから送る入力")).toBeInTheDocument();
+  });
 });
