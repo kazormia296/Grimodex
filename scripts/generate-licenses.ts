@@ -406,6 +406,28 @@ const APACHE_2_0_LICENSE_TEXT = `                                 Apache License
    See the License for the specific language governing permissions and
    limitations under the License.`;
 
+const BGE_MIT_LICENSE_TEXT = `MIT License
+
+Copyright (c) 2022 staoxiao
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.`;
+
 const TOARU_EKI_SIGN_LICENSE_TEXT = `「とある駅の案内板っぽい？フォント」 (修正版)
 作者: 栃木那須・ユズノカ
 
@@ -459,6 +481,19 @@ function gatherAssetLicenses(): LicenseEntry[] {
       license: "Apache-2.0",
       repository: "https://huggingface.co/cl-nagoya/ruri-v3-30m",
       licenseText: APACHE_2_0_LICENSE_TEXT,
+    },
+    {
+      // Semantic Search 用の英語テキスト埋め込みモデル。日本語の Ruri v3 と対になる
+      // 言語別モデルで、英語プロジェクトの semantic search に使う。リリースビルドに
+      // ONNX (model_int8.onnx) と tokenizer.json を Tauri リソースとして同梱している
+      // (src-tauri/tauri.release.conf.json / dir_name: bge-small-en-v15)。
+      // BAAI (Beijing Academy of Artificial Intelligence) の FlagEmbedding プロジェクト
+      // として MIT ライセンスで公開されている (商用利用可)。
+      name: "BGE small en v1.5 (BAAI/bge-small-en-v1.5, English text embedding model, embedded as ONNX for semantic search)",
+      version: "bge-small-en-v1.5",
+      license: "MIT",
+      repository: "https://huggingface.co/BAAI/bge-small-en-v1.5",
+      licenseText: BGE_MIT_LICENSE_TEXT,
     },
   ];
 }
