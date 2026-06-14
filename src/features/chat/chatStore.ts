@@ -1563,9 +1563,10 @@ async function loadMapBoardMarkdown(
 /**
  * preview / copy 共通の scene スコープ "outgoing プロンプト" ビルダー。
  * 「これから送るメッセージ (inputText)」を semantic recall の seed と会話末尾の
- * outgoing user message の両方に反映し、send (sendMessage) と同一の
- * buildSceneContextPrompt 呼び出しに揃える。eco (includeBodies=false) の本文
- * ブランクもここで一元化する。
+ * outgoing user message の両方に反映し、send (sendMessage) と揃える。
+ * ただし seed は send より寛容で、inputText が空のときは直近 user 発話 →
+ * 本文末尾へフォールバックする(プレビューを入力前に開いても related_scenes が
+ * 出るように)。eco (includeBodies=false) の本文ブランクもここで一元化する。
  */
 async function buildOutgoingScenePrompt(
   get: () => ChatState,
@@ -1656,9 +1657,10 @@ async function buildSceneContextPrompt(opts: {
    * 注入される (eco モードでも必ず注入)。 */
   mentionedSceneIds?: string[];
   sessionStableCodexIds?: string[];
-  /** semantic recall (Layer4 RAG) のクエリ seed に使う直近ユーザー発話。
-   * 送信経路 (sendMessage) でのみ渡される。未指定 (プレビュー / コピー経路)
-   * なら semantic 検索は走らない — 打鍵毎の embedder 呼び出しを避けるため。 */
+  /** semantic recall (Layer4 RAG) のクエリ seed に使う「これから送る本文」。
+   * 送信 (sendMessage) は content、プレビュー / コピーは buildOutgoingScenePrompt
+   * 経由で入力中テキスト(無ければ直近 user 発話 / 本文末尾)を渡す。未指定なら
+   * semantic 検索は走らない — refreshContextLayers のライブ経路がこれに当たる。 */
   semanticRecallSeedMessage?: string;
   /** ユーザーが × で auto 注入から除外したエントリ ID。always 再収集と
    * mentioned（自動検出）の両方から取り除く — UI の × は detected/always を
