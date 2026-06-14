@@ -20,8 +20,19 @@ export interface SemanticRecallChunk {
   score: number;
 }
 
-/** スコア下限。ruri-v3 の正規化内積 [-1,1] で無関係チャンクは 0 近傍に集まる。 */
-export const SEMANTIC_RECALL_MIN_SCORE = 0.5;
+/**
+ * 日本語モデル (ruri-v3-30m, mean pooling, 「検索クエリ: / 検索文書: 」prefix) 用の
+ * スコア下限。`scripts/calibrate-embedding-threshold.py` を
+ * `scripts/fixtures/ja-calibration.jsonl` で実測した推奨値
+ * (related 再現率 1.00 / unrelated 誤検出率 0.011 が (recall-fp) 最大点・2 種の
+ * フィクスチャで 0.84〜0.85 と robust)。
+ * ruri は無関係な散文どうしでも cosine が 0.79 前後に座る高ベースライン特性のため、
+ * 旧値 0.5 ではほぼ全チャンクが閾値を越えてノイズ注入になっていた。
+ * 注意: 実プロジェクトでは「緩く関連するシーン」が 0.82 前後まで落ちることがあり、
+ * その分は注入されない (precision 寄り)。緩い関連も拾いたい (recall 優先) なら
+ * 0.80 程度まで下げる余地がある。
+ */
+export const SEMANTIC_RECALL_MIN_SCORE = 0.85;
 /**
  * 英語モデル (bge-small-en-v1.5, CLS pooling) 用のスコア下限。
  * `scripts/calibrate-embedding-threshold.py`(36ペアコーパス)で確定した値:

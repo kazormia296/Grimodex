@@ -98,6 +98,7 @@ describe("selectSemanticRecallChunks", () => {
     ];
     const chunks = selectSemanticRecallChunks(hits, {
       excludeSceneIds: ["current", "mentioned"],
+      minScore: 0,
     });
     expect(chunks.map((c) => c.sceneId)).toEqual(["other"]);
   });
@@ -117,7 +118,10 @@ describe("selectSemanticRecallChunks", () => {
       makeHit({ sceneId: "high", score: 0.95 }),
       makeHit({ sceneId: "mid", score: 0.8 }),
     ];
-    const chunks = selectSemanticRecallChunks(hits, { excludeSceneIds: [] });
+    const chunks = selectSemanticRecallChunks(hits, {
+      excludeSceneIds: [],
+      minScore: 0,
+    });
     expect(chunks.map((c) => c.sceneId)).toEqual(["high", "mid", "low"]);
   });
 
@@ -125,6 +129,7 @@ describe("selectSemanticRecallChunks", () => {
     const long = "長".repeat(SEMANTIC_RECALL_MAX_CHUNK_CHARS + 200);
     const chunks = selectSemanticRecallChunks([makeHit({ chunkText: long })], {
       excludeSceneIds: [],
+      minScore: 0,
     });
     expect(chunks[0].chunkText.length).toBeLessThanOrEqual(
       SEMANTIC_RECALL_MAX_CHUNK_CHARS + 1,
@@ -139,7 +144,7 @@ describe("selectSemanticRecallChunks", () => {
   it("keeps short chunk text untouched", () => {
     const chunks = selectSemanticRecallChunks(
       [makeHit({ chunkText: "短い抜粋。" })],
-      { excludeSceneIds: [] },
+      { excludeSceneIds: [], minScore: 0 },
     );
     expect(chunks[0].chunkText).toBe("短い抜粋。");
   });
