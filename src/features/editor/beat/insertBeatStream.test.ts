@@ -276,4 +276,39 @@ describe("appendBeatChunk", () => {
     expect(ok).toBe(false);
     editor.destroy();
   });
+
+  it("merges streamed chunks into a single AI span when they share a timestamp (regression: 1–2 char fragmentation)", () => {
+    // Real callers pass one timestamp per generation. With identical mark attrs
+    // ProseMirror joins the adjacent text nodes, so a beat is one authorship
+    // span — not one tiny span per streamed chunk.
+    const editor = createEditor();
+    insertBeat(editor, "b1");
+    ensureGeneratedBlock(editor, "b1");
+    const ts = "2026-06-14T00:00:00.000Z";
+    for (const ch of ["あ", "い", "うえ", "お"]) {
+      appendBeatChunk(editor, "b1", ch, {
+        model: "claude",
+        traceId: "t1",
+        timestamp: ts,
+      });
+    }
+
+    const block = findGeneratedBlockForBeat(editor, "b1");
+    const blockNode = editor.state.doc.nodeAt(block!.blockPos);
+    expect(blockNode?.textContent).toBe("あいうえお");
+
+    let aiTextNodes = 0;
+    blockNode!.descendants((node) => {
+      if (
+        node.isText &&
+        node.marks.some(
+          (m) => m.type.name === "authorship" && m.attrs.source === "ai",
+        )
+      ) {
+        aiTextNodes += 1;
+      }
+    });
+    expect(aiTextNodes).toBe(1);
+    editor.destroy();
+  });
 });

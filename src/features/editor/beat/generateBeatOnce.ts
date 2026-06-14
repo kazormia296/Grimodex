@@ -53,6 +53,9 @@ export async function generateBeatOnce(
   if (!ensureGeneratedBlock(editor, beatId)) return;
 
   const traceId = crypto.randomUUID();
+  // One timestamp for the whole generation so streamed chunks share an identical
+  // authorship mark and merge into a single span (not one per chunk).
+  const generatedAt = new Date().toISOString();
   // Single source of truth for the listener cleanup. `released` guards the
   // (theoretical) race where onDone/onError fire before the awaited Promise
   // resolves: in that case we fall through and call cleanup synchronously
@@ -74,6 +77,7 @@ export async function generateBeatOnce(
           const ok = appendBeatChunk(editor, beatId, delta, {
             model: beatModel ?? DEFAULT_MODEL,
             traceId,
+            timestamp: generatedAt,
           });
           if (!ok) release();
         },

@@ -232,6 +232,9 @@ export function useBeatGeneration(
     const resolvedModel = beatModel || null;
 
     const traceId = crypto.randomUUID();
+    // One timestamp for the whole generation so streamed chunks share an
+    // identical authorship mark and merge into a single span (not one per chunk).
+    const generatedAt = new Date().toISOString();
     inFlightRef.current = true;
     setState({ status: "generating", error: null, cleanup: null });
     let orphaned = false;
@@ -249,6 +252,7 @@ export function useBeatGeneration(
             const ok = appendBeatChunk(editor, beatId, delta, {
               model: resolvedModel ?? DEFAULT_MODEL,
               traceId,
+              timestamp: generatedAt,
             });
             if (!ok) {
               orphaned = true;

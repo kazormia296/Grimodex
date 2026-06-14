@@ -105,7 +105,7 @@ export function appendBeatChunk(
   editor: Editor,
   beatId: string,
   chunk: string,
-  authorship: { model: string; traceId: string },
+  authorship: { model: string; traceId: string; timestamp?: string },
 ): boolean {
   if (chunk.length === 0) return true;
 
@@ -123,11 +123,17 @@ export function appendBeatChunk(
   // last child; - 1 backs into the last child's content.
   const tailPos = block.blockPos + 1 + blockNode.content.size - 1;
 
+  // Reuse one timestamp for the whole generation. A fresh per-chunk timestamp
+  // would make each chunk's mark unequal, so ProseMirror could not merge the
+  // adjacent text nodes — leaving one authorship span per streamed chunk (the
+  // disclosure/attribution report then lists a beat as dozens of 1–2 char
+  // passages). Callers pass a stable per-generation timestamp; the fallback is
+  // only for ad-hoc/test calls.
   const aiMark = authorshipType.create({
     source: "ai",
     model: authorship.model,
     traceId: authorship.traceId,
-    timestamp: new Date().toISOString(),
+    timestamp: authorship.timestamp ?? new Date().toISOString(),
   });
 
   const segments = chunk.split("\n");
