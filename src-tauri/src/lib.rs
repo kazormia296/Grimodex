@@ -259,6 +259,8 @@ pub fn run() {
             commands::semantic::semantic_reindex_all,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_chunk_context,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::semantic_debug_dump,
             commands::external_mount::external_mount_register,
             commands::external_mount::external_mount_unregister,
             commands::external_mount::external_mount_read_file,

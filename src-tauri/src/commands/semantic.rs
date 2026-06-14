@@ -441,3 +441,149 @@ pub(crate) async fn semantic_chunk_context(
         .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
     result
 }
+
+/// `semantic_debug_dump` が返す 1 chunk 分の検査用メタデータ。
+///
+/// 埋め込みベクトルそのものは返さず、L2 ノルム (正規化済みなら ≈1.0) と
+/// 寸法・モデル・chunker・content_hash・本文プレビューだけを返す。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DebugChunkRow {
+    scene_id: String,
+    scene_title: String,
+    chunk_index: i64,
+    char_start: i64,
+    char_end: i64,
+    dialogue_ratio: f64,
+    text_preview: String,
+    model_id: String,
+    embedding_dim: i64,
+    chunker_version: String,
+    content_hash: String,
+    /// 格納された f32 ベクトルの L2 ノルム。正規化済みなら ≈1.0。
+    embedding_norm: f64,
+    /// 現在の spec (project language 由来) と model/dim/chunker が食い違うなら true。
+    is_stale: bool,
+}
+
+/// `semantic_debug_dump` のレスポンス全体。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DebugDumpReport {
+    project_id: String,
+    language: String,
+    current_model_id: String,
+    current_embedding_dim: usize,
+    current_chunker_version: String,
+    total_chunks: usize,
+    returned_chunks: usize,
+    chunks: Vec<DebugChunkRow>,
+}
+
+/// 開発者向け: 指定 project (任意で 1 scene) の `scene_chunks` を検査用にダンプする。
+///
+/// セマンティック検索のデバッグ用。「何が・どのモデルで index されたか」
+/// (chunk 本文・文字範囲・dialogue_ratio・model_id・embedding_dim・
+/// chunker_version・content_hash・埋め込み L2 ノルム・stale 判定) を一覧で返す。
+/// Embedder のロードは不要で、DB 読み出しのみ。`scene_id=None` で project 全体、
+/// `limit` 省略時は 200 件 (上限 2000) を返す。
+#[tauri::command]
+pub(crate) async fn semantic_debug_dump(
+    app: tauri::AppHandle,
+    project_id: String,
+    scene_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<DebugDumpReport, AppError> {
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<DebugDumpReport, AppError> {
+            let cap = limit.unwrap_or(200).min(2000);
+            let ws_state = app.state::<WorkspaceState>();
+            with_db(&ws_state, |db| {
+                let language = project_language(db, &project_id)?;
+                let spec = spec_for_language(&language);
+                let current_model_id = spec.full_model_id();
+
+                db.with_conn(|conn| {
+                    let total_chunks: usize = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM scene_chunks sc \
+                         JOIN tree_nodes tn ON tn.id = sc.scene_id \
+                         WHERE tn.project_id = ?1 \
+                           AND (?2 IS NULL OR sc.scene_id = ?2)",
+                            rusqlite::params![project_id, scene_id],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .unwrap_or(0) as usize;
+
+                    let mut stmt = conn.prepare(
+                        "SELECT sc.scene_id, COALESCE(tn.title, ''), sc.chunk_index, \
+                            sc.char_start, sc.char_end, sc.dialogue_ratio, sc.text, \
+                            sc.model_id, sc.embedding_dim, sc.chunker_version, \
+                            sc.content_hash, sc.embedding \
+                     FROM scene_chunks sc \
+                     JOIN tree_nodes tn ON tn.id = sc.scene_id \
+                     WHERE tn.project_id = ?1 \
+                       AND (?2 IS NULL OR sc.scene_id = ?2) \
+                     ORDER BY sc.scene_id, sc.chunk_index \
+                     LIMIT ?3",
+                    )?;
+
+                    let rows = stmt.query_map(
+                        rusqlite::params![project_id, scene_id, cap as i64],
+                        |row| {
+                            let text: String = row.get(6)?;
+                            let model_id: String = row.get(7)?;
+                            let embedding_dim: i64 = row.get(8)?;
+                            let chunker_version: String = row.get(9)?;
+                            let blob: Vec<u8> = row.get(11)?;
+                            let norm = l2_norm_of_f32_le(&blob);
+                            let is_stale = model_id != current_model_id
+                                || embedding_dim != spec.embedding_dim as i64
+                                || chunker_version != spec.chunker_version;
+                            Ok(DebugChunkRow {
+                                scene_id: row.get(0)?,
+                                scene_title: row.get(1)?,
+                                chunk_index: row.get(2)?,
+                                char_start: row.get(3)?,
+                                char_end: row.get(4)?,
+                                dialogue_ratio: row.get(5)?,
+                                text_preview: text.chars().take(140).collect(),
+                                model_id,
+                                embedding_dim,
+                                chunker_version,
+                                content_hash: row.get(10)?,
+                                embedding_norm: norm,
+                                is_stale,
+                            })
+                        },
+                    )?;
+                    let chunks: Vec<DebugChunkRow> = rows.collect::<rusqlite::Result<_>>()?;
+
+                    Ok(DebugDumpReport {
+                        project_id: project_id.clone(),
+                        language: language.clone(),
+                        current_model_id: current_model_id.clone(),
+                        current_embedding_dim: spec.embedding_dim,
+                        current_chunker_version: spec.chunker_version.to_string(),
+                        total_chunks,
+                        returned_chunks: chunks.len(),
+                        chunks,
+                    })
+                })
+            })
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// little-endian f32 でパックされた埋め込み BLOB の L2 ノルムを計算する。
+/// 長さが 4 の倍数でなければ末尾の端数は無視する。
+fn l2_norm_of_f32_le(blob: &[u8]) -> f64 {
+    let mut sum = 0.0f64;
+    for chunk in blob.chunks_exact(4) {
+        let v = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64;
+        sum += v * v;
+    }
+    sum.sqrt()
+}

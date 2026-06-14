@@ -88,3 +88,49 @@ export function getSemanticChunkContext(args: {
     padding: args.padding,
   });
 }
+
+/**
+ * 開発者向けデバッグダンプ。指定 project (任意で 1 scene) の `scene_chunks` を
+ * 検査用に列挙する。セマンティック検索で「何が・どのモデルで index されたか」を
+ * 確認するための窓口。Rust 側の `DebugChunkRow` / `DebugDumpReport` (serde camelCase)
+ * と一致させること。`embeddingNorm` は格納ベクトルの L2 ノルム (正規化済みなら ≈1.0)、
+ * `isStale` は現在の spec と model/dim/chunker が食い違うと true。
+ */
+export interface SemanticDebugChunk {
+  sceneId: string;
+  sceneTitle: string;
+  chunkIndex: number;
+  charStart: number;
+  charEnd: number;
+  dialogueRatio: number;
+  textPreview: string;
+  modelId: string;
+  embeddingDim: number;
+  chunkerVersion: string;
+  contentHash: string;
+  embeddingNorm: number;
+  isStale: boolean;
+}
+
+export interface SemanticDebugDump {
+  projectId: string;
+  language: string;
+  currentModelId: string;
+  currentEmbeddingDim: number;
+  currentChunkerVersion: string;
+  totalChunks: number;
+  returnedChunks: number;
+  chunks: SemanticDebugChunk[];
+}
+
+export function semanticDebugDump(args: {
+  projectId: string;
+  sceneId?: string | null;
+  limit?: number;
+}): Promise<SemanticDebugDump> {
+  return invoke<SemanticDebugDump>("semantic_debug_dump", {
+    projectId: args.projectId,
+    sceneId: args.sceneId ?? null,
+    limit: args.limit ?? null,
+  });
+}

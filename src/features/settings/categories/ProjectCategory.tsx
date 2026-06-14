@@ -21,6 +21,7 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { PROJECT_ID } from "@/features/project/constants";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import {
+  semanticDebugDump,
   semanticIndexStatus,
   semanticReindexAll,
   type SemanticIndexStatus,
@@ -564,6 +565,32 @@ export function ProjectCategory() {
                 ? t("settings.project.semanticReindexRunning", "再構築中…")
                 : t("settings.project.semanticReindexButton", "再構築")}
             </button>
+            {import.meta.env.DEV && (
+              // 開発専用: index 済み scene_chunks をコンソールにダンプして
+              // セマンティック検索のデバッグ（何が・どのモデルで index されたか）に使う。
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const dump = await semanticDebugDump({
+                      projectId: getCurrentProjectId(),
+                    });
+                    console.log(
+                      `[semantic-debug] ${dump.returnedChunks}/${dump.totalChunks} chunks · ` +
+                        `lang=${dump.language} · model=${dump.currentModelId} · ` +
+                        `dim=${dump.currentEmbeddingDim} · chunker=${dump.currentChunkerVersion}`,
+                    );
+                    console.table(dump.chunks);
+                  } catch (e) {
+                    console.error("[semantic-debug] dump failed", e);
+                  }
+                }}
+                className="rounded-md border border-dashed border-border px-3 py-1 text-sm text-muted-foreground hover:bg-accent"
+                title="開発専用: scene_chunks をコンソールにダンプ"
+              >
+                Dump chunks
+              </button>
+            )}
           </div>
         </SettingRow>
       </SettingSection>
