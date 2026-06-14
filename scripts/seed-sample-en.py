@@ -2429,7 +2429,9 @@ def seed(db_path: Path, scale: str = "default") -> None:
         para("Back in Ironhaven, Eleanor meets the Citadel knight Aldric."),
         para("Purpose: introduce Aldric. Plain-looking and courteous on the surface, but "
              "something is off — the face of a man who knows a thing and is not saying it."),
-        para("Aldric already knows why Eleanor went home. That becomes a planted hook."),
+        para("Aldric already knows that Eleanor has travelled to Greymoor and back — to the "
+             "ruined hall. That she went home at all is something he should not know. That "
+             "becomes a planted hook."),
         para("To decide: does Aldric approach Eleanor, or does Eleanor seek out Aldric? Which one "
              "moves first changes the first read on the balance of power between them."),
     )
@@ -3580,10 +3582,26 @@ def seed(db_path: Path, scale: str = "default") -> None:
                      "She finds the sealed writ. Under the compass. The words 'Come back,' the "
                      "steps of the Sundering Rite, and a final line that cannot be read.",
                      beat_type="guided", pov=eleanor_id),
+            # Beat の指示文は semantic index から除外される（chunker は sceneBeat を
+            # プロンプト扱い）。封書/Wrenna の内容を実本文(generatedProseBlock)として
+            # 書き出し、検索可能にする。
+            generated_prose_node(beat_s2_writ_id, [
+                "Under the compass lay a writ, sealed and uncreased by ten years. Her own name "
+                "stood at the top. Below it, in two words, Come back, and beneath that the steps "
+                "of the Sundering Rite.",
+                "The final line she could not read. It was not blacked out; her eye simply slid "
+                "off it, the way a hand slides off wet glass.",
+            ]),
             beat_node(beat_s2_wren_id,
                      "Wrenna arrives. 'So you came after all,' and holds out a parcel. Eleanor "
                      "does not ask how she knew. She cannot.",
                      beat_type="dialogue", pov=wren_id),
+            generated_prose_node(beat_s2_wren_id, [
+                "The door opened without a knock. Wrenna stood there as if ten years were "
+                "nothing. 'So you came after all,' she said, and held out a small wrapped parcel.",
+                "Eleanor did not ask how Wrenna had known she would come. She found that she "
+                "could not.",
+            ]),
         ],
     }
     scene2_content_new = json.dumps(scene2_doc)

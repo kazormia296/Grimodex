@@ -3511,10 +3511,24 @@ def seed(db_path: Path, scale: str = "default") -> None:
                      "封じ文を見つける。朱紐の下。「帰れ」の二文字、朱縄の儀の手順、"
                      "そして読めない最終行。",
                      beat_type="guided", pov=akane_id),
+            # Beat の指示文は semantic index から除外される（chunker は sceneBeat を
+            # プロンプト扱い）。封じ文／音羽の内容を実本文(generatedProseBlock)として
+            # 書き出し、検索可能にする。
+            generated_prose_node(beat_s2_letter_id, [
+                "朱紐の下に、封がされたまま十年経っても皺ひとつない文があった。"
+                "冒頭に朱音自身の名。その下に二文字、「帰れ」。さらに朱縄の儀の手順。",
+                "最後の一行だけは読めなかった。墨で消されているのではない。"
+                "読もうとすると、濡れた硝子を撫でるように目が滑った。",
+            ]),
             beat_node(beat_s2_otowa_id,
                      "音羽が来る。「やっぱり来たか」とだけ言って饅頭を差し出す。"
                      "なぜ知っていたかは聞かない。聞けない。",
                      beat_type="dialogue", pov=otowa_id),
+            generated_prose_node(beat_s2_otowa_id, [
+                "戸が、音もなく開いた。十年が無かったかのように音羽が立っていた。"
+                "「やっぱり来たか」と言って、饅頭の包みを差し出す。",
+                "なぜ朱音が来ると知っていたのかは、聞かなかった。聞けなかった。",
+            ]),
         ],
     }
     scene2_content_new = json.dumps(scene2_doc, ensure_ascii=False)
