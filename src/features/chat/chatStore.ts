@@ -1584,9 +1584,17 @@ async function buildOutgoingScenePrompt(
     inputPinnedEntryIds,
     excludedAutoEntryIds,
     agentMode,
+    ragEnabled,
     includeBodies,
     messages,
   } = get();
+
+  // send (sendMessage) は agentMode トグル OFF でも web 検索 RAG が有効な対応
+  // プロバイダ時は agent パスに入り agentMode:true で L0 に agentInstruction を足す。
+  // 逆に cli は RAG 非対応かつ agent パス対象外。preview/copy を同じ判定に揃える。
+  const aiProvider = useAiSettingsStore.getState().settings?.provider;
+  const ragActive = ragEnabled && isRagCapableProvider(aiProvider);
+  const effectiveAgentMode = (agentMode || ragActive) && aiProvider !== "cli";
 
   const [sceneCtx, projectCtx] = await Promise.all([
     fetchSceneContext(effectiveSceneId),
@@ -1627,6 +1635,8 @@ async function buildOutgoingScenePrompt(
       : []),
   ];
 
+  // sessionStableCodexIds / prefetchedEntries は send 専用(cacheSegments 分割と
+  // fetch 重複排除のみで、返す prompt 文字列には影響しない)ため preview/copy では省く。
   const { prompt, layers, totalTokens } = await buildSceneContextPrompt({
     sceneCtx,
     projectCtx,
@@ -1634,7 +1644,7 @@ async function buildOutgoingScenePrompt(
     effectiveSceneId,
     inputPinnedEntryIds,
     conversationMessages,
-    agentMode,
+    agentMode: effectiveAgentMode,
     mentionedSceneIds: opts.mentionedSceneIds,
     excludedAutoEntryIds,
     semanticRecallSeedMessage: seed,

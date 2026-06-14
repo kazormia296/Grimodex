@@ -2310,6 +2310,54 @@ describe("useChatStore", () => {
       expect(preview.prompt).toBe("UNIFIED SYS");
       expect(copy).toContain(`[system]\n${preview.prompt}`);
     });
+
+    it("RAG 有効(agentトグルOFF+対応provider)では agentMode:true で組む(送信と一致)", async () => {
+      const { getNode } = await import("@/features/tree/api");
+      const { semanticSearch } = await import("@/features/semantic-search/api");
+      const { useAiSettingsStore, DEFAULT_AI_SETTINGS } =
+        await import("./store");
+      vi.mocked(getNode).mockResolvedValue({
+        id: "scene-1",
+        title: "テストシーン",
+      } as never);
+      vi.mocked(semanticSearch).mockResolvedValue([] as never);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "P",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      const prevSettings = useAiSettingsStore.getState().settings;
+      useAiSettingsStore.setState({
+        settings: { ...DEFAULT_AI_SETTINGS, provider: "openrouter" },
+      });
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        inputPinnedEntryIds: [],
+        includeBodies: true,
+        agentMode: false, // トグルは OFF
+        ragEnabled: true, // だが RAG は ON
+        messages: [],
+      });
+      useChatStore.getState().registerInputDraftProvider(() => ({
+        markdown: "質問",
+        mentionedSceneIds: [],
+      }));
+
+      await useChatStore.getState().buildPreviewPrompt();
+
+      // send は RAG 有効時 agent パス(agentMode:true)に入るので preview も揃える
+      expect(mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.agentMode).toBe(
+        true,
+      );
+
+      // プロバイダ設定を元に戻す(他テストへの漏れ防止)
+      useAiSettingsStore.setState({ settings: prevSettings });
+    });
   });
 
   describe("refreshContextLayers project scope aggregation", () => {
