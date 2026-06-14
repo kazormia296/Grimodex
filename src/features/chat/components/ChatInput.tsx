@@ -119,6 +119,9 @@ export function ChatInput({
 
   const stopGeneration = useChatStore((s) => s.stopGeneration);
   const buildPromptForCopy = useChatStore((s) => s.buildPromptForCopy);
+  const registerInputDraftProvider = useChatStore(
+    (s) => s.registerInputDraftProvider,
+  );
   const agentMode = useChatStore((s) => s.agentMode);
   const messages = useChatStore((s) => s.messages);
   const editUserMessage = useChatStore((s) => s.editUserMessage);
@@ -440,6 +443,24 @@ export function ChatInput({
     });
     return sceneIdSet.size > 0 ? Array.from(sceneIdSet) : undefined;
   }, [editor]);
+
+  // プレビュー(ContextBar)が seed / 表示に使う入力中テキストを on-demand 提供する。
+  useEffect(() => {
+    registerInputDraftProvider(() => {
+      if (!editor) return { markdown: "", mentionedSceneIds: [] };
+      const markdownStorage = editor.storage as unknown as Record<
+        string,
+        { getMarkdown?: () => string } | undefined
+      >;
+      const text = editor.getText().trim();
+      const markdown = markdownStorage.markdown?.getMarkdown?.() ?? text;
+      return {
+        markdown,
+        mentionedSceneIds: collectMentionedSceneIds() ?? [],
+      };
+    });
+    return () => registerInputDraftProvider(null);
+  }, [editor, registerInputDraftProvider, collectMentionedSceneIds]);
 
   const handleSendClick = (options?: { overrideAgentMode?: boolean }) => {
     if (!editor || isStreaming) return;
