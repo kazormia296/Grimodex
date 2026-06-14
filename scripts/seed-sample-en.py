@@ -3489,17 +3489,36 @@ def seed(db_path: Path, scale: str = "default") -> None:
     )
 
     # ---- Extra scenes for status-variant coverage ----
+    # Each carries real, topically distinct prose (not placeholder text) so the
+    # semantic index has meaningful, non-noisy targets to retrieve.
     status_variant_ids: dict[str, str] = {}
-    for title, syn, status_, sort, story in [
+    for title, syn, status_, sort, story, body_paras in [
         ("Bonus: The Origin of the Compass (complete)",
          "A short chapter on where the compass came from. For checking the complete flag.",
-         "complete", "a1", "Prehistory"),
+         "complete", "a1", "Prehistory",
+         ["The compass was not made; it was bound. The first of the Ashveil line carried a "
+          "needle of cold iron to the King's Fountain and gave it a single drop of blood, and "
+          "from that night the needle pointed not to north but to kin.",
+          "Every heir since has fed it the same way. The needle remembers each hand that held "
+          "it. That is why, ten years untended on the hearthstone, it was still warm — it had "
+          "not forgotten Eleanor."]),
         ("Bonus: Beneath the Citadel (revision)",
          "A chapter first depicting the sealed vault. Awaiting revision.",
-         "revision", "a2", "Ten years on, early winter"),
+         "revision", "a2", "Ten years on, early winter",
+         ["The sealed vault lies below the level of the river, under the Citadel's oldest wing. "
+          "Three keyholders are needed to open it, and none is permitted to know the other two.",
+          "It holds what the realm would rather not remember: the reports of bindings that "
+          "failed, the names struck from the ward-walkers' rolls, and one drawer that has not "
+          "been opened since the Sundering.",
+          "[revision note] decide whether Aldric's key still turns, or whether the lock has "
+          "been changed since he last went down."]),
         ("Bonus: The Litany of the Burning Night (final)",
          "The full text of the litany her mother spoke in the memory. Finalized.",
-         "final", "a3", "Ten years ago, a summer night"),
+         "final", "a3", "Ten years ago, a summer night",
+         ["What her mother spoke that night was not a spell but a litany — the names of the "
+          "bound, said in order, so that none would be forgotten in the dark.",
+          "Eleanor remembers the cadence and not the words. The fire took the words. The cadence "
+          "is all that survived, and on bad nights she catches herself keeping its time."]),
     ]:
         sid = uid()
         status_variant_ids[status_] = sid
@@ -3510,7 +3529,7 @@ def seed(db_path: Path, scale: str = "default") -> None:
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (sid, project_id, notes_folder_id, "scene", title, syn, sort, sort, story,
              eleanor_id, None, status_,
-             doc_nodes(para(f"[sample body for confirming the {status_} status]")),
+             doc_nodes(*[para(p) for p in body_paras]),
              now, now),
         )
 
