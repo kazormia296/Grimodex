@@ -118,6 +118,22 @@ describe("selectSemanticRecallChunks", () => {
     expect(chunks.map((c) => c.sceneId)).toEqual(["win", "second"]);
   });
 
+  it("dedupes by scene, keeping the best chunk per scene", () => {
+    const hits = [
+      makeHit({ sceneId: "a", score: 0.95, chunkText: "a-best" }),
+      makeHit({ sceneId: "a", score: 0.9, chunkText: "a-second-chunk" }),
+      makeHit({ sceneId: "b", score: 0.88, chunkText: "b-1" }),
+    ];
+    const chunks = selectSemanticRecallChunks(hits, {
+      excludeSceneIds: [],
+      minScore: 0,
+      gateScore: 0,
+    });
+    // 同一シーン (a) の 2 チャンクは最良 1 件に畳まれ、distinct な a / b を返す。
+    expect(chunks.map((c) => c.sceneId)).toEqual(["a", "b"]);
+    expect(chunks[0].chunkText).toBe("a-best");
+  });
+
   it("excludes the current scene and mentioned scenes", () => {
     const hits = [
       makeHit({ sceneId: "current" }),

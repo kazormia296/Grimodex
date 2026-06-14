@@ -115,7 +115,8 @@ export function buildSemanticRecallQuery(args: {
  * top-1 ゲート + runner-up 床方式: 除外シーン (現在シーン / @mention で全文注入済み)
  * を除いた最良候補が `gateScore` に届かなければ何も注入しない (= 明確に関連する
  * シーンが無いクエリは空)。届いた時だけ `minScore` (床) 以上の二番手を拾い、
- * スコア降順 → 件数 cap → 文字数 cap の順で返す。
+ * スコア降順 → シーン重複排除 (同一シーンの複数チャンクは最良1件) → 件数 cap →
+ * 文字数 cap の順で返す。
  *
  * ruri は無関係散文でも cosine が高く座る (団子) ため、単一閾値だと「勝者あり」と
  * 「団子だけ」を見分けにくい。ゲートで precision を、床で recall を分担する。
@@ -137,9 +138,19 @@ export function selectSemanticRecallChunks(
   const maxChunkChars = opts.maxChunkChars ?? SEMANTIC_RECALL_MAX_CHUNK_CHARS;
   const excluded = new Set(opts.excludeSceneIds);
 
-  const candidates = hits
+  const sorted = hits
     .filter((h) => !excluded.has(h.sceneId))
     .sort((a, b) => b.score - a.score);
+
+  // シーン単位で重複排除 (各シーンの最良チャンクだけ残す)。同じシーンの別チャンクが
+  // 上位を占めて「同じシーンが複数回注入される」のを防ぐ (関連 "シーン" 注入なので
+  // distinct なシーンを返す)。score 降順を保つため最初に出たものを採用。
+  const seenScenes = new Set<string>();
+  const candidates = sorted.filter((h) => {
+    if (seenScenes.has(h.sceneId)) return false;
+    seenScenes.add(h.sceneId);
+    return true;
+  });
 
   // top-1 ゲート: 最良候補がゲートに届かなければ何も注入しない (precision)。
   if (candidates.length === 0 || candidates[0].score < gateScore) return [];
