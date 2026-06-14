@@ -11,6 +11,8 @@ import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getScreenshotLanguage } from "./screenshotMode";
+import { SCREENSHOT_SEED_CONTENT } from "./screenshotSeedContent";
 
 export function getScreenshotCaptureId(): string | null {
   try {
@@ -103,57 +105,40 @@ export function applyScreenshotUiState(): void {
   if (!needsKouetsuDemo) return;
 
   const now = new Date().toISOString();
+  const c = SCREENSHOT_SEED_CONTENT[getScreenshotLanguage()];
+  const { lint, annotations } = c;
   useKouetsuStore.setState({
     activeTab: "issues",
     activeIssuesScope: "current",
   });
+  const lintDiagnostics = [
+    {
+      rule_id: lint.diag1.ruleId,
+      severity: "warning" as const,
+      message: lint.diag1.message,
+      range: { start: lint.diag1.rangeStart, end: lint.diag1.rangeEnd },
+      fix: {
+        label: lint.diag1.fixLabel,
+        replacement: lint.diag1.fixReplacement,
+        range: { start: lint.diag1.rangeStart, end: lint.diag1.rangeEnd },
+      },
+    },
+    {
+      rule_id: lint.diag2.ruleId,
+      severity: "error" as const,
+      message: lint.diag2.message,
+      range: { start: lint.diag2.rangeStart, end: lint.diag2.rangeEnd },
+    },
+  ];
   useLintStore.setState({
     currentSceneId: "scene-1",
-    rawDiagnostics: [
-      {
-        rule_id: "ja/sentence-too-long",
-        severity: "warning",
-        message: "一文が長く、情景と行動が同じ段落に詰まっています",
-        range: { start: 28, end: 86 },
-        fix: {
-          label: "二文に分ける",
-          replacement:
-            "廃社は思っていたより小さかった。記憶の中では鬱蒼とした杉に囲まれていた。",
-          range: { start: 28, end: 86 },
-        },
-      },
-      {
-        rule_id: "ja/ambiguous-subject",
-        severity: "error",
-        message: "記憶が誰のものか、直前の文だけでは曖昧です",
-        range: { start: 148, end: 166 },
-      },
-    ],
-    diagnostics: [
-      {
-        rule_id: "ja/sentence-too-long",
-        severity: "warning",
-        message: "一文が長く、情景と行動が同じ段落に詰まっています",
-        range: { start: 28, end: 86 },
-        fix: {
-          label: "二文に分ける",
-          replacement:
-            "廃社は思っていたより小さかった。記憶の中では鬱蒼とした杉に囲まれていた。",
-          range: { start: 28, end: 86 },
-        },
-      },
-      {
-        rule_id: "ja/ambiguous-subject",
-        severity: "error",
-        message: "記憶が誰のものか、直前の文だけでは曖昧です",
-        range: { start: 148, end: 166 },
-      },
-    ],
-    lastSceneText:
-      "朱音は鳥居の手前で立ち止まった。十年ぶりだった。廃社は思っていたより小さかった。祭壇の奥に、赤いものがあった。朱紐だった。",
+    rawDiagnostics: lintDiagnostics,
+    diagnostics: lintDiagnostics,
+    lastSceneText: lint.lastSceneText,
     isLinting: false,
     lastErrorMessage: null,
   });
+  const compassDry = annotations.compassDry;
   useAnnotationStore.getState().setAnnotations("scene-1", [
     {
       id: "ann-akahimo-wet",
@@ -161,31 +146,28 @@ export function applyScreenshotUiState(): void {
       runId: "run-screenshot-kouetsu",
       anchorType: "scene_range",
       sceneId: "scene-1",
-      rangeStart: 130,
-      rangeEnd: 150,
-      textSnapshot: "朱紐は乾いていた",
+      rangeStart: compassDry.rangeStart,
+      rangeEnd: compassDry.rangeEnd,
+      textSnapshot: compassDry.textSnapshot,
       category: "consistency_anchor",
-      persona: "整合性チェック",
+      persona: compassDry.persona,
       severity: "error",
-      content:
-        "Codexでは朱紐は雨に濡れると墨のように黒ずむ設定ですが、このシーンでは雨ざらしのまま乾いています。",
+      content: compassDry.content,
       authorRole: "ai",
       parentId: null,
       status: "open",
       metadata: JSON.stringify({
         codex_ref: {
           entry_id: "codex-akahimo",
-          entry_name: "朱紐",
+          entry_name: compassDry.entryName,
           source_field: "content",
-          expected_value: "雨に濡れると黒ずむ",
-          found_value: "雨ざらしでも乾いている",
-          found_text: "朱紐は乾いていた",
-          found_context:
-            "朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。",
+          expected_value: compassDry.expectedValue,
+          found_value: compassDry.foundValue,
+          found_text: compassDry.foundText,
+          found_context: compassDry.foundContext,
           confidence: "high",
-          llm_reason:
-            "物理的な状態が設定と逆になっており、読者が意図的な異常かミスか判別できないため。",
-          dismiss_key: "codex-akahimo:wetness:scene-1",
+          llm_reason: compassDry.llmReason,
+          dismiss_key: compassDry.dismissKey,
           detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
         },
       }),

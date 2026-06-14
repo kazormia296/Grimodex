@@ -15,7 +15,11 @@ import type {
   AgentMessagePayload,
   AgentToolDefinition,
 } from "@/features/chat/agent/agentTypes";
-import { isScreenshotStagingActive } from "@/screenshot-scenes/screenshotMode";
+import {
+  getScreenshotLanguage,
+  isScreenshotStagingActive,
+} from "@/screenshot-scenes/screenshotMode";
+import { SCREENSHOT_SEED_CONTENT } from "@/screenshot-scenes/screenshotSeedContent";
 import {
   bytesToHex,
   computeEventHash,
@@ -1080,6 +1084,8 @@ function proseDoc(lines: string[]): string {
 
 function getScreenshotAnnotations(now: string) {
   if (!isScreenshotStagingActive()) return [];
+  const { compassDry, foreignMemory } =
+    SCREENSHOT_SEED_CONTENT[getScreenshotLanguage()].annotations;
   return [
     {
       id: "ann-akahimo-wet",
@@ -1087,31 +1093,28 @@ function getScreenshotAnnotations(now: string) {
       runId: "run-screenshot-kouetsu",
       anchorType: "scene_range",
       sceneId: "scene-1",
-      rangeStart: 130,
-      rangeEnd: 150,
-      textSnapshot: "朱紐は乾いていた",
+      rangeStart: compassDry.rangeStart,
+      rangeEnd: compassDry.rangeEnd,
+      textSnapshot: compassDry.textSnapshot,
       category: "consistency_anchor",
-      persona: "整合性チェック",
+      persona: compassDry.persona,
       severity: "error",
-      content:
-        "Codexでは朱紐は雨に濡れると墨のように黒ずむ設定ですが、このシーンでは雨ざらしのまま乾いています。",
+      content: compassDry.content,
       authorRole: "ai",
       parentId: null,
       status: "open",
       metadata: JSON.stringify({
         codex_ref: {
           entry_id: "codex-akahimo",
-          entry_name: "朱紐",
+          entry_name: compassDry.entryName,
           source_field: "content",
-          expected_value: "雨に濡れると黒ずむ",
-          found_value: "雨ざらしでも乾いている",
-          found_text: "朱紐は乾いていた",
-          found_context:
-            "朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。",
+          expected_value: compassDry.expectedValue,
+          found_value: compassDry.foundValue,
+          found_text: compassDry.foundText,
+          found_context: compassDry.foundContext,
           confidence: "high",
-          llm_reason:
-            "物理的な状態が設定と逆になっており、読者が意図的な異常かミスか判別できないため。",
-          dismiss_key: "codex-akahimo:wetness:scene-1",
+          llm_reason: compassDry.llmReason,
+          dismiss_key: compassDry.dismissKey,
           detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
         },
       }),
@@ -1124,25 +1127,22 @@ function getScreenshotAnnotations(now: string) {
       runId: "run-screenshot-kouetsu",
       anchorType: "scene_range",
       sceneId: "scene-1",
-      rangeStart: 151,
-      rangeEnd: 180,
-      textSnapshot: "朱音自身の記憶ではなかった",
+      rangeStart: foreignMemory.rangeStart,
+      rangeEnd: foreignMemory.rangeEnd,
+      textSnapshot: foreignMemory.textSnapshot,
       category: "consistency_anchor",
-      persona: "整合性チェック",
+      persona: compassDry.persona,
       severity: "warning",
-      content:
-        "朱音が他者の記憶を受け取る能力は、この時点のCodexには未登録です。能力として採用するなら設定項目を追加してください。",
+      content: foreignMemory.content,
       authorRole: "ai",
       parentId: null,
       status: "open",
       metadata: JSON.stringify({
         confidence: "medium",
-        found_text: "朱音自身の記憶ではなかった",
-        found_context:
-          "指が触れた瞬間、記憶が来た。朱音自身の記憶ではなかった。",
-        llm_reason:
-          "キャラクター能力として重要な変化だが、人物設定と儀式設定のどちらにも明示がないため。",
-        dismiss_key: "akane:foreign-memory:scene-1",
+        found_text: foreignMemory.foundText,
+        found_context: foreignMemory.foundContext,
+        llm_reason: foreignMemory.llmReason,
+        dismiss_key: foreignMemory.dismissKey,
         detected_by_model: "openrouter/anthropic/claude-sonnet-4.6",
       }),
       createdAt: now,
@@ -1153,6 +1153,8 @@ function getScreenshotAnnotations(now: string) {
 
 function getScreenshotTrashItems(now: string) {
   if (!isScreenshotStagingActive()) return [];
+  const { sceneDraft, textFragment } =
+    SCREENSHOT_SEED_CONTENT[getScreenshotLanguage()].trash;
   return [
     {
       id: "trash-scene-draft",
@@ -1161,34 +1163,32 @@ function getScreenshotTrashItems(now: string) {
       subKind: "scene",
       originSceneId: "scene-1",
       originCodexId: null,
-      previewText: "旧稿：火の夜の導入",
+      previewText: sceneDraft.previewText,
       previewMeta: JSON.stringify({
         nodeType: "scene",
         status: "draft",
-        folderHintName: "第一部：帰還",
+        folderHintName: sceneDraft.folderHintName,
       }),
       payload: JSON.stringify({
         originalId: "scene-old-fire-night",
-        title: "旧稿：火の夜の導入",
-        body: proseDoc([
-          "火はまだ見えなかった。ただ、煙だけが山を降りてきていた。",
-        ]),
+        title: sceneDraft.title,
+        body: proseDoc(sceneDraft.body),
         beats: "[]",
         povCharacterId: "codex-akane",
         folderHintId: "chapter-1",
-        folderHintName: "第一部：帰還",
+        folderHintName: sceneDraft.folderHintName,
         metadata: {
-          synopsis: "回想章の没導入。",
+          synopsis: sceneDraft.synopsis,
           status: "draft",
           nodeType: "scene",
           locationId: "codex-haisha",
           sortOrder: "a9",
           storyTimeOrder: "z1",
-          storyTimeLabel: "十年前",
+          storyTimeLabel: sceneDraft.storyTimeLabel,
         },
-        charCount: 28,
+        charCount: sceneDraft.charCount,
       }),
-      charCount: 28,
+      charCount: sceneDraft.charCount,
       isInteresting: true,
       deletedAt: now,
     },
@@ -1199,13 +1199,13 @@ function getScreenshotTrashItems(now: string) {
       subKind: "text-fragment",
       originSceneId: "scene-1",
       originCodexId: null,
-      previewText: "朱音は泣きそうになった、という説明的な一文",
+      previewText: textFragment.previewText,
       previewMeta: null,
       payload: JSON.stringify({
-        text: "朱音は泣きそうになった、という説明的な一文",
+        text: textFragment.text,
         spans: [
           {
-            text: "朱音は泣きそうになった、という説明的な一文",
+            text: textFragment.text,
             source: "human",
             model: null,
             chatMessageId: null,
@@ -1213,7 +1213,7 @@ function getScreenshotTrashItems(now: string) {
           },
         ],
       }),
-      charCount: 23,
+      charCount: textFragment.charCount,
       isInteresting: false,
       deletedAt: now,
     },
@@ -1238,35 +1238,40 @@ function seedBuiltinCodexTypes(db: Database, now: string): void {
 }
 
 function seedScreenshotWorkspace(db: Database, now: string): void {
+  const lang = getScreenshotLanguage();
+  const c = SCREENSHOT_SEED_CONTENT[lang];
   db.run(
     `UPDATE projects
-     SET title = '朱の記憶',
-       genre = '和風ダークファンタジー',
-       pov = '三人称限定視点',
-       tense = '過去形',
-       language = 'ja',
-       style_guide = '簡潔で鋭い文体を心がける。情景描写は短く、感情は行動と所作で示す。',
-       ai_instructions = '和風ダークファンタジーの執筆補助。設定の一貫性と人物の動機を重視する。',
+     SET title = ?,
+       genre = ?,
+       pov = ?,
+       tense = ?,
+       language = ?,
+       style_guide = ?,
+       ai_instructions = ?,
        updated_at = ?
      WHERE id = 'default-project'`,
-    [now],
+    [
+      c.project.title,
+      c.project.genre,
+      c.project.pov,
+      c.project.tense,
+      lang,
+      c.project.styleGuide,
+      c.project.aiInstructions,
+      now,
+    ],
   );
 
-  const sceneContent = proseDoc([
-    "朱音は鳥居の手前で立ち止まった。十年ぶりだった。",
-    "廃社は思っていたより小さかった。記憶の中では鬱蒼とした杉に囲まれた大きな建物だったが、今は雨に濡れた骨組みのように見えた。",
-    "拝殿の扉には鍵がかかっていなかった。朱音は錠前を拾い上げ、しばらく眺めてから、元の場所に置いた。",
-    "祭壇の奥に、赤いものがあった。朱紐だった。",
-    "朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。指が触れた瞬間、記憶が来た。朱音自身の記憶ではなかった。",
-  ]);
+  const sceneContent = proseDoc(c.scenes.scene1.body);
 
   const nodes = [
     [
       "chapter-1",
       null,
       "folder",
-      "第一部：帰還",
-      "朱音が十年ぶりに故郷へ戻り、廃社と朱紐に再会する。",
+      c.chapter.title,
+      c.chapter.synopsis,
       "a0",
       null,
       null,
@@ -1278,48 +1283,40 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       "scene-1",
       "chapter-1",
       "scene",
-      "一章：廃社",
-      "雨の夜、朱音は十年ぶりに故郷の廃社へ帰る。祭壇には十年前に置いてきた朱紐が残っていた。",
+      c.scenes.scene1.title,
+      c.scenes.scene1.synopsis,
       "a0",
       "a0",
-      "雨の夜",
+      c.scenes.scene1.storyTimeLabel,
       "draft",
       sceneContent,
-      186,
+      c.scenes.scene1.charCount,
     ],
     [
       "scene-2",
       "chapter-1",
       "scene",
-      "二章：封じ文",
-      "廃社で朱紐とともに封じ文を見つける。朱音の名と「帰れ」の二文字が書かれている。",
+      c.scenes.scene2.title,
+      c.scenes.scene2.synopsis,
       "a1",
       "a1",
-      "翌朝",
+      c.scenes.scene2.storyTimeLabel,
       "outline",
-      proseDoc([
-        "廃社のシーンの翌朝。朱音は拝殿で目を覚ます。朱紐は手の中にある。",
-        "封じ文は朱紐の下に置かれていた。紙は十年経っても黄ばんでいない。",
-        "音羽が来る。「やっぱり来たか」と言って、饅頭を差し出す。それだけ。",
-      ]),
-      92,
+      proseDoc(c.scenes.scene2.body),
+      c.scenes.scene2.charCount,
     ],
     [
       "scene-3",
       "chapter-1",
       "scene",
-      "回想：火の夜",
-      "十年前の夏の夜、廃社が燃えた。朱音はその場にいた。忘れられた声が残っている。",
+      c.scenes.scene3.title,
+      c.scenes.scene3.synopsis,
       "a2",
       "a2",
-      "十年前",
+      c.scenes.scene3.storyTimeLabel,
       "outline",
-      proseDoc([
-        "火は社の内側から出ていた。",
-        "「離れろ」という声がした。誰の声か、朱音は今も思い出せない。",
-        "朱音は走った。朱紐を手に、ただ走った。",
-      ]),
-      73,
+      proseDoc(c.scenes.scene3.body),
+      c.scenes.scene3.charCount,
     ],
   ];
 
@@ -1337,37 +1334,37 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
     [
       "codex-akane",
       "character",
-      "朱音",
-      "朱紐を操る一族の最後の生き残り。十年間、都で記録師として生きてきた。故郷の廃社が燃えたという知らせを受け、十年ぶりに桐野へ帰る。",
-      JSON.stringify([{ name: "主人公", color: "#7C9BD1" }]),
+      c.codex.akane.name,
+      c.codex.akane.summary,
+      JSON.stringify([{ name: c.codex.akane.tagName, color: "#7C9BD1" }]),
     ],
     [
       "codex-otowa",
       "character",
-      "音羽",
-      "朱音の幼なじみ。今は桐野で薬師をしている。十年間、朱音が帰ってくるのを待っていた。",
-      JSON.stringify([{ name: "協力者", color: "#7FB08E" }]),
+      c.codex.otowa.name,
+      c.codex.otowa.summary,
+      JSON.stringify([{ name: c.codex.otowa.tagName, color: "#7FB08E" }]),
     ],
     [
       "codex-haisha",
       "location",
-      "桐野の廃社",
-      "朱音の一族が代々守ってきた山中の社。十年前の火事で本殿が焼け、祭壇には朱音が置いていった朱紐が残っていた。",
-      JSON.stringify([{ name: "舞台", color: "#7FB08E" }]),
+      c.codex.haisha.name,
+      c.codex.haisha.summary,
+      JSON.stringify([{ name: c.codex.haisha.tagName, color: "#7FB08E" }]),
     ],
     [
       "codex-akahimo",
       "item",
-      "朱紐",
-      "朱音の一族が代々受け継いできた赤い紐。鬼を縛り、記憶を封じる力がある。朱音が十年前に廃社の祭壇に置いていったもの。",
-      JSON.stringify([{ name: "呪術", color: "#9B59B6" }]),
+      c.codex.akahimo.name,
+      c.codex.akahimo.summary,
+      JSON.stringify([{ name: c.codex.akahimo.tagName, color: "#9B59B6" }]),
     ],
     [
       "codex-akanawa",
       "lore",
-      "朱縄の儀",
-      "朱音の一族が百年以上行ってきた鬼封じの儀式。朱紐を使い、鬼の記憶ごと封じ込める。",
-      JSON.stringify([{ name: "呪術", color: "#9B59B6" }]),
+      c.codex.akanawa.name,
+      c.codex.akanawa.summary,
+      JSON.stringify([{ name: c.codex.akanawa.tagName, color: "#9B59B6" }]),
     ],
   ];
   const codexStmt = db.prepare(
@@ -1396,9 +1393,9 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
   );
 
   const labelRows = [
-    ["label-ki", "起", "rose", 0],
-    ["label-important", "重要", "red", 1],
-    ["label-consider", "検討中", "slate", 2],
+    ["label-ki", c.labels.ki, "rose", 0],
+    ["label-important", c.labels.important, "red", 1],
+    ["label-consider", c.labels.consider, "slate", 2],
   ];
   const labelStmt = db.prepare(
     `INSERT OR IGNORE INTO labels
@@ -1419,22 +1416,21 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       (id, project_id, title, content, tags_cache, content_source, scene_id,
        source_chat_message_id, usage_count, created_at, updated_at)
      VALUES
-      ('snippet-akane-restraint', 'default-project', '朱音の律し方', ?, ?,
+      ('snippet-akane-restraint', 'default-project', ?, ?, ?,
        'human', 'scene-1', NULL, 2, ?, ?),
-      ('snippet-akahimo-reunion', 'default-project', '朱紐、再会', ?, ?,
+      ('snippet-akahimo-reunion', 'default-project', ?, ?, ?,
        'human', 'scene-1', NULL, 1, ?, ?)`,
     [
-      proseDoc([
-        "鳥居をくぐるとき、朱音は一度だけ足を止めた。止まった理由を自分では説明できなかった。",
+      c.snippets.restraint.title,
+      proseDoc(c.snippets.restraint.body),
+      JSON.stringify([
+        { name: c.snippets.restraint.tagName, color: "#5B8CDD" },
       ]),
-      JSON.stringify([{ name: "語り口", color: "#5B8CDD" }]),
       now,
       now,
-      proseDoc([
-        "朱紐は乾いていた。雨ざらしのはずなのに、濡れていなかった。",
-        "指が触れた瞬間、記憶が来た。朱音自身の記憶ではなかった。",
-      ]),
-      JSON.stringify([{ name: "朱紐", color: "#9B59B6" }]),
+      c.snippets.reunion.title,
+      proseDoc(c.snippets.reunion.body),
+      JSON.stringify([{ name: c.snippets.reunion.tagName, color: "#9B59B6" }]),
       now,
       now,
     ],
@@ -1471,20 +1467,20 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
        backward_label, labels, style, color, direction, created_at, updated_at)
      VALUES
       ('map-edge-1', 'default-project-main-board', 'map-pos-akane',
-       'map-pos-scene-1', '帰還', NULL, '[]', 'solid', '#8b7fd4',
+       'map-pos-scene-1', ?, NULL, '[]', 'solid', '#8b7fd4',
        'forward', ?, ?),
       ('map-edge-2', 'default-project-main-board', 'map-pos-scene-1',
-       'map-pos-akahimo', '発見', NULL, '[]', 'solid', '#d4a35f',
+       'map-pos-akahimo', ?, NULL, '[]', 'solid', '#d4a35f',
        'forward', ?, ?)`,
-    [now, now, now, now],
+    [c.map.edge1Label, now, now, c.map.edge2Label, now, now],
   );
   db.run(
     `INSERT OR IGNORE INTO map_frames
       (id, board_id, title, x, y, width, height, background, border_color, z_index,
        created_at, updated_at)
-     VALUES ('map-frame-return', 'default-project-main-board', '第一部：帰還',
+     VALUES ('map-frame-return', 'default-project-main-board', ?,
        60, 40, 880, 520, '#2b3038', '#64748b', -1, ?, ?)`,
-    [now, now],
+    [c.map.frameTitle, now, now],
   );
 
   db.run(
@@ -1493,15 +1489,26 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
        payoff_to_pos, payoff_confirmed, abandoned, secret, load_bearing,
        created_at, updated_at)
      VALUES
-      ('fs-akahimo-warmth', 'default-project', '朱紐の温もり',
-       '十年経っても朱紐が乾いたままだった事実を後の章で回収する。',
-       '朱紐が朱音を待っていた／意思を持つ設定の伏線。', 'scene-2',
+      ('fs-akahimo-warmth', 'default-project', ?,
+       ?,
+       ?, 'scene-2',
        NULL, NULL, 0, 0, 1, 'critical', ?, ?),
-      ('fs-haisha-visitor', 'default-project', '廃社の侵入者',
-       '拝殿の錠前が落ちていた事実を、十年前以降の出入りの証拠にする。',
-       '朱鬼または別の誰かが廃社へ出入りしている。', NULL,
+      ('fs-haisha-visitor', 'default-project', ?,
+       ?,
+       ?, NULL,
        NULL, NULL, 0, 0, 1, 'supporting', ?, ?)`,
-    [Date.now(), Date.now(), Date.now(), Date.now()],
+    [
+      c.foreshadows.warmth.title,
+      c.foreshadows.warmth.intent,
+      c.foreshadows.warmth.notes,
+      Date.now(),
+      Date.now(),
+      c.foreshadows.visitor.title,
+      c.foreshadows.visitor.intent,
+      c.foreshadows.visitor.notes,
+      Date.now(),
+      Date.now(),
+    ],
   );
   db.run(
     `INSERT OR IGNORE INTO foreshadow_setups
@@ -1509,23 +1516,36 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
        ai_strength, ai_reasoning, attribution, ai_rationale,
        last_evaluated_at, is_orphan, created_at, updated_at)
      VALUES
-      ('setup-akahimo-warmth', 'fs-akahimo-warmth', 'scene-1', 30, 52,
+      ('setup-akahimo-warmth', 'fs-akahimo-warmth', 'scene-1', ?, ?,
        'designated_existing', 'moderate', 'moderate',
-       '読者が違和感として覚えやすい具体物になっている。', 'human',
+       ?, 'human',
        NULL, ?, 0, ?, ?),
-      ('setup-haisha-lock', 'fs-haisha-visitor', 'scene-1', 18, 29,
+      ('setup-haisha-lock', 'fs-haisha-visitor', 'scene-1', ?, ?,
        'designated_existing', 'subtle', 'subtle',
-       '証拠としては弱いため後続で補強が必要。', 'human',
+       ?, 'human',
        NULL, ?, 0, ?, ?)`,
-    [Date.now(), Date.now(), Date.now(), Date.now(), Date.now(), Date.now()],
+    [
+      c.foreshadows.setupWarmth.fromPos,
+      c.foreshadows.setupWarmth.toPos,
+      c.foreshadows.setupWarmth.aiReasoning,
+      Date.now(),
+      Date.now(),
+      Date.now(),
+      c.foreshadows.setupLock.fromPos,
+      c.foreshadows.setupLock.toPos,
+      c.foreshadows.setupLock.aiReasoning,
+      Date.now(),
+      Date.now(),
+      Date.now(),
+    ],
   );
 
   db.run(
     `INSERT OR IGNORE INTO chat_sessions
       (id, project_id, node_id, title, title_manual, model, created_at, updated_at)
-     VALUES ('chat-scene-1', 'default-project', 'scene-1', '朱音の語り口について', 1,
+     VALUES ('chat-scene-1', 'default-project', 'scene-1', ?, 1,
        'openrouter/anthropic/claude-sonnet-4.6', ?, ?)`,
-    [now, now],
+    [c.chat.sessionTitle, now, now],
   );
   const msgStmt = db.prepare(
     `INSERT OR IGNORE INTO chat_messages
@@ -1536,7 +1556,7 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
   msgStmt.run([
     "chat-message-user-1",
     "user",
-    "一章の冒頭を書いたのですが、朱音の語り口がまだ定まっていません。彼女は感情を抑える人間なので、地の文でも感情が直接出てこないようにしたいです。",
+    c.chat.userMsg,
     null,
     null,
     null,
@@ -1547,7 +1567,7 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
   msgStmt.run([
     "chat-message-assistant-1",
     "assistant",
-    "鳥居をくぐるとき、朱音は一度だけ足を止めた。止まった理由を自分では説明できなかった。草の匂いがした。杉の木が揺れた。それだけのことで、先に進めなくなった。感情の名前を出さずに、「三つ数えてから」という行動で内面の動揺を示す方向が合います。",
+    c.chat.assistantMsg,
     "openrouter/anthropic/claude-sonnet-4.6",
     820,
     118,
@@ -1617,11 +1637,24 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
     `INSERT OR IGNORE INTO authorship_spans
       (id, node_id, codex_entry_id, snippet_id, detail_value_id, from_pos, to_pos, source, model, timestamp, chat_msg_id, phase_id, sticky_id)
      VALUES
-      ('shot-auth-s1a', 'scene-1', NULL, NULL, NULL, 0, 95, 'human', NULL, ?, NULL, NULL, NULL),
-      ('shot-auth-s1b', 'scene-1', NULL, NULL, NULL, 95, 168, 'ai', 'openrouter/anthropic/claude-sonnet-4.6', ?, NULL, NULL, NULL),
-      ('shot-auth-s1c', 'scene-1', NULL, NULL, NULL, 168, 186, 'unknown', NULL, ?, NULL, NULL, NULL),
-      ('shot-auth-s2a', 'scene-2', NULL, NULL, NULL, 0, 45, 'human', NULL, ?, NULL, NULL, NULL),
-      ('shot-auth-s3a', 'scene-3', NULL, NULL, NULL, 0, 30, 'ai', 'openrouter/anthropic/claude-sonnet-4.6', ?, NULL, NULL, NULL)`,
-    [now, now, now, now, now],
+      ('shot-auth-s1a', 'scene-1', NULL, NULL, NULL, 0, ?, 'human', NULL, ?, NULL, NULL, NULL),
+      ('shot-auth-s1b', 'scene-1', NULL, NULL, NULL, ?, ?, 'ai', 'openrouter/anthropic/claude-sonnet-4.6', ?, NULL, NULL, NULL),
+      ('shot-auth-s1c', 'scene-1', NULL, NULL, NULL, ?, ?, 'unknown', NULL, ?, NULL, NULL, NULL),
+      ('shot-auth-s2a', 'scene-2', NULL, NULL, NULL, 0, ?, 'human', NULL, ?, NULL, NULL, NULL),
+      ('shot-auth-s3a', 'scene-3', NULL, NULL, NULL, 0, ?, 'ai', 'openrouter/anthropic/claude-sonnet-4.6', ?, NULL, NULL, NULL)`,
+    [
+      c.authorship.scene1.humanTo,
+      now,
+      c.authorship.scene1.humanTo,
+      c.authorship.scene1.aiTo,
+      now,
+      c.authorship.scene1.aiTo,
+      c.authorship.scene1.unknownTo,
+      now,
+      c.authorship.scene2.humanTo,
+      now,
+      c.authorship.scene3.aiTo,
+      now,
+    ],
   );
 }

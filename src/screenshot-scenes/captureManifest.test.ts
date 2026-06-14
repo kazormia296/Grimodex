@@ -53,6 +53,28 @@ describe("screenshotOutputFilename", () => {
       }),
     ).toBe("panel-editor-light-warm-craft.png");
   });
+
+  it("omits the language suffix for the default language (ja)", () => {
+    expect(
+      screenshotOutputFilename("panel-editor-1080x890", { language: "ja" }),
+    ).toBe("panel-editor.png");
+  });
+
+  it("appends a trailing language suffix for non-default languages", () => {
+    expect(
+      screenshotOutputFilename("panel-editor-1080x890", { language: "en" }),
+    ).toBe("panel-editor-en.png");
+  });
+
+  it("orders the language suffix last, after theme and colorTheme", () => {
+    expect(
+      screenshotOutputFilename("panel-editor-1080x890", {
+        theme: "light",
+        colorTheme: "warm-craft",
+        language: "en",
+      }),
+    ).toBe("panel-editor-light-warm-craft-en.png");
+  });
 });
 
 describe("SCREENSHOT_CAPTURES", () => {

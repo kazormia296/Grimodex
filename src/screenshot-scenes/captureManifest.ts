@@ -1,4 +1,8 @@
 import { COLOR_THEMES, DEFAULT_COLOR_THEME } from "../lib/colorThemes";
+import {
+  DEFAULT_SCREENSHOT_LANGUAGE,
+  type ScreenshotLanguage,
+} from "./screenshotMode";
 
 export type ScreenshotTheme = "dark" | "light";
 
@@ -83,12 +87,18 @@ export const SCREENSHOT_COLOR_THEME_IDS: readonly string[] = COLOR_THEMES.map(
 
 /**
  * `-123x456` 形式の末尾サイズを除いた PNG ファイル名。
- * `opts.theme`/`opts.colorTheme` がデフォルトと異なる場合のみ接尾辞を付け、
- * 既定テーマでは従来どおり `panel-editor.png` のような名前を返す。
+ * `opts.theme`/`opts.colorTheme`/`opts.language` がデフォルトと異なる場合のみ
+ * 接尾辞を付け、既定（dark / dark-academia / ja）では従来どおり
+ * `panel-editor.png` のような名前を返す。言語接尾辞は末尾に付く
+ * （例: `panel-editor-en.png`, `panel-editor-light-en.png`）。
  */
 export function screenshotOutputFilename(
   captureId: string,
-  opts?: { theme?: ScreenshotTheme; colorTheme?: string },
+  opts?: {
+    theme?: ScreenshotTheme;
+    colorTheme?: string;
+    language?: ScreenshotLanguage;
+  },
 ): string {
   const base = captureId.replace(/-\d+x\d+$/, "");
   const parts: string[] = [base];
@@ -97,6 +107,9 @@ export function screenshotOutputFilename(
   }
   if (opts?.colorTheme && opts.colorTheme !== DEFAULT_SCREENSHOT_COLOR_THEME) {
     parts.push(opts.colorTheme);
+  }
+  if (opts?.language && opts.language !== DEFAULT_SCREENSHOT_LANGUAGE) {
+    parts.push(opts.language);
   }
   return `${parts.join("-")}.png`;
 }

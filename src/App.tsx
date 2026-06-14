@@ -336,6 +336,9 @@ function EditorScreen() {
         const project = await getProject(getCurrentProjectId());
         if (project?.language) {
           document.documentElement.lang = project.language;
+          // 執筆言語の既定（本文フォント Literata・行間・スマートクォート等）を
+          // 反映する。loadProject() を通さない撮影ブートでも en の体裁を揃える。
+          useSettingsStore.getState().applyProjectLanguage(project.language);
         }
         if (project?.phaseResolutionMode) {
           usePhaseStore

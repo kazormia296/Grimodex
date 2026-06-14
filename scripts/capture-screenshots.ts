@@ -21,6 +21,13 @@
  *   SCREENSHOT_THEME=light SCREENSHOT_COLOR_THEME=modern-mystic pnpm screenshot
  * デフォルト（dark + dark-academia）以外を指定したカットには
  * `panel-editor-light.png`・`panel-editor-modern-mystic.png` のように接尾辞が付きます。
+ *
+ * 言語切り替え（ja/en。UI・シードデータ・校閲デモが連動。既定は ja）:
+ *   pnpm screenshot -- --lang en
+ *   pnpm screenshot -- -l en
+ *   SCREENSHOT_LANGUAGE=en pnpm screenshot
+ * 既定（ja）以外の言語のカットには `panel-editor-en.png`・
+ * `panel-editor-light-en.png` のように言語接尾辞が末尾に付きます。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
@@ -40,6 +47,13 @@ import {
   type ScreenshotCapture,
   type ScreenshotTheme,
 } from "../src/screenshot-scenes/captureManifest";
+import {
+  DEFAULT_SCREENSHOT_LANGUAGE,
+  SCREENSHOT_LANGUAGES,
+  SCREENSHOT_LANGUAGE_LOCALSTORAGE_KEY,
+  type ScreenshotLanguage,
+} from "../src/screenshot-scenes/screenshotMode";
+import { SCREENSHOT_SEED_CONTENT } from "../src/screenshot-scenes/screenshotSeedContent";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_PORT = 4174;
@@ -51,6 +65,7 @@ const MAX_SCREENSHOT_BYTES_FLOOR = 10_000;
 const SCREENSHOT_UI_SCALE_ENV_KEY = "SCREENSHOT_UI_SCALE";
 const SCREENSHOT_THEME_ENV_KEY = "SCREENSHOT_THEME";
 const SCREENSHOT_COLOR_THEME_ENV_KEY = "SCREENSHOT_COLOR_THEME";
+const SCREENSHOT_LANGUAGE_ENV_KEY = "SCREENSHOT_LANGUAGE";
 /** 平坦なダークUIは PNG 圧縮率が高く、画素数が小さいほど変動が大きい */
 const SCREENSHOT_MIN_BYTES_SLACK = 0.88;
 
@@ -80,6 +95,22 @@ function envColorTheme(): string | undefined {
   const raw = process.env[SCREENSHOT_COLOR_THEME_ENV_KEY];
   if (raw === undefined || raw === "") return undefined;
   return parseColorThemeValue(raw, SCREENSHOT_COLOR_THEME_ENV_KEY);
+}
+
+function parseLanguageValue(value: string, source: string): ScreenshotLanguage {
+  const v = value.trim().toLowerCase();
+  if ((SCREENSHOT_LANGUAGES as readonly string[]).includes(v)) {
+    return v as ScreenshotLanguage;
+  }
+  throw new Error(
+    `${source} must be one of ${SCREENSHOT_LANGUAGES.join(", ")}; got "${value}"`,
+  );
+}
+
+function envLanguage(): ScreenshotLanguage | undefined {
+  const raw = process.env[SCREENSHOT_LANGUAGE_ENV_KEY];
+  if (raw === undefined || raw === "") return undefined;
+  return parseLanguageValue(raw, SCREENSHOT_LANGUAGE_ENV_KEY);
 }
 
 function parsePositiveRenderScale(value: string): number {
@@ -153,12 +184,14 @@ function parseCli(): {
   uiScalePercent?: number;
   theme?: ScreenshotTheme;
   colorTheme?: string;
+  language?: ScreenshotLanguage;
 } {
   const raw = process.argv.slice(2);
   let renderScale = envRenderScale();
   let uiScalePercent = envUiScalePercent();
   let theme = envTheme();
   let colorTheme = envColorTheme();
+  let language = envLanguage();
   const requested: string[] = [];
 
   for (let i = 0; i < raw.length; i++) {
@@ -221,9 +254,24 @@ function parseCli(): {
       colorTheme = parseColorThemeValue(colorThemeEq[1], "--color-theme");
       continue;
     }
+    if (arg === "--lang" || arg === "-l") {
+      const next = raw[++i];
+      if (next === undefined) {
+        throw new Error(
+          `${arg} requires one of: ${SCREENSHOT_LANGUAGES.join(", ")}`,
+        );
+      }
+      language = parseLanguageValue(next, arg);
+      continue;
+    }
+    const langEq = /^--lang=(.+)$/.exec(arg);
+    if (langEq) {
+      language = parseLanguageValue(langEq[1], "--lang");
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(
-        `Unknown option "${arg}". Use --scale N (or -s N) for Hi-DPI capture, --ui-scale PCT for UI zoom, --theme dark|light, --color-theme ID.`,
+        `Unknown option "${arg}". Use --scale N (or -s N) for Hi-DPI capture, --ui-scale PCT for UI zoom, --theme dark|light, --color-theme ID, --lang ja|en (or -l).`,
       );
     }
     requested.push(arg);
@@ -242,7 +290,7 @@ function parseCli(): {
           return capture;
         });
 
-  return { captures, renderScale, uiScalePercent, theme, colorTheme };
+  return { captures, renderScale, uiScalePercent, theme, colorTheme, language };
 }
 
 async function isServerReady(baseUrl: string): Promise<boolean> {
@@ -308,17 +356,24 @@ async function clickTextIfVisible(page: Page, text: string) {
   return true;
 }
 
-async function performCaptureActions(page: Page, capture: ScreenshotCapture) {
+async function performCaptureActions(
+  page: Page,
+  capture: ScreenshotCapture,
+  language: ScreenshotLanguage,
+) {
+  // codex / snippet はリスト項目をテキストで選ぶため、シードと同じ言語別の
+  // 名称を使う（select-scene / fit-map は data 属性・CSS で言語非依存）。
+  const content = SCREENSHOT_SEED_CONTENT[language];
   for (const action of capture.actions ?? []) {
     switch (action) {
       case "select-scene":
         await clickIfVisible(page, '[data-node-id="scene-1"]');
         break;
       case "select-codex":
-        await clickTextIfVisible(page, "朱紐");
+        await clickTextIfVisible(page, content.codex.akahimo.name);
         break;
       case "select-snippet":
-        await clickTextIfVisible(page, "朱紐、再会");
+        await clickTextIfVisible(page, content.snippets.reunion.title);
         break;
       case "fit-map":
         await clickIfVisible(page, ".react-flow__controls-fitview");
@@ -356,6 +411,7 @@ async function captureOne(
   defaultUiScalePercent?: number,
   defaultTheme?: ScreenshotTheme,
   defaultColorTheme?: string,
+  language: ScreenshotLanguage = DEFAULT_SCREENSHOT_LANGUAGE,
 ) {
   if (capture.uiScale != null) {
     if (
@@ -376,6 +432,7 @@ async function captureOne(
   const outputName = screenshotOutputFilename(capture.id, {
     theme: resolvedTheme,
     colorTheme: resolvedColorTheme,
+    language,
   });
 
   const browser = await chromium.launch();
@@ -392,10 +449,22 @@ async function captureOne(
     );
 
     await page.addInitScript(
-      ({ captureId, panelId, presetId, theme, colorTheme, uiScale }) => {
+      ({
+        captureId,
+        panelId,
+        presetId,
+        theme,
+        colorTheme,
+        uiScale,
+        language,
+        languageKey,
+      }) => {
         const workspacePath = "/dev/workspace";
         localStorage.setItem("grimodex:screenshot-mode", "true");
         localStorage.setItem("grimodex:screenshot-capture", captureId);
+        // browser-mock のシードと screenshotBootstrap のデモ状態が参照する
+        // 言語フラグ（global-settings.uiLanguage とは別系統で先に確定させる）。
+        localStorage.setItem(languageKey, language);
         if (panelId) {
           localStorage.setItem("grimodex:screenshot-panel", panelId);
           localStorage.removeItem("grimodex:screenshot-preset");
@@ -424,7 +493,7 @@ async function captureOne(
             lastActiveWorkspace: workspacePath,
             theme,
             colorTheme,
-            uiLanguage: "ja",
+            uiLanguage: language,
             uiScale,
             showLauncherOnStartup: false,
             acceptedEulaVersion: "1.0",
@@ -440,6 +509,8 @@ async function captureOne(
         theme: resolvedTheme,
         colorTheme: resolvedColorTheme,
         uiScale: uiScalePct,
+        language,
+        languageKey: SCREENSHOT_LANGUAGE_LOCALSTORAGE_KEY,
       },
     );
     await page.emulateMedia({ colorScheme: resolvedTheme });
@@ -471,7 +542,7 @@ async function captureOne(
         /* fallback: stale builds without marker */
       });
     await page.waitForTimeout(1_200);
-    await performCaptureActions(page, capture);
+    await performCaptureActions(page, capture, language);
     await page.waitForTimeout(300);
 
     const outputPath = join(ROOT, DEFAULT_SCREENSHOT_DIR, outputName);
@@ -496,8 +567,10 @@ async function captureOne(
       resolvedColorTheme !== DEFAULT_SCREENSHOT_COLOR_THEME
         ? ` (color-theme=${resolvedColorTheme})`
         : "";
+    const languageNote =
+      language !== DEFAULT_SCREENSHOT_LANGUAGE ? ` (lang=${language})` : "";
     console.log(
-      `captured ${outputName}${scaleNote}${uiNote}${themeNote}${colorThemeNote}`,
+      `captured ${outputName}${scaleNote}${uiNote}${themeNote}${colorThemeNote}${languageNote}`,
     );
   } finally {
     await browser.close();
@@ -505,8 +578,9 @@ async function captureOne(
 }
 
 async function main() {
-  const { captures, renderScale, uiScalePercent, theme, colorTheme } =
+  const { captures, renderScale, uiScalePercent, theme, colorTheme, language } =
     parseCli();
+  const resolvedLanguage = language ?? DEFAULT_SCREENSHOT_LANGUAGE;
   const port = Number(process.env.SCREENSHOT_PORT ?? DEFAULT_PORT);
   const baseUrl = `http://127.0.0.1:${port}`;
   let server: ChildProcessWithoutNullStreams | undefined;
@@ -527,6 +601,9 @@ async function main() {
     if (colorTheme != null) {
       console.log(`Default screenshot color theme ${colorTheme}`);
     }
+    if (resolvedLanguage !== DEFAULT_SCREENSHOT_LANGUAGE) {
+      console.log(`Screenshot language ${resolvedLanguage}`);
+    }
     for (const capture of captures) {
       await captureOne(
         baseUrl,
@@ -535,6 +612,7 @@ async function main() {
         uiScalePercent,
         theme,
         colorTheme,
+        resolvedLanguage,
       );
     }
   } finally {
