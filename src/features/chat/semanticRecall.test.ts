@@ -15,6 +15,8 @@ import {
   recallParamsForLang,
   SEMANTIC_RECALL_MIN_SCORE,
   SEMANTIC_RECALL_MIN_SCORE_EN,
+  SEMANTIC_RECALL_TOP1_GATE,
+  SEMANTIC_RECALL_TOP1_GATE_EN,
   SEMANTIC_RECALL_MAX_CHUNKS,
   SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS,
   SEMANTIC_RECALL_MAX_CHUNK_CHARS,
@@ -90,6 +92,32 @@ describe("selectSemanticRecallChunks", () => {
     expect(chunks.map((c) => c.sceneId)).toEqual(["a"]);
   });
 
+  it("injects nothing when the best hit is below the top-1 gate", () => {
+    // floor (MIN_SCORE) は超えるが gate には届かない「団子だけ」のクエリ。
+    const mid = (SEMANTIC_RECALL_MIN_SCORE + SEMANTIC_RECALL_TOP1_GATE) / 2;
+    const hits = [
+      makeHit({ sceneId: "a", score: mid }),
+      makeHit({ sceneId: "b", score: SEMANTIC_RECALL_MIN_SCORE }),
+    ];
+    expect(selectSemanticRecallChunks(hits, { excludeSceneIds: [] })).toEqual(
+      [],
+    );
+  });
+
+  it("pulls in runners-up down to the floor once the top hit clears the gate", () => {
+    const hits = [
+      makeHit({ sceneId: "win", score: SEMANTIC_RECALL_TOP1_GATE + 0.05 }),
+      makeHit({ sceneId: "second", score: SEMANTIC_RECALL_MIN_SCORE + 0.01 }),
+      makeHit({
+        sceneId: "belowFloor",
+        score: SEMANTIC_RECALL_MIN_SCORE - 0.01,
+      }),
+    ];
+    const chunks = selectSemanticRecallChunks(hits, { excludeSceneIds: [] });
+    // win が gate を超えるので、gate 未満だが floor 以上の second も拾う。
+    expect(chunks.map((c) => c.sceneId)).toEqual(["win", "second"]);
+  });
+
   it("excludes the current scene and mentioned scenes", () => {
     const hits = [
       makeHit({ sceneId: "current" }),
@@ -99,6 +127,7 @@ describe("selectSemanticRecallChunks", () => {
     const chunks = selectSemanticRecallChunks(hits, {
       excludeSceneIds: ["current", "mentioned"],
       minScore: 0,
+      gateScore: 0,
     });
     expect(chunks.map((c) => c.sceneId)).toEqual(["other"]);
   });
@@ -121,6 +150,7 @@ describe("selectSemanticRecallChunks", () => {
     const chunks = selectSemanticRecallChunks(hits, {
       excludeSceneIds: [],
       minScore: 0,
+      gateScore: 0,
     });
     expect(chunks.map((c) => c.sceneId)).toEqual(["high", "mid", "low"]);
   });
@@ -130,6 +160,7 @@ describe("selectSemanticRecallChunks", () => {
     const chunks = selectSemanticRecallChunks([makeHit({ chunkText: long })], {
       excludeSceneIds: [],
       minScore: 0,
+      gateScore: 0,
     });
     expect(chunks[0].chunkText.length).toBeLessThanOrEqual(
       SEMANTIC_RECALL_MAX_CHUNK_CHARS + 1,
@@ -144,7 +175,7 @@ describe("selectSemanticRecallChunks", () => {
   it("keeps short chunk text untouched", () => {
     const chunks = selectSemanticRecallChunks(
       [makeHit({ chunkText: "短い抜粋。" })],
-      { excludeSceneIds: [], minScore: 0 },
+      { excludeSceneIds: [], minScore: 0, gateScore: 0 },
     );
     expect(chunks[0].chunkText).toBe("短い抜粋。");
   });
@@ -159,6 +190,7 @@ describe("recallParamsForLang", () => {
     expect(recallParamsForLang("ja")).toEqual({
       minScore: SEMANTIC_RECALL_MIN_SCORE,
       maxChunkChars: SEMANTIC_RECALL_MAX_CHUNK_CHARS,
+      gateScore: SEMANTIC_RECALL_TOP1_GATE,
     });
   });
 
@@ -166,6 +198,7 @@ describe("recallParamsForLang", () => {
     expect(recallParamsForLang("en")).toEqual({
       minScore: SEMANTIC_RECALL_MIN_SCORE_EN,
       maxChunkChars: SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN,
+      gateScore: SEMANTIC_RECALL_TOP1_GATE_EN,
     });
     expect(SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN).toBeGreaterThan(
       SEMANTIC_RECALL_MAX_CHUNK_CHARS,

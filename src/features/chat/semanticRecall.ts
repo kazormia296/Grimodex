@@ -21,18 +21,26 @@ export interface SemanticRecallChunk {
 }
 
 /**
- * 日本語モデル (ruri-v3-30m, mean pooling, 「検索クエリ: / 検索文書: 」prefix) 用の
- * スコア下限。`scripts/calibrate-embedding-threshold.py` を
- * `scripts/fixtures/ja-calibration.jsonl` で実測した推奨値
- * (related 再現率 1.00 / unrelated 誤検出率 0.011 が (recall-fp) 最大点・2 種の
- * フィクスチャで 0.84〜0.85 と robust)。
+ * 日本語モデル (ruri-v3-30m) 用のスコア「床」。ここを下回るチャンクは注入しない。
+ * 注入する/しないの判定は下の TOP1_GATE で行い、ゲートを通った時だけ二番手以降を
+ * この床まで拾う (top-1 ゲート + runner-up 床方式)。
  * ruri は無関係な散文どうしでも cosine が 0.79 前後に座る高ベースライン特性のため、
- * 旧値 0.5 ではほぼ全チャンクが閾値を越えてノイズ注入になっていた。
- * 注意: 実プロジェクトでは「緩く関連するシーン」が 0.82 前後まで落ちることがあり、
- * その分は注入されない (precision 寄り)。緩い関連も拾いたい (recall 優先) なら
- * 0.80 程度まで下げる余地がある。
+ * この床を単独の閾値にすると無関係シーンの団子 (0.82〜0.84) を巻き込む。そこで
+ * 「明確な勝者 (ゲート 0.85) がいる時だけ床 0.80 まで recall を取る」構成にする。
+ * 値は calibrate-embedding-threshold.py(ja-calibration.jsonl)推奨 0.85 をゲートに、
+ * その下 0.05 を recall 用の床に充てたもの。
+ * 詳細: docs/Grimodex_セマンティック検索の閾値とモデル特性.md。
  */
-export const SEMANTIC_RECALL_MIN_SCORE = 0.85;
+export const SEMANTIC_RECALL_MIN_SCORE = 0.8;
+/**
+ * 日本語モデル用の top-1 ゲート。最良ヒットがこの値に届かない (= 明確に関連する
+ * シーンが無い) クエリでは何も注入しない。届いた時だけ MIN_SCORE まで二番手を拾う。
+ * これで「無関係シーンが団子状に並ぶだけ」のクエリでの誤注入を防ぐ。
+ * 値は ja の校正推奨値 (calibrate RECOMMENDED 0.85) と一致。
+ * 注意: ruri は winner↔団子のギャップが ~0.04 と狭く、この方式でも overlap を
+ * 完全には分離できない (真の解は reranker)。実効は dev の Run search eval で計測可。
+ */
+export const SEMANTIC_RECALL_TOP1_GATE = 0.85;
 /**
  * 英語モデル (bge-small-en-v1.5, CLS pooling) 用のスコア下限。
  * `scripts/calibrate-embedding-threshold.py`(36ペアコーパス)で確定した値:
@@ -41,6 +49,12 @@ export const SEMANTIC_RECALL_MIN_SCORE = 0.85;
  * 0.5 とは別系統の絶対値になる。実プロジェクトのログで微調整余地あり。
  */
 export const SEMANTIC_RECALL_MIN_SCORE_EN = 0.51;
+/**
+ * 英語モデル (bge-small-en-v1.5) は related↔unrelated の分離マージンが広く
+ * (~0.18) ja のような団子問題が無いため、ゲート = 床 とし注入判定は床のみで行う
+ * (= 従来どおりの単一閾値 0.51)。
+ */
+export const SEMANTIC_RECALL_TOP1_GATE_EN = SEMANTIC_RECALL_MIN_SCORE_EN;
 /** プロンプトに注入する抜粋の上限件数。 */
 export const SEMANTIC_RECALL_MAX_CHUNKS = 3;
 /** 現在シーン・@mention シーン・低スコアの間引きを見込んだ取得件数。 */
@@ -59,6 +73,7 @@ export const SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN = 900;
 export function recallParamsForLang(lang?: string): {
   minScore: number;
   maxChunkChars: number;
+  gateScore: number;
 } {
   const resolved =
     lang ??
@@ -67,11 +82,13 @@ export function recallParamsForLang(lang?: string): {
     return {
       minScore: SEMANTIC_RECALL_MIN_SCORE_EN,
       maxChunkChars: SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN,
+      gateScore: SEMANTIC_RECALL_TOP1_GATE_EN,
     };
   }
   return {
     minScore: SEMANTIC_RECALL_MIN_SCORE,
     maxChunkChars: SEMANTIC_RECALL_MAX_CHUNK_CHARS,
+    gateScore: SEMANTIC_RECALL_TOP1_GATE,
   };
 }
 
@@ -94,26 +111,42 @@ export function buildSemanticRecallQuery(args: {
 
 /**
  * 検索ヒットを注入用チャンクに選別する。
- * スコア下限 → 除外シーン (現在シーン / @mention で全文注入済みのシーン) →
- * スコア降順 → 件数 cap → 文字数 cap の順。
+ *
+ * top-1 ゲート + runner-up 床方式: 除外シーン (現在シーン / @mention で全文注入済み)
+ * を除いた最良候補が `gateScore` に届かなければ何も注入しない (= 明確に関連する
+ * シーンが無いクエリは空)。届いた時だけ `minScore` (床) 以上の二番手を拾い、
+ * スコア降順 → 件数 cap → 文字数 cap の順で返す。
+ *
+ * ruri は無関係散文でも cosine が高く座る (団子) ため、単一閾値だと「勝者あり」と
+ * 「団子だけ」を見分けにくい。ゲートで precision を、床で recall を分担する。
+ * 設計: docs/Grimodex_セマンティック検索の閾値とモデル特性.md。
  */
 export function selectSemanticRecallChunks(
   hits: SemanticSearchHit[],
   opts: {
     excludeSceneIds: string[];
     minScore?: number;
+    gateScore?: number;
     maxChunks?: number;
     maxChunkChars?: number;
   },
 ): SemanticRecallChunk[] {
   const minScore = opts.minScore ?? SEMANTIC_RECALL_MIN_SCORE;
+  const gateScore = opts.gateScore ?? SEMANTIC_RECALL_TOP1_GATE;
   const maxChunks = opts.maxChunks ?? SEMANTIC_RECALL_MAX_CHUNKS;
   const maxChunkChars = opts.maxChunkChars ?? SEMANTIC_RECALL_MAX_CHUNK_CHARS;
   const excluded = new Set(opts.excludeSceneIds);
 
-  return hits
-    .filter((h) => h.score >= minScore && !excluded.has(h.sceneId))
-    .sort((a, b) => b.score - a.score)
+  const candidates = hits
+    .filter((h) => !excluded.has(h.sceneId))
+    .sort((a, b) => b.score - a.score);
+
+  // top-1 ゲート: 最良候補がゲートに届かなければ何も注入しない (precision)。
+  if (candidates.length === 0 || candidates[0].score < gateScore) return [];
+
+  // ゲート通過時のみ床まで二番手を拾う (recall)。candidates[0] はゲート >= 床 より常に通る。
+  return candidates
+    .filter((h) => h.score >= minScore)
     .slice(0, maxChunks)
     .map((h) => ({
       sceneId: h.sceneId,
@@ -156,6 +189,7 @@ export async function fetchSemanticRecall(args: {
   const selected = selectSemanticRecallChunks(hits, {
     excludeSceneIds: args.excludeSceneIds,
     minScore: params.minScore,
+    gateScore: params.gateScore,
     maxChunkChars: params.maxChunkChars,
   });
   // 注入判定の可観測性: 生ヒット数 / 足切り(スコア下限・除外シーン)後の
@@ -164,7 +198,8 @@ export async function fetchSemanticRecall(args: {
     hits.length > 0 ? Math.max(...hits.map((h) => h.score)) : null;
   debugLog.info(
     "SemanticRecall",
-    `hits=${hits.length} injected=${selected.length} minScore=${params.minScore}`,
+    `hits=${hits.length} injected=${selected.length} ` +
+      `gate=${params.gateScore} floor=${params.minScore}`,
     topScore !== null ? `topScore=${topScore.toFixed(3)}` : "no hits",
   );
   return selected;
