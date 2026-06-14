@@ -2299,10 +2299,14 @@ describe("useChatStore", () => {
         mentionedSceneIds: [],
       }));
 
+      mockBuildSystemPrompt.mockClear();
       const preview = await useChatStore.getState().buildPreviewPrompt();
       const copy = await useChatStore.getState().buildPromptForCopy("共通入力");
 
-      // 両経路とも buildOutgoingScenePrompt を通り同一 system を出す
+      // 両経路とも buildOutgoingScenePrompt 経由で buildSystemPrompt に到達する
+      // (どちらかが早期 return すると 2 にならない)
+      expect(mockBuildSystemPrompt).toHaveBeenCalledTimes(2);
+      // 両経路とも同一 system prompt を返す
       expect(preview.prompt).toBe("UNIFIED SYS");
       expect(copy).toContain(`[system]\n${preview.prompt}`);
     });

@@ -416,12 +416,10 @@ interface ChatState {
    * プロンプトを流用しないための照合に使う。 */
   lastSystemPromptKey: string | null;
   /**
-   * プレビュー専用のプロンプト再構築。related_scenes（semantic RAG）は
-   * メッセージ依存で送信時のみ計算され、ライブの lastSystemPrompt には
-   * 含まれない。プレビューを開いたときにこれを呼ぶと、現在のシーン本文と
-   * 直近ユーザー発話を seed に意味検索を1回走らせ、RAG 込みのプロンプトを
-   * 組んで返す（store は変更しない）。scene スコープ以外は RAG 対象外なので
-   * ライブ値をそのまま返す。 */
+   * プレビュー専用のプロンプト再構築（store は変更しない）。seed 優先順位:
+   * registerInputDraftProvider 経由の入力ドラフト → 直近ユーザー発話 → シーン本文末尾。
+   * 返す userMessage はプレビューに表示する「入力中の未送信テキスト」。
+   * scene スコープ以外は RAG 対象外のためライブ値をそのまま返す。 */
   buildPreviewPrompt: () => Promise<{
     prompt: string;
     layers: LayerBreakdown[];
