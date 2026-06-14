@@ -26,6 +26,10 @@ import {
   semanticReindexAll,
   type SemanticIndexStatus,
 } from "@/features/semantic-search/api";
+import {
+  runSearchEval,
+  formatEvalReport,
+} from "@/features/semantic-search/searchEval";
 import { useReindexProgressStore } from "@/features/semantic-search/reindexProgressStore";
 import { GENRE_VALUES } from "@/features/project/genreOptions";
 
@@ -589,6 +593,35 @@ export function ProjectCategory() {
                 title="開発専用: scene_chunks をコンソールにダンプ"
               >
                 Dump chunks
+              </button>
+            )}
+            {import.meta.env.DEV && (
+              // 開発専用: query→期待シーンの eval set を実機 semantic_search に流し、
+              // Recall@1/@3/MRR・閾値跨ぎ・miss/junk をコンソールへ。検索品質の回帰検知用。
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const report = await runSearchEval();
+                    console.log(formatEvalReport(report));
+                    console.table(
+                      report.results.map((r) => ({
+                        query: r.query,
+                        rank: r.rank,
+                        expectedScore: r.expectedScore,
+                        topScore: r.topScore,
+                        top: r.scenes[0]?.sceneTitle,
+                      })),
+                    );
+                    console.table(report.junk);
+                  } catch (e) {
+                    console.error("[semantic-eval] failed", e);
+                  }
+                }}
+                className="rounded-md border border-dashed border-border px-3 py-1 text-sm text-muted-foreground hover:bg-accent"
+                title="開発専用: クエリ集を実機検索に流して Recall/閾値を計測"
+              >
+                Run search eval
               </button>
             )}
           </div>
