@@ -1,4 +1,5 @@
 import { invoke } from "@/lib/tauri";
+import { toFtsMatchQuery } from "@/lib/fts";
 import type { CodexEntry } from "./api";
 
 interface QueryResult {
@@ -30,16 +31,18 @@ export async function searchCodexEntries(
   const trimmed = query.trim();
   if (trimmed.length === 0) return [];
 
-  const charCount = [...trimmed].length; // Unicode-aware length
+  // 生クエリを安全な FTS5 MATCH 式へ。3 codepoint 未満のトークンしか無いときは
+  // 空になるので LIKE フォールバックへ倒す。
+  const matchQuery = toFtsMatchQuery(trimmed);
 
-  if (charCount >= 3) {
+  if (matchQuery) {
     const scope = projectId ? " AND ce.project_id = ?" : "";
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT ce.* FROM codex_entries ce
             JOIN codex_fts fts ON ce.rowid = fts.rowid
             WHERE codex_fts MATCH ?${scope}
             ORDER BY fts.rank`,
-      params: projectId ? [trimmed, projectId] : [trimmed],
+      params: projectId ? [matchQuery, projectId] : [matchQuery],
       method: "all",
     });
     return result.rows.map(rowToEntry);

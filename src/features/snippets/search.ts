@@ -1,4 +1,5 @@
 import { invoke } from "@/lib/tauri";
+import { toFtsMatchQuery } from "@/lib/fts";
 import type { Snippet } from "./api";
 
 interface QueryResult {
@@ -14,15 +15,17 @@ export async function searchSnippets(query: string): Promise<Snippet[]> {
   const trimmed = query.trim();
   if (trimmed.length === 0) return [];
 
-  const charCount = [...trimmed].length; // Unicode-aware length
+  // 生クエリを安全な FTS5 MATCH 式へ。3 codepoint 未満のトークンしか無いときは
+  // 空になるので LIKE フォールバックへ倒す。
+  const matchQuery = toFtsMatchQuery(trimmed);
 
-  if (charCount >= 3) {
+  if (matchQuery) {
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT s.* FROM snippets s
             JOIN snippets_fts fts ON s.rowid = fts.rowid
             WHERE snippets_fts MATCH ?
             ORDER BY fts.rank`,
-      params: [trimmed],
+      params: [matchQuery],
       method: "all",
     });
     return result.rows;

@@ -1,4 +1,5 @@
 import { invoke } from "@/lib/tauri";
+import { toFtsMatchQuery } from "@/lib/fts";
 import { db } from "@/db/client";
 import {
   chatSessions,
@@ -190,6 +191,11 @@ export async function searchChatMessages(
 ): Promise<MessageSearchHit[]> {
   if (!query.trim()) return [];
 
+  // 生クエリを安全な FTS5 MATCH 式へ（`,` 等で syntax error にしない）。
+  // 一致可能なトークンが無ければ空を返す。
+  const matchQuery = toFtsMatchQuery(query);
+  if (!matchQuery) return [];
+
   interface RawRow {
     msg_id: string;
     session_id: string;
@@ -229,7 +235,7 @@ export async function searchChatMessages(
 
   const result = await invoke<{ rows: RawRow[] }>("db_execute", {
     sql,
-    params: [query, projectId],
+    params: [matchQuery, projectId],
     method: "all",
   });
 

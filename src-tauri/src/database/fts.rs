@@ -28,8 +28,12 @@ impl Database {
         let mut results: Vec<serde_json::Value> = Vec::new();
         let lim = limit.min(50) as i64;
 
-        // FTS5 trigram requires ≥3 chars; fall back to LIKE for shorter queries.
-        let use_like = query.chars().count() < 3;
+        // Sanitize the raw query into a safe FTS5 MATCH expression (commas / hyphens /
+        // colons in a raw query are FTS5 operators and raise "syntax error" /
+        // "no such column"). trigram can't match <3 codepoint tokens, so fall back to
+        // LIKE when the query is short or no trigram-friendly token remains.
+        let match_query = to_fts_match(query);
+        let use_like = query.chars().count() < 3 || match_query.is_empty();
         let like_pattern = format!("%{query}%");
 
         if scope == "all" || scope == "scenes" {
@@ -64,7 +68,7 @@ impl Database {
                      ORDER BY rank LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(
-                    params_from_iter([query, project_id, &lim.to_string()]),
+                    params_from_iter([match_query.as_str(), project_id, &lim.to_string()]),
                     |row| {
                         Ok(serde_json::json!({
                             "sourceType": "scene",
@@ -112,7 +116,7 @@ impl Database {
                      ORDER BY rank LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(
-                    params_from_iter([query, project_id, &lim.to_string()]),
+                    params_from_iter([match_query.as_str(), project_id, &lim.to_string()]),
                     |row| {
                         Ok(serde_json::json!({
                             "sourceType": "codex",
@@ -159,7 +163,7 @@ impl Database {
                      ORDER BY rank LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(
-                    params_from_iter([query, project_id, &lim.to_string()]),
+                    params_from_iter([match_query.as_str(), project_id, &lim.to_string()]),
                     |row| {
                         Ok(serde_json::json!({
                             "sourceType": "snippet",
@@ -187,5 +191,57 @@ impl Database {
              INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('rebuild');",
         )?;
         Ok(())
+    }
+}
+
+/// Convert a raw user search string into a safe FTS5 MATCH expression.
+///
+/// Each token is wrapped in double quotes (an FTS5 string literal) so that `,`,
+/// `-`, `:`, parentheses, etc. are not parsed as FTS5 query operators / column
+/// filters. Tokens are joined with `OR` (natural-language AND tends to miss).
+/// trigram can't match tokens shorter than 3 codepoints, so those are dropped;
+/// if nothing remains the result is empty (the caller falls back to LIKE).
+///
+/// Keep in sync with `toFtsMatchQuery` in `src/lib/fts.ts`.
+fn to_fts_match(raw: &str) -> String {
+    raw.split_whitespace()
+        .filter(|t| t.chars().count() >= 3)
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_fts_match;
+
+    #[test]
+    fn quotes_tokens_and_joins_with_or() {
+        assert_eq!(to_fts_match("iron crown"), "\"iron\" OR \"crown\"");
+    }
+
+    #[test]
+    fn neutralizes_fts5_operators() {
+        // Commas / hyphens that used to raise "syntax error" / "no such column"
+        // now become a valid quoted-token expression.
+        assert_eq!(
+            to_fts_match("come back, with a final"),
+            "\"come\" OR \"back,\" OR \"with\" OR \"final\"",
+        );
+        assert_eq!(
+            to_fts_match("the keeping-room door"),
+            "\"the\" OR \"keeping-room\" OR \"door\"",
+        );
+    }
+
+    #[test]
+    fn drops_tokens_shorter_than_three_codepoints() {
+        assert_eq!(to_fts_match("a of in"), "");
+        assert_eq!(to_fts_match("a lock"), "\"lock\"");
+    }
+
+    #[test]
+    fn escapes_embedded_double_quotes() {
+        assert_eq!(to_fts_match("say \"hi\""), "\"say\" OR \"\"\"hi\"\"\"");
     }
 }

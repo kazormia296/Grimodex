@@ -50,14 +50,14 @@ describe("searchCodexEntries", () => {
     expect(entry).not.toHaveProperty("project_id");
   });
 
-  it("scopes MATCH queries to the given project", async () => {
+  it("scopes MATCH queries to the given project (sanitized to a quoted FTS5 term)", async () => {
     mockInvoke.mockResolvedValue({ rows: [] });
 
     await searchCodexEntries("山田太郎", "proj-1");
 
     expect(mockInvoke).toHaveBeenCalledWith("db_execute", {
       sql: expect.stringContaining("project_id"),
-      params: ["山田太郎", "proj-1"],
+      params: ['"山田太郎"', "proj-1"],
       method: "all",
     });
   });
@@ -81,7 +81,7 @@ describe("searchCodexEntries", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith("db_execute", {
       sql: expect.not.stringContaining("project_id"),
-      params: ["山田太郎"],
+      params: ['"山田太郎"'],
       method: "all",
     });
   });

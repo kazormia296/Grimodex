@@ -1,6 +1,11 @@
 import { invoke } from "@/lib/tauri";
 import { loadSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
+import {
+  tokenizeFtsQuery as tokenizeQuery,
+  codepointLength,
+  ftsOrMatch as ftsPhraseOrQuery,
+} from "@/lib/fts";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { db } from "@/db/client";
 import {
@@ -62,21 +67,6 @@ function parseTagsCacheNames(json: string | null | undefined): string[] {
   }
 }
 
-/**
- * 空白区切りでトークン化する。空文字や全空白入力では空配列を返す。
- * Unicode コードポイント数を返す `codepointLength` も合わせて提供する。
- */
-function tokenizeQuery(raw: string): string[] {
-  return raw
-    .split(/\s+/)
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0);
-}
-
-function codepointLength(s: string): number {
-  return [...s].length;
-}
-
 const EXCERPT_MAX_CHARS = 200;
 
 /**
@@ -104,20 +94,6 @@ function plainTextExcerpt(content: unknown, tokens: string[]): string {
     plain.slice(start, end) +
     (end < plain.length ? "..." : "")
   );
-}
-
-/**
- * トークン群を FTS5 の "phrase OR phrase" 形に変換する。
- *
- * FTS5 既定の AND セマンティクスでは "朱音 所持品" のような自然な
- * 複数語クエリが空振りするため、句単位の OR に書き換えて
- * Agent の "どれか一語でも当たれば返ってきてほしい" 直感に合わせる。
- *
- * 注意: trigram tokenizer は 3 codepoint 未満のトークンを match できない。
- * 呼び出し側で全トークンが ≥3 cp を確認した上で使うこと。
- */
-function ftsPhraseOrQuery(tokens: string[]): string {
-  return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
 }
 
 /**
