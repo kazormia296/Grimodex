@@ -118,10 +118,27 @@ describe("selectSemanticRecallChunks", () => {
     expect(chunks.map((c) => c.sceneId)).toEqual(["win", "second"]);
   });
 
-  it("dedupes by scene, keeping the best chunk per scene", () => {
+  it("prioritizes distinct scenes over a second chunk of the same scene", () => {
+    // 別シーンが 3 つあるので、a の二番手 (0.85) より別シーン c を優先する。
+    const hits = [
+      makeHit({ sceneId: "a", score: 0.95 }),
+      makeHit({ sceneId: "b", score: 0.9 }),
+      makeHit({ sceneId: "c", score: 0.88 }),
+      makeHit({ sceneId: "a", score: 0.85 }),
+    ];
+    const chunks = selectSemanticRecallChunks(hits, {
+      excludeSceneIds: [],
+      minScore: 0,
+      gateScore: 0,
+    });
+    expect(chunks.map((c) => c.sceneId)).toEqual(["a", "b", "c"]);
+  });
+
+  it("backfills remaining slots with secondary chunks when scenes are scarce", () => {
+    // 別シーンが a / b の 2 つしか無いので、余り枠を a の二番手チャンクで埋める。
     const hits = [
       makeHit({ sceneId: "a", score: 0.95, chunkText: "a-best" }),
-      makeHit({ sceneId: "a", score: 0.9, chunkText: "a-second-chunk" }),
+      makeHit({ sceneId: "a", score: 0.9, chunkText: "a-second" }),
       makeHit({ sceneId: "b", score: 0.88, chunkText: "b-1" }),
     ];
     const chunks = selectSemanticRecallChunks(hits, {
@@ -129,9 +146,13 @@ describe("selectSemanticRecallChunks", () => {
       minScore: 0,
       gateScore: 0,
     });
-    // 同一シーン (a) の 2 チャンクは最良 1 件に畳まれ、distinct な a / b を返す。
-    expect(chunks.map((c) => c.sceneId)).toEqual(["a", "b"]);
-    expect(chunks[0].chunkText).toBe("a-best");
+    // distinct (a-best, b) 優先 + 余り 1 枠に a-second、最後にスコア降順で並べる。
+    expect(chunks.map((c) => c.sceneId)).toEqual(["a", "a", "b"]);
+    expect(chunks.map((c) => c.chunkText)).toEqual([
+      "a-best",
+      "a-second",
+      "b-1",
+    ]);
   });
 
   it("excludes the current scene and mentioned scenes", () => {

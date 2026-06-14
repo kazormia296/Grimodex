@@ -114,9 +114,10 @@ export function buildSemanticRecallQuery(args: {
  *
  * top-1 ゲート + runner-up 床方式: 除外シーン (現在シーン / @mention で全文注入済み)
  * を除いた最良候補が `gateScore` に届かなければ何も注入しない (= 明確に関連する
- * シーンが無いクエリは空)。届いた時だけ `minScore` (床) 以上の二番手を拾い、
- * スコア降順 → シーン重複排除 (同一シーンの複数チャンクは最良1件) → 件数 cap →
- * 文字数 cap の順で返す。
+ * シーンが無いクエリは空)。届いた時だけ `minScore` (床) 以上を拾う。
+ * 件数 cap 内では distinct シーンを優先し、枠が余ったら同一シーンの二番手チャンクで
+ * 埋める (backfill): 別シーンという多様な選択肢がある時だけ二番手パッセージを譲るので、
+ * 関連シーンが少ないときは同一シーンの別内容チャンクを取りこぼさない。
  *
  * ruri は無関係散文でも cosine が高く座る (団子) ため、単一閾値だと「勝者あり」と
  * 「団子だけ」を見分けにくい。ゲートで precision を、床で recall を分担する。
@@ -138,36 +139,42 @@ export function selectSemanticRecallChunks(
   const maxChunkChars = opts.maxChunkChars ?? SEMANTIC_RECALL_MAX_CHUNK_CHARS;
   const excluded = new Set(opts.excludeSceneIds);
 
+  // 除外シーンを除き、床 (minScore) 以上だけをスコア降順に。
   const sorted = hits
-    .filter((h) => !excluded.has(h.sceneId))
+    .filter((h) => !excluded.has(h.sceneId) && h.score >= minScore)
     .sort((a, b) => b.score - a.score);
 
-  // シーン単位で重複排除 (各シーンの最良チャンクだけ残す)。同じシーンの別チャンクが
-  // 上位を占めて「同じシーンが複数回注入される」のを防ぐ (関連 "シーン" 注入なので
-  // distinct なシーンを返す)。score 降順を保つため最初に出たものを採用。
-  const seenScenes = new Set<string>();
-  const candidates = sorted.filter((h) => {
-    if (seenScenes.has(h.sceneId)) return false;
-    seenScenes.add(h.sceneId);
-    return true;
-  });
-
   // top-1 ゲート: 最良候補がゲートに届かなければ何も注入しない (precision)。
-  if (candidates.length === 0 || candidates[0].score < gateScore) return [];
+  if (sorted.length === 0 || sorted[0].score < gateScore) return [];
 
-  // ゲート通過時のみ床まで二番手を拾う (recall)。candidates[0] はゲート >= 床 より常に通る。
-  return candidates
-    .filter((h) => h.score >= minScore)
+  // distinct シーン優先 + backfill: まず各シーンの最良チャンク (distinct) を集め、
+  // 枠が余ったら同一シーンの二番手チャンク (leftover) で埋める。これにより
+  // 「別シーンという多様な選択肢がある時だけ」二番手パッセージを譲る — 関連シーンが
+  // 少ないときは同一シーンの別チャンク (別内容) を取りこぼさない。
+  const seenScenes = new Set<string>();
+  const distinct: SemanticSearchHit[] = [];
+  const leftover: SemanticSearchHit[] = [];
+  for (const h of sorted) {
+    if (seenScenes.has(h.sceneId)) {
+      leftover.push(h);
+    } else {
+      seenScenes.add(h.sceneId);
+      distinct.push(h);
+    }
+  }
+  const chosen = [...distinct, ...leftover]
     .slice(0, maxChunks)
-    .map((h) => ({
-      sceneId: h.sceneId,
-      sceneTitle: h.sceneTitle,
-      chunkText:
-        h.chunkText.length > maxChunkChars
-          ? `${h.chunkText.slice(0, maxChunkChars)}…`
-          : h.chunkText,
-      score: h.score,
-    }));
+    .sort((a, b) => b.score - a.score);
+
+  return chosen.map((h) => ({
+    sceneId: h.sceneId,
+    sceneTitle: h.sceneTitle,
+    chunkText:
+      h.chunkText.length > maxChunkChars
+        ? `${h.chunkText.slice(0, maxChunkChars)}…`
+        : h.chunkText,
+    score: h.score,
+  }));
 }
 
 /**
