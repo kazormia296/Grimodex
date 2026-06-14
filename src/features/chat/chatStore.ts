@@ -4369,10 +4369,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       contextLayers,
       contextTokenCount,
     } = get();
-    const draft = _inputDraftProvider?.() ?? {
+    let draft: { markdown: string; mentionedSceneIds: string[] } = {
       markdown: "",
       mentionedSceneIds: [],
     };
+    try {
+      draft = _inputDraftProvider?.() ?? draft;
+    } catch {
+      // provider getter が throw(エディタ teardown 中など)した場合は空ドラフトで継続。
+    }
     // ライブ値フォールバック(RAG 非対象スコープ / 取得失敗時)。
     const live = {
       prompt: lastSystemPrompt,
