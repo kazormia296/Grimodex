@@ -258,6 +258,8 @@ describe("useChatStore", () => {
     // policy 既定はクリア（projects 空 → fail-open=full）。chat ガードを
     // 素通りさせ、既存の sendMessage テストを従来どおり走らせる。
     useProjectStore.setState({ currentProjectId: null, projects: [] });
+    // プロンプトプレビューの入力ドラフト DI をテスト間でリセット
+    useChatStore.getState().registerInputDraftProvider(null);
   });
 
   // --- Session management tests ---
@@ -2088,8 +2090,23 @@ describe("useChatStore", () => {
   describe("buildPreviewPrompt", () => {
     it("scene スコープ: 意味検索を seed 付きで走らせ related_scenes を含めて返す", async () => {
       const { getNode } = await import("@/features/tree/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
       const { semanticSearch } = await import("@/features/semantic-search/api");
       const mockSearch = vi.mocked(semanticSearch);
+      vi.mocked(useTreeStore.getState).mockReturnValue({
+        nodes: [
+          {
+            id: "scene-1",
+            parentId: null,
+            nodeType: "scene",
+            title: "テストシーン",
+            sortOrder: "a0",
+            synopsis: null,
+            charCount: 100,
+          },
+        ],
+        projectId: "proj-1",
+      } as never);
       vi.mocked(getNode).mockResolvedValue({
         id: "scene-1",
         title: "テストシーン",
@@ -2168,7 +2185,126 @@ describe("useChatStore", () => {
         prompt: "LIVE PROJECT PROMPT",
         layers: [],
         totalTokens: 99,
+        userMessage: "",
       });
+    });
+
+    it("scene スコープ: 入力ドラフトを seed に使い userMessage を返す", async () => {
+      const { getNode } = await import("@/features/tree/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { semanticSearch } = await import("@/features/semantic-search/api");
+      const mockSearch = vi.mocked(semanticSearch);
+      vi.mocked(useTreeStore.getState).mockReturnValue({
+        nodes: [
+          {
+            id: "scene-1",
+            parentId: null,
+            nodeType: "scene",
+            title: "テストシーン",
+            sortOrder: "a0",
+            synopsis: null,
+            charCount: 100,
+          },
+        ],
+        projectId: "proj-1",
+      } as never);
+      vi.mocked(getNode).mockResolvedValue({
+        id: "scene-1",
+        title: "テストシーン",
+      } as never);
+      mockSearch.mockResolvedValueOnce([] as never);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "P",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        inputPinnedEntryIds: [],
+        includeBodies: true,
+        messages: [
+          {
+            id: "u1",
+            sessionId: "",
+            role: "user",
+            content: "履歴の発話",
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      });
+
+      useChatStore.getState().registerInputDraftProvider(() => ({
+        markdown: "入力中のテキスト",
+        mentionedSceneIds: [],
+      }));
+
+      const result = await useChatStore.getState().buildPreviewPrompt();
+
+      // seed は履歴ではなく入力ドラフト(②)
+      expect(mockSearch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          query: expect.stringContaining("入力中のテキスト"),
+        }),
+      );
+      // 入力メッセージをモーダルへ返す(③)
+      expect(result.userMessage).toBe("入力中のテキスト");
+    });
+
+    it("不変条件: 同一入力で preview の prompt と copy の [system] が一致する", async () => {
+      const { getNode } = await import("@/features/tree/api");
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { semanticSearch } = await import("@/features/semantic-search/api");
+      vi.mocked(useTreeStore.getState).mockReturnValue({
+        nodes: [
+          {
+            id: "scene-1",
+            parentId: null,
+            nodeType: "scene",
+            title: "テストシーン",
+            sortOrder: "a0",
+            synopsis: null,
+            charCount: 100,
+          },
+        ],
+        projectId: "proj-1",
+      } as never);
+      vi.mocked(getNode).mockResolvedValue({
+        id: "scene-1",
+        title: "テストシーン",
+      } as never);
+      vi.mocked(semanticSearch).mockResolvedValue([] as never);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "UNIFIED SYS",
+        totalTokens: 3,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        inputPinnedEntryIds: [],
+        includeBodies: true,
+        messages: [],
+      });
+      useChatStore.getState().registerInputDraftProvider(() => ({
+        markdown: "共通入力",
+        mentionedSceneIds: [],
+      }));
+
+      const preview = await useChatStore.getState().buildPreviewPrompt();
+      const copy = await useChatStore.getState().buildPromptForCopy("共通入力");
+
+      // 両経路とも buildOutgoingScenePrompt を通り同一 system を出す
+      expect(preview.prompt).toBe("UNIFIED SYS");
+      expect(copy).toContain(`[system]\n${preview.prompt}`);
     });
   });
 

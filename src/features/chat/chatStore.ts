@@ -426,6 +426,8 @@ interface ChatState {
     prompt: string;
     layers: LayerBreakdown[];
     totalTokens: number;
+    /** プレビューに描画する「これから送る入力メッセージ」。空文字なら非表示。 */
+    userMessage: string;
   }>;
   /**
    * Monotonic counter bumped each time refreshContextLayers completes.
@@ -564,6 +566,11 @@ interface ChatState {
     userInput: string,
     options?: { mentionedSceneIds?: string[] },
   ) => Promise<string>;
+  /** ChatInput の入力中テキスト getter を登録 / 解除(null で解除)。
+   * buildPreviewPrompt が seed と表示に使う。 */
+  registerInputDraftProvider: (
+    provider: (() => { markdown: string; mentionedSceneIds: string[] }) | null,
+  ) => void;
   stopGeneration: () => void;
   deleteMessage: (messageId: string) => Promise<void>;
   editUserMessage: (messageId: string) => {
@@ -1438,6 +1445,12 @@ let _resolveUserQuestion: ((result: ToolResult) => void) | null = null;
 // agent ループの中断要求フラグ。Stop / セッション切替で true にし、runAgentLoop
 // の shouldAbort から参照する（stop が agent path を止められない問題への対処）。
 let _agentAborted = false;
+// プロンプトプレビューの seed / 表示用に、ChatInput の入力中テキストを on-demand
+// で取得する DI。打鍵毎にストアへ書かず、プレビューを開いた瞬間だけ読む。
+// ChatInput が mount 時に登録し unmount で null 解除する。
+let _inputDraftProvider:
+  | (() => { markdown: string; mentionedSceneIds: string[] })
+  | null = null;
 
 // ---------------------------------------------------------------------------
 // Shared scene context builder — used by both sendMessage and buildPromptForCopy
@@ -4351,67 +4364,45 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   buildPreviewPrompt: async () => {
     const {
       activeSceneId,
-      activeProjectId,
-      activeSessionId,
       chatScope,
       lastSystemPrompt,
       contextLayers,
       contextTokenCount,
     } = get();
-    // ライブ値フォールバック（RAG 非対象スコープ / 取得失敗時）。
+    const draft = _inputDraftProvider?.() ?? {
+      markdown: "",
+      mentionedSceneIds: [],
+    };
+    // ライブ値フォールバック(RAG 非対象スコープ / 取得失敗時)。
     const live = {
       prompt: lastSystemPrompt,
       layers: contextLayers,
       totalTokens: contextTokenCount,
+      userMessage: draft.markdown,
     };
-    // semantic recall は scene スコープ限定。それ以外は RAG が無いので
-    // ライブの lastSystemPrompt がそのまま実送信内容と一致する。
+    // semantic recall は scene スコープ限定。それ以外はライブ値が実送信と一致。
     const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
     if (!effectiveSceneId) return live;
 
     try {
-      await ensureTokenizer();
-      const [sceneCtx, projectCtx] = await Promise.all([
-        fetchSceneContext(effectiveSceneId),
-        fetchProjectContext(activeProjectId),
-      ]);
-      if (!sceneCtx) return live;
-
-      // 検索 seed: 直近ユーザー発話（実送信のクエリに最も近い）→無ければ
-      // 現在シーン本文の末尾。eco ブランク前の本文から取る（seed は注入では
-      // なくクエリなので、本文非表示モードでも関連シーンは引ける）。
-      const lastUserMessage = [...get().messages]
-        .reverse()
-        .find((m) => m.role === "user" && !m.isSummarized)?.content;
-      const seed =
-        lastUserMessage?.trim() ||
-        sceneCtx.content.slice(-SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS);
-
-      // eco モード（本文非注入）は実送信と揃えて本文を空にする。
-      if (!get().includeBodies) {
-        sceneCtx.content = "";
-      }
-
-      const ctxResult = await buildSceneContextPrompt({
-        sceneCtx,
-        projectCtx,
-        activeSessionId,
-        effectiveSceneId,
-        inputPinnedEntryIds: get().inputPinnedEntryIds,
-        conversationMessages: get().messages.filter((m) => !m.isSummarized),
-        agentMode: get().agentMode,
-        excludedAutoEntryIds: get().excludedAutoEntryIds,
-        // これがプレビューに related_scenes を含める鍵。送信経路と同じ seed 経由。
-        semanticRecallSeedMessage: seed,
+      const built = await buildOutgoingScenePrompt(get, effectiveSceneId, {
+        inputText: draft.markdown,
+        mentionedSceneIds: draft.mentionedSceneIds,
       });
+      if (!built) return live;
       return {
-        prompt: ctxResult.prompt,
-        layers: ctxResult.layers,
-        totalTokens: ctxResult.totalTokens,
+        prompt: built.prompt,
+        layers: built.layers,
+        totalTokens: built.totalTokens,
+        userMessage: draft.markdown,
       };
     } catch {
       return live;
     }
+  },
+
+  registerInputDraftProvider: (provider) => {
+    _inputDraftProvider = provider;
   },
 
   setAgentMode: (on: boolean) => set({ agentMode: on }),
