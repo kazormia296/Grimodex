@@ -1549,6 +1549,87 @@ async function loadMapBoardMarkdown(
   }
 }
 
+/**
+ * preview / copy 共通の scene スコープ "outgoing プロンプト" ビルダー。
+ * 「これから送るメッセージ (inputText)」を semantic recall の seed と会話末尾の
+ * outgoing user message の両方に反映し、send (sendMessage) と同一の
+ * buildSceneContextPrompt 呼び出しに揃える。eco (includeBodies=false) の本文
+ * ブランクもここで一元化する。
+ */
+async function buildOutgoingScenePrompt(
+  get: () => ChatState,
+  effectiveSceneId: string,
+  opts: { inputText: string; mentionedSceneIds?: string[] },
+): Promise<{
+  prompt: string;
+  layers: LayerBreakdown[];
+  totalTokens: number;
+} | null> {
+  await ensureTokenizer();
+  const {
+    activeProjectId,
+    activeSessionId,
+    inputPinnedEntryIds,
+    excludedAutoEntryIds,
+    agentMode,
+    includeBodies,
+    messages,
+  } = get();
+
+  const [sceneCtx, projectCtx] = await Promise.all([
+    fetchSceneContext(effectiveSceneId),
+    fetchProjectContext(activeProjectId),
+  ]);
+  if (!sceneCtx) return null;
+
+  const input = opts.inputText.trim();
+
+  // RAG seed: 今送る入力 → 無ければ直近 user 発話 → 無ければ本文末尾。
+  // 本文末尾は eco ブランク前の本文から取る(seed はクエリであって注入ではない)。
+  const lastUserMessage = [...messages]
+    .reverse()
+    .find((m) => m.role === "user" && !m.isSummarized)?.content;
+  const seed =
+    input ||
+    lastUserMessage?.trim() ||
+    sceneCtx.content.slice(-SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS);
+
+  // eco モード: send / refreshContextLayers と揃えて本文を空にする。
+  if (!includeBodies) {
+    sceneCtx.content = "";
+  }
+
+  // 会話履歴 + これから送るメッセージ(send の messagesForCtx と同形)。
+  const conversationMessages: ChatMessage[] = [
+    ...messages.filter((m) => !m.isSummarized),
+    ...(input
+      ? [
+          {
+            id: "outgoing",
+            sessionId: activeSessionId ?? "",
+            role: "user",
+            content: opts.inputText,
+            createdAt: new Date().toISOString(),
+          } as ChatMessage,
+        ]
+      : []),
+  ];
+
+  const { prompt, layers, totalTokens } = await buildSceneContextPrompt({
+    sceneCtx,
+    projectCtx,
+    activeSessionId,
+    effectiveSceneId,
+    inputPinnedEntryIds,
+    conversationMessages,
+    agentMode,
+    mentionedSceneIds: opts.mentionedSceneIds,
+    excludedAutoEntryIds,
+    semanticRecallSeedMessage: seed,
+  });
+  return { prompt, layers, totalTokens };
+}
+
 async function buildSceneContextPrompt(opts: {
   sceneCtx: SceneContext;
   projectCtx: ProjectContext | null;
@@ -2611,15 +2692,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     options?: { mentionedSceneIds?: string[] },
   ): Promise<string> => {
     await ensureTokenizer();
-    const {
-      activeSceneId,
-      activeProjectId,
-      activeSessionId,
-      chatScope,
-      agentMode,
-      messages: prevMessages,
-      inputPinnedEntryIds,
-    } = get();
+    const { activeSceneId, chatScope, messages: prevMessages } = get();
     const effectiveSceneId =
       chatScope === "scene" && activeSceneId ? activeSceneId : null;
 
@@ -2629,34 +2702,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     try {
       if (effectiveSceneId) {
-        const [sceneCtx, projectCtx] = await Promise.all([
-          fetchSceneContext(effectiveSceneId),
-          fetchProjectContext(activeProjectId),
-        ]);
-        if (sceneCtx) {
-          // Agent モードでも通常モードと同じコンテキスト（L1〜L4）を組む。
-          const conversationMessages: ChatMessage[] = [
-            ...prevMessages.filter((m) => !m.isSummarized),
-            {
-              id: "preview",
-              sessionId: activeSessionId ?? "",
-              role: "user",
-              content: userInput,
-              createdAt: new Date().toISOString(),
-            } as ChatMessage,
-          ];
-          const { prompt } = await buildSceneContextPrompt({
-            sceneCtx,
-            projectCtx,
-            activeSessionId,
-            effectiveSceneId,
-            inputPinnedEntryIds,
-            conversationMessages,
-            agentMode,
-            mentionedSceneIds: options?.mentionedSceneIds,
-            excludedAutoEntryIds: get().excludedAutoEntryIds,
-          });
-          parts.push(`[system]\n${prompt}`);
+        const built = await buildOutgoingScenePrompt(get, effectiveSceneId, {
+          inputText: userInput,
+          mentionedSceneIds: options?.mentionedSceneIds,
+        });
+        if (built) {
+          parts.push(`[system]\n${built.prompt}`);
           contextLoaded = true;
         }
       } else if (

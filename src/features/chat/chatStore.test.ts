@@ -1147,6 +1147,85 @@ describe("useChatStore", () => {
       // (次回 sendMessage が古い pin を吸わない)
       expect(useChatStore.getState().lastSystemPrompt).toMatch(/^mentionなし-/);
     });
+
+    it("buildPromptForCopy scene スコープ: 入力を seed に related_scenes を含め、eco で本文を空にする", async () => {
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      const { getNode, loadSceneContent } = await import("@/features/tree/api");
+      const { semanticSearch } = await import("@/features/semantic-search/api");
+      const mockSearch = vi.mocked(semanticSearch);
+      const mockTreeState = vi.mocked(useTreeStore.getState);
+      mockTreeState.mockReturnValue({
+        nodes: [
+          {
+            id: "scene-1",
+            parentId: null,
+            nodeType: "scene",
+            title: "テストシーン",
+            sortOrder: "a0",
+            synopsis: "要約",
+            charCount: 100,
+          },
+        ],
+        projectId: "proj-1",
+      } as never);
+      vi.mocked(getNode).mockResolvedValue({
+        id: "scene-1",
+        title: "テストシーン",
+        synopsis: "要約",
+      } as never);
+      vi.mocked(loadSceneContent).mockResolvedValue(
+        "これは長いシーン本文" as never,
+      );
+      mockSearch.mockResolvedValueOnce([
+        {
+          sceneId: "other-scene",
+          sceneTitle: "過去シーン",
+          chunkText: "関連する過去の抜粋",
+          charStart: 0,
+          charEnd: 10,
+          score: 0.9,
+          dialogueRatio: 0,
+        },
+      ] as never);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "COPY SYS",
+        totalTokens: 1,
+        layers: [],
+      });
+
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        inputPinnedEntryIds: [],
+        includeBodies: false, // eco
+        messages: [],
+      });
+
+      const result = await useChatStore
+        .getState()
+        .buildPromptForCopy("今書いてる入力");
+
+      // ① 入力を seed に意味検索が走り related_scenes が buildSystemPrompt へ
+      expect(mockSearch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "proj-1",
+          query: expect.stringContaining("今書いてる入力"),
+        }),
+      );
+      expect(
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.semanticRecall,
+      ).toBeDefined();
+      // ④ eco: 本文ブランク
+      expect(mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.scene.content).toBe(
+        "",
+      );
+      // system + 末尾の入力行
+      expect(result).toContain("[system]\nCOPY SYS");
+      expect(result).toContain("[user]\n今書いてる入力");
+    });
   });
 
   // --- G21: inputPinnedEntryIds ---
