@@ -98,7 +98,7 @@ export const lexicalSearchProvider: CommandCenterProvider = {
   order: PROVIDER_ORDER,
   title: "Lexical",
   hideWhenEmpty: true,
-  surfaces: ["panel"],
+  surfaces: ["bar", "panel"],
   supportsMode: (mode) => mode === "search",
   async search(ctx: ProviderSearchContext): Promise<CommandCenterSection> {
     const query = ctx.query.trim();
