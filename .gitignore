@@ -38,3 +38,6 @@ docs/screenshots/generated/*.png
 # Python venvs for the embedding scripts (calibrate / export / golden).
 # scripts/setup-en-embedding.sh / calibrate-embedding-threshold.py 用。
 .venv*/
+
+# scripts/seed-sample-*.py が生成する開発/QA 用サンプルワークスペース。
+samples/
