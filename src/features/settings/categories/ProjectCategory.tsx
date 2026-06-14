@@ -590,9 +590,9 @@ export function ProjectCategory() {
                   }
                 }}
                 className="rounded-md border border-dashed border-border px-3 py-1 text-sm text-muted-foreground hover:bg-accent"
-                title="開発専用: scene_chunks をコンソールにダンプ"
+                title={t("settings.project.semanticDebugDumpTitle")}
               >
-                Dump chunks
+                {t("settings.project.semanticDebugDumpButton")}
               </button>
             )}
             {import.meta.env.DEV && (
@@ -619,9 +619,9 @@ export function ProjectCategory() {
                   }
                 }}
                 className="rounded-md border border-dashed border-border px-3 py-1 text-sm text-muted-foreground hover:bg-accent"
-                title="開発専用: クエリ集を実機検索に流して Recall/閾値を計測"
+                title={t("settings.project.semanticEvalTitle")}
               >
-                Run search eval
+                {t("settings.project.semanticEvalButton")}
               </button>
             )}
           </div>

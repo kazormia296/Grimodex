@@ -175,8 +175,16 @@ export function LicensesSection() {
           />
         </div>
       </div>
-      <EntryList title="npm Packages" entries={state.npm} query={query} />
-      <EntryList title="Rust Crates" entries={state.cargo} query={query} />
+      <EntryList
+        title={t("settings.about.npmPackages")}
+        entries={state.npm}
+        query={query}
+      />
+      <EntryList
+        title={t("settings.about.rustCrates")}
+        entries={state.cargo}
+        query={query}
+      />
       {noMatch && (
         <p className="py-8 text-center text-sm text-muted-foreground">
           {t("settings.about.notFound", { query })}

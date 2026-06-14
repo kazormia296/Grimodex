@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { RotateCcw } from "lucide-react";
 
 import {
@@ -13,6 +14,7 @@ import type { Severity } from "@/features/lint/types";
 type Tab = "rules" | "terms" | "ignores";
 
 export function LinterCategory() {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<Tab>("rules");
 
   return (
@@ -20,9 +22,9 @@ export function LinterCategory() {
       <div className="flex gap-0 border-b border-border px-4 pt-3">
         {(
           [
-            { id: "rules", label: "ルール設定" },
-            { id: "terms", label: "用語辞書" },
-            { id: "ignores", label: "無視リスト" },
+            { id: "rules", label: t("settings.linter.tabRules") },
+            { id: "terms", label: t("settings.linter.tabTerms") },
+            { id: "ignores", label: t("settings.linter.tabIgnores") },
           ] as const
         ).map(({ id, label }) => (
           <button
@@ -48,6 +50,7 @@ export function LinterCategory() {
 }
 
 function LinterRulesTab() {
+  const { t } = useTranslation();
   const effective = useLintConfigStore((s) => s.getEffective());
   const setLinterEnabled = useLintConfigStore((s) => s.setLinterEnabled);
   const setLanguageEnabled = useLintConfigStore((s) => s.setLanguageEnabled);
@@ -78,29 +81,28 @@ function LinterRulesTab() {
   return (
     <div className="flex flex-col gap-6 p-6 text-sm">
       <section>
-        <h3 className="mb-3 text-base font-semibold">校正</h3>
+        <h3 className="mb-3 text-base font-semibold">
+          {t("settings.linter.proofreading")}
+        </h3>
         <label className="flex items-center gap-2">
           <input
             type="checkbox"
             checked={effective.enabled}
             onChange={(e) => setLinterEnabled(e.target.checked)}
           />
-          校正 を有効にする
+          {t("settings.linter.enableProofreading")}
         </label>
         <button
           type="button"
           onClick={() => {
-            if (
-              window.confirm(
-                "校正 設定をすべてデフォルトに戻します。よろしいですか？",
-              )
-            ) {
+            if (window.confirm(t("settings.linter.resetAllConfirm"))) {
               resetAll();
             }
           }}
           className="mt-2 flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
         >
-          <RotateCcw className="h-3.5 w-3.5" /> 全ルールをデフォルトに戻す
+          <RotateCcw className="h-3.5 w-3.5" />{" "}
+          {t("settings.linter.resetAllRules")}
         </button>
       </section>
 
@@ -108,7 +110,9 @@ function LinterRulesTab() {
         <section key={lang} className="flex flex-col gap-3">
           <div className="flex items-center justify-between border-b border-border pb-1">
             <h4 className="font-semibold">
-              {lang === "ja" ? "日本語ルール" : "英語ルール"}
+              {lang === "ja"
+                ? t("settings.linter.langRulesJa")
+                : t("settings.linter.langRulesEn")}
             </h4>
             <div className="flex items-center gap-2">
               <label className="flex items-center gap-1 text-xs">
@@ -117,13 +121,17 @@ function LinterRulesTab() {
                   checked={effective.languages[lang].enabled}
                   onChange={(e) => setLanguageEnabled(lang, e.target.checked)}
                 />
-                言語全体を有効
+                {t("settings.linter.enableLanguage")}
               </label>
               <button
                 type="button"
                 onClick={() => resetLanguage(lang)}
                 className="rounded border border-border px-1.5 py-0.5 text-xs hover:bg-accent"
-                title={`${lang === "ja" ? "日本語" : "英語"}のルールをデフォルトに戻す`}
+                title={
+                  lang === "ja"
+                    ? t("settings.linter.resetLangRulesJa")
+                    : t("settings.linter.resetLangRulesEn")
+                }
               >
                 <RotateCcw className="h-3 w-3" />
               </button>
@@ -150,7 +158,9 @@ function LinterRulesTab() {
           <section key={group} className="flex flex-col gap-3">
             <div className="flex items-center justify-between border-b border-border pb-1">
               <h4 className="font-semibold">
-                {group === "project" ? "プロジェクト連動" : "Codex 連動"}
+                {group === "project"
+                  ? t("settings.linter.groupProject")
+                  : t("settings.linter.groupCodex")}
               </h4>
             </div>
             <div className="flex flex-col divide-y divide-border rounded border border-border">
@@ -171,14 +181,6 @@ function LinterRulesTab() {
   );
 }
 
-const SEVERITY_OPTIONS: Array<{ value: Severity | "default"; label: string }> =
-  [
-    { value: "default", label: "既定" },
-    { value: "error", label: "Error" },
-    { value: "warning", label: "Warning" },
-    { value: "info", label: "Info" },
-  ];
-
 function RuleRow({
   ruleId,
   disabledByLanguage,
@@ -190,6 +192,7 @@ function RuleRow({
   onSetRule: (ruleId: string, patch: Record<string, unknown>) => void;
   onResetRule: (ruleId: string) => void;
 }) {
+  const { t } = useTranslation();
   const rule = useLintConfigStore((s) => s.getEffective().rules[ruleId]);
   if (!rule) return null;
 
@@ -200,6 +203,14 @@ function RuleRow({
   // severity would be meaningless and could drift from what the
   // dictionary surfaces, so we lock the dropdown.
   const severityDisabled = ruleId === "project/term-consistency";
+
+  const severityOptions: Array<{ value: Severity | "default"; label: string }> =
+    [
+      { value: "default", label: t("settings.linter.severityDefault") },
+      { value: "error", label: "Error" },
+      { value: "warning", label: "Warning" },
+      { value: "info", label: "Info" },
+    ];
 
   return (
     <div className="flex flex-col gap-1 px-3 py-2">
@@ -221,7 +232,11 @@ function RuleRow({
         <select
           value={severity}
           disabled={disabledByLanguage || !enabled || severityDisabled}
-          title={severityDisabled ? "エントリごとに設定" : undefined}
+          title={
+            severityDisabled
+              ? t("settings.linter.setSeverityPerEntry")
+              : undefined
+          }
           onChange={(e) => {
             const v = e.target.value;
             if (v === "default") onSetRule(ruleId, { severity: undefined });
@@ -229,7 +244,7 @@ function RuleRow({
           }}
           className="h-6 rounded border border-border bg-background px-1 text-xs disabled:opacity-50"
         >
-          {SEVERITY_OPTIONS.map((o) => (
+          {severityOptions.map((o) => (
             <option key={o.value} value={o.value}>
               {o.label}
             </option>
@@ -239,7 +254,7 @@ function RuleRow({
           type="button"
           onClick={() => onResetRule(ruleId)}
           className="rounded border border-border p-1 text-xs hover:bg-accent"
-          title="このルールをデフォルトに戻す"
+          title={t("settings.linter.resetRule")}
         >
           <RotateCcw className="h-3 w-3" />
         </button>
@@ -258,6 +273,7 @@ function RuleOptions({
   rule: { options?: Record<string, unknown> };
   onSetRule: (ruleId: string, patch: Record<string, unknown>) => void;
 }) {
+  const { t } = useTranslation();
   const options = rule.options ?? {};
 
   if (ruleId === "ja/sentence-length") {
@@ -277,7 +293,7 @@ function RuleOptions({
             }
             className="h-6 w-14 rounded border border-border bg-background px-1 text-right"
           />
-          文字
+          {t("settings.linter.characters")}
         </label>
         <label className="flex items-center gap-1">
           Error
@@ -293,7 +309,7 @@ function RuleOptions({
             }
             className="h-6 w-14 rounded border border-border bg-background px-1 text-right"
           />
-          文字
+          {t("settings.linter.characters")}
         </label>
       </div>
     );
@@ -303,7 +319,7 @@ function RuleOptions({
     const policy = (options.policy as string) ?? "strip";
     return (
       <div className="flex items-center gap-2 pl-6 text-xs text-muted-foreground">
-        方針
+        {t("settings.linter.policy")}
         <select
           value={policy}
           onChange={(e) =>
@@ -311,9 +327,13 @@ function RuleOptions({
           }
           className="h-6 rounded border border-border bg-background px-1"
         >
-          <option value="strip">strip（句点を削除）</option>
-          <option value="require">require（句点を付与）</option>
-          <option value="preserve">preserve（検出しない）</option>
+          <option value="strip">{t("settings.linter.quotePolicyStrip")}</option>
+          <option value="require">
+            {t("settings.linter.quotePolicyRequire")}
+          </option>
+          <option value="preserve">
+            {t("settings.linter.quotePolicyPreserve")}
+          </option>
         </select>
       </div>
     );
@@ -323,7 +343,7 @@ function RuleOptions({
     const policy = (options.policy as string) ?? "all-halfwidth";
     return (
       <div className="flex items-center gap-2 pl-6 text-xs text-muted-foreground">
-        方針
+        {t("settings.linter.policy")}
         <select
           value={policy}
           onChange={(e) =>
@@ -331,10 +351,14 @@ function RuleOptions({
           }
           className="h-6 rounded border border-border bg-background px-1"
         >
-          <option value="all-halfwidth">all-halfwidth（英数字は半角）</option>
-          <option value="all-fullwidth">all-fullwidth（英数字は全角）</option>
+          <option value="all-halfwidth">
+            {t("settings.linter.widthPolicyAllHalfwidth")}
+          </option>
+          <option value="all-fullwidth">
+            {t("settings.linter.widthPolicyAllFullwidth")}
+          </option>
           <option value="ja-halfwidth-with-exceptions">
-            ja-halfwidth-with-exceptions（日本語文中は半角、1桁数字は全角）
+            {t("settings.linter.widthPolicyJaHalfwidth")}
           </option>
           <option value="off">off</option>
         </select>
@@ -347,7 +371,7 @@ function RuleOptions({
     return (
       <div className="flex items-center gap-2 pl-6 text-xs text-muted-foreground">
         <label className="flex items-center gap-1">
-          連続「の」が
+          {t("settings.linter.particleChainBefore")}
           <input
             type="number"
             min={2}
@@ -360,7 +384,7 @@ function RuleOptions({
             }
             className="h-6 w-12 rounded border border-border bg-background px-1 text-right"
           />
-          個以上で検出
+          {t("settings.linter.particleChainAfter")}
         </label>
       </div>
     );
@@ -372,7 +396,7 @@ function RuleOptions({
     return (
       <div className="flex items-center gap-3 pl-6 text-xs text-muted-foreground flex-wrap">
         <label className="flex items-center gap-1">
-          検出ウィンドウ
+          {t("settings.linter.detectionWindow")}
           <input
             type="number"
             min={10}
@@ -385,10 +409,10 @@ function RuleOptions({
             }
             className="h-6 w-16 rounded border border-border bg-background px-1 text-right"
           />
-          文字
+          {t("settings.linter.characters")}
         </label>
         <label className="flex items-center gap-1">
-          最小語長
+          {t("settings.linter.minLength")}
           <input
             type="number"
             min={1}
@@ -401,7 +425,7 @@ function RuleOptions({
             }
             className="h-6 w-12 rounded border border-border bg-background px-1 text-right"
           />
-          文字
+          {t("settings.linter.characters")}
         </label>
       </div>
     );
@@ -413,7 +437,7 @@ function RuleOptions({
     return (
       <div className="flex items-center gap-3 pl-6 text-xs text-muted-foreground flex-wrap">
         <label className="flex items-center gap-1">
-          漢字連続
+          {t("settings.linter.kanjiChain")}
           <input
             type="number"
             min={2}
@@ -426,10 +450,10 @@ function RuleOptions({
             }
             className="h-6 w-12 rounded border border-border bg-background px-1 text-right"
           />
-          文字以上
+          {t("settings.linter.charsOrMore")}
         </label>
         <label className="flex items-center gap-1">
-          ひらがな連続
+          {t("settings.linter.hiraganaChain")}
           <input
             type="number"
             min={5}
@@ -442,7 +466,7 @@ function RuleOptions({
             }
             className="h-6 w-12 rounded border border-border bg-background px-1 text-right"
           />
-          文字以上
+          {t("settings.linter.charsOrMore")}
         </label>
       </div>
     );

@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { useReindexProgressStore } from "./reindexProgressStore";
 
 /**
@@ -7,6 +8,7 @@ import { useReindexProgressStore } from "./reindexProgressStore";
  * 自動で消える (store 側で AUTO_CLEAR_MS タイマー管理)。
  */
 export function ReindexProgressToast() {
+  const { t } = useTranslation();
   const active = useReindexProgressStore((s) => s.active);
   const current = useReindexProgressStore((s) => s.current);
   const finished = useReindexProgressStore((s) => s.finished);
@@ -21,12 +23,16 @@ export function ReindexProgressToast() {
         : 0;
 
   const title = finished
-    ? "再インデックス完了"
-    : "セマンティック再インデックス中";
+    ? t("semanticSearch.reindexComplete")
+    : t("semanticSearch.reindexing");
   const detail =
     totalScenes === 0
-      ? "対象シーンなし"
-      : `${sceneIndex} / ${totalScenes} シーン · ${chunksIndexed} チャンク`;
+      ? t("semanticSearch.noScenes")
+      : t("semanticSearch.progressDetail", {
+          scene: sceneIndex,
+          total: totalScenes,
+          chunks: chunksIndexed,
+        });
 
   return createPortal(
     <div

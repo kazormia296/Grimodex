@@ -1,6 +1,7 @@
 import { AlertTriangle, Check, X } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import i18next from "i18next";
 import { toast } from "sonner";
 import {
   useAiSettingsStore,
@@ -52,9 +53,9 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
   ollama: "ollama-local",
-  "openai-compatible": "OpenAI 互換",
+  "openai-compatible": "OpenAI-compatible",
   "ai-novelist": "AI のべりすと",
-  cli: "CLI エージェント",
+  cli: "CLI agent",
 };
 
 /** AI のべりすと等のサンプリングキーで「数値型」として扱うキー */
@@ -119,7 +120,7 @@ function renderSamplingInput(
         }}
         onBlur={onBlur}
         className="flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm font-mono focus:outline-none"
-        placeholder="(空欄で省略)"
+        placeholder={i18next.t("settings.ai.samplingOmitPlaceholder")}
       />
     </div>
   );
@@ -324,8 +325,13 @@ export function AiCategory() {
   const budgetTotal = budgetValues.reduce((sum, l) => sum + l.value, 0);
   const budgetError = budgetTotal > 100;
 
-  const providerLabel = (p: AiProvider) =>
-    p === "ollama" ? t("settings.ai.ollamaLocal") : PROVIDER_LABELS[p];
+  const providerLabel = (p: AiProvider) => {
+    if (p === "ollama") return t("settings.ai.ollamaLocal");
+    if (p === "openai-compatible")
+      return t("settings.ai.providerOpenaiCompatible");
+    if (p === "cli") return t("settings.ai.providerCli");
+    return PROVIDER_LABELS[p];
+  };
 
   if (!localSettings) {
     return (
@@ -375,9 +381,7 @@ export function AiCategory() {
         {localSettings.provider === "openai-compatible" && (
           <>
             <p className="mb-2 text-xs text-muted-foreground">
-              llama.cpp / LM Studio / vLLM / 自前ホストの GPU
-              推論サーバ等。baseURL を入力してください。API
-              キーが不要なサーバの場合は空欄で構いません。
+              {t("settings.ai.openaiCompatDesc")}
             </p>
             <SettingRow label="Base URL">
               <input
@@ -392,8 +396,8 @@ export function AiCategory() {
               />
             </SettingRow>
             <SettingRow
-              label="コンテキスト窓 (tokens)"
-              description="モデルの最大入力トークン数。空欄時は 8,000 にフォールバック"
+              label={t("settings.ai.contextWindowLabel")}
+              description={t("settings.ai.contextWindowDesc")}
             >
               <input
                 type="number"
@@ -411,8 +415,8 @@ export function AiCategory() {
               />
             </SettingRow>
             <SettingRow
-              label="最大出力 (tokens)"
-              description="モデル固有の出力上限。指定すると応答予約のクランプに使われる"
+              label={t("settings.ai.maxOutputLabel")}
+              description={t("settings.ai.maxOutputDesc")}
             >
               <input
                 type="number"
@@ -426,12 +430,12 @@ export function AiCategory() {
                 }
                 onBlur={handleSaveOpenaiCompat}
                 className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                placeholder="(任意)"
+                placeholder={t("settings.ai.optionalPlaceholder")}
               />
             </SettingRow>
             <SettingRow
-              label="Codex 自動抽出 / Synopsis 自動生成を許可"
-              description="構造化出力 (JSON) の精度が低い場合はオフのままにしてください"
+              label={t("settings.ai.allowStructuredTasks")}
+              description={t("settings.ai.structuredTasksLowAccuracyNote")}
             >
               <input
                 type="checkbox"
@@ -459,9 +463,9 @@ export function AiCategory() {
         {localSettings.provider === "ai-novelist" && (
           <>
             <p className="mb-2 text-xs text-muted-foreground">
-              日本語小説特化のプロバイダ。API キーは{" "}
-              <span className="font-mono">ai-novel.com/account_api.php</span>{" "}
-              で発行できます。
+              {t("settings.ai.aiNovelistDescBefore")}
+              <span className="font-mono">ai-novel.com/account_api.php</span>
+              {t("settings.ai.aiNovelistDescAfter")}
             </p>
             <SettingRow label="Base URL (legacy)">
               <span className="text-sm text-muted-foreground font-mono">
@@ -474,8 +478,8 @@ export function AiCategory() {
               </span>
             </SettingRow>
             <SettingRow
-              label="多言語モード"
-              description="日本語以外で生成する場合に有効にしてください（spiko Ultra / v1 モデル向け）"
+              label={t("settings.ai.multilingualMode")}
+              description={t("settings.ai.multilingualModeDesc")}
             >
               <input
                 type="checkbox"
@@ -504,12 +508,12 @@ export function AiCategory() {
             ) && (
               <div className="mt-3 mb-2">
                 <p className="mb-1 text-sm font-medium text-foreground">
-                  サンプリングパラメータ
+                  {t("settings.ai.samplingParameters")}
                 </p>
                 <p className="mb-2 text-xs text-muted-foreground">
-                  空欄でリクエストから省略されます。配列・オブジェクトは JSON
-                  文字列で入力してください（例:{" "}
-                  <code className="font-mono">["foo","bar"]</code>）。
+                  {t("settings.ai.samplingParamsDescBefore")}
+                  <code className="font-mono">["foo","bar"]</code>
+                  {t("settings.ai.samplingParamsDescAfter")}
                 </p>
                 <div className="space-y-1.5">
                   {AINOVERIST_EXTRA_SAMPLING_KEYS.map((key) =>
@@ -544,7 +548,7 @@ export function AiCategory() {
               </div>
             )}
             <SettingRow
-              label="Codex 自動抽出 / Synopsis 自動生成を許可"
+              label={t("settings.ai.allowStructuredTasks")}
               description={
                 isAinoveristV1Model(
                   localSettings.model,
@@ -554,8 +558,8 @@ export function AiCategory() {
                     localSettings.modelApiVariant,
                   ),
                 )
-                  ? "v1 モデルでは利用可能ですが、デフォルトは保守的に無効化されています"
-                  : "このプロバイダは構造化出力 (JSON) の精度が低いため、デフォルトで無効化されています"
+                  ? t("settings.ai.structuredTasksV1Note")
+                  : t("settings.ai.structuredTasksLegacyNote")
               }
             >
               <input
@@ -617,7 +621,7 @@ export function AiCategory() {
             };
             return (
               <>
-                <SettingRow label="CLI 種別">
+                <SettingRow label={t("settings.ai.cliKind")}>
                   <select
                     value={cli.kind}
                     onChange={(e) => {
@@ -635,20 +639,19 @@ export function AiCategory() {
                   </select>
                 </SettingRow>
                 <p className="mb-2 text-xs text-muted-foreground">
-                  CLI 側で事前に{" "}
+                  {t("settings.ai.cliAuthNoteBefore")}
                   <code className="font-mono">
                     {cli.kind === "opencode"
                       ? "opencode auth login"
                       : cli.kind === "codex"
                         ? "codex login"
                         : "claude login"}
-                  </code>{" "}
-                  等で認証を済ませてください。本パネルからはツール (ファイル R/W
-                  / shell) は全て無効化された状態で起動します。
+                  </code>
+                  {t("settings.ai.cliAuthNoteAfter")}
                 </p>
                 <SettingRow
-                  label="バイナリパス"
-                  description="空欄なら CLI 名で PATH 解決。「自動検出」は macOS/Linux で bash -lc which、Windows で where.exe を使います"
+                  label={t("settings.ai.binaryPath")}
+                  description={t("settings.ai.binaryPathDesc")}
                 >
                   <div className="flex gap-2">
                     <input
@@ -659,7 +662,9 @@ export function AiCategory() {
                       }
                       onBlur={persistCliSettings}
                       className="w-72 rounded-md border border-input bg-background px-2 py-1 text-sm font-mono focus:outline-none"
-                      placeholder={`${cli.kind}（PATH またはフルパス）`}
+                      placeholder={t("settings.ai.binaryPathPlaceholder", {
+                        kind: cli.kind,
+                      })}
                     />
                     <button
                       type="button"
@@ -668,25 +673,29 @@ export function AiCategory() {
                         if (path) {
                           await updateCli({ binaryPath: path });
                           handleLoadModels();
-                          toast.success(`検出: ${path}`);
+                          toast.success(
+                            t("settings.ai.detectedToast", { path }),
+                          );
                         } else {
                           toast.error(
-                            `${cli.kind} が PATH 上で見つかりませんでした。手動でパスを指定してください。`,
+                            t("settings.ai.cliNotFoundToast", {
+                              kind: cli.kind,
+                            }),
                           );
                         }
                       }}
                       className="rounded-md border border-border px-2 py-1 text-sm hover:bg-accent"
                     >
-                      自動検出
+                      {t("settings.ai.autoDetect")}
                     </button>
                   </div>
                 </SettingRow>
                 <SettingRow
-                  label="モデル"
+                  label={t("settings.ai.model")}
                   description={
                     cli.kind === "claude"
-                      ? "Claude Code は一覧コマンドがないためよく使うモデルを表示します。空欄なら CLI のデフォルト"
-                      : "CLI から取得したモデル一覧。空欄なら CLI のデフォルト"
+                      ? t("settings.ai.cliModelDescClaude")
+                      : t("settings.ai.cliModelDescOther")
                   }
                 >
                   <div className="flex gap-2">
@@ -695,7 +704,7 @@ export function AiCategory() {
                       value={cli.model ?? ""}
                       onChange={(modelId) => void updateCli({ model: modelId })}
                       isLoading={isLoadingModels}
-                      placeholder="(CLI デフォルト)"
+                      placeholder={t("settings.ai.cliDefaultPlaceholder")}
                     />
                     <button
                       type="button"
@@ -714,17 +723,21 @@ export function AiCategory() {
                       const path = cli.binaryPath || cli.kind;
                       try {
                         const version = await testCliConnection(path);
-                        toast.success(`接続成功: ${version}`);
+                        toast.success(
+                          t("settings.ai.connectionSuccessToast", { version }),
+                        );
                       } catch (e) {
                         toast.error(
-                          `接続失敗: ${e instanceof Error ? e.message : String(e)}`,
+                          t("settings.ai.connectionFailedToast", {
+                            error: e instanceof Error ? e.message : String(e),
+                          }),
                         );
                       }
                     }}
                     disabled={!cli.binaryPath && !cli.kind}
                     className="rounded-md bg-secondary px-3 py-1.5 text-sm text-secondary-foreground hover:bg-secondary/80 disabled:opacity-50"
                   >
-                    接続テスト (--version)
+                    {t("settings.ai.connectionTestVersion")}
                   </button>
                 </div>
               </>
@@ -738,9 +751,9 @@ export function AiCategory() {
               label={t("settings.ai.apiKey")}
               description={
                 localSettings.provider === "openai-compatible"
-                  ? "ローカル LLM サーバ等で API キーが不要な場合は空欄で構いません"
+                  ? t("settings.ai.apiKeyDescOpenaiCompat")
                   : localSettings.provider === "ai-novelist"
-                    ? "ai-novel.com/account_api.php で発行した API キーを入力してください"
+                    ? t("settings.ai.apiKeyDescAiNovelist")
                     : undefined
               }
             >
@@ -1048,7 +1061,7 @@ export function AiCategory() {
         {localSettings.provider === "openrouter" && (
           <SettingRow
             label="Provider pin"
-            description="OpenRouter のルーティングを 1 つの provider に固定し、Anthropic prompt cache を効きやすくする。fallbacks 有効なので落ちたら別 provider に逃げる。"
+            description={t("settings.ai.providerPinDesc")}
           >
             <select
               value={localSettings.openrouterProviderPin ?? ""}
@@ -1063,7 +1076,7 @@ export function AiCategory() {
               }}
               className="rounded-md border border-input bg-background px-2 py-1 text-sm"
             >
-              <option value="">指定しない（OpenRouter デフォルト）</option>
+              <option value="">{t("settings.ai.providerPinNone")}</option>
               {OPENROUTER_PROVIDER_PINS.map((p) => (
                 <option key={p.slug} value={p.slug}>
                   {p.label}
@@ -1078,7 +1091,7 @@ export function AiCategory() {
           localSettings.provider !== "cli" && (
             <SettingRow
               label="Tool call protocol"
-              description="Agent のツール呼び出し形式。auto は model 名に hermes を含む場合のみ Hermes 形式（本文 <tool_call>）として解釈。Qwen 等は hermes を明示選択。"
+              description={t("settings.ai.toolProtocolDesc")}
             >
               <select
                 value={localSettings.toolProtocolMode ?? "auto"}
@@ -1092,7 +1105,9 @@ export function AiCategory() {
                 }}
                 className="rounded-md border border-input bg-background px-2 py-1 text-sm"
               >
-                <option value="auto">auto（推奨）</option>
+                <option value="auto">
+                  {t("settings.ai.toolProtocolAuto")}
+                </option>
                 <option value="native">native</option>
                 <option value="hermes">hermes</option>
               </select>

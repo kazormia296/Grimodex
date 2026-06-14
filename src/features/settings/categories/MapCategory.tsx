@@ -1,14 +1,9 @@
+import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingDropdown } from "../components/SettingDropdown";
 import { useSettingControl, useSettingNumber } from "../useSettingControl";
 import { PALETTES, getPalette } from "@/lib/stickyPalettes";
-
-const EDGE_STYLE_OPTIONS = [
-  { value: "solid", label: "実線 (Solid)" },
-  { value: "dashed", label: "破線 (Dashed)" },
-  { value: "dotted", label: "点線 (Dotted)" },
-];
 
 const PALETTE_OPTIONS = Object.values(PALETTES).map((p) => ({
   value: p.id,
@@ -16,6 +11,12 @@ const PALETTE_OPTIONS = Object.values(PALETTES).map((p) => ({
 }));
 
 export function MapCategory() {
+  const { t } = useTranslation();
+  const EDGE_STYLE_OPTIONS = [
+    { value: "solid", label: t("settings.map.edgeStyleSolid") },
+    { value: "dashed", label: t("settings.map.edgeStyleDashed") },
+    { value: "dotted", label: t("settings.map.edgeStyleDotted") },
+  ];
   const { value: paletteId } = useSettingControl(
     "map.defaultStickyPaletteId",
     "post-it-playful",
@@ -29,10 +30,10 @@ export function MapCategory() {
 
   return (
     <div className="flex flex-col gap-6">
-      <SettingSection title="Sticky 既定値">
+      <SettingSection title={t("settings.map.stickyDefaults")}>
         <SettingRow
-          label="パレット"
-          description="新規 Sticky 作成時の既定パレット。"
+          label={t("settings.map.palette")}
+          description={t("settings.map.paletteDesc")}
         >
           <SettingDropdown
             settingKey="map.defaultStickyPaletteId"
@@ -41,8 +42,8 @@ export function MapCategory() {
           />
         </SettingRow>
         <SettingRow
-          label="既定色"
-          description="新規 Sticky 作成時の色 (パレット内 slot)。"
+          label={t("settings.map.defaultColor")}
+          description={t("settings.map.defaultColorDesc")}
         >
           <div className="flex flex-wrap gap-1.5">
             {palette.colors.map((c, i) => {
@@ -71,10 +72,10 @@ export function MapCategory() {
         </SettingRow>
       </SettingSection>
 
-      <SettingSection title="Edge 既定値">
+      <SettingSection title={t("settings.map.edgeDefaults")}>
         <SettingRow
-          label="既定スタイル"
-          description="ノード間にエッジを描画するときの既定線種。"
+          label={t("settings.map.defaultEdgeStyle")}
+          description={t("settings.map.defaultEdgeStyleDesc")}
         >
           <SettingDropdown
             settingKey="map.defaultEdgeStyle"

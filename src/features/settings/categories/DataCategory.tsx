@@ -253,10 +253,12 @@ export function DataCategory() {
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <div>
-              <span className="text-sm">Codex 言及キャッシュを再構築</span>
+              <span className="text-sm">
+                {t("settings.data.rebuildMentionCache")}
+              </span>
               {rescanRunning && (
                 <p className="text-xs text-muted-foreground">
-                  Scanning... {rescanProgress}/{rescanTotal}
+                  {t("settings.data.scanning")} {rescanProgress}/{rescanTotal}
                 </p>
               )}
             </div>
@@ -266,7 +268,9 @@ export function DataCategory() {
               disabled={rescanRunning}
               className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
             >
-              {rescanRunning ? "実行中..." : t("settings.data.rebuild")}
+              {rescanRunning
+                ? t("settings.data.running")
+                : t("settings.data.rebuild")}
             </button>
           </div>
           <div className="flex items-center justify-between">

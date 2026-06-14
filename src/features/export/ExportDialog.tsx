@@ -513,8 +513,9 @@ export function ExportDialog({ open, onClose }: Props) {
             </>
           ) : (
             <span className="text-xs text-muted-foreground">
-              残存 AI: {(authorshipReport?.totals.ai ?? 0).toLocaleString()}{" "}
-              文字
+              {t("export.disclosure.remainingAi", {
+                count: (authorshipReport?.totals.ai ?? 0).toLocaleString(),
+              })}
             </span>
           )}
           <div className="flex-1" />
@@ -582,6 +583,7 @@ function AuthorshipDisclosureSection({
   includeFullSystemPrompt: boolean;
   onIncludeFullSystemPromptChange: (value: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const total = report?.totals.total ?? 0;
   const ai = report?.totals.ai ?? 0;
   const aiPct = total > 0 ? Math.round((ai / total) * 100) : 0;
@@ -592,9 +594,11 @@ function AuthorshipDisclosureSection({
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold">AI 使用開示</h3>
+            <h3 className="text-sm font-semibold">
+              {t("export.disclosure.title")}
+            </h3>
             <p className="text-xs text-muted-foreground">
-              残存している authorship metadata に基づく出自レポートです。
+              {t("export.disclosure.subtitle")}
             </p>
           </div>
           <div className="flex flex-col items-end gap-1.5 text-xs text-muted-foreground">
@@ -606,7 +610,7 @@ function AuthorshipDisclosureSection({
                   onIncludePassageExcerptsChange(e.currentTarget.checked)
                 }
               />
-              抜粋を含める
+              {t("export.disclosure.includeExcerpts")}
             </label>
             <label className="flex items-center gap-2">
               <input
@@ -616,7 +620,7 @@ function AuthorshipDisclosureSection({
                   onIncludePromptsChange(e.currentTarget.checked)
                 }
               />
-              制作過程（プロンプト入出力）を含める
+              {t("export.disclosure.includeProcess")}
             </label>
             {includePrompts && (
               <label className="flex items-center gap-2 pl-4">
@@ -627,7 +631,7 @@ function AuthorshipDisclosureSection({
                     onIncludeFullSystemPromptChange(e.currentTarget.checked)
                   }
                 />
-                完全な送信プロンプトも含める
+                {t("export.disclosure.includeFullPrompt")}
               </label>
             )}
           </div>
@@ -636,32 +640,41 @@ function AuthorshipDisclosureSection({
         {(includePassageExcerpts || includePrompts) && (
           <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
             {includeFullSystemPrompt
-              ? "送信プロンプト全文には、他シーンの本文・設定資料・RAG 抜粋が含まれることがあります。開示ファイルの公開範囲に十分注意してください。"
-              : "AI 使用箇所の本文・プロンプトがそのまま含まれます。公開範囲について注意してください。"}
+              ? t("export.disclosure.warnFullPrompt")
+              : t("export.disclosure.warnExcerpts")}
           </div>
         )}
 
         {loading ? (
-          <p className="text-sm text-muted-foreground">読み込み中...</p>
+          <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
         ) : !report || !breakdown ? (
           <p className="text-sm text-muted-foreground">
-            レポートを作成できませんでした。
+            {t("export.disclosure.reportFailed")}
           </p>
         ) : (
           <>
             <div className="grid grid-cols-3 gap-3">
-              <Metric label="総文字数" value={total.toLocaleString()} />
-              <Metric label="AI 文字数" value={ai.toLocaleString()} />
-              <Metric label="AI 比率" value={`${aiPct}%`} />
+              <Metric
+                label={t("export.disclosure.metricTotal")}
+                value={total.toLocaleString()}
+              />
+              <Metric
+                label={t("export.disclosure.metricAi")}
+                value={ai.toLocaleString()}
+              />
+              <Metric
+                label={t("export.disclosure.metricRatio")}
+                value={`${aiPct}%`}
+              />
             </div>
 
             <div className="rounded border border-border">
               {[
-                ["チャット", breakdown.chat],
+                [t("export.disclosure.breakdownChat"), breakdown.chat],
                 ["slash", breakdown.inlineAi],
                 ["Beat", breakdown.beat],
-                ["消失", breakdown.orphanChat],
-                ["出自記録なし", breakdown.unknownAi],
+                [t("export.disclosure.breakdownOrphan"), breakdown.orphanChat],
+                [t("export.disclosure.breakdownUnknown"), breakdown.unknownAi],
               ].map(([label, value]) => (
                 <div
                   key={label}
@@ -689,20 +702,26 @@ function AuthorshipDisclosureSection({
                     {passage.disclosure ? (
                       <div className="mt-1 flex flex-col gap-1">
                         <div>
-                          <span className="font-semibold">入力:</span>{" "}
-                          {passage.disclosure.userPrompt || "（記録なし）"}
+                          <span className="font-semibold">
+                            {t("export.disclosure.inputLabel")}
+                          </span>{" "}
+                          {passage.disclosure.userPrompt ||
+                            t("export.disclosure.noRecord")}
                         </div>
                         <div>
-                          <span className="font-semibold">出力:</span>{" "}
-                          {passage.disclosure.output || "（空）"}
+                          <span className="font-semibold">
+                            {t("export.disclosure.outputLabel")}
+                          </span>{" "}
+                          {passage.disclosure.output ||
+                            t("export.disclosure.empty")}
                         </div>
                         {includeFullSystemPrompt && (
                           <div className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-2 text-muted-foreground">
                             <span className="font-semibold">
-                              送信プロンプト:
+                              {t("export.disclosure.sentPromptLabel")}
                             </span>{" "}
                             {passage.disclosure.sentSystemPrompt ||
-                              "（未記録）"}
+                              t("export.disclosure.notRecorded")}
                           </div>
                         )}
                       </div>
@@ -717,15 +736,16 @@ function AuthorshipDisclosureSection({
             {report.map && report.map.stickyCount > 0 && (
               <div>
                 <h4 className="text-xs font-semibold">
-                  Map AI コンテンツ（本文集計とは別）
+                  {t("export.disclosure.mapAiTitle")}
                 </h4>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  付箋 {report.map.stickyCount.toLocaleString()} 件 / AI 文字数{" "}
-                  {report.map.totalAiChars.toLocaleString()}
+                  {t("export.disclosure.mapAiSummary", {
+                    stickyCount: report.map.stickyCount.toLocaleString(),
+                    aiChars: report.map.totalAiChars.toLocaleString(),
+                  })}
                 </p>
                 <p className="mt-1 text-[11px] text-muted-foreground">
-                  ※ AI Branch 採用時点の文字数です。採用後に手で編集した付箋は
-                  過大計上されることがあります。
+                  {t("export.disclosure.mapAiNote")}
                 </p>
                 <div className="mt-2 rounded border border-border">
                   {report.map.stickies.map((s) => (

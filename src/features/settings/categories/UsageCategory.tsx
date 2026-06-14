@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -30,6 +31,7 @@ function cacheReadRatio(read: number, write: number): string {
 }
 
 export function UsageCategory() {
+  const { t } = useTranslation();
   const [summary, setSummary] = useState<ProjectUsageSummary | null>(null);
   const [loading, setLoading] = useState(true);
   // 集計の読み取りは書き込み側 (recordAiUsage) と同一の projectId 源 (tree store)
@@ -59,44 +61,45 @@ export function UsageCategory() {
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto p-4">
         <p className="mb-4 text-xs text-muted-foreground">
-          このプロジェクトの AI 生成によるトークン使用量とおおよそのコストです。
-          コストは料金表 (modelPricing)
-          からの概算で、課金額そのものではありません。
+          {t("settings.usage.summaryIntro")}{" "}
+          {t("settings.usage.costDisclaimer")}
         </p>
 
         {loading && (
-          <div className="text-sm text-muted-foreground">読み込み中…</div>
+          <div className="text-sm text-muted-foreground">
+            {t("common.loading")}
+          </div>
         )}
 
         {!loading && summary && summary.totalCount === 0 && (
           <div className="text-sm text-muted-foreground">
-            まだ AI 生成の記録がありません。
+            {t("settings.usage.noRecords")}
           </div>
         )}
 
         {!loading && summary && summary.totalCount > 0 && (
           <>
-            <SettingSection title="合計">
-              <SettingRow label="生成回数">
+            <SettingSection title={t("settings.usage.total")}>
+              <SettingRow label={t("settings.usage.generationCount")}>
                 <span className="text-sm tabular-nums text-foreground">
                   {summary.totalCount.toLocaleString()}
                 </span>
               </SettingRow>
-              <SettingRow label="入力トークン">
+              <SettingRow label={t("settings.usage.inputTokens")}>
                 <span className="text-sm tabular-nums text-foreground">
                   {formatTokens(summary.totalTokensIn)}
                 </span>
               </SettingRow>
-              <SettingRow label="出力トークン">
+              <SettingRow label={t("settings.usage.outputTokens")}>
                 <span className="text-sm tabular-nums text-foreground">
                   {formatTokens(summary.totalTokensOut)}
                 </span>
               </SettingRow>
               <SettingRow
-                label="推定コスト"
+                label={t("settings.usage.estimatedCost")}
                 description={
                   summary.anyCostEstimated
-                    ? "一部はトークン数からの概算 (≈) を含みます"
+                    ? t("settings.usage.costEstimatedNote")
                     : undefined
                 }
               >
@@ -109,8 +112,8 @@ export function UsageCategory() {
               </SettingRow>
               {summary.unmeteredCount > 0 && (
                 <SettingRow
-                  label="トークン未取得"
-                  description="ストリーミングで usage が届かなかった生成 (回数のみ計上)"
+                  label={t("settings.usage.unmeteredCount")}
+                  description={t("settings.usage.unmeteredDesc")}
                 >
                   <span className="text-sm tabular-nums text-muted-foreground">
                     {summary.unmeteredCount.toLocaleString()}
@@ -121,10 +124,10 @@ export function UsageCategory() {
 
             {summary.totalCacheReadTokens + summary.totalCacheWriteTokens >
               0 && (
-              <SettingSection title="プロンプトキャッシュ">
+              <SettingSection title={t("settings.usage.promptCache")}>
                 <SettingRow
-                  label="読込率"
-                  description="読込 / (読込+書込)。高いほどキャッシュが効いている。低い場合は provider 切替か TTL(5分)切れ — この集計では区別できません"
+                  label={t("settings.usage.cacheReadRatio")}
+                  description={t("settings.usage.cacheReadRatioDesc")}
                 >
                   <span className="text-sm tabular-nums text-foreground">
                     {cacheReadRatio(
@@ -134,16 +137,16 @@ export function UsageCategory() {
                   </span>
                 </SettingRow>
                 <SettingRow
-                  label="読込トークン"
-                  description="キャッシュから読めた入力 (節約側)"
+                  label={t("settings.usage.cacheReadTokens")}
+                  description={t("settings.usage.cacheReadTokensDesc")}
                 >
                   <span className="text-sm tabular-nums text-foreground">
                     {formatTokens(summary.totalCacheReadTokens)}
                   </span>
                 </SettingRow>
                 <SettingRow
-                  label="書込トークン"
-                  description="キャッシュへ書いた入力 (初回/期限切れ。コスト側で節約ではない)"
+                  label={t("settings.usage.cacheWriteTokens")}
+                  description={t("settings.usage.cacheWriteTokensDesc")}
                 >
                   <span className="text-sm tabular-nums text-foreground">
                     {formatTokens(summary.totalCacheWriteTokens)}
@@ -152,14 +155,16 @@ export function UsageCategory() {
               </SettingSection>
             )}
 
-            <SettingSection title="サーフェス別">
+            <SettingSection title={t("settings.usage.bySurface")}>
               {summary.bySurface.map((s) => (
                 <SettingRow
                   key={s.surface}
                   label={surfaceLabel(s.surface)}
-                  description={`${s.count.toLocaleString()} 回 · 入力 ${formatTokens(
-                    s.tokensIn,
-                  )} / 出力 ${formatTokens(s.tokensOut)}`}
+                  description={t("settings.usage.surfaceRowDesc", {
+                    count: s.count.toLocaleString(),
+                    tokensIn: formatTokens(s.tokensIn),
+                    tokensOut: formatTokens(s.tokensOut),
+                  })}
                 >
                   <span className="text-sm tabular-nums text-foreground">
                     {formatCostMaybeEstimated(s.costUsd, s.costEstimated)}
