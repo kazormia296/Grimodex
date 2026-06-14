@@ -34,3 +34,7 @@ docs/screenshots/generated/*.png
 # Vitest browser-mode attachments (per-run failure screenshots)
 .vitest-attachments/
 **/__screenshots__/
+
+# Python venvs for the embedding scripts (calibrate / export / golden).
+# scripts/setup-en-embedding.sh / calibrate-embedding-threshold.py 用。
+.venv*/
