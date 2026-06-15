@@ -1,4 +1,27 @@
 {
+  "lint": {
+    "filter": {
+      "searchPlaceholder": "Filter by rule_id / message",
+      "applyAllFixes": "Fix all ({{n}})",
+      "applyAllFixesTitle": "Apply all fixes in the filtered results"
+    },
+    "severity": {
+      "error": "Error",
+      "warning": "Warning",
+      "info": "Info"
+    },
+    "group": {
+      "none": "None"
+    }
+  },
+  "postEffect": {
+    "confidence": {
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "title": "AI confidence: {{level}}"
+    }
+  },
   "common": {
     "loading": "Loading…",
     "loadingContent": "Loading…",
@@ -1584,7 +1607,8 @@
     "header": {
       "chapterCount": "{{count}} chapter(s)",
       "newChapter": "Add Chapter",
-      "displaySettings": "Display settings"
+      "displaySettings": "Display settings",
+      "displayFilter": "Display & filter"
     },
     "column": {
       "newScene": "Add Scene",
@@ -1596,6 +1620,7 @@
     },
     "card": {
       "synopsisPlaceholder": "Add synopsis…",
+      "expandSynopsis": "Show more",
       "empty": "Empty scene",
       "openInEditor": "Open in Editor",
       "moreBeats": "+{{n}} more",

@@ -1,4 +1,27 @@
 {
+  "lint": {
+    "filter": {
+      "searchPlaceholder": "rule_id / message で絞り込み",
+      "applyAllFixes": "全 Fix ({{n}})",
+      "applyAllFixesTitle": "フィルタ結果の Fix を一括適用"
+    },
+    "severity": {
+      "error": "エラー",
+      "warning": "警告",
+      "info": "情報"
+    },
+    "group": {
+      "none": "なし"
+    }
+  },
+  "postEffect": {
+    "confidence": {
+      "high": "高",
+      "medium": "中",
+      "low": "低",
+      "title": "AI 信頼度: {{level}}"
+    }
+  },
   "common": {
     "loading": "読み込み中…",
     "loadingContent": "読み込み中…",
@@ -1579,7 +1602,8 @@
     "header": {
       "chapterCount": "{{count}} 章",
       "newChapter": "章を追加",
-      "displaySettings": "表示設定"
+      "displaySettings": "表示設定",
+      "displayFilter": "表示・フィルタ"
     },
     "column": {
       "newScene": "シーンを追加",
@@ -1591,6 +1615,7 @@
     },
     "card": {
       "synopsisPlaceholder": "シノプシスを追加…",
+      "expandSynopsis": "もっと見る",
       "empty": "空のシーン",
       "openInEditor": "エディタで開く",
       "moreBeats": "他 {{n}} 件",

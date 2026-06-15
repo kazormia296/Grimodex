@@ -1,4 +1,5 @@
 import { ArrowRight, ExternalLink, MapPinOff } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -62,15 +63,17 @@ export function ConfidenceBadge({
 }: {
   level: "high" | "medium" | "low";
 }) {
+  const { t } = useTranslation();
+  const label = t(`postEffect.confidence.${level}`, CONFIDENCE_LABEL[level]);
   return (
     <span
-      title={`AI 信頼度: ${CONFIDENCE_LABEL[level]}`}
+      title={t("postEffect.confidence.title", { level: label })}
       className={cn(
         "shrink-0 rounded px-1 py-0 text-[10px] leading-tight",
         CONFIDENCE_STYLE[level],
       )}
     >
-      {CONFIDENCE_LABEL[level]}
+      {label}
     </span>
   );
 }

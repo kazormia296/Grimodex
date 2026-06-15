@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   AlertTriangle,
@@ -710,6 +711,7 @@ function PanelHeader(props: {
   fixableCount: number;
   onApplyAll: () => void;
 }) {
+  const { t } = useTranslation();
   const {
     counts,
     severityFilter,
@@ -726,7 +728,7 @@ function PanelHeader(props: {
     <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-2 py-1.5">
       <SeverityChip
         label={<Circle className="h-3 w-3 fill-current" aria-hidden />}
-        ariaLabel="エラー"
+        ariaLabel={t("lint.severity.error", "エラー")}
         active={severityFilter.error}
         count={counts.error}
         colorClass="text-red-600"
@@ -739,7 +741,7 @@ function PanelHeader(props: {
       />
       <SeverityChip
         label={<AlertTriangle className="h-3 w-3" aria-hidden />}
-        ariaLabel="警告"
+        ariaLabel={t("lint.severity.warning", "警告")}
         active={severityFilter.warning}
         count={counts.warning}
         colorClass="text-amber-600"
@@ -752,7 +754,7 @@ function PanelHeader(props: {
       />
       <SeverityChip
         label={<Info className="h-3 w-3" aria-hidden />}
-        ariaLabel="情報"
+        ariaLabel={t("lint.severity.info", "情報")}
         active={severityFilter.info}
         count={counts.info}
         colorClass="text-blue-600"
@@ -767,7 +769,10 @@ function PanelHeader(props: {
         <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <input
           type="text"
-          placeholder="rule_id / message で絞り込み"
+          placeholder={t(
+            "lint.filter.searchPlaceholder",
+            "rule_id / message で絞り込み",
+          )}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           className="h-6 w-full min-w-0 bg-transparent text-xs outline-none"
@@ -789,16 +794,23 @@ function PanelHeader(props: {
       >
         <option value="severity">Group: Severity</option>
         <option value="rule">Group: Rule</option>
-        <option value="none">Group: なし</option>
+        <option value="none">Group: {t("lint.group.none", "なし")}</option>
       </select>
       {fixableCount > 0 && (
         <button
           type="button"
           onClick={onApplyAll}
-          title="フィルタ結果の Fix を一括適用"
+          title={t(
+            "lint.filter.applyAllFixesTitle",
+            "フィルタ結果の Fix を一括適用",
+          )}
           className="flex h-6 shrink-0 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
         >
-          <Wrench className="h-3.5 w-3.5" /> 全 Fix ({fixableCount})
+          <Wrench className="h-3.5 w-3.5" />{" "}
+          {t("lint.filter.applyAllFixes", {
+            n: fixableCount,
+            defaultValue: "全 Fix ({{n}})",
+          })}
         </button>
       )}
       <WarningsBadge warnings={warnings} />
@@ -977,6 +989,7 @@ export function LinterPanel({ mode }: { mode: PanelMode }) {
  * scene and jumps to the range via the pending-jump mechanism.
  */
 function ProjectLinterView() {
+  const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
   const currentSceneId = useLintStore((s) => s.currentSceneId);
   const phase = useLintProjectStore((s) => s.phase);
@@ -1250,7 +1263,7 @@ function ProjectLinterView() {
         <div className="flex items-center gap-2">
           <SeverityChip
             label={<Circle className="h-3 w-3 fill-current" aria-hidden />}
-            ariaLabel="エラー"
+            ariaLabel={t("lint.severity.error", "エラー")}
             active={severityFilter.error}
             count={counts.error}
             colorClass="text-red-600"
@@ -1263,7 +1276,7 @@ function ProjectLinterView() {
           />
           <SeverityChip
             label={<AlertTriangle className="h-3 w-3" aria-hidden />}
-            ariaLabel="警告"
+            ariaLabel={t("lint.severity.warning", "警告")}
             active={severityFilter.warning}
             count={counts.warning}
             colorClass="text-amber-600"
@@ -1276,7 +1289,7 @@ function ProjectLinterView() {
           />
           <SeverityChip
             label={<Info className="h-3 w-3" aria-hidden />}
-            ariaLabel="情報"
+            ariaLabel={t("lint.severity.info", "情報")}
             active={severityFilter.info}
             count={counts.info}
             colorClass="text-blue-600"
@@ -1291,7 +1304,10 @@ function ProjectLinterView() {
             <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <input
               type="text"
-              placeholder="rule_id / message で絞り込み"
+              placeholder={t(
+                "lint.filter.searchPlaceholder",
+                "rule_id / message で絞り込み",
+              )}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="h-6 w-full min-w-0 bg-transparent text-xs outline-none"
