@@ -1,5 +1,6 @@
 import { AlertTriangle } from "lucide-react";
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneStore } from "@/features/tree/store";
@@ -10,6 +11,7 @@ import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { toast } from "sonner";
+import { useAnchoredPopover } from "./useAnchoredPopover";
 
 /**
  * B-10: storySoFar coverage warning pill.
@@ -22,6 +24,15 @@ export function StorySoFarCoverage() {
   const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
 
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // .glass-chat の backdrop-filter stacking context に埋もれないよう
+  // document.body へ portal する。外側クリック/Escape は hook が閉じる。
+  const { popoverRef, style } = useAnchoredPopover(
+    triggerRef,
+    open,
+    () => setOpen(false),
+    "bottom-start",
+  );
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
@@ -103,6 +114,7 @@ export function StorySoFarCoverage() {
   return (
     <div className="relative inline-block">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1 rounded-full bg-yellow-500/15 px-2 py-0.5 text-xs text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/25"
@@ -112,12 +124,14 @@ export function StorySoFarCoverage() {
         storySoFar: {coverageLabel}
       </button>
 
-      {open && (
-        <>
-          {/* Backdrop */}
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          {/* Popover */}
-          <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover p-3 shadow-md text-xs">
+      {open &&
+        style &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            style={style}
+            className="z-[100] w-72 rounded-md border border-border bg-popover p-3 shadow-md text-xs"
+          >
             <p className="text-muted-foreground mb-2">
               {t("chat.storySoFar.coverageDesc", {
                 total: totalPreceding,
@@ -152,9 +166,9 @@ export function StorySoFarCoverage() {
                 Generate all ({totalPreceding - withSynopsis} missing)
               </button>
             )}
-          </div>
-        </>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

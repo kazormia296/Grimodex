@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
@@ -24,6 +25,7 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import type { ChatScope } from "../chatScope";
 import { CodexScopePickerSection } from "./CodexScopePickerSection";
 import { SnippetScopePickerSection } from "./SnippetScopePickerSection";
+import { useAnchoredPopover } from "./useAnchoredPopover";
 
 type PickerTab = "scene" | "codex" | "snippet";
 
@@ -183,23 +185,25 @@ export function ChatPanelHeader({
 
   const [open, setOpen] = useState(false);
   const [pickerTab, setPickerTab] = useState<PickerTab>("scene");
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const [scopeHint, setScopeHint] = useState(false);
   const activePresetId = useLayoutStore((s) => s.activePresetId);
 
-  useEffect(() => {
-    if (!open) return;
-    function onOutside(e: MouseEvent) {
-      if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", onOutside);
-    return () => document.removeEventListener("mousedown", onOutside);
-  }, [open]);
+  // ドロップダウン / 時限ヒントは .glass-chat の backdrop-filter が作る stacking
+  // context に埋もれないよう document.body へ portal する。位置計算と外側クリック
+  // /Escape での閉じ処理は useAnchoredPopover に委譲（同一トリガに 2 つぶら下げ）。
+  const dropdownPopover = useAnchoredPopover(
+    triggerRef,
+    open,
+    () => setOpen(false),
+    "bottom-start",
+  );
+  const hintPopover = useAnchoredPopover(
+    triggerRef,
+    scopeHint && !open,
+    () => setScopeHint(false),
+    "bottom-start",
+  );
 
   // Chat プリセットへの切替時に Project スコープを時限ポップオーバーで提案。
   // かつては LayoutShell がプリセット切替で subtree を remount していたため
@@ -271,8 +275,9 @@ export function ChatPanelHeader({
           {t("chat.title")}
         </span>
 
-        <div className="relative min-w-0" ref={dropdownRef}>
+        <div className="relative min-w-0">
           <button
+            ref={triggerRef}
             type="button"
             onClick={handleToggleOpen}
             className="flex max-w-[200px] items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -294,147 +299,166 @@ export function ChatPanelHeader({
             <ChevronDown className="h-3 w-3 shrink-0" />
           </button>
 
-          {scopeHint && !open && (
-            <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-md border border-primary/40 bg-popover p-2.5 shadow-md">
-              <p className="mb-2 text-[11px] text-muted-foreground">
-                {t("chat.scopeHint.message")}
-              </p>
-              <div className="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setScopeHint(false)}
-                  className="rounded px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
-                >
-                  {t("common.close")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onScopeChange("project");
-                    setScopeHint(false);
-                  }}
-                  className="rounded bg-primary px-2 py-0.5 text-[11px] text-primary-foreground hover:bg-primary/90"
-                >
-                  {t("chat.scopeHint.action")}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {open && (
-            <div className="absolute left-0 top-full z-50 mt-1 w-72 overflow-hidden rounded-md border border-border bg-popover shadow-lg">
-              {/* Spotlight (PinEntryDialog) 形式のタブバー。aria は ImportDialog の
-                  tablist パターンに合わせる。 */}
+          {scopeHint &&
+            !open &&
+            hintPopover.style &&
+            createPortal(
               <div
-                role="tablist"
-                aria-label={t("chat.scope.picker")}
-                className="flex border-b border-border"
+                ref={hintPopover.popoverRef}
+                style={hintPopover.style}
+                className="z-[100] w-52 rounded-md border border-primary/40 bg-popover p-2.5 shadow-md"
               >
-                {PICKER_TABS.map((tab) => (
-                  <button
-                    key={tab.value}
-                    type="button"
-                    role="tab"
-                    aria-selected={pickerTab === tab.value}
-                    onClick={() => setPickerTab(tab.value)}
-                    className={[
-                      "flex-1 px-3 py-1.5 text-xs font-medium transition-colors",
-                      pickerTab === tab.value
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-background text-muted-foreground hover:bg-accent",
-                    ].join(" ")}
-                  >
-                    {t(tab.labelKey)}
-                  </button>
-                ))}
-              </div>
-
-              {pickerTab === "scene" && (
-                <>
-                  {/* Project (root) */}
+                <p className="mb-2 text-[11px] text-muted-foreground">
+                  {t("chat.scopeHint.message")}
+                </p>
+                <div className="flex items-center justify-end gap-2">
                   <button
                     type="button"
-                    onClick={handlePickProject}
-                    className={[
-                      "flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs",
-                      chatScope === "project"
-                        ? "bg-accent font-medium text-foreground"
-                        : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                    ].join(" ")}
+                    onClick={() => setScopeHint(false)}
+                    className="rounded px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
                   >
-                    <Globe className="h-3.5 w-3.5 shrink-0" />
-                    <span className="flex-1">{t("chat.scope.project")}</span>
-                    {chatScope === "project" && (
-                      <Check className="h-3 w-3 shrink-0" />
-                    )}
+                    {t("common.close")}
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onScopeChange("project");
+                      setScopeHint(false);
+                    }}
+                    className="rounded bg-primary px-2 py-0.5 text-[11px] text-primary-foreground hover:bg-primary/90"
+                  >
+                    {t("chat.scopeHint.action")}
+                  </button>
+                </div>
+              </div>,
+              document.body,
+            )}
 
-                  <div className="max-h-72 overflow-y-auto py-1">
-                    {rows.length === 0 && (
-                      <p className="px-3 py-2 text-xs text-muted-foreground">
-                        {t("chat.noScenes")}
-                      </p>
-                    )}
-                    {rows.map(({ node, depth }) => {
-                      const isFolder = node.nodeType === "folder";
-                      if (!isFolder && node.nodeType !== "scene") return null;
-                      const isSelected = isFolder
-                        ? chatScope === "folder" && scopeAnchorId === node.id
-                        : chatScope === "scene" && chatSceneId === node.id;
-                      const isEditorActive =
-                        !isFolder && editorActiveSceneId === node.id;
-                      return (
-                        <button
-                          key={node.id}
-                          type="button"
-                          onClick={() =>
-                            isFolder
-                              ? handlePickFolder(node.id)
-                              : handlePickScene(node.id)
-                          }
-                          style={{ paddingLeft: 12 + depth * 12 }}
-                          className={[
-                            "flex w-full items-center gap-1.5 py-1 pr-3 text-left text-xs",
-                            isSelected
-                              ? "bg-accent font-medium text-foreground"
-                              : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                          ].join(" ")}
-                        >
-                          {isFolder ? (
-                            <FolderTree className="h-3 w-3 shrink-0 opacity-70" />
-                          ) : (
-                            <FileText className="h-3 w-3 shrink-0 opacity-70" />
-                          )}
-                          <span className="flex-1 truncate">{node.title}</span>
-                          {isEditorActive && (
-                            <Circle
-                              className="h-2 w-2 shrink-0 fill-primary text-primary"
-                              aria-label={t("chat.scope.editorHere")}
-                            />
-                          )}
-                          {isSelected && <Check className="h-3 w-3 shrink-0" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
+          {open &&
+            dropdownPopover.style &&
+            createPortal(
+              <div
+                ref={dropdownPopover.popoverRef}
+                style={dropdownPopover.style}
+                className="z-[100] w-72 overflow-hidden rounded-md border border-border bg-popover shadow-lg"
+              >
+                {/* Spotlight (PinEntryDialog) 形式のタブバー。aria は ImportDialog の
+                  tablist パターンに合わせる。 */}
+                <div
+                  role="tablist"
+                  aria-label={t("chat.scope.picker")}
+                  className="flex border-b border-border"
+                >
+                  {PICKER_TABS.map((tab) => (
+                    <button
+                      key={tab.value}
+                      type="button"
+                      role="tab"
+                      aria-selected={pickerTab === tab.value}
+                      onClick={() => setPickerTab(tab.value)}
+                      className={[
+                        "flex-1 px-3 py-1.5 text-xs font-medium transition-colors",
+                        pickerTab === tab.value
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-background text-muted-foreground hover:bg-accent",
+                      ].join(" ")}
+                    >
+                      {t(tab.labelKey)}
+                    </button>
+                  ))}
+                </div>
 
-              {pickerTab === "codex" && (
-                <CodexScopePickerSection
-                  selectedId={chatScope === "codex" ? scopeAnchorId : null}
-                  onPick={handlePickCodex}
-                />
-              )}
+                {pickerTab === "scene" && (
+                  <>
+                    {/* Project (root) */}
+                    <button
+                      type="button"
+                      onClick={handlePickProject}
+                      className={[
+                        "flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs",
+                        chatScope === "project"
+                          ? "bg-accent font-medium text-foreground"
+                          : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                      ].join(" ")}
+                    >
+                      <Globe className="h-3.5 w-3.5 shrink-0" />
+                      <span className="flex-1">{t("chat.scope.project")}</span>
+                      {chatScope === "project" && (
+                        <Check className="h-3 w-3 shrink-0" />
+                      )}
+                    </button>
 
-              {pickerTab === "snippet" && (
-                <SnippetScopePickerSection
-                  selectedId={chatScope === "snippet" ? scopeAnchorId : null}
-                  onPick={handlePickSnippet}
-                />
-              )}
-            </div>
-          )}
+                    <div className="max-h-72 overflow-y-auto py-1">
+                      {rows.length === 0 && (
+                        <p className="px-3 py-2 text-xs text-muted-foreground">
+                          {t("chat.noScenes")}
+                        </p>
+                      )}
+                      {rows.map(({ node, depth }) => {
+                        const isFolder = node.nodeType === "folder";
+                        if (!isFolder && node.nodeType !== "scene") return null;
+                        const isSelected = isFolder
+                          ? chatScope === "folder" && scopeAnchorId === node.id
+                          : chatScope === "scene" && chatSceneId === node.id;
+                        const isEditorActive =
+                          !isFolder && editorActiveSceneId === node.id;
+                        return (
+                          <button
+                            key={node.id}
+                            type="button"
+                            onClick={() =>
+                              isFolder
+                                ? handlePickFolder(node.id)
+                                : handlePickScene(node.id)
+                            }
+                            style={{ paddingLeft: 12 + depth * 12 }}
+                            className={[
+                              "flex w-full items-center gap-1.5 py-1 pr-3 text-left text-xs",
+                              isSelected
+                                ? "bg-accent font-medium text-foreground"
+                                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                            ].join(" ")}
+                          >
+                            {isFolder ? (
+                              <FolderTree className="h-3 w-3 shrink-0 opacity-70" />
+                            ) : (
+                              <FileText className="h-3 w-3 shrink-0 opacity-70" />
+                            )}
+                            <span className="flex-1 truncate">
+                              {node.title}
+                            </span>
+                            {isEditorActive && (
+                              <Circle
+                                className="h-2 w-2 shrink-0 fill-primary text-primary"
+                                aria-label={t("chat.scope.editorHere")}
+                              />
+                            )}
+                            {isSelected && (
+                              <Check className="h-3 w-3 shrink-0" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {pickerTab === "codex" && (
+                  <CodexScopePickerSection
+                    selectedId={chatScope === "codex" ? scopeAnchorId : null}
+                    onPick={handlePickCodex}
+                  />
+                )}
+
+                {pickerTab === "snippet" && (
+                  <SnippetScopePickerSection
+                    selectedId={chatScope === "snippet" ? scopeAnchorId : null}
+                    onPick={handlePickSnippet}
+                  />
+                )}
+              </div>,
+              document.body,
+            )}
         </div>
 
         {/* eco モード相当: 本文を context に含めるかのトグル */}

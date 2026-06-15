@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { X, MoreVertical, Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -9,6 +10,7 @@ import { resolveScopeSessionKey } from "../chatScope";
 import * as chatApi from "@/features/chat/chatApi";
 import type { ChatSession } from "@/features/chat/chatTypes";
 import { SessionRowSkeletonList } from "@/components/ui/skeleton-patterns";
+import { useAnchoredPopover } from "./useAnchoredPopover";
 
 interface SessionsPanelProps {
   sceneTitle: string;
@@ -34,8 +36,16 @@ function SessionItem({
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(session.title);
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // セッションメニューは .glass-chat 内のセッションドロワーにあり、inline absolute
+  // だと祖先 stacking context に埋もれる。document.body へ portal して脱出する。
+  const { popoverRef, style } = useAnchoredPopover(
+    menuTriggerRef,
+    menuOpen,
+    () => setMenuOpen(false),
+    "bottom-end",
+  );
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -43,17 +53,6 @@ function SessionItem({
       inputRef.current.select();
     }
   }, [isEditing]);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    function handleClickOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [menuOpen]);
 
   const { t } = useTranslation();
 
@@ -106,8 +105,9 @@ function SessionItem({
         )}
         <p className="text-[10px] text-muted-foreground">{date}</p>
       </div>
-      <div className="relative" ref={menuRef}>
+      <div className="relative">
         <button
+          ref={menuTriggerRef}
           type="button"
           aria-label={t("chat.sessionMenu")}
           onClick={(e) => {
@@ -118,32 +118,39 @@ function SessionItem({
         >
           <MoreVertical className="h-3 w-3" />
         </button>
-        {menuOpen && (
-          <div className="absolute right-0 top-5 z-40 w-28 rounded border border-border bg-popover shadow-md">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenuOpen(false);
-                setIsEditing(true);
-              }}
-              className="w-full px-3 py-1.5 text-left text-xs hover:bg-accent"
+        {menuOpen &&
+          style &&
+          createPortal(
+            <div
+              ref={popoverRef}
+              style={style}
+              className="z-[100] w-28 rounded border border-border bg-popover shadow-md"
             >
-              {t("chat.sessionRename")}
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenuOpen(false);
-                onDelete();
-              }}
-              className="w-full px-3 py-1.5 text-left text-xs text-destructive hover:bg-accent"
-            >
-              {t("common.delete")}
-            </button>
-          </div>
-        )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                  setIsEditing(true);
+                }}
+                className="w-full px-3 py-1.5 text-left text-xs hover:bg-accent"
+              >
+                {t("chat.sessionRename")}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                  onDelete();
+                }}
+                className="w-full px-3 py-1.5 text-left text-xs text-destructive hover:bg-accent"
+              >
+                {t("common.delete")}
+              </button>
+            </div>,
+            document.body,
+          )}
       </div>
     </div>
   );

@@ -238,6 +238,33 @@ describe("ChatPanelHeader — scope dropdown tabs (Spotlight 形式)", () => {
     fireEvent.click(toggle);
     expect(onToggle).not.toHaveBeenCalled();
   });
+
+  it("portals the dropdown out of the component subtree (escapes .glass-chat)", () => {
+    // 退行ガード: inline absolute に戻すと .glass-chat の backdrop-filter が作る
+    // stacking context に閉じ込められ、他パネルに埋もれる。document.body へ
+    // portal して祖先 stacking context を脱出していることを assert する。
+    const { container } = render(
+      <ChatPanelHeader {...baseProps({ chatScope: "scene" })} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "chat.scope.picker" }));
+    const tablist = screen.getByRole("tablist");
+    expect(container.contains(tablist)).toBe(false);
+    expect(document.body.contains(tablist)).toBe(true);
+  });
+
+  it("keeps the portaled dropdown open on inner click, closes on outside mousedown", () => {
+    // portal 後も dual-ref で外側クリック判定する退行ガード（ポータル内クリックで
+    // 閉じない / 外側で閉じる）。
+    render(<ChatPanelHeader {...baseProps({ chatScope: "scene" })} />);
+    fireEvent.click(screen.getByRole("button", { name: "chat.scope.picker" }));
+    expect(screen.getByRole("tablist")).toBeInTheDocument();
+    fireEvent.mouseDown(
+      screen.getByRole("tab", { name: "chat.scope.tabCodex" }),
+    );
+    expect(screen.queryByRole("tablist")).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("tablist")).toBeNull();
+  });
 });
 
 describe("ChatPanelHeader — RAG egress disclosure (F-1)", () => {

@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, Gauge } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useAnchoredPopover } from "./useAnchoredPopover";
 
 export type ReasoningEffortValue = "low" | "medium" | "high";
 
@@ -27,21 +29,19 @@ export function ReasoningEffortChip({
 }: ReasoningEffortChipProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // メニューは入力欄上部に開くため上向き。.glass-chat の backdrop-filter が作る
+  // stacking context に埋もれないよう document.body へ portal する。
+  const { popoverRef, style } = useAnchoredPopover(
+    triggerRef,
+    open,
+    () => setOpen(false),
+    "top-start",
+  );
 
   // 許可値が 1 つ以下のモデル（例: gpt-5-pro は high 固定）は切替の意味が無い
   const locked = options.length <= 1;
   const disabled = !thinkingEnabled || locked;
-
-  useEffect(() => {
-    if (!open) return;
-    function onOutside(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node))
-        setOpen(false);
-    }
-    document.addEventListener("mousedown", onOutside);
-    return () => document.removeEventListener("mousedown", onOutside);
-  }, [open]);
 
   const title = !thinkingEnabled
     ? t("chat.reasoningEffortNeedsThinking")
@@ -57,8 +57,9 @@ export function ReasoningEffortChip({
   const items: Array<ReasoningEffortValue | null> = [null, ...options];
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         disabled={disabled}
@@ -79,31 +80,36 @@ export function ReasoningEffortChip({
         <ChevronDown className="h-3 w-3 shrink-0" />
       </button>
 
-      {open && (
-        <div
-          role="listbox"
-          aria-label={t("chat.reasoningEffortTitle")}
-          className="absolute bottom-full left-0 z-20 mb-1 min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-md"
-        >
-          {items.map((item) => (
-            <button
-              key={item ?? "auto"}
-              type="button"
-              role="option"
-              aria-selected={item === value}
-              onClick={() => handleSelect(item)}
-              className={[
-                "w-full px-3 py-1.5 text-left text-xs hover:bg-accent",
-                item === value
-                  ? "font-medium text-foreground"
-                  : "text-muted-foreground",
-              ].join(" ")}
-            >
-              {item ?? t("chat.reasoningEffortAuto")}
-            </button>
-          ))}
-        </div>
-      )}
+      {open &&
+        style &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            role="listbox"
+            aria-label={t("chat.reasoningEffortTitle")}
+            style={style}
+            className="z-[100] min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-md"
+          >
+            {items.map((item) => (
+              <button
+                key={item ?? "auto"}
+                type="button"
+                role="option"
+                aria-selected={item === value}
+                onClick={() => handleSelect(item)}
+                className={[
+                  "w-full px-3 py-1.5 text-left text-xs hover:bg-accent",
+                  item === value
+                    ? "font-medium text-foreground"
+                    : "text-muted-foreground",
+                ].join(" ")}
+              >
+                {item ?? t("chat.reasoningEffortAuto")}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

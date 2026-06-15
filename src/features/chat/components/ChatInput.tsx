@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import type { MutableRefObject } from "react";
 import {
   Send,
@@ -30,6 +31,7 @@ import { MentionPopup } from "./MentionPopup";
 import { ChatCommandPopup } from "./ChatCommandPopup";
 import { ReasoningEffortChip } from "./ReasoningEffortChip";
 import type { ReasoningEffortValue } from "./ReasoningEffortChip";
+import { useAnchoredPopover } from "./useAnchoredPopover";
 import type { MentionItem } from "@/features/codex/CodexMentionExtension";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { shouldSuggestAgentMode } from "../agentSuggestion";
@@ -163,7 +165,15 @@ export function ChatInput({
   );
 
   const [modelOpen, setModelOpen] = useState(false);
-  const modelRef = useRef<HTMLDivElement>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  // モデルメニューは入力欄上部に開く。.glass-chat の backdrop-filter が作る
+  // stacking context に埋もれないよう document.body へ portal する。
+  const modelPopover = useAnchoredPopover(
+    modelTriggerRef,
+    modelOpen,
+    () => setModelOpen(false),
+    "top-start",
+  );
 
   // ポップアップ状態
   const [mentionPopup, setMentionPopup] = useState<MentionPopupState | null>(
@@ -329,16 +339,6 @@ export function ChatInput({
     if (!editor) return;
     editor.setEditable(!isStreaming);
   }, [editor, isStreaming]);
-
-  // 外部クリックでモデル選択ポップオーバーを閉じる
-  useEffect(() => {
-    function onOutside(e: MouseEvent) {
-      if (modelRef.current && !modelRef.current.contains(e.target as Node))
-        setModelOpen(false);
-    }
-    document.addEventListener("mousedown", onOutside);
-    return () => document.removeEventListener("mousedown", onOutside);
-  }, []);
 
   const modelLabel = (() => {
     if (!currentModel) {
@@ -651,8 +651,9 @@ export function ChatInput({
           )}
 
           {/* モデル選択 chip */}
-          <div className="relative" ref={modelRef}>
+          <div className="relative">
             <button
+              ref={modelTriggerRef}
               type="button"
               onClick={handleOpenModelMenu}
               className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75"
@@ -662,31 +663,38 @@ export function ChatInput({
               <ChevronDown className="h-3 w-3 shrink-0" />
             </button>
 
-            {modelOpen && (
-              <div className="absolute bottom-full left-0 z-20 mb-1 max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
-                {models.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-muted-foreground">
-                    {t("chat.loadingModels")}
-                  </p>
-                ) : (
-                  models.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => handleSelectModel(m.id)}
-                      className={[
-                        "w-full px-3 py-1.5 text-left text-xs hover:bg-accent",
-                        m.id === currentModel
-                          ? "font-medium text-foreground"
-                          : "text-muted-foreground",
-                      ].join(" ")}
-                    >
-                      {m.name || m.id}
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
+            {modelOpen &&
+              modelPopover.style &&
+              createPortal(
+                <div
+                  ref={modelPopover.popoverRef}
+                  style={modelPopover.style}
+                  className="z-[100] max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md"
+                >
+                  {models.length === 0 ? (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">
+                      {t("chat.loadingModels")}
+                    </p>
+                  ) : (
+                    models.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => handleSelectModel(m.id)}
+                        className={[
+                          "w-full px-3 py-1.5 text-left text-xs hover:bg-accent",
+                          m.id === currentModel
+                            ? "font-medium text-foreground"
+                            : "text-muted-foreground",
+                        ].join(" ")}
+                      >
+                        {m.name || m.id}
+                      </button>
+                    ))
+                  )}
+                </div>,
+                document.body,
+              )}
           </div>
 
           {/* 右端: Send / Stop 円形ボタン */}
