@@ -12,7 +12,7 @@ import { ModelPicker } from "@/features/chat/ModelPicker";
 import {
   AI_PROVIDERS,
   DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
-  OPENROUTER_PROVIDER_PINS,
+  getOpenrouterProviderPins,
   groupModelsByDeveloper,
 } from "@/features/chat/types";
 import type {
@@ -1077,7 +1077,7 @@ export function AiCategory() {
               className="rounded-md border border-input bg-background px-2 py-1 text-sm"
             >
               <option value="">{t("settings.ai.providerPinNone")}</option>
-              {OPENROUTER_PROVIDER_PINS.map((p) => (
+              {getOpenrouterProviderPins().map((p) => (
                 <option key={p.slug} value={p.slug}>
                   {p.label}
                 </option>

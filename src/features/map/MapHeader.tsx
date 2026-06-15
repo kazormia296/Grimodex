@@ -43,9 +43,9 @@ const ARRANGE_ITEMS: { type: AutoArrangeType; labelKey: string }[] = [
   { type: "force-directed", labelKey: "map.arrange.forceDirected" },
 ];
 
-const MODES: { key: MapMode; label: string }[] = [
-  { key: "free", label: "Free" },
-  { key: "theme", label: "Theme" },
+const MODES: { key: MapMode; labelKey: string }[] = [
+  { key: "free", labelKey: "map.mode.free" },
+  { key: "theme", labelKey: "map.mode.theme" },
 ];
 
 const COLOR_BY_OPTIONS: { value: ColorByAxis; labelKey: string }[] = [
@@ -160,7 +160,9 @@ export function MapHeader() {
         fontSize: 12,
       }}
     >
-      <span style={{ fontWeight: 600, marginRight: 4, fontSize: 13 }}>Map</span>
+      <span style={{ fontWeight: 600, marginRight: 4, fontSize: 13 }}>
+        {t("map.header.title")}
+      </span>
 
       {/* Board selector */}
       <Popover
@@ -355,8 +357,9 @@ export function MapHeader() {
 
       {/* Mode buttons */}
       <div style={{ display: "flex", gap: 2 }}>
-        {MODES.map(({ key, label }) => {
+        {MODES.map(({ key, labelKey }) => {
           const active = mode === key;
+          const label = t(labelKey);
           return (
             <Button
               key={key}
@@ -385,47 +388,47 @@ export function MapHeader() {
 
       {/* Show checkboxes */}
       <ShowCheckbox
-        label="Scenes"
+        label={t("map.palette.showScenes")}
         checked={show.scenes}
         onChange={(v) => setShow({ scenes: v })}
       />
       <ShowCheckbox
-        label="Codex"
+        label={t("map.palette.showCodex")}
         checked={show.codex}
         onChange={(v) => setShow({ codex: v })}
       />
       <ShowCheckbox
-        label="Stickies"
+        label={t("map.palette.showStickies")}
         checked={show.stickies}
         onChange={(v) => setShow({ stickies: v })}
       />
       <ShowCheckbox
-        label="Snippets"
+        label={t("map.palette.showSnippets")}
         checked={show.snippets}
         onChange={(v) => setShow({ snippets: v })}
       />
       <ShowCheckbox
-        label="Notes"
+        label={t("map.palette.showNotes")}
         checked={show.notes}
         onChange={(v) => setShow({ notes: v })}
       />
       <ShowCheckbox
-        label="AI Branch"
+        label={t("map.palette.showAiBranch")}
         checked={show.aiBranch}
         onChange={(v) => setShow({ aiBranch: v })}
       />
       <ShowCheckbox
-        label="Edges"
+        label={t("map.palette.showEdges")}
         checked={show.derivedEdges}
         onChange={(v) => setShow({ derivedEdges: v })}
       />
       <ShowCheckbox
-        label="User edges"
+        label={t("map.palette.showUserEdges")}
         checked={show.userEdges}
         onChange={(v) => setShow({ userEdges: v })}
       />
       <ShowCheckbox
-        label="Frames"
+        label={t("map.palette.showFrames")}
         checked={show.frames}
         onChange={(v) => setShow({ frames: v })}
       />

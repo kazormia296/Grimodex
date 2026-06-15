@@ -1,25 +1,35 @@
+import i18next from "@/lib/i18n";
 import type { AiUsageSurface } from "./recordAiUsage";
 
 /**
- * AI usage サーフェスの表示ラベル (集計 UI 用)。
+ * AI usage サーフェスの既知キー一覧 (集計 UI 用)。
  * recordAiUsage.ts の AiUsageSurface と 1:1 で対応させること。
+ * 表示ラベルは settings.usage.surface.<surface> から i18n 解決する。
  */
-export const SURFACE_LABELS: Record<AiUsageSurface, string> = {
-  chat: "チャット",
-  agent: "エージェント",
-  map_branch: "Map AI Branch",
-  tree_scaffold: "Tree 生成",
-  beat: "Beat 生成",
-  beat_role: "Beat 役割推論",
-  foreshadow: "伏線",
-  inline_ai: "インライン AI",
-  synopsis: "あらすじ生成",
-  session_title: "セッションタイトル",
-  summarization: "要約",
-  context_creator: "Context Creator",
-};
+const KNOWN_SURFACES: AiUsageSurface[] = [
+  "chat",
+  "agent",
+  "map_branch",
+  "tree_scaffold",
+  "beat",
+  "beat_role",
+  "foreshadow",
+  "inline_ai",
+  "synopsis",
+  "session_title",
+  "summarization",
+  "context_creator",
+];
 
-/** 未知サーフェスはキーをそのまま返す (前方互換)。 */
+const KNOWN_SURFACE_SET = new Set<string>(KNOWN_SURFACES);
+
+/**
+ * サーフェスの表示ラベルを返す。既知サーフェスは i18n 解決し、
+ * 未知サーフェスはキーをそのまま返す (前方互換)。
+ */
 export function surfaceLabel(surface: string): string {
-  return (SURFACE_LABELS as Record<string, string>)[surface] ?? surface;
+  if (KNOWN_SURFACE_SET.has(surface)) {
+    return i18next.t(`settings.usage.surface.${surface}`);
+  }
+  return surface;
 }

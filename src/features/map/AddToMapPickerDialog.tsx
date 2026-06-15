@@ -17,7 +17,7 @@ function typeLabel(t: TFunction, type: EntityType): string {
     case "note":
       return t("map.nodeType.note");
     case "codex":
-      return "Codex";
+      return t("map.nodeType.codex");
     case "snippet":
       return t("map.nodeType.snippet");
   }

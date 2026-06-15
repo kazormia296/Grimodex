@@ -25,15 +25,16 @@ import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
 import { GridCardSkeletonList } from "@/components/ui/skeleton-patterns";
 
-const SOURCE_FILTER_OPTIONS: { value: SnippetSourceFilter; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "from-chat", label: "From chat" },
-  { value: "from-editor", label: "From editor" },
-  { value: "manual", label: "Manual" },
-];
-
 export function SnippetPanel() {
   const { t } = useTranslation();
+
+  const SOURCE_FILTER_OPTIONS: { value: SnippetSourceFilter; label: string }[] =
+    [
+      { value: "all", label: t("snippets.filterAll") },
+      { value: "from-chat", label: t("snippets.filterFromChat") },
+      { value: "from-editor", label: t("snippets.filterFromEditor") },
+      { value: "manual", label: t("snippets.filterManual") },
+    ];
 
   const SORT_OPTIONS: { value: SnippetSortOrder; label: string }[] = [
     { value: "recent", label: t("snippets.sortRecent") },
@@ -390,7 +391,9 @@ export function SnippetPanel() {
               data-panel-header
               className="flex items-center justify-between border-b border-border px-3 py-2"
             >
-              <span className="text-sm font-semibold">Snippets</span>
+              <span className="text-sm font-semibold">
+                {t("layout.panel.snippets")}
+              </span>
               <div className="flex items-center gap-1">
                 <span
                   data-testid="snippet-count"

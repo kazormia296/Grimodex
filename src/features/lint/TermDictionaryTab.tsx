@@ -116,31 +116,38 @@ export function TermDictionaryTab() {
           onClick={openNew}
           className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
         >
-          <Plus className="h-3.5 w-3.5" /> 追加
+          <Plus className="h-3.5 w-3.5" />{" "}
+          {t("lint.termDict.addButton", "追加")}
         </button>
         <button
           type="button"
           disabled
           className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground"
-          title="Phase 2 で実装予定"
+          title={t("lint.termDict.phase2Planned", "Phase 2 で実装予定")}
         >
-          <Upload className="h-3.5 w-3.5" /> CSV インポート
-          <span className="ml-1 text-[10px]">[未実装]</span>
+          <Upload className="h-3.5 w-3.5" />{" "}
+          {t("lint.termDict.importCsv", "CSV インポート")}
+          <span className="ml-1 text-[10px]">
+            {t("lint.termDict.unimplemented", "[未実装]")}
+          </span>
         </button>
         <button
           type="button"
           disabled
           className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground"
-          title="Phase 2 で実装予定"
+          title={t("lint.termDict.phase2Planned", "Phase 2 で実装予定")}
         >
-          <Download className="h-3.5 w-3.5" /> エクスポート
-          <span className="ml-1 text-[10px]">[未実装]</span>
+          <Download className="h-3.5 w-3.5" />{" "}
+          {t("lint.termDict.export", "エクスポート")}
+          <span className="ml-1 text-[10px]">
+            {t("lint.termDict.unimplemented", "[未実装]")}
+          </span>
         </button>
         <div className="ml-auto flex items-center gap-2">
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="検索"
+            placeholder={t("lint.termDict.search", "検索")}
             className="h-7 w-40 rounded border border-border bg-background px-2 text-xs"
           />
           <select
@@ -148,9 +155,15 @@ export function TermDictionaryTab() {
             onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
             className="h-7 rounded border border-border bg-background px-1 text-xs"
           >
-            <option value="sortOrder">手動並び順</option>
-            <option value="preferred">推奨表記</option>
-            <option value="updatedAt">更新日</option>
+            <option value="sortOrder">
+              {t("lint.termDict.sortOrder", "手動並び順")}
+            </option>
+            <option value="preferred">
+              {t("lint.termDict.preferred", "推奨表記")}
+            </option>
+            <option value="updatedAt">
+              {t("lint.termDict.updatedAt", "更新日")}
+            </option>
             <option value="severity">Severity</option>
           </select>
         </div>
@@ -165,8 +178,12 @@ export function TermDictionaryTab() {
             <thead className="bg-muted/50 text-left">
               <tr>
                 <th className="w-8 px-2 py-1.5" />
-                <th className="px-2 py-1.5">推奨表記</th>
-                <th className="px-2 py-1.5">許容しない表記</th>
+                <th className="px-2 py-1.5">
+                  {t("lint.termDict.preferred", "推奨表記")}
+                </th>
+                <th className="px-2 py-1.5">
+                  {t("lint.termDict.variants", "許容しない表記")}
+                </th>
                 <th className="w-20 px-2 py-1.5">Severity</th>
                 <th className="w-14 px-2 py-1.5 text-center">ON</th>
                 <th className="w-24 px-2 py-1.5" />
@@ -189,8 +206,12 @@ export function TermDictionaryTab() {
             <thead className="bg-muted/50 text-left">
               <tr>
                 <th className="w-8 px-2 py-1.5" />
-                <th className="px-2 py-1.5">推奨表記</th>
-                <th className="px-2 py-1.5">許容しない表記</th>
+                <th className="px-2 py-1.5">
+                  {t("lint.termDict.preferred", "推奨表記")}
+                </th>
+                <th className="px-2 py-1.5">
+                  {t("lint.termDict.variants", "許容しない表記")}
+                </th>
                 <th className="w-20 px-2 py-1.5">Severity</th>
                 <th className="w-14 px-2 py-1.5 text-center">ON</th>
                 <th className="w-24 px-2 py-1.5" />
@@ -208,7 +229,11 @@ export function TermDictionaryTab() {
                   <td className="px-2 py-1.5">
                     {row.aliasCollision.length > 0 && (
                       <span
-                        title={`Codex「${row.aliasCollision.join("」「")}」の alias と衝突、Codex 側が優先されます`}
+                        title={t("lint.termDict.codexCollision", {
+                          names: row.aliasCollision.join("」「"),
+                          defaultValue:
+                            "Codex「{{names}}」の alias と衝突、Codex 側が優先されます",
+                        })}
                         aria-label="Codex alias collision"
                       >
                         <AlertTriangle className="h-3.5 w-3.5 text-yellow-500" />
@@ -264,7 +289,7 @@ export function TermDictionaryTab() {
                       type="button"
                       onClick={() => void duplicate(row.id)}
                       className="rounded p-1 hover:bg-accent"
-                      title="複製"
+                      title={t("lint.termDict.duplicate", "複製")}
                     >
                       <Copy className="h-3 w-3" />
                     </button>
@@ -272,13 +297,18 @@ export function TermDictionaryTab() {
                       type="button"
                       onClick={() => {
                         if (
-                          window.confirm(`「${row.preferred}」を削除しますか？`)
+                          window.confirm(
+                            t("lint.termDict.confirmDelete", {
+                              name: row.preferred,
+                              defaultValue: "「{{name}}」を削除しますか？",
+                            }),
+                          )
                         ) {
                           void remove(row.id);
                         }
                       }}
                       className="rounded p-1 hover:bg-accent"
-                      title="削除"
+                      title={t("lint.termDict.delete", "削除")}
                     >
                       <Trash2 className="h-3 w-3" />
                     </button>
@@ -294,30 +324,38 @@ export function TermDictionaryTab() {
         <div className="rounded border border-border bg-muted/20 p-3">
           <div className="mb-2 flex items-center justify-between">
             <h5 className="font-semibold">
-              {editing.id ? "エントリを編集" : "新しいエントリ"}
+              {editing.id
+                ? t("lint.termDict.editEntry", "エントリを編集")
+                : t("lint.termDict.newEntry", "新しいエントリ")}
             </h5>
           </div>
           <div className="flex flex-col gap-2">
             <label className="flex flex-col gap-1 text-xs">
-              推奨表記
+              {t("lint.termDict.preferred", "推奨表記")}
               <input
                 value={editing.preferred}
                 onChange={(e) =>
                   setEditing({ ...editing, preferred: e.target.value })
                 }
                 className="h-7 rounded border border-border bg-background px-2"
-                placeholder="ウェブ"
+                placeholder={t("lint.termDict.preferredPlaceholder", "ウェブ")}
               />
             </label>
             <label className="flex flex-col gap-1 text-xs">
-              許容しない表記（カンマ区切り）
+              {t(
+                "lint.termDict.variantsLabel",
+                "許容しない表記（カンマ区切り）",
+              )}
               <input
                 value={editing.variantsRaw}
                 onChange={(e) =>
                   setEditing({ ...editing, variantsRaw: e.target.value })
                 }
                 className="h-7 rounded border border-border bg-background px-2"
-                placeholder="web, Web, ウエブ"
+                placeholder={t(
+                  "lint.termDict.variantsPlaceholder",
+                  "web, Web, ウエブ",
+                )}
               />
             </label>
             <div className="flex items-center gap-3 text-xs">
@@ -345,18 +383,21 @@ export function TermDictionaryTab() {
                     setEditing({ ...editing, enabled: e.target.checked })
                   }
                 />
-                有効
+                {t("lint.termDict.enabled", "有効")}
               </label>
             </div>
             <label className="flex flex-col gap-1 text-xs">
-              メモ（任意）
+              {t("lint.termDict.note", "メモ（任意）")}
               <input
                 value={editing.note}
                 onChange={(e) =>
                   setEditing({ ...editing, note: e.target.value })
                 }
                 className="h-7 rounded border border-border bg-background px-2"
-                placeholder="企画書 §3.2 で決定"
+                placeholder={t(
+                  "lint.termDict.notePlaceholder",
+                  "企画書 §3.2 で決定",
+                )}
               />
             </label>
             {errors.length > 0 && (
@@ -372,7 +413,7 @@ export function TermDictionaryTab() {
                 onClick={() => void save()}
                 className="rounded border border-border bg-primary px-3 py-1 text-xs text-primary-foreground hover:bg-primary/90"
               >
-                保存
+                {t("common.save", "保存")}
               </button>
               <button
                 type="button"
@@ -382,7 +423,7 @@ export function TermDictionaryTab() {
                 }}
                 className="rounded border border-border px-3 py-1 text-xs hover:bg-accent"
               >
-                キャンセル
+                {t("common.cancel", "キャンセル")}
               </button>
             </div>
           </div>

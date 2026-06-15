@@ -283,7 +283,7 @@ describe("ContextPillGroup 子エントリ表示 (グループモード内)", ()
     await user.click(screen.getByRole("button", { name: /キャラクター/ }));
     expect(screen.getByText("親キャラ")).toBeInTheDocument();
     expect(screen.getByText("子キャラ")).toBeInTheDocument();
-    expect(screen.getByText(/via 親キャラ/)).toBeInTheDocument();
+    expect(screen.getByText(/親キャラ 由来/)).toBeInTheDocument();
   });
 
   it("viaEntries が空の場合ポップオーバー内に子エントリ行を表示しない", async () => {

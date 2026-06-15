@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useLensStore } from "@/features/post-effect/lensStore";
 import type {
@@ -59,6 +60,7 @@ export function LensDot({
   sceneId: string;
   updatedAt?: string;
 }) {
+  const { t } = useTranslation();
   const showLensOverlay = useLensStore((s) => s.showLensOverlay);
   const lenses = useLensStore((s) => s.bySceneId.get(sceneId));
 
@@ -68,11 +70,7 @@ export function LensDot({
 
   return (
     <span
-      title={
-        stale
-          ? "このシーンは構造診断以降に編集されています"
-          : "メタ構造診断あり"
-      }
+      title={stale ? t("tree.lensDot.edited") : t("tree.lensDot.found")}
       className={cn(
         "ml-1 inline-block h-2 w-2 shrink-0 rounded-full",
         SEVERITY_COLOR[worst],

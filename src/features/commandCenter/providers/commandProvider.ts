@@ -26,41 +26,50 @@ interface CommandDef {
 
 interface PanelDef {
   panelId: Exclude<PanelId, "editor">;
-  label: string;
   keywords?: string;
 }
 
+/**
+ * パネル開閉コマンドの静的データ。
+ * label は import 時に確定させず、表示時に layout.panel.<panelId> から
+ * i18next で解決する (言語切替に追従させるため)。
+ */
 const PANEL_COMMANDS: PanelDef[] = [
-  { panelId: "scenes", label: "シーン", keywords: "scenes tree" },
-  { panelId: "codex", label: "Codex", keywords: "codex glossary" },
-  { panelId: "codex-quick", label: "Codex クイック", keywords: "codex quick" },
+  { panelId: "scenes", keywords: "scenes tree" },
+  { panelId: "codex", keywords: "codex glossary" },
+  { panelId: "codex-quick", keywords: "codex quick" },
   {
     panelId: "command-center-results",
-    label: "検索パネル",
     keywords: "search panel results",
   },
-  { panelId: "chat", label: "AI チャット", keywords: "chat ai" },
-  { panelId: "chat-history", label: "チャット履歴", keywords: "chat history" },
-  { panelId: "snippets", label: "スニペット", keywords: "snippets" },
+  { panelId: "chat", keywords: "chat ai" },
+  { panelId: "chat-history", keywords: "chat history" },
+  { panelId: "snippets", keywords: "snippets" },
   {
     panelId: "attribution",
-    label: "帰属ヒートマップ",
     keywords: "attribution heatmap",
   },
-  { panelId: "timeline", label: "タイムライン", keywords: "timeline" },
-  { panelId: "map", label: "地図", keywords: "map" },
-  { panelId: "kouetsu", label: "校閲", keywords: "kouetsu review" },
-  { panelId: "foreshadow", label: "伏線", keywords: "foreshadow" },
-  { panelId: "grid", label: "グリッド", keywords: "grid board" },
-  { panelId: "matrix", label: "マトリクス", keywords: "matrix" },
-  { panelId: "trash-bin", label: "ゴミ箱", keywords: "trash bin recycle" },
+  { panelId: "timeline", keywords: "timeline" },
+  { panelId: "map", keywords: "map" },
+  { panelId: "kouetsu", keywords: "kouetsu review" },
+  { panelId: "foreshadow", keywords: "foreshadow" },
+  { panelId: "grid", keywords: "grid board" },
+  { panelId: "matrix", keywords: "matrix" },
+  { panelId: "trash-bin", keywords: "trash bin recycle" },
 ];
+
+/** パネル名を layout.panel.<panelId> から解決する (言語切替に追従)。 */
+function panelLabel(panelId: PanelDef["panelId"]): string {
+  return i18next.t(`layout.panel.${panelId}`, { defaultValue: panelId });
+}
 
 function buildCommands(): CommandDef[] {
   const list: CommandDef[] = [
     {
       id: "open-settings",
-      label: "設定を開く",
+      label: i18next.t("commandCenter.command.openSettings", {
+        defaultValue: "設定を開く",
+      }),
       keywords: "settings preferences config",
       run: () =>
         window.dispatchEvent(
@@ -69,13 +78,17 @@ function buildCommands(): CommandDef[] {
     },
     {
       id: "open-export",
-      label: "エクスポート",
+      label: i18next.t("commandCenter.command.export", {
+        defaultValue: "エクスポート",
+      }),
       keywords: "export download",
       run: () => window.dispatchEvent(new CustomEvent("open-export-dialog")),
     },
     {
       id: "restart-sample-tour",
-      label: "ツアー再開",
+      label: i18next.t("commandCenter.command.restartTour", {
+        defaultValue: "ツアー再開",
+      }),
       keywords: "tour tutorial onboarding",
       run: () => window.dispatchEvent(new CustomEvent("restart-sample-tour")),
     },
@@ -84,7 +97,10 @@ function buildCommands(): CommandDef[] {
   for (const p of PANEL_COMMANDS) {
     list.push({
       id: `toggle-panel:${p.panelId}`,
-      label: `パネル切替: ${p.label}`,
+      label: i18next.t("commandCenter.command.togglePanel", {
+        panel: panelLabel(p.panelId),
+        defaultValue: "パネル切替: {{panel}}",
+      }),
       keywords: `panel toggle ${p.keywords ?? ""}`,
       run: () => useLayoutStore.getState().togglePanel(p.panelId),
     });

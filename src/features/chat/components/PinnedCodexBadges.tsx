@@ -54,10 +54,12 @@ export function PinnedCodexBadges({
               <span
                 key={`${entry.id}-child-${child.id}`}
                 className="inline-flex items-center gap-1 rounded-full bg-accent/60 px-2 py-0.5 text-[10px] text-muted-foreground"
-                title={`via ${entry.name}`}
+                title={t("chat.context.childViaParent", { name: entry.name })}
               >
                 {child.name}
-                <span className="opacity-60">↑{entry.name}</span>
+                <span className="opacity-60">
+                  {t("chat.context.viaIndicator", { name: entry.name })}
+                </span>
               </span>
             ))}
           </span>

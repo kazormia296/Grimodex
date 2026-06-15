@@ -5,6 +5,7 @@
  */
 
 import { unzipSync, strFromU8 } from "fflate";
+import i18next from "@/lib/i18n";
 import { zipBombGuard } from "./zipGuard";
 import type { ImportedNode } from "./importTypes";
 import {
@@ -86,7 +87,8 @@ export function parseKakuyomuZip(zipBytes: Uint8Array): KakuyomuParseResult {
 
   const aboutSections = parseKakuyomuSections(strFromU8(aboutBytes));
   const metadata = parseAboutMetadata(aboutSections);
-  const projectTitle = metadata.title ?? "Imported Project";
+  const projectTitle =
+    metadata.title ?? i18next.t("import.kakuyomu.defaultProjectTitle");
 
   const episodes = collectEpisodes(files, warnings);
   const tocRoots = parseToc(aboutSections.get("目次") ?? "");
@@ -157,10 +159,16 @@ function collectEpisodes(
     if (!m) continue;
     const num = Number(m[1]);
     const sections = parseKakuyomuSections(strFromU8(data));
-    const title = sections.get("タイトル")?.trim() || `Episode ${num}`;
+    const title =
+      sections.get("タイトル")?.trim() ||
+      i18next.t("import.kakuyomu.defaultEpisodeTitle", { num });
     const body = extractEpisodeBody(sections);
     if (!body) {
-      warnings.push(`episode_${String(num).padStart(4, "0")}.txt: empty body`);
+      warnings.push(
+        i18next.t("import.kakuyomu.warnings.emptyBody", {
+          file: `episode_${String(num).padStart(4, "0")}.txt`,
+        }),
+      );
     }
     episodes.push({
       num,
@@ -254,14 +262,21 @@ function buildTreeFromToc(
         const ep = episodeByNum.get(node.episodeNum);
         if (!ep) {
           warnings.push(
-            `目次 episode ${node.episodeNum} に対応する episode_${String(node.episodeNum).padStart(4, "0")}.txt がありません`,
+            i18next.t("import.kakuyomu.warnings.missingEpisodeFile", {
+              num: node.episodeNum,
+              file: `episode_${String(node.episodeNum).padStart(4, "0")}.txt`,
+            }),
           );
           continue;
         }
         placedNums.add(ep.num);
         if (ep.title !== node.title) {
           warnings.push(
-            `episode ${ep.num}: 目次タイトル「${node.title}」とファイルタイトル「${ep.title}」が異なります（ファイル側を採用）`,
+            i18next.t("import.kakuyomu.warnings.titleMismatch", {
+              num: ep.num,
+              tocTitle: node.title,
+              fileTitle: ep.title,
+            }),
           );
         }
         result.push(episodeToScene(ep));
@@ -292,7 +307,9 @@ function appendUnmappedEpisodes(
 
   for (const ep of unmapped) {
     warnings.push(
-      `episode_${String(ep.num).padStart(4, "0")}.txt が目次に見つかりません — ツリー末尾に追加します`,
+      i18next.t("import.kakuyomu.warnings.episodeNotInToc", {
+        file: `episode_${String(ep.num).padStart(4, "0")}.txt`,
+      }),
     );
   }
 
@@ -305,7 +322,7 @@ function appendUnmappedEpisodes(
     tree.push({
       kind: "folder",
       id: crypto.randomUUID(),
-      title: "追加エピソード",
+      title: i18next.t("import.kakuyomu.extraEpisodesFolder"),
       children: unmapped.map(episodeToScene),
     });
   }

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { listCodexEntries } from "@/features/codex/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -147,7 +148,12 @@ export function validateEntry(
   const errors: string[] = [];
   const preferred = input.preferred.trim();
   if (!preferred) {
-    errors.push("推奨表記を入力してください。");
+    errors.push(
+      i18next.t(
+        "lint.termDict.errorPreferredRequired",
+        "推奨表記を入力してください。",
+      ),
+    );
   }
   // Deduplicate variants; drop preferred==variant occurrences per spec.
   const seen = new Set<string>();
@@ -161,7 +167,12 @@ export function validateEntry(
     cleanedVariants.push(v);
   }
   if (cleanedVariants.length === 0) {
-    errors.push("許容しない表記を 1 つ以上入力してください。");
+    errors.push(
+      i18next.t(
+        "lint.termDict.errorVariantsRequired",
+        "許容しない表記を 1 つ以上入力してください。",
+      ),
+    );
   }
   // Cross-entry variant uniqueness.
   const dupAcross: string[] = [];
@@ -173,7 +184,11 @@ export function validateEntry(
   }
   if (dupAcross.length > 0) {
     errors.push(
-      `同じ variant が他のエントリに登録されています: ${dupAcross.join(", ")}`,
+      i18next.t("lint.termDict.errorDuplicateVariant", {
+        variants: dupAcross.join(", "),
+        defaultValue:
+          "同じ variant が他のエントリに登録されています: {{variants}}",
+      }),
     );
   }
   if (errors.length > 0) return { ok: false, errors };
@@ -380,7 +395,10 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
         [
           newId,
           getCurrentProjectId(),
-          `${source.preferred}（コピー）`,
+          i18next.t("lint.termDict.copySuffix", {
+            name: source.preferred,
+            defaultValue: "{{name}}（コピー）",
+          }),
           JSON.stringify(newVariants),
           source.severity,
           source.note,
@@ -393,7 +411,10 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       );
       const row: TermDictionaryRow = {
         id: newId,
-        preferred: `${source.preferred}（コピー）`,
+        preferred: i18next.t("lint.termDict.copySuffix", {
+          name: source.preferred,
+          defaultValue: "{{name}}（コピー）",
+        }),
         variants: newVariants,
         severity: source.severity,
         note: source.note,

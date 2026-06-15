@@ -3,15 +3,41 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { PromptPreviewModal } from "./PromptPreviewModal";
 
-// i18n は defaultValue を返す薄いスタブ（キー解決に依存しない）。
-vi.mock("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (_key: string, arg?: unknown) =>
-      typeof arg === "string"
-        ? arg
-        : ((arg as { defaultValue?: string })?.defaultValue ?? _key),
-  }),
-}));
+// i18n は実 ja.json を解決して {{...}} 補間する軽量スタブ（実描画と同じ文言を検証する）。
+vi.mock("react-i18next", async () => {
+  const ja = (await import("@/locales/ja.json")).default as Record<
+    string,
+    unknown
+  >;
+  const resolve = (key: string): unknown =>
+    key
+      .split(".")
+      .reduce<unknown>(
+        (o, p) =>
+          o && typeof o === "object"
+            ? (o as Record<string, unknown>)[p]
+            : undefined,
+        ja,
+      );
+  return {
+    useTranslation: () => ({
+      t: (key: string, arg?: unknown) => {
+        let s = resolve(key);
+        if (typeof s !== "string")
+          s =
+            typeof arg === "string"
+              ? arg
+              : ((arg as { defaultValue?: string })?.defaultValue ?? key);
+        if (arg && typeof arg === "object" && typeof s === "string") {
+          for (const [k, v] of Object.entries(arg as Record<string, unknown>)) {
+            if (k !== "defaultValue") s = s.replaceAll(`{{${k}}}`, String(v));
+          }
+        }
+        return s;
+      },
+    }),
+  };
+});
 
 vi.mock("@/components/ui/animated-overlay", () => ({
   AnimatedOverlay: ({ children }: { children: React.ReactNode }) => (

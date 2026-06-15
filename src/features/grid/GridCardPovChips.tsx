@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useSceneBeatPovStore } from "@/features/editor/beat/sceneBeatPovStore";
@@ -36,6 +37,7 @@ interface Props {
 }
 
 export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
+  const { t } = useTranslation();
   const beatPovIds = useSceneBeatPovStore(
     (s) => s.povIdsByScene[sceneId] ?? EMPTY_POV_IDS,
   );
@@ -83,7 +85,9 @@ export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
                     color: color,
                   }
             }
-            title={isScene ? "Scene POV" : "Beat POV override"}
+            title={
+              isScene ? t("grid.card.scenePov") : t("grid.card.beatPovOverride")
+            }
           >
             {name}
           </button>
@@ -91,7 +95,7 @@ export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
       })}
       {extraCount > 0 && (
         <span className="text-[10px] text-muted-foreground">
-          +{extraCount} more
+          {t("common.more", { count: extraCount })}
         </span>
       )}
     </div>

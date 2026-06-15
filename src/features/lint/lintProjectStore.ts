@@ -7,6 +7,7 @@
  */
 
 import { create } from "zustand";
+import i18next from "@/lib/i18n";
 import { useLintConfigStore } from "./lintConfigStore";
 import { resolveLintLanguage } from "./types";
 import type { Diagnostic, Utf16Range } from "./types";
@@ -78,7 +79,13 @@ export const useLintProjectStore = create<LintProjectState>()((set, get) => ({
     if (get().phase === "running") return;
     const cfgStore = useLintConfigStore.getState();
     if (!cfgStore.isLoaded) {
-      set({ phase: "error", fatalError: "設定の読み込み待ちです" });
+      set({
+        phase: "error",
+        fatalError: i18next.t(
+          "lint.error.configLoadingWait",
+          "設定の読み込み待ちです",
+        ),
+      });
       return;
     }
     const effective = cfgStore.getEffective();
@@ -86,7 +93,10 @@ export const useLintProjectStore = create<LintProjectState>()((set, get) => ({
     if (!effective.enabled || !effective.languages[language]?.enabled) {
       set({
         phase: "error",
-        fatalError: "Linter が無効化されています",
+        fatalError: i18next.t(
+          "lint.error.linterDisabled",
+          "Linter が無効化されています",
+        ),
       });
       return;
     }

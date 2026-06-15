@@ -143,7 +143,7 @@ export const AIBranchNode = memo(function AIBranchNode({
             alignItems: "center",
           }}
         >
-          <span>AI Branch</span>
+          <span>{t("map.aiBranch.label")}</span>
           {count > 0 && (
             <span
               style={{

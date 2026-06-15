@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { db } from "@/db/client";
 import { sceneCodexMentions, codexTags, sceneBeatPovCache } from "@/db/schema";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -36,6 +37,7 @@ interface MentionRow {
 }
 
 export function MatrixPanel() {
+  const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const allEntries = useCodexStore((s) => s.entries);
 
@@ -336,9 +338,9 @@ export function MatrixPanel() {
         csv,
         "text/csv",
       );
-      if (saved !== null) toast.success("CSV をエクスポートしました");
+      if (saved !== null) toast.success(t("matrix.export.success"));
     } catch (err) {
-      toast.error("エクスポートに失敗しました", { description: String(err) });
+      toast.error(t("matrix.export.failed"), { description: String(err) });
     }
   }
 

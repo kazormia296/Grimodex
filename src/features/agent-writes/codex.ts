@@ -1,3 +1,4 @@
+import i18next from "i18next";
 import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
@@ -166,7 +167,7 @@ export async function agentCreateCodexEntry(
     const entityId = result.entityId;
     useGlobalHistoryStore.getState().push({
       kind: "codex",
-      label: "Agent: Codex作成",
+      label: i18next.t("codex.store.agentHistoryCreate"),
       entityId,
       async undo() {
         await applyUndoJournal(journalId, "undo");
@@ -255,7 +256,7 @@ export async function agentUpdateCodexEntry(
     const entityId = input.entryId;
     useGlobalHistoryStore.getState().push({
       kind: "codex",
-      label: "Agent: Codex更新",
+      label: i18next.t("codex.store.agentHistoryUpdate"),
       entityId,
       async undo() {
         await applyUndoJournal(journalId, "undo");

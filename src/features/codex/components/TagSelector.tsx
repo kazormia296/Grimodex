@@ -151,10 +151,10 @@ export function TagSelector({
       );
     } catch (err) {
       onTagsChange(before);
-      toast.error("タグの保存に失敗しました", { description: String(err) });
+      toast.error(t("codex.tag.saveFailed"), { description: String(err) });
       return;
     }
-    pushTagAssociation(before, next, "タグ切替");
+    pushTagAssociation(before, next, t("codex.tag.historyToggle"));
   };
 
   const handleRemove = async (tagId: string) => {
@@ -168,10 +168,10 @@ export function TagSelector({
       );
     } catch (err) {
       onTagsChange(before);
-      toast.error("タグの保存に失敗しました", { description: String(err) });
+      toast.error(t("codex.tag.saveFailed"), { description: String(err) });
       return;
     }
-    pushTagAssociation(before, next, "タグ解除");
+    pushTagAssociation(before, next, t("codex.tag.historyRemove"));
   };
 
   const handleCreate = async () => {
@@ -186,7 +186,7 @@ export function TagSelector({
         color: newColor,
       });
     } catch (err) {
-      toast.error("タグの作成に失敗しました", { description: String(err) });
+      toast.error(t("codex.tag.createFailed"), { description: String(err) });
       return;
     }
     setAllTags((prev) => [...prev, tag]);
@@ -203,7 +203,7 @@ export function TagSelector({
       // optimistic association only and skip the history push — the tag
       // creation itself is a valid standalone outcome.
       onTagsChange(before);
-      toast.error("タグの関連付けに失敗しました", {
+      toast.error(t("codex.tag.linkFailed"), {
         description: String(err),
       });
       setNewName("");
@@ -226,7 +226,7 @@ export function TagSelector({
       };
       useGlobalHistoryStore.getState().push({
         kind: "tags",
-        label: "タグ作成",
+        label: t("codex.tag.historyCreate"),
         async undo() {
           await persistTags(
             cap.entryId,

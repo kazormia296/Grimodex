@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   anchorX: number;
@@ -19,6 +20,7 @@ export function BeatPopover({
   onConfirm,
   onClose,
 }: Props) {
+  const { t } = useTranslation();
   const [value, setValue] = useState(initialText);
   const inputRef = useRef<HTMLInputElement>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -60,7 +62,7 @@ export function BeatPopover({
       style={{ left: anchorX, top: anchorY }}
     >
       <p className="mb-1 text-[10px] text-muted-foreground">
-        Add beat (Enter to confirm)
+        {t("matrix.beatPopover.hint")}
       </p>
       <input
         ref={inputRef}
@@ -69,7 +71,7 @@ export function BeatPopover({
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
         className="w-full rounded border border-border bg-background px-2 py-1 text-xs outline-none"
-        placeholder="Beat content…"
+        placeholder={t("matrix.beatPopover.placeholder")}
       />
     </div>
   );

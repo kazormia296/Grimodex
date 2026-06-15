@@ -8,6 +8,7 @@
 
 import type { NovelFile } from "@/lib/novelFormat";
 import { stripBracketWrapper } from "@/lib/novelFormat";
+import i18next from "@/lib/i18n";
 import type { ImportedNode } from "./importTypes";
 import type { ParsedCodexEntry } from "./novelcrafterParser";
 
@@ -66,11 +67,14 @@ export function buildNovelImportPlan(
   fallbackTitle: string,
 ): NovelImportPlan {
   const warnings: string[] = [];
-  const projectTitle = novel.title.trim() || fallbackTitle.trim() || "Imported";
+  const projectTitle =
+    novel.title.trim() ||
+    fallbackTitle.trim() ||
+    i18next.t("import.novel.defaultProjectTitle");
 
   const lines = novel.body.trim() ? splitNovelBodyLines(novel.body) : [];
   if (lines.length === 0) {
-    warnings.push("本文が空です（キャラクターブックのみ取り込みます）");
+    warnings.push(i18next.t("import.novel.warnings.emptyBody"));
   }
 
   const codexDrafts: NovelCodexDraft[] = novel.charBook.map((entry) => ({

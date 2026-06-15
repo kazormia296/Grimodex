@@ -223,7 +223,7 @@ export function ContextPillGroup({
                   >
                     {child.name}
                     <span className="ml-1 text-muted-foreground/70">
-                      via {parentName}
+                      {t("chat.context.via", { name: parentName })}
                     </span>
                   </span>
                   <div className="flex shrink-0 items-center gap-0.5">
@@ -274,7 +274,7 @@ export function ContextPillGroup({
                         </span>
                       ) : (
                         <span className="ml-1 text-muted-foreground/70">
-                          auto
+                          {t("chat.context.autoLabel")}
                         </span>
                       )}
                     </span>

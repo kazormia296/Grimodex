@@ -167,7 +167,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
       if (useGlobalHistoryStore.getState().isReplaying) return;
       useGlobalHistoryStore.getState().push({
         kind: "codex",
-        label: "親変更",
+        label: t("codex.relation.historyParentChange"),
         async undo() {
           await setParentRelation(childId, beforeParentId);
           await loadEntries();
@@ -178,7 +178,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
         },
       });
     },
-    [loadEntries],
+    [loadEntries, t],
   );
 
   const handleRemoveParent = useCallback(async () => {
@@ -186,12 +186,14 @@ export function RelationSection({ entry }: RelationSectionProps) {
     try {
       await setParentRelation(entry.id, null);
     } catch (err) {
-      toast.error("親関係の解除に失敗しました", { description: String(err) });
+      toast.error(t("codex.relation.removeParentFailed"), {
+        description: String(err),
+      });
       return;
     }
     await loadEntries();
     pushParentChange(entry.id, beforeParentId, null);
-  }, [entry.id, entry.parentId, loadEntries, pushParentChange]);
+  }, [entry.id, entry.parentId, loadEntries, pushParentChange, t]);
 
   const handleAddChild = useCallback(
     async (childEntry: CodexEntry) => {
@@ -199,7 +201,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
       try {
         await setParentRelation(childEntry.id, entry.id);
       } catch (err) {
-        toast.error("子関係の追加に失敗しました", {
+        toast.error(t("codex.relation.addChildFailed"), {
           description: String(err),
         });
         return;
@@ -207,7 +209,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
       await loadEntries();
       pushParentChange(childEntry.id, beforeParentId, entry.id);
     },
-    [entry.id, loadEntries, pushParentChange],
+    [entry.id, loadEntries, pushParentChange, t],
   );
 
   const handleDismiss = useCallback(
@@ -215,7 +217,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
       try {
         await dismissRelation(entry.id, dismissedId);
       } catch (err) {
-        toast.error("候補の非表示化に失敗しました", {
+        toast.error(t("codex.relation.dismissFailed"), {
           description: String(err),
         });
         return;
@@ -226,7 +228,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
         const cap = { entryId: entry.id, dismissedId };
         useGlobalHistoryStore.getState().push({
           kind: "codex",
-          label: "関連候補を非表示",
+          label: t("codex.relation.historyDismiss"),
           async undo() {
             await undismissRelation(cap.entryId, cap.dismissedId);
             setDismissedIds((prev) => {
@@ -242,7 +244,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
         });
       }
     },
-    [entry.id],
+    [entry.id, t],
   );
 
   const handleAddSuggestion = useCallback(
@@ -252,7 +254,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
       try {
         await setParentRelation(suggestionId, entry.id);
       } catch (err) {
-        toast.error("子関係の追加に失敗しました", {
+        toast.error(t("codex.relation.addChildFailed"), {
           description: String(err),
         });
         return;
@@ -260,7 +262,7 @@ export function RelationSection({ entry }: RelationSectionProps) {
       await loadEntries();
       pushParentChange(suggestionId, beforeParentId, entry.id);
     },
-    [entry.id, allEntries, loadEntries, pushParentChange],
+    [entry.id, allEntries, loadEntries, pushParentChange, t],
   );
 
   const childIds = useMemo(

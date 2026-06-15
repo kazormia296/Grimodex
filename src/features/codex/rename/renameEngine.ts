@@ -1,4 +1,5 @@
 import { getSchema } from "@tiptap/core";
+import i18next from "@/lib/i18n";
 import { Node as ProseMirrorNode, type Schema } from "@tiptap/pm/model";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db/client";
@@ -546,7 +547,10 @@ export async function applyRenamePropagation(
   if (!useGlobalHistoryStore.getState().isReplaying) {
     useGlobalHistoryStore.getState().push({
       kind: "scenes",
-      label: `「${oldName}」→「${newName}」の本文反映`,
+      label: i18next.t("codex.history.renamePropagated", {
+        oldName,
+        newName,
+      }),
       entityId: entryId,
       undo: runUndo,
       redo: runForward,

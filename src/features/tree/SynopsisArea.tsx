@@ -83,7 +83,7 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
             ) : (
               <>
                 <Sparkles className="h-3 w-3" aria-hidden />
-                Generate
+                {t("tree.synopsis.generate")}
               </>
             )}
           </button>
@@ -121,7 +121,7 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
         placeholder={
           isFolder
             ? t("tree.outline.placeholder")
-            : "What happens in this scene?"
+            : t("tree.synopsis.scenePlaceholder")
         }
         textareaClassName="w-full resize-none rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
       />

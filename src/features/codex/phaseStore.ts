@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import i18next from "@/lib/i18n";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntry } from "./api";
 import * as phaseApi from "./phaseApi";
@@ -109,7 +110,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       const cap = { ...phase };
       useGlobalHistoryStore.getState().push({
         kind: "phase",
-        label: "Phase作成",
+        label: i18next.t("phase.history.created"),
         async undo() {
           await phaseApi.deletePhase(cap.id);
           set((state) => ({
@@ -184,7 +185,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     const cap = { id, before: { ...before }, undoPatch, redoPatch: data };
     useGlobalHistoryStore.getState().push({
       kind: "phase",
-      label: "Phase更新",
+      label: i18next.t("phase.history.updated"),
       async undo() {
         const restored = await phaseApi.updatePhase(cap.id, cap.undoPatch);
         if (restored) {
@@ -256,7 +257,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     };
     useGlobalHistoryStore.getState().push({
       kind: "phase",
-      label: "Phase削除",
+      label: i18next.t("phase.history.deleted"),
       async undo() {
         await phaseApi.createPhase({
           id: cap.phase.id,
@@ -335,7 +336,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     const cap = { phaseId, definitionId, beforeValue, afterValue: value };
     useGlobalHistoryStore.getState().push({
       kind: "phase",
-      label: "詳細上書き更新",
+      label: i18next.t("phase.history.detailOverrideUpdated"),
       async undo() {
         if (cap.beforeValue === undefined) {
           // Was missing → delete
@@ -412,7 +413,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     const cap = { ...beforeOverride };
     useGlobalHistoryStore.getState().push({
       kind: "phase",
-      label: "詳細上書き削除",
+      label: i18next.t("phase.history.detailOverrideDeleted"),
       async undo() {
         const restored = await phaseApi.upsertDetailOverride(
           cap.phaseId,

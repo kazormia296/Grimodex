@@ -112,6 +112,7 @@ function LabelRow({
   onEdit: (label: Label) => void;
   onDelete: (label: Label) => void;
 }) {
+  const { t } = useTranslation();
   const { attributes, listeners, setNodeRef, transform, transition } =
     useSortable({ id: label.id });
   const colorHex = LABEL_PALETTE[label.color]?.light ?? "#888888";
@@ -126,7 +127,7 @@ function LabelRow({
         {...attributes}
         {...listeners}
         className="cursor-grab active:cursor-grabbing text-muted-foreground/50 hover:text-muted-foreground"
-        aria-label="並べ替え"
+        aria-label={t("labels.reorder", "並べ替え")}
       >
         <GripVertical className="h-4 w-4" />
       </button>
@@ -138,14 +139,14 @@ function LabelRow({
       <button
         className="rounded p-1 hover:bg-accent text-muted-foreground"
         onClick={() => onEdit(label)}
-        aria-label="編集"
+        aria-label={t("common.edit", "編集")}
       >
         <Pencil className="h-3.5 w-3.5" />
       </button>
       <button
         className="rounded p-1 hover:bg-accent text-muted-foreground"
         onClick={() => onDelete(label)}
-        aria-label="削除"
+        aria-label={t("common.delete", "削除")}
       >
         <Trash2 className="h-3.5 w-3.5" />
       </button>

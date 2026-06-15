@@ -197,7 +197,8 @@ export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
               exit={{ opacity: 0, scale: 0.85 }}
               transition={transition}
             >
-              <StopCircle className="h-2.5 w-2.5" /> Stopped
+              <StopCircle className="h-2.5 w-2.5" />{" "}
+              {t("chat.messageBadge.stopped")}
             </motion.span>
           )}
           {data && data.codexEntries.length > 0 && (
@@ -247,7 +248,9 @@ export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
             className="fixed z-50 min-w-[180px] max-w-[260px] rounded-md border border-border bg-popover py-1 shadow-lg"
           >
             <p className="border-b border-border px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {dropdown.type === "codex" ? "Codex entries" : "Snippets"}
+              {dropdown.type === "codex"
+                ? t("chat.messageBadge.codexEntries")
+                : t("chat.messageBadge.snippets")}
             </p>
             {dropdownItems.map((item) => (
               <button

@@ -1,3 +1,5 @@
+import i18next from "@/lib/i18n";
+
 export const AI_PROVIDERS = [
   "openrouter",
   "openai",
@@ -94,13 +96,23 @@ export interface AiSettings {
   toolProtocolMode?: ToolProtocolMode;
 }
 
-/** OpenRouter provider pin の候補一覧（UI 用）。 */
-export const OPENROUTER_PROVIDER_PINS: Array<{ slug: string; label: string }> =
-  [
-    { slug: "anthropic", label: "Anthropic (直接)" },
+/**
+ * OpenRouter provider pin の候補一覧（UI 用）。
+ * 言語切り替えに追従させるため関数化（import 時固定の const は避ける）。
+ */
+export function getOpenrouterProviderPins(): Array<{
+  slug: string;
+  label: string;
+}> {
+  return [
+    {
+      slug: "anthropic",
+      label: `Anthropic (${i18next.t("settings.ai.providerPinDirect")})`,
+    },
     { slug: "amazon-bedrock", label: "Amazon Bedrock" },
     { slug: "google-vertex", label: "Google Vertex" },
   ];
+}
 
 export const DEFAULT_AI_SETTINGS: AiSettings = {
   provider: "openrouter",

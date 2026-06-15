@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertCircle, AlertTriangle, Check, Info, Loader2 } from "lucide-react";
 
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -17,6 +18,7 @@ import { useLintStore } from "./lintStore";
  * - isLinting without prior results → `…`
  */
 export function StatusBarIndicator() {
+  const { t } = useTranslation();
   const diagnostics = useLintStore((s) => s.diagnostics);
   const isLinting = useLintStore((s) => s.isLinting);
   const lastErrorMessage = useLintStore((s) => s.lastErrorMessage);
@@ -44,7 +46,7 @@ export function StatusBarIndicator() {
         title={lastErrorMessage}
       >
         <AlertTriangle className="h-3.5 w-3.5" />
-        Lint失敗
+        {t("lint.status.failed", "Lint失敗")}
       </button>
     );
   }
@@ -69,7 +71,7 @@ export function StatusBarIndicator() {
       <button
         type="button"
         onClick={onClick}
-        title="Linter: 問題なし"
+        title={t("lint.status.noProblems", "Linter: 問題なし")}
         className={`flex h-5 items-center gap-1 rounded px-2 text-xs hover:bg-accent ${
           isLinting ? "text-muted-foreground opacity-60" : "text-green-600"
         }`}
@@ -83,7 +85,7 @@ export function StatusBarIndicator() {
     <button
       type="button"
       onClick={onClick}
-      title="Linter パネルを開く"
+      title={t("lint.status.openPanel", "Linter パネルを開く")}
       className={`flex h-5 items-center gap-2 rounded px-2 text-xs hover:bg-accent ${
         isLinting ? "opacity-60" : ""
       }`}

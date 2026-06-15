@@ -271,10 +271,12 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
           {(isLoadingPassages || passages.length > 0) && (
             <div className="mt-1 border-t border-border pt-2">
               <p className="mb-1 text-xs font-medium text-muted-foreground">
-                AI 使用箇所
+                {t("attribution.aiUsageLocations")}
               </p>
               {isLoadingPassages ? (
-                <p className="text-xs text-muted-foreground">読み込み中...</p>
+                <p className="text-xs text-muted-foreground">
+                  {t("common.loading")}
+                </p>
               ) : (
                 <div className="flex max-h-56 flex-col gap-1 overflow-auto">
                   {passages.map((passage) => (
@@ -296,7 +298,7 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
                 type="button"
                 onClick={handleExportMd}
                 className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent"
-                title="Markdown export"
+                title={t("attribution.exportMarkdownTitle")}
               >
                 <Download className="h-3 w-3" /> MD
               </button>
@@ -304,7 +306,7 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
                 type="button"
                 onClick={handleExportCsv}
                 className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent"
-                title="CSV export"
+                title={t("attribution.exportCsvTitle")}
               >
                 <Download className="h-3 w-3" /> CSV
               </button>
@@ -325,18 +327,21 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
   return __renderResult;
 }
 
-function provenanceLabel(kind: ProvenanceKind): string {
+function provenanceLabel(
+  kind: ProvenanceKind,
+  t: (key: string) => string,
+): string {
   switch (kind) {
     case "chat":
-      return "チャット";
+      return t("attribution.provenanceChat");
     case "inline-ai":
       return "slash";
     case "beat":
       return "Beat";
     case "orphan-chat":
-      return "消失";
+      return t("attribution.provenanceOrphanChat");
     case "unknown":
-      return "出自記録なし";
+      return t("attribution.provenanceUnknown");
   }
 }
 
@@ -347,6 +352,7 @@ function PassageRow({
   passage: ResolvedPassage;
   onJump: (passage: ResolvedPassage) => void;
 }) {
+  const { t } = useTranslation();
   const provenance = passage.provenance;
   const detail =
     provenance.kind === "chat"
@@ -358,8 +364,8 @@ function PassageRow({
             .filter(Boolean)
             .join(": ")
         : provenance.kind === "orphan-chat"
-          ? "元チャット削除済"
-          : "既存本文または手動スニペット由来";
+          ? t("attribution.detailOrphanChat")
+          : t("attribution.detailLegacyContent");
 
   return (
     <button
@@ -369,7 +375,7 @@ function PassageRow({
     >
       <div className="flex items-center gap-2">
         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-          {provenanceLabel(provenance.kind)}
+          {provenanceLabel(provenance.kind, t)}
         </span>
         {passage.model && (
           <span className="truncate text-[10px] text-muted-foreground">

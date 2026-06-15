@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Trash2 } from "lucide-react";
+import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { useLintIgnoreStore, type LintIgnoreEntry } from "./lintIgnoreStore";
 import { buildBlocksFromJson } from "./projectScan";
@@ -80,12 +81,12 @@ async function computeStaleness(
   return result;
 }
 
-const STALENESS_LABEL: Record<StalenessStatus, string> = {
-  active: "有効",
-  stale: "陳腐化",
-  orphan: "孤児",
-  unknown: "不明",
-};
+const stalenessLabel = (): Record<StalenessStatus, string> => ({
+  active: i18next.t("lint.ignore.statusActive", "有効"),
+  stale: i18next.t("lint.ignore.statusStale", "陳腐化"),
+  orphan: i18next.t("lint.ignore.statusOrphan", "孤児"),
+  unknown: i18next.t("lint.ignore.statusUnknown", "不明"),
+});
 
 const STALENESS_CLASS: Record<StalenessStatus, string> = {
   active:
@@ -117,6 +118,8 @@ function SceneGroup({
   staleness,
   onDelete,
 }: SceneGroupProps) {
+  const { t } = useTranslation();
+  const labels = stalenessLabel();
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const handleDelete = useCallback(
@@ -134,7 +137,7 @@ function SceneGroup({
   return (
     <div className="flex flex-col gap-1">
       <div className="sticky top-0 bg-background px-3 py-1 text-xs font-semibold text-muted-foreground border-b border-border">
-        {sceneTitle ?? "（シーン不明）"}
+        {sceneTitle ?? t("lint.ignore.unknownScene", "（シーン不明）")}
       </div>
       {entries.map((e) => {
         const status = staleness.get(e.id) ?? "unknown";
@@ -151,7 +154,7 @@ function SceneGroup({
                 <span
                   className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STALENESS_CLASS[status]}`}
                 >
-                  {STALENESS_LABEL[status]}
+                  {labels[status]}
                 </span>
                 <span className="text-[10px] text-muted-foreground ml-auto">
                   {formatDate(e.created_at)}
@@ -175,7 +178,7 @@ function SceneGroup({
               onClick={() => handleDelete(e.id)}
               disabled={deleting === e.id}
               className="flex-shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-              title="この無視エントリを削除"
+              title={t("lint.ignore.deleteEntry", "この無視エントリを削除")}
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>

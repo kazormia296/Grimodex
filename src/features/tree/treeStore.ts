@@ -692,7 +692,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       projectId,
       parentId: chapterNode?.id ?? null,
       nodeType: "note",
-      title: "新しいノート",
+      title: i18next.t("tree.defaultNewNote"),
       sortOrder,
     });
     const newNode = toNodeData(created);
@@ -884,10 +884,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const captured = { ...newNode };
       const createLabel =
         newNode.nodeType === "scene"
-          ? "シーン作成"
+          ? i18next.t("tree.undo.sceneCreated")
           : newNode.nodeType === "folder"
-            ? "フォルダー作成"
-            : "ノート作成";
+            ? i18next.t("tree.undo.folderCreated")
+            : i18next.t("tree.undo.noteCreated");
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
         label: createLabel,
@@ -946,7 +946,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
-        label: "リネーム",
+        label: i18next.t("tree.undo.renamed"),
         async undo() {
           await api.updateNode(id, { title: oldTitle });
           set((state) => {
@@ -1008,7 +1008,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         successfullyDeleted.add(delId);
       } catch (err) {
         partialFailure = true;
-        toast.error("ノード削除に失敗しました", { description: String(err) });
+        toast.error(i18next.t("tree.errors.deleteFailed"), {
+          description: String(err),
+        });
         break;
       }
     }
@@ -1074,7 +1076,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (trackHistory) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
-        label: "削除",
+        label: i18next.t("tree.undo.deleted"),
         async undo() {
           // 1500ms 以内 Ctrl+Z 吸収: trash 保留を全 cancel
           for (const tempId of trashTempIds.values()) {
@@ -1159,7 +1161,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
-        label: "synopsis 更新",
+        label: i18next.t("tree.undo.synopsisUpdated"),
         async undo() {
           await api.updateNode(id, { synopsis: oldSynopsis ?? undefined });
           set((state) => ({
@@ -1197,7 +1199,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
-        label: "intent 更新",
+        label: i18next.t("tree.undo.intentUpdated"),
         async undo() {
           await api.updateNode(id, { intent: oldIntent ?? undefined });
           set((state) => ({
@@ -1225,7 +1227,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
-        label: "ステータス変更",
+        label: i18next.t("tree.undo.statusChanged"),
         async undo() {
           await api.updateNode(id, {
             status: (oldStatus as SceneStatus) ?? undefined,
@@ -1271,7 +1273,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
-        label: "時系列順変更",
+        label: i18next.t("tree.undo.storyTimeChanged"),
         async undo() {
           const undoPatch: Parameters<typeof api.updateNode>[1] = {
             storyTimeOrder: oldOrder ?? undefined,
@@ -1447,7 +1449,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
-        label: "移動",
+        label: i18next.t("tree.undo.moved"),
         async undo() {
           await api.updateNode(id, {
             parentId: oldParentId,

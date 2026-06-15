@@ -1,35 +1,46 @@
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Pencil, Search, X, MoreVertical } from "lucide-react";
+import i18next from "@/lib/i18n";
 import { useMatrixStore } from "./matrixStore";
 import type { ShowMode } from "./lib/deriveColumns";
 import type { DisplayMode, SortMode } from "./matrixStore";
 
-const SHOW_MODES: { value: ShowMode; label: string; disabled?: boolean }[] = [
-  { value: "codex-all", label: "Codex (all)" },
-  { value: "codex-characters", label: "Codex (characters)" },
-  { value: "codex-locations", label: "Codex (locations)" },
-  { value: "codex-items", label: "Codex (items)" },
-  { value: "codex-lore", label: "Codex (lore)" },
-  { value: "pov", label: "POV" },
-  { value: "location", label: "Location" },
-  { value: "subplot", label: "Subplot" },
-  { value: "custom", label: "Custom" },
+const getShowModes = (): {
+  value: ShowMode;
+  label: string;
+  disabled?: boolean;
+}[] => [
+  { value: "codex-all", label: i18next.t("matrix.showMode.codexAll") },
+  {
+    value: "codex-characters",
+    label: i18next.t("matrix.showMode.codexCharacters"),
+  },
+  {
+    value: "codex-locations",
+    label: i18next.t("matrix.showMode.codexLocations"),
+  },
+  { value: "codex-items", label: i18next.t("matrix.showMode.codexItems") },
+  { value: "codex-lore", label: i18next.t("matrix.showMode.codexLore") },
+  { value: "pov", label: i18next.t("matrix.showMode.pov") },
+  { value: "location", label: i18next.t("matrix.showMode.location") },
+  { value: "subplot", label: i18next.t("matrix.showMode.subplot") },
+  { value: "custom", label: i18next.t("matrix.showMode.custom") },
 ];
 
-const SORT_MODES: { value: SortMode; label: string }[] = [
-  { value: "reading", label: "Reading order" },
-  { value: "story-time", label: "Story-time order" },
-  { value: "word-count", label: "Character count" },
-  { value: "last-edited", label: "Last edited" },
+const getSortModes = (): { value: SortMode; label: string }[] => [
+  { value: "reading", label: i18next.t("matrix.sortMode.readingOrder") },
+  { value: "story-time", label: i18next.t("matrix.sortMode.storyTimeOrder") },
+  { value: "word-count", label: i18next.t("matrix.sortMode.characterCount") },
+  { value: "last-edited", label: i18next.t("matrix.sortMode.lastEdited") },
 ];
 
-const DISPLAY_MODES: { value: DisplayMode; label: string }[] = [
-  { value: "dot", label: "Dot (●/◯)" },
-  { value: "count", label: "Count" },
-  { value: "heatmap", label: "Heatmap" },
-  { value: "pov-color", label: "POV color" },
-  { value: "role-aware", label: "Role-aware (★●◯)" },
+const getDisplayModes = (): { value: DisplayMode; label: string }[] => [
+  { value: "dot", label: i18next.t("matrix.displayMode.dot") },
+  { value: "count", label: i18next.t("matrix.displayMode.count") },
+  { value: "heatmap", label: i18next.t("matrix.displayMode.heatmap") },
+  { value: "pov-color", label: i18next.t("matrix.displayMode.povColor") },
+  { value: "role-aware", label: i18next.t("matrix.displayMode.roleAware") },
 ];
 
 /** Show modes where the tag-filter row is hidden */
@@ -69,6 +80,10 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const showModes = getShowModes();
+  const sortModes = getSortModes();
+  const displayModes = getDisplayModes();
 
   const currentTags = tagFilter[showMode] ?? [];
   const showTagFilter = !NO_TAG_FILTER_MODES.has(showMode);
@@ -113,7 +128,9 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
     <div className="shrink-0 border-b">
       {/* Main row */}
       <div data-panel-header className="flex items-center gap-2 px-3 py-2">
-        <span className="text-sm font-semibold">Matrix</span>
+        <span className="text-sm font-semibold">
+          {t("layout.panel.matrix")}
+        </span>
         <div className="flex-1" />
 
         {/* Show mode */}
@@ -122,7 +139,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
           onChange={(e) => setShowMode(e.target.value as ShowMode)}
           className="rounded border border-border bg-background px-2 py-1 text-xs"
         >
-          {SHOW_MODES.map((m) => (
+          {showModes.map((m) => (
             <option key={m.value} value={m.value} disabled={m.disabled}>
               {m.label}
             </option>
@@ -135,7 +152,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
           onChange={(e) => setSortMode(e.target.value as SortMode)}
           className="rounded border border-border bg-background px-2 py-1 text-xs"
         >
-          {SORT_MODES.map((m) => (
+          {sortModes.map((m) => (
             <option key={m.value} value={m.value}>
               {m.label}
             </option>
@@ -147,7 +164,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
           type="button"
           onClick={toggleSearch}
           className={`rounded p-1 hover:bg-accent ${searchOpen ? "bg-accent" : ""}`}
-          title="Search scenes / codex"
+          title={t("matrix.searchTooltip")}
         >
           <Search className="h-3.5 w-3.5" />
         </button>
@@ -158,7 +175,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
             type="button"
             onClick={() => setMenuOpen((v) => !v)}
             className={`rounded p-1 hover:bg-accent ${menuOpen ? "bg-accent" : ""}`}
-            title="Panel menu"
+            title={t("matrix.menuTooltip")}
           >
             <MoreVertical className="h-3.5 w-3.5" />
           </button>
@@ -166,9 +183,9 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
           {menuOpen && (
             <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-md border border-border bg-popover shadow-md">
               <div className="px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
-                Display mode
+                {t("matrix.menu.displayMode")}
               </div>
-              {DISPLAY_MODES.map((m) => (
+              {displayModes.map((m) => (
                 <button
                   key={m.value}
                   type="button"
@@ -191,7 +208,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
               ))}
               <div className="my-1 border-t border-border/50" />
               <div className="px-3 py-2 text-[10px] font-semibold uppercase text-muted-foreground">
-                Row filters
+                {t("matrix.menu.rowFilters")}
               </div>
               <button
                 type="button"
@@ -242,7 +259,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
       {showMode === "subplot" && (
         <div className="flex items-center gap-2 border-t px-3 py-1.5">
           <span className="text-[11px] text-muted-foreground">
-            Subplot tag:
+            {t("matrix.subplot.tagLabel")}
           </span>
           <input
             type="text"
@@ -355,7 +372,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
                 setSearchOpen(false);
               }
             }}
-            placeholder="Search scenes or codex…"
+            placeholder={t("matrix.header.searchPlaceholder")}
             className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
           />
           {searchQuery && (
@@ -399,7 +416,11 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
               }
               if (e.key === "Escape") setShowTagSuggestions(false);
             }}
-            placeholder={currentTags.length === 0 ? "Filter by tag…" : ""}
+            placeholder={
+              currentTags.length === 0
+                ? t("matrix.header.filterPlaceholder")
+                : ""
+            }
             className="min-w-[80px] flex-1 bg-transparent text-[11px] outline-none placeholder:text-muted-foreground"
           />
           {showTagSuggestions && suggestions.length > 0 && (

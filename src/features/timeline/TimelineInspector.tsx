@@ -91,7 +91,7 @@ export function TimelineInspector({
                 (e.target as HTMLInputElement).blur();
               }
             }}
-            placeholder="T1"
+            placeholder={t("timeline.inspector.labelPlaceholder", "T1")}
             className="rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
           />
           <span className="text-muted-foreground">

@@ -257,7 +257,9 @@ export function NodeContextMenu({
                       </DropdownMenuItem>
                     ))}
                     <DropdownMenuSub>
-                      <DropdownMenuSubTrigger>Codex</DropdownMenuSubTrigger>
+                      <DropdownMenuSubTrigger>
+                        {t("map.nodeType.codex")}
+                      </DropdownMenuSubTrigger>
                       <DropdownMenuSubContent className="min-w-[130px]">
                         {CODEX_TYPES.map(({ value, labelKey }) => (
                           <DropdownMenuItem

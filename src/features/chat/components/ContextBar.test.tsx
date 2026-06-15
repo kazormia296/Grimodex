@@ -212,7 +212,7 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     const pills = screen.getByTestId("pills-visible");
     expect(within(pills).getByText("親キャラ")).toBeInTheDocument();
     expect(within(pills).getByText("子キャラ")).toBeInTheDocument();
-    expect(within(pills).getByText(/via 親キャラ/)).toBeInTheDocument();
+    expect(within(pills).getByText(/親キャラ 由来/)).toBeInTheDocument();
   });
 
   it("withChildren=true でも子がいなければ子ピルは表示されない", () => {
@@ -221,7 +221,7 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     render(<ContextBar {...defaultProps} pinnedEntries={[parent]} />);
     const pills = screen.getByTestId("pills-visible");
     expect(within(pills).getByText("親キャラ")).toBeInTheDocument();
-    expect(within(pills).queryByText(/via 親キャラ/)).not.toBeInTheDocument();
+    expect(within(pills).queryByText(/親キャラ 由来/)).not.toBeInTheDocument();
   });
 
   it("chat_mention (input-detected) エントリは withChildren=true で子ピルを via 表示する", () => {
@@ -238,7 +238,7 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     const pills = screen.getByTestId("pills-visible");
     expect(within(pills).getByText("検出キャラ")).toBeInTheDocument();
     expect(within(pills).getByText("子キャラ")).toBeInTheDocument();
-    expect(within(pills).getByText(/via 検出キャラ/)).toBeInTheDocument();
+    expect(within(pills).getByText(/検出キャラ 由来/)).toBeInTheDocument();
   });
 
   it("子エントリが既に pinnedEntries に含まれる場合は via 表示しない（重複排除）", () => {
@@ -253,7 +253,7 @@ describe("ContextBar 子エントリピル表示 (非グループモード)", ()
     // 子キャラはピン済みとして表示されるが via ラベルは付かない
     const pills = screen.getByTestId("pills-visible");
     expect(within(pills).getAllByText("子キャラ")).toHaveLength(1);
-    expect(within(pills).queryByText(/via 親キャラ/)).not.toBeInTheDocument();
+    expect(within(pills).queryByText(/親キャラ 由来/)).not.toBeInTheDocument();
   });
 
   it("onDismissViaChild が渡された場合、via子エントリに X ボタンが表示される", async () => {

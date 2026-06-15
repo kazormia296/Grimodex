@@ -28,12 +28,106 @@
     "disables": {
       "currentScene": "Current scene",
       "otherScenes": "Other scenes",
-      "none": "No exclusions"
+      "none": "No exclusions",
+      "allRules": "All rules",
+      "emptyBlock": "(empty block)",
+      "jumpToLocation": "Jump to location",
+      "removeDisable": "Remove disable"
     },
     "ruleDisableAll": "Disable rule \"{{rule}}\" entirely",
     "ctx": {
       "ignoreHere": "Ignore here permanently",
       "inlineDisable": "Disable here (inline)"
+    },
+    "disable": {
+      "title": "Disable rule",
+      "description": "Silence the specified Lint rules for the selected range.",
+      "allRules": "All rules (disable every rule)",
+      "selectSpecific": "Select specific rules:",
+      "noRules": "No enabled rules",
+      "multiBlock": "The selection spans multiple blocks",
+      "multiBlockExplanation": "Because a TipTap Mark is confined to a single block, choose one of the following:",
+      "blockWide": "Disable per block",
+      "blockWideDesc": "Apply to every included block in full",
+      "spanPerBlock": "Span per block",
+      "spanPerBlockDesc": "Apply only to the matching range within each block",
+      "rememberPolicy": "Always apply this method without asking again",
+      "selectedPolicy": "Method for multi-block selections: ",
+      "blockPolicy": "Per block",
+      "spanPolicy": "Span per block",
+      "resetToAsk": "Show the confirmation dialog next time",
+      "resetButton": "Ask every time again",
+      "apply": "Apply"
+    },
+    "ignore": {
+      "statusActive": "Active",
+      "statusStale": "Stale",
+      "statusOrphan": "Orphan",
+      "statusUnknown": "Unknown",
+      "unknownScene": "(scene unknown)",
+      "deleteEntry": "Delete this ignore entry"
+    },
+    "notification": {
+      "close": "Close notification"
+    },
+    "warnings": {
+      "show": "Show Linter warnings",
+      "title": "Linter warnings"
+    },
+    "error": {
+      "temporarilyUnavailableShort": "The Linter is temporarily unavailable",
+      "sceneTooLarge": "This scene is too large to lint",
+      "unsupportedLanguage": "Unsupported language: {{lang}}",
+      "configError": "There is an error in the Linter configuration",
+      "temporarilyUnavailable": "The Linter is temporarily unavailable ({{type}})",
+      "configLoadingWait": "Waiting for the configuration to load",
+      "linterDisabled": "The Linter is disabled"
+    },
+    "fix": {
+      "disablesRemoved": "Applying the fix removed {{count}} Lint disable(s)",
+      "disablesRemovedBulk": "Applying fixes in bulk removed {{count}} Lint disable(s)",
+      "sceneOpenRequired": "Open the scene before applying the fix"
+    },
+    "export": {
+      "dialogTitle": "Export Lint report",
+      "format": "Format",
+      "includeExcerpt": "Include text excerpt",
+      "summary": "Output: {{scenes}} scene(s) ( {{diagnostics}} finding(s) )",
+      "saving": "Saving...",
+      "save": "Save"
+    },
+    "status": {
+      "failed": "Lint failed",
+      "noProblems": "Linter: no problems",
+      "openPanel": "Open Linter panel"
+    },
+    "termDict": {
+      "addButton": "Add",
+      "phase2Planned": "Planned for Phase 2",
+      "importCsv": "Import CSV",
+      "unimplemented": "[not implemented]",
+      "export": "Export",
+      "search": "Search",
+      "sortOrder": "Manual order",
+      "preferred": "Preferred form",
+      "updatedAt": "Updated",
+      "variants": "Disallowed forms",
+      "codexCollision": "Collides with the alias of Codex \"{{names}}\"; Codex takes precedence",
+      "duplicate": "Duplicate",
+      "confirmDelete": "Delete \"{{name}}\"?",
+      "delete": "Delete",
+      "editEntry": "Edit entry",
+      "newEntry": "New entry",
+      "preferredPlaceholder": "Web",
+      "variantsLabel": "Disallowed forms (comma-separated)",
+      "variantsPlaceholder": "web, Web, ウエブ",
+      "enabled": "Enabled",
+      "note": "Note (optional)",
+      "notePlaceholder": "Decided in planning doc §3.2",
+      "errorPreferredRequired": "Please enter a preferred form.",
+      "errorVariantsRequired": "Please enter at least one disallowed form.",
+      "errorDuplicateVariant": "The same variant is already registered in another entry: {{variants}}",
+      "copySuffix": "{{name}} (copy)"
     }
   },
   "postEffect": {
@@ -44,7 +138,72 @@
       "title": "AI confidence: {{level}}"
     },
     "annotations": {
-      "empty": "No annotations"
+      "empty": "No annotations",
+      "resolved": "Resolved / Dismissed"
+    },
+    "codex": {
+      "summary": "Summary",
+      "openEntry": "Open Codex \"{{entryName}}\""
+    },
+    "contrast": {
+      "codex": "Codex:",
+      "text": "Text:"
+    },
+    "typo": {
+      "category": {
+        "okurigana": "Okurigana",
+        "missingParticle": "Particle",
+        "homophone": "Homophone",
+        "missingChar": "Missing character",
+        "spelling": "Spelling",
+        "grammar": "Grammar",
+        "punctuation": "Punctuation",
+        "other": "Typo"
+      },
+      "titleTemplate": "Typo: {{category}}"
+    },
+    "relation": {
+      "contradicts": "Contradicts",
+      "absent": "Absent",
+      "dilutes": "Diluted",
+      "ambiguous": "Ambiguous",
+      "chronology": "Chronology",
+      "causality": "Causality",
+      "contradiction": "Contradiction",
+      "tooltip": {
+        "contradicts": "Contradicts the intended aim",
+        "absent": "The intended aim is absent from the text",
+        "dilutes": "The aim is present but diluted",
+        "ambiguous": "The relationship is ambiguous",
+        "chronology": "Contradicts the in-story chronology",
+        "causality": "Contradicts cause and effect",
+        "contradiction": "Contradicts an established fact"
+      }
+    },
+    "typoContrast": {
+      "incorrect": "Wrong:",
+      "correct": "Right:"
+    },
+    "expanded": {
+      "reason": "Reason: ",
+      "codexExcerpt": "Codex excerpt: ",
+      "context": "Context: ",
+      "orphanedTooltip": "Could not locate the corresponding position in the text",
+      "orphaned": "Position not found",
+      "staleModelTooltip": "This finding was detected by a different model than the current one ({{currentModel}})",
+      "detectedBy": "by {{model}}"
+    },
+    "actions": {
+      "resolve": "Resolved",
+      "dismiss": "Dismiss"
+    },
+    "pseudoComment": {
+      "yourName": "You",
+      "replyPlaceholder": "Write a reply…",
+      "replyButton": "Reply"
+    },
+    "codexChip": {
+      "summary": "Summary"
     }
   },
   "common": {
@@ -71,7 +230,13 @@
     "confirmDelete": "Delete?",
     "remove": "Remove",
     "untitled": "(Untitled)",
-    "none": "None"
+    "none": "None",
+    "error": "An error occurred",
+    "ok": "OK",
+    "done": "Done",
+    "more": "+{{count}} more",
+    "unitScenes": "scenes",
+    "unitCodex": "codex"
   },
   "welcome": {
     "description": "Choose a folder to save your manuscript.",
@@ -190,7 +355,16 @@
       "title": "Title",
       "applyMetadata": "Apply title, synopsis, and genre to current project",
       "flatStructureWarning": "No chapter headers in table of contents — all episodes placed in one folder",
-      "success": "Import complete: {{folders}} folders / {{scenes}} scenes ({{imported}} nodes)"
+      "success": "Import complete: {{folders}} folders / {{scenes}} scenes ({{imported}} nodes)",
+      "warnings": {
+        "emptyBody": "{{file}}: empty body",
+        "missingEpisodeFile": "No {{file}} found for episode {{num}} in the table of contents",
+        "titleMismatch": "episode {{num}}: TOC title \"{{tocTitle}}\" differs from file title \"{{fileTitle}}\" (using the file title)",
+        "episodeNotInToc": "{{file}} was not found in the table of contents — appending it to the end of the tree"
+      },
+      "extraEpisodesFolder": "Extra episodes",
+      "defaultProjectTitle": "Imported Project",
+      "defaultEpisodeTitle": "Episode {{num}}"
     },
     "markdown": {
       "modeLabel": "Markdown input type",
@@ -225,7 +399,13 @@
       "metadataHintNewProject": "Memory → synopsis and footnote → AI instructions will be applied to the new project.",
       "metadataHintCurrentProject": "Memory / footnote will be added as a memo note at the end of the tree without overwriting existing settings.",
       "memoNoteTitle": "Memory/footnote of {{title}}",
-      "success": "Import complete: {{scenes}} scenes / {{entries}} Codex entries"
+      "success": "Import complete: {{scenes}} scenes / {{entries}} Codex entries",
+      "warnings": {
+        "emptyBody": "The body is empty (importing only the character book)",
+        "tagNoContent": "No content for character book tag \"{{tag}}\"",
+        "tagEmpty": "Skipped a character book entry with an empty tag"
+      },
+      "defaultProjectTitle": "Imported"
     }
   },
   "novelExport": {
@@ -557,7 +737,8 @@
       "providerPinDesc": "Pin OpenRouter routing to a single provider so the Anthropic prompt cache hits more often. Fallbacks stay on, so it switches providers if one fails.",
       "providerPinNone": "Not specified (OpenRouter default)",
       "toolProtocolDesc": "Tool-call format for the agent. \"auto\" treats it as Hermes format (in-body <tool_call>) only when the model name contains \"hermes\". Select \"hermes\" explicitly for Qwen, etc.",
-      "toolProtocolAuto": "auto (recommended)"
+      "toolProtocolAuto": "auto (recommended)",
+      "providerPinDirect": "direct"
     },
     "project": {
       "basic": "Basic Info",
@@ -1290,7 +1471,11 @@
       "regenerate": "Regenerate",
       "edit": "Edit",
       "delete": "Delete",
-      "viewPrompt": "View prompt"
+      "viewPrompt": "View prompt",
+      "insertLabel": "Insert",
+      "codexLabel": "Codex",
+      "snippetLabel": "Snippet",
+      "copyLabel": "Copy"
     },
     "contextMenu": {
       "insertSelectionToEditor": "Insert selection to editor",
@@ -1374,7 +1559,17 @@
       },
       "promptPreviewLoading": "Building prompt…",
       "promptSnapshotMissing": "No sent-prompt record for this message (it was sent before this feature was added).",
-      "promptSnapshotError": "Failed to load the prompt record"
+      "promptSnapshotError": "Failed to load the prompt record",
+      "projectLabel": "Project",
+      "via": "via {{name}}",
+      "autoLabel": "auto",
+      "sceneLabel": "Scene:",
+      "stickyLabel": "Sticky",
+      "spotlightLabel": "Spotlight: {{content}}",
+      "unpinSpotlight": "Remove Spotlight: {{label}}",
+      "childViaParent": "via {{name}}",
+      "viaIndicator": "↑{{name}}",
+      "heading": "Context"
     },
     "conversationSummary": "Conversation summary",
     "sessionMenu": "Session menu",
@@ -1396,6 +1591,11 @@
       "extractToCodex": "Extract to Codex",
       "saveAsSnippet": "Save as Snippet",
       "copy": "Copy"
+    },
+    "messageBadge": {
+      "stopped": "Stopped",
+      "codexEntries": "Codex entries",
+      "snippets": "Snippets"
     }
   },
   "codex": {
@@ -1481,7 +1681,17 @@
       "deleteEmptyConfirmBody_one": "This deletes {{count}} field definition with no values. Fields with values are not affected.",
       "deleteEmptyConfirmBody_other": "This deletes {{count}} field definitions with no values. Fields with values are not affected.",
       "deleteEmptyDone_one": "Deleted {{count}} empty field",
-      "deleteEmptyDone_other": "Deleted {{count}} empty fields"
+      "deleteEmptyDone_other": "Deleted {{count}} empty fields",
+      "duplicateName": "\"{{name}}\" is already used by another Codex entry. Body matching will become ambiguous.",
+      "fieldLabelName": "Name",
+      "fieldLabelType": "Type",
+      "fieldIncludeInContext": "Include in AI context",
+      "deleteFieldTitle": "Delete this field?",
+      "deleteFieldDesc": "Deleting \"{{name}}\" permanently removes this field's value from every entry of this type. This action cannot be undone.",
+      "fieldTypeText": "Text",
+      "fieldTypeDropdown": "Dropdown",
+      "fieldTypeCodexReference": "Codex Reference",
+      "manageFieldsTitle": "Manage fields: {{type}}"
     },
     "relation": {
       "title": "Hierarchy (parent/child)",
@@ -1517,7 +1727,12 @@
         "enemy": "Enemy",
         "mentor": "Mentor",
         "servant": "Master/servant"
-      }
+      },
+      "removeParentFailed": "Failed to remove the parent relation",
+      "addChildFailed": "Failed to add the child relation",
+      "dismissFailed": "Failed to dismiss the suggestion",
+      "historyParentChange": "Change parent",
+      "historyDismiss": "Dismiss suggestion"
     },
     "research": {
       "notesLabel": "Notes",
@@ -1607,7 +1822,11 @@
       "exposureAiChars": "(~{{chars}} chars)",
       "exposureTitle": "Phase AI exposure",
       "exposureDesc": "Only \"AI-visible\" phases are injected into the prompt. \"Wiki-only\" phases (suppress/hidden) never reach AI, so you can stack as many as you like for planning or pure record-keeping without bloating prompts.",
-      "exposureCostWarning": "AI-visible summary is {{chars}} chars — a bit heavy. Trimming summaries or switching past phases to Wiki-only will lighten AI output."
+      "exposureCostWarning": "AI-visible summary is {{chars}} chars — a bit heavy. Trimming summaries or switching past phases to Wiki-only will lighten AI output.",
+      "summaryQuoted": "\"{{value}}\"",
+      "noAnchorScene": "No anchor scene set",
+      "addPhase": "Add phase",
+      "baseState": "Base state"
     },
     "store": {
       "loadFailed": "Failed to load Codex",
@@ -1615,7 +1834,9 @@
       "createFailed": "Failed to create Codex entry",
       "updateFailed": "Failed to update Codex entry",
       "deleteFailed": "Failed to delete Codex entry",
-      "filterFailed": "Failed to apply filter"
+      "filterFailed": "Failed to apply filter",
+      "agentHistoryCreate": "Agent: Create Codex",
+      "agentHistoryUpdate": "Agent: Update Codex"
     },
     "extraction": {
       "title": "Extract to Codex",
@@ -1638,6 +1859,59 @@
     },
     "customSets": {
       "noSets": "No sets"
+    },
+    "tag": {
+      "saveFailed": "Failed to save tags",
+      "createFailed": "Failed to create the tag",
+      "linkFailed": "Failed to link the tag",
+      "historyToggle": "Toggle tag",
+      "historyRemove": "Remove tag",
+      "historyCreate": "Create tag"
+    },
+    "phase": {
+      "deleteTitle": "Delete this phase?",
+      "deleteName": "\"{{label}}\"",
+      "deleteNameWithScene": "\"{{label}}\" ({{scene}})",
+      "deleteDesc": "Deleting {{name}} will lose all of this phase's overrides. This action cannot be undone."
+    },
+    "rename": {
+      "dialogTitle": "Apply \"{{oldName}}\" → \"{{newName}}\" to the body",
+      "dialogDesc": "Found {{count}} occurrences of the old name in prose and descriptions. Choose which to rewrite to the new name (@mentions follow automatically and are excluded).",
+      "ambiguousWarning": "Another Codex entry shares this name or alias. Since the intended entry cannot be determined automatically, everything is off by default. Review the content and select individually.",
+      "selectAll": "Select all",
+      "deselectAll": "Deselect all",
+      "rubyExcluded": "(Ruby excluded)",
+      "selectedCount": "{{selected}} / {{total}} selected",
+      "applyButton": "Apply {{count}}",
+      "applying": "Applying…",
+      "kindSceneBody": "Body",
+      "kindNodeTitle": "Title",
+      "kindNodeSynopsis": "Synopsis",
+      "kindCodexSummary": "Summary",
+      "kindCodexContent": "Codex body",
+      "kindCodexNotes": "Notes",
+      "kindCodexDetail": "Detail field",
+      "kindCodexRelationLabel": "Relation label"
+    },
+    "history": {
+      "typeChanged": "Type changed",
+      "nameChanged": "Name changed",
+      "summaryChanged": "Summary changed",
+      "contentChanged": "Content changed",
+      "notesChanged": "Notes changed",
+      "tagsChanged": "Tags changed",
+      "aliasesChanged": "Aliases changed",
+      "excludedAliasesChanged": "Excluded aliases changed",
+      "parentChanged": "Parent changed",
+      "contextModeChanged": "Context mode changed",
+      "iconChanged": "Icon changed",
+      "childrenBudgetChanged": "Child budget changed",
+      "updated": "Codex updated",
+      "created": "Codex created",
+      "deleted": "Codex deleted",
+      "pinAdded": "Pin added",
+      "pinRemoved": "Pin removed",
+      "renamePropagated": "Apply rename \"{{oldName}}\" → \"{{newName}}\" to body text"
     }
   },
   "grid": {
@@ -1654,7 +1928,8 @@
       "expandAll": "Expand all",
       "collapseAll": "Collapse all",
       "hideToolbar": "Hide display settings",
-      "showToolbar": "Display settings"
+      "showToolbar": "Display settings",
+      "actionsMenu": "Actions"
     },
     "column": {
       "newScene": "Add Scene",
@@ -1670,7 +1945,8 @@
       "dialog": {
         "deleteTitle": "Delete chapter",
         "deleteDescription": "Delete \"{{title}}\" and all scenes inside it. This cannot be undone."
-      }
+      },
+      "dragHandle": "Drag to reorder"
     },
     "looseColumn": {
       "title": "Unassigned Scenes",
@@ -1702,7 +1978,20 @@
         "addBeat": "Add beat",
         "addLabel": "Add label",
         "delete": "Delete"
-      }
+      },
+      "addBeatPrompt": "+ Add beat",
+      "addCodex": "Link Codex",
+      "addSynopsisPrompt": "+ Add synopsis",
+      "beatEditHint": "Enter to confirm, Shift+Enter for newline, Esc to cancel",
+      "beatPlaceholder": "Enter a beat… (Enter to confirm / Shift+Enter for newline)",
+      "collapseSynopsis": "Collapse",
+      "pinCodexTitle": "Link Codex",
+      "placedBeatHint": "Beat placed in the text",
+      "removeCodex": "Remove",
+      "tabs": "Scene info tabs",
+      "unplacedBeatHint": "Unplaced beat",
+      "scenePov": "Scene POV",
+      "beatPovOverride": "Beat POV override"
     },
     "container": {
       "root": "Project Root",
@@ -2217,7 +2506,23 @@
       "dialog": {
         "deleteTitle": "Delete folder",
         "deleteDescription": "Delete \"{{title}}\" and all scenes inside it. This cannot be undone."
-      }
+      },
+      "collapse": "Collapse",
+      "diveIn": "Click to open",
+      "dragHandle": "Drag to move",
+      "empty": "Empty",
+      "expand": "Expand",
+      "folders": "{{n}} folders",
+      "scenes": "{{n}} scenes"
+    },
+    "foreshadow": {
+      "paid": "Paid off",
+      "seeded": "Seeded",
+      "needsStrengthening": "Needs strengthening",
+      "criticalWeak": "Critical & weak",
+      "orphanPayoff": "Orphan payoff",
+      "planned": "Planned",
+      "abandoned": "Abandoned"
     }
   },
   "foreshadow": {
@@ -2270,7 +2575,9 @@
       "designateHeading": "Designate as Payoff",
       "searchPlaceholder": "Search…",
       "noResults": "No results",
-      "createNew": "Create new foreshadow"
+      "createNew": "Create new foreshadow",
+      "setupButton": "Setup",
+      "payoffButton": "Payoff"
     },
     "hoverPopover": {
       "removeMark": "Remove mark",
@@ -2314,7 +2621,9 @@
       "reanchorNoSelection": "Select the range to re-anchor",
       "reinsertFailed": "Failed to re-insert setup",
       "reinsertNoEditor": "Open the scene being edited to re-insert",
-      "reinsertNoSelection": "Select the range to re-insert"
+      "reinsertNoSelection": "Select the range to re-insert",
+      "agentHistoryCreate": "Agent: Create foreshadowing",
+      "agentHistoryUpdate": "Agent: Update foreshadowing"
     },
     "strength": {
       "subtle": "Subtle",
@@ -2460,7 +2769,8 @@
       "saved": "Saved as Snippet",
       "createFailed": "Failed to create snippet",
       "updateFailed": "Failed to update snippet",
-      "deleteFailed": "Failed to delete snippet"
+      "deleteFailed": "Failed to delete snippet",
+      "agentHistoryCreate": "Agent: Create Snippet"
     },
     "contextMenu": {
       "insertAtCursor": "Insert at cursor",
@@ -2469,8 +2779,10 @@
       "duplicate": "Duplicate",
       "goToScene": "Go to scene",
       "delete": "Delete",
-      "registerAsForeshadow": "Register as Foreshadow"
-    }
+      "registerAsForeshadow": "Register as Foreshadow",
+      "addToMap": "Add to Map"
+    },
+    "duplicateTitle": "{{title}} (copy)"
   },
   "tree": {
     "openInEditor": "Open in Editor",
@@ -2497,7 +2809,9 @@
       "generating": "Generating…",
       "overwriteConfirm": "Overwrite existing synopsis?",
       "overwrite": "Overwrite",
-      "saveFailed": "Failed to save synopsis"
+      "saveFailed": "Failed to save synopsis",
+      "generate": "Generate",
+      "scenePlaceholder": "What happens in this scene?"
     },
     "outline": {
       "label": "Outline",
@@ -2508,6 +2822,27 @@
       "pin": "Pin",
       "noEntries": "No entries",
       "pinCodex": "Pin Codex entry"
+    },
+    "lensDot": {
+      "edited": "This scene has been edited since the structure diagnosis",
+      "found": "Meta-structure diagnosis available"
+    },
+    "addToMap": "Add to Map",
+    "defaultNewNote": "New note",
+    "undo": {
+      "sceneCreated": "Create scene",
+      "folderCreated": "Create folder",
+      "noteCreated": "Create note",
+      "renamed": "Rename",
+      "deleted": "Delete",
+      "synopsisUpdated": "Update synopsis",
+      "intentUpdated": "Update intent",
+      "statusChanged": "Change status",
+      "storyTimeChanged": "Change chronological order",
+      "moved": "Move"
+    },
+    "errors": {
+      "deleteFailed": "Failed to delete node"
     }
   },
   "commandPalette": {
@@ -2545,6 +2880,14 @@
     },
     "panel": {
       "emptyHint": "Type to search (> for command mode)"
+    },
+    "sectionCommands": "Commands",
+    "sectionQuickOpen": "Jump to",
+    "command": {
+      "openSettings": "Open Settings",
+      "export": "Export",
+      "restartTour": "Restart Tour",
+      "togglePanel": "Toggle Panel: {{panel}}"
     }
   },
   "chatCommands": {
@@ -2639,7 +2982,8 @@
       },
       "alternativeSaved": "Saved alternative to snippets",
       "generateFromSynopsis": "Suggest beats from synopsis",
-      "generatingFromSynopsis": "Generating beats…"
+      "generatingFromSynopsis": "Generating beats…",
+      "dragHandle": "Drag to reorder"
     },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",
@@ -2677,7 +3021,8 @@
       "targetCharCount": "Target character count...",
       "showLineNumbers": "Show line numbers",
       "rubyBase": "Base",
-      "rubyAnnotation": "Reading"
+      "rubyAnnotation": "Reading",
+      "urlPlaceholder": "https://..."
     },
     "status": {
       "outline": "Outline",
@@ -2703,7 +3048,10 @@
       "readingTimeValue": "~{{n}} min",
       "goal": "Goal",
       "beatsLabel": "Beats: {{total}}",
-      "generatedBeats": "({{generated}} generated)"
+      "generatedBeats": "({{generated}} generated)",
+      "saving": "Saving...",
+      "unsaved": "Unsaved",
+      "saved": "Saved"
     },
     "tabBar": {
       "syncedIndicator": "Also open in another group",
@@ -2920,7 +3268,16 @@
     "columnAiPct": "AI%",
     "exportJson": "JSON",
     "exportHtml": "HTML",
-    "exportProjectReportTitle": "Export project-wide authorship report"
+    "exportProjectReportTitle": "Export project-wide authorship report",
+    "knowledgeAiChars": "Codex/Snippet AI: {{chars}} chars",
+    "aiUsageLocations": "AI usage locations",
+    "provenanceChat": "Chat",
+    "provenanceOrphanChat": "Lost",
+    "provenanceUnknown": "No provenance record",
+    "detailOrphanChat": "Source chat deleted",
+    "detailLegacyContent": "From existing body text or a manual snippet",
+    "exportMarkdownTitle": "Markdown export",
+    "exportCsvTitle": "CSV export"
   },
   "timelapse": {
     "title": "Timelapse",
@@ -3002,7 +3359,14 @@
     "aiExposureSuppress": "Suppress from AI context (suppress)",
     "aiExposureHidden": "Wiki-only / never shown to AI (hidden)",
     "aiExposureHint": "\"Wiki-only\" phases never reach the AI prompt, so feel free to use them for planning, outlining, or pure record-keeping without bloating context.",
-    "saving": "Saving..."
+    "saving": "Saving...",
+    "history": {
+      "created": "Phase created",
+      "updated": "Phase updated",
+      "deleted": "Phase deleted",
+      "detailOverrideUpdated": "Detail override updated",
+      "detailOverrideDeleted": "Detail override deleted"
+    }
   },
   "snapshot": {
     "title": "Project Snapshot",
@@ -3364,7 +3728,12 @@
     "undo": "Undo",
     "redo": "Redo",
     "undoError": "Undo failed",
-    "redoError": "Redo failed"
+    "redoError": "Redo failed",
+    "snippets": {
+      "created": "Create Snippet",
+      "updated": "Update Snippet",
+      "deleted": "Delete Snippet"
+    }
   },
   "integrity": {
     "check": "Check Integrity",
@@ -3478,7 +3847,9 @@
     "generate": "Generate",
     "generating": "Generating…",
     "done": "Created {{created}} / Moved {{moved}} / Renamed {{renamed}}",
-    "failed": "AI structure generation failed. Please try again."
+    "failed": "AI structure generation failed. Please try again.",
+    "historyScaffold": "AI structure generation",
+    "historyReorganize": "AI reorganization"
   },
   "aiPolicy": {
     "full": {
@@ -3501,7 +3872,14 @@
       "policy": "Disabled by AI policy",
       "noModel": "No AI model selected",
       "noProvider": "AI is not configured"
-    }
+    },
+    "presetLabel": {
+      "assistOff": "Assist-off",
+      "reviewOnly": "Review-only",
+      "off": "AI OFF",
+      "custom": "AI custom"
+    },
+    "openSettingsTooltip": "Open AI policy settings"
   },
   "tour": {
     "next": "Next",
@@ -3741,7 +4119,8 @@
     "nodeType": {
       "scene": "Scene",
       "note": "Note",
-      "snippet": "Snippet"
+      "snippet": "Snippet",
+      "codex": "Codex"
     },
     "picker": {
       "empty": "(Empty)",
@@ -3852,7 +4231,8 @@
     },
     "aiBranch": {
       "generating": "Generating AI Branch…",
-      "stickyCount": "{{count}} sheets"
+      "stickyCount": "{{count}} sheets",
+      "label": "AI Branch"
     },
     "colorBy": {
       "status": "Status",
@@ -3907,7 +4287,20 @@
       "addCodex": "Add Codex…",
       "addSnippet": "Add Snippet…",
       "frameHint": "Drag on the canvas to create a frame (Esc to cancel)",
-      "connectHint": "Click a node to start an edge (Esc to cancel)"
+      "connectHint": "Click a node to start an edge (Esc to cancel)",
+      "showScenes": "Scenes",
+      "showCodex": "Codex",
+      "showStickies": "Stickies",
+      "showSnippets": "Snippets",
+      "showNotes": "Notes",
+      "showAiBranch": "AI Branch",
+      "showEdges": "Edges",
+      "showUserEdges": "User edges",
+      "showFrames": "Frames",
+      "addSticky": "+ Sticky",
+      "addMenuButton": "▾ Add…",
+      "addFrame": "+ Frame",
+      "connectButton": "⌥ Connect"
     },
     "search": {
       "placeholder": "Search nodes...",
@@ -3964,7 +4357,15 @@
       "defaultBoardTitle": "Character Correlation Diagram"
     },
     "sceneNode": {
-      "synopsisPlaceholder": "What happens in this scene?"
+      "synopsisPlaceholder": "What happens in this scene?",
+      "openButton": "Open↗"
+    },
+    "header": {
+      "title": "Map"
+    },
+    "mode": {
+      "free": "Free",
+      "theme": "Theme"
     }
   },
   "timeline": {
@@ -3995,7 +4396,8 @@
       "unscheduled": "Unscheduled",
       "synopsis": "Synopsis",
       "phases": "Phases anchored ({{n}})",
-      "created": "Created"
+      "created": "Created",
+      "labelPlaceholder": "T1"
     }
   },
   "matrix": {
@@ -4004,7 +4406,9 @@
       "onlyUnedited": "Unedited scenes only"
     },
     "menu": {
-      "exportCsv": "Export CSV"
+      "exportCsv": "Export CSV",
+      "displayMode": "Display mode",
+      "rowFilters": "Row filters"
     },
     "custom": {
       "noSets": "No sets — create with \"+\"",
@@ -4028,6 +4432,74 @@
       "hideColumn": "Hide column: {{name}}",
       "expandSection": "Expand \"{{type}}\" section",
       "collapseSection": "Collapse \"{{type}}\" section"
+    },
+    "addSceneToChapterTooltip": "Add scene to this chapter",
+    "showMode": {
+      "codexAll": "Codex (all)",
+      "codexCharacters": "Codex (characters)",
+      "codexLocations": "Codex (locations)",
+      "codexItems": "Codex (items)",
+      "codexLore": "Codex (lore)",
+      "pov": "POV",
+      "location": "Location",
+      "subplot": "Subplot",
+      "custom": "Custom"
+    },
+    "sortMode": {
+      "readingOrder": "Reading order",
+      "storyTimeOrder": "Story-time order",
+      "characterCount": "Character count",
+      "lastEdited": "Last edited"
+    },
+    "displayMode": {
+      "dot": "Dot (●/◯)",
+      "count": "Count",
+      "heatmap": "Heatmap",
+      "povColor": "POV color",
+      "roleAware": "Role-aware (★●◯)"
+    },
+    "searchTooltip": "Search scenes / codex",
+    "menuTooltip": "Panel menu",
+    "subplot": {
+      "tagLabel": "Subplot tag:"
+    },
+    "header": {
+      "searchPlaceholder": "Search scenes or codex…",
+      "filterPlaceholder": "Filter by tag…"
+    },
+    "status": {
+      "cellsFilled": "{{count}} cells filled",
+      "settingsSavedStatus": "Settings: Saved",
+      "settingsSavingStatus": "Settings: Saving...",
+      "scanning": "Scanning... {{progress}}/{{total}}"
+    },
+    "beatPopover": {
+      "hint": "Add beat (Enter to confirm)",
+      "placeholder": "Beat content…"
+    },
+    "scenePopover": {
+      "hint": "Synopsis (optional)",
+      "placeholder": "Enter synopsis…",
+      "addAnother": "Add another scene"
+    },
+    "export": {
+      "success": "Exported CSV",
+      "failed": "Export failed"
     }
+  },
+  "labels": {
+    "manageTitle": "Manage labels",
+    "addNew": "Add new label",
+    "name": "Name",
+    "namePlaceholder": "Label name…",
+    "color": "Color",
+    "empty": "No labels",
+    "addFailed": "Failed to add label",
+    "updateFailed": "Failed to update label",
+    "deleteFailed": "Failed to delete label",
+    "deleteConfirmTitle": "Delete “{{name}}”?",
+    "deleteConfirmDesc_one": "It will be removed from {{count}} scene or chapter.",
+    "deleteConfirmDesc_other": "It will be removed from {{count}} scenes and chapters.",
+    "reorder": "Reorder"
   }
 }

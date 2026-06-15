@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/core";
 
 import { useLintConfigStore } from "./lintConfigStore";
@@ -87,6 +88,7 @@ export function LintDisablePicker({
   initialRules,
   onClose,
 }: LintDisablePickerProps) {
+  const { t } = useTranslation();
   const effective = useLintConfigStore((s) => s.getEffective());
   const setMultiBlockPolicy = useLintConfigStore((s) => s.setMultiBlockPolicy);
   const persistedPolicy: MultiBlockDisablePolicy =
@@ -151,9 +153,14 @@ export function LintDisablePicker({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="border-b border-border px-4 py-2">
-          <h3 className="text-sm font-semibold">ルールを無効化</h3>
+          <h3 className="text-sm font-semibold">
+            {t("lint.disable.title", "ルールを無効化")}
+          </h3>
           <p className="text-xs text-muted-foreground mt-1">
-            選択範囲で指定した Lint ルールを silence します。
+            {t(
+              "lint.disable.description",
+              "選択範囲で指定した Lint ルールを silence します。",
+            )}
           </p>
         </div>
 
@@ -164,17 +171,17 @@ export function LintDisablePicker({
               checked={isAll}
               onChange={(e) => setIsAll(e.target.checked)}
             />
-            すべてのルール（全ルール無効化）
+            {t("lint.disable.allRules", "すべてのルール（全ルール無効化）")}
           </label>
 
           {!isAll && (
             <div className="flex flex-col gap-1 border-t border-border pt-2">
               <div className="text-xs text-muted-foreground mb-1">
-                特定のルールを選択:
+                {t("lint.disable.selectSpecific", "特定のルールを選択:")}
               </div>
               {availableRules.length === 0 ? (
                 <div className="text-xs text-muted-foreground italic">
-                  有効なルールがありません
+                  {t("lint.disable.noRules", "有効なルールがありません")}
                 </div>
               ) : (
                 availableRules.map((id) => (
@@ -204,11 +211,16 @@ export function LintDisablePicker({
           {selection.multiBlock && persistedPolicy === "ask" && (
             <div className="border-t border-border pt-2 flex flex-col gap-2">
               <div className="text-xs font-medium text-amber-700 dark:text-amber-400">
-                選択範囲が複数のブロックをまたいでいます
+                {t(
+                  "lint.disable.multiBlock",
+                  "選択範囲が複数のブロックをまたいでいます",
+                )}
               </div>
               <div className="text-xs text-muted-foreground">
-                TipTap Mark は 1
-                ブロック内に閉じる仕様のため、以下のいずれかを選んでください:
+                {t(
+                  "lint.disable.multiBlockExplanation",
+                  "TipTap Mark は 1 ブロック内に閉じる仕様のため、以下のいずれかを選んでください:",
+                )}
               </div>
               <label className="flex items-start gap-2 text-xs">
                 <input
@@ -218,9 +230,14 @@ export function LintDisablePicker({
                   onChange={() => setPolicy("block")}
                 />
                 <span>
-                  <strong>ブロック単位で無効化</strong>
+                  <strong>
+                    {t("lint.disable.blockWide", "ブロック単位で無効化")}
+                  </strong>
                   <span className="block text-muted-foreground">
-                    含まれる各ブロック全体に適用
+                    {t(
+                      "lint.disable.blockWideDesc",
+                      "含まれる各ブロック全体に適用",
+                    )}
                   </span>
                 </span>
               </label>
@@ -232,9 +249,14 @@ export function LintDisablePicker({
                   onChange={() => setPolicy("span")}
                 />
                 <span>
-                  <strong>ブロックごとに Span</strong>
+                  <strong>
+                    {t("lint.disable.spanPerBlock", "ブロックごとに Span")}
+                  </strong>
                   <span className="block text-muted-foreground">
-                    各ブロック内の該当範囲のみに適用
+                    {t(
+                      "lint.disable.spanPerBlockDesc",
+                      "各ブロック内の該当範囲のみに適用",
+                    )}
                   </span>
                 </span>
               </label>
@@ -244,27 +266,33 @@ export function LintDisablePicker({
                   checked={rememberPolicy}
                   onChange={(e) => setRememberPolicy(e.target.checked)}
                 />
-                今後は確認せず常にこの方式で適用
+                {t(
+                  "lint.disable.rememberPolicy",
+                  "今後は確認せず常にこの方式で適用",
+                )}
               </label>
             </div>
           )}
           {selection.multiBlock && persistedPolicy !== "ask" && (
             <div className="border-t border-border pt-2 text-xs text-muted-foreground flex items-center justify-between gap-2">
               <span>
-                複数ブロック選択時の方式:{" "}
+                {t("lint.disable.selectedPolicy", "複数ブロック選択時の方式: ")}
                 <strong>
                   {persistedPolicy === "block"
-                    ? "ブロック単位"
-                    : "ブロックごとに Span"}
+                    ? t("lint.disable.blockPolicy", "ブロック単位")
+                    : t("lint.disable.spanPolicy", "ブロックごとに Span")}
                 </strong>
               </span>
               <button
                 type="button"
                 onClick={() => setMultiBlockPolicy("ask")}
                 className="rounded border border-border px-1.5 py-0.5 text-xs hover:bg-accent"
-                title="次回から確認ダイアログを表示する"
+                title={t(
+                  "lint.disable.resetToAsk",
+                  "次回から確認ダイアログを表示する",
+                )}
               >
-                毎回確認に戻す
+                {t("lint.disable.resetButton", "毎回確認に戻す")}
               </button>
             </div>
           )}
@@ -276,7 +304,7 @@ export function LintDisablePicker({
             onClick={onClose}
             className="text-xs px-3 py-1 rounded border border-border hover:bg-accent"
           >
-            キャンセル
+            {t("common.cancel", "キャンセル")}
           </button>
           <button
             type="button"
@@ -284,7 +312,7 @@ export function LintDisablePicker({
             disabled={!canApply}
             className="text-xs px-3 py-1 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
           >
-            適用
+            {t("lint.disable.apply", "適用")}
           </button>
         </div>
       </div>
