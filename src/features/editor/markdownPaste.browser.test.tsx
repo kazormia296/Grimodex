@@ -11,6 +11,7 @@ import { render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
 import { createAttributionPlugin } from "@/features/attribution/AttributionPlugin";
 import { createAiEditedPlugin } from "@/features/attribution/AiEditedPlugin";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
@@ -87,8 +88,30 @@ async function mount() {
 
 afterEach(() => {
   useEditorStore.getState().setEditor(null);
+  consumePlainPaste(); // テスト間でフラグを残さない
   document.body.innerHTML = "";
 });
+
+// file-backed エディタ (PasteSanitizer プラグインが paste を処理。
+// editorProps.handlePaste を持たないため実プラグイン経路を通る)。
+function FileBackedPasteEditor() {
+  const editor = useEditor({
+    extensions: getFileBackedEditorExtensions(),
+    content: "<p></p>",
+  });
+  return <EditorContent editor={editor} />;
+}
+
+async function mountFileBacked() {
+  const { container } = render(<FileBackedPasteEditor />);
+  const pm = (await waitFor(() => {
+    const el = container.querySelector(".ProseMirror");
+    if (!el) throw new Error("no editor");
+    return el as HTMLElement;
+  })) as HTMLElement;
+  pm.focus();
+  return { pm };
+}
 
 describe("markdown paste 統合 (browser)", () => {
   it("通常ペースト: Markdown 記法が見出し/太字に変換される", async () => {
@@ -123,5 +146,30 @@ describe("markdown paste 統合 (browser)", () => {
     // 書式設定なし: 見出しノードは作られず、'#' も残らない
     expect(pm.querySelector("h1")).toBeNull();
     expect(pm.textContent).not.toContain("#");
+  });
+});
+
+describe("file-backed paste 統合 (browser, PasteSanitizer plugin)", () => {
+  it("通常ペースト: Markdown が変換される (PasteSanitizer 経由)", async () => {
+    const { pm } = await mountFileBacked();
+    await userEvent.paste("# 見出し\n\n**太字**の段落");
+
+    await waitFor(() => {
+      expect(pm.querySelector("h1")).toBeTruthy();
+    });
+    expect(pm.querySelector("h1")?.textContent).toContain("見出し");
+    expect(pm.querySelector("strong")?.textContent).toContain("太字");
+  });
+
+  it("ruby 記法は除去される (sanitizePastedMarkdown 維持)", async () => {
+    const { pm } = await mountFileBacked();
+    await userEvent.paste("｜漢字《かんじ》のテスト");
+
+    await waitFor(() => {
+      expect(pm.textContent).toContain("漢字のテスト");
+    });
+    // ruby 注記 (《》｜) は除去される
+    expect(pm.textContent).not.toContain("《");
+    expect(pm.textContent).not.toContain("｜");
   });
 });

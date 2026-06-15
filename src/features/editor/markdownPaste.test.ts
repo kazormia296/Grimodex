@@ -2,9 +2,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Editor } from "@tiptap/core";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
 import {
   markdownToPlainText,
   insertMarkdownAsUnknown,
+  insertPlainTextAsUnknown,
   armPlainPaste,
   consumePlainPaste,
   isPlainPasteCombo,
@@ -155,6 +157,68 @@ describe("insertMarkdownAsUnknown (通常ペースト: markdown を変換し unk
       .run();
     const r = runs(editor);
     expect(r.filter((x) => x.source !== "unknown")).toEqual([]);
+  });
+});
+
+describe("insertPlainTextAsUnknown (任意エディタへのプレーン挿入)", () => {
+  it("authorship を持つエディタ: テキストを source:'unknown' で挿入する", () => {
+    editor.commands.focus();
+    insertPlainTextAsUnknown(editor, "ただの文章");
+    const r = runs(editor);
+    expect(r.map((x) => x.text).join("")).toContain("ただの文章");
+    expect(r.every((x) => x.source === "unknown")).toBe(true);
+  });
+
+  it("複数行は段落に分割される", () => {
+    editor.commands.focus();
+    insertPlainTextAsUnknown(editor, "行1\n行2\n行3");
+    const paraTexts: string[] = [];
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "paragraph") paraTexts.push(node.textContent);
+    });
+    expect(paraTexts).toContain("行1");
+    expect(paraTexts).toContain("行2");
+    expect(paraTexts).toContain("行3");
+  });
+
+  it("authorship を持たない file-backed エディタ: クラッシュせずテキストを挿入する", () => {
+    const fb = new Editor({
+      extensions: getFileBackedEditorExtensions(),
+      content: "<p></p>",
+    });
+    try {
+      fb.commands.focus();
+      insertPlainTextAsUnknown(fb, "外部ファイルの文章");
+      expect(fb.state.doc.textContent).toContain("外部ファイルの文章");
+      // authorship マークは付かない (schema に無い)
+      let hasAuthorship = false;
+      fb.state.doc.descendants((node) => {
+        if (node.marks.some((m) => m.type.name === "authorship")) {
+          hasAuthorship = true;
+        }
+      });
+      expect(hasAuthorship).toBe(false);
+    } finally {
+      fb.destroy();
+    }
+  });
+
+  it("file-backed エディタでも Markdown を変換する (heading)", () => {
+    const fb = new Editor({
+      extensions: getFileBackedEditorExtensions(),
+      content: "<p></p>",
+    });
+    try {
+      fb.commands.focus();
+      const ok = insertMarkdownAsUnknown(fb, "# 見出し");
+      expect(ok).toBe(true);
+      const hasHeading = fb.state.doc.content.content.some(
+        (n) => n.type.name === "heading",
+      );
+      expect(hasHeading).toBe(true);
+    } finally {
+      fb.destroy();
+    }
   });
 });
 

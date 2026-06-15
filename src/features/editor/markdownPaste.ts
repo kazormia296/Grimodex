@@ -1,5 +1,5 @@
 import type { Editor } from "@tiptap/core";
-import { DOMParser as PMDOMParser, Slice } from "@tiptap/pm/model";
+import { DOMParser as PMDOMParser, Fragment, Slice } from "@tiptap/pm/model";
 
 /**
  * 貼り付けた Markdown を本文に取り込むためのユーティリティ。
@@ -79,13 +79,13 @@ export function markdownToPlainText(editor: Editor, text: string): string {
 }
 
 /**
- * Markdown を変換して現在の選択位置に挿入し、挿入範囲に `source:"unknown"`
- * 帰属マークを付与する。`programmaticInsert` メタを立てることで AiEditedPlugin
- * による帰属マーク除去を回避する (provenance 契約の維持)。
- * 変換できなければ false を返す (呼び出し側が生テキスト挿入にフォールバック)。
+ * Slice を現在の選択位置に挿入し、挿入範囲に `source:"unknown"` 帰属マークを
+ * 付与する共通処理。`programmaticInsert` メタを立てて AiEditedPlugin による
+ * 帰属マーク除去を回避する (provenance 契約の維持)。schema に authorship が
+ * 無いエディタ (file-backed 等) では帰属付与をスキップし、挿入のみ行う。
+ * 配置不能で no-op だった場合は false を返す (呼び出し側が fallback)。
  */
-export function insertMarkdownAsUnknown(editor: Editor, text: string): boolean {
-  const slice = parseMarkdownToSlice(editor, text);
+function insertSliceWithUnknown(editor: Editor, slice: Slice | null): boolean {
   if (!slice || slice.size === 0) return false;
 
   const now = new Date().toISOString();
@@ -98,8 +98,6 @@ export function insertMarkdownAsUnknown(editor: Editor, text: string): boolean {
     .command(({ tr }) => {
       tr.setMeta("programmaticInsert", true);
       tr.replaceSelection(slice);
-      // slice が現在のコンテキストに配置不能で no-op だった場合は false を返し、
-      // 呼び出し側 (pasteExternalText) の生テキスト fallback に委ねる。
       if (!tr.docChanged) return false;
       const insertedTo = tr.selection.from;
       if (authorshipType && insertedTo > from) {
@@ -118,6 +116,43 @@ export function insertMarkdownAsUnknown(editor: Editor, text: string): boolean {
       return true;
     })
     .run();
+}
+
+/**
+ * Markdown を変換して挿入し、挿入範囲に `source:"unknown"` 帰属を付与する。
+ * 変換できなければ false を返す (呼び出し側が生テキスト挿入にフォールバック)。
+ */
+export function insertMarkdownAsUnknown(editor: Editor, text: string): boolean {
+  return insertSliceWithUnknown(editor, parseMarkdownToSlice(editor, text));
+}
+
+/**
+ * プレーンテキストを段落単位 (改行で分割) で Slice 化する。
+ * `insertFromPaste` の複数段落分岐と同じ openStart/openEnd=1 で、先頭段落は
+ * カーソル位置の段落に、末尾段落は後続の残りにマージされる。
+ */
+function plainTextToSlice(editor: Editor, text: string): Slice | null {
+  const { schema } = editor;
+  const paragraphType = schema.nodes["paragraph"];
+  if (!paragraphType) return null;
+  const lines = text.split("\n");
+  const nodes = lines.map((line) =>
+    line
+      ? paragraphType.create(null, schema.text(line))
+      : paragraphType.create(),
+  );
+  return new Slice(Fragment.fromArray(nodes), 1, 1);
+}
+
+/**
+ * プレーンテキストを挿入し、挿入範囲に `source:"unknown"` 帰属を付与する
+ * (書式設定なしペースト / 変換フォールバック用、エディタ非依存)。
+ */
+export function insertPlainTextAsUnknown(
+  editor: Editor,
+  text: string,
+): boolean {
+  return insertSliceWithUnknown(editor, plainTextToSlice(editor, text));
 }
 
 // --- 書式設定なしペースト (Ctrl/Cmd+Shift+V) の検出フラグ ---

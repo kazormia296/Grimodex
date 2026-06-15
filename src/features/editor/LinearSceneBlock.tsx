@@ -4,8 +4,17 @@ import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { getEditorExtensions } from "@/features/editor/extensions";
-import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
+import {
+  getFileBackedEditorExtensions,
+  sanitizePastedMarkdown,
+} from "@/features/external-mount/fileBackedEditorExtensions";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
+import {
+  pasteExternalText,
+  insertPlainTextAsUnknown,
+  notePlainPasteKeyDown,
+  consumePlainPaste,
+} from "@/features/editor/markdownPaste";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneFull } from "@/features/tree/api";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
@@ -188,6 +197,37 @@ function MountedSceneBlock({
         attributes: {
           role: "textbox",
           "aria-multiline": "true",
+        },
+        handlePaste(_view, event) {
+          const html = event.clipboardData?.getData("text/html");
+          // 内部コピー (grimodex/pm-slice) は ProseMirror 既定処理に委ねる
+          if (
+            html &&
+            (html.includes("data-grimodex-source") ||
+              html.includes("data-pm-slice"))
+          ) {
+            return false;
+          }
+          const wantPlain = consumePlainPaste();
+          const plainText = event.clipboardData?.getData("text/plain") ?? "";
+          if (!plainText) return false;
+          const ed = editorRef.current;
+          if (!ed) return false;
+          // file-backed シーンは ruby 記法を除去してから変換する
+          const text = isFileBacked
+            ? sanitizePastedMarkdown(plainText)
+            : plainText;
+          pasteExternalText(
+            ed,
+            text,
+            (t) => insertPlainTextAsUnknown(ed, t),
+            wantPlain,
+          );
+          return true;
+        },
+        handleKeyDown(_view, event) {
+          notePlainPasteKeyDown(event);
+          return false;
         },
       },
       onDestroy() {
