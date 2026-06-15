@@ -771,7 +771,21 @@
       "cacheWriteTokens": "書込トークン",
       "cacheWriteTokensDesc": "キャッシュへ書いた入力 (初回/期限切れ。コスト側で節約ではない)",
       "bySurface": "サーフェス別",
-      "surfaceRowDesc": "{{count}} 回 · 入力 {{tokensIn}} / 出力 {{tokensOut}}"
+      "surfaceRowDesc": "{{count}} 回 · 入力 {{tokensIn}} / 出力 {{tokensOut}}",
+      "surface": {
+        "chat": "チャット",
+        "agent": "エージェント",
+        "map_branch": "Map AI Branch",
+        "tree_scaffold": "Tree 生成",
+        "beat": "Beat 生成",
+        "beat_role": "Beat 役割推論",
+        "foreshadow": "伏線",
+        "inline_ai": "インライン AI",
+        "synopsis": "あらすじ生成",
+        "session_title": "セッションタイトル",
+        "summarization": "要約",
+        "context_creator": "Context Creator"
+      }
     }
   },
   "layout": {

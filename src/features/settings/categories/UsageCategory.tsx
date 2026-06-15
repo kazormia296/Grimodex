@@ -159,7 +159,10 @@ export function UsageCategory() {
               {summary.bySurface.map((s) => (
                 <SettingRow
                   key={s.surface}
-                  label={surfaceLabel(s.surface)}
+                  label={t(
+                    `settings.usage.surface.${s.surface}`,
+                    surfaceLabel(s.surface),
+                  )}
                   description={t("settings.usage.surfaceRowDesc", {
                     count: s.count.toLocaleString(),
                     tokensIn: formatTokens(s.tokensIn),

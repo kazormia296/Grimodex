@@ -771,7 +771,21 @@
       "cacheWriteTokens": "Write tokens",
       "cacheWriteTokensDesc": "Input written to cache (first time / expired; not a saving)",
       "bySurface": "By surface",
-      "surfaceRowDesc": "{{count}}× · in {{tokensIn}} / out {{tokensOut}}"
+      "surfaceRowDesc": "{{count}}× · in {{tokensIn}} / out {{tokensOut}}",
+      "surface": {
+        "chat": "Chat",
+        "agent": "Agent",
+        "map_branch": "Map AI Branch",
+        "tree_scaffold": "Tree generation",
+        "beat": "Beat generation",
+        "beat_role": "Beat role inference",
+        "foreshadow": "Foreshadowing",
+        "inline_ai": "Inline AI",
+        "synopsis": "Synopsis generation",
+        "session_title": "Session title",
+        "summarization": "Summarization",
+        "context_creator": "Context Creator"
+      }
     }
   },
   "layout": {
