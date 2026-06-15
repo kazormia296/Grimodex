@@ -87,7 +87,7 @@
     "i18next": "^26.2.0",
     "jotai": "^2.20.0",
     "js-yaml": "^4.2.0",
-    "lucide-react": "^1.16.0",
+    "lucide-react": "^1.18.0",
     "matter-js": "^0.20.0",
     "motion": "^12.40.0",
     "prosemirror-markdown": "^1.13.4",
