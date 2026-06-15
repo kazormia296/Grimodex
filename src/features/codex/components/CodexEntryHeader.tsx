@@ -12,6 +12,8 @@ import type { CodexTag } from "../tagApi";
 import { useFitsInline } from "@/hooks/useFitsInline";
 import { useFitFontSize } from "@/hooks/useFitFontSize";
 import { useAutoGrowHeight } from "@/hooks/useAutoGrowHeight";
+import { useCurrentProject } from "@/features/project/projectStore";
+import { codexNameFontFamily } from "./codexNameFont";
 import { AliasesChip } from "./AliasesChip";
 import { AliasesField } from "./AliasesField";
 import { EntryHeroAvatar } from "./EntryHeroAvatar";
@@ -74,6 +76,13 @@ export function CodexEntryHeader({
   const { t } = useTranslation();
   const KickerIcon = KICKER_ICON[type] ?? UserIcon;
   const originalName = useRef(name);
+
+  // 名称欄の表示用フォント。英語プロジェクトでは駅名標フォントを Helvetica 系
+  // (TeX Gyre Heros) に差し替える。名前は作品の内容なので、UI 言語ではなく
+  // プロジェクト言語で判定する (editor-en-typography と同じ流儀。Heros は CJK
+  // グリフを持たないため、UI 言語で切り替えると日本語名が壊れる)。計測 span と
+  // 可視 textarea で必ず同じ値を使う (採寸の整合のため — codexNameFont.ts 参照)。
+  const nameFontFamily = codexNameFontFamily(useCurrentProject()?.language);
 
   // 名前を 1 行に収まるよう自動縮小 (収まる時は NAME_BASE_PX のまま)。下限を割ると
   // textarea の soft-wrap で折り返す。
@@ -143,8 +152,7 @@ export function CodexEntryHeader({
             style={{
               width: "max-content",
               fontSize: `${NAME_BASE_PX}px`,
-              fontFamily:
-                '"Toaru Eki Sign", ui-sans-serif, system-ui, sans-serif',
+              fontFamily: nameFontFamily,
             }}
           >
             {name}
@@ -166,8 +174,7 @@ export function CodexEntryHeader({
             className="-ml-1.5 block w-full resize-none overflow-hidden rounded border border-transparent bg-transparent px-1.5 py-0.5 leading-[1.1] tracking-[0.05em] text-foreground transition-colors hover:bg-accent/40 focus:border-transparent focus:bg-transparent focus:outline-none focus:ring-2 focus:ring-primary"
             style={{
               fontSize: `${fontSize}px`,
-              fontFamily:
-                '"Toaru Eki Sign", ui-sans-serif, system-ui, sans-serif',
+              fontFamily: nameFontFamily,
             }}
           />
 

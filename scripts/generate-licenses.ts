@@ -443,6 +443,56 @@ Codex 詳細パネルの名称入力欄の表示用に .ttf を Grimodex へ同�
 制約:
 - 反社会的利用の禁止 (平和な活動での利用に限る)`;
 
+const TEX_GYRE_HEROS_LICENSE_TEXT = `TeX Gyre Heros
+Authors: Bogusław Jackowski and Janusz M. Nowacki (on behalf of TeX Users Groups)
+Version: 2.004 (30 X 2009)
+Source: http://www.gust.org.pl/projects/e-foundry/tex-gyre/heros
+
+Copyright 2007--2009 for TeX Gyre extensions by B. Jackowski and J.M. Nowacki
+(on behalf of TeX Users Groups). Vietnamese characters were added by Han The
+Thanh. TeX Gyre Heros is based on the URW Nimbus Sans L kindly released by
+URW++ Design and Development Inc. under the GUST Font License (independently of
+the GPL release accompanying Ghostscript). It can be used as a replacement for
+Helvetica.
+
+This work can be freely used and distributed under the GUST Font License
+(GFL), which is actually an instance of the LaTeX Project Public License
+(LPPL — see http://www.latex-project.org/lppl.txt).
+
+------------------------------------------------------------------------------
+GUST Font License
+------------------------------------------------------------------------------
+
+% This is a preliminary version (2006-09-30), barring acceptance from
+% the LaTeX Project Team and other feedback, of the GUST Font License.
+% (GUST is the Polish TeX Users Group, http://www.gust.org.pl)
+%
+% For the most recent version of this license see
+% http://www.gust.org.pl/fonts/licenses/GUST-FONT-LICENSE.txt
+% or
+% http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt
+%
+% This work may be distributed and/or modified under the conditions
+% of the LaTeX Project Public License, either version 1.3c of this
+% license or (at your option) any later version.
+%
+% Please also observe the following clause:
+% 1) it is requested, but not legally required, that derived works be
+%    distributed only after changing the names of the fonts comprising this
+%    work and given in an accompanying "manifest", and that the
+%    files comprising the Work, as listed in the manifest, also be given
+%    new names. Any exceptions to this request are also given in the
+%    manifest.
+%
+%    We recommend the manifest be given in a separate file named
+%    MANIFEST-<fontid>.txt, where <fontid> is some unique identification
+%    of the font family. If a separate "readme" file accompanies the Work,
+%    we recommend a name of the form README-<fontid>.txt.
+%
+% The latest version of the LaTeX Project Public License is in
+% http://www.latex-project.org/lppl.txt and version 1.3c or later
+% is part of all distributions of LaTeX version 2006/05/20 or later.`;
+
 function gatherAssetLicenses(): LicenseEntry[] {
   return [
     {
@@ -456,6 +506,18 @@ function gatherAssetLicenses(): LicenseEntry[] {
       license:
         "Custom (author-granted — free commercial, bundling & redistribution OK; credit optional)",
       licenseText: TOARU_EKI_SIGN_LICENSE_TEXT,
+    },
+    {
+      // 英語 UI 時の Codex 名称欄の表示用フォント (Toaru Eki Sign の Latin 版)。
+      // src/assets/fonts/texgyreheros-regular.otf として同梱し、index.css の
+      // @font-face ("TeX Gyre Heros") から codexNameFont.ts が英語時のみ参照する。
+      // GUST Font License (GFL) — LPPL 1.3c のインスタンスで、同梱・再配布・改変が
+      // 許諾されている (GPL ではない)。URW Nimbus Sans L ベースの Helvetica 代替。
+      name: "TeX Gyre Heros (Helvetica-style display font, bundled for the English Codex name field)",
+      version: "2.004",
+      license: "GUST Font License (GFL — an instance of LPPL-1.3c)",
+      repository: "http://www.gust.org.pl/projects/e-foundry/tex-gyre/heros",
+      licenseText: TEX_GYRE_HEROS_LICENSE_TEXT,
     },
     {
       name: "Cork001 (cork texture)",

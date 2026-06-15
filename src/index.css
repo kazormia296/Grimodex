@@ -10,6 +10,17 @@
   font-display: swap;
 }
 
+/* English counterpart of the Codex name display font: a Helvetica-style face
+   (URW Nimbus Sans / TeX Gyre Heros) that keeps the public-signage aesthetic
+   for Latin text. Selected at runtime by codexNameFont.ts. GUST Font License. */
+@font-face {
+  font-family: "TeX Gyre Heros";
+  src: url("./assets/fonts/texgyreheros-regular.otf") format("opentype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 :root {

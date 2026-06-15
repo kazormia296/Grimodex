@@ -62806,7 +62806,7 @@ END OF TERMS AND CONDITIONS
 ```
 </details>
 
-### regex (1.12.3)
+### regex (1.12.4)
 
 - License: MIT OR Apache-2.0
 - Repository: https://github.com/rust-lang/regex
@@ -63234,7 +63234,7 @@ limitations under the License.
 ```
 </details>
 
-### regex-syntax (0.8.10)
+### regex-syntax (0.8.11)
 
 - License: MIT OR Apache-2.0
 - Repository: https://github.com/rust-lang/regex
@@ -86835,7 +86835,7 @@ END OF TERMS AND CONDITIONS
 ```
 </details>
 
-### uuid (1.23.2)
+### uuid (1.23.3)
 
 - License: Apache-2.0 OR MIT
 - Repository: https://github.com/uuid-rs/uuid
@@ -104748,6 +104748,67 @@ for the full legal code.
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+```
+</details>
+
+### TeX Gyre Heros (Helvetica-style display font, bundled for the English Codex name field) (2.004)
+
+- License: GUST Font License (GFL — an instance of LPPL-1.3c)
+- Repository: http://www.gust.org.pl/projects/e-foundry/tex-gyre/heros
+
+<details>
+<summary>License Text</summary>
+
+```
+TeX Gyre Heros
+Authors: Bogusław Jackowski and Janusz M. Nowacki (on behalf of TeX Users Groups)
+Version: 2.004 (30 X 2009)
+Source: http://www.gust.org.pl/projects/e-foundry/tex-gyre/heros
+
+Copyright 2007--2009 for TeX Gyre extensions by B. Jackowski and J.M. Nowacki
+(on behalf of TeX Users Groups). Vietnamese characters were added by Han The
+Thanh. TeX Gyre Heros is based on the URW Nimbus Sans L kindly released by
+URW++ Design and Development Inc. under the GUST Font License (independently of
+the GPL release accompanying Ghostscript). It can be used as a replacement for
+Helvetica.
+
+This work can be freely used and distributed under the GUST Font License
+(GFL), which is actually an instance of the LaTeX Project Public License
+(LPPL — see http://www.latex-project.org/lppl.txt).
+
+------------------------------------------------------------------------------
+GUST Font License
+------------------------------------------------------------------------------
+
+% This is a preliminary version (2006-09-30), barring acceptance from
+% the LaTeX Project Team and other feedback, of the GUST Font License.
+% (GUST is the Polish TeX Users Group, http://www.gust.org.pl)
+%
+% For the most recent version of this license see
+% http://www.gust.org.pl/fonts/licenses/GUST-FONT-LICENSE.txt
+% or
+% http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt
+%
+% This work may be distributed and/or modified under the conditions
+% of the LaTeX Project Public License, either version 1.3c of this
+% license or (at your option) any later version.
+%
+% Please also observe the following clause:
+% 1) it is requested, but not legally required, that derived works be
+%    distributed only after changing the names of the fonts comprising this
+%    work and given in an accompanying "manifest", and that the
+%    files comprising the Work, as listed in the manifest, also be given
+%    new names. Any exceptions to this request are also given in the
+%    manifest.
+%
+%    We recommend the manifest be given in a separate file named
+%    MANIFEST-<fontid>.txt, where <fontid> is some unique identification
+%    of the font family. If a separate "readme" file accompanies the Work,
+%    we recommend a name of the form README-<fontid>.txt.
+%
+% The latest version of the LaTeX Project Public License is in
+% http://www.latex-project.org/lppl.txt and version 1.3c or later
+% is part of all distributions of LaTeX version 2006/05/20 or later.
 ```
 </details>
 
