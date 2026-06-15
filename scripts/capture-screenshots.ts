@@ -54,6 +54,7 @@ import {
   type ScreenshotLanguage,
 } from "../src/screenshot-scenes/screenshotMode";
 import { SCREENSHOT_SEED_CONTENT } from "../src/screenshot-scenes/screenshotSeedContent";
+import { EULA_VERSION } from "../src/features/legal/constants";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_PORT = 4174;
@@ -458,6 +459,7 @@ async function captureOne(
         uiScale,
         language,
         languageKey,
+        eulaVersion,
       }) => {
         const workspacePath = "/dev/workspace";
         localStorage.setItem("grimodex:screenshot-mode", "true");
@@ -496,7 +498,7 @@ async function captureOne(
             uiLanguage: language,
             uiScale,
             showLauncherOnStartup: false,
-            acceptedEulaVersion: "1.0",
+            acceptedEulaVersion: eulaVersion,
             trustedWorkspaces: [workspacePath],
             userPreferences,
           }),
@@ -511,6 +513,7 @@ async function captureOne(
         uiScale: uiScalePct,
         language,
         languageKey: SCREENSHOT_LANGUAGE_LOCALSTORAGE_KEY,
+        eulaVersion: EULA_VERSION,
       },
     );
     await page.emulateMedia({ colorScheme: resolvedTheme });
