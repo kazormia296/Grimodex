@@ -1344,7 +1344,6 @@ function LPVariantH() {
   const [lang, setLang] = useState(detectInitialLpLang);
   const [workflowMode, setWorkflowMode] = useState("plotter");
   const workflowGridRef = useRef(null);
-  const pagingLockRef = useRef(false);
   const navRef = useRef(null);
   const heroTitleRef = useRef(null);
   const heroMetaRef = useRef(null);
@@ -1640,113 +1639,13 @@ function LPVariantH() {
     return () => tween.kill();
   }, [workflowMode]);
 
-  useEffect(() => {
-    const pageSelector = "[data-hz-page]";
-    const navSelector = "[data-hz-nav]";
-
-    const getPages = () => Array.from(document.querySelectorAll(pageSelector));
-    const getNavOffset = () =>
-      document.querySelector(navSelector)?.getBoundingClientRect().height ?? 0;
-    const getCurrentIndex = (pages) => {
-      // Pick the latest page whose start has scrolled past the nav.
-      // For tall sticky sections (Workspace = 220vh), this keeps "current"
-      // pinned to the section the user is actually inside, instead of jumping
-      // to the next section as soon as its top kisses the viewport.
-      const navOffset = getNavOffset();
-      const cursor = window.scrollY + navOffset + 1;
-      let idx = 0;
-      for (let i = 0; i < pages.length; i++) {
-        if (pages[i].offsetTop <= cursor) idx = i;
-      }
-      return idx;
-    };
-
-    const goToPage = (direction) => {
-      const pages = getPages();
-      if (pages.length === 0 || pagingLockRef.current) return false;
-
-      const current = getCurrentIndex(pages);
-      const next = Math.min(Math.max(current + direction, 0), pages.length - 1);
-      if (next === current) return false;
-
-      const target = pages[next];
-      const navOffset = getNavOffset();
-      // When entering a sticky stage from below, land at its END so scrolling
-      // up reveals the animation; from above, land at its START.
-      const isWorkspace = target.hasAttribute("data-hz-workspace");
-      let top;
-      if (isWorkspace && direction < 0) {
-        top = target.offsetTop + target.offsetHeight - window.innerHeight;
-      } else {
-        top = target.offsetTop - navOffset;
-      }
-
-      pagingLockRef.current = true;
-      window.scrollTo({
-        top: Math.max(0, top),
-        behavior: HMotionOK() ? "smooth" : "auto",
-      });
-      window.setTimeout(
-        () => {
-          pagingLockRef.current = false;
-        },
-        HMotionOK() ? 720 : 120,
-      );
-      return true;
-    };
-
-    // Workspace section runs a tall sticky stage — page-snap must stand down
-    // while the user is scrolling through its interior, otherwise the scroll
-    // jumps past the sticky animation in one wheel tick. The thresholds use
-    // navOffset (not 0) because goToPage lands users at `offsetTop - navOffset`,
-    // making rect.top ≈ navOffset on entry, not 0.
-    const isInsideWorkspaceStage = (direction) => {
-      const stage = document.querySelector("[data-hz-workspace]");
-      if (!stage) return false;
-      const rect = stage.getBoundingClientRect();
-      const vh = window.innerHeight;
-      const navOffset = getNavOffset();
-      const epsilon = 4;
-      if (direction > 0) {
-        // scrolling down: stay native from entry until the stage bottom reaches viewport bottom
-        return rect.top <= navOffset + epsilon && rect.bottom > vh + epsilon;
-      }
-      // scrolling up: stay native from end-of-sticky until the stage top reaches the nav
-      return rect.top < navOffset - epsilon && rect.bottom >= vh - epsilon;
-    };
-
-    const onWheel = (event) => {
-      if (
-        Math.abs(event.deltaY) < 18 ||
-        Math.abs(event.deltaX) > Math.abs(event.deltaY)
-      )
-        return;
-      if (pagingLockRef.current) return;
-      if (isInsideWorkspaceStage(event.deltaY > 0 ? 1 : -1)) return;
-      if (goToPage(event.deltaY > 0 ? 1 : -1)) {
-        event.preventDefault();
-      }
-    };
-
-    const onKeyDown = (event) => {
-      if (event.defaultPrevented) return;
-      if (["ArrowDown", "PageDown", " "].includes(event.key)) {
-        if (isInsideWorkspaceStage(1)) return;
-        if (goToPage(1)) event.preventDefault();
-      }
-      if (["ArrowUp", "PageUp"].includes(event.key)) {
-        if (isInsideWorkspaceStage(-1)) return;
-        if (goToPage(-1)) event.preventDefault();
-      }
-    };
-
-    window.addEventListener("wheel", onWheel, { passive: false });
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("wheel", onWheel);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, []);
+  // Native scroll only. An earlier build hijacked wheel/keydown to "page-snap"
+  // section-by-section (preventDefault on a non-passive wheel listener + a
+  // smooth scrollTo + a 720ms input lock). On trackpads/inertial scrolling that
+  // felt janky ("カクっと"): the page swallowed input, then jerked to the next
+  // section. Removed in favour of free native scrolling. The Workspace sticky
+  // stage (its own rAF, scrollY-driven) and nav anchor links
+  // (html{scroll-behavior:smooth}) keep working without it.
 
   const workflowSteps = {
     plotter: [
