@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { FolderOpen } from "lucide-react";
 import type { TrashItemData } from "../types";
 import { getBodySize } from "../displayHelpers";
@@ -10,6 +11,7 @@ interface Props {
 
 // 設計書 §8.2: 「帯 200×40、Grid カラー (オレンジ系)、左に階層インデント風記号」
 export function GridChapterTrashItem({ item, registerNode }: Props) {
+  const { t } = useTranslation();
   const ref = useCallback(
     (el: HTMLDivElement | null) => registerNode(item.id, el),
     [item.id, registerNode],
@@ -27,7 +29,7 @@ export function GridChapterTrashItem({ item, registerNode }: Props) {
     >
       <FolderOpen className="h-3.5 w-3.5 shrink-0 text-orange-700 dark:text-orange-300" />
       <span className="truncate text-xs font-semibold text-foreground">
-        {item.previewText || "(無題)"}
+        {item.previewText || t("common.untitled")}
       </span>
     </div>
   );

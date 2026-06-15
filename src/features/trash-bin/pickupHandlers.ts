@@ -12,7 +12,7 @@
  * 失われるため)。
  */
 import { toast } from "sonner";
-import i18next from "i18next";
+import i18next from "@/lib/i18n";
 import {
   restoreScene,
   restoreCodexEntry,
@@ -183,18 +183,16 @@ export async function pickupAndDispatch(
   }
   if (!result.ok) {
     toast.error(
-      i18next.t("trashBin.pickupFailed", "復元に失敗しました") +
+      i18next.t("trashBin.pickupFailed") +
         (result.message ? `: ${result.message}` : ""),
     );
   } else if (result.brokenLinks.length > 0) {
     toast.warning(
-      i18next.t(
-        "trashBin.brokenLinkWarning",
-        "復元しましたが一部のリンクが切れています",
-      ) + ` (${result.brokenLinks.join(", ")})`,
+      i18next.t("trashBin.brokenLinkWarning") +
+        ` (${result.brokenLinks.join(", ")})`,
     );
   } else {
-    toast.success(i18next.t("trashBin.pickupSuccess", "復元しました"));
+    toast.success(i18next.t("trashBin.pickupSuccess"));
   }
   return result;
 }

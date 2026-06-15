@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 
 interface AIBranchDialogProps {
   boardId: string;
@@ -16,6 +17,7 @@ export function AINodeDialog({
   onConfirm,
   onCancel,
 }: AIBranchDialogProps) {
+  const { t } = useTranslation();
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState<3 | 5 | 8>(5);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -64,7 +66,7 @@ export function AINodeDialog({
                 marginBottom: 4,
               }}
             >
-              コンテキスト
+              {t("map.aiNodeDialog.context")}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
               {seedNodeTitles.map((title, i) => (
@@ -93,13 +95,13 @@ export function AINodeDialog({
               marginBottom: 4,
             }}
           >
-            プロンプト
+            {t("map.aiNodeDialog.prompt")}
           </div>
           <textarea
             ref={textareaRef}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="アイデアを展開してください…"
+            placeholder={t("map.aiNodeDialog.promptPlaceholder")}
             onKeyDown={(e) => {
               if (e.key === "Escape") onCancel();
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && canSubmit) {
@@ -132,7 +134,7 @@ export function AINodeDialog({
           }}
         >
           <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>
-            生成数
+            {t("map.aiNodeDialog.generateCount")}
           </span>
           {COUNT_OPTIONS.map((n) => (
             <button
@@ -170,7 +172,7 @@ export function AINodeDialog({
               cursor: "pointer",
             }}
           >
-            キャンセル
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -187,7 +189,7 @@ export function AINodeDialog({
               fontWeight: 600,
             }}
           >
-            生成
+            {t("map.aiNodeDialog.generate")}
           </button>
         </div>
       </div>

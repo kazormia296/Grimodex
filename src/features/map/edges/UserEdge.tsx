@@ -13,6 +13,7 @@ import {
   useInternalNode,
   type EdgeProps,
 } from "@xyflow/react";
+import { useTranslation } from "react-i18next";
 import { getFloatingEdgeParams } from "./floatingEdge";
 import { getBezierControlPoints, getLabelPos, type Pt } from "./labelGeometry";
 import { pendingEdgeLabelEdits } from "../mapApi";
@@ -65,6 +66,7 @@ function InlineLabel({
   onSave: (label: string | null) => void;
   onAutoEditConsumed: () => void;
 }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [draft, setDraft] = useState("");
@@ -243,7 +245,7 @@ function InlineLabel({
                 opacity: 0.9,
               }}
             >
-              ＋ラベル
+              {t("map.edge.addLabel")}
             </button>
           )}
         </div>

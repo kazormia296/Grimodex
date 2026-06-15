@@ -1,6 +1,7 @@
 import { Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import type { AiGatePresentation } from "@/features/ai-policy/evaluateAiCapability";
 
 type PaletteMode = "default" | "frame" | "connect";
@@ -16,11 +17,11 @@ interface MapPaletteProps {
   aiBranchTooltip: string | null;
 }
 
-const PICKER_ITEMS: { type: PickerEntityType; label: string }[] = [
-  { type: "scene", label: "シーンを追加…" },
-  { type: "note", label: "ノートを追加…" },
-  { type: "codex", label: "Codexを追加…" },
-  { type: "snippet", label: "スニペットを追加…" },
+const PICKER_ITEMS: { type: PickerEntityType; labelKey: string }[] = [
+  { type: "scene", labelKey: "map.palette.addScene" },
+  { type: "note", labelKey: "map.palette.addNote" },
+  { type: "codex", labelKey: "map.palette.addCodex" },
+  { type: "snippet", labelKey: "map.palette.addSnippet" },
 ];
 
 export function MapPalette({
@@ -32,6 +33,7 @@ export function MapPalette({
   aiBranchPresentation,
   aiBranchTooltip,
 }: MapPaletteProps) {
+  const { t } = useTranslation();
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
 
@@ -77,7 +79,7 @@ export function MapPalette({
       <PaletteButton
         label="+ Sticky"
         onClick={onAddSticky}
-        title="付箋を追加 (S)"
+        title={t("map.tooltip.addSticky")}
       />
 
       {/* policy で chat OFF のときはボタンごと隠す（provider/model 未設定は
@@ -88,7 +90,7 @@ export function MapPalette({
           label="AI Branch"
           onClick={onOpenAiBranch}
           disabled={aiBranchPresentation === "disabled"}
-          title={aiBranchTooltip ?? "AI Branchを生成"}
+          title={aiBranchTooltip ?? t("map.tooltip.generateAiBranch")}
         />
       )}
 
@@ -98,7 +100,7 @@ export function MapPalette({
           label="▾ Add…"
           active={addMenuOpen}
           onClick={() => setAddMenuOpen((v) => !v)}
-          title="既存エンティティをMapに追加"
+          title={t("map.tooltip.addExistingEntity")}
         />
         {addMenuOpen && (
           <div
@@ -141,7 +143,7 @@ export function MapPalette({
                   (e.currentTarget.style.background = "transparent")
                 }
               >
-                {item.label}
+                {t(item.labelKey)}
               </button>
             ))}
           </div>
@@ -152,7 +154,7 @@ export function MapPalette({
         label="+ Frame"
         active={paletteMode === "frame"}
         onClick={() => toggleMode("frame")}
-        title="フレームを描画 (F)"
+        title={t("map.tooltip.drawFrame")}
       />
 
       <div
@@ -168,7 +170,7 @@ export function MapPalette({
         label="⌥ Connect"
         active={paletteMode === "connect"}
         onClick={() => toggleMode("connect")}
-        title="エッジを接続 (Alt)"
+        title={t("map.tooltip.connectEdge")}
       />
 
       {paletteMode !== "default" && (
@@ -187,8 +189,8 @@ export function MapPalette({
           }}
         >
           {paletteMode === "frame"
-            ? "キャンバスをドラッグしてフレームを作成 (Esc でキャンセル)"
-            : "ノードをクリックしてエッジを開始 (Esc でキャンセル)"}
+            ? t("map.palette.frameHint")
+            : t("map.palette.connectHint")}
         </div>
       )}
     </div>

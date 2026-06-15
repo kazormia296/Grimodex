@@ -18,6 +18,7 @@ import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import * as chatApi from "@/features/chat/chatApi";
+import i18next from "@/lib/i18n";
 
 export interface ContextMenuState {
   nodeId: string;
@@ -124,7 +125,7 @@ export function useMapContextMenu({
       try {
         await deleteNodePosition(pos.id);
       } catch (err) {
-        toast.error("ボードからの削除に失敗しました", {
+        toast.error(i18next.t("map.toast.removeFromBoardFailed"), {
           description: String(err),
         });
         setContextMenu(null);
@@ -139,7 +140,7 @@ export function useMapContextMenu({
         let liveId = cap.id;
         useGlobalHistoryStore.getState().push({
           kind: "map",
-          label: "ボードから外す",
+          label: i18next.t("map.menu.removeFromBoard"),
           async undo() {
             const args = buildUpsertArgs(boardId, cap.nodeId, cap.x, cap.y);
             if (!args) return;
@@ -269,25 +270,25 @@ export function useMapContextMenu({
     if (!pos?.stickyId) return;
     const sessionId = useChatStore.getState().activeSessionId;
     if (!sessionId) {
-      toast.error("アクティブなチャットセッションがありません");
+      toast.error(i18next.t("map.toast.noActiveChatSession"));
       return;
     }
     const wasPinned = contextMenu.isStickyPinnedToChat;
     try {
       if (wasPinned) {
         await chatApi.unpinStickyEntry(sessionId, pos.stickyId);
-        toast.success("Sticky の Spotlight を解除しました");
+        toast.success(i18next.t("map.toast.stickySpotlightRemoved"));
       } else {
         await chatApi.pinStickyEntry(sessionId, pos.stickyId);
-        toast.success("Sticky を Spotlight に追加しました");
+        toast.success(i18next.t("map.toast.stickySpotlightAdded"));
       }
       await useChatStore.getState().refreshContextLayers();
     } catch (err) {
       console.error("[useMapContextMenu] toggle sticky chat pin failed", err);
       toast.error(
         wasPinned
-          ? "Sticky の Spotlight 解除に失敗しました"
-          : "Sticky の Spotlight 追加に失敗しました",
+          ? i18next.t("map.toast.stickySpotlightUnpinFailed")
+          : i18next.t("map.toast.stickySpotlightPinFailed"),
       );
     }
     setContextMenu(null);

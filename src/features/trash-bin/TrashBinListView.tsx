@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import i18next from "@/lib/i18n";
 import { Trash2, Hand } from "lucide-react";
 import type { TrashItemData } from "./types";
 import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
@@ -15,13 +16,16 @@ function relativeTime(iso: string): string {
   const then = new Date(iso).getTime();
   const diff = Date.now() - then;
   const sec = Math.floor(diff / 1000);
-  if (sec < 60) return `${sec}秒前`;
+  if (sec < 60)
+    return i18next.t("trashBin.relativeTime.secondsAgo", { n: sec });
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}分前`;
+  if (min < 60)
+    return i18next.t("trashBin.relativeTime.minutesAgo", { n: min });
   const hour = Math.floor(min / 60);
-  if (hour < 24) return `${hour}時間前`;
+  if (hour < 24)
+    return i18next.t("trashBin.relativeTime.hoursAgo", { n: hour });
   const day = Math.floor(hour / 24);
-  return `${day}日前`;
+  return i18next.t("trashBin.relativeTime.daysAgo", { n: day });
 }
 
 export function TrashBinListView({

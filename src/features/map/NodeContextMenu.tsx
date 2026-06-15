@@ -1,4 +1,5 @@
 import { Sparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { PromoteTargetType } from "./mapApi";
 import { getPalette, DEFAULT_PALETTE_ID } from "@/lib/stickyPalettes";
 import {
@@ -13,16 +14,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 const CODEX_TYPES = [
-  { value: "character", label: "キャラクター" },
-  { value: "location", label: "場所" },
-  { value: "item", label: "アイテム" },
-  { value: "lore", label: "設定・用語" },
+  { value: "character", labelKey: "map.codexType.character" },
+  { value: "location", labelKey: "map.codexType.location" },
+  { value: "item", labelKey: "map.codexType.item" },
+  { value: "lore", labelKey: "map.codexType.lore" },
 ] as const;
 
 const PROMOTE_FLAT_ITEMS = [
-  { type: "scene" as PromoteTargetType, label: "シーン" },
-  { type: "note" as PromoteTargetType, label: "ノート" },
-  { type: "snippet" as PromoteTargetType, label: "スニペット" },
+  { type: "scene" as PromoteTargetType, labelKey: "map.nodeType.scene" },
+  { type: "note" as PromoteTargetType, labelKey: "map.nodeType.note" },
+  { type: "snippet" as PromoteTargetType, labelKey: "map.nodeType.snippet" },
 ] as const;
 
 interface NodeContextMenuProps {
@@ -92,6 +93,7 @@ export function NodeContextMenu({
   onAdoptAllDerived,
   derivedStickyCount = 0,
 }: NodeContextMenuProps) {
+  const { t } = useTranslation();
   const palette = getPalette(stickyPaletteId ?? DEFAULT_PALETTE_ID);
 
   return (
@@ -120,14 +122,16 @@ export function NodeContextMenu({
           <>
             {onPromoteFrame && (
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger>Codex に昇格…</DropdownMenuSubTrigger>
+                <DropdownMenuSubTrigger>
+                  {t("map.menu.promoteToCodex")}
+                </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
-                  {CODEX_TYPES.map(({ value, label }) => (
+                  {CODEX_TYPES.map(({ value, labelKey }) => (
                     <DropdownMenuItem
                       key={value}
                       onSelect={() => onPromoteFrame(value)}
                     >
-                      {label}
+                      {t(labelKey)}
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuSubContent>
@@ -138,35 +142,39 @@ export function NodeContextMenu({
               onSelect={onRemoveFromBoard}
               className={DESTRUCTIVE_CLASS}
             >
-              削除
+              {t("common.delete")}
             </DropdownMenuItem>
           </>
         ) : (
           <>
             {isScene && (
               <>
-                <DropdownMenuItem onSelect={onOpen}>開く</DropdownMenuItem>
+                <DropdownMenuItem onSelect={onOpen}>
+                  {t("map.menu.open")}
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
               </>
             )}
 
             <DropdownMenuItem onSelect={isPinned ? onUnpin : onPin}>
-              {isPinned ? "固定解除" : "位置を固定"}
+              {isPinned
+                ? t("map.menu.unpinPosition")
+                : t("map.menu.pinPosition")}
             </DropdownMenuItem>
 
             <DropdownMenuSeparator />
 
             <DropdownMenuItem onSelect={onBringToFront}>
-              前面へ移動
+              {t("map.menu.bringToFront")}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onSendToBack}>
-              背面へ移動
+              {t("map.menu.sendToBack")}
             </DropdownMenuItem>
 
             <DropdownMenuSeparator />
 
             <DropdownMenuItem onSelect={focusedNodeId ? onExitFocus : onFocus}>
-              {focusedNodeId ? "フォーカスを解除" : "フォーカス"}
+              {focusedNodeId ? t("map.menu.exitFocus") : t("map.menu.focus")}
             </DropdownMenuItem>
 
             {isSticky && onPinToChatContext && (
@@ -174,8 +182,8 @@ export function NodeContextMenu({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={onPinToChatContext}>
                   {isStickyPinnedToChat
-                    ? "チャットの Spotlight を解除"
-                    : "チャットの Spotlight に追加"}
+                    ? t("map.menu.removeChatSpotlight")
+                    : t("map.menu.addChatSpotlight")}
                 </DropdownMenuItem>
               </>
             )}
@@ -184,7 +192,9 @@ export function NodeContextMenu({
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>色を変更…</DropdownMenuSubTrigger>
+                  <DropdownMenuSubTrigger>
+                    {t("map.menu.changeColor")}
+                  </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="min-w-[160px]">
                     {palette.colors.map((c, slot) => (
                       <DropdownMenuItem
@@ -215,7 +225,7 @@ export function NodeContextMenu({
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={onBranchFrom}>
-                  ここから分岐
+                  {t("map.menu.branchFromHere")}
                 </DropdownMenuItem>
               </>
             )}
@@ -225,7 +235,7 @@ export function NodeContextMenu({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={onOpenAiBranch}>
                   <Sparkles className="mr-1.5 h-3.5 w-3.5" aria-hidden />
-                  AI Branch を生成…
+                  {t("map.menu.generateAiBranch")}
                 </DropdownMenuItem>
               </>
             )}
@@ -234,25 +244,27 @@ export function NodeContextMenu({
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>昇格…</DropdownMenuSubTrigger>
+                  <DropdownMenuSubTrigger>
+                    {t("map.menu.promote")}
+                  </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="min-w-[140px]">
-                    {PROMOTE_FLAT_ITEMS.map(({ type, label }) => (
+                    {PROMOTE_FLAT_ITEMS.map(({ type, labelKey }) => (
                       <DropdownMenuItem
                         key={type}
                         onSelect={() => onPromote(type)}
                       >
-                        {label}
+                        {t(labelKey)}
                       </DropdownMenuItem>
                     ))}
                     <DropdownMenuSub>
                       <DropdownMenuSubTrigger>Codex</DropdownMenuSubTrigger>
                       <DropdownMenuSubContent className="min-w-[130px]">
-                        {CODEX_TYPES.map(({ value, label }) => (
+                        {CODEX_TYPES.map(({ value, labelKey }) => (
                           <DropdownMenuItem
                             key={value}
                             onSelect={() => onPromote("codex", value)}
                           >
-                            {label}
+                            {t(labelKey)}
                           </DropdownMenuItem>
                         ))}
                       </DropdownMenuSubContent>
@@ -268,16 +280,20 @@ export function NodeContextMenu({
               onSelect={onRemoveFromBoard}
               className={DESTRUCTIVE_CLASS}
             >
-              {isSticky || isAiBranch ? "削除" : "このボードから削除"}
+              {isSticky || isAiBranch
+                ? t("common.delete")
+                : t("map.menu.deleteFromBoard")}
             </DropdownMenuItem>
 
             {isAiBranch && onAdoptAllDerived && derivedStickyCount > 0 && (
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={onAdoptAllDerived}>
-                  派生 Sticky を全て採用
+                  {t("map.menu.adoptAllDerived")}
                   <span className="ml-2 opacity-70">
-                    ({derivedStickyCount} 枚)
+                    {t("map.menu.derivedStickyCount", {
+                      count: derivedStickyCount,
+                    })}
                   </span>
                 </DropdownMenuItem>
               </>
@@ -288,10 +304,12 @@ export function NodeContextMenu({
                 onSelect={onDeleteWithDerivedStickies}
                 className={DESTRUCTIVE_CLASS}
               >
-                派生 Sticky ごと削除…
+                {t("map.menu.deleteWithDerived")}
                 {derivedStickyCount > 0 && (
                   <span className="ml-2 opacity-70">
-                    ({derivedStickyCount} 枚)
+                    {t("map.menu.derivedStickyCount", {
+                      count: derivedStickyCount,
+                    })}
                   </span>
                 )}
               </DropdownMenuItem>

@@ -21,7 +21,9 @@
     "other": "Other",
     "snippetSaveFailed": "Failed to save snippet",
     "confirmDelete": "Delete?",
-    "remove": "Remove"
+    "remove": "Remove",
+    "untitled": "(Untitled)",
+    "none": "None"
   },
   "welcome": {
     "description": "Choose a folder to save your manuscript.",
@@ -2288,6 +2290,12 @@
       "snippets": "Restore as snippet",
       "map": "Restore as sticky",
       "foreshadow": "Restore as foreshadow"
+    },
+    "relativeTime": {
+      "secondsAgo": "{{n}}s ago",
+      "minutesAgo": "{{n}}m ago",
+      "hoursAgo": "{{n}}h ago",
+      "daysAgo": "{{n}}d ago"
     }
   },
   "snippets": {
@@ -3600,6 +3608,243 @@
     "generateSynopsis": {
       "emptyResponse": "AI returned an empty response",
       "saveFailed": "Failed to save synopsis"
+    }
+  },
+  "map": {
+    "aiNodeDialog": {
+      "context": "Context",
+      "prompt": "Prompt",
+      "promptPlaceholder": "Expand on your idea…",
+      "generateCount": "Count",
+      "generate": "Generate"
+    },
+    "nodeType": {
+      "scene": "Scene",
+      "note": "Note",
+      "snippet": "Snippet"
+    },
+    "picker": {
+      "empty": "(Empty)",
+      "searchPlaceholder": "Search {{type}}…",
+      "noMatches": "No matches found",
+      "noItems": "No {{type}} found"
+    },
+    "autoArrange": {
+      "layoutReadingOrder": "Grid layout by reading order",
+      "layoutForceDirected": "Force-directed layout",
+      "title": "Rearrange nodes?",
+      "runLayout": "Run \"{{label}}\".",
+      "description": "Pinned nodes will not move. Other scene nodes will be rearranged into a grid.",
+      "run": "Run"
+    },
+    "correlationDialog": {
+      "title": "Generate Character Correlation Diagram",
+      "description": "Generates a single correlation diagram board between characters from co-occurrence in the text and existing relationships.",
+      "targetCharacters": "Target characters ({{selected}}/{{total}})",
+      "selectAll": "Select all",
+      "deselectAll": "Deselect all",
+      "loading": "Loading…",
+      "noCharacters": "No Codex entries of type character.",
+      "thresholdLabel": "Co-occurrence threshold (shared scene count)",
+      "groupByParent": "Group characters with the same parent entry in a frame",
+      "generate": "Generate",
+      "generateFailed": "Failed to generate correlation diagram",
+      "progressCrossReference": "Analyzing characters in the text…",
+      "progressLayout": "Computing layout…",
+      "progressWriting": "Saving correlation diagram…"
+    },
+    "forceLayoutProgress": {
+      "calculating": "Calculating layout…"
+    },
+    "history": {
+      "edgeDelete": "Delete edge",
+      "aiBranchDelete": "Delete AI Branch",
+      "frameDelete": "Delete frame",
+      "stickyDelete": "Delete Sticky",
+      "stickyAdopt": "Adopt Sticky",
+      "stickyBulkAdopt": "Adopt all Stickies",
+      "aiBranchBulkDelete": "Delete AI Branch and derived Stickies",
+      "aiBranchGenerate": "Generate AI Branch",
+      "stickyCreate": "Create Sticky",
+      "branchStickyCreate": "Create branch Sticky",
+      "multiDelete": "Delete multiple",
+      "nodeMove": "Move node",
+      "frameCreate": "Create frame",
+      "edgeCreate": "Create edge"
+    },
+    "menu": {
+      "removeFromBoard": "Remove from board",
+      "menu": "Menu",
+      "searchNodes": "Search nodes",
+      "displaySettings": "Display settings",
+      "color": "Color",
+      "theme": "Theme",
+      "minimap": "Minimap",
+      "autoArrange": "Auto arrange",
+      "generate": "Generate",
+      "generateCorrelation": "Generate character relationship diagram",
+      "export": "Export",
+      "promoteToCodex": "Promote to Codex…",
+      "open": "Open",
+      "pinPosition": "Pin position",
+      "unpinPosition": "Unpin",
+      "bringToFront": "Bring to front",
+      "sendToBack": "Send to back",
+      "focus": "Focus",
+      "exitFocus": "Exit focus",
+      "addChatSpotlight": "Add to Chat Spotlight",
+      "removeChatSpotlight": "Remove from Chat Spotlight",
+      "changeColor": "Change color…",
+      "branchFromHere": "Branch from here",
+      "generateAiBranch": "Generate AI Branch…",
+      "promote": "Promote…",
+      "deleteFromBoard": "Delete from this board",
+      "adoptAllDerived": "Adopt all derived Stickies",
+      "deleteWithDerived": "Delete with derived Stickies…",
+      "derivedStickyCount": "({{count}})",
+      "branchStickyLeft": "Add branch Sticky to the left",
+      "branchStickyRight": "Add branch Sticky to the right",
+      "openInEditor": "Open in Editor"
+    },
+    "toast": {
+      "removeFromBoardFailed": "Failed to remove from board",
+      "aiBranchBulkDeleteFailed": "Failed to delete AI Branch and derived Stickies",
+      "stickiesAdopted": "Adopted {{count}} Stickies",
+      "edgeDeleteFailed": "Failed to delete edge",
+      "frameDeleteFailed": "Failed to delete frame",
+      "nodeDeleteFailed": "Failed to delete node",
+      "promoteRelationBothCodexOnly": "Only user edges with Codex nodes at both ends can be promoted",
+      "promotedToCodexRelation": "Promoted to Codex Relation",
+      "chatSessionDeleted": "Chat session deleted",
+      "noActiveChatSession": "No active chat session",
+      "stickySpotlightRemoved": "Removed Sticky from Spotlight",
+      "stickySpotlightAdded": "Added Sticky to Spotlight",
+      "stickySpotlightUnpinFailed": "Failed to remove Sticky from Spotlight",
+      "stickySpotlightPinFailed": "Failed to add Sticky to Spotlight",
+      "positionSaveFailed": "Failed to save position",
+      "frameCreateFailed": "Failed to create frame",
+      "exportFailed": "Export failed"
+    },
+    "deleteAiBranchWithDerived": {
+      "title": "Delete AI Branch with derived Stickies",
+      "descriptionWithCount": "{{count}} derived Stickies will also be deleted. You can undo this.",
+      "descriptionEmpty": "There are no derived Stickies. The AI Branch node will be deleted."
+    },
+    "aiBranch": {
+      "generating": "Generating AI Branch…",
+      "stickyCount": "{{count}} sheets"
+    },
+    "colorBy": {
+      "status": "Status",
+      "stickyColor": "Sticky color"
+    },
+    "theme": {
+      "default": "Default",
+      "corkboard": "Corkboard",
+      "constellation": "Constellation"
+    },
+    "arrange": {
+      "readingOrder": "Grid: Reading order",
+      "forceDirected": "Force-directed"
+    },
+    "export": {
+      "svg": "Save as SVG",
+      "png": "Save as PNG",
+      "json": "Export as JSON"
+    },
+    "tooltip": {
+      "switchBoard": "Switch board",
+      "modeButton": "{{mode}} mode",
+      "renameBoardShortcut": "Rename (F2)",
+      "renameBoardAria": "Rename \"{{title}}\"",
+      "duplicateBoardShortcut": "Duplicate ({{shortcut}})",
+      "duplicateBoardAria": "Duplicate \"{{title}}\"",
+      "deleteBoardShortcut": "Delete (Delete)",
+      "deleteBoardAria": "Delete \"{{title}}\"",
+      "addSticky": "Add sticky (S)",
+      "generateAiBranch": "Generate AI Branch",
+      "addExistingEntity": "Add an existing entity to the Map",
+      "drawFrame": "Draw frame (F)",
+      "connectEdge": "Connect edge (Alt)",
+      "deleteAiBranch": "Delete AI Branch",
+      "doubleClickToChat": "Double-click to show in Chat panel",
+      "openInChatPanel": "Open in Chat panel",
+      "openInCodex": "Open in Codex"
+    },
+    "board": {
+      "newBoardMenuItem": "+ New board",
+      "renameLabel": "New board name",
+      "createLabel": "New board name",
+      "newBoardPlaceholder": "New board",
+      "renameAction": "Rename",
+      "deleteTitle": "Delete board",
+      "deleteConfirm": "Delete \"{{title}}\"? Data on the board will also be lost.",
+      "duplicateTitle": "{{title}} (Copy)"
+    },
+    "palette": {
+      "addScene": "Add Scene…",
+      "addNote": "Add Note…",
+      "addCodex": "Add Codex…",
+      "addSnippet": "Add Snippet…",
+      "frameHint": "Drag on the canvas to create a frame (Esc to cancel)",
+      "connectHint": "Click a node to start an edge (Esc to cancel)"
+    },
+    "search": {
+      "placeholder": "Search nodes...",
+      "noResults": "No results found"
+    },
+    "codexType": {
+      "character": "Character",
+      "location": "Location",
+      "item": "Item",
+      "lore": "Lore & Terms"
+    },
+    "color": {
+      "gray": "Gray",
+      "red": "Red",
+      "orange": "Orange",
+      "yellow": "Yellow",
+      "green": "Green",
+      "blue": "Blue",
+      "purple": "Purple"
+    },
+    "edge": {
+      "style": {
+        "solid": "Solid",
+        "dashed": "Dashed",
+        "dotted": "Dotted"
+      },
+      "direction": {
+        "forward": "Forward",
+        "bidirectional": "Bidirectional"
+      },
+      "labelEdit": "Edit label",
+      "forwardLabel": "Forward label",
+      "backwardLabel": "Backward label",
+      "arrowDirection": "Arrow direction",
+      "lineStyle": "Line style",
+      "colorChange": "Change color",
+      "promoteToRelation": "Promote to Codex Relation",
+      "addLabel": "+ Label"
+    },
+    "scene": {
+      "titleEditorHint": "Enter to confirm · Esc to cancel",
+      "synopsisEditorHint": "{{shortcut}} to save · Esc to cancel"
+    },
+    "sticky": {
+      "adoptAriaLabel": "Adopt this sticky",
+      "adoptTitle": "Adopt (detach from branch)",
+      "adopt": "Adopt",
+      "rejectAriaLabel": "Reject this sticky",
+      "rejectTitle": "Reject (move to trash)",
+      "reject": "Reject"
+    },
+    "correlation": {
+      "noTargetCharacters": "No target characters",
+      "defaultBoardTitle": "Character Correlation Diagram"
+    },
+    "sceneNode": {
+      "synopsisPlaceholder": "What happens in this scene?"
     }
   }
 }

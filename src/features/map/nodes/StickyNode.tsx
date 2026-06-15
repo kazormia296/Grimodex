@@ -9,6 +9,7 @@ import {
 } from "react";
 import { Check, X } from "lucide-react";
 import { motion } from "motion/react";
+import { useTranslation } from "react-i18next";
 import { NodeToolbar, Position, type NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
 import { NodeBranchToolbar } from "./NodeBranchToolbar";
@@ -201,6 +202,7 @@ export const StickyNode = memo(function StickyNode({
   selected,
   isConnectable,
 }: NodeProps) {
+  const { t } = useTranslation();
   const d = data as StickyNodeData;
   const rotation = d.rotation ?? 0;
   const isDeleting = d.isDeleting ?? false;
@@ -327,8 +329,8 @@ export const StickyNode = memo(function StickyNode({
         >
           <button
             type="button"
-            aria-label="この付箋を採用"
-            title="採用 (branch から切り離す)"
+            aria-label={t("map.sticky.adoptAriaLabel")}
+            title={t("map.sticky.adoptTitle")}
             onClick={(e) => {
               e.stopPropagation();
               d.onAdopt?.();
@@ -336,12 +338,12 @@ export const StickyNode = memo(function StickyNode({
             className="map-sticky-adopt-btn"
           >
             <Check size={11} strokeWidth={3} aria-hidden />
-            採用
+            {t("map.sticky.adopt")}
           </button>
           <button
             type="button"
-            aria-label="この付箋を不採用"
-            title="不採用 (ゴミ箱へ)"
+            aria-label={t("map.sticky.rejectAriaLabel")}
+            title={t("map.sticky.rejectTitle")}
             onClick={(e) => {
               e.stopPropagation();
               d.onReject?.();
@@ -349,7 +351,7 @@ export const StickyNode = memo(function StickyNode({
             className="map-sticky-reject-btn"
           >
             <X size={11} aria-hidden />
-            不採用
+            {t("map.sticky.reject")}
           </button>
         </NodeToolbar>
       )}

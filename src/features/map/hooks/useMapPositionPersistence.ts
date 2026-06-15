@@ -18,6 +18,7 @@ import type { MapNodePositionRecord } from "../types";
 import type { MapEdge, MapFrame } from "@/db/schema";
 import { useKeyedDebouncedCallback } from "@/lib/useDebounce";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import i18next from "@/lib/i18n";
 
 interface UseMapPositionPersistenceInput {
   boardId: string | null;
@@ -44,7 +45,9 @@ function reportPersistError(err: unknown) {
   // leave the UI in an inconsistent state. Log + toast, swallow the rejection.
 
   console.error("[map] persistPosition failed", err);
-  toast.error("位置の保存に失敗しました", { description: String(err) });
+  toast.error(i18next.t("map.toast.positionSaveFailed"), {
+    description: String(err),
+  });
 }
 
 export function useMapPositionPersistence({
@@ -310,7 +313,7 @@ export function useMapPositionPersistence({
         };
         useGlobalHistoryStore.getState().push({
           kind: "map",
-          label: "ノード移動",
+          label: i18next.t("map.history.nodeMove"),
           async undo() {
             await moveTo(captured.fromX, captured.fromY);
           },
@@ -432,7 +435,7 @@ export function useMapPositionPersistence({
             if (useGlobalHistoryStore.getState().isReplaying) return;
             useGlobalHistoryStore.getState().push({
               kind: "map",
-              label: "エッジ削除",
+              label: i18next.t("map.history.edgeDelete"),
               async undo() {
                 const recreated = await createUserEdgeFn({
                   id: cap.id,

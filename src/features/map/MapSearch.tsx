@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Node } from "@xyflow/react";
 import { Search, X } from "lucide-react";
 
@@ -14,6 +15,7 @@ interface MapSearchProps {
 }
 
 export function MapSearch({ nodes, onFocus, onClose }: MapSearchProps) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [cursor, setCursor] = useState(0);
@@ -108,7 +110,7 @@ export function MapSearch({ nodes, onFocus, onClose }: MapSearchProps) {
             search(e.target.value);
           }}
           onKeyDown={handleKeyDown}
-          placeholder="ノードを検索..."
+          placeholder={t("map.search.placeholder")}
           style={{
             flex: 1,
             border: "none",
@@ -120,7 +122,7 @@ export function MapSearch({ nodes, onFocus, onClose }: MapSearchProps) {
         />
         <button
           onClick={onClose}
-          aria-label="閉じる"
+          aria-label={t("common.close")}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -174,7 +176,7 @@ export function MapSearch({ nodes, onFocus, onClose }: MapSearchProps) {
             color: "var(--muted-foreground)",
           }}
         >
-          見つかりません
+          {t("map.search.noResults")}
         </div>
       )}
     </div>

@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import type { MapFrame } from "@/db/schema";
 import { createFrame, deleteFrame } from "../mapApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import i18next from "@/lib/i18n";
 
 type Rect = { x: number; y: number; w: number; h: number };
 
@@ -83,7 +84,9 @@ export function useFrameDrawing(
         height: rect.h,
       });
     } catch (err) {
-      toast.error("Frame の作成に失敗しました", { description: String(err) });
+      toast.error(i18next.t("map.toast.frameCreateFailed"), {
+        description: String(err),
+      });
       return;
     }
     setFrames((prev) => [...prev, newFrame]);
@@ -93,7 +96,7 @@ export function useFrameDrawing(
       const cap = { ...newFrame };
       useGlobalHistoryStore.getState().push({
         kind: "map",
-        label: "Frame作成",
+        label: i18next.t("map.history.frameCreate"),
         async undo() {
           await deleteFrame(cap.id);
           setFrames((prev) => prev.filter((f) => f.id !== cap.id));

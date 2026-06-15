@@ -1,5 +1,6 @@
 import { AlertTriangle, Pencil, Sparkles } from "lucide-react";
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 
@@ -12,6 +13,7 @@ export interface AINodeData {
 }
 
 export const AINode = memo(function AINode({ data, selected }: NodeProps) {
+  const { t } = useTranslation();
   const d = data as AINodeData;
   const promptPreview = d.prompt.slice(0, 60);
   const responsePreview = (d.response ?? "").slice(0, 80);
@@ -24,7 +26,7 @@ export const AINode = memo(function AINode({ data, selected }: NodeProps) {
         <button
           type="button"
           className="map-edit-indicator"
-          title="Chat パネルで開く"
+          title={t("map.tooltip.openInChatPanel")}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
@@ -41,8 +43,8 @@ export const AINode = memo(function AINode({ data, selected }: NodeProps) {
         }}
         title={
           hasSession
-            ? "ダブルクリックでChatパネルに表示"
-            : "Chatセッションが削除されました"
+            ? t("map.tooltip.doubleClickToChat")
+            : t("map.toast.chatSessionDeleted")
         }
         style={{
           width: 220,
@@ -93,7 +95,7 @@ export const AINode = memo(function AINode({ data, selected }: NodeProps) {
           </span>
           {!hasSession && (
             <span
-              title="Chatセッションが削除されました"
+              title={t("map.toast.chatSessionDeleted")}
               style={{ display: "inline-flex", color: "#D97706" }}
             >
               <AlertTriangle size={12} aria-hidden />

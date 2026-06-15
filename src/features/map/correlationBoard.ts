@@ -42,6 +42,7 @@ import type { ForceNode, ForceLink } from "./layouts/forceLayout.worker";
 import { hashStringToSeed } from "./layouts/seededRandom";
 import { listBoards, serializeShowConfig } from "./mapApi";
 import type { ShowFlags } from "./types";
+import i18next from "@/lib/i18n";
 
 export interface CorrelationProgress {
   phase: "cross-reference" | "layout" | "writing";
@@ -189,7 +190,7 @@ export async function generateCorrelationBoard(
     ? allCharacters.filter((c) => filterSet.has(c.id))
     : allCharacters;
   if (characters.length === 0) {
-    throw new Error("対象キャラクターがありません");
+    throw new Error(i18next.t("map.correlation.noTargetCharacters"));
   }
   const characterIdSet = new Set(characters.map((c) => c.id));
 
@@ -268,7 +269,7 @@ export async function generateCorrelationBoard(
   const boardRow: NewMapBoard = {
     id: boardId,
     projectId,
-    title: opts.title?.trim() || "人物相関図",
+    title: opts.title?.trim() || i18next.t("map.correlation.defaultBoardTitle"),
     sortOrder: maxOrder + 1.0,
     mode: "free",
     viewportX: 0,

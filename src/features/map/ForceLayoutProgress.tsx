@@ -1,8 +1,11 @@
+import { useTranslation } from "react-i18next";
+
 interface ForceLayoutProgressProps {
   alpha: number;
 }
 
 export function ForceLayoutProgress({ alpha }: ForceLayoutProgressProps) {
+  const { t } = useTranslation();
   const progress = Math.max(0, Math.min(100, (1 - alpha) * 100));
 
   return (
@@ -15,7 +18,7 @@ export function ForceLayoutProgress({ alpha }: ForceLayoutProgressProps) {
           />
         </div>
         <span className="text-[10px] text-muted-foreground">
-          レイアウト計算中…
+          {t("map.forceLayoutProgress.calculating")}
         </span>
       </div>
     </div>

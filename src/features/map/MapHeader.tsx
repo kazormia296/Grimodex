@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { useMapStore } from "./mapStore";
 import type { MapMode, ColorByAxis, VisualTheme } from "./types";
 import type { AutoArrangeType } from "./layouts/autoArrange";
@@ -37,9 +38,9 @@ import { useCurrentProjectId } from "@/features/project/projectStore";
 import { formatShortcut } from "@/lib/platform";
 import { CorrelationDialog } from "./CorrelationDialog";
 
-const ARRANGE_ITEMS: { type: AutoArrangeType; label: string }[] = [
-  { type: "reading-order", label: "Grid: 読み順" },
-  { type: "force-directed", label: "Force-directed" },
+const ARRANGE_ITEMS: { type: AutoArrangeType; labelKey: string }[] = [
+  { type: "reading-order", labelKey: "map.arrange.readingOrder" },
+  { type: "force-directed", labelKey: "map.arrange.forceDirected" },
 ];
 
 const MODES: { key: MapMode; label: string }[] = [
@@ -47,16 +48,16 @@ const MODES: { key: MapMode; label: string }[] = [
   { key: "theme", label: "Theme" },
 ];
 
-const COLOR_BY_OPTIONS: { value: ColorByAxis; label: string }[] = [
-  { value: "none", label: "なし" },
-  { value: "status", label: "ステータス" },
-  { value: "stickyColor", label: "付箋カラー" },
+const COLOR_BY_OPTIONS: { value: ColorByAxis; labelKey: string }[] = [
+  { value: "none", labelKey: "common.none" },
+  { value: "status", labelKey: "map.colorBy.status" },
+  { value: "stickyColor", labelKey: "map.colorBy.stickyColor" },
 ];
 
-const VISUAL_THEME_OPTIONS: { value: VisualTheme; label: string }[] = [
-  { value: "default", label: "デフォルト" },
-  { value: "corkboard", label: "コルクボード" },
-  { value: "constellation", label: "星座" },
+const VISUAL_THEME_OPTIONS: { value: VisualTheme; labelKey: string }[] = [
+  { value: "default", labelKey: "map.theme.default" },
+  { value: "corkboard", labelKey: "map.theme.corkboard" },
+  { value: "constellation", labelKey: "map.theme.constellation" },
 ];
 
 type EditingBoardState =
@@ -66,12 +67,13 @@ type EditingBoardState =
   | null;
 
 const EXPORT_ITEMS = [
-  { type: "svg", label: "SVG として保存" },
-  { type: "png", label: "PNG として保存" },
-  { type: "json", label: "JSON としてエクスポート" },
+  { type: "svg", labelKey: "map.export.svg" },
+  { type: "png", labelKey: "map.export.png" },
+  { type: "json", labelKey: "map.export.json" },
 ] as const;
 
 export function MapHeader() {
+  const { t } = useTranslation();
   const mode = useMapStore((s) => s.mode);
   const setMode = useMapStore((s) => s.setMode);
   const show = useMapStore((s) => s.show);
@@ -173,7 +175,7 @@ export function MapHeader() {
               <Button
                 variant="outline"
                 size="xs"
-                title="ボードを切り替え"
+                title={t("map.tooltip.switchBoard")}
                 className="max-w-[140px] overflow-hidden"
               >
                 <span className="truncate">{activeBoard?.title ?? "—"}</span>
@@ -245,8 +247,10 @@ export function MapHeader() {
                       type="button"
                       variant="ghost"
                       size="icon-xs"
-                      title="リネーム (F2)"
-                      aria-label={`「${b.title}」をリネーム`}
+                      title={t("map.tooltip.renameBoardShortcut")}
+                      aria-label={t("map.tooltip.renameBoardAria", {
+                        title: b.title,
+                      })}
                       className="h-5 w-5 text-muted-foreground hover:bg-accent/70 hover:text-foreground"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -264,8 +268,12 @@ export function MapHeader() {
                       type="button"
                       variant="ghost"
                       size="icon-xs"
-                      title={`複製 (${formatShortcut("Ctrl+D")})`}
-                      aria-label={`「${b.title}」を複製`}
+                      title={t("map.tooltip.duplicateBoardShortcut", {
+                        shortcut: formatShortcut("Ctrl+D"),
+                      })}
+                      aria-label={t("map.tooltip.duplicateBoardAria", {
+                        title: b.title,
+                      })}
                       className="h-5 w-5 text-muted-foreground hover:bg-accent/70 hover:text-foreground"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -279,8 +287,10 @@ export function MapHeader() {
                         type="button"
                         variant="ghost"
                         size="icon-xs"
-                        title="削除 (Delete)"
-                        aria-label={`「${b.title}」を削除`}
+                        title={t("map.tooltip.deleteBoardShortcut")}
+                        aria-label={t("map.tooltip.deleteBoardAria", {
+                          title: b.title,
+                        })}
                         className="h-5 w-5 text-muted-foreground hover:bg-destructive/15 hover:text-[color:var(--destructive)]"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -306,7 +316,7 @@ export function MapHeader() {
                 setEditingBoard({ mode: "create" });
               }}
             >
-              + 新規ボード
+              {t("map.board.newBoardMenuItem")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -353,7 +363,7 @@ export function MapHeader() {
               variant={active ? "default" : "outline"}
               size="xs"
               onClick={() => setMode(key)}
-              title={`${label} モード`}
+              title={t("map.tooltip.modeButton", { mode: label })}
               style={
                 active
                   ? {
@@ -427,15 +437,15 @@ export function MapHeader() {
             <Button
               variant="outline"
               size="xs"
-              title="メニュー"
-              aria-label="メニュー"
+              title={t("map.menu.menu")}
+              aria-label={t("map.menu.menu")}
             >
               <MoreVertical className="h-3.5 w-3.5" aria-hidden />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[200px]">
             <DropdownMenuItem onSelect={() => setSearchVisible(true)}>
-              ノードを検索
+              {t("map.menu.searchNodes")}
               <DropdownMenuShortcut>
                 {formatShortcut("Ctrl+F")}
               </DropdownMenuShortcut>
@@ -443,32 +453,38 @@ export function MapHeader() {
 
             <DropdownMenuSeparator />
 
-            <DropdownMenuLabel>表示設定</DropdownMenuLabel>
+            <DropdownMenuLabel>
+              {t("map.menu.displaySettings")}
+            </DropdownMenuLabel>
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>カラー</DropdownMenuSubTrigger>
+              <DropdownMenuSubTrigger>
+                {t("map.menu.color")}
+              </DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
                 <DropdownMenuRadioGroup
                   value={colorBy}
                   onValueChange={(v) => setColorBy(v as ColorByAxis)}
                 >
-                  {COLOR_BY_OPTIONS.map(({ value, label }) => (
+                  {COLOR_BY_OPTIONS.map(({ value, labelKey }) => (
                     <DropdownMenuRadioItem key={value} value={value}>
-                      {label}
+                      {t(labelKey)}
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>テーマ</DropdownMenuSubTrigger>
+              <DropdownMenuSubTrigger>
+                {t("map.menu.theme")}
+              </DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
                 <DropdownMenuRadioGroup
                   value={visualTheme}
                   onValueChange={(v) => setVisualTheme(v as VisualTheme)}
                 >
-                  {VISUAL_THEME_OPTIONS.map(({ value, label }) => (
+                  {VISUAL_THEME_OPTIONS.map(({ value, labelKey }) => (
                     <DropdownMenuRadioItem key={value} value={value}>
-                      {label}
+                      {t(labelKey)}
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>
@@ -478,37 +494,37 @@ export function MapHeader() {
               checked={minimapVisible}
               onCheckedChange={(v) => setMinimapVisible(v === true)}
             >
-              ミニマップ
+              {t("map.menu.minimap")}
             </DropdownMenuCheckboxItem>
 
             <DropdownMenuSeparator />
 
-            <DropdownMenuLabel>自動配置</DropdownMenuLabel>
+            <DropdownMenuLabel>{t("map.menu.autoArrange")}</DropdownMenuLabel>
             {ARRANGE_ITEMS.map((item) => (
               <DropdownMenuItem
                 key={item.type}
                 onSelect={() => setPendingAutoArrange(item.type)}
               >
-                {item.label}
+                {t(item.labelKey)}
               </DropdownMenuItem>
             ))}
 
             <DropdownMenuSeparator />
 
-            <DropdownMenuLabel>生成</DropdownMenuLabel>
+            <DropdownMenuLabel>{t("map.menu.generate")}</DropdownMenuLabel>
             <DropdownMenuItem onSelect={() => setCorrelationOpen(true)}>
-              人物相関図を生成
+              {t("map.menu.generateCorrelation")}
             </DropdownMenuItem>
 
             <DropdownMenuSeparator />
 
-            <DropdownMenuLabel>エクスポート</DropdownMenuLabel>
+            <DropdownMenuLabel>{t("map.menu.export")}</DropdownMenuLabel>
             {EXPORT_ITEMS.map((item) => (
               <DropdownMenuItem
                 key={item.type}
                 onSelect={() => setPendingExport(item.type)}
               >
-                {item.label}
+                {t(item.labelKey)}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -555,6 +571,7 @@ function BoardEditForm({
   onSubmit: (value: string) => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   const [value, setValue] = useState(initialValue);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -580,7 +597,9 @@ function BoardEditForm({
           fontWeight: 500,
         }}
       >
-        {mode === "rename" ? "新しいボード名" : "新規ボード名"}
+        {mode === "rename"
+          ? t("map.board.renameLabel")
+          : t("map.board.createLabel")}
       </label>
       <input
         ref={inputRef}
@@ -592,7 +611,9 @@ function BoardEditForm({
             onCancel();
           }
         }}
-        placeholder={mode === "create" ? "新規ボード" : ""}
+        placeholder={
+          mode === "create" ? t("map.board.newBoardPlaceholder") : ""
+        }
         style={{
           fontSize: 12,
           padding: "5px 8px",
@@ -611,7 +632,7 @@ function BoardEditForm({
         }}
       >
         <Button type="button" variant="ghost" size="xs" onClick={onCancel}>
-          キャンセル
+          {t("common.cancel")}
         </Button>
         <Button
           type="submit"
@@ -624,7 +645,7 @@ function BoardEditForm({
             color: "#fff",
           }}
         >
-          {mode === "rename" ? "リネーム" : "作成"}
+          {mode === "rename" ? t("map.board.renameAction") : t("common.create")}
         </Button>
       </div>
     </form>
@@ -640,11 +661,14 @@ function BoardDeleteConfirm({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={{ fontSize: 13, fontWeight: 600 }}>ボードを削除</div>
+      <div style={{ fontSize: 13, fontWeight: 600 }}>
+        {t("map.board.deleteTitle")}
+      </div>
       <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
-        「{title}」を削除しますか？ボード上のデータも消えます。
+        {t("map.board.deleteConfirm", { title })}
       </div>
       <div
         style={{
@@ -654,7 +678,7 @@ function BoardDeleteConfirm({
         }}
       >
         <Button type="button" variant="ghost" size="xs" onClick={onCancel}>
-          キャンセル
+          {t("common.cancel")}
         </Button>
         <Button
           type="button"
@@ -667,7 +691,7 @@ function BoardDeleteConfirm({
             color: "var(--destructive-foreground)",
           }}
         >
-          削除
+          {t("common.delete")}
         </Button>
       </div>
     </div>

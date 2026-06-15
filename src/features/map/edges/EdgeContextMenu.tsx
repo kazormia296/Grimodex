@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -29,25 +30,29 @@ interface EdgeContextMenuProps extends EdgeContextMenuState {
 }
 
 const COLOR_PRESETS = [
-  { value: "#555555", label: "グレー" },
-  { value: "#ef4444", label: "赤" },
-  { value: "#f97316", label: "オレンジ" },
-  { value: "#eab308", label: "黄" },
-  { value: "#22c55e", label: "緑" },
-  { value: "#3b82f6", label: "青" },
-  { value: "#a855f7", label: "紫" },
+  { value: "#555555", labelKey: "map.color.gray" },
+  { value: "#ef4444", labelKey: "map.color.red" },
+  { value: "#f97316", labelKey: "map.color.orange" },
+  { value: "#eab308", labelKey: "map.color.yellow" },
+  { value: "#22c55e", labelKey: "map.color.green" },
+  { value: "#3b82f6", labelKey: "map.color.blue" },
+  { value: "#a855f7", labelKey: "map.color.purple" },
 ] as const;
 
 const STYLE_ITEMS = [
-  { value: "solid", label: "実線", glyph: "──" },
-  { value: "dashed", label: "破線", glyph: "╌╌" },
-  { value: "dotted", label: "点線", glyph: "···" },
+  { value: "solid", labelKey: "map.edge.style.solid", glyph: "──" },
+  { value: "dashed", labelKey: "map.edge.style.dashed", glyph: "╌╌" },
+  { value: "dotted", labelKey: "map.edge.style.dotted", glyph: "···" },
 ] as const;
 
 const DIRECTION_ITEMS = [
-  { value: "none", label: "なし", glyph: "──" },
-  { value: "forward", label: "順方向", glyph: "→" },
-  { value: "bidirectional", label: "双方向", glyph: "↔" },
+  { value: "none", labelKey: "common.none", glyph: "──" },
+  { value: "forward", labelKey: "map.edge.direction.forward", glyph: "→" },
+  {
+    value: "bidirectional",
+    labelKey: "map.edge.direction.bidirectional",
+    glyph: "↔",
+  },
 ] as const;
 
 export function EdgeContextMenu({
@@ -64,6 +69,7 @@ export function EdgeContextMenu({
   canPromoteToRelation,
   onEditLabel,
 }: EdgeContextMenuProps) {
+  const { t } = useTranslation();
   return (
     <DropdownMenu
       open
@@ -88,48 +94,48 @@ export function EdgeContextMenu({
       <DropdownMenuContent align="start" className="min-w-[200px]">
         {onEditLabel && (
           <>
-            <DropdownMenuLabel>ラベル編集</DropdownMenuLabel>
+            <DropdownMenuLabel>{t("map.edge.labelEdit")}</DropdownMenuLabel>
             <DropdownMenuItem onSelect={() => onEditLabel("forwardLabel")}>
-              順方向ラベル
+              {t("map.edge.forwardLabel")}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => onEditLabel("backwardLabel")}>
-              逆方向ラベル
+              {t("map.edge.backwardLabel")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>
         )}
-        <DropdownMenuLabel>矢印方向</DropdownMenuLabel>
-        {DIRECTION_ITEMS.map(({ value, label, glyph }) => (
+        <DropdownMenuLabel>{t("map.edge.arrowDirection")}</DropdownMenuLabel>
+        {DIRECTION_ITEMS.map(({ value, labelKey, glyph }) => (
           <DropdownMenuItem
             key={value}
             onSelect={() => onDirectionChange(value)}
             className={direction === value ? "font-semibold" : undefined}
           >
             <span className="inline-block w-8">{glyph}</span>
-            {label}
+            {t(labelKey)}
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator />
-        <DropdownMenuLabel>線種</DropdownMenuLabel>
-        {STYLE_ITEMS.map(({ value, label, glyph }) => (
+        <DropdownMenuLabel>{t("map.edge.lineStyle")}</DropdownMenuLabel>
+        {STYLE_ITEMS.map(({ value, labelKey, glyph }) => (
           <DropdownMenuItem
             key={value}
             onSelect={() => onStyleChange(value)}
             className={style === value ? "font-semibold" : undefined}
           >
             <span className="inline-block w-8">{glyph}</span>
-            {label}
+            {t(labelKey)}
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator />
-        <DropdownMenuLabel>色変更</DropdownMenuLabel>
+        <DropdownMenuLabel>{t("map.edge.colorChange")}</DropdownMenuLabel>
         <div className="flex flex-wrap gap-2 px-2 py-2">
           {COLOR_PRESETS.map((c) => (
             <button
               key={c.value}
               type="button"
-              title={c.label}
-              aria-label={c.label}
+              title={t(c.labelKey)}
+              aria-label={t(c.labelKey)}
               className="rounded-full border-2 transition-transform hover:scale-110"
               style={{
                 width: 20,
@@ -149,7 +155,7 @@ export function EdgeContextMenu({
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={onPromoteToRelation}>
-              Codex Relation に昇格
+              {t("map.edge.promoteToRelation")}
             </DropdownMenuItem>
           </>
         )}
@@ -158,7 +164,7 @@ export function EdgeContextMenu({
           onSelect={onDelete}
           className="text-[color:var(--destructive)] focus:text-[color:var(--destructive)]"
         >
-          削除
+          {t("common.delete")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -21,7 +21,9 @@
     "other": "その他",
     "snippetSaveFailed": "スニペットの保存に失敗しました",
     "confirmDelete": "削除?",
-    "remove": "削除"
+    "remove": "削除",
+    "untitled": "(無題)",
+    "none": "なし"
   },
   "welcome": {
     "description": "原稿の保存先フォルダを選んでください。",
@@ -2283,6 +2285,12 @@
       "snippets": "スニペットとして復元",
       "map": "付箋として復元",
       "foreshadow": "伏線として復元"
+    },
+    "relativeTime": {
+      "secondsAgo": "{{n}}秒前",
+      "minutesAgo": "{{n}}分前",
+      "hoursAgo": "{{n}}時間前",
+      "daysAgo": "{{n}}日前"
     }
   },
   "snippets": {
@@ -3599,6 +3607,243 @@
     "generateSynopsis": {
       "emptyResponse": "AIが空のレスポンスを返しました",
       "saveFailed": "シノプシスの保存に失敗しました"
+    }
+  },
+  "map": {
+    "aiNodeDialog": {
+      "context": "コンテキスト",
+      "prompt": "プロンプト",
+      "promptPlaceholder": "アイデアを展開してください…",
+      "generateCount": "生成数",
+      "generate": "生成"
+    },
+    "nodeType": {
+      "scene": "シーン",
+      "note": "ノート",
+      "snippet": "スニペット"
+    },
+    "picker": {
+      "empty": "(空)",
+      "searchPlaceholder": "{{type}}を検索…",
+      "noMatches": "一致するものがありません",
+      "noItems": "{{type}}がありません"
+    },
+    "autoArrange": {
+      "layoutReadingOrder": "読み順でグリッド配置",
+      "layoutForceDirected": "Force-directed 配置",
+      "title": "ノードを並び替えますか？",
+      "runLayout": "「{{label}}」を実行します。",
+      "description": "ピン留め済みのノードは移動しません。それ以外のシーンノードがグリッドに再配置されます。",
+      "run": "実行"
+    },
+    "correlationDialog": {
+      "title": "人物相関図を生成",
+      "description": "本文の共起と作成済みの関係から、キャラクター同士の相関図ボードを 1 つ生成します。",
+      "targetCharacters": "対象キャラクター（{{selected}}/{{total}}）",
+      "selectAll": "全選択",
+      "deselectAll": "全解除",
+      "loading": "読み込み中…",
+      "noCharacters": "character タイプの Codex エントリがありません。",
+      "thresholdLabel": "共起のしきい値（共有シーン数）",
+      "groupByParent": "同じ親エントリのキャラクターを枠で囲む",
+      "generate": "生成",
+      "generateFailed": "相関図の生成に失敗しました",
+      "progressCrossReference": "本文の登場人物を解析中…",
+      "progressLayout": "レイアウト計算中…",
+      "progressWriting": "相関図を保存中…"
+    },
+    "forceLayoutProgress": {
+      "calculating": "レイアウト計算中…"
+    },
+    "history": {
+      "edgeDelete": "エッジ削除",
+      "aiBranchDelete": "AI Branch 削除",
+      "frameDelete": "Frame削除",
+      "stickyDelete": "Sticky削除",
+      "stickyAdopt": "Sticky 採用",
+      "stickyBulkAdopt": "Sticky 一括採用",
+      "aiBranchBulkDelete": "AI Branch 一括削除",
+      "aiBranchGenerate": "AI Branch 生成",
+      "stickyCreate": "Sticky作成",
+      "branchStickyCreate": "分岐 Sticky 作成",
+      "multiDelete": "複数削除",
+      "nodeMove": "ノード移動",
+      "frameCreate": "Frame作成",
+      "edgeCreate": "エッジ作成"
+    },
+    "menu": {
+      "removeFromBoard": "ボードから外す",
+      "menu": "メニュー",
+      "searchNodes": "ノードを検索",
+      "displaySettings": "表示設定",
+      "color": "カラー",
+      "theme": "テーマ",
+      "minimap": "ミニマップ",
+      "autoArrange": "自動配置",
+      "generate": "生成",
+      "generateCorrelation": "人物相関図を生成",
+      "export": "エクスポート",
+      "promoteToCodex": "Codex に昇格…",
+      "open": "開く",
+      "pinPosition": "位置を固定",
+      "unpinPosition": "固定解除",
+      "bringToFront": "前面へ移動",
+      "sendToBack": "背面へ移動",
+      "focus": "フォーカス",
+      "exitFocus": "フォーカスを解除",
+      "addChatSpotlight": "チャットの Spotlight に追加",
+      "removeChatSpotlight": "チャットの Spotlight を解除",
+      "changeColor": "色を変更…",
+      "branchFromHere": "ここから分岐",
+      "generateAiBranch": "AI Branch を生成…",
+      "promote": "昇格…",
+      "deleteFromBoard": "このボードから削除",
+      "adoptAllDerived": "派生 Sticky を全て採用",
+      "deleteWithDerived": "派生 Sticky ごと削除…",
+      "derivedStickyCount": "({{count}} 枚)",
+      "branchStickyLeft": "左に分岐 Sticky を追加",
+      "branchStickyRight": "右に分岐 Sticky を追加",
+      "openInEditor": "Editor で開く"
+    },
+    "toast": {
+      "removeFromBoardFailed": "ボードからの削除に失敗しました",
+      "aiBranchBulkDeleteFailed": "AI Branch の一括削除に失敗しました",
+      "stickiesAdopted": "{{count}} 枚の Sticky を採用しました",
+      "edgeDeleteFailed": "エッジ削除に失敗しました",
+      "frameDeleteFailed": "Frame 削除に失敗しました",
+      "nodeDeleteFailed": "ノード削除に失敗しました",
+      "promoteRelationBothCodexOnly": "両端が Codex ノードの User edge のみ昇格できます",
+      "promotedToCodexRelation": "Codex Relation に昇格しました",
+      "chatSessionDeleted": "Chatセッションが削除されました",
+      "noActiveChatSession": "アクティブなチャットセッションがありません",
+      "stickySpotlightRemoved": "Sticky の Spotlight を解除しました",
+      "stickySpotlightAdded": "Sticky を Spotlight に追加しました",
+      "stickySpotlightUnpinFailed": "Sticky の Spotlight 解除に失敗しました",
+      "stickySpotlightPinFailed": "Sticky の Spotlight 追加に失敗しました",
+      "positionSaveFailed": "位置の保存に失敗しました",
+      "frameCreateFailed": "Frame の作成に失敗しました",
+      "exportFailed": "エクスポートに失敗しました"
+    },
+    "deleteAiBranchWithDerived": {
+      "title": "AI Branch を派生 Sticky ごと削除",
+      "descriptionWithCount": "{{count}} 枚の派生 Sticky も一緒に削除されます。Undo で元に戻せます。",
+      "descriptionEmpty": "派生 Sticky はありません。AI Branch ノードを削除します。"
+    },
+    "aiBranch": {
+      "generating": "AI Branch を生成中…",
+      "stickyCount": "{{count}} 枚"
+    },
+    "colorBy": {
+      "status": "ステータス",
+      "stickyColor": "付箋カラー"
+    },
+    "theme": {
+      "default": "デフォルト",
+      "corkboard": "コルクボード",
+      "constellation": "星座"
+    },
+    "arrange": {
+      "readingOrder": "Grid: 読み順",
+      "forceDirected": "Force-directed"
+    },
+    "export": {
+      "svg": "SVG として保存",
+      "png": "PNG として保存",
+      "json": "JSON としてエクスポート"
+    },
+    "tooltip": {
+      "switchBoard": "ボードを切り替え",
+      "modeButton": "{{mode}} モード",
+      "renameBoardShortcut": "リネーム (F2)",
+      "renameBoardAria": "「{{title}}」をリネーム",
+      "duplicateBoardShortcut": "複製 ({{shortcut}})",
+      "duplicateBoardAria": "「{{title}}」を複製",
+      "deleteBoardShortcut": "削除 (Delete)",
+      "deleteBoardAria": "「{{title}}」を削除",
+      "addSticky": "付箋を追加 (S)",
+      "generateAiBranch": "AI Branchを生成",
+      "addExistingEntity": "既存エンティティをMapに追加",
+      "drawFrame": "フレームを描画 (F)",
+      "connectEdge": "エッジを接続 (Alt)",
+      "deleteAiBranch": "AI Branch を削除",
+      "doubleClickToChat": "ダブルクリックでChatパネルに表示",
+      "openInChatPanel": "Chat パネルで開く",
+      "openInCodex": "Codex で開く"
+    },
+    "board": {
+      "newBoardMenuItem": "+ 新規ボード",
+      "renameLabel": "新しいボード名",
+      "createLabel": "新規ボード名",
+      "newBoardPlaceholder": "新規ボード",
+      "renameAction": "リネーム",
+      "deleteTitle": "ボードを削除",
+      "deleteConfirm": "「{{title}}」を削除しますか？ボード上のデータも消えます。",
+      "duplicateTitle": "{{title}} (コピー)"
+    },
+    "palette": {
+      "addScene": "シーンを追加…",
+      "addNote": "ノートを追加…",
+      "addCodex": "Codexを追加…",
+      "addSnippet": "スニペットを追加…",
+      "frameHint": "キャンバスをドラッグしてフレームを作成 (Esc でキャンセル)",
+      "connectHint": "ノードをクリックしてエッジを開始 (Esc でキャンセル)"
+    },
+    "search": {
+      "placeholder": "ノードを検索...",
+      "noResults": "見つかりません"
+    },
+    "codexType": {
+      "character": "キャラクター",
+      "location": "場所",
+      "item": "アイテム",
+      "lore": "設定・用語"
+    },
+    "color": {
+      "gray": "グレー",
+      "red": "赤",
+      "orange": "オレンジ",
+      "yellow": "黄",
+      "green": "緑",
+      "blue": "青",
+      "purple": "紫"
+    },
+    "edge": {
+      "style": {
+        "solid": "実線",
+        "dashed": "破線",
+        "dotted": "点線"
+      },
+      "direction": {
+        "forward": "順方向",
+        "bidirectional": "双方向"
+      },
+      "labelEdit": "ラベル編集",
+      "forwardLabel": "順方向ラベル",
+      "backwardLabel": "逆方向ラベル",
+      "arrowDirection": "矢印方向",
+      "lineStyle": "線種",
+      "colorChange": "色変更",
+      "promoteToRelation": "Codex Relation に昇格",
+      "addLabel": "＋ラベル"
+    },
+    "scene": {
+      "titleEditorHint": "Enter で確定 · Esc でキャンセル",
+      "synopsisEditorHint": "{{shortcut}} で保存 · Esc でキャンセル"
+    },
+    "sticky": {
+      "adoptAriaLabel": "この付箋を採用",
+      "adoptTitle": "採用 (branch から切り離す)",
+      "adopt": "採用",
+      "rejectAriaLabel": "この付箋を不採用",
+      "rejectTitle": "不採用 (ゴミ箱へ)",
+      "reject": "不採用"
+    },
+    "correlation": {
+      "noTargetCharacters": "対象キャラクターがありません",
+      "defaultBoardTitle": "人物相関図"
+    },
+    "sceneNode": {
+      "synopsisPlaceholder": "このシーンで何が起きる？"
     }
   }
 }

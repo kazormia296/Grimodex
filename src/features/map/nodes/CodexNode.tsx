@@ -1,5 +1,6 @@
 import { Pencil } from "lucide-react";
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 import type { NodeProps } from "@xyflow/react";
 import { parseTags } from "@/features/codex/components/EntryCard";
 import { TagPill } from "@/features/codex/components/TagPill";
@@ -25,6 +26,7 @@ export const CodexNode = memo(function CodexNode({
   selected,
   isConnectable,
 }: NodeProps) {
+  const { t } = useTranslation();
   const d = data as CodexNodeData;
   // colorBy=none disables the intrinsic type accent stripe for visual calm.
   const borderColor =
@@ -65,7 +67,7 @@ export const CodexNode = memo(function CodexNode({
       <button
         type="button"
         className="map-edit-indicator"
-        title="Codex で開く"
+        title={t("map.tooltip.openInCodex")}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();

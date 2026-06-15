@@ -15,6 +15,7 @@ import {
   extractPreviewText,
 } from "../mapApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import i18next from "@/lib/i18n";
 import { layoutFor, layoutForAsync, applyPinnedOverrides } from "../layouts";
 import { WorkerForceLayoutEngine } from "../layouts/forceEngine";
 import { layoutFingerprint } from "../layouts/layoutFingerprint";
@@ -285,7 +286,7 @@ export function useMapNodes({
                   if (!useGlobalHistoryStore.getState().isReplaying) {
                     useGlobalHistoryStore.getState().push({
                       kind: "map",
-                      label: "Frame削除",
+                      label: i18next.t("map.history.frameDelete"),
                       async undo() {
                         const recreated = await createFrame({
                           id: cap.id,
@@ -586,7 +587,7 @@ export function useMapNodes({
                     const cap = snapshot;
                     useGlobalHistoryStore.getState().push({
                       kind: "map",
-                      label: "AI Branch 削除",
+                      label: i18next.t("map.history.aiBranchDelete"),
                       async undo() {
                         await restoreAiBranchSnapshot(cap);
                         setAiBranches((prev) => [...prev, cap.branch]);

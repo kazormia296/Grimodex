@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
   ReactFlow,
@@ -147,6 +148,7 @@ type PaletteMode = "default" | "frame" | "connect";
 
 // Must be rendered inside ReactFlowProvider
 export function MapCanvas() {
+  const { t } = useTranslation();
   const treeNodes = useTreeStore((s) => s.nodes);
   const codexEntries = useCodexStore((s) => s.entries);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
@@ -451,7 +453,7 @@ export function MapCanvas() {
 
         useGlobalHistoryStore.getState().push({
           kind: "map",
-          label: "Sticky削除",
+          label: t("map.history.stickyDelete"),
           async undo() {
             // 1500ms 以内 Ctrl+Z 吸収: trash 保留を cancel
             useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
@@ -500,7 +502,7 @@ export function MapCanvas() {
       if (branchId && !useGlobalHistoryStore.getState().isReplaying) {
         useGlobalHistoryStore.getState().push({
           kind: "map",
-          label: "Sticky 採用",
+          label: t("map.history.stickyAdopt"),
           async undo() {
             await reattachSticky(stickyId, branchId, removed);
             setStickies((prev) =>
@@ -676,18 +678,18 @@ export function MapCanvas() {
       const count = snapshot.stickies.length;
       setContextMenu(null);
       const ok = await confirmDestructive({
-        title: "AI Branch を派生 Sticky ごと削除",
+        title: t("map.deleteAiBranchWithDerived.title"),
         description:
           count > 0
-            ? `${count} 枚の派生 Sticky も一緒に削除されます。Undo で元に戻せます。`
-            : "派生 Sticky はありません。AI Branch ノードを削除します。",
-        confirmLabel: "削除",
+            ? t("map.deleteAiBranchWithDerived.descriptionWithCount", { count })
+            : t("map.deleteAiBranchWithDerived.descriptionEmpty"),
+        confirmLabel: t("common.delete"),
       });
       if (!ok) return;
       try {
         await eraseAiBranchSnapshot(snapshot);
       } catch (err) {
-        toast.error("AI Branch の一括削除に失敗しました", {
+        toast.error(t("map.toast.aiBranchBulkDeleteFailed"), {
           description: String(err),
         });
         return;
@@ -709,7 +711,7 @@ export function MapCanvas() {
         const cap = snapshot;
         useGlobalHistoryStore.getState().push({
           kind: "map",
-          label: "AI Branch 一括削除",
+          label: t("map.history.aiBranchBulkDelete"),
           async undo() {
             await restoreAiBranchSnapshot(cap);
             setAiBranches((prev) => [...prev, cap.branch]);
@@ -775,13 +777,13 @@ export function MapCanvas() {
       if (removedEdgeIds.size > 0) {
         setUserEdges((prev) => prev.filter((e) => !removedEdgeIds.has(e.id)));
       }
-      toast.success(`${results.length} 枚の Sticky を採用しました`);
+      toast.success(t("map.toast.stickiesAdopted", { count: results.length }));
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
         const cap = results;
         useGlobalHistoryStore.getState().push({
           kind: "map",
-          label: "Sticky 一括採用",
+          label: t("map.history.stickyBulkAdopt"),
           async undo() {
             for (const r of cap) {
               if (r.previousAiBranchId) {
@@ -931,7 +933,7 @@ export function MapCanvas() {
             const edgeIds = cap.edges.map((e) => e.id);
             useGlobalHistoryStore.getState().push({
               kind: "map",
-              label: "AI Branch 削除",
+              label: t("map.history.aiBranchDelete"),
               async undo() {
                 // restoreAiBranchSnapshot re-links orphan stickies' aiBranchId
                 // and re-inserts the branch row, branch position, and dashed edges.
@@ -993,7 +995,9 @@ export function MapCanvas() {
       try {
         await deleteUserEdge(userEdgeId);
       } catch (err) {
-        toast.error("エッジ削除に失敗しました", { description: String(err) });
+        toast.error(t("map.toast.edgeDeleteFailed"), {
+          description: String(err),
+        });
         continue;
       }
       if (original) capturedEdges.push({ ...original });
@@ -1012,7 +1016,9 @@ export function MapCanvas() {
       try {
         await deleteFrame(frameId);
       } catch (err) {
-        toast.error("Frame 削除に失敗しました", { description: String(err) });
+        toast.error(t("map.toast.frameDeleteFailed"), {
+          description: String(err),
+        });
         continue;
       }
       if (frame) capturedFrames.push({ ...frame });
@@ -1029,7 +1035,7 @@ export function MapCanvas() {
       try {
         await deleteNodePosition(pos.id);
       } catch (err) {
-        toast.error("ボードからの削除に失敗しました", {
+        toast.error(t("map.toast.removeFromBoardFailed"), {
           description: String(err),
         });
         continue;
@@ -1042,7 +1048,9 @@ export function MapCanvas() {
       try {
         await deleteEntityNodes([node]);
       } catch (err) {
-        toast.error("ノード削除に失敗しました", { description: String(err) });
+        toast.error(t("map.toast.nodeDeleteFailed"), {
+          description: String(err),
+        });
       }
     }
 
@@ -1070,11 +1078,11 @@ export function MapCanvas() {
         label:
           totalCount === 1
             ? cap.edges.length === 1
-              ? "エッジ削除"
+              ? t("map.history.edgeDelete")
               : cap.frames.length === 1
-                ? "Frame削除"
-                : "ボードから外す"
-            : "複数削除",
+                ? t("map.history.frameDelete")
+                : t("map.menu.removeFromBoard")
+            : t("map.history.multiDelete"),
         async undo() {
           for (const e of cap.edges) {
             await createUserEdge({
@@ -1309,7 +1317,7 @@ export function MapCanvas() {
         };
         useGlobalHistoryStore.getState().push({
           kind: "map",
-          label: "Sticky作成",
+          label: t("map.history.stickyCreate"),
           async undo() {
             await deleteSticky(captured.sticky.id);
             setStickies((prev) =>
@@ -1414,7 +1422,7 @@ export function MapCanvas() {
         };
         useGlobalHistoryStore.getState().push({
           kind: "map",
-          label: "分岐 Sticky 作成",
+          label: t("map.history.branchStickyCreate"),
           async undo() {
             await deleteUserEdge(captured.edge.id);
             await deleteSticky(captured.sticky.id);
@@ -1601,7 +1609,7 @@ export function MapCanvas() {
             const edgeIds = cap.edges.map((e) => e.id);
             useGlobalHistoryStore.getState().push({
               kind: "map",
-              label: "AI Branch 生成",
+              label: t("map.history.aiBranchGenerate"),
               async undo() {
                 await eraseAiBranchSnapshot(cap);
                 setAiBranches((prev) =>
@@ -1762,7 +1770,7 @@ export function MapCanvas() {
                   animation: "grimodex-spin 0.8s linear infinite",
                 }}
               />
-              <span>AI Branch を生成中…</span>
+              <span>{t("map.aiBranch.generating")}</span>
             </div>
           </ViewportPortal>
         )}
@@ -1998,12 +2006,12 @@ export function MapCanvas() {
               positionsRef.current,
             );
             if (!result) {
-              toast.error("両端が Codex ノードの User edge のみ昇格できます");
+              toast.error(t("map.toast.promoteRelationBothCodexOnly"));
               return;
             }
             setUserEdges((prev) => prev.filter((u) => u.id !== edgeId));
             await refreshCodexRelations();
-            toast.success("Codex Relation に昇格しました");
+            toast.success(t("map.toast.promotedToCodexRelation"));
             setEdgeContextMenu(null);
           }}
           onDelete={async () => {
@@ -2016,7 +2024,7 @@ export function MapCanvas() {
               const cap = { ...captured };
               useGlobalHistoryStore.getState().push({
                 kind: "map",
-                label: "エッジ削除",
+                label: t("map.history.edgeDelete"),
                 async undo() {
                   const recreated = await createUserEdge({
                     id: cap.id,

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import i18next from "@/lib/i18n";
 import { listCodexEntries, type CodexEntry } from "@/features/codex/api";
 import {
   generateCorrelationBoard,
@@ -15,17 +17,18 @@ interface CorrelationDialogProps {
   onClose: () => void;
 }
 
-const PROGRESS_LABELS: Record<CorrelationProgress["phase"], string> = {
-  "cross-reference": "本文の登場人物を解析中…",
-  layout: "レイアウト計算中…",
-  writing: "相関図を保存中…",
-};
+const progressLabels = (): Record<CorrelationProgress["phase"], string> => ({
+  "cross-reference": i18next.t("map.correlationDialog.progressCrossReference"),
+  layout: i18next.t("map.correlationDialog.progressLayout"),
+  writing: i18next.t("map.correlationDialog.progressWriting"),
+});
 
 export function CorrelationDialog({
   projectId,
   onGenerated,
   onClose,
 }: CorrelationDialogProps) {
+  const { t } = useTranslation();
   const [characters, setCharacters] = useState<CodexEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -90,7 +93,9 @@ export function CorrelationDialog({
     } catch (e) {
       setProgress(null);
       toast.error(
-        e instanceof Error ? e.message : "相関図の生成に失敗しました",
+        e instanceof Error
+          ? e.message
+          : t("map.correlationDialog.generateFailed"),
       );
     }
   };
@@ -121,7 +126,7 @@ export function CorrelationDialog({
             marginBottom: 4,
           }}
         >
-          人物相関図を生成
+          {t("map.correlationDialog.title")}
         </div>
         <p
           style={{
@@ -131,8 +136,7 @@ export function CorrelationDialog({
             lineHeight: 1.5,
           }}
         >
-          本文の共起と作成済みの関係から、キャラクター同士の相関図ボードを 1
-          つ生成します。
+          {t("map.correlationDialog.description")}
         </p>
 
         {/* Character picker */}
@@ -146,7 +150,10 @@ export function CorrelationDialog({
             }}
           >
             <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>
-              対象キャラクター（{selected.size}/{characters.length}）
+              {t("map.correlationDialog.targetCharacters", {
+                selected: selected.size,
+                total: characters.length,
+              })}
             </span>
             {characters.length > 0 && (
               <button
@@ -161,7 +168,9 @@ export function CorrelationDialog({
                   cursor: running ? "default" : "pointer",
                 }}
               >
-                {allSelected ? "全解除" : "全選択"}
+                {allSelected
+                  ? t("map.correlationDialog.deselectAll")
+                  : t("map.correlationDialog.selectAll")}
               </button>
             )}
           </div>
@@ -182,7 +191,7 @@ export function CorrelationDialog({
                   padding: 6,
                 }}
               >
-                読み込み中…
+                {t("map.correlationDialog.loading")}
               </div>
             ) : characters.length === 0 ? (
               <div
@@ -192,7 +201,7 @@ export function CorrelationDialog({
                   padding: 6,
                 }}
               >
-                character タイプの Codex エントリがありません。
+                {t("map.correlationDialog.noCharacters")}
               </div>
             ) : (
               characters.map((c) => (
@@ -240,7 +249,7 @@ export function CorrelationDialog({
             color: "var(--foreground)",
           }}
         >
-          共起のしきい値（共有シーン数）
+          {t("map.correlationDialog.thresholdLabel")}
           <input
             type="number"
             min={1}
@@ -278,7 +287,7 @@ export function CorrelationDialog({
             disabled={running}
             onChange={(e) => setIncludeFrames(e.target.checked)}
           />
-          同じ親エントリのキャラクターを枠で囲む
+          {t("map.correlationDialog.groupByParent")}
         </label>
 
         {/* Progress */}
@@ -301,7 +310,7 @@ export function CorrelationDialog({
                 }}
               >
                 <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-                {progress ? PROGRESS_LABELS[progress.phase] : ""}
+                {progress ? progressLabels()[progress.phase] : ""}
               </div>
             )}
           </div>
@@ -322,7 +331,7 @@ export function CorrelationDialog({
               cursor: running ? "default" : "pointer",
             }}
           >
-            キャンセル
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -339,7 +348,7 @@ export function CorrelationDialog({
               fontWeight: 600,
             }}
           >
-            生成
+            {t("map.correlationDialog.generate")}
           </button>
         </div>
       </div>

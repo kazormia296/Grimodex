@@ -280,7 +280,7 @@ function CardScene({
               fontStyle: "italic",
             }}
           >
-            What happens in this scene?
+            {t("map.sceneNode.synopsisPlaceholder")}
           </p>
         )}
       </div>
@@ -341,6 +341,7 @@ function TitleEditor({
   onCancel: () => void;
   onTab?: () => void;
 }) {
+  const { t } = useTranslation();
   const [value, setValue] = useState(d.title);
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelledRef = useRef(false);
@@ -413,7 +414,7 @@ function TitleEditor({
             fontSize: 12,
           }}
         >
-          {d.synopsis?.trim() || "What happens in this scene?"}
+          {d.synopsis?.trim() || t("map.sceneNode.synopsisPlaceholder")}
         </p>
       </div>
       <div
@@ -424,7 +425,7 @@ function TitleEditor({
         }}
       >
         <span style={{ fontSize: 10, color: "var(--muted-foreground)" }}>
-          Enter で確定 · Esc でキャンセル
+          {t("map.scene.titleEditorHint")}
         </span>
       </div>
     </div>
@@ -446,6 +447,7 @@ function SynopsisEditor({
   onCommit: (synopsis: string) => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   const [value, setValue] = useState(d.synopsis ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cancelledRef = useRef(false);
@@ -579,7 +581,7 @@ function SynopsisEditor({
         }}
         onBlur={commit}
         onPointerDown={(e) => e.stopPropagation()}
-        placeholder="What happens in this scene?"
+        placeholder={t("map.sceneNode.synopsisPlaceholder")}
         style={{
           resize: "none",
           border: "none",
@@ -605,7 +607,9 @@ function SynopsisEditor({
         }}
       >
         <span style={{ fontSize: 10, color: "var(--muted-foreground)" }}>
-          {formatShortcut("Ctrl+Enter")} で保存 · Esc でキャンセル
+          {t("map.scene.synopsisEditorHint", {
+            shortcut: formatShortcut("Ctrl+Enter"),
+          })}
         </span>
       </div>
     </div>
@@ -621,6 +625,7 @@ export const SceneNode = memo(function SceneNode({
   selected,
   isConnectable,
 }: NodeProps) {
+  const { t } = useTranslation();
   const d = data as SceneNodeData;
   const [editMode, setEditMode] = useState<EditMode>("none");
 
@@ -661,7 +666,7 @@ export const SceneNode = memo(function SceneNode({
       <button
         type="button"
         className="map-edit-indicator"
-        title="Editor で開く"
+        title={t("map.menu.openInEditor")}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();

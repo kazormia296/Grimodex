@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from "react";
+import i18next from "@/lib/i18n";
 import { useDebouncedCallback } from "@/lib/useDebounce";
 import type { Node, Edge, Connection } from "@xyflow/react";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -69,7 +70,7 @@ export function useMapCallbacks({
         const captured = { ...newEdge };
         useGlobalHistoryStore.getState().push({
           kind: "map",
-          label: "エッジ作成",
+          label: i18next.t("map.history.edgeCreate"),
           async undo() {
             await deleteUserEdge(captured.id);
             setUserEdges((prev) => prev.filter((e) => e.id !== captured.id));

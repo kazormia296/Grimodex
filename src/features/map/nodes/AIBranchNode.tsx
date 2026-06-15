@@ -1,5 +1,6 @@
 import { AlertTriangle, Sparkles } from "lucide-react";
 import { memo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { NodeProps } from "@xyflow/react";
 import { FloatingHandle } from "./FloatingHandle";
 import { NodeBranchToolbar } from "./NodeBranchToolbar";
@@ -19,6 +20,7 @@ export const AIBranchNode = memo(function AIBranchNode({
   selected,
   isConnectable,
 }: NodeProps) {
+  const { t } = useTranslation();
   const d = data as AIBranchNodeData;
   const promptPreview = d.prompt.slice(0, 60);
   const hasSession = !!d.sessionId;
@@ -38,7 +40,7 @@ export const AIBranchNode = memo(function AIBranchNode({
       {(hovered || selected) && d.onDelete && (
         <button
           type="button"
-          title="AI Branch を削除"
+          title={t("map.tooltip.deleteAiBranch")}
           onClick={(e) => {
             e.stopPropagation();
             d.onDelete?.();
@@ -73,8 +75,8 @@ export const AIBranchNode = memo(function AIBranchNode({
         }}
         title={
           hasSession
-            ? "ダブルクリックでChatパネルに表示"
-            : "Chatセッションが削除されました"
+            ? t("map.tooltip.doubleClickToChat")
+            : t("map.toast.chatSessionDeleted")
         }
         style={{
           width: 220,
@@ -124,7 +126,7 @@ export const AIBranchNode = memo(function AIBranchNode({
           </span>
           {!hasSession && (
             <span
-              title="Chatセッションが削除されました"
+              title={t("map.toast.chatSessionDeleted")}
               style={{ display: "inline-flex", color: "#3B82F6" }}
             >
               <AlertTriangle size={12} aria-hidden />
@@ -152,7 +154,7 @@ export const AIBranchNode = memo(function AIBranchNode({
                 color: "#1E40AF",
               }}
             >
-              {count} 枚
+              {t("map.aiBranch.stickyCount", { count })}
             </span>
           )}
         </div>

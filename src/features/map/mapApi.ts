@@ -40,6 +40,7 @@ import { DEFAULT_PALETTE_ID, DEFAULT_COLOR_SLOT } from "@/lib/stickyPalettes";
 import { seedAuthorshipMarksJson } from "@/features/attribution/seedAuthorshipMarks";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
+import i18next from "@/lib/i18n";
 
 /**
  * 執筆タイムラプス: Map 系操作を統一窓口で capture する。drag 中の
@@ -254,7 +255,7 @@ export async function duplicateBoard(
     .values({
       id: newBoardId,
       projectId,
-      title: `${source[0].title} (コピー)`,
+      title: i18next.t("map.board.duplicateTitle", { title: source[0].title }),
       sortOrder: maxOrder + 1.0,
       mode: source[0].mode,
       viewportX: source[0].viewportX,

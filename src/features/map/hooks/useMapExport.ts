@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { Edge, Node } from "@xyflow/react";
 import { buildMapSVG, svgToPngBlob, buildMapJSON } from "../mapExport";
 import { saveTextFile, saveBinaryFile } from "@/lib/exportFile";
+import i18next from "@/lib/i18n";
 import { toast } from "sonner";
 
 type ExportType = "svg" | "png" | "json";
@@ -59,7 +60,9 @@ export function useMapExport(
 
     doExport().catch((err) => {
       console.error(err);
-      toast.error("エクスポートに失敗しました", { description: String(err) });
+      toast.error(i18next.t("map.toast.exportFailed"), {
+        description: String(err),
+      });
     });
   }, [pendingExport, setPendingExport, getNodes, getEdges]);
 }

@@ -1,5 +1,7 @@
 import { createPortal } from "react-dom";
 import { useState, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -8,12 +10,18 @@ import type { MapNodePositionRecord } from "./types";
 
 type EntityType = "scene" | "note" | "codex" | "snippet";
 
-const TYPE_LABELS: Record<EntityType, string> = {
-  scene: "シーン",
-  note: "ノート",
-  codex: "Codex",
-  snippet: "スニペット",
-};
+function typeLabel(t: TFunction, type: EntityType): string {
+  switch (type) {
+    case "scene":
+      return t("map.nodeType.scene");
+    case "note":
+      return t("map.nodeType.note");
+    case "codex":
+      return "Codex";
+    case "snippet":
+      return t("map.nodeType.snippet");
+  }
+}
 
 interface AddToMapPickerDialogProps {
   boardId: string;
@@ -33,6 +41,7 @@ export function AddToMapPickerDialog({
   onPicked,
   onClose,
 }: AddToMapPickerDialogProps) {
+  const { t } = useTranslation();
   const [entityType, setEntityType] = useState<EntityType>(initialType);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -59,7 +68,7 @@ export function AddToMapPickerDialog({
             n.nodeType === "scene" &&
             (lower === "" || n.title.toLowerCase().includes(lower)),
         )
-        .map((n) => ({ id: n.id, label: n.title || "(無題)" }));
+        .map((n) => ({ id: n.id, label: n.title || t("common.untitled") }));
     }
     if (entityType === "note") {
       return treeNodes
@@ -68,12 +77,12 @@ export function AddToMapPickerDialog({
             n.nodeType === "note" &&
             (lower === "" || n.title.toLowerCase().includes(lower)),
         )
-        .map((n) => ({ id: n.id, label: n.title || "(無題)" }));
+        .map((n) => ({ id: n.id, label: n.title || t("common.untitled") }));
     }
     if (entityType === "codex") {
       return codexEntries
         .filter((e) => lower === "" || e.name.toLowerCase().includes(lower))
-        .map((e) => ({ id: e.id, label: e.name || "(無題)" }));
+        .map((e) => ({ id: e.id, label: e.name || t("common.untitled") }));
     }
     // snippet
     return snippetEntries
@@ -83,7 +92,7 @@ export function AddToMapPickerDialog({
       })
       .map((s) => ({
         id: s.id,
-        label: s.title || s.content.slice(0, 60) || "(空)",
+        label: s.title || s.content.slice(0, 60) || t("map.picker.empty"),
       }));
   })();
 
@@ -138,31 +147,33 @@ export function AddToMapPickerDialog({
             gap: 2,
           }}
         >
-          {(["scene", "note", "codex", "snippet"] as EntityType[]).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setEntityType(t)}
-              style={{
-                padding: "4px 12px",
-                fontSize: 12,
-                border: "none",
-                borderBottom:
-                  entityType === t
-                    ? "2px solid #534AB7"
-                    : "2px solid transparent",
-                background: "transparent",
-                color:
-                  entityType === t
-                    ? "var(--foreground)"
-                    : "var(--muted-foreground)",
-                cursor: "pointer",
-                fontWeight: entityType === t ? 600 : 400,
-              }}
-            >
-              {TYPE_LABELS[t]}
-            </button>
-          ))}
+          {(["scene", "note", "codex", "snippet"] as EntityType[]).map(
+            (type) => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => setEntityType(type)}
+                style={{
+                  padding: "4px 12px",
+                  fontSize: 12,
+                  border: "none",
+                  borderBottom:
+                    entityType === type
+                      ? "2px solid #534AB7"
+                      : "2px solid transparent",
+                  background: "transparent",
+                  color:
+                    entityType === type
+                      ? "var(--foreground)"
+                      : "var(--muted-foreground)",
+                  cursor: "pointer",
+                  fontWeight: entityType === type ? 600 : 400,
+                }}
+              >
+                {typeLabel(t, type)}
+              </button>
+            ),
+          )}
         </div>
 
         {/* Search */}
@@ -177,7 +188,9 @@ export function AddToMapPickerDialog({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && onClose()}
-            placeholder={`${TYPE_LABELS[entityType]}を検索…`}
+            placeholder={t("map.picker.searchPlaceholder", {
+              type: typeLabel(t, entityType),
+            })}
             style={{
               width: "100%",
               padding: "6px 10px",
@@ -204,8 +217,10 @@ export function AddToMapPickerDialog({
               }}
             >
               {query
-                ? "一致するものがありません"
-                : `${TYPE_LABELS[entityType]}がありません`}
+                ? t("map.picker.noMatches")
+                : t("map.picker.noItems", {
+                    type: typeLabel(t, entityType),
+                  })}
             </div>
           ) : (
             items.slice(0, 50).map((item) => (

@@ -1,4 +1,5 @@
 import { NodeToolbar, Position } from "@xyflow/react";
+import { useTranslation } from "react-i18next";
 
 /**
  * 選択中のノードの左右に「+」ボタンを表示し、押下するとその方向に
@@ -14,14 +15,15 @@ export function NodeBranchToolbar({
 }: {
   onBranchFrom?: (dir: "left" | "right") => void;
 }) {
+  const { t } = useTranslation();
   if (!onBranchFrom) return null;
   return (
     <>
       <NodeToolbar position={Position.Left} offset={6}>
         <button
           type="button"
-          aria-label="左に分岐 Sticky を追加"
-          title="左に分岐 Sticky を追加"
+          aria-label={t("map.menu.branchStickyLeft")}
+          title={t("map.menu.branchStickyLeft")}
           onClick={(e) => {
             e.stopPropagation();
             onBranchFrom("left");
@@ -34,8 +36,8 @@ export function NodeBranchToolbar({
       <NodeToolbar position={Position.Right} offset={6}>
         <button
           type="button"
-          aria-label="右に分岐 Sticky を追加"
-          title="右に分岐 Sticky を追加"
+          aria-label={t("map.menu.branchStickyRight")}
+          title={t("map.menu.branchStickyRight")}
           onClick={(e) => {
             e.stopPropagation();
             onBranchFrom("right");

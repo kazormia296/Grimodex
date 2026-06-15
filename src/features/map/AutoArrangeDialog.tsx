@@ -1,9 +1,10 @@
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import type { AutoArrangeType } from "./layouts/autoArrange";
 
-const LABELS: Record<AutoArrangeType, string> = {
-  "reading-order": "読み順でグリッド配置",
-  "force-directed": "Force-directed 配置",
+const LABEL_KEYS: Record<AutoArrangeType, string> = {
+  "reading-order": "map.autoArrange.layoutReadingOrder",
+  "force-directed": "map.autoArrange.layoutForceDirected",
 };
 
 interface AutoArrangeDialogProps {
@@ -17,6 +18,7 @@ export function AutoArrangeDialog({
   onConfirm,
   onCancel,
 }: AutoArrangeDialogProps) {
+  const { t } = useTranslation();
   return createPortal(
     <div
       style={{
@@ -39,15 +41,15 @@ export function AutoArrangeDialog({
           style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}
           className="text-foreground"
         >
-          ノードを並び替えますか？
+          {t("map.autoArrange.title")}
         </h3>
         <p
           style={{ fontSize: 13, marginBottom: 20, lineHeight: 1.6 }}
           className="text-muted-foreground"
         >
-          「{LABELS[type]}」を実行します。
+          {t("map.autoArrange.runLayout", { label: t(LABEL_KEYS[type]) })}
           <br />
-          ピン留め済みのノードは移動しません。それ以外のシーンノードがグリッドに再配置されます。
+          {t("map.autoArrange.description")}
         </p>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button
@@ -63,7 +65,7 @@ export function AutoArrangeDialog({
             }}
             onClick={onCancel}
           >
-            キャンセル
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -78,7 +80,7 @@ export function AutoArrangeDialog({
             }}
             onClick={onConfirm}
           >
-            実行
+            {t("map.autoArrange.run")}
           </button>
         </div>
       </div>
