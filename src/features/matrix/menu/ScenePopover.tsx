@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   /** Anchor position (cell top-left) */
@@ -20,6 +21,7 @@ export function ScenePopover({
   onAddAnother,
   onClose,
 }: Props) {
+  const { t } = useTranslation();
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -59,7 +61,7 @@ export function ScenePopover({
       style={{ left: anchorX, top: anchorY }}
     >
       <p className="mb-1 text-[10px] text-muted-foreground">
-        Synopsis (optional)
+        {t("matrix.scenePopover.hint")}
       </p>
       <textarea
         ref={inputRef}
@@ -68,7 +70,7 @@ export function ScenePopover({
         onKeyDown={handleKeyDown}
         rows={2}
         className="w-full resize-none rounded border border-border bg-background px-2 py-1 text-xs outline-none"
-        placeholder="Enter synopsis…"
+        placeholder={t("matrix.scenePopover.placeholder")}
       />
       <div className="mt-1.5 flex justify-between gap-1">
         <button
@@ -76,14 +78,14 @@ export function ScenePopover({
           onClick={() => onAddAnother(value)}
           className="rounded border border-border px-2 py-0.5 text-[10px] hover:bg-accent"
         >
-          Add another scene
+          {t("matrix.scenePopover.addAnother")}
         </button>
         <button
           type="button"
           onClick={() => onConfirm(value)}
           className="rounded bg-primary px-2 py-0.5 text-[10px] text-primary-foreground"
         >
-          Done
+          {t("common.done")}
         </button>
       </div>
     </div>

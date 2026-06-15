@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useRescanStore } from "@/features/codex/mentionRescanQueue";
 import { useMatrixStore } from "./matrixStore";
 
@@ -16,6 +17,7 @@ export function MatrixStatusBar({
   totalCodexCount,
   filledCells,
 }: Props) {
+  const { t } = useTranslation();
   const settingsSaved = useMatrixStore((s) => s.settingsSaved);
   const isRunning = useRescanStore((s) => s.isRunning);
   const progress = useRescanStore((s) => s.progress);
@@ -23,13 +25,13 @@ export function MatrixStatusBar({
 
   const sceneLabel =
     sceneCount < totalSceneCount
-      ? `${sceneCount} / ${totalSceneCount} scenes`
-      : `${sceneCount} scenes`;
+      ? `${sceneCount} / ${totalSceneCount} ${t("common.unitScenes")}`
+      : `${sceneCount} ${t("common.unitScenes")}`;
 
   const codexLabel =
     codexCount < totalCodexCount
-      ? `${codexCount} / ${totalCodexCount} codex`
-      : `${codexCount} codex`;
+      ? `${codexCount} / ${totalCodexCount} ${t("common.unitCodex")}`
+      : `${codexCount} ${t("common.unitCodex")}`;
 
   return (
     <div className="flex items-center gap-3 border-t px-4 py-1 text-[11px] text-muted-foreground">
@@ -37,14 +39,18 @@ export function MatrixStatusBar({
         {sceneLabel} × {codexLabel}
       </span>
       <span>•</span>
-      <span>{filledCells} cells filled</span>
+      <span>{t("matrix.status.cellsFilled", { count: filledCells })}</span>
       <span>•</span>
-      <span>Settings: {settingsSaved ? "Saved" : "Saving..."}</span>
+      <span>
+        {settingsSaved
+          ? t("matrix.status.settingsSavedStatus")
+          : t("matrix.status.settingsSavingStatus")}
+      </span>
       {isRunning && (
         <>
           <span>•</span>
           <span className="text-yellow-600 dark:text-yellow-400">
-            Scanning... {progress}/{total}
+            {t("matrix.status.scanning", { progress, total })}
           </span>
         </>
       )}

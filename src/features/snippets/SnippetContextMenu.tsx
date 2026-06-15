@@ -100,7 +100,7 @@ export function SnippetContextMenu({
 
   async function handleDuplicate() {
     await create({
-      title: `${snippet.title} (copy)`,
+      title: t("snippets.duplicateTitle", { title: snippet.title }),
       content: snippet.content,
       tagsCache: snippet.tagsCache ?? undefined,
     });
@@ -220,7 +220,7 @@ export function SnippetContextMenu({
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
             >
               <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-              <span>Map に追加</span>
+              <span>{t("snippets.contextMenu.addToMap")}</span>
               <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
             </button>
             {mapMenuOpen && (

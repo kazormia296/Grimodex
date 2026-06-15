@@ -169,7 +169,7 @@ export function ChatMessageActions({
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
               <FileInput className="h-3 w-3" />
-              <span>Insert</span>
+              <span>{t("chat.actions.insertLabel")}</span>
             </button>
           )}
           {onExtractCodexQuick && (
@@ -181,7 +181,7 @@ export function ChatMessageActions({
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
               <BookOpen className="h-3 w-3" />
-              <span>Codex</span>
+              <span>{t("chat.actions.codexLabel")}</span>
             </button>
           )}
           {onSaveSnippetQuick && (
@@ -193,7 +193,7 @@ export function ChatMessageActions({
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
               <Bookmark className="h-3 w-3" />
-              <span>Snippet</span>
+              <span>{t("chat.actions.snippetLabel")}</span>
             </button>
           )}
           {onCopy && (
@@ -205,7 +205,7 @@ export function ChatMessageActions({
               className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             >
               <Copy className="h-3 w-3" />
-              <span>Copy</span>
+              <span>{t("chat.actions.copyLabel")}</span>
             </button>
           )}
         </>

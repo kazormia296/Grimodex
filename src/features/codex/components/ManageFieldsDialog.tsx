@@ -22,12 +22,16 @@ import {
   deleteEmptyDetailFields,
 } from "../detailCleanup";
 import { getCurrentProjectLanguage } from "@/features/project/projectStore";
+import i18next from "i18next";
 
 // --- Field type labels ---
-const FIELD_TYPE_OPTIONS = [
-  { value: "text", label: "Text" },
-  { value: "dropdown", label: "Dropdown" },
-  { value: "codex_reference", label: "Codex Reference" },
+const fieldTypeOptions = () => [
+  { value: "text", label: i18next.t("codex.detail.fieldTypeText") },
+  { value: "dropdown", label: i18next.t("codex.detail.fieldTypeDropdown") },
+  {
+    value: "codex_reference",
+    label: i18next.t("codex.detail.fieldTypeCodexReference"),
+  },
 ];
 
 /** textarea の生入力を選択肢配列へ（trim・空行除去・重複排除） */
@@ -108,7 +112,9 @@ function AddForm({
       className="rounded-md border border-border bg-muted/30 p-3 space-y-2"
     >
       <div>
-        <label className="mb-0.5 block text-xs font-medium">Name</label>
+        <label className="mb-0.5 block text-xs font-medium">
+          {t("codex.detail.fieldLabelName")}
+        </label>
         <input
           data-testid="manage-field-name-input"
           type="text"
@@ -121,14 +127,16 @@ function AddForm({
         />
       </div>
       <div>
-        <label className="mb-0.5 block text-xs font-medium">Type</label>
+        <label className="mb-0.5 block text-xs font-medium">
+          {t("codex.detail.fieldLabelType")}
+        </label>
         <select
           data-testid="manage-field-type-select"
           value={fieldType}
           onChange={(e) => setFieldType(e.target.value)}
           className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
         >
-          {FIELD_TYPE_OPTIONS.map((opt) => (
+          {fieldTypeOptions().map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
             </option>
@@ -156,7 +164,7 @@ function AddForm({
           checked={includeInContext}
           onChange={(e) => setIncludeInContext(e.target.checked)}
         />
-        Include in AI context
+        {t("codex.detail.fieldIncludeInContext")}
       </label>
       <div className="flex justify-end gap-2">
         <button
@@ -165,7 +173,7 @@ function AddForm({
           onClick={onCancel}
           className="rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
         >
-          Cancel
+          {t("common.cancel")}
         </button>
         <button
           type="button"
@@ -173,7 +181,7 @@ function AddForm({
           onClick={() => void handleSave()}
           className="rounded bg-primary px-3 py-1 text-xs text-primary-foreground hover:bg-primary/90"
         >
-          Save
+          {t("common.save")}
         </button>
       </div>
     </div>
@@ -217,7 +225,9 @@ function EditForm({ definition, onSave, onCancel }: EditFormProps) {
       className="mt-1 rounded-md border border-border bg-muted/30 p-3 space-y-2"
     >
       <div>
-        <label className="mb-0.5 block text-xs font-medium">Name</label>
+        <label className="mb-0.5 block text-xs font-medium">
+          {t("codex.detail.fieldLabelName")}
+        </label>
         <input
           data-testid={`manage-field-edit-name-${definition.id}`}
           type="text"
@@ -227,14 +237,16 @@ function EditForm({ definition, onSave, onCancel }: EditFormProps) {
         />
       </div>
       <div>
-        <label className="mb-0.5 block text-xs font-medium">Type</label>
+        <label className="mb-0.5 block text-xs font-medium">
+          {t("codex.detail.fieldLabelType")}
+        </label>
         <select
           data-testid={`manage-field-edit-type-${definition.id}`}
           value={fieldType}
           onChange={(e) => setFieldType(e.target.value)}
           className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
         >
-          {FIELD_TYPE_OPTIONS.map((opt) => (
+          {fieldTypeOptions().map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
             </option>
@@ -262,7 +274,7 @@ function EditForm({ definition, onSave, onCancel }: EditFormProps) {
           checked={includeInContext}
           onChange={(e) => setIncludeInContext(e.target.checked)}
         />
-        Include in AI context
+        {t("codex.detail.fieldIncludeInContext")}
       </label>
       <div className="flex justify-end gap-2">
         <button
@@ -271,7 +283,7 @@ function EditForm({ definition, onSave, onCancel }: EditFormProps) {
           onClick={onCancel}
           className="rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
         >
-          Cancel
+          {t("common.cancel")}
         </button>
         <button
           type="button"
@@ -279,7 +291,7 @@ function EditForm({ definition, onSave, onCancel }: EditFormProps) {
           onClick={() => void handleSave()}
           className="rounded bg-primary px-3 py-1 text-xs text-primary-foreground hover:bg-primary/90"
         >
-          Save
+          {t("common.save")}
         </button>
       </div>
     </div>
@@ -298,6 +310,7 @@ function DeleteConfirmDialog({
   onConfirm,
   onCancel,
 }: DeleteConfirmProps) {
+  const { t } = useTranslation();
   // 親の ManageFieldsDialog (AnimatedOverlay) は body へ portal された z-50。
   // その上に確実に重ねるため、こちらも body へ portal して z-[60] にする。
   return createPortal(
@@ -311,11 +324,10 @@ function DeleteConfirmDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <h4 className="mb-2 text-sm font-semibold">
-          フィールドを削除しますか？
+          {t("codex.detail.deleteFieldTitle")}
         </h4>
         <p className="mb-4 text-xs text-muted-foreground">
-          「{definitionName}
-          」を削除すると、このタイプの全エントリからこのフィールドの値が完全に削除されます。この操作は元に戻せません。
+          {t("codex.detail.deleteFieldDesc", { name: definitionName })}
         </p>
         <div className="flex justify-end gap-2">
           <button
@@ -324,7 +336,7 @@ function DeleteConfirmDialog({
             onClick={onCancel}
             className="rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
           >
-            キャンセル
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -332,7 +344,7 @@ function DeleteConfirmDialog({
             onClick={onConfirm}
             className="rounded bg-destructive px-3 py-1 text-xs text-destructive-foreground hover:bg-destructive/90"
           >
-            削除
+            {t("common.delete")}
           </button>
         </div>
       </div>
@@ -657,7 +669,9 @@ export function ManageFieldsDialog({
       >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <h3 className="text-sm font-semibold">Manage fields: {typeLabel}</h3>
+          <h3 className="text-sm font-semibold">
+            {t("codex.detail.manageFieldsTitle", { type: typeLabel })}
+          </h3>
           <button
             type="button"
             data-testid="manage-fields-close-button"
@@ -736,7 +750,7 @@ export function ManageFieldsDialog({
             onClick={() => setShowAddForm(true)}
             className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
           >
-            + Add field
+            {t("codex.detail.addField")}
           </button>
           <div className="flex items-center gap-1">
             <select
@@ -778,7 +792,7 @@ export function ManageFieldsDialog({
             onClick={onClose}
             className="ml-auto rounded px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
           >
-            Close
+            {t("common.close")}
           </button>
         </div>
       </AnimatedOverlay>

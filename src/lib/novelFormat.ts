@@ -11,6 +11,8 @@
  *   5 禁止ワード / 6 タイトル / 7 作品ID / 8 スクリプト / 9 チャットテンプレート
  */
 
+import i18next from "@/lib/i18n";
+
 export const NOVEL_SECTION_SEP = "<|endofsection|>";
 export const NOVEL_ENTRY_SEP = "<|entry|>";
 
@@ -102,14 +104,14 @@ export function parseCharBook(section: string): {
         entries.push({ tags, content: "" });
       }
       warnings.push(
-        `キャラクターブックのタグ「${tagField.trim()}」に対応する内容がありません`,
+        i18next.t("import.novel.warnings.tagNoContent", {
+          tag: tagField.trim(),
+        }),
       );
       continue;
     }
     if (tags.length === 0) {
-      warnings.push(
-        "キャラクターブックにタグが空のエントリがあるためスキップしました",
-      );
+      warnings.push(i18next.t("import.novel.warnings.tagEmpty"));
       continue;
     }
     entries.push({ tags, content });

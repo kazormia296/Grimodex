@@ -79,7 +79,7 @@ describe("TimelineTab", () => {
     mockPhaseState.phasesByEntry = { "entry-1": [] };
     render(<TimelineTab entry={mockEntry} />);
     await waitFor(() => {
-      expect(screen.getAllByText("Add phase").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("フェーズを追加").length).toBeGreaterThan(0);
     });
   });
 
@@ -109,7 +109,7 @@ describe("TimelineTab", () => {
     };
     render(<TimelineTab entry={mockEntry} />);
     await waitFor(() => {
-      expect(screen.getByText("Base state")).toBeInTheDocument();
+      expect(screen.getByText("基本状態")).toBeInTheDocument();
       expect(screen.getByText("変身後")).toBeInTheDocument();
     });
   });

@@ -1,4 +1,5 @@
 import { Check, Pin } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
@@ -14,14 +15,24 @@ const LABEL_HEALTH_PRIORITY: DerivedLabel[] = [
   "abandoned",
 ];
 
-const HEALTH_DOT: Record<DerivedLabel, { bg: string; title: string }> = {
-  paid: { bg: "bg-green-500", title: "Paid off" },
-  seeded: { bg: "bg-blue-500", title: "Seeded" },
-  needs_strengthening: { bg: "bg-yellow-400", title: "Needs strengthening" },
-  critical_weak: { bg: "bg-red-500", title: "Critical & weak" },
-  orphan_payoff: { bg: "bg-orange-400", title: "Orphan payoff" },
-  planned: { bg: "bg-muted-foreground/30", title: "Planned" },
-  abandoned: { bg: "bg-muted-foreground/20", title: "Abandoned" },
+const HEALTH_DOT_BG: Record<DerivedLabel, string> = {
+  paid: "bg-green-500",
+  seeded: "bg-blue-500",
+  needs_strengthening: "bg-yellow-400",
+  critical_weak: "bg-red-500",
+  orphan_payoff: "bg-orange-400",
+  planned: "bg-muted-foreground/30",
+  abandoned: "bg-muted-foreground/20",
+};
+
+const HEALTH_DOT_TITLE_KEY: Record<DerivedLabel, string> = {
+  paid: "grid.foreshadow.paid",
+  seeded: "grid.foreshadow.seeded",
+  needs_strengthening: "grid.foreshadow.needsStrengthening",
+  critical_weak: "grid.foreshadow.criticalWeak",
+  orphan_payoff: "grid.foreshadow.orphanPayoff",
+  planned: "grid.foreshadow.planned",
+  abandoned: "grid.foreshadow.abandoned",
 };
 
 interface Props {
@@ -30,6 +41,7 @@ interface Props {
 }
 
 export function GridCardForeshadowIndicator({ sceneId, compact }: Props) {
+  const { t } = useTranslation();
   const sceneInfo = useForeshadowStore((s) => s.sceneInfoBySceneId[sceneId]);
   const setupIds = sceneInfo?.setupForeshadowIds ?? [];
   const payoffIds = sceneInfo?.payoffForeshadowIds ?? [];
@@ -55,7 +67,9 @@ export function GridCardForeshadowIndicator({ sceneId, compact }: Props) {
     }
   }
 
-  const dot = worstLabel ? HEALTH_DOT[worstLabel] : HEALTH_DOT.seeded;
+  const dotLabel = worstLabel ?? "seeded";
+  const dotBg = HEALTH_DOT_BG[dotLabel];
+  const dotTitle = t(HEALTH_DOT_TITLE_KEY[dotLabel]);
 
   function handleClick(e: React.MouseEvent) {
     e.stopPropagation();
@@ -68,11 +82,9 @@ export function GridCardForeshadowIndicator({ sceneId, compact }: Props) {
       type="button"
       className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/80 hover:text-foreground transition-colors"
       onClick={handleClick}
-      title={dot.title}
+      title={dotTitle}
     >
-      <span
-        className={`inline-block h-2 w-2 rounded-full shrink-0 ${dot.bg}`}
-      />
+      <span className={`inline-block h-2 w-2 rounded-full shrink-0 ${dotBg}`} />
       {!compact && setupCount > 0 && (
         <span className="inline-flex items-center gap-0.5">
           <Pin className="h-2.5 w-2.5 shrink-0" aria-hidden />

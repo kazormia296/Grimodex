@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import type {
   Diagnostic,
@@ -114,13 +115,25 @@ function formatLintError(err: unknown): string {
     const e = err as { type: string; data?: unknown };
     switch (e.type) {
       case "TextTooLarge":
-        return "このシーンは Lint できない大きさです";
+        return i18next.t(
+          "lint.error.sceneTooLarge",
+          "このシーンは Lint できない大きさです",
+        );
       case "InvalidLanguage":
-        return `未対応の言語です: ${String(e.data ?? "")}`;
+        return i18next.t("lint.error.unsupportedLanguage", {
+          lang: String(e.data ?? ""),
+          defaultValue: "未対応の言語です: {{lang}}",
+        });
       case "InvalidConfig":
-        return "Linter 設定にエラーがあります";
+        return i18next.t(
+          "lint.error.configError",
+          "Linter 設定にエラーがあります",
+        );
       default:
-        return `Linter が一時的に利用できません (${e.type})`;
+        return i18next.t("lint.error.temporarilyUnavailable", {
+          type: e.type,
+          defaultValue: "Linter が一時的に利用できません ({{type}})",
+        });
     }
   }
   if (err instanceof Error) return err.message;

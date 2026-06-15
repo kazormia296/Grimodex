@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { CellInfo } from "./lib/deriveCells";
 import type { DisplayCell } from "./lib/deriveCellRender";
 import type { DisplayMode } from "./matrixStore";
@@ -94,6 +95,7 @@ export function MatrixCell({
   onClick,
   onHoverAddClick,
 }: Props) {
+  const { t } = useTranslation();
   if (isFolder) {
     return (
       <div
@@ -104,7 +106,7 @@ export function MatrixCell({
           type="button"
           onClick={onHoverAddClick}
           className="hidden h-5 w-5 items-center justify-center rounded text-[10px] text-muted-foreground hover:bg-accent group-hover:flex"
-          title="Add scene to this chapter"
+          title={t("matrix.addSceneToChapterTooltip")}
         >
           +
         </button>

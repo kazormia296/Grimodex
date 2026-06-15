@@ -56,27 +56,28 @@ type StructuralPatch = Partial<
 
 type TextPatch = Partial<Pick<NewCodexEntry, "summary" | "content" | "notes">>;
 
-const FIELD_LABELS: Record<string, string> = {
-  type: "種別変更",
-  name: "名称変更",
-  summary: "概要変更",
-  content: "内容変更",
-  notes: "ノート変更",
-  tagsCache: "タグ変更",
-  aliases: "別名変更",
-  excludedAliases: "除外別名変更",
-  parentId: "親変更",
-  contextMode: "コンテキストモード変更",
-  icon: "アイコン変更",
-  childrenBudget: "子budget変更",
+const FIELD_LABEL_KEYS: Record<string, string> = {
+  type: "codex.history.typeChanged",
+  name: "codex.history.nameChanged",
+  summary: "codex.history.summaryChanged",
+  content: "codex.history.contentChanged",
+  notes: "codex.history.notesChanged",
+  tagsCache: "codex.history.tagsChanged",
+  aliases: "codex.history.aliasesChanged",
+  excludedAliases: "codex.history.excludedAliasesChanged",
+  parentId: "codex.history.parentChanged",
+  contextMode: "codex.history.contextModeChanged",
+  icon: "codex.history.iconChanged",
+  childrenBudget: "codex.history.childrenBudgetChanged",
 };
 
 function labelForPatch(data: StructuralPatch): string {
   const keys = Object.keys(data);
   if (keys.length === 1) {
-    return FIELD_LABELS[keys[0]] ?? "Codex 更新";
+    const key = FIELD_LABEL_KEYS[keys[0]];
+    if (key) return i18next.t(key);
   }
-  return "Codex 更新";
+  return i18next.t("codex.history.updated");
 }
 
 interface CodexState {
@@ -248,7 +249,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         const captured = { ...entry };
         useGlobalHistoryStore.getState().push({
           kind: "codex",
-          label: "Codex作成",
+          label: i18next.t("codex.history.created"),
           entityId: captured.id,
           async undo() {
             await deleteCodexEntry(captured.projectId, captured.id);
@@ -451,7 +452,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       });
       useGlobalHistoryStore.getState().push({
         kind: "codex",
-        label: "Codex削除",
+        label: i18next.t("codex.history.deleted"),
         entityId: captured.id,
         async undo() {
           useTrashBinStore.getState().cancelPending({ tempId: trashTempId });

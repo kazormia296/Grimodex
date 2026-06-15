@@ -343,7 +343,9 @@ export function ContextBar({
           aria-expanded={!collapsed}
           className="flex w-full cursor-pointer items-center justify-between px-4 py-1 text-xs text-muted-foreground hover:bg-muted/30"
         >
-          <span className="flex items-center gap-1.5 font-medium">Context</span>
+          <span className="flex items-center gap-1.5 font-medium">
+            {t("chat.context.heading")}
+          </span>
           <div className="flex items-center gap-2">
             {(summaryCount > 3 || maxSummaryGeneration > 3) &&
               onCreateLinkedSession && (
@@ -468,7 +470,9 @@ export function ContextBar({
                 aria-hidden="true"
               >
                 {contextLayers.find((l) => l.layer === "L1" && l.used > 0) && (
-                  <span className="px-1.5 py-0.5">Project</span>
+                  <span className="px-1.5 py-0.5">
+                    {t("chat.context.projectLabel")}
+                  </span>
                 )}
                 {scopeAnchorLabel && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5">
@@ -478,7 +482,8 @@ export function ContextBar({
                 )}
                 {sceneTokens > 0 && (
                   <span className="px-1.5 py-0.5">
-                    Scene: {sceneTokens.toLocaleString()}
+                    {t("chat.context.sceneLabel")}{" "}
+                    {sceneTokens.toLocaleString()}
                   </span>
                 )}
                 {projectOutline && (
@@ -509,7 +514,9 @@ export function ContextBar({
                     className="inline-flex items-center gap-1 px-2 py-0.5"
                   >
                     {child.name}
-                    <span>via {viaParentName}</span>
+                    <span>
+                      {t("chat.context.via", { name: viaParentName })}
+                    </span>
                     <span className="inline-block h-3 w-3" />
                     <span className="inline-block h-3 w-3" />
                   </span>
@@ -520,7 +527,7 @@ export function ContextBar({
                     className="inline-flex items-center gap-1 px-2 py-0.5"
                   >
                     {e.name}
-                    <span>auto</span>
+                    <span>{t("chat.context.autoLabel")}</span>
                     <span className="inline-block h-3 w-3" />
                     <span className="inline-block h-3 w-3" />
                   </span>
@@ -547,7 +554,7 @@ export function ContextBar({
                     className="shrink-0 whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
                     title={t("chat.context.projectInfo")}
                   >
-                    Project
+                    {t("chat.context.projectLabel")}
                   </span>
                 )}
                 {/* スコープアンカー: codex/snippet スコープの主題を表す固定チップ。
@@ -580,7 +587,8 @@ export function ContextBar({
                       count: sceneTokens.toLocaleString(),
                     })}
                   >
-                    Scene: {sceneTokens.toLocaleString()}
+                    {t("chat.context.sceneLabel")}{" "}
+                    {sceneTokens.toLocaleString()}
                   </span>
                 )}
                 {/* Phase 4 後続: project outline chip — クリックで全文プレビュー */}
@@ -718,7 +726,7 @@ export function ContextBar({
                       entry={child}
                       suffix={
                         <span className="text-muted-foreground/70">
-                          via {viaParentName}
+                          {t("chat.context.via", { name: viaParentName })}
                         </span>
                       }
                       actions={
@@ -767,7 +775,7 @@ export function ContextBar({
                             </span>
                           ) : (
                             <span className="text-muted-foreground/70">
-                              auto
+                              {t("chat.context.autoLabel")}
                             </span>
                           )
                         }
@@ -820,14 +828,18 @@ export function ContextBar({
                 {/* Spotlight Sticky エントリ (Map 由来) */}
                 {pinnedStickies.map((sticky) => {
                   const label =
-                    sticky.title ?? sticky.content.slice(0, 24) ?? "Sticky";
+                    sticky.title ??
+                    sticky.content.slice(0, 24) ??
+                    t("chat.context.stickyLabel");
                   return (
                     <span
                       key={sticky.id}
                       title={
                         sticky.content
-                          ? `Spotlight: ${sticky.content.slice(0, 80)}`
-                          : "Spotlight"
+                          ? t("chat.context.spotlightLabel", {
+                              content: sticky.content.slice(0, 80),
+                            })
+                          : t("chat.context.pin")
                       }
                       className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-900"
                     >
@@ -837,7 +849,7 @@ export function ContextBar({
                         type="button"
                         onClick={() => onUnpinSticky?.(sticky.id)}
                         className="hover:text-destructive"
-                        aria-label={`Spotlight 解除: ${label}`}
+                        aria-label={t("chat.context.unpinSpotlight", { label })}
                       >
                         <X className="h-3 w-3" />
                       </button>

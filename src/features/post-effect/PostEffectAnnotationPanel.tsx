@@ -65,6 +65,7 @@ export function AnnotationItem({
   ann: PostEffectAnnotation;
   onStatusChange?: (annotationId: string, status: PostEffectStatus) => void;
 }) {
+  const { t } = useTranslation();
   const { focusedAnnotationId, setFocusedAnnotationId } = useAnnotationStore();
   const editor = useEditorStore((s) => s.editor);
   const focused = focusedAnnotationId === ann.id;
@@ -127,8 +128,8 @@ export function AnnotationItem({
         {!isDone && (
           <div className="flex shrink-0 gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
             <button
-              aria-label="解決済み"
-              title="解決済み"
+              aria-label={t("postEffect.actions.resolve")}
+              title={t("postEffect.actions.resolve")}
               onClick={(e) => {
                 e.stopPropagation();
                 resolve();
@@ -138,8 +139,8 @@ export function AnnotationItem({
               <CheckCircle2 size={13} />
             </button>
             <button
-              aria-label="無視"
-              title="無視"
+              aria-label={t("postEffect.actions.dismiss")}
+              title={t("postEffect.actions.dismiss")}
               onClick={(e) => {
                 e.stopPropagation();
                 dismiss();
@@ -221,7 +222,9 @@ export function PostEffectAnnotationPanel({
       ))}
       {done.length > 0 && (
         <>
-          <p className="mt-2 text-xs text-muted-foreground">解決済み / 無視</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t("postEffect.annotations.resolved")}
+          </p>
           {done.map((a) => (
             <AnnotationItem key={a.id} ann={a} />
           ))}

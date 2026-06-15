@@ -70,7 +70,7 @@ export function PromptPreviewModal({
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {loading ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            {t("chat.context.promptPreviewLoading", "プロンプトを構築中…")}
+            {t("chat.context.promptPreviewLoading")}
           </p>
         ) : (
           <>
@@ -196,7 +196,7 @@ export function PromptPreviewModal({
             {userMessage && userMessage.trim() && (
               <div>
                 <h3 className="mb-2 text-xs font-semibold text-muted-foreground uppercase">
-                  {t("chat.context.outgoingMessage", "送信メッセージ")}
+                  {t("chat.context.outgoingMessage")}
                 </h3>
                 <pre className="whitespace-pre-wrap rounded bg-muted p-3 text-xs text-foreground">
                   {userMessage}

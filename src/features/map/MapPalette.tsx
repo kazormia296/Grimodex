@@ -77,7 +77,7 @@ export function MapPalette({
       }}
     >
       <PaletteButton
-        label="+ Sticky"
+        label={t("map.palette.addSticky")}
         onClick={onAddSticky}
         title={t("map.tooltip.addSticky")}
       />
@@ -87,7 +87,7 @@ export function MapPalette({
       {aiBranchPresentation !== "hidden" && (
         <PaletteButton
           icon={<Sparkles size={12} aria-hidden />}
-          label="AI Branch"
+          label={t("map.aiBranch.label")}
           onClick={onOpenAiBranch}
           disabled={aiBranchPresentation === "disabled"}
           title={aiBranchTooltip ?? t("map.tooltip.generateAiBranch")}
@@ -97,7 +97,7 @@ export function MapPalette({
       {/* [▾ Add…] dropdown */}
       <div ref={addMenuRef} style={{ position: "relative" }}>
         <PaletteButton
-          label="▾ Add…"
+          label={t("map.palette.addMenuButton")}
           active={addMenuOpen}
           onClick={() => setAddMenuOpen((v) => !v)}
           title={t("map.tooltip.addExistingEntity")}
@@ -151,7 +151,7 @@ export function MapPalette({
       </div>
 
       <PaletteButton
-        label="+ Frame"
+        label={t("map.palette.addFrame")}
         active={paletteMode === "frame"}
         onClick={() => toggleMode("frame")}
         title={t("map.tooltip.drawFrame")}
@@ -167,7 +167,7 @@ export function MapPalette({
       />
 
       <PaletteButton
-        label="⌥ Connect"
+        label={t("map.palette.connectButton")}
         active={paletteMode === "connect"}
         onClick={() => toggleMode("connect")}
         title={t("map.tooltip.connectEdge")}

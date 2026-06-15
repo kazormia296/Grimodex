@@ -241,7 +241,7 @@ export function SceneBeatNodeView({
         <button
           type="button"
           data-testid="beat-drag-handle"
-          aria-label="Drag to reorder"
+          aria-label={t("editor.beat.dragHandle")}
           className="cursor-grab rounded p-0.5 text-muted-foreground/40 hover:bg-muted hover:text-muted-foreground active:cursor-grabbing"
           {...dragListeners}
           {...dragAttributes}

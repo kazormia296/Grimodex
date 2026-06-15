@@ -125,6 +125,7 @@ function buildDiagnosticKeys(list: Diagnostic[]): Map<Diagnostic, string> {
 }
 
 function NotificationsList() {
+  const { t } = useTranslation();
   const notifications = useLintStore((s) => s.notifications);
   const dismiss = useLintStore((s) => s.dismissNotification);
   if (notifications.length === 0) return null;
@@ -141,7 +142,7 @@ function NotificationsList() {
             type="button"
             onClick={() => dismiss(n.id)}
             className="rounded p-0.5 hover:bg-blue-500/20"
-            aria-label="通知を閉じる"
+            aria-label={t("lint.notification.close", "通知を閉じる")}
           >
             <X className="h-3 w-3" />
           </button>
@@ -152,6 +153,7 @@ function NotificationsList() {
 }
 
 function WarningsBadge({ warnings }: { warnings: RuleWarning[] }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   if (warnings.length === 0) return null;
   return (
@@ -159,7 +161,7 @@ function WarningsBadge({ warnings }: { warnings: RuleWarning[] }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title="Linter の警告を表示"
+        title={t("lint.warnings.show", "Linter の警告を表示")}
         className="flex h-6 items-center gap-1 rounded border border-amber-500/50 px-1.5 text-xs text-amber-600 hover:bg-amber-500/10"
       >
         <AlertTriangle className="h-3.5 w-3.5" />
@@ -175,7 +177,9 @@ function WarningsBadge({ warnings }: { warnings: RuleWarning[] }) {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between">
-              <h3 className="font-semibold">Linter warnings</h3>
+              <h3 className="font-semibold">
+                {t("lint.warnings.title", "Linter warnings")}
+              </h3>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
@@ -389,7 +393,11 @@ function CurrentLinterView() {
       const removed = beforeDisableCount - afterDisableCount;
       if (removed > 0) {
         pushNotification(
-          `Fix 適用により ${removed} 件の Lint 無効化が削除されました`,
+          t("lint.fix.disablesRemoved", {
+            count: removed,
+            defaultValue:
+              "Fix 適用により {{count}} 件の Lint 無効化が削除されました",
+          }),
         );
       }
       if (autoResolveIds.length > 0) {
@@ -399,7 +407,7 @@ function CurrentLinterView() {
         void runLintNow(editor, currentSceneId);
       }
     },
-    [editor, currentSceneId, pushNotification],
+    [editor, currentSceneId, pushNotification, t],
   );
 
   /**
@@ -449,7 +457,11 @@ function CurrentLinterView() {
     const removed = beforeDisableCount - afterDisableCount;
     if (removed > 0) {
       pushNotification(
-        `一括 Fix 適用により ${removed} 件の Lint 無効化が削除されました`,
+        t("lint.fix.disablesRemovedBulk", {
+          count: removed,
+          defaultValue:
+            "一括 Fix 適用により {{count}} 件の Lint 無効化が削除されました",
+        }),
       );
     }
     if (autoResolveIds.length > 0) {
@@ -460,7 +472,7 @@ function CurrentLinterView() {
       );
     }
     if (currentSceneId) void runLintNow(editor, currentSceneId);
-  }, [editor, filtered, currentSceneId, pushNotification]);
+  }, [editor, filtered, currentSceneId, pushNotification, t]);
 
   const fixableCount = useMemo(
     () => filtered.filter((d) => d.fix).length,
@@ -568,7 +580,12 @@ function CurrentLinterView() {
         {header}
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
           <AlertCircle className="h-5 w-5 text-red-500" />
-          <p>Linter が一時的に利用できません</p>
+          <p>
+            {t(
+              "lint.error.temporarilyUnavailableShort",
+              "Linter が一時的に利用できません",
+            )}
+          </p>
           <p className="text-xs">{lastErrorMessage}</p>
         </div>
       </div>
@@ -596,7 +613,7 @@ function CurrentLinterView() {
       <div className="flex-1 overflow-y-auto" ref={listRef} tabIndex={0}>
         {grouped.length === 0 ? (
           <p className="p-4 text-sm text-muted-foreground">
-            該当する項目はありません
+            {t("lint.empty.noMatches", "該当する項目はありません")}
           </p>
         ) : (
           grouped.map((group) => {
@@ -1190,7 +1207,11 @@ function ProjectLinterView() {
       const removed = beforeDisableCount - afterDisableCount;
       if (removed > 0) {
         projectPushNotification(
-          `Fix 適用により ${removed} 件の Lint 無効化が削除されました`,
+          t("lint.fix.disablesRemoved", {
+            count: removed,
+            defaultValue:
+              "Fix 適用により {{count}} 件の Lint 無効化が削除されました",
+          }),
         );
       }
       if (autoResolveIds.length > 0) {
@@ -1198,7 +1219,7 @@ function ProjectLinterView() {
       }
       void runLintNow(editor, scene.sceneId);
     },
-    [editor, currentSceneId, projectPushNotification],
+    [editor, currentSceneId, projectPushNotification, t],
   );
 
   /**
@@ -1541,6 +1562,7 @@ function ProjectDiagnosticRow({
   onFix?: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
+  const { t } = useTranslation();
   const { before, hit, after } = extractExcerpt(sceneText, d);
   const liClasses = [
     "flex items-start gap-2 px-3 py-2 hover:bg-accent/40",
@@ -1585,7 +1607,14 @@ function ProjectDiagnosticRow({
       {d.fix && (
         <button
           type="button"
-          title={canFix ? d.fix.label : "Fix はシーンを開いてから適用できます"}
+          title={
+            canFix
+              ? d.fix.label
+              : t(
+                  "lint.fix.sceneOpenRequired",
+                  "Fix はシーンを開いてから適用できます",
+                )
+          }
           onClick={() => onFix?.()}
           disabled={!canFix}
           className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
@@ -1609,6 +1638,7 @@ function ExportReportDialog({
   scenes: ScannedScene[];
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [format, setFormat] = useState<ReportFormat>("markdown");
   const [includeExcerpt, setIncludeExcerpt] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1645,7 +1675,9 @@ function ExportReportDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="font-semibold">Lint レポートを書き出し</h3>
+          <h3 className="font-semibold">
+            {t("lint.export.dialogTitle", "Lint レポートを書き出し")}
+          </h3>
           <button
             type="button"
             onClick={onClose}
@@ -1656,7 +1688,7 @@ function ExportReportDialog({
         </div>
         <div className="mb-3 flex flex-col gap-2">
           <label className="flex items-center gap-2 text-xs">
-            形式
+            {t("lint.export.format", "形式")}
             <select
               value={format}
               onChange={(e) => setFormat(e.target.value as ReportFormat)}
@@ -1673,11 +1705,15 @@ function ExportReportDialog({
               checked={includeExcerpt}
               onChange={(e) => setIncludeExcerpt(e.target.checked)}
             />
-            本文抜粋を含める
+            {t("lint.export.includeExcerpt", "本文抜粋を含める")}
           </label>
           <p className="text-xs text-muted-foreground">
-            出力対象: {scenes.length} シーン ({" "}
-            {scenes.reduce((a, s) => a + s.diagnostics.length, 0)} 指摘 )
+            {t("lint.export.summary", {
+              scenes: scenes.length,
+              diagnostics: scenes.reduce((a, s) => a + s.diagnostics.length, 0),
+              defaultValue:
+                "出力対象: {{scenes}} シーン ( {{diagnostics}} 指摘 )",
+            })}
           </p>
           {error && (
             <p className="rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-600">
@@ -1691,7 +1727,7 @@ function ExportReportDialog({
             onClick={onClose}
             className="h-7 rounded border border-border bg-background px-3 text-xs hover:bg-accent"
           >
-            キャンセル
+            {t("common.cancel", "キャンセル")}
           </button>
           <button
             type="button"
@@ -1700,7 +1736,9 @@ function ExportReportDialog({
             className="flex h-7 items-center gap-1 rounded border border-primary bg-primary px-3 text-xs text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             <Download className="h-3.5 w-3.5" />
-            {saving ? "保存中..." : "保存"}
+            {saving
+              ? t("lint.export.saving", "保存中...")
+              : t("lint.export.save", "保存")}
           </button>
         </div>
       </div>

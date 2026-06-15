@@ -160,7 +160,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         const captured = { ...created };
         useGlobalHistoryStore.getState().push({
           kind: "snippets",
-          label: "Snippet作成",
+          label: i18next.t("history.snippets.created"),
           entityId: captured.id,
           async undo() {
             await snippetApi.deleteSnippet(captured.projectId, captured.id);
@@ -255,7 +255,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
 
     useGlobalHistoryStore.getState().push({
       kind: "snippets",
-      label: "Snippet更新",
+      label: i18next.t("history.snippets.updated"),
       entityId: id,
       async undo() {
         const restored = await snippetApi.updateSnippet(
@@ -318,7 +318,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     });
     useGlobalHistoryStore.getState().push({
       kind: "snippets",
-      label: "Snippet削除",
+      label: i18next.t("history.snippets.deleted"),
       entityId: captured.id,
       async undo() {
         useTrashBinStore.getState().cancelPending({ tempId: trashTempId });

@@ -293,7 +293,7 @@ export function CodexDetailContent({
         );
       if (collision) {
         toast.warning(
-          `「${trimmed}」は既に他の Codex 項目で使われています。本文マッチングが曖昧になります。`,
+          i18next.t("codex.detail.duplicateName", { name: trimmed }),
         );
       }
       await update(entry.id, { name: trimmed });

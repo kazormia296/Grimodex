@@ -222,7 +222,10 @@ export function AttributionProjectView() {
         </button>
         {knowledgeAiChars > 0 && (
           <span className="text-xs text-muted-foreground">
-            Codex/Snippet AI: {knowledgeAiChars.toLocaleString()} chars
+            {t("attribution.knowledgeAiChars", {
+              count: knowledgeAiChars,
+              chars: knowledgeAiChars.toLocaleString(),
+            })}
           </span>
         )}
       </div>

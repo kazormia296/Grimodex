@@ -9,6 +9,7 @@ import type {
   TypoAnnotationMeta,
   TypoCategory,
 } from "./types";
+import i18next from "@/lib/i18n";
 
 export interface ParsedAnnotationMeta {
   /**
@@ -192,7 +193,8 @@ export function parseAnnotationMeta(
 export function codexChipLabel(codex: ParsedAnnotationMeta["codex"]): string {
   if (!codex) return "";
   if (codex.detailName) return `${codex.entryName} ▸ ${codex.detailName}`;
-  if (codex.sourceField === "summary") return `${codex.entryName} ▸ サマリ`;
+  if (codex.sourceField === "summary")
+    return `${codex.entryName} ▸ ${i18next.t("postEffect.codexChip.summary", "サマリ")}`;
   return codex.entryName;
 }
 

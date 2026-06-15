@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { CornerDownRight, MessageSquare, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -54,6 +55,7 @@ function PersonaBadge({ persona }: { persona: string | null | undefined }) {
 }
 
 function ReplyRow({ reply }: { reply: PostEffectAnnotation }) {
+  const { t } = useTranslation();
   const isUser = reply.authorRole === "user";
   return (
     <div className="flex items-start gap-1.5 pl-3 text-xs">
@@ -63,7 +65,9 @@ function ReplyRow({ reply }: { reply: PostEffectAnnotation }) {
       />
       <div className="flex flex-col gap-0.5">
         <span className="text-[10px] text-muted-foreground">
-          {isUser ? "あなた" : (reply.persona ?? "AI")}
+          {isUser
+            ? t("postEffect.pseudoComment.yourName")
+            : (reply.persona ?? "AI")}
         </span>
         <p className="leading-snug">{reply.content}</p>
       </div>
@@ -86,6 +90,7 @@ export function PseudoCommentThread({
   sceneLabel,
   onJump,
 }: Props) {
+  const { t } = useTranslation();
   const { root, replies } = thread;
   const [replying, setReplying] = useState(false);
   const [text, setText] = useState("");
@@ -142,8 +147,8 @@ export function PseudoCommentThread({
         </div>
         <button
           type="button"
-          aria-label="無視"
-          title="無視"
+          aria-label={t("postEffect.actions.dismiss")}
+          title={t("postEffect.actions.dismiss")}
           onClick={dismiss}
           className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100"
         >
@@ -200,7 +205,7 @@ export function PseudoCommentThread({
                 setText("");
               }
             }}
-            placeholder="返信を入力…"
+            placeholder={t("postEffect.pseudoComment.replyPlaceholder")}
             className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs outline-none focus:border-primary"
           />
           <button
@@ -218,7 +223,7 @@ export function PseudoCommentThread({
           onClick={() => setReplying(true)}
           className="self-start text-[11px] text-muted-foreground hover:text-foreground"
         >
-          返信する
+          {t("postEffect.pseudoComment.replyButton")}
         </button>
       )}
     </div>

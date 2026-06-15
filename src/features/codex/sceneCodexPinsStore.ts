@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import i18next from "@/lib/i18n";
 import {
   listPinsForScene,
   listAllPinsForProject,
@@ -84,7 +85,7 @@ export const useSceneCodexPinsStore = create<SceneCodexPinsState>()(
 
       useGlobalHistoryStore.getState().push({
         kind: "pins",
-        label: "ピン追加",
+        label: i18next.t("codex.history.pinAdded"),
         async undo() {
           await removePin(sceneId, entryId);
           set((s) => ({
@@ -139,7 +140,7 @@ export const useSceneCodexPinsStore = create<SceneCodexPinsState>()(
       // Global Undo (Ctrl+Z) のみで復元する。
       useGlobalHistoryStore.getState().push({
         kind: "pins",
-        label: "ピン解除",
+        label: i18next.t("codex.history.pinRemoved"),
         async undo() {
           await addPin(sceneId, entryId);
           set((s) => ({

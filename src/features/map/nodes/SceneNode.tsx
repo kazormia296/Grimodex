@@ -317,7 +317,7 @@ function CardScene({
             cursor: "pointer",
           }}
         >
-          Open↗
+          {t("map.sceneNode.openButton")}
         </button>
       </div>
     </div>

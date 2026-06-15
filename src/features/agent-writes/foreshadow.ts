@@ -5,6 +5,7 @@
  * Mirrors the codex/snippet agent-write shape: knowledgeWrite gate →
  * tracked invoke → store reload → globalHistory undo push.
  */
+import i18next from "i18next";
 import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
@@ -111,7 +112,7 @@ export async function agentCreateForeshadow(
   });
 
   const item = await reloadAndFind(projectId, result.entityId);
-  pushUndo("Agent: 伏線作成", projectId, result);
+  pushUndo(i18next.t("foreshadow.store.agentHistoryCreate"), projectId, result);
   return item;
 }
 
@@ -151,6 +152,6 @@ export async function agentUpdateForeshadow(
   });
 
   const item = await reloadAndFind(projectId, result.entityId);
-  pushUndo("Agent: 伏線更新", projectId, result);
+  pushUndo(i18next.t("foreshadow.store.agentHistoryUpdate"), projectId, result);
   return item;
 }

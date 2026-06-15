@@ -202,14 +202,14 @@ export function ForeshadowMarkPopover({ editor }: Props) {
             onClick={() => setMode("setup")}
             className="flex-1 rounded-md border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-xs font-medium text-blue-600 hover:bg-blue-500/20 dark:text-blue-400"
           >
-            Setup
+            {t("foreshadow.popover.setupButton", "Setup")}
           </button>
           <button
             type="button"
             onClick={() => setMode("payoff")}
             className="flex-1 rounded-md border border-green-500/40 bg-green-500/10 px-3 py-2 text-xs font-medium text-green-600 hover:bg-green-500/20 dark:text-green-400"
           >
-            Payoff
+            {t("foreshadow.popover.payoffButton", "Payoff")}
           </button>
         </div>
       )}

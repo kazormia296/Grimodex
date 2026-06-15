@@ -181,7 +181,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
           className="mt-1 flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
         >
           <Plus className="h-3.5 w-3.5" />
-          Add phase
+          {t("codex.timeline.addPhase")}
         </button>
 
         {dialogOpen && (
@@ -340,7 +340,9 @@ export function TimelineTab({ entry }: TimelineTabProps) {
           <div className="mt-1 w-px flex-1 bg-border" />
         </div>
         <div className="pb-3 pt-0.5">
-          <p className="text-xs font-semibold">Base state</p>
+          <p className="text-xs font-semibold">
+            {t("codex.timeline.baseState")}
+          </p>
           {entry.summary && (
             <p className="mt-0.5 text-[11px] text-muted-foreground line-clamp-2">
               {entry.summary}
@@ -412,7 +414,9 @@ export function TimelineTab({ entry }: TimelineTabProps) {
                     <p className="text-[11px] text-muted-foreground">
                       <span className="text-foreground/60">summary →</span>{" "}
                       {phase.summaryOverride
-                        ? `「${phase.summaryOverride}」`
+                        ? t("codex.timeline.summaryQuoted", {
+                            value: phase.summaryOverride,
+                          })
                         : t("codex.timeline.empty")}
                     </p>
                   )}
@@ -453,7 +457,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
               <div>
                 <p className="text-xs font-semibold">{phase.label}</p>
                 <p className="text-[10px] text-muted-foreground">
-                  アンカーシーン未設定
+                  {t("codex.timeline.noAnchorScene")}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
@@ -490,7 +494,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
         className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border py-2 text-xs text-muted-foreground hover:border-primary hover:text-primary"
       >
         <Plus className="h-3.5 w-3.5" />
-        Add phase
+        {t("codex.timeline.addPhase")}
       </button>
 
       {/* Phase dialog */}
@@ -508,14 +512,17 @@ export function TimelineTab({ entry }: TimelineTabProps) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-80 rounded-lg border border-border bg-background p-5 shadow-xl">
             <p className="text-sm font-semibold">
-              このフェーズを削除しますか？
+              {t("codex.phase.deleteTitle")}
             </p>
             <p className="mt-2 text-xs text-muted-foreground">
-              「{confirmPhase.label}」
-              {confirmPhase.anchorNodeId
-                ? `（${getSceneTitle(confirmPhase.anchorNodeId)}）`
-                : ""}
-              を削除すると、このフェーズの上書き内容がすべて失われます。この操作は元に戻せません。
+              {t("codex.phase.deleteDesc", {
+                name: confirmPhase.anchorNodeId
+                  ? t("codex.phase.deleteNameWithScene", {
+                      label: confirmPhase.label,
+                      scene: getSceneTitle(confirmPhase.anchorNodeId),
+                    })
+                  : t("codex.phase.deleteName", { label: confirmPhase.label }),
+              })}
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button
@@ -523,14 +530,14 @@ export function TimelineTab({ entry }: TimelineTabProps) {
                 onClick={() => setConfirmDeleteId(null)}
                 className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent"
               >
-                キャンセル
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
                 onClick={() => void handleDeleteConfirm()}
                 className="rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground hover:bg-destructive/90"
               >
-                削除
+                {t("common.delete")}
               </button>
             </div>
           </div>

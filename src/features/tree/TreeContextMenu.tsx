@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import i18next from "@/lib/i18n";
 import { MapPin, Settings, Tag, Sparkles } from "lucide-react";
 import { useTreeStore } from "./treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -32,13 +33,13 @@ const STATUS_OPTIONS: SceneStatus[] = [
   "revision",
   "final",
 ];
-const STATUS_LABELS: Record<SceneStatus, string> = {
-  outline: "Outline",
-  draft: "Draft",
-  complete: "Complete",
-  revision: "Revision",
-  final: "Final",
-};
+const statusLabels = (): Record<SceneStatus, string> => ({
+  outline: i18next.t("editor.status.outline"),
+  draft: i18next.t("editor.status.draft"),
+  complete: i18next.t("editor.status.complete"),
+  revision: i18next.t("editor.status.revision"),
+  final: i18next.t("editor.status.final"),
+});
 
 interface TreeContextMenuProps {
   node: TreeNodeData;
@@ -149,7 +150,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
                 {STATUS_OPTIONS.map((s) => (
                   <ContextMenuRadioItem key={s} value={s}>
                     <StatusDot status={s} />
-                    <span className="ml-2">{STATUS_LABELS[s]}</span>
+                    <span className="ml-2">{statusLabels()[s]}</span>
                   </ContextMenuRadioItem>
                 ))}
               </ContextMenuRadioGroup>
@@ -341,7 +342,7 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
           <ContextMenuSub>
             <ContextMenuSubTrigger>
               <MapPin className="h-3 w-3" />
-              <span>Map に追加</span>
+              <span>{t("tree.addToMap")}</span>
             </ContextMenuSubTrigger>
             <ContextMenuSubContent>
               {boards.map((b) => (

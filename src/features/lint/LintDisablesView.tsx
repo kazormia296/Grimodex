@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import i18next from "@/lib/i18n";
 import { Trash2, Navigation } from "lucide-react";
 import type { Editor } from "@tiptap/core";
 
@@ -77,7 +78,8 @@ function excerpt(sceneText: string, d: LintDisableRange): string {
 }
 
 function formatRules(rules: string[]): string {
-  if (rules.length === 1 && rules[0] === "*") return "すべてのルール";
+  if (rules.length === 1 && rules[0] === "*")
+    return i18next.t("lint.disables.allRules", "すべてのルール");
   return rules.join(", ");
 }
 
@@ -113,7 +115,7 @@ export function DisablesView() {
     const sceneText = map.blocks.map((b) => b.text).join("\n");
     return {
       sceneId: currentSceneId,
-      sceneTitle: "現在のシーン",
+      sceneTitle: t("lint.disables.currentScene", "現在のシーン"),
       sceneText,
       disables: map.disables,
     };
@@ -121,7 +123,7 @@ export function DisablesView() {
     // worth silencing via a `void` call because we genuinely need
     // the memo to re-run on every transaction.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, currentSceneId, docVersion]);
+  }, [editor, currentSceneId, docVersion, t]);
 
   // Other scenes: walk the stored JSON. The design doc explicitly
   // requires this — disables in scenes the user hasn't opened still
@@ -298,6 +300,7 @@ function DisableRow({
   onRemove: () => void;
   canRemove: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-start gap-2 px-3 py-2 hover:bg-accent/30 border-t border-border/50">
       <div className="flex flex-1 min-w-0 flex-col gap-0.5">
@@ -310,13 +313,14 @@ function DisableRow({
           </span>
         </div>
         <div className="truncate font-mono text-xs text-muted-foreground">
-          {excerpt(scene.sceneText, d) || "(空のブロック)"}
+          {excerpt(scene.sceneText, d) ||
+            t("lint.disables.emptyBlock", "(空のブロック)")}
         </div>
       </div>
       <button
         type="button"
         onClick={onJump}
-        title="該当箇所へジャンプ"
+        title={t("lint.disables.jumpToLocation", "該当箇所へジャンプ")}
         className="flex-shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
       >
         <Navigation className="h-3.5 w-3.5" />
@@ -325,7 +329,7 @@ function DisableRow({
         <button
           type="button"
           onClick={onRemove}
-          title="無効化を解除"
+          title={t("lint.disables.removeDisable", "無効化を解除")}
           className="flex-shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         >
           <Trash2 className="h-3.5 w-3.5" />

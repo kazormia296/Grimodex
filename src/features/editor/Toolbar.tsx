@@ -778,7 +778,7 @@ export function Toolbar({
               onClick={applyRuby}
               className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground"
             >
-              OK
+              {t("common.ok")}
             </button>
             <button
               type="button"
@@ -805,7 +805,7 @@ export function Toolbar({
               // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
               type="url"
-              placeholder="https://..."
+              placeholder={t("editor.toolbar.urlPlaceholder")}
               value={linkUrl}
               onChange={(e) => setLinkUrl(e.target.value)}
               onKeyDown={(e) => {
@@ -819,7 +819,7 @@ export function Toolbar({
               onClick={applyLink}
               className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground"
             >
-              OK
+              {t("common.ok")}
             </button>
             <button
               type="button"

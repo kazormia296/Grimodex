@@ -12,6 +12,7 @@
  * 「(先) 既存ノードの parentId/sortOrder/title を復元 → (後) 作成ノードを
  * leaf-first で削除」の非対称順序を厳守する(Codex/Plan agent 指摘の最重要点)。
  */
+import i18next from "i18next";
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
@@ -286,7 +287,10 @@ export async function applyAiTreePlan(
   if (!useGlobalHistoryStore.getState().isReplaying) {
     useGlobalHistoryStore.getState().push({
       kind: "scenes",
-      label: plan.kind === "scaffold" ? "AI 構成生成" : "AI 再編成",
+      label:
+        plan.kind === "scaffold"
+          ? i18next.t("aiTree.historyScaffold")
+          : i18next.t("aiTree.historyReorganize"),
       undo: runUndoBatch,
       redo: runForwardBatch,
     });

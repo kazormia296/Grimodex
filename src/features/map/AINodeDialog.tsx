@@ -54,7 +54,7 @@ export function AINodeDialog({
             marginBottom: 16,
           }}
         >
-          AI Branch
+          {t("map.aiBranch.label")}
         </div>
 
         {seedNodeTitles.length > 0 && (

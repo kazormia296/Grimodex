@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import i18next from "i18next";
 import {
   Dialog,
   DialogContent,
@@ -14,16 +16,16 @@ import { useRenamePropagationStore } from "./renamePropagationStore";
 import { applyRenamePropagation } from "./renameEngine";
 import type { RenameOccurrence, RenameSourceKind } from "./detectOccurrences";
 
-const KIND_LABEL: Record<RenameSourceKind, string> = {
-  "scene-body": "本文",
-  "node-title": "タイトル",
-  "node-synopsis": "あらすじ",
-  "codex-summary": "概要",
-  "codex-content": "Codex 本文",
-  "codex-notes": "メモ",
-  "codex-detail": "詳細フィールド",
-  "codex-relation-label": "関係ラベル",
-};
+const kindLabels = (): Record<RenameSourceKind, string> => ({
+  "scene-body": i18next.t("codex.rename.kindSceneBody"),
+  "node-title": i18next.t("codex.rename.kindNodeTitle"),
+  "node-synopsis": i18next.t("codex.rename.kindNodeSynopsis"),
+  "codex-summary": i18next.t("codex.rename.kindCodexSummary"),
+  "codex-content": i18next.t("codex.rename.kindCodexContent"),
+  "codex-notes": i18next.t("codex.rename.kindCodexNotes"),
+  "codex-detail": i18next.t("codex.rename.kindCodexDetail"),
+  "codex-relation-label": i18next.t("codex.rename.kindCodexRelationLabel"),
+});
 
 function occKey(o: RenameOccurrence): string {
   const s = o.source;
@@ -44,6 +46,7 @@ interface Group {
  * OFF and show a warning; ruby occurrences are shown read-only (not rewritable).
  */
 export function RenamePropagationDialog() {
+  const { t, i18n } = useTranslation();
   const pending = useRenamePropagationStore((s) => s.pending);
   const isApplying = useRenamePropagationStore((s) => s.isApplying);
   const setApplying = useRenamePropagationStore((s) => s.setApplying);
@@ -69,6 +72,7 @@ export function RenamePropagationDialog() {
   }, [pending]);
 
   const groups = useMemo<Group[]>(() => {
+    const labels = kindLabels();
     const map = new Map<string, Group>();
     for (const o of occurrences) {
       const s = o.source;
@@ -78,7 +82,7 @@ export function RenamePropagationDialog() {
         g = {
           key: gkey,
           label: s.refLabel,
-          kindLabel: KIND_LABEL[s.kind],
+          kindLabel: labels[s.kind],
           items: [],
         };
         map.set(gkey, g);
@@ -86,7 +90,8 @@ export function RenamePropagationDialog() {
       g.items.push(o);
     }
     return [...map.values()];
-  }, [occurrences]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [occurrences, i18n.language]);
 
   const selected = occurrences.filter((o) => checked[occKey(o)] && !o.ruby);
   const selectableCount = occurrences.filter((o) => !o.ruby).length;
@@ -120,30 +125,29 @@ export function RenamePropagationDialog() {
       <DialogContent className="flex max-h-[85vh] w-full max-w-2xl flex-col gap-3 overflow-hidden">
         <DialogHeader className="shrink-0">
           <DialogTitle>
-            「{pending?.oldName}」→「{pending?.newName}」を本文へ反映
+            {t("codex.rename.dialogTitle", {
+              oldName: pending?.oldName,
+              newName: pending?.newName,
+            })}
           </DialogTitle>
           <DialogDescription>
-            旧名が地の文や説明文に {occurrences.length} 件見つかりました。新名へ
-            書き換える箇所を選んでください（@メンションは自動追従するため対象外）。
+            {t("codex.rename.dialogDesc", { count: occurrences.length })}
           </DialogDescription>
         </DialogHeader>
 
         {ambiguous && (
           <div className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-            同名または別名が一致する別の Codex
-            項目が存在します。どの項目を指すか
-            自動判別できないため、既定ではすべてオフにしています。内容を確認のうえ
-            個別に選択してください。
+            {t("codex.rename.ambiguousWarning")}
           </div>
         )}
 
         <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
           <button className="hover:underline" onClick={() => setAll(true)}>
-            すべて選択
+            {t("codex.rename.selectAll")}
           </button>
           <span>/</span>
           <button className="hover:underline" onClick={() => setAll(false)}>
-            すべて解除
+            {t("codex.rename.deselectAll")}
           </button>
         </div>
 
@@ -181,7 +185,7 @@ export function RenamePropagationDialog() {
                       <span className="text-muted-foreground">{o.after}</span>
                       {o.ruby && (
                         <span className="ml-1 text-[10px] text-amber-600">
-                          （ルビは対象外）
+                          {t("codex.rename.rubyExcluded")}
                         </span>
                       )}
                     </span>
@@ -194,17 +198,22 @@ export function RenamePropagationDialog() {
 
         <DialogFooter className="shrink-0 items-center gap-2 sm:justify-between">
           <span className="text-xs text-muted-foreground">
-            {selected.length} / {selectableCount} 件を選択中
+            {t("codex.rename.selectedCount", {
+              selected: selected.length,
+              total: selectableCount,
+            })}
           </span>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={close} disabled={isApplying}>
-              キャンセル
+              {t("common.cancel")}
             </Button>
             <Button
               onClick={handleApply}
               disabled={isApplying || selected.length === 0}
             >
-              {isApplying ? "反映中…" : `${selected.length} 件を反映`}
+              {isApplying
+                ? t("codex.rename.applying")
+                : t("codex.rename.applyButton", { count: selected.length })}
             </Button>
           </div>
         </DialogFooter>

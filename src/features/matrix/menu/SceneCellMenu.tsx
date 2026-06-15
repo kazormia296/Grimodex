@@ -18,12 +18,6 @@ interface Props {
   onShowInGrid: () => void;
 }
 
-const SOURCE_LABEL: Record<CellSource, string> = {
-  body: "本文言及",
-  beat: "Beat メンション",
-  relation: "明示リレーション",
-};
-
 export function SceneCellMenu({
   x,
   y,
@@ -67,7 +61,7 @@ export function SceneCellMenu({
     { label: `Add beat (with @${entryName})`, action: onAddBeat },
     source
       ? {
-          label: `Show source: ${t(`matrix.sources.${source}`, SOURCE_LABEL[source])}`,
+          label: `Show source: ${t(`matrix.sources.${source}`)}`,
           action: () => {
             /* Phase B: show detail modal */
             onClose();

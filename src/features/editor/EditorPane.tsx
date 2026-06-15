@@ -1926,11 +1926,11 @@ export function EditorPane({
             isLoading={isSceneContentLoading}
           />
           {isSaving ? (
-            <span className="opacity-50">Saving...</span>
+            <span className="opacity-50">{t("editor.status.saving")}</span>
           ) : isDirty ? (
-            <span className="text-amber-500">Unsaved</span>
+            <span className="text-amber-500">{t("editor.status.unsaved")}</span>
           ) : (
-            <span className="opacity-40">Saved</span>
+            <span className="opacity-40">{t("editor.status.saved")}</span>
           )}
           <button
             type="button"
