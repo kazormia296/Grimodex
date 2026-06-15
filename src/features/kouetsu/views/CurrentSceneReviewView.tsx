@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,7 @@ interface Props {
 }
 
 export function CurrentSceneReviewView({ sceneId }: Props) {
+  const { t } = useTranslation();
   const [running, setRunning] = useState(false);
   const analysisGate = useAiGate("analysis");
   const { setAnnotations } = useAnnotationStore();
@@ -110,34 +112,37 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
       setRunning(false);
 
       if (!outcome.ok) {
-        toast.error("批評の実行に失敗しました", {
+        toast.error(t("kouetsu.review.executionFailed"), {
           description: outcome.error,
         });
         return;
       }
       if (outcome.e?.from_cache) {
-        toast.info("前回と同じ内容のためキャッシュから読み込みました", {
-          description: "AI には送信していません",
+        toast.info(t("kouetsu.consistency.fromCache"), {
+          description: t("kouetsu.cache.notSent"),
         });
       } else if ((outcome.e?.annotation_count ?? 0) === 0) {
-        toast.success("指摘はありませんでした");
+        toast.success(t("kouetsu.review.noFindings"));
       }
     } catch (e) {
       console.error("review launch error", e);
       setRunning(false);
-      toast.error("批評を起動できませんでした", {
+      toast.error(t("kouetsu.review.launchFailed"), {
         description: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [running, sceneId, setAnnotations]);
+  }, [running, sceneId, setAnnotations, t]);
 
   const disabled = running || analysisGate.presentation !== "enabled";
-  const triggerTitle = analysisGate.tooltip ?? "現在シーンの批評を実行";
+  const triggerTitle =
+    analysisGate.tooltip ?? t("kouetsu.review.currentTooltip");
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
-        <span className="text-xs text-muted-foreground">現在シーン批評</span>
+        <span className="text-xs text-muted-foreground">
+          {t("kouetsu.currentScene.review")}
+        </span>
         {/* analysis がポリシーで OFF のときは実行ボタンを隠す（パネルは残す）。 */}
         {analysisGate.presentation !== "hidden" && (
           <button
@@ -156,7 +161,7 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
             ) : (
               <Sparkles size={12} />
             )}
-            <span>AIレビュー</span>
+            <span>{t("kouetsu.aiReview")}</span>
           </button>
         )}
       </div>
@@ -164,7 +169,7 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
         <PostEffectAnnotationPanel
           sceneId={sceneId}
           categoryFilter={REVIEW_FILTER}
-          emptyLabel="批評はまだありません"
+          emptyLabel={t("kouetsu.review.empty")}
         />
       </div>
     </div>

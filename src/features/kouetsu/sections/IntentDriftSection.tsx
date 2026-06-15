@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { CurrentSceneIntentDriftView } from "@/features/kouetsu/views/CurrentSceneIntentDriftView";
@@ -5,6 +6,7 @@ import { ProjectIntentDriftView } from "@/features/kouetsu/views/ProjectIntentDr
 import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnnotationsView";
 
 export function IntentDriftSection() {
+  const { t } = useTranslation();
   const scope = useKouetsuStore((s) => s.activeEditorialScope);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
@@ -16,7 +18,7 @@ export function IntentDriftSection() {
     return (
       <DismissedAnnotationsView
         category="intent_anchor"
-        emptyLabel="無視した狙いズレ指摘はありません"
+        emptyLabel={t("kouetsu.intentDrift.emptyIgnored")}
       />
     );
   }
@@ -24,7 +26,7 @@ export function IntentDriftSection() {
   if (!activeSceneId) {
     return (
       <div className="px-3 py-4 text-xs text-muted-foreground">
-        シーンを選択してください
+        {t("kouetsu.selectScene")}
       </div>
     );
   }

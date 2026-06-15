@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, Info, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,7 @@ import type { PostEffectAnnotation } from "@/features/post-effect/types";
  * 決定論データ衛生 (重複/不正キー) を live 表示する (ハイブリッドの検証可能な半分)。
  */
 export function ProjectTimelineConsistencyView() {
+  const { t } = useTranslation();
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
@@ -137,8 +139,8 @@ export function ProjectTimelineConsistencyView() {
       );
       if (payload.scenes.length === 0) {
         setRunningAll(false);
-        toast.info("story-time に配置されたシーンがありません", {
-          description: "タイムラインにシーンを配置すると検査できます。",
+        toast.info(t("kouetsu.projectTimeline.noScenesPlaced"), {
+          description: t("kouetsu.projectTimeline.placeScenesHint"),
         });
         return;
       }
@@ -172,14 +174,14 @@ export function ProjectTimelineConsistencyView() {
       await afterRunAll(activeSceneId);
       setRunningAll(false);
       if (!outcome.ok) {
-        toast.error("時系列チェックに失敗しました", {
+        toast.error(t("kouetsu.projectTimeline.checkFailed"), {
           description: outcome.error,
         });
       }
     } catch (e) {
       console.error("timeline multi launch error", e);
       setRunningAll(false);
-      toast.error("時系列チェックを起動できませんでした", {
+      toast.error(t("kouetsu.projectTimeline.launchFailed"), {
         description: e instanceof Error ? e.message : String(e),
       });
     }
@@ -207,14 +209,16 @@ export function ProjectTimelineConsistencyView() {
     <div className="flex flex-col">
       <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
         <span className="text-xs text-muted-foreground">
-          物語内時系列の整合性
+          {t("kouetsu.projectTimeline.header")}
         </span>
         {analysisGate.presentation !== "hidden" && (
           <button
             type="button"
             disabled={runningAll || analysisGate.presentation !== "enabled"}
             onClick={() => void runAll()}
-            title={analysisGate.tooltip ?? "配置済シーンの時系列整合性を検査"}
+            title={
+              analysisGate.tooltip ?? t("kouetsu.projectTimeline.checkTooltip")
+            }
             className={cn(
               "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
               "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
@@ -226,7 +230,7 @@ export function ProjectTimelineConsistencyView() {
             ) : (
               <Sparkles size={12} />
             )}
-            <span>AI時系列チェック</span>
+            <span>{t("kouetsu.projectTimeline.checkButton")}</span>
           </button>
         )}
       </div>
@@ -235,7 +239,7 @@ export function ProjectTimelineConsistencyView() {
         <div className="flex flex-col border-b border-border">
           <div className="flex items-center gap-1.5 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-700 dark:text-amber-400">
             <AlertTriangle size={12} />
-            <span>データ不整合（自動検出）</span>
+            <span>{t("kouetsu.projectTimeline.dataInconsistency")}</span>
             <span className="rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[10px] leading-none">
               {hygiene.length}
             </span>
@@ -253,8 +257,8 @@ export function ProjectTimelineConsistencyView() {
                   <span className="truncate">{sceneTitle(h.sceneId)}</span>
                   <span className="ml-auto shrink-0 text-[10px]">
                     {h.kind === "duplicate_order"
-                      ? "story-time キー重複"
-                      : "story-time キー不正"}
+                      ? t("kouetsu.projectTimeline.duplicateKey")
+                      : t("kouetsu.projectTimeline.invalidKey")}
                   </span>
                 </button>
               </li>
@@ -270,7 +274,7 @@ export function ProjectTimelineConsistencyView() {
       ) : groups.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
           <Info size={16} />
-          <span>時系列の指摘はまだありません</span>
+          <span>{t("kouetsu.projectTimeline.empty")}</span>
         </div>
       ) : (
         <div className="flex flex-col gap-0">

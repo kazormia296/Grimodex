@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Info, Loader2 } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { listAnnotationsForProject } from "@/features/post-effect/api";
@@ -7,6 +8,7 @@ import type { PostEffectAnnotation } from "@/features/post-effect/types";
 
 /** プロジェクト全体の intent_anchor 指摘を表示するのみ（multi run 非対応）。 */
 export function ProjectIntentDriftView() {
+  const { t } = useTranslation();
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -55,7 +57,7 @@ export function ProjectIntentDriftView() {
     <div className="flex flex-col">
       <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
         <span className="text-xs text-muted-foreground">
-          全シーン・狙いズレ（表示のみ）
+          {t("kouetsu.projectIntentDrift.header")}
         </span>
       </div>
 
@@ -66,7 +68,7 @@ export function ProjectIntentDriftView() {
       ) : groups.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
           <Info size={16} />
-          <span>狙いズレの指摘はまだありません</span>
+          <span>{t("kouetsu.intentDrift.empty")}</span>
         </div>
       ) : (
         <div className="flex flex-col gap-0">

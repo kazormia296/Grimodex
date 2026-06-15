@@ -4,6 +4,7 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { streamInlineAiText } from "./streamInlineAiText";
 import { getPromptCatalog } from "@/prompts/index";
 import { getProject } from "@/features/project/api";
+import i18next from "@/lib/i18n";
 
 interface GenerateSynopsisCallbacks {
   onStart?: () => void;
@@ -67,13 +68,13 @@ export async function generateSynopsisFromBeats(
   }
   const synopsis = result.text.trim();
   if (!synopsis) {
-    callbacks?.onError?.("AIが空のレスポンスを返しました");
+    callbacks?.onError?.(i18next.t("beat.generateSynopsis.emptyResponse"));
     return;
   }
   try {
     await useTreeStore.getState().updateSynopsis(sceneId, synopsis);
     callbacks?.onDone?.();
   } catch {
-    callbacks?.onError?.("シノプシスの保存に失敗しました");
+    callbacks?.onError?.(i18next.t("beat.generateSynopsis.saveFailed"));
   }
 }

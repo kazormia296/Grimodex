@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, Info, Loader2, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -41,20 +42,22 @@ const SEVERITY_ICON: Record<PostEffectSeverity, React.ReactNode> = {
   info: <Info size={13} className="shrink-0 text-muted-foreground" />,
 };
 
-const LENS_LABEL: Record<string, string> = {
-  plot_structure: "構造",
-  pacing: "ペース",
-  character_arc: "アーク",
-  pov: "視点",
+const LENS_LABEL_KEY: Record<string, string> = {
+  plot_structure: "kouetsu.lens.structure",
+  pacing: "kouetsu.lens.pacing",
+  character_arc: "kouetsu.lens.characterArc",
+  pov: "kouetsu.lens.pov",
 };
 
 function LensRow({ lens }: { lens: SceneLensRecord }) {
+  const { t } = useTranslation();
+  const labelKey = LENS_LABEL_KEY[lens.lensType];
   return (
     <div className="flex items-start gap-1.5 rounded border border-border px-2 py-1.5 text-xs">
       {SEVERITY_ICON[lens.severity]}
       <div className="flex flex-1 flex-col gap-0.5">
         <span className="text-[10px] font-medium text-muted-foreground">
-          {LENS_LABEL[lens.lensType] ?? lens.lensType}
+          {labelKey ? t(labelKey) : lens.lensType}
         </span>
         <p className="leading-snug">{lens.finding}</p>
       </div>
@@ -68,6 +71,7 @@ interface Props {
 }
 
 export function MetaStructureView({ scope, sceneId }: Props) {
+  const { t } = useTranslation();
   const [running, setRunning] = useState(false);
   const analysisGate = useAiGate("analysis");
   const projectId = useTreeStore((s) => s.projectId);
@@ -142,17 +146,17 @@ export function MetaStructureView({ scope, sceneId }: Props) {
       await loadLens(projectId);
       setRunning(false);
       if (!outcome.ok) {
-        toast.error("メタ構造レビューに失敗しました", {
+        toast.error(t("kouetsu.metaStructure.reviewFailed"), {
           description: outcome.error,
         });
       }
     } catch (e) {
       setRunning(false);
-      toast.error("メタ構造レビューを起動できませんでした", {
+      toast.error(t("kouetsu.metaStructure.launchFailed"), {
         description: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [running, sceneId, projectId, loadLens]);
+  }, [running, sceneId, projectId, loadLens, t]);
 
   const runProject = useCallback(async () => {
     if (running) return;
@@ -208,17 +212,17 @@ export function MetaStructureView({ scope, sceneId }: Props) {
       await loadLens(projectId);
       setRunning(false);
       if (!outcome.ok) {
-        toast.error("全シーンのメタ構造レビューに失敗しました", {
+        toast.error(t("kouetsu.metaStructure.projectReviewFailed"), {
           description: outcome.error,
         });
       }
     } catch (e) {
       setRunning(false);
-      toast.error("メタ構造レビューを起動できませんでした", {
+      toast.error(t("kouetsu.metaStructure.launchFailed"), {
         description: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [running, projectId, loadLens]);
+  }, [running, projectId, loadLens, t]);
 
   const projectGroups = useMemo(() => {
     if (scope !== "project") return [];
@@ -239,7 +243,9 @@ export function MetaStructureView({ scope, sceneId }: Props) {
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
         <span className="text-xs text-muted-foreground">
-          {scope === "project" ? "全シーン構造診断" : "現在シーン構造診断"}
+          {scope === "project"
+            ? t("kouetsu.metaStructure.projectScope")
+            : t("kouetsu.metaStructure.currentScope")}
         </span>
         {/* analysis がポリシーで OFF のときは実行ボタンを隠す（パネルは残す）。 */}
         {analysisGate.presentation !== "hidden" && (
@@ -249,7 +255,9 @@ export function MetaStructureView({ scope, sceneId }: Props) {
             onClick={() =>
               void (scope === "project" ? runProject() : runScene())
             }
-            title={analysisGate.tooltip ?? "メタ構造レビューを実行"}
+            title={
+              analysisGate.tooltip ?? t("kouetsu.metaStructure.runTooltip")
+            }
             className={cn(
               "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
               "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
@@ -261,7 +269,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
             ) : (
               <Sparkles size={12} />
             )}
-            <span>AI診断</span>
+            <span>{t("kouetsu.metaStructure.diagnosisButton")}</span>
           </button>
         )}
       </div>
@@ -305,10 +313,11 @@ export function MetaStructureView({ scope, sceneId }: Props) {
 }
 
 function EmptyState() {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
       <Info size={18} />
-      <span>構造診断はまだありません</span>
+      <span>{t("kouetsu.metaStructure.empty")}</span>
     </div>
   );
 }

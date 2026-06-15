@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { COMMENT_REBUILD_META } from "./CommentDecorationPlugin";
@@ -22,6 +23,7 @@ interface Props {
  * over a `.comment-deco` span. Provides Edit and Delete actions.
  */
 export function CommentHoverPopover({ editor, containerRef }: Props) {
+  const { t } = useTranslation();
   const showComments = useCursorSettingsStore((s) => s.showComments);
   const [target, setTarget] = useState<CommentTarget | null>(null);
   const [editing, setEditing] = useState(false);
@@ -151,14 +153,14 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
               className="flex-1 rounded bg-primary px-2 py-1 text-xs text-primary-foreground hover:opacity-90"
               onClick={handleEditConfirm}
             >
-              保存
+              {t("common.save")}
             </button>
             <button
               type="button"
               className="flex-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
               onClick={() => setEditing(false)}
             >
-              キャンセル
+              {t("common.cancel")}
             </button>
           </div>
         </div>
@@ -167,7 +169,7 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
           <p className="mb-2 text-sm leading-snug text-popover-foreground">
             {target.text || (
               <span className="text-muted-foreground italic">
-                （コメントなし）
+                {t("editor.comment.empty")}
               </span>
             )}
           </p>
@@ -180,14 +182,14 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
                 setEditText(target.text);
               }}
             >
-              編集
+              {t("common.edit")}
             </button>
             <button
               type="button"
               className="rounded border border-border px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
               onClick={handleDelete}
             >
-              削除
+              {t("common.delete")}
             </button>
           </div>
         </div>

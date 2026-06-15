@@ -10,6 +10,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
@@ -67,6 +68,7 @@ interface Props {
 }
 
 export function CurrentSceneTypoView({ sceneId }: Props) {
+  const { t } = useTranslation();
   const [running, setRunning] = useState(false);
   const analysisGate = useAiGate("analysis");
   const { setAnnotations } = useAnnotationStore();
@@ -133,36 +135,35 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
       setRunning(false);
 
       if (!done.ok) {
-        toast.error("誤字脱字チェックに失敗しました", {
+        toast.error(t("kouetsu.typo.checkFailed"), {
           description: done.error,
         });
         return;
       }
       if (done.from_cache) {
-        toast.info("前回と同じ内容のためキャッシュから読み込みました", {
-          description: "AI には送信していません",
+        toast.info(t("kouetsu.consistency.fromCache"), {
+          description: t("kouetsu.cache.notSent"),
         });
       } else if ((done.count ?? 0) === 0) {
-        toast.success("誤字脱字は見つかりませんでした");
+        toast.success(t("kouetsu.typo.noIssues"));
       }
     } catch (e) {
       console.error("typo run error", e);
       setRunning(false);
-      toast.error("誤字脱字チェックを起動できませんでした", {
+      toast.error(t("kouetsu.typo.launchFailed"), {
         description: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [running, sceneId, setAnnotations]);
+  }, [running, sceneId, setAnnotations, t]);
 
   const disabled = running || analysisGate.presentation !== "enabled";
-  const triggerTitle =
-    analysisGate.tooltip ?? "現在シーンの誤字脱字チェックを実行";
+  const triggerTitle = analysisGate.tooltip ?? t("kouetsu.typo.currentTooltip");
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
         <span className="text-xs text-muted-foreground">
-          現在シーン誤字脱字
+          {t("kouetsu.currentScene.typo")}
         </span>
         {/* analysis がポリシーで OFF のときは実行ボタンを隠す（パネルは残す）。 */}
         {analysisGate.presentation !== "hidden" && (
@@ -182,7 +183,7 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
             ) : (
               <Sparkles size={12} />
             )}
-            <span>AIチェック</span>
+            <span>{t("kouetsu.aiCheck")}</span>
           </button>
         )}
       </div>
@@ -199,6 +200,7 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
 // ---------------------------------------------------------------------------
 
 function LocalTypoList() {
+  const { t } = useTranslation();
   const diagnostics = useLintStore((s) => s.diagnostics);
   const editor = useEditorStore((s) => s.editor);
   const localTypos = useMemo(
@@ -236,14 +238,14 @@ function LocalTypoList() {
   return (
     <section className="flex flex-col">
       <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-border bg-muted/30 px-3 py-1 text-[11px] font-medium text-muted-foreground">
-        <span>ローカル検出</span>
+        <span>{t("kouetsu.typo.localDetection")}</span>
         <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none">
           {localTypos.length}
         </span>
       </div>
       {localTypos.length === 0 ? (
         <p className="px-3 py-2 text-xs text-muted-foreground">
-          確定的なタイポは見つかっていません
+          {t("kouetsu.typo.localEmpty")}
         </p>
       ) : (
         <ul className="flex flex-col gap-1 p-2">
@@ -294,6 +296,7 @@ function LocalTypoList() {
 // ---------------------------------------------------------------------------
 
 function AiTypoList({ sceneId }: { sceneId: string }) {
+  const { t } = useTranslation();
   const annotations = useAnnotationStore(
     (s) => s.annotationsByScene.get(sceneId) ?? EMPTY_ANNOTATIONS,
   );
@@ -309,14 +312,14 @@ function AiTypoList({ sceneId }: { sceneId: string }) {
   return (
     <section className="flex flex-col">
       <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-border bg-muted/30 px-3 py-1 text-[11px] font-medium text-muted-foreground">
-        <span>AI 検出</span>
+        <span>{t("kouetsu.typo.aiDetection")}</span>
         <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none">
           {open.length}
         </span>
       </div>
       {typoAnns.length === 0 ? (
         <p className="px-3 py-2 text-xs text-muted-foreground">
-          AI チェック未実行 / 検出なし
+          {t("kouetsu.typo.aiEmpty")}
         </p>
       ) : (
         <div className="flex flex-col gap-1 p-2">
@@ -326,7 +329,7 @@ function AiTypoList({ sceneId }: { sceneId: string }) {
           {done.length > 0 && (
             <>
               <p className="mt-1 px-1 text-[10px] text-muted-foreground">
-                解決済み / 無視
+                {t("kouetsu.typo.resolvedIgnored")}
               </p>
               {done.map((a) => (
                 <TypoAnnotationRow key={a.id} ann={a} />
@@ -340,6 +343,7 @@ function AiTypoList({ sceneId }: { sceneId: string }) {
 }
 
 function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
+  const { t } = useTranslation();
   const { focusedAnnotationId, setFocusedAnnotationId } = useAnnotationStore();
   const editor = useEditorStore((s) => s.editor);
   const focused = focusedAnnotationId === ann.id;
@@ -362,8 +366,8 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
   async function fix() {
     const result = await applyTypoFixAndResolve(editor, ann);
     if (!result.applied) {
-      toast.error("置換できませんでした", {
-        description: "該当箇所が本文中で見つからないか変更されています",
+      toast.error(t("kouetsu.typo.replacementFailed"), {
+        description: t("kouetsu.typo.replacementFailedDesc"),
       });
     }
   }
@@ -395,8 +399,10 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
           <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-hover:opacity-100">
             {canFix && (
               <button
-                aria-label="Quick Fix (suggestion を適用)"
-                title={`「${parsed.typo!.suggestion}」に置き換える`}
+                aria-label={t("kouetsu.typo.quickFixAria")}
+                title={t("kouetsu.typo.replaceWith", {
+                  suggestion: parsed.typo!.suggestion,
+                })}
                 onClick={(e) => {
                   e.stopPropagation();
                   void fix();
@@ -407,8 +413,8 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
               </button>
             )}
             <button
-              aria-label="解決済み"
-              title="解決済み"
+              aria-label={t("kouetsu.typo.resolved")}
+              title={t("kouetsu.typo.resolved")}
               onClick={(e) => {
                 e.stopPropagation();
                 resolve();
@@ -418,8 +424,8 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
               <CheckCircle2 size={13} />
             </button>
             <button
-              aria-label="無視"
-              title="無視"
+              aria-label={t("kouetsu.typo.dismiss")}
+              title={t("kouetsu.typo.dismiss")}
               onClick={(e) => {
                 e.stopPropagation();
                 dismiss();

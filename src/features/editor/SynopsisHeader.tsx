@@ -123,7 +123,7 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
           ) : (
             <ChevronDown className="h-3 w-3" />
           )}
-          <span className="font-medium">Synopsis</span>
+          <span className="font-medium">{t("editor.synopsis.title")}</span>
           {collapsed && node.synopsis && (
             <span className="ml-2 truncate italic opacity-70">
               {node.synopsis}
@@ -182,16 +182,16 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
           <SynopsisArea nodeId={sceneId} />
           <div className="mt-2 border-t border-border/60 pt-2">
             <span className="mb-1 block text-[10px] font-medium text-muted-foreground">
-              狙い（このシーンで達成したいこと）
+              {t("editor.synopsis.intentLabel")}
             </span>
             <InlineSynopsisEditor
               nodeId={sceneId}
               synopsis={node?.intent ?? null}
               onSave={(text) => updateIntent(sceneId, text)}
-              saveFailedLabel="狙いの保存に失敗しました"
+              saveFailedLabel={t("editor.synopsis.intentSaveFailed")}
               alwaysEditing
               rows={2}
-              placeholder="このシーンで読者に届けたいこと・達成したい効果"
+              placeholder={t("editor.synopsis.intentPlaceholder")}
               textareaClassName="w-full resize-none rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
@@ -199,7 +199,7 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
             <div className="mt-1.5 flex flex-wrap gap-3">
               {characters.length > 0 && (
                 <CodexRefSelect
-                  label="POV"
+                  label={t("editor.synopsis.povLabel")}
                   value={node.povCharacterId}
                   entries={characters}
                   onSelect={(id) => updatePovCharacter(sceneId, id)}
@@ -207,7 +207,7 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
               )}
               {locations.length > 0 && (
                 <CodexRefSelect
-                  label="場所"
+                  label={t("codex.location")}
                   value={node.locationId}
                   entries={locations}
                   onSelect={(id) => updateLocation(sceneId, id)}

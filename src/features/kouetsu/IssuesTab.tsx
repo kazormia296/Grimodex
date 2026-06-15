@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronRight } from "lucide-react";
 import { usePanelRef } from "react-resizable-panels";
 import { cn } from "@/lib/utils";
@@ -63,6 +64,7 @@ function SectionHeader({
 }
 
 export function IssuesTab() {
+  const { t } = useTranslation();
   const [linterExpanded, setLinterExpanded] = useState(true);
   const [consistencyExpanded, setConsistencyExpanded] = useState(true);
   const [typoExpanded, setTypoExpanded] = useState(true);
@@ -132,13 +134,13 @@ export function IssuesTab() {
           className="flex flex-col overflow-hidden"
         >
           <SectionHeader
-            title="校正"
+            title={t("settings.linter.proofreading")}
             count={linterCount}
             expanded={linterExpanded}
             onToggle={handleLinterToggle}
             action={
               <span className="text-[10px] text-muted-foreground">
-                自動検出
+                {t("settings.ai.autoDetect")}
               </span>
             }
           />
@@ -163,7 +165,7 @@ export function IssuesTab() {
           className="flex flex-col overflow-hidden"
         >
           <SectionHeader
-            title="整合性"
+            title={t("codex.tab.consistency")}
             count={consistencyCount}
             expanded={consistencyExpanded}
             onToggle={handleConsistencyToggle}
@@ -187,7 +189,7 @@ export function IssuesTab() {
           className="flex flex-col overflow-hidden"
         >
           <SectionHeader
-            title="誤字脱字"
+            title={t("kouetsu.issues.typo")}
             count={typoCount}
             expanded={typoExpanded}
             onToggle={handleTypoToggle}

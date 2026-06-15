@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { COMMENT_REBUILD_META } from "./CommentDecorationPlugin";
@@ -14,6 +15,7 @@ interface Props {
  * Positioned just below the selection end.
  */
 export function CommentAddPopover({ editor }: Props) {
+  const { t } = useTranslation();
   const open = useCursorSettingsStore((s) => s.commentPickerOpen);
   const setOpen = useCursorSettingsStore((s) => s.setCommentPickerOpen);
   const [text, setText] = useState("");
@@ -123,7 +125,7 @@ export function CommentAddPopover({ editor }: Props) {
             confirm();
           }
         }}
-        placeholder="コメントを入力…"
+        placeholder={t("editor.comment.inputPlaceholder")}
         className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
       />
       <button
@@ -131,7 +133,7 @@ export function CommentAddPopover({ editor }: Props) {
         className="shrink-0 rounded px-2 py-0.5 text-xs bg-primary text-primary-foreground hover:opacity-90"
         onClick={confirm}
       >
-        追加
+        {t("codex.relation.add")}
       </button>
     </div>,
     document.body,

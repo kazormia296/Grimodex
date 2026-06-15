@@ -18,7 +18,10 @@
     "create": "作成",
     "deleteConfirmTitle": "削除の確認",
     "deleteConfirm": "削除する",
-    "other": "その他"
+    "other": "その他",
+    "snippetSaveFailed": "スニペットの保存に失敗しました",
+    "confirmDelete": "削除?",
+    "remove": "削除"
   },
   "welcome": {
     "description": "原稿の保存先フォルダを選んでください。",
@@ -904,6 +907,173 @@
         "scene_intent_empty": "狙い未設定のシーン",
         "trash_salvageable": "復元候補の断片"
       }
+    },
+    "comments": {
+      "empty": "コメントはありません",
+      "emptyHint": "本文を選択して {{shortcut}} で手動コメント、批評タブの疑似コメントもここに集約されます",
+      "jumpToLocation": "該当箇所を開いて選択"
+    },
+    "scope": {
+      "current": "現在シーン",
+      "project": "プロジェクト",
+      "ignored": "除外"
+    },
+    "editorial": {
+      "review": "レビュー",
+      "pseudoComment": "疑似コメント",
+      "intentDrift": "狙いズレ",
+      "metaStructure": "メタ構造",
+      "timeline": "時系列"
+    },
+    "issues": {
+      "typo": "誤字脱字"
+    },
+    "consistency": {
+      "emptyIgnored": "無視した整合性チェック結果はありません",
+      "codexLabel": "Codex整合性",
+      "intraLabel": "シーン内矛盾",
+      "partialError": "整合性チェック ({{effect}}) に失敗しました",
+      "fromCache": "前回と同じ内容のためキャッシュから読み込みました",
+      "noIssues": "矛盾は見つかりませんでした",
+      "otherModelWarning": "{{count}} 件は別モデルで検出された指摘です",
+      "launchFailed": "整合性チェックを起動できませんでした",
+      "runCurrentScene": "現在シーンの整合性チェックを実行",
+      "intraPrefix": "シーン内",
+      "foundCount": "{{count}} 件の矛盾候補を検出しました",
+      "conflictBreakdown": "Codex: {{consCount}}件 / シーン内: {{intraCount}}件",
+      "singleEffectError": "全シーン{{label}}チェックに失敗しました",
+      "unclassified": "未分類",
+      "runAllScenes": "全シーンの整合性チェックを実行",
+      "modelCount": "{{model}}: {{count}}件"
+    },
+    "selectScene": "シーンを選択してください",
+    "intentDrift": {
+      "emptyIgnored": "無視した狙いズレ指摘はありません",
+      "executionFailed": "狙いズレ診断の実行に失敗しました",
+      "noIssues": "明確なズレは見つかりませんでした",
+      "launchFailed": "狙いズレ診断を起動できませんでした",
+      "empty": "狙いズレの指摘はまだありません"
+    },
+    "metaStructure": {
+      "noExcluded": "メタ構造に除外項目はありません",
+      "reviewFailed": "メタ構造レビューに失敗しました",
+      "launchFailed": "メタ構造レビューを起動できませんでした",
+      "projectReviewFailed": "全シーンのメタ構造レビューに失敗しました",
+      "projectScope": "全シーン構造診断",
+      "currentScope": "現在シーン構造診断",
+      "diagnosisButton": "AI診断",
+      "empty": "構造診断はまだありません",
+      "runTooltip": "メタ構造レビューを実行"
+    },
+    "pseudoComment": {
+      "projectUnavailable": "疑似コメントは現在シーンで生成します。横断表示は「コメント」タブへ。",
+      "emptyIgnored": "無視した疑似コメントはありません",
+      "generationFailed": "疑似コメントの生成に失敗しました",
+      "noComments": "コメントはありませんでした",
+      "launchFailed": "疑似コメントを起動できませんでした",
+      "targetProfileRequired": "プロジェクト設定で想定読者を入力すると選べます",
+      "requiresTargetProfile": "（要・想定読者設定）",
+      "generateButton": "AIコメント",
+      "empty": "コメントはまだありません",
+      "runTooltip": "選択したペルソナでコメントを生成"
+    },
+    "review": {
+      "emptyIgnored": "無視したレビュー指摘はありません",
+      "executionFailed": "批評の実行に失敗しました",
+      "noFindings": "指摘はありませんでした",
+      "launchFailed": "批評を起動できませんでした",
+      "empty": "批評はまだありません",
+      "currentTooltip": "現在シーンの批評を実行",
+      "projectTooltip": "全シーンの批評を実行"
+    },
+    "timelineConsistency": {
+      "emptyIgnored": "無視した時系列指摘はありません"
+    },
+    "typo": {
+      "emptyIgnored": "無視した誤字脱字はありません",
+      "checkFailed": "誤字脱字チェックに失敗しました",
+      "noIssues": "誤字脱字は見つかりませんでした",
+      "launchFailed": "誤字脱字チェックを起動できませんでした",
+      "localDetection": "ローカル検出",
+      "localEmpty": "確定的なタイポは見つかっていません",
+      "aiDetection": "AI 検出",
+      "aiEmpty": "AI チェック未実行 / 検出なし",
+      "resolvedIgnored": "解決済み / 無視",
+      "replacementFailed": "置換できませんでした",
+      "replacementFailedDesc": "該当箇所が本文中で見つからないか変更されています",
+      "currentTooltip": "現在シーンの誤字脱字チェックを実行",
+      "projectTooltip": "全シーンの誤字脱字チェックを実行",
+      "quickFixAria": "クイック修正（提案を適用）",
+      "replaceWith": "「{{suggestion}}」に置き換える",
+      "resolved": "解決済み",
+      "dismiss": "無視",
+      "replaceFailed": "置換できませんでした",
+      "replaceFailedDesc": "該当箇所が本文中で見つからないか変更されています"
+    },
+    "cache": {
+      "notSent": "AI には送信していません"
+    },
+    "currentScene": {
+      "consistency": "現在シーン整合性",
+      "intentDriftHint": "このシーンに狙いを入力すると診断できます",
+      "intentDriftTooltip": "現在シーンの狙いズレを診断",
+      "intentDrift": "現在シーン・狙いズレ",
+      "intentDriftDiagnosisButton": "狙いズレ診断",
+      "review": "現在シーン批評",
+      "typo": "現在シーン誤字脱字"
+    },
+    "aiCheck": "AIチェック",
+    "aiReview": "AIレビュー",
+    "dismissed": {
+      "reopen": "再表示",
+      "reopenTooltip": "再表示（open に戻す）"
+    },
+    "lens": {
+      "structure": "構造",
+      "pacing": "ペース",
+      "characterArc": "アーク",
+      "pov": "視点"
+    },
+    "projectAnnotations": {
+      "checkFailed": "全シーン整合性チェックに失敗しました",
+      "checkFailedPartial": "全シーン整合性チェック ({{label}}) に失敗しました",
+      "noIssues": "全シーンで矛盾は見つかりませんでした",
+      "noIssuesOfType": "全シーンで{{label}}の問題は見つかりませんでした",
+      "foundCount": "{{count}} 件の矛盾候補を検出しました",
+      "launchFailed": "全シーン整合性チェックを起動できませんでした",
+      "header": "全シーン整合性",
+      "groupByScene": "シーン別",
+      "groupByCodex": "Codex別",
+      "empty": "整合性の問題は見つかっていません"
+    },
+    "projectIntentDrift": {
+      "header": "全シーン・狙いズレ（表示のみ）"
+    },
+    "projectReview": {
+      "failed": "全シーン批評に失敗しました",
+      "launchFailed": "全シーン批評を起動できませんでした",
+      "header": "全シーン批評"
+    },
+    "projectTimeline": {
+      "noScenesPlaced": "story-time に配置されたシーンがありません",
+      "placeScenesHint": "タイムラインにシーンを配置すると検査できます。",
+      "checkFailed": "時系列チェックに失敗しました",
+      "launchFailed": "時系列チェックを起動できませんでした",
+      "header": "物語内時系列の整合性",
+      "checkButton": "AI時系列チェック",
+      "dataInconsistency": "データ不整合（自動検出）",
+      "duplicateKey": "story-time キー重複",
+      "invalidKey": "story-time キー不正",
+      "empty": "時系列の指摘はまだありません",
+      "checkTooltip": "配置済シーンの時系列整合性を検査"
+    },
+    "projectTypo": {
+      "checkFailed": "全シーン誤字脱字チェックに失敗しました",
+      "noIssues": "全シーンで誤字脱字は見つかりませんでした",
+      "foundCount": "{{count}} 件の誤字脱字候補を検出しました",
+      "launchFailed": "全シーン誤字脱字チェックを起動できませんでした",
+      "header": "全シーン誤字脱字",
+      "empty": "誤字脱字は見つかっていません"
     }
   },
   "chat": {
@@ -1941,7 +2111,12 @@
       "toggle": "展開/折り畳み",
       "setupsEmpty": "Setup なし",
       "editButton": "編集",
-      "jumpPayoff": "Payoff へ移動"
+      "jumpPayoff": "Payoff へ移動",
+      "adoptSetup": "採用",
+      "proposeSetups": "Setup を提案",
+      "tabChapter": "章別監査",
+      "tabList": "一覧",
+      "adoptInsertNew": "挿入して採用"
     },
     "create": {
       "heading": "伏線を新規作成",
@@ -1977,7 +2152,8 @@
       "createNew": "新規伏線を作成して追加"
     },
     "hoverPopover": {
-      "removeMark": "マークを外す"
+      "removeMark": "マークを外す",
+      "jumpToPanel": "パネルで表示"
     },
     "setup": {
       "orphan": "孤立",
@@ -1986,12 +2162,38 @@
         "designated_existing": "指名済",
         "inserted_new": "新規挿入",
         "rewritten": "書き直し"
-      }
+      },
+      "jump": "Setup へ移動",
+      "reanchor": "再アンカー",
+      "reinsert": "再挿入"
     },
     "store": {
       "evaluateFailed": "AI評価の取得に失敗しました",
       "createSuccess": "伏線として登録しました",
-      "updateFailed": "伏線の更新に失敗しました"
+      "updateFailed": "伏線の更新に失敗しました",
+      "adoptDone": "採用しました",
+      "adoptFailed": "採用に失敗しました",
+      "auditFailed": "監査に失敗しました",
+      "createFailed": "伏線の作成に失敗しました",
+      "deleteFailed": "伏線の削除に失敗しました",
+      "historyCreate": "伏線作成",
+      "historyUpdate": "伏線更新",
+      "historyDelete": "伏線削除",
+      "historyAdoptSetup": "Setup採用",
+      "historyAdoptSetupInsert": "Setup採用 (本文挿入)",
+      "adoptNoEditor": "採用するには対象シーンを開いてください",
+      "adoptNoPosition": "AI が位置情報を返しませんでした。シーンを開いて手動で設定してください",
+      "adoptWrongScene": "候補のシーンを開いてから採用してください",
+      "deleteSetupFailed": "Setupの削除に失敗しました",
+      "loadFailed": "伏線の読み込みに失敗しました",
+      "proposeFailed": "Setup 提案の取得に失敗しました",
+      "proposeNoPayoff": "Setup を提案するには回収シーンを先に設定してください",
+      "reanchorFailed": "Setupの再アンカーに失敗しました",
+      "reanchorNoEditor": "再アンカーするには編集中のシーンを開いてください",
+      "reanchorNoSelection": "再アンカーする範囲を選択してください",
+      "reinsertFailed": "Setupの再挿入に失敗しました",
+      "reinsertNoEditor": "再挿入するには編集中のシーンを開いてください",
+      "reinsertNoSelection": "再挿入する範囲を選択してください"
     },
     "strength": {
       "subtle": "控えめ",
@@ -2027,7 +2229,14 @@
         "careful": "精読者",
         "casual": "普通",
         "skim": "流し読み"
-      }
+      },
+      "aiStrength": "AI評価（careful）",
+      "authorStrength": "作者評価"
+    },
+    "chapter": {
+      "adopt": "伏線として登録",
+      "audit": "AI 監査",
+      "noChapters": "章がありません"
     }
   },
   "trashBin": {
@@ -2164,7 +2373,8 @@
       "generateFromBeats": "ビートからSynopsisを生成",
       "generatingFromBeats": "Synopsisを生成中…",
       "generatedFromBeats": "ビートからSynopsisを生成しました",
-      "generateFromBeatsFailed": "Synopsis生成に失敗しました"
+      "generateFromBeatsFailed": "Synopsis生成に失敗しました",
+      "saveFailed": "Synopsis の保存に失敗しました"
     },
     "outline": {
       "label": "Outline",
@@ -2368,7 +2578,9 @@
       "manuscriptPagesValueWords": "{{n}} 枚（250語）",
       "readingTime": "推定読了時間",
       "readingTimeValue": "約{{n}}分",
-      "goal": "目標"
+      "goal": "目標",
+      "beatsLabel": "Beats: {{total}}",
+      "generatedBeats": "({{generated}} 自動生成)"
     },
     "tabBar": {
       "syncedIndicator": "別のグループでも開かれています",
@@ -2446,7 +2658,28 @@
     },
     "splash": {
       "hint": "ツリーからシーンを選択して執筆を始めましょう"
-    }
+    },
+    "comment": {
+      "inputPlaceholder": "コメントを入力…",
+      "empty": "（コメントなし）"
+    },
+    "lintDisable": {
+      "gutterTooltipAll": "このブロックは全 Lint ルールを無効化中",
+      "gutterTooltipPartial": "このブロックに {{count}} 件の Lint 無効化があります"
+    },
+    "synopsis": {
+      "title": "Synopsis",
+      "intentLabel": "狙い（このシーンで達成したいこと）",
+      "intentSaveFailed": "狙いの保存に失敗しました",
+      "intentPlaceholder": "このシーンで読者に届けたいこと・達成したい効果",
+      "povLabel": "POV",
+      "generateFromBeats": "ビートからSynopsisを生成",
+      "generatedFromBeats": "ビートからSynopsisを生成しました",
+      "generatingFromBeats": "Synopsisを生成中…",
+      "overwrite": "上書き",
+      "overwriteConfirm": "既存のSynopsisを上書きしますか？"
+    },
+    "bodyPlaceholder": "思いついたことを書く…"
   },
   "inlineAi": {
     "generateFailed": "生成に失敗しました",
@@ -3358,5 +3591,14 @@
     "reindexing": "セマンティック再インデックス中",
     "noScenes": "対象シーンなし",
     "progressDetail": "{{scene}} / {{total}} シーン · {{chunks}} チャンク"
+  },
+  "beat": {
+    "generateBeats": {
+      "parseError": "AIの出力をパースできませんでした"
+    },
+    "generateSynopsis": {
+      "emptyResponse": "AIが空のレスポンスを返しました",
+      "saveFailed": "シノプシスの保存に失敗しました"
+    }
   }
 }

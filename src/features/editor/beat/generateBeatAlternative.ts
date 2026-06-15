@@ -1,4 +1,5 @@
 import type { Editor } from "@tiptap/core";
+import i18next from "@/lib/i18n";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -76,6 +77,6 @@ export async function generateBeatAlternative(
       .create({ title, content, sceneId, contentSource: "ai" });
     callbacks?.onDone?.();
   } catch {
-    callbacks?.onError?.("スニペットの保存に失敗しました");
+    callbacks?.onError?.(i18next.t("common.snippetSaveFailed"));
   }
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -37,6 +38,7 @@ interface Props {
 }
 
 export function CurrentSceneIntentDriftView({ sceneId }: Props) {
+  const { t } = useTranslation();
   const [running, setRunning] = useState(false);
   const analysisGate = useAiGate("analysis");
   const { setAnnotations } = useAnnotationStore();
@@ -107,38 +109,38 @@ export function CurrentSceneIntentDriftView({ sceneId }: Props) {
       setRunning(false);
 
       if (!outcome.ok) {
-        toast.error("狙いズレ診断の実行に失敗しました", {
+        toast.error(t("kouetsu.intentDrift.executionFailed"), {
           description: outcome.error,
         });
         return;
       }
       if (outcome.e?.from_cache) {
-        toast.info("前回と同じ内容のためキャッシュから読み込みました", {
-          description: "AI には送信していません",
+        toast.info(t("kouetsu.consistency.fromCache"), {
+          description: t("kouetsu.cache.notSent"),
         });
       } else if ((outcome.e?.annotation_count ?? 0) === 0) {
-        toast.success("明確なズレは見つかりませんでした");
+        toast.success(t("kouetsu.intentDrift.noIssues"));
       }
     } catch (e) {
       console.error("intent_drift launch error", e);
       setRunning(false);
-      toast.error("狙いズレ診断を起動できませんでした", {
+      toast.error(t("kouetsu.intentDrift.launchFailed"), {
         description: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [running, sceneId, intent, hasIntent, setAnnotations]);
+  }, [running, sceneId, intent, hasIntent, setAnnotations, t]);
 
   const disabled =
     running || !hasIntent || analysisGate.presentation !== "enabled";
   const triggerTitle = !hasIntent
-    ? "このシーンに狙いを入力すると診断できます"
-    : (analysisGate.tooltip ?? "現在シーンの狙いズレを診断");
+    ? t("kouetsu.currentScene.intentDriftHint")
+    : (analysisGate.tooltip ?? t("kouetsu.currentScene.intentDriftTooltip"));
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
         <span className="text-xs text-muted-foreground">
-          現在シーン・狙いズレ
+          {t("kouetsu.currentScene.intentDrift")}
         </span>
         {analysisGate.presentation !== "hidden" && (
           <button
@@ -157,7 +159,7 @@ export function CurrentSceneIntentDriftView({ sceneId }: Props) {
             ) : (
               <Sparkles size={12} />
             )}
-            <span>狙いズレ診断</span>
+            <span>{t("kouetsu.currentScene.intentDriftDiagnosisButton")}</span>
           </button>
         )}
       </div>
@@ -165,7 +167,7 @@ export function CurrentSceneIntentDriftView({ sceneId }: Props) {
         <PostEffectAnnotationPanel
           sceneId={sceneId}
           categoryFilter={INTENT_DRIFT_FILTER}
-          emptyLabel="狙いズレの指摘はまだありません"
+          emptyLabel={t("kouetsu.intentDrift.empty")}
         />
       </div>
     </div>

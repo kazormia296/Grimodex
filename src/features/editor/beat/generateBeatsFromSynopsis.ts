@@ -6,6 +6,7 @@ import { streamInlineAiText } from "./streamInlineAiText";
 import { BEAT_TYPES } from "@/features/editor/SceneBeatNode";
 import type { BeatType } from "@/features/editor/SceneBeatNode";
 import { getPromptCatalog } from "@/prompts/index";
+import i18next from "@/lib/i18n";
 
 interface GenerateBeatsCallbacks {
   onStart?: () => void;
@@ -93,7 +94,7 @@ export async function generateBeatsFromSynopsis(
 
   const rawBeats = parseBeatJson(result.text.trim());
   if (!rawBeats) {
-    callbacks?.onError?.("AIの出力をパースできませんでした");
+    callbacks?.onError?.(i18next.t("beat.generateBeats.parseError"));
     return;
   }
 

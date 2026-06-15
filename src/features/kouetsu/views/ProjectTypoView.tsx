@@ -8,6 +8,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
@@ -53,6 +54,7 @@ const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
 };
 
 export function ProjectTypoView() {
+  const { t } = useTranslation();
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
@@ -172,28 +174,30 @@ export function ProjectTypoView() {
       setRunningAll(false);
 
       if (!result.ok) {
-        toast.error("全シーン誤字脱字チェックに失敗しました", {
+        toast.error(t("kouetsu.projectTypo.checkFailed"), {
           description: result.error,
         });
         return;
       }
       if (result.from_cache) {
-        toast.info("前回と同じ内容のためキャッシュから読み込みました", {
-          description: "AI には送信していません",
+        toast.info(t("kouetsu.consistency.fromCache"), {
+          description: t("kouetsu.cache.notSent"),
         });
       } else if ((result.count ?? 0) === 0) {
-        toast.success("全シーンで誤字脱字は見つかりませんでした");
+        toast.success(t("kouetsu.projectTypo.noIssues"));
       } else {
-        toast.success(`${result.count} 件の誤字脱字候補を検出しました`);
+        toast.success(
+          t("kouetsu.projectTypo.foundCount", { count: result.count }),
+        );
       }
     } catch (e) {
       console.error("typo multi launch error", e);
       setRunningAll(false);
-      toast.error("全シーン誤字脱字チェックを起動できませんでした", {
+      toast.error(t("kouetsu.projectTypo.launchFailed"), {
         description: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [runningAll, projectId, afterRunAll]);
+  }, [runningAll, projectId, afterRunAll, t]);
 
   const groups = useMemo(() => {
     const acc = new Map<string, PostEffectAnnotation[]>();
@@ -212,13 +216,14 @@ export function ProjectTypoView() {
   }, [annotations, scenes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const disabled = runningAll || analysisGate.presentation !== "enabled";
-  const triggerTitle =
-    analysisGate.tooltip ?? "全シーンの誤字脱字チェックを実行";
+  const triggerTitle = analysisGate.tooltip ?? t("kouetsu.typo.projectTooltip");
 
   return (
     <div className="flex flex-col">
       <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
-        <span className="text-xs text-muted-foreground">全シーン誤字脱字</span>
+        <span className="text-xs text-muted-foreground">
+          {t("kouetsu.projectTypo.header")}
+        </span>
         {/* analysis がポリシーで OFF のときは実行ボタンを隠す（パネルは残す）。 */}
         {analysisGate.presentation !== "hidden" && (
           <button
@@ -237,7 +242,7 @@ export function ProjectTypoView() {
             ) : (
               <Sparkles size={12} />
             )}
-            <span>AIチェック</span>
+            <span>{t("kouetsu.aiCheck")}</span>
           </button>
         )}
       </div>
@@ -249,7 +254,7 @@ export function ProjectTypoView() {
       ) : groups.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
           <Info size={16} />
-          <span>誤字脱字は見つかっていません</span>
+          <span>{t("kouetsu.projectTypo.empty")}</span>
         </div>
       ) : (
         <div className="flex flex-col gap-0">
@@ -303,6 +308,7 @@ function SceneGroupSection({
 }
 
 function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
+  const { t } = useTranslation();
   const { setFocusedAnnotationId, focusedAnnotationId } = useAnnotationStore();
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const editor = useEditorStore((s) => s.editor);
@@ -324,8 +330,8 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
   async function fix() {
     const result = await applyTypoFixAndResolve(editor, ann);
     if (!result.applied) {
-      toast.error("置換できませんでした", {
-        description: "該当箇所が本文中で見つからないか変更されています",
+      toast.error(t("kouetsu.typo.replaceFailed"), {
+        description: t("kouetsu.typo.replaceFailedDesc"),
       });
     }
   }
@@ -359,8 +365,10 @@ function TypoAnnotationRow({ ann }: { ann: PostEffectAnnotation }) {
         </div>
         {canFix && (
           <button
-            aria-label="Quick Fix (suggestion を適用)"
-            title={`「${parsed.typo!.suggestion}」に置き換える`}
+            aria-label={t("kouetsu.typo.quickFixAria")}
+            title={t("kouetsu.typo.replaceWith", {
+              suggestion: parsed.typo!.suggestion,
+            })}
             onClick={(e) => {
               e.stopPropagation();
               void fix();

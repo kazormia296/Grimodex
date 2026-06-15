@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Info, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,7 @@ import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
 
 export function ProjectReviewView() {
+  const { t } = useTranslation();
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
@@ -111,14 +113,14 @@ export function ProjectReviewView() {
       reload();
       setRunningAll(false);
       if (!outcome.ok) {
-        toast.error("全シーン批評に失敗しました", {
+        toast.error(t("kouetsu.projectReview.failed"), {
           description: outcome.error,
         });
       }
     } catch (e) {
       console.error("review multi launch error", e);
       setRunningAll(false);
-      toast.error("全シーン批評を起動できませんでした", {
+      toast.error(t("kouetsu.projectReview.launchFailed"), {
         description: e instanceof Error ? e.message : String(e),
       });
     }
@@ -146,14 +148,16 @@ export function ProjectReviewView() {
   return (
     <div className="flex flex-col">
       <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
-        <span className="text-xs text-muted-foreground">全シーン批評</span>
+        <span className="text-xs text-muted-foreground">
+          {t("kouetsu.projectReview.header")}
+        </span>
         {/* analysis がポリシーで OFF のときは実行ボタンを隠す（パネルは残す）。 */}
         {analysisGate.presentation !== "hidden" && (
           <button
             type="button"
             disabled={runningAll || analysisGate.presentation !== "enabled"}
             onClick={() => void runAll()}
-            title={analysisGate.tooltip ?? "全シーンの批評を実行"}
+            title={analysisGate.tooltip ?? t("kouetsu.review.projectTooltip")}
             className={cn(
               "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
               "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
@@ -165,7 +169,7 @@ export function ProjectReviewView() {
             ) : (
               <Sparkles size={12} />
             )}
-            <span>AIレビュー</span>
+            <span>{t("kouetsu.aiReview")}</span>
           </button>
         )}
       </div>
@@ -177,7 +181,7 @@ export function ProjectReviewView() {
       ) : groups.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
           <Info size={16} />
-          <span>批評はまだありません</span>
+          <span>{t("kouetsu.review.empty")}</span>
         </div>
       ) : (
         <div className="flex flex-col gap-0">

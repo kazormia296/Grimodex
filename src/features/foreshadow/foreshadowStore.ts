@@ -153,7 +153,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         const cap = { ...row };
         useGlobalHistoryStore.getState().push({
           kind: "foreshadow",
-          label: "伏線作成",
+          label: i18next.t("foreshadow.store.historyCreate"),
           async undo() {
             await deleteForeshadow(cap.id);
             set((s) => ({ items: s.items.filter((i) => i.id !== cap.id) }));
@@ -263,7 +263,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
 
     useGlobalHistoryStore.getState().push({
       kind: "foreshadow",
-      label: "伏線更新",
+      label: i18next.t("foreshadow.store.historyUpdate"),
       async undo() {
         await updateForeshadow(id, undoPatch);
         if (releasedPayoffSnapshot) {
@@ -352,7 +352,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     const cap = { ...before };
     useGlobalHistoryStore.getState().push({
       kind: "foreshadow",
-      label: "伏線削除",
+      label: i18next.t("foreshadow.store.historyDelete"),
       async undo() {
         // 1500ms 以内 Ctrl+Z 吸収: trash 保留を cancel
         useTrashBinStore.getState().cancelPending({ tempId: trashTempId });
@@ -839,7 +839,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     const capIdx = candidateIdx;
     useGlobalHistoryStore.getState().push({
       kind: "foreshadow",
-      label: "Setup採用",
+      label: i18next.t("foreshadow.store.historyAdoptSetup"),
       async undo() {
         await deleteSetup(setupPayload.id);
         await get().loadSetups(foreshadowId);
@@ -989,7 +989,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
 
     useGlobalHistoryStore.getState().push({
       kind: "foreshadow",
-      label: "Setup採用 (本文挿入)",
+      label: i18next.t("foreshadow.store.historyAdoptSetupInsert"),
       async undo() {
         await deleteSetup(setupPayload.id);
         await saveSceneContent(capSceneId, capBefore);

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronRight } from "lucide-react";
 import { usePanelRef } from "react-resizable-panels";
 import { cn } from "@/lib/utils";
@@ -52,6 +53,7 @@ function SectionHeader({
 }
 
 export function EditorialTab() {
+  const { t } = useTranslation();
   const [reviewExpanded, setReviewExpanded] = useState(true);
   const [pseudoExpanded, setPseudoExpanded] = useState(false);
   const [intentExpanded, setIntentExpanded] = useState(false);
@@ -114,7 +116,7 @@ export function EditorialTab() {
           className="flex flex-col overflow-hidden"
         >
           <SectionHeader
-            title="レビュー"
+            title={t("kouetsu.editorial.review")}
             count={reviewCount}
             expanded={reviewExpanded}
             onToggle={() => toggle(reviewRef, reviewExpanded)}
@@ -138,7 +140,7 @@ export function EditorialTab() {
           className="flex flex-col overflow-hidden"
         >
           <SectionHeader
-            title="疑似コメント"
+            title={t("kouetsu.editorial.pseudoComment")}
             count={pseudoCount}
             expanded={pseudoExpanded}
             onToggle={() => toggle(pseudoRef, pseudoExpanded)}
@@ -162,7 +164,7 @@ export function EditorialTab() {
           className="flex flex-col overflow-hidden"
         >
           <SectionHeader
-            title="狙いズレ"
+            title={t("kouetsu.editorial.intentDrift")}
             count={intentCount}
             expanded={intentExpanded}
             onToggle={() => toggle(intentRef, intentExpanded)}
@@ -186,7 +188,7 @@ export function EditorialTab() {
           className="flex flex-col overflow-hidden"
         >
           <SectionHeader
-            title="メタ構造"
+            title={t("kouetsu.editorial.metaStructure")}
             count={0}
             expanded={metaExpanded}
             onToggle={() => toggle(metaRef, metaExpanded)}
@@ -210,7 +212,7 @@ export function EditorialTab() {
           className="flex flex-col overflow-hidden"
         >
           <SectionHeader
-            title="時系列"
+            title={t("kouetsu.editorial.timeline")}
             count={0}
             expanded={timelineExpanded}
             onToggle={() => toggle(timelineRef, timelineExpanded)}

@@ -18,7 +18,10 @@
     "create": "Create",
     "deleteConfirmTitle": "Confirm Delete",
     "deleteConfirm": "Delete",
-    "other": "Other"
+    "other": "Other",
+    "snippetSaveFailed": "Failed to save snippet",
+    "confirmDelete": "Delete?",
+    "remove": "Remove"
   },
   "welcome": {
     "description": "Choose a folder to save your manuscript.",
@@ -904,6 +907,173 @@
         "scene_intent_empty": "Scenes with no intent set",
         "trash_salvageable": "Salvageable fragments"
       }
+    },
+    "comments": {
+      "empty": "No comments",
+      "emptyHint": "Select text and press {{shortcut}} to add a manual comment; pseudo-comments from the Editorial tab are also aggregated here",
+      "jumpToLocation": "Open and select location"
+    },
+    "scope": {
+      "current": "Current scene",
+      "project": "Project",
+      "ignored": "Excluded"
+    },
+    "editorial": {
+      "review": "Review",
+      "pseudoComment": "Pseudo-comments",
+      "intentDrift": "Intent drift",
+      "metaStructure": "Meta structure",
+      "timeline": "Timeline"
+    },
+    "issues": {
+      "typo": "Typos & omissions"
+    },
+    "consistency": {
+      "emptyIgnored": "No ignored consistency check results",
+      "codexLabel": "Codex Consistency",
+      "intraLabel": "Intra-scene contradiction",
+      "partialError": "Consistency check ({{effect}}) failed",
+      "fromCache": "Loaded from cache (unchanged since last run)",
+      "noIssues": "No contradictions found",
+      "otherModelWarning": "{{count}} findings detected by a different model",
+      "launchFailed": "Failed to launch consistency check",
+      "runCurrentScene": "Run consistency check for current scene",
+      "intraPrefix": "Intra-scene",
+      "foundCount": "Detected {{count}} contradiction candidates",
+      "conflictBreakdown": "Codex: {{consCount}} / Internal: {{intraCount}}",
+      "singleEffectError": "All scenes {{label}} check failed",
+      "unclassified": "Unclassified",
+      "runAllScenes": "Run consistency check for all scenes",
+      "modelCount": "{{model}}: {{count}}"
+    },
+    "selectScene": "Select a scene",
+    "intentDrift": {
+      "emptyIgnored": "No ignored intent drift findings",
+      "executionFailed": "Failed to execute intent drift diagnosis",
+      "noIssues": "No clear intent drift found",
+      "launchFailed": "Failed to launch intent drift diagnosis",
+      "empty": "No intent-drift findings yet"
+    },
+    "metaStructure": {
+      "noExcluded": "No excluded items in meta structure",
+      "reviewFailed": "Meta structure review failed",
+      "launchFailed": "Failed to launch meta structure review",
+      "projectReviewFailed": "Failed to review meta structure for all scenes",
+      "projectScope": "All Scenes Structure Diagnosis",
+      "currentScope": "Current Scene Structure Diagnosis",
+      "diagnosisButton": "AI Diagnosis",
+      "empty": "No structure diagnoses yet",
+      "runTooltip": "Run meta-structure review"
+    },
+    "pseudoComment": {
+      "projectUnavailable": "Pseudo-comments are generated per scene. Use the Comments tab for cross-project view",
+      "emptyIgnored": "No ignored pseudo-comments",
+      "generationFailed": "Failed to generate pseudo comments",
+      "noComments": "No comments generated",
+      "launchFailed": "Failed to launch pseudo comment generation",
+      "targetProfileRequired": "Enter target reader profile in project settings to enable",
+      "requiresTargetProfile": " (requires target reader setting)",
+      "generateButton": "AI Comment",
+      "empty": "No comments yet",
+      "runTooltip": "Generate comments with the selected persona"
+    },
+    "review": {
+      "emptyIgnored": "No ignored review findings",
+      "executionFailed": "Failed to execute review",
+      "noFindings": "No findings",
+      "launchFailed": "Failed to launch review",
+      "empty": "No reviews yet",
+      "currentTooltip": "Run review for the current scene",
+      "projectTooltip": "Run review for all scenes"
+    },
+    "timelineConsistency": {
+      "emptyIgnored": "No ignored timeline findings"
+    },
+    "typo": {
+      "emptyIgnored": "No ignored typos",
+      "checkFailed": "Typo check failed",
+      "noIssues": "No typos found",
+      "launchFailed": "Failed to launch typo check",
+      "localDetection": "Local Detection",
+      "localEmpty": "No confirmed typos found",
+      "aiDetection": "AI Detection",
+      "aiEmpty": "AI check not run / no findings",
+      "resolvedIgnored": "Resolved / Ignored",
+      "replacementFailed": "Could not replace",
+      "replacementFailedDesc": "Location not found in text or has been changed",
+      "currentTooltip": "Run typo check for the current scene",
+      "projectTooltip": "Run typo check for all scenes",
+      "quickFixAria": "Quick Fix (apply suggestion)",
+      "replaceWith": "Replace with “{{suggestion}}”",
+      "resolved": "Resolved",
+      "dismiss": "Ignore",
+      "replaceFailed": "Could not replace",
+      "replaceFailedDesc": "The target text was not found or has changed"
+    },
+    "cache": {
+      "notSent": "Not sent to AI"
+    },
+    "currentScene": {
+      "consistency": "Current Scene Consistency",
+      "intentDriftHint": "Enter intent for this scene to run diagnosis",
+      "intentDriftTooltip": "Diagnose intent drift for current scene",
+      "intentDrift": "Current Scene Intent Drift",
+      "intentDriftDiagnosisButton": "Intent Drift Diagnosis",
+      "review": "Current Scene Review",
+      "typo": "Current Scene Typos"
+    },
+    "aiCheck": "AI check",
+    "aiReview": "AI review",
+    "dismissed": {
+      "reopen": "Reopen",
+      "reopenTooltip": "Reopen (restore to open)"
+    },
+    "lens": {
+      "structure": "Structure",
+      "pacing": "Pacing",
+      "characterArc": "Character Arc",
+      "pov": "Point of View"
+    },
+    "projectAnnotations": {
+      "checkFailed": "Failed to check consistency for all scenes",
+      "checkFailedPartial": "Failed to check {{label}} consistency for all scenes",
+      "noIssues": "No contradictions found in all scenes",
+      "noIssuesOfType": "No {{label}} issues found in all scenes",
+      "foundCount": "Found {{count}} conflict candidates",
+      "launchFailed": "Failed to launch consistency check for all scenes",
+      "header": "All Scenes Consistency",
+      "groupByScene": "By Scene",
+      "groupByCodex": "By Codex",
+      "empty": "No consistency issues found"
+    },
+    "projectIntentDrift": {
+      "header": "All Scenes Intent Drift (view only)"
+    },
+    "projectReview": {
+      "failed": "Failed to review all scenes",
+      "launchFailed": "Failed to launch review for all scenes",
+      "header": "All Scenes Review"
+    },
+    "projectTimeline": {
+      "noScenesPlaced": "No scenes placed in story-time",
+      "placeScenesHint": "Place scenes in timeline to run check",
+      "checkFailed": "Timeline check failed",
+      "launchFailed": "Failed to launch timeline check",
+      "header": "In-Story Timeline Consistency",
+      "checkButton": "AI Timeline Check",
+      "dataInconsistency": "Data Inconsistencies (auto-detected)",
+      "duplicateKey": "story-time key duplicate",
+      "invalidKey": "story-time key invalid",
+      "empty": "No timeline findings yet",
+      "checkTooltip": "Check timeline consistency of placed scenes"
+    },
+    "projectTypo": {
+      "checkFailed": "Failed to check typos in all scenes",
+      "noIssues": "No typos found in all scenes",
+      "foundCount": "Found {{count}} typo candidates",
+      "launchFailed": "Failed to launch typo check for all scenes",
+      "header": "All Scenes Typos",
+      "empty": "No typos found"
     }
   },
   "chat": {
@@ -1946,7 +2116,12 @@
       "toggle": "Expand/collapse",
       "setupsEmpty": "No setups",
       "editButton": "Edit",
-      "jumpPayoff": "Jump to Payoff"
+      "jumpPayoff": "Jump to Payoff",
+      "adoptSetup": "Adopt",
+      "proposeSetups": "Propose setups",
+      "tabChapter": "Chapter audit",
+      "tabList": "List",
+      "adoptInsertNew": "Insert and adopt"
     },
     "create": {
       "heading": "Create Foreshadow",
@@ -1982,7 +2157,8 @@
       "createNew": "Create new foreshadow"
     },
     "hoverPopover": {
-      "removeMark": "Remove mark"
+      "removeMark": "Remove mark",
+      "jumpToPanel": "Show in panel"
     },
     "setup": {
       "orphan": "Orphan",
@@ -1991,12 +2167,38 @@
         "designated_existing": "Designated",
         "inserted_new": "Inserted",
         "rewritten": "Rewritten"
-      }
+      },
+      "jump": "Jump to setup",
+      "reanchor": "Re-anchor",
+      "reinsert": "Re-insert"
     },
     "store": {
       "evaluateFailed": "Failed to get AI evaluation",
       "createSuccess": "Registered as foreshadow",
-      "updateFailed": "Failed to update foreshadow"
+      "updateFailed": "Failed to update foreshadow",
+      "adoptDone": "Adopted",
+      "adoptFailed": "Failed to adopt",
+      "auditFailed": "Audit failed",
+      "createFailed": "Failed to create foreshadowing",
+      "deleteFailed": "Failed to delete foreshadowing",
+      "historyCreate": "Create foreshadowing",
+      "historyUpdate": "Update foreshadowing",
+      "historyDelete": "Delete foreshadowing",
+      "historyAdoptSetup": "Adopt setup",
+      "historyAdoptSetupInsert": "Adopt setup (insert into body)",
+      "adoptNoEditor": "Open the target scene to adopt",
+      "adoptNoPosition": "The AI returned no position. Open the scene and set it manually",
+      "adoptWrongScene": "Open the candidate scene before adopting",
+      "deleteSetupFailed": "Failed to delete setup",
+      "loadFailed": "Failed to load foreshadowing",
+      "proposeFailed": "Failed to get setup proposals",
+      "proposeNoPayoff": "Set the payoff scene first to propose setups",
+      "reanchorFailed": "Failed to re-anchor setup",
+      "reanchorNoEditor": "Open the scene being edited to re-anchor",
+      "reanchorNoSelection": "Select the range to re-anchor",
+      "reinsertFailed": "Failed to re-insert setup",
+      "reinsertNoEditor": "Open the scene being edited to re-insert",
+      "reinsertNoSelection": "Select the range to re-insert"
     },
     "strength": {
       "subtle": "Subtle",
@@ -2032,7 +2234,14 @@
         "careful": "Careful",
         "casual": "Casual",
         "skim": "Skim"
-      }
+      },
+      "aiStrength": "AI assessment (careful)",
+      "authorStrength": "Author assessment"
+    },
+    "chapter": {
+      "adopt": "Register as foreshadowing",
+      "audit": "AI Audit",
+      "noChapters": "No chapters"
     }
   },
   "trashBin": {
@@ -2165,7 +2374,8 @@
       "generateTitle": "Generate synopsis with AI",
       "generating": "Generating…",
       "overwriteConfirm": "Overwrite existing synopsis?",
-      "overwrite": "Overwrite"
+      "overwrite": "Overwrite",
+      "saveFailed": "Failed to save synopsis"
     },
     "outline": {
       "label": "Outline",
@@ -2260,7 +2470,9 @@
         "deleteBeatOnly": "Delete beat only (keep prose)",
         "deleteBeatAndProse": "Delete beat and prose",
         "regenerate": "Regenerate",
-        "unplace": "Move to Unplaced"
+        "unplace": "Move to Unplaced",
+        "generateAlternative": "Generate alternative & save to snippets",
+        "generatingAlternative": "Generating alternative…"
       },
       "unplacedDragHandle": "Drag to reorder",
       "unplacedMenuItems": {
@@ -2302,7 +2514,10 @@
         "prompt": "Change \"{{name}}\" to {{role}}?",
         "accept": "Apply",
         "reject": "Dismiss"
-      }
+      },
+      "alternativeSaved": "Saved alternative to snippets",
+      "generateFromSynopsis": "Suggest beats from synopsis",
+      "generatingFromSynopsis": "Generating beats…"
     },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",
@@ -2364,7 +2579,9 @@
       "manuscriptPagesValueWords": "{{n}} pages (250 words)",
       "readingTime": "Reading time",
       "readingTimeValue": "~{{n}} min",
-      "goal": "Goal"
+      "goal": "Goal",
+      "beatsLabel": "Beats: {{total}}",
+      "generatedBeats": "({{generated}} generated)"
     },
     "tabBar": {
       "syncedIndicator": "Also open in another group",
@@ -2442,7 +2659,28 @@
     },
     "splash": {
       "hint": "Select a scene from the tree to start writing"
-    }
+    },
+    "comment": {
+      "inputPlaceholder": "Enter a comment…",
+      "empty": "(No comment)"
+    },
+    "lintDisable": {
+      "gutterTooltipAll": "All Lint rules are disabled on this block",
+      "gutterTooltipPartial": "{{count}} Lint disable directives on this block"
+    },
+    "synopsis": {
+      "title": "Synopsis",
+      "intentLabel": "Intent (What you want to achieve in this scene)",
+      "intentSaveFailed": "Failed to save intent",
+      "intentPlaceholder": "What you want to convey to readers / effect you want to achieve in this scene",
+      "povLabel": "POV",
+      "generateFromBeats": "Generate synopsis from beats",
+      "generatedFromBeats": "Generated synopsis from beats",
+      "generatingFromBeats": "Generating synopsis…",
+      "overwrite": "Overwrite",
+      "overwriteConfirm": "Overwrite existing synopsis?"
+    },
+    "bodyPlaceholder": "Write whatever comes to mind…"
   },
   "inlineAi": {
     "generateFailed": "Generation failed",
@@ -3354,5 +3592,14 @@
     "reindexing": "Semantic reindexing…",
     "noScenes": "No scenes to index",
     "progressDetail": "{{scene}} / {{total}} scenes · {{chunks}} chunks"
+  },
+  "beat": {
+    "generateBeats": {
+      "parseError": "Failed to parse AI output"
+    },
+    "generateSynopsis": {
+      "emptyResponse": "AI returned an empty response",
+      "saveFailed": "Failed to save synopsis"
+    }
   }
 }

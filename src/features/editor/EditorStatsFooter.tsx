@@ -129,8 +129,9 @@ export function EditorStatsFooter({
           data-testid="beat-stats"
           className="tabular-nums text-muted-foreground"
         >
-          Beats: {beatTotal}
-          {beatGenerated > 0 && ` (${beatGenerated} generated)`}
+          {i18next.t("editor.status.beatsLabel", { total: beatTotal })}
+          {beatGenerated > 0 &&
+            ` ${i18next.t("editor.status.generatedBeats", { generated: beatGenerated })}`}
         </span>
       )}
       <div ref={containerRef} className="relative">

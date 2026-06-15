@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Info, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -41,6 +42,7 @@ interface Props {
 }
 
 export function CurrentScenePseudoCommentView({ sceneId }: Props) {
+  const { t } = useTranslation();
   // project 言語で読者ペルソナ集合 (ja/en) と校閲プロンプトを切替える。
   const lang = useCurrentProject()?.language ?? "ja";
   const personaDefs = personaDefsForLang(lang);
@@ -176,22 +178,22 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
       setRunning(false);
 
       if (!outcome.ok) {
-        toast.error("疑似コメントの生成に失敗しました", {
+        toast.error(t("kouetsu.pseudoComment.generationFailed"), {
           description: outcome.error,
         });
         return;
       }
       if (outcome.e?.from_cache) {
-        toast.info("前回と同じ内容のためキャッシュから読み込みました", {
-          description: "AI には送信していません",
+        toast.info(t("kouetsu.consistency.fromCache"), {
+          description: t("kouetsu.cache.notSent"),
         });
       } else if ((outcome.e?.annotation_count ?? 0) === 0) {
-        toast.success("コメントはありませんでした");
+        toast.success(t("kouetsu.pseudoComment.noComments"));
       }
     } catch (e) {
       console.error("pseudo_comment launch error", e);
       setRunning(false);
-      toast.error("疑似コメントを起動できませんでした", {
+      toast.error(t("kouetsu.pseudoComment.launchFailed"), {
         description: e instanceof Error ? e.message : String(e),
       });
     }
@@ -217,11 +219,13 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
                 disabled={locked}
                 title={
                   locked
-                    ? "プロジェクト設定で想定読者を入力すると選べます"
+                    ? t("kouetsu.pseudoComment.targetProfileRequired")
                     : undefined
                 }
               >
-                {locked ? `${d.label}（要・想定読者設定）` : d.label}
+                {locked
+                  ? `${d.label}${t("kouetsu.pseudoComment.requiresTargetProfile")}`
+                  : d.label}
               </option>
             );
           })}
@@ -231,7 +235,9 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
           <button
             type="button"
             disabled={disabled}
-            title={analysisGate.tooltip ?? "選択したペルソナでコメントを生成"}
+            title={
+              analysisGate.tooltip ?? t("kouetsu.pseudoComment.runTooltip")
+            }
             onClick={() => void run()}
             className={cn(
               "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
@@ -244,7 +250,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
             ) : (
               <Sparkles size={12} />
             )}
-            <span>AIコメント</span>
+            <span>{t("kouetsu.pseudoComment.generateButton")}</span>
           </button>
         )}
       </div>
@@ -252,7 +258,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
         {threads.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
             <Info size={18} />
-            <span>コメントはまだありません</span>
+            <span>{t("kouetsu.pseudoComment.empty")}</span>
           </div>
         ) : (
           <div className="flex flex-col gap-2">

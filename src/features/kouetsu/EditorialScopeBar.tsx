@@ -1,19 +1,21 @@
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useKouetsuStore, type IssuesScope } from "./kouetsuStore";
 
-const SCOPES: Array<{ id: IssuesScope; label: string }> = [
-  { id: "current", label: "現在シーン" },
-  { id: "project", label: "プロジェクト" },
-  { id: "ignored", label: "除外" },
+const SCOPES: Array<{ id: IssuesScope; labelKey: string }> = [
+  { id: "current", labelKey: "kouetsu.scope.current" },
+  { id: "project", labelKey: "kouetsu.scope.project" },
+  { id: "ignored", labelKey: "kouetsu.scope.ignored" },
 ];
 
 export function EditorialScopeBar() {
+  const { t } = useTranslation();
   const activeScope = useKouetsuStore((s) => s.activeEditorialScope);
   const setScope = useKouetsuStore((s) => s.setActiveEditorialScope);
 
   return (
     <div className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/20 px-2 py-1 text-xs">
-      {SCOPES.map(({ id, label }) => (
+      {SCOPES.map(({ id, labelKey }) => (
         <button
           key={id}
           type="button"
@@ -25,7 +27,7 @@ export function EditorialScopeBar() {
               : "text-muted-foreground hover:bg-accent",
           )}
         >
-          {label}
+          {t(labelKey)}
         </button>
       ))}
     </div>

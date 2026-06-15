@@ -1,5 +1,6 @@
 import { Check, X } from "lucide-react";
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { useInlineAiStore } from "./inlineAiStore";
 
 interface InlineAIToolbarProps {
@@ -21,6 +22,7 @@ export function InlineAIToolbar({
   onReject,
   onRetry,
 }: InlineAIToolbarProps) {
+  const { t } = useTranslation();
   const status = useInlineAiStore((s) => s.status);
   const isVisible = status === "diffShown" || status === "generating";
 
@@ -86,7 +88,7 @@ export function InlineAIToolbar({
       )}
       {isGenerating && (
         <span className="ml-1 text-xs text-muted-foreground animate-pulse">
-          生成中…
+          {t("aiTree.generating")}
         </span>
       )}
     </div>

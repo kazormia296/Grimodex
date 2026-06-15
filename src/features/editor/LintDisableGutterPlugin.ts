@@ -3,6 +3,7 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { EditorState, Transaction } from "@tiptap/pm/state";
 
 import { sanitiseRules } from "@/features/lint/lintDisableWalker";
+import i18next from "@/lib/i18n";
 
 /**
  * Gutter icon for blocks that contain at least one disable directive
@@ -84,8 +85,10 @@ function buildGutterDecorations(state: EditorState): DecorationSet {
           el.className = `lint-disable-gutter${info.isAll ? " lint-disable-gutter--all" : ""}`;
           el.setAttribute("aria-hidden", "true");
           el.title = info.isAll
-            ? "このブロックは全 Lint ルールを無効化中"
-            : `このブロックに ${info.count} 件の Lint 無効化があります`;
+            ? i18next.t("editor.lintDisable.gutterTooltipAll")
+            : i18next.t("editor.lintDisable.gutterTooltipPartial", {
+                count: info.count,
+              });
           return el;
         },
         { side: -1, key: `lint-gutter-${pos}-${info.isAll ? "all" : "rules"}` },

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { CurrentSceneTypoView } from "@/features/kouetsu/views/CurrentSceneTypoView";
@@ -5,6 +6,7 @@ import { ProjectTypoView } from "@/features/kouetsu/views/ProjectTypoView";
 import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnnotationsView";
 
 export function TypoSection() {
+  const { t } = useTranslation();
   const scope = useKouetsuStore((s) => s.activeIssuesScope);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
@@ -19,7 +21,7 @@ export function TypoSection() {
     return (
       <DismissedAnnotationsView
         category="typo_anchor"
-        emptyLabel="無視した誤字脱字はありません"
+        emptyLabel={t("kouetsu.typo.emptyIgnored")}
       />
     );
   }
@@ -28,7 +30,7 @@ export function TypoSection() {
   if (!activeSceneId) {
     return (
       <div className="px-3 py-4 text-xs text-muted-foreground">
-        シーンを選択してください
+        {t("kouetsu.selectScene")}
       </div>
     );
   }

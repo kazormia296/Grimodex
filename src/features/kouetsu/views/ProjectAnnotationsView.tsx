@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, Info, Loader2, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -52,6 +53,7 @@ type RunOutcome =
   | { kind: "err"; effect: "consistency" | "intra"; error: string };
 
 export function ProjectAnnotationsView() {
+  const { t } = useTranslation();
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
@@ -200,19 +202,28 @@ export function ProjectAnnotationsView() {
 
           const errors: string[] = [];
           if (resA.kind === "err") errors.push(`Codex: ${resA.error}`);
-          if (resB.kind === "err") errors.push(`シーン内: ${resB.error}`);
+          if (resB.kind === "err")
+            errors.push(
+              `${t("kouetsu.consistency.intraPrefix")}: ${resB.error}`,
+            );
 
           if (errors.length === 2) {
-            toast.error("全シーン整合性チェックに失敗しました", {
+            toast.error(t("kouetsu.projectAnnotations.checkFailed"), {
               description: errors.join(" / "),
             });
             return;
           }
           if (errors.length === 1) {
-            const label = resA.kind === "err" ? "Codex整合性" : "シーン内矛盾";
-            toast.error(`全シーン整合性チェック (${label}) に失敗しました`, {
-              description: errors[0],
-            });
+            const label =
+              resA.kind === "err"
+                ? t("kouetsu.consistency.codexLabel")
+                : t("kouetsu.consistency.intraLabel");
+            toast.error(
+              t("kouetsu.projectAnnotations.checkFailedPartial", { label }),
+              {
+                description: errors[0],
+              },
+            );
           } else {
             const bothCache =
               resA.kind === "ok" &&
@@ -226,15 +237,21 @@ export function ProjectAnnotationsView() {
             const intraCount = resB.kind === "ok" ? resB.e.annotation_count : 0;
 
             if (bothCache) {
-              toast.info("前回と同じ内容のためキャッシュから読み込みました", {
-                description: "AI には送信していません",
+              toast.info(t("kouetsu.consistency.fromCache"), {
+                description: t("kouetsu.cache.notSent"),
               });
             } else if (totalCount === 0) {
-              toast.success("全シーンで矛盾は見つかりませんでした");
+              toast.success(t("kouetsu.projectAnnotations.noIssues"));
             } else {
-              toast.success(`${totalCount} 件の矛盾候補を検出しました`, {
-                description: `Codex: ${consCount}件 / シーン内: ${intraCount}件`,
-              });
+              toast.success(
+                t("kouetsu.consistency.foundCount", { count: totalCount }),
+                {
+                  description: t("kouetsu.consistency.conflictBreakdown", {
+                    consCount,
+                    intraCount,
+                  }),
+                },
+              );
             }
           }
         } else {
@@ -245,35 +262,43 @@ export function ProjectAnnotationsView() {
 
           if (res.kind === "err") {
             const label =
-              kind === "consistency" ? "Codex整合性" : "シーン内矛盾";
-            toast.error(`全シーン${label}チェックに失敗しました`, {
+              kind === "consistency"
+                ? t("kouetsu.consistency.codexLabel")
+                : t("kouetsu.consistency.intraLabel");
+            toast.error(t("kouetsu.consistency.singleEffectError", { label }), {
               description: res.error,
             });
             return;
           }
           if (res.e.from_cache) {
-            toast.info("前回と同じ内容のためキャッシュから読み込みました", {
-              description: "AI には送信していません",
+            toast.info(t("kouetsu.consistency.fromCache"), {
+              description: t("kouetsu.cache.notSent"),
             });
           } else if (res.e.annotation_count === 0) {
             const label =
-              kind === "consistency" ? "Codex整合性" : "シーン内矛盾";
-            toast.success(`全シーンで${label}の問題は見つかりませんでした`);
+              kind === "consistency"
+                ? t("kouetsu.consistency.codexLabel")
+                : t("kouetsu.consistency.intraLabel");
+            toast.success(
+              t("kouetsu.projectAnnotations.noIssuesOfType", { label }),
+            );
           } else {
             toast.success(
-              `${res.e.annotation_count} 件の矛盾候補を検出しました`,
+              t("kouetsu.projectAnnotations.foundCount", {
+                count: res.e.annotation_count,
+              }),
             );
           }
         }
       } catch (e) {
         console.error("post-effect multi launch error", e);
         setRunningAll(false);
-        toast.error("全シーン整合性チェックを起動できませんでした", {
+        toast.error(t("kouetsu.projectAnnotations.launchFailed"), {
           description: e instanceof Error ? e.message : String(e),
         });
       }
     },
-    [runningAll, projectId, afterRunAll],
+    [runningAll, projectId, afterRunAll, t],
   );
 
   // ---- grouping ----
@@ -307,7 +332,9 @@ export function ProjectAnnotationsView() {
       const key = parsed.codex?.entryId ?? "__other__";
       const label =
         parsed.codex?.entryName ??
-        (parsed.kind === "intra" ? "シーン内矛盾" : "未分類");
+        (parsed.kind === "intra"
+          ? t("kouetsu.consistency.intraLabel")
+          : t("kouetsu.consistency.unclassified"));
       const g = acc.get(key) ?? { key, label, items: [] };
       g.items.push(ann);
       acc.set(key, g);
@@ -320,7 +347,9 @@ export function ProjectAnnotationsView() {
     <div className="flex flex-col">
       <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
         <div className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">全シーン整合性</span>
+          <span className="text-muted-foreground">
+            {t("kouetsu.projectAnnotations.header")}
+          </span>
           <div className="flex items-center rounded border border-border bg-muted/40 p-0.5">
             <button
               type="button"
@@ -332,7 +361,7 @@ export function ProjectAnnotationsView() {
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              シーン別
+              {t("kouetsu.projectAnnotations.groupByScene")}
             </button>
             <button
               type="button"
@@ -344,7 +373,7 @@ export function ProjectAnnotationsView() {
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              Codex別
+              {t("kouetsu.projectAnnotations.groupByCodex")}
             </button>
           </div>
         </div>
@@ -354,7 +383,9 @@ export function ProjectAnnotationsView() {
             type="button"
             disabled={runningAll || analysisGate.presentation !== "enabled"}
             onClick={() => void runMulti("both")}
-            title={analysisGate.tooltip ?? "全シーンの整合性チェックを実行"}
+            title={
+              analysisGate.tooltip ?? t("kouetsu.consistency.runAllScenes")
+            }
             className={cn(
               "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
               "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
@@ -366,7 +397,7 @@ export function ProjectAnnotationsView() {
             ) : (
               <Sparkles size={12} />
             )}
-            <span>AIチェック</span>
+            <span>{t("kouetsu.aiCheck")}</span>
           </button>
         )}
       </div>
@@ -378,7 +409,7 @@ export function ProjectAnnotationsView() {
       ) : groups.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
           <Info size={16} />
-          <span>整合性の問題は見つかっていません</span>
+          <span>{t("kouetsu.projectAnnotations.empty")}</span>
         </div>
       ) : (
         <div className="flex flex-col gap-0">

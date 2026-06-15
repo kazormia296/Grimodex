@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -76,6 +77,7 @@ function countOpenByOtherModel(
 }
 
 export function CurrentSceneAnnotationsView({ sceneId }: Props) {
+  const { t } = useTranslation();
   const [running, setRunning] = useState(false);
   const analysisGate = useAiGate("analysis");
   const { setAnnotations } = useAnnotationStore();
@@ -200,12 +202,14 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
         setRunning(false);
 
         const labelOf = (e: "consistency" | "intra") =>
-          e === "consistency" ? "Codex整合性" : "シーン内矛盾";
+          e === "consistency"
+            ? t("kouetsu.consistency.codexLabel")
+            : t("kouetsu.consistency.intraLabel");
         const errors = results.filter((r) => r.kind === "err");
         const oks = results.filter((r) => r.kind === "ok");
 
         if (errors.length === results.length) {
-          toast.error("整合性チェックに失敗しました", {
+          toast.error(t("integrity.checkError"), {
             description: errors
               .map((r) => `${labelOf(r.effect)}: ${r.error}`)
               .join(" / "),
@@ -214,7 +218,9 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
         }
         if (errors.length > 0) {
           toast.error(
-            `整合性チェック (${labelOf(errors[0]!.effect)}) に失敗しました`,
+            t("kouetsu.consistency.partialError", {
+              effect: labelOf(errors[0]!.effect),
+            }),
             { description: errors[0]!.error },
           );
         } else {
@@ -224,43 +230,49 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
             0,
           );
           if (allCache) {
-            toast.info("前回と同じ内容のためキャッシュから読み込みました", {
-              description: "AI には送信していません",
+            toast.info(t("kouetsu.consistency.fromCache"), {
+              description: t("kouetsu.cache.notSent"),
             });
           } else if (totalCount === 0) {
-            toast.success("矛盾は見つかりませんでした");
+            toast.success(t("kouetsu.consistency.noIssues"));
           }
         }
 
         const otherModelCount = countOpenByOtherModel(resp.annotations, model);
         if (otherModelCount.total > 0) {
           const sample = [...otherModelCount.byModel.entries()]
-            .map(([m, n]) => `${m}: ${n}件`)
+            .map(([m, n]) =>
+              t("kouetsu.consistency.modelCount", { model: m, count: n }),
+            )
             .join(", ");
           toast.info(
-            `${otherModelCount.total} 件は別モデルで検出された指摘です`,
+            t("kouetsu.consistency.otherModelWarning", {
+              count: otherModelCount.total,
+            }),
             { description: sample },
           );
         }
       } catch (e) {
         console.error("post-effect launch error", e);
         setRunning(false);
-        toast.error("整合性チェックを起動できませんでした", {
+        toast.error(t("kouetsu.consistency.launchFailed"), {
           description: e instanceof Error ? e.message : String(e),
         });
       }
     },
-    [running, sceneId, setAnnotations],
+    [running, sceneId, setAnnotations, t],
   );
 
   const disabled = running || analysisGate.presentation !== "enabled";
   const triggerTitle =
-    analysisGate.tooltip ?? "現在シーンの整合性チェックを実行";
+    analysisGate.tooltip ?? t("kouetsu.consistency.runCurrentScene");
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
-        <span className="text-xs text-muted-foreground">現在シーン整合性</span>
+        <span className="text-xs text-muted-foreground">
+          {t("kouetsu.currentScene.consistency")}
+        </span>
         {/* analysis がポリシーで OFF のときは実行ボタンを隠す（パネルは残す）。 */}
         {analysisGate.presentation !== "hidden" && (
           <button
@@ -279,7 +291,7 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
             ) : (
               <Sparkles size={12} />
             )}
-            <span>AIチェック</span>
+            <span>{t("kouetsu.aiCheck")}</span>
           </button>
         )}
       </div>

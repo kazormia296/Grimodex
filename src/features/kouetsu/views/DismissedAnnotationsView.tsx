@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, Info, Loader2, RotateCcw, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -29,6 +30,7 @@ interface Props {
 }
 
 export function DismissedAnnotationsView({ category, emptyLabel }: Props) {
+  const { t } = useTranslation();
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -37,7 +39,9 @@ export function DismissedAnnotationsView({ category, emptyLabel }: Props) {
   const { updateAnnotationStatus: localUpdate } = useAnnotationStore();
 
   const sceneTitle = (sceneId: string | null) =>
-    scenes.find((s) => s.id === sceneId)?.title ?? sceneId ?? "不明";
+    scenes.find((s) => s.id === sceneId)?.title ??
+    sceneId ??
+    t("attribution.columnUnknown");
 
   useEffect(() => {
     if (!projectId) return;
@@ -103,6 +107,7 @@ function DismissedRow({
   sceneTitle: string;
   onReopen: () => void;
 }) {
+  const { t } = useTranslation();
   const severity = (ann.severity ?? "info") as PostEffectSeverity;
   return (
     <div
@@ -118,8 +123,8 @@ function DismissedRow({
           <span className="text-muted-foreground">{sceneTitle}</span>
         </div>
         <button
-          aria-label="再表示"
-          title="再表示（open に戻す）"
+          aria-label={t("kouetsu.dismissed.reopen")}
+          title={t("kouetsu.dismissed.reopenTooltip")}
           onClick={onReopen}
           className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
         >

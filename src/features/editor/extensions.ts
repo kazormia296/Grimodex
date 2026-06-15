@@ -232,7 +232,9 @@ export function getStickyEditorExtensions(): Extensions {
     TableRow,
     TableHeader,
     TableCell,
-    Placeholder.configure({ placeholder: "思いついたことを書く…" }),
+    Placeholder.configure({
+      placeholder: () => i18next.t("editor.bodyPlaceholder"),
+    }),
     AuthorshipMark,
   ];
 }

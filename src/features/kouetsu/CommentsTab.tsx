@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { and, eq } from "drizzle-orm";
 import { Loader2, MessageSquare, RefreshCw, User } from "lucide-react";
 import { db } from "@/db/client";
@@ -41,6 +42,7 @@ async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
 }
 
 export function CommentsTab() {
+  const { t } = useTranslation();
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
   const [human, setHuman] = useState<HumanComment[]>([]);
@@ -110,9 +112,9 @@ export function CommentsTab() {
         <div className="flex items-center gap-1">
           {(
             [
-              ["all", "すべて"],
-              ["human", "手動"],
-              ["ai", "AI"],
+              ["all", t("snippets.filterAll")],
+              ["human", t("scenes.sortManual")],
+              ["ai", t("attribution.columnAi")],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -133,7 +135,7 @@ export function CommentsTab() {
         <button
           type="button"
           onClick={() => void reload()}
-          title="再読み込み"
+          title={t("error.reload")}
           className="rounded p-1 text-muted-foreground hover:bg-accent"
         >
           <RefreshCw size={12} />
@@ -148,11 +150,11 @@ export function CommentsTab() {
         ) : totalCount === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 py-8 text-center text-xs text-muted-foreground">
             <MessageSquare size={18} />
-            <span>コメントはありません</span>
+            <span>{t("kouetsu.comments.empty")}</span>
             <span className="text-[10px] text-muted-foreground/70">
-              本文を選択して {formatShortcut("Ctrl+Shift+M")} で手動コメント、
-              <br />
-              批評タブの疑似コメントもここに集約されます
+              {t("kouetsu.comments.emptyHint", {
+                shortcut: formatShortcut("Ctrl+Shift+M"),
+              })}
             </span>
           </div>
         ) : (
@@ -182,7 +184,7 @@ export function CommentsTab() {
                       key={`h-${g.sceneId}-${i}`}
                       type="button"
                       onClick={() => jumpToComment(c)}
-                      title="該当箇所を開いて選択"
+                      title={t("kouetsu.comments.jumpToLocation")}
                       className="flex items-start gap-1.5 rounded-md border border-border px-3 py-2 text-left text-sm hover:bg-accent/30"
                     >
                       <User
