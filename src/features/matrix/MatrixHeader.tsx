@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, Pencil, Search, X, MoreVertical } from "lucide-react";
 import { useMatrixStore } from "./matrixStore";
 import type { ShowMode } from "./lib/deriveColumns";
@@ -40,6 +41,7 @@ interface Props {
 }
 
 export function MatrixHeader({ availableTags, onExportCsv }: Props) {
+  const { t } = useTranslation();
   const showMode = useMatrixStore((s) => s.showMode);
   const sortMode = useMatrixStore((s) => s.sortMode);
   const displayMode = useMatrixStore((s) => s.displayMode);
@@ -203,7 +205,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
                     <span className="w-3 inline-block" />
                   )}
                 </span>
-                空セルを非表示
+                {t("matrix.filters.hideEmpty", "空セルを非表示")}
               </button>
               <button
                 type="button"
@@ -217,7 +219,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
                     <span className="w-3 inline-block" />
                   )}
                 </span>
-                未編集シーンのみ
+                {t("matrix.filters.onlyUnedited", "未編集シーンのみ")}
               </button>
               <div className="my-1 border-t border-border/50" />
               <button
@@ -229,7 +231,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
                 }}
               >
                 <span className="w-3 inline-block" />
-                CSV をエクスポート
+                {t("matrix.menu.exportCsv", "CSV をエクスポート")}
               </button>
             </div>
           )}
@@ -263,7 +265,7 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
         <div className="flex items-center gap-2 border-t px-3 py-1.5">
           {customSets.length === 0 ? (
             <span className="flex-1 text-[11px] text-muted-foreground">
-              セットなし — 「+」で作成
+              {t("matrix.custom.noSets", "セットなし — 「+」で作成")}
             </span>
           ) : (
             <select
@@ -271,7 +273,9 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
               onChange={(e) => setActiveCustomSetId(e.target.value || null)}
               className="flex-1 rounded border border-border bg-background px-2 py-0.5 text-xs"
             >
-              <option value="">— セットを選択 —</option>
+              <option value="">
+                {t("matrix.custom.selectSet", "— セットを選択 —")}
+              </option>
               {customSets.map((cs) => (
                 <option key={cs.id} value={cs.id}>
                   {cs.name} ({cs.codexEntryIds.length})
@@ -281,10 +285,12 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
           )}
           <button
             type="button"
-            title="新規セット"
+            title={t("matrix.custom.newSet", "新規セット")}
             className="rounded px-1.5 py-0.5 text-xs hover:bg-accent"
             onClick={() => {
-              const name = window.prompt("セット名:");
+              const name = window.prompt(
+                t("matrix.custom.setNamePrompt", "セット名:"),
+              );
               if (name?.trim()) createCustomSet(name.trim());
             }}
           >
@@ -294,13 +300,16 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
             <>
               <button
                 type="button"
-                title="リネーム"
+                title={t("matrix.custom.rename", "リネーム")}
                 className="rounded px-1.5 py-0.5 text-xs hover:bg-accent"
                 onClick={() => {
                   const current =
                     customSets.find((cs) => cs.id === activeCustomSetId)
                       ?.name ?? "";
-                  const name = window.prompt("新しいセット名:", current);
+                  const name = window.prompt(
+                    t("matrix.custom.renamePrompt", "新しいセット名:"),
+                    current,
+                  );
                   if (name?.trim())
                     renameCustomSet(activeCustomSetId, name.trim());
                 }}
@@ -309,10 +318,17 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
               </button>
               <button
                 type="button"
-                title="削除"
+                title={t("matrix.custom.delete", "削除")}
                 className="rounded px-1.5 py-0.5 text-xs text-destructive hover:bg-accent"
                 onClick={() => {
-                  if (window.confirm("このセットを削除しますか?"))
+                  if (
+                    window.confirm(
+                      t(
+                        "matrix.custom.deleteConfirm",
+                        "このセットを削除しますか?",
+                      ),
+                    )
+                  )
                     deleteCustomSet(activeCustomSetId);
                 }}
               >

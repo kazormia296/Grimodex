@@ -12,6 +12,28 @@
     },
     "group": {
       "none": "None"
+    },
+    "empty": {
+      "noProblems": "No problems found",
+      "linting": "Linting…",
+      "noMatches": "No matching items"
+    },
+    "project": {
+      "runAll": "Lint all chapters",
+      "runAllHint": "Press \"Lint all chapters\" to scan every scene in the project",
+      "loadingScenes": "Loading scenes…",
+      "cancelled": "Cancelled (showing partial results)",
+      "exportReport": "Export report"
+    },
+    "disables": {
+      "currentScene": "Current scene",
+      "otherScenes": "Other scenes",
+      "none": "No exclusions"
+    },
+    "ruleDisableAll": "Disable rule \"{{rule}}\" entirely",
+    "ctx": {
+      "ignoreHere": "Ignore here permanently",
+      "inlineDisable": "Disable here (inline)"
     }
   },
   "postEffect": {
@@ -20,6 +42,9 @@
       "medium": "Medium",
       "low": "Low",
       "title": "AI confidence: {{level}}"
+    },
+    "annotations": {
+      "empty": "No annotations"
     }
   },
   "common": {
@@ -1600,6 +1625,19 @@
       "summary": "Summary",
       "tags": "Tags",
       "tagsPlaceholder": "Enter tags separated by commas"
+    },
+    "contextMenu": {
+      "rename": "Rename",
+      "duplicate": "Duplicate",
+      "changeType": "Change type",
+      "findInScenes": "Find in scenes",
+      "addToMap": "Add to Map",
+      "spotlightInChat": "Spotlight in chat",
+      "addToCustomSet": "Add to Matrix custom set",
+      "delete": "Delete"
+    },
+    "customSets": {
+      "noSets": "No sets"
     }
   },
   "grid": {
@@ -1608,15 +1646,38 @@
       "chapterCount": "{{count}} chapter(s)",
       "newChapter": "Add Chapter",
       "displaySettings": "Display settings",
-      "displayFilter": "Display & filter"
+      "displayFilter": "Display & filter",
+      "kicker": "Grid",
+      "searchPlaceholder": "Search scenes, synopsis, beats, Codex…",
+      "closeSearch": "Close search",
+      "search": "Search",
+      "expandAll": "Expand all",
+      "collapseAll": "Collapse all",
+      "hideToolbar": "Hide display settings",
+      "showToolbar": "Display settings"
     },
     "column": {
       "newScene": "Add Scene",
       "dropHere": "Drop here",
-      "addOutline": "+ Add outline"
+      "addOutline": "+ Add outline",
+      "menu": "Menu",
+      "contextMenu": {
+        "diveIn": "Open",
+        "addScene": "Add scene",
+        "rename": "Rename",
+        "delete": "Delete"
+      },
+      "dialog": {
+        "deleteTitle": "Delete chapter",
+        "deleteDescription": "Delete \"{{title}}\" and all scenes inside it. This cannot be undone."
+      }
     },
     "looseColumn": {
-      "title": "Unassigned Scenes"
+      "title": "Unassigned Scenes",
+      "menu": "Actions",
+      "pickChapter": "Select chapter",
+      "consolidate": "Consolidate into a chapter",
+      "convertToChapter": "Convert to chapter folder"
     },
     "card": {
       "synopsisPlaceholder": "Add synopsis…",
@@ -1633,6 +1694,14 @@
         "showInScenes": "Show in Scenes",
         "delete": "Delete",
         "deleteConfirm": "Delete this scene?"
+      },
+      "menuLabel": "Menu",
+      "contextMenu": {
+        "openInEditor": "Open in editor",
+        "showInScenes": "Show in scenes",
+        "addBeat": "Add beat",
+        "addLabel": "Add label",
+        "delete": "Delete"
       }
     },
     "container": {
@@ -2129,6 +2198,26 @@
       "clear": "Clear selection",
       "moveToChapter": "Select target chapter",
       "noChapters": "No chapters"
+    },
+    "cardTab": {
+      "auto": "Auto",
+      "beat": "Beat",
+      "synopsis": "Synopsis",
+      "label": "Card tab"
+    },
+    "folderCard": {
+      "menu": "Menu",
+      "contextMenu": {
+        "open": "Open",
+        "collapse": "Collapse",
+        "expand": "Expand",
+        "rename": "Rename",
+        "delete": "Delete"
+      },
+      "dialog": {
+        "deleteTitle": "Delete folder",
+        "deleteDescription": "Delete \"{{title}}\" and all scenes inside it. This cannot be undone."
+      }
     }
   },
   "foreshadow": {
@@ -3870,6 +3959,69 @@
     },
     "sceneNode": {
       "synopsisPlaceholder": "What happens in this scene?"
+    }
+  },
+  "timeline": {
+    "ctx": {
+      "openInEditor": "Open in editor",
+      "openInSide": "Open at side",
+      "clearStoryTime": "Clear story-time",
+      "showInScenes": "Show in scenes",
+      "delete": "Delete"
+    },
+    "noScenes": "No scenes",
+    "viewport": "Timeline viewport",
+    "emptyAxisHint": "↑ Drag scenes here to set their story-time",
+    "unscheduledAllHint": "Unscheduled — drag up onto the axis",
+    "unscheduled": "Unscheduled",
+    "axisMode": "Axis mode",
+    "spacingMode": "Spacing",
+    "coverage": "{{scheduled}}/{{total}}",
+    "sceneCount": "{{count}} scenes",
+    "toggleTitles": "Show titles",
+    "togglePhasePins": "Show phase pins",
+    "toggleInspector": "Inspector",
+    "inspector": {
+      "close": "Close inspector",
+      "status": "Status",
+      "storyTimeLabel": "Story-time label",
+      "hasOrder": "Placed",
+      "unscheduled": "Unscheduled",
+      "synopsis": "Synopsis",
+      "phases": "Phases anchored ({{n}})",
+      "created": "Created"
+    }
+  },
+  "matrix": {
+    "filters": {
+      "hideEmpty": "Hide empty cells",
+      "onlyUnedited": "Unedited scenes only"
+    },
+    "menu": {
+      "exportCsv": "Export CSV"
+    },
+    "custom": {
+      "noSets": "No sets — create with \"+\"",
+      "selectSet": "— Select a set —",
+      "newSet": "New set",
+      "setNamePrompt": "Set name:",
+      "rename": "Rename",
+      "renamePrompt": "New set name:",
+      "delete": "Delete",
+      "deleteConfirm": "Delete this set?",
+      "removeFromSet": "Remove from set"
+    },
+    "sources": {
+      "body": "Body mention",
+      "beat": "Beat mention",
+      "relation": "Explicit relation"
+    },
+    "columnMenu": {
+      "unpin": "Unpin: {{name}}",
+      "pinFirst": "Pin first: {{name}}",
+      "hideColumn": "Hide column: {{name}}",
+      "expandSection": "Expand \"{{type}}\" section",
+      "collapseSection": "Collapse \"{{type}}\" section"
     }
   }
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
   Copy,
@@ -46,6 +47,7 @@ export function EntryContextMenu({
   customSets,
   onAddToCustomSet,
 }: EntryContextMenuProps) {
+  const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const [showTypeSubmenu, setShowTypeSubmenu] = useState(false);
   const [showCustomSetSubmenu, setShowCustomSetSubmenu] = useState(false);
@@ -118,7 +120,7 @@ export function EntryContextMenu({
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
         >
           <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
-          名前を変更
+          {t("codex.contextMenu.rename", "名前を変更")}
         </button>
 
         <button
@@ -128,7 +130,7 @@ export function EntryContextMenu({
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
         >
           <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-          複製
+          {t("codex.contextMenu.duplicate", "複製")}
         </button>
 
         {/* Change type */}
@@ -140,28 +142,28 @@ export function EntryContextMenu({
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
           >
             <Tag className="h-3.5 w-3.5 text-muted-foreground" />
-            タイプ変更
+            {t("codex.contextMenu.changeType", "タイプ変更")}
           </button>
           {showTypeSubmenu && codexTypes.length > 0 && (
             <div className="absolute left-full top-0 z-50 min-w-[140px] rounded-lg border border-border bg-popover shadow-lg">
               <div className="py-1">
-                {codexTypes.map((t) => (
+                {codexTypes.map((ct) => (
                   <button
-                    key={t.slug}
+                    key={ct.slug}
                     type="button"
-                    data-testid={`entry-context-menu-type-${t.slug}`}
-                    onClick={() => handleChangeType(t.slug)}
+                    data-testid={`entry-context-menu-type-${ct.slug}`}
+                    onClick={() => handleChangeType(ct.slug)}
                     className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent ${
-                      entry.type === t.slug ? "font-medium" : ""
+                      entry.type === ct.slug ? "font-medium" : ""
                     }`}
                   >
                     <span
                       className="h-2 w-2 shrink-0 rounded-full"
                       style={{
-                        backgroundColor: typeColorMap[t.slug]?.fg ?? t.color,
+                        backgroundColor: typeColorMap[ct.slug]?.fg ?? ct.color,
                       }}
                     />
-                    {t.label}
+                    {ct.label}
                   </button>
                 ))}
               </div>
@@ -178,7 +180,7 @@ export function EntryContextMenu({
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
         >
           <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-          シーンで検索
+          {t("codex.contextMenu.findInScenes", "シーンで検索")}
         </button>
 
         {boards.length > 0 && (
@@ -192,7 +194,7 @@ export function EntryContextMenu({
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
             >
               <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-              <span>Map に追加</span>
+              <span>{t("codex.contextMenu.addToMap", "Map に追加")}</span>
               <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
             </button>
             {showMapSubmenu && (
@@ -229,7 +231,7 @@ export function EntryContextMenu({
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
           >
             <Spotlight className="h-3.5 w-3.5 text-muted-foreground" />
-            チャットで Spotlight
+            {t("codex.contextMenu.spotlightInChat", "チャットで Spotlight")}
           </button>
         )}
 
@@ -242,7 +244,10 @@ export function EntryContextMenu({
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
             >
               <Grid2X2 className="h-3.5 w-3.5 text-muted-foreground" />
-              Matrix カスタムセットに追加
+              {t(
+                "codex.contextMenu.addToCustomSet",
+                "Matrix カスタムセットに追加",
+              )}
             </button>
             {showCustomSetSubmenu && (
               <div className="absolute left-full top-0 z-50 min-w-[160px] rounded-lg border border-border bg-popover shadow-lg">
@@ -264,7 +269,7 @@ export function EntryContextMenu({
                     ))
                   ) : (
                     <p className="px-3 py-1.5 text-xs text-muted-foreground">
-                      セットなし
+                      {t("codex.customSets.noSets", "セットなし")}
                     </p>
                   )}
                 </div>
@@ -282,7 +287,7 @@ export function EntryContextMenu({
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10"
         >
           <Trash2 className="h-3.5 w-3.5" />
-          削除
+          {t("codex.contextMenu.delete", "削除")}
         </button>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Trash2, Navigation } from "lucide-react";
 import type { Editor } from "@tiptap/core";
 
@@ -81,6 +82,7 @@ function formatRules(rules: string[]): string {
 }
 
 export function DisablesView() {
+  const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
   const currentSceneId = useLintStore((s) => s.currentSceneId);
   const requestJump = useLintProjectStore((s) => s.requestJump);
@@ -200,8 +202,12 @@ export function DisablesView() {
       <div className="flex-1 overflow-y-auto">
         {currentScene && (
           <Section
-            title={`現在シーン (${currentScene.disables.length})`}
-            empty={currentEmpty ? "無効化はありません" : null}
+            title={`${t("lint.disables.currentScene", "現在シーン")} (${currentScene.disables.length})`}
+            empty={
+              currentEmpty
+                ? t("lint.disables.none", "無効化はありません")
+                : null
+            }
           >
             {!currentEmpty &&
               currentScene.disables.map((d, idx) => (
@@ -218,12 +224,16 @@ export function DisablesView() {
         )}
 
         <Section
-          title={`その他のシーン (${otherScenes.reduce(
+          title={`${t("lint.disables.otherScenes", "その他のシーン")} (${otherScenes.reduce(
             (n, s) => n + s.disables.length,
             0,
           )})`}
           empty={
-            loading ? "読み込み中..." : otherEmpty ? "無効化はありません" : null
+            loading
+              ? t("common.loading", "読み込み中…")
+              : otherEmpty
+                ? t("lint.disables.none", "無効化はありません")
+                : null
           }
         >
           {!otherEmpty &&

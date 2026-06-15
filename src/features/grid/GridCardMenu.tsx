@@ -48,7 +48,7 @@ export function GridCardMenu({ nodeId, onDelete }: Props) {
           className="opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100 transition-opacity"
           onClick={(e) => e.stopPropagation()}
           data-testid="grid-card-menu-btn"
-          title="メニュー"
+          title={t("grid.card.menuLabel", "メニュー")}
         >
           <MoreHorizontal />
         </Button>

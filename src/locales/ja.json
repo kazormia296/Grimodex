@@ -12,6 +12,28 @@
     },
     "group": {
       "none": "なし"
+    },
+    "empty": {
+      "noProblems": "問題は見つかりませんでした",
+      "linting": "Lint 実行中...",
+      "noMatches": "該当する項目はありません"
+    },
+    "project": {
+      "runAll": "全章 Lint",
+      "runAllHint": "「全章 Lint」を押すとプロジェクト全シーンを走査します",
+      "loadingScenes": "シーン一覧を取得中...",
+      "cancelled": "キャンセルされました（部分結果を表示中）",
+      "exportReport": "レポートを書き出し"
+    },
+    "disables": {
+      "currentScene": "現在シーン",
+      "otherScenes": "その他のシーン",
+      "none": "無効化はありません"
+    },
+    "ruleDisableAll": "ルール「{{rule}}」全体を無効化",
+    "ctx": {
+      "ignoreHere": "この箇所を永続無視",
+      "inlineDisable": "この箇所で無効化（インライン）"
     }
   },
   "postEffect": {
@@ -20,6 +42,9 @@
       "medium": "中",
       "low": "低",
       "title": "AI 信頼度: {{level}}"
+    },
+    "annotations": {
+      "empty": "アノテーションなし"
     }
   },
   "common": {
@@ -1595,6 +1620,19 @@
       "summary": "概要",
       "tags": "タグ",
       "tagsPlaceholder": "タグをカンマ区切りで入力"
+    },
+    "contextMenu": {
+      "rename": "名前を変更",
+      "duplicate": "複製",
+      "changeType": "タイプ変更",
+      "findInScenes": "シーンで検索",
+      "addToMap": "Map に追加",
+      "spotlightInChat": "チャットで Spotlight",
+      "addToCustomSet": "Matrix カスタムセットに追加",
+      "delete": "削除"
+    },
+    "customSets": {
+      "noSets": "セットなし"
     }
   },
   "grid": {
@@ -1603,15 +1641,38 @@
       "chapterCount": "{{count}} 章",
       "newChapter": "章を追加",
       "displaySettings": "表示設定",
-      "displayFilter": "表示・フィルタ"
+      "displayFilter": "表示・フィルタ",
+      "kicker": "Grid",
+      "searchPlaceholder": "シーン名・Synopsis・Beat・Codex を検索…",
+      "closeSearch": "検索を閉じる",
+      "search": "検索",
+      "expandAll": "全て展開",
+      "collapseAll": "全て折りたたむ",
+      "hideToolbar": "表示設定を閉じる",
+      "showToolbar": "表示設定"
     },
     "column": {
       "newScene": "シーンを追加",
       "dropHere": "ここにドロップ",
-      "addOutline": "＋ Outline を追加"
+      "addOutline": "＋ Outline を追加",
+      "menu": "メニュー",
+      "contextMenu": {
+        "diveIn": "中を表示",
+        "addScene": "シーンを追加",
+        "rename": "リネーム",
+        "delete": "削除"
+      },
+      "dialog": {
+        "deleteTitle": "章を削除",
+        "deleteDescription": "「{{title}}」と配下のすべてのシーンを削除します。元に戻せません。"
+      }
     },
     "looseColumn": {
-      "title": "未分類シーン"
+      "title": "未分類シーン",
+      "menu": "操作",
+      "pickChapter": "章を選択",
+      "consolidate": "既存の章にまとめる",
+      "convertToChapter": "新規章フォルダに変換"
     },
     "card": {
       "synopsisPlaceholder": "シノプシスを追加…",
@@ -1628,6 +1689,14 @@
         "showInScenes": "シーン一覧で表示",
         "delete": "削除",
         "deleteConfirm": "このシーンを削除しますか？"
+      },
+      "menuLabel": "メニュー",
+      "contextMenu": {
+        "openInEditor": "エディタで開く",
+        "showInScenes": "シーン一覧で表示",
+        "addBeat": "Beat を追加",
+        "addLabel": "Label を付ける",
+        "delete": "削除"
       }
     },
     "container": {
@@ -2124,6 +2193,26 @@
       "clear": "選択解除",
       "moveToChapter": "移動先の章を選択",
       "noChapters": "章がありません"
+    },
+    "cardTab": {
+      "auto": "Auto",
+      "beat": "Beat",
+      "synopsis": "Synopsis",
+      "label": "カードタブ"
+    },
+    "folderCard": {
+      "menu": "メニュー",
+      "contextMenu": {
+        "open": "中を表示",
+        "collapse": "折りたたむ",
+        "expand": "展開",
+        "rename": "リネーム",
+        "delete": "削除"
+      },
+      "dialog": {
+        "deleteTitle": "フォルダを削除",
+        "deleteDescription": "「{{title}}」と配下のすべてのシーンを削除します。元に戻せません。"
+      }
     }
   },
   "foreshadow": {
@@ -3869,6 +3958,69 @@
     },
     "sceneNode": {
       "synopsisPlaceholder": "このシーンで何が起きる？"
+    }
+  },
+  "timeline": {
+    "ctx": {
+      "openInEditor": "Editor で開く",
+      "openInSide": "サイドで開く",
+      "clearStoryTime": "Clear story-time",
+      "showInScenes": "Scenes で表示",
+      "delete": "削除"
+    },
+    "noScenes": "シーンがありません",
+    "viewport": "タイムライン ビューポート",
+    "emptyAxisHint": "↑ シーンをここにドラッグして story-time を設定",
+    "unscheduledAllHint": "Unscheduled — 上にドラッグして軸に配置",
+    "unscheduled": "Unscheduled",
+    "axisMode": "時間軸モード",
+    "spacingMode": "スペーシング",
+    "coverage": "{{scheduled}}/{{total}}",
+    "sceneCount": "{{count}} scenes",
+    "toggleTitles": "タイトル表示",
+    "togglePhasePins": "フェーズピン表示",
+    "toggleInspector": "インスペクター",
+    "inspector": {
+      "close": "インスペクターを閉じる",
+      "status": "Status",
+      "storyTimeLabel": "Story-time label",
+      "hasOrder": "配置済み",
+      "unscheduled": "Unscheduled",
+      "synopsis": "Synopsis",
+      "phases": "Phases anchored ({{n}})",
+      "created": "Created"
+    }
+  },
+  "matrix": {
+    "filters": {
+      "hideEmpty": "空セルを非表示",
+      "onlyUnedited": "未編集シーンのみ"
+    },
+    "menu": {
+      "exportCsv": "CSV をエクスポート"
+    },
+    "custom": {
+      "noSets": "セットなし — 「+」で作成",
+      "selectSet": "— セットを選択 —",
+      "newSet": "新規セット",
+      "setNamePrompt": "セット名:",
+      "rename": "リネーム",
+      "renamePrompt": "新しいセット名:",
+      "delete": "削除",
+      "deleteConfirm": "このセットを削除しますか?",
+      "removeFromSet": "セットから削除"
+    },
+    "sources": {
+      "body": "本文言及",
+      "beat": "Beat メンション",
+      "relation": "明示リレーション"
+    },
+    "columnMenu": {
+      "unpin": "ピン解除: {{name}}",
+      "pinFirst": "先頭にピン: {{name}}",
+      "hideColumn": "列を非表示: {{name}}",
+      "expandSection": "「{{type}}」セクションを展開",
+      "collapseSection": "「{{type}}」セクションを折りたたむ"
     }
   }
 }

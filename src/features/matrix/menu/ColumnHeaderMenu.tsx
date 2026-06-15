@@ -1,4 +1,5 @@
 import { useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   x: number;
@@ -27,6 +28,7 @@ export function ColumnHeaderMenu({
   onToggleTypeSection,
   onRemoveFromSet,
 }: Props) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -46,17 +48,31 @@ export function ColumnHeaderMenu({
 
   const items = [
     {
-      label: isPinned ? `ピン解除: ${entryName}` : `先頭にピン: ${entryName}`,
+      label: isPinned
+        ? t("matrix.columnMenu.unpin", "ピン解除: {{name}}", {
+            name: entryName,
+          })
+        : t("matrix.columnMenu.pinFirst", "先頭にピン: {{name}}", {
+            name: entryName,
+          }),
       action: onTogglePin,
     },
     {
-      label: `列を非表示: ${entryName}`,
+      label: t("matrix.columnMenu.hideColumn", "列を非表示: {{name}}", {
+        name: entryName,
+      }),
       action: onHide,
     },
     {
       label: isSectionCollapsed
-        ? `「${entryType}」セクションを展開`
-        : `「${entryType}」セクションを折りたたむ`,
+        ? t("matrix.columnMenu.expandSection", "「{{type}}」セクションを展開", {
+            type: entryType,
+          })
+        : t(
+            "matrix.columnMenu.collapseSection",
+            "「{{type}}」セクションを折りたたむ",
+            { type: entryType },
+          ),
       action: onToggleTypeSection,
     },
   ];
@@ -91,7 +107,7 @@ export function ColumnHeaderMenu({
               onClose();
             }}
           >
-            セットから削除
+            {t("matrix.custom.removeFromSet", "セットから削除")}
           </button>
         </>
       )}

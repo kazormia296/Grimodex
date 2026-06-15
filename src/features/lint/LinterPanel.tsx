@@ -242,6 +242,7 @@ function SeverityChip({
  * - ヘッダに「全 Fix 適用」ボタン
  */
 function CurrentLinterView() {
+  const { t } = useTranslation();
   const editor = useEditorStore((s) => s.editor);
   const diagnostics = useLintStore((s) => s.diagnostics);
   const warnings = useLintStore((s) => s.warnings);
@@ -580,9 +581,9 @@ function CurrentLinterView() {
         {header}
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
           {isLinting ? (
-            <p>Lint 実行中...</p>
+            <p>{t("lint.empty.linting", "Lint 実行中...")}</p>
           ) : (
-            <p>問題は見つかりませんでした</p>
+            <p>{t("lint.empty.noProblems", "問題は見つかりませんでした")}</p>
           )}
         </div>
       </div>
@@ -911,6 +912,7 @@ function ContextMenu({
   onInlineDisable?: () => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   // Clamp to viewport — a naive offset is fine at this scale.
   const style: React.CSSProperties = {
     position: "fixed",
@@ -929,7 +931,8 @@ function ContextMenu({
         onClick={onIgnore}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent"
       >
-        <EyeOff className="h-4 w-4" /> この箇所を永続無視
+        <EyeOff className="h-4 w-4" />{" "}
+        {t("lint.ctx.ignoreHere", "この箇所を永続無視")}
       </button>
       {onInlineDisable && (
         <button
@@ -937,7 +940,8 @@ function ContextMenu({
           onClick={onInlineDisable}
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent"
         >
-          <PowerOff className="h-4 w-4" /> この箇所で無効化（インライン）
+          <PowerOff className="h-4 w-4" />{" "}
+          {t("lint.ctx.inlineDisable", "この箇所で無効化（インライン）")}
         </button>
       )}
       <button
@@ -945,7 +949,10 @@ function ContextMenu({
         onClick={onDisableRule}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent"
       >
-        <PowerOff className="h-4 w-4" /> ルール「{d.rule_id}」全体を無効化
+        <PowerOff className="h-4 w-4" />{" "}
+        {t("lint.ruleDisableAll", "ルール「{{rule}}」全体を無効化", {
+          rule: d.rule_id,
+        })}
       </button>
       <div className="my-1 border-t border-border" />
       <button
@@ -953,7 +960,7 @@ function ContextMenu({
         onClick={onClose}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-muted-foreground hover:bg-accent"
       >
-        キャンセル
+        {t("common.cancel", "キャンセル")}
       </button>
     </div>
   );
@@ -1335,7 +1342,7 @@ function ProjectLinterView() {
             <button
               type="button"
               onClick={() => setExportOpen(true)}
-              title="レポートを書き出し"
+              title={t("lint.project.exportReport", "レポートを書き出し")}
               className="flex h-6 shrink-0 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
             >
               <Download className="h-3.5 w-3.5" />
@@ -1348,7 +1355,7 @@ function ProjectLinterView() {
               onClick={cancel}
               className="flex h-6 shrink-0 items-center gap-1 rounded border border-border bg-background px-1.5 text-xs hover:bg-accent"
             >
-              キャンセル
+              {t("common.cancel", "キャンセル")}
             </button>
           ) : (
             <button
@@ -1356,7 +1363,7 @@ function ProjectLinterView() {
               onClick={onStart}
               className="flex h-6 shrink-0 items-center gap-1 rounded border border-primary bg-primary px-2 text-xs text-primary-foreground hover:opacity-90"
             >
-              全章 Lint
+              {t("lint.project.runAll", "全章 Lint")}
             </button>
           )}
         </div>
@@ -1364,7 +1371,8 @@ function ProjectLinterView() {
           <div className="flex flex-col gap-0.5">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span className="truncate">
-                {currentTitle ?? "シーン一覧を取得中..."}
+                {currentTitle ??
+                  t("lint.project.loadingScenes", "シーン一覧を取得中...")}
               </span>
               <span>
                 {completed}/{total}
@@ -1380,7 +1388,10 @@ function ProjectLinterView() {
         )}
         {phase === "cancelled" && (
           <p className="text-xs text-amber-600">
-            キャンセルされました（部分結果を表示中）
+            {t(
+              "lint.project.cancelled",
+              "キャンセルされました（部分結果を表示中）",
+            )}
           </p>
         )}
         {phase === "error" && fatalError && (
@@ -1391,14 +1402,19 @@ function ProjectLinterView() {
       <div className="flex-1 overflow-y-auto" ref={listRef} tabIndex={0}>
         {phase === "idle" && scenes.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
-            <p>「全章 Lint」を押すとプロジェクト全シーンを走査します</p>
+            <p>
+              {t(
+                "lint.project.runAllHint",
+                "「全章 Lint」を押すとプロジェクト全シーンを走査します",
+              )}
+            </p>
           </div>
         ) : grouped.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
             {phase === "running" ? (
-              <p>Lint 実行中...</p>
+              <p>{t("lint.empty.linting", "Lint 実行中...")}</p>
             ) : (
-              <p>該当する項目はありません</p>
+              <p>{t("lint.empty.noMatches", "該当する項目はありません")}</p>
             )}
           </div>
         ) : (

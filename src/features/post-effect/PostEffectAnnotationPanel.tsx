@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -177,8 +178,9 @@ export function AnnotationItem({
 export function PostEffectAnnotationPanel({
   sceneId,
   categoryFilter,
-  emptyLabel = "アノテーションなし",
+  emptyLabel,
 }: Props) {
+  const { t } = useTranslation();
   const { annotationsByScene, setAnnotations } = useAnnotationStore();
   const allAnnotations = annotationsByScene.get(sceneId) ?? [];
 
@@ -204,7 +206,10 @@ export function PostEffectAnnotationPanel({
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
         <Info size={18} />
-        <span>{emptyLabel}</span>
+        <span>
+          {emptyLabel ??
+            t("postEffect.annotations.empty", "アノテーションなし")}
+        </span>
       </div>
     );
   }

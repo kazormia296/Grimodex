@@ -1,4 +1,5 @@
 import { useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import type { CellSource } from "../lib/deriveCells";
 
 interface Props {
@@ -36,6 +37,7 @@ export function SceneCellMenu({
   onAddBeat,
   onShowInGrid,
 }: Props) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -65,7 +67,7 @@ export function SceneCellMenu({
     { label: `Add beat (with @${entryName})`, action: onAddBeat },
     source
       ? {
-          label: `Show source: ${SOURCE_LABEL[source]}`,
+          label: `Show source: ${t(`matrix.sources.${source}`, SOURCE_LABEL[source])}`,
           action: () => {
             /* Phase B: show detail modal */
             onClose();
