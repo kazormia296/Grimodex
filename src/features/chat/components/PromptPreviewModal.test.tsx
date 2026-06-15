@@ -22,18 +22,18 @@ vi.mock("react-i18next", async () => {
   return {
     useTranslation: () => ({
       t: (key: string, arg?: unknown) => {
-        let s = resolve(key);
-        if (typeof s !== "string")
-          s =
-            typeof arg === "string"
-              ? arg
-              : ((arg as { defaultValue?: string })?.defaultValue ?? key);
-        if (arg && typeof arg === "object" && typeof s === "string") {
+        const resolved = resolve(key);
+        let text: string;
+        if (typeof resolved === "string") text = resolved;
+        else if (typeof arg === "string") text = arg;
+        else text = (arg as { defaultValue?: string })?.defaultValue ?? key;
+        if (arg && typeof arg === "object") {
           for (const [k, v] of Object.entries(arg as Record<string, unknown>)) {
-            if (k !== "defaultValue") s = s.replaceAll(`{{${k}}}`, String(v));
+            if (k !== "defaultValue")
+              text = text.replaceAll(`{{${k}}}`, String(v));
           }
         }
-        return s;
+        return text;
       },
     }),
   };
