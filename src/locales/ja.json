@@ -3212,9 +3212,13 @@
         "aozora": "青空文庫テキスト",
         "genericMd": "汎用 Markdown",
         "wordHtml": "Word 貼付 (HTML)",
+        "webFiction": "Web 小説（Wattpad 等）",
+        "ao3": "Archive of Our Own",
         "userPresetsGroup": "ユーザー定義",
         "builtinGroup": "ビルトイン",
-        "genericGroup": "汎用"
+        "genericGroup": "汎用",
+        "englishPlatformsGroup": "英語向けプラットフォーム",
+        "japanesePlatformsGroup": "日本語向けプラットフォーム"
       },
       "presetNote": {
         "narou": "傍点は |語《・・》 形式。1文字ずつ分割するオプションあり。",
@@ -3223,7 +3227,9 @@
         "novelism": "傍点は「記法変換 ON」設定の場合のみ有効です。",
         "aozora": "青空文庫テキスト形式（｜《》＋傍点注記）。",
         "genericMd": "Discord / Slack / note などへの貼付向け。",
-        "wordHtml": "Word / LibreOffice は <ruby> タグを解釈します。"
+        "wordHtml": "Word / LibreOffice は <ruby> タグを解釈します。",
+        "webFiction": "プレーンテキスト貼付向け。ルビ・傍点は除去されます。",
+        "ao3": "AO3 の HTML エディタへの貼付向け。作者ノート等は手動で分離してください。"
       },
       "presetOption": {
         "pixivChapterNewpage": "章見出しの前に [newpage] を入れる",

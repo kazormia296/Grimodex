@@ -35,12 +35,25 @@ export const EXPORT_PRESET_IDS = [
   "aozora",
   "generic-md",
   "word-html",
+  "web-fiction",
+  "ao3",
 ] as const satisfies readonly ExportPresetId[];
+
+/**
+ * プリセットの主な対象言語。プリセット選択 UI の optgroup 並べ替え
+ * （exportPresetCatalog.ts）で使う。
+ *  - "ja":  日本の投稿サイト／青空文庫向け
+ *  - "en":  英語圏の web 小説プラットフォーム向け
+ *  - "all": 言語共通（汎用 Markdown / HTML）
+ */
+export type ExportPresetRegion = "ja" | "en" | "all";
 
 export interface ExportPresetMeta {
   id: ExportPresetId;
   /** 表示名（i18n キー） */
   labelKey: string;
+  /** 主な対象言語（UI のグルーピングに使用） */
+  region: ExportPresetRegion;
   /** 補足説明（i18n キー、任意） */
   descriptionKey?: string;
   /** ルビ文字数バリデーション上限。null なら検査なし */
@@ -71,6 +84,7 @@ const SHARED_DEFAULTS = {
 function makePreset(
   id: Exclude<ExportPresetId, "custom">,
   labelKey: string,
+  region: ExportPresetRegion,
   overrides: {
     format: ExportFormat;
     rubyStyle: RubyStyle;
@@ -97,6 +111,7 @@ function makePreset(
   return {
     id,
     labelKey,
+    region,
     descriptionKey: meta.descriptionKey,
     rubyLimit: meta.rubyLimit ?? null,
     settings,
@@ -110,6 +125,7 @@ export const EXPORT_PRESETS: Record<
   narou: makePreset(
     "narou",
     "export.settings.preset.narou",
+    "ja",
     {
       format: "plaintext",
       rubyStyle: "aozora",
@@ -126,6 +142,7 @@ export const EXPORT_PRESETS: Record<
   kakuyomu: makePreset(
     "kakuyomu",
     "export.settings.preset.kakuyomu",
+    "ja",
     {
       format: "plaintext",
       rubyStyle: "aozora-auto",
@@ -139,17 +156,23 @@ export const EXPORT_PRESETS: Record<
     },
   ),
 
-  alphapolis: makePreset("alphapolis", "export.settings.preset.alphapolis", {
-    format: "plaintext",
-    rubyStyle: "aozora",
-    emphasisDotsStyle: "double-angle",
-    sceneBreakStyle: "asterisks",
-    sceneDivider: "blank",
-  }),
+  alphapolis: makePreset(
+    "alphapolis",
+    "export.settings.preset.alphapolis",
+    "ja",
+    {
+      format: "plaintext",
+      rubyStyle: "aozora",
+      emphasisDotsStyle: "double-angle",
+      sceneBreakStyle: "asterisks",
+      sceneDivider: "blank",
+    },
+  ),
 
   pixiv: makePreset(
     "pixiv",
     "export.settings.preset.pixiv",
+    "ja",
     {
       format: "plaintext",
       folderHeading: true,
@@ -163,7 +186,7 @@ export const EXPORT_PRESETS: Record<
     { descriptionKey: "export.settings.presetNote.pixiv" },
   ),
 
-  hameln: makePreset("hameln", "export.settings.preset.hameln", {
+  hameln: makePreset("hameln", "export.settings.preset.hameln", "ja", {
     format: "plaintext",
     rubyStyle: "aozora",
     emphasisDotsStyle: "double-angle",
@@ -174,6 +197,7 @@ export const EXPORT_PRESETS: Record<
   novelup: makePreset(
     "novelup",
     "export.settings.preset.novelup",
+    "ja",
     {
       format: "plaintext",
       rubyStyle: "aozora",
@@ -187,6 +211,7 @@ export const EXPORT_PRESETS: Record<
   novelism: makePreset(
     "novelism",
     "export.settings.preset.novelism",
+    "ja",
     {
       format: "plaintext",
       rubyStyle: "aozora",
@@ -200,6 +225,7 @@ export const EXPORT_PRESETS: Record<
   aozora: makePreset(
     "aozora",
     "export.settings.preset.aozora",
+    "ja",
     {
       format: "plaintext",
       rubyStyle: "aozora",
@@ -213,6 +239,7 @@ export const EXPORT_PRESETS: Record<
   "generic-md": makePreset(
     "generic-md",
     "export.settings.preset.genericMd",
+    "all",
     {
       format: "markdown",
       folderHeading: true,
@@ -227,6 +254,7 @@ export const EXPORT_PRESETS: Record<
   "word-html": makePreset(
     "word-html",
     "export.settings.preset.wordHtml",
+    "all",
     {
       format: "html",
       folderHeading: true,
@@ -236,6 +264,41 @@ export const EXPORT_PRESETS: Record<
       sceneDivider: "blank",
     },
     { descriptionKey: "export.settings.presetNote.wordHtml" },
+  ),
+
+  // ── 英語圏向け ──────────────────────────────────────────────
+  // 英語小説はルビ・傍点をほぼ使わないため、base ルビ（除去）+ plain 傍点
+  // （除去）に寄せる。章見出しはサイト側 UI で付ける前提。
+  "web-fiction": makePreset(
+    "web-fiction",
+    "export.settings.preset.webFiction",
+    "en",
+    {
+      format: "plaintext",
+      folderHeading: false,
+      rubyStyle: "base",
+      emphasisDotsStyle: "plain",
+      sceneBreakStyle: "asterisks",
+      sceneDivider: "blank",
+    },
+    { descriptionKey: "export.settings.presetNote.webFiction" },
+  ),
+
+  // AO3 (Archive of Our Own) HTML エディタへの貼付向け。word-html に近いが
+  // 傍点 span を出さず（plain）、章間を blank2 で区切る。
+  ao3: makePreset(
+    "ao3",
+    "export.settings.preset.ao3",
+    "en",
+    {
+      format: "html",
+      folderHeading: true,
+      rubyStyle: "html",
+      emphasisDotsStyle: "plain",
+      sceneBreakStyle: "hr",
+      sceneDivider: "blank2",
+    },
+    { descriptionKey: "export.settings.presetNote.ao3" },
   ),
 };
 

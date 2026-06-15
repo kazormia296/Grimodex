@@ -67,7 +67,9 @@ export type ExportPresetId =
   | "novelism"
   | "aozora"
   | "generic-md"
-  | "word-html";
+  | "word-html"
+  | "web-fiction"
+  | "ao3";
 
 export interface ExportSettings {
   format: ExportFormat;

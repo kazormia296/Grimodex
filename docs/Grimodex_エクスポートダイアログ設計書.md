@@ -323,7 +323,25 @@ TipTapの独自ノード/マークのエクスポート方法を設定する。
 | `aozora` | 青空文庫テキスト | plaintext | OFF | `aozora` | `aozora` | `asterisks` (`blank2` divider) | 青空文庫入稿用 |
 | `generic-md` | 汎用 Markdown | markdown | ON | `parentheses` | `plain` | `hr` (`blank2` divider) | Discord / Slack / note 貼付向け |
 | `word-html` | Word 貼付 (HTML) | html | ON | `html` | `html` | `hr` | Word / LibreOffice の `<ruby>` 解釈に対応 |
+| `web-fiction` | Web 小説（Wattpad 等） | plaintext | OFF | `base` | `plain` | `asterisks` | 英語 web 小説のプレーンテキスト貼付向け。ルビ・傍点を除去。章見出しはサイト側 UI で付ける前提 |
+| `ao3` | Archive of Our Own | html | ON | `html` | `plain` | `hr` (`blank2` divider) | AO3 HTML エディタ貼付向け。`word-html` と違い傍点 span を出さない |
 | `custom` | カスタム | （現在値） | — | — | — | — | プリセット適用なし。手動変更時に自動でこの ID へフォールバック |
+
+各プリセットには **対象言語メタデータ `region`**（`ja` / `en` / `all`）が付与される。`ja` = 日本の投稿サイト＋青空文庫、`en` = `web-fiction` / `ao3`、`all` = `generic-md` / `word-html`（言語共通）。`region` は選択 UI の optgroup 並べ替え（後述）に使う。
+
+#### 言語別 optgroup 並べ替え
+
+プリセット選択 UI は **プロジェクト言語**（`settingsStore.projectLanguage`、書体・行間等と同じ基準）で optgroup の並びを切り替える。グルーピングは `src/features/export/exportPresetCatalog.ts` の `getPresetGroups(projectLanguage, currentPresetId)` が組み立てる。
+
+| プロジェクト言語 | primary（先頭） | generic（中段） | secondary（末尾） |
+|---|---|---|---|
+| `ja`（既定） | 日本の投稿サイト 7 種 | `aozora` / `generic-md` / `word-html` | 「英語向けプラットフォーム」= `web-fiction` / `ao3` |
+| `en` | 「Built-in」= `web-fiction` / `ao3` | `generic-md` / `word-html` | 「日本語向けプラットフォーム」= 投稿サイト 7 種 ＋ `aozora` |
+
+- `custom` は常にグループ外の先頭、ユーザー定義プリセットは常に末尾。
+- HTML `<select>` の optgroup は実際には畳めないため「畳む」=末尾にまとめて表示の意。
+- `aozora` は青空文庫という汎用テキスト寄りの性格上、`ja` プロジェクトでは generic 側に置き（既存挙動の維持）、`en` プロジェクトでは日本語プラットフォーム群にまとめる。
+- 全ビルトインは常にいずれかのグループに含まれるため、保存済みの `narou` を英語プロジェクトで開いても選択肢から消えない（`currentPresetId` 安全網も併用）。
 
 #### 適用方式
 

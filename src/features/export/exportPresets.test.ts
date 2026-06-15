@@ -31,6 +31,33 @@ describe("EXPORT_PRESETS", () => {
       expect(def.settings.exportPresetId).toBe(id);
     }
   });
+
+  it("英語向けプリセット web-fiction / ao3 が定義されている", () => {
+    expect(EXPORT_PRESET_IDS).toContain("web-fiction");
+    expect(EXPORT_PRESET_IDS).toContain("ao3");
+    expect(EXPORT_PRESETS["web-fiction"]).toBeDefined();
+    expect(EXPORT_PRESETS["ao3"]).toBeDefined();
+  });
+
+  it("各ビルトインプリセットに region メタデータが付与されている", () => {
+    const expected: Record<string, "ja" | "en" | "all"> = {
+      narou: "ja",
+      kakuyomu: "ja",
+      alphapolis: "ja",
+      pixiv: "ja",
+      hameln: "ja",
+      novelup: "ja",
+      novelism: "ja",
+      aozora: "ja",
+      "web-fiction": "en",
+      ao3: "en",
+      "generic-md": "all",
+      "word-html": "all",
+    };
+    for (const [id, def] of Object.entries(EXPORT_PRESETS)) {
+      expect(def.region).toBe(expected[id]);
+    }
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -110,6 +137,31 @@ describe("applyExportPreset", () => {
     expect(result.exportPresetId).toBe("word-html");
   });
 
+  it("web-fiction: plaintext + base ルビ除去 + plain 傍点除去 + asterisks", () => {
+    const result = applyExportPreset("web-fiction", DEFAULT_EXPORT_SETTINGS);
+    expect(result.format).toBe("plaintext");
+    // 英語 web 小説はルビ・傍点を使わないので除去寄りに
+    expect(result.rubyStyle).toBe("base");
+    expect(result.emphasisDotsStyle).toBe("plain");
+    expect(result.sceneBreakStyle).toBe("asterisks");
+    expect(result.sceneDivider).toBe("blank");
+    // 章見出しはサイト側 UI で付ける前提
+    expect(result.folderHeading).toBe(false);
+    expect(result.exportPresetId).toBe("web-fiction");
+  });
+
+  it("ao3: html + html ルビ + plain 傍点 + hr ブレイク + blank2 区切り", () => {
+    const result = applyExportPreset("ao3", DEFAULT_EXPORT_SETTINGS);
+    expect(result.format).toBe("html");
+    expect(result.folderHeading).toBe(true);
+    expect(result.rubyStyle).toBe("html");
+    // word-html と違い傍点 span は出さない
+    expect(result.emphasisDotsStyle).toBe("plain");
+    expect(result.sceneBreakStyle).toBe("hr");
+    expect(result.sceneDivider).toBe("blank2");
+    expect(result.exportPresetId).toBe("ao3");
+  });
+
   it("プリセット適用は includeTrashBin など『ユーザー意図』フィールドを保持する", () => {
     // includeTrashBin は「ゴミ箱を含むか」というプリセットと無関係な意思決定。
     // プリセット切替で勝手に false に戻されると混乱するので、現在値を引き継ぐ。
@@ -135,6 +187,8 @@ describe("detectExportPreset", () => {
       "aozora",
       "generic-md",
       "word-html",
+      "web-fiction",
+      "ao3",
     ];
     for (const id of ids) {
       const settings = {

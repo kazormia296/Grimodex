@@ -3213,9 +3213,13 @@
         "aozora": "Aozora Bunko text",
         "genericMd": "Generic Markdown",
         "wordHtml": "Word paste (HTML)",
+        "webFiction": "Web fiction (Wattpad, etc.)",
+        "ao3": "Archive of Our Own",
         "userPresetsGroup": "User-defined",
         "builtinGroup": "Built-in",
-        "genericGroup": "Generic"
+        "genericGroup": "Generic",
+        "englishPlatformsGroup": "English platforms",
+        "japanesePlatformsGroup": "Japanese platforms"
       },
       "presetNote": {
         "narou": "Emphasis as |word《・・》. Per-character split available.",
@@ -3224,7 +3228,9 @@
         "novelism": "Emphasis works only when 'notation conversion' is enabled on Novelism.",
         "aozora": "Aozora Bunko text (｜《》 + emphasis annotation).",
         "genericMd": "For pasting to Discord / Slack / note.",
-        "wordHtml": "Word / LibreOffice render <ruby> tags."
+        "wordHtml": "Word / LibreOffice render <ruby> tags.",
+        "webFiction": "For pasting as plain text. Ruby and emphasis dots are stripped.",
+        "ao3": "For pasting into the AO3 HTML editor. Separate author's notes manually."
       },
       "presetOption": {
         "pixivChapterNewpage": "Insert [newpage] before chapter heading",

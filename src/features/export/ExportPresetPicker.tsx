@@ -10,12 +10,18 @@ import {
   validateUserPresetName,
 } from "./exportPresets";
 import {
+  getPresetGroups,
+  type PresetGroup,
+  type PresetGroups,
+} from "./exportPresetCatalog";
+import {
   addUserPreset,
   findUserPreset,
   removeUserPreset,
   type UserExportPreset,
 } from "./exportUserPresets";
 import type { RubyLengthWarning } from "./exportValidation";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 
 // ────────────────────────────────────────────────────────────────────
 // プリセット Select の選択肢構築
@@ -23,61 +29,43 @@ import type { RubyLengthWarning } from "./exportValidation";
 
 type SelectValue = `preset:${ExportPresetId}` | `user:${string}`;
 
-interface PresetOption {
-  value: SelectValue;
-  label: string;
-  group: "custom" | "publishing" | "generic" | "user";
+interface OptGroupDesc {
+  /** optgroup ラベルの i18n キー */
+  labelKey: string;
+  options: { value: SelectValue; label: string }[];
 }
 
-const PUBLISHING_IDS: ExportPresetId[] = [
-  "narou",
-  "kakuyomu",
-  "alphapolis",
-  "pixiv",
-  "hameln",
-  "novelup",
-  "novelism",
-];
-
-const GENERIC_IDS: ExportPresetId[] = ["aozora", "generic-md", "word-html"];
-
-function buildOptions(
+/**
+ * catalog の言語別グルーピングにユーザープリセットを足して、
+ * 表示順どおりの optgroup 記述子配列に変換する。custom はグループ外なので含めない。
+ */
+function buildOptGroups(
+  groups: PresetGroups,
   userPresets: UserExportPreset[],
   t: (key: string) => string,
-): PresetOption[] {
-  const opts: PresetOption[] = [
-    {
-      value: "preset:custom",
-      label: t("export.settings.preset.custom"),
-      group: "custom",
-    },
+): OptGroupDesc[] {
+  const fromPresetGroup = (g: PresetGroup): OptGroupDesc => ({
+    labelKey: g.labelKey,
+    options: g.ids.map((id) => ({
+      value: `preset:${id}` as SelectValue,
+      label: t(EXPORT_PRESETS[id].labelKey),
+    })),
+  });
+  const result: OptGroupDesc[] = [
+    fromPresetGroup(groups.primary),
+    fromPresetGroup(groups.generic),
+    fromPresetGroup(groups.secondary),
   ];
-  for (const id of PUBLISHING_IDS) {
-    opts.push({
-      value: `preset:${id}`,
-      label: t(
-        EXPORT_PRESETS[id as Exclude<ExportPresetId, "custom">].labelKey,
-      ),
-      group: "publishing",
+  if (userPresets.length > 0) {
+    result.push({
+      labelKey: "export.settings.preset.userPresetsGroup",
+      options: userPresets.map((up) => ({
+        value: `user:${up.id}` as SelectValue,
+        label: up.name,
+      })),
     });
   }
-  for (const id of GENERIC_IDS) {
-    opts.push({
-      value: `preset:${id}`,
-      label: t(
-        EXPORT_PRESETS[id as Exclude<ExportPresetId, "custom">].labelKey,
-      ),
-      group: "generic",
-    });
-  }
-  for (const up of userPresets) {
-    opts.push({
-      value: `user:${up.id}`,
-      label: up.name,
-      group: "user",
-    });
-  }
-  return opts;
+  return result;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -259,6 +247,9 @@ export function ExportPresetPicker({
 }: Props) {
   const { t } = useTranslation();
   const [saveOpen, setSaveOpen] = useState(false);
+  // 執筆言語に応じてプリセットの並びを変える（書体・行間等と同じ projectLanguage 基準）。
+  // ExportDialog の projectLanguage state と二重管理しないよう store から直接取得する。
+  const projectLanguage = useSettingsStore((s) => s.projectLanguage);
 
   // 現在の Select 値: ユーザープリセットなら "user:<id>"、ビルトインなら "preset:<id>"
   const currentValue = useMemo<SelectValue>(() => {
@@ -272,7 +263,15 @@ export function ExportPresetPicker({
     return `preset:${detected}` as SelectValue;
   }, [settings, userPresets]);
 
-  const options = useMemo(() => buildOptions(userPresets, t), [userPresets, t]);
+  const optGroups = useMemo(
+    () =>
+      buildOptGroups(
+        getPresetGroups(projectLanguage, settings.exportPresetId),
+        userPresets,
+        t,
+      ),
+    [projectLanguage, settings.exportPresetId, userPresets, t],
+  );
 
   const builtinId =
     settings.exportPresetId !== "custom"
@@ -348,7 +347,20 @@ export function ExportPresetPicker({
         onChange={(e) => handleSelectChange(e.target.value as SelectValue)}
         className="w-full rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
       >
-        <PresetOptGroups options={options} t={t} />
+        <option value="preset:custom">
+          {t("export.settings.preset.custom")}
+        </option>
+        {optGroups.map((g) =>
+          g.options.length > 0 ? (
+            <optgroup key={g.labelKey} label={t(g.labelKey)}>
+              {g.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </optgroup>
+          ) : null,
+        )}
       </select>
 
       {/* 注記 */}
@@ -370,57 +382,6 @@ export function ExportPresetPicker({
         onSave={handleSavePreset}
       />
     </div>
-  );
-}
-
-// ────────────────────────────────────────────────────────────────────
-// optgroup レンダラ
-// ────────────────────────────────────────────────────────────────────
-
-function PresetOptGroups({
-  options,
-  t,
-}: {
-  options: PresetOption[];
-  t: (key: string) => string;
-}) {
-  const groups = {
-    custom: options.filter((o) => o.group === "custom"),
-    publishing: options.filter((o) => o.group === "publishing"),
-    generic: options.filter((o) => o.group === "generic"),
-    user: options.filter((o) => o.group === "user"),
-  };
-  return (
-    <>
-      {groups.custom.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-      <optgroup label={t("export.settings.preset.builtinGroup")}>
-        {groups.publishing.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </optgroup>
-      <optgroup label={t("export.settings.preset.genericGroup")}>
-        {groups.generic.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </optgroup>
-      {groups.user.length > 0 && (
-        <optgroup label={t("export.settings.preset.userPresetsGroup")}>
-          {groups.user.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </optgroup>
-      )}
-    </>
   );
 }
 
