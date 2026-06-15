@@ -239,6 +239,75 @@ describe("insertPlainTextAsUnknown (任意エディタへのプレーン挿入)"
   });
 });
 
+describe("pasteExternalText: コードブロック内は verbatim (変換しない)", () => {
+  function codeBlockText(editor: Editor): string {
+    let txt = "";
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "codeBlock") txt = node.textContent;
+    });
+    return txt;
+  }
+
+  it("通常ペースト: Markdown を変換せず原文をコードブロックに挿入する", () => {
+    editor.destroy();
+    editor = makeEditor("<pre><code>let </code></pre>");
+    editor.commands.setTextSelection(3); // "let " の内側 (コードブロック内)
+    pasteExternalText(editor, "# 見出し\n**太字**", () => {}, false);
+    // heading / bold ノードは作られない
+    const hasHeading = editor.state.doc.content.content.some(
+      (n) => n.type.name === "heading",
+    );
+    expect(hasHeading).toBe(false);
+    // 記法がそのまま残る (verbatim)
+    const code = codeBlockText(editor);
+    expect(code).toContain("# 見出し");
+    expect(code).toContain("**太字**");
+    // 帰属の部分付与は起きない (コードブロックは mark 不可)
+    const r = runs(editor);
+    expect(r.some((x) => x.source === "unknown")).toBe(false);
+  });
+
+  it("Ctrl+Shift+V (plain=true): コードブロック内も原文 verbatim", () => {
+    editor.destroy();
+    editor = makeEditor("<pre><code></code></pre>");
+    editor.commands.setTextSelection(1);
+    pasteExternalText(editor, "## 見出し", () => {}, true);
+    const code = codeBlockText(editor);
+    expect(code).toContain("## 見出し");
+  });
+
+  it("コードブロック内: 非空選択を上書きして verbatim 挿入する", () => {
+    editor.destroy();
+    editor = makeEditor("<pre><code>hello world</code></pre>");
+    // "world" (pos 7-12) を選択して上書き
+    editor.commands.setTextSelection({ from: 7, to: 12 });
+    pasteExternalText(editor, "code", () => {}, false);
+    expect(codeBlockText(editor)).toBe("hello code");
+  });
+
+  it("複数行も改行を保持して verbatim 挿入する", () => {
+    editor.destroy();
+    editor = makeEditor("<pre><code></code></pre>");
+    editor.commands.setTextSelection(1);
+    pasteExternalText(editor, "行1\n行2", () => {}, false);
+    expect(codeBlockText(editor)).toBe("行1\n行2");
+  });
+
+  it("ガードは過剰発火しない: 引用(blockquote)内では Markdown 変換が効く", () => {
+    editor.destroy();
+    editor = makeEditor("<blockquote><p>引用</p></blockquote>");
+    editor.commands.setTextSelection(2); // blockquote > paragraph 内
+    pasteExternalText(editor, "**太字**", () => {}, false);
+    let hasBold = false;
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.marks.some((m) => m.type.name === "bold")) {
+        hasBold = true;
+      }
+    });
+    expect(hasBold).toBe(true);
+  });
+});
+
 describe("handleExternalPaste (Linear/fileBacked 共有ハンドラ)", () => {
   it("外部テキスト: Markdown を変換し true を返す", () => {
     editor.commands.focus();

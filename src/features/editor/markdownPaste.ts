@@ -155,6 +155,34 @@ export function insertPlainTextAsUnknown(
   return insertSliceWithUnknown(editor, plainTextToSlice(editor, text));
 }
 
+/**
+ * 現在の選択位置が verbatim (コードブロック等 `spec.code` ノード) 内かどうか。
+ * code ノードは inline mark を許可せず、Markdown 変換も不適切 (コードは逐語)。
+ */
+function isVerbatimContext(editor: Editor): boolean {
+  const { $from } = editor.state.selection;
+  for (let depth = $from.depth; depth > 0; depth--) {
+    if ($from.node(depth).type.spec.code) return true;
+  }
+  return false;
+}
+
+/**
+ * 原文テキストをそのまま (変換・マークなしで) 挿入する。コードブロック内
+ * ペースト用 — `\n` も含めて逐語で入る。
+ */
+function insertVerbatimText(editor: Editor, text: string): void {
+  editor
+    .chain()
+    .focus()
+    .command(({ tr }) => {
+      tr.setMeta("programmaticInsert", true);
+      tr.insertText(text);
+      return true;
+    })
+    .run();
+}
+
 // --- 書式設定なしペースト (Ctrl/Cmd+Shift+V) の検出フラグ ---
 //
 // クリップボード API の同期読み取りは権限・user-gesture 制約があるため、
@@ -218,6 +246,12 @@ export function pasteExternalText(
   insertRaw: (text: string) => void,
   plain: boolean,
 ): void {
+  // コードブロック等 verbatim コンテキストでは変換せず原文を逐語挿入する
+  // (code ノードは mark 不可で、変換すると構造破壊・帰属の部分付与が起きる)。
+  if (isVerbatimContext(editor)) {
+    insertVerbatimText(editor, plainText);
+    return;
+  }
   if (plain) {
     // ブロック専用記法 (`---` 水平線など) は textBetween が空文字を返す。
     // そのまま挿入すると貼り付けが無音で消えるため、空なら原文を挿入する。
