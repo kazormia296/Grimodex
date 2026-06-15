@@ -4,6 +4,8 @@ import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel, selectSceneFromChat } from "./ChatPanel";
 import { useChatStore } from "./chatStore";
+import { useAiSettingsStore } from "./store";
+import { DEFAULT_AI_SETTINGS } from "./types";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -604,6 +606,40 @@ describe("ChatPanel", () => {
 
       expect(screen.getByTestId("chat-message-u1")).toBeInTheDocument();
       expect(document.querySelectorAll("[data-animate-in]").length).toBe(0);
+    });
+  });
+
+  // Context Creator（AIコンテキスト提案）は Codex/Snippet 検索ツールを使う
+  // エージェント実行なので、現在のモデル/プロバイダが Tool Use 対応のときだけ
+  // 押せる。ヘッダー刷新リファクタ (790785ab) で canUseCreator が false 固定に
+  // され、対応モデルでも常に無効化されていた回帰を gate する。
+  describe("Context Creator のツール対応ゲート", () => {
+    afterEach(() => {
+      useAiSettingsStore.setState({ settings: null, models: [] });
+    });
+
+    it("Tool Use 対応モデルでは AIコンテキスト提案ボタンが有効", () => {
+      useAiSettingsStore.setState({
+        settings: { ...DEFAULT_AI_SETTINGS, model: "claude-opus-4-8" },
+      });
+
+      render(<ChatPanel />);
+
+      expect(
+        screen.getByRole("button", { name: "AIコンテキスト提案" }),
+      ).toBeEnabled();
+    });
+
+    it("Tool Use 非対応モデルでは AIコンテキスト提案ボタンが無効", () => {
+      useAiSettingsStore.setState({
+        settings: { ...DEFAULT_AI_SETTINGS, model: "deepseek-r1" },
+      });
+
+      render(<ChatPanel />);
+
+      expect(
+        screen.getByRole("button", { name: "AIコンテキスト提案" }),
+      ).toBeDisabled();
     });
   });
 

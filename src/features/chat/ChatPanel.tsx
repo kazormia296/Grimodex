@@ -25,7 +25,11 @@ import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 import { ContextBar } from "./components/ContextBar";
 import { PromptPreviewModal } from "./components/PromptPreviewModal";
-import { getModelCapabilities } from "./agent/modelLimits";
+import {
+  getModelCapabilities,
+  resolveModelCapabilities,
+} from "./agent/modelLimits";
+import { resolveAinoveristApiVariant } from "./aiNovelist";
 import { computeSpotlightCandidates } from "./spotlightSuggestion";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { CodexPopover } from "@/features/editor/CodexPopover";
@@ -178,7 +182,24 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const loadAiSettings = useAiSettingsStore((s) => s.loadSettings);
+  const aiModels = useAiSettingsStore((s) => s.models);
+  // 動的 capability レジストリ（OpenRouter /models 等）更新時に再計算する。
+  useAiSettingsStore((s) => s.modelCapsRevision);
   const currentModel = aiSettings?.model ?? "";
+
+  // Context Creator（AIコンテキスト提案）は Codex/Snippet 検索ツールを使う
+  // エージェント実行のため、現在のモデル/プロバイダが Tool Use 対応のときだけ
+  // 有効化する。判定は ChatInput の agent ゲートと同じ resolveModelCapabilities
+  // 経路に揃える（CLI / AI のべりすと legacy 等のツール非対応プロバイダも反映）。
+  const canUseCreator = resolveModelCapabilities(
+    currentModel,
+    aiSettings,
+    resolveAinoveristApiVariant(
+      currentModel,
+      aiModels,
+      aiSettings?.modelApiVariant,
+    ),
+  ).supportsTools;
 
   useEffect(() => {
     loadAiSettings();
@@ -994,7 +1015,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}
         model={currentModel}
-        canUseCreator={false}
+        canUseCreator={canUseCreator}
         projectOutline={projectOutline}
         chapterOutlines={chapterOutlines}
         summaryCount={summaryCount}
