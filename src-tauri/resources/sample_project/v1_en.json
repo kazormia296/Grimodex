@@ -1,0 +1,222 @@
+{
+  "project": {
+    "id": "default-project",
+    "title": "The Iron Crown",
+    "genre": "fantasy",
+    "language": "en",
+    "ai_instructions": "Keep Eleanor's interiority restrained — show feeling through action and gesture, not by naming it. Hold the world consistent: the compass binds memory, and the Sundering Rite seals a Hollow together with its memory. Keep the central mystery of the night of the fire alive."
+  },
+  "tree_nodes": [
+    {
+      "id": "sample-folder-1",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "Part One: The Return",
+      "synopsis": "Eleanor returns to the ruined Ashveil Hall after ten years and finds the compass she left behind on the hearthstone.",
+      "sort_order": "a0",
+      "status": "draft"
+    },
+    {
+      "id": "sample-scene-1",
+      "parent_id": "sample-folder-1",
+      "node_type": "scene",
+      "title": "Chapter One: The Hall",
+      "synopsis": "On a night of rain, Eleanor returns to the ruined Ashveil Hall for the first time in ten years. On the hearthstone, the compass she left behind still lies — and it is dry.",
+      "sort_order": "a0",
+      "status": "draft",
+      "story_time_order": "0001",
+      "story_time_label": "A night of rain",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Eleanor stopped a few paces short of the gate. It had been ten years.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The hall was smaller than she remembered. In her memory it had been a great dark house ringed by old elms; now it was a half-collapsed shell, wet to the bone with rain.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The door to the keeping-room was not locked. There had been a lock, but it had fallen, hasp and all. Eleanor picked it up, turned it over, and set it back where it had lain.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Something had been left on the old hearthstone. A compass.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The compass was dry. It had been left to ten years of rain, and it was not wet. The moment her finger touched it, the memory came. It was not her own memory.\"}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"beat-en-scene1\",\"collapsed\":false,\"beatType\":\"free\",\"pov\":null,\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"Eleanor cannot leave the dry compass on the hearth. She takes it up, certain now that someone has crossed this threshold since the night of the fire.\"}]}]}"
+    },
+    {
+      "id": "sample-scene-2",
+      "parent_id": "sample-folder-1",
+      "node_type": "scene",
+      "title": "Chapter Two: The Writ",
+      "synopsis": "The next morning, beneath the compass, Eleanor finds a sealed writ. Her name is on it, and two words: \"Come back.\" Wrenna arrives with a parcel and a greeting that says she had been waiting.",
+      "sort_order": "a1",
+      "status": "outline",
+      "story_time_order": "0002",
+      "story_time_label": "The next morning",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Eleanor woke in the keeping-room with the compass still in her hand. Beneath it, where the compass had lain, was a folded writ, its seal unbroken.\"}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"beat-en-scene2\",\"collapsed\":false,\"beatType\":\"free\",\"pov\":null,\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"Eleanor breaks the seal and reads her own name and two words — Come back. Before she can think, Wrenna is at the door with a wrapped parcel, greeting her as if ten years were nothing.\"}]}]}"
+    },
+    {
+      "id": "sample-folder-2",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "Part Two: The Fire",
+      "synopsis": "The night the east wing burned, ten years ago, and the voice Eleanor has never been able to name.",
+      "sort_order": "a1",
+      "status": "outline"
+    },
+    {
+      "id": "sample-scene-3",
+      "parent_id": "sample-folder-2",
+      "node_type": "scene",
+      "title": "Memory: The Night of the Fire",
+      "synopsis": "Ten years ago, on a summer night, the hall burned while Eleanor was inside. A voice told her to get back — she still cannot say whose.",
+      "sort_order": "a0",
+      "status": "outline",
+      "story_time_order": "0003",
+      "story_time_label": "Ten years ago",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The fire came from inside the house. \\\"Get back,\\\" a voice said — whose, Eleanor still cannot say — and she ran, the compass shut tight in her hand.\"}]}]}"
+    },
+    {
+      "id": "sample-scene-4",
+      "parent_id": "sample-folder-2",
+      "node_type": "scene",
+      "title": "The Hollow's Voice",
+      "synopsis": "In the dark of the hall, the thing the compass binds finally speaks — and what it knows of Eleanor's blood begins to surface.",
+      "sort_order": "a1",
+      "status": "outline",
+      "story_time_order": "0004",
+      "story_time_label": "That same night",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"\\\"You came back,\\\" said the voice in the dark, \\\"as the compass swore you would, Eleanor Ashveil.\\\"\"}]}]}"
+    }
+  ],
+  "codex_entries": [
+    {
+      "id": "sample-codex-eleanor",
+      "type": "character",
+      "name": "Eleanor Ashveil",
+      "aliases": "[\"Eleanor\",\"the Ashveil archivist\"]",
+      "summary": "The last of a line that kept the Sundering Rite. For ten years she has lived in Ironhaven as a quiet archivist. Word that her family hall has burned sends her back to Greymoor for the first time in a decade.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Eleanor governs herself. She holds her feelings in, and even the narration around her keeps emotion from surfacing directly — when she is shaken, she counts to three and walks on.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"She left the hall, and the compass, the night of the fire. She has never let herself ask whose voice told her to get back.\"}]}]}",
+      "notes": null,
+      "context_mode": "always"
+    },
+    {
+      "id": "sample-codex-wrenna",
+      "type": "character",
+      "name": "Wrenna Cole",
+      "aliases": "[\"Wrenna\",\"the Greymoor healer\"]",
+      "summary": "Eleanor's old friend, now a healer and keeper of the records at Greymoor. She waited ten years for Eleanor to come back — and will not admit that she waited.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Wrenna greets Eleanor as if ten years were nothing: \\\"So you came after all.\\\" She arrives at the hall the morning after Eleanor's return, carrying a wrapped parcel she does not yet explain.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-hall",
+      "type": "location",
+      "name": "Ashveil Hall",
+      "aliases": "[\"the hall\",\"Greymoor seat\"]",
+      "summary": "The Ashveil seat in the hills above Greymoor, kept by Eleanor's line for generations. The east wing burned ten years ago and was never rebuilt. On the old hearthstone, the compass Eleanor left behind still lay.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Half-collapsed and wet to the bone with rain, the hall is smaller than memory makes it. The lock on the keeping-room door has fallen, hasp and all — someone has been coming here since the fire.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-compass",
+      "type": "item",
+      "name": "Aldric's Compass",
+      "aliases": "[\"the compass\"]",
+      "summary": "A compass handed down in Eleanor's line. It binds a Hollow and holds memory. Eleanor left it on the hall's hearthstone ten years ago. \"It will always find your blood.\"",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The compass is said to cloud and stall in the damp, yet after ten years of rain on an open hearthstone it lies dry and true. Touched, it gives the holder a memory that is not their own.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-rite",
+      "type": "lore",
+      "name": "The Sundering Rite",
+      "aliases": "[\"the rite\",\"Hollow-binding\"]",
+      "summary": "The Hollow-binding rite Eleanor's line has worked for over a century. Using the compass, it seals a Hollow together with its memory. The last full working failed ten years ago.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The rite does not destroy a Hollow; it binds it, memory and all, into the compass. When the last working failed, the Hollow was left half-bound — and a voice from that night still waits in the hall.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    }
+  ],
+  "chat_sessions": [
+    {
+      "id": "sample-session-1",
+      "node_id": "sample-scene-1",
+      "title": "Developing Eleanor's voice",
+      "model": "openrouter/anthropic/claude-sonnet-4.6"
+    }
+  ],
+  "chat_messages": [
+    {
+      "id": "sample-msg-1",
+      "session_id": "sample-session-1",
+      "role": "user",
+      "content": "I've written the opening of chapter one, but Eleanor's voice still isn't set. She holds her feelings in, so I want even the narration to keep emotion from surfacing directly. How should I handle a moment where she's shaken?"
+    },
+    {
+      "id": "sample-msg-2",
+      "session_id": "sample-session-1",
+      "role": "assistant",
+      "content": "Show the shake through action, not naming. For example:\n\n> At the gate, Eleanor stopped once. She could not have said why she stopped. There was the smell of grass. An elm moved. For nothing more than that, she could not go on. She counted to three, and began to walk again.\n\nThe \"counted to three\" carries the inner tremor without ever naming a feeling, and it reads her as someone who governs herself. Keep the sentences short when she's holding on hardest."
+    },
+    {
+      "id": "sample-msg-3",
+      "session_id": "sample-session-1",
+      "role": "user",
+      "content": "I like that — the restraint fits her. Can the same control carry into the moment she touches the compass and gets a memory that isn't hers?"
+    },
+    {
+      "id": "sample-msg-4",
+      "session_id": "sample-session-1",
+      "role": "assistant",
+      "content": "Yes — let the prose stay flat exactly where the content turns strange. \"The compass was dry. The moment her finger touched it, the memory came. It was not her own memory.\" No alarm, no exclamation; the calm surface makes the wrongness land harder.\n\nOne tip: a memory that isn't hers is a real change to her abilities. Note it on Eleanor's Codex entry now, so the foreshadowing and consistency checks can track it later."
+    }
+  ],
+  "foreshadows": [
+    {
+      "id": "sample-foreshadow-1",
+      "title": "The Compass Stays True",
+      "intent": "The compass stayed dry through ten years of rain. Pay this off later as proof that it waited for Eleanor and has a will of its own.",
+      "notes": "Planted in Chapter One: The Hall on the line \"The compass was dry.\" Payoff scene not yet written.",
+      "payoff_scene_id": null
+    },
+    {
+      "id": "sample-foreshadow-2",
+      "title": "The Intruder at the Hall",
+      "intent": "The fallen lock shows that someone has been entering the ruined hall since the fire. Pays off when the Hollow's presence is revealed.",
+      "notes": "Planted in Chapter One on the fallen lock. Payoff points to \"The Hollow's Voice.\"",
+      "payoff_scene_id": "sample-scene-4"
+    },
+    {
+      "id": "sample-foreshadow-3",
+      "title": "Wrenna Was Waiting",
+      "intent": "Wrenna's greeting — \"So you came after all\" — hints that she knew Eleanor would return and has been waiting ten years. Pays off when her reason is revealed.",
+      "notes": "Set up in Chapter Two: The Writ. Payoff scene not yet written.",
+      "payoff_scene_id": null
+    }
+  ],
+  "snippets": [
+    {
+      "id": "sample-snippet-1",
+      "title": "How Eleanor steadies herself",
+      "content": "At the gate, Eleanor stopped once. She could not have said why she stopped. There was the smell of grass. An elm moved. For nothing more than that, she could not go on.",
+      "content_source": "human"
+    },
+    {
+      "id": "sample-snippet-2",
+      "title": "The compass, again",
+      "content": "The compass was dry. It had been left to ten years of rain, and it was not wet.",
+      "content_source": "human"
+    }
+  ],
+  "foreshadow_setups": [
+    {
+      "id": "sample-setup-1",
+      "foreshadow_id": "sample-foreshadow-1",
+      "scene_id": "sample-scene-1",
+      "from_pos": 477,
+      "to_pos": 496,
+      "kind": "designated_existing",
+      "strength": "subtle",
+      "attribution": "human"
+    },
+    {
+      "id": "sample-setup-2",
+      "foreshadow_id": "sample-foreshadow-2",
+      "scene_id": "sample-scene-1",
+      "from_pos": 314,
+      "to_pos": 341,
+      "kind": "designated_existing",
+      "strength": "moderate",
+      "attribution": "human"
+    }
+  ]
+}

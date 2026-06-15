@@ -7,6 +7,24 @@ use crate::{
 };
 
 const SEED_V1: &str = include_str!("../../resources/sample_project/v1.json");
+const SEED_V1_EN: &str = include_str!("../../resources/sample_project/v1_en.json");
+
+/// Select the embedded sample seed and its project language for the chosen UI
+/// language.
+///
+/// Each bundled sample is authored end-to-end in a single language (entry
+/// names / body / chapter titles), so the project's `language` column must
+/// match the content. If they diverge, only the Codex builtin type-labels
+/// relabel and the result is an "English labels + Japanese body" half-state.
+/// Only `en` has a dedicated English sample today; every other value
+/// (including `ja`) falls back to the Japanese sample so labels and body stay
+/// internally consistent.
+fn select_seed(language: &str) -> (&'static str, &'static str) {
+    match language {
+        "en" => (SEED_V1_EN, "en"),
+        _ => (SEED_V1, "ja"),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // JSON seed data shapes
@@ -167,19 +185,17 @@ pub(crate) fn seed_sample_workspace(
     let db = Database::new(&db_path)?;
     db.migrate()?;
 
+    // Pick the embedded sample whose authored language matches the user's UI
+    // language (ja / en). `sample_language` is written to the project's
+    // `language` column so labels and body stay consistent; unknown languages
+    // fall back to the Japanese sample. See `select_seed` for the rationale.
+    let (seed_src, sample_language) = select_seed(&language);
+
     // Seed from embedded JSON
-    let seed: SeedData = serde_json::from_str(SEED_V1).map_err(anyhow::Error::from)?;
+    let seed: SeedData = serde_json::from_str(seed_src).map_err(anyhow::Error::from)?;
     let project_id = seed.project.id.clone();
     let now_dt = chrono::Utc::now().to_rfc3339();
     let now_ms = chrono::Utc::now().timestamp_millis();
-
-    // 同梱サンプル (v1.json) のコンテンツ (エントリ名/本文/章タイトル) は日本語固定。
-    // ここで project.language にユーザー選択言語 (例 en) を入れると、Codex の
-    // builtin タイプラベルだけが en へ relabel され「英語ラベル + 日本語本文」の
-    // 半端な状態になる。英語サンプル (v1_en.json) を用意するまではサンプルを ja
-    // 固定にして内部整合を保つ (新規プロジェクトはユーザー選択言語を尊重)。
-    let _ = &language; // FE から渡るが現状サンプルは同梱コンテンツ (ja) に従う
-    let sample_language = "ja";
     db.with_conn(|conn| {
         // Project
         // Migration pre-inserts "default-project"; replace it with sample data.
@@ -389,6 +405,149 @@ mod tests {
         assert!(!seed.chat_sessions.is_empty());
         assert!(!seed.chat_messages.is_empty());
         assert!(!seed.foreshadows.is_empty());
+    }
+
+    #[test]
+    fn seed_v1_en_json_is_valid() {
+        let result: Result<SeedData, _> = serde_json::from_str(SEED_V1_EN);
+        assert!(
+            result.is_ok(),
+            "v1_en.json failed to parse: {:?}",
+            result.err()
+        );
+        let seed = result.unwrap();
+        // Must replace the migration's pre-inserted "default-project" row, same
+        // as the Japanese seed — otherwise the sample workspace gets two projects.
+        assert_eq!(seed.project.id, "default-project");
+        assert!(!seed.tree_nodes.is_empty());
+        assert!(!seed.codex_entries.is_empty());
+        assert!(!seed.chat_sessions.is_empty());
+        assert!(!seed.chat_messages.is_empty());
+        assert!(!seed.foreshadows.is_empty());
+    }
+
+    #[test]
+    fn select_seed_picks_language() {
+        let (en_src, en_lang) = select_seed("en");
+        assert_eq!(en_lang, "en");
+        assert_eq!(en_src, SEED_V1_EN);
+
+        let (ja_src, ja_lang) = select_seed("ja");
+        assert_eq!(ja_lang, "ja");
+        assert_eq!(ja_src, SEED_V1);
+
+        // Unknown / unsupported languages fall back to the Japanese sample so we
+        // never ship an inconsistent labels-vs-body half-state.
+        let (fallback_src, fallback_lang) = select_seed("zh");
+        assert_eq!(fallback_lang, "ja");
+        assert_eq!(fallback_src, SEED_V1);
+    }
+
+    #[test]
+    fn seed_en_matches_ja_structure() {
+        // The tour gates (tourGates.ts) and SampleTour are content-agnostic: they
+        // gate on store mutations (scene opened, chars written, chat sent, codex
+        // added, snippet used), not on specific entity names. So the English
+        // sample only has to ship the SAME KINDS and COUNTS of content as the
+        // Japanese one to satisfy every gate. Lock that parity in here.
+        let ja: SeedData = serde_json::from_str(SEED_V1).unwrap();
+        let en: SeedData = serde_json::from_str(SEED_V1_EN).unwrap();
+
+        let scenes = |s: &SeedData| {
+            s.tree_nodes
+                .iter()
+                .filter(|n| n.node_type == "scene")
+                .count()
+        };
+        let folders = |s: &SeedData| {
+            s.tree_nodes
+                .iter()
+                .filter(|n| n.node_type == "folder")
+                .count()
+        };
+
+        assert_eq!(en.tree_nodes.len(), ja.tree_nodes.len(), "tree_nodes");
+        assert_eq!(scenes(&en), scenes(&ja), "scene count");
+        assert_eq!(folders(&en), folders(&ja), "folder count");
+        assert_eq!(en.codex_entries.len(), ja.codex_entries.len(), "codex");
+        assert_eq!(en.chat_sessions.len(), ja.chat_sessions.len(), "sessions");
+        assert_eq!(en.chat_messages.len(), ja.chat_messages.len(), "messages");
+        assert_eq!(en.foreshadows.len(), ja.foreshadows.len(), "foreshadows");
+        assert_eq!(en.snippets.len(), ja.snippets.len(), "snippets");
+        assert_eq!(
+            en.foreshadow_setups.len(),
+            ja.foreshadow_setups.len(),
+            "foreshadow_setups"
+        );
+    }
+
+    /// Extract the text covered by a ProseMirror position range from a scene's
+    /// stringified doc. Mirrors PM position math: block open/close each consume
+    /// one position, a text node consumes one per char, any other inline node
+    /// (atom) consumes one. English seed content is BMP-only so `chars()` count
+    /// matches PM's UTF-16 sizing.
+    fn pm_text_between(content: &str, from: i64, to: i64) -> String {
+        let doc: serde_json::Value = serde_json::from_str(content).unwrap();
+        let mut pos: i64 = 0;
+        let mut out = String::new();
+        for block in doc["content"].as_array().unwrap() {
+            pos += 1; // open
+            if let Some(inline) = block["content"].as_array() {
+                for n in inline {
+                    if n["type"] == "text" {
+                        for ch in n["text"].as_str().unwrap().chars() {
+                            if pos >= from && pos < to {
+                                out.push(ch);
+                            }
+                            pos += 1;
+                        }
+                    } else {
+                        if pos >= from && pos < to {
+                            out.push('\u{fffc}');
+                        }
+                        pos += 1;
+                    }
+                }
+            }
+            pos += 1; // close
+        }
+        out
+    }
+
+    #[test]
+    fn seed_en_foreshadow_setups_anchor_expected_text() {
+        // Guards against prose edits that shift text without re-tuning the baked
+        // from_pos/to_pos: each setup must still cover the line it was planted on.
+        let en: SeedData = serde_json::from_str(SEED_V1_EN).unwrap();
+        let scene_content = |id: &str| -> String {
+            en.tree_nodes
+                .iter()
+                .find(|n| n.id == id)
+                .and_then(|n| n.content.clone())
+                .unwrap_or_else(|| panic!("scene {id} missing"))
+        };
+
+        let expected: &[(&str, &str)] = &[
+            ("sample-setup-1", "The compass was dry"),
+            ("sample-setup-2", "it had fallen, hasp and all"),
+        ];
+        for (setup_id, text) in expected {
+            let setup = en
+                .foreshadow_setups
+                .iter()
+                .find(|s| &s.id == setup_id)
+                .unwrap_or_else(|| panic!("setup {setup_id} missing"));
+            assert!(
+                setup.from_pos < setup.to_pos,
+                "{setup_id}: from_pos must precede to_pos"
+            );
+            let got = pm_text_between(
+                &scene_content(&setup.scene_id),
+                setup.from_pos,
+                setup.to_pos,
+            );
+            assert_eq!(&got, text, "{setup_id} anchor text drifted");
+        }
     }
 
     #[test]
