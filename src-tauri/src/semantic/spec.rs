@@ -54,6 +54,15 @@ pub struct EmbeddingModelSpec {
     /// Whether the ONNX graph requires a (zeroed) `token_type_ids` input.
     /// false for ModernBERT (ruri/granite); true for plain BERT (bge/e5).
     pub needs_token_type_ids: bool,
+    /// Maximum input length (in tokens) the ONNX graph accepts. The tokenizer is
+    /// configured to truncate to this so an input longer than the model's
+    /// position table never reaches inference. Plain BERT (bge) has a fixed
+    /// 512-entry position embedding; feeding it >512 tokens makes the
+    /// `/embeddings/Add_1` (word+position) broadcast fail at runtime
+    /// ("Attempting to broadcast an axis ... 512 by N"). ruri (ModernBERT)
+    /// supports 8192, so Japanese chunks (~760 tokens) are never truncated and
+    /// existing ja embeddings stay byte-identical.
+    pub max_seq_len: usize,
     /// Chunker version string written to `scene_chunks.chunker_version`. The
     /// English chunker uses its own value so changing it never restages
     /// Japanese scenes.
@@ -100,6 +109,9 @@ pub static SPEC_JA: EmbeddingModelSpec = EmbeddingModelSpec {
     document_prefix: "検索文書: ",
     pooling: Pooling::MeanWithMask,
     needs_token_type_ids: false,
+    // ModernBERT / RoPE: documented 8192. ja chunks tokenize to ~760, so this
+    // never truncates — capping lower would silently change every ja embedding.
+    max_seq_len: 8192,
     chunker_version: CHUNKER_VERSION,
     model_id_suffix: "@local/model_int8.onnx/prefix-v1",
     golden_fixture: "ruri_v3_30m_golden.json",
@@ -125,6 +137,10 @@ pub static SPEC_EN: EmbeddingModelSpec = EmbeddingModelSpec {
     document_prefix: "",
     pooling: Pooling::Cls,
     needs_token_type_ids: true,
+    // Plain BERT: fixed 512-entry position table. Inputs >512 tokens crash the
+    // position-embedding add. Hit when Japanese text is indexed in an English
+    // project (each CJK char ≈ 1 bge token, so 1000-char chunks blow past 512).
+    max_seq_len: 512,
     chunker_version: CHUNKER_VERSION_EN,
     model_id_suffix: "@local/model_int8.onnx/en-v1",
     golden_fixture: "bge_small_en_v15_golden.json",
@@ -158,6 +174,9 @@ mod tests {
         assert_eq!(SPEC_JA.document_prefix, "検索文書: ");
         assert_eq!(SPEC_JA.pooling, Pooling::MeanWithMask);
         assert!(!SPEC_JA.needs_token_type_ids);
+        // ruri must keep its full context: capping lower would truncate ja
+        // chunks (~760 tokens) and silently change every existing ja embedding.
+        assert_eq!(SPEC_JA.max_seq_len, 8192);
     }
 
     #[test]
@@ -179,5 +198,8 @@ mod tests {
         assert_eq!(SPEC_EN.pooling, Pooling::Cls);
         assert!(SPEC_EN.needs_token_type_ids);
         assert_eq!(SPEC_EN.embedding_dim, 384);
+        // bge's position table is 512 entries; the tokenizer truncates here so
+        // over-long (e.g. Japanese-in-en-project) chunks never crash inference.
+        assert_eq!(SPEC_EN.max_seq_len, 512);
     }
 }

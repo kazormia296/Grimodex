@@ -25,7 +25,7 @@ use anyhow::{anyhow, Context, Result};
 use ndarray::Array2;
 use ort::session::Session;
 use ort::value::TensorRef;
-use tokenizers::Tokenizer;
+use tokenizers::{Tokenizer, TruncationParams};
 
 use crate::semantic::spec::{EmbeddingModelSpec, Pooling};
 
@@ -55,8 +55,23 @@ impl Embedder {
         tokenizer_path: &Path,
         spec: &'static EmbeddingModelSpec,
     ) -> Result<Self> {
-        let tokenizer = Tokenizer::from_file(tokenizer_path)
+        let mut tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| anyhow!("failed to load tokenizer at {:?}: {e}", tokenizer_path))?;
+        // The Rust `tokenizers` crate does NOT honour `model_max_length` from
+        // tokenizer_config.json, so by default every input is tokenized in full.
+        // Plain BERT models (bge) have a fixed 512-entry position table; a longer
+        // input makes the `/embeddings/Add_1` (word+position) broadcast fail at
+        // inference ("Attempting to broadcast an axis ... 512 by N"). This bit
+        // when Japanese prose was indexed in an English project (each CJK char ≈
+        // 1 bge token). Truncate to the spec's max so over-long chunks are capped
+        // instead of crashing. max_length accounts for the post-processor's
+        // special tokens, so the final sequence (incl. CLS/SEP) stays ≤ max.
+        tokenizer
+            .with_truncation(Some(TruncationParams {
+                max_length: spec.max_seq_len,
+                ..Default::default()
+            }))
+            .map_err(|e| anyhow!("failed to configure tokenizer truncation: {e}"))?;
         let session = Session::builder()
             .context("failed to create ort SessionBuilder")?
             .commit_from_file(model_path)
@@ -589,5 +604,43 @@ mod golden {
             failures.len(),
             failures.join("\n")
         );
+    }
+
+    /// Regression: a chunk longer than the model's position table must be
+    /// truncated, not crash ONNX. This reproduces "English project + Japanese
+    /// text": each CJK ideograph is ~1 bge token, so a long Japanese passage
+    /// tokenizes to >512 tokens and previously failed at `/embeddings/Add_1`
+    /// ("Attempting to broadcast an axis ... 512 by 676"). Skipped when the bge
+    /// model/tokenizer aren't present (CI/sandbox without resources).
+    #[test]
+    fn over_long_input_is_truncated_not_crashed() {
+        let dir = manifest_dir()
+            .join("resources/semantic")
+            .join(SPEC_EN.dir_name);
+        let tokenizer = dir.join("tokenizer.json");
+        let models = locate_models(&dir);
+        if !tokenizer.exists() || models.is_empty() {
+            eprintln!(
+                "[trunc {}] skipped (tokenizer={} models={})",
+                SPEC_EN.dir_name,
+                tokenizer.exists(),
+                models.len()
+            );
+            return;
+        }
+        // ~700 CJK ideographs → ~700 bge tokens before truncation, well over 512.
+        let long_input = "国".repeat(700);
+        for (model_path, _) in &models {
+            let mut embedder = Embedder::load(model_path, &tokenizer, &SPEC_EN)
+                .unwrap_or_else(|e| panic!("load bge embedder {model_path:?}: {e}"));
+            let pooled = embedder.embed_document(&long_input).unwrap_or_else(|e| {
+                panic!("over-long input must be truncated, not crash, on {model_path:?}: {e}")
+            });
+            assert_eq!(
+                pooled.len(),
+                SPEC_EN.embedding_dim,
+                "bge dim mismatch for {model_path:?}"
+            );
+        }
     }
 }
