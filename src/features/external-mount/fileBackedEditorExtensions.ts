@@ -17,10 +17,8 @@ import { Plugin } from "@tiptap/pm/state";
 import i18next from "@/lib/i18n";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
-  pasteExternalText,
-  insertPlainTextAsUnknown,
+  handleExternalPaste,
   notePlainPasteKeyDown,
-  consumePlainPaste,
 } from "@/features/editor/markdownPaste";
 
 /** Strip unsupported marks/nodes from pasted rich content. */
@@ -40,28 +38,11 @@ const PasteSanitizerExtension = Extension.create({
       new Plugin({
         props: {
           handlePaste(_view, event) {
-            const html = event.clipboardData?.getData("text/html");
-            // 内部コピー (grimodex/pm-slice) は ProseMirror 既定処理に委ねる
-            if (
-              html &&
-              (html.includes("data-grimodex-source") ||
-                html.includes("data-pm-slice"))
-            ) {
-              return false;
-            }
-            const text = event.clipboardData?.getData("text/plain");
-            if (!text) return false;
-            const wantPlain = consumePlainPaste();
-            // ruby 記法を除去してから Markdown を変換する
+            // ruby 記法を除去してから Markdown を変換する共有ハンドラに委譲
             // (file-backed は authorship 非対応のため帰属は付かない)。
-            const sanitized = sanitizePastedMarkdown(text);
-            pasteExternalText(
-              editor,
-              sanitized,
-              (t) => insertPlainTextAsUnknown(editor, t),
-              wantPlain,
-            );
-            return true;
+            return handleExternalPaste(editor, event, {
+              sanitize: sanitizePastedMarkdown,
+            });
           },
           handleKeyDown(_view, event) {
             notePlainPasteKeyDown(event);

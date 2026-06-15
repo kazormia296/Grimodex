@@ -10,10 +10,8 @@ import {
 } from "@/features/external-mount/fileBackedEditorExtensions";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import {
-  pasteExternalText,
-  insertPlainTextAsUnknown,
+  handleExternalPaste,
   notePlainPasteKeyDown,
-  consumePlainPaste,
 } from "@/features/editor/markdownPaste";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneFull } from "@/features/tree/api";
@@ -199,31 +197,13 @@ function MountedSceneBlock({
           "aria-multiline": "true",
         },
         handlePaste(_view, event) {
-          const html = event.clipboardData?.getData("text/html");
-          // 内部コピー (grimodex/pm-slice) は ProseMirror 既定処理に委ねる
-          if (
-            html &&
-            (html.includes("data-grimodex-source") ||
-              html.includes("data-pm-slice"))
-          ) {
-            return false;
-          }
-          const wantPlain = consumePlainPaste();
-          const plainText = event.clipboardData?.getData("text/plain") ?? "";
-          if (!plainText) return false;
-          const ed = editorRef.current;
-          if (!ed) return false;
-          // file-backed シーンは ruby 記法を除去してから変換する
-          const text = isFileBacked
-            ? sanitizePastedMarkdown(plainText)
-            : plainText;
-          pasteExternalText(
-            ed,
-            text,
-            (t) => insertPlainTextAsUnknown(ed, t),
-            wantPlain,
+          // 外部テキストの Markdown 変換は共有ハンドラに委譲 (EditorPane と同経路)。
+          // file-backed シーンは ruby 記法を除去してから変換する。
+          return handleExternalPaste(
+            editorRef.current,
+            event,
+            isFileBacked ? { sanitize: sanitizePastedMarkdown } : {},
           );
-          return true;
         },
         handleKeyDown(_view, event) {
           notePlainPasteKeyDown(event);

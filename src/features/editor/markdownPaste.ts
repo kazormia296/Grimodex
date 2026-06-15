@@ -219,9 +219,45 @@ export function pasteExternalText(
   plain: boolean,
 ): void {
   if (plain) {
-    insertRaw(markdownToPlainText(editor, plainText));
+    // ブロック専用記法 (`---` 水平線など) は textBetween が空文字を返す。
+    // そのまま挿入すると貼り付けが無音で消えるため、空なら原文を挿入する。
+    const stripped = markdownToPlainText(editor, plainText);
+    insertRaw(stripped || plainText);
     return;
   }
   if (insertMarkdownAsUnknown(editor, plainText)) return;
   insertRaw(plainText);
+}
+
+/**
+ * Linear / file-backed エディタ共通の外部テキスト paste ハンドラ。
+ * editorProps.handlePaste / PasteSanitizer plugin から委譲して使う。
+ * - 内部コピー (grimodex/pm-slice) は false を返し ProseMirror 既定処理に委ねる
+ * - 書式なしフラグを消費し、必要なら `sanitize` を変換前に適用して `pasteExternalText`
+ * - 挿入は渡された `editor` に対して行う (ペイン別ルーティング)
+ * 処理したら true、対象外なら false を返す。
+ */
+export function handleExternalPaste(
+  editor: Editor | null,
+  event: ClipboardEvent,
+  opts: { sanitize?: (text: string) => string } = {},
+): boolean {
+  const html = event.clipboardData?.getData("text/html");
+  if (
+    html &&
+    (html.includes("data-grimodex-source") || html.includes("data-pm-slice"))
+  ) {
+    return false;
+  }
+  const wantPlain = consumePlainPaste();
+  const plainText = event.clipboardData?.getData("text/plain") ?? "";
+  if (!plainText || !editor) return false;
+  const text = opts.sanitize ? opts.sanitize(plainText) : plainText;
+  pasteExternalText(
+    editor,
+    text,
+    (t) => insertPlainTextAsUnknown(editor, t),
+    wantPlain,
+  );
+  return true;
 }

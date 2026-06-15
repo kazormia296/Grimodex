@@ -12,7 +12,24 @@ import {
   isPlainPasteCombo,
   pasteExternalText,
   notePlainPasteKeyDown,
+  handleExternalPaste,
 } from "./markdownPaste";
+
+function fakeClipboardEvent(data: {
+  plain?: string;
+  html?: string;
+}): ClipboardEvent {
+  return {
+    clipboardData: {
+      getData: (type: string) =>
+        type === "text/plain"
+          ? (data.plain ?? "")
+          : type === "text/html"
+            ? (data.html ?? "")
+            : "",
+    },
+  } as unknown as ClipboardEvent;
+}
 
 function makeEditor(content = "<p></p>"): Editor {
   return new Editor({ extensions: getEditorExtensions(), content });
@@ -222,6 +239,62 @@ describe("insertPlainTextAsUnknown (任意エディタへのプレーン挿入)"
   });
 });
 
+describe("handleExternalPaste (Linear/fileBacked 共有ハンドラ)", () => {
+  it("外部テキスト: Markdown を変換し true を返す", () => {
+    editor.commands.focus();
+    const handled = handleExternalPaste(
+      editor,
+      fakeClipboardEvent({ plain: "# 見出し" }),
+    );
+    expect(handled).toBe(true);
+    const hasHeading = editor.state.doc.content.content.some(
+      (n) => n.type.name === "heading",
+    );
+    expect(hasHeading).toBe(true);
+  });
+
+  it("内部コピー(data-grimodex-source)は false を返し挿入しない (既定処理に委譲)", () => {
+    editor.commands.focus();
+    const before = editor.state.doc.textContent;
+    const handled = handleExternalPaste(
+      editor,
+      fakeClipboardEvent({
+        plain: "# 見出し",
+        html: '<div data-grimodex-source="ai"># 見出し</div>',
+      }),
+    );
+    expect(handled).toBe(false);
+    expect(editor.state.doc.textContent).toBe(before);
+  });
+
+  it("内部コピー(data-pm-slice)は false を返す", () => {
+    editor.commands.focus();
+    const handled = handleExternalPaste(
+      editor,
+      fakeClipboardEvent({ plain: "x", html: "<p data-pm-slice>x</p>" }),
+    );
+    expect(handled).toBe(false);
+  });
+
+  it("sanitize オプションを変換前に適用する", () => {
+    editor.commands.focus();
+    handleExternalPaste(editor, fakeClipboardEvent({ plain: "Xあいう" }), {
+      sanitize: (t) => t.replace("X", ""),
+    });
+    expect(editor.state.doc.textContent).toContain("あいう");
+    expect(editor.state.doc.textContent).not.toContain("X");
+  });
+
+  it("空テキスト / editor=null は false", () => {
+    expect(handleExternalPaste(editor, fakeClipboardEvent({ plain: "" }))).toBe(
+      false,
+    );
+    expect(handleExternalPaste(null, fakeClipboardEvent({ plain: "x" }))).toBe(
+      false,
+    );
+  });
+});
+
 describe("plain-paste flag (Mod-Shift-V detection)", () => {
   it("isPlainPasteCombo は Mod+Shift+V を検出する", () => {
     expect(
@@ -295,6 +368,14 @@ describe("pasteExternalText (Case 3 の分岐: 通常=変換 / Shift=除去)", (
       (n) => n.type.name === "heading",
     );
     expect(hasHeading).toBe(true);
+  });
+
+  it("plain=true: ブロック専用記法(---)は空にせず原文で挿入する (silent drop 回避)", () => {
+    // markdownToPlainText("---") は水平線=テキスト0で "" になるため、
+    // そのまま挿入すると貼り付けが無音で消える。原文 fallback を確認。
+    const args: string[] = [];
+    pasteExternalText(editor, "---", (t) => args.push(t), true);
+    expect(args).toEqual(["---"]);
   });
 
   it("plain=true: markdown 記法を除去したテキストで insertRaw を呼ぶ (変換しない)", () => {
