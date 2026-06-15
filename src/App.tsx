@@ -42,6 +42,7 @@ import {
 } from "@/lib/colorThemes";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
+import { HeaderBarLayout } from "@/components/HeaderBarLayout";
 import { LiveRegion } from "@/components/a11y/LiveRegion";
 import { useAiStreamingAnnouncer } from "@/features/chat/useAiStreamingAnnouncer";
 import i18next from "@/lib/i18n";
@@ -581,65 +582,57 @@ function EditorScreen() {
       >
         {t("a11y.skipToContent")}
       </a>
-      <header
-        className={cn(
-          // py-2: ボタン上下に最低 8px の Tauri drag region 帯を確保する。
-          // py-1 (4px) では狭すぎて掴みづらく、CommandCenterBar の opt-out と
-          // 相まってウィンドウ移動できない事象が出ていた。
-          "glass-shell flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2",
-          mac && "pl-20",
-          getScreenshotPanelId() && "no-screenshot",
-        )}
-        data-tauri-drag-region
-      >
-        <GrimodexLogo height={24} className="text-foreground" />
-        <WorkspaceMenu />
-        <ProjectMenu
-          onOpenImport={() => setShowImportDialog(true)}
-          onOpenZipExport={() => setShowZipExportDialog(true)}
-          onOpenNovelExport={() => setShowNovelExportDialog(true)}
-          onOpenSnapshot={() => setShowSnapshotModal(true)}
-        />
-        <HistoryButtons />
-        <button
-          type="button"
-          title={t("app.exportTitle")}
-          onClick={() => setShowExport((v) => !v)}
-          className="flex h-8 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <FileOutput className="h-4 w-4" />
-          <span className="text-sm">{t("app.exportLabel")}</span>
-        </button>
-        {/* Tauri v2 の data-tauri-drag-region は親→子で必ずしも継承されない
-            ため、wrapper 自身にも明示的に付与する。CommandCenterBar 側で
-            "false" による opt-out をしているので bar の中はそのまま除外。 */}
-        <div
-          data-tauri-drag-region
-          className="flex min-w-0 flex-1 justify-center px-8"
-        >
-          <CommandCenterBar />
-        </div>
-        <LayoutPresetDropdown />
-        <PanelToggleDropdown />
-        <button
-          type="button"
-          title={t("app.settingsTitle")}
-          onClick={() => {
-            setSettingsInitialCategory("project");
-            setShowSettings(true);
-          }}
-          className="flex h-8 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <Settings className="h-4 w-4" />
-          <span className="text-sm">{t("app.settingsLabel")}</span>
-        </button>
-        {!mac && (
+      <HeaderBarLayout
+        mac={mac}
+        className={cn(getScreenshotPanelId() && "no-screenshot")}
+        left={
           <>
-            <div className="h-4 w-px bg-border" />
-            <WindowControls />
+            <GrimodexLogo height={24} className="text-foreground" />
+            <WorkspaceMenu />
+            <ProjectMenu
+              onOpenImport={() => setShowImportDialog(true)}
+              onOpenZipExport={() => setShowZipExportDialog(true)}
+              onOpenNovelExport={() => setShowNovelExportDialog(true)}
+              onOpenSnapshot={() => setShowSnapshotModal(true)}
+            />
+            <HistoryButtons />
+            <button
+              type="button"
+              title={t("app.exportTitle")}
+              onClick={() => setShowExport((v) => !v)}
+              className="flex h-8 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <FileOutput className="h-4 w-4" />
+              <span className="text-sm">{t("app.exportLabel")}</span>
+            </button>
           </>
-        )}
-      </header>
+        }
+        center={<CommandCenterBar />}
+        right={
+          <>
+            <LayoutPresetDropdown />
+            <PanelToggleDropdown />
+            <button
+              type="button"
+              title={t("app.settingsTitle")}
+              onClick={() => {
+                setSettingsInitialCategory("project");
+                setShowSettings(true);
+              }}
+              className="flex h-8 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Settings className="h-4 w-4" />
+              <span className="text-sm">{t("app.settingsLabel")}</span>
+            </button>
+            {!mac && (
+              <>
+                <div className="h-4 w-px bg-border" />
+                <WindowControls />
+              </>
+            )}
+          </>
+        }
+      />
       <SettingsDialog
         open={showSettings}
         onClose={() => setShowSettings(false)}
