@@ -1,5 +1,6 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { ReplaceStep } from "@tiptap/pm/transform";
+import { isHistoryTransaction } from "@tiptap/pm/history";
 import { markStart, markEnd } from "@/lib/perfLog";
 
 export const aiEditedKey = new PluginKey("aiEdited");
@@ -28,6 +29,13 @@ export function createAiEditedPlugin(): Plugin {
     appendTransaction(transactions, oldState, newState) {
       const docChanged = transactions.some((tr) => tr.docChanged);
       if (!docChanged) return null;
+      // Undo/redo replays content verbatim from the history stack — the
+      // split/no-split decision was already made at original-edit time.
+      // Re-running the splitter here would strip ai/unknown marks from
+      // re-inserted text (e.g. delete a mid-span char then Ctrl+Z restores it
+      // as "human"). Skip history transactions. isHistoryTransaction matches by
+      // prosemirror-history's own PluginKey (robust vs the "history$" string).
+      if (transactions.some((tr) => isHistoryTransaction(tr))) return null;
       markStart("plugin.aiEdited.appendTransaction");
       try {
         // Skip programmatic inserts (chat/snippet insertion)

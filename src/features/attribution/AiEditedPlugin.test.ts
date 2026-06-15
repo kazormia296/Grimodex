@@ -337,6 +337,59 @@ describe("AiEditedPlugin", () => {
       editor.destroy();
     });
 
+    it("中間文字を削除後 undo で復元しても ai のまま (Issue 1: undo reclassify)", () => {
+      editor.destroy();
+      editor = createTestEditor("<p></p>");
+      // ai テキストを履歴に載せず seed (undo 対象を delete のみに隔離)
+      editor
+        .chain()
+        .focus()
+        .command(({ tr }) => {
+          tr.setMeta("programmaticInsert", true);
+          tr.setMeta("addToHistory", false);
+          return true;
+        })
+        .insertContent([
+          {
+            type: "text",
+            text: "ABCDE",
+            marks: [
+              {
+                type: "authorship",
+                attrs: {
+                  source: "ai",
+                  chatMessageId: "m",
+                  timestamp: new Date().toISOString(),
+                  originalLength: 5,
+                },
+              },
+            ],
+          },
+        ])
+        .run();
+
+      // 中間 "C" (pos 3-4) を削除 (履歴に載る user 操作)
+      editor.commands.deleteRange({ from: 3, to: 4 });
+      expect(editor.state.doc.textContent).toBe("ABDE");
+
+      // undo で "C" を復元
+      editor.commands.undo();
+      expect(editor.state.doc.textContent).toBe("ABCDE");
+
+      // 復元後、全テキストが ai のまま (human 化していない)
+      const runs: { text: string; source: string }[] = [];
+      editor.state.doc.descendants((node) => {
+        if (!node.isText) return;
+        const mark = node.marks.find((m) => m.type.name === "authorship");
+        runs.push({
+          text: node.text ?? "",
+          source: mark ? (mark.attrs.source as string) : "(none)",
+        });
+      });
+      expect(runs.every((r) => r.source === "ai")).toBe(true);
+      editor.destroy();
+    });
+
     it("splits unknown span on insertion (same as ai)", () => {
       insertUnknownText(editor, "HelloWorld");
 
