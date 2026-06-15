@@ -1,1 +1,2 @@
-pnpm screenshot -- --scale 2 --ui-scale 100 --theme light --color-theme simple
+pnpm screenshot -- --scale 2 --ui-scale 100 --theme light 
+pnpm screenshot -- --scale 2 --ui-scale 100 --theme light --lang en

@@ -31,6 +31,29 @@ import psChat from "/assets/preset-chat-main.png?w=1400;2200;3000&format=avif;we
 import psCodex from "/assets/preset-codex-main.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
 import psReview from "/assets/preset-review.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
 
+// English UI captures — same crops re-shot with the app in English. Selected
+// per active LP language so the screenshots match the surrounding copy.
+import pEditorEn from "/assets/panel-editor-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pScenesEn from "/assets/panel-scenes-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pGridEn from "/assets/panel-grid-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pCodexEn from "/assets/panel-codex-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pSnippetsEn from "/assets/panel-snippets-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pChatEn from "/assets/panel-chat-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pKouetsuEn from "/assets/panel-kouetsu-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pTimelineEn from "/assets/panel-timeline-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pMapEn from "/assets/panel-map-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pMatrixEn from "/assets/panel-matrix-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pTrashBinEn from "/assets/panel-trash-bin-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pChatHistoryEn from "/assets/panel-chat-history-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pCodexQuickEn from "/assets/panel-codex-quick-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pAttributionEn from "/assets/panel-attribution-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pForeshadowEn from "/assets/panel-foreshadow-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import psDefaultEn from "/assets/preset-default-en.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
+import psPlanEn from "/assets/preset-plan-en.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
+import psChatEn from "/assets/preset-chat-main-en.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
+import psCodexEn from "/assets/preset-codex-main-en.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
+import psReviewEn from "/assets/preset-review-en.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
+
 // Renders the vite-imagetools `?as=picture` payload as a real <picture>,
 // preserving the styles/aria props passed by the caller on the inner <img>.
 function HPicture({ pic, alt, sizes, style, draggable }) {
@@ -61,6 +84,94 @@ function HPicture({ pic, alt, sizes, style, draggable }) {
 const HZ_INK = "#0a0a0a";
 const HZ_BG = "#ffffff";
 const HZ_HL = "var(--hz-hl, #fff200)";
+
+/* ============================================================
+   I18N — runtime ja/en switch for the landing page.
+   The page is a single client-rendered bundle, so language is held in
+   React state, seeded from (in priority order) the `?lang=` query param,
+   `localStorage`, then the browser's `navigator.language`. Switching also
+   rewrites <html lang>, document.title and the description meta so the
+   tab / a11y tree stay correct. Decorative mono labels (WORKSPACE, SPEC…)
+   are part of the Swiss-zine chrome and intentionally stay identical in
+   both languages; only reader-facing prose is localized.
+   ============================================================ */
+const LP_LANGS = ["ja", "en"];
+const LP_LANG_STORAGE_KEY = "grimodex-lp-lang";
+
+// Context carries the active language to the module-scoped sub-components
+// (HWorkspaceSection / WSPanelDialog) without prop-drilling through them.
+const LPLangContext = React.createContext("ja");
+function useLpLang() {
+  return React.useContext(LPLangContext);
+}
+
+// Pick a localized value. Accepts a `{ ja, en }` map (returns the active
+// language, falling back to ja) or a plain value (returned as-is so shared
+// mono strings can sit alongside localized ones).
+function lpText(value, lang) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if ("ja" in value || "en" in value) return value[lang] ?? value.ja;
+  }
+  return value;
+}
+
+function detectInitialLpLang() {
+  try {
+    const fromQuery = new URLSearchParams(window.location.search).get("lang");
+    if (LP_LANGS.includes(fromQuery)) return fromQuery;
+    const stored = window.localStorage?.getItem(LP_LANG_STORAGE_KEY);
+    if (LP_LANGS.includes(stored)) return stored;
+    const nav = (
+      window.navigator?.language ||
+      window.navigator?.userLanguage ||
+      ""
+    ).toLowerCase();
+    return nav.startsWith("en") ? "en" : "ja";
+  } catch {
+    return "ja";
+  }
+}
+
+const LP_DOC_META = {
+  ja: {
+    title: "Grimodex — A Writing Fidget IDE",
+    description:
+      "Grimodex は、書いていない時間も書いている、ライティング・フィジェット IDE。Codex / Map / AI Chat のフライホイールで、長編小説の世界が破綻しない。",
+  },
+  en: {
+    title: "Grimodex — A Writing Fidget IDE",
+    description:
+      "Grimodex is a writing fidget IDE — even when you're not writing, you're writing. A Codex / Map / AI Chat flywheel keeps the world of a long novel from falling apart.",
+  },
+};
+
+// Reflect the active language onto the document chrome. OGP/Twitter tags are
+// crawler-only (read from static HTML at fetch time), so we update just the
+// live-relevant bits: <html lang>, title and description.
+function applyLpDocumentMeta(lang) {
+  try {
+    const meta = LP_DOC_META[lang] ?? LP_DOC_META.ja;
+    document.documentElement.lang = lang;
+    document.title = meta.title;
+    const desc = document.querySelector('meta[name="description"]');
+    if (desc) desc.setAttribute("content", meta.description);
+  } catch {
+    /* SSR-less page; ignore if document is unavailable */
+  }
+}
+
+// Persist + reflect a language choice into storage and the URL so reloads and
+// shared links keep the selection.
+function persistLpLang(lang) {
+  try {
+    window.localStorage?.setItem(LP_LANG_STORAGE_KEY, lang);
+    const url = new URL(window.location.href);
+    url.searchParams.set("lang", lang);
+    window.history.replaceState(null, "", url);
+  } catch {
+    /* storage / history may be unavailable; selection still applies in-memory */
+  }
+}
 
 function HChip({ children, hl, on }) {
   return (
@@ -239,93 +350,183 @@ function HReveal({ children, style, delay = 0, burst = false }) {
 const WS_PANELS = {
   Editor: {
     jp: "Editor",
-    cat: "次の一行を書く場所。",
-    desc: "本文を執筆する中心パネル。AI や設定資料に飲み込まれず、最終的に作品へ落とし込むための主戦場。",
-    img: pEditor,
+    cat: {
+      ja: "次の一行を書く場所。",
+      en: "Where the next line gets written.",
+    },
+    desc: {
+      ja: "本文を執筆する中心パネル。AI や設定資料に飲み込まれず、最終的に作品へ落とし込むための主戦場。",
+      en: "The central panel where the manuscript gets written — the main stage for turning everything into finished prose without being swallowed by the AI or your notes.",
+    },
+    img: { ja: pEditor, en: pEditorEn },
   },
   Scenes: {
     jp: "Scenes",
-    cat: "場面を分けて、迷子を減らす。",
-    desc: "シーン単位で本文を管理し、長編の構成を扱いやすくするパネル。どこで何が起きているかを見失いにくくする。",
-    img: pScenes,
+    cat: {
+      ja: "場面を分けて、迷子を減らす。",
+      en: "Split the scenes, get lost less.",
+    },
+    desc: {
+      ja: "シーン単位で本文を管理し、長編の構成を扱いやすくするパネル。どこで何が起きているかを見失いにくくする。",
+      en: "Manages the manuscript scene by scene, keeping a long work's structure tractable so you rarely lose track of what happens where.",
+    },
+    img: { ja: pScenes, en: pScenesEn },
   },
   Grid: {
     jp: "Grid",
-    cat: "章とシーンを、カードで見渡す。",
-    desc: "章・シーンをカード状に並べる構成ビュー。物語全体の配置や流れを視覚的に確認できる。",
-    img: pGrid,
+    cat: {
+      ja: "章とシーンを、カードで見渡す。",
+      en: "Survey chapters and scenes as cards.",
+    },
+    desc: {
+      ja: "章・シーンをカード状に並べる構成ビュー。物語全体の配置や流れを視覚的に確認できる。",
+      en: "A structural view that lays chapters and scenes out as cards, so you can read the whole story's arrangement and flow at a glance.",
+    },
+    img: { ja: pGrid, en: pGridEn },
   },
   Codex: {
     jp: "Codex",
-    cat: "設定資料が、執筆の外に散らばらない。",
-    desc: "キャラクター、世界観、用語、組織などをまとめる設定資料庫。AI に注入される情報源となる。",
-    img: pCodex,
+    cat: {
+      ja: "設定資料が、執筆の外に散らばらない。",
+      en: "Your worldbuilding stops scattering.",
+    },
+    desc: {
+      ja: "キャラクター、世界観、用語、組織などをまとめる設定資料庫。AI に注入される情報源となる。",
+      en: "A reference library for characters, world, terminology, and factions — and the source that gets injected into the AI's context.",
+    },
+    img: { ja: pCodex, en: pCodexEn },
   },
   Snippets: {
     jp: "Snippets",
-    cat: "まだ本文ではない言葉を、捨てずに持つ。",
-    desc: "台詞、描写、アイデア、断片的な文章を保管するパネル。今は使えない一文も、後のシーン素材にできる。",
-    img: pSnippets,
+    cat: {
+      ja: "まだ本文ではない言葉を、捨てずに持つ。",
+      en: "Keep the words that aren't prose yet.",
+    },
+    desc: {
+      ja: "台詞、描写、アイデア、断片的な文章を保管するパネル。今は使えない一文も、後のシーン素材にできる。",
+      en: "Holds lines, descriptions, ideas, and stray fragments. A sentence you can't use now can become material for a later scene.",
+    },
+    img: { ja: pSnippets, en: pSnippetsEn },
   },
   Chat: {
     jp: "Chat",
-    cat: "AI に丸投げしない。AI と揉む。",
-    desc: "AI との相談用パネル。本文生成よりも、違和感の整理、別案の検討、設定の掘り下げに使う補助空間。",
-    img: pChat,
+    cat: {
+      ja: "AI に丸投げしない。AI と揉む。",
+      en: "Don't outsource to AI. Spar with it.",
+    },
+    desc: {
+      ja: "AI との相談用パネル。本文生成よりも、違和感の整理、別案の検討、設定の掘り下げに使う補助空間。",
+      en: "A panel for consulting the AI — less about generating prose, more a space for untangling what feels off, weighing alternatives, and digging into settings.",
+    },
+    img: { ja: pChat, en: pChatEn },
   },
   Review: {
     jp: "Review",
-    cat: "作品を、少し離れて見る。",
-    desc: "矛盾、弱い動機、説明不足、テンポの乱れなどを確認する校閲・レビュー用パネル。書いた後の違和感を拾う。",
-    img: pKouetsu,
+    cat: {
+      ja: "作品を、少し離れて見る。",
+      en: "See your work from a step back.",
+    },
+    desc: {
+      ja: "矛盾、弱い動機、説明不足、テンポの乱れなどを確認する校閲・レビュー用パネル。書いた後の違和感を拾う。",
+      en: "An editorial / review panel for catching contradictions, weak motivations, missing explanations, and pacing slips — the unease that surfaces after you've written.",
+    },
+    img: { ja: pKouetsu, en: pKouetsuEn },
   },
   Timeline: {
     jp: "Timeline",
-    cat: "出来事の順番を見失わない。",
-    desc: "物語内の時系列を管理するパネル。回想、過去設定、章をまたぐ因果関係を整理しやすくする。",
-    img: pTimeline,
+    cat: {
+      ja: "出来事の順番を見失わない。",
+      en: "Never lose the order of events.",
+    },
+    desc: {
+      ja: "物語内の時系列を管理するパネル。回想、過去設定、章をまたぐ因果関係を整理しやすくする。",
+      en: "Manages the in-story chronology, keeping flashbacks, backstory, and cause-and-effect that span chapters straight.",
+    },
+    img: { ja: pTimeline, en: pTimelineEn },
   },
   Map: {
     jp: "Map",
-    cat: "物語の迷子にならない。",
-    desc: "付箋、ノード、関係線でアイデアや設定を広げる発散の盤。構造化しすぎず、眺めながら考えるための空間。",
-    img: pMap,
+    cat: {
+      ja: "物語の迷子にならない。",
+      en: "Don't get lost in your own story.",
+    },
+    desc: {
+      ja: "付箋、ノード、関係線でアイデアや設定を広げる発散の盤。構造化しすぎず、眺めながら考えるための空間。",
+      en: "A divergent board for spreading ideas and settings out as sticky notes, nodes, and relation lines — a space to think while you look, without over-structuring.",
+    },
+    img: { ja: pMap, en: pMapEn },
   },
   Matrix: {
     jp: "Matrix",
-    cat: "関係性を、表で殴る。",
-    desc: "Codex エントリ × シーンの言及をマトリクスで一覧化するパネル。どのキャラがどのシーンに登場し、どの設定がどこで触れられているかを俯瞰できる。",
-    img: pMatrix,
+    cat: {
+      ja: "関係性を、表で殴る。",
+      en: "Relationships, pinned to a grid.",
+    },
+    desc: {
+      ja: "Codex エントリ × シーンの言及をマトリクスで一覧化するパネル。どのキャラがどのシーンに登場し、どの設定がどこで触れられているかを俯瞰できる。",
+      en: "Tabulates Codex entries × scene mentions as a matrix, so you can see which character appears in which scene and where each setting is touched.",
+    },
+    img: { ja: pMatrix, en: pMatrixEn },
   },
   TrashBin: {
     jp: "Trash Bin",
-    cat: "没案も、まだ死んでいない。",
-    desc: "削除した断片や使わなかった文章を一時的に保持するパネル。完全な廃棄ではなく、再利用可能な創作残骸として扱う。",
-    img: pTrashBin,
+    cat: {
+      ja: "没案も、まだ死んでいない。",
+      en: "Killed drafts aren't dead yet.",
+    },
+    desc: {
+      ja: "削除した断片や使わなかった文章を一時的に保持するパネル。完全な廃棄ではなく、再利用可能な創作残骸として扱う。",
+      en: "Temporarily holds deleted fragments and unused text — not a final purge, but reusable creative debris.",
+    },
+    img: { ja: pTrashBin, en: pTrashBinEn },
   },
   ChatHistory: {
     jp: "Chat History",
-    cat: "AI との思考ログを、作品の横に残す。",
-    desc: "AI との過去のやり取りを確認するパネル。相談の流れ、出てきた案、却下した方向性などを振り返り、執筆判断の履歴として扱える。",
-    img: pChatHistory,
+    cat: {
+      ja: "AI との思考ログを、作品の横に残す。",
+      en: "Keep your thinking log beside the work.",
+    },
+    desc: {
+      ja: "AI との過去のやり取りを確認するパネル。相談の流れ、出てきた案、却下した方向性などを振り返り、執筆判断の履歴として扱える。",
+      en: "Review past exchanges with the AI — how a consult unfolded, the ideas it raised, the directions you rejected — as a history of your writing decisions.",
+    },
+    img: { ja: pChatHistory, en: pChatHistoryEn },
   },
   CodexQuick: {
     jp: "Codex Quick",
-    cat: "今のシーンに必要な設定だけ、一覧で。",
-    desc: "Codex の情報を素早く参照するための簡易パネル。シーンに登場するキャラクター名・用語・設定だけをリストアップ。",
-    img: pCodexQuick,
+    cat: {
+      ja: "今のシーンに必要な設定だけ、一覧で。",
+      en: "Only the settings this scene needs.",
+    },
+    desc: {
+      ja: "Codex の情報を素早く参照するための簡易パネル。シーンに登場するキャラクター名・用語・設定だけをリストアップ。",
+      en: "A lightweight panel for quick Codex lookups, listing only the character names, terms, and settings that appear in the current scene.",
+    },
+    img: { ja: pCodexQuick, en: pCodexQuickEn },
   },
   Attribution: {
     jp: "Attribution",
-    cat: "何を使い、どこから来たかを見える化する。",
-    desc: "AI / Human(人間) / Unknown(コピペ) の割合をグラフ化するパネル。AI の使用率を俯瞰できる。",
-    img: pAttribution,
+    cat: {
+      ja: "何を使い、どこから来たかを見える化する。",
+      en: "See what you used and where it came from.",
+    },
+    desc: {
+      ja: "AI / Human(人間) / Unknown(コピペ) の割合をグラフ化するパネル。AI の使用率を俯瞰できる。",
+      en: "Graphs the ratio of AI / Human / Unknown (pasted) text, giving you an overview of how much AI you lean on.",
+    },
+    img: { ja: pAttribution, en: pAttributionEn },
   },
   Foreshadow: {
     jp: "Foreshadow",
-    cat: "伏線を、置いたまま忘れない。",
-    desc: "伏線、回収予定、未解決の要素を管理するパネル。思いつきで置いた仕込みを後から追跡し、放置や回収漏れを防ぐ。さらに、回収シーンで「どこに setup を仕込むべきか」を AI に提案させられる。",
-    img: pForeshadow,
+    cat: {
+      ja: "伏線を、置いたまま忘れない。",
+      en: "Plant a hook — and don't forget it.",
+    },
+    desc: {
+      ja: "伏線、回収予定、未解決の要素を管理するパネル。思いつきで置いた仕込みを後から追跡し、放置や回収漏れを防ぐ。さらに、回収シーンで「どこに setup を仕込むべきか」を AI に提案させられる。",
+      en: "Manages foreshadowing, planned payoffs, and loose threads. Track the hooks you dropped on a whim so nothing is left dangling — and let the AI suggest where to plant the setup for a payoff scene.",
+    },
+    img: { ja: pForeshadow, en: pForeshadowEn },
   },
 };
 
@@ -352,36 +553,51 @@ const WS_PRESETS = [
     id: "write",
     label: "WRITE",
     num: "01",
-    desc: "本文 + Codex + Chat。中心は本文。設定資料と相談相手を脇に置く、執筆中心のレイアウト。",
-    img: psDefault,
+    desc: {
+      ja: "本文 + Codex + Chat。中心は本文。設定資料と相談相手を脇に置く、執筆中心のレイアウト。",
+      en: "Manuscript + Codex + Chat. Prose at the center, with your notes and a sounding board off to the side — a writing-first layout.",
+    },
+    img: { ja: psDefault, en: psDefaultEn },
   },
   {
     id: "plan",
     label: "PLAN",
     num: "02",
-    desc: "Grid + Map + Timeline。章とシーンを並べ、時系列と関係性で俯瞰する構成のレイアウト。",
-    img: psPlan,
+    desc: {
+      ja: "Grid + Map + Timeline。章とシーンを並べ、時系列と関係性で俯瞰する構成のレイアウト。",
+      en: "Grid + Map + Timeline. Lay out chapters and scenes and survey them by chronology and relationships — a structuring layout.",
+    },
+    img: { ja: psPlan, en: psPlanEn },
   },
   {
     id: "chat",
     label: "CHAT",
     num: "03",
-    desc: "Chat を中央へ。設定の掘り下げ、別案の検討、違和感の整理を広いキャンバスで。",
-    img: psChat,
+    desc: {
+      ja: "Chat を中央へ。設定の掘り下げ、別案の検討、違和感の整理を広いキャンバスで。",
+      en: "Chat at the center. Dig into settings, weigh alternatives, and untangle what feels off on a wide canvas.",
+    },
+    img: { ja: psChat, en: psChatEn },
   },
   {
     id: "codex",
     label: "CODEX",
     num: "04",
-    desc: "Codex を中央へ。キャラクター・場所・用語を本文の隣に置いて編集する、設定編みのレイアウト。",
-    img: psCodex,
+    desc: {
+      ja: "Codex を中央へ。キャラクター・場所・用語を本文の隣に置いて編集する、設定編みのレイアウト。",
+      en: "Codex at the center. Edit characters, places, and terms right beside the prose — a worldbuilding layout.",
+    },
+    img: { ja: psCodex, en: psCodexEn },
   },
   {
     id: "review",
     label: "REVIEW",
     num: "05",
-    desc: "Review + Attribution。矛盾、説明不足、由来の不明な箇所を拾う、読み返しのレイアウト。",
-    img: psReview,
+    desc: {
+      ja: "Review + Attribution。矛盾、説明不足、由来の不明な箇所を拾う、読み返しのレイアウト。",
+      en: "Review + Attribution. Catch contradictions, gaps, and passages of unclear origin — a re-reading layout.",
+    },
+    img: { ja: psReview, en: psReviewEn },
   },
 ];
 
@@ -405,6 +621,7 @@ const WS_DIALOG_BTN_STYLE = {
 };
 
 function WSPanelDialog({ openKey, onClose, onNav }) {
+  const lang = useLpLang();
   const idx = openKey ? WS_ALL_PANEL_KEYS.indexOf(openKey) : -1;
   const prev =
     idx >= 0
@@ -496,7 +713,7 @@ function WSPanelDialog({ openKey, onClose, onNav }) {
           e.stopPropagation();
           onNav(prev);
         }}
-        aria-label="前のパネル"
+        aria-label={lang === "en" ? "Previous panel" : "前のパネル"}
         className="ws-carousel-btn ws-carousel-btn--prev"
       >
         <span style={{ fontSize: 22, lineHeight: 1, marginBottom: 2 }}>←</span>
@@ -517,7 +734,7 @@ function WSPanelDialog({ openKey, onClose, onNav }) {
           e.stopPropagation();
           onNav(next);
         }}
-        aria-label="次のパネル"
+        aria-label={lang === "en" ? "Next panel" : "次のパネル"}
         className="ws-carousel-btn ws-carousel-btn--next"
       >
         <span style={{ fontSize: 22, lineHeight: 1, marginBottom: 2 }}>→</span>
@@ -594,7 +811,7 @@ function WSPanelDialog({ openKey, onClose, onNav }) {
           <button
             ref={closeBtnRef}
             onClick={onClose}
-            aria-label="閉じる"
+            aria-label={lang === "en" ? "Close" : "閉じる"}
             style={{
               ...WS_DIALOG_BTN_STYLE,
               background: HZ_INK,
@@ -623,7 +840,7 @@ function WSPanelDialog({ openKey, onClose, onNav }) {
             }}
           >
             <HPicture
-              pic={p.img}
+              pic={lpText(p.img, lang)}
               alt={p.jp}
               sizes="(max-width: 900px) 100vw, 60vw"
               style={{
@@ -654,7 +871,7 @@ function WSPanelDialog({ openKey, onClose, onNav }) {
               </span>
             </h3>
             <p style={{ fontSize: 16, lineHeight: 1.85, margin: 0 }}>
-              {p.desc}
+              {lpText(p.desc, lang)}
             </p>
             <div
               style={{
@@ -670,7 +887,11 @@ function WSPanelDialog({ openKey, onClose, onNav }) {
                 justifyContent: "space-between",
               }}
             >
-              <span>← / → で別パネル · ESC で閉じる</span>
+              <span>
+                {lang === "en"
+                  ? "← / → for other panels · ESC to close"
+                  : "← / → で別パネル · ESC で閉じる"}
+              </span>
               <span>
                 {idx + 1} / {WS_ALL_PANEL_KEYS.length}
               </span>
@@ -694,6 +915,7 @@ const WS_STAGE_VH = 220;
 const WS_ANIM_END = 0.65;
 
 function HWorkspaceSection() {
+  const lang = useLpLang();
   const stageRef = useRef(null);
   const marketingRef = useRef(null);
   const copyRef = useRef(null);
@@ -949,8 +1171,9 @@ function HWorkspaceSection() {
               margin: 0,
             }}
           >
-            Editor、Codex、Map、Chat、Grid
-            などを自由に並べ替えられる作業レイアウト。プリセットでレイアウトを瞬時に切り替えられる。執筆、整理、発散、相談をひとつの画面内で行き来できる。
+            {lang === "en"
+              ? "A work layout where Editor, Codex, Map, Chat, Grid and more rearrange freely. Presets switch the whole layout in an instant, so writing, organizing, diverging, and consulting all live on one screen."
+              : "Editor、Codex、Map、Chat、Grid などを自由に並べ替えられる作業レイアウト。プリセットでレイアウトを瞬時に切り替えられる。執筆、整理、発散、相談をひとつの画面内で行き来できる。"}
           </p>
         </div>
 
@@ -1007,7 +1230,7 @@ function HWorkspaceSection() {
             }}
           >
             <HPicture
-              pic={shown.img}
+              pic={lpText(shown.img, lang)}
               alt={shown.label}
               sizes="96vw"
               draggable={false}
@@ -1052,7 +1275,7 @@ function HWorkspaceSection() {
             <span
               style={{ fontSize: 13, lineHeight: 1.55, flex: 1, minWidth: 280 }}
             >
-              {shown.desc}
+              {lpText(shown.desc, lang)}
             </span>
             <span
               style={{
@@ -1063,7 +1286,7 @@ function HWorkspaceSection() {
                 letterSpacing: ".06em",
               }}
             >
-              ↓ 15 PANELS から開く
+              {lang === "en" ? "↓ OPEN FROM 15 PANELS" : "↓ 15 PANELS から開く"}
             </span>
           </div>
 
@@ -1118,6 +1341,7 @@ function HWorkspaceSection() {
 }
 
 function LPVariantH() {
+  const [lang, setLang] = useState(detectInitialLpLang);
   const [workflowMode, setWorkflowMode] = useState("plotter");
   const workflowGridRef = useRef(null);
   const pagingLockRef = useRef(false);
@@ -1126,6 +1350,16 @@ function LPVariantH() {
   const heroMetaRef = useRef(null);
   const heroBodyRef = useRef(null);
   const heroEchoRef = useRef(null);
+
+  // Reflect the active language onto the document chrome and persist the
+  // choice (localStorage + ?lang=) whenever it changes — including the
+  // browser-detected default on first paint, so the URL is shareable.
+  useEffect(() => {
+    applyLpDocumentMeta(lang);
+    persistLpLang(lang);
+  }, [lang]);
+
+  const toggleLang = () => setLang((prev) => (prev === "en" ? "ja" : "en"));
 
   // Always start at the top on initial load, even if the URL has a fragment
   // like #workspace. The hero animation is part of the brand and the page
@@ -1521,7 +1755,10 @@ function LPVariantH() {
         k: "DESIGN",
         jp: "設計",
         role: "entry",
-        t: "キャラ・世界観・設定を、本文より先に固める。",
+        t: {
+          ja: "キャラ・世界観・設定を、本文より先に固める。",
+          en: "Lock in characters, world, and settings before the prose.",
+        },
         panels: ["Codex", "Chat", "Map"],
       },
       {
@@ -1529,7 +1766,10 @@ function LPVariantH() {
         k: "OUTLINE",
         jp: "構成",
         role: null,
-        t: "プロット・章立て・伏線をマップ上に置く。",
+        t: {
+          ja: "プロット・章立て・伏線をマップ上に置く。",
+          en: "Lay plot, chapters, and foreshadowing out on the map.",
+        },
         panels: ["Matrix", "Timeline", "Foreshadow", "Map"],
       },
       {
@@ -1537,7 +1777,10 @@ function LPVariantH() {
         k: "WRITE",
         jp: "執筆",
         role: null,
-        t: "設計に沿って本文を進める。設定は脇に置く。",
+        t: {
+          ja: "設計に沿って本文を進める。設定は脇に置く。",
+          en: "Advance the prose along the design, notes kept to the side.",
+        },
         panels: ["Editor", "Chat", "Codex"],
       },
       {
@@ -1545,7 +1788,10 @@ function LPVariantH() {
         k: "POLISH",
         jp: "仕上げ",
         role: "end",
-        t: "整合性と表現を磨く。回収漏れを潰す。",
+        t: {
+          ja: "整合性と表現を磨く。回収漏れを潰す。",
+          en: "Polish consistency and prose; close every unpaid setup.",
+        },
         panels: ["Review", "Foreshadow", "ChatHistory"],
       },
     ],
@@ -1555,7 +1801,10 @@ function LPVariantH() {
         k: "DRAFT",
         jp: "走り書き",
         role: "entry",
-        t: "思いつきで書き始める。AI と壁打ちする。",
+        t: {
+          ja: "思いつきで書き始める。AI と壁打ちする。",
+          en: "Start writing on a whim; bounce ideas off the AI.",
+        },
         panels: ["Editor", "Chat"],
       },
       {
@@ -1563,7 +1812,10 @@ function LPVariantH() {
         k: "CAPTURE",
         jp: "回収",
         role: null,
-        t: "出てきた設定・人物を、後から構造化する。",
+        t: {
+          ja: "出てきた設定・人物を、後から構造化する。",
+          en: "Structure the settings and characters that emerge, after the fact.",
+        },
         panels: ["Snippets", "Codex"],
       },
       {
@@ -1571,7 +1823,10 @@ function LPVariantH() {
         k: "RECONCILE",
         jp: "整合",
         role: null,
-        t: "矛盾と時系列を、後付けで揃える。",
+        t: {
+          ja: "矛盾と時系列を、後付けで揃える。",
+          en: "Reconcile contradictions and chronology retroactively.",
+        },
         panels: ["Codex", "Timeline", "Foreshadow"],
       },
       {
@@ -1579,7 +1834,10 @@ function LPVariantH() {
         k: "POLISH",
         jp: "仕上げ",
         role: "end",
-        t: "全体を俯瞰し、整える。",
+        t: {
+          ja: "全体を俯瞰し、整える。",
+          en: "Survey the whole and tidy it up.",
+        },
         panels: ["Matrix", "Review", "ChatHistory"],
       },
     ],
@@ -1610,53 +1868,99 @@ function LPVariantH() {
   };
   const advantageRows = [
     {
-      pain: "ChatGPT/Claude Projects に上げた設定.md を、書き換えるたびに上げ直してる。",
-      title: "AI が、世界を覚える。",
+      pain: {
+        ja: "ChatGPT/Claude Projects に上げた設定.md を、書き換えるたびに上げ直してる。",
+        en: "Every time I edit my settings.md, I re-upload it to ChatGPT / Claude Projects.",
+      },
+      title: {
+        ja: "AI が、世界を覚える。",
+        en: "Your AI remembers the world.",
+      },
       en: "Context that lingers.",
-      body: "Codex はアプリ内データ。書き換えれば次のターンから AI が見る内容も即変わる。毎回アップロードし直さなくていい。",
+      body: {
+        ja: "Codex はアプリ内データ。書き換えれば次のターンから AI が見る内容も即変わる。毎回アップロードし直さなくていい。",
+        en: "The Codex is in-app data. Edit it and what the AI sees changes from the very next turn — no re-uploading, every time.",
+      },
       chip: "TALK",
       moveTag: "↳ MOVE 03",
     },
     {
-      pain: "死んだはずのキャラが、後の章で生きている。",
-      title: "設定が、時系列で進む。",
+      pain: {
+        ja: "死んだはずのキャラが、後の章で生きている。",
+        en: "A character who should be dead is alive again two chapters later.",
+      },
+      title: {
+        ja: "設定が、時系列で進む。",
+        en: "Settings that move through time.",
+      },
       en: "Phase-aware Codex.",
-      body: "Phase は物語進行のスナップショット。シーン毎に Phase を切り替えれば Codex の値が時系列で変化し、過去シーンには過去の Phase の状態のまま AI が読みに行く。死んだキャラは、それ以降のシーンでは死んだまま。",
+      body: {
+        ja: "Phase は物語進行のスナップショット。シーン毎に Phase を切り替えれば Codex の値が時系列で変化し、過去シーンには過去の Phase の状態のまま AI が読みに行く。死んだキャラは、それ以降のシーンでは死んだまま。",
+        en: "A Phase is a snapshot of story progress. Switch Phase per scene and Codex values shift over time; for past scenes the AI reads the past Phase's state. A character who died stays dead in every scene after.",
+      },
       chip: "CODEX · PHASE",
       moveTag: "↳ MOVE 02",
     },
     {
-      pain: "張った伏線を、回収するのを忘れてた。",
-      title: "伏線が、構造化される。",
+      pain: {
+        ja: "張った伏線を、回収するのを忘れてた。",
+        en: "I planted a foreshadow and forgot to pay it off.",
+      },
+      title: {
+        ja: "伏線が、構造化される。",
+        en: "Foreshadowing, made structural.",
+      },
       en: "Foreshadows, structured.",
-      body: "未回収の伏線は、状態（仕込み済み・回収待ち・回収済み）付きで一覧できる構造化データとして Foreshadow に残る。AI 文脈にも自動で乗るが、まず自分の目で回収漏れを確認できることが効く。",
+      body: {
+        ja: "未回収の伏線は、状態（仕込み済み・回収待ち・回収済み）付きで一覧できる構造化データとして Foreshadow に残る。AI 文脈にも自動で乗るが、まず自分の目で回収漏れを確認できることが効く。",
+        en: "Unpaid foreshadowing lives in Foreshadow as structured data you can list by state (planted, awaiting payoff, paid off). It rides into the AI context automatically — but the real win is seeing the gaps with your own eyes first.",
+      },
       chip: "FORESHADOW",
       moveTag: "↳ MOVE 02",
     },
     {
-      pain: "AI に書かせると、自分の声が消える。",
-      title: "AI は、Co-Writer。",
+      pain: {
+        ja: "AI に書かせると、自分の声が消える。",
+        en: "When I let AI write, my own voice disappears.",
+      },
+      title: {
+        ja: "AI は、Co-Writer。",
+        en: "AI as your co-writer.",
+      },
       en: "AI as second opinion.",
-      body: "Chat は本文生成より、矛盾チェック・壁打ちに使う設計。書いた一行が AI / 人間どちらに由来するかは文字単位で追跡されているので、自分の書いた箇所が常に見える。",
+      body: {
+        ja: "Chat は本文生成より、矛盾チェック・壁打ちに使う設計。書いた一行が AI / 人間どちらに由来するかは文字単位で追跡されているので、自分の書いた箇所が常に見える。",
+        en: "Chat is built less for generating prose than for consistency checks and sparring. Every line is tracked character by character as AI- or human-authored, so what you wrote always stays visible.",
+      },
       chip: "ATTRIBUTION",
       moveTag: "↳ MOVE 01",
     },
     {
-      pain: "クラウドに原稿を預けたくない。",
-      title: "ローカルファースト。",
+      pain: {
+        ja: "クラウドに原稿を預けたくない。",
+        en: "I don't want to hand my manuscript to the cloud.",
+      },
+      title: {
+        ja: "ローカルファースト。",
+        en: "Local-first.",
+      },
       en: "Local-first, account-free.",
-      body: "原稿は SQLite にローカル保存。アカウント不要。通信が起きるのは、自分で呼んだ AI と、ライセンス確認の小さな ping だけ。ローカルLLMも対応。",
+      body: {
+        ja: "原稿は SQLite にローカル保存。アカウント不要。通信が起きるのは、自分で呼んだ AI と、ライセンス確認の小さな ping だけ。ローカルLLMも対応。",
+        en: "Your manuscript is stored locally in SQLite. No account. The only traffic is the AI you call yourself and a small license-check ping. Local LLMs are supported too.",
+      },
       chip: "LOCAL",
       moveTag: "(INFRA)",
     },
   ];
 
   return (
-    <LPFrame
-      bg={HZ_BG}
-      fontFamily="'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif"
-    >
-      <style>{`
+    <LPLangContext.Provider value={lang}>
+      <LPFrame
+        bg={HZ_BG}
+        fontFamily="'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+      >
+        <style>{`
         .hz-mark{background:${HZ_HL};padding:0 10px;display:inline-block;line-height:0.95}
         .hz-hero-marker{--hero-marker-scale:0;background:transparent;position:relative;isolation:isolate;overflow:visible}
         .hz-hero-marker::before{content:"";position:absolute;left:0;right:0;bottom:.04em;height:.92em;background:${HZ_HL};transform:scaleX(var(--hero-marker-scale));transform-origin:left center;z-index:-1}
@@ -1787,490 +2091,365 @@ function LPVariantH() {
         }
       `}</style>
 
-      {/* Page-wide paper texture overlays. Opacity is driven by CSS
+        {/* Page-wide paper texture overlays. Opacity is driven by CSS
           variables on :root (--tex-halftone-op / --tex-grain-op) tweened
           from the hero timeline; same vars also feed the workspace-local
           overlays so the texture stays in sync across the section. */}
-      <div className="hz-halftone" aria-hidden="true" />
-      <div className="hz-grain" aria-hidden="true" />
+        <div className="hz-halftone" aria-hidden="true" />
+        <div className="hz-grain" aria-hidden="true" />
 
-      {/* NAV — hidden during the hero intro and revealed at the end of the
+        {/* NAV — hidden during the hero intro and revealed at the end of the
           hero timeline so it doesn't compete with the headline animation. */}
-      <div
-        ref={navRef}
-        data-hz-nav
-        style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 30,
-          background: HZ_BG,
-          borderTop: `4px solid ${HZ_INK}`,
-          borderBottom: `2px solid ${HZ_INK}`,
-          opacity: 0,
-        }}
-      >
         <div
-          className="hz-nav-row"
+          ref={navRef}
+          data-hz-nav
           style={{
-            display: "grid",
-            gridTemplateColumns: "1fr auto 1fr",
-            alignItems: "center",
-            padding: "16px 48px",
-            color: HZ_INK,
+            position: "sticky",
+            top: 0,
+            zIndex: 30,
+            background: HZ_BG,
+            borderTop: `4px solid ${HZ_INK}`,
+            borderBottom: `2px solid ${HZ_INK}`,
+            opacity: 0,
           }}
         >
-          <a
-            href="#hero"
-            className="hz-nav-logo"
-            style={{ display: "inline-flex", width: 190, color: HZ_INK }}
-          >
-            <img
-              src="assets/grimodex-logo.svg"
-              alt="Grimodex"
-              style={{ width: "100%", height: "auto", display: "block" }}
-            />
-          </a>
           <div
-            className="hz-nav-center"
+            className="hz-nav-row"
             style={{
-              display: "flex",
-              gap: 24,
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 11,
-              textTransform: "uppercase",
-              letterSpacing: ".08em",
-            }}
-          >
-            <a
-              className="hz-nav-link"
-              href="#hero"
-              style={{ color: HZ_INK, textDecoration: "none" }}
-            >
-              A HERO
-            </a>
-            <a
-              className="hz-nav-link"
-              href="#workspace"
-              style={{ color: HZ_INK, textDecoration: "none" }}
-            >
-              B WORKSPACE
-            </a>
-            <a
-              className="hz-nav-link"
-              href="#moves"
-              style={{ color: HZ_INK, textDecoration: "none" }}
-            >
-              C MOVES
-            </a>
-            <a
-              className="hz-nav-link"
-              href="#workflow"
-              style={{ color: HZ_INK, textDecoration: "none" }}
-            >
-              D WORKFLOW
-            </a>
-            <a
-              className="hz-nav-link"
-              href="#for"
-              style={{ color: HZ_INK, textDecoration: "none" }}
-            >
-              E FOR
-            </a>
-          </div>
-          <div
-            style={{
-              justifySelf: "end",
-              display: "flex",
+              display: "grid",
+              gridTemplateColumns: "1fr auto 1fr",
               alignItems: "center",
-              gap: 12,
+              padding: "16px 48px",
+              color: HZ_INK,
             }}
           >
             <a
-              href="#download"
-              className="hz-shadow hz-pop"
+              href="#hero"
+              className="hz-nav-logo"
+              style={{ display: "inline-flex", width: 190, color: HZ_INK }}
+            >
+              <img
+                src="assets/grimodex-logo.svg"
+                alt="Grimodex"
+                style={{ width: "100%", height: "auto", display: "block" }}
+              />
+            </a>
+            <div
+              className="hz-nav-center"
               style={{
-                background: HZ_INK,
-                color: HZ_BG,
-                border: `2px solid ${HZ_INK}`,
-                padding: "10px 18px",
+                display: "flex",
+                gap: 24,
                 fontFamily: "'JetBrains Mono', monospace",
                 fontSize: 11,
-                fontWeight: 700,
-                cursor: "pointer",
                 textTransform: "uppercase",
                 letterSpacing: ".08em",
-                textDecoration: "none",
               }}
             >
-              ↓ DOWNLOAD
-            </a>
+              <a
+                className="hz-nav-link"
+                href="#hero"
+                style={{ color: HZ_INK, textDecoration: "none" }}
+              >
+                A HERO
+              </a>
+              <a
+                className="hz-nav-link"
+                href="#workspace"
+                style={{ color: HZ_INK, textDecoration: "none" }}
+              >
+                B WORKSPACE
+              </a>
+              <a
+                className="hz-nav-link"
+                href="#moves"
+                style={{ color: HZ_INK, textDecoration: "none" }}
+              >
+                C MOVES
+              </a>
+              <a
+                className="hz-nav-link"
+                href="#workflow"
+                style={{ color: HZ_INK, textDecoration: "none" }}
+              >
+                D WORKFLOW
+              </a>
+              <a
+                className="hz-nav-link"
+                href="#for"
+                style={{ color: HZ_INK, textDecoration: "none" }}
+              >
+                E FOR
+              </a>
+            </div>
+            <div
+              style={{
+                justifySelf: "end",
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+              }}
+            >
+              <button
+                type="button"
+                onClick={toggleLang}
+                className="hz-pop"
+                aria-label={
+                  lang === "en" ? "日本語に切り替え" : "Switch to English"
+                }
+                title={lang === "en" ? "日本語" : "English"}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "stretch",
+                  border: `2px solid ${HZ_INK}`,
+                  background: HZ_BG,
+                  padding: 0,
+                  cursor: "pointer",
+                  overflow: "hidden",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: ".08em",
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    padding: "9px 9px",
+                    background: lang === "ja" ? HZ_INK : HZ_BG,
+                    color: lang === "ja" ? HZ_BG : HZ_INK,
+                  }}
+                >
+                  JA
+                </span>
+                <span
+                  aria-hidden="true"
+                  style={{
+                    padding: "9px 9px",
+                    borderLeft: `2px solid ${HZ_INK}`,
+                    background: lang === "en" ? HZ_INK : HZ_BG,
+                    color: lang === "en" ? HZ_BG : HZ_INK,
+                  }}
+                >
+                  EN
+                </span>
+              </button>
+              <a
+                href="#download"
+                className="hz-shadow hz-pop"
+                style={{
+                  background: HZ_INK,
+                  color: HZ_BG,
+                  border: `2px solid ${HZ_INK}`,
+                  padding: "10px 18px",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  textTransform: "uppercase",
+                  letterSpacing: ".08em",
+                  textDecoration: "none",
+                }}
+              >
+                ↓ DOWNLOAD
+              </a>
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* HERO */}
-      <section
-        data-hz-page
-        id="hero"
-        className="hz-page hz-hero-section"
-        style={{
-          padding: "48px 48px 56px",
-          color: HZ_INK,
-          position: "relative",
-          overflow: "hidden",
-        }}
-      >
-        <div ref={heroEchoRef} className="hz-hero-echo" aria-hidden="true">
-          YOU&rsquo;RE WRITING<span className="hz-mark">.</span>
-        </div>
-        <div style={{ position: "relative", zIndex: 1 }}>
-          <div>
-            <h1
-              ref={heroTitleRef}
-              data-hz-hero-title
-              style={{
-                margin: 0,
-                fontSize: "clamp(44px, 13vw, 200px)",
-                lineHeight: 0.88,
-                fontWeight: 800,
-                letterSpacing: "-0.035em",
-                fontFamily: "'Inter Tight', 'Helvetica Neue', Helvetica, Arial",
-                width: "max-content",
-                maxWidth: "100%",
-              }}
-            >
-              <span data-hz-hero-line className="hz-split">
-                {"\u66f8\u3044\u3066\u306a\u3044"}
-              </span>
-              <span data-hz-hero-line className="hz-split">
-                {"\u6642\u9593\u3082\u3001"}
-              </span>
-              <span
-                data-hz-hero-line
-                data-hz-hero-marker
-                className="hz-mark hz-split hz-hero-marker"
-              >
-                {"\u66f8\u3044\u3066\u3044\u308b\u3002"}
-              </span>
-            </h1>
-            <div ref={heroMetaRef} data-hz-hero-meta>
-              <div
-                className="hz-hero-meta-row"
+        {/* HERO */}
+        <section
+          data-hz-page
+          id="hero"
+          className="hz-page hz-hero-section"
+          style={{
+            padding: "48px 48px 56px",
+            color: HZ_INK,
+            position: "relative",
+            overflow: "hidden",
+          }}
+        >
+          <div ref={heroEchoRef} className="hz-hero-echo" aria-hidden="true">
+            {lang === "en" ? (
+              <>
+                {"書いている"}
+                <span className="hz-mark">{"。"}</span>
+              </>
+            ) : (
+              <>
+                YOU&rsquo;RE WRITING<span className="hz-mark">.</span>
+              </>
+            )}
+          </div>
+          <div style={{ position: "relative", zIndex: 1 }}>
+            <div>
+              <h1
+                ref={heroTitleRef}
+                data-hz-hero-title
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 14,
-                  marginTop: 28,
-                  flexWrap: "wrap",
+                  margin: 0,
+                  fontSize: "clamp(44px, 13vw, 200px)",
+                  lineHeight: 0.88,
+                  fontWeight: 800,
+                  letterSpacing: "-0.035em",
+                  fontFamily:
+                    "'Inter Tight', 'Helvetica Neue', Helvetica, Arial",
+                  width: "max-content",
+                  maxWidth: "100%",
                 }}
               >
-                <span
-                  className="hz-micro"
-                  style={{
-                    background: HZ_INK,
-                    color: HZ_BG,
-                    padding: "4px 10px",
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 11,
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    letterSpacing: ".1em",
-                  }}
-                >
-                  A / 01
+                <span data-hz-hero-line className="hz-split">
+                  {lang === "en"
+                    ? "Even when"
+                    : "\u66f8\u3044\u3066\u306a\u3044"}
+                </span>
+                <span data-hz-hero-line className="hz-split">
+                  {lang === "en"
+                    ? "you\u2019re idle,"
+                    : "\u6642\u9593\u3082\u3001"}
                 </span>
                 <span
-                  className="hz-micro"
-                  style={{
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 13,
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    letterSpacing: ".18em",
-                  }}
+                  data-hz-hero-line
+                  data-hz-hero-marker
+                  className="hz-mark hz-split hz-hero-marker"
                 >
-                  A{" "}
-                  <span className="hz-mark" style={{ padding: "0 6px" }}>
-                    WRITING FIDGET IDE
-                  </span>
+                  {lang === "en"
+                    ? "you\u2019re writing."
+                    : "\u66f8\u3044\u3066\u3044\u308b\u3002"}
                 </span>
-                <span
-                  style={{
-                    flex: 1,
-                    height: 1,
-                    background: HZ_INK,
-                    opacity: 0.25,
-                    minWidth: 40,
-                  }}
-                />
-                <span
-                  style={{
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 10,
-                    color: "rgba(10,10,10,0.55)",
-                    textTransform: "uppercase",
-                    letterSpacing: ".12em",
-                  }}
-                >
-                  TAURI · LOCAL · CLI · BYOK
-                </span>
-              </div>
-            </div>
-            <div ref={heroBodyRef} data-hz-hero-body>
-              <div
-                className="hz-hero-grid"
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr auto",
-                  gap: 48,
-                  marginTop: 56,
-                  alignItems: "start",
-                }}
-              >
-                <div>
-                  <div
-                    style={{
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 10,
-                      textTransform: "uppercase",
-                      letterSpacing: ".1em",
-                      color: "rgba(10,10,10,0.55)",
-                      marginBottom: 8,
-                    }}
-                  >
-                    EN ──
-                  </div>
-                  <p
-                    style={{
-                      fontSize: 22,
-                      lineHeight: 1.35,
-                      margin: 0,
-                      fontWeight: 600,
-                    }}
-                  >
-                    Even when you're not writing,{" "}
-                    <span className="hz-mark" style={{ padding: "0 6px" }}>
-                      you're writing.
-                    </span>
-                  </p>
-                  <p
-                    style={{
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 11,
-                      lineHeight: 1.7,
-                      color: "rgba(10,10,10,0.6)",
-                      marginTop: 14,
-                      textTransform: "uppercase",
-                      letterSpacing: ".04em",
-                    }}
-                  >
-                    THE FIDGET IS THE WORK. IDLE MOVES FEED THE NEXT LINE.
-                  </p>
-                </div>
-                <div>
-                  <div
-                    style={{
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 10,
-                      textTransform: "uppercase",
-                      letterSpacing: ".1em",
-                      color: "rgba(10,10,10,0.55)",
-                      marginBottom: 8,
-                    }}
-                  >
-                    JA ──
-                  </div>
-                  <p style={{ fontSize: 16, lineHeight: 1.85, margin: 0 }}>
-                    執筆ツールの王道は、集中を邪魔しないこと。
-                    <br />
-                    Grimodex は、集中の外側にある時間まで執筆に変える。
-                    <br />
-                    Codex を整える時間も、Map を眺める時間も、AI
-                    と雑談する時間も——
-                    <span className="hz-mark" style={{ padding: "0 4px" }}>
-                      全部、次の一行に効く。
-                    </span>
-                  </p>
-                </div>
-                {/* Spec sheet — the zine fingerprint */}
+              </h1>
+              <div ref={heroMetaRef} data-hz-hero-meta>
                 <div
-                  className="hz-hero-spec"
+                  className="hz-hero-meta-row"
                   style={{
-                    border: `2px solid ${HZ_INK}`,
-                    padding: "12px 16px",
-                    minWidth: 220,
-                    position: "relative",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 14,
+                    marginTop: 28,
+                    flexWrap: "wrap",
                   }}
                 >
                   <span
+                    className="hz-micro"
                     style={{
-                      position: "absolute",
-                      top: -10,
-                      left: 10,
-                      background: HZ_BG,
-                      padding: "0 6px",
+                      background: HZ_INK,
+                      color: HZ_BG,
+                      padding: "4px 10px",
                       fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 10,
+                      fontSize: 11,
+                      fontWeight: 700,
                       textTransform: "uppercase",
                       letterSpacing: ".1em",
                     }}
                   >
-                    SPEC
+                    A / 01
                   </span>
-                  <div
+                  <span
+                    className="hz-micro"
                     style={{
                       fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 11,
-                      lineHeight: 2,
+                      fontSize: 13,
+                      fontWeight: 700,
                       textTransform: "uppercase",
-                      letterSpacing: ".04em",
+                      letterSpacing: ".18em",
                     }}
                   >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        borderBottom: `1px dashed ${HZ_INK}`,
-                      }}
-                    >
-                      <span>RUNTIME</span>
-                      <b>TAURI v2</b>
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        borderBottom: `1px dashed ${HZ_INK}`,
-                      }}
-                    >
-                      <span>STORAGE</span>
-                      <b>LOCAL</b>
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        borderBottom: `1px dashed ${HZ_INK}`,
-                      }}
-                    >
-                      <span>AI</span>
-                      <b>MCP / LOCAL / CLI / BYOK</b>
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                      }}
-                    >
-                      <span>STATUS</span>
-                      <b style={{ background: HZ_HL, padding: "0 4px" }}>
-                        BETA
-                      </b>
-                    </div>
-                  </div>
+                    A{" "}
+                    <span className="hz-mark" style={{ padding: "0 6px" }}>
+                      WRITING FIDGET IDE
+                    </span>
+                  </span>
+                  <span
+                    style={{
+                      flex: 1,
+                      height: 1,
+                      background: HZ_INK,
+                      opacity: 0.25,
+                      minWidth: 40,
+                    }}
+                  />
+                  <span
+                    style={{
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 10,
+                      color: "rgba(10,10,10,0.55)",
+                      textTransform: "uppercase",
+                      letterSpacing: ".12em",
+                    }}
+                  >
+                    TAURI · LOCAL · CLI · BYOK
+                  </span>
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* WORKSPACE — sticky scroll stage (snap-exempt) */}
-      <HWorkspaceSection />
-
-      {/* THREE MOVES — D layout, G accents */}
-      <section
-        data-hz-page
-        id="moves"
-        className="hz-page hz-page-section"
-        style={{ padding: "100px 48px", color: HZ_INK }}
-      >
-        <div
-          className="hz-section-row"
-          style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}
-        >
-          <HSectionMark tag="C / 03" kicker="THREE MOVES" />
-          <div>
-            <HReveal>
-              <h2
-                className="hz-massive"
-                style={{
-                  fontSize: 112,
-                  lineHeight: 0.92,
-                  fontWeight: 800,
-                  letterSpacing: -4,
-                  margin: "0 0 56px",
-                }}
-              >
-                THREE MOVES
-                <br />
-                THAT <span className="hz-mark">COMPOUND.</span>
-              </h2>
-            </HReveal>
-            {[
-              {
-                no: "01",
-                kicker_en: "WRITE · 書く",
-                title_ja: ["書き手は、", "あなたのまま。"],
-                title_en: "Your voice stays your own.",
-                body_ja:
-                  "自分の文章で本文を進める。AI は「必要なときだけ呼ぶ」道具で、ハンドルを奪わない。",
-                chips: ["Editor", "Scenes", "Snippets"],
-                out_ja: "一行が積まれる。",
-                out_en: "Lines accumulate.",
-                accent: "+1 LINE",
-                flow: "↓ feeds 02",
-              },
-              {
-                no: "02",
-                kicker_en: "STRUCTURE · 構造的重力",
-                title_ja: ["構造化への、", "重力。"],
-                title_en: "A gravity toward structure.",
-                body_ja:
-                  "Structural Gravity（構造的重力）— 書いた本文を、構造化する力。Codex の言及が Matrix の格子に並び、シーンが Timeline の点に変わる。Phase（物語進行のスナップショット）を切り替えれば、Codex の値が時系列で変化していく。",
-                chips: ["Codex", "Phase", "Matrix", "Timeline"],
-                out_ja: "構造が見える。",
-                out_en: "See the skeleton.",
-                accent: "+1 GRAVITY",
-                flow: "↓ feeds 03",
-              },
-              {
-                no: "03",
-                kicker_en: "TALK · 壁打ち",
-                title_ja: ["AI には書かせず、", "アイデアを揉む。"],
-                title_en: "Spar with AI. Don't ghostwrite.",
-                body_ja:
-                  "Chat はシーンごとに独立。AI はそのシーンの本文・関連 Codex・未回収の伏線等を見た状態で答える。ブレスト、設定を煮詰め、物語を強化する。",
-                chips: ["Chat", "ChatHistory", "Foreshadow"],
-                out_ja: "設定が深くなる。",
-                out_en: "Your world grows deeper.",
-                accent: "+1 DEPTH",
-                flow: "↺ back to 01",
-              },
-            ].map((f, i) => (
-              <HReveal key={f.no} delay={i * 0.08}>
+              <div ref={heroBodyRef} data-hz-hero-body>
                 <div
-                  className="hz-3move-row"
+                  className="hz-hero-grid"
                   style={{
-                    borderTop: `2px solid ${HZ_INK}`,
-                    padding: "44px 0",
                     display: "grid",
-                    gridTemplateColumns: "100px 1fr 1fr 140px",
-                    gap: 32,
+                    gridTemplateColumns: "1fr 1fr auto",
+                    gap: 48,
+                    marginTop: 56,
                     alignItems: "start",
                   }}
                 >
-                  <div
-                    className="hz-3move-num"
-                    style={{
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 64,
-                      fontWeight: 800,
-                      lineHeight: 0.9,
-                      letterSpacing: -3,
-                    }}
-                  >
-                    {f.no}
+                  <div>
+                    <div
+                      style={{
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 10,
+                        textTransform: "uppercase",
+                        letterSpacing: ".1em",
+                        color: "rgba(10,10,10,0.55)",
+                        marginBottom: 8,
+                      }}
+                    >
+                      {lang === "en" ? "WHY ──" : "EN ──"}
+                    </div>
+                    <p
+                      style={{
+                        fontSize: 22,
+                        lineHeight: 1.35,
+                        margin: 0,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {lang === "en" ? (
+                        <>
+                          The fidget{" "}
+                          <span
+                            className="hz-mark"
+                            style={{ padding: "0 6px" }}
+                          >
+                            is the work.
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          Even when you're not writing,{" "}
+                          <span
+                            className="hz-mark"
+                            style={{ padding: "0 6px" }}
+                          >
+                            you're writing.
+                          </span>
+                        </>
+                      )}
+                    </p>
+                    <p
+                      style={{
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 11,
+                        lineHeight: 1.7,
+                        color: "rgba(10,10,10,0.6)",
+                        marginTop: 14,
+                        textTransform: "uppercase",
+                        letterSpacing: ".04em",
+                      }}
+                    >
+                      {lang === "en"
+                        ? "IDLE MOVES — TIDYING CODEX, EYEING THE MAP, CHATTING WITH AI — FEED THE NEXT LINE."
+                        : "THE FIDGET IS THE WORK. IDLE MOVES FEED THE NEXT LINE."}
+                    </p>
                   </div>
                   <div>
                     <div
@@ -2279,730 +2458,1141 @@ function LPVariantH() {
                         fontSize: 10,
                         textTransform: "uppercase",
                         letterSpacing: ".1em",
-                        opacity: 0.55,
-                        marginBottom: 12,
+                        color: "rgba(10,10,10,0.55)",
+                        marginBottom: 8,
                       }}
                     >
-                      ── {f.kicker_en}
+                      {lang === "en" ? "HOW ──" : "JA ──"}
                     </div>
-                    <h3
-                      className="hz-3move-title"
+                    <p style={{ fontSize: 16, lineHeight: 1.85, margin: 0 }}>
+                      {lang === "en" ? (
+                        <>
+                          The golden rule of writing tools is to never break
+                          your focus.
+                          <br />
+                          Grimodex turns even the time outside that focus into
+                          writing.
+                          <br />
+                          Tidying the Codex, eyeing the Map, chatting with the
+                          AI —{" "}
+                          <span
+                            className="hz-mark"
+                            style={{ padding: "0 4px" }}
+                          >
+                            it all feeds the next line.
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          執筆ツールの王道は、集中を邪魔しないこと。
+                          <br />
+                          Grimodex は、集中の外側にある時間まで執筆に変える。
+                          <br />
+                          Codex を整える時間も、Map を眺める時間も、AI
+                          と雑談する時間も——
+                          <span
+                            className="hz-mark"
+                            style={{ padding: "0 4px" }}
+                          >
+                            全部、次の一行に効く。
+                          </span>
+                        </>
+                      )}
+                    </p>
+                  </div>
+                  {/* Spec sheet — the zine fingerprint */}
+                  <div
+                    className="hz-hero-spec"
+                    style={{
+                      border: `2px solid ${HZ_INK}`,
+                      padding: "12px 16px",
+                      minWidth: 220,
+                      position: "relative",
+                    }}
+                  >
+                    <span
                       style={{
-                        fontSize: 44,
-                        lineHeight: 1,
-                        fontWeight: 800,
-                        letterSpacing: -1.5,
-                        margin: 0,
-                        textTransform: "none",
+                        position: "absolute",
+                        top: -10,
+                        left: 10,
+                        background: HZ_BG,
+                        padding: "0 6px",
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 10,
+                        textTransform: "uppercase",
+                        letterSpacing: ".1em",
                       }}
                     >
-                      {f.title_ja.map((line, k) => (
-                        <span key={k} style={{ display: "block" }}>
-                          {k === f.title_ja.length - 1 ? (
-                            <span
-                              className="hz-mark"
-                              style={{ padding: "0 6px" }}
-                            >
-                              {line}
-                            </span>
-                          ) : (
-                            line
-                          )}
-                        </span>
-                      ))}
-                    </h3>
+                      SPEC
+                    </span>
                     <div
                       style={{
                         fontFamily: "'JetBrains Mono', monospace",
                         fontSize: 11,
-                        opacity: 0.55,
-                        marginTop: 12,
+                        lineHeight: 2,
                         textTransform: "uppercase",
-                        letterSpacing: ".06em",
+                        letterSpacing: ".04em",
                       }}
                     >
-                      {f.title_en}
-                    </div>
-                    <div
-                      className="hz-3move-chips"
-                      style={{
-                        display: "flex",
-                        flexWrap: "wrap",
-                        gap: 5,
-                        marginTop: 16,
-                      }}
-                    >
-                      {f.chips.map((c) => (
-                        <span
-                          key={c}
-                          className="hz-wf-chip"
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            fontFamily: "'JetBrains Mono', monospace",
-                            fontSize: 9.5,
-                            fontWeight: 700,
-                            letterSpacing: ".06em",
-                            textTransform: "uppercase",
-                            padding: "3px 7px",
-                            border: `1.5px solid ${HZ_INK}`,
-                            background: HZ_BG,
-                            color: HZ_INK,
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {c}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <p style={{ fontSize: 15, lineHeight: 1.75, margin: 0 }}>
-                      {f.body_ja}
-                    </p>
-                    <div
-                      className="hz-3move-output"
-                      style={{
-                        marginTop: 18,
-                        paddingTop: 14,
-                        borderTop: `1.5px dashed rgba(10,10,10,0.28)`,
-                        display: "flex",
-                        alignItems: "baseline",
-                        gap: 10,
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <span
+                      <div
                         style={{
-                          fontFamily: "'JetBrains Mono', monospace",
-                          fontSize: 10,
-                          fontWeight: 800,
-                          letterSpacing: ".1em",
-                          background: HZ_INK,
-                          color: HZ_BG,
-                          padding: "3px 7px",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          borderBottom: `1px dashed ${HZ_INK}`,
                         }}
                       >
-                        ↳ OUTPUT
-                      </span>
-                      <span style={{ fontSize: 14, fontWeight: 700 }}>
-                        {f.out_ja}
-                      </span>
-                      <span
+                        <span>RUNTIME</span>
+                        <b>TAURI v2</b>
+                      </div>
+                      <div
                         style={{
-                          fontFamily: "'JetBrains Mono', monospace",
-                          fontSize: 11,
-                          opacity: 0.55,
-                          letterSpacing: ".03em",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          borderBottom: `1px dashed ${HZ_INK}`,
                         }}
                       >
-                        {f.out_en}
-                      </span>
-                    </div>
-                  </div>
-                  <div
-                    className="hz-3move-meta"
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 6,
-                      alignItems: "flex-end",
-                    }}
-                  >
-                    <HChip>0{i + 1} / 03</HChip>
-                    <HChip hl>{["WRITE", "STRUCTURE", "TALK"][i]}</HChip>
-                    <div
-                      style={{
-                        marginTop: 12,
-                        padding: "4px 8px",
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize: 10,
-                        fontWeight: 800,
-                        letterSpacing: ".08em",
-                        background: HZ_INK,
-                        color: HZ_BG,
-                      }}
-                    >
-                      {f.accent}
-                    </div>
-                    <div
-                      style={{
-                        marginTop: 6,
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize: 9.5,
-                        opacity: 0.55,
-                        letterSpacing: ".05em",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {f.flow}
+                        <span>STORAGE</span>
+                        <b>LOCAL</b>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          borderBottom: `1px dashed ${HZ_INK}`,
+                        }}
+                      >
+                        <span>AI</span>
+                        <b>MCP / LOCAL / CLI / BYOK</b>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                        }}
+                      >
+                        <span>STATUS</span>
+                        <b style={{ background: HZ_HL, padding: "0 4px" }}>
+                          BETA
+                        </b>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </HReveal>
-            ))}
+              </div>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* WORKFLOW */}
-      <section
-        data-hz-page
-        id="workflow"
-        className="hz-page hz-page-section"
-        style={{ padding: "100px 48px", color: HZ_INK }}
-      >
-        <div
-          className="hz-section-row"
-          style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}
+        {/* WORKSPACE — sticky scroll stage (snap-exempt) */}
+        <HWorkspaceSection />
+
+        {/* THREE MOVES — D layout, G accents */}
+        <section
+          data-hz-page
+          id="moves"
+          className="hz-page hz-page-section"
+          style={{ padding: "100px 48px", color: HZ_INK }}
         >
-          <HSectionMark tag="D / 04" kicker="WORKFLOW" />
-          <div>
-            <HReveal>
-              <h2
-                className="hz-massive"
-                style={{
-                  fontSize: 112,
-                  lineHeight: 0.92,
-                  fontWeight: 800,
-                  letterSpacing: -4,
-                  margin: "0 0 48px",
-                }}
-              >
-                PLOTTER OR
-                <br />
-                <span className="hz-mark">PANTSER.</span>
-              </h2>
-            </HReveal>
-            <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
+          <div
+            className="hz-section-row"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "180px 1fr",
+              gap: 40,
+            }}
+          >
+            <HSectionMark tag="C / 03" kicker="THREE MOVES" />
+            <div>
+              <HReveal>
+                <h2
+                  className="hz-massive"
+                  style={{
+                    fontSize: 112,
+                    lineHeight: 0.92,
+                    fontWeight: 800,
+                    letterSpacing: -4,
+                    margin: "0 0 56px",
+                  }}
+                >
+                  THREE MOVES
+                  <br />
+                  THAT <span className="hz-mark">COMPOUND.</span>
+                </h2>
+              </HReveal>
               {[
-                { key: "plotter", label: "PLOTTER", desc: "先に構造を作る" },
-                { key: "pantser", label: "PANTSER", desc: "探索しながら書く" },
-              ].map((mode) => {
-                const active = workflowMode === mode.key;
-                return (
-                  <button
-                    key={mode.key}
-                    onClick={(event) =>
-                      handleWorkflowModeClick(mode.key, event)
-                    }
-                    style={{
-                      background: active ? HZ_HL : HZ_BG,
-                      color: HZ_INK,
-                      border: `2px solid ${HZ_INK}`,
-                      padding: "12px 16px",
-                      minWidth: 180,
-                      textAlign: "left",
-                      cursor: "pointer",
-                      fontFamily: "'JetBrains Mono', monospace",
-                      boxShadow: active
-                        ? `4px 4px 0 ${HZ_INK}`
-                        : `0 0 0 ${HZ_INK}`,
-                      transformOrigin: "50% 80%",
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 800,
-                        letterSpacing: ".08em",
-                      }}
-                    >
-                      {mode.label}
-                    </div>
-                    <div style={{ fontSize: 11, marginTop: 4, opacity: 0.7 }}>
-                      {mode.desc}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-            <div
-              className="hz-workflow-tagline"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                flexWrap: "wrap",
-                gap: 12,
-                marginBottom: 18,
-              }}
-            >
-              <span
-                style={{
-                  background: HZ_INK,
-                  color: HZ_BG,
-                  padding: "5px 10px",
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 11,
-                  fontWeight: 800,
-                  textTransform: "uppercase",
-                  letterSpacing: ".1em",
-                }}
-              >
-                ↳ SAME END · DIFFERENT PATH
-              </span>
-              <span
-                style={{
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 11,
-                  letterSpacing: ".06em",
-                  color: "rgba(10,10,10,0.65)",
-                }}
-              >
-                終点は同じ。経路は別。
-              </span>
-            </div>
-            <div style={{ border: `2px solid ${HZ_INK}` }}>
-              <div
-                ref={workflowGridRef}
-                className="hz-workflow-grid"
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(4, 1fr)",
-                }}
-              >
-                {activeWorkflow.map((s, i) => (
+                {
+                  no: "01",
+                  kicker_en: { ja: "WRITE · 書く", en: "WRITE" },
+                  title: {
+                    ja: ["書き手は、", "あなたのまま。"],
+                    en: ["You stay", "the writer."],
+                  },
+                  title_en: "Your voice stays your own.",
+                  body: {
+                    ja: "自分の文章で本文を進める。AI は「必要なときだけ呼ぶ」道具で、ハンドルを奪わない。",
+                    en: "Move the prose forward in your own words. The AI is a tool you call only when needed — it never grabs the wheel.",
+                  },
+                  chips: ["Editor", "Scenes", "Snippets"],
+                  out: { ja: "一行が積まれる。", en: "One more line lands." },
+                  out_en: "Lines accumulate.",
+                  accent: "+1 LINE",
+                  flow: "↓ feeds 02",
+                },
+                {
+                  no: "02",
+                  kicker_en: { ja: "STRUCTURE · 構造的重力", en: "STRUCTURE" },
+                  title: {
+                    ja: ["構造化への、", "重力。"],
+                    en: ["Structure", "has gravity."],
+                  },
+                  title_en: "A gravity toward structure.",
+                  body: {
+                    ja: "Structural Gravity（構造的重力）— 書いた本文を、構造化する力。Codex の言及が Matrix の格子に並び、シーンが Timeline の点に変わる。Phase（物語進行のスナップショット）を切り替えれば、Codex の値が時系列で変化していく。",
+                    en: "Structural Gravity — the force that structures the prose you've written. Codex mentions line up in the Matrix grid, scenes become points on the Timeline, and switching Phase (a snapshot of story progress) shifts Codex values across time.",
+                  },
+                  chips: ["Codex", "Phase", "Matrix", "Timeline"],
+                  out: { ja: "構造が見える。", en: "The skeleton shows." },
+                  out_en: "See the skeleton.",
+                  accent: "+1 GRAVITY",
+                  flow: "↓ feeds 03",
+                },
+                {
+                  no: "03",
+                  kicker_en: { ja: "TALK · 壁打ち", en: "TALK" },
+                  title: {
+                    ja: ["AI には書かせず、", "アイデアを揉む。"],
+                    en: ["Don't ghostwrite —", "knead the ideas."],
+                  },
+                  title_en: "Spar with AI. Don't ghostwrite.",
+                  body: {
+                    ja: "Chat はシーンごとに独立。AI はそのシーンの本文・関連 Codex・未回収の伏線等を見た状態で答える。ブレスト、設定を煮詰め、物語を強化する。",
+                    en: "Chat is independent per scene. The AI answers having seen that scene's prose, the relevant Codex, and any unpaid foreshadowing. Brainstorm, distill settings, and strengthen the story.",
+                  },
+                  chips: ["Chat", "ChatHistory", "Foreshadow"],
+                  out: { ja: "設定が深くなる。", en: "The world deepens." },
+                  out_en: "Your world grows deeper.",
+                  accent: "+1 DEPTH",
+                  flow: "↺ back to 01",
+                },
+              ].map((f, i) => (
+                <HReveal key={f.no} delay={i * 0.08}>
                   <div
-                    key={s.n}
-                    className="hz-workflow-step"
+                    className="hz-3move-row"
                     style={{
-                      borderRight: i < 3 ? `2px solid ${HZ_INK}` : "none",
-                      padding: "28px 22px",
-                      minHeight: 248,
-                      position: "relative",
-                      background: i === 0 ? HZ_HL : HZ_BG,
-                      display: "flex",
-                      flexDirection: "column",
+                      borderTop: `2px solid ${HZ_INK}`,
+                      padding: "44px 0",
+                      display: "grid",
+                      gridTemplateColumns: "100px 1fr 1fr 140px",
+                      gap: 32,
+                      alignItems: "start",
                     }}
                   >
                     <div
+                      className="hz-3move-num"
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 6,
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 64,
+                        fontWeight: 800,
+                        lineHeight: 0.9,
+                        letterSpacing: -3,
                       }}
                     >
+                      {f.no}
+                    </div>
+                    <div>
                       <div
                         style={{
                           fontFamily: "'JetBrains Mono', monospace",
-                          fontSize: 11,
+                          fontSize: 10,
                           textTransform: "uppercase",
                           letterSpacing: ".1em",
-                          opacity: 0.7,
+                          opacity: 0.55,
+                          marginBottom: 12,
                         }}
                       >
-                        STEP {s.n}
+                        ── {lpText(f.kicker_en, lang)}
                       </div>
-                      {s.role === "entry" && (
+                      <h3
+                        className="hz-3move-title"
+                        style={{
+                          fontSize: 44,
+                          lineHeight: 1,
+                          fontWeight: 800,
+                          letterSpacing: -1.5,
+                          margin: 0,
+                          textTransform: "none",
+                        }}
+                      >
+                        {lpText(f.title, lang).map((line, k, lines) => (
+                          <span key={k} style={{ display: "block" }}>
+                            {k === lines.length - 1 ? (
+                              <span
+                                className="hz-mark"
+                                style={{ padding: "0 6px" }}
+                              >
+                                {line}
+                              </span>
+                            ) : (
+                              line
+                            )}
+                          </span>
+                        ))}
+                      </h3>
+                      {lang === "ja" && (
                         <div
                           style={{
                             fontFamily: "'JetBrains Mono', monospace",
-                            fontSize: 9.5,
-                            fontWeight: 800,
+                            fontSize: 11,
+                            opacity: 0.55,
+                            marginTop: 12,
                             textTransform: "uppercase",
-                            letterSpacing: ".08em",
-                            color: HZ_INK,
-                            background: HZ_BG,
-                            border: `1.5px solid ${HZ_INK}`,
-                            padding: "2px 6px",
+                            letterSpacing: ".06em",
                           }}
                         >
-                          ← ENTRY
+                          {f.title_en}
                         </div>
                       )}
-                      {s.role === "end" && (
-                        <div
+                      <div
+                        className="hz-3move-chips"
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: 5,
+                          marginTop: 16,
+                        }}
+                      >
+                        {f.chips.map((c) => (
+                          <span
+                            key={c}
+                            className="hz-wf-chip"
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              fontFamily: "'JetBrains Mono', monospace",
+                              fontSize: 9.5,
+                              fontWeight: 700,
+                              letterSpacing: ".06em",
+                              textTransform: "uppercase",
+                              padding: "3px 7px",
+                              border: `1.5px solid ${HZ_INK}`,
+                              background: HZ_BG,
+                              color: HZ_INK,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {c}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <p style={{ fontSize: 15, lineHeight: 1.75, margin: 0 }}>
+                        {lpText(f.body, lang)}
+                      </p>
+                      <div
+                        className="hz-3move-output"
+                        style={{
+                          marginTop: 18,
+                          paddingTop: 14,
+                          borderTop: `1.5px dashed rgba(10,10,10,0.28)`,
+                          display: "flex",
+                          alignItems: "baseline",
+                          gap: 10,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <span
                           style={{
                             fontFamily: "'JetBrains Mono', monospace",
-                            fontSize: 9.5,
+                            fontSize: 10,
                             fontWeight: 800,
-                            textTransform: "uppercase",
-                            letterSpacing: ".08em",
-                            color: HZ_BG,
+                            letterSpacing: ".1em",
                             background: HZ_INK,
+                            color: HZ_BG,
                             padding: "3px 7px",
                           }}
                         >
-                          → SHARED END
+                          ↳ OUTPUT
+                        </span>
+                        <span style={{ fontSize: 14, fontWeight: 700 }}>
+                          {lpText(f.out, lang)}
+                        </span>
+                        {lang === "ja" && (
+                          <span
+                            style={{
+                              fontFamily: "'JetBrains Mono', monospace",
+                              fontSize: 11,
+                              opacity: 0.55,
+                              letterSpacing: ".03em",
+                            }}
+                          >
+                            {f.out_en}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div
+                      className="hz-3move-meta"
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                        alignItems: "flex-end",
+                      }}
+                    >
+                      <HChip>0{i + 1} / 03</HChip>
+                      <HChip hl>{["WRITE", "STRUCTURE", "TALK"][i]}</HChip>
+                      <div
+                        style={{
+                          marginTop: 12,
+                          padding: "4px 8px",
+                          fontFamily: "'JetBrains Mono', monospace",
+                          fontSize: 10,
+                          fontWeight: 800,
+                          letterSpacing: ".08em",
+                          background: HZ_INK,
+                          color: HZ_BG,
+                        }}
+                      >
+                        {f.accent}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontFamily: "'JetBrains Mono', monospace",
+                          fontSize: 9.5,
+                          opacity: 0.55,
+                          letterSpacing: ".05em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {f.flow}
+                      </div>
+                    </div>
+                  </div>
+                </HReveal>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* WORKFLOW */}
+        <section
+          data-hz-page
+          id="workflow"
+          className="hz-page hz-page-section"
+          style={{ padding: "100px 48px", color: HZ_INK }}
+        >
+          <div
+            className="hz-section-row"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "180px 1fr",
+              gap: 40,
+            }}
+          >
+            <HSectionMark tag="D / 04" kicker="WORKFLOW" />
+            <div>
+              <HReveal>
+                <h2
+                  className="hz-massive"
+                  style={{
+                    fontSize: 112,
+                    lineHeight: 0.92,
+                    fontWeight: 800,
+                    letterSpacing: -4,
+                    margin: "0 0 48px",
+                  }}
+                >
+                  PLOTTER OR
+                  <br />
+                  <span className="hz-mark">PANTSER.</span>
+                </h2>
+              </HReveal>
+              <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
+                {[
+                  {
+                    key: "plotter",
+                    label: "PLOTTER",
+                    desc: { ja: "先に構造を作る", en: "Structure first" },
+                  },
+                  {
+                    key: "pantser",
+                    label: "PANTSER",
+                    desc: { ja: "探索しながら書く", en: "Write to explore" },
+                  },
+                ].map((mode) => {
+                  const active = workflowMode === mode.key;
+                  return (
+                    <button
+                      key={mode.key}
+                      onClick={(event) =>
+                        handleWorkflowModeClick(mode.key, event)
+                      }
+                      style={{
+                        background: active ? HZ_HL : HZ_BG,
+                        color: HZ_INK,
+                        border: `2px solid ${HZ_INK}`,
+                        padding: "12px 16px",
+                        minWidth: 180,
+                        textAlign: "left",
+                        cursor: "pointer",
+                        fontFamily: "'JetBrains Mono', monospace",
+                        boxShadow: active
+                          ? `4px 4px 0 ${HZ_INK}`
+                          : `0 0 0 ${HZ_INK}`,
+                        transformOrigin: "50% 80%",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 800,
+                          letterSpacing: ".08em",
+                        }}
+                      >
+                        {mode.label}
+                      </div>
+                      <div style={{ fontSize: 11, marginTop: 4, opacity: 0.7 }}>
+                        {lpText(mode.desc, lang)}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div
+                className="hz-workflow-tagline"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 12,
+                  marginBottom: 18,
+                }}
+              >
+                <span
+                  style={{
+                    background: HZ_INK,
+                    color: HZ_BG,
+                    padding: "5px 10px",
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 11,
+                    fontWeight: 800,
+                    textTransform: "uppercase",
+                    letterSpacing: ".1em",
+                  }}
+                >
+                  ↳ SAME END · DIFFERENT PATH
+                </span>
+                <span
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 11,
+                    letterSpacing: ".06em",
+                    color: "rgba(10,10,10,0.65)",
+                  }}
+                >
+                  {lang === "en"
+                    ? "Same destination. Different route."
+                    : "終点は同じ。経路は別。"}
+                </span>
+              </div>
+              <div style={{ border: `2px solid ${HZ_INK}` }}>
+                <div
+                  ref={workflowGridRef}
+                  className="hz-workflow-grid"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(4, 1fr)",
+                  }}
+                >
+                  {activeWorkflow.map((s, i) => (
+                    <div
+                      key={s.n}
+                      className="hz-workflow-step"
+                      style={{
+                        borderRight: i < 3 ? `2px solid ${HZ_INK}` : "none",
+                        padding: "28px 22px",
+                        minHeight: 248,
+                        position: "relative",
+                        background: i === 0 ? HZ_HL : HZ_BG,
+                        display: "flex",
+                        flexDirection: "column",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 6,
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontFamily: "'JetBrains Mono', monospace",
+                            fontSize: 11,
+                            textTransform: "uppercase",
+                            letterSpacing: ".1em",
+                            opacity: 0.7,
+                          }}
+                        >
+                          STEP {s.n}
+                        </div>
+                        {s.role === "entry" && (
+                          <div
+                            style={{
+                              fontFamily: "'JetBrains Mono', monospace",
+                              fontSize: 9.5,
+                              fontWeight: 800,
+                              textTransform: "uppercase",
+                              letterSpacing: ".08em",
+                              color: HZ_INK,
+                              background: HZ_BG,
+                              border: `1.5px solid ${HZ_INK}`,
+                              padding: "2px 6px",
+                            }}
+                          >
+                            ← ENTRY
+                          </div>
+                        )}
+                        {s.role === "end" && (
+                          <div
+                            style={{
+                              fontFamily: "'JetBrains Mono', monospace",
+                              fontSize: 9.5,
+                              fontWeight: 800,
+                              textTransform: "uppercase",
+                              letterSpacing: ".08em",
+                              color: HZ_BG,
+                              background: HZ_INK,
+                              padding: "3px 7px",
+                            }}
+                          >
+                            → SHARED END
+                          </div>
+                        )}
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "baseline",
+                          gap: 10,
+                          marginTop: 10,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div
+                          className="hz-workflow-step-k"
+                          style={{
+                            fontFamily: "'JetBrains Mono', monospace",
+                            fontWeight: 800,
+                            fontSize: 32,
+                            letterSpacing: -1,
+                            lineHeight: 1,
+                          }}
+                        >
+                          {s.k}
+                        </div>
+                        {lang === "ja" && (
+                          <div
+                            style={{
+                              fontFamily: "'JetBrains Mono', monospace",
+                              fontSize: 11,
+                              opacity: 0.55,
+                              letterSpacing: ".04em",
+                            }}
+                          >
+                            / {s.jp}
+                          </div>
+                        )}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          lineHeight: 1.55,
+                          opacity: 0.78,
+                          marginTop: 10,
+                        }}
+                      >
+                        {lpText(s.t, lang)}
+                      </div>
+                      <div style={{ flex: 1 }} />
+                      <div
+                        className="hz-workflow-step-panels"
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: 4,
+                          marginTop: 16,
+                        }}
+                      >
+                        {s.panels.map((p) => (
+                          <span
+                            key={p}
+                            className="hz-wf-chip"
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              fontFamily: "'JetBrains Mono', monospace",
+                              fontSize: 9.5,
+                              fontWeight: 700,
+                              letterSpacing: ".06em",
+                              textTransform: "uppercase",
+                              padding: "3px 6px",
+                              border: `1.5px solid ${HZ_INK}`,
+                              background: HZ_BG,
+                              color: HZ_INK,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {p}
+                          </span>
+                        ))}
+                      </div>
+                      {i < 3 && (
+                        <div
+                          className="hz-workflow-step-arrow"
+                          style={{
+                            position: "absolute",
+                            right: -14,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            width: 26,
+                            height: 26,
+                            background: HZ_BG,
+                            border: `2px solid ${HZ_INK}`,
+                            borderRadius: "50%",
+                            display: "grid",
+                            placeItems: "center",
+                            fontFamily: "'JetBrains Mono', monospace",
+                            fontSize: 14,
+                            fontWeight: 800,
+                            zIndex: 2,
+                          }}
+                        >
+                          →
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div style={{ marginTop: 18 }}>
+                <HZBar
+                  items={[
+                    { t: "NO SINGLE FLOW", k: true },
+                    { t: "PLOTTER", hl: workflowMode === "plotter" },
+                    { t: "PANTSER", hl: workflowMode === "pantser" },
+                    { t: "OR HYBRID" },
+                    { t: "↳ GRIMODEX :: FITS THE DRAFT" },
+                  ]}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* USE CASES */}
+        <section
+          data-hz-page
+          id="for"
+          className="hz-page hz-page-section"
+          style={{ padding: "100px 48px", color: HZ_INK }}
+        >
+          <div
+            className="hz-section-row"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "180px 1fr",
+              gap: 40,
+            }}
+          >
+            <HSectionMark tag="E / 05" kicker="FOR" />
+            <div>
+              <HReveal>
+                <h2
+                  className="hz-massive"
+                  style={{
+                    fontSize: 112,
+                    lineHeight: 0.92,
+                    fontWeight: 800,
+                    letterSpacing: -4,
+                    margin: "0 0 48px",
+                  }}
+                >
+                  WHY WRITE
+                  <br />
+                  <span className="hz-mark">HERE?</span>
+                </h2>
+              </HReveal>
+              <div style={{ border: `2px solid ${HZ_INK}` }}>
+                {advantageRows.map((u, i) => (
+                  <div
+                    key={u.en}
+                    className="hz-usecase-row"
+                    style={{
+                      borderBottom:
+                        i < advantageRows.length - 1
+                          ? `2px solid ${HZ_INK}`
+                          : "none",
+                      display: "grid",
+                      gridTemplateColumns: "70px 280px 1fr 110px",
+                      gap: 0,
+                      alignItems: "stretch",
+                    }}
+                  >
+                    <div
+                      className="hz-usecase-num"
+                      style={{
+                        borderRight: `2px solid ${HZ_INK}`,
+                        padding: "20px 14px",
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 22,
+                        fontWeight: 800,
+                        display: "flex",
+                        alignItems: "center",
+                      }}
+                    >
+                      0{i + 1}
+                    </div>
+                    <div
+                      className="hz-usecase-title"
+                      style={{
+                        borderRight: `2px solid ${HZ_INK}`,
+                        padding: "20px 18px",
+                      }}
+                    >
+                      <div
+                        className="hz-usecase-pain"
+                        style={{
+                          display: "flex",
+                          gap: 6,
+                          alignItems: "baseline",
+                          fontSize: 13,
+                          lineHeight: 1.45,
+                          color: "rgba(10,10,10,0.6)",
+                          marginBottom: 10,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontFamily: "'JetBrains Mono', monospace",
+                            fontSize: 11,
+                            opacity: 0.7,
+                          }}
+                        >
+                          ↳
+                        </span>
+                        <span>
+                          {lang === "en"
+                            ? `“${lpText(u.pain, lang)}”`
+                            : `「${lpText(u.pain, lang)}」`}
+                        </span>
+                      </div>
+                      <div
+                        className="hz-usecase-title-text"
+                        style={{
+                          fontSize: 22,
+                          fontWeight: 800,
+                          letterSpacing: -0.5,
+                          lineHeight: 1.12,
+                        }}
+                      >
+                        {lpText(u.title, lang)}
+                      </div>
+                      {lang === "ja" && (
+                        <div
+                          style={{
+                            fontFamily: "'JetBrains Mono', monospace",
+                            fontSize: 10,
+                            opacity: 0.6,
+                            textTransform: "uppercase",
+                            letterSpacing: ".06em",
+                            marginTop: 6,
+                          }}
+                        >
+                          {u.en}
                         </div>
                       )}
                     </div>
                     <div
+                      className="hz-usecase-body"
                       style={{
-                        display: "flex",
-                        alignItems: "baseline",
-                        gap: 10,
-                        marginTop: 10,
-                        flexWrap: "wrap",
+                        padding: "20px 18px",
+                        borderRight: `2px solid ${HZ_INK}`,
+                        fontSize: 14,
+                        lineHeight: 1.7,
                       }}
                     >
-                      <div
-                        className="hz-workflow-step-k"
-                        style={{
-                          fontFamily: "'JetBrains Mono', monospace",
-                          fontWeight: 800,
-                          fontSize: 32,
-                          letterSpacing: -1,
-                          lineHeight: 1,
-                        }}
-                      >
-                        {s.k}
-                      </div>
-                      <div
-                        style={{
-                          fontFamily: "'JetBrains Mono', monospace",
-                          fontSize: 11,
-                          opacity: 0.55,
-                          letterSpacing: ".04em",
-                        }}
-                      >
-                        / {s.jp}
-                      </div>
+                      {lpText(u.body, lang)}
                     </div>
                     <div
+                      className="hz-usecase-chip"
                       style={{
-                        fontSize: 13,
-                        lineHeight: 1.55,
-                        opacity: 0.78,
-                        marginTop: 10,
-                      }}
-                    >
-                      {s.t}
-                    </div>
-                    <div style={{ flex: 1 }} />
-                    <div
-                      className="hz-workflow-step-panels"
-                      style={{
+                        padding: "20px 14px",
                         display: "flex",
-                        flexWrap: "wrap",
-                        gap: 4,
-                        marginTop: 16,
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 6,
+                        background: i === 0 ? HZ_HL : HZ_BG,
                       }}
                     >
-                      {s.panels.map((p) => (
-                        <span
-                          key={p}
-                          className="hz-wf-chip"
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            fontFamily: "'JetBrains Mono', monospace",
-                            fontSize: 9.5,
-                            fontWeight: 700,
-                            letterSpacing: ".06em",
-                            textTransform: "uppercase",
-                            padding: "3px 6px",
-                            border: `1.5px solid ${HZ_INK}`,
-                            background: HZ_BG,
-                            color: HZ_INK,
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {p}
-                        </span>
-                      ))}
-                    </div>
-                    {i < 3 && (
                       <div
-                        className="hz-workflow-step-arrow"
                         style={{
-                          position: "absolute",
-                          right: -14,
-                          top: "50%",
-                          transform: "translateY(-50%)",
-                          width: 26,
-                          height: 26,
-                          background: HZ_BG,
-                          border: `2px solid ${HZ_INK}`,
-                          borderRadius: "50%",
-                          display: "grid",
-                          placeItems: "center",
                           fontFamily: "'JetBrains Mono', monospace",
-                          fontSize: 14,
-                          fontWeight: 800,
-                          zIndex: 2,
+                          fontSize: 9,
+                          opacity: 0.5,
+                          letterSpacing: ".08em",
+                          textTransform: "uppercase",
                         }}
                       >
-                        →
+                        {u.moveTag}
                       </div>
-                    )}
+                      <HChip>{u.chip}</HChip>
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
-            <div style={{ marginTop: 18 }}>
-              <HZBar
-                items={[
-                  { t: "NO SINGLE FLOW", k: true },
-                  { t: "PLOTTER", hl: workflowMode === "plotter" },
-                  { t: "PANTSER", hl: workflowMode === "pantser" },
-                  { t: "OR HYBRID" },
-                  { t: "↳ GRIMODEX :: FITS THE DRAFT" },
-                ]}
-              />
-            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* USE CASES */}
-      <section
-        data-hz-page
-        id="for"
-        className="hz-page hz-page-section"
-        style={{ padding: "100px 48px", color: HZ_INK }}
-      >
-        <div
-          className="hz-section-row"
-          style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 40 }}
+        {/* CTA — D's massive scale, G's brutalist buttons */}
+        <section
+          data-hz-page
+          id="download"
+          className="hz-page hz-cta-section"
+          style={{ padding: "120px 48px", color: HZ_INK, textAlign: "center" }}
         >
-          <HSectionMark tag="E / 05" kicker="FOR" />
-          <div>
-            <HReveal>
-              <h2
-                className="hz-massive"
-                style={{
-                  fontSize: 112,
-                  lineHeight: 0.92,
-                  fontWeight: 800,
-                  letterSpacing: -4,
-                  margin: "0 0 48px",
-                }}
-              >
-                WHY WRITE
-                <br />
-                <span className="hz-mark">HERE?</span>
-              </h2>
-            </HReveal>
-            <div style={{ border: `2px solid ${HZ_INK}` }}>
-              {advantageRows.map((u, i) => (
-                <div
-                  key={u.title}
-                  className="hz-usecase-row"
-                  style={{
-                    borderBottom:
-                      i < advantageRows.length - 1
-                        ? `2px solid ${HZ_INK}`
-                        : "none",
-                    display: "grid",
-                    gridTemplateColumns: "70px 280px 1fr 110px",
-                    gap: 0,
-                    alignItems: "stretch",
-                  }}
-                >
-                  <div
-                    className="hz-usecase-num"
-                    style={{
-                      borderRight: `2px solid ${HZ_INK}`,
-                      padding: "20px 14px",
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 22,
-                      fontWeight: 800,
-                      display: "flex",
-                      alignItems: "center",
-                    }}
-                  >
-                    0{i + 1}
-                  </div>
-                  <div
-                    className="hz-usecase-title"
-                    style={{
-                      borderRight: `2px solid ${HZ_INK}`,
-                      padding: "20px 18px",
-                    }}
-                  >
-                    <div
-                      className="hz-usecase-pain"
-                      style={{
-                        display: "flex",
-                        gap: 6,
-                        alignItems: "baseline",
-                        fontSize: 13,
-                        lineHeight: 1.45,
-                        color: "rgba(10,10,10,0.6)",
-                        marginBottom: 10,
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontFamily: "'JetBrains Mono', monospace",
-                          fontSize: 11,
-                          opacity: 0.7,
-                        }}
-                      >
-                        ↳
-                      </span>
-                      <span>「{u.pain}」</span>
-                    </div>
-                    <div
-                      className="hz-usecase-title-text"
-                      style={{
-                        fontSize: 22,
-                        fontWeight: 800,
-                        letterSpacing: -0.5,
-                        lineHeight: 1.12,
-                      }}
-                    >
-                      {u.title}
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize: 10,
-                        opacity: 0.6,
-                        textTransform: "uppercase",
-                        letterSpacing: ".06em",
-                        marginTop: 6,
-                      }}
-                    >
-                      {u.en}
-                    </div>
-                  </div>
-                  <div
-                    className="hz-usecase-body"
-                    style={{
-                      padding: "20px 18px",
-                      borderRight: `2px solid ${HZ_INK}`,
-                      fontSize: 14,
-                      lineHeight: 1.7,
-                    }}
-                  >
-                    {u.body}
-                  </div>
-                  <div
-                    className="hz-usecase-chip"
-                    style={{
-                      padding: "20px 14px",
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 6,
-                      background: i === 0 ? HZ_HL : HZ_BG,
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize: 9,
-                        opacity: 0.5,
-                        letterSpacing: ".08em",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {u.moveTag}
-                    </div>
-                    <HChip>{u.chip}</HChip>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* CTA — D's massive scale, G's brutalist buttons */}
-      <section
-        data-hz-page
-        id="download"
-        className="hz-page hz-cta-section"
-        style={{ padding: "120px 48px", color: HZ_INK, textAlign: "center" }}
-      >
-        <h2
-          className="hz-cta-massive"
-          style={{
-            fontSize: 220,
-            lineHeight: 0.86,
-            fontWeight: 800,
-            letterSpacing: -8,
-            margin: 0,
-          }}
-        >
-          WRITE
-          <br />
-          <span className="hz-mark" style={{ padding: "0 18px" }}>
-            DIFFERENTLY.
-          </span>
-        </h2>
-        <p
-          style={{
-            fontSize: 16,
-            opacity: 0.65,
-            marginTop: 28,
-            fontFamily: "'JetBrains Mono', monospace",
-            textTransform: "uppercase",
-            letterSpacing: ".08em",
-          }}
-        >
-          FREE (BETA) · LOCAL-FIRST · BRING YOUR OWN AI KEY
-        </p>
-        <div
-          style={{ display: "flex", justifyContent: "center", marginTop: 44 }}
-        >
-          <a
-            href="https://github.com/kazormia296/Grimodex/releases/latest"
-            className="hz-shadow"
+          <h2
+            className="hz-cta-massive"
             style={{
-              background: HZ_HL,
-              color: HZ_INK,
-              border: `2px solid ${HZ_INK}`,
-              padding: "22px 30px",
-              textAlign: "left",
-              cursor: "pointer",
-              display: "inline-flex",
-              flexDirection: "column",
-              gap: 5,
-              minWidth: 360,
-              textDecoration: "none",
+              fontSize: 220,
+              lineHeight: 0.86,
+              fontWeight: 800,
+              letterSpacing: -8,
+              margin: 0,
             }}
           >
-            <div
+            WRITE
+            <br />
+            <span className="hz-mark" style={{ padding: "0 18px" }}>
+              DIFFERENTLY.
+            </span>
+          </h2>
+          <p
+            style={{
+              fontSize: 16,
+              opacity: 0.65,
+              marginTop: 28,
+              fontFamily: "'JetBrains Mono', monospace",
+              textTransform: "uppercase",
+              letterSpacing: ".08em",
+            }}
+          >
+            FREE (BETA) · LOCAL-FIRST · BRING YOUR OWN AI KEY
+          </p>
+          <div
+            style={{ display: "flex", justifyContent: "center", marginTop: 44 }}
+          >
+            <a
+              href="https://github.com/kazormia296/Grimodex/releases/latest"
+              className="hz-shadow"
               style={{
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: 11,
-                textTransform: "uppercase",
-                letterSpacing: ".1em",
-                opacity: 0.65,
+                background: HZ_HL,
+                color: HZ_INK,
+                border: `2px solid ${HZ_INK}`,
+                padding: "22px 30px",
+                textAlign: "left",
+                cursor: "pointer",
+                display: "inline-flex",
+                flexDirection: "column",
+                gap: 5,
+                minWidth: 360,
+                textDecoration: "none",
               }}
             >
-              ↓ DOWNLOAD
-            </div>
-            <div style={{ fontWeight: 800, fontSize: 26, letterSpacing: -0.5 }}>
-              GitHub Releases
-            </div>
-            <div
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11,
+                  textTransform: "uppercase",
+                  letterSpacing: ".1em",
+                  opacity: 0.65,
+                }}
+              >
+                ↓ DOWNLOAD
+              </div>
+              <div
+                style={{ fontWeight: 800, fontSize: 26, letterSpacing: -0.5 }}
+              >
+                GitHub Releases
+              </div>
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 10,
+                  textTransform: "uppercase",
+                  opacity: 0.6,
+                }}
+              >
+                macOS / Windows / Linux
+              </div>
+            </a>
+          </div>
+
+          {/* OPEN BETA — Discord tester recruitment. The whole card links to
+              the Discord invite; the inner pill is a visual affordance, not a
+              nested anchor. */}
+          <div
+            style={{ display: "flex", justifyContent: "center", marginTop: 40 }}
+          >
+            <a
+              href="https://t.co/XFWKaSPfmu"
+              target="_blank"
+              rel="noreferrer"
+              className="hz-shadow"
               style={{
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: 10,
-                textTransform: "uppercase",
-                opacity: 0.6,
+                background: HZ_BG,
+                color: HZ_INK,
+                border: `2px solid ${HZ_INK}`,
+                padding: "24px 28px",
+                maxWidth: 760,
+                width: "100%",
+                textAlign: "left",
+                textDecoration: "none",
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: 24,
+                justifyContent: "space-between",
               }}
             >
-              macOS / Windows / Linux
-            </div>
-          </a>
-        </div>
-        <div style={{ marginTop: 80 }}>
-          <HZBar
-            items={[
-              { t: "GRIMODEX", k: true },
-              { t: "BETA" },
-              { t: "TAURI v2" },
-              {
-                t: "GITHUB ↗",
-                href: "https://github.com/kazormia296/Grimodex",
-              },
-              {
-                t: "WIKI ↗",
-                href: "https://github.com/kazormia296/Grimodex/wiki",
-              },
-              { t: "© 2026", hl: true },
-            ]}
-          />
-        </div>
-      </section>
-    </LPFrame>
+              <div style={{ flex: "1 1 340px", minWidth: 260 }}>
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 11,
+                    fontWeight: 800,
+                    textTransform: "uppercase",
+                    letterSpacing: ".1em",
+                    marginBottom: 12,
+                  }}
+                >
+                  <span
+                    style={{
+                      background: HZ_HL,
+                      padding: "3px 8px",
+                      border: `1.5px solid ${HZ_INK}`,
+                    }}
+                  >
+                    OPEN BETA
+                  </span>
+                  <span style={{ opacity: 0.6 }}>
+                    {lang === "en" ? "TESTERS WANTED" : "テスター募集"}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 22,
+                    fontWeight: 800,
+                    letterSpacing: -0.5,
+                    lineHeight: 1.2,
+                    marginBottom: 10,
+                  }}
+                >
+                  {lang === "en" ? (
+                    <>
+                      Report a bug, shape a feature —{" "}
+                      <span className="hz-mark" style={{ padding: "0 6px" }}>
+                        earn a 1.0 license.
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      バグ報告・機能提案で、
+                      <span className="hz-mark" style={{ padding: "0 6px" }}>
+                        1.0 ライセンスを進呈。
+                      </span>
+                    </>
+                  )}
+                </div>
+                <p
+                  style={{
+                    fontSize: 14,
+                    lineHeight: 1.7,
+                    margin: 0,
+                    opacity: 0.85,
+                  }}
+                >
+                  {lang === "en"
+                    ? "Grimodex is in open beta and looking for testers. Submit at least one reproducible bug report — or a feature proposal we adopt — during the beta, and we'll grant you a full 1.0 release license."
+                    : "Grimodex は現在オープンベータ中で、ベータテスターを募集しています。ベータ期間中に「再現可能なバグ報告」または「採用された機能提案」を 1 件以上してくださった方に、1.0 の製品版ライセンスを進呈します。"}
+                </p>
+              </div>
+              <span
+                style={{
+                  flex: "0 0 auto",
+                  background: HZ_INK,
+                  color: HZ_BG,
+                  border: `2px solid ${HZ_INK}`,
+                  padding: "16px 22px",
+                  display: "inline-flex",
+                  flexDirection: "column",
+                  gap: 4,
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 10,
+                    textTransform: "uppercase",
+                    letterSpacing: ".1em",
+                    opacity: 0.7,
+                  }}
+                >
+                  ↗ DISCORD
+                </span>
+                <span
+                  style={{
+                    fontWeight: 800,
+                    fontSize: 18,
+                    letterSpacing: -0.3,
+                  }}
+                >
+                  {lang === "en" ? "Join the Discord" : "Discord に参加"}
+                </span>
+              </span>
+            </a>
+          </div>
+
+          <div style={{ marginTop: 80 }}>
+            <HZBar
+              items={[
+                { t: "GRIMODEX", k: true },
+                { t: "BETA" },
+                { t: "TAURI v2" },
+                {
+                  t: "GITHUB ↗",
+                  href: "https://github.com/kazormia296/Grimodex",
+                },
+                {
+                  t: "WIKI ↗",
+                  href: "https://github.com/kazormia296/Grimodex/wiki",
+                },
+                { t: "DISCORD ↗", href: "https://t.co/XFWKaSPfmu" },
+                { t: "© 2026", hl: true },
+              ]}
+            />
+          </div>
+        </section>
+      </LPFrame>
+    </LPLangContext.Provider>
   );
 }
 window.LPVariantH = LPVariantH;
