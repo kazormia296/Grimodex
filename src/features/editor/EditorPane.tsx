@@ -45,6 +45,11 @@ import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { parseClipboardHtml } from "@/lib/clipboardAttribution";
+import {
+  pasteExternalText,
+  notePlainPasteKeyDown,
+  consumePlainPaste,
+} from "@/features/editor/markdownPaste";
 import { useInsertHighlight } from "@/features/editor/InsertHighlight";
 import { useGhostPreview } from "@/features/editor/useGhostPreview";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
@@ -494,6 +499,9 @@ export function EditorPane({
         handlePaste(view, event, slice) {
           const html = event.clipboardData?.getData("text/html");
           const plainText = event.clipboardData?.getData("text/plain") ?? "";
+          // 「書式設定なし」フラグは paste 種別に関わらず必ず消費する。
+          // (Case 1/2 で early-return しても arm が次の paste に漏れないように)
+          const wantPlain = consumePlainPaste();
 
           if (html) {
             // Case 1: Grimodex 固有コピー（Codex/Snippet/Chat パネル）
@@ -523,11 +531,33 @@ export function EditorPane({
             }
           }
 
-          // Case 3: 外部テキスト貼り付け
+          // Case 3: 外部テキスト貼り付け — Markdown を変換して挿入する
+          // (通常 = レンダリング, Ctrl/Cmd+Shift+V = Markdown 記法を除去)。
+          // いずれも source:"unknown" 帰属を付与する。
           if (plainText) {
-            insertFromPaste([{ text: plainText, source: "unknown" }]);
+            // この view を所有するペインのエディタ (editorRef) を対象にする。
+            // global store ref は primary group しかセットされず、split / Codex
+            // wide-mode の副ペインに貼ると挿入先・focus が誤って primary に飛ぶ。
+            const ed = editorRef.current;
+            if (ed) {
+              pasteExternalText(
+                ed,
+                plainText,
+                (text) => insertFromPaste([{ text, source: "unknown" }]),
+                wantPlain,
+              );
+            } else {
+              insertFromPaste([{ text: plainText, source: "unknown" }]);
+            }
             return true;
           }
+          return false;
+        },
+        handleKeyDown(_view, event) {
+          // Ctrl/Cmd+Shift+V を「書式設定なし」ペーストとして arm する。
+          // native paste は止めず、handlePaste 側で Markdown 記法を除去する。
+          // 他キーでは arm を解除する (paste が来なかった場合の stale 防止)。
+          notePlainPasteKeyDown(event);
           return false;
         },
         handleDrop(view, event) {

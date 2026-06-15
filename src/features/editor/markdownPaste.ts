@@ -1,0 +1,192 @@
+import type { Editor } from "@tiptap/core";
+import { DOMParser as PMDOMParser, Slice } from "@tiptap/pm/model";
+
+/**
+ * 貼り付けた Markdown を本文に取り込むためのユーティリティ。
+ *
+ * - 通常ペースト (Ctrl/Cmd+V): `insertMarkdownAsUnknown` で Markdown を
+ *   リッチノードに変換し、挿入範囲に `source:"unknown"` 帰属を付与する。
+ * - 書式設定なしペースト (Ctrl/Cmd+Shift+V): `markdownToPlainText` で
+ *   Markdown 記法を除去したプレーンテキストにしてから挿入する。
+ *
+ * 変換は tiptap-markdown の `editor.storage.markdown.parser` を正本に使う
+ * (clipboardTextParser と同じ inline 解釈)。これにより手打ち InputRules と
+ * 同じレンダリング結果が貼り付けでも得られる。
+ */
+
+// tiptap-markdown の elementFromString を踏襲: <body> でラップして DOM 化する。
+function elementFromString(html: string): HTMLElement {
+  return new window.DOMParser().parseFromString(
+    `<body>${html}</body>`,
+    "text/html",
+  ).body;
+}
+
+interface MarkdownStorage {
+  parser?: { parse: (content: string, opts?: { inline?: boolean }) => string };
+}
+
+function getMarkdownParser(editor: Editor) {
+  const storage = (
+    editor.storage as unknown as Record<string, unknown> | undefined
+  )?.["markdown"] as MarkdownStorage | undefined;
+  return storage?.parser ?? null;
+}
+
+/**
+ * Markdown テキストを ProseMirror Slice に変換する。
+ * tiptap-markdown の clipboardTextParser と同じ `inline:true` 解釈を使う
+ * (単一段落は unwrap され、見出し/リスト等のブロックは保持される)。
+ */
+export function parseMarkdownToSlice(
+  editor: Editor,
+  text: string,
+): Slice | null {
+  const parser = getMarkdownParser(editor);
+  if (!parser) return null;
+  try {
+    const html = parser.parse(text, { inline: true });
+    return PMDOMParser.fromSchema(editor.schema).parseSlice(
+      elementFromString(html),
+      { preserveWhitespace: true, context: editor.state.selection.$from },
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Markdown 記法を除去したプレーンテキストを返す (書式設定なしペースト用)。
+ * 一旦 Markdown を解析して DOM/ノードにし、ブロック区切りを改行にした
+ * テキストを取り出すことで、`#` `*` `-` 等のマーカーを確実に落とす。
+ */
+export function markdownToPlainText(editor: Editor, text: string): string {
+  const parser = getMarkdownParser(editor);
+  if (!parser) return text;
+  try {
+    const html = parser.parse(text, { inline: false });
+    const node = PMDOMParser.fromSchema(editor.schema).parse(
+      elementFromString(html),
+    );
+    // ブロック境界は改行に、hardBreak (<br>) も改行に落とす
+    // (leafText="" のままだと "行1<br>行2" が "行1行2" に潰れる)。
+    return node.textBetween(0, node.content.size, "\n", (leaf) =>
+      leaf.type.name === "hardBreak" ? "\n" : "",
+    );
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * Markdown を変換して現在の選択位置に挿入し、挿入範囲に `source:"unknown"`
+ * 帰属マークを付与する。`programmaticInsert` メタを立てることで AiEditedPlugin
+ * による帰属マーク除去を回避する (provenance 契約の維持)。
+ * 変換できなければ false を返す (呼び出し側が生テキスト挿入にフォールバック)。
+ */
+export function insertMarkdownAsUnknown(editor: Editor, text: string): boolean {
+  const slice = parseMarkdownToSlice(editor, text);
+  if (!slice || slice.size === 0) return false;
+
+  const now = new Date().toISOString();
+  const from = editor.state.selection.from;
+  const authorshipType = editor.schema.marks["authorship"];
+
+  return editor
+    .chain()
+    .focus()
+    .command(({ tr }) => {
+      tr.setMeta("programmaticInsert", true);
+      tr.replaceSelection(slice);
+      // slice が現在のコンテキストに配置不能で no-op だった場合は false を返し、
+      // 呼び出し側 (pasteExternalText) の生テキスト fallback に委ねる。
+      if (!tr.docChanged) return false;
+      const insertedTo = tr.selection.from;
+      if (authorshipType && insertedTo > from) {
+        tr.addMark(
+          from,
+          insertedTo,
+          authorshipType.create({
+            source: "unknown",
+            timestamp: now,
+            originalLength: insertedTo - from,
+            model: null,
+            chatMessageId: null,
+          }),
+        );
+      }
+      return true;
+    })
+    .run();
+}
+
+// --- 書式設定なしペースト (Ctrl/Cmd+Shift+V) の検出フラグ ---
+//
+// クリップボード API の同期読み取りは権限・user-gesture 制約があるため、
+// keydown で「次の paste は書式なし」と arm し、native paste イベントが
+// 配信するクリップボードデータを handlePaste 側で strip して使う。
+
+let plainPasteArmed = false;
+
+/** keydown イベントが Mod(+Ctrl/Cmd)+Shift+V かどうか。 */
+export function isPlainPasteCombo(event: KeyboardEvent): boolean {
+  const isV = event.key === "v" || event.key === "V";
+  return (
+    isV &&
+    event.shiftKey === true &&
+    (event.metaKey === true || event.ctrlKey === true)
+  );
+}
+
+/** 次の paste を「書式設定なし」として扱うよう arm する。 */
+export function armPlainPaste(): void {
+  plainPasteArmed = true;
+}
+
+/** arm 済みなら true を返し、フラグを消費 (リセット) する。 */
+export function consumePlainPaste(): boolean {
+  const armed = plainPasteArmed;
+  plainPasteArmed = false;
+  return armed;
+}
+
+/**
+ * keydown を受けて書式なしペーストの arm 状態を更新する。
+ * - Mod+Shift+V なら arm。
+ * - それ以外のキーなら arm を解除する (paste が来なかった場合の stale 解除)。
+ *
+ * タイマーを使わずキーイベントだけで解除するため、直後の通常 Ctrl+V でも
+ * その keydown 列 (modifier/v) が stale flag を確実に消す。
+ */
+export function notePlainPasteKeyDown(event: KeyboardEvent): void {
+  if (isPlainPasteCombo(event)) {
+    plainPasteArmed = true;
+  } else {
+    plainPasteArmed = false;
+  }
+}
+
+/**
+ * 外部プレーンテキスト貼り付け (handlePaste Case 3) の分岐。
+ * - `plain` が true (書式設定なし) なら Markdown 記法を除去して `insertRaw`。
+ * - 通常は Markdown を変換して unknown 帰属で挿入する。
+ * - 変換できなければ生テキストで `insertRaw` にフォールバック。
+ *
+ * `plain` フラグの消費 (consumePlainPaste) は呼び出し側 (handlePaste) が
+ * paste 種別に関わらず必ず行う。ここはフラグの値だけを受け取る純関数とし、
+ * arm が次の paste に漏れないようにする。
+ * `insertRaw` は呼び出し側が持つ生テキスト挿入 (source:"unknown") を渡す。
+ */
+export function pasteExternalText(
+  editor: Editor,
+  plainText: string,
+  insertRaw: (text: string) => void,
+  plain: boolean,
+): void {
+  if (plain) {
+    insertRaw(markdownToPlainText(editor, plainText));
+    return;
+  }
+  if (insertMarkdownAsUnknown(editor, plainText)) return;
+  insertRaw(plainText);
+}
