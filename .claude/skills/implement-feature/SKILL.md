@@ -20,6 +20,10 @@ argument-hint: [feature-description]
 2. `superpowers:writing-plans` — 多段タスクなら計画を書く
 3. `superpowers:test-driven-development` — 実装前にテストを書く（test-first / red→green）
 4. `superpowers:verification-before-completion` — 「完了」と言う前に検証する
+5. **実装後は敵対的レビューで壊しにいく** — `/review-code`、または
+   `superpowers:requesting-code-review` でレビュアー subagent を派遣する場合は
+   vanilla の `code-reviewer.md` ではなく `review-code/adversarial-reviewer.md`
+   を使う。Critical→Important の「壊し方」を潰してから完了とする。
 
 ## このプロジェクト固有で必ず守ること
 
