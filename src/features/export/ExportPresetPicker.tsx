@@ -1,19 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Save, Trash2, AlertTriangle } from "lucide-react";
-import type { ExportPresetId, ExportSettings } from "./types";
+import { Save, Trash2, AlertTriangle, ChevronRight } from "lucide-react";
+import type { ExportSettings } from "./types";
+import { DEFAULT_EXPORT_SETTINGS } from "./types";
 import {
-  EXPORT_PRESETS,
-  applyExportPreset,
   detectExportPreset,
+  settingsMatch,
   validateUserPresetName,
 } from "./exportPresets";
-import {
-  getPresetGroups,
-  type PresetGroup,
-  type PresetGroups,
-} from "./exportPresetCatalog";
+import { getSiteEntry } from "./rubyProfiles";
+import { ExportSitePickerDialog } from "./ExportSitePickerDialog";
 import {
   addUserPreset,
   findUserPreset,
@@ -21,52 +18,6 @@ import {
   type UserExportPreset,
 } from "./exportUserPresets";
 import type { RubyLengthWarning } from "./exportValidation";
-import { useSettingsStore } from "@/features/settings/settingsStore";
-
-// ────────────────────────────────────────────────────────────────────
-// プリセット Select の選択肢構築
-// ────────────────────────────────────────────────────────────────────
-
-type SelectValue = `preset:${ExportPresetId}` | `user:${string}`;
-
-interface OptGroupDesc {
-  /** optgroup ラベルの i18n キー */
-  labelKey: string;
-  options: { value: SelectValue; label: string }[];
-}
-
-/**
- * catalog の言語別グルーピングにユーザープリセットを足して、
- * 表示順どおりの optgroup 記述子配列に変換する。custom はグループ外なので含めない。
- */
-function buildOptGroups(
-  groups: PresetGroups,
-  userPresets: UserExportPreset[],
-  t: (key: string) => string,
-): OptGroupDesc[] {
-  const fromPresetGroup = (g: PresetGroup): OptGroupDesc => ({
-    labelKey: g.labelKey,
-    options: g.ids.map((id) => ({
-      value: `preset:${id}` as SelectValue,
-      label: t(EXPORT_PRESETS[id].labelKey),
-    })),
-  });
-  const result: OptGroupDesc[] = [
-    fromPresetGroup(groups.primary),
-    fromPresetGroup(groups.generic),
-    fromPresetGroup(groups.secondary),
-  ];
-  if (userPresets.length > 0) {
-    result.push({
-      labelKey: "export.settings.preset.userPresetsGroup",
-      options: userPresets.map((up) => ({
-        value: `user:${up.id}` as SelectValue,
-        label: up.name,
-      })),
-    });
-  }
-  return result;
-}
 
 // ────────────────────────────────────────────────────────────────────
 // 保存ダイアログ
@@ -247,60 +198,48 @@ export function ExportPresetPicker({
 }: Props) {
   const { t } = useTranslation();
   const [saveOpen, setSaveOpen] = useState(false);
-  // 執筆言語に応じてプリセットの並びを変える（書体・行間等と同じ projectLanguage 基準）。
-  // ExportDialog の projectLanguage state と二重管理しないよう store から直接取得する。
-  const projectLanguage = useSettingsStore((s) => s.projectLanguage);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
-  // 現在の Select 値: ユーザープリセットなら "user:<id>"、ビルトインなら "preset:<id>"
-  const currentValue = useMemo<SelectValue>(() => {
-    // ユーザープリセットの settings と完全一致するものがあれば優先表示
-    // （exportPresetId は常に "custom" として保存しているため、構造比較）
-    const userMatch = userPresets.find((up) =>
-      settingsStructurallyEqual(up.settings, settings),
-    );
-    if (userMatch) return `user:${userMatch.id}` as SelectValue;
-    const detected = detectExportPreset(settings, settings.exportPresetId);
-    return `preset:${detected}` as SelectValue;
-  }, [settings, userPresets]);
-
-  const optGroups = useMemo(
-    () =>
-      buildOptGroups(
-        getPresetGroups(projectLanguage, settings.exportPresetId),
-        userPresets,
-        t,
-      ),
-    [projectLanguage, settings.exportPresetId, userPresets, t],
+  // 現在選択中のユーザープリセット（exportPresetId は常に "custom" で保存するため構造比較）
+  const currentUserPreset = useMemo(
+    () => userPresets.find((up) => settingsMatch(up.settings, settings)),
+    [userPresets, settings],
   );
 
-  const builtinId =
+  // 注記・警告バナーは「選択中プリセット」(settings.exportPresetId) に紐づける。
+  // サブオプション（なろう傍点・pixiv [newpage]）切替時は exportPresetId は維持されるが
+  // detect は custom を返す。警告の rubyLimit 出所は exportPresetId 側なので、ラベルも
+  // そちらに合わせないと siteLabel が空になり "の文字数上限を超えています" と崩れる。
+  const selectedEntry =
     settings.exportPresetId !== "custom"
-      ? (settings.exportPresetId as Exclude<ExportPresetId, "custom">)
+      ? getSiteEntry(settings.exportPresetId)
       : null;
-  const builtinDef = builtinId ? EXPORT_PRESETS[builtinId] : null;
-  const siteLabel = builtinDef ? t(builtinDef.labelKey) : "";
+  const selectedLabel = selectedEntry ? t(selectedEntry.labelKey) : "";
 
-  function handleSelectChange(value: SelectValue) {
-    if (value.startsWith("user:")) {
-      const id = value.slice(5);
-      const found = findUserPreset(userPresets, id);
-      if (found) {
-        onChange({ ...found.settings });
-      }
-      return;
-    }
-    const presetId = value.slice("preset:".length) as ExportPresetId;
-    onChange(applyExportPreset(presetId, settings));
-  }
+  // トリガーボタンの表示は detect ベース（手動変更で「カスタム」を表示する）。
+  const detectedSiteId = currentUserPreset
+    ? ("custom" as const)
+    : detectExportPreset(settings, settings.exportPresetId);
+  const detectedEntry =
+    detectedSiteId !== "custom" ? getSiteEntry(detectedSiteId) : null;
+
+  const triggerLabel = currentUserPreset
+    ? currentUserPreset.name
+    : detectedEntry
+      ? t("export.settings.sitePicker.trigger", {
+          name: t(detectedEntry.labelKey),
+        })
+      : settingsMatch(settings, DEFAULT_EXPORT_SETTINGS)
+        ? t("export.settings.sitePicker.triggerEmpty")
+        : t("export.settings.preset.custom");
 
   function handleSavePreset(name: string) {
     onUserPresetsChange(addUserPreset(userPresets, name, settings));
   }
 
   function handleDeleteCurrentUserPreset() {
-    if (!currentValue.startsWith("user:")) return;
-    const id = currentValue.slice(5);
-    const found = findUserPreset(userPresets, id);
+    if (!currentUserPreset) return;
+    const found = findUserPreset(userPresets, currentUserPreset.id);
     if (!found) return;
     if (
       !window.confirm(
@@ -308,10 +247,8 @@ export function ExportPresetPicker({
       )
     )
       return;
-    onUserPresetsChange(removeUserPreset(userPresets, id));
+    onUserPresetsChange(removeUserPreset(userPresets, currentUserPreset.id));
   }
-
-  const isUserPresetSelected = currentValue.startsWith("user:");
 
   return (
     <div className="border-b border-border bg-muted/20 px-3 py-3">
@@ -320,7 +257,7 @@ export function ExportPresetPicker({
           {t("export.settings.preset.section")}
         </label>
         <div className="flex items-center gap-1">
-          {isUserPresetSelected && (
+          {currentUserPreset && (
             <button
               type="button"
               onClick={handleDeleteCurrentUserPreset}
@@ -342,31 +279,19 @@ export function ExportPresetPicker({
         </div>
       </div>
 
-      <select
-        value={currentValue}
-        onChange={(e) => handleSelectChange(e.target.value as SelectValue)}
-        className="w-full rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+      <button
+        type="button"
+        onClick={() => setPickerOpen(true)}
+        className="flex w-full items-center justify-between rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground hover:bg-accent"
       >
-        <option value="preset:custom">
-          {t("export.settings.preset.custom")}
-        </option>
-        {optGroups.map((g) =>
-          g.options.length > 0 ? (
-            <optgroup key={g.labelKey} label={t(g.labelKey)}>
-              {g.options.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </optgroup>
-          ) : null,
-        )}
-      </select>
+        <span className="truncate">{triggerLabel}</span>
+        <ChevronRight className="ml-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      </button>
 
       {/* 注記 */}
-      {builtinDef?.descriptionKey && (
+      {selectedEntry?.noteKey && (
         <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
-          {t(builtinDef.descriptionKey)}
+          {t(selectedEntry.noteKey)}
         </p>
       )}
 
@@ -374,7 +299,15 @@ export function ExportPresetPicker({
       <PresetSubOptions settings={settings} onChange={onChange} />
 
       {/* 警告バナー */}
-      <WarningBanner warnings={warnings} siteLabel={siteLabel} />
+      <WarningBanner warnings={warnings} siteLabel={selectedLabel} />
+
+      <ExportSitePickerDialog
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        settings={settings}
+        onChange={onChange}
+        userPresets={userPresets}
+      />
 
       <SavePresetDialog
         open={saveOpen}
@@ -439,34 +372,4 @@ function PresetSubOptions({
   }
 
   return null;
-}
-
-// ────────────────────────────────────────────────────────────────────
-// 構造比較（ユーザープリセット選択検出用）
-// ────────────────────────────────────────────────────────────────────
-
-const COMPARED_FIELDS: (keyof ExportSettings)[] = [
-  "format",
-  "folderHeading",
-  "folderHeadingStyle",
-  "folderHeadingFormat",
-  "sceneDivider",
-  "sceneDividerCustom",
-  "sceneTitle",
-  "rubyStyle",
-  "emphasisDotsStyle",
-  "sceneBreakStyle",
-  "sceneBreakCustom",
-  "pixivChapterNewpage",
-  "narouEmphasisMode",
-];
-
-function settingsStructurallyEqual(
-  a: ExportSettings,
-  b: ExportSettings,
-): boolean {
-  for (const k of COMPARED_FIELDS) {
-    if (a[k] !== b[k]) return false;
-  }
-  return true;
 }

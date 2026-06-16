@@ -58,6 +58,7 @@ export type SceneBreakStyle = "asterisks" | "hr" | "blank" | "custom";
 /** 投稿サイト別ビルトインプリセット ID */
 export type ExportPresetId =
   | "custom"
+  // ── jp-double-angle 系統 ──
   | "narou"
   | "kakuyomu"
   | "alphapolis"
@@ -65,9 +66,22 @@ export type ExportPresetId =
   | "hameln"
   | "novelup"
   | "novelism"
+  | "solispia"
+  | "estar"
+  | "aipen"
+  | "sutekibungei"
+  | "caita"
+  | "noveland"
+  // ── jp-ruby-emphasis 系統 ──
+  | "noveldays"
+  | "noichigo"
+  | "maho"
+  // ── 単独系統 ──
   | "aozora"
+  | "monogatary"
   | "generic-md"
   | "word-html"
+  // ── 英語圏向け ──
   | "web-fiction"
   | "ao3";
 

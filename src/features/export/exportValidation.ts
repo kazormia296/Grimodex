@@ -6,7 +6,7 @@
  */
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { ExportPresetId } from "./types";
-import { EXPORT_PRESETS } from "./exportPresets";
+import { getSiteRubyLimit } from "./rubyProfiles";
 
 export interface RubyLengthWarning {
   sceneId: string;
@@ -61,9 +61,9 @@ export function validateExportRubyLengths(
 ): RubyLengthWarning[] {
   const { nodes, contentMap, checkedIds, presetId } = input;
   if (presetId === "custom") return [];
-  const preset = EXPORT_PRESETS[presetId];
-  if (!preset || !preset.rubyLimit) return [];
-  const { baseMax, rubyMax } = preset.rubyLimit;
+  const rubyLimit = getSiteRubyLimit(presetId);
+  if (!rubyLimit) return [];
+  const { baseMax, rubyMax } = rubyLimit;
 
   const warnings: RubyLengthWarning[] = [];
   const sceneById = new Map(nodes.map((n) => [n.id, n]));
