@@ -85,6 +85,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.targetCharCount": "project",
   "editor.wordBreak": "project",
   "editor.lineBreak": "project",
+  "editor.textAutospace": "project",
   "editor.paragraphIndent": "project",
   "editor.verticalMode": "project",
   // Display — user preference (global)
@@ -198,6 +199,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.disableAllAnimations": "false",
   "editor.wordBreak": "normal",
   "editor.lineBreak": "strict",
+  // 和欧間スペーシング (CSS text-autospace)。WebKit のデフォルトは
+  // no-autospace なので、和欧間アキを効かせるには normal を明示する必要がある
+  // （normal は仕様本来の既定値で、CJK↔英数字に四分アキ相当を自動挿入）。
+  "editor.textAutospace": "normal",
   "editor.focusModeHideBeats": "false",
   "editor.sceneMetaPanelOpen": "true",
   "editor.sceneMetaPanelWidth": "20",
