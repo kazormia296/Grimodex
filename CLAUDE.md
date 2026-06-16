@@ -50,6 +50,16 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 - AIチャット: シーンごとに独立した会話履歴を保持
 - 帰属追跡: テキスト挿入時にsource metadata（human/ai/unknown）を記録
 
+## Git 運用
+
+- **branch-first 運用**（2026-06-16 に master 直運用を廃止）。master へ直接 commit しない。
+  作業は必ずブランチ（`fix/` `feat/` `chore/` など）を切ってから commit する。
+  harness 既定の「If on default branch, branch first」をそのまま適用する。
+- push は branch + PR。`master` への直 push は `.claude/hooks/block-push-to-main.sh` がハードブロック済み。
+- `git add` は `-A` を避け、変更ファイルを明示パスで個別に add する。
+- 合成 git コマンド（`git reset --hard` を含む）は権限ダイアログで拒否されやすい。単純コマンドに分割する。
+- リリース（/bump-version）・ライセンス更新（/update-licenses）も branch + PR で通す。
+
 ## スキル発火条件
 
 | トリガーワード                                 | 発動スキル         | 動作             |

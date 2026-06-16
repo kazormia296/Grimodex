@@ -3,7 +3,7 @@ name: update-licenses
 description: >
   THIRD_PARTY_LICENSES.md を再生成して依存・同梱アセットの最新状態に揃える。
   scripts/generate-licenses.ts を正本に root + public/ を生成し、新規バンドル
-  アセット(ONNX モデル/独自フォント/画像)の収録と master 直 commit まで行う。
+  アセット(ONNX モデル/独自フォント/画像)の収録と branch + PR での commit まで行う。
   Use when: 「ThirdPartyLicense 更新」「サードパーティライセンス更新」
   「ライセンス一覧を再生成」「third party license を更新」と言われたとき。
 allowed-tools: Read, Edit, Grep, Bash, WebFetch
@@ -67,16 +67,17 @@ allowed-tools: Read, Edit, Grep, Bash, WebFetch
    ```
    - **期待: 純加算（追加のみ・削除0）**。削除が出るのは依存が実際に version bump した時だけ。
      `## ` / `### ` の見出しが消えていたら何かを取りこぼしている（調査する）。
-5. **コミット**（運用: master 直・独断でブランチを切らない）:
-   - `git log origin/master..HEAD` と `git status` を確認。
+5. **ブランチを切ってコミット**（master へ直接 commit しない）:
+   - `git switch -c chore/update-licenses`（既に作業ブランチ上ならそのまま使ってよい）。
+   - `git status` を確認。
    - **作業ツリーに無関係な変更が混ざっていることがある**。`git add -A` は使わず、
      ライセンス系ファイルだけを**明示パスで個別に** add する
      （`THIRD_PARTY_LICENSES.md` / `public/THIRD_PARTY_LICENSES.md` /
      アセット追加した場合のみ `scripts/generate-licenses.ts`）。
    - メッセージ例: `chore(licenses): THIRD_PARTY_LICENSES を再生成 (<追加物> を収録)`
    - 末尾に Co-Authored-By trailer を付ける。
-6. **報告して push 前に確認**: 未 push（先行コミット多数の可能性）であることを伝え、
-   push するかユーザーに確認する。独断で push しない。
+6. **push + PR**（push 前にユーザー確認・独断で push しない）:
+   `git push origin chore/update-licenses` → `gh pr create`。CI green を確認してマージする。
 
 ## 罠（過去に踏んだもの）
 
