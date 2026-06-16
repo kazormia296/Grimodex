@@ -508,8 +508,8 @@ function gatherAssetLicenses(): LicenseEntry[] {
       licenseText: TOARU_EKI_SIGN_LICENSE_TEXT,
     },
     {
-      // 英語 UI 時の Codex 名称欄の表示用フォント (Toaru Eki Sign の Latin 版)。
-      // src/assets/fonts/texgyreheros-regular.otf として同梱し、index.css の
+      // 英語プロジェクト時の Codex 名称欄の表示用フォント (Toaru Eki Sign の Latin 版)。
+      // Bold ウェイト src/assets/fonts/texgyreheros-bold.otf を同梱し、index.css の
       // @font-face ("TeX Gyre Heros") から codexNameFont.ts が英語時のみ参照する。
       // GUST Font License (GFL) — LPPL 1.3c のインスタンスで、同梱・再配布・改変が
       // 許諾されている (GPL ではない)。URW Nimbus Sans L ベースの Helvetica 代替。

@@ -11,12 +11,13 @@
 }
 
 /* English counterpart of the Codex name display font: a Helvetica-style face
-   (URW Nimbus Sans / TeX Gyre Heros) that keeps the public-signage aesthetic
-   for Latin text. Selected at runtime by codexNameFont.ts. GUST Font License. */
+   (URW Nimbus Sans / TeX Gyre Heros), shipped in Bold to match the display
+   weight the name field uses for Latin text. Selected at runtime by
+   codexNameFont.ts. GUST Font License. */
 @font-face {
   font-family: "TeX Gyre Heros";
-  src: url("./assets/fonts/texgyreheros-regular.otf") format("opentype");
-  font-weight: normal;
+  src: url("./assets/fonts/texgyreheros-bold.otf") format("opentype");
+  font-weight: 700;
   font-style: normal;
   font-display: swap;
 }
