@@ -89,8 +89,12 @@ export function expandForArm(
 /**
  * contextBuilder の relation ブロック描画を模した payload テキスト。
  * label-only は名前＋「経由」行のみ、legacy は「概要」行（生 summary）も足す。
+ * ライブ harness (relationInjectionEval.live.test.ts) からも同じ描画を使う。
  */
-function renderRelationPayload(arm: ArmId, injected: CodexContext[]): string {
+export function renderRelationPayload(
+  arm: ArmId,
+  injected: CodexContext[],
+): string {
   const lines: string[] = [];
   for (const e of injected) {
     lines.push(`- **${e.name}** (${e.type})`);
