@@ -202,3 +202,37 @@ export function buildEvalCorpus(): RelationInjectionCorpus {
     seedEntryIds: ["alice"],
   };
 }
+
+/**
+ * benefit シナリオ用コーパス（phase 無し）。
+ *
+ * bob はアリスの「従者（家臣）」だが**シーン本文には主従が書かれていない**。
+ * しかも見た目の手がかりは逆（アリス＝旅の若者／ボブ＝歴戦の騎士）なので、
+ * relation を注入しない off は「アリスがボブに従う」と取り違えやすい。
+ * label-only は「経由: from アリス via 従者」で主従の向きを知る。
+ * → relation 注入の benefit（関係がシーン外にしか無い時の価値）を判別する。
+ */
+export function buildBenefitCorpus(): RelationInjectionCorpus {
+  const nodes = [mkScene("b1", "a0")];
+  const entries = [
+    mkEntry({ id: "alice", name: "アリス", summary: "アリスは旅をする若者。" }),
+    mkEntry({ id: "bob", name: "ボブ", summary: "ボブは歴戦の騎士。" }),
+  ];
+  const relations = [
+    mkRelation({
+      id: "rb1",
+      fromCodexId: "alice",
+      toCodexId: "bob",
+      relationType: "servant",
+      label: "従者",
+    }),
+  ];
+  return {
+    nodes,
+    entries,
+    relations,
+    phasesByEntry: new Map(),
+    targetSceneId: "b1",
+    seedEntryIds: ["alice"],
+  };
+}
