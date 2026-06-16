@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   buildSystemPrompt,
   trimToFit,
+  trimL3Text,
   trimL4Text,
+  trimL5Text,
   countTokens,
   sanitizeSceneContent,
   allocateLayerBudgets,
@@ -677,6 +679,61 @@ describe("contextBuilder", () => {
       const result = trimToFit(layers, 5);
       // With budget=5, multiple layers should be trimmed
       expect(result.trimmedLayers.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("trimL3Text — astral 文字のサロゲート保護 (#2)", () => {
+    // U+20000 CJK 統合漢字拡張B（1 文字 = UTF-16 で 2 コードユニット）。
+    // split("") はこれをサロゲート境界で割って壊すが Array.from は割らない。
+    const ASTRAL = "𠀀";
+    const HEADER = "### シーン本文\n";
+
+    function hasLoneSurrogate(s: string): boolean {
+      return /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(
+        s,
+      );
+    }
+
+    it("どの予算で切っても lone surrogate / U+FFFD を生まない", () => {
+      const text = HEADER + ASTRAL.repeat(200);
+      const full = countTokens(text);
+      for (let target = 2; target < full; target += 1) {
+        const trimmed = trimL3Text(text, target);
+        expect(hasLoneSurrogate(trimmed)).toBe(false);
+        expect(trimmed.includes("�")).toBe(false);
+        // ヘッダー以降の本文は完全な astral 文字のみで構成される
+        const body = trimmed.slice(HEADER.length);
+        expect([...body].every((ch) => ch === ASTRAL)).toBe(true);
+      }
+    });
+  });
+
+  describe("trimL5Text — graceful trim (#3)", () => {
+    const HEADER = "\n## これまでの会話の要約\n";
+
+    it("古い要約から削り直近を残す（全削除しない）", () => {
+      const oldS = "古い要約: " + "あ".repeat(200);
+      const midS = "中間要約: " + "い".repeat(200);
+      const recentS = "直近要約: 重要な最新の文脈";
+      const text = HEADER + [oldS, midS, recentS].join("\n\n");
+      // recent だけがちょうど収まる予算
+      const target = countTokens(HEADER + recentS);
+
+      const trimmed = trimL5Text(text, target);
+      expect(trimmed).not.toBe(""); // 一発全削除しない
+      expect(trimmed).toContain("直近要約"); // 直近は残る
+      expect(trimmed).not.toContain("古い要約"); // 古いものから落ちる
+      expect(countTokens(trimmed)).toBeLessThanOrEqual(target);
+    });
+
+    it("単一要約が予算を超える場合は最終手段として空にする", () => {
+      const text = HEADER + "巨大要約: " + "う".repeat(500);
+      expect(trimL5Text(text, 5)).toBe("");
+    });
+
+    it("予算内ならそのまま返す", () => {
+      const text = HEADER + "短い要約";
+      expect(trimL5Text(text, 100_000)).toBe(text);
     });
   });
 
