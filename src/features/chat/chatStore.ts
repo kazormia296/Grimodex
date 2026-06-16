@@ -378,12 +378,17 @@ async function enrichWithCustomDetails<T extends CodexContext>(
   });
 }
 
-// Helper: compute childrenContext for pinned/G21 entries based on childrenBudget
+// Helper: compute childrenContext for pinned/G21 entries based on childrenBudget.
+// resolvedById を渡すと子孫 summary を phase 解決済みで注入する（Phase Cb）。
 function buildChildrenCtxForEntry(
   entry: CodexEntry,
   allEntries: CodexEntry[],
   l4Budget: number,
   excludeIds?: Set<string>,
+  resolvedById?: ReadonlyMap<
+    string,
+    { summary: string | null; content: string }
+  >,
 ): string | undefined {
   const preset = entry.childrenBudget ?? "compact";
   if (preset === "none") return undefined;
@@ -391,7 +396,7 @@ function buildChildrenCtxForEntry(
   const descendants = getDescendantsBFS(entry.id, allEntries).filter(
     (d) => !excludeIds?.has(d.id),
   );
-  return buildChildrenContext(descendants, budget) || undefined;
+  return buildChildrenContext(descendants, budget, resolvedById) || undefined;
 }
 
 interface ChatState {
@@ -1050,11 +1055,20 @@ export async function buildCodexScopeBlocks(opts: {
     ? phases.find((p) => p.id === lastPhaseId)
     : undefined;
 
+  // Phase Cb: 子孫 summary も seed と同じ基準（focus は applyAllPhases）で
+  // phase 解決してから注入する。生注入だと子孫の旧状態を漏らす。
+  const focusDescIds = collectBudgetedDescendantIds([selected.id], allEntries);
+  const { resolved: resolvedFocusDescendants } = await resolveEntriesForContext(
+    allEntries.filter((e) => focusDescIds.has(e.id)),
+    null,
+    { applyAllPhases: true },
+  );
   const childrenCtx = buildChildrenCtxForEntry(
     selected,
     allEntries,
     L4_TOTAL_BUDGET,
     new Set([selected.id]),
+    resolvedFocusDescendants,
   );
   const aliases = parseAliases(selected.aliases);
   const tags = parseTags(selected.tagsCache);
@@ -1795,6 +1809,17 @@ async function buildSceneContextPrompt(opts: {
   });
 
   // Children context (subtree token budget)
+  // Phase Cb: detected seed は phase 解決されるので、その子孫 summary も同じ
+  // effectiveSceneId 時点で解決してから注入する（生注入だと過去シーンに子孫の
+  // 未来/旧状態を漏らす relation と同型の時点リーク）。予算内子孫を一括解決。
+  const detectedDescIds = collectBudgetedDescendantIds(
+    rawCodexEntries.map((e) => e.id),
+    allEntries,
+  );
+  const { resolved: resolvedDescendants } = await resolveEntriesForContext(
+    allEntries.filter((e) => detectedDescIds.has(e.id)),
+    effectiveSceneId,
+  );
   const withChildrenCtx: CodexContext[] = baseCodexEntries.map((ctx) => {
     const fullEntry = allEntries.find((e) => e.id === ctx.id);
     if (!fullEntry) return ctx;
@@ -1802,7 +1827,11 @@ async function buildSceneContextPrompt(opts: {
     if (preset === "none") return ctx;
     const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
     const descendants = getDescendantsBFS(fullEntry.id, allEntries);
-    const childrenContext = buildChildrenContext(descendants, budget);
+    const childrenContext = buildChildrenContext(
+      descendants,
+      budget,
+      resolvedDescendants,
+    );
     return childrenContext ? { ...ctx, childrenContext } : ctx;
   });
 

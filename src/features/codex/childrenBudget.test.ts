@@ -234,6 +234,40 @@ describe("buildChildrenContext", () => {
     const lines = result.split("\n");
     expect(lines.length).toBe(2);
   });
+
+  it("uses the phase-resolved summary from resolvedById instead of the raw summary", () => {
+    const resolved = new Map([
+      ["childA", { summary: "RESOLVED child A state", content: "{}" }],
+    ]);
+    const result = buildChildrenContext([CHILD_A], 1000, resolved);
+    expect(result).toContain("RESOLVED child A state");
+    expect(result).not.toContain("Child A summary");
+  });
+
+  it("falls back to the raw summary when resolvedById lacks the child", () => {
+    const resolved = new Map([
+      ["someoneElse", { summary: "x", content: "{}" }],
+    ]);
+    const result = buildChildrenContext([CHILD_A], 1000, resolved);
+    expect(result).toContain("Child A summary");
+  });
+
+  it("uses resolved content as fallback when the resolved summary is null", () => {
+    const contentOnly = makeEntry("co", "root", "ContentOnly");
+    contentOnly.content = JSON.stringify({ text: "RAW content" });
+    const resolved = new Map([
+      [
+        "co",
+        {
+          summary: null,
+          content: JSON.stringify({ text: "resolved content text" }),
+        },
+      ],
+    ]);
+    const result = buildChildrenContext([contentOnly], 1000, resolved);
+    expect(result).toContain("resolved content text");
+    expect(result).not.toContain("RAW content");
+  });
 });
 
 describe("computeChildrenTokenBudget", () => {

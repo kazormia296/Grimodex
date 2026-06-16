@@ -89,10 +89,20 @@ export function collectBudgetedDescendantIds(
 /**
  * Build context string for descendants within a token budget.
  * Returns empty string if preset is 'none' or budget is 0.
+ *
+ * Phase Cb: `resolvedById` を渡すと、各子孫の summary / content を**現在シーン
+ * 時点で phase 解決済みの状態**で注入する（seed と同じ基準に揃える）。未指定 or
+ * map に無い子孫は生 summary にフォールバック。生のまま注入すると、過去シーンに
+ * 子孫の未来/旧状態を漏らす relation と同型の時点リークになるため、親が phase
+ * 解決される経路（detected / focus）では必ず渡すこと。
  */
 export function buildChildrenContext(
   descendants: CodexEntry[],
   budgetTokens: number,
+  resolvedById?: ReadonlyMap<
+    string,
+    { summary: string | null; content: string }
+  >,
 ): string {
   if (budgetTokens <= 0 || descendants.length === 0) return "";
 
@@ -100,8 +110,11 @@ export function buildChildrenContext(
   let usedTokens = 0;
 
   for (const child of descendants) {
+    const rs = resolvedById?.get(child.id);
+    const childSummary = rs ? rs.summary : child.summary;
+    const childContent = rs ? rs.content : child.content;
     const summary =
-      child.summary?.trim() || extractPlainText(child.content) || "";
+      childSummary?.trim() || extractPlainText(childContent) || "";
     if (!summary) continue;
     const line = `  - ${child.name}: ${summary}`;
     const lineTokens = countTokens(line);
