@@ -20,6 +20,7 @@ export type EditorContentStyleSettings = Pick<
   | "maxContentWidth"
   | "wordBreak"
   | "lineBreak"
+  | "textAutospace"
   | "paragraphIndent"
   | "paragraphSpacing"
 >;
@@ -46,6 +47,9 @@ export function buildEditorContentStyle(
     lineHeight: s.lineHeight,
     wordBreak: s.wordBreak as React.CSSProperties["wordBreak"],
     lineBreak: s.lineBreak as React.CSSProperties["lineBreak"],
+    // 和欧間スペーシング。WebKit 系は no-autospace が既定なので、normal を
+    // 明示しないと和欧間アキが効かない（表示のみ・本文は不変）。
+    textAutospace: s.textAutospace as React.CSSProperties["textAutospace"],
     "--editor-paragraph-indent": `${s.paragraphIndent}em`,
     "--editor-paragraph-spacing": `${s.paragraphSpacing}px`,
   } as React.CSSProperties;

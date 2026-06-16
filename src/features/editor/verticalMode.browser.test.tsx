@@ -37,6 +37,7 @@ const CONTENT_SETTINGS = {
   maxContentWidth: 720,
   wordBreak: "normal",
   lineBreak: "strict",
+  textAutospace: "normal",
   paragraphIndent: 0,
   paragraphSpacing: 8,
 };

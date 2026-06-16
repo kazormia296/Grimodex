@@ -84,6 +84,7 @@ function makeSettings(spellCheck: boolean): EditorSettings {
     disableAllAnimations: false,
     wordBreak: "normal",
     lineBreak: "auto",
+    textAutospace: "normal",
     focusModeHideBeats: false,
     linearBeatDisplay: "normal",
     sceneMetaPanelOpen: false,

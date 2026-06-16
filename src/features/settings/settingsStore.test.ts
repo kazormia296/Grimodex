@@ -61,6 +61,7 @@ describe("KEY_SCOPE routing invariants", () => {
       "editor.paragraphIndent",
       "editor.wordBreak",
       "editor.lineBreak",
+      "editor.textAutospace",
       "export.format",
       "export.sceneDivider",
       "beat.injectIntoContext",

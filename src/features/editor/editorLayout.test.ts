@@ -25,6 +25,17 @@ describe("editor.verticalMode setting registration", () => {
   });
 });
 
+describe("editor.textAutospace setting registration", () => {
+  // 和欧間スペーシング (text-autospace) は作品ごとの組版選択なので
+  // wordBreak / lineBreak と同じ project スコープ。デフォルトは normal —
+  // WebKit のデフォルトは no-autospace なので、明示しないと和欧間アキが
+  // 効かない（仕様本来の既定値である normal を明示する）。
+  it("is registered as a project-scope key defaulting to normal", () => {
+    expect(KEY_SCOPE["editor.textAutospace"]).toBe("project");
+    expect(DEFAULT_SETTINGS["editor.textAutospace"]).toBe("normal");
+  });
+});
+
 describe("buildEditorContentStyle / buildEditorMeasureStyle", () => {
   const settings = {
     fontFamily: '"Noto Serif JP"',
@@ -33,6 +44,7 @@ describe("buildEditorContentStyle / buildEditorMeasureStyle", () => {
     maxContentWidth: 720,
     wordBreak: "normal",
     lineBreak: "strict",
+    textAutospace: "normal",
     paragraphIndent: 1,
     paragraphSpacing: 8,
   };
@@ -54,6 +66,9 @@ describe("buildEditorContentStyle / buildEditorMeasureStyle", () => {
     expect(style.lineHeight).toBe(2);
     expect(style.wordBreak).toBe("normal");
     expect(style.lineBreak).toBe("strict");
+    // editor.textAutospace（和欧間スペーシング）の配線漏れ再発防止。
+    // 設定UIのみ存在し本文に届かないバグの regression gate。
+    expect(style.textAutospace).toBe("normal");
     expect(style["--editor-paragraph-indent"]).toBe("1em");
     // editor.paragraphSpacing 設定の配線漏れ再発防止（設定UIのみ存在し
     // 本文に届かないバグの regression gate）

@@ -25,6 +25,11 @@ export function EditorCategory() {
     { value: "auto", label: t("settings.editor.lineBreakAuto") },
   ];
 
+  const TEXT_AUTOSPACE_OPTIONS = [
+    { value: "normal", label: t("settings.editor.textAutospaceNormal") },
+    { value: "no-autospace", label: t("settings.editor.textAutospaceOff") },
+  ];
+
   const { value: disableAll, setValue: setDisableAll } = useSettingBoolean(
     "editor.disableAllAnimations",
     false,
@@ -288,6 +293,16 @@ export function EditorCategory() {
             settingKey="editor.lineBreak"
             options={LINE_BREAK_OPTIONS}
             defaultValue="strict"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.textAutospace")}
+          description={t("settings.editor.textAutospaceDesc")}
+        >
+          <SettingDropdown
+            settingKey="editor.textAutospace"
+            options={TEXT_AUTOSPACE_OPTIONS}
+            defaultValue="normal"
           />
         </SettingRow>
       </SettingSection>
