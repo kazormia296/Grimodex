@@ -13,6 +13,7 @@ import { KouetsuPanel } from "@/features/kouetsu/KouetsuPanel";
 import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { GridPanel } from "@/features/grid/GridPanel";
 import { MatrixPanel } from "@/features/matrix/MatrixPanel";
+import { WritingStatsPanel } from "@/features/writing-stats/WritingStatsPanel";
 import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
 import { CommandCenterResultsPanel } from "@/features/commandCenter/CommandCenterResultsPanel";
 import { SceneEditor } from "@/features/tree/SceneEditor";
@@ -39,6 +40,7 @@ export const PANEL_COMPONENT_MAP: Record<
   foreshadow: ForeshadowPanel,
   grid: GridPanel,
   matrix: MatrixPanel,
+  "writing-stats": WritingStatsPanel,
   "trash-bin": TrashBinPanel,
   "command-center-results": CommandCenterResultsPanel,
 };
