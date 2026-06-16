@@ -8,6 +8,7 @@ import {
   exportProvenanceDisclosureCsv,
   exportProvenanceDisclosureJson,
 } from "./exportReport";
+import { ATTRIBUTION_COLORS } from "./attributionColors";
 import type { ProjectAuthorshipReport } from "./projectAuthorship";
 import type { ProvenanceDisclosureReport, ResolvedPassage } from "./provenance";
 
@@ -79,6 +80,9 @@ describe("exportAuthorshipHtml", () => {
     const out = exportAuthorshipHtml(sampleReport);
     expect(out).toContain("<svg");
     expect(out).toContain("oklch(");
+    // SVG fill は正本トークンと同色（teal/amber/blue）であること（色ドリフト検出）。
+    expect(out).toContain(ATTRIBUTION_COLORS.ai);
+    expect(out).toContain(ATTRIBUTION_COLORS.unknown);
     expect(out).not.toMatch(/<script\b/);
     expect(out).not.toMatch(/src="http/);
   });

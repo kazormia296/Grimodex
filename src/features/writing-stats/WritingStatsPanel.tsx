@@ -4,6 +4,7 @@ import { RefreshCw } from "lucide-react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { BreakdownBar } from "@/features/attribution/BreakdownBar";
+import { ATTRIBUTION_COLOR_VARS } from "@/features/attribution/attributionColors";
 import { formatCost } from "@/features/chat/modelPricing";
 import { computeWritingStats, buildHeatmap } from "./deriveStats";
 import {
@@ -11,12 +12,6 @@ import {
   type WritingStatsData,
 } from "./writingStatsQuery";
 import { Heatmap } from "./Heatmap";
-
-const BREAKDOWN_COLORS = {
-  human: "oklch(0.65 0.10 220)",
-  ai: "oklch(0.65 0.18 250)",
-  unknown: "oklch(0.65 0.05 0)",
-} as const;
 
 export function WritingStatsPanel({ isActive = true }: SlotPanelProps = {}) {
   const { t } = useTranslation();
@@ -164,19 +159,19 @@ export function WritingStatsPanel({ isActive = true }: SlotPanelProps = {}) {
               />
               <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
                 <LegendRow
-                  color={BREAKDOWN_COLORS.human}
+                  color={ATTRIBUTION_COLOR_VARS.human}
                   label={t("writingStats.human")}
                   value={data.attribution.human}
                   total={data.attribution.total}
                 />
                 <LegendRow
-                  color={BREAKDOWN_COLORS.ai}
+                  color={ATTRIBUTION_COLOR_VARS.ai}
                   label={t("writingStats.ai")}
                   value={data.attribution.ai}
                   total={data.attribution.total}
                 />
                 <LegendRow
-                  color={BREAKDOWN_COLORS.unknown}
+                  color={ATTRIBUTION_COLOR_VARS.unknown}
                   label={t("writingStats.unknown")}
                   value={data.attribution.unknown}
                   total={data.attribution.total}

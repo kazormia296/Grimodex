@@ -9,6 +9,7 @@ import { useAttributionStore } from "./attributionStore";
 import { ExportAgentTraceButton } from "./ExportAgentTraceButton";
 import { AttributionProjectView } from "./AttributionProjectView";
 import { BreakdownBar } from "./BreakdownBar";
+import { ATTRIBUTION_COLOR_VARS } from "./attributionColors";
 import {
   exportAttributionMarkdown,
   exportAttributionCsv,
@@ -208,7 +209,7 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
             label={t("attribution.human")}
             count={stats.human + stats.unmarked}
             total={stats.total}
-            color="oklch(0.65 0.10 220)"
+            color={ATTRIBUTION_COLOR_VARS.human}
             source="human"
             activeFilter={filterSource}
             onFilter={setFilterSource}
@@ -217,7 +218,7 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
             label={t("attribution.ai")}
             count={stats.ai}
             total={stats.total}
-            color="oklch(0.65 0.18 250)"
+            color={ATTRIBUTION_COLOR_VARS.ai}
             source="ai"
             activeFilter={filterSource}
             onFilter={setFilterSource}
@@ -226,7 +227,7 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
             label={t("attribution.unknown")}
             count={stats.unknown}
             total={stats.total}
-            color="oklch(0.65 0.05 0)"
+            color={ATTRIBUTION_COLOR_VARS.unknown}
             source="unknown"
             activeFilter={filterSource}
             onFilter={setFilterSource}

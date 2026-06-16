@@ -44,7 +44,10 @@ export const DEFAULT_THEME: EditorRenderTheme = {
   textMuted: "#666666",
   border: "#dddddd",
   showAttribution: false,
-  attributionAi: "rgba(34, 197, 94, 0.18)",
+  // Canvas-paintable fallback only (used when getComputedStyle of .attribution-*
+  // fails). Approximates the canonical teal/amber tints in
+  // attributionColors.ts / index.css; the live path resolves the real CSS.
+  attributionAi: "rgba(20, 184, 166, 0.18)",
   attributionUnknown: "rgba(217, 119, 6, 0.16)",
   fontFamily: "ui-sans-serif, system-ui, sans-serif",
   fontSizePx: 16,

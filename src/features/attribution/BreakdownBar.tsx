@@ -1,3 +1,5 @@
+import { ATTRIBUTION_COLOR_VARS } from "./attributionColors";
+
 interface BreakdownBarProps {
   human: number;
   ai: number;
@@ -5,12 +7,6 @@ interface BreakdownBarProps {
   total: number;
   height?: number;
 }
-
-const COLORS = {
-  human: "oklch(0.65 0.10 220)",
-  ai: "oklch(0.65 0.18 250)",
-  unknown: "oklch(0.65 0.05 0)",
-} as const;
 
 export function BreakdownBar({
   human,
@@ -42,7 +38,7 @@ export function BreakdownBar({
             style={{
               width: `${pct}%`,
               minWidth: "2px",
-              backgroundColor: COLORS[key],
+              backgroundColor: ATTRIBUTION_COLOR_VARS[key],
             }}
           />
         );

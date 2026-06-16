@@ -61,6 +61,16 @@
   --content-border: oklch(0.922 0 0);
   /* Attribution highlight blend amount (overridden by JS from display.attributionHighlightOpacity) */
   --attribution-pct: 20%;
+  /* Attribution semantic hues — single source of truth shared by the inline
+     overlay (.attribution-*), the stats breakdown bar, and the legend.
+     .attribution-* color-mix these with --content-background, so they adapt to
+     each color theme's paper tint automatically. Keep in sync with the literal
+     fallbacks in src/features/attribution/attributionColors.ts.
+     AI = teal-green (165°, "machine"), unknown = amber (30°, "uncertain"),
+     human = calm blue (220°, only shown where a human swatch is needed). */
+  --attribution-human: oklch(0.65 0.1 220);
+  --attribution-ai: oklch(0.72 0.2 165);
+  --attribution-unknown: oklch(0.72 0.14 30);
   /* Map note node — tinted with the app's brand accent (#534AB7). */
   --note-bg: #eeebfa;
   --note-border: #8b7fd4;
@@ -228,6 +238,9 @@
   --color-content-foreground-muted: var(--content-foreground-muted);
   --color-content-accent: var(--content-accent);
   --color-content-border: var(--content-border);
+  --color-attribution-human: var(--attribution-human);
+  --color-attribution-ai: var(--attribution-ai);
+  --color-attribution-unknown: var(--attribution-unknown);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -1324,14 +1337,15 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   transform: scale(0.95);
 }
 
-/* Attribution decorations — color-mix blends semantic hue with content background,
-   so light/dark and per-theme adaptation is automatic.
-   AI = teal-green (hue 165°, "processed/machine"), Unknown = warm amber (hue 30°, "uncertain").
+/* Attribution decorations — color-mix blends the semantic hue token with the
+   content background, so light/dark and per-theme adaptation is automatic.
+   Hues are defined once as --attribution-{ai,unknown} (see :root) and reused by
+   the stats breakdown bar and the legend for a single color language.
    --attribution-pct is set from display.attributionHighlightOpacity setting. */
 .attribution-ai {
   background-color: color-mix(
     in oklch,
-    oklch(0.72 0.2 165) var(--attribution-pct),
+    var(--attribution-ai) var(--attribution-pct),
     var(--content-background)
   );
   border-radius: 2px;
@@ -1339,7 +1353,7 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .attribution-unknown {
   background-color: color-mix(
     in oklch,
-    oklch(0.72 0.14 30) var(--attribution-pct),
+    var(--attribution-unknown) var(--attribution-pct),
     var(--content-background)
   );
   border-radius: 2px;
