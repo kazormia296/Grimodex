@@ -33,7 +33,9 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - **Details タブ**: `PhaseIndicator` + Summary（Phase 編集対応・プレビュー対応）+ Content（TipTap + Phase 切替 + Open in Editor）+ DetailsSection（カスタムディテール）
   - AI 自動要約（`Wand2` ボタン、`generateSynopsisFromContent`）
   - summary 未記入時のヒントメッセージ
-- **Relations タブ**: 親エントリ表示、子エントリ追加、Suggested（`findMentionedEntriesAsync` 経由）、Dismiss 永続化（`codex_dismissed_relations`）、`ChildrenBudgetSelector` (4 プリセット: none / compact / standard / generous = 0% / 15% / 30% / 50%)
+- **Relations タブ**: 2 つの独立セクションを内包する。
+  - **階層（親子）= Hierarchy**（`RelationSection`）: 親エントリ表示、子エントリ追加、Suggested（`findMentionedEntriesAsync` 経由）、Dismiss 永続化（`codex_dismissed_relations`）、`ChildrenBudgetSelector` (4 プリセット: none / compact / standard / generous = 0% / 15% / 30% / 50%)
+  - **関係（対人）= Relations**（`CodexTypedRelationsSection`）: friend / family / lover / enemy / mentor / servant 等の対人/対物リレーション。独立テーブル `codex_relations`（方向あり・複数可）、`codexRelationApi` 経由。Map の人物相関図エッジ・User edge からの昇格と連動
 - **Tracking タブ**: `ContextModeSelector`（always / mentioned / suppress / hidden）+ `ExcludedAliasesField`
 - **Mentions タブ**: `ReferencesSection`（Manuscript、`buildCrossReferenceReport` 経由）+ Source chat link（`source_chat_message_id` から `chatSessions.title` 解決）
 - **Research タブ**: `notes` プライベートノート（TipTap、2 秒 debounce 自動保存）
@@ -46,8 +48,8 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
   - `codexMatcher.ts`（JS Aho-Corasick）と `rustMatcher.ts`（Tauri Command `codex_rebuild_matcher` / `codex_match_text` 経由の Rust 実装）の 2 系統併存
   - 除外パターン（`excludedAliases`）、CJK 文字クラス境界（`charClassBoundary.ts`）、最長一致解決
   - `mentionRescanQueue.ts` による `scene_codex_mentions` キャッシュテーブル更新
-- **DB スキーマ**: `codex_types` / `codex_entries`（`contextMode` / `childrenBudget` / `notes` / `icon` / `parentId` 等）/ `codex_tags` / `codex_entry_tags` / `codex_detail_definitions` / `codex_detail_values` / `codex_dismissed_relations` / `codex_quick_pins` / `codex_entry_phases` / `codex_phase_detail_overrides` / `scene_codex_pins` / `scene_codex_mentions` 全て存在。`tree_nodes.story_time_order` / `story_time_label` / `projects.phase_resolution_mode` / `authorship_spans.phase_id` も存在
-- **API モジュール分割**: `tagApi` / `phaseApi` / `relationApi` / `detailApi` / `typeApi` の 5 分割を実装済み（設計書通り）
+- **DB スキーマ**: `codex_types` / `codex_entries`（`contextMode` / `childrenBudget` / `notes` / `icon` / `parentId` 等）/ `codex_tags` / `codex_entry_tags` / `codex_detail_definitions` / `codex_detail_values` / `codex_relations`（対人リレーション）/ `codex_dismissed_relations`（親子提案の却下記録）/ `codex_quick_pins` / `codex_entry_phases` / `codex_phase_detail_overrides` / `scene_codex_pins` / `scene_codex_mentions` 全て存在。`tree_nodes.story_time_order` / `story_time_label` / `projects.phase_resolution_mode` / `authorship_spans.phase_id` も存在
+- **API モジュール分割**: `tagApi` / `phaseApi` / `relationApi` / `detailApi` / `typeApi` の 5 分割（設計書通り）+ 対人リレーション用 `codexRelationApi` を実装済み
 - **`CodexCommandPalette`** + Aliases / ExcludedAliases / Tags 構造化管理 UI（`AliasesField` / `ExcludedAliasesField` / `TagSelector`）
 - **Chat 注入連携**: `chatStore.ts` で `contextMode` フィルタ（`hidden` / `suppress` 除外、`always` 常時注入）、`childrenBudget` ベースの BFS 子孫注入（`buildChildrenContext` + `computeChildrenTokenBudget`）、プロジェクトスコープでの `formatTimelineContext` 統合
 
@@ -653,7 +655,16 @@ Save クリックで `codex_detail_definitions` に行追加。同一タイプ�
 
 ### Relations タブ
 
-Codexエントリ間の親子関係を管理するセクション。詳細は「エントリ間リレーション」セクション参照。
+Codexエントリ間のつながりを管理するタブ。**性質の異なる 2 つのセクション**を上下に並べる（UI ラベルは実 i18n に準拠）:
+
+| セクション | UI ラベル | 表すもの | テーブル | 多重度・方向 |
+|-----------|----------|---------|---------|------------|
+| **階層（親子）= Hierarchy** | `階層（親子）` / `Hierarchy (parent/child)` | 包含・所属（組織と所属員、場所と内部 等） | `codex_entries.parent_id`（自己参照） | 子は最大 1 親（多対1）・無向の包含 |
+| **関係（対人）= Relations** | `関係（対人）` / `Relations (interpersonal)` | 対人/対物の関係（友人・敵・師匠 等） | `codex_relations`（独立テーブル） | 多対多・**from→to の方向あり** |
+
+2 セクションは**スキーマ・API・コンポーネント・i18n キーがすべて分離**しており、一方の変更が他方に波及しない（直交）。以下まず上段の階層（親子）、続いて下段の関係（対人）を述べる。詳細モデルは「エントリ間リレーション」セクション参照。
+
+#### 階層（親子）セクション — `RelationSection`
 
 **Parent（親エントリ）**:
 - 現在のエントリの親。0個または1個
@@ -686,6 +697,36 @@ Codexエントリ間の親子関係を管理するセクション。詳細は「
 - 検出は `findMentionedEntriesAsync` ユーティリティが担当し、Codex マッチングパイプライン（Rust/JS いずれの Aho-Corasick 経路でも）が検出した mention id 集合から既存リレーション・自エントリ・Dismiss 済みを差し引いた候補を返す
 - 各候補の右に [+ Add] ボタン。クリックで子リレーションとして確定
 - Content変更時に自動更新。Dismiss した候補は `codex_dismissed_relations` テーブルに永続保存され、以後 `findMentionedEntriesAsync` の結果から恒久的に除外される（ユーザーが明示的に undo するまで再提案されない）
+
+#### 関係（対人）セクション — `CodexTypedRelationsSection`
+
+階層セクションの下に `border-top` で区切って配置。親子（包含）とは別軸の、**キャラクター間の意味的な関係**（friend / enemy / mentor 等）を扱う。
+
+**既存リレーション一覧**:
+- このエントリを端点に持つ `codex_relations` 行を `→`（outgoing: このエントリ→対象）/ `←`（incoming: 対象→このエントリ）の方向表示付きで列挙
+- 各行に [リレーションを削除] ボタン
+- 表示ラベルは `label`（ユーザー入力の生テキスト、例「師匠」）を優先し、未入力時は `relationType`（slug、例 `mentor`）にフォールバック
+
+**追加フォーム**:
+1. 対象エントリをドロップダウンで選択（`targetLabel`）
+2. 方向トグル（`directionOutgoing` / `directionIncoming`）
+3. プリセットボタン群: friend / family / lover / enemy / mentor / servant（押すと `relationType` と既定 `label` をセット）
+4. 自由記述の `label`（例「親友」）を入力して [追加]
+- 同一 (from, to, relationType) の重複は弾く
+
+**多重度・方向**:
+- 同一ペアに**複数の型を併存**できる（例: A→B に「友人」かつ「ライバル」）
+- レコードは**方向付き**。「AはBの師匠」と「BはAの弟子」は別レコードとして区別され、同一視しない（検索の `findCodexRelationByEdgeEndpoints` のみ両方向を OR で統合）
+
+**Map（人物相関図）との連動**:
+- Map の人物相関図生成は、本文の**共起**（`cooccurrence.ts`、無向・AI非依存）と**作成済み `codex_relations`** を入力にボードを 1 つ snapshot 生成する
+- Map 上で手動描画した User edge は、両端が Codex ノードなら右クリック [Codex Relation に昇格] で正式な `codex_relations` 行へ変換できる（`promoteUserEdgeToCodexRelation`）
+- `derivedEdges` トグル ON 時、typed リレーションは紫の破線エッジとして描画される
+
+**AI コンテキスト注入**:
+- `relationExpansion.expandCodexRelationsBFS` が seed エントリから方向付きで relation を BFS 探索し、「from X via Y」「to Z via W」形式の経由テキストを CodexContext ブロックに注入する（親子の子孫注入とは別経路）
+
+> **命名上の注意**: `codex_dismissed_relations` テーブルは名前に "relations" を含むが、実体は**階層（親子）セクションの Suggested 却下記録**であり、対人 `codex_relations` とは無関係。
 
 ---
 
@@ -960,13 +1001,14 @@ FTS5テーブルはname + aliases + summary + tags_cacheを検索対象にする
 
 ### API モジュール分割
 
-Codex 系の Tauri Command 呼び出しは責務別に 5 つのフロントエンド API モジュールに分割する。いずれも Zustand ストアからのみ呼び出し、コンポーネントは直接触らない:
+Codex 系の Tauri Command 呼び出しは責務別のフロントエンド API モジュールに分割する（親子系の 5 モジュール + 対人リレーションの `codexRelationApi`）。いずれも Zustand ストアからのみ呼び出し、コンポーネントは直接触らない:
 
 | モジュール | 対象 | 主なコマンド群 |
 |-----------|------|--------------|
 | `tagApi` | `codex_tags` / `codex_entry_tags` | タグ作成、リネーム、エントリへの付与/解除、`type_filter` 管理 |
 | `phaseApi` | `codex_entry_phases` / `codex_phase_detail_overrides` | フェーズ CRUD、アンカー付け替え、フィールド override の上書き/解除 |
-| `relationApi` | `codex_entries.parent_id` / `codex_dismissed_relations` | 親子設定、循環検出、Suggested の検出・Dismiss |
+| `relationApi` | `codex_entries.parent_id` / `codex_dismissed_relations` | **階層（親子）**: 親子設定、循環検出、Suggested の検出・Dismiss |
+| `codexRelationApi` | `codex_relations` | **関係（対人）**: typed リレーションの CRUD、方向付きエンドポイント検索（`findCodexRelationByEdgeEndpoints`）、User edge からの昇格 |
 | `detailApi` | `codex_detail_definitions` / `codex_detail_values` | カスタムフィールド定義 CRUD、値の読み書き、型変更時の扱い |
 | `typeApi` | `codex_types` | ビルトイン保証（`ensureBuiltinTypes`）、カスタムタイプ CRUD、`sort_order` 並び替え |
 
@@ -1359,15 +1401,23 @@ ContentのテキストはSceneの本文（数千〜数万文字）に比べて�
 
 ## エントリ間リレーション
 
-### 概要
+### 概要 — 2 系統のリレーション
 
-Codexエントリ間に親子関係（リレーション）を設定できる。キャラクターと所持アイテム、場所とそこに関連する伝承、組織と所属メンバーなどの構造化に使う。
+Codexエントリ間のつながりには**性質の異なる 2 系統**がある。両者は別テーブル・別 API・別コンポーネントで**直交**しており、混同しないこと:
 
-リレーションの主な用途:
+| 系統 | 表すもの | テーブル | 多重度・方向 | 主な用途 |
+|------|---------|---------|------------|---------|
+| **階層（親子）= Hierarchy** | 構造的な包含・所属（組織と所属員、場所と内部、キャラと所持品 等） | `codex_entries.parent_id`（自己参照／隣接リスト） | 子は最大 1 親（多対1）・無向 | ナビゲーション＋**子孫 summary の BFS コンテキスト注入** |
+| **関係（対人）= Relations** | 人物間の意味的関係（友人・敵・師匠 等） | `codex_relations`（独立テーブル） | 多対多・**from→to の方向あり** | 人物相関図（Map）＋**relation 経由テキストの注入** |
+
+以下、まず **階層（親子）** を詳述し、続いて **関係（対人）= typed relations** を述べる。
+
+### 階層（親子）の用途
+
 1. **ナビゲーション**: 詳細画面で関連エントリに素早く移動
 2. **コンテキスト注入**: 親エントリがChatに注入される場合、子孫エントリのsummaryをサブツリートークン予算内でBFS順に自動注入
 
-### リレーションモデル
+### 親子（階層）モデル
 
 - 1つのエントリは最大1つの親を持てる（多対1）
 - 1つのエントリは0個以上の子を持てる（1対多）
@@ -1550,13 +1600,55 @@ Layer 4全体のトークン予算を超過する場合の優先順位:
 
 Chatパネルのコンテキストバーには、自動注入された子孫エントリもピルとして表示する。ただし通常のピルとは異なるスタイル（薄い表示 + 「via {親名}」ラベル）で区別し、×で個別除外も可能。`always` エントリは常にピルとして表示（薄いスタイル + 「auto」ラベル）。`hidden` エントリはピンダイアログに表示しない。
 
+### 対人リレーション（typed relations）
+
+親子（階層）とは独立した、**人物間の意味的な関係**を表す系統。「エララはケインの師匠」「AとBはライバル」のような対人/対物の関係を first-class に保持する。Relations タブの「関係（対人）」セクション（`CodexTypedRelationsSection`）で編集する。
+
+#### モデル
+
+独立テーブル `codex_relations`（`src/db/schema.ts`）。主なカラム:
+
+| カラム | 意味 |
+|--------|------|
+| `fromCodexId` / `toCodexId` | 関係の端点（**方向あり**: from→to） |
+| `relationType` | 種別 slug（既定 `custom`。プリセット: friend / family / lover / enemy / mentor / servant） |
+| `label` | ユーザー入力の生テキスト（例「親友」「師匠」）。表示は label を優先し未入力時 `relationType` にフォールバック |
+| `depthHint` | AI 探索の深さヒント（nullable） |
+| `sourceMapEdgeId` | Map の User edge から昇格した場合の元エッジ ID（nullable） |
+
+- **多対多**: 同一ペアに複数の `relationType` を併存できる（例: A→B に friend と enemy）
+- **方向付き**: 「AはBの師匠」と「BはAの弟子」は別レコード。検索ヘルパ `findCodexRelationByEdgeEndpoints` のみ両方向を OR で照合する
+- インデックス: `projectId` / `fromCodexId` / `toCodexId`
+
+#### 親子（階層）との直交性
+
+| 観点 | 階層（親子） | 関係（対人） |
+|------|------------|------------|
+| テーブル | `codex_entries.parent_id` | `codex_relations` |
+| API | `relationApi`（`setParentRelation` 等） | `codexRelationApi`（`createCodexRelation` 等） |
+| コンポーネント | `RelationSection` | `CodexTypedRelationsSection` |
+| i18n キー | `codex.relation.title` / `hierarchyDesc` / `parent` / `children` | `codex.relation.typedTitle` / `typedDesc` / presets / direction |
+| 注入経路 | 子孫 summary の BFS 注入（`buildChildrenContext`） | relation BFS 経由テキスト（`relationExpansion.expandCodexRelationsBFS`） |
+
+両 API は互いを import せず、一方の変更が他方に波及しない。視覚的衝突回避のため、相関図描画で同一ペアに typed relation が存在する場合に限り親子由来のエッジを抑制する点だけが両者の接点。
+
+#### Map（人物相関図）との連動
+
+- **人物相関図生成**（`correlationBoard.ts`）: 本文の**共起**（`cooccurrence.ts`、無向・AI非依存の純関数。同一シーン登場ペアを `sharedScenes` 数で重み付け）と**作成済み `codex_relations`** を入力に、force layout でボードを 1 つ snapshot 生成（`derivedEdges: false` で自動更新を切る）
+- **User edge からの昇格**: Map 上で手動描画したエッジは、両端が Codex ノードなら右クリック [Codex Relation に昇格]（`promoteUserEdgeToCodexRelation`）で正式な `codex_relations` 行へ変換できる
+- `derivedEdges` トグル ON 時、typed relation は紫の破線エッジとして描画
+
+#### AI コンテキスト注入
+
+`relationExpansion.expandCodexRelationsBFS` が seed エントリから方向付きで relation を BFS 探索し、「from X via Y」「to Z via W」形式の経由テキストを CodexContext ブロックに注入する。親子の子孫 summary 注入とは別経路。
+
 ---
 
-## Content言及からのリレーション提案
+## Content言及からの親子リレーション提案
 
 ### 概要
 
-Content内のCodexハイライトで検出されたエントリを、リレーションの「候補」として提案する。ただし、**自動的にリレーションを形成しない**。ユーザーが確認して手動で追加する。
+Content内のCodexハイライトで検出されたエントリを、**親子（階層）リレーションの「候補」**として提案する（対人 `codex_relations` の提案ではない）。ただし、**自動的にリレーションを形成しない**。ユーザーが確認して手動で追加する。
 
 ### 提案ロジック
 
