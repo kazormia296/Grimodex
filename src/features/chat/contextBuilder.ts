@@ -966,7 +966,14 @@ export function buildSystemPrompt(
     includePinnedExtras: boolean,
   ): string[] => {
     const label = s.typeLabels[entry.type] ?? entry.type;
-    const displaySummary = entry.summary.trim() || entry.contentFallback || "";
+    // Phase Cb: relation-BFS で展開された相手 (relationVia 付き) は seed と異なり
+    // フェーズ未解決の生 summary しか持たない。過去シーンに未来状態を漏らす
+    // (時系列矛盾・ネタバレ) ため、展開ブロックは関係ラベルのみ注入し summary /
+    // content 本体は出さない。相手の詳細が要るなら seed (言及/pin) にすれば
+    // フェーズ解決された summary が通常経路で入る。
+    const displaySummary = entry.relationVia
+      ? ""
+      : entry.summary.trim() || entry.contentFallback || "";
     const phaseSuffix = entry.phaseLabel ? ` [${entry.phaseLabel}]` : "";
     const out = [
       `- **${entry.name}**${phaseSuffix} (${label})`,
