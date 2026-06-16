@@ -73,6 +73,7 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 | 「アニメ」「トランジション」「動き」「磨いて」 | /polish-motion     | UIモーション規律 |
 | 「バージョン上げて」「リリースタグ」           | /bump-version      | 版上げ+commit+tag |
 | 「ライセンス更新」「サードパーティライセンス」 | /update-licenses   | ライセンス一覧再生成 |
+| 「PR出して」「プッシュしてマージ」「ship」      | /ship-branch       | push+PR+マージ    |
 
 ## Superpowers ワークフローの上書き指示（最優先）
 
