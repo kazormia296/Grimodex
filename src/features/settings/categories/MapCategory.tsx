@@ -29,7 +29,7 @@ export function MapCategory() {
   const palette = getPalette(paletteId);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6 p-6">
       <SettingSection title={t("settings.map.stickyDefaults")}>
         <SettingRow
           label={t("settings.map.palette")}

@@ -409,7 +409,7 @@ export function CodexCategory() {
   };
 
   return (
-    <div className="space-y-6" data-testid="codex-category">
+    <div className="space-y-6 p-6" data-testid="codex-category">
       <SettingSection title={t("settings.codex.typeManagement")}>
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">
