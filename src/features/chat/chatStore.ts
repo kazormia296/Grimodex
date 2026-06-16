@@ -2253,11 +2253,14 @@ async function buildSceneContextPrompt(opts: {
         ...l4SeedIds,
         ...collectBudgetedDescendantIds(l4SeedIds, allEntries),
       ]);
+      // depth 2 の「相手の相手」(師匠のライバル等) は現シーンとほぼ無関係な
+      // ノイズになりやすいため、focus 経路と揃えて直接の相手 (depth 1) のみに絞る。
       const expanded = expandCodexRelationsBFS(
         [...l4SeedIds],
         relations,
         allEntries,
         relExcludeIds,
+        { maxDepth: 1 },
       );
       relationCodexEntries = expanded.length > 0 ? expanded : undefined;
     }

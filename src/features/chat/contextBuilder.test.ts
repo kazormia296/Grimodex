@@ -1519,6 +1519,47 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain("Bob");
     });
 
+    it("relation-derived codex injects only the relation label, not the phase-unresolved summary/content", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "s1", title: "Scene", content: "body" },
+        codexEntries: [
+          {
+            id: "a1",
+            type: "character",
+            name: "Alice",
+            summary: "NORMAL_SEED_SUMMARY",
+          },
+        ],
+        relationCodexEntries: [
+          {
+            id: "b1",
+            type: "character",
+            name: "Bob",
+            summary: "REL_SUMMARY_LEAK_MARKER",
+            relationVia: "from Alice via 師匠",
+          },
+          {
+            id: "c1",
+            type: "character",
+            name: "Cara",
+            summary: "",
+            contentFallback: "REL_CONTENT_LEAK_MARKER",
+            relationVia: "to Alice via 親友",
+          },
+        ],
+      });
+      // 関係ラベルと名前は注入される
+      expect(result.prompt).toContain("経由: from Alice via 師匠");
+      expect(result.prompt).toContain("経由: to Alice via 親友");
+      expect(result.prompt).toContain("Bob");
+      expect(result.prompt).toContain("Cara");
+      // フェーズ未解決の生 summary / content は注入しない（時系列リーク防止）
+      expect(result.prompt).not.toContain("REL_SUMMARY_LEAK_MARKER");
+      expect(result.prompt).not.toContain("REL_CONTENT_LEAK_MARKER");
+      // seed エントリの summary は従来どおり注入される（対照）
+      expect(result.prompt).toContain("NORMAL_SEED_SUMMARY");
+    });
+
     it("strips l4pri markers from final prompt and cacheSegments (LLM never sees them)", () => {
       const result = buildSystemPrompt({
         scene: { id: "s1", title: "Scene", content: "body" },
