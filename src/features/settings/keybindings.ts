@@ -115,6 +115,12 @@ export function getCommands(): CommandDef[] {
       defaultBinding: "Mod+Alt+R",
       panel: "matrix",
     },
+    {
+      id: "focusWritingStats",
+      label: i18next.t("keys.focusWritingStats"),
+      defaultBinding: "Mod+Alt+W",
+      panel: "writing-stats",
+    },
     // ── Global ──
     {
       id: "openSettings",

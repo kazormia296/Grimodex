@@ -437,7 +437,7 @@ describe("useLayoutStore", () => {
       expect(
         useLayoutStore.getState().builtinPresetOverrides["builtin:default"]
           ?.hiddenStripePanels,
-      ).toEqual(["map", "matrix", "trash-bin", "chat"]);
+      ).toEqual(["map", "matrix", "trash-bin", "writing-stats", "chat"]);
 
       useLayoutStore.getState().applyPreset("builtin:plan");
       expect(useLayoutStore.getState().hiddenStripePanels.has("chat")).toBe(
