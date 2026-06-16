@@ -212,8 +212,9 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
         const cfgStore = useLintConfigStore.getState();
         const lang = resolveLintLanguage();
         const effective = cfgStore.getEffective();
-        // Respect Linter-wide and per-language toggles.
-        if (!effective.enabled || !effective.languages[lang]?.enabled) {
+        // Respect the Linter-wide toggle. Per-language gating is implicit:
+        // the engine only runs the active language's rules.
+        if (!effective.enabled) {
           useLintStore.getState().clear();
           markEnd("linter.scheduledAnalyze");
           return;
@@ -296,13 +297,12 @@ export function useLinter(editor: Editor | null, sceneId: string | null): void {
     // Track cursor position → scene offset for reverse highlight.
     const onSelectionUpdate = () => {
       if (!editor) return;
-      // Linter 無効/言語無効時は誰も cursorOffset を消費しない。debounced 経路
-      // (schedule 内 line 216) と対称化し、reverse-highlight 用の full-doc walk を
-      // 払わない。Linter を一度も開いていないユーザーが毎打鍵で負担していた（所見#2）。
+      // Linter 無効時は誰も cursorOffset を消費しない。debounced 経路（schedule）
+      // と対称化し、reverse-highlight 用の full-doc walk を払わない。Linter を一度も
+      // 開いていないユーザーが毎打鍵で負担していた（所見#2）。
       const cfgStore = useLintConfigStore.getState();
-      const lang = resolveLintLanguage();
       const effective = cfgStore.getEffective();
-      if (!effective.enabled || !effective.languages[lang]?.enabled) return;
+      if (!effective.enabled) return;
       markStart("linter.selectionUpdate");
       const map = getOffsetMap(editor.state.doc);
       const head = editor.state.selection.head;

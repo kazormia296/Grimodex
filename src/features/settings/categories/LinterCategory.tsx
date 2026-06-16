@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
 
 import {
   useLintConfigStore,
@@ -9,7 +9,8 @@ import {
 import { LinterIgnoreListTab } from "@/features/lint/LinterIgnoreListTab";
 import { TermDictionaryTab } from "@/features/lint/TermDictionaryTab";
 import { cn } from "@/lib/utils";
-import type { Severity } from "@/features/lint/types";
+import { resolveLintLanguage } from "@/features/lint/types";
+import type { Severity, LintLanguage } from "@/features/lint/types";
 
 type Tab = "rules" | "terms" | "ignores";
 
@@ -53,11 +54,20 @@ function LinterRulesTab() {
   const { t } = useTranslation();
   const effective = useLintConfigStore((s) => s.getEffective());
   const setLinterEnabled = useLintConfigStore((s) => s.setLinterEnabled);
-  const setLanguageEnabled = useLintConfigStore((s) => s.setLanguageEnabled);
   const setRule = useLintConfigStore((s) => s.setRule);
   const resetRule = useLintConfigStore((s) => s.resetRule);
   const resetLanguage = useLintConfigStore((s) => s.resetLanguage);
   const resetAll = useLintConfigStore((s) => s.resetAll);
+
+  // The lint engine only ever runs the project's active language rules
+  // (`supported_languages()` filter); the other language's rules are inert
+  // here. So surface the active language first and collapse the inactive one
+  // behind a disclosure — without touching its `enabled` flag, which is a
+  // separate user preference that should survive a project-language switch.
+  const activeLang = resolveLintLanguage();
+  const orderedLangs: readonly LintLanguage[] =
+    activeLang === "en" ? (["en", "ja"] as const) : (["ja", "en"] as const);
+  const [inactiveExpanded, setInactiveExpanded] = useState(false);
 
   const groupedRules = useMemo(() => {
     // `project/` and `codex/` are language-neutral but Settings groups
@@ -106,50 +116,75 @@ function LinterRulesTab() {
         </button>
       </section>
 
-      {(["ja", "en"] as const).map((lang) => (
-        <section key={lang} className="flex flex-col gap-3">
-          <div className="flex items-center justify-between border-b border-border pb-1">
-            <h4 className="font-semibold">
-              {lang === "ja"
-                ? t("settings.linter.langRulesJa")
-                : t("settings.linter.langRulesEn")}
-            </h4>
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1 text-xs">
-                <input
-                  type="checkbox"
-                  checked={effective.languages[lang].enabled}
-                  onChange={(e) => setLanguageEnabled(lang, e.target.checked)}
-                />
-                {t("settings.linter.enableLanguage")}
-              </label>
-              <button
-                type="button"
-                onClick={() => resetLanguage(lang)}
-                className="rounded border border-border px-1.5 py-0.5 text-xs hover:bg-accent"
-                title={
-                  lang === "ja"
-                    ? t("settings.linter.resetLangRulesJa")
-                    : t("settings.linter.resetLangRulesEn")
-                }
-              >
-                <RotateCcw className="h-3 w-3" />
-              </button>
+      {orderedLangs.map((lang) => {
+        const isActive = lang === activeLang;
+        const expanded = isActive || inactiveExpanded;
+        return (
+          <section key={lang} className="flex flex-col gap-3">
+            <div className="flex items-center justify-between border-b border-border pb-1">
+              <div className="flex items-center gap-2">
+                <h4 className="font-semibold">
+                  {lang === "ja"
+                    ? t("settings.linter.langRulesJa")
+                    : t("settings.linter.langRulesEn")}
+                </h4>
+                {!isActive && (
+                  <span
+                    className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground"
+                    title={t("settings.linter.langNotAppliedHint")}
+                  >
+                    {t("settings.linter.langNotApplied")}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {!isActive && (
+                  <button
+                    type="button"
+                    onClick={() => setInactiveExpanded((v) => !v)}
+                    className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-xs hover:bg-accent"
+                  >
+                    {expanded ? (
+                      <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3" />
+                    )}
+                    {expanded
+                      ? t("settings.linter.collapseLangRules")
+                      : t("settings.linter.expandLangRules")}
+                  </button>
+                )}
+                {expanded && (
+                  <button
+                    type="button"
+                    onClick={() => resetLanguage(lang)}
+                    className="rounded border border-border px-1.5 py-0.5 text-xs hover:bg-accent"
+                    title={
+                      lang === "ja"
+                        ? t("settings.linter.resetLangRulesJa")
+                        : t("settings.linter.resetLangRulesEn")
+                    }
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-          <div className="flex flex-col divide-y divide-border rounded border border-border">
-            {groupedRules[lang].map((ruleId) => (
-              <RuleRow
-                key={ruleId}
-                ruleId={ruleId}
-                disabledByLanguage={!effective.languages[lang].enabled}
-                onSetRule={setRule}
-                onResetRule={resetRule}
-              />
-            ))}
-          </div>
-        </section>
-      ))}
+            {expanded && (
+              <div className="flex flex-col divide-y divide-border rounded border border-border">
+                {groupedRules[lang].map((ruleId) => (
+                  <RuleRow
+                    key={ruleId}
+                    ruleId={ruleId}
+                    onSetRule={setRule}
+                    onResetRule={resetRule}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        );
+      })}
 
       {(["project", "codex"] as const).map((group) => {
         const rules = groupedRules[group];
@@ -168,7 +203,6 @@ function LinterRulesTab() {
                 <RuleRow
                   key={ruleId}
                   ruleId={ruleId}
-                  disabledByLanguage={false}
                   onSetRule={setRule}
                   onResetRule={resetRule}
                 />
@@ -183,12 +217,10 @@ function LinterRulesTab() {
 
 function RuleRow({
   ruleId,
-  disabledByLanguage,
   onSetRule,
   onResetRule,
 }: {
   ruleId: string;
-  disabledByLanguage: boolean;
   onSetRule: (ruleId: string, patch: Record<string, unknown>) => void;
   onResetRule: (ruleId: string) => void;
 }) {
@@ -219,7 +251,6 @@ function RuleRow({
           <input
             type="checkbox"
             checked={enabled}
-            disabled={disabledByLanguage}
             onChange={(e) => onSetRule(ruleId, { enabled: e.target.checked })}
           />
           <code className="text-xs">{ruleId}</code>
@@ -231,7 +262,7 @@ function RuleRow({
         </label>
         <select
           value={severity}
-          disabled={disabledByLanguage || !enabled || severityDisabled}
+          disabled={!enabled || severityDisabled}
           title={
             severityDisabled
               ? t("settings.linter.setSeverityPerEntry")
