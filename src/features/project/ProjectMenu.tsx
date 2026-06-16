@@ -12,13 +12,11 @@ import { isLicenseRestrictedError } from "@/features/license/gate";
 
 export function ProjectMenu({
   onOpenImport,
-  onOpenZipExport,
-  onOpenNovelExport,
+  onOpenExport,
   onOpenSnapshot,
 }: {
   onOpenImport?: () => void;
-  onOpenZipExport?: () => void;
-  onOpenNovelExport?: () => void;
+  onOpenExport?: () => void;
   onOpenSnapshot?: () => void;
 }) {
   const { t } = useTranslation();
@@ -117,16 +115,16 @@ export function ProjectMenu({
           type="button"
           data-testid="project-menu-trigger"
           onClick={() => setIsOpen(!isOpen)}
-          className="flex items-center gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+          className="flex w-44 items-center justify-between gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
         >
-          <span className="max-w-40 truncate">{displayTitle}</span>
-          <span className="text-xs">▾</span>
+          <span className="min-w-0 truncate">{displayTitle}</span>
+          <span className="shrink-0 text-xs">▾</span>
         </button>
 
         {isOpen && (
           <div
             data-testid="project-menu-dropdown"
-            className="absolute left-0 top-full z-50 mt-1 min-w-56 rounded-md border border-border bg-popover py-1 shadow-lg"
+            className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover py-1 shadow-lg"
           >
             {projects.map((project) => (
               <div
@@ -172,7 +170,7 @@ export function ProjectMenu({
                 setIsOpen(false);
                 setShowCreateDialog(true);
               }}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+              className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
             >
               <span className="w-4" />
               {t("project.create.action")}
@@ -185,38 +183,24 @@ export function ProjectMenu({
                   setIsOpen(false);
                   onOpenImport();
                 }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
               >
                 <span className="w-4" />
                 {t("project.import.action")}
               </button>
             )}
-            {onOpenZipExport && (
+            {onOpenExport && (
               <button
                 type="button"
-                data-testid="project-zip-export-open"
+                data-testid="project-export-open"
                 onClick={() => {
                   setIsOpen(false);
-                  onOpenZipExport();
+                  onOpenExport();
                 }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
               >
                 <span className="w-4" />
-                {t("project.zipExport.action")}
-              </button>
-            )}
-            {onOpenNovelExport && (
-              <button
-                type="button"
-                data-testid="project-novel-export-open"
-                onClick={() => {
-                  setIsOpen(false);
-                  onOpenNovelExport();
-                }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-              >
-                <span className="w-4" />
-                {t("project.novelExport.action")}
+                {t("project.export.action")}
               </button>
             )}
             {onOpenSnapshot && (
@@ -227,7 +211,7 @@ export function ProjectMenu({
                   setIsOpen(false);
                   onOpenSnapshot();
                 }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
               >
                 <span className="w-4" />
                 {t("project.snapshot.action")}

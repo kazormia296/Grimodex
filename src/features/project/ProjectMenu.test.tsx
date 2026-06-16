@@ -128,6 +128,40 @@ describe("ProjectMenu", () => {
     expect(onOpenImport).toHaveBeenCalledOnce();
   });
 
+  it("calls onOpenExport when the unified export item is clicked", () => {
+    const onOpenExport = vi.fn();
+    render(<ProjectMenu onOpenExport={onOpenExport} />);
+    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    fireEvent.click(screen.getByTestId("project-export-open"));
+    expect(onOpenExport).toHaveBeenCalledOnce();
+  });
+
+  it("omits the export item when onOpenExport is not provided", () => {
+    render(<ProjectMenu />);
+    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    expect(screen.queryByTestId("project-export-open")).toBeNull();
+  });
+
+  // 回帰ゲート: トリガー幅・パネル幅は内容に左右されない固定幅であること。
+  // (プロジェクト名やコマンドラベルの長さで揺れていた問題の再発防止)
+  it("uses content-independent fixed widths for trigger and dropdown panel", () => {
+    render(<ProjectMenu onOpenImport={vi.fn()} onOpenExport={vi.fn()} />);
+
+    const trigger = screen.getByTestId("project-menu-trigger");
+    expect(trigger.className).toContain("w-44");
+    expect(trigger.className).toContain("justify-between");
+
+    fireEvent.click(trigger);
+    const panel = screen.getByTestId("project-menu-dropdown");
+    expect(panel.className).toContain("w-72");
+    expect(panel.className).not.toContain("min-w-56");
+
+    // コマンド項目は固定幅内で折り返さない。
+    expect(screen.getByTestId("project-export-open").className).toContain(
+      "whitespace-nowrap",
+    );
+  });
+
   it("calls onOpenSnapshot when the snapshot item is clicked", () => {
     const onOpenSnapshot = vi.fn();
     render(<ProjectMenu onOpenSnapshot={onOpenSnapshot} />);

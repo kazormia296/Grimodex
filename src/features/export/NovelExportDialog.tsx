@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Download } from "lucide-react";
+import { Download } from "lucide-react";
 import { toast } from "sonner";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -39,7 +39,11 @@ function parseAliases(raw: string | null): string[] {
   }
 }
 
-export function NovelExportDialog({ open, onClose }: Props) {
+/**
+ * AIのべりすと (.novel) エクスポート UI 本体（AnimatedOverlay を含まない）。
+ * 単体ダイアログ（NovelExportDialog）と統合ダイアログ（TransferDialog）の両方で再利用。
+ */
+export function NovelExportBody({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const expandedIds = useTreeStore((s) => s.expandedIds);
@@ -50,11 +54,10 @@ export function NovelExportDialog({ open, onClose }: Props) {
   const [isExporting, setIsExporting] = useState(false);
 
   useEffect(() => {
-    if (!open) return;
+    // マウント時（＝ダイアログ表示時）にツリー選択を初期化する。
     setTreeState(buildInitialTreeState(nodes, expandedIds));
-    // intentionally omit deps: runs only when dialog opens (ExportDialog と同じ規約)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, []);
 
   const checkedScenes = nodes.filter(
     (n) => n.nodeType === "scene" && treeState.checkedIds.has(n.id),
@@ -130,21 +133,10 @@ export function NovelExportDialog({ open, onClose }: Props) {
   }
 
   return (
-    <AnimatedOverlay
-      open={open}
-      onClose={onClose}
-      className="flex h-[min(560px,85vh)] w-[480px] max-w-[90vw] flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-xl"
-    >
-      <div className="flex shrink-0 items-center justify-between">
-        <h2 className="text-base font-semibold">{t("novelExport.title")}</h2>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded p-1 text-muted-foreground hover:bg-accent"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
+    <div className="flex min-h-0 w-full flex-1 flex-col gap-4">
+      <h2 className="shrink-0 text-base font-semibold">
+        {t("novelExport.title")}
+      </h2>
 
       <p className="shrink-0 text-sm text-muted-foreground">
         {t("novelExport.description")}
@@ -179,6 +171,18 @@ export function NovelExportDialog({ open, onClose }: Props) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+export function NovelExportDialog({ open, onClose }: Props) {
+  return (
+    <AnimatedOverlay
+      open={open}
+      onClose={onClose}
+      className="flex h-[min(560px,85vh)] w-[480px] max-w-[90vw] flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-xl"
+    >
+      <NovelExportBody onClose={onClose} />
     </AnimatedOverlay>
   );
 }

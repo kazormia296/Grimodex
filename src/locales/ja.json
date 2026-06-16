@@ -267,11 +267,8 @@
     "import": {
       "action": "インポート…"
     },
-    "zipExport": {
-      "action": "プロジェクトを zip エクスポート…"
-    },
-    "novelExport": {
-      "action": "AIのべりすと形式でエクスポート…"
+    "export": {
+      "action": "エクスポート…"
     },
     "snapshot": {
       "action": "プロジェクトスナップショット…"
@@ -299,6 +296,15 @@
       "success": "プロジェクトを削除しました",
       "failed": "プロジェクトの削除に失敗しました",
       "lastProject": "ワークスペース内の最後のプロジェクトは削除できません"
+    }
+  },
+  "transfer": {
+    "dialogTitle": "インポート / エクスポート",
+    "tablistLabel": "インポート / エクスポートの切り替え",
+    "tab": {
+      "import": "インポート",
+      "zip": "ZIP",
+      "novel": "AIのべりすと"
     }
   },
   "import": {

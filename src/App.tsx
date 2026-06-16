@@ -12,7 +12,10 @@ import { useSyncUiScale } from "@/features/workspace/useSyncUiScale";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import type { SettingsCategory } from "@/features/settings/types";
 import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
-import { ImportDialog } from "@/features/import/ImportDialog";
+import {
+  TransferDialog,
+  type TransferTab,
+} from "@/features/transfer/TransferDialog";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -33,8 +36,6 @@ import { useDebugLogStore } from "@/lib/debugLog";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
-import { ZipExportDialog } from "@/features/export/ZipExportDialog";
-import { NovelExportDialog } from "@/features/export/NovelExportDialog";
 import {
   COLOR_THEMES,
   DEFAULT_COLOR_THEME,
@@ -222,10 +223,9 @@ function EditorScreen() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
-  const [showZipExportDialog, setShowZipExportDialog] = useState(false);
-  const [showNovelExportDialog, setShowNovelExportDialog] = useState(false);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
-  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [showTransferDialog, setShowTransferDialog] = useState(false);
+  const [transferTab, setTransferTab] = useState<TransferTab>("import");
   const { setShowSampleTour, seedAndOpenSample } = useWorkspaceStore();
   const showSampleTour = useWorkspaceStore((s) => s.showSampleTour);
   const glassEnabled = useSettingsStore((s) =>
@@ -590,9 +590,14 @@ function EditorScreen() {
             <GrimodexLogo height={24} className="text-foreground" />
             <WorkspaceMenu />
             <ProjectMenu
-              onOpenImport={() => setShowImportDialog(true)}
-              onOpenZipExport={() => setShowZipExportDialog(true)}
-              onOpenNovelExport={() => setShowNovelExportDialog(true)}
+              onOpenImport={() => {
+                setTransferTab("import");
+                setShowTransferDialog(true);
+              }}
+              onOpenExport={() => {
+                setTransferTab("zip");
+                setShowTransferDialog(true);
+              }}
               onOpenSnapshot={() => setShowSnapshotModal(true)}
             />
             <HistoryButtons />
@@ -639,22 +644,15 @@ function EditorScreen() {
         initialCategory={settingsInitialCategory}
       />
       <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
-      <ZipExportDialog
-        open={showZipExportDialog}
-        onClose={() => setShowZipExportDialog(false)}
-      />
-
-      <NovelExportDialog
-        open={showNovelExportDialog}
-        onClose={() => setShowNovelExportDialog(false)}
-      />
       <ProjectSnapshotModal
         open={showSnapshotModal}
         onClose={() => setShowSnapshotModal(false)}
       />
-      <ImportDialog
-        open={showImportDialog}
-        onClose={() => setShowImportDialog(false)}
+      <TransferDialog
+        open={showTransferDialog}
+        tab={transferTab}
+        onTabChange={setTransferTab}
+        onClose={() => setShowTransferDialog(false)}
       />
       {showSampleTour && <SampleTour />}
       <ReindexProgressToast />

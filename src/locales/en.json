@@ -267,11 +267,8 @@
     "import": {
       "action": "Import…"
     },
-    "zipExport": {
-      "action": "Export project as ZIP…"
-    },
-    "novelExport": {
-      "action": "Export as AI Novelist file…"
+    "export": {
+      "action": "Export…"
     },
     "snapshot": {
       "action": "Project Snapshot…"
@@ -299,6 +296,15 @@
       "success": "Project deleted",
       "failed": "Failed to delete project",
       "lastProject": "Cannot delete the last project in the workspace"
+    }
+  },
+  "transfer": {
+    "dialogTitle": "Import / Export",
+    "tablistLabel": "Import and export sections",
+    "tab": {
+      "import": "Import",
+      "zip": "ZIP",
+      "novel": "AI Novelist"
     }
   },
   "import": {

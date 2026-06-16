@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Download } from "lucide-react";
+import { Download } from "lucide-react";
 import { toast } from "sonner";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import {
@@ -55,7 +55,11 @@ function ToggleRow({
   );
 }
 
-export function ZipExportDialog({ open, onClose }: Props) {
+/**
+ * プロジェクト ZIP エクスポート UI 本体（AnimatedOverlay を含まない）。
+ * 単体ダイアログ（ZipExportDialog）と統合ダイアログ（TransferDialog）の両方で再利用。
+ */
+export function ZipExportBody({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const projectId = useCurrentProjectId();
   const project = useCurrentProject();
@@ -96,21 +100,8 @@ export function ZipExportDialog({ open, onClose }: Props) {
   }
 
   return (
-    <AnimatedOverlay
-      open={open}
-      onClose={onClose}
-      className="flex w-[480px] max-w-[90vw] flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-xl"
-    >
-      <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold">{t("zipExport.title")}</h2>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded p-1 text-muted-foreground hover:bg-accent"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
+    <div className="flex w-full flex-col gap-4">
+      <h2 className="text-base font-semibold">{t("zipExport.title")}</h2>
 
       <p className="text-sm text-muted-foreground">
         {t("zipExport.description")}
@@ -161,6 +152,18 @@ export function ZipExportDialog({ open, onClose }: Props) {
           {isExporting ? t("zipExport.exporting") : t("zipExport.export")}
         </button>
       </div>
+    </div>
+  );
+}
+
+export function ZipExportDialog({ open, onClose }: Props) {
+  return (
+    <AnimatedOverlay
+      open={open}
+      onClose={onClose}
+      className="flex w-[480px] max-w-[90vw] flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-xl"
+    >
+      <ZipExportBody onClose={onClose} />
     </AnimatedOverlay>
   );
 }
