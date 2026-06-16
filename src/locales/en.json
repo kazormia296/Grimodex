@@ -954,7 +954,6 @@
       "resetAllRules": "Reset all rules to default",
       "langRulesJa": "Japanese rules",
       "langRulesEn": "English rules",
-      "enableLanguage": "Enable entire language",
       "resetLangRulesJa": "Reset Japanese rules to default",
       "resetLangRulesEn": "Reset English rules to default",
       "langNotApplied": "Not applied",

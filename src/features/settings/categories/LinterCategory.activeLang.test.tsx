@@ -17,13 +17,8 @@ vi.mock("@/features/lint/LinterIgnoreListTab", () => ({
 }));
 
 const h = vi.hoisted(() => {
-  const setLanguageEnabled = vi.fn();
   const effective = {
     enabled: true,
-    languages: {
-      ja: { enabled: true },
-      en: { enabled: true },
-    },
     rules: {
       "ja/consecutive-punct": { enabled: true },
       "en/straight-quotes": { enabled: true },
@@ -32,13 +27,12 @@ const h = vi.hoisted(() => {
   const storeState = {
     getEffective: () => effective,
     setLinterEnabled: vi.fn(),
-    setLanguageEnabled,
     setRule: vi.fn(),
     resetRule: vi.fn(),
     resetLanguage: vi.fn(),
     resetAll: vi.fn(),
   };
-  return { setLanguageEnabled, storeState };
+  return { storeState };
 });
 
 vi.mock("@/features/lint/lintConfigStore", () => ({
@@ -117,11 +111,5 @@ describe("LinterCategory — アクティブ執筆言語に応じたルールセ
     // 日本語ルール行が現れ、ボタンは『隠す』に変わる。
     expect(screen.getByText("ja/consecutive-punct")).toBeTruthy();
     expect(screen.getByText("settings.linter.collapseLangRules")).toBeTruthy();
-  });
-
-  it("マウント時に言語 enabled フラグを書き換えない（enabled は不変）", () => {
-    setProjectLanguage("en");
-    render(<LinterCategory />);
-    expect(h.setLanguageEnabled).not.toHaveBeenCalled();
   });
 });

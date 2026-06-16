@@ -90,7 +90,7 @@ export const useLintProjectStore = create<LintProjectState>()((set, get) => ({
     }
     const effective = cfgStore.getEffective();
     const language = resolveLintLanguage();
-    if (!effective.enabled || !effective.languages[language]?.enabled) {
+    if (!effective.enabled) {
       set({
         phase: "error",
         fatalError: i18next.t(

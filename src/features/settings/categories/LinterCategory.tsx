@@ -54,7 +54,6 @@ function LinterRulesTab() {
   const { t } = useTranslation();
   const effective = useLintConfigStore((s) => s.getEffective());
   const setLinterEnabled = useLintConfigStore((s) => s.setLinterEnabled);
-  const setLanguageEnabled = useLintConfigStore((s) => s.setLanguageEnabled);
   const setRule = useLintConfigStore((s) => s.setRule);
   const resetRule = useLintConfigStore((s) => s.resetRule);
   const resetLanguage = useLintConfigStore((s) => s.resetLanguage);
@@ -156,30 +155,18 @@ function LinterRulesTab() {
                   </button>
                 )}
                 {expanded && (
-                  <>
-                    <label className="flex items-center gap-1 text-xs">
-                      <input
-                        type="checkbox"
-                        checked={effective.languages[lang].enabled}
-                        onChange={(e) =>
-                          setLanguageEnabled(lang, e.target.checked)
-                        }
-                      />
-                      {t("settings.linter.enableLanguage")}
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => resetLanguage(lang)}
-                      className="rounded border border-border px-1.5 py-0.5 text-xs hover:bg-accent"
-                      title={
-                        lang === "ja"
-                          ? t("settings.linter.resetLangRulesJa")
-                          : t("settings.linter.resetLangRulesEn")
-                      }
-                    >
-                      <RotateCcw className="h-3 w-3" />
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    onClick={() => resetLanguage(lang)}
+                    className="rounded border border-border px-1.5 py-0.5 text-xs hover:bg-accent"
+                    title={
+                      lang === "ja"
+                        ? t("settings.linter.resetLangRulesJa")
+                        : t("settings.linter.resetLangRulesEn")
+                    }
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                  </button>
                 )}
               </div>
             </div>
@@ -189,7 +176,6 @@ function LinterRulesTab() {
                   <RuleRow
                     key={ruleId}
                     ruleId={ruleId}
-                    disabledByLanguage={!effective.languages[lang].enabled}
                     onSetRule={setRule}
                     onResetRule={resetRule}
                   />
@@ -217,7 +203,6 @@ function LinterRulesTab() {
                 <RuleRow
                   key={ruleId}
                   ruleId={ruleId}
-                  disabledByLanguage={false}
                   onSetRule={setRule}
                   onResetRule={resetRule}
                 />
@@ -232,12 +217,10 @@ function LinterRulesTab() {
 
 function RuleRow({
   ruleId,
-  disabledByLanguage,
   onSetRule,
   onResetRule,
 }: {
   ruleId: string;
-  disabledByLanguage: boolean;
   onSetRule: (ruleId: string, patch: Record<string, unknown>) => void;
   onResetRule: (ruleId: string) => void;
 }) {
@@ -268,7 +251,6 @@ function RuleRow({
           <input
             type="checkbox"
             checked={enabled}
-            disabled={disabledByLanguage}
             onChange={(e) => onSetRule(ruleId, { enabled: e.target.checked })}
           />
           <code className="text-xs">{ruleId}</code>
@@ -280,7 +262,7 @@ function RuleRow({
         </label>
         <select
           value={severity}
-          disabled={disabledByLanguage || !enabled || severityDisabled}
+          disabled={!enabled || severityDisabled}
           title={
             severityDisabled
               ? t("settings.linter.setSeverityPerEntry")

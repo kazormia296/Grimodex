@@ -954,7 +954,6 @@
       "resetAllRules": "全ルールをデフォルトに戻す",
       "langRulesJa": "日本語ルール",
       "langRulesEn": "英語ルール",
-      "enableLanguage": "言語全体を有効",
       "resetLangRulesJa": "日本語のルールをデフォルトに戻す",
       "resetLangRulesEn": "英語のルールをデフォルトに戻す",
       "langNotApplied": "適用外",

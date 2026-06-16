@@ -10,10 +10,6 @@ import type { LintLanguage, RuleConfig } from "./types";
  */
 export const LINT_CONFIG_SCHEMA_VERSION = 1;
 
-export interface LangConfig {
-  enabled: boolean;
-}
-
 /**
  * Behaviour when the inline-disable picker sees a multi-block selection.
  *
@@ -33,7 +29,6 @@ export interface InlineDisableConfig {
 export interface LintFullConfig {
   schemaVersion: number;
   enabled: boolean;
-  languages: Record<LintLanguage, LangConfig>;
   rules: Record<string, RuleConfig>;
   inlineDisable: InlineDisableConfig;
 }
@@ -49,10 +44,6 @@ export interface LintFullConfig {
 export const BUILTIN_DEFAULT_CONFIG: LintFullConfig = {
   schemaVersion: LINT_CONFIG_SCHEMA_VERSION,
   enabled: true,
-  languages: {
-    ja: { enabled: true },
-    en: { enabled: true },
-  },
   rules: {
     "ja/consecutive-punct": { enabled: true },
     "ja/dash-single": { enabled: true },
@@ -145,7 +136,6 @@ interface LintConfigState {
 
   /** Update / reset helpers — all flush through settings store debounce. */
   setLinterEnabled: (enabled: boolean) => void;
-  setLanguageEnabled: (lang: LintLanguage, enabled: boolean) => void;
   setRule: (ruleId: string, patch: Partial<RuleConfig>) => void;
   setMultiBlockPolicy: (policy: MultiBlockDisablePolicy) => void;
   resetRule: (ruleId: string) => void;
@@ -198,18 +188,6 @@ function computeEffective(userLayer: Partial<LintFullConfig>): LintFullConfig {
   const value: LintFullConfig = {
     schemaVersion: LINT_CONFIG_SCHEMA_VERSION,
     enabled: userLayer.enabled ?? BUILTIN_DEFAULT_CONFIG.enabled,
-    languages: {
-      ja: {
-        enabled:
-          userLayer.languages?.ja?.enabled ??
-          BUILTIN_DEFAULT_CONFIG.languages.ja.enabled,
-      },
-      en: {
-        enabled:
-          userLayer.languages?.en?.enabled ??
-          BUILTIN_DEFAULT_CONFIG.languages.en.enabled,
-      },
-    },
     rules: mergeRules(userLayer.rules),
     inlineDisable: {
       multiBlockPolicy:
@@ -242,20 +220,6 @@ export const useLintConfigStore = create<LintConfigState>()((set, get) => ({
     const user = { ...get().userLayer, enabled };
     set({ userLayer: user });
     persist(user);
-  },
-
-  setLanguageEnabled: (lang, enabled) => {
-    const user = get().userLayer;
-    const next: Partial<LintFullConfig> = {
-      ...user,
-      languages: {
-        ja: user.languages?.ja ?? BUILTIN_DEFAULT_CONFIG.languages.ja,
-        en: user.languages?.en ?? BUILTIN_DEFAULT_CONFIG.languages.en,
-        [lang]: { enabled },
-      } as Record<LintLanguage, LangConfig>,
-    };
-    set({ userLayer: next });
-    persist(next);
   },
 
   setRule: (ruleId, patch) => {
@@ -307,16 +271,7 @@ export const useLintConfigStore = create<LintConfigState>()((set, get) => ({
     for (const key of Object.keys(nextRules)) {
       if (key.startsWith(`${lang}/`)) delete nextRules[key];
     }
-    const nextLanguages = { ...(user.languages ?? {}) } as Record<
-      LintLanguage,
-      LangConfig
-    >;
-    delete (nextLanguages as Record<string, LangConfig>)[lang];
-    const next: Partial<LintFullConfig> = {
-      ...user,
-      rules: nextRules,
-      languages: nextLanguages,
-    };
+    const next: Partial<LintFullConfig> = { ...user, rules: nextRules };
     set({ userLayer: next });
     persist(next);
   },
