@@ -148,17 +148,37 @@ describe("computeLongestStreak", () => {
 });
 
 describe("intensityLevel", () => {
-  it("0 / 上限 0 はレベル 0", () => {
-    expect(intensityLevel(0, 100)).toBe(0);
-    expect(intensityLevel(50, 0)).toBe(0);
+  it("0 以下はレベル 0", () => {
+    expect(intensityLevel(0, "chars")).toBe(0);
+    expect(intensityLevel(-5, "events")).toBe(0);
   });
 
-  it("相対比でレベル分けする", () => {
-    expect(intensityLevel(5, 100)).toBe(1); // 5%
-    expect(intensityLevel(20, 100)).toBe(2); // 20%
-    expect(intensityLevel(50, 100)).toBe(3); // 50%
-    expect(intensityLevel(90, 100)).toBe(4); // 90%
-    expect(intensityLevel(100, 100)).toBe(4); // max
+  it("chars を絶対バンドでレベル分けする（少量は淡色に留まる）", () => {
+    expect(intensityLevel(1, "chars")).toBe(1);
+    expect(intensityLevel(99, "chars")).toBe(1);
+    expect(intensityLevel(100, "chars")).toBe(2);
+    expect(intensityLevel(399, "chars")).toBe(2);
+    expect(intensityLevel(400, "chars")).toBe(3);
+    expect(intensityLevel(1199, "chars")).toBe(3);
+    expect(intensityLevel(1200, "chars")).toBe(4);
+    expect(intensityLevel(99999, "chars")).toBe(4);
+  });
+
+  it("events を絶対バンドでレベル分けする（1〜2 回は最濃にならない）", () => {
+    expect(intensityLevel(1, "events")).toBe(1);
+    expect(intensityLevel(2, "events")).toBe(1);
+    expect(intensityLevel(3, "events")).toBe(2);
+    expect(intensityLevel(9, "events")).toBe(2);
+    expect(intensityLevel(10, "events")).toBe(3);
+    expect(intensityLevel(29, "events")).toBe(3);
+    expect(intensityLevel(30, "events")).toBe(4);
+  });
+
+  it("回帰: 閑散期でも単発の少量編集は level 4（真っ黒）にならない", () => {
+    // 旧相対実装ではウィンドウ最大値=自分自身となり 1 回の編集が level 4
+    // に化けていた。絶対バンドでは少量は淡色に留まる。
+    expect(intensityLevel(5, "chars")).toBe(1);
+    expect(intensityLevel(1, "events")).toBe(1);
   });
 });
 
@@ -210,5 +230,24 @@ describe("buildHeatmap", () => {
     const hm = buildHeatmap(noChars, now, 53);
     expect(hm.metric).toBe("events");
     expect(hm.max).toBe(2);
+  });
+
+  it("回帰: 閑散期に少量だけ書いた過去日は最濃 (level 4) にならない", () => {
+    // ウィンドウ内で唯一の活動が「ある過去日に 5 文字」でも、絶対バンドにより
+    // level 1（淡色）に留まり、真っ黒には塗られない。
+    const quiet = computeWritingStats([ev(2026, 6, 1, 5)], now);
+    const hm = buildHeatmap(quiet, now, 53);
+    const day = hm.weeks.flat().find((c) => c.key === "2026-06-01");
+    expect(day?.chars).toBe(5);
+    expect(day?.level).toBe(1);
+  });
+
+  it("回帰: 文字復元失敗時も単発イベントの過去日は level 1 止まり", () => {
+    const quietEvents = computeWritingStats([ev(2026, 6, 1, 0)], now);
+    const hm = buildHeatmap(quietEvents, now, 53);
+    expect(hm.metric).toBe("events");
+    const day = hm.weeks.flat().find((c) => c.key === "2026-06-01");
+    expect(day?.events).toBe(1);
+    expect(day?.level).toBe(1);
   });
 });

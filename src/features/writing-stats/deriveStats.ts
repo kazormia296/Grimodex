@@ -60,7 +60,7 @@ export interface HeatmapCell {
 export interface Heatmap {
   /** 各要素が 1 週（列）。週内は日曜=0 .. 土曜=6 の 7 セル。 */
   weeks: HeatmapCell[][];
-  /** 強度算出に使った最大値 */
+  /** ウィンドウ内ピーク日の値（指標 metric ベースの参考値。level 計算には未使用）。 */
   max: number;
   /** 強度の元にした指標 */
   metric: "chars" | "events";
@@ -202,7 +202,7 @@ export function buildHeatmap(
   const totalDays = weeks * 7;
   const startKey = shiftDayKey(endKey, -(totalDays - 1));
 
-  // 強度の最大値（埋めセルは除外＝inRange のみ）。
+  // ピーク日の値（参考値として返すだけ。level は intensityLevel の絶対バンド）。
   let max = 0;
   for (const bucket of stats.byDay.values()) {
     const v = metric === "chars" ? bucket.chars : bucket.events;
@@ -225,7 +225,7 @@ export function buildHeatmap(
         chars,
         events,
         inRange,
-        level: inRange ? intensityLevel(value, max) : 0,
+        level: inRange ? intensityLevel(value, metric) : 0,
       });
       cursor = shiftDayKey(cursor, 1);
     }
@@ -235,12 +235,31 @@ export function buildHeatmap(
   return { weeks: out, max, metric };
 }
 
-/** 値を最大値に対する相対比で 0..4 のレベルへ。 */
-export function intensityLevel(value: number, max: number): number {
-  if (value <= 0 || max <= 0) return 0;
-  const r = value / max;
-  if (r > 0.66) return 4;
-  if (r > 0.33) return 3;
-  if (r > 0.1) return 2;
+/**
+ * 強度レベルの絶対しきい値。
+ *
+ * 旧実装は「ウィンドウ内最大値」に対する相対比でレベルを決めていた。これだと
+ * 閑散期は 1 回のちょっとした編集が最大値＝最濃 (level 4) になり、ほとんど
+ * 書いていない日まで真っ黒に塗られて見えた（既定 light テーマの --primary が
+ * near-black なため特に顕著）。GitHub のコントリビューショングラフと同様、
+ * 絶対量のバンドでレベルを決め、些細な日は淡色 (level 1) に留める。
+ *
+ * バンドは「以上」境界の昇順 3 要素 [L2, L3, L4]。chars は挿入文字数の概算、
+ * events は doc 変更トランザクション数（文字数復元に失敗したときのフォール
+ * バック指標）。値はチューニング可能。
+ */
+const CHAR_BANDS = [100, 400, 1200] as const; // 1..99→1, 100..399→2, 400..1199→3, 1200+→4
+const EVENT_BANDS = [3, 10, 30] as const; //     1..2→1, 3..9→2,    10..29→3,    30+→4
+
+/** 値を絶対量のバンドで 0..4 のレベルへ。0 以下は level 0（無着色）。 */
+export function intensityLevel(
+  value: number,
+  metric: "chars" | "events",
+): number {
+  if (value <= 0) return 0;
+  const bands = metric === "chars" ? CHAR_BANDS : EVENT_BANDS;
+  if (value >= bands[2]) return 4;
+  if (value >= bands[1]) return 3;
+  if (value >= bands[0]) return 2;
   return 1;
 }
