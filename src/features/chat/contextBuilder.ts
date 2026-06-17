@@ -591,7 +591,7 @@ function trimL2Text(text: string, targetTokens: number): string {
 }
 
 /** L3: シーン本文を先頭から切り詰め（ヘッダ保持、末尾保持） */
-function trimL3Text(
+export function trimL3Text(
   text: string,
   targetTokens: number,
   markers: L3TrimMarkers = JA_L3_TRIM_MARKERS,
@@ -613,8 +613,10 @@ function trimL3Text(
 
   const bodyBudget = targetTokens - headerTokens;
 
-  // Trim from the front of scene body, keeping the tail
-  const words = sceneBody.split("");
+  // Trim from the front of scene body, keeping the tail.
+  // Array.from でコードポイント単位に分割する（split("") は UTF-16 コードユニット
+  // 単位で astral 文字 = CJK 拡張B漢字・絵文字を境界でサロゲート分割し壊すため）。
+  const words = Array.from(sceneBody);
   // Binary search for the cutoff point
   let lo = 0;
   let hi = words.length;
@@ -648,8 +650,34 @@ function trimL1Text(
   return current;
 }
 
-/** L5: 将来用 Progressive Summarization。現在は全削除のみ */
-function trimL5Text(_text: string, _targetTokens: number): string {
+/**
+ * L5 (会話要約) の予算超過時トリム。古い要約ブロックから先頭削りし直近を残す。
+ *
+ * 段階的要約 (Progressive Summarization, G17) は上流 (chatApi / chatStore) が
+ * 会話を要約して L5 を生成する。本関数はプロンプト組み上げ後に全体予算を超えた
+ * 場合の最終手段トリムで、trimToFit の順序上 RAG の次・L4 より先に発動する。
+ * 直近の要約ほど現在の執筆に有用なため、古い要約 (先頭) から落として末尾を残す。
+ */
+export function trimL5Text(text: string, targetTokens: number): string {
+  if (countTokens(text) <= targetTokens) return text;
+  if (targetTokens <= 0) return "";
+
+  // Format: "\n## これまでの会話の要約\n" then "summary1\n\nsummary2\n\n..."
+  // (chatStore: summaries.map((s) => s.summary).join("\n\n"), 古い→新しい順)
+  const headerMatch = text.match(/^(\n## [^\n]+\n)/);
+  const header = headerMatch ? headerMatch[1] : "";
+  const body = header ? text.slice(header.length) : text;
+
+  const entries = body.split(/\n\n/).filter((e) => e.trim().length > 0);
+
+  // Remove from the front (oldest summary first)
+  let kept = [...entries];
+  while (kept.length > 0) {
+    kept = kept.slice(1);
+    if (kept.length === 0) return "";
+    const candidate = header + kept.join("\n\n");
+    if (countTokens(candidate) <= targetTokens) return candidate;
+  }
   return "";
 }
 
