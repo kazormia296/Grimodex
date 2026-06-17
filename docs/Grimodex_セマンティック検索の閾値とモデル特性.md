@@ -80,7 +80,7 @@ JMTEB（公式モデルカード）。RAG で効くのは Retrieval 列:
 3. **top-1 マージン — 注入用途に好相性**。「絶対床（例 0.80）以上 かつ top-1 から一定差以内」の二段条件。
    無関係シーンが 0.82〜0.84 に団子状に並ぶ状況では、団子内の微差より「明確に抜けた1件があるか」を見る方が頑健。
 4. **ハイブリッド（dense + sparse, bge-m3 等）**。固有名詞・語彙一致を sparse が補完。小説の人名・地名が
-   「関連シーン」の強い手がかりなので相性良。
+   「関連シーン」の強い手がかりなので相性良。**→ 2026-06-17 実装（下記「ハイブリッド検索」節）。**
 5. 学習ベース（Cosine Adapter / MLP 分類器）。ラベル要・単一作品ツール規模では過剰。
 
 ## 採用方針（2026-06-14 確定）
@@ -95,6 +95,34 @@ JMTEB（公式モデルカード）。RAG で効くのは Retrieval 列:
 - 将来: 検索目的なら **130m**（310m と retrieval 同値・軽い）。precision 不満時に reranker（v3 は重い）。
   en 不満時は bge-base / multilingual-e5（**閾値は再キャリブレーション必須**）。
 
+## ハイブリッド検索（dense + sparse/BM25, RRF）2026-06-17 実装
+
+Q5 改善策 #4。密ベクトル（256/384 次元）は語彙完全一致を過小評価しがちで、固有名詞
+（人名・地名）の recall を落とす。「アイリーン」を含むシーンを引きたいのに cosine が
+ゲート（ja 0.85）下（例 0.83）に座って注入されない、という取りこぼしを補う。
+
+- **配置**: フロント JS（`semanticRecall.ts`）。既存の Tauri コマンド `semantic_search`（dense）と
+  `fts_search`（scope=`scenes`, trigram tokenizer, `ORDER BY rank` = bm25）を併用するだけで、
+  Rust 変更なし。融合は `selectHybridRecallChunks`。
+- **融合**: Reciprocal Rank Fusion。`rrf(s) = 1/(k+rank_dense) + 1/(k+rank_sparse)`（k=60）。
+- **precision 維持（「迷ったら何も注入しない」を崩さない）**:
+  - 土台は dense pool（本文と cosine を持つのは dense 側だけ。`HYBRID_FETCH_LIMIT=30` に拡大）。
+  - `eligible(s) = sparseRescue(s) || (densePass && denseConfident(s))`。
+    - `densePass` = 明確な勝者（cosine ≥ gate）が居る。
+    - `denseConfident` = cosine ≥ 床（minScore）。
+    - `sparseRescue` = sparse 上位 N（`SPARSE_LIMIT=10`）に居て cosine ≥ 床 − `RESCUE_MARGIN(0.05)`。
+  - 勝者が居ない（densePass=false）時は **救済シーンだけ**注入。床は超えるが勝者でない団子
+    （無関係 0.82〜0.84）を巻き込まない。救済も無ければ空（従来どおり）。
+  - 救済の二段ガード: ① sparse 上位 N 限定（bm25 IDF が共通語を下げる）+ ② cosine ≥ 床−margin
+    （語彙だけ一致する低 cosine の偶発ヒットを弾く）。
+- **グレースフル**: sparse が空／失敗、または設定オフなら dense 単独選別（`selectSemanticRecallChunks`）へ退避。
+  → FTS 未整備や feature 無効ビルドでも従来挙動と完全一致。
+- **MVP 制約**: sparse でだけ一致して dense pool（上位 30）に居ないシーンは、本文・cosine を持たないため
+  注入しない。将来は sparse-only シーンの本文 backfill（`semantic_chunk_context` 等）で対応余地あり。
+- **設定**: `ai.hybridRecall`（project, 既定 ON, `ai.semanticRecall` が前提）。
+- **未検証ゲート**: 実プロジェクト・実 LLM での recall/precision 効果は dev の Run search eval と
+  実機ログ（`SemanticRecall mode=hybrid …` 行）で要計測。閾値（RESCUE_MARGIN / SPARSE_LIMIT）は暫定。
+
 ## 一次情報源
 
 - ruri-v3-30m モデルカード（サイズ表・JMTEB・cosine 例・pooling 設定）: huggingface.co/cl-nagoya/ruri-v3-30m
@@ -106,7 +134,8 @@ JMTEB（公式モデルカード）。RAG で効くのは Retrieval 列:
 
 ## 関連
 
-- 実装: `src/features/chat/semanticRecall.ts`（閾値・recall パラメータ）
+- 実装: `src/features/chat/semanticRecall.ts`（閾値・recall パラメータ・`selectHybridRecallChunks` RRF 融合）
+- sparse: `src-tauri/src/database/fts.rs`（`search_fts` scope=scenes, trigram bm25）、`src/lib/fts.ts`（sanitizer）
 - 計測: `scripts/calibrate-embedding-threshold.py`、`scripts/fixtures/{ja,en}-calibration.jsonl`、
   dev の Run search eval（`src/features/semantic-search/searchEval.ts`）、Dump chunks
   （`semantic_debug_dump`）

@@ -2191,6 +2191,10 @@ async function buildSceneContextPrompt(opts: {
   const semanticRecallEnabled = useSettingsStore
     .getState()
     .getBoolean("ai.semanticRecall", true);
+  // ハイブリッド検索 (dense + sparse/bm25 RRF 融合)。semanticRecall が前提。
+  const hybridRecallEnabled = useSettingsStore
+    .getState()
+    .getBoolean("ai.hybridRecall", true);
   const recallQuery =
     semanticRecallEnabled && opts.semanticRecallSeedMessage
       ? buildSemanticRecallQuery({
@@ -2219,6 +2223,7 @@ async function buildSceneContextPrompt(opts: {
           projectId: projectIdForFs,
           query: recallQuery,
           excludeSceneIds: [sceneCtx.id, ...(opts.mentionedSceneIds ?? [])],
+          hybrid: hybridRecallEnabled,
         })
       : Promise.resolve([] as SemanticRecallChunk[]),
   ]);

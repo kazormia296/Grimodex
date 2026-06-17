@@ -11,6 +11,7 @@ import type { SemanticSearchHit } from "../semantic-search/api";
 import {
   buildSemanticRecallQuery,
   selectSemanticRecallChunks,
+  selectHybridRecallChunks,
   fetchSemanticRecall,
   recallParamsForLang,
   SEMANTIC_RECALL_MIN_SCORE,
@@ -21,6 +22,9 @@ import {
   SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS,
   SEMANTIC_RECALL_MAX_CHUNK_CHARS,
   SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN,
+  SEMANTIC_RECALL_RESCUE_MARGIN,
+  SEMANTIC_RECALL_HYBRID_FETCH_LIMIT,
+  SEMANTIC_RECALL_SPARSE_LIMIT,
 } from "./semanticRecall";
 
 function makeHit(over: Partial<SemanticSearchHit> = {}): SemanticSearchHit {
@@ -295,5 +299,256 @@ describe("fetchSemanticRecall", () => {
       excludeSceneIds: [],
     });
     expect(chunks).toEqual([]);
+  });
+});
+
+describe("selectHybridRecallChunks", () => {
+  const FLOOR = SEMANTIC_RECALL_MIN_SCORE; // 0.80 (ja)
+  const GATE = SEMANTIC_RECALL_TOP1_GATE; // 0.85 (ja)
+  // 団子帯 (>=floor だが <gate): dense 単独では「勝者なし」でゲートに弾かれる。
+  const DANGO = (FLOOR + GATE) / 2;
+  // 床を割るが rescue 床 (floor - margin) は上回る、語彙一致で救済可能な帯。
+  const RESCUE_BAND = FLOOR - SEMANTIC_RECALL_RESCUE_MARGIN / 2;
+
+  it("degrades to the dense-only selection when the sparse list is empty", () => {
+    // 勝者あり + 床以上の runner-up + 床割れ。sparse 無しなら従来挙動と一致。
+    const hits = [
+      makeHit({ sceneId: "win", score: GATE + 0.05 }),
+      makeHit({ sceneId: "second", score: FLOOR + 0.01 }),
+      makeHit({ sceneId: "belowFloor", score: FLOOR - 0.01 }),
+    ];
+    const chunks = selectHybridRecallChunks(hits, [], { excludeSceneIds: [] });
+    expect(chunks.map((c) => c.sceneId)).toEqual(["win", "second"]);
+  });
+
+  it("injects nothing when there is no dense winner and no sparse rescue", () => {
+    // 団子だけ (>=floor, <gate) で sparse ヒットも無い → precision 維持で空。
+    const hits = [
+      makeHit({ sceneId: "a", score: DANGO }),
+      makeHit({ sceneId: "b", score: FLOOR }),
+    ];
+    expect(selectHybridRecallChunks(hits, [], { excludeSceneIds: [] })).toEqual(
+      [],
+    );
+  });
+
+  it("rescues a sparse top hit below the floor when there is no dense winner", () => {
+    // dense 単独だと irene (床割れ) は捨てられ、団子しか無いのでゲートで全没 → 空。
+    // sparse top-1 に irene が居るので、rescue 床まで引き上げて irene だけ注入する。
+    const hits = [
+      makeHit({ sceneId: "dango", score: DANGO }),
+      makeHit({
+        sceneId: "irene",
+        score: RESCUE_BAND,
+        chunkText: "アイリーンは振り返った。",
+      }),
+    ];
+    const chunks = selectHybridRecallChunks(hits, ["irene"], {
+      excludeSceneIds: [],
+    });
+    // 救済は sparse 一致 scene のみ。団子 (dango) は巻き込まない。
+    expect(chunks.map((c) => c.sceneId)).toEqual(["irene"]);
+    expect(chunks[0].chunkText).toBe("アイリーンは振り返った。");
+  });
+
+  it("does not rescue a sparse hit whose cosine is below the rescue floor", () => {
+    // 語彙は一致するが意味的には無関係 (cosine 0.5)。rescue 床未満なので注入しない。
+    const hits = [
+      makeHit({ sceneId: "dango", score: DANGO }),
+      makeHit({ sceneId: "coincidence", score: 0.5 }),
+    ];
+    expect(
+      selectHybridRecallChunks(hits, ["coincidence"], { excludeSceneIds: [] }),
+    ).toEqual([]);
+  });
+
+  it("does not inject a sparse-only scene that is absent from the dense pool", () => {
+    // dense pool に無いシーンは chunkText も cosine も無いので注入対象外 (MVP 制約)。
+    const hits = [makeHit({ sceneId: "a", score: GATE + 0.05 })];
+    const chunks = selectHybridRecallChunks(hits, ["ghost", "a"], {
+      excludeSceneIds: [],
+    });
+    expect(chunks.map((c) => c.sceneId)).toEqual(["a"]);
+  });
+
+  it("lifts a scene ranked high in both dense and sparse above dense-only scenes (RRF)", () => {
+    // C は dense 3 位だが sparse 1 位。RRF で A/B を抜いて先頭に来る。
+    const hits = [
+      makeHit({ sceneId: "A", score: 0.95 }),
+      makeHit({ sceneId: "B", score: 0.92 }),
+      makeHit({ sceneId: "C", score: 0.9 }),
+    ];
+    const chunks = selectHybridRecallChunks(hits, ["C"], {
+      excludeSceneIds: [],
+    });
+    expect(chunks.map((c) => c.sceneId)).toEqual(["C", "A", "B"]);
+  });
+
+  it("applies excludeSceneIds to the sparse rescue path too", () => {
+    // sparse 一致シーンが除外対象なら救済しない → 団子だけ残り空になる。
+    const hits = [
+      makeHit({ sceneId: "dango", score: DANGO }),
+      makeHit({ sceneId: "irene", score: RESCUE_BAND }),
+    ];
+    const chunks = selectHybridRecallChunks(hits, ["irene"], {
+      excludeSceneIds: ["irene"],
+    });
+    expect(chunks).toEqual([]);
+  });
+
+  it("backfills remaining slots with same-scene runner-ups when a winner is present", () => {
+    // distinct シーンが a / b の 2 つだけ。勝者ありなので余り枠を a の二番手で埋める。
+    const hits = [
+      makeHit({ sceneId: "a", score: GATE + 0.05, chunkText: "a-best" }),
+      makeHit({ sceneId: "a", score: GATE, chunkText: "a-second" }),
+      makeHit({ sceneId: "b", score: FLOOR + 0.02, chunkText: "b-1" }),
+    ];
+    const chunks = selectHybridRecallChunks(hits, [], { excludeSceneIds: [] });
+    expect(chunks.map((c) => c.sceneId)).toEqual(["a", "b", "a"]);
+    expect(chunks.map((c) => c.chunkText)).toEqual([
+      "a-best",
+      "b-1",
+      "a-second",
+    ]);
+  });
+
+  it("does not backfill in the rescue-only regime (no dense winner)", () => {
+    // 勝者がいない救済のみのとき、団子の二番手で枠を埋めない (precision 維持)。
+    const hits = [
+      makeHit({ sceneId: "irene", score: RESCUE_BAND, chunkText: "irene-1" }),
+      makeHit({ sceneId: "dango", score: DANGO, chunkText: "dango-best" }),
+      makeHit({ sceneId: "dango", score: DANGO - 0.01, chunkText: "dango-2" }),
+    ];
+    const chunks = selectHybridRecallChunks(hits, ["irene"], {
+      excludeSceneIds: [],
+    });
+    // irene だけ。床以上の dango (団子) もその二番手も巻き込まない。
+    expect(chunks.map((c) => c.sceneId)).toEqual(["irene"]);
+  });
+
+  it("caps the number of injected chunks", () => {
+    const win = makeHit({ sceneId: "win", score: GATE + 0.05 });
+    const extras = Array.from(
+      { length: SEMANTIC_RECALL_MAX_CHUNKS + 3 },
+      (_, i) => makeHit({ sceneId: `r${i}`, score: RESCUE_BAND }),
+    );
+    const sparseIds = extras.map((h) => h.sceneId);
+    const chunks = selectHybridRecallChunks([win, ...extras], sparseIds, {
+      excludeSceneIds: [],
+    });
+    expect(chunks).toHaveLength(SEMANTIC_RECALL_MAX_CHUNKS);
+  });
+
+  it("truncates over-long chunk text", () => {
+    const long = "長".repeat(SEMANTIC_RECALL_MAX_CHUNK_CHARS + 200);
+    const chunks = selectHybridRecallChunks(
+      [makeHit({ sceneId: "win", score: GATE + 0.05, chunkText: long })],
+      [],
+      { excludeSceneIds: [] },
+    );
+    expect(chunks[0].chunkText.length).toBeLessThanOrEqual(
+      SEMANTIC_RECALL_MAX_CHUNK_CHARS + 1,
+    );
+  });
+});
+
+describe("fetchSemanticRecall (hybrid mode)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function routeInvoke(opts: {
+    dense?: SemanticSearchHit[] | (() => Promise<unknown>);
+    sparse?: unknown[] | (() => Promise<unknown>);
+  }) {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "semantic_search") {
+        return typeof opts.dense === "function"
+          ? opts.dense()
+          : Promise.resolve(opts.dense ?? []);
+      }
+      if (cmd === "fts_search") {
+        return typeof opts.sparse === "function"
+          ? opts.sparse()
+          : Promise.resolve(opts.sparse ?? []);
+      }
+      return Promise.resolve([]);
+    });
+  }
+
+  it("queries fts_search (scope=scenes) and fuses it to rescue a borderline scene", async () => {
+    routeInvoke({
+      dense: [
+        makeHit({ sceneId: "dango", score: 0.825 }),
+        makeHit({
+          sceneId: "irene",
+          score: 0.78,
+          chunkText: "アイリーンは振り返った。",
+        }),
+      ],
+      sparse: [
+        { sourceType: "scene", id: "irene", title: "再会", excerpt: "" },
+      ],
+    });
+    const chunks = await fetchSemanticRecall({
+      projectId: "p1",
+      query: "アイリーンのシーン",
+      excludeSceneIds: [],
+      hybrid: true,
+    });
+    expect(chunks.map((c) => c.sceneId)).toEqual(["irene"]);
+
+    const ftsCall = mockInvoke.mock.calls.find(([cmd]) => cmd === "fts_search");
+    expect(ftsCall).toBeDefined();
+    const ftsPayload = ftsCall![1] as Record<string, unknown>;
+    expect(ftsPayload.scope).toBe("scenes");
+    expect(ftsPayload.projectId).toBe("p1");
+    expect(ftsPayload.query).toBe("アイリーンのシーン");
+    expect(ftsPayload.limit).toBe(SEMANTIC_RECALL_SPARSE_LIMIT);
+  });
+
+  it("fetches a larger dense candidate pool in hybrid mode", async () => {
+    routeInvoke({
+      dense: [makeHit({ sceneId: "win", score: 0.92 })],
+      sparse: [],
+    });
+    await fetchSemanticRecall({
+      projectId: "p1",
+      query: "嵐",
+      excludeSceneIds: [],
+      hybrid: true,
+    });
+    const denseCall = mockInvoke.mock.calls.find(
+      ([cmd]) => cmd === "semantic_search",
+    );
+    const densePayload = denseCall![1] as Record<string, unknown>;
+    expect(densePayload.limit).toBe(SEMANTIC_RECALL_HYBRID_FETCH_LIMIT);
+  });
+
+  it("falls back to the dense-only selection when fts_search fails", async () => {
+    routeInvoke({
+      dense: [makeHit({ sceneId: "win", score: 0.92, chunkText: "勝者" })],
+      sparse: () => Promise.reject(new Error("fts boom")),
+    });
+    const chunks = await fetchSemanticRecall({
+      projectId: "p1",
+      query: "嵐",
+      excludeSceneIds: [],
+      hybrid: true,
+    });
+    expect(chunks.map((c) => c.sceneId)).toEqual(["win"]);
+  });
+
+  it("does not query fts_search when hybrid mode is off", async () => {
+    routeInvoke({ dense: [makeHit({ sceneId: "win", score: 0.92 })] });
+    await fetchSemanticRecall({
+      projectId: "p1",
+      query: "嵐",
+      excludeSceneIds: [],
+    });
+    const ftsCalled = mockInvoke.mock.calls.some(
+      ([cmd]) => cmd === "fts_search",
+    );
+    expect(ftsCalled).toBe(false);
   });
 });

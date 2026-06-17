@@ -55,6 +55,7 @@ export function ProjectCategory() {
   const numberingScope = useSettingControl("tree.numberingScope", "project");
   const autoAcceptBody = useSettingBoolean("ai.autoAcceptBodyProposals", false);
   const semanticRecall = useSettingBoolean("ai.semanticRecall", true);
+  const hybridRecall = useSettingBoolean("ai.hybridRecall", true);
   const trashBinEnabled = useSettingBoolean("trashBin.enabled", true);
   const trashBinRetention = useSettingNumber("trashBin.retentionDays", 60);
 
@@ -527,6 +528,24 @@ export function ProjectCategory() {
             checked={semanticRecall.value}
             onChange={(e) => semanticRecall.setValue(e.target.checked)}
             className="h-4 w-4 cursor-pointer rounded border-input"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.project.aiHybridRecall",
+            "固有名詞の語彙一致も併用（ハイブリッド検索）",
+          )}
+          description={t(
+            "settings.project.aiHybridRecallDesc",
+            "意味検索に全文検索（FTS5/bm25）を順位融合（RRF）し、人名・地名など固有名詞の語彙一致を手がかりに関連シーンを拾いやすくする。関連シーンの自動注入がオフのときは無効。",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={hybridRecall.value}
+            disabled={!semanticRecall.value}
+            onChange={(e) => hybridRecall.setValue(e.target.checked)}
+            className="h-4 w-4 cursor-pointer rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
           />
         </SettingRow>
         <SettingRow

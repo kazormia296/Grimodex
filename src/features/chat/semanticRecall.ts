@@ -1,4 +1,5 @@
 import { semanticSearch, type SemanticSearchHit } from "../semantic-search/api";
+import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 
 /**
@@ -65,6 +66,33 @@ export const SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS = 500;
 export const SEMANTIC_RECALL_MAX_CHUNK_CHARS = 600;
 /** 英語は文字あたり情報量が低いので 1 チャンクの注入上限を広げる。 */
 export const SEMANTIC_RECALL_MAX_CHUNK_CHARS_EN = 900;
+
+/**
+ * ハイブリッド検索 (dense + sparse/BM25) 用パラメータ。
+ *
+ * dense 単独の意味検索は 256/384 次元の密ベクトルで語彙完全一致を過小評価しがちで、
+ * 小説で強い手がかりになる固有名詞 (人名・地名) の recall を落としやすい。既存の
+ * FTS5 (trigram tokenizer, scene 本文を index) を sparse ランカーとして併用し、
+ * Reciprocal Rank Fusion (RRF) で順位融合することで固有名詞 recall を補う。
+ * 設計: docs/Grimodex_セマンティック検索の閾値とモデル特性.md (Q5 改善策 #4)。
+ */
+/** RRF の定数 k。順位 r のスコア寄与は 1/(k+r)。情報検索の慣例値 60。 */
+export const RRF_K = 60;
+/**
+ * sparse 救済の床マージン。sparse top-N に居るシーンは、cosine が床 (minScore) を
+ * 割っても `floor - margin` までなら注入を許す。語彙一致だが意味的には無関係な
+ * 偶発ヒット (低 cosine) を弾く precision ガード — bm25 の IDF が共通語を下げる効果と
+ * 二段で効かせる。
+ */
+export const SEMANTIC_RECALL_RESCUE_MARGIN = 0.05;
+/**
+ * ハイブリッド時の dense 取得件数。sparse で一致した「ゲートぎりぎり下」のシーンが
+ * cosine とチャンク本文を伴って候補に乗るよう、dense 単独 (12) より広く取る。
+ * dense pool に居ないシーンは本文・cosine を持たないため救済対象外 (MVP 制約)。
+ */
+export const SEMANTIC_RECALL_HYBRID_FETCH_LIMIT = 30;
+/** sparse (FTS5) 側で考慮する scene 上位件数。bm25 rank 上位のみを救済対象にする。 */
+export const SEMANTIC_RECALL_SPARSE_LIMIT = 10;
 
 /**
  * 現在のプロジェクト言語に応じた recall パラメータ。言語は projectStore が
@@ -169,54 +197,223 @@ export function selectSemanticRecallChunks(
   return chosen.map((h) => ({
     sceneId: h.sceneId,
     sceneTitle: h.sceneTitle,
-    chunkText:
-      h.chunkText.length > maxChunkChars
-        ? `${h.chunkText.slice(0, maxChunkChars)}…`
-        : h.chunkText,
+    chunkText: truncateChunk(h.chunkText, maxChunkChars),
     score: h.score,
   }));
+}
+
+function truncateChunk(text: string, maxChunkChars: number): string {
+  return text.length > maxChunkChars
+    ? `${text.slice(0, maxChunkChars)}…`
+    : text;
+}
+
+/**
+ * dense (意味検索) と sparse (FTS5/bm25) の順位を RRF で融合して注入用チャンクを
+ * 選別する。dense pool を土台にし (本文・cosine を持つのはこちらだけ)、sparse は
+ * 順位の押し上げと「ゲート下の語彙一致シーン」の救済に使う。
+ *
+ * precision 設計 (docs の「迷ったら何も注入しない」を保つ):
+ *  - densePass = 明確な勝者 (cosine >= gate) が居る。
+ *  - eligible(scene) = sparseRescue || (densePass && denseConfident)
+ *      - denseConfident: cosine >= floor (従来の recall 床)。
+ *      - sparseRescue: sparse top-N に居て cosine >= floor-margin。
+ *    勝者が居ない時 (densePass=false) は救済シーンだけを注入し、団子
+ *    (床は超えるが勝者でない無関係シーン) を巻き込まない。救済も無ければ空。
+ *  - 並びは RRF 降順 (タイブレーク cosine→sceneId)。余り枠は勝者がいる時だけ
+ *    床以上シーンの二番手チャンクで埋める (従来 backfill の踏襲)。
+ *
+ * sparse 側で一致しても dense pool (HYBRID_FETCH_LIMIT 件) に居ないシーンは
+ * 本文・cosine が無いため注入しない (MVP 制約)。
+ */
+export function selectHybridRecallChunks(
+  denseHits: SemanticSearchHit[],
+  sparseSceneIdsRanked: string[],
+  opts: {
+    excludeSceneIds: string[];
+    minScore?: number;
+    gateScore?: number;
+    maxChunks?: number;
+    maxChunkChars?: number;
+    rescueMargin?: number;
+  },
+): SemanticRecallChunk[] {
+  const minScore = opts.minScore ?? SEMANTIC_RECALL_MIN_SCORE;
+  const gateScore = opts.gateScore ?? SEMANTIC_RECALL_TOP1_GATE;
+  const maxChunks = opts.maxChunks ?? SEMANTIC_RECALL_MAX_CHUNKS;
+  const maxChunkChars = opts.maxChunkChars ?? SEMANTIC_RECALL_MAX_CHUNK_CHARS;
+  const rescueMargin = opts.rescueMargin ?? SEMANTIC_RECALL_RESCUE_MARGIN;
+  const rescueFloor = minScore - rescueMargin;
+  const excluded = new Set(opts.excludeSceneIds);
+
+  // sparse 順位 map (除外シーンを除いた連番)。値が小さいほど上位。
+  const sparseRank = new Map<string, number>();
+  for (const id of sparseSceneIdsRanked) {
+    if (excluded.has(id) || sparseRank.has(id)) continue;
+    sparseRank.set(id, sparseRank.size);
+  }
+
+  // dense pool: 除外を除き、scene ごとの最良チャンクと二番手以降 (backfill 用) に分ける。
+  const byScoreDesc = denseHits
+    .filter((h) => !excluded.has(h.sceneId))
+    .sort((a, b) => b.score - a.score);
+  const bestByScene = new Map<string, SemanticSearchHit>();
+  const leftover: SemanticSearchHit[] = [];
+  for (const h of byScoreDesc) {
+    if (bestByScene.has(h.sceneId)) leftover.push(h);
+    else bestByScene.set(h.sceneId, h);
+  }
+
+  // dense 順位 = 最良チャンクの cosine 降順。値が小さいほど上位。
+  const denseScenes = [...bestByScene.values()].sort(
+    (a, b) => b.score - a.score,
+  );
+  const denseRank = new Map<string, number>();
+  denseScenes.forEach((h, i) => denseRank.set(h.sceneId, i));
+  const densePass = denseScenes.length > 0 && denseScenes[0].score >= gateScore;
+
+  const eligible: { hit: SemanticSearchHit; rrf: number }[] = [];
+  for (const h of denseScenes) {
+    const dRank = denseRank.get(h.sceneId)!;
+    const sRank = sparseRank.get(h.sceneId);
+    const inSparse = sRank !== undefined;
+    const sparseRescue = inSparse && h.score >= rescueFloor;
+    const denseConfident = h.score >= minScore;
+    if (!sparseRescue && !(densePass && denseConfident)) continue;
+    const rrf = 1 / (RRF_K + dRank) + (inSparse ? 1 / (RRF_K + sRank) : 0);
+    eligible.push({ hit: h, rrf });
+  }
+  if (eligible.length === 0) return [];
+
+  eligible.sort(
+    (a, b) =>
+      b.rrf - a.rrf ||
+      b.hit.score - a.hit.score ||
+      a.hit.sceneId.localeCompare(b.hit.sceneId),
+  );
+  const chosen: SemanticSearchHit[] = eligible
+    .slice(0, maxChunks)
+    .map((e) => e.hit);
+
+  // backfill: 勝者がいる時だけ、余り枠を床以上シーンの二番手チャンクで埋める。
+  // rescue-only regime では団子混入を避けるため埋めない。
+  if (densePass && chosen.length < maxChunks) {
+    const room = maxChunks - chosen.length;
+    const fillers = leftover.filter((h) => h.score >= minScore).slice(0, room);
+    chosen.push(...fillers);
+  }
+
+  return chosen.map((h) => ({
+    sceneId: h.sceneId,
+    sceneTitle: h.sceneTitle,
+    chunkText: truncateChunk(h.chunkText, maxChunkChars),
+    score: h.score,
+  }));
+}
+
+interface FtsSceneRow {
+  sourceType: string;
+  id: string;
+  title: string;
+  excerpt: string;
+}
+
+/**
+ * FTS5 で scene を bm25 順に引き、上位の sceneId を順位どおり返す。
+ * `fts_search` は生クエリを Rust 側 `to_fts_match` で sanitize するので、
+ * ここでは整形せず recall クエリをそのまま渡す (二重 quote 化を避ける)。
+ */
+async function fetchSparseSceneIds(args: {
+  projectId: string;
+  query: string;
+}): Promise<string[]> {
+  const rows = await invoke<FtsSceneRow[]>("fts_search", {
+    projectId: args.projectId,
+    query: args.query,
+    scope: "scenes",
+    limit: SEMANTIC_RECALL_SPARSE_LIMIT,
+  });
+  return rows.filter((r) => r.sourceType === "scene").map((r) => r.id);
 }
 
 /**
  * semantic 検索を実行して注入用チャンクを返す。失敗 (feature 無効ビルド /
  * モデル不在 / 未 index) は全て空配列フォールバック — 通常文脈での送信を
  * 妨げないことが契約。
+ *
+ * `hybrid` 指定時は dense と sparse (FTS5/bm25) を並列取得し RRF 融合する。
+ * sparse が空 / 失敗なら dense 単独の選別へグレースフルに退避する (= 従来挙動)。
  */
 export async function fetchSemanticRecall(args: {
   projectId: string;
   query: string;
   excludeSceneIds: string[];
+  hybrid?: boolean;
 }): Promise<SemanticRecallChunk[]> {
   if (!args.query.trim()) return [];
-  const hits = await semanticSearch({
+  const params = recallParamsForLang();
+  const fetchLimit = args.hybrid
+    ? SEMANTIC_RECALL_HYBRID_FETCH_LIMIT
+    : SEMANTIC_RECALL_FETCH_LIMIT;
+
+  const densePromise = semanticSearch({
     projectId: args.projectId,
     query: args.query,
-    limit: SEMANTIC_RECALL_FETCH_LIMIT,
+    limit: fetchLimit,
   }).catch((e) => {
     // 空配列フォールバック (送信を妨げない契約) は維持しつつ、原因を
     // デバッグログに残す — 無言だと「未 index / feature 無効 / IPC timeout」
     // のどれで注入されないのか切り分け不能になる。
     debugLog.warn(
       "SemanticRecall",
-      "search failed (empty fallback)",
+      "dense search failed (empty fallback)",
       errorDetail(e),
     );
     return [] as SemanticSearchHit[];
   });
-  const params = recallParamsForLang();
-  const selected = selectSemanticRecallChunks(hits, {
-    excludeSceneIds: args.excludeSceneIds,
-    minScore: params.minScore,
-    gateScore: params.gateScore,
-    maxChunkChars: params.maxChunkChars,
-  });
-  // 注入判定の可観測性: 生ヒット数 / 足切り(スコア下限・除外シーン)後の
-  // 注入数 / トップスコア。閾値が実データに合っているかはこの行で見る。
+
+  // sparse は失敗しても dense 単独へ退避する (注入ゼロにしない)。
+  const sparsePromise: Promise<string[]> = args.hybrid
+    ? fetchSparseSceneIds({
+        projectId: args.projectId,
+        query: args.query,
+      }).catch((e) => {
+        debugLog.warn(
+          "SemanticRecall",
+          "sparse search failed (dense-only fallback)",
+          errorDetail(e),
+        );
+        return [] as string[];
+      })
+    : Promise.resolve([] as string[]);
+
+  const [hits, sparseSceneIds] = await Promise.all([
+    densePromise,
+    sparsePromise,
+  ]);
+
+  const selected =
+    args.hybrid && sparseSceneIds.length > 0
+      ? selectHybridRecallChunks(hits, sparseSceneIds, {
+          excludeSceneIds: args.excludeSceneIds,
+          minScore: params.minScore,
+          gateScore: params.gateScore,
+          maxChunkChars: params.maxChunkChars,
+        })
+      : selectSemanticRecallChunks(hits, {
+          excludeSceneIds: args.excludeSceneIds,
+          minScore: params.minScore,
+          gateScore: params.gateScore,
+          maxChunkChars: params.maxChunkChars,
+        });
+  // 注入判定の可観測性: 取得モード / 生ヒット数 / sparse 件数 / 注入数 / トップスコア。
+  // 閾値・融合が実データに合っているかはこの行で見る。
   const topScore =
     hits.length > 0 ? Math.max(...hits.map((h) => h.score)) : null;
   debugLog.info(
     "SemanticRecall",
-    `hits=${hits.length} injected=${selected.length} ` +
+    `mode=${args.hybrid ? "hybrid" : "dense"} hits=${hits.length} ` +
+      `sparse=${sparseSceneIds.length} injected=${selected.length} ` +
       `gate=${params.gateScore} floor=${params.minScore}`,
     topScore !== null ? `topScore=${topScore.toFixed(3)}` : "no hits",
   );
