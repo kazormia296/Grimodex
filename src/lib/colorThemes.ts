@@ -37,6 +37,14 @@ export interface ThemePalette {
   // glass aurora independently from the brand colours.
   "--glass-tint-a": string;
   "--glass-tint-b": string;
+  // Attribution highlight hues (human / ai / unknown). The HUE is constant
+  // across every theme (human=blue 220°, ai=teal 165°, unknown=amber 30°) for a
+  // consistent colour language; only lightness/chroma are tuned per theme×mode
+  // so the color-mix highlight stays legible on each --content-background
+  // (dark themes use brighter, higher-chroma values). See attributionColors.ts.
+  "--attribution-human": string;
+  "--attribution-ai": string;
+  "--attribution-unknown": string;
 }
 
 export interface PaletteSlot {
@@ -93,6 +101,9 @@ export const THEME_CSS_VARS = [
   "--content-border",
   "--glass-tint-a",
   "--glass-tint-b",
+  "--attribution-human",
+  "--attribution-ai",
+  "--attribution-unknown",
 ] as const;
 
 export const COLOR_THEMES: ColorTheme[] = [
@@ -135,6 +146,9 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-border": "oklch(0.922 0 0)",
       "--glass-tint-a": "#8FB4D6",
       "--glass-tint-b": "#D6B5A5",
+      "--attribution-human": "oklch(0.65 0.1 220)",
+      "--attribution-ai": "oklch(0.72 0.2 165)",
+      "--attribution-unknown": "oklch(0.72 0.14 30)",
     },
     dark: {
       "--background": "oklch(0.145 0 0)",
@@ -172,6 +186,9 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-border": "oklch(0.269 0 0)",
       "--glass-tint-a": "#4A6FA8",
       "--glass-tint-b": "#A87055",
+      "--attribution-human": "oklch(0.72 0.13 220)",
+      "--attribution-ai": "oklch(0.82 0.19 165)",
+      "--attribution-unknown": "oklch(0.8 0.16 30)",
     },
     palette: {
       light: [
@@ -239,6 +256,9 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-border": "#D8D0C4",
       "--glass-tint-a": "#3D2447",
       "--glass-tint-b": "#1E5236",
+      "--attribution-human": "oklch(0.65 0.1 220)",
+      "--attribution-ai": "oklch(0.72 0.2 165)",
+      "--attribution-unknown": "oklch(0.72 0.14 30)",
     },
     dark: {
       "--background": "#1C1C1C",
@@ -276,6 +296,9 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-border": "#3A3530",
       "--glass-tint-a": "#7A4A8C",
       "--glass-tint-b": "#4A9B6E",
+      "--attribution-human": "oklch(0.71 0.12 220)",
+      "--attribution-ai": "oklch(0.8 0.17 165)",
+      "--attribution-unknown": "oklch(0.78 0.15 30)",
     },
     palette: {
       light: [
@@ -343,6 +366,9 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-border": "#C8D6E0",
       "--glass-tint-a": "#0097A7",
       "--glass-tint-b": "#5B5BC4",
+      "--attribution-human": "oklch(0.65 0.1 220)",
+      "--attribution-ai": "oklch(0.72 0.2 165)",
+      "--attribution-unknown": "oklch(0.72 0.14 30)",
     },
     dark: {
       "--background": "#151A22",
@@ -380,6 +406,9 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-border": "#1A3348",
       "--glass-tint-a": "#3DDFE6",
       "--glass-tint-b": "#7878D8",
+      "--attribution-human": "oklch(0.73 0.13 220)",
+      "--attribution-ai": "oklch(0.83 0.18 165)",
+      "--attribution-unknown": "oklch(0.81 0.16 30)",
     },
     palette: {
       light: [
@@ -447,6 +476,9 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-border": "#DDD0BC",
       "--glass-tint-a": "#B07D10",
       "--glass-tint-b": "#A85510",
+      "--attribution-human": "oklch(0.65 0.1 220)",
+      "--attribution-ai": "oklch(0.72 0.2 165)",
+      "--attribution-unknown": "oklch(0.72 0.14 30)",
     },
     dark: {
       "--background": "#221C18",
@@ -484,6 +516,9 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--content-border": "#5A4035",
       "--glass-tint-a": "#E0A030",
       "--glass-tint-b": "#D86618",
+      "--attribution-human": "oklch(0.71 0.12 220)",
+      "--attribution-ai": "oklch(0.8 0.16 165)",
+      "--attribution-unknown": "oklch(0.78 0.15 30)",
     },
     palette: {
       light: [
