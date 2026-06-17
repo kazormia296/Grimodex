@@ -521,7 +521,7 @@ impl Database {
 
             -- FTS5 full-text search indexes (trigram tokenizer for Japanese)
             CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts USING fts5(
-                name, aliases, summary, tags_cache,
+                name, aliases, summary, tags_cache, content,
                 content=codex_entries, content_rowid=rowid,
                 tokenize='trigram'
             );
@@ -545,21 +545,23 @@ impl Database {
             );
 
             -- Triggers to keep FTS indexes in sync: codex_entries
+            -- `content` (ProseMirror body JSON) is indexed alongside the metadata
+            -- columns so search_codex can match on the body, not just name/summary.
             CREATE TRIGGER IF NOT EXISTS codex_fts_ai AFTER INSERT ON codex_entries BEGIN
-                INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
-                VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
+                INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache, content)
+                VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''), COALESCE(new.content, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS codex_fts_ad AFTER DELETE ON codex_entries BEGIN
-                INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
-                VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
+                INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache, content)
+                VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''), COALESCE(old.content, ''));
             END;
             CREATE TRIGGER IF NOT EXISTS codex_fts_au AFTER UPDATE ON codex_entries
-              WHEN old.name IS NOT new.name OR old.aliases IS NOT new.aliases OR old.summary IS NOT new.summary OR old.tags_cache IS NOT new.tags_cache
+              WHEN old.name IS NOT new.name OR old.aliases IS NOT new.aliases OR old.summary IS NOT new.summary OR old.tags_cache IS NOT new.tags_cache OR old.content IS NOT new.content
             BEGIN
-                INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
-                VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
-                INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
-                VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
+                INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache, content)
+                VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''), COALESCE(old.content, ''));
+                INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache, content)
+                VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''), COALESCE(new.content, ''));
             END;
 
             -- Triggers to keep FTS indexes in sync: snippets
@@ -1468,6 +1470,13 @@ impl Database {
 
         Self::migrate_ai_write_infrastructure(&conn)?;
 
+        // Index codex body `content` in codex_fts (legacy DBs indexed only
+        // name/aliases/summary/tags_cache). Fresh DBs already get the new schema
+        // from the CREATE batch above; this rebuilds the virtual table + triggers
+        // for existing DBs and re-indexes their rows. Must run after the codex_fts
+        // CREATE above; idempotent once the `content` column is present.
+        Self::migrate_codex_fts_add_content(&conn)?;
+
         // Codex-scoped chat sessions: anchor to a codex entry (node_id stays NULL).
         Self::add_column_if_missing(
             &conn,
@@ -1890,6 +1899,53 @@ impl Database {
     pub(super) fn migrate_ai_usage_cache_tokens(conn: &Connection) -> anyhow::Result<()> {
         Self::add_column_if_missing(conn, "ai_usage", "cache_read_tokens", "INTEGER")?;
         Self::add_column_if_missing(conn, "ai_usage", "cache_write_tokens", "INTEGER")?;
+        Ok(())
+    }
+
+    /// One-shot migration: index the codex body `content` column in codex_fts so
+    /// search matches the ProseMirror body, not just name/aliases/summary/tags_cache.
+    /// FTS5 columns are fixed at creation, so the virtual table and its triggers are
+    /// rebuilt and the existing rows are re-indexed via the FTS5 'rebuild' command.
+    /// Idempotent: a no-op once codex_fts already carries the `content` column.
+    pub(super) fn migrate_codex_fts_add_content(conn: &Connection) -> anyhow::Result<()> {
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(codex_fts)")?
+            .query_map([], |row| row.get::<_, String>("name"))?
+            .collect::<Result<_, _>>()?;
+        if columns.iter().any(|c| c == "content") {
+            return Ok(());
+        }
+        // Atomic rebuild: a partial failure must not leave codex_fts dropped.
+        conn.execute_batch(
+            "BEGIN;
+             DROP TRIGGER IF EXISTS codex_fts_ai;
+             DROP TRIGGER IF EXISTS codex_fts_ad;
+             DROP TRIGGER IF EXISTS codex_fts_au;
+             DROP TABLE IF EXISTS codex_fts;
+             CREATE VIRTUAL TABLE codex_fts USING fts5(
+                 name, aliases, summary, tags_cache, content,
+                 content=codex_entries, content_rowid=rowid,
+                 tokenize='trigram'
+             );
+             CREATE TRIGGER codex_fts_ai AFTER INSERT ON codex_entries BEGIN
+                 INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache, content)
+                 VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''), COALESCE(new.content, ''));
+             END;
+             CREATE TRIGGER codex_fts_ad AFTER DELETE ON codex_entries BEGIN
+                 INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache, content)
+                 VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''), COALESCE(old.content, ''));
+             END;
+             CREATE TRIGGER codex_fts_au AFTER UPDATE ON codex_entries
+               WHEN old.name IS NOT new.name OR old.aliases IS NOT new.aliases OR old.summary IS NOT new.summary OR old.tags_cache IS NOT new.tags_cache OR old.content IS NOT new.content
+             BEGIN
+                 INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache, content)
+                 VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''), COALESCE(old.content, ''));
+                 INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache, content)
+                 VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''), COALESCE(new.content, ''));
+             END;
+             INSERT INTO codex_fts(codex_fts) VALUES('rebuild');
+             COMMIT;",
+        )?;
         Ok(())
     }
 

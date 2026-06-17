@@ -162,9 +162,12 @@ async function searchCodex(
     });
     rows = result.rows;
   } else {
+    // `content` (ProseMirror body) is matched too so short (1-2 codepoint)
+    // tokens — the LIKE-fallback case, common for Japanese — can hit body text,
+    // not just metadata. The FTS path already covers content via codex_fts.
     const { clause, params: likeParams } = buildLikeOrClause(
       tokens.length > 0 ? tokens : [query],
-      ["name", "summary", "tags_cache", "aliases"],
+      ["name", "summary", "tags_cache", "aliases", "content"],
     );
     const result = await invoke<QueryResult>("db_execute", {
       sql: `SELECT id, name, type, summary FROM codex_entries
