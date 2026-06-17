@@ -44,8 +44,12 @@ import type {
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { fetchProjectContext as fetchProjectContextAtom } from "@/features/project/contextAtoms";
 import { runAgentLoop } from "./agent/agentLoop";
-import { executeTool } from "./agent/toolExecutors";
-import { snapshotAgentTools } from "./agent/toolDefinitions";
+import { executeTool, executeReadOnlyTool } from "./agent/toolExecutors";
+import {
+  snapshotAgentTools,
+  getResearchSubagentTools,
+  RESEARCH_SUBAGENT_TOOL,
+} from "./agent/toolDefinitions";
 import {
   buildAskUserResult,
   dismissedAskUserResult,
@@ -54,6 +58,7 @@ import {
 } from "./agent/askUser";
 import {
   getToolTokenBudget,
+  getAgentToolCallBudget,
   buildThinkingParams,
   getEffortForTask,
   resolveModelCapabilities,
@@ -490,7 +495,23 @@ interface ChatState {
   // Agent mode
   agentMode: boolean;
   agentProgress: AgentLoopProgress | null;
+  /**
+   * run_research サブエージェントの進捗（子ループ実行中のみ非 null）。
+   * AgentProgressBar が親の進捗の下にネスト表示する。
+   */
+  subAgentProgress: AgentLoopProgress | null;
+  /**
+   * 直近のエージェントターンがツール呼び出し/トークン上限で打ち切られたとき、
+   * 「続行」ボタンを出すための状態。新しい予算でターンを再開できる。
+   * 新規送信の冒頭でクリアする（ボタンは最新ターンに対してのみ出す）。
+   */
+  agentContinuation: { sessionId: string | null } | null;
   setAgentMode: (on: boolean) => void;
+  /**
+   * 「続行」: 上限で打ち切られたターンを新しい予算で再開する。
+   * 直前の回答は会話履歴に残っているので、それを踏まえて残作業を継続する。
+   */
+  continueAgentRun: () => Promise<void>;
 
   // ask_user（ユーザーへの質問）— 回答待ち状態と解決アクション
   pendingUserQuestion: PendingUserQuestion | null;
@@ -2413,6 +2434,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   inputPinnedEntryIds: [],
   agentMode: false,
   agentProgress: null,
+  subAgentProgress: null,
+  agentContinuation: null,
   pendingUserQuestion: null,
   ragEnabled: false,
   chatScope: "scene",
@@ -2608,6 +2631,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionStableCodexIds: [],
         sessionAgentToolsSnapshot: null,
         excludedAutoEntryIds: [],
+        // 前セッションの「続行」/サブエージェント進捗を持ち越さない。
+        agentContinuation: null,
+        subAgentProgress: null,
       });
       return;
     }
@@ -2615,6 +2641,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       isLoadingMessages: true,
       activeSessionId: sessionId,
       messages: [],
+      // 前セッションの「続行」/サブエージェント進捗を持ち越さない。
+      agentContinuation: null,
+      subAgentProgress: null,
     });
     try {
       const [messages, summaries] = await Promise.all([
@@ -2859,6 +2888,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     if (isStreaming) return;
     await ensureTokenizer();
     if (!content.trim()) return;
+    // 新規送信が始まったら直前ターンの「続行」ボタンは無効化する
+    // （ボタンは常に最新ターンに対してのみ出す）。
+    if (get().agentContinuation) set({ agentContinuation: null });
     // Defense: chat がポリシーで OFF なら送信を弾く。Send ボタンは hide/disabled
     // になるが、Enter / Cmd+Enter / regenerate / agent 再入は全てこの sendMessage
     // に集約されるため、ここで塞げば UI を経由しない送信経路も封じられる。
@@ -3160,6 +3192,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const currentModel = aiSettings?.model ?? "";
         const agentApiVariant = getChatApiVariant(currentModel);
         const tokenBudget = getToolTokenBudget(currentModel);
+        // model-aware なツール呼び出し上限。大窓モデルほど多段探索を許す。
+        const parentMaxToolCalls = getAgentToolCallBudget(currentModel);
+        // run_research（サブエージェント）の 1 ターンあたり呼び出し上限。
+        // 各サブエージェントは独立したループ（高コスト）なので、親予算とは別枠で
+        // 厳しめに絞る。各呼び出しは parentMaxToolCalls も 1 消費する。
+        const MAX_SUBAGENT_CALLS = 4;
+        let subAgentCallCount = 0;
         const agentThinkingParams = buildThinkingParams(
           currentModel,
           getEffortForTask("agent"),
@@ -3210,6 +3249,124 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 },
               });
             });
+          }
+          // run_research: 読み取り専用のサブエージェントを別ループで起動し、
+          // 要約だけを tool_result として親に返す。親のツール予算を温存しつつ
+          // 大規模な調査を1呼び出しに圧縮する。子は read-only ツールのみ宣言され、
+          // executeReadOnlyTool で dispatch されるため、書き込み・質問・再帰
+          // （run_research 自身）は構造的に不可（depth=1）。
+          if (name === RESEARCH_SUBAGENT_TOOL) {
+            const task = String(params?.["task"] ?? "").trim();
+            if (!task) {
+              const msg = "run_research requires a non-empty 'task'.";
+              return {
+                toolCallId,
+                name,
+                content: null,
+                summary: msg,
+                tokensUsed: 0,
+                error: msg,
+              };
+            }
+            if (subAgentCallCount >= MAX_SUBAGENT_CALLS) {
+              const msg = `Research sub-agent limit reached (${MAX_SUBAGENT_CALLS} per turn). Summarize with the information you already have.`;
+              return {
+                toolCallId,
+                name,
+                content: null,
+                summary: msg,
+                tokensUsed: 0,
+                error: msg,
+              };
+            }
+            subAgentCallCount++;
+
+            // 予算分割: 子は親の半分（トークン / 呼び出し）。子の重い文脈は
+            // 親予算を消費せず、返す要約のみが親に積まれる。
+            const childTokenBudget = Math.max(
+              2_000,
+              Math.floor(tokenBudget * 0.5),
+            );
+            const childMaxCalls = Math.max(
+              3,
+              Math.floor(parentMaxToolCalls / 2),
+            );
+            const childMessages: AgentMessagePayload[] = [
+              { role: "system", content: agentControl.researchSubagentSystem },
+              { role: "user", content: task },
+            ];
+
+            let childResult;
+            try {
+              childResult = await runAgentLoop({
+                messages: childMessages,
+                tools: getResearchSubagentTools(),
+                tokenBudget: childTokenBudget,
+                maxToolCalls: childMaxCalls,
+                // 親 Stop / セッション切替を子にも伝播させる。
+                shouldAbort: () => _agentAborted,
+                // 子内部の上限メッセージは「続行」ボタン案内を含まない専用文言。
+                // 子に Continue ボタンは無く、その案内を要約へ取り込んで親へ
+                // 漏らさないようにする。
+                callLimitMessage: agentControl.researchLimitMessage,
+                tokenBudgetMessage: agentControl.researchLimitMessage,
+                sendToLLM: (msgs, tools) =>
+                  chatApi.sendAgentMessage(
+                    msgs,
+                    tools,
+                    agentThinkingParams,
+                    // 子は親の cacheSegments / volatileTail を使わず、専用の
+                    // system prompt を持つ。Web 検索も無効（null）。
+                    undefined,
+                    agentApiVariant,
+                    null,
+                    undefined,
+                  ),
+                executeTool: executeReadOnlyTool,
+                onProgress: (p) => set({ subAgentProgress: p }),
+                onTextChunk: () => {},
+              });
+            } catch (e) {
+              // 子の LLM / ネットワーク失敗で親ターン全体を破棄しない。
+              // error ToolResult として返し、親 LLM が回復・継続できるようにする
+              // （他ツールと同じ「失敗は tool_result 化」契約に揃える）。
+              const msg = e instanceof Error ? e.message : String(e);
+              return {
+                toolCallId,
+                name,
+                content: null,
+                summary: `Research sub-agent failed: ${msg}`,
+                tokensUsed: 0,
+                error: msg,
+              };
+            } finally {
+              set({ subAgentProgress: null });
+            }
+
+            // 子の LLM usage（input/output/コスト）は親メッセージと同じ traceId で
+            // 台帳に記録する（同一論理ターンにロールアップ）。
+            void recordAiUsage({
+              surface: "agent",
+              model: currentModel,
+              tokensIn: childResult.tokensIn,
+              tokensOut: childResult.tokensOut,
+              costUsd: childResult.cost,
+              traceId: assistantMsg.id,
+              refId: assistantMsg.id,
+            });
+
+            const findings = childResult.finalText.trim() || "(no findings)";
+            const content = {
+              findings,
+              toolCalls: childResult.toolCallRecords.length,
+            };
+            return {
+              toolCallId,
+              name,
+              content,
+              summary: `Research sub-agent completed (${childResult.toolCallRecords.length} read calls)`,
+              tokensUsed: countTokens(JSON.stringify(content)),
+            };
           }
           if (name === "get_codex_entry") {
             const id = String(params?.["id"] ?? "");
@@ -3262,10 +3419,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           cost,
           tokensIn: agentTokensIn,
           tokensOut: agentTokensOut,
+          stoppedReason: agentStoppedReason,
         } = await runAgentLoop({
           messages: agentMsgs,
           tools: agentTools,
           tokenBudget,
+          maxToolCalls: parentMaxToolCalls,
           shouldAbort: () => _agentAborted,
           callLimitMessage: agentControl.callLimitMessage,
           tokenBudgetMessage: agentControl.tokenBudgetMessage,
@@ -3313,6 +3472,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             });
           },
         });
+
+        // 上限で打ち切られたターンには「続行」ボタンを出す。質問上限(ask_user)は
+        // 続行対象外（ユーザー回答待ちで止まる性質なので新予算で再開しても無意味）。
+        if (
+          agentStoppedReason === "limit_calls" ||
+          agentStoppedReason === "limit_tokens"
+        ) {
+          set({ agentContinuation: { sessionId: sessionIdForPersist } });
+        }
 
         // 引用の事後検証: 不正 URL を排除 + 本文中の裏付けなし URL を検出。
         const safeCitations = sanitizeCitations(citations);
@@ -3455,7 +3623,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
         get()._cancelPendingUserQuestion();
         _agentAborted = false;
-        set({ isStreaming: false, agentProgress: null });
+        set({
+          isStreaming: false,
+          agentProgress: null,
+          subAgentProgress: null,
+        });
       }
       return;
     }
@@ -4458,6 +4630,25 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   setAgentMode: (on: boolean) => set({ agentMode: on }),
+
+  continueAgentRun: async () => {
+    const cont = get().agentContinuation;
+    if (!cont || get().isStreaming) return;
+    // 続行は別セッションへ切り替わっていたら無効（最新ターン専用）。
+    if (cont.sessionId && cont.sessionId !== get().activeSessionId) {
+      set({ agentContinuation: null });
+      return;
+    }
+    set({ agentContinuation: null });
+    const lang =
+      (await fetchProjectContext(get().activeProjectId))?.language ?? "ja";
+    const continuePrompt = getPromptCatalog(lang).agentControl.continuePrompt;
+    // agent パスを強制（続行は常にエージェントターンの再開）。
+    await get().sendMessage(continuePrompt, undefined, {
+      overrideAgentMode: true,
+    });
+  },
+
   setRagEnabled: (on: boolean) => set({ ragEnabled: on }),
 
   // --- ask_user（ユーザーへの質問）の解決 ---
@@ -4662,7 +4853,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     );
   },
 
-  clearMessages: () => set({ messages: [] }),
+  clearMessages: () => set({ messages: [], agentContinuation: null }),
   clearError: () => set({ error: null }),
   setActiveSceneId: (id: string) => {
     markStart("chatStore.setActiveSceneId");

@@ -382,6 +382,24 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     },
   },
 
+  // ── サブエージェント委譲 ──────────────────────────────────────────────────
+  {
+    name: "run_research",
+    description:
+      "Delegate a focused, read-only research sub-task to a sub-agent that has its OWN fresh tool-call budget and context. The sub-agent investigates on its own and returns a concise written summary of its findings (not raw data), so a deep investigation costs you only ONE tool call instead of many. Use this for self-contained read-only investigations that would otherwise burn through your own budget — e.g. 'gather every appearance, trait, and relationship of character X across all scenes', 'survey all open foreshadowing and summarize what is still unresolved and where'. The sub-agent can ONLY read (search/list/get over Codex, scenes, foreshadowing, snippets); it CANNOT write, propose body text, ask the user, or spawn further sub-agents. Give it a clear, self-contained task and the entry/scene ids it should start from. Prefer this over making many read calls yourself for a single investigation; do NOT use it for trivial one-shot lookups.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: {
+          type: "string",
+          description:
+            "A clear, self-contained research instruction for the sub-agent, including any starting entry/scene ids and exactly what to find and summarize.",
+        },
+      },
+      required: ["task"],
+    },
+  },
+
   // ── ユーザーへの質問 ──────────────────────────────────────────────────────
   {
     name: "ask_user",
@@ -460,6 +478,44 @@ export function getDeterministicAgentTools(): AgentToolDefinition[] {
 /** Deep-cloned session snapshot — immutable for the session lifetime. */
 export function snapshotAgentTools(): AgentToolDefinition[] {
   return structuredClone(getDeterministicAgentTools());
+}
+
+/** リサーチ・サブエージェント委譲ツールの名前。chatStore が intercept する。 */
+export const RESEARCH_SUBAGENT_TOOL = "run_research";
+
+/**
+ * リサーチ・サブエージェントに渡せる読み取り専用ツールの名前。
+ * READ_ONLY_EXECUTORS（toolExecutors.ts）と一致していなければならず、
+ * toolDefinitions.test.ts でドリフトを gate する。ここを正本にすることで
+ * toolDefinitions → toolExecutors の重い import 依存（DB コード）を避ける。
+ */
+export const READ_ONLY_TOOL_NAMES: readonly string[] = [
+  "search_codex",
+  "list_codex_by_type",
+  "get_codex_entry",
+  "list_codex_tags",
+  "search_codex_by_tags",
+  "find_related_entries",
+  "list_chapters",
+  "get_scene",
+  "search_scenes",
+  "search_snippets",
+  "get_chapter_summaries",
+  "list_open_foreshadows",
+  "get_foreshadow_detail",
+  "get_scene_timeline_neighbors",
+];
+
+/**
+ * リサーチ・サブエージェントに渡すツール定義（読み取り専用サブセット）。
+ * run_research 自身を含まないため、子はさらにサブエージェントを起動できず、
+ * 再帰深さは構造的に 1 に固定される（depth=1）。
+ */
+export function getResearchSubagentTools(): AgentToolDefinition[] {
+  const allow = new Set(READ_ONLY_TOOL_NAMES);
+  return structuredClone(
+    getDeterministicAgentTools().filter((t) => allow.has(t.name)),
+  );
 }
 
 /** ツール名→定義のマップ */

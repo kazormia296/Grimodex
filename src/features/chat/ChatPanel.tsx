@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTranslation } from "react-i18next";
 import { motion } from "motion/react";
+import { Play } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useReducedMotion } from "@/lib/animation";
 import type { Editor } from "@tiptap/core";
@@ -135,6 +136,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentMode = useChatStore((s) => s.agentMode);
   const agentProgress = useChatStore((s) => s.agentProgress);
+  const subAgentProgress = useChatStore((s) => s.subAgentProgress);
+  const agentContinuation = useChatStore((s) => s.agentContinuation);
+  const continueAgentRun = useChatStore((s) => s.continueAgentRun);
   const pendingUserQuestion = useChatStore((s) => s.pendingUserQuestion);
   const resolveUserQuestion = useChatStore((s) => s.resolveUserQuestion);
   const dismissUserQuestion = useChatStore((s) => s.dismissUserQuestion);
@@ -1141,8 +1145,36 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
           tokensUsed={agentProgress.tokensUsed}
           tokenBudget={agentProgress.tokenBudget}
           currentToolName={agentProgress.currentToolName}
+          subProgress={
+            subAgentProgress
+              ? {
+                  calls: subAgentProgress.totalCalls,
+                  maxCalls: subAgentProgress.maxCalls,
+                  currentToolName: subAgentProgress.currentToolName,
+                }
+              : null
+          }
         />
       )}
+
+      {agentContinuation &&
+        agentContinuation.sessionId === activeSessionId &&
+        !isStreaming &&
+        !pendingUserQuestion && (
+          <div className="border-t border-border bg-muted/30 px-4 py-2">
+            <button
+              type="button"
+              onClick={() => void continueAgentRun()}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+            >
+              <Play className="h-3 w-3 shrink-0" aria-hidden />
+              {t("chat.agentContinue")}
+            </button>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {t("chat.agentContinueHint")}
+            </p>
+          </div>
+        )}
 
       {chatGate.presentation === "hidden" ? (
         // chat がポリシーで OFF: composer 自体を隠す（モード扱い）。履歴は残す。

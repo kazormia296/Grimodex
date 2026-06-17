@@ -3,6 +3,7 @@ import {
   buildThinkingParams,
   clampReasoningEffort,
   formatContextWindow,
+  getAgentToolCallBudget,
   getEffortForTask,
   getModelCapabilities,
   getToolTokenBudget,
@@ -586,5 +587,22 @@ describe("動的 capability レジストリ統合", () => {
     expect(params.reasoningEnabled).toBe(true);
     expect(params.reasoningEffort).toBe("medium");
     expect(params.thinking).toBeUndefined();
+  });
+});
+
+describe("getAgentToolCallBudget — model-aware tool-call limit", () => {
+  it("scales the cap up with the context window", () => {
+    // 1M 窓（Opus 4.8 等）→ 25、200k → 16、小窓は従来どおり 10。
+    expect(getAgentToolCallBudget("claude-opus-4-8")).toBe(25);
+    expect(getAgentToolCallBudget("claude-opus-4-5")).toBe(16); // 200k
+    expect(getAgentToolCallBudget("claude-haiku-4-5-20251001")).toBe(16); // 200k
+    expect(getAgentToolCallBudget("deepseek-r1")).toBe(12); // 64k
+    expect(getAgentToolCallBudget("qwen3")).toBe(10); // 32k
+  });
+
+  it("keeps small / unknown models at the safe floor of 10", () => {
+    // 既定能力（8k）の未知モデルは引き上げない（文脈溢れ・コスト爆発を回避）。
+    expect(getAgentToolCallBudget("some-unknown-local-model")).toBe(10);
+    expect(getAgentToolCallBudget("")).toBe(10);
   });
 });
