@@ -88,6 +88,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.textAutospace": "project",
   "editor.paragraphIndent": "project",
   "editor.verticalMode": "project",
+  "editor.tateChuYoko": "project",
   // Display — user preference (global)
   "display.uiFontFamily": "global",
   "display.showWordCount": "global",
@@ -210,6 +211,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.showLineNumbers": "false",
   "editor.paragraphIndent": "0",
   "editor.verticalMode": "false",
+  // 縦中横（縦書き時に半角数字を正立結合）。既定は出版物の慣習に最も近い
+  // 2桁のみ結合。3桁以上は流儀に幅があるため "all" で任意に有効化できる。
+  "editor.tateChuYoko": "2",
   // Display (theme, uiLanguage, uiScale are in GlobalSettings)
   // 同梱 UI 書体 M PLUS 1 を既定に。fallback 無しは buildFontOptions の
   // 同梱/列挙 option (quoteFamily) と一致させ重複表示を防ぐ。

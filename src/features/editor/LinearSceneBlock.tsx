@@ -31,6 +31,7 @@ import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
+import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
 import {
   loadAuthorshipSpans,
   spansToMarkData,
@@ -431,6 +432,7 @@ function MountedSceneBlock({
   // 表示される (overlay は view.hasFocus() でゲートされる)。
   useCursorOverlay(editor);
   useImeDiagnostics(editor);
+  useTateChuYoko(editor);
 
   // Load content
   useEffect(() => {

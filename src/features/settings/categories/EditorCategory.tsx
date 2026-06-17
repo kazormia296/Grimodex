@@ -30,6 +30,12 @@ export function EditorCategory() {
     { value: "no-autospace", label: t("settings.editor.textAutospaceOff") },
   ];
 
+  const TATE_CHU_YOKO_OPTIONS = [
+    { value: "off", label: t("settings.editor.tateChuYokoOff") },
+    { value: "2", label: t("settings.editor.tateChuYoko2") },
+    { value: "all", label: t("settings.editor.tateChuYokoAll") },
+  ];
+
   const { value: disableAll, setValue: setDisableAll } = useSettingBoolean(
     "editor.disableAllAnimations",
     false,
@@ -261,6 +267,16 @@ export function EditorCategory() {
           <SettingToggle
             settingKey="editor.verticalMode"
             defaultValue={false}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.tateChuYoko")}
+          description={t("settings.editor.tateChuYokoDesc")}
+        >
+          <SettingDropdown
+            settingKey="editor.tateChuYoko"
+            options={TATE_CHU_YOKO_OPTIONS}
+            defaultValue="2"
           />
         </SettingRow>
       </SettingSection>

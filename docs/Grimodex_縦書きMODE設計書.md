@@ -78,9 +78,45 @@ per-project トグル（`editor.verticalMode`、project_settings KV）で TipTap
 - Arrow/Home/End = native 委譲。Ctrl+Home/End（InlineAtomNavigation）は
   Selection.atStart/atEnd の論理軸で正当。
 
+## 縦中横（tate-chu-yoko）対応（2026-06-17 実装）
+
+縦書き中、半角数字の連続（run）を `text-combine-upright: all` で正立・横並びに
+結合する。CSS `text-combine-upright: all` は Baseline 2022（全エンジン対応）の
+native 委譲で、ルビ・圏点と同じ「CSS に任せる」グループ。仕様の `digits N` 値は
+どのエンジンも未実装なので、結合範囲（span）は自前で検出して当てる。
+
+- **検出**: `TateChuYokoPlugin.ts` の `buildTateChuYokoDecorations(doc, policy)`。
+  Codex と同じ `flattenDocForCodex` で平坦化してから `/[0-9]+/g` で run を取る。
+  per-text-node の `matchAll` だと `20<b>26</b>` のように mark で割れた run を
+  取りこぼすため、平坦化を single source of truth として共有する。ruby atom と
+  block 境界は PM-position の連続性チェックで弾く。doc/schema は触らない純粋な
+  inline decoration なので Undo にも乗らない。
+- **ポリシー**: 設定 `editor.tateChuYoko`（project scope, 既定 `2`）。
+  `off` / `2`（2桁のみ・出版物の慣習）/ `all`（2桁以上すべて・3〜4桁は流儀に
+  幅があるため任意）。1桁は縦中横の対象外（2文字以上が定義）。全角数字は mixed で
+  既に正立するため対象外。
+- **配線**: `useTateChuYoko(editor)` が縦書き時のみ動的登録（横書きでは登録せず、
+  CSS も `.editor-vertical` スコープで二重ガード）。EditorPane / LinearSceneBlock の
+  両サーフェスに配線（codex highlight と同じ decoration-plugin ライフサイクル）。
+- **未対応（将来拡張）**: 欧文（ラテン文字）の縦中横、`！？` などの約物結合、
+  単位（kg 等）。いずれも別ルールとして後から足せる足場のみ用意。
+- **実機/ブラウザ QA ゲート（happy-dom で再現不能・要 Chromium 検証）**:
+  1. 別プラグイン隣接クラッシュ: tcy deco 同士は数字 run が必ず非数字で分かれる
+     ため隣接し得ないが、codex/lint/comment 等の別 DecorationSet とは隣接し得る。
+     ProseMirror の DOM reconciler は同一 set 内の隣接 inline deco で過去に
+     クラッシュした（CodexHighlightPlugin が 8f201e46 で同 set 内ガードを追加）。
+     cross-plugin 隣接が同じ経路でクラッシュするかは happy-dom では再現しないため、
+     verticalMode.browser.test.tsx の「別プラグインの隣接 decoration + 境界挿入」で
+     gate（CI/実機でのみ実行可能）。fragile な plugin 間結合は意図的に避けた。
+  2. IME 合成中の再構築: apply は docChanged 毎に DecorationSet を全再構築する
+     （"1"+"2"→"12" の新規 run を map では拾えないため意図的）。日本語変換で
+     「12月34日」等を連続入力した際の合成中断/ちらつきの有無は実機 IME QA で確認
+     （縦書き IME の QA 手順に追加）。コストは1 run の正規表現のみで軽量。
+
 ## v1 の既知制限（意図的 defer）
 
-- 縦中横（text-combine-upright）未対応 — 半角数字/欧文は mixed で横倒し
+- 欧文（ラテン文字）・約物・単位の縦中横は未対応 — 半角英字等は mixed で横倒しの
+  まま（半角数字の縦中横は上記の通り対応済み）
 - typewriter / characterFadeOut の縦書き対応版（smoothCaret は対応済み）
 - popup 群（Codex/Comment/Foreshadow/Slash 等）の出現方向最適化 —
   viewport 座標なので機能はするが「下に出す」前提が縦組みでは不自然
@@ -196,6 +232,8 @@ QA ビルドは `pnpm tauri build` に devtools feature 付与を推奨（コン
 - `src/lib/imeLog.ts` — IME 診断ログ基盤（enableImeLog/dumpImeLog、+ unit test）
 - `src/features/editor/ImeDiagnosticsPlugin.ts` — composition 記録 + 矩形オーバーレイ（+ unit test）
 - `public/ime-test.html` / `public/ime-test.js` — 素の contenteditable 切り分けページ
-- `src/features/editor/verticalMode.browser.test.tsx` — 縦書き幾何 gate
+- `src/features/editor/TateChuYokoPlugin.ts` — 縦中横 decoration プラグイン（+ unit test）
+- `src/features/editor/useTateChuYoko.ts` — 縦書き時のみ動的登録するフック
+- `src/features/editor/verticalMode.browser.test.tsx` — 縦書き幾何 gate（縦中横の CSS 解決も gate）
 - `src/features/editor/linearVerticalGeometry.browser.test.tsx` — Linear スクロール幾何 gate
 - `src/index.css` — `.editor-vertical` ブロック + 論理プロパティ化された prose CSS
