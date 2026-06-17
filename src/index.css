@@ -1352,13 +1352,23 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 }
 
 /* Attribution decorations — color-mix blends the semantic hue token with the
-   content background, so light/dark and per-theme adaptation is automatic.
-   Hues are defined once as --attribution-{ai,unknown} (see :root) and reused by
-   the stats breakdown bar and the legend for a single color language.
-   --attribution-pct is set from display.attributionHighlightOpacity setting. */
+   content background, so light/dark and per-theme paper adaptation is automatic.
+   Hues are defined once as --attribution-{ai,unknown} (see :root).
+
+   MUST mix `in oklab` (Cartesian), NOT `in oklch` (polar). On a chromatic paper
+   (warm cream / blue-night themes) oklch interpolates the HUE along the arc,
+   dragging both the AI(teal 165°) and unknown(amber 30°) tints ~80% toward the
+   paper's own hue at the default 20% weight — which collapses AI-vs-unknown
+   separation (deltaEOK ~0.06 → ~0.02), so the two overlays (and the paper)
+   become indistinguishable on those themes. oklab keeps the overlay-to-overlay
+   difference = 20%·(tokenAI − tokenUnknown), INDEPENDENT of the paper, restoring
+   ~0.06 separation on every theme; the neutral (achromatic-paper) theme renders
+   identically either way. The footer AttributionLegend swatch reuses these exact
+   classes so its key always matches the painted tint, on every theme.
+   --attribution-pct is set from display.attributionHighlightOpacity. */
 .attribution-ai {
   background-color: color-mix(
-    in oklch,
+    in oklab,
     var(--attribution-ai) var(--attribution-pct),
     var(--content-background)
   );
@@ -1366,7 +1376,7 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 }
 .attribution-unknown {
   background-color: color-mix(
-    in oklch,
+    in oklab,
     var(--attribution-unknown) var(--attribution-pct),
     var(--content-background)
   );

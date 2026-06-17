@@ -20,10 +20,10 @@ const CSS = `
   --attribution-pct: 20%;
 }
 .attribution-ai {
-  background-color: color-mix(in oklch, oklch(0.72 0.2 165) var(--attribution-pct), var(--content-background));
+  background-color: color-mix(in oklab, oklch(0.72 0.2 165) var(--attribution-pct), var(--content-background));
 }
 .attribution-unknown {
-  background-color: color-mix(in oklch, oklch(0.72 0.14 30) var(--attribution-pct), var(--content-background));
+  background-color: color-mix(in oklab, oklch(0.72 0.14 30) var(--attribution-pct), var(--content-background));
 }
 .tiptap { font-family: Georgia, serif; font-size: 18px; line-height: 2; }
 `;
