@@ -677,3 +677,47 @@ export async function runLiveAgent(
     tokensOut: res.tokensOut,
   };
 }
+
+// ── 単発（tool 無し）ランナー ────────────────────────────────────────────────
+
+export interface LiveSingleShotResult {
+  text: string;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  stopReason: AgentLLMResponse["stopReason"];
+}
+
+/**
+ * tool を一切宣言せず、実 LLM に 1 往復だけ投げる単発ランナー。
+ * `runAgentLoop` を経由しない高水準ヘルパで、synopsis / セッションタイトル /
+ * 要約 / 伏線監査などの「単発 `send_chat_message` サーフェス」を、**本番のプロンプト
+ * ビルダー**（getPromptCatalog 等）と組み合わせて実モデルで検証するための最短経路。
+ * 本番経路は Tauri → Rust だが、ここでは挙動（プロンプト×モデル応答）を検証する
+ * 目的で OpenRouter を直接叩く（トランスポートは {@link createOpenRouterSendToLLM} と
+ * 同じく fetch 直叩き）。
+ *
+ * 例:
+ *   const { text } = await runLiveSingleShot(
+ *     getPromptCatalog("ja").chatApi.buildSynopsisFromContentPrompt(title, body),
+ *   );
+ */
+export async function runLiveSingleShot(
+  user: string,
+  opts: { system?: string; send?: OpenRouterSendOptions } = {},
+): Promise<LiveSingleShotResult> {
+  const sendToLLM = createOpenRouterSendToLLM(opts.send);
+  const messages: AgentMessagePayload[] = [];
+  if (opts.system) messages.push({ role: "system", content: opts.system });
+  messages.push({ role: "user", content: user });
+  const res = await sendToLLM(messages, []);
+  const text = res.blocks
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; content: string }).content)
+    .join("\n");
+  return {
+    text,
+    tokensIn: res.inputTokens ?? null,
+    tokensOut: res.outputTokens ?? null,
+    stopReason: res.stopReason,
+  };
+}
