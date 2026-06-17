@@ -917,6 +917,185 @@ fn test_fts5_codex_search() {
 }
 
 #[test]
+fn test_fts5_codex_search_matches_body_content() {
+    // codex_fts must index the ProseMirror body `content`, not just
+    // name/aliases/summary/tags_cache. A writer's distinctive body word
+    // (here 主席卒業) lives only in `content`, so a fresh-DB search for it
+    // must surface the entry.
+    let db = test_db();
+
+    db.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            Value::String("c-body".into()),
+            Value::String("default-project".into()),
+            Value::String("character".into()),
+            Value::String("セレーナ".into()),
+            Value::String("幼なじみの魔法導師".into()),
+            Value::String("[]".into()),
+            Value::String(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"学院を主席卒業し古代魔法を解読した才媛。"}]}]}"#
+                    .into(),
+            ),
+            Value::String("2025-01-01T00:00:00Z".into()),
+            Value::String("2025-01-01T00:00:00Z".into()),
+        ],
+        "run",
+    )
+    .expect("insert");
+
+    // 主席卒業 appears only in the body content, not name/summary/tags.
+    let rows = db
+        .execute(
+            "SELECT name FROM codex_fts WHERE codex_fts MATCH ?",
+            &[Value::String("主席卒業".into())],
+            "all",
+        )
+        .expect("fts search by body content");
+    assert_eq!(
+        rows.len(),
+        1,
+        "body word should match via codex_fts content"
+    );
+    assert_eq!(rows[0]["name"], Value::String("セレーナ".into()));
+}
+
+#[test]
+fn test_migrate_codex_fts_add_content_upgrades_legacy() {
+    // Simulate a legacy DB whose codex_fts predates the `content` column, then
+    // run the migration: existing rows must be re-indexed so body words become
+    // searchable, and re-running must be a no-op.
+    let db = test_db();
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS codex_fts_ai;
+             DROP TRIGGER IF EXISTS codex_fts_ad;
+             DROP TRIGGER IF EXISTS codex_fts_au;
+             DROP TABLE IF EXISTS codex_fts;
+             CREATE VIRTUAL TABLE codex_fts USING fts5(
+                 name, aliases, summary, tags_cache,
+                 content=codex_entries, content_rowid=rowid,
+                 tokenize='trigram'
+             );
+             CREATE TRIGGER codex_fts_ai AFTER INSERT ON codex_entries BEGIN
+                 INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
+                 VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''), COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
+             END;
+             CREATE TRIGGER codex_fts_ad AFTER DELETE ON codex_entries BEGIN
+                 INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
+                 VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''), COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
+             END;",
+        )
+        .expect("seed legacy codex_fts");
+    }
+
+    // Inserted under the legacy schema → body content is not indexed yet.
+    db.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            Value::String("c-legacy".into()),
+            Value::String("default-project".into()),
+            Value::String("character".into()),
+            Value::String("ヴェルズ".into()),
+            Value::String("廃墟の主".into()),
+            Value::String("[]".into()),
+            Value::String(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"主人公の父と因縁を持つ千年の番人。"}]}]}"#
+                    .into(),
+            ),
+            Value::String("2025-01-01T00:00:00Z".into()),
+            Value::String("2025-01-01T00:00:00Z".into()),
+        ],
+        "run",
+    )
+    .expect("insert legacy");
+
+    let before = db
+        .execute(
+            "SELECT name FROM codex_fts WHERE codex_fts MATCH ?",
+            &[Value::String("千年の番人".into())],
+            "all",
+        )
+        .expect("fts before migrate");
+    assert_eq!(before.len(), 0, "legacy schema must not index body content");
+
+    {
+        let conn = db.conn.lock().expect("lock");
+        Database::migrate_codex_fts_add_content(&conn).expect("migrate");
+        // Idempotent: a second run is a no-op.
+        Database::migrate_codex_fts_add_content(&conn).expect("noop second run");
+    }
+
+    let cols = db
+        .execute("PRAGMA table_info('codex_fts')", &[], "all")
+        .expect("pragma");
+    let names: Vec<String> = cols
+        .iter()
+        .filter_map(|row| {
+            if let Value::String(s) = &row["name"] {
+                Some(s.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        names.contains(&"content".to_string()),
+        "codex_fts should gain a content column"
+    );
+
+    // The pre-existing row was re-indexed by the 'rebuild' command.
+    let after = db
+        .execute(
+            "SELECT name FROM codex_fts WHERE codex_fts MATCH ?",
+            &[Value::String("千年の番人".into())],
+            "all",
+        )
+        .expect("fts after migrate");
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0]["name"], Value::String("ヴェルズ".into()));
+}
+
+#[test]
+fn test_search_fts_codex_like_matches_content() {
+    // The search_fts codex LIKE fallback (short, <3 codepoint query) must also
+    // match body content — mirroring the FTS path and the scene LIKE branch.
+    // 共鳴 (2 codepoints) lives only in the body, so it exercises the fallback.
+    let db = test_db();
+
+    db.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            Value::String("c-like".into()),
+            Value::String("default-project".into()),
+            Value::String("lore".into()),
+            Value::String("古代魔法システム".into()),
+            Value::String("失われた術の体系".into()),
+            Value::String("[]".into()),
+            Value::String(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"感情が共鳴すると出力が増幅し暴走する。"}]}]}"#
+                    .into(),
+            ),
+            Value::String("2025-01-01T00:00:00Z".into()),
+            Value::String("2025-01-01T00:00:00Z".into()),
+        ],
+        "run",
+    )
+    .expect("insert");
+
+    let hits = db
+        .search_fts("default-project", "共鳴", "codex", 20)
+        .expect("search_fts");
+    assert_eq!(
+        hits.len(),
+        1,
+        "short body word should hit via codex LIKE fallback"
+    );
+    assert_eq!(hits[0]["title"].as_str(), Some("古代魔法システム"));
+}
+
+#[test]
 fn test_fts5_snippets_search() {
     let db = test_db();
 

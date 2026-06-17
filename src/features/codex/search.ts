@@ -48,14 +48,18 @@ export async function searchCodexEntries(
     return result.rows.map(rowToEntry);
   }
 
+  // `content` (ProseMirror body) is matched too so short (1-2 codepoint) tokens
+  // — the LIKE-fallback case, common for Japanese — hit body text, not just
+  // metadata. The FTS path above already covers content via codex_fts. Mirrors
+  // the Agent search_codex fallback and the Rust search_fts codex branch.
   const likeParam = `%${trimmed}%`;
   const scope = projectId ? " AND project_id = ?" : "";
   const result = await invoke<QueryResult>("db_execute", {
     sql: `SELECT * FROM codex_entries
-          WHERE (name LIKE ? OR summary LIKE ? OR tags_cache LIKE ?)${scope}`,
+          WHERE (name LIKE ? OR summary LIKE ? OR tags_cache LIKE ? OR content LIKE ?)${scope}`,
     params: projectId
-      ? [likeParam, likeParam, likeParam, projectId]
-      : [likeParam, likeParam, likeParam],
+      ? [likeParam, likeParam, likeParam, likeParam, projectId]
+      : [likeParam, likeParam, likeParam, likeParam],
     method: "all",
   });
   return result.rows.map(rowToEntry);

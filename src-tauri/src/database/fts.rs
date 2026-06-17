@@ -90,7 +90,7 @@ impl Database {
                     "SELECT id, name, COALESCE(summary, '')
                      FROM codex_entries
                      WHERE project_id = ?1
-                       AND (name LIKE ?2 OR aliases LIKE ?2 OR summary LIKE ?2)
+                       AND (name LIKE ?2 OR aliases LIKE ?2 OR summary LIKE ?2 OR content LIKE ?2)
                      LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(

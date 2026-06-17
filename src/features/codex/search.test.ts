@@ -69,7 +69,8 @@ describe("searchCodexEntries", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith("db_execute", {
       sql: expect.stringContaining("project_id"),
-      params: ["%太郎%", "%太郎%", "%太郎%", "proj-1"],
+      // name + summary + tags_cache + content LIKE params, then project_id.
+      params: ["%太郎%", "%太郎%", "%太郎%", "%太郎%", "proj-1"],
       method: "all",
     });
   });
@@ -138,6 +139,18 @@ describe("searchCodexEntries", () => {
     expect(mockInvoke).toHaveBeenCalledWith("db_execute", {
       sql: expect.any(String),
       params: expect.arrayContaining(["%太郎%"]),
+      method: "all",
+    });
+  });
+
+  it("includes body content in the LIKE fallback", async () => {
+    mockInvoke.mockResolvedValue({ rows: [] });
+
+    await searchCodexEntries("太郎");
+
+    expect(mockInvoke).toHaveBeenCalledWith("db_execute", {
+      sql: expect.stringContaining("content LIKE"),
+      params: expect.any(Array),
       method: "all",
     });
   });
