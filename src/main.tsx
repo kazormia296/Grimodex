@@ -25,11 +25,13 @@ import "@fontsource/line-seed-jp/japanese-400.css";
 import "@fontsource/line-seed-jp/japanese-700.css";
 import "@fontsource/line-seed-jp/latin-400.css";
 import "@fontsource/line-seed-jp/latin-700.css";
-// 同梱フォント: Noto Sans JP (OFL-1.1)。デフォルトではなく追加の選択肢。
-import "@fontsource/noto-sans-jp/japanese-400.css";
-import "@fontsource/noto-sans-jp/japanese-700.css";
-import "@fontsource/noto-sans-jp/latin-400.css";
-import "@fontsource/noto-sans-jp/latin-700.css";
+// 同梱フォント: Gen Interface JP (OFL-1.1)。デフォルトではなく追加の UI/ゴシック選択肢。
+// Inter + Noto Sans JP をブレンドした UI 向け書体。npm パッケージは Google Fonts 式の
+// unicode-range サブセット (./w/normal/<weight>/*.woff2) を per-weight CSS で提供し、Vite が
+// build 時にバンドルする。@font-face family は "Gen Interface JP"。Regular(400)/Medium(500)/Bold(700)。
+import "gen-interface-jp/400.css";
+import "gen-interface-jp/500.css";
+import "gen-interface-jp/700.css";
 // 同梱フォント: Literata (OFL-1.1)。英語プロジェクトの本文デフォルト書体
 // (Google Play Books の長文読書向け serif)。latin のみ (和文サブセット不要)。
 // italic は必須: 英語小説の強調・内的独白表現で faux italic を避ける。
