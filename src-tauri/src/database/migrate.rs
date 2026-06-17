@@ -1328,7 +1328,27 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_scene_chunks_model
                 ON scene_chunks(model_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_scene_chunks_scene_index
-                ON scene_chunks(scene_id, chunk_index);",
+                ON scene_chunks(scene_id, chunk_index);
+
+            -- Codex semantic index (stage 3): 1 entry = 1 embedding row.
+            -- Codex bodies are short, so no chunking — PK=entry_id enforces
+            -- one vector per entry. Brand-new table, so IF NOT EXISTS covers
+            -- both fresh and existing DBs (no separate migration helper needed).
+            CREATE TABLE IF NOT EXISTS codex_chunks (
+                entry_id         TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+                entry_name       TEXT NOT NULL,
+                entry_type       TEXT NOT NULL,
+                text             TEXT NOT NULL,
+                embedding        BLOB NOT NULL,
+                embedding_dim    INTEGER NOT NULL,
+                model_id         TEXT NOT NULL,
+                content_hash     TEXT NOT NULL,
+                chunker_version  TEXT NOT NULL,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_codex_chunks_model
+                ON codex_chunks(model_id);",
         )?;
 
         // Chat summaries: generation tracking for Tier-based progressive summarization.

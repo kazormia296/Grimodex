@@ -1,6 +1,6 @@
 import { debugLog } from "@/lib/debugLog";
 import { errorDetail } from "@/lib/debugLog";
-import { semanticIndexScene } from "./api";
+import { semanticIndexScene, codexIndexEntry } from "./api";
 
 /**
  * シーン保存後にデバウンス付きでセマンティックインデックスを走らせるスケジューラ。
@@ -19,6 +19,7 @@ import { semanticIndexScene } from "./api";
 const INDEX_DEBOUNCE_MS = 2500;
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
+const codexTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function scheduleSceneIndex(sceneId: string): void {
   if (!sceneId) return;
@@ -47,13 +48,45 @@ export function cancelSceneIndex(sceneId: string): void {
   }
 }
 
+/**
+ * Codex エントリ保存後にデバウンス付きで `codex_index_entry` を走らせる。
+ * scene 版と同型: name/summary/content/aliases 変更時に呼び、2.5s 後 1 度だけ invoke。
+ * UI 経路 (codex/api.ts) と agent 経路 (agent_codex_*) の両方から呼ぶこと。
+ */
+export function scheduleCodexIndex(entryId: string): void {
+  if (!entryId) return;
+  const existing = codexTimers.get(entryId);
+  if (existing !== undefined) clearTimeout(existing);
+  const t = setTimeout(() => {
+    codexTimers.delete(entryId);
+    codexIndexEntry(entryId).catch((e) => {
+      debugLog.warn(
+        "semantic-search",
+        `codex_index_entry failed: ${entryId}`,
+        errorDetail(e),
+      );
+    });
+  }, INDEX_DEBOUNCE_MS);
+  codexTimers.set(entryId, t);
+}
+
+export function cancelCodexIndex(entryId: string): void {
+  const t = codexTimers.get(entryId);
+  if (t !== undefined) {
+    clearTimeout(t);
+    codexTimers.delete(entryId);
+  }
+}
+
 /** テスト用: 全タイマーを破棄してマップを空に戻す。 */
 export function _resetSchedulerForTests(): void {
   for (const t of timers.values()) clearTimeout(t);
   timers.clear();
+  for (const t of codexTimers.values()) clearTimeout(t);
+  codexTimers.clear();
 }
 
-/** テスト用: 現在保持しているタイマー件数。 */
+/** テスト用: 現在保持しているタイマー件数 (scene + codex)。 */
 export function _pendingCount(): number {
-  return timers.size;
+  return timers.size + codexTimers.size;
 }
