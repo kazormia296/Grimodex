@@ -59,6 +59,7 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
+import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
 import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
@@ -1122,6 +1123,7 @@ export function EditorPane({
   useCursorOverlay(mountedEditor);
   useImeDiagnostics(mountedEditor);
   useCharacterFade(mountedEditor);
+  useTateChuYoko(mountedEditor);
   useAttribution(dbNativeEditor);
 
   // Listen for slash-command events dispatched by SlashCommandExtension

@@ -20,10 +20,17 @@
 import { describe, it, expect } from "vitest";
 import { render, waitFor, fireEvent } from "@testing-library/react";
 import { useEditor, EditorContent } from "@tiptap/react";
+import { Editor, Extension } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import StarterKit from "@tiptap/starter-kit";
 import { RubyNode } from "./RubyNode";
 import { SceneBeatNode } from "./SceneBeatNode";
 import { GeneratedProseBlockNode } from "./GeneratedProseBlockNode";
+import {
+  createTateChuYokoPlugin,
+  type TateChuYokoPolicy,
+} from "./TateChuYokoPlugin";
 import {
   buildEditorContentStyle,
   getLogicalScrollOffset,
@@ -454,5 +461,127 @@ describe("縦書きMODE: 行番号ガターの軸マップ", () => {
     expect(getComputedStyle(v).paddingLeft).toBe("0px");
     expect(getComputedStyle(h).paddingLeft).toBe("40px");
     expect(getComputedStyle(h).paddingTop).toBe("0px");
+  });
+});
+
+// 縦中横（tate-chu-yoko）: 半角数字 run を正立結合する .tcy decoration の
+// CSS 解決を実 Chromium で gate する。decoration の範囲計算は
+// TateChuYokoPlugin.test.ts（happy-dom）が検証済み。ここで gate するのは
+// (1) plugin → DOM の span 出力 (2) .editor-vertical スコープでの
+// text-combine-upright: all 解決 (3) 横書きでは効かない（スコープ漏れ防止）。
+function tcyTestExtension(policy: TateChuYokoPolicy) {
+  return Extension.create({
+    name: "tcyTest",
+    addProseMirrorPlugins() {
+      return [createTateChuYokoPlugin(policy)];
+    },
+  });
+}
+
+function TcyFixture({
+  vertical,
+  content,
+  policy,
+}: {
+  vertical: boolean;
+  content: string;
+  policy: TateChuYokoPolicy;
+}) {
+  const editor = useEditor({
+    extensions: [StarterKit, tcyTestExtension(policy)],
+    content,
+  });
+  return (
+    <div
+      data-testid="scroll-container"
+      className={`overflow-auto p-4${vertical ? " editor-vertical" : ""}`}
+      style={{ width: 400, height: 300 }}
+    >
+      <EditorContent editor={editor} />
+    </div>
+  );
+}
+
+describe("縦書きMODE: 縦中横 (tate-chu-yoko)", () => {
+  it("縦書きで 2桁数字が .tcy span に包まれ text-combine-upright: all に解決", async () => {
+    const { container } = render(
+      <TcyFixture vertical content="<p>第12話</p>" policy="2" />,
+    );
+    const span = await waitFor(() => {
+      const el = container.querySelector("span.tcy") as HTMLElement | null;
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(span.textContent).toBe("12");
+    expect(getComputedStyle(span).textCombineUpright).toBe("all");
+  });
+
+  it("横書きでは .tcy が付いても text-combine-upright は none（CSS は editor-vertical スコープ）", async () => {
+    const { container } = render(
+      <TcyFixture vertical={false} content="<p>第12話</p>" policy="2" />,
+    );
+    const span = await waitFor(() => {
+      const el = container.querySelector("span.tcy") as HTMLElement | null;
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(getComputedStyle(span).textCombineUpright).toBe("none");
+  });
+
+  // 別プラグイン由来の decoration が tcy deco に隣接した状態で境界に文字を挿入
+  // しても ProseMirror の DOM reconciler がクラッシュしないことを実 Chromium で
+  // gate する。tcy deco 同士は数字 run が必ず非数字で分かれるため隣接し得ないが、
+  // codex/lint/comment 等の別 set とは隣接し得る（CodexHighlightPlugin が同種の
+  // 隣接クラッシュを 8f201e46 でガードした前例。happy-dom では再現しないため
+  // browser test でのみ検証可能）。
+  it("別プラグインの隣接 decoration + 境界挿入でクラッシュしない", () => {
+    // "12月" → tcy が "12" を [1,3) で装飾。テスト用プラグインが "月" を [3,4) で
+    // 装飾し PM 位置3で隣接させる。境界(3)に文字を挿入してクラッシュしないこと。
+    // editor を直接生成して view ハンドルを確実に握る（DOM 経由参照は脆い）。
+    const adjacentKey = new PluginKey("adjacentTest");
+    const adjacentDecoExtension = Extension.create({
+      name: "adjacentTest",
+      addProseMirrorPlugins() {
+        return [
+          new Plugin({
+            key: adjacentKey,
+            state: {
+              init: (_c, state) =>
+                DecorationSet.create(state.doc, [
+                  Decoration.inline(3, 4, { class: "adjacent-test" }),
+                ]),
+              apply: (tr, old) =>
+                tr.docChanged
+                  ? DecorationSet.create(tr.doc, [
+                      Decoration.inline(3, 4, { class: "adjacent-test" }),
+                    ])
+                  : old,
+            },
+            props: {
+              decorations(state) {
+                return adjacentKey.getState(state);
+              },
+            },
+          }),
+        ];
+      },
+    });
+
+    const el = document.createElement("div");
+    el.className = "editor-vertical";
+    document.body.appendChild(el);
+    const editor = new Editor({
+      element: el,
+      extensions: [StarterKit, tcyTestExtension("2"), adjacentDecoExtension],
+      content: "<p>12月</p>",
+    });
+    // tcy span が実際に出ていることを確認（前提が成立しているか）。
+    expect(el.querySelector("span.tcy")?.textContent).toBe("12");
+    // 境界(PM 3)に文字を挿入。reconciler がクラッシュすれば throw して fail する。
+    expect(() => {
+      editor.commands.insertContentAt(3, "X");
+    }).not.toThrow();
+    editor.destroy();
+    el.remove();
   });
 });

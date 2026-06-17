@@ -1137,6 +1137,13 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .editor-vertical .tiptap ruby rt {
   font-size: 0.5em;
 }
+/* 縦中横（tate-chu-yoko）— TateChuYokoPlugin が当てる .tcy span 内の半角数字を
+ * 正立・横並びに結合する。プラグインは縦書き時のみ登録されるが、CSS も
+ * .editor-vertical スコープに閉じて二重ガードする（横書きでは no-op）。
+ * Baseline 2022（全エンジン対応）の native CSS 委譲。 */
+.editor-vertical .tiptap .tcy {
+  text-combine-upright: all;
+}
 /* Node islands stay horizontal UI chunks inside the vertical flow
  * (writing-mode reset back to horizontal-tb). pre = code blocks and
  * taskList (flex row checkbox + body, GFM file-backed scenes) are
