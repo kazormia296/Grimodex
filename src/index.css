@@ -179,6 +179,13 @@
   --content-foreground-muted: oklch(0.708 0 0);
   --content-accent: oklch(0.985 0 0);
   --content-border: oklch(0.269 0 0);
+  /* Dark-mode attribution hues: same hue as :root (blue/teal/amber) but brighter
+     + higher chroma so the 20% color-mix highlight stays visible on dark paper.
+     Per-named-theme values come from colorThemes.ts via applyTheme(); these are
+     the fallback for initial paint and the "unknown theme" path. */
+  --attribution-human: oklch(0.72 0.13 220);
+  --attribution-ai: oklch(0.82 0.19 165);
+  --attribution-unknown: oklch(0.8 0.16 30);
   --note-bg: #2a2540;
   --note-border: #7a6bc4;
   --glass-border: color-mix(in oklch, white 16%, var(--border));
