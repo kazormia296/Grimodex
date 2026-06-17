@@ -12,7 +12,12 @@ import type {
 } from "./agentTypes";
 import { ensureTokenizer, countTokens } from "../contextBuilder";
 
-const MAX_TOOL_CALLS = 10;
+/**
+ * データ取得ツール呼び出しの既定上限。呼び出し元が maxToolCalls を渡さない
+ * 場合のフォールバック（Context Creator・テスト等）。メインチャットは
+ * model-aware な getAgentToolCallBudget(model) を渡して上書きする。
+ */
+const DEFAULT_MAX_TOOL_CALLS = 10;
 /**
  * 1 件の tool_result が会話に積めるトークン上限（tokenBudget に対する割合）。
  * budget 判定は結果追加後にしか走らないため、巨大な get_scene 一発で
@@ -20,11 +25,11 @@ const MAX_TOOL_CALLS = 10;
  */
 const TOOL_RESULT_TOKEN_CAP_RATIO = 0.25;
 /**
- * ask_user（ユーザーへの質問）の 1 ターンあたり上限。データ取得ツールの
- * MAX_TOOL_CALLS とは別カウント。適応的な多段質問を許しつつ、質問の連打／
- * 無限ループを抑止する。
+ * ask_user（ユーザーへの質問）の 1 ターンあたり既定上限。データ取得ツールの
+ * 上限とは別カウント。適応的な多段質問を許しつつ、質問の連打／無限ループを
+ * 抑止する。呼び出し元が maxUserQuestions を渡せば上書きできる。
  */
-const MAX_USER_QUESTIONS = 8;
+const DEFAULT_MAX_USER_QUESTIONS = 8;
 
 /** ユーザーへの質問ツール名（totalCalls から除外し別カウントする）。 */
 const ASK_USER_TOOL = "ask_user";
@@ -59,7 +64,23 @@ export interface AgentLoopOptions {
    * 呼び出し元（Context Creator 等）では省略可。未指定時は callLimitMessage に倒す。
    */
   userQuestionLimitMessage?: string;
+  /**
+   * データ取得ツール呼び出しの上限。未指定なら DEFAULT_MAX_TOOL_CALLS(10)。
+   * メインチャットは getAgentToolCallBudget(model) を渡して model-aware に
+   * スケールさせる。サブエージェントは親予算を分割した小さい値を渡す。
+   */
+  maxToolCalls?: number;
+  /** ask_user 呼び出しの上限。未指定なら DEFAULT_MAX_USER_QUESTIONS(8)。 */
+  maxUserQuestions?: number;
 }
+
+/** ループ終了理由。続行アフォーダンスの出し分けに使う。 */
+export type AgentStoppedReason =
+  | "completed"
+  | "limit_calls"
+  | "limit_tokens"
+  | "limit_questions"
+  | "aborted";
 
 export interface AgentLoopResult {
   finalText: string;
@@ -74,6 +95,11 @@ export interface AgentLoopResult {
   tokensIn: number | null;
   /** 全ターンの出力トークン合計（N4。取得不可なら null）。 */
   tokensOut: number | null;
+  /**
+   * ループがなぜ止まったか。"limit_*" のとき UI は「続行」ボタンを出し、
+   * ユーザーが新しい予算でターンを再開できるようにする。
+   */
+  stoppedReason: AgentStoppedReason;
 }
 
 function extractText(blocks: ResponseBlock[]): string {
@@ -124,6 +150,9 @@ export async function runAgentLoop(
     onToolComplete,
     onTextChunk,
   } = options;
+  const maxToolCalls = options.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
+  const maxUserQuestions =
+    options.maxUserQuestions ?? DEFAULT_MAX_USER_QUESTIONS;
 
   await ensureTokenizer();
 
@@ -133,6 +162,10 @@ export async function runAgentLoop(
   let userQuestionCalls = 0;
   let totalTokens = 0;
   let limitMessageInserted = false;
+  // 終了理由。abort 経路で true、limit 到達で具体的な理由をセットする。
+  let aborted = false;
+  let limitReason: Exclude<AgentStoppedReason, "completed" | "aborted"> | null =
+    null;
 
   // このターンで宣言したツール名の集合。プロバイダが返した tool_use を dispatch
   // する前にこの集合と照合し、未宣言ツールの実行を拒否する。executeTool は
@@ -171,11 +204,13 @@ export async function runAgentLoop(
     cost,
     tokensIn,
     tokensOut,
+    stoppedReason: aborted ? "aborted" : (limitReason ?? "completed"),
   });
 
   while (true) {
     // 次の LLM 呼び出し前に中断確認（Stop 後に新ターンを発火させない）。
     if (options.shouldAbort?.()) {
+      aborted = true;
       return result("", []);
     }
 
@@ -227,7 +262,7 @@ export async function runAgentLoop(
     // Execute each tool
     const toolResults: ToolResult[] = [];
     for (const tu of toolUses) {
-      // ask_user はデータ取得予算 (MAX_TOOL_CALLS) を消費せず別枠でカウント。
+      // ask_user はデータ取得予算 (maxToolCalls) を消費せず別枠でカウント。
       // 適応的な多段質問が data fetch 予算を食い潰さないようにするため。
       if (tu.name === ASK_USER_TOOL) {
         userQuestionCalls++;
@@ -262,7 +297,7 @@ export async function runAgentLoop(
 
       onProgress({
         totalCalls,
-        maxCalls: MAX_TOOL_CALLS,
+        maxCalls: maxToolCalls,
         tokensUsed: totalTokens,
         tokenBudget,
         currentToolName: tu.name,
@@ -274,6 +309,7 @@ export async function runAgentLoop(
       // ツール実行中に Stop / セッション切替が入った場合は、tool_result を
       // 積まずに即終了する（積むと次ターンの sendToLLM が再発火し暴走する）。
       if (options.shouldAbort?.()) {
+        aborted = true;
         return result(textContent, currentThinkingBlocks);
       }
 
@@ -326,21 +362,30 @@ export async function runAgentLoop(
 
     onProgress({
       totalCalls,
-      maxCalls: MAX_TOOL_CALLS,
+      maxCalls: maxToolCalls,
       tokensUsed: totalTokens,
       tokenBudget,
     });
 
-    // Check limits — insert system message then let LLM respond once more
+    // Check limits — insert system message then let LLM respond once more.
+    // 最終 result() に伝える stoppedReason もここで確定する（質問上限 →
+    // 呼び出し上限 → トークン予算 の優先順は制御メッセージの選択と揃える）。
     if (
-      totalCalls >= MAX_TOOL_CALLS ||
+      totalCalls >= maxToolCalls ||
       totalTokens >= tokenBudget ||
-      userQuestionCalls >= MAX_USER_QUESTIONS
+      userQuestionCalls >= maxUserQuestions
     ) {
+      if (userQuestionCalls >= maxUserQuestions) {
+        limitReason = "limit_questions";
+      } else if (totalCalls >= maxToolCalls) {
+        limitReason = "limit_calls";
+      } else {
+        limitReason = "limit_tokens";
+      }
       const limitMsg =
-        userQuestionCalls >= MAX_USER_QUESTIONS
+        limitReason === "limit_questions"
           ? (options.userQuestionLimitMessage ?? options.callLimitMessage)
-          : totalCalls >= MAX_TOOL_CALLS
+          : limitReason === "limit_calls"
             ? options.callLimitMessage
             : options.tokenBudgetMessage;
       conversation.push({ role: "user", content: limitMsg });

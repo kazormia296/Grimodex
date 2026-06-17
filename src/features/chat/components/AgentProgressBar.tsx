@@ -1,5 +1,12 @@
-import { Wrench } from "lucide-react";
+import { Wrench, CornerDownRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
+
+/** run_research サブエージェントの進捗（親の下にネスト表示する分のみ）。 */
+export interface SubAgentProgress {
+  calls: number;
+  maxCalls: number;
+  currentToolName?: string;
+}
 
 interface AgentProgressBarProps {
   calls: number;
@@ -7,6 +14,8 @@ interface AgentProgressBarProps {
   tokensUsed: number;
   tokenBudget: number;
   currentToolName?: string;
+  /** リサーチ・サブエージェント実行中のみ非 null。親の下にネスト表示する。 */
+  subProgress?: SubAgentProgress | null;
 }
 
 export function AgentProgressBar({
@@ -15,6 +24,7 @@ export function AgentProgressBar({
   tokensUsed,
   tokenBudget,
   currentToolName,
+  subProgress,
 }: AgentProgressBarProps) {
   const { t } = useTranslation();
   const tokenPct =
@@ -40,7 +50,23 @@ export function AgentProgressBar({
           </span>
         </div>
       </div>
-      {currentToolName && (
+      {subProgress && (
+        <div className="mt-0.5 flex items-center gap-1 truncate opacity-80">
+          <CornerDownRight className="h-3 w-3 shrink-0" aria-hidden />
+          <span className="shrink-0">
+            {t("chat.context.subagentRunning", {
+              calls: subProgress.calls,
+              maxCalls: subProgress.maxCalls,
+            })}
+          </span>
+          {subProgress.currentToolName && (
+            <span className="truncate opacity-70">
+              · {subProgress.currentToolName}
+            </span>
+          )}
+        </div>
+      )}
+      {!subProgress && currentToolName && (
         <div className="mt-0.5 truncate opacity-70">
           {t("chat.context.running", { name: currentToolName })}
         </div>

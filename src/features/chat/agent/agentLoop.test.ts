@@ -426,3 +426,79 @@ describe("runAgentLoop — Hermes inbound contract", () => {
     expect(res.finalText).toBe("final");
   });
 });
+
+// ── maxToolCalls / maxUserQuestions オーバーライド & stoppedReason ─────────────
+describe("runAgentLoop — configurable limits & stoppedReason", () => {
+  it("honors a custom maxToolCalls and reports limit_calls", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValue(toolUseResponse("search_codex"));
+    const executeTool = vi.fn(async () =>
+      toolResult({ name: "search_codex", tokensUsed: 1 }),
+    );
+
+    const res = await runAgentLoop(
+      baseOptions({ sendToLLM, executeTool, maxToolCalls: 2 }),
+    );
+
+    // 2 回でデータツール上限に達し、CALL_LIMIT を挿入してもう一度だけ応答を許す。
+    expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(res.stoppedReason).toBe("limit_calls");
+    const lastCallMessages = sendToLLM.mock.calls.at(-1)?.[0] ?? [];
+    expect(
+      lastCallMessages.some(
+        (m) => "content" in m && m.content === "CALL_LIMIT",
+      ),
+    ).toBe(true);
+  });
+
+  it("honors a custom maxUserQuestions and reports limit_questions", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValue(toolUseResponse("ask_user"));
+    const executeTool = vi.fn(async () =>
+      toolResult({ name: "ask_user", tokensUsed: 1 }),
+    );
+
+    const res = await runAgentLoop(
+      baseOptions({ sendToLLM, executeTool, maxUserQuestions: 2 }),
+    );
+
+    expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(res.stoppedReason).toBe("limit_questions");
+  });
+
+  it("reports stoppedReason completed on a clean end_turn", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(endResponse("done"));
+    const res = await runAgentLoop(baseOptions({ sendToLLM }));
+    expect(res.stoppedReason).toBe("completed");
+  });
+
+  it("reports stoppedReason aborted when shouldAbort fires between turns", async () => {
+    let aborted = false;
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockImplementation(async () => {
+        aborted = true;
+        return toolUseResponse("search_codex");
+      });
+    const res = await runAgentLoop(
+      baseOptions({ sendToLLM, shouldAbort: () => aborted }),
+    );
+    expect(res.stoppedReason).toBe("aborted");
+  });
+
+  it("defaults to 10 data-tool calls when maxToolCalls is omitted", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValue(toolUseResponse("search_codex"));
+    const executeTool = vi.fn(async () =>
+      toolResult({ name: "search_codex", tokensUsed: 1 }),
+    );
+    const res = await runAgentLoop(baseOptions({ sendToLLM, executeTool }));
+    expect(executeTool).toHaveBeenCalledTimes(10);
+    expect(res.stoppedReason).toBe("limit_calls");
+  });
+});

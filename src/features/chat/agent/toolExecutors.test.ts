@@ -57,12 +57,16 @@ vi.mock("../contextBuilder", () => ({
 
 import {
   executeTool,
+  executeReadOnlyTool,
   EXECUTORS,
   READ_ONLY_EXECUTORS,
   MUTATING_EXECUTORS,
 } from "./toolExecutors";
 import { MUTATING_TOOL_NAMES } from "../toolProtocolParse";
-import { getDeterministicAgentTools } from "./toolDefinitions";
+import {
+  getDeterministicAgentTools,
+  READ_ONLY_TOOL_NAMES,
+} from "./toolDefinitions";
 
 // ── read-only allowlist 不変条件 (security review F-2) ───────────────────────
 // EXECUTORS は read-only ツールのみで構成される契約。mutating executor を追加
@@ -116,20 +120,69 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     );
   });
 
-  it("covers every non-ask_user AGENT_TOOL and excludes ask_user", () => {
+  it("covers every AGENT_TOOL except the chatStore-intercepted ones", () => {
+    // ask_user / run_research は EXECUTORS に入れず、chatStore の
+    // guardedExecuteTool が UI 往復 / サブエージェントとして横取りする。
+    const intercepted = new Set(["ask_user", "run_research"]);
     const executorNames = new Set(Object.keys(EXECUTORS));
     const dataToolNames = getDeterministicAgentTools()
       .map((t) => t.name)
-      .filter((n) => n !== "ask_user");
+      .filter((n) => !intercepted.has(n));
     const missing = dataToolNames.filter((n) => !executorNames.has(n));
     expect(missing).toEqual([]);
     expect(executorNames.has("ask_user")).toBe(false);
+    expect(executorNames.has("run_research")).toBe(false);
   });
 
   it("is frozen against runtime mutation", () => {
     expect(Object.isFrozen(READ_ONLY_EXECUTORS)).toBe(true);
     expect(Object.isFrozen(MUTATING_EXECUTORS)).toBe(true);
     expect(Object.isFrozen(EXECUTORS)).toBe(true);
+  });
+
+  it("READ_ONLY_TOOL_NAMES (research subagent allowlist) tracks READ_ONLY_EXECUTORS", () => {
+    // toolDefinitions の正本 list が toolExecutors の実体とドリフトすると、
+    // リサーチ・サブエージェントに「宣言したのに dispatch できない」ツールが
+    // 紛れる / 逆に read-only ツールが欠ける。両者の一致を gate する。
+    expect([...READ_ONLY_TOOL_NAMES].sort()).toEqual(
+      Object.keys(READ_ONLY_EXECUTORS).sort(),
+    );
+  });
+});
+
+// ── executeReadOnlyTool（リサーチ・サブエージェント用 dispatcher）─────────────
+describe("executeReadOnlyTool — read-only dispatch invariant", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    mockTreeProjectId.mockReset();
+    mockAgentCreateForeshadow.mockReset();
+  });
+
+  it("rejects every mutating tool (cannot write from a sub-agent)", async () => {
+    for (const name of Object.keys(MUTATING_EXECUTORS)) {
+      const res = await executeReadOnlyTool(name, "t1", {});
+      expect(res.error).toBeTruthy();
+      expect(res.content).toBeNull();
+      expect(res.error).toContain("read-only");
+    }
+    // 念のため代表的な mutating executor が一切呼ばれていないこと。
+    expect(mockAgentCreateForeshadow).not.toHaveBeenCalled();
+  });
+
+  it("rejects ask_user and run_research (no questions, no recursion)", async () => {
+    for (const name of ["ask_user", "run_research"]) {
+      const res = await executeReadOnlyTool(name, "t1", {});
+      expect(res.error).toBeTruthy();
+      expect(res.content).toBeNull();
+    }
+  });
+
+  it("dispatches a read-only tool through to its executor", async () => {
+    mockTreeProjectId.mockReturnValue("p1");
+    const res = await executeReadOnlyTool("list_chapters", "t1", {});
+    // db mock は空配列を返すので成功（error なし）で抜ける。
+    expect(res.error).toBeUndefined();
+    expect(res.name).toBe("list_chapters");
   });
 });
 

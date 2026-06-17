@@ -1498,3 +1498,44 @@ export async function executeTool(
     };
   }
 }
+
+/**
+ * 読み取り専用ツールのみを dispatch する（リサーチ・サブエージェント用）。
+ * READ_ONLY_EXECUTORS 以外（mutating / ask_user / run_research）は構造的に拒否し、
+ * 子エージェントが書き込み・質問・再帰を行えないことを defense-in-depth で保証する。
+ * サブエージェントには getResearchSubagentTools() の読み取りサブセットしか宣言しない
+ * ため通常ここに非読み取りツールは来ないが、宣言ゲートが万一破られても
+ * read-only 不変条件を二重に守る。
+ */
+export async function executeReadOnlyTool(
+  name: string,
+  toolCallId: string,
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
+  const executor = READ_ONLY_EXECUTORS[name];
+  if (!executor) {
+    const msg = `Tool not available in research sub-agent (read-only): ${name}`;
+    return {
+      toolCallId,
+      name,
+      content: null,
+      summary: msg,
+      tokensUsed: 0,
+      error: msg,
+    };
+  }
+  try {
+    const result = await executor(params);
+    return { toolCallId, ...result };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      toolCallId,
+      name,
+      content: null,
+      summary: `Error: ${msg}`,
+      tokensUsed: 0,
+      error: msg,
+    };
+  }
+}

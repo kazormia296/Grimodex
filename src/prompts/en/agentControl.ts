@@ -1,10 +1,33 @@
 export const EN_AGENT_CONTROL = {
   callLimitMessage:
-    "The tool-call limit (10 calls) has been reached. Please answer with the information you currently have.",
+    "The tool-call limit has been reached. Please answer with the information you currently have. If more work is needed, the user can resume the turn with a fresh budget via the “Continue” button.",
   tokenBudgetMessage:
-    "The token budget for tool results has been reached. Please answer with the information you currently have.",
+    "The token budget for tool results has been reached. Please answer with the information you currently have. If more work is needed, the user can resume the turn with a fresh budget via the “Continue” button.",
   userQuestionLimitMessage:
     "The limit on the number of questions you may ask the user has been reached. Do not call ask_user any further; proceed with the information you currently know.",
+  /**
+   * User message sent when the "Continue" button is pressed. Resumes — with a
+   * fresh budget — a turn that was cut off at the tool-call/token limit. The
+   * previous answer remains in history so work can build on it.
+   */
+  continuePrompt:
+    "Your previous response was cut off when it reached its budget limit. Building on what you have found so far, continue the remaining work and complete the task.",
+  /**
+   * Limit message used inside the run_research sub-agent. The sub-agent has no
+   * "Continue" button, so keep it terse and free of that guidance (so it is not
+   * parroted into the summary returned to the parent).
+   */
+  researchLimitMessage:
+    "The research budget limit has been reached. Summarize what you have found so far.",
+  /**
+   * System prompt for the run_research sub-agent (read-only). Delegates a
+   * self-contained investigation so the parent agent's tool budget is preserved.
+   */
+  researchSubagentSystem:
+    "You are a research sub-agent for a novel-writing tool. Focus solely on the given research task and use the available read-only tools (search/get over Codex, scenes, foreshadowing, snippets) to gather what is needed. Strictly observe the following:\n" +
+    "- You can only read. You cannot create or update data, propose body text, ask the user, or spawn further sub-agents.\n" +
+    "- Do not fabricate facts not grounded in tool results. If something is not found, state plainly that it was not found.\n" +
+    "- End with a concise, well-structured written summary of your findings (include the id of relevant entries/scenes). Return conclusions the parent agent can use directly, not a dump of raw data.",
   userDismissMessage:
     "The user closed this question without answering. Do not repeat the question; either proceed using reasonable judgment, or, only if it is truly necessary, ask once more with a tightly focused, single confirmation.",
   /**

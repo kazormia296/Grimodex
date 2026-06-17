@@ -1331,6 +1331,8 @@
   "chat": {
     "title": "AIチャット",
     "generating": "生成中…",
+    "agentContinue": "続行",
+    "agentContinueHint": "上限で打ち切られました。新しい予算で続きを実行します。",
     "aiOffNote": "このプロジェクトではAIチャットがオフです。",
     "aiOffOpenSettings": "ポリシー設定を開く",
     "userQuestion": {
@@ -1549,6 +1551,7 @@
       "foundEntries": "{{count}} 件のエントリが見つかりました:",
       "addSelected": "選択を追加 ({{count}})",
       "running": "実行中: {{name}}",
+      "subagentRunning": "リサーチ・サブエージェント {{calls}}/{{maxCalls}}",
       "commandSuggestions": "コマンド候補",
       "mentionSuggestions": "@メンション候補",
       "mentionScene": "シーン",

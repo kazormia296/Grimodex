@@ -1331,6 +1331,8 @@
   "chat": {
     "title": "AI Chat",
     "generating": "Generating…",
+    "agentContinue": "Continue",
+    "agentContinueHint": "Stopped at the limit. Resumes with a fresh budget.",
     "aiOffNote": "AI chat is off for this project.",
     "aiOffOpenSettings": "Open policy settings",
     "userQuestion": {
@@ -1549,6 +1551,7 @@
       "foundEntries": "Found {{count}} entries:",
       "addSelected": "Add selected ({{count}})",
       "running": "Running: {{name}}",
+      "subagentRunning": "Research sub-agent {{calls}}/{{maxCalls}}",
       "commandSuggestions": "Command suggestions",
       "mentionSuggestions": "Mention suggestions",
       "mentionScene": "Scene",

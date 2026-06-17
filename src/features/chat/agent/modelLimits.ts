@@ -550,6 +550,24 @@ export function getToolTokenBudget(model: string): number {
   return Math.max(2_000, Math.floor(contextWindow * 0.3));
 }
 
+/**
+ * エージェントモードの 1 ターンあたりデータツール呼び出し上限（model-aware）。
+ *
+ * 従来は agentLoop に 10 がハードコードされていたが、上限の真のボトルネックは
+ * 「回数」そのものではなく会話履歴の累積（毎ターン全 tool_result を再送する
+ * フラットループ）であり、コンテキスト窓が大きいモデルほど多段探索を許せる。
+ * そこで窓サイズに応じて段階的に引き上げる。小窓モデルは従来どおり 10 で据え置き、
+ * 文脈溢れ・コスト爆発を避ける。さらに大規模タスクは run_research サブエージェント
+ * （独立予算・要約のみ返す）と「続行」アフォーダンスで伸ばす設計。
+ */
+export function getAgentToolCallBudget(model: string): number {
+  const { contextWindow } = getModelCapabilities(model);
+  if (contextWindow >= 400_000) return 25;
+  if (contextWindow >= 200_000) return 16;
+  if (contextWindow >= 64_000) return 12;
+  return 10;
+}
+
 /** Tool Use 対応モデルの判定 */
 export function modelSupportsTools(model: string): boolean {
   return getModelCapabilities(model).supportsTools;

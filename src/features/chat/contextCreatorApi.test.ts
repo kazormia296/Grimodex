@@ -43,6 +43,7 @@ function loopResult(finalText: string): AgentLoopResult {
     cost: null,
     tokensIn: null,
     tokensOut: null,
+    stoppedReason: "completed",
   };
 }
 
