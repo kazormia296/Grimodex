@@ -36,6 +36,7 @@ import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingTextarea } from "../components/SettingTextarea";
+import { AiProjectSettings } from "./AiProjectSettings";
 import { useSettingsStore } from "../settingsStore";
 
 /** AI プロンプト追記カスタマイズの対象スロット (project_settings の key 末尾)。 */
@@ -1287,6 +1288,9 @@ export function AiCategory() {
         })()}
 
       <SettingScopeHeader title={t("settings.scopeProject")} />
+      {/* AI 使用ポリシー + AI 作品設定（旧 Project タブから集約）。 */}
+      <AiProjectSettings />
+
       {/* Context budget */}
       <SettingSection title={t("settings.ai.contextBudget")}>
         <div className="space-y-2">
