@@ -3296,6 +3296,7 @@
     "human": "Human",
     "ai": "AI",
     "unknown": "Unknown",
+    "legendLabel": "Attribution highlight legend",
     "byModel": "By model",
     "filterOnlyTitle": "Show only {{label}}",
     "clearFilterTitle": "Clear filter",

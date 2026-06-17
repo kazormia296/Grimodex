@@ -55,6 +55,7 @@ import { useGhostPreview } from "@/features/editor/useGhostPreview";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
+import { AttributionLegend } from "@/features/attribution/AttributionLegend";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
@@ -1896,7 +1897,7 @@ export function EditorPane({
       </DndContext>
       <div className="glass-editor-chrome flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
         {/* Left: status badge */}
-        <div className="relative flex min-w-0 items-center">
+        <div className="relative flex min-w-0 items-center gap-2">
           {activeStatus ? (
             <>
               <button
@@ -1935,6 +1936,11 @@ export function EditorPane({
               )}
             </>
           ) : null}
+          {/* Attribution overlay legend — only while the overlay is on, kept on
+             the left away from the purple AI-ratio badge to avoid color clash. */}
+          {showAttribution && (
+            <AttributionLegend className="text-[10px] text-muted-foreground" />
+          )}
         </div>
         {/* Right: stats + save state + history */}
         <div className="flex flex-shrink-0 items-center gap-3">
@@ -1946,7 +1952,7 @@ export function EditorPane({
               type="button"
               title={i18next.t("editor.status.openAttribution")}
               onClick={() => togglePanel("attribution")}
-              className="tabular-nums text-purple-400 hover:text-foreground"
+              className="tabular-nums text-attribution-ai hover:text-foreground"
             >
               AI: {aiRatio}%
             </button>

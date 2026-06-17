@@ -1,3 +1,4 @@
+import { ATTRIBUTION_COLORS } from "./attributionColors";
 import type { AttributionStats } from "./attributionStats";
 import type {
   AuthorshipTotals,
@@ -314,9 +315,9 @@ function renderBar(totals: AuthorshipTotals): string {
   const unknownW = (totals.unknown / total) * w;
   return [
     `<svg width="${w}" height="${h}" role="img" aria-label="authorship ratio">`,
-    `<rect x="0" y="0" width="${humanW.toFixed(2)}" height="${h}" fill="oklch(0.65 0.10 220)"/>`,
-    `<rect x="${humanW.toFixed(2)}" y="0" width="${aiW.toFixed(2)}" height="${h}" fill="oklch(0.65 0.18 250)"/>`,
-    `<rect x="${(humanW + aiW).toFixed(2)}" y="0" width="${unknownW.toFixed(2)}" height="${h}" fill="oklch(0.65 0.05 0)"/>`,
+    `<rect x="0" y="0" width="${humanW.toFixed(2)}" height="${h}" fill="${ATTRIBUTION_COLORS.human}"/>`,
+    `<rect x="${humanW.toFixed(2)}" y="0" width="${aiW.toFixed(2)}" height="${h}" fill="${ATTRIBUTION_COLORS.ai}"/>`,
+    `<rect x="${(humanW + aiW).toFixed(2)}" y="0" width="${unknownW.toFixed(2)}" height="${h}" fill="${ATTRIBUTION_COLORS.unknown}"/>`,
     `</svg>`,
   ].join("");
 }

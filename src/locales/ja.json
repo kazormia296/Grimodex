@@ -3293,6 +3293,7 @@
     "human": "人間",
     "ai": "AI生成",
     "unknown": "不明",
+    "legendLabel": "帰属ハイライトの凡例",
     "byModel": "モデル別",
     "filterOnlyTitle": "{{label}}のみ表示",
     "clearFilterTitle": "フィルタを解除",
