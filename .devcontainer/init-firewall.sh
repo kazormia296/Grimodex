@@ -98,7 +98,9 @@ for domain in \
     "parcel.pyke.io" \
     "polar.sh" \
     "docs.polar.sh" \
-    "api.polar.sh"; do
+    "api.polar.sh" \
+    "support.apple.com" \
+    "developer.apple.com"; do
     echo "Resolving $domain..."
     ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then
