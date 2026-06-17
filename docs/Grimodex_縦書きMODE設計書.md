@@ -125,9 +125,12 @@ native 委譲で、ルビ・圏点と同じ「CSS に任せる」グループ。
 - IME 候補ウィンドウは完全な縦組みにならない（WebView の制約・許容済み）。
   位置はキャレット近傍に出る（Windows 実機確認済 2026-06-12）。MS-IME は
   予測候補グリフを 90 度回転描画するが IME 側の挙動で制御不可。
-  詳細は「IME 変換対応の方針」参照。
+  **macOS も同じ天井で確定（2026-06-17・ソース調査）**: WebKit が縦シグナル
+  `NSTextInputClient.-drawsVerticallyForCharacterAtIndex:` を未実装のため、
+  WKWebView は vertical-rl でも候補窓を横向きで出す（Safari 自体も同様）。
+  ネイティブ縦候補窓は実装しないと判断。詳細は「IME 変換対応の方針」参照。
 
-## IME 変換対応の方針（2026-06-12 検討確定）
+## IME 変換対応の方針（2026-06-12 検討確定・2026-06-17 macOS 確定）
 
 外部調査（IMM32/TSF・TATEditor/Mery の対応実態・EditContext API）の結論を
 Grimodex のスタック（Tauri WebView + TipTap/PM）に当てはめた確定事項。
@@ -148,6 +151,29 @@ Grimodex のスタック（Tauri WebView + TipTap/PM）に当てはめた確定�
 - **EditContext API は不採用**。位置制御の Web 標準（Chromium 121+）だが、
   contenteditable の既定編集動作をオプトアウトする設計のため ProseMirror の
   入力パイプラインと根本非互換。WKWebView 未対応も致命的。再検討しない。
+- **macOS WKWebView も「横向き・キャレット付近」が天井で確定（2026-06-17・
+  ソース調査。実機検証は未だが原因はソースで特定済み）**。macOS が候補窓を
+  縦組みにする唯一のトリガは `NSTextInputClient` の
+  `-drawsVerticallyForCharacterAtIndex:`（10.6+・ヘッダ "Returns if the marked
+  text is in vertical layout"。NSTextView は `layoutOrientation == vertical` で
+  YES を返す）。`IMKCandidatePanelType` は候補グリッド形状のみ、
+  `baseWritingDirection` は bidi（LTR/RTL）で無関係。**WebKit はこのメソッドを
+  未実装**（WebKit source に `drawsVertical` / `NSTextLayoutOrientation` の
+  ヒット 0、`validAttributesForMarkedText` に `NSVerticalGlyphFormAttributeName`
+  も無し）→ vertical-rl の contenteditable でも Safari / WKWebView は候補窓を
+  横向きで出す。Windows（TSF）とは別機構ながら同結論。傍証: Firefox も
+  per-platform 未完（Bugzilla 1130935/1130937）、前例ゼロ、自プロジェクトの
+  Windows 実機 QA もグリフ回転のみで窓レイアウトは横。
+  - **ネイティブ shim は到達可だが hard / fragile で見送り**。wry は objc2 で
+    WKWebView を subclass 済のため `-drawsVerticallyForCharacterAtIndex:` を
+    足すことは可能だが、(1) writing-mode のネイティブ源泉が無く per-focus IPC
+    同期が必要、(2) `firstRectForCharacterRange:` / `baselineDelta` が web
+    process から async・横向き rect のみ、(3) **非 NSTextView クライアントに OS が
+    縦パネルを描くか自体が未検証**（上記の全傍証は描かない方向）。加えて App
+    Store 却下リスク（private `_impl` / selector swizzling）と WebKit 更新での
+    破綻。唯一安価な決着手段は実機 Mac で捨てビルドに `drawsVertically` を
+    ハードコード YES し Apple 日本語 IME のパネルが回るか目視するスパイクのみ。
+    検討の結果、スパイクも含め**実装しない**と判断（2026-06-17）。
 
 ### フォールバック階段
 
@@ -210,8 +236,12 @@ QA ビルドは `pnpm tauri build` に devtools feature 付与を推奨（コン
       （dom rect 直下/隣接）に出現、決定表の「許容」に該当。位置は IME に
       よって多少異なるが可読位置。MS-IME は予測候補グリフを 90 度回転描画
       （上記のとおり IME 側挙動・実害なし）。スクショ = temp/ime（dpr=1）。
-      残: 再変換・確定直後 undo・行末/左端/スクロール後の位置バリエーション・
-      macOS WKWebView。
+      残（Windows）: 再変換・確定直後 undo・行末/左端/スクロール後の位置
+      バリエーション。
+      **macOS（2026-06-17・ソース調査で確定）**: WebKit が縦シグナル
+      `-drawsVerticallyForCharacterAtIndex:` を未実装のため WKWebView も
+      横向き・キャレット近傍が天井（Windows と同結論）。ネイティブ縦候補窓は
+      実装しないと判断。詳細は「IME 変換対応の方針」の macOS 項を参照。
 - [ ] scrollLeft 符号のエンジン差: WKWebView / WebKitGTK 実機で
       get/setLogicalScrollOffset の前提（0 起点・負方向）を確認。
 - [ ] 句読点・括弧・長音の縦書き字形（vert/vpal）: Noto Serif JP + 任意フォント。
