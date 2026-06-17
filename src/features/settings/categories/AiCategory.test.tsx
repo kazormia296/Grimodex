@@ -49,6 +49,17 @@ vi.mock("@/features/chat/agent/modelLimits", () => ({
   registerAinoveristCaps: () => {},
 }));
 
+// AiCategory は AiProjectSettings（プロジェクト固有の AI 設定）を内包する。
+// project 未取得時は AiProjectSettings が null を返すので、ここでは provider/
+// モデル/Beat/WebSearch 等のグローバル設定のレンダリングだけを検証する。
+vi.mock("../hooks/useProjectSettings", () => ({
+  useProjectSettings: () => ({
+    project: null,
+    isLoading: false,
+    updateField: vi.fn(),
+  }),
+}));
+
 vi.mock("@/features/settings/settingsStore", () => {
   const cache: Record<string, string> = {
     "ai.modelWhitelist": "[]",

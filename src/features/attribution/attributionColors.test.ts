@@ -39,4 +39,23 @@ describe("attributionColors（帰属カラーの正本）", () => {
       expect(m![1].trim()).toBe(ATTRIBUTION_COLORS[s]);
     }
   });
+
+  it("本文オーバーレイは color-mix(in oklab) で混色する（oklch に戻さない）", () => {
+    // oklch(polar) は色相を紙色の色相へ引きずり、彩度の低い色付き紙(暖色/青夜)で
+    // AI(teal) と unknown(amber) の区別を潰す。oklab(Cartesian) は overlay 同士の
+    // 差を紙色から独立に保つ。退行防止として実ファイルで混色空間を固定する。
+    const cssPath = fileURLToPath(new URL("../../index.css", import.meta.url));
+    const css = readFileSync(cssPath, "utf8");
+    for (const s of ["ai", "unknown"] as const) {
+      const rule = css.match(
+        new RegExp(`\\.attribution-${s}\\s*\\{([\\s\\S]*?)\\}`),
+      );
+      expect(
+        rule,
+        `.attribution-${s} ルールが index.css に見つからない`,
+      ).toBeTruthy();
+      expect(rule![1]).toMatch(/color-mix\(\s*in oklab\b/);
+      expect(rule![1]).not.toMatch(/in oklch\b/);
+    }
+  });
 });

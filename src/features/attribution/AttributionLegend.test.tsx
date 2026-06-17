@@ -19,16 +19,20 @@ describe("AttributionLegend（本文オーバーレイの凡例）", () => {
     expect(container.querySelector("[data-legend-source='human']")).toBeNull();
   });
 
-  it("各項目に正本トークン由来の色スウォッチ utility が付く", () => {
+  it("スウォッチは本文オーバーレイと同一の .attribution-* クラスで描画する（凡例＝本文の色が一致）", () => {
     const { container } = render(<AttributionLegend />);
     const aiSwatch = container.querySelector(
       "[data-legend-source='ai'] span[aria-hidden]",
     ) as HTMLElement;
-    expect(aiSwatch.className).toContain("bg-attribution-ai");
+    // 本文オーバーレイと同じ color-mix を共有するため overlay クラスを流用する。
+    // 単色トークン（bg-attribution-*）に戻すと凡例と本文の色がずれるので禁止。
+    expect(aiSwatch.className.split(" ")).toContain("attribution-ai");
+    expect(aiSwatch.className).not.toContain("bg-attribution-ai");
     const unknownSwatch = container.querySelector(
       "[data-legend-source='unknown'] span[aria-hidden]",
     ) as HTMLElement;
-    expect(unknownSwatch.className).toContain("bg-attribution-unknown");
+    expect(unknownSwatch.className.split(" ")).toContain("attribution-unknown");
+    expect(unknownSwatch.className).not.toContain("bg-attribution-unknown");
   });
 
   it("スクリーンリーダー向けに凡例のラベルを持つ", () => {

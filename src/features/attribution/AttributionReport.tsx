@@ -166,8 +166,14 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
   }, [stats]);
 
   const __renderResult = (
-    <div className="flex flex-col gap-3 p-3" data-testid="attribution-report">
-      <div data-panel-header className="flex items-center justify-between">
+    <div
+      className="flex h-full min-h-0 flex-col"
+      data-testid="attribution-report"
+    >
+      <div
+        data-panel-header
+        className="flex items-center justify-between border-b border-border px-3 py-2"
+      >
         <h3 className="text-sm font-semibold">{t("attribution.report")}</h3>
         <div className="flex gap-1">
           {(["scene", "project"] as const).map((s) => (
@@ -185,139 +191,144 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
         </div>
       </div>
 
-      {scope === "project" ? (
-        <AttributionProjectView />
-      ) : !stats || stats.total === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          {t("attribution.noText")}
-        </p>
-      ) : (
-        <>
-          {filterSource && (
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <span>{t("attribution.filtering")}</span>
-              <button
-                type="button"
-                onClick={() => setFilterSource(null)}
-                className="text-primary underline"
-              >
-                {t("attribution.clearFilter")}
-              </button>
-            </div>
-          )}
-          <StatBar
-            label={t("attribution.human")}
-            count={stats.human + stats.unmarked}
-            total={stats.total}
-            color={ATTRIBUTION_COLOR_VARS.human}
-            source="human"
-            activeFilter={filterSource}
-            onFilter={setFilterSource}
-          />
-          <StatBar
-            label={t("attribution.ai")}
-            count={stats.ai}
-            total={stats.total}
-            color={ATTRIBUTION_COLOR_VARS.ai}
-            source="ai"
-            activeFilter={filterSource}
-            onFilter={setFilterSource}
-          />
-          <StatBar
-            label={t("attribution.unknown")}
-            count={stats.unknown}
-            total={stats.total}
-            color={ATTRIBUTION_COLOR_VARS.unknown}
-            source="unknown"
-            activeFilter={filterSource}
-            onFilter={setFilterSource}
-          />
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+        {scope === "project" ? (
+          <AttributionProjectView />
+        ) : !stats || stats.total === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            {t("attribution.noText")}
+          </p>
+        ) : (
+          <>
+            {filterSource && (
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <span>{t("attribution.filtering")}</span>
+                <button
+                  type="button"
+                  onClick={() => setFilterSource(null)}
+                  className="text-primary underline"
+                >
+                  {t("attribution.clearFilter")}
+                </button>
+              </div>
+            )}
+            <StatBar
+              label={t("attribution.human")}
+              count={stats.human + stats.unmarked}
+              total={stats.total}
+              color={ATTRIBUTION_COLOR_VARS.human}
+              source="human"
+              activeFilter={filterSource}
+              onFilter={setFilterSource}
+            />
+            <StatBar
+              label={t("attribution.ai")}
+              count={stats.ai}
+              total={stats.total}
+              color={ATTRIBUTION_COLOR_VARS.ai}
+              source="ai"
+              activeFilter={filterSource}
+              onFilter={setFilterSource}
+            />
+            <StatBar
+              label={t("attribution.unknown")}
+              count={stats.unknown}
+              total={stats.total}
+              color={ATTRIBUTION_COLOR_VARS.unknown}
+              source="unknown"
+              activeFilter={filterSource}
+              onFilter={setFilterSource}
+            />
 
-          <BreakdownBar
-            human={stats.human + stats.unmarked}
-            ai={stats.ai}
-            unknown={stats.unknown}
-            total={stats.total}
-          />
+            <BreakdownBar
+              human={stats.human + stats.unmarked}
+              ai={stats.ai}
+              unknown={stats.unknown}
+              total={stats.total}
+            />
 
-          {Object.keys(stats.modelBreakdown).length > 0 && (
-            <div className="mt-1">
-              <p className="mb-1 text-xs font-medium text-muted-foreground">
-                {t("attribution.byModel")}
-              </p>
-              {Object.entries(stats.modelBreakdown).map(([model, count]) => {
-                const pct =
-                  stats.ai > 0 ? Math.round((count / stats.ai) * 100) : 0;
-                const label =
-                  model === UNKNOWN_MODEL_KEY
-                    ? t("attribution.unknownModel")
-                    : model;
-                return (
-                  <div key={model} className="flex items-center gap-2 text-xs">
-                    <span
-                      className="flex-1 truncate text-muted-foreground"
-                      title={label}
-                    >
-                      {label}
-                    </span>
-                    <span className="tabular-nums text-muted-foreground">
-                      {t("attribution.charCount", { count, pct })}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {(isLoadingPassages || passages.length > 0) && (
-            <div className="mt-1 border-t border-border pt-2">
-              <p className="mb-1 text-xs font-medium text-muted-foreground">
-                {t("attribution.aiUsageLocations")}
-              </p>
-              {isLoadingPassages ? (
-                <p className="text-xs text-muted-foreground">
-                  {t("common.loading")}
+            {Object.keys(stats.modelBreakdown).length > 0 && (
+              <div className="mt-1">
+                <p className="mb-1 text-xs font-medium text-muted-foreground">
+                  {t("attribution.byModel")}
                 </p>
-              ) : (
-                <div className="flex max-h-56 flex-col gap-1 overflow-auto">
-                  {passages.map((passage) => (
-                    <PassageRow
-                      key={passage.id}
-                      passage={passage}
-                      onJump={handleJumpToPassage}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                {Object.entries(stats.modelBreakdown).map(([model, count]) => {
+                  const pct =
+                    stats.ai > 0 ? Math.round((count / stats.ai) * 100) : 0;
+                  const label =
+                    model === UNKNOWN_MODEL_KEY
+                      ? t("attribution.unknownModel")
+                      : model;
+                  return (
+                    <div
+                      key={model}
+                      className="flex items-center gap-2 text-xs"
+                    >
+                      <span
+                        className="flex-1 truncate text-muted-foreground"
+                        title={label}
+                      >
+                        {label}
+                      </span>
+                      <span className="tabular-nums text-muted-foreground">
+                        {t("attribution.charCount", { count, pct })}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
-          <div className="flex items-center justify-between pt-1 border-t border-border">
-            <div className="flex gap-1">
-              <ExportAgentTraceButton />
-              <button
-                type="button"
-                onClick={handleExportMd}
-                className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent"
-                title={t("attribution.exportMarkdownTitle")}
-              >
-                <Download className="h-3 w-3" /> MD
-              </button>
-              <button
-                type="button"
-                onClick={handleExportCsv}
-                className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent"
-                title={t("attribution.exportCsvTitle")}
-              >
-                <Download className="h-3 w-3" /> CSV
-              </button>
+            {(isLoadingPassages || passages.length > 0) && (
+              <div className="mt-1 border-t border-border pt-2">
+                <p className="mb-1 text-xs font-medium text-muted-foreground">
+                  {t("attribution.aiUsageLocations")}
+                </p>
+                {isLoadingPassages ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t("common.loading")}
+                  </p>
+                ) : (
+                  <div className="flex max-h-56 flex-col gap-1 overflow-auto">
+                    {passages.map((passage) => (
+                      <PassageRow
+                        key={passage.id}
+                        passage={passage}
+                        onJump={handleJumpToPassage}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-1 border-t border-border">
+              <div className="flex gap-1">
+                <ExportAgentTraceButton />
+                <button
+                  type="button"
+                  onClick={handleExportMd}
+                  className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent"
+                  title={t("attribution.exportMarkdownTitle")}
+                >
+                  <Download className="h-3 w-3" /> MD
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportCsv}
+                  className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent"
+                  title={t("attribution.exportCsvTitle")}
+                >
+                  <Download className="h-3 w-3" /> CSV
+                </button>
+              </div>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {t("attribution.total", { count: stats.total })}
+              </span>
             </div>
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {t("attribution.total", { count: stats.total })}
-            </span>
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </div>
     </div>
   );
   recordMark(
