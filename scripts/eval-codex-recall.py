@@ -192,7 +192,8 @@ def summarize(rows, np, label):
     for r in sorted(rows, key=lambda x: (x["kind"], x["rank"])):
         flag = "" if r["rank"] <= 3 else "  <- MISS@3"
         print(f"    [{r['kind'][:4]}] rank={r['rank']:2d} score={r['score']:.3f}  {r['query'][:42]}{flag}")
-    return metrics(hard)[1]  # hard Recall@3 = decision axis
+    r1, r3, mrr, _ = metrics(hard)
+    return (r1, r3, mrr)  # descriptive-hard (Recall@1, Recall@3, MRR)
 
 
 def main() -> int:
@@ -264,21 +265,33 @@ def main() -> int:
     summary_rows = run_mode(model, entries, queries, "summary", qprefix, dprefix, np)
     body_rows = run_mode(model, entries, queries, "body", qprefix, dprefix, np)
 
-    hard3_summary = summarize(summary_rows, np, "doc=summary-only (name+aliases+summary)")
-    hard3_body = summarize(body_rows, np, "doc=summary+body (adds content)")
+    s1, s3, smrr = summarize(summary_rows, np, "doc=summary-only (name+aliases+summary)")
+    b1, b3, bmrr = summarize(body_rows, np, "doc=summary+body (adds content)")
 
-    print("\n=== DECISION AXIS: descriptive-hard Recall@3 ===")
-    print(f"  summary-only : {hard3_summary:.2f}")
-    print(f"  summary+body : {hard3_body:.2f}")
-    delta = hard3_body - hard3_summary
-    print(f"  body lift    : {delta:+.2f}")
+    n_entries = len(entries)
+    print("\n=== DECISION (descriptive-hard) ===")
+    print("             Recall@1  Recall@3    MRR")
+    print(f"  summary  :   {s1:.2f}      {s3:.2f}    {smrr:.3f}")
+    print(f"  +body    :   {b1:.2f}      {b3:.2f}    {bmrr:.3f}")
+    print(f"  body lift:  R@1 {b1 - s1:+.2f}            MRR {bmrr - smrr:+.3f}")
+    if n_entries < 12:
+        # Recall@3 is top-3-of-N; on a tiny corpus it saturates and is NOT the
+        # discriminating signal. Read Recall@1 / MRR instead, and treat absolute
+        # values as optimistic (a real codex has many more distractors).
+        print(
+            f"  NOTE: tiny corpus ({n_entries} entries) — Recall@3 saturates "
+            f"(top-3 of {n_entries}); judge by Recall@1 / MRR."
+        )
     print()
-    if hard3_body >= 0.7 and delta >= 0.1:
-        print("  => GO: dense recovers the FTS-missed hard queries, and body is necessary.")
-    elif hard3_body >= 0.7:
-        print("  => GO (dense helps), but body adds little over summary — embed summary only.")
-    elif hard3_summary < 0.5 and hard3_body < 0.5:
-        print("  => WEAK: dense also struggles on this corpus. Re-check model/corpus before stage 3.")
+    # Decision keys on Recall@1 / MRR (robust on small corpora), not Recall@3.
+    dense_ok = b1 >= 0.7 or bmrr >= 0.8
+    body_helps = (b1 - s1) >= 0.05 or (bmrr - smrr) >= 0.03
+    if dense_ok and body_helps:
+        print("  => GO: dense recovers FTS-missed queries; embed BODY (clear Recall@1/MRR lift).")
+    elif dense_ok:
+        print("  => GO: dense helps; body adds little at rank-1 — summary may suffice.")
+    elif s1 < 0.5 and b1 < 0.5:
+        print("  => WEAK: dense struggles even at rank-1. Re-check model/corpus before stage 3.")
     else:
         print("  => MIXED: inspect per-query misses above before committing to hybrid.")
     return 0
