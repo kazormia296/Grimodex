@@ -19,7 +19,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 function findLicenseFile(pkgDir: string): string | undefined {
   try {
     const files = readdirSync(pkgDir);
-    const licenseFile = files.find((f) => /^licen[cs]e/i.test(f));
+    // 通常は LICENSE/LICENCE を優先。無ければ OFL.txt / COPYING にフォールバック
+    // する（一部のフォントは LICENSE を置かず SIL OFL を OFL.txt で配布する。例:
+    // gen-interface-jp）。これが無いと同梱フォントのライセンス本文と上流の帰属
+    // (Inter / Source Han Sans 等) が脱落し、OFL-1.1 §2 に違反する。
+    const licenseFile =
+      files.find((f) => /^licen[cs]e/i.test(f)) ??
+      files.find((f) => /^(ofl|copying)/i.test(f));
     if (licenseFile) {
       return readFileSync(join(pkgDir, licenseFile), "utf-8");
     }

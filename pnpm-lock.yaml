@@ -31,9 +31,6 @@ importers:
       '@fontsource/m-plus-1':
         specifier: ^5.2.9
         version: 5.2.9
-      '@fontsource/noto-sans-jp':
-        specifier: ^5.2.9
-        version: 5.2.9
       '@fontsource/noto-serif-jp':
         specifier: ^5.2.8
         version: 5.2.8
@@ -172,6 +169,9 @@ importers:
       fractional-indexing:
         specifier: ^3.2.0
         version: 3.2.0
+      gen-interface-jp:
+        specifier: ^0.6.2
+        version: 0.6.2
       gsap:
         specifier: ^3.15.0
         version: 3.15.0
@@ -788,9 +788,6 @@ packages:
 
   '@fontsource/m-plus-1@5.2.9':
     resolution: {integrity: sha512-/QhKBcdfpfCPwlDVY4dBXQgQwlTGT5Un0HDFRMFcOJ7ZcV/X4cTjAlxl2LO8VyRyP6qJ8itoOU0czlCSUj9djQ==}
-
-  '@fontsource/noto-sans-jp@5.2.9':
-    resolution: {integrity: sha512-6yVGiofnrnbiJjU8ch4JGSs2HqyozxMvsVyVmFwOnDH3u//qQKLqmKM4n0lqN0637uaJNzUW9nIJqbbMgHVQzw==}
 
   '@fontsource/noto-serif-jp@5.2.8':
     resolution: {integrity: sha512-x+tGrrK+4t/hoHLxAl7Ry5nN8CVPermqz0fD7HtCXzBJSxzFKxNH9y+cuOD3gZW0tyKZ2CD7WvuAfHbISvjL5Q==}
@@ -3509,6 +3506,9 @@ packages:
   functions-have-names@1.2.3:
     resolution: {integrity: sha512-xckBUXyTIqT97tq2x2AMb+g163b5JFysYk0x4qxNFwbfQkmNZoiRHb6sPzI9/QV33WeuvVYBUIiD4NzNIyqaRQ==}
 
+  gen-interface-jp@0.6.2:
+    resolution: {integrity: sha512-cfHDk5Er7HY+FtXcMfjCgW0J1QW1cAnO7kWRC12ZVrur1ZDASIDb2LMHzZD0Ug1IMK6VevR05l0rNZUAWb+kEw==}
+
   generator-function@2.0.1:
     resolution: {integrity: sha512-SFdFmIJi+ybC0vjlHN0ZGVGHc3lgE0DxPAT0djjVg+kjOnSqclqmj0KQ7ykTOLP6YxoqOvuAODGdcHJn+43q3g==}
     engines: {node: '>= 0.4'}
@@ -5555,8 +5555,6 @@ snapshots:
   '@fontsource/literata@5.2.8': {}
 
   '@fontsource/m-plus-1@5.2.9': {}
-
-  '@fontsource/noto-sans-jp@5.2.9': {}
 
   '@fontsource/noto-serif-jp@5.2.8': {}
 
@@ -8039,6 +8037,8 @@ snapshots:
       is-callable: 1.2.7
 
   functions-have-names@1.2.3: {}
+
+  gen-interface-jp@0.6.2: {}
 
   generator-function@2.0.1: {}
 
