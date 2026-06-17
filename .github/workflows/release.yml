@@ -57,6 +57,11 @@ jobs:
       - name: Linux 依存ライブラリのインストール
         if: matrix.platform == 'ubuntu-24.04'
         run: |
+          # GitHub Actions ランナー同梱の Microsoft apt リポジトリ(azure-cli / prod)が
+          # 403 / "no longer signed" を返し apt-get update を中断させることがある。
+          # 依存はすべて Ubuntu 標準アーカイブ由来で Microsoft リポジトリは不要なため、
+          # update 前に該当ソースを除去する。
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
