@@ -102,7 +102,7 @@ function isEnglishProject(input: GenerateTreePlanInput): boolean {
   return input.project?.language?.startsWith("en") ?? false;
 }
 
-function buildSystemPrompt(input: GenerateTreePlanInput): string {
+export function buildSystemPrompt(input: GenerateTreePlanInput): string {
   return isEnglishProject(input)
     ? buildSystemPromptEn(input)
     : buildSystemPromptJa(input);
@@ -184,7 +184,7 @@ function renderOutline(outline: OutlineNode[], isEn: boolean): string {
     .join("\n");
 }
 
-function buildUserPrompt(input: GenerateTreePlanInput): string {
+export function buildUserPrompt(input: GenerateTreePlanInput): string {
   return isEnglishProject(input)
     ? buildUserPromptEn(input)
     : buildUserPromptJa(input);

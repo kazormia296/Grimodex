@@ -4603,3 +4603,107 @@ mod list_scene_lens_for_project_tests {
         assert_eq!(query_run_ids(&conn), vec!["rB".to_string()]);
     }
 }
+
+#[cfg(test)]
+mod post_effect_live_tests {
+    //! 校閲 post-effect grader の **ライブ** 検証（実 OpenRouter）。
+    //!
+    //! 校閲系はプロンプト構築も応答解析も Rust 側にあり、JS の aiLiveHarness からは
+    //! 届かない（docs/AI経路検証.md の経路③）。そこで本番の `call_post_effect_api`
+    //! を実プロバイダに直接叩き、`extract_json` + JSON parse の到達経路を検証する。
+    //! 検証範囲は「Rust トランスポート × 実モデル応答 × extract_json 解析」。各 effect の
+    //! プロンプト文言の権威は FE(src/prompts/*/postEffect.ts)側で、ここでは代表的な
+    //! JSON 返却指示を用いる。
+    //!
+    //! 既定 SKIP（キー無しは即 return）。実行（実トークン課金あり）:
+    //!   OPENROUTER_API_KEY=sk-... cargo test --no-default-features \
+    //!     post_effect_live -- --nocapture
+    //!   モデル上書き: OPENROUTER_MODEL（既定 openai/gpt-4o-mini）。
+    use super::extract_json;
+    use crate::ai::{call_post_effect_api, AiProvider, AiSettings};
+
+    fn live_key() -> Option<String> {
+        std::env::var("OPENROUTER_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+    }
+
+    fn live_settings() -> AiSettings {
+        AiSettings {
+            provider: AiProvider::OpenRouter,
+            model: std::env::var("OPENROUTER_MODEL")
+                .unwrap_or_else(|_| "openai/gpt-4o-mini".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// マルチバイト境界で割らないようにテキストを切り詰める（エラー表示用）。
+    fn head(s: &str, n: usize) -> String {
+        s.chars().take(n).collect()
+    }
+
+    /// 1 つの effect について call_post_effect_api → extract_json → JSON parse を検証。
+    fn run_one(label: &str, system_prompt: &str, codex: Option<&str>, scene: &str) {
+        let Some(key) = live_key() else {
+            eprintln!("[skip] {label}: OPENROUTER_API_KEY 未設定");
+            return;
+        };
+        let settings = live_settings();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let raw = rt
+            .block_on(call_post_effect_api(
+                &settings,
+                &key,
+                system_prompt,
+                codex,
+                scene,
+            ))
+            .unwrap_or_else(|e| panic!("{label}: API 呼び出し失敗: {e:#}"));
+        let json = extract_json(&raw);
+        let parsed: serde_json::Value = serde_json::from_str(json)
+            .unwrap_or_else(|e| panic!("{label}: JSON parse 失敗: {e} / raw={}", head(&raw, 200)));
+        assert!(
+            parsed.is_object(),
+            "{label}: 応答が JSON オブジェクトでない"
+        );
+        eprintln!(
+            "[ok] {label}: {} keys",
+            parsed.as_object().map_or(0, |o| o.len())
+        );
+    }
+
+    const SCENE: &str = "朱音は棚の奥で古い真鍮の鍵を見つけた。なぜか胸騒ぎがして、誰にも言わずポケットにしまった。その夜、彼女は鍵の夢を見た。";
+
+    #[test]
+    fn intent_drift_live() {
+        run_one(
+            "intent_drift",
+            "あなたは小説の校閲者です。シーン本文が作者の意図からずれていないか分析し、結果を JSON オブジェクトで返してください。前後に説明やコードフェンスを付けないこと。形式: {\"findings\":[{\"issue\":\"...\",\"severity\":\"low|medium|high\"}]}",
+            None,
+            SCENE,
+        );
+    }
+
+    #[test]
+    fn review_live() {
+        run_one(
+            "review",
+            "あなたは小説の編集者です。シーン本文を講評し、結果を JSON オブジェクトで返してください。説明やコードフェンスは不要。形式: {\"comments\":[{\"point\":\"...\",\"suggestion\":\"...\"}]}",
+            None,
+            SCENE,
+        );
+    }
+
+    #[test]
+    fn consistency_with_codex_live() {
+        run_one(
+            "consistency",
+            "あなたは小説の校閲者です。Codex 設定とシーン本文の矛盾を検出し、JSON オブジェクトで返してください。説明やコードフェンスは不要。形式: {\"violations\":[{\"detail\":\"...\"}]}",
+            Some("{\"name\":\"朱音\",\"note\":\"鍵が大の苦手で、見るのも触るのも嫌う性格\"}"),
+            SCENE,
+        );
+    }
+}

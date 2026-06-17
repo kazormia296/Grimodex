@@ -158,7 +158,7 @@ function langKey(project: AiBranchProjectContext | null): "ja" | "en" {
   return project?.language?.startsWith("en") ? "en" : "ja";
 }
 
-function buildSystemPrompt(
+export function buildSystemPrompt(
   project: AiBranchProjectContext | null,
   spotlight: AiBranchSeed[],
 ): string {
@@ -222,7 +222,7 @@ function buildSystemPrompt(
   return lines.join("\n");
 }
 
-function buildUserPrompt(
+export function buildUserPrompt(
   userPrompt: string,
   count: number,
   seeds: AiBranchSeed[],
@@ -263,7 +263,7 @@ function buildUserPrompt(
   return parts.join("\n");
 }
 
-function parseCards(
+export function parseCards(
   text: string,
   count: number,
   lang: "ja" | "en",
