@@ -123,6 +123,9 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   // Semantic recall (Layer4 RAG): drafting チャットへ過去シーンの意味検索
   // 抜粋を自動注入する (project)
   "ai.semanticRecall": "project",
+  // Hybrid recall: 意味検索 (dense) に FTS5/bm25 (sparse) を RRF 融合し、
+  // 固有名詞 (人名・地名) の recall を補う。semanticRecall が前提 (project)
+  "ai.hybridRecall": "project",
   "ai.contextBudget.l1": "project",
   "ai.contextBudget.l2": "project",
   "ai.contextBudget.l3": "project",
@@ -240,6 +243,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.webSearch.maxContentTokens": "",
   "ai.autoAcceptBodyProposals": "false",
   "ai.semanticRecall": "true",
+  "ai.hybridRecall": "true",
   "ai.contextBudget.l1": "2",
   "ai.contextBudget.l2": "10",
   "ai.contextBudget.l3": "40",
