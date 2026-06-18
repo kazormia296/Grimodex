@@ -35,11 +35,18 @@
   entry にリンクされた foreshadow のうち
     secret == true
     && abandoned == false
-    && (payoffSceneId == null              // まだ payoff していない
-        || sceneOrder[payoffSceneId] > sceneOrder[currentSceneId])  // payoff が現在シーンより後
+    && (
+         // payoff シーン未設定: 未確定なら未回収＝未開示。確定済み(orphan_payoff)は
+         // 「回収済みだが位置不明」なので開示済みとみなし警告しない。
+         (payoffSceneId == null && payoffConfirmed == false)
+         // payoff シーンが現在シーンより後（順序に無い=削除等も後扱い）
+         || (payoffSceneId != null
+             && (sceneOrder[payoffSceneId] == null
+                 || sceneOrder[payoffSceneId] > sceneOrder[currentSceneId]))
+       )
 ```
 
-`payoffConfirmed` は payoff 位置が確定済みかの別軸であり、ここでは `payoffSceneId` と順序のみで「このシーン時点で明かされたか」を判定する。`sceneOrder` は `computeSceneTimeIndex(nodes, resolutionMode)`（既存）で算出し、phase 解決と同じ順序基準を共有する。
+`payoffConfirmed`（ユーザーが手動で立てられる「回収済み」フラグ・`payoffSceneId` と独立）は `payoffSceneId==null` のケースでのみ参照する: 確定済みで位置不明な `orphan_payoff` 状態（`deriveLabel` 既存ラベル）の秘匿伏線を全シーンで誤って未開示と出さないためのガード。`sceneOrder` は `phaseStore.globalSceneOrder`（treeStore が維持・phase 解決と同一基準）を共有する。
 
 ## アーキテクチャ（Approach A：共有フック＋純関数）
 

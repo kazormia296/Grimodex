@@ -71,4 +71,30 @@ describe("computeUnrevealedSecretForeshadows", () => {
     );
     expect(out.size).toBe(0);
   });
+  it("payoffConfirmed=true で payoffSceneId=null（orphan_payoff）は警告しない", () => {
+    const out = computeUnrevealedSecretForeshadows(
+      new Map([
+        ["e1", [makeF({ payoffConfirmed: true, payoffSceneId: null })]],
+      ]),
+      order,
+      "s2",
+    );
+    expect(out.has("e1")).toBe(false);
+  });
+  it("payoff が現在シーンと同一なら警告しない（境界）", () => {
+    const out = computeUnrevealedSecretForeshadows(
+      new Map([["e1", [makeF({ payoffSceneId: "s2" })]]]),
+      order,
+      "s2",
+    );
+    expect(out.has("e1")).toBe(false);
+  });
+  it("payoff シーンが順序に無い（削除等）なら未開示扱い", () => {
+    const out = computeUnrevealedSecretForeshadows(
+      new Map([["e1", [makeF({ payoffSceneId: "gone" })]]]),
+      order,
+      "s2",
+    );
+    expect(out.get("e1")).toEqual([{ id: "f1", title: "王の正体" }]);
+  });
 });

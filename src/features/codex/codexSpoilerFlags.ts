@@ -27,7 +27,9 @@ export function computeUnrevealedSecretForeshadows(
     for (const f of foreshadows) {
       if (!f.secret || f.abandoned) continue;
       if (f.payoffSceneId == null) {
-        unrevealed.push({ id: f.id, title: f.title });
+        // payoffConfirmed=true かつ scene 未設定 = orphan_payoff（回収済みだが位置不明）。
+        // 回収済み＝開示済みとみなし警告しない。未確定のみ未回収＝未開示として扱う。
+        if (!f.payoffConfirmed) unrevealed.push({ id: f.id, title: f.title });
         continue;
       }
       const payoffOrder = sceneOrder.get(f.payoffSceneId);
@@ -60,6 +62,8 @@ export function useUnrevealedSecretForeshadows(
         try {
           return [id, await listForeshadowsByCodexEntry(id)] as const;
         } catch {
+          // 取得失敗は空配列としてキャッシュ（read-only バッジのため再試行せず、
+          // 失敗時はその行の警告を出さない＝安全側）。
           return [id, [] as ForeshadowWithLabel[]] as const;
         }
       }),
