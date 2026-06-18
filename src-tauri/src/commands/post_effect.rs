@@ -3121,7 +3121,7 @@ async fn process_impact_review_scene(
                         "change_id": change_id,
                         "change_summary": change_summary,
                         "contradiction_score": contradiction_score,
-                        "reason": reason,
+                        "llm_reason": reason,
                         "confidence": confidence,
                         "found_text": found_text,
                         "found_context": found_context,
