@@ -39,7 +39,7 @@ const INTENT_DRIFT_PROMPT_VERSION: &str = "intent_drift_v1.0";
 // v2.0: ペルソナを bare label から genre/想定読者プロフィールを織り込んだ
 // brief 注入へ刷新 (TS pseudoCommentPayloadBuilder と同期)。
 const PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_v2.0";
-const META_STRUCTURE_PROMPT_VERSION: &str = "meta_structure_v1.0";
+const META_STRUCTURE_PROMPT_VERSION: &str = "meta_structure_v1.1";
 
 // システムプロンプト本文は FE catalog (src/prompts/ja/postEffect.ts) で管理し、
 // `StartPostEffectRunArgs.system_prompt` として IPC 経由で渡される。
