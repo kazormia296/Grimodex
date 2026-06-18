@@ -88,6 +88,25 @@ export function codexIndexEntry(entryId: string): Promise<number> {
   return invoke<number>("codex_index_entry", { entryId });
 }
 
+/**
+ * 段階3c: project 内の codex index 充足状況。Embedder ロード不要の軽量クエリ。
+ * indexedEntryCount < totalEntryCount なら未 index の既存エントリがある
+ * (= bulk back-index が必要)。型は Rust 側 `CodexIndexStatus` (camelCase) と一致。
+ */
+export interface CodexIndexStatus {
+  indexedEntryCount: number;
+  totalEntryCount: number;
+}
+
+export function codexIndexStatus(projectId: string): Promise<CodexIndexStatus> {
+  return invoke<CodexIndexStatus>("codex_index_status", { projectId });
+}
+
+/** project 内の全 codex エントリを一括再 index。戻り値は投入ベクトル総数。 */
+export function codexReindexAll(projectId: string): Promise<number> {
+  return invoke<number>("codex_reindex_all", { projectId });
+}
+
 /** 指定 project の scene_chunks 状態を取得。Embedder ロード不要、軽量。 */
 export function semanticIndexStatus(
   projectId: string,
