@@ -915,6 +915,7 @@ impl Database {
                 abandoned        INTEGER NOT NULL DEFAULT 0,
                 secret           INTEGER NOT NULL DEFAULT 1,
                 load_bearing     TEXT,
+                codex_link_dirty_at INTEGER,
                 created_at       INTEGER NOT NULL,
                 updated_at       INTEGER NOT NULL
             );
@@ -955,6 +956,9 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_fs_codex_codex
                 ON foreshadow_codex_links(codex_entry_id);",
         )?;
+        // impact-review: 既存 DB の foreshadows に Codex 変更 stale 用カラムを追加
+        // (新 DB は上の CREATE TABLE で済)。
+        Self::add_column_if_missing(&conn, "foreshadows", "codex_link_dirty_at", "INTEGER")?;
 
         // Beat system (Phase B) — role-aware codex mention cache per scene.
         conn.execute_batch(
@@ -1140,7 +1144,7 @@ impl Database {
                 id              TEXT PRIMARY KEY,
                 project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 effect_type     TEXT NOT NULL
-                                  CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency','typo_detection','intent_drift','timeline_consistency')),
+                                  CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency','typo_detection','intent_drift','timeline_consistency','impact_review')),
                 scope_type      TEXT NOT NULL
                                   CHECK(scope_type IN ('scene','folder','project')),
                 scope_target_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
@@ -1174,7 +1178,7 @@ impl Database {
                 range_end      INTEGER,
                 text_snapshot  TEXT,
                 category       TEXT NOT NULL
-                                  CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor','typo_anchor','intent_anchor','timeline_anchor')),
+                                  CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor','typo_anchor','intent_anchor','timeline_anchor','impact_review_anchor')),
                 persona        TEXT,
                 severity       TEXT CHECK(severity IS NULL OR severity IN ('info','suggestion','warning','error')),
                 content        TEXT NOT NULL,
@@ -1267,6 +1271,21 @@ impl Database {
         Self::migrate_post_effect_intent_categories(&conn)?;
         // intent migration の後でなければ .replace ターゲットがズレるので順序厳守。
         Self::migrate_post_effect_timeline_categories(&conn)?;
+        // impact-review: timeline migration の **後** に走る (target は 'timeline_*')。順序厳守。
+        Self::migrate_post_effect_impact_review_categories(&conn)?;
+
+        // impact-review 差分基準テーブル（Codex エントリ単位の前回レビュー時スナップショット）。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS impact_review_baselines (
+                entry_id      TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+                project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                snapshot_json TEXT NOT NULL,
+                content_hash  TEXT NOT NULL,
+                reviewed_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_impact_baselines_project
+                ON impact_review_baselines(project_id);",
+        )?;
 
         // PostEffect クラッシュリカバリ: プロセス強制終了等で running のまま残った run を
         // 起動時に failed へ落とす。idx_runs_running_scope の UNIQUE が次回起動を
@@ -1827,6 +1846,95 @@ impl Database {
         let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
         if integrity != "ok" {
             anyhow::bail!("integrity_check failed after timeline CHECK widening: {integrity}");
+        }
+
+        Ok(())
+    }
+
+    /// One-shot migration: 既存 DB の post_effect_runs / post_effect_annotations CHECK 制約に
+    /// impact_review / impact_review_anchor を追加する。
+    /// timeline migration の **後** に走るため、.replace のターゲットは timeline 追加済の
+    /// CHECK 文字列 (`'timeline_consistency')` / `'timeline_anchor')`) でなければならない。ズレると
+    /// 一致せず silent no-op (warn) になり、既存 DB が impact_review effect を insert 不能になる。
+    pub(super) fn migrate_post_effect_impact_review_categories(
+        conn: &Connection,
+    ) -> anyhow::Result<()> {
+        let runs_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'post_effect_runs'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        let anns_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'post_effect_annotations'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let runs_needs = runs_sql
+            .as_deref()
+            .is_some_and(|s| !s.contains("impact_review'"));
+        let anns_needs = anns_sql
+            .as_deref()
+            .is_some_and(|s| !s.contains("impact_review_anchor"));
+
+        if !runs_needs && !anns_needs {
+            return Ok(());
+        }
+
+        let current_version: i64 = conn.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+
+        conn.pragma_update(None, "writable_schema", true)?;
+
+        if runs_needs {
+            if let Some(old) = runs_sql {
+                let new = old.replace(
+                    "'timeline_consistency')",
+                    "'timeline_consistency','impact_review')",
+                );
+                if new != old {
+                    conn.execute(
+                        "UPDATE sqlite_master SET sql = ?1 \
+                         WHERE type = 'table' AND name = 'post_effect_runs'",
+                        params![new],
+                    )?;
+                } else {
+                    tracing::warn!(
+                        "post_effect_runs CHECK constraint not in expected form; skipping impact_review migration"
+                    );
+                }
+            }
+        }
+
+        if anns_needs {
+            if let Some(old) = anns_sql {
+                let new = old.replace(
+                    "'timeline_anchor')",
+                    "'timeline_anchor','impact_review_anchor')",
+                );
+                if new != old {
+                    conn.execute(
+                        "UPDATE sqlite_master SET sql = ?1 \
+                         WHERE type = 'table' AND name = 'post_effect_annotations'",
+                        params![new],
+                    )?;
+                } else {
+                    tracing::warn!(
+                        "post_effect_annotations CHECK constraint not in expected form; skipping impact_review_anchor migration"
+                    );
+                }
+            }
+        }
+
+        conn.pragma_update(None, "schema_version", current_version + 1)?;
+        conn.pragma_update(None, "writable_schema", false)?;
+
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            anyhow::bail!("integrity_check failed after impact_review CHECK widening: {integrity}");
         }
 
         Ok(())

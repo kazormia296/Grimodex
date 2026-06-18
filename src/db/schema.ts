@@ -1255,6 +1255,10 @@ export const foreshadows = sqliteTable(
     // Phase 6: load_bearing 軸（critical / supporting / optional / null）
     loadBearing: text("load_bearing"),
 
+    // impact-review: リンク先 Codex が変更された時刻。setup の lastEvaluatedAt より
+    // 新しければ「Codex 変更により再評価が必要」として stale 判定する（null=未変更）。
+    codexLinkDirtyAt: integer("codex_link_dirty_at", { mode: "timestamp" }),
+
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
@@ -1522,6 +1526,36 @@ export const postEffectAnnotationRelations = sqliteTable(
     index("idx_pear_b").on(table.annotationBId),
   ],
 );
+
+/**
+ * impact-review (影響度レビュー) の差分基準。
+ * Codex エントリ単位で「前回レビューを実行した時点の状態」を 1 行保持し、
+ * 手動トリガ時に現在の状態と diff して「前回チェック以降の変更」を求める。
+ * baseline が無い (初回) 場合は全文を変更扱いで広く判定する。
+ */
+export const impactReviewBaselines = sqliteTable(
+  "impact_review_baselines",
+  {
+    // 1 codex entry につき 1 baseline
+    entryId: text("entry_id")
+      .primaryKey()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // 前回 impact-review 実行時点の Codex 状態スナップショット
+    // (JSON: { name, aliases, summary, content_plain, details:[{name,value}] })
+    snapshotJson: text("snapshot_json").notNull(),
+    // snapshot の content hash（差分有無の高速判定用）
+    contentHash: text("content_hash").notNull(),
+    reviewedAt: text("reviewed_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (t) => [index("idx_impact_baselines_project").on(t.projectId)],
+);
+export type ImpactReviewBaseline = typeof impactReviewBaselines.$inferSelect;
+export type NewImpactReviewBaseline = typeof impactReviewBaselines.$inferInsert;
 
 export const sceneLensData = sqliteTable(
   "scene_lens_data",
@@ -1850,7 +1884,8 @@ export type PostEffectType =
   | "intra_scene_consistency"
   | "typo_detection"
   | "intent_drift"
-  | "timeline_consistency";
+  | "timeline_consistency"
+  | "impact_review";
 export type PostEffectScopeType = "scene" | "folder" | "project";
 export type PostEffectRunStatus =
   | "running"
@@ -1866,7 +1901,8 @@ export type PostEffectCategory =
   | "theme_anchor"
   | "typo_anchor"
   | "intent_anchor"
-  | "timeline_anchor";
+  | "timeline_anchor"
+  | "impact_review_anchor";
 export type PostEffectSeverity = "info" | "suggestion" | "warning" | "error";
 export type PostEffectAuthorRole = "ai" | "user" | "system";
 export type PostEffectStatus = "open" | "resolved" | "dismissed";
