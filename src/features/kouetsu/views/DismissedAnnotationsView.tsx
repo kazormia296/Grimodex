@@ -59,7 +59,7 @@ export function DismissedAnnotationsView({ category, emptyLabel }: Props) {
 
   async function reopen(ann: PostEffectAnnotation) {
     try {
-      await updateAnnotationStatus(ann.id, "open");
+      await updateAnnotationStatus(ann.id, "open", projectId ?? "");
       localUpdate(ann.id, "open");
       setAnnotations((prev) => prev.filter((a) => a.id !== ann.id));
     } catch {

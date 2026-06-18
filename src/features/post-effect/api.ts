@@ -65,8 +65,11 @@ export async function startPostEffectRunMulti(
   });
 }
 
-export async function abortPostEffectRun(runId: string): Promise<void> {
-  return invoke<void>("abort_post_effect_run", { runId });
+export async function abortPostEffectRun(
+  runId: string,
+  projectId: string,
+): Promise<void> {
+  return invoke<void>("abort_post_effect_run", { runId, projectId });
 }
 
 // ---------------------------------------------------------------------------
@@ -89,8 +92,9 @@ export async function listPostEffectRuns(params: {
 
 export async function getPostEffectRun(
   runId: string,
+  projectId: string,
 ): Promise<RunDetailResponse> {
-  return invoke<RunDetailResponse>("get_post_effect_run", { runId });
+  return invoke<RunDetailResponse>("get_post_effect_run", { runId, projectId });
 }
 
 export async function listAnnotationsForScene(params: {
@@ -134,20 +138,24 @@ export async function listAnnotationsForProject(params: {
 export async function updateAnnotationStatus(
   annotationId: string,
   status: PostEffectStatus,
+  projectId: string,
 ): Promise<PostEffectAnnotation> {
   return invoke<PostEffectAnnotation>("update_annotation_status", {
     annotationId,
     status,
+    projectId,
   });
 }
 
 export async function updateRelationStatus(
   relationId: string,
   status: PostEffectStatus,
+  projectId: string,
 ): Promise<PostEffectAnnotationRelation> {
   return invoke<PostEffectAnnotationRelation>("update_relation_status", {
     relationId,
     status,
+    projectId,
   });
 }
 
@@ -156,12 +164,14 @@ export async function replyToAnnotation(params: {
   parentId: string;
   content: string;
   authorRole?: "user" | "ai" | "system";
+  projectId: string;
 }): Promise<PostEffectAnnotation> {
   return invoke<PostEffectAnnotation>("reply_to_annotation", {
     args: {
       parent_id: params.parentId,
       content: params.content,
       author_role: params.authorRole ?? "user",
+      project_id: params.projectId,
     },
   });
 }
