@@ -14,6 +14,7 @@ import {
   ConfidenceBadge,
   ContrastRow,
   ExpandedDetails,
+  ImpactChip,
   IntentRelationChip,
   TypoChip,
   TypoContrastRow,
@@ -50,6 +51,10 @@ export const INTENT_DRIFT_FILTER = (a: PostEffectAnnotation) =>
 /** pseudo_comment セクション用 filter (親コメントのみ; 返信は parent_id でぶら下げる)。 */
 export const PSEUDO_COMMENT_FILTER = (a: PostEffectAnnotation) =>
   a.category === "pseudo_comment" && a.parentId == null;
+
+/** impact_review (変更影響レビュー) セクション用 filter。 */
+export const IMPACT_REVIEW_FILTER = (a: PostEffectAnnotation) =>
+  a.category === "impact_review_anchor";
 
 const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
   error: <XCircle size={14} className="text-destructive shrink-0" />,
@@ -94,7 +99,8 @@ export function AnnotationItem({
     parsed.kind === "review" ||
     parsed.kind === "intent_drift" ||
     parsed.kind === "timeline" ||
-    parsed.kind === "pseudo_comment";
+    parsed.kind === "pseudo_comment" ||
+    parsed.kind === "impact";
 
   return (
     <div
@@ -118,6 +124,7 @@ export function AnnotationItem({
         {SEVERITY_ICONS[severity]}
         <div className="flex flex-1 flex-wrap items-center gap-1.5">
           {parsed.codex && <CodexChip codex={parsed.codex} />}
+          {parsed.impact && <ImpactChip impact={parsed.impact} />}
           {parsed.typo && <TypoChip category={parsed.typo.category} />}
           {parsed.relation && <IntentRelationChip relation={parsed.relation} />}
           {parsed.confidence && <ConfidenceBadge level={parsed.confidence} />}

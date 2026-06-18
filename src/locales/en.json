@@ -1205,6 +1205,12 @@
       "runAllScenes": "Run consistency check for all scenes",
       "modelCount": "{{model}}: {{count}}"
     },
+    "impactReview": {
+      "title": "Impact review",
+      "empty": "No change impact found",
+      "emptyCurrent": "No change impact in this scene",
+      "emptyIgnored": "No ignored impact review findings"
+    },
     "selectScene": "Select a scene",
     "intentDrift": {
       "emptyIgnored": "No ignored intent drift findings",
@@ -1829,6 +1835,15 @@
       "count_one": "{{count}} contradicting passage",
       "count_other": "{{count}} contradicting passages",
       "unknownScene": "Unknown scene"
+    },
+    "impactCheck": {
+      "button": "Check impact of changes",
+      "tooltip": "Find passages contradicted by this entry's changes",
+      "started": "Checking {{count}} scenes… (results appear in the Review panel)",
+      "noChange": "No changes since the last check",
+      "noCandidates": "No affected scenes were found",
+      "done": "Impact review complete",
+      "error": "Impact check failed"
     },
     "phaseIndicator": {
       "preview": "Preview",

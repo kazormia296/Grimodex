@@ -154,4 +154,43 @@ describe("parseAnnotationMeta", () => {
     expect(parsed.kind).toBe("intra");
     expect(parsed.llmReason).toBe("前後で矛盾");
   });
+
+  it("category=impact_review_anchor を impact として解決し impact_ref を拾う", () => {
+    const parsed = parseAnnotationMeta(
+      ann({
+        category: "impact_review_anchor",
+        metadata: {
+          impact_ref: {
+            entry_id: "e1",
+            entry_name: "アリス",
+            change_id: "c1",
+            change_summary: "年齢: 15 → 17",
+            contradiction_score: 0.8,
+            found_text: "15歳のアリス",
+            found_context: "…15歳のアリスは…",
+            confidence: "high",
+            // Rust 側は metadata key を llm_reason で書く（契約固定）
+            llm_reason: "本文がまだ旧設定の年齢を反映している",
+            dismiss_key: "k1",
+            detected_by_model: "gpt-4o-mini",
+          },
+        },
+      }),
+    );
+    expect(parsed.kind).toBe("impact");
+    expect(parsed.foundText).toBe("15歳のアリス");
+    expect(parsed.llmReason).toBe("本文がまだ旧設定の年齢を反映している");
+    expect(parsed.detectedByModel).toBe("gpt-4o-mini");
+    expect(parsed.impact?.entryName).toBe("アリス");
+    expect(parsed.impact?.changeSummary).toBe("年齢: 15 → 17");
+    expect(parsed.impact?.contradictionScore).toBe(0.8);
+  });
+
+  it("impact_review_anchor で impact_ref が欠落していても impact (orphaned)", () => {
+    const parsed = parseAnnotationMeta(
+      ann({ category: "impact_review_anchor", metadata: {} }),
+    );
+    expect(parsed.kind).toBe("impact");
+    expect(parsed.impact).toBeUndefined();
+  });
 });

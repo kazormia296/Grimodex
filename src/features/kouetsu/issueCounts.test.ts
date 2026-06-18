@@ -110,4 +110,21 @@ describe("deriveIssueCounts", () => {
     });
     expect(counts.consistencyCount).toBe(1);
   });
+
+  it("impactCount counts only open impact_review_anchor annotations", () => {
+    const anns = [
+      ann("open", "impact_review_anchor"),
+      ann("open", "impact_review_anchor"),
+      ann("dismissed", "impact_review_anchor"), // wrong status
+      ann("open", "consistency_anchor"), // wrong category
+    ];
+    const counts = deriveIssueCounts({
+      diagnostics: [],
+      annotationsByScene: mapOf("s1", anns),
+      scope: "current",
+      activeSceneId: "s1",
+    });
+    expect(counts.impactCount).toBe(2);
+    expect(counts.consistencyCount).toBe(1);
+  });
 });

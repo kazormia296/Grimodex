@@ -72,6 +72,8 @@ const STRENGTH_VALUES: (ForeshadowStrength | null)[] = [
 interface SetupRowProps {
   setup: ForeshadowSetupRow;
   evaluatingSetupIds: Set<string>;
+  /** 親伏線の Codex 変更時刻（impact-review: stale 判定に加味） */
+  codexLinkDirtyAt?: Date | null;
   onEvaluate: (setup: ForeshadowSetupRow) => void;
   onReanchor: () => void;
   onReinsert: () => void;
@@ -83,6 +85,7 @@ interface SetupRowProps {
 function SetupRow({
   setup,
   evaluatingSetupIds,
+  codexLinkDirtyAt,
   onEvaluate,
   onReanchor,
   onReinsert,
@@ -94,10 +97,14 @@ function SetupRow({
   const [showPersonas, setShowPersonas] = useState(false);
   const isEvaluating = evaluatingSetupIds.has(setup.id);
   const evaluation = safeParseAiEvaluation(setup.aiReasoning);
+  // impact-review: Codex 変更 (codexLinkDirtyAt) も stale 要因に加える。
+  const codexStale =
+    codexLinkDirtyAt != null &&
+    (setup.lastEvaluatedAt == null || codexLinkDirtyAt > setup.lastEvaluatedAt);
   const stale =
-    setup.sceneUpdatedAt !== undefined
-      ? isSetupEvaluationStale(setup, setup.sceneUpdatedAt)
-      : !setup.lastEvaluatedAt;
+    (setup.sceneUpdatedAt !== undefined
+      ? isSetupEvaluationStale(setup, setup.sceneUpdatedAt, codexLinkDirtyAt)
+      : !setup.lastEvaluatedAt) || codexStale;
 
   return (
     <div data-testid={`foreshadow-setup-${setup.id}`} className="py-1.5">
@@ -688,6 +695,7 @@ export function ForeshadowPanel() {
                           key={setup.id}
                           setup={setup}
                           evaluatingSetupIds={evaluatingSetupIds}
+                          codexLinkDirtyAt={item.codexLinkDirtyAt}
                           onEvaluate={(s) =>
                             void evaluateSetup(
                               s.id,

@@ -1205,6 +1205,12 @@
       "runAllScenes": "全シーンの整合性チェックを実行",
       "modelCount": "{{model}}: {{count}}件"
     },
+    "impactReview": {
+      "title": "影響レビュー",
+      "empty": "変更の影響は見つかっていません",
+      "emptyCurrent": "このシーンに変更の影響はありません",
+      "emptyIgnored": "無視した影響レビューの指摘はありません"
+    },
     "selectScene": "シーンを選択してください",
     "intentDrift": {
       "emptyIgnored": "無視した狙いズレ指摘はありません",
@@ -1824,6 +1830,15 @@
       "count_one": "矛盾する本文の指摘 {{count}}件",
       "count_other": "矛盾する本文の指摘 {{count}}件",
       "unknownScene": "不明なシーン"
+    },
+    "impactCheck": {
+      "button": "この変更の影響をチェック",
+      "tooltip": "この設定の変更で矛盾する本文箇所を探します",
+      "started": "{{count}} 件のシーンを確認中…（結果は校閲パネルに表示されます）",
+      "noChange": "変更がありません（前回チェック以降）",
+      "noCandidates": "影響しそうなシーンは見つかりませんでした",
+      "done": "影響レビュー完了",
+      "error": "影響チェックに失敗しました"
     },
     "phaseIndicator": {
       "preview": "プレビュー",

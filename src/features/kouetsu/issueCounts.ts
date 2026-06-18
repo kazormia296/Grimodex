@@ -10,6 +10,7 @@ export interface IssueCounts {
   typoAiCount: number;
   typoCount: number;
   consistencyCount: number;
+  impactCount: number;
 }
 
 /**
@@ -49,6 +50,9 @@ export function deriveIssueCounts({
     (a) => a.status === "open" && a.category === "typo_anchor",
   ).length;
   const typoCount = typoLintCount + typoAiCount;
+  const impactCount = sceneAnnotations.filter(
+    (a) => a.status === "open" && a.category === "impact_review_anchor",
+  ).length;
 
   return {
     linterCount,
@@ -56,5 +60,6 @@ export function deriveIssueCounts({
     typoAiCount,
     typoCount,
     consistencyCount,
+    impactCount,
   };
 }

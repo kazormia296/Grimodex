@@ -93,6 +93,9 @@ function normalizeForeshadowRow(raw: unknown): ForeshadowRow {
         | ForeshadowLoadBearing
         | null
         | undefined) ?? null,
+    codexLinkDirtyAt: toNullableDate(
+      row.codexLinkDirtyAt ?? row.codex_link_dirty_at,
+    ),
     createdAt: toDate(row.createdAt ?? row.created_at),
     updatedAt: toDate(row.updatedAt ?? row.updated_at),
   };
@@ -316,6 +319,7 @@ function buildOpenForeshadowsForContext(
         abandoned: r.abandoned,
         secret: false,
         loadBearing: r.loadBearing,
+        codexLinkDirtyAt: null,
         createdAt: new Date(),
         updatedAt:
           r.updatedAt instanceof Date

@@ -163,6 +163,34 @@ export interface PseudoCommentAnnotationMeta {
   orphaned?: boolean;
 }
 
+/**
+ * impact_review (影響度レビュー) annotation の metadata。
+ * 「変更された Codex 設定」に対し、本文中の矛盾箇所を指摘する。
+ * consistency の codex_ref とは分離した impact_ref に格納する
+ * （カテゴリ impact_review_anchor で別フィルタするため）。
+ */
+export interface ImpactReviewAnnotationMeta {
+  impact_ref?: {
+    entry_id: string;
+    entry_name: string;
+    /** 今回レビュー対象の変更を識別するキー（baseline→現在の差分ハッシュ等） */
+    change_id: string;
+    /** 何が変わったかの要約（例「年齢 15→17」） */
+    change_summary: string;
+    /** 矛盾の強さ 0.0–1.0 */
+    contradiction_score: number;
+    found_text: string;
+    found_context: string;
+    confidence: "high" | "medium" | "low";
+    llm_reason: string;
+    dismiss_key: string;
+    dismiss_source?: "manual" | "run_completed" | "cascade";
+    detected_by_model?: string;
+  };
+  /** range が特定できなかった (found_text が scene に見つからない等) */
+  orphaned?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Codex payload entry (frontend → Rust)
 // ---------------------------------------------------------------------------

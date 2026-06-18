@@ -295,6 +295,17 @@ export const AI_PATHS: AiPathEntry[] = [
     testRef: POST_EFFECT_RUST,
     note: "同上。",
   },
+  {
+    id: "post_effect_impact_review",
+    label: "校閲: impact review（変更影響レビュー）",
+    surface:
+      "post_effect.rs process_impact_review_scene → ai::call_post_effect_api",
+    layer: "post-effect",
+    transport: "call_post_effect_api",
+    verifier: "rust-live",
+    testRef: POST_EFFECT_RUST,
+    note: "同上。変更された Codex 設定 (old→new) の差分を Codex ブロックとして Some(..) で渡し（cache_control 境界）、本文の矛盾箇所を judgments[] で返させる経路を Rust ライブテスト (impact_review_with_diff_live) が検証。",
+  },
 
   // ── ⑤ CLI サブプロセス（自動検証不可）────────────────────────────────────
   {
