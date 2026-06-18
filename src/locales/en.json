@@ -1636,6 +1636,9 @@
     }
   },
   "codex": {
+    "spoiler": {
+      "unrevealedTooltip": "Not yet revealed as of this scene: {{titles}}"
+    },
     "character": "Character",
     "location": "Location",
     "item": "Item",

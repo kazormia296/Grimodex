@@ -1636,6 +1636,9 @@
     }
   },
   "codex": {
+    "spoiler": {
+      "unrevealedTooltip": "このシーン時点で未開示: {{titles}}"
+    },
     "character": "キャラクター",
     "location": "場所",
     "item": "アイテム",
