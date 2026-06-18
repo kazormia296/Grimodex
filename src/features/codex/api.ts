@@ -1,8 +1,30 @@
 import { db } from "@/db/client";
-import { codexEntries } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { codexEntries, foreshadows, foreshadowCodexLinks } from "@/db/schema";
+import { eq, and, inArray } from "drizzle-orm";
 import { enqueueRescan } from "./mentionRescanQueue";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
+
+/**
+ * impact-review: この Codex に紐づく伏線を「Codex 変更で再評価が必要」とマークする。
+ * codexLinkDirtyAt を現在時刻にし、伏線パネルの stale 判定 (isSetupEvaluationStale) で
+ * 拾わせる。リンク無しなら no-op。失敗は非致命（保存自体は妨げない）。
+ */
+async function markLinkedForeshadowsDirty(entryId: string): Promise<void> {
+  const links = await db
+    .select({ foreshadowId: foreshadowCodexLinks.foreshadowId })
+    .from(foreshadowCodexLinks)
+    .where(eq(foreshadowCodexLinks.codexEntryId, entryId));
+  if (links.length === 0) return;
+  await db
+    .update(foreshadows)
+    .set({ codexLinkDirtyAt: new Date() })
+    .where(
+      inArray(
+        foreshadows.id,
+        links.map((l) => l.foreshadowId),
+      ),
+    );
+}
 
 export type CodexEntry = typeof codexEntries.$inferSelect;
 export type NewCodexEntry = typeof codexEntries.$inferInsert;
@@ -106,6 +128,13 @@ export async function updateCodexEntry(
     data.content !== undefined
   ) {
     scheduleCodexIndex(id);
+    // impact-review: 埋め込みに効く変更＝伏線整合性にも効きうる変更。
+    // リンク伏線を再評価対象としてマーク（非致命なので失敗は飲み込む）。
+    try {
+      await markLinkedForeshadowsDirty(id);
+    } catch {
+      /* foreshadow dirty マークの失敗は保存を妨げない */
+    }
   }
 
   return rows[0];

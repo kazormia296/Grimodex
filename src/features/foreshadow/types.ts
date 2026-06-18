@@ -74,6 +74,10 @@ export interface ForeshadowRow {
   abandoned: boolean;
   secret: boolean;
   loadBearing: ForeshadowLoadBearing | null;
+  /** リンク先 Codex が変更された時刻。setup の lastEvaluatedAt より新しければ
+   *  「Codex 変更により再評価が必要」として stale 扱いにする（未設定/null=未変更）。
+   *  DB mapper は常に設定するが、テスト/内部 mapper の省略を許すため optional。 */
+  codexLinkDirtyAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

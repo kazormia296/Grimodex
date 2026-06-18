@@ -58,4 +58,43 @@ describe("isSetupEvaluationStale", () => {
     });
     expect(isSetupEvaluationStale(setup, ts)).toBe(false);
   });
+
+  // impact-review: Codex 変更 (codexLinkDirtyAt) を stale 要因に加える
+  it("returns true when a linked codex changed after evaluation", () => {
+    const setup = makeSetup({
+      lastEvaluatedAt: new Date("2026-01-10T00:00:00.000Z"),
+    });
+    expect(
+      isSetupEvaluationStale(
+        setup,
+        "2026-01-01T00:00:00.000Z", // scene older → not stale by itself
+        new Date("2026-01-15T00:00:00.000Z"), // codex changed later → stale
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false when the codex change predates evaluation", () => {
+    const setup = makeSetup({
+      lastEvaluatedAt: new Date("2026-01-10T00:00:00.000Z"),
+    });
+    expect(
+      isSetupEvaluationStale(
+        setup,
+        "2026-01-01T00:00:00.000Z",
+        new Date("2026-01-05T00:00:00.000Z"),
+      ),
+    ).toBe(false);
+  });
+
+  it("ignores a null/undefined codexLinkDirtyAt", () => {
+    const setup = makeSetup({
+      lastEvaluatedAt: new Date("2026-01-10T00:00:00.000Z"),
+    });
+    expect(
+      isSetupEvaluationStale(setup, "2026-01-01T00:00:00.000Z", null),
+    ).toBe(false);
+    expect(
+      isSetupEvaluationStale(setup, "2026-01-01T00:00:00.000Z", undefined),
+    ).toBe(false);
+  });
 });
