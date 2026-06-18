@@ -30,6 +30,11 @@ import {
 } from "@/features/post-effect/customInstruction";
 import { selectStoryContext } from "@/features/post-effect/storyContext";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { TensionCurve } from "@/features/post-effect/TensionCurve";
+import {
+  buildTensionSeries,
+  detectSaggyRuns,
+} from "@/features/post-effect/tensionSeries";
 import type {
   PostEffectSeverity,
   SceneLensRecord,
@@ -76,8 +81,16 @@ export function MetaStructureView({ scope, sceneId }: Props) {
   const analysisGate = useAiGate("analysis");
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
+  const nodes = useTreeStore((s) => s.nodes);
   const bySceneId = useLensStore((s) => s.bySceneId);
   const loadLens = useLensStore((s) => s.load);
+
+  const tensionSeries = useMemo(
+    () => buildTensionSeries(nodes, bySceneId),
+    [nodes, bySceneId],
+  );
+  const saggy = useMemo(() => detectSaggyRuns(tensionSeries), [tensionSeries]);
+  const hasTension = tensionSeries.some((p) => p.tension !== null);
 
   const sceneTitle = (id: string) =>
     scenes.find((s) => s.id === id)?.title ?? id;
@@ -276,11 +289,20 @@ export function MetaStructureView({ scope, sceneId }: Props) {
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {scope === "project" ? (
-          projectGroups.length === 0 ? (
-            <EmptyState />
-          ) : (
-            <div className="flex flex-col gap-3">
-              {projectGroups.map((g) => (
+          <div className="flex flex-col gap-3">
+            {hasTension && (
+              <TensionCurve
+                series={tensionSeries}
+                saggy={saggy}
+                onSelectScene={(id) =>
+                  useTreeStore.getState().setActiveScene(id)
+                }
+              />
+            )}
+            {projectGroups.length === 0 ? (
+              <EmptyState />
+            ) : (
+              projectGroups.map((g) => (
                 <div key={g.sceneId} className="flex flex-col gap-1">
                   <button
                     type="button"
@@ -295,9 +317,9 @@ export function MetaStructureView({ scope, sceneId }: Props) {
                     <LensRow key={l.id} lens={l} />
                   ))}
                 </div>
-              ))}
-            </div>
-          )
+              ))
+            )}
+          </div>
         ) : currentLenses.length === 0 ? (
           <EmptyState />
         ) : (
