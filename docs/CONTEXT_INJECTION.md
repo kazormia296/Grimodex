@@ -58,12 +58,20 @@ L4 のトークン予算超過時、**数値が小さいブロックほど先に
 |--------|---------|------|
 | **Codex** | L4 | `context_mode`、別名、Spotlight ピン、メンション検出 |
 | **Note**（`tree_nodes.node_type=note`） | L4 | Codex と同じモード。本文は `prosemirrorToText` 経由 |
-| **Snippet** | L4（ピン時のみ） | セッションピンテーブル |
-| **Map Sticky** | L4（ピン時のみ） | セッションピンテーブル。`<sticky>` ラッパー |
+| **Snippet** | L4（ピン時のみ） | セッションピンテーブル（`pinnedSnippets`）。同一 Snippet がアクティブタブの場合は L3（`activeTabContent`）にも別経路で載りうる（下記参照） |
+| **Map Sticky** | L4（ピン時のみ） | セッションピンテーブル（`pinnedStickies`）。`<sticky>` ラッパー |
+| **focus_subject**（スコープアンカー） | L3 と L4 の間（`<focus_subject>`） | Codex / Snippet スコープでアンカーした「この会話の主題」。`focusSubject` で渡す。Codex は Spotlight 相当のフル描画、Snippet は title + 抽出本文。**trim 対象外で常時注入**するため、呼び出し側は当該アンカーを L4 の `pinnedCodexEntries` / `pinnedSnippets` から除外して重複させない |
+| **activeTabContent**（参照中のコンテンツ） | L3 | アクティブタブが Codex / Snippet のとき `## 参照中のコンテンツ` として L3 末尾に注入。type / title / 抽出本文 |
+| **semantic recall（Layer4 RAG）** | RAG（`<related_scenes>`、L4 の直後） | `semanticRecall` で渡す意味検索ヒット（過去シーン抜粋）。クエリ依存で毎ターン変動するため `cacheSegments` には載せず `prompt` + `volatileTail` のみ。trim では全層に先んじて削られる |
+| **Map board overlay** | L4（pri = PINNED） | `mapBoardMarkdown`：アクティブ Map board 全体を `<map board="…">…</map>` で囲んだ 1 ブロック（`l4pri:3` マーカー付きで `pinnedStickies` の直後に追加）。`includeMapBoard` 有効時のみ。スコープと直交し folder / project 経路でも注入される |
 | **伏線（Foreshadow）** | L2（未回収一覧）、L3（シーン setup/payoff） | `deriveLabel` による派生ラベル。**L4 には載せない** |
 | **Beat** | L3（`pendingBeatsSection` のみ） | 配置済み Beat はシーン本文内。未配置 Beat は pending セクション。**Beat 一括ダンプはしない**（過剰注入リスク） |
 | **story_time_label** | L3（現在シーン + story-time 直前シーン） | 読み順の直前シーンは従来どおり |
 | **Map User edge → Codex Relation** | L4 BFS | 両端が Codex であること。昇格後は derived edge として描画 |
+
+> **`focus_subject` は独立スロット（L0〜L6 の外）**：プロンプト本文・トークン内訳・cacheSegments とも **L3 の直後・L4 の前**に置かれる擬似レイヤー（内訳ラベルは `FOCUS`）。L3 と同じ cache セグメントに統合され、trim では削られない（`hardeningOverhead` で本文ぶんを先取り予約）。
+>
+> **ピン留め Snippet の二経路**：同一 Snippet が「セッションピン」かつ「アクティブタブ」のときは、L4（`pinnedSnippets`）と L3（`activeTabContent` = 参照中のコンテンツ）の双方に注入されうる（両経路間の重複排除はしない）。一方、Snippet スコープのアンカーは `focusSubject` 側に集約し L4 の `pinnedSnippets` からは除外される。
 
 ---
 

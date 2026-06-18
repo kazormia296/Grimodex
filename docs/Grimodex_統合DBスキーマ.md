@@ -60,12 +60,27 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `scene_codex_pins` | 通常 | Matrix / Grid | シーン × Codex の明示的リレーション（Pin to scene の保存先） |
 | `scene_codex_mentions` | 通常 | Matrix | シーン × Codex の言及スキャンキャッシュ（source 別: body/beat/relation、role: mentioned/actor/target） |
 | `scene_beat_pov_cache` | 通常 | Matrix / Beat | Beat レベル POV キャラクターの集約キャッシュ |
-| `post_effect_runs` | 通常 | PostEffects | AI ポストエフェクトの実行単位（review / pseudo_comment / meta_structure / consistency / intra_scene_consistency） |
+| `post_effect_runs` | 通常 | PostEffects | AI ポストエフェクトの実行単位（review / pseudo_comment / meta_structure / consistency / intra_scene_consistency / typo_detection / intent_drift / timeline_consistency / impact_review） |
 | `post_effect_annotations` | 通常 | PostEffects | ポストエフェクトの注釈成果物（シーン範囲・カテゴリ・親子スレッド対応） |
 | `post_effect_annotation_relations` | 通常 | PostEffects | 注釈間の関係（contradiction / foreshadowing / theme_echo） |
 | `post_effect_annotations_fts` | FTS5仮想 | PostEffects | 注釈 content の全文検索 |
 | `scene_lens_data` | 通常 | PostEffects | シーン単位のレンズ計測結果（plot_structure / pacing / character_arc / pov） |
 | `trash_items` | 通常 | Trash | 物理ゴミ箱（削除されたテキスト断片および構造アイテム） |
+| `impact_review_baselines` | 通常 | PostEffects | impact-review（Codex変更→本文矛盾の逆引き）の差分基準スナップショット（1エントリ1行） |
+| `codex_relations` | 通常 | Map / Codex | Codex 同士の型付き関係（Map の User edge を昇格した格納先） |
+| `scene_chunks` | 通常 | セマンティック検索 | 本文シーンを分割した埋め込みチャンク（ベクトル総当たり検索用） |
+| `codex_chunks` | 通常（Rust専用） | セマンティック検索 | Codex エントリの埋め込み（1エントリ1ベクトル・hybrid 検索 / impact-review 用） |
+| `change_events` | 通常 | 執筆タイムラプス | 変更イベントの append-only ログ（sha256 prev_hash→hash チェーン） |
+| `state_snapshots` | 通常 | 執筆タイムラプス | リプレイ起点アンカー（v1 は未配線で常に空＝latent） |
+| `undo_journal` | 通常（Rust専用） | AI書き込み基盤 | tracked write の before/after ジャーナル（楽観ロック undo 用） |
+| `prose_staging` | 通常 | AI書き込み基盤 | AI 提案本文の staged 中間テーブル（diff UI で accept/reject） |
+| `ai_usage` | 通常 | AI使用量 | 横断トークン使用量台帳（N4・全生成サーフェスを追記専用で記録） |
+| `generation_logs` | 通常 | Attribution | inline-ai / beat 生成の出自ログ（プロンプト全文・trace_id） |
+| `chat_message_prompts` | 通常 | Chat | 送信時の最終システムプロンプトのスナップショット（後から確認用） |
+| `project_snapshot_tree_nodes` | 通常 | Editor / Revision | プロジェクトスナップショットの tree_nodes 構造ミラー |
+| `project_snapshot_codex_entries` | 通常 | Editor / Revision | プロジェクトスナップショットの Codex 構造ミラー |
+| `project_snapshot_snippets` | 通常 | Editor / Revision | プロジェクトスナップショットの Snippet 構造ミラー |
+| `project_snapshot_aux` | 通常 | Editor / Revision | スナップショット付帯データ（map/foreshadow/labels/lint 等を JSON で生コピー） |
 
 ---
 
@@ -200,6 +215,50 @@ tree_nodes (1)
 
 codex_entries (1)
  └──< trash_items (*)              origin_codex_id (nullable)
+
+# ── 2026-06 追加分 ──────────────────────────────
+
+projects (1)                       （上記 projects ブロックへの追加）
+ ├──< ai_usage (*)                 project_id (ON DELETE CASCADE)
+ ├──< generation_logs (*)          project_id (ON DELETE CASCADE)
+ ├──< change_events (*)            project_id (ON DELETE CASCADE)
+ ├──< state_snapshots (*)          project_id (ON DELETE CASCADE)
+ ├──< codex_relations (*)          project_id (ON DELETE CASCADE)
+ ├──< impact_review_baselines (*)  project_id (ON DELETE CASCADE)
+ ├──< undo_journal (*)             project_id (ON DELETE CASCADE)
+ └──< prose_staging (*)            project_id (ON DELETE CASCADE)
+
+tree_nodes (1)                     （上記 tree_nodes ブロックへの追加）
+ ├──< scene_chunks (*)             scene_id (ON DELETE CASCADE)
+ ├──< prose_staging (*)            scene_id (ON DELETE CASCADE)
+ ├──< change_events (*)            scene_id (nullable, ON DELETE SET NULL)
+ ├──< ai_usage (*)                 scene_node_id (nullable, ON DELETE SET NULL)
+ └──< generation_logs (*)          scene_node_id (nullable, ON DELETE CASCADE)
+
+codex_entries (1)
+ ├──< codex_relations (*)          from_codex_id / to_codex_id (ON DELETE CASCADE)
+ ├──< codex_chunks (?)             entry_id (PK=FK, 1エントリ1ベクトル, ON DELETE CASCADE)
+ └──< impact_review_baselines (?)  entry_id (PK=FK, 1エントリ1行, ON DELETE CASCADE)
+
+chat_sessions (1)                  （新スコープアンカー）
+ ├──> codex_entries (?)            codex_anchor_id (nullable, ON DELETE SET NULL)
+ └──> snippets (?)                 snippet_anchor_id (nullable, ON DELETE SET NULL)
+
+chat_messages (1)
+ └──< chat_message_prompts (?)     message_id (PK=FK, ON DELETE CASCADE)
+
+project_snapshots (1)
+ ├──< project_snapshot_tree_nodes (*)    snapshot_id (ON DELETE CASCADE)
+ ├──< project_snapshot_codex_entries (*) snapshot_id (ON DELETE CASCADE)
+ ├──< project_snapshot_snippets (*)      snapshot_id (ON DELETE CASCADE)
+ └──< project_snapshot_aux (*)           snapshot_id (ON DELETE CASCADE)
+
+content_versions (1)               （スナップショットからの本文ポインタ）
+ ├──< project_snapshot_tree_nodes (?)    body_version_id (ON DELETE RESTRICT)
+ ├──< project_snapshot_codex_entries (?) body_version_id (ON DELETE RESTRICT)
+ └──< project_snapshot_snippets (?)      body_version_id (ON DELETE RESTRICT)
+
+change_events ⇄ state_snapshots    （anchor_sequence で対応。FK ではなく sequence 一致）
 ```
 
 ---
@@ -222,8 +281,9 @@ CREATE TABLE projects (
   ai_instructions       TEXT,                    -- グローバルAI指示（最大4,000文字）
   outline               TEXT,                    -- Phase 4: 物語全体の outline（free text）。著者が手書きする意図・テーマ・到達点。AI コンテキスト L2 に常時注入。空欄可
   ai_policy             TEXT NOT NULL DEFAULT
-    '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true}}',
-                                                 -- プロジェクト単位の AI 使用方針（chat/bodyWrite/analysis トグル）。デフォルトは Full プリセット
+    '{"preset":"custom","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":false,"knowledgeWrite":false}}',
+                                                 -- プロジェクト単位の AI 使用方針。chat/bodyWrite/analysis/structureWrite/knowledgeWrite の5トグル。
+                                                 -- 既定は構造書き込み・知識書き込みを無効にした安全側（structureWrite/knowledgeWrite=false, preset='custom'）
   is_sample             INTEGER NOT NULL DEFAULT 0,
                                                  -- 1: サンプルワークスペースのプロジェクト（初回オープン時に SampleTour を起動）
   phase_resolution_mode TEXT NOT NULL DEFAULT 'reading'
@@ -240,10 +300,11 @@ CREATE TABLE projects (
 - 対称概念として `tree_nodes.synopsis`（フォルダ用）が chapter outline を担う。フォルダ階層の `synopsis` と組み合わせて階層的に注入される。
 
 **`ai_policy` の構造**:
-- JSON 文字列で `{ preset: string, toggles: { chat: bool, bodyWrite: bool, analysis: bool } }` 形式。
+- JSON 文字列で `{ preset: string, toggles: { chat, bodyWrite, analysis, structureWrite, knowledgeWrite: bool } }` 形式。
 - `preset` は UI のプリセット名（`'full'` / `'chat-only'` / `'analysis-only'` / `'custom'` 等）。`toggles` が実際の挙動を決める。
-- すべての toggle が `true` の "Full" がデフォルト。AI 連動機能をすべて無効化するには `toggles` 全てを `false` に設定する（preset は `'custom'` になる）。
-- アプリ層は機能ごとに該当 toggle を参照し、`false` のときは AI 呼び出しをスキップする（Chat / Body Write / 分析パスは独立判定）。
+- **既定値（2026-06 時点）は `preset='custom'` ＋ `chat/bodyWrite/analysis=true`・`structureWrite/knowledgeWrite=false`** の安全側。構造書き込み（案B tree 書き込み）と知識書き込み（Codex/伏線への AI 書き込み）は、明示的に有効化しない限り走らない（security F-6 の安全既定）。
+- `structureWrite` は 2026-06-03、`knowledgeWrite` は AI 書き込み基盤の導入に伴って追加されたトグル。旧 DB は `add_column_if_missing` 経由でこの既定 JSON が入る。
+- アプリ層は機能ごとに該当 toggle を参照し、`false` のときは AI 呼び出しをスキップする（Chat / Body Write / 分析 / 構造書き込み / 知識書き込みパスは独立判定）。
 
 **`is_sample` の用途**:
 - サンプルワークスペース（チュートリアル用テンプレートから生成されたプロジェクト）かどうかを区別するフラグ。
@@ -812,7 +873,7 @@ CREATE TABLE project_settings (
 
 ### codex_fts
 
-Codexエントリの検索用。name + aliases + summary + tags_cache を対象。tags_cacheは `codex_entry_tags` の非正規化キャッシュ。
+Codexエントリの検索用。name + aliases + summary + tags_cache + content を対象。tags_cacheは `codex_entry_tags` の非正規化キャッシュ。`content`（Codex 本文 = ProseMirror JSON）は **2026-06-18（PR #109）に 5 番目のインデックス列として追加**され、`search_codex` がメタデータだけでなく本文にもマッチするようになった（[セマンティック検索設計書](./Grimodex_セマンティック検索設計書.md) の「Codex 本文の index 化」）。
 
 ```sql
 CREATE VIRTUAL TABLE codex_fts USING fts5(
@@ -820,11 +881,14 @@ CREATE VIRTUAL TABLE codex_fts USING fts5(
   aliases,
   summary,
   tags_cache,
-  content=codex_entries,
+  content,                  -- 2026-06-18 追加: Codex 本文（ProseMirror JSON）。本文検索を有効化
+  content=codex_entries,    -- ※ fts5 の external-content オプション（同名だが直上の content 列とは別物）
   content_rowid=rowid,
   tokenize='trigram'
 );
 ```
+
+> 既に構築済みの（レガシー）DB には `migrate_codex_fts_add_content`（`migrate.rs`）が `content` 列付きで `codex_fts` とトリガー（`codex_fts_ai/ad/au`）を **DROP → 再作成**し、`INSERT INTO codex_fts(codex_fts) VALUES('rebuild')` で全行を再インデックスする。`codex_fts` に `content` 列が既に在れば no-op（冪等）。
 
 ### snippets_fts
 
@@ -880,27 +944,28 @@ CREATE VIRTUAL TABLE tree_nodes_fts USING fts5(
 
 ```sql
 CREATE TRIGGER codex_fts_ai AFTER INSERT ON codex_entries BEGIN
-  INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
+  INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache, content)
     VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''),
-            COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
+            COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''), COALESCE(new.content, ''));
 END;
 
 CREATE TRIGGER codex_fts_ad AFTER DELETE ON codex_entries BEGIN
-  INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
+  INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache, content)
     VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''),
-            COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
+            COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''), COALESCE(old.content, ''));
 END;
 
 CREATE TRIGGER codex_fts_au AFTER UPDATE ON codex_entries
   WHEN old.name IS NOT new.name OR old.aliases IS NOT new.aliases
     OR old.summary IS NOT new.summary OR old.tags_cache IS NOT new.tags_cache
+    OR old.content IS NOT new.content
 BEGIN
-  INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache)
+  INSERT INTO codex_fts(codex_fts, rowid, name, aliases, summary, tags_cache, content)
     VALUES ('delete', old.rowid, COALESCE(old.name, ''), COALESCE(old.aliases, ''),
-            COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''));
-  INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache)
+            COALESCE(old.summary, ''), COALESCE(old.tags_cache, ''), COALESCE(old.content, ''));
+  INSERT INTO codex_fts(rowid, name, aliases, summary, tags_cache, content)
     VALUES (new.rowid, COALESCE(new.name, ''), COALESCE(new.aliases, ''),
-            COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''));
+            COALESCE(new.summary, ''), COALESCE(new.tags_cache, ''), COALESCE(new.content, ''));
 END;
 ```
 
@@ -1820,7 +1885,10 @@ CREATE TABLE post_effect_runs (
   id              TEXT PRIMARY KEY,
   project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   effect_type     TEXT NOT NULL
-                    CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency')),
+                    CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency',
+                                          'typo_detection','intent_drift','timeline_consistency','impact_review')),
+                                          -- 2026-05-26〜06-18 に typo_detection / intent_drift / timeline_consistency / impact_review を追加。
+                                          -- 既存DBは migrate_post_effect_*_categories が CHECK 文字列を置換して遅延拡張（置換不能なら no-op + warn）
   scope_type      TEXT NOT NULL CHECK(scope_type IN ('scene','folder','project')),
   scope_target_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,  -- project スコープでは NULL
   model           TEXT NOT NULL,
@@ -1862,7 +1930,9 @@ CREATE TABLE post_effect_annotations (
   range_end      INTEGER,
   text_snapshot  TEXT,      -- アンカー時点のテキスト（表示時に PM 位置を再解決する基準）
   category       TEXT NOT NULL
-                   CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor')),
+                   CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor',
+                                      'typo_anchor','intent_anchor','timeline_anchor','impact_review_anchor')),
+                                      -- effect_type の拡張に対応して typo_anchor / intent_anchor / timeline_anchor / impact_review_anchor を追加
   persona        TEXT,
   severity       TEXT CHECK(severity IS NULL OR severity IN ('info','suggestion','warning','error')),
   content        TEXT NOT NULL,
@@ -2069,7 +2139,7 @@ PostEffects パネル・Trash bin・projects テーブル拡張など、実装�
 | テーブル | カラム | 用途 |
 |---------|-------|------|
 | `projects` | `outline` | Phase 4: 物語全体の手書きアウトライン。AI コンテキスト L2 に常時注入 |
-| `projects` | `ai_policy` | プロジェクト単位の AI 使用方針（chat / bodyWrite / analysis トグル）。デフォルトは Full プリセット |
+| `projects` | `ai_policy` | プロジェクト単位の AI 使用方針トグル（導入時は chat / bodyWrite / analysis の3トグル・既定 Full）。※その後 `structureWrite` / `knowledgeWrite` が追加され、既定も安全側の `preset='custom'`（structureWrite/knowledgeWrite=false）へ変更。最新は `projects` の DDL（`ai_policy` 節）を参照 |
 | `projects` | `is_sample` | サンプルワークスペース判定フラグ。`EditorScreen` 初回オープン時の `SampleTour` 発火に使用 |
 | `foreshadows` | `secret` | 読者に明かさない伏線フラグ。新規 CREATE は 1、`add_column_if_missing` 経由の既存行は 0 |
 
@@ -2089,3 +2159,489 @@ PostEffects パネル・Trash bin・projects テーブル拡張など、実装�
 |------|------|
 | `tree_nodes` の DDL | `idx_tree_pov` / `idx_tree_location` から "Phase C-2 マイグレーションで追加" の注釈を削除（既に基本 migrate に統合済み） |
 | `projects.language` | DEFAULT のみだったところを `NOT NULL DEFAULT 'ja'` に修正（実装に追従） |
+
+---
+
+## セマンティック検索 / RAG ベクトルインデックス（2026-06-18 追記）
+
+本文・Codex のセマンティック検索（RAG）用に、埋め込みベクトルを保持するテーブル群。いずれも ONNX で生成した L2 正規化済み埋め込みを BLOB で保持し、コサイン総当たりで検索する。詳細は [セマンティック検索設計書](./Grimodex_セマンティック検索設計書.md) / [閾値とモデル特性](./Grimodex_セマンティック検索の閾値とモデル特性.md)。Codex 本文の FTS index 化（`codex_fts.content`）は上の [codex_fts](#codex_fts) 節を参照。
+
+### scene_chunks
+
+本文（prose）シーンを分割した埋め込みチャンク。`chunk_index` 単位で本文を区切り、char 範囲・会話文比率（`dialogue_ratio`）・モデル/ハッシュ/チャンカーバージョンを保持する。Drizzle（`src/db/schema.ts`）と完全一致させる正本。
+
+```sql
+CREATE TABLE IF NOT EXISTS scene_chunks (
+  id               TEXT PRIMARY KEY,
+  scene_id         TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  chunk_index      INTEGER NOT NULL,
+  text             TEXT NOT NULL,
+  char_start       INTEGER NOT NULL,        -- 正規化プレーンテキスト内の開始 Unicode スカラー位置
+  char_end         INTEGER NOT NULL,
+  dialogue_ratio   REAL NOT NULL DEFAULT 0, -- 会話文の文字比率（0.0〜1.0）。description_mode 減点に使用
+  embedding        BLOB NOT NULL,           -- f32 配列（little-endian）・L2 正規化済み
+  embedding_dim    INTEGER NOT NULL,
+  model_id         TEXT NOT NULL,           -- 例: cl-nagoya/ruri-v3-30m@<rev>/model_int8.onnx/prefix-v1
+  content_hash     TEXT NOT NULL,           -- 本文から安定算出。非同期 job race の回避用
+  chunker_version  TEXT NOT NULL,           -- 例: semantic-prose-chunker-v1。仕様変更で stale 判定
+  created_at       INTEGER NOT NULL,        -- ms-since-epoch（Drizzle mode:'timestamp'）
+  updated_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scene_chunks_scene ON scene_chunks(scene_id);
+CREATE INDEX IF NOT EXISTS idx_scene_chunks_model ON scene_chunks(model_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_scene_chunks_scene_index ON scene_chunks(scene_id, chunk_index);
+```
+
+### codex_chunks
+
+Codex エントリのセマンティック検索（RAG）用ベクトル。Codex 本文は短いためチャンク分割せず **「1 エントリ = 1 埋め込み行」**（`PRIMARY KEY = entry_id`）。dense 埋め込みと sparse（FTS5/bm25）を RRF 融合する Codex hybrid 検索（`fuseCodexHybrid`）と、impact-review の embeddings 絞り込みに使う。**Rust 専用テーブル**（`scene_chunks` 等と同じく Drizzle には定義されない）。
+
+```sql
+CREATE TABLE IF NOT EXISTS codex_chunks (
+  entry_id         TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+  entry_name       TEXT NOT NULL,           -- 検索結果表示用に非正規化保持
+  entry_type       TEXT NOT NULL,           -- フィルタ/表示用に非正規化保持
+  text             TEXT NOT NULL,           -- 埋め込み生成に使ったソース本文
+  embedding        BLOB NOT NULL,
+  embedding_dim    INTEGER NOT NULL,
+  model_id         TEXT NOT NULL,           -- 再生成判定・索引フィルタ用
+  content_hash     TEXT NOT NULL,           -- 内容変化検知（再埋め込み要否）
+  chunker_version  TEXT NOT NULL,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_codex_chunks_model ON codex_chunks(model_id);
+```
+
+---
+
+## 執筆タイムラプス / レコーダー（2026-05-29 実装 / 2026-06-18 追記）
+
+執筆過程を append-only で記録し、後から再生（タイムラプス）するための変更イベントログとリプレイアンカー。詳細は [執筆タイムラプス設計書](./Grimodex_執筆タイムラプス設計書.md)。採番・ハッシュチェーンは Rust 権威化（`change_events.rs::append_change_events_in_tx`）、書き込みウィンドウは `src/features/timelapse/recorder.ts`。
+
+### change_events
+
+各ドメイン（editor/codex/snippet/grid/map/synopsis/intent/beat/chat/layout/prose 等）の操作を、`(project_id, sequence)` で単調増加させつつ sha256 の `prev_hash → hash` チェーンで改ざん検知可能に記録する正本ログ。`state_snapshots` とペアで動作する。
+
+```sql
+CREATE TABLE IF NOT EXISTS change_events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_uid    TEXT,                  -- イベント冪等キー。UNIQUE(project_id, event_uid)。レガシーDBは後付けで全 NULL
+  project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  scene_id     TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+  domain       TEXT NOT NULL,         -- 変更ドメイン
+  op_type      TEXT NOT NULL,         -- 操作種別（挿入/更新/削除など）
+  entity_type  TEXT,
+  entity_id    TEXT,
+  payload      TEXT NOT NULL,         -- 変更内容の JSON ペイロード
+  session_id   TEXT NOT NULL,         -- 連続実行（セッション）識別。再生スナップショットのヒューリスティクス用
+  sequence     INTEGER NOT NULL,      -- project 内で単調増加。Rust 側で採番（権威化）
+  timestamp    INTEGER NOT NULL,
+  prev_hash    TEXT NOT NULL,         -- 直前イベントの sha256（hex TEXT）
+  hash         TEXT NOT NULL          -- 当該イベントの sha256（hex TEXT）
+);
+
+CREATE INDEX IF NOT EXISTS idx_change_events_project_ts ON change_events(project_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_change_events_scene_ts   ON change_events(scene_id, timestamp);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_seq ON change_events(project_id, sequence);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_uid ON change_events(project_id, event_uid);
+```
+
+> `event_uid` は CREATE 本体に含まれるが、導入前のレガシー DB 救済のため CREATE 直後に `add_column_if_missing` で冪等に後付けされる。`uq_change_events_project_uid` は列追加の **後** に別バッチで作る必要がある（レガシー DB では in-batch だと「no such column」で失敗。`IF NOT EXISTS` は列解決エラーを抑止しない）。`prev_hash`/`hash` は drizzle sqlite-proxy が BLOB をラウンドトリップできないため hex TEXT で保持。
+
+### state_snapshots
+
+リプレイ起点アンカー。`change_events` の forward 適用だけでは過去 doc を逆算できないため、「`anchor_sequence` 以下のイベントを適用した後の状態」を `payload`（PM-JSON 等）として保存し、replay の seek 起点に使う。**v1 では production caller が存在せず常に空（latent）**で、baseline 焼き込み配線は今後の課題。
+
+```sql
+CREATE TABLE IF NOT EXISTS state_snapshots (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  domain            TEXT NOT NULL,
+  entity_type       TEXT,
+  entity_id         TEXT,
+  anchor_sequence   INTEGER NOT NULL,  -- sequence<=この値の change_event 適用後の状態
+  anchor_timestamp  INTEGER NOT NULL,
+  payload           TEXT NOT NULL,     -- 直列化スナップショット（v1 は PM-JSON 文字列。BLOB を避け TEXT 格納）
+  encoding          TEXT NOT NULL DEFAULT 'json',  -- 既定 'json'（将来 gzip/zstd 分岐を想定）
+  created_at        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_state_snap_project_seq ON state_snapshots(project_id, anchor_sequence);
+CREATE INDEX IF NOT EXISTS idx_state_snap_domain_seq  ON state_snapshots(project_id, domain, anchor_sequence);
+```
+
+---
+
+## AI 書き込み基盤（tracked write）（2026-06-06 実装 / 2026-06-18 追記）
+
+AI / エージェントによる「追跡付き書き込み（tracked write）」の取り消し・段階適用を支える基盤。`migrate_ai_write_infrastructure` で一括作成される。詳細は [AI による書き込み横断検討](./Grimodex_AIによる書き込み横断検討.md) / [AI エージェント設計書](./Grimodex_AIエージェント設計書.md)。
+
+### undo_journal
+
+1 書き込み操作ごとに、対象エンティティの `before_json` / `after_json` と `base_version → result_version`、対応する `change_event_uid` を記録し、後から逆操作で巻き戻せるようにする前後状態ジャーナル。**Rust 専用テーブル**（挿入は `undo_journal.rs::insert_undo_journal_in_tx`）。
+
+```sql
+CREATE TABLE IF NOT EXISTS undo_journal (
+  id                  TEXT PRIMARY KEY,
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  surface             TEXT NOT NULL,      -- 書き込み発生サーフェス（in-app Agent / MCP 等）
+  entity_kind         TEXT NOT NULL,      -- codex / foreshadow / snippet など
+  entity_id           TEXT NOT NULL,
+  op_kind             TEXT NOT NULL,      -- create / update / delete 等
+  before_json         TEXT,               -- 操作前スナップショット（undo に使用）
+  after_json          TEXT,
+  base_version        INTEGER NOT NULL,   -- 操作開始時のバージョン（楽観ロック基点）
+  result_version      INTEGER NOT NULL,
+  change_event_uid    TEXT,               -- 対応する change_event の UID
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_undo_journal_project_entity ON undo_journal(project_id, entity_kind, entity_id);
+```
+
+### prose_staging
+
+AI（Agent / MCP / inline）が生成した本文 prose を「提案（staged）」として一旦溜め、人間が diff UI で accept/reject するための二相書き込みの中間テーブル。`propose_scene_body` 等は本文へ直接書かず本テーブルに積み、accept で `tree_nodes` 本文へ反映、discard で破棄（AI 書き込み Phase 5）。
+
+```sql
+CREATE TABLE IF NOT EXISTS prose_staging (
+  id                  TEXT PRIMARY KEY,
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  scene_id            TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  proposed_content    TEXT NOT NULL,
+  base_version        INTEGER NOT NULL,   -- 提案が基づいた本文バージョン（競合検出用）
+  status              TEXT NOT NULL DEFAULT 'proposed'
+                        CHECK(status IN ('proposed','accepted','discarded')),
+  source_surface      TEXT NOT NULL,      -- Agent / MCP / inline 等
+  source_session_id   TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_prose_staging_project_scene ON prose_staging(project_id, scene_id, status);
+```
+
+### codex_entries / snippets / tree_nodes.version（カラム追加）
+
+AI 書き込みの楽観ロック用にバージョンカウンタを追加（`undo_journal.base_version` / `result_version` の基準）。**いずれも Rust（`migrate.rs`）のみで管理し、Drizzle `schema.ts` には未反映**。
+
+```sql
+ALTER TABLE tree_nodes    ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE codex_entries ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE snippets      ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+```
+
+---
+
+## AI 使用量・生成出自ログ（2026-06-18 追記）
+
+### ai_usage
+
+N4「横断トークン使用量台帳」。全 AI 生成サーフェス（chat / agent / map_branch / tree_scaffold / beat / foreshadow / inline_ai / synopsis / session_title / summarization / context_creator）を横断し、1 回の LLM 生成につき 1 行を追記専用で記録する。usage 非対応のストリーミングや中断でも呼び出し回数を数えるため、トークン/コスト列は null 許容。`recordAiUsage`（fail-open）が書き込み、Settings → Usage タブで累計・推定コスト・サーフェス別内訳を可視化。詳細は [AI による書き込み横断検討](./Grimodex_AIによる書き込み横断検討.md)（N4）。
+
+```sql
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  surface       TEXT NOT NULL,          -- 生成サーフェス識別子（AiUsageSurface）
+  scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,  -- シーン削除時は支出履歴を残す
+  model         TEXT,
+  provider      TEXT,                   -- OpenRouter / OpenAI 互換 / Ollama 等
+  tokens_in     INTEGER,                -- usage 未取得時は null
+  tokens_out    INTEGER,
+  cache_read_tokens  INTEGER,           -- ↓ migrate_ai_usage_cache_tokens で後追い追加（既存行は null=0 扱い）
+  cache_write_tokens INTEGER,
+  cost_usd      REAL,                   -- null なら UI がトークンから推定
+  duration_ms   INTEGER,
+  trace_id      TEXT,
+  ref_id        TEXT,
+  metadata      TEXT,                   -- 追加メタデータ（JSON）
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_usage_project_created ON ai_usage(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_project_surface ON ai_usage(project_id, surface);
+```
+
+> `cache_read_tokens` / `cache_write_tokens` は後追いマイグレーションで追加。`add_column_if_missing` は **CREATE TABLE の直後**に呼ぶ必要がある（前だと fresh DB で「no such table: ai_usage」で migrate() ごと落ちる。回帰テストで固定）。
+
+### generation_logs
+
+スラッシュ（`inline-ai`）／ Beat 生成の AI 出自（プロンプト全文・命令・モデル・`trace_id`）を前方キャプチャする append-only ログ。制作過程開示（出自レポート）エクスポートのデータ源。Chat は別途 `chat_message_prompts` を持つため、本テーブルは inline-ai/beat 経路のみ。詳細は [Attribution パネル設計書](./Grimodex_Attributionパネル設計書.md)。
+
+```sql
+CREATE TABLE IF NOT EXISTS generation_logs (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,
+  kind          TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')),
+  command_id    TEXT,
+  instruction   TEXT,                   -- ユーザー指示文
+  prompt_full   TEXT,                   -- 実送信プロンプト全文（system+user）。旧レコードは NULL
+  model         TEXT,
+  trace_id      TEXT NOT NULL UNIQUE,   -- authorship_spans 等との突合キー
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_generation_logs_project_trace ON generation_logs(project_id, trace_id);
+CREATE INDEX IF NOT EXISTS idx_generation_logs_scene ON generation_logs(scene_node_id);
+```
+
+### chat_message_prompts
+
+チャットの各ターンで実際に送信された最終システムプロンプトのスナップショットを、トリガーとなったユーザーメッセージ（`message_id`）に紐づけて保存。RAG が非決定的かつ codex/scene 状態が送信後に変化するため再構築では復元不可能で、送信時にキャプチャして「過去メッセージの送信プロンプトを後から確認」機能で表示する。重いプロンプト本文を `chat_messages` 本体から切り出した side-table。詳細は [Chat パネル設計書](./Grimodex_Chatパネル設計書.md)。
+
+```sql
+CREATE TABLE IF NOT EXISTS chat_message_prompts (
+  message_id    TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+  system_prompt TEXT NOT NULL,          -- 送信された最終システムプロンプト本文（再構築不可）
+  layers        TEXT,                   -- レイヤー内訳（LayerBreakdown[] の JSON）
+  total_tokens  INTEGER,
+  model         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+---
+
+## プロジェクトスナップショット構造拡張（2026-05-19 実装 / 2026-06-18 追記）
+
+`project_snapshots` を「構造込み・スコープ選択式」に拡張した際に追加された 4 テーブル。スナップショット時点の各エンティティの構造メタを行単位でミラーし、削除エンティティの再生成や構造巻き戻し（リストア）を可能にする。本文は二重保存せず `body_version_id` で `content_versions` を指す軽量ポインタ方式で、参照中のリビジョンは **ON DELETE RESTRICT** でプルーニングから保護される。コアエンティティ（tree_nodes / codex_entries / snippets）は専用 strict テーブル、それ以外（map/foreshadow/labels/lint 等）は `project_snapshot_aux` に JSON 生コピーで格納。詳細は [リビジョン履歴設計書](./Grimodex_リビジョン履歴設計書.md)。
+
+### project_snapshot_tree_nodes
+
+```sql
+CREATE TABLE IF NOT EXISTS project_snapshot_tree_nodes (
+  snapshot_id        TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+  node_id            TEXT NOT NULL,
+  parent_id          TEXT,
+  node_type          TEXT NOT NULL,
+  title              TEXT NOT NULL,
+  synopsis           TEXT,
+  intent             TEXT,               -- migrate_tree_nodes_intent で後付け。シーンの「狙い」
+  sort_order         TEXT NOT NULL,
+  story_time_order   TEXT,
+  story_time_label   TEXT,
+  pov_character_id   TEXT,
+  location_id        TEXT,
+  status             TEXT,
+  body_version_id    TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+  unplaced_beats_doc TEXT NOT NULL DEFAULT '[]',
+  char_count         INTEGER NOT NULL DEFAULT 0,
+  -- 元エンティティの作成/更新日時を保存（リストアで復元時刻でなく実際の日時を復元する）
+  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (snapshot_id, node_id)
+);
+```
+
+### project_snapshot_codex_entries
+
+```sql
+CREATE TABLE IF NOT EXISTS project_snapshot_codex_entries (
+  snapshot_id            TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+  entry_id               TEXT NOT NULL,
+  type                   TEXT NOT NULL,
+  name                   TEXT NOT NULL,
+  parent_id              TEXT,
+  aliases                TEXT,
+  excluded_aliases       TEXT,
+  summary                TEXT,
+  icon                   TEXT,
+  context_mode           TEXT NOT NULL,
+  children_budget        TEXT NOT NULL,
+  notes                  TEXT,
+  body_version_id        TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (snapshot_id, entry_id)
+);
+```
+
+### project_snapshot_snippets
+
+```sql
+CREATE TABLE IF NOT EXISTS project_snapshot_snippets (
+  snapshot_id            TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+  snippet_id             TEXT NOT NULL,
+  title                  TEXT NOT NULL,
+  scene_id               TEXT,
+  source_chat_message_id TEXT,
+  body_version_id        TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (snapshot_id, snippet_id)
+);
+```
+
+### project_snapshot_aux
+
+```sql
+CREATE TABLE IF NOT EXISTS project_snapshot_aux (
+  snapshot_id  TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
+  scope        TEXT NOT NULL,            -- map / foreshadow / labels / lint 等（1スコープ1行）
+  payload_json TEXT NOT NULL,            -- { rows: RawRow[] } 形式の生行コピー（schema は projectSnapshotScopes.ts）
+  PRIMARY KEY (snapshot_id, scope)
+);
+```
+
+> **`content_versions` のプルーニング保護**: `body_version_id`（RESTRICT）に加え、`delete_cv_on_tree_node_delete` / `_codex_entry_delete` / `_snippet_delete` の 3 トリガーが `migrate_cv_triggers_protect_snapshot_versions` で **スナップショット参照中のバージョンを削除しない** snapshot-aware 版へ DROP→再作成される。エンティティ削除時の content_versions 連鎖削除が、スナップショットがまだ参照しているリビジョンを巻き込まないようにするため。
+
+---
+
+## Codex Relation（型付き関係）（2026-05-26 実装 / 2026-06-18 追記）
+
+Codex エントリ同士の「正式な型付き関係」を保持する。Map パネルでユーザーが描いた User edge（両端が Codex ノード）を「Codex Relation へ昇格」して構造化する経路の格納先で、AI コンテキスト注入（Chat）の Codex Relation 経路でも参照される。`codex_dismissed_relations`（提案 Dismiss 記録）とは別物。詳細は [Map パネル設計書](./Grimodex_Mapパネル設計書.md)「Codex Relation への昇格」。
+
+### codex_relations
+
+```sql
+CREATE TABLE IF NOT EXISTS codex_relations (
+  id                  TEXT PRIMARY KEY,
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  from_codex_id       TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+  relation_type       TEXT NOT NULL DEFAULT 'custom',   -- 例: mentor。既定 custom
+  label               TEXT,                             -- 表示ラベル（例: 師匠）
+  depth_hint          INTEGER,                          -- 関係注入/展開時の深さヒント
+  source_map_edge_id  TEXT,                             -- 昇格元の Map User edge ID（FK は持たない＝edge 削除後も追跡可）
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_codex_relations_project ON codex_relations(project_id);
+CREATE INDEX IF NOT EXISTS idx_codex_relations_from    ON codex_relations(from_codex_id);
+CREATE INDEX IF NOT EXISTS idx_codex_relations_to      ON codex_relations(to_codex_id);
+```
+
+> `source_map_edge_id` は FK を持たない純粋な TEXT（昇格元エッジ削除後も ID を追跡できるように）。FK が残っている旧 dev DB を検出した場合のみ、`migrate_codex_relations_source_map_edge_id` が `codex_relations_new` への退避→DROP→RENAME でテーブルを再構築して FK を撤去する（再構築版は `created_at`/`updated_at` の DEFAULT を省く）。
+
+---
+
+## 影響度レビュー（impact-review）（2026-06-18 追記）
+
+### impact_review_baselines
+
+impact-review（Codex 変更 → 本文矛盾の逆引き検出）の差分基準テーブル。Codex エントリ単位で「前回 impact-review 実行時点の状態スナップショット」を 1 行保持し、手動トリガ時に現在状態と diff して「前回チェック以降の変更」を求める。baseline が無い初回は全文を変更扱い。詳細は [impact-review 実装計画](./Grimodex_impact-review実装計画.md)。
+
+```sql
+CREATE TABLE IF NOT EXISTS impact_review_baselines (
+  entry_id      TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  snapshot_json TEXT NOT NULL,          -- { name, aliases, summary, content_plain, details:[{name,value}] }
+  content_hash  TEXT NOT NULL,          -- 差分有無の高速判定用
+  reviewed_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_impact_baselines_project ON impact_review_baselines(project_id);
+```
+
+> impact-review は `post_effect_runs.effect_type = 'impact_review'` / `post_effect_annotations.category = 'impact_review_anchor'` として PostEffects 群に統合される（[post_effect_runs](#post_effect_runs) の CHECK 拡張参照）。
+
+---
+
+## 既存テーブルへのカラム追加（2026-06-18 追記）
+
+`## テーブル定義` の各テーブルへ、2026-05-24〜06-12 に追加されたカラム。新規 DB は CREATE 時点で列を含み、既存 DB は `add_column_if_missing` で冪等に後付けされる。
+
+### tree_nodes（Note コンテキスト + 外部 MD マウント + 楽観ロック）
+
+```sql
+-- Note ノードの AI コンテキスト注入（2026-05-26, Chat コンテキスト拡張）
+ALTER TABLE tree_nodes ADD COLUMN context_mode     TEXT;                       -- 非 note 行は NULL、既存 note は 'mentioned' へ backfill
+ALTER TABLE tree_nodes ADD COLUMN aliases          TEXT NOT NULL DEFAULT '[]'; -- Note の別名 JSON 配列（本文内 Note 検出）
+ALTER TABLE tree_nodes ADD COLUMN excluded_aliases TEXT NOT NULL DEFAULT '[]'; -- 言及マッチから外す表記
+-- 外部 MD マウント（file-backed シーン, 2026-05-24）
+ALTER TABLE tree_nodes ADD COLUMN source_uri   TEXT;   -- 元ファイル URI（双方向同期のリンク先）
+ALTER TABLE tree_nodes ADD COLUMN source_mtime TEXT;   -- 元ファイル mtime（外部変更検知）
+ALTER TABLE tree_nodes ADD COLUMN archived_at  TEXT;   -- アーカイブ日時。NULL = 非アーカイブ
+-- シーン別の「狙い」（2026-06-05, intent_drift 診断の基準）
+ALTER TABLE tree_nodes ADD COLUMN intent  TEXT;
+-- AI 書き込みの楽観ロック（2026-06-06）
+ALTER TABLE tree_nodes ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+```
+
+### chat_sessions（Codex / Snippet スコープアンカー）
+
+Chat スコープに Codex（2026-06-10）と Snippet（2026-06-12）を追加。蓄積知識（Codex エントリ）や Snippet を起点に対話するためのアンカーで、`node_id` は NULL のまま。
+
+```sql
+ALTER TABLE chat_sessions ADD COLUMN codex_anchor_id   TEXT REFERENCES codex_entries(id) ON DELETE SET NULL;
+ALTER TABLE chat_sessions ADD COLUMN snippet_anchor_id TEXT REFERENCES snippets(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_codex_anchor   ON chat_sessions(project_id, codex_anchor_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_snippet_anchor ON chat_sessions(project_id, snippet_anchor_id);
+```
+
+### lint_term_dictionary（project スコープ化）
+
+用語辞書を project スコープ化（2026-06-03）。旧 DB は WS 共有→最古プロジェクトへ backfill、孤児行は削除。ALTER では nullable、新規 DB は CREATE 側で `NOT NULL` + FK。
+
+```sql
+ALTER TABLE lint_term_dictionary ADD COLUMN project_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_lint_term_dict_project ON lint_term_dictionary(project_id);
+```
+
+### post_effect_runs.effect_type / post_effect_annotations.category（CHECK 拡張）
+
+カラム追加ではなく **CHECK 列挙の拡張**。`effect_type` に `typo_detection`（2026-05-26）/ `intent_drift`・`timeline_consistency`（2026-06-05）/ `impact_review`（2026-06-18）を、`category` に対応する `*_anchor` を追加（上の [post_effect_runs](#post_effect_runs) / [post_effect_annotations](#post_effect_annotations) の DDL を参照）。既存 DB は `migrate_post_effect_*_categories` が CHECK 文字列を置換して遅延拡張する。
+
+---
+
+## スキーマ更新履歴（2026-06-18）
+
+セマンティック検索 / RAG・執筆タイムラプス・AI 書き込み基盤・AI 使用量台帳・スナップショット構造拡張・impact-review など、2026-05-19〜06-18 に実装が先行していた領域を設計書へ反映。前回の追従基準日は 2026-05-16。本更新は live スキーマ（`migrate.rs`）を正本に Drizzle（`schema.ts`）と突合して作成し、各テーブルの DDL・導入日は git で裏取りした。
+
+### 追加テーブル（設計書に未記載だったもの）
+
+| テーブル | 追加理由 | 実装日 |
+|---------|---------|--------|
+| `scene_chunks` | 本文セマンティック検索の埋め込みチャンク | 2026-05-19 |
+| `codex_chunks`（Rust専用） | Codex hybrid 検索の埋め込み（1エントリ1ベクトル） | 2026-06-18 |
+| `change_events` / `state_snapshots` | 執筆タイムラプスの変更ログ + リプレイアンカー | 2026-05-29 |
+| `undo_journal`（Rust専用） / `prose_staging` | AI 書き込み基盤（tracked write / staged prose） | 2026-06-06 |
+| `ai_usage` | N4 横断トークン使用量台帳 | 2026-06-05 |
+| `generation_logs` | inline-ai/beat 生成の出自ログ | 2026-05-31 |
+| `chat_message_prompts` | 送信プロンプトのスナップショット | 2026-06-13 |
+| `project_snapshot_tree_nodes` / `_codex_entries` / `_snippets` / `_aux` | スナップショットの構造込み拡張 | 2026-05-19 |
+| `codex_relations` | Codex 同士の型付き関係（Map edge 昇格） | 2026-05-26 |
+| `impact_review_baselines` | impact-review の差分基準 | 2026-06-18 |
+
+### 追加カラム（既存テーブル）
+
+| テーブル | カラム | 用途 | 実装日 |
+|---------|-------|------|--------|
+| `tree_nodes` | `context_mode` / `aliases` / `excluded_aliases` | Note の AI コンテキスト注入・言及検出 | 2026-05-26 |
+| `tree_nodes` | `source_uri` / `source_mtime` / `archived_at` | 外部 MD マウント（file-backed） | 2026-05-24 |
+| `tree_nodes` | `intent` | シーン別の「狙い」（intent_drift 基準） | 2026-06-05 |
+| `tree_nodes` / `codex_entries` / `snippets` | `version` | AI 書き込みの楽観ロック（Rust のみ） | 2026-06-06 |
+| `chat_sessions` | `codex_anchor_id` / `snippet_anchor_id` | Codex / Snippet スコープのチャット | 2026-06-10 / 06-12 |
+| `lint_term_dictionary` | `project_id` | 用語辞書の project スコープ化 | 2026-06-03 |
+| `ai_usage` | `cache_read_tokens` / `cache_write_tokens` | prompt cache トークン計測（後追い） | 2026-06-05 |
+
+### トリガー / FTS / CHECK の変更
+
+| 項目 | 内容 |
+|------|------|
+| `codex_fts` に `content` 列追加 | Codex 本文（PM JSON）を 5 番目の列としてインデックス。`search_codex` が本文にマッチ。`codex_fts_ai/ad/au` も `content` 同期。レガシー DB は `migrate_codex_fts_add_content` が DROP→再作成→rebuild（PR #109, 2026-06-18） |
+| `delete_cv_on_*_delete` の snapshot-aware 化 | `migrate_cv_triggers_protect_snapshot_versions` が 3 トリガーを再作成し、スナップショット参照中の `content_versions` を連鎖削除から保護 |
+| `post_effect_runs.effect_type` CHECK 拡張 | 5→9（`typo_detection` / `intent_drift` / `timeline_consistency` / `impact_review` を追加） |
+| `post_effect_annotations.category` CHECK 拡張 | 5→9（`typo_anchor` / `intent_anchor` / `timeline_anchor` / `impact_review_anchor` を追加） |
+
+### Drizzle ↔ Rust スキーマの差分
+
+`src-tauri/src/database/migrate.rs`（実 DB の正本）と `src/db/schema.ts`（アプリ層ミラー）の現状差分。いずれも意図的か、Drizzle が遅れているだけで実害はない。
+
+| 項目 | 状態 |
+|------|------|
+| `codex_chunks` / `undo_journal` | Rust のみ。FTS 仮想テーブルと同じく Rust 管理で Drizzle には定義しない（意図的） |
+| `tree_nodes.version` / `codex_entries.version` / `snippets.version` | Rust のみ（楽観ロック列）。Drizzle 未反映 |
+| `projects.is_sample` | Rust のみ。Drizzle 未反映 |
+| FTS5 / CHECK 制約 / 部分・UNIQUE インデックス / seed・cascade トリガー | すべて `migrate.rs` のみに存在（Drizzle では表現しない設計） |
+
+### マイグレーション方針について
+
+2026-05 以降に追加されたテーブル / カラムは、番号付きマイグレーション（旧 v1〜v7）ではなく **`CREATE TABLE IF NOT EXISTS` + `add_column_if_missing` による冪等適用**で導入されている。`ai_usage` の cache 列や `change_events.event_uid` のように、後付け列に依存する UNIQUE インデックスは「列追加の **後**」に別バッチで作る必要がある点に注意（`IF NOT EXISTS` は列解決エラーを抑止しないため）。

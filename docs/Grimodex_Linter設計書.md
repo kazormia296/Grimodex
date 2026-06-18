@@ -122,10 +122,15 @@ src-tauri/crates/grimodex-lint/
 ├── Cargo.toml
 └── src/
     ├── lib.rs               # 公開 API（`lint()` / 型 re-export）
-    ├── engine.rs            # エンジン本体（disable resolve / 辞書衝突解決 / 出力ソート）
+    ├── engine.rs            # エンジン本体（disable resolve / 辞書衝突解決 /
+    │                        #   dialogue scope フィルタ / 出力ソート）
     ├── error.rs             # `LintError`
     ├── morph.rs             # lindera + UniDic ラッパー（Phase 2 で前倒し導入）
+    ├── dialogue.rs          # 英語の会話文スパン解析（`DialogueScope` /
+    │                        #   `DialogueAnalysis` / `analyze_dialogue`）
     ├── offset.rs            # UTF-16 offset ユーティリティ
+    ├── textscan/            # 言語別の低レベルテキスト走査（en: 会話引用スパン /
+    │                        #   文区切り、ja ほか）
     ├── rule.rs              # `LintRule` trait、`Diagnostic`、`Severity` ほか共通型
     └── rules/
         ├── mod.rs           # `build_ruleset()`（言語別にルールを登録）
@@ -134,8 +139,11 @@ src-tauri/crates/grimodex-lint/
         │                    # kanji_hiragana_chain / particle_no_chain /
         │                    # quote_period / redundant_expression /
         │                    # sentence_ending_repeat / sentence_length /
-        │                    # word_repetition
-        ├── en/              # double_space / ellipsis / em_dash / straight_quotes
+        │                    # typo_confusable / word_repetition
+        ├── en/              # double_space / ellipsis / em_dash / straight_quotes /
+        │                    # apostrophe / dialogue_punctuation / unclosed_quote /
+        │                    # sentence_length / filter_words / adverb_ly /
+        │                    # intensifiers_weasel / word_repetition / sentence_starters
         ├── codex/           # name_inconsistency（F 群、Phase 2 → 1 前倒し、既定 OFF）
         └── project/         # term_consistency（用語辞書）
 
@@ -151,6 +159,16 @@ scripts/
 ```
 
 **将来拡張**: textlint 系辞書を取り込むタイミングで `crates/grimodex-lint/data/` 配下に静的辞書を置き `include_str!` で埋め込む。lindera + UniDic は既に `embed-unidic` feature で埋め込み済み。
+
+### 会話文スコープ解析（`dialogue.rs`）
+
+英語の散文 craft ルール（`en/filter-words` / `en/adverb-ly` 等）は **地の文にのみ効かせ、台詞内の砕けた表現を誤検出しない** 必要がある。これを担うのが `dialogue.rs`:
+
+- `DialogueScope`（`Anywhere` / `DialogueOnly` / `NarrationOnly`）: ルールが `dialogue_scope()` で宣言する。`NarrationOnly` は会話文に重なる Diagnostic を捨て、`DialogueOnly` は会話文に重なるものだけ残す。デフォルトは `Anywhere`（フィルタなし）
+- `analyze_dialogue(blocks)` → `DialogueAnalysis`: ブロック列を走査し、二重引用符の会話文スパン（シーン全体 UTF-16 座標）と、**段落跨ぎ会話の慣例を除いた本物の未閉じ引用** を収集する。`en/unclosed-quote` はこの `unclosed_ranges()` をそのまま Diagnostic 化する
+- **英語専用**: 解析は `Anywhere` 以外を返す有効ルールが 1 つでもある英語リクエストでのみ、1 回だけ走る。日本語では起動しない（`textscan::en` の引用走査を利用するため）
+
+`Diagnostic.range` は内部で既にシーン全体 UTF-16 座標に揃っており、`DialogueAnalysis::overlaps()` で会話文との重なりを判定する。
 
 ### ビルド方針（重要）
 
@@ -261,6 +279,15 @@ pub trait LintRule: Send + Sync {
     /// デフォルト: false（regex 専用ルール）。
     fn requires_morphology(&self) -> bool {
         false
+    }
+
+    /// この ルールの Diagnostic が会話文（dialogue span）に対してどう振る舞うか。
+    /// エンジンが発行後にフィルタする: `NarrationOnly` は会話文に重なる
+    /// Diagnostic を捨て、`DialogueOnly` は会話文に重なるものだけ残す。
+    /// dialogue 解析は **英語リクエストのみ**、`Anywhere` 以外を返す有効ルールが
+    /// 1 つでもあれば 1 回だけ走る（§dialogue モジュール）。デフォルト: `Anywhere`。
+    fn dialogue_scope(&self) -> DialogueScope {
+        DialogueScope::Anywhere
     }
 
     /// 適用可能なブロック種別。エンジン側でこの配列に含まれない BlockKind の
@@ -508,25 +535,30 @@ type PosInterval = {
 
 → **Phase 1 完了時点では「うるさくない、確実に効く」セットのみ ON**。OFF のルールは設定パネルで個別に有効化。
 
-### Phase 1 ルール一覧（regex のみ、形態素解析不要）
+### Phase 1 ルール一覧
 
-#### 日本語
+**注**: 当初は「Phase 1 = regex のみ」の方針だったが、形態素解析依存ルール 5 個と Codex 連動 1 個を Phase 1 に前倒し（§Phase 2 から Phase 1 へ前倒しした項目）。以下は **現在出荷済みの全ビルトインルール**（`rules/mod.rs` の `build_ruleset()` 登録順に対応）。「形」列が ✅ のものは形態素解析（lindera + UniDic）を使う（`requires_morphology() == true`）。既定 ON/OFF はフロントの `BUILTIN_DEFAULT_CONFIG`（`lintConfigStore.ts`）が正本で、未掲載ルールは読み取り時 `enabled: true` にフォールバックする。
 
-| Rule ID | 内容 | Severity | 自動修正 |
-|---|---|---|---|
-| `ja/ellipsis-single` | `…` 単体 → `……` | error | ✅ |
-| `ja/ellipsis-odd` | `………` のような奇数個 → `……` または `…………` | warn | ✅ |
-| `ja/dash-single` | `—` 単体 → `——` | error | ✅ |
-| `ja/consecutive-punct` | `、、` `。。` の連続 | error | ✅（1つに圧縮） |
-| `ja/halfwidth-kana` | `ｱｲｳ` 等の半角カナ | error | ✅（全角化） |
-| `ja/quote-period` | カギ括弧内末尾句点の有無（プロジェクト設定で `strip`/`require`/`preserve`） | info | ✅（`preserve` 時を除く） |
-| `ja/sentence-length` | 一文 80 文字超で warn、120 で error | warn / error | × |
-| `ja/sentence-ending-repeat` | 「〜た。」「〜だ。」等が 3 文連続（括弧内は除外） | info | × |
-| `ja/halfwidth-fullwidth-mix` | 全半角英数字の混在（プロジェクトで規則を設定、Phase 1 は `all-halfwidth` / `all-fullwidth` / `off` のみ） | warn | ✅ |
+#### 日本語（14 ルール）
 
-**Phase 1 から除外したルール**:
+| Rule ID | 内容 | Severity | 形 | 既定 | 自動修正 |
+|---|---|---|---|---|---|
+| `ja/consecutive-punct` | `、、` `。。` の連続 | error | | ON | ✅（1つに圧縮） |
+| `ja/dash-single` | `—` 単体 → `——` | error | | ON | ✅ |
+| `ja/ellipsis-single` | `…` 単体 → `……` | error | | ON | ✅ |
+| `ja/ellipsis-odd` | `………` のような奇数個 → `……` または `…………` | warn | | ON | ✅ |
+| `ja/halfwidth-fullwidth-mix` | 全半角英数字の混在（プロジェクトで規則を設定） | warn | | ON | ✅ |
+| `ja/halfwidth-kana` | `ｱｲｳ` 等の半角カナ | error | | ON | ✅（全角化） |
+| `ja/quote-period` | カギ括弧内末尾句点の有無（`strip`/`require`/`preserve`） | info | | ON | ✅（`preserve` 時を除く） |
+| `ja/sentence-length` | 一文 80 文字超で warn、120 で error | warn / error | | ON | × |
+| `ja/sentence-ending-repeat` | 「〜た。」「〜だ。」等が 3 文連続（括弧内は除外） | info | | OFF | × |
+| `ja/typo-confusable` | カタカナ語の典型的な打ち間違い（「シュミレーション」等、辞書ベース） | warn | | ON | ✅ |
+| `ja/kanji-hiragana-chain` | 漢字・平仮名の不自然な連続 | info | ✅ | OFF | — |
+| `ja/particle-no-chain` | 助詞「の」連続 | warn | ✅ | OFF | — |
+| `ja/redundant-expression` | 冗長表現（textlint 系の対応表ベース） | info | ✅ | OFF | — |
+| `ja/word-repetition` | 同語近接反復 | info | ✅ | OFF | — |
 
-- `ja/particle-no-chain`（助詞「の」連続）: 「の」は格助詞／連体修飾／準体助詞／終助詞など意味が多岐で、形態素解析なしでは誤検出が多い（例: 「真琴の母の作ったお弁当を食べた」のような自然な文も拾ってしまう）。**Phase 2 で形態素解析を導入後に実装**。
+`ja/particle-no-chain` は「の」が格助詞／連体修飾／準体助詞／終助詞など意味が多岐で regex では誤検出が多いため、形態素解析を前提に **既定 OFF** で同梱する（例: 「真琴の母の作ったお弁当を食べた」のような自然な文を拾わないよう、形態素列で連体助詞の連鎖のみを対象にする）。
 
 ### ルール固有のデフォルト値
 
@@ -572,14 +604,27 @@ Phase 1 のデフォルト `all-halfwidth` は**日本語横書き小説で最�
 - 閾値: 3 文連続で警告
 - **括弧内の文は除外**（会話文中の「〜た。」が連続しても自然なため）
 
-#### 英語
+#### 英語（13 ルール）
 
-| Rule ID | 内容 | Severity | 自動修正 |
-|---|---|---|---|
-| `en/straight-quotes` | `"hello"` → `"hello"` | warn | ✅ |
-| `en/em-dash` | `word - word` のハイフン誤用 → em dash | info | 候補提示 |
-| `en/ellipsis` | `...` → `…` | info | ✅ |
-| `en/double-space` | `. ` ピリオド後の二重スペース | warn | ✅ |
+「Dスコープ」列は `dialogue_scope()`。`narration` の付いたルールは **会話文に重なる Diagnostic を捨て、地の文のみで発火**する（§会話文スコープ解析）。`en/unclosed-quote` は逆に未閉じ引用そのものを検出する。
+
+| Rule ID | 内容 | Severity | Dスコープ | 既定 | 自動修正 |
+|---|---|---|---|---|---|
+| `en/straight-quotes` | `"hello"` → `“hello”` | warn | — | ON | ✅ |
+| `en/em-dash` | `word - word` のハイフン誤用 → em dash | info | — | ON | 候補提示 |
+| `en/ellipsis` | `...` → `…` | info | — | ON | ✅ |
+| `en/double-space` | `. ` ピリオド後の二重スペース | warn | — | ON | ✅ |
+| `en/apostrophe` | 語中の直線アポストロフィ `'`（`don't` 等）→ タイポグラフィ `’` | warn | — | ON | ✅ |
+| `en/dialogue-punctuation` | 会話タグが続く台詞末尾の `."` → `,"`（`"Hello." she said` → `"Hello," she said`） | warn | — | ON | ✅ |
+| `en/unclosed-quote` | 段落内で閉じない開き二重引用符（段落跨ぎ会話の慣例は除外） | warn | — | ON | × |
+| `en/sentence-length` | 一文の語数超過（既定 35 語で warn、60 語で error） | warn / error | narration | ON | × |
+| `en/filter-words` | 視点人物から読者を遠ざける filter word（saw / heard / felt / noticed…） | info | narration | OFF | × |
+| `en/adverb-ly` | `-ly` 副詞の多用（非副詞は除外リストで弾く） | info | narration | OFF | × |
+| `en/intensifiers-weasel` | 弱い強調語・ヘッジ（very / really / just / quite…） | info | narration | OFF | × |
+| `en/word-repetition` | 一定語数ウィンドウ内の内容語の反復（stop word は無視） | info | narration | OFF | × |
+| `en/sentence-starters` | 同じ語で始まる文の連続（単調さ。既定 3 文連続） | info | narration | OFF | × |
+
+英語の craft 系ルール（`filter-words` / `adverb-ly` / `intensifiers-weasel` / `word-repetition` / `sentence-starters`）は誤検出が体験を阻害しやすいため **既定 OFF**。`en/sentence-length` は語数測定（日本語の文字数とは別軸）で既定 ON。
 
 ### Phase 2 以降のルール（参考、設計時詳細化）
 
@@ -615,10 +660,9 @@ Phase 1 のデフォルト `all-halfwidth` は**日本語横書き小説で最�
 {
   "schemaVersion": 1,            // 構造変更時にインクリメント。マイグレーションのキー
   "enabled": true,
-  "languages": {
-    "ja": { "enabled": true },
-    "en": { "enabled": true }
-  },
+  // 注: 言語全体の enable/disable（旧 `languages: { ja, en }`）は 2026-06-16
+  //     に撤去（§ルール設定 UI）。言語の切替は「執筆言語」で決まり、エンジンは
+  //     `supported_languages()` で常にアクティブ言語のルールだけを走らせる。
   "rules": {
     "ja/ellipsis-single": { "enabled": true },
     "ja/sentence-length": {
@@ -708,7 +752,7 @@ Lint 実行時は両方を参照する。Codex Alias は「エントリの正表
 
 - ルールオプションのキー名変更（例: `policy` → `variant`）
 - `options` の値の型変更（文字列 → オブジェクト等）
-- 設定階層の再編（`languages` / `rules` の構造変更）
+- 設定階層の再編（実例: 2026-06-16 に言語全体の enable/disable を表す `languages` キーを撤去。`rules` 構造の再編も同様）
 
 **バージョンアップ不要なケース**（前方互換で吸収）:
 
@@ -737,15 +781,20 @@ Phase 1 から設定 UI に用意:
 
 ## ルール設定 UI（概要）
 
-設定パネル（`Settings → Linter`）で以下を制御:
+設定パネル（`Settings → Linter`）の `ルール` タブ（`用語辞書` / `無視リスト` と並ぶ）で以下を制御:
 
 - **Linter 全体の有効/無効**
-- **言語ごとの有効/無効**
 - **ルールごとの ON/OFF**
 - **ルールごとの Severity 上書き**
 - **ルール固有のオプション**（一文長の閾値、カギ括弧内句点の方針等）
 - **用語統一辞書の編集**（`lint_term_dictionary` の CRUD、詳細は後述「用語辞書 UI」）
 - **リセットボタン**（全体／言語／個別）
+
+#### 言語ごとの有効/無効トグルは撤去（2026-06-16 追記）
+
+当初は「言語ごとの有効/無効」トグルを置いていたが撤去した。エンジンは `supported_languages()` フィルタで **常にプロジェクトのアクティブ執筆言語のルールだけを走らせる** ため、もう一方の言語のルールはこの UI 上で本来 inert で、言語全体トグルはルール ON/OFF とグローバル ON/OFF の冗長なゲートにすぎなかった（再導入はしない）。
+
+代わりに `ルール` タブはルールを言語別グループ（`ja` / `en` + 言語非依存の `project` / `codex`）に分け、**アクティブ言語を先頭に展開表示、非アクティブ言語は折りたたみ**にする（`LinterCategory.tsx`、`resolveLintLanguage()` で判定）。非アクティブ側の ON/OFF 設定はプロジェクト言語切替を跨いで保持される（ユーザー個別設定として残す）。なお「言語ごとにデフォルトに戻す」リセット（`resetLanguage`）は存置する。
 
 ---
 
@@ -1859,7 +1908,7 @@ src-tauri/src/lint/tests/fixtures/
 2. `LintRule` trait + `Diagnostic` 型 + `LintContext` の設計
 3. ProseMirror ↔ 文字列オフセット変換層（ユニットテスト付き）
 4. ゴールデンファイル形式のテストハーネス
-5. Phase 1 ルール群（日英、regex のみ）
+5. Phase 1 ルール群（日英。当初は regex のみの想定だったが、形態素解析・会話文解析・Codex 連動の一部を前倒し。§Phase 2 から Phase 1 へ前倒しした項目）
 
 加えて:
 
@@ -1899,6 +1948,9 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 - **Lint レポートエクスポート（CSV / Markdown / JSON）** — 上述「Lint レポートのエクスポート」節
 - **Project スキャナ（disable も含む）** — `projectScan.ts` で集約、Project モードで利用
 - **`ja/halfwidth-fullwidth-mix` の `ja-halfwidth-with-exceptions` ポリシー** — 隣接文字ヒューリスティックで Phase 1 から有効（形態素解析は不要と判明）
+- **`ja/typo-confusable`（カタカナ語タイポ辞書ルール、既定 ON）** — 決定論側の打ち間違い検出。同音異義語の誤変換等は AI Post-Effect `typo_detection` 側に住み分け
+- **英語 P0 ルール 3 種 + 会話文解析基盤** — `en/apostrophe` / `en/dialogue-punctuation` / `en/unclosed-quote` と `dialogue.rs`（`DialogueScope` / `analyze_dialogue`）。`LintRule::dialogue_scope()` も合わせて Phase 1 で着地
+- **英語 P1（craft 系）ルール 6 種（多くは既定 OFF）** — `en/sentence-length`（既定 ON）/ `en/filter-words` / `en/adverb-ly` / `en/intensifiers-weasel` / `en/word-repetition` / `en/sentence-starters`。いずれも `NarrationOnly` で地の文のみ評価
 
 ### Phase 2（形態素解析 + Codex 連動）
 
@@ -1960,7 +2012,7 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | 位置インデックス | UTF-16 コードユニット単位で Rust → JS に返却 |
 | `Diagnostic.range` / `Fix.range` 基準 | **シーン全体テキスト基準の UTF-16 オフセット**（ブロック内ローカルではない） |
 | ProseMirror 連携 | フロント側で位置マップを保持して変換 |
-| Phase 1 ルール | 日本語 9、英語 4（すべて regex、`ja/particle-no-chain` は Phase 2 へ） |
+| Phase 1 ルール（出荷済み） | 日本語 14、英語 13（+ 言語非依存の `codex/name-inconsistency`・`project/term-consistency`）。形態素解析依存 5 個（`ja/particle-no-chain` / `kanji-hiragana-chain` / `redundant-expression` / `word-repetition` ＋ `codex/name-inconsistency`）と英語 craft ルールを既定 OFF で前倒し同梱 |
 | `ja/halfwidth-fullwidth-mix` | Phase 1 で全 4 ポリシー対応（`all-halfwidth`（デフォルト）/ `all-fullwidth` / `ja-halfwidth-with-exceptions` / `off`）。`with-exceptions` は隣接 1 文字での日本語コンテキスト判定で形態素解析不要 |
 | `ja/quote-period` の方針 | `strip`（デフォルト）/ `require`（句点付与）/ `preserve`（検出しない）の 3 択 |
 | 既定 ON | 記号・約物すべて + 一文長 |
@@ -2016,6 +2068,8 @@ UI 側（Linter パネル）はサブフェーズに分けて実装:
 | ログ内の本文 | 原則 `[redacted]`。`--verbose-lint` + `debug` レベル時のみ `text_snippet` を含める |
 | テスト | ゴールデンファイル形式を day 1 から。期待値再生成は `UPDATE_EXPECT=1 cargo test` 相当 |
 | LintRule の対象ブロック制御 | `supported_block_kinds` をデフォルト実装付きで trait に持たせ、エンジン側で自動スキップ（Heading で sentence-length を走らせない等） |
+| LintRule の会話文スコープ | `dialogue_scope()`（`Anywhere` / `DialogueOnly` / `NarrationOnly`）を trait に持たせ、エンジンが発行後にフィルタ。dialogue 解析（`dialogue.rs`）は英語リクエストのみ・非 `Anywhere` ルールがあるときだけ実行 |
+| 言語ごとの有効/無効トグル | **撤去（2026-06-16）**。エンジンは `supported_languages()` で常にアクティブ言語のルールだけ走らせるため冗長。ルール一覧はアクティブ言語を先頭表示・非アクティブは折りたたみ。`resetLanguage` リセットは存置 |
 
 ---
 

@@ -14,67 +14,86 @@ Grimodex の検索は **ヘッダー常駐バー + Dockview パネル + Provider
 ### 設計の柱
 
 1. **常駐 + 専用ビュー の二段構え**: ヘッダーバーはどの画面でも 1 クリックで
-   到達できるサマリー (各セクション 10 件)。Dockview パネルは横断的な scan
-   と hover プレビュー (semantic chunk は前後 ±100 文字) を提供する。
-2. **Provider レジストリで複数検索源を 1 入力に集約**: lexical / semantic /
-   将来の command を `CommandCenterProvider` インターフェイスで束ね、registry に
-   登録するだけで `useCommandCenterSearch` の並行実行ループに乗る。
-3. **バーが入力の単一所有 (single owner)**: 検索フックは `CommandCenterBar` の
-   1 箇所のみで呼び、パネルは store を購読する。これにより同一クエリで
-   provider が二重発火する race を構造的に排除する。
+   到達できるサマリー (各セクション最大 `BAR_VISIBLE_LIMIT_PER_SECTION`=10 件)。
+   Dockview パネルは横断的な scan と hover プレビュー (semantic chunk は前後
+   ±100 文字) を提供する。
+2. **Provider レジストリで複数検索源を 1 入力に集約**: quickOpen / command /
+   lexical / semantic を `CommandCenterProvider` インターフェイスで束ね、registry に
+   登録するだけで `useCommandCenterSearch` の並行実行ループに乗る。各 provider は
+   `surfaces: ("bar" | "panel")[]` で **どの surface に出すか** を宣言する。
+3. **バーとパネルは独立した store / runtime** (Phase A2 で分離): 検索フックは
+   `CommandCenterBar` と `CommandCenterResultsPanel` が **各々独立に** 呼ぶ。
+   両者は別 store (`useBarStore` / `usePanelStore`) を購読するため、同一文字を
+   打っても store が分かれており upsert が衝突しない。バーは surface=`"bar"`、
+   パネルは surface=`"panel"` で `getProviders` を絞り込む。
 4. **クエリで「除外」も書ける**: `邂逅 -雨` のように `-word` で除外。Lexical /
    Semantic 両方に共通の post-filter を適用する。
 
 ### スコープ外（本機能では扱わない）
 
-- **コマンド実行**: `>` プレフィックスで `mode: "command"` には切り替わるが、
-  command provider は今は登録していない (placeholder)。将来の拡張点。
 - **複数プロジェクト横断検索**: セマンティック検索設計書と同じく単一プロジェクト前提。
 - **検索履歴**: 永続化しない (将来検討)。
 - **保存済みフィルタ**: フィルタ状態はセッションのみ。
 
+> DB スキーマ (FTS5 仮想テーブル・semantic chunk テーブル等) の詳細は
+> [`docs/Grimodex_統合DBスキーマ.md`](./Grimodex_統合DBスキーマ.md) を参照。
+
 ---
 
-## CommandPalette との関係
+## コマンドパレット (Command Palette) 統合
 
-`features/commandPalette/CommandPalette.tsx` (Ctrl+Shift+P) は別物として併存する。
-- CommandPalette: シーンステータス変更などのアプリ内コマンド (現状ハードコード)。
-- CommandCenter: 検索 + 将来のコマンド統合。
+旧 `features/commandPalette/CommandPalette.tsx` は撤去され、コマンドパレット相当の
+機能は CommandCenter の `commandProvider` (バー surface 専用) に統合された。
 
-CommandCenter は `mode: "search" | "command"` を持ち、入力先頭 `>` で command
-モードに切替えられる足場まで実装済み。将来的に CommandPalette を CommandCenter の
-command provider として吸収できる。
+- **Ctrl+Shift+P**: バーに focus を渡し、入力を `"> "` にセットして command
+  モードで起動する (`App.tsx:418-427`)。`commandProvider` が設定起動・エクスポート・
+  ツアー再開・各パネル開閉などのアクションを一覧化する (後述「バー専用 Provider」)。
+- `mode: "search" | "command"` は `parseCommandInput` が入力先頭 `>` を検出して切替える。
+- 名前が似た `features/codex/components/CodexCommandPalette.tsx` は Codex エントリの
+  ピッカーで本機能とは無関係。
 
 ---
 
 ## 全体アーキテクチャ
 
-```
-[ヘッダー (App.tsx)]                       [Dockview パネル]
-CommandCenterBar (常駐 input)              CommandCenterResultsPanel
-  │                                          ├─ 入力欄 (バーと同じ store を共有)
-  │ useCommandCenterSearch  ⇐ 単一所有       ├─ CommandCenterFilterBar (kebab + responsive)
-  │   ↓                                      ├─ Results list
-  │   parseCommandInput (mode/text/excludes) │    └─ CommandCenterPreviewPopover (hover)
-  │   ↓                                      └─ useResultsPanelStore (mounted, 除外フィルタ)
-  │   getProviders(mode)
-  │   ↓ (provider ごと debounce + 世代 ID + AbortController)
-  │
-  ▼
-[providers/registry.ts]
-  - lexicalSearchProvider (order=1)   → invoke "fts_search"
-  - semanticSearchProvider (order=2) → invoke "semantic_search" (+ "semantic_chunk_context" for hover)
+Phase A2 (`c2652383`) でバーとパネルは **完全に独立** している。両者は同じ
+`createSearchStore()` factory から作った別 instance (`useBarStore` /
+`usePanelStore`) を持ち、各々が自前で `useCommandCenterSearch` を起動する。
 
-  ▼
-[commandCenterStore]                       [resultsPanelStore]
-  query / parsedQuery / mode / excludes      mounted / excludedSources / excludedTypes /
-  descriptionMode                            selectedItemId / hoveredItemId
-  sections / selectedIndex / focusRequest
+```
+[ヘッダー (App.tsx)]                          [Dockview パネル]
+CommandCenterBar                              CommandCenterResultsPanel
+  │                                             │
+  │ useCommandCenterSearch(                      │ useCommandCenterSearch(
+  │   useBarStore,                               │   usePanelStore,
+  │   { limit: BAR_FETCH_LIMIT=10,               │   { limit: PANEL_FETCH_LIMIT=50,
+  │     surface: "bar" })                        │     surface: "panel" })
+  │   ↓ parseCommandInput (mode/text/excludes)   │   ↓ (同左)
+  │   ↓ getProviders(mode, "bar")                │   ↓ getProviders(mode, "panel")
+  │   ↓ (provider ごと debounce + 世代 ID         │   ↓
+  │      + AbortController, runtime は store 別)  │
+  ▼                                             ▼
+[providers/registry.ts]  getProviders(mode, surface) で surfaces により絞り込み
+  - quickOpenProvider  (order=1, surfaces=["bar"],          mode=search)
+  - lexicalSearchProvider  (order=1, surfaces=["bar","panel"], mode=search)
+  - semanticSearchProvider (order=2, surfaces=["bar","panel"], mode=search)
+  - commandProvider    (order=3, surfaces=["bar"],          mode=command)
+
+  ▼                                             ▼
+[useBarStore]                                 [usePanelStore]
+  query/parsedQuery/mode/excludes/             (同じ形。bar とは独立した sections)
+  descriptionMode/sections/selectedIndex
+[useResultsPanelStore (パネル専用 UI 状態)]
+  excludedSources/excludedTypes/selectedItemId/hoveredItemId/focusRequest
 ```
 
-入力 → `parseCommandInput` → `useCommandCenterSearch` → registry の provider
-を並行実行 → 各 provider が `CommandCenterSection` を返す → store に upsert →
-バー (popover) と パネル の両方が同じ sections を購読する。
+各 surface の hook が独立に `parseCommandInput` → registry の provider を並行実行
+→ 各 provider が `CommandCenterSection` を返す → **自分の store** に upsert する。
+バーは search モードで quickOpen+lexical+semantic、command モードで command を、
+パネルは lexical+semantic を回す (b4d829ce で lexical/semantic がバーにも追加された)。
+
+`limit` は surface ごとに固定 (`BAR_FETCH_LIMIT`=10 / `PANEL_FETCH_LIMIT`=50)。
+パネルの開閉に応じてバーの limit を切替える旧来の `mounted` 連携は撤去済み。
 
 ---
 
@@ -89,17 +108,19 @@ src/features/commandCenter/
 ├── CommandCenterResultsPanel.tsx     # Dockview パネル本体 (検索パネル)
 ├── CommandCenterFilterBar.tsx        # パネル上部の除外フィルタ + kebab 折り畳み
 ├── CommandCenterPreviewPopover.tsx   # hover プレビュー (Radix Popover)
-├── index.ts                          # 公開 API + provider 登録 (side-effect)
+├── index.ts                          # 公開 API + 4 provider 登録 (side-effect)
 ├── store/
-│   ├── commandCenterStore.ts         # zustand: query/mode/sections/selectedIndex/excludes/descriptionMode
-│   └── resultsPanelStore.ts          # zustand: panel 独自フィルタ + 選択/hover + mounted
+│   ├── commandCenterStore.ts         # createSearchStore() factory + useBarStore / usePanelStore / useCommandCenterStore(@deprecated=useBarStore)
+│   └── resultsPanelStore.ts          # zustand: panel 独自フィルタ + 選択/hover + focusRequest
 ├── providers/
-│   ├── types.ts                      # CommandCenterItem / Section / Provider / ProviderSearchContext
-│   ├── registry.ts                   # registerProvider / getProviders(mode)
-│   ├── lexicalSearchProvider.ts      # fts_search ラッパ + onSelect
-│   └── semanticSearchProvider.ts     # semanticSearch ラッパ + onSelect (descriptionMode 対応)
+│   ├── types.ts                      # CommandCenterItem / Section / Provider(surfaces) / ProviderExtras / ProviderSearchContext / Surface
+│   ├── registry.ts                   # registerProvider / getProviders(mode, surface?)
+│   ├── lexicalSearchProvider.ts      # fts_search ラッパ + onSelect (surfaces=["bar","panel"])
+│   ├── semanticSearchProvider.ts     # semanticSearch ラッパ + onSelect (descriptionMode 対応, surfaces=["bar","panel"])
+│   ├── quickOpenProvider.ts          # バー用 Quick Open: Scene/Codex/Snippet 名の in-memory 部分一致 (surfaces=["bar"])
+│   └── commandProvider.ts            # バー用 Command: 設定/エクスポート/パネル開閉等のアクション一覧 (surfaces=["bar"], command mode)
 ├── hooks/
-│   ├── useCommandCenterSearch.ts     # 単一所有の検索フック (debounce + memo + race対策)
+│   ├── useCommandCenterSearch.ts     # 検索フック (store 引数 + debounce + memo + race対策)。bar/panel が各々呼ぶ
 │   ├── useCommandCenterKeyboard.ts   # input の onKeyDown ハンドラ
 │   └── useFilteredSections.ts        # パネル用: 除外フィルタを適用した sections
 ├── lib/
@@ -126,7 +147,7 @@ src-tauri/src/semantic/preview.rs     # slice_context (char_indices 1 パスで�
 
 ### ヘッダーバー (常駐)
 
-`src/App.tsx:772` 付近のヘッダー中央に `<CommandCenterBar />` を配置。
+`src/App.tsx:624` のヘッダー `center` スロットに `<CommandCenterBar />` を配置。
 
 ```
 ┌─ ヘッダー全体 (data-tauri-drag-region) ────────────────────────────────┐
@@ -151,11 +172,16 @@ src-tauri/src/semantic/preview.rs     # slice_context (char_indices 1 パスで�
   `data-tauri-drag-region="false"` を明示してドラッグ干渉を切る。
 - `Search` / `Terminal` アイコンを `mode` に応じて切替 (parseCommandInput が
   `>` を検出すると Terminal に)。
-- 表示有無は `selectPopoverOpen(state) = open && parsedQuery.trim() !== ""`。
-  Escape / 外側クリックで `open=false` (フォーカスは保持しない方向で簡素化)。
-- Ctrl+Shift+F: バーをフォーカス + select。すでに open ならクローズトグル。
-  TipTap の `Mod-Shift-f` (foreshadow picker) と衝突するため、グローバル
-  ハンドラは `e.defaultPrevented` を尊重する (App.tsx:585-590)。
+- 表示有無は `selectPopoverOpen(state)`: `open && (mode === "command" ||
+  parsedQuery.trim() !== "")`。command モード (`> ` 起動) では空クエリでも
+  コマンド一覧を出すため parsedQuery を問わない。Escape / 外側クリックで
+  `open=false`。
+- Ctrl+Shift+P: バーへ focus し `"> "` をセットして command モードで起動
+  (`App.tsx:418-427`)。
+- Ctrl+Shift+F は **バーではなく検索パネル** を開いてパネル内 input へ focus する
+  (後述 [キーボード / ショートカット](#キーボード--ショートカット))。TipTap の
+  `Mod-Shift-f` (foreshadow picker) と衝突するため、グローバルハンドラは
+  `e.defaultPrevented` を尊重する (`App.tsx:410-416`)。
 
 ### 検索パネル (Dockview)
 
@@ -164,7 +190,7 @@ src-tauri/src/semantic/preview.rs     # slice_context (char_indices 1 パスで�
 
 ```
 ┌─ 検索パネル ────────────────────────────────┐
-│ 🔍 [ 検索…                            ]      │ ← バーと同じ store を共有
+│ 🔍 [ 検索…                            ]      │ ← 独立 store (usePanelStore)
 ├──────────────────────────────────────────────┤
 │ Source: [Scene][Codex][Snippet]    [⋯]      │ ← FilterBar (kebab 折り畳み)
 │ Type:   [Lexical][Semantic]                  │
@@ -178,14 +204,17 @@ src-tauri/src/semantic/preview.rs     # slice_context (char_indices 1 パスで�
 └──────────────────────────────────────────────┘   └────────────────────────┘
 ```
 
-- 入力欄は `commandCenterStore.query` / `setQuery` を共有 (双方向同期)。
+- 入力欄は `usePanelStore.query` / `setQuery`。バーの `useBarStore` とは
+  **別 store** で、クエリ・結果が完全に分離される (バーに打った文字はパネルへ
+  伝播しない)。
 - パネル独自の選択は `resultsPanelStore.selectedItemId` (hover ベース、行に
   `bg-accent/30`)。バーの `selectedIndex` とは独立。
 - 行 hover 400ms 後にプレビュー Popover が右に出る (画面右端で左反転)。
   プレビュー内容は `previewCache` に LRU 100 件。クエリ (parsedQuery) 変更で
   全クリア。
-- パネルがマウント中 → `useResultsPanelStore.mounted = true` → バーが購読して
-  `useCommandCenterSearch` の limit を 50 に上げる。
+- パネルは自前で `useCommandCenterSearch(usePanelStore, { limit:
+  PANEL_FETCH_LIMIT=50, surface: "panel" })` を起動する。バーとは store が別なので
+  並行に同じ provider を駆動しても upsert が衝突しない。
 
 ---
 
@@ -193,27 +222,30 @@ src-tauri/src/semantic/preview.rs     # slice_context (char_indices 1 パスで�
 
 | 観点 | バー (popover) | パネル |
 |---|---|---|
-| クエリ入力 | input (常駐) | input (パネル上部) — 同じ store を共有 |
-| 表示件数 | 各 section 最大 10 件 (slice) | 全件 (最大 50) |
-| 並行実行 | **単一所有** `useCommandCenterSearch` | フック呼び出さない (race 防止) |
-| 取得件数決定 | `mounted ? 50 : 10` (バーが mounted を購読) | (バー経由で結果が更新される) |
+| store | `useBarStore` | `usePanelStore` (別 instance) |
+| クエリ入力 | input (常駐) | input (パネル上部) — 別 store・伝播しない |
+| 表示 provider | quickOpen+lexical+semantic (search) / command (command) | lexical+semantic |
+| 表示件数 | 各 section 最大 10 件 (`BAR_VISIBLE_LIMIT_PER_SECTION` で slice) | 全件 (最大 `PANEL_FETCH_LIMIT`=50) |
+| 並行実行 | 自前で `useCommandCenterSearch(useBarStore, { surface: "bar" })` | 自前で `useCommandCenterSearch(usePanelStore, { surface: "panel" })` |
+| 取得件数 | `BAR_FETCH_LIMIT`=10 固定 | `PANEL_FETCH_LIMIT`=50 固定 |
 | キーボード操作 | ↑↓ Enter Esc (selectedIndex) | hover/click 主体 |
 | 除外フィルタ | (適用なし — クエリ `-word` のみ反映) | source/type 除外を追加適用 |
 | プレビュー | なし | hover 400ms で前後 ±100 文字 |
-| 開閉 | Ctrl+Shift+F | Ctrl+Alt+K (toggle) |
+| 開閉 | フォーカス (Ctrl+Shift+P=command モード起動) | Ctrl+Alt+K (toggle) / Ctrl+Shift+F (開いて focus) |
 
-### 単一所有の不変条件
+### store / runtime の分離 (Phase A2)
 
-`useCommandCenterSearch` は **`CommandCenterBar` でのみ呼ぶ**。専用パネルから
-呼ぶと 2 つの hook 実例がそれぞれ `runtimesRef` を持って互いを認識せず、同じ
-クエリで provider を二重発火 → store への upsert が race する。
+`useCommandCenterSearch` は **store を引数で受け取り**、バーとパネルが各々
+独立に呼ぶ。`useBarStore` と `usePanelStore` は同じ `createSearchStore()`
+factory から作った別 instance なので、両者が同じ provider を並行に駆動しても
+それぞれ自分の store にだけ upsert する → 同一クエリでの race は store 分離で
+構造的に防がれる。
 
-パネル展開時の limit 切替は次の連携で実現:
-1. `CommandCenterResultsPanel` が mount 時に `useResultsPanelStore.setMounted(true)`。
-2. `CommandCenterBar` は `useResultsPanelStore((s) => s.mounted)` を購読し、
-   `useCommandCenterSearch({ limit: mounted ? 50 : 10 })` を渡す。
-3. `useCommandCenterSearch` の effect deps に `limit` が含まれ、変更で再評価。
-4. メモ化 (後述 superset memo) により無駄な再 fetch は抑制。
+各 hook 内の `runtimesRef` (debounce タイマー・世代 ID・superset memo) も
+hook 実例ごとに独立しており、surface による provider 絞り込み
+(`getProviders(mode, surface)`) と組み合わさって干渉しない。limit は surface
+ごとに固定 (`BAR_FETCH_LIMIT` / `PANEL_FETCH_LIMIT`) で、パネル開閉に応じて
+バーの limit を切替えていた旧来の `mounted` 連携は撤去された。
 
 ---
 
@@ -244,7 +276,14 @@ interface CommandCenterSection {
   state?: { kind: "idle" | "loading" | "error"; message?: string };
 }
 
-interface ProviderSearchContext {
+type Surface = "bar" | "panel";
+
+/** cacheKeyExtras / search に渡す provider extras (store を直接読まずに DI) */
+interface ProviderExtras {
+  descriptionMode: boolean;         // semantic の dialogue penalty (search モード)
+}
+
+interface ProviderSearchContext extends ProviderExtras {
   query: string;                    // prefix と -word を剥がした positive
   signal: AbortSignal;              // 補助 (Tauri invoke は abort できない)
   limit: number;                    // バー=10 / パネル=50
@@ -254,17 +293,23 @@ interface ProviderSearchContext {
 
 interface CommandCenterProvider {
   id: string;
-  order: number;
+  order: number;                    // Lexical=1 / quickOpen=1 / Semantic=2 / Commands=3
   title: string;
   hideWhenEmpty: boolean;           // 0 件 section を結果配列から除外するか
+  surfaces: readonly Surface[];     // 出力対象 surface。getProviders(mode, surface) で絞り込む
   supportsMode: (mode) => boolean;
-  search: (ctx) => Promise<CommandCenterSection>;
-  /** Provider 固有の memo bust factor (例: semantic は descriptionMode) */
-  cacheKeyExtras?: () => string;
+  search: (ctx: ProviderSearchContext) => Promise<CommandCenterSection>;
+  /** Provider 固有の memo bust factor (例: semantic は descriptionMode)。extras を DI で受ける */
+  cacheKeyExtras?: (extras: ProviderExtras) => string;
 }
 ```
 
-### `store/commandCenterStore.ts` (バー所有)
+### `store/commandCenterStore.ts` (`createSearchStore()` factory)
+
+検索状態の store は factory で作り、`useBarStore` (バー用) と `usePanelStore`
+(パネル用) の 2 つの独立 instance を export する。`useCommandCenterStore` は
+`useBarStore` の `@deprecated` エイリアス (旧名互換)。両 instance は同じ形の
+state を持つ:
 
 | フィールド | 役割 |
 |---|---|
@@ -276,9 +321,9 @@ interface CommandCenterProvider {
 | `descriptionMode: boolean` | Semantic の dialogue ペナルティ。FilterBar の kebab から切替 |
 | `sections: CommandCenterSection[]` | provider の結果。バー/パネル両方が購読 |
 | `selectedIndex: number` | flat items index (**バー用** に bar-visible 範囲で clamp) |
-| `focusRequest: number` | Ctrl+Shift+F で increment → バーが watch して focus |
+| `focusRequest: number` | `requestFocus()` で increment → バーが watch して focus (Ctrl+Shift+P 経由) |
 
-派生: `selectPopoverOpen(state) = state.open && state.parsedQuery.trim() !== ""`。
+派生: `selectPopoverOpen(state) = state.open && (state.mode === "command" || state.parsedQuery.trim() !== "")`。
 helper: `barVisibleFlat(sections)` は `BAR_VISIBLE_LIMIT_PER_SECTION` で slice
 してから `flattenSections` する。`moveSelection` / `executeSelected` / 各
 upsert 時の clamp に使う (バーの可視範囲外に selectedIndex が飛ぶのを防ぐ)。
@@ -287,13 +332,48 @@ upsert 時の clamp に使う (バーの可視範囲外に selectedIndex が飛�
 
 | フィールド | 役割 |
 |---|---|
-| `mounted: boolean` | バーが limit 切替に使う唯一の入口 |
 | `excludedSources: SourceKind[]` | scene/codex/snippet のうち除外する集合 |
 | `excludedTypes: SearchTypeKind[]` | lexical/semantic のうち除外する集合 |
 | `selectedItemId: string \| null` | パネル独自の選択 (hover ベース) |
 | `hoveredItemId: string \| null` | 400ms タイマーで preview popover を開く対象 |
+| `focusRequest: number` | Ctrl+Shift+F で increment → パネル内 input が watch して focus |
 
-`toggleSource(kind)` / `toggleType(kind)` で配列に有無を toggle。
+`toggleSource(kind)` / `toggleType(kind)` で配列に有無を toggle。検索クエリ・
+結果は `usePanelStore` が SSoT で、この store は **panel 専用 UI 状態** のみを持つ
+(`mounted` 連携は撤去済み)。
+
+---
+
+## バー専用 Provider (Phase B)
+
+Phase B (`81199c67`) でバー surface 専用の 2 provider を新設した。両者とも
+`surfaces: ["bar"]` で、パネル surface には出ない。
+
+### Quick Open (`providers/quickOpenProvider.ts`)
+
+VSCode の Ctrl+P 相当。`id="quickOpen"` / `order=1` / search モード。Scene /
+Codex / Snippet の **名前** を **in-memory で部分一致** 検索してジャンプする
+(全文検索ではない。全文は panel 側の lexical/semantic が担う)。
+
+- `useTreeStore` (scene) / `useCodexStore` / `useSnippetStore` の現在の
+  エントリ名を `toLowerCase()` 部分一致で走査。
+- スコア `0=完全一致 / 1=前方一致 / 2=部分一致` でソートし `ctx.limit` で打ち切り。
+- badge は `Scene` / `Codex` / `Snippet`。`onSelect` は各 store の選択 API +
+  対応パネルを `showPanel` で開く。
+- `hideWhenEmpty: true` (ヒット 0 件で section を隠す)。
+
+### Command Provider (`providers/commandProvider.ts`)
+
+VSCode の Ctrl+Shift+P 相当。`id="commands"` / `order=3` / **command モード専用**
+(`supportsMode(mode) => mode === "command"`)。Grimodex 内のアクションを一覧化する。
+
+- 固定アクション: 設定起動 (`open-settings` CustomEvent) / エクスポート
+  (`open-export-dialog`) / ツアー再開 (`restart-sample-tour`)。
+- パネル開閉: `PANEL_COMMANDS` の各 `panelId` を `useLayoutStore.togglePanel`
+  で toggle。label は `layout.panel.<panelId>` から i18next で都度解決 (言語切替追従)。
+- 空クエリ時は全コマンドを宣言順に、クエリ入力時は label / `keywords` の部分一致を
+  スコア (`0=完全 / 1=前方 / 2=部分 / 3=keywords ヒット`) 順で `ctx.limit` まで表示。
+- badge は `Cmd` (tone=`command`)。
 
 ---
 
@@ -309,7 +389,8 @@ upsert 時の clamp に使う (バーの可視範囲外に selectedIndex が飛�
 
 - `>` で始まる入力は command モードに切替。直後の空白は trim される。
 - command モードでは `supportsMode("command")` を返す provider のみが動く。
-  今は登録 0 件のため UI 上「結果なし」になる。
+  現在は `commandProvider` (バー surface) が登録済みで、空クエリ時は全コマンドを
+  宣言順に、クエリ入力時は label/keywords の部分一致でスコア順に表示する。
 
 ### 除外 (`-word`)
 
@@ -333,14 +414,25 @@ upsert 時の clamp に使う (バーの可視範囲外に selectedIndex が飛�
 
 ## 検索フック (`hooks/useCommandCenterSearch.ts`)
 
+```ts
+useCommandCenterSearch(
+  store: SearchStore,                 // useBarStore か usePanelStore
+  options?: { limit?: number; surface?: Surface },
+): void
+```
+
+バーとパネルが **各々この hook を呼ぶ** (`store` 引数で対象を切替える)。
+`limit` は surface ごとに固定値を渡す (`BAR_FETCH_LIMIT` / `PANEL_FETCH_LIMIT`)。
+`surface` は `getProviders` の絞り込みに使う。
+
 ### 責務
 
-1. `commandCenterStore.query` を購読
+1. `store.query` を購読 (引数の store instance)
 2. `parseCommandInput` で `mode` / `parsedQuery` / `excludes` を算出
-3. store にそれぞれ書き戻す
-4. `getProviders(mode)` から有効 provider を取得
+3. 同じ store にそれぞれ書き戻す
+4. `getProviders(mode, surface)` から有効 provider を取得
 5. provider ごとに **独立 debounce + 世代 ID + AbortController** で並行実行
-6. 応答を post-filter (`filterByExcludes`) して `upsertSection`
+6. 応答を post-filter (`filterByExcludes`) して **その store** に `upsertSection`
 
 ### Race 対策
 
@@ -351,26 +443,28 @@ upsert 時の clamp に使う (バーの可視範囲外に selectedIndex が飛�
 
 ### Superset memoization
 
-`runtime.lastBaseKey` + `runtime.lastMaxLimit` の二段で memo:
+`runtime.lastBaseKey` + `runtime.lastMaxLimit` の二段で memo (runtime は
+hook 実例ごと=surface ごとに独立):
 
 ```
-baseKey = `${mode}::${query}::ex=${sortedExcludes}::extras=${provider.cacheKeyExtras?.()}`
+baseKey = `${mode}::${query}::ex=${sortedExcludes}::extras=${provider.cacheKeyExtras?.(extras)}`
 ```
 
 `runtime.lastBaseKey === baseKey && args.limit <= runtime.lastMaxLimit` なら
-**skip**。これにより:
+**skip**。limit は今や surface ごとに固定 (バー=10 / パネル=50) なので、同一
+surface 内では `lastMaxLimit` は基本一定。`lastMaxLimit` の比較は再レンダ等で
+同条件の effect が再走しても無駄な再 fetch を抑える役割に収斂している:
 
-| 操作 | provider 呼出回数 |
+| 操作 (同一 surface 内) | provider 呼出回数 |
 |---|---|
-| パネル開 (10→50)、type 同じ | 1 回 (50 > 10) |
-| パネル閉 (50→10)、type 同じ | 0 回 (10 ≤ 50, skip) |
-| パネル開 (50→50) | 0 回 (skip) |
+| 同じクエリで effect 再走 (limit 同値) | 0 回 (skip) |
 | クエリ変更 | 1 回 (base key 違う) |
 | descriptionMode toggle (semantic のみ) | 1 回 semantic のみ (lexical は extras 空で skip) |
 
-`provider.cacheKeyExtras` は **provider 固有の bust factor**。semantic は
-`desc=${descriptionMode ? 1 : 0}` を返し、descriptionMode 切替時に semantic
-だけ memo が外れる (lexical は no-op で skip される)。
+`provider.cacheKeyExtras` は **provider 固有の bust factor**。`extras`
+(`ProviderExtras`) を DI で受け取り、semantic は `desc=${descriptionMode ? 1 : 0}`
+を返して descriptionMode 切替時に semantic だけ memo を外す (lexical は no-op で
+skip される)。
 
 ### Debounce
 
@@ -383,7 +477,7 @@ baseKey = `${mode}::${query}::ex=${sortedExcludes}::extras=${provider.cacheKeyEx
 
 ## 検索パネルのフィルタ
 
-`useFilteredSections` が `commandCenterStore.sections` を購読し、パネル独自の
+`useFilteredSections` が `usePanelStore.sections` を購読し、パネル独自の
 `excludedSources` / `excludedTypes` を適用して新 sections を返す (`useMemo`)。
 
 ```
@@ -402,9 +496,11 @@ excludedSources が "snippet" を含む → lexical-snippet のみ除外
 
 Semantic の dialogue ペナルティ。kebab メニュー内の「地の文優先」トグル。
 ON で `dialogue_ratio > 0.6` のチャンクのスコアが Rust 側で 0.85 倍に減点される。
-状態は `commandCenterStore.descriptionMode` に格納し、semantic provider が
-`useCommandCenterStore.getState().descriptionMode` を読んで invoke に渡す。
-`cacheKeyExtras` 経由で **semantic だけ memo を bust する** (lexical 無影響)。
+状態は store の `descriptionMode` に格納し、hook が `ProviderExtras` として
+DI する (`ctx.descriptionMode` で受け取り invoke に渡す。provider が store を
+直接 import しない)。`cacheKeyExtras(extras)` が
+`desc=${extras.descriptionMode ? "1" : "0"}` を返すことで **semantic だけ
+memo を bust する** (lexical 無影響)。
 
 ### FilterBar のレスポンシブ overflow
 
@@ -450,7 +546,8 @@ multi-byte (日本語等) 安全。`chars().nth()` を複数回呼ぶより O(n)
 
 | キー | 場所 | 動作 |
 |---|---|---|
-| Ctrl+Shift+F | グローバル | バーをフォーカス + select。open ならクローズトグル。`defaultPrevented` を尊重 |
+| Ctrl+Shift+F | グローバル | 検索パネルを `showPanel` で開き、`useResultsPanelStore.requestFocus()` でパネル内 input に focus + select。`defaultPrevented` を尊重 (`App.tsx:410-416`) |
+| Ctrl+Shift+P | グローバル | バーに focus し、`"> "` をセットして command モードで起動 (`App.tsx:418-427`) |
 | Ctrl+Alt+K | グローバル | 検索パネル toggle |
 | ↑ ↓ | バー input (popover open 中) | selectedIndex を移動 (bar-visible 範囲で clamp)。popover 閉じ中はキャレット移動 |
 | Enter | バー input (popover open + 結果あり) | `executeSelected()` |
@@ -460,9 +557,9 @@ multi-byte (日本語等) 安全。`chars().nth()` を複数回呼ぶより O(n)
 ### 既存ショートカットとの衝突回避
 
 - TipTap が `Mod-Shift-f` を **foreshadow picker** (選択あり時のみ) に使う
-  (`src/features/editor/extensions.ts:135`)。エディタフォーカス + 選択ありの
+  (`src/features/editor/extensions.ts:140`)。エディタフォーカス + 選択ありの
   ときは TipTap 側が `return true` で preventDefault する。グローバル
-  ハンドラ (`App.tsx:585`) は `if (e.defaultPrevented) return;` で二重発火を回避。
+  ハンドラ (`App.tsx:410`) は `if (e.defaultPrevented) return;` で二重発火を回避。
 
 ---
 
@@ -473,7 +570,9 @@ multi-byte (日本語等) 安全。`chars().nth()` を複数回呼ぶより O(n)
 | キー | 用途 |
 |---|---|
 | `placeholderSearch` / `placeholderCommand` | input の placeholder |
-| `sectionLexical` / `sectionSemantic` / `sectionCommand` | section header |
+| `sectionLexical` / `sectionSemantic` | lexical/semantic section header |
+| `sectionQuickOpen` / `sectionCommands` | quickOpen/command section header |
+| `command.openSettings` / `command.export` / `command.restartTour` / `command.togglePanel` | commandProvider のアクション label (`togglePanel` は `{{panel}}` 補間) |
 | `loading` / `noResults` / `emptyHint` / `untitled` | プレースホルダ |
 | `filter.sourceLabel` / `filter.typeLabel` | FilterBar の見出し |
 | `filter.scene/codex/snippet/lexical/semantic` | フィルタトグルのラベル |
@@ -516,22 +615,24 @@ useLayoutStore.getState().showPanel("editor");
 ### 1. 新しい検索源を追加する
 
 1. `providers/myProvider.ts` を作成、`CommandCenterProvider` を満たす。
-2. `index.ts` で `registerProvider(myProvider)`。
-3. 必要なら `cacheKeyExtras` で provider 固有の memo bust factor を返す。
+2. `surfaces` でバー / パネルどちらに出すか宣言する (`["bar"]` / `["panel"]` /
+   両方)。
+3. `index.ts` で `registerProvider(myProvider)`。
+4. 必要なら `cacheKeyExtras(extras)` で provider 固有の memo bust factor を返す。
 
-それだけで `useCommandCenterSearch` の並行ループに乗る。UI 変更不要。
+それだけで対象 surface の `useCommandCenterSearch` の並行ループに乗る。UI 変更不要。
 
-### 2. Command Palette を取り込む
+### 2. コマンドを追加する
 
-`mode === "command"` で `supportsMode("command")` を返す provider を追加し、
-既存 `CommandPalette.tsx` の `Command` 定義 (id/label/run) を `CommandCenterItem`
-に変換すれば、`>` で同じバー / パネルから実行できる。CommandCenter 側は parser /
-icon 切替 / mode フィルタまで実装済み。
+`commandProvider.ts` の `buildCommands()` に `CommandDef` (id/label/keywords/run)
+を足すか、`PANEL_COMMANDS` にパネルを追加すれば `> ` 起動の command モードに
+即座に並ぶ (旧 `CommandPalette.tsx` を取り込む案は実装済み)。
 
 ### 3. 取得件数の上限を増やす
 
-`lib/constants.ts` の `PANEL_FETCH_LIMIT` を上げるだけ。superset memo が
-バーから 10 → 50 への上昇を 1 回だけ fetch して残りはキャッシュする。
+`lib/constants.ts` の `PANEL_FETCH_LIMIT` (パネル) / `BAR_FETCH_LIMIT` (バー) を
+上げるだけ。limit は surface ごとに固定なので、変更後の値で各 surface が一度
+fetch して superset memo がそれ以降の再走を抑える。
 
 ### 4. プレビューの padding を変える
 
@@ -558,5 +659,9 @@ icon 切替 / mode フィルタまで実装済み。
 - `src/features/semantic-search/SemanticSearchDialog.tsx` / `.test.ts`
   (chunk ジャンプ周りの core ロジック (`api.ts` / `semanticNavStore.ts` /
    `findChunkInDoc.ts` / `searchResultSelection.ts`) は残し、本機能から再利用)。
-- Ctrl+Shift+F の挙動: ダイアログ起動 → バーフォーカス。
+- `src/features/commandPalette/CommandPalette.tsx` (アプリ内コマンドパレット)。
+  コマンドは `commandProvider` に移管し、Ctrl+Shift+P で CommandCenter の
+  command モードとして起動する。
+- Ctrl+Shift+F の挙動: ダイアログ起動 → **検索パネルを開いてパネル内 input に
+  focus** (旧記述「バーフォーカス」は Phase B 以降の挙動に合わせ更新)。
 - i18n `layout.panel.command-center-results`: 「検索結果」→「検索」。

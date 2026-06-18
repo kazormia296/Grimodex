@@ -33,9 +33,9 @@
 │ エクスポート                                                  [×] │
 ├──────────────────────────────────┬────────────────────────────────┤
 │                                  │ ── 投稿サイトプリセット ──      │
-│ ☑ ▼ 📁 第一部: 旅立ち            │ [カスタム ▼]    [💾 保存…]    │
-│   ☑ ▼ 📁 第1章: 始まり           │ （※プリセット選択時のみ注記表示）│
-│     ☑ 塔の麓                     │ （※ルビ文字数警告バナーがここ） │
+│ ☑ ▼ 📁 第一部: 旅立ち            │ [投稿サイト: カクヨム  ›] [💾保存]│
+│   ☑ ▼ 📁 第1章: 始まり           │ （※トリガー押下でサイト選択モーダル）│
+│     ☑ 塔の麓                     │ （※選択中サイトの注記・警告バナー）│
 │     ☑ 最初の呪文                  │                                │
 │   ☑   幕間                       │  出力形式                      │
 │ ☐ ▶ 📁 第二部: 暗転              │  ○ Markdown                   │
@@ -307,62 +307,76 @@ TipTapの独自ノード/マークのエクスポート方法を設定する。
 
 ### 投稿サイトプリセット
 
-右ペイン最上部に配置されるプリセット選択 UI。投稿サイト・汎用フォーマットごとに「出力形式 / 区切り / ルビ / 傍点 / 章見出し」を一括で適用する。実装は `src/features/export/ExportPresetPicker.tsx` と `src/features/export/exportPresets.ts`。
+右ペイン最上部に配置されるプリセット選択 UI。投稿サイト・汎用フォーマットごとに「出力形式 / 区切り / ルビ / 傍点 / 章見出し」を一括で適用する。
 
-#### ビルトインプリセット一覧
+> **（2026-06-18 追記）内部再構築**: 投稿サイトは「記法プロファイル + サイト登録（レジストリ）」方式へ再構築した。正本は `src/features/export/rubyProfiles.ts`。
+> - **記法プロファイル（7 種）**: その系統の標準サイトが使う `ExportSettings` 一式を表す一次概念。`RUBY_PROFILES`（`jp-double-angle` / `jp-ruby-emphasis` / `pixiv` / `aozora-bunko` / `plain-only` / `generic-md` / `word-html`）。
+> - **サイト登録（22 サイト）**: 各サイトは「プロファイル参照 + 差分オーバーライド」の `SiteEntry` として `SITE_ENTRIES` に登録する。出力が同一のサイトは同じプロファイルを共有し、サイト固有差分（ルビ文字数上限・傍点モード等）だけを持つ。
+> - `resolveSitePreset(id)` がプロファイル既定 + サイトオーバーライドを合成して `ExportSettings` を返す。これが apply / detect / validation すべての単一の真実源。
+> - `src/features/export/exportPresets.ts` は `applyExportPreset` / `detectExportPreset` / `settingsMatch` / `validateUserPresetName` の**薄いラッパ**に縮小し、レジストリ駆動で動く（`exportPresetCatalog.ts` は削除済み）。
 
-| ID | 表示名 | format | 見出し | ルビ | 傍点 | scene break | 備考 |
-|---|---|---|---|---|---|---|---|
-| `narou` | 小説家になろう | plaintext | OFF | `aozora` | `narou-emphasis-batch` | `asterisks` | base 10字 / ruby 10字の警告。1文字分割サブオプションあり |
-| `kakuyomu` | カクヨム | plaintext | OFF | `aozora-auto` | `double-angle` | `asterisks` | base 20字 / ruby 50字の警告 |
-| `alphapolis` | アルファポリス | plaintext | OFF | `aozora` | `double-angle` | `asterisks` | — |
-| `pixiv` | pixiv 小説 | plaintext | ON / `pixiv-chapter` | `rb-bracket` | `double-angle` | `custom: [newpage]` | `[newpage]` 章前挿入サブオプションあり |
-| `hameln` | ハーメルン | plaintext | OFF | `aozora` | `double-angle` | `asterisks` | — |
-| `novelup` | ノベルアップ+ | plaintext | OFF | `aozora` | `double-angle` | `asterisks` | base 50字 / ruby 50字の警告 |
-| `novelism` | ノベリズム | plaintext | OFF | `aozora` | `double-angle` | `asterisks` | 「記法変換 ON 時のみ有効」と注記 |
-| `aozora` | 青空文庫テキスト | plaintext | OFF | `aozora` | `aozora` | `asterisks` (`blank2` divider) | 青空文庫入稿用 |
-| `generic-md` | 汎用 Markdown | markdown | ON | `parentheses` | `plain` | `hr` (`blank2` divider) | Discord / Slack / note 貼付向け |
-| `word-html` | Word 貼付 (HTML) | html | ON | `html` | `html` | `hr` | Word / LibreOffice の `<ruby>` 解釈に対応 |
-| `web-fiction` | Web 小説（Wattpad 等） | plaintext | OFF | `base` | `plain` | `asterisks` | 英語 web 小説のプレーンテキスト貼付向け。ルビ・傍点を除去。章見出しはサイト側 UI で付ける前提 |
-| `ao3` | Archive of Our Own | html | ON | `html` | `plain` | `hr` (`blank2` divider) | AO3 HTML エディタ貼付向け。`word-html` と違い傍点 span を出さない |
-| `custom` | カスタム | （現在値） | — | — | — | — | プリセット適用なし。手動変更時に自動でこの ID へフォールバック |
+#### 選択 UI: ExportSitePickerDialog（2026-06-18 追記）
 
-各プリセットには **対象言語メタデータ `region`**（`ja` / `en` / `all`）が付与される。`ja` = 日本の投稿サイト＋青空文庫、`en` = `web-fiction` / `ao3`、`all` = `generic-md` / `word-html`（言語共通）。`region` は選択 UI の optgroup 並べ替え（後述）に使う。
+旧 `<select>` + optgroup から、専用のモーダルダイアログへ刷新した。
 
-#### 言語別 optgroup 並べ替え
+- **トリガー**: 右ペイン最上部に置いた `ExportPresetPicker.tsx`（実装）に、現在の選択を示すトリガーボタン（`投稿サイト: {name}` / 未選択時 `投稿サイトを選択…` / 手動変更時 `カスタム`）を表示。クリックで `ExportSitePickerDialog.tsx`（モーダル）を開く。
+- **モーダル構造**: 検索ボックス（サイト名・系統で絞り込み）＋ **系統（プロファイル）別の見出し** ＋ 各見出し下の **記法例**（等幅、例: `｜漢字《かんじ》 ・ 《《重要》》`）＋ 該当サイトのチップ群。選択中サイトには `Check` アイコン。`createPortal(document.body)` + `z-[60]` で viewport 基準に出し、Escape は capture phase で先取りして親 ExportDialog に伝播させない。
+- **系統見出し（`SectionId`）**: 「一般ルビ + 二重山括弧傍点」「一般ルビ + 傍点はルビ代用」「pixiv 記法」「青空文庫テキスト」「特殊表現なし」「汎用」「英語圏向け」。`SECTION_ORDER` の宣言順で表示。
+- **言語別並べ替え**: `getSectionOrder(projectLanguage)`（`rubyProfiles.ts`）で、英語プロジェクトのときだけ「英語圏向け」「汎用」を先頭に繰り上げる（旧 `exportPresetCatalog.getPresetGroups` の挙動を踏襲）。`ja` / 未指定では宣言順のまま。
+- ユーザー定義プリセットはモーダル末尾に「ユーザー定義」見出しでまとめて表示。
 
-プリセット選択 UI は **プロジェクト言語**（`settingsStore.projectLanguage`、書体・行間等と同じ基準）で optgroup の並びを切り替える。グルーピングは `src/features/export/exportPresetCatalog.ts` の `getPresetGroups(projectLanguage, currentPresetId)` が組み立てる。
+#### 登録サイト一覧（22 サイト）
 
-| プロジェクト言語 | primary（先頭） | generic（中段） | secondary（末尾） |
-|---|---|---|---|
-| `ja`（既定） | 日本の投稿サイト 7 種 | `aozora` / `generic-md` / `word-html` | 「英語向けプラットフォーム」= `web-fiction` / `ao3` |
-| `en` | 「Built-in」= `web-fiction` / `ao3` | `generic-md` / `word-html` | 「日本語向けプラットフォーム」= 投稿サイト 7 種 ＋ `aozora` |
+`resolveSitePreset(id)` が返す実効値は profile 既定 + override の合成。`base`/`ruby` 列はルビ文字数バリデーション上限（未指定はバリデーションなし）。
 
-- `custom` は常にグループ外の先頭、ユーザー定義プリセットは常に末尾。
-- HTML `<select>` の optgroup は実際には畳めないため「畳む」=末尾にまとめて表示の意。
-- `aozora` は青空文庫という汎用テキスト寄りの性格上、`ja` プロジェクトでは generic 側に置き（既存挙動の維持）、`en` プロジェクトでは日本語プラットフォーム群にまとめる。
-- 全ビルトインは常にいずれかのグループに含まれるため、保存済みの `narou` を英語プロジェクトで開いても選択肢から消えない（`currentPresetId` 安全網も併用）。
+| ID | 表示名 | profile | override 抜粋 | rubyLimit (base/ruby) | サブ/注記 |
+|---|---|---|---|---|---|
+| `kakuyomu` | カクヨム | `jp-double-angle` | `rubyStyle: aozora-auto` | 20 / 50 | — |
+| `alphapolis` | アルファポリス | `jp-double-angle` | — | — | — |
+| `novelism` | ノベリズム | `jp-double-angle` | — | — | 「記法変換 ON 時のみ有効」と注記 |
+| `solispia` | Solispia（ソリスピア） | `jp-double-angle` | — | — | — |
+| `estar` | エブリスタ | `jp-double-angle` | — | — | 「ルビと傍点の同時付与不可」注記 |
+| `aipen` | あいぺん | `jp-double-angle` | — | — | — |
+| `sutekibungei` | ステキブンゲイ | `jp-double-angle` | — | — | — |
+| `caita` | Caita | `jp-double-angle` | — | — | 「一般ルビで統一」注記 |
+| `noveland` | NoveLand | `jp-double-angle` | — | — | — |
+| `hameln` | ハーメルン | `jp-double-angle` | — | — | — |
+| `novelup` | ノベルアップ+ | `jp-double-angle` | — | 50 / 50 | — |
+| `narou` | 小説家になろう | `jp-ruby-emphasis` | `emphasisDotsStyle: narou-emphasis-batch` | 10 / 10 | 1 文字分割サブオプションあり |
+| `noveldays` | NOVEL DAYS | `jp-ruby-emphasis` | — | — | — |
+| `noichigo` | 野いちご | `jp-ruby-emphasis` | — | — | — |
+| `maho` | 魔法のiランド | `jp-ruby-emphasis` | — | — | — |
+| `pixiv` | pixiv 小説 | `pixiv` | — | — | `[newpage]` 章前挿入サブオプションあり |
+| `aozora` | 青空文庫テキスト | `aozora-bunko` | — | — | 青空文庫入稿用 |
+| `monogatary` | monogatary.com | `plain-only` | — | — | ルビ・傍点とも除去 |
+| `generic-md` | 汎用 Markdown | `generic-md` | — | — | Discord / Slack / note 貼付向け |
+| `word-html` | Word 貼付 (HTML) | `word-html` | — | — | `<ruby>` 解釈に対応 |
+| `web-fiction` | Web 小説（Wattpad 等） | `plain-only` | — | — | 英語圏向け。ルビ・傍点を除去 |
+| `ao3` | Archive of Our Own | `word-html` | `emphasisDotsStyle: plain`, `sceneDivider: blank2` | — | AO3 HTML エディタ貼付向け |
+
+`custom` は「現在値そのまま・プリセット適用なし」を表す特別 ID で、手動変更時に自動でフォールバックする（レジストリには含めない）。プロファイル実効値の参考: `jp-double-angle` = `aozora` ルビ + `double-angle` 傍点、`jp-ruby-emphasis` = `aozora` ルビ + `narou-emphasis-per-char` 傍点（既定。なろうは override で `batch`）、`pixiv` = `rb-bracket` ルビ + `pixiv-chapter` 見出し + `[newpage]` sceneBreak、`aozora-bunko` = `aozora` 傍点 + `blank2` 区切り、`plain-only` = `base` ルビ + `plain` 傍点、`generic-md` = markdown + `parentheses` + `hr`、`word-html` = html + `<ruby>`。
 
 #### 適用方式
 
-- **完全上書き**: プリセット選択で 7 軸（format / folderHeading / folderHeadingFormat / sceneDivider / sceneTitle / rubyStyle / emphasisDotsStyle / sceneBreakStyle ＋ サブオプション）を一括差し替え
-- **保持フィールド**: `includeTrashBin` はプリセットと無関係な「コンテンツ選択」軸として、適用時に現在値を引き継ぐ
+- **完全上書き**: `applyExportPreset(id, current)` がサイト選択で全軸（format / folderHeading / folderHeadingStyle / folderHeadingFormat / sceneDivider / sceneDividerCustom / sceneTitle / rubyStyle / emphasisDotsStyle / sceneBreakStyle / sceneBreakCustom / pixivChapterNewpage / narouEmphasisMode）を `resolveSitePreset(id)` の値へ一括差し替え
+- **保持フィールド**: `includeTrashBin` はプリセットと無関係な「コンテンツ選択」軸として、適用時に現在値を引き継ぐ（`PRESERVED_FIELDS`）
 - **手動変更で自動 custom フォールバック**: 詳細設定を 1 項目でも触ると `detectExportPreset(settings, hint)` で再検出し、ビルトインと一致しなくなれば `exportPresetId` を `custom` に書き換える
-- **重複ビルトインの hint 優先**: `alphapolis` / `hameln` / `novelup` / `novelism` は実サイト仕様上同じ設定値になるため、settings だけからは区別不能。現在の `exportPresetId` を hint として渡す限り、ユーザーの選択が維持される
+- **重複サイトの hint 優先**: `alphapolis` / `hameln` / `solispia` など同系統サイトは実サイト仕様上同じ設定値になるため、settings だけからは区別不能。現在の `exportPresetId` を hint として渡す限り、ユーザーの選択が維持される（`SITE_IDS` の宣言順が detect の探索順 = no-hint 既定）
 
 #### サブオプション
 
-プリセット選択時のみ追加で表示されるトグル:
+選択中サイト（`settings.exportPresetId`）が下記のときだけトリガー下に追加表示されるトグル（`PresetSubOptions`）。`SiteEntry.suboption` で種別を指定する。
 
 | プリセット | サブオプション | 設定キー | 詳細 |
 |---|---|---|---|
 | `narou` | 傍点を1文字ずつ分割 | `narouEmphasisMode` (`batch` / `per-char`) | ON で `emphasisDotsStyle` を `narou-emphasis-per-char` に切替 |
 | `pixiv` | 章見出しの前に `[newpage]` を入れる | `pixivChapterNewpage` | ON で `[chapter:...]` の直前に `[newpage]\n` を挿入 |
-| `novelism` | （注記表示のみ） | — | 「傍点は記法変換 ON 設定の場合のみ有効」と表示 |
+
+サイトごとの補足（`SiteEntry.noteKey`）はトリガー直下に表示される。例: `novelism` =「傍点は記法変換 ON 設定の場合のみ有効」、`estar` =「ルビと傍点の同時付与不可」。注記・警告バナーは detect ではなく `settings.exportPresetId`（選択中サイト）に紐づける。
 
 #### サイト別ルビ文字数バリデーション
 
-実装は `src/features/export/exportValidation.ts`。プリセットに `rubyLimit: { baseMax, rubyMax }` が定義されている場合のみ走査する（`custom` は対象外）。
+実装は `src/features/export/exportValidation.ts`。上限は `SiteEntry.rubyLimit: { baseMax, rubyMax }` をレジストリから引く `getSiteRubyLimit(presetId)`（`rubyProfiles.ts`）から取得する。定義のあるサイトのみ走査する（`custom` は対象外）。
 
 - ProseMirror JSON 内の `ruby` ノードを再帰的に辿り、`base` / `annotation` のコードポイント長を上限と比較
 - 違反は `RubyLengthWarning[]` として返し、UI 上部の **警告バナー** に最大 5 件まで表示（超過分は「他 N 件」）
@@ -388,7 +402,7 @@ TipTapの独自ノード/マークのエクスポート方法を設定する。
 | 構造比較で再選択検出 | Select の現在値は、構造一致するユーザープリセットがあればそれを表示。なければ `detectExportPreset` の結果 |
 | 削除 | ユーザープリセット選択時のみ削除ボタン表示。`window.confirm` で確認後に削除 |
 
-UI 上は optgroup で「ビルトイン」「汎用」「ユーザー定義」を分離する。
+実装は `src/features/export/exportUserPresets.ts`（`addUserPreset` / `findUserPreset` / `removeUserPreset` / `parseUserPresets`）。ユーザー定義プリセットは選択モーダル（`ExportSitePickerDialog`）の末尾に「ユーザー定義」見出しでまとめて表示する。
 
 ---
 
@@ -541,7 +555,7 @@ HTML形式を選択した場合、完全なHTML文書として出力する。
 
 ## 設定の永続化
 
-エクスポート設定は `app_settings` テーブルに保存し、次回ダイアログを開いた時に復元する。シーンの選択状態は保存しない（毎回全選択で開始）。
+エクスポート設定は `app_settings` テーブル（key-value）に保存し、次回ダイアログを開いた時に復元する。シーンの選択状態は保存しない（毎回全選択で開始）。テーブル定義は [統合DBスキーマ](./Grimodex_統合DBスキーマ.md) の `app_settings` を参照。
 
 | キー | デフォルト値 | 詳細 |
 |------|-------------|------|
@@ -606,10 +620,17 @@ Settings の Data カテゴリにあった「Export as Markdown」「Export as p
 
 - ヘッダーバー設計書の要素一覧にエクスポートボタンを追加（ワークスペースメニューの右）
 
-### ← rubyExport.ts
+### ← ルビ描画（`rubyFormats.ts`）
 
-- 既存の `rubyToHtml()` / `rubyToPlainText()` を利用する
-- 青空文庫形式・ベースのみは新規実装
+- ルビの記法生成は `src/features/export/rubyFormats.ts` の `renderRubyText(base, annotation, style)` に集約（旧 `rubyExport.ts` の `rubyToHtml()` / `rubyToPlainText()` は `renderRubyText()` を内部呼びする薄いラッパへ刷新。関数自体は互換のため存置）
+- 各投稿サイト・Wiki エンジン・ゲームエンジン向けの記法（HTML / 括弧 / 青空文庫 / pixiv 等）を `RubyStyle` で網羅する
+
+### ↔ TransferDialog（インポート / エクスポート統合ダイアログ）
+
+> **（2026-06-18 追記）** 本設計書が扱う **シーン ExportDialog**（ヘッダーの `FileOutput` ボタン・`Ctrl+Shift+E`）とは別に、`src/features/transfer/TransferDialog.tsx` が **インポート / ZIP エクスポート / AIのべりすと書き出し** をタブで束ねた統合ダイアログを提供する（ProjectMenu の「インポート」「エクスポート」から開く）。
+
+- 左側に縦タブ（`import` / `zip` / `novel`）。各タブ本体は既存の `ImportDialogBody` / `ZipExportBody` / `NovelExportBody` をそのまま再利用する（単体ダイアログ・統合ダイアログの両用）。
+- シーン ExportDialog はこの統合に含めず、独立したダイアログのまま（ツリー選択 + プリセット + プレビューの専用 UI のため）。
 
 ---
 

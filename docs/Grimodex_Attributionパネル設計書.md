@@ -75,14 +75,14 @@ Editorのアクティブシーンが変わったとき:
 
 | カード | 値 | 色 |
 |--------|-----|-----|
-| Total | 合計文字数 | グレー |
-| Human | Human文字数 + 割合 | グレー（デフォルト、マーカーなし） |
-| AI | AI文字数 + 割合 | パープル (#7F77DD) |
-| Unknown | Unknown文字数 + 割合 | アンバー (#BA7517) |
+| Total | 合計文字数 | ニュートラル（`--muted-foreground`） |
+| Human | Human文字数 + 割合 | `--attribution-human`（青系 / 色相 220°） |
+| AI | AI文字数 + 割合 | `--attribution-ai`（ティール / 色相 165°） |
+| Unknown | Unknown文字数 + 割合 | `--attribution-unknown`（アンバー / 色相 30°） |
 
 各カードはクリック可能。クリックするとそのsourceのテキストだけをEditorのAttributionHighlight上で強調表示する（他のsourceを薄くする）。再クリックで解除。
 
-> **現状の実装**: 4枚カードではなく、`AttributionReport.tsx` の `StatBar`（ラベル + 横棒 + 文字数/割合）を Human / AI / Unknown の 3 行で縦に並べる構成。Total はフッターに表示。クリックでフィルタ on/off を切り替える挙動は仕様通り。
+> **現状の実装**: 4枚カードではなく、`AttributionReport.tsx` の `StatBar`（ラベル + 横棒 + 文字数/割合）を Human / AI / Unknown の 3 行で縦に並べる構成。Total はフッターに表示。クリックでフィルタ on/off を切り替える挙動は仕様通り。色は `attributionColors.ts` の正本トークン（`ATTRIBUTION_COLOR_VARS` = `var(--attribution-*)`）を参照する。トークンは**色相を固定（human=220° / ai=165° / unknown=30°）したまま**、カラーテーマ × light/dark ごとに明度・彩度のみ調整される（`colorThemes.ts` の `THEME_CSS_VARS`、`applyTheme()` 適用）。旧記載のパープル `#7F77DD` / アンバー `#BA7517` / 「Human=グレー」は廃止。
 
 ---
 
@@ -92,12 +92,13 @@ Editorのアクティブシーンが変わったとき:
 
 ```
 [████████████████████████░░░░░░░░░░░░▒▒▒▒▒▒]
- Human (グレー)          AI (パープル)  Unknown (アンバー)
+ Human (青系)            AI (ティール)  Unknown (アンバー)
 ```
 
-- 各セグメントにホバーで割合と文字数のツールチップ
-- セグメントをクリック → サマリーカードのクリックと同じフィルタ動作（※ 現状未実装。セグメント要素はクリックハンドラを持たない）
+- 各セグメントにホバーで割合と文字数のツールチップ（`title` 属性 `{key}: {value} chars ({pct}%)`）
+- セグメントをクリック → サマリーカードのクリックと同じフィルタ動作（※ 未実装。`BreakdownBar.tsx` のセグメント要素は `data-segment` 属性のみで `onClick` を持たない）
 - バーの高さ: 24px（`height` prop で上書き可能。シーン別テーブルのミニバーは 6px）。角丸。各セグメントの最小幅は2px（0%でない場合は可視化保証）
+- セグメント色は `ATTRIBUTION_COLOR_VARS`（`var(--attribution-*)`）の単色トークンを「色キー」として使う。値 0 のセグメントは描画しない（`value > 0` でフィルタ）
 
 ---
 
@@ -253,14 +254,15 @@ Attribution 集計の前提となる AuthorshipMark は以下の属性を持つ�
 - `codex_entry_id`: Codex エントリ本文
 - `snippet_id`: Snippet 本文
 - `detail_value_id`: カスタムディテール値
-- `phase_id`: フェーズ固有本文
+- `phase_id`: フェーズ固有本文（`codex_entry_id` と直交し、フェーズレーンの帰属を記録）
 - `sticky_id`: Map Sticky body（Map パネル設計書で追加）
 
-いずれの参照カラムも NULL 許容で、1 レコードにつき排他的に 1 つだけが非 NULL となる。Attribution パネルの集計は、スコープに応じてこれら参照カラムも対象に含める。
+いずれの参照カラムも NULL 許容で、`node_id`/`codex_entry_id`/`snippet_id`/`detail_value_id`/`sticky_id` のうち排他的に 1 つだけが非 NULL となる（`phase_id` は直交。SQL CHECK 制約で強制）。テーブル定義・DDL・インデックスの正本は [統合DBスキーマ設計書](./Grimodex_統合DBスキーマ.md) の `authorship_spans` 節を参照。
 
-**プロジェクト全体の集計に Map Sticky を含める**: Sticky body は ProseMirror JSON で保持され、AI Branch 由来は初期 `ai`、ユーザーが編集すると `human` に切り替わる。Attribution パネルの「プロジェクト」スコープでは Sticky の文字数も AI 比率に算入する。サマリーカード上で「Map Stickies: N 件、AI X%」のように内訳を 1 行表示する（v2 で UI 拡張）。
-
-> **現状の実装**: DB スキーマ（`authorship_spans` の `codex_entry_id` / `snippet_id` / `detail_value_id` / `phase_id` / `sticky_id`）と SQL CHECK 制約（exactly one of nodeId/codexEntryId/snippetId/detailValueId/stickyId is NOT NULL、phaseId は codexEntryId と直交）まで実装済み。一方 `projectStats.ts` の `loadProjectAttributionStats` は `node_id` のみで `WHERE` を組み立てており、Codex / Snippet / Detail / Phase / Sticky 由来のスパンはプロジェクト集計から除外されている。Sticky 件数の内訳行 UI も未実装。
+> **現状の実装（2026-06-18）**: 集計レーンはコンテンツ種別で分離している。
+> - **本文（シーン）集計** = `projectStats.ts` の `loadProjectAttributionStats(sceneIds)`。`node_id` のみで `WHERE` を組み立て、`treeNodes.charCount` を分母に AI / Unknown / Human を算出する。シーン別テーブルと「プロジェクト」スコープの行はこれを使う。**Detail / Phase 由来のスパンは集計に含まれない**（`detail_value_id` / `phase_id` のレーンは書き込み配線済みだがプロジェクト集計の対象外）。
+> - **Codex / Snippet レーン** = `loadKnowledgeAttributionStats(projectId)`。`codex_entry_id` / `snippet_id` 由来のスパンを per-entity に集計し（cross-project は codex の projectId join で除外）、`AttributionProjectView` のヘッダーに「ナレッジ由来 AI 文字数」の合計を 1 行で表示する（per-scene 集計の分母には混ぜない）。
+> - **Map Sticky レーン** = AI 由来の Sticky は本文集計に算入せず**独立レーン**として扱う（後述「制作過程開示エクスポート」の `MapProvenance`）。Sticky の authorship スパンは `trace_id` / `chat_msg_id` を持たず由来を分類できないため、本文の「AI 比率」分母に混ぜると汚染する。旧記載「プロジェクトスコープで Sticky を AI 比率に算入」は誤りなので撤回。
 
 ### AiEditedPlugin
 
@@ -356,6 +358,32 @@ Generated: 2026-04-01
 **Agent Trace v0.1.0 形式**: MIME タイプ `application/vnd.agent-trace.record+json` で AI 由来スパンを機械可読なトレースレコードとして書き出す。各レコードには `traceId` / `toolName` / `toolVersion` / `model` / `chatMessageId` の他、原文・現在本文の SHA-256 を表す `contentHash` を含め、外部監査ツールや AI 利用開示パイプラインへ入力できる。MD / CSV レポートと並列のエクスポート手段として提供。
 
 エクスポートはTauriのファイルダイアログで保存先を選択。
+
+### 制作過程開示エクスポート（2026-06-18 追記）
+
+メインのエクスポートダイアログ（`ExportDialog.tsx`、本文出力 / **AI 使用開示** / タイムラプス動画の 3 モード）の「AI 使用開示」モードが、コンテスト等で要求される制作過程開示用のレポートを生成する。データソースは `provenance.ts` の `buildProvenanceBreakdown(projectId, options)` で、返り値は `ProvenanceDisclosureReport`。
+
+集計スコープは `scope: "body-text-only"`（シーン本文のみ）。AI 由来スパンを由来種別ごとに分類した `breakdown` を持つ:
+
+| 由来 | 説明 |
+|------|------|
+| `chat` | チャットメッセージ由来（`chat_msg_id` から解決） |
+| `inline-ai` | スラッシュコマンド系のインライン生成（`trace_id` → `generation_logs`） |
+| `beat` | ビート展開生成（同上） |
+| `orphan-chat` | 元チャットが見つからない AI スパン |
+| `unknownAi` | trace も chat も無い AI スパン（旧データ等） |
+
+ダイアログのトグルで開示の粒度を段階的に上げる:
+
+- **抜粋を含める**（`includePassageExcerpts`）: 各 AI 使用箇所に本文抜粋を付ける。
+- **入力＋出力を含める**（`includePrompts`）: 各箇所に `disclosure`（`PassageDisclosure`）を添付する。`userPrompt`（chat = 直前のユーザー発話 / inline-ai・beat = 指示文）と `output`（その箇所になった AI 出力の全文）を記録する。
+- **送信プロンプト全文を含める**（`includeFullSystemPrompt`、上の子トグル）: `sentSystemPrompt` を追加する。chat は `chat_message_prompts` のスナップショット（直前ユーザーメッセージ ID をキーに取得）と `layers`（コンテキスト層別トークン内訳）、inline-ai・beat は `generation_logs.prompt_full`。capture 配線前に生成された旧レコードでは NULL（`promptRecorded: false`）。送信全文は他シーンの文脈を含み得るため警告を表示する。
+
+`generation_logs`（`prompt_full` / `trace_id` 等）のテーブル定義は [統合DBスキーマ設計書](./Grimodex_統合DBスキーマ.md) の `generation_logs` 節を参照。
+
+**Map AI コンテンツの独立レーン**: `report.map`（`MapProvenance`）は本文の `totals` / `breakdown` から完全に分離して報告される。`buildMapProvenance(projectId)` が board → stickies → `sticky_id` 帰属スパンを辿り、AI 文字数を Sticky 単位で集計する（`stickyCount` / `totalAiChars` / `stickies[]`）。本文の AI 比率分母には決して混ぜない（前述「対象エンティティ」の理由）。
+
+出力形式は `exportReport.ts` の `exportProvenanceDisclosureMarkdown` / `…Html` / `…Json`（および `…Csv`）。いずれも Map レーンを別セクション（"Map AI Content"）として描画する。
 
 ---
 

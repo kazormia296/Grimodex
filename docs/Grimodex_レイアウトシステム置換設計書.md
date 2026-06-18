@@ -40,9 +40,9 @@ IntelliJ 式の **非対称レイアウト** (中央のエディタ領域は固�
 
 | 項目 | 現行 | 本設計 |
 |------|------|--------|
-| stripe に出るアイコン | 一度でも開いた panel (`stripePanelIds`) | **全 15 tool window を常時表示** |
+| stripe に出るアイコン | 一度でも開いた panel (`stripePanelIds`) | **全 16 tool window を常時表示**（`hiddenStripePanels` で個別非表示にした分は除く） |
 | パネル内の裏 tab | Dockview の background 状態 | **なし** (1 slot = 1 表示) |
-| 「サイドバーから削除」 | stripe 登録を外す | **廃止**（§13 参照。全 panel 事前登録のため） |
+| 「サイドバーから削除」 | stripe 登録を外す | **存続**（`removePanelFromStripe` → `hiddenStripePanels`。下記 §7.4 参照） |
 | カスタムレイアウト保存 | `SerializedDockview` JSON | `LayoutState` スナップショット |
 
 ## 2. 設計方針
@@ -120,6 +120,18 @@ interface PersistedLayout {
 interface LayoutState {
   regions: Record<RegionId, RegionState>;
   center: CenterState;
+  /** editor 単独 collapse 時、再表示で幅を復元するため閉じる直前の左右
+   *  region サイズを保持する。再表示で消費し、region の手動リサイズで破棄する。 */
+  collapsedEditorRegionSizes?: { left: number; right: number };
+  /** ボトム両端の角を bottom region と side stripe のどちらが取るか。
+   *  未指定時は both false（side stripe が角を取る = 従来挙動）。§6.6 参照。 */
+  bottomCorners?: BottomCornerOwnership;
+}
+
+/** true = bottom region が角を取る / false = side stripe が角を取る。 */
+interface BottomCornerOwnership {
+  left: boolean;
+  right: boolean;
 }
 
 interface CenterState {
@@ -204,9 +216,10 @@ interface SlotState {
 
 ### 4.2 パネルの登録
 
-全 15 個の tool window（`TOOL_WINDOW_PANEL_IDS`、`editor` 除く）は起動時に既定 region/slot
-へ**事前登録**される（`DEFAULT_SLOT_MAP` → `DEFAULT_REGION_MAP` / `DEFAULT_INDEX_MAP`
-から slot 構成を生成）。3 つの stripe は最初から全アイコンが並ぶ (IntelliJ 同様)。
+全 16 個の tool window（`TOOL_WINDOW_PANEL_IDS` = `DEFAULT_SLOT_MAP` のキー、`editor`
+除く。執筆統計 `writing-stats` を含む。既定 slot は `BR`）は起動時に既定 region/slot へ
+**事前登録**される（`DEFAULT_SLOT_MAP` → `DEFAULT_REGION_MAP` / `DEFAULT_INDEX_MAP` から
+slot 構成を生成）。3 つの stripe は最初から全アイコンが並ぶ (IntelliJ 同様)。
 
 **初回起動・マイグレーション直後の `LayoutState`:**
 
@@ -255,8 +268,10 @@ Phase 1 で実装。Dockview 専用の `layoutValidation.ts` に替わる軽量�
 │   ├─ <SlotView> × N             slot.activePanel を描画（閉じた slot はアンマウント）
 │   └─ <Splitter> × N             open slot 間
 ├─ <CenterStripe>                 cstripe 行。常設の横帯（§4）
+│   ├─ <SideDockToggle> × 2       左右端: side region 一括開閉（EditorToggle と同形）
 │   ├─ <EditorToggleIcon>         editor 開閉専用アイコン（非ドラッグ）
-│   └─ <RegionStripe>             center tool segment のアイコン（region="center"）
+│   ├─ <RegionStripe>             center tool segment のアイコン（region="center"）
+│   └─ <ZoomRestoreBar>           最大化中のみ表示する復帰バー（§6.7）
 ├─ <CenterContent>                content 行。editor / center tool segment を横並び
 │   ├─ <EditorArea>               kind:"editor" segment → <SceneEditor/>
 │   ├─ <SlotView> × N             kind:"tool" segment を描画
@@ -264,8 +279,20 @@ Phase 1 で実装。Dockview 専用の `layoutValidation.ts` に替わる軽量�
 ├─ <RegionDock region="bottom">   bottom content（横分割）+ 横 stripe
 │   ├─ <RegionContent>            bottom region content
 │   └─ <RegionStripe>             bottom stripe（横）
+├─ <BottomCornerToggle> × 2       ボトム左右の角の所有者切替（§6.6）
 └─ <RegionResizeSplitter>         region ⇔ center 境界（left / right / bottom）
 ```
+
+- `SideDockToggle`（`data-side-dock-toggle`）は Center Stripe の左右端セルに置く side region
+  一括開閉トグル。`EditorToggleIcon` と同形の「固定・移動不可」アイコンとし、`collapseLayoutRegion`
+  / `expandLayoutRegion` を呼ぶ（その region の全 slot を一括で開閉。§8.1）。
+- `BottomCornerToggle`（`data-bottom-corner-toggle`）はボトム左右の角に置く小ボタンで、その角を
+  side stripe ⇔ bottom region のどちらが取るかを `toggleBottomCorner(side)` で切り替える（§6.6）。
+- `PanelChromeMenu` はパネルラッパーに被せる chrome 操作レイヤー（折りたたみ / 最大化）。配線は
+  イベント委譲で、パネル本体は `data-panel-header` 属性 1 個を足すだけ（layout 機構を import
+  しない）。`AnimatedSlotPanel` と `EditorArea` が各パネルを包む（§6.7）。
+- `ZoomRestoreBar`（`data-zoom-restore-bar`）は最大化中だけ Center Stripe 帯に出る復帰バー
+  （タイトル + 「元のサイズに戻す」ボタン、dblclick でも解除）。§6.7。
 
 - `RegionStripe` は side / bottom / center 共通。slot（center は tool segment）ごとに
   `StripeGroup` を作り `ToolWindowIcon` を並べる。アイコンは 3 状態（active /
@@ -278,6 +305,14 @@ Phase 1 で実装。Dockview 専用の `layoutValidation.ts` に替わる軽量�
 - `EditorArea` は `<SceneEditor/>` を 1 つ持ち、`registerEditorFocusHandler` 経由で
   `requestEditorFocus()`（`layoutStore`）を公開する。
 - glass テーマ: `SlotView` / `EditorArea` は `glass-region-panel` クラスで描画する。
+- `Splitter` は `splitter/SplitterHandle`（pointer ドラッグ）+ `splitter/SplitterChrome`
+  （見た目）+ `splitter/useSplitterKeyboard`（キーボードリサイズ）の合成。region splitter は
+  `keyboardResize` を有効化し、`role="separator"` を focusable（`tabIndex=0`、`layoutLocked`
+  時は `-1`）にして `aria-value*` を出す。`useSplitterKeyboard` は Arrow（縦バー=Left/Right、
+  横バー=Up/Down で ±`step`px、既定 16）/ PageUp・PageDown（±`largeStep`px、既定 64）/
+  Home・End（±`jump`px、既定 10000 を consumer 側の clamp で min/max に張り付け）を
+  `onDrag(deltaPx)` に変換する。正の delta は手前（preceding）ペインを拡大する向きで pointer
+  と一致（16849577）。slot splitter は `keyboardResize` 未指定。
 
 ## 6. 振る舞い
 
@@ -353,6 +388,42 @@ stripe だけが残る。`region.size` は保持され、次に slot を開い�
 - editor を再び開く（または center tool が入る）と content 列が幅を持ち、filler は解除
   される。`layoutLocked` 中もトグル（開閉）は許可（§6.4）。
 
+### 6.6 ボトム角の所有権（`bottomCorners`）
+
+ボトム region の content 帯がボトム左右の角まで広がるか、それとも side stripe が角を取るかを
+**角ごとに**切り替えられる。`LayoutState.bottomCorners: { left, right }`（未指定時は both
+false = side stripe が角を取る従来挙動）に永続化する。
+
+- `BottomCornerToggle`（左右各 1 個）が各角を `toggleBottomCorner(side)` でトグルする
+  （`layoutLocked` 時は無効）。`getBottomCorners(layout)` が未指定を both false に正規化する。
+- side stripe が角を取るときは、その端に `BOTTOM_CORNER_TOGGLE_CLEARANCE_PX`（28px）の余白を
+  確保してトグルボタンと stripe アイコンが重ならないようにする。
+
+### 6.7 パネル最大化（視覚 zoom）
+
+任意の表示中パネル（tool window / editor）を一時的に全面化できる。レイアウト state は変えず、
+`maximizedPanelId: PanelId | null`（store の揮発フィールド・**非永続**）と grid template の
+差し替えだけで全面表示し、パネルの DOM identity を保つ（6f543191）。
+
+- **トグル / 解除:** `toggleMaximizePanel(panel)` は対象が**表示中のときのみ** zoom をトグルする
+  （折りたたみ / editor 非表示は no-op）。`clearMaximize()` で解除。
+- **トリガー:** パネルのヘッダー帯（`data-panel-header`）の**ダブルクリック**または
+  **右クリックメニュー**（`PanelChromeMenu`、最大化 / 折りたたみ）。`ToolWindowIcon` の右クリック
+  メニューにも「最大化」項目があり、折りたたみ中は先に `showPanel` してから zoom する。
+  ヘッダー帯の外・インタラクティブ要素（button / input / tab / draggable 等）上では発火しない
+  （`isPanelChromeGestureTarget`）。
+- **自動解除:** layout 参照が変わる mutation（パネル開閉 / プリセット / リサイズ / DnD）で store
+  subscribe が `maximizedPanelId` を null に戻す。
+- **Esc:** `LayoutShell` 最外周の `keydown` で `Escape` を拾い解除する。ただし `isComposing`
+  （IME 変換キャンセル）と `defaultPrevented`（Radix ダイアログや Timeline/Grid 等パネル固有の
+  Esc が先に消費）は奪わない＝その場合は 2 度押しで抜ける（階層的 Esc。730ce7dd）。
+- **復帰動線:** zoom 中は stripe が不可視になるため、`ZoomRestoreBar` を Center Stripe と同じ高さの
+  帯に常時出し、パネル名 +「元のサイズに戻す」ボタン（dblclick でも解除）で発見可能性を確保する
+  （730ce7dd）。
+- **演出:** `useZoomReveal` が突入時に FLIP 的な clip-path reveal を行う（grid 全面化を即時適用し
+  → 直前矩形に clip → 外側へ開く。`inset` の 4 数値を rAF で自前補間、composite-only でテキストは
+  動かない）。解除側のフェードは `useLayoutPresetCrossfade`。Reduced Motion 時は省略（1bc28383）。
+
 ## 7. DnD 設計
 
 Dockview overlay に依存せず自作。`layoutLocked` 時は全 DnD 無効。
@@ -410,10 +481,12 @@ free モードの insert index は `calculateStripeInsertIndex` の gap ヒス�
 
 ### 7.4 コンテキストメニュー（`ToolWindowIcon`）
 
-現行「Move to region」「Remove from sidebar」を置換:
-
+- **最大化 / 元のサイズに戻す**: `toggleMaximizePanel`（折りたたみ中は先に `showPanel`。§6.7）
 - **Move to Left / Right / Bottom**: `movePanelToRegion`（末尾 slot へ合流、無ければ新規 slot）
-- **Remove from sidebar**: **廃止**（§1.3）。将来「デフォルト slot に戻す」等に転用可
+- **サイドバーから削除**: `removePanelFromStripe(panel)` → 対象を `hiddenStripePanels` に追加し、
+  表示中なら slot を畳む（`activePanel = null`）。slot の `panels` 登録自体は維持するため、後で
+  プリセット適用や明示再追加で復帰できる。`layoutLocked` 時は無効。区域単位の
+  `removeAllPanelsFromStripeRegion` も同様に `hiddenStripePanels` へ束で追加する。
 
 ## 8. 状態管理 / store
 
@@ -422,9 +495,16 @@ free モードの insert index は `calculateStripeInsertIndex` の gap ヒス�
 ### 8.1 主なアクション
 
 - `togglePanel` / `showPanel` — §6.1
+- `toggleMaximizePanel(panel)` / `clearMaximize()` — §6.7（`maximizedPanelId` を更新する非永続 zoom）
 - `movePanelToSlot` / `movePanelToRegion` / `movePanelToNewSlot` — §7
+- `removePanelFromStripe(panel)` / `removeAllPanelsFromStripeRegion(region)` — §7.4（`hiddenStripePanels`）
 - `reorderPanelInSlot(panel, region, slotId, insertIndex)` — §7.2 stripe-reorder
-- `setRegionSize` / `setSlotRatios` — §6.2
+- `collapseLayoutRegion(region)` / `expandLayoutRegion(region)` — §6.6 / `SideDockToggle`
+  （region の全 slot を一括で畳む / 各 slot を先頭 panel で開き直す。center は editor も連動）
+- `toggleBottomCorner(side)` — §6.6（`bottomCorners` を更新）
+- `setRegionSize` / `setRegionSizeLive`（ドラッグ中・保存なし）/ `nudgeRegionSize(region, deltaPx, viewport?)`
+  （キーボードリサイズ）/ `setSlotRatios` — §6.2
+- `reclampForViewport()` — カードレイアウト切替時に保存済み region サイズを現モードで再クランプ
 - `setDraggingPanel(panel, source?, offset?)` — §7.1
 - `requestEditorFocus()` — §5（エディタ中央セルへフォーカス。`tabStore` 連携は呼び出し側）
 - `layoutLocked` / `toggleLayoutLock` — §6.4
@@ -438,12 +518,15 @@ global settings:
 ```ts
 {
   layoutVersion: 3,
-  layout: LayoutState,
+  layout: LayoutState,            // collapsedEditorRegionSizes? / bottomCorners? を含む（§4）
   activePresetId?: string,
-  layoutPresets?: CustomLayoutPreset[],  // { id, name, state: LayoutState }
+  hiddenStripePanels?: ToolWindowPanelId[],  // §7.4 「サイドバーから削除」
+  layoutPresets?: CustomLayoutPreset[],  // { id, name, state: LayoutState, hiddenStripePanels? }
   // toolWindows (旧) は読み取りのみ・マイグレーション後は書かない
 }
 ```
+
+なお `maximizedPanelId`（§6.7）は store の揮発状態で、**永続化しない**。
 
 - Dockview `SerializedDockview` は廃止
 - `SceneEditor` の `tabStore` は従来通り別管理
@@ -543,7 +626,11 @@ big-bang 置換。**完全リセット方式**を採用する（best-effort 移�
 - `layoutConstants.ts` — min/max サイズ
 - `layoutStateUtils.ts` — `validateLayoutState`, `normalizeSlotRatios`, `buildDefaultLayoutState`
 - `LayoutShell` / `RegionDock` / `RegionContent` / `SlotView` / `Splitter` / `EditorArea`
-- `splitter/SplitterHandle` / `splitter/SplitterChrome` — Splitter style/functional 分離
+- `splitter/SplitterHandle` / `splitter/SplitterChrome` / `splitter/useSplitterKeyboard`
+  — Splitter の pointer / chrome / キーボードリサイズ分離（§5・§6.2）
+- `PanelChromeMenu` — ヘッダー帯の右クリック / dblclick chrome 操作（§6.7）
+- `ZoomRestoreBar` / `useZoomReveal` — 最大化の復帰バーと reveal 演出（§6.7）
+- `SideDockToggle` / `BottomCornerToggle` — Center Stripe の side 一括開閉 / ボトム角切替（§6.6）
 - 自作 DnD + drop highlight + `StripeInsertIndicator` + `LayoutPanelDragGhost`
 - `useStripeIconPointerDrag` — stripe pointer drag（6px threshold、短クリックで toggle）
 - `reorderPanelInSlot` / `reorderPanelInCenterSegment`（`layoutStateUtils` pure）
@@ -590,3 +677,9 @@ no-op または UI 無効化とする。Dockview パッケージは Phase 6 で 
 マイグレーション方式（完全リセット）、Center Stripe 常設化（editor 開閉トグルの常設動線）、
 center filler（editor 非表示時のグリッド充填）、**DnD UX**（pointer 統一・stripe-reorder・
 InsertIndicator / Highlight 排他・`STRIPE_DRAG_DETECTION_PAD_PX`）。
+
+**（2026-06-18 追記）出荷済みの追加機能:** 「サイドバーから削除」は廃止せず `hiddenStripePanels`
+として存続（§1.3・§7.4）。執筆統計パネル `writing-stats` を追加し tool window は 16 個に（§4.2・
+7833d53f）。パネル最大化（視覚 zoom）+ 復帰バー + reveal 演出（§6.7・6f543191 / 730ce7dd /
+1bc28383）、ボトム角の所有権切替 `bottomCorners`（§6.6）、Splitter のキーボードリサイズ
+（§6.2・16849577）、side region 一括開閉 `SideDockToggle`（§6.6）を実装。

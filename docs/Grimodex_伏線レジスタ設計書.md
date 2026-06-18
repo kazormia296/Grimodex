@@ -126,6 +126,11 @@ foreshadows = sqliteTable("foreshadows", {
   // 構造的重要度（Phase 6）。null は未設定で既存伏線の挙動を維持
   loadBearing: text("load_bearing"),                     // 'critical' | 'supporting' | 'optional' | null
 
+  // impact-review（2026-06-18 追記）。リンク先 Codex の変更時刻。setup の
+  // lastEvaluatedAt より新しければ「Codex 変更により再評価が必要」と stale 判定する
+  // （null=未変更）。詳細は「Codex 変更追従（codexLinkDirtyAt）」セクション参照
+  codexLinkDirtyAt: integer("codex_link_dirty_at", { mode: "timestamp" }),
+
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 }, (t) => [
@@ -528,6 +533,36 @@ where (
 
 ---
 
+## Agent write 連携（2026-06-18 追記）
+
+Chat Agent から伏線本体を**作成 / 更新**できる。読み取り（`list_open_foreshadows`）に加えて、伏線が read/write とも chat・MCP 対称になった（どちらも tracked write 経由）。コミット 5e4c1a9e（前提は foreshadow tracked 化 7df9374d）。
+
+### ツール定義
+
+`src/features/chat/agent/toolDefinitions.ts` に 2 ツール：
+
+| ツール | 必須 | 主なフィールド |
+|---|---|---|
+| `create_foreshadow` | `title` | `intent` / `notes` / `loadBearing`（critical/supporting/optional）/ `secret`（既定 true） |
+| `update_foreshadow` | `id` | `title` / `intent` / `notes` / `loadBearing` / `payoffConfirmed` / `abandoned` / `secret`（与えた項目のみ変更） |
+
+`create_foreshadow` の `secret` 既定は `true`（MCP parity）。description に「同会話内で読み返すなら `secret=false`」を明記し、`secret=true` の plant は `list_open_foreshadows` / AI コンテキストから隠れる（→「AI コンテキスト注入と secret フラグ」）。
+
+### 実行経路
+
+`toolExecutors.ts` → `src/features/agent-writes/foreshadow.ts` の `agentCreateForeshadow` / `agentUpdateForeshadow`：
+
+1. `blockIfPolicyOff("knowledgeWrite")` ゲート（OFF なら throw、`MUTATING_EXECUTORS` 経由で error result 化）。`loadBearing` 値検証・空 patch 拒否。
+2. Tauri `agent_foreshadow_create` / `agent_foreshadow_update`（`src-tauri/src/commands/agent_writes.rs`）→ `grimodex_core::writes::foreshadow::tracked_foreshadow_create/update`。entity 書き込み + `undo_journal` + `change_event` を **1 tx**・`surface="in-app-agent"`（recorder session 連動）。
+3. `useForeshadowStore.load(projectId)` でパネルをリロードし、書き込んだ行を返す。
+4. `useGlobalHistoryStore.push({ kind: "foreshadow", undo/redo })` で undo/redo を登録。undo/redo は `applyUndoJournal(undoJournalId, "undo"|"redo")`（実装済みの foreshadow revert/apply アーム）→ 再度 store reload。`isReplaying` 中は push をスキップ。
+
+### injection 遮断
+
+`create_foreshadow` / `update_foreshadow` は MUTATING ツールなので、Hermes 本文 channel 経由の駆動を JS `MUTATING_TOOL_NAMES` と Rust `HERMES_BLOCKED_TOOL_NAMES` の両セットで遮断する（prompt injection 駆動の書き込みベクタ封じ）。
+
+---
+
 ## AI 連携（Phase 1）
 
 ### `propose_past_setups`：遡及候補生成
@@ -555,6 +590,8 @@ type ProposeRequest = {
 };
 ```
 
+> **`relatedCodex` の自動投入（`detectRelatedCodex`、2026-06-18 追記）**: `relatedCodex` は手動指定だけでなく、本文テキストから自動検出できる。`src/features/foreshadow/api.ts` の `detectRelatedCodex(text)` が chat の auto-detect と同じ `findMentionedEntriesAsync`（editor 非依存・text ベースの Rust マッチャ）でシーン本文中の Codex 言及を拾い、`{ id, name, summary }` に整形する。`contextMode` が `hidden` / `suppress` のエントリと summary 空のエントリは除外し、エントリ数（最大 20）と合計文字数（3000 字）で上限を掛ける。
+
 **出力**
 
 OpenRouter の structured output（JSON Schema 強制）を使用：
@@ -579,6 +616,10 @@ type ProposeResponse = {
   }>;
 };
 ```
+
+**実装形態（2026-06-18 追記）**
+
+`proposePastSetups` は **Tauri command ではなく `src/features/foreshadow/api.ts` の純 TS 関数**で、`sendChatMessageWithThinking` を直接呼ぶ（Rust 側の `foreshadow_propose_past_setups` は存在しない）。冒頭で `blockIfPolicyOff("analysis")` を評価し、AiPolicy の analysis トグルが OFF なら **LLM を呼ばず `[]` を即返す**（kouetsu の分析系 view と同じ correctness 層。詳細は ai-policy/policyGuard.ts）。生成 usage は `recordAiUsage({ surface: "foreshadow" })` で台帳に記録する。
 
 **モデル選定**
 
@@ -662,6 +703,10 @@ updateSetup(setupId, {
 });
 ```
 
+**実装形態 / AiPolicy gate（2026-06-18 追記）**
+
+`evaluateSetupStrength` も純 TS（`sendChatMessageWithThinking` 直呼び・Rust IPC なし）。冒頭で `blockIfPolicyOff("analysis")` を評価し、analysis トグルが OFF なら **LLM を呼ばず `null` を返す**。usage は `recordAiUsage({ surface: "foreshadow" })`。
+
 **コスト管理（Phase 2）**
 
 - 手動トリガのみ（自動再評価しない）
@@ -736,10 +781,9 @@ interface AuditCandidate {
 
 `AuditCandidate` → 「伏線として登録」ボタン → `CreateForeshadowDialog` を `initialTitle` / `initialIntent` プリフィル付きで起動（既存 Phase 2 の props を流用）。
 
-**ランタイム分岐**
+**実装形態（2026-06-18 訂正）**
 
-- Tauri: `foreshadow_audit_chapter` IPC（Rust 側でプロンプト生成 + OpenRouter 呼び出し）
-- ブラウザ: JS 側で `sendChatMessageWithThinking` を直接呼び出し（同一プロンプト）
+`auditChapter` は **Tauri command ではなく `api.ts` の純 TS**で、Tauri / ブラウザを問わず `sendChatMessageWithThinking` を直接呼ぶ（旧記述の「Tauri は `foreshadow_audit_chapter` Rust IPC でプロンプト生成 + OpenRouter」は誤り。Rust 側 audit command は存在しない）。冒頭で `blockIfPolicyOff("analysis")` を評価し、analysis トグル OFF なら LLM を呼ばず `[]` を返す。空シーン除外後にシーン本文を結合してプロンプト化する。usage は `recordAiUsage({ surface: "foreshadow" })`。
 
 **二重送信防止**
 
@@ -772,27 +816,42 @@ interface ChapterForeshadowStats {
 
 `createRevision` は content 同一時のスキップが内部実装済み。加えて `adoptInsertedNewSetup` は 1 採用フローにつき 1 回だけ呼ぶ（`saveSceneContent` の完了を await してから呼ぶ）。
 
-### Staleness 判定（Phase 2 実装済み）
+### Staleness 判定（Phase 2 実装済み / 2026-06-18 第 3 要因追加）
 
 ```ts
 // src/features/foreshadow/staleness.ts
 export function isSetupEvaluationStale(
   setup: ForeshadowSetupRow,
-  sceneUpdatedAt: string,  // treeNodes.updatedAt（ISO 文字列）
+  sceneUpdatedAt: string,             // treeNodes.updatedAt（ISO 文字列）
+  codexLinkDirtyAt?: Date | null,     // 2026-06-18 追記: impact-review
 ): boolean {
   if (!setup.lastEvaluatedAt) return true;
-  return new Date(sceneUpdatedAt) > setup.lastEvaluatedAt;
+  if (new Date(sceneUpdatedAt) > setup.lastEvaluatedAt) return true;
+  if (codexLinkDirtyAt && codexLinkDirtyAt > setup.lastEvaluatedAt) return true;
+  return false;
 }
 ```
 
 `sceneUpdatedAt` は `listSetups()` 時に `treeNodes` を LEFT JOIN して取得し、`ForeshadowSetupRow.sceneUpdatedAt?: string` として付与する（非永続フィールド、DB には保存しない）。UI では黄色 dot でインジケートする。
 
+### Codex 変更追従（`codexLinkDirtyAt`）（2026-06-18 追記）
+
+impact-review 連携。**リンク先 Codex の埋め込み対象フィールド（name / aliases / summary / content）が更新されると、関連伏線の AI 強度評価を stale 扱い**にする経路を追加した。スキーマ詳細は **Grimodex_統合DBスキーマ.md**（`foreshadows.codex_link_dirty_at`）を参照。
+
+- **マーク（書き込み）**: `src/features/codex/api.ts` の Codex 更新で、埋め込みに効く差分があれば（`scheduleCodexIndex` と同条件）`markLinkedForeshadowsDirty(entryId)` を呼ぶ。`foreshadow_codex_links` を辿り、リンク先 `foreshadows.codexLinkDirtyAt` を現在時刻に一括 update する。リンク無しは no-op、失敗は非致命（保存自体は妨げない）。
+- **判定（読み取り）**: 上記 `isSetupEvaluationStale` の第 3 引数。`codexLinkDirtyAt > setup.lastEvaluatedAt` なら stale。`ForeshadowPanel` が `item.codexLinkDirtyAt` を SetupRow に渡し、既存の「シーン更新で stale」黄色 dot と同じインジケータに合流させる。
+- 既存伏線・新規作成時は `null`（未変更）。`api.ts` の行正規化が `codex_link_dirty_at` の snake_case フォールバックを持つ。
+
 ---
 
 ## IPC surface（Tauri Commands）
 
+実体は `src-tauri/src/commands/foreshadow.rs`（lib.rs の `invoke_handler` に登録）。
+**AI passthrough（`propose_past_setups` / `evaluate_setup_strength` / `audit_chapter`）は Tauri command ではなく、
+`src/features/foreshadow/api.ts` の純 TS が `sendChatMessageWithThinking` を直接呼ぶ**（→ 「AI 連携（Phase 1〜3）」参照）。Rust 側 AI command は存在しない。
+
 ```rust
-// src-tauri/src/commands/foreshadow.rs（新規）
+// src-tauri/src/commands/foreshadow.rs（lib.rs で登録）
 
 #[tauri::command]
 foreshadow_create(project_id: String, title: String, intent: Option<String>) -> Result<Foreshadow>
@@ -830,10 +889,6 @@ foreshadow_save_anchors_for_scene(scene_id: String, payload: SaveAnchorsPayload)
 foreshadow_load_anchors_for_scene(scene_id: String) -> Result<LoadAnchorsResult>
 
 #[tauri::command]
-foreshadow_propose_past_setups(req: ProposeRequest) -> Result<ProposeResponse>
-// AIへのpassthrough、OpenRouterまで
-
-#[tauri::command]
 foreshadow_set_setup_strength(setup_id: String, strength: Option<Strength>) -> Result<()>
 
 #[tauri::command]
@@ -850,11 +905,56 @@ foreshadow_setup_create_ai(
 ) -> Result<()>
 // AI メタデータ付き INSERT。ON CONFLICT(id) は fromPos/toPos/isOrphan/updatedAt のみ更新。
 // ai_rationale / strength / kind / attribution / ai_reasoning は保持される。
+```
+
+### 追加コマンド群（2026-06-18 追記）
+
+ForeshadowPanel / 章別監査 / Codex タブ / AI コンテキスト注入の DB 集計・読み取りを担う AI 不使用の Rust コマンド群が追加されている（いずれも `ws_state` を取り `Result<_, AppError>` を返す）：
+
+```rust
+#[tauri::command]
+foreshadow_list_with_labels(project_id: String) -> Result<ForeshadowListWithLabelsResponse>
+// 派生ラベル + setup 集計を付与した一覧（パネルの主クエリ）。
 
 #[tauri::command]
-async foreshadow_audit_chapter(req: ForeshadowAuditRequest) -> Result<ForeshadowAuditResponse>
-// 章配下シーン本文を AI に渡し AuditCandidate[] を返す。
-// 空シーン事前除外。章全体が空なら candidates: [] を即時返す。
+foreshadow_list_open_for_context(project_id: String) -> Result<ForeshadowListWithLabelsResponse>
+// AI コンテキスト注入用フィルタ（payoffConfirmed=false かつ abandoned=false かつ secret=false）。
+// TS wrapper は listOpenForeshadowsForContext。→ 「AI コンテキスト注入と secret フラグ」参照。
+
+#[tauri::command]
+foreshadow_get_scene_info(scene_id: String) -> Result<ForeshadowSceneInfoResponse>
+
+#[tauri::command]
+foreshadow_get_scene_context(scene_id: String) -> Result<ForeshadowSceneContextResponse>
+// propose / audit のシーン文脈（excerpt / past scenes 等）を組み立てる読み取り。
+
+#[tauri::command]
+foreshadow_list_by_codex_entry(codex_entry_id: String) -> Result<ForeshadowListWithLabelsResponse>
+// Codex 詳細「伏線」タブの逆参照（listForeshadowsByCodexEntry）。
+
+#[tauri::command]
+foreshadow_get_chapter_stats(chapter_id: String) -> Result<ForeshadowChapterStatsBundle>
+// 章別監査ダッシュボードの統計（getChapterForeshadowStats）。AI 不使用。
+
+#[tauri::command]
+foreshadow_get_setup(setup_id: String) -> Result<Option<Value>>
+
+#[tauri::command]
+foreshadow_update_setup(id: String, patch: ForeshadowSetupPatch) -> Result<()>
+// setup の固有メタ（strength / aiStrength / aiReasoning / lastEvaluatedAt 等）を差分パッチ更新。
+```
+
+### Agent write commands（2026-06-18 追記）
+
+Chat Agent から伏線本体を作成 / 更新するための tracked write 系（`src-tauri/src/commands/agent_writes.rs`、内部で `grimodex_core::writes::foreshadow::tracked_foreshadow_create/update` を呼ぶ）。詳細は「Agent write 連携」セクション参照：
+
+```rust
+#[tauri::command]
+agent_foreshadow_create(payload: AgentForeshadowCreatePayload) -> Result<AgentWriteResult>
+
+#[tauri::command]
+agent_foreshadow_update(payload: AgentForeshadowUpdatePayload) -> Result<AgentWriteResult>
+// AgentWriteResult: { entityId, version, changeEventUid, undoJournalId }
 ```
 
 ---
@@ -1086,7 +1186,7 @@ Phase 1 デフォルトは執筆モード。
   - 空シーン（bodyText 空文字）は事前除外
   - `existingForeshadows` を除外リストとして明示し被り防止
   - confidence バイアス低め（`low` → 折りたたみ表示推奨）
-  - Tauri ランタイム: `foreshadow_audit_chapter` Rust IPC 経由 / ブラウザ: JS 直接呼び出し
+  - 実装は純 TS（`sendChatMessageWithThinking` 直呼び）で Tauri / ブラウザ共通。Rust IPC は持たない（2026-06-18 訂正）
 
 - **C. 章別監査ダッシュボード（`ForeshadowChapterTab`）**
   - ForeshadowPanel にタブ切替「一覧」「章別監査」を追加
@@ -1110,7 +1210,7 @@ Phase 1 デフォルトは執筆モード。
 
 - **新規 Tauri コマンド**
   - `foreshadow_setup_create_ai`: AI メタデータ付き INSERT（ON CONFLICT はアンカーのみ更新）。`ai_reasoning` / `last_evaluated_at` も含む
-  - `foreshadow_audit_chapter`: 章監査 AI パス（Rust 側プロンプト生成 + OpenRouter 呼び出し）
+  - （2026-06-18 訂正）`auditChapter` は当初 Rust IPC を想定していたが、実装は純 TS で `foreshadow_audit_chapter` コマンドは存在しない
 
 **Phase 3 の残課題・見送り**
 
@@ -1621,18 +1721,25 @@ src/features/foreshadow/
     ├── foreshadowPasteRule.ts             # transformPasted で foreshadow 系 mark を strip
     └── ForeshadowMarks.test.ts            # mark + paste rule のテスト
 
-src-tauri/src/lib.rs                       # foreshadow 関連 Tauri コマンドを lib.rs に直書き
+src-tauri/src/commands/foreshadow.rs       # foreshadow 関連 Tauri コマンド（lib.rs の invoke_handler に登録）
                                            # （foreshadow_create / foreshadow_update / foreshadow_delete /
-                                           #   foreshadow_list / foreshadow_get /
+                                           #   foreshadow_list / foreshadow_list_with_labels /
+                                           #   foreshadow_list_open_for_context / foreshadow_get /
+                                           #   foreshadow_get_scene_info / foreshadow_get_scene_context /
+                                           #   foreshadow_list_by_codex_entry / foreshadow_get_chapter_stats /
+                                           #   foreshadow_get_setup / foreshadow_update_setup /
                                            #   foreshadow_link_codex / foreshadow_unlink_codex /
                                            #   foreshadow_list_linked_codex（Phase 5）/
                                            #   foreshadow_set_setup_strength / foreshadow_resolve_orphan /
                                            #   foreshadow_save_anchors_for_scene / foreshadow_load_anchors_for_scene /
-                                           #   foreshadow_propose_past_setups /
-                                           #   foreshadow_setup_create_ai（Phase 3）/ foreshadow_audit_chapter（Phase 3））
-                                           # ※ evaluateSetupStrength / getChapterForeshadowStats は
-                                           #    Rust IPC を持たず src/features/foreshadow/api.ts に純 TS で実装
-                                           #    （前者は sendChatMessageWithThinking 直呼び、後者は DB 集計のみ）
+                                           #   foreshadow_setup_create_ai（Phase 3））
+                                           # ※ propose_past_setups / evaluateSetupStrength / auditChapter /
+                                           #    getChapterForeshadowStats は Rust AI IPC を持たず
+                                           #    src/features/foreshadow/api.ts に純 TS で実装
+                                           #    （前 3 者は sendChatMessageWithThinking 直呼び + analysis policy gate、
+                                           #     getChapterForeshadowStats は foreshadow_get_chapter_stats で DB 集計）
+src-tauri/src/commands/agent_writes.rs     # agent_foreshadow_create / agent_foreshadow_update
+                                           # （tracked write: entity + undo_journal + change_event を 1 tx で）
 
 drizzle/migrations/
 └── XXXX_add_foreshadow_tables.sql         # Phase 1 migration（追加 migration なし）
@@ -1670,3 +1777,10 @@ drizzle/migrations/
   - **新規追加**: `foreshadows.secret` フラグを設計書に反映（設計書未記載のまま Phase 5 と同時実装されていた）。スキーマ定義に `secret` カラムを追記し、「AI コンテキスト注入と secret フラグ」セクションを新設して目的・既定値・migration 既定の非対称（schema default true / migration default false）・`listOpenForeshadowsForContext` のフィルタ挙動・Create dialog から外す設計判断を文書化。
   - **IPC surface 補完**: Phase 5 narrative に登場するが IPC 一覧から漏れていた `foreshadow_list_linked_codex` を追加。
   - スキーマ定義に `loadBearing` カラムも明示（Phase 6 narrative にしか書かれていなかった）。
+- 2026-06-18: コードとの差分修正・shipped 機能の追記。
+  - **impact-review 連携**: スキーマ定義に `codexLinkDirtyAt`（`codex_link_dirty_at`）を追記し、「Codex 変更追従」サブセクションを新設。リンク先 Codex の埋め込み対象更新で `markLinkedForeshadowsDirty` がリンク伏線をマーク → `isSetupEvaluationStale` の第 3 要因（codexLinkDirtyAt）で stale 判定する経路を文書化。DDL は Grimodex_統合DBスキーマ.md にリンク。
+  - **IPC surface 訂正・補完**: 実体パスを `src-tauri/src/commands/foreshadow.rs` に修正（lib.rs 直書きではない）。追加コマンド群（`foreshadow_list_with_labels` / `foreshadow_list_open_for_context` / `foreshadow_get_scene_info` / `foreshadow_get_scene_context` / `foreshadow_list_by_codex_entry` / `foreshadow_get_chapter_stats` / `foreshadow_get_setup` / `foreshadow_update_setup`）を追記。agent write コマンド（`agent_foreshadow_create` / `agent_foreshadow_update`）を追記。
+  - **誤った Tauri command 記載の修正**: `foreshadow_propose_past_setups` を IPC 一覧から削除し、`proposePastSetups` / `evaluateSetupStrength` / `auditChapter` は Tauri command を持たず `api.ts` の純 TS（`sendChatMessageWithThinking` 直呼び）である旨を各 AI 連携セクションで明記。`foreshadow_audit_chapter` Rust IPC は存在しないため Phase 3 のランタイム分岐記述を訂正。
+  - **AiPolicy gate（28293b2b）**: 上記 3 AI 関数の冒頭 `blockIfPolicyOff("analysis")`（off 時は空 / null を返す）を追記。
+  - **`detectRelatedCodex`**: 本文から Codex 言及を自動検出して `relatedCodex` に整形する経路を Phase 1 propose セクションに追記。
+  - **Agent write 連携（5e4c1a9e）**: chat agent の `create_foreshadow` / `update_foreshadow` ツール（knowledgeWrite gate → tracked write → store reload → globalHistory undo）の新セクションを追加。実装ファイル配置に `agent_writes.rs` を追記。

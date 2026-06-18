@@ -37,7 +37,7 @@
 >   - ~~**#14 実 drizzle `.toSQL()` を SQLite で実行する test**~~ **実施済** — `src/features/tree/aiScaffold/applyPlan.sqlite.test.ts`（既存 `createBrowserMock` / sql.js asm、happy-dom）。Rust 手書き SQL テストに加え、drizzle 生成 SQL の列/param がミラー SQLite で実行可能であることを gate。`migrate.rs` ↔ `browser-mock.ts SCHEMA_DDL` drift はスコープ外（フォローアップ可）。
 
 > **実装状況（2026-06-11 横断レビュー / multi-agent 調査・主張11件全て敵対的裏取り済み）**: 本メモの §0「agent tool protocol は完全 read-only」・§2(a)・案C「時期尚早」は **ai-write Phase 0-5 + agent-writes Phase で超過済み**。以下が現状の正:
-> - **in-app agent に MUTATING_EXECUTORS 5個が実装済み**（`toolExecutors.ts:1363`）: `create_codex_entry` / `update_codex_entry` / `create_snippet` / `apply_ai_tree_plan` / `propose_scene_body`。三重ゲート = ①各 agent-writes ヘルパ先頭の `blockIfPolicyOff`（knowledgeWrite / structureWrite / bodyWrite）②`declaredToolNames` ゲート（宣言ターンのみ発火）③Hermes 本文 tool_call チャネルから mutating 5個を除外（`ai.rs:1879 HERMES_BLOCKED_TOOL_NAMES`、injection 駆動書き込み対策）。F-2「完全 read-only」契約は「mutating は専用 allowlist + 三重ゲート経由のみ」契約に置換された。
+> - **in-app agent に MUTATING_EXECUTORS 7個が実装済み**（`toolExecutors.ts`、うち伏線 write 2 個は後述の chat 解禁分）: `create_codex_entry` / `update_codex_entry` / `create_snippet` / `apply_ai_tree_plan` / `propose_scene_body` / `create_foreshadow` / `update_foreshadow`。三重ゲート = ①各 agent-writes ヘルパ先頭の `blockIfPolicyOff`（knowledgeWrite / structureWrite / bodyWrite）②`declaredToolNames` ゲート（宣言ターンのみ発火）③Hermes 本文 tool_call チャネルから mutating 7個を除外（`ai.rs` の `HERMES_BLOCKED_TOOL_NAMES`、injection 駆動書き込み対策）。F-2「完全 read-only」契約は「mutating は専用 allowlist + 三重ゲート経由のみ」契約に置換された。
 > - **policy キーは5個**（chat / bodyWrite / analysis / structureWrite / knowledgeWrite — `ai-policy/types.ts`）。付録の「3キー」記載は stale。
 > - **本文は二相**: `propose_scene_body` は `prose_staging` に積むだけで、人間が diff UI で accept/reject するのが既定。**opt-in headless 自動適用**（`ai.autoAcceptBodyProposals`[project-scope, default off] AND bodyWrite ON、`autoAcceptGate.ts`）は append と一意アンカー指定 insert のみ着地、replace / アンカー無し insert は常に手動レビュー。エージェント設計書の「書き込みはユーザー確認必須」は「opt-in トグルが確認の代替」という設計判断（本ノートで明文化）。
 > - **外部 MCP（grimodex-mcp）は28ツール**（read 21 / write 5 / staging 1 / meta 1）。write は 3段ゲート（readonly → license → `reload_policy` 都度DB読み）。**foreshadow create/update は MCP 専用かつ完全 untracked**（change_event / authorship / undo_journal 皆無の生 INSERT/UPDATE、in-app 正本も同様）— chat への伏線 write 解禁はこの tracked 化が前提条件。
@@ -50,31 +50,64 @@
 
 ## 0. 検証済みの土台（要点）
 
-- **agent tool protocol は完全 read-only**。`AGENT_TOOLS`(`toolDefinitions.ts:4-264`) の15ツールは全て read か `ask_user` の UI 往復のみ。`EXECUTORS`(`toolExecutors.ts:947-964`) は read-only 14 executor を `Object.freeze`、F-2 security review 契約として「ここに載る executor は全て read-only」とコメント明記。DB/editor/map/codex への書き込みツールは存在しない。
-- したがって**全サーフェスの AI 書き込みは bespoke UI（人間が必ずクリックして着地させる）経由**で、agent からは1つも到達不可。
+> **【歴史的記録 — 2026-06-04 原状】** 以下の §0 / §1 表 / §2(a) は調査時点（2026-06-04）の原状記述。**agent tool protocol が完全 read-only だったのは過去**で、現在は MUTATING_EXECUTORS 経由で書き込み可能（次項の「現状」を正とする）。文脈保持のため原文を残す。
+
+- **agent tool protocol は完全 read-only**（※2026-06-04 原状。現在は超過）。`AGENT_TOOLS`(`toolDefinitions.ts`) は read か `ask_user` の UI 往復のみで、`EXECUTORS`(`toolExecutors.ts`) は read-only executor を `Object.freeze`、F-2 security review 契約として「ここに載る executor は全て read-only」とコメント明記していた。DB/editor/map/codex への書き込みツールは存在しなかった。
+- したがって**全サーフェスの AI 書き込みは bespoke UI（人間が必ずクリックして着地させる）経由**で、agent からは1つも到達不可だった。
 - `bodyWrite` ポリシーは「scene doc に書く」経路（inline-AI / Beat）にしか HARD gate されておらず、他の AI 散文着地点（Codex summary・synopsis 列・Snippet 行・Map sticky・伏線挿入文）は射程外。
 - 出自追跡は「記録」と「集計到達」の2軸が独立で、サーフェスごとに4状態が混在（健全／書かれるが読まれない／誤って human と記録／完全 untracked）。
 
+> **【現状 — 2026-06-18 時点の正】** agent tool protocol は read-only ではない。`AGENT_TOOLS`(`toolDefinitions.ts`) は**23 ツール**（read 14 + mutating 7 + `run_research` + `ask_user`）。`EXECUTORS`(`toolExecutors.ts`) は `READ_ONLY_EXECUTORS`（14, `Object.freeze`・F-2 allowlist）と `MUTATING_EXECUTORS`（7, `Object.freeze`）の合成で、両者とも凍結される。詳細は [§1.5 agent 書き込み（MUTATING_EXECUTORS）](#15-agent-書き込みmutating_executors現状) を参照。**policy キーは5個**（chat / bodyWrite / analysis / structureWrite / knowledgeWrite — `ai-policy/types.ts` の `AiFeature`）。付録や本文中の「3キー」「15ツール」「14 read-only executor のみ」記載は stale。
+
 ## 1. 現状マトリクス
 
-行=AI-write サーフェス。「出自: 記録」=挿入時に mark/span/行フラグが付くか。「出自: 集計到達」=`provenance.ts`(nodeId join)/`loadBatchAiRatio`/`projectStats` の nodeId スコープ集計がそれを読むか。両者は独立。
+行=AI-write サーフェス。「出自: 記録」=挿入時に mark/span/行フラグが付くか。「出自: 集計到達」=`provenance.ts`(nodeId join)/`loadBatchAiRatio`/`projectStats` の nodeId スコープ集計がそれを読むか。両者は独立。file:line は 2026-06-04 調査時点のもので drift あり（行番号依存より symbol 名を信頼。DB 列の正本は [`docs/Grimodex_統合DBスキーマ.md`] を参照）。
+
+> **（2026-06-18 追記）** この表は bespoke UI 経路の原状。agent tool 経由の書き込み（Codex/Snippet/伏線/tree/本文 staging）は [§1.5](#15-agent-書き込みmutating_executors現状) を正とする。下表のうち **Foreshadow/校閲 typo fix の「source='human' 誤着地」は 2026-06-04 に修正済**（冒頭 note の `7b0b46bf` 参照）で、現在は `source='ai'` 着地。**tree は apply_ai_tree_plan で AI 書き込み可**（§(d) の「縦の空白」は解消）。
 
 | サーフェス | AI書き込み機構 (file:line) | エントリ点 | ポリシーゲート (キー) | 出自: 記録 | 出自: 集計到達 |
 |---|---|---|---|---|---|
 | **本文 (prose)** | inline-AI `useInlineAiDiff.ts:194,213`; Beat streaming `insertBeatStream.ts:126`; `generateBeatOnce.ts:25`; `insertFromChat editorStore.ts:63`; `insertFromSnippet :163`; `insertFromPaste :240` | bespoke UI | **HARD** `bodyWrite` (inline `useInlineAiDiff.ts:75`, Beat `useBeatGeneration.ts:170`) — ただし**穴3つ**: `generateBeatOnce`/chat挿入(SOFTのみ)/snippet・paste挿入は ungated | mark `source='ai'`+model+(inline/Beatは)traceId; chat挿入は+chatMessageId | **到達** (scene doc → `extractDbSpans api.ts:99` → `authorship_spans` nodeId行; traceId→`generation_logs`, chatMsgId→`chat_messages`) |
-| **Codex** | チャット抽出 dialog/quick `ChatPanel.tsx:436,449`; AI summary生成 `DetailsTab.tsx:294`→`chatApi.ts:84` | bespoke UI | AI summary生成は **HARD** `bodyWrite`（`DetailsTab.tsx` の onClick で `blockIfPolicyOff('bodyWrite')`、synopsis と同じ `generateSynopsisFromContent` 生成のため同一キーで統一）。チャット抽出（配置）は無し | `sourceChatMessageId` のみ(粗粒度, **ai/human 不可判別** — user抽出でも同列が埋まる; AI summary経由は付かない) | **非到達** (`summary` は plain TEXT列 `schema.ts:156`; `authorship_spans.codexEntryId` 列は在るが永続化呼出ゼロ=dead column) |
-| **Snippet** | チャット抽出 quick/detailed `ChatPanel.tsx:485,503`; Beat Alternative `generateBeatAlternative.ts:81-104` | bespoke UI | **無し** (チャット抽出); Beat Alt は `bodyWrite` **presentation のみ** `SceneBeatNodeView.tsx:74` (HARD gate 無し) | 行フラグ `contentSource='ai'` `schema.ts:318`+`sourceChatMessageId` (**Codexより強い行レベル二値**); Beat Alt は model/traceId を破棄 | **非到達** (`authorship_spans.snippetId` 列は在るが永続化呼出ゼロ; per-span 帰属は scene 挿入時に初めて発生) |
-| **Map (AI Branch)** | `generateAiBranchCards mapAiApi.ts:209`→`createAiBranch mapApi.ts:904`; `seedAuthorshipMarksJson :989` | bespoke UI (`buildSystemPrompt mapAiApi.ts:48` が contextBuilder/agent ループを bypass) | **無し** (`src/features/map/` に policy 参照 0件) — **意図的判断**[bodywrite-chat-suppression] | mark `source='ai'`+model + **stickyId-keyed `authorship_spans` 行 `mapApi.ts:1065-1079`** (lossy 射影を通らない直書き) | **非到達** (span は stickyId lane に隔離; `provenance.ts:272` は nodeId のみ, `projectStats.ts:23` も nodeId スコープ → **書かれるが読まれない**) |
-| **Foreshadow** | `adoptInsertedNewSetup foreshadowStore.ts:855-1017` (本文挿入 `:916`); designated/audit/evaluate はメタのみ | bespoke UI | **無し** (`src/features/foreshadow/` に policy 0件) | **無し** — `foreshadowSetup` mark のみ(source 属性なし), authorship mark/programmaticInsert 不付与 → **`source='human'` で着地** | **誤集計** (human として計上; foreshadow-local `attribution='ai'` 列はパネル表示専用) |
-| **tree (アウトライン/フォルダ)** | **構造変更の AI 機構は皆無** (createNode/moveNode/deleteNode/renameScene は人間専用) | — (AI 不可達) | — | — | — |
+| **Codex** | チャット抽出 dialog/quick `ChatPanel.tsx:436,449`; AI summary生成 `DetailsTab.tsx`→`chatApi.ts`; **agent `create_codex_entry`/`update_codex_entry`**（`agent-writes/codex.ts`） | bespoke UI ＋ **agent ツール（knowledgeWrite gate）** | AI summary生成は **HARD** `bodyWrite`（`DetailsTab.tsx` の onClick で `blockIfPolicyOff('bodyWrite')`、synopsis と同じ `generateSynopsisFromContent` 生成のため同一キーで統一）。チャット抽出（配置）は無し。agent 経由は **HARD** `knowledgeWrite` | `sourceChatMessageId` のみ(粗粒度, **ai/human 不可判別** — user抽出でも同列が埋まる; AI summary経由は付かない)。**agent 経由は `replaceOwnerLaneAuthorshipSpans({kind:'codex'})` で `authorship_spans` の codexEntryId lane に source/model span を残す**（`agent-writes/codex.ts:174,266`） | チャット抽出/summary は **非到達**（`summary` は plain TEXT 列）。**agent codex span は到達** — `projectStats.ts:93` が `isNotNull(authorshipSpans.codexEntryId)` で knowledge lane を集計（`codexEntryId` 列は dead column ではない・b25309ed） |
+| **Snippet** | チャット抽出 quick/detailed `ChatPanel.tsx:485,503`; Beat Alternative `generateBeatAlternative.ts:81-104`; **agent `create_snippet`**（`agent-writes/snippet.ts`） | bespoke UI ＋ **agent ツール（knowledgeWrite gate）** | **無し** (チャット抽出); Beat Alt は `bodyWrite` **presentation のみ** `SceneBeatNodeView.tsx:74` (HARD gate 無し); agent 経由は **HARD** `knowledgeWrite` | 行フラグ `contentSource='ai'`+`sourceChatMessageId` (**Codexより強い行レベル二値**); Beat Alt は model/traceId を破棄 | **非到達** (`authorship_spans.snippetId` 列は在るが本文 snippet では永続化呼出ゼロ; per-span 帰属は scene 挿入時に初めて発生) |
+| **Map (AI Branch)** | `generateAiBranchCards mapAiApi.ts:209`→`createAiBranch mapApi.ts:904`; `seedAuthorshipMarksJson :989` | bespoke UI (`buildSystemPrompt mapAiApi.ts:48` が contextBuilder/agent ループを bypass) | **無し** (`src/features/map/` に policy 参照 0件) — **意図的判断**[bodywrite-chat-suppression] | mark `source='ai'`+model + **stickyId-keyed `authorship_spans` 行 `mapApi.ts:1065-1079`** (lossy 射影を通らない直書き) | **解消済**（2026-06-04 案A）— `buildMapProvenance` が stickyId span を本文 lane と別レーンで集計し開示レポートに出力。本文 totals には依然混ざらない（意図） |
+| **Foreshadow** | `adoptInsertedNewSetup foreshadowStore.ts:870-` (本文挿入); designated/audit/evaluate はメタのみ; **agent `create_foreshadow`/`update_foreshadow`**（`agent-writes/foreshadow.ts`） | bespoke UI ＋ **agent ツール（knowledgeWrite gate）** | bespoke adopt は **無し**（配置経路ゆえ非 gate・意図）。agent 経由は **HARD** `knowledgeWrite` | adopt は `aiAuthorshipAttrs()` + `programmaticInsert` で **`source='ai'` 着地**（2026-06-04 `7b0b46bf` で誤 human 計上を解消） | adopt 本文は **到達**（authorship span 経由）。agent foreshadow write は tracked（change_event/undo） |
+| **tree (アウトライン/フォルダ)** | bespoke `AiTreeDialog`（案B）＋ **agent `apply_ai_tree_plan`**（scaffold/reorganize、`agent-writes/tree.ts`） | bespoke UI ＋ **agent ツール** | **HARD** `structureWrite`（synopsis 生成時は + `bodyWrite` の二重 gate。`agent-writes/tree.ts:17,23`） | `recordChangeEvent`(domain:'grid', source/model/traceId/createdIds/movedIds/renamedIds) の **監査証跡**。`tree_nodes` への source 列追加は defer | 監査証跡のみ（scaffold は空 body で authorship span 無し） |
 | **シノプシス** | `generateSynopsisFromContent` (手動/status自動/StorySoFar一括); `generateSynopsisFromBeats.ts:72` — 全て `updateSynopsis treeStore.ts:1119` 単一集約 | bespoke UI | **無し** (4経路すべて 0件) | **無し** (`tree_nodes.synopsis` plain TEXT列; timelapse `recordChangeEvent` は source/model なし=人間編集と同一) | **非到達** (専用列すら無い) |
-| **校閲 (kouetsu)** | review/pseudo_comment/typo/consistency/meta_structure run `api.ts:29,37`; **typo fix adopt `typoFix.ts:44-48`** (唯一の本文書込) | bespoke UI | **HARD** `analysis` (各 view `blockIfPolicyOff('analysis')`) — ただし **typo fix adopt は analysis/bodyWrite 両方 ungated** | run は別系統 `post_effect_annotations`(authorRole='ai')+`post_effect_runs`(model); typo fix は **authorship mark 不付与 → `source='human'`** | 注釈は別系統で追跡可だが `authorship_spans`/`projectAuthorship` 非到達; typo fix は **誤集計(human)** |
-| **その他 (chat summarization)** | `runSummarization summarization.ts:52`→`addSummary chatApi.ts:865`→`chat_summaries`; 副次=RAG citation `chatStore.ts:2793`, timelapse capture `captureChat.ts:26` | 内部パイプライン (`sendMessage` 内自動) | **SOFT** `chat` (transitive: `sendMessage` 冒頭 `chatStore.ts:2373` blockIfPolicyOff) | **無し** (`chat_summaries schema.ts:439` に source/model/traceId 列なし — 最も provenance-poor) | **非到達** |
+| **校閲 (kouetsu)** | review/pseudo_comment/typo/consistency/meta_structure/intent_drift/timeline_consistency/**impact_review** run `post-effect/api.ts`; **typo fix adopt `typoFix.ts`** (唯一の本文書込) | bespoke UI | **HARD** `analysis` (各 view `blockIfPolicyOff('analysis')`); **typo fix adopt も `bodyWrite` HARD gate**（`typoFix.ts:38`、2026-06-04 修正済） | run は別系統 `post_effect_annotations`(authorRole='ai')+`post_effect_runs`(model); typo fix は `aiAuthorshipAttrs()` + `programmaticInsert` で **`source='ai'` 着地**（2026-06-04 `7b0b46bf` で誤 human 計上を解消） | 注釈は別系統で追跡可だが `authorship_spans`/`projectAuthorship` 非到達; typo fix 本文は authorship span 経由で **到達** |
+| **影響度レビュー (impact-review)** | `runImpactReview.ts`（Codex 変更 → 影響候補シーン絞り → `impact_review` post-effect 実行）; 本文は書かない（**注釈のみ**）。副次=`foreshadows.codexLinkDirtyAt` を立て伏線 setup を stale 化（`codex/api.ts`→`ForeshadowPanel.tsx` で「Codex 変更により再評価が必要」表示） | bespoke UI（手動トリガ） | **HARD** `analysis`（post-effect 共通ゲート） | `post_effect_annotations`(category=`impact_review_anchor`, authorRole='ai') + `post_effect_runs`(model) + `impact_review_baselines`(entry スナップショット) | 注釈系統で追跡可。`authorship_spans` 非到達（本文を書かないため対象外） |
+| **その他 (chat summarization)** | `runSummarization summarization.ts:52`→`addSummary chatApi.ts:865`→`chat_summaries`; 副次=RAG citation `chatStore.ts:2793`, timelapse capture `captureChat.ts:26` | 内部パイプライン (`sendMessage` 内自動) | **SOFT** `chat` (transitive: `sendMessage` 冒頭 blockIfPolicyOff) | **無し** (`chat_summaries` に source/model/traceId 列なし — 最も provenance-poor) | **非到達** |
+
+## 1.5 agent 書き込み（MUTATING_EXECUTORS）【現状】
+
+> （2026-06-18 追記）§0/§1/§2(a) の「agent は完全 read-only」は ai-write Phase 0-5 + agent-writes Phase + impact-review(#114) + tool scaling(#105) で超過済み。本節が現状の正。
+
+`EXECUTORS`(`toolExecutors.ts`) は **`READ_ONLY_EXECUTORS`（14, `Object.freeze`・F-2 allowlist）** と **`MUTATING_EXECUTORS`（7, `Object.freeze`）** の合成。mutating 7 ツール:
+
+| ツール | helper | ポリシーキー |
+|---|---|---|
+| `create_codex_entry` / `update_codex_entry` | `agent-writes/codex.ts` | `knowledgeWrite` |
+| `create_foreshadow` / `update_foreshadow` | `agent-writes/foreshadow.ts` | `knowledgeWrite` |
+| `create_snippet` | `agent-writes/snippet.ts` | `knowledgeWrite` |
+| `apply_ai_tree_plan` | `agent-writes/tree.ts` | `structureWrite`（+ synopsis 時 `bodyWrite`） |
+| `propose_scene_body` | `agent-writes/prose.ts` | `bodyWrite` |
+
+**三重ゲート**で injection 駆動の無断書き込みを防ぐ:
+
+1. **policy ゲート** — 各 helper 先頭で `blockIfPolicyOff(...)`（off なら throw。`codex.ts:115` / `foreshadow.ts:96` / `snippet.ts:36` / `tree.ts:17` / `prose.ts:83`）。
+2. **`declaredToolNames` ゲート**（`agentLoop.ts`）— 宣言されたツールのターンでのみ発火。
+3. **Hermes 本文 tool_call チャネルから mutating 7個を除外** — `ai.rs:1901 HERMES_BLOCKED_TOOL_NAMES` が native tool_calls 経路でしか書き込みを通さず、本文に紛れた疑似 tool_call を破棄。
+
+**本文は二相（propose → human accept/reject）**: `propose_scene_body` は `prose_staging` に積むだけで、人間が diff UI で accept/reject するのが既定。**opt-in headless 自動適用**（`ai.autoAcceptBodyProposals`[project-scope, default off] AND `bodyWrite` ON、`agent-writes/autoAcceptGate.ts`）は append と一意アンカー指定 insert のみ着地、replace / アンカー無し insert は常に手動レビュー。chat 版 `propose_scene_body` は anchorText を伝播せず（本文途中の無確認改変を開かない UX 防衛線・**意図的非対称**で MCP のみ anchored-insert を headless 着地可）。
+
+**tool-call 予算スケーリング + `run_research`（#105）**: agent のデータ取得ツール呼び出し上限は model-aware（`maxToolCalls`、既定 `DEFAULT_MAX_TOOL_CALLS=10`）。`run_research`（`toolDefinitions.ts:387`）は read-only サブエージェントに独自の予算と context を与えて 1 ツールコールで深掘り調査を委譲する委任ツール。サブエージェントは read 系（search/list/get over Codex/scenes/foreshadow/snippets）のみで、書き込み・`propose_scene_body`・`ask_user`・更なる sub-agent 起動は不可（depth=1 の二重ガード。`RESEARCH_SUBAGENT_TOOL`）。
 
 ## 2. 横断的な不整合
 
-### (a) エントリ点ムラ — agent は読めるが書けない、書き込みは全て bespoke
-**9 サーフェス全ての AI-write が bespoke UI 経由で、agent tool protocol からは 1 つも到達不可。** `EXECUTORS`(`toolExecutors.ts:947-964`)は read-only 14 executor を `Object.freeze` で凍結、F-2 security review 契約として「ここに載る executor は全て read-only」とコメント明記。agent は `search_codex`/`get_scene`/`list_open_foreshadows` 等で**読める**が、tree mutator・editor write・codex write ツールは定義に存在しない。`declaredToolNames` ゲート(`agentLoop.ts:133,222`)が将来の mutating executor の宣言ターン外発火も防ぐ。この read/write 非対称は構造的に一貫した設計判断であり、バグではない。
+### (a) エントリ点ムラ — agent は読めるが書けない、書き込みは全て bespoke 【歴史的記録 — 2026-06-04 原状。現在は超過、[§1.5](#15-agent-書き込みmutating_executors現状) を正とする】
+**（※2026-06-04 原状）全 AI-write が bespoke UI 経由で、agent tool protocol からは 1 つも到達不可だった。** `EXECUTORS`(`toolExecutors.ts`)は read-only executor を `Object.freeze` で凍結、F-2 security review 契約として「ここに載る executor は全て read-only」とコメント明記していた。agent は `search_codex`/`get_scene`/`list_open_foreshadows` 等で読めるが、tree mutator・editor write・codex write ツールは定義に存在しなかった。`declaredToolNames` ゲート(`agentLoop.ts`)が将来の mutating executor の宣言ターン外発火を防いでいた。
+
+**（現状）この read/write 非対称は解消済み** — F-2「完全 read-only」契約は「mutating は専用 allowlist(`MUTATING_EXECUTORS` 7個) + 三重ゲート経由のみ」契約に置換された。`declaredToolNames` ゲートは「将来防御」から「現役 mutation guard」へ役割転換した。詳細は §1.5。
 
 ### (b) ポリシー被覆ムラ — bodyWrite は本文 doc にしか効かない
 `bodyWrite` HARD gate の配線先は `useInlineAiDiff.ts:75` / `useBeatGeneration.ts:170` / `inlineAiCommands.ts` のみ。これが効くのは「scene doc に書く」経路だけで、以下を素通りする:
@@ -90,21 +123,25 @@
 ### (c) 出自被覆ムラ — 4 つの状態が混在
 1. **記録+集計到達**(健全): 本文 inline-AI/Beat/chat挿入。mark+span+(generation_logs/chat_messages)。`generateBeatOnce` も source='ai'+`insertGenerationLog :109` で完全(policy gap ≠ provenance gap)。
 2. **記録されるが集計非到達**(消費側の死角): **Map AI Branch** — `mapApi.ts:1065-1079` が `source:'ai'` の `authorship_spans` 行を直書きするが stickyId lane に隔離され、`provenance.ts:272`(nodeId join)・`projectStats.ts:23` が読まない。**書かれるが読まれない**。AI 使用箇所レポート(93b1aa7c)に Map 由来 AI 本文が現れない死角。Snippet `contentSource='ai'`・校閲 `post_effect_annotations` も同型(別系統に在るが横断集計に乗らない)。
-3. **誤って human と記録**(最悪 — 人間比率を汚染): **Foreshadow `adoptInsertedNewSetup`**(`foreshadowStore.ts:914-919`)と**校閲 typo fix adopt**(`typoFix.ts:44-48`)は AI 散文を `insertContentAt` するが authorship mark も `programmaticInsert` meta も付けない → `AuthorshipMark` default `source='human'` で着地し、`AiEditedPlugin` も新規挿入は対象外。AI 由来本文が `authorship_spans` 上 human として計上され `loadBatchAiRatio` を歪める。
+3. ~~**誤って human と記録**(最悪 — 人間比率を汚染): Foreshadow `adoptInsertedNewSetup` と校閲 typo fix adopt が authorship mark を付けず `source='human'` で着地し `loadBatchAiRatio` を歪める。~~ **【解消済 — 2026-06-04 `7b0b46bf`】** 両者とも `aiAuthorshipAttrs()` + `programmaticInsert` meta を付与し **`source='ai'` で着地**するよう修正済（共通ヘルパ `attribution/aiAuthorship.ts`。`foreshadowStore.ts:936,942` / `typoFix.ts:54-60`）。この状態 3 は現存しない。
 4. **完全 untracked(中立)**: Codex summary・synopsis 列・chat_summaries。専用列が無く plain TEXT。人間編集と区別不能。
 
-### (d) tree/アウトラインの縦の空白
-**章/シーン/フォルダの構造(create/move/delete/rename/reorder)を触る AI 機構が一切無い。** agent tool には mutator が無く(read-only 契約)、bespoke AI ボタンも構造編集を持たない。AI が tree に触れる唯一点は `scene.synopsis` 1 フィールドのみ(それも ungated・untracked)。構造編成は完全に人間専用 — これは安全側の縦の空白で、唯一の「AI が原理的に介入していないサーフェス」。
+### (d) tree/アウトラインの縦の空白 【解消済 — 案B + agent `apply_ai_tree_plan`】
+> ~~章/シーン/フォルダの構造を触る AI 機構が一切無い。~~ **（2026-06-18 追記）この縦の空白は埋まった。** bespoke `AiTreeDialog`（案B）と agent ツール `apply_ai_tree_plan`（scaffold/reorganize、`agent-writes/tree.ts`）の両経路で AI が章/シーン/フォルダを scaffold・再編できる。`structureWrite` HARD gate（synopsis 生成時は + `bodyWrite` の二重 gate）。帰属は `recordChangeEvent`(domain:'grid', source/model/traceId/createdIds/movedIds/renamedIds) の監査証跡のみ（`tree_nodes` への source 列追加は defer — scaffold は空 body で authorship span を持たないため）。原文（原状記述）は文脈保持のため以下に残す:
+>
+> 「章/シーン/フォルダの構造(create/move/delete/rename/reorder)を触る AI 機構が一切無い。agent tool には mutator が無く(read-only 契約)、bespoke AI ボタンも構造編集を持たない。構造編成は完全に人間専用 — 唯一の『AI が原理的に介入していないサーフェス』。」
 
 ## 3. 設計上の論点
 
 **(a) 単一 AI-write 経路 vs N 個の bespoke。** 現状は 9 サーフェス × 7+ 機構の bespoke が並立し、policy/provenance の配線が機構ごとにバラバラ(上記 (b)(c) のムラの根本原因)。「単一経路」候補は 2 つ — agent tool protocol(§(c))か、または「AI 散文を本文/メタに着地させる共通 sink 関数」。前者は F-2 read-only 契約を破る必要があり security boundary を動かす。後者(`insertFromChat`/`updateSynopsis` 等を 1 つの attributed-write helper に集約)は blast radius が大きいが概念的に正しい。
 
-**(b) チョークポイント横断的関心事。** policy gate と provenance tagging は本来 cross-cutting concern。現状はサーフェスごとに手配線で、追加するたび 1 つ忘れる(`generateBeatOnce`・typoFix・Foreshadow が実証)。`saveAuthorshipSpans`(`api.ts:42`)は既に scene doc の choke だが**呼出元が scene エディタに限定**(EditorPane/LinearSceneBlock + map sticky)で、これが codexEntryId/snippetId 列を dead column にしている。理想は「AI が永続テキストを書く全経路が必ず通る 1 関数 + そこで policy 確認 & source タグ強制」。ただし plain TEXT 列(summary/synopsis)は span 化できない構造的制約があり、完全統一には schema 変更が要る。
+**(b) チョークポイント横断的関心事。** policy gate と provenance tagging は本来 cross-cutting concern。現状はサーフェスごとに手配線で、追加するたび 1 つ忘れる(`generateBeatOnce`・typoFix・Foreshadow が実証だった — 後 2 者は解消済)。**（2026-06-18 追記）非 scene owner lane 用の choke `replaceOwnerLaneAuthorshipSpans`(`api.ts`)が新設され、codex/snippet/detail/phase lane を atomic に書けるようになった。** agent codex write(`agent-writes/codex.ts:174,266`)が codex lane を実際に書き、`projectStats.ts:93` が `isNotNull(authorshipSpans.codexEntryId)` で knowledge lane を集計するため、**`codexEntryId` 列は dead column ではない**（b25309ed）。理想は「AI が永続テキストを書く全経路が必ず通る 1 関数 + そこで policy 確認 & source タグ強制」。ただし plain TEXT 列(summary/synopsis)は span 化できない構造的制約があり、完全統一には schema 変更が要る。
 
 **(c) アウトライン/フォルダ・フロンティア。** AI に tree 構造の scaffold/再編を解禁するかは最大の未踏点。リスクが質的に違う: 破壊的 move/delete(現状 `treeStore` mutation は全て `recordChangeEvent`+globalHistory undo を持つので undo 基盤は在る)、構造変更の帰属(synopsis ですら追跡が無い現状で structural op の source をどう残すか未設計)、agent への mutator 解禁は F-2 契約の明示的変更。
 
 ## 4. 前進オプション
+
+> **【解決状況 — 2026-06-18】** 本章 3 案は 2026-06-04 時点の提案で、いずれも以降着手済み。**案A（横の統一）**: synopsis 以外（typoFix/Foreshadow の source='ai' 化、`generateBeatOnce` の `bodyWrite` gate、Map provenance 集計）は実装済み。synopsis 出自追跡のみ defer（冒頭 note 参照）。**案B（tree 解禁）**: bespoke `AiTreeDialog` + agent `apply_ai_tree_plan` で実装済（`structureWrite` gate）。**案C（agent tool protocol 統一）**: 「時期尚早」を超過し、`MUTATING_EXECUTORS` 7個 + 三重ゲートで部分実装済（[§1.5](#15-agent-書き込みmutating_executors現状)）。以下の各案テキストは判断の経緯として残す。
 
 ### 案A — 横の統一: 既存 AI-write に policy+source を揃える
 **Scope:** ungated 経路に `blockIfPolicyOff` を足し、誤 human 着地に authorship mark を付ける。
@@ -139,20 +176,25 @@
 
 | 仮説 | 判定 | 補正 |
 |---|---|---|
-| agent tool protocol は tree を mutate できない（AI はアウトライン/フォルダを scaffold/再編できない） | **confirmed** | `src/features/chat/` に createNode/moveNode/deleteNode 参照ゼロ |
+| agent tool protocol は tree を mutate できない（AI はアウトライン/フォルダを scaffold/再編できない） | ~~confirmed~~ **超過（2026-06-18）** | 当時は `src/features/chat/` に createNode/moveNode/deleteNode 参照ゼロで confirmed だったが、現在は agent ツール `apply_ai_tree_plan`（`agent-writes/tree.ts`、`structureWrite` gate）で scaffold/reorganize 可能 |
 | bodyWrite=off は Map AI Branch を gate しない | **confirmed** | より強く、Map は chat/analysis 含む**全 ai-policy を bypass**（send_chat_message 直叩き）。かつ「untracked」は誤り — span は書くが nodeId 集計から不可視 |
 | inline-AI/Beat 生成は chat_msg_id 出自を持たない | **confirmed** | untracked ではない — traceId→`generation_logs` で追跡される |
 | Codex/Snippet の AI 抽出は本文 prose と異なる出自記録 | **partial** | Codex と Snippet は別機構。Snippet は行レベル `contentSource='ai'` 二値を持ち Codex より強い。Codex summary は ai/human 不可判別 |
 | synopsisSuggestion の AI 書き込みは ungated かつ untracked | **confirmed** | — |
-| kouetsu Editorial/疑似コメントは gate/track されているか | **confirmed** | review/pseudo は analysis HARD gate + post_effect_annotations 追跡。ただし**隣接の typo fix adopt は ungated かつ source='human' 誤着地** |
+| kouetsu Editorial/疑似コメントは gate/track されているか | **confirmed** | review/pseudo は analysis HARD gate + post_effect_annotations 追跡。隣接の typo fix adopt は当時 ungated かつ source='human' 誤着地だったが **2026-06-04 に `bodyWrite` gate + source='ai' 化で解消済** |
 
 ### 主要関連ファイル
 - `src/features/editor/editorStore.ts`（insertFromChat / insertFromSnippet / insertFromPaste）
 - `src/features/editor/beat/generateBeatOnce.ts`（ungated Beat 経路）
-- `src/features/foreshadow/foreshadowStore.ts`（adoptInsertedNewSetup — human 誤着地）
-- `src/features/post-effect/typoFix.ts`（typo fix adopt — human 誤着地・ungated）
+- `src/features/foreshadow/foreshadowStore.ts`（adoptInsertedNewSetup — source='ai' 着地に修正済）
+- `src/features/post-effect/typoFix.ts`（typo fix adopt — `bodyWrite` gate + source='ai' に修正済）
+- `src/features/impact-review/runImpactReview.ts`（Codex 変更 → 影響度レビュー post-effect・注釈のみ・#114）
 - `src/features/tree/treeStore.ts`（updateSynopsis — synopsis 単一チョーク）
+- `src/features/agent-writes/{codex,foreshadow,snippet,tree,prose}.ts`（agent MUTATING_EXECUTORS の helper・policy gate）
 - `src/features/map/mapApi.ts`（createAiBranch + stickyId span 書込）
-- `src/features/attribution/provenance.ts` / `projectStats.ts`（nodeId スコープ集計 — Map span を読まない）
-- `src/features/chat/agent/toolExecutors.ts`（EXECUTORS freeze / F-2 read-only 契約）
-- `src/features/ai-policy/{types,policyGuard,preset}.ts`（capability キー = chat / bodyWrite / analysis）
+- `src/features/attribution/api.ts`（`replaceOwnerLaneAuthorshipSpans` — 非 scene owner lane の choke）
+- `src/features/attribution/provenance.ts` / `projectStats.ts`（集計 — `buildMapProvenance`/knowledge lane を含む）
+- `src/features/chat/agent/toolExecutors.ts`（READ_ONLY_EXECUTORS 14 + MUTATING_EXECUTORS 7 / 両者 freeze）
+- `src-tauri/src/ai.rs`（`HERMES_BLOCKED_TOOL_NAMES` — 本文 channel mutation block）
+- `src/features/ai-policy/types.ts`（`AiFeature` = chat / bodyWrite / analysis / structureWrite / knowledgeWrite の 5 キー）
+- [`docs/Grimodex_統合DBスキーマ.md`]（DB 列の正本: `authorship_spans` / `impact_review_baselines` / `post_effect_*` / `foreshadows.codex_link_dirty_at` 等）
