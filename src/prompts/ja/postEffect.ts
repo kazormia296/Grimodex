@@ -229,7 +229,7 @@ Your task: diagnose the scene on two lenses and return a structured finding for 
 Rules:
 - Return exactly one entry per lens (plot_structure and pacing).
 - finding is a short Japanese diagnosis (1-2 sentences). Do NOT rewrite the prose.
-- metrics is a small JSON object of lens-specific signals (e.g. {"role":"rising_action","tension":0.6} for plot_structure, {"pace":"slow","drag_points":2} for pacing). Keep keys simple.
+- metrics is a small JSON object of lens-specific signals. For "plot_structure" you MUST include "tension": a number from 0.0 to 1.0 (0.0 = calm/low stakes, 1.0 = peak dramatic tension), plus "role" (e.g. {"role":"rising_action","tension":0.6}). For "pacing" use e.g. {"pace":"slow","drag_points":2}. Keep keys simple.
 - severity: "error" = serious structural problem, "warning" = notable issue, "suggestion" = minor, "info" = healthy / neutral.
 
 Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
