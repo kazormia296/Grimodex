@@ -83,71 +83,75 @@ export function CodexQuickSection() {
             {t("tree.quickSection.noEntries")}
           </p>
         ) : (
-          displayed.map((entry) => (
-            <div
-              key={entry.id}
-              className="group flex cursor-pointer items-center gap-2 px-2 py-1 hover:bg-accent/50"
-              onClick={() => handleEntryClick(entry)}
-              onMouseEnter={(e) => {
-                setHoveredEntry({
-                  entry,
-                  rect: e.currentTarget.getBoundingClientRect(),
-                });
-              }}
-              onMouseLeave={() => setHoveredEntry(null)}
-            >
-              {/* Category dot */}
-              <span
-                className="h-2 w-2 flex-shrink-0 rounded-full"
-                style={{
-                  backgroundColor: typeColorMap[entry.type]?.fg ?? "#888888",
+          displayed.map((entry) => {
+            const phaseLabel = resolved.get(entry.id)?.phaseLabel;
+            const spoilerNote = spoilerNoteFor(entry.id);
+            return (
+              <div
+                key={entry.id}
+                className="group flex cursor-pointer items-center gap-2 px-2 py-1 hover:bg-accent/50"
+                onClick={() => handleEntryClick(entry)}
+                onMouseEnter={(e) => {
+                  setHoveredEntry({
+                    entry,
+                    rect: e.currentTarget.getBoundingClientRect(),
+                  });
                 }}
-              />
-              {/* Name */}
-              <span className="flex-1 truncate text-xs text-foreground">
-                {entry.name}
-              </span>
-              {resolved.get(entry.id)?.phaseLabel && (
-                <span className="shrink-0 rounded bg-primary/10 px-1 py-0.5 text-[10px] font-medium text-primary">
-                  {resolved.get(entry.id)!.phaseLabel}
-                </span>
-              )}
-              {spoilerNoteFor(entry.id) && (
-                <EyeOff
-                  data-testid={`codex-quick-spoiler-${entry.id}`}
-                  className="h-3 w-3 shrink-0 text-amber-600 dark:text-amber-500"
-                  aria-label={spoilerNoteFor(entry.id)}
-                />
-              )}
-              {/* Type label */}
-              <span className="text-[10px] text-muted-foreground">
-                {entry.type}
-              </span>
-              {/* Pin/unpin button */}
-              <button
-                type="button"
-                title={
-                  pinnedCodexIds.includes(entry.id)
-                    ? t("tree.quickSection.unpin")
-                    : t("tree.quickSection.pin")
-                }
-                onClick={(e) => {
-                  e.stopPropagation();
-                  togglePinnedCodex(entry.id);
-                }}
-                className={cn(
-                  "hidden h-4 w-4 flex-shrink-0 items-center justify-center rounded text-muted-foreground group-hover:flex",
-                  pinnedCodexIds.includes(entry.id) && "flex text-primary",
-                )}
+                onMouseLeave={() => setHoveredEntry(null)}
               >
-                {pinnedCodexIds.includes(entry.id) ? (
-                  <PinOff className="h-3 w-3" />
-                ) : (
-                  <Pin className="h-3 w-3" />
+                {/* Category dot */}
+                <span
+                  className="h-2 w-2 flex-shrink-0 rounded-full"
+                  style={{
+                    backgroundColor: typeColorMap[entry.type]?.fg ?? "#888888",
+                  }}
+                />
+                {/* Name */}
+                <span className="flex-1 truncate text-xs text-foreground">
+                  {entry.name}
+                </span>
+                {phaseLabel && (
+                  <span className="shrink-0 rounded bg-primary/10 px-1 py-0.5 text-[10px] font-medium text-primary">
+                    {phaseLabel}
+                  </span>
                 )}
-              </button>
-            </div>
-          ))
+                {spoilerNote && (
+                  <EyeOff
+                    data-testid={`codex-quick-spoiler-${entry.id}`}
+                    className="h-3 w-3 shrink-0 text-amber-600 dark:text-amber-500"
+                    aria-label={spoilerNote}
+                  />
+                )}
+                {/* Type label */}
+                <span className="text-[10px] text-muted-foreground">
+                  {entry.type}
+                </span>
+                {/* Pin/unpin button */}
+                <button
+                  type="button"
+                  title={
+                    pinnedCodexIds.includes(entry.id)
+                      ? t("tree.quickSection.unpin")
+                      : t("tree.quickSection.pin")
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    togglePinnedCodex(entry.id);
+                  }}
+                  className={cn(
+                    "hidden h-4 w-4 flex-shrink-0 items-center justify-center rounded text-muted-foreground group-hover:flex",
+                    pinnedCodexIds.includes(entry.id) && "flex text-primary",
+                  )}
+                >
+                  {pinnedCodexIds.includes(entry.id) ? (
+                    <PinOff className="h-3 w-3" />
+                  ) : (
+                    <Pin className="h-3 w-3" />
+                  )}
+                </button>
+              </div>
+            );
+          })
         )}
 
         {/* Add pin button */}
