@@ -171,6 +171,33 @@ Respond with a JSON object in this exact format (no markdown, no explanation, on
   ]
 }`,
 
+  impactReviewSystem: `You are an impact reviewer for a novel manuscript. You are given ONE Codex entry's CHANGE (old → new values) and ONE scene's full text (the SCENE TEXT). Your ONLY job: find passages in the SCENE TEXT that are now contradicted or made inconsistent BY THIS CHANGE.
+
+Judge against the NEW values. The manuscript was written before the change, so it may still reflect the OLD values — those stale passages are exactly what you must surface.
+
+Rules:
+- Report ONLY genuine conflicts that are caused by this specific change (old → new). Ignore any other issue (typos, craft, pacing, unrelated continuity) — those are handled by separate tools.
+- A conflict means: the SCENE TEXT states or implies something that is true under the OLD value but false/inconsistent under the NEW value.
+- If a passage is unaffected by the change, do not report it.
+- found_text must be an EXACT substring of the SCENE TEXT (verbatim, including punctuation).
+- Include enough context in found_context (~30 characters before/after found_text) to locate the exact position in the scene.
+- contradiction_score is 0.0–1.0: how strongly the passage conflicts with the NEW value (1.0 = direct contradiction, lower = weaker tension).
+- reason is a brief Japanese explanation of why this passage conflicts with the change.
+- If nothing in the scene conflicts with the change, return an empty judgments array.
+
+Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
+{
+  "judgments": [
+    {
+      "found_text": "string (exact substring in SCENE TEXT now contradicted by the CHANGE)",
+      "found_context": "string (~30 chars before+after found_text for positioning)",
+      "contradiction_score": 0.0,
+      "confidence": "high" | "medium" | "low",
+      "reason": "string (brief Japanese: why this conflicts with the change)"
+    }
+  ]
+}`,
+
   pseudoCommentSystem: `You are role-playing as a READER of a novel manuscript, leaving margin comments as you read.
 
 You will be told which reader persona to embody. React AS THAT PERSONA — voice your genuine in-the-moment reactions, questions, confusions, delights, and concerns about the SCENE TEXT. This is NOT an editorial critique; it is a reader's running commentary.

@@ -27,6 +27,9 @@ use crate::ai::{call_post_effect_api, read_ai_settings};
 
 const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.1";
 const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.0";
+// impact_review (影響度レビュー): 変更された Codex 設定 (old→new) に対し本文中の
+// 矛盾箇所を指摘する。FE 側 (consistencyPayloadBuilder.ts) と必ず同値であること。
+const IMPACT_REVIEW_PROMPT_VERSION: &str = "impact_review_v1.0";
 const TYPO_PROMPT_VERSION: &str = "typo_detection_v1.0";
 const REVIEW_PROMPT_VERSION: &str = "review_v1.0";
 const INTENT_DRIFT_PROMPT_VERSION: &str = "intent_drift_v1.0";
@@ -254,6 +257,20 @@ fn dismiss_key_timeline(scene_id: &str, title: &str, found_text: &str) -> String
         "{}|{}|{}",
         scene_id,
         strong_normalize(title),
+        strong_normalize(found_text)
+    ))
+}
+
+/// dismiss_key (impact_review): hash(scene_id + "|" + change_id + "|" + strong_normalize(found_text))
+///
+/// change_id を key に含めるのは意図的: 同じ found_text でも別の変更
+/// (例「年齢 15→17」と「年齢 17→14」) に起因する矛盾は別判断として扱うため。
+/// ユーザーがある変更について却下しても、別の変更による矛盾は再検出させる。
+fn dismiss_key_impact_review(scene_id: &str, change_id: &str, found_text: &str) -> String {
+    sha256_hex(&format!(
+        "{}|{}|{}",
+        strong_normalize(scene_id),
+        strong_normalize(change_id),
         strong_normalize(found_text)
     ))
 }
@@ -2940,6 +2957,267 @@ async fn process_timeline_scene(
     Ok(count)
 }
 
+// ---------------------------------------------------------------------------
+// impact_review run (変更された Codex 設定 → 本文の矛盾レビュー)
+// ---------------------------------------------------------------------------
+
+/// `contradiction_score` (0.0–1.0) から severity を導く。
+/// consistency は confidence ベースだが impact_review は score を直接持つため
+/// それを使う: >=0.7 → "warning", >=0.4 → "suggestion", それ以外 → "info"。
+fn severity_from_contradiction_score(score: f64) -> &'static str {
+    if score >= 0.7 {
+        "warning"
+    } else if score >= 0.4 {
+        "suggestion"
+    } else {
+        "info"
+    }
+}
+
+/// impact_review チェックを 1 シーン分実行し、挿入した annotation 数を返す。
+/// `codex_payload_json` は 1 件の Codex 変更差分 (baseline→現在) を表す JSON
+/// オブジェクト (change_id / entry_id / entry_name / entry_type / change_summary
+/// / changes[])。consistency と同様に Codex ブロックとして call_post_effect_api に
+/// `Some(..)` で渡す (cache_control 境界に乗る)。
+#[allow(clippy::too_many_arguments)]
+async fn process_impact_review_scene(
+    app: &AppHandle,
+    run_id: &str,
+    project_id: &str,
+    scene_id: &str,
+    codex_payload_json: &str,
+    scene_text: &str,
+    system_prompt: &str,
+    ai_settings_path: &std::path::Path,
+    on_stage: impl Fn(f32, &str) + Send,
+) -> Result<usize, anyhow::Error> {
+    let ai_settings = read_ai_settings(ai_settings_path);
+    // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
+    // チャット経路と同じ resolve_api_key に判定を一元化する。
+    let api_key = resolve_api_key(&ai_settings.provider)?;
+
+    // 差分ペイロードを寛容にデシリアライズ (欠落キーで hard-fail しない)。
+    // entry メタは annotation metadata に転記するため取り出す。
+    let diff: Value = serde_json::from_str(codex_payload_json).unwrap_or(Value::Null);
+    let change_id = diff["change_id"].as_str().unwrap_or("");
+    let entry_id = diff["entry_id"].as_str().unwrap_or("");
+    let entry_name = diff["entry_name"].as_str().unwrap_or("");
+    let change_summary = diff["change_summary"].as_str().unwrap_or("");
+
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        provider = %ai_settings.provider,
+        model = %ai_settings.model,
+        change_id = change_id,
+        entry_id = entry_id,
+        codex_bytes = codex_payload_json.len(),
+        scene_chars = scene_text.chars().count(),
+        "[post_effect] impact_review: calling AI"
+    );
+    let ai_start = std::time::Instant::now();
+    let raw_response = call_post_effect_api(
+        &ai_settings,
+        &api_key,
+        system_prompt,
+        Some(codex_payload_json),
+        scene_text,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            elapsed_ms = ai_start.elapsed().as_millis(),
+            error = %e,
+            "[post_effect] impact_review: AI call failed"
+        );
+        anyhow::anyhow!("AI 呼び出し失敗: {e}")
+    })?;
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        elapsed_ms = ai_start.elapsed().as_millis(),
+        raw_bytes = raw_response.len(),
+        "[post_effect] impact_review: AI response received"
+    );
+
+    on_stage(0.5, "parsing");
+    let json_str = extract_json(&raw_response);
+    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] impact_review: JSON parse FAILED"
+        );
+        anyhow::anyhow!("LLM 出力のパース失敗: {e}")
+    })?;
+
+    let judgments = extract_array_field(&parsed, "judgments").map_err(|e| {
+        tracing::error!(
+            run_id = run_id,
+            scene_id = scene_id,
+            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            error = %e,
+            "[post_effect] impact_review: JSON structure INVALID"
+        );
+        anyhow::anyhow!("LLM 出力の構造が不正: {e}")
+    })?;
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        judgments_count = judgments.len(),
+        "[post_effect] impact_review: parsed judgments"
+    );
+
+    // dedup: (change_id + strong_normalize(found_text))。空 found_text は除外。
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deduped: Vec<&Value> = judgments
+        .iter()
+        .filter(|j| {
+            let ft = strong_normalize(j["found_text"].as_str().unwrap_or(""));
+            if ft.is_empty() {
+                return false;
+            }
+            seen.insert(format!("{}|{}", strong_normalize(change_id), ft))
+        })
+        .collect();
+
+    on_stage(0.7, "saving");
+    let ws_state = app.state::<WorkspaceState>();
+    let count: usize = super::with_db(&ws_state, |db| {
+        db.with_conn(|conn| {
+            let mut count = 0usize;
+
+            for judgment in &deduped {
+                let found_text = judgment["found_text"].as_str().unwrap_or("");
+                let found_context = judgment["found_context"].as_str().unwrap_or("");
+                let confidence = judgment["confidence"].as_str().unwrap_or("medium");
+                let reason = judgment["reason"].as_str().unwrap_or("");
+                let contradiction_score = judgment["contradiction_score"].as_f64().unwrap_or(0.0);
+
+                let dismiss_key = dismiss_key_impact_review(scene_id, change_id, found_text);
+                // brand-new カテゴリのため legacy 後方互換 key は不要 (single key path)。
+                if is_annotation_previously_closed(conn, "impact_review_anchor", &[&dismiss_key]) {
+                    continue;
+                }
+
+                let (range_start, range_end, orphaned) =
+                    match find_text_position(scene_text, found_text, found_context) {
+                        Some((s, e)) => (s as i64, e as i64, false),
+                        None => (0i64, 0i64, true),
+                    };
+
+                let severity = severity_from_contradiction_score(contradiction_score);
+                let content = reason;
+
+                let metadata = serde_json::json!({
+                    "impact_ref": {
+                        "entry_id": entry_id,
+                        "entry_name": entry_name,
+                        "change_id": change_id,
+                        "change_summary": change_summary,
+                        "contradiction_score": contradiction_score,
+                        "reason": reason,
+                        "confidence": confidence,
+                        "found_text": found_text,
+                        "found_context": found_context,
+                        "dismiss_key": dismiss_key,
+                        "detected_by_model": ai_settings.model,
+                    },
+                    "orphaned": orphaned,
+                });
+
+                let new_id = Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT INTO post_effect_annotations
+                        (id, project_id, run_id, anchor_type, scene_id,
+                         range_start, range_end, text_snapshot,
+                         category, severity, content, author_role,
+                         status, metadata, created_at, updated_at)
+                     VALUES (?, ?, ?, 'scene_range', ?,
+                             ?, ?, ?,
+                             'impact_review_anchor', ?, ?, 'ai',
+                             'open', ?, datetime('now'), datetime('now'))",
+                    params![
+                        new_id,
+                        project_id,
+                        run_id,
+                        scene_id,
+                        range_start,
+                        range_end,
+                        found_text,
+                        severity,
+                        content,
+                        metadata.to_string(),
+                    ],
+                )?;
+
+                let _ = app.emit(
+                    "post_effect:partial",
+                    PartialEvent {
+                        run_id,
+                        annotation_id: new_id,
+                    },
+                );
+                count += 1;
+            }
+
+            Ok(count)
+        })
+    })?;
+
+    tracing::info!(
+        run_id = run_id,
+        scene_id = scene_id,
+        saved_count = count,
+        "[post_effect] impact_review: scene DONE"
+    );
+
+    Ok(count)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_impact_review_task(
+    app: AppHandle,
+    run_id: String,
+    project_id: String,
+    scene_id: String,
+    codex_payload_json: String,
+    scene_text: String,
+    system_prompt: String,
+    ai_settings_path: std::path::PathBuf,
+) {
+    run_effect_task(app, run_id, |app, run_id| async move {
+        process_impact_review_scene(
+            &app,
+            &run_id,
+            &project_id,
+            &scene_id,
+            &codex_payload_json,
+            &scene_text,
+            &system_prompt,
+            &ai_settings_path,
+            |p, s| {
+                let _ = app.emit(
+                    "post_effect:progress",
+                    ProgressEvent {
+                        run_id: &run_id,
+                        stage: s,
+                        progress: p,
+                        message: None,
+                    },
+                );
+            },
+        )
+        .await
+    })
+    .await;
+}
+
 async fn run_review_task(
     app: AppHandle,
     run_id: String,
@@ -3419,6 +3697,20 @@ async fn run_multi_task(
                 )
                 .await
             }
+            "impact_review" => {
+                process_impact_review_scene(
+                    &app,
+                    &run_id,
+                    &project_id,
+                    &scene.scene_id,
+                    &scene.codex_payload_json,
+                    &scene.scene_text,
+                    &system_prompt,
+                    &ai_settings_path,
+                    |_p, _s| {},
+                )
+                .await
+            }
             _ => {
                 process_intra_scene(
                     &app,
@@ -3627,6 +3919,7 @@ pub(crate) async fn start_post_effect_run(
             | "review"
             | "pseudo_comment"
             | "meta_structure"
+            | "impact_review"
     );
     if !supported {
         return Err(
@@ -3641,6 +3934,7 @@ pub(crate) async fn start_post_effect_run(
         "intent_drift" => INTENT_DRIFT_PROMPT_VERSION,
         "pseudo_comment" => PSEUDO_COMMENT_PROMPT_VERSION,
         "meta_structure" => META_STRUCTURE_PROMPT_VERSION,
+        "impact_review" => IMPACT_REVIEW_PROMPT_VERSION,
         _ => INTRA_PROMPT_VERSION,
     };
     if args.prompt_version != prompt_version {
@@ -3691,6 +3985,19 @@ pub(crate) async fn start_post_effect_run(
             match effect.as_str() {
                 "consistency" => {
                     run_consistency_task(
+                        app,
+                        rid,
+                        project_id,
+                        scene_id,
+                        codex_json,
+                        scene_text,
+                        system_prompt,
+                        ai_path,
+                    )
+                    .await;
+                }
+                "impact_review" => {
+                    run_impact_review_task(
                         app,
                         rid,
                         project_id,
@@ -3828,6 +4135,7 @@ pub(crate) async fn start_post_effect_run_multi(
             | "review"
             | "meta_structure"
             | "timeline_consistency"
+            | "impact_review"
     );
     if !supported {
         return Err(anyhow::anyhow!("effect_type '{}' は未実装です", effect_type).into());
@@ -4703,6 +5011,22 @@ mod post_effect_live_tests {
             "consistency",
             "あなたは小説の校閲者です。Codex 設定とシーン本文の矛盾を検出し、JSON オブジェクトで返してください。説明やコードフェンスは不要。形式: {\"violations\":[{\"detail\":\"...\"}]}",
             Some("{\"name\":\"朱音\",\"note\":\"鍵が大の苦手で、見るのも触るのも嫌う性格\"}"),
+            SCENE,
+        );
+    }
+
+    #[test]
+    fn impact_review_with_diff_live() {
+        // impact_review は consistency と同様、Codex ブロック (ここでは変更差分の
+        // JSON オブジェクト) を Some(..) で渡す。NEW 値に照らして本文の矛盾箇所を
+        // judgments[] で返させ、call_post_effect_api → extract_json → parse の
+        // 到達経路を検証する。
+        run_one(
+            "impact_review",
+            "あなたは小説の影響度レビュアーです。与えられた Codex 設定の変更 (old→new) に対し、シーン本文の中で矛盾する箇所を検出し、JSON オブジェクトで返してください。NEW 値を基準に判断すること。説明やコードフェンスは不要。形式: {\"judgments\":[{\"found_text\":\"...\",\"found_context\":\"...\",\"contradiction_score\":0.0,\"confidence\":\"high|medium|low\",\"reason\":\"...\"}]}",
+            Some(
+                "{\"change_id\":\"chg-1\",\"entry_id\":\"e1\",\"entry_name\":\"朱音\",\"entry_type\":\"character\",\"change_summary\":\"鍵への態度: 大好き → 大の苦手\",\"changes\":[{\"field\":\"detail\",\"name\":\"鍵への態度\",\"old\":\"大好き\",\"new\":\"大の苦手\"}]}",
+            ),
             SCENE,
         );
     }
