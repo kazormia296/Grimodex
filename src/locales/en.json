@@ -589,7 +589,14 @@
       "linearBeatDisplayDesc": "How beats are shown in Linear edit mode",
       "linearBeatDisplayNormal": "Normal",
       "linearBeatDisplayCollapsed": "Collapsed",
-      "linearBeatDisplayHidden": "Hidden"
+      "linearBeatDisplayHidden": "Hidden",
+      "writingGoal": "Writing Goal",
+      "dailyGoalDefault": "Default daily goal",
+      "dailyGoalDefaultDesc": "Daily character target applied to projects that haven't set their own (0 = none).",
+      "dailyGoalNone": "None",
+      "dailyGoal": "Daily goal (this project)",
+      "dailyGoalDesc": "Overrides the default for this project (0 = use the default).",
+      "dailyGoalInherit": "Default"
     },
     "ai": {
       "mcp": {
@@ -3289,7 +3296,21 @@
     "weekdayMon": "Mon",
     "weekdayWed": "Wed",
     "weekdayFri": "Fri",
-    "noData": "No writing recorded yet. Stats will appear here once you start writing."
+    "noData": "No writing recorded yet. Stats will appear here once you start writing.",
+    "dailyGoal": {
+      "title": "Today's goal",
+      "currentProgress": "{{current}} / {{goal}} chars",
+      "remaining": "{{remaining}} to go",
+      "reached": "Goal reached! 🎉",
+      "set": "Set a daily goal",
+      "edit": "Edit goal",
+      "save": "Save",
+      "cancel": "Cancel",
+      "placeholder": "Characters",
+      "clearHint": "Leave empty to use the default",
+      "usingDefault": "Using the default goal",
+      "noCharData": "Character data unavailable today; showing 0"
+    }
   },
   "attribution": {
     "report": "Attribution Report",

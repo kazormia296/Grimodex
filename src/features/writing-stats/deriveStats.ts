@@ -263,3 +263,46 @@ export function intensityLevel(
   if (value >= bands[0]) return 2;
   return 1;
 }
+
+/** 本日の執筆量と目標から導いた進捗。`goal <= 0` は「目標なし」を表す。 */
+export interface GoalProgress {
+  /** 有効な目標が設定されているか（goal > 0）。 */
+  hasGoal: boolean;
+  goal: number;
+  /** 本日の実績（負値は 0 にクランプ）。 */
+  current: number;
+  /** 目標までの残り（達成済みなら 0）。 */
+  remaining: number;
+  /** 0..100 に丸めてクランプした達成率。 */
+  pct: number;
+  reached: boolean;
+}
+
+/**
+ * 本日の執筆量 `current` の、目標 `goal` に対する進捗を計算する純関数。
+ * 目標が 0 以下なら hasGoal=false（UI は「目標未設定」状態を出す）。
+ */
+export function computeGoalProgress(
+  current: number,
+  goal: number,
+): GoalProgress {
+  const cur = current > 0 ? current : 0;
+  if (goal <= 0) {
+    return {
+      hasGoal: false,
+      goal: 0,
+      current: cur,
+      remaining: 0,
+      pct: 0,
+      reached: false,
+    };
+  }
+  return {
+    hasGoal: true,
+    goal,
+    current: cur,
+    remaining: Math.max(0, goal - cur),
+    pct: Math.min(100, Math.round((cur / goal) * 100)),
+    reached: cur >= goal,
+  };
+}

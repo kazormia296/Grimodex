@@ -12,6 +12,7 @@ import {
   type WritingStatsData,
 } from "./writingStatsQuery";
 import { Heatmap } from "./Heatmap";
+import { DailyGoalProgress } from "./DailyGoalProgress";
 
 export function WritingStatsPanel({ isActive = true }: SlotPanelProps = {}) {
   const { t } = useTranslation();
@@ -129,6 +130,12 @@ export function WritingStatsPanel({ isActive = true }: SlotPanelProps = {}) {
               value={t("writingStats.days", { count: stats.activeDays })}
             />
           </div>
+
+          {/* 本日の目標 */}
+          <DailyGoalProgress
+            todayChars={stats.todayChars}
+            hasCharData={stats.hasCharData}
+          />
 
           {/* ヒートマップ */}
           {heatmap && (
