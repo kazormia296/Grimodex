@@ -129,4 +129,31 @@ describe("CodexEntryPopoverContent", () => {
     );
     expect(onOpenInCodex).toHaveBeenCalledOnce();
   });
+
+  it("spoilerNote を渡すと警告行を表示する", () => {
+    render(
+      <CodexEntryPopoverContent
+        entry={mockEntry}
+        dotColor="#888"
+        typeLabel="人物"
+        spoilerNote="このシーン時点で未開示: 王の正体"
+      />,
+    );
+    expect(
+      screen.getByText("このシーン時点で未開示: 王の正体"),
+    ).toBeInTheDocument();
+  });
+
+  it("spoilerNote が無ければ警告行を表示しない", () => {
+    const { container } = render(
+      <CodexEntryPopoverContent
+        entry={mockEntry}
+        dotColor="#888"
+        typeLabel="人物"
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="codex-spoiler-note"]'),
+    ).toBeNull();
+  });
 });

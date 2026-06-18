@@ -1,4 +1,4 @@
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, EyeOff } from "lucide-react";
 import type { CodexEntry } from "@/features/codex/api";
 import { iconToDataUrl } from "../iconUtils";
 
@@ -9,6 +9,7 @@ interface CodexEntryPopoverContentProps {
   onOpenInCodex?: () => void;
   phaseLabel?: string;
   resolvedSummary?: string | null;
+  spoilerNote?: string;
 }
 
 export function CodexEntryPopoverContent({
@@ -18,6 +19,7 @@ export function CodexEntryPopoverContent({
   onOpenInCodex,
   phaseLabel,
   resolvedSummary,
+  spoilerNote,
 }: CodexEntryPopoverContentProps) {
   const safeIcon = iconToDataUrl(entry.icon);
   return (
@@ -51,6 +53,15 @@ export function CodexEntryPopoverContent({
       {(resolvedSummary ?? entry.summary) && (
         <p className="mb-2 line-clamp-3 text-xs text-muted-foreground">
           {resolvedSummary ?? entry.summary}
+        </p>
+      )}
+      {spoilerNote && (
+        <p
+          data-testid="codex-spoiler-note"
+          className="mb-2 flex items-start gap-1 text-[11px] text-amber-600 dark:text-amber-500"
+        >
+          <EyeOff className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+          <span>{spoilerNote}</span>
         </p>
       )}
       {onOpenInCodex && (
