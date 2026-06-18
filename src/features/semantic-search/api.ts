@@ -57,6 +57,37 @@ export function semanticReindexAll(projectId: string): Promise<number> {
   return invoke<number>("semantic_reindex_all", { projectId });
 }
 
+/**
+ * Codex の dense セマンティック検索 (段階3 hybrid の dense arm)。
+ * Rust 側 `codex_semantic_search` (semantic-embedding feature gate) を叩く。
+ * 1 エントリ 1 ベクトル (name+aliases+summary+content を埋め込み)。score は cosine。
+ * 型は Rust 側 `CodexSearchHit` (serde camelCase) と一致させること。
+ */
+export interface CodexSearchHit {
+  entryId: string;
+  entryName: string;
+  entryType: string;
+  summary: string;
+  score: number;
+}
+
+export function codexSemanticSearch(args: {
+  projectId: string;
+  query: string;
+  limit: number;
+}): Promise<CodexSearchHit[]> {
+  return invoke<CodexSearchHit[]>("codex_semantic_search", {
+    projectId: args.projectId,
+    query: args.query,
+    limit: args.limit,
+  });
+}
+
+/** Codex エントリ 1 件を index 再構築。戻り値は投入ベクトル数 (0 = race/欠落)。 */
+export function codexIndexEntry(entryId: string): Promise<number> {
+  return invoke<number>("codex_index_entry", { entryId });
+}
+
 /** 指定 project の scene_chunks 状態を取得。Embedder ロード不要、軽量。 */
 export function semanticIndexStatus(
   projectId: string,

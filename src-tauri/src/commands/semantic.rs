@@ -28,6 +28,11 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
+use crate::semantic::codex_index::{
+    embed_codex_text, project_language_for_codex_entry, read_codex_for_index, upsert_codex_chunk,
+    CodexUpsertOutcome,
+};
+use crate::semantic::codex_search::{run_codex_search, CodexSearchCache, CodexSearchHit};
 use crate::semantic::embedding::Embedder;
 use crate::semantic::index::{
     collect_index_status, embed_scene_payloads, list_scene_ids_in_project, project_language,
@@ -250,6 +255,130 @@ pub(crate) async fn semantic_search(
                     scene_scope.as_deref(),
                     limit,
                     description_mode,
+                    &model_id,
+                    embedding_dim,
+                    spec.chunker_version,
+                )
+            })?;
+            Ok(hits)
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// Codex entry 1 件の埋め込みを再構築する (stage 3)。
+///
+/// scene の `index_scene_split_lock` と同型: 読み出し → embed → upsert を分割し、
+/// workspace lock を ONNX 推論中に保持しない。推論中の entry 変更は upsert 側の
+/// hash 再確認が race を吸収する。
+fn codex_index_split_lock(
+    ws_state: &tauri::State<'_, WorkspaceState>,
+    embedder: &mut Embedder,
+    entry_id: &str,
+    model_id: &str,
+    spec: &'static EmbeddingModelSpec,
+) -> Result<CodexUpsertOutcome, AppError> {
+    let Some((text, initial_hash)) = with_db(ws_state, |db| read_codex_for_index(db, entry_id))?
+    else {
+        return Ok(CodexUpsertOutcome::SkippedMissing);
+    };
+    // lock 外: 推論中も他コマンドの DB アクセスを止めない。
+    let embedding = embed_codex_text(embedder, &text)?;
+    let embedding_dim = embedder.embedding_dim();
+    let outcome = with_db(ws_state, |db| {
+        upsert_codex_chunk(
+            db,
+            entry_id,
+            &initial_hash,
+            &embedding,
+            &text,
+            model_id,
+            embedding_dim,
+            spec.chunker_version,
+        )
+    })?;
+    Ok(outcome)
+}
+
+/// Codex entry 1 件をセマンティック index に投入/更新する。
+///
+/// 戻り値: 投入したベクトル数 (1)。entry 不在や古い hash で破棄された場合は 0。
+/// 成功時は `CodexSearchCache` の該当 entry を invalidate する。
+#[tauri::command]
+pub(crate) async fn codex_index_entry(
+    app: tauri::AppHandle,
+    entry_id: String,
+) -> Result<usize, AppError> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<usize, AppError> {
+        let ws_state = app.state::<WorkspaceState>();
+        let emb_state = app.state::<SemanticEmbedderState>();
+        let cache = app.state::<CodexSearchCache>();
+
+        let language = with_db(&ws_state, |db| {
+            project_language_for_codex_entry(db, &entry_id)
+        })?;
+        let spec = spec_for_language(&language);
+        let model_id = spec.full_model_id();
+
+        let mut guard = emb_state
+            .inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+        let embedder = ensure_embedder(&app, spec, &mut guard)?;
+
+        let outcome = codex_index_split_lock(&ws_state, embedder, &entry_id, &model_id, spec)?;
+
+        let n = match outcome {
+            CodexUpsertOutcome::Indexed(n) => {
+                cache.invalidate(&entry_id)?;
+                n
+            }
+            CodexUpsertOutcome::SkippedHashMismatch | CodexUpsertOutcome::SkippedMissing => 0,
+        };
+        Ok(n)
+    })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// Codex セマンティック検索 (stage 3)。クエリを埋め込み、project 配下の
+/// codex_chunks に総当たりコサイン → Top-K。JS 側 `search_codex` が sparse(FTS)
+/// と RRF 融合する dense arm。
+#[tauri::command]
+pub(crate) async fn codex_semantic_search(
+    app: tauri::AppHandle,
+    project_id: String,
+    query: String,
+    limit: usize,
+) -> Result<Vec<CodexSearchHit>, AppError> {
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<CodexSearchHit>, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            let emb_state = app.state::<SemanticEmbedderState>();
+            let cache = app.state::<CodexSearchCache>();
+
+            let language = with_db(&ws_state, |db| project_language(db, &project_id))?;
+            let spec = spec_for_language(&language);
+            let model_id = spec.full_model_id();
+
+            let mut guard = emb_state
+                .inner
+                .lock()
+                .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+            let embedder = ensure_embedder(&app, spec, &mut guard)?;
+            let query_embedding = embedder.embed_query(&query)?;
+            let embedding_dim = embedder.embedding_dim();
+            drop(guard);
+
+            let hits = with_db(&ws_state, |db| {
+                run_codex_search(
+                    db,
+                    &cache,
+                    &query_embedding,
+                    &project_id,
+                    limit,
                     &model_id,
                     embedding_dim,
                     spec.chunker_version,

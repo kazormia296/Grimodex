@@ -14,6 +14,7 @@ import {
 import { applyUndoJournal } from "./undoJournal";
 import type { CodexEntry } from "@/features/codex/api";
 import { getCodexEntryVersion } from "@/features/codex/version";
+import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 
 export interface AgentCodexCreateInput {
   type: string;
@@ -153,6 +154,10 @@ export async function agentCreateCodexEntry(
 
   await useCodexStore.getState().loadEntries();
 
+  // 段階3: agent 経路の codex 作成も semantic index へ (api.ts は通らないため
+  // ここで明示フック)。debounce + Rust 側 hash 再検証で冪等。
+  scheduleCodexIndex(result.entityId);
+
   const entry = useCodexStore
     .getState()
     .entries.find((e) => e.id === result.entityId);
@@ -241,6 +246,9 @@ export async function agentUpdateCodexEntry(
   });
 
   await useCodexStore.getState().loadEntries();
+
+  // 段階3: agent 経路の codex 更新も semantic index へ (api.ts は通らない)。
+  scheduleCodexIndex(result.entityId);
 
   const entry = useCodexStore
     .getState()

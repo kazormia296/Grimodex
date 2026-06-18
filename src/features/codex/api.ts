@@ -2,6 +2,7 @@ import { db } from "@/db/client";
 import { codexEntries } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { enqueueRescan } from "./mentionRescanQueue";
+import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 
 export type CodexEntry = typeof codexEntries.$inferSelect;
 export type NewCodexEntry = typeof codexEntries.$inferInsert;
@@ -55,6 +56,8 @@ export async function createCodexEntry(
     .insert(codexEntries)
     .values({ ...data, createdAt: now, updatedAt: now })
     .returning();
+  // 段階3: 新規エントリを semantic index へ (debounce + Rust 側 hash 再検証で冪等)。
+  if (rows[0]) scheduleCodexIndex(rows[0].id);
   return rows[0];
 }
 
@@ -92,6 +95,17 @@ export async function updateCodexEntry(
     data.excludedAliases !== undefined
   ) {
     enqueueRescan(id);
+  }
+
+  // 段階3: 埋め込み対象 (name/aliases/summary/content) が変わったら再 index。
+  // notes/icon/contextMode 等のみの更新では発火しない (埋め込みに影響しない)。
+  if (
+    data.name !== undefined ||
+    data.aliases !== undefined ||
+    data.summary !== undefined ||
+    data.content !== undefined
+  ) {
+    scheduleCodexIndex(id);
   }
 
   return rows[0];

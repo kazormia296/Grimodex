@@ -149,6 +149,10 @@ pub fn run() {
             // Semantic search: in-memory embedding cache (scene_id -> Vec<f32>).
             // Cleared on workspace open; invalidated per-scene on index_scene.
             app.manage(semantic::search::SearchCache::new());
+            // Codex semantic search cache (entry_id -> embedding). Same lifecycle:
+            // cleared on workspace open, invalidated per-entry on codex_index_entry.
+            // Non-gated so workspace.rs (also non-gated) can clear it.
+            app.manage(semantic::codex_search::CodexSearchCache::new());
 
             app.manage(ExternalMountWatchState::new());
             app.manage(ExternalMountState::new());
@@ -261,6 +265,10 @@ pub fn run() {
             commands::semantic::semantic_chunk_context,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_debug_dump,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::codex_semantic_search,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::codex_index_entry,
             commands::external_mount::external_mount_register,
             commands::external_mount::external_mount_unregister,
             commands::external_mount::external_mount_read_file,

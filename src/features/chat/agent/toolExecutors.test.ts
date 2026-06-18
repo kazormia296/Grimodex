@@ -484,3 +484,81 @@ describe("project scoping — agent read tools (XPROJ-1)", () => {
     },
   );
 });
+
+// search_codex は段階3で dense(codex_semantic_search) + sparse(codex_fts) を
+// RRF 融合する。dense が失敗 (feature 無効 / 未 index) なら sparse 単独へ退避する。
+describe("search_codex hybrid fusion (段階3)", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    mockTreeProjectId.mockReset();
+    mockTreeProjectId.mockReturnValue("proj-A");
+  });
+
+  it("fuses dense and sparse results", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "codex_semantic_search") {
+        return Promise.resolve([
+          {
+            entryId: "e-dense",
+            entryName: "DenseHit",
+            entryType: "character",
+            summary: "d",
+            score: 0.9,
+          },
+        ]);
+      }
+      if (cmd === "db_execute") {
+        return Promise.resolve({
+          rows: [
+            {
+              id: "e-sparse",
+              name: "SparseHit",
+              type: "location",
+              summary: "s",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await executeTool("search_codex", "c", {
+      query: "ドラクタール",
+    });
+    expect(res.error).toBeUndefined();
+    const ids = (res.content as { id: string }[]).map((r) => r.id);
+    expect(ids).toContain("e-dense");
+    expect(ids).toContain("e-sparse");
+    expect(
+      mockInvoke.mock.calls.some((c) => c[0] === "codex_semantic_search"),
+    ).toBe(true);
+  });
+
+  it("falls back to sparse-only when dense search rejects", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "codex_semantic_search") {
+        return Promise.reject(new Error("semantic-embedding disabled"));
+      }
+      if (cmd === "db_execute") {
+        return Promise.resolve({
+          rows: [
+            {
+              id: "e-sparse",
+              name: "SparseHit",
+              type: "location",
+              summary: "s",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await executeTool("search_codex", "c", {
+      query: "ドラクタール",
+    });
+    expect(res.error).toBeUndefined();
+    const ids = (res.content as { id: string }[]).map((r) => r.id);
+    expect(ids).toEqual(["e-sparse"]);
+  });
+});

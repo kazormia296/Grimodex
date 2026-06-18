@@ -10,6 +10,8 @@ const mockInvoke = vi.mocked(invoke);
 import {
   scheduleSceneIndex,
   cancelSceneIndex,
+  scheduleCodexIndex,
+  cancelCodexIndex,
   _resetSchedulerForTests,
   _pendingCount,
 } from "./scheduler";
@@ -108,5 +110,55 @@ describe("semantic-search/scheduler", () => {
     // microtask を flush して catch を走らせる。
     await vi.runAllTimersAsync();
     expect(mockInvoke).toHaveBeenCalledTimes(1);
+  });
+
+  // ── codex scheduler (段階3, scene 版と同型) ──────────────────────
+  it("fires codex_index_entry once after the debounce elapses", () => {
+    scheduleCodexIndex("codex-1");
+    vi.advanceTimersByTime(DEBOUNCE_MS - 1);
+    expect(mockInvoke).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith("codex_index_entry", {
+      entryId: "codex-1",
+    });
+  });
+
+  it("coalesces rapid re-schedules of the same codex entry", () => {
+    scheduleCodexIndex("codex-1");
+    vi.advanceTimersByTime(1000);
+    scheduleCodexIndex("codex-1");
+    vi.advanceTimersByTime(DEBOUNCE_MS - 1);
+    expect(mockInvoke).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancelCodexIndex prevents the pending fire", () => {
+    scheduleCodexIndex("codex-1");
+    cancelCodexIndex("codex-1");
+    vi.advanceTimersByTime(DEBOUNCE_MS * 2);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("ignores empty entryId", () => {
+    scheduleCodexIndex("");
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(_pendingCount()).toBe(0);
+  });
+
+  it("scene and codex timers are tracked independently", () => {
+    scheduleSceneIndex("scene-1");
+    scheduleCodexIndex("codex-1");
+    expect(_pendingCount()).toBe(2);
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    expect(_pendingCount()).toBe(0);
+    expect(mockInvoke).toHaveBeenCalledWith("semantic_index_scene", {
+      sceneId: "scene-1",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("codex_index_entry", {
+      entryId: "codex-1",
+    });
   });
 });

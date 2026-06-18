@@ -12,6 +12,8 @@
 
 pub(crate) mod chunker;
 pub(crate) mod chunker_en;
+pub(crate) mod codex_index;
+pub(crate) mod codex_search;
 pub(crate) mod index;
 pub(crate) mod preview;
 pub(crate) mod search;

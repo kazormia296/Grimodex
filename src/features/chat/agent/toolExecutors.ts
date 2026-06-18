@@ -36,6 +36,12 @@ import { agentApplyTreePlan } from "@/features/agent-writes/tree";
 import { agentProposeSceneBody } from "@/features/agent-writes/prose";
 import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
 import type { AiTreePlan } from "@/features/tree/aiScaffold/types";
+import {
+  codexSemanticSearch,
+  type CodexSearchHit,
+} from "@/features/semantic-search/api";
+import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 
 interface QueryResult<T = Record<string, unknown>> {
   rows: T[];
@@ -179,12 +185,32 @@ async function searchCodex(
     rows = result.rows;
   }
 
-  const content = rows.map((r) => ({
-    id: r["id"],
-    name: r["name"],
-    type: r["type"],
-    summary: r["summary"] ?? "",
+  const sparse: CodexHybridResult[] = rows.map((r) => ({
+    id: String(r["id"] ?? ""),
+    name: String(r["name"] ?? ""),
+    type: String(r["type"] ?? ""),
+    summary: String(r["summary"] ?? ""),
   }));
+
+  // dense arm (段階3): codex_semantic_search を sparse(FTS/LIKE) と RRF 融合する。
+  // feature 無効ビルド / 未 index / モデル不在では reject → sparse 単独へグレース
+  // フルに退避 (= 段階1までの挙動)。search ツールなので注入用の precision ゲートは
+  // かけず、順位融合した上位 20 件を返す (関連性判断は LLM 側)。
+  const dense = await codexSemanticSearch({
+    projectId,
+    query,
+    limit: 30,
+  }).catch((e) => {
+    debugLog.warn(
+      "search_codex",
+      "dense codex search failed (sparse-only fallback)",
+      errorDetail(e),
+    );
+    return [] as CodexSearchHit[];
+  });
+
+  const content =
+    dense.length > 0 ? fuseCodexHybrid(dense, sparse, 20) : sparse;
   const json = JSON.stringify(content);
   return {
     name: "search_codex",
