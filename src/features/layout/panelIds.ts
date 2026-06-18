@@ -16,6 +16,7 @@ export type PanelId =
   | "matrix"
   | "trash-bin"
   | "writing-stats"
+  | "related-scenes"
   | "command-center-results";
 
 /** MIME type used to transfer panel IDs during external drag operations */

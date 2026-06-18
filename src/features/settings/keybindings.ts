@@ -121,6 +121,12 @@ export function getCommands(): CommandDef[] {
       defaultBinding: "Mod+Alt+W",
       panel: "writing-stats",
     },
+    {
+      id: "focusRelatedScenes",
+      label: i18next.t("keys.focusRelatedScenes"),
+      defaultBinding: "Mod+Alt+P",
+      panel: "related-scenes",
+    },
     // ── Global ──
     {
       id: "openSettings",

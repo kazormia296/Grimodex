@@ -545,6 +545,36 @@ runner-up 床方式にする。bge は related↔unrelated の分離マージン
 Recall@1/@3・MRR・閾値跨ぎ・閾値 sweep・miss/junk を集計する dev 専用ツール。
 `recallParamsForLang` を共有する。
 
+### 「関連する過去シーン」パネル（人間向け recall）（2026-06-18 追記）
+
+実装: `src/features/related-scenes/`（`fetchRelatedScenes.ts` 取得 +
+`selectRelatedScenes.ts` 選別純関数 + `RelatedScenesPanel.tsx` UI）。tool window
+`related-scenes`（パネル設計書 `docs/Grimodex_関連する過去シーンパネル設計書.md`）。
+
+Layer 4 RAG が「AI のための recall（チャット文脈へ自動注入）」なのに対し、本パネルは
+**同じ scene semantic search を人間向け UI に転用**したもの。現在編集中シーンに意味的に
+関連する「読書順で前の（既読）シーン」を一覧し、クリックで該当箇所へジャンプする
+（TALK→EXTRACT→**RECALL** ループの RECALL を初めて人間向けに出す read-only パネル）。
+
+* **クエリ seed** = 現在シーン本文の末尾のみ（`loadSceneContent` → `prosemirrorToText`
+  → `buildSemanticRecallQuery({ userMessage: "", sceneBody })`）。チャット発話は無い。
+* **取得**: `semanticSearch`（dense 単独、`limit=30`）。sparse 救済ハイブリッドは Phase 2。
+  失敗・未 index は空配列フォールバック（チャット recall と同契約）。
+* **選別**（`selectRelatedPastScenes` 純関数）:
+  - 「既読」= 読書順（`computeGlobalSceneOrder` の正準 reading order）で現在シーンより
+    **前**のシーンだけ。現在シーン自身・現在以降（未読）・順序外（folder/削除済）は除外。
+  - 床 = **言語別 gate 値**（`recallParamsForLang().gateScore`、ja 0.85 / en 0.51）を
+    **per-scene floor** として使う。チャット注入の top-1 ゲート（「明確な勝者が無ければ
+    全部隠す」）は使わない — 人間が関連性を判断できるパネルなので all-or-nothing は不要。
+    代わりに各シーンが単独で「明確に関連」のバーを越えるものだけ出し、ruri の団子混入を防ぐ。
+  - 1 シーン 1 行に集約（最良チャンクを代表に）、スコア降順（同点は sceneId 安定化）、
+    最大 `RELATED_SCENES_MAX=8` 件。
+* **ジャンプ**: 行クリックで `requestJump → setActiveScene → showPanel("editor")`（順序は
+  不変条件。`semanticNavStore` 経由で EditorPane がシーンロード後にチャンク位置へスクロール+
+  選択。意味検索ダイアログと同一機構）。
+* **トリガー**: アクティブシーン変更で auto（400ms debounce）。非表示時（`isActive=false`）は
+  検索しない（keepalive）。DB 書き込み・schema 変更なし。
+
 ---
 
 ## Tauri Command インタフェース
@@ -777,6 +807,11 @@ semantic-search/
 
 chat/semanticRecall.ts         … Layer 4 RAG。dense+sparse RRF 取得・選別・言語別閾値
 chat/agent/codexHybridSearch.ts … codex dense(codex_semantic_search)+sparse の RRF 融合
+
+related-scenes/                … 「関連する過去シーン」パネル (人間向け recall)
+├── selectRelatedScenes.ts     … 既読フィルタ+1シーン集約+件数 cap の選別 pure
+├── fetchRelatedScenes.ts      … loadSceneContent→semanticSearch→selectRelatedPastScenes
+└── RelatedScenesPanel.tsx     … パネル UI (debounce fetch + クリックで chunk jump)
 App.tsx                        … listener 起動 + Toast マウント + SearchDialog 配線
                                   + open 時 ensureSemanticIndexesOnOpen
 features/editor/EditorPane.tsx … coreSave 末尾で scheduleSceneIndex、

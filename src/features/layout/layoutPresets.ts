@@ -133,7 +133,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin", "writing-stats"],
+              panels: ["trash-bin", "writing-stats", "related-scenes"],
               activePanel: null,
             },
           ],
@@ -144,7 +144,14 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
         segments: [{ id: "ceditor", kind: "editor", sizeRatio: 1 }],
       },
     },
-    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin", "writing-stats"],
+    hiddenStripePanels: [
+      "map",
+      "grid",
+      "matrix",
+      "trash-bin",
+      "writing-stats",
+      "related-scenes",
+    ],
   },
   "builtin:plan": {
     icon: Network,
@@ -202,7 +209,13 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["kouetsu", "trash-bin", "timeline", "writing-stats"],
+              panels: [
+                "kouetsu",
+                "trash-bin",
+                "timeline",
+                "writing-stats",
+                "related-scenes",
+              ],
               activePanel: null,
             },
           ],
@@ -227,6 +240,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
       "kouetsu",
       "attribution",
       "writing-stats",
+      "related-scenes",
     ],
   },
   "builtin:chat-main": {
@@ -285,7 +299,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin", "writing-stats"],
+              panels: ["trash-bin", "writing-stats", "related-scenes"],
               activePanel: null,
             },
           ],
@@ -312,6 +326,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
       "trash-bin",
       "attribution",
       "writing-stats",
+      "related-scenes",
     ],
   },
   "builtin:review": {
@@ -376,7 +391,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin", "writing-stats"],
+              panels: ["trash-bin", "writing-stats", "related-scenes"],
               activePanel: null,
             },
           ],
@@ -396,7 +411,14 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
         ],
       },
     },
-    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin", "writing-stats"],
+    hiddenStripePanels: [
+      "map",
+      "grid",
+      "matrix",
+      "trash-bin",
+      "writing-stats",
+      "related-scenes",
+    ],
   },
   "builtin:codex-main": {
     icon: Library,
@@ -460,7 +482,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin", "writing-stats"],
+              panels: ["trash-bin", "writing-stats", "related-scenes"],
               activePanel: null,
             },
           ],
@@ -480,7 +502,14 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
         ],
       },
     },
-    hiddenStripePanels: ["map", "grid", "matrix", "trash-bin", "writing-stats"],
+    hiddenStripePanels: [
+      "map",
+      "grid",
+      "matrix",
+      "trash-bin",
+      "writing-stats",
+      "related-scenes",
+    ],
   },
 };
 

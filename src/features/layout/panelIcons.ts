@@ -15,6 +15,7 @@ import {
   Table2,
   Trash2,
   BarChart3,
+  History,
   type LucideIcon,
 } from "lucide-react";
 
@@ -40,5 +41,6 @@ export const PANEL_ICON_MAP: Record<Exclude<PanelId, "editor">, LucideIcon> = {
   grid: Columns3,
   matrix: Table2,
   "writing-stats": BarChart3,
+  "related-scenes": History,
   "trash-bin": Trash2,
 };

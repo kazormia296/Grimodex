@@ -40,7 +40,7 @@ IntelliJ 式の **非対称レイアウト** (中央のエディタ領域は固�
 
 | 項目 | 現行 | 本設計 |
 |------|------|--------|
-| stripe に出るアイコン | 一度でも開いた panel (`stripePanelIds`) | **全 16 tool window を常時表示**（`hiddenStripePanels` で個別非表示にした分は除く） |
+| stripe に出るアイコン | 一度でも開いた panel (`stripePanelIds`) | **全 17 tool window を常時表示**（`hiddenStripePanels` で個別非表示にした分は除く） |
 | パネル内の裏 tab | Dockview の background 状態 | **なし** (1 slot = 1 表示) |
 | 「サイドバーから削除」 | stripe 登録を外す | **存続**（`removePanelFromStripe` → `hiddenStripePanels`。下記 §7.4 参照） |
 | カスタムレイアウト保存 | `SerializedDockview` JSON | `LayoutState` スナップショット |
@@ -216,8 +216,9 @@ interface SlotState {
 
 ### 4.2 パネルの登録
 
-全 16 個の tool window（`TOOL_WINDOW_PANEL_IDS` = `DEFAULT_SLOT_MAP` のキー、`editor`
-除く。執筆統計 `writing-stats` を含む。既定 slot は `BR`）は起動時に既定 region/slot へ
+全 17 個の tool window（`TOOL_WINDOW_PANEL_IDS` = `DEFAULT_SLOT_MAP` のキー、`editor`
+除く。執筆統計 `writing-stats`・関連する過去シーン `related-scenes` を含む。既定 slot は
+`BR`）は起動時に既定 region/slot へ
 **事前登録**される（`DEFAULT_SLOT_MAP` → `DEFAULT_REGION_MAP` / `DEFAULT_INDEX_MAP` から
 slot 構成を生成）。3 つの stripe は最初から全アイコンが並ぶ (IntelliJ 同様)。
 

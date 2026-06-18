@@ -14,6 +14,7 @@ import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { GridPanel } from "@/features/grid/GridPanel";
 import { MatrixPanel } from "@/features/matrix/MatrixPanel";
 import { WritingStatsPanel } from "@/features/writing-stats/WritingStatsPanel";
+import { RelatedScenesPanel } from "@/features/related-scenes/RelatedScenesPanel";
 import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
 import { CommandCenterResultsPanel } from "@/features/commandCenter/CommandCenterResultsPanel";
 import { SceneEditor } from "@/features/tree/SceneEditor";
@@ -41,6 +42,7 @@ export const PANEL_COMPONENT_MAP: Record<
   grid: GridPanel,
   matrix: MatrixPanel,
   "writing-stats": WritingStatsPanel,
+  "related-scenes": RelatedScenesPanel,
   "trash-bin": TrashBinPanel,
   "command-center-results": CommandCenterResultsPanel,
 };
