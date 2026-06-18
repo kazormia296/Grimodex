@@ -58,4 +58,12 @@ describe("resolveCodexStatesFor", () => {
     const out = resolveCodexStatesFor([makeEntry()], phases, {}, order, null);
     expect(out.get("e1")).toEqual({ resolvedSummary: "ベース要約" });
   });
+  it("summaryOverride なしのフェーズでも phaseLabel は返し summary は base のまま", () => {
+    const phases = { e1: [makePhase({ contentOverride: "新本文" })] };
+    const out = resolveCodexStatesFor([makeEntry()], phases, {}, order, "s3");
+    expect(out.get("e1")).toEqual({
+      phaseLabel: "第2幕",
+      resolvedSummary: "ベース要約",
+    });
+  });
 });

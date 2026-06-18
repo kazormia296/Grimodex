@@ -34,6 +34,7 @@ export function resolveCodexStatesFor(
       },
       phases,
       phaseDetailsMap,
+      // baseDetails: バッジ表示は summary/phaseLabel のみ使うため detail 値は不要
       new Map(),
       currentSceneId,
       globalSceneOrder,

@@ -23,7 +23,6 @@ export function useResolvedCodexStates(
     for (const id of idsKey ? idsKey.split("|") : []) {
       if (!loaded[id]) void loadPhasesForEntry(id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idsKey]);
 
   return useMemo(() => {
@@ -36,7 +35,6 @@ export function useResolvedCodexStates(
       globalSceneOrder,
       activeSceneId || null,
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     idsKey,
     entries,
