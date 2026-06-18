@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Pin, PinOff, Plus } from "lucide-react";
+import { Pin, PinOff, Plus, EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -18,6 +18,8 @@ import {
 } from "@/features/project/projectStore";
 import type { CodexEntry } from "@/features/codex/api";
 import type { CodexType } from "@/features/codex/typeApi";
+import { useResolvedCodexStates } from "@/features/codex/useResolvedCodexStates";
+import { useUnrevealedSecretForeshadows } from "@/features/codex/codexSpoilerFlags";
 
 export function CodexQuickSection() {
   const { t } = useTranslation();
@@ -57,6 +59,17 @@ export function CodexQuickSection() {
       ? sortEntriesByCategory(combined, codexTypes)
       : sortEntries(combined, sortOrder);
 
+  const displayedIds = displayed.map((e) => e.id);
+  const resolved = useResolvedCodexStates(displayedIds);
+  const spoilers = useUnrevealedSecretForeshadows(displayedIds);
+  function spoilerNoteFor(entryId: string): string | undefined {
+    const list = spoilers.get(entryId);
+    if (!list || list.length === 0) return undefined;
+    return t("codex.spoiler.unrevealedTooltip", {
+      titles: list.map((f) => f.title).join(", "),
+    });
+  }
+
   function handleEntryClick(entry: CodexEntry) {
     useLayoutStore.getState().showPanel("codex");
     useCodexStore.getState().requestSelectEntry(entry.id);
@@ -94,6 +107,18 @@ export function CodexQuickSection() {
               <span className="flex-1 truncate text-xs text-foreground">
                 {entry.name}
               </span>
+              {resolved.get(entry.id)?.phaseLabel && (
+                <span className="shrink-0 rounded bg-primary/10 px-1 py-0.5 text-[10px] font-medium text-primary">
+                  {resolved.get(entry.id)!.phaseLabel}
+                </span>
+              )}
+              {spoilerNoteFor(entry.id) && (
+                <EyeOff
+                  data-testid={`codex-quick-spoiler-${entry.id}`}
+                  className="h-3 w-3 shrink-0 text-amber-600 dark:text-amber-500"
+                  aria-label={spoilerNoteFor(entry.id)}
+                />
+              )}
               {/* Type label */}
               <span className="text-[10px] text-muted-foreground">
                 {entry.type}
@@ -144,6 +169,9 @@ export function CodexQuickSection() {
           dotColor={typeColorMap[hoveredEntry.entry.type]?.fg ?? "#888888"}
           typeLabel={getTypeLabel(hoveredEntry.entry.type)}
           onClose={() => setHoveredEntry(null)}
+          phaseLabel={resolved.get(hoveredEntry.entry.id)?.phaseLabel}
+          resolvedSummary={resolved.get(hoveredEntry.entry.id)?.resolvedSummary}
+          spoilerNote={spoilerNoteFor(hoveredEntry.entry.id)}
         />
       )}
 

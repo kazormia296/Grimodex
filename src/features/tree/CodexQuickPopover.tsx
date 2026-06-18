@@ -8,6 +8,9 @@ interface CodexQuickPopoverProps {
   dotColor: string;
   typeLabel: string;
   onClose: () => void;
+  phaseLabel?: string;
+  resolvedSummary?: string | null;
+  spoilerNote?: string;
 }
 
 export function CodexQuickPopover({
@@ -16,6 +19,9 @@ export function CodexQuickPopover({
   dotColor,
   typeLabel,
   onClose,
+  phaseLabel,
+  resolvedSummary,
+  spoilerNote,
 }: CodexQuickPopoverProps) {
   return createPortal(
     <div
@@ -30,6 +36,9 @@ export function CodexQuickPopover({
         entry={entry}
         dotColor={dotColor}
         typeLabel={typeLabel}
+        phaseLabel={phaseLabel}
+        resolvedSummary={resolvedSummary}
+        spoilerNote={spoilerNote}
       />
     </div>,
     document.body,
