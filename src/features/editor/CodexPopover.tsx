@@ -1,18 +1,14 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
+import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { usePhaseStore } from "@/features/codex/phaseStore";
-import { useTreeStore } from "@/features/tree/treeStore";
-import {
-  resolveCodexState,
-  computeSceneTimeIndex,
-} from "@/features/codex/phaseResolver";
 import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
-import type { CodexPhaseDetailOverride } from "@/db/schema";
+import { useResolvedCodexStates } from "@/features/codex/useResolvedCodexStates";
+import { useUnrevealedSecretForeshadows } from "@/features/codex/codexSpoilerFlags";
 
 const FALLBACK_TYPE_COLORS: Record<string, string> = {
   character: "#6B7ADB",
@@ -37,11 +33,6 @@ interface CodexPopoverProps {
 export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
   const entries = useCodexStore((s) => s.entries);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
-  const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
-  const detailOverrides = usePhaseStore((s) => s.detailOverrides);
-  const resolutionMode = usePhaseStore((s) => s.resolutionMode);
-  const activeSceneId = useTreeStore((s) => s.activeSceneId);
-  const nodes = useTreeStore((s) => s.nodes);
   const [popover, setPopover] = useState<PopoverState>({
     visible: false,
     x: 0,
@@ -105,54 +96,11 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
     };
   }, [editor, containerEl, handleMouseOver, handleMouseOut]);
 
-  // Phase 解決: ポップオーバーが表示されたらエントリのフェーズをロードし、アクティブシーンで解決する
-  useEffect(() => {
-    if (!popover.visible || !popover.entryId) return;
-    if (!phasesByEntry[popover.entryId]) {
-      void usePhaseStore.getState().loadPhasesForEntry(popover.entryId);
-    }
-  }, [popover.visible, popover.entryId, phasesByEntry]);
-
-  const resolvedPhase = useMemo(() => {
-    const entryId = popover.entryId;
-    if (!entryId) return null;
-    const entry = entries.find((e) => e.id === entryId);
-    if (!entry) return null;
-    const phases = phasesByEntry[entryId];
-    if (!phases || phases.length === 0) return null;
-
-    const phaseDetailsMap = new Map<string, CodexPhaseDetailOverride[]>();
-    for (const phase of phases) {
-      phaseDetailsMap.set(phase.id, detailOverrides[phase.id] ?? []);
-    }
-    const sceneOrder = computeSceneTimeIndex(nodes, resolutionMode);
-    const resolved = resolveCodexState(
-      {
-        summary: entry.summary ?? null,
-        content: entry.content,
-        contextMode: entry.contextMode ?? "mentioned",
-      },
-      phases,
-      phaseDetailsMap,
-      new Map(),
-      activeSceneId || null,
-      sceneOrder,
-    );
-    const lastPhaseId =
-      resolved.appliedPhaseIds[resolved.appliedPhaseIds.length - 1];
-    const phaseLabel = lastPhaseId
-      ? phases.find((p) => p.id === lastPhaseId)?.label
-      : undefined;
-    return { summary: resolved.summary, phaseLabel };
-  }, [
-    popover.entryId,
-    entries,
-    phasesByEntry,
-    detailOverrides,
-    nodes,
-    resolutionMode,
-    activeSceneId,
-  ]);
+  // 共有フックで phase 解決と未開示伏線を取得（フック呼び出しは early return より前に配置必須）
+  const { t } = useTranslation();
+  const activeIds = popover.entryId ? [popover.entryId] : [];
+  const resolved = useResolvedCodexStates(activeIds);
+  const spoilers = useUnrevealedSecretForeshadows(activeIds);
 
   if (!popover.visible || !popover.entryId) return null;
 
@@ -189,8 +137,18 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
         dotColor={dotColor}
         typeLabel={getTypeLabel(entry.type)}
         onOpenInCodex={handleOpenInCodex}
-        phaseLabel={resolvedPhase?.phaseLabel}
-        resolvedSummary={resolvedPhase?.summary}
+        phaseLabel={resolved.get(entry.id)?.phaseLabel}
+        resolvedSummary={resolved.get(entry.id)?.resolvedSummary}
+        spoilerNote={
+          (spoilers.get(entry.id)?.length ?? 0) > 0
+            ? t("codex.spoiler.unrevealedTooltip", {
+                titles: spoilers
+                  .get(entry.id)!
+                  .map((f) => f.title)
+                  .join(", "),
+              })
+            : undefined
+        }
       />
     </div>,
     document.body,
