@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CornerDownRight, MessageSquare, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { useAnnotationStore } from "./annotationStore";
 import { closeAnnotation } from "./closeAnnotation";
 import { replyToAnnotation } from "./api";
@@ -109,7 +110,11 @@ export function PseudoCommentThread({
     if (!body || busy) return;
     setBusy(true);
     try {
-      await replyToAnnotation({ parentId: root.id, content: body });
+      await replyToAnnotation({
+        parentId: root.id,
+        content: body,
+        projectId: useTreeStore.getState().projectId ?? "",
+      });
       setText("");
       setReplying(false);
       onChanged();

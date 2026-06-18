@@ -5,6 +5,7 @@ import { updateAnnotationStatus } from "./api";
 import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
 import { parseAnnotationMeta } from "./annotationMeta";
 import { resolveAnnotationRange } from "./resolveAnnotationRange";
+import { useTreeStore } from "@/features/tree/treeStore";
 
 /**
  * Lint Fix が結果として AI typo annotation の suggestion と完全一致するとき、
@@ -66,9 +67,10 @@ export async function applyAutoResolvedTypos(
 ): Promise<void> {
   if (ids.length === 0) return;
   const store = useAnnotationStore.getState();
+  const projectId = useTreeStore.getState().projectId ?? "";
   for (const id of ids) {
     try {
-      await updateAnnotationStatus(id, "resolved");
+      await updateAnnotationStatus(id, "resolved", projectId);
     } catch {
       /* ignore individual failure; orphan-state will surface in panel */
     }

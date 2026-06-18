@@ -12,6 +12,11 @@ vi.mock("./api", () => ({
   updateAnnotationStatus: updateAnnotationStatusMock,
 }));
 
+// closeAnnotation は現在プロジェクトを useTreeStore から取って XPROJ ガードに渡す
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: { getState: () => ({ projectId: "p" }) },
+}));
+
 import { useAnnotationStore } from "./annotationStore";
 import { closeAnnotation } from "./closeAnnotation";
 import { AnnotationMark } from "./AnnotationMark";
@@ -76,7 +81,11 @@ describe("closeAnnotation", () => {
 
     await closeAnnotation(a, "resolved", editor);
 
-    expect(updateAnnotationStatusMock).toHaveBeenCalledWith("a1", "resolved");
+    expect(updateAnnotationStatusMock).toHaveBeenCalledWith(
+      "a1",
+      "resolved",
+      "p",
+    );
     const stored = useAnnotationStore.getState().annotationsByScene.get("s1");
     expect(stored?.find((x) => x.id === "a1")?.status).toBe("resolved");
     editor.destroy();
@@ -101,7 +110,11 @@ describe("closeAnnotation", () => {
 
     await closeAnnotation(a, "resolved", null);
 
-    expect(updateAnnotationStatusMock).toHaveBeenCalledWith("a1", "resolved");
+    expect(updateAnnotationStatusMock).toHaveBeenCalledWith(
+      "a1",
+      "resolved",
+      "p",
+    );
     const stored = useAnnotationStore.getState().annotationsByScene.get("s1");
     expect(stored?.find((x) => x.id === "a1")?.status).toBe("resolved");
   });

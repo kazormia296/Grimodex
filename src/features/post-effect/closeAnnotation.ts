@@ -2,6 +2,7 @@ import type { Editor } from "@tiptap/core";
 import { updateAnnotationStatus } from "./api";
 import { useAnnotationStore } from "./annotationStore";
 import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
+import { useTreeStore } from "@/features/tree/treeStore";
 import type { PostEffectAnnotation, PostEffectStatus } from "./types";
 
 /**
@@ -22,7 +23,9 @@ export async function closeAnnotation(
   editor: Editor | null,
 ): Promise<void> {
   try {
-    await updateAnnotationStatus(ann.id, status);
+    // XPROJ ガード: 現在プロジェクトを渡す (他プロジェクトの id は Rust 側で弾かれる)。
+    const projectId = useTreeStore.getState().projectId ?? "";
+    await updateAnnotationStatus(ann.id, status, projectId);
   } catch {
     // DB エラーでもユーザーの意図 (このパネルから消す) は反映する
   }

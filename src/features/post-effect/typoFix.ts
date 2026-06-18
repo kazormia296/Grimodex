@@ -7,6 +7,7 @@ import { updateAnnotationStatus } from "./api";
 import { useAnnotationStore } from "./annotationStore";
 import { applyAnnotationsToEditor } from "./applyAnnotationsToEditor";
 import { parseAnnotationMeta } from "./annotationMeta";
+import { useTreeStore } from "@/features/tree/treeStore";
 import type { PostEffectAnnotation } from "./types";
 
 export interface ApplyTypoFixResult {
@@ -69,7 +70,11 @@ export async function applyTypoFixAndResolve(
     .run();
 
   try {
-    await updateAnnotationStatus(ann.id, "resolved");
+    await updateAnnotationStatus(
+      ann.id,
+      "resolved",
+      useTreeStore.getState().projectId ?? "",
+    );
   } catch {
     /* DB エラー時も置換自体は完了しているので applied:true で返す */
   }

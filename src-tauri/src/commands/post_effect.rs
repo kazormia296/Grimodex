@@ -1125,10 +1125,22 @@ mod reply_to_annotation_tests {
     }
 
     fn args(parent_id: &str, content: &str, author_role: &str) -> ReplyToAnnotationArgs {
+        // 既存テストは親と同一プロジェクトを前提 (proj-1 / proj)。XPROJ ガードの
+        // 不一致ケースは args_in() で別途検証する。
+        args_in(parent_id, content, author_role, "proj-1")
+    }
+
+    fn args_in(
+        parent_id: &str,
+        content: &str,
+        author_role: &str,
+        project_id: &str,
+    ) -> ReplyToAnnotationArgs {
         ReplyToAnnotationArgs {
             parent_id: parent_id.to_string(),
             content: content.to_string(),
             author_role: author_role.to_string(),
+            project_id: project_id.to_string(),
         }
     }
 
@@ -1174,7 +1186,7 @@ mod reply_to_annotation_tests {
 
     fn author_role_for(input: &str) -> String {
         let conn = open_db();
-        insert_parent(&conn, "p", "proj", Some("s"), Some("r"), Some("persona"));
+        insert_parent(&conn, "p", "proj-1", Some("s"), Some("r"), Some("persona"));
         let child = reply_to_annotation_inner(&conn, &args("p", "c", input)).unwrap();
         child["authorRole"].as_str().unwrap().to_string()
     }
@@ -1197,12 +1209,130 @@ mod reply_to_annotation_tests {
     #[test]
     fn null_persona_parent_yields_null_child_persona() {
         let conn = open_db();
-        insert_parent(&conn, "p", "proj", Some("s"), Some("r"), None);
+        insert_parent(&conn, "p", "proj-1", Some("s"), Some("r"), None);
 
         let child = reply_to_annotation_inner(&conn, &args("p", "c", "user")).unwrap();
 
         assert!(child["persona"].is_null());
         assert!(child["metadata"]["persona"].is_null());
+    }
+
+    // ---- (d) XPROJ guard: 別プロジェクトの parent_id では返信できない ----
+
+    #[test]
+    fn rejects_reply_to_parent_in_another_project() {
+        let conn = open_db();
+        insert_parent(&conn, "p", "proj-A", Some("s"), Some("r"), None);
+
+        // proj-B から proj-A の親へ返信を試みる → 親 lookup が 0 行で Err
+        let res = reply_to_annotation_inner(&conn, &args_in("p", "侵入", "user", "proj-B"));
+        assert!(res.is_err(), "cross-project reply must be rejected");
+
+        // 子 annotation が作られていないこと
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM post_effect_annotations WHERE parent_id = 'p'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "no child row may be inserted on rejection");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod xproj_scope_tests {
+    use super::{update_annotation_status_inner, update_relation_status_inner};
+    use rusqlite::{params, Connection};
+
+    fn open_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE post_effect_annotations (
+                id TEXT PRIMARY KEY, project_id TEXT, run_id TEXT, anchor_type TEXT,
+                scene_id TEXT, range_start INTEGER, range_end INTEGER, text_snapshot TEXT,
+                category TEXT NOT NULL, persona TEXT, severity TEXT, content TEXT,
+                author_role TEXT, parent_id TEXT, status TEXT NOT NULL,
+                metadata TEXT NOT NULL DEFAULT '{}', created_at TEXT, updated_at TEXT
+            );
+            CREATE TABLE post_effect_annotation_relations (
+                id TEXT PRIMARY KEY, project_id TEXT, run_id TEXT,
+                annotation_a_id TEXT NOT NULL, annotation_b_id TEXT NOT NULL,
+                relation_type TEXT NOT NULL, direction TEXT NOT NULL DEFAULT 'bidirectional',
+                description TEXT, status TEXT NOT NULL DEFAULT 'open',
+                metadata TEXT NOT NULL DEFAULT '{}', created_at TEXT
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_ann(conn: &Connection, id: &str, project_id: &str) {
+        // anchor_type / created_at / updated_at は row_to_annotation_value が
+        // 非 Option で読むため必ず埋める (read-back を成立させる)。
+        conn.execute(
+            "INSERT INTO post_effect_annotations
+                (id, project_id, anchor_type, category, content, author_role,
+                 status, metadata, created_at, updated_at)
+             VALUES (?, ?, 'scene_range', 'consistency_anchor', 'c', 'ai',
+                     'open', '{}', '2024-01-01', '2024-01-01')",
+            params![id, project_id],
+        )
+        .unwrap();
+    }
+
+    fn status_of(conn: &Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT status FROM post_effect_annotations WHERE id = ?",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn update_annotation_status_rejects_other_project() {
+        let conn = open_db();
+        insert_ann(&conn, "a1", "proj-A");
+
+        // 別プロジェクトからの更新は弾かれ、状態は変わらない
+        let res = update_annotation_status_inner(&conn, "a1", "dismissed", "proj-B");
+        assert!(res.is_err(), "cross-project update must be rejected");
+        assert_eq!(status_of(&conn, "a1"), "open");
+
+        // 同一プロジェクトなら更新できる
+        let ok = update_annotation_status_inner(&conn, "a1", "dismissed", "proj-A");
+        assert!(ok.is_ok());
+        assert_eq!(status_of(&conn, "a1"), "dismissed");
+    }
+
+    #[test]
+    fn update_relation_status_rejects_other_project_and_scopes_cascade() {
+        let conn = open_db();
+        insert_ann(&conn, "a1", "proj-A");
+        insert_ann(&conn, "a2", "proj-A");
+        conn.execute(
+            "INSERT INTO post_effect_annotation_relations
+                (id, project_id, annotation_a_id, annotation_b_id, relation_type,
+                 status, metadata, created_at)
+             VALUES ('rel1', 'proj-A', 'a1', 'a2', 'contradiction',
+                     'open', '{}', '2024-01-01')",
+            [],
+        )
+        .unwrap();
+
+        // 別プロジェクトからは弾かれ、relation も両端 annotation も変わらない
+        let res = update_relation_status_inner(&conn, "rel1", "dismissed", "proj-B");
+        assert!(res.is_err());
+        assert_eq!(status_of(&conn, "a1"), "open");
+        assert_eq!(status_of(&conn, "a2"), "open");
+
+        // 同一プロジェクトなら relation + 両端 annotation がカスケード
+        let ok = update_relation_status_inner(&conn, "rel1", "dismissed", "proj-A");
+        assert!(ok.is_ok());
+        assert_eq!(status_of(&conn, "a1"), "dismissed");
+        assert_eq!(status_of(&conn, "a2"), "dismissed");
     }
 }
 
@@ -4204,18 +4334,20 @@ pub(crate) fn abort_post_effect_run(
     abort_flag: State<'_, PostEffectAbortFlag>,
     ws_state: State<'_, WorkspaceState>,
     run_id: String,
+    project_id: String,
 ) -> Result<(), AppError> {
     abort_flag
         .flag
         .store(true, std::sync::atomic::Ordering::Relaxed);
-    // DB 上も cancelled にする (タスクが既に終わっている場合は影響なし)
+    // DB 上も cancelled にする (タスクが既に終わっている場合は影響なし)。
+    // XPROJ ガード: 現在プロジェクトの run に限定 (他プロジェクトの run_id では 0 行 = no-op)。
     super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE post_effect_runs
                     SET status = 'cancelled', completed_at = datetime('now')
-                  WHERE id = ? AND status = 'running'",
-                params![run_id],
+                  WHERE id = ? AND project_id = ? AND status = 'running'",
+                params![run_id, project_id],
             )?;
             Ok(())
         })
@@ -4272,15 +4404,18 @@ pub(crate) fn list_post_effect_runs(
 pub(crate) fn get_post_effect_run(
     ws_state: State<'_, WorkspaceState>,
     run_id: String,
+    project_id: String,
 ) -> Result<Value, AppError> {
     super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
+            // XPROJ ガード: 現在プロジェクトの run に限定。run を project で検証すれば
+            // run_id 紐付けの annotations/relations/lens も同プロジェクトに閉じる (fail-closed)。
             let run = conn.query_row(
                 "SELECT id, project_id, effect_type, scope_type, scope_target_id,
                         model, prompt_version, input_hash, status, summary,
                         error_message, started_at, completed_at
-                   FROM post_effect_runs WHERE id = ?",
-                params![run_id],
+                   FROM post_effect_runs WHERE id = ? AND project_id = ?",
+                params![run_id, project_id],
                 row_to_run_value,
             )?;
 
@@ -4471,45 +4606,62 @@ pub(crate) fn list_annotations_for_project(
     })
 }
 
+/// `update_annotation_status` の中核ロジック。
+/// **XPROJ ガード**: `WHERE id = ? AND project_id = ?` で現在プロジェクトに限定する
+/// (project_id は呼び出し側の現在プロジェクト)。他プロジェクトの annotation id を
+/// 渡しても 0 行 = bail し、状態を書き換えられない (fail-closed)。コマンドから分離してテスト可能に。
+fn update_annotation_status_inner(
+    conn: &rusqlite::Connection,
+    annotation_id: &str,
+    status: &str,
+    project_id: &str,
+) -> anyhow::Result<Value> {
+    // dismiss_source を status に合わせて更新
+    let dismiss_source = if status == "dismissed" {
+        Some("manual")
+    } else {
+        None
+    };
+
+    let affected = if let Some(src) = dismiss_source {
+        conn.execute(
+            "UPDATE post_effect_annotations
+                SET status = ?,
+                    metadata = json_set(metadata, '$.dismiss_source', ?),
+                    updated_at = datetime('now')
+              WHERE id = ? AND project_id = ?",
+            params![status, src, annotation_id, project_id],
+        )?
+    } else {
+        conn.execute(
+            "UPDATE post_effect_annotations
+                SET status = ?, updated_at = datetime('now')
+              WHERE id = ? AND project_id = ?",
+            params![status, annotation_id, project_id],
+        )?
+    };
+    if affected == 0 {
+        anyhow::bail!("annotation not found in project (id={annotation_id})");
+    }
+
+    let ann = conn.query_row(
+        "SELECT * FROM post_effect_annotations WHERE id = ? AND project_id = ?",
+        params![annotation_id, project_id],
+        row_to_annotation_value,
+    )?;
+    Ok(ann)
+}
+
 #[tauri::command]
 pub(crate) fn update_annotation_status(
     ws_state: State<'_, WorkspaceState>,
     annotation_id: String,
     status: String,
+    project_id: String,
 ) -> Result<Value, AppError> {
     super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
-            // dismiss_source を status に合わせて更新
-            let dismiss_source = if status == "dismissed" {
-                Some("manual")
-            } else {
-                None
-            };
-
-            if let Some(src) = dismiss_source {
-                conn.execute(
-                    "UPDATE post_effect_annotations
-                        SET status = ?,
-                            metadata = json_set(metadata, '$.dismiss_source', ?),
-                            updated_at = datetime('now')
-                      WHERE id = ?",
-                    params![status, src, annotation_id],
-                )?;
-            } else {
-                conn.execute(
-                    "UPDATE post_effect_annotations
-                        SET status = ?, updated_at = datetime('now')
-                      WHERE id = ?",
-                    params![status, annotation_id],
-                )?;
-            }
-
-            let ann = conn.query_row(
-                "SELECT * FROM post_effect_annotations WHERE id = ?",
-                params![annotation_id],
-                row_to_annotation_value,
-            )?;
-            Ok(ann)
+            update_annotation_status_inner(conn, &annotation_id, &status, &project_id)
         })
     })
 }
@@ -4519,6 +4671,8 @@ pub(crate) struct ReplyToAnnotationArgs {
     parent_id: String,
     content: String,
     author_role: String,
+    /// XPROJ ガード: 親 annotation が属するべき現在プロジェクト。
+    project_id: String,
 }
 
 /// `reply_to_annotation` の中核ロジック。
@@ -4536,9 +4690,11 @@ fn reply_to_annotation_inner(
         Option<String>,
         Option<String>,
     ) = conn.query_row(
+        // XPROJ ガード: 親は現在プロジェクトのものに限定 (他プロジェクトの
+        // parent_id を渡しても 0 行 = NoRows エラーで fail-closed)。
         "SELECT project_id, scene_id, run_id, persona
-           FROM post_effect_annotations WHERE id = ?",
-        params![args.parent_id],
+           FROM post_effect_annotations WHERE id = ? AND project_id = ?",
+        params![args.parent_id, args.project_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
 
@@ -4588,42 +4744,66 @@ pub(crate) fn reply_to_annotation(
     })
 }
 
+/// `update_relation_status` の中核ロジック。
+/// **XPROJ ガード**: relation・カスケード先 annotation・read-back すべてを
+/// `AND project_id = ?` で現在プロジェクトに限定 (fail-closed)。
+fn update_relation_status_inner(
+    conn: &rusqlite::Connection,
+    relation_id: &str,
+    status: &str,
+    project_id: &str,
+) -> anyhow::Result<Value> {
+    let affected = conn.execute(
+        "UPDATE post_effect_annotation_relations
+            SET status = ?, metadata = json_set(metadata, '$.updated_at', datetime('now'))
+          WHERE id = ? AND project_id = ?",
+        params![status, relation_id, project_id],
+    )?;
+    if affected == 0 {
+        anyhow::bail!("relation not found in project (id={relation_id})");
+    }
+
+    // §2: 両端 annotation を同じ status にカスケード (現在プロジェクト内に限定)
+    conn.execute(
+        "UPDATE post_effect_annotations
+            SET status = ?,
+                metadata = json_set(metadata, '$.dismiss_source', 'cascade'),
+                updated_at = datetime('now')
+          WHERE project_id = ?
+            AND id IN (
+                SELECT annotation_a_id FROM post_effect_annotation_relations
+                  WHERE id = ? AND project_id = ?
+                UNION
+                SELECT annotation_b_id FROM post_effect_annotation_relations
+                  WHERE id = ? AND project_id = ?
+            )",
+        params![
+            status,
+            project_id,
+            relation_id,
+            project_id,
+            relation_id,
+            project_id
+        ],
+    )?;
+
+    let rel = conn.query_row(
+        "SELECT * FROM post_effect_annotation_relations WHERE id = ? AND project_id = ?",
+        params![relation_id, project_id],
+        row_to_relation_value,
+    )?;
+    Ok(rel)
+}
+
 #[tauri::command]
 pub(crate) fn update_relation_status(
     ws_state: State<'_, WorkspaceState>,
     relation_id: String,
     status: String,
+    project_id: String,
 ) -> Result<Value, AppError> {
     super::with_db(&ws_state, |db| {
-        db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE post_effect_annotation_relations
-                    SET status = ?, metadata = json_set(metadata, '$.updated_at', datetime('now'))
-                  WHERE id = ?",
-                params![status, relation_id],
-            )?;
-
-            // §2: 両端 annotation を同じ status にカスケード
-            conn.execute(
-                "UPDATE post_effect_annotations
-                    SET status = ?,
-                        metadata = json_set(metadata, '$.dismiss_source', 'cascade'),
-                        updated_at = datetime('now')
-                  WHERE id IN (
-                      SELECT annotation_a_id FROM post_effect_annotation_relations WHERE id = ?
-                      UNION
-                      SELECT annotation_b_id FROM post_effect_annotation_relations WHERE id = ?
-                  )",
-                params![status, relation_id, relation_id],
-            )?;
-
-            let rel = conn.query_row(
-                "SELECT * FROM post_effect_annotation_relations WHERE id = ?",
-                params![relation_id],
-                row_to_relation_value,
-            )?;
-            Ok(rel)
-        })
+        db.with_conn(|conn| update_relation_status_inner(conn, &relation_id, &status, &project_id))
     })
 }
 
