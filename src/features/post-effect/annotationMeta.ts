@@ -1,5 +1,6 @@
 import type {
   ConsistencyAnnotationMeta,
+  ImpactReviewAnnotationMeta,
   IntraAnnotationMeta,
   PostEffectAnnotation,
   PseudoCommentAnnotationMeta,
@@ -23,7 +24,8 @@ export interface ParsedAnnotationMeta {
     | "review"
     | "intent_drift"
     | "timeline"
-    | "pseudo_comment";
+    | "pseudo_comment"
+    | "impact";
   orphaned: boolean;
   detectedByModel?: string;
   llmReason?: string;
@@ -50,6 +52,14 @@ export interface ParsedAnnotationMeta {
   typo?: {
     category: TypoCategory;
     suggestion: string;
+  };
+  /** impact_review only — 変更された Codex 設定と矛盾の強さ */
+  impact?: {
+    entryId: string;
+    entryName: string;
+    changeId: string;
+    changeSummary: string;
+    contradictionScore: number;
   };
 }
 
@@ -79,6 +89,8 @@ export function parseAnnotationMeta(
       return { kind: "timeline", orphaned: false };
     if (ann.category === "pseudo_comment")
       return { kind: "pseudo_comment", orphaned: false };
+    if (ann.category === "impact_review_anchor")
+      return { kind: "impact", orphaned: false };
     return { kind: "intra", orphaned: false };
   }
 
@@ -130,6 +142,30 @@ export function parseAnnotationMeta(
       foundContext: p.found_context,
       persona: p.persona,
     };
+  }
+
+  // impact_review (変更影響レビュー) は category で判定し impact_ref を読む。
+  if (ann.category === "impact_review_anchor") {
+    const ref = (meta as ImpactReviewAnnotationMeta).impact_ref;
+    if (ref && typeof ref === "object" && ref.entry_id) {
+      return {
+        kind: "impact",
+        orphaned,
+        detectedByModel: ref.detected_by_model,
+        llmReason: ref.llm_reason,
+        confidence: ref.confidence,
+        foundText: ref.found_text,
+        foundContext: ref.found_context,
+        impact: {
+          entryId: ref.entry_id,
+          entryName: ref.entry_name,
+          changeId: ref.change_id,
+          changeSummary: ref.change_summary,
+          contradictionScore: ref.contradiction_score,
+        },
+      };
+    }
+    return { kind: "impact", orphaned };
   }
 
   const typoRef = meta.typo_ref as TypoAnnotationMeta["typo_ref"] | undefined;

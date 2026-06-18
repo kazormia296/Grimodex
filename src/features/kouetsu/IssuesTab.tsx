@@ -16,6 +16,7 @@ import { deriveIssueCounts } from "./issueCounts";
 import { IssuesScopeBar } from "./IssuesScopeBar";
 import { LinterSection } from "./sections/LinterSection";
 import { ConsistencySection } from "./sections/ConsistencySection";
+import { ImpactReviewSection } from "./sections/ImpactReviewSection";
 import { TypoSection } from "./sections/TypoSection";
 
 function SectionHeader({
@@ -67,9 +68,11 @@ export function IssuesTab() {
   const { t } = useTranslation();
   const [linterExpanded, setLinterExpanded] = useState(true);
   const [consistencyExpanded, setConsistencyExpanded] = useState(true);
+  const [impactExpanded, setImpactExpanded] = useState(true);
   const [typoExpanded, setTypoExpanded] = useState(true);
   const linterRef = usePanelRef();
   const consistencyRef = usePanelRef();
+  const impactRef = usePanelRef();
   const typoRef = usePanelRef();
 
   const scope = useKouetsuStore((s) => s.activeIssuesScope);
@@ -79,7 +82,7 @@ export function IssuesTab() {
 
   // typo Lint は誤字脱字セクションに別集計しつつ、校正セクションにも従来どおり含める
   // (Linter 全件パネルの一貫性を優先。MVP のトレードオフ)
-  const { linterCount, consistencyCount, typoCount } = useMemo(
+  const { linterCount, consistencyCount, impactCount, typoCount } = useMemo(
     () =>
       deriveIssueCounts({
         diagnostics,
@@ -106,6 +109,14 @@ export function IssuesTab() {
     }
   };
 
+  const handleImpactToggle = () => {
+    if (impactExpanded) {
+      impactRef.current?.collapse();
+    } else {
+      impactRef.current?.expand();
+    }
+  };
+
   const handleTypoToggle = () => {
     if (typoExpanded) {
       typoRef.current?.collapse();
@@ -127,7 +138,7 @@ export function IssuesTab() {
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="34%"
+          defaultSize="28%"
           onResize={() => {
             setLinterExpanded(!(linterRef.current?.isCollapsed() ?? false));
           }}
@@ -156,7 +167,7 @@ export function IssuesTab() {
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="33%"
+          defaultSize="24%"
           onResize={() => {
             setConsistencyExpanded(
               !(consistencyRef.current?.isCollapsed() ?? false),
@@ -178,11 +189,35 @@ export function IssuesTab() {
         <ResizableHandle horizontal withHandle />
 
         <ResizablePanel
+          panelRef={impactRef}
+          collapsible
+          collapsedSize={32}
+          minSize="15%"
+          defaultSize="24%"
+          onResize={() => {
+            setImpactExpanded(!(impactRef.current?.isCollapsed() ?? false));
+          }}
+          className="flex flex-col overflow-hidden"
+        >
+          <SectionHeader
+            title={t("kouetsu.impactReview.title")}
+            count={impactCount}
+            expanded={impactExpanded}
+            onToggle={handleImpactToggle}
+          />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <ImpactReviewSection />
+          </div>
+        </ResizablePanel>
+
+        <ResizableHandle horizontal withHandle />
+
+        <ResizablePanel
           panelRef={typoRef}
           collapsible
           collapsedSize={32}
           minSize="15%"
-          defaultSize="33%"
+          defaultSize="24%"
           onResize={() => {
             setTypoExpanded(!(typoRef.current?.isCollapsed() ?? false));
           }}

@@ -12,6 +12,7 @@ import {
 } from "@/features/post-effect/annotationMeta";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { ImpactCheckButton } from "./ImpactCheckButton";
 
 const SEVERITY_DOT: Record<string, string> = {
   error: "bg-red-500",
@@ -69,11 +70,14 @@ export function ConsistencyTab({ codexEntryId }: ConsistencyTabProps) {
 
   if (findings.length === 0) {
     return (
-      <div
-        data-testid="consistency-tab-empty"
-        className="py-8 text-center text-xs text-muted-foreground"
-      >
-        {t("codex.consistencyTab.empty")}
+      <div className="space-y-3">
+        <ImpactCheckButton entryId={codexEntryId} />
+        <div
+          data-testid="consistency-tab-empty"
+          className="py-8 text-center text-xs text-muted-foreground"
+        >
+          {t("codex.consistencyTab.empty")}
+        </div>
       </div>
     );
   }
@@ -90,6 +94,7 @@ export function ConsistencyTab({ codexEntryId }: ConsistencyTabProps) {
 
   return (
     <div className="space-y-2">
+      <ImpactCheckButton entryId={codexEntryId} />
       <p
         data-testid="consistency-tab-count"
         className="px-1 text-xs text-muted-foreground"

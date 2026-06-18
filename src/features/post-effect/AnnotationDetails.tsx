@@ -47,6 +47,40 @@ export function CodexChip({ codex }: CodexChipProps) {
   );
 }
 
+interface ImpactChipProps {
+  impact: NonNullable<ParsedAnnotationMeta["impact"]>;
+}
+
+/**
+ * impact_review (変更影響レビュー) chip。変更された Codex 設定 (entry ▸ 変更要約) を
+ * 表示し、クリックで該当エントリを開く。CodexChip と同じ導線。
+ */
+export function ImpactChip({ impact }: ImpactChipProps) {
+  const { t } = useTranslation();
+  const label = impact.changeSummary
+    ? `${impact.entryName} ▸ ${impact.changeSummary}`
+    : impact.entryName;
+
+  return (
+    <button
+      type="button"
+      title={t("postEffect.codex.openEntry", { entryName: impact.entryName })}
+      onClick={(e) => {
+        e.stopPropagation();
+        openCodexEntry(impact.entryId);
+      }}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-0.5 rounded border border-border/70 bg-muted/40 px-1.5 py-0 text-[10px] text-foreground/80",
+        "hover:border-primary/50 hover:bg-primary/10 hover:text-primary",
+        "transition-colors",
+      )}
+    >
+      <span className="truncate max-w-[16rem]">{label}</span>
+      <ExternalLink size={9} className="shrink-0 opacity-60" />
+    </button>
+  );
+}
+
 const CONFIDENCE_STYLE: Record<"high" | "medium" | "low", string> = {
   high: "bg-destructive/15 text-destructive",
   medium: "bg-yellow-500/15 text-yellow-700 dark:text-yellow-400",
