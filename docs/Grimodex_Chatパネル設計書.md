@@ -60,10 +60,11 @@ UI 用語は `feat(chat,codex): ピン留めを Spotlight にリネーム` で�
 ### 表示要素
 
 - **パネルタイトル**: 「Chat」
-- **🌐 グローバルチャットボタン**: ワンクリックでプロジェクトスコープ（`node_id = NULL`）に切り替え。再度クリックでアクティブシーンに復帰。プロジェクトスコープ時はシーンインジケーターが「Project」に切り替わる
-- **シーンインジケーター**: 現在のアクティブシーン名。クリックでシーン選択ドロップダウン（Chatのコンテキストをエディタのアクティブシーンから手動で切り替える場合に使用）
-  - ドロップダウンはツリー上の **フォルダ単位でグループ化** して表示する。各グループ見出しは親フォルダのタイトル（親無しのシーンは "Uncategorized"）、見出し下にそのフォルダ直下のシーンを列挙する。プロジェクトスコープ（🌐）時は選択されているグループ無し状態で「Project」ラベルが表示される
-  - 現在の実装は `ChatPanelHeader.tsx` の `sceneGroups` 構築ロジック（`nodes.filter(nodeType === 'folder')` でフォルダタイトルを参照しつつ scene を `parentId` でグループ化）に対応する
+- **スコープインジケーター + スコープピッカー**: タイトル横のボタンに現在のスコープ（`ChatScope = "scene" | "folder" | "project" | "codex" | "snippet"`、`src/features/chat/chatScope.ts` が正本）とアンカー名を表示し、種別アイコンを前置する（scene=📄 / folder=🗂 / project=🌐 / codex=📑 / snippet=🗒）。クリックでスコープピッカーのドロップダウンを開く
+  - ドロップダウンは **Scene / Codex / Snippet のタブ式**（`PinEntryDialog` と同じ tablist パターン）。**Snippet は独立タブ処理ではなく第一級スコープに昇格**しており、`resolveScopeSessionKey` が scope 種別ごとにセッションキー（`nodeId` / `codexAnchorId` / `snippetAnchorId`）を解決する
+    - **Scene タブ**: 先頭に「Project」（`node_id = NULL`、🌐）を置き、その下にツリーを **フォルダ単位でグループ化**して列挙する。各グループ見出しは親フォルダ（Act/Chapter）のタイトル。**フォルダ自体を選ぶと `folder` スコープ**（そのフォルダノードをアンカーにしたセッション）になり、シーンを選ぶと `scene` スコープになる
+    - **Codex タブ** (`CodexScopePickerSection`) / **Snippet タブ** (`SnippetScopePickerSection`): エントリを選ぶと `codex` / `snippet` スコープに切り替わり、当該エントリ／Snippet の content 全文を主コンテキストにして壁打ちできる（後述「Codex/Snippet タブの場合」）
+  - **Project スコープ提案ヒント**: Chat プリセットへ切替した直後など、`scopeHint` で「Project スコープに切り替える」時限ポップオーバーを提案する
 - **Sessions ボタン**: セッション一覧サイドシートを開く（後述）
 - **+ ボタン**: 新しいセッションを作成
 
@@ -133,7 +134,7 @@ Codex + Snippet のピル合計が コンテキストバーの横幅に収まら
 
 - コンテキストバー末尾の「📌ピン留め」ボタンで、CodexエントリまたはSnippetを手動ピン留め
 - **✦ AI コンテキストクリエイター（Context Creator）**: 「+」ボタンの隣に配置。AI が Tool Use でプロジェクトデータを能動的に探索し、現在のシーン／セッションに関連する Codex エントリや Snippet をコンテキスト候補として提案する
-  - 利用ツールは `search_codex` / `list_codex_by_type` / `search_codex_by_tags` / `search_snippets` の 4 種に絞った専用サブセット（Agent mode の 10 ツールとは別定義。読み取り・探索寄りのツールのみ）
+  - 利用ツールは `search_codex` / `list_codex_by_type` / `search_codex_by_tags` / `search_snippets` の 4 種に絞った専用サブセット（`contextCreatorApi.ts` の `CREATOR_TOOLS` が `AGENT_TOOLS` からフィルタ。Agent mode の全 23 ツールとは別定義で、読み取り・探索寄りのツールのみ）
   - 実行本体は `runContextCreator`。Agent mode と同じループ基盤上で動くが、最終出力は自然言語応答ではなく「提案エントリ ID のリスト」で、ユーザーの確認後に手動ピン留めとして `pinned_codex` に追加される
   - UI は 🛠️ オプションや Settings からの公開を前提に実装基盤のみ用意しており、現時点ではボタンを無効化状態で提示する（公開保留）。Tool Use が出来ないモデルでは非活性マウスカーソル🚫
 - ポップオーバーの検索UIでエントリを選択（Codex/Snippetをタブまたはフィルタで切り替え）
@@ -157,7 +158,7 @@ Codex + Snippet のピル合計が コンテキストバーの横幅に収まら
 
 ### プロジェクトスコープ時の挙動
 
-🌐ボタンでプロジェクトスコープに切り替えた場合、コンテキストバーは以下のように変化する:
+スコープピッカーの Scene タブ先頭の「Project」（🌐）を選んでプロジェクトスコープに切り替えた場合、コンテキストバーは以下のように変化する:
 
 | 要素                         | シーンスコープ  |     プロジェクトスコープ     |
 | -------------------------- | :------: | :----------------: |
@@ -309,15 +310,20 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 - @ボタン/ /ボタン : 後述の特殊入力のポップオーバー表示
 - 🛠️ボタン: AIのオプションをポップオーバーリスト表示。全て対応モデルのみ活性化。対応機能が一つもない場合はこのボタン自体非活性マウスカーソル🚫(コンテキストバーのAIボタンと同じ)。ポップオーバー内の各トグル状態は `ai_settings` テーブルに永続化され、セッション・再起動をまたいで保持される。
 	- **🔧 Agent mode トグル（スタンドアロン実行モード）**: Tool Use を有効化し、LLM がプロジェクトデータを能動的に検索・取得できるモードに切り替える。ON にすると送信時に `runAgentLoop` が起動し、LLM のツール呼び出しをループ実行する:
-		- **利用可能ツール（14 種）**: `search_codex` / `list_codex_by_type` / `get_codex_entry` / `list_codex_tags` / `search_codex_by_tags` / `find_related_entries` / `list_chapters` / `get_scene` / `search_scenes` / `search_snippets` / `get_chapter_summaries` / `list_open_foreshadows` / `get_foreshadow_detail` / `get_scene_timeline_neighbors`
-		  - 末尾3種は実装時に追加された伏線レジスタ／タイムライン探索系ツール: `list_open_foreshadows` は未回収伏線の一覧、`get_foreshadow_detail` は単一伏線の詳細（出現／回収シーン、関連 Codex）、`get_scene_timeline_neighbors` は指定シーンの前後シーンの synopsis を返す
-		- **呼び出し上限**: 1 ターンあたり最大 10 回のツール呼び出し。これを超えた場合はループ打ち切りで最終応答生成に遷移
+		- **利用可能ツール（23 種 = 読み取り 14 + 書き込み 7 + 委譲/質問 2）**: 正本は `src/features/chat/agent/toolDefinitions.ts` の `AGENT_TOOLS`。
+		  - 読み取り（14 種、`READ_ONLY_EXECUTORS`）: `search_codex` / `list_codex_by_type` / `get_codex_entry` / `list_codex_tags` / `search_codex_by_tags` / `find_related_entries` / `list_chapters` / `get_scene` / `search_scenes` / `search_snippets` / `get_chapter_summaries` / `list_open_foreshadows` / `get_foreshadow_detail` / `get_scene_timeline_neighbors`。`list_open_foreshadows` は未回収伏線の一覧、`get_foreshadow_detail` は単一伏線の詳細（出現／回収シーン、関連 Codex）、`get_scene_timeline_neighbors` は指定シーンのストーリー時間軸での前後シーンの synopsis を返す
+		  - 書き込み（7 種、`MUTATING_EXECUTORS`、AiPolicy ゲート付き）: `create_codex_entry` / `update_codex_entry`（`knowledgeWrite`）／`create_foreshadow` / `update_foreshadow`（`knowledgeWrite`、伏線レジスタの起票・更新）／`create_snippet`（`knowledgeWrite`）／`apply_ai_tree_plan`（`structureWrite`、synopsis 付きは `bodyWrite` も）／`propose_scene_body`（`bodyWrite`、staged accept/reject の本文提案）
+		  - 委譲／質問（2 種、`EXECUTORS` 外で chatStore が intercept）: `run_research`（独立予算を持つ読み取り専用サブエージェントへ調査を委譲し要約のみ返す。再帰深さは構造的に depth=1 固定）／`ask_user`（ユーザーへ質問してインライン回答を待機）
+		- **呼び出し上限（model-aware）**: 1 ターンあたりのデータ取得ツール呼び出し上限は `getAgentToolCallBudget(model)` がコンテキスト窓に応じて段階的に決める（< 64k = 10、≥ 64k = 12、≥ 200k = 16、≥ 400k = 25）。上限超過時はループ打ち切りで最終応答生成に遷移し、「続行」アフォーダンスで追加ターンに伸ばせる。`ask_user` はこのデータ取得予算を消費せず別枠でカウントする
 		- **トークン予算制御**: ツール結果の累計トークンが予算を超えそうになった時点で追加ツール呼び出しを抑止し、既取得の結果のみで応答を合成する
 		- **進捗 UI**: ループの状態（現在何番目のツールを呼んでいるか／累計ツール呼び出し回数／推定残予算）を `AgentProgressBar` コンポーネントでメッセージリスト上部に可視化する
-		- 詳細は AI エージェント設計書（`Grimodex_AIエージェント設計書.md`）参照
+		- 詳細（ツール仕様・AiPolicy・run_research のサブエージェント設計）は AI エージェント設計書（`Grimodex_AIエージェント設計書.md`）参照
 	- **💡 Thinking トグル（拡張思考）**: AdaptiveThinking または budget_tokens 方式の拡張思考を有効化する。状態は `ai_settings.thinkingEnabled` に永続化される。対応モデルでは adaptive（Opus/Sonnet 4.6）と budget_tokens（旧世代 Opus/Sonnet 4.5 等）の両方式を自動選択し、display は `summarized` を既定、Synopsis 等軽量タスクでは `omitted` を使う。マルチターン会話では thinking ブロックの `signature` を `chat_messages.metadata` に保存し、次ターンに完全なブロックを返送する（後述「拡張思考」セクション参照）。
 		- **パラメータ二系統**: Anthropic 直接／adaptive 方式のモデルには `effort`（`low` / `medium` / `high` / `max`）を送る。OpenRouter 系推論モデル（o1、o3、DeepSeek-R1 等）には `reasoningEffort` を送る。Grimodex はモデル能力に応じて送出先を振り分け、ユーザーは同じトグル + effort レベルから操作する
-	- **🌐 RAG トグル**: インターネット検索による RAG のプレースホルダー。UI は 🛠️ オプション内に常設するが、現時点では常に disable・非活性で、中身は将来実装枠として予約する
+		- **reasoning effort chip（入力欄下段）**: Thinking トグルとは別に、入力欄下段に effort 上書き用の chip（`ReasoningEffortChip`、⏲ Gauge アイコン）を常設する。値は `Auto`（= タスク既定）／モデルが許可する `low` / `medium` / `high` から選び、`ai_settings.reasoningEffortOverride` に永続化する（Settings の AiCategory select と同じキーを読み書き）。Thinking が実効 OFF のとき・許可値が 1 つ以下のモデル（例: `high` 固定）では非活性。`run_research` サブエージェントもこの effort を引き継ぐ。表示条件（`caps.supportsReasoning`）は親が判定する
+- **Web 検索 RAG とセマンティック再呼出 RAG は別機能**（混同しないこと）。
+	- **Web 検索 RAG（🌐 Globe）**: 実装済み。トグルは 🛠️ オプション内ではなく **ヘッダーの 🌐 ボタン**（`onToggleRag` / `ragEnabled`）に常設する。ON でプロバイダのサーバサイド検索（Anthropic native `web_search`、OpenRouter exa、OpenAI Responses server tool 等）を注入し、引用元は `CitationList` で表示する。非対応プロバイダ（Ollama 等）では非活性。ドメイン制御／取得トークン上限は Settings の `ai.webSearch.*` に永続化。第三者送信（egress）と取得内容によるプロンプトインジェクションのリスクは `aria-describedby` で SR/タッチにも開示する（詳細は Web 検索 RAG セキュリティレビュー参照）
+	- **セマンティック再呼出 RAG（Layer 4）**: 後述「Layer 4」「semantic recall（Layer4 RAG）」参照。意味検索で過去シーンの抜粋を自動注入する別系統で、Web 検索とは独立に動く
 - **送信時のテキスト変換**: 送信時にTipTapのHTML→Markdownに変換してLLMに渡す
 
 ### 特殊入力
@@ -416,7 +422,7 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 
 ### プロジェクトスコープのセッション
 
-シーンに紐づかない「プロジェクト全体」のセッションも作成可能。ヘッダーの🌐ボタンでプロジェクトスコープに切り替えると、シーンインジケーターが「Project」になる。プロジェクト全体の設定相談やプロット議論に使用する。
+シーンに紐づかない「プロジェクト全体」のセッションも作成可能。スコープピッカーの Scene タブ先頭にある「Project」（🌐）を選ぶとプロジェクトスコープ（`node_id = NULL`）に切り替わり、スコープインジケーターが「Project」になる。プロジェクト全体の設定相談やプロット議論に使用する。
 
 ---
 
@@ -504,6 +510,33 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
   例外: アクティブシーン移動 / モデル変更 / AI 指示変更時は Codex 集合自体が
   再構築されるためキャッシュは無効化される (これは設計上回避不能)
 
+- **semantic recall（Layer4 RAG / 意味的再呼出）**: Aho-Corasick の字句マッチに加え、
+  **意味検索で現在の執筆内容に関連する過去シーンの抜粋**を自動注入する（実装済み・既定 ON）。
+  正本は `src/features/chat/semanticRecall.ts`、注入は `contextBuilder.ts` の `ragText`。
+  契約とテストは `contextBuilder.semanticRecall.test.ts` を参照
+  - **クエリ seed**: 直近ユーザー発話 + 現在シーン本文末尾（既定 500 文字、`buildSemanticRecallQuery`）。
+    eco モードで本文が空でもユーザー発話のみで成立する
+  - **取得経路**: `fetchSemanticRecall` が `semantic_search`（Rust 側 `semantic-embedding` feature ゲート内）
+    を叩く。feature 無効ビルド / モデル不在 / 未 index プロジェクト / IPC 失敗はすべて **空配列フォールバック**で、
+    通常文脈の送信を妨げない（送信を止めないことが契約）
+  - **注入先**: クエリ毎に変わるため `cacheSegments`（prefix cache の byte 安定領域）には**入れない**。
+    `prompt`（cache 非対応プロバイダ用 fallback）と `volatileTail`（cache 対応プロバイダ用）の両方に置き、
+    全プロバイダに届ける。プロンプト上は「## 関連する過去シーン (自動検索)」見出しで注入し、
+    抜粋は断片であり設定情報の正本は Codex 側であることを明示する
+  - **選別（top-1 ゲート + runner-up 床）**: 除外シーン（現在シーン・@mention 全文注入済み）を除いた
+    最良候補がゲートに届かなければ何も注入しない（迷ったら注入しない precision 優先）。届いた時だけ床まで
+    二番手を拾い、distinct シーン優先 + backfill で最大 3 件・1 チャンク最大 600 文字（英語は 900）に収める
+  - **言語別パラメータ**（`recallParamsForLang`、`document.documentElement.lang` 基準）: 日本語（ruri-v3-30m）は
+    無関係散文でも cosine が高ベースラインに座る団子特性のため **ゲート 0.85 / 床 0.80** の二段構成。
+    英語（bge-small-en-v1.5）は分離マージンが広く **ゲート = 床 = 0.51** の単一閾値。
+    閾値較正の詳細は `docs/Grimodex_セマンティック検索の閾値とモデル特性.md`
+  - **ハイブリッド検索（dense + sparse/BM25 RRF）**: 既定 ON（設定キー `ai.hybridRecall`）。密ベクトルは
+    固有名詞（人名・地名）の語彙完全一致を過小評価しがちなので、既存 FTS5（trigram、scene 本文 index）を
+    sparse ランカーとして併用し **Reciprocal Rank Fusion（k=60）** で順位融合する（`selectHybridRecallChunks`）。
+    sparse top-N に居るシーンは cosine が床を割っても `床 - 0.05` まで救済注入し、固有名詞 recall を補う。
+    sparse が空／失敗なら dense 単独の選別へグレースフルに退避する（= 従来挙動）
+  - **設定**: `ai.semanticRecall`（既定 ON、これが前提）／`ai.hybridRecall`（既定 ON）で個別に切替
+
 **Layer 5: Conversation history**
 
 - 現在のセッションのメッセージ履歴
@@ -590,19 +623,21 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - 不採用理由: コンテキストバーの操作がすでに複雑（ピン留め、自動検出ピル、トークン表示）であり、レイヤー制御を加えるとユーザーの認知負荷が高い。プロジェクトスコープ＋Codexピン留めでほぼ同等のことが可能。「シーンのセッション一覧で見つけたい」という整理面の需要は、将来的にセッションのタグ/フィルタ機能で対応する方が適切
 
 
-#### 将来の検討事項: 意味的類似性検索（Semantic Retrieval）
+#### 意味的類似性検索（Semantic Retrieval）— 実装状況
 
-現在のCodex検出はAho-Corasickによる完全な字句マッチングのみ。「王冠」というエントリがあるシーンで「王の頭上の宝飾」と書いた場合、aliasに登録しない限り検出されない。
+> 旧版は「embedding 導入は不採用」としていたが、2026-06 に **embedding ベースの意味検索を実装・投入済み**。本節は現状に合わせて改訂。
 
-意味的類似性検索により、字句マッチの限界を補完できる可能性がある:
+字句マッチ（Aho-Corasick + alias）だけでは、「王冠」というエントリがあるシーンで「王の頭上の宝飾」と書いても検出できない。この限界を補うため、ローカル埋め込みモデル（日本語 ruri-v3-30m / 英語 bge-small-en-v1.5、Rust 側 `semantic-embedding` feature）による意味検索を導入した。
 
-- **アプローチ**: ローカル埋め込みモデル（e.g., all-MiniLM-L6-v2）でCodexエントリのembeddingを生成し、シーンテキストとのコサイン類似度で「関連するかもしれないエントリ」を候補提示
-- **導入箇所の候補**:
-  1. `mentioned` モードに `mentioned_semantic` サブモードを追加し、閾値を超えたエントリも注入対象にする
-  2. Agent mode の `search_codex` ツールにembedding検索オプションを追加（最小実装）
-  3. Codex QuickセクションやContext Barで「Suggested by similarity」として候補を表示し、ユーザーがピン留めで確定
-- **現時点で不採用の理由**: 現在の設計（Aho-Corasick + alias + Agent mode ツール検索）でほとんどのケースはカバーでき、embedding検索は実装コスト（ローカルモデルの管理、ベクトルDB、インデックス更新）に対してリターンが不確実。実際のユーザーフィードバックでalias運用の限界が顕在化した段階で再検討する
-- **中間解として実装済み**: 「〇〇に関連するエントリ」「〇〇の所持品」のような関係質問に対しては、Agent mode の `find_related_entries(id, type?)` ツール（起点エントリの name + aliases を他エントリの name / summary / aliases / tags_cache に LIKE-OR で照合）で対応する。embedding を導入せずに既存 SQL infra で関係探索を実現する段階的アプローチ。embedding はこの中間解でもカバーできない曖昧マッチ（「王の頭上の宝飾」→「王冠」等）が顕在化した段階で再検討する
+**実装済み（shipped）:**
+
+- **過去シーンのセマンティック再呼出（Layer4 RAG）**: 現在の執筆内容と意味的に関連する過去シーンの抜粋を自動注入する（§Layer 4「semantic recall」参照）。旧案の「`mentioned` モードに `mentioned_semantic` を足す」よりも、シーン本文を chunk 単位で索引し抜粋を返す形に落ち着いた
+- **Agent mode の `search_codex` ハイブリッド化**: ツール実装が Codex の dense（`codex_semantic_search`）と sparse（FTS/LIKE）を RRF 融合して上位を返す（`codexHybridSearch.ts` の `fuseCodexHybrid`）。search ツールなので注入用の precision ゲートはかけず、関連性判断は LLM 側に委ねる。feature 無効／未 index ではグレースフルに sparse 単独へ退避する
+- **関係質問の `find_related_entries`**: 「〇〇に関連するエントリ」「〇〇の所持品」のような関係質問は、起点エントリの name + aliases を他エントリの name / summary / aliases / tags_cache に LIKE-OR で照合する SQL ベースのツールで対応（embedding 非依存）
+
+**未実装（将来の検討事項）:**
+
+- Codex Quick セクションや Context Bar での「Suggested by similarity」候補表示（シーン本文 × 各 Codex エントリのコサイン類似で「関連するかもしれないエントリ」をユーザーに提示し、Spotlight で確定する動線）。現状のセマンティック再呼出は**過去シーンの抜粋**を返すもので、**単一 Codex エントリの意味検出**（「王の頭上の宝飾」→ エントリ「王冠」）は別機能として残課題
 
 ### トークン予算管理
 
@@ -670,6 +705,20 @@ function buildContext(
   //   5. カスタムディテール（include_in_context=1）も注入対象に含める
   //   6. 子孫エントリはサブツリートークン予算（Layer 4予算の比率）内でBFS順に注入
   //      （各子エントリも個別にフェーズ解決）
+
+  // semantic recall (Layer4 RAG): buildCodexContext の外側・送信経路で実行する。
+  // fetchSemanticRecall が dense (semantic_search) と sparse (FTS5/bm25) を並列取得し
+  // RRF 融合 (hybrid) または top-1 ゲート選別する。feature 無効 / 未 index は空配列。
+  // 結果は contextBuilder の semanticRecall 入力として prompt + volatileTail にのみ
+  // 載せる (cacheSegments には入れない = 毎ターン変わるため)。
+  //   テスト: contextBuilder.semanticRecall.test.ts / semanticRecall.test.ts
+  const recallQuery = buildSemanticRecallQuery({ userMessage, sceneBody });
+  const semanticRecall = await fetchSemanticRecall({
+    projectId, query: recallQuery,
+    excludeSceneIds: [sceneId, ...mentionedSceneIds],
+    hybrid: settings.hybridRecall,  // ai.hybridRecall (既定 ON)
+  });  // settings.semanticRecall (ai.semanticRecall, 既定 ON) が OFF なら空
+
   const layer5 = buildConversationHistory(session.messages, allocations.layer5);
   // Progressive summarization: 2 段階トリガー
   //   予防的: 4 往復超 && Layer5 予算 80% 超 → 早めに圧縮
@@ -683,7 +732,10 @@ function buildContext(
   //
   // 多段要約警告: chat_summaries 件数 > 3 で警告ピル表示
 
-  return assembleLayers([layer1, layer2, layer3, layer4, layer5]);
+  // semanticRecall は cacheSegments に混ぜず prompt + volatileTail に配置する
+  return assembleLayers([layer1, layer2, layer3, layer4, layer5], {
+    semanticRecall,
+  });
 }
 ```
 
@@ -764,6 +816,7 @@ OpenAI / Anthropic / OpenRouter いずれも、リクエストプロンプトの
 | L2 storySoFar | 中 (新規 synopsis 追加時のみ伸長) | 数ターン〜セッション全体 |
 | L3 Current scene | 中 (アクティブシーン内では本文編集のみで変化) | シーン編集まで |
 | L4 Codex | 動 (チャット言及で自動ピン追加) | append-only ポリシーで延命 |
+| L4 semantic recall (RAG) | 超動 (クエリ毎に変わる) | キャッシュ対象外。`cacheSegments` に入れず `volatileTail` 側に置く |
 | L5 History | 動 (毎ターン append) | append-only により延命 |
 
 ### キャッシュ無効化トリガー

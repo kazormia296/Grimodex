@@ -1075,15 +1075,20 @@ Options:
 
 ### 起動時の検証
 
-**現状の実装** (`src/main.rs`):
+**現状の実装** (`grimodex-mcp/src/lib.rs::run`。本体 `src-tauri/src/main.rs` の
+`mcp` サブコマンド分岐は `run_blocking` に委譲するだけ):
 
 1. `--workspace` パスに `grimodex.db` が存在するか確認
 2. DB を WAL モードで開く（`busy_timeout = 5000`、`foreign_keys = ON`）
-3. `--project` 未指定時は `SELECT id FROM projects ORDER BY created_at LIMIT 1` で先頭プロジェクトを採用
-4. ログ出力先（stderr ＋ `~/.grimodex/logs/lint-mcp-*.log` の日次ローテーション）を初期化
-5. MCP サーバーを stdio で起動
+3. **スキーマバージョン検証**: `PRAGMA user_version` を読み、`grimodex_core::SCHEMA_VERSION`
+   と不一致なら **readonly に降格**して `warn` ログを出す（`bail` はしない＝古い/新しい
+   DB でも read は通す。書き込みだけ止めて破壊を防ぐ）
+4. `--project` 未指定時は `SELECT id FROM projects ORDER BY created_at LIMIT 1` で先頭プロジェクトを採用
+5. ログ出力先（stderr ＋ `~/.grimodex/logs/lint-mcp-*.log` の日次ローテーション）を初期化
+6. MCP サーバーを stdio で起動
 
-※ 現状未実装: スキーマバージョン検証、Content Dir パスの解決（§5 のとおりファイルを使わないため）。
+※ 現状未実装: Content Dir パスの解決（§5 のとおりファイルを使わないため）。
+DB スキーマの詳細は `docs/Grimodex_統合DBスキーマ.md` を参照。
 
 ---
 
@@ -1106,6 +1111,27 @@ Options:
   全作品にアクセスし得るため **ローカル/信頼クライアント専用**。なおピン留めが守るのは
   「どの作品を見せるか」であり、見せた作品の本文がクラウドへ exfil されること自体は
   防げない（秘匿原稿はクラウド MCP に繋がない/ローカルモデルを使う）。
+
+### ライセンスゲート (Phase 2 / 2026-06-11)
+
+write 系ツールはライセンス状態でも制限する（`--readonly` とは独立した別ゲート）。
+`GrimodexServer::ensure_license_allows_write()`（`server.rs`）が、6 つの write ツール
+（`create_codex_entry` / `update_codex_entry` / `create_snippet` / `propose_scene_body`
+/ `create_foreshadow` / `update_foreshadow`）の冒頭で呼ばれ、制限状態なら
+`invalid_params` エラーで一括ブロックする。read 系ツールは常時許可（Phase 2 決定）。
+
+- **制限状態**: `grimodex_core::license::LicenseStatus::is_write_restricted()` が
+  `true` を返す `TrialExpired`（試用期限切れ） / `LicenseStale`（最終検証から猶予超過）
+  / `Revoked`（キー失効）の 3 状態。`Trial` / `Licensed` / `Grace` では許可。
+- **再読み込み**: 呼び出しごとに `license.json` を読み直す（`reload_policy` と同じ思想。
+  アプリ側での再アクティベートを MCP 再起動なしで反映する。write 呼び出しは低頻度ゆえ I/O 許容）。
+- **パス解決**: `license_gate::license_file_path()` が `dirs::data_dir()` ＋
+  `grimodex_core::license::APP_IDENTIFIER` で Tauri 側と同一の `license.json` を指す
+  （MCP は `AppHandle` を持たないため自前解決）。
+- **fail-soft**: `licensing` feature 無効ビルド（ベータ）、`license.json` の欠損・破損、
+  パス解決不能はいずれも **許可側に倒す**（read は default = 試用初期状態を返すため）。
+- **ゲート順序**: 各 write ツールは `--readonly`（call-time）→ `ensure_license_allows_write()`
+  → 各ツールの AI ポリシー（`knowledgeWrite` / `bodyWrite`）の順に検査する。
 
 ### 書き込み制限 (v1)
 

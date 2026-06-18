@@ -4,8 +4,10 @@
 
 作者が**自分の本文（散文）を意味で検索できる**ようにする機能。既存の FTS5
 全文検索は 3 文字 n-gram の字句一致なので、「嵐の描写」で `雨が窓を叩いていた` を
-引けない。本機能は ruri-v3 ベースの dense embedding で本文をチャンク化・インデックス
-化し、ローカル推論でクエリと比較してトップ-K を返す。
+引けない。本機能は dense embedding（日本語=ruri-v3 / 英語=bge、§埋め込みモデル）で
+本文をチャンク化・インデックス化し、ローカル推論でクエリと比較してトップ-K を返す。
+さらに Codex エントリのセマンティック検索と、チャット文脈への自動注入（Layer 4 RAG・
+dense+sparse ハイブリッド）まで拡張済み。
 
 実装上流のタスクコンテキストは [`temp/semantic-prose-search-context.md`](../temp/semantic-prose-search-context.md)。
 本書は **実装で確定した最終形** をまとめる正本であり、上流コンテキストとの差分
@@ -14,7 +16,8 @@
 ### 設計の柱
 
 1. **全ローカル推論**: クエリ・本文ともに端末上で完結。API キーや外部通信を
-   要求しない。`ort` クレートで ONNX Runtime を介し ruri-v3-30m (256 次元) を動かす。
+   要求しない。`ort` クレートで ONNX Runtime を介し、プロジェクト言語に応じて
+   日本語=ruri-v3-30m (256 次元) / 英語=bge-small-en-v1.5 (384 次元) を動かす（§埋め込みモデル）。
 2. **チャンク単位の検索**: シーン全体ではなく数百文字単位のチャンクを返し、
    結果から本文の該当箇所へジャンプできるようにする。
 3. **書き味に干渉しない**: 検索インデックスは保存パイプラインの後段で debounce
@@ -24,10 +27,19 @@
 
 ### スコープ外（本機能では扱わない）
 
-* Codex のセマンティック検出（Chat パネル設計書で *不採用* 決定済み）
-* Layer 4 RAG コンテキスト注入（SPEC.md で Post-MVP）
 * 複数プロジェクト横断検索（§4 「Phase 1 は単一プロジェクト前提」）
-* 字句一致と意味検索のハイブリッドスコア（bge-m3 sparse など、将来候補）
+
+> **（2026-06-18 追記）当初スコープ外だった以下は出荷済み**:
+> * **Codex のセマンティック検索** — 出荷済み（旧「不採用」記述は誤り）。
+>   1 エントリ 1 ベクトルの専用 index (`codex_chunks`) を持ち、Agent Mode の
+>   `search_codex` ツールの dense アーム（sparse と RRF 融合）として動く。本文専用 UI
+>   ダイアログは持たない。詳細は §「Codex セマンティック検索」。
+> * **Layer 4 RAG コンテキスト注入** — 出荷済み。drafting チャットの文脈に意味検索
+>   ヒットを自動注入する `features/chat/semanticRecall.ts`。dense + sparse(BM25) の
+>   RRF ハイブリッドで実装。詳細は §「Layer 4 RAG（チャット文脈注入）」。
+> * **字句一致と意味検索のハイブリッドスコア** — RRF 融合として実装済み。chat 注入
+>   経路（semanticRecall）と codex 検索（search_codex）の両方で dense と FTS5 sparse を
+>   Reciprocal Rank Fusion する。
 
 ---
 
@@ -67,21 +79,22 @@ localStorage に保持する。`SearchDialog.tsx` ラッパーが store の値�
 [commands/semantic.rs]      ─────── Rust Tauri commands (feature-gated)
         │
         │ ┌──────────────────────────────────────┐
-        │ │ SemanticEmbedderState                 │  ruri-v3 ONNX Session (lazy)
-        │ │  Mutex<Option<Embedder>>              │
+        │ │ SemanticEmbedderState                 │  ONNX Session (lazy, dir_name 別)
+        │ │  Mutex<HashMap<&str, Embedder>>       │   (ja=ruri / en=bge を同居キャッシュ)
         │ └──────────────────────────────────────┘
         │ ┌──────────────────────────────────────┐
-        │ │ SearchCache                           │  scene_id → CacheEntry
+        │ │ SearchCache / CodexSearchCache        │  scene_id / entry_id → CacheEntry
         │ │  Mutex<HashMap<id, CacheEntry>>       │   (model/dim/version 付き)
         │ └──────────────────────────────────────┘
         │
         ▼
-[semantic::chunker]   ProseMirror JSON → ChunkerConfig → Vec<SceneChunk>
-[semantic::embedding] tokenizer + ONNX inference → L2 正規化済み Vec<f32>
+[semantic::spec]      project language → EmbeddingModelSpec (ja/en)
+[semantic::chunker(_en)] ProseMirror JSON → ChunkerConfig → Vec<SceneChunk>
+[semantic::embedding] tokenizer + ONNX inference (spec 駆動) → L2 正規化済み Vec<f32>
 [semantic::index]     content_hash 検証 + DELETE/INSERT トランザクション
 [semantic::search]    cache + コサイン Top-K + dialogue_ratio 減点
         ▼
-SQLite (scene_chunks テーブル)
+SQLite (scene_chunks / codex_chunks テーブル)
 ```
 
 * **Rust 側はすべて `semantic-embedding` Cargo feature の中**。
@@ -128,6 +141,28 @@ Rust マイグレーション: `src-tauri/src/database/migrate.rs` の trash_ite
 (`CLAUDE.md` の「drizzle-kit migration は生成しない」運用に倣う)。
 Drizzle 側はスキーマ整合のために定義し、`schema.test.ts` で SQL 生成を確認する。
 実 DB に対する CREATE TABLE は Rust 側だけが担う。
+
+### `codex_chunks` テーブル（2026-06-18 追記）
+
+Codex セマンティック検索用（§「Codex セマンティック検索」）。scene と違い
+**チャンク分割せず 1 entry = 1 ベクトル**なので PK は `entry_id`（= `codex_entries(id)`
+への FK、`ON DELETE CASCADE`）。Rust マイグレーション `migrate.rs` の `scene_chunks`
+直後の同じ `execute_batch` で `CREATE TABLE IF NOT EXISTS codex_chunks ...` する。
+
+主なカラム: `entry_id` (TEXT PK/FK) / `entry_name` / `entry_type` / `text`
+（埋め込んだ平文 `name。aliases。summary。本文`）/ `embedding` (BLOB, f32 LE flat,
+L2 正規化) / `embedding_dim` / `model_id` / `content_hash` (entry の SHA-256) /
+`chunker_version` / `created_at` / `updated_at`。インデックスは
+`idx_codex_chunks_model` on (model_id) のみ。
+
+> **`codex_chunks` は Drizzle `schema.ts` に定義が無い Rust 専用テーブル**
+> （`scene_chunks` と異なり Drizzle 側ミラーを持たない）。CREATE / 読み書きは
+> 完全に Rust 側で完結する。DDL の正本は
+> [`docs/Grimodex_統合DBスキーマ.md`](./Grimodex_統合DBスキーマ.md) の
+> `codex_chunks` 節を参照（本書では再掲しない）。
+
+DB スキーマ詳細（`scene_chunks` / `codex_chunks` の完全な DDL）は
+[`docs/Grimodex_統合DBスキーマ.md`](./Grimodex_統合DBスキーマ.md) を正本とする。
 
 ---
 
@@ -199,32 +234,67 @@ Drizzle 側はスキーマ整合のために定義し、`schema.test.ts` で SQL
 
 ## 埋め込みモデル
 
-実装: `src-tauri/src/semantic/embedding.rs`。
+実装: `src-tauri/src/semantic/embedding.rs`。モデル/言語固有のパラメータは
+`src-tauri/src/semantic/spec.rs` (`EmbeddingModelSpec`) に集約する。
 
-### 採用モデル
+### 採用モデル（言語別 2 モデル体制 / 2026-06-18 追記）
 
-* `cl-nagoya/ruri-v3-30m` (Apache 2.0, ModernBERT-Ja ベース、256 次元)
-* ONNX: `sirasagi62/ruri-v3-30m-ONNX` の `model_int8.onnx` (36MB)
-* 同梱: `src-tauri/resources/semantic/ruri-v3-30m/{model_int8.onnx,tokenizer.json}`
-* Tauri 配布物への組み込み: `tauri.conf.json#bundle.resources` に登録済み
+プロジェクトの `language` 列で埋め込みモデルを切り替える
+（`spec_for_language(language)`: `"en"` で始まれば英語 spec、それ以外は日本語 spec）。
+得られた `model_id` / `embedding_dim` / `chunker_version` を `scene_chunks` /
+`codex_chunks` に書くので、プロジェクトの言語（やモデル）を切り替えるとその
+チャンクは stale 判定され `semantic_reindex_all` で再構築される。
 
-定数:
-* `MODEL_ID_RURI_V3_30M = "cl-nagoya/ruri-v3-30m"`
-* `EMBEDDING_DIM_RURI_V3_30M = 256`
-* `QUERY_PREFIX = "検索クエリ: "`
-* `DOCUMENT_PREFIX = "検索文書: "`
+| | 日本語 (`SPEC_JA`) | 英語 (`SPEC_EN`) |
+|---|---|---|
+| モデル | `cl-nagoya/ruri-v3-30m` (Apache 2.0, ModernBERT-Ja) | `BAAI/bge-small-en-v1.5` (MIT, plain BERT) |
+| 次元 | 256 | 384 |
+| pooling | `MeanWithMask` (attention-mask 重み付き mean) | `Cls` (先頭トークン) |
+| prefix | query `検索クエリ: ` / doc `検索文書: ` | 無し（prefix-free） |
+| `token_type_ids` | 不要 (ModernBERT) | 必要（zeroed を渡す） |
+| `max_seq_len` | 8192 | 512 |
+| dir | `resources/semantic/ruri-v3-30m/` | `resources/semantic/bge-small-en-v15/` |
+| `model_id` suffix | `@local/model_int8.onnx/prefix-v1` | `@local/model_int8.onnx/en-v1` |
+| `chunker_version` | `semantic-prose-chunker-v1` | `semantic-prose-chunker-en-v1` |
+| golden fixture | `ruri_v3_30m_golden.json` | `bge_small_en_v15_golden.json` |
 
-`scene_chunks.model_id` に書く文字列は
-`"{MODEL_ID_RURI_V3_30M}@local/model_int8.onnx/prefix-v1"`。
-**revision pin・量子化バリアント・prefix ルール変更を識別できる粒度**にする。
+`scene_chunks.model_id` / `codex_chunks.model_id` に書く文字列は spec の
+`full_model_id()`（= `model_id + model_id_suffix`）で言語ごとに変わる。
+例: 日本語 `cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1`。
+**revision pin・量子化バリアント・prefix ルール変更・モデル種別を識別できる粒度**にする。
+
+* ONNX: 日本語は `model_int8.onnx` (36MB)、英語 bge も int8 (~34MB)
+* Tauri 配布物への組み込み: `tauri.conf.json#bundle.resources` に両 dir 登録済み
+
+#### 英語モデルの `max_seq_len=512` 罠
+
+bge は plain BERT で position embedding が 512 固定。英語プロジェクトに日本語本文が
+混ざると CJK 1 文字 ≈ 1 bge トークンで 512 を超え、`/embeddings/Add_1`
+(word+position broadcast) が実行時クラッシュする。そのため tokenizer 側で
+`max_seq_len` まで truncate する。一方 ruri (ModernBERT) は 8192 まで扱えるので
+日本語チャンク（~760 トークン）は決して truncate されず、既存 ja 埋め込みは
+バイト同値を保つ（`spec.rs` の ja-invariant ユニットテストで固定）。
+
+#### 言語別チャンカー
+
+`spec.chunker_config()` が言語別の `ChunkerConfig` を返す。英語は文字あたりの
+情報量が低いのでチャンク目標を約 2 倍にする（`target_min=400 / max=1000 /
+dialogue_tag_max=120`）。`index::embed_scene_payloads` が日本語=`chunk_scene`、
+英語=`chunk_scene_en`（`chunker_en.rs`、`grimodex_lint::textscan::en` の文/引用
+スキャンを使い、1 段落内に narration と引用が混在する英語に合わせて
+`dialogue_chars` を引用スパンから数える）に振り分ける。
 
 ### 推論パイプライン
 
-1. テキストに `検索クエリ: ` / `検索文書: ` prefix を付与
-2. HF `tokenizers` で `input_ids`, `attention_mask` に変換
-   （ModernBERT 系のため `token_type_ids` は渡さない）
+spec に従って分岐する（以下は日本語 ruri の例。英語 bge は prefix 無し・
+`token_type_ids` 必要・CLS pooling）:
+
+1. spec の prefix を付与（ja: `検索クエリ: ` / `検索文書: `、en: 無し）
+2. HF `tokenizers` で `input_ids`, `attention_mask`（+ `spec.needs_token_type_ids`
+   なら zeroed `token_type_ids`）に変換。`spec.max_seq_len` で truncate（§512 罠）
 3. ort で `last_hidden_state` を取得（`token_embeddings` 出力名にもフォールバック）
-4. attention_mask 重み付き **mean pool**（prefix トークンも含めた `include_prompt: True` 相当）
+4. `spec.pooling` で 1 ベクトルに集約 — ja は attention_mask 重み付き **mean pool**
+   （prefix トークンも含めた `include_prompt: True` 相当）、en は **CLS**（先頭トークン）
 5. **L2 正規化**
 
 L2 正規化済み出力同士はドット積 = コサイン類似度になるため、検索時のスコアリングは
@@ -233,8 +303,9 @@ L2 正規化済み出力同士はドット積 = コサイン類似度になる�
 ### 検収条件（golden test）
 
 `tests/embedding_golden.rs` 内 `#[cfg(test)] mod golden` で gated 実行。
-Python `sentence-transformers` で生成した
-`tests/fixtures/ruri_v3_30m_golden.json` と Rust 出力を比較する。
+Python `sentence-transformers` で生成した各 spec の golden fixture
+（`tests/fixtures/{ruri_v3_30m,bge_small_en_v15}_golden.json`、`spec.golden_fixture`）
+と Rust 出力を比較する。
 
 * **fp32 ONNX**: cosine >= 0.9999 (パイプライン正当性)
 * **量子化 ONNX**: fp32 比 cosine >= 0.99 (量子化誤差は許容)
@@ -314,6 +385,24 @@ t4: t2 の embed が新たに開始
 正しさは Rust 側の content_hash 検証で担保されるので、フロントの debounce は
 パフォーマンス最適化（無駄な embed を抑える）でしかない。
 
+### プロジェクト open 時の自動 back-index（2026-06-18 追記）
+
+逐次更新は「編集された scene / codex entry」しか index しないので、機能追加前から
+在る・未編集のシーン/エントリは未 index のまま（dense 検索に乗らず sparse 退避）。
+`features/semantic-search/autoIndex.ts` がプロジェクト open 時
+（`App.tsx` の `ensureSemanticIndexesOnOpen(currentProjectId)`）に
+**codex と scene の両方**を言語別に一括 back-index する。
+
+* `ensureCodexIndexed` — まず軽量 `codex_index_status` で
+  `indexedEntryCount < totalEntryCount` を判定し、不足時だけ `codex_reindex_all`。
+* `ensureSceneIndexed` — `semantic_index_status` + scene 総数 count で
+  「未 index または stale あり」を判定し、不足時だけ `semantic_reindex_all`
+  （手動 reindex と `reindexProgressStore.running` で相互排他、進捗は既存トースト）。
+* 充足済みなら embedder をロードせず即 return。失敗（feature 無効 / モデル不在）は
+  無音でガードを外し、開き直しで再試行できる。1 セッション 1 プロジェクト 1 回。
+* Rust 側は `codex_index_split_lock` / `index_scene_split_lock`（embed 中に
+  workspace lock を持たない）で autosave 等を妨げない。
+
 ---
 
 ## 検索パイプライン
@@ -323,7 +412,8 @@ t4: t2 の embed が新たに開始
 
 ### 1. クエリの埋め込み
 
-* `embedder.embed_query(query)` で `検索クエリ: ` prefix 込みで埋め込み (256 次元)
+* `embedder.embed_query(query)` で spec の query prefix 込みで埋め込み
+  （ja は `検索クエリ: ` 込み 256 次元、en は prefix 無し 384 次元）
 * embedder Mutex は埋め込みが終わったら `drop(guard)` で release し、
   後段のスコアリング中に並行 invoke が embed できるようにする
 
@@ -350,7 +440,7 @@ stale (識別子不一致) のチャンクは検索対象から除外される�
 
 ### 4. スコアリング
 
-ruri-v3 出力は L2 正規化済みなので `dot_product(query, chunk) = cosine similarity`。
+埋め込み出力は ja/en とも L2 正規化済みなので `dot_product(query, chunk) = cosine similarity`。
 
 ```rust
 pub fn apply_dialogue_penalty(score: f32, dialogue_ratio: f32, description_mode: bool) -> f32 {
@@ -370,6 +460,90 @@ pub fn apply_dialogue_penalty(score: f32, dialogue_ratio: f32, description_mode:
 に clone して返す。
 
 近似近傍探索や `sqlite-vec` は導入しない (単一作品の数千〜数万チャンクなら総当たりで十分)。
+
+---
+
+## Codex セマンティック検索（2026-06-18 追記）
+
+実装: `src-tauri/src/semantic/codex_index.rs` (index) +
+`src-tauri/src/semantic/codex_search.rs` (検索) +
+`commands/semantic.rs` の codex コマンド群。
+
+scene の index/search を「**チャンク不要・1 エントリ 1 ベクトル**」にフォークした版。
+codex 本文は短い (80〜300字) ので段落チャンカーを通さず、entry 全体
+（`build_codex_embed_text` = `name。aliases。summary。本文(平文)`）を 1 ベクトルで
+埋める。eval (`scripts/eval-codex-recall.py`) で descriptive recall が出ることを確認済み。
+
+* **テーブル**: `codex_chunks`（PK=`entry_id`、§データモデル）。
+* **race detection**: scene と同型。`read_codex_for_index` で embed 前に hash 算出
+  → embed 中は DB lock を放す → `upsert_codex_chunk` が TX 内で entry を再 SELECT・
+  再 hash し `expected_hash` 不一致なら破棄（`CodexUpsertOutcome::{Indexed(1),
+  SkippedHashMismatch, SkippedMissing}`）。
+* **キャッシュ**: `CodexSearchCache`（`entry_id` 単位）。scene の `SearchCache` と
+  同じ stale ガード（model_id / embedding_dim / chunker_version 一致時だけ hit）。
+* **検索**: `run_codex_search` が project 配下の codex_chunks に総当たりコサイン →
+  Top-K。project スコープは `list_indexed_codex_entry_ids` 側で効かせる（XPROJ 防御）。
+  dialogue_ratio が無いので減点は無い。
+* **逐次更新**: codex entry 保存後に `scheduler.ts::scheduleCodexIndex` が debounce
+  付きで `codex_index_entry` を呼ぶ（scene の `scheduleSceneIndex` と同形）。
+  `codex_index_split_lock` が embed 中に workspace lock を持たない（autosave 等を妨げない）。
+
+### 消費側（専用 UI は無い）
+
+codex セマンティック検索は **専用ダイアログを持たない**。Chat Agent Mode の
+`search_codex` ツールの **dense アーム**として使い、JS 側
+(`features/chat/agent/codexHybridSearch.ts::fuseCodexHybrid`) が `codex_semantic_search`
+の dense 結果と sparse(FTS/LIKE) を Reciprocal Rank Fusion で融合する。融合は検索
+ツール用の単純 RRF で、注入用の閾値較正は不要。
+
+---
+
+## Layer 4 RAG（チャット文脈注入）（2026-06-18 追記）
+
+実装: `src/features/chat/semanticRecall.ts`（取得・選別）+ `chatStore.ts`（配線）+
+`contextBuilder.ts`（プロンプト組み立て）。
+
+drafting チャットの文脈に、意味検索で見つけた過去シーンの抜粋を自動注入する。
+当初「Post-MVP」だったが出荷済み。
+
+* **クエリ seed** = 直近ユーザー発話 + 現在シーン本文の末尾（DB 保存値、最大
+  `SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS=500` 文字）。`buildSemanticRecallQuery`。
+* **配線**: `chatStore` が設定 `ai.semanticRecall`（既定 true）を見て `fetchSemanticRecall`
+  を呼び、結果を `contextBuilder` の `semanticRecall` 入力へ渡す。注入先はクエリ毎に
+  変わるため cacheSegments（prompt cache 安定領域）ではなく prompt + volatileTail。
+* **グレースフル**: `semantic_search` は feature gate 内なので、無効ビルドや未 index
+  プロジェクトでは静かに空配列へフォールバックする。
+
+### dense + sparse ハイブリッド (RRF)
+
+dense 単独は固有名詞 (人名・地名) の recall を落としやすいので、既存 FTS5 (trigram,
+scene 本文 index) を sparse ランカーとして併用し RRF で順位融合する。設定
+`ai.hybridRecall`（既定 true、`semanticRecall` が前提）で切替。
+
+* `RRF_K = 60`（順位 r の寄与 1/(k+r)）
+* `SEMANTIC_RECALL_RESCUE_MARGIN = 0.05`: sparse top-N に居れば cosine が床を
+  `floor - margin` まで割っても注入を許す救済。語彙一致だが意味無関係な偶発ヒットは
+  bm25 IDF と二段で弾く。
+* 選別: `selectSemanticRecallChunks`（dense 単独）/ `selectHybridRecallChunks`（融合）。
+
+### 言語別の閾値（`recallParamsForLang`）
+
+| | 日本語 (ruri) | 英語 (bge) |
+|---|---|---|
+| 注入床 `MIN_SCORE` | 0.80 | 0.51 |
+| top-1 ゲート | 0.85 | = 床 (0.51) |
+| 1 チャンク注入文字数上限 | 600 | 900 |
+
+ruri は無関係な散文どうしでも cosine が ~0.79 に座る高ベースラインなので、
+「明確な勝者 (ゲート 0.85) がいる時だけ床 0.80 まで二番手を拾う」top-1 ゲート +
+runner-up 床方式にする。bge は related↔unrelated の分離マージンが広いので
+ゲート = 床（単一閾値）。詳細は `docs/Grimodex_セマンティック検索の閾値とモデル特性.md`。
+
+### dev 評価ハーネス（`searchEval.ts`）
+
+クエリ → 期待シーン集を **実機の `semantic_search`**（int8-ONNX 経路）に流し、
+Recall@1/@3・MRR・閾値跨ぎ・閾値 sweep・miss/junk を集計する dev 専用ツール。
+`recallParamsForLang` を共有する。
 
 ---
 
@@ -402,6 +576,51 @@ async fn semantic_reindex_all(app: AppHandle, project_id: String) -> Result<usiz
 // 戻り値: 投入チャンク総数
 // 1 scene 完了ごとに `semantic:reindex_progress` event を emit
 ```
+
+#### Codex セマンティック / 補助コマンド（2026-06-18 追記）
+
+scene 系の 4 コマンドに加え、以下 6 コマンドを実装している（同じく
+`commands/semantic.rs`・`semantic-embedding` feature gate 内・camelCase）。
+
+```rust
+#[tauri::command]
+async fn codex_index_entry(app: AppHandle, entry_id: String) -> Result<usize>
+// codex entry 1 件を index/更新。戻り値: 投入ベクトル数 (1)、破棄時 0
+
+#[tauri::command]
+async fn codex_semantic_search(
+    app: AppHandle, project_id: String, query: String, limit: usize,
+) -> Result<Vec<CodexSearchHit>>
+// codex の dense 検索。JS 側 search_codex が sparse と RRF 融合する dense アーム
+
+#[tauri::command]
+async fn codex_reindex_all(app: AppHandle, project_id: String) -> Result<usize>
+// project 配下の全 codex entry を bulk back-index。progress event は出さない
+
+#[tauri::command]
+async fn codex_index_status(app: AppHandle, project_id: String) -> Result<CodexIndexStatus>
+// Embedder 不要。{ indexedEntryCount, totalEntryCount }
+
+#[tauri::command]
+async fn semantic_chunk_context(
+    app: AppHandle, scene_id: String, char_start: usize, char_end: usize, padding: usize,
+) -> Result<PreviewContext>
+// hit の前後文脈プレビュー (preview.rs::slice_context)。{ before, chunk, after, sceneTitle }
+
+#[tauri::command]
+async fn semantic_debug_dump(
+    app: AppHandle, project_id: String, scene_id: Option<String>, limit: Option<usize>,
+) -> Result<DebugDumpReport>
+// 開発者向け: scene_chunks の検査用ダンプ (本文/範囲/model/dim/chunker/hash/
+// 埋め込み L2 ノルム/stale 判定)。Embedder 不要。limit 既定 200・上限 2000
+```
+
+* `CodexSearchHit`: `{ entryId, entryName, entryType, summary, score }`
+* `CodexIndexStatus`: `{ indexedEntryCount, totalEntryCount }`
+  （`indexedEntryCount < totalEntryCount` で未 index の既存エントリがある）
+* `PreviewContext`: `{ before, chunk, after, sceneTitle }`
+* `DebugDumpReport`: `{ projectId, language, currentModelId, currentEmbeddingDim,
+  currentChunkerVersion, totalChunks, returnedChunks, chunks: DebugChunkRow[] }`
 
 `IndexStatusReport`:
 ```ts
@@ -516,17 +735,23 @@ const useSearchModeStore = create<SearchModeState>()(
 ```
 semantic/
 ├── mod.rs            … モジュール宣言。embedding のみ feature gate
-├── chunker.rs        … ProseMirror 段落抽出 + 分類 + 文分割 + パッキング (pure)
-├── embedding.rs      … ort + tokenizers の Embedder。golden test 同居
+├── spec.rs           … EmbeddingModelSpec / SPEC_JA / SPEC_EN / spec_for_language (pure)
+├── chunker.rs        … 日本語: 段落抽出 + 分類 + 文分割 + パッキング (pure)
+├── chunker_en.rs     … 英語: 引用スパン基準の dialogue 計数 + 共有パッキング (pure)
+├── embedding.rs      … ort + tokenizers の Embedder (spec 駆動)。golden test 同居
 ├── index.rs          … upsert_scene_chunks (pure) + index_scene (feature gated)
 │                       + collect_index_status / list_scene_ids_in_project (pure)
-└── search.rs         … SearchCache / load_scene_chunks_from_db / run_search (pure)
+├── search.rs         … SearchCache / load_scene_chunks_from_db / run_search (pure)
+├── codex_index.rs    … codex_chunks の upsert / 1 entry 1 ベクトル / status (pure + embed)
+├── codex_search.rs   … CodexSearchCache / run_codex_search (pure)
+└── preview.rs        … semantic_chunk_context 用の前後文脈切り出し (pure)
 
 commands/
-└── semantic.rs       … 4 つの Tauri command + SemanticEmbedderState
-                        + resolve_ruri_dir (resource_dir 経由 + CARGO_MANIFEST_DIR fallback)
+└── semantic.rs       … 10 個の Tauri command + SemanticEmbedderState
+                        + SearchCache / CodexSearchCache + *_split_lock
+                        + resolve dir (resource_dir 経由 + CARGO_MANIFEST_DIR fallback)
 
-database/migrate.rs   … scene_chunks CREATE TABLE
+database/migrate.rs   … scene_chunks + codex_chunks CREATE TABLE
 ```
 
 ### Frontend (`src/features/`)
@@ -538,17 +763,22 @@ search/
 └── GlobalSearchDialog.tsx     … 既存 FTS5、上部に SearchModeTabs を追加
 
 semantic-search/
-├── api.ts                     … 4 つの invoke ラッパー (型付き)
+├── api.ts                     … 10 個の invoke ラッパー (型付き、scene + codex + 補助)
 ├── SemanticSearchDialog.tsx   … 検索 UI 本体 (SearchModeTabs export 元)
 ├── searchResultSelection.ts   … キーボードナビ pure helper
 ├── semanticNavStore.ts        … chunk jump 要求 store (foreshadow nav と同形)
 ├── findChunkInDoc.ts          … PM doc 内で chunkText 先頭一致を探す pure
 ├── scheduler.ts               … シーン保存後の debounce 付き自動再インデックス
+├── autoIndex.ts               … open 時の codex/scene 自動 back-index (ensureSemanticIndexesOnOpen)
+├── searchEval.ts / searchEvalSets.ts … dev 評価ハーネス (Recall/MRR/閾値 sweep)
 ├── reindexProgressStore.ts    … 進捗トースト用 store
 ├── useReindexProgressListener.ts … Tauri event 購読 hook
 └── ReindexProgressToast.tsx   … 右下固定の進捗トースト
 
+chat/semanticRecall.ts         … Layer 4 RAG。dense+sparse RRF 取得・選別・言語別閾値
+chat/agent/codexHybridSearch.ts … codex dense(codex_semantic_search)+sparse の RRF 融合
 App.tsx                        … listener 起動 + Toast マウント + SearchDialog 配線
+                                  + open 時 ensureSemanticIndexesOnOpen
 features/editor/EditorPane.tsx … coreSave 末尾で scheduleSceneIndex、
                                   switchScene + subscribe で chunk jump consume
 lib/tauri.ts                   … SLOW_COMMANDS に semantic_reindex_all 追加
@@ -557,16 +787,21 @@ lib/tauri.ts                   … SLOW_COMMANDS に semantic_reindex_all 追加
 ### リソース
 
 ```
-src-tauri/resources/semantic/ruri-v3-30m/
-├── model_int8.onnx       … 36MB、tauri.conf.json#bundle.resources 同梱
-├── model.onnx            … 141MB、golden test 専用 (非同梱)
-├── tokenizer.json        … 6.5MB、同梱
-└── (その他 config 系)
+src-tauri/resources/semantic/
+├── ruri-v3-30m/          … 日本語 (SPEC_JA.dir_name)
+│   ├── model_int8.onnx       … 36MB、tauri.conf.json#bundle.resources 同梱
+│   ├── model.onnx            … 141MB、golden test 専用 (非同梱)
+│   ├── tokenizer.json        … 6.5MB、同梱
+│   └── (その他 config 系)
+└── bge-small-en-v15/     … 英語 (SPEC_EN.dir_name)、同様に int8 ONNX + tokenizer を同梱
 ```
 
-dev / prod の両方で `app.path().resource_dir().join("resources/semantic/ruri-v3-30m")`
-で解決。`model_int8.onnx` の存在で検証し、見つからなければ `CARGO_MANIFEST_DIR`
-にフォールバック (cargo test 経路や非 Tauri ランタイム救済)。
+dev / prod の両方で `resolve_model_dir(app, spec)` =
+`app.path().resource_dir().join("resources/semantic/{spec.dir_name}")` で解決。
+`model_int8.onnx` の存在で検証し、見つからなければ `CARGO_MANIFEST_DIR`
+にフォールバック (cargo test 経路や非 Tauri ランタイム救済)。Embedder は
+`SemanticEmbedderState` が `dir_name` 別にキャッシュし、ja/en プロジェクトの
+切替で取り直す。
 
 ---
 
@@ -581,20 +816,26 @@ dev / prod の両方で `app.path().resource_dir().join("resources/semantic/ruri
 * `search.rs`: `dot_product` / `apply_dialogue_penalty` / `SearchCache` の identity
   キャッシュヒット・stale 削除 / `load_scene_chunks_from_db` decode / `run_search`
   ranking / scope / limit / cache hit / description_mode / dim mismatch
-* `embedding.rs`: pure logic (mean_pool / l2_normalize / cosine) +
-  golden gated test (fp32 ONNX vs Python sentence-transformers)
+* `embedding.rs`: pure logic (mean_pool / cls_pool / l2_normalize / cosine) +
+  golden gated test (ja/en の fp32 ONNX vs Python sentence-transformers)
+* `spec.rs`: ja 識別子バイト固定 (ja-invariant) / 言語選択 / en の CLS+token_type_ids
+* `codex_index.rs`: `build_codex_embed_text` / `upsert_codex_chunk` の insert・置換・
+  hash mismatch・missing / `collect_codex_index_status`
+* `codex_search.rs`: `CodexSearchCache` identity / `run_codex_search` ranking・scope・limit
+* `chunker_en.rs`: 英語の文/引用スキャンと dialogue 計数
+* `preview.rs`: `slice_context` の前後切り出し境界
 
 ### Frontend (Vitest)
 
-* `api.test.ts`: invoke ペイロード形状と返値の型
-* `searchResultSelection.test.ts`: キーボードナビ境界
-* `semanticNavStore.test.ts`: requestJump / consumeJump / scene 不一致の保持
-* `findChunkInDoc.test.ts`: 単一 text node / mark 分割 / `\n` 含み / 不在 / 短すぎる /
-  空 doc / max chars 境界 / 複数出現の先頭 / heading 混在
-* `scheduler.test.ts`: debounce / 連続 schedule のマージ / scene_id 独立 / cancel /
-  空 id / pending count / reject 伝播抑止
-* `reindexProgressStore.test.ts`: 初期 inactive / setProgress / auto clear /
-  新 progress で timer cancel / clear
+* `api.test.ts`: invoke ペイロード形状と返値の型 (scene + codex + 補助)
+* `searchResultSelection.test.ts` / `semanticNavStore.test.ts` / `findChunkInDoc.test.ts`:
+  キーボードナビ・jump 要求・PM doc 先頭一致 (従来どおり)
+* `scheduler.test.ts` / `reindexProgressStore.test.ts`: debounce / 進捗トースト
+* `autoIndex.test.ts`: open 時の codex/scene 自動 back-index と充足判定・無音フォールバック
+* `searchEval.test.ts`: dev 評価ハーネスの集計
+* `chat/semanticRecall.test.ts` / `contextBuilder.semanticRecall.test.ts`:
+  Layer 4 RAG の取得・選別・言語別閾値・注入組み立て
+* `chat/agent/codexHybridSearch.test.ts`: codex dense+sparse の RRF 融合
 
 ### CI 上の注意
 
@@ -612,9 +853,11 @@ dev / prod の両方で `app.path().resource_dir().join("resources/semantic/ruri
 
 * **chunker 改訂 = 全 stale**: `CHUNKER_VERSION` を上げると全プロジェクトで
   `semantic_reindex_all` を要求する。ユーザに状態が見える仕組み
-  (`semantic_index_status`) はあるが、自動再構築 UI はまだ無い。
-* **`semantic_reindex_all` トリガー UI 未実装**: 現状 DevTools console から
-  invoke するしかない。Settings パネルにボタンを追加する余地あり。
+  (`semantic_index_status`) と、プロジェクト open 時の自動 back-index
+  (`autoIndex.ts`、§インデックス更新) はあるが、明示的な「再構築」設定 UI は無い。
+* **`semantic_reindex_all` 手動トリガー UI 未実装**: open 時の自動 back-index は
+  あるが、ユーザが任意に再構築する Settings ボタンは未実装（DevTools console から
+  invoke で代用）。
 * **abort 未対応**: 大規模プロジェクトの reindex 中に止める手段が無い
   (アプリ終了のみ)。`AbortFlag` パターンで追加可能だが MVP では入れていない。
 * **chunk highlight は先頭 line のみ**: `findChunkInDoc` は prefix (最大 60 chars)
@@ -631,16 +874,22 @@ dev / prod の両方で `app.path().resource_dir().join("resources/semantic/ruri
   持つので、シーン全体をトークンレベルで埋め込んでから区間 mean pooling する
   方式に切替可能。チャンク区間定義は両方式で共通なので、移行コストは
   embedding 生成部に限定される。
-* **bge-m3 sparse によるハイブリッド**: dense (ruri-v3) と sparse (bge-m3) の
-  ハイブリッド検索で固有名詞検索の精度が上がる可能性がある。
+* **bge-m3 など learned-sparse によるハイブリッド**: dense + sparse のハイブリッド
+  自体は FTS5 (trigram/bm25) を sparse ランカーにした RRF 融合で**出荷済み**
+  （§Layer 4 RAG / §Codex セマンティック検索）。bge-m3 のような learned sparse に
+  差し替えればさらに精度が上がる可能性は残る。
 * **`ruri-v3-310m` (768 次元) への差し替え**: 同梱サイズが大きい (~500MB) ため
   optional model pack / 初回ダウンロード方式での提供を検討。
   `embedding_dim` カラムが既にあるので DB は変更不要。
-* **Layer 4 RAG コンテキスト注入**: 本機能の cache とインフラを流用して、
-  AI チャットへのコンテキスト注入に応用できる。SPEC.md で Post-MVP に位置付け済み。
 * **chunk scroll の精度向上**: char_start/char_end を ProseMirror position に
   正確にマッピングするためのオフセットマップ層が必要。
   `Grimodex_Linter設計書.md` の「位置オフセットの取り扱い」と同じ問題系。
+
+> **（2026-06-18 追記）旧「将来検討」から出荷済みに昇格**:
+> * **Layer 4 RAG コンテキスト注入** — 出荷済み（§Layer 4 RAG）。本機能の
+>   インフラを流用し、dense+sparse RRF で chat 文脈へ自動注入する。
+> * **言語別 2 モデル体制** — ja=ruri / en=bge-small-en-v1.5 を出荷済み（§埋め込みモデル）。
+> * **Codex セマンティック検索** — 出荷済み（§Codex セマンティック検索）。
 
 ---
 
@@ -661,3 +910,9 @@ dev / prod の両方で `app.path().resource_dir().join("resources/semantic/ruri
 | `findChunkInDoc` は先頭 line を prefix にした単純検索 (MVP) | 実装で確定 |
 | `bundle.resources` にモデルを同梱 (production 配布で必須) | 後続で確定 |
 | reindex_all に progress event、abort は後回し | 実装で確定 |
+| 言語別 2 モデル体制 (ja=ruri-256d / en=bge-small-en-v1.5-384d)、`spec.rs` に集約 | **2026-06-18 出荷** |
+| ja 識別子をバイト固定 (`spec.rs` ja-invariant test) し既存 index を無効化しない | **2026-06-18 出荷** |
+| Codex は 1 entry 1 ベクトル (チャンク無し) で `codex_chunks` に index | **2026-06-18 出荷** |
+| dense + FTS5 sparse を RRF 融合 (chat 注入 / codex 検索)。閾値は言語別 | **2026-06-18 出荷** |
+| Layer 4 RAG を chat 文脈へ自動注入 (`semanticRecall.ts`、cacheSegments 外) | **2026-06-18 出荷** |
+| open 時に codex/scene を言語別に自動 back-index (`autoIndex.ts`) | **2026-06-18 出荷** |

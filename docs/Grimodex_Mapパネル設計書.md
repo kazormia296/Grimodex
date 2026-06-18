@@ -120,6 +120,8 @@ Layout
   ---
   Reset Free positions（ピン留め以外を原点近傍に戻す）
   Fit to viewport
+  ---
+  Generate correlation board…（人物相関図ボードを生成。後述）
 
 Export
   SVG / PNG として保存
@@ -254,9 +256,11 @@ Sticky body は専用の TipTap プリセットで編集する。Editor / Snippe
 | 基本 | StarterKit（Document/Paragraph/Text/Bold/Italic/Heading/BulletList/OrderedList/CodeBlock/History） | 軽量編集 |
 | 表 | `@tiptap/extension-table`（Table/TableRow/TableCell/TableHeader） | AI 図表対応 |
 | 画像 | `@tiptap/extension-image` | v2、貼り付け対応 |
-| Mark（既存共有） | **CodexHighlightMark** | Codex 名の自動ハイライト |
+| Mark（既存共有） | **CodexHighlightMark** | Codex 名の自動ハイライト。**※未実装（後述）** |
 | Mark（既存共有） | **AuthorshipMark** | 帰属追跡 |
 | 装飾 | Placeholder | 空 Sticky に「思いついたことを書く…」表示 |
+
+> **実装注記（2026-06-18 追記）**: 実装の `getStickyEditorExtensions`（`src/features/editor/extensions.ts`）は StarterKit + `Markdown` + Table 系 + Placeholder + **`AuthorshipMark` のみ**で、**`CodexHighlightMark` は未登録**。当初設計で「必須」とした Sticky 編集中の Codex 名リアルタイムハイライトは効かない（spec に対する regression）。
 
 **含めない**: リンク・引用・水平線・タスクリスト等。Sticky の軽量性を守るため。リッチに書きたいなら Note/Snippet に昇格する。
 
@@ -471,6 +475,18 @@ AI Branch ノードはホバー時に右上に **`×` バッジ**が表示され
 
 `×` バッジは AI Branch ノード固有の UI。Sticky や Scene/Codex/Note には付かない（誤削除リスクが高いため）。
 
+#### 派生 Sticky の採用 / 不採用（2026-06-18 追記・実装済）
+
+AI Branch が撒いた Sticky を 1 件ずつ仕分けるワンクリック操作。branch 在籍中（`ai_branch_id` 非 NULL）の Sticky だけがホバー時に**採用 / 不採用ボタン**を出す（`StickyNode.tsx`）。
+
+| 操作 | 動作 |
+|------|------|
+| **採用 (adopt)** | branch から切り離して通常 Sticky 化（`ai_branch_id` を NULL に）。`adoptSticky`。globalHistory で Undo 可能（`reattachSticky` で復元） |
+| **不採用 (reject)** | 既存の 2-phase delete → Trash Bin 経路でゴミ箱へ |
+| **派生 Sticky を全て採用** | AI Branch ノード右クリックの `Adopt all derived`（`adoptAllForBranch`、`NodeContextMenu.tsx`）。一括採用も Undo 可能 |
+
+**出自フラグの分離（Plan B）**: 「現在の所属 branch」を表す `ai_branch_id` と、「AI が生成したか」という不変の出自 `ai_derived` を**別カラムに分離**する。採用で `ai_branch_id` を NULL 化しても `ai_derived` は残るため、採用後の Sticky を本文へコピーしても帰属は `ai` のまま維持される（`StickyNode` の onCopy ラベルは `ai_derived` を見る）。
+
 ### 永続化されないこと
 
 Map では**全ノード が `map_node_positions` に行を持つ**。これはどのボードにどの座標で配置されているかの台帳。Scene/Codex/Note の Map への出現は手動キュレーションなので、追加されない限り行は作られない。
@@ -519,11 +535,13 @@ Map では**全ノード が `map_node_positions` に行を持つ**。これは�
 
 - エッジクリック → 選択（太線ハイライト）
 - ダブルクリック → ラベル編集ポップオーバー（forward / backward / 補助ラベル配列を一括編集）
-- 右クリック → コンテキストメニュー（線種変更・色変更・**Codex Relation に昇格**（v2）・削除）
+- 右クリック → コンテキストメニュー（線種変更・色変更・**Codex Relation に昇格**・削除）
 
-#### Codex Relation への昇格（v2）
+#### Codex Relation への昇格（実装済）
 
-両端が Codex ノードである User edge は、`Promote to Codex relation` で正式 Relation に昇格できる（`codex_relations` テーブル新設前提、v2）。Map で発見した関係を構造化する経路。
+> **実装注記（2026-06-18 追記）**: 当初 v2 計画だったが**実装済み**。`codex_relations` テーブルは新設済み（[統合 DB スキーマ設計書](./Grimodex_統合DBスキーマ.md) の `codex_relations` 参照）。昇格は `mapApi.ts` の `promoteUserEdgeToCodexRelation` が担い、`EdgeContextMenu.tsx` の `Promote to relation`（両端が Codex ノードのときのみ表示）から起動する。
+
+両端が Codex ノードである User edge は、`Promote to Codex relation` で正式 Relation に昇格できる。Map で発見した関係を構造化する経路。
 
 ```
 A: Elara ──「師匠」──> B: Marcus      （User edge）
@@ -531,7 +549,11 @@ A: Elara ──「師匠」──> B: Marcus      （User edge）
 codex_relations: { from: Elara, to: Marcus, type: "mentor", label: "師匠" }
 ```
 
-昇格後の User edge は Derived edge として描画される（自動生成扱い）。
+- `relation_type` は `forward_label` を slug 化（`slugifyRelationType`）して決定。`label` は forward_label をそのまま保持
+- 既存の同方向 relation があれば再作成せずそれを再利用（exact 重複ガード）
+- 昇格元の User edge は削除し、`codex_relations.source_map_edge_id` に元エッジ ID を記録。以降は Derived edge として描画される（自動生成扱い）
+
+なお `codex_relations` は Codex パネル側の relation 作成フォーム（`CodexTypedRelationsSection`）からも直接作成でき、Codex の「関係（対人）」は親子の「階層」とは概念分離されている（同一無向ペアに typed relation があると無ラベルの親 Derived エッジは Map で抑止され二重描画を防ぐ）。
 
 ---
 
@@ -623,6 +645,36 @@ Sticky / AI Branch は Map 専用エンティティなので、Map で削除す�
 
   [キャンセル]  [削除する]
 ```
+
+---
+
+## 人物相関図ボード生成（2026-06-18 追記・実装済）
+
+Map に**人物相関図 (Character Correlation Diagram) ボードを一度きり自動生成**する機能（Phase 1・決定的・AI なし）。「全エンティティを自動でぶちまけない」原則の例外ではなく、**ユーザーが明示的に起動して生成された 1 枚の独立ボード**として扱う。正本: `src/features/map/correlationBoard.ts`（`generateCorrelationBoard`）+ `CorrelationDialog.tsx`。
+
+### 起動
+
+ヘッダー `[⋮]` パネルメニュー → `Generate correlation board`（`map.menu.generateCorrelation`、`MapHeader.tsx`）→ `CorrelationDialog` でオプションを指定して生成。完了すると新ボードに切り替わる。
+
+### 生成パイプライン
+
+```
+characters → cross-reference（本文全文 × Rust matcher）→ 共起ペア列挙
+  → authored relations（両端 character の codex_relations）→ force layout（in-memory）
+  → board / positions / edges / frames を 1 tx（db_execute_batch）で snapshot 書き込み
+```
+
+| 段 | 内容 |
+|----|------|
+| 対象 | `type = 'character'` の Codex エントリ。ダイアログで個別に絞り込み可能 |
+| 共起 | `buildCrossReferenceReportForProject` → `transposeToSceneSets` → `emitCooccurrencePairs`。共有シーン数（`minSharedScenes` 閾値）で character ペアを列挙し、強さ・色に写像 |
+| 関係 | 両端が対象 character の `codex_relations`（authored relations）を採用。ラベルは `label ?? relationType` |
+| 配置 | `d3-force`（WorkerForceLayoutEngine）。再生成で揺れない安定 seed（`projectId + characterIds + 閾値`） |
+| 親 Frame | `includeParentFrames` 時、同一 `parent_id` グループ（2 件以上）の bbox を Frame として描画（親ノードは作らず親 entry 名を Frame title に） |
+
+### スナップショット方針
+
+生成エッジは **board-local の User edge としてスナップショット**し、ボードは `derivedEdges: false`・`mode: 'free'` で作る。これにより (a) Derived edges の 200 ノード自動 OFF を回避、(b) overlay 漏れ防止、(c) `codex_relations` を汚さない、(d) 自動更新不要、を一括で達成する。共起エッジは実線（共有数で色付け）、relation エッジは破線・`#7c3aed`・forward 方向。生成後は通常ボードと同じく自由に編集・削除できる（再生成すると別ボードになる）。
 
 ---
 
@@ -884,7 +936,10 @@ CREATE UNIQUE INDEX idx_map_pos_uniq_ai ON map_node_positions(board_id, ai_branc
 
 ### map_stickies（新規）
 
+> **実装注記（2026-06-18 追記）**: 正規版 DDL は [統合 DB スキーマ設計書](./Grimodex_統合DBスキーマ.md) の `map_stickies` を参照。下記の `color` 8 色固定 enum は**実装では採用されなかった**。実装は `palette_id`（`src/lib/stickyPalettes.ts` のパレット名）+ `color_slot`（パレット内インデックス）の 2 カラム構成で、任意パレット選択方式に拡張済み（`migrate.rs` の one-shot migration で旧 enum を移行）。さらに AI 由来出自を所属 branch とは独立に保持する `ai_derived` 列を追加（後述「AI Branch 製 Sticky の採用 / 不採用」参照）。以下の SQL は当初設計の歴史記録として残す。
+
 ```sql
+-- ※当初設計（実装では palette_id + color_slot + ai_derived に置換済み。統合DBスキーマ参照）
 CREATE TABLE map_stickies (
   id          TEXT PRIMARY KEY,
   board_id    TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE,
@@ -909,8 +964,10 @@ CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id)
 |--------|------|
 | `body` | **ProseMirror JSON 文字列**。TipTap minimal インスタンスで編集される（前述「TipTap minimal インスタンス仕様」参照）。空 Sticky のデフォルトは空 doc |
 | `preview_text` | body 先頭の text を 40 文字で抽出したキャッシュ。保存時にフロント側で計算して同梱（Beat 設計書の `unplaced_beat_preview` と同じ lazy パターン）。ノード縮小描画 / 検索ヒット表示で使用 |
-| `ai_branch_id` | AI Branch 生成時にリンク。AI Branch を消しても Sticky は残るが由来情報は失う（`ON DELETE SET NULL`） |
-| `source_chat_message_id` | Chat → Map で `As Sticky` 抽出した場合の元メッセージ。non-null なら Map ノード上に `💬` バッジ表示。元 Chat メッセージ削除時は SET NULL（Sticky 自体は残る） |
+| `palette_id` / `color_slot` | **実装で採用したカラー表現**（旧 `color` enum を置換）。`palette_id` は `src/lib/stickyPalettes.ts` のパレット名、`color_slot` はそのパレット `colors` 配列のインデックス。デフォルトは `post-it-playful` / `0` |
+| `ai_branch_id` | AI Branch 生成時にリンク。AI Branch を消しても（または採用しても）Sticky は残る（`ON DELETE SET NULL`）。「現在の所属 branch」を表す可変フラグ |
+| `ai_derived` | **AI が生成した付箋かどうかの不変の出自フラグ**（`ai_branch_id` とは独立）。採用（adopt）で `ai_branch_id` を NULL 化しても `ai_derived` は保持し、採用後の Sticky を本文へコピーしても帰属が `ai` のまま維持される |
+| `source_chat_message_id` | Chat → Map で `As Sticky` 抽出した場合の元メッセージ。元 Chat メッセージ削除時は SET NULL（Sticky 自体は残る）。**現状この列を書き込む UI 経路は未実装**（後述「実装状況」参照） |
 
 ### authorship_spans への sticky_id 追加
 
@@ -1149,21 +1206,30 @@ React Flow を採用し、独自ノードタイプ（SceneNode / CodexNode / Not
 
 設計書と実コード（`src/features/map/` 配下、`src-tauri/src/database/migrate.rs`、関連他パネル）の差分を Phase 別に整理する。凡例: ✅ 実装済 / 🟡 部分（差分あり）/ ⬜ 未実装。
 
+> **2026-06-18 追記（2026-05-16 以降の差分）**: 下記スナップショット以降に次が出荷された。
+> - **User edge → Codex Relation 昇格**（Phase E 計画分）が実装済（`promoteUserEdgeToCodexRelation` + `EdgeContextMenu`、`codex_relations` テーブル新設）。Phase E サマリは 0/6 → 1/6 へ。
+> - **人物相関図ボード生成**（`correlationBoard.ts` + `CorrelationDialog`、`⋮` メニュー起点）が新規追加。当初設計書に無い機能（前述「人物相関図ボード生成」セクション参照）。
+> - **AI Branch 製 Sticky の採用 / 不採用**（`adoptSticky` / `adoptAllForBranch` / `reattachSticky` + `StickyNode` のホバーボタン）。`map_stickies.ai_derived` 列を追加（出自と所属の分離）。
+> - **`Delete with all derived stickies`** サブメニューが実装され（`NodeContextMenu` の `deleteWithDerived` + `Adopt all derived`）、下記 Phase C「未達」記述は解消済。
+> - Codex relation の「階層（親子）/ 関係（対人）」概念分離（Codex パネル + Map の Derived edge 二重描画抑止）。
+>
+> 一方、**Chat → Map 連携・AI Branch の `session_id` 配線・Sticky title 入力 UI・`CodexHighlightMark` の Sticky 編集登録は 2026-06-18 時点も未実装**（下記記述は引き続き有効）。
+
 ### サマリ
 
 | Phase | 達成 | 主な未達 |
 |-------|------|---------|
 | Phase A 基盤 | 8/11 完, 3 部分 | Sticky の Codex highlight・帰属バッジ・パフォーマンス閾値 / 空白右クリックメニュー / ホバーツールチップ |
 | Phase B 関係性・昇格 | 4/8 完, 4 部分 | User edge 多重ラベル UI / 検索の body・content 走査 / Snippet 出処エッジの接続先 / Corkboard 演出 |
-| Phase C AI と Theme | 3/4 完, 1 部分 | AI Branch の `session_id` 配線（Map ↔ Chat 双方向ジャンプが未通電）|
+| Phase C AI と Theme | 3/4 完, 1 部分 | AI Branch の `session_id` 配線（Map ↔ Chat 双方向ジャンプが未通電）。※`Delete with all derived stickies` は 2026-06-18 までに実装済 |
 | Phase D 高度な機能 | 4/4 完 | — |
-| Phase E v2 | 0/6 | 想定通り未着手 |
+| Phase E v2 | 1/6（2026-06-18 時点） | User edge → Relation 昇格は実装済。残: Constellation / POV・Tag Color by / World map / 横断検索 / Grid・Matrix クロスナビ |
 
 横断的な未達（Phase に跨る）:
 
 - **Chat → Map 連携（`As Sticky` / `As Snippet` / `As AI Branch` / `As Codex…`）が完全未実装**。DB の `map_stickies.source_chat_message_id` カラムと `snippets.source_chat_message_id` は揃っているが、Chat メッセージのメニューに「Map に追加 ▸」が無く、書き込み経路も無い。
 - `Ctrl+D` Duplicate / `F2` rename inline / `Enter` open ショートカット未実装。
-- AI Branch 生成時に `sessionId` を `createAiBranch` へ渡しておらず（`MapCanvas.tsx:1046-1052`）、`map_ai_branches.session_id` が常に null。結果として AI Branch ノードダブルクリック → Chat への遷移が事実上死んでいる（`useMapNodes.ts:441-445` の分岐に入らない）。
+- AI Branch 生成時に `sessionId` を `createAiBranch` へ渡しておらず（`MapCanvas.tsx` の `createAiBranch` 呼び出し）、`map_ai_branches.session_id` が常に null。結果として AI Branch ノードダブルクリック → Chat への遷移が事実上死んでいる（`useMapNodes.ts:441-445` の分岐に入らない）。
 
 ### Phase A 詳細
 
@@ -1171,7 +1237,7 @@ React Flow を採用し、独自ノードタイプ（SceneNode / CodexNode / Not
 - ✅ 複数ボード対応（一覧・追加・削除・リネーム・複製）— `mapApi.ts:40-259`、`MapHeader.tsx:159-286`。削除確認ダイアログは `countBoardEntities`（`mapApi.ts:131-147`）を持つが、`MapHeader.tsx:550-591` の `BoardDeleteConfirm` では件数表示に未使用（設計書 615-625 行のダブル確認はテキストのみ）。
 - ✅ Free モード — `src/features/map/layouts/free.ts`
 - 🟡 Sticky ノード — TipTap 編集・色変更・削除・空白ダブルクリック生成・`S` キー・パレット `[+Sticky]` は揃う。以下が未達:
-  - **`CodexHighlightMark` が `getStickyEditorExtensions` に含まれていない**（`src/features/editor/extensions.ts:213-224`、`AuthorshipMark` のみ）。設計書 257 行で必須とされた Codex 名のリアルタイムハイライトが Sticky 編集中に効かない。
+  - **`CodexHighlightMark` が `getStickyEditorExtensions` に含まれていない**（`src/features/editor/extensions.ts` の `getStickyEditorExtensions`、StarterKit + Markdown + Table 系 + Placeholder + `AuthorshipMark` のみ）。設計書「TipTap minimal インスタンス仕様」で必須とされた Codex 名のリアルタイムハイライトが Sticky 編集中に効かない（2026-06-18 時点も未解消）。
   - **読み取り専用時は `preview_text`（plain text）描画**（`StickyNode.tsx:262-278`）。設計書 1229-1234 行の「Codex highlight・authorship 色付けを事前計算で描画」が未達。
   - **50 個閾値での static HTML フォールバック未実装**（設計書 1226-1238 行の Phase A 必達要件）。現状は編集中のみ TipTap、それ以外は単純な plain text。
   - **タイトル input が無い**（`StickyNode.tsx` は body のみレンダリングし、`title` プロパティが UI から編集できない）。
@@ -1204,8 +1270,9 @@ React Flow を採用し、独自ノードタイプ（SceneNode / CodexNode / Not
 ### Phase C 詳細
 
 - 🟡 AI Branch ノード — 種からの Sticky 撒き（`mapApi.ts:653-805`、放射状配置、各 Sticky に `ai` authorship span を自動付与、branch→sticky の dashed エッジ生成）、`AINodeDialog.tsx` のプロンプト + 生成数（3/5/8）選択 UI、`×` ワンクリック削除（`AIBranchNode.tsx:33-62`、確認ダイアログなし即削除）、`ON DELETE SET NULL` による派生 Sticky の orphan 保持はすべて動作。**フルスナップショット undo/redo**（`mapApi.ts:811-943` の `getAiBranchSnapshot` / `restoreAiBranchSnapshot` / `eraseAiBranchSnapshot`）は branch row + position + 派生 sticky + position + dashed edges + authorship spans まで一括復元できる設計超えの実装。
-  - **未達**: `MapCanvas.tsx:1046-1052` で `createAiBranch` 呼び出し時に `sessionId` を渡していない。`mapAiApi.ts:86-92` の `send_chat_message` 呼び出しも session を発行・返却しないため `map_ai_branches.session_id` は恒常的に null。結果、`useMapNodes.ts:441-445` のダブルクリック → Chat ジャンプ条件に入らない。
-  - **未達**: `Delete with all derived stickies` サブメニュー（設計書 470 行）。
+  - **未達（2026-06-18 時点も）**: `MapCanvas.tsx` の `createAiBranch` 呼び出し（オプション `options.sessionId` を省略）で `sessionId` を渡していない。`mapAiApi.ts` の `send_chat_message` 呼び出しも session を発行・返却しないため `map_ai_branches.session_id` は恒常的に null。結果、AI Branch ノードのダブルクリック → Chat ジャンプ条件に入らない。
+  - ✅ **`Delete with all derived stickies` / `Adopt all derived` サブメニュー実装済（2026-06-18 追記）** — `NodeContextMenu.tsx` の `deleteWithDerived` / `adoptAllDerived`、`MapCanvas.tsx` の `handleDeleteAiBranchWithDerived` / `handleAdoptAllForBranch` で配線。当初「未達」だったが解消。
+  - ✅ **派生 Sticky の採用 / 不採用（2026-06-18 追記）** — `mapApi.ts` の `adoptSticky` / `reattachSticky`（undo）/ `adoptAllForBranch`、`StickyNode.tsx` の branch 在籍中ホバーボタン。`map_stickies.ai_derived` で出自を保持。
 - ✅ Theme モード（d3-force + Web Worker）— `layouts/theme.ts`、`layouts/forceEngine.ts`、`layouts/forceLayout.worker.ts`、`layouts/index.ts:28-38`
 - ✅ Hybrid（Pin/Unpin）— `layouts/index.ts:6-20` の `applyPinnedOverrides`、`mapApi.ts:404-409` の `setNodePinned`、`NodeContextMenu.tsx:136-138`、`Ctrl+P`（`useMapKeyboard.ts:158-163`）
 - ✅ Auto-arrange: Force-directed compact — `layouts/autoArrange.ts:63-86`
@@ -1217,19 +1284,21 @@ React Flow を採用し、独自ノードタイプ（SceneNode / CodexNode / Not
 - ✅ Sticky Branch（隣に新規 Sticky を生やしてエッジ自動接続）— `MapCanvas.tsx:917-1000`、`NodeContextMenu.tsx:186-193`
 - ✅ Auto-arrange: Grid by reading-order — `layouts/autoArrange.ts:44-60`、`hooks/useMapAutoArrange.ts`
 
-### Phase E（v2 想定 / 未着手）
+### Phase E（v2 想定 / 大半未着手）
 
-- ⬜ Codex Relation テーブル新設 + User edge → Relation 昇格
+- ✅ **Codex Relation テーブル新設 + User edge → Relation 昇格（2026-06-18 追記）** — `codex_relations`（`migrate.rs`、[統合 DB スキーマ設計書](./Grimodex_統合DBスキーマ.md) 参照）。昇格は `mapApi.ts` の `promoteUserEdgeToCodexRelation` + `EdgeContextMenu.tsx` の `Promote to relation`。`slugifyRelationType` で relation_type 決定、exact 重複ガード、`source_map_edge_id` に元エッジ ID 記録。Codex パネル側の relation 作成フォーム（`CodexTypedRelationsSection`）からも直接作成可。
 - ⬜ Constellation visual theme（`visualTheme === "constellation"` の値だけ受け付け実体未実装）
 - ⬜ POV / Tag による Color by（`tree_nodes.pov_character_id` 列の追加が前提）
 - ⬜ World map overlay
 - ⬜ 全ボード横断検索
 - ⬜ Map から Grid / Matrix へのクロスナビゲーション
 
-### DB スキーマ差分
+DB スキーマの正規版は [統合 DB スキーマ設計書](./Grimodex_統合DBスキーマ.md) を参照（本設計書の SQL は当初設計の歴史記録）。
 
-- **`map_stickies.color`（8 色 enum）→ `palette_id` + `color_slot` の 2 カラム構成に置換**（`migrate.rs:1068-1120` の one-shot migration）。`src/lib/stickyPalettes.ts` ベースの任意パレット選択方式に拡張されている。設計書 894-895 行の 8 色固定 enum 制約は実装で緩和済。設計書スキーマ定義（894-906 行）を実装に合わせて更新する余地あり。
-- ✅ `authorship_spans.sticky_id` カラム・polymorphic CHECK 制約 — `migrate.rs:881` で実装済
+- **`map_stickies.color`（8 色 enum）→ `palette_id` + `color_slot` の 2 カラム構成に置換**（`migrate.rs` の one-shot migration）。`src/lib/stickyPalettes.ts` ベースの任意パレット選択方式に拡張。本設計書の `map_stickies` SQL 定義は実装注記付きで更新済（前述「DB スキーマ § map_stickies」）。
+- **`map_stickies.ai_derived` 列追加（2026-06-18 追記）** — AI 由来出自を所属 branch（`ai_branch_id`）と独立に保持。採用後も `ai` 帰属を維持するため（`migrate.rs`、additive 追加 + 既存 branch 由来付箋を遡及 backfill）。
+- **`codex_relations` テーブル新設（2026-06-18 追記）** — Map User edge の昇格先（前述「Codex Relation への昇格」）。`source_map_edge_id` に昇格元エッジ ID を記録。詳細は統合 DB スキーマ設計書参照。
+- ✅ `authorship_spans.sticky_id` カラム・polymorphic CHECK 制約 — 実装済
 - ✅ `map_edges.forward_label` / `backward_label` / `labels` / `style` / `color` / `direction` — すべて設計通り
 - ✅ `map_node_positions.pinned` / `z_index` — 設計通り
 

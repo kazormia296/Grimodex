@@ -203,9 +203,8 @@ Help
 - Codex モード時はタイプ別グループ化（character / location / item / lore のセクション、各セクション折りたたみ可）
 - Tag フィルタが指定されていれば、列候補はそのタグでさらに絞り込まれる
 - Custom モード時は手動で追加したエントリのみが順序固定で並び、`+` ボタンで追加・列ヘッダの `×` で削除
-- 列ヘッダ右クリックで「列を非表示」「ピン留め（左端固定）」「タイプセクションごと折りたたむ」（Custom モードでは「セットから削除」も追加）
-- 列幅はドラッグで変更可能
-- 列の並び順は default で Codex の `sortOrder`、ユーザーが D&D で変更可
+- 列ヘッダ右クリックで「列を非表示」「ピン留め（左端固定）」「タイプセクションごと折りたたむ」（Custom モードでは「セットから削除」も追加）。実装は `ColumnHeaderMenu.tsx`
+- 列幅は固定（`MatrixTable.tsx` の `COL_WIDTH = 80`）。**ドラッグによる列幅変更・列の D&D 並べ替えは未実装**。列の並び順は default で Codex の `sortOrder`
 
 ### セル
 
@@ -277,13 +276,19 @@ POV / Location モードでは `scene_codex_pins` には書かない（メタデ
 | モード | 表示 | 用途 | 導入 Phase |
 |--------|------|------|--------|
 | `dot` | ● / 空欄（default） | 言及の有無のみ | Phase A |
-| `count` | 言及回数の数値 | どこで濃く言及されているか | Phase B |
-| `heatmap` | 言及回数を背景色の濃淡で | 集中・分散の俯瞰 | Phase B |
-| `pov-color` | POV キャラの色で塗り分け | 視点配分の俯瞰 | Phase B |
+| `count` | 根拠の種類数（数値） | どの根拠で濃く埋まっているか | Phase B |
+| `heatmap` | 根拠別の背景色濃淡 | 集中・分散の俯瞰 | Phase B |
+| `pov-color` | （現状 `dot` と同等表示） | 視点配分の俯瞰（将来） | Phase B（部分） |
 | `role-aware` | actor / target / mentioned / POV を視覚分離 | 誰が能動側／受動側／視点かを区別する | Phase B |
-| `beat-list` | シーンの Unplaced beat 箇条書きを各セル行に表示 | Beat ベースで計画を俯瞰する | Phase B（オプション） |
 
-**`beat-list` モードについて**: Matrix の主用途は記号による俯瞰であるため、Beat 箇条書き表示は Toggle で切替可能なオプションとする（デフォルト OFF）。列は Codex エントリではなく Beat 概要の表示に切り替わる。Grid パネルが Beat の主要計画ビューであり、Matrix では補助的なオプションとして提供する。
+Display モードのドロップダウン（`MatrixHeader.tsx` の `getDisplayModes()`）は上記 5 つを選択可能（`dot` / `count` / `heatmap` / `pov-color` / `role-aware`）。
+
+> **（2026-06-18 追記）現状の実装**:
+>
+> - `count` は `scene_codex_mentions` の `mention_count` 未実装のため、**根拠の種類数 `cellInfo.sources.size`（最大 3＝body/beat/relation）** を表示する簡易実装（`deriveCellDisplay()` / `deriveCellRender.ts`）。正確な言及回数表示は `mention_count` カラム追加後に切り替える。
+> - `heatmap` は最強根拠（`topSource`）を 3 段（relation=1 / beat=2 / body=3）にマップした背景色濃淡（`HEATMAP_INTENSITY`）。
+> - **`pov-color` はドロップダウンに存在するが `deriveCellDisplay()` に専用 case が無く `default` で `dot` 表示にフォールスルーする**（POV キャラ色の塗り分けは未実装）。POV 配分の俯瞰には Show モード `POV`（後述 ★ オーバーライド付き）を使う。
+> - `beat-list` モード（Beat 箇条書き表示）は設計案のみで**未実装**（`DisplayMode` 型・ヘッダーいずれにもトグルが無い）。Beat の計画ビューは Grid パネルが担う。
 
 `dot` モードでもセル背景のカラーで根拠を区別する：
 
@@ -658,16 +663,19 @@ CREATE INDEX idx_scene_beat_pov_scene ON scene_beat_pov_cache(scene_id);
 - [x] Show モード切替（`POV` / `Location` / `Subplot` / `Custom`）— `MatrixHeader.tsx` の `SHOW_MODES` に列挙、`deriveColumns` で分岐
 - [x] Custom モード: ヘッダの `+` ボタンでセット作成、`ColumnHeaderMenu` の「セットから削除」、Codex パネルからの「Add to Matrix Custom」
 - [x] Custom モード: 複数プリセットの保存・切替・rename・削除（`matrixStore.ts` の `customSets` / `activeCustomSetId`）
-- [x] Display モード: `count` / `heatmap` / `pov-color` / `role-aware`（UI は全て選択可、`deriveCellRender.ts`）
+- [x] Display モード: `count` / `heatmap` / `role-aware`（`deriveCellRender.ts`）
   - ※ `count` は現状 `cellInfo.sources.size`（根拠の種類数、最大3）を返す簡易実装。正確な mention 回数は `mention_count` カラム追加後に切り替え
+  - ※ `pov-color` はドロップダウンに列挙されるが `deriveCellDisplay()` に case が無く `dot` 表示にフォールスルー（**未実装**）
 - [x] **Display モード `role-aware`**（actor `●` / target `◯` / mentioned `·` / POV `★`、`MatrixCell.tsx`）
 - [x] `scene_codex_mentions` の `role` カラム（`source='beat'` 行）に actor/target/mentioned の最強値を書き込む実装（`upsertSceneBeatMentions`）
 - [x] **`scene_beat_pov_cache` テーブルの新規追加**（Drizzle migration 済み、`beatPovCacheApi.ts`）
 - [x] **POV モードに Beat レベル POV オーバーライドを反映**（保存時に `extractBeatPovOverrides` → `upsertSceneBeatPovOverrides`、Matrix 側は `Set<"sceneId::characterId">` として一括読み込み）
 - [x] フィルタ・絞り込み（空セル非表示、未編集のみ）— Phase A から `hideEmptyRows` / `onlyUneditedRows` として実装済み
-- [x] Codex 列の折りたたみ・並べ替え・ピン留め（`pinnedColumnIds` / `hiddenColumnIds` / `collapsedTypeSections`）
+- [x] Codex 列の折りたたみ・ピン留め・非表示（`pinnedColumnIds` / `hiddenColumnIds` / `collapsedTypeSections`、`ColumnHeaderMenu.tsx`）
+  - ※ 列の D&D 並べ替え・列幅ドラッグ変更は**未実装**（列幅は `COL_WIDTH=80` 固定）
 - [x] CSV エクスポート（`buildCsvString` / `exportCsv.ts`、現行フォーマットは `source` をコード文字列で集約）
-- [ ] Custom モードのプリセット切替時の UI 状態保持仕様（列幅は保持、スクロール位置はリセット — 現状はスクロール位置リセットのみ実装、列幅 D&D 自体が未実装）
+- [x] Custom モードのプリセット切替時のスクロール位置リセット（`MatrixTable.tsx` で `activeCustomSetId` 変更時に `containerRef.scrollTo(0, 0)`）
+  - ※ 設計時に挙げた「列幅は保持」は対象外（列幅変更 D&D 自体が未実装のため）
 - [x] Sort: Word count / Last edited
 
 ### Phase C: 整合性チェック（v2+）

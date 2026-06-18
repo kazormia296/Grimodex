@@ -63,9 +63,21 @@ Scene と Note はノード**作成時**に種別を選択する。作成後の�
 | ステータスドット | 常時 | 色でシーン状態を示す（後述） |
 | タイトル | 常時 | インライン編集可能（F2 / ダブルクリック遅延） |
 | AI帰属バッジ | Settings `display.showAiBadge` が ON の時のみ | AI生成テキストの割合（%）。ピル型バッジ |
+| メタ構造 lens ドット | 当該シーンに meta_structure 系の post-effect 診断があり、`showLensOverlay` が ON の時のみ | 校閲（post-effect）のメタ構造診断結果を重要度色の小さな丸で示す（後述「メタ構造 lens ドット」） |
 | 文字数 | 常時（パネルメニューでOFF可） | 右寄せ。0の場合はグレーアウト |
 
 アクティブシーン（Editorで開いているシーン）は左ボーダー + 背景ハイライトで強調。
+
+#### メタ構造 lens ドット
+
+Scene ノード行には、校閲（post-effect）の **meta_structure 系診断**を表す小さな色付きドット（`LensDot`、`src/features/tree/LensDot.tsx`）を表示する。診断結果のあるシーンを Scenes パネル上で一目で見つけるための視覚要素。
+
+- ラベルドット・AI 帰属バッジの右、文字数の手前に並ぶ（`TreeNodeItem.tsx`）
+- 当該シーンに lens レコードがあり、`useLensStore` の `showLensOverlay` が ON のときのみ表示（データが無ければ非表示）
+- 色は最も重い重要度（`PostEffectSeverity`）で決まる: `error` 赤 / `warning` アンバー / `suggestion` ブルー / `info` スレート
+- 診断 run の完了時刻より後にシーンが編集されている（`updatedAt` が新しい）場合は **stale** とみなし、ドットを薄く（`opacity-30`）表示する。判定は純関数 `computeLensDotState` が担う
+- ホバー時のツールチップは通常「メタ構造診断あり」、stale 時は「このシーンは構造診断以降に編集されています」
+- lens データは `useLensStore.load(projectId)` でプロジェクト単位に一括ロードし、`bySceneId` にキャッシュする（Scene = `targetId` 単位）。詳細な診断内容・校閲フローは校閲（post-effect）側の責務
 
 #### AI 帰属バッジの取得
 
@@ -411,13 +423,19 @@ CREATE TABLE tree_node_labels (
 | メニュー項目 | ショートカット | 動作 |
 |-------------|-------------|------|
 | 名前を変更 | `F2` | タイトルをインライン編集モードにする |
-| Assign labels | ▶ | サブメニュー: プロジェクト内のラベル一覧。チェック式で複数付与・解除 |
 | --- | | |
 | シーンを追加 | | このFolderの末尾に新規Scene |
 | ノートを追加 | | このFolderの末尾に新規Note |
 | フォルダーを追加 | | このFolderの末尾に新規Folder |
 | --- | | |
+| **✦ AI で構成を生成** | | **このFolderを起点にAIで章/シーン構成を生成（`openAiTree({ mode: "scaffold" })`、案B tree 書き込み）。`scenesContext` が無い文脈では非表示** |
+| **✦ AI で構成を再編** | | **このFolder配下の既存ツリーをAIで並べ替え・再編（`openAiTree({ mode: "reorganize" })`）。子ノードを 1 件以上持つ Folder でのみ表示（空 Folder では生成のみに縮退するため出さない）** |
+| --- | | |
 | 削除 | `Del` | 右クリックメニュー経由の Delete は確認ダイアログを経由せず即削除する（キーボード `Del` / ツールバー経由は `initiateDelete` を通り、配下に本文または synopsis を持つ Scene/Note が 1 件以上ある場合に確認ダイアログを表示） |
+
+> Folder の右クリックメニューには **Assign labels が無い**（ラベル付与は現状 Scene / Note のみ。前述「ラベル > 適用範囲」参照）。
+>
+> AI 構成生成・再編は `Sparkles`（✦）アイコン付きで、`ScenesPanelContext.openAiTree({ mode, rootRef, rootTitle })` 経由で専用ダイアログを開く（`TreeContextMenu.tsx`）。`rootRef` に Folder の `id` を渡すとその配下が対象になる。ルート（空エリア）の右クリックメニューにも `rootRef: null`（プロジェクト全体）を対象とする「AI でアウトライン生成」項目があり、同じダイアログを開く（`RootContextMenu.tsx`）。
 
 ### ルート（空エリア）の右クリック
 
@@ -674,6 +692,7 @@ CREATE TABLE tree_nodes (
   node_type         TEXT NOT NULL,        -- 'folder' | 'scene' | 'note'
   title             TEXT NOT NULL DEFAULT 'Untitled',
   synopsis          TEXT,                 -- Sceneのみ: シーン要約（プレーンテキスト）
+  intent            TEXT,                 -- Sceneのみ: 作者が宣言する「このシーンの狙い」（intent_drift 評価のオプトイン入力）
   sort_order        TEXT NOT NULL,        -- 文字列 fractional indexing キー（辞書順比較）
   status            TEXT DEFAULT 'outline', -- Sceneのみ: 'outline'|'draft'|'complete'|'revision'|'final'
   content           TEXT NOT NULL DEFAULT '{}', -- Scene/Note本文（ProseMirror JSON）
@@ -681,13 +700,28 @@ CREATE TABLE tree_nodes (
   story_time_label  TEXT,                 -- 物語内時間ラベル（例 "三ヶ月前"、Timeline パネル用）
   pov_character_id  TEXT REFERENCES codex_entries(id), -- POV キャラ参照（Map / Timeline パネル用）
   location_id       TEXT REFERENCES codex_entries(id), -- 場所参照（Map / Timeline パネル用）
+  source_uri        TEXT,                 -- 外部 MD マウント時のファイル位置（`external-root://<rootId>/<rel-path>`）。null = DB ネイティブ
+  source_mtime      TEXT,                 -- file-backed ノードの最終同期 mtime（ISO 8601）
+  archived_at       TEXT,                 -- file-backed ノードのソフト削除タイムスタンプ
+  context_mode      TEXT,                 -- Noteのみ: AI コンテキスト注入モード 'always'|'mentioned'|'suppress'|'hidden'（folder/scene は null）
+  aliases           TEXT DEFAULT '[]',    -- Noteのみ: メンション検出用の別名（JSON 配列）
+  excluded_aliases  TEXT DEFAULT '[]',    -- Noteのみ: メンション検出から除外する別名（JSON 配列）
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+  -- Beat / Grid 連携カラム（unplaced_beats_doc / char_count / unplaced_beat_preview / placed_beat_preview）は後述
 );
 
 CREATE INDEX idx_tree_parent ON tree_nodes(project_id, parent_id, sort_order);
 CREATE INDEX idx_tree_story_time ON tree_nodes(project_id, story_time_order);
 ```
+
+> 正本の完全な DDL（全カラム・型・index）は [統合DBスキーマ](./Grimodex_統合DBスキーマ.md) を参照。本表は Scenes パネルから見て関係する列の抜粋であり、全 DDL は再掲しない。
+
+`synopsis` の隣に追加された **`intent`** は Scene のみが持つ「このシーンで何を達成したいか」の作者宣言で、intent_drift（狙いと本文のずれ評価）のオプトイン入力。Synopsis（読者向けの起こること要約）とは別軸。
+
+`source_uri` / `source_mtime` / `archived_at` は **外部 Markdown マウント**（file-backed ノード）用。`source_uri` が null のノードは従来通り DB ネイティブで、本文は `content` 列に保持する。`archived_at` は file-backed ノードのソフト削除に使う。
+
+`context_mode` / `aliases` / `excluded_aliases` は **Note の AI コンテキスト注入**を制御する（Folder / Scene では使わない）。`context_mode` は Note 本文を AI に注入するタイミング（`always` / `mentioned` / `suppress` / `hidden`）、`aliases` / `excluded_aliases` はメンション検出用の別名リスト（JSON 配列）。意味は Codex エントリの同名カラムと揃えてある。
 
 ### Timeline / Map 連携カラム
 

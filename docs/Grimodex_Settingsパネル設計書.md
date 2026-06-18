@@ -20,21 +20,13 @@ Settingsパネルはプロジェクト設定、AI設定、エディタ設定、�
 │   Editor │  Title:  [My Fantasy Novel          ]    │
 │   Display│  Genre:  [Fantasy             ▼]         │
 │   Keys   │  POV:    [Third person limited ▼]        │
-│   Data   │                                          │
-│   Codex  │                                          │
+│   Data   │  Tense:  [Past tense          ▼]         │
+│   Codex  │  Language: [日本語            ▼]          │
+│   Map    │  Phase resolution: [auto      ▼]         │
 │   Linter │                                          │
+│   Usage  │  （Outline / Style guide / AI            │
+│   License│    instructions は AI カテゴリへ移設）     │
 │   About  │                                          │
-│          │  Style guide:                            │
-│          │  ┌──────────────────────────────────┐    │
-│          │  │ Write in literary Japanese.      │    │
-│          │  │ Prefer short sentences. Avoid... │    │
-│          │  └──────────────────────────────────┘    │
-│          │                                          │
-│          │  AI instructions (global):               │
-│          │  ┌──────────────────────────────────┐    │
-│          │  │ You are a writing assistant for  │    │
-│          │  │ a dark fantasy novel...          │    │
-│          │  └──────────────────────────────────┘    │
 │          │                                          │
 └──────────┴──────────────────────────────────────────┘
 ```
@@ -45,23 +37,32 @@ Settingsパネルはプロジェクト設定、AI設定、エディタ設定、�
 
 ## カテゴリ一覧
 
+カテゴリは `SETTINGS_CATEGORIES`（`src/features/settings/types.ts`）が正本で、現状 **12 カテゴリ**（License は licensing 無効ビルドでは `CategoryNav` が項目ごと非表示にする）。
+
 | カテゴリ | 内容 |
 |---------|------|
-| Project | プロジェクトのメタ情報、Outline / Style guide / AI instructions、Phase 解決モード、ネーミングルール、ゴミ箱、AI 使用ポリシー、デフォルト雛形保存 |
-| AI | APIキー管理、プロバイダ設定（OpenRouter / OpenAI / Anthropic / Ollama / OpenAI 互換 / AI のべりすと / CLI エージェント）、モデル選択、モデルホワイトリスト、拡張思考、コンテキスト予算配分、Beat AI 統合 |
-| Editor | フォント、行間、タイプライターモード、単語・行頭禁則、段落字下げ、インライン AI、Beat 表示モード等 |
-| Display | カラーテーマ、ライト／ダーク、UI 言語、UI スケール、reduceMotion、Glass エフェクト、Attribution 表示、Codex ハイライト |
+| Project | プロジェクトのメタ情報、Phase 解決モード、ネーミングルール、ゴミ箱、執筆タイムラプス記録、デフォルト雛形保存 |
+| AI | APIキー管理、プロバイダ設定（OpenRouter / OpenAI / Anthropic / Ollama / OpenAI 互換 / AI のべりすと / CLI エージェント）、ツールプロトコル、モデル選択、モデルホワイトリスト、拡張思考、Web 検索 (RAG) ドメイン制御、AI 使用ポリシー・AI 作品設定（Outline / 対象読者 / Style guide / AI instructions）、関連シーン自動注入（意味/ハイブリッド検索）、コンテキスト予算配分、Beat AI 統合、AI プロンプト追記カスタマイズ、MCP 連携 |
+| Editor | フォント、行間、タイプライターモード、執筆目標（日次文字数）、縦書き・縦中横、和欧スペーシング、単語・行頭禁則、段落字下げ、インライン AI、Beat 表示モード等 |
+| Display | カラーテーマ、ライト／ダーク、UI 言語、UI フォント、UI スケール、reduceMotion、Glass エフェクト、Attribution 表示、Codex ハイライト |
 | Keys | キーボードショートカットのカスタマイズ |
-| Data | バックアップ、リビジョン、エクスポート、Codex 言及キャッシュ再構築、FTS 再構築、VACUUM、整合性チェック |
+| Data | プロジェクト情報、バックアップ、リビジョン、エクスポート、外部マウント、Codex 言及キャッシュ再構築、FTS 再構築、VACUUM、整合性チェック |
 | Codex | ビルトイン／ユーザー定義 Codex タイプの管理とパレット色割り当て |
+| Map | Map パネルの新規付箋・エッジの既定（パレット / 色スロット / エッジスタイル） |
 | Linter | 校正ルールの ON/OFF と重要度、用語辞書、スニペット単位の無視リスト管理 |
+| Usage | プロジェクト単位の AI トークン使用量・推定コスト・prompt cache 読込率・サーフェス別内訳（表示のみ） |
+| License | ライセンス認証状態・キー入力・端末解除・再検証（licensing 有効ビルドのみ） |
 | About | アプリ情報、利用規約、開発者メッセージ、THIRD_PARTY_LICENSES 一覧 |
+
+> Project / AI / Editor の各カテゴリは `SettingScopeHeader` でグローバル設定セクションとプロジェクト設定セクションを視覚的に分ける。AI カテゴリのプロジェクトスコープには、以前 Project カテゴリにあった AI 使用ポリシー・AI 作品設定（Outline / 対象読者 / Style guide / AI instructions）が集約されている（`AiProjectSettings`、i18n キーは互換のため `settings.project.*` のまま）。
 
 ---
 
 ## Project カテゴリ
 
-プロジェクトのメタ情報とAIへの指示を設定する。これらの値はChatのコンテキスト注入Layer 1（Project info）として全てのAI呼び出しに含まれる。
+プロジェクトのメタ情報・ネーミング・ゴミ箱・タイムラプス記録・デフォルト雛形を設定する（`ProjectCategory`）。
+
+> **（2026-06-18 追記）** Outline / 対象読者 / Style guide / AI instructions と AI 使用ポリシーは Project カテゴリから **AI カテゴリのプロジェクトスコープ**（`AiProjectSettings`）へ集約された。これらの値は Chat のコンテキスト注入 Layer 1（Project info）として全ての AI 呼び出しに含まれる。本節の以下「Outline / Style guide / AI instructions」サブセクションは AI カテゴリへの参照として残す。
 
 ### フィールド
 
@@ -72,28 +73,16 @@ Settingsパネルはプロジェクト設定、AI設定、エディタ設定、�
 | POV | ドロップダウン | 未選択 | First person / Third person limited / Third person omniscient / Second person |
 | Tense | ドロップダウン | 未選択 | Past tense / Present tense |
 | Language | ドロップダウン | 日本語 | 作品の執筆言語。AIへの指示言語にも影響 |
-| Phase resolution mode | セグメント | reading | Codex Phase（登場時期）の解決モード。`reading`: 読者視点での初出順。`story`: 物語内時系列順。キー: `phaseResolutionMode` |
+| Phase resolution mode | ドロップダウン | auto | Codex Phase（登場時期）の解決モード。`reading`: 読者視点での初出順。`story`: 物語内時系列順。`auto`。キー: `phaseResolutionMode`（`projects` 列・既定 `auto`）。変更時は `usePhaseStore.setResolutionMode` にも反映 |
 
-### Outline（プロジェクト全体の概要）
+### AI 作品設定（Outline / 対象読者 / Style guide / AI instructions）
 
-- 複数行テキストエリア（最大 8,000 文字、`projects.outline` 列）
-- プレースホルダー: 「物語の意図・テーマ・到達点など…」
-- AI コンテキスト Layer 2（Story so far）への常時注入対象。`tree_nodes.synopsis` が章/シーンの outline を担うのに対し、こちらはプロジェクト全体の outline を著者が手書きするフィールド
+> **（2026-06-18 追記）** これらは **AI カテゴリのプロジェクトスコープ**（`AiProjectSettings`）に移設された。値は `projects` テーブル列に保存され、AI コンテキスト注入に使われる。
 
-### Style guide（文体ガイド）
-
-- 複数行テキストエリア（最大2,000文字）
-- プレースホルダー: 「文体の特徴、避けるべき表現、好む語彙など...」
-- 例: 「文語調で書く。一人称は『我』。会話文は方言を使う。擬音語は控えめに。」
-- この内容はLayer 1に含まれ、AIの文体を制御する
-
-### AI instructions（グローバルAI指示）
-
-- 複数行テキストエリア（最大4,000文字）
-- プレースホルダー: 「AIへの追加指示...」
-- Style guideとの違い: Style guideは「文体」に特化、AI instructionsは「AIの振る舞い全般」を制御
-- 例: 「登場人物の名前を勝手に変えないこと。プロット上の重大な変更は提案のみで、勝手に実行しない。日本語で応答すること。」
-- この内容もLayer 1に含まれる
+- **Outline** — 複数行テキストエリア（最大 8,000 文字、`projects.outline` 列）。AI コンテキスト Layer 2（Story so far）への常時注入対象。`tree_nodes.synopsis` が章/シーンの outline を担うのに対し、こちらはプロジェクト全体の outline を著者が手書きするフィールド
+- **対象読者** — 複数行テキストエリア（最大 2,000 文字、`projects.target_readers` 列）。想定読者層を AI に伝える
+- **Style guide** — 複数行テキストエリア（最大 2,000 文字、`projects.style_guide` 列）。Layer 1 に含まれ AI の文体を制御。例: 「文語調で書く。一人称は『我』。会話文は方言を使う。」
+- **AI instructions** — 複数行テキストエリア（最大 4,000 文字、`projects.ai_instructions` 列）。Style guide が「文体」に特化するのに対し、AI の振る舞い全般を制御。例: 「登場人物の名前を勝手に変えない。日本語で応答する。」
 
 ### ネーミングルール
 
@@ -124,16 +113,35 @@ Scenesパネルでの新規ノード作成時の自動命名を設定する。
 | ゴミ箱を有効化 | チェックボックス | ON | `trashBin.enabled`。OFF にすると削除時にゴミ箱を経由せず即時消去 |
 | 保持期間 | ドロップダウン | 60 日 | `trashBin.retentionDays`。`7` / `30` / `60` / `90` / `-1`（無期限）。期限超過分は次回起動 / 1 時間ごとの掃除で削除される |
 
+### 執筆タイムラプス
+
+執筆過程の記録（タイムラプス）の per-project トグルと履歴パージ（`TimelapseSettings`）。
+
+| フィールド | UI 要素 | デフォルト | 詳細 |
+|-----------|---------|-----------|------|
+| この作品の変更を記録 | トグル | ON | `timelapse.enabled`（project スコープ）。OFF→ON で再開すると履歴に欠落が生じるため、既存イベントが残っている場合は破棄確認ダイアログを出す。トグルは必ずオーケストレーター `setTimelapseEnabled` を唯一の writer として経由する（auto-persist する `SettingToggle` は wipe/baseline 処理をスキップしてしまうため使わない） |
+| 履歴を削除 | ボタン | — | `purgeTimelapseHistory`。`change_events` を全削除（確認ダイアログ付き） |
+
+> per-project の読み書きは固定 `PROJECT_ID` の settings store ではなく `currentProjectId` を直接使う（recorder が `currentProjectId` で `change_events` を書くため整合させる）。
+
 ### AI 使用ポリシー
+
+> **（2026-06-18 追記）** AI 使用ポリシーは **AI カテゴリのプロジェクトスコープ**（`AiProjectSettings`）へ移設された。設計は下記のまま。
 
 プロジェクト単位で AI 機能の使用範囲を制御する。`projects.ai_policy` 列に JSON で保存され、`src/features/ai-policy/` のプリセット展開ロジックを介して各機能の許可判定に使われる。
 
 | フィールド | UI 要素 | デフォルト | 詳細 |
 |-----------|---------|-----------|------|
 | プリセット | ドロップダウン | Full | `full` / `assist-off` / `review-only` / `off`。個別トグルを変更すると自動的に `custom` 扱いになる |
-| チャット | チェックボックス | ON | チャットパネル・Agent・CLI 連携の許可 |
-| 本文書き込み | チェックボックス | ON | インライン AI・Beat 生成の許可 |
-| 分析 | チェックボックス | ON | 整合性チェック・伏線 AI の許可 |
+| チャット | チェックボックス | ON | チャットパネル・Agent・CLI 連携の許可（`chat`） |
+| 本文書き込み | チェックボックス | ON | インライン AI・Beat 生成の許可（`bodyWrite`） |
+| 分析 | チェックボックス | ON | 整合性チェック・伏線 AI の許可（`analysis`） |
+| 構成編集 | チェックボックス | ON | AI による章/シーン構成の生成・再編（`structureWrite`） |
+| 知識書き込み | チェックボックス | ON | AI による Codex・伏線・スニペットの自律的な作成・更新（`knowledgeWrite`） |
+| 本文提案の自動適用（ヘッドレス） | チェックボックス | OFF | `ai.autoAcceptBodyProposals`（project）。MCP/エージェントの本文提案を人間の承認なしで適用（対象は末尾追記と一意アンカー挿入のみ。置換・アンカー無し挿入は常に手動レビュー）。本文書き込みポリシー ON のときのみ有効 |
+| 関連シーンの自動注入（意味検索） | チェックボックス | ON | `ai.semanticRecall`（project）。Layer4 RAG。チャット送信時に意味的に関連する過去シーン抜粋を文脈に自動注入 |
+| 固有名詞の語彙一致も併用（ハイブリッド検索） | チェックボックス | ON | `ai.hybridRecall`（project）。意味検索（dense）に全文検索（FTS5/bm25）を RRF 融合し固有名詞の recall を補う。関連シーン自動注入が OFF のときは無効 |
+| 意味検索インデックスの再構築 | ボタン | — | プロジェクト内の全シーンを再インデックス。インデックス状態（シーン数/チャンク数・stale チャンク数）も表示。進行状況は画面右下に表示 |
 
 ### デフォルト雛形
 
@@ -141,29 +149,13 @@ Scenesパネルでの新規ノード作成時の自動命名を設定する。
 
 ### DBスキーマ
 
-```sql
-CREATE TABLE projects (
-  id                     TEXT PRIMARY KEY,
-  title                  TEXT NOT NULL DEFAULT 'Untitled Project',
-  genre                  TEXT,
-  pov                    TEXT,
-  tense                  TEXT,
-  language               TEXT NOT NULL DEFAULT 'ja',
-  style_guide            TEXT,
-  ai_instructions        TEXT,
-  outline                TEXT,           -- L2 注入対象のプロジェクト全体 outline
-  phase_resolution_mode  TEXT NOT NULL DEFAULT 'auto',  -- 'reading' | 'story' | 'auto'
-  ai_policy              TEXT NOT NULL DEFAULT '{"preset":"full","toggles":{...}}',
-  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
-);
-```
+Project カテゴリ・AI 作品設定の各フィールド（`title` / `genre` / `pov` / `tense` / `language` / `outline` / `target_readers` / `style_guide` / `ai_instructions` / `phase_resolution_mode` / `ai_policy` 等）は `projects` テーブルに保存される。列定義は [統合DBスキーマ](./Grimodex_統合DBスキーマ.md) を正本とする。
 
 ---
 
 ## AI カテゴリ
 
-BYOKのAPIキー管理とモデル設定。Chatパネル設計書で定義されたBYOK仕様をUIに落とし込む。
+BYOKのAPIキー管理とモデル設定。Chatパネル設計書で定義されたBYOK仕様をUIに落とし込む。`SettingScopeHeader` でグローバル設定（プロバイダ / モデル / Web 検索ポリシー）とプロジェクト設定に分かれ、プロジェクトスコープには AI 使用ポリシー・AI 作品設定（Outline / 対象読者 / Style guide / AI instructions、`AiProjectSettings`）・コンテキスト予算配分・Beat AI 統合・AI プロンプト追記カスタマイズ・MCP 連携が並ぶ。
 
 ### プロバイダ設定
 
@@ -211,8 +203,10 @@ APIキーの保存先: Tauri keyring（OS標準のセキュアストレージ）
 | Default chat model | ドロップダウン | 設定済みプロバイダのモデル一覧から選択。Chatパネル新規セッションのデフォルト |
 | Default inline AI model | ドロップダウン | EditorのインラインAIで使うデフォルトモデル。Chat modelと同じにも別にもできる |
 | Session title model | ドロップダウン | セッションタイトル自動生成に使う軽量モデル。デフォルト: 同プロバイダの最安モデル |
-| Model whitelist | チェックボックスリスト | プロバイダのモデル一覧から、Chat / インラインAIモデルセレクタに表示するモデルを絞り込む。未設定時は全モデル表示。キー: `ai.modelWhitelist` |
-| Extended thinking (default) | トグル | OFF | 新規Chatセッションでの拡張思考のデフォルトON/OFF。キー: `ai.thinkingEnabled`。モデルが未対応の場合は自動的に無効 |
+| Model whitelist | チェックボックスリスト | プロバイダのモデル一覧から、Chat / インラインAIモデルセレクタに表示するモデルを絞り込む。検索フィルタ付き・developer 別グルーピング。未設定時は全モデル表示。キー: `ai.modelWhitelist`（global） |
+| Thinking mode | トグル | 拡張思考の ON/OFF。thinking 対応モデル選択時のみ表示。常時推論モデル（`canDisableReasoning === false`）は ON 固定・操作不可。対応モデルでは `reasoningEffortOverride`（low / medium / high / auto）も併せて選べる |
+| Provider pin | ドロップダウン | OpenRouter 選択時のみ。1 つのサブプロバイダにルーティング固定（Anthropic prompt cache 最適化用）。`localSettings.openrouterProviderPin` |
+| Tool call protocol | ドロップダウン | `auto` / `native` / `hermes`。LLM のツール呼び出しプロトコルを選ぶ。Anthropic / CLI は native 固定のため非表示。それ以外（ネイティブ tool-calling が不安定なローカル/互換モデル）で Hermes 形式に切り替えられる。`localSettings.toolProtocolMode`（`ToolProtocolMode`） |
 
 モデル一覧の取得:
 - OpenRouter: API経由で動的取得（`/api/v1/models`）
@@ -244,11 +238,11 @@ Response reserve        [ 5%  ▼] (min: 2,000)
 
 | フィールド | UI要素 | デフォルト | 詳細 |
 |-----------|--------|-----------|------|
-| L1〜L5, Response reserve | ドロップダウン（1%刻み） | 上表参照 | 合計は100%以下。余剰は上位優先レイヤーに再配分 |
+| L1〜L5, Response reserve | スライダー（各レイヤー 1% 〜 60%、1% 刻み） | 上表参照 | 合計は100%以下。余剰は上位優先レイヤーに再配分。`[Reset to defaults]` で既定へ |
 | 各レイヤーのfloor | 表示のみ | 固定値 | 最小トークン数。小コンテキストモデルでの最低保証 |
 
 - 合計が100%を超える場合はバリデーションエラーを表示し保存不可
-- 変更はプロジェクト単位で保存（`app_settings` テーブル、キー: `ai.contextBudget.*`）
+- 変更はプロジェクト単位で保存（`project_settings` テーブル、キー: `ai.contextBudget.*`）
 - Chat設計書のプロンプトプレビューモーダルで実際の配分結果を確認可能
 
 ### Beat AI 統合
@@ -261,45 +255,87 @@ Beat システム（Phase C）の AI 連携設定。
 | Beat 役割推論を有効化 | トグル | ON | `beat.inferRoles` |
 | 役割推論の信頼度しきい値 | スライダー | 70% | `beat.roleInferenceConfidenceThreshold`（`0.5` - `0.95`、0.05 刻み） |
 
+### Web 検索 (RAG) ドメイン制御（2026-06-18 追記）
+
+Chat の Web 検索（RAG）のドメイン許可/拒否ポリシーを設定する。RAG 対応プロバイダ（`isRagCapableProvider`、OpenRouter / Anthropic）選択時のみ表示。グローバル設定。第三者（検索プロバイダ）へクエリ・本文が送信される旨の開示警告を常時表示する。
+
+| フィールド | UI 要素 | デフォルト | キー |
+|-----------|---------|-----------|------|
+| ドメインモード | ドロップダウン | `off` | `ai.webSearch.domainMode`（`off` / `allow` / `block`） |
+| ドメインリスト | テキストエリア（改行区切り） | 空 | `ai.webSearch.domains`（JSON 配列。`normalizeDomainList` で正規化して保存） |
+| 本文トークン上限 | 数値 | 未設定 | `ai.webSearch.maxContentTokens`。OpenRouter（exa）経路でのみ表示・有効 |
+
+- `allow` モードでリストが空のときは fail-open（全 Web 検索が通る）になるため注意喚起を表示
+- OpenRouter ではドメイン制御 / 本文上限の指定が exa 強制（追加課金・未検証経路）になり得るため警告を表示。Anthropic は native `web_search` でドメイン制御を検証済み（exa 非経由・追加課金なし）
+
+### AI プロンプト追記カスタマイズ（2026-06-18 追記）
+
+各 AI 機能の組み込みプロンプトに、プロジェクト固有の追記指示を足す（追記式・空欄なら組み込みプロンプトのまま byte-identical）。プロジェクトスコープ。各スロット最大 2,000 文字のテキストエリア。
+
+| スロット | キー |
+|---------|------|
+| チャット | `aiPrompt.custom.chat` |
+| 校閲 | `aiPrompt.custom.kouetsu` |
+| 伏線 | `aiPrompt.custom.foreshadow` |
+| インライン AI | `aiPrompt.custom.inline` |
+| Beat | `aiPrompt.custom.beat` |
+| AI 分岐 | `aiPrompt.custom.aiBranch` |
+
+### MCP 連携（2026-06-18 追記）
+
+外部 MCP クライアントをこの Grimodex インストールに向ける `.mcp.json` スニペットをクリップボードへコピーする（`McpIntegrationSection`、AI カテゴリ末尾）。アプリバイナリ自身が MCP サーバ（`Grimodex mcp …`）を兼ね、スニペットの `command` は `get_mcp_config` が解決する OS 別の絶対パス。各ボタンはコピー動作のみでアプリのモード変更は伴わない。
+
+| 軸 | 選択肢 |
+|----|--------|
+| スコープ（行） | このプロジェクト（`--project` で pinned） / 全プロジェクト（`--all-projects`、DB 全体・ローカル/信頼環境のみ） |
+| 書込権限（ボタン） | 読み取り専用（`--readonly`、クラウド安全） / ポリシー準拠（`--readonly` なし。書き込みはプロジェクトの AI ポリシー `knowledgeWrite` / `bodyWrite` に従う＝アプリ内 AI と同じ） |
+
+> 以前は Chat パネルにあったが AI カテゴリへ移設された。
+
 ---
 
 ## Editor カテゴリ
 
-エディタの外観と振る舞いを設定する。変更は即座にEditorに反映される（リアルタイムプレビュー）。
+エディタの外観と振る舞いを設定する。変更は即座にEditorに反映される（リアルタイムプレビュー）。`SettingScopeHeader` でグローバルなユーザー嗜好（テキスト表示 / 編集体験 / インライン AI / Beat / アニメーション / 執筆目標の既定）と、作品ごとに変えうるプロジェクト設定（執筆目標の上書き / 縦書き・縦中横 / 段落スタイル）に分かれる。
 
 ### テキスト表示
 
 | フィールド | UI要素 | 選択肢 | デフォルト |
 |-----------|--------|--------|-----------|
-| Font family | ドロップダウン | システムフォント一覧 + カスタムフォント指定 | 游明朝 / Noto Serif JP |
+| Font family | `FontFamilySelect` | 同梱フォント + システムフォント列挙 + カスタム指定 | 日本語 `"Noto Serif JP"` / 英語 `"Literata"`（`LANGUAGE_DEFAULT_OVERRIDES`、`editor.fontFamily`） |
 | Font size | スライダー + 数値 | 14px - 24px (1px刻み) | 18px |
-| Line height | スライダー + 数値 | 1.2 - 3.0 (0.1刻み) | 2.0 |
+| Line height | スライダー + 数値 | 1.2 - 3.0 (0.1刻み) | 2.0（英語は 1.6） |
 | Max content width | スライダー + 数値 | 480px - 960px (40px刻み) | 720px |
-| Paragraph spacing | スライダー + 数値 | 0px - 24px (2px刻み) | 8px |
+| Paragraph spacing | スライダー + 数値 | 0px - 24px (2px刻み) | 8px（英語は 0、字下げ運用） |
 
 ### 編集体験
 
 | フィールド | UI要素 | デフォルト | 詳細 |
 |-----------|--------|-----------|------|
 | Typewriter mode | トグル | OFF | カーソル行を常にキャンバス中央に固定 |
-| Auto-save delay | スライダー | 2秒 | 0.5秒 - 10秒の範囲 |
-| Spell check | トグル | OFF | ブラウザ内蔵スペルチェック。日本語中心の執筆で誤検知が多いため既定OFF |
-| Smart quotes | トグル | OFF | 「"」→「"」"」の自動変換。日本語ではOFF推奨 |
-| Smart dashes | トグル | OFF | 「--」→「—」の自動変換 |
-| Word break | ドロップダウン | normal | CSS `word-break` 相当の挙動を切り替える。`auto-phrase` / `normal` / `break-all` / `keep-all`。キー: `editor.wordBreak`（プロジェクト固有） |
-| Line break | ドロップダウン | strict | 日本語行頭禁則の強度。CSS `line-break` に対応する `strict` / `normal` / `loose` / `auto`。キー: `editor.lineBreak`（プロジェクト固有） |
-| Paragraph indent | ドロップダウン | 0 | 段落先頭の字下げ幅。`0`（オフ）/ `1` / `2`。キー: `editor.paragraphIndent`（プロジェクト固有） |
-| Show breadcrumb | トグル | ON | エディタ上部のパンくず表示。キー: `editor.showBreadcrumb` |
-| Show line numbers | トグル | OFF | 行番号の表示。キー: `editor.showLineNumbers` |
+| Auto-save delay | スライダー | 2秒 | 0.5秒 - 10秒の範囲（`editor.autoSaveDelay`、ms） |
+| Spell check | トグル | OFF | ブラウザ内蔵スペルチェック。日本語中心の執筆で誤検知が多いため既定OFF（英語は ON） |
+| Smart quotes | トグル | OFF | 引用符の自動変換。日本語ではOFF推奨（英語は ON） |
+| Smart dashes | トグル | OFF | 「--」→「—」の自動変換（英語は ON） |
+| Markdown strict line breaks | トグル | OFF | OFF=GFM/Obsidian 互換（単一改行が改行になる）/ ON=CommonMark 仕様（単一改行はソフトブレイク）。キー: `editor.markdownStrictLineBreaks` |
 
-> Focus mode（特定段落以外を薄く表示）と target character count（目標文字数表示）は `Settings` の型定義にフィールドとして存在するが、UI としての露出は現時点で保留（未設計）。
+> Word break / Line break / Paragraph indent / 和欧スペーシングはプロジェクト固有設定のため、下記「段落スタイル」（プロジェクトスコープ）に移動した。
+
+> Focus mode（特定段落以外を薄く表示）と target character count（`editor.targetCharCount`）は型定義に存在するが Editor カテゴリ UI には未露出（focusMode は別経路、行番号 `editor.showLineNumbers` はエディタツールバー側のトグルで操作する）。
 
 ### インラインAI
 
 | フィールド | UI要素 | デフォルト | 詳細 |
 |-----------|--------|-----------|------|
-| Enable / command | トグル | ON | エディタ内の `/` コマンドトリガーを有効/無効 |
-| Enable Ctrl+Shift+Space | トグル | ON | Ctrl+Shift+Space パレットを有効/無効 |
+| Enable / command | トグル | ON | エディタ内の `/` コマンドトリガーを有効/無効（`editor.inlineAiCommand`） |
+| Enable Ctrl+Shift+Space | トグル | ON | Ctrl+Shift+Space パレットを有効/無効（`editor.inlineAiShortcut`） |
+
+### Beat
+
+| フィールド | UI要素 | デフォルト | キー |
+|-----------|--------|-----------|------|
+| Focus mode で Beat を非表示にする | トグル | OFF | `editor.focusModeHideBeats` |
+| Beat 表示モード（リニア編集モード時） | ドロップダウン | collapsed | `editor.linearBeatDisplay`（`normal` / `collapsed` / `hidden`） |
 
 ### アニメーション
 
@@ -309,7 +345,36 @@ Beat システム（Phase C）の AI 連携設定。
 | Cursor blink | トグル | ON | 滑らかなフェード点滅（ブラウザデフォルトの硬い点滅を置き換え） |
 | Character fade-in | トグル | OFF | 入力時に文字がふわっと現れる |
 | Character fade-out | トグル | OFF | 削除時に文字がすっと消える |
-| Disable all animations | トグル | OFF | 上記4つを一括OFF |
+| Disable all animations | トグル | OFF | 上記4つを一括OFF（`editor.disableAllAnimations`）。ON にすると上記 4 トグルは無効化される |
+
+### 執筆目標（2026-06-18 追記）
+
+日次の目標文字数（writing goal）。二段構成で、グローバルセクションに全プロジェクト共通の既定値、プロジェクトセクションに当該プロジェクト固有の上書きを置く。`SettingNumberInput`（100 字刻み、0 = 目標なし）。
+
+| フィールド | スコープ | デフォルト | キー |
+|-----------|---------|-----------|------|
+| 日次目標（既定） | global | 0 | `goal.dailyDefaultChars` |
+| 日次目標（このプロジェクト） | project | 0（0 のとき既定にフォールバック） | `goal.dailyChars` |
+
+### 書字方向（縦書き・縦中横）（2026-06-18 追記）
+
+プロジェクト固有設定。
+
+| フィールド | UI要素 | デフォルト | キー |
+|-----------|--------|-----------|------|
+| 縦書きモード | トグル | OFF | `editor.verticalMode` |
+| 縦中横 | ドロップダウン | `2` | `editor.tateChuYoko`（`off` / `2`=2桁のみ正立結合 / `all`=全桁）。縦書き時に半角数字を正立結合する |
+
+### 段落スタイル（2026-06-18 追記）
+
+CSS の禁則・字下げ・和欧スペーシング。いずれもプロジェクト固有設定（作品ごとに変えうる）。
+
+| フィールド | UI要素 | デフォルト | キー |
+|-----------|--------|-----------|------|
+| Paragraph indent | ドロップダウン | 0 | `editor.paragraphIndent`（`0`=オフ / `1` / `2`、英語は既定 1） |
+| Word break | ドロップダウン | normal | `editor.wordBreak`（CSS `word-break` 相当。`auto-phrase` / `normal` / `break-all` / `keep-all`） |
+| Line break | ドロップダウン | strict | `editor.lineBreak`（日本語行頭禁則の強度。CSS `line-break`。`strict` / `normal` / `loose` / `auto`） |
+| 和欧スペーシング | ドロップダウン | normal | `editor.textAutospace`（CSS `text-autospace`。`normal`=CJK↔英数字に四分アキ相当を自動挿入 / `no-autospace`。WebKit 既定は no-autospace なので `normal` を明示する） |
 
 ---
 
@@ -331,10 +396,12 @@ UIの外観全般を設定する。
 | フィールド | UI要素 | デフォルト | 詳細 |
 |-----------|--------|-----------|------|
 | UI language | ドロップダウン | 日本語 | **現状の実装**は日本語 (ja) / English (en) の 2 言語。中文 / 한국어 はネーミングルールのフォールバック実装（i18next リソース）は存在するが、UI 言語セレクタには未追加（将来拡張） |
+| UI font | `FontFamilySelect` | `"M PLUS 1"`（同梱） | UI 表示書体。`display.uiFontFamily`（global）。同梱フォント + システムフォント列挙 + カスタム指定 |
 | UI scale | スライダー | 100% | 80% - 上限（実機の Hi-DPI に応じて `getUiScaleMaxPercent()` で算出、最大 150% 程度）。5% 刻み。ポインタドラッグ中は IPC を抑制し、リリース時にのみコミットする。`uiScale` はグローバル設定 |
 | Reduce motion | トグル | OFF | アニメーションを抑制し Framer Motion / GSAP の遷移を最小化。OS の `prefers-reduced-motion` とも連動。キー: `display.reduceMotion` |
-| Show word count in Scenes | トグル | ON | Scenesパネルのツリーに文字数を表示 |
-| Show AI badge in Scenes | トグル | OFF | ScenesパネルのツリーにAI帰属バッジを表示 |
+| Card layout | トグル | ON | カードレイアウト表示。キー: `display.cardLayout` |
+| Show word count in Scenes | トグル | ON | Scenesパネルのツリーに文字数を表示（`display.showWordCount`） |
+| Show AI badge in Scenes | トグル | OFF | ScenesパネルのツリーにAI帰属バッジを表示（`display.showAiBadge`） |
 
 ### Glass エフェクト
 
@@ -483,7 +550,9 @@ Inline AI palette                Ctrl+Space
 | Compact database | SQLiteの VACUUM を実行（データベースサイズ最適化） |
 | Clear chat history | 全チャットセッション・メッセージを削除（確認ダイアログ。Codex/Snippetの抽出済みデータは残る） |
 | Delete project | プロジェクト全体を削除（最終確認ダイアログ。テキスト入力での確認を要求） |
-| Check integrity | 孤立参照チェック＆修復、Codex×シーン相互参照レポート生成 |
+| Check integrity | 孤立参照チェック＆修復、Codex×シーン相互参照レポート生成（`IntegrityCheckSection`） |
+
+> データ管理セクションの下に外部マウント管理（`externalMount` / `MountListDialog`）が並ぶ。
 
 ---
 
@@ -532,6 +601,25 @@ CREATE TABLE codex_types (
 ```
 
 タイプ一覧は `typeApi`（Zustand ストア）経由で購読・更新する。Settings の Codex カテゴリは `typeApi` を薄くラップした UI として動作し、`app_settings` テーブルには保存しない。
+
+---
+
+## Map カテゴリ（2026-06-18 追記）
+
+Map パネルで新規作成する付箋・エッジの既定値を設定する（`MapCategory`）。いずれもグローバル設定。
+
+### 付箋の既定
+
+| フィールド | UI 要素 | デフォルト | キー |
+|-----------|---------|-----------|------|
+| パレット | ドロップダウン | `post-it-playful` | `map.defaultStickyPaletteId`（`src/lib/stickyPalettes.ts` の `PALETTES`） |
+| 既定色 | カラースウォッチ | 0（パレット先頭の色スロット） | `map.defaultStickyColorSlot`。選択中パレットの色配列からスロット番号で選ぶ |
+
+### エッジの既定
+
+| フィールド | UI 要素 | デフォルト | キー |
+|-----------|---------|-----------|------|
+| 既定のエッジスタイル | ドロップダウン | `solid` | `map.defaultEdgeStyle`（`solid` / `dashed` / `dotted`） |
 
 ---
 
@@ -589,6 +677,33 @@ Linter 設定は `app_settings` テーブルではなく専用の `lintConfigSto
 
 ---
 
+## Usage カテゴリ（2026-06-18 追記）
+
+プロジェクト単位の AI トークン使用量・推定コストを表示する（`UsageCategory`、表示のみ）。`ai_usage` 台帳（`getProjectUsageSummary`）を集計する。書き込み側（`recordAiUsage`）と同じ `projectId` 源（tree store）を使って read/write のずれを防ぐ。
+
+| セクション | 内容 |
+|-----------|------|
+| 合計 | 生成回数 / 入力トークン / 出力トークン / 推定コスト（推定値を含む場合は `≈` 接頭辞）。計測不能（unmetered）件数があれば併記 |
+| Prompt cache | キャッシュ読込率（read /(read+write)）/ cache read トークン / cache write トークン。キャッシュトークンがある場合のみ表示 |
+| サーフェス別 | チャット・インライン AI・校閲・抽出など発生サーフェス別の件数・トークン・コスト内訳（`surfaceLabel`） |
+
+> コストはモデル価格表からの推定であり、実際の課金額とは一致しないことがある旨の注記を表示する。
+
+---
+
+## License カテゴリ（2026-06-18 追記）
+
+ライセンス認証の状態確認・キー入力・端末解除・再検証を行う（`LicenseCategory`、ライセンス認証設計書 §7）。licensing 無効ビルドでは `CategoryNav` が項目ごと非表示にする（`LicenseCategory` も `licensingEnabled` が false なら `null` を返す）。状態は `useLicenseStore` から購読する。
+
+| 状態 | 表示・操作 |
+|------|-----------|
+| trial / trial_expired | 残日数（`trialDaysRemaining`）またはトライアル終了。キー入力 + アクティベート、購入リンク（Polar） |
+| licensed / grace | アクティベート済み（キー末尾 `keyTail` / grace 残日数）。最終検証日時、「この端末を解除」（二段階確認ボタン） |
+| license_stale | 「再検証」ボタン（オンライン再確認） |
+| revoked | 失効表示・機能制限の説明 |
+
+---
+
 ## About カテゴリ
 
 アプリに関するメタ情報とサポートリンクを表示する。設定項目ではなく情報表示が主体。`src/features/settings/categories/about/` 配下のサブコンポーネントで構成される。
@@ -628,7 +743,9 @@ UI の外観など「どのプロジェクトを開いても同じであって�
 
 #### プロジェクト固有設定
 
-上記以外の項目はすべて `app_settings` テーブル（Drizzle ORM 経由）に 300ms debounce で保存する。プロジェクトを開き直すと当該プロジェクトの `project.db` から読み戻される。
+`KEY_SCOPE` が `project` のキーは `setProjectSetting` 経由で `project_settings` テーブルに 300ms debounce で保存する。プロジェクトを開き直すと当該プロジェクトの `project.db` から読み戻される。`KEY_SCOPE` に載っていない旧来キー（legacy 層）は従来どおり `app_settings` テーブル（`setSetting`）へ保存される。
+
+> `settingsStore` は legacy（`app_settings`）/ project（`project_settings`）/ global（`global-settings.json` の `userPreferences`）の 3 層を `DEFAULT_SETTINGS` < 言語別オーバーライド（`LANGUAGE_DEFAULT_OVERRIDES`）< legacy < project < global の優先順位でマージする。書き込み先は `KEY_SCOPE[key]` で決まる（`persistSetting`）。
 
 #### カテゴリ独自ストア
 
@@ -639,45 +756,45 @@ UI の外観など「どのプロジェクトを開いても同じであって�
 | Codex types | `typeApi`（Zustand） + `codex_types` テーブル | ビルトイン／カスタムタイプの CRUD |
 | Linter (ルール + 無視リスト) | `lintConfigStore` + `lint_ignores` テーブル | `app_settings` テーブルには保存しない |
 | AI (APIキー) | Tauri keyring | OS 標準のセキュアストレージ |
-| AI (モデル選択 / 拡張思考 / ホワイトリスト等) | `chat/store` + `app_settings` テーブル | Chat パネルと共有 |
+| AI (プロバイダ / モデル選択 / 拡張思考 / Tool protocol 等) | `chat/store`（`useAiSettingsStore`） | Chat パネルと共有 |
 
 #### 保存先サマリ
 
 | 設定カテゴリ | 保存先 | 理由 |
 |-------------|--------|------|
-| Project (メタ情報 / outline / aiPolicy / phaseResolutionMode) | `projects` テーブル | プロジェクト固有 |
-| Project (ネーミング / 採番スコープ) | `app_settings` テーブル | プロジェクト固有 |
-| Project (ゴミ箱 `trashBin.enabled` / `trashBin.retentionDays`) | `app_settings` テーブル | プロジェクト固有 |
+| Project (メタ情報 / outline / 対象読者 / aiPolicy / phaseResolutionMode) | `projects` テーブル | プロジェクト固有 |
+| Project (ネーミング `tree.folderNaming` / 採番スコープ `tree.numberingScope`) | `project_settings` テーブル | プロジェクト固有 |
+| Project (ゴミ箱 `trashBin.enabled` / `trashBin.retentionDays`) | `project_settings` テーブル（legacy 層）※ | プロジェクト固有 |
+| Project (タイムラプス `timelapse.enabled`) | `project_settings` テーブル | プロジェクト固有 |
 | Project (デフォルト雛形 `projectDefaults`) | `global-settings.json` | 全プロジェクトの初期値として共有 |
 | AI (APIキー) | Tauri keyring | セキュリティ |
-| AI (モデル / Provider pin / openai-compatible / ai-novelist サンプリング・多言語モード / cli 設定) | `chat/store` 経由 + `app_settings` テーブル | プロジェクト固有 |
+| AI (プロバイダ / モデル / Provider pin / Tool protocol / openai-compatible / ai-novelist サンプリング・多言語モード / cli 設定) | `chat/store` 経由 | グローバル |
 | AI (`ai.inlineModel` / `ai.sessionTitleModel` / `ai.modelWhitelist`) | `global-settings.json` | グローバル |
-| AI (コンテキスト予算 `ai.contextBudget.*`) | `app_settings` テーブル | プロジェクト固有 |
-| AI (Beat 連携 `beat.injectIntoContext` / `beat.inferRoles` / `beat.roleInferenceConfidenceThreshold`) | `app_settings` テーブル | プロジェクト固有 |
-| Editor (フォント / 行間 / アニメーション / インライン AI 等のユーザー嗜好) | `global-settings.json` | グローバル |
-| Editor (`wordBreak` / `lineBreak` / `paragraphIndent` / `targetCharCount`) | `app_settings` テーブル | プロジェクト固有（作品ごとに変えうる） |
-| Display (theme / colorTheme / uiLanguage / uiScale) | `global-settings.json` | グローバル |
+| AI (Web 検索 `ai.webSearch.domainMode` / `ai.webSearch.domains` / `ai.webSearch.maxContentTokens`) | `global-settings.json` | グローバル |
+| AI (`ai.autoAcceptBodyProposals` / `ai.semanticRecall` / `ai.hybridRecall`) | `project_settings` テーブル | プロジェクト固有 |
+| AI (コンテキスト予算 `ai.contextBudget.*`) | `project_settings` テーブル | プロジェクト固有 |
+| AI (Beat 連携 `beat.injectIntoContext` / `beat.inferRoles` / `beat.roleInferenceConfidenceThreshold`) | `project_settings` テーブル | プロジェクト固有 |
+| AI (プロンプト追記 `aiPrompt.custom.*`) | `project_settings` テーブル | プロジェクト固有 |
+| Editor (フォント / 行間 / アニメーション / インライン AI / Beat 表示 / `goal.dailyDefaultChars` 等のユーザー嗜好) | `global-settings.json` | グローバル |
+| Editor (`wordBreak` / `lineBreak` / `paragraphIndent` / `textAutospace` / `verticalMode` / `tateChuYoko` / `targetCharCount` / `goal.dailyChars`) | `project_settings` テーブル | プロジェクト固有（作品ごとに変えうる） |
+| Display (theme / colorTheme / uiLanguage / uiScale / `display.uiFontFamily` / `display.cardLayout`) | `global-settings.json` | グローバル |
 | Display (reduceMotion / Glass / Codex highlight / Attribution opacity 等) | `global-settings.json`（`KEY_SCOPE` 上は `global`） | グローバル |
 | Keys (`keys.bindings`) | `global-settings.json` | グローバル |
 | Data (バックアップ / リビジョン) | `global-settings.json` | グローバル |
-| Data (エクスポート詳細 `export.*`) | `app_settings` テーブル | プロジェクト固有 |
+| Map (`map.defaultStickyPaletteId` / `map.defaultStickyColorSlot` / `map.defaultEdgeStyle`) | `global-settings.json` | グローバル |
+| Data (エクスポート詳細 `export.*`) | `project_settings` テーブル | プロジェクト固有 |
 | Codex (types) | `codex_types` テーブル（`typeApi` 経由） | プロジェクト固有 |
-| Linter (ルール / 用語辞書) | `lintConfigStore` → `app_settings` テーブル | プロジェクト固有 |
+| Linter (ルール / 用語辞書) | `lintConfigStore` | プロジェクト固有 |
 | Linter (無視リスト) | `lint_ignores` テーブル | プロジェクト固有 |
+| Usage | `ai_usage` 台帳の集計（表示のみ） | — |
+| License | `useLicenseStore`（Rust 側に保存） | 端末ごと |
 | About | 表示のみ | — |
 
-> `KEY_SCOPE`（`src/features/settings/types.ts`）が各キーのスコープ（`global` / `project`）を一元定義しており、`useSettingControl` 系フックはこのマップを参照してプロジェクト DB か `global-settings.json` のどちらに書き込むかを切り替える。設計書と実装で表現が食い違う場合は `KEY_SCOPE` を正とする。
+> ※ `trashBin.*` は `KEY_SCOPE` に未登録のため legacy 層（`app_settings`）に保存される可能性がある。スコープの正本は `KEY_SCOPE`（`src/features/settings/types.ts`）で、`KEY_SCOPE[key]` が `global` なら `global-settings.json` の `userPreferences`、`project` なら `project_settings` テーブル、未登録なら legacy（`app_settings`）に書き込まれる。設計書と実装で表現が食い違う場合は `KEY_SCOPE` を正とする。
 
-### app_settings テーブル
+### settings 保存テーブル
 
-```sql
-CREATE TABLE app_settings (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL  -- JSON value
-);
-```
-
-アプリ全体のKey-Valueストア。各設定項目は `editor.fontSize`、`display.theme`、`ai.defaultChatModel` のようなドット区切りのキーで保存。`project_settings` テーブルも併存するが、現在のすべてのキーはアプリ全体のプリファレンスのため `app_settings` 側に格納される（詳細は統合DBスキーマ参照）。
+設定の Key-Value は `app_settings`（legacy・アプリ全体）と `project_settings`（プロジェクト固有）の 2 テーブルに分かれ、いずれもドット区切りキー（例: `editor.fontSize`、`ai.contextBudget.l3`）で JSON 値を保存する。テーブルの DDL は [統合DBスキーマ](./Grimodex_統合DBスキーマ.md) を正本とする。`KEY_SCOPE` が `project` のキーは `project_settings`、未登録キーは `app_settings`、`global` のキーは `global-settings.json` に書き込まれる。
 
 ```typescript
 // 使用例
@@ -748,6 +865,8 @@ AIプロバイダ設定（BYOK）のUI詳細はSettingsのAIカテゴリで定�
 ## Beat / Matrix / Grid 関連設定（追加項目）
 
 [Beat システム設計書](./Grimodex_Beatシステム設計書.md) / [Matrix パネル設計書](./Grimodex_Matrixパネル設計書.md) / [Grid パネル設計書](./Grimodex_Gridパネル設計書.md) の導入に伴い、Settings の以下のカテゴリに項目を追加する。
+
+> **（2026-06-18 追記）** 下記のうち `editor.linearBeatDisplay` / `editor.focusModeHideBeats` は実装済みで、本文「Editor カテゴリ § Beat」に記載済み（UI 上の保存先キーが正本。下表の旧 JSON 例の `beatDisplayInLinearMode` / `hideBeatsInFocusMode` は古いキー名で、実際は `editor.linearBeatDisplay` / `editor.focusModeHideBeats`）。`beatTypePrompts` / `injectPendingBeatsInGeneration` / `includeBeatsInCharCount` / `includeBeatsInFullTextSearch` / `subplotTagName` は現状コードに存在しない（未実装の提案）。
 
 ### Editor カテゴリ
 

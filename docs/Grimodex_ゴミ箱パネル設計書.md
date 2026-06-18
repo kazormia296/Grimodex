@@ -84,6 +84,8 @@ aria-label: 「ゴミ箱。削除物 {n} 件」
 
 **インデックス**: `(projectId, deletedAt DESC)`、`(projectId, kind, deletedAt DESC)`
 
+> 確定 DDL・FK・他テーブルとの関係は [`docs/Grimodex_統合DBスキーマ.md`](./Grimodex_統合DBスキーマ.md) の `trash_items` 節を正本とする（本書では再掲しない）。
+
 **CASCADE ON DELETE**:
 - `projectId` → 親プロジェクト削除時に連動削除
 - `originSceneId` / `originCodexId` → 親シーン/エントリ削除時に文字屑のみ連動削除（構造アイテム本体は親と独立）
@@ -101,12 +103,13 @@ interface TrashSpan {
   source: "human" | "ai" | "unknown";
   model: string | null;
   chatMessageId: string | null;
+  traceId: string | null;
   timestamp: string | null;
 }
 ```
 
 - 削除範囲内の各テキストノードから authorship mark を位置順に抽出
-- mark 未付与は `source: "human"` として記録
+- `traceId` も含めて authorship mark の属性を丸ごと取り込む（`TrashBinCapturePlugin.ts`）。mark 未付与は全属性 `null` + `source: "human"` として記録
 - 再挿入時、各 span に `AuthorshipMark` を再付与（`AuthorshipMark.ts` の全属性が `default: null` を持つことを確認済み）
 
 ### 3.2 構造アイテム (`kind: "structure-item"`) の payload
@@ -668,7 +671,7 @@ interface FocusedContentEditorStore {
 | `trashBin.pauseToggle`       | 記録を一時停止/再開          | Pause / resume recording        |
 | `trashBin.enableLabel`       | ゴミ箱を有効化               | Enable trash bin                |
 | `trashBin.includeInExport`   | ゴミ箱の内容を含める         | Include trash bin contents      |
-| `trashBin.brokenLink`        | リンク切れ                  | Broken link                     |
+| `trashBin.brokenLinkWarning` | 復元しましたが一部のリンクが切れています | Restored, but some links are broken |
 | `trashBin.kind.textFragment` | 文字屑                      | Text scrap                      |
 | `trashBin.kind.scene`        | シーン                      | Scene                           |
 | `trashBin.kind.codex`        | 設定資料                    | Codex                           |
@@ -866,11 +869,19 @@ type ScenePayload = {
   originalId: string;          // 参照のみ
   title: string;
   body: string;                // ProseMirror JSON シリアライズ
-  beats: Beat[];
+  beats: string;               // unplacedBeatsDoc (JSON 配列) を生のまま保持
   povCharacterId: string | null;
   folderHintId: string | null;
   folderHintName: string | null;
-  metadata: Record<string, unknown>;
+  metadata: {
+    synopsis: string | null;
+    status: string | null;
+    nodeType: "scene" | "folder" | "note";
+    locationId: string | null;
+    sortOrder: string;
+    storyTimeOrder: string | null;
+    storyTimeLabel: string | null;
+  };
   charCount: number;
 };
 ```
@@ -881,11 +892,21 @@ type ScenePayload = {
 type CodexEntryPayload = {
   originalId: string;
   name: string;
-  category: string;
+  category: string;            // schema 上の type カラム（Codex 種別 slug）
   body: string;                // ProseMirror JSON
-  fields: CodexField[];
-  links: CodexLink[];          // 参考のみ、復元時は再リンク無し
-  imageRefs: string[];         // 画像 ID は維持（画像 DB は別管理）
+  summary: string | null;
+  aliases: string | null;          // schema は JSON 文字列で保持
+  excludedAliases: string | null;
+  icon: string | null;
+  notes: string | null;
+  contextMode: string;
+  childrenBudget: string;
+  parentId: string | null;
+  // fields/links/imageRefs は現 schema に存在しないため Phase 4 では取り扱わず、
+  // 設計書互換のため常に空配列で存在させる。
+  fields: never[];
+  links: never[];
+  imageRefs: never[];
 };
 ```
 
@@ -896,7 +917,9 @@ type SnippetPayload = {
   originalId: string;
   title: string;
   body: string;                // ProseMirror JSON（authorship 含む）
-  tags: string[];
+  tags: string | null;         // schema の tagsCache (JSON 文字列) を生で保持
+  contentSource: string | null;
+  sceneId: string | null;
 };
 ```
 
@@ -905,28 +928,44 @@ type SnippetPayload = {
 ```typescript
 type MapStickyPayload = {
   originalId: string;
-  mapId: string;               // 参考のみ
+  boardId: string;             // 参考のみ
+  title: string | null;
+  body: string;                // ProseMirror JSON 本文
+  previewText: string | null;
+  paletteId: string;           // 色は paletteId + colorSlot の組で表現
+  colorSlot: number;
   x: number;                   // ドロップ時の位置参考、強制復帰しない
   y: number;
-  color: string;
-  content: string;             // 本文
-  rotation: number;
+  pinned: boolean;
+  zIndex: number;
 };
 ```
+
+> 実 schema は `mapStickies`（`body` PM JSON + `previewText` + `paletteId`/`colorSlot`）と
+> 座標を持つ `mapNodePositions` 別テーブルに分かれている。`x`/`y`/`pinned`/`zIndex`
+> は position 行から取り込む（`captureMapStickyDeletion` が `MapNodePosition` を別引数で受け取る）。
 
 ### 16.6 `foreshadow`
 
 ```typescript
 type ForeshadowPayload = {
   originalId: string;
+  projectId: string;
   title: string;
-  setupText: string | null;
-  payoffText: string | null;
-  setupSceneRef: string | null;   // 参考のみ
-  payoffSceneRef: string | null;
-  status: ForeshadowStatus;
+  intent: string | null;
+  notes: string | null;
+  payoffSceneRef: string | null;  // 参考のみ
+  payoffFromPos: number | null;
+  payoffToPos: number | null;
+  payoffConfirmed: boolean;
+  abandoned: boolean;
+  loadBearing: string | null;
 };
 ```
+
+> `foreshadowSetups` は親削除で CASCADE 消滅するため、本 payload は親 row のみ保持し
+> setups は復元しない（`foreshadowStore.remove` と同方針。復元時は `brokenLinks` に
+> `"setups"` を積む）。
 
 ### 16.7 `pin` (※ 現状未実装)
 
@@ -948,7 +987,8 @@ Pin の trash 連携は将来拡張。subKind / restorer / drop target / capture
 type GridChapterPayload = {
   originalId: string;
   title: string;
-  order: number;
+  parentId: string | null;     // 親フォルダ（消えていればルート復元、§6-C）
+  sortOrder: string;           // treeNodes の sortOrder（fractional index 文字列）
   metadata: Record<string, unknown>;
 };
 ```

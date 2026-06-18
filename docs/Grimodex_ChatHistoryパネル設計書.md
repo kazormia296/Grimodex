@@ -24,9 +24,9 @@ Chat Historyパネルはプロジェクト内の全チャットセッション�
 │ [All scenes ▼] [Has extractions]     │
 │ [Project scope]         Sort: Recent │
 ├──────────────────────────────────────┤
-│ D. Session list (grouped)            │
+│ D. Session list (grouped by scope)   │
 │                                      │
-│ Ch 1: Awakening / The tower          │
+│ The tower                            │
 │ ┌──────────────────────────────────┐ │
 │ │ Character deep-dive    Today     │ │
 │ │ Describe what Elara feels...     │ │
@@ -38,7 +38,7 @@ Chat Historyパネルはプロジェクト内の全チャットセッション�
 │ │ [4 msgs] [1 codex]              │ │
 │ └──────────────────────────────────┘ │
 │                                      │
-│ Ch 1: Awakening / First spell        │
+│ First spell                          │
 │ ┌──────────────────────────────────┐ │
 │ │ Magic system brainstorm  Mar 29 │ │
 │ │ ...                              │ │
@@ -47,6 +47,12 @@ Chat Historyパネルはプロジェクト内の全チャットセッション�
 │ Project scope                        │
 │ ┌──────────────────────────────────┐ │
 │ │ Plot outline discussion  Mar 27 │ │
+│ │ ...                              │ │
+│ └──────────────────────────────────┘ │
+│                                      │
+│ Codex: Elara                         │
+│ ┌──────────────────────────────────┐ │
+│ │ Worldbuilding Q&A      Mar 26   │ │
 │ │ ...                              │ │
 │ └──────────────────────────────────┘ │
 │                                      │
@@ -72,28 +78,30 @@ Chat Historyパネルはプロジェクト内の全チャットセッション�
 - マッチしたメッセージを含むセッションのみ表示
 - セッションカード内にマッチしたメッセージのスニペット（ハイライト付き）を表示
 - 取得件数の上限はクエリ内で `LIMIT 50`。それを超えるヒットは現状切り捨て（ページングは将来拡張）
+- 生の検索文字列は `searchChatMessages`（`chatHistoryApi.ts`）が `toFtsMatchQuery`（`@/lib/fts`）で安全な FTS5 `MATCH` 式へ変換してから渡す。`,` などの記号で FTS5 構文エラーにならず、一致可能なトークンが無ければ空結果を返す
 - ハイライトは FTS5 の `snippet()` 関数が `\x01` / `\x02` のセンチネル文字でマーカ付き文字列を返し、`ChatHistoryPanel` 側の `renderHighlight()` が `<mark>` に変換する
 
 ### 検索結果の表示
 
-検索中は通常のセッションリストが「検索結果モード」に切り替わる:
+検索中は通常のセッションリストが「検索結果モード」に切り替わる。ヒットはセッション単位でまとめられ、各セッションの先頭に **スコープアンカー付きのヘッダー（`<スコープ> › <セッションタイトル>`）** を表示する。スコープ部分は所属グループと同じ優先順（Codex → Snippet → Scene → Project scope）で `Codex: <名>` / `Snippet: <タイトル>` / Scene タイトル / `Project scope` を解決する:
 
 ```
-Search: "Elara magic"          3 results
+Search: "Elara magic"          3 hits
 
-Ch 1 / The tower > Character deep-dive
+Codex: Elara › Character deep-dive (1)
+  You · 14:32
   "...Elara's connection to magic stems from..."
-  Message 5 of 8 · AI · Today 14:32
 
-Ch 1 / First spell > Magic system brainstorm
+First spell › Magic system brainstorm (2)
+  You · 10:15
   "...How should Elara learn her first spell?..."
-  Message 2 of 12 · User · Mar 29 10:15
-
+  AI · 10:15
   "...Elara could discover magic through..."
-  Message 3 of 12 · AI · Mar 29 10:15
 ```
 
-各結果をクリックすると、Chatパネルがそのセッションの該当メッセージまでスクロールして開く。
+- ヘッダー右の `(N)` はそのセッション内のヒット件数。ヘッダー自体もクリック可能で、クリックでそのセッションを Chat パネルに開く
+- スコープのアンカー解決は検索結果でも `codexEntryMap` / `snippetEntryMap` を使い、未解決時は ID を表示（`MessageSearchHit` が `nodeId` / `codexAnchorId` / `snippetAnchorId` を返す）
+- 各ヒット行は送信者（You / AI）と時刻、ハイライト付きスニペットを表示。行クリックでそのセッションを Chat パネルで開く
 
 ---
 
@@ -113,7 +121,7 @@ Ch 1 / First spell > Magic system brainstorm
 | フィルタ | 動作 |
 |---------|------|
 | Has extractions | Codex/Snippet抽出が1件以上あるセッションのみ |
-| Project scope | シーン非紐づけのプロジェクトスコープセッションのみ |
+| Project scope | 完全にスコープ非紐づけのセッションのみ。`nodeId` / `codexAnchorId` / `snippetAnchorId` の **いずれか** を持つセッションは除外する（`filterAndSortSessions`、`chatHistoryStore.ts`）。Codex / Snippet にアンカーされたセッションも Scene 紐づけ同様に除外対象 |
 
 **ソート順（ドロップダウン）**:
 
@@ -130,14 +138,20 @@ Ch 1 / First spell > Magic system brainstorm
 
 ### グルーピング
 
-セッションはシーン別にグループ化して表示する。グループヘッダーはScenesツリーのパス形式。
+セッションはスコープ別にグループ化して表示する。スコープには Scene のほか、Codex / Snippet にアンカーされたセッションのグループ、シーン非紐づけの Project scope がある。
 
 ```
-Ch 1: Awakening / The tower          ← グループヘッダー
+Codex: Elara                          ← Codex アンカーグループ
+  [Session card]
+
+Snippet: Tower description             ← Snippet アンカーグループ
+  [Session card]
+
+The tower                             ← Scene グループヘッダー
   [Session card]
   [Session card]
 
-Ch 1: Awakening / First spell
+First spell
   [Session card]
 
 Project scope                         ← シーン非紐づけ
@@ -145,10 +159,12 @@ Project scope                         ← シーン非紐づけ
 ```
 
 - シーンフィルタが適用されている場合はグループヘッダー不要（1グループのみ）
-- ソート順はグループ内のセッションに適用。グループ自体の順序はツリー順
-- **現状の実装**: グループヘッダーは Scene 単体のタイトル（`nodeMap[nodeId]?.title`）のみを描画する。`groupSessionsByScene` (`src/features/chat/chatHistoryStore.ts`) は祖先 Folder までさかのぼった「Ch 1: Awakening / The tower」形式のパス連結を行わない。`SessionGroup` 型もフラットな `groupLabel: string` を持つだけ
-- グループの順序は `Map` への挿入順（=セッション一覧の元順序）に依存。`nodeId === null` の Project scope グループだけは末尾に押し下げる。「ツリー順」での厳密ソートは未実装
-- Scene グループのヘッダーをクリックすると、`treeStore.setActiveScene` と `tabStore.openPinned` を同時に呼んで Editor で開く（`Go to scene` 相当の動作がヘッダー直クリックに割り当てられている）
+- ソート順はグループ内のセッションに適用
+- **現状の実装**: グルーピングは `groupSessionsByScope` (`src/features/chat/chatHistoryStore.ts`) が担う（旧名 `groupSessionsByScene` は `@deprecated` エイリアスとして存置）。セッションのスコープ判定は **`codexAnchorId` → `snippetAnchorId` → `nodeId` → Project scope の優先順**。`codexAnchorId` を持つセッションは Scene への紐づけより優先して Codex グループに入る
+- グループラベルは Codex 系が `Codex: <エントリ名>`、Snippet 系が `Snippet: <Snippet タイトル>`、Scene 系が `nodeMap[nodeId]?.title`（Scene 単体のタイトルのみ。祖先 Folder までさかのぼった「Ch 1: Awakening / The tower」形式のパス連結は行わない）、シーン非紐づけが `Project scope`。Codex / Snippet のエントリ名は `codexEntryMap` / `snippetEntryMap`（`codexStore` / `snippetStore` 由来）で解決し、未解決時は ID をそのまま表示
+- `SessionGroup` 型は `groupLabel` のほか `nodeId` / `codexAnchorId` / `snippetAnchorId` を保持する
+- グループ順序は `groupSessionsByScope` 内のソートで **Scene グループ → Project scope → アンカー（Codex/Snippet）グループの順**に並ぶ（アンカー系を末尾へ押し下げ、Project scope はアンカー無しグループの中で末尾）。グループ内の挿入順はセッション一覧の元順序に依存
+- **Scene グループ（`nodeId` 有り）のヘッダーのみ**クリック可能で、`treeStore.setActiveScene` と `tabStore.openPinned` を同時に呼んで Editor で開く（`Go to scene` 相当）。Codex / Snippet / Project scope のヘッダーは非インタラクティブな `<p>` で描画
 
 ### セッションカード
 
@@ -275,6 +291,8 @@ END;
 抽出数の集計は `chat_messages.metadata` JSONの `extractedCodex` / `extractedSnippets` 配列の長さをカウント。パフォーマンスが問題になった場合、`chat_sessions` に `codex_count` / `snippet_count` のデノーマライズドカラムを追加。
 
 > **現状の実装**: 抽出元の追跡は JSON メタデータではなく、`codex_entries.source_chat_message_id` / `snippets.source_chat_message_id` の **FK カラム**で行われている（`src/db/schema.ts`、`idx_codex_entries_src_msg` / `idx_snippets_src_msg` のインデックスあり）。`listSessionsWithStats` (`src/features/chat/chatHistoryApi.ts`) はセッション配下の `chat_messages.id` をまとめて引いたあと、この FK で `codexCount` / `snippetCount` を集計する。`listExtractionsBySession` も同じ FK を辿ってバッジクリック時のポップオーバー一覧を返す。FTS5 仮想テーブル `chat_messages_fts` および対応する `_ai` / `_ad` / `_au` トリガは `src-tauri/src/database/migrate.rs` に同等の DDL で実装済み。
+>
+> **スコープアンカー列**: `chat_sessions` にはシーン紐づけ用の `node_id`（`treeNodes` 参照・`onDelete: set null`）に加え、Codex / Snippet にアンカーされたセッション用の **`codex_anchor_id`（`codexEntries` 参照）/ `snippet_anchor_id`（`snippets` 参照）の FK 列**がある（いずれも `onDelete: set null`）。複合インデックス `idx_chat_sessions_node` / `idx_chat_sessions_codex_anchor` / `idx_chat_sessions_snippet_anchor`（いずれも `project_id` 先頭）を持つ。これらの列がパネルのスコープグルーピング・フィルタ・検索結果ヘッダーの判定軸になる。列定義の正本は [Grimodex 統合DBスキーマ](./Grimodex_統合DBスキーマ.md) を参照。
 
 ---
 

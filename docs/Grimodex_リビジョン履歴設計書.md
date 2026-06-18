@@ -1,10 +1,10 @@
 # Grimodex — リビジョン履歴設計書
 
-> 最終更新: 2026-05-16
-> ステータス: 実装済み（Diff 表示はテキストブロック単位、Tauri 化は未着手）
-> 依存: Grimodex_統合DBスキーマ.md（content_versions テーブル）、Grimodex_Editorパネル設計書.md、Grimodex_Codexパネル設計書.md、Grimodex_Snippetsパネル設計書.md
+> 最終更新: 2026-06-18
+> ステータス: 実装済み（プロジェクトスナップショットは構造込み・スコープ選択式に拡張済み。Diff 表示はテキストブロック単位、Tauri 化は未着手）
+> 依存: Grimodex_統合DBスキーマ.md（content_versions / project_snapshot_* テーブル）、Grimodex_Editorパネル設計書.md、Grimodex_Codexパネル設計書.md、Grimodex_Snippetsパネル設計書.md
 
-実装ディレクトリ: `src/features/revision/`（`api.ts`, `revisionStore.ts`, `RevisionHistoryModal.tsx`, `projectSnapshotApi.ts`, `ProjectSnapshotModal.tsx`）。
+実装ディレクトリ: `src/features/revision/`（`api.ts`, `revisionStore.ts`, `RevisionHistoryModal.tsx`, `projectSnapshotApi.ts`, `ProjectSnapshotModal.tsx`, `projectSnapshotScopes.ts`）。
 
 ---
 
@@ -234,73 +234,100 @@ History ボタンクリックで **モーダルオーバーレイ** を表示す
 
 ### 概念
 
-プロジェクトスナップショットは**軽量ポインタ**である。全エンティティの「その時点の content_version ID」を記録するだけで、content を二重に保存しない。
+プロジェクトスナップショットは**構造込みスナップショット**である（2026-05-19 に「軽量ポインタ」方式から拡張、`a280ea33`）。スナップショット時点の全エンティティの構造メタ（タイトル / 親 / 並び順 / ステータス / POV / 場所 / 字数 …）を行単位でミラーし、削除されたエンティティの再生成や構造の巻き戻し（リストア）を可能にする。本文（content）は二重保存せず、`body_version_id` で `content_versions` を指すポインタ方式を維持する（参照中のリビジョンは **ON DELETE RESTRICT** でプルーニングから保護）。
+
+格納先は2系統:
+- **コアエンティティ**（tree_nodes / codex_entries / snippets）→ 専用 strict テーブル（`project_snapshot_tree_nodes` / `project_snapshot_codex_entries` / `project_snapshot_snippets`）
+- **それ以外**（map / foreshadow / labels / lint / authorship / generation_logs / post-effect 注釈 など 30+ テーブル）→ `project_snapshot_aux(scope, payload_json)` に **スコープ別の JSON 生コピー**（1 スコープ 1 行）
+
+旧形式（軽量ポインタのみ）のスナップショットも `project_snapshot_entries` の content ポインタとして引き続き読め、リストア時に legacy フォールバック（後述）で扱う。
 
 ### DBスキーマ
 
-> 正規版は [`Grimodex_統合DBスキーマ.md`](Grimodex_統合DBスキーマ.md) を参照。
-
-```sql
-CREATE TABLE project_snapshots (
-  id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  name        TEXT NOT NULL,              -- ユーザーが付ける名前（例: "第3章完成", "提出前"）
-  description TEXT,                       -- 任意のメモ
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX idx_project_snapshots ON project_snapshots(project_id, created_at DESC);
-
--- プロジェクトスナップショットと各エンティティの content_version の紐付け
-CREATE TABLE project_snapshot_entries (
-  snapshot_id    TEXT NOT NULL REFERENCES project_snapshots(id) ON DELETE CASCADE,
-  version_id     TEXT NOT NULL REFERENCES content_versions(id),
-  PRIMARY KEY (snapshot_id, version_id)
-);
-```
+> `project_snapshots` / `project_snapshot_entries` / `project_snapshot_tree_nodes` / `project_snapshot_codex_entries` / `project_snapshot_snippets` / `project_snapshot_aux` の DDL・FK・プルーニング保護トリガーの正規版は [`Grimodex_統合DBスキーマ.md`](Grimodex_統合DBスキーマ.md) を参照。aux ペイロード（`{ rows: RawRow[] }`）の形は `src/features/revision/projectSnapshotScopes.ts` が正本。
 
 ### プルーニング保護
 
-プロジェクトスナップショットが参照している `content_versions` レコードは、個別エンティティのプルーニング対象から**除外**する。これにより、プロジェクトスナップショットの整合性が保証される。
-
-```sql
--- プルーニング時の除外条件
-DELETE FROM content_versions
-WHERE id NOT IN (SELECT version_id FROM project_snapshot_entries)
-  AND entity_type = ? AND entity_id = ?
-  AND ...;
-```
+プロジェクトスナップショットが参照している `content_versions` レコードは、個別エンティティのプルーニング対象から**除外**する。これにより、プロジェクトスナップショットの整合性が保証される。参照判定は legacy の `project_snapshot_entries.version_id` だけでなく、構造込みテーブル 3 種（`project_snapshot_tree_nodes` / `_codex_entries` / `_snippets`）の `body_version_id` も含む（JS 側 `pruneRevisions` は前者のみ除外するが、DB 側は後者にも **ON DELETE RESTRICT** を張りトリガーで全 4 経路を保護する）。除外条件の正規版は [`Grimodex_統合DBスキーマ.md`](Grimodex_統合DBスキーマ.md) を参照。
 
 ### 作成フロー
 
+スナップショット作成は**常に全スコープを丸ごと**キャプチャする（スコープ選択はリストア時のみ・後述）。本文だけでなく構造メタ・付帯データもまとめて記録する。
+
 ```
-1. メニュー「Project → Create Project Snapshot...」
-2. ダイアログ: 名前（必須）+ 説明（任意）を入力
-3. 作成処理:
-   a. project_snapshots レコードを作成
-   b. 全エンティティ（Scene/Note/Codex/Snippet）の現在の content で
-      手動リビジョンを一括作成（既に最新リビジョンと同一なら作成スキップ）
-   c. 作成されたリビジョン ID を project_snapshot_entries に記録
-4. トースト: "Project snapshot '{name}' created ({N} entities)"
+1. ダイアログ「新しいスナップショット」: 名前（必須）+ 説明（任意）を入力
+2. 作成処理:
+   a. project_snapshots レコードを作成（UNIQUE(project_id, name)）
+   b. Scene/Note → project_snapshot_tree_nodes へ構造メタ（title/parent/
+      sort_order/status/pov_character_id/location_id/synopsis/intent/字数 …）
+      を行単位でミラー。本文を持つノードは getOrCreateRevisionId で手動
+      リビジョンを採番し body_version_id で参照（既に最新と同一なら既存
+      リビジョンを再利用。フォルダは空 content なのでスキップ）
+   c. Codex → project_snapshot_codex_entries（type/name/parent/aliases/
+      summary/icon/context_mode/notes …）、Snippet → project_snapshot_snippets
+      も同様に構造ミラー + body_version_id
+   d. 旧クライアント互換のため body_version_id 群を project_snapshot_entries
+      にもミラー（entryCount もここから算出）
+   e. 付帯スコープ（map / foreshadow / labels / lint / authorship_spans /
+      generation_logs / post_effect_annotations / scene_codex_* など）を
+      各テーブルの現プロジェクト行をそのまま JSON 化し project_snapshot_aux
+      にスコープ別 1 行で記録（テーブルが存在しない環境では空ペイロード）
+3. トースト: "スナップショット「{name}」を作成しました（{N} エンティティ）"
 ```
+
+> 作成は厳密にはトランザクションではない。途中失敗で content_versions に残る孤児リビジョンは無害でプルーニング対象になる（リストア側は後述のとおりトランザクショナル）。
 
 ### 復元フロー
 
+復元は**スコープ選択式**（後述）で、構造込みスナップショットは「選択スコープを丸ごと wipe → スナップショット行から再構築」する。
+
 ```
-1. メニュー「Project → Project Snapshots...」でスナップショット一覧を表示
-2. 復元対象を選択し「Restore」クリック
-3. 確認ダイアログ: "Restore project to '{name}'? All current content will be saved as snapshots first."
-4. 確認後:
-   a. 現在の全エンティティの状態を自動プロジェクトスナップショットとして保存（セーフティネット、名前: "Before restore to '{name}'"）
-   b. project_snapshot_entries の各 version_id から content を取得
-   c. 対応する各テーブルの content カラムを一括上書き
-   d. 開いているエディタの TipTap インスタンスを更新
-5. トースト: "Restored to snapshot '{name}'"
+1. スナップショット一覧で復元対象を選択し「この時点に復元」クリック
+2. 確認ダイアログ: スコープ選択チェックボックス（構造込みのみ）+ 警告
+3. 確認後:
+   a. 現在の全状態をセーフティネットとして自動スナップショット保存
+      （名前: "Before restore to '{name}' ({ISO timestamp})"。常に全スコープ。
+        timestamp 接尾辞で UNIQUE(project_id, name) を回避）
+   b. 形式検出: project_snapshot_aux に行があれば structural、無ければ legacy
+   c-structural. 単一トランザクションのバッチで:
+      ① PRAGMA defer_foreign_keys = ON（FK チェックを COMMIT 時に遅延）
+      ② wipe されるスコープを跨ぐ CASCADE FK を事前 NULL 化
+         （例: body を wipe するが map 非選択のとき map_node_positions.tree_node_id）
+      ③ 選択スコープの最上位テーブルを project_id で DELETE（子は CASCADE）
+      ④ スナップショット行を INSERT で再構築。除外スコープへの FK は
+         NULL 化または skip（後述）
+      ⑤ COMMIT
+   c-legacy. project_snapshot_entries の version_id から content を取得し、
+      現存する同一 ID のエンティティの content カラムのみ UPDATE
+      （スコープ選択は無視）
+   d. window.location.reload() でエディタを再初期化
+4. トースト: "スナップショット「{name}」に復元しました（{N} エンティティ）"
+   + スキップが発生した場合は件数を info トーストで補足
 ```
+
+### 復元スコープと依存・スキップ（2026-05-19 追記）
+
+構造込みスナップショットの復元時、確認ダイアログに**スコープ選択チェックボックス**を表示する（`ProjectSnapshotModal.tsx`、`projectSnapshotScopes.ts` の `RESTORE_SCOPES` を列挙）。既定は全選択。旧形式スナップショットでは「本文のみが復元されます」の注記を出し、チェックボックスは表示しない。
+
+| スコープ (`RestoreScope`) | ラベル | 対象 | 依存 |
+|---------------------------|--------|------|------|
+| `body` | 本文・章立て | tree_nodes（構造＋本文）・authorship_spans・post-effect 注釈・scene_codex_*・generation_logs | — |
+| `codex` | コーデックス | codex_entries・types・tags・detail・phases・relations 等 | — |
+| `snippet` | スニペット | snippets・snippet_entry_tags | — |
+| `map` | マップ・付箋 | map_boards 配下（位置・付箋・繋ぎ線・AI 分岐・フレーム） | — |
+| `foreshadow` | 伏線 | foreshadows・setups・codex_links | — |
+| `labels` | ラベル | labels・tree_node_labels | `body`（tree_node_labels.node_id は NOT NULL） |
+| `lint` | 校閲設定 | lint_ignored_diagnostics・lint_term_dictionary | `body`（scene_id は NOT NULL） |
+
+**依存スコープ未選択時の FK 処理**（除外スコープへの参照をどう扱うか。`AUX_BODY_DEPENDENCY` / `AUX_CODEX_DEPENDENCY`）:
+- **skip**: NOT NULL FK で参照先が live DB に存在しない行は丸ごと捨てる（tree_node_labels / lint_ignored_diagnostics / foreshadow_setups / foreshadow_codex_links / scene_codex_pins・mentions / scene_beat_pov_cache 等）
+- **NULL 化**: NULL 可の FK 列だけを NULL にして行は復元する（foreshadows.payoff_scene_id / map_node_positions.tree_node_id・codex_entry_id / tree_nodes.pov_character_id・location_id）
+
+skip / NULL 化した件数は復元結果 `RestoreResult.skipped`（`SkipReport`）で返り、0 でなければ「{count} 件のアイテムは依存するデータ範囲が選択されていないため復元をスキップしました」の info トーストで通知する。`body` を OFF にすると伏線・マップ・校閲・ラベルなどの一部が復元されない旨をダイアログ内でも注意喚起する。
 
 ### スナップショット一覧 UI
 
-メニュー「Project → Snapshots...」でモーダルを表示:
+「Project → Snapshots...」でモーダルを表示する（作成フォーム・一覧・フッターの Delete / Close / Restore を1画面に統合。Restore クリックで上記スコープ選択ダイアログへ）:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -324,12 +351,12 @@ WHERE id NOT IN (SELECT version_id FROM project_snapshot_entries)
 ### 保持上限
 
 - プロジェクトスナップショットはデフォルト上限なし（手動作成のため頻度が低い）
-- 削除は手動のみ。削除時は `project_snapshot_entries` もCASCADE削除
-- 参照されなくなった `content_versions` は次回プルーニング時に通常通り削除対象になる
+- 削除は手動のみ。削除時は `project_snapshot_entries` / `project_snapshot_tree_nodes` / `_codex_entries` / `_snippets` / `_aux` がすべて ON DELETE CASCADE で削除される
+- 参照されなくなった `content_versions`（`version_id` / `body_version_id` のいずれからも参照されなくなったもの）は次回プルーニング時に通常通り削除対象になる
 
 ### データアクセス API
 
-**現状の実装**: `src/features/revision/projectSnapshotApi.ts` がフロント側で Drizzle ORM を直接叩く。`projectId` は内部定数 `"default-project"` を使用（マルチプロジェクト対応は未実装）。
+**現状の実装**: `src/features/revision/projectSnapshotApi.ts`。プロジェクト ID は `getCurrentProjectId()` から取得する（旧版の内部定数 `"default-project"` 固定は撤廃）。作成・一覧・legacy 復元は Drizzle ORM を使うが、構造込み復元は **生 SQL**（`db_execute` / `db_execute_batch` の Tauri コマンド）を多用する大規模実装に拡大した。aux ペイロードを drizzle のモデル型（Date/boolean）に通すと SQLite の素の格納形（INTEGER/TEXT）とずれるため、aux スコープは読み書きとも drizzle をバイパスして生の行（string/number/null）で扱う。
 
 ```typescript
 createProjectSnapshot(params: {
@@ -337,19 +364,31 @@ createProjectSnapshot(params: {
   description?: string;
 }): Promise<{ id: string; entryCount: number }>
 
-listProjectSnapshots(): Promise<ProjectSnapshotMeta[]>
+listProjectSnapshots(): Promise<ProjectSnapshotMeta[]>  // isStructural を含む
+
+interface RestoreOptions {
+  scopes?: ReadonlySet<RestoreScope>;   // 既定: 全スコープ。legacy では無視
+}
+
+interface RestoreResult {
+  restoredCount: number;
+  safetySnapshotId: string;
+  format: "structural" | "legacy";      // 形式検出の結果
+  skipped: SkipReport;                  // skip / NULL 化した行数
+}
 
 restoreProjectSnapshot(
   snapshotId: string,
-  snapshotName: string,    // safety スナップショット名生成のため UI から渡す
-): Promise<{ restoredCount: number; safetySnapshotId: string }>
+  snapshotName: string,                 // safety スナップショット名生成のため UI から渡す
+  options?: RestoreOptions,
+): Promise<RestoreResult>
 
 deleteProjectSnapshot(snapshotId: string): Promise<void>
 ```
 
-復元処理は対象テーブル（`tree_nodes` / `codex_entries` / `snippets`）の `content` を直接更新したのち、`ProjectSnapshotModal` 側で `window.location.reload()` を呼んでエディタを再初期化する（※ TipTap インスタンスを個別に更新する設計は未実装）。
+構造込み復元は選択スコープを wipe → スナップショット行から再構築する単一トランザクション（`PRAGMA defer_foreign_keys`）で実行する。legacy 復元は現存エンティティの `content` を直接 UPDATE するのみ。いずれの後も `ProjectSnapshotModal` 側で `window.location.reload()` を呼んでエディタを再初期化する（※ TipTap インスタンスを個別に更新する設計は未実装）。
 
-**将来拡張**: Rust 側に同等の Tauri コマンドを切り出す案は未実装（※ 現状未実装）。
+**将来拡張**: Rust 側に同等の Tauri コマンドを切り出す案は未実装（生 SQL は `db_execute` 経由で Rust に渡るが、復元ロジック自体はフロント側）（※ 現状未実装）。
 
 
 ---
@@ -397,6 +436,11 @@ listRevisions(
 getRevision(id: string): Promise<ContentVersion | undefined>
 
 // リビジョン作成（前回と同一 content ならスキップして null を返す）
+// version_number は INSERT 内のサブクエリ
+// `(select coalesce(max(version_number),0)+1 ...)` で**原子的に採番**する
+// （fa8b0b45）。JS 側で max+1 を先読みすると、並走する saveFn（flush 二重
+//  発火等）が同じ番号を計算して UNIQUE(entity_type, entity_id, version_number)
+//  衝突を起こし、auto-revision が全滅する不具合があったため。
 createRevision(params: {
   entityType: EntityType;
   entityId: string;
@@ -472,7 +516,8 @@ interface RevisionHistoryState {
 | 仕様 | 正とする文書 |
 |------|------------|
 | `content_versions` テーブル定義 | Grimodex_統合DBスキーマ.md |
-| `project_snapshots` / `project_snapshot_entries` テーブル定義 | Grimodex_統合DBスキーマ.md |
+| `project_snapshots` / `project_snapshot_entries` / `project_snapshot_tree_nodes` / `_codex_entries` / `_snippets` / `_aux` テーブル定義 | Grimodex_統合DBスキーマ.md |
+| 復元スコープ定義・aux ペイロード形 | `src/features/revision/projectSnapshotScopes.ts`（コード正本） |
 | Settings のリビジョン設定項目 | Grimodex_Settingsパネル設計書.md |
 | Editor フッターバーの配置 | Grimodex_Editorパネル設計書.md |
 | 本機能の UI・フロー・ポリシー | **本設計書** |

@@ -10,7 +10,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ---
 
-## 実装状況サマリ（2026-05-16 時点）
+## 実装状況サマリ（2026-06-18 時点）
 
 本セクションは設計書本文と実装（`src/features/codex/` および関連箇所）の照合結果を要約する。詳細な記述は各設計セクションに残し、ここでは「どこが実装済み」「どこが設計と乖離」「未実装」を一覧で把握できるようにする。
 
@@ -27,7 +27,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
   - `requestSelectEntry` / `pendingEntryId` 経由の外部遷移 API
   - ゴミ箱 (`useDropTarget`)、Map、Matrix Custom Set との連携メニュー
 - **詳細画面**（`CodexDetailContent.tsx`）
-  - タブ: `details` / `relations` / `tracking` / `mentions` / `research` / `timeline` / **`foreshadow`（設計書未記載・追加実装）**
+  - タブ: `details` / `relations` / `tracking` / `mentions` / `research` / `timeline` / **`foreshadow`（設計書未記載・追加実装）** / **`consistency`（設計書未記載・追加実装。表示ラベル「整合性」）**
   - ヘッダー: アイコン（`EntryHeroAvatar` + `IconPicker` + `IconCropDialog`）、name インライン編集、Type バッジ、Aliases、Tags
   - リビジョン履歴ボタン（`Clock` アイコン）+ 削除ボタン
 - **Details タブ**: `PhaseIndicator` + Summary（Phase 編集対応・プレビュー対応）+ Content（TipTap + Phase 切替 + Open in Editor）+ DetailsSection（カスタムディテール）
@@ -70,13 +70,15 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
   - 実装: 単一 `Map<string, number>`。`computeSceneTimeIndex(nodes, mode)` が `mode='story'/'auto'` 時に「`storyTimeOrder` が設定されたシーンを `storyTimeOrder` 昇順に並べ、未設定シーンは reading-order でその後ろに追加」して連番化する単純な実装。軸不一致の all-or-nothing フォールバックは未実装、`storyTimeInherited`（未設定シーンへの直前値継承）も未実装
   - tie-break ロジック（同値時 reading-order → `created_at` 優先）は明示的に実装されていない
 - **`codex_reference` フィールドの値編集 UI**: 設計書では「検索 UI でエントリを選択しピル表示（クリックで遷移）」を求めているが、現状は単純なテキスト入力（エントリ ID を直接入力するプレースホルダー）
-- **検索バーの FTS5 trigram + 1-2 文字 LIKE フォールバック**: コードは `searchCodexEntries` を経由しているが、trigram と LIKE フォールバックの明示的な切替実装の確認は未済
+- **検索バーの FTS5 trigram + 1-2 文字 LIKE フォールバック**: `searchCodexEntries`（`search.ts`）で実装済みを確認。`toFtsMatchQuery` が trigram MATCH 式を組み立て、3 codepoint 未満のトークンしか無く式が空になる場合に name / summary / tags_cache / content の LIKE フォールバックへ倒す。**`content`（本文）も検索対象**（FTS パス・LIKE フォールバックの両方、PR #109）
 - **ヘッダーソート選択肢のラベル**: 設計書の「By category」「Name (A→Z)」等の表記が、実装側では i18n キー (`codex.sortCategory` 等) を介した翻訳になっている。動作は同等
 - **Mentions タブの `Codex` / `Chats` セクション**: 設計書では「将来対応」と明記。実装も設計通り未実装
 
 ### 設計書に未記載の追加実装
 
 - **`Foreshadow` タブ**（`ForeshadowTab.tsx`）: 伏線レジスタとの連携専用タブ。`listForeshadowsByCodexEntry` で当該 Codex エントリに紐づく伏線の一覧（タイトル、setup 件数、ラベル: `planned` / `seeded` / `paid` / `critical_weak` / `needs_strengthening` / `orphan_payoff` / `abandoned`）を表示。詳細は [伏線レジスタ設計書](./Grimodex_伏線レジスタ設計書.md) に従う
+- **`Consistency`（整合性）タブ**（`ConsistencyTab.tsx`、表示ラベル「整合性」）: このエントリと矛盾する本文側の整合性指摘を逆引き表示するタブ。校閲（consistency / impact-review）の annotation を `entry_id` で読み替えるだけ（生成側は不変）。手動トリガ `ImpactCheckButton`（「この変更の影響をチェック」）で impact-review を起動できる。後述「Consistency タブ」節参照
+- **CodexQuick の「今の真実」バッジ + 未開示伏線警告**（`useResolvedCodexStates` / `resolveCodexStatesFor` / `codexSpoilerFlags`、`CodexQuickSection.tsx`）: アクティブシーン時点のフェーズ解決後 summary とフェーズラベルを CodexQuick の各行・ホバーポップオーバーに反映し、そのシーン時点でまだ開示されていない `secret` 伏線がある行に警告アイコンを出す。後述「CodexQuick の今の真実バッジ・未開示伏線警告」節参照
 - **Wide モード（≥1200px）の 3 カラムレイアウト**: List + 中央 `EditorPane`（`contentType="codex"` で Codex content をフル機能エディタで編集）+ Detail パネルの並列表示。`phaseIdOverride` で Detail 側のプレビューフェーズと中央エディタを同期
 - **Codex エントリのリビジョン履歴**（`Clock` アイコン → `useRevisionStore.openHistory("codex_entry", ...)`）: content 変更の自動リビジョンと keep count 設定に統合
 - **`codexStore.previewPhaseByEntry`**: Wide モードでの中央 EditorPane と Detail タブ間で Phase プレビューを共有するためのストア状態
@@ -145,12 +147,15 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ### 全文検索
 
-- エントリの name、aliases、summary、tags_cache をFTS5（trigramトークナイザー）でインクリメンタル検索
-- 1-2文字の短いクエリはFTS5のtrigramトークナイザーでマッチできないため、name/summary/tags_cache に対するLIKEフォールバックで検索
+- エントリの name、aliases、summary、tags_cache、**content（本文）** をFTS5（trigramトークナイザー）でインクリメンタル検索（`search.ts` の `searchCodexEntries`）。生クエリは `toFtsMatchQuery` で安全な FTS5 MATCH 式へ変換する
+- **本文（content）も FTS インデックス対象**: `codex_fts` は 2026-06-18（PR #109）に `content`（ProseMirror JSON 本文）を 5 番目のインデックス列として追加済み。検索バーはメタデータだけでなく本文にもマッチする（旧「MVP では content を検索対象にしない」設計からの変更。後述「DBスキーマ」節参照）
+- 1-2文字の短いクエリは trigram でマッチできない（`toFtsMatchQuery` が空を返す）ため、name / summary / tags_cache / **content** に対する LIKE フォールバックで検索（日本語の短トークンが本文に当たるようにするため）
 - 入力開始でデバウンス300msの即時フィルタ
 - マッチしたエントリのみリストに表示
 - 検索語がname内にマッチした場合は太字ハイライト
 - `Escape` でクリア
+
+> **セマンティック / ハイブリッド検索について**: dense（埋め込み）検索および dense+sparse の RRF ハイブリッド融合は、Codex パネルの検索バーではなく **Agent の `search_codex` ツール**側に実装されている（`src/features/chat/agent/codexHybridSearch.ts` の `fuseCodexHybrid`、Rust 側 `semantic/codex_search.rs` / `codex_index.rs`、`codex_chunks` テーブル＝1 エントリ 1 ベクトル。a3e6ce4e / 930b7715）。検索ツール用途のため top-1 ゲート等の precision ゲートはかけず、dense と sparse の順位を素直に RRF 融合する。パネルの検索バー自体は上記の FTS5 + LIKE のままである。`codex_chunks` のスキーマは [統合DBスキーマ設計書](./Grimodex_統合DBスキーマ.md) を参照
 
 ---
 
@@ -263,14 +268,14 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ### 構造
 
-> **実装注**: タブの実装上の順序は `Details / Relations / Tracking / Mentions / Research / Timeline / Foreshadow` の 7 タブ。設計書記載の 6 タブに加えて、伏線レジスタ連携用の `Foreshadow` タブが追加実装されている（後述「Foreshadow タブ」節参照、設計書未記載）。
+> **実装注**: タブの実装上の順序は `Details / Relations / Tracking / Mentions / Research / Timeline / Foreshadow / Consistency` の 8 タブ（`CodexDetailContent.tsx` の `getTabs`）。設計書記載の 6 タブに加えて、伏線レジスタ連携用の `Foreshadow` タブ（後述「Foreshadow タブ」節）と、本文側の整合性指摘を逆引きする `Consistency`（整合性）タブ（後述「Consistency タブ」節）が追加実装されている（いずれも設計書未記載）。
 
 ```
 ┌─────────────────────────────────────────┐
 │ [🖼] Elara             👤character      │  ← ヘッダー（タブ外・常時表示）
 │ tags: [protagonist] [mage] [+]          │
 ├─────────────────────────────────────────┤
-│ Details│Relations│Tracking│Mentions│Research│Timeline│Foreshadow│ ← タブ
+│ Details│Relations│Tracking│Mentions│Research│Timeline│Foreshadow│整合性│ ← タブ
 ├═════════════════════════════════════════┤
 │                                         │  ← Details タブ
 │ Aliases: [エララ]                       │
@@ -819,6 +824,32 @@ Trackingタブ内に「Context:」ドロップダウンを配置。エントリ�
 
 ---
 
+### Consistency タブ（実装済み・設計書未記載）
+
+本文側の整合性指摘を **Codex 設定から逆引き**するタブ（`src/features/codex/components/ConsistencyTab.tsx`、表示ラベル「整合性」、`AlertTriangle` アイコン）。校閲パネル（`ProjectAnnotationsView` / Issues タブ）の指摘を、このエントリを起点に並べ直したものであり、新しい解析エンジンを足すのではなく既存 annotation を `entry_id` で読み替えるだけ（生成側は不変）。
+
+| 表示要素 | 内容 |
+|---------|------|
+| 影響チェックボタン | `ImpactCheckButton`（後述）。常にタブ先頭に表示 |
+| 件数 | `selectConsistencyFindingsForEntry` で当該エントリ向けに絞った open annotation の件数 |
+| 指摘リスト | 重要度ドット（error 赤 / warning 黄 / suggestion 青 / info グレー）+ Codex チップラベル + シーン名 + 理由（`llmReason` または `foundText` を 80 字でクリップ） |
+
+- データソース: `listAnnotationsForProject({ projectId, status: "open" })` → `selectConsistencyFindingsForEntry(annotations, codexEntryId)`（`@/features/post-effect/consistencyByEntry`）。件数集計はクライアント側
+- 指摘クリックで該当シーンへ遷移（`setActiveScene`）し、`setFocusedAnnotationId` で校閲側のフォーカスを合わせる
+- 空状態は「矛盾する本文の指摘はありません」メッセージ（影響チェックボタンは空状態でも表示）
+
+#### この変更の影響をチェック（ImpactCheckButton → impact-review）
+
+`ImpactCheckButton`（`ImpactCheckButton.tsx`）は **Codex 設定の変更がどの本文と矛盾するか**を逆方向に探す手動トリガ。「この変更の影響をチェック」ボタンで `runImpactReview(entryId)`（`@/features/impact-review/runImpactReview`）を起動する:
+
+- 現在の Codex スナップショット ↔ baseline の差分を取り、`narrowCandidateScenes` で影響候補シーンを絞り込んだうえで `impact_review` post-effect を実行する
+- 結果は `post_effect_annotations` に入り、校閲パネルの **Issues タブ（影響レビュー）** に annotation として表示される（完了後に Kouetsu 側へ反映）。完了で baseline を現在値へ更新
+- 整合性チェックと同じガードを踏襲: AI ポリシー OFF（`useAiGate("analysis")`）ではボタン非表示、ライセンス未認証は実行時に弾く（`blockIfUnlicensed`）。実行前に `flushPendingSceneSaves` で未保存本文を flush
+- 実行結果のステータス: `no-change`（差分なし）/ `no-candidates`（候補 0）/ `started`（{N} 件のシーンを確認中）
+- これは consistency（本文 → Codex 矛盾）の **向きとトリガを変えた経路**で、矛盾検出エンジン自体は consistency / phaseResolver の既存実装を共有する。impact-review の詳細は別途 impact-review 設計を参照
+
+---
+
 ### Research タブ
 
 #### Notes フィールド（プライベートノート）
@@ -992,9 +1023,10 @@ DBスキーマの正規版は統合DBスキーマ設計書（`Grimodex_統合DB�
 - `codex_entry_phases`: フェーズ（経時的変化。アンカーシーン + フィールド上書き）
 - `codex_phase_detail_overrides`: フェーズ内のカスタムフィールド上書き値。エントリ × フェーズ × フィールド（definition）の粒度で個別 override を保持する（Summary / Content / 各カスタムディテールをそれぞれ別レコードで管理）
 - `codex_quick_pins`: CodexQuick パネルでの手動ピン留めを永続化するテーブル。自動検出結果とは独立して、ユーザーが明示的に Quick に固定したエントリを保持する。スキーマの詳細は [Codex Quick パネル設計書](./Grimodex_CodexQuickパネル設計書.md) を参照
-- `codex_fts`: FTS5仮想テーブル（name + aliases + summary + tags_cache）。Codex マッチングパイプラインや検索バー、CodexCommandPalette の高速検索バックエンドとして利用する
+- `codex_fts`: FTS5仮想テーブル（name + aliases + summary + tags_cache + **content**）。Codex マッチングパイプラインや検索バー、CodexCommandPalette の高速検索バックエンドとして利用する
+- `codex_chunks`: Codex エントリの埋め込み（1 エントリ 1 ベクトル）。Agent `search_codex` の dense/hybrid 検索および impact-review が利用する（Rust 専用）。スキーマの詳細は [統合DBスキーマ設計書](./Grimodex_統合DBスキーマ.md) を参照
 
-FTS5テーブルはname + aliases + summary + tags_cacheを検索対象にする。contentもDBに格納されているためFTS5に追加可能だが、MVPではname + aliases + summary + tags_cacheの検索で十分と判断。
+FTS5テーブルは name + aliases + summary + tags_cache + content を検索対象にする。**`content`（Codex 本文 = ProseMirror JSON）は 2026-06-18（PR #109）に 5 番目のインデックス列として追加**され、検索・`search_codex` がメタデータだけでなく本文にもマッチするようになった（旧「MVP では content を検索対象にしない」判断からの変更）。レガシー DB には `migrate_codex_fts_add_content`（`migrate.rs`）が `content` 列付きで `codex_fts` とトリガーを再作成し全行を再インデックスする。詳細な DDL・トリガーは [統合DBスキーマ設計書](./Grimodex_統合DBスキーマ.md) の `codex_fts` 節を参照。
 
 `authorship_spans` テーブルにフェーズ用カラムを追加:
 - `phase_id TEXT REFERENCES codex_entry_phases(id) ON DELETE CASCADE`: フェーズの content_override に対する帰属追跡用。`codex_entry_id` が non-null かつ `phase_id` が non-null の場合はフェーズ content_override のスパン。`codex_entry_id` が non-null かつ `phase_id` が null の場合は Base content のスパン。
@@ -2351,6 +2383,14 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 - CodexQuick の各エントリ行では、名前ドット、type ラベル、summary プレビューを含む **エントリホバーポップオーバー**（`CodexEntryPopoverContent` コンポーネント）を表示する。ホバー遅延や配置規約は TooltipProvider の共通設定に従う
 - CodexQuick セクションのエントリクリック → `requestSelectEntry` 経由で Codex パネルに遷移し、詳細を表示
 - CodexQuick の並び順・ピン留めは `codex_quick_pins` テーブルに永続化されており、セッションをまたいで保持される
+
+#### CodexQuick の今の真実バッジ・未開示伏線警告（実装済み・設計書未記載）
+
+CodexQuick の各行とホバーポップオーバーには、**アクティブシーン時点のフェーズ解決結果**と**未開示伏線の警告**が反映される（`CodexQuickSection.tsx`）:
+
+- **今の真実バッジ**: `useResolvedCodexStates(entryIds)`（`resolveCodexStatesFor` + `phaseResolver.resolveCodexState`）が、アクティブシーン（`treeStore.activeSceneId`）に応じてフェーズ解決後の summary と適用中フェーズの `phaseLabel` を返す。フェーズを持つ行はラベルを `primary` 色のピルで表示し、ホバーポップオーバーには解決後 summary を渡す（フェーズ未設定エントリは Base の summary のまま）
+- **未開示伏線警告**: `useUnrevealedSecretForeshadows(entryIds)`（`codexSpoilerFlags.ts`）が、当該エントリにリンクされた `secret` 伏線のうち、現在シーンの読者順位置（`phaseStore.globalSceneOrder`）でまだ payoff に到達していないものを検出し、該当行に `EyeOff` 警告アイコン（amber）を出す。`abandoned` 伏線・回収済み（`payoffConfirmed`）は警告しない。ツールチップは `codex.spoiler.unrevealedTooltip`（「このシーン時点で未開示: …」）
+- いずれも read-only バッジで、取得失敗時は警告を出さない安全側に倒す（DB へは書き込まない）
 
 ### ← Chat
 

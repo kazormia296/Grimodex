@@ -1,11 +1,12 @@
 # Grimodex — 執筆タイムラプス設計書（動画エクスポート / P7）
 
-> 最終更新: 2026-05-29
+> 最終更新: 2026-06-18
 > ステータス: **P7 v1 実装済み**（2026-05-30、master 直 commit）。記録基盤（P2〜P5）は従前から本番稼働中。本書は P7「Canvas ビジュアル再生 → WebM 動画エクスポート」+ 記録 ON/OFF 制御（§15）の設計と実装記録（実装乖離は §16）。
-> 依存: Grimodex_統合DBスキーマ.md（`change_events` / `state_snapshots`）、Grimodex_Editorパネル設計書.md（doc.step 記録）、Grimodex_リビジョン履歴設計書.md（モーダルホストの先例）、Grimodex_エクスポートダイアログ設計書.md（save-to-disk パターン）
+> （2026-06-18 追記）その後 **P5 compositor**（複数 entity cursor + chrome キャプション）・**プロジェクト全体書出**・**chat/layout 記録（P0, §17）**・**見出し/リスト/引用の構造描画（P2）**が出荷済み。本書の旧記述（renderer は段落のみ／対象はシーン単位／replayEngine 未配線／ホストは `TimelapsePanel`／§17 は記録フックのみで描画は将来）は **stale**。各節に追記で訂正する。
+> 依存: Grimodex_統合DBスキーマ.md（`change_events` / `state_snapshots` の DDL はそちらが正本。本書では再掲しない）、Grimodex_Editorパネル設計書.md（doc.step 記録）、Grimodex_リビジョン履歴設計書.md（モーダルホストの先例）、Grimodex_エクスポートダイアログ設計書.md（save-to-disk パターン）
 
 実装ディレクトリ: `src/features/timelapse/`
-（`recorder.ts`, `queryEvents.ts`, `hashChain.ts`, `snapshots.ts`, `replayEngine.ts`, `renderers/editorRenderer.ts`, `videoExport.ts`, `zipExport.ts`, `verifyHtmlTemplate.ts`, `TimelapsePlayer.tsx`）
+（記録: `recorder.ts`, `queryEvents.ts`, `hashChain.ts`, `snapshots.ts` / 記録フック: `captureChat.ts`, `captureLayout.ts`, `seedSession.ts` / 再生: `replayEngine.ts`, `replayStart.ts`, `renderers/editorRenderer.ts` / compositor: `compositeTimelapse.ts`, `frameProducer.ts`, `formatEventCaption.ts`, `bodyDiff.ts`, `chromeRenderer.ts`, `resolveEditorTheme.ts` / 書出: `exportTimelapse.ts`, `videoExport.ts`, `zipExport.ts`, `verifyHtmlTemplate.ts` / UI: `TimelapseExportSection.tsx`, `TimelapsePlayer.tsx`）
 
 ---
 
@@ -14,8 +15,8 @@
 - **動画化は「ゼロから作る」のではなく、既存ピースの配線**である。`replayEditorSteps`（step→doc）・`renderDocToCanvas`（doc→canvas）・`captureCanvasToWebm`（canvas→WebM Blob）は実装済み・ユニットテスト済みだが、**3つを繋ぐ frame producer が存在せず、どこからも呼ばれていない**。
 - **ただし最大の制約は「再生可能性の射程」**。editor の payload は full snapshot ではなく **incremental ProseMirror step**。replay は「空 doc から forward 適用」しか正しく復元できず、**forward step からは逆算（過去 doc の復元）が原理的に不可能**。`state_snapshots` は実装されているが production で一度も書かれていない（caller 0 件）。
 - 従って **本機能は forward-looking**。「記録開始前から本文があったシーンの過去執筆」はタイムラプス化できない。**v1 は「記録開始時点で空だったシーン」**（= 記録基盤稼働後に新規作成されたシーン）を対象とし、既存シーンは **baseline snapshot を一度焼く**ことで「それ以降の執筆」を対象化する。
-- v1 スコープは **editor 系ドメイン（editor / codex / snippet 本文）のプレーンテキスト**のみ。map/grid/見出し/リスト等は renderer 未対応。
-- ホストは **dock パネルではなく全画面オーバーレイ**（`RevisionHistoryModal` 方式）を推奨。
+- v1 スコープは **editor 系ドメイン（editor / codex / snippet 本文）の描画**。見出し/リスト/引用は **構造描画済み**（2026-06-18 追記、§6 / `editorRenderer.ts:258-353`）。map/grid 等の視覚状態は依然 renderer 未対応（chat/layout は本文描画ではなく下部 chrome キャプションとして合成、§17 / `formatEventCaption.ts`）。
+- ホストは **`AnimatedOverlay` ではなく `ExportDialog` の「タイムラプス動画」タブ**に着地した（2026-06-18 追記、§16-1）。当初推奨の全画面オーバーレイは save-only のため不要だった。
 
 ---
 
@@ -25,11 +26,14 @@
 
 | フェーズ | 内容 | 実装状況 | 典拠 |
 | --- | --- | --- | --- |
-| P2 | editor 系 step replay（`replayEditorSteps`） | 実装済（editor/codex/snippet のみ） | `replayEngine.ts:1-11` |
-| P3+ | grid/map など他ドメインの replay | 未着手 | `replayEngine.ts:8-10` |
-| P5 | データ駆動プレイヤー（scrubber + chain 検証） | 実装済・未マウント | `TimelapsePlayer.tsx:21-33` |
-| **P7** | **Canvas ビジュアル再生 → 動画化** | **本書で設計** | `editorRenderer.ts`（"P7 minimum-viable"）, `TimelapsePlayer.tsx:30-33` |
-| P8 | `verify.html` ドロップイン検証 | 実装済（zip 内）・UI 未配線 | `zipExport.ts:23` |
+| P0 | chat / layout の forward-only 記録（§17） | **実装済**（`captureChat`/`captureLayout`/`seedSession` + chatApi/layoutStore/loadProject 配線） | `recorder.ts:37-42`（`chat`/`layout` domain） |
+| P2 | editor 系 step replay + 見出し/リスト/引用の構造描画 | 実装済（editor/codex/snippet のみ） | `replayEngine.ts:1-13`, `editorRenderer.ts:258-353` |
+| P3+ | grid/map など他ドメインの本文 replay | 未着手（grid/map は chrome キャプションのみ） | `replayEngine.ts:10-12` |
+| P5 | compositor（複数 entity cursor + chrome キャプション + render-target 選択） | **実装済・出荷** | `compositeTimelapse.ts`, `frameProducer.ts`, `formatEventCaption.ts` |
+| **P7** | **Canvas ビジュアル再生 → 動画化** | **実装済（v1, §16）** | `exportTimelapse.ts`, `videoExport.ts`, `editorRenderer.ts` |
+| P8 | `verify.html` ドロップイン検証 | 実装済（zip 内）・UI 未配線 | `zipExport.ts` |
+
+> （2026-06-18 追記）`TimelapsePlayer`（scrubber UI）は debug/将来用に残るが出荷経路ではない。出荷 UI は `TimelapseExportSection`（ExportDialog タブ）。
 
 ---
 
@@ -40,15 +44,16 @@
 | `recorder.ts` | 変更イベント記録（append-only, hash chain, 100ms バッチ） | `recordChangeEvent(input)`（L156-168）/ `flushNow()`（L184-248）/ default `enabled:false`（L67） | **本番稼働中**（§3） |
 | `queryEvents.ts` | イベント読み出し | `loadProjectChangeEvents(projectId)`（L21-27）/ `loadSceneChangeEvents(projectId, sceneId)`（L35-49, ASC by sequence） | project 版のみ配線済 |
 | `hashChain.ts` | sha256 チェーン検証 | `verifyChain(events)`（L139-176）/ `canonicalSerializeEvent`（L43-70） | 配線済（verify ボタン） |
-| `replayEngine.ts` | step→doc 再構成 | `replayEditorSteps(schema, initialDoc, events)`（L34-85）/ editor/codex/snippet のみ（L87-89） | **未配線**（テストのみ） |
+| `replayEngine.ts` | step→doc 再構成 | `createReplayCursor(schema, initialDoc, events)`（L74）の逐次カーソル / `replayEditorSteps`（L194）は cursor で実装 / editor/codex/snippet のみ（`isEditorBodyDomain` L212） | **配線済**（`compositeTimelapse.ts` が cursor を呼ぶ, 2026-06-18 追記） |
 | `renderers/editorRenderer.ts` | doc→canvas 描画（authorship 色付き） | `renderDocToCanvas(ctx, doc, w, h, theme)`（L64-119）/ text-only（L4-16） | **未配線** |
 | `videoExport.ts` | canvas→WebM Blob | `captureCanvasToWebm(canvas, opts)`（L42-91）/ `CaptureWebmOptions`（L17-40） | **未配線** |
 | `snapshots.ts` | replay 起点アンカー | `recordStateSnapshot`（L32-51）/ `loadLatestSnapshot`（L66-111）/ `shouldCreateSnapshot`（L117-128） | **未配線（production caller 0）** |
 | `zipExport.ts` | 検証可能 zip（report+chain+verify.html） | `buildAuthorshipExportZip(input)`（L64-76, `level:0` STORE） | 未配線 |
-| `TimelapsePlayer.tsx` | P5 プレイヤー UI | props 無し / 全イベント load / canvas 無し | **どこにもマウントされていない** |
+| `TimelapsePlayer.tsx` | scrubber プレイヤー UI（debug/将来用） | props 無し / 全イベント load | **どこにもマウントされていない**（出荷経路は `TimelapseExportSection`） |
 | `ZipExportDialog.tsx` | save-to-disk の定番実装 | `saveZipBlob(blob, filename)`（L21-46） | 参照元（reuse 対象） |
 
-> **結論**: 動画化に必要な3つのコア関数（`replayEditorSteps` / `renderDocToCanvas` / `captureCanvasToWebm`）はすべて存在しテスト済み。`grep` で production caller は 0。**未実装なのは「繋ぎ込み（frame producer）」と「ホスト UI」と「保存配線」**。
+> **結論（旧 / 2026-05-29）**: 未実装は「繋ぎ込み（frame producer）」「ホスト UI」「保存配線」。
+> **（2026-06-18 追記）解消済み**: 繋ぎ込みは `frameProducer.ts`（schedule + makeDrawFrame）と `compositeTimelapse.ts`（複数 entity cursor + chrome キャプション）に実装。書出は `exportTimelapse.ts`（`produceSceneTimelapseWebm` / `produceProjectTimelapseWebm` / `saveWebmBlob`）。ホストは `TimelapseExportSection`（ExportDialog タブ）。新規アセット: `compositeTimelapse.ts` / `frameProducer.ts` / `formatEventCaption.ts` / `bodyDiff.ts`（本文 diff キャプション）/ `chromeRenderer.ts`（下部キャプション帯）/ `resolveEditorTheme.ts` / `replayStart.ts`（snapshot or 空 doc から起点 doc を構築）。
 
 ---
 
@@ -58,18 +63,14 @@
 
 `projectStore.loadProject` が実ブラウザ時（vitest / SSR 以外）に `setRecorderEnabled(true)` + `initRecorderForProject(projectId)` を呼ぶ（`projectStore.ts:86-102`）。**プロジェクトを開くたびに記録が走る**。よって記録基盤の稼働開始以降に書かれた編集は素材として溜まっている。
 
-### 3.2 change_events スキーマ（`schema.ts:1512-1538`）
+### 3.2 change_events スキーマ（要点）
 
-```
-id, projectId(FK cascade), sceneId(FK set null, nullable),
-domain, opType, entityType?, entityId?,
-payload(text, canonical JSON), sessionId,
-sequence(int, project内 monotone), timestamp(epoch ms),
-prevHash(blob 32B), hash(blob 32B)
-unique(projectId, sequence)
-```
+> 列定義・型・index・FK の正本は Grimodex_統合DBスキーマ.md の `change_events` / `state_snapshots` を参照（本書では再掲しない）。タイムラプス再生に効く要点だけ抜粋:
 
-- **domain**（7値）: `editor | codex | snippet | grid | map | synopsis | beat`。`synopsis`/`beat` は capture site 未実装（予約）。
+- `projectId`(FK cascade) / `sceneId`(FK set null, nullable, treeNodes 参照) / `domain` / `opType` / `entityType?` / `entityId?`(FK 無し) / `payload`(canonical JSON TEXT) / `sessionId`(録画 run id) / `sequence`(project 内 monotone) / `timestamp`(epoch ms) / `prevHash` / `hash`。`unique(projectId, sequence)`。
+- **`prevHash`/`hash` は hex TEXT**（当初 blob 32B 設計だったが drizzle sqlite-proxy が BLOB を round-trip できず hex TEXT 化、§16-7）。
+
+- **domain**（`recorder.ts:28-42` / `queryEvents.ts`）: `editor | codex | snippet | grid | map | synopsis | intent | beat | chat | layout`。`chat`/`layout` は P0（§17）で capture site 実装済み（doc.step は持たず chrome キャプション/snapshot として再生）。`synopsis`/`intent`/`beat` は capture site 未実装（予約）。列は enum でなく TEXT のため domain 追加に migration 不要。
 - **sequence は project 単位の単調増加**（scene/chapter 単位ではない）。順序の真の基準は `sequence`（同一 ms に複数 step が入りうるので timestamp では順序を決めない）。
 - **書き込み**: `recordChangeEvent` は非ブロッキング enqueue → 100ms デバウンスで単一 `INSERT ... VALUES(複数行)`（`recorder.ts:170-248`）。
 
@@ -178,6 +179,11 @@ export function makeDrawFrame(plan, ctx): (i: number) => boolean
 - `makeDrawFrame` は cursor を保持し、フレーム i で `cursor.applyUntil(schedule[i])` → `renderDocToCanvas(ctx, cursor.doc, w, h, theme)` → 末尾超過で `true`。
 - これを `captureCanvasToWebm(canvas, { fps, drawFrame })` に渡すだけ。
 
+> **（2026-06-18 追記）実装シグネチャ**: 出荷版は上記 `TimelapsePlan` 一括 props ではなく分割された:
+> - `frameProducer.buildFrameSchedule(events, { fps?, targetDurationSec?, maxIdleMs? }): number[]`（events は `{sequence,timestamp}` のみ要求, idle gap を `maxIdleMs`(既定2000) でクランプ）。
+> - `frameProducer.makeDrawFrame({ cursor, ctx, width, height, schedule, theme? })`（単一 entity 用）。
+> - プロジェクト全体/複数 entity は `compositeTimelapse.ts` 側が schedule + 複数 cursor を束ね、`exportTimelapse.makeCompositeDrawFrame` がフレーム毎に `pickRenderTarget`→`advanceCursorForTarget`→`renderDocToCanvas`＋`renderChromeOverlay` を呼ぶ。
+
 ### 5.4 MediaRecorder は real-time / 非決定的（許容する）
 
 `captureCanvasToWebm` は `canvas.captureStream(fps)` の **ライブ canvas を MediaRecorder が wall-clock でサンプリング**する方式（`videoExport.ts:54,80-86`）。`drawFrame` の呼び出し回数と実際のフレーム数は厳密 1:1 ではない。
@@ -199,15 +205,18 @@ export function makeDrawFrame(plan, ctx): (i: number) => boolean
 
 ## 6. スコープと制約（期待値管理）
 
-- **対象ドメイン**: v1 は **editor 本文（+ codex/snippet 本文の doc.step）**のみ。grid/map/synopsis/beat は対象外（payload がメタのみ・renderer 無し）。
-- **renderer 忠実度**: `editorRenderer` は **段落 + テキストランのみ**（見出し/リスト/引用/インライン埋め込み/装飾なし, `editorRenderer.ts:4-16`）。実原稿の非段落ブロックは lossy。authorship 色（human/ai/unknown）は `attrs.source` から既に反映される（`editorRenderer.ts:86-98`）。
-- **mapRenderer は不在**: `editorRenderer.ts:18` が参照する `mapRenderer.ts` は存在しない。map タイムラプスは P3+ の別タスク。
+- **対象ドメイン（本文描画）**: v1 は **editor 本文（+ codex/snippet 本文の doc.step）**を canvas に描く。grid/map/synopsis/beat の視覚状態は本文描画対象外（payload がメタのみ・本文 renderer 無し）。
+- **chat/layout は本文ではなく chrome キャプション**（2026-06-18 追記）: chat（追加/削除）・layout（パネル開閉/プリセット）・codex/snippet/map/grid の操作は `formatEventCaption.ts` で下部キャプション帯（`chromeRenderer.renderChromeOverlay`）に合成され、フレーム下端に最大 2 行表示される。本文 doc.step の編集は描画に出るため抑制（`shouldSuppressCaption`）。
+- **renderer 忠実度**（2026-06-18 追記）: `editorRenderer` は段落に加え **見出し（em scale + bold）・bullet/ordered リスト（マーカー + インデント・ネスト再帰）・blockquote（左罫 + インデント + italic + muted）**を構造描画する（P2, `renderBlock` `editorRenderer.ts:258-353`）。テーブル/ruby/sceneBeat/圏点は依然スコープ外（canvas 手描きの ROI 判断）で lossy。authorship は `attrs.source` から **AI/unknown ラン背後の背景 tint**として反映（`showAttribution` ゲート, human は無着色, `editorRenderer.ts:92-100`）。テーマ色・エディタフォントは `resolveEditorTheme` でライブテーマ追従。`focusPos` 指定時は直近編集位置を中心にスクロール（`computeScrollOffset`）。
+- **mapRenderer は不在**: 本文 map renderer は存在しない。map 操作はキャプション止まり。map/grid 本文タイムラプスは P3+ の別タスク。
 - **pagination 無し**: `queryEvents` は全件メモリロード（`queryEvents.ts:20` "fits in memory"）。長大プロジェクトの動画化前に **sequence range のキーセットページング**が必要（`uq_change_events_project_seq` を cursor に）。v1 はシーン単位（`loadSceneChangeEvents`）で件数を抑える。
 - **schema drift**: replay は呼び出し側のライブ Schema を使う（`replayEngine.ts:36`）。TipTap 拡張が将来変わると過去 step の `Step.fromJSON` が失敗しうる。長期検証用途なら session ごとに schema version を残す検討（v1 ではログ警告に留める）。
 
 ---
 
 ## 7. UI / ホスト面設計
+
+> **（2026-06-18 追記）本節（全画面オーバーレイ + 独立 `timelapse` パネル登録）は不採用**。実装は `ExportDialog` の「タイムラプス動画」タブに `TimelapseExportSection` をマウントする形に着地した（§16-1）。`useTimelapseStore`・§7.2 のパネル登録チェックリスト・§7.3 の `TimelapsePlayer` 動画ボタンは出荷経路では使わない。i18n キー（§7.4）は実装で `timelapse.export*` / `scope*` / `pace*` 系に拡張されている。以下は当初設計として残す。
 
 ### 7.1 ホストは全画面オーバーレイ（dock パネルではない）
 
@@ -252,6 +261,8 @@ P5 プレイヤーをオーバーレイ内に流用する場合、ヘッダの�
 
 ## 8. 保存（save-to-disk）配線
 
+> **（2026-06-18 追記）実装は Rust 側 save ダイアログ**。下記の JS `save()`+`writeFile()` 直叩き案ではなく、security audit PIO-2 に従い `saveWebmBlob`（`exportTimelapse.ts:205`）は `@/lib/exportFile` の `saveBinaryFile(filename, { name:"WebM", extensions:["webm"] }, bytes, "video/webm")` を呼ぶ（保存ダイアログは Rust、キャンセルは null）。以下の当初案は履歴として残す。
+
 WebM Blob の保存は **`saveZipBlob`（`ZipExportDialog.tsx:21-46`）と同型のバイナリ版**を新設。バイナリ writeFile は `useMapExport.ts:49-59`（PNG）が先例。
 
 ```ts
@@ -266,7 +277,6 @@ async function saveWebmBlob(blob: Blob, filename: string): Promise<boolean> {
 }
 ```
 
-- `defaultPath` は `$HOME` 配下を既定に（fs capability は `$HOME/**` スコープ, `capabilities/default.json:14-15`。`dialog:allow-save` 有り L11-13）。
 - zip 検証パッケージ（§9）の保存は `saveZipBlob` をそのまま再利用（`buildAuthorshipExportZip` は `Uint8Array` を返すので互換）。
 
 ---
@@ -290,6 +300,8 @@ async function saveWebmBlob(blob: Blob, filename: string): Promise<boolean> {
 ---
 
 ## 11. 実装フェーズ分解（P7.x）
+
+> （2026-06-18 追記）P7.1〜P7.9 は出荷済み。ただし P7.4（ホスト UI）は `useTimelapseStore`/`AnimatedOverlay` ではなく ExportDialog タブ（`TimelapseExportSection`）に着地、P7.5（独立パネル登録）は不採用（§16-1）。実装乖離の正本は §16。以下は当初計画として残す。
 
 | サブフェーズ | 内容 | 依存 | 規模感 |
 | --- | --- | --- | --- |
@@ -322,7 +334,7 @@ async function saveWebmBlob(blob: Blob, filename: string): Promise<boolean> {
 ### 決定済み（2026-05-29）
 
 - **目標尺デフォルト = 30s**（ユーザー可変可、§5.5）。
-- **対象選択 = シーン単位**（`loadSceneChangeEvents`）。チャプター/全体合成は将来（compositor 未存在）。
+- **対象選択 = シーン単位 / プロジェクト全体**（2026-06-18 追記）。当初「全体合成は将来（compositor 未存在）」としていたが、`compositeTimelapse.ts` の compositor が出荷され `produceSceneTimelapseWebm` / `produceProjectTimelapseWebm` の両 scope を `TimelapseExportSection` で選べる（`exportTimelapse.ts:151,178`）。プロジェクト全体は複数 entity の cursor を持ち、フレーム毎に `pickRenderTarget`（最後に編集された entity）の doc を描画する。
 - **baseline 一回焼きを v1 に含める**（§4.5-3 / §15 の記録 ON 時に焼く）。
 - **記録の ON/OFF をユーザー制御にする**（§15）。Project 作成時チェックボックス + Settings トグル。OFF→ON で既存履歴を wipe。
 - **既定値 = ON**（`timelapse.enabled` 既定 `'true'`）。現行の always-on 挙動を保ち、設定行の無い既存プロジェクトも default-on で継続（連続性を壊さない）。作成チェックボックスも初期チェック済み。— ※ opt-in（既定 OFF）にしたい場合のみ要相談。
@@ -499,7 +511,7 @@ ON→OFF（`enabled === false`）:
 
 実装時に判明した事実に基づく設計からの差分。
 
-1. **save-only / AnimatedOverlay 不採用**: v1 はアプリ内プレビュー無し（§13 決定）のため大きな動画面が不要 → overlay は使わず、エクスポート UI を **`TimelapsePanel` に直接ホスト**（`src/features/timelapse/TimelapsePanel.tsx`）。パネル登録チェックリスト（§7.2）はそのまま採用。`useTimelapseStore` は不要だった。
+1. **save-only / AnimatedOverlay 不採用 / 着地は ExportDialog タブ**: v1 はアプリ内プレビュー無し（§13 決定）のため大きな動画面が不要 → overlay は使わず、エクスポート UI を **`ExportDialog` の「タイムラプス動画」タブにマウント**（`TimelapseExportSection.tsx` を `ExportDialog.tsx:493` でホスト）。`useTimelapseStore` も独立パネル登録（§7.2 のチェックリスト）も不要だった（既存のエクスポートダイアログに同居）。タブ内で scope（現在のシーン / プロジェクト全体）・尺（15/30/60s）・テンポ（fast/standard/slow → `maxIdleMs`）を選び、自前の書き出しボタン（`data-testid="timelapse-export-video"`）で WebM を保存する。— ※ 旧 §7.x（全画面オーバーレイ + 独立パネル登録）は不採用。
 2. **settings store バイパス（重要）**: `useSettingsStore` は固定 `PROJECT_ID = "default-project"` に束縛され（`settingsStore.ts:28/43`）、recorder が使う実 `currentProjectId` と一致しない。`change_events` は実 projectId で書かれるため、`timelapse.enabled` は **settings store を経由せず `getProjectSetting`/`setProjectSetting` を実 projectId で直接読み書き**（B3 `toggle.ts` / B4 `loadProject` / B5 作成 / B6 `TimelapseSettings`）。`KEY_SCOPE`/`DEFAULT_SETTINGS` 登録（B2）は scope ドキュメント + テスト不変条件として保持。Settings トグルは **`ControlledToggle`（auto-persist する `SettingToggle` は失格）**。
 3. **frame schedule**: clamped-timestamp（既定 `maxIdle=2000ms`）で idle 圧縮し 30s/30fps にサンプル（§5.5 通り、`frameProducer.ts`）。
 4. **replay 起点**: baseline snapshot があれば seed、無ければ空 doc（`buildReplayStart`、C1）。baseline は記録 ON 時に scene ごと anchorSequence=0 で焼く（`toggle.ts`）。
@@ -511,14 +523,20 @@ ON→OFF（`enabled === false`）:
 
 ## 17. P0 記録スキーマ設計 — 軸C(会話フロー)とUI動作の forward-only 記録
 
+> **（2026-06-18 追記）実装済み**。本節は当初「記録フックだけ先に入れる（描画 consumer は P5 で別実装）」という設計だったが、記録フック・P5 consumer の両方が出荷された。実装対応:
+> - 記録フック: `captureChat.ts`（`recordChatMessageAdd`/`recordChatMessageDelete`/`recordChatMessagesDeleteFrom`、`chatApi.ts:547/561/576` で配線）・`captureLayout.ts`（`recordLayoutSnapshot`、`layoutStore.ts:397`）・`seedSession.ts`（`seedWorkspaceSnapshot`、`projectStore.loadProject:147` と `toggle.ts:151` で配線）。
+> - 描画 consumer: `compositeTimelapse.ts` が chat/layout イベントを `formatEventCaption.ts` で下部キャプションに合成し、`chromeRenderer.renderChromeOverlay` で各フレーム下端に描画（§6）。
+> - opType は実装で `chat.message.add` / `chat.message.delete` / `chat.message.deleteFrom` を採用（下表の `regenerate`/`edit` は delete+add の 2 イベントに収斂）。
+> 以下の設計記述（payload 形・配置規約・連続性整合）は実装と概ね一致するため残すが、「記録がまだ無い / 描画は将来」という前提語は stale。
+
 ### 17.0 前提と本節の境界
 
-P5 描画より前に「記録フックだけ」を入れ、今日からデータ蓄積を始める。対象は現状 change_events に一切記録がない 2 種:
+P5 描画より前に「記録フックだけ」を入れ、今日からデータ蓄積を始める設計だった（現在は両方出荷済み、上の追記参照）。対象は当時 change_events に一切記録がなかった 2 種:
 
 - 軸C-1 AIチャットの会話フロー(add / delete / regenerate / edit)
 - 軸C-2 パネル・レイアウト・activeScene・focus の動き
 
-いずれも forward-only(記録開始後の分しか取れない)で、記録漏れは過去分が永久欠落する。よって「何を・どの粒度で・どんな payload で」を P0 で確定し、後で直せない決定(本文焼き込み・delete 別建て・seed 経路)を今すべて入れる。描画 consumer は P5 で別実装する(`replayEngine` は `opType==='doc.step'` のみ処理 — replayEngine.ts:9-13)。
+いずれも forward-only(記録開始後の分しか取れない)で、記録漏れは過去分が永久欠落する。よって「何を・どの粒度で・どんな payload で」を P0 で確定し、後で直せない決定(本文焼き込み・delete 別建て・seed 経路)をすべて入れた。描画 consumer は `compositeTimelapse.ts` で実装済み(`replayEngine` 自体は `opType==='doc.step'` のみ処理 — replayEngine.ts:10-12、chat/layout は本文 replay ではなくキャプション経路)。
 
 ### 17.1 前段必須 — Domain union 拡張(これ無しでは全フックが型で空振りする)
 

@@ -4,21 +4,26 @@
 
 ポストエフェクト（Post-Effect）とは、既に書かれた本文に対して**書き換えずに注釈を重ねる AI パス**の総称。本体の執筆フローとは別軸で走り、書き手のセルフレビュー・推敲支援を担う。
 
-本書が対象とする9機能:
+本書が対象とする機能:
 
-| 機能         | 概要                                | 単位           |
-| ---------- | --------------------------------- | ------------ |
-| レビュー       | 編集者視点の診断レポート（構造化所見リスト）            | span         |
-| 疑似コメント     | 読者ペルソナによる本文横の吹き出し、スレッド可           | span         |
-| メタ構造レビュー   | プロット構造・ペーシングなどの俯瞰診断               | scene/folder |
-| 整合性チェック    | 本文と Codex の事実矛盾を検出（Codex 基準）      | span         |
-| 自己整合性チェック  | 本文内の自己矛盾を検出（Codex 不使用）            | span ペア      |
-| エンティティ抽出   | 本文から Codex 未登録の固有名詞・概念候補を抽出（本文基準） | span         |
-| 誤字脱字チェック   | LLM ベースで本文中の誤字脱字・タイポ・同音異義語誤用を検出   | span         |
-| PoV ブレ検出   | 視点キャラ以外の内面描写・観察不能情報の混入を検出         | span         |
-| シーン目的診断    | シーンの存在意義を診断し削除候補を明示               | scene        |
+| 機能         | `effect_type`             | 概要                                | 単位           | 状態 |
+| ---------- | ------------------------- | --------------------------------- | ------------ | --- |
+| レビュー       | `review`                  | 編集者視点の診断レポート（構造化所見リスト）            | span         | 出荷 |
+| 疑似コメント     | `pseudo_comment`          | 読者ペルソナによる本文横の吹き出し、スレッド可           | span         | 出荷 |
+| メタ構造レビュー   | `meta_structure`          | プロット構造・ペーシングなどの俯瞰診断               | scene/folder | 出荷 |
+| 整合性チェック    | `consistency`             | 本文と Codex の事実矛盾を検出（Codex 基準）      | span         | 出荷 |
+| 自己整合性チェック  | `intra_scene_consistency` | 本文内の自己矛盾を検出（Codex 不使用）            | span ペア      | 出荷 |
+| 誤字脱字チェック   | `typo_detection`          | LLM ベースで本文中の誤字脱字・タイポ・同音異義語誤用を検出   | span         | 出荷 |
+| 意図ドリフト診断  | `intent_drift`            | 作者宣言の狙い（per-scene intent）と本文のズレを指摘 | span         | 出荷 |
+| 時系列整合性     | `timeline_consistency`    | 確立済タイムラインに照らした物語内時系列の矛盾検出（folder/project 専用） | span | 出荷 |
+| 影響度レビュー    | `impact_review`           | 変更された Codex 設定（old→new）に対する本文の矛盾箇所を逆引き検出 | span | 出荷 |
+| エンティティ抽出   | `entity_extraction`       | 本文から Codex 未登録の固有名詞・概念候補を抽出（本文基準） | span         | post-MVP |
+| PoV ブレ検出   | `pov_drift`               | 視点キャラ以外の内面描写・観察不能情報の混入を検出         | span         | post-MVP |
+| シーン目的診断    | `scene_purpose`           | シーンの存在意義を診断し削除候補を明示               | scene        | post-MVP |
 
-整合性チェック (`consistency` + `intra_scene_consistency`) と本文 → Codex 方向の `entity_extraction` は対の関係を成し、§整合性チェック詳細設計 にまとめる。軽量・コスト効率特化の `proofreading` / `pov_drift` / `scene_purpose` は §軽量 effect_type シリーズ で扱う。
+整合性チェック (`consistency` + `intra_scene_consistency`) と本文 → Codex 方向の `entity_extraction` は対の関係を成し、§整合性チェック詳細設計 にまとめる。軽量・コスト効率特化の `typo_detection`（旧称 `proofreading`）/ `pov_drift` / `scene_purpose` は §軽量 effect_type シリーズ で扱う。
+
+> **（2026-06-18 追記）出荷済 `effect_type` は 9 種**: `review` / `pseudo_comment` / `meta_structure` / `consistency` / `intra_scene_consistency` / `typo_detection`（2026-05-26）/ `intent_drift`（2026-06-05）/ `timeline_consistency`（2026-06-05）/ `impact_review`（2026-06-18）。MVP 設計時の 5 種から拡張された。enum の正本（`effect_type` / `category` の CHECK 制約）は [`Grimodex_統合DBスキーマ.md`](Grimodex_統合DBスキーマ.md) の `post_effect_runs` / `post_effect_annotations` を参照。`entity_extraction` / `pov_drift` / `scene_purpose` は本書に設計のみあり未実装。
 
 Linter 系（形式的ルールベース）は対象外。本書は「非決定的・LLM ベースの事後分析」のみを扱う。
 
@@ -96,6 +101,7 @@ CREATE TABLE post_effect_runs (
   id              TEXT PRIMARY KEY,
   project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   effect_type     TEXT NOT NULL,          -- 'review' | 'pseudo_comment' | 'meta_structure' | 'consistency' | 'intra_scene_consistency'
+                                          -- | 'typo_detection' | 'intent_drift' | 'timeline_consistency' | 'impact_review'（計 9 種、CHECK 正本は統合DBスキーマ.md）
   scope_type      TEXT NOT NULL,          -- 'scene' | 'folder' | 'project'
   scope_target_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE,  -- NULL=プロジェクト全体
   model           TEXT NOT NULL,
@@ -136,6 +142,8 @@ CREATE TABLE post_effect_annotations (
   -- 内容
   category       TEXT NOT NULL,          -- 'review' | 'pseudo_comment'
                                           -- | 'consistency_anchor' | 'foreshadow_anchor' | 'theme_anchor'
+                                          -- | 'typo_anchor' | 'intent_anchor' | 'timeline_anchor' | 'impact_review_anchor'
+                                          -- （計 9 種。CHECK 制約の正本は統合DBスキーマ.md）
   persona        TEXT,                   -- 疑似コメントのペルソナ名
   severity       TEXT,                   -- 'info' | 'suggestion' | 'warning' | 'error'
   content        TEXT NOT NULL,
@@ -235,6 +243,10 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 | メタ構造レビュー | △（シーン内の個別指摘があれば） | — | ✓ (主) |
 | 整合性チェック (`consistency`) | ✓ (`category=consistency_anchor`、単独 annotation + `metadata.codex_ref`) | — | — |
 | 自己整合性チェック (`intra_scene_consistency`) | ✓ (両端: `category=consistency_anchor`) | ✓ (`relation_type=contradiction`, `bidirectional`) | — |
+| 誤字脱字チェック (`typo_detection`) | ✓ (`category=typo_anchor`、単独 annotation) | — | — |
+| 意図ドリフト診断 (`intent_drift`) | ✓ (`category=intent_anchor`、単独 annotation) | — | — |
+| 時系列整合性 (`timeline_consistency`) | ✓ (`category=timeline_anchor`、単独 annotation) | — | — |
+| 影響度レビュー (`impact_review`) | ✓ (`category=impact_review_anchor`、単独 annotation) | — | — |
 | 伏線・回収 | ✓ (`foreshadow_anchor`) | ✓ (`foreshadowing`, `direction=a_to_b`) | — |
 | テーマ一貫性 | ✓ (`theme_anchor`) | ✓ (`theme_echo`) | — |
 
@@ -293,7 +305,21 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 
 **方針:** コード内の semver 定数（例: `REVIEW_PROMPT_VERSION = 'review_v1.0'`）で管理し、プロンプトに本質的な変更を入れたら minor/major を上げる。git SHA には紐付けない（プロンプト改版と無関係なコミットでも SHA が変わってしまうため）。
 
-**現状の実装**: `src/features/post-effect/consistencyPayloadBuilder.ts` に `CONSISTENCY_PROMPT_VERSION = 'consistency_v1.1'` / `INTRA_CONSISTENCY_PROMPT_VERSION = 'intra_scene_consistency_v1.0'` を定義済み。レビュー・疑似コメント・メタ構造レビューは未実装のためバージョン定数も未追加。
+**現状の実装（2026-06-18）**: 出荷済 9 種すべてに定数を定義済み。プロンプト本文は FE catalog（`src/prompts/ja/postEffect.ts`）で管理し、`StartPostEffectRunArgs.system_prompt` として IPC で渡す。Rust 側（`src-tauri/src/commands/post_effect.rs` L28-42）と FE 側（`src/features/post-effect/*PayloadBuilder.ts`）で同値であることを契約とする:
+
+| `effect_type` | 定数 | 値 | 定義ファイル |
+|---|---|---|---|
+| `consistency` | `CONSISTENCY_PROMPT_VERSION` | `consistency_v1.1` | `consistencyPayloadBuilder.ts` |
+| `intra_scene_consistency` | `INTRA_CONSISTENCY_PROMPT_VERSION` | `intra_scene_consistency_v1.0` | `consistencyPayloadBuilder.ts` |
+| `impact_review` | `IMPACT_REVIEW_PROMPT_VERSION` | `impact_review_v1.0` | `consistencyPayloadBuilder.ts` |
+| `typo_detection` | `TYPO_PROMPT_VERSION` | `typo_detection_v1.0` | `typoPayloadBuilder.ts` |
+| `review` | `REVIEW_PROMPT_VERSION` | `review_v1.0` | `reviewPayloadBuilder.ts` |
+| `intent_drift` | `INTENT_DRIFT_PROMPT_VERSION` | `intent_drift_v1.0` | `intentDriftPayloadBuilder.ts` |
+| `pseudo_comment` | `PSEUDO_COMMENT_PROMPT_VERSION` | `pseudo_comment_v2.0` | `pseudoCommentPayloadBuilder.ts` |
+| `meta_structure` | `META_STRUCTURE_PROMPT_VERSION` | `meta_structure_v1.0` | `metaStructurePayloadBuilder.ts` |
+| `timeline_consistency` | `TIMELINE_CONSISTENCY_PROMPT_VERSION` | `timeline_consistency_v1.0` | `timelinePayloadBuilder.ts` |
+
+`pseudo_comment` は v2.0 で bare label から genre/想定読者プロフィールを織り込んだ brief 注入へ刷新（読者ペルソナ再編）。`timeline_consistency` は multi（folder/project）スコープ専用で multi コマンドは prompt_version を検証しない（TS が `timelinePayloadBuilder` で権威を持つ）ため Rust 側に定数を持たない。
 
 ### 9. Outline オーバーレイの鮮度表示
 
@@ -301,7 +327,9 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 
 ### 10. `input_hash` の扱い
 
-**方針:** MVP 必須（整合性チェックで同一入力 run の再利用に使う）。スキーマ上は nullable のままだが、`consistency` / `intra_scene_consistency` の run では必ず生成して書き込む。レビュー・疑似コメント・メタ構造レビューでは MVP では生成しなくてもよい（将来必要になれば足す）。生成アルゴリズムは §整合性チェック詳細設計 §input_hash 参照。
+**方針:** MVP 必須（整合性チェックで同一入力 run の再利用に使う）。スキーマ上は nullable のまま。生成アルゴリズムは §整合性チェック詳細設計 §input_hash 参照。
+
+**現状の実装（2026-06-18）**: 当初は `consistency` / `intra_scene_consistency` のみ必須だったが、出荷済 9 種すべての payload builder（`*PayloadBuilder.ts`）が `canonicalize.ts::computeInputHash` で `input_hash` を生成し、`start_post_effect_run` / `start_post_effect_run_multi` のキャッシュ短絡に乗せる。`pseudo_comment` は `persona` を入力に含めるため、同じシーンでも persona が違えば別 run / 別キャッシュになる。
 
 ### 11. `category` の種別混在について
 
@@ -368,10 +396,10 @@ start →    │ running │ ──completed──▶ completed (terminal)
 
 ### MVP に含める
 
-- `post_effect_runs` テーブル（5つの `effect_type` 全てのガワ）
+- `post_effect_runs` テーブル（`effect_type` 全てのガワ）
 - `post_effect_annotations` テーブル（`scene_range` アンカーのみ）
 - `post_effect_annotation_relations` テーブル（`relation_type='contradiction'` のみ運用）
-- `scene_lens_data` テーブル（`lens_type='plot_structure'` と `'pacing'` のみ生成）
+- `scene_lens_data` テーブル（`lens_type='plot_structure'` と `'pacing'` のみ生成。スキーマは 4 種すべて許容するが、MVP コードは meta_structure ランナーで `plot_structure` / `pacing` 以外を `continue` で破棄する — `post_effect.rs::process_meta_structure_scene`）
 - 機能: **レビュー** / **疑似コメント** / **メタ構造レビュー（plot_structure + pacing）** / **整合性チェック（`consistency`, Codex 基準）** / **自己整合性チェック（`intra_scene_consistency`, Codex 不使用）**
 - FTS5 インデックス
 - TipTap マーク / Decoration / 同期パイプライン
@@ -379,11 +407,13 @@ start →    │ running │ ──completed──▶ completed (terminal)
 - Outline ビューへのオーバーレイ表示
 - `input_hash` 生成と同一入力 run の再利用（整合性チェックで必須）
 
-### ポスト MVP
+> **（2026-06-18 追記）MVP 後に出荷済の追加機能**: 当初 MVP 5 種に加え、`typo_detection`（旧称 `proofreading`、2026-05-26）/ `intent_drift`（2026-06-05）/ `timeline_consistency`（2026-06-05、folder/project 専用）/ `impact_review`（2026-06-18）が出荷済。`impact_review` は変更された Codex 設定（old→new）を起点に本文の矛盾を逆引きする逆方向レビューで、整合性チェック基盤を流用する。これらに伴い `category` に `typo_anchor` / `intent_anchor` / `timeline_anchor` / `impact_review_anchor` が加わった（§機能 × テーブルのマッピング）。下記「ポスト MVP」のうち実装済の項目は本注記で上書きされる。
+
+### ポスト MVP（未実装のみ）
 
 - 機能: **伏線・回収** / **テーマ一貫性**
 - 機能: **エンティティ抽出**（`entity_extraction`, 本文 → Codex 候補。`consistency` と逆方向の対）— 詳細は §エンティティ抽出（本文 → Codex 候補）
-- 機能: **軽量 effect_type シリーズ**（`proofreading` / `pov_drift` / `scene_purpose`）— 詳細は §軽量 effect_type シリーズ。整合性チェックより payload が小さく実装も流用範囲が広いため、優先度高め
+- 機能: **軽量 effect_type シリーズの残り**（`pov_drift` / `scene_purpose`。`typo_detection` は出荷済）— 詳細は §軽量 effect_type シリーズ
 - `relation_type='foreshadowing' | 'theme_echo'`
 - `anchor_type='codex_entry'` 導入（Codex 基点の対等な relation）
 - `lens_type='character_arc' / 'pov'`
@@ -697,7 +727,7 @@ MVP: 明示ボタンのみ。`[整合性チェック]` と `[自己整合性チ�
 | 1 | migration + payload builder + 単一コール path（Codex+Scene が budget 内のみ対応）+ `found_context` 含む metadata + プロンプト + dedupe + UI 統合（両 effect_type 同時） |
 | 2 | Scene chunking（Phase 1 で実測コストを見てから判断） |
 | 3 | folder/project scope の per-scene iteration ランナー |
-| Future | 自動実行 opt-in / SemanticLink 統合 / 伏線・テーマ feature 解禁 / `entity_extraction` 解禁 / 軽量 effect_type シリーズ（`proofreading` → `pov_drift` → `scene_purpose` の順）解禁 |
+| Future | 自動実行 opt-in / SemanticLink 統合 / 伏線・テーマ feature 解禁 / `entity_extraction` 解禁 / 軽量 effect_type シリーズの残り（`typo_detection` は出荷済、続けて `pov_drift` → `scene_purpose`）解禁 |
 
 ### エンティティ抽出（本文 → Codex 候補）
 
@@ -754,9 +784,11 @@ MVP: 明示ボタンのみ。`[整合性チェック]` と `[自己整合性チ�
 
 ## 軽量 effect_type シリーズ
 
-`consistency` と比べて **payload が小さく・プロンプトが単純・既存基盤の流用範囲が広い** 検出群。整合性チェック実装をベースにすれば追加コストは小さい。**ポスト MVP** で `proofreading` → `pov_drift` → `scene_purpose` の順に解禁する想定。
+`consistency` と比べて **payload が小さく・プロンプトが単純・既存基盤の流用範囲が広い** 検出群。整合性チェック実装をベースにすれば追加コストは小さい。`typo_detection`（旧称 `proofreading`、出荷済）→ `pov_drift` → `scene_purpose` の順で解禁する想定で、`pov_drift` / `scene_purpose` は **ポスト MVP**。
 
-### proofreading (誤字脱字)
+### typo_detection (誤字脱字)
+
+> **（2026-06-18 追記）出荷済**: 設計時の仮称 `proofreading` は実装では `effect_type='typo_detection'`（`TYPO_PROMPT_VERSION='typo_detection_v1.0'`、`category='typo_anchor'`）として 2026-05-26 に出荷。以下の設計はおおむね実装と一致するが、正本は `src/features/post-effect/typoPayloadBuilder.ts` + `post_effect.rs::process_typo_scene`。
 
 LLM ベースの誤字脱字検出。Linter（確定論ルール）では拾えない同音異義語の誤用・送り仮名違い・タイポ・一字脱落を扱う。**整合性チェック実装からの追加コストが最小**で、使用頻度が最も高い見込み。
 
@@ -904,7 +936,7 @@ LLM ベースの誤字脱字検出。Linter（確定論ルール）では拾え�
 | `list_annotations_for_project` | `{ project_id, status? }` | `{ annotations: Annotation[] }`（全シーン横断ビュー用）| ✓ |
 | `update_annotation_status` | `{ annotation_id, status }` | `Annotation`（relation 経由なら端点もまとめて更新）| ✓ |
 | `update_relation_status` | `{ relation_id, status }` | `Relation`（両端 annotation にカスケード）| ✓ |
-| `reply_to_annotation` | `{ parent_id, content, author_role }` | 新 `Annotation` | ※ 現状未実装（疑似コメント機能と一緒に post-MVP） |
+| `reply_to_annotation` | `{ parent_id, content, author_role }` | 新 `Annotation` | ✓ (親の `project_id` / `scene_id` / `run_id` / `persona` を継承して `category='pseudo_comment'` の子を作成。§4 のとおり親の `run_id` を継承) |
 | `save_post_effect_annotations` | `{ scene_id, annotations[] }` | scene 保存時の同期用（`saveAuthorshipSpans` と同タイミングで呼ぶ）| ✓ |
 
 **キャッシュ短絡（`from_cache`）:** §10「`input_hash` の扱い」に基づき、同 `input_hash` の `completed` run があれば `start_post_effect_run` / `start_post_effect_run_multi` は新 run を起動せず既存 `run_id` を `from_cache: true` で即返す。フロント (`runPostEffect` in `src/features/post-effect/api.ts`) は実 `post_effect:done` が届かないため合成 `onDone` を発火して spinner を確実に解除する。

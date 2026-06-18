@@ -26,12 +26,18 @@ Codex QuickはScenesパネルとは独立した専用パネル（`src/features/t
 - 手動で「ピン留め」したCodexエントリも表示（自動検出に漏れた場合の補完。自動検出と重複した場合はマッチ側を優先して重複排除）
 - パネル上部にツールバーがあり、ソート順を `category` / `name-asc` / `name-desc` / `updated` / `created` から選択可能（`most-referenced` は参照数データを持たないため除外）。ソート状態は `useCodexStore.sortOrder` を共有し、Codex 管理パネルと同期する
 
+### 「今の真実」バッジと未開示伏線警告（2026-06-18 追記）
+
+- **「今の真実」バッジ**: フェーズ（時系列）を持つエントリは、名前とカテゴリラベルの間に適用中フェーズの `phaseLabel` を `primary` 色のピルで表示する（`useResolvedCodexStates(displayedIds)` → `resolveCodexStatesFor` → `phaseResolver.resolveCodexState`）。アクティブシーン（`useTreeStore.activeSceneId`）と `globalSceneOrder` から「そのシーン時点でのフェーズ」を解決して出すため、執筆位置に追随する read-only 表示。フェーズ未設定のエントリにはバッジは出ない。
+- **未開示伏線警告アイコン**: 「今の真実」バッジの隣に、`EyeOff` アイコン（アンバー色）を表示する。アクティブシーン時点でまだ回収されていない `secret` 伏線がそのエントリに紐づく場合のみ出る（`useUnrevealedSecretForeshadows(displayedIds)` → `computeUnrevealedSecretForeshadows`）。`aria-label`／ツールチップは i18n キー `codex.spoiler.unrevealedTooltip`（例: 「このシーン時点で未開示: {{titles}}」）。`abandoned` 伏線・回収済み（`payoffConfirmed`）伏線は警告対象外。伏線取得失敗時はその行の警告を出さない（安全側）。
+- **行内の表示順**は左から: カテゴリドット → 名前 → 「今の真実」バッジ → 未開示伏線警告アイコン → カテゴリラベル → ピンボタン（ホバー時／ピン済み時に出現）。
+
 ## インタラクション
 
 | 操作 | 動作 |
 |------|------|
 | エントリをクリック | Codexパネルを表示し（`useLayoutStore.showPanel("codex")`）、`useCodexStore.requestSelectEntry(id)` でそのエントリの詳細を選択 |
-| エントリをホバー | ポップオーバーでCodexエントリのプレビューを表示（`CodexQuickPopover` → `CodexEntryPopoverContent` を使用） |
+| エントリをホバー | ポップオーバーでCodexエントリのプレビューを表示（`CodexQuickPopover` → `CodexEntryPopoverContent` を使用）。行と同じく「今の真実」バッジ（`phaseLabel`）、フェーズ解決後の summary（`resolvedSummary`、未設定時は Base の `summary`）、未開示伏線の警告文（`spoilerNote`）も併せて表示する |
 | 行ホバー時に出現するピンアイコン | クリックでピン留め／解除をトグル（`togglePinnedCodex`、ピン済みエントリでは PinOff アイコンを常時表示） |
 | [+ Pin Codex entry] | `CodexCommandPalette`（`src/features/codex/components/CodexCommandPalette.tsx`）を開き、検索してエントリを選択するとピン留め |
 | `Ctrl+Alt+Q` | Codex Quickパネルの表示トグル＋フォーカス（`src/App.tsx` のグローバルショートカット、表示後 `requestAnimationFrame` で `panel.api.setActive()` を呼ぶ） |

@@ -149,6 +149,15 @@ Snippet のタグは Codex と同じ構造化タグ基盤の上に載る。UI �
 | 右クリック | コンテキストメニュー（後述） |
 | ホバー | 軽いハイライト + × ボタン表示 |
 
+### キーボード/スクリーンリーダー（roving tabindex）
+
+（2026-06-09 追記）リストは roving tabindex 方式で、Tab 連打による tab-stop 爆発を避けつつ矢印キーで各カードへ到達できる。
+
+- 各カードは `data-snippet-index={idx}` を持ち、`role="group"` + `aria-label`（タイトル）でスクリーンリーダーが「&lt;タイトル&gt;, グループ」と読み上げる
+- 選択中カードは `aria-current` を立てる（role 非依存の global 属性）
+- カード本体・インラインの Copy/× ボタンはいずれも `tabIndex={-1}`。フォーカスは `↑`/`↓` で移動し、移動先カードへ実 DOM フォーカスを移す
+- インライン Copy ボタンはタブ順から外れているため、キーボードでは後述の `Ctrl+C`（カードの `onCopy` 経路）でコピーする
+
 ### E. 詳細ペイン（Detail pane）
 
 リストでカードをクリックすると、右の詳細ペインにフル編集モードで表示される。
@@ -250,6 +259,24 @@ Snippet をエディタへ挿入するとき、「AI 由来の Snippet をユー
 
 ---
 
+## Snippet スコープ（Chat 連携）
+
+（2026-06-12 追記）Chat パネルのスコープピッカーを Spotlight（PinEntryDialog）形式のタブバーに刷新し、`scene` / `codex` / `snippet` の3タブを設けた。`snippet` タブから Snippet を選ぶと、その Snippet が当該チャットセッションのアンカーになる。
+
+- スコープ種別は `ChatScope = "scene" | "folder" | "project" | "codex" | "snippet"`（`chatScope.ts`）
+- タブ UI は `ChatPanelHeader` の `role="tablist"` / `role="tab"` + `aria-selected` で構成（`PICKER_TABS`）
+- `snippet` タブ本体は `SnippetScopePickerSection`。検索入力でタイトル絞り込み、選択中エントリに `Check` アイコンを表示。Snippet パネル未訪問でも `ensureEntriesLoaded()` でリストをロードする
+- アンカーは `chat_sessions.snippet_anchor_id`（FK → `snippets.id`、ON DELETE SET NULL）に永続化。`resolveScopeSessionKey` がスコープごとのセッションキーを排他的に解決する
+- Chat History パネルではアンカー Snippet のタイトルを `Snippet: {title}` としてグループ表示する
+
+### L4 への注入
+
+- アンカーにした Snippet は `<focus_subject>` ブロック（title + 抽出プレーンテキスト）として L3 スロット直後・L4 の前に注入され、「この会話の主題」を LLM に明示する（トリム対象外）
+- セッションにピン留めした Snippet は `contextBuilder.ts` の `pinnedSnippets` 経由で L4 に `- **{title}** (Snippet): {content}` 形式・優先度 `L4_PRI_PINNED` で注入される
+- `codex` / `snippet` スコープは本文集約を持たないため、Chat の eco（本文集約）トグルは無効になる
+
+---
+
 ## スニペットの作成
 
 ### 1. Chatパネルから（Chat設計書で定義済み）
@@ -304,6 +331,13 @@ Snippet 作成後、Snippetsパネル側では `snippetStore.pendingEntryId` に
 ### 楽観的更新と再フェッチ
 
 Snippet の `create` 呼び出しは楽観的更新で扱う。ストア側は `isLoading` 中であっても新しいエントリを即座にリストへ差し込み、詳細ペインを新規エントリに切り替える。バックグラウンドで `listSnippets` を再実行して結果を正規のソース・オブ・トゥルースで差し替えることで、サーバー側の自動フィールド付与（timestamps 等）とのレースコンディションを吸収する。
+
+### ライセンス機能ゲート
+
+（2026-06-11 追記）ライセンス制限状態（trial_expired / license_stale / revoked）では Snippet の書き込みがブロックされる（`@/features/license/gate`）。
+
+- `snippetStore.create` は冒頭で `blockIfUnlicensed()` を判定し、制限中は `license.writeBlocked` トーストを出して `LICENSE_WRITE_RESTRICTED_ERROR` を throw する（Promise を返すチョークポイントのため早期 return できず throw で拒否する契約）。新規作成・クリップボード貼付・複製などすべて create 経由でブロックされる
+- 詳細ペインの本文ミニエディタは `useLicenseEditableSync` で制限中は読み取り専用（`setEditable(false)`）になる
 
 ---
 
@@ -446,6 +480,8 @@ Snippetのcontentは `snippets.content` カラムにProseMirror JSON形式で保
 
 `content_source` はスニペットの作成元（ai/human/NULL）を記録し、ソースバッジの表示・ソースフィルタ・Attribution 追跡に使用する。`scene_id`（実装カラム名）は「作成元シーン」、`source_chat_message_id` は「抽出元チャットメッセージ」を指す。
 
+**Chat からの参照**（2026-06-12 追記）: `chat_sessions.snippet_anchor_id`（FK → `snippets.id`、ON DELETE SET NULL）が Snippet スコープのアンカーを保持する。カラム定義の詳細は [統合DBスキーマ](Grimodex_統合DBスキーマ.md) を正とする。
+
 ---
 
 ## キーボードショートカット
@@ -459,9 +495,12 @@ Snippetのcontentは `snippets.content` カラムにProseMirror JSON形式で保
 | `↑` / `↓` | スニペットカード間のフォーカス移動 |
 | `Enter` | 選択スニペットを詳細ペインに表示 / 表示中なら選択解除 |
 | `Ctrl+Enter` | 選択スニペットをEditorのカーソル位置に挿入 |
+| `Ctrl+C` | フォーカス中カードの本文を Attribution 付きでコピー（テキスト選択中はネイティブのコピーを尊重）。Ctrl/Cmd の両方で発火 |
 | `Ctrl+V` | クリップボードから新規スニペット作成 |
 | `Del` | 選択スニペットを削除（確認ダイアログ） |
 | `Escape` | 検索クリア / 選択解除 |
+
+（2026-06-10 追記）プライマリ修飾は `matchesMod`（`src/lib/platform.ts`）で判定し、macOS では Ctrl 系ショートカットが ⌘ で発火、画面上の表記も `formatShortcut` により ⌘ 記号でレンダリングされる（非 macOS では従来どおり `Ctrl`）。`Ctrl+C` のみ ⌘/Ctrl いずれの押下でも動くよう `e.ctrlKey || e.metaKey` で受ける。
 
 ---
 
@@ -501,7 +540,7 @@ Snippetのcontentは `snippets.content` カラムにProseMirror JSON形式で保
 | 内容の性質 | 設定情報（キャラ、場所、伝承） | 散文テキスト（台詞、描写、文章の断片） |
 | 構造 | name + type + summary + content + aliases + relations | title + content |
 | エディタとの関係 | 本文中でハイライト表示、ポップオーバー参照 | D&Dで本文に挿入（挿入後はスニペットとの紐付けなし） |
-| AI連携 | コンテキスト注入（Layer 4）、マッチング | 直接的な連携なし |
+| AI連携 | コンテキスト注入（Layer 4）、マッチング | Snippet スコープで Chat のアンカーに指定し L4 注入（後述「Snippet スコープ（Chat 連携）」） |
 | 典型的なライフサイクル | 長期保持。プロジェクト全体で参照 | 短〜中期。挿入して役目を終えたら削除も |
 
 ---

@@ -191,7 +191,9 @@ Noteの場合:
 
 ### 表示/非表示
 
-ブレッドクラムはツールバーのオーバーフローメニューから非表示にできる。狭い画面では省略記号（...）で中間パスを省略。
+ブレッドクラムは通常モード・リニアモードとも**常時表示**（`SceneEditor.tsx` が両分岐で `<Breadcrumb />` を無条件描画）。狭い画面では省略記号（...）で中間パスを省略。
+
+> **（2026-06-12 追記）** 旧「Show breadcrumb」トグル（`editor.showBreadcrumb` 設定）は c4e6d6c0 で廃止。パネルの最大化・折りたたみ制御にブレッドクラム行が必要なため常時表示へ統一した（既存 DB の残存設定行は寛容マージで無害）。
 
 ---
 
@@ -244,19 +246,21 @@ Noteの場合:
 | Attr | Attribution表示トグル | ON: AI帰属マーカー表示、OFF: 非表示 |
 | Cmt | コメント表示トグル | ON: コメント付きテキストの波線下線+ホバーポップオーバー表示、OFF: 非表示（コメントデータは保持） |
 | Focus | フォーカスモードトグル | ON: 現在の段落以外を半透明化 |
-| TW | タイプライターモードトグル | ON: カーソル行を常に垂直中央に固定 |
+| TW | タイプライターモードトグル | ON: カーソル行を常に垂直中央に固定。縦書きMODE中は `disabled` |
+| 縦 | 縦書きMODEトグル | ON: 本文を縦書き（`writing-mode: vertical-rl`）で編集。プロジェクト単位（`editor.verticalMode`）。詳細は後述「縦書きMODE」 |
 
-Attr / Cmt / Focus / TW の 4 つは独立したトグルで、組み合わせ可能。Aa はトグルではなくポップオーバー入口。
+Attr / Cmt / Focus / TW / 縦 は独立したトグルで、組み合わせ可能（縦書き中は TW が無効）。Aa はトグルではなくポップオーバー入口。
 
 #### オーバーフローメニュー（⋮）
 
 | メニュー項目 | ショートカット | 詳細 |
 |-------------|-------------|------|
 | Find & Replace | `Ctrl+H` | エディタ上部にオーバーレイ表示 |
-| Word count goal... | | 目標文字数を設定するダイアログ |
-| Vertical preview | | 縦書きプレビューパネルを開く |
-| Show breadcrumb | | ブレッドクラムの表示/非表示 |
-| Show line numbers | | 行番号の表示/非表示 |
+| 目標文字数 / 目標語数 | | ステータスバーの一次メトリクスに連動した目標値の数値入力（言語連動。後述「ステータスバー」参照） |
+| Show line numbers | | 行番号の表示/非表示（チェック付きトグル） |
+
+> **（2026-06-12 追記）** 縦書きプレビューパネル（旧「Vertical preview」項目）はライブの縦書きMODE（`editor.verticalMode`、Settings > Editor の「縦書きで編集」トグル）に置き換えられ、c4e6d6c0 でオーバーフローメニュー項目・`VerticalPreview` コンポーネント・専用 CSS・locale キーごと廃止された。エディタ本体を縦書き表示する詳細は後述「縦書きMODE」を参照。
+> あわせて「Show breadcrumb」トグル（旧 `editor.showBreadcrumb` 設定）も同コミットで廃止され、ブレッドクラムは通常モード・リニアモードとも**常時表示**に統一された（パネルの最大化・折りたたみ制御に必要なため）。
 
 ---
 
@@ -444,7 +448,7 @@ Mark.create({
 })
 ```
 
-- CSS `text-emphasis: filled sesame` で描画。縦書きプレビューでも正しく表示される
+- CSS `text-emphasis: filled sesame` で描画。縦書きMODEでも正しく表示される（文字の右側に出る）
 - ツールバーボタン（﹅）またはショートカット `Ctrl+.` でトグル
 - Markdownエクスポート時は `《圏点:テキスト》` 形式に変換（小説投稿サイトの慣例に準拠）
 - インポート時は `《圏点:テキスト》` パターンを検出してEmphasisDotsMarkに変換
@@ -497,8 +501,9 @@ Mark.create({
 **SlashCommandExtension**
 
 - エディタの **行頭または空行でのみ** `/` を入力するとインライン AI コマンドサジェスト（Slash メニュー）を起動する
-- サジェスト候補: `continue` / `describe` / `dialogue` / `summarize` / `brainstorm` / `rewrite` / `translate`
-- 行中での `/` 入力や、コードブロック / URL 内では発火しない（フォーマット入力として扱う）
+  - 実装上は TipTap Suggestion の `startOfLine: false` を指定し、行頭制限は独自の `allow()` コールバックで行う。`allow()` は「カーソル位置より前の行内テキストが空白のみ（`textBefore.trim() === ""`）」または「ブロック先頭（`parentOffset === 0`）」のときだけ true を返す（`src/features/editor/inlineAi/SlashCommandExtension.ts`）。`editor.inlineAiCommand` トグルが OFF のときも `allow()` が false を返して停止する
+- サジェスト候補: `continue` / `rewrite` / `describe` / `dialogue` / `shorten` / `expand` / `tone` / `translate` / `custom`（後述「インラインAIコマンド」のコマンド一覧と同一）
+- 行中での `/` 入力では発火しない（フォーマット入力として扱う）
 - 選択後は既存のインライン AI パレットへ委譲し、以降の diff 表示 / Accept / Reject フローはインライン AI 側の仕様に従う（「インラインAIコマンド」セクション参照）
 
 #### クリップボードのAuthorship伝搬
@@ -529,7 +534,14 @@ Mark.create({
   - **注記**: TipTap 本体のペーストバグ回避として用意しているパスで、TipTap upstream PR がマージされた時点で Case 2 の分岐は撤去し、Case 1 / Case 3 の 2 系統に統合する予定
 
 - **Case 3: 外部テキスト**（平文のみ、Grimodex / ProseMirror いずれのマーカーも持たない）
-  - プレーンテキストとして挿入し、範囲全体に `{ source: 'unknown' }` を付与する
+  - 範囲全体に `{ source: 'unknown' }` を付与する点は共通だが、挿入内容はペースト種別とカーソルコンテキストで分岐する（共有ヘルパ `src/features/editor/markdownPaste.ts`）:
+    - **通常ペースト（`Ctrl/Cmd+V`）**: クリップボードの平文を **Markdown として変換してレンダリング**する（`tiptap-markdown` の `clipboardTextParser` 経由で見出し・リスト・強調等を構造化）。変換できなければ生テキストにフォールバック
+    - **書式なしペースト（`Ctrl/Cmd+Shift+V`）**: Markdown 記法を**除去**したプレーンテキストとして挿入する（`markdownToPlainText`）。`---` のようなブロック専用記法で結果が空になる場合は原文をそのまま挿入し、無音で消えるのを防ぐ
+    - **コードブロック内ペースト**（`spec.code` ノード内 = verbatim コンテキスト）: 種別に関わらず**変換・整形をせず原文を逐語挿入**する（`isVerbatimContext` → `insertVerbatimText`、改行も保持）。コード系ノードは inline mark を許可しないため、変換すると構造破壊や帰属の部分ずれが起きるのを避ける
+  - 書式なしフラグは `Ctrl/Cmd+Shift+V` の keydown で arm し、次の paste で消費する（タイマー不使用。他キーの keydown で stale 解除）
+  - いずれの挿入も同一トランザクションに `programmaticInsert` meta を立て、AiEditedPlugin による帰属除去を回避する
+
+  > **（2026-06-16 追記）** 通常ペースト時の Markdown 変換（52ad2716）とコードブロック逐語挿入（84400ee6）を実装。それ以前は Case 3 が生テキスト挿入のみで、貼り付けた Markdown が描画されなかった。
 
 #### AuthorshipMark のスパン操作ルール
 
@@ -584,10 +596,10 @@ ProseMirror プラグインとして実装され、`ai` または `unknown` ス�
 
 **AttributionHighlight**
 - ツールバーの「Attr」トグルがON時のみ表示
-- AuthorshipMarkの `source` に基づいてテキスト範囲全体に背景色ハイライトを適用:
-  - `ai`: パープルの薄い背景 (rgba(127, 119, 221, 0.10))
-  - `unknown`: アンバーの薄い背景 (rgba(186, 117, 23, 0.10))
-  - `human`: ハイライトなし
+- AuthorshipMarkの `source` に基づいてテキスト範囲全体に背景色ハイライトを適用（色は `attributionColors.ts` の正本トークン `var(--attribution-*)`・テーマ追従。下記「帰属色の凡例」注記も参照）:
+  - `ai`: AI 帰属色（ティール `var(--attribution-ai)`）の薄い背景
+  - `unknown`: 不明帰属色（アンバー `var(--attribution-unknown)`）の薄い背景
+  - `human`: ハイライトなし（＝素の執筆）
 - 背景色は執筆の邪魔にならない程度に薄く設定。Settings > Display > Attribution highlight opacity で調整可能（5% - 25%、デフォルト10%）
 - ホバーで詳細ツールチップ（source, model名, timestamp）
 
@@ -619,6 +631,7 @@ ProseMirror プラグインとして実装され、`ai` または `unknown` ス�
 - スクロールがカーソル追従になる（キー入力のたびにスクロール位置を調整）
 - CSS `scroll-margin-block` または ProseMirror の `scrollIntoView` カスタマイズで実装
 - カーソル上方・下方に十分なスクロール余白を確保（最低キャンバス高さの50%）
+- 縦書きMODE中は実効 OFF（Y 軸スクロール前提のため。`effectiveTypewriter = typewriterMode && !verticalMode`）
 
 ### Placeholder
 
@@ -692,16 +705,27 @@ Settings > Editor > Animations セクション:
 | 表示項目     | 詳細                                                              |
 | -------- | --------------------------------------------------------------- |
 | ステータスバッジ | シーンのステータス（Outline/Draft/Complete/Revision/Final）。クリックで変更ポップオーバー |
+| 帰属凡例（AttributionLegend） | Attr表示ON時のみ左側に表示。本文オーバーレイがマークする AI（ティール）と unknown（アンバー）の 2 色のスウォッチ + ラベル。human は意図的にハイライトしないため凡例にも出さない。詳細は後述「帰属凡例」 |
 
 ### 右側（統計情報）
 
 | 表示項目 | 詳細 |
 |---------|------|
-| `AI: {割合}%` | AI帰属割合。Attr表示ON時のみ表示。クリックでAttributionパネルを開く |
+| `AI: {割合}%` | AI帰属割合。Attr表示ON時かつ割合 > 0 のときのみ表示。文字色は帰属トークンのティール（`text-attribution-ai`）で本文オーバーレイの AI 色と統一。クリックでAttributionパネルを開く |
 | `Beats: {総数} ({生成済}件 generated)` | Placed beat の総数と生成済み件数（Beat 設計書 Phase A）。Beat が0個の場合は非表示。クリックで Beats セクションをスクロール表示 |
-| 文字数 | `{文字数} chars`。目標設定時はミニプログレスバーも表示。クリックで詳細統計ポップオーバー（文字数、単語数、原稿用紙枚数、推定読了時間） |
+| 文字数 / 語数 | 一次メトリクス（日本語など=`{文字数} 字` / 英語プロジェクト=`{語数} words`。後述）。目標設定時はミニプログレスバーも表示。クリックで詳細統計ポップオーバー |
 | 保存状態 | `Saved` / `Saving...` / `Unsaved`。Unsavedはアンバー色で警告 |
 | History | `Clock` アイコンボタン。クリックでリビジョン履歴モーダルを開く（`Ctrl+Shift+H` と同等） |
+
+### 帰属凡例（AttributionLegend）
+
+ステータスバー左側に表示される本文オーバーレイの色凡例（`src/features/attribution/AttributionLegend.tsx`、ba7d4b2b で追加）。
+
+- `showAttribution`（Attr トグル）が ON のときのみ表示。右側の AI% バッジとの色衝突を避けるため左配置
+- 対象は AI（ティール）と unknown（アンバー）の 2 色のみ。human はオーバーレイ自体がハイライトしない（＝素の執筆）ため凡例にも出さない
+- スウォッチは本文オーバーレイと**同一の `.attribution-*` クラス**を流用するため、どのカラーテーマ（紙色で色相がずれるダーク系を含む）でも「凡例の色 ＝ 本文ハイライトの色」が必ず一致する
+
+> **（2026-06-17 追記）** 帰属色は `src/features/attribution/attributionColors.ts` で一元化（正本トークン `var(--attribution-*)`）。これに伴い AI% バッジは紫→ティールへ統一され、統計内訳（BreakdownBar / レポート）の AI=ティール・unknown=アンバーも本文オーバーレイと一致するようになった。本文 AttributionHighlight の色記述（「AI: パープルの薄い背景 / unknown: アンバー」）はトークン化前の旧値で、現行はいずれも `--attribution-*` トークン（AI=ティール / unknown=アンバー）の薄ティント。
 
 ### 文字数詳細ポップオーバー
 
@@ -718,6 +742,19 @@ Settings > Editor > Animations セクション:
 ```
 
 原稿用紙換算は日本語小説で特に重要な指標。
+
+#### 一次メトリクスの言語連動
+
+ステータスバーの主役メトリクスは**プロジェクト言語**で切り替わる（`src/features/editor/charCountStats.ts`、a2461c91）。
+
+- `primaryCountUnit(lang)`: 言語が `en` で始まれば **語数（word）**、それ以外（日本語など）は従来どおり **文字数（char）** を一次メトリクスにする。`lang` 省略時は文字数（＝既存の日本語挙動を不変に保つ）
+- 単位の名詞（字 / chars / 語 / words）は **UI 言語**でローカライズし、どの単位かは **プロジェクト言語**で決める（i18next の UI 言語では決めない）
+- 原稿用紙換算・推定読了時間も一次メトリクスから算出し、言語で係数が変わる:
+  - 文字（日本語など）: 400 字 / ページ・500 cpm（黙読速度の中点）
+  - 語（英語など）: 250 words / ページ（英語出版の慣習値）・225 wpm
+- ポップオーバーは一次単位の行を先頭に置く。目標値入力（ツールバーのオーバーフロー）の単位ラベルもフッタ目標行と一致するよう一次単位連動（`targetWordCount` / `targetCharCount`）
+- マイグレーション無し（Option A）: tree/grid/map 等の集計表示は永続 `char_count` のままで、ハードコードの "chars"/"字" をローカライズ済みラベルへ統一しただけ
+- LinearSceneBlock 各ブロックのフッタも一次メトリクス化（語数は表示時に live doc から導出）
 
 ---
 
@@ -797,7 +834,6 @@ EditorPaneからシーン編集に必要なロジックのみを抽出した軽�
 - InlineAI palette/toolbar
 - CodexPopover, EditorContextMenu, AttributionOverrideMenu
 - タブ関連ロジック（openPreview, pinTab等）
-- VerticalPreview
 - Split-view同期（sceneContentStoreのbroadcast）
 
 ### 遅延マウント
@@ -1180,26 +1216,26 @@ Acceptした直後に再度 `/` や `Ctrl+Shift+Space` を押せば、前の生�
 
 ---
 
-## 縦書きプレビュー
+## 縦書きMODE
 
 ### 概要
 
-エディタ自体は常に横書き。縦書きプレビューは独立したリードオンリーパネルとして別途開く。
+本文エディタそのものを縦書き（右から左）で表示・**編集**するモード。旧「縦書きプレビュー」（別パネルで開くリードオンリー表示）を置き換える形で c4e6d6c0 にて導入された。プレビューではなく本文 EditorView 自体に `writing-mode: vertical-rl` を適用するため、入力・選択・ルビ・傍点・Beat などをすべて縦書きフローのまま編集できる。
 
 ### 開き方
 
-- ツールバーのオーバーフローメニュー（⋮）→「Vertical preview」
-- コマンドパレット →「Open vertical preview」
+- ツールバーの「縦」トグルボタン（`Toolbar.tsx`）
+- または Settings > Editor の「縦書きで編集（この作品）」トグル
+- 設定キー `editor.verticalMode`、scope = `project`、default `false`。プロジェクト単位の設定のため、作品ごとに横書き/縦書きを切り替えられる
 
 ### 振る舞い
 
-- Bottom DockまたはRight Dockにパネルとして表示（デフォルト: Right Dock）
-- フローティングウィンドウとして開くことも可能
-- CSS `writing-mode: vertical-rl` を適用したリードオンリービュー
-- エディタの変更にリアルタイム追従
-- ルビは縦書きでも正しく表示
-- 本体実装としては StarterKit ベースのエディタに `writing-mode: vertical-rl` を適用した薄いビューを想定する（カスタム拡張は最小限で、AuthorshipMark 等の装飾は横書きエディタ側に委ねる）
-- **カーソル行ハイライトの同期はこの設計書では規定しない**。リードオンリー側で保持すべき同期状態・ハイライト表現は今後別途定義する余地を残す
+- 本文ラッパー（`EditorContentArea.tsx`）に `editor-vertical` クラスを付与し、CSS `writing-mode: vertical-rl` を適用する
+- ホイールの縦回転を読み進み方向（横）のスクロールへ変換する（`useVerticalWheelScroll`）
+- スムースキャレットは縦書きでも有効で、縦書き用の座標リゾルバ（`cursorCoords.ts` の `resolveCoordsVertical`）でゼロ幅縦線として再構成する（`useCursorOverlay` が `getVertical` を `CursorOverlayPlugin` に渡す）
+- カーソル移動キーは writing-mode で入れ替わる（縦書きでは ←/→ が行跨ぎ、↑/↓ が行内）
+- **タイプライターモードは縦書き中は実効 OFF** になる（Y 軸スクロール前提のため。`effectiveTypewriter = typewriterMode && !verticalMode`、TW ボタンも `disabled`。設定値自体は保持し、横書き復帰時に元に戻る）
+- ルビ・傍点・Beat ノードも縦書きフローに参加する（傍点は CSS `text-emphasis` が縦書きで文字の右側に出る）
 
 ---
 
@@ -1544,6 +1580,8 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 > 履歴: 初回スナップショットの後、Bundle A / B / C で **Snippet タブアイコン / 文字数ミニプログレスバー / Show breadcrumb・Show line numbers トグル / Set ruby・Insert from Snippet コンテキストメニュー / 段落字下げ設定 / Breadcrumb 狭幅省略 / タブ種バナーの lucide 化** を実装済みに更新。Bundle B/C 着手時の調査で **Attribution highlight opacity / タブ種バナー本体** は既に実装済みであったことが判明したため、誤検知扱いで ✅ に修正。
 >
 > 2026-05-16 更新: 前スナップショット（2026-05-07）以降に **Cursor blink 配線 / Character fade-in / Character fade-out / Codex タブの Summary 入力欄 + ✦ Generate / SynopsisHeader・BeatsHeader のエディタ上部廃止 / Linear モード Beat 表示モード設定（`editor.linearBeatDisplay`）** の 6 項目が実装済みに昇格したことを確認。
+>
+> 2026-06-18 更新: 以下の出荷を本文へ反映。**縦書きプレビューパネルを全廃しライブ縦書きMODE（`editor.verticalMode`）へ置換 + Show breadcrumb トグル撤去・常時表示化（c4e6d6c0）** / **外部ペーストの Markdown 変換 + `Ctrl/Cmd+Shift+V` 書式除去（52ad2716）** / **コードブロック内ペーストの逐語挿入（84400ee6）** / **帰属色のトークン化 + 本文オーバーレイ凡例 AttributionLegend・AI% バッジのティール統一（ba7d4b2b）** / **英語プロジェクトでの word count 一次メトリクス化（a2461c91）**。
 
 ### A. タブバー
 
@@ -1557,13 +1595,13 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 ### B. ブレッドクラム
 
 - ✅ パス表示、セグメントクリックで兄弟ドロップダウン
-- ✅ ツールバー オーバーフローの `Show breadcrumb` トグル（`editor.showBreadcrumb`、default: true）
+- ✅ 常時表示（通常/リニア両モード）。`Show breadcrumb` トグルと `editor.showBreadcrumb` 設定は c4e6d6c0 で撤去済（2026-06-12）
 - ✅ 狭幅時の省略（`max-width` + `flex-shrink` + `truncate`、`title` 属性で full text 保持。中間セグメント優先で縮む）
 
 ### C. ツールバー
 
-- ✅ グループ 1〜5 の主要ボタン、Aa ポップオーバー、Attr / Cmt / Focus / TW、Find & Replace、Word count goal、Vertical preview
-- ✅ オーバーフロー: `Show breadcrumb` / `Show line numbers` 両方ともチェック付きトグルとして稼働
+- ✅ グループ 1〜5 の主要ボタン、Aa ポップオーバー、Attr / Cmt / Focus / TW、Find & Replace、目標文字数/語数入力
+- ✅ オーバーフロー: `Show line numbers` がチェック付きトグルとして稼働。`Vertical preview` / `Show breadcrumb` 項目は c4e6d6c0 で撤去済（2026-06-12）
 - ➕ Fs（伏線マーク表示）トグル
 - ➕ ▶（SceneMetaPanel 開閉）ボタン
 
@@ -1585,6 +1623,7 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 - ✅ AiEditedPlugin（`programmaticInsert` meta 対応）/ AttributionPlugin / AttributionOverrideMenu
 - ✅ CodexHighlightPlugin / Codex Mention 拡張
 - ⚠️ ペースト 3 系統分岐: Case 1 の判定が独自 MIME `application/x-grimodex-authorship` ではなく HTML 内 `data-grimodex-source` 文字列マッチに簡略化されている
+- ✅ Case 3 外部ペーストの Markdown 変換（通常）/ `Ctrl/Cmd+Shift+V` 書式除去 / コードブロック内逐語挿入 — `markdownPaste.ts` 共有ヘルパ（`pasteExternalText` / `isVerbatimContext` / `markdownToPlainText`、52ad2716 + 84400ee6）
 - 🟡 クリップボード Authorship 伝搬: Codex/Snippet/Chat 用 writer は `lib/clipboardAttribution.ts` にあるが、AuthorshipMark 付きエディタテキストのコピー時に独自 MIME を書き出す TipTap clipboardSerializer 拡張は未確認
 - ➕ ForeshadowSetupMark / ForeshadowPayoffMark / ForeshadowPasteRule（伏線レジスタ機能）
 
@@ -1592,6 +1631,7 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 
 - ✅ CodexHighlight / AttributionHighlight / FocusDim / LintDecorationPlugin
 - ✅ Attribution highlight opacity 設定（5–25%）— `display.attributionHighlightOpacity` を `App.tsx` で CSS 変数 `--attribution-pct` に同期、`DisplayCategory` に slider、`index.css` の `attribution-ai/unknown` で適用
+- ✅ 帰属色のトークン化 — `attributionColors.ts` 正本（`var(--attribution-*)`）。AttributionHighlight の AI=ティール / unknown=アンバーは本文オーバーレイ・統計内訳・footer で統一（ba7d4b2b）
 
 #### スタイル / モード
 
@@ -1609,9 +1649,11 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 
 ### E. ステータスバー
 
-- ✅ ステータスバッジ、AI: %、Beats、文字数（target との `/X` 表示）、Saving/Saved/Unsaved、History
+- ✅ ステータスバッジ、AI: %（`text-attribution-ai` ティール）、Beats、文字数/語数（target との `/X` 表示）、Saving/Saved/Unsaved、History
+- ✅ 帰属凡例 AttributionLegend（footer 左、`showAttribution` ゲート、AI/unknown 2 色、本文 `.attribution-*` クラス流用、ba7d4b2b）
+- ✅ 一次メトリクスの言語連動（`primaryCountUnit` — en=word / それ以外=char、原稿用紙・読了時間の係数も言語連動、a2461c91）
 - ✅ 文字数ミニプログレスバー（達成時 emerald / 未達 primary、超過文字数を rose で `+N` 表示）
-- ✅ 文字数詳細ポップオーバー（クリックで開く AnimatedDropdown：文字数 / 単語数 / 原稿用紙換算 400字詰め / 推定読了時間 / 目標との進捗）
+- ✅ 文字数詳細ポップオーバー（クリックで開く AnimatedDropdown：一次メトリクス行を先頭に文字数 / 単語数 / 原稿用紙換算 / 推定読了時間 / 目標との進捗）
 - ➕ Lint Status インジケータ
 
 ### リニア編集モード
@@ -1639,9 +1681,9 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 - ✅ ツールバーオーバーフローでの設定、ステータスバーでの `{count} / {goal}` 表示
 - ✅ ミニプログレスバー（達成色 emerald / 超過色 rose）
 
-### 縦書きプレビュー
+### 縦書きMODE（2026-06-12 更新）
 
-- 🟡 VerticalPreview はモーダルオーバーレイ（`h-[85vh] w-[90vw]`）として実装。設計書の Right Dock デフォルト + Bottom Dock + フローティングウィンドウ構成は未実現
+- ✅ ライブ縦書き編集（`editor.verticalMode`、project scope）— 本文 EditorView に `editor-vertical` / `writing-mode: vertical-rl` を適用。旧 `VerticalPreview` モーダルは c4e6d6c0 で全廃（コンポーネント・CSS・locale キーごと削除）。縦書き中はホイール→横スクロール変換・縦書き用キャレット座標リゾルバ・タイプライター/スムースキャレットの実効 OFF を含む
 
 ### 自動保存 / sceneContentStore / Codex Phase override / タブ切替時の状態保存
 
@@ -1668,7 +1710,7 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 2. ~~Phase B Beat 拡張~~ ✅ 完了。SynopsisHeader / BeatsHeader のエディタ上部廃止も `EditorPane.tsx` から直接 import 撤去済で完了
 3. ~~文字数詳細ポップオーバー~~ ✅ 実装済み（クリックで AnimatedDropdown 開、原稿用紙換算 / 推定読了時間 / 単語数 / 進捗）
 4. ~~Codex タブの「Summary」入力欄 + ✦ Generate ボタン~~ ✅ `DetailsTab.tsx` に実装済（Wand2 アイコン、`generateSynopsisFromContent` 経由）
-5. **VerticalPreview がモーダル実装で Dock / フローティング構想と乖離** — 「縦書きで参照しながら書く」体験が未提供。レイアウトシステムとの結合が深く要構造変更
+5. ~~VerticalPreview がモーダル実装で Dock / フローティング構想と乖離~~ ✅ 解消（2026-06-12 c4e6d6c0）。縦書きはライブの縦書きMODE（`editor.verticalMode`）に置き換え、本文 EditorView を直接縦書き表示する形になった。旧 VerticalPreview は全廃
 6. **クリップボード Authorship 伝搬の独自 MIME 出力側**（`application/x-grimodex-authorship`）— Chat 用 writer は `lib/clipboardAttribution.ts` に存在するが、エディタからのコピー時に TipTap `clipboardTextSerializer` / `transformCopied` 等で MIME を書き出すシリアライザ拡張は未実装
 7. **ペースト Case 1 判定の独自 MIME 統一** — `EditorPane.tsx` の paste handler は `html.includes("data-grimodex-source")` 文字列マッチに留まり、`clipboardData.getData("application/x-grimodex-authorship")` 直接読みへの統一は未完
 8. **タブを Center 外にドラッグ → フローティングウィンドウ / Group エッジへのドロップで新規スプリット作成** — `TabBar.tsx` のドラッグハンドラはタブ並び替え＋グループ間移動のみ。`WebviewWindow` 利用も未導入
@@ -1678,6 +1720,5 @@ C-4 セクションの既存 textarea 実装は本コンポーネントに置換
 - タブを Center 外にドラッグ → フローティングウィンドウ
 - Group エッジへのドロップで新規スプリット作成
 - ペースト Case 1 判定を独自 MIME `application/x-grimodex-authorship` 直接読みに統一（writer 側のエディタ copy 用シリアライザ拡張とセットで実装）
-- VerticalPreview を Right Dock デフォルト + Bottom Dock + フローティングウィンドウ構成へ刷新
 - `InlineSynopsisEditor` を Editor 側（`SceneMetaPanel` / `SynopsisHeader`）にも展開し、3 パネル共通利用を完成させる（Grid / Scenes Outline は既に置換済）
 - `InlineSynopsisEditor` の 3 パネル共通化を完全実施
