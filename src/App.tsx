@@ -27,6 +27,7 @@ import {
 } from "@/features/commandCenter";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
+import { ensureSemanticIndexesOnOpen } from "@/features/semantic-search/autoIndex";
 import { useExternalMountListener } from "@/features/external-mount/useExternalMountListener";
 import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
@@ -129,6 +130,14 @@ function App() {
   useReindexProgressListener();
   useExternalMountListener();
   useLicenseStateListener();
+
+  // 段階3c: プロジェクトを開いたら codex / scene の未 index を自動補完する。
+  // status は embedder 不要の軽量チェック → 未 index がある時だけ背景 reindex。
+  // 失敗は無音 (sparse で動く)。1 セッション 1 プロジェクト 1 回。
+  const currentProjectId = useProjectStore((s) => s.currentProjectId);
+  useEffect(() => {
+    if (currentProjectId) void ensureSemanticIndexesOnOpen(currentProjectId);
+  }, [currentProjectId]);
 
   // Sync uiLanguage setting → i18next
   useEffect(() => {

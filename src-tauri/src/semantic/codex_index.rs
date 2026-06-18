@@ -218,6 +218,59 @@ pub fn list_entry_ids_in_project(db: &Database, project_id: &str) -> Result<Vec<
     })
 }
 
+/// project の codex index 充足状況 (段階3c の bulk back-index 要否判定用)。
+/// `indexed_entry_count < total_entry_count` なら未 index の既存エントリがある。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexIndexStatus {
+    /// 現 spec (model_id/embedding_dim/chunker_version) に一致する codex_chunks 行数
+    /// (= index 済み entry 数)。stale 行は数えない。
+    pub indexed_entry_count: usize,
+    /// project 配下の codex_entries 総数。
+    pub total_entry_count: usize,
+}
+
+/// codex の index 充足状況を 1 回の `with_conn` で集計する。Embedder 不要の cheap
+/// クエリ (scene の `collect_index_status` と同型)。codex_chunks は PK=entry_id なので
+/// 行数 = index 済み entry 数。`indexed` は現 spec 一致行のみ (stale 除外)。
+pub fn collect_codex_index_status(
+    db: &Database,
+    project_id: &str,
+    current_model_id: &str,
+    current_embedding_dim: usize,
+    current_chunker_version: &str,
+) -> Result<CodexIndexStatus> {
+    db.with_conn(|conn| {
+        let total_entry_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM codex_entries WHERE project_id = ?",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+
+        let indexed_entry_count: i64 = conn.query_row(
+            "SELECT COUNT(*)
+             FROM codex_chunks cc
+             JOIN codex_entries ce ON ce.id = cc.entry_id
+             WHERE ce.project_id = ?
+               AND cc.model_id = ?
+               AND cc.embedding_dim = ?
+               AND cc.chunker_version = ?",
+            params![
+                project_id,
+                current_model_id,
+                current_embedding_dim as i64,
+                current_chunker_version,
+            ],
+            |row| row.get(0),
+        )?;
+
+        Ok(CodexIndexStatus {
+            indexed_entry_count: indexed_entry_count as usize,
+            total_entry_count: total_entry_count as usize,
+        })
+    })
+}
+
 /// entry_id からそのプロジェクトの言語を引く (codex_entries → projects JOIN)。
 /// 行が無ければ "ja"。spec 選択に使う (非 gated)。
 pub fn project_language_for_codex_entry(db: &Database, entry_id: &str) -> Result<String> {
@@ -424,5 +477,59 @@ mod tests {
         let mut ids = list_entry_ids_in_project(&db, "p1").unwrap();
         ids.sort();
         assert_eq!(ids, vec!["c1".to_string(), "c2".to_string()]);
+    }
+
+    /// テスト用: entry を指定 model で index する (dim 8 / ver "v1" 固定)。
+    fn index_entry(db: &Database, entry_id: &str, model_id: &str) {
+        let (text, hash) = read_codex_for_index(db, entry_id).unwrap().unwrap();
+        upsert_codex_chunk(
+            db,
+            entry_id,
+            &hash,
+            &emb_bytes(8, 0.1),
+            &text,
+            model_id,
+            8,
+            "v1",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn index_status_counts_total_and_indexed() {
+        let db = mem_db();
+        seed_codex(&db, "p1", "c1", "character", "A", "", "{}");
+        seed_codex(&db, "p1", "c2", "character", "B", "", "{}");
+        seed_codex(&db, "p1", "c3", "character", "C", "", "{}");
+        index_entry(&db, "c1", "m");
+        index_entry(&db, "c2", "m");
+        let s = collect_codex_index_status(&db, "p1", "m", 8, "v1").unwrap();
+        assert_eq!(s.total_entry_count, 3);
+        assert_eq!(s.indexed_entry_count, 2);
+    }
+
+    #[test]
+    fn index_status_excludes_stale_model() {
+        let db = mem_db();
+        seed_codex(&db, "p1", "c1", "character", "A", "", "{}");
+        index_entry(&db, "c1", "old-model");
+        let s = collect_codex_index_status(&db, "p1", "m", 8, "v1").unwrap();
+        assert_eq!(s.total_entry_count, 1);
+        assert_eq!(
+            s.indexed_entry_count, 0,
+            "stale model row must not count as indexed"
+        );
+    }
+
+    #[test]
+    fn index_status_scoped_to_project() {
+        let db = mem_db();
+        seed_codex(&db, "p1", "c1", "character", "A", "", "{}");
+        seed_codex(&db, "p2", "c2", "character", "B", "", "{}");
+        index_entry(&db, "c1", "m");
+        index_entry(&db, "c2", "m");
+        let s = collect_codex_index_status(&db, "p1", "m", 8, "v1").unwrap();
+        assert_eq!(s.total_entry_count, 1);
+        assert_eq!(s.indexed_entry_count, 1);
     }
 }

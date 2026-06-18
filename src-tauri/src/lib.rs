@@ -269,6 +269,10 @@ pub fn run() {
             commands::semantic::codex_semantic_search,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::codex_index_entry,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::codex_index_status,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::codex_reindex_all,
             commands::external_mount::external_mount_register,
             commands::external_mount::external_mount_unregister,
             commands::external_mount::external_mount_read_file,

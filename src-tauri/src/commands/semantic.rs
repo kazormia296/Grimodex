@@ -29,7 +29,8 @@ use serde::Serialize;
 use tauri::{Emitter, Manager};
 
 use crate::semantic::codex_index::{
-    embed_codex_text, project_language_for_codex_entry, read_codex_for_index, upsert_codex_chunk,
+    collect_codex_index_status, embed_codex_text, list_entry_ids_in_project,
+    project_language_for_codex_entry, read_codex_for_index, upsert_codex_chunk, CodexIndexStatus,
     CodexUpsertOutcome,
 };
 use crate::semantic::codex_search::{run_codex_search, CodexSearchCache, CodexSearchHit};
@@ -388,6 +389,80 @@ pub(crate) async fn codex_semantic_search(
         })
         .await
         .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// Codex の index 充足状況 (段階3c)。Embedder 不要の cheap クエリ。JS 側が
+/// `indexedEntryCount < totalEntryCount` を見て bulk back-index の要否を判定する。
+#[tauri::command]
+pub(crate) async fn codex_index_status(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<CodexIndexStatus, AppError> {
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<CodexIndexStatus, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            let report = with_db(&ws_state, |db| {
+                let language = project_language(db, &project_id)?;
+                let spec = spec_for_language(&language);
+                collect_codex_index_status(
+                    db,
+                    &project_id,
+                    &spec.full_model_id(),
+                    spec.embedding_dim,
+                    spec.chunker_version,
+                )
+            })?;
+            Ok(report)
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// project 配下の全 codex entry を一括再 index する (段階3c bulk back-index)。
+///
+/// `semantic_reindex_all` の codex 版。既存エントリ (機能追加前 / 未編集) は逐次
+/// index (`codex_index_entry`) が走らず未 index のままなので、初回構築用に全件回す。
+/// Embedder を 1 度 load し各 entry を `codex_index_split_lock` で index、成功ごとに
+/// `CodexSearchCache` を invalidate、投入ベクトル総数を返す。codex は件数が少なく
+/// 短時間なので scene と違い progress event は出さない。
+#[tauri::command]
+pub(crate) async fn codex_reindex_all(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<usize, AppError> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<usize, AppError> {
+        let ws_state = app.state::<WorkspaceState>();
+        let emb_state = app.state::<SemanticEmbedderState>();
+        let cache = app.state::<CodexSearchCache>();
+
+        let language = with_db(&ws_state, |db| project_language(db, &project_id))?;
+        let spec = spec_for_language(&language);
+        let model_id = spec.full_model_id();
+        let entry_ids: Vec<String> =
+            with_db(&ws_state, |db| list_entry_ids_in_project(db, &project_id))?;
+
+        // Embedder lazy load。全 entry を 1 guard で回し lock 取り直しを避ける。
+        let mut guard = emb_state
+            .inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+        let embedder = ensure_embedder(&app, spec, &mut guard)?;
+
+        let mut total: usize = 0;
+        for entry_id in &entry_ids {
+            // entry ごとに lock 分割版を使い、embed 中に workspace lock を持たない。
+            let outcome = codex_index_split_lock(&ws_state, embedder, entry_id, &model_id, spec)?;
+            if let CodexUpsertOutcome::Indexed(n) = outcome {
+                cache.invalidate(entry_id)?;
+                total += n;
+            }
+        }
+        Ok(total)
+    })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
     result
 }
 
