@@ -1141,6 +1141,11 @@
     }
   },
   "kouetsu": {
+    "tension": {
+      "title": "テンション波形",
+      "saggy": "■ 中だるみ",
+      "chapterHook": "● 章末フック"
+    },
     "tab": {
       "issues": "指摘",
       "editorial": "批評",

@@ -1141,6 +1141,11 @@
     }
   },
   "kouetsu": {
+    "tension": {
+      "title": "Tension curve",
+      "saggy": "■ Saggy stretch",
+      "chapterHook": "● Chapter hook"
+    },
     "tab": {
       "issues": "Issues",
       "editorial": "Editorial",
