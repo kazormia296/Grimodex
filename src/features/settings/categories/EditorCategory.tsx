@@ -4,6 +4,7 @@ import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
+import { SettingNumberInput } from "../components/SettingNumberInput";
 import { SettingDropdown } from "../components/SettingDropdown";
 import { FontFamilySelect } from "../components/FontFamilySelect";
 import { useSettingBoolean } from "../useSettingControl";
@@ -258,7 +259,38 @@ export function EditorCategory() {
         </SettingRow>
       </SettingSection>
 
+      <SettingSection title={t("settings.editor.writingGoal")}>
+        <SettingRow
+          label={t("settings.editor.dailyGoalDefault")}
+          description={t("settings.editor.dailyGoalDefaultDesc")}
+        >
+          <SettingNumberInput
+            settingKey="goal.dailyDefaultChars"
+            min={0}
+            step={100}
+            defaultValue={0}
+            unit={t("writingStats.charsUnit")}
+            placeholder={t("settings.editor.dailyGoalNone")}
+          />
+        </SettingRow>
+      </SettingSection>
+
       <SettingScopeHeader title={t("settings.scopeProject")} />
+      <SettingSection title={t("settings.editor.writingGoal")}>
+        <SettingRow
+          label={t("settings.editor.dailyGoal")}
+          description={t("settings.editor.dailyGoalDesc")}
+        >
+          <SettingNumberInput
+            settingKey="goal.dailyChars"
+            min={0}
+            step={100}
+            defaultValue={0}
+            unit={t("writingStats.charsUnit")}
+            placeholder={t("settings.editor.dailyGoalInherit")}
+          />
+        </SettingRow>
+      </SettingSection>
       <SettingSection title={t("settings.editor.writingDirection")}>
         <SettingRow
           label={t("settings.editor.verticalMode")}

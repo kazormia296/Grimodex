@@ -89,6 +89,11 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.paragraphIndent": "project",
   "editor.verticalMode": "project",
   "editor.tateChuYoko": "project",
+  // Writing goal — daily character target
+  // default は全プロジェクト共通の既定値 (global)、override は当該プロジェクト
+  // 固有値 (project)。override が 0 のとき default にフォールバックする。
+  "goal.dailyDefaultChars": "global",
+  "goal.dailyChars": "project",
   // Display — user preference (global)
   "display.uiFontFamily": "global",
   "display.showWordCount": "global",
@@ -217,6 +222,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // 縦中横（縦書き時に半角数字を正立結合）。既定は出版物の慣習に最も近い
   // 2桁のみ結合。3桁以上は流儀に幅があるため "all" で任意に有効化できる。
   "editor.tateChuYoko": "2",
+  // Writing goal — daily character target (0 = no goal). default は global、
+  // project 固有値が 0 のとき default にフォールバックする。
+  "goal.dailyDefaultChars": "0",
+  "goal.dailyChars": "0",
   // Display (theme, uiLanguage, uiScale are in GlobalSettings)
   // 同梱 UI 書体 M PLUS 1 を既定に。fallback 無しは buildFontOptions の
   // 同梱/列挙 option (quoteFamily) と一致させ重複表示を防ぐ。

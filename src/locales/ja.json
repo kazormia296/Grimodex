@@ -589,7 +589,14 @@
       "linearBeatDisplayDesc": "リニア編集モードでのビートの表示方法",
       "linearBeatDisplayNormal": "通常",
       "linearBeatDisplayCollapsed": "折りたたむ",
-      "linearBeatDisplayHidden": "非表示"
+      "linearBeatDisplayHidden": "非表示",
+      "writingGoal": "執筆目標",
+      "dailyGoalDefault": "デフォルトの一日の目標",
+      "dailyGoalDefaultDesc": "個別に設定していないプロジェクトに適用する一日の目標文字数（0 = なし）。",
+      "dailyGoalNone": "なし",
+      "dailyGoal": "一日の目標（このプロジェクト）",
+      "dailyGoalDesc": "このプロジェクトの目標。0 にするとデフォルトを使用します。",
+      "dailyGoalInherit": "デフォルト"
     },
     "ai": {
       "mcp": {
@@ -3286,7 +3293,21 @@
     "weekdayMon": "月",
     "weekdayWed": "水",
     "weekdayFri": "金",
-    "noData": "まだ執筆記録がありません。本文を書くとここに統計が表示されます。"
+    "noData": "まだ執筆記録がありません。本文を書くとここに統計が表示されます。",
+    "dailyGoal": {
+      "title": "本日の目標",
+      "currentProgress": "{{current}} / {{goal}} 字",
+      "remaining": "あと {{remaining}} 字",
+      "reached": "目標達成！🎉",
+      "set": "一日の目標を設定",
+      "edit": "目標を編集",
+      "save": "保存",
+      "cancel": "キャンセル",
+      "placeholder": "文字数",
+      "clearHint": "空欄にすると既定値を使用します",
+      "usingDefault": "既定の目標を使用中",
+      "noCharData": "本日の字数データがありません（0 と表示）"
+    }
   },
   "attribution": {
     "report": "帰属レポート",

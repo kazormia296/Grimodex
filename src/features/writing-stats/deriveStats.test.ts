@@ -6,6 +6,7 @@ import {
   buildHeatmap,
   intensityLevel,
   localDayKey,
+  computeGoalProgress,
   type WritingEvent,
   type DayBucket,
 } from "./deriveStats";
@@ -249,5 +250,51 @@ describe("buildHeatmap", () => {
     const day = hm.weeks.flat().find((c) => c.key === "2026-06-01");
     expect(day?.events).toBe(1);
     expect(day?.level).toBe(1);
+  });
+});
+
+describe("computeGoalProgress", () => {
+  it("目標 0 は hasGoal=false（実績は保持する）", () => {
+    const p = computeGoalProgress(500, 0);
+    expect(p.hasGoal).toBe(false);
+    expect(p.current).toBe(500);
+    expect(p.remaining).toBe(0);
+    expect(p.pct).toBe(0);
+    expect(p.reached).toBe(false);
+  });
+
+  it("未達: pct を丸め、remaining を出す", () => {
+    const p = computeGoalProgress(300, 2000);
+    expect(p.hasGoal).toBe(true);
+    expect(p.goal).toBe(2000);
+    expect(p.current).toBe(300);
+    expect(p.remaining).toBe(1700);
+    expect(p.pct).toBe(15);
+    expect(p.reached).toBe(false);
+  });
+
+  it("ちょうど達成: reached=true・remaining=0・pct=100", () => {
+    const p = computeGoalProgress(2000, 2000);
+    expect(p.reached).toBe(true);
+    expect(p.remaining).toBe(0);
+    expect(p.pct).toBe(100);
+  });
+
+  it("超過: pct は 100 にクランプ・remaining は 0 止まり", () => {
+    const p = computeGoalProgress(5000, 2000);
+    expect(p.reached).toBe(true);
+    expect(p.remaining).toBe(0);
+    expect(p.pct).toBe(100);
+  });
+
+  it("負の実績は 0 にクランプ", () => {
+    const p = computeGoalProgress(-50, 1000);
+    expect(p.current).toBe(0);
+    expect(p.remaining).toBe(1000);
+    expect(p.pct).toBe(0);
+  });
+
+  it("負の目標も hasGoal=false 扱い", () => {
+    expect(computeGoalProgress(100, -1).hasGoal).toBe(false);
   });
 });
