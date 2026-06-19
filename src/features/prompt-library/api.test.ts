@@ -1,120 +1,121 @@
-import { describe, it, expect } from "vitest";
-import { drizzle } from "drizzle-orm/sqlite-proxy";
-import { eq, and, sql, desc } from "drizzle-orm";
-import { promptTemplates } from "@/db/schema";
-import * as schema from "@/db/schema";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
-function createQueryCapture() {
+// 生成 SQL を捕捉する drizzle-proxy インスタンスで @/db/client を差し替える。
+// 状態 (queries / rows) は vi.hoisted で確定させ、async ファクトリから drizzle と
+// schema を動的 import して capture db を構築する (alias 解決を Vite に委ねる)。
+const h = vi.hoisted(() => {
   const queries: { sql: string; params: unknown[]; method: string }[] = [];
+  const rowsRef = { current: { rows: [] as unknown[] | unknown[][] } };
+  return { queries, rowsRef };
+});
+
+vi.mock("@/db/client", async () => {
+  const { drizzle } = await import("drizzle-orm/sqlite-proxy");
+  const schema = await import("@/db/schema");
   const db = drizzle<typeof schema>(
-    async (sqlText, params, method) => {
-      queries.push({ sql: sqlText, params, method });
-      return { rows: [] };
+    async (sql, params, method) => {
+      h.queries.push({ sql, params, method });
+      return h.rowsRef.current;
     },
     { schema },
   );
-  return { db, queries };
-}
+  return { db };
+});
 
-describe("prompt-library API query generation", () => {
-  it("lists templates scoped by project_id, newest first", async () => {
-    const { db, queries } = createQueryCapture();
-    await db
-      .select()
-      .from(promptTemplates)
-      .where(eq(promptTemplates.projectId, "project-1"))
-      .orderBy(desc(promptTemplates.createdAt));
-    expect(queries).toHaveLength(1);
-    expect(queries[0].sql).toContain("prompt_templates");
-    expect(queries[0].sql).toContain("project_id");
-    expect(queries[0].sql).toContain("order by");
-    expect(queries[0].params).toContain("project-1");
+import {
+  listPromptTemplates,
+  getPromptTemplate,
+  createPromptTemplate,
+  updatePromptTemplate,
+  deletePromptTemplate,
+  incrementPromptTemplateUsage,
+} from "./api";
+
+beforeEach(() => {
+  h.queries.length = 0;
+  h.rowsRef.current = { rows: [] };
+});
+
+describe("prompt-library api", () => {
+  it("listPromptTemplates scopes by project_id, newest first", async () => {
+    await listPromptTemplates("project-1");
+    expect(h.queries).toHaveLength(1);
+    expect(h.queries[0].sql).toContain("prompt_templates");
+    expect(h.queries[0].sql).toContain("project_id");
+    expect(h.queries[0].sql.toLowerCase()).toContain("order by");
+    expect(h.queries[0].params).toContain("project-1");
   });
 
-  it("gets a single template scoped by id AND project_id", async () => {
-    const { db, queries } = createQueryCapture();
-    await db
-      .select()
-      .from(promptTemplates)
-      .where(
-        and(
-          eq(promptTemplates.id, "tpl-1"),
-          eq(promptTemplates.projectId, "project-1"),
-        ),
-      );
-    expect(queries[0].sql).toContain("prompt_templates");
-    // cross-project read を塞ぐため両条件が乗る
-    expect(queries[0].params).toContain("tpl-1");
-    expect(queries[0].params).toContain("project-1");
+  it("getPromptTemplate scopes by both id AND project_id (cross-project read を塞ぐ)", async () => {
+    await getPromptTemplate("project-1", "tpl-1");
+    expect(h.queries).toHaveLength(1);
+    expect(h.queries[0].sql).toContain("prompt_templates");
+    expect(h.queries[0].sql).toContain("project_id");
+    expect(h.queries[0].params).toContain("tpl-1");
+    expect(h.queries[0].params).toContain("project-1");
   });
 
-  it("creates a template with the required fields", async () => {
-    const { db, queries } = createQueryCapture();
-    await db
-      .insert(promptTemplates)
-      .values({
-        id: "tpl-1",
-        projectId: "project-1",
-        title: "文体整形プロンプト",
-        content: "次の文章の文体を整えてください。",
-        createdAt: "2025-01-01T00:00:00Z",
-        updatedAt: "2025-01-01T00:00:00Z",
-      })
-      .returning();
-    expect(queries).toHaveLength(1);
-    expect(queries[0].sql).toContain("insert");
-    expect(queries[0].params).toContain("文体整形プロンプト");
-    expect(queries[0].params).toContain("次の文章の文体を整えてください。");
+  it("createPromptTemplate inserts the required fields", async () => {
+    h.rowsRef.current = {
+      rows: [
+        [
+          "tpl-1",
+          "project-1",
+          "文体整形プロンプト",
+          "次の文章の文体を整えてください。",
+          0,
+          "2025-01-01T00:00:00Z",
+          "2025-01-01T00:00:00Z",
+        ],
+      ],
+    };
+    await createPromptTemplate({
+      id: "tpl-1",
+      projectId: "project-1",
+      title: "文体整形プロンプト",
+      content: "次の文章の文体を整えてください。",
+    });
+    expect(h.queries).toHaveLength(1);
+    expect(h.queries[0].sql).toContain("insert");
+    expect(h.queries[0].sql).toContain("prompt_templates");
+    expect(h.queries[0].params).toContain("project-1");
+    expect(h.queries[0].params).toContain("文体整形プロンプト");
+    expect(h.queries[0].params).toContain("次の文章の文体を整えてください。");
   });
 
-  it("updates title/content with project scope", async () => {
-    const { db, queries } = createQueryCapture();
-    await db
-      .update(promptTemplates)
-      .set({ title: "更新後", content: "更新本文" })
-      .where(
-        and(
-          eq(promptTemplates.id, "tpl-1"),
-          eq(promptTemplates.projectId, "project-1"),
-        ),
-      )
-      .returning();
-    expect(queries[0].sql).toContain("update");
-    expect(queries[0].params).toContain("更新後");
-    expect(queries[0].params).toContain("project-1");
+  it("updatePromptTemplate updates with id AND project_id scope", async () => {
+    await updatePromptTemplate("project-1", "tpl-1", {
+      title: "更新後",
+      content: "更新本文",
+    });
+    expect(h.queries).toHaveLength(1);
+    expect(h.queries[0].sql).toContain("update");
+    expect(h.queries[0].sql).toContain("prompt_templates");
+    expect(h.queries[0].sql).toContain("project_id");
+    expect(h.queries[0].params).toContain("更新後");
+    expect(h.queries[0].params).toContain("tpl-1");
+    expect(h.queries[0].params).toContain("project-1");
   });
 
-  it("increments usage_count via SQL expression scoped by project_id", async () => {
-    const { db, queries } = createQueryCapture();
-    await db
-      .update(promptTemplates)
-      .set({ usageCount: sql`${promptTemplates.usageCount} + 1` })
-      .where(
-        and(
-          eq(promptTemplates.id, "tpl-1"),
-          eq(promptTemplates.projectId, "project-1"),
-        ),
-      );
-    expect(queries[0].sql).toContain("update");
-    expect(queries[0].sql).toContain(
+  it("incrementPromptTemplateUsage bumps usage_count scoped by id AND project_id", async () => {
+    await incrementPromptTemplateUsage("project-1", "tpl-1");
+    expect(h.queries).toHaveLength(1);
+    expect(h.queries[0].sql).toContain("update");
+    expect(h.queries[0].sql).toContain(
       '"usage_count" = "prompt_templates"."usage_count" + 1',
     );
-    expect(queries[0].params).toContain("project-1");
+    expect(h.queries[0].sql).toContain("project_id");
+    expect(h.queries[0].params).toContain("tpl-1");
+    expect(h.queries[0].params).toContain("project-1");
   });
 
-  it("deletes a template scoped by id AND project_id", async () => {
-    const { db, queries } = createQueryCapture();
-    await db
-      .delete(promptTemplates)
-      .where(
-        and(
-          eq(promptTemplates.id, "tpl-1"),
-          eq(promptTemplates.projectId, "project-1"),
-        ),
-      );
-    expect(queries[0].sql).toContain("delete");
-    expect(queries[0].sql).toContain("prompt_templates");
-    expect(queries[0].params).toContain("tpl-1");
-    expect(queries[0].params).toContain("project-1");
+  it("deletePromptTemplate deletes with id AND project_id scope", async () => {
+    await deletePromptTemplate("project-1", "tpl-1");
+    expect(h.queries).toHaveLength(1);
+    expect(h.queries[0].sql).toContain("delete");
+    expect(h.queries[0].sql).toContain("prompt_templates");
+    expect(h.queries[0].sql).toContain("project_id");
+    expect(h.queries[0].params).toContain("tpl-1");
+    expect(h.queries[0].params).toContain("project-1");
   });
 });

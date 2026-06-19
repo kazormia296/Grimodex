@@ -29,6 +29,22 @@ describe("candidateKey", () => {
     expect(nfc).not.toBe(nfd);
     expect(candidateKey(nfc)).toBe(candidateKey(nfd));
   });
+
+  it("ASCII のみ小文字化し非 ASCII は素通しする (Rust normalize_name と跨言語一致)", () => {
+    // ASCII A–Z だけを a–z へ。これは Rust 側 (char::is_ascii_uppercase →
+    // to_ascii_lowercase) と JS で確実に同一な折り畳み。
+    expect(candidateKey("ABC123")).toBe("abc123");
+    // トルコ語の点付き大文字 I (U+0130) は Unicode のフル小文字化だと "i" + 結合
+    // 点 (U+0069 U+0307) に展開され Rust/JS で挙動が割れうる。ASCII 限定なので
+    // ここでは変換されず、両ランタイムで NFC 後の同一バイト列に固定される。
+    const dottedI = "İ"; // İ
+    expect(candidateKey(dottedI)).toBe(dottedI.normalize("NFC"));
+    // 点なし小文字 i (U+0131) も非 ASCII なので素通し。
+    const dotlessI = "ı"; // ı
+    expect(candidateKey(dotlessI)).toBe(dotlessI.normalize("NFC"));
+    // フル小文字化なら İ → i 系に潰れて衝突しうるが、ASCII 限定では別キーのまま。
+    expect(candidateKey(dottedI)).not.toBe(candidateKey("i"));
+  });
 });
 
 describe("knownNameSet", () => {

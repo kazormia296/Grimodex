@@ -89,6 +89,21 @@ describe("buildTensionSeries", () => {
     expect(out.map((p) => p.tension)).toEqual([0.6, 0.2, null]);
     expect(out.map((p) => p.isChapterEnd)).toEqual([false, true, true]);
   });
+  it("親フォルダが nodes に欠落した孤児シーンも脱落させず末尾に追加する", () => {
+    // s1 は正常ツリー。orphan は親フォルダ "missing" が nodes に含まれない。
+    const nodes = [
+      folder("f1", null, "a"),
+      scene("s1", "f1", "a"),
+      scene("orphan", "missing", "a"),
+    ];
+    const by = new Map<string, SceneLensRecord[]>([
+      ["s1", [lens("s1", "plot_structure", 0.6)]],
+      ["orphan", [lens("orphan", "plot_structure", 0.4)]],
+    ]);
+    const out = buildTensionSeries(nodes, by);
+    expect(out.map((p) => p.sceneId)).toEqual(["s1", "orphan"]);
+    expect(out.map((p) => p.tension)).toEqual([0.6, 0.4]);
+  });
   it("metrics.tension が数値でない/範囲外は null/クランプ", () => {
     const nodes = [scene("s1", null, "a"), scene("s2", null, "b")];
     const by = new Map<string, SceneLensRecord[]>([

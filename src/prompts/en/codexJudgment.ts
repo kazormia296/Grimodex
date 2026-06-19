@@ -1,5 +1,8 @@
 import { JSON_ONLY } from "../shared/jsonContract";
-import type { CandidateJudgmentInput } from "../ja/codexJudgment";
+import {
+  sanitizeCandidateField,
+  type CandidateJudgmentInput,
+} from "../ja/codexJudgment";
 
 export type { CandidateJudgmentInput };
 
@@ -13,16 +16,20 @@ export function buildCandidateJudgmentPromptEn(
   const candidateLines =
     input.candidates
       .map((c) => {
-        const ctx = c.context ? `\n  context: ${c.context}` : "";
-        return `- surface=${c.surface} (count ${c.count})${ctx}`;
+        const ctx = c.context
+          ? `\n  context: ${sanitizeCandidateField(c.context)}`
+          : "";
+        return `- surface=${sanitizeCandidateField(c.surface)} (count ${c.count})${ctx}`;
       })
       .join("\n") || "(none)";
 
   const entryLines = input.existingEntries.length
     ? input.existingEntries
         .map((e) => {
-          const aka = e.aliases.length ? ` aka=[${e.aliases.join(", ")}]` : "";
-          return `- id=${e.id} name=${e.name}${aka}`;
+          const aka = e.aliases.length
+            ? ` aka=[${e.aliases.map(sanitizeCandidateField).join(", ")}]`
+            : "";
+          return `- id=${e.id} name=${sanitizeCandidateField(e.name)}${aka}`;
         })
         .join("\n")
     : "(none)";

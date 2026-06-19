@@ -58,6 +58,12 @@ export interface AiPathEntry {
    * は実在ファイル必須。stub/n/a は null。
    */
   testRef: string | null;
+  /**
+   * testRef 内に実在すべきテスト名の一部（it/describe の文字列、または Rust の fn 名）。
+   * 任意（後方互換）。指定したエントリは完全性メタテストが testRef を読み込み、
+   * この文字列が含まれることを assert する（ファイル存在だけでなく中身まで照合）。
+   */
+  testName?: string;
   /** 検証手段の説明、または gap の明示。 */
   note: string;
 }
@@ -87,6 +93,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_agent_message",
     verifier: "covered-by-agent-loop",
     testRef: AGENT_LOOP_TEST,
+    testName: "S1:",
     note: "ツールループ・最終回答到達を S1 が実モデルで検証。ループは JS 側なのでハーネスが忠実再現（sendToLLM のみ差し替え）。",
   },
   {
@@ -97,6 +104,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_agent_message",
     verifier: "covered-by-agent-loop",
     testRef: AGENT_LOOP_TEST,
+    testName: "S2:",
     note: "S2 が親→子委譲と子の自前 read（depth=1, 非再帰）を実モデルで検証。createResearchInterceptor で再現。",
   },
   {
@@ -107,6 +115,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_agent_message",
     verifier: "covered-by-agent-loop",
     testRef: AGENT_LOOP_TEST,
+    testName: "S3:",
     note: "S3 が上限到達での打ち切り（stoppedReason=limit_calls）を検証。",
   },
   {
@@ -129,6 +138,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "synopsis:",
     note: "本番ビルダー chatApi.buildSynopsisFromContentPrompt + runLiveSingleShot。非空テキストを assert。",
   },
   {
@@ -139,6 +149,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "session_title:",
     note: "本番ビルダー chatApi.buildSessionTitlePrompt + runLiveSingleShot。",
   },
   {
@@ -149,6 +160,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "summarization:",
     note: "本番ビルダー summarization.buildPrompt（実 ChatMessage[]）+ runLiveSingleShot。",
   },
   {
@@ -159,6 +171,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "foreshadow.auditChapter:",
     note: "本番ビルダー foreshadow.buildAuditChapterPrompt + 本番パーサ extractJsonObject。candidates 形を assert。",
   },
   {
@@ -169,6 +182,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "foreshadow.proposePastSetups:",
     note: "本番ビルダー foreshadow.buildProposePastSetupsPrompt + extractJsonObject。",
   },
   {
@@ -179,6 +193,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "foreshadow.evaluateSetupStrength:",
     note: "本番ビルダー foreshadow.buildEvaluateSetupStrengthPrompt + 本番パーサ safeParseAiEvaluation。",
   },
   {
@@ -189,6 +204,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "beat_role:",
     note: "本番ビルダー inferMentionRoles.buildPrompt + extractJsonObject。results[].role を assert。",
   },
   {
@@ -199,6 +215,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "map_branch:",
     note: "本番 buildSystemPrompt/buildUserPrompt + 本番パーサ parseCards。doc 形・枚数を assert。",
   },
   {
@@ -209,6 +226,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "tree_scaffold:",
     note: "本番 buildSystemPrompt/buildUserPrompt + 本番パーサ parseTreePlan。ops 配列・create op を assert。",
   },
   {
@@ -219,6 +237,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "direct-fetch (OpenRouter)",
     verifier: "js-live",
     testRef: RELATION_EVAL_TEST,
+    testName: "relation injection live eval",
     note: "既存のライブ eval。生成アーム + judge モデルで relation 注入の cost/benefit を採点。",
   },
 
@@ -231,6 +250,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message_stream",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "streaming surfaces:",
     note: "OpenRouter リクエスト挙動を runLiveSingleShot で検証。chat:stream-* イベント配信は Rust/Tauri IPC 層の責務（OpenRouter ハーネスでは非再現＝この境界は意図的に範囲外）。",
   },
   {
@@ -241,6 +261,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_inline_ai_stream",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
+    testName: "streaming surfaces:",
     note: "リクエスト挙動は runLiveSingleShot で検証。inline-ai:stream-* イベント配信は Rust/Tauri 層（非再現）。",
   },
 
@@ -253,6 +274,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "call_post_effect_api",
     verifier: "rust-live",
     testRef: POST_EFFECT_RUST,
+    testName: "intent_drift_live",
     note: "Rust 側 #[cfg(test)] ライブテストが実 OpenRouter を叩き、extract_json + JSON parse の到達経路を検証（プロンプト/解析が Rust 側のため Rust で検証）。",
   },
   {
@@ -263,6 +285,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "call_post_effect_api",
     verifier: "rust-live",
     testRef: POST_EFFECT_RUST,
+    testName: "review_live",
     note: "同上。review 用の代表プロンプトで JSON 到達を検証。",
   },
   {
@@ -273,6 +296,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "call_post_effect_api",
     verifier: "rust-live",
     testRef: POST_EFFECT_RUST,
+    testName: "consistency_with_codex_live",
     note: "同上。Codex content（cache_control 境界）を付けた経路を検証。",
   },
   {
@@ -304,6 +328,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "call_post_effect_api",
     verifier: "rust-live",
     testRef: POST_EFFECT_RUST,
+    testName: "impact_review_with_diff_live",
     note: "同上。変更された Codex 設定 (old→new) の差分を Codex ブロックとして Some(..) で渡し（cache_control 境界）、本文の矛盾箇所を judgments[] で返させる経路を Rust ライブテスト (impact_review_with_diff_live) が検証。",
   },
 

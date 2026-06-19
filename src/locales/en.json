@@ -3315,6 +3315,7 @@
       "generateFromBeats": "Generate synopsis from beats",
       "generatedFromBeats": "Generated synopsis from beats",
       "generatingFromBeats": "Generating synopsis…",
+      "generateFromBeatsFailed": "Failed to generate synopsis from beats.",
       "overwrite": "Overwrite",
       "overwriteConfirm": "Overwrite existing synopsis?"
     },

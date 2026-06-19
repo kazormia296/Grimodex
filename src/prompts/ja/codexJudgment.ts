@@ -1,5 +1,18 @@
 import { JSON_ONLY } from "../shared/jsonContract";
 
+// プロンプト・インジェクション対策: 候補 surface / 文脈 / 既存エントリ名は
+// ユーザー本文由来の自由文なので、`[candidates]` `[existingEntries]` のような
+// セクション境界トークンをそのまま含むと構造を偽装できる。contextBuilder の
+// escapeReservedTags (`<` の直後に `\` を挿入) と同じ発想で、角括弧の直後に
+// `\` を挿入して無害化する (`[existingEntries]` → `[\existingEntries]`)。挿入後は
+// 次が `\` のため再マッチせず冪等。空白変種も潰すため括弧内先頭の空白も許容する。
+const RESERVED_SECTION_TOKEN_RE = /\[(?=\s*(?:candidates|existingEntries)\b)/gi;
+
+/** 自由文中のセクション境界トークン偽装を無害化する。 */
+export function sanitizeCandidateField(text: string): string {
+  return text.replace(RESERVED_SECTION_TOKEN_RE, "[\\");
+}
+
 /** B2 LLM 判定の入力。候補と既存 Codex 名(別名統合の照合先)。 */
 export interface CandidateJudgmentInput {
   candidates: {
@@ -21,16 +34,20 @@ export function buildCandidateJudgmentPromptJa(
   const candidateLines =
     input.candidates
       .map((c) => {
-        const ctx = c.context ? `\n  文脈: ${c.context}` : "";
-        return `- surface=${c.surface} (出現${c.count}回)${ctx}`;
+        const ctx = c.context
+          ? `\n  文脈: ${sanitizeCandidateField(c.context)}`
+          : "";
+        return `- surface=${sanitizeCandidateField(c.surface)} (出現${c.count}回)${ctx}`;
       })
       .join("\n") || "(なし)";
 
   const entryLines = input.existingEntries.length
     ? input.existingEntries
         .map((e) => {
-          const aka = e.aliases.length ? ` aka=[${e.aliases.join(", ")}]` : "";
-          return `- id=${e.id} name=${e.name}${aka}`;
+          const aka = e.aliases.length
+            ? ` aka=[${e.aliases.map(sanitizeCandidateField).join(", ")}]`
+            : "";
+          return `- id=${e.id} name=${sanitizeCandidateField(e.name)}${aka}`;
         })
         .join("\n")
     : "(なし)";

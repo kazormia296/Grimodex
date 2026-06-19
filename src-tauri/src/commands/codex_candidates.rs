@@ -45,16 +45,27 @@ struct NodeRow {
     content: Option<String>,
 }
 
-/// 照合キー正規化。trim → NFC → 小文字化。NFC を挟むのは、固有名詞が NFC/NFD
-/// (例: 濁点付き仮名や macOS 由来の分解形) で揺れても重複検出が外れないようにするため。
+/// 照合キー正規化。trim → NFC → ASCII 小文字化 (A–Z のみ a–z へ)。NFC を挟むのは、
+/// 固有名詞が NFC/NFD (例: 濁点付き仮名や macOS 由来の分解形) で揺れても重複検出が
+/// 外れないようにするため。
 /// **フロントの `candidateKey` (codexCandidates.ts) と必ず同じ規則に保つこと**
 /// (ズレると Rust が出した候補をクライアントが誤って消す/残す)。
+///
+/// 小文字化を ASCII に限定する理由: 候補生成は日本語プロジェクト専用で固有名詞は
+/// 実質 ASCII 折り畳み可能だが、Unicode のフル小文字化は特殊ケース (トルコ語の
+/// 点付き/点なし I・末尾シグマ等) で Rust の `char::to_lowercase` と JS の
+/// `String.prototype.toLowerCase` が一致する保証がない。両ランタイムで確実に同一な
+/// ASCII 折り畳みに絞ることで、受理/却下キーのズレを構造的に防ぐ。
 fn normalize_name(s: &str) -> String {
     s.trim()
         .nfc()
-        .collect::<String>()
-        .chars()
-        .flat_map(|c| c.to_lowercase())
+        .map(|c| {
+            if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
