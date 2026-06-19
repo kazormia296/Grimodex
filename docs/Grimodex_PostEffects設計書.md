@@ -317,9 +317,11 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 | `intent_drift` | `INTENT_DRIFT_PROMPT_VERSION` | `intent_drift_v1.0` | `intentDriftPayloadBuilder.ts` |
 | `pseudo_comment` | `PSEUDO_COMMENT_PROMPT_VERSION` | `pseudo_comment_v2.0` | `pseudoCommentPayloadBuilder.ts` |
 | `meta_structure` | `META_STRUCTURE_PROMPT_VERSION` | `meta_structure_v1.0` | `metaStructurePayloadBuilder.ts` |
-| `timeline_consistency` | `TIMELINE_CONSISTENCY_PROMPT_VERSION` | `timeline_consistency_v1.0` | `timelinePayloadBuilder.ts` |
+| `timeline_consistency` | `TIMELINE_CONSISTENCY_PROMPT_VERSION` | `timeline_consistency_v1.1` | `timelinePayloadBuilder.ts` |
 
 `pseudo_comment` は v2.0 で bare label から genre/想定読者プロフィールを織り込んだ brief 注入へ刷新（読者ペルソナ再編）。`timeline_consistency` は multi（folder/project）スコープ専用で multi コマンドは prompt_version を検証しない（TS が `timelinePayloadBuilder` で権威を持つ）ため Rust 側に定数を持たない。
+
+**timeline_consistency v1.1（2026-06-19・因果地図用）**: `buildTimelineContext` が各タイムライン行頭に `{scene_id=...}` を埋め込み、`relation='causality'` の finding では LLM に **「因」シーンの `cause_scene_id`**（確立済タイムラインから選ぶ）を返させる。Rust 側は causality finding のときだけ `metadata.cause_scene_id` を構造化保存する（`commands/post_effect.rs`、`TimelineAnnotationMeta.cause_scene_id`）。annotation 自体は従来どおり「果」シーンに anchor。これが Map の **因果地図ボード**（`causalityBoard.ts`、Map パネル設計書参照）の有向辺 cause→effect の源になる。scene_id 注入で `timelineScopeSuffix` 経由の `input_hash` も変わるため既存 completed run は再診断される（v1.1 bump は belt-and-suspenders）。LLM は実在しない id を返しうるが描画側 `buildCausalityDag` が実在シーン解決で吸収する（Rust は per-scene 処理で検証しない）。
 
 ### 9. Outline オーバーレイの鮮度表示
 

@@ -3033,7 +3033,7 @@ async fn process_timeline_scene(
 
                 let new_id = Uuid::new_v4().to_string();
                 let content = if title.is_empty() { note } else { title };
-                let metadata = serde_json::json!({
+                let mut metadata = serde_json::json!({
                     "dismiss_key": dismiss_key,
                     "llm_reason": note,
                     "relation": relation,
@@ -3042,6 +3042,17 @@ async fn process_timeline_scene(
                     "detected_by_model": ai_settings.model,
                     "orphaned": orphaned,
                 });
+                // causality finding のみ、LLM が返した「因」シーン id を構造化保存する
+                // (因果地図用)。LLM は実在しない id を返しうるが、描画側
+                // (buildCausalityDag) が実在シーンに解決できないものを捨てるため
+                // Rust 側では検証しない。
+                if relation == "causality" {
+                    let cause_scene_id = finding["cause_scene_id"].as_str().unwrap_or("");
+                    if !cause_scene_id.is_empty() {
+                        metadata["cause_scene_id"] =
+                            serde_json::Value::String(cause_scene_id.to_string());
+                    }
+                }
 
                 conn.execute(
                     "INSERT INTO post_effect_annotations

@@ -4508,6 +4508,15 @@
       "noTargetCharacters": "No target characters",
       "defaultBoardTitle": "Character Correlation Diagram"
     },
+    "causality": {
+      "defaultBoardTitle": "Causality Diagram",
+      "generateButton": "Generate causality diagram",
+      "generated": "Causality diagram created ({{edges}} causal links)",
+      "generatedWithCycles": "Causality diagram created ({{edges}} links, {{cycles}} cycle(s) ⚠)",
+      "noEdgesToast": "No causal relations found (run the Timeline consistency review first)",
+      "noScenes": "Scenes are not loaded",
+      "failed": "Failed to generate causality diagram: {{error}}"
+    },
     "sceneNode": {
       "synopsisPlaceholder": "What happens in this scene?",
       "openButton": "Open↗"

@@ -18,7 +18,10 @@ import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { computeInputHash, normalizeText } from "./canonicalize";
 import { kouetsuScopeSuffix, timelineScopeSuffix } from "./customInstruction";
 
-export const TIMELINE_CONSISTENCY_PROMPT_VERSION = "timeline_consistency_v1.0";
+// v1.1: timelineContext に scene_id を埋め込み、causality finding で LLM に
+// cause_scene_id を返させる (因果地図用)。scene_id 注入で timelineScopeSuffix 経由の
+// input_hash も自動的に変わるため既存 completed run は再診断される。
+export const TIMELINE_CONSISTENCY_PROMPT_VERSION = "timeline_consistency_v1.1";
 
 /** タイムライン要約 1 エントリの本文抜粋の最大文字数 (system_prompt 肥大化を防ぐ)。 */
 export const TIMELINE_ENTRY_EXCERPT_MAX = 100;
@@ -76,10 +79,15 @@ function excerpt(text: string, max: number): string {
   return `${t.slice(0, max)}…`;
 }
 
-/** story-time 昇順シーンから system_prompt 用の要約文脈を組む (synopsis 優先・本文抜粋 fallback)。 */
+/**
+ * story-time 昇順シーンから system_prompt 用の要約文脈を組む (synopsis 優先・本文抜粋 fallback)。
+ * 各行頭に `{scene_id=...}` を付け、LLM が causality finding で「因」シーンを
+ * cause_scene_id として返せるようにする (因果地図用)。これは system_prompt 専用で
+ * 人間向け UI には出ない。
+ */
 export function buildTimelineContext(
   placed: Array<
-    Pick<TreeNodeData, "title" | "synopsis" | "storyTimeLabel"> & {
+    Pick<TreeNodeData, "id" | "title" | "synopsis" | "storyTimeLabel"> & {
       bodyExcerptSource: string;
     }
   >,
@@ -92,7 +100,7 @@ export function buildTimelineContext(
         node.synopsis?.trim() ||
         excerpt(node.bodyExcerptSource, TIMELINE_ENTRY_EXCERPT_MAX) ||
         "(本文なし)";
-      return `${idx}. [${label}] ${node.title} — ${summary}`;
+      return `${idx}. {scene_id=${node.id}} [${label}] ${node.title} — ${summary}`;
     })
     .join("\n");
 }
@@ -108,7 +116,7 @@ export async function buildTimelinePayload(
 
   const scenes: TimelineMultiSceneEntry[] = [];
   const contextInput: Array<
-    Pick<TreeNodeData, "title" | "synopsis" | "storyTimeLabel"> & {
+    Pick<TreeNodeData, "id" | "title" | "synopsis" | "storyTimeLabel"> & {
       bodyExcerptSource: string;
     }
   > = [];
@@ -120,6 +128,7 @@ export async function buildTimelinePayload(
       scene_text: sceneText,
     });
     contextInput.push({
+      id: node.id,
       title: node.title,
       synopsis: node.synopsis,
       storyTimeLabel: node.storyTimeLabel,

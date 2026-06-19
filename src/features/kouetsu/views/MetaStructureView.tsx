@@ -31,6 +31,7 @@ import {
 import { selectStoryContext } from "@/features/post-effect/storyContext";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { TensionCurve } from "@/features/post-effect/TensionCurve";
+import { CausalityMapButton } from "@/features/map/CausalityMapButton";
 import {
   buildTensionSeries,
   detectSaggyRuns,
@@ -299,6 +300,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
                 }
               />
             )}
+            <CausalityMapButton projectId={projectId} />
             {projectGroups.length === 0 ? (
               <EmptyState />
             ) : (

@@ -156,6 +156,7 @@ Rules:
 - Non-linear narration (flashback, foreshadowing, dramatic irony) is LEGITIMATE — do NOT flag a scene merely for being told out of reading order. Flag only an in-world impossibility or contradiction.
 - When two scenes conflict, report from the perspective of the LATER (violating) scene only, to avoid duplicate mirror-image findings.
 - Anchor each finding: found_text = exact substring of THIS scene, found_context = ~30 chars around it; for scene-whole conflicts set both null.
+- cause_scene_id: for a "causality" finding ONLY. A causality violation means THIS scene references an event/outcome/state that — per the timeline — has not happened yet. Set cause_scene_id to the scene_id of the ESTABLISHED TIMELINE entry where that referenced event ACTUALLY occurs (the CAUSE) — this is a DIFFERENT scene from THIS one. Example: THIS scene shows a character grieving a death, but the death itself occurs in a later timeline entry → cause_scene_id = that later entry's scene_id. Each timeline line is prefixed with its id as {scene_id=...}; those markers are metadata: use the id value, and NEVER copy a {scene_id=...} marker into found_text/found_context (those must be exact quotes from THIS scene only). Use ONLY a scene_id literally shown in the ESTABLISHED TIMELINE; never invent or guess one. For every other relation, set cause_scene_id to null.
 - note = short Japanese observation of HOW it conflicts with the timeline + what to reconsider (material to argue with, never a correction or score).
 - If nothing clearly conflicts, return an empty findings array. Do NOT report typos/craft/quality notes.
 Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
@@ -165,6 +166,7 @@ Respond with a JSON object in this exact format (no markdown, no explanation, on
       "title": "...",
       "note": "...",
       "relation": "chronology"|"causality"|"contradiction"|"ambiguous",
+      "cause_scene_id": "scene_id of the cause from the ESTABLISHED TIMELINE (causality only), or null",
       "found_text": "string or null",
       "found_context": "string or null"
     }

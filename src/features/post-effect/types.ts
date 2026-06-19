@@ -149,6 +149,13 @@ export interface TimelineAnnotationMeta {
   dismiss_source?: "manual" | "run_completed" | "cascade";
   detected_by_model?: string;
   orphaned?: boolean;
+  /**
+   * relation='causality' のとき、原因イベントが属するシーンの id (timeline 要約から
+   * LLM が選ぶ「因」)。annotation 自体は「果」のシーンに anchor 済み。因果地図の有向辺
+   * (cause→effect) の cause 端点。LLM が hallucinate しうるので、描画側 (buildCausalityDag)
+   * で実在シーンに解決できないものは捨てる。
+   */
+  cause_scene_id?: string;
 }
 
 /**
