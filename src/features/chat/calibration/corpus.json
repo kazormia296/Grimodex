@@ -2,62 +2,559 @@
   "_doc": "Chat episodic-recall calibration corpus. Hand-authored seed (拡張は scripts/eval-chat-recall-gen.mjs が OpenRouter で生成). messages = 1 project の過去チャット履歴プール(role/効果信号付き)。cases = クエリと gold(recall されるべき messageId)。gold=[] は無関連クエリ(ゲートが何も注入しないのが正解)。distractor には plain assistant 散文(話題は近いが実質薄い)と無関係話題を混ぜ、ゲート/床と plain 減点の較正に効かせる。",
   "ja": {
     "messages": [
-      { "id": "m_a1", "role": "user", "text": "この世界の魔法は等価交換にしたい。何かを得るには必ず同等の代償を払う。", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_a2", "role": "assistant", "text": "では代償は『記憶の欠落』にしましょう。強い魔法を使うほど、術者は大切な記憶を一つ失う。", "insertedToEditor": true, "extractedCount": 0 },
-      { "id": "m_a3", "role": "assistant", "text": "魔法のあるファンタジーは本当に面白いテーマですよね。古今東西いろいろな名作があります。", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_a4", "role": "user", "text": "記憶を失う代償、いいね。失った記憶は二度と戻らない設定にしよう。", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_b1", "role": "user", "text": "主人公セレーナは孤児院で育った設定にしたい。両親の顔は知らない。", "insertedToEditor": false, "extractedCount": 1 },
-      { "id": "m_b2", "role": "assistant", "text": "導師ガイウスが孤児院で彼女の魔法の才能を見出して引き取った、という出会いはどうでしょう。", "insertedToEditor": false, "extractedCount": 1 },
-      { "id": "m_b3", "role": "user", "text": "ガイウスは厳格だけど根は優しい。セレーナにとっては父親代わり。", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_b4", "role": "assistant", "text": "いいですね。家族構成の設定が固まると人物に芯が出ます。", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_c1", "role": "user", "text": "王都は三層構造。下層は職人街、中層は商業区、上層は貴族の居住区。", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_c2", "role": "assistant", "text": "上層と中層を隔てる『銀の門』を関所にすると、身分による移動制限が物語に効きます。", "insertedToEditor": true, "extractedCount": 0 },
-      { "id": "m_d1", "role": "user", "text": "敵役のヴァルカは復讐が動機。魔法の暴走で家族を一度に失った過去がある。", "insertedToEditor": false, "extractedCount": 1 },
-      { "id": "m_d2", "role": "assistant", "text": "復讐ものは王道で良いと思います。読者の共感も得やすいですね。", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_e1", "role": "user", "text": "物語の冒頭は雨のシーンから始めたい。セレーナが王都に到着する場面。", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_e2", "role": "assistant", "text": "雨は『記憶を洗い流す』モチーフと重ねられます。魔法の代償と呼応させると良いでしょう。", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_x1", "role": "user", "text": "今日はいい天気ですね。少し散歩してきました。", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_x2", "role": "assistant", "text": "気分転換は大事です。執筆もはかどるといいですね。", "insertedToEditor": false, "extractedCount": 0 }
+      {
+        "id": "m_a1",
+        "role": "user",
+        "text": "この世界の魔法は等価交換にしたい。何かを得るには必ず同等の代償を払う。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_a2",
+        "role": "assistant",
+        "text": "では代償は『記憶の欠落』にしましょう。強い魔法を使うほど、術者は大切な記憶を一つ失う。",
+        "insertedToEditor": true,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_a3",
+        "role": "assistant",
+        "text": "魔法のあるファンタジーは本当に面白いテーマですよね。古今東西いろいろな名作があります。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_a4",
+        "role": "user",
+        "text": "記憶を失う代償、いいね。失った記憶は二度と戻らない設定にしよう。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_b1",
+        "role": "user",
+        "text": "主人公セレーナは孤児院で育った設定にしたい。両親の顔は知らない。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "m_b2",
+        "role": "assistant",
+        "text": "導師ガイウスが孤児院で彼女の魔法の才能を見出して引き取った、という出会いはどうでしょう。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "m_b3",
+        "role": "user",
+        "text": "ガイウスは厳格だけど根は優しい。セレーナにとっては父親代わり。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_b4",
+        "role": "assistant",
+        "text": "いいですね。家族構成の設定が固まると人物に芯が出ます。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_c1",
+        "role": "user",
+        "text": "王都は三層構造。下層は職人街、中層は商業区、上層は貴族の居住区。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_c2",
+        "role": "assistant",
+        "text": "上層と中層を隔てる『銀の門』を関所にすると、身分による移動制限が物語に効きます。",
+        "insertedToEditor": true,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_d1",
+        "role": "user",
+        "text": "敵役のヴァルカは復讐が動機。魔法の暴走で家族を一度に失った過去がある。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "m_d2",
+        "role": "assistant",
+        "text": "復讐ものは王道で良いと思います。読者の共感も得やすいですね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_e1",
+        "role": "user",
+        "text": "物語の冒頭は雨のシーンから始めたい。セレーナが王都に到着する場面。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_e2",
+        "role": "assistant",
+        "text": "雨は『記憶を洗い流す』モチーフと重ねられます。魔法の代償と呼応させると良いでしょう。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_x1",
+        "role": "user",
+        "text": "今日はいい天気ですね。少し散歩してきました。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_x2",
+        "role": "assistant",
+        "text": "気分転換は大事です。執筆もはかどるといいですね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_0",
+        "role": "user",
+        "text": "この物語の舞台はどのような場所にするべきか考えています。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_1",
+        "role": "assistant",
+        "text": "ファンタジーの世界なら、魔法の森や古代の遺跡があると面白いですね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_2",
+        "role": "user",
+        "text": "魔法の森が良さそうです。そこで何か特別な生き物が住んでいますか？",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_3",
+        "role": "assistant",
+        "text": "はい、例えば、光る蝶やドラゴンの幼体が住んでいる設定ができますね。",
+        "insertedToEditor": true,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_4",
+        "role": "user",
+        "text": "それに決めます！それでは、その生き物たちの特徴を詳しく教えてください。",
+        "insertedToEditor": true,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_5",
+        "role": "user",
+        "text": "主人公のバックストーリーを考えています。彼の過去についてどう思いますか？",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_6",
+        "role": "assistant",
+        "text": "彼を孤児にして、特別な力を持つことにするとドラマチックですね。",
+        "insertedToEditor": true,
+        "extractedCount": 2
+      },
+      {
+        "id": "g_ja_7",
+        "role": "user",
+        "text": "いいですね！その力は何ですか？",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_8",
+        "role": "assistant",
+        "text": "例えば、時間を操る能力があれば、ストーリーに奥行きが出ますよ。",
+        "insertedToEditor": true,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_9",
+        "role": "user",
+        "text": "それは素晴らしいアイデアです！",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_10",
+        "role": "user",
+        "text": "物語のテーマについて考えています。どんなメッセージを込めるべきでしょうか？",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_11",
+        "role": "assistant",
+        "text": "友情や勇気のテーマは、読者に感動を与えることができますね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_12",
+        "role": "user",
+        "text": "それを中心に進めます！他に何かありますか？",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_13",
+        "role": "assistant",
+        "text": "愛や自己発見の要素も加えると、さらに深みが出ますよ。",
+        "insertedToEditor": true,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_14",
+        "role": "user",
+        "text": "そのアイデアも取り入れます！",
+        "insertedToEditor": true,
+        "extractedCount": 1
+      }
     ],
     "cases": [
-      { "id": "q_a", "query": "魔法のルールはどう決めたんだっけ？代償は何だった？", "gold": ["m_a1", "m_a2", "m_a4"] },
-      { "id": "q_a_eff", "query": "記憶を失う魔法の設定、もう一度確認したい", "gold": ["m_a2", "m_a4"] },
-      { "id": "q_b", "query": "セレーナの生い立ちと導師との出会いを思い出したい", "gold": ["m_b1", "m_b2", "m_b3"] },
-      { "id": "q_c", "query": "王都の街の構造ってどうなってたか確認したい", "gold": ["m_c1", "m_c2"] },
-      { "id": "q_d", "query": "敵役ヴァルカの動機は何だった？", "gold": ["m_d1"] },
-      { "id": "q_e", "query": "冒頭の雨のシーンで考えてたモチーフは？", "gold": ["m_e1", "m_e2"] },
-      { "id": "q_nomatch1", "query": "Pythonでファイルを1行ずつ読み込む方法を教えて", "gold": [] },
-      { "id": "q_nomatch2", "query": "料理の描写、宮廷晩餐会のメニューを考えたい", "gold": [] }
+      {
+        "id": "q_a",
+        "query": "魔法のルールはどう決めたんだっけ？代償は何だった？",
+        "gold": [
+          "m_a1",
+          "m_a2",
+          "m_a4"
+        ]
+      },
+      {
+        "id": "q_a_eff",
+        "query": "記憶を失う魔法の設定、もう一度確認したい",
+        "gold": [
+          "m_a2",
+          "m_a4"
+        ]
+      },
+      {
+        "id": "q_b",
+        "query": "セレーナの生い立ちと導師との出会いを思い出したい",
+        "gold": [
+          "m_b1",
+          "m_b2",
+          "m_b3"
+        ]
+      },
+      {
+        "id": "q_c",
+        "query": "王都の街の構造ってどうなってたか確認したい",
+        "gold": [
+          "m_c1",
+          "m_c2"
+        ]
+      },
+      {
+        "id": "q_d",
+        "query": "敵役ヴァルカの動機は何だった？",
+        "gold": [
+          "m_d1"
+        ]
+      },
+      {
+        "id": "q_e",
+        "query": "冒頭の雨のシーンで考えてたモチーフは？",
+        "gold": [
+          "m_e1",
+          "m_e2"
+        ]
+      },
+      {
+        "id": "q_nomatch1",
+        "query": "Pythonでファイルを1行ずつ読み込む方法を教えて",
+        "gold": []
+      },
+      {
+        "id": "q_nomatch2",
+        "query": "料理の描写、宮廷晩餐会のメニューを考えたい",
+        "gold": []
+      },
+      {
+        "id": "gq_ja_8",
+        "query": "魔法の森に住む特別な生き物について教えて",
+        "gold": [
+          "g_ja_3",
+          "g_ja_4"
+        ]
+      },
+      {
+        "id": "gq_ja_9",
+        "query": "主人公のバックストーリーについて詳しく教えて",
+        "gold": [
+          "g_ja_6",
+          "g_ja_8"
+        ]
+      },
+      {
+        "id": "gq_ja_10",
+        "query": "物語のテーマは何にしたらいいか？",
+        "gold": [
+          "g_ja_11",
+          "g_ja_13"
+        ]
+      },
+      {
+        "id": "gq_ja_11",
+        "query": "最近のプログラミング言語について教えて",
+        "gold": []
+      },
+      {
+        "id": "gq_ja_12",
+        "query": "税金の申告についてのアドバイスはありますか？",
+        "gold": []
+      },
+      {
+        "id": "gq_ja_13",
+        "query": "最近のスポーツニュースを知りたい",
+        "gold": []
+      }
     ]
   },
   "en": {
     "messages": [
-      { "id": "m_a1", "role": "user", "text": "Magic in this world should be equivalent exchange: to gain something you pay an equal price.", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_a2", "role": "assistant", "text": "Then let the price be memory loss: the stronger the spell, the more precious a memory the caster forgets.", "insertedToEditor": true, "extractedCount": 0 },
-      { "id": "m_a3", "role": "assistant", "text": "Fantasy with magic is such a rich theme. There are so many great works across history.", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_a4", "role": "user", "text": "Memory as the price, I like it. Let's say lost memories never come back.", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_b1", "role": "user", "text": "The protagonist Selena grew up in an orphanage and never knew her parents.", "insertedToEditor": false, "extractedCount": 1 },
-      { "id": "m_b2", "role": "assistant", "text": "What if the mentor Gaius discovered her magical talent at the orphanage and took her in?", "insertedToEditor": false, "extractedCount": 1 },
-      { "id": "m_b3", "role": "user", "text": "Gaius is strict but kind at heart, a father figure to Selena.", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_b4", "role": "assistant", "text": "Nice. Once the family setup is fixed the character gains a real backbone.", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_c1", "role": "user", "text": "The capital has three tiers: the lower artisan quarter, the middle merchant district, the upper noble quarter.", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_c2", "role": "assistant", "text": "Make the Silver Gate between the upper and middle tiers a checkpoint, so class-based movement limits drive the plot.", "insertedToEditor": true, "extractedCount": 0 },
-      { "id": "m_d1", "role": "user", "text": "The antagonist Valca is driven by revenge; he lost his whole family to a magic accident.", "insertedToEditor": false, "extractedCount": 1 },
-      { "id": "m_d2", "role": "assistant", "text": "A revenge motive is a solid classic, and readers empathize with it easily.", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_e1", "role": "user", "text": "I want to open the story with a rain scene, Selena arriving at the capital.", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_e2", "role": "assistant", "text": "Rain can double as a 'washing away memory' motif, echoing the price of magic.", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_x1", "role": "user", "text": "Lovely weather today. I went for a short walk.", "insertedToEditor": false, "extractedCount": 0 },
-      { "id": "m_x2", "role": "assistant", "text": "Breaks matter. Hope the writing goes well afterwards.", "insertedToEditor": false, "extractedCount": 0 }
+      {
+        "id": "m_a1",
+        "role": "user",
+        "text": "Magic in this world should be equivalent exchange: to gain something you pay an equal price.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_a2",
+        "role": "assistant",
+        "text": "Then let the price be memory loss: the stronger the spell, the more precious a memory the caster forgets.",
+        "insertedToEditor": true,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_a3",
+        "role": "assistant",
+        "text": "Fantasy with magic is such a rich theme. There are so many great works across history.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_a4",
+        "role": "user",
+        "text": "Memory as the price, I like it. Let's say lost memories never come back.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_b1",
+        "role": "user",
+        "text": "The protagonist Selena grew up in an orphanage and never knew her parents.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "m_b2",
+        "role": "assistant",
+        "text": "What if the mentor Gaius discovered her magical talent at the orphanage and took her in?",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "m_b3",
+        "role": "user",
+        "text": "Gaius is strict but kind at heart, a father figure to Selena.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_b4",
+        "role": "assistant",
+        "text": "Nice. Once the family setup is fixed the character gains a real backbone.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_c1",
+        "role": "user",
+        "text": "The capital has three tiers: the lower artisan quarter, the middle merchant district, the upper noble quarter.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_c2",
+        "role": "assistant",
+        "text": "Make the Silver Gate between the upper and middle tiers a checkpoint, so class-based movement limits drive the plot.",
+        "insertedToEditor": true,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_d1",
+        "role": "user",
+        "text": "The antagonist Valca is driven by revenge; he lost his whole family to a magic accident.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "m_d2",
+        "role": "assistant",
+        "text": "A revenge motive is a solid classic, and readers empathize with it easily.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_e1",
+        "role": "user",
+        "text": "I want to open the story with a rain scene, Selena arriving at the capital.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_e2",
+        "role": "assistant",
+        "text": "Rain can double as a 'washing away memory' motif, echoing the price of magic.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_x1",
+        "role": "user",
+        "text": "Lovely weather today. I went for a short walk.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "m_x2",
+        "role": "assistant",
+        "text": "Breaks matter. Hope the writing goes well afterwards.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_0",
+        "role": "user",
+        "text": "I'm thinking about the magic system in my world. Should it be elemental?",
+        "insertedToEditor": true,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_1",
+        "role": "assistant",
+        "text": "Elemental magic can create a vibrant and dynamic world! What elements are you considering?",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_2",
+        "role": "user",
+        "text": "I want to include fire, water, and earth. How can I make them unique?",
+        "insertedToEditor": true,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_3",
+        "role": "assistant",
+        "text": "You could give each element a specific cultural significance in your societies.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_4",
+        "role": "user",
+        "text": "That's a good idea! Fire could symbolize passion and destruction.",
+        "insertedToEditor": true,
+        "extractedCount": 1
+      }
     ],
     "cases": [
-      { "id": "q_a", "query": "How did we decide the rules of magic again? What was the price?", "gold": ["m_a1", "m_a2", "m_a4"] },
-      { "id": "q_a_eff", "query": "Let me double-check the memory-loss magic setup", "gold": ["m_a2", "m_a4"] },
-      { "id": "q_b", "query": "I want to recall Selena's upbringing and how she met her mentor", "gold": ["m_b1", "m_b2", "m_b3"] },
-      { "id": "q_c", "query": "Remind me how the capital city is structured", "gold": ["m_c1", "m_c2"] },
-      { "id": "q_d", "query": "What was the antagonist Valca's motive?", "gold": ["m_d1"] },
-      { "id": "q_e", "query": "What motif did we plan for the opening rain scene?", "gold": ["m_e1", "m_e2"] },
-      { "id": "q_nomatch1", "query": "How do I read a file line by line in Python?", "gold": [] },
-      { "id": "q_nomatch2", "query": "Let's plan the menu for a royal banquet feast", "gold": [] }
+      {
+        "id": "q_a",
+        "query": "How did we decide the rules of magic again? What was the price?",
+        "gold": [
+          "m_a1",
+          "m_a2",
+          "m_a4"
+        ]
+      },
+      {
+        "id": "q_a_eff",
+        "query": "Let me double-check the memory-loss magic setup",
+        "gold": [
+          "m_a2",
+          "m_a4"
+        ]
+      },
+      {
+        "id": "q_b",
+        "query": "I want to recall Selena's upbringing and how she met her mentor",
+        "gold": [
+          "m_b1",
+          "m_b2",
+          "m_b3"
+        ]
+      },
+      {
+        "id": "q_c",
+        "query": "Remind me how the capital city is structured",
+        "gold": [
+          "m_c1",
+          "m_c2"
+        ]
+      },
+      {
+        "id": "q_d",
+        "query": "What was the antagonist Valca's motive?",
+        "gold": [
+          "m_d1"
+        ]
+      },
+      {
+        "id": "q_e",
+        "query": "What motif did we plan for the opening rain scene?",
+        "gold": [
+          "m_e1",
+          "m_e2"
+        ]
+      },
+      {
+        "id": "q_nomatch1",
+        "query": "How do I read a file line by line in Python?",
+        "gold": []
+      },
+      {
+        "id": "q_nomatch2",
+        "query": "Let's plan the menu for a royal banquet feast",
+        "gold": []
+      },
+      {
+        "id": "gq_en_8",
+        "query": "What elements should be in my magic system?",
+        "gold": [
+          "g_en_0",
+          "g_en_2",
+          "g_en_4"
+        ]
+      },
+      {
+        "id": "gq_en_9",
+        "query": "How do I calculate taxes for my fantasy world?",
+        "gold": []
+      },
+      {
+        "id": "gq_en_10",
+        "query": "What are the latest football scores?",
+        "gold": []
+      },
+      {
+        "id": "gq_en_11",
+        "query": "Can you help me with programming in Python?",
+        "gold": []
+      }
     ]
   }
 }

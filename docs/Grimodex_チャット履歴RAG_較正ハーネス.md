@@ -38,32 +38,55 @@ EMBED_RES_DIR=/workspace/src-tauri/resources/semantic node scripts/chatRecallLiv
 pnpm test --run src/features/chat/calibration/chatRecallCalibration.eval.test.ts
 ```
 
-## 予備的知見（seed コーパス: 各言語 16 メッセージ / 8 クエリ）
+## 知見（seed + OpenRouter拡張コーパス: ja 31メッセージ/14クエリ, en 21/12）
 
-実埋め込みでの実測:
+OpenRouter(gpt-4o-mini)でコーパスを拡張して実埋め込みで計測したところ、**重大な precision
+バグ**が浮かび、ハーネスがそれを捕まえて修正に導いた。
+
+### 1. 重み付きスコアをゲートにかけると precision が壊れる → **raw cosine ゲートへ修正**
+
+実装当初は `weight = cos × (1+α·inserted+β·extracted)` を gate/floor の score にしていた。
+拡張コーパスで無関連クエリ(税金/プログラミング/スポーツ)の最良マッチを見ると:
+
+| ja 無関連クエリ | max RAW cos | max **weighted** |
+|---|---|---|
+| プログラミング | 0.782（gate0.85 未満=正しく弾ける） | **0.982**（突破） |
+| 税金の申告 | 0.807 | **0.998** |
+| スポーツニュース | 0.789 | **1.034** |
+
+raw cosine は正しくゲート未満なのに、信号付きメッセージ(cos×1.15)が weighted でゲートを
+突破して無関連注入を起こしていた。候補プールが大きいほど(max-of-N が上がる)悪化する。
+**修正: gate/floor/選別は RAW cosine で行い、重み付けは選別後の並べ替えにのみ使う**
+(`selectChatRecallMessages`)。「効いた発話を上位に・素 assistant を下位に」は順位付けで
+担保しつつ、ゲート突破による混入を断つ。これは作者自身の「迷ったら何も注入しない」規律に整合。
 
 | lang | 構成 | R@1 | recall | precision | fpRate |
 |---|---|---|---|---|---|
-| ja | scene 既定 (gate0.85/floor0.80) | 0.83 | 0.58 | 0.39 | 0.00 |
-| ja | sweep 最良 (gate0.82/floor0.76) | **1.00** | **0.83** | 0.56 | 0.00 |
-| en | scene 既定 (gate0.51) | 0.83 | 0.78 | 0.56 | 0.50 |
-| en | sweep 最良 (gate0.54) | 0.83 | 0.81 | 0.67 | 0.50 |
+| ja | weighted-gate(旧・バグ) | 0.11 | 0.52 | 0.33 | **1.00** |
+| ja | **raw-gate(修正後)** gate0.85/floor0.80 | 0.67 | 0.65 | 0.44 | **0.00** |
+| en | raw-gate, scene gate0.51 | 0.71 | 0.71 | 0.52 | 0.80 |
+| en | **raw-gate + 較正 gate0.66/floor0.60** | 0.71 | 0.71 | 0.71 | **0.00** |
 
-**読み取り:**
-- **scene 由来の既定はチャットに最適ではない**。とくに ja は **floor 0.80 が高すぎ**、
-  チャットメッセージ（シーン本文より短い＝cosine が低めに出る）の recall を 0.58 に抑えていた。
-  floor を 0.76 へ下げると recall 0.83 / R@1 1.00 へ、しかも fpRate=0 のまま。
-- 話題隣接の **ハード負例**（晩餐会↔貴族街）は ruri/bge の高ベースラインでは gate 単独で
-  完全分離できない（設計既知・真の解は reranker）。クリーンな無関連（プログラミング）は
-  ゲートで弾ける。弱 recall の leak は **Codex > chat RAG 順序**で正典を上書きしないので許容範囲。
-- plain-assistant 減点（0.8）は本 recall コーパスでは recall/precision を犠牲にしない一方、
-  この指標では押し上げ効果も小さい。**その価値は self-reference 抑制（モデル自身の過去の
-  憶測を等倍で戻さない）という質的な安全側にある**ため、recall 指標が報いなくても維持する。
+### 2. en の gate 0.51(scene 由来)はチャットには低すぎる → **0.66 へ**
 
-## 結論・次アクション
+bge は短い無関連クエリでも raw cosine が 0.5〜0.64 に座るため、scene gate 0.51 では
+税金(raw0.64)等を弾けず fpRate=0.80。**chat 専用に en gate を 0.66 / floor 0.60 へ引き上げ**
+ると fpRate=0 / R@1 0.71 / precision 0.71。ja(ruri)は raw-gate 化だけで scene 既定 0.85/0.80
+が fpRate=0 になるため据え置き(`chatRecallParamsForLang`)。
 
-- **本番定数はまだ変更しない**。seed は 8 クエリと小さく、過適合のリスクがある
-  （repo の閾値較正は 36 ペア規模で確定してきた）。
-- **次アクション**: `eval-chat-recall-gen.mjs`（OpenRouter）でコーパスを数十シナリオ規模へ
-  拡張 → 再 sweep → データ裏付けのある定数（とくに ja の chat 専用 floor）を適用。
-  方向性（chat は floor を下げる余地大）はこの予備計測で既に robust。
+### 3. コーパス品質の注意
+
+gpt-4o-mini の自動生成は「友情/勇気/テーマ」等の汎用的な執筆チャットに偏り、シナリオ間の
+意味的分離が弱い(gold の絶対 recall が伸びにくい)。また insertedToEditor を付け過ぎる傾向が
+あり、結果として **weighted-gate バグを強く可視化した**(=テストとしては好都合)。より精密な
+α/β 較正には、より強いモデル(gpt-4o / claude)や鋭いプロンプトで**分離の良い**コーパスが要る。
+
+## 結論・適用
+
+- **適用済み(本ブランチ)**: ①raw-cosine ゲート化(precision バグ修正・robust)、
+  ②en chat gate 0.66/floor 0.60。両言語とも本番構成で fpRate=0・recall/R@1≥0.6。
+- **未適用(データ不足)**: α/β/cap/plain の微調整。raw-gate 化で重みは順位付けのみに効くため
+  影響は小さく、現状の既定(α0.15/β0.10/plain0.8)を維持。plain<1 は self-reference 抑制の
+  質的安全側として保持。
+- **次アクション**: 強いモデルで分離の良いコーパスを生成 → α/β を本較正。en の 0.66/0.60 は
+  小コーパス由来の暫定値なので、拡張後に再確認。reranker は依然 precision の最終解。

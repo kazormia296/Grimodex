@@ -135,26 +135,49 @@ describe("selectChatRecallMessages (gate / weighting)", () => {
     expect(out).toHaveLength(0);
   });
 
-  it("weighting lifts an effective utterance over the gate", () => {
-    // 生 cos 0.83 は gate 0.85 未満だが、insertedToEditor で 0.83×1.15=0.9545 → 注入。
+  it("weighting does NOT lift a below-gate hit over the gate (precision-safe)", () => {
+    // 較正で判明したバグの回帰: 生 cos 0.83 は gate 0.85 未満。信号付きでも weighted で
+    // ゲートを突破させない(gate は RAW cosine)。無関連クエリの誤注入を防ぐ。
     const out = selectChatRecallMessages(
       [hit({ messageId: "m1", score: 0.83, insertedToEditor: true })],
       [],
       { excludeSessionIds: [], ...JA },
     );
-    expect(out).toHaveLength(1);
-    expect(out[0].messageId).toBe("m1");
-    expect(out[0].score).toBeGreaterThan(0.85);
+    expect(out).toHaveLength(0);
   });
 
-  it("plain assistant prose is demoted below the gate and dropped", () => {
-    // 生 cos 0.86 は gate を越えるが、素の assistant は ×0.8 = 0.688 → 落ちる。
+  it("weighting orders effective utterances ahead of plain ones within the gated set", () => {
+    // 両方とも RAW で gate を越える。順位は重み付きスコアで決まる:
+    //   plain user 0.90 → 0.90 / inserted assistant 0.87 → 0.87×1.15=1.0005 が上位。
     const out = selectChatRecallMessages(
-      [hit({ messageId: "m1", score: 0.86, role: "assistant" })],
+      [
+        hit({ messageId: "plain", score: 0.9, role: "user" }),
+        hit({
+          messageId: "effective",
+          score: 0.87,
+          role: "assistant",
+          insertedToEditor: true,
+        }),
+      ],
       [],
       { excludeSessionIds: [], ...JA },
     );
-    expect(out).toHaveLength(0);
+    expect(out.map((m) => m.messageId)).toEqual(["effective", "plain"]);
+  });
+
+  it("a high-cosine plain assistant message is injected (gate on raw) but ranked last", () => {
+    // 生 cos 0.86 は gate を越えるので注入される(raw ゲート)。素の assistant は
+    // 重みで下位に回るが、precision のため除外はしない(話題的には関連)。
+    const out = selectChatRecallMessages(
+      [
+        hit({ messageId: "user", score: 0.86, role: "user" }),
+        hit({ messageId: "plainai", score: 0.88, role: "assistant" }),
+      ],
+      [],
+      { excludeSessionIds: [], ...JA },
+    );
+    // plainai は raw 0.88 で最高だが、weighted 0.88×0.8=0.704 < user 0.86 → 下位。
+    expect(out.map((m) => m.messageId)).toEqual(["user", "plainai"]);
   });
 
   it("excludes the current session (live turn) from recall", () => {

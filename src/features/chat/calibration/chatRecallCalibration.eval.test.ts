@@ -152,8 +152,8 @@ const GRID: Record<Lang, { gates: number[]; floors: number[] }> = {
     floors: [0.76, 0.78, 0.8, 0.82],
   },
   en: {
-    gates: [0.42, 0.45, 0.48, 0.51, 0.54, 0.58],
-    floors: [0.42, 0.45, 0.48, 0.51, 0.54],
+    gates: [0.51, 0.54, 0.58, 0.62, 0.66, 0.7],
+    floors: [0.48, 0.51, 0.54, 0.58, 0.62],
   },
 };
 const ALPHA = [0.1, 0.15, 0.2, 0.25];
@@ -161,9 +161,11 @@ const BETA = [0.05, 0.1, 0.15];
 const CAP = [3];
 const PLAIN = [0.7, 0.8, 0.9, 1.0];
 
+// 本番の chatRecallParamsForLang と一致させる(較正適用後の production 構成)。
+// ja は scene 既定、en は較正で引き上げ。gate は RAW cosine にかかる。
 const DEFAULT_GF: Record<Lang, { gate: number; floor: number }> = {
   ja: { gate: 0.85, floor: 0.8 },
-  en: { gate: 0.51, floor: 0.51 },
+  en: { gate: 0.66, floor: 0.6 },
 };
 
 interface Best {
@@ -245,42 +247,27 @@ describe.skipIf(!embReady)(
 
       console.log(report.join("\n"));
 
-      // 品質ゲート(seed コーパスは小さく過適合し得るので、絶対値ではなく較正の
-      // 健全性で gate する):
-      //  - 較正は default より悪化しない(fpRate↓ recall↑ = 単調)。
-      //  - 最良構成は実用水準で recall できる(R@1/recall ≥ 0.6)。
-      //  - クリーンな無関連クエリ(q_nomatch1=プログラミング)はゲートで弾ける(=
-      //    最良構成 fpRate ≤ 0.5: ハード負例 1 件の leak は許容、クリーン負例は弾く)。
-      // 注: ruri/bge の高ベースラインでは話題隣接のハード負例(晩餐会↔貴族街)は
-      //     gate 単独で完全分離できない(設計既知・真の解は reranker)。Codex>chatRAG
-      //     順序で弱 recall は正典を上書きしないので許容範囲。
+      // 品質ゲート: **本番構成**(raw-gate + 較正済み gate/floor = DEFAULT_GF)が
+      //  - 無関連クエリで一切注入しない(fpRate=0 = precision 規律)、
+      //  - gold クエリを実用水準で当てる(recall / R@1 ≥ 0.6)。
+      // さらに sweep もクリーン構成を見つけられること(ハーネス健全性)。
+      // raw-gate 化前は weighting がゲートを突破して ja/en とも fpRate≥0.8 だった
+      // (= この test が weighting-gate 退行を捕まえる)。
       for (const lang of LANGS) {
         const best = bests[lang]!;
         const d = DEFAULT_GF[lang];
-        const def = evalConfig(
+        const prod = evalConfig(
           lang,
           d.gate,
           d.floor,
           DEFAULT_CHAT_RECALL_WEIGHTS,
         );
-        expect(best.obj, `${lang} sweep≥default`).toBeGreaterThanOrEqual(
-          objective(def),
-        );
-        expect(best.m.fpRate, `${lang} fpRate not worse`).toBeLessThanOrEqual(
-          def.fpRate + 1e-9,
-        );
-        expect(
-          best.m.recall,
-          `${lang} recall not worse`,
-        ).toBeGreaterThanOrEqual(def.recall - 1e-9);
-        expect(
-          best.m.fpRate,
-          `${lang} clean negative rejected`,
-        ).toBeLessThanOrEqual(0.5);
-        expect(best.m.recall, `${lang} recall usable`).toBeGreaterThanOrEqual(
+        expect(prod.fpRate, `${lang} production fpRate`).toBe(0);
+        expect(prod.recall, `${lang} production recall`).toBeGreaterThanOrEqual(
           0.6,
         );
-        expect(best.m.r1, `${lang} R@1 usable`).toBeGreaterThanOrEqual(0.6);
+        expect(prod.r1, `${lang} production R@1`).toBeGreaterThanOrEqual(0.6);
+        expect(best.m.fpRate, `${lang} sweep finds clean config`).toBe(0);
       }
     });
 
