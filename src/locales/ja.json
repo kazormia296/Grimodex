@@ -4752,5 +4752,41 @@
     "deleteConfirmTitle": "「{{name}}」を削除しますか？",
     "deleteConfirmDesc": "{{count}} 件のシーン・章から外されます。",
     "reorder": "並べ替え"
+  },
+  "promptLibrary": {
+    "section": {
+      "title": "プロンプトライブラリ",
+      "intro": "よく使う指示文をテンプレートとして保存し、チャット入力に挿し込めます。このプロジェクト内でのみ共有されます。",
+      "empty": "保存済みのテンプレートはまだありません。",
+      "add": "テンプレートを追加",
+      "usageCount": "{{count}} 回使用",
+      "editAria": "「{{title}}」を編集",
+      "deleteAria": "「{{title}}」を削除"
+    },
+    "editor": {
+      "headingNew": "テンプレートを新規作成",
+      "headingEdit": "テンプレートを編集",
+      "titleLabel": "タイトル",
+      "titlePlaceholder": "例: 文体を整えてもらう指示",
+      "contentLabel": "本文",
+      "contentPlaceholder": "再利用したい指示文を入力…"
+    },
+    "picker": {
+      "title": "保存済みテンプレートを挿入",
+      "label": "テンプレート",
+      "empty": "テンプレートがありません。設定 → AI から追加できます。"
+    },
+    "saveFromPreview": {
+      "title": "この内容をテンプレートとして保存",
+      "label": "テンプレート保存"
+    },
+    "toast": {
+      "saved": "テンプレートを保存しました",
+      "saveFailed": "テンプレートの保存に失敗しました",
+      "loadFailed": "テンプレートの読み込みに失敗しました",
+      "deleteFailed": "テンプレートの削除に失敗しました",
+      "titleRequired": "タイトルを入力してください",
+      "contentRequired": "本文を入力してください"
+    }
   }
 }

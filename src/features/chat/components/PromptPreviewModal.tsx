@@ -1,8 +1,11 @@
-import { X } from "lucide-react";
+import { useState } from "react";
+import { BookmarkPlus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { LayerBreakdown } from "../contextBuilder";
 import { estimateInputCost, formatCost } from "../modelPricing";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { usePromptLibraryStore } from "@/features/prompt-library/promptLibraryStore";
+import { PromptTemplateEditorDialog } from "@/features/prompt-library/PromptTemplateEditorDialog";
 
 interface PromptPreviewModalProps {
   systemPrompt: string;
@@ -30,6 +33,12 @@ export function PromptPreviewModal({
   onClose,
 }: PromptPreviewModalProps) {
   const { t } = useTranslation();
+  const createTemplate = usePromptLibraryStore((s) => s.create);
+  // テンプレート保存ダイアログ。保存対象は「これから送る入力メッセージ」が
+  // あればそれ（再利用したい指示文）、無ければプロンプト全文。
+  const [saveOpen, setSaveOpen] = useState(false);
+  const saveTarget =
+    userMessage && userMessage.trim() ? userMessage : systemPrompt;
   const estimatedCost =
     model && totalTokens > 0 ? estimateInputCost(model, totalTokens) : null;
   const costLabel = estimatedCost !== null ? formatCost(estimatedCost) : null;
@@ -57,15 +66,41 @@ export function PromptPreviewModal({
         <h2 className="text-sm font-semibold">
           {t("chat.context.promptPreviewTitle")}
         </h2>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded p-1 text-muted-foreground hover:bg-accent"
-          aria-label={t("common.close")}
-        >
-          <X className="h-4 w-4" aria-hidden />
-        </button>
+        <div className="flex items-center gap-1">
+          {!loading && saveTarget.trim() && (
+            <button
+              type="button"
+              onClick={() => setSaveOpen(true)}
+              className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              title={t("promptLibrary.saveFromPreview.title")}
+            >
+              <BookmarkPlus className="h-3.5 w-3.5" aria-hidden />
+              {t("promptLibrary.saveFromPreview.label")}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-muted-foreground hover:bg-accent"
+            aria-label={t("common.close")}
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </button>
+        </div>
       </div>
+
+      {saveOpen && (
+        <PromptTemplateEditorDialog
+          heading={t("promptLibrary.editor.headingNew")}
+          initialTitle=""
+          initialContent={saveTarget}
+          onSubmit={async (title, content) => {
+            await createTemplate(title, content);
+            setSaveOpen(false);
+          }}
+          onClose={() => setSaveOpen(false)}
+        />
+      )}
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {loading ? (
