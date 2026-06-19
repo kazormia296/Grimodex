@@ -141,6 +141,9 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "ai.contextBudget.l4": "project",
   "ai.contextBudget.l5": "project",
   "ai.contextBudget.reserve": "project",
+  // AI cost budget — 月予算 (USD)・プロジェクト毎・表示のみ (0 = 未設定)。
+  // 生成はブロックしない (機能①「トークン予算 ETA」)。
+  "ai.costBudgetPerMonth": "project",
   // Beat — work-specific (project)
   "beat.injectIntoContext": "project",
   "beat.inferRoles": "project",
@@ -269,6 +272,8 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.contextBudget.l4": "20",
   "ai.contextBudget.l5": "20",
   "ai.contextBudget.reserve": "5",
+  // 月予算 (USD)。0 = 未設定 (バー・残日数を表示しない)。
+  "ai.costBudgetPerMonth": "0",
   // Beat AI context injection (Phase C)
   "beat.injectIntoContext": "true",
   "beat.inferRoles": "true",

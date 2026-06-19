@@ -1049,6 +1049,27 @@
       }
     }
   },
+  "tokenBudget": {
+    "title": "Budget & ETA",
+    "intro": "Your AI cost so far this month for this project, plus a month-end projection based on your current pace. Display only — generation is never blocked when you go over budget.",
+    "monthlyBudget": "Monthly budget (USD)",
+    "monthlyBudgetDesc": "An approximate cost ceiling per month for this project. 0 = unset (the bar and days-left are hidden).",
+    "unset": "Not set",
+    "consumed": "Consumed",
+    "monthCost": "Cost this month",
+    "dailyRate": "Daily pace",
+    "dailyRateDesc": "Month total ÷ {{days}} elapsed day(s)",
+    "projectedMonthEnd": "Month-end (avg pace)",
+    "projectedMonthEndDesc": "Projected month-end cost if this month's average pace holds",
+    "recentProjected": "Month-end (recent pace)",
+    "recentProjectedDesc": "Projected month-end cost using the last 7 days' pace for the remaining days",
+    "daysUntilBudget": "Days until budget",
+    "daysUntilBudgetDesc": "Approximate days until the budget is reached at the current daily pace",
+    "daysValue": "~{{days}} day(s)",
+    "warnApproaching": "At this pace you are on track to reach this month's budget.",
+    "warnOver": "You have exceeded this month's budget.",
+    "warnNonBlocking": "(display only — generation is not blocked)"
+  },
   "layout": {
     "watermark": {
       "panelsClosed": "Panels are closed",
