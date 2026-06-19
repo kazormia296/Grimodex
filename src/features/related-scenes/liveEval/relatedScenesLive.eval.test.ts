@@ -265,6 +265,26 @@ describe.skipIf(!embReady)("related-scenes live eval (real embeddings)", () => {
     }
   });
 
+  it("#1b dense 勝者アンカー: hybrid の R@1 は dense を下回らない(トレードオフ解消)", () => {
+    // 旧 hybrid は RRF が語彙一致の弱関連を dense 勝者の上へ押し R@1 を落としていた
+    // (all 0.40→0.29)。dense 勝者アンカー後は、confident 勝者がいる時 hybrid の rank1 =
+    // dense の rank1 (同一シーン) になり、勝者不在なら dense は空(R@1=0)なので hybrid≥dense
+    // が構造的に保証される。+seed/+rel も admit を足すだけで rank1 を奪わない。
+    for (const lang of ["ja", "en", "all"]) {
+      const r = report[lang];
+      expect(r.hybrid.recallAt1).toBeGreaterThanOrEqual(r.dense.recallAt1);
+      expect(r["hybrid+seed(3)"].recallAt1).toBeGreaterThanOrEqual(
+        r.dense.recallAt1,
+      );
+      expect(r["hybrid+seed+rel(2)"].recallAt1).toBeGreaterThanOrEqual(
+        r.dense.recallAt1,
+      );
+    }
+    // 実測の到達点(本コーパス・決定的埋め込み): hybrid は R@1/R@3/recall/MRR で dense を
+    // 同等以上にしつつ recall を 0.88→1.00 に引き上げる(precision のみ recall の対価で低下)。
+    expect(report.all.hybrid.mrr).toBeGreaterThanOrEqual(report.all.dense.mrr);
+  });
+
   it("#2 相対救済を入れても precision が崩壊しない(団子を溢れさせない)", () => {
     expect(report.all["hybrid+seed+rel(2)"].precision).toBeGreaterThan(0.3);
   });
