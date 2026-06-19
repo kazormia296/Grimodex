@@ -32,7 +32,7 @@
   - 重み係数 `weight = roleBase × (1 + α·insertedToEditor + β·min(extractedCount, k))`
     - α=`CHAT_RECALL_INSERTED_BOOST`(0.15) / β=`CHAT_RECALL_EXTRACTED_BOOST`(0.10) / k=3
     - `roleBase`: user・信号付き assistant = 1.0、**素の assistant 散文 = 0.8**（モデル自身の過去の憶測が等倍で「記憶」として戻る self-reference を抑える）
-  - `weight × cosine` を score として、scene recall の選別関数（`selectSemanticRecallChunks` / `selectHybridRecallChunks`、gate/floor/RRF/backfill）を流用。gate/floor は `recallParamsForLang`（ja 0.85/0.80、en 0.51）を共有。「効いた発話」はゲートを越えやすくなる（ユーザー合意の挙動）。
+  - **gate/floor/選別は RAW cosine** で scene recall の選別関数（`selectSemanticRecallChunks` / `selectHybridRecallChunks`）を流用し、**重み付けは選別後の並べ替えにのみ使う**。当初は `weight × cosine` を gate score にしていたが、実埋め込み較正で信号付きメッセージ（cos×1.15）が無関連クエリでゲートを突破し precision を壊すと判明（ja 無関連 raw≈0.78→weighted≈0.98）。raw-gate 化で fpRate 1.0→0。詳細は [較正ハーネス](Grimodex_チャット履歴RAG_較正ハーネス.md)。閾値は `chatRecallParamsForLang`（ja=scene 0.85/0.80、**en=chat専用 0.66/0.60**＝scene 0.51 はチャット無関連を弾けず較正で引き上げ）。
   - 現セッションは `excludeSessionIds` で除外（進行中ターンを記憶として引き戻さない）。
 - hybrid: sparse 腕は既存の `chat_messages_fts`（FTS5/trigram、トリガ同期済）に `fts_search` の `scope:"chat"` を足して再利用。`ai.hybridRecall` を scene RAG と共有。
 
@@ -52,7 +52,14 @@
 - `ai.chatRecall`（既定 ON、独立トグル。OFF で scene RAG を残したまま記憶だけ切れる）
 - `ai.hybridRecall` を scene RAG と共有。
 
+## 較正（[較正ハーネス](Grimodex_チャット履歴RAG_較正ハーネス.md)）
+
+- 実埋め込み（ローカル ONNX）での sweep で **raw-cosine ゲート化**（precision バグ修正）と
+  **en gate 0.66/0.60**（scene 0.51 はチャット無関連を弾けない）を確定・適用。両言語 fpRate=0。
+- 未適用: α/β/cap/plain の微調整（raw-gate 化で重みは順位付けのみに効くため影響小）。
+  より分離の良いコーパス（強いモデルで生成）で再較正の余地。reranker が precision の最終解。
+
 ## 残ゲート
 
 - 実機 GUI QA（バナー表示・昇格フロー・縦書き等は未確認）。
-- 重み係数 α/β と plain-assistant 基底 0.8、および chat の gate/floor の **ライブ eval による較正**（現状は scene の閾値を流用した保守的既定）。`debugLog "ChatRecall"` 行で可観測。
+- en の 0.66/0.60 は小コーパス由来の暫定値。`debugLog "ChatRecall"` 行で実データ可観測。
