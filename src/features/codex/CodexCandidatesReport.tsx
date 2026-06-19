@@ -69,8 +69,10 @@ export function CodexCandidatesReport() {
   }, []);
 
   // 候補を本文スキャンで取得 (project 切替 / 手動リフレッシュで再実行)。
+  // 再スキャンすると候補集合が変わるので、古い AI 判定は破棄する (stale 防止)。
   const reload = useCallback(() => {
     const pid = projectIdRef.current;
+    setJudgments(new Map());
     if (!pid) {
       setCandidates([]);
       return;
@@ -225,7 +227,12 @@ export function CodexCandidatesReport() {
           const target = entries.find((e) => e.id === judgment.aliasOfId);
           if (target) {
             const aliases = parseAliases(target.aliases);
-            if (!aliases.includes(c.surface)) {
+            // 既存 name/alias と正規化キーで突合し、表記揺れ(NFC/大小)も含め重複追記しない。
+            const key = candidateKey(c.surface);
+            const dup =
+              candidateKey(target.name ?? "") === key ||
+              aliases.some((a) => candidateKey(a) === key);
+            if (!dup) {
               await update(target.id, {
                 aliases: JSON.stringify([...aliases, c.surface]),
               });

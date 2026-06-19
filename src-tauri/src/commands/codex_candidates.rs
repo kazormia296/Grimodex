@@ -159,7 +159,7 @@ fn context_window(plain: &str, byte_start: usize, byte_end: usize) -> String {
     while r < chars.len() {
         let (_, c) = chars[r];
         r += 1;
-        if TERMINATORS.contains(&c) || r.saturating_sub(end_ci) > RADIUS {
+        if TERMINATORS.contains(&c) || r.saturating_sub(end_ci) >= RADIUS {
             break;
         }
     }

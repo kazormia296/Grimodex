@@ -19,6 +19,7 @@ const KNOWN_SURFACES: AiUsageSurface[] = [
   "session_title",
   "summarization",
   "context_creator",
+  "codex_judgment",
 ];
 
 const KNOWN_SURFACE_SET = new Set<string>(KNOWN_SURFACES);

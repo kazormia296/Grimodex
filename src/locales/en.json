@@ -1073,7 +1073,8 @@
         "synopsis": "Synopsis generation",
         "session_title": "Session title",
         "summarization": "Summarization",
-        "context_creator": "Context Creator"
+        "context_creator": "Context Creator",
+        "codex_judgment": "Proper-noun candidate judgment"
       }
     }
   },

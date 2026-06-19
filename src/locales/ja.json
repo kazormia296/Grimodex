@@ -1073,7 +1073,8 @@
         "synopsis": "あらすじ生成",
         "session_title": "セッションタイトル",
         "summarization": "要約",
-        "context_creator": "Context Creator"
+        "context_creator": "Context Creator",
+        "codex_judgment": "固有名詞候補の判定"
       }
     }
   },

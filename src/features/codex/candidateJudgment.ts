@@ -41,30 +41,6 @@ const MAX_ENTRIES = 200;
 
 type EntryLike = { id: string; name: string | null; aliases: string | null };
 
-function isValidJudgment(
-  x: unknown,
-  knownIds: Set<string>,
-): x is CandidateJudgment {
-  if (!x || typeof x !== "object") return false;
-  const j = x as Record<string, unknown>;
-  if (typeof j.surface !== "string" || j.surface.length === 0) return false;
-  if (
-    typeof j.suggestedType !== "string" ||
-    !SUGGESTED_TYPES.includes(j.suggestedType as SuggestedType)
-  ) {
-    return false;
-  }
-  if (j.summary != null && typeof j.summary !== "string") return false;
-  // aliasOfId は null か、実在する既存エントリ id のみ許可 (hallucinate 棄却)。
-  if (
-    j.aliasOfId != null &&
-    (typeof j.aliasOfId !== "string" || !knownIds.has(j.aliasOfId))
-  ) {
-    return false;
-  }
-  return true;
-}
-
 /**
  * 候補を一括判定し、`candidateKey(surface) → CandidateJudgment` の Map を返す。
  * policy off / 候補なし / AI 失敗時は空 Map (UI は決定的な候補一覧のまま動く)。
@@ -87,6 +63,8 @@ export async function judgeCandidates(
   }
 
   const knownIds = new Set(entries.map((e) => e.id));
+  // LLM が入力に無い surface を返した場合 (hallucination) を弾く照合先。
+  const validSurfaces = new Set(candidates.map((c) => candidateKey(c.surface)));
   const prompt = getPromptCatalog(
     lang,
   ).codexJudgment.buildCandidateJudgmentPrompt({
@@ -123,14 +101,28 @@ export async function judgeCandidates(
     const parsed = JSON.parse(jsonText) as { judgments?: unknown };
     if (!Array.isArray(parsed.judgments)) return result;
     for (const raw of parsed.judgments) {
-      if (isValidJudgment(raw, knownIds)) {
-        result.set(candidateKey(raw.surface), {
-          surface: raw.surface,
-          suggestedType: raw.suggestedType,
-          summary: typeof raw.summary === "string" ? raw.summary : "",
-          aliasOfId: raw.aliasOfId ?? null,
-        });
-      }
+      if (!raw || typeof raw !== "object") continue;
+      const r = raw as Record<string, unknown>;
+      if (typeof r.surface !== "string") continue;
+      const key = candidateKey(r.surface);
+      // 入力候補に無い surface (hallucination)・空キー (空白のみ) は捨てる。
+      if (!key || !validSurfaces.has(key)) continue;
+      // 種別は前後空白・大小を吸収して 4 種 enum に丸める。
+      const typeStr =
+        typeof r.suggestedType === "string"
+          ? r.suggestedType.trim().toLowerCase()
+          : "";
+      if (!SUGGESTED_TYPES.includes(typeStr as SuggestedType)) continue;
+      // aliasOfId は実在 id のみ採用。不正/未知は null に倒す (種別判定自体は活かす)。
+      const aliasRaw =
+        typeof r.aliasOfId === "string" ? r.aliasOfId.trim() : null;
+      const aliasOfId = aliasRaw && knownIds.has(aliasRaw) ? aliasRaw : null;
+      result.set(key, {
+        surface: r.surface,
+        suggestedType: typeStr as SuggestedType,
+        summary: typeof r.summary === "string" ? r.summary : "",
+        aliasOfId,
+      });
     }
   } catch {
     // ignore — 空 Map

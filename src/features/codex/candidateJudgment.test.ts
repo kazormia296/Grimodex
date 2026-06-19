@@ -32,54 +32,71 @@ function cand(surface: string): CodexCandidate {
   };
 }
 
+function aiReturns(judgments: unknown[]) {
+  mockSend.mockResolvedValue({
+    text: JSON.stringify({ judgments }),
+    inputTokens: 1,
+    outputTokens: 1,
+  });
+}
+
 describe("judgeCandidates", () => {
   beforeEach(() => {
     mockSend.mockReset();
     mockBlock.mockReturnValue(false);
   });
 
-  it("有効な判定だけを採用し、不正な種別/未知 aliasOfId は捨てる", async () => {
-    mockSend.mockResolvedValue({
-      text: JSON.stringify({
-        judgments: [
-          {
-            surface: "円明",
-            suggestedType: "character",
-            summary: "主人公",
-            aliasOfId: null,
-          },
-          {
-            surface: "帝都",
-            suggestedType: "location",
-            summary: "",
-            aliasOfId: "e1",
-          },
-          {
-            surface: "謎",
-            suggestedType: "bogus",
-            summary: "",
-            aliasOfId: null,
-          },
-          {
-            surface: "影",
-            suggestedType: "item",
-            summary: "",
-            aliasOfId: "ghost",
-          },
-        ],
-      }),
-      inputTokens: 1,
-      outputTokens: 1,
-    });
+  it("種別を正規化採用し、不正種別は捨て、未知 aliasOfId は null に倒す", async () => {
+    aiReturns([
+      {
+        surface: "円明",
+        suggestedType: " Character ",
+        summary: "主人公",
+        aliasOfId: null,
+      },
+      {
+        surface: "帝都",
+        suggestedType: "location",
+        summary: "",
+        aliasOfId: "e1",
+      },
+      { surface: "謎", suggestedType: "bogus", summary: "", aliasOfId: null },
+      { surface: "影", suggestedType: "item", summary: "", aliasOfId: "ghost" },
+    ]);
     const m = await judgeCandidates(
       [cand("円明"), cand("帝都"), cand("謎"), cand("影")],
       [{ id: "e1", name: "首都", aliases: null }],
     );
+    // 前後空白・大小を吸収して enum に丸める
     expect(m.get("円明")?.suggestedType).toBe("character");
     expect(m.get("円明")?.summary).toBe("主人公");
     expect(m.get("帝都")?.aliasOfId).toBe("e1"); // 既知 id は採用
     expect(m.has("謎")).toBe(false); // 不正な種別は除外
-    expect(m.has("影")).toBe(false); // 未知 aliasOfId は除外
+    // 種別は有効・aliasOfId だけ未知 → 判定は活かし alias は null に倒す
+    expect(m.get("影")?.suggestedType).toBe("item");
+    expect(m.get("影")?.aliasOfId).toBeNull();
+  });
+
+  it("入力候補に無い surface (hallucination) と空白のみ surface は捨てる", async () => {
+    aiReturns([
+      {
+        surface: "円明",
+        suggestedType: "character",
+        summary: "",
+        aliasOfId: null,
+      },
+      {
+        surface: "パン屋",
+        suggestedType: "location",
+        summary: "",
+        aliasOfId: null,
+      },
+      { surface: "   ", suggestedType: "item", summary: "", aliasOfId: null },
+    ]);
+    const m = await judgeCandidates([cand("円明")], []);
+    expect(m.has("円明")).toBe(true);
+    expect(m.has("パン屋")).toBe(false); // 入力に無い
+    expect(m.size).toBe(1); // 空白 surface も入らない
   });
 
   it("policy off なら AI を呼ばず空", async () => {
