@@ -63,6 +63,7 @@ interface ChatResponsePayload {
 export async function sendChatMessage(
   messages: ChatMessage[],
   onChunk: (chunk: string) => void,
+  model?: string | null,
 ): Promise<void> {
   const payload = messages.map((m) => ({ role: m.role, content: m.content }));
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
@@ -71,12 +72,42 @@ export async function sendChatMessage(
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
+    model: model ?? null,
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
     .map((b) => (b as { type: "text"; content: string }).content)
     .join("\n");
   onChunk(text);
+}
+
+/**
+ * A/B 比較 (③) 用の非ストリーミング 1 ショット送信。ライブ ChatPanel の
+ * 単一ストリーム描画には一切触れず、専用の比較サーフェスから 2 構成を
+ * 並列に投げるためのヘルパ。model override 付き、テキストだけを返す。
+ * usage は呼び出し側 (dispatcher) で recordAiUsage する。
+ */
+export async function sendChatMessageOnceAb(
+  messages: { role: string; content: string }[],
+  model?: string | null,
+): Promise<{ text: string; inputTokens?: number; outputTokens?: number }> {
+  const response = await invoke<ChatResponsePayload>("send_chat_message", {
+    messages,
+    thinking: null,
+    effort: null,
+    reasoningEnabled: null,
+    reasoningEffort: null,
+    model: model ?? null,
+  });
+  const text = response.blocks
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; content: string }).content)
+    .join("\n");
+  return {
+    text,
+    inputTokens: response.inputTokens,
+    outputTokens: response.outputTokens,
+  };
 }
 
 /**

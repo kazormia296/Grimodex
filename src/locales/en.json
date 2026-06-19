@@ -1,4 +1,32 @@
 {
+  "abTest": {
+    "sideA": "A",
+    "sideB": "B",
+    "defaultModel": "Default model",
+    "modeModel": "Compare models",
+    "modePrompt": "Compare prompts",
+    "promptVariantPlaceholder": "Extra instruction for side B (e.g. be more concise / first person)",
+    "run": "Run comparison",
+    "running": "Generating…",
+    "adoptA": "Use A",
+    "adoptB": "Use B",
+    "chosenBadge": "Chosen",
+    "emptyPrompt": "There is no prompt to compare.",
+    "buildPromptFailed": "Failed to build the prompt.",
+    "adoptedToClipboard": "Copied the chosen text to the clipboard.",
+    "chatTitle": "Chat A/B comparison",
+    "chatDescription": "Send the same prompt to two setups (model / prompt) in parallel and compare. Does not affect the live chat view.",
+    "chatMenuLabel": "Compare A/B",
+    "inlineTitle": "Inline AI A/B comparison",
+    "inlineDescription": "Generate the same instruction with two setups, compare them, and insert the better one.",
+    "inlineMenuLabel": "Compare A/B",
+    "settingsTitle": "A/B comparison",
+    "settingsIntro": "Initial values for side B when opening the comparison dialog. You can still set them per run.",
+    "defaultModelBLabel": "Default comparison model (B)",
+    "defaultModelBDesc": "The counterpart for model A/B (A is the current default model).",
+    "defaultPromptVariantBLabel": "Default extra instruction (B)",
+    "defaultPromptVariantBDesc": "The extra instruction for prompt A/B (A has none)."
+  },
   "lint": {
     "filter": {
       "searchPlaceholder": "Filter by rule_id / message",

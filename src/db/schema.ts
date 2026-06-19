@@ -529,6 +529,40 @@ export const aiUsage = sqliteTable(
   ],
 );
 
+/**
+ * A/B 比較 (③): 同一プロンプトに対しモデル / プロンプト追記の 2 構成 (A/B) を
+ * 走らせた結果と採用判断を記録する履歴。surface は "chat" | "inline" 等。
+ * chosen は採用したカラム ("a" | "b")、未採用なら null。
+ * src-tauri/src/database/migrate.rs の ab_comparisons とミラー (2 箇所手動同期)。
+ */
+export const abComparisons = sqliteTable(
+  "ab_comparisons",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    surface: text("surface").notNull(),
+    prompt: text("prompt").notNull(),
+    modelA: text("model_a"),
+    modelB: text("model_b"),
+    promptVariantA: text("prompt_variant_a"),
+    promptVariantB: text("prompt_variant_b"),
+    responseA: text("response_a").notNull(),
+    responseB: text("response_b").notNull(),
+    chosen: text("chosen"), // "a" | "b" | null
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_ab_comparisons_project_created").on(
+      table.projectId,
+      table.createdAt,
+    ),
+  ],
+);
+
 export const chatSummaries = sqliteTable(
   "chat_summaries",
   {
@@ -1903,6 +1937,9 @@ export type ChangeEvent = typeof changeEvents.$inferSelect;
 export type NewChangeEvent = typeof changeEvents.$inferInsert;
 export type StateSnapshot = typeof stateSnapshots.$inferSelect;
 export type NewStateSnapshot = typeof stateSnapshots.$inferInsert;
+
+export type AbComparison = typeof abComparisons.$inferSelect;
+export type NewAbComparison = typeof abComparisons.$inferInsert;
 
 export type PostEffectType =
   | "review"

@@ -148,6 +148,12 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "beat.injectIntoContext": "project",
   "beat.inferRoles": "project",
   "beat.roleInferenceConfidenceThreshold": "project",
+  // --- A/B 比較 (③) — モデル/プロンプト A/B の既定値 (global) -----------------
+  // モデル A/B のデフォルト相手モデル (A=現在の既定モデル, B=これ)。空=未設定。
+  "abTest.defaultModelB": "global",
+  // プロンプト A/B のデフォルト追記指示 (A=なし, B=これ)。空=未設定。
+  "abTest.defaultPromptVariantB": "global",
+  // ---------------------------------------------------------------------------
   // AI prompt customization — 追記式カスタム指示 (project)
   "aiPrompt.custom.chat": "project",
   "aiPrompt.custom.kouetsu": "project",
@@ -278,6 +284,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "beat.injectIntoContext": "true",
   "beat.inferRoles": "true",
   "beat.roleInferenceConfidenceThreshold": "0.7",
+  // A/B 比較 (③) — 既定値 (空 = 未設定)
+  "abTest.defaultModelB": "",
+  "abTest.defaultPromptVariantB": "",
   // AI prompt customization addenda — 空 = 組み込みプロンプトのまま (byte-identical)
   "aiPrompt.custom.chat": "",
   "aiPrompt.custom.kouetsu": "",

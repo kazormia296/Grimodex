@@ -1558,6 +1558,29 @@ impl Database {
                 ON prompt_templates(project_id, created_at);",
         )?;
 
+        // A/B 比較 (③): モデル/プロンプトの 2 構成を同一プロンプトに対して走らせ、
+        // どちらを採用したかを記録する履歴。surface は "chat" | "inline" 等。
+        // chosen は採用したカラム ('a' | 'b')、未採用なら NULL。Drizzle 側の
+        // src/db/schema.ts abComparisons とミラー。project 削除で CASCADE。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ab_comparisons (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface           TEXT NOT NULL,
+                prompt            TEXT NOT NULL,
+                model_a           TEXT,
+                model_b           TEXT,
+                prompt_variant_a  TEXT,
+                prompt_variant_b  TEXT,
+                response_a        TEXT NOT NULL,
+                response_b        TEXT NOT NULL,
+                chosen            TEXT,
+                created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_ab_comparisons_project_created
+                ON ab_comparisons(project_id, created_at);",
+        )?;
+
         Ok(())
     }
 
