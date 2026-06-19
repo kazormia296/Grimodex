@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { History, Loader2 } from "lucide-react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { usePhaseStore } from "@/features/codex/phaseStore";
 import { requestSceneChunkJump } from "@/features/semantic-search/sceneChunkJump";
 import { fetchRelatedPastScenes } from "./fetchRelatedScenes";
 import type { RelatedScene } from "./selectRelatedScenes";
@@ -36,6 +37,9 @@ function navigateToScene(scene: RelatedScene): void {
 export function RelatedScenesPanel({ isActive = true }: SlotPanelProps = {}) {
   const { t } = useTranslation();
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
+  // 順序軸 (reading/story/auto) が変わったら関連シーンを取り直す。fetchRelatedPastScenes が
+  // この mode に従って既読境界を計算するので、Settings での切替を即パネルへ反映させる。
+  const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const [scenes, setScenes] = useState<RelatedScene[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -64,7 +68,7 @@ export function RelatedScenesPanel({ isActive = true }: SlotPanelProps = {}) {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [isActive, activeSceneId]);
+  }, [isActive, activeSceneId, resolutionMode]);
 
   return (
     <div className="flex h-full flex-col">

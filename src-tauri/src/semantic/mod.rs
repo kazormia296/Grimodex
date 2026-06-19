@@ -10,6 +10,8 @@
 //!   `semantic-embedding` feature 内。
 //! - `search`: in-memory cache + 総当たりコサイン + dialogue_ratio 減点 (Step 7、別セッションで追加予定)。
 
+pub(crate) mod chat_index;
+pub(crate) mod chat_search;
 pub(crate) mod chunker;
 pub(crate) mod chunker_en;
 pub(crate) mod codex_index;

@@ -72,6 +72,14 @@ import {
   SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS,
   type SemanticRecallChunk,
 } from "./semanticRecall";
+import { fetchChatRecall, type ChatRecallMessage } from "./chatRecall";
+import {
+  createRecallPromoteTracker,
+  trackRecallForPromote,
+  dismissRecallPromote,
+  resetRecallPromote,
+  type RecallPromoteSuggestion,
+} from "./chatRecallPromote";
 import { stripToolProtocol } from "./toolProtocol";
 import { isHermesProtocol } from "./toolProtocolParse";
 import {
@@ -426,6 +434,12 @@ interface ChatState {
    * プロンプトを流用しないための照合に使う。 */
   lastSystemPromptKey: string | null;
   /**
+   * chat episodic recall が同じ過去発言を閾値回数引いたときの「Codex に昇格
+   * しますか？」候補 (柔→硬の橋渡し)。null = 提案なし。UI (ChatPanel) が観測して
+   * 既存の抽出ダイアログを促す。自動書き込みはしない (recall-only)。
+   */
+  chatRecallPromoteSuggestion: RecallPromoteSuggestion | null;
+  /**
    * プレビュー専用のプロンプト再構築（store は変更しない）。seed 優先順位:
    * registerInputDraftProvider 経由の入力ドラフト → 直近ユーザー発話 → シーン本文末尾。
    * 返す userMessage はプレビューに表示する「入力中の未送信テキスト」。
@@ -622,6 +636,8 @@ interface ChatState {
   }) => Promise<void>;
   clearMessages: () => void;
   clearError: () => void;
+  /** 「Codex に昇格」候補を却下する (再提案しない)。 */
+  dismissChatRecallPromote: (messageId: string) => void;
   setActiveSceneId: (id: string) => void;
   setActiveProjectId: (id: string | null) => void;
   /** Editor Insert 後に in-memory metadata を同期 */
@@ -1712,6 +1728,9 @@ async function buildSceneContextPrompt(opts: {
    * 区別せず付くため、片方だけ除外すると detected の × が次の refresh で
    * 即復活する。pinned 経路には影響しない（pin は除外を解除する）。 */
   excludedAutoEntryIds?: string[];
+  /** 実送信経路のみ true。chat episodic recall の「Codex に昇格」頻度を数えるのは
+   * 実際に送ったターンだけ — プレビュー/コピー/ライブ更新では数えない。 */
+  trackRecallPromote?: boolean;
 }): Promise<SceneContextPayload> {
   const {
     sceneCtx,
@@ -2224,12 +2243,29 @@ async function buildSceneContextPrompt(opts: {
         })
       : "";
 
+  // chat episodic recall (エピソード記憶): 過去の対話を意味検索で注入する。scene RAG
+  // とは独立トグル (ai.chatRecall) で、無効にすればシーン RAG を残したまま記憶だけ切れる。
+  // hybrid 融合 (sparse/bm25) は scene RAG と同じ ai.hybridRecall を共有する。クエリ seed
+  // も同じ (ユーザー発話 + 現在シーン本文末尾)。現セッションは除外し進行中ターンを
+  // 記憶として引き戻さない。
+  const chatRecallEnabled = useSettingsStore
+    .getState()
+    .getBoolean("ai.chatRecall", true);
+  const chatRecallQuery =
+    chatRecallEnabled && opts.semanticRecallSeedMessage
+      ? buildSemanticRecallQuery({
+          userMessage: opts.semanticRecallSeedMessage,
+          sceneBody: sceneCtx.content,
+        })
+      : "";
+
   markStart("buildSceneCtx.fetchLabelsAndForeshadow");
   const [
     sceneLabelRows,
     sceneForeshadow,
     openForeshadowRows,
     semanticRecallChunks,
+    chatRecallMessages,
   ] = await Promise.all([
     listNodeLabels(sceneCtx.id).catch(() => []),
     getSceneForeshadowContext(sceneCtx.id).catch(() => ({
@@ -2247,6 +2283,14 @@ async function buildSceneContextPrompt(opts: {
           hybrid: hybridRecallEnabled,
         })
       : Promise.resolve([] as SemanticRecallChunk[]),
+    chatRecallQuery && projectIdForFs
+      ? fetchChatRecall({
+          projectId: projectIdForFs,
+          query: chatRecallQuery,
+          excludeSessionIds: activeSessionId ? [activeSessionId] : [],
+          hybrid: hybridRecallEnabled,
+        })
+      : Promise.resolve([] as ChatRecallMessage[]),
   ]);
   markEnd("buildSceneCtx.fetchLabelsAndForeshadow");
   const sceneLabels = sceneLabelRows.map((l) => l.name);
@@ -2363,8 +2407,24 @@ async function buildSceneContextPrompt(opts: {
             chunkText: c.chunkText,
           }))
         : undefined,
+    chatRecall:
+      chatRecallMessages.length > 0
+        ? chatRecallMessages.map((m) => ({ label: m.label, text: m.text }))
+        : undefined,
   });
   markEnd("buildSceneCtx.buildSystemPrompt");
+
+  // 「Codex に昇格しますか？」: 同じ過去発言が閾値回数 recall されたら既存の抽出 UI を
+  // 促す候補を立てる (柔→硬は人が渡る)。実送信ターンのみ数える。
+  if (opts.trackRecallPromote && chatRecallMessages.length > 0) {
+    const suggestion = trackRecallForPromote(
+      recallPromoteTracker,
+      chatRecallMessages.map((m) => ({ messageId: m.messageId, text: m.text })),
+    );
+    if (suggestion) {
+      useChatStore.setState({ chatRecallPromoteSuggestion: suggestion });
+    }
+  }
 
   const stableCodexIds = [
     ...allPinnedIdSet,
@@ -2410,6 +2470,13 @@ export function contextPromptKey(
   ].join("\u0000");
 }
 
+/**
+ * chat episodic recall の「Codex に昇格しますか？」頻度トラッカー (per-session・
+ * in-memory)。store 外の module 状態にして、毎ターンの recall カウントで store の
+ * re-render を起こさない (提案が立った瞬間だけ store state を更新する)。
+ */
+const recallPromoteTracker = createRecallPromoteTracker();
+
 export const useChatStore = create<ChatState>()((set, get) => ({
   sessions: [],
   activeSessionId: null,
@@ -2424,6 +2491,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   contextLayers: [],
   lastSystemPrompt: "",
   lastSystemPromptKey: null,
+  chatRecallPromoteSuggestion: null,
   pinsVersion: 0,
   projectOutline: undefined,
   chapterOutlines: [],
@@ -2621,6 +2689,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // セッションを切り替える前に、回答待ちの ask_user を sentinel 解決して
     // resolver リーク・別セッションでのカード誤表示を防ぐ（null/切替の両分岐共通）。
     get()._cancelPendingUserQuestion();
+    // エピソード recall 昇格トラッカーは per-session。切替時にリセットして、前
+    // セッションの頻度・dismiss を持ち越さない。
+    resetRecallPromote(recallPromoteTracker);
     if (sessionId === null) {
       set({
         activeSessionId: null,
@@ -2631,6 +2702,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionStableCodexIds: [],
         sessionAgentToolsSnapshot: null,
         excludedAutoEntryIds: [],
+        chatRecallPromoteSuggestion: null,
         // 前セッションの「続行」/サブエージェント進捗を持ち越さない。
         agentContinuation: null,
         subAgentProgress: null,
@@ -2641,6 +2713,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       isLoadingMessages: true,
       activeSessionId: sessionId,
       messages: [],
+      chatRecallPromoteSuggestion: null,
       // 前セッションの「続行」/サブエージェント進捗を持ち越さない。
       agentContinuation: null,
       subAgentProgress: null,
@@ -3085,6 +3158,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             sessionStableCodexIds: get().sessionStableCodexIds,
             semanticRecallSeedMessage: content,
             excludedAutoEntryIds: get().excludedAutoEntryIds,
+            trackRecallPromote: true,
           });
           systemPromptForAgent = ctxResult.prompt;
           systemCacheSegmentsForAgent = ctxResult.cacheSegments;
@@ -3745,6 +3819,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           sessionStableCodexIds: get().sessionStableCodexIds,
           semanticRecallSeedMessage: content,
           excludedAutoEntryIds: get().excludedAutoEntryIds,
+          trackRecallPromote: true,
         });
 
         if (get().sessionStableCodexIds.length === 0) {
@@ -4855,6 +4930,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   clearMessages: () => set({ messages: [], agentContinuation: null }),
   clearError: () => set({ error: null }),
+  dismissChatRecallPromote: (messageId: string) => {
+    dismissRecallPromote(recallPromoteTracker, messageId);
+    if (get().chatRecallPromoteSuggestion?.messageId === messageId) {
+      set({ chatRecallPromoteSuggestion: null });
+    }
+  },
   setActiveSceneId: (id: string) => {
     markStart("chatStore.setActiveSceneId");
     try {
