@@ -221,6 +221,31 @@ Codex データ内部の食い違いを埋める（genuine 空白）。検出す
 entries 購読で自動再計算。削除済みエントリを指す stale relation は表示前に除外する。i18n は
 `codex.integrity.*`。
 
+### 未確定の固有名詞候補（2026-06-20 追記 / PR #130）
+
+整合性レポートの直下（リスト上部）に、本文に出現するが Codex 未登録の固有名詞を「未確定候補」
+として列挙する折りたたみセクションを出す。0 件で非表示。`CodexIntegrityReport` と同設計の
+**セクション差し込みのみ（新パネル登録ゼロ）**。形態素×LLM の機能（思想と全体設計は
+[`Grimodex_PostEffects設計書.md`](Grimodex_PostEffects設計書.md) §エンティティ抽出の出荷追記）。
+
+- **抽出（B1・決定的）**: Rust コマンド `extract_codex_candidates`（`candidateExtractor.ts` が
+  invoke）が全シーンを読書順 DFS で lindera 形態素解析し、固有名詞（`pos_major=="名詞" &&
+  pos_sub1=="固有名詞"`）を完全列挙→既存 Codex name/alias を差引→`{surface, lemma, count,
+  first_scene_id, context}` を出現数降順で返す。日本語専用。
+- **AI 評価（B2・任意）**: 「AI で評価」ボタン → `candidateJudgment.judgeCandidates` が候補ごとに
+  種別（character/location/item/lore）・要約・別名検出（既存エントリの別表記か）を single-shot
+  判定（`analysis` policy gate）。判定後は各行に種別バッジ・要約・「○○の別名?」を表示。
+- **受理**: AI 判定があれば種別/要約を pre-fill して `useCodexStore.create`。別名判定
+  （`aliasOfId`）のときは新規作成せず既存エントリの `aliases` に追記（`candidateKey` 正規化で
+  重複追記を防ぐ）。受理後は entries 更新で一覧から自動消去（`activeCandidates`）。
+- **却下**: `project_settings` KV `codex.candidates.dismissed`（NFC 正規化キー集合）に永続化。
+  楽観 ref + 直列化 last-write-wins + undo は `CodexIntegrityReport` と同機構
+  （`codexCandidateDismissals.ts`）。再スキャンでも再提示しない。
+- **read-only スキャン**: 自動で Codex には書かない。「再スキャン」ボタンで再抽出（判定はクリア）。
+- 正規化キー `candidateKey`（`codexCandidates.ts` = trim→NFC→lower）は **Rust `normalize_name` と
+  同規則必須**（ズレると候補が誤消去される）。i18n は `codex.candidates.*`。品質は実 LLM
+  ライブハーネス `candidateJudgment.live.test.ts` で評価可能。
+
 ### エントリカード
 
 各エントリは以下の情報を持つコンパクトなカードで表示:
