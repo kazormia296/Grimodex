@@ -159,6 +159,7 @@ describe("foreshadowStore", () => {
       mockListForeshadowsWithLabels.mockResolvedValue({
         items,
         sceneInfoBySceneId: {},
+        setupScenesByForeshadowId: {},
       });
 
       await useForeshadowStore.getState().load("proj-1");

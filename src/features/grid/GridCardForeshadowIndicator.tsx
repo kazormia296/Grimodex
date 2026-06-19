@@ -4,36 +4,11 @@ import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore"
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import type { DerivedLabel } from "@/features/foreshadow/types";
-
-const LABEL_HEALTH_PRIORITY: DerivedLabel[] = [
-  "critical_weak",
-  "orphan_payoff",
-  "needs_strengthening",
-  "seeded",
-  "paid",
-  "planned",
-  "abandoned",
-];
-
-const HEALTH_DOT_BG: Record<DerivedLabel, string> = {
-  paid: "bg-green-500",
-  seeded: "bg-blue-500",
-  needs_strengthening: "bg-yellow-400",
-  critical_weak: "bg-red-500",
-  orphan_payoff: "bg-orange-400",
-  planned: "bg-muted-foreground/30",
-  abandoned: "bg-muted-foreground/20",
-};
-
-const HEALTH_DOT_TITLE_KEY: Record<DerivedLabel, string> = {
-  paid: "grid.foreshadow.paid",
-  seeded: "grid.foreshadow.seeded",
-  needs_strengthening: "grid.foreshadow.needsStrengthening",
-  critical_weak: "grid.foreshadow.criticalWeak",
-  orphan_payoff: "grid.foreshadow.orphanPayoff",
-  planned: "grid.foreshadow.planned",
-  abandoned: "grid.foreshadow.abandoned",
-};
+import {
+  FORESHADOW_LABEL_PRIORITY as LABEL_HEALTH_PRIORITY,
+  FORESHADOW_LABEL_DOT_BG as HEALTH_DOT_BG,
+  FORESHADOW_LABEL_TITLE_KEY as HEALTH_DOT_TITLE_KEY,
+} from "@/features/foreshadow/foreshadowLabelStyles";
 
 interface Props {
   sceneId: string;

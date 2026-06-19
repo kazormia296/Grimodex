@@ -14,7 +14,6 @@ import {
   X,
 } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "./foreshadowStore";
 import { useForeshadowNavStore } from "./foreshadowNavStore";
@@ -22,6 +21,9 @@ import { ForeshadowItemSkeletonList } from "@/components/ui/skeleton-patterns";
 import { CreateForeshadowDialog } from "./CreateForeshadowDialog";
 import { EditForeshadowDialog } from "./EditForeshadowDialog";
 import { ForeshadowChapterTab } from "./ForeshadowChapterTab";
+import { ForeshadowRadarTab } from "./radar/ForeshadowRadarTab";
+import { requestForeshadowJump } from "./foreshadowSceneJump";
+import { FORESHADOW_LABEL_PILL_CLASS } from "./foreshadowLabelStyles";
 import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { isSetupEvaluationStale } from "./staleness";
 import { safeParseAiEvaluation } from "./types";
@@ -44,15 +46,7 @@ const LABEL_ORDER: DerivedLabel[] = [
   "abandoned",
 ];
 
-const LABEL_STYLE: Record<DerivedLabel, string> = {
-  planned: "bg-muted text-muted-foreground",
-  seeded: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-  paid: "bg-green-500/15 text-green-600 dark:text-green-400",
-  critical_weak: "bg-red-500/15 text-red-600 dark:text-red-400",
-  needs_strengthening: "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400",
-  orphan_payoff: "bg-orange-500/15 text-orange-600 dark:text-orange-400",
-  abandoned: "bg-muted text-muted-foreground/50 line-through",
-};
+const LABEL_STYLE = FORESHADOW_LABEL_PILL_CLASS;
 
 const STRENGTH_STYLE: Record<string, string> = {
   subtle: "text-yellow-600 dark:text-yellow-400",
@@ -260,7 +254,7 @@ function SetupRow({
   );
 }
 
-type PanelTab = "list" | "chapter";
+type PanelTab = "list" | "chapter" | "radar";
 
 export function ForeshadowPanel() {
   const { t } = useTranslation();
@@ -315,12 +309,7 @@ export function ForeshadowPanel() {
   }, [loadSetups]);
 
   const jumpToAnchor = (sceneId: string, fromPos: number, toPos: number) => {
-    // 同シーン・別シーンとも EditorPane が一元的に処理する。
-    // 先に pendingJump を立ててから setActiveScene と showPanel を呼ぶことで、
-    // 別シーンでも switchScene が consumeJump できる順序を保証する。
-    useForeshadowNavStore.getState().requestJump({ sceneId, fromPos, toPos });
-    useTreeStore.getState().setActiveScene(sceneId);
-    useLayoutStore.getState().showPanel("editor");
+    requestForeshadowJump(sceneId, fromPos, toPos);
   };
 
   const handleExpand = (id: string) => {
@@ -464,7 +453,29 @@ export function ForeshadowPanel() {
         >
           {t("foreshadow.panel.tabChapter", "章別監査")}
         </button>
+        <button
+          type="button"
+          data-testid="foreshadow-tab-radar"
+          onClick={() => setActiveTab("radar")}
+          className={`flex-1 py-1.5 text-[11px] font-medium transition-colors ${
+            activeTab === "radar"
+              ? "border-b-2 border-foreground text-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {t("foreshadow.panel.tabRadar", "レーダー")}
+        </button>
       </div>
+
+      {/* Radar tab */}
+      {activeTab === "radar" && (
+        <div
+          data-testid="foreshadow-radar-tab-content"
+          className="flex-1 overflow-y-auto"
+        >
+          <ForeshadowRadarTab />
+        </div>
+      )}
 
       {/* Chapter audit tab */}
       {activeTab === "chapter" && (
