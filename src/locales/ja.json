@@ -1704,6 +1704,20 @@
       "allHidden": "整合性の指摘 {{count}} 件を非表示中",
       "show": "再表示"
     },
+    "candidates": {
+      "title": "未確定の固有名詞候補",
+      "occurrences": "{{count}} 回",
+      "accept": "Codex エントリ化 (種別は後で変更可)",
+      "dismiss": "この候補を却下",
+      "rescan": "再スキャン",
+      "historyDismiss": "候補を却下",
+      "historyRestore": "却下した候補を再表示",
+      "dismissFailed": "却下の保存に失敗しました",
+      "acceptFailed": "エントリ化に失敗しました",
+      "restoreHidden": "却下中 {{count}} 件を再表示",
+      "allDismissed": "固有名詞候補 {{count}} 件を却下中",
+      "show": "再表示"
+    },
     "spoiler": {
       "unrevealedTooltip": "このシーン時点で未開示: {{titles}}"
     },

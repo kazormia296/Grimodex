@@ -239,6 +239,7 @@ pub fn run() {
             commands::trash_bin::trash_bin_prune,
             codex_matching::codex_rebuild_matcher,
             codex_matching::codex_match_text,
+            commands::codex_candidates::extract_codex_candidates,
             commands::lint::lint_text,
             commands::post_effect::start_post_effect_run,
             commands::post_effect::start_post_effect_run_multi,

@@ -1704,6 +1704,20 @@
       "allHidden": "{{count}} integrity issue(s) hidden",
       "show": "Show"
     },
+    "candidates": {
+      "title": "Proper-noun candidates",
+      "occurrences": "{{count}}×",
+      "accept": "Add to Codex (type editable later)",
+      "dismiss": "Dismiss this candidate",
+      "rescan": "Rescan",
+      "historyDismiss": "Dismiss candidate",
+      "historyRestore": "Restore dismissed candidates",
+      "dismissFailed": "Couldn't save the dismissal",
+      "acceptFailed": "Couldn't create the entry",
+      "restoreHidden": "Show {{count}} dismissed",
+      "allDismissed": "{{count}} proper-noun candidate(s) dismissed",
+      "show": "Show"
+    },
     "spoiler": {
       "unrevealedTooltip": "Not yet revealed as of this scene: {{titles}}"
     },
