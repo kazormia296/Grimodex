@@ -17,8 +17,8 @@ import {
   type SemanticIndexStatus,
 } from "@/features/semantic-search/api";
 import {
-  runSearchEval,
-  formatEvalReport,
+  runSearchEvalCompare,
+  formatEvalCompare,
 } from "@/features/semantic-search/searchEval";
 import { useReindexProgressStore } from "@/features/semantic-search/reindexProgressStore";
 
@@ -346,15 +346,16 @@ export function AiProjectSettings() {
             )}
             {import.meta.env.DEV && (
               // 開発専用: query→期待シーンの eval set を実機 semantic_search に流し、
-              // Recall@1/@3/MRR・閾値跨ぎ・miss/junk をコンソールへ。検索品質の回帰検知用。
+              // dense 単独 vs hybrid(dense+sparse RRF) の Recall@1/@3/MRR・差分・miss/junk を
+              // コンソールへ。検索品質の回帰検知と「sparse 融合の効き目」計測用。
               <button
                 type="button"
                 onClick={async () => {
                   try {
-                    const report = await runSearchEval();
-                    console.log(formatEvalReport(report));
+                    const cmp = await runSearchEvalCompare();
+                    console.log(formatEvalCompare(cmp));
                     console.table(
-                      report.results.map((r) => ({
+                      cmp.hybrid.results.map((r) => ({
                         query: r.query,
                         rank: r.rank,
                         expectedScore: r.expectedScore,
@@ -362,7 +363,7 @@ export function AiProjectSettings() {
                         top: r.scenes[0]?.sceneTitle,
                       })),
                     );
-                    console.table(report.junk);
+                    console.table(cmp.hybrid.junk);
                   } catch (e) {
                     console.error("[semantic-eval] failed", e);
                   }

@@ -205,3 +205,104 @@ describe("selectRelatedPastScenes", () => {
     expect(result.map((r) => r.sceneId)).toEqual(["sa", "sb"]);
   });
 });
+
+describe("selectRelatedPastScenes — hybrid (sparse 救済 + RRF 融合)", () => {
+  // minScore=0.8, rescueMargin=0.05 → rescueFloor=0.75。
+  const HY = { minScore: 0.8, maxScenes: 8, rescueMargin: 0.05 };
+
+  it("sparse top-N の『床ぎりぎり下』シーンを救済し、非 sparse の同帯は除外する", () => {
+    // s1/s2 とも cosine は [rescueFloor, floor) 帯。dense 単独なら両方落ちる。
+    const hits = [hit("s1", 0.78), hit("s2", 0.77)];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("s1", "s2", "scur"),
+      sparseSceneIds: ["s1"],
+      ...HY,
+    });
+    expect(result.map((r) => r.sceneId)).toEqual(["s1"]);
+  });
+
+  it("RRF: 低 cosine でも sparse 上位なら高 cosine の非 sparse シーンを上回れる", () => {
+    const hits = [hit("hi", 0.9), hit("lo", 0.82)]; // 両方 floor 以上
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("hi", "lo", "scur"),
+      sparseSceneIds: ["lo"], // lo を sparse top-1 が後押し
+      ...HY,
+    });
+    expect(result.map((r) => r.sceneId)).toEqual(["lo", "hi"]);
+  });
+
+  it("床以上のシーンは sparse 不一致でも残る (recall を削らない)", () => {
+    const hits = [hit("hi", 0.9), hit("mid", 0.83)];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("hi", "mid", "scur"),
+      sparseSceneIds: ["zzz"], // どの候補にも一致しない → hybrid 経路だが sparse 寄与ゼロ
+      ...HY,
+    });
+    expect(result.map((r) => r.sceneId)).toEqual(["hi", "mid"]);
+  });
+
+  it("rescueFloor 未満は sparse 一致でも除外する", () => {
+    const hits = [hit("s1", 0.74), hit("s2", 0.9)]; // s1 は rescueFloor(0.75) 未満
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("s1", "s2", "scur"),
+      sparseSceneIds: ["s1", "s2"],
+      ...HY,
+    });
+    expect(result.map((r) => r.sceneId)).toEqual(["s2"]);
+  });
+
+  it("sparse 救済も読書順/現在シーン/順序外の壁を越えられない", () => {
+    const hits = [
+      hit("future", 0.78), // 未読 (current より後)
+      hit("orphan", 0.78), // 読書順 map 外
+      hit("s1", 0.9), // 正当な過去シーン
+    ];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("s1", "scur", "future"), // orphan は含めない
+      sparseSceneIds: ["future", "orphan", "s1"],
+      ...HY,
+    });
+    expect(result.map((r) => r.sceneId)).toEqual(["s1"]);
+  });
+
+  it("hybrid でも同一シーンの複数チャンクは最良スコアに集約する", () => {
+    const hits = [
+      hit("s1", 0.78, "weak"),
+      hit("s1", 0.83, "strong"), // floor 以上
+      hit("s2", 0.9, "s2chunk"),
+    ];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("s1", "s2", "scur"),
+      sparseSceneIds: ["s2"], // hybrid 経路を起動
+      ...HY,
+    });
+    expect(result).toHaveLength(2);
+    const s1 = result.find((r) => r.sceneId === "s1")!;
+    expect(s1.chunkText).toBe("strong");
+    expect(s1.score).toBe(0.83);
+  });
+
+  it("sparseSceneIds が空配列なら dense 単独と完全に同一 (後方互換)", () => {
+    const hits = [hit("s1", 0.78), hit("s2", 0.9)]; // s1 は床未満
+    const base = {
+      currentSceneId: "scur",
+      sceneOrder: order("s1", "s2", "scur"),
+      minScore: 0.8,
+      maxScenes: 8,
+    };
+    const denseOnly = selectRelatedPastScenes(hits, base);
+    const emptyHybrid = selectRelatedPastScenes(hits, {
+      ...base,
+      sparseSceneIds: [],
+      rescueMargin: 0.05,
+    });
+    expect(emptyHybrid).toEqual(denseOnly);
+    expect(denseOnly.map((r) => r.sceneId)).toEqual(["s2"]); // s1 は床未満で出ない
+  });
+});

@@ -17,7 +17,11 @@ import {
   type SemanticSearchHit,
   type SemanticIndexStatus,
 } from "./api";
-import { recallParamsForLang } from "@/features/chat/semanticRecall";
+import {
+  fetchSparseSceneIds,
+  recallParamsForLang,
+  RRF_K,
+} from "@/features/chat/semanticRecall";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { EN_EVAL_SET, JA_EVAL_SET } from "./searchEvalSets";
 
@@ -63,6 +67,8 @@ export interface JunkResult {
 export interface EvalReport {
   language: string;
   label: string;
+  /** 検索モード: dense 単独 か hybrid (dense+sparse RRF 融合)。 */
+  mode: "dense" | "hybrid";
   threshold: number;
   modelId?: string;
   embeddingDim?: number;
@@ -94,6 +100,40 @@ export function dedupeScenes(hits: SemanticSearchHit[]): SceneHit[] {
     out.push({ sceneId: h.sceneId, sceneTitle: h.sceneTitle, score: h.score });
   }
   return out;
+}
+
+/**
+ * dense (cosine 降順で重複排除済み) の scene 順位と sparse (FTS5/bm25) 順位を RRF 融合して
+ * scene を並べ替える。related-scenes パネルの hybrid と同じ融合式 (固有名詞 recall の
+ * 補強効果を eval で測るため)。sparse は dense pool に居る scene の順位押し上げのみに使う
+ * (dense に無い sparse-only scene は cosine を持たないので対象外 — MVP 制約と一致)。
+ */
+export function fuseHybridSceneRanking(
+  denseScenes: SceneHit[],
+  sparseSceneIdsRanked: string[],
+): SceneHit[] {
+  const denseRank = new Map<string, number>();
+  denseScenes.forEach((s, i) => denseRank.set(s.sceneId, i));
+  const sparseRank = new Map<string, number>();
+  for (const id of sparseSceneIdsRanked) {
+    if (sparseRank.has(id)) continue;
+    sparseRank.set(id, sparseRank.size);
+  }
+  return denseScenes
+    .map((scene) => {
+      const dRank = denseRank.get(scene.sceneId)!;
+      const sRank = sparseRank.get(scene.sceneId);
+      const rrf =
+        1 / (RRF_K + dRank) + (sRank !== undefined ? 1 / (RRF_K + sRank) : 0);
+      return { scene, rrf };
+    })
+    .sort(
+      (a, b) =>
+        b.rrf - a.rrf ||
+        b.scene.score - a.scene.score ||
+        a.scene.sceneId.localeCompare(b.scene.sceneId),
+    )
+    .map((e) => e.scene);
 }
 
 /** 期待タイトルのいずれかに最初に一致した scene の順位とスコア。 */
@@ -173,6 +213,8 @@ export async function runSearchEval(
     evalSet?: EvalSet;
     limit?: number;
     descriptionMode?: boolean;
+    /** true で dense+sparse(FTS5/bm25) を RRF 融合した順位で評価する。 */
+    hybrid?: boolean;
   } = {},
 ): Promise<EvalReport> {
   const projectId = opts.projectId ?? getCurrentProjectId();
@@ -180,6 +222,7 @@ export async function runSearchEval(
     typeof document !== "undefined" ? document.documentElement.lang : "";
   const evalSet = opts.evalSet ?? defaultEvalSet(lang);
   const limit = opts.limit ?? 20;
+  const hybrid = opts.hybrid ?? false;
   const threshold = recallParamsForLang().minScore;
 
   let status: SemanticIndexStatus | undefined;
@@ -197,7 +240,16 @@ export async function runSearchEval(
       limit,
       descriptionMode: opts.descriptionMode,
     });
-    const scenes = dedupeScenes(hits);
+    let scenes = dedupeScenes(hits);
+    if (hybrid) {
+      // sparse 失敗時は dense 単独へ退避 (注入経路の graceful 契約と同じ)。
+      const sparseIds = await fetchSparseSceneIds({
+        projectId,
+        query: q.query,
+        limit,
+      }).catch(() => [] as string[]);
+      scenes = fuseHybridSceneRanking(scenes, sparseIds);
+    }
     const { rank, score } = rankOfExpected(scenes, q.expect);
     results.push({
       query: q.query,
@@ -227,6 +279,7 @@ export async function runSearchEval(
   return {
     language: evalSet.language,
     label: evalSet.label,
+    mode: hybrid ? "hybrid" : "dense",
     threshold,
     modelId: status?.currentModelId,
     embeddingDim: status?.currentEmbeddingDim,
@@ -246,6 +299,39 @@ export async function runSearchEval(
   };
 }
 
+export interface EvalCompare {
+  dense: EvalReport;
+  hybrid: EvalReport;
+  /** hybrid − dense の差分 (正なら hybrid が改善)。 */
+  delta: { recallAt1: number; recallAt3: number; mrr: number };
+}
+
+/**
+ * 同じ eval set を dense 単独と hybrid (dense+sparse RRF) の両方で走らせ、差分を返す。
+ * 「related-scenes/RAG に sparse 融合を入れる効き目」を実機で測る計測ゲート (dev 専用)。
+ * dense fetch を 2 度叩くが手動 dev ツールなので許容 (融合の有無で別 fetch のため)。
+ */
+export async function runSearchEvalCompare(
+  opts: {
+    projectId?: string;
+    evalSet?: EvalSet;
+    limit?: number;
+    descriptionMode?: boolean;
+  } = {},
+): Promise<EvalCompare> {
+  const dense = await runSearchEval({ ...opts, hybrid: false });
+  const hybrid = await runSearchEval({ ...opts, hybrid: true });
+  return {
+    dense,
+    hybrid,
+    delta: {
+      recallAt1: hybrid.recallAt1 - dense.recallAt1,
+      recallAt3: hybrid.recallAt3 - dense.recallAt3,
+      mrr: hybrid.mrr - dense.mrr,
+    },
+  };
+}
+
 function truncate(s: string, n = 56): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
@@ -255,7 +341,7 @@ export function formatEvalReport(r: EvalReport): string {
   const pct = (x: number) => x.toFixed(2);
   const model = r.modelId ? `, ${r.modelId.split("@")[0]}` : "";
   const lines: string[] = [
-    `semantic eval — ${r.label} (${r.language}${model})`,
+    `semantic eval — ${r.label} (${r.language}${model}) [${r.mode}]`,
     `query set: ${r.relevantCount} relevant + ${r.junkCount} junk · limit ${r.limit}`,
     `  Recall@1=${pct(r.recallAt1)}  Recall@3=${pct(r.recallAt3)}  MRR=${r.mrr.toFixed(3)}`,
     `  threshold ${r.threshold}: relevant>=t ${r.relevantOverThreshold}/${r.relevantCount} · junk>=t ${r.junkOverThreshold}/${r.junkCount}`,
@@ -278,4 +364,17 @@ export function formatEvalReport(r: EvalReport): string {
     }
   }
   return lines.join("\n");
+}
+
+/** dense/hybrid 比較レポートを整形（console.log 用）。差分を最後に並べる。 */
+export function formatEvalCompare(c: EvalCompare): string {
+  const sgn = (x: number) => (x >= 0 ? "+" : "") + x.toFixed(2);
+  return [
+    formatEvalReport(c.dense),
+    "",
+    formatEvalReport(c.hybrid),
+    "",
+    `hybrid − dense Δ:  Recall@1 ${sgn(c.delta.recallAt1)}  ` +
+      `Recall@3 ${sgn(c.delta.recallAt3)}  MRR ${sgn(c.delta.mrr)}`,
+  ].join("\n");
 }
