@@ -23,7 +23,7 @@
 
 整合性チェック (`consistency` + `intra_scene_consistency`) と本文 → Codex 方向の `entity_extraction` は対の関係を成し、§整合性チェック詳細設計 にまとめる。軽量・コスト効率特化の `typo_detection`（旧称 `proofreading`）/ `pov_drift` / `scene_purpose` は §軽量 effect_type シリーズ で扱う。
 
-> **（2026-06-18 追記）出荷済 `effect_type` は 9 種**: `review` / `pseudo_comment` / `meta_structure` / `consistency` / `intra_scene_consistency` / `typo_detection`（2026-05-26）/ `intent_drift`（2026-06-05）/ `timeline_consistency`（2026-06-05）/ `impact_review`（2026-06-18）。MVP 設計時の 5 種から拡張された。enum の正本（`effect_type` / `category` の CHECK 制約）は [`Grimodex_統合DBスキーマ.md`](Grimodex_統合DBスキーマ.md) の `post_effect_runs` / `post_effect_annotations` を参照。`entity_extraction` / `pov_drift` / `scene_purpose` は本書に設計のみあり未実装。
+> **（2026-06-18 追記）出荷済 `effect_type` は 9 種**: `review` / `pseudo_comment` / `meta_structure` / `consistency` / `intra_scene_consistency` / `typo_detection`（2026-05-26）/ `intent_drift`（2026-06-05）/ `timeline_consistency`（2026-06-05）/ `impact_review`（2026-06-18）。MVP 設計時の 5 種から拡張された。enum の正本（`effect_type` / `category` の CHECK 制約）は [`Grimodex_統合DBスキーマ.md`](Grimodex_統合DBスキーマ.md) の `post_effect_runs` / `post_effect_annotations` を参照。`pov_drift` / `scene_purpose` は本書に設計のみあり未実装。`entity_extraction` は **post_effect の effect_type ではなく Codex パネルの「未確定候補」機能として出荷**（2026-06-20 / PR #130・形態素 `extract_codex_candidates` + LLM 判定 `candidateJudgment` + 受理/却下 UI）— 詳細は §エンティティ抽出（本文 → Codex 候補）の出荷追記。
 
 Linter 系（形式的ルールベース）は対象外。本書は「非決定的・LLM ベースの事後分析」のみを扱う。
 
@@ -276,8 +276,10 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 - 絶対にやらないこと: 開いているドキュメントに対してDBの `range_start/end` を直接描画する。off-by-N のドリフトを呼ぶ。
 
 **現状の実装で注意すべき range の意味論の差**: `range_start/end` の単位はソースによってブレる。
-- Rust の consistency runner (`src-tauri/src/commands/post_effect.rs` の `find_text_position`) は **正規化済みプレーンテキストへの byte offset** を書き込む。
+- Rust の anchor 解決 (`src-tauri/src/commands/post_effect.rs` の `find_text_position`、8 post-effect 共有) は **生 scene_text への byte offset** を書き込む（2026-06-20 / PR #130 で正規化空白座標から raw に統一）。
 - JS の `saveAnnotationAnchors` (`src/features/post-effect/syncAnnotations.ts`) は **PM position** を書き込む。
+
+> **（2026-06-20 追記）アンカーの lemma 照合フォールバック（PR #130）**: `find_text_position` は **exact（空白正規化の完全一致）→ 日本語プロジェクトのみ形態素 lemma 照合** の 2 段。LLM の `found_text` が活用差・送り仮名差・全角半角差で本文と一致しないケースを `find_text_position_morph`（lindera lemma + 正規化表層の連続部分列照合）が救済し、`orphaned` を削減する。両経路とも生 scene_text の byte offset を返して座標系を統一し、`found_context` で多重出現を曖昧解消する。`MorphToken` は Rust 内部に閉じる（Serialize 不要・後方互換）。さらに **`text_snapshot` には本文に verbatim 存在する表層スライスを格納** するため、FE の `indexOf` 再アンカーが活用差に依存せず成功する。
 
 このため hydration 時は `range_*` をヒントとしてのみ扱い、`text_snapshot` から真の PM 位置を再解決する。実装は `src/features/post-effect/resolveAnnotationRange.ts`（`applyAnnotationsToEditor` から呼ばれる）。同一 snapshot が複数箇所にマッチする場合は `range_start` を近傍ヒントとして最寄りの出現を選ぶ。
 
@@ -735,6 +737,15 @@ MVP: 明示ボタンのみ。`[整合性チェック]` と `[自己整合性チ�
 
 `consistency` と**逆方向の対**として動く `effect_type='entity_extraction'`。本文中に出現するが Codex に未登録の固有名詞・概念を抽出し、Codex への追加候補として提示する。**ポスト MVP**。
 
+> **（2026-06-20 追記）出荷済 — ただし下記初期設計とは別形で実装（PR #130）**。`entity_extraction` という post_effect の effect_type ではなく、**Codex パネルの「未確定候補」機能**として出荷した。差分の要点:
+>
+> - **形態素を採用した**（L741 の「形態素は採用しない」判断は撤回）。Rust コマンド `extract_codex_candidates`（B1）が全シーンを読書順（tree DFS = `computeGlobalSceneOrder` 相当）に lindera で形態素解析し、**固有名詞（`pos_major=="名詞" && pos_sub1=="固有名詞"`）を完全列挙** → 既存 Codex の name/alias を NFC 正規化キーで差引 → 初出周辺一文 context 付き候補（`{surface, lemma, count, first_scene_id, context}`）を返す。日本語専用（UniDic 依存）。DB ロックは読取のみ保持し、形態素解析はロック外で実行。固有名詞 POS は recall が高く、誤爆は「常時 Lint 警告」ではなく**能動スキャン＋受理/却下 UI**で吸収するため、旧判断の「鬱陶しさ」懸念は解消した。
+> - **LLM は意味判定に専念（B2）**: `src/features/codex/candidateJudgment.ts` の `judgeCandidates` が候補ごとに種別（character/location/item/lore）・要約・**別名検出**（既存エントリの別表記か）を FE single-shot（`sendChatMessageWithThinking`）で判定。`analysis` policy gate・入力に無い surface 棄却・未知 aliasOfId は null に倒す。別名検出は旧 §既知の限界 の「将来検討」を前倒しした。
+> - **`post_effect_annotations` を使わない**: 候補は揮発（毎回スキャン）。受理＝`codex_entries` を直接作成（種別/要約 pre-fill、別名判定時は既存エントリの `aliases` に追記）。却下＝`project_settings` の KV `codex.candidates.dismissed`（NFC 正規化キー集合）に永続化。よって以下の「Annotation 構造」「`status` で dismiss 吸収」は**出荷版には当てはまらない**。
+> - UI 詳細は [`Grimodex_Codexパネル設計書.md`](Grimodex_Codexパネル設計書.md) の §未確定候補（CodexCandidatesReport）。品質は実 LLM ライブハーネス `candidateJudgment.live.test.ts`（本番ビルダー×実モデル×本番パーサ）で評価可能。
+>
+> 以下は初期設計（思想の記録として残す）。
+
 #### 思想
 
 - **方向性が逆**: `consistency` は「Codex を ground truth、本文を被検査側」。`entity_extraction` は「本文を一次ソース、Codex を既知集合（差分の参照側）」
@@ -940,6 +951,7 @@ LLM ベースの誤字脱字検出。Linter（確定論ルール）では拾え�
 | `update_relation_status` | `{ relation_id, status }` | `Relation`（両端 annotation にカスケード）| ✓ |
 | `reply_to_annotation` | `{ parent_id, content, author_role }` | 新 `Annotation` | ✓ (親の `project_id` / `scene_id` / `run_id` / `persona` を継承して `category='pseudo_comment'` の子を作成。§4 のとおり親の `run_id` を継承) |
 | `save_post_effect_annotations` | `{ scene_id, annotations[] }` | scene 保存時の同期用（`saveAuthorshipSpans` と同タイミングで呼ぶ）| ✓ |
+| `extract_codex_candidates` | `{ project_id, min_count? }` | `CodexCandidate[]`（`{surface, lemma, count, first_scene_id, context}`）| ✓ (2026-06-20 / PR #130。日本語専用＝lindera UniDic。全シーンを読書順 DFS で形態素解析→固有名詞を完全列挙→既存 Codex name/alias 差引。post_effect_run には乗らない独立コマンド。LLM 判定なし＝B1 のみ。`min_count` 既定 2) |
 
 **キャッシュ短絡（`from_cache`）:** §10「`input_hash` の扱い」に基づき、同 `input_hash` の `completed` run があれば `start_post_effect_run` / `start_post_effect_run_multi` は新 run を起動せず既存 `run_id` を `from_cache: true` で即返す。フロント (`runPostEffect` in `src/features/post-effect/api.ts`) は実 `post_effect:done` が届かないため合成 `onDone` を発火して spinner を確実に解除する。
 

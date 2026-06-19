@@ -30,6 +30,8 @@ Grimodex のテキスト Linter は、執筆中の文章に対して**確定論�
 
 Codex 基点で「真琴/Makoto の表記ゆれ」は Linter、「Codex: 目=青 vs 本文: 緑」は PostEffects。同じ Codex エントリが両機能で別角度から検出されるのは許容（責務が異なる情報源として並記する）。
 
+> **（2026-06-20 追記）形態素の用途拡大と固有名詞処理の棲み分け（PR #130）**: 形態素解析（lindera）は従来 Linter ルール内（`word_repetition` 等）専用だったが、Codex パネルの「未確定候補」機能（[`Grimodex_Codexパネル設計書.md`](Grimodex_Codexパネル設計書.md) §未確定候補）でも使うようになった。固有名詞処理の境界: **既知 Codex エントリの表記ゆれ検出 = Linter（決定論・Fix あり）／ 本文中の未登録固有名詞の発見・候補化 = Codex 候補機能（形態素で完全列挙 + LLM で種別/別名判定・受理/却下 UI、Lint 警告ではない）**。後者の `extract_codex_candidates` は Linter パスではなく独立コマンド。PostEffects 設計書の旧「形態素は採用しない」判断はこの機能で撤回された。
+
 ### 装飾の重なり規則
 
 同一 span に Linter の squiggly と PostEffect の `pe-annotation-*` decoration が重なる場合:
