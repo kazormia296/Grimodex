@@ -1778,6 +1778,32 @@ export const proseStaging = sqliteTable(
   ],
 );
 
+// ⑦ AI運用ツール群: プロンプト再利用ライブラリ（per-project）。
+// 既存の `snippets`（物語知識の抽出）とは別概念で、ユーザーが保存する
+// 再利用可能なプロンプト/指示テンプレート。チャット入力に挿し込んで使う。
+// v1 はパラメータ `{{...}}` 置換なしのプレーンテキスト。
+export const promptTemplates = sqliteTable(
+  "prompt_templates",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("Untitled"),
+    content: text("content").notNull().default(""),
+    usageCount: integer("usage_count").notNull().default(0),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_prompt_templates_project").on(table.projectId, table.createdAt),
+  ],
+);
+
 // Type exports
 export type AuthorshipSpan = typeof authorshipSpans.$inferSelect;
 export type NewAuthorshipSpan = typeof authorshipSpans.$inferInsert;
@@ -1811,6 +1837,8 @@ export type NewProjectSnapshotSnippet =
   typeof projectSnapshotSnippets.$inferInsert;
 export type ProjectSnapshotAux = typeof projectSnapshotAux.$inferSelect;
 export type NewProjectSnapshotAux = typeof projectSnapshotAux.$inferInsert;
+export type PromptTemplate = typeof promptTemplates.$inferSelect;
+export type NewPromptTemplate = typeof promptTemplates.$inferInsert;
 export type CodexEntryPhase = typeof codexEntryPhases.$inferSelect;
 export type NewCodexEntryPhase = typeof codexEntryPhases.$inferInsert;
 export type CodexPhaseDetailOverride =

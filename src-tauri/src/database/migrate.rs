@@ -1540,6 +1540,24 @@ impl Database {
                 ON chat_sessions(project_id, snippet_anchor_id);",
         )?;
 
+        // ⑦ AI運用ツール群: プロンプト再利用ライブラリ（per-project）。
+        // schema.ts の `promptTemplates` テーブルと列を手動同期している。
+        // snippets とは別概念で、ユーザーが保存する再利用可能なプロンプト
+        // テンプレート。v1 はパラメータ置換なしのプレーンテキスト。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS prompt_templates (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title       TEXT NOT NULL DEFAULT 'Untitled',
+                content     TEXT NOT NULL DEFAULT '',
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_prompt_templates_project
+                ON prompt_templates(project_id, created_at);",
+        )?;
+
         Ok(())
     }
 

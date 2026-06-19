@@ -4703,5 +4703,41 @@
     "deleteConfirmDesc_one": "It will be removed from {{count}} scene or chapter.",
     "deleteConfirmDesc_other": "It will be removed from {{count}} scenes and chapters.",
     "reorder": "Reorder"
+  },
+  "promptLibrary": {
+    "section": {
+      "title": "Prompt library",
+      "intro": "Save your frequently used instructions as templates and drop them into the chat input. They are shared only within this project.",
+      "empty": "No saved templates yet.",
+      "add": "Add template",
+      "usageCount_one": "Used {{count}} time",
+      "usageCount_other": "Used {{count}} times",
+      "editAria": "Edit “{{title}}”",
+      "deleteAria": "Delete “{{title}}”"
+    },
+    "editor": {
+      "headingNew": "New template",
+      "headingEdit": "Edit template",
+      "titleLabel": "Title",
+      "titlePlaceholder": "e.g. Tidy up the prose style",
+      "contentLabel": "Content",
+      "contentPlaceholder": "Enter the instruction you want to reuse…"
+    },
+    "picker": {
+      "title": "Insert a saved template",
+      "label": "Template",
+      "empty": "No templates. Add them under Settings → AI."
+    },
+    "saveFromPreview": {
+      "title": "Save this content as a template",
+      "label": "Save template"
+    },
+    "toast": {
+      "saved": "Template saved",
+      "saveFailed": "Failed to save template",
+      "loadFailed": "Failed to load templates",
+      "deleteFailed": "Failed to delete template",
+      "titleRequired": "Please enter a title"
+    }
   }
 }

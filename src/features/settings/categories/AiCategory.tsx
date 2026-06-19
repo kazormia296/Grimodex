@@ -37,6 +37,7 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingTextarea } from "../components/SettingTextarea";
 import { AiProjectSettings } from "./AiProjectSettings";
+import { PromptLibrarySection } from "@/features/prompt-library/PromptLibrarySection";
 import { useSettingsStore } from "../settingsStore";
 
 /** AI プロンプト追記カスタマイズの対象スロット (project_settings の key 末尾)。 */
@@ -1290,6 +1291,9 @@ export function AiCategory() {
       <SettingScopeHeader title={t("settings.scopeProject")} />
       {/* AI 使用ポリシー + AI 作品設定（旧 Project タブから集約）。 */}
       <AiProjectSettings />
+
+      {/* ⑦ プロンプト再利用ライブラリ（per-project）。 */}
+      <PromptLibrarySection />
 
       {/* Context budget */}
       <SettingSection title={t("settings.ai.contextBudget")}>

@@ -35,6 +35,9 @@ import { useAnchoredPopover } from "./useAnchoredPopover";
 import type { MentionItem } from "@/features/codex/CodexMentionExtension";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { shouldSuggestAgentMode } from "../agentSuggestion";
+import { PromptTemplatePicker } from "@/features/prompt-library/PromptTemplatePicker";
+import { usePromptLibraryStore } from "@/features/prompt-library/promptLibraryStore";
+import type { PromptTemplate } from "@/features/prompt-library/api";
 
 interface ChatInputProps {
   onSend: (
@@ -429,6 +432,19 @@ export function ChatInput({
     [commandPopup],
   );
 
+  // プロンプトテンプレート挿入: 本文を入力エディタのカーソル位置にテキストとして
+  // 差し込む。markdown 記法はそのまま（tiptap-markdown が再描画する）。挿入後に
+  // usageCount を 1 増やす。
+  const incrementTemplateUsage = usePromptLibraryStore((s) => s.incrementUsage);
+  const handleTemplateSelect = useCallback(
+    (template: PromptTemplate) => {
+      if (!editor) return;
+      editor.chain().focus().insertContent(template.content).run();
+      void incrementTemplateUsage(template.id);
+    },
+    [editor, incrementTemplateUsage],
+  );
+
   // 現在の doc から `@シーン名` メンションされた scene ID 群を抽出する。
   // 送信用と preview-copy 用で同じロジックを共有して prompt が食い違わない
   // ようにする。
@@ -649,6 +665,12 @@ export function ChatInput({
               onChange={handleChangeReasoningEffort}
             />
           )}
+
+          {/* プロンプトテンプレート挿入ピッカー */}
+          <PromptTemplatePicker
+            onSelect={handleTemplateSelect}
+            disabled={isStreaming}
+          />
 
           {/* モデル選択 chip */}
           <div className="relative">
