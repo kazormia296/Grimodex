@@ -83,7 +83,7 @@ function dayKeyFromDate(d: Date): string {
  * これで DST のある日でも「翌日 / 前日」が正しく出る（local midnight の差が
  * 86400000 にならない日があるため）。
  */
-function shiftDayKey(key: string, delta: number): string {
+export function shiftDayKey(key: string, delta: number): string {
   const [y, m, d] = key.split("-").map(Number);
   return dayKeyFromDate(new Date(y, m - 1, d + delta));
 }

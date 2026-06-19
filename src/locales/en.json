@@ -3347,6 +3347,27 @@
       "clearHint": "Leave empty to use the default",
       "usingDefault": "Using the default goal",
       "noCharData": "Character data unavailable today; showing 0"
+    },
+    "pacemaker": {
+      "title": "Finish-line pacemaker",
+      "set": "Set a finish-line goal",
+      "edit": "Edit goal & deadline",
+      "save": "Save",
+      "cancel": "Cancel",
+      "targetLabel": "Target characters",
+      "targetPlaceholder": "Characters",
+      "deadlineLabel": "Deadline (optional)",
+      "currentProgress": "{{current}} / {{target}} chars",
+      "remaining": "{{remaining}} to go",
+      "reached": "Finished! 🎉",
+      "pace": "Recent pace {{pace}} chars/day",
+      "projectedFinish": "Finish by {{date}} ({{days}} days left)",
+      "noPace": "Not enough recent writing to project a finish date",
+      "noCharData": "Character data is insufficient to estimate pace",
+      "deadlineRequired": "To hit {{date}}: {{pace}} chars/day needed",
+      "onTrack": "On track at your current pace",
+      "behind": "{{days}} days behind at your current pace",
+      "cannotMake": "Won't make it at your current pace"
     }
   },
   "attribution": {

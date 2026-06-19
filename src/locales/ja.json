@@ -3344,6 +3344,27 @@
       "clearHint": "空欄にすると既定値を使用します",
       "usingDefault": "既定の目標を使用中",
       "noCharData": "本日の字数データがありません（0 と表示）"
+    },
+    "pacemaker": {
+      "title": "完走ペースメーカー",
+      "set": "完走目標を設定",
+      "edit": "目標・締切を編集",
+      "save": "保存",
+      "cancel": "キャンセル",
+      "targetLabel": "目標文字数",
+      "targetPlaceholder": "文字数",
+      "deadlineLabel": "締切（任意）",
+      "currentProgress": "{{current}} / {{target}} 字",
+      "remaining": "あと {{remaining}} 字",
+      "reached": "完走！🎉",
+      "pace": "直近ペース {{pace}} 字/日",
+      "projectedFinish": "完走予定 {{date}}（あと {{days}} 日）",
+      "noPace": "直近に執筆がないため完走予定を出せません",
+      "noCharData": "字数データが不足しているためペースを概算できません",
+      "deadlineRequired": "締切 {{date}} まで：1 日 {{pace}} 字 必要",
+      "onTrack": "現ペースで間に合います",
+      "behind": "現ペースだと {{days}} 日遅れ",
+      "cannotMake": "現ペースでは間に合いません"
     }
   },
   "attribution": {
