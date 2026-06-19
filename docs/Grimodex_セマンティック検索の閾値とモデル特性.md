@@ -122,6 +122,16 @@ Q5 改善策 #4。密ベクトル（256/384 次元）は語彙完全一致を過
 - **設定**: `ai.hybridRecall`（project, 既定 ON, `ai.semanticRecall` が前提）。
 - **未検証ゲート**: 実プロジェクト・実 LLM での recall/precision 効果は dev の Run search eval と
   実機ログ（`SemanticRecall mode=hybrid …` 行）で要計測。閾値（RESCUE_MARGIN / SPARSE_LIMIT）は暫定。
+- **ランキング差（chat vs 関連シーンパネル）**: 上記 chat 注入（`selectHybridRecallChunks`）は
+  RRF 純ソートで並べる（precision-first・top-1 ゲートが「明確な勝者が無ければ何も注入しない」を
+  担保するため、順位は素の RRF で十分）。一方 **関連する過去シーンパネル**（`selectRelatedPastScenes`,
+  2026-06-19 PR#129）は同じ RRF に **dense 勝者アンカー**を足す: RRF は語彙一致の弱関連を意味的
+  最近傍（最大 cosine の confident シーン＝ dense 勝者）の上へ押し上げ、browse パネル先頭の R@1/MRR を
+  落とす。そこで pool 最大 cosine が床以上なら**その 1 件だけ rank1 に固定**し、2 位以降は RRF のまま
+  残す。これで `hybrid R@1 ≥ dense R@1` が構造的に保証され（新 knob 不要、admit が使う confidence 床を
+  再利用）、recall 補強（R@3/recall）は維持される。chat はこのアンカーを意図的に持ち込まない。
+  実埋め込み eval（`related-scenes/liveEval/relatedScenesLive.eval.test.ts`）でゲート: all で R@1
+  0.29→0.40・MRR 0.60→0.73 を回復しつつ recall 1.00 維持。
 
 ## 一次情報源
 
@@ -135,6 +145,9 @@ Q5 改善策 #4。密ベクトル（256/384 次元）は語彙完全一致を過
 ## 関連
 
 - 実装: `src/features/chat/semanticRecall.ts`（閾値・recall パラメータ・`selectHybridRecallChunks` RRF 融合）
+- 関連シーンパネル: `src/features/related-scenes/selectRelatedScenes.ts`（RRF 融合＋dense 勝者アンカー）、
+  `seedTerms.ts`（固有名詞 seed 拡張）、`liveEval/`（実 ONNX 埋め込み eval ハーネス）。
+  設計書 `docs/Grimodex_関連する過去シーンパネル設計書.md`
 - sparse: `src-tauri/src/database/fts.rs`（`search_fts` scope=scenes, trigram bm25）、`src/lib/fts.ts`（sanitizer）
 - 計測: `scripts/calibrate-embedding-threshold.py`、`scripts/fixtures/{ja,en}-calibration.jsonl`、
   dev の Run search eval（`src/features/semantic-search/searchEval.ts`）、Dump chunks

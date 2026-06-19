@@ -558,8 +558,10 @@ Layer 4 RAG が「AI のための recall（チャット文脈へ自動注入）�
 
 * **クエリ seed** = 現在シーン本文の末尾のみ（`loadSceneContent` → `prosemirrorToText`
   → `buildSemanticRecallQuery({ userMessage: "", sceneBody })`）。チャット発話は無い。
-* **取得**: `semanticSearch`（dense 単独、`limit=30`）。sparse 救済ハイブリッドは Phase 2。
-  失敗・未 index は空配列フォールバック（チャット recall と同契約）。
+* **取得（hybrid, 2026-06-19 PR#126）**: dense（`semanticSearch`, `limit=30`）と sparse
+  （`fetchSparseSceneIds` = FTS5/bm25）を**並列取得**。sparse クエリは `buildSparseQuery` で
+  本文全体の固有名詞 seed を足して拡張する（③）。失敗・未 index は空配列／dense 単独へ
+  グレースフルに退避（チャット recall と同契約）。
 * **選別**（`selectRelatedPastScenes` 純関数）:
   - 「既読」= 読書順（`computeGlobalSceneOrder` の正準 reading order）で現在シーンより
     **前**のシーンだけ。現在シーン自身・現在以降（未読）・順序外（folder/削除済）は除外。
@@ -567,8 +569,16 @@ Layer 4 RAG が「AI のための recall（チャット文脈へ自動注入）�
     **per-scene floor** として使う。チャット注入の top-1 ゲート（「明確な勝者が無ければ
     全部隠す」）は使わない — 人間が関連性を判断できるパネルなので all-or-nothing は不要。
     代わりに各シーンが単独で「明確に関連」のバーを越えるものだけ出し、ruri の団子混入を防ぐ。
-  - 1 シーン 1 行に集約（最良チャンクを代表に）、スコア降順（同点は sceneId 安定化）、
-    最大 `RELATED_SCENES_MAX=8` 件。
+  - **救済**: sparse 上位の語彙一致シーンを `rescueMargin=0.05` で床ぎりぎり下まで救済（固有名詞
+    補強）＋ browse 向けに二段ガード相対救済（②, `relativeRescue.gap=0.05`）。
+  - **ランキング**: dense と sparse 順位を **RRF 融合**（`RRF_K=60`）。ただし pool 最大 cosine の
+    シーンが confident（床以上）なら**その 1 件だけ rank1 に固定する dense 勝者アンカー**
+    （2026-06-19 PR#129）。RRF が語彙一致の弱関連を意味的最近傍の上へ押す browse トレードオフを
+    先頭だけ打ち消し（`hybrid R@1 ≥ dense R@1` を構造保証）、2 位以降は RRF のまま recall 補強を
+    維持。チャット注入はこのアンカーを**意図的に持ち込まない**（precision 優先）。
+  - 1 シーン 1 行に集約（最良チャンクを代表に）、最大 `RELATED_SCENES_MAX=8` 件。
+  - 計測: `liveEval/relatedScenesLive.eval.test.ts`（実 ONNX 埋め込みの bilingual eval、
+    `embeddings.generated.json` は gitignore＝再生成可）。
 * **ジャンプ**: 行クリックで `requestJump → setActiveScene → showPanel("editor")`（順序は
   不変条件。`semanticNavStore` 経由で EditorPane がシーンロード後にチャンク位置へスクロール+
   選択。意味検索ダイアログと同一機構）。
