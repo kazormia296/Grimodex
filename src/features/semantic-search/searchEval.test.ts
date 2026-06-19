@@ -5,6 +5,7 @@ import {
   rankOfExpected,
   computeRecallMrr,
   thresholdSweep,
+  fuseHybridSceneRanking,
 } from "./searchEval";
 
 function hit(
@@ -80,6 +81,37 @@ describe("computeRecallMrr", () => {
       recallAt3: 0,
       mrr: 0,
     });
+  });
+});
+
+describe("fuseHybridSceneRanking", () => {
+  const sc = (sceneId: string, score: number) => ({
+    sceneId,
+    sceneTitle: sceneId.toUpperCase(),
+    score,
+  });
+
+  it("promotes a sparse-top scene above a higher-cosine non-sparse scene", () => {
+    const dense = [sc("hi", 0.9), sc("lo", 0.82)]; // dense (cosine-desc) order
+    const fused = fuseHybridSceneRanking(dense, ["lo"]);
+    expect(fused.map((s) => s.sceneId)).toEqual(["lo", "hi"]);
+  });
+
+  it("preserves dense order when there are no sparse hits", () => {
+    const dense = [sc("a", 0.9), sc("b", 0.8), sc("c", 0.7)];
+    expect(fuseHybridSceneRanking(dense, []).map((s) => s.sceneId)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+
+  it("ignores sparse-only ids that are not in the dense pool (no phantom rows)", () => {
+    const dense = [sc("a", 0.9), sc("b", 0.8)];
+    // "ghost" takes sparse rank 0 (consumed), "b" rank 1 → still promoted over a.
+    const fused = fuseHybridSceneRanking(dense, ["ghost", "b"]);
+    expect(fused.map((s) => s.sceneId)).toEqual(["b", "a"]);
+    expect(fused).toHaveLength(2);
   });
 });
 
