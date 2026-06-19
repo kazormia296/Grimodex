@@ -94,6 +94,9 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   // 固有値 (project)。override が 0 のとき default にフォールバックする。
   "goal.dailyDefaultChars": "global",
   "goal.dailyChars": "project",
+  // Finish-line pacemaker — 原稿全体の目標総文字数と任意の締切（共に project 固有）。
+  "goal.manuscriptTargetChars": "project",
+  "goal.manuscriptDeadline": "project",
   // Display — user preference (global)
   "display.uiFontFamily": "global",
   "display.showWordCount": "global",
@@ -226,6 +229,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // project 固有値が 0 のとき default にフォールバックする。
   "goal.dailyDefaultChars": "0",
   "goal.dailyChars": "0",
+  // Finish-line pacemaker（0 / 空 = 未設定）。締切は "YYYY-MM-DD" のローカル日付。
+  "goal.manuscriptTargetChars": "0",
+  "goal.manuscriptDeadline": "",
   // Display (theme, uiLanguage, uiScale are in GlobalSettings)
   // 同梱 UI 書体 M PLUS 1 を既定に。fallback 無しは buildFontOptions の
   // 同梱/列挙 option (quoteFamily) と一致させ重複表示を防ぐ。

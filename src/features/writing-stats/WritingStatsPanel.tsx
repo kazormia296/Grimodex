@@ -13,17 +13,26 @@ import {
 } from "./writingStatsQuery";
 import { Heatmap } from "./Heatmap";
 import { DailyGoalProgress } from "./DailyGoalProgress";
+import { FinishLinePacemaker } from "./FinishLinePacemaker";
 
 export function WritingStatsPanel({ isActive = true }: SlotPanelProps = {}) {
   const { t } = useTranslation();
   const projectId = useTreeStore((s) => s.projectId);
   const nodes = useTreeStore((s) => s.nodes);
+  const charCounts = useTreeStore((s) => s.charCounts);
 
   const sceneIds = useMemo(
     () => nodes.filter((n) => n.nodeType === "scene").map((n) => n.id),
     [nodes],
   );
   const sceneIdsKey = sceneIds.join(",");
+
+  // 完走ペースメーカーの分子＝現在の原稿総文字数。live な charCounts マップ
+  // （シーンごとの net 文字数キャッシュ）をシーンぶん合計する。
+  const currentChars = useMemo(
+    () => sceneIds.reduce((sum, id) => sum + (charCounts[id] ?? 0), 0),
+    [sceneIds, charCounts],
+  );
 
   const [data, setData] = useState<WritingStatsData | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -135,6 +144,14 @@ export function WritingStatsPanel({ isActive = true }: SlotPanelProps = {}) {
           <DailyGoalProgress
             todayChars={stats.todayChars}
             hasCharData={stats.hasCharData}
+          />
+
+          {/* 完走ペースメーカー（残量 ÷ 直近の暦日平均ペース → 完走予定日） */}
+          <FinishLinePacemaker
+            currentChars={currentChars}
+            pace={stats.last30Chars / 30}
+            hasCharData={stats.hasCharData}
+            now={now}
           />
 
           {/* ヒートマップ */}
