@@ -2,9 +2,10 @@
 
 ## 概要
 
-「関連する過去シーン」は、いま編集中のシーンに意味的に関連する**読書順で前の（既読）
-シーン**を一覧する専用 tool window パネル（`src/features/related-scenes/RelatedScenesPanel.tsx`、
-tool window id `related-scenes`）。クリックでそのシーンの一致箇所へジャンプできる。
+「関連する過去シーン」は、いま編集中のシーンに意味的に関連する**「前の」シーン**（既定＝
+読書順で前＝既読。`phase_resolution_mode` が story/auto なら作中時系列で前）を一覧する専用
+tool window パネル（`src/features/related-scenes/RelatedScenesPanel.tsx`、tool window id
+`related-scenes`）。クリックでそのシーンの一致箇所へジャンプできる。
 
 Grimodex のコア体験 **TALK→EXTRACT→RECALL** ループのうち、RECALL（過去に書いた／
 抽出した知識を執筆中に引き戻す）を**初めて人間向け UI として出した read-only パネル**。
@@ -30,9 +31,16 @@ Grimodex のコア体験 **TALK→EXTRACT→RECALL** ループのうち、RECALL
 
 - 現在編集中シーン（`useTreeStore.activeSceneId`）が変わるたびに、その本文を seed に
   意味検索し、関連する**過去**シーンを出す。
-- 「過去（既読）」= **読書順**（`computeGlobalSceneOrder` の正準 reading order）で現在
-  シーンより**前**にあるシーンのみ。現在シーン自身・現在以降（＝未読）・順序外
-  （folder / 削除済）は出さない。これが「単なる関連シーン（相関図領域）」との違い。
+- 「過去」の時間軸は**プロジェクトの `phase_resolution_mode`（reading/story/auto）に従う**
+  （Codex フェーズ解決と統一。`computeSceneTimeIndex(nodes, resolutionMode)`）。
+  - **reading**（既定）: 読書順（原稿ツリーの DFS = `computeGlobalSceneOrder`）。「過去＝既読＝
+    原稿で手前」。回想シーンが読書順で後ろにあれば「未来（未読）」扱い。
+  - **story / auto**: 作中時系列（`storyTimeOrder` 順、未設定シーンは読書順末尾）。「過去＝作中で
+    前に起きた」。読書順では後ろの回想シーンでも作中時系列で前なら「過去」に入る。
+  いずれも現在シーンより**前**だけを出し、現在シーン自身・現在以降・順序外（folder/削除済）は
+  除外する。順序軸は `selectRelatedPastScenes` には透過で、渡された index map の前後だけで判定する。
+  これが「単なる関連シーン（相関図領域）」との違い。Settings での mode 切替はパネルが購読して即時
+  取り直す（`RelatedScenesPanel` が `resolutionMode` を effect 依存に持つ）。
 - 各行は **1 シーン**（最良スコアのチャンクを代表に集約）。並び順は hybrid の RRF 融合＋
   dense 勝者アンカー（下記「検索とランキング」）、純 dense 時のみ cosine 降順、同点は sceneId で
   安定ソート。最大 `RELATED_SCENES_MAX = 8` 件。
@@ -65,7 +73,8 @@ Grimodex のコア体験 **TALK→EXTRACT→RECALL** ループのうち、RECALL
   → dense と sparse を並列取得（hybrid。一方が失敗してもグレースフルに退避）:
       semanticSearch({ projectId, query, limit: 30 })          … dense。失敗/未 index は空配列
       fetchSparseSceneIds({ projectId, query: sparseQuery })   … sparse=FTS5/bm25。失敗→dense 単独
-  → computeGlobalSceneOrder(treeStore.nodes) で読書順を算出
+  → computeSceneTimeIndex(treeStore.nodes, usePhaseStore.resolutionMode) で順序軸を算出
+      （reading=読書順 / story・auto=作中時系列。reading は computeGlobalSceneOrder と同義）
   → selectRelatedPastScenes(hits, { currentSceneId, sceneOrder, minScore=gate, maxScenes=8,
       sparseSceneIds, rescueMargin=0.05, relativeRescue:{ gap=0.05 } })
   → パネルに行として描画（RRF 融合＋dense 勝者アンカーで順位付け、下記「検索とランキング」）
@@ -80,9 +89,10 @@ Grimodex のコア体験 **TALK→EXTRACT→RECALL** ループのうち、RECALL
   大文字始まり Latin（連語可）の固有名詞 seed を頻度順に抽出し、sparse クエリを拡張する（③）。
   LLM 不要・決定的（シーンを開く度に走るので HyDE は不可）。漢字固有名詞は形態素器が無く対象外。
 - `fetchRelatedScenes.ts` — `fetchRelatedPastScenes`。本文取得→クエリ組み立て→dense/sparse 並列
-  取得→読書順算出→選別の取得オーケストレーション。失敗は空配列／dense 単独フォールバック。
+  取得→`computeSceneTimeIndex` で順序軸算出（`phase_resolution_mode` に従う）→選別の取得
+  オーケストレーション。失敗は空配列／dense 単独フォールバック。
 - `RelatedScenesPanel.tsx` — パネル UI（debounce fetch・loading/empty 状態・行クリック
-  ジャンプ）。
+  ジャンプ）。`usePhaseStore.resolutionMode` を購読し、順序軸の切替で再取得する。
 
 ## 検索とランキング（hybrid + dense 勝者アンカー）
 
@@ -125,7 +135,7 @@ dense/hybrid/+seed/+rel の Recall@k・Precision・MRR を実測し、`hybrid R@
 ## 設計上の判断・制約
 
 - **read-only**: DB 書き込み・schema 変更・Rust 変更なし。既存 `semantic_search` /
-  `fts_search` / `semanticNavStore` / `computeGlobalSceneOrder` / `loadSceneContent` を
+  `fts_search` / `semanticNavStore` / `computeSceneTimeIndex` / `loadSceneContent` を
   組み合わせるだけ（sparse 腕も既存 FTS5 を流用、Rust 0）。
 - **hybrid（dense + sparse RRF）出荷済み**: 当初は dense 単独 MVP（2026-06-18）だったが、
   固有名詞 recall を補うため Layer 4 RAG と同じ RRF 機構＋固有名詞 seed 拡張（③）＋二段ガード
@@ -134,6 +144,13 @@ dense/hybrid/+seed/+rel の Recall@k・Precision・MRR を実測し、`hybrid R@
 - **クエリは現在シーン本文のみ**: チャット recall と違いユーザー発話が無いので、dense seed は
   本文末尾だけ。sparse seed だけは本文全体の固有名詞で拡張する（末尾 500 字に主題が無い長い
   シーン対策、③）。本文が空（新規シーン等）ならクエリ空＝結果なし。
+- **「過去」の時間軸は専用設定を増やさず `phase_resolution_mode` を再利用する**（2026-06-20）:
+  当初は読書順固定だったが、Codex フェーズ解決が既に持つ reading/story/auto 設定にパネルも従わせる
+  （`computeSceneTimeIndex`）。reading が既定かつ `computeGlobalSceneOrder` と同義なので既存
+  プロジェクトの挙動は不変。**パネル独自の reading/story トグルは意図的に作らない** — 同一概念の
+  2 つ目の設定を増やさず、プロジェクト全体の時間軸を 1 設定に統一するため。story モードでは「過去」が
+  「既読」ではなく「作中で前に起きた」に変わる点に注意（回想の扱いが変わる。`storyTimeOrder` 未設定
+  シーンは読書順末尾＝ほぼ未来扱い）。
 - **未 index / feature 無効**: `semantic_search` は `semantic-embedding` feature gate 内。
   無効ビルドや未 index プロジェクトでは静かに空配列へフォールバックし、`empty` 表示になる
   （チャット recall と同契約）。
