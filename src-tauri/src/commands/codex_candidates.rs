@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use grimodex_lint::morph::{tokenize_block, MorphToken};
 use rusqlite::params;
 use serde_json::Value;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::database::Database;
 use crate::semantic::chunker::extract_paragraph_texts;
@@ -29,10 +30,8 @@ pub(crate) struct CodexCandidate {
     pub lemma: String,
     /// プロジェクト全体での総出現数。
     pub count: usize,
-    /// 読書順で最初に出現したシーン。
+    /// 読書順で最初に出現したシーン (初出シーンへのジャンプ用)。
     pub first_scene_id: String,
-    /// 上記シーンの平文内バイトオフセット (初出位置へのジャンプ用)。
-    pub first_byte_offset: usize,
 }
 
 /// tree_nodes の 1 行 (読書順 DFS 用の最小情報)。
@@ -44,10 +43,17 @@ struct NodeRow {
     content: Option<String>,
 }
 
-/// 照合キー正規化。既存 matcher (`codex_matching`) と同じく小文字化のみ。
-/// 候補 surface と既知 name/alias の双方に同じ関数を通すことで一貫させる。
+/// 照合キー正規化。trim → NFC → 小文字化。NFC を挟むのは、固有名詞が NFC/NFD
+/// (例: 濁点付き仮名や macOS 由来の分解形) で揺れても重複検出が外れないようにするため。
+/// **フロントの `candidateKey` (codexCandidates.ts) と必ず同じ規則に保つこと**
+/// (ズレると Rust が出した候補をクライアントが誤って消す/残す)。
 fn normalize_name(s: &str) -> String {
-    s.trim().chars().flat_map(|c| c.to_lowercase()).collect()
+    s.trim()
+        .nfc()
+        .collect::<String>()
+        .chars()
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 /// codex_entries.aliases (JSON 文字列 `["a","b"]`) を配列へ。壊れていれば空。
@@ -129,12 +135,12 @@ fn aggregate_candidates(
         count: usize,
         first_scene_idx: usize,
         first_scene_id: String,
-        first_byte_offset: usize,
+        first_token_idx: usize,
     }
 
     let mut map: HashMap<String, Agg> = HashMap::new();
     for (scene_idx, (scene_id, tokens)) in scenes_tokens.iter().enumerate() {
-        for t in tokens {
+        for (tok_idx, t) in tokens.iter().enumerate() {
             if t.pos_major != "名詞" || t.pos_sub1 != "固有名詞" {
                 continue;
             }
@@ -153,7 +159,7 @@ fn aggregate_candidates(
                 count: 0,
                 first_scene_idx: scene_idx,
                 first_scene_id: scene_id.clone(),
-                first_byte_offset: t.byte_start,
+                first_token_idx: tok_idx,
             });
             // unwrap 不可避を避けるため再取得して加算。
             if let Some(agg) = map.get_mut(&normalize_name(&t.surface)) {
@@ -163,12 +169,12 @@ fn aggregate_candidates(
     }
 
     let mut aggs: Vec<Agg> = map.into_values().filter(|a| a.count >= min_count).collect();
-    // 出現数 desc → 初出シーン順 asc → シーン内位置 asc → surface で決定化。
+    // 出現数 desc → 初出シーン順 asc → シーン内トークン順 asc → surface で決定化。
     aggs.sort_by(|a, b| {
         b.count
             .cmp(&a.count)
             .then_with(|| a.first_scene_idx.cmp(&b.first_scene_idx))
-            .then_with(|| a.first_byte_offset.cmp(&b.first_byte_offset))
+            .then_with(|| a.first_token_idx.cmp(&b.first_token_idx))
             .then_with(|| a.surface.cmp(&b.surface))
     });
     aggs.into_iter()
@@ -177,7 +183,6 @@ fn aggregate_candidates(
             lemma: a.lemma,
             count: a.count,
             first_scene_id: a.first_scene_id,
-            first_byte_offset: a.first_byte_offset,
         })
         .collect()
 }
@@ -243,29 +248,44 @@ pub(crate) fn extract_codex_candidates(
     min_count: Option<usize>,
 ) -> Result<Vec<CodexCandidate>, AppError> {
     let min_count = min_count.unwrap_or(2).max(1);
-    with_db(&ws_state, |db| {
+
+    // フェーズ 1 (ロック保持は最小): DB から読書順シーンと既知名だけ取り出す。
+    // 形態素解析 (CPU バウンド) はロックの**外**で行い、大規模プロジェクトで
+    // ワークスペースの DB アクセス全体をブロックしないようにする。
+    let (scenes, known): (Vec<(String, String)>, HashSet<String>) = with_db(&ws_state, |db| {
         // 日本語専用 (lindera/UniDic)。それ以外は候補なし。
         if project_language(db, &project_id)? != "ja" {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), HashSet::new()));
         }
         let nodes = load_project_nodes(db, &project_id)?;
         let known = load_known_codex_names(db, &project_id)?;
-        let scenes = reading_order_scenes(&nodes);
+        Ok((reading_order_scenes(&nodes), known))
+    })?;
 
-        let mut scenes_tokens: Vec<(String, Vec<MorphToken>)> = Vec::with_capacity(scenes.len());
-        for (scene_id, content_json) in scenes {
-            let plain = plaintext_of(&content_json);
-            let tokens = if plain.is_empty() {
-                Vec::new()
-            } else {
-                // tokenize 失敗時はそのシーンを空扱い (best-effort)。
-                tokenize_block(&plain).unwrap_or_default()
-            };
-            scenes_tokens.push((scene_id, tokens));
-        }
+    // フェーズ 2 (ロック外): 各シーンを形態素解析。
+    let mut scenes_tokens: Vec<(String, Vec<MorphToken>)> = Vec::with_capacity(scenes.len());
+    for (scene_id, content_json) in scenes {
+        let plain = plaintext_of(&content_json);
+        let tokens = if plain.is_empty() {
+            Vec::new()
+        } else {
+            match tokenize_block(&plain) {
+                Ok(t) => t,
+                Err(e) => {
+                    // best-effort: そのシーンは空扱いにするが、握り潰さず記録する。
+                    tracing::warn!(
+                        scene_id = %scene_id,
+                        error = %e,
+                        "[codex_candidates] morph tokenize 失敗; このシーンを空扱い"
+                    );
+                    Vec::new()
+                }
+            }
+        };
+        scenes_tokens.push((scene_id, tokens));
+    }
 
-        Ok(aggregate_candidates(&scenes_tokens, &known, min_count))
-    })
+    Ok(aggregate_candidates(&scenes_tokens, &known, min_count))
 }
 
 #[cfg(test)]
@@ -297,6 +317,16 @@ mod tests {
     fn normalize_name_lowercases_and_trims() {
         assert_eq!(normalize_name("  Alice "), "alice");
         assert_eq!(normalize_name("円明"), "円明");
+    }
+
+    #[test]
+    fn normalize_name_unifies_nfc_and_nfd() {
+        // 「ガ」: NFC = U+30AC 単一 / NFD = U+30AB U+3099 (カ + 結合濁点)。
+        // NFC 正規化を挟むので両者は同じキーになる (重複検出が外れない)。
+        let nfc = "ガ";
+        let nfd = "\u{30AB}\u{3099}";
+        assert_ne!(nfc, nfd, "前提: NFC と NFD は元の文字列としては異なる");
+        assert_eq!(normalize_name(nfc), normalize_name(nfd));
     }
 
     #[test]
@@ -349,7 +379,6 @@ mod tests {
         assert_eq!(cands[0].surface, "円明");
         assert_eq!(cands[0].count, 3);
         assert_eq!(cands[0].first_scene_id, "s1");
-        assert_eq!(cands[0].first_byte_offset, 0);
         assert_eq!(cands[1].surface, "帝都");
         assert_eq!(cands[1].count, 1);
         assert_eq!(cands[1].first_scene_id, "s2");

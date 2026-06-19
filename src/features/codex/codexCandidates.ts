@@ -10,9 +10,13 @@
 import { parseAliases } from "./codexMatcher";
 import type { CodexCandidate } from "./candidateExtractor";
 
-/** 候補/エントリ名の正規化キー (Rust normalize_name と一致させる: trim + 小文字化)。 */
+/**
+ * 候補/エントリ名の正規化キー。**Rust 側 `normalize_name` (codex_candidates.rs) と
+ * 必ず同じ規則**に保つこと: trim → NFC → 小文字化。NFC を挟むのは固有名詞の
+ * NFC/NFD 揺れ (濁点付き仮名・macOS 由来の分解形等) で重複検出が外れないようにするため。
+ */
 export function candidateKey(surface: string): string {
-  return surface.trim().toLowerCase();
+  return surface.trim().normalize("NFC").toLowerCase();
 }
 
 /** entries の name + aliases を正規化した既知名集合。 */

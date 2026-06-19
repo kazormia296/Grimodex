@@ -1999,6 +1999,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "unicode-normalization",
  "uuid",
  "window-vibrancy 0.7.1",
  "wiremock",

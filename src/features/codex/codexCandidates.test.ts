@@ -12,7 +12,6 @@ function cand(surface: string, count = 2): CodexCandidate {
     lemma: surface,
     count,
     firstSceneId: "s1",
-    firstByteOffset: 0,
   };
 }
 
@@ -20,6 +19,14 @@ describe("candidateKey", () => {
   it("trims and lowercases (Rust normalize_name と一致)", () => {
     expect(candidateKey("  Alice ")).toBe("alice");
     expect(candidateKey("円明")).toBe("円明");
+  });
+
+  it("folds NFC and NFD to the same key (dedup holds)", () => {
+    // 0x30AC = composed katakana GA; 0x30AB + 0x3099 = KA + combining dakuten.
+    const nfc = String.fromCharCode(0x30ac);
+    const nfd = String.fromCharCode(0x30ab, 0x3099);
+    expect(nfc).not.toBe(nfd);
+    expect(candidateKey(nfc)).toBe(candidateKey(nfd));
   });
 });
 

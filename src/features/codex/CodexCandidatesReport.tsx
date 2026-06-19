@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { isLicenseRestrictedError } from "@/features/license/gate";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useCodexStore } from "./codexStore";
 import {
@@ -80,6 +81,10 @@ export function CodexCandidatesReport() {
   }, []);
 
   useEffect(() => {
+    // project 切替時は旧 project の候補を即クリアしてから読み直す
+    // (新スキャン完了まで旧候補が一瞬残るのを防ぐ)。手動リフレッシュ (reload 直呼び)
+    // はクリアしないのでスピナー中に旧一覧が見えたままになる。
+    setCandidates([]);
     reload();
   }, [projectId, reload]);
 
@@ -189,9 +194,12 @@ export function CodexCandidatesReport() {
         const entry = await create({ type: "character", name: c.surface });
         useCodexStore.getState().requestSelectEntry(entry.id);
       } catch (e) {
-        toast.error(t("codex.candidates.acceptFailed"), {
-          description: String(e),
-        });
+        // ライセンス制限は create 内の gate が既にトーストするので二重表示しない。
+        if (!isLicenseRestrictedError(e)) {
+          toast.error(t("codex.candidates.acceptFailed"), {
+            description: String(e),
+          });
+        }
       }
     },
     [create, t],

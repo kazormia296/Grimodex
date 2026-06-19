@@ -17,10 +17,8 @@ export interface CodexCandidate {
   lemma: string;
   /** プロジェクト全体での総出現数。 */
   count: number;
-  /** 読書順で最初に出現したシーン。 */
+  /** 読書順で最初に出現したシーン (初出シーンへのジャンプ用)。 */
   firstSceneId: string;
-  /** そのシーン平文内のバイトオフセット。 */
-  firstByteOffset: number;
 }
 
 /**

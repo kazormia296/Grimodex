@@ -61,6 +61,8 @@ aho-corasick = "1"
 fontdb = "0.23"
 grimodex-lint = { path = "crates/grimodex-lint" }
 grimodex-core = { path = "crates/grimodex-core" }
+# Codex 候補名の正規化 (NFC) に使用。固有名詞の NFC/NFD 揺れで重複検出が外れるのを防ぐ。
+unicode-normalization = "0.1"
 # MCP サーバを本体バイナリに統一する (src/main.rs の `mcp` サブコマンド分岐から
 # run_blocking を呼ぶ)。一方向依存・循環なし: grimodex-mcp は grimodex-core のみ
 # に依存し src-tauri を参照しない。grimodex_lib 側へ import しないこと。
