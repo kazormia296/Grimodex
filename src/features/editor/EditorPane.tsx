@@ -36,7 +36,10 @@ import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
 import { getSnippet, updateSnippet } from "@/features/snippets/api";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  getCurrentProjectId,
+  getCurrentProjectLanguage,
+} from "@/features/project/projectStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -93,6 +96,12 @@ import {
 import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { useAgentProseStaging } from "@/features/editor/inlineAi/useAgentProseStaging";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
+import {
+  buildSystemPrompt as buildInlineSystemPrompt,
+  buildUserPrompt as buildInlineUserPrompt,
+} from "@/features/editor/inlineAi/inlineAiApi";
+import { AbInlineDialog } from "@/features/ab-test/AbInlineDialog";
+import type { AbMessage } from "@/features/ab-test/abHarness";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import { SlashCommandPopup } from "@/features/editor/inlineAi/SlashCommandPopup";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
@@ -290,6 +299,14 @@ export function EditorPane({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [palettePreselect, setPalettePreselect] =
     useState<InlineAiCommand | null>(null);
+  // A/B 比較 (③): インライン AI を 2 構成で並列生成して見比べるモーダル。
+  const [abInline, setAbInline] = useState<{
+    messages: AbMessage[];
+    mode: "insert" | "replace";
+    originalRange: { from: number; to: number } | null;
+    insertPos: number | null;
+    projectId: string;
+  } | null>(null);
   const [mentionPopup, setMentionPopupState] =
     useState<CodexMentionPopupState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -1114,7 +1131,7 @@ export function EditorPane({
     }
   }, [verticalMode]);
   const inlineAiDiff = useInlineAiDiff(dbNativeEditor);
-  const { generate, retry } = inlineAiDiff;
+  const { generate, retry, showProvidedText } = inlineAiDiff;
   const { acceptWithStaging, rejectWithStaging } = useAgentProseStaging(
     dbNativeEditor,
     nodeId,
@@ -2011,6 +2028,65 @@ export function EditorPane({
               arg: prompt || undefined,
             });
             generate(command, context);
+          }}
+          onSubmitAb={(command, prompt) => {
+            if (!editor) return;
+            const node = useTreeStore
+              .getState()
+              .nodes.find((n) => n.id === nodeId);
+            const projectTitle =
+              useWorkspaceStore.getState().activeWorkspaceName ?? "";
+            const matchedCodexIds =
+              useCodexHighlightStore.getState().matchedEntryIds;
+            const codexEntries = useCodexStore.getState().entries;
+            const context = buildInlineAiContext({
+              editor,
+              projectTitle,
+              sceneTitle: node?.title ?? "",
+              matchedCodexIds,
+              codexEntries,
+              arg: prompt || undefined,
+            });
+            const lang = getCurrentProjectLanguage();
+            const messages: AbMessage[] = [
+              {
+                role: "system",
+                content: buildInlineSystemPrompt(command, context, lang),
+              },
+              {
+                role: "user",
+                content: buildInlineUserPrompt(command, context, lang),
+              },
+            ];
+            // 採用後に showProvidedText で diff 挿入できるよう、起動時点の
+            // 選択範囲 / 挿入位置を確定して保持する。
+            const { from, to } = editor.state.selection;
+            const isReplace = command.mode === "replace" && from !== to;
+            setAbInline({
+              messages,
+              mode: isReplace ? "replace" : "insert",
+              originalRange: isReplace ? { from, to } : null,
+              insertPos: isReplace ? null : from,
+              projectId: getCurrentProjectId(),
+            });
+          }}
+        />
+      )}
+      {abInline && (
+        <AbInlineDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) setAbInline(null);
+          }}
+          projectId={abInline.projectId}
+          messages={abInline.messages}
+          onAdopt={(text) => {
+            showProvidedText(text, {
+              mode: abInline.mode,
+              originalRange: abInline.originalRange ?? undefined,
+              insertPos: abInline.insertPos ?? undefined,
+            });
+            setAbInline(null);
           }}
         />
       )}

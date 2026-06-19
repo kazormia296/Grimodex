@@ -1,4 +1,32 @@
 {
+  "abTest": {
+    "sideA": "A",
+    "sideB": "B",
+    "defaultModel": "Default model",
+    "modeModel": "Compare models",
+    "modePrompt": "Compare prompts",
+    "promptVariantPlaceholder": "Extra instruction for side B (e.g. be more concise / first person)",
+    "run": "Run comparison",
+    "running": "Generating…",
+    "adoptA": "Use A",
+    "adoptB": "Use B",
+    "chosenBadge": "Chosen",
+    "emptyPrompt": "There is no prompt to compare.",
+    "buildPromptFailed": "Failed to build the prompt.",
+    "adoptedToClipboard": "Copied the chosen text to the clipboard.",
+    "chatTitle": "Chat A/B comparison",
+    "chatDescription": "Send the same prompt to two setups (model / prompt) in parallel and compare. Does not affect the live chat view.",
+    "chatMenuLabel": "Compare A/B",
+    "inlineTitle": "Inline AI A/B comparison",
+    "inlineDescription": "Generate the same instruction with two setups, compare them, and insert the better one.",
+    "inlineMenuLabel": "Compare A/B",
+    "settingsTitle": "A/B comparison",
+    "settingsIntro": "Initial values for side B when opening the comparison dialog. You can still set them per run.",
+    "defaultModelBLabel": "Default comparison model (B)",
+    "defaultModelBDesc": "The counterpart for model A/B (A is the current default model).",
+    "defaultPromptVariantBLabel": "Default extra instruction (B)",
+    "defaultPromptVariantBDesc": "The extra instruction for prompt A/B (A has none)."
+  },
   "lint": {
     "filter": {
       "searchPlaceholder": "Filter by rule_id / message",
@@ -1048,6 +1076,27 @@
         "context_creator": "Context Creator"
       }
     }
+  },
+  "tokenBudget": {
+    "title": "Budget & ETA",
+    "intro": "Your AI cost so far this month for this project, plus a month-end projection based on your current pace. Display only — generation is never blocked when you go over budget.",
+    "monthlyBudget": "Monthly budget (USD)",
+    "monthlyBudgetDesc": "An approximate cost ceiling per month for this project. 0 = unset (the bar and days-left are hidden).",
+    "unset": "Not set",
+    "consumed": "Consumed",
+    "monthCost": "Cost this month",
+    "dailyRate": "Daily pace",
+    "dailyRateDesc": "Month total ÷ {{days}} elapsed day(s)",
+    "projectedMonthEnd": "Month-end (avg pace)",
+    "projectedMonthEndDesc": "Projected month-end cost if this month's average pace holds",
+    "recentProjected": "Month-end (recent pace)",
+    "recentProjectedDesc": "Projected month-end cost using the last 7 days' pace for the remaining days",
+    "daysUntilBudget": "Days until budget",
+    "daysUntilBudgetDesc": "Approximate days until the budget is reached at the current daily pace",
+    "daysValue": "~{{days}} day(s)",
+    "warnApproaching": "At this pace you are on track to reach this month's budget.",
+    "warnOver": "You have exceeded this month's budget.",
+    "warnNonBlocking": "(display only — generation is not blocked)"
   },
   "layout": {
     "watermark": {
@@ -3434,6 +3483,38 @@
     "exportMarkdownTitle": "Markdown export",
     "exportCsvTitle": "CSV export"
   },
+  "provenanceAnalytics": {
+    "sectionTitle": "Provenance analytics",
+    "sectionHint": "Rolls up the AI contribution still present in the body text by model and generation kind.",
+    "noAi": "No AI-authored body text yet.",
+    "modelTitle": "Contribution by model",
+    "modelColModel": "Model",
+    "modelColChars": "Chars",
+    "modelColPassages": "Passages",
+    "modelColPct": "% of AI",
+    "kindTitle": "Generation kind distribution",
+    "kindColKind": "Kind",
+    "kindColChars": "Chars",
+    "kindColPassages": "Passages",
+    "kindColPct": "% of AI",
+    "kindChat": "Chat",
+    "kindInlineAi": "Inline AI",
+    "kindBeat": "Beat",
+    "kindOrphanChat": "Deleted chat",
+    "kindUnknownAi": "Unknown AI",
+    "costTitle": "Approximate cost by provenance",
+    "costApproxNote": "Approximate (rows without a provider-reported cost are estimated from tokens). Derived by mapping the usage log (ai_usage) onto provenance kinds; it does not map one-to-one to individual body passages.",
+    "costByModelTitle": "By model",
+    "costByKindTitle": "By kind",
+    "costColModel": "Model",
+    "costColKind": "Kind",
+    "costColCost": "Est. cost",
+    "costColCalls": "Calls",
+    "costKindOther": "Other (synopsis, etc.)",
+    "costTotal": "Total",
+    "unknownModel": "Unknown model",
+    "approxPrefix": "~"
+  },
   "timelapse": {
     "title": "Timelapse",
     "refresh": "Refresh",
@@ -4703,5 +4784,42 @@
     "deleteConfirmDesc_one": "It will be removed from {{count}} scene or chapter.",
     "deleteConfirmDesc_other": "It will be removed from {{count}} scenes and chapters.",
     "reorder": "Reorder"
+  },
+  "promptLibrary": {
+    "section": {
+      "title": "Prompt library",
+      "intro": "Save your frequently used instructions as templates and drop them into the chat input. They are shared only within this project.",
+      "empty": "No saved templates yet.",
+      "add": "Add template",
+      "usageCount_one": "Used {{count}} time",
+      "usageCount_other": "Used {{count}} times",
+      "editAria": "Edit “{{title}}”",
+      "deleteAria": "Delete “{{title}}”"
+    },
+    "editor": {
+      "headingNew": "New template",
+      "headingEdit": "Edit template",
+      "titleLabel": "Title",
+      "titlePlaceholder": "e.g. Tidy up the prose style",
+      "contentLabel": "Content",
+      "contentPlaceholder": "Enter the instruction you want to reuse…"
+    },
+    "picker": {
+      "title": "Insert a saved template",
+      "label": "Template",
+      "empty": "No templates. Add them under Settings → AI."
+    },
+    "saveFromPreview": {
+      "title": "Save this content as a template",
+      "label": "Save template"
+    },
+    "toast": {
+      "saved": "Template saved",
+      "saveFailed": "Failed to save template",
+      "loadFailed": "Failed to load templates",
+      "deleteFailed": "Failed to delete template",
+      "titleRequired": "Please enter a title",
+      "contentRequired": "Please enter the content"
+    }
   }
 }

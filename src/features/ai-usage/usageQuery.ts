@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { aiUsage } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, gte, lt } from "drizzle-orm";
 import { estimateTotalCost } from "@/features/chat/modelPricing";
 
 export interface SurfaceUsage {
@@ -145,4 +145,84 @@ export async function getProjectUsageSummary(
     unmeteredCount,
     bySurface,
   };
+}
+
+/** ai_usage の 1 行を時系列コスト点に縮約したもの (機能①「予算 ETA」用)。 */
+export interface UsageCostPoint {
+  /** ISO 8601 タイムスタンプ (created_at)。 */
+  createdAt: string;
+  /** 解決済みコスト USD (provider 実値、無ければ modelPricing 推定、無ければ 0)。 */
+  costUsd: number;
+  /** この行のコストがトークン数からの推定か (provider 値が無かった)。 */
+  estimated: boolean;
+}
+
+/** getProjectUsageInRange の集計結果。 */
+export interface ProjectUsageRange {
+  points: UsageCostPoint[];
+  /** 期間内の総コスト USD (estimate を含む)。 */
+  totalCostUsd: number;
+  /** 推定コストが 1 件でも混ざっているか (UI で「概算」表示するため)。 */
+  anyCostEstimated: boolean;
+}
+
+/**
+ * ai_usage 台帳を `created_at` で期間スライスし、コスト点列として返す (機能①)。
+ *
+ * `sinceIso` 以上、`untilIso` 未満 (untilIso 省略時は上限なし) の行を、
+ * `idx_ai_usage_project_created` (project_id, created_at) を活かして取得する。
+ * `costUsd` が null の行は `estimateTotalCost`(modelPricing) で補完する
+ * (getProjectUsageSummary と同一手法)。コストが解決できない行は 0 として点に含める
+ * (バーンレート算出側で無害)。
+ *
+ * created_at は ISO 8601 (TEXT) のため、辞書順比較がそのまま時間順比較になる。
+ * よって SQL の文字列比較 (gte/lt) で範囲を絞れる。
+ */
+export async function getProjectUsageInRange(
+  projectId: string,
+  sinceIso: string,
+  untilIso?: string,
+): Promise<ProjectUsageRange> {
+  if (!projectId) {
+    return { points: [], totalCostUsd: 0, anyCostEstimated: false };
+  }
+
+  const conditions = [
+    eq(aiUsage.projectId, projectId),
+    gte(aiUsage.createdAt, sinceIso),
+  ];
+  if (untilIso) conditions.push(lt(aiUsage.createdAt, untilIso));
+
+  const rows = await db
+    .select({
+      createdAt: aiUsage.createdAt,
+      model: aiUsage.model,
+      tokensIn: aiUsage.tokensIn,
+      tokensOut: aiUsage.tokensOut,
+      costUsd: aiUsage.costUsd,
+    })
+    .from(aiUsage)
+    .where(and(...conditions));
+
+  const points: UsageCostPoint[] = [];
+  let totalCostUsd = 0;
+  let anyCostEstimated = false;
+
+  for (const r of rows) {
+    let cost = r.costUsd ?? null;
+    let estimated = false;
+    if (cost == null) {
+      const est = estimateTotalCost(r.model, r.tokensIn ?? 0, r.tokensOut ?? 0);
+      if (est != null) {
+        cost = est;
+        estimated = true;
+      }
+    }
+    const costVal = cost ?? 0;
+    if (estimated) anyCostEstimated = true;
+    totalCostUsd += costVal;
+    points.push({ createdAt: r.createdAt, costUsd: costVal, estimated });
+  }
+
+  return { points, totalCostUsd, anyCostEstimated };
 }

@@ -1,4 +1,32 @@
 {
+  "abTest": {
+    "sideA": "A",
+    "sideB": "B",
+    "defaultModel": "既定モデル",
+    "modeModel": "モデルで比較",
+    "modePrompt": "プロンプトで比較",
+    "promptVariantPlaceholder": "B 側に追記する指示（例: もっと簡潔に / 一人称で）",
+    "run": "比較を実行",
+    "running": "生成中…",
+    "adoptA": "A を採用",
+    "adoptB": "B を採用",
+    "chosenBadge": "採用",
+    "emptyPrompt": "比較するプロンプトがありません。",
+    "buildPromptFailed": "プロンプトの組み立てに失敗しました。",
+    "adoptedToClipboard": "採用したテキストをクリップボードへコピーしました。",
+    "chatTitle": "チャット A/B 比較",
+    "chatDescription": "同じプロンプトを 2 構成（モデル / プロンプト）へ並列送信して見比べます。ライブのチャット表示には影響しません。",
+    "chatMenuLabel": "A/B で比較",
+    "inlineTitle": "インライン AI A/B 比較",
+    "inlineDescription": "同じ指示を 2 構成で生成して見比べ、良い方を本文に挿入します。",
+    "inlineMenuLabel": "A/B で比較",
+    "settingsTitle": "A/B 比較",
+    "settingsIntro": "比較ダイアログを開いたときの B 構成の初期値です。空のままでも各回で個別に設定できます。",
+    "defaultModelBLabel": "既定の比較モデル (B)",
+    "defaultModelBDesc": "モデル A/B の相手（A は現在の既定モデル）。",
+    "defaultPromptVariantBLabel": "既定の追記指示 (B)",
+    "defaultPromptVariantBDesc": "プロンプト A/B の追記指示（A は追記なし）。"
+  },
   "lint": {
     "filter": {
       "searchPlaceholder": "rule_id / message で絞り込み",
@@ -1048,6 +1076,27 @@
         "context_creator": "Context Creator"
       }
     }
+  },
+  "tokenBudget": {
+    "title": "予算とETA",
+    "intro": "このプロジェクトの今月の AI コストと、現在のペースから予測した月末コストです。表示のみで、予算を超えても生成は止まりません。",
+    "monthlyBudget": "月予算 (USD)",
+    "monthlyBudgetDesc": "このプロジェクトの 1 か月あたりのコスト目安。0 = 未設定 (バーや残日数を表示しません)。",
+    "unset": "未設定",
+    "consumed": "消化率",
+    "monthCost": "今月の累計コスト",
+    "dailyRate": "日次ペース",
+    "dailyRateDesc": "今月の累計 ÷ 経過 {{days}} 日",
+    "projectedMonthEnd": "月末予測 (平均ペース)",
+    "projectedMonthEndDesc": "今月の平均ペースがそのまま続いた場合の月末コスト",
+    "recentProjected": "月末予測 (直近ペース)",
+    "recentProjectedDesc": "直近 7 日間のペースで残り日数を埋めた場合の月末コスト",
+    "daysUntilBudget": "予算到達まで",
+    "daysUntilBudgetDesc": "現在の日次ペースで予算に達するまでの目安日数",
+    "daysValue": "約 {{days}} 日",
+    "warnApproaching": "このペースだと今月の予算に達する見込みです。",
+    "warnOver": "今月の予算を超えました。",
+    "warnNonBlocking": "(表示のみ・生成は止まりません)"
   },
   "layout": {
     "watermark": {
@@ -3431,6 +3480,38 @@
     "exportMarkdownTitle": "Markdown で書き出す",
     "exportCsvTitle": "CSV で書き出す"
   },
+  "provenanceAnalytics": {
+    "sectionTitle": "出所分析",
+    "sectionHint": "本文に残る AI 寄与をモデル別・生成種別別に集計します。",
+    "noAi": "AI 由来の本文はまだありません。",
+    "modelTitle": "モデル別寄与",
+    "modelColModel": "モデル",
+    "modelColChars": "文字数",
+    "modelColPassages": "箇所",
+    "modelColPct": "AI比",
+    "kindTitle": "生成種別の分布",
+    "kindColKind": "種別",
+    "kindColChars": "文字数",
+    "kindColPassages": "箇所",
+    "kindColPct": "AI比",
+    "kindChat": "チャット",
+    "kindInlineAi": "インライン AI",
+    "kindBeat": "ビート",
+    "kindOrphanChat": "消失チャット",
+    "kindUnknownAi": "出自記録なし AI",
+    "costTitle": "概算コスト（出所別）",
+    "costApproxNote": "概算（プロバイダ実値が無い行はトークンから推定）。利用ログ（ai_usage）を出所種別へ寄せた近似で、本文の各箇所とは1対1には対応しません。",
+    "costByModelTitle": "モデル別",
+    "costByKindTitle": "種別別",
+    "costColModel": "モデル",
+    "costColKind": "種別",
+    "costColCost": "概算コスト",
+    "costColCalls": "呼出",
+    "costKindOther": "その他（あらすじ等）",
+    "costTotal": "合計",
+    "unknownModel": "不明モデル",
+    "approxPrefix": "~"
+  },
   "timelapse": {
     "title": "執筆タイムラプス",
     "refresh": "再読み込み",
@@ -4699,5 +4780,41 @@
     "deleteConfirmTitle": "「{{name}}」を削除しますか？",
     "deleteConfirmDesc": "{{count}} 件のシーン・章から外されます。",
     "reorder": "並べ替え"
+  },
+  "promptLibrary": {
+    "section": {
+      "title": "プロンプトライブラリ",
+      "intro": "よく使う指示文をテンプレートとして保存し、チャット入力に挿し込めます。このプロジェクト内でのみ共有されます。",
+      "empty": "保存済みのテンプレートはまだありません。",
+      "add": "テンプレートを追加",
+      "usageCount": "{{count}} 回使用",
+      "editAria": "「{{title}}」を編集",
+      "deleteAria": "「{{title}}」を削除"
+    },
+    "editor": {
+      "headingNew": "テンプレートを新規作成",
+      "headingEdit": "テンプレートを編集",
+      "titleLabel": "タイトル",
+      "titlePlaceholder": "例: 文体を整えてもらう指示",
+      "contentLabel": "本文",
+      "contentPlaceholder": "再利用したい指示文を入力…"
+    },
+    "picker": {
+      "title": "保存済みテンプレートを挿入",
+      "label": "テンプレート",
+      "empty": "テンプレートがありません。設定 → AI から追加できます。"
+    },
+    "saveFromPreview": {
+      "title": "この内容をテンプレートとして保存",
+      "label": "テンプレート保存"
+    },
+    "toast": {
+      "saved": "テンプレートを保存しました",
+      "saveFailed": "テンプレートの保存に失敗しました",
+      "loadFailed": "テンプレートの読み込みに失敗しました",
+      "deleteFailed": "テンプレートの削除に失敗しました",
+      "titleRequired": "タイトルを入力してください",
+      "contentRequired": "本文を入力してください"
+    }
   }
 }

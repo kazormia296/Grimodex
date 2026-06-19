@@ -37,6 +37,8 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingTextarea } from "../components/SettingTextarea";
 import { AiProjectSettings } from "./AiProjectSettings";
+import { PromptLibrarySection } from "@/features/prompt-library/PromptLibrarySection";
+import { AbTestSection } from "@/features/ab-test/AbTestSection";
 import { useSettingsStore } from "../settingsStore";
 
 /** AI プロンプト追記カスタマイズの対象スロット (project_settings の key 末尾)。 */
@@ -1291,6 +1293,9 @@ export function AiCategory() {
       {/* AI 使用ポリシー + AI 作品設定（旧 Project タブから集約）。 */}
       <AiProjectSettings />
 
+      {/* ⑦ プロンプト再利用ライブラリ（per-project）。 */}
+      <PromptLibrarySection />
+
       {/* Context budget */}
       <SettingSection title={t("settings.ai.contextBudget")}>
         <div className="space-y-2">
@@ -1424,6 +1429,9 @@ export function AiCategory() {
           })}
         </div>
       </SettingSection>
+
+      {/* A/B 比較 (③) 設定 — 実体は ab-test feature に閉じる */}
+      <AbTestSection />
 
       <McpIntegrationSection />
     </div>

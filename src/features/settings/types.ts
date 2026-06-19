@@ -141,10 +141,19 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "ai.contextBudget.l4": "project",
   "ai.contextBudget.l5": "project",
   "ai.contextBudget.reserve": "project",
+  // AI cost budget — 月予算 (USD)・プロジェクト毎・表示のみ (0 = 未設定)。
+  // 生成はブロックしない (機能①「トークン予算 ETA」)。
+  "ai.costBudgetPerMonth": "project",
   // Beat — work-specific (project)
   "beat.injectIntoContext": "project",
   "beat.inferRoles": "project",
   "beat.roleInferenceConfidenceThreshold": "project",
+  // --- A/B 比較 (③) — モデル/プロンプト A/B の既定値 (global) -----------------
+  // モデル A/B のデフォルト相手モデル (A=現在の既定モデル, B=これ)。空=未設定。
+  "abTest.defaultModelB": "global",
+  // プロンプト A/B のデフォルト追記指示 (A=なし, B=これ)。空=未設定。
+  "abTest.defaultPromptVariantB": "global",
+  // ---------------------------------------------------------------------------
   // AI prompt customization — 追記式カスタム指示 (project)
   "aiPrompt.custom.chat": "project",
   "aiPrompt.custom.kouetsu": "project",
@@ -269,10 +278,15 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.contextBudget.l4": "20",
   "ai.contextBudget.l5": "20",
   "ai.contextBudget.reserve": "5",
+  // 月予算 (USD)。0 = 未設定 (バー・残日数を表示しない)。
+  "ai.costBudgetPerMonth": "0",
   // Beat AI context injection (Phase C)
   "beat.injectIntoContext": "true",
   "beat.inferRoles": "true",
   "beat.roleInferenceConfidenceThreshold": "0.7",
+  // A/B 比較 (③) — 既定値 (空 = 未設定)
+  "abTest.defaultModelB": "",
+  "abTest.defaultPromptVariantB": "",
   // AI prompt customization addenda — 空 = 組み込みプロンプトのまま (byte-identical)
   "aiPrompt.custom.chat": "",
   "aiPrompt.custom.kouetsu": "",
