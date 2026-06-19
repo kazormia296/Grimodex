@@ -74,6 +74,26 @@ describe("chatRecallWeight", () => {
     ).toBe(CHAT_RECALL_ASSISTANT_PLAIN_BASE);
   });
 
+  it("accepts injected weights (calibration sweep path)", () => {
+    // 既定では plain assistant=0.8 だが、注入で 1.0 にすれば減点なし。
+    const demoted = chatRecallWeight({
+      role: "assistant",
+      insertedToEditor: false,
+      extractedCount: 0,
+    });
+    const noBase = chatRecallWeight(
+      { role: "assistant", insertedToEditor: false, extractedCount: 0 },
+      {
+        insertedBoost: 0.15,
+        extractedBoost: 0.1,
+        extractedCap: 3,
+        assistantPlainBase: 1.0,
+      },
+    );
+    expect(demoted).toBe(0.8);
+    expect(noBase).toBe(1.0);
+  });
+
   it("assistant WITH a signal is not demoted (effective utterance)", () => {
     // hasSignal → roleBase 1.0、signalBoost のみ効く。
     expect(

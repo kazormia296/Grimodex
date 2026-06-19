@@ -61,23 +61,45 @@ export const CHAT_RECALL_EXTRACTED_CAP = 3;
 export const CHAT_RECALL_ASSISTANT_PLAIN_BASE = 0.8;
 
 /**
- * 1 ヒットの重み係数を返す。cosine にこれを掛けたものを score として gate/sort に使う。
+ * 重み係数のチューナブルパラメータ。既定は上の定数。calibration ハーネス
+ * (chatRecallCalibration.eval) が実埋め込みでこれを sweep して較正値を出すため、
+ * 本番選別関数にそのまま注入できるよう options 化している (eval と本番のロジック
+ * ドリフトを避ける)。
  */
-export function chatRecallWeight(hit: {
-  role: string;
-  insertedToEditor: boolean;
-  extractedCount: number;
-}): number {
+export interface ChatRecallWeights {
+  insertedBoost: number;
+  extractedBoost: number;
+  extractedCap: number;
+  assistantPlainBase: number;
+}
+
+export const DEFAULT_CHAT_RECALL_WEIGHTS: ChatRecallWeights = {
+  insertedBoost: CHAT_RECALL_INSERTED_BOOST,
+  extractedBoost: CHAT_RECALL_EXTRACTED_BOOST,
+  extractedCap: CHAT_RECALL_EXTRACTED_CAP,
+  assistantPlainBase: CHAT_RECALL_ASSISTANT_PLAIN_BASE,
+};
+
+/**
+ * 1 ヒットの重み係数を返す。cosine にこれを掛けたものを score として gate/sort に使う。
+ * `weights` 省略時は本番既定 (DEFAULT_CHAT_RECALL_WEIGHTS)。
+ */
+export function chatRecallWeight(
+  hit: {
+    role: string;
+    insertedToEditor: boolean;
+    extractedCount: number;
+  },
+  weights: ChatRecallWeights = DEFAULT_CHAT_RECALL_WEIGHTS,
+): number {
   const signalBoost =
     1 +
-    (hit.insertedToEditor ? CHAT_RECALL_INSERTED_BOOST : 0) +
-    CHAT_RECALL_EXTRACTED_BOOST *
-      Math.min(Math.max(hit.extractedCount, 0), CHAT_RECALL_EXTRACTED_CAP);
+    (hit.insertedToEditor ? weights.insertedBoost : 0) +
+    weights.extractedBoost *
+      Math.min(Math.max(hit.extractedCount, 0), weights.extractedCap);
   const hasSignal = hit.insertedToEditor || hit.extractedCount > 0;
   const roleBase =
-    hit.role === "assistant" && !hasSignal
-      ? CHAT_RECALL_ASSISTANT_PLAIN_BASE
-      : 1;
+    hit.role === "assistant" && !hasSignal ? weights.assistantPlainBase : 1;
   return roleBase * signalBoost;
 }
 
@@ -92,14 +114,17 @@ export function chatRecallLabel(role: string): string {
  * (selectSemanticRecallChunks / selectHybridRecallChunks) の gate/floor/RRF/backfill を
  * そのまま再利用できる。1 メッセージ 1 ベクトルなので distinct/backfill は自明に成立。
  */
-function toWeightedHit(hit: ChatMessageSearchHit): SemanticSearchHit {
+function toWeightedHit(
+  hit: ChatMessageSearchHit,
+  weights: ChatRecallWeights,
+): SemanticSearchHit {
   return {
     sceneId: hit.messageId,
     sceneTitle: chatRecallLabel(hit.role),
     chunkText: hit.text,
     charStart: 0,
     charEnd: 0,
-    score: hit.score * chatRecallWeight(hit),
+    score: hit.score * chatRecallWeight(hit, weights),
     dialogueRatio: 0,
   };
 }
@@ -121,16 +146,19 @@ export function selectChatRecallMessages(
     maxChunks?: number;
     maxChunkChars?: number;
     rescueMargin?: number;
+    /** 重み係数。省略時は本番既定。calibration sweep のみ非既定を渡す。 */
+    weights?: ChatRecallWeights;
   },
 ): ChatRecallMessage[] {
   const excludedSessions = new Set(opts.excludeSessionIds);
+  const weights = opts.weights ?? DEFAULT_CHAT_RECALL_WEIGHTS;
 
   const byId = new Map<string, ChatMessageSearchHit>();
   const weightedDense: SemanticSearchHit[] = [];
   for (const h of denseHits) {
     if (excludedSessions.has(h.sessionId)) continue;
     byId.set(h.messageId, h);
-    weightedDense.push(toWeightedHit(h));
+    weightedDense.push(toWeightedHit(h, weights));
   }
 
   // sparse: 除外セッションの messageId を落とす。dense pool 外の id は hybrid 側で
