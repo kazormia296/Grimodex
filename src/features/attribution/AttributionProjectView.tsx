@@ -23,6 +23,7 @@ import {
   exportAuthorshipHtml,
   downloadTextFile,
 } from "./exportReport";
+import { ProvenanceAnalyticsSection } from "./ProvenanceAnalyticsSection";
 import { Download } from "lucide-react";
 
 type SortColumn = "scene" | "total" | "human" | "ai" | "unknown" | "aiPct";
@@ -90,6 +91,9 @@ export function AttributionProjectView() {
   );
   const [sortCol, setSortCol] = useState<SortColumn>("scene");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  // Bumped on every (re)load so the analytics section re-fetches in sync with
+  // the Refresh button.
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const sceneIds = nodes.filter((n) => n.nodeType === "scene").map((n) => n.id);
   const sceneIdsKey = sceneIds.join(",");
@@ -97,6 +101,7 @@ export function AttributionProjectView() {
   const load = useCallback(() => {
     if (sceneIds.length === 0) return;
     setIsLoading(true);
+    setRefreshKey((n) => n + 1);
     Promise.all([
       loadProjectAttributionStats(sceneIds),
       loadKnowledgeAttributionStats(projectId),
@@ -405,6 +410,13 @@ export function AttributionProjectView() {
           })}
         </tbody>
       </table>
+
+      {projectId && (
+        <ProvenanceAnalyticsSection
+          projectId={projectId}
+          refreshKey={refreshKey}
+        />
+      )}
     </div>
   );
 }
