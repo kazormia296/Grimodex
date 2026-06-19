@@ -563,8 +563,12 @@ Layer 4 RAG が「AI のための recall（チャット文脈へ自動注入）�
   本文全体の固有名詞 seed を足して拡張する（③）。失敗・未 index は空配列／dense 単独へ
   グレースフルに退避（チャット recall と同契約）。
 * **選別**（`selectRelatedPastScenes` 純関数）:
-  - 「既読」= 読書順（`computeGlobalSceneOrder` の正準 reading order）で現在シーンより
-    **前**のシーンだけ。現在シーン自身・現在以降（未読）・順序外（folder/削除済）は除外。
+  - 「前のシーン」の時間軸は**プロジェクトの `phase_resolution_mode` に従う**
+    （`computeSceneTimeIndex(nodes, resolutionMode)`、Codex フェーズ解決と統一、2026-06-20）。
+    reading（既定）= 読書順（既読＝原稿で手前、`computeGlobalSceneOrder` と同義）、story/auto =
+    作中時系列（`storyTimeOrder` 順、未設定は読書順末尾）。いずれも現在シーンより**前**だけを残し、
+    現在シーン自身・現在以降・順序外（folder/削除済）は除外。パネルは `resolutionMode` を購読し
+    切替で再取得する（パネル独自トグルは作らず設定を 1 本化）。
   - 床 = **言語別 gate 値**（`recallParamsForLang().gateScore`、ja 0.85 / en 0.51）を
     **per-scene floor** として使う。チャット注入の top-1 ゲート（「明確な勝者が無ければ
     全部隠す」）は使わない — 人間が関連性を判断できるパネルなので all-or-nothing は不要。
