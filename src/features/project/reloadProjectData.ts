@@ -20,6 +20,7 @@ import { useResultsPanelStore } from "@/features/commandCenter/store/resultsPane
 import { useLintStore } from "@/features/lint/lintStore";
 import { useTermDictionaryStore } from "@/features/lint/termDictionaryStore";
 import { useMapStore } from "@/features/map/mapStore";
+import { usePromptLibraryStore } from "@/features/prompt-library/promptLibraryStore";
 import { withProjectLoad } from "./projectLoadGate";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
 
@@ -140,6 +141,14 @@ export async function reloadProjectData(projectId: string): Promise<void> {
       searchVisible: false,
       pendingAutoArrange: null,
       pendingExport: null,
+    });
+
+    // プロンプトライブラリは project スコープ。loadedProjectId を倒して
+    // 次回 ensureLoaded 参照時に新 Project 分を読み直させる。
+    usePromptLibraryStore.setState({
+      templates: [],
+      loadedProjectId: null,
+      isLoading: false,
     });
 
     // 1 ストアのロード失敗で切替全体を中断しない (他パネルは読み直せる)。

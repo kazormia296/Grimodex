@@ -46,15 +46,18 @@ export function createChatAbDispatcher(
 /**
  * inline / beat surface の dispatcher。streamInlineAiText が model override と
  * usage 記録 (surface: inline_ai) を内包しているのでそのまま委譲する。
+ * usage は project スコープを明示するため projectId を渡せる。
  */
-export const inlineAbDispatcher: AbDispatcher = async (
-  messages,
-  config,
-): Promise<AbRunResult> => {
-  const res = await streamInlineAiText(messages, {
-    model: config.model ?? undefined,
-    usageSurface: "inline_ai",
-  });
-  if (res.ok) return { ok: true, text: res.text };
-  return { ok: false, error: res.error };
-};
+export function createInlineAbDispatcher(
+  projectId?: string | null,
+): AbDispatcher {
+  return async (messages, config): Promise<AbRunResult> => {
+    const res = await streamInlineAiText(messages, {
+      model: config.model ?? undefined,
+      usageSurface: "inline_ai",
+      projectId: projectId ?? undefined,
+    });
+    if (res.ok) return { ok: true, text: res.text };
+    return { ok: false, error: res.error };
+  };
+}

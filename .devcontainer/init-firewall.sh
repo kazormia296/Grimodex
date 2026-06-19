@@ -51,6 +51,18 @@ open_firewall() {
   echo "Firewall paused — all outbound traffic allowed"
 }
 
+# SECURITY NOTE (accepted trade-off):
+# This script is exposed to the unprivileged `node` user via a passwordless sudoers
+# entry (Dockerfile: `node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh`),
+# which accepts ANY argument. That means the in-container agent can run
+# `sudo init-firewall.sh open` (or set GRIMODEX_FIREWALL_OPEN=1) to disable the
+# egress allowlist. This is INTENTIONAL: the dev container's threat model treats the
+# in-container agent as trusted, and the allowlist is a guardrail against accidental
+# exfiltration / typo'd installs, not a hard boundary against a hostile in-container
+# actor. `open` mode is OFF by default (no arg, no env var). If this firewall must
+# ever become a boundary the agent cannot cross, move `open_firewall` into a separate
+# script that is NOT in the NOPASSWD allowlist (require a real password) or enforce it
+# host-side; do not rely on this gate alone.
 if [[ "${1:-}" == "open" || "${GRIMODEX_FIREWALL_OPEN:-}" == "1" ]]; then
   open_firewall
   exit 0

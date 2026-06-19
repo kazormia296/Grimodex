@@ -72,12 +72,16 @@ export function computeCodexDiff(
     changes.push({ field: "name", name: null, old: b.name, new: current.name });
   }
 
+  // 正規化済みトークンを区切り文字なしで連結すると ["ab","c"] と ["a","bc"] が
+  // 同一キーに潰れて別名編集を取りこぼす。配列を構造ごと stableStringify して
+  // 単射なキーにする。
   const aliasKey = (a: string[]) =>
-    a
-      .map(cmp)
-      .filter((x) => x !== "")
-      .sort()
-      .join("");
+    stableStringify(
+      a
+        .map(cmp)
+        .filter((x) => x !== "")
+        .sort(),
+    );
   if (aliasKey(b.aliases) !== aliasKey(current.aliases)) {
     changes.push({
       field: "aliases",

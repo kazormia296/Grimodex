@@ -26,6 +26,17 @@ import { useReindexProgressStore } from "./reindexProgressStore";
 const codexAttempted = new Set<string>();
 const sceneAttempted = new Set<string>();
 
+/**
+ * 自動 scene back-index の単一フライト トークン。`reindexProgressStore.running`
+ * (boolean) だけでは、高速なプロジェクト切替 A→B で両方の呼び出しが async な
+ * status 取得中に `running===false` を通過し、二重起動 → 先に終わった側の
+ * `finally{setRunning(false)}` が、まだ実行中の後発 bulk reindex のフラグを
+ * 消してしまう (相互排他破れ)。in-flight な projectId を覚えておくことで、
+ * (1) 実行中は別プロジェクトの新規起動を弾き、(2) finally では自分が掴んだ
+ * トークンの時だけフラグを下ろす (横取りで早期クリアしない)。
+ */
+let autoIndexingProjectId: string | null = null;
+
 /** 既存 codex エントリの自動 back-index。 */
 export async function ensureCodexIndexed(projectId: string): Promise<void> {
   if (!projectId || codexAttempted.has(projectId)) return;
@@ -69,8 +80,11 @@ async function countScenesInProject(projectId: string): Promise<number> {
  */
 export async function ensureSceneIndexed(projectId: string): Promise<void> {
   if (!projectId || sceneAttempted.has(projectId)) return;
-  // 手動/別の reindex が進行中なら任せる (次の open で再試行)。
+  // 手動/別の reindex、または別プロジェクトの自動 back-index が進行中なら任せる
+  // (次の open で再試行)。in-flight トークンは A→B 高速切替で running boolean が
+  // 取りこぼす二重起動を弾く。
   if (useReindexProgressStore.getState().running) return;
+  if (autoIndexingProjectId !== null) return;
   sceneAttempted.add(projectId);
   try {
     const [status, totalScenes] = await Promise.all([
@@ -80,7 +94,10 @@ export async function ensureSceneIndexed(projectId: string): Promise<void> {
     const incomplete =
       status.indexedSceneCount < totalScenes || status.staleChunkCount > 0;
     if (!incomplete) return; // 充足 (未 index も stale も無い)
+    // status 取得は async なので、その間に他の reindex が走り出していないか再確認。
     if (useReindexProgressStore.getState().running) return;
+    if (autoIndexingProjectId !== null) return;
+    autoIndexingProjectId = projectId;
     debugLog.info(
       "semantic-search",
       `scene auto back-index: ${status.indexedSceneCount}/${totalScenes} indexed, stale=${status.staleChunkCount} → reindexing`,
@@ -93,11 +110,18 @@ export async function ensureSceneIndexed(projectId: string): Promise<void> {
         `scene auto back-index done: ${n} chunks`,
       );
     } finally {
-      useReindexProgressStore.getState().setRunning(false);
+      // 自分が掴んだトークンの時だけフラグを下ろす (後発が早期に消さない)。
+      if (autoIndexingProjectId === projectId) {
+        autoIndexingProjectId = null;
+        useReindexProgressStore.getState().setRunning(false);
+      }
     }
   } catch (e) {
     sceneAttempted.delete(projectId);
-    useReindexProgressStore.getState().clear();
+    if (autoIndexingProjectId === projectId) {
+      autoIndexingProjectId = null;
+      useReindexProgressStore.getState().clear();
+    }
     debugLog.warn(
       "semantic-search",
       `scene auto back-index skipped: ${projectId}`,
@@ -119,4 +143,5 @@ export async function ensureSemanticIndexesOnOpen(
 export function _resetAutoIndexForTests(): void {
   codexAttempted.clear();
   sceneAttempted.clear();
+  autoIndexingProjectId = null;
 }

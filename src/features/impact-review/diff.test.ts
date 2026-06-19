@@ -86,6 +86,14 @@ describe("computeCodexDiff", () => {
     expect(changes.some((c) => c.field === "aliases")).toBe(true);
   });
 
+  it("detects alias edits that would collide under delimiter-less join", () => {
+    // ["ab","c"] と ["a","bc"] は区切り無し連結だと共に "abc" となり潰れる。
+    const b: CodexSnapshot = { ...base, aliases: ["ab", "c"] };
+    const cur: CodexSnapshot = { ...base, aliases: ["a", "bc"] };
+    const changes = computeCodexDiff(b, cur);
+    expect(changes.some((c) => c.field === "aliases")).toBe(true);
+  });
+
   it("ignores whitespace-only differences (normalized)", () => {
     const cur: CodexSnapshot = { ...base, summary: "15歳の少女。 黒髪。 " };
     expect(computeCodexDiff(base, cur)).toEqual([]);

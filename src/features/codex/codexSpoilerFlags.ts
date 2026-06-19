@@ -4,6 +4,7 @@ import type {
   ForeshadowWithLabel,
 } from "@/features/foreshadow/types";
 import { listForeshadowsByCodexEntry } from "@/features/foreshadow/api";
+import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import { usePhaseStore } from "./phaseStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 
@@ -51,6 +52,28 @@ export function useUnrevealedSecretForeshadows(
   const [linkedByEntry, setLinkedByEntry] = useState<
     Record<string, ForeshadowWithLabel[]>
   >({});
+
+  // 既存シグナルでのキャッシュ無効化: 伏線ストア (load() が更新ごとに items を
+  // 差し替える正本) の、ネタバレ判定に関与するフィールドだけの指紋を購読する。
+  // 秘匿/回収シーン/破棄/回収確定/タイトルの編集、およびプロジェクト切替
+  // (items 全差し替え) で指紋が変わり、stale なキャッシュを破棄して再取得する。
+  // entry id 単位の対応は取得して初めて判るため、変化時はキャッシュ全体を捨てる
+  // (指紋が実際に変わった時だけ走るので過剰購読にはならない)。
+  const spoilerFingerprint = useForeshadowStore((s) =>
+    s.items
+      .map(
+        (f) =>
+          `${f.id}:${f.secret ? 1 : 0}:${f.payoffSceneId ?? ""}:${
+            f.abandoned ? 1 : 0
+          }:${f.payoffConfirmed ? 1 : 0}:${f.title}`,
+      )
+      .join("|"),
+  );
+
+  useEffect(() => {
+    // 指紋が変われば既存キャッシュを破棄し、下の取得 effect に再取得させる。
+    setLinkedByEntry({});
+  }, [spoilerFingerprint]);
 
   useEffect(() => {
     let cancelled = false;

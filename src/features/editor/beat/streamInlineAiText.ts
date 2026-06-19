@@ -18,7 +18,12 @@ export type InlineAiTextResult =
  */
 export function streamInlineAiText(
   messages: { role: string; content: string }[],
-  options?: { model?: string; usageSurface?: AiUsageSurface },
+  options?: {
+    model?: string;
+    usageSurface?: AiUsageSurface;
+    /** usage 台帳の project スコープ明示。省略時は active project にフォールバック。 */
+    projectId?: string | null;
+  },
 ): Promise<InlineAiTextResult> {
   return new Promise((resolve) => {
     const buffer: string[] = [];
@@ -48,6 +53,7 @@ export function streamInlineAiText(
               tokensIn: info.inputTokens,
               tokensOut: info.outputTokens,
               costUsd: info.cost ?? null,
+              projectId: options.projectId ?? undefined,
             });
           }
           settle({ ok: true, text: buffer.join("") });

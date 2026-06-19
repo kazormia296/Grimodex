@@ -1696,6 +1696,30 @@ export const sceneChunks = sqliteTable(
   ],
 );
 
+// Codex セマンティック索引 (stage 3): 1 エントリ = 1 embedding 行。
+// Codex 本文は短いのでチャンク分割せず、PK=entry_id でエントリ1件1ベクトルを担保。
+// migrate.rs の codex_chunks をそのまま鏡写しにする (列名/型/制約を一致させること)。
+export const codexChunks = sqliteTable(
+  "codex_chunks",
+  {
+    entryId: text("entry_id")
+      .primaryKey()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    entryName: text("entry_name").notNull(),
+    entryType: text("entry_type").notNull(),
+    text: text("text").notNull(),
+    // f32 配列 (little-endian), L2 正規化済み。embedding_dim と長さで整合を取る。
+    embedding: blob("embedding", { mode: "buffer" }).notNull(),
+    embeddingDim: integer("embedding_dim").notNull(),
+    modelId: text("model_id").notNull(),
+    contentHash: text("content_hash").notNull(),
+    chunkerVersion: text("chunker_version").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => [index("idx_codex_chunks_model").on(t.modelId)],
+);
+
 /**
  * 執筆タイムラプス (Timelapse) — append-only change event log.
  *
@@ -1932,6 +1956,9 @@ export type NewSceneLensData = typeof sceneLensData.$inferInsert;
 
 export type SceneChunk = typeof sceneChunks.$inferSelect;
 export type NewSceneChunk = typeof sceneChunks.$inferInsert;
+
+export type CodexChunk = typeof codexChunks.$inferSelect;
+export type NewCodexChunk = typeof codexChunks.$inferInsert;
 
 export type ChangeEvent = typeof changeEvents.$inferSelect;
 export type NewChangeEvent = typeof changeEvents.$inferInsert;

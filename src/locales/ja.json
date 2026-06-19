@@ -2966,10 +2966,6 @@
       "generating": "生成中…",
       "overwriteConfirm": "既存のSynopsisを上書きしますか？",
       "overwrite": "上書き",
-      "generateFromBeats": "ビートからSynopsisを生成",
-      "generatingFromBeats": "Synopsisを生成中…",
-      "generatedFromBeats": "ビートからSynopsisを生成しました",
-      "generateFromBeatsFailed": "Synopsis生成に失敗しました",
       "saveFailed": "Synopsis の保存に失敗しました",
       "generate": "生成",
       "scenePlaceholder": "このシーンでは何が起きますか？"
@@ -3308,6 +3304,7 @@
       "generateFromBeats": "ビートからSynopsisを生成",
       "generatedFromBeats": "ビートからSynopsisを生成しました",
       "generatingFromBeats": "Synopsisを生成中…",
+      "generateFromBeatsFailed": "ビートからのあらすじ生成に失敗しました",
       "overwrite": "上書き",
       "overwriteConfirm": "既存のSynopsisを上書きしますか？"
     },

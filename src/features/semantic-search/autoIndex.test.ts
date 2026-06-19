@@ -146,6 +146,34 @@ describe("ensureSceneIndexed", () => {
     await expect(ensureSceneIndexed("p1")).resolves.toBeUndefined();
     expect(useReindexProgressStore.getState().running).toBe(false);
   });
+
+  it("single-flights an A→B race: only one bulk reindex proceeds and the flag is not cleared early", async () => {
+    mockSemanticIndexStatus.mockResolvedValue(
+      sceneStatus({ indexedSceneCount: 0 }),
+    );
+    mockInvoke.mockResolvedValue({ rows: [{ n: 4 }] });
+    // 先発 (A) の bulk reindex を in-flight に保持する deferred。
+    let releaseA: () => void = () => {};
+    const aInFlight = new Promise<number>((resolve) => {
+      releaseA = () => resolve(7);
+    });
+    mockSemanticReindexAll.mockReturnValueOnce(aInFlight);
+
+    // A→B を相次いで起動 (A の reindex は未解決のまま B が走り出す)。
+    const aDone = ensureSceneIndexed("pA");
+    const bDone = ensureSceneIndexed("pB");
+    // B は A の in-flight トークンに弾かれ、bulk reindex を始めない。
+    await bDone;
+    expect(mockSemanticReindexAll).toHaveBeenCalledTimes(1);
+    expect(mockSemanticReindexAll).toHaveBeenCalledWith("pA");
+    // A がまだ実行中なので running フラグは下りていない (横取りで早期クリアされない)。
+    expect(useReindexProgressStore.getState().running).toBe(true);
+
+    // A 完了でフラグが下りる。
+    releaseA();
+    await aDone;
+    expect(useReindexProgressStore.getState().running).toBe(false);
+  });
 });
 
 describe("ensureSemanticIndexesOnOpen", () => {

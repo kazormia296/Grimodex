@@ -122,18 +122,20 @@ describe("checkAliasCollisions", () => {
     expect(issues).toHaveLength(1);
   });
 
-  it("excludedAliases に含まれる表記は衝突報告から除外する (matcher 整合)", () => {
+  it("excludedAliases に含まれる表記でも衝突として報告する (matcher は位置単位でしか除外しないため)", () => {
     // baseline: 別名 藍 が衝突する
     expect(
       checkAliasCollisions([entry("a", "灰目", ["藍"]), entry("b", "藍")]),
     ).toHaveLength(1);
-    // a が 藍 を除外していれば実行時に一致しない → 衝突報告しない
-    expect(
-      checkAliasCollisions([
-        { id: "a", name: "灰目", aliases: ["藍"], excludedAliases: ["藍"] },
-        entry("b", "藍"),
-      ]),
-    ).toEqual([]);
+    // a が 藍 を除外していても、matcher は除外を位置単位でしか適用しないため大半の
+    // 位置では実行時に一致する。よって衝突は黙って隠さず報告する (false negative 回避)。
+    const issues = checkAliasCollisions([
+      { id: "a", name: "灰目", aliases: ["藍"], excludedAliases: ["藍"] },
+      entry("b", "藍"),
+    ]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].normalized).toBe("藍");
+    expect(issues[0].surfaces.map((s) => s.entryId).sort()).toEqual(["a", "b"]);
   });
 });
 

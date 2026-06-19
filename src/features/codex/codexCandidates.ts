@@ -2,7 +2,7 @@
  * codexCandidates.ts — 未確定固有名詞候補の純ロジック (描画・副作用なし)。
  *
  * - `candidateKey`: 却下キー / 既存エントリ照合のための安定キー。Rust 側の
- *   `normalize_name` (trim + lowercase) と揃える。
+ *   `normalize_name` (trim + NFC + ASCII 小文字化) と揃える。
  * - `knownNameSet` / `activeCandidates`: 受理直後に該当候補を即時消し込みする
  *   ためのクライアント側フィルタ (Rust は本文スキャン時点の既知を引いているが、
  *   UI で受理した直後はまだ再スキャンしていないため entries と再照合する)。
@@ -12,11 +12,21 @@ import type { CodexCandidate } from "./candidateExtractor";
 
 /**
  * 候補/エントリ名の正規化キー。**Rust 側 `normalize_name` (codex_candidates.rs) と
- * 必ず同じ規則**に保つこと: trim → NFC → 小文字化。NFC を挟むのは固有名詞の
- * NFC/NFD 揺れ (濁点付き仮名・macOS 由来の分解形等) で重複検出が外れないようにするため。
+ * 必ず同じ規則**に保つこと: trim → NFC → ASCII 小文字化 (A–Z のみ a–z へ)。
+ * NFC を挟むのは固有名詞の NFC/NFD 揺れ (濁点付き仮名・macOS 由来の分解形等) で
+ * 重複検出が外れないようにするため。
+ *
+ * 小文字化を ASCII (A–Z) に限定する理由: 候補生成は日本語プロジェクト専用で
+ * 固有名詞は実質 ASCII 折り畳み可能だが、Unicode のフル小文字化は特殊ケース
+ * (トルコ語の点付き/点なし I・末尾シグマ等) で Rust の `char::to_lowercase` と
+ * JS の `String.prototype.toLowerCase` が一致する保証がない。両ランタイムで
+ * 確実に同一な ASCII 折り畳みに絞ることで、受理/却下キーのズレを構造的に防ぐ。
  */
 export function candidateKey(surface: string): string {
-  return surface.trim().normalize("NFC").toLowerCase();
+  return surface
+    .trim()
+    .normalize("NFC")
+    .replace(/[A-Z]/g, (ch) => ch.toLowerCase());
 }
 
 /** entries の name + aliases を正規化した既知名集合。 */
