@@ -41,7 +41,7 @@ export function buildCandidateJudgmentPromptJa(
     "",
     "各候補について判定:",
     "- suggestedType: character(人物) / location(場所) / item(物・道具) / lore(設定・概念) から最も妥当なもの",
-    "- summary: 文脈から分かる範囲の一行説明 (不明なら空文字)",
+    "- summary: その固有名詞が何かを表す簡潔な一文 (固有名詞を主語に体言中心・20字程度)。**文脈文をそのまま引き写さず**要約する。不明なら空文字",
     "- aliasOfId: 既存エントリ(existingEntries)と同一実体の別表記/誤記だと判断できる場合はその id。新規なら null",
     "",
     "【ルール】",

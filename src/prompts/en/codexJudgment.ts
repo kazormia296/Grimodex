@@ -33,7 +33,7 @@ export function buildCandidateJudgmentPromptEn(
     "",
     "For each candidate decide:",
     "- suggestedType: one of character / location / item / lore (most fitting).",
-    "- summary: a one-line description from what the context shows (empty string if unknown).",
+    "- summary: a concise description of what this entity is (subject = the entity, ~10 words, noun phrase). Summarize — do NOT copy the context sentence verbatim. Empty string if unknown.",
     "- aliasOfId: if it is clearly an alternate spelling/variant of an existing entry, that entry's id; otherwise null.",
     "",
     "Rules:",
