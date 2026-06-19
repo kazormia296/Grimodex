@@ -87,7 +87,12 @@ function median(xs: number[]): number {
  *   は呼び出し側の責務。
  * - 1 シーン 1 行に集約 (最良スコアのチャンクを代表に)。同一シーン内で同スコアの
  *   チャンクが複数あるときは charStart が小さい (本文で先に出る) チャンクを代表にして
- *   決定的にする。行はスコア降順、同点は sceneId で安定化。
+ *   決定的にする。
+ * - 並び順: hybrid (sparse/relative 関与) のときは RRF 降順。ただし dense 勝者
+ *   (pool 最大 cosine) が confident (床=gate 以上) なら rank1 に固定する (dense 勝者
+ *   アンカー)。RRF が語彙一致の弱関連を意味的最近傍の上に押す browse トレードオフを
+ *   先頭 1 件だけ打ち消し、2 位以降は RRF のまま (sparse recall 補強を維持) する。
+ *   純 dense (sparse/relative 無し) のときは cosine 降順 (従来挙動)。同点は sceneId 安定化。
  */
 export function selectRelatedPastScenes(
   hits: SemanticSearchHit[],
@@ -175,5 +180,22 @@ export function selectRelatedPastScenes(
         a.hit.sceneId.localeCompare(b.hit.sceneId)
       : b.hit.score - a.hit.score || a.hit.sceneId.localeCompare(b.hit.sceneId),
   );
+
+  // dense 勝者アンカー (hybrid 時のみ): RRF は語彙一致の弱関連を「意味的に最も近い
+  // 既読シーン」(= dense 勝者) の上へ押し上げてしまい、browse パネルの先頭が体験的に
+  // 劣化する (R@1/MRR ↓)。そこで pool 最大 cosine のシーンが confident (床=gate 以上)
+  // なら rank1 に固定する。固定するのは先頭 1 件だけで、2 位以降は RRF 並びのまま残す
+  // ので、固有名詞 recall を補う sparse 救済 (R@3/recall の伸び) は維持される。
+  // 勝者不在 (rescue-only regime: 最大 cosine が床未満) では固定しない — 守るべき dense
+  // 勝者がいないので RRF の語彙順を尊重する。
+  // 実測 (liveEval): R@1 0.29→0.40 / MRR 0.60→0.73 回復、R@3 0.54・recall 1.00 維持。
+  if (fused && denseSorted[0].score >= minScore) {
+    const anchorId = denseSorted[0].sceneId;
+    const idx = admitted.findIndex((e) => e.hit.sceneId === anchorId);
+    if (idx > 0) {
+      const [anchor] = admitted.splice(idx, 1);
+      admitted.unshift(anchor);
+    }
+  }
   return admitted.slice(0, cap).map((e) => toRelatedScene(e.hit));
 }

@@ -222,15 +222,46 @@ describe("selectRelatedPastScenes — hybrid (sparse 救済 + RRF 融合)", () =
     expect(result.map((r) => r.sceneId)).toEqual(["s1"]);
   });
 
-  it("RRF: 低 cosine でも sparse 上位なら高 cosine の非 sparse シーンを上回れる", () => {
-    const hits = [hit("hi", 0.9), hit("lo", 0.82)]; // 両方 floor 以上
+  it("dense 勝者アンカー: confident な最大 cosine シーンは RRF より上の rank1 に固定", () => {
+    // hi は confident な dense 勝者 (sparse 不一致)、lo は sparse top-1 で RRF 上は hi を
+    // 上回る。素の RRF なら ["lo","hi"] になるが、アンカーが hi を rank1 に固定する。
+    // RRF が「意味的最近傍 (dense 勝者)」を語彙一致の弱関連の下へ押す browse トレードオフを
+    // 先頭 1 件で打ち消す ([[grimodex-ruri-cosine-baseline]] / liveEval R@1 回復)。
+    const hits = [hit("hi", 0.9), hit("lo", 0.82)]; // 両方 floor 以上 = confident
     const result = selectRelatedPastScenes(hits, {
       currentSceneId: "scur",
       sceneOrder: order("hi", "lo", "scur"),
       sparseSceneIds: ["lo"], // lo を sparse top-1 が後押し
       ...HY,
     });
-    expect(result.map((r) => r.sceneId)).toEqual(["lo", "hi"]);
+    expect(result.map((r) => r.sceneId)).toEqual(["hi", "lo"]);
+  });
+
+  it("アンカーは先頭 1 件だけ — 2 位以降は RRF 並び (sparse recall 補強を維持)", () => {
+    // win=dense 勝者 (anchor)。a は b より cosine 高いが、b は sparse top-1 で RRF 上 a を
+    // 上回る。アンカー後も win に続いて b > a となり、固有名詞 recall の押し上げが残る。
+    const hits = [hit("win", 0.95), hit("a", 0.84), hit("b", 0.83)];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("win", "a", "b", "scur"),
+      sparseSceneIds: ["b"],
+      ...HY,
+    });
+    expect(result.map((r) => r.sceneId)).toEqual(["win", "b", "a"]);
+  });
+
+  it("勝者不在 (rescue-only) ではアンカーしない — RRF の語彙順を尊重する", () => {
+    // 全シーンが床 (0.8) 未満だが rescueFloor (0.75) 以上で sparse 一致 → 全て救済 admit。
+    // confident な dense 勝者がいないのでアンカーは発動せず、RRF 一本で並ぶ。最大 cosine の
+    // a が rank1 にならない (b が sparse top で RRF 最上位) ことで「固定なし」を確認。
+    const hits = [hit("a", 0.79), hit("b", 0.78), hit("c", 0.77)];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("a", "b", "c", "scur"),
+      sparseSceneIds: ["b", "c", "a"], // sparse rank: b=0, c=1, a=2
+      ...HY,
+    });
+    expect(result.map((r) => r.sceneId)).toEqual(["b", "a", "c"]);
   });
 
   it("床以上のシーンは sparse 不一致でも残る (recall を削らない)", () => {
