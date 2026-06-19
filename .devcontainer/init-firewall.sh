@@ -2,6 +2,60 @@
 set -euo pipefail  # Exit on error, undefined vars, and pipeline failures
 IFS=$'\n\t'       # Stricter word splitting
 
+open_firewall() {
+  echo "Opening firewall (OUTPUT ACCEPT, allowlist disabled)..."
+  echo "Re-enable: sudo /usr/local/bin/init-firewall.sh"
+
+  local docker_dns_rules
+  docker_dns_rules=$(iptables-save -t nat | grep "127\.0\.0\.11" || true)
+
+  iptables -P INPUT ACCEPT
+  iptables -P FORWARD ACCEPT
+  iptables -P OUTPUT ACCEPT
+
+  iptables -F
+  iptables -X
+  iptables -t nat -F
+  iptables -t nat -X
+  iptables -t mangle -F
+  iptables -t mangle -X
+  ipset destroy allowed-domains 2>/dev/null || true
+
+  if [ -n "$docker_dns_rules" ]; then
+    echo "Restoring Docker DNS rules..."
+    iptables -t nat -N DOCKER_OUTPUT 2>/dev/null || true
+    iptables -t nat -N DOCKER_POSTROUTING 2>/dev/null || true
+    echo "$docker_dns_rules" | xargs -L 1 iptables -t nat
+  fi
+
+  iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+  iptables -A INPUT -p udp --sport 53 -j ACCEPT
+  iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
+  iptables -A INPUT -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
+  iptables -A INPUT -i lo -j ACCEPT
+  iptables -A OUTPUT -o lo -j ACCEPT
+
+  local host_ip host_network
+  host_ip=$(ip route | grep default | cut -d" " -f3 || true)
+  if [ -n "$host_ip" ]; then
+    host_network=$(echo "$host_ip" | sed "s/\.[0-9]*$/.0\/24/")
+    echo "Host network detected as: $host_network"
+    iptables -A INPUT -s "$host_network" -j ACCEPT
+    iptables -A OUTPUT -d "$host_network" -j ACCEPT
+  fi
+
+  iptables -P INPUT ACCEPT
+  iptables -P FORWARD ACCEPT
+  iptables -P OUTPUT ACCEPT
+
+  echo "Firewall paused — all outbound traffic allowed"
+}
+
+if [[ "${1:-}" == "open" || "${GRIMODEX_FIREWALL_OPEN:-}" == "1" ]]; then
+  open_firewall
+  exit 0
+fi
+
 # 1. Extract Docker DNS info BEFORE any flushing
 DOCKER_DNS_RULES=$(iptables-save -t nat | grep "127\.0\.0\.11" || true)
 

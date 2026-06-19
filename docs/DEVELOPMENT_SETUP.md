@@ -127,6 +127,20 @@ sudo /usr/local/bin/init-firewall.sh
 
 コンテナ内のファイアウォールは許可リスト方式で、以下の通信のみ許可しています:
 
+一時的に全 outbound を許可する場合:
+
+```bash
+sudo /usr/local/bin/init-firewall.sh open
+```
+
+再び許可リストを有効化する場合:
+
+```bash
+sudo /usr/local/bin/init-firewall.sh
+```
+
+許可ドメイン:
+
 - GitHub（API・Web・Git）
 - npm registry
 - crates.io / static.crates.io
