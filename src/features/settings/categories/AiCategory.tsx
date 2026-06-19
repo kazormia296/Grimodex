@@ -37,6 +37,7 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingTextarea } from "../components/SettingTextarea";
 import { AiProjectSettings } from "./AiProjectSettings";
+import { AbTestSection } from "@/features/ab-test/AbTestSection";
 import { useSettingsStore } from "../settingsStore";
 
 /** AI プロンプト追記カスタマイズの対象スロット (project_settings の key 末尾)。 */
@@ -1424,6 +1425,9 @@ export function AiCategory() {
           })}
         </div>
       </SettingSection>
+
+      {/* A/B 比較 (③) 設定 — 実体は ab-test feature に閉じる */}
+      <AbTestSection />
 
       <McpIntegrationSection />
     </div>

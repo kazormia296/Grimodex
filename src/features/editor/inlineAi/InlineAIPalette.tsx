@@ -16,6 +16,8 @@ interface InlineAIPaletteProps {
   preselectedCommand?: InlineAiCommand | null;
   onClose: () => void;
   onSubmit: (command: InlineAiCommand, prompt: string) => void;
+  /** A/B 比較 (③): 同一プロンプトを 2 構成へ並列生成して見比べる。 */
+  onSubmitAb?: (command: InlineAiCommand, prompt: string) => void;
 }
 
 /**
@@ -27,6 +29,7 @@ export function InlineAIPalette({
   preselectedCommand,
   onClose,
   onSubmit,
+  onSubmitAb,
 }: InlineAIPaletteProps) {
   const { t, i18n } = useTranslation();
   const bodyWriteGate = useAiGate("bodyWrite");
@@ -68,6 +71,11 @@ export function InlineAIPalette({
 
   function handleSubmit() {
     onSubmit(selectedCommand, prompt);
+    onClose();
+  }
+
+  function handleSubmitAb() {
+    onSubmitAb?.(selectedCommand, prompt);
     onClose();
   }
 
@@ -139,6 +147,16 @@ export function InlineAIPalette({
                 }
                 className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
               />
+              {onSubmitAb && (
+                <button
+                  type="button"
+                  onClick={handleSubmitAb}
+                  title={t("abTest.inlineMenuLabel")}
+                  className="rounded border border-border px-2 py-1.5 text-xs font-medium text-foreground hover:bg-accent"
+                >
+                  A/B
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleSubmit}

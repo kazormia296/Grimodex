@@ -11,6 +11,7 @@ import {
   Lightbulb,
   LightbulbOff,
   X,
+  Columns2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -35,6 +36,8 @@ import { useAnchoredPopover } from "./useAnchoredPopover";
 import type { MentionItem } from "@/features/codex/CodexMentionExtension";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { shouldSuggestAgentMode } from "../agentSuggestion";
+import { AbChatDialog } from "@/features/ab-test/AbChatDialog";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 interface ChatInputProps {
   onSend: (
@@ -165,6 +168,12 @@ export function ChatInput({
   );
 
   const [modelOpen, setModelOpen] = useState(false);
+  // A/B 比較 (③): 現在の下書きプロンプトを 2 構成へ並列送信する専用モーダル。
+  // ライブストリーム描画には一切触れない。
+  const [abChat, setAbChat] = useState<{
+    basePrompt: string;
+    projectId: string;
+  } | null>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   // モデルメニューは入力欄上部に開く。.glass-chat の backdrop-filter が作る
   // stacking context に埋もれないよう document.body へ portal する。
@@ -505,6 +514,29 @@ export function ChatInput({
     [editor, buildPromptForCopy, collectMentionedSceneIds, t],
   );
 
+  // A/B 比較を起動: 現在の下書き + 文脈から buildPromptForCopy で基底プロンプトを
+  // 組み立て、専用モーダルを開く。ライブ送信 (onSend) は呼ばない。
+  const handleOpenAbCompare = useCallback(async () => {
+    if (!editor || isStreaming) return;
+    const markdownStorage = editor.storage as unknown as Record<
+      string,
+      { getMarkdown?: () => string } | undefined
+    >;
+    const text = editor.getText().trim();
+    if (!text) {
+      toast.error(t("abTest.emptyPrompt"));
+      return;
+    }
+    const markdown: string = markdownStorage.markdown?.getMarkdown?.() ?? text;
+    const mentionedSceneIds = collectMentionedSceneIds();
+    try {
+      const prompt = await buildPromptForCopy(markdown, { mentionedSceneIds });
+      setAbChat({ basePrompt: prompt, projectId: getCurrentProjectId() });
+    } catch {
+      toast.error(t("abTest.buildPromptFailed"));
+    }
+  }, [editor, isStreaming, buildPromptForCopy, collectMentionedSceneIds, t]);
+
   const canUseTools = caps.supportsTools;
   const canThink =
     caps.supportsThinking ||
@@ -697,6 +729,18 @@ export function ChatInput({
               )}
           </div>
 
+          {/* A/B 比較 chip (③): 現在の下書きを 2 構成で並列生成して見比べる */}
+          <button
+            type="button"
+            onClick={() => void handleOpenAbCompare()}
+            disabled={!editor || !hasText || isStreaming}
+            title={t("abTest.chatMenuLabel")}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:text-muted-foreground/40"
+          >
+            <Columns2 className="h-3 w-3 shrink-0" />
+            <span>A/B</span>
+          </button>
+
           {/* 右端: Send / Stop 円形ボタン */}
           <div className="ml-auto">
             {isStreaming ? (
@@ -728,6 +772,17 @@ export function ChatInput({
           </div>
         </div>
       </div>
+
+      {abChat && (
+        <AbChatDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) setAbChat(null);
+          }}
+          projectId={abChat.projectId}
+          basePrompt={abChat.basePrompt}
+        />
+      )}
     </div>
   );
 }

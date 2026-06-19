@@ -1,4 +1,32 @@
 {
+  "abTest": {
+    "sideA": "A",
+    "sideB": "B",
+    "defaultModel": "既定モデル",
+    "modeModel": "モデルで比較",
+    "modePrompt": "プロンプトで比較",
+    "promptVariantPlaceholder": "B 側に追記する指示（例: もっと簡潔に / 一人称で）",
+    "run": "比較を実行",
+    "running": "生成中…",
+    "adoptA": "A を採用",
+    "adoptB": "B を採用",
+    "chosenBadge": "採用",
+    "emptyPrompt": "比較するプロンプトがありません。",
+    "buildPromptFailed": "プロンプトの組み立てに失敗しました。",
+    "adoptedToClipboard": "採用したテキストをクリップボードへコピーしました。",
+    "chatTitle": "チャット A/B 比較",
+    "chatDescription": "同じプロンプトを 2 構成（モデル / プロンプト）へ並列送信して見比べます。ライブのチャット表示には影響しません。",
+    "chatMenuLabel": "A/B で比較",
+    "inlineTitle": "インライン AI A/B 比較",
+    "inlineDescription": "同じ指示を 2 構成で生成して見比べ、良い方を本文に挿入します。",
+    "inlineMenuLabel": "A/B で比較",
+    "settingsTitle": "A/B 比較",
+    "settingsIntro": "比較ダイアログを開いたときの B 構成の初期値です。空のままでも各回で個別に設定できます。",
+    "defaultModelBLabel": "既定の比較モデル (B)",
+    "defaultModelBDesc": "モデル A/B の相手（A は現在の既定モデル）。",
+    "defaultPromptVariantBLabel": "既定の追記指示 (B)",
+    "defaultPromptVariantBDesc": "プロンプト A/B の追記指示（A は追記なし）。"
+  },
   "lint": {
     "filter": {
       "searchPlaceholder": "rule_id / message で絞り込み",
