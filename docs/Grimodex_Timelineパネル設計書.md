@@ -236,7 +236,7 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 | モード | ラベル内容 |
 |--------|----------|
 | Story-time | `story_time_label`（設定されていれば）or `T{N}`（story-time順での通し番号、1始まり） |
-| Reading-order | `Ch.{番号}` または章フォルダー名 |
+| Reading-order | `Ch.{N}`（シーン読み順での通し番号、1始まり）。※ 現状の実装（`timelineLabels.ts`）は配列インデックスベースの通し番号のみで、章フォルダー名・章階層からの算出は行わない |
 | Write-order | 作成日（相対「2週間前」または絶対「2026/3/15」） |
 
 ラベル間引き: ノード密度が高い場合は5〜10ノードおきに表示。ズームで増減。
@@ -423,15 +423,14 @@ Editorがすでに該当シーンを固定タブで開いている場合は、�
 | Editorで開く | 固定タブで開く |
 | サイドで開く | 新しいEditor Groupで開く |
 | --- | |
-| Set status | サブメニュー |
-| Set story-time label... | インライン編集 |
-| Clear story-time | order と label を NULL に |
-| --- | |
-| Add phase here... | このシーンをアンカーとしてPhase作成ダイアログを開く |
+| Set status | 5 ステータス（Outline / Draft / Complete / Revision / Final）を直接選択 |
+| Clear story-time | order と label を NULL に（story-timeモード時のみ表示） |
 | --- | |
 | Show in Scenes | Scenesパネルで該当ノードを展開・選択 |
 | --- | |
 | 削除 | Scenesパネルと同じ削除フロー |
+
+> **現状の実装** (`TimelineContextMenu.tsx`): 上記のうち「Editorで開く」「サイドで開く」「Set status」「Clear story-time」（story-timeモード時のみ）「Show in Scenes」「削除」を実装する。「Set story-time label...」はコンテキストメニューには無く、`F2` キー（story-timeモード時）または Inspector 上のインライン編集から行う。「Add phase here...」（Phase 作成ダイアログ起動）も未実装で、Phase 作成は Codex パネル側の動線に依存する（将来拡張）。
 
 ### ズーム・スクロール
 
@@ -538,6 +537,8 @@ Phaseは `anchor_node_id` でシーンに紐づく。Timelineパネル上では:
 - `Codex entry` は別途選択（エントリ一覧から）
 - 保存後、Timelineにピンが即時追加される
 
+> **現状の実装**: `Add phase here...` コンテキストメニュー項目は未実装（`TimelineContextMenu.tsx` に該当 item が無い）。当面 Phase 作成は Codex パネル側の動線に依存する（将来拡張）。
+
 ---
 
 ## 他パネルとの連携
@@ -590,10 +591,10 @@ Phaseは `anchor_node_id` でシーンに紐づく。Timelineパネル上では:
 | `←` / `→` | 前/次のシーンノードに選択移動（表示順） |
 | `Shift+←` / `Shift+→` | 選択範囲を拡張 |
 | `Enter` | 選択ノードをEditorで固定タブとして開く |
-| `Space` | 選択ノードをEditorでプレビュータブとして開く |
+| `Space` | 選択ノードをEditorでプレビュータブとして開く ※ 現状未実装（Scenesパネルでは実装済みだが Timeline のキーハンドラには `Space` ケースがない。固定タブを開く `Enter` のみ対応） |
 | `Ctrl+Enter` | 選択ノードを新しいEditor Groupで開く |
 | `1` / `2` / `3` | Axisモード切替（Story / Reading / Write） |
-| `Ctrl+F` | 検索バーにフォーカス |
+| `Ctrl+F` | 検索バーにフォーカス ※ 現状未実装（検索バー自体が未実装。Ctrl+F ケースもキーハンドラにない） |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | ズームイン / アウト / Fit |
 | `F2` | 選択ノードの story_time_label をインライン編集（story-timeモード時） |
 | `Del` | 選択ノードを削除（確認ダイアログ） |
@@ -683,6 +684,8 @@ ALTER TABLE projects ADD COLUMN phase_resolution_mode TEXT NOT NULL DEFAULT 'rea
 | カラム | 型 | 説明 |
 |--------|-----|------|
 | `phase_resolution_mode` | TEXT | Codex Phase の resolution で使う時間軸。新規プロジェクトは `auto` を推奨、既存プロジェクトは `reading` で後方互換 |
+
+> **現状の実装（SQL 既定値 と ORM 既定値の差異に注意）**: 実 DB の DDL（Rust `src-tauri/src/database/migrate.rs` および `browser-mock.ts`）は本設計書の通り `DEFAULT 'reading'` を採用し、既存プロジェクトの後方互換を保証する。一方、Drizzle スキーマ（`src/db/schema.ts:30-34`）は `.default("auto")` を宣言しており、`createProject`（`src/features/project/api.ts`）が `phaseResolutionMode` を明示指定しないため、Drizzle 経由で作成される新規プロジェクトには **ORM 既定値の `auto` が INSERT 時に注入される**（SQL 既定値の `reading` ではなく `auto` で着地する）。結果として「新規プロジェクト = `auto` / 既存プロジェクト = `reading`」という設計意図は満たされるが、SQL レベル（`reading`）と ORM レベル（`auto`）で既定値が二重化している点は将来的に統一を要検討（どちらか一方に揃え、必要なら `createProject` で明示設定する）。
 
 **モードの挙動**:
 

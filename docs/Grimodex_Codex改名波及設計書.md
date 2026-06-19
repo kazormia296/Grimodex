@@ -206,9 +206,11 @@ snippet ヘルパは `lint/lintIgnoreStore.ts:extractContext` / `LinterPanel.tsx
 | `codex_detail_values.value`(fieldType=text のみ) | 同上。fieldType 判別は `definition.fieldType`(`detailApi.ts:40`) |
 | `codex_relations.label` | **update API 不在** → raw drizzle UPDATE を bundle に同梱 |
 
-**追加スコープ判断(要ユーザー確認)**: 当初スコープは content/summary/content/notes/detailValue(text)/relation.label。
-node の **title / synopsis / unplacedBeatsDoc**、codex の **aliases / tagsCache** は対象外。意図的除外として扱う
-(初版スコープ)。excerpt は `LinterPanel.extractExcerpt` / `lintIgnoreStore.extractContext` が
+**追加スコープ判断**: 当初スコープは content/summary/content/notes/detailValue(text)/relation.label であったが、
+実装時(2026-06-08)に node の **title / synopsis** が scope に追加された(`renameEngine.ts:130-144` で
+`node-title`/`node-synopsis` kind として gather し、`:332-343` で `tree_nodes` の title/synopsis カラムを UPDATE)。
+**unplacedBeatsDoc** は引き続き対象外。codex の **aliases / tagsCache** も対象外のまま。excerpt は
+`LinterPanel.extractExcerpt` / `lintIgnoreStore.extractContext` が
 `{range:{start,end}}` を取るので matcher の `{from,to}`(同じ char offset 座標系)を wrap して流用可。
 
 ### 5.4 帰属(attribution)

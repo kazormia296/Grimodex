@@ -240,8 +240,8 @@ Map のために新設する**軽量メモ**。`tree_nodes` に乗らず Scenes 
 | 参照 | なし（Map 専用エンティティ） |
 | 保存先 | `map_stickies` テーブル |
 | 表示 | カラー付き付箋（パレット 8 色から選択、デフォルト黄）+ TipTap read-only ビュー |
-| サイズ | **幅: 固定 240px / 高さ: auto**（最小 80px、最大 600px。超過は内部スクロール） |
-| タイトル | 任意（空も可、plain text） |
+| サイズ | **幅: 固定 200px / 高さ: auto**（編集時: 最小 52px、最大 480px。超過は内部スクロール。非編集時: 高さ上限なし・スクロールなし）※当初設計は 240px / 600px。`StickyNode.tsx` 実装は 200px / 編集時 480px（「実装状況」セクション参照） |
+| タイトル | 任意（空も可、plain text）※**現状 UI では title 入力フィールド未実装**。body のみ編集可能（「実装状況」セクション参照） |
 | 本文 | **ProseMirror JSON**。改行・段落・H3・list・table・code 対応 |
 | 編集 | ダブルクリックで TipTap 編集モード、floating toolbar |
 
@@ -267,7 +267,7 @@ Sticky body は専用の TipTap プリセットで編集する。Editor / Snippe
 **編集 UI**:
 
 - シングルクリック: ノード選択
-- **ダブルクリック / `Enter`**: TipTap 編集モード起動。title input と body エディタの両方が編集可能になる
+- **ダブルクリック / `Enter`**: TipTap 編集モード起動。body エディタが編集可能になる（当初設計では title input も同時に編集可能とする予定だったが、**title 入力フィールドは未実装**。`StickyNode.tsx` は body のみレンダリングする。「実装状況」セクション参照）
 - 編集モード時にノード下に **floating toolbar**（B / I / H / list / table / code）
 - markdown ショートカット（`**bold**` / `#` / `-` / 三連バッククォート / `|table|` 等）有効
 - Codex ハイライトは編集中もリアルタイム適用
@@ -304,9 +304,9 @@ Sticky body は他の ProseMirror ベース document（Codex content / Snippet c
 
 バッジクリックで Attribution パネルへ遷移。
 
-**Chat 由来バッジ（💬）**:
+**Chat 由来バッジ（💬）** ※**未実装・Chat → Map 連携フェーズに依存**:
 
-`map_stickies.source_chat_message_id` が non-null の場合、ノード右下に小さな `💬` を表示。クリックで Chat の該当メッセージへジャンプ。
+`map_stickies.source_chat_message_id` が non-null の場合、ノード右下に小さな `💬` を表示し、クリックで Chat の該当メッセージへジャンプする設計。**ただし DB カラムは定義済みだが、`💬` バッジの描画も Chat → Map 書き込み経路も未実装**（`source_chat_message_id` は常に NULL 初期化）。Chat → Map 連携の実装に依存する（「実装状況」セクション参照）。
 
 #### 作成方法
 
@@ -420,6 +420,7 @@ Frame の右クリック → `Promote frame to Codex` で、内包 Sticky 群を
 |----|------|--------|
 | 永続性 | Scenes パネルツリーに常駐 | Map のボード限定 |
 | エディタ | フル TipTap（リンク・引用・タスクリスト等すべて） | minimal TipTap（B/I/H/list/table/code のみ、リンク等なし） |
+| タイトル | タイトル編集可 | body のみ編集可（**title 入力 UI 未実装**。「実装状況」セクション参照） |
 | 編集面積 | 本文をフルエディタで書く | 高さ可変だが 400px 超で昇格を促される |
 | 用途 | 取材メモ・設定資料・脚本断片 | 落書き・思いつき・問い・AI 図表の受け皿 |
 | 寿命 | 長期保管 | 短期、昇格 or 削除されるのが前提 |
@@ -845,14 +846,14 @@ listAnnotationsForProject → extractCausalEdges(timeline_anchor かつ relation
 
 `🔍` ボタンまたは `Ctrl+F` で検索バー展開。
 
-- 検索対象（現在のボードのみ、全ボード横断は v2）:
-  - **Sticky**: title + body
+- 検索対象（現在のボードのみ、全ボード横断は v2）。**当初設計は本文・content・prompt まで網羅する予定だったが、実装（`MapSearch.tsx`）は `title`/`name` と `synopsis`/`summary` のみ走査する**（body / content / tag / prompt は未対応。「実装状況」セクション参照）:
+  - **Sticky**: title のみ（body は未対象）
   - **Scene**: title + synopsis
-  - **Codex**: name + content + tag 名
-  - **Snippet**: content + tag 名
-  - **Note**: title + 本文先頭テキスト
-  - **AI Branch**: prompt
-- ヒットノードはキャンバス上で黄色ハイライト
+  - **Codex**: name のみ（content / tag 名は未対象）
+  - **Snippet**: 未対応（content は未対象）
+  - **Note**: title のみ（本文先頭テキストは未対象）
+  - **AI Branch**: 未対応（prompt は未対象）
+- ヒットノードはビューポート中央に自動センタリング + 選択（**当初設計の黄色ハイライトは未実装**。「実装状況」セクション参照）
 - `Enter` でヒットノードにビューポート移動 + 選択
 - `↑↓` で複数ヒット間の移動
 
@@ -1276,13 +1277,13 @@ React Flow を採用し、独自ノードタイプ（SceneNode / CodexNode / Not
   - **50 個閾値での static HTML フォールバック未実装**（設計書 1226-1238 行の Phase A 必達要件）。現状は編集中のみ TipTap、それ以外は単純な plain text。
   - **タイトル input が無い**（`StickyNode.tsx` は body のみレンダリングし、`title` プロパティが UI から編集できない）。
   - **帰属バッジ `✦` / `◐` / Chat 由来バッジ `💬` 未実装**（設計書 293-305 行）。
-  - サイズは幅 200px（設計書 240px）、`maxHeight` 編集時 480px / 非編集時 280px（設計書 600px 内部スクロール）。
+  - サイズは幅 200px（当初設計 240px）、`maxHeight` は編集時 480px・非編集時 `undefined`（上限なし）、`overflow` は編集時 `auto`・非編集時 `visible`（スクロールなし）（`StickyNode.tsx:383-386`）。当初設計の「600px 内部スクロール」とは異なる。
 - ✅ ノードドラッグ・座標保存 — `useMapPositionPersistence.ts`
 - ✅ ズーム・パン — React Flow 標準
-- 🟡 既存 Codex/Scene/Snippet/Note の手動追加 — パネル右クリック「Add to Map ▸」とパレット `[▾Add…]` は完（`TreeContextMenu.tsx:303-329` / `EntryContextMenu.tsx:196-210` / `SnippetContextMenu.tsx:221-235` / `MapPalette.tsx:82-136` / `AddToMapPickerDialog.tsx`）。**Map 空白右クリックメニュー（`Add Scene…` 等）は未実装**（`MapCanvas.tsx:1160` で `onPaneContextMenu={(e) => e.preventDefault()}` のみ）。
+- 🟡 既存 Codex/Scene/Snippet/Note の手動追加 — パネル右クリック「Add to Map ▸」とパレット `[▾Add…]` は完（`TreeContextMenu.tsx:303-329` / `EntryContextMenu.tsx:196-210` / `SnippetContextMenu.tsx:221-235` / `MapPalette.tsx:82-136` / `AddToMapPickerDialog.tsx`）。**Map 空白右クリックメニュー（`Add Scene…` 等）は未実装**（`MapCanvas.tsx` の `onPaneContextMenu` ハンドラは `(e) => e.preventDefault()` のみ）。
 - 🟡 Scene / Codex / Snippet / Note ノード — Compact 表示完。ただし:
-  - **Codex ノードに summary 先頭 40 文字が常時表示**（`CodexNode.tsx:80-89`）。設計書 378 行はホバーツールチップへ退避する規定。
-  - **Snippet ノードの先頭 40 文字抽出が ProseMirror JSON の生文字列 `s.content.slice(0, 40)` で行われている**（`SnippetNode.tsx:16`）。設計書 391・1310-1316 行が求めた「JSON 走査で最初の text ノード」抽出が未達。
+  - **Codex ノードに summary 先頭 40 文字が常時表示**（`CodexNode.tsx:115-124`）。設計書 378 行はホバーツールチップへ退避する規定。
+  - **Snippet ノードの先頭 40 文字抽出が ProseMirror JSON の生文字列 `d.content.trim().slice(0, 40)` で行われている**（`SnippetNode.tsx:20`）。設計書 391・1310-1316 行が求めた「JSON 走査で最初の text ノード」抽出が未達。
   - **ホバーツールチップは未実装**（HTML `title` 属性のみ）。
 - ✅ Derived edges: Codex 親子 — `useMapEdges.ts:82-92`
 - ✅ ダブルクリックで Editor / Codex / Snippets 連携 — `useMapCallbacks.ts`

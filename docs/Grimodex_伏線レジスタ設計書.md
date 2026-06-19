@@ -1090,6 +1090,22 @@ Codex 詳細画面に「**伏線**」タブ追加（既に検討中のタブ化�
 
 チャプター/パート単位で「未着手」「未強化」「orphan」をリスト化。Phase 1 はシンプルなフィルタビュー、Phase 3 で AI 監査パス統合。
 
+### 副入口：伏線レーダータブ（2026-06-20 追記 / #123 shipped）
+
+伏線パネルの第 3 タブ「**レーダー**」（`ForeshadowRadarTab`）。回収状況を読書順タイムライン上で俯瞰する読み取り専用ビューで、AI 不使用・純フロントエンド集計（`buildForeshadowRadarModel`）。
+
+- **ヘッダーのサマリー**: `abandoned` を除いた回収率（`paid / total`）を % と積み上げバーで表示。内訳チップは **確定回収（paid）/ 未回収（planned + seeded）/ 要注意（critical_weak + needs_strengthening + orphan_payoff）**、`abandoned` が 1 件以上ある場合のみ **破棄** チップも出す。
+- **アークタイムライン**: 読書順（`computeGlobalSceneOrder`）の x 軸上に、各伏線を「最早 Setup → Payoff」を結ぶ円弧（SVG）として描く。アーク高さはスパン（読書順インデックス差）に比例。x 軸上部に章バンド（読書順で連続する同一トップレベルフォルダ）の区切り線とラベルを重ねる。
+- **状態の描き分け**:
+  - 確定回収（payoff 確定）= 実線アーク + 両端塗りマーカー
+  - 未回収（payoff 未確定）= 末尾フロンティア（最終シーン）まで破線でダングリングし、終端は中空マーカー
+  - 回収先シーン欠落（broken: payoff 確定だが読書順に該当シーンなし）= 未回収と同じくフロンティアまでダングリング
+  - orphan_payoff（Setup 不在で payoff マーカーのみ）= 弧を描かず payoff マーカーのみ
+  - 派生ラベルの色はパネル共通の `foreshadowLabelStyles` を流用
+- **未配置（floating）**: Setup も Payoff も本文に存在しない伏線はタイムライン外の別枠にラベルピルで列挙し、クリックで一覧タブ側へハイライト要請（`requestPanelHighlight`）。
+- **インタラクション**: アーククリックで Setup / Payoff シーンへジャンプ（`requestForeshadowJump`、payoff は本文内位置で選択範囲付き）。「**回収済みを隠す**」トグルで paid アークを一時的に伏せられる（paid が 1 件以上あるときのみ表示）。
+- **データの鮮度**: load 時スナップショット（`setupScenesByForeshadowId`）を基本に、setup 編集で再ロード済みの伏線は live な `setupsByForeshadowId` で上書きし、編集後も俯瞰を正確に保つ。
+
 ### orphan setup 通知 UI（Phase 1 必須）
 
 orphan が発生した時、何らかの形でユーザに通知が必要：
@@ -1699,11 +1715,16 @@ src/features/foreshadow/
 ├── foreshadowStore.test.ts
 ├── foreshadowStore.adoptProposedSetup.test.ts  # Phase 3: adoptProposedSetup テスト
 ├── foreshadowStore.adoptInsertedNew.test.ts    # Phase 3: adoptInsertedNewSetup テスト
-├── ForeshadowPanel.tsx                    # メインパネル（一覧タブ + 章別監査タブ切替）
+├── ForeshadowPanel.tsx                    # メインパネル（一覧 / 章別監査 / レーダー の 3 タブ切替）
 ├── ForeshadowPanel.test.tsx               # Phase 1/2 テスト
 ├── ForeshadowPanel.phase3.test.tsx        # Phase 3 テスト（タブ切替 / Setup 提案ボタン）
 ├── ForeshadowPanel.stories.tsx            # Storybook
 ├── ForeshadowChapterTab.tsx               # 章別監査ダッシュボード（Phase 3）
+├── radar/                                  # 伏線レーダータブ（#123）
+│   ├── ForeshadowRadarTab.tsx             # レーダータブ UI（SVG アークタイムライン / サマリー / floating 一覧）
+│   ├── ForeshadowRadarTab.test.tsx
+│   ├── foreshadowRadarModel.ts            # 読書順アーク + 章バンド + サマリー集計の純データモデル（buildForeshadowRadarModel）
+│   └── foreshadowRadarModel.test.ts
 ├── ForeshadowMarkPopover.tsx              # setup mark 右クリックポップオーバー
 ├── ForeshadowMarkPopover.test.tsx
 ├── ForeshadowMarkHoverPopover.tsx         # hover 表示
@@ -1784,3 +1805,7 @@ drizzle/migrations/
   - **AiPolicy gate（28293b2b）**: 上記 3 AI 関数の冒頭 `blockIfPolicyOff("analysis")`（off 時は空 / null を返す）を追記。
   - **`detectRelatedCodex`**: 本文から Codex 言及を自動検出して `relatedCodex` に整形する経路を Phase 1 propose セクションに追記。
   - **Agent write 連携（5e4c1a9e）**: chat agent の `create_foreshadow` / `update_foreshadow` ツール（knowledgeWrite gate → tracked write → store reload → globalHistory undo）の新セクションを追加。実装ファイル配置に `agent_writes.rs` を追記。
+- 2026-06-20: 伏線レーダータブ（#123 shipped）の追記。
+  - **副入口：伏線レーダータブ** セクションを新設。回収状況を読書順タイムライン上の SVG アークで俯瞰する読み取り専用の第 3 タブ（AI 不使用・純フロント集計 `buildForeshadowRadarModel`）。回収率サマリー（paid / open / atRisk / abandoned）、確定回収 = 実線・未回収/broken = フロンティアへ破線ダングリング・orphan_payoff = マーカーのみ、の描き分け、未配置（floating）別枠、アーククリックでのシーンジャンプ、「回収済みを隠す」トグルを文書化。
+  - パネルのタブ構成を **一覧 / 章別監査 / レーダー の 3 タブ**（`PanelTab = "list" | "chapter" | "radar"`）に整合。
+  - 実装ファイル配置に `radar/`（`ForeshadowRadarTab.tsx` + `foreshadowRadarModel.ts` + 各 `.test`）を追記。

@@ -77,6 +77,8 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `ai_usage` | 通常 | AI使用量 | 横断トークン使用量台帳（N4・全生成サーフェスを追記専用で記録） |
 | `generation_logs` | 通常 | Attribution | inline-ai / beat 生成の出自ログ（プロンプト全文・trace_id） |
 | `chat_message_prompts` | 通常 | Chat | 送信時の最終システムプロンプトのスナップショット（後から確認用） |
+| `prompt_templates` | 通常 | Chat / Prompt Library | ユーザー保存のプロンプトテンプレート。title/content/usage_count を保持し、チャット入力時の再利用を可能にする |
+| `ab_comparisons` | 通常 | AI運用 | A/B 比較履歴（モデル/プロンプト選択）。surface/prompt/model_a/model_b/prompt_variant_a/prompt_variant_b/response_a/response_b/chosen を保持 |
 | `project_snapshot_tree_nodes` | 通常 | Editor / Revision | プロジェクトスナップショットの tree_nodes 構造ミラー |
 | `project_snapshot_codex_entries` | 通常 | Editor / Revision | プロジェクトスナップショットの Codex 構造ミラー |
 | `project_snapshot_snippets` | 通常 | Editor / Revision | プロジェクトスナップショットの Snippet 構造ミラー |
@@ -2645,3 +2647,67 @@ CREATE INDEX IF NOT EXISTS idx_lint_term_dict_project ON lint_term_dictionary(pr
 ### マイグレーション方針について
 
 2026-05 以降に追加されたテーブル / カラムは、番号付きマイグレーション（旧 v1〜v7）ではなく **`CREATE TABLE IF NOT EXISTS` + `add_column_if_missing` による冪等適用**で導入されている。`ai_usage` の cache 列や `change_events.event_uid` のように、後付け列に依存する UNIQUE インデックスは「列追加の **後**」に別バッチで作る必要がある点に注意（`IF NOT EXISTS` は列解決エラーを抑止しないため）。
+
+---
+
+## AI 運用ツール群（2026-06-19 実装 / 2026-06-20 追記）
+
+「AI 運用ツール群」（PR #124）で追加された 2 テーブル。ユーザーが保存して再利用するプロンプトテンプレート（Prompt Library）と、モデル/プロンプトの 2 構成を同一プロンプトに対して走らせた A/B 比較履歴を保持する。いずれも `project_id` を持ちプロジェクト削除で `ON DELETE CASCADE`。`migrate()` 内の `CREATE TABLE IF NOT EXISTS` で冪等に導入され、Drizzle の `promptTemplates` / `abComparisons`（`src/db/schema.ts`）とミラーする。
+
+### prompt_templates
+
+ユーザーが保存する再利用可能なプロンプトテンプレート（per-project）。`snippets` とは別概念で、チャット入力時に呼び出して再利用する。v1 はパラメータ置換なしのプレーンテキスト。`usage_count` で利用回数を記録し、よく使うテンプレートの並べ替えに利用する。
+
+```sql
+CREATE TABLE IF NOT EXISTS prompt_templates (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL DEFAULT 'Untitled',  -- テンプレートの表示名
+    content     TEXT NOT NULL DEFAULT '',          -- プロンプト本文（v1 は置換なしプレーンテキスト）
+    usage_count INTEGER NOT NULL DEFAULT 0,         -- 利用回数（再利用頻度の並べ替え用）
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_templates_project
+    ON prompt_templates(project_id, created_at);
+```
+
+### ab_comparisons
+
+モデル/プロンプトの 2 構成（A / B）を同一プロンプトに対して走らせ、どちらを採用したかを記録する履歴（per-project）。`surface` は実行面（`"chat"` | `"inline"` 等）、`model_a` / `model_b` と `prompt_variant_a` / `prompt_variant_b` が比較した 2 構成、`response_a` / `response_b` が各応答本文。`chosen` は採用したカラム（`'a'` | `'b'`）で、未採用なら NULL。
+
+```sql
+CREATE TABLE IF NOT EXISTS ab_comparisons (
+    id                TEXT PRIMARY KEY,
+    project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    surface           TEXT NOT NULL,   -- 実行面（"chat" | "inline" 等）
+    prompt            TEXT NOT NULL,   -- 比較に用いた共通プロンプト
+    model_a           TEXT,            -- A 構成のモデル
+    model_b           TEXT,            -- B 構成のモデル
+    prompt_variant_a  TEXT,            -- A 構成のプロンプト変種
+    prompt_variant_b  TEXT,            -- B 構成のプロンプト変種
+    response_a        TEXT NOT NULL,   -- A 構成の応答本文
+    response_b        TEXT NOT NULL,   -- B 構成の応答本文
+    chosen            TEXT,            -- 採用カラム（'a' | 'b'）。未採用なら NULL
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ab_comparisons_project_created
+    ON ab_comparisons(project_id, created_at);
+```
+
+---
+
+## スキーマ更新履歴（2026-06-20）
+
+「AI 運用ツール群」（PR #124, 2026-06-19）でユーザー保存のプロンプトテンプレートとモデル/プロンプトの A/B 比較履歴が追加された分を設計書へ反映。前回の追従基準日は 2026-06-18。live スキーマ（`migrate.rs`）を正本に Drizzle（`schema.ts`）と突合した。
+
+### 追加テーブル（設計書に未記載だったもの）
+
+| テーブル | 追加理由 | 実装日 |
+|---------|---------|--------|
+| `prompt_templates` | ユーザー保存のプロンプトテンプレート（Prompt Library）。`title` / `content` / `usage_count` を保持し、チャット入力時の再利用を可能にする | 2026-06-19 |
+| `ab_comparisons` | モデル/プロンプトの A/B 比較履歴。`surface` / `prompt` / `model_a` / `model_b` / `prompt_variant_a` / `prompt_variant_b` / `response_a` / `response_b` / `chosen` を保持。`chosen` は採用カラム（`'a'` \| `'b'`）、未採用は NULL | 2026-06-19 |
+
+いずれも `project_id` を持ち、プロジェクト削除時に `ON DELETE CASCADE`。`migrate()` 内の `CREATE TABLE IF NOT EXISTS` で冪等に導入される。Drizzle の `promptTemplates` / `abComparisons`（`src/db/schema.ts`）とミラー。

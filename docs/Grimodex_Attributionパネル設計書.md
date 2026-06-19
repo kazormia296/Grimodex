@@ -38,9 +38,9 @@ Attributionパネルはプロジェクト内のAI帰属統計を可視化する�
 │ ...                                                             │
 ├─────────────────────────────────────────────────────────────────┤
 │ E. Model usage                                                  │
-│ claude-sonnet-4.6   ████████████████  7,230 chars (55.2%)       │
-│ gpt-4o              ████████          3,840 chars (29.3%)       │
-│ claude-haiku-4.5    ████              2,030 chars (15.5%)       │
+│ claude-sonnet-4.6   7,230 chars (55.2%)                         │
+│ gpt-4o              3,840 chars (29.3%)                         │
+│ claude-haiku-4.5    2,030 chars (15.5%)                         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -157,18 +157,17 @@ AI生成テキスト（`source: 'ai'`）を生成モデル別に集計するセ�
 
 ### 表示
 
-各モデルを水平棒グラフ + 文字数 + 割合で表示。
+各モデルを文字数 + 割合のテキスト表示で表示。
 
 ```
-claude-sonnet-4.6   ████████████████  7,230 chars (55.2%)
-gpt-4o              ████████          3,840 chars (29.3%)
-claude-haiku-4.5    ████              2,030 chars (15.5%)
+claude-sonnet-4.6   7,230 chars (55.2%)
+gpt-4o              3,840 chars (29.3%)
+claude-haiku-4.5    2,030 chars (15.5%)
 ```
 
 - AuthorshipMarkの `model` フィールドから集計
 - `model` がNULLの場合（手動でai markを付けた場合等）は「Unknown model」として表示
-- バーはパープル系の濃淡で区別
-- モデルが1種類のみの場合はこのセクションを折りたたみ表示
+- モデルが1種類のみの場合はこのセクションを折りたたみ表示（未実装）
 
 > **現状の実装**: `AttributionReport.tsx` の AI Model Breakdown はモデル名と文字数 / 割合のみのテキスト表示で、横棒グラフは未実装。`AttributionStats.modelBreakdown` に集計済み（`__unknown_model__` キーが Unknown model に対応）。モデル数による折りたたみも未実装。
 
@@ -283,9 +282,9 @@ AI / Unknown スパン内にユーザーが文字を挿入した場合、挿入�
 
 ### Codex / Snippet エディタでの初期マーク付与
 
-Codex / Snippet のミニエディタで AI 由来コンテンツを開いた際、保存済みの `authorship_spans`（`codex_entry_id` / `snippet_id` 参照）から `applyInitialAuthorshipMarks`（`src/features/attribution/applyInitialMarks.ts`）が一括でマークを復元する。ミニエディタ上でも通常エディタと同等の AttributionHighlight・Attribution 集計が機能する。
+Codex / Snippet のミニエディタで AI 由来コンテンツを開いた際、保存済みの `authorship_spans`（`codex_entry_id` / `snippet_id` 参照）からマークを復元する。ミニエディタ上でも通常エディタと同等の AttributionHighlight・Attribution 集計が機能する。
 
-> **現状の実装**: `applyInitialAuthorshipMarks(editor, source, content)` は引数で受け取った単一の `source` をドキュメント全体に一括適用するシンプルな実装。spans から復元するのではなく、HTML に `data-authorship` 属性が含まれる場合はスキップする。`programmaticInsert` メタを立てて `AiEditedPlugin` の介入を避ける。
+> **現状の実装**: 保存済みの `authorship_spans` から ProseMirror JSON marks を復元する仕組みは、`seedAuthorshipMarks`（`src/features/attribution/seedAuthorshipMarks.ts` の `addAuthorshipMarks`）で実装されている。この関数はドキュメント全体の全テキストノードに `authorship` mark を一括付与し、既に mark を持つノードは idempotent に保持する（再スタンプしない）。検査対象は ProseMirror JSON の mark type（`m.type === 'authorship'`）であり、HTML の `data-authorship` 属性ではない。
 
 ### `unmarked` テキストの扱い
 
@@ -419,7 +418,7 @@ Generated: 2026-04-01
 
 - Scenes パネルの各シーンノードに、そのシーンの AI 帰属割合を小さなピルバッジで表示する
 - バッジのデータソースは Attribution と同じ `authorship_spans` テーブルで、バッチ API `loadBatchAiRatio(sceneIds: string[])` により全シーンを 1 リクエストで取得する（N+1 を避けパフォーマンスを確保）
-- シーン本文の自動保存完了時、および Attribution パネルの再集計完了時にバッジのキャッシュを無効化する
+- シーン本文の自動保存完了時にバッジのキャッシュを無効化する。Attribution パネルの再集計完了時は未実装。
 
 > **現状の実装**: `loadBatchAiRatio` は `src/features/attribution/api.ts` に実装され、`src/features/tree/treeStore.ts` の `loadTree` で全シーン分を初回ロードする。シーン本文の自動保存完了時は `treeStore.refreshAiRatio(nodeId)` が単一シーンの比率のみ再計算する（`EditorPane.tsx` / `LinearSceneBlock.tsx` から呼び出し）。バッジ表示は `TreeNodeItem.tsx` の `useTreeStore((s) => s.aiRatios[node.id])`。Attribution パネルの再集計完了時の無効化は連携していない。
 

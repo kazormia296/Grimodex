@@ -126,6 +126,9 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] 抽出ダイアログ: チャットから Codex 候補抽出
 - [ ] Codex management panel: ソート、フィルタ、子要素 budget
 - [ ] 文字クラス境界（漢字/かな/英数）でのマッチ精度
+- [ ] Codex内部整合チェッカー: 別名衝突、重複/自己参照リレーション検出
+- [ ] チェッカー指摘を × で dismiss（非表示）し、状態が project 単位で永続化される
+- [ ] 非表示にした指摘は折りたたみ末尾の「再表示」で復帰可能
 
 ## 9. Foreshadow（伏線）
 
@@ -133,6 +136,7 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] エディタ上のマーク表示・ホバー popover
 - [ ] チャプタータブで一覧
 - [ ] Foreshadow panel: 状態フィルタ、stale 検出
+- [ ] Foreshadow レーダータブ: 全伏線の回収状況を俯瞰、フィルタと状態別集計
 - [ ] Past setup 提案
 - [ ] Chapter 監査 (`auditChapter`)
 - [ ] シーン内 foreshadow context 表示
@@ -236,32 +240,57 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] Matrix パネル: 行列ビュー、セル編集
 - [ ] 大量データでスクロール・ズーム劣化なし
 
-## 23. Semantic Search
+## 23. Writing Stats / 完走ペースメーカー
+
+- [ ] 直近ペース計算（last 30日の暦日平均）→ 完走予定日表示
+- [ ] 目標文字数設定 → 必要ペース表示（締切基準）
+- [ ] 日別進捗トラッキング（streak、active days、today/last7/last30 集計）
+- [ ] 本日の目標（daily goal）設定 → 進捗バー表示
+- [ ] ヒートマップ表示（過去 N 週の日次活動の可視化）
+- [ ] 締切に対する「間に合う/遅れる」判定と残り日数表示
+- [ ] 文字数の内訳（人間 / AI / 不明）の棒グラフ
+- [ ] AI 使用量統計（生成回数・推定コスト）
+- [ ] パネルのリロードボタン、統計の最新化
+
+## 24. Semantic Search
 
 - [ ] 自然文クエリで関連シーン / Codex がヒット
 - [ ] embeddings インデックスの再構築
 - [ ] Lindera 辞書ロード成功（CI 赤の memory 確認）
 
-## 24. Settings
+## 25. Settings
 
-- [ ] 各カテゴリ（一般 / エディタ / AI / 表示 / キー / 拡張 / プライバシー）切替
+- [ ] 各カテゴリ（プロジェクト・エディタ・AI・表示・キー・データ・Codex・マップ・Linter・使用法・ライセンス・概要）切替
 - [ ] 保存 → 再起動後も反映
 - [ ] AI policy preset 切替
 - [ ] ショートカット変更
 
-## 25. Onboarding
+## 26. Onboarding
 
 - [ ] Preflight card のステップ進行
 - [ ] Sample tour 起動 / スキップ
 - [ ] Spotlight が UI 要素に正しくアタッチ
 - [ ] Tour gate（条件分岐）
 
-## 26. Legal / Licenses
+## 27. Legal / Licenses
 
 - [ ] About / Licenses パネルで OSS ライセンス一覧表示
 - [ ] NOTICE / Third-party licenses リンクが開く
 
-## 27. パフォーマンス / 安定性監視
+## 28. AI 運用ツール
+
+- [ ] トークン予算 ETA: 月間上限設定、消化率ビジュアル、日次レート / 月末予測表示
+  - [ ] 予算超過 / 接近時に非ブロッキング警告が表示される
+  - [ ] 予算未設定時は警告が出ない
+- [ ] プロンプト再利用ライブラリ: テンプレート作成 / 編集 / 削除、本文プレビュー、使用カウント表示
+  - [ ] 新規テンプレート追加 → PromptTemplateEditorDialog 起動
+  - [ ] テンプレート一覧表示と即座の適用可否
+- [ ] A/B テスト: プロンプト / モデル比較パネル、採用ボタン
+  - [ ] AbComparePanel で 2 構成を横並び表示
+  - [ ] モデルラベル / プロンプト variant の表示
+  - [ ] 採用（onAdopt）処理が反映
+
+## 29. パフォーマンス / 安定性監視
 
 - [ ] DevTools Performance で 1 分タイピング録画: 大きな longtask（>200ms）がない
 - [ ] Memory tab: 30 分操作してリーク傾向がない
@@ -269,7 +298,7 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] **Release ビルドで CSP 違反が出ない**（memory: csp-ipc-fallback。`connect-src` に `ipc: http://ipc.localhost`、`script-src` に `'wasm-unsafe-eval'` が必要）
 - [ ] Rust 側 panic / `unwrap` の発生有無（ターミナルログ）
 
-## 28. リグレッション固定ポイント（過去事故）
+## 30. リグレッション固定ポイント（過去事故）
 
 - [ ] file-backed mount overlap (fce86d11)
 - [ ] Stripe の Editor アイコン消失 (bb50e873)
@@ -279,7 +308,7 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] Framer Motion clip-path 補間（open 側 inset(-200px)）
 - [ ] projectStore.test.ts のテスト分離問題（フルスイートでのみ落ちる、許容）
 
-## 29. MCP 連携（本体バイナリ統一）
+## 31. MCP 連携（本体バイナリ統一）
 
 - [ ] 設定 → AI → **MCP 連携** に「この作品 / 全作品（ローカル用）」× 「読み取り専用 / ポリシー準拠」の
       コピーボタンが表示される（トグルではなく各ボタン＝即時コピー）
@@ -290,8 +319,8 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] 「ポリシー準拠」押下では `--readonly` が**付かない**（書込は AI ポリシーに委譲）。
       「全作品」押下では `--project` の代わりに `--all-projects` が入る
 - [ ] **統合パス（本体経由）**: `Grimodex mcp --workspace <ws> --readonly`（dev は
-      `cargo run -- mcp …`）で stdio に `initialize` + `tools/list` を流し、現状 25 ツールが返る
-      （プロジェクト管理 2 + read 19 + write 4）。GUI ウィンドウは開かない
+      `cargo run -- mcp …`）で stdio に `initialize` + `tools/list` を流し、現状 28 ツールが返る
+      （プロジェクト管理 2 + read 20 + write 6）。GUI ウィンドウは開かない
 - [ ] **プロジェクトスコープ（既定=pinned）**: `list_projects` が **bound 1 件のみ**返す。
       `select_project` を呼ぶと「pinned… start with --all-projects」エラー（他作品の id/title を漏らさない）
 - [ ] **`--all-projects`（ローカル/信頼用）**: 付けて起動すると `list_projects` が全作品を列挙、
@@ -299,7 +328,8 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
       存在しない id は not found。クラウド用途では付けない（付けるなら `--readonly` 併用）
 - [ ] **残置 standalone bin**: `cargo run -p grimodex-mcp -- --workspace <ws> --readonly` が
       従来どおり動く（repo-root `.mcp.json` の dev 設定も）
-- [ ] **write gate**: `--readonly` 時に write 2 ツール（create/update_codex_entry 等）がエラー応答
+- [ ] **write gate**: `--readonly` 時に write 6 ツール（`create_foreshadow` / `update_foreshadow` /
+      `create_snippet` / `create_codex_entry` / `update_codex_entry` / `propose_scene_body`）がエラー応答
 - [ ] **XPROJ**: project A スコープのクライアントから project B の scene_id/entry_id を
       read-by-id しても not found（本体統一でエンドユーザー到達面が増えた点に注意）
 - [ ] 🔴 **[要実機] Windows release**: GUI-subsystem 本体を実 MCP クライアントが spawn して

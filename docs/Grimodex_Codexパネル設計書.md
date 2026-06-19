@@ -511,7 +511,7 @@ Content フィールドの下に配置。タイプごとに定義されたカス
 | `dropdown` | `<select>`。選択肢は `field_config.options` から生成 | 選択肢文字列 |
 | `codex_reference` | 検索UIでCodexエントリを選択。ピル表示（クリックで遷移） | エントリID |
 
-> **実装状況**: `codex_reference` の値編集 UI は現状**単純なテキスト入力**（エントリ ID を直接入力するプレースホルダー、`DetailsSection.tsx` の `<input data-testid="detail-field-ref-...">`）。設計書の「検索 UI で選択しピル表示・クリックで遷移」は未実装。
+> **実装状況**: `codex_reference` の値編集 UI は `ReferenceField` コンポーネント（`DetailsSection.tsx` 行109-195）で実装済み。「Select Reference」ボタンクリックで `PinEntryDialog` 検索ピッカーが開き、FTS5 検索インデックスで Codex エントリを検索・絞り込んで選択可能。選択後はエントリの解決名をボタンラベルに表示し、クリックで対象エントリへ遷移。×ボタンで参照をクリア可能。（2026-06-20 追記）
 
 `codex_reference` の `field_config.allowedTypes` で参照可能なタイプを制限可能（NULL = 全タイプ）。
 
@@ -745,10 +745,10 @@ Codexエントリ間のつながりを管理するタブ。**性質の異なる 
   | 選択肢 | Layer 4比率 | 説明 |
   |--------|-----------|------|
   | None (`none`) | 0% | 子孫を注入しない |
-  | Few / Compact (`few`、default) | 15% | 子が少ないエントリ向け |
+  | Compact (`compact`、default) | 15% | 子が少ないエントリ向け |
   | Many / Standard (`many`) | 30% | 中規模の子ツリー向け |
   | All / Generous (`all`) | 50% | 大きな組織・派閥向け |
-- デフォルト: `few` (15%)
+- デフォルト: `compact`（Compact、15%）
 - 子エントリが0個の場合はこのセクションを非表示
 
 **Suggested（提案）**:

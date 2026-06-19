@@ -318,7 +318,7 @@ CREATE INDEX idx_lens_target_type ON scene_lens_data(target_id, lens_type);
 | `review` | `REVIEW_PROMPT_VERSION` | `review_v1.0` | `reviewPayloadBuilder.ts` |
 | `intent_drift` | `INTENT_DRIFT_PROMPT_VERSION` | `intent_drift_v1.0` | `intentDriftPayloadBuilder.ts` |
 | `pseudo_comment` | `PSEUDO_COMMENT_PROMPT_VERSION` | `pseudo_comment_v2.0` | `pseudoCommentPayloadBuilder.ts` |
-| `meta_structure` | `META_STRUCTURE_PROMPT_VERSION` | `meta_structure_v1.0` | `metaStructurePayloadBuilder.ts` |
+| `meta_structure` | `META_STRUCTURE_PROMPT_VERSION` | `meta_structure_v1.1` | `metaStructurePayloadBuilder.ts` |
 | `timeline_consistency` | `TIMELINE_CONSISTENCY_PROMPT_VERSION` | `timeline_consistency_v1.1` | `timelinePayloadBuilder.ts` |
 
 `pseudo_comment` は v2.0 で bare label から genre/想定読者プロフィールを織り込んだ brief 注入へ刷新（読者ペルソナ再編）。`timeline_consistency` は multi（folder/project）スコープ専用で multi コマンドは prompt_version を検証しない（TS が `timelinePayloadBuilder` で権威を持つ）ため Rust 側に定数を持たない。
@@ -940,7 +940,7 @@ LLM ベースの誤字脱字検出。Linter（確定論ルール）では拾え�
 
 | コマンド | 引数 | 返り値 | 実装状況 |
 |---|---|---|---|
-| `start_post_effect_run` | `{ project_id, effect_type, scope_type, scope_target_id?, model, prompt_version, input_hash, codex_payload_json, scene_text }` | `{ run_id, from_cache }` | ✓ (`consistency` / `intra_scene_consistency` のみ) |
+| `start_post_effect_run` | `{ project_id, effect_type, scope_type, scope_target_id?, model, prompt_version, input_hash, codex_payload_json, scene_text }` | `{ run_id, from_cache }` | ✓ (8 種: `consistency` / `intra_scene_consistency` / `typo_detection` / `intent_drift` / `review` / `pseudo_comment` / `meta_structure` / `impact_review`。`timeline_consistency` は `start_post_effect_run_multi` 限定＝folder/project scope 専用) |
 | `start_post_effect_run_multi` | `{ ..., scenes: [{ scene_id, codex_payload_json, scene_text }] }` | `{ run_id, from_cache }` | ✓ (folder / project scope の per-scene iteration ランナー) |
 | `abort_post_effect_run` | `{ run_id }` | `()` | ✓ |
 | `list_post_effect_runs` | `{ project_id, effect_type?, limit?, offset? }` | `Run[]` | ✓ |

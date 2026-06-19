@@ -387,96 +387,122 @@ trash 内アイテムは独立コピー。元の Scene/Codex が trash に入っ
 
 ## 7. 物理シミュレーション
 
+> **実装メモ（2026-06-20 追記）**: 物理エンジンは自前の AABB ソルバではなく
+> **Matter.js バックエンド**で実装済み（`physics.ts:1-8`、`import Matter from "matter-js"`）。
+> `TrashPhysicsEngine` クラスが Matter.js の `Engine`/`World` を内包する stateful
+> ラッパーになっており、座標は外向き API では `top-left`、内部では Matter 標準の
+> `center-of-mass` を扱う。以下は実装に追従した記述（旧・自前 `stepPhysics` 関数群の
+> 記述を置き換え）。
+
 ### `physics.ts`
 
 ```typescript
-interface PhysicsBody {
+export interface BodyState {
   id: string;
-  x: number; y: number;
-  vx: number; vy: number;
-  width: number; height: number;
-  mass: number;          // subKind ごとに階層化
-  rotation: number;
-  rotationV: number;
-  settled: boolean;
-  detached: boolean;     // D&D 中の離脱フラグ
+  x: number; // top-left
+  y: number; // top-left
+  width: number;
+  height: number;
+  rotation: number; // degrees
+  isSleeping: boolean;
+  isStatic: boolean;
+}
+
+export interface AddBodyOpts {
+  id: string;
+  subKind: TrashSubKind;
+  size: { width: number; height: number };
+  initial: "falling" | "settled-floor";
+  containerWidth?: number;
+  rng?: () => number; // seed 可能 PRNG（テスト用）
+  x?: number;
+  y?: number;
+}
+
+export class TrashPhysicsEngine {
+  // Matter.js の Engine/World を内包する stateful ラッパー。
+  // 座標は外向き API では top-left、内部では Matter 標準の center-of-mass を扱う。
 }
 ```
 
-### 関数
+### 公開 API メソッド
 
-- `createBody(id, subKind, containerWidth, size)` — subKind から mass・初期回転を決定、ランダム x、y = -height で上から落下
-- `stepPhysics(bodies, dt, floorY, containerWidth)`:
-  1. `detached === true` の body は重力・衝突スキップ（マウス追従中）
-  2. `settled === true` の body は重力・衝突対象外（sleep）
-  3. 重力適用: `vy += GRAVITY * dt / mass`
-  4. 位置更新: `x += vx * dt; y += vy * dt`
-  5. 壁反射: `x < 0 || x + w > containerWidth` でバウンス
-  6. 床衝突: `y + h > floorY` でバウンス + 摩擦
-  7. AABB 衝突: 他 body と重なっていれば質量比で押し戻し + 速度反転（係数 0.4）
-  8. settle 判定（速度閾値 + フレーム数）
-- `applyShake(bodies, ax, ay)` — 全 body に外力、settled 解除
-- `wakeNeighbors(newBody, bodies)` — 新規 body 着地時に接触する body の settled を解除
-- `attach(body) / detach(body)` — D&D 開始/終了で物理から離脱/復帰
+- `constructor()` — Matter.js Engine と World を初期化、重力 (`gravity.scale = 0.001`)・sleep 機能 (`enableSleeping`) 有効
+- `setBounds(width, floorY)` — 容器サイズ設定。寸法が同じなら no-op、変わったら床と左右壁を再生成
+- `addBody(opts)` — body を追加（`falling` または `settled-floor` 状態で開始）、`BodyState` を返す
+- `removeBody(id)` — body を削除し、支えを失う上層 body を wake（重力で再落下させるため）
+- `step(dtMs)` — 物理ステップを進める。dt は `1000/60`（≈16.67ms）でクランプ
+- `shake(intensityX, intensityY, rng?)` — 全 body を wake・ランダムな上向きインパルスを与え、角速度も変更
+- `beginDrag(id)` — ドラッグ開始で body を static に固定（手動位置制御）
+- `dragTo(id, topLeftX, topLeftY)` — ドラッグ中の位置更新。投擲速度のため最近の位置/時刻を追跡
+- `endDrag(id)` — ドラッグ終了で動的に戻し、投擲速度・角速度を反映
+- `getState(id)` — body の現在状態を `BodyState`（top-left 座標）で取得
+- `forEachState(callback)` — 全 body の状態をイテレーション
+- `clampBodies()` — ResizeObserver から呼ぶ。動的 body を境界内へクランプ、wake な body が動けば true
+- `placeFloorPreset(items, rng?)` — 起動時に既存アイテムを「床に積まれた」状態で決定論的に配置
+- `hasUnsettled()` — いずれかの動的 body が起きているか判定（rAF 継続判定用）
+- `hasBody(id)` — 指定 id の body が存在するか確認
+- `isStatic(id)` — 指定 body が static か確認
+- `ids()` — 全 body id を配列で取得
+- `destroy()` — World/Engine をクリアして破棄
 
-### 定数
+### 実装特性
 
-| 名前                | 値          |
-|--------------------|-------------|
-| `GRAVITY`          | 680 px/s²   |
-| `BOUNCE_DAMPING`   | 0.35        |
-| `WALL_DAMPING`     | 0.5         |
-| `FRICTION`         | 0.92        |
-| `SETTLE_THRESHOLD` | 4 px/s      |
-| `COLLISION_REST`   | 0.4         |
-| `STIR_IMPULSE`     | 400 px/s    |
-| `STIR_IMPULSE_MAX` | 1200 px/s   |
-| `SLEEP_FRAMES`     | 10 frames   |
-| `DRAG_THRESHOLD_PX`| 5           |
+- **Matter.js バックエンド**: 2D 剛体エンジン。AABB 衝突検出・反発・重力・sleep 機能を提供
+- **Sleep 状態**: 静止した body は自動的に `isSleeping = true` になり、次の wake まで物理計算対象外
+- **Density 統一**: 全 subKind で共通密度（`BODY_DENSITY = 0.001`）。重い body が軽い body に着地した瞬間の popcorn 化を避けるため、質量差はサイズで表現する（subKind 別の質量定数は持たない）
+- **Drag トラッキング**: `beginDrag`/`endDrag` で body を static/dynamic に切り替え、手動位置制御に対応
+- **rng パラメータ**: テスト用に seed 可能な PRNG を `addBody` / `shake` / `placeFloorPreset` に渡せる
 
-質量（subKind 別）:
-- text-fragment: 1.0
-- map-sticky / foreshadow / pin: 1.5
-- codex-entry / snippet / grid-chapter: 2.0
-- scene: 3.0
+### 物理定数
 
-テスト: `physics.test.ts` — pure function 単位でバウンス・AABB 衝突・settle 判定・detach を検証。
+| 名前 | 値 |
+|---|---|
+| `STIR_IMPULSE` | 400 |
+| `STIR_IMPULSE_MAX` | 1200 |
+| `DRAG_THRESHOLD_PX` | 5 |
+| `BODY_DENSITY` | 0.001 |
+| `WALL_THICKNESS` | 200 |
+| `FRICTION` | 0.4 |
+| `FRICTION_AIR` | 0.01 |
+| `RESTITUTION` | 0 |
+
+テスト: `physics.test.ts` — `addBody` / `removeBody` / `step`（重力・床）/ `shake` / `beginDrag` / `dragTo` / `endDrag` / `placeFloorPreset` / `clampBodies` を単位テスト。
 
 ### Sleep 状態と静止接触
 
-単純な AABB + 弾性反発 + 重力では積み重なった body が永続微振動する。対策:
-- `|vx|, |vy| < SETTLE_THRESHOLD` が `SLEEP_FRAMES` 連続 → `settled = true` で速度ゼロ固定
-- sleep 中は重力・衝突対象外
-- 新 body 接触時 `wakeNeighbors` で下の body を wake
-- `applyShake` で全 body 強制 wake
+積み重なった body の永続微振動は Matter.js の sleep 機能で抑える。
+- 静止した body は `isSleeping = true` になり、重力・衝突対象外（速度ゼロ固定）
+- 新 body 接触や `removeBody`（支え消失）時は周囲の動的 body を wake して落下を進める
+- `shake` で全 body 強制 wake
 
-完璧なスタッキングは得られない。「雑然とした屑だまり」として受け入れる。要件が出たら matter.js（~50KB gzip）導入を Phase 7 で検討。
+Matter.js を採用し、完全な物理シミュレーション（`TrashPhysicsEngine`）を実装済み。body の falling / settled-floor 状態管理、sleep 判定、drag 追跡、境界クランプ（`clampBodies`）により、安定したスタッキングを実現している。
 
 ### rAF ループ
 
-`TrashBinPanel.tsx` 内:
-- `requestAnimationFrame` で `stepPhysics` を呼び回す
+`TrashBinPhysicsView.tsx` 内（パネル本体 `TrashBinPanel.tsx` ではなく物理ビュー側に配置）:
+- `requestAnimationFrame` で `engine.step(dtMs)` → `forEachState(applyTransform)` を呼び回す。dt は `MAX_DT_MS = 33`（30fps 下限）でクランプ
 - `IntersectionObserver` でパネル非表示 → ループ停止（**本リポ初の確立パターン**: `AsciiSplash.tsx` は停止ロジックなし、`LinearEditorView.tsx` は mount/unmount 検知のみ）
-- `hasUnsettled(bodies) === false && !stirring && !dragging` で停止
+- `engine.hasUnsettled() === false` でループ終了（攪拌・ドラッグ・追加・クランプ等の起点で `startLoop()` 再起動）
 - DOM 要素に `transform: translate3d(x, y, 0) rotate(deg)` で反映（React state 更新は使わず直接 DOM 操作）
 
-rAF ↔ DOM 接続部の **integration test**（jsdom + fake rAF）を Phase 3 末で別建て。
+rAF ↔ DOM 接続部の integration test は `TrashBinPhysicsView.test.tsx`。
 
 ### 初期ロード時の配置
 
 `loadItems` 完了直後に最大 100 件が全部上から落下するのはドラマチックすぎる。
-- 初期ロード時は各 body を **床に settled 状態で積まれた状態**から開始（ランダム x、床面付近 y、settled = true、速度ゼロ）
-- 以降の `addItem` のみ y = -height から落下
+- 初期ロード時は各 body を **床に settled 状態で積まれた状態**から開始（`placeFloorPreset`: 決定論的レイアウト、`initial: "settled-floor"`、`isSleeping = true`、速度ゼロ）
+- 以降の `addBody`（`initial: "falling"`）のみ y = -height から落下
 - パネル再マウント時も同様
 
-初期位置は決定論でも乱数でも可、テスト都合で seed 可能にする。
+初期位置は `placeFloorPreset` に渡す `rng` で決定論にもでき、テスト都合で seed 可能。
 
 ### 攪拌インタラクション
 
-#### 🌀 かき混ぜるボタン
-- ヘッダ右配置、Lucide `Tornado` または `Waves`
-- 単発タップ: `applyShake` を 1 回。方向ランダム + 上向きバイアス、各 body に乱数回転速度
-- 長押し: 300ms 間隔で連続インパルス、強度を段階的に増加（`STIR_IMPULSE_MAX` で上限）
+#### 🌀 かき混ぜるボタン（`TrashBinStirButton.tsx`）
+- ヘッダ右配置、Lucide `Tornado`
+- 単発タップ: `shake` を 1 回（intensity = `STIR_IMPULSE` = 400）。方向ランダム + 上向きバイアス、各 body に乱数角速度
+- 長押し: 300ms 間隔で連続インパルス、強度を 1.5 秒かけて線形に `STIR_IMPULSE_MAX`（1200）まで上げる
 
 #### アイテム衝突の副産物
 - 着地波紋: 新 body が落下して既存 body に当たると下が wake
@@ -795,7 +821,7 @@ IME、undo 協調、reduced-motion、保持ポリシー、Replace 扱い、メ�
 - 全パイプラインを検証（Scene 削除 → DB → store → リスト）
 
 ### Phase 3: 物理シミュレーション + 文字屑表示
-- `physics.ts`（AABB 衝突、質量階層、detach、pure function、`physics.test.ts`）
+- `physics.ts`（Matter.js バックエンドの `TrashPhysicsEngine` クラス: AABB 衝突・sleep・drag 追跡・境界クランプ、`physics.test.ts`）
 - rAF ループ統合（**新規パターン**: IntersectionObserver 停止）
 - `TrashBinItem` の text-fragment 表現
 - `ResizeObserver` / `IntersectionObserver`
@@ -837,7 +863,7 @@ IME、undo 協調、reduced-motion、保持ポリシー、Replace 扱い、メ�
 ### Phase 8（将来検討）
 - Pin の trash 統合（subKind `pin` / `PinPayload` / restorer / `pin-panel` drop target / `capturePinDeletion`）
 - `useGlobalHistoryStore` への trash 操作統合（`pickup` を atomic に扱える設計が組めれば）
-- 物理スタッキング本格化（matter.js 導入）
+- ~~物理スタッキング本格化（matter.js 導入）~~ → **実装済み**（`physics.ts` の `TrashPhysicsEngine` が Matter.js バックエンド、§7 参照）
 - ~~保持期間の設定 UI（7 / 30 / 60 / 90 / 無期限）~~ → **実装済み**（`ProjectCategory.tsx`、§3.5 参照）
 - ChatInput 削除のキャプチャ（subKind = `chat-input` 拡張）
 - `focusedContentEditorStore` を foreshadow / pin / snippet の挿入経路にも展開

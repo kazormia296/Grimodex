@@ -386,7 +386,7 @@ UIの外観全般を設定する。
 
 | フィールド | UI要素 | 選択肢 | デフォルト |
 |-----------|--------|--------|-----------|
-| Color theme | ドロップダウン | `simple` / `dark-academia` / `modern-mystic` / `warm-craft`（`src/lib/colorThemes.ts` の `COLOR_THEMES`） | `dark-academia` |
+| Color theme | ドロップダウン | `simple` / `dark-academia` / `modern-mystic` / `warm-craft`（`src/lib/colorThemes.ts` の `COLOR_THEMES`） | `simple` |
 | Light / Dark | ドロップダウン | System / Dark / Light | System |
 
 > 当初の設計では「アクセント色のプリセット 5 色 + カスタム」を想定していたが、現状はカラーテーマ単位（パレット全体＋ライト／ダークの双方を含む）でプリセット選択する形に統一されている。
@@ -409,7 +409,7 @@ UIの外観全般を設定する。
 
 | フィールド | UI 要素 | デフォルト | キー |
 |-----------|---------|-----------|------|
-| Enable glass effect | トグル | ON | `display.glassEffectEnabled` |
+| Enable glass effect | トグル | OFF | `display.glassEffectEnabled` |
 | Transparency | スライダー（0 - 90%） | 30% | `display.glassTransparency` |
 | Tinted backdrop gradient | トグル | ON | `display.glassBackdropGradient` |
 | macOS native vibrancy | トグル | ON | `display.glassNativeVibrancy` |

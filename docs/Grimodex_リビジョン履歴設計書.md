@@ -1,6 +1,6 @@
 # Grimodex — リビジョン履歴設計書
 
-> 最終更新: 2026-06-18
+> 最終更新: 2026-06-20
 > ステータス: 実装済み（プロジェクトスナップショットは構造込み・スコープ選択式に拡張済み。Diff 表示はテキストブロック単位、Tauri 化は未着手）
 > 依存: Grimodex_統合DBスキーマ.md（content_versions / project_snapshot_* テーブル）、Grimodex_Editorパネル設計書.md、Grimodex_Codexパネル設計書.md、Grimodex_Snippetsパネル設計書.md
 
@@ -12,18 +12,37 @@
 
 すべてのコンテンツ（Scene、Note、Codex エントリ、Snippet）に対してリビジョン履歴を提供する。ユーザーは任意の過去リビジョンの内容をプレビューし、復元できる。
 
+> 現状の実装では Note は Scene と同じ本文エディタサーフェス（"scene" content type）で扱われ、リビジョンは `entityType: 'scene'` で記録される（Note 専用の `'note'` entity_type は未発行。詳細は「対象エンティティ」節を参照）。
+
 Novelcrafter の Revision History を参考にしたUIを採用する。
 
 ---
 
 ## 対象エンティティ
 
-| エンティティ | テーブル | content カラム | entity_type 値 |
-|-------------|---------|---------------|----------------|
-| Scene | `tree_nodes` | `content` | `scene` |
-| Note | `tree_nodes` | `content` | `note` |
-| Codex エントリ | `codex_entries` | `content` | `codex_entry` |
-| Snippet | `snippets` | `content` | `snippet` |
+| エンティティ | テーブル | content カラム | entity_type 値（スキーマ定義） | 実装で発行される entity_type |
+|-------------|---------|---------------|----------------|----------------|
+| Scene | `tree_nodes` | `content` | `scene` | `scene` |
+| Note | `tree_nodes` | `content` | `note` | `scene`（※下記の制約を参照） |
+| Codex エントリ | `codex_entries` | `content` | `codex_entry` | `codex_entry` |
+| Snippet | `snippets` | `content` | `snippet` | `snippet` |
+
+> **Note の entity_type に関する現状の制約（2026-06-20 追記）**
+> `content_versions.entity_type` の CHECK 制約・ヘルパー `getEntityType(nodeType)`
+> （`revisionStore.ts`、`note → note` を返す）はいずれも `'note'` 値を正式にサポートする。
+> しかし **Note はエディタ上で Scene と同じ "scene" content type で開かれる**
+> （`TabContentType = "scene" | "codex" | "snippet"` に `note` は存在せず、Note は
+> tree_nodes を共有して本文エディタサーフェスにロードされる）。このため、Note を編集
+> したときに作成されるリビジョン／開かれる History はすべて `entityType: 'scene'`
+> 固定で発行され、`'note'` 値は実際には書き込まれない。該当箇所:
+> - 自動リビジョン: `EditorPane.tsx` `saveFn`（`entityType: "scene"` ハードコード）
+> - 手動リビジョン（`Ctrl+S`）: `EditorPane.tsx` `handleManualSave`（同上）
+> - History 起動: `EditorPane.tsx` のフッター History ボタン／`useEditorKeyboard.ts`
+>   の `Ctrl+Shift+H`（いずれも `openHistory("scene", ...)` ハードコード）
+>
+> 結果として **Note は Scene のリビジョン名前空間に同居して履歴が残る**。Note 専用に
+> `'note'` を発行するには、上記 4 箇所で `getEntityType(activeNode.nodeType)` を用いて
+> entity_type を解決する配線が必要（※ 現状未実装）。
 
 ---
 
@@ -94,7 +113,7 @@ CREATE INDEX idx_cv_entity ON content_versions(entity_type, entity_id, version_n
 ```
 
 対象:
-- Scene / Note タブ → フッターに History ボタン
+- Scene / Note タブ → フッターに History ボタン（Note も "scene" content type で開かれるため、起動時の entity_type は `scene` 固定。「対象エンティティ」節を参照）
 - Codex タブ → フッターに History ボタン（content フィールド対象）
 - Snippet タブ → フッターに History ボタン
 

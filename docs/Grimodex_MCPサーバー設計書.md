@@ -783,7 +783,7 @@ write_scene 等の scene 書き込みは v2 で未実装ゆえ tools/list に出
 `semantic_search` は defer（§3.11）ゆえ tools/list に出ない）。
 クラウド LLM クライアント（Claude Desktop / Claude Code / Hermes Agent 等）では
 **`--readonly` 付きで起動する**ことを推奨。ただし `--readonly` は **call-time gate** であり、
-write 4 ツールは tools/list には**載る**が、呼び出すと「readonly mode」エラーを返す
+write 6 ツールは tools/list には**載る**が、呼び出すと「readonly mode」エラーを返す
 （list-time で隠れるわけではない）。
 
 ### 3.9 In-app チャット executor との能力パリティ
@@ -981,7 +981,7 @@ cargo run -- mcp --workspace /abs/ws --readonly
 
 ### .mcp.json（Claude Code / Desktop）
 
-**クラウド LLM では `--readonly` を必ず付ける**（write 4 ツールを call-time で無効化）。
+**クラウド LLM では `--readonly` を必ず付ける**（write 6 ツールを call-time で無効化）。
 
 ```json
 {
@@ -1023,7 +1023,7 @@ mcp_servers:
     env: {}
 ```
 
-接続後 `tools/list` が **25 ツール**（プロジェクト管理 2 + read 19 + write 4）を返すことを確認する。write 4 種は
+接続後 `tools/list` が **28 ツール**（プロジェクト管理 2 + read 20 + write 6）を返すことを確認する。write 6 種は
 `--readonly` でも list には載るが、呼び出すと call-time でエラー応答する（list-time では隠れない）。
 
 ### .mcp.json（standalone dev bin / readonly なし・非推奨例）
@@ -1213,11 +1213,23 @@ Stored XSS が成立する。
 2. `rmcp` で stdio MCP サーバーの骨格を実装
 3. DB 接続 + Content Dir 読み取りを実装
 4. ProseMirror JSON → Markdown 変換器を実装
-5. 読み取りツールを実装:
-   - `get_project`, `list_tree`, `read_scene`, `read_scenes_batch`
-   - `list_codex_entries`, `get_codex_entry`
-   - `get_project_stats`
-6. Claude Code で接続テスト
+5. 読み取りツール（20個）を実装:
+   - プロジェクト・ツリー: `get_project`, `list_tree`, `read_scene`, `read_scenes_batch`, `get_project_stats`
+   - 検索: `search_project`
+   - Codex: `list_codex_entries`, `get_codex_entry`, `list_codex_tags`, `search_codex_by_tags`, `find_related_entries`
+   - 構成: `get_chapter_summaries`
+   - 伏線: `list_open_foreshadows`, `get_foreshadow_detail`
+   - タイムライン: `get_scene_timeline_neighbors`
+   - チャット: `list_chat_sessions`, `read_chat_history`
+   - スニペット: `list_snippets`
+   - 統計: `get_attribution_report`
+   - コンテキスト集約: `get_writing_context`
+6. 書き込みツール（6個）を実装:
+   - `create_codex_entry`, `update_codex_entry`
+   - `create_snippet`
+   - `propose_scene_body`
+   - `create_foreshadow`, `update_foreshadow`
+7. Claude Code で接続テスト
 
 ### Phase 2: 検索 + チャット
 

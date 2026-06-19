@@ -680,7 +680,7 @@ center filler（editor 非表示時のグリッド充填）、**DnD UX**（point
 InsertIndicator / Highlight 排他・`STRIPE_DRAG_DETECTION_PAD_PX`）。
 
 **（2026-06-18 追記）出荷済みの追加機能:** 「サイドバーから削除」は廃止せず `hiddenStripePanels`
-として存続（§1.3・§7.4）。執筆統計パネル `writing-stats` を追加し tool window は 16 個に（§4.2・
+として存続（§1.3・§7.4）。執筆統計パネル `writing-stats` を追加し tool window は 17 個に（§4.2・
 7833d53f）。パネル最大化（視覚 zoom）+ 復帰バー + reveal 演出（§6.7・6f543191 / 730ce7dd /
 1bc28383）、ボトム角の所有権切替 `bottomCorners`（§6.6）、Splitter のキーボードリサイズ
 （§6.2・16849577）、side region 一括開閉 `SideDockToggle`（§6.6）を実装。

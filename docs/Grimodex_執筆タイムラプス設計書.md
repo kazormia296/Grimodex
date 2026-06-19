@@ -41,7 +41,7 @@
 
 | 部品 | 役割 | シグネチャ / 要点 | 状態 |
 | --- | --- | --- | --- |
-| `recorder.ts` | 変更イベント記録（append-only, hash chain, 100ms バッチ） | `recordChangeEvent(input)`（L156-168）/ `flushNow()`（L184-248）/ default `enabled:false`（L67） | **本番稼働中**（§3） |
+| `recorder.ts` | 変更イベント記録（append-only, hash chain, 100ms バッチ） | `recordChangeEvent(input)`（L241-254）/ `flushNow()`（L270-332）/ default `enabled:false`（L97） | **本番稼働中**（§3） |
 | `queryEvents.ts` | イベント読み出し | `loadProjectChangeEvents(projectId)`（L21-27）/ `loadSceneChangeEvents(projectId, sceneId)`（L35-49, ASC by sequence） | project 版のみ配線済 |
 | `hashChain.ts` | sha256 チェーン検証 | `verifyChain(events)`（L139-176）/ `canonicalSerializeEvent`（L43-70） | 配線済（verify ボタン） |
 | `replayEngine.ts` | step→doc 再構成 | `createReplayCursor(schema, initialDoc, events)`（L74）の逐次カーソル / `replayEditorSteps`（L194）は cursor で実装 / editor/codex/snippet のみ（`isEditorBodyDomain` L212） | **配線済**（`compositeTimelapse.ts` が cursor を呼ぶ, 2026-06-18 追記） |
@@ -76,7 +76,7 @@
 
 ### 3.3 【核心】editor payload は incremental step（snapshot ではない）
 
-`EditorPane.onTransaction` が `payload = { steps: transaction.steps.map(s => s.toJSON()) }`, `opType='doc.step'` で記録（`EditorPane.tsx:820,831-838`）。`isApplyingExternalUpdate` のときは記録しない（シーン切替ロード/同期は「執筆」ではないため、`EditorPane.tsx:818`）。
+`EditorPane.onTransaction` が `payload = { steps: transaction.steps.map(s => s.toJSON()) }`, `opType='doc.step'` で記録（`EditorPane.tsx:719-739`）。`isApplyingExternalUpdate` のときは記録しない（シーン切替ロード/同期は「執筆」ではないため、`EditorPane.tsx:719`）。
 
 - **replayable なのは editor 系のみ**。`replayEditorSteps` は `opType==='doc.step'` かつ domain ∈ {editor, codex, snippet} だけを `Step.fromJSON` + `step.apply` で前進適用（`replayEngine.ts:44-83`）。
 - grid/map/codex メタ/snippet メタの payload は **メタデータのみ**（例 `{ fields: [...] }`）で、視覚状態を再構成できない。codex 本文 diff は editor の doc.step 経路を通る（`codexStore.ts:282-286`）。
