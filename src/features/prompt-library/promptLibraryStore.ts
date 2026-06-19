@@ -38,10 +38,16 @@ export const usePromptLibraryStore = create<PromptLibraryState>((set, get) => ({
     set({ isLoading: true });
     try {
       const templates = await api.listPromptTemplates(projectId);
+      // 非同期中にプロジェクトが切り替わっていたら stale 結果を破棄する
+      // （クロスプロジェクト汚染防止 / 新プロジェクトの load が状態を所有する）。
+      if (getCurrentProjectId() !== projectId) return;
       set({ templates, isLoading: false, loadedProjectId: projectId });
     } catch (e) {
       debugLog.error("promptLibrary", "load failed", errorDetail(e));
-      set({ isLoading: false });
+      // stale なエラーで現行ロードの状態を壊さない。
+      if (getCurrentProjectId() !== projectId) return;
+      // loadedProjectId をリセットし ensureLoaded での再試行を可能にする。
+      set({ isLoading: false, loadedProjectId: null });
       toast.error(i18next.t("promptLibrary.toast.loadFailed"));
     }
   },
@@ -57,6 +63,10 @@ export const usePromptLibraryStore = create<PromptLibraryState>((set, get) => ({
     const trimmedTitle = title.trim();
     if (!trimmedTitle) {
       toast.error(i18next.t("promptLibrary.toast.titleRequired"));
+      return null;
+    }
+    if (!content.trim()) {
+      toast.error(i18next.t("promptLibrary.toast.contentRequired"));
       return null;
     }
     try {

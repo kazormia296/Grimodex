@@ -4732,7 +4732,8 @@
       "saveFailed": "テンプレートの保存に失敗しました",
       "loadFailed": "テンプレートの読み込みに失敗しました",
       "deleteFailed": "テンプレートの削除に失敗しました",
-      "titleRequired": "タイトルを入力してください"
+      "titleRequired": "タイトルを入力してください",
+      "contentRequired": "本文を入力してください"
     }
   }
 }

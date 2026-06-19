@@ -4737,7 +4737,8 @@
       "saveFailed": "Failed to save template",
       "loadFailed": "Failed to load templates",
       "deleteFailed": "Failed to delete template",
-      "titleRequired": "Please enter a title"
+      "titleRequired": "Please enter a title",
+      "contentRequired": "Please enter the content"
     }
   }
 }

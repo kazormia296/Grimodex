@@ -22,9 +22,11 @@ vi.mock("i18next", () => ({
 }));
 
 import { usePromptLibraryStore } from "./promptLibraryStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import * as api from "./api";
 import type { PromptTemplate } from "./api";
 
+const mockProjectId = vi.mocked(getCurrentProjectId);
 const mockList = vi.mocked(api.listPromptTemplates);
 const mockCreate = vi.mocked(api.createPromptTemplate);
 const mockUpdate = vi.mocked(api.updatePromptTemplate);
@@ -47,6 +49,8 @@ const fakeTemplate = (
 describe("promptLibraryStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks は mockReturnValue の上書きを消さないため毎回明示リセット。
+    mockProjectId.mockReturnValue("default-project");
     usePromptLibraryStore.setState({
       templates: [],
       isLoading: false,
@@ -95,6 +99,52 @@ describe("promptLibraryStore", () => {
       .create("   ", "本文");
     expect(created).toBeNull();
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("create() rejects blank content without hitting the API", async () => {
+    const created = await usePromptLibraryStore
+      .getState()
+      .create("タイトル", "   ");
+    expect(created).toBeNull();
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("load() discards stale results when the project switches mid-flight", async () => {
+    // project A の load を開始（list を保留して切替を割り込ませる）。
+    let resolveA: (v: PromptTemplate[]) => void = () => {};
+    mockList.mockImplementationOnce(
+      () =>
+        new Promise<PromptTemplate[]>((r) => {
+          resolveA = r;
+        }),
+    );
+    const pending = usePromptLibraryStore.getState().load();
+    // 非同期解決の前にプロジェクト B へ切替。
+    mockProjectId.mockReturnValue("project-B");
+    resolveA([fakeTemplate({ id: "stale-A" })]);
+    await pending;
+    const s = usePromptLibraryStore.getState();
+    // stale な A の結果は state を汚染しない。
+    expect(s.templates).toHaveLength(0);
+    expect(s.loadedProjectId).toBeNull();
+  });
+
+  it("load() failure resets loadedProjectId so ensureLoaded can retry", async () => {
+    mockList.mockResolvedValueOnce([fakeTemplate()]);
+    await usePromptLibraryStore.getState().load();
+    expect(usePromptLibraryStore.getState().loadedProjectId).toBe(
+      "default-project",
+    );
+    // 再ロードが失敗 → loadedProjectId をリセットし再試行を可能にする。
+    mockList.mockRejectedValueOnce(new Error("boom"));
+    await usePromptLibraryStore.getState().load();
+    const failed = usePromptLibraryStore.getState();
+    expect(failed.isLoading).toBe(false);
+    expect(failed.loadedProjectId).toBeNull();
+    // ensureLoaded が再ロードを試みる。
+    mockList.mockResolvedValueOnce([fakeTemplate({ id: "retry" })]);
+    await usePromptLibraryStore.getState().ensureLoaded();
+    expect(usePromptLibraryStore.getState().templates[0].id).toBe("retry");
   });
 
   it("update() replaces the matching template in place", async () => {
