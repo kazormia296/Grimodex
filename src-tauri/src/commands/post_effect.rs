@@ -654,7 +654,8 @@ mod detail_name_is_valid_tests {
 
 #[cfg(test)]
 mod find_text_position_tests {
-    use super::find_text_position;
+    // 既存テストは空白正規化の完全一致経路を検証する。
+    use super::find_text_position_exact as find_text_position;
 
     /// 日本語シーン中で found_text を発見できる
     #[test]
@@ -703,6 +704,99 @@ mod find_text_position_tests {
         let scene = "今日は良い天気だ。";
         let pos = find_text_position(scene, "良い天気", "").expect("should find");
         assert_eq!(&scene[pos.0..pos.1], "良い天気");
+    }
+}
+
+#[cfg(test)]
+mod find_text_position_morph_tests {
+    use super::find_text_position;
+
+    /// 活用差: LLM が原形「走る」を返しても本文の「走った」にアンカーできる。
+    /// 完全一致経路 (find_text_position_exact) では当たらないことも併せて確認する。
+    #[test]
+    fn resolves_inflected_verb_via_lemma() {
+        let scene = "彼は走った。";
+        // 完全一致経路では活用差で当たらない (= 従来は orphaned だった)
+        assert!(
+            super::find_text_position_exact(scene, "彼は走る", "").is_none(),
+            "完全一致経路では活用差を吸収できないはず"
+        );
+        // 日本語なら形態素 lemma 照合で当たる
+        let hit = find_text_position(scene, "彼は走る", "", true)
+            .expect("形態素照合で活用差を吸収して当てるべき");
+        // surface は本文に verbatim で存在する (FE が indexOf 再アンカーできる不変条件)
+        assert!(
+            scene.contains(&hit.surface),
+            "surface は本文に存在する文字列であるべき: {:?}",
+            hit.surface
+        );
+        assert!(
+            hit.surface.contains('走'),
+            "一致範囲は対象の動詞を含むべき: {:?}",
+            hit.surface
+        );
+        // start/end は surface と整合する
+        assert_eq!(&scene[hit.start..hit.end], hit.surface);
+    }
+
+    /// 非日本語 (is_japanese=false) では形態素フォールバックを行わない。
+    /// 活用差は吸収されず None になる (英語プロジェクトの従来挙動を保つ)。
+    #[test]
+    fn does_not_use_morph_fallback_for_non_japanese() {
+        let scene = "彼は走った。";
+        assert!(
+            find_text_position(scene, "彼は走る", "", false).is_none(),
+            "非日本語では形態素フォールバックしないので None のはず"
+        );
+    }
+
+    /// 完全一致するものは従来どおり exact 経路で当たり、surface は found_text のまま。
+    #[test]
+    fn exact_match_keeps_found_text_surface() {
+        let scene = "今日は良い天気だ。";
+        let hit = find_text_position(scene, "良い天気", "", true).expect("should find");
+        assert_eq!(hit.surface, "良い天気");
+        assert_eq!(&scene[hit.start..hit.end], "良い天気");
+    }
+
+    /// 本文に存在しない指摘は日本語でも None (orphaned)。
+    #[test]
+    fn returns_none_when_absent_even_in_japanese() {
+        let scene = "今日は良い天気だ。";
+        assert!(find_text_position(scene, "吹雪が荒れ狂う", "", true).is_none());
+    }
+
+    /// exact 経路は改行(=normalize_ws で潰れる空白)を跨いでも **生 scene_text の
+    /// バイトオフセット** を返し、surface を生本文からスライスできる(座標系統一)。
+    #[test]
+    fn exact_returns_raw_offsets_across_newline() {
+        let scene = "第一段落。\n第二段落で円明が現れた。";
+        let hit = find_text_position(scene, "円明が現れた", "", true).expect("should find");
+        // raw オフセットなので生本文スライスが一致する(normalized 座標だと崩れる)
+        assert_eq!(&scene[hit.start..hit.end], "円明が現れた");
+        assert_eq!(hit.surface, "円明が現れた");
+    }
+
+    /// 同一表現が複数あるとき、morph 経路も found_context で正しい出現を選ぶ。
+    #[test]
+    fn morph_uses_context_to_disambiguate() {
+        // 「走った」が 2 箇所。found_text は原形「走る」(活用差で exact は外れる)。
+        let scene = "朝、彼は走った。夜、彼女は走った。";
+        assert!(
+            super::find_text_position_exact(scene, "走る", "").is_none(),
+            "exact は活用差で当たらない前提"
+        );
+        let hit =
+            find_text_position(scene, "走る", "彼女は走った", true).expect("morph should find");
+        // context が 2 箇所目(夜のほう)を指すので、そちらにアンカーするべき
+        let yoru = scene.find('夜').expect("夜 exists");
+        assert!(
+            hit.start >= yoru,
+            "context が示す 2 箇所目を選ぶべき: start={} yoru={}",
+            hit.start,
+            yoru
+        );
+        assert!(scene.contains(&hit.surface));
     }
 }
 
@@ -1361,19 +1455,26 @@ fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
 }
 
 /// `found_context` をシーン本文で緩めにマッチし、その window 内で
-/// `found_text` を locate する。文字単位のオフセットを返す。
-/// 失敗時は `None` (orphaned annotation として扱う)。
+/// `found_text` を locate する (空白正規化したうえでの完全一致経路)。
+/// 戻り値は **生 scene_text のバイトオフセット**。失敗時は `None`。
 ///
 /// `found_text` が複数箇所に出現する場合は、各位置の周辺と `found_context`
 /// の一致度 (trigram 重なり + 完全包含ボーナス) をスコアリングして
 /// 最良の位置を選ぶ。これは「同じ表現が複数箇所にあるが LLM は特定の
 /// 1 箇所を指摘している」ケースで誤位置に annotation が貼られる事故を防ぐ。
-fn find_text_position(
+///
+/// LLM が活用差・送り仮名差・全角半角差を含む `found_text` を返した場合は
+/// この経路では `None` になる。日本語ではその後 [`find_text_position_morph`]
+/// が形態素 lemma 照合でフォールバックする ([`find_text_position`])。
+fn find_text_position_exact(
     scene_text: &str,
     found_text: &str,
     found_context: &str,
 ) -> Option<(usize, usize)> {
-    let norm_scene = normalize_ws(scene_text);
+    // 空白正規化したシーン上でマッチし、`norm→raw` バイト写像で **生 scene_text の
+    // バイトオフセット** に戻して返す。これにより exact / morph 両経路の戻り値が
+    // 同じ raw 座標系に揃い、range_start/end の重なり判定が破綻しない。
+    let (norm_scene, norm_to_raw) = normalize_ws_indexed(scene_text);
     let norm_ctx = normalize_ws(found_context);
     let norm_ft = normalize_ws(found_text);
 
@@ -1391,23 +1492,243 @@ fn find_text_position(
         return None;
     }
 
-    // 単一出現 or context なし: 最初 (=唯一) の位置を返す
-    if occurrences.len() == 1 || norm_ctx.is_empty() {
-        let pos = occurrences[0];
-        return Some((pos, pos + norm_ft.len()));
+    // 単一出現 or context なし: 最初 (=唯一) の位置。複数なら context で最良を選ぶ。
+    let norm_pos = if occurrences.len() == 1 || norm_ctx.is_empty() {
+        occurrences[0]
+    } else {
+        occurrences
+            .iter()
+            .copied()
+            .max_by_key(|&pos| {
+                let window = scene_window_around(&norm_scene, pos, norm_ft.len(), norm_ctx.len());
+                score_context_match(window, &norm_ctx)
+            })
+            .unwrap_or(occurrences[0])
+    };
+
+    // normalized offset → raw scene_text offset
+    let raw_start = *norm_to_raw.get(norm_pos)?;
+    let raw_end = *norm_to_raw.get(norm_pos + norm_ft.len())?;
+    Some((raw_start, raw_end))
+}
+
+/// `normalize_ws` と同じ正規化文字列を作りつつ、正規化文字列の各バイト位置が
+/// 元 `s` のどのバイト位置に対応するかの写像 (`map[norm_byte] = raw_byte`) を返す。
+/// `map` の長さは `norm.len() + 1` で、末尾に `s.len()` の番兵を持つ。
+/// これで normalized 上のマッチ位置を生バイトオフセットへ戻せる。
+fn normalize_ws_indexed(s: &str) -> (String, Vec<usize>) {
+    let mut norm = String::with_capacity(s.len());
+    let mut map: Vec<usize> = Vec::with_capacity(s.len() + 1);
+    let mut prev_was_word = false;
+    // 直前に出た空白ランの開始 raw 位置 (次に語が来たとき単一スペースへ畳む)
+    let mut pending_space_raw: Option<usize> = None;
+
+    for (idx, c) in s.char_indices() {
+        if c.is_whitespace() {
+            if prev_was_word {
+                pending_space_raw = Some(idx);
+            }
+            prev_was_word = false;
+            continue;
+        }
+        // 語の前に空白ランがあり、かつ先頭でなければ単一スペースを挿入
+        if let Some(space_raw) = pending_space_raw.take() {
+            if !norm.is_empty() {
+                map.push(space_raw);
+                norm.push(' ');
+            }
+        }
+        let before = norm.len();
+        norm.push(c);
+        for _ in before..norm.len() {
+            map.push(idx);
+        }
+        prev_was_word = true;
+    }
+    map.push(s.len());
+    (norm, map)
+}
+
+/// [`find_text_position`] の結果。
+///
+/// - `start`/`end`: シーン本文中の位置ヒント (FE は近傍ヒントとしてのみ使い、
+///   表示時は `text_snapshot` から PM 位置を再解決する)。
+/// - `surface`: **本文中に verbatim で存在する**文字列。これを `text_snapshot`
+///   に格納すると、活用差などで LLM の `found_text` が本文と一致しないケースでも
+///   FE が `indexOf` でエディタ上にアンカーを復元できる。
+struct AnchorHit {
+    start: usize,
+    end: usize,
+    surface: String,
+}
+
+/// LLM の `found_text` をシーン本文中に位置決めする。
+///
+/// 1. まず空白正規化の完全一致 ([`find_text_position_exact`]) を試す。これで
+///    当たれば従来どおり (`surface = found_text`)。
+/// 2. 当たらず、かつ日本語プロジェクトなら形態素 lemma 照合
+///    ([`find_text_position_morph`]) でフォールバックし、活用差・送り仮名差・
+///    全角半角差を吸収する。この経路では本文スライスを `surface` に採るため、
+///    `text_snapshot` 経由の FE 再アンカーが成功する。
+///
+/// 英語など非日本語では形態素辞書 (lindera/UniDic) が無いため、完全一致のみ
+/// (= 従来挙動) に留める。どちらも当たらなければ `None` (orphaned)。
+fn find_text_position(
+    scene_text: &str,
+    found_text: &str,
+    found_context: &str,
+    is_japanese: bool,
+) -> Option<AnchorHit> {
+    // exact (空白正規化) を先に、外れたら日本語のみ形態素 lemma 照合。
+    // どちらも生 scene_text のバイトオフセットを返す (座標系を統一)。
+    let (start, end) =
+        find_text_position_exact(scene_text, found_text, found_context).or_else(|| {
+            if is_japanese {
+                find_text_position_morph(scene_text, found_text, found_context)
+            } else {
+                None
+            }
+        })?;
+    // surface は常に本文スライス = verbatim。text_snapshot に入れると FE が
+    // indexOf で再アンカーできる (LLM の found_text の表記揺れに依存しない)。
+    let surface = scene_text.get(start..end)?.to_string();
+    Some(AnchorHit {
+        start,
+        end,
+        surface,
+    })
+}
+
+/// 形態素 (lindera/UniDic) の lemma + 正規化表層を照合キーにして、`found_text`
+/// のトークン列がシーン本文のトークン列に連続部分列として一致する位置を探す。
+///
+/// lemma が活用 (走った↔走る) を、`normalize_morph_key` が送り仮名・全角半角・
+/// 大文字小文字差を吸収する。返すのは raw `scene_text` のバイト範囲。
+///
+/// 同一表現が複数箇所にある場合は exact 経路と同様に `found_context` で最良の
+/// 位置を選ぶ (誤位置アンカーを防ぐ)。`MorphToken` は Rust 内部に閉じたまま
+/// (Serialize 不要) で、戻り値はバイト位置のみ。lindera のトークナイズ失敗は
+/// `warn` ログを残して `None` (= orphaned) に倒す。
+fn find_text_position_morph(
+    scene_text: &str,
+    found_text: &str,
+    found_context: &str,
+) -> Option<(usize, usize)> {
+    let ft_toks = match grimodex_lint::morph::tokenize_block(found_text) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, "[post_effect] morph tokenize(found_text) 失敗; orphaned に倒す");
+            return None;
+        }
+    };
+    let ft_keys: Vec<String> = ft_toks
+        .iter()
+        .map(morph_key)
+        .filter(|k| !k.is_empty())
+        .collect();
+    if ft_keys.is_empty() {
+        return None;
     }
 
-    // 複数出現: 周辺ウィンドウと context の一致度でスコアリングし最良を選ぶ
-    let best_pos = occurrences
+    let scene_toks = match grimodex_lint::morph::tokenize_block(scene_text) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, "[post_effect] morph tokenize(scene) 失敗; orphaned に倒す");
+            return None;
+        }
+    };
+    // (照合キー, byte_start, byte_end)。空白等で key が空になるトークンは除外。
+    let scene_keyed: Vec<(String, usize, usize)> = scene_toks
+        .iter()
+        .map(|t| (morph_key(t), t.byte_start, t.byte_end))
+        .filter(|(k, _, _)| !k.is_empty())
+        .collect();
+    let window = ft_keys.len();
+    if scene_keyed.len() < window {
+        return None;
+    }
+
+    // 連続部分列一致の全候補を集める。
+    let mut candidates: Vec<(usize, usize)> = Vec::new();
+    for start in 0..=(scene_keyed.len() - window) {
+        let matches = (0..window).all(|j| scene_keyed[start + j].0 == ft_keys[j]);
+        if matches {
+            let s = scene_keyed[start].1;
+            let e = scene_keyed[start + window - 1].2;
+            if s < e && scene_text.is_char_boundary(s) && scene_text.is_char_boundary(e) {
+                candidates.push((s, e));
+            }
+        }
+    }
+
+    if candidates.len() <= 1 || found_context.is_empty() {
+        return candidates.first().copied();
+    }
+    // 複数候補: exact 経路と同じく周辺 window と context の一致度で最良を選ぶ。
+    candidates
         .iter()
         .copied()
-        .max_by_key(|&pos| {
-            let window = scene_window_around(&norm_scene, pos, norm_ft.len(), norm_ctx.len());
-            score_context_match(window, &norm_ctx)
+        .max_by_key(|&(s, e)| {
+            let window = scene_window_around(scene_text, s, e.saturating_sub(s), found_context.len());
+            score_context_match(window, found_context)
         })
-        .unwrap_or(occurrences[0]);
+        .or_else(|| candidates.first().copied())
+}
 
-    Some((best_pos, best_pos + norm_ft.len()))
+/// 形態素トークンの照合キー。lemma があればそれ (活用を吸収)、無ければ表層を
+/// 使い、いずれも `normalize_morph_key` で正規化する。
+fn morph_key(t: &grimodex_lint::morph::MorphToken) -> String {
+    let base = if t.lemma.is_empty() {
+        t.surface.as_str()
+    } else {
+        t.lemma.as_str()
+    };
+    normalize_morph_key(base)
+}
+
+/// 照合キーの正規化: 空白除去 + 全角 ASCII の半角化 + 小文字化。
+/// 送り仮名差は lemma 側で、表記ゆれ (全角/半角・大小) はここで吸収する。
+fn normalize_morph_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace())
+        .map(fold_fullwidth_ascii)
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// 全角 ASCII (Ａ-Ｚ ０-９ 記号) を対応する半角 ASCII へ畳み込む。
+fn fold_fullwidth_ascii(c: char) -> char {
+    match c {
+        '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+        _ => c,
+    }
+}
+
+/// プロジェクトの言語が日本語 (= 形態素 lemma 照合を有効化する) か。
+///
+/// 既に開いている `conn` を直接使うことで `with_conn` 内から安全に呼べる
+/// (`project_language` のように `with_conn` を再帰させるとデッドロックするのを
+/// 回避)。判定は明示的な opt-in (`== "ja"`) とし、将来 ja/en 以外の言語が増えても
+/// 誤って lindera(日本語専用辞書) を当てない。行が無い場合はスキーマ既定の ja、
+/// DB エラー時は warn を残しつつ ja 既定にフォールバックする。
+fn conn_project_is_japanese(conn: &rusqlite::Connection, project_id: &str) -> bool {
+    match conn.query_row(
+        "SELECT language FROM projects WHERE id = ?1",
+        rusqlite::params![project_id],
+        |r| r.get::<_, String>(0),
+    ) {
+        Ok(lang) => lang == "ja",
+        // 行が無い = スキーマ既定 'ja' 相当
+        Err(rusqlite::Error::QueryReturnedNoRows) => true,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                project_id,
+                "[post_effect] project 言語の取得に失敗; ja 既定にフォールバック"
+            );
+            true
+        }
+    }
 }
 
 /// `pos` の前後 `radius` バイトの窓を char 境界でクランプして返す。
@@ -1748,6 +2069,7 @@ async fn process_consistency_scene(
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
+            let is_ja = conn_project_is_japanese(conn, project_id);
 
             for violation in &deduped {
                 let entry_id = violation["entry_id"].as_str().unwrap_or("");
@@ -1801,11 +2123,14 @@ async fn process_consistency_scene(
                     continue;
                 }
 
-                let (range_start, range_end, orphaned) =
-                    match find_text_position(scene_text, found_text, found_context) {
-                        Some((s, e)) => (s as i64, e as i64, false),
-                        None => (0i64, 0i64, true),
-                    };
+                let hit = find_text_position(scene_text, found_text, found_context, is_ja);
+                let (range_start, range_end, orphaned) = match &hit {
+                    Some(h) => (h.start as i64, h.end as i64, false),
+                    None => (0i64, 0i64, true),
+                };
+                // text_snapshot には本文に verbatim 存在する表層を入れる
+                // (FE が indexOf で再アンカーできるように)。
+                let text_snapshot = hit.as_ref().map_or(found_text, |h| h.surface.as_str());
 
                 // 既存 open annotation で range が重なるものを探す。
                 // ヒットすれば INSERT せず UPDATE (LLM の表現揺れを吸収)。
@@ -1868,7 +2193,7 @@ async fn process_consistency_scene(
                             run_id,
                             range_start,
                             range_end,
-                            found_text,
+                            text_snapshot,
                             severity,
                             content,
                             metadata.to_string(),
@@ -1901,7 +2226,7 @@ async fn process_consistency_scene(
                             scene_id,
                             range_start,
                             range_end,
-                            found_text,
+                            text_snapshot,
                             severity,
                             content,
                             metadata.to_string(),
@@ -2123,6 +2448,7 @@ async fn process_intra_scene(
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
+            let is_ja = conn_project_is_japanese(conn, project_id);
 
             for pair in &deduped {
                 let a_text = pair["a"]["found_text"].as_str().unwrap_or("");
@@ -2153,16 +2479,18 @@ async fn process_intra_scene(
                     continue;
                 }
 
-                let (a_start, a_end, a_orphaned) =
-                    match find_text_position(scene_text, a_text, a_ctx) {
-                        Some((s, e)) => (s as i64, e as i64, false),
-                        None => (0i64, 0i64, true),
-                    };
-                let (b_start, b_end, b_orphaned) =
-                    match find_text_position(scene_text, b_text, b_ctx) {
-                        Some((s, e)) => (s as i64, e as i64, false),
-                        None => (0i64, 0i64, true),
-                    };
+                let a_hit = find_text_position(scene_text, a_text, a_ctx, is_ja);
+                let (a_start, a_end, a_orphaned) = match &a_hit {
+                    Some(h) => (h.start as i64, h.end as i64, false),
+                    None => (0i64, 0i64, true),
+                };
+                let a_snapshot = a_hit.as_ref().map_or(a_text, |h| h.surface.as_str());
+                let b_hit = find_text_position(scene_text, b_text, b_ctx, is_ja);
+                let (b_start, b_end, b_orphaned) = match &b_hit {
+                    Some(h) => (h.start as i64, h.end as i64, false),
+                    None => (0i64, 0i64, true),
+                };
+                let b_snapshot = b_hit.as_ref().map_or(b_text, |h| h.surface.as_str());
 
                 let ann_a_id = Uuid::new_v4().to_string();
                 let ann_b_id = Uuid::new_v4().to_string();
@@ -2204,7 +2532,7 @@ async fn process_intra_scene(
                         scene_id,
                         a_start,
                         a_end,
-                        a_text,
+                        a_snapshot,
                         severity,
                         reason,
                         meta_a.to_string(),
@@ -2227,7 +2555,7 @@ async fn process_intra_scene(
                         scene_id,
                         b_start,
                         b_end,
-                        b_text,
+                        b_snapshot,
                         severity,
                         reason,
                         meta_b.to_string(),
@@ -2399,6 +2727,7 @@ async fn process_typo_scene(
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
+            let is_ja = conn_project_is_japanese(conn, project_id);
 
             for issue in &deduped {
                 let found_text = issue["found_text"].as_str().unwrap_or("");
@@ -2428,11 +2757,12 @@ async fn process_typo_scene(
                     continue;
                 }
 
-                let (range_start, range_end, orphaned) =
-                    match find_text_position(scene_text, found_text, found_context) {
-                        Some((s, e)) => (s as i64, e as i64, false),
-                        None => (0i64, 0i64, true),
-                    };
+                let hit = find_text_position(scene_text, found_text, found_context, is_ja);
+                let (range_start, range_end, orphaned) = match &hit {
+                    Some(h) => (h.start as i64, h.end as i64, false),
+                    None => (0i64, 0i64, true),
+                };
+                let text_snapshot = hit.as_ref().map_or(found_text, |h| h.surface.as_str());
 
                 let new_id = Uuid::new_v4().to_string();
                 let content = if suggestion.is_empty() {
@@ -2475,7 +2805,7 @@ async fn process_typo_scene(
                         scene_id,
                         range_start,
                         range_end,
-                        found_text,
+                        text_snapshot,
                         severity,
                         content,
                         metadata.to_string(),
@@ -2629,6 +2959,7 @@ async fn process_review_scene(
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
+            let is_ja = conn_project_is_japanese(conn, project_id);
 
             for finding in &deduped {
                 let title = finding["title"].as_str().unwrap_or("");
@@ -2648,13 +2979,19 @@ async fn process_review_scene(
                 }
 
                 // found_text が空なら scene 全体所見 (位置特定なし = orphaned)
-                let (range_start, range_end, orphaned) = if found_text.is_empty() {
-                    (0i64, 0i64, true)
+                let hit = if found_text.is_empty() {
+                    None
                 } else {
-                    match find_text_position(scene_text, found_text, found_context) {
-                        Some((s, e)) => (s as i64, e as i64, false),
-                        None => (0i64, 0i64, true),
-                    }
+                    find_text_position(scene_text, found_text, found_context, is_ja)
+                };
+                let (range_start, range_end, orphaned) = match &hit {
+                    Some(h) => (h.start as i64, h.end as i64, false),
+                    None => (0i64, 0i64, true),
+                };
+                let text_snapshot: Option<&str> = if found_text.is_empty() {
+                    None
+                } else {
+                    Some(hit.as_ref().map_or(found_text, |h| h.surface.as_str()))
                 };
 
                 let new_id = Uuid::new_v4().to_string();
@@ -2685,11 +3022,7 @@ async fn process_review_scene(
                         scene_id,
                         range_start,
                         range_end,
-                        if found_text.is_empty() {
-                            None
-                        } else {
-                            Some(found_text)
-                        },
+                        text_snapshot,
                         severity,
                         content,
                         metadata.to_string(),
@@ -2802,6 +3135,7 @@ async fn process_intent_drift_scene(
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
+            let is_ja = conn_project_is_japanese(conn, project_id);
 
             for finding in &deduped {
                 let title = finding["title"].as_str().unwrap_or("");
@@ -2815,13 +3149,19 @@ async fn process_intent_drift_scene(
                     continue;
                 }
 
-                let (range_start, range_end, orphaned) = if found_text.is_empty() {
-                    (0i64, 0i64, true)
+                let hit = if found_text.is_empty() {
+                    None
                 } else {
-                    match find_text_position(scene_text, found_text, found_context) {
-                        Some((s, e)) => (s as i64, e as i64, false),
-                        None => (0i64, 0i64, true),
-                    }
+                    find_text_position(scene_text, found_text, found_context, is_ja)
+                };
+                let (range_start, range_end, orphaned) = match &hit {
+                    Some(h) => (h.start as i64, h.end as i64, false),
+                    None => (0i64, 0i64, true),
+                };
+                let text_snapshot: Option<&str> = if found_text.is_empty() {
+                    None
+                } else {
+                    Some(hit.as_ref().map_or(found_text, |h| h.surface.as_str()))
                 };
 
                 let new_id = Uuid::new_v4().to_string();
@@ -2853,11 +3193,7 @@ async fn process_intent_drift_scene(
                         scene_id,
                         range_start,
                         range_end,
-                        if found_text.is_empty() {
-                            None
-                        } else {
-                            Some(found_text)
-                        },
+                        text_snapshot,
                         content,
                         metadata.to_string(),
                     ],
@@ -3009,6 +3345,7 @@ async fn process_timeline_scene(
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
+            let is_ja = conn_project_is_japanese(conn, project_id);
 
             for finding in &deduped {
                 let title = finding["title"].as_str().unwrap_or("");
@@ -3022,13 +3359,19 @@ async fn process_timeline_scene(
                     continue;
                 }
 
-                let (range_start, range_end, orphaned) = if found_text.is_empty() {
-                    (0i64, 0i64, true)
+                let hit = if found_text.is_empty() {
+                    None
                 } else {
-                    match find_text_position(scene_text, found_text, found_context) {
-                        Some((s, e)) => (s as i64, e as i64, false),
-                        None => (0i64, 0i64, true),
-                    }
+                    find_text_position(scene_text, found_text, found_context, is_ja)
+                };
+                let (range_start, range_end, orphaned) = match &hit {
+                    Some(h) => (h.start as i64, h.end as i64, false),
+                    None => (0i64, 0i64, true),
+                };
+                let text_snapshot: Option<&str> = if found_text.is_empty() {
+                    None
+                } else {
+                    Some(hit.as_ref().map_or(found_text, |h| h.surface.as_str()))
                 };
 
                 let new_id = Uuid::new_v4().to_string();
@@ -3071,11 +3414,7 @@ async fn process_timeline_scene(
                         scene_id,
                         range_start,
                         range_end,
-                        if found_text.is_empty() {
-                            None
-                        } else {
-                            Some(found_text)
-                        },
+                        text_snapshot,
                         content,
                         metadata.to_string(),
                     ],
@@ -3232,6 +3571,7 @@ async fn process_impact_review_scene(
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
+            let is_ja = conn_project_is_japanese(conn, project_id);
 
             for judgment in &deduped {
                 let found_text = judgment["found_text"].as_str().unwrap_or("");
@@ -3246,11 +3586,12 @@ async fn process_impact_review_scene(
                     continue;
                 }
 
-                let (range_start, range_end, orphaned) =
-                    match find_text_position(scene_text, found_text, found_context) {
-                        Some((s, e)) => (s as i64, e as i64, false),
-                        None => (0i64, 0i64, true),
-                    };
+                let hit = find_text_position(scene_text, found_text, found_context, is_ja);
+                let (range_start, range_end, orphaned) = match &hit {
+                    Some(h) => (h.start as i64, h.end as i64, false),
+                    None => (0i64, 0i64, true),
+                };
+                let text_snapshot = hit.as_ref().map_or(found_text, |h| h.surface.as_str());
 
                 let severity = severity_from_contradiction_score(contradiction_score);
                 let content = reason;
@@ -3290,7 +3631,7 @@ async fn process_impact_review_scene(
                         scene_id,
                         range_start,
                         range_end,
-                        found_text,
+                        text_snapshot,
                         severity,
                         content,
                         metadata.to_string(),
@@ -3471,19 +3812,26 @@ async fn process_pseudo_comment_scene(
     let count: usize = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             let mut count = 0usize;
+            let is_ja = conn_project_is_japanese(conn, project_id);
 
             for comment in &deduped {
                 let body = comment["content"].as_str().unwrap_or("");
                 let found_text = comment["found_text"].as_str().unwrap_or("");
                 let found_context = comment["found_context"].as_str().unwrap_or("");
 
-                let (range_start, range_end, orphaned) = if found_text.is_empty() {
-                    (0i64, 0i64, true)
+                let hit = if found_text.is_empty() {
+                    None
                 } else {
-                    match find_text_position(scene_text, found_text, found_context) {
-                        Some((s, e)) => (s as i64, e as i64, false),
-                        None => (0i64, 0i64, true),
-                    }
+                    find_text_position(scene_text, found_text, found_context, is_ja)
+                };
+                let (range_start, range_end, orphaned) = match &hit {
+                    Some(h) => (h.start as i64, h.end as i64, false),
+                    None => (0i64, 0i64, true),
+                };
+                let text_snapshot: Option<&str> = if found_text.is_empty() {
+                    None
+                } else {
+                    Some(hit.as_ref().map_or(found_text, |h| h.surface.as_str()))
                 };
 
                 let new_id = Uuid::new_v4().to_string();
@@ -3512,11 +3860,7 @@ async fn process_pseudo_comment_scene(
                         scene_id,
                         range_start,
                         range_end,
-                        if found_text.is_empty() {
-                            None
-                        } else {
-                            Some(found_text)
-                        },
+                        text_snapshot,
                         persona,
                         body,
                         metadata.to_string(),
