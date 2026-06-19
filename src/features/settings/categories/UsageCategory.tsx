@@ -8,6 +8,7 @@ import {
   type ProjectUsageSummary,
 } from "@/features/ai-usage/usageQuery";
 import { surfaceLabel } from "@/features/ai-usage/usageLabels";
+import { BudgetEtaSection } from "@/features/ai-usage/BudgetEtaSection";
 import { formatCost } from "@/features/chat/modelPricing";
 
 function formatTokens(n: number): string {
@@ -64,6 +65,8 @@ export function UsageCategory() {
           {t("settings.usage.summaryIntro")}{" "}
           {t("settings.usage.costDisclaimer")}
         </p>
+
+        <BudgetEtaSection projectId={projectId} />
 
         {loading && (
           <div className="text-sm text-muted-foreground">

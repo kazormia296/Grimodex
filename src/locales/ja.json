@@ -1049,6 +1049,27 @@
       }
     }
   },
+  "tokenBudget": {
+    "title": "予算とETA",
+    "intro": "このプロジェクトの今月の AI コストと、現在のペースから予測した月末コストです。表示のみで、予算を超えても生成は止まりません。",
+    "monthlyBudget": "月予算 (USD)",
+    "monthlyBudgetDesc": "このプロジェクトの 1 か月あたりのコスト目安。0 = 未設定 (バーや残日数を表示しません)。",
+    "unset": "未設定",
+    "consumed": "消化率",
+    "monthCost": "今月の累計コスト",
+    "dailyRate": "日次ペース",
+    "dailyRateDesc": "今月の累計 ÷ 経過 {{days}} 日",
+    "projectedMonthEnd": "月末予測 (平均ペース)",
+    "projectedMonthEndDesc": "今月の平均ペースがそのまま続いた場合の月末コスト",
+    "recentProjected": "月末予測 (直近ペース)",
+    "recentProjectedDesc": "直近 7 日間のペースで残り日数を埋めた場合の月末コスト",
+    "daysUntilBudget": "予算到達まで",
+    "daysUntilBudgetDesc": "現在の日次ペースで予算に達するまでの目安日数",
+    "daysValue": "約 {{days}} 日",
+    "warnApproaching": "このペースだと今月の予算に達する見込みです。",
+    "warnOver": "今月の予算を超えました。",
+    "warnNonBlocking": "(表示のみ・生成は止まりません)"
+  },
   "layout": {
     "watermark": {
       "panelsClosed": "パネルが閉じられています",
