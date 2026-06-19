@@ -2598,7 +2598,27 @@
       "proposeSetups": "Setup を提案",
       "tabChapter": "章別監査",
       "tabList": "一覧",
+      "tabRadar": "レーダー",
       "adoptInsertNew": "挿入して採用"
+    },
+    "radar": {
+      "recoveryRate": "回収率",
+      "statPaid": "確定回収",
+      "statOpen": "未回収",
+      "statAtRisk": "要注意",
+      "statAbandoned": "破棄",
+      "hidePaid": "回収済みを隠す",
+      "legendSetup": "設置",
+      "legendOpen": "未回収",
+      "empty": "表示できる伏線がありません",
+      "floatingTitle": "未配置の伏線 ({{count}})",
+      "floatingHelp": "Setup も Payoff も本文に未配置",
+      "untitled": "(無題)",
+      "ariaChart": "伏線回収レーダー",
+      "tooltipOpen": "未回収",
+      "tooltipBroken": "回収先シーンが見つかりません",
+      "tooltipOrphan": "Setup なし",
+      "tooltipDistance": "距離 {{n}}"
     },
     "create": {
       "heading": "伏線を新規作成",

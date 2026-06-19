@@ -49,6 +49,9 @@ interface ForeshadowState {
   isLoading: boolean;
   sceneInfoBySceneId: Record<string, SceneForeshadowInfo>;
 
+  /** 各伏線の非孤立 Setup シーン ID (load 時に構築・レーダーが使用)。 */
+  setupScenesByForeshadowId: Record<string, string[]>;
+
   /** Setup rows keyed by foreshadowId; populated on demand. */
   setupsByForeshadowId: Record<string, ForeshadowSetupRow[]>;
 
@@ -97,6 +100,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   items: [],
   isLoading: false,
   sceneInfoBySceneId: {},
+  setupScenesByForeshadowId: {},
   setupsByForeshadowId: {},
   evaluatingSetupIds: new Set<string>(),
   proposeResults: {},
@@ -107,9 +111,14 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   load: async (projectId) => {
     set({ isLoading: true });
     try {
-      const { items, sceneInfoBySceneId } =
+      const { items, sceneInfoBySceneId, setupScenesByForeshadowId } =
         await listForeshadowsWithLabels(projectId);
-      set({ items, sceneInfoBySceneId, isLoading: false });
+      set({
+        items,
+        sceneInfoBySceneId,
+        setupScenesByForeshadowId: setupScenesByForeshadowId ?? {},
+        isLoading: false,
+      });
     } catch (e) {
       set({ isLoading: false });
       toast.error(

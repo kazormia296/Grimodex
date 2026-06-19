@@ -237,6 +237,25 @@ export function buildSceneForeshadowInfoIndex(
   return index;
 }
 
+/**
+ * 各伏線の「本文に生きている (非孤立) Setup シーン ID」索引。
+ * レーダー等が earliest-setup の読書順位置を引くために使う。
+ * 注意: `buildSceneForeshadowInfoIndex` は孤立 setup も含む (scene→ID 逆引き用)
+ * のに対し、こちらは setupCount と同じく `isOrphan` を除外する。
+ */
+export function buildSetupScenesByForeshadowId(
+  setups: Array<{ foreshadowId: string; sceneId?: string; isOrphan?: boolean }>,
+): Record<string, string[]> {
+  const index: Record<string, string[]> = {};
+  for (const s of setups) {
+    if (s.isOrphan) continue;
+    if (!s.sceneId) continue;
+    const list = index[s.foreshadowId] ?? (index[s.foreshadowId] = []);
+    if (!list.includes(s.sceneId)) list.push(s.sceneId);
+  }
+  return index;
+}
+
 export function buildForeshadowsWithLabels(
   rows: ForeshadowRow[],
   setups: SetupLabelInput[],
@@ -480,6 +499,7 @@ function computeChapterForeshadowStats(
 export async function listForeshadowsWithLabels(projectId: string): Promise<{
   items: ForeshadowWithLabel[];
   sceneInfoBySceneId: Record<string, SceneForeshadowInfo>;
+  setupScenesByForeshadowId: Record<string, string[]>;
 }> {
   if (isTauriRuntime()) {
     const { rows, setups } = await invokeForeshadowListWithLabels(
@@ -489,12 +509,13 @@ export async function listForeshadowsWithLabels(projectId: string): Promise<{
     return {
       items: buildForeshadowsWithLabels(rows, setups),
       sceneInfoBySceneId: buildSceneForeshadowInfoIndex(rows, setups),
+      setupScenesByForeshadowId: buildSetupScenesByForeshadowId(setups),
     };
   }
 
   const rows = await listForeshadows(projectId);
   if (rows.length === 0) {
-    return { items: [], sceneInfoBySceneId: {} };
+    return { items: [], sceneInfoBySceneId: {}, setupScenesByForeshadowId: {} };
   }
 
   const ids = rows.map((r) => r.id);
@@ -513,6 +534,7 @@ export async function listForeshadowsWithLabels(projectId: string): Promise<{
   return {
     items: buildForeshadowsWithLabels(rows, setups as SetupLabelInput[]),
     sceneInfoBySceneId: buildSceneForeshadowInfoIndex(rows, setups),
+    setupScenesByForeshadowId: buildSetupScenesByForeshadowId(setups),
   };
 }
 

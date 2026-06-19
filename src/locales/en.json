@@ -2603,7 +2603,27 @@
       "proposeSetups": "Propose setups",
       "tabChapter": "Chapter audit",
       "tabList": "List",
+      "tabRadar": "Radar",
       "adoptInsertNew": "Insert and adopt"
+    },
+    "radar": {
+      "recoveryRate": "Recovery",
+      "statPaid": "Paid",
+      "statOpen": "Open",
+      "statAtRisk": "At risk",
+      "statAbandoned": "Abandoned",
+      "hidePaid": "Hide paid",
+      "legendSetup": "Setup",
+      "legendOpen": "Open",
+      "empty": "No foreshadows to chart",
+      "floatingTitle": "Unplaced ({{count}})",
+      "floatingHelp": "No setup or payoff anchored in the manuscript",
+      "untitled": "(untitled)",
+      "ariaChart": "Foreshadow payoff radar",
+      "tooltipOpen": "Open",
+      "tooltipBroken": "Payoff scene not found",
+      "tooltipOrphan": "No setup",
+      "tooltipDistance": "Distance {{n}}"
     },
     "create": {
       "heading": "Create Foreshadow",
