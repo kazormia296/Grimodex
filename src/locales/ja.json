@@ -1641,6 +1641,12 @@
     }
   },
   "codex": {
+    "integrity": {
+      "title": "設定の整合性",
+      "aliasCollision": "「{{name}}」が複数エントリで重複",
+      "duplicateRelation": "「{{type}}」リレーションが {{count}} 件重複",
+      "selfRelation": "自己参照リレーション「{{type}}」"
+    },
     "spoiler": {
       "unrevealedTooltip": "このシーン時点で未開示: {{titles}}"
     },

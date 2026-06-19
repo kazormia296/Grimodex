@@ -192,6 +192,35 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 
 ## D. エントリリスト（マスター）
 
+### 設定の整合性レポート（2026-06-19 追記）
+
+リスト最上部に、Codex の**内部整合性**（本文を見ない、Codex データ自身の食い違い）を
+検出する折りたたみレポートを出す。問題が 0 件のときは何も表示しない。実装は
+`CodexIntegrityReport.tsx`（描画）+ `codexIntegrity.ts`（純関数の検出器）。read-only —
+検出のみで自動修正はしない。
+
+既存の consistency post-effect が「本文 × Codex 正本」の矛盾を見るのに対し、本レポートは
+Codex データ内部の食い違いを埋める（genuine 空白）。検出するのは曖昧さの無い 2 種:
+
+- **別名衝突**: 同じ表記（`normalizeSurface` = trim + toLowerCase + NFC）が複数エントリの
+  名前/別名にまたがる状態。matcher はこの重複を黙って**先勝ち**で畳む（type は見ず name
+  だけでキー化するため、同名なら type が違っても後勝ちエントリは自動検出されず AI 文脈にも
+  誤注入されうる）→ 可視化する。**誤検出回避**: あるエントリの `excludedAliases` に入っている
+  表記は実行時に一致しないので衝突報告からも外す（matcher の effective 挙動に合わせる）。
+- **重複/自己参照リレーション**: 無向ペア + relationType の二重定義（A→B と B→A の同 type も
+  `expandCodexRelationsBFS` が双方向展開するため冗長）、および from===to の自己参照。
+
+> **「関係の非対称」は検出しない（意図的）**: codex_relations は単方向 1 レコードだが
+> relationType に対称/非対称メタデータが無く、業務ロジックは全 relation を双方向グラフ
+> として扱う。「A→B はあるが B→A が無い＝矛盾」は全 relation が該当する誤検出になるため
+> 採らない。フェーズ時系列矛盾（同一エントリが同一シーンに複数フェーズ等）は project 横断
+> フェーズの安価なローダが無いため Phase 2 候補。
+
+各問題行のエントリ名はクリックで該当エントリを選択（`requestSelectEntry`）。relations は
+`listCodexRelations` で自前ロードし、`subscribeCodexRelationsChanged` で再取得する。別名衝突は
+entries 購読で自動再計算。削除済みエントリを指す stale relation は表示前に除外する。i18n は
+`codex.integrity.*`。
+
 ### エントリカード
 
 各エントリは以下の情報を持つコンパクトなカードで表示:

@@ -1641,6 +1641,12 @@
     }
   },
   "codex": {
+    "integrity": {
+      "title": "Codex integrity",
+      "aliasCollision": "“{{name}}” is shared by multiple entries",
+      "duplicateRelation": "“{{type}}” relation defined {{count}}×",
+      "selfRelation": "Self-referential “{{type}}” relation"
+    },
     "spoiler": {
       "unrevealedTooltip": "Not yet revealed as of this scene: {{titles}}"
     },
