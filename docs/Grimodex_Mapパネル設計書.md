@@ -678,6 +678,40 @@ characters → cross-reference（本文全文 × Rust matcher）→ 共起ペア
 
 ---
 
+## 因果地図ボード生成（2026-06-19 追記・実装済）
+
+Map に **シーン因果 DAG (Causality Diagram) ボードを一度きり生成**する機能。人物相関図と
+同じ「ユーザーが明示起動 → 1 枚の独立ボードを snapshot」方式（決定的・AI なし）。正本:
+`src/features/map/causalityBoard.ts`（`generateCausalityBoard`）+ `causalityDag.ts`（純関数）。
+
+**データ源**: `timeline_consistency` post-effect が出した **causality 注釈**。各注釈は「果」
+シーンに anchor 済みで、`metadata.cause_scene_id` に「因」シーン id を持つ（PostEffects 設計書
+§timeline_consistency 参照。これを出すため timeline プロンプトを v1.1 に拡張した）。
+
+**起動**: 校閲 MetaStructure（project スコープ・テンション波形の隣）の「因果地図を生成」
+ボタン（`CausalityMapButton.tsx`、`map.causality.generateButton`）→ 生成後に Map パネルへ
+遷移（`setActiveBoardId` + `showPanel("map")`）。**AI は使わない**（既存注釈の再構成のみ）。
+
+### 生成パイプライン
+
+```
+listAnnotationsForProject → extractCausalEdges(timeline_anchor かつ relation=causality)
+  → buildCausalityDag(scenes, edges)        … 実在シーン解決・自己ループ除去・dedup・循環検出
+  → WorkerForceLayoutEngine(force layout)   … dagre 等の階層 lib は依存に無く force で代替
+  → board(scene ノード) + 有向 edge(cause→effect, direction='forward', 赤 #dc2626) を 1 tx snapshot
+```
+
+- **hallucination 吸収**: LLM は実在しない `cause_scene_id` を返しうるが、`buildCausalityDag`
+  が「両端が実在シーンに解決でき、自己ループでない辺」だけを残す（Rust は per-scene 処理で
+  sibling 検証できないため、**描画側が安全網**）。
+- **循環検出**: 健全な因果は DAG（無循環）。DFS 彩色で閉路を検出し件数を返す（`cycleCount`）。
+- **scene ノードは map で既存サポート**（`nodeRefType='scene'`）なので schema 変更不要。
+- 解決可能な因果辺が 0 なら board を作らず `boardId=null`（ボタンは「該当なし」トースト）。
+  tree 未ロードで scenes が空の場合は「該当なし」と区別して throw する。
+- 生成後は通常ボードと同じく自由に編集・削除できる（再生成すると別ボード。相関図と同挙動）。
+
+---
+
 ## ノードインタラクション
 
 ### クリック / ダブルクリック

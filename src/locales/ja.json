@@ -4505,6 +4505,15 @@
       "noTargetCharacters": "対象キャラクターがありません",
       "defaultBoardTitle": "人物相関図"
     },
+    "causality": {
+      "defaultBoardTitle": "因果地図",
+      "generateButton": "因果地図を生成",
+      "generated": "因果地図を生成しました（{{edges}} 本の因果）",
+      "generatedWithCycles": "因果地図を生成（{{edges}} 本・循環 {{cycles}} 件 ⚠）",
+      "noEdgesToast": "因果関係の指摘が見つかりませんでした（先に校閲の「時系列整合」を実行してください）",
+      "noScenes": "シーンが読み込まれていません",
+      "failed": "因果地図の生成に失敗しました: {{error}}"
+    },
     "sceneNode": {
       "synopsisPlaceholder": "このシーンで何が起きる？",
       "openButton": "開く↗"

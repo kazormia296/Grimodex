@@ -68,18 +68,21 @@ describe("buildTimelineContext", () => {
   it("prefers synopsis, falls back to body excerpt, then placeholder", () => {
     const ctx = buildTimelineContext([
       {
+        id: "s1",
         title: "出会い",
         synopsis: "二人が初めて会う",
         storyTimeLabel: "一日目",
         bodyExcerptSource: "本文……",
       },
       {
+        id: "s2",
         title: "再会",
         synopsis: null,
         storyTimeLabel: null,
         bodyExcerptSource: "三日後、二人は再び会った。",
       },
       {
+        id: "s3",
         title: "空シーン",
         synopsis: "   ",
         storyTimeLabel: "",
@@ -87,17 +90,23 @@ describe("buildTimelineContext", () => {
       },
     ]);
     const lines = ctx.split("\n");
-    expect(lines[0]).toBe("1. [一日目] 出会い — 二人が初めて会う");
+    // 各行頭に {scene_id=...} を埋め込む (因果地図の cause_scene_id 用)
+    expect(lines[0]).toBe(
+      "1. {scene_id=s1} [一日目] 出会い — 二人が初めて会う",
+    );
     // label fallback T{idx}, body excerpt used
-    expect(lines[1]).toBe("2. [T2] 再会 — 三日後、二人は再び会った。");
+    expect(lines[1]).toBe(
+      "2. {scene_id=s2} [T2] 再会 — 三日後、二人は再び会った。",
+    );
     // empty everything -> placeholder
-    expect(lines[2]).toBe("3. [T3] 空シーン — (本文なし)");
+    expect(lines[2]).toBe("3. {scene_id=s3} [T3] 空シーン — (本文なし)");
   });
 
   it("truncates long body excerpts", () => {
     const long = "あ".repeat(200);
     const ctx = buildTimelineContext([
       {
+        id: "s1",
         title: "長い",
         synopsis: null,
         storyTimeLabel: "x",
