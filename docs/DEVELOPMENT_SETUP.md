@@ -130,5 +130,6 @@ sudo /usr/local/bin/init-firewall.sh
 - GitHub（API・Web・Git）
 - npm registry
 - crates.io / static.crates.io
+- Hugging Face（huggingface.co / cdn-lfs.huggingface.co）
 - Anthropic API
 - VS Code Marketplace

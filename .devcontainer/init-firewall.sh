@@ -72,6 +72,8 @@ done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
 # Resolve and add other allowed domains
 # lindera.dev / *.pyke.io: Grimodex の Rust ビルド依存。lindera-unidic の build.rs が
 # lindera.dev から UniDic 辞書を、ort-sys が cdn.pyke.io から ONNX Runtime prebuilt を取得する。
+# huggingface.co / cdn-lfs.huggingface.co: セマンティック検索用 ONNX モデル
+# (ruri-v3-30m / bge-small-en-v1.5) の取得・export スクリプト用。
 # *.polar.sh: ライセンス認証 (Phase 3)。docs = API 仕様の突き合わせ、
 # api = customer-portal 系エンドポイントの応答形実測（認証不要）。
 for domain in \
@@ -95,6 +97,9 @@ for domain in \
     "sh.rustup.rs" \
     "lindera.dev" \
     "cdn.pyke.io" \
+    "cdn-lfs.huggingface.co" \
+    "hf.co" \
+    "huggingface.co" \
     "parcel.pyke.io" \
     "polar.sh" \
     "docs.polar.sh" \

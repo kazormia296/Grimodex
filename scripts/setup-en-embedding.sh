@@ -3,8 +3,8 @@
 # 英語 embedding モデルをホストでセットアップする one-shot スクリプト。
 #
 # このスクリプトは **ホスト** (ort がリンクでき、HuggingFace に到達でき、pip が
-# 使える開発機) で実行する。devcontainer では (a) HuggingFace/pypi が firewall
-# 許可外、(b) pip 不在、(c) ort が glibc symbol mismatch でリンク失敗、の 3 点で
+# 使える開発機) で実行する。devcontainer では (a) pypi が firewall 許可外、
+# (b) pip 不在、(c) ort が glibc symbol mismatch でリンク失敗、の 3 点で
 # モデル export・推論検証ができないため。
 #
 # やること:
