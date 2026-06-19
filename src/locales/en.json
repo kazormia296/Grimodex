@@ -1695,7 +1695,14 @@
       "title": "Codex integrity",
       "aliasCollision": "“{{name}}” is shared by multiple entries",
       "duplicateRelation": "“{{type}}” relation defined {{count}}×",
-      "selfRelation": "Self-referential “{{type}}” relation"
+      "selfRelation": "Self-referential “{{type}}” relation",
+      "dismiss": "Hide this issue",
+      "historyDismiss": "Hide integrity issue",
+      "historyRestore": "Restore hidden integrity issues",
+      "dismissFailed": "Couldn't save the dismissal",
+      "restoreHidden": "Show {{count}} hidden",
+      "allHidden": "{{count}} integrity issue(s) hidden",
+      "show": "Show"
     },
     "spoiler": {
       "unrevealedTooltip": "Not yet revealed as of this scene: {{titles}}"
