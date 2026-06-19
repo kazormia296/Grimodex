@@ -12,6 +12,12 @@ import type {
   ProvenanceKind,
   ResolvedPassage,
 } from "./provenance";
+import type {
+  ModelContributionRow,
+  ProvenanceAnalyticsReport,
+} from "./provenanceAnalytics";
+import { UNKNOWN_MODEL } from "./provenanceAnalytics";
+import { formatCost } from "@/features/chat/modelPricing";
 
 /**
  * Export attribution stats as a Markdown report.
@@ -169,8 +175,99 @@ function disclosureFootnote(report: ProvenanceDisclosureReport): string {
   return `This disclosure reflects remaining AI-attributed spans at export time.${orphan} Legacy or manually inserted AI text without provenance is counted as Unknown AI.${prompts}`;
 }
 
+// ── Analytics section (model contribution / kind / approx cost) ─────────────
+// Additive: rendered into the MD/HTML disclosure only when an analytics report
+// is supplied. The disclosure report itself is unchanged.
+
+function modelLabel(model: string): string {
+  return model === UNKNOWN_MODEL ? "Unknown model" : model;
+}
+
+function modelContributionTotal(rows: ModelContributionRow[]): number {
+  return rows.reduce((n, r) => n + r.chars, 0);
+}
+
+/** "~$1.23" — approximate marker, consistent with the UI. */
+function approxCost(usd: number): string {
+  return `~${formatCost(usd)}`;
+}
+
+function analyticsMarkdown(analytics: ProvenanceAnalyticsReport): string[] {
+  const lines: string[] = ["## Provenance Analytics", ""];
+
+  const aiTotal = modelContributionTotal(analytics.modelContribution);
+  if (analytics.modelContribution.length > 0) {
+    lines.push(
+      "### Contribution by model",
+      "",
+      `| Model | Characters | Passages | % of AI |`,
+      `|-------|------------|----------|---------|`,
+    );
+    for (const r of analytics.modelContribution) {
+      lines.push(
+        `| ${mdCell(modelLabel(r.model))} | ${r.chars} | ${r.passages} | ${pct(
+          r.chars,
+          aiTotal,
+        )}% |`,
+      );
+    }
+    lines.push("");
+  }
+
+  const d = analytics.kindDistribution;
+  lines.push(
+    "### Generation kind distribution",
+    "",
+    `| Kind | Characters | Passages | % of AI |`,
+    `|------|------------|----------|---------|`,
+    `| Chat | ${d.chat.chars} | ${d.chat.passages} | ${pct(d.chat.chars, d.totalChars)}% |`,
+    `| Inline AI | ${d.inlineAi.chars} | ${d.inlineAi.passages} | ${pct(d.inlineAi.chars, d.totalChars)}% |`,
+    `| Beat | ${d.beat.chars} | ${d.beat.passages} | ${pct(d.beat.chars, d.totalChars)}% |`,
+    `| Deleted chat | ${d.orphanChat.chars} | ${d.orphanChat.passages} | ${pct(d.orphanChat.chars, d.totalChars)}% |`,
+    `| Unknown AI | ${d.unknownAi.chars} | ${d.unknownAi.passages} | ${pct(d.unknownAi.chars, d.totalChars)}% |`,
+    "",
+  );
+
+  if (analytics.hasUsageData) {
+    const c = analytics.costByKind;
+    lines.push(
+      "### Approximate cost by provenance",
+      "",
+      "Approximate — rows without a provider-reported cost are estimated from tokens, and the usage log is mapped onto provenance kinds (not one-to-one with body passages).",
+      "",
+      `| Kind | Est. cost |`,
+      `|------|-----------|`,
+      `| Chat | ${approxCost(c.byKind.chat.costUsd)} |`,
+      `| Inline AI | ${approxCost(c.byKind.inlineAi.costUsd)} |`,
+      `| Beat | ${approxCost(c.byKind.beat.costUsd)} |`,
+    );
+    if (c.otherCostUsd > 0) {
+      lines.push(`| Other (synopsis, etc.) | ${approxCost(c.otherCostUsd)} |`);
+    }
+    lines.push(`| Total | ${approxCost(c.totalCostUsd)} |`, "");
+
+    if (analytics.costByModel.length > 0) {
+      lines.push(
+        "Cost by model:",
+        "",
+        `| Model | Calls | Est. cost |`,
+        `|-------|-------|-----------|`,
+      );
+      for (const r of analytics.costByModel) {
+        lines.push(
+          `| ${mdCell(modelLabel(r.model))} | ${r.calls} | ${approxCost(r.costUsd)} |`,
+        );
+      }
+      lines.push("");
+    }
+  }
+
+  return lines;
+}
+
 export function exportProvenanceDisclosureMarkdown(
   report: ProvenanceDisclosureReport,
+  analytics?: ProvenanceAnalyticsReport,
 ): string {
   const t = report.totals;
   const human = t.human + t.unmarked;
@@ -259,6 +356,8 @@ export function exportProvenanceDisclosureMarkdown(
     }
     lines.push("");
   }
+
+  if (analytics) lines.push(...analyticsMarkdown(analytics));
 
   lines.push(disclosureFootnote(report), "");
   return lines.join("\n");
@@ -493,8 +592,59 @@ function renderMapDisclosure(map: MapProvenance | undefined): string {
   return `<section><h2>Map AI Content</h2><p>${map.stickyCount} sticky note(s), ${map.totalAiChars} AI-authored characters — separate from the manuscript totals. Counts reflect AI content at branch-adoption time and may overstate it if a sticky was later edited by hand.</p><table><thead><tr><th>Board</th><th>Sticky</th><th>Characters</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
+function renderAnalytics(
+  analytics: ProvenanceAnalyticsReport | undefined,
+): string {
+  if (!analytics) return "";
+  const aiTotal = modelContributionTotal(analytics.modelContribution);
+  const modelRows = analytics.modelContribution
+    .map(
+      (r) =>
+        `<tr><td>${escapeHtml(modelLabel(r.model))}</td><td class="num">${r.chars}</td><td class="num">${r.passages}</td><td class="num">${pct(r.chars, aiTotal)}%</td></tr>`,
+    )
+    .join("");
+  const modelTable =
+    analytics.modelContribution.length > 0
+      ? `<h3>Contribution by model</h3><table><thead><tr><th>Model</th><th>Characters</th><th>Passages</th><th>% of AI</th></tr></thead><tbody>${modelRows}</tbody></table>`
+      : "";
+
+  const d = analytics.kindDistribution;
+  const kindRow = (label: string, b: { chars: number; passages: number }) =>
+    `<tr><td>${label}</td><td class="num">${b.chars}</td><td class="num">${b.passages}</td><td class="num">${pct(b.chars, d.totalChars)}%</td></tr>`;
+  const kindTable = `<h3>Generation kind distribution</h3><table><thead><tr><th>Kind</th><th>Characters</th><th>Passages</th><th>% of AI</th></tr></thead><tbody>${kindRow(
+    "Chat",
+    d.chat,
+  )}${kindRow("Inline AI", d.inlineAi)}${kindRow("Beat", d.beat)}${kindRow(
+    "Deleted chat",
+    d.orphanChat,
+  )}${kindRow("Unknown AI", d.unknownAi)}</tbody></table>`;
+
+  let costBlock = "";
+  if (analytics.hasUsageData) {
+    const c = analytics.costByKind;
+    const other =
+      c.otherCostUsd > 0
+        ? `<tr><td>Other (synopsis, etc.)</td><td class="num">${approxCost(c.otherCostUsd)}</td></tr>`
+        : "";
+    const costByModelRows = analytics.costByModel
+      .map(
+        (r) =>
+          `<tr><td>${escapeHtml(modelLabel(r.model))}</td><td class="num">${r.calls}</td><td class="num">${approxCost(r.costUsd)}</td></tr>`,
+      )
+      .join("");
+    const costByModelTable =
+      analytics.costByModel.length > 0
+        ? `<table><thead><tr><th>Model</th><th>Calls</th><th>Est. cost</th></tr></thead><tbody>${costByModelRows}</tbody></table>`
+        : "";
+    costBlock = `<h3>Approximate cost by provenance</h3><p>Approximate — rows without a provider-reported cost are estimated from tokens, and the usage log is mapped onto provenance kinds (not one-to-one with body passages).</p><table><tbody><tr><th>Chat</th><td class="num">${approxCost(c.byKind.chat.costUsd)}</td></tr><tr><th>Inline AI</th><td class="num">${approxCost(c.byKind.inlineAi.costUsd)}</td></tr><tr><th>Beat</th><td class="num">${approxCost(c.byKind.beat.costUsd)}</td></tr>${other}<tr><th>Total</th><td class="num">${approxCost(c.totalCostUsd)}</td></tr></tbody></table>${costByModelTable}`;
+  }
+
+  return `<section><h2>Provenance Analytics</h2>${modelTable}${kindTable}${costBlock}</section>`;
+}
+
 export function exportProvenanceDisclosureHtml(
   report: ProvenanceDisclosureReport,
+  analytics?: ProvenanceAnalyticsReport,
 ): string {
   const t = report.totals;
   const human = t.human + t.unmarked;
@@ -541,6 +691,7 @@ footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #ddd; color:
 </table>
 ${renderPassageList(report)}
 ${renderMapDisclosure(report.map)}
+${renderAnalytics(analytics)}
 <footer>${escapeHtml(disclosureFootnote(report))}</footer>
 </body>
 </html>

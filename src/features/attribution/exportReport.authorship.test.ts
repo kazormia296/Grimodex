@@ -11,6 +11,7 @@ import {
 import { ATTRIBUTION_COLORS } from "./attributionColors";
 import type { ProjectAuthorshipReport } from "./projectAuthorship";
 import type { ProvenanceDisclosureReport, ResolvedPassage } from "./provenance";
+import type { ProvenanceAnalyticsReport } from "./provenanceAnalytics";
 
 const sampleReport: ProjectAuthorshipReport = {
   projectId: "p1",
@@ -404,5 +405,77 @@ describe("process disclosure — JSON carries the disclosure payload", () => {
     expect(parsed.includePrompts).toBe(true);
     expect(parsed.passages[0].disclosure.userPrompt).toContain("続きを書いて");
     expect(parsed.passages[1].disclosure.promptRecorded).toBe(false);
+  });
+});
+
+// ── Analytics section (additive, optional second arg) ──────────────────────
+const analyticsReport: ProvenanceAnalyticsReport = {
+  modelContribution: [
+    { model: "claude-sonnet-4-6", chars: 7, passages: 1 },
+    { model: "__unknown_model__", chars: 3, passages: 1 },
+  ],
+  kindDistribution: {
+    chat: { chars: 3, passages: 1 },
+    inlineAi: { chars: 7, passages: 1 },
+    beat: { chars: 0, passages: 0 },
+    orphanChat: { chars: 0, passages: 0 },
+    unknownAi: { chars: 0, passages: 0 },
+    totalChars: 10,
+    totalPassages: 2,
+  },
+  costByModel: [
+    { model: "claude-sonnet-4-6", costUsd: 0.5, calls: 2, estimated: true },
+  ],
+  costByKind: {
+    byKind: {
+      chat: { costUsd: 0.3, calls: 1, estimated: true },
+      inlineAi: { costUsd: 0.2, calls: 1, estimated: true },
+      beat: { costUsd: 0, calls: 0, estimated: false },
+    },
+    otherCostUsd: 0.1,
+    totalCostUsd: 0.6,
+    anyEstimated: true,
+  },
+  hasUsageData: true,
+};
+
+describe("disclosure analytics section", () => {
+  it("omits the analytics section when no analytics arg is passed", () => {
+    const md = exportProvenanceDisclosureMarkdown(disclosureReport);
+    const html = exportProvenanceDisclosureHtml(disclosureReport);
+    expect(md).not.toContain("Provenance Analytics");
+    expect(html).not.toContain("Provenance Analytics");
+  });
+
+  it("renders model contribution and approx cost in markdown", () => {
+    const md = exportProvenanceDisclosureMarkdown(
+      disclosureReport,
+      analyticsReport,
+    );
+    expect(md).toContain("## Provenance Analytics");
+    expect(md).toContain("Contribution by model");
+    expect(md).toContain("claude-sonnet-4-6");
+    expect(md).toContain("Unknown model");
+    // approx marker on cost
+    expect(md).toContain("~$0.60");
+  });
+
+  it("renders the analytics section in html with approx cost", () => {
+    const html = exportProvenanceDisclosureHtml(
+      disclosureReport,
+      analyticsReport,
+    );
+    expect(html).toContain("<h2>Provenance Analytics</h2>");
+    expect(html).toContain("Approximate cost by provenance");
+    expect(html).toContain("~$0.60");
+  });
+
+  it("hides the cost block when there is no usage data", () => {
+    const md = exportProvenanceDisclosureMarkdown(disclosureReport, {
+      ...analyticsReport,
+      hasUsageData: false,
+    });
+    expect(md).toContain("## Provenance Analytics");
+    expect(md).not.toContain("Approximate cost by provenance");
   });
 });

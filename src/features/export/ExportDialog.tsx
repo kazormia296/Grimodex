@@ -34,6 +34,10 @@ import {
   type ProvenanceDisclosureReport,
 } from "@/features/attribution/provenance";
 import {
+  loadProvenanceAnalytics,
+  type ProvenanceAnalyticsReport,
+} from "@/features/attribution/provenanceAnalytics";
+import {
   exportProvenanceDisclosureHtml,
   exportProvenanceDisclosureJson,
   exportProvenanceDisclosureMarkdown,
@@ -193,6 +197,8 @@ export function ExportDialog({ open, onClose }: Props) {
   const [includeFullSystemPrompt, setIncludeFullSystemPrompt] = useState(false);
   const [authorshipReport, setAuthorshipReport] =
     useState<ProvenanceDisclosureReport | null>(null);
+  const [analyticsReport, setAnalyticsReport] =
+    useState<ProvenanceAnalyticsReport | null>(null);
   const [isLoadingAuthorship, setIsLoadingAuthorship] = useState(false);
 
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -315,17 +321,31 @@ export function ExportDialog({ open, onClose }: Props) {
     if (!open || mode !== "authorship") return;
     let cancelled = false;
     setIsLoadingAuthorship(true);
-    buildProvenanceBreakdown(getCurrentProjectId(), {
-      includePassageExcerpts,
-      includePrompts,
-      includeFullSystemPrompt,
-    })
-      .then((report) => {
-        if (!cancelled) setAuthorshipReport(report);
+    const projectId = getCurrentProjectId();
+    Promise.all([
+      buildProvenanceBreakdown(projectId, {
+        includePassageExcerpts,
+        includePrompts,
+        includeFullSystemPrompt,
+      }),
+      // Analytics is its own roll-up (model contribution / kind / approx cost),
+      // loaded best-effort; its absence must not block the disclosure export.
+      loadProvenanceAnalytics(projectId).catch((err: unknown) => {
+        console.warn("provenance analytics failed", err);
+        return null;
+      }),
+    ])
+      .then(([report, analytics]) => {
+        if (cancelled) return;
+        setAuthorshipReport(report);
+        setAnalyticsReport(analytics);
       })
       .catch((err: unknown) => {
         console.warn("authorship disclosure report failed", err);
-        if (!cancelled) setAuthorshipReport(null);
+        if (!cancelled) {
+          setAuthorshipReport(null);
+          setAnalyticsReport(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setIsLoadingAuthorship(false);
@@ -347,9 +367,15 @@ export function ExportDialog({ open, onClose }: Props) {
       if (!authorshipReport) return "";
       switch (exportSettings.format) {
         case "markdown":
-          return exportProvenanceDisclosureMarkdown(authorshipReport);
+          return exportProvenanceDisclosureMarkdown(
+            authorshipReport,
+            analyticsReport ?? undefined,
+          );
         case "html":
-          return exportProvenanceDisclosureHtml(authorshipReport);
+          return exportProvenanceDisclosureHtml(
+            authorshipReport,
+            analyticsReport ?? undefined,
+          );
         case "plaintext":
           return exportProvenanceDisclosureJson(authorshipReport);
       }
