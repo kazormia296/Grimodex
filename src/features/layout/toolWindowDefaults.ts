@@ -55,6 +55,7 @@ export const DEFAULT_SLOT_MAP: Record<
   kouetsu: "BR",
   foreshadow: "BR",
   "writing-stats": "BR",
+  "related-scenes": "BR",
   "trash-bin": "BR",
 };
 

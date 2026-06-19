@@ -22,6 +22,7 @@ export const PANEL_REGION_MAP: Record<
   grid: "center-bottom",
   matrix: "center-bottom",
   "writing-stats": "center-bottom",
+  "related-scenes": "center-bottom",
   "trash-bin": "center-bottom",
 };
 
@@ -41,6 +42,7 @@ export const KEYBOARD_SHORTCUT_MAP: Partial<Record<PanelId, string>> = {
   grid: "Ctrl+Alt+G",
   matrix: "Ctrl+Alt+R",
   "writing-stats": "Ctrl+Alt+W",
+  "related-scenes": "Ctrl+Alt+P",
   "trash-bin": "Ctrl+Alt+B",
   "command-center-results": "Ctrl+Shift+F",
 };
@@ -65,5 +67,6 @@ export const TOGGLEABLE_PANELS: Exclude<PanelId, "editor">[] = [
   "grid",
   "matrix",
   "writing-stats",
+  "related-scenes",
   "trash-bin",
 ];

@@ -1093,6 +1093,7 @@
       "grid": "グリッド",
       "matrix": "マトリクス",
       "writing-stats": "執筆統計",
+      "related-scenes": "関連する過去シーン",
       "trash-bin": "ゴミ箱",
       "command-center-results": "検索"
     },
@@ -3270,6 +3271,12 @@
     },
     "linearUnsupported": "AIコマンドはリニアモードでは未対応です。通常モードのエディタで実行してください。"
   },
+  "relatedScenes": {
+    "noActiveScene": "シーンを選ぶと、関連する過去シーンが表示されます",
+    "loading": "検索中…",
+    "empty": "関連する過去シーンは見つかりませんでした",
+    "untitled": "(無題)"
+  },
   "keys": {
     "focusScenes": "Scenes パネルにフォーカス",
     "focusChat": "Chat パネルにフォーカス",
@@ -3286,6 +3293,7 @@
     "focusGrid": "Grid パネルにフォーカス",
     "focusMatrix": "Matrix パネルにフォーカス",
     "focusWritingStats": "執筆統計パネルにフォーカス",
+    "focusRelatedScenes": "関連する過去シーンパネルにフォーカス",
     "openSettings": "Settings を開く",
     "splitVertical": "エディタを縦分割",
     "splitHorizontal": "エディタを横分割",
