@@ -95,7 +95,24 @@ export async function judgeCandidates(
     tokensOut: response.outputTokens,
   });
 
-  const jsonText = extractJsonObject(response.text);
+  return parseJudgmentResponse(response.text, validSurfaces, knownIds);
+}
+
+/**
+ * LLM 応答テキストから judgments を抽出・検証して Map にする純関数。
+ * **本番経路 (judgeCandidates) と live 品質テストの双方がこれを使う** ことで
+ * パーサのドリフトを防ぐ。型ガード:
+ * - surface は入力候補 (validSurfaces) に在るものだけ (hallucination 棄却)。
+ * - suggestedType は trim+lower で 4 種 enum に正規化、外れは捨てる。
+ * - aliasOfId は実在 id (knownIds) のみ採用、未知/不正は null に倒す (判定は活かす)。
+ */
+export function parseJudgmentResponse(
+  responseText: string,
+  validSurfaces: Set<string>,
+  knownIds: Set<string>,
+): Map<string, CandidateJudgment> {
+  const result = new Map<string, CandidateJudgment>();
+  const jsonText = extractJsonObject(responseText);
   if (!jsonText) return result;
   try {
     const parsed = JSON.parse(jsonText) as { judgments?: unknown };
