@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/resizable";
 import { useCodexStore, type CodexSortOrder } from "./codexStore";
 import { CodexIntegrityReport } from "./CodexIntegrityReport";
+import { CodexCandidatesReport } from "./CodexCandidatesReport";
 import { sortEntries, CODEX_SORT_OPTIONS } from "./codexSort";
 import type { CodexEntry, CodexEntryType } from "./api";
 import type { CodexType } from "./typeApi";
@@ -1058,6 +1059,7 @@ export function CodexManagementPanel({
   const listPanelContent = (
     <div data-testid="codex-list-panel" className="flex h-full flex-col">
       <CodexIntegrityReport />
+      <CodexCandidatesReport />
       {searchBar}
       {filterTabs}
       {tagFilterBar}

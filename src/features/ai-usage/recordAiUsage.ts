@@ -20,7 +20,8 @@ export type AiUsageSurface =
   | "synopsis" // あらすじ生成
   | "session_title" // チャットセッションタイトル自動生成
   | "summarization" // 進行的要約 (L5)
-  | "context_creator"; // Context Creator (ピン提案エージェント)
+  | "context_creator" // Context Creator (ピン提案エージェント)
+  | "codex_judgment"; // 未確定固有名詞候補の種別判定 (B2)
 
 export interface RecordAiUsageInput {
   surface: AiUsageSurface;

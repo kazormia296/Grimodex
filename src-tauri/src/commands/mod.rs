@@ -14,6 +14,7 @@ use crate::database::Database;
 pub(crate) mod agent_writes;
 pub(crate) mod ai;
 pub(crate) mod cli_ai;
+pub(crate) mod codex_candidates;
 pub(crate) mod db;
 pub(crate) mod export;
 pub(crate) mod external_mount;

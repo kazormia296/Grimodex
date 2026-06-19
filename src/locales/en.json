@@ -1073,7 +1073,8 @@
         "synopsis": "Synopsis generation",
         "session_title": "Session title",
         "summarization": "Summarization",
-        "context_creator": "Context Creator"
+        "context_creator": "Context Creator",
+        "codex_judgment": "Proper-noun candidate judgment"
       }
     }
   },
@@ -1703,6 +1704,30 @@
       "restoreHidden": "Show {{count}} hidden",
       "allHidden": "{{count}} integrity issue(s) hidden",
       "show": "Show"
+    },
+    "candidates": {
+      "title": "Proper-noun candidates",
+      "occurrences": "{{count}}×",
+      "accept": "Add to Codex (type editable later)",
+      "dismiss": "Dismiss this candidate",
+      "rescan": "Rescan",
+      "historyDismiss": "Dismiss candidate",
+      "historyRestore": "Restore dismissed candidates",
+      "dismissFailed": "Couldn't save the dismissal",
+      "acceptFailed": "Couldn't create the entry",
+      "restoreHidden": "Show {{count}} dismissed",
+      "allDismissed": "{{count}} proper-noun candidate(s) dismissed",
+      "show": "Show",
+      "judge": "Evaluate with AI",
+      "judgeFailed": "AI evaluation failed",
+      "acceptAlias": "Add as an alias of \"{{name}}\"",
+      "aliasHint": "alias of \"{{name}}\"?",
+      "type": {
+        "character": "Character",
+        "location": "Location",
+        "item": "Item",
+        "lore": "Lore"
+      }
     },
     "spoiler": {
       "unrevealedTooltip": "Not yet revealed as of this scene: {{titles}}"
