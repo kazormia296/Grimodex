@@ -107,6 +107,59 @@ export function codexReindexAll(projectId: string): Promise<number> {
   return invoke<number>("codex_reindex_all", { projectId });
 }
 
+/**
+ * Chat episodic recall の dense 検索 (過去対話の意味検索)。Rust 側
+ * `chat_message_search` を叩く。1 メッセージ 1 ベクトル。**生 cosine** を `score` に、
+ * 重み付けの材料 (role / insertedToEditor / extractedCount) を併せて返す
+ * (重み付け・gate は JS chatRecall に集約)。型は Rust 側 `ChatSearchHit`
+ * (serde camelCase) と一致させること。
+ */
+export interface ChatMessageSearchHit {
+  messageId: string;
+  sessionId: string;
+  role: string;
+  text: string;
+  insertedToEditor: boolean;
+  extractedCount: number;
+  score: number;
+}
+
+export function chatMessageSearch(args: {
+  projectId: string;
+  query: string;
+  limit: number;
+}): Promise<ChatMessageSearchHit[]> {
+  return invoke<ChatMessageSearchHit[]>("chat_message_search", {
+    projectId: args.projectId,
+    query: args.query,
+    limit: args.limit,
+  });
+}
+
+/** チャットメッセージ 1 件を index 再構築。戻り値は投入ベクトル数 (0 = race/対象外)。 */
+export function chatIndexMessage(messageId: string): Promise<number> {
+  return invoke<number>("chat_index_message", { messageId });
+}
+
+/**
+ * project 内の chat episodic index 充足状況。Embedder ロード不要の軽量クエリ。
+ * indexedMessageCount < totalMessageCount なら未 index の既存メッセージがある
+ * (= bulk back-index が必要)。型は Rust 側 `ChatIndexStatus` (camelCase) と一致。
+ */
+export interface ChatIndexStatus {
+  indexedMessageCount: number;
+  totalMessageCount: number;
+}
+
+export function chatIndexStatus(projectId: string): Promise<ChatIndexStatus> {
+  return invoke<ChatIndexStatus>("chat_index_status", { projectId });
+}
+
+/** project 内の全 index 対象メッセージを一括再 index。戻り値は投入ベクトル総数。 */
+export function chatReindexAll(projectId: string): Promise<number> {
+  return invoke<number>("chat_reindex_all", { projectId });
+}
+
 /** 指定 project の scene_chunks 状態を取得。Embedder ロード不要、軽量。 */
 export function semanticIndexStatus(
   projectId: string,

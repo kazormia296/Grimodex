@@ -3,6 +3,8 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   codexIndexStatus,
   codexReindexAll,
+  chatIndexStatus,
+  chatReindexAll,
   semanticIndexStatus,
   semanticReindexAll,
 } from "./api";
@@ -25,6 +27,7 @@ import { useReindexProgressStore } from "./reindexProgressStore";
 
 const codexAttempted = new Set<string>();
 const sceneAttempted = new Set<string>();
+const chatAttempted = new Set<string>();
 
 /** 既存 codex エントリの自動 back-index。 */
 export async function ensureCodexIndexed(projectId: string): Promise<void> {
@@ -47,6 +50,33 @@ export async function ensureCodexIndexed(projectId: string): Promise<void> {
     debugLog.warn(
       "semantic-search",
       `codex auto back-index skipped: ${projectId}`,
+      errorDetail(e),
+    );
+  }
+}
+
+/**
+ * 既存チャットメッセージの自動 back-index (エピソード記憶)。codex と同型 (軽量・
+ * メッセージは短く件数も限られるので progress toast なし)。機能追加前から在る過去
+ * セッションは未 index = dense recall に乗らないため、open 時に一括 back-index する。
+ */
+export async function ensureChatIndexed(projectId: string): Promise<void> {
+  if (!projectId || chatAttempted.has(projectId)) return;
+  chatAttempted.add(projectId);
+  try {
+    const status = await chatIndexStatus(projectId);
+    if (status.indexedMessageCount >= status.totalMessageCount) return; // 充足
+    debugLog.info(
+      "semantic-search",
+      `chat auto back-index: ${status.indexedMessageCount}/${status.totalMessageCount} → reindexing`,
+    );
+    const n = await chatReindexAll(projectId);
+    debugLog.info("semantic-search", `chat auto back-index done: ${n} vectors`);
+  } catch (e) {
+    chatAttempted.delete(projectId);
+    debugLog.warn(
+      "semantic-search",
+      `chat auto back-index skipped: ${projectId}`,
       errorDetail(e),
     );
   }
@@ -110,8 +140,9 @@ export async function ensureSceneIndexed(projectId: string): Promise<void> {
 export async function ensureSemanticIndexesOnOpen(
   projectId: string,
 ): Promise<void> {
-  // codex 先 (軽量・短時間) → scene (重い)。embedder ロックは Rust 側で直列化される。
+  // codex / chat 先 (軽量・短時間) → scene (重い)。embedder ロックは Rust 側で直列化。
   await ensureCodexIndexed(projectId);
+  await ensureChatIndexed(projectId);
   await ensureSceneIndexed(projectId);
 }
 
@@ -119,4 +150,5 @@ export async function ensureSemanticIndexesOnOpen(
 export function _resetAutoIndexForTests(): void {
   codexAttempted.clear();
   sceneAttempted.clear();
+  chatAttempted.clear();
 }

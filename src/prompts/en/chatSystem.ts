@@ -134,6 +134,13 @@ export const EN_CHAT_SYSTEM = {
     semanticRecall: "\n## Related Past Scenes (auto-search)",
     /** title line of each excerpt under semanticRecall */
     semanticRecallScene: "### Excerpt: ",
+    /** chat episodic recall: section header for excerpts of past conversations.
+     * Like semanticRecall it is query-dependent, so it is kept out of cacheSegments
+     * (prompt + volatileTail only) and placed after Codex so it cannot override canon. */
+    chatRecall: "\n## Memory of Past Conversations (auto-search)",
+    /** label line of each message under chatRecall (role-based). Starts with `### `
+     * to stay consistent with the trim block split (trimRagText). */
+    chatRecallEntry: "### ",
   },
 
   /** Sandwich reminder: placed at the end of all data-layer injection (after L5 and
@@ -159,6 +166,16 @@ export const EN_CHAT_SYSTEM = {
     "The following are excerpts of past scenes semantically related to the current writing " +
     "(auto-searched fragments). Use them as references for callbacks and consistency. The canonical " +
     "source of setting information is the codex-entries section above.",
+
+  /** Operating note at the top of the chatRecall section. These are episodic memory
+   * (what was discussed, decided, or set aside) — a soft layer, NOT the canonical
+   * source of settings. The wording reinforces that old conversation must not override
+   * the Codex / setting sections above. */
+  chatRecallIntro:
+    "The following are excerpts of past conversations semantically related to this discussion " +
+    "(auto-searched fragments). Use them as a reminder of what was previously discussed, decided, " +
+    "or set aside. However, this is the memory of a conversation, not the canonical source of " +
+    "settings. If anything conflicts, prefer the setting information and Codex sections above.",
 
   labels: {
     title: "Title",

@@ -12,6 +12,8 @@ import {
   cancelSceneIndex,
   scheduleCodexIndex,
   cancelCodexIndex,
+  scheduleChatIndex,
+  cancelChatIndex,
   _resetSchedulerForTests,
   _pendingCount,
 } from "./scheduler";
@@ -159,6 +161,55 @@ describe("semantic-search/scheduler", () => {
     });
     expect(mockInvoke).toHaveBeenCalledWith("codex_index_entry", {
       entryId: "codex-1",
+    });
+  });
+
+  // ── chat scheduler (episodic recall, scene/codex 版と同型) ──────────
+  it("fires chat_index_message once after the debounce elapses", () => {
+    scheduleChatIndex("msg-1");
+    vi.advanceTimersByTime(DEBOUNCE_MS - 1);
+    expect(mockInvoke).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith("chat_index_message", {
+      messageId: "msg-1",
+    });
+  });
+
+  it("coalesces rapid re-schedules of the same message (addMessage + metadata)", () => {
+    // addMessage 直後に updateMessageMetadata が来ても 1 回に畳む。
+    scheduleChatIndex("msg-1");
+    vi.advanceTimersByTime(500);
+    scheduleChatIndex("msg-1");
+    vi.advanceTimersByTime(DEBOUNCE_MS - 1);
+    expect(mockInvoke).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancelChatIndex prevents the pending fire", () => {
+    scheduleChatIndex("msg-1");
+    cancelChatIndex("msg-1");
+    vi.advanceTimersByTime(DEBOUNCE_MS * 2);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("ignores empty messageId", () => {
+    scheduleChatIndex("");
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(_pendingCount()).toBe(0);
+  });
+
+  it("scene, codex and chat timers are tracked independently", () => {
+    scheduleSceneIndex("scene-1");
+    scheduleCodexIndex("codex-1");
+    scheduleChatIndex("msg-1");
+    expect(_pendingCount()).toBe(3);
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    expect(_pendingCount()).toBe(0);
+    expect(mockInvoke).toHaveBeenCalledWith("chat_index_message", {
+      messageId: "msg-1",
     });
   });
 });

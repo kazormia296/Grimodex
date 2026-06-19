@@ -22,6 +22,7 @@ import { ChatInput, restoreSceneMentionChips } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
 import { UserQuestionCard } from "./components/UserQuestionCard";
 import { QuickActionStrip } from "./components/QuickActionStrip";
+import { ChatRecallPromoteBanner } from "./components/ChatRecallPromoteBanner";
 import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
 import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 import { ContextBar } from "./components/ContextBar";
@@ -129,6 +130,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const systemPrompt = useChatStore((s) => s.lastSystemPrompt);
   const setActiveSceneId = useChatStore((s) => s.setActiveSceneId);
   const refreshContextLayers = useChatStore((s) => s.refreshContextLayers);
+  const dismissChatRecallPromote = useChatStore(
+    (s) => s.dismissChatRecallPromote,
+  );
   const removeEntryFromAuto = useChatStore((s) => s.removeEntryFromAuto);
   const excludeEntryFromAuto = useChatStore((s) => s.excludeEntryFromAuto);
   const clearAutoExclusion = useChatStore((s) => s.clearAutoExclusion);
@@ -1198,6 +1202,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         </div>
       ) : (
         <>
+          <ChatRecallPromoteBanner
+            onPromote={(messageId, text) => {
+              handleExtractCodexDetailed(messageId, text);
+              dismissChatRecallPromote(messageId);
+            }}
+          />
           <QuickActionStrip hidden={inputHasText} />
 
           <ChatInput

@@ -1367,7 +1367,40 @@ impl Database {
                 updated_at       INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_codex_chunks_model
-                ON codex_chunks(model_id);",
+                ON codex_chunks(model_id);
+
+            -- Chat episodic-memory index: 1 chat_message = 1 embedding row.
+            -- エピソード記憶 (過去の対話) を scene/codex と同じ意味検索経路で recall
+            -- するための埋め込み表。chat_messages には project_id が無いので、検索の
+            -- スコープ (project.db 単位) を効かせるため project_id / session_id を
+            -- index 時に非正規化して持つ (chat_sessions JOIN を読み出し時に省く)。
+            -- inserted_to_editor / extracted_count は「実際に効いた発話」を recall で
+            -- 重み付けするための信号 (metadata から非正規化)。signal が変わると content
+            -- hash も変わるよう upsert 側で hash 入力に含め、再 index で列が更新される。
+            -- codex_chunks と同じく Rust 専用 (Drizzle mirror 不要)。1 message 1 vector
+            -- なので PK=message_id・INSERT OR REPLACE。
+            CREATE TABLE IF NOT EXISTS chat_message_chunks (
+                message_id         TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+                session_id         TEXT NOT NULL,
+                project_id         TEXT NOT NULL,
+                role               TEXT NOT NULL,
+                text               TEXT NOT NULL,
+                inserted_to_editor INTEGER NOT NULL DEFAULT 0,
+                extracted_count    INTEGER NOT NULL DEFAULT 0,
+                embedding          BLOB NOT NULL,
+                embedding_dim      INTEGER NOT NULL,
+                model_id           TEXT NOT NULL,
+                content_hash       TEXT NOT NULL,
+                chunker_version    TEXT NOT NULL,
+                created_at         INTEGER NOT NULL,
+                updated_at         INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_message_chunks_project
+                ON chat_message_chunks(project_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_message_chunks_model
+                ON chat_message_chunks(model_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_message_chunks_session
+                ON chat_message_chunks(session_id);",
         )?;
 
         // Chat summaries: generation tracking for Tier-based progressive summarization.
