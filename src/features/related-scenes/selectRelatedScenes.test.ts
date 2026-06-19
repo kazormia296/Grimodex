@@ -306,3 +306,90 @@ describe("selectRelatedPastScenes — hybrid (sparse 救済 + RRF 融合)", () =
     expect(denseOnly.map((r) => r.sceneId)).toEqual(["s2"]); // s1 は床未満で出ない
   });
 });
+
+describe("selectRelatedPastScenes — relativeRescue (二段ガード相対救済)", () => {
+  // minScore=0.8, gap=0.05, nearFloorMargin=0.05 → relNearFloor=0.75。
+  const REL = {
+    minScore: 0.8,
+    maxScenes: 8,
+    relativeRescue: { gap: 0.05, nearFloorMargin: 0.05 },
+  };
+
+  it("勝者が居て、床下だが pool 中央値より gap 以上際立つシーンを救済する", () => {
+    // winner s0=0.9。standout s1=0.79 (<floor, >=0.75)。pack=0.74。
+    // 中央値=median(0.9,0.79,0.74,0.74,0.74)=0.74。s1-bg=0.05>=gap → 救済。
+    const hits = [
+      hit("s0", 0.9),
+      hit("s1", 0.79),
+      hit("s2", 0.74),
+      hit("s3", 0.74),
+      hit("s4", 0.74),
+    ];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("s0", "s1", "s2", "s3", "s4", "scur"),
+      ...REL,
+    });
+    expect(result.map((r) => r.sceneId)).toEqual(["s0", "s1"]);
+  });
+
+  it("勝者不在 (全部団子) なら床下を一切救済しない (副作用回避)", () => {
+    // 最大でも 0.79 < floor 0.8 → hasWinner=false → relative 発動せず。
+    const hits = [hit("s1", 0.79), hit("s2", 0.78), hit("s3", 0.7)];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("s1", "s2", "s3", "scur"),
+      ...REL,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("中央値から gap 未満しか出ないシーン (団子) は救済しない", () => {
+    // winner s0=0.85。pack s1=0.79,s2=0.78,s3=0.78。
+    // median(0.85,0.79,0.78,0.78)=(0.78+0.79)/2=0.785。s1-bg=0.005<gap → 不救済。
+    const hits = [
+      hit("s0", 0.85),
+      hit("s1", 0.79),
+      hit("s2", 0.78),
+      hit("s3", 0.78),
+    ];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("s0", "s1", "s2", "s3", "scur"),
+      ...REL,
+    });
+    expect(result.map((r) => r.sceneId)).toEqual(["s0"]);
+  });
+
+  it("近傍床 (floor - nearFloorMargin) より下は際立っても救済しない", () => {
+    // winner s0=0.9。s1=0.70 は pack(0.5) から際立つが 0.70 < relNearFloor 0.75 → 不救済。
+    const hits = [
+      hit("s0", 0.9),
+      hit("s1", 0.7),
+      hit("s2", 0.5),
+      hit("s3", 0.5),
+    ];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("s0", "s1", "s2", "s3", "scur"),
+      ...REL,
+    });
+    expect(result.map((r) => r.sceneId)).toEqual(["s0"]);
+  });
+
+  it("sparse 救済と relative 救済は共存し、relative が団子を過剰 admit しない", () => {
+    // winner s0=0.9 (denseConfident)。s1=0.78 (sparse 救済)。pack s2=0.76 は
+    // 中央値 0.78 を超えないので relative でも拾わない。
+    // 並び順は RRF 依存 (sparse の s1 が s0 を上回る = test B と同性質) なので
+    // ここでは「集合 = {s0,s1}・s2 は除外」を順序非依存で確認する。
+    const hits = [hit("s0", 0.9), hit("s1", 0.78), hit("s2", 0.76)];
+    const result = selectRelatedPastScenes(hits, {
+      currentSceneId: "scur",
+      sceneOrder: order("s0", "s1", "s2", "scur"),
+      sparseSceneIds: ["s1"],
+      rescueMargin: 0.05,
+      ...REL,
+    });
+    expect(result.map((r) => r.sceneId).sort()).toEqual(["s0", "s1"]);
+  });
+});

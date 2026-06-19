@@ -42,6 +42,20 @@ export interface SelectRelatedScenesOptions {
   sparseSceneIds?: string[];
   /** sparse 救済の床マージン (hybrid 時のみ)。既定は chat と共通の正準値。 */
   rescueMargin?: number;
+  /**
+   * 相対標準化による「クエリ内で際立つ」シーンの救済 (browse UI 向けの recall 追加)。
+   * ruri は無関係散文でも cosine が高く座る (団子) ため絶対床だけだと取りこぼす一方、
+   * 単純に床を下げると団子を巻き込む。そこで **二段ガード** で床下を救済する:
+   *   (a) 絶対近傍: cosine >= `minScore - nearFloorMargin`
+   *   (b) 明確な勝者: pool 最大 cosine >= `minScore` (勝者不在クエリでは発動しない)
+   *   (c) 相対標準化: cosine が pool 中央値より `gap` 以上際立つ
+   * 3 条件全てで初めて床下シーンを admit する。絶対床を撤廃しないので「勝者不在の団子
+   * 最上位を過大評価」する副作用を避ける ([[grimodex-ruri-cosine-baseline]] の二段方式)。
+   * パラメータ (特に gap) は実ログでの較正前提。省略で無効 (= 従来挙動)。
+   * 注入用途では使わない (precision 優先)。related-scenes は誤検出コストの低い browse UI
+   * なので recall 寄りのこの救済を許容する。
+   */
+  relativeRescue?: { gap: number; nearFloorMargin?: number };
 }
 
 function toRelatedScene(h: SemanticSearchHit): RelatedScene {
@@ -51,6 +65,14 @@ function toRelatedScene(h: SemanticSearchHit): RelatedScene {
     chunkText: h.chunkText,
     score: h.score,
   };
+}
+
+/** 数値列の中央値 (偶数長は中央 2 値の平均)。空は 0。 */
+function median(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  const s = xs.slice().sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
 /**
@@ -77,20 +99,19 @@ export function selectRelatedPastScenes(
   if (currentOrder === undefined) return [];
 
   const sparseIds = opts.sparseSceneIds ?? [];
-  const hybrid = sparseIds.length > 0;
+  const hasSparse = sparseIds.length > 0;
+  const rel = opts.relativeRescue;
   const rescueMargin = opts.rescueMargin ?? SEMANTIC_RECALL_RESCUE_MARGIN;
   const rescueFloor = minScore - rescueMargin;
-  // hybrid では sparse 救済の対象になりうる「床ぎりぎり下」シーンも候補に残す。
-  // dense 単独では従来どおり床 (minScore) で切る。
-  const candidateFloor = hybrid ? rescueFloor : minScore;
   const cap = Math.max(0, maxScenes);
 
-  // scene ごとの最良チャンクだけを残す (現在シーン / 未読 / 順序外 / 候補床未満を除外)。
+  // scene ごとの最良チャンクを残す (現在シーン / 未読 / 順序外 / 非有限スコアを除外)。
+  // ここでは床で切らない: sparse / relative 救済が「床ぎりぎり下」の best チャンクを
+  // 必要とし、相対標準化の中央値も pool 全体から取るため。admit 判定は下の二段で行う。
   const bestByScene = new Map<string, SemanticSearchHit>();
   for (const h of hits) {
     if (h.sceneId === currentSceneId) continue;
-    // 非有限スコア (NaN/Infinity) は床比較が当てにならないので明示的に弾く。
-    if (!Number.isFinite(h.score) || h.score < candidateFloor) continue;
+    if (!Number.isFinite(h.score)) continue;
     const sceneRank = sceneOrder.get(h.sceneId);
     // 順序外 (folder/削除済) と、現在以降 (未読) を除外。
     if (sceneRank === undefined || sceneRank >= currentOrder) continue;
@@ -105,22 +126,15 @@ export function selectRelatedPastScenes(
     }
   }
 
-  const candidates = [...bestByScene.values()];
+  const pool = [...bestByScene.values()];
+  if (pool.length === 0) return [];
 
-  if (!hybrid) {
-    // dense 単独 (従来挙動): 床以上をスコア降順、同点 sceneId 安定化。
-    return candidates
-      .sort((a, b) => b.score - a.score || a.sceneId.localeCompare(b.sceneId))
-      .slice(0, cap)
-      .map(toRelatedScene);
-  }
-
-  // hybrid: dense 順位 (cosine 降順) と sparse 順位 (bm25) を RRF 融合する。
-  const denseRank = new Map<string, number>();
-  candidates
+  // dense 順位 (cosine 降順, sceneId 安定化)。
+  const denseSorted = pool
     .slice()
-    .sort((a, b) => b.score - a.score || a.sceneId.localeCompare(b.sceneId))
-    .forEach((h, i) => denseRank.set(h.sceneId, i));
+    .sort((a, b) => b.score - a.score || a.sceneId.localeCompare(b.sceneId));
+  const denseRank = new Map<string, number>();
+  denseSorted.forEach((h, i) => denseRank.set(h.sceneId, i));
 
   const sparseRank = new Map<string, number>();
   for (const id of sparseIds) {
@@ -128,26 +142,38 @@ export function selectRelatedPastScenes(
     sparseRank.set(id, sparseRank.size);
   }
 
-  const eligible: { hit: SemanticSearchHit; rrf: number }[] = [];
-  for (const h of candidates) {
+  // 相対救済 (二段ガード) の前提値。
+  const relNearFloor = minScore - (rel?.nearFloorMargin ?? rescueMargin);
+  const background = rel ? median(pool.map((h) => h.score)) : 0;
+  const hasWinner = rel ? denseSorted[0].score >= minScore : false;
+
+  const admitted: { hit: SemanticSearchHit; rrf: number }[] = [];
+  for (const h of pool) {
     const sRank = sparseRank.get(h.sceneId);
     const inSparse = sRank !== undefined;
     const denseConfident = h.score >= minScore;
-    // 候補は既に rescueFloor 以上なので、sparse に居れば救済成立。
-    const sparseRescue = inSparse;
-    if (!denseConfident && !sparseRescue) continue;
+    const sparseRescue = hasSparse && inSparse && h.score >= rescueFloor;
+    const relativeRescue =
+      !!rel &&
+      hasWinner &&
+      h.score >= relNearFloor &&
+      h.score - background >= rel.gap;
+    if (!denseConfident && !sparseRescue && !relativeRescue) continue;
     const dRank = denseRank.get(h.sceneId)!;
     const rrf = 1 / (RRF_K + dRank) + (inSparse ? 1 / (RRF_K + sRank) : 0);
-    eligible.push({ hit: h, rrf });
+    admitted.push({ hit: h, rrf });
   }
+  if (admitted.length === 0) return [];
 
-  return eligible
-    .sort(
-      (a, b) =>
-        b.rrf - a.rrf ||
+  // ランキング: sparse / relative が関与するなら RRF (sparse 寄与込み)、純 dense のみなら
+  // cosine 降順 (従来挙動を保つ)。
+  const fused = hasSparse || !!rel;
+  admitted.sort((a, b) =>
+    fused
+      ? b.rrf - a.rrf ||
         b.hit.score - a.hit.score ||
-        a.hit.sceneId.localeCompare(b.hit.sceneId),
-    )
-    .slice(0, cap)
-    .map((e) => toRelatedScene(e.hit));
+        a.hit.sceneId.localeCompare(b.hit.sceneId)
+      : b.hit.score - a.hit.score || a.hit.sceneId.localeCompare(b.hit.sceneId),
+  );
+  return admitted.slice(0, cap).map((e) => toRelatedScene(e.hit));
 }
