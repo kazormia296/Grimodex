@@ -1695,7 +1695,14 @@
       "title": "設定の整合性",
       "aliasCollision": "「{{name}}」が複数エントリで重複",
       "duplicateRelation": "「{{type}}」リレーションが {{count}} 件重複",
-      "selfRelation": "自己参照リレーション「{{type}}」"
+      "selfRelation": "自己参照リレーション「{{type}}」",
+      "dismiss": "この指摘を非表示にする",
+      "historyDismiss": "整合性の指摘を非表示",
+      "historyRestore": "非表示の整合性指摘を再表示",
+      "dismissFailed": "非表示の保存に失敗しました",
+      "restoreHidden": "非表示中 {{count}} 件を再表示",
+      "allHidden": "整合性の指摘 {{count}} 件を非表示中",
+      "show": "再表示"
     },
     "spoiler": {
       "unrevealedTooltip": "このシーン時点で未開示: {{titles}}"
