@@ -322,16 +322,21 @@ interface FtsSceneRow {
  * FTS5 で scene を bm25 順に引き、上位の sceneId を順位どおり返す。
  * `fts_search` は生クエリを Rust 側 `to_fts_match` で sanitize するので、
  * ここでは整形せず recall クエリをそのまま渡す (二重 quote 化を避ける)。
+ *
+ * chat の hybrid recall と related-scenes パネルの双方が sparse 腕として共有する
+ * (融合は呼び出し側: selectHybridRecallChunks / selectRelatedPastScenes)。
  */
-async function fetchSparseSceneIds(args: {
+export async function fetchSparseSceneIds(args: {
   projectId: string;
   query: string;
+  /** 取得する scene 上位件数。既定は SEMANTIC_RECALL_SPARSE_LIMIT。 */
+  limit?: number;
 }): Promise<string[]> {
   const rows = await invoke<FtsSceneRow[]>("fts_search", {
     projectId: args.projectId,
     query: args.query,
     scope: "scenes",
-    limit: SEMANTIC_RECALL_SPARSE_LIMIT,
+    limit: args.limit ?? SEMANTIC_RECALL_SPARSE_LIMIT,
   });
   return rows.filter((r) => r.sourceType === "scene").map((r) => r.id);
 }
