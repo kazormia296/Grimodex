@@ -1,0 +1,165 @@
+{
+  "_doc": "related-scenes ライブ実埋め込み eval 用コーパス。各言語に scenes(読書順) と cases(現在シーン→過去シーンの qrels)。cases は ①②③ を実埋め込みで発火させるよう設計(paraphrase=dense必須 / 固有名詞共有=hybrid sparse / 固有名詞が冒頭のみ=seed拡張③ / 団子+際立ち=相対救済②)。denseQueryText は currentBody の tail(<500字なので全文)。",
+  "ja": {
+    "lang": "ja",
+    "scenes": [
+      {
+        "id": "ja-s1",
+        "order": 0,
+        "title": "一章：廃社への帰還",
+        "body": "朱音は鳥居の手前で立ち止まった。十年ぶりの桐野だった。廃社は記憶より小さく、雨に濡れた骨組みのように見えた。祭壇の奥に赤いものがあった。朱紐だった。指が触れた瞬間、朱音自身のものではない記憶が流れ込んできた。"
+      },
+      {
+        "id": "ja-s2",
+        "order": 1,
+        "title": "二章：封じ文",
+        "body": "廃社で目を覚ますと、朱紐は手の中にあった。その下に封じ文が置かれていた。紙には朱音の名と「帰れ」の二文字。音羽が訪ねてきて、何も聞かずに饅頭を差し出した。"
+      },
+      {
+        "id": "ja-s3",
+        "order": 2,
+        "title": "三章：都の記録師",
+        "body": "都での十年、朱音は記録師として帳面に文字を写し続けた。同僚たちは朱音の故郷を知らなかった。朱音も語らなかった。墨の匂いだけが日々を満たしていた。"
+      },
+      {
+        "id": "ja-s4",
+        "order": 3,
+        "title": "回想：火の夜",
+        "body": "十年前の夏、社は内側から燃えた。煙が山を降りてきた。「離れろ」という声がした。誰の声か、朱音は今も思い出せない。朱紐を握り、ただ走った。"
+      },
+      {
+        "id": "ja-s5",
+        "order": 4,
+        "title": "伝承：朱縄の儀",
+        "body": "朱縄の儀は一族が百年以上続けてきた鬼封じの作法である。朱紐で鬼を縛り、その記憶ごと封じ込める。儀を誤れば、封じた記憶が術者へ逆流するという。"
+      },
+      {
+        "id": "ja-s6",
+        "order": 5,
+        "title": "間章：音羽の薬庵",
+        "body": "音羽は桐野で薬師として暮らしていた。乾いた薬草の束が天井から下がる小さな庵で、十年ものあいだ朱音が帰る日を待っていた。誰にも言わずに。"
+      },
+      {
+        "id": "ja-s7",
+        "order": 6,
+        "title": "序：都を発つ朝",
+        "body": "訃報は霜の朝に届いた。朱音は帳面を閉じ、墨を片づけ、都を発った。振り返らなかった。"
+      }
+    ],
+    "cases": [
+      {
+        "id": "ja-c1",
+        "note": "廃社/朱紐を共有する複数過去シーン。dense+sparse の両方が効くはず(① hybrid)。",
+        "currentBody": "朱音はふたたび廃社の祭壇の前に立った。乾いたままの朱紐を見つめ、十年前にこれを置いていった日のことを思い出していた。雨はまだ降り続いている。",
+        "denseQueryText": "朱音はふたたび廃社の祭壇の前に立った。乾いたままの朱紐を見つめ、十年前にこれを置いていった日のことを思い出していた。雨はまだ降り続いている。",
+        "currentOrder": 100,
+        "qrels": ["ja-s1", "ja-s2", "ja-s4"]
+      },
+      {
+        "id": "ja-c2",
+        "note": "火の夜(ja-s4)の言い換え。火/燃/社の語を避け語彙一致を断つ→denseでしか拾えない。",
+        "currentBody": "あの夏の夜、すべてが熱と煙に呑まれた。誰かの叫びだけが闇に残り、少女はただ駆けていった。",
+        "denseQueryText": "あの夏の夜、すべてが熱と煙に呑まれた。誰かの叫びだけが闇に残り、少女はただ駆けていった。",
+        "currentOrder": 100,
+        "qrels": ["ja-s4"]
+      },
+      {
+        "id": "ja-c3",
+        "note": "音羽(漢字固有名詞)を冒頭のみ言及。③は漢字を抽出しないため効かない見込み→① trigram sparse / dense の挙動を正直に計測。",
+        "currentBody": "音羽のことを、朱音はずっと考えないようにしてきた。都の冬は長く、帳面の文字は冷たく、夜は窓を打つ雨の音だけが続いた。記録師の務めは淡々としていた。",
+        "denseQueryText": "音羽のことを、朱音はずっと考えないようにしてきた。都の冬は長く、帳面の文字は冷たく、夜は窓を打つ雨の音だけが続いた。記録師の務めは淡々としていた。",
+        "currentOrder": 100,
+        "qrels": ["ja-s2", "ja-s6"]
+      },
+      {
+        "id": "ja-c4",
+        "note": "古い記憶と後悔という曖昧な主題。明確な勝者(火の夜)+境界の関連(朱縄の儀)で②相対救済を計測。",
+        "currentBody": "置き去りにしてしまったものの重さを、朱音はずっと抱えていた。古い記憶は封じたはずなのに、ふとした拍子に逆流してくる。",
+        "denseQueryText": "置き去りにしてしまったものの重さを、朱音はずっと抱えていた。古い記憶は封じたはずなのに、ふとした拍子に逆流してくる。",
+        "currentOrder": 100,
+        "qrels": ["ja-s4", "ja-s5"]
+      }
+    ]
+  },
+  "en": {
+    "lang": "en",
+    "scenes": [
+      {
+        "id": "en-s1",
+        "order": 0,
+        "title": "Chapter One: The Hall",
+        "body": "Eleanor stopped at the gate. Ten years had passed. Ashveil Hall was smaller than she remembered, its beams blackened and slick with rain. On the hearthstone lay something bright. It was the compass. The moment her fingers touched it, a memory came that was not her own."
+      },
+      {
+        "id": "en-s2",
+        "order": 1,
+        "title": "Chapter Two: The Writ",
+        "body": "She woke in Ashveil Hall with the compass still in her hand. Beneath it lay the writ, her name written there and the single word, Return. Wrenna came without questions and set down bread, and said nothing at all."
+      },
+      {
+        "id": "en-s3",
+        "order": 2,
+        "title": "Chapter Three: The Capital",
+        "body": "For ten years Eleanor copied letters as a record-keeper in the capital. Her colleagues never knew where she came from, and she never told them. Only the smell of ink filled the days."
+      },
+      {
+        "id": "en-s4",
+        "order": 3,
+        "title": "Memory: The Night of the Fire",
+        "body": "Ten years before, the hall burned from within. Smoke rolled down the mountain. A voice said, Run. She never could recall whose voice it was. She gripped the compass and ran."
+      },
+      {
+        "id": "en-s5",
+        "order": 4,
+        "title": "Lore: The Binding Rite",
+        "body": "The binding rite had been kept by the family for over a century. With the compass they bound the hollow ones, sealing them away together with their memories. Perform it wrongly, they said, and the sealed memory floods back into the binder."
+      },
+      {
+        "id": "en-s6",
+        "order": 5,
+        "title": "Interlude: Wrenna's Apothecary",
+        "body": "Wrenna lived in the town as an apothecary. In a small room hung with drying herbs she had waited ten years for Eleanor to come home, and told no one."
+      },
+      {
+        "id": "en-s7",
+        "order": 6,
+        "title": "Prologue: Leaving the Capital",
+        "body": "The news came on a morning of frost. Eleanor closed her ledger, put away the ink, and left the capital. She did not look back."
+      }
+    ],
+    "cases": [
+      {
+        "id": "en-c1",
+        "note": "Shares Ashveil Hall / compass across scenes. Both dense and sparse should fire (hybrid ①).",
+        "currentBody": "Eleanor stood before the hearth of Ashveil Hall again. She looked at the compass, still dry, and remembered the day she had left it behind ten years ago. The rain had not stopped.",
+        "denseQueryText": "Eleanor stood before the hearth of Ashveil Hall again. She looked at the compass, still dry, and remembered the day she had left it behind ten years ago. The rain had not stopped.",
+        "currentOrder": 100,
+        "qrels": ["en-s1", "en-s2", "en-s4"]
+      },
+      {
+        "id": "en-c2",
+        "note": "Paraphrase of the fire night (en-s4) avoiding fire/burn/hall words → only dense should retrieve it.",
+        "currentBody": "That summer night, everything was swallowed by heat and smoke. Only a cry remained in the dark, and the girl simply ran.",
+        "denseQueryText": "That summer night, everything was swallowed by heat and smoke. Only a cry remained in the dark, and the girl simply ran.",
+        "currentOrder": 100,
+        "qrels": ["en-s4"]
+      },
+      {
+        "id": "en-c3",
+        "note": "Proper noun 'Wrenna' only in the first sentence then unrelated body. Tail seed misses it → ③ extracts 'Wrenna' from full body → sparse finds en-s6/en-s2.",
+        "currentBody": "Wrenna she had tried not to think about for a long time. The winters in the capital were long, the letters cold under her pen, and at night only the sound of rain against the window went on. The record-keeper's duty was quiet work.",
+        "denseQueryText": "Wrenna she had tried not to think about for a long time. The winters in the capital were long, the letters cold under her pen, and at night only the sound of rain against the window went on. The record-keeper's duty was quiet work.",
+        "currentOrder": 100,
+        "qrels": ["en-s2", "en-s6"]
+      },
+      {
+        "id": "en-c4",
+        "note": "Vague theme of old memory and regret. Clear winner (fire night) + borderline (binding rite) to exercise ② relative rescue.",
+        "currentBody": "The weight of what she had left behind never left Eleanor. The old memory was supposed to be sealed, yet at the smallest provocation it floods back.",
+        "denseQueryText": "The weight of what she had left behind never left Eleanor. The old memory was supposed to be sealed, yet at the smallest provocation it floods back.",
+        "currentOrder": 100,
+        "qrels": ["en-s4", "en-s5"]
+      }
+    ]
+  }
+}

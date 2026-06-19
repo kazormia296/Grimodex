@@ -35,6 +35,10 @@ docs/screenshots/generated/*.png
 .vitest-attachments/
 **/__screenshots__/
 
+# related-scenes ライブ eval の実埋め込み生成物(scripts/relatedScenesLiveEmbed.mjs で再生成)。
+# 生成すると relatedScenesLive.eval.test.ts が実行され、無ければ skip。
+src/features/related-scenes/liveEval/embeddings.generated.json
+
 # Python venvs for the embedding scripts (calibrate / export / golden).
 # scripts/setup-en-embedding.sh / calibrate-embedding-threshold.py 用。
 .venv*/
