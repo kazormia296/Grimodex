@@ -1716,7 +1716,17 @@
       "acceptFailed": "エントリ化に失敗しました",
       "restoreHidden": "却下中 {{count}} 件を再表示",
       "allDismissed": "固有名詞候補 {{count}} 件を却下中",
-      "show": "再表示"
+      "show": "再表示",
+      "judge": "AI で評価",
+      "judgeFailed": "AI 評価に失敗しました",
+      "acceptAlias": "「{{name}}」の別名として追加",
+      "aliasHint": "「{{name}}」の別名?",
+      "type": {
+        "character": "人物",
+        "location": "場所",
+        "item": "物",
+        "lore": "設定"
+      }
     },
     "spoiler": {
       "unrevealedTooltip": "このシーン時点で未開示: {{titles}}"

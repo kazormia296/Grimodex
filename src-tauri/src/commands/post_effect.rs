@@ -1669,7 +1669,8 @@ fn find_text_position_morph(
         .iter()
         .copied()
         .max_by_key(|&(s, e)| {
-            let window = scene_window_around(scene_text, s, e.saturating_sub(s), found_context.len());
+            let window =
+                scene_window_around(scene_text, s, e.saturating_sub(s), found_context.len());
             score_context_match(window, found_context)
         })
         .or_else(|| candidates.first().copied())

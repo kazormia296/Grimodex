@@ -23,6 +23,7 @@ import {
   buildSessionTitlePromptJa,
 } from "./ja/chatApi";
 import { JA_POST_EFFECT } from "./ja/postEffect";
+import { buildCandidateJudgmentPromptJa } from "./ja/codexJudgment";
 import { EN_CHAT_SYSTEM } from "./en/chatSystem";
 import { EN_AGENT_CONTROL } from "./en/agentControl";
 import { buildBeatSystemPromptEn, buildBeatUserPromptEn } from "./en/beat";
@@ -40,6 +41,7 @@ import {
   buildEvaluateSetupStrengthPromptEn,
   buildAuditChapterPromptEn,
 } from "./en/foreshadow";
+import { buildCandidateJudgmentPromptEn } from "./en/codexJudgment";
 import {
   buildSynopsisFromContentPromptEn,
   buildSessionTitlePromptEn,
@@ -75,6 +77,9 @@ const JA_CATALOG = {
   chatApi: {
     buildSynopsisFromContentPrompt: buildSynopsisFromContentPromptJa,
     buildSessionTitlePrompt: buildSessionTitlePromptJa,
+  },
+  codexJudgment: {
+    buildCandidateJudgmentPrompt: buildCandidateJudgmentPromptJa,
   },
   // ja/en の postEffect は `as const` で互いに異なる文字列リテラル型になるため、
   // string 値へ widen してどちらの言語セットも代入可能にする (中身は不変)。
@@ -118,6 +123,9 @@ const EN_CATALOG: PromptCatalog = {
   chatApi: {
     buildSynopsisFromContentPrompt: buildSynopsisFromContentPromptEn,
     buildSessionTitlePrompt: buildSessionTitlePromptEn,
+  },
+  codexJudgment: {
+    buildCandidateJudgmentPrompt: buildCandidateJudgmentPromptEn,
   },
   postEffect: EN_POST_EFFECT,
 };

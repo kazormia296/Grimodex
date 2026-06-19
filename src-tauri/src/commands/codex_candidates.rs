@@ -32,6 +32,8 @@ pub(crate) struct CodexCandidate {
     pub count: usize,
     /// 読書順で最初に出現したシーン (初出シーンへのジャンプ用)。
     pub first_scene_id: String,
+    /// 初出箇所の周辺一文 (LLM 種別判定の文脈サンプル用)。
+    pub context: String,
 }
 
 /// tree_nodes の 1 行 (読書順 DFS 用の最小情報)。
@@ -122,10 +124,56 @@ fn walk_reading_order(
     }
 }
 
-/// 読書順に並んだ (scene_id, tokens) から固有名詞を集約し、既知 Codex 名を
-/// 差し引いて候補を返す。純ロジック (DB/lindera 非依存) なのでテスト可能。
+/// `plain` 内の `[byte_start, byte_end)` を含む周辺一文を返す (LLM 文脈用)。
+/// 文境界 (。！？!?改行) まで広げ、長すぎる場合は前後 `RADIUS` 文字でクランプ。
+/// char 単位で走査するのでバイト境界 panic を起こさない。範囲外オフセットは丸める。
+fn context_window(plain: &str, byte_start: usize, byte_end: usize) -> String {
+    const RADIUS: usize = 50;
+    const TERMINATORS: [char; 6] = ['。', '！', '？', '!', '?', '\n'];
+
+    let chars: Vec<(usize, char)> = plain.char_indices().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    // start_ci / end_ci: byte_start/byte_end 以上の最初の char index。
+    let start_ci = chars
+        .iter()
+        .position(|&(b, _)| b >= byte_start)
+        .unwrap_or(chars.len());
+    let end_ci = chars
+        .iter()
+        .position(|&(b, _)| b >= byte_end)
+        .unwrap_or(chars.len());
+
+    // 左へ: 直前文字が終端 or RADIUS 超過まで。
+    let mut l = start_ci;
+    while l > 0 {
+        let (_, c) = chars[l - 1];
+        if TERMINATORS.contains(&c) || start_ci.saturating_sub(l - 1) > RADIUS {
+            break;
+        }
+        l -= 1;
+    }
+    // 右へ: 終端文字を含めて 1 つ先まで or RADIUS 超過まで。
+    let mut r = end_ci;
+    while r < chars.len() {
+        let (_, c) = chars[r];
+        r += 1;
+        if TERMINATORS.contains(&c) || r.saturating_sub(end_ci) > RADIUS {
+            break;
+        }
+    }
+
+    let lb = chars.get(l).map(|&(b, _)| b).unwrap_or(0);
+    let rb = chars.get(r).map(|&(b, _)| b).unwrap_or(plain.len());
+    plain.get(lb..rb).unwrap_or("").trim().to_string()
+}
+
+/// 読書順に並んだ (scene_id, plain, tokens) から固有名詞を集約し、既知 Codex 名を
+/// 差し引いて候補を返す。初出箇所の周辺一文を context に詰める。
+/// 純ロジック (DB/lindera 非依存) なのでテスト可能。
 fn aggregate_candidates(
-    scenes_tokens: &[(String, Vec<MorphToken>)],
+    scenes: &[(String, String, Vec<MorphToken>)],
     known: &HashSet<String>,
     min_count: usize,
 ) -> Vec<CodexCandidate> {
@@ -136,10 +184,11 @@ fn aggregate_candidates(
         first_scene_idx: usize,
         first_scene_id: String,
         first_token_idx: usize,
+        context: String,
     }
 
     let mut map: HashMap<String, Agg> = HashMap::new();
-    for (scene_idx, (scene_id, tokens)) in scenes_tokens.iter().enumerate() {
+    for (scene_idx, (scene_id, plain, tokens)) in scenes.iter().enumerate() {
         for (tok_idx, t) in tokens.iter().enumerate() {
             if t.pos_major != "名詞" || t.pos_sub1 != "固有名詞" {
                 continue;
@@ -160,6 +209,7 @@ fn aggregate_candidates(
                 first_scene_idx: scene_idx,
                 first_scene_id: scene_id.clone(),
                 first_token_idx: tok_idx,
+                context: context_window(plain, t.byte_start, t.byte_end),
             });
             // unwrap 不可避を避けるため再取得して加算。
             if let Some(agg) = map.get_mut(&normalize_name(&t.surface)) {
@@ -183,6 +233,7 @@ fn aggregate_candidates(
             lemma: a.lemma,
             count: a.count,
             first_scene_id: a.first_scene_id,
+            context: a.context,
         })
         .collect()
 }
@@ -262,8 +313,9 @@ pub(crate) fn extract_codex_candidates(
         Ok((reading_order_scenes(&nodes), known))
     })?;
 
-    // フェーズ 2 (ロック外): 各シーンを形態素解析。
-    let mut scenes_tokens: Vec<(String, Vec<MorphToken>)> = Vec::with_capacity(scenes.len());
+    // フェーズ 2 (ロック外): 各シーンを形態素解析。平文も持ち回して文脈窓に使う。
+    let mut scenes_tokens: Vec<(String, String, Vec<MorphToken>)> =
+        Vec::with_capacity(scenes.len());
     for (scene_id, content_json) in scenes {
         let plain = plaintext_of(&content_json);
         let tokens = if plain.is_empty() {
@@ -282,7 +334,7 @@ pub(crate) fn extract_codex_candidates(
                 }
             }
         };
-        scenes_tokens.push((scene_id, tokens));
+        scenes_tokens.push((scene_id, plain, tokens));
     }
 
     Ok(aggregate_candidates(&scenes_tokens, &known, min_count))
@@ -354,6 +406,7 @@ mod tests {
         let scenes = vec![
             (
                 "s1".to_string(),
+                "円明走る円明".to_string(),
                 vec![
                     tok("円明", "名詞", "固有名詞", 0),
                     tok("走る", "動詞", "一般", 6),
@@ -362,6 +415,7 @@ mod tests {
             ),
             (
                 "s2".to_string(),
+                "帝都円明朱".to_string(),
                 vec![
                     tok("帝都", "名詞", "固有名詞", 0),
                     tok("円明", "名詞", "固有名詞", 6),
@@ -382,12 +436,15 @@ mod tests {
         assert_eq!(cands[1].surface, "帝都");
         assert_eq!(cands[1].count, 1);
         assert_eq!(cands[1].first_scene_id, "s2");
+        // 初出箇所の文脈が詰まっている (本文の一部)。
+        assert!(cands[0].context.contains("円明"));
     }
 
     #[test]
     fn aggregate_min_count_filters_one_offs() {
         let scenes = vec![(
             "s1".to_string(),
+            "円明円明帝都".to_string(),
             vec![
                 tok("円明", "名詞", "固有名詞", 0),
                 tok("円明", "名詞", "固有名詞", 6),
@@ -398,5 +455,22 @@ mod tests {
         // min_count=2 で帝都(1回)は落ちる。
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].surface, "円明");
+    }
+
+    #[test]
+    fn context_window_extends_to_sentence_boundaries() {
+        // 「円明」を含む文を、前後の句点境界まで切り出す。
+        let plain = "朝だった。円明は走った。夜が来た。";
+        let start = plain.find("円明").expect("present");
+        let ctx = context_window(plain, start, start + "円明".len());
+        assert!(ctx.contains("円明は走った"), "ctx={ctx}");
+        assert!(!ctx.contains("朝だった"), "前の文は含めない: ctx={ctx}");
+    }
+
+    #[test]
+    fn context_window_tolerates_out_of_range_offsets() {
+        // 範囲外オフセットでも panic せず空などを返す。
+        assert_eq!(context_window("", 0, 5), "");
+        let _ = context_window("短い", 100, 200);
     }
 }

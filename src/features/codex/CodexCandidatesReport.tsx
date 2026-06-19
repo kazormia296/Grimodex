@@ -7,6 +7,7 @@ import {
   EyeOff,
   Plus,
   RefreshCw,
+  Sparkles,
   Tags,
   X,
 } from "lucide-react";
@@ -20,6 +21,8 @@ import {
   type CodexCandidate,
 } from "./candidateExtractor";
 import { activeCandidates, candidateKey } from "./codexCandidates";
+import { judgeCandidates, type CandidateJudgment } from "./candidateJudgment";
+import { parseAliases } from "./codexMatcher";
 import {
   loadDismissedCandidateKeys,
   saveDismissedCandidateKeys,
@@ -44,9 +47,14 @@ export function CodexCandidatesReport() {
   const projectId = useCurrentProjectId();
   const entries = useCodexStore((s) => s.entries);
   const create = useCodexStore((s) => s.create);
+  const update = useCodexStore((s) => s.update);
 
   const [candidates, setCandidates] = useState<CodexCandidate[]>([]);
   const [loading, setLoading] = useState(false);
+  const [judging, setJudging] = useState(false);
+  const [judgments, setJudgments] = useState<Map<string, CandidateJudgment>>(
+    new Map(),
+  );
   const [expanded, setExpanded] = useState(false);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
 
@@ -81,10 +89,11 @@ export function CodexCandidatesReport() {
   }, []);
 
   useEffect(() => {
-    // project 切替時は旧 project の候補を即クリアしてから読み直す
+    // project 切替時は旧 project の候補/判定を即クリアしてから読み直す
     // (新スキャン完了まで旧候補が一瞬残るのを防ぐ)。手動リフレッシュ (reload 直呼び)
     // はクリアしないのでスピナー中に旧一覧が見えたままになる。
     setCandidates([]);
+    setJudgments(new Map());
     reload();
   }, [projectId, reload]);
 
@@ -115,6 +124,24 @@ export function CodexCandidatesReport() {
     [active, dismissed],
   );
   const hiddenActiveCount = active.length - visible.length;
+
+  // AI 判定 (B2): 表示中の候補を一括で種別分類/別名検出させる。
+  const handleJudge = useCallback(async () => {
+    if (judging || visible.length === 0) return;
+    setJudging(true);
+    try {
+      const result = await judgeCandidates(visible, entries);
+      setJudgments(result);
+    } catch (e) {
+      if (!isLicenseRestrictedError(e)) {
+        toast.error(t("codex.candidates.judgeFailed"), {
+          description: String(e),
+        });
+      }
+    } finally {
+      setJudging(false);
+    }
+  }, [judging, visible, entries, t]);
 
   const persistValue = useCallback(
     (pid: string, value: Set<string>): Promise<void> => {
@@ -186,15 +213,35 @@ export function CodexCandidatesReport() {
     );
   }, [mutate, t]);
 
-  // 受理: character として作成し詳細を開く (種別/説明は詳細側で調整)。受理後は
-  // entries 更新で activeCandidates から自動的に消える。create が undo 履歴を積む。
+  // 受理: AI 判定があれば種別/要約を使って作成 (無ければ character 既定)。
+  // 「既存エントリ X の別名」と判定された場合は新規作成せず X の aliases に追記。
+  // 受理後は entries 更新で activeCandidates から自動的に消える。create/update が
+  // undo 履歴を積む。
   const handleAccept = useCallback(
     async (c: CodexCandidate) => {
+      const judgment = judgments.get(candidateKey(c.surface));
       try {
-        const entry = await create({ type: "character", name: c.surface });
+        if (judgment?.aliasOfId) {
+          const target = entries.find((e) => e.id === judgment.aliasOfId);
+          if (target) {
+            const aliases = parseAliases(target.aliases);
+            if (!aliases.includes(c.surface)) {
+              await update(target.id, {
+                aliases: JSON.stringify([...aliases, c.surface]),
+              });
+            }
+            useCodexStore.getState().requestSelectEntry(target.id);
+            return;
+          }
+        }
+        const entry = await create({
+          type: judgment?.suggestedType ?? "character",
+          name: c.surface,
+          summary: judgment?.summary || undefined,
+        });
         useCodexStore.getState().requestSelectEntry(entry.id);
       } catch (e) {
-        // ライセンス制限は create 内の gate が既にトーストするので二重表示しない。
+        // ライセンス制限は create/update 内の gate が既にトーストするので二重表示しない。
         if (!isLicenseRestrictedError(e)) {
           toast.error(t("codex.candidates.acceptFailed"), {
             description: String(e),
@@ -202,7 +249,7 @@ export function CodexCandidatesReport() {
         }
       }
     },
-    [create, t],
+    [create, update, entries, judgments, t],
   );
 
   if (visible.length === 0 && hiddenActiveCount === 0) return null;
@@ -260,41 +307,79 @@ export function CodexCandidatesReport() {
       {expanded && (
         <div className="border-t border-sky-500/20">
           <ul className="max-h-48 overflow-y-auto px-2 py-1">
-            {visible.map((c) => (
-              <li
-                key={candidateKey(c.surface)}
-                className="flex items-center gap-1 py-1 text-[11px]"
-              >
-                <span className="min-w-0 flex-1 truncate">
-                  <span className="font-medium">{c.surface}</span>
-                  <span className="ml-1 text-sky-700/70 dark:text-sky-300/70 tabular-nums">
-                    {t("codex.candidates.occurrences", { count: c.count })}
+            {visible.map((c) => {
+              const j = judgments.get(candidateKey(c.surface));
+              const aliasName = j?.aliasOfId
+                ? entries.find((e) => e.id === j.aliasOfId)?.name
+                : undefined;
+              return (
+                <li
+                  key={candidateKey(c.surface)}
+                  className="flex items-center gap-1 py-1 text-[11px]"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1">
+                      <span className="truncate font-medium">{c.surface}</span>
+                      <span className="shrink-0 text-sky-700/70 dark:text-sky-300/70 tabular-nums">
+                        {t("codex.candidates.occurrences", { count: c.count })}
+                      </span>
+                      {j && (
+                        <span className="shrink-0 rounded bg-sky-500/15 px-1 text-[9px] uppercase tracking-wide">
+                          {t(`codex.candidates.type.${j.suggestedType}`)}
+                        </span>
+                      )}
+                    </span>
+                    {j && aliasName ? (
+                      <span className="block truncate text-[10px] text-amber-700 dark:text-amber-300">
+                        {t("codex.candidates.aliasHint", { name: aliasName })}
+                      </span>
+                    ) : j && j.summary ? (
+                      <span className="block truncate text-[10px] text-sky-700/70 dark:text-sky-300/70">
+                        {j.summary}
+                      </span>
+                    ) : null}
                   </span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void handleAccept(c)}
-                  title={t("codex.candidates.accept")}
-                  aria-label={t("codex.candidates.accept")}
-                  data-testid="codex-candidates-accept"
-                  className={`flex shrink-0 items-center gap-0.5 rounded px-1.5 py-1 font-medium text-sky-700 hover:bg-sky-500/20 hover:text-sky-900 dark:text-sky-300 dark:hover:text-sky-100 ${FOCUS_RING}`}
-                >
-                  <Plus className="h-3 w-3" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDismiss(c.surface)}
-                  title={t("codex.candidates.dismiss")}
-                  aria-label={t("codex.candidates.dismiss")}
-                  data-testid="codex-candidates-dismiss"
-                  className={`shrink-0 rounded p-1.5 text-sky-700/70 hover:bg-sky-500/20 hover:text-sky-900 dark:hover:text-sky-100 ${FOCUS_RING}`}
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </li>
-            ))}
+                  <button
+                    type="button"
+                    onClick={() => void handleAccept(c)}
+                    title={
+                      aliasName
+                        ? t("codex.candidates.acceptAlias", { name: aliasName })
+                        : t("codex.candidates.accept")
+                    }
+                    aria-label={t("codex.candidates.accept")}
+                    data-testid="codex-candidates-accept"
+                    className={`flex shrink-0 items-center gap-0.5 rounded px-1.5 py-1 font-medium text-sky-700 hover:bg-sky-500/20 hover:text-sky-900 dark:text-sky-300 dark:hover:text-sky-100 ${FOCUS_RING}`}
+                  >
+                    <Plus className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDismiss(c.surface)}
+                    title={t("codex.candidates.dismiss")}
+                    aria-label={t("codex.candidates.dismiss")}
+                    data-testid="codex-candidates-dismiss"
+                    className={`shrink-0 rounded p-1.5 text-sky-700/70 hover:bg-sky-500/20 hover:text-sky-900 dark:hover:text-sky-100 ${FOCUS_RING}`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </li>
+              );
+            })}
           </ul>
           <div className="flex items-center gap-2 border-t border-sky-500/20 px-2 py-1">
+            <button
+              type="button"
+              onClick={() => void handleJudge()}
+              disabled={judging || loading}
+              data-testid="codex-candidates-judge"
+              className={`flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium text-sky-700/90 hover:bg-sky-500/20 disabled:opacity-50 dark:text-sky-200 ${FOCUS_RING}`}
+            >
+              <Sparkles
+                className={`h-3 w-3 ${judging ? "animate-pulse" : ""}`}
+              />
+              {t("codex.candidates.judge")}
+            </button>
             <button
               type="button"
               onClick={reload}

@@ -1716,7 +1716,17 @@
       "acceptFailed": "Couldn't create the entry",
       "restoreHidden": "Show {{count}} dismissed",
       "allDismissed": "{{count}} proper-noun candidate(s) dismissed",
-      "show": "Show"
+      "show": "Show",
+      "judge": "Evaluate with AI",
+      "judgeFailed": "AI evaluation failed",
+      "acceptAlias": "Add as an alias of \"{{name}}\"",
+      "aliasHint": "alias of \"{{name}}\"?",
+      "type": {
+        "character": "Character",
+        "location": "Location",
+        "item": "Item",
+        "lore": "Lore"
+      }
     },
     "spoiler": {
       "unrevealedTooltip": "Not yet revealed as of this scene: {{titles}}"

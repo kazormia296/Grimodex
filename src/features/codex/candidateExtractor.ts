@@ -19,6 +19,8 @@ export interface CodexCandidate {
   count: number;
   /** 読書順で最初に出現したシーン (初出シーンへのジャンプ用)。 */
   firstSceneId: string;
+  /** 初出箇所の周辺一文 (LLM 種別判定の文脈サンプル用)。 */
+  context: string;
 }
 
 /**

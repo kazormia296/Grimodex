@@ -12,6 +12,7 @@ function cand(surface: string, count = 2): CodexCandidate {
     lemma: surface,
     count,
     firstSceneId: "s1",
+    context: "",
   };
 }
 
