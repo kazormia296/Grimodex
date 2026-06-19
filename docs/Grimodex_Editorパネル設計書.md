@@ -69,7 +69,8 @@ EditorパネルはGrimodexの中核コンポーネント。TipTapベースのリ
 - Codexパネルの詳細画面「Open in Editor」ボタン、またはSnippetの展開表示「Open in Editor」ボタンで開く
 - タブアイコンで区別: Codexは該当typeのカラードット、Snippetは🗂アイコン
 - タブタイトル: Codexは「{エントリ名}」、Snippetは「{Snippet title}」
-- エディタ上部にバナー表示: Codexは「Editing Codex entry — changes are saved to {type}: {name}」（typeカラードット付き）、Snippetは「Editing Snippet — changes are saved to Snippets」
+- エディタ上部にバナー表示: Codexは「Codex エントリ編集中 — {name}」（英語版では「Editing Codex Entry — {name}」、typeカラードット付き）、Snippetは「スニペット編集中 — {title}」（英語版では「Editing Snippet — {title}」）
+  > **（2026-06-20 追記）** バナー文言はロケールキー `editor.ribbon.codexEditing`（ja=「Codex エントリ編集中」/ en=「Editing Codex Entry」）・`editor.ribbon.snippetEditing`（ja=「スニペット編集中」/ en=「Editing Snippet」）に名前（`— {name}` / `— {title}`）を続けて表示する。旧記述の「changes are saved to {type}: {name}」「changes are saved to Snippets」句は実装されていない（`EditorPane.tsx` の CodexMode / SnippetMode バナー）。
 - 保存先は既存のCodex/SnippetのDBレコード（contentカラム）
 - プレビュータブとして開く動作は無し（常に固定タブ）
 - **Chat連携**: Codex/Snippetタブがアクティブの場合、Chatパネルのコンテキスト（Layer 3）にはCodex/Snippetのcontent全文が注入される。ヘッダーの表示は「Codex: {エントリ名}」または「Snippet: {title}」に切り替わる
@@ -1527,7 +1528,9 @@ Beat システムの Phase A は実装済み。Phase B として `SceneMetaPanel
 
 ### `/` コマンド
 
-本文中で `/` を押すとコマンドメニューが開き、`Scene beat` / `Continue writing`（= 即時生成つき beat） を選択可能。`Ctrl+Shift+B` ショートカットも提供。
+本文中で `/` を押すとコマンドメニューが開き、インライン AI コマンド 9 個（`continue`, `rewrite`, `describe`, `dialogue`, `shorten`, `expand`, `tone`, `translate`, `custom`）およびシーン Beat 挿入コマンド（`Scene beat` = `sceneBeat`）の全 10 個から選択可能。`Ctrl+Shift+B` ショートカットも提供。
+
+> **（2026-06-20 追記）** `/` メニューは旧記述の `Scene beat` / `Continue writing` 2 項目ではなく、`inlineAiCommands.ts` の `COMMAND_DEFS`（AI 系 9 + 構造系 `sceneBeat` の計 10 件）を `getVisibleInlineAiCommands()` のフィルタ後にすべて表示する。
 
 ### ツールバー
 

@@ -450,26 +450,40 @@ TipTapの独自ノード/マークのエクスポート方法を設定する。
 - HTML出力形式を選択中の場合でも、コピーはプレーンテキストとしてクリップボードに書き込む（HTMLタグ含む文字列）
 - ファイル保存ダイアログは開かない（コピーのみで完結）
 
-### エクスポート実行フロー
+### エクスポート実行フロー（2026-06-20 改訂: PIO-2 実装に追従）
+
+> 設計初期稿では renderer 側が `@tauri-apps/plugin-dialog` の `save()` で保存先を取得し、`@tauri-apps/plugin-fs` の `writeTextFile()` でユーザーが選んだフルパスへ書き込む方式を記していた。security audit PIO-2（パストラバーサル防止）に基づき実装を変更し、**保存ダイアログを開くのも書き込むのも Rust 側**へ移した。renderer は保存先パスを一切受け取らず・渡さない。本フローは現行実装（`src-tauri/src/commands/export.rs` / `src/lib/exportFile.ts`）に追従した記述。
 
 1. [エクスポート] クリック
-2. 保存ダイアログを表示してパスを取得し、ファイルへ書き込む
-   - デフォルトファイル名: `{プロジェクトタイトル}.{拡張子}`（例: `My Fantasy Novel.txt`）
-   - **Tauri 環境**: `@tauri-apps/plugin-dialog` の `save()` で OS ネイティブの保存ダイアログを表示。出力形式に応じた filter（Markdown / Plain Text / HTML）を渡す。確定後 `@tauri-apps/plugin-fs` の `writeTextFile()` でユーザーが選んだフルパスへ書き込む
-   - **ブラウザ環境（dev サーバー / vitest）**: 従来通り `Blob` + `<a download>` でデフォルトダウンロードフォルダに保存（フォールバック）
-   - 環境判定は `"__TAURI_INTERNALS__" in window`
+2. renderer の `saveTextFile()`（バイナリは `saveBinaryFile()`）が、出力内容・推奨ファイル名・出力形式に応じたフィルタ（Markdown / Plain Text / HTML）のみを IPC で Rust へ渡す。書き込み先パスは渡さない
+   - 推奨ファイル名: `{プロジェクトタイトル}.{拡張子}`（例: `My Fantasy Novel.txt`）
+   - **Tauri 環境**（`isTauri()` 判定）: `export_save_text` / `export_save_bytes` コマンドを invoke。Rust 側の `prompt_save_path()` が `tauri_plugin_dialog` の `blocking_save_file()` で OS ネイティブの保存ダイアログを開き、ユーザーが選んだパスへ `std::fs::write()` で書き込む。保存できたら絶対パス文字列、キャンセル時は `null` を返す
+   - **ブラウザ環境（dev サーバー / vitest）**: 従来通り `Blob` + `<a download>` でデフォルトダウンロードフォルダに保存し、推奨ファイル名を返す（フォールバック）
 3. 完了後、トースト通知: `エクスポート完了: {ファイル名またはフルパス}`
-4. 保存ダイアログでキャンセル（path = null）された場合はトーストも出さず無音で終了
+4. 保存ダイアログでキャンセル（戻り値 = null）された場合はトーストも出さず無音で終了
 5. ダイアログは閉じない（連続エクスポート可能）
 
-### 必要な Tauri capability
+### Tauri capability（Security Audit PIO-2 適用）
 
-`src-tauri/capabilities/default.json` に以下が必要:
+> **（2026-06-20 追記）変更履歴**: 設計初期稿では renderer 側に `dialog:allow-save` と `fs:allow-write-text-file`（`scope: $HOME/**`）の権限を想定していました。ただし security audit PIO-2 に基づき実装を変更し、保存ダイアログと書き込みをすべて Rust 側で担当する設計に統一しました。
 
-- `dialog:allow-save`
-- `fs:allow-write-text-file`（`scope: $HOME/**`）
+**実装方式**:
 
-書き込み先がホームディレクトリ外（例: `/tmp` 直下、ルート、外付けデバイスを mount していないパス）になる場合は permission denied になり、エラーハンドリング経由で toast.error が出る。スコープ拡張は別途検討事項。
+- Rust 側（`export.rs`）で `tauri_plugin_dialog` の `blocking_save_file()` でネイティブ保存ダイアログを開く
+- ユーザー選択のパスを Rust 側で受け取り、同じく Rust 側で `std::fs::write()` で書き込む
+- Renderer は出力内容（テキスト）と推奨ファイル名のみを IPC で渡し、書き込み先パスの制御権をもたない
+
+**結果**:
+
+- Renderer に `fs:write` capability 不要（撤廃済）
+- 侵害された renderer でも任意パスへの silent write 不可（保存ダイアログ由来の user-chosen path のみ）
+- Save-anywhere 選択肢は維持（ユーザーがダイアログで任意場所を選択可能）
+
+**権限要件**:
+
+- `src-tauri/capabilities/default.json` に必要: `dialog:default` ✓（既存） + `dialog:allow-open` ✓（既存）のみ
+- `dialog:allow-save` 不要（Rust 側実装）
+- `fs:allow-write-text-file` 不要（Renderer が path を制御しないため）
 
 ### エラーハンドリング
 

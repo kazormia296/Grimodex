@@ -53,15 +53,24 @@ Mark.create({
 
 **CSS**: `span.emphasis-dots { text-emphasis: filled sesame; text-emphasis-position: over right; }`
 
-**Markdown 変換**:
+**Markdown 変換**（当初設計）:
 - エクスポート: `《圏点:テキスト》` 形式に変換
 - インポート: `《圏点:(.+?)》` パターンを検出して EmphasisDotsMark に変換
 - `tiptap-markdown` のカスタム serializer/parser で対応
 
-**テスト**: `EmphasisDotsMark.test.ts`
-- マーク適用・解除の往復テスト
-- HTML parse/render の一致確認
-- Markdown エクスポート・インポートの一致確認
+> （2026-06-20 追記・未実装）現状の `EmphasisDotsMark.ts` は `parseHTML()` /
+> `renderHTML()` による HTML ラウンドトリップとキーボードショートカット（`Mod-.`）の
+> みを定義しており、`addStorage()` による markdown serializer/parser は持たない。
+> `《圏点:…》` 形式の Markdown 変換は **未実装（deferred）** であり、出力整形は
+> exportEngine 側に委譲されている。Markdown ラウンドトリップが必要になった時点で
+> `addStorage()` を追加する。
+
+**テスト**:
+> （2026-06-20 追記・未実装）`EmphasisDotsMark.test.ts` は未作成（deferred）。
+> 作成する場合は以下を最低限カバーする:
+> - マーク適用・解除の往復テスト
+> - HTML parse/render の一致確認
+> - （Markdown 変換を実装した場合）Markdown エクスポート・インポートの一致確認
 
 #### B. 新規 Mark: CommentMark（インラインコメント）— タスク C-2
 
@@ -99,9 +108,11 @@ Mark.create({
 
 **Markdown 変換**: コメントは **エクスポートに含めない**（本文テキストではないため）
 
-**テスト**: `CommentMark.test.ts`
-- 属性（text, createdAt）の保持確認
-- inclusive: false の動作確認（コメント末尾での入力が非コメントになること）
+**テスト**:
+> （2026-06-20 追記・未実装）`CommentMark.test.ts` は未作成（deferred）。
+> 作成する場合は以下をカバーする:
+> - 属性（text, createdAt）の保持確認
+> - inclusive: false の動作確認（コメント末尾での入力が非コメントになること）
 
 #### C. 新規 Node: SceneBreakNode — タスク C-2
 
@@ -127,16 +138,19 @@ Node.create({
 
 #### D. 追加すべき公式拡張
 
-現在 `StarterKit` のみだが、設計書は以下の公式拡張を要求:
+以下の公式拡張の多くは `StarterKit` に含まれます。明示的追加が必要なもの:
 
 | パッケージ | 用途 | 設定 |
 |-----------|------|------|
-| `@tiptap/extension-underline` | 下線マーク | `Ctrl+U` |
 | `@tiptap/extension-link` | ハイパーリンク | `Ctrl+K` でダイアログ |
 | `@tiptap/extension-placeholder` | 空エディタのプレースホルダー | `placeholder: 'ここに書き始める...'` |
 | `@tiptap/extension-character-count` | 文字数カウント | `storage.characters()` でステータスバーに表示 |
 | `@tiptap/extension-typography` | スマートクォート自動変換 | デフォルト設定 |
-| `@tiptap/extension-focus` | フォーカスクラス付与 | FocusDim デコレーションの前提 |
+
+> （2026-06-20 追記）
+> - **Underline**: `StarterKit` v3.22+ に含まれるため、明示 import 不要（`Ctrl+U` も既定で有効）。
+> - **`@tiptap/extension-focus`**: 採用していない。フォーカスのディミングは自前の
+>   `FocusModePlugin`（ProseMirror Plugin）で実装しており、`.has-focus` クラスや本拡張には依存しない。
 
 **実装手順**:
 1. `pnpm install` で各パッケージ追加
@@ -144,21 +158,25 @@ Node.create({
 3. Toolbar にボタン追加（Underline, Link）
 4. 既存テストのリグレッション確認
 
-#### E. 新規 ProseMirror Plugin: FocusDim — タスク C-2
+#### E. 新規 ProseMirror Plugin: FocusMode — タスク C-2
+
+> （2026-06-20 追記）実装はファイル名・識別子ともに **FocusMode** で命名済み
+> （`@tiptap/extension-focus` の `.has-focus` クラスには依存せず、自前で現在ブロックを判定する）。
+> デコレーション構築の主エクスポートは `buildFocusDimDecorations()` ユーティリティ関数で、
+> `createFocusModePlugin(getFocusMode)` がそれを `state.apply` で呼び出す。
 
 ```typescript
-// src/features/editor/FocusDimPlugin.ts
-// Focus 拡張が付与する `.has-focus` クラスを利用
-// 現在の段落以外に opacity: 0.3 を適用するデコレーション
+// src/features/editor/FocusModePlugin.ts
+// 現在のブロック以外に focus-dimmed クラス（opacity dim）を適用するデコレーション
 
-function createFocusDimPlugin(): Plugin {
+function createFocusModePlugin(getFocusMode: () => boolean): Plugin {
   return new Plugin({
-    key: focusDimKey,
+    key: focusModeKey,
     props: {
       decorations(state) {
-        if (!enabled) return DecorationSet.empty;
-        const focusPos = state.selection.$head.start(1); // ブロックレベル
-        // focusPos のブロック以外に Decoration.node() で opacity 適用
+        if (!getFocusMode()) return DecorationSet.empty;
+        // buildFocusDimDecorations() が現在ブロック以外に
+        // Decoration.node() で focus-dimmed クラスを適用
       },
     },
   });
@@ -187,15 +205,14 @@ function createFocusDimPlugin(): Plugin {
 ```typescript
 export function getEditorExtensions(): Extensions {
   return [
-    StarterKit,
+    StarterKit, // Underline（Ctrl+U）含む — 明示 import 不要
     Markdown.configure({ html: true }),
     // 公式拡張
-    Underline,
     Link.configure({ openOnClick: false }),
     Placeholder.configure({ placeholder: 'ここに書き始める...' }),
     CharacterCount,
     Typography,
-    Focus.configure({ className: 'has-focus', mode: 'deepest' }),
+    // ※ @tiptap/extension-focus は不採用。FocusModePlugin を動的登録する。
     // カスタム Mark
     AuthorshipMark,
     EmphasisDotsMark,
@@ -207,7 +224,7 @@ export function getEditorExtensions(): Extensions {
 }
 // 動的プラグイン（React hooks 経由、変更なし）:
 // CodexHighlightPlugin, AttributionPlugin, AiEditedPlugin,
-// InsertHighlight, FocusDimPlugin
+// InsertHighlight, FocusModePlugin
 ```
 
 ### 1.4 Toolbar の最終形（全ボタン追加後）
@@ -337,57 +354,48 @@ interface ClipboardAuthorship {
 
 **`clipboardAttribution.ts` の改修**:
 
-```typescript
-// 1. copyWithAttribution() を拡張
-export async function copyWithAttribution(
-  segments: AttributedSegment[],  // 単一→配列に変更
-): Promise<void> {
-  const plainText = segments.map(s => s.text).join('');
-  const html = segments.map(s =>
-    `<span data-grimodex-source="${s.source}">${escapeHtml(s.text)}</span>`
-  ).join('');
-  const authorship: ClipboardAuthorship = {
-    version: 1,
-    segments: segments.map(s => ({
-      text: s.text,
-      length: s.text.length,
-      source: s.source,
-      ...(s.model && { model: s.model }),
-      ...(s.chatMessageId && { chatMessageId: s.chatMessageId }),
-    })),
-  };
+> （2026-06-20 追記）現状の実装は **copy（書き込み）と paste（解析）で型が非対称**:
+> - **copy**: `copyWithAttribution(text: string, source: AuthorshipSource)` は単一の
+>   text/source ペアを受け取る。Chat AI メッセージのコピーは別関数
+>   `copyChatMessageWithAttribution(text, messageId, model?)` が担い、こちらは
+>   `web application/x-grimodex-authorship` MIME（"web " prefix 付き、Chrome 101+）も
+>   試行し、未対応環境では HTML / plain text へフォールバックする。
+> - **paste**: `parseClipboardHtml(html)` が `AttributedSegment[]` 配列を返す（解析側のみ
+>   セグメント配列を扱う）。混在ソースの本文コピーは HTML の `data-authorship` / `data-pm-slice`
+>   から復元する。
+> 以下のコード例は「単一ソースの copy」と「配列を返す paste」を分離して示す。
 
+```typescript
+// 1. copyWithAttribution() — 単一の text/source ペアを受け取る（現在の実装と一致）
+export async function copyWithAttribution(
+  text: string,
+  source: AuthorshipSource,
+): Promise<void> {
+  const html = `<span data-grimodex-source="${source}">${escapeHtml(text)}</span>`;
   const item = new ClipboardItem({
-    'text/plain': new Blob([plainText], { type: 'text/plain' }),
+    'text/plain': new Blob([text], { type: 'text/plain' }),
     'text/html': new Blob([html], { type: 'text/html' }),
-    'application/x-grimodex-authorship': new Blob(
-      [JSON.stringify(authorship)],
-      { type: 'application/x-grimodex-authorship' }
-    ),
   });
   await navigator.clipboard.write([item]);
 }
 
-// 2. parseClipboard() で MIME を優先チェック
-export async function parseClipboard(): Promise<AttributedSegment[] | null> {
-  const items = await navigator.clipboard.read();
-  for (const item of items) {
-    // 優先: カスタム MIME
-    if (item.types.includes('application/x-grimodex-authorship')) {
-      const blob = await item.getType('application/x-grimodex-authorship');
-      const json: ClipboardAuthorship = JSON.parse(await blob.text());
-      return json.segments;
-    }
-  }
-  // フォールバック: 既存の HTML パース
-  // ...existing parseClipboardHtml() logic...
+// 2. parseClipboardHtml() — ペースト時に AttributedSegment[] 配列を返す（解析用）
+//    data-grimodex-source（Codex/Snippet/Chat コピー）または
+//    data-authorship / data-pm-slice（エディタ本文コピー）から復元する。
+export function parseClipboardHtml(
+  html: string | undefined,
+): AttributedSegment[] | null {
+  // ...HTML をパースして混在セグメントを抽出...
   return null;
 }
 ```
 
-**互換性**:
-- カスタム MIME は Grimodex 内部のコピペでのみ使用
-- `text/html` の `data-grimodex-source` は **フォールバックとして残す**（MIME 非対応環境への保険）
+**互換性 / 今後の拡張**:
+- `text/html` の `data-grimodex-source` を一次経路とし、`data-authorship` をフォールバックに残す
+- 複数ソース混在のコピーが必要になった場合は、`copyWithAttribution()` のシグネチャ拡張
+  （配列受け取り）か、呼び出し側での複数回呼び出しを検討する
+- カスタム MIME `application/x-grimodex-authorship` は現状 Chat メッセージコピー
+  （`copyChatMessageWithAttribution`）でのみ "web " prefix 付きで試行している
 - 外部からのペーストは従来通り HTML フォールバック → `null` → `unknown`
 
 **SceneEditor.tsx の handlePaste 改修**:
@@ -607,10 +615,30 @@ App.tsx
           読み取り専用 TipTap インスタンスに適用
 ```
 
-### 5.3 実装の要点
+### 5.3 実装: 目的別に分散された diff 関数
+
+> （2026-06-20 追記）Diff 機能は **統一モジュール（`src/features/revision/diffUtils.ts`）として
+> 実装されていない**。実際には用途に応じて **2 つの機能モジュール** に分かれている:
+>
+> **1. `src/features/snippets/snippetDiff.ts`**（属性追跡用）
+> - `computeAttributedSegments(originalContent, currentContent)` — AI 原文との diff から、
+>   各テキストセグメントを `'ai'`（EQUAL）または `'human'`（INSERT）として分類（DELETE はスキップ）
+> - Snippet テキスト編集の帰属管理に使用
+> - テスト: `snippetDiff.test.ts`
+>
+> **2. `src/features/timelapse/bodyDiff.ts`**（タイムラプス表示用）
+> - `computeBodyDiff(before, after)` / `computeDocDiff(beforeJson, afterJson)` —
+>   ProseMirror JSON またはプレーンテキストの差分を compact フォーマットで返す
+> - Codex/Snippet/Map 本文の変更履歴を payload サイズに最適化
+>   （`EQ_CONTEXT=24` 字に切り詰め、`MAX_TOTAL_CHARS=8000` 字で truncate）して記録
+> - テスト: `bodyDiff.test.ts`
+>
+> 両者とも `diff-match-patch` を使用し、`diff_main()` + `diff_cleanupSemantic()` で生成する。
+> 以下の `computeDiff` / `diffsToDecorations` は、リビジョン比較ビュー（読み取り専用 TipTap への
+> デコレーション適用）を実装する際の **当初設計の参考コード** として残す。
 
 ```typescript
-// src/features/revision/diffUtils.ts
+// 当初設計（リビジョン diff デコレーションの参考）
 import DiffMatchPatch from 'diff-match-patch';
 
 const dmp = new DiffMatchPatch();
@@ -686,7 +714,8 @@ export function diffsToDecorations(
 ### 5.5 テスト戦略
 
 ```typescript
-// src/features/revision/diffUtils.test.ts
+// 当初設計（リビジョン diff ビュー）の参考テスト
+// ※ 現状の実装テストは snippetDiff.test.ts / bodyDiff.test.ts を参照
 describe('computeDiff', () => {
   it('同一テキスト → diff なし');
   it('末尾追加 → DIFF_INSERT のみ');
@@ -712,20 +741,19 @@ describe('diffsToDecorations', () => {
 | ファイル | パス | タスク |
 |---------|------|--------|
 | EmphasisDotsMark.ts | `src/features/editor/` | C-2 |
-| EmphasisDotsMark.test.ts | `src/features/editor/` | C-2 |
 | CommentMark.ts | `src/features/editor/` | C-2 |
-| CommentMark.test.ts | `src/features/editor/` | C-2 |
 | CommentPopover.tsx | `src/features/editor/` | C-2 |
 | SceneBreakNode.ts | `src/features/editor/` | C-2 |
-| SceneBreakNode.test.ts | `src/features/editor/` | C-2 |
-| FocusDimPlugin.ts | `src/features/editor/` | C-2 |
+| FocusModePlugin.ts | `src/features/editor/` | C-2 |
 | ChatInput.tsx | `src/features/chat/` | D-16 |
 | PanelToggleDropdown.tsx | `src/features/layout/` | A-2 |
 | PanelHighlightOverlay.tsx | `src/features/layout/` | A-2 |
 | panelRegions.ts | `src/features/layout/` | A-2 |
 | DockZone.tsx | `src/features/layout/` | A-3 |
 | layoutStore.ts | `src/features/layout/` | A-1 |
-| diffUtils.ts | `src/features/revision/` | F-6 |
-| diffUtils.test.ts | `src/features/revision/` | F-6 |
+| snippetDiff.ts | `src/features/snippets/` | F-6 |
+| snippetDiff.test.ts | `src/features/snippets/` | F-6 |
+| bodyDiff.ts | `src/features/timelapse/` | F-6 |
+| bodyDiff.test.ts | `src/features/timelapse/` | F-6 |
 | RevisionHistoryModal.tsx | `src/features/revision/` | F-5 |
 | revisionHistoryStore.ts | `src/features/revision/` | F-2 |

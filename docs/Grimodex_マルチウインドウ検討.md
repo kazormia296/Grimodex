@@ -22,25 +22,26 @@
 
 ## 1. どのパネルを出すか（参照価値の棚卸し）
 
-16 パネル（`src/features/layout/panelIds.ts:2-18` 列挙 → `panelComponents.tsx:27-44` で component、`panelRegions.ts` で region マップ）を「常時表示の参照窓」観点で分類。`editor` は中央執筆面でスコープ外。
+18 パネル（`src/features/layout/panelIds.ts:3-20` 列挙 → `panelComponents.tsx:30-47` で component、`panelRegions.ts:10-26` で region マップ）を「常時表示の参照窓」観点で分類。`editor` は中央執筆面でスコープ外。
 
 ### 高価値（read 優位・glanceable・write は意図的）
 
 | パネル | file | 価値 | 備考 |
 |---|---|---|---|
 | **Codex Quick** | `src/features/tree/CodexQuickPanel.tsx:14` | 高 | アクティブシーンに自動追従し、必要な用語/設定だけ出す。最軽量・read-mostly。**第一候補** |
-| **Foreshadow（伏線）** | `src/features/foreshadow/ForeshadowPanel.tsx:1` | 高 | 未回収の設定を常時可視化。落とし防止。write は `setSetupStrength` 等の意図操作のみ |
-| **Matrix（シーン×キャラ出現表）** | `src/features/matrix/MatrixPanel.tsx:38` | 高 | 「X は 3 章以降出てる？」を一目で。継続性チェック。write は明示的セル toggle のみ |
+| **Related Scenes（関連シーン）** | `src/features/related-scenes/RelatedScenesPanel.tsx:36` | 高 | アクティブシーンに自動追従し、類似/関連シーンを hybrid 検索で提示。read 専用・glanceable で参照窓向き |
+| **Foreshadow（伏線）** | `src/features/foreshadow/ForeshadowPanel.tsx:259` | 高 | 未回収の設定を常時可視化。落とし防止。write は `setSetupStrength` 等の意図操作のみ |
+| **Matrix（シーン×キャラ出現表）** | `src/features/matrix/MatrixPanel.tsx:39` | 高 | 「X は 3 章以降出てる？」を一目で。継続性チェック。write は明示的セル toggle のみ |
 | **Timeline** | `src/features/timeline/TimelinePanel.tsx:17` | 高 | 時系列/構成の俯瞰。drag で storyTime 変更（`updateStoryTime` :116-138）はあるが意図操作 |
 | **Codex 本体** | `src/features/codex/CodexManagementPanel.tsx:1` | 高（read 限定） | 設定資料の全文・検索・タグ。ただし編集ペイン内蔵（`EditorPane` :1146）なので read 用途に限定する前提 |
 
 ### 中価値
 
-Scenes/Tree（構造俯瞰だが主ナビゲータ＝グローバル `activeSceneId` を駆動）／Snippets（コピー元の棚だが detail は編集可）／Attribution（read-only 著者率ダッシュボードだが定期確認メトリック）／Kouetsu 校閲（read-out 中心だがアクション志向）／Map・相関図（関係/世界の参照価値は高いが React Flow が node drag を即 persist＝誤編集リスク `MapCanvas.tsx:615,869,1255,1698`）。
+Scenes/Tree（構造俯瞰だが主ナビゲータ＝グローバル `activeSceneId` を駆動）／Snippets（コピー元の棚だが detail は編集可）／Attribution（read-only 著者率ダッシュボードだが定期確認メトリック）／Writing Stats（`src/features/writing-stats/WritingStatsPanel.tsx:18`。執筆量/ヒートマップ/完走ペースの read-only メトリクスだが glanceable よりは定期確認向き）／Kouetsu 校閲（read-out 中心だがアクション志向）／Map・相関図（関係/世界の参照価値は高いが React Flow が node drag を即 persist＝誤編集リスク `MapCanvas.tsx:615,869,1255,1698`）。
 
 ### 不適（常時表示の受動窓に向かない）
 
-Chat / Chat History（フォーカスを奪う AI 入力・ナビ）／Command Center（入力前提の一時 UI、選択でエディタが飛ぶ）／Grid（最重量 dnd、並べ替えが即 persist で誤操作・無駄）／Trash Bin（たまに使う復旧ツール＋背景 prune）。
+Chat / Chat History（フォーカスを奪う AI 入力・ナビ）／Command Center Results（`src/features/commandCenter/CommandCenterResultsPanel.tsx:24`。入力前提の一時 UI＝検索結果リスト、選択でエディタが飛ぶ）／Grid（最重量 dnd、並べ替えが即 persist で誤操作・無駄）／Trash Bin（たまに使う復旧ツール＋背景 prune）。
 
 ### 現実的な参照窓ロードアウト
 
@@ -59,7 +60,7 @@ Chat / Chat History（フォーカスを奪う AI 入力・ナビ）／Command C
 | 資産 | file | 効能 |
 |---|---|---|
 | **共有 DB（`db_execute`）** | `src/db/client.ts:9` → `src-tauri/src/database.rs:13` | drizzle sqlite-proxy が全クエリを単一 `Mutex<Connection>`（WAL）へ。**DB は既に全窓共有**。窓 B が read するのは同じ invoke を撃つだけで**コード変更ゼロ** |
-| **`externalWriteFeed`（change_events ポーリング）** | `src/features/concurrency/externalWriteFeed.ts:243`（起動 `projectStore.ts:157`） | 750ms ごとに `change_events` を `sequence>cursor AND sessionId!=self` で取得し、tree/codex/snippet/foreshadow を再ロード。MCP/エージェントの second-writer 用に作った仕組み。窓 B は自前 sessionId を持つので**窓 A の書き込みが窓 B には「外部書き込み」に見え、自動再ロードされる** |
+| **`externalWriteFeed`（change_events ポーリング）** | `src/features/concurrency/externalWriteFeed.ts:243`（起動 `projectStore.ts:165`） | 750ms ごとに `change_events` を `sequence>cursor AND sessionId!=self` で取得し、tree/codex/snippet/foreshadow を再ロード。MCP/エージェントの second-writer 用に作った仕組み。窓 B は自前 sessionId を持つので**窓 A の書き込みが窓 B には「外部書き込み」に見え、自動再ロードされる** |
 | **Rust→全窓 broadcast emit** | `src-tauri/src/external_mount/watch.rs:165-190`（FE: `useExternalMountListener.ts`） | `app.emit(channel, payload)` は Tauri v2 で**全ウィンドウへ配信**。debounce→typed channel→全窓 listen→re-sync の形が既に動いている。**「project データが変わった」汎用 emit の理想テンプレ** |
 
 ### 2.3 推奨同期アーキテクチャ（HYDRATE + INVALIDATE）
@@ -136,7 +137,7 @@ URL ルーターは存在しない（`main.tsx:59-65` が単一 `<App/>` をマ�
 
 ## 6. editor detach がスコープ外である根拠
 
-- TipTap は `EditorPane.tsx:485` の `useEditor` でペインごとに**その窓の JS context にローカルなインスタンス**として生成、ProseMirror state・NodeView・編集中 doc が webview DOM に密結合 → 窓間でシリアライズ移送不可。
+- TipTap は `EditorPane.tsx:509` の `useEditor` でペインごとに**その窓の JS context にローカルなインスタンス**として生成、ProseMirror state・NodeView・編集中 doc が webview DOM に密結合 → 窓間でシリアライズ移送不可。
 - 保存経路も窓ローカル（`editorSaveRegistry`＝flush 正本、linear 用 `linearEditorStore.registerEditor`）。2 窓で同一シーン編集 → 各 TipTap が独立 doc を持ち、それぞれの unmount/pending flush が共有 DB 同一行へ書き戻し → **last-writer-wins で本文消失**（drizzle sqlite-proxy は invoke ごと独立で read-after-write 保証無し）。
 - 帰属追跡（human/ai/unknown）も単一編集サーフェス前提で、複数窓の編集主体を 1 doc に統合する契約が無い。
 

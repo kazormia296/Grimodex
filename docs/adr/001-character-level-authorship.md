@@ -81,26 +81,33 @@ Mark.create({
   name: 'authorship',
   addAttributes() {
     return {
-      source: { default: 'unknown' },    // 'human' | 'ai' | 'unknown'
-      model: { default: null },            // 'claude-sonnet-4.6' etc.
+      source: { default: 'human' },        // 'human' | 'ai' | 'unknown'
       timestamp: { default: null },        // ISO 8601
+      model: { default: null },            // 'claude-sonnet-4.6' etc.
       chatMessageId: { default: null },    // 抽出元チャットメッセージへの参照
+      traceId: { default: null },          // 生成トレース ID
+      toolName: { default: null },         // ソースツール名
+      toolVersion: { default: null },      // ソースツールバージョン
+      manualOverride: { default: false },  // ユーザーによる手動上書きフラグ
+      originalLength: { default: null },   // 編集前の元のテキスト長
     }
   },
 })
 ```
 
-`model` はAI生成テキストの生成モデルを記録し、Attributionパネルのモデル使用状況セクションで集計に使用する。
+`model` はAI生成テキストの生成モデルを記録し、Attributionパネルのモデル使用状況セクションで集計に使用する。`traceId` / `toolName` / `toolVersion` はソースツールの情報を記録し、監査用途に用いる。`manualOverride` はユーザーが手動でsource分類を変更したか（コンテキストメニューによる上書き）を示し、`originalLength` は編集前の元のテキスト長を記録して編集範囲の追跡に用いる。
+
+> source の既定値は `'human'`（キーボード入力経路）。出自が追跡できないテキスト（外部ペースト、インポート等）は付与経路側で明示的に `'unknown'` を設定する。（2026-06-20 追記: 実装に合わせて既定値および追加属性 `traceId` / `toolName` / `toolVersion` / `manualOverride` / `originalLength` を反映）
 
 ### 3. 永続化
 
-`authorship_spans` テーブルに文字位置ベースで保存。対象ドキュメントの種別に応じて `node_id`（Scene/Note）、`codex_entry_id`（Codex content）、`snippet_id`（Snippet content）のいずれか1つを設定する。
+`authorship_spans` テーブルに文字位置ベースで保存。対象ドキュメントの種別に応じて `node_id`（Scene/Note）、`codex_entry_id`（Codex entry）、`snippet_id`（Snippet）、`detail_value_id`（Codexカスタム詳細フィールド）、`sticky_id`（Map Sticky note）のいずれか1つを設定する（SQL CHECK で「いずれか1つだけが NOT NULL」を強制）。加えて `phase_id`（Codex phase固有のcontent）はオプショナルで、`codex_entry_id` が設定されている場合にのみ同時に設定可能（SQL CHECK で強制）。
 
 正規スキーマは統合DBスキーマ設計書（`Grimodex_統合DBスキーマ.md`）を参照。
 
 ### 4. クリップボードによるAuthorship伝搬
 
-アプリ内コピー時にカスタムMIMEタイプ `application/x-grimodex-authorship` でAuthorshipMarkのJSONを付与し、ペースト先で復元する。外部ペースト（MIME情報なし）は `unknown` にフォールバック。
+アプリ内コピー時にカスタムMIMEタイプ `web application/x-grimodex-authorship` でAuthorshipMarkのJSONを付与し（Chrome 101+で `ClipboardItem` にカスタムMIMEタイプを書き込むには「web」プレフィックスが必須）、ペースト先で復元する。外部ペースト（MIME情報なし）は `unknown` にフォールバック。
 
 詳細はEditorパネル設計書の「クリップボードのAuthorship伝搬」セクションを参照。
 

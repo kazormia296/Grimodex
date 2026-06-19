@@ -185,8 +185,21 @@ src-tauri/src/semantic/preview.rs     # slice_context (char_indices 1 パスで�
 
 ### 検索パネル (Dockview)
 
-`PanelId = "command-center-results"`、`Ctrl+Alt+K` でトグル。i18n タイトルは
-「検索」(en: "Search")。挿入位置は chat / chat-history と同じ right region。
+`PanelId = "command-center-results"`、`Ctrl+Shift+F` で開いてパネル内 input に
+focus する。i18n タイトルは「検索」(en: "Search")。挿入位置は chat / chat-history
+と同じ right region。
+
+> **（2026-06-20 追記 / drift 訂正）** 旧記述「`Ctrl+Alt+K` でトグル」は
+> コード上に存在しない。`keybindings.ts` の `getCommands()` には検索パネル用の
+> focus/toggle コマンド (`focusSearch` 相当) が登録されておらず、`PANEL_COMMANDS`
+> にも乗らないため、他パネルのような `Mod+Alt+*` 系トグルは効かない。検索パネルへの
+> 到達は **`Ctrl+Shift+F` のハードコードハンドラ** (`App.tsx:407-416`、`showPanel` で
+> 開いて `requestFocus()`) のみ。パネルの shortcut hint も `KEYBOARD_SHORTCUT_MAP`
+> (`panelRegions.ts:47`) で `Ctrl+Shift+F` を表示する。`Ctrl+Alt+K` トグルが必要なら
+> `getCommands()` に `{ id: "focusSearch", defaultBinding: "Mod+Alt+K",
+> panel: "command-center-results" }` を追加 (+ `keys.focusSearch` の ja/en キー) して
+> `PANEL_COMMANDS` 経由の汎用 togglePanel ループ (`App.tsx:432-447`) に乗せる必要がある
+> (未実装 / known gap)。
 
 ```
 ┌─ 検索パネル ────────────────────────────────┐
@@ -231,7 +244,7 @@ src-tauri/src/semantic/preview.rs     # slice_context (char_indices 1 パスで�
 | キーボード操作 | ↑↓ Enter Esc (selectedIndex) | hover/click 主体 |
 | 除外フィルタ | (適用なし — クエリ `-word` のみ反映) | source/type 除外を追加適用 |
 | プレビュー | なし | hover 400ms で前後 ±100 文字 |
-| 開閉 | フォーカス (Ctrl+Shift+P=command モード起動) | Ctrl+Alt+K (toggle) / Ctrl+Shift+F (開いて focus) |
+| 開閉 | フォーカス (Ctrl+Shift+P=command モード起動) | Ctrl+Shift+F (開いて focus)。`Ctrl+Alt+K` トグルは未実装 (上記 drift 訂正参照) |
 
 ### store / runtime の分離 (Phase A2)
 
@@ -548,7 +561,7 @@ multi-byte (日本語等) 安全。`chars().nth()` を複数回呼ぶより O(n)
 |---|---|---|
 | Ctrl+Shift+F | グローバル | 検索パネルを `showPanel` で開き、`useResultsPanelStore.requestFocus()` でパネル内 input に focus + select。`defaultPrevented` を尊重 (`App.tsx:410-416`) |
 | Ctrl+Shift+P | グローバル | バーに focus し、`"> "` をセットして command モードで起動 (`App.tsx:418-427`) |
-| Ctrl+Alt+K | グローバル | 検索パネル toggle |
+| ~~Ctrl+Alt+K~~ | — | **未実装 (drift)**: 検索パネル用の focus/toggle コマンドは `keybindings.ts` に登録されていない。検索パネルへの到達は上記 `Ctrl+Shift+F` のみ（2026-06-20 訂正、[検索パネル (Dockview)](#検索パネル-dockview) の追記参照） |
 | ↑ ↓ | バー input (popover open 中) | selectedIndex を移動 (bar-visible 範囲で clamp)。popover 閉じ中はキャレット移動 |
 | Enter | バー input (popover open + 結果あり) | `executeSelected()` |
 | Escape | バー input (open 中のみ) | `setOpen(false)` |

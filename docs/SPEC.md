@@ -1,7 +1,7 @@
 # Grimodex - 製品仕様書
 
-> バージョン: 0.2.0
-> 最終更新: 2026-04-02
+> バージョン: 0.8.0
+> 最終更新: 2026-06-18
 
 ## 1. 製品概要
 
@@ -133,6 +133,23 @@ OSのアプリケーションデータディレクトリに格納。全ワーク
 - `project.db` がルートに存在するディレクトリ → 既存ワークスペース
 - 空ディレクトリまたは存在しないパス → 新規ワークスペース作成可能
 - 上記以外（`project.db` がないファイルを含むディレクトリ）→ 無効
+
+### 2.6 外部ファイルマウント（File-backed Scenes）
+
+> **注（2026-06-18 追記）:** DB ネイティブのシーンに加え、外部の Markdown ファイルを
+> 実体とするシーン（file-backed scene）をサポートする。`src/features/external-mount/` を参照。
+
+- **URI 形式**: `external-root://<rootId>/<rel-path>`。マウント済みの外部ルート（rootId）
+  からの相対パスで実ファイルを指す
+- **トラッキング**: `tree_nodes` の `source_uri`（上記 URI）と `source_mtime`（最終同期した
+  ファイルの mtime, ISO 8601）で file-backed シーンを管理。DB ネイティブシーンは両方 null
+- **同期セマンティクス**: エディタ保存時にデバウンス付きで Markdown をファイルへ書き戻し、
+  mtime を更新する。外部からファイルが変更されたかを mtime で検知する
+- **競合解決**: エディタに未保存の変更がある状態で外部ファイルが変わった場合、
+  「ローカルを保持」か「再読み込み」かを選ばせる（ExternalEditConflictBanner）
+- **制限**: file-backed シーンは制限付きの TipTap 拡張（StarterKit ベース。ruby/authorship
+  などのカスタム Mark なし）を使い、Markdown のみのフォーマットで扱う。
+  管理は externalRootStore / mountManager 経由
 
 ---
 
@@ -268,9 +285,17 @@ CREATE TABLE chat_messages (
 );
 ```
 
-### 4.3 コンテキスト注入（5レイヤーモデル）
+### 4.3 コンテキスト注入（6レイヤー + RAG モデル）
 
-LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注入する:
+> **注（2026-06-18 更新）:** 初期設計の 5 レイヤーモデルは、L0（基本指示）・L6（コマンド指示）・
+> RAG（セマンティックリコール）・Focus subject の追加により拡張された。実装は
+> `contextBuilder.ts` を参照。
+
+LLM APIのシステムプロンプトに以下のレイヤーを階層的に注入する:
+
+**Layer 0: Base instruction（常時、trim 対象外）**
+- システムプロンプトの基本指示、カスタムチャット指示、ボディ書き込み制約
+- trim 対象外で常に注入（Agent モード時は agentInstruction を付加）
 
 **Layer 1: Project info（常時）**
 - プロジェクトタイトル、ジャンル、視点、文体ガイド、AI指示
@@ -281,6 +306,7 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - Synopsisが未記入のシーンはスキップ（本文フォールバックはしない — トークン爆発防止）
 - トークン予算に応じて、古いシーンのSynopsisから順に切り詰め（直近のシーンを優先）
 - シーンが Complete/Revision/Final に遷移した時点で未記入なら自動生成を提案（Scenesパネル設計書参照）
+- 末尾に「未回収の伏線」リストを追記（Phase 2）
 - 予算配分: コンテキストの ~10%
 
 **Layer 3: Current scene + previous（常時）**
@@ -288,7 +314,7 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - 直前のシーンの synopsis + 末尾段落（最大3段落）
 - 予算配分: コンテキストの ~40%
 
-**Layer 4: Codex entries + Snippets**
+**Layer 4: Codex entries + Snippets + Notes**
 - `context_mode` フィルタ: 各エントリの `context_mode` により注入可否を判定
   - `always`: 常に注入
   - `mentioned`: 現在のシーン内容にマッチした場合のみ
@@ -298,10 +324,23 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - 子エントリの自動注入: マッチした親エントリの子孫エントリのsummaryをサブツリートークン予算の範囲内でBFS順に自動追加
 - 予算配分: コンテキストの ~20%
 
-**Layer 5: Conversation history**
+**Layer 5: Conversation history（会話要約）**
 - 現在のセッションのメッセージ履歴
 - Progressive summarization方式（Chat設計書参照）
 - 予算配分: コンテキストの ~20%
+
+**Layer 6: Command instruction（一回限り、trim 対象外）**
+- スラッシュコマンド（/continue, /rewrite 等）で注入されるワンショット指示
+- trim 対象外で常に効く
+
+**RAG層（semantic recall）: 意味検索による過去シーン抜粋**
+- クエリ（直近ユーザー発話＋現在シーン本文末尾）毎に変動する投機的文脈
+- セッション途中で自動検索により見つかった過去シーン抜粋を注入（11.4 参照）
+- 予算超過時は他レイヤーより先に削られる（最初に切るべきレイヤー）
+
+**Focus subject（条件付き、trim 対象外）**
+- Codex/Snippet スコープのアンカー（この会話の主題を `<focus_subject>` ブロックで強調）
+- L3 スロット直後・L4 前に注入（常時ではなく、当該スコープ時のみ）
 
 **応答予約**: コンテキストの ~5%（最小2,000tok）
 
@@ -310,7 +349,7 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 - **比率ベース配分**: 使用モデルのコンテキスト上限に対する比率で各レイヤーの予算を動的に算出（8kモデルと1Mモデルで同じ比率が適用される）
 - 各レイヤーに最小トークン数（floor）を設定し、小コンテキストモデルでも最低限の機能を保証
 - 比率はSettings > AI > コンテキスト予算配分でカスタマイズ可能
-- 予算超過時の優先順位: Layer 1 > Layer 3 > Layer 2 > Layer 4 > Layer 5
+- **予算超過時の優先順位（削除順）**: RAG → L5 → L4 → L2 → L3 → L1（L0・L6・focusSubject は常に保持）
 - コンテキストバーに合計トークン数を常時表示
 
 ### 4.4 スラッシュコマンド
@@ -326,6 +365,52 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
 | `/brainstorm` | アイデアを自由に発散 |
 | `/rewrite` | 選択範囲を書き直し |
 | `/translate {lang}` | 指定言語に翻訳 |
+
+### 4.5 AI 使用ポリシーと権限制御
+
+> **注（2026-06-18 追記）:** 間接プロンプトインジェクション対策（security F-6）として、
+> AI 機能をプロジェクト単位でトグル制御する仕組みを導入した。`projects.ai_policy`
+> カラム（JSON）に保存する。
+
+**機能トグル:**
+
+| トグル | 制御対象 |
+|--------|---------|
+| `chat` | AIチャット全般 |
+| `bodyWrite` | 本文への書き込み提案（staged） |
+| `analysis` | 校閲・伏線・整合性などの分析系 AI |
+| `structureWrite` | AI による自律的なツリー scaffold（シーン/章/フォルダの構造書き込み） |
+| `knowledgeWrite` | AI による自律的な Codex / 伏線 / Snippet 書き込み |
+
+**プリセット（`preset.ts`）:**
+
+| プリセット | chat | bodyWrite | analysis | structureWrite | knowledgeWrite |
+|-----------|:----:|:---------:|:--------:|:--------------:|:--------------:|
+| `full` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `assist-off` | ✓ | ✗ | ✓ | ✓ | ✓ |
+| `review-only` | ✗ | ✗ | ✓ | ✗ | ✗ |
+| `off` | ✗ | ✗ | ✗ | ✗ | ✗ |
+| `custom` | （各トグルを個別指定） | | | | |
+
+> `structureWrite` は「本文代筆」ではなく構造の scaffold/再編なので、本文を禁じる
+> `assist-off` でも ON、`analysis` のみ／全停止では OFF になる。`knowledgeWrite` は
+> `structureWrite` とは別軸。
+
+**既定ポリシー:**
+
+- 新規/import プロジェクトの既定: `custom` プリセットで `structureWrite=false`・
+  `knowledgeWrite=false`（インジェクション防御の出口バックストップ）。chat/bodyWrite/
+  analysis は有効のまま
+- 既存プロジェクトは後方互換の `DEFAULT_AI_POLICY`（parse 時に全 true=full 相当）を据え置き
+  （遡及変更しない）
+
+**enforcement:**
+
+- 実アクションの前に `blockIfPolicyOff(feature)`（内部で `isAiFeatureBlockedByPolicy()`）で
+  早期 return する（`src/features/ai-policy/policyGuard.ts`）
+- 適用点: agent-writes の codex / snippet / tree / foreshadow など自律書き込み経路
+
+**ユーザー再設定パス:** 設定 > AI > 「使用ポリシー」パネルから再有効化できる。
 
 ---
 
@@ -389,25 +474,45 @@ Codexエントリは `parent_id` による自己参照で親子関係を表現�
 - 親エントリの下に子エントリをぶら下げる（例: 「カゾルミア帝国」→「帝国軍」→「第三師団」）
 - コンテキスト注入時: 親エントリがマッチした場合、depth 1 の子エントリの summary を自動追加
 - `codex_dismissed_relations` テーブル: システムが提案したリレーションをユーザーが却下した記録を保持（同じ提案を繰り返さない）
-- MVP UI: エントリごとのリレーション一覧（追加/削除）。グラフ可視化はpost-MVP。
+- MVP UI: エントリごとのリレーション一覧（追加/削除）。グラフ可視化は v0.8 の Map システムで出荷済み（14.1 参照）。
 
-### 5.4 チャットからの抽出
+### 5.4 Codexエントリの抽出
+
+> **注（2026-06-18 更新）:** 抽出は 2 系統に分化した。チャットレスポンスからの手動抽出
+> （5.4.1）と、プロジェクト本文からの候補抽出パイプライン（5.4.2、形態素×LLM）。
+
+#### 5.4.1 チャットからの抽出（AIレスポンス起点）
 
 各AIレスポンスに「Codex」ボタンを配置。クリックすると抽出ダイアログが開く。
-
-**2つの抽出モード:**
-
-| モード | 動作 | 用途 |
-|--------|------|------|
-| AI mode（デフォルト） | 軽量モデルがメッセージ内容からName/Type/Tagsを自動提案 | 素早い抽出 |
-| Manual mode | フィールドは空のまま表示、ユーザーが全て入力 | 手動で正確に登録 |
+ダイアログは単一モード（手動）で、サマリー欄にメッセージ本文を事前入力し、
+名前・タイプ・タグはユーザーが入力する。
 
 **抽出フロー:**
 1. AIがコンテンツを含むレスポンスを返す
 2. ユーザーが「Codex」ボタンをクリック
-3. ダイアログ表示: 名前、タイプ、タグ、サマリー、コンテンツ（AI modeでは事前入力）
+3. ダイアログ表示: 名前（必須）、タイプ、タグ、サマリー（メッセージ本文を事前入力）
 4. ユーザーが確認 → `codex_entries` レコード作成（メタデータ + コンテンツをDBに格納）
 5. `source_chat_message_id` で抽出元メッセージへの紐付けを保持
+
+#### 5.4.2 候補からの抽出（プロジェクト本文起点・形態素×LLM）
+
+Codex パネルの候補レポート（CodexCandidatesReport）は、まだ Codex に登録されていない
+未確定の固有名詞を、形態素解析 × LLM のパイプラインで自動的に発見する。読み取り専用の
+発見（自動書き込みなし）で、明示的に受理されるまで候補はレポートに留まる。
+
+**2段階の抽出:**
+
+- **段階1（B1・形態素）**: Rust バックエンドの `extract_codex_candidates` コマンドが
+  形態素解析を行い、まだ Codex に無い候補固有名詞を列挙する。各候補は surface（表記）・
+  lemma（UniDic 語彙素）・count（出現回数）・firstSceneId（初出シーン）・context（文脈抜粋）を返す。
+- **段階2（B2・LLM 判定）**: 任意の判定フェーズで LLM を呼び、候補をタイプ（character/location/
+  item/lore）に分類し、既存エントリの別名（alias）かどうかを判定する。analysis ポリシーで
+  gate される。
+
+各候補は次のいずれかの状態を取る:
+- 受理 → 新しい `codex_entries` を作成、または既存エントリの別名（aliases）に追加
+- 却下（dismiss）→ `project_settings`（`codex.candidates.dismissed` キー）に JSON 配列で記録し、再提案しない
+- 判定未実行なら保留（pending）
 
 ### 5.5 Snippets（テキスト断片）
 
@@ -433,6 +538,37 @@ CREATE TABLE snippets (
   updated_at              TEXT NOT NULL
 );
 ```
+
+### 5.6 内部整合性チェッカー（Codex Integrity Checker）
+
+Codexエントリ間の内部矛盾を検出し、ユーザーに可視化するシステム。エントリ本文との
+矛盾（それは consistency post-effect の担当）ではなく、Codex メタデータ自身の食い違いを
+検出する。本文や AI 推論を使わず、Codex メタデータ（name, aliases, excluded_aliases,
+relations）だけから即座に計算する純関数群で動く。
+
+**検出される3種類の問題:**
+
+| 問題タイプ | 説明 | 例 |
+|-----------|------|-----|
+| **別名衝突（Alias Collision）** | 同じ別名・エントリ名（正規化後）が複数エントリに属する | 「太郎」が「山田太郎」と「田中太郎」の両者の別名 |
+| **自己参照リレーション（Self-Relation）** | エントリが自身を指すリレーションを持つ（from === to） | エントリAがA→Aのリレーションを持つ |
+| **重複リレーション（Duplicate Relation）** | 同じ無向ペア + リレーションタイプが複数定義されている | A↔B の「組織に属する」が2件 |
+
+> **注:** リレーションの非対称（A→B はあるが B→A が無い）は、relation type に対称/非対称の
+> メタデータが無いため矛盾と判定しない（全 relation が該当してしまい誤検出になる）。
+
+**UI機能:**
+
+- CodexパネルのIntegrityReportセクション: 検出された問題をリスト表示（0件の場合は非表示）
+- 各問題の × ボタンで「非表示（dismiss）」化でき、状態は `project_settings` テーブル
+  （`codex.integrity.dismissed` キー）に安定キーの JSON 配列で永続化
+- 全件非表示時は「再表示」ボタンで復帰可能
+- 問題行をクリックして該当エントリを選択
+
+**実装特性:**
+
+- 非表示状態は作業者の「確認済み」マーク。プロジェクトスナップショット（バージョン履歴）には
+  含めない（content ではなく workflow state のため）
 
 ---
 
@@ -488,7 +624,7 @@ Jotai atoms（ローカル）:
 
 **AIチャットフロー:**
 1. ユーザーがメッセージを入力
-2. フロントエンドが5レイヤーコンテキストを構築（4.3節参照）
+2. フロントエンドが多層コンテキスト（6レイヤー + RAG）を構築（4.3節参照）
 3. Tauriコマンド: Rustバックエンド経由でAIプロバイダーにメッセージを送信
 4. レスポンスをフロントエンドにストリーミング
 5. レスポンスを「Insert」「Codex」「Snippet」「Copy」ボタン付きで表示
@@ -515,22 +651,141 @@ Jotai atoms（ローカル）:
 
 ### テーブル一覧
 
+> **注（2026-06-18 更新）:** v0.2 の MVP は 14 通常テーブル + 3 FTS5 仮想テーブルだったが、
+> v0.8 時点では Map・伏線・校閲・Post-Effect・スナップショット等の機能追加により
+> `schema.ts` は **62 個の通常テーブル** を宣言している（FTS5 仮想テーブルは別途）。
+> 以下は機能ドメイン別の概要。正規版は [`Grimodex_統合DBスキーマ.md`](Grimodex_統合DBスキーマ.md) を参照。
+
+**(1) コアプロジェクト:**
+
+| テーブル | 説明 |
+|---------|------|
+| `projects` | プロジェクトのメタ情報（タイトル、ジャンル、POV、文体ガイド、outline、target_readers、phase_resolution_mode、ai_policy 等） |
+| `tree_nodes` | Part/Chapter/Scene/Folder/Note の統一ツリー（fractional indexing、story-time 順、file-backed 用の source_uri/source_mtime 含む） |
+
+**(2) Codex システム:**
+
+| テーブル | 説明 |
+|---------|------|
+| `codex_types` | Codexエントリタイプ定義（ビルトイン4種 + カスタム） |
+| `codex_entries` | 世界設定エントリ（context_mode、aliases、excluded_aliases 含む） |
+| `codex_dismissed_relations` | リレーション提案のDismiss記録 |
+| `codex_tags` / `codex_entry_tags` | 構造化タグ定義 + エントリ↔タグ多対多 |
+| `codex_detail_definitions` / `codex_detail_values` | カスタムディテール定義（タイプごと）+ 値（エントリごと） |
+| `codex_relations` | エントリ間の名前付きリレーション（親子ツリーとは別軸の有向グラフ） |
+| `codex_quick_pins` | Codex Quick パネルのピン留め |
+| `codex_entry_phases` / `codex_phase_detail_overrides` | フェーズ（時間軸）別のエントリ状態とディテール上書き |
+
+**(3) チャット:**
+
+| テーブル | 説明 |
+|---------|------|
+| `chat_sessions` | チャットセッション（シーン or プロジェクトスコープ） |
+| `chat_messages` | チャットメッセージ（トークン数、メタデータ含む） |
+| `chat_message_prompts` | 送信時に確定した実プロンプトのキャプチャ（再構築不能なため別表で保持） |
+| `chat_session_pinned_codex` | セッションごとの Codex ピン留め（正規化） |
+| `chat_summaries` / `chat_summary_messages` | 会話の Progressive summarization と要約↔メッセージ対応 |
+
+**(4) コンテンツ管理:**
+
+| テーブル | 説明 |
+|---------|------|
+| `snippets` / `snippet_entry_tags` | 再利用テキスト断片 + タグ |
+| `content_versions` | 全コンテンツのリビジョン履歴 |
+| `authorship_spans` | AI帰属追跡スパン（source: human/ai/unknown） |
+| `prose_staging` | AI本文書き込みの staging（accept/reject 制御） |
+
+**(5) Map / 可視化:** 関係図・因果地図ボードを支える6テーブル。
+
+| テーブル | 説明 |
+|---------|------|
+| `map_boards` | ボード本体 |
+| `map_ai_branches` | AI 生成ブランチ |
+| `map_stickies` | 付箋ノード |
+| `map_node_positions` | ノード座標 |
+| `map_edges` | エッジ（関係線） |
+| `map_frames` | フレーム（グループ枠） |
+
+**(6) 校閲 / 品質（Lint）:** 校閲パネルの無視・辞書・操作ログを支える3テーブル。
+
+| テーブル | 説明 |
+|---------|------|
+| `lint_ignored_diagnostics` | 無視（ignore）された指摘 |
+| `lint_term_dictionary` | 用語辞書 |
+| `lint_action_log` | 校閲操作ログ |
+
+**(7) 伏線（Foreshadowing）:** 伏線の仕込み・回収を追跡する3テーブル。
+
+| テーブル | 説明 |
+|---------|------|
+| `foreshadows` | 伏線本体 |
+| `foreshadow_setups` | 仕込み（setup）位置 |
+| `foreshadow_codex_links` | 伏線↔Codex リンク |
+
+**(8) シーン解析:**
+
+| テーブル | 説明 |
+|---------|------|
+| `scene_codex_mentions` | シーン内 Codex 言及キャッシュ |
+| `scene_beat_pov_cache` | ビート/POV キャッシュ |
+| `scene_codex_pins` | シーンごとの Codex ピン留め |
+| `scene_lens_data` | シーンのレンズ解析データ（テンション値等） |
+| `scene_chunks` | セマンティック検索用チャンク + 埋め込み（11.4 参照） |
+
+**(9) Post-Effect / 注釈:** 校閲・整合性・影響レビュー等の post-effect 実行結果を支える3テーブル。
+
+| テーブル | 説明 |
+|---------|------|
+| `post_effect_runs` | post-effect 実行記録 |
+| `post_effect_annotations` | 注釈（疑似コメント・指摘等） |
+| `post_effect_annotation_relations` | 注釈間のリレーション |
+| `impact_review_baselines` | 影響レビューのベースライン |
+
+**(10) プロジェクト履歴（スナップショット）:** バージョン履歴を支える6テーブル。
+
+| テーブル | 説明 |
+|---------|------|
+| `project_snapshots` | スナップショット本体 |
+| `project_snapshot_entries` | 含まれるエントリ一覧 |
+| `project_snapshot_tree_nodes` | ツリーノードのスナップショット |
+| `project_snapshot_codex_entries` | Codex エントリのスナップショット |
+| `project_snapshot_snippets` | Snippet のスナップショット |
+| `project_snapshot_aux` | 補助スコープ（aux）のスナップショット |
+
+**(11) 設定・メタデータ:**
+
+| テーブル | 説明 |
+|---------|------|
+| `app_settings` | アプリ全体の Key-Value 設定（ドット記法: `editor.fontSize`） |
+| `project_settings` | プロジェクト単位の Key-Value 設定（aiPrompt.custom、codex.integrity.dismissed 等） |
+
+**(12) ラベル・整理:**
+
+| テーブル | 説明 |
+|---------|------|
+| `labels` / `tree_node_labels` | ラベル定義 + ツリーノード↔ラベル多対多 |
+| `trash_items` | 削除済みアイテムのゴミ箱 |
+
+**(13) 追跡・監査・統計:**
+
+| テーブル | 説明 |
+|---------|------|
+| `change_events` | 全編集の append-only ログ（sha256 チェーン検証可能、タイムラプス用） |
+| `state_snapshots` | リプレイ用の状態スナップショット |
+| `ai_usage` | AI トークン使用量台帳 |
+| `ab_comparisons` | A/B 比較記録 |
+| `generation_logs` | 生成ログ |
+
+**(14) 生成・テンプレート:**
+
+| テーブル | 説明 |
+|---------|------|
+| `prompt_templates` | プロンプトテンプレート |
+
+**FTS5 仮想テーブル（クエリ時専用、トリガーで自動同期）:**
+
 | テーブル | 種別 | 説明 |
 |---------|------|------|
-| `projects` | 通常 | プロジェクトのメタ情報（タイトル、ジャンル、POV、文体ガイド等） |
-| `tree_nodes` | 通常 | Part/Chapter/Scene/Folder/Note の統一ツリー（fractional indexing） |
-| `codex_types` | 通常 | Codexエントリタイプ定義（ビルトイン4種 + カスタム） |
-| `codex_entries` | 通常 | 世界設定エントリ（context_mode、aliases、excluded_aliases 含む） |
-| `codex_dismissed_relations` | 通常 | リレーション提案のDismiss記録 |
-| `codex_tags` | 通常 | 構造化タグ定義（タイプ関連付け付き） |
-| `codex_entry_tags` | 通常 | エントリ↔タグの多対多リレーション |
-| `codex_detail_definitions` | 通常 | カスタムディテール定義（タイプごと） |
-| `codex_detail_values` | 通常 | カスタムディテール値（エントリごと） |
-| `snippets` | 通常 | 再利用テキスト断片 |
-| `chat_sessions` | 通常 | チャットセッション（シーン or プロジェクトスコープ） |
-| `chat_messages` | 通常 | チャットメッセージ（トークン数、メタデータ含む） |
-| `authorship_spans` | 通常 | AI帰属追跡スパン（source: human/ai/unknown） |
-| `settings` | 通常 | Key-Value設定ストア（ドット記法: `editor.fontSize`） |
 | `codex_fts` | FTS5仮想 | Codexエントリの全文検索（name, aliases, summary, tags_cache） |
 | `snippets_fts` | FTS5仮想 | Snippetの全文検索（title, content, tags） |
 | `chat_messages_fts` | FTS5仮想 | チャットメッセージの全文検索（trigram tokenizer） |
@@ -623,12 +878,24 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 **パネル状態:** Closed / Docked / Collapsed / Floating
 **Settings:** フローティング専用（Dockには配置しない）
 
-**キーボードショートカット（Ctrl+Alt プレフィクス）:**
-- `Ctrl+Alt+S`: Scenes、`Ctrl+Alt+Q`: Codex Quick、`Ctrl+Alt+X`: Codex
-- `Ctrl+Alt+C`: Chat、`Ctrl+Alt+H`: Chat History
-- `Ctrl+Alt+N`: Snippets、`Ctrl+Alt+A`: Attribution
-- `Ctrl+Alt+B/R/J`: Left/Right/Bottom Dockトグル
-- `Ctrl+Alt+,`: Settings
+**キーボードショートカット（Mod+Alt プレフィクス）:**
+Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
+
+**基本パネル:**
+- `Mod+Alt+S`: Scenes、`Mod+Alt+Q`: Codex Quick、`Mod+Alt+X`: Codex
+- `Mod+Alt+C`: Chat、`Mod+Alt+H`: Chat History
+- `Mod+Alt+N`: Snippets、`Mod+Alt+A`: Attribution
+
+**拡張パネル:**
+- `Mod+Alt+L`: Timeline、`Mod+Alt+M`: Map、`Mod+Alt+T`: Kouetsu
+- `Mod+Alt+F`: Foreshadow、`Mod+Alt+B`: TrashBin
+- `Mod+Alt+G`: Grid、`Mod+Alt+R`: Matrix、`Mod+Alt+W`: WritingStats
+- `Mod+Alt+P`: RelatedScenes
+
+**グローバル:**
+- `Mod+Alt+,`: Settings
+
+注：Dock トグルバインディングは現在実装されていません。
 
 ---
 
@@ -679,6 +946,32 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 - チャット履歴: 直近N件のみ読み込み（デフォルト: 50）、古いメッセージは遅延読み込み
 - コンテキストバジェット: モデルのコンテキスト上限から逆算して配分
 
+### 11.4 セマンティック検索とチャンク戦略
+
+- **本文セマンティック検索（RAG）**: `cl-nagoya/ruri-v3-30m` ONNX モデルを Rust 側で
+  推論し、f32 配列埋め込みを L2 正規化して `scene_chunks` テーブルに保存
+- **チャンク分割**: 各シーンを意味的に分割し、テキスト位置情報（char_start/char_end）・
+  会話文比率（dialogue_ratio）・埋め込み次元（embedding_dim）を記録
+- **検索スコアリング**: 日本語は top-1 ゲート 0.85 + 最小スコア（床）0.80 で、無関係シーンの
+  誤注入を防止（英語は別校正、しきい値 0.51）
+- **コンテキスト注入**: RAG 層として最大 3 チャンクを注入、クエリごとに動的再計算
+  （4.3 参照）
+
+### 11.5 変更イベント追跡とスナップショット
+
+- **変更イベントログ**: `change_events` テーブルの append-only ログで全編集を記録
+  （sha256 チェーンで「ログ自体が後から改竄されていない」ことを検証可能）
+- **状態スナップショット**: `state_snapshots` テーブルで domain/entityId ごとに、
+  おおよそ 1000 イベントまたは 1 時間間隔でスナップショットを記録
+- **リプレイエンジン**: 最寄りスナップショットへジャンプ → forward イベントを適用して
+  任意時点の状態を復元（執筆タイムラプス）
+
+### 11.6 仮想化スクロールと遅延読み込み
+
+- **Codex パネル**: TanStack Virtual（useVirtualizer）で大規模リスト（100+ エントリ）を仮想化
+- **チャット履歴**: 直近 N 件のメッセージのみメモリ読み込み、過去メッセージは遅延読み込み
+- **リアクティブ遅延**: codexStore / snippetStore の ensureLoaded パターンで段階的ロード
+
 ---
 
 ## 12. セキュリティ
@@ -700,8 +993,7 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 
 | カテゴリ | 設定項目 | 型 | デフォルト |
 |---------|---------|-----|----------|
-| AI | `ai.defaultChatModel` | string | （プロバイダー依存） |
-| AI | `ai.defaultInlineModel` | string | （プロバイダー依存） |
+| AI | `ai.inlineModel` | string | （プロバイダー依存） |
 | AI | `ai.sessionTitleModel` | string | （軽量モデル） |
 | エディタ | `editor.fontFamily` | string | システムデフォルト |
 | エディタ | `editor.fontSize` | number | `16` |
@@ -718,6 +1010,8 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 | 表示 | `display.attributionOpacity` | number（%） | `10` |
 | エクスポート | `export.sceneSeparator` | string | `"***"` |
 
+> **注（2026-06-20 追記）:** チャット用モデルは `ai.defaultChatModel` として `app_settings` には保存しない。現在のチャットモデルはプロバイダーごとに `aiSettingsStore`（AI設定ストア）側で保持する。`app_settings` に保存される AI 関連キーは `ai.inlineModel`（インライン生成用）と `ai.sessionTitleModel`（セッション自動タイトル用の軽量モデル）の2つ。
+
 ---
 
 ## 14. MVPスコープと境界
@@ -730,7 +1024,7 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 - [x] 帰属追跡（3値: human/ai/unknown、SQLite永続化）
 - [x] AIチャットパネル（マルチプロバイダー: OpenRouter/Anthropic/OpenAI/Ollama）
 - [x] シーン1:Nセッション + プロジェクトスコープセッション
-- [x] 5レイヤーコンテキスト注入 + 手動ピン留め
+- [x] 多層コンテキスト注入（6レイヤー + RAG）+ 手動ピン留め
 - [x] Codex: タイプシステム（ビルトイン4種 + カスタム）+ カスタムディテールフィールド
 - [x] Codex: 親子リレーション + context_mode（always/mentioned/suppress/hidden）
 - [x] チャットからのCodex/Snippet抽出（AI mode + Manual mode）
@@ -741,17 +1035,36 @@ VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 - [x] 縦書きプレビュー
 - [x] ルビテキスト（RubyNode拡張）
 
-### スコープ外（Post-MVP）
+### スコープ外（当初 Post-MVP 想定 / 一部は v0.8 で出荷済み）
 
-- [ ] 埋め込みベースのベクトル検索（RAGアップグレード）
+- [x] 埋め込みベースのベクトル検索（RAG）— v0.8 で出荷（11.4 参照、ruri-v3-30m ONNX）
 - [ ] DOCX/EPUBエクスポート
-- [ ] FTS用日本語形態素解析
-- [ ] Codexリレーショングラフ可視化
+- [x] 形態素解析（校閲 Lint・Codex 候補抽出の lemma 照合）— v0.8 で出荷（5.4.2 参照）
+- [x] Codexリレーション可視化（関係図・因果地図ボード）— v0.8 で出荷（下記 14.1 Map）
 - [ ] フローティングウィンドウ（レイアウトシステム）
-- [ ] キーストロークリプレイ（Grammarly Authorship風）
+- [x] キーストロークリプレイ（執筆タイムラプス）— v0.8 で出荷（11.5 参照、change_events）
 - [ ] コラボレーション / マルチユーザー
 - [ ] クラウド同期
 - [ ] プラグインシステム
+
+### 14.1 v0.8 で追加された主要機能（当初仕様外）
+
+> **注（2026-06-18 追記）:** v0.2 の MVP 出荷後、以下の機能ドメインが追加された。
+> 各々が `schema.ts` に対応テーブルを持つ（7章のテーブル一覧を参照）。
+
+| 機能ドメイン | 概要 | 主なテーブル |
+|------------|------|------------|
+| **Map システム** | 関係図・シーン因果 DAG ボード（付箋/エッジ/フレーム/AI ブランチ） | `map_boards` 他6 |
+| **伏線トラッキング** | 伏線の仕込み・回収の追跡、Codex リンク、伏線レーダー | `foreshadows` 他2 |
+| **執筆統計・ペースメーカー** | streak / 日次量 / ヒートマップ / 目標文字数 / 完走 ETA | （集計は本文 char_count + change_events） |
+| **Post-Effect / 注釈** | 校閲・整合性・影響レビュー等の post-effect 実行と疑似コメント注釈 | `post_effect_runs` 他3 |
+| **校閲（Lint）** | 用語辞書・無視管理・操作ログを伴う文章校閲 | `lint_*` 3 |
+| **プロジェクトスナップショット** | プロジェクト全体のバージョン履歴 | `project_snapshot_*` 6 |
+| **執筆タイムラプス** | append-only 変更イベント + リプレイ（11.5 参照） | `change_events`, `state_snapshots` |
+| **関連シーンパネル** | dense+sparse ハイブリッド検索による関連シーン提示 | `scene_chunks`（埋め込み） |
+| **ラベル / ゴミ箱** | ツリーノードのラベル付けと削除アイテムの復元 | `labels`, `tree_node_labels`, `trash_items` |
+| **AI 使用ポリシー** | プロジェクト単位の AI 権限トグル（4.5 参照） | `projects.ai_policy` |
+| **外部ファイルマウント** | 外部 Markdown を実体とする file-backed シーン（2.6 参照） | `tree_nodes.source_uri/source_mtime` |
 
 ---
 

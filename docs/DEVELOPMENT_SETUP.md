@@ -1,6 +1,6 @@
 # 開発環境構築ガイド
 
-> 最終更新: 2026-05-22
+> 最終更新: 2026-06-19
 
 ## 前提条件
 
@@ -120,8 +120,10 @@ sudo /usr/local/bin/init-firewall.sh
 | `grimodex-cargo-registry-*` | `/home/node/.cargo/registry` | Rustクレートキャッシュ |
 | `grimodex-cargo-git-*` | `/home/node/.cargo/git` | Cargoのgitチェックアウト |
 | `grimodex-target-*` | `/workspace/src-tauri/target` | Rustビルド成果物 |
+| `grimodex-node-modules-*` | `/workspace/node_modules` | Node.js依存キャッシュ |
 | `grimodex-bashhistory-*` | `/commandhistory` | シェル履歴 |
 | `grimodex-claude-config-*` | `/home/node/.claude` | Claude Code設定 |
+| `grimodex-codex-config-*` | `/home/node/.codex` | Codex CLI設定 |
 
 ### ネットワーク制限
 
@@ -141,9 +143,33 @@ sudo /usr/local/bin/init-firewall.sh
 
 許可ドメイン:
 
-- GitHub（API・Web・Git）
-- npm registry
-- crates.io / static.crates.io
-- Hugging Face（huggingface.co / cdn-lfs.huggingface.co）
-- Anthropic API
-- VS Code Marketplace
+以下のドメインがネットワーク許可リストに含まれます。GitHub・CloudFront IP範囲は動的に取得されます:
+
+**(1) Build & Package Managers**
+- GitHub（api.github.com、web・git・api IP範囲を動的取得）
+- npm registry（registry.npmjs.org）
+- crates.io（crates.io、static.crates.io、index.crates.io）
+- Rust toolchain（static.rust-lang.org、sh.rustup.rs）
+
+**(2) Build Dependencies**
+- lindera.dev（UniDic 辞書）
+- cdn.pyke.io（ONNX Runtime prebuilt）
+- parcel.pyke.io
+- CloudFront（crates.io CDN、IP範囲を動的取得）
+
+**(3) AI APIs**
+- Anthropic API（api.anthropic.com）
+- OpenAI（auth.openai.com、api.openai.com、chatgpt.com、platform.openai.com）
+- OpenRouter（openrouter.ai）
+
+**(4) Infrastructure & Monitoring**
+- Hugging Face（huggingface.co、hf.co、cdn-lfs.huggingface.co）
+- VS Code Marketplace（marketplace.visualstudio.com、vscode.blob.core.windows.net、update.code.visualstudio.com）
+- Sentry（sentry.io）
+- Statsig（statsig.anthropic.com、statsig.com）
+
+**(5) Licensing**
+- Polar（polar.sh、docs.polar.sh、api.polar.sh）
+
+**(6) Platform Support**
+- Apple（support.apple.com、developer.apple.com）

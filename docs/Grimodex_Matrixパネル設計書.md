@@ -146,7 +146,7 @@ Show モードで選ばれた列候補に対し、Codex タグで二段目の絞
 
 > **Custom モードの仕様**: 任意の Codex エントリを手動で集めて列にする「ピン留め型」モード。Tag フィルタを使わず、列ヘッダの `+` ボタンまたは Codex パネルからの「Add to Matrix Custom」操作で1エントリずつ追加・削除する。複数の Custom セット（保存済みプリセット）を `global-settings.json` に保持し、ドロップダウンで切り替え可能（例: 「主要登場人物セット」「subplot A 関連セット」）。Tag フィルタによる動的集合では拾いきれない、ad-hoc な「この章で追跡したい組み合わせ」を表現する用途。
 
-> **Note**: シーンに対する多値ラベル（`labels`）の概念は現行スキーマに**存在しない**。`storyTimeLabel` は単一テキストで Timeline 用途のため Matrix の列軸には不向き。多値ラベルが必要になった場合は `tree_nodes` への新規カラム追加または `scene_labels` テーブル新規作成が必要となるが、本設計書では**範囲外**とする。
+> **Note**:（2026-06-20 追記）シーンに対する多値ラベル（`labels`）の概念は**スキーマで実装済み**（`labels` テーブル＋`tree_node_labels` 結合テーブルによる `tree_nodes` ↔ `labels` の M:N 関係。`src/db/schema.ts`）だが、現行 Matrix 設計では列軸として利用していない。`storyTimeLabel` は単一テキストで Timeline 用途のため Matrix の列軸には不向き。ラベルを Matrix の列軸に採用する場合は既存の `labels` / `tree_node_labels` を JOIN する Show モードを追加すればよく、新規スキーマ追加は不要だが、本設計書では**範囲外**とする。
 
 ### Sort モード
 

@@ -6,8 +6,8 @@
 
 **「箱は出来ているが中身が未充填」**。per-project `language` 列（ja/en/zh/ko, `src/db/schema.ts:19`）、UI 言語切替（`uiLanguage` → i18next, 3箇所のUI＋永続化済み）、en.json 2,290 キー、決定論 lint の en ルールセットまで基盤は配線済み。真のブロッカーは 4 つ:
 
-1. **AI プロンプトカタログの en 版がほぼ未実装**（summarization 1本のみ。コア体験を直撃）
-2. **embedding が日本語特化 ruri-v3-30m 固定**（英語ではRAGが事実上沈黙）
+1. ~~**AI プロンプトカタログの en 版がほぼ未実装**~~ → **実装完了**（EN_CATALOG で全カテゴリ実装済み。残課題は LLM 校閲 8 種の ja ハードコード化、trim マーカー同期、読者ペルソナ日本語固定。2026-06-20 追記）
+2. ~~**embedding が日本語特化 ruri-v3-30m 固定**~~ → **per-language embedding 実装完了**（en は bge-small-en-v1.5 を `spec_for_language()` で選択。RAG 沈黙は解消。2026-06-20 追記）
 3. **word count が一級市民でない**（英語小説の標準単位が欠落、全表示が char）
 4. **LLM 校閲 8 種が `getPromptCatalog("ja")` ハードコード**（決定論 lint は対応済み、LLM 側が未対応）
 
@@ -28,7 +28,7 @@
 
 | Gap | Sev/Eff | 内容 |
 |---|---|---|
-| en カタログ未実装 | blocker/L | `getPromptCatalog("en")` は summarization 以外 JA フォールバック（`prompts/index.ts:64-77`）。chatSystem/agentControl/beat/inlineAi/beatGenerate/foreshadow/chatApi/inferMentionRoles/postEffect ≈ 700 行 ≈ 25 本の英訳実装が必要 |
+| ~~en カタログ未実装~~ → 実装完了 | ✅complete（2026-06-20 追記） | `getPromptCatalog("en")` は EN_CATALOG（`prompts/index.ts:97-131`）で全カテゴリ実装済み。EN_CHAT_SYSTEM, EN_AGENT_CONTROL, buildBeatSystemPromptEn, buildMentionRolesPromptEn, buildInlineAiSystemPromptEn, buildGenerateBeatsMessagesEn, buildProposePastSetupsPromptEn, buildSynopsisFromContentPromptEn, buildCandidateJudgmentPromptEn, EN_POST_EFFECT が実装済み。`src/prompts/en/` に 11 プロンプトファイル（agentControl/beat/beatGenerate/chatApi/chatSystem/codexJudgment/foreshadow/inferMentionRoles/inlineAi/postEffect/summarization）完備 |
 | trim マーカー同期 | blocker/M | `JA_L1/L3_TRIM_MARKERS`（`chatSystem.ts:3-15`）は日本語見出しに regex マッチ。en 見出しと**必ず同期**しないとコンテキスト圧縮が無効化（`contextBuilder.ts:590,631,701-702`） |
 | LLM 校閲 8 種が ja 固定 | blocker/L | kouetsu 全 view が `getPromptCatalog("ja")` ハードコード（CurrentSceneTypoView:111 等 8 ファイル）。typoSystem は送り仮名/助詞/同音異義語前提で英語に無意味。出力も "in Japanese" ロック（`postEffect.ts:122,137,159,181,189,204`） |
 | 読者ペルソナ日本語固定 | blocker/M | ラベル（'一般読者' 等）が DB の annotation.persona キー兼 input_hash 構成要素（`pseudoCommentPayloadBuilder.ts:158`）。単純翻訳すると既存 ja プロジェクトのキャッシュ/dismiss と非互換 → 内部 enum 化＋表示名分離の再設計 |
@@ -41,7 +41,7 @@
 
 | Gap | Sev/Eff | 内容 |
 |---|---|---|
-| ruri-v3-30m 固定 | blocker/L | model_id/dim=256/日本語 prefix（「検索クエリ: 」「検索文書: 」）が `embedding.rs:31-38` ハードコード。英語でもクラッシュはしないが意味空間を学習しておらず、`SEMANTIC_RECALL_MIN_SCORE=0.5` を割って L4 RAG が沈黙する。多言語モデル（multilingual-e5 等）差し替え＋per-project モデル選択が正攻法 |
+| ~~ruri-v3-30m 固定~~ → per-language embedding 実装完了 | ✅DONE（2026-06-20 追記） | per-language embedding モデルを実装済み（`src-tauri/src/semantic/spec.rs`）。ja プロジェクトは `SPEC_JA`（ruri-v3-30m, dim=256, MeanWithMask, prefix「検索クエリ: 」「検索文書: 」, max_seq_len=8192）、en プロジェクトは `SPEC_EN`（bge-small-en-v1.5, dim=384, CLS pooling, prefix なし, max_seq_len=512）。`spec_for_language()`（lines 151-157）が project.language で spec を選択。chunker version も独立（`CHUNKER_VERSION_EN`）。RAG 閾値は `SEMANTIC_RECALL_MIN_SCORE_EN=0.51`（`semanticRecall.ts:52`）。golden fixture は両モデル分存在。`embedding.rs:31-38` の旧定数は回帰テスト用 |
 | dim 変更とインデックス | blocker/L(同上に含む) | `scene_chunks` は dim 可変スキーマで migration script 不要。モデル切替→全 chunk stale→`semantic_reindex_all` で作り直し。per-project にするなら `current_model_id()` の project 設定化＋ `SemanticEmbedderState`（単一 Mutex）のモデル別拡張 |
 | chunker 日本語前提 | degraded/M | 会話判定=「『 先頭、文分割=。！？、SPEECH_VERBS=日本語動詞（`chunker.rs:75-205`）。英語は全段落 Prose・dialogue_ratio 常に 0。言語別 chunker 分岐＋CHUNKER_VERSION bump で再インデックス切替可能 |
 | RAG 閾値 0.5 が ruri 前提 | degraded/S | モデル別閾値化が必要（`semanticRecall.ts:23`）。MAX_CHUNK_CHARS=600 も和文密度前提 |
@@ -64,8 +64,8 @@ i18n でもプロンプトカタログでも救済されない:
 
 | Gap | Sev/Eff | 内容 |
 |---|---|---|
-| BUILTIN_TYPES の label | blocker/M | `ensureBuiltinTypes`（`typeApi.ts:44-77`）が language を見ずに「キャラクター」等を `codex_types.label` に INSERT。呼び出し元 6 経路（lazy ensure 5 経路は language ルックアップ追加要）。既存プロジェクトは rename 可能なので migration 不要、新規 en プロジェクトのみ en シード |
-| detail プリセット | blocker/M | `BASE/GENRE_DETAIL_PRESETS`（`detailPresets.ts:34-117`）のフィールド名・dropdown 選択肢が日本語で `codex_detail_definitions.name` に焼かれ、includeInContext=1 なら毎リクエスト LLM へ（`contextBuilder.ts:1006`）。language 別プリセット化＋`applyDetailPreset` への lang 引数 |
+| ~~BUILTIN_TYPES の label~~ → 実装完了 | ✅resolved（2026-06-20 追記） | `ensureBuiltinTypes`（`typeApi.ts:96-145`）は既に language-aware。signature（line 98）に `lang?: string \| null`、`builtinTypesForLang(lang)`（line 100）で言語別 builtin セットを選択。`BUILTIN_TYPES_EN`（lines 51-56, Character/Location/Item/Lore & Worldbuilding）を定義し、`builtinLabelRelabel`（lines 133-134）でトリガが ja で seed した未カスタマイズ既定ラベルのみ en へ relabel（rename 済みは温存・冪等）。呼び出し元は lang を渡しており migration 不要 |
+| ~~detail プリセット~~ → 実装完了 | ✅COMPLETED（2026-06-20 追記） | `BASE_DETAIL_PRESETS_EN`（`detailPresets.ts:124-172`, Role/Age/Appearance 等）/`GENRE_DETAIL_PRESETS_EN`（lines 175-235, 全 8 ジャンルの英語フィールド名）を実装済み。`presetsForLang()`（lines 238-245）が ja/en を選択し、`applyDetailPreset`（line 279）/`resolvePresetFields`（line 258）は lang パラメータ対応済み。このギャップは既に解決しているため重複実装不要 |
 | chatSystem.typeLabels | blocker/M | `contextBuilder.ts:971` の `s.typeLabels` が en でも JA のまま → L4 に「(キャラクター)」混入。EN_CHAT_SYSTEM 丸ごと整備（A 項と統合すべき） |
 | formatTimelineContext | degraded/S | `phaseResolver.ts:247-272` がライブで type slug 生出力＋「現在の状態」「## 変遷」日本語直書き。※`contextBuilder.ts:1472` の JA_TYPE_LABELS は**呼び出し元ゼロの dead code**（critic 初期主張の訂正） |
 | Map AI の TYPE_LABELS | degraded/S | `mapAiApi.ts:41-48`（scene→シーン等）＋「(無題)」が AI Branch 生成プロンプトに混入 |
@@ -114,6 +114,12 @@ i18n でもプロンプトカタログでも救済されない:
 - **Phase 4（磨き）**: 生日本語 UI 600 行の i18n 化＋toast＋inline default 107 キー＋locale ヘルパ＋エクスポート英語形式。→ E + H 群
 
 Phase 1 だけでも「英語で書ける AI 小説エディタ」として成立する（lint 決定論側・UI 大半・smartQuotes は既に動くため）。Phase 3 は工数最大だが、RAG が沈黙していても チャット/Codex のコア体験は損なわれない。
+
+## 実装済み機能（文書作成後に納品）
+
+### Codex 内部整合チェッカー (CodexIntegrityReport)（2026-06-20 追記）
+
+Codex のデータ自身の整合性を検出するコンポーネント。別名衝突（同一表記が複数エントリ）、重複リレーション（同一無向ペア+type の二重定義）、自己参照リレーション（from===to）を検出し、一覧表示する。各指摘は非表示(dismiss)可能で、状態をプロジェクト単位で永続化する（意図的な別名共有などを毎回警告されないため）。read-only — 検出のみで自動修正はしない。実装：`src/features/codex/CodexIntegrityReport.tsx` + `codexIntegrity.ts` + `codexIntegrityDismissals.ts`（+ `codexRelationApi.ts`）。納品：PR #119（2026-06-19）。
 
 ## 調査時の訂正事項（再調査不要）
 

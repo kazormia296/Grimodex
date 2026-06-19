@@ -197,16 +197,16 @@ fn resolve_model_dir(app, spec) -> PathBuf {
 
 | 経路 | コード | モデル不在時の現状 | sparse(FTS) degrade |
 |---|---|---|---|
-| Chat 自動注入 (semanticRecall) | `chat/semanticRecall.ts:347-421` | `[]` 無音フォールバック | hybrid 時に sparse 退避あり（375-388）。**degrade 可** |
-| Related-Scenes パネル | `related-scenes/fetchRelatedScenes.ts:36-70` | `.catch(()=>[])` 無音 | dense 単独。**degrade 不可（空表示になる）** ← 改善余地 |
-| CommandCenter 検索 | `commandCenter/hooks/useCommandCenterSearch.ts:55-58` | provider が `[]` | **要確認**（hybrid 対応か dense 単独か未確定） |
-| Agent search_codex | `commands/semantic.rs:351-393` | Embedder load 失敗→Err→JS catch→`[]` | JS 側 RRF 融合があれば sparse 残る（**要確認**）。FTS5 codex 本文 index は既存（PR#109）なので **degrade 可能性あり** |
+| Chat 自動注入 (semanticRecall) | `chat/semanticRecall.ts:352-426`（fetchSemanticRecall） | `[]` 無音フォールバック | hybrid 時に sparse 退避あり（381-393）。**degrade 可** |
+| Related-Scenes パネル | `related-scenes/fetchRelatedScenes.ts:53-105`（fetchRelatedPastScenes） | `.catch(()=>[])` 無音 | hybrid（dense=`semanticSearch` + sparse=FTS5/bm25 を RRF 融合）。dense 失敗→空、sparse 失敗→dense 単独へグレースフル退避（67-89）。**degrade 可** |
+| CommandCenter 検索 | `commandCenter/providers/semanticSearchProvider.ts:73-99`（provider）, `hooks/useCommandCenterSearch.ts:55-58`（fetch 配線） | provider が `[]`（error は section.state.error） | **degrade 不可（dense 単独）**。semantic provider は `semanticSearch` を呼ぶだけで sparse/RRF 融合を持たない（lexical provider が別 section の独立 sparse arm）。モデル不在＝意味検索 section が空 ← 改善余地 |
+| Agent search_codex | `commands/semantic.rs:351-393`（dense arm）, `chat/agent/toolExecutors.ts:127-221`（searchCodex）, `chat/agent/codexHybridSearch.ts`（fuseCodexHybrid） | dense は Embedder load 失敗→Err→JS catch | **degrade 可**。JS 側 `searchCodex` が dense(`codexSemanticSearch`)+sparse(FTS5/LIKE) を RRF 融合し、dense reject 時は sparse 単独へグレースフル退避（`toolExecutors.ts:199-213`）。FTS5 codex 本文 index は既存（PR#109） |
 | Impact Review | `commands/post_effect.rs` | semantic を直接呼ばない | **影響なし**（degrade 不要） |
 
 設計指針:
-- **degrade 可の経路（Chat / 一部 codex）**: モデル DL 中・失敗でも sparse で実用最低限を返す。ユーザー体験の劣化は「固有名詞リコールは効くが意味的近接は出ない」。
-- **degrade 不可の経路（Related-Scenes が典型）**: 現状は dense 単独で空配列＝パネルが「該当なし」になる。DL 化を機に、**モデル不在時は sparse へ退避するか、明示的に「英語モデル未取得」を表示**する設計を入れるべき（無音で空表示は「壊れている」と誤認させる）。
-- **要確認 2 件**（CommandCenter / search_codex の RRF 実装箇所）は実装フェーズ前に追跡必須。degrade 可否がここの実装に依存する。
+- **degrade 可の経路（Chat / Related-Scenes / Agent search_codex）**: モデル DL 中・失敗でも sparse で実用最低限を返す。ユーザー体験の劣化は「固有名詞リコールは効くが意味的近接は出ない」。Related-Scenes パネルは `fetchRelatedPastScenes` が dense(`semanticSearch`)+sparse(FTS5/bm25) を RRF 融合し、sparse reject 時は dense 単独へグレースフル退避する（chat の semanticRecall と同契約）。search_codex は `toolExecutors.ts` の searchCodex が RRF 融合と sparse 単独退避を持つため degrade 可と確定済み。
+- **degrade 不可の経路（CommandCenter）**: モデル不在時に意味検索 section が空表示になる。DL 化を機に、**モデル不在時は sparse へ退避するか、明示的に「英語モデル未取得」を表示**する設計を入れるべき（無音で空表示は「壊れている」と誤認させる）。CommandCenter は semantic provider が dense 単独（sparse/RRF 未実装）なので、RRF 追加 vs 明示表示のどちらを採るかを別タスクで敲定する（CommandCenter RRF 対応は別タスク）。
+  - 注（2026-06-20 追記）: 旧版の「要確認 2 件（CommandCenter / search_codex の RRF 実装箇所）」はコード照合で確定済み。search_codex=degrade 可（RRF 融合あり）、CommandCenter=degrade 不可（dense 単独）。
 
 「FTS は model 不在でも動く」という graceful 契約は `semantic-search/autoIndex.ts:15-21` に明記があり、全経路の degrade の足場になる。
 
@@ -271,10 +271,10 @@ fn resolve_model_dir(app, spec) -> PathBuf {
 ## 7. 段階的実装プラン
 
 ### Phase 0: 確認（実装前ゲート）
-- search_codex / CommandCenter の RRF 実装箇所を特定し、degrade 可否を確定（§4.3 の「要確認」2 件）。
+- ~~search_codex / CommandCenter の RRF 実装箇所を特定し、degrade 可否を確定~~（**2026-06-20 完了**: §4.3 表で確定。search_codex=degrade 可、CommandCenter=degrade 不可）。CommandCenter の不可をどう扱うか（RRF 追加 vs 明示表示）を別タスクで敲定（CommandCenter RRF 対応は別タスク）。
 - ruri-v3-30m のライセンス再配布可否確認。
 - 我々の calibrate 済み int8 artifact の sha256 を採取。
-- 受け入れ条件: degrade 可否が全 5 経路で表に確定。再配布可。sha256 確定。
+- 受け入れ条件: degrade 可否が全 5 経路で表に確定（済）。CommandCenter の改修方針が確定。再配布可。sha256 確定。
 
 ### Phase 1: ローダの DL-dir 対応（DL 機構なし）
 - `resolve_model_dir` に DL dir 探索（探索順 2）を追加（§3）。`spec.rs` に DL メタフィールド追加（値は埋めるが未使用）。
@@ -292,7 +292,7 @@ fn resolve_model_dir(app, spec) -> PathBuf {
 ### Phase 3: トリガ & UX & degrade 堅牢化
 - open_workspace 早期トリガ + ensure_embedder 遅延トリガ（§4.1）。
 - DownloadProgressToast、失敗/オフライン toast、設定画面の再 DL ボタン。
-- **degrade 不可経路（Related-Scenes 等）を sparse 退避 or 明示表示に改修**（§4.3）。
+- **degrade 不可経路（CommandCenter）を sparse 退避 or 明示表示に改修**（§4.3）。
 - 計測: オフラインで起動→FTS で全経路が「壊れず」動く。DL 中の検索が degrade で返る。
 - 受け入れ条件: オフライン/DL 失敗時に semantic 依存全経路が graceful。空表示で「壊れた」誤認させない。
 
@@ -325,6 +325,6 @@ fn resolve_model_dir(app, spec) -> PathBuf {
 - 言語: `src-tauri/src/database/migrate.rs`（projects.language default 'ja'）, `src-tauri/src/semantic/index.rs:349-376`
 - DL 基盤: `src-tauri/Cargo.toml:55`（reqwest）, `src-tauri/src/license.rs:149-180`（timeout 例）, `src-tauri/src/ai.rs:2309-2326`（stream 例）, `src-tauri/src/external_mount/hash.rs:10-14`（sha256）, `src-tauri/src/lib.rs:74-77`（app_data_dir）
 - CSP/firewall: `src-tauri/tauri.conf.json:28`, `.devcontainer/init-firewall.sh:95-108`
-- degrade 経路: `src/features/chat/semanticRecall.ts:347-421`, `src/features/related-scenes/fetchRelatedScenes.ts:36-70`, `src/features/commandCenter/hooks/useCommandCenterSearch.ts:55-58`, `src-tauri/src/commands/semantic.rs:351-393`, `src/features/semantic-search/autoIndex.ts:15-21`
+- degrade 経路: `src/features/chat/semanticRecall.ts:352-426`（fetchSemanticRecall）, `src/features/related-scenes/fetchRelatedScenes.ts:53-105`（fetchRelatedPastScenes）, `src/features/commandCenter/hooks/useCommandCenterSearch.ts:55-58`, `src-tauri/src/commands/semantic.rs:351-393`, `src/features/semantic-search/autoIndex.ts:15-21`
 - 進捗基盤: `src/features/semantic-search/ReindexProgressToast.tsx`, `src-tauri/src/commands/semantic.rs:66`
 - トリガ: `src-tauri/src/commands/workspace.rs:128-171`
