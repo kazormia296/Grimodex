@@ -42,8 +42,14 @@ vi.mock("drizzle-orm", () => ({
   asc: vi.fn((col: unknown) => ({ asc: col })),
 }));
 
+vi.mock("@/features/semantic-search/scheduler", () => ({
+  scheduleChatIndex: vi.fn(),
+}));
+
 import { db } from "@/db/client";
 const mockDb = vi.mocked(db);
+import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
+const mockScheduleChatIndex = vi.mocked(scheduleChatIndex);
 
 import {
   listSessions,
@@ -345,6 +351,29 @@ describe("chatApi - session/message persistence", () => {
       expect(result.sessionId).toBe("session-1");
       expect(result.role).toBe("user");
       expect(result.content).toBe("テストメッセージ");
+    });
+
+    it("schedules episodic index for a non-empty user/assistant message", async () => {
+      mockScheduleChatIndex.mockClear();
+      mockInsertChain([{ id: "msg-x", sessionId: "s1", role: "assistant" }]);
+      mockUpdateChain();
+      await addMessage("s1", "assistant", "覚えておくべき発言", {
+        id: "msg-x",
+      });
+      expect(mockScheduleChatIndex).toHaveBeenCalledWith("msg-x");
+    });
+
+    it("does NOT schedule episodic index for system or empty messages", async () => {
+      mockScheduleChatIndex.mockClear();
+      mockInsertChain([{ id: "sys", sessionId: "s1", role: "system" }]);
+      mockUpdateChain();
+      await addMessage("s1", "system", "internal", { id: "sys" });
+      expect(mockScheduleChatIndex).not.toHaveBeenCalled();
+
+      mockInsertChain([{ id: "blank", sessionId: "s1", role: "user" }]);
+      mockUpdateChain();
+      await addMessage("s1", "user", "   ", { id: "blank" });
+      expect(mockScheduleChatIndex).not.toHaveBeenCalled();
     });
   });
 

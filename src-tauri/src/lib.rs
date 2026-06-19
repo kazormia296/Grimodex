@@ -153,6 +153,9 @@ pub fn run() {
             // cleared on workspace open, invalidated per-entry on codex_index_entry.
             // Non-gated so workspace.rs (also non-gated) can clear it.
             app.manage(semantic::codex_search::CodexSearchCache::new());
+            // Chat episodic recall cache (message_id -> embedding). Same lifecycle:
+            // cleared on workspace open, invalidated per-message on chat_index_message.
+            app.manage(semantic::chat_search::ChatSearchCache::new());
 
             app.manage(ExternalMountWatchState::new());
             app.manage(ExternalMountState::new());
@@ -274,6 +277,14 @@ pub fn run() {
             commands::semantic::codex_index_status,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::codex_reindex_all,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::chat_index_message,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::chat_message_search,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::chat_index_status,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::chat_reindex_all,
             commands::external_mount::external_mount_register,
             commands::external_mount::external_mount_unregister,
             commands::external_mount::external_mount_read_file,

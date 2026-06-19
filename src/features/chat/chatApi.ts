@@ -41,6 +41,7 @@ import { sanitizeSceneContent, type LayerBreakdown } from "./contextBuilder";
 import { getPromptCatalog } from "@/prompts/index";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
+import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 
 // --- AI message sending (existing) ---
 
@@ -584,6 +585,12 @@ export async function addMessage(
     createdAt: now,
   });
 
+  // エピソード記憶 index: user/assistant の非空メッセージを意味検索に載せる
+  // (system / 空本文は Rust 側でも対象外)。2.5s デバウンスで畳む。fire-and-forget。
+  if ((role === "user" || role === "assistant") && content.trim().length > 0) {
+    scheduleChatIndex(id);
+  }
+
   return toMessage(rows[0]);
 }
 
@@ -626,6 +633,11 @@ export async function updateMessageMetadata(
     .update(chatMessages)
     .set({ metadata: JSON.stringify(merged) })
     .where(eq(chatMessages.id, messageId));
+
+  // 効果信号 (insertedToEditor / extractedCodex 等) が変わったので episodic index の
+  // weight 列を更新するため再 index をスケジュール。content 不変でも hash に signal を
+  // 含めるため Rust 側で列が更新される。fire-and-forget。
+  scheduleChatIndex(messageId);
 }
 
 /** 過去メッセージのプロンプト確認用スナップショット (chat_message_prompts)。 */
