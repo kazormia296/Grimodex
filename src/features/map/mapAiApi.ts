@@ -2,6 +2,7 @@ import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { buildVsInstruction, type VsOptions } from "@/lib/verbalizedSampling";
+import { resolveModelForPath } from "@/features/chat/modelRouting";
 import type { AiBranchCard } from "./mapApi";
 
 interface LLMResponsePayload {
@@ -423,6 +424,7 @@ export async function generateAiBranchCards(
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
+    model: resolveModelForPath("map_branch") ?? null,
   });
 
   // N4: 従来 response の usage は捨てられていた。台帳に記録する。

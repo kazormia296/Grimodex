@@ -4,6 +4,7 @@ import i18next from "@/lib/i18n";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import * as chatApi from "./chatApi";
+import { resolveModelForPath } from "./modelRouting";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 
 // ---------------------------------------------------------------------------
@@ -4241,6 +4242,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               systemCacheSegments,
               chatApiVariant,
               systemVolatileTail,
+              resolveModelForPath("chat_stream_non_agent") ?? null,
             );
 
         streamPromise
