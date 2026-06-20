@@ -71,6 +71,52 @@ export const EN_EVAL_SET: EvalSet = {
         "the litany of the bound names her mother spoke as the house burned",
       expect: ["Bonus: The Litany of the Burning Night (final)"],
     },
+    // --- Lexical probes (proper nouns): single distinctive names where the
+    // sparse/FTS arm should match exactly even if dense ranks them weakly.
+    // Each noun is confined to the expected scene(s) in the seed-sample-en corpus.
+    {
+      query: "Wrenna",
+      expect: ["Chapter Two: The Writ"],
+    },
+    {
+      query: "Ironhaven",
+      expect: ["Chapter Three: Ironhaven by Night"],
+    },
+    {
+      query: "Greymoor",
+      expect: ["Chapter Three: Ironhaven by Night"],
+    },
+    {
+      query: "Citadel",
+      // appears in both the bonus scene and Ch.3 (the Citadel knight); either is fair.
+      expect: [
+        "Bonus: Beneath the Citadel (revision)",
+        "Chapter Three: Ironhaven by Night",
+      ],
+    },
+    // --- Stemming probes (inflected): the query uses a base form whose body
+    // surface form differs (travel/travelled, seal/sealed, …). Trigram tends to
+    // miss the suffix divergence; the porter _en tokenizer stems both sides.
+    {
+      query: "travel to Greymoor",
+      expect: ["Chapter Three: Ironhaven by Night"],
+    },
+    {
+      query: "seal the writ",
+      expect: ["Chapter Two: The Writ"],
+    },
+    {
+      query: "keyholder vault",
+      expect: ["Bonus: Beneath the Citadel (revision)"],
+    },
+    {
+      query: "pick up the token",
+      expect: ["Interlude: The Hearthstone"],
+    },
+    {
+      query: "touch the compass",
+      expect: ["Chapter One: The Hall"],
+    },
   ],
   junk: [
     "a recipe for sourdough bread",
