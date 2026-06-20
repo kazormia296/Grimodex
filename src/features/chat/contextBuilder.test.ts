@@ -680,6 +680,81 @@ describe("contextBuilder", () => {
       // With budget=5, multiple layers should be trimmed
       expect(result.trimmedLayers.length).toBeGreaterThan(0);
     });
+
+    it("trims L4 before L2 (story so far survives if L4 alone suffices)", () => {
+      const l4Content =
+        "\n## 登場キャラクター・設定情報\n" +
+        Array.from(
+          { length: 20 },
+          (_, i) => `- **C${i}** (キャラクター): 詳しい説明文${i}`,
+        ).join("\n");
+      const l2Content = "\n## これまでの物語\n\n第一章の概要\n\n第二章の概要";
+      const layers = makeLayers({ l4Text: l4Content, l2Text: l2Content });
+      // Leave room for base + full L2 + roughly half of L4 → only L4 is touched.
+      const budget =
+        countTokens("base") +
+        countTokens(l2Content) +
+        Math.floor(countTokens(l4Content) / 2);
+
+      const result = trimToFit(layers, budget);
+      expect(result.trimmedLayers).toContain("L4");
+      expect(result.trimmedLayers).not.toContain("L2");
+      expect(result.trimmedTexts.l2Text).toBe(l2Content);
+      expect(result.totalTokens).toBeLessThanOrEqual(budget);
+    });
+
+    it("trims L2 oldest-first (FIFO) before touching L3 and L1", () => {
+      const l1Content = "プロジェクト: 鉄の王冠\nジャンル: ファンタジー";
+      const l3Content = "### シーン本文\n直近のシーン本文テキスト";
+      const oldest = "第一章：最も古い時代の長い概要文をここに記す";
+      const middle = "第二章：中間の時代の長い概要文をここに記す";
+      const newest = "第三章：最新の時代の長い概要文をここに記す";
+      const l2Content =
+        "\n## これまでの物語\n\n" + [oldest, middle, newest].join("\n\n");
+      const layers = makeLayers({
+        l1Text: l1Content,
+        l2Text: l2Content,
+        l3Text: l3Content,
+      });
+      // Budget fits base + L1 + L3 + (L2 header + newest entry only).
+      const l2KeptNewest = "\n## これまでの物語\n\n" + newest;
+      const budget =
+        countTokens("base") +
+        countTokens(l1Content) +
+        countTokens(l3Content) +
+        countTokens(l2KeptNewest) +
+        2;
+
+      const result = trimToFit(layers, budget);
+      expect(result.trimmedLayers).toContain("L2");
+      expect(result.trimmedLayers).not.toContain("L3");
+      expect(result.trimmedLayers).not.toContain("L1");
+      // Oldest entries dropped from the front, newest retained.
+      expect(result.trimmedTexts.l2Text).toContain("第三章");
+      expect(result.trimmedTexts.l2Text).not.toContain("第一章");
+      expect(result.trimmedTexts.l2Text).not.toContain("第二章");
+      // Lower-priority layers are untouched once L2 trimming suffices.
+      expect(result.trimmedTexts.l3Text).toBe(l3Content);
+      expect(result.trimmedTexts.l1Text).toBe(l1Content);
+    });
+
+    it("trims L1 last and always preserves the project title", () => {
+      const styleGuide =
+        "硬質で簡潔な文体を保つこと。" + "比喩は控えめに。".repeat(40);
+      const l1Content =
+        "プロジェクト: 鉄の王冠\nジャンル: ファンタジー\n視点: 三人称\n時制: 過去形\n文体ガイド:\n" +
+        styleGuide;
+      const layers = makeLayers({ l1Text: l1Content });
+      const titleOnly = "プロジェクト: 鉄の王冠";
+      const budget = countTokens("base") + countTokens(titleOnly) + 5;
+
+      const result = trimToFit(layers, budget);
+      expect(result.trimmedLayers).toContain("L1");
+      // Title is never removed; removable sections (style guide, genre…) are.
+      expect(result.trimmedTexts.l1Text).toContain("鉄の王冠");
+      expect(result.trimmedTexts.l1Text).not.toContain("文体ガイド");
+      expect(result.trimmedTexts.l1Text).not.toContain("ファンタジー");
+    });
   });
 
   describe("trimL3Text — astral 文字のサロゲート保護 (#2)", () => {
@@ -1457,6 +1532,60 @@ describe("contextBuilder", () => {
       // available = 2000, l3 = min(2000, 1200) = 1200, l5 = min(1000, 600) = 600
       expect(budgets.l3).toBe(1_200);
       expect(budgets.l5).toBe(600);
+    });
+
+    it("uses standard mode at exactly available == INPUT_FLOOR_TOTAL (4500)", () => {
+      // cw 6500, reservation clamped to 2000 → available = 4500 (not < 4500)
+      const budgets = allocateLayerBudgets(6_500, { maxOutputTokens: 2_000 });
+      expect(budgets.responseReservation).toBe(2_000);
+      expect(budgets.degraded).toBe(false);
+      expect(budgets.l1).toBe(90); // 4500 * 2%
+      expect(budgets.l2).toBe(450); // 4500 * 10%
+      expect(budgets.l3).toBe(1_800); // 4500 * 40%
+      expect(budgets.l4).toBe(900); // 4500 * 20%
+      expect(budgets.l5).toBe(900); // 4500 * 20%
+    });
+
+    it("enters degraded mode one token below the floor (available == 4499)", () => {
+      const budgets = allocateLayerBudgets(6_499, { maxOutputTokens: 2_000 });
+      expect(budgets.degraded).toBe(true);
+      expect(budgets.l1).toBe(0);
+      expect(budgets.l2).toBe(0);
+      expect(budgets.l4).toBe(0);
+      // 4499 * 0.6 = 2699.4 → capped at 2000; 4499 * 0.3 = 1349.7 → capped at 1000
+      expect(budgets.l3).toBe(2_000);
+      expect(budgets.l5).toBe(1_000);
+    });
+
+    it("applies the degraded L3/L5 min() caps when available is large but still degraded", () => {
+      // available = 4000 (degraded). 0.6*4000=2400 → cap 2000; 0.3*4000=1200 → cap 1000.
+      const budgets = allocateLayerBudgets(6_000, { maxOutputTokens: 2_000 });
+      expect(budgets.degraded).toBe(true);
+      expect(budgets.l3).toBe(2_000);
+      expect(budgets.l5).toBe(1_000);
+    });
+
+    it("clamps available to 0 when the response reservation exceeds the window", () => {
+      // cw 1000 < reservation floor 2000 → available = max(0, -1000) = 0
+      const budgets = allocateLayerBudgets(1_000);
+      expect(budgets.responseReservation).toBe(2_000);
+      expect(budgets.degraded).toBe(true);
+      expect(budgets.l1).toBe(0);
+      expect(budgets.l2).toBe(0);
+      expect(budgets.l3).toBe(0); // min(2000, 0 * 0.6)
+      expect(budgets.l4).toBe(0);
+      expect(budgets.l5).toBe(0); // min(1000, 0 * 0.3)
+    });
+
+    it("rounds each layer to the nearest integer for non-divisible windows", () => {
+      // cw 8192 → reservation 2000 → available 6192 (standard mode)
+      const budgets = allocateLayerBudgets(8_192);
+      expect(budgets.degraded).toBe(false);
+      expect(budgets.l1).toBe(124); // round(6192 * 0.02 = 123.84)
+      expect(budgets.l2).toBe(619); // round(6192 * 0.10 = 619.2)
+      expect(budgets.l3).toBe(2_477); // round(6192 * 0.40 = 2476.8)
+      expect(budgets.l4).toBe(1_238); // round(6192 * 0.20 = 1238.4)
+      expect(budgets.l5).toBe(1_238); // round(6192 * 0.20 = 1238.4)
     });
   });
 
