@@ -232,6 +232,7 @@ pub fn run() {
             commands::foreshadow::foreshadow_load_anchors_for_scene,
             commands::integrity::fts_optimize,
             commands::integrity::fts_rebuild,
+            commands::integrity::fts_rebuild_en,
             commands::integrity::fts_search,
             commands::integrity::integrity_check,
             commands::integrity::repair_integrity,
