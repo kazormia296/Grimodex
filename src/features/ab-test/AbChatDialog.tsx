@@ -28,6 +28,17 @@ interface AbChatDialogProps {
    * メッセージとして 2 構成へ並列送信する。
    */
   basePrompt: string;
+  /**
+   * 採用ハンドラ。採用列のテキスト・解決済みモデル・side を呼び出し側へ渡す。
+   * clipboard コピーは廃止し、呼び出し側 (ChatInput) がそのチャットの会話履歴へ
+   * 1 往復として積む。解決した Promise が成立すればダイアログを閉じる。
+   */
+  onAdopt: (result: {
+    side: "a" | "b";
+    text: string;
+    /** 採用側の実モデル (未指定の既定なら null)。 */
+    model: string | null;
+  }) => void | Promise<void>;
 }
 
 /**
@@ -40,6 +51,7 @@ export function AbChatDialog({
   onOpenChange,
   projectId,
   basePrompt,
+  onAdopt,
 }: AbChatDialogProps) {
   const { t } = useTranslation();
   const defaultModel = useAiSettingsStore((s) => s.settings?.model ?? "");
@@ -56,7 +68,7 @@ export function AbChatDialog({
     () => createChatAbDispatcher(projectId),
     [projectId],
   );
-  const { state, run, adopt, reset } = useAbComparison({
+  const { state, run, adopt, reset, clearSideB } = useAbComparison({
     surface: "chat",
     projectId,
     dispatch,
@@ -65,6 +77,17 @@ export function AbChatDialog({
   const { configA, configB: resolvedB } = deriveAbConfigs(mode, configB);
   const meaningful = isAbConfigMeaningful(mode, configB);
   const hasResult = state.resultA !== null || state.resultB !== null;
+
+  // mode (モデル↔プロンプト) を切り替えると B の構成が変わるため、表示中の B 応答は
+  // stale になる → 破棄する。A は構成不変なので残し、次の実行で使い回す。
+  const handleModeChange = useCallback(
+    (next: AbMode) => {
+      if (next === mode) return;
+      setMode(next);
+      clearSideB();
+    },
+    [mode, clearSideB],
+  );
 
   const handleRun = useCallback(() => {
     if (!basePrompt.trim()) {
@@ -80,13 +103,15 @@ export function AbChatDialog({
 
   const handleAdopt = useCallback(
     async (side: "a" | "b") => {
+      // adopt(): 採用列を記録 (chosen 状態 + setAbChosen) し、本文を返す。
       const text = await adopt(side);
-      if (text !== null) {
-        await navigator.clipboard?.writeText(text).catch(() => {});
-        toast.success(t("abTest.adoptedToClipboard"));
-      }
+      if (text === null) return;
+      // 採用側の実モデルを解決 (configA は既定 = model 未指定 → defaultModel)。
+      const cfg = side === "a" ? configA : resolvedB;
+      const model = cfg.model?.trim() || defaultModel.trim() || null;
+      await onAdopt({ side, text, model });
     },
-    [adopt, t],
+    [adopt, onAdopt, configA, resolvedB, defaultModel],
   );
 
   const handleOpenChange = useCallback(
@@ -107,10 +132,11 @@ export function AbChatDialog({
 
         <AbConfigForm
           mode={mode}
-          onModeChange={setMode}
+          onModeChange={handleModeChange}
           defaultModel={defaultModel}
           configB={configB}
           onConfigBChange={setConfigB}
+          disabled={state.running}
         />
 
         {hasResult && (
@@ -120,6 +146,7 @@ export function AbChatDialog({
               configB={resolvedB}
               resultA={state.resultA}
               resultB={state.resultB}
+              running={state.running}
               chosen={state.chosen}
               onAdopt={handleAdopt}
             />

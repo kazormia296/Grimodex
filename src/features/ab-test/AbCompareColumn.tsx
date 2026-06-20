@@ -9,8 +9,13 @@ interface AbCompareColumnProps {
   modelLabel?: string | null;
   /** プロンプト追記指示 (あれば小さく表示)。 */
   promptVariant?: string | null;
-  /** 実行結果。null = 実行中。 */
+  /** 実行結果。null = まだ結果なし (実行中 or mode 切替で破棄)。 */
   result: AbRunResult | null;
+  /**
+   * 比較を実行中か。result===null の意味を分けるために使う:
+   * running 中の null = スピナー / 非 running の null = 未生成プレースホルダ。
+   */
+  running?: boolean;
   /** 採用済みか (両列のうち選ばれた方)。 */
   chosen: boolean;
   /** 採用ボタン押下。実行中 / 失敗時は無効。 */
@@ -27,13 +32,12 @@ export function AbCompareColumn({
   modelLabel,
   promptVariant,
   result,
+  running = false,
   chosen,
   onAdopt,
   adoptable,
 }: AbCompareColumnProps) {
   const { t } = useTranslation();
-  const loading = result === null;
-  const failed = result !== null && !result.ok;
 
   return (
     <div
@@ -65,24 +69,29 @@ export function AbCompareColumn({
       )}
 
       <div className="min-h-[8rem] flex-1 overflow-y-auto px-3 py-2 text-sm">
-        {loading ? (
-          <div className="flex h-full items-center justify-center text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-          </div>
-        ) : failed ? (
+        {result === null ? (
+          // null は「実行中」と「未生成 (mode 切替で破棄)」の 2 通り。
+          running ? (
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            </div>
+          ) : (
+            <div className="flex h-full items-center justify-center px-2 text-center text-xs text-muted-foreground">
+              {t("abTest.columnEmpty")}
+            </div>
+          )
+        ) : result.ok ? (
+          <p className="whitespace-pre-wrap break-words">{result.text}</p>
+        ) : (
           <div className="flex items-start gap-1.5 text-destructive">
             <AlertTriangle
               className="mt-0.5 h-3.5 w-3.5 shrink-0"
               aria-hidden
             />
             <span className="whitespace-pre-wrap break-words">
-              {result.ok ? "" : result.error}
+              {result.error}
             </span>
           </div>
-        ) : (
-          <p className="whitespace-pre-wrap break-words">
-            {result.ok ? result.text : ""}
-          </p>
         )}
       </div>
 
@@ -90,7 +99,7 @@ export function AbCompareColumn({
         <button
           type="button"
           onClick={onAdopt}
-          disabled={!adoptable || loading || failed}
+          disabled={!adoptable || !result || !result.ok}
           className="w-full rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
         >
           {side === "a" ? t("abTest.adoptA") : t("abTest.adoptB")}

@@ -85,6 +85,13 @@ export interface RunAbOptions {
    * では 2 本同時に走らせると chunk が混線するため必ず逐次にする。
    */
   parallel?: boolean;
+  /**
+   * A 側を再生成せず既存結果を流用する。A は常に「既定構成」(configA={}) で
+   * mode 切替や B 構成変更の影響を受けないため、一度生成したら使い回せる。
+   * **ok な結果が渡されたときだけ**流用し B のみ実行する。null / 失敗結果 /
+   * 未指定のときは従来どおり A も実行する。
+   */
+  reuseA?: AbRunResult | null;
 }
 
 /**
@@ -102,10 +109,15 @@ export async function runAbComparison(
   const messagesA = applyPromptVariant(request.messages, configA.promptVariant);
   const messagesB = applyPromptVariant(request.messages, configB.promptVariant);
 
+  // ok な既存 A があれば流用し、B だけ実行する (mode 切替後の A 使い回し)。
+  const reuseA = options?.reuseA?.ok ? options.reuseA : null;
   const parallel = options?.parallel ?? true;
   let a: AbRunResult;
   let b: AbRunResult;
-  if (parallel) {
+  if (reuseA) {
+    a = reuseA;
+    b = await safeDispatch(dispatch, messagesB, configB);
+  } else if (parallel) {
     [a, b] = await Promise.all([
       safeDispatch(dispatch, messagesA, configA),
       safeDispatch(dispatch, messagesB, configB),

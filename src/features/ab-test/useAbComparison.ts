@@ -48,11 +48,12 @@ export function useAbComparison({
 }: UseAbComparisonOptions) {
   const [state, setState] = useState<AbComparisonState>(IDLE);
   // 最新 run の config / result を adopt 時に参照するための ref。
+  // resultB は mode 切替の clearSideB で無効化されうるため null を許容する。
   const lastRunRef = useRef<{
     configA: AbConfig;
     configB: AbConfig;
     resultA: AbRunResult;
-    resultB: AbRunResult;
+    resultB: AbRunResult | null;
     recordId: string | null;
   } | null>(null);
 
@@ -61,9 +62,31 @@ export function useAbComparison({
     lastRunRef.current = null;
   }, []);
 
+  /**
+   * B 側の結果だけを破棄する (A は保持)。mode (モデル↔プロンプト) を切り替えると
+   * B の構成が変わり表示中の B 応答が stale になるため呼ぶ。A は構成不変なので
+   * 残して次の run で使い回す。B を採用済みだった場合は選択も解除する。
+   */
+  const clearSideB = useCallback(() => {
+    setState((s) => ({
+      ...s,
+      resultB: null,
+      chosen: s.chosen === "b" ? null : s.chosen,
+    }));
+    if (lastRunRef.current) {
+      lastRunRef.current = { ...lastRunRef.current, resultB: null };
+    }
+  }, []);
+
   const run = useCallback(
     async (request: AbRequest, configA: AbConfig, configB: AbConfig) => {
-      setState({ ...IDLE, running: true });
+      // A は常に既定構成 (configA={}) なので、ok な既存結果があれば使い回し B
+      // だけ生成する (mode 切替後の再実行で無駄な生成/課金を避ける)。流用時は
+      // running 中も A の表示を維持する。
+      const reuseA = lastRunRef.current?.resultA?.ok
+        ? lastRunRef.current.resultA
+        : null;
+      setState({ ...IDLE, running: true, resultA: reuseA ?? null });
       // inline-ai は共有ストリームイベント (inline-ai:stream-*) と共有 abort flag を
       // 使うため、2 本同時に走らせると chunk が混線する → 逐次実行に倒す。
       // chat は非ストリーミングで応答が独立しているので並列で安全。
@@ -73,7 +96,7 @@ export function useAbComparison({
         configA,
         configB,
         dispatch,
-        { parallel },
+        { parallel, reuseA },
       );
 
       // 両側成功で projectId があるときだけ履歴を残す (片側失敗は記録しない)。
@@ -124,7 +147,8 @@ export function useAbComparison({
       const last = lastRunRef.current;
       if (!last) return null;
       const result = side === "a" ? last.resultA : last.resultB;
-      if (!result.ok) return null;
+      // resultB は clearSideB で null になりうる。null / 失敗は採用不可。
+      if (!result || !result.ok) return null;
 
       setState((s) => ({ ...s, chosen: side }));
       if (projectId && last.recordId) {
@@ -139,7 +163,7 @@ export function useAbComparison({
     [projectId],
   );
 
-  return { state, run, adopt, reset };
+  return { state, run, adopt, reset, clearSideB };
 }
 
 /** promptSummary 未指定時の簡易要約 (最後の user メッセージ先頭 120 字)。 */
