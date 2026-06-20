@@ -25,11 +25,15 @@ export function buildTensionSeries(
   nodes: TreeNodeData[],
   bySceneId: Map<string, SceneLensRecord[]>,
 ): TensionPoint[] {
-  // 読了順は既存の正準関数を流用（フォルダを含む全ツリーが前提＝実データは常に満たす）。
+  // 読了順は既存の正準関数を流用。親フォルダが nodes に含まれない孤児サブツリー
+  // （部分ロード／ストリーミング中など）は order に載らないため、computeSceneTimeIndex の
+  // unscheduled-fallback に倣い、order 不在のシーンは末尾へ安定的に追加して脱落させない。
   const order = computeGlobalSceneOrder(nodes);
   const scenes = nodes
-    .filter((n) => n.nodeType === "scene" && order.has(n.id))
-    .sort((a, b) => order.get(a.id)! - order.get(b.id)!);
+    .filter((n) => n.nodeType === "scene")
+    .sort(
+      (a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity),
+    );
 
   const points: TensionPoint[] = scenes.map((n) => {
     const lenses = bySceneId.get(n.id) ?? [];

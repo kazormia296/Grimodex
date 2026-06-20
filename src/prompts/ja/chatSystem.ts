@@ -131,6 +131,13 @@ export const JA_CHAT_SYSTEM = {
     semanticRecall: "\n## 関連する過去シーン (自動検索)",
     /** semanticRecall 配下の各抜粋タイトル行 */
     semanticRecallScene: "### 抜粋: ",
+    /** chat episodic recall (エピソード記憶): 過去の対話の抜粋セクションヘッダ。
+     * クエリ毎に変わるため semanticRecall と同様 cacheSegments には入れず prompt +
+     * volatileTail のみ。Codex/設定情報の後ろに置き正本を上書きさせない。 */
+    chatRecall: "\n## 過去の対話の記憶 (自動検索)",
+    /** chatRecall 配下の各メッセージのラベル行 (役割ベース)。`### ` 始まりで
+     * trim (trimRagText) のブロック分割と整合させる。 */
+    chatRecallEntry: "### ",
   },
 
   /** サンドイッチ・リマインダー: 全データレイヤー注入の終端 (L5 の後・
@@ -153,6 +160,15 @@ export const JA_CHAT_SYSTEM = {
   semanticRecallIntro:
     "以下は現在の執筆内容と意味的に関連する過去シーンの抜粋です（自動検索・断片）。" +
     "呼応や整合性の参考にしてください。設定情報の正本は上記の設定情報セクションです。",
+
+  /** chatRecall セクション冒頭の運用説明。これは「いつ何を話し・決め・見送ったか」の
+   * エピソード記憶 (柔らかい層) であり、設定の正本ではないことを明示する。古い対話が
+   * 上記 Codex / 設定情報 (硬い層 = 正本) を上書きしないよう本文でも釘を刺す。 */
+  chatRecallIntro:
+    "以下はこの相談に意味的に関連する過去の対話の抜粋です（自動検索・断片）。" +
+    "過去に何を話し・決め・見送ったかの参考にしてください。" +
+    "ただしこれは会話の記憶であって設定の正本ではありません。" +
+    "矛盾する場合は上記の設定情報・Codex を優先してください。",
 
   labels: {
     title: "タイトル",

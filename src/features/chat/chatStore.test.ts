@@ -132,6 +132,10 @@ vi.mock("@/features/semantic-search/api", () => ({
   semanticSearch: vi.fn(() => Promise.resolve([])),
   semanticIndexStatus: vi.fn(() => Promise.resolve(null)),
   semanticReindexAll: vi.fn(() => Promise.resolve(0)),
+  chatMessageSearch: vi.fn(() => Promise.resolve([])),
+  chatIndexMessage: vi.fn(() => Promise.resolve(0)),
+  chatIndexStatus: vi.fn(() => Promise.resolve(null)),
+  chatReindexAll: vi.fn(() => Promise.resolve(0)),
 }));
 
 import * as chatApi from "./chatApi";

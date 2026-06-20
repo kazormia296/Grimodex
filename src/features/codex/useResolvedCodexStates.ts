@@ -17,6 +17,11 @@ export function useResolvedCodexStates(
   const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
+  // フェーズの「初回ロード」のみ one-shot（未ロードの id だけ取得）。
+  // 以降のバッジ鮮度は usePhaseStore の購読（phasesByEntry / detailOverrides）が担保する:
+  // フェーズの追加・編集がストアへ反映されれば下の useMemo が再計算されるため、
+  // ここで再ロードする必要はない（再ロードすると更新ループになる）。
+  // ＝ ロードは一度きり・表示はストア駆動でライブ、という契約。
   useEffect(() => {
     const { phasesByEntry: loaded, loadPhasesForEntry } =
       usePhaseStore.getState();

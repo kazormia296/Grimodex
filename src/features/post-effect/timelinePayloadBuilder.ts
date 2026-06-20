@@ -80,6 +80,15 @@ function excerpt(text: string, max: number): string {
 }
 
 /**
+ * 著者の自由テキスト (title / synopsis / 本文抜粋 / story_time_label) が
+ * `{scene_id=...}` マーカーを偽装して LLM の cause_scene_id を誘導するのを防ぐ。
+ * 実際に発行する `${node.id}` マーカーには適用しない (自由テキストにのみ無害化)。
+ */
+function neutralizeSceneMarker(text: string): string {
+  return text.replace(/\{scene_id/g, "{ scene_id");
+}
+
+/**
  * story-time 昇順シーンから system_prompt 用の要約文脈を組む (synopsis 優先・本文抜粋 fallback)。
  * 各行頭に `{scene_id=...}` を付け、LLM が causality finding で「因」シーンを
  * cause_scene_id として返せるようにする (因果地図用)。これは system_prompt 専用で
@@ -95,12 +104,16 @@ export function buildTimelineContext(
   return placed
     .map((node, i) => {
       const idx = i + 1;
-      const label = node.storyTimeLabel?.trim() || `T${idx}`;
-      const summary =
+      const label = neutralizeSceneMarker(
+        node.storyTimeLabel?.trim() || `T${idx}`,
+      );
+      const summary = neutralizeSceneMarker(
         node.synopsis?.trim() ||
-        excerpt(node.bodyExcerptSource, TIMELINE_ENTRY_EXCERPT_MAX) ||
-        "(本文なし)";
-      return `${idx}. {scene_id=${node.id}} [${label}] ${node.title} — ${summary}`;
+          excerpt(node.bodyExcerptSource, TIMELINE_ENTRY_EXCERPT_MAX) ||
+          "(本文なし)",
+      );
+      const title = neutralizeSceneMarker(node.title);
+      return `${idx}. {scene_id=${node.id}} [${label}] ${title} — ${summary}`;
     })
     .join("\n");
 }

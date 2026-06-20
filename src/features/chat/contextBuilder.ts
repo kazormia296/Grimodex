@@ -83,6 +83,9 @@ export interface TrimInput {
   /** semantic recall (Layer4 RAG) セクション。投機的文脈のため、予算超過時は
    * 既存レイヤーより先に削られる (trim 順の先頭)。未指定は空文字と等価。 */
   ragText?: string;
+  /** chat episodic recall (エピソード記憶) セクション。最も投機的な層なので
+   * 予算超過時は RAG よりさらに先に削られる (trim 順の先頭)。未指定は空文字と等価。 */
+  episodicText?: string;
 }
 
 export interface TrimResult {
@@ -241,6 +244,14 @@ export interface BuildSystemPromptInput {
    * trim では既存レイヤーより先に削られる。空配列 / undefined はセクション省略。
    */
   semanticRecall?: Array<{ sceneTitle: string; chunkText: string }>;
+  /**
+   * chat episodic recall (エピソード記憶): 意味検索で見つけた過去の対話の抜粋。
+   * semanticRecall と同じくクエリ依存で毎ターン変わるため cacheSegments には混ぜず、
+   * prompt + volatileTail にのみ配置される。**順序は Codex / scene RAG の後ろ**に
+   * 置かれ、古い対話が正典 (Codex) や現在シーンを上書きしない。trim では最も先に
+   * 削られる (最も投機的な層)。空配列 / undefined はセクション省略。
+   */
+  chatRecall?: Array<{ label: string; text: string }>;
 }
 
 export interface LayerBudgets {
@@ -433,6 +444,7 @@ export const PROMPT_DATA_TAGS = {
   focus: "focus_subject",
   l4: "codex_entries",
   rag: "related_scenes",
+  episodic: "chat_history",
   l5: "conversation_summary",
 } as const;
 
@@ -441,7 +453,7 @@ export const PROMPT_DATA_TAGS = {
 // 直後に `\` を挿入して無害化する。挿入後は `<` の次が `\` になり再マッチ
 // しない (冪等)。`<note>` `<sticky>` `<map>` は予約外なので素通しになる。
 const RESERVED_TAG_RE =
-  /<(?=\s*\/?\s*(?:project_info|story_so_far|current_scene|focus_subject|codex_entries|related_scenes|conversation_summary)\b)/gi;
+  /<(?=\s*\/?\s*(?:project_info|story_so_far|current_scene|focus_subject|codex_entries|related_scenes|chat_history|conversation_summary)\b)/gi;
 
 /** データ内の予約タグ偽装をエスケープする (`</current_scene>` → `<\/current_scene>`)。 */
 export function escapeReservedTags(text: string): string {
@@ -681,6 +693,13 @@ export function trimL5Text(text: string, targetTokens: number): string {
   return "";
 }
 
+/** chat episodic recall: 末尾 (低スコア側) のメッセージブロックから丸ごと削る。
+ * フォーマットが semanticRecall と同型 (ヘッダ+intro / `### ` 始まりの各エントリ) なので
+ * trimRagText を流用する。 */
+function trimEpisodicText(text: string, targetTokens: number): string {
+  return trimRagText(text, targetTokens);
+}
+
 /** semantic recall (RAG): 末尾 (低スコア側) の抜粋ブロックから丸ごと削る。
  * 抜粋が 1 つも残らない場合はヘッダだけ残しても無意味なので空にする。 */
 function trimRagText(text: string, targetTokens: number): string {
@@ -718,7 +737,8 @@ export function trimToFit(
     countTokens(t.l4Text) +
     countTokens(t.l5Text) +
     countTokens(t.l6Text) +
-    countTokens(t.ragText ?? "");
+    countTokens(t.ragText ?? "") +
+    countTokens(t.episodicText ?? "");
 
   const total = sumTokens(layers);
   if (total <= budget) {
@@ -728,14 +748,16 @@ export function trimToFit(
   const trimmedLayers: string[] = [];
   const texts = { ...layers };
 
-  // Trim order: RAG → L5 → L4 → L2 → L3 → L1
-  // RAG (semantic recall) は自動検索による投機的文脈なので、ユーザーが明示的に
-  // 構成した既存レイヤーより先に犠牲にする。
+  // Trim order: EPISODIC → RAG → L5 → L4 → L2 → L3 → L1
+  // chat episodic recall (エピソード記憶) は最も投機的な層 (会話の柔らかい記憶) なので
+  // scene RAG よりさらに先に犠牲にする。RAG (semantic recall) も自動検索の投機的文脈
+  // なので、ユーザーが明示的に構成した既存レイヤーより先に犠牲にする。
   const trimOrder: Array<{
     key: keyof TrimInput;
     name: string;
     fn: (text: string, target: number) => string;
   }> = [
+    { key: "episodicText", name: "EPISODIC", fn: trimEpisodicText },
     { key: "ragText", name: "RAG", fn: trimRagText },
     { key: "l5Text", name: "L5", fn: trimL5Text },
     { key: "l4Text", name: "L4", fn: trimL4Text },
@@ -1187,6 +1209,19 @@ export function buildSystemPrompt(
     ragText = ragLines.join("\n");
   }
 
+  // chat episodic recall (エピソード記憶): 意味検索による過去の対話抜粋。semanticRecall
+  // と同じくクエリ依存で毎ターン変わるため cacheSegments には入れず prompt + volatileTail
+  // のみ。順序は Codex / scene RAG の後ろに置き、古い対話が正典を上書きしないようにする。
+  let episodicText = "";
+  if (input.chatRecall && input.chatRecall.length > 0) {
+    const episodicLines: string[] = [s.headers.chatRecall, s.chatRecallIntro];
+    for (const msg of input.chatRecall) {
+      episodicLines.push(`${s.headers.chatRecallEntry}${msg.label}`);
+      episodicLines.push(msg.text);
+    }
+    episodicText = episodicLines.join("\n");
+  }
+
   // L5: G17 会話要約（Progressive Summarization）
   const l5Text = input.conversationSummary
     ? `${s.headers.conversationSummary}\n${input.conversationSummary}`
@@ -1234,6 +1269,7 @@ export function buildSystemPrompt(
   let effectiveL5 = l5Text;
   let effectiveL6 = l6Text;
   let effectiveRag = ragText;
+  let effectiveEpisodic = episodicText;
   const exclude = input.excludeLayers ?? [];
   if (exclude.includes("L1")) effectiveL1 = "";
   if (exclude.includes("L2")) effectiveL2 = "";
@@ -1247,6 +1283,7 @@ export function buildSystemPrompt(
   if (exclude.includes("L5")) effectiveL5 = "";
   if (exclude.includes("L6")) effectiveL6 = "";
   if (exclude.includes("RAG")) effectiveRag = "";
+  if (exclude.includes("EPISODIC")) effectiveEpisodic = "";
 
   let trimmedLayers: string[] | undefined;
 
@@ -1301,6 +1338,7 @@ export function buildSystemPrompt(
       l5Text: effectiveL5,
       l6Text: effectiveL6,
       ragText: effectiveRag,
+      episodicText: effectiveEpisodic,
     };
     // 言語別 trim マーカーを渡す: en では L1/L3 のヘッダが英語になるため、
     // ja 既定の regex では一致せず trim が効かない (s = lang の chatSystem)。
@@ -1312,6 +1350,7 @@ export function buildSystemPrompt(
     effectiveL5 = result.trimmedTexts.l5Text;
     effectiveL6 = result.trimmedTexts.l6Text;
     effectiveRag = result.trimmedTexts.ragText ?? "";
+    effectiveEpisodic = result.trimmedTexts.episodicText ?? "";
     if (result.trimmedLayers.length > 0) {
       trimmedLayers = result.trimmedLayers;
     }
@@ -1350,6 +1389,10 @@ export function buildSystemPrompt(
   l4StableSegment = wrapDataLayer(l4StableSegment, PROMPT_DATA_TAGS.l4);
   l4VolatileSegment = wrapDataLayer(l4VolatileSegment, PROMPT_DATA_TAGS.l4);
   effectiveRag = wrapDataLayer(effectiveRag, PROMPT_DATA_TAGS.rag);
+  effectiveEpisodic = wrapDataLayer(
+    effectiveEpisodic,
+    PROMPT_DATA_TAGS.episodic,
+  );
   effectiveL5 = wrapDataLayer(effectiveL5, PROMPT_DATA_TAGS.l5);
 
   // サンドイッチ: 全データレイヤーの直後・L6 (正当な指示) の前に境界リマインダー
@@ -1364,6 +1407,7 @@ export function buildSystemPrompt(
     effectiveL4,
     l4StableSegment,
     effectiveRag,
+    effectiveEpisodic,
     effectiveL5,
   ].some((seg) => seg.trim().length > 0);
   const reminderText = hasDataLayers ? s.dataBoundaryReminder : "";
@@ -1376,6 +1420,7 @@ export function buildSystemPrompt(
   const focusTokens = effectiveFocus ? countTokens(effectiveFocus) : 0;
   const l4Tokens = countTokens(effectiveL4);
   const ragTokens = effectiveRag ? countTokens(effectiveRag) : 0;
+  const episodicTokens = effectiveEpisodic ? countTokens(effectiveEpisodic) : 0;
   const l5Tokens = effectiveL5 ? countTokens(effectiveL5) : 0;
   const l6Tokens = effectiveL6 ? countTokens(effectiveL6) : 0;
 
@@ -1413,6 +1458,13 @@ export function buildSystemPrompt(
       used: ragTokens,
     });
   }
+  if (effectiveEpisodic) {
+    layers.push({
+      layer: "EPISODIC",
+      label: i18next.t("chat.context.layer.EPISODIC"),
+      used: episodicTokens,
+    });
+  }
   if (effectiveL5) {
     layers.push({
       layer: "L5",
@@ -1436,6 +1488,7 @@ export function buildSystemPrompt(
     effectiveFocus,
     effectiveL4,
     effectiveRag,
+    effectiveEpisodic,
     effectiveL5,
     ...(reminderText ? [reminderText] : []),
     effectiveL6,
@@ -1457,10 +1510,12 @@ export function buildSystemPrompt(
 
   // cacheSegments を使うプロバイダ向けの揮発層。cacheSegments の直後に
   // cache_control 無しブロックとして送られる (4 breakpoint 制限を消費しない)。
-  // semantic recall (RAG) はクエリ依存で毎ターン変わるため必ずこちら側。
+  // semantic recall (RAG) と chat episodic recall はクエリ依存で毎ターン変わるため
+  // 必ずこちら側。episodic は scene RAG の後ろ・L5 の前 = Codex > scene RAG > chatRAG の順。
   const volatileTail = [
     l4VolatileSegment,
     effectiveRag,
+    effectiveEpisodic,
     effectiveL5,
     reminderText,
     effectiveL6,
@@ -1479,11 +1534,13 @@ export function buildSystemPrompt(
     focusTokens +
     l4Tokens +
     ragTokens +
+    episodicTokens +
     l5Tokens +
     l6Tokens +
     reminderTokens +
-    // prompt 配列に effectiveFocus を 1 要素追加したぶん join の \n が 1 個増える。
-    (reminderText ? 9 : 8);
+    // prompt 配列の固定要素は baseText/L1/L2/L3/focus/L4/rag/episodic/L5/L6 = 10。
+    // join("\n") の区切りは要素数 -1。reminder が入ると要素が 1 増える。
+    (reminderText ? 10 : 9);
 
   return {
     prompt,

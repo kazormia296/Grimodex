@@ -87,7 +87,18 @@ Codex（キャラクター/世界観/設定エントリ）は物語の進行に�
 
 ユーザーの操作量に対して常に妥当な結果になる。新規プロジェクトの既定値として安全。
 
-ただし `phaseStore.ts:66` の現在の初期値は `"reading"`。これは過去の互換性のためで、将来 `"auto"` に変える際は既存プロジェクトの `phase_resolution_mode` カラム値マイグレーション（NULL を `"auto"` に置換するか、`"reading"` を維持するか）が必要なので別 PR で扱う。
+ただし「既定値」には **2 つのレイヤ** があり、値が食い違っている点に注意（2026-06-20 追記）:
+
+1. **in-memory ストアの初期値**: `phaseStore.ts:67` は `resolutionMode` を `"reading"` で初期化する。これはプロジェクトが 1 件もロードされる前のブートストラップ用フォールバック。
+2. **DB スキーマの既定値**: `schema.ts:30-34` は `projects.phaseResolutionMode` を `.default("auto")` で定義する。したがって新規作成プロジェクトは DB 上で `"auto"` を受け取る。
+
+プロジェクトがロードされると (`projectStore.ts:106-108`)、DB の値が取得され `setResolutionMode()` 経由で in-memory ストアへ同期される。つまり:
+
+- どのプロジェクトもロードされる前 → in-memory 状態は `"reading"`
+- 新規プロジェクト → DB 上は `"auto"`
+- auto 導入前から存在する既存プロジェクト → 保存済みのモードを保持、または DB の既定値にフォールバック
+
+in-memory の `"reading"` 既定はレガシーであり、既存プロジェクトの `phase_resolution_mode` カラムの `NULL` 値を `"auto"` へマイグレーションし終えれば deprecated にできる余地がある。このマイグレーション（NULL を `"auto"` に置換するか、`"reading"` を維持するか）は別 PR で扱う。
 
 ## reading モードの品質トレードオフ
 
@@ -140,7 +151,7 @@ AI が「アリス = 真犯人」を **知らない** 状態で scene-7 を書�
 ## 関連箇所
 
 - `src/features/codex/phaseResolver.ts` — 順序計算 (`computeGlobalSceneOrder`, `computeSceneTimeIndex`) と Phase 適用 (`resolveCodexState`)
-- `src/features/codex/phaseStore.ts:66` — `resolutionMode` 状態と現在の既定値
+- `src/features/codex/phaseStore.ts:67` — `resolutionMode` 状態の in-memory 初期値 (`"reading"`)
 - `src/features/chat/chatStore.ts:188` — AI 文脈構築での `resolveCodexState` 呼び出し
 - `src/features/settings/categories/ProjectCategory.tsx:202` — Settings UI
 - `src/features/codex/components/TimelineTab.tsx` — モード表示バッジ + Popover

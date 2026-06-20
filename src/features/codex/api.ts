@@ -9,7 +9,10 @@ import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
  * codexLinkDirtyAt を現在時刻にし、伏線パネルの stale 判定 (isSetupEvaluationStale) で
  * 拾わせる。リンク無しなら no-op。失敗は非致命（保存自体は妨げない）。
  */
-async function markLinkedForeshadowsDirty(entryId: string): Promise<void> {
+async function markLinkedForeshadowsDirty(
+  projectId: string,
+  entryId: string,
+): Promise<void> {
   const links = await db
     .select({ foreshadowId: foreshadowCodexLinks.foreshadowId })
     .from(foreshadowCodexLinks)
@@ -19,9 +22,12 @@ async function markLinkedForeshadowsDirty(entryId: string): Promise<void> {
     .update(foreshadows)
     .set({ codexLinkDirtyAt: new Date() })
     .where(
-      inArray(
-        foreshadows.id,
-        links.map((l) => l.foreshadowId),
+      and(
+        eq(foreshadows.projectId, projectId),
+        inArray(
+          foreshadows.id,
+          links.map((l) => l.foreshadowId),
+        ),
       ),
     );
 }
@@ -110,6 +116,12 @@ export async function updateCodexEntry(
     .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)))
     .returning();
 
+  // 0 件マッチ (id が別プロジェクト等で project スコープに弾かれた場合) は
+  // 後続の副作用 (rescan/index/伏線 dirty) を一切走らせない。
+  // 特に markLinkedForeshadowsDirty は projectId 非依存なので、ここで
+  // 早期 return しないと別プロジェクトの伏線を汚染しうる。
+  if (!rows[0]) return undefined;
+
   // If name/aliases/excludedAliases changed, body-mention cache may be stale
   if (
     data.name !== undefined ||
@@ -131,7 +143,7 @@ export async function updateCodexEntry(
     // impact-review: 埋め込みに効く変更＝伏線整合性にも効きうる変更。
     // リンク伏線を再評価対象としてマーク（非致命なので失敗は飲み込む）。
     try {
-      await markLinkedForeshadowsDirty(id);
+      await markLinkedForeshadowsDirty(projectId, id);
     } catch {
       /* foreshadow dirty マークの失敗は保存を妨げない */
     }

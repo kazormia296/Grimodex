@@ -3090,3 +3090,136 @@ fn test_migrate_map_stickies_ai_derived_backfill() {
         .expect("query plain sticky");
     assert_eq!(plain, 0, "plain sticky stays 0");
 }
+
+/// Seed an in-memory DB to the legacy *timeline-migrated* state: the
+/// post_effect_runs / post_effect_annotations CHECK 制約には typo / intent /
+/// timeline までが入っているが impact_review はまだ無い。CHECK 文字列は
+/// `'timeline_consistency')` / `'timeline_anchor')` で終わる形 ——
+/// `migrate_post_effect_impact_review_categories` の `.replace` ターゲットと
+/// 一致する必要がある。
+fn open_post_timeline_post_effect_db() -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+    conn.execute_batch(
+        "CREATE TABLE post_effect_runs (
+            id              TEXT PRIMARY KEY,
+            project_id      TEXT NOT NULL,
+            effect_type     TEXT NOT NULL
+                              CHECK(effect_type IN ('review','pseudo_comment','meta_structure','consistency','intra_scene_consistency','typo_detection','intent_drift','timeline_consistency')),
+            scope_type      TEXT NOT NULL,
+            scope_target_id TEXT,
+            model           TEXT NOT NULL,
+            prompt_version  TEXT NOT NULL,
+            input_hash      TEXT,
+            status          TEXT NOT NULL DEFAULT 'running',
+            summary         TEXT,
+            error_message   TEXT,
+            started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            completed_at    TEXT
+        );
+        CREATE TABLE post_effect_annotations (
+            id             TEXT PRIMARY KEY,
+            project_id     TEXT NOT NULL,
+            run_id         TEXT,
+            anchor_type    TEXT NOT NULL DEFAULT 'scene_range',
+            scene_id       TEXT,
+            range_start    INTEGER,
+            range_end      INTEGER,
+            text_snapshot  TEXT,
+            category       TEXT NOT NULL
+                              CHECK(category IN ('review','pseudo_comment','consistency_anchor','foreshadow_anchor','theme_anchor','typo_anchor','intent_anchor','timeline_anchor')),
+            persona        TEXT,
+            severity       TEXT,
+            content        TEXT NOT NULL,
+            author_role    TEXT NOT NULL DEFAULT 'ai',
+            parent_id      TEXT,
+            status         TEXT NOT NULL DEFAULT 'open',
+            metadata       TEXT NOT NULL DEFAULT '{}',
+            created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )
+    .expect("seed legacy timeline-migrated post_effect tables");
+    conn
+}
+
+#[test]
+fn test_migrate_impact_review_categories_widens_legacy_timeline_check() {
+    // Regression: the impact_review CHECK widening uses a fragile string .replace
+    // on sqlite_master.sql and runs *after* the timeline migration. If the target
+    // string drifts it silently no-ops, leaving upgraded DBs unable to INSERT
+    // impact_review rows. Verify the legacy → migrated path really opens the gate.
+    let conn = open_post_timeline_post_effect_db();
+
+    // Before: impact_review / impact_review_anchor は拒否される。
+    let run_before = conn.execute(
+        "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+         VALUES ('r-ir', 'p1', 'impact_review', 'project', 'm', 'v')",
+        [],
+    );
+    assert!(
+        run_before.is_err(),
+        "pre-impact_review schema should reject impact_review effect_type"
+    );
+    let ann_before = conn.execute(
+        "INSERT INTO post_effect_annotations (id, project_id, category, content)
+         VALUES ('a-ir', 'p1', 'impact_review_anchor', 'x')",
+        [],
+    );
+    assert!(
+        ann_before.is_err(),
+        "pre-impact_review schema should reject impact_review_anchor category"
+    );
+
+    Database::migrate_post_effect_impact_review_categories(&conn).expect("migration ok");
+
+    // After: impact_review run と impact_review_anchor annotation が両方 insert 可。
+    conn.execute(
+        "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+         VALUES ('r-ir', 'p1', 'impact_review', 'project', 'm', 'v')",
+        [],
+    )
+    .expect("impact_review run accepted after migration");
+    conn.execute(
+        "INSERT INTO post_effect_annotations (id, project_id, run_id, category, content)
+         VALUES ('a-ir', 'p1', 'r-ir', 'impact_review_anchor', 'x')",
+        [],
+    )
+    .expect("impact_review_anchor annotation accepted after migration");
+
+    // 既存の timeline カテゴリが消えていないこと (CHECK 文字列の累積)。
+    conn.execute(
+        "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+         VALUES ('r-tl', 'p1', 'timeline_consistency', 'project', 'm', 'v')",
+        [],
+    )
+    .expect("timeline_consistency still accepted");
+
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .expect("integrity_check");
+    assert_eq!(
+        integrity, "ok",
+        "DB must remain consistent after CHECK widening"
+    );
+
+    // 冪等: 2回目以降は no-op で、insert 機能も保たれる。
+    Database::migrate_post_effect_impact_review_categories(&conn).expect("second run no-op");
+    Database::migrate_post_effect_impact_review_categories(&conn).expect("third run no-op");
+    conn.execute(
+        "INSERT INTO post_effect_runs (id, project_id, effect_type, scope_type, model, prompt_version)
+         VALUES ('r-ir2', 'p1', 'impact_review', 'scene', 'm', 'v')",
+        [],
+    )
+    .expect("impact_review still accepted after idempotent re-run");
+    conn.execute(
+        "INSERT INTO post_effect_annotations (id, project_id, category, content)
+         VALUES ('a-ir2', 'p1', 'impact_review_anchor', 'x')",
+        [],
+    )
+    .expect("impact_review_anchor still accepted after idempotent re-run");
+
+    let integrity_again: String = conn
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .expect("integrity_check after re-run");
+    assert_eq!(integrity_again, "ok");
+}

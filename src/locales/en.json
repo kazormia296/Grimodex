@@ -1404,6 +1404,11 @@
     "agentContinueHint": "Stopped at the limit. Resumes with a fresh budget.",
     "aiOffNote": "AI chat is off for this project.",
     "aiOffOpenSettings": "Open policy settings",
+    "recallPromote": {
+      "title": "This message keeps coming up. Promote it to the Codex?",
+      "action": "Promote to Codex",
+      "dismiss": "Later"
+    },
     "userQuestion": {
       "title": "Question",
       "aiGenerated": "AI-generated",
@@ -1647,6 +1652,7 @@
         "FOCUS": "Conversation focus",
         "L4": "Codex & settings",
         "RAG": "Related scenes (semantic)",
+        "EPISODIC": "Past conversation memory",
         "L5": "Conversation summary",
         "L6": "Command instruction"
       },
@@ -3309,6 +3315,7 @@
       "generateFromBeats": "Generate synopsis from beats",
       "generatedFromBeats": "Generated synopsis from beats",
       "generatingFromBeats": "Generating synopsis…",
+      "generateFromBeatsFailed": "Failed to generate synopsis from beats.",
       "overwrite": "Overwrite",
       "overwriteConfirm": "Overwrite existing synopsis?"
     },

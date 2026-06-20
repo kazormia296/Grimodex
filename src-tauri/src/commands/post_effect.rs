@@ -974,11 +974,13 @@ mod is_annotation_previously_closed_tests {
         conn
     }
 
+    // 全行を project_id = 'P1' で投入する (is_annotation_previously_closed は
+    // project スコープで照会するため、テストも一致する project_id を渡す)。
     fn insert(conn: &Connection, id: &str, status: &str, category: &str, metadata: &str) {
         conn.execute(
             "INSERT INTO post_effect_annotations
-                (id, category, status, metadata, content, author_role)
-             VALUES (?, ?, ?, ?, '', 'ai')",
+                (id, project_id, category, status, metadata, content, author_role)
+             VALUES (?, 'P1', ?, ?, ?, '', 'ai')",
             params![id, category, status, metadata],
         )
         .unwrap();
@@ -998,11 +1000,13 @@ mod is_annotation_previously_closed_tests {
         );
         assert!(is_annotation_previously_closed(
             &conn,
+            "P1",
             "typo_anchor",
             &["K1"]
         ));
         assert!(!is_annotation_previously_closed(
             &conn,
+            "P1",
             "typo_anchor",
             &["other"]
         ));
@@ -1020,6 +1024,7 @@ mod is_annotation_previously_closed_tests {
         );
         assert!(is_annotation_previously_closed(
             &conn,
+            "P1",
             "typo_anchor",
             &["K1"]
         ));
@@ -1037,6 +1042,7 @@ mod is_annotation_previously_closed_tests {
         );
         assert!(is_annotation_previously_closed(
             &conn,
+            "P1",
             "typo_anchor",
             &["K1"]
         ));
@@ -1054,6 +1060,7 @@ mod is_annotation_previously_closed_tests {
         );
         assert!(!is_annotation_previously_closed(
             &conn,
+            "P1",
             "typo_anchor",
             &["K1"]
         ));
@@ -1074,6 +1081,7 @@ mod is_annotation_previously_closed_tests {
         );
         assert!(is_annotation_previously_closed(
             &conn,
+            "P1",
             "consistency_anchor",
             &["K1"]
         ));
@@ -1091,6 +1099,7 @@ mod is_annotation_previously_closed_tests {
         );
         assert!(is_annotation_previously_closed(
             &conn,
+            "P1",
             "consistency_anchor",
             &["K1"]
         ));
@@ -1111,6 +1120,7 @@ mod is_annotation_previously_closed_tests {
         );
         assert!(is_annotation_previously_closed(
             &conn,
+            "P1",
             "consistency_anchor",
             &["K1"]
         ));
@@ -1131,6 +1141,7 @@ mod is_annotation_previously_closed_tests {
         // category 不一致なら hit しない
         assert!(!is_annotation_previously_closed(
             &conn,
+            "P1",
             "typo_anchor",
             &["K1"]
         ));
@@ -1151,6 +1162,7 @@ mod is_annotation_previously_closed_tests {
         // 1 番目 (legacy) は外れだが 2 番目 (new) で hit
         assert!(is_annotation_previously_closed(
             &conn,
+            "P1",
             "consistency_anchor",
             &["LEGACY1", "NEW1"]
         ));
@@ -1159,7 +1171,12 @@ mod is_annotation_previously_closed_tests {
     #[test]
     fn empty_keys_returns_false() {
         let conn = open_db();
-        assert!(!is_annotation_previously_closed(&conn, "typo_anchor", &[]));
+        assert!(!is_annotation_previously_closed(
+            &conn,
+            "P1",
+            "typo_anchor",
+            &[]
+        ));
     }
 }
 
@@ -1794,6 +1811,7 @@ fn score_context_match(window: &str, context: &str) -> u32 {
 /// 上書きされる UX バグを防ぐ。
 fn is_annotation_previously_closed(
     conn: &rusqlite::Connection,
+    project_id: &str,
     category: &str,
     dismiss_keys: &[&str],
 ) -> bool {
@@ -1803,18 +1821,23 @@ fn is_annotation_previously_closed(
     let placeholders = std::iter::repeat_n("?", dismiss_keys.len())
         .collect::<Vec<_>>()
         .join(", ");
-    // category は呼び出し側が文字列リテラルで指定する (ユーザー入力ではない)
+    // category は呼び出し側が文字列リテラルで指定する (ユーザー入力ではない)。
+    // project_id を必ず束縛してプロジェクト跨ぎの dismiss_key 衝突を防ぐ
+    // (この経路の他の read/write はすべて project スコープ済み。dismiss_key 自体
+    // に scene_id(UUID) が埋まり衝突はほぼ起き得ないが defense-in-depth)。
     let sql = format!(
         "SELECT 1 FROM post_effect_annotations
-           WHERE category = ?1
+           WHERE project_id = ?1
+             AND category = ?2
              AND status IN ('dismissed', 'resolved')
              AND (json_extract(metadata, '$.dismiss_key')            IN ({placeholders})
                   OR json_extract(metadata, '$.codex_ref.dismiss_key') IN ({placeholders})
                   OR json_extract(metadata, '$.typo_ref.dismiss_key')  IN ({placeholders}))
            LIMIT 1"
     );
-    // params: [category, keys..., keys..., keys...]
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + dismiss_keys.len() * 3);
+    // params: [project_id, category, keys..., keys..., keys...]
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 + dismiss_keys.len() * 3);
+    params.push(&project_id as &dyn rusqlite::ToSql);
     params.push(&category as &dyn rusqlite::ToSql);
     for _ in 0..3 {
         for k in dismiss_keys {
@@ -2118,6 +2141,7 @@ async fn process_consistency_scene(
                 // ため top-level クエリが空振りしていた regression を解消する。
                 if is_annotation_previously_closed(
                     conn,
+                    project_id,
                     "consistency_anchor",
                     &[&dismiss_key, &legacy_dismiss_key],
                 ) {
@@ -2474,6 +2498,7 @@ async fn process_intra_scene(
                 // ため、片側だけ open になる正規ルートは存在しない)。
                 if is_annotation_previously_closed(
                     conn,
+                    project_id,
                     "consistency_anchor",
                     &[&dismiss_key, &legacy_dismiss_key],
                 ) {
@@ -2754,7 +2779,8 @@ async fn process_typo_scene(
                 let dismiss_key = dismiss_key_typo(scene_id, found_text, suggestion);
                 // 過去に dismissed / resolved されている場合は新規 annotation を
                 // 作らない (ユーザー判断を尊重 + done セクションが重複しない)
-                if is_annotation_previously_closed(conn, "typo_anchor", &[&dismiss_key]) {
+                if is_annotation_previously_closed(conn, project_id, "typo_anchor", &[&dismiss_key])
+                {
                     continue;
                 }
 
@@ -2975,7 +3001,7 @@ async fn process_review_scene(
                 };
 
                 let dismiss_key = dismiss_key_review(scene_id, title, found_text);
-                if is_annotation_previously_closed(conn, "review", &[&dismiss_key]) {
+                if is_annotation_previously_closed(conn, project_id, "review", &[&dismiss_key]) {
                     continue;
                 }
 
@@ -3146,7 +3172,12 @@ async fn process_intent_drift_scene(
                 let found_context = finding["found_context"].as_str().unwrap_or("");
 
                 let dismiss_key = dismiss_key_intent_drift(scene_id, title, found_text);
-                if is_annotation_previously_closed(conn, "intent_anchor", &[&dismiss_key]) {
+                if is_annotation_previously_closed(
+                    conn,
+                    project_id,
+                    "intent_anchor",
+                    &[&dismiss_key],
+                ) {
                     continue;
                 }
 
@@ -3356,7 +3387,12 @@ async fn process_timeline_scene(
                 let found_context = finding["found_context"].as_str().unwrap_or("");
 
                 let dismiss_key = dismiss_key_timeline(scene_id, title, found_text);
-                if is_annotation_previously_closed(conn, "timeline_anchor", &[&dismiss_key]) {
+                if is_annotation_previously_closed(
+                    conn,
+                    project_id,
+                    "timeline_anchor",
+                    &[&dismiss_key],
+                ) {
                     continue;
                 }
 
@@ -3583,7 +3619,12 @@ async fn process_impact_review_scene(
 
                 let dismiss_key = dismiss_key_impact_review(scene_id, change_id, found_text);
                 // brand-new カテゴリのため legacy 後方互換 key は不要 (single key path)。
-                if is_annotation_previously_closed(conn, "impact_review_anchor", &[&dismiss_key]) {
+                if is_annotation_previously_closed(
+                    conn,
+                    project_id,
+                    "impact_review_anchor",
+                    &[&dismiss_key],
+                ) {
                     continue;
                 }
 
@@ -5109,7 +5150,12 @@ fn update_relation_status_inner(
     status: &str,
     project_id: &str,
 ) -> anyhow::Result<Value> {
-    let affected = conn.execute(
+    // §1 と §2 を 1 トランザクションに束ねる。relation 本体と両端 annotation の
+    // カスケードは不可分であるべきで、片方だけ成功して状態が割れるのを防ぐ
+    // (with_conn は接続をロックするだけで自動コミットのため、明示的に張る)。
+    let tx = conn.unchecked_transaction()?;
+
+    let affected = tx.execute(
         "UPDATE post_effect_annotation_relations
             SET status = ?, metadata = json_set(metadata, '$.updated_at', datetime('now'))
           WHERE id = ? AND project_id = ?",
@@ -5120,7 +5166,7 @@ fn update_relation_status_inner(
     }
 
     // §2: 両端 annotation を同じ status にカスケード (現在プロジェクト内に限定)
-    conn.execute(
+    tx.execute(
         "UPDATE post_effect_annotations
             SET status = ?,
                 metadata = json_set(metadata, '$.dismiss_source', 'cascade'),
@@ -5142,6 +5188,8 @@ fn update_relation_status_inner(
             project_id
         ],
     )?;
+
+    tx.commit()?;
 
     let rel = conn.query_row(
         "SELECT * FROM post_effect_annotation_relations WHERE id = ? AND project_id = ?",

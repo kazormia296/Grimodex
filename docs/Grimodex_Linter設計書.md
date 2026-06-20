@@ -554,11 +554,13 @@ type PosInterval = {
 | `ja/quote-period` | カギ括弧内末尾句点の有無（`strip`/`require`/`preserve`） | info | | ON | ✅（`preserve` 時を除く） |
 | `ja/sentence-length` | 一文 80 文字超で warn、120 で error | warn / error | | ON | × |
 | `ja/sentence-ending-repeat` | 「〜た。」「〜だ。」等が 3 文連続（括弧内は除外） | info | | OFF | × |
-| `ja/typo-confusable` | カタカナ語の典型的な打ち間違い（「シュミレーション」等、辞書ベース） | warn | | ON | ✅ |
+| `ja/typo-confusable` | カタカナ語の典型的な打ち間違い（「シュミレーション」等、辞書ベース） | warn | | ON（※フォールバック依存・下記注記参照） | ✅ |
 | `ja/kanji-hiragana-chain` | 漢字・平仮名の不自然な連続 | info | ✅ | OFF | — |
 | `ja/particle-no-chain` | 助詞「の」連続 | warn | ✅ | OFF | — |
 | `ja/redundant-expression` | 冗長表現（textlint 系の対応表ベース） | info | ✅ | OFF | — |
 | `ja/word-repetition` | 同語近接反復 | info | ✅ | OFF | — |
+
+> **（2026-06-20 追記）`ja/typo-confusable` はフロント `BUILTIN_DEFAULT_CONFIG` に未掲載**: 本ルールは Rust 側で完全に実装・登録されている（`rules/ja/typo_confusable.rs`、`rules/mod.rs` の `build_ruleset()` 登録順 — `ja/sentence-length` と `ja/word-repetition` の間。`default_severity()` は `Warning`）。一方、フロントの正本 `BUILTIN_DEFAULT_CONFIG.rules`（`lintConfigStore.ts`）には**エントリが存在しない**。このため「既定 ON」は本表冒頭の注（§Phase 1 ルール一覧）にある「未掲載ルールは読み取り時 `enabled: true` にフォールバックする」挙動によってのみ成立しており、エンジン上は ON で動くが、**設定パネルには定義済みエントリとして現れず、プロジェクト設定（`rules` キー）にも書き込まれない**（他ルールのように `BUILTIN_DEFAULT_CONFIG` 経由で UI に並ぶわけではない）。挙動を他ルールと揃えるなら `lintConfigStore.ts` の `ja/sentence-length`（既定 ON）と `ja/sentence-ending-repeat`（既定 OFF）の間に `"ja/typo-confusable": { enabled: true }` を追加する必要がある。
 
 `ja/particle-no-chain` は「の」が格助詞／連体修飾／準体助詞／終助詞など意味が多岐で regex では誤検出が多いため、形態素解析を前提に **既定 OFF** で同梱する（例: 「真琴の母の作ったお弁当を食べた」のような自然な文を拾わないよう、形態素列で連体助詞の連鎖のみを対象にする）。
 

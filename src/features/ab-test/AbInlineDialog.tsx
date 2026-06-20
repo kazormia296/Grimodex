@@ -13,7 +13,7 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { AbConfigForm } from "./AbConfigForm";
 import { AbComparePanel } from "./AbComparePanel";
 import { useAbComparison } from "./useAbComparison";
-import { inlineAbDispatcher } from "./abDispatchers";
+import { createInlineAbDispatcher } from "./abDispatchers";
 import { deriveAbConfigs, isAbConfigMeaningful, type AbMode } from "./abConfig";
 import type { AbConfig, AbMessage } from "./abHarness";
 
@@ -49,10 +49,14 @@ export function AbInlineDialog({
       settingsStore.get("abTest.defaultPromptVariantB", "") || undefined,
   }));
 
+  const dispatch = useMemo(
+    () => createInlineAbDispatcher(projectId),
+    [projectId],
+  );
   const { state, run, adopt, reset } = useAbComparison({
     surface: "inline",
     projectId,
-    dispatch: inlineAbDispatcher,
+    dispatch,
   });
 
   const { configA, configB: resolvedB } = useMemo(

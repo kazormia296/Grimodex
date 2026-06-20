@@ -28,6 +28,12 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
+use crate::semantic::chat_index::{
+    collect_chat_index_status, embed_chat_text, list_message_ids_in_project,
+    project_language_for_chat_message, read_chat_message_for_index, upsert_chat_chunk,
+    ChatIndexStatus, ChatUpsertOutcome,
+};
+use crate::semantic::chat_search::{run_chat_search, ChatSearchCache, ChatSearchHit};
 use crate::semantic::codex_index::{
     collect_codex_index_status, embed_codex_text, list_entry_ids_in_project,
     project_language_for_codex_entry, read_codex_for_index, upsert_codex_chunk, CodexIndexStatus,
@@ -456,6 +462,206 @@ pub(crate) async fn codex_reindex_all(
             let outcome = codex_index_split_lock(&ws_state, embedder, entry_id, &model_id, spec)?;
             if let CodexUpsertOutcome::Indexed(n) = outcome {
                 cache.invalidate(entry_id)?;
+                total += n;
+            }
+        }
+        Ok(total)
+    })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chat episodic recall (エピソード記憶) — codex 経路と同型
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 1 メッセージの index 更新を「読み出し → embed → upsert」に分割し、ONNX 推論中に
+/// workspace lock を持たない版 (codex_index_split_lock と同型)。
+fn chat_index_split_lock(
+    ws_state: &tauri::State<'_, WorkspaceState>,
+    embedder: &mut Embedder,
+    message_id: &str,
+    model_id: &str,
+    spec: &'static EmbeddingModelSpec,
+) -> Result<ChatUpsertOutcome, AppError> {
+    let Some(input) = with_db(ws_state, |db| read_chat_message_for_index(db, message_id))? else {
+        return Ok(ChatUpsertOutcome::SkippedMissing);
+    };
+    // lock 外: 推論中も他コマンドの DB アクセスを止めない。
+    let embedding = embed_chat_text(embedder, &input.text)?;
+    let embedding_dim = embedder.embedding_dim();
+    let outcome = with_db(ws_state, |db| {
+        upsert_chat_chunk(
+            db,
+            message_id,
+            &input.hash,
+            &embedding,
+            &input.text,
+            model_id,
+            embedding_dim,
+            spec.chunker_version,
+        )
+    })?;
+    Ok(outcome)
+}
+
+/// チャットメッセージ 1 件を episodic index に投入/更新する。
+///
+/// 戻り値: 投入したベクトル数 (1)。不在 / index 対象外 (system・空本文) / 古い hash で
+/// 破棄された場合は 0。成功時は `ChatSearchCache` の該当メッセージを invalidate する。
+/// addMessage (確定 1 回) と updateMessageMetadata (信号変化 → weight 列更新) から
+/// デバウンス経由で呼ばれる。
+#[tauri::command]
+pub(crate) async fn chat_index_message(
+    app: tauri::AppHandle,
+    message_id: String,
+) -> Result<usize, AppError> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<usize, AppError> {
+        let ws_state = app.state::<WorkspaceState>();
+        let emb_state = app.state::<SemanticEmbedderState>();
+        let cache = app.state::<ChatSearchCache>();
+
+        // 安価な事前 read: index 対象外 (system / 空本文 / 不在) なら ONNX を load せず即 0。
+        // updateMessageMetadata は非対象メッセージにも呼ばれ得るので embedder load を省く。
+        if with_db(&ws_state, |db| read_chat_message_for_index(db, &message_id))?.is_none() {
+            return Ok(0);
+        }
+
+        let language = with_db(&ws_state, |db| {
+            project_language_for_chat_message(db, &message_id)
+        })?;
+        let spec = spec_for_language(&language);
+        let model_id = spec.full_model_id();
+
+        let mut guard = emb_state
+            .inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+        let embedder = ensure_embedder(&app, spec, &mut guard)?;
+
+        let outcome = chat_index_split_lock(&ws_state, embedder, &message_id, &model_id, spec)?;
+
+        let n = match outcome {
+            ChatUpsertOutcome::Indexed(n) => {
+                cache.invalidate(&message_id)?;
+                n
+            }
+            ChatUpsertOutcome::SkippedHashMismatch | ChatUpsertOutcome::SkippedMissing => 0,
+        };
+        Ok(n)
+    })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// Chat episodic dense 検索。クエリを埋め込み、project 配下の chat_message_chunks に
+/// 総当たりコサイン → Top-K。生 cosine + 信号を返す (重み付けは JS chatRecall)。
+#[tauri::command]
+pub(crate) async fn chat_message_search(
+    app: tauri::AppHandle,
+    project_id: String,
+    query: String,
+    limit: usize,
+) -> Result<Vec<ChatSearchHit>, AppError> {
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<ChatSearchHit>, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            let emb_state = app.state::<SemanticEmbedderState>();
+            let cache = app.state::<ChatSearchCache>();
+
+            let language = with_db(&ws_state, |db| project_language(db, &project_id))?;
+            let spec = spec_for_language(&language);
+            let model_id = spec.full_model_id();
+
+            let mut guard = emb_state
+                .inner
+                .lock()
+                .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+            let embedder = ensure_embedder(&app, spec, &mut guard)?;
+            let query_embedding = embedder.embed_query(&query)?;
+            let embedding_dim = embedder.embedding_dim();
+            drop(guard);
+
+            let hits = with_db(&ws_state, |db| {
+                run_chat_search(
+                    db,
+                    &cache,
+                    &query_embedding,
+                    &project_id,
+                    limit,
+                    &model_id,
+                    embedding_dim,
+                    spec.chunker_version,
+                )
+            })?;
+            Ok(hits)
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// chat episodic index の充足状況。Embedder 不要の cheap クエリ。JS 側が
+/// `indexedMessageCount < totalMessageCount` を見て bulk back-index の要否を判定する。
+#[tauri::command]
+pub(crate) async fn chat_index_status(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<ChatIndexStatus, AppError> {
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<ChatIndexStatus, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            let report = with_db(&ws_state, |db| {
+                let language = project_language(db, &project_id)?;
+                let spec = spec_for_language(&language);
+                collect_chat_index_status(
+                    db,
+                    &project_id,
+                    &spec.full_model_id(),
+                    spec.embedding_dim,
+                    spec.chunker_version,
+                )
+            })?;
+            Ok(report)
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// project 配下の全 index 対象メッセージを一括再 index する (初回構築 / bulk back-index)。
+/// `codex_reindex_all` の chat 版。Embedder を 1 度 load し各メッセージを
+/// `chat_index_split_lock` で index、成功ごとに `ChatSearchCache` を invalidate、
+/// 投入ベクトル総数を返す。
+#[tauri::command]
+pub(crate) async fn chat_reindex_all(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<usize, AppError> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<usize, AppError> {
+        let ws_state = app.state::<WorkspaceState>();
+        let emb_state = app.state::<SemanticEmbedderState>();
+        let cache = app.state::<ChatSearchCache>();
+
+        let language = with_db(&ws_state, |db| project_language(db, &project_id))?;
+        let spec = spec_for_language(&language);
+        let model_id = spec.full_model_id();
+        let message_ids: Vec<String> =
+            with_db(&ws_state, |db| list_message_ids_in_project(db, &project_id))?;
+
+        let mut guard = emb_state
+            .inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+        let embedder = ensure_embedder(&app, spec, &mut guard)?;
+
+        let mut total: usize = 0;
+        for message_id in &message_ids {
+            let outcome = chat_index_split_lock(&ws_state, embedder, message_id, &model_id, spec)?;
+            if let ChatUpsertOutcome::Indexed(n) = outcome {
+                cache.invalidate(message_id)?;
                 total += n;
             }
         }

@@ -10,7 +10,8 @@ import {
   recallParamsForLang,
   SEMANTIC_RECALL_RESCUE_MARGIN,
 } from "@/features/chat/semanticRecall";
-import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
+import { computeSceneTimeIndex } from "@/features/codex/phaseResolver";
+import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import {
   getCurrentProjectId,
@@ -88,7 +89,13 @@ export async function fetchRelatedPastScenes(
     }),
   ]);
 
-  const sceneOrder = computeGlobalSceneOrder(useTreeStore.getState().nodes);
+  // 順序軸はプロジェクトの phase_resolution_mode に従う (Codex フェーズ解決と統一)。
+  // reading=読書順（既読＝原稿で手前）／ story・auto=作中時系列（storyTimeOrder 順、
+  // 未設定シーンは読書順末尾）。reading は computeGlobalSceneOrder と同義なので既定挙動は不変。
+  const sceneOrder = computeSceneTimeIndex(
+    useTreeStore.getState().nodes,
+    usePhaseStore.getState().resolutionMode,
+  );
   return selectRelatedPastScenes(hits, {
     currentSceneId: sceneId,
     sceneOrder,

@@ -45,3 +45,6 @@ src/features/related-scenes/liveEval/embeddings.generated.json
 
 # scripts/seed-sample-*.py が生成する開発/QA 用サンプルワークスペース。
 samples/
+
+# chat episodic-recall calibration (生成物・gitignore)
+src/features/chat/calibration/embeddings.generated.json

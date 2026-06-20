@@ -31,6 +31,10 @@ pub struct CodexCachedChunk {
     pub entry_id: String,
     pub entry_name: String,
     pub entry_type: String,
+    /// 表示用 summary。**eventual consistency**: summary は content hash の一部
+    /// なので編集すれば最終的に再インデックスされてキャッシュは無効化されるが、
+    /// 編集〜再インデックスの間は dense ヒットが古い summary を見せ得る
+    /// (scene 検索パイプラインと同じ契約)。
     pub summary: String,
     pub embedding: Vec<f32>,
 }

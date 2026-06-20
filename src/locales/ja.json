@@ -1404,6 +1404,11 @@
     "agentContinueHint": "上限で打ち切られました。新しい予算で続きを実行します。",
     "aiOffNote": "このプロジェクトではAIチャットがオフです。",
     "aiOffOpenSettings": "ポリシー設定を開く",
+    "recallPromote": {
+      "title": "この発言は何度も参照されています。Codexに昇格しますか？",
+      "action": "Codexに昇格",
+      "dismiss": "後で"
+    },
     "userQuestion": {
       "title": "質問",
       "aiGenerated": "AI生成",
@@ -1647,6 +1652,7 @@
         "FOCUS": "会話の焦点",
         "L4": "Codex・設定情報",
         "RAG": "関連シーン検索",
+        "EPISODIC": "過去の対話の記憶",
         "L5": "会話要約",
         "L6": "コマンド指示"
       },
@@ -2966,10 +2972,6 @@
       "generating": "生成中…",
       "overwriteConfirm": "既存のSynopsisを上書きしますか？",
       "overwrite": "上書き",
-      "generateFromBeats": "ビートからSynopsisを生成",
-      "generatingFromBeats": "Synopsisを生成中…",
-      "generatedFromBeats": "ビートからSynopsisを生成しました",
-      "generateFromBeatsFailed": "Synopsis生成に失敗しました",
       "saveFailed": "Synopsis の保存に失敗しました",
       "generate": "生成",
       "scenePlaceholder": "このシーンでは何が起きますか？"
@@ -3308,6 +3310,7 @@
       "generateFromBeats": "ビートからSynopsisを生成",
       "generatedFromBeats": "ビートからSynopsisを生成しました",
       "generatingFromBeats": "Synopsisを生成中…",
+      "generateFromBeatsFailed": "ビートからのあらすじ生成に失敗しました",
       "overwrite": "上書き",
       "overwriteConfirm": "既存のSynopsisを上書きしますか？"
     },

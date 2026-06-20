@@ -15,7 +15,9 @@ impl Database {
     }
 
     /// Full-text search across scenes, codex, and snippets.
-    /// `scope`: "all" | "scenes" | "codex" | "snippets"
+    /// `scope`: "all" | "scenes" | "codex" | "snippets" | "chat"
+    /// "chat" は episodic recall (chat hybrid) の sparse 腕専用で "all" には含めない
+    /// (コマンドセンター検索の挙動を変えない)。`id` は message_id。
     /// Returns up to `limit` results (capped at 50).
     pub fn search_fts(
         &self,
@@ -167,6 +169,61 @@ impl Database {
                     |row| {
                         Ok(serde_json::json!({
                             "sourceType": "snippet",
+                            "id": row.get::<_, String>(0)?,
+                            "title": row.get::<_, String>(1)?,
+                            "excerpt": row.get::<_, String>(2)?,
+                        }))
+                    },
+                )?;
+                for r in rows {
+                    results.push(r?);
+                }
+            }
+        }
+
+        // chat scope (episodic recall の sparse 腕)。"all" には含めない。
+        // chat_messages_fts は content=chat_messages なので rowid で本体 JOIN し、
+        // project スコープと role 絞り込み (user/assistant) を chat_messages 側で効かせる。
+        if scope == "chat" {
+            if use_like {
+                let mut stmt = conn.prepare(
+                    "SELECT cm.id, cm.role, substr(cm.content, 1, 80)
+                     FROM chat_messages cm
+                     JOIN chat_sessions cs ON cs.id = cm.session_id
+                     WHERE cs.project_id = ?1
+                       AND cm.role IN ('user', 'assistant')
+                       AND cm.content LIKE ?2
+                     LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(
+                    params_from_iter([project_id, like_pattern.as_str(), &lim.to_string()]),
+                    |row| {
+                        Ok(serde_json::json!({
+                            "sourceType": "chat",
+                            "id": row.get::<_, String>(0)?,
+                            "title": row.get::<_, String>(1)?,
+                            "excerpt": row.get::<_, String>(2)?,
+                        }))
+                    },
+                )?;
+                for r in rows {
+                    results.push(r?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT cm.id, cm.role, substr(cm.content, 1, 80)
+                     FROM chat_messages_fts
+                     JOIN chat_messages cm ON cm.rowid = chat_messages_fts.rowid
+                     JOIN chat_sessions cs ON cs.id = cm.session_id
+                     WHERE chat_messages_fts MATCH ?1 AND cs.project_id = ?2
+                       AND cm.role IN ('user', 'assistant')
+                     ORDER BY rank LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(
+                    params_from_iter([match_query.as_str(), project_id, &lim.to_string()]),
+                    |row| {
+                        Ok(serde_json::json!({
+                            "sourceType": "chat",
                             "id": row.get::<_, String>(0)?,
                             "title": row.get::<_, String>(1)?,
                             "excerpt": row.get::<_, String>(2)?,

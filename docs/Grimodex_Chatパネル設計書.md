@@ -144,8 +144,13 @@ Codex + Snippet のピル合計が コンテキストバーの横幅に収まら
 - 自動検出されたCodexエントリも×ボタンで個別除外可能
 - **ピルプレビュー内ピン昇格**: 自動検出（未ピン留め）のCodexエントリのピルをクリックしたポップオーバー内に「Spotlight」ボタンを表示。クリックで Spotlight に昇格し、ピルに 🔦 が付き、以降content全文が注入される
 - **✨ Spotlight 候補マーク（自動推薦）**: auto エントリ（detected + always）のうち、本文の充実したエントリを最大 N 件まで「✨ Spotlight candidate」として強調表示する。クリック動作は通常の auto ピルと同じで、Spotlight ボタン押下で content 全文注入に昇格する。ユーザーが「どのエントリを Spotlight 化すべきか」の発見を支援する非破壊的なヒント表示
-  - 判定ロジックは `spotlightSuggestion.ts` の `isSpotlightCandidate` / `computeSpotlightCandidates`
-  - 採用条件: `content` が空 doc（`{}` または `{"type":"doc","content":[]}`）でない、かつ文字数 ≥ `MIN_CONTENT_LEN`（既定 30）
+  - 判定ロジックは `spotlightSuggestion.ts` の `scoreCandidate`（内部ヘルパ。`_internals` 経由でテスト公開）/ `computeSpotlightCandidates`（公開 API）
+  - 採用条件: `scoreCandidate` が算出するスコアが `MIN_SCORE`（既定 2）以上のエントリ（2026-06-20 追記: 単純な「空 doc でない、かつ文字数 ≥ 既定 30」ではなく多要因スコアリング）。スコアは以下から算出する:
+    - `content` の文字数が `MIN_TEXT_LEN`（既定 30）未満なら 0（足切り）
+    - base スコア 1
+    - `summary` が空または空白のみなら +2
+    - auto エントリのうち detected（`mentioned` 検出）なら +1（always エントリは加点なし）
+    - 例: summary なし + detected → 1+2+1=4（採用）/ summary あり + detected → 1+0+1=2（採用）/ summary あり + always → 1+0+0=1（不採用）
   - 上限: `MAX_CANDIDATES`（既定 3）。先頭から順に候補化し、すでに pinned のエントリは除外
   - グループ化表示時もグループ内ピル展開後に同じ ✨ マークが付与される
 - **チャット言及による自動ピン留め**: ユーザーのチャットメッセージ内でCodexエントリ名が検出された場合（CodexHighlightまたは@メンション経由）、そのエントリをセッションの `pinned_codex` に自動追加する。シーン本文での言及（summary注入）とは異なり、チャットでの言及はユーザーの明確な意図を示すため、content全文を注入する。自動ピン留めされたエントリはContext Barにピルとして表示され、不要な場合は×で除外可能

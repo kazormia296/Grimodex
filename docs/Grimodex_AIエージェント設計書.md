@@ -16,7 +16,7 @@ LLMのTool Use（Function Calling）を活用し、プロジェクトデータ�
 
 Chatパネルのグローバルチャット（🌐ボタン）でプロジェクトスコープに切り替えた状態で、エージェントモードを有効化する。
 
-**有効化**: ChatInput 下段ツール列の **AI オプション ポップオーバー**（🔧 Wrench アイコン）内に **「Agent mode」チェックボックス**を配置（`src/features/chat/components/ChatInput.tsx`）。ONにするとツール定義がシステムプロンプトに追加され、LLMがツールを使えるようになる。Thinking トグルも同じポップオーバー内にあり、両者を一括で切り替えられる。
+**有効化**: ChatInput 下段ツール列に Agent mode と Thinking mode を**独立した chips として配置**する（`src/features/chat/components/ChatInput.tsx`）。Agent mode は Bot/BotOff アイコン、Thinking mode は Lightbulb/LightbulbOff アイコンを使用し、同じツールバー行に並べられるが、共有ポップオーバーでのグループ化はされていない（両者は同じツールバー行の Model picker・Template picker などの他コントロールと一列に並ぶ）。Agent mode の chip を ON にするとツール定義がシステムプロンプトに追加され、LLMがツールを使えるようになる。
 
 - エージェントモードON時、コンテキストバーに `[Agent]`（Bot アイコン）ピルを表示
 - 探索性が高そうな問いが入力欄に書かれた場合、ChatInput 上に「Agent mode で送る」サジェストチップが現れる（`agentSuggestion.ts` の `shouldSuggestAgentMode`）。応答後に「情報が足りない」系の文言を検出した場合は再試行サジェストも出る（`looksLikeMissingInfo`）
@@ -336,10 +336,13 @@ Snippetを検索する。
   parameters: {
     sceneId: { type: "string", description: "Target scene UUID" },
     text: { type: "string", description: "Plain-text prose to propose" },
-    mode: { type: "string", enum: ["append", "insert"] }
-  }
+    mode: { type: "string", enum: ["append", "insert"], description: "Optional: append (end of scene) or insert (at caret). Defaults to append." }
+  },
+  required: ["sceneId", "text"]
 }
 ```
+
+`sceneId` / `text` のみ必須で、`mode` は任意（未指定時は `append`）。実装上は `inputSchema.required` が `["sceneId", "text"]`（`mode` は properties に定義されるが required には含めない）。
 
 書き込みは AI 帰属（`application/x-grimodex-authorship` / `authorshipSpans`）と undo ジャーナル（`globalHistoryStore`）に連動する。DB スキーマ詳細（`prose_staging` 等）は [`Grimodex_統合DBスキーマ.md`](./Grimodex_統合DBスキーマ.md) を参照。
 
@@ -486,18 +489,14 @@ Snippetを検索する。
 
 ### エージェントモードトグル
 
-ChatInput 下段ツール列の 🔧 Wrench アイコン（AI オプション ポップオーバー）内に Agent mode / Thinking mode のチェックボックスを並べる:
+ChatInput 下段ツール列に Agent mode / Thinking mode を**独立した chips として**並べる（共有ポップオーバーは使わない）。Agent mode は Bot/BotOff アイコン、Thinking mode は Lightbulb/LightbulbOff アイコンを使い、Model picker・Template picker などと同じツールバー行に直接並ぶ:
 
 ```
-┌─ ChatInput card ──────────────────────────┐
-│ [TipTap editor]                            │
-│ [🔧][model picker]            [Send ▶]    │
-└────────────────────────────────────────────┘
-            ↓ 🔧 クリック
-   ┌──────────────────────────┐
-   │ ☑ Agent mode             │
-   │ ☑ Thinking mode          │
-   └──────────────────────────┘
+┌─ ChatInput card ─────────────────────────────────────────┐
+│ [TipTap editor]                                          │
+│ [Bot Agent mode][Lightbulb Thinking mode][model picker]  │
+│                                             [Send ▶]     │
+└──────────────────────────────────────────────────────────┘
 ```
 
 - OFF（デフォルト）: 通常のコンテキスト注入モード
@@ -610,7 +609,7 @@ Tool Use対応はモデルによって異なる:
 | AI のべりすと | 条件付き | legacy モデル: 非対応 (`supportsTools: false`)。v1 モデル（`spiko_ultra` 等、`apiVariant === "v1"`）: 対応 (`supportsTools: true`)。`resolveModelCapabilities` が `apiVariant` で分岐 |
 | CLI（Claude Code 等） | 非対応 | subprocess 経由のためツール呼び出し不可。`supportsTools: false` 固定で、Agent mode ON のままでも送信時は通常チャットパス（`sendCliChatStream`）にフォールバックする |
 
-エージェントモードトグルは、現在のセッションモデルがTool Useに対応している場合のみ有効化する。対応状況は `getModelCapabilities` / `resolveModelCapabilities`（`src/features/chat/agent/modelLimits.ts`）の `supportsTools` で判定し、UI 側では ChatInput の `canUseTools` フラグで Agent mode チェックボックスをグレーアウトする。
+エージェントモードトグルは、現在のセッションモデルがTool Useに対応している場合のみ有効化する。対応状況は `getModelCapabilities` / `resolveModelCapabilities`（`src/features/chat/agent/modelLimits.ts`）の `supportsTools` で判定し、UI 側では ChatInput の `canUseTools` フラグで Agent mode chip を disabled（グレーアウト）にする。
 
 ### 拡張思考・effortとの併用
 
