@@ -23,6 +23,8 @@ export interface ChatMessageMetadata {
   tool_calls?: unknown[];
   mentioned_scene_ids?: string[];
   summary_id?: string;
+  /** A/B 比較から採用した応答であることの provenance (ライブ生成と区別)。 */
+  ab_adopted?: boolean;
   [key: string]: unknown;
 }
 

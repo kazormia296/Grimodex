@@ -505,6 +505,23 @@ interface ChatState {
   ensureSession: () => Promise<string | null>;
   deleteSession: (sessionId: string) => Promise<void>;
   persistMessage: (role: MessageRole, content: string) => Promise<void>;
+  /**
+   * チャット A/B 比較で採用した応答を、現在のチャットセッションの会話履歴へ
+   * 1 往復 (user 下書き + assistant 採用応答) として積む。clipboard コピーの
+   * 置き換え。セッションが無ければ ensureSession で作成する。成功で true。
+   */
+  appendAdoptedAbTurn: (input: {
+    /** 入力欄に書いていた下書き (user メッセージ本文)。 */
+    userDraft: string;
+    /** A/B 各構成へ実際に送った完全プロンプト (制作過程開示用スナップショット)。 */
+    basePrompt: string;
+    /** @scene メンションされたシーン id (user メッセージ metadata 用)。 */
+    mentionedSceneIds: string[];
+    /** 採用した側の応答本文 (assistant メッセージ本文)。 */
+    assistantText: string;
+    /** 採用した側の実モデル (未解決なら null)。 */
+    model: string | null;
+  }) => Promise<boolean>;
 
   // Agent mode
   agentMode: boolean;
@@ -2844,6 +2861,74 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } catch (e) {
       toast.error(i18next.t("chat.saveMessageFailed"));
       debugLog.error("ChatStore", "persistMessage", errorDetail(e));
+    }
+  },
+
+  appendAdoptedAbTurn: async ({
+    userDraft,
+    basePrompt,
+    mentionedSceneIds,
+    assistantText,
+    model,
+  }) => {
+    // A/B ダイアログはスコープを変えずに開くため、ensureSession は現在のスコープ
+    // (scene/folder/project/codex/snippet) に対応する正しいセッションを返す。
+    const sessionId = await get().ensureSession();
+    if (!sessionId) {
+      toast.error(i18next.t("chat.saveMessageFailed"));
+      return false;
+    }
+
+    try {
+      // user 下書き。@scene メンションは sendMessage と同じく metadata に残す。
+      const userMetadata =
+        mentionedSceneIds.length > 0
+          ? JSON.stringify({ mentioned_scene_ids: mentionedSceneIds })
+          : undefined;
+      const userMsg = await chatApi.addMessage(sessionId, "user", userDraft, {
+        ...(userMetadata ? { metadata: userMetadata } : {}),
+      });
+
+      // 制作過程開示: A/B 各構成へ実際に送ったフルプロンプトをスナップショット保存
+      // (通常送信の saveMessagePrompt と同じ chat_message_prompts へ)。fire-and-forget。
+      // 比較は単発 user メッセージで投げているため layers は空・tokens は不明。
+      if (basePrompt) {
+        void chatApi
+          .saveMessagePrompt(userMsg.id, {
+            systemPrompt: basePrompt,
+            layers: [],
+            totalTokens: null,
+            model,
+          })
+          .catch((e) =>
+            debugLog.warn(
+              "ChatStore",
+              "appendAdoptedAbTurn:saveMessagePrompt",
+              errorDetail(e),
+            ),
+          );
+      }
+
+      // 採用応答。ab_adopted で provenance を残す (ライブ生成と区別)。
+      // usage は A/B 実行時に recordAiUsage 済みなので二重記録しない。
+      const assistantMsg = await chatApi.addMessage(
+        sessionId,
+        "assistant",
+        assistantText,
+        {
+          ...(model ? { model } : {}),
+          metadata: JSON.stringify({ ab_adopted: true }),
+        },
+      );
+
+      set((state) => ({
+        messages: [...state.messages, userMsg, assistantMsg],
+      }));
+      return true;
+    } catch (e) {
+      toast.error(i18next.t("chat.saveMessageFailed"));
+      debugLog.error("ChatStore", "appendAdoptedAbTurn", errorDetail(e));
+      return false;
     }
   },
 

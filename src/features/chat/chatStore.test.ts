@@ -512,6 +512,119 @@ describe("useChatStore", () => {
     });
   });
 
+  describe("appendAdoptedAbTurn", () => {
+    const mockSaveMessagePrompt = vi.mocked(chatApi.saveMessagePrompt);
+
+    it("ensures a session, appends user + assistant turn, and snapshots the prompt", async () => {
+      // activeSessionId が null → ensureSession が createSession を呼ぶ。
+      useChatStore.setState({
+        sessions: [],
+        activeSessionId: null,
+        messages: [],
+        chatScope: "scene",
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+      });
+      const userMsg = makeMessage("user", "下書き");
+      const assistantMsg = makeMessage("assistant", "採用応答");
+      mockCreateSession.mockResolvedValueOnce(session1);
+      mockAddMessage
+        .mockResolvedValueOnce(userMsg)
+        .mockResolvedValueOnce(assistantMsg);
+
+      const ok = await useChatStore.getState().appendAdoptedAbTurn({
+        userDraft: "下書き",
+        basePrompt: "FULL PROMPT",
+        mentionedSceneIds: ["scene-9"],
+        assistantText: "採用応答",
+        model: "openai/gpt-4o",
+      });
+
+      expect(ok).toBe(true);
+      expect(mockCreateSession).toHaveBeenCalledTimes(1);
+
+      // user + assistant の 2 メッセージを順に積む。
+      expect(mockAddMessage).toHaveBeenCalledTimes(2);
+      const [userCall, assistantCall] = mockAddMessage.mock.calls;
+      expect(userCall[0]).toBe("session-1");
+      expect(userCall[1]).toBe("user");
+      expect(userCall[2]).toBe("下書き");
+      expect(userCall[3]?.metadata).toBe(
+        JSON.stringify({ mentioned_scene_ids: ["scene-9"] }),
+      );
+      expect(assistantCall[1]).toBe("assistant");
+      expect(assistantCall[2]).toBe("採用応答");
+      expect(assistantCall[3]?.model).toBe("openai/gpt-4o");
+      expect(assistantCall[3]?.metadata).toBe(
+        JSON.stringify({ ab_adopted: true }),
+      );
+
+      // 制作過程開示: basePrompt を user メッセージのスナップショットへ。
+      expect(mockSaveMessagePrompt).toHaveBeenCalledWith(userMsg.id, {
+        systemPrompt: "FULL PROMPT",
+        layers: [],
+        totalTokens: null,
+        model: "openai/gpt-4o",
+      });
+
+      // in-memory messages に両方反映。
+      const msgs = useChatStore.getState().messages;
+      expect(msgs.map((m) => m.id)).toEqual([userMsg.id, assistantMsg.id]);
+    });
+
+    it("reuses the existing active session and skips snapshot when basePrompt is empty", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: "session-1",
+        messages: [],
+      });
+      mockAddMessage
+        .mockResolvedValueOnce(makeMessage("user", "d"))
+        .mockResolvedValueOnce(makeMessage("assistant", "r"));
+
+      const ok = await useChatStore.getState().appendAdoptedAbTurn({
+        userDraft: "d",
+        basePrompt: "",
+        mentionedSceneIds: [],
+        assistantText: "r",
+        model: null,
+      });
+
+      expect(ok).toBe(true);
+      expect(mockCreateSession).not.toHaveBeenCalled();
+      // basePrompt 空 → スナップショットは呼ばない。
+      expect(mockSaveMessagePrompt).not.toHaveBeenCalled();
+      // mentions 空 → user metadata なし / model null → assistant に model 指定なし。
+      const [userCall, assistantCall] = mockAddMessage.mock.calls;
+      expect(userCall[3]?.metadata).toBeUndefined();
+      expect(assistantCall[3]?.model).toBeUndefined();
+      expect(assistantCall[3]?.metadata).toBe(
+        JSON.stringify({ ab_adopted: true }),
+      );
+    });
+
+    it("returns false and records nothing when the session cannot be created", async () => {
+      useChatStore.setState({
+        sessions: [],
+        activeSessionId: null,
+        messages: [],
+      });
+      mockCreateSession.mockRejectedValueOnce(new Error("db down"));
+
+      const ok = await useChatStore.getState().appendAdoptedAbTurn({
+        userDraft: "d",
+        basePrompt: "p",
+        mentionedSceneIds: [],
+        assistantText: "r",
+        model: null,
+      });
+
+      expect(ok).toBe(false);
+      expect(mockAddMessage).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toHaveLength(0);
+    });
+  });
+
   // --- sendMessage tests ---
 
   describe("sendMessage", () => {

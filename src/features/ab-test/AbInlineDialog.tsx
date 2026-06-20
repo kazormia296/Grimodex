@@ -53,7 +53,7 @@ export function AbInlineDialog({
     () => createInlineAbDispatcher(projectId),
     [projectId],
   );
-  const { state, run, adopt, reset } = useAbComparison({
+  const { state, run, adopt, reset, clearSideB } = useAbComparison({
     surface: "inline",
     projectId,
     dispatch,
@@ -70,6 +70,17 @@ export function AbInlineDialog({
   useEffect(() => {
     if (open) reset();
   }, [open, reset]);
+
+  // mode 切替で B の構成が変わると表示中の B 応答が stale になる → 破棄。
+  // A は構成不変なので残し、次の実行で使い回す。
+  const handleModeChange = useCallback(
+    (next: AbMode) => {
+      if (next === mode) return;
+      setMode(next);
+      clearSideB();
+    },
+    [mode, clearSideB],
+  );
 
   const handleRun = useCallback(() => {
     void run({ messages }, configA, resolvedB);
@@ -96,10 +107,11 @@ export function AbInlineDialog({
 
         <AbConfigForm
           mode={mode}
-          onModeChange={setMode}
+          onModeChange={handleModeChange}
           defaultModel={defaultModel}
           configB={configB}
           onConfigBChange={setConfigB}
+          disabled={state.running}
         />
 
         {hasResult && (
@@ -109,6 +121,7 @@ export function AbInlineDialog({
               configB={resolvedB}
               resultA={state.resultA}
               resultB={state.resultB}
+              running={state.running}
               chosen={state.chosen}
               onAdopt={handleAdopt}
             />

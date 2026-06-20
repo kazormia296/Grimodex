@@ -159,4 +159,45 @@ describe("runAbComparison", () => {
     expect(result.a).toEqual({ ok: false, error: "rate limited" });
     expect(result.b).toEqual({ ok: false, error: "rate limited" });
   });
+
+  it("reuses an ok A result and only dispatches B", async () => {
+    const seen: (string | null | undefined)[] = [];
+    const dispatch: AbDispatcher = async (_messages, config) => {
+      seen.push(config.model);
+      return { ok: true as const, text: `model=${config.model ?? "default"}` };
+    };
+
+    const result = await runAbComparison(
+      { messages: BASE },
+      {},
+      { model: "gpt-b" },
+      dispatch,
+      { reuseA: { ok: true, text: "REUSED_A" } },
+    );
+
+    expect(result.a).toEqual({ ok: true, text: "REUSED_A" });
+    expect(result.b).toEqual({ ok: true, text: "model=gpt-b" });
+    // A は dispatch されず B だけが走る。
+    expect(seen).toEqual(["gpt-b"]);
+  });
+
+  it("ignores a failed reuseA and dispatches both sides", async () => {
+    const dispatch: AbDispatcher = vi.fn(async (_messages, config) => ({
+      ok: true as const,
+      text: `${config.model}`,
+    }));
+
+    const result = await runAbComparison(
+      { messages: BASE },
+      { model: "a" },
+      { model: "b" },
+      dispatch,
+      { reuseA: { ok: false, error: "boom" } },
+    );
+
+    // 失敗結果は流用しない → A も含め両側を実行。
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(result.a).toEqual({ ok: true, text: "a" });
+    expect(result.b).toEqual({ ok: true, text: "b" });
+  });
 });

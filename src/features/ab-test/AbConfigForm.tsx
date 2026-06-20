@@ -12,6 +12,11 @@ interface AbConfigFormProps {
   defaultModel: string;
   configB: AbConfig;
   onConfigBChange: (next: AbConfig) => void;
+  /**
+   * 実行中などで構成変更を止めたいとき true。mode 切替は clearSideB を伴うため、
+   * 実行中に切り替えると完了した run が結果を上書きしてしまう。それを防ぐ。
+   */
+  disabled?: boolean;
 }
 
 /**
@@ -26,6 +31,7 @@ export function AbConfigForm({
   defaultModel,
   configB,
   onConfigBChange,
+  disabled = false,
 }: AbConfigFormProps) {
   const { t } = useTranslation();
   const { models, isLoadingModels } = useAiSettingsStore();
@@ -36,7 +42,8 @@ export function AbConfigForm({
         <button
           type="button"
           onClick={() => onModeChange("model")}
-          className={`rounded-md border px-3 py-1.5 text-sm ${
+          disabled={disabled}
+          className={`rounded-md border px-3 py-1.5 text-sm disabled:opacity-40 ${
             mode === "model"
               ? "border-primary bg-primary text-primary-foreground"
               : "border-border hover:bg-accent"
@@ -47,7 +54,8 @@ export function AbConfigForm({
         <button
           type="button"
           onClick={() => onModeChange("prompt")}
-          className={`rounded-md border px-3 py-1.5 text-sm ${
+          disabled={disabled}
+          className={`rounded-md border px-3 py-1.5 text-sm disabled:opacity-40 ${
             mode === "prompt"
               ? "border-primary bg-primary text-primary-foreground"
               : "border-border hover:bg-accent"

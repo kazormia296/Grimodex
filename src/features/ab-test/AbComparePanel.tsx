@@ -4,10 +4,12 @@ import type { AbConfig, AbRunResult } from "./abHarness";
 interface AbComparePanelProps {
   configA: AbConfig;
   configB: AbConfig;
-  /** A 列の結果。null = 実行中。 */
+  /** A 列の結果。null = まだ結果なし。 */
   resultA: AbRunResult | null;
-  /** B 列の結果。null = 実行中。 */
+  /** B 列の結果。null = まだ結果なし。 */
   resultB: AbRunResult | null;
+  /** 比較を実行中か。null 結果を「実行中」と「未生成」で描き分けるため。 */
+  running?: boolean;
   /** 採用済みの列 ("a" | "b" | null)。 */
   chosen: "a" | "b" | null;
   /** A / B いずれかの採用ボタン押下。 */
@@ -26,6 +28,7 @@ export function AbComparePanel({
   configB,
   resultA,
   resultB,
+  running = false,
   chosen,
   onAdopt,
   adoptable = true,
@@ -37,6 +40,7 @@ export function AbComparePanel({
         modelLabel={configA.model}
         promptVariant={configA.promptVariant}
         result={resultA}
+        running={running}
         chosen={chosen === "a"}
         onAdopt={() => onAdopt("a")}
         adoptable={adoptable}
@@ -46,6 +50,7 @@ export function AbComparePanel({
         modelLabel={configB.model}
         promptVariant={configB.promptVariant}
         result={resultB}
+        running={running}
         chosen={chosen === "b"}
         onAdopt={() => onAdopt("b")}
         adoptable={adoptable}

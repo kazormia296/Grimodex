@@ -133,6 +133,7 @@ export function ChatInput({
 
   const stopGeneration = useChatStore((s) => s.stopGeneration);
   const buildPromptForCopy = useChatStore((s) => s.buildPromptForCopy);
+  const appendAdoptedAbTurn = useChatStore((s) => s.appendAdoptedAbTurn);
   const registerInputDraftProvider = useChatStore(
     (s) => s.registerInputDraftProvider,
   );
@@ -178,9 +179,12 @@ export function ChatInput({
 
   const [modelOpen, setModelOpen] = useState(false);
   // A/B 比較 (③): 現在の下書きプロンプトを 2 構成へ並列送信する専用モーダル。
-  // ライブストリーム描画には一切触れない。
+  // ライブストリーム描画には一切触れない。採用時は会話履歴へ積むため、表示用の
+  // 下書き本文 (userDraft) とメンション情報も保持しておく。
   const [abChat, setAbChat] = useState<{
     basePrompt: string;
+    userDraft: string;
+    mentionedSceneIds: string[];
     projectId: string;
   } | null>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -577,11 +581,39 @@ export function ChatInput({
     const mentionedSceneIds = collectMentionedSceneIds();
     try {
       const prompt = await buildPromptForCopy(markdown, { mentionedSceneIds });
-      setAbChat({ basePrompt: prompt, projectId: getCurrentProjectId() });
+      setAbChat({
+        basePrompt: prompt,
+        userDraft: markdown,
+        mentionedSceneIds: mentionedSceneIds ?? [],
+        projectId: getCurrentProjectId(),
+      });
     } catch {
       toast.error(t("abTest.buildPromptFailed"));
     }
   }, [editor, isStreaming, buildPromptForCopy, collectMentionedSceneIds, t]);
+
+  // A/B 採用: 採用列の応答を、そのチャットの会話履歴へ 1 往復として積む
+  // (下書き = user / 採用応答 = assistant)。clipboard コピーの置き換え。
+  // 適用できたら下書きをクリアしてダイアログを閉じる。
+  const handleAdoptAb = useCallback(
+    async ({ text, model }: { text: string; model: string | null }) => {
+      const current = abChat;
+      if (!current) return;
+      const ok = await appendAdoptedAbTurn({
+        userDraft: current.userDraft,
+        basePrompt: current.basePrompt,
+        mentionedSceneIds: current.mentionedSceneIds,
+        assistantText: text,
+        model,
+      });
+      if (!ok) return;
+      editor?.commands.clearContent();
+      onHasTextChange?.(false);
+      setAbChat(null);
+      toast.success(t("abTest.adoptedToConversation"));
+    },
+    [abChat, appendAdoptedAbTurn, editor, onHasTextChange, t],
+  );
 
   const canUseTools = caps.supportsTools;
   const canThink =
@@ -833,6 +865,7 @@ export function ChatInput({
           }}
           projectId={abChat.projectId}
           basePrompt={abChat.basePrompt}
+          onAdopt={handleAdoptAb}
         />
       )}
     </div>
