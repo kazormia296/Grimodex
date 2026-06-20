@@ -18,6 +18,7 @@ pub mod morph;
 pub mod offset;
 pub mod rule;
 pub mod rules;
+pub mod stem;
 pub mod textscan;
 
 pub use dialogue::{analyze_dialogue, DialogueAnalysis, DialogueScope};
