@@ -15,6 +15,25 @@ interface LLMResponsePayload {
   outputTokens?: number;
 }
 
+/**
+ * AI Branch 生成で LLM が空応答(text ブロック 0 件)を返したときに投げる。
+ *
+ * 推論モデル(gpt-5 等)は hidden reasoning トークンも出力トークン上限(max_tokens)に
+ * 課金されるため、上限が小さいと reasoning で使い切って `content` が空
+ * (finish_reason:length)になる。従来は {@link parseCards} がこの空テキストを黙って
+ * プレースホルダ("アイデア N" + 空 doc)で埋め、失敗を完全に隠していた。
+ * これを明示エラー化し、呼び出し側(MapCanvas)でトーストできるようにする。
+ *
+ * count 未満の partial(1 枚でも実カードがある)は従来どおり parseCards が補完する。
+ * 投げるのは「実カード 0 枚 = 完全な空応答」のときだけ。
+ */
+export class AiBranchEmptyResponseError extends Error {
+  constructor() {
+    super("AI returned an empty response (no idea text was produced).");
+    this.name = "AiBranchEmptyResponseError";
+  }
+}
+
 export interface AiBranchSeed {
   type: "scene" | "note" | "codex" | "sticky" | "snippet" | "ai_branch";
   title: string;
@@ -417,6 +436,13 @@ export async function generateAiBranchCards(
     .filter((b) => b.type === "text")
     .map((b) => (b as { type: "text"; content: string }).content)
     .join("\n");
+
+  // 空応答(推論モデルが reasoning で出力上限を使い切る等)を silent-pad で隠さず
+  // 明示的に失敗させる。reasoning は thinking ブロックに入る場合があるが、それは
+  // ユーザー向けの回答ではないため text 0 件は失敗として扱う。
+  if (!text.trim()) {
+    throw new AiBranchEmptyResponseError();
+  }
 
   return parseCards(text, count, lang, vsForBranch != null);
 }

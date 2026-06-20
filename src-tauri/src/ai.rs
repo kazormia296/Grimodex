@@ -503,12 +503,32 @@ fn is_ainoverist_v1(params: &ChatParams<'_>) -> bool {
         && ai_novelist::is_v1_variant(params.api_variant.as_deref(), params.model)
 }
 
+/// OpenRouter 経由でも OpenAI o系 / gpt-5系などの reasoning モデルは hidden
+/// reasoning トークンが `max_tokens` に課金されるため、4096 では content が空
+/// (finish_reason:length)になりうる。該当モデルを検出して予算に余裕を持たせる
+/// (OpenAI 直叩きの 32k 余裕と同根)。`gpt-5-chat` は非 reasoning なので除外する。
+fn is_openrouter_reasoning_model(model: &str) -> bool {
+    // provider プレフィックス(`openai/` `deepseek/` 等)を剥がして素のモデル名で判定。
+    let m = model.rsplit('/').next().unwrap_or(model);
+    if m.starts_with("gpt-5-chat") {
+        return false;
+    }
+    m.starts_with("gpt-5")
+        || m.starts_with("o1")
+        || m.starts_with("o3")
+        || m.starts_with("o4")
+        || m.starts_with("deepseek-r1")
+}
+
 fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
     if is_ainoverist_v1(params) {
         ai_novelist::length_for(params.model)
-    } else if matches!(params.provider, AiProvider::OpenAI) {
-        // OpenAI 直叩き reasoning モデルは hidden reasoning も max_completion_tokens に
-        // 課金されるため、4096 では content が空 (finish_reason:length) になりうる。余裕を持たせる。
+    } else if matches!(params.provider, AiProvider::OpenAI)
+        || is_openrouter_reasoning_model(params.model)
+    {
+        // reasoning モデルは hidden reasoning も max_tokens / max_completion_tokens に
+        // 課金されるため、4096 では content が空 (finish_reason:length) になりうる。
+        // OpenAI 直叩き全般 + OpenRouter 経由の reasoning モデルに余裕を持たせる。
         32_000
     } else {
         4096
@@ -4216,6 +4236,76 @@ mod tests {
         insert_chat_completion_token_limit(&mut body, &AiProvider::OpenRouter, 4096);
         assert_eq!(body["max_tokens"], 4096);
         assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn test_is_openrouter_reasoning_model() {
+        // 推論モデル(provider プレフィックス有無どちらも検出する)。
+        for m in [
+            "openai/gpt-5",
+            "openai/gpt-5-mini",
+            "openai/gpt-5-pro",
+            "gpt-5",
+            "openai/gpt-5-2025-08-01", // 日付サフィックスでも検出
+            "openai/o1",
+            "openai/o1-mini",
+            "openai/o3-mini",
+            "openai/o4-mini",
+            "deepseek/deepseek-r1",
+            "deepseek-r1",
+        ] {
+            assert!(is_openrouter_reasoning_model(m), "expected reasoning: {m}");
+        }
+        // 非 reasoning(gpt-5-chat は明示除外・その他通常モデル)。
+        for m in [
+            "openai/gpt-5-chat",
+            "gpt-5-chat",
+            "openai/gpt-4o-mini",
+            "openai/gpt-4o",
+            "anthropic/claude-opus-4-8",
+            "meta-llama/llama-3.1-70b-instruct",
+        ] {
+            assert!(
+                !is_openrouter_reasoning_model(m),
+                "expected non-reasoning: {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_openai_max_tokens_openrouter_reasoning_headroom() {
+        // OpenRouter provider で model 名だけ差し替えて openai_max_tokens を測る。
+        fn mt(settings: &AiSettings, model: &'static str) -> u32 {
+            let params = ChatParams {
+                provider: &AiProvider::OpenRouter,
+                model,
+                api_key: "sk-test",
+                endpoints: settings.endpoints(),
+                thinking: None,
+                effort: None,
+                reasoning_enabled: None,
+                reasoning_effort: None,
+                extra_body: None,
+                retry_429: false,
+                ai_novelist_mode: AiNovelistMode::Chat,
+                openrouter_provider_pin: None,
+                system_cache_segments: None,
+                system_volatile_tail: None,
+                api_variant: None,
+                web_search: None,
+                resolved_tool_protocol: ResolvedToolProtocol::Native,
+            };
+            openai_max_tokens(&params)
+        }
+        let settings = AiSettings::default();
+        // OpenRouter 経由の reasoning モデルは 32k へ(hidden reasoning 予算枯渇の回避)。
+        assert_eq!(mt(&settings, "openai/gpt-5"), 32_000);
+        assert_eq!(mt(&settings, "openai/gpt-5-pro"), 32_000);
+        assert_eq!(mt(&settings, "deepseek/deepseek-r1"), 32_000);
+        // 非 reasoning は従来どおり 4096。
+        assert_eq!(mt(&settings, "openai/gpt-4o-mini"), 4096);
+        // gpt-5-chat は非 reasoning 扱いで 4096。
+        assert_eq!(mt(&settings, "openai/gpt-5-chat"), 4096);
     }
 
     #[test]

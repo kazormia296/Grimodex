@@ -90,7 +90,11 @@ import {
   pendingEdgeLabelEdits,
 } from "./mapApi";
 import { AINodeDialog } from "./AINodeDialog";
-import { generateAiBranchCards, type AiBranchSeed } from "./mapAiApi";
+import {
+  generateAiBranchCards,
+  AiBranchEmptyResponseError,
+  type AiBranchSeed,
+} from "./mapAiApi";
 import { useAiSettingsStore } from "@/features/chat/store";
 import {
   collectAiBranchSeeds,
@@ -1649,6 +1653,17 @@ export function MapCanvas() {
               },
             });
           }
+        }
+      } catch (err) {
+        // 従来 catch が無く、空応答は parseCards の silent-pad で隠れ、ネットワーク/
+        // ポリシー失敗も無言だった。空応答(推論モデルの予算枯渇など)は専用文言で、
+        // それ以外は汎用文言で必ずトーストする。
+        if (err instanceof AiBranchEmptyResponseError) {
+          toast.error(t("map.toast.aiBranchEmptyResponse"));
+        } else {
+          toast.error(t("map.toast.aiBranchGenerateFailed"), {
+            description: err instanceof Error ? err.message : undefined,
+          });
         }
       } finally {
         setGeneratingAiBranch(null);
