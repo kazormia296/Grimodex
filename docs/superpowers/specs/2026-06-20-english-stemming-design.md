@@ -39,8 +39,9 @@
 
 1. **`tokenize='porter unicode61'` は有効。** `porter` は下位トークナイザを引数に取る*ラッパ*トークナイザ。`CREATE VIRTUAL TABLE ... USING fts5(content, tokenize='porter unicode61')` は成功する。
 2. **二重引用符は stemming を無効化しない。** `porter unicode61` で `MATCH '"studies"'` は `studying` を含む行にマッチする（両者とも `studi` に stem される）。引用符内にもトークナイザ(porter stemmer 含む)が適用される。傍証：*既存の* trigram 検索は全トークンを引用符で囲んで動作している＝FTS5は引用符内もトークナイズする証拠（無効化されるなら現状のtrigram検索は一切ヒットしない）。
+3. **外部コンテンツ(`content=`)FTSでは `count(*)` がインデックス行数ではなくコンテンツ表の行数を返す**（実測：英語1行のみ索引でも `count(*)`→2）。よって外部コンテンツFTSは「空かどうか」の backfill ゲートに使えない。`_en` を**非外部(通常)FTS5**にすると `count(*)` が正確になり、通常の `DELETE FROM` も使えて 'delete' sentinel が不要になる（実測確認済み）。
 
-帰結：既存サニタイザの引用符はそのままでよく、porter `_en` テーブルは index 側・query 側とも自動で stem する。**stemming を効かせるためのサニタイザ変更は不要。**
+帰結：(a) 既存サニタイザの引用符はそのままでよく、porter `_en` テーブルは index 側・query 側とも自動で stem する＝**サニタイザ変更は不要**。(b) `_en` は**非外部 FTS5** とし、自前で英語テキストの写しを保持する（後述の §5.3/§5.4 の単純化はこれに依存）。
 
 ## 5. 設計
 
@@ -63,33 +64,28 @@
 - 不規則変化(`ran`→`run`)は Snowball では正規化されない。許容(lemmatization はバイナリ肥大/複雑性のため却下済)。
 - 校閲の利得は**検索とは独立**：RRF/dense の事情に関係なく改善する。
 
-### 5.3 FTS 英語テーブル（`porter unicode61`）
+### 5.3 FTS 英語テーブル（`porter unicode61`・非外部・LEAN ルーティング）
 
-- 5本の base テーブルそれぞれに対し、`tokenize='porter unicode61'` の `_en` FTS5 テーブルを追加。列構成と外部コンテンツ設定は trigram 兄弟と同一：
+- 5本の base テーブルそれぞれに対し、`tokenize='porter unicode61'` の **非外部(通常)** `_en` FTS5 テーブルを追加(列構成は trigram 兄弟と同じだが `content=`/`content_rowid=` は付けない＝自前で写しを保持)：
   `codex_fts_en`・`snippets_fts_en`・`tree_nodes_fts_en`・`post_effect_annotations_fts_en`・`chat_messages_fts_en`。
-- **書込ルーティング(トリガ):** 各 base テーブルに言語ガード付きの `*_ai`/`*_ad`/`*_au` トリガを追加。英語行→`_en` テーブル、他→既存 trigram テーブル。`WHEN` ガード：
-  - 直接 `project_id` を持つ場合(codex/snippets/tree_nodes/post_effect_annotations)：
-    `WHEN (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'`
-  - `chat_messages`(間接)：
-    `WHEN (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = new.session_id)) LIKE 'en%'`
-  - いずれも PK lookup(安価)だが §7 の性能注記参照。
-  - **冪等性:** トリガ変更時に古い無ガードトリガが残らないよう、各 `CREATE TRIGGER` の前に `DROP TRIGGER IF EXISTS`。
-- **クエリルーティング:** `search_fts()` は冒頭で project 言語を一度引き、英語なら `_en` テーブルに MATCH。サニタイザ(`to_fts_match`/`toFtsMatchQuery`)は**変更なし**(引用符は stemming と両立・§4)。
+- **書込ルーティング(LEAN):** **既存の trigram トリガ・テーブルは一切変更しない。** 新たに言語ガード付きの `*_en_ai`/`*_en_ad`/`*_en_au` トリガを追加するのみ。英語行のみ `_en` に同期する。
+  - `_en_ai`: `WHEN (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'` で `INSERT INTO X_en(rowid, cols) VALUES(...)`。
+  - `_en_ad`: 同ガードで `DELETE FROM X_en WHERE rowid = old.rowid`（非外部なので通常 DELETE・sentinel 不要）。
+  - `_en_au`: 既存の列変更条件 AND 言語ガードで `DELETE`→`INSERT`。
+  - `chat_messages` は `project_id` 間接：`WHERE id = (SELECT project_id FROM chat_sessions WHERE id = new.session_id)`。
+  - いずれも PK lookup(安価)・§7 性能注記参照。新規 `IF NOT EXISTS` トリガなので既存への `DROP` 不要。
+  - **帰結(許容):** 英語コンテンツは trigram にも(既存トリガ経由で)索引されるが、英語プロジェクトのクエリは `_en` のみを引くため trigram 側の英語コピーは決して参照されない(無害な重複)。これにより既存 trigram の `('rebuild')`/`('optimize')` がそのまま有効に保てる(§5.4)。
+- **クエリルーティング:** `search_fts()` は冒頭で `SELECT language LIKE 'en%' FROM projects WHERE id=?` を一度引き、英語なら各 scope の MATCH を `_en` テーブルへ向ける(table 名を `&str` 変数で切替し `format!` で組む)。LIKE フォールバック枝は不変。サニタイザ(`to_fts_match`/`toFtsMatchQuery`)は**変更なし**(引用符は stemming と両立・§4)。
 - **効果の位置づけ:** trigram に対する主効果は**精度(precision)**(語境界＋stem により `run`→`rune`/`runner` の誤ヒットが消える)＋屈折形 recall(`studies`↔`study`)。stemming は RRF の sparse アームしか動かさないため、検索全体への寄与は計測必須(§8)。
 
-### 5.4 rebuild・backfill・言語変更（共通コード経路）
+### 5.4 rebuild・backfill・言語変更
 
-外部コンテンツの `('rebuild')` は base テーブル全体を読み、トリガの `WHEN` ガードを無視するため、全言語を1つの `_en`/trigram テーブルに index してしまう。よって分割後は**使用不可**。言語フィルタ付きの再投入に置換する。
+`_en` は非外部 FTS5 なので、通常の `DELETE FROM` + 言語フィルタ `INSERT ... SELECT` で確実に再構築できる(`('rebuild')` の外部コンテンツ問題は回避)。
 
-- 新 Rust 関数 `repopulate_fts_for_project(conn, project_id)`：
-  1. project 言語を引く。
-  2. 5つの content type それぞれについて、この project の行を trigram と `_en` の**両テーブルから削除**し、言語に応じた**正しいテーブル**へ INSERT。
-- この単一関数が3用途を兼ねる：
-  - **backfill**：マイグレーション初回実行時に既存英語プロジェクトを投入(英語プロジェクトごとに呼ぶ)。
-  - **言語変更**：`projects.language` が変わったときに呼ぶ(下記の project 更新経路から配線)。
-  - 手動修復／整合性 rebuild。
-- `fts_rebuild()`/`fts_optimize()` を言語対応に書き換え：projects を巡回して各 project の content を正しいテーブルへ振り分ける(あるいは project ごとに `repopulate_fts_for_project` を呼ぶ)。`optimize` は FTS テーブルごとに発行(trigram と `_en` の両方)。
-- **言語変更の配線:** `updateProject()`(`src/features/project/api.ts`)は現状 FTS フックなし(検証済)。`language` フィールドが変わったら `repopulate_fts_for_project` を呼ぶ Tauri コマンドを叩く。これが無いと project の言語切替で index が逆テーブルに取り残され、その project の検索が黙って壊れる — **レビューで判明した最重要の修正**。
+- 新 Rust メソッド `rebuild_en_fts()`：各 `_en` テーブルを `DELETE FROM X_en;` してから `INSERT INTO X_en(rowid, cols) SELECT rowid, cols FROM <base> WHERE project_id IN (SELECT id FROM projects WHERE language LIKE 'en%')`(chat は `chat_sessions` 経由)。SQL 本体は `&Connection` を取る自由関数に切り出し、`migrate()` の backfill と `rebuild_en_fts()` の双方から呼ぶ(ロック二重取得の回避)。
+- **backfill:** `migrate()` 末尾で `SELECT count(*) = 0 FROM codex_fts_en`(非外部なので正確)が真なら上記 rebuild SQL を実行。アップグレード直後の既存英語プロジェクトを一度だけ投入。新規/空 DB では no-op、以降は `_en` 非空ゲートでスキップ。
+- **既存 trigram の `fts_rebuild()`/`fts_optimize()` はそのまま温存**(trigram は全言語の catch-all で正しい)。`fts_rebuild()` に `rebuild_en_fts()` 呼び出しを**追記**し、`fts_optimize()` に `_en` テーブルの `('optimize')` を**追記**するのみ。
+- **言語変更の配線:** `updateProject()`(`src/features/project/api.ts`)は現状 FTS フックなし(検証済)。新コマンド `fts_rebuild_en`(= `db.rebuild_en_fts()`)を追加し、`updateProject` の patch に `language` が含まれるとき更新後に `invoke("fts_rebuild_en")` を呼ぶ。これが無いと project の言語切替で `_en` に逆言語の行が残り検索が壊れる — **レビューで判明した最重要の修正**。`_en` 全再構築は稀な操作なので全件で可。
 
 ## 6. エッジケースと決定
 
@@ -116,16 +112,17 @@
 - `src-tauri/crates/grimodex-lint/Cargo.toml` — `rust-stemmers` 追加。
 - `src-tauri/crates/grimodex-lint/src/stem.rs`(新規) — `stem_en`。
 - `src-tauri/crates/grimodex-lint/src/rules/en/{word_repetition,filter_words,dialogue_punctuation}.rs` — retrofit。
-- `src-tauri/src/database/migrate.rs` — `_en` テーブル5本＋言語ガード付きトリガ(DROP-before-CREATE)。
-- `src-tauri/src/database/fts.rs` — `search_fts` 言語ルーティング・`fts_rebuild`/`fts_optimize` 言語対応・`repopulate_fts_for_project`。
-- `src-tauri/src/commands/*` — repopulate を起動するコマンド(backfill＋言語変更)。
-- `src/features/project/api.ts` — `language` 変更時に repopulate を呼ぶ。
+- `src-tauri/src/database/migrate.rs` — 非外部 `_en` テーブル5本＋言語ガード付き `*_en_*` トリガ(新規`IF NOT EXISTS`・既存トリガは不変)＋ backfill ゲート(`count(*)=0`)。
+- `src-tauri/src/database/fts.rs` — `search_fts` 言語ルーティング・`rebuild_en_fts()`＋自由関数化した rebuild SQL・`fts_rebuild`/`fts_optimize` に `_en` 追記。
+- `src-tauri/src/commands/integrity.rs` — `fts_rebuild_en` コマンド(= `db.rebuild_en_fts()`)。
+- `src-tauri/src/lib.rs` — `fts_rebuild_en` を `invoke_handler` に登録。
+- `src/features/project/api.ts` — `language` を含む更新時に `invoke("fts_rebuild_en")`。
 - `src/lib/fts.ts` — **変更なし**(引用符は stemming と両立)。
 
 ## 10. リスクと未決事項
 
 - 検索の end-to-end 利得は **eval ゲート実行まで未証明**(dense アームが支配する可能性)。校閲の利得は独立かつ明確。eval で検索利得が無視できると出たら、校閲を残しつつ FTS 半分を再検討できる。
-- DB サイズ：英語プロジェクトは実質1つの FTS テーブルのみ使用(trigram 兄弟は空)。無視できる。
+- DB サイズ：`_en` は非外部のため英語テキストの写しを保持し、かつ英語コンテンツは trigram にも(無害に)索引される。よって英語プロジェクトはテキストを実質2重に保持(base＋`_en`)。小説規模で数MB増程度・デスクトップ単一ユーザーでは許容。日本語プロジェクトは無影響。
 - マイグレーション backfill コストは既存英語プロジェクトの content 量に比例(一度きり)。
 
 ## 11. スコープ外／将来
