@@ -88,5 +88,48 @@ gpt-4o-mini の自動生成は「友情/勇気/テーマ」等の汎用的な執
 - **未適用(データ不足)**: α/β/cap/plain の微調整。raw-gate 化で重みは順位付けのみに効くため
   影響は小さく、現状の既定(α0.15/β0.10/plain0.8)を維持。plain<1 は self-reference 抑制の
   質的安全側として保持。
-- **次アクション**: 強いモデルで分離の良いコーパスを生成 → α/β を本較正。en の 0.66/0.60 は
-  小コーパス由来の暫定値なので、拡張後に再確認。reranker は依然 precision の最終解。
+## v2: 強モデル(gpt-4o)で larger/cleaner コーパス → 本番構成を scale 検証
+
+固有名詞ベースの具体シナリオを gpt-4o で生成(ja 55メッセージ/19gold+7no-match, en 35/12+7)し
+再較正。**本番構成(ja 0.85/0.80・en 0.66/0.60)は scale でも fpRate=0 を維持**:
+
+| lang | gate/floor | R@1 | recall | precision | fpRate |
+|---|---|---|---|---|---|
+| ja | 0.85/0.80 | **1.00** | **0.94** | 0.63 | **0.00** |
+| en | 0.66/0.60 | 0.92 | 0.64 | 0.79 | **0.00** |
+
+- ja gate カーブ: fpRate=0 が 0.84〜0.88 で維持・recall 0.94、0.90 で recall 0.76 へ落ちる →
+  **gate 0.85 が sweet spot**(55メッセージで確認)。en 0.66 も 35メッセージで fpRate=0 を確認。
+- **α/β は raw-gate 下で inert**: 重みは注入確定後の ≤3 件の並べ替えにしか効かず、R@1 は重みに
+  依らず ja1.00/en0.92。→ **α/β 微調整は metrics を動かさない・既定維持で確定**。precision の
+  レバーは per-model gate(と最終的には reranker)。
+- **較正の教訓(gen prompt 修正)**: no-match ケースに対応する**メッセージを生成してはいけない**。
+  当初 gpt-4o は no-match 話題(Python/税金等)を**メッセージとしても**プールに入れ、その結果
+  no-match クエリが正しくそれに当たって fpRate≈0.71 に見えた(=ラベルの罠・実 precision ではない)。
+  no-match は**クエリのみ**でプールに不在、を prompt に明記。
+
+## v3: フロンティアモデル(Claude Opus 4.8)でクロス検証
+
+コーパス品質が較正の信頼性を左右するため、最新フロンティア(`anthropic/claude-opus-4.8`)でも
+生成し直してクロス検証(ja/en 各 88メッセージ/24gold+8no-match。Opus は en も full に生成し、
+gpt-4o の en 偏り[35]も解消)。committed fixture はこの Opus 版。
+
+| lang | gate/floor | R@1 | recall | precision | fpRate |
+|---|---|---|---|---|---|
+| ja | 0.85/0.80 | **1.00** | 0.83 | 0.76 | **0.00** |
+| en | 0.66/0.60 | 0.88 | 0.51 | 0.77 | **0.00** |
+
+- **3モデル(gpt-4o-mini → gpt-4o → Opus 4.8)が一致**して本番構成で fpRate=0。設定は frontier
+  モデル横断で robust。
+- ja gate カーブ: R@1=1.0 が 0.83〜0.85・0.86 で落ち始める → **gate 0.85 が R@1 sweet spot**。
+  en は gate **0.60 で fpRate=0.12(leak)**、0.62+ で fpRate=0 → 本番 0.66 はマージンあり。
+- Opus は**より難しい gold** を生成するため en recall=0.51(top-3 で gold の半分を拾う)だが、
+  R@1=0.88 で最良ヒットは当たる。**主要指標 fpRate=0 / R@1 は堅牢**。eval の品質ゲートも
+  recall ではなく fpRate=0 + R@1≥0.6 に置く(recall はコーパス難度依存の情報項目)。
+- α/β は Opus コーパスでも inert(R@1 は重みに依らず ja1.00/en0.88)。
+
+## 結論
+
+- 本番構成(raw-gate + ja 0.85/0.80 + en 0.66/0.60)は **3つの frontier モデルで生成した
+  larger・分離の良いコーパスでクロス検証済み・変更不要**。α/β/cap/plain は raw-gate 下で inert の
+  ため既定維持(plain<1 は self-reference 抑制の質的安全側)。reranker は依然 precision の最終解。

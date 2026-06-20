@@ -117,107 +117,506 @@
       {
         "id": "g_ja_0",
         "role": "user",
-        "text": "この物語の舞台はどのような場所にするべきか考えています。",
+        "text": "魔法体系について決めたい。詠唱者は「燐光石」を媒体に使うんだけど、一度使うと石が72時間冷却期間に入る設定にしよう。",
         "insertedToEditor": false,
         "extractedCount": 0
       },
       {
         "id": "g_ja_1",
         "role": "assistant",
-        "text": "ファンタジーの世界なら、魔法の森や古代の遺跡があると面白いですね。",
-        "insertedToEditor": false,
-        "extractedCount": 0
+        "text": "では燐光石は青く発光し、冷却中は灰色に濁る描写にしましょう。冷却中に無理に使うと術者の視力を一時的に奪う反動を加えるとリスクが明確になります。",
+        "insertedToEditor": true,
+        "extractedCount": 1
       },
       {
         "id": "g_ja_2",
         "role": "user",
-        "text": "魔法の森が良さそうです。そこで何か特別な生き物が住んでいますか？",
+        "text": "いいね。燐光石は王都の鉱山「ヴェルダ坑」でしか採れないことにする。",
         "insertedToEditor": false,
         "extractedCount": 0
       },
       {
         "id": "g_ja_3",
         "role": "assistant",
-        "text": "はい、例えば、光る蝶やドラゴンの幼体が住んでいる設定ができますね。",
-        "insertedToEditor": true,
-        "extractedCount": 1
-      },
-      {
-        "id": "g_ja_4",
-        "role": "user",
-        "text": "それに決めます！それでは、その生き物たちの特徴を詳しく教えてください。",
-        "insertedToEditor": true,
-        "extractedCount": 1
-      },
-      {
-        "id": "g_ja_5",
-        "role": "user",
-        "text": "主人公のバックストーリーを考えています。彼の過去についてどう思いますか？",
+        "text": "なるほど、それなら良さそうです。",
         "insertedToEditor": false,
         "extractedCount": 0
       },
       {
-        "id": "g_ja_6",
+        "id": "g_ja_4",
+        "role": "user",
+        "text": "主人公カイレンの過去を固めたい。12歳のとき塩商人の父を海賊に殺されている。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_5",
         "role": "assistant",
-        "text": "彼を孤児にして、特別な力を持つことにするとドラマチックですね。",
-        "insertedToEditor": true,
-        "extractedCount": 2
+        "text": "その事件を「銀波湾の襲撃」と名付けましょう。カイレンは父の懐中時計だけを形見に持ち、針が事件の時刻で止まったままにすると象徴的です。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_6",
+        "role": "user",
+        "text": "懐中時計いいね。それ以来カイレンは海を見るのを避けている設定にする。",
+        "insertedToEditor": false,
+        "extractedCount": 0
       },
       {
         "id": "g_ja_7",
-        "role": "user",
-        "text": "いいですね！その力は何ですか？",
+        "role": "assistant",
+        "text": "素敵な設定ですね、しっくりきます。",
         "insertedToEditor": false,
         "extractedCount": 0
       },
       {
         "id": "g_ja_8",
-        "role": "assistant",
-        "text": "例えば、時間を操る能力があれば、ストーリーに奥行きが出ますよ。",
-        "insertedToEditor": true,
-        "extractedCount": 1
+        "role": "user",
+        "text": "舞台になる図書館都市「アルメニカ」の構造を決めよう。七層の螺旋構造で、上に行くほど禁書区画になる。",
+        "insertedToEditor": false,
+        "extractedCount": 0
       },
       {
         "id": "g_ja_9",
-        "role": "user",
-        "text": "それは素晴らしいアイデアです！",
-        "insertedToEditor": false,
+        "role": "assistant",
+        "text": "最上層の第七層は「沈黙の冠」と呼ばれ、司書長しか入れない設定にしましょう。各層は回転する橋でしか繋がらず、夜には橋が格納されると侵入が難しくなります。",
+        "insertedToEditor": true,
         "extractedCount": 0
       },
       {
         "id": "g_ja_10",
         "role": "user",
-        "text": "物語のテーマについて考えています。どんなメッセージを込めるべきでしょうか？",
+        "text": "回転する橋は毎時0分に位置が変わる時計仕掛けにしよう。",
         "insertedToEditor": false,
         "extractedCount": 0
       },
       {
         "id": "g_ja_11",
         "role": "assistant",
-        "text": "友情や勇気のテーマは、読者に感動を与えることができますね。",
+        "text": "了解です、面白い仕掛けになりますね。",
         "insertedToEditor": false,
         "extractedCount": 0
       },
       {
         "id": "g_ja_12",
         "role": "user",
-        "text": "それを中心に進めます！他に何かありますか？",
+        "text": "敵対組織「灰燼教団」の目的を整理したい。彼らは古代神セルヴァンを再び目覚めさせようとしている。",
         "insertedToEditor": false,
         "extractedCount": 0
       },
       {
         "id": "g_ja_13",
         "role": "assistant",
-        "text": "愛や自己発見の要素も加えると、さらに深みが出ますよ。",
-        "insertedToEditor": true,
+        "text": "灰燼教団は世界各地の「封印の鐘」を破壊することでセルヴァンの眠りを浅くしていく計画にしましょう。鐘は全部で九つあり、すでに三つが破壊済みという緊迫感を出せます。",
+        "insertedToEditor": false,
         "extractedCount": 1
       },
       {
         "id": "g_ja_14",
         "role": "user",
-        "text": "そのアイデアも取り入れます！",
+        "text": "教団の指導者は元神官のヴォルガ枢機卿にする。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_15",
+        "role": "assistant",
+        "text": "良い対立軸になりそうです。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_16",
+        "role": "user",
+        "text": "物語の発端となる「紅蝕の夜」のタイムラインを決めたい。建国暦814年の夏至の夜に二つの月が重なる。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_17",
+        "role": "assistant",
+        "text": "その夜、空が赤く染まり、各地の家畜が一斉に死ぬ前兆を描きましょう。紅蝕は約400年周期で起こり、前回は建国暦414年だったと記録に残すと歴史の厚みが出ます。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_18",
+        "role": "user",
+        "text": "紅蝕の夜にカイレンが魔法に目覚める展開にしよう。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_19",
+        "role": "assistant",
+        "text": "導入として綺麗にまとまりますね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_20",
+        "role": "user",
+        "text": "重要アイテム「霜縫いの短剣」の性質を決めたい。刺した相手の血液を凍らせるが、使うたびに刃が1ミリずつ短くなる。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_21",
+        "role": "assistant",
+        "text": "元の刃渡りは30センチとして、つまり実質30回しか使えない計算にしましょう。短くなるほど効果が増す代わりに、最後の一刺しで刃が砕け散る運命を持たせると劇的です。",
         "insertedToEditor": true,
         "extractedCount": 1
+      },
+      {
+        "id": "g_ja_22",
+        "role": "user",
+        "text": "この短剣はカイレンの父の形見にしようか迷ってる。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_23",
+        "role": "assistant",
+        "text": "なるほど、検討の余地がありますね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_24",
+        "role": "user",
+        "text": "幻獣「夜啼鳥ノクトゥラ」を登場させたい。鳴き声を聞いた者は最も古い記憶を失う。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_25",
+        "role": "assistant",
+        "text": "ノクトゥラは羽が黒曜石のように硬く、新月の夜にしか姿を現さない設定にしましょう。失われた記憶は鳥の羽根に閉じ込められ、その羽を燃やすと記憶が戻る救済ルートも作れます。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_26",
+        "role": "user",
+        "text": "ノクトゥラはアルメニカの禁書区画に巣を作っていることにする。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_27",
+        "role": "assistant",
+        "text": "設定が繋がってきて良い感じですね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_28",
+        "role": "user",
+        "text": "二国間の政治対立を考えたい。海洋国家タレシアと内陸帝国ドラムガルドが「白塩条約」を巡って緊張している。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_29",
+        "role": "assistant",
+        "text": "白塩条約は塩の交易量を年間5万樽に制限する内容にしましょう。ドラムガルドが密かに条約を破って備蓄しているという疑惑が戦争の火種になります。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_30",
+        "role": "user",
+        "text": "タレシアの女王はイゼルダ三世という名前にする。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_31",
+        "role": "assistant",
+        "text": "政治劇の骨格ができてきましたね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_32",
+        "role": "user",
+        "text": "脇役の錬金術師ミラベルの工房を描写したい。地下三階建てで、各階で温度が違う。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_33",
+        "role": "assistant",
+        "text": "最下層は氷点下で霜縫いの素材を保管し、最上層は灼熱で金属を溶かす炉がある対比にしましょう。階段の代わりに滑車式の昇降籠で移動する設定が彼女の偏屈さを表します。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_34",
+        "role": "user",
+        "text": "ミラベルは左手が義手で、それ自体が小型の蒸留器になっている。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_35",
+        "role": "assistant",
+        "text": "キャラが立っていて良いですね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_36",
+        "role": "user",
+        "text": "通貨制度を決めたい。タレシアでは「貝貨」が使われていて、巻貝の大きさで価値が変わる。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_37",
+        "role": "assistant",
+        "text": "小指ほどの貝が1ニーラ、握り拳大の貝が100ニーラという三段階にしましょう。貝は偽造防止のため王室の刻印が必要で、無印の貝は罰金対象という社会描写も入れられます。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_38",
+        "role": "user",
+        "text": "ドラムガルドは金貨制で、両替商が国境で暴利を貪っていることにしよう。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_39",
+        "role": "assistant",
+        "text": "経済の対比が面白いですね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_40",
+        "role": "user",
+        "text": "ヒロインのサヤカの能力を決めたい。彼女は他人の声を完璧に模倣できるが、模倣中は自分の声を失う。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_41",
+        "role": "assistant",
+        "text": "模倣には対象の声を三回聞く必要があり、長く真似るほど自分の声が戻るのが遅れる制約にしましょう。クライマックスでヴォルガ枢機卿の声を真似て教団に潜入する展開に繋げられます。",
+        "insertedToEditor": true,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_42",
+        "role": "user",
+        "text": "サヤカは幼い頃から声真似で生計を立てていた旅芸人出身にする。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_43",
+        "role": "assistant",
+        "text": "背景に説得力がありますね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_44",
+        "role": "user",
+        "text": "山岳地帯「霧背峠」を旅の難所にしたい。常に濃霧で視界が3メートルしかない。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_45",
+        "role": "assistant",
+        "text": "霧背峠には「鈴付きの杭」が等間隔で打たれ、旅人は鈴の音を頼りに進む文化を作りましょう。鈴を盗む山賊「霧喰らい」がいると緊張感が増します。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_46",
+        "role": "user",
+        "text": "峠を越えるのに通常は丸三日かかることにする。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_47",
+        "role": "assistant",
+        "text": "旅の章にちょうど良い難所ですね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_48",
+        "role": "user",
+        "text": "宗教儀式「灯返しの祭」を作りたい。死者の魂を一年に一度だけ呼び戻せると信じられている。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_49",
+        "role": "assistant",
+        "text": "祭では家ごとに故人の名を刻んだ蝋燭を灯し、夜明けまでに消えなければ魂が訪れた証とする儀礼にしましょう。カイレンが父の蝋燭を灯す場面を感情の山場にできます。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_50",
+        "role": "user",
+        "text": "灯返しの祭は秋分の日に行われることにする。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_51",
+        "role": "assistant",
+        "text": "良い儀式の核ができましたね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_52",
+        "role": "user",
+        "text": "騎士団「銀梟騎士団」の組織を決めたい。団員はわずか13名で、全員が孤児院出身。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_53",
+        "role": "assistant",
+        "text": "13名にはそれぞれ番号が刻まれた銀の梟の徽章があり、欠員が出ても番号は永久欠番になる伝統にしましょう。団長は「初号」と呼ばれ、現在は女剣士レナータが務めます。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_54",
+        "role": "user",
+        "text": "騎士団は王ではなくアルメニカの図書館に忠誠を誓っていることにする。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_55",
+        "role": "assistant",
+        "text": "独特の立ち位置で面白いですね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_56",
+        "role": "user",
+        "text": "古代語「リューン文字」の仕組みを決めたい。一文字が音ではなく感情を表す表意文字なんだ。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_57",
+        "role": "assistant",
+        "text": "リューン文字は全部で49字あり、組み合わせで複雑な感情を綴ります。読むには対応する感情を実際に抱く必要があり、悲しみの文字は泣きながらでないと解読できない設定が独特です。",
+        "insertedToEditor": true,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_58",
+        "role": "user",
+        "text": "禁書区画の本はすべてリューン文字で書かれていることにしよう。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_59",
+        "role": "assistant",
+        "text": "設定同士が綺麗に噛み合いますね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_60",
+        "role": "user",
+        "text": "料理文化を作りたい。タレシアの名物は「霜貝の蒸し焼き」で、塩漬けの貝を海藻で包んで蒸す。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_61",
+        "role": "assistant",
+        "text": "霜貝は紅蝕の夜に獲れたものが最高級とされ、年に一度しか味わえない珍味にしましょう。宴の場面で身分差を表す小道具として使えます。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_62",
+        "role": "user",
+        "text": "貝は必ず三枚貝で、一枚でも欠けると縁起が悪いとされる。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_63",
+        "role": "assistant",
+        "text": "食文化に深みが出ますね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_64",
+        "role": "user",
+        "text": "終盤の決戦場所「崩れ落ちた天文台クレシダ」を設計したい。傾いた塔で、床が15度傾斜している。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_65",
+        "role": "assistant",
+        "text": "クレシダの天井には壊れた巨大な星図儀があり、戦闘中に落下する危険物として機能させましょう。傾斜で足場が不安定なため、剣戟が滑りながらの攻防になり迫力が出ます。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_66",
+        "role": "user",
+        "text": "天文台は紅蝕を観測するために建てられた歴史にする。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_67",
+        "role": "assistant",
+        "text": "クライマックスの舞台にぴったりですね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_68",
+        "role": "user",
+        "text": "サブプロット用に薬草「眠り苔ヴェンナ」を出したい。煎じて飲むと三日間眠り続ける。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_69",
+        "role": "assistant",
+        "text": "ヴェンナは霧背峠の岩陰にだけ生え、青紫の胞子を放ちます。過剰摂取すると二度と目覚めない毒にもなる両刃の設定にすると、暗殺の手段としても使えます。",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_ja_70",
+        "role": "user",
+        "text": "ミラベルがヴェンナを栽培しようとして失敗している過去にしよう。",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_ja_71",
+        "role": "assistant",
+        "text": "伏線として効きそうですね。",
+        "insertedToEditor": false,
+        "extractedCount": 0
       }
     ],
     "cases": [
@@ -282,41 +681,194 @@
       },
       {
         "id": "gq_ja_8",
-        "query": "魔法の森に住む特別な生き物について教えて",
+        "query": "燐光石を魔法の媒体に使う設定、冷却期間とか反動どうしてたっけ？",
         "gold": [
-          "g_ja_3",
-          "g_ja_4"
+          "g_ja_0",
+          "g_ja_1",
+          "g_ja_2"
         ]
       },
       {
         "id": "gq_ja_9",
-        "query": "主人公のバックストーリーについて詳しく教えて",
+        "query": "カイレンの父が殺された事件と懐中時計の形見の設定を確認したい",
         "gold": [
-          "g_ja_6",
-          "g_ja_8"
+          "g_ja_4",
+          "g_ja_5",
+          "g_ja_6"
         ]
       },
       {
         "id": "gq_ja_10",
-        "query": "物語のテーマは何にしたらいいか？",
+        "query": "図書館都市アルメニカの七層構造と橋の仕掛けってどう決めた？",
         "gold": [
-          "g_ja_11",
-          "g_ja_13"
+          "g_ja_8",
+          "g_ja_9",
+          "g_ja_10"
         ]
       },
       {
         "id": "gq_ja_11",
-        "query": "最近のプログラミング言語について教えて",
-        "gold": []
+        "query": "灰燼教団の目的と封印の鐘の話を思い出したい",
+        "gold": [
+          "g_ja_12",
+          "g_ja_13",
+          "g_ja_14"
+        ]
       },
       {
         "id": "gq_ja_12",
-        "query": "税金の申告についてのアドバイスはありますか？",
-        "gold": []
+        "query": "紅蝕の夜の年代と周期の設定どうしたっけ",
+        "gold": [
+          "g_ja_16",
+          "g_ja_17",
+          "g_ja_18"
+        ]
       },
       {
         "id": "gq_ja_13",
-        "query": "最近のスポーツニュースを知りたい",
+        "query": "霜縫いの短剣の効果と使用回数の制約を確認したい",
+        "gold": [
+          "g_ja_20",
+          "g_ja_21",
+          "g_ja_22"
+        ]
+      },
+      {
+        "id": "gq_ja_14",
+        "query": "夜啼鳥ノクトゥラの能力と出現条件の設定",
+        "gold": [
+          "g_ja_24",
+          "g_ja_25",
+          "g_ja_26"
+        ]
+      },
+      {
+        "id": "gq_ja_15",
+        "query": "タレシアとドラムガルドの白塩条約を巡る対立の詳細",
+        "gold": [
+          "g_ja_28",
+          "g_ja_29",
+          "g_ja_30"
+        ]
+      },
+      {
+        "id": "gq_ja_16",
+        "query": "錬金術師ミラベルの工房の構造ってどう描写した？",
+        "gold": [
+          "g_ja_32",
+          "g_ja_33",
+          "g_ja_34"
+        ]
+      },
+      {
+        "id": "gq_ja_17",
+        "query": "貝貨の通貨制度の単位と価値の決め方",
+        "gold": [
+          "g_ja_36",
+          "g_ja_37",
+          "g_ja_38"
+        ]
+      },
+      {
+        "id": "gq_ja_18",
+        "query": "サヤカの声を模倣する能力の制約を確認したい",
+        "gold": [
+          "g_ja_40",
+          "g_ja_41",
+          "g_ja_42"
+        ]
+      },
+      {
+        "id": "gq_ja_19",
+        "query": "霧背峠の難所、鈴の杭と日数の設定どうだった？",
+        "gold": [
+          "g_ja_44",
+          "g_ja_45",
+          "g_ja_46"
+        ]
+      },
+      {
+        "id": "gq_ja_20",
+        "query": "灯返しの祭の儀式の内容と日付を思い出したい",
+        "gold": [
+          "g_ja_48",
+          "g_ja_49",
+          "g_ja_50"
+        ]
+      },
+      {
+        "id": "gq_ja_21",
+        "query": "銀梟騎士団の人数と徽章の伝統の設定",
+        "gold": [
+          "g_ja_52",
+          "g_ja_53",
+          "g_ja_54"
+        ]
+      },
+      {
+        "id": "gq_ja_22",
+        "query": "リューン文字の仕組み、感情を表す文字の話",
+        "gold": [
+          "g_ja_56",
+          "g_ja_57",
+          "g_ja_58"
+        ]
+      },
+      {
+        "id": "gq_ja_23",
+        "query": "霜貝の蒸し焼きの料理設定を確認したい",
+        "gold": [
+          "g_ja_60",
+          "g_ja_61",
+          "g_ja_62"
+        ]
+      },
+      {
+        "id": "gq_ja_24",
+        "query": "決戦の天文台クレシダの傾斜と星図儀の設定",
+        "gold": [
+          "g_ja_64",
+          "g_ja_65",
+          "g_ja_66"
+        ]
+      },
+      {
+        "id": "gq_ja_25",
+        "query": "眠り苔ヴェンナの効果と生える場所どうしたっけ",
+        "gold": [
+          "g_ja_68",
+          "g_ja_69",
+          "g_ja_70"
+        ]
+      },
+      {
+        "id": "gq_ja_26",
+        "query": "Pythonでtry-exceptを使った例外処理の書き方を教えて",
+        "gold": []
+      },
+      {
+        "id": "gq_ja_27",
+        "query": "確定申告の医療費控除の申請方法は？",
+        "gold": []
+      },
+      {
+        "id": "gq_ja_28",
+        "query": "昨日のサッカーの試合のスコアを知りたい",
+        "gold": []
+      },
+      {
+        "id": "gq_ja_29",
+        "query": "車のエンジンオイルの交換時期はどれくらい？",
+        "gold": []
+      },
+      {
+        "id": "gq_ja_30",
+        "query": "Excelでセルを絶対参照にするショートカットは？",
+        "gold": []
+      },
+      {
+        "id": "gq_ja_31",
+        "query": "電子レンジでゆで卵を作るのは危険なの？",
         "gold": []
       }
     ]
@@ -438,37 +990,506 @@
       {
         "id": "g_en_0",
         "role": "user",
-        "text": "I'm thinking about the magic system in my world. Should it be elemental?",
-        "insertedToEditor": true,
+        "text": "Let's lock in the magic system. The Tideweave lets casters borrow strength from ocean currents, but only within 300 paces of saltwater.",
+        "insertedToEditor": false,
         "extractedCount": 1
       },
       {
         "id": "g_en_1",
         "role": "assistant",
-        "text": "Elemental magic can create a vibrant and dynamic world! What elements are you considering?",
+        "text": "Good constraint. I'd add that each Tideweave casting drains the user's body heat, so casters shiver violently after big spells and need wool cloaks even in summer.",
         "insertedToEditor": false,
         "extractedCount": 0
       },
       {
         "id": "g_en_2",
         "role": "user",
-        "text": "I want to include fire, water, and earth. How can I make them unique?",
+        "text": "Yes, and the heat-drain is cumulative — three castings in an hour can drop a caster into deadly hypothermia.",
         "insertedToEditor": true,
-        "extractedCount": 1
+        "extractedCount": 0
       },
       {
         "id": "g_en_3",
         "role": "assistant",
-        "text": "You could give each element a specific cultural significance in your societies.",
+        "text": "Nice, that works well.",
         "insertedToEditor": false,
         "extractedCount": 0
       },
       {
         "id": "g_en_4",
         "role": "user",
-        "text": "That's a good idea! Fire could symbolize passion and destruction.",
-        "insertedToEditor": true,
+        "text": "Backstory for Captain Veyla Orn: she lost her left hand at the Siege of Karrowmoor when she was nineteen, defending the granary gate.",
+        "insertedToEditor": false,
         "extractedCount": 1
+      },
+      {
+        "id": "g_en_5",
+        "role": "assistant",
+        "text": "We could give her a brass prosthetic forged by the smith Dolian, who carved tiny gull motifs into the knuckles as a private joke about her seasickness.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_6",
+        "role": "assistant",
+        "text": "That's a strong detail.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_7",
+        "role": "user",
+        "text": "She still has phantom pain in the missing hand whenever a storm approaches — it became her crew's weather forecast.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_8",
+        "role": "user",
+        "text": "The city of Brannock is built in five concentric rings, with the bronze Foundry Ring at the center and the slum Mudring on the outermost edge.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_9",
+        "role": "assistant",
+        "text": "Travel between rings goes through the Sluice Gates, which only open at dawn and dusk — so being caught in the wrong ring at night means you're stuck there.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_10",
+        "role": "assistant",
+        "text": "Love that layout.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_11",
+        "role": "user",
+        "text": "The Foundry Ring's heat keeps the whole city warm, so the closer you live to the center, the higher your status.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_12",
+        "role": "user",
+        "text": "The Ashen Concord faction wants to extinguish every dragon-flame in the realm because they believe fire-magic is what cracked the old moon.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_13",
+        "role": "assistant",
+        "text": "Their agents carry frostglass vials that smother flames instantly, and they brand themselves with a snuffed-candle sigil over the heart.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_14",
+        "role": "assistant",
+        "text": "Great, that's coherent.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_15",
+        "role": "user",
+        "text": "Their leader, Mother Quench, was herself burned as a child in the Pyre of Saint Allow.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_16",
+        "role": "user",
+        "text": "Timeline: the Sundering happened in the year 412, when the twin suns first appeared in the sky over Eldermarsh.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_17",
+        "role": "assistant",
+        "text": "So the novel's present should be 412 plus roughly sixty years — call it 470 — when the last people who remember a single sun are dying off.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_18",
+        "role": "assistant",
+        "text": "Sounds right.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_19",
+        "role": "user",
+        "text": "And the Long Drought of 438 nearly emptied Eldermarsh — that's why the marsh tribes scattered.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_20",
+        "role": "user",
+        "text": "The artifact is the Hollow Lantern: it gives light that casts no shadows, and anyone standing in its glow cannot lie.",
+        "insertedToEditor": true,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_21",
+        "role": "assistant",
+        "text": "We should make its fuel rare — it burns only powdered nightbloom petals, and one petal lasts a single hour.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_22",
+        "role": "assistant",
+        "text": "Perfect.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_23",
+        "role": "user",
+        "text": "And prolonged exposure to its light slowly bleaches the holder's eyes to milky white.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_24",
+        "role": "user",
+        "text": "Let's design the creature called the Mirewight — a bog-dwelling thing that wears the drowned as a disguise.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_25",
+        "role": "assistant",
+        "text": "It hunts by mimicking the voice of a victim's dead loved one, luring travelers off the safe causeway into the sucking peat.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_26",
+        "role": "assistant",
+        "text": "Chilling — that fits.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_27",
+        "role": "user",
+        "text": "You can spot a Mirewight because it casts no reflection in still water, only ripples.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_28",
+        "role": "user",
+        "text": "Political conflict: the Salt Barons of Hesp control all the realm's salt mines and have just doubled the tithe, starving the inland duchies.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_29",
+        "role": "assistant",
+        "text": "Duke Arven of Caldmere could respond by funding pirates to raid the salt galleons, sparking an undeclared sea war.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_30",
+        "role": "assistant",
+        "text": "Good escalation.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_31",
+        "role": "user",
+        "text": "The Barons retaliate by salting the duchy's wells, which is a war crime under the Pact of Hesp.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_32",
+        "role": "user",
+        "text": "Religion detail: the Threnody Order worships silence and forbids its monks from speaking after their fortieth birthday.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_33",
+        "role": "assistant",
+        "text": "They communicate through a finger-tapping language called Knuckle-Cant, and the eldest monks are revered as 'the Truly Quiet.'",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_34",
+        "role": "assistant",
+        "text": "Beautiful idea.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_35",
+        "role": "user",
+        "text": "Their monastery, Greypsalm, is carved into a cliff so the wind never reaches it — total stillness.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_36",
+        "role": "user",
+        "text": "Protagonist Jora's arc: she starts as a forger of trade seals in the port of Wend before she's blackmailed into the Crown's spy service.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_37",
+        "role": "assistant",
+        "text": "Her forging skill becomes her spy specialty — she can replicate any noble's wax sigil from a single glance.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_38",
+        "role": "assistant",
+        "text": "Yes, that ties together nicely.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_39",
+        "role": "user",
+        "text": "The man who blackmails her is Spymaster Olwin, who holds proof she forged a dead duke's will.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_40",
+        "role": "user",
+        "text": "The Glasswind Pass is the only mountain route into the northern kingdom, and it's blocked by ice for nine months a year.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_41",
+        "role": "assistant",
+        "text": "During the brief thaw, caravans race through, but the pass narrows at the Needle, where only one cart can fit at a time — a perfect ambush point.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_42",
+        "role": "assistant",
+        "text": "Strong setpiece.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_43",
+        "role": "user",
+        "text": "Toll-keepers at the Needle charge in fresh fruit, since nothing grows in the northern kingdom.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_44",
+        "role": "user",
+        "text": "The royal succession runs through the maternal line: the Moonstone Crown only passes to a queen's eldest daughter, never a son.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_45",
+        "role": "assistant",
+        "text": "So Prince Halric, having no sisters, is locked out — which gives him a desperate motive to fake a daughter, perhaps an adopted heir.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_46",
+        "role": "assistant",
+        "text": "That's a juicy complication.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_47",
+        "role": "user",
+        "text": "If no daughter exists, the crown reverts to the Conclave of Widows, who haven't governed in three centuries.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_48",
+        "role": "user",
+        "text": "The Emberfair is a festival held every seven years in Tellsgrove where debts are forgiven and masks are worn to hide identity.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_49",
+        "role": "assistant",
+        "text": "We can stage the assassination during the Emberfair — anonymity means the killer blends into thousands of masked dancers.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_50",
+        "role": "assistant",
+        "text": "Excellent setting for it.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_51",
+        "role": "user",
+        "text": "Tradition says you must burn last year's mask in the central bonfire, so masks are never reused — useful for the plot.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_52",
+        "role": "user",
+        "text": "The horse breed in the story is the Dunmane, bred by the steppe Khelai to run for two days without water.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_53",
+        "role": "assistant",
+        "text": "Their distinctive trait is a grey stripe down the spine, and the Khelai believe a Dunmane chooses its rider, not the reverse.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_54",
+        "role": "assistant",
+        "text": "Lovely worldbuilding.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_55",
+        "role": "user",
+        "text": "Selling a Dunmane outside the Khelai is punishable by the loss of a hand under steppe law.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_56",
+        "role": "user",
+        "text": "The poison central to act two is Widow's Lace — odorless, brewed from a white moth's wings, and only fatal when mixed with wine.",
+        "insertedToEditor": true,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_57",
+        "role": "assistant",
+        "text": "The antidote is goat's milk taken within an hour, which makes the timing of the poisoning a tense plot clock.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_58",
+        "role": "assistant",
+        "text": "Great tension device.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_59",
+        "role": "user",
+        "text": "Symptoms start as harmless laughter, so the victim seems merely drunk before collapsing.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_60",
+        "role": "user",
+        "text": "Language detail: the Vorn people have no word for 'goodbye' — they say 'unfinished' instead, implying every parting is temporary.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_61",
+        "role": "assistant",
+        "text": "We could pay this off emotionally when a Vorn character refuses to say 'unfinished' over a grave, signaling he believes that death really is final.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_62",
+        "role": "assistant",
+        "text": "That lands well.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_63",
+        "role": "user",
+        "text": "The Vorn also count years backward from a person's death, which they can't know — so all Vorn dates are guesses.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_64",
+        "role": "user",
+        "text": "The wizard tower Spindlereach has rooms that rearrange themselves every midnight, so no map of the interior stays accurate.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_65",
+        "role": "assistant",
+        "text": "The library is the one fixed room — apprentices learn to navigate by always heading toward the smell of old parchment.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_66",
+        "role": "assistant",
+        "text": "Clever anchor.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_67",
+        "role": "user",
+        "text": "The tower's master, Archon Pell, is the only one who can command the rooms to hold still, and only for an hour at a time.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_68",
+        "role": "user",
+        "text": "The currency of the merchant republic is the Tallow Mark — coins made of pressed beeswax stamped with a queen-bee seal.",
+        "insertedToEditor": false,
+        "extractedCount": 1
+      },
+      {
+        "id": "g_en_69",
+        "role": "assistant",
+        "text": "Because wax melts, the wealthy keep their fortunes in cool cellars, and a heatwave can literally bankrupt a family overnight.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_70",
+        "role": "assistant",
+        "text": "Wonderfully strange economy.",
+        "insertedToEditor": false,
+        "extractedCount": 0
+      },
+      {
+        "id": "g_en_71",
+        "role": "user",
+        "text": "Counterfeiters use paraffin instead of beeswax, detectable only by a slightly sweeter smell.",
+        "insertedToEditor": false,
+        "extractedCount": 0
       }
     ],
     "cases": [
@@ -533,26 +1554,194 @@
       },
       {
         "id": "gq_en_8",
-        "query": "What elements should be in my magic system?",
+        "query": "Remind me how the Tideweave magic works and its drawbacks near saltwater?",
         "gold": [
           "g_en_0",
-          "g_en_2",
-          "g_en_4"
+          "g_en_1",
+          "g_en_2"
         ]
       },
       {
         "id": "gq_en_9",
-        "query": "How do I calculate taxes for my fantasy world?",
-        "gold": []
+        "query": "What was Captain Veyla Orn's backstory with her hand and the prosthetic?",
+        "gold": [
+          "g_en_4",
+          "g_en_5",
+          "g_en_7"
+        ]
       },
       {
         "id": "gq_en_10",
-        "query": "What are the latest football scores?",
-        "gold": []
+        "query": "How is the city of Brannock laid out with its rings and gates?",
+        "gold": [
+          "g_en_8",
+          "g_en_9",
+          "g_en_11"
+        ]
       },
       {
         "id": "gq_en_11",
-        "query": "Can you help me with programming in Python?",
+        "query": "What does the Ashen Concord faction want and how do its agents operate?",
+        "gold": [
+          "g_en_12",
+          "g_en_13",
+          "g_en_15"
+        ]
+      },
+      {
+        "id": "gq_en_12",
+        "query": "Can you refresh the timeline around the Sundering and the twin suns?",
+        "gold": [
+          "g_en_16",
+          "g_en_17",
+          "g_en_19"
+        ]
+      },
+      {
+        "id": "gq_en_13",
+        "query": "What are the properties and fuel of the Hollow Lantern?",
+        "gold": [
+          "g_en_20",
+          "g_en_21",
+          "g_en_23"
+        ]
+      },
+      {
+        "id": "gq_en_14",
+        "query": "Tell me again how the Mirewight hunts and how to detect it.",
+        "gold": [
+          "g_en_24",
+          "g_en_25",
+          "g_en_27"
+        ]
+      },
+      {
+        "id": "gq_en_15",
+        "query": "What's the conflict between the Salt Barons of Hesp and the inland duchies?",
+        "gold": [
+          "g_en_28",
+          "g_en_29",
+          "g_en_31"
+        ]
+      },
+      {
+        "id": "gq_en_16",
+        "query": "How does the Threnody Order's vow of silence and communication work?",
+        "gold": [
+          "g_en_32",
+          "g_en_33",
+          "g_en_35"
+        ]
+      },
+      {
+        "id": "gq_en_17",
+        "query": "Remind me of Jora's forger-to-spy arc and who blackmails her.",
+        "gold": [
+          "g_en_36",
+          "g_en_37",
+          "g_en_39"
+        ]
+      },
+      {
+        "id": "gq_en_18",
+        "query": "What are the details of the Glasswind Pass and the Needle chokepoint?",
+        "gold": [
+          "g_en_40",
+          "g_en_41",
+          "g_en_43"
+        ]
+      },
+      {
+        "id": "gq_en_19",
+        "query": "How does the Moonstone Crown succession through the maternal line work?",
+        "gold": [
+          "g_en_44",
+          "g_en_45",
+          "g_en_47"
+        ]
+      },
+      {
+        "id": "gq_en_20",
+        "query": "What are the rules and traditions of the Emberfair festival?",
+        "gold": [
+          "g_en_48",
+          "g_en_49",
+          "g_en_51"
+        ]
+      },
+      {
+        "id": "gq_en_21",
+        "query": "Tell me about the Dunmane horses and the Khelai laws around them.",
+        "gold": [
+          "g_en_52",
+          "g_en_53",
+          "g_en_55"
+        ]
+      },
+      {
+        "id": "gq_en_22",
+        "query": "How does Widow's Lace poison work, its symptoms and antidote?",
+        "gold": [
+          "g_en_56",
+          "g_en_57",
+          "g_en_59"
+        ]
+      },
+      {
+        "id": "gq_en_23",
+        "query": "What's the Vorn language quirk about goodbyes and dates?",
+        "gold": [
+          "g_en_60",
+          "g_en_61",
+          "g_en_63"
+        ]
+      },
+      {
+        "id": "gq_en_24",
+        "query": "Remind me how the Spindlereach tower's shifting rooms work.",
+        "gold": [
+          "g_en_64",
+          "g_en_65",
+          "g_en_67"
+        ]
+      },
+      {
+        "id": "gq_en_25",
+        "query": "How does the Tallow Mark currency function in the merchant republic?",
+        "gold": [
+          "g_en_68",
+          "g_en_69",
+          "g_en_71"
+        ]
+      },
+      {
+        "id": "gq_en_26",
+        "query": "How do I catch a generic exception in Python and log the traceback?",
+        "gold": []
+      },
+      {
+        "id": "gq_en_27",
+        "query": "What's the deadline for filing quarterly estimated taxes this year?",
+        "gold": []
+      },
+      {
+        "id": "gq_en_28",
+        "query": "Who won last night's Premier League match between Arsenal and Chelsea?",
+        "gold": []
+      },
+      {
+        "id": "gq_en_29",
+        "query": "How often should I rotate my car's tires and change the oil?",
+        "gold": []
+      },
+      {
+        "id": "gq_en_30",
+        "query": "What's a good recipe for sourdough bread starter from scratch?",
+        "gold": []
+      },
+      {
+        "id": "gq_en_31",
+        "query": "How do I reset my home router to factory settings?",
         "gold": []
       }
     ]
