@@ -164,6 +164,14 @@ mod tests {
     }
 
     #[test]
+    fn distinct_lemmas_do_not_collapse() {
+        // Guards the stemmed key against over-folding: "shadow" and "shatter"
+        // are different lemmas (distinct stems), so neither is a repeat.
+        let ds = run("The shadow fell as the glass began to shatter.");
+        assert!(ds.is_empty());
+    }
+
+    #[test]
     fn ignores_stop_words() {
         assert!(run("the cat and the dog and the bird").is_empty());
     }
