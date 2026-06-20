@@ -1,133 +1,133 @@
-# English stemming for 校閲(lint) + FTS(sparse search) — Design
+# 英語 stemming 設計：校閲(lint) + FTS(sparse検索)
 
-- Date: 2026-06-20
-- Status: Approved design (pre-implementation)
-- Scope: Add English word-stemming to (1) the lint engine and (2) the FTS5 sparse-search arm. Dense embeddings are intentionally left untouched.
+- 日付: 2026-06-20
+- ステータス: 設計承認済み（実装前）
+- スコープ: 英語の語幹化(stemming)を (1) 校閲エンジン と (2) FTS5 の sparse 検索アームに追加する。密(dense)埋め込みは意図的に変更しない。
 
-## 1. Summary & goals
+## 1. 概要と目的
 
-English text currently receives **no morphological normalization**. Lindera/UniDic is Japanese-only; English flows through whitespace tokenization + heuristic sentence ranges. As a result:
+現在、英語テキストには**形態素的な正規化が一切ない**。lindera/UniDic は日本語専用で、英語は空白トークナイズ＋ヒューリスティックな文境界検出を通る。その結果：
 
-- **Lint** treats `run` / `runs` / `running` as distinct words (e.g. `en/word-repetition` keys on `to_ascii_lowercase()`), and `en/filter-words` hard-codes 66 inflected surface forms.
-- **FTS sparse search** uses a `trigram` tokenizer shared across all languages, which matches prefix substrings but produces morphologically-blind false positives (`run` matches `rune`, `runner`, `turner`).
+- **校閲**は `run` / `runs` / `running` を別語として扱う（例：`en/word-repetition` は `to_ascii_lowercase()` をキーにしている）。`en/filter-words` は66個の活用形を直書きしている。
+- **FTS sparse 検索**は全言語共通の `trigram` トークナイザを使う。前方部分一致は拾えるが、形態素を区別しないため誤ヒットを生む（`run` が `rune`・`runner`・`turner` にマッチ）。
 
-Goal: introduce **Snowball stemming** for English so inflectional variants normalize to a common root, improving lint word-equality and FTS sparse-search **precision** (and, secondarily, inflectional recall).
+目的：英語に **Snowball stemming** を導入し、屈折形を共通の語根へ正規化することで、校閲の単語一致と FTS sparse 検索の**精度(precision)**（および副次的に屈折形の recall）を改善する。
 
-## 2. Locked decisions (settled with the user)
+## 2. 確定事項（ユーザーと合意済み）
 
-1. **Dense embeddings (bge-small-en-v1.5) stay CLEAN — NO stemming.** bge's BERT/WordPiece tokenizer is trained on unstemmed text and already encodes morphological similarity semantically; stemming would feed out-of-distribution subwords (`studies`→`studi`→garbage WordPieces) and degrade embedding quality. Stemming is a *lexical* normalization that belongs only on lexical paths.
-2. **Algorithm: Snowball (Porter2)** via the `rust-stemmers` crate for the lint layer.
-3. **FTS architecture: 案A** — separate English FTS tables using FTS5's built-in `porter unicode61` tokenizer (not stemming into the existing trigram tables). This also replaces trigram's substring matching with word-boundary matching for English.
-4. **Routing is hardcoded `language LIKE 'en%'`** (no general language-profile abstraction yet — YAGNI; build it only when a 3rd language arrives).
+1. **密埋め込み(bge-small-en-v1.5)はクリーンのまま据置 — stemmingしない。** bge の BERT/WordPiece トークナイザは未stemmingのテキストで学習され、形態素的類似性を意味空間で既に捉えている。stemmingすると分布外のサブワード(`studies`→`studi`→壊れたWordPiece)を与えて埋め込み品質を下げる。stemming は*語彙的(lexical)*正規化であり、語彙的経路のみに置く。
+2. **アルゴリズム：Snowball (Porter2)** を `rust-stemmers` クレートで校閲層に使う。
+3. **FTS構成：案A** — FTS5 組み込みの `porter unicode61` トークナイザを使う英語専用テーブルを新設（既存 trigram テーブルへ stem を流し込む案Bは不採用）。これにより英語は trigram の部分一致が語境界一致に置き換わる。
+4. **ルーティングは `language LIKE 'en%'` のハードコード**（汎用の言語プロファイル抽象は今は作らない＝YAGNI。3言語目が来たときに抽象化する）。
 
-## 3. Background (verified current state)
+## 3. 背景（現状・検証済み）
 
-- Lint crate: `src-tauri/crates/grimodex-lint`. English rules under `src/rules/en/` (14 rules). `LintContext.block_tokens` is populated only when a rule sets `requires_morphology()=true`, which triggers lindera (Japanese). **English stemming must NOT use this path** — English rules extract words via regex; stemming is a pure helper applied to those words.
-- FTS: 5 external-content (`content=<base>`, `content_rowid=rowid`) FTS5 tables, all `tokenize='trigram'`, populated 100% by SQL triggers (`*_ai`/`*_ad`/`*_au`):
-  - `codex_fts` ← `codex_entries` (has `project_id`)
-  - `snippets_fts` ← `snippets` (has `project_id`)
-  - `tree_nodes_fts` ← `tree_nodes` (has `project_id`)
-  - `post_effect_annotations_fts` ← `post_effect_annotations` (has `project_id`)
-  - `chat_messages_fts` ← `chat_messages` (**no** `project_id`; resolve via `chat_sessions.project_id`)
-- Query path: `src-tauri/src/database/fts.rs::search_fts()` is project-scoped (`project_id` param) but **language-neutral** today. Sanitizer `to_fts_match()` (Rust) / `toFtsMatchQuery()` (`src/lib/fts.ts`) wraps tokens in double quotes and drops `<3`-codepoint tokens, falling back to `LIKE`.
-- Search is **hybrid**: dense (bge/ruri) + sparse (FTS5 BM25) fused via RRF (`src/features/chat/semanticRecall.ts`, `chatRecall.ts`). Stemming affects **only the sparse arm**.
-- Language source of truth: `projects.language` (`TEXT NOT NULL DEFAULT 'ja'`). No content auto-detection.
+- 校閲クレート: `src-tauri/crates/grimodex-lint`。英語ルールは `src/rules/en/` 配下（14ルール）。`LintContext.block_tokens` はルールが `requires_morphology()=true` を立てたときのみ populate され、lindera(日本語)が走る。**英語stemmingはこの経路を使わない** — 英語ルールは正規表現で単語抽出しており、stemming はその単語に当てる純粋ヘルパとする。
+- FTS: 外部コンテンツ(`content=<base>`, `content_rowid=rowid`)の FTS5 テーブルが5本、全て `tokenize='trigram'`、書込は100%SQLトリガ(`*_ai`/`*_ad`/`*_au`)：
+  - `codex_fts` ← `codex_entries`（`project_id` あり）
+  - `snippets_fts` ← `snippets`（`project_id` あり）
+  - `tree_nodes_fts` ← `tree_nodes`（`project_id` あり）
+  - `post_effect_annotations_fts` ← `post_effect_annotations`（`project_id` あり）
+  - `chat_messages_fts` ← `chat_messages`（`project_id` **なし**。`chat_sessions.project_id` 経由で解決）
+- クエリ経路: `src-tauri/src/database/fts.rs::search_fts()` は project スコープ(`project_id` 引数)だが現状**言語非依存**。サニタイザ `to_fts_match()`(Rust)/`toFtsMatchQuery()`(`src/lib/fts.ts`) はトークンを二重引用符で囲み、`<3` codepoint のトークンを落として `LIKE` にフォールバックする。
+- 検索は**ハイブリッド**：dense(bge/ruri) + sparse(FTS5 BM25) を RRF で融合(`src/features/chat/semanticRecall.ts`, `chatRecall.ts`)。stemming は **sparse アームのみ**に効く。
+- 言語の正本: `projects.language`(`TEXT NOT NULL DEFAULT 'ja'`)。内容からの自動判定はしない。
 
-## 4. Verified facts (empirically confirmed, debunking two review objections)
+## 4. 検証済みの事実（レビューの2つの反論を実証で否定）
 
-A multi-lens advisor review flagged two "critical blockers"; both were **disproven** by direct SQLite (FTS5 3.40.1) testing:
+複数観点の advisor レビューが2つの「致命的ブロッカー」を指摘したが、いずれも SQLite(FTS5 3.40.1) の直接テストで**否定**された：
 
-1. **`tokenize='porter unicode61'` is valid.** `porter` is a *wrapper* tokenizer that takes the underlying tokenizer as arguments. `CREATE VIRTUAL TABLE ... USING fts5(content, tokenize='porter unicode61')` succeeds.
-2. **Double-quoting does NOT disable stemming.** With `porter unicode61`, `MATCH '"studies"'` matches a row containing `studying` (both stem to `studi`). The tokenizer (including the porter stemmer) is applied inside double quotes. Corroborating proof: the *existing* trigram search wraps every token in quotes and works — which is only possible if FTS5 tokenizes quoted strings.
+1. **`tokenize='porter unicode61'` は有効。** `porter` は下位トークナイザを引数に取る*ラッパ*トークナイザ。`CREATE VIRTUAL TABLE ... USING fts5(content, tokenize='porter unicode61')` は成功する。
+2. **二重引用符は stemming を無効化しない。** `porter unicode61` で `MATCH '"studies"'` は `studying` を含む行にマッチする（両者とも `studi` に stem される）。引用符内にもトークナイザ(porter stemmer 含む)が適用される。傍証：*既存の* trigram 検索は全トークンを引用符で囲んで動作している＝FTS5は引用符内もトークナイズする証拠（無効化されるなら現状のtrigram検索は一切ヒットしない）。
 
-Consequence: the existing sanitizer's quoting is fine; the porter `_en` tables will stem on both index and query sides automatically. **No sanitizer change is required for stemming to work.**
+帰結：既存サニタイザの引用符はそのままでよく、porter `_en` テーブルは index 側・query 側とも自動で stem する。**stemming を効かせるためのサニタイザ変更は不要。**
 
-## 5. Design
+## 5. 設計
 
-### 5.1 Language routing (hardcoded)
+### 5.1 言語ルーティング（ハードコード）
 
-A single predicate, used identically at write-time (triggers) and query-time (`search_fts`):
+書込時(トリガ)とクエリ時(`search_fts`)で同一の単一述語を使う：
 
-> English ⇔ `projects.language LIKE 'en%'`. Everything else (`ja`, `de`, ``, NULL, unknown) → default/trigram path.
+> 英語 ⇔ `projects.language LIKE 'en%'`。それ以外(`ja`・`de`・空・NULL・不明)は既定/trigram 経路。
 
-This matches the existing `spec_for_language()` convention (`en*` → English, else Japanese) and keeps write/query routing in agreement.
+これは既存 `spec_for_language()` の慣習(`en*`→英語、他→日本語)に一致し、書込/クエリのルーティングを常に一致させる。
 
-### 5.2 Lint stemming (Snowball / `rust-stemmers`)
+### 5.2 校閲 stemming（Snowball / `rust-stemmers`）
 
-- Add `rust-stemmers` to `grimodex-lint/Cargo.toml`.
-- New pure helper `stem_en(word: &str) -> String` (e.g. `src/stem.rs`) wrapping `Stemmer::create(Language::English)`. **Does not** set `requires_morphology()`; **does not** touch lindera.
-- Retrofits:
-  - **`rules/en/word_repetition.rs` (PRIMARY):** dedup key `to_ascii_lowercase()` → `stem_en(&lower)`. Unifies `run`/`runs`/`running`.
-  - **`rules/en/filter_words.rs` (SECONDARY):** replace the 66 inflected-form list with ~14 roots; match `stem_en(candidate)` against the root set.
-  - **`rules/en/dialogue_punctuation.rs` (TERTIARY, optional):** stem the captured leading word before the said-verb check.
-- Irregulars (`ran`→`run`) are NOT normalized by Snowball; accepted (lemmatization was rejected for binary-size/complexity).
-- Lint value is **independent of search**: it improves regardless of any RRF/dense considerations.
+- `grimodex-lint/Cargo.toml` に `rust-stemmers` を追加。
+- 純粋ヘルパ `stem_en(word: &str) -> String`（例：`src/stem.rs`）を新設し `Stemmer::create(Language::English)` をラップ。**`requires_morphology()` は立てない**・**lindera に触れない**。
+- retrofit:
+  - **`rules/en/word_repetition.rs`(主):** 重複判定キー `to_ascii_lowercase()` → `stem_en(&lower)`。`run`/`runs`/`running` を同一視。
+  - **`rules/en/filter_words.rs`(次):** 66個の活用形リストを ~14個の語根に置換し、`stem_en(候補)` を語根集合と照合。
+  - **`rules/en/dialogue_punctuation.rs`(三・任意):** said系動詞照合の前に先頭語を stem。
+- 不規則変化(`ran`→`run`)は Snowball では正規化されない。許容(lemmatization はバイナリ肥大/複雑性のため却下済)。
+- 校閲の利得は**検索とは独立**：RRF/dense の事情に関係なく改善する。
 
-### 5.3 FTS English tables (`porter unicode61`)
+### 5.3 FTS 英語テーブル（`porter unicode61`）
 
-- For each of the 5 base tables, add an `_en` FTS5 table with `tokenize='porter unicode61'`, same column list and external-content config as its trigram sibling:
-  `codex_fts_en`, `snippets_fts_en`, `tree_nodes_fts_en`, `post_effect_annotations_fts_en`, `chat_messages_fts_en`.
-- **Write routing (triggers):** each base table gets language-guarded `*_ai`/`*_ad`/`*_au` triggers. English rows → `_en` table, others → existing trigram table. Use `WHEN` guards:
-  - Direct `project_id` (codex/snippets/tree_nodes/post_effect_annotations):
+- 5本の base テーブルそれぞれに対し、`tokenize='porter unicode61'` の `_en` FTS5 テーブルを追加。列構成と外部コンテンツ設定は trigram 兄弟と同一：
+  `codex_fts_en`・`snippets_fts_en`・`tree_nodes_fts_en`・`post_effect_annotations_fts_en`・`chat_messages_fts_en`。
+- **書込ルーティング(トリガ):** 各 base テーブルに言語ガード付きの `*_ai`/`*_ad`/`*_au` トリガを追加。英語行→`_en` テーブル、他→既存 trigram テーブル。`WHEN` ガード：
+  - 直接 `project_id` を持つ場合(codex/snippets/tree_nodes/post_effect_annotations)：
     `WHEN (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'`
-  - `chat_messages` (indirect):
+  - `chat_messages`(間接)：
     `WHEN (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = new.session_id)) LIKE 'en%'`
-  - These are PK lookups (cheap), but see §7 perf note.
-  - **Idempotency:** `DROP TRIGGER IF EXISTS` before each `CREATE TRIGGER` so re-running migrations with changed logic does not leave stale unguarded triggers.
-- **Query routing:** `search_fts()` reads the project language once up front; when English, it MATCHes the `_en` tables. The sanitizer (`to_fts_match` / `toFtsMatchQuery`) is **unchanged** (quoting is compatible with stemming per §4).
-- **Effect framing:** vs trigram, the primary win is **precision** (word-boundary + stem removes `run`→`rune`/`runner` false positives) plus inflectional recall (`studies`↔`study`). Net search impact must be measured (§8) because stemming only moves the sparse arm of the RRF fusion.
+  - いずれも PK lookup(安価)だが §7 の性能注記参照。
+  - **冪等性:** トリガ変更時に古い無ガードトリガが残らないよう、各 `CREATE TRIGGER` の前に `DROP TRIGGER IF EXISTS`。
+- **クエリルーティング:** `search_fts()` は冒頭で project 言語を一度引き、英語なら `_en` テーブルに MATCH。サニタイザ(`to_fts_match`/`toFtsMatchQuery`)は**変更なし**(引用符は stemming と両立・§4)。
+- **効果の位置づけ:** trigram に対する主効果は**精度(precision)**(語境界＋stem により `run`→`rune`/`runner` の誤ヒットが消える)＋屈折形 recall(`studies`↔`study`)。stemming は RRF の sparse アームしか動かさないため、検索全体への寄与は計測必須(§8)。
 
-### 5.4 Rebuild, backfill, and language-change (shared code path)
+### 5.4 rebuild・backfill・言語変更（共通コード経路）
 
-External-content `('rebuild')` reads the whole base table and ignores trigger `WHEN` guards, so it would index every language into one `_en`/trigram table. It is therefore **unusable after the split**. Replace it with language-filtered repopulation.
+外部コンテンツの `('rebuild')` は base テーブル全体を読み、トリガの `WHEN` ガードを無視するため、全言語を1つの `_en`/trigram テーブルに index してしまう。よって分割後は**使用不可**。言語フィルタ付きの再投入に置換する。
 
-- New Rust function `repopulate_fts_for_project(conn, project_id)`:
-  1. Look up the project language.
-  2. For each of the 5 content types: delete this project's rows from **both** the trigram and `_en` FTS tables, then INSERT this project's rows into the **correct** table per language.
-- This single function serves three needs:
-  - **Backfill** existing English projects when the migration first runs (call per English project).
-  - **Language change**: call when `projects.language` changes (wired from the project-update path — see below).
-  - Manual repair / consistency rebuild.
-- Rewrite `fts_rebuild()` / `fts_optimize()` to be language-aware: iterate projects and route each project's content to the correct table (or call `repopulate_fts_for_project` per project). `optimize` is still issued per FTS table (both trigram and `_en`).
-- **Language-change wiring:** `updateProject()` (`src/features/project/api.ts`) currently has no FTS hook (verified). When the `language` field changes, invoke a Tauri command that calls `repopulate_fts_for_project`. Without this, switching a project's language strands its index in the wrong table and silently breaks its search — this is the single most important correctness fix from the review.
+- 新 Rust 関数 `repopulate_fts_for_project(conn, project_id)`：
+  1. project 言語を引く。
+  2. 5つの content type それぞれについて、この project の行を trigram と `_en` の**両テーブルから削除**し、言語に応じた**正しいテーブル**へ INSERT。
+- この単一関数が3用途を兼ねる：
+  - **backfill**：マイグレーション初回実行時に既存英語プロジェクトを投入(英語プロジェクトごとに呼ぶ)。
+  - **言語変更**：`projects.language` が変わったときに呼ぶ(下記の project 更新経路から配線)。
+  - 手動修復／整合性 rebuild。
+- `fts_rebuild()`/`fts_optimize()` を言語対応に書き換え：projects を巡回して各 project の content を正しいテーブルへ振り分ける(あるいは project ごとに `repopulate_fts_for_project` を呼ぶ)。`optimize` は FTS テーブルごとに発行(trigram と `_en` の両方)。
+- **言語変更の配線:** `updateProject()`(`src/features/project/api.ts`)は現状 FTS フックなし(検証済)。`language` フィールドが変わったら `repopulate_fts_for_project` を呼ぶ Tauri コマンドを叩く。これが無いと project の言語切替で index が逆テーブルに取り残され、その project の検索が黙って壊れる — **レビューで判明した最重要の修正**。
 
-## 6. Edge cases & decisions
+## 6. エッジケースと決定
 
-- **Unsupported language values** (`'de'`, `'EN'`, ``, NULL): fall to the default/trigram path (same as today's `spec_for_language`). Routing predicate `LIKE 'en%'` is case-sensitive; DB stores lowercase `'en'` by default. A `CHECK(language IN ('ja','en'))` constraint is **out of scope** (too invasive for existing data); document the open language set instead.
-- **Two stemmers** (lint = Snowball/Porter2, FTS = FTS5 classic Porter): the two subsystems share no state; each is internally symmetric (query and document use the same stemmer within the subsystem). Functionally harmless; documented in code comments. (Unifying would require a custom FTS5 tokenizer in Rust — rejected as not worth the fragility.)
-- **Proper nouns** get stemmed in FTS (`Running`→`run`); acceptable for prose search (unicode61 is case-insensitive anyway).
-- **Short words (`<3` codepoints):** the sanitizer drops them before MATCH, so unicode61's ability to index `go`/`AI` is not realized at query time. This is **orthogonal to stemming** and left as-is; an optional future enhancement is an `_en`-only query path that permits 2-char tokens.
-- **Stopwords:** FTS indexes everything (no stopword filtering, unchanged). Lint keeps its own `STOP_WORDS` set for `word-repetition`.
+- **未対応の言語値**(`'de'`・`'EN'`・空・NULL)：既定/trigram 経路に落ちる(今日の `spec_for_language` と同じ)。ルーティング述語 `LIKE 'en%'` は大小文字を区別する。DB は既定で小文字 `'en'` を格納。`CHECK(language IN ('ja','en'))` 制約は**スコープ外**(既存データに対し侵襲的すぎる)。代わりに言語集合が開いていることを文書化する。
+- **2つの stemmer**(校閲=Snowball/Porter2、FTS=FTS5 classic Porter)：両サブシステムは状態を共有せず、各々が内部で対称(query と document に同一 stemmer)。機能的に無害。コードコメントで明記。(統一には Rust での FTS5 カスタムトークナイザが必要で、脆さに見合わず却下。)
+- **固有名詞**は FTS で stem される(`Running`→`run`)。散文検索では許容(unicode61 はそもそも大小無視)。
+- **短語(`<3` codepoint):** サニタイザが MATCH 前に落とすため、unicode61 が `go`/`AI` を index できてもクエリ時には活きない。これは **stemming と直交**するので現状維持。将来の任意拡張として `_en` 専用のクエリ経路で2文字トークンを許可する案。
+- **ストップワード:** FTS は全語を index(フィルタなし・現状維持)。校閲は `word-repetition` 用の `STOP_WORDS` 集合を自前で保持。
 
-## 7. Performance
+## 7. 性能
 
-- Each insert/update on the 4 direct + 1 indirect base table now evaluates a `projects`/`chat_sessions` subquery in the trigger `WHEN` clause. These are primary-key lookups (cheap), but this codebase has known DB-lock sensitivity (ONNX mutex / `db_execute` timeouts). **Add a write-latency check** to confirm no regression; mitigation if needed: cache language on the child table or a small lookup table.
+- 直接 project_id を持つ4テーブル＋間接1テーブルへの insert/update で、トリガの `WHEN` 句が `projects`/`chat_sessions` のサブクエリを評価するようになる。これらは PK lookup(安価)だが、本リポは DB ロック感度の既知問題(ONNX mutex / `db_execute` タイムアウト)を持つ。**書込レイテンシのチェックを追加**して退行が無いことを確認。必要なら子テーブルへの言語キャッシュや小さなルックアップテーブルで緩和。
 
-## 8. Testing & eval gate
+## 8. テストと eval ゲート
 
-- **Lint unit tests:** `word_repetition` unifies `run`/`running`; `filter_words` matches via root + stem.
-- **FTS integration tests:** English project — `studies` indexed → `study` query hits; verify content lands in exactly one table (not both, not neither) across insert/update/delete and a language switch (`en→ja→en`). Japanese unaffected (trigram) regression.
-- **Eval gate (validates the search half is worth it):** measure English sparse-arm precision/recall (trigram vs `porter unicode61`) on a small held-out query set drawn from English sample content, and the hybrid end-to-end (RRF) before/after. Record a baseline so future changes regress-test. Fits this repo's existing eval-harness culture.
-- **Cross-project isolation test:** a DB with mixed-language projects returns correctly isolated results.
-- Respect existing guards: `noControlBytes`, branch-first (no master direct commit), no `.github` edits.
+- **校閲ユニットテスト:** `word_repetition` が `run`/`running` を同一視・`filter_words` が語根＋stem で照合。
+- **FTS 統合テスト:** 英語プロジェクトで `studies` を index → `study` クエリでヒット。insert/update/delete と言語切替(`en→ja→en`)を跨いで、content が**ちょうど1テーブル**(両方でも0でもない)に入ることを検証。日本語は無影響(trigram)を回帰テスト。
+- **eval ゲート(検索側の価値を検証):** 英語 sparse アームの precision/recall(trigram vs `porter unicode61`)を、英語サンプルから作った held-out クエリ集合で計測。ハイブリッド end-to-end(RRF) の before/after も計測。ベースラインを記録し将来の退行検知に。本リポの既存 eval-harness 文化に合致。
+- **クロスプロジェクト分離テスト:** 多言語プロジェクト混在 DB で結果が正しく分離される。
+- 既存ガード遵守：`noControlBytes`・branch-first(master 直 commit 禁止)・`.github` 編集禁止。
 
-## 9. Blast radius / files touched
+## 9. 影響範囲／変更ファイル
 
-- `src-tauri/crates/grimodex-lint/Cargo.toml` — add `rust-stemmers`.
-- `src-tauri/crates/grimodex-lint/src/stem.rs` (new) — `stem_en`.
-- `src-tauri/crates/grimodex-lint/src/rules/en/{word_repetition,filter_words,dialogue_punctuation}.rs` — retrofits.
-- `src-tauri/src/database/migrate.rs` — 5 `_en` tables + language-guarded triggers (DROP-before-CREATE).
-- `src-tauri/src/database/fts.rs` — `search_fts` language routing; `fts_rebuild`/`fts_optimize` language-aware; `repopulate_fts_for_project`.
-- `src-tauri/src/commands/*` — command to trigger repopulate (backfill + language-change).
-- `src/features/project/api.ts` — call repopulate when `language` changes.
-- `src/lib/fts.ts` — **unchanged** (quoting compatible with stemming).
+- `src-tauri/crates/grimodex-lint/Cargo.toml` — `rust-stemmers` 追加。
+- `src-tauri/crates/grimodex-lint/src/stem.rs`(新規) — `stem_en`。
+- `src-tauri/crates/grimodex-lint/src/rules/en/{word_repetition,filter_words,dialogue_punctuation}.rs` — retrofit。
+- `src-tauri/src/database/migrate.rs` — `_en` テーブル5本＋言語ガード付きトリガ(DROP-before-CREATE)。
+- `src-tauri/src/database/fts.rs` — `search_fts` 言語ルーティング・`fts_rebuild`/`fts_optimize` 言語対応・`repopulate_fts_for_project`。
+- `src-tauri/src/commands/*` — repopulate を起動するコマンド(backfill＋言語変更)。
+- `src/features/project/api.ts` — `language` 変更時に repopulate を呼ぶ。
+- `src/lib/fts.ts` — **変更なし**(引用符は stemming と両立)。
 
-## 10. Risks & open points
+## 10. リスクと未決事項
 
-- Search end-to-end gain is **unproven until the eval gate runs** (dense arm may dominate). Lint gain is independent and clear. If eval shows negligible search gain, the FTS half can be reconsidered while keeping lint.
-- DB size: English projects effectively occupy one FTS table (the trigram sibling stays empty for them); negligible.
-- Migration backfill cost scales with existing English-project content volume (one-time).
+- 検索の end-to-end 利得は **eval ゲート実行まで未証明**(dense アームが支配する可能性)。校閲の利得は独立かつ明確。eval で検索利得が無視できると出たら、校閲を残しつつ FTS 半分を再検討できる。
+- DB サイズ：英語プロジェクトは実質1つの FTS テーブルのみ使用(trigram 兄弟は空)。無視できる。
+- マイグレーション backfill コストは既存英語プロジェクトの content 量に比例(一度きり)。
 
-## 11. Out of scope / future
+## 11. スコープ外／将来
 
-- Lemmatization (irregulars), query expansion, relaxing the `<3`-codepoint short-word filter, a general per-language profile abstraction, CJK languages (`zh`/`ko` would reuse the trigram table + need their own chunker/model), `CHECK` constraint on `projects.language`.
+- lemmatization(不規則)・クエリ拡張・`<3` codepoint 短語フィルタの緩和・汎用 per-language プロファイル抽象・CJK 言語(`zh`/`ko` は trigram テーブルを再利用しつつ独自チャンカー/モデルが必要)・`projects.language` への `CHECK` 制約。
