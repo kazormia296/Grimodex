@@ -10,7 +10,12 @@ impl Database {
             "INSERT INTO codex_fts(codex_fts) VALUES('optimize');
              INSERT INTO snippets_fts(snippets_fts) VALUES('optimize');
              INSERT INTO chat_messages_fts(chat_messages_fts) VALUES('optimize');
-             INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('optimize');",
+             INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('optimize');
+             INSERT INTO codex_fts_en(codex_fts_en) VALUES('optimize');
+             INSERT INTO snippets_fts_en(snippets_fts_en) VALUES('optimize');
+             INSERT INTO chat_messages_fts_en(chat_messages_fts_en) VALUES('optimize');
+             INSERT INTO tree_nodes_fts_en(tree_nodes_fts_en) VALUES('optimize');
+             INSERT INTO post_effect_annotations_fts_en(post_effect_annotations_fts_en) VALUES('optimize');",
         )?;
         Ok(())
     }
@@ -71,7 +76,11 @@ impl Database {
                     results.push(r?);
                 }
             } else {
-                let fts = if is_en { "tree_nodes_fts_en" } else { "tree_nodes_fts" };
+                let fts = if is_en {
+                    "tree_nodes_fts_en"
+                } else {
+                    "tree_nodes_fts"
+                };
                 let sql = format!(
                     "SELECT tn.id, tn.title, COALESCE(tn.synopsis, '')
                      FROM {fts}
@@ -170,7 +179,11 @@ impl Database {
                     results.push(r?);
                 }
             } else {
-                let fts = if is_en { "snippets_fts_en" } else { "snippets_fts" };
+                let fts = if is_en {
+                    "snippets_fts_en"
+                } else {
+                    "snippets_fts"
+                };
                 let sql = format!(
                     "SELECT s.id, s.title, COALESCE(s.tags_cache, '')
                      FROM {fts}
@@ -225,7 +238,11 @@ impl Database {
                     results.push(r?);
                 }
             } else {
-                let fts = if is_en { "chat_messages_fts_en" } else { "chat_messages_fts" };
+                let fts = if is_en {
+                    "chat_messages_fts_en"
+                } else {
+                    "chat_messages_fts"
+                };
                 let sql = format!(
                     "SELECT cm.id, cm.role, substr(cm.content, 1, 80)
                      FROM {fts}
@@ -264,6 +281,7 @@ impl Database {
              INSERT INTO chat_messages_fts(chat_messages_fts) VALUES('rebuild');
              INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('rebuild');",
         )?;
+        rebuild_en_fts_sql(&conn)?;
         Ok(())
     }
 

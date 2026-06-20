@@ -1112,7 +1112,11 @@ fn test_search_fts_en_project_stems_query() {
     let results = db
         .search_fts("p_en", "studies", "scenes", 10)
         .expect("search");
-    assert_eq!(results.len(), 1, "porter-stemmed query hits the inflected body");
+    assert_eq!(
+        results.len(),
+        1,
+        "porter-stemmed query hits the inflected body"
+    );
     assert_eq!(results[0]["id"], serde_json::json!("s1"));
 }
 
@@ -1309,7 +1313,10 @@ fn test_en_fts_triggers_route_and_stem() {
             |r| r.get(0),
         )
         .expect("match query");
-    assert_eq!(hits, 1, "only the en scene is in _en and porter stems studies==studying");
+    assert_eq!(
+        hits, 1,
+        "only the en scene is in _en and porter stems studies==studying"
+    );
 }
 
 #[test]
@@ -1341,7 +1348,10 @@ fn test_rebuild_en_fts_repopulates_after_wipe() {
             |r| r.get(0),
         )
         .expect("match");
-    assert_eq!(hits, 1, "rebuild re-indexed the en scene; porter stems runs==running");
+    assert_eq!(
+        hits, 1,
+        "rebuild re-indexed the en scene; porter stems runs==running"
+    );
 }
 
 #[test]
@@ -1946,6 +1956,33 @@ fn test_fts_optimize_succeeds() {
     ).expect("insert snippet");
 
     db.fts_optimize().expect("fts_optimize should succeed");
+}
+
+#[test]
+fn test_fts_rebuild_includes_en_tables() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "INSERT INTO projects(id, title, language) VALUES ('p_en', 'En', 'en');
+             INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+               VALUES ('s1', 'p_en', 'scene', 'Ch1', 'horses galloped');
+             DELETE FROM tree_nodes_fts_en;",
+        )
+        .expect("seed + wipe");
+    }
+    db.fts_rebuild().expect("rebuild");
+    db.fts_optimize().expect("optimize");
+    let conn = db.conn.lock().expect("lock");
+    let hits: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM tree_nodes_fts_en WHERE tree_nodes_fts_en MATCH ?1",
+            ["\"horse\""],
+            |r| r.get(0),
+        )
+        .expect("match");
+    assert_eq!(hits, 1, "fts_rebuild repopulated _en; fts_optimize did not error");
 }
 
 #[test]
