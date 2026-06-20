@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use grimodex_lint::morph::{tokenize_block, MorphToken};
 use rusqlite::params;
 use serde_json::Value;
@@ -180,11 +181,25 @@ fn context_window(plain: &str, byte_start: usize, byte_end: usize) -> String {
     plain.get(lb..rb).unwrap_or("").trim().to_string()
 }
 
-/// 読書順に並んだ (scene_id, plain, tokens) から固有名詞を集約し、既知 Codex 名を
-/// 差し引いて候補を返す。初出箇所の周辺一文を context に詰める。
+/// `[byte_start, byte_end)` が既知 Codex 名の出現スパン (`spans`) のいずれかに
+/// **完全に包含される**か。包含 = その固有名詞トークンは既知名の一部 (lindera が
+/// 既知名を過分割して生じたフラグメント) なので候補から落とす。より長い別語
+/// (スパンを跨ぐ・はみ出すトークン) は包含されないので残る。
+fn is_fragment_of_known_name(spans: &[(usize, usize)], byte_start: usize, byte_end: usize) -> bool {
+    spans
+        .iter()
+        .any(|&(s, e)| s <= byte_start && byte_end <= e)
+}
+
+/// 読書順に並んだ (scene_id, plain, tokens, name_spans) から固有名詞を集約し、既知
+/// Codex 名を差し引いて候補を返す。初出箇所の周辺一文を context に詰める。
+/// `name_spans` は本文中で既知 Codex 名 (name/alias) が出現したバイト範囲で、ここに
+/// 完全包含される固有名詞トークン (例: 既存「桜井」が `桜`+`井` に分割された `桜`、
+/// 「山田太郎」が `山田`+`太郎` に分割された各片) は候補にしない。これにより
+/// 「Codex 項目の一部 (一文字) が未確定候補に出る」過分割リークを防ぐ。
 /// 純ロジック (DB/lindera 非依存) なのでテスト可能。
 fn aggregate_candidates(
-    scenes: &[(String, String, Vec<MorphToken>)],
+    scenes: &[(String, String, Vec<MorphToken>, Vec<(usize, usize)>)],
     known: &HashSet<String>,
     min_count: usize,
 ) -> Vec<CodexCandidate> {
@@ -199,9 +214,14 @@ fn aggregate_candidates(
     }
 
     let mut map: HashMap<String, Agg> = HashMap::new();
-    for (scene_idx, (scene_id, plain, tokens)) in scenes.iter().enumerate() {
+    for (scene_idx, (scene_id, plain, tokens, name_spans)) in scenes.iter().enumerate() {
         for (tok_idx, t) in tokens.iter().enumerate() {
             if t.pos_major != "名詞" || t.pos_sub1 != "固有名詞" {
+                continue;
+            }
+            // 既知 Codex 名の出現範囲に丸ごと収まる固有名詞は、その既知名が形態素解析で
+            // 過分割されて出た「一部」なので候補にしない (一文字フラグメントの主因)。
+            if is_fragment_of_known_name(name_spans, t.byte_start, t.byte_end) {
                 continue;
             }
             let key = normalize_name(&t.surface);
@@ -249,6 +269,48 @@ fn aggregate_candidates(
         .collect()
 }
 
+/// 既知名パターンから ASCII 大小無視の aho-corasick を構築 (空なら None)。
+/// `ascii_case_insensitive` なので本文を小文字化せずに走査でき、返るバイトオフセットが
+/// 本文の char 境界と一致する (UTF-16 変換も不要)。パターン (= 正規化済み `known`) も
+/// 走査対象の本文も NFC に寄せてあるので合成/分解形の揺れで取りこぼさない。
+///
+/// マスクは best-effort: 構築失敗時は None を返して**マスク無し**に縮退するが、その場合
+/// 過分割フラグメントが再び候補に漏れる (本コマンドが直す当の不具合) ので、握り潰さず
+/// warn ログを残して原因を追えるようにする。実際には codex 名規模で AC 構築が失敗する
+/// ことはまず無い。
+fn build_name_matcher(patterns: &[String]) -> Option<AhoCorasick> {
+    if patterns.is_empty() {
+        return None;
+    }
+    match AhoCorasickBuilder::new()
+        .ascii_case_insensitive(true)
+        .match_kind(MatchKind::Standard)
+        .build(patterns)
+    {
+        Ok(ac) => Some(ac),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                pattern_count = patterns.len(),
+                "[codex_candidates] 既知名マッチャ構築に失敗; フラグメントマスク無効化"
+            );
+            None
+        }
+    }
+}
+
+/// 本文 `plain` 内で既知 Codex 名 (AC) が出現したバイトスパン `[start, end)` を集める。
+/// `find_overlapping_iter` で重なりも全部拾う (短い別名と長い名前が入れ子でも両方マスク)。
+fn name_occurrence_spans(plain: &str, matcher: Option<&AhoCorasick>) -> Vec<(usize, usize)> {
+    match matcher {
+        Some(ac) if !plain.is_empty() => ac
+            .find_overlapping_iter(plain)
+            .map(|m| (m.start(), m.end()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn load_project_nodes(db: &Database, project_id: &str) -> anyhow::Result<Vec<NodeRow>> {
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(
@@ -273,6 +335,9 @@ fn load_project_nodes(db: &Database, project_id: &str) -> anyhow::Result<Vec<Nod
     })
 }
 
+/// 既知 Codex 名を正規化キー集合 (`normalize_name` = trim + NFC + ASCII 小文字化) で返す。
+/// 用途は 2 つ: (1) 固有名詞トークンの**完全一致**除外、(2) 本文マスク用 aho-corasick の
+/// パターン。どちらも NFC 済みなので、NFC に寄せた本文と合成/分解形の揺れなく突合できる。
 fn load_known_codex_names(db: &Database, project_id: &str) -> anyhow::Result<HashSet<String>> {
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(
@@ -324,11 +389,20 @@ pub(crate) fn extract_codex_candidates(
         Ok((reading_order_scenes(&nodes), known))
     })?;
 
+    // 既知名の本文マスク用 AC を一度だけ構築 (ロック外)。パターンは正規化済み `known`
+    // (NFC) を流用。これで各シーンの本文から既知名の出現スパンを引き、過分割フラグメント
+    // (一文字等) を候補から除外する。
+    let name_patterns: Vec<String> = known.iter().cloned().collect();
+    let name_matcher = build_name_matcher(&name_patterns);
+
     // フェーズ 2 (ロック外): 各シーンを形態素解析。平文も持ち回して文脈窓に使う。
-    let mut scenes_tokens: Vec<(String, String, Vec<MorphToken>)> =
+    let mut scenes_tokens: Vec<(String, String, Vec<MorphToken>, Vec<(usize, usize)>)> =
         Vec::with_capacity(scenes.len());
     for (scene_id, content_json) in scenes {
-        let plain = plaintext_of(&content_json);
+        // 本文を NFC へ正規化してから形態素解析・マスクの双方に使う。これで既知名
+        // パターン (normalize_name=NFC) と本文の合成/分解形が一致し、トークン・スパンの
+        // バイトオフセットも同一座標系に揃う (UniDic も NFC 前提なので解析品質も向上)。
+        let plain: String = plaintext_of(&content_json).nfc().collect();
         let tokens = if plain.is_empty() {
             Vec::new()
         } else {
@@ -345,7 +419,8 @@ pub(crate) fn extract_codex_candidates(
                 }
             }
         };
-        scenes_tokens.push((scene_id, plain, tokens));
+        let name_spans = name_occurrence_spans(&plain, name_matcher.as_ref());
+        scenes_tokens.push((scene_id, plain, tokens, name_spans));
     }
 
     Ok(aggregate_candidates(&scenes_tokens, &known, min_count))
@@ -423,6 +498,7 @@ mod tests {
                     tok("走る", "動詞", "一般", 6),
                     tok("円明", "名詞", "固有名詞", 12),
                 ],
+                Vec::new(),
             ),
             (
                 "s2".to_string(),
@@ -432,6 +508,7 @@ mod tests {
                     tok("円明", "名詞", "固有名詞", 6),
                     tok("朱", "名詞", "固有名詞", 12),
                 ],
+                Vec::new(),
             ),
         ];
         let mut known = HashSet::new();
@@ -461,6 +538,7 @@ mod tests {
                 tok("円明", "名詞", "固有名詞", 6),
                 tok("帝都", "名詞", "固有名詞", 12), // 1 回のみ
             ],
+            Vec::new(),
         )];
         let cands = aggregate_candidates(&scenes, &HashSet::new(), 2);
         // min_count=2 で帝都(1回)は落ちる。
@@ -483,5 +561,144 @@ mod tests {
         // 範囲外オフセットでも panic せず空などを返す。
         assert_eq!(context_window("", 0, 5), "");
         let _ = context_window("短い", 100, 200);
+    }
+
+    // --- 既知名フラグメント除外 (一文字リーク対策) ---
+
+    #[test]
+    fn is_fragment_of_known_name_requires_full_containment() {
+        let spans = vec![(0usize, 12usize)];
+        assert!(is_fragment_of_known_name(&spans, 0, 6)); // 先頭片
+        assert!(is_fragment_of_known_name(&spans, 6, 12)); // 末尾片
+        assert!(is_fragment_of_known_name(&spans, 3, 9)); // 中間片
+        assert!(is_fragment_of_known_name(&spans, 0, 12)); // 完全一致
+        assert!(!is_fragment_of_known_name(&spans, 0, 15)); // 末尾はみ出し → 別語
+        assert!(!is_fragment_of_known_name(&spans, 12, 18)); // スパン外
+        assert!(!is_fragment_of_known_name(&[], 0, 6)); // スパン無し
+    }
+
+    #[test]
+    fn name_occurrence_spans_finds_known_and_folds_ascii_case() {
+        let patterns = vec!["山田太郎".to_string(), "Alice".to_string()];
+        let m = build_name_matcher(&patterns);
+        let plain = "山田太郎とaliceが来た。";
+        let spans = name_occurrence_spans(plain, m.as_ref());
+        // 山田太郎は先頭、alice は大文字 Alice パターンに ASCII 大小無視で一致。
+        assert!(spans.contains(&(0, "山田太郎".len())));
+        let astart = plain.find("alice").unwrap();
+        assert!(spans.contains(&(astart, astart + "alice".len())));
+    }
+
+    #[test]
+    fn name_occurrence_spans_empty_when_no_patterns() {
+        let m = build_name_matcher(&[]);
+        assert!(m.is_none());
+        assert!(name_occurrence_spans("山田太郎", None).is_empty());
+    }
+
+    #[test]
+    fn nfc_normalization_aligns_pattern_and_plaintext() {
+        use unicode_normalization::UnicodeNormalization;
+        // 既知名パターンは normalize_name で NFC 合成形。本文が分解形(NFD)だと、
+        // NFC のまま検索しても一致しない (= マスク漏れ → フラグメント再リーク)。
+        let nfc_pattern = normalize_name("がんも"); // が = U+304C 合成
+        let nfd_plain = "\u{304B}\u{3099}んもが笑った。"; // 先頭 が = か+結合濁点 (分解形)
+        let m = build_name_matcher(&[nfc_pattern]);
+        assert!(
+            name_occurrence_spans(nfd_plain, m.as_ref()).is_empty(),
+            "分解形のままでは合成形パターンに一致しない"
+        );
+        // command と同様に本文を NFC へ寄せれば一致し、先頭からのスパンが取れる。
+        let nfc_plain: String = nfd_plain.nfc().collect();
+        let spans = name_occurrence_spans(&nfc_plain, m.as_ref());
+        assert!(!spans.is_empty(), "NFC 化後は一致する");
+        assert_eq!(spans[0].0, 0);
+    }
+
+    #[test]
+    fn aggregate_drops_known_name_fragments() {
+        // 既存 Codex 名「山田太郎」「桜井」。本文では過分割されて「山田」「太郎」「桜」
+        // 等の固有名詞片が出るが、いずれも既知名スパンに包含されるので候補にしない。
+        // 本物の新規名「円明」だけが残る (= 一文字フラグメントリークの再現と修正)。
+        let plain = "山田太郎と桜井が来た。円明も笑った。".to_string();
+        let patterns = vec!["山田太郎".to_string(), "桜井".to_string()];
+        let matcher = build_name_matcher(&patterns);
+        let name_spans = name_occurrence_spans(&plain, matcher.as_ref());
+
+        // byte offset は本文から実測してトークン化 (手計算ミス回避)。
+        let b = |s: &str| plain.find(s).expect("substring present");
+        let tokens = vec![
+            tok("山田", "名詞", "固有名詞", b("山田")),
+            tok("太郎", "名詞", "固有名詞", b("太郎")),
+            tok("桜", "名詞", "固有名詞", b("桜")), // ← 一文字フラグメント
+            tok("円明", "名詞", "固有名詞", b("円明")),
+        ];
+        let mut known = HashSet::new();
+        known.insert(normalize_name("山田太郎"));
+        known.insert(normalize_name("桜井"));
+
+        let scenes = vec![("s1".to_string(), plain.clone(), tokens, name_spans)];
+        let cands = aggregate_candidates(&scenes, &known, 1);
+        assert_eq!(
+            cands.iter().map(|c| c.surface.as_str()).collect::<Vec<_>>(),
+            vec!["円明"]
+        );
+    }
+
+    #[test]
+    fn aggregate_keeps_longer_word_that_only_overlaps_known_name() {
+        // 既知名「ナギ」。別人「ナギサ」は「ナギ」を接頭に含むが、トークン「ナギサ」は
+        // 既知名スパンを末尾ではみ出すので包含されず候補に残る (誤マスク防止の要)。
+        let plain = "ナギサが笑った。".to_string();
+        let patterns = vec!["ナギ".to_string()];
+        let matcher = build_name_matcher(&patterns);
+        let name_spans = name_occurrence_spans(&plain, matcher.as_ref());
+        let tokens = vec![tok(
+            "ナギサ",
+            "名詞",
+            "固有名詞",
+            plain.find("ナギサ").unwrap(),
+        )];
+        let mut known = HashSet::new();
+        known.insert(normalize_name("ナギ"));
+        let scenes = vec![("s1".to_string(), plain.clone(), tokens, name_spans)];
+        let cands = aggregate_candidates(&scenes, &known, 1);
+        assert_eq!(
+            cands.iter().map(|c| c.surface.as_str()).collect::<Vec<_>>(),
+            vec!["ナギサ"]
+        );
+    }
+
+    #[test]
+    fn aggregate_counts_only_standalone_occurrences_of_fragment() {
+        // 既知「光井」。s1 では「光井」過分割の「光」(=フラグメント・除外)、
+        // s2 では独立した新規人物「光」(=残す)。count は s2 の 1 回だけ、初出は s2。
+        let s1 = "光井が来た。".to_string();
+        let s2 = "光が笑った。".to_string();
+        let patterns = vec!["光井".to_string()];
+        let matcher = build_name_matcher(&patterns);
+        let spans1 = name_occurrence_spans(&s1, matcher.as_ref());
+        let spans2 = name_occurrence_spans(&s2, matcher.as_ref());
+        let scenes = vec![
+            (
+                "s1".to_string(),
+                s1.clone(),
+                vec![tok("光", "名詞", "固有名詞", s1.find("光").unwrap())],
+                spans1,
+            ),
+            (
+                "s2".to_string(),
+                s2.clone(),
+                vec![tok("光", "名詞", "固有名詞", s2.find("光").unwrap())],
+                spans2,
+            ),
+        ];
+        let mut known = HashSet::new();
+        known.insert(normalize_name("光井"));
+        let cands = aggregate_candidates(&scenes, &known, 1);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].surface, "光");
+        assert_eq!(cands[0].count, 1);
+        assert_eq!(cands[0].first_scene_id, "s2");
     }
 }
