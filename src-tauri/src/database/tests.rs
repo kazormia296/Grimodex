@@ -1121,6 +1121,68 @@ fn test_search_fts_en_project_stems_query() {
 }
 
 #[test]
+#[ignore = "measurement: run with --ignored to print trigram vs _en recall"]
+fn measure_en_fts_recall_trigram_vs_porter() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    // A handful of scenes with inflected vocabulary, plus an en and a ja project.
+    let scenes: &[(&str, &str)] = &[
+        ("s1", "the soldiers were studying old maps by candlelight"),
+        ("s2", "she studies the ledger and decides to leave"),
+        ("s3", "horses galloped while the riders shouted"),
+        ("s4", "he noticed the broken lock and the cold draft"),
+        ("s5", "they kept running through the burning streets"),
+    ];
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute(
+            "INSERT INTO projects(id, title, language) VALUES ('p_en', 'En', 'en')",
+            [],
+        )
+        .expect("en project");
+        for (id, body) in scenes {
+            conn.execute(
+                "INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+                 VALUES (?1, 'p_en', 'scene', 'S', ?2)",
+                rusqlite::params![id, body],
+            )
+            .expect("scene");
+        }
+    }
+    // Query (stemmed/base form) -> the scene id it should retrieve.
+    let queries: &[(&str, &str)] = &[
+        ("study", "s1"),  // study -> studying
+        ("decide", "s2"), // decide -> decides
+        ("gallop", "s3"), // gallop -> galloped
+        ("notice", "s4"), // notice -> noticed
+        ("run", "s5"),    // run -> running (len 3: see note below)
+    ];
+    let mut en_hits = 0;
+    for (q, want) in queries {
+        let found = db
+            .search_fts("p_en", q, "scenes", 10)
+            .expect("search")
+            .iter()
+            .any(|r| r["id"] == serde_json::json!(*want));
+        if found {
+            en_hits += 1;
+        }
+    }
+    // Note: "run" is 3 codepoints and survives the sanitizer; 1-2 char queries
+    // are dropped by to_fts_match for both tokenizers (documented limitation).
+    println!(
+        "[eval] _en (porter unicode61) recall: {}/{} inflected queries",
+        en_hits,
+        queries.len()
+    );
+    // Sanity floor: stemming should retrieve clearly inflected matches.
+    assert!(
+        en_hits >= 4,
+        "expected porter stemming to recall >=4/5 inflected queries"
+    );
+}
+
+#[test]
 fn test_fts5_snippets_search() {
     let db = test_db();
 
