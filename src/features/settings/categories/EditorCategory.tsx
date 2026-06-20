@@ -183,6 +183,9 @@ export function EditorCategory() {
             defaultValue={false}
           />
         </SettingRow>
+        <SettingRow label={t("settings.editor.bubbleMenu")}>
+          <SettingToggle settingKey="editor.bubbleMenu" defaultValue={true} />
+        </SettingRow>
       </SettingSection>
 
       <SettingSection title={t("settings.editor.inlineAi")}>

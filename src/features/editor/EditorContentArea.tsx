@@ -4,6 +4,7 @@ import type { Editor } from "@tiptap/react";
 import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { CodexPopover } from "@/features/editor/CodexPopover";
+import { EditorBubbleMenu } from "@/features/editor/EditorBubbleMenu";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
 import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
@@ -165,6 +166,10 @@ export function EditorContentArea({
               <EditorContent editor={editor} />
             </SceneBeatEditorContextProvider>
             <CodexPopover editor={editor} />
+            <EditorBubbleMenu
+              editor={editor}
+              toolbarActionsRef={toolbarActionsRef}
+            />
             <CommentAddPopover editor={editor} />
             <ForeshadowMarkPopover editor={editor} />
             <ForeshadowMarkHoverPopover

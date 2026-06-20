@@ -603,6 +603,7 @@
       "inlineAi": "インライン AI",
       "slashCommand": "/ コマンドを有効化",
       "paletteShortcut": "Ctrl+Shift+Space パレットを有効化",
+      "bubbleMenu": "選択時のツールバーを表示",
       "animation": "アニメーション",
       "disableAll": "すべてのアニメーションを無効化",
       "disableAllDesc": "以下の設定を一括でOFF",
@@ -3150,6 +3151,11 @@
       },
       "dragHandle": "ドラッグして並べ替え"
     },
+    "bubbleMenu": {
+      "label": "選択ツールバー",
+      "comment": "コメントを追加",
+      "foreshadow": "伏線として登録"
+    },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",
       "italic": "斜体 (Ctrl+I)",
@@ -3375,7 +3381,9 @@
         "target": "対象"
       }
     },
-    "linearUnsupported": "AIコマンドはリニアモードでは未対応です。通常モードのエディタで実行してください。"
+    "linearUnsupported": "AIコマンドはリニアモードでは未対応です。通常モードのエディタで実行してください。",
+    "noResults": "該当するコマンドがありません",
+    "slashMenuLabel": "インライン AI コマンド"
   },
   "relatedScenes": {
     "noActiveScene": "シーンを選ぶと、関連する過去シーンが表示されます",
