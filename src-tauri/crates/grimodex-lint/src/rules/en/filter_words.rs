@@ -11,62 +11,18 @@ use crate::dialogue::DialogueScope;
 use crate::offset::utf8_to_utf16;
 use crate::rule::{Diagnostic, Language, LintContext, LintInput, LintRule, Severity, Utf16Range};
 
-/// Perception / cognition verbs commonly cited as filtering. Curated set with
-/// the frequent inflections; deliberately not exhaustive.
-const FILTER_WORDS: &[&str] = &[
-    "see",
-    "saw",
-    "seen",
-    "sees",
-    "seeing",
-    "hear",
-    "heard",
-    "hears",
-    "hearing",
-    "feel",
-    "felt",
-    "feels",
-    "feeling",
-    "notice",
-    "noticed",
-    "notices",
-    "noticing",
-    "realize",
-    "realized",
-    "realise",
-    "realised",
-    "realizes",
-    "wonder",
-    "wondered",
-    "wonders",
-    "wondering",
-    "think",
-    "thought",
-    "thinks",
-    "thinking",
-    "know",
-    "knew",
-    "knows",
-    "knowing",
-    "watch",
-    "watched",
-    "watches",
-    "watching",
-    "seem",
-    "seemed",
-    "seems",
-    "seeming",
-    "decide",
-    "decided",
-    "decides",
-    "remember",
-    "remembered",
-    "remembers",
-    "remembering",
+/// Perception / cognition verbs commonly cited as filtering. We list each
+/// family's base form plus the irregular past tenses Snowball can't fold
+/// (saw, seen, heard, felt, thought, knew). Regular inflections (-s/-ed/-ing)
+/// are matched by stemming, so they need not be listed.
+const FILTER_WORD_FORMS: &[&str] = &[
+    "see", "saw", "seen", "hear", "heard", "feel", "felt", "notice", "realize",
+    "realise", "wonder", "think", "thought", "know", "knew", "watch", "seem",
+    "decide", "remember",
 ];
 
 static WORD_RE: OnceLock<Regex> = OnceLock::new();
-static WORD_SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+static WORD_SET: OnceLock<HashSet<String>> = OnceLock::new();
 
 fn word_regex() -> &'static Regex {
     WORD_RE.get_or_init(|| {
@@ -97,7 +53,12 @@ impl LintRule for FilterWordsRule {
             .rule(self.id())
             .and_then(|r| r.severity)
             .unwrap_or_else(|| self.default_severity());
-        let set = WORD_SET.get_or_init(|| FILTER_WORDS.iter().copied().collect());
+        let set = WORD_SET.get_or_init(|| {
+            FILTER_WORD_FORMS
+                .iter()
+                .map(|w| crate::stem::stem_en(w))
+                .collect()
+        });
 
         let mut out = Vec::new();
         for block in input.blocks {
@@ -105,7 +66,8 @@ impl LintRule for FilterWordsRule {
                 continue;
             }
             for m in word_regex().find_iter(&block.text) {
-                if !set.contains(m.as_str().to_ascii_lowercase().as_str()) {
+                let stem = crate::stem::stem_en(&m.as_str().to_ascii_lowercase());
+                if !set.contains(stem.as_str()) {
                     continue;
                 }
                 let start = block.str_offset_start + utf8_to_utf16(&block.text, m.start());
@@ -165,6 +127,18 @@ mod tests {
         let ds = run("She saw the door and heard a sound.");
         assert_eq!(ds.len(), 2);
         assert_eq!(ds[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn flags_inflections_not_listed_literally() {
+        // "noticed"/"noticing" are not in the base list; stemming maps them in.
+        assert_eq!(run("He noticed the cold while noticing the wind.").len(), 2);
+    }
+
+    #[test]
+    fn still_flags_irregular_past() {
+        // "felt" is irregular (Snowball won't map it to "feel"); kept in the list.
+        assert_eq!(run("She felt the chill.").len(), 1);
     }
 
     #[test]
