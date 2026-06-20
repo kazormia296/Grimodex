@@ -4427,7 +4427,11 @@
       "prompt": "Prompt",
       "promptPlaceholder": "Expand on your idea…",
       "generateCount": "Count",
-      "generate": "Generate"
+      "generate": "Generate",
+      "novelty": "Novelty",
+      "noveltyStandard": "Standard",
+      "noveltyNovel": "Novel",
+      "noveltyBold": "Bold"
     },
     "nodeType": {
       "scene": "Scene",

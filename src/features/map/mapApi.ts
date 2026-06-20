@@ -888,7 +888,15 @@ export async function listAiBranches(boardId: string): Promise<MapAiBranch[]> {
     .where(eq(mapAiBranches.boardId, boardId));
 }
 
-export type AiBranchCard = { title: string; body: string };
+export type AiBranchCard = {
+  title: string;
+  body: string;
+  /**
+   * Verbalized Sampling 有効時のみ: LLM が添えた推定確率 (0〜1, 低いほど珍しい)。
+   * カードの並べ替え (珍しい順) に使う一時的な信号で、sticky には永続化しない。
+   */
+  probability?: number;
+};
 
 export async function createAiBranch(
   boardId: string,

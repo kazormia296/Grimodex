@@ -216,7 +216,7 @@ export const AI_PATHS: AiPathEntry[] = [
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
     testName: "map_branch:",
-    note: "本番 buildSystemPrompt/buildUserPrompt + 本番パーサ parseCards。doc 形・枚数を assert。",
+    note: "本番 buildSystemPrompt/buildUserPrompt + 本番パーサ parseCards。doc 形・枚数を assert。VS(意外性ノブ)有効時は VS-on/off の構造多様性(LLM盲検A/B)+語彙を比較計測。",
   },
   {
     id: "tree_scaffold",
