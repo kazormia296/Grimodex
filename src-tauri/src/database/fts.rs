@@ -1,4 +1,5 @@
 use rusqlite::params_from_iter;
+use rusqlite::Connection;
 
 use super::Database;
 
@@ -266,6 +267,47 @@ fn to_fts_match(raw: &str) -> String {
         .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" OR ")
+}
+
+/// Repopulate every `_en` FTS table from scratch, restricted to English
+/// projects (`projects.language LIKE 'en%'`). `_en` tables are non-external,
+/// so a plain `DELETE FROM` + filtered `INSERT ... SELECT` is correct and the
+/// FTS5 `('rebuild')` external-content footgun does not apply.
+pub(crate) fn rebuild_en_fts_sql(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "DELETE FROM codex_fts_en;
+         INSERT INTO codex_fts_en(rowid, name, aliases, summary, tags_cache, content)
+           SELECT rowid, COALESCE(name,''), COALESCE(aliases,''), COALESCE(summary,''), COALESCE(tags_cache,''), COALESCE(content,'')
+           FROM codex_entries
+           WHERE project_id IN (SELECT id FROM projects WHERE language LIKE 'en%');
+
+         DELETE FROM snippets_fts_en;
+         INSERT INTO snippets_fts_en(rowid, title, content, tags_cache)
+           SELECT rowid, COALESCE(title,''), COALESCE(content,''), COALESCE(tags_cache,'')
+           FROM snippets
+           WHERE project_id IN (SELECT id FROM projects WHERE language LIKE 'en%');
+
+         DELETE FROM tree_nodes_fts_en;
+         INSERT INTO tree_nodes_fts_en(rowid, title, content)
+           SELECT rowid, COALESCE(title,''), COALESCE(content,'')
+           FROM tree_nodes
+           WHERE project_id IN (SELECT id FROM projects WHERE language LIKE 'en%');
+
+         DELETE FROM post_effect_annotations_fts_en;
+         INSERT INTO post_effect_annotations_fts_en(rowid, content)
+           SELECT rowid, COALESCE(content,'')
+           FROM post_effect_annotations
+           WHERE project_id IN (SELECT id FROM projects WHERE language LIKE 'en%');
+
+         DELETE FROM chat_messages_fts_en;
+         INSERT INTO chat_messages_fts_en(rowid, content)
+           SELECT rowid, COALESCE(content,'')
+           FROM chat_messages
+           WHERE session_id IN (
+             SELECT id FROM chat_sessions
+             WHERE project_id IN (SELECT id FROM projects WHERE language LIKE 'en%')
+           );",
+    )
 }
 
 #[cfg(test)]

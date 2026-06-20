@@ -1263,6 +1263,35 @@ fn test_fts5_sync_on_delete() {
 }
 
 #[test]
+fn test_en_fts_triggers_route_and_stem() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    db.migrate().expect("re-migrate is idempotent");
+
+    let conn = db.conn.lock().expect("lock");
+    conn.execute_batch(
+        "INSERT INTO projects(id, title, language) VALUES
+           ('p_en', 'En Project', 'en'),
+           ('p_ja', 'Ja Project', 'ja');
+         INSERT INTO tree_nodes(id, project_id, node_type, title, content) VALUES
+           ('s_en', 'p_en', 'scene', 'Ch1', 'she was studying hard'),
+           ('s_ja', 'p_ja', 'scene', 'Sho1', 'plain japanese body');",
+    )
+    .expect("seed rows");
+
+    // Incremental trigger indexed ONLY the English scene into _en, and porter
+    // stems the query "studies" to match the indexed "studying".
+    let hits: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM tree_nodes_fts_en WHERE tree_nodes_fts_en MATCH ?1",
+            ["\"studies\""],
+            |r| r.get(0),
+        )
+        .expect("match query");
+    assert_eq!(hits, 1, "only the en scene is in _en and porter stems studies==studying");
+}
+
+#[test]
 fn test_nullify_codex_source_on_message_delete() {
     let db = test_db();
 
