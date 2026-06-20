@@ -64,13 +64,32 @@ Output JSON shape EXACTLY:
   ]
 }
 
-Rules (critical for label quality):
-- Per scenario include 3-5 messages on ONE topic (e.g. magic rules, a character's backstory, world geography, a plot decision, a motif).
-- Mix roles: user statements/decisions AND assistant proposals. Give SOME substantive messages effectiveness signals: set insertedToEditor=true OR extractedCount>=1 for messages that record a real decision/fact. Leave others false/0.
-- Include at least one PLAIN assistant message per scenario: topically near but content-thin chit-chat (e.g. "that's a great theme!"). It must NOT be in any gold list (it is a distractor).
-- For each scenario add one query that a writer would later ask to recall that topic; gold = the substantive messages of that scenario ONLY (never the plain distractor, never other scenarios' messages).
-- Also add ${Math.max(1, Math.round(n / 3))} NO-MATCH query case(s) with "gold": [] whose topic is CLEARLY OUTSIDE this novel (e.g. programming, taxes, sports) so the gate should inject nothing.
-- Keep every id globally unique within this output. Keep messages 1-3 sentences, natural ${LANG_NAME[lang]}.
+Rules (critical for label quality — a recall eval is only as good as its SEPARABILITY):
+- Each scenario must be about a DISTINCT, CONCRETE topic with UNIQUE invented proper nouns
+  (specific character/place/item names, numbers, dates). NEVER use vague writing-craft chatter
+  like "themes", "friendship", "courage", "self-discovery", "depth" — those make scenarios
+  semantically overlap and ruin the eval. Two scenarios must not share a topic.
+- Span varied topics ACROSS scenarios: a magic mechanic, one named character's concrete past,
+  a named location's layout, a faction's goal, a specific timeline/event, an object's property,
+  a named creature, a political conflict, etc. Make them concrete enough that a reader could
+  tell them apart from a single sentence.
+- Per scenario: 3-5 messages. Mix roles (user states facts/decisions; assistant proposes
+  concrete specifics).
+- SIGNAL DISCIPLINE (realistic, sparse): at MOST ONE message per scenario may have
+  insertedToEditor=true, and at MOST ONE may have extractedCount=1 (a genuinely recorded
+  decision/fact). Most messages have insertedToEditor=false and extractedCount=0. Do NOT
+  sprinkle signals broadly.
+- Include exactly one PLAIN assistant message per scenario: an on-topic but content-thin
+  acknowledgement ("Nice, that works well."). It MUST NOT appear in any gold list.
+- One query per scenario, phrased as a writer recalling that concrete topic later; gold = the
+  SUBSTANTIVE messages of THAT scenario only (never the plain distractor, never other
+  scenarios' messages, never pure-agreement lines).
+- Add ${Math.max(2, Math.round(n / 3))} NO-MATCH cases ("gold": []) on topics CLEARLY OUTSIDE
+  any fiction project (e.g. Python exceptions, filing taxes, football scores, car maintenance).
+  CRITICAL: a no-match case is a QUERY ONLY. Do NOT add ANY message about the no-match topic —
+  the topic must be ENTIRELY ABSENT from the "messages" pool (otherwise the query correctly
+  matches it and the gold=[] label is wrong). No-match topics appear ONLY as queries.
+- Every id globally unique. Messages 1-3 sentences, natural ${LANG_NAME[lang]}.
 
 Return ONLY the JSON object.`;
 }
@@ -88,7 +107,7 @@ async function callLLM(messages) {
       model: MODEL,
       messages,
       temperature: 0.7,
-      max_tokens: 4096,
+      max_tokens: 8192,
       response_format: { type: "json_object" },
     }),
   });
