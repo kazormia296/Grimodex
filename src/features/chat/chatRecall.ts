@@ -31,9 +31,11 @@ import {
  * - 順序は Codex(always) > chat RAG (contextBuilder 側で担保)。古い対話が正典を
  *   上書きできない。
  *
- * gate/floor は scene recall と同じ `recallParamsForLang` を流用 (ja: gate0.85/floor0.80,
- * en: 0.51)。weight は cosine にかけてから gate に通すので「効いた発話」はゲートを
- * 越えやすくなる (ユーザー合意の挙動)。閾値較正は live eval で後追い。
+ * gate/floor/選別は RAW cosine で行い、scene recall の選別関数 (precision 規律) をそのまま
+ * 流用する。en だけチャット用に gate 0.51→0.66 / floor 0.60 へ引き上げ (CHAT_RECALL_GATE_EN /
+ * CHAT_RECALL_FLOOR_EN)、ja (ruri) は scene 既定 0.85/0.80 据え置き。weight は gate にはかけず、
+ * 注入が確定したメッセージの並べ替えにのみ使う (重み付きを gate にかけると信号付き発話が無関連
+ * クエリでゲートを突破し precision を壊すため)。閾値較正は実埋め込み sweep + フロンティアクロス検証。
  */
 
 export interface ChatRecallMessage {

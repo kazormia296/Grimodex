@@ -26,12 +26,13 @@ Grimodex はチャットのシステムプロンプトに、プロジェクト�
 | L2 | これまでの物語 + アウトライン + 未回収伏線 | シーン要約、フォルダ要約、`projects.outline`、未回収伏線 | 先頭エントリから削る。末尾の `projectOutline` は最後まで残る |
 | L3 | 現在のシーン | シーン本文、ラベル、Beat、シーン伏線、story-time 隣接、`@scene` ピン | 本文は先頭から削る。ヘッダー・伏線ブロックは保護 |
 | L4 | Codex / Note / Snippet / Sticky | メンションまたはピン留めされたエンティティ | 優先度（pri）に基づくブロック単位の削除（下記） |
+| EPISODIC | チャット履歴 RAG（エピソード記憶） | `chat_message_chunks`（過去の対話の意味検索ヒット）。`<chat_history>` ラッパー。scene RAG の**後ろ**・L5 の**前**に注入する recall-only 層 | **最も投機的な層**。クエリ依存で毎ターン変動するため `cacheSegments` には載せず `volatileTail` のみ。trim では**全層に先んじて最初に削る**（scene RAG よりさらに先） |
 | L5 | 会話要約 | `chat_summaries` | 予算超過時 RAG の次（**L4 より先**）に削る。古い要約ブロックから先頭削りし直近を残す |
 | L6 | コマンド指示 | スラッシュコマンド等の一回限り指示 | エフェメラル（そのターンのみ） |
 
 > **トリムには 2 つの独立した機構があり、混同しないこと**（実装: `contextBuilder.ts`）。
 >
-> 1. **`trimToFit` の貪欲順序** — 予算超過時、`RAG → L5 → L4 → L2 → L3 → L1` の固定順で各層を予算ぴったりまで削る。RAG（自動検索の投機的文脈）を最初に、L1（プロジェクト情報）と L3（現在シーン）を最後に犠牲にする。層内では価値考慮トリム（L4=pri スケール / L3=末尾保持の二分探索 / L2・L5・RAG=古い順 / L1=styleGuide 先）。
+> 1. **`trimToFit` の貪欲順序** — 予算超過時、`EPISODIC → RAG → L5 → L4 → L2 → L3 → L1` の固定順で各層を予算ぴったりまで削る（`contextBuilder.ts:751`）。EPISODIC（chat episodic recall = 会話の柔らかい記憶）を最初に、scene RAG（自動検索の投機的文脈）をその次に犠牲にし、L1（プロジェクト情報）と L3（現在シーン）を最後に残す。層内では価値考慮トリム（L4=pri スケール / L3=末尾保持の二分探索 / L2・L5・RAG=古い順 / EPISODIC=低スコア側のブロックから / L1=styleGuide 先）。
 > 2. **縮退モードの予算配分** — `available = contextWindow − 応答予約` が input floor（4,500 tok）を割る極小窓モデル（例: AI のべりすと `damsel` = 2,400 tok）でのみ発動。L1/L2/L4 を**ゼロ**にし L3・L5 のみ確保する（`allocateLayerBudgets`）。
 
 ---
@@ -62,7 +63,8 @@ L4 のトークン予算超過時、**数値が小さいブロックほど先に
 | **Map Sticky** | L4（ピン時のみ） | セッションピンテーブル（`pinnedStickies`）。`<sticky>` ラッパー |
 | **focus_subject**（スコープアンカー） | L3 と L4 の間（`<focus_subject>`） | Codex / Snippet スコープでアンカーした「この会話の主題」。`focusSubject` で渡す。Codex は Spotlight 相当のフル描画、Snippet は title + 抽出本文。**trim 対象外で常時注入**するため、呼び出し側は当該アンカーを L4 の `pinnedCodexEntries` / `pinnedSnippets` から除外して重複させない |
 | **activeTabContent**（参照中のコンテンツ） | L3 | アクティブタブが Codex / Snippet のとき `## 参照中のコンテンツ` として L3 末尾に注入。type / title / 抽出本文 |
-| **semantic recall（Layer4 RAG）** | RAG（`<related_scenes>`、L4 の直後） | `semanticRecall` で渡す意味検索ヒット（過去シーン抜粋）。クエリ依存で毎ターン変動するため `cacheSegments` には載せず `prompt` + `volatileTail` のみ。trim では全層に先んじて削られる |
+| **semantic recall（Layer4 RAG）** | RAG（`<related_scenes>`、L4 の直後） | `semanticRecall` で渡す意味検索ヒット（過去シーン抜粋）。クエリ依存で毎ターン変動するため `cacheSegments` には載せず `prompt` + `volatileTail` のみ。trim では EPISODIC の次に削られる |
+| **chat episodic recall（エピソード記憶）** | EPISODIC（`<chat_history>`、scene RAG の直後） | `chat_message_chunks` を `fetchChatRecall`（`chatRecall.ts:280`）で意味検索 → `chatRecall?: Array<{label,text}>`（`contextBuilder.ts:254`）として注入する **recall-only** 層。クエリ依存で毎ターン変動するため `cacheSegments` には載せず `prompt` + `volatileTail` のみ。優先度は **Codex(L4) > scene RAG > chat RAG**（古い対話が正典・現在シーンを上書きしない）。trim では**全層に先んじて最初に**削られる |
 | **Map board overlay** | L4（pri = PINNED） | `mapBoardMarkdown`：アクティブ Map board 全体を `<map board="…">…</map>` で囲んだ 1 ブロック（`l4pri:3` マーカー付きで `pinnedStickies` の直後に追加）。`includeMapBoard` 有効時のみ。スコープと直交し folder / project 経路でも注入される |
 | **伏線（Foreshadow）** | L2（未回収一覧）、L3（シーン setup/payoff） | `deriveLabel` による派生ラベル。**L4 には載せない** |
 | **Beat** | L3（`pendingBeatsSection` のみ） | 配置済み Beat はシーン本文内。未配置 Beat は pending セクション。**Beat 一括ダンプはしない**（過剰注入リスク） |
@@ -72,6 +74,8 @@ L4 のトークン予算超過時、**数値が小さいブロックほど先に
 > **`focus_subject` は独立スロット（L0〜L6 の外）**：プロンプト本文・トークン内訳・cacheSegments とも **L3 の直後・L4 の前**に置かれる擬似レイヤー（内訳ラベルは `FOCUS`）。L3 と同じ cache セグメントに統合され、trim では削られない（`hardeningOverhead` で本文ぶんを先取り予約）。
 >
 > **ピン留め Snippet の二経路**：同一 Snippet が「セッションピン」かつ「アクティブタブ」のときは、L4（`pinnedSnippets`）と L3（`activeTabContent` = 参照中のコンテンツ）の双方に注入されうる（両経路間の重複排除はしない）。一方、Snippet スコープのアンカーは `focusSubject` 側に集約し L4 の `pinnedSnippets` からは除外される。
+>
+> **注入順序**（プロンプト配列、`contextBuilder.ts:1483`）：`baseText → L1 → L2 → L3 → focus → L4 → RAG → EPISODIC → L5 → reminder → L6`。scene RAG の**直後**に chat episodic recall（EPISODIC）が来る。優先度は **Codex(L4) > scene RAG > chat RAG**で、古い対話が正典（Codex）や現在シーンを上書きしないよう後置する。RAG と EPISODIC はクエリ依存のため `cacheSegments` を消費せず `volatileTail` 側に置かれる（`contextBuilder.ts:1504-1524`）。
 
 ---
 
