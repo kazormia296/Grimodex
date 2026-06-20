@@ -181,6 +181,10 @@ fn context_window(plain: &str, byte_start: usize, byte_end: usize) -> String {
     plain.get(lb..rb).unwrap_or("").trim().to_string()
 }
 
+/// 形態素解析済みの 1 シーン: (scene_id, NFC 正規化済み平文, 固有名詞含む全トークン,
+/// 既知 Codex 名の出現スパン `[start, end)`)。`aggregate_candidates` の入力単位。
+type SceneTokens = (String, String, Vec<MorphToken>, Vec<(usize, usize)>);
+
 /// `[byte_start, byte_end)` が既知 Codex 名の出現スパン (`spans`) のいずれかに
 /// **完全に包含される**か。包含 = その固有名詞トークンは既知名の一部 (lindera が
 /// 既知名を過分割して生じたフラグメント) なので候補から落とす。より長い別語
@@ -199,7 +203,7 @@ fn is_fragment_of_known_name(spans: &[(usize, usize)], byte_start: usize, byte_e
 /// 「Codex 項目の一部 (一文字) が未確定候補に出る」過分割リークを防ぐ。
 /// 純ロジック (DB/lindera 非依存) なのでテスト可能。
 fn aggregate_candidates(
-    scenes: &[(String, String, Vec<MorphToken>, Vec<(usize, usize)>)],
+    scenes: &[SceneTokens],
     known: &HashSet<String>,
     min_count: usize,
 ) -> Vec<CodexCandidate> {
@@ -396,8 +400,7 @@ pub(crate) fn extract_codex_candidates(
     let name_matcher = build_name_matcher(&name_patterns);
 
     // フェーズ 2 (ロック外): 各シーンを形態素解析。平文も持ち回して文脈窓に使う。
-    let mut scenes_tokens: Vec<(String, String, Vec<MorphToken>, Vec<(usize, usize)>)> =
-        Vec::with_capacity(scenes.len());
+    let mut scenes_tokens: Vec<SceneTokens> = Vec::with_capacity(scenes.len());
     for (scene_id, content_json) in scenes {
         // 本文を NFC へ正規化してから形態素解析・マスクの双方に使う。これで既知名
         // パターン (normalize_name=NFC) と本文の合成/分解形が一致し、トークン・スパンの
