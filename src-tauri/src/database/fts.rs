@@ -39,6 +39,14 @@ impl Database {
         let use_like = query.chars().count() < 3 || match_query.is_empty();
         let like_pattern = format!("%{query}%");
 
+        let is_en: bool = conn
+            .query_row(
+                "SELECT language LIKE 'en%' FROM projects WHERE id = ?1",
+                [project_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+
         if scope == "all" || scope == "scenes" {
             if use_like {
                 let mut stmt = conn.prepare(
@@ -63,13 +71,15 @@ impl Database {
                     results.push(r?);
                 }
             } else {
-                let mut stmt = conn.prepare(
+                let fts = if is_en { "tree_nodes_fts_en" } else { "tree_nodes_fts" };
+                let sql = format!(
                     "SELECT tn.id, tn.title, COALESCE(tn.synopsis, '')
-                     FROM tree_nodes_fts
-                     JOIN tree_nodes tn ON tn.rowid = tree_nodes_fts.rowid
-                     WHERE tree_nodes_fts MATCH ?1 AND tn.project_id = ?2 AND tn.node_type = 'scene'
-                     ORDER BY rank LIMIT ?3",
-                )?;
+                     FROM {fts}
+                     JOIN tree_nodes tn ON tn.rowid = {fts}.rowid
+                     WHERE {fts} MATCH ?1 AND tn.project_id = ?2 AND tn.node_type = 'scene'
+                     ORDER BY rank LIMIT ?3"
+                );
+                let mut stmt = conn.prepare(&sql)?;
                 let rows = stmt.query_map(
                     params_from_iter([match_query.as_str(), project_id, &lim.to_string()]),
                     |row| {
@@ -111,13 +121,15 @@ impl Database {
                     results.push(r?);
                 }
             } else {
-                let mut stmt = conn.prepare(
+                let fts = if is_en { "codex_fts_en" } else { "codex_fts" };
+                let sql = format!(
                     "SELECT e.id, e.name, COALESCE(e.summary, '')
-                     FROM codex_fts
-                     JOIN codex_entries e ON e.rowid = codex_fts.rowid
-                     WHERE codex_fts MATCH ?1 AND e.project_id = ?2
-                     ORDER BY rank LIMIT ?3",
-                )?;
+                     FROM {fts}
+                     JOIN codex_entries e ON e.rowid = {fts}.rowid
+                     WHERE {fts} MATCH ?1 AND e.project_id = ?2
+                     ORDER BY rank LIMIT ?3"
+                );
+                let mut stmt = conn.prepare(&sql)?;
                 let rows = stmt.query_map(
                     params_from_iter([match_query.as_str(), project_id, &lim.to_string()]),
                     |row| {
@@ -158,13 +170,15 @@ impl Database {
                     results.push(r?);
                 }
             } else {
-                let mut stmt = conn.prepare(
+                let fts = if is_en { "snippets_fts_en" } else { "snippets_fts" };
+                let sql = format!(
                     "SELECT s.id, s.title, COALESCE(s.tags_cache, '')
-                     FROM snippets_fts
-                     JOIN snippets s ON s.rowid = snippets_fts.rowid
-                     WHERE snippets_fts MATCH ?1 AND s.project_id = ?2
-                     ORDER BY rank LIMIT ?3",
-                )?;
+                     FROM {fts}
+                     JOIN snippets s ON s.rowid = {fts}.rowid
+                     WHERE {fts} MATCH ?1 AND s.project_id = ?2
+                     ORDER BY rank LIMIT ?3"
+                );
+                let mut stmt = conn.prepare(&sql)?;
                 let rows = stmt.query_map(
                     params_from_iter([match_query.as_str(), project_id, &lim.to_string()]),
                     |row| {
@@ -211,15 +225,17 @@ impl Database {
                     results.push(r?);
                 }
             } else {
-                let mut stmt = conn.prepare(
+                let fts = if is_en { "chat_messages_fts_en" } else { "chat_messages_fts" };
+                let sql = format!(
                     "SELECT cm.id, cm.role, substr(cm.content, 1, 80)
-                     FROM chat_messages_fts
-                     JOIN chat_messages cm ON cm.rowid = chat_messages_fts.rowid
+                     FROM {fts}
+                     JOIN chat_messages cm ON cm.rowid = {fts}.rowid
                      JOIN chat_sessions cs ON cs.id = cm.session_id
-                     WHERE chat_messages_fts MATCH ?1 AND cs.project_id = ?2
+                     WHERE {fts} MATCH ?1 AND cs.project_id = ?2
                        AND cm.role IN ('user', 'assistant')
-                     ORDER BY rank LIMIT ?3",
-                )?;
+                     ORDER BY rank LIMIT ?3"
+                );
+                let mut stmt = conn.prepare(&sql)?;
                 let rows = stmt.query_map(
                     params_from_iter([match_query.as_str(), project_id, &lim.to_string()]),
                     |row| {

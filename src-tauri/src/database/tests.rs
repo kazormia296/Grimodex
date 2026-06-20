@@ -1096,6 +1096,27 @@ fn test_search_fts_codex_like_matches_content() {
 }
 
 #[test]
+fn test_search_fts_en_project_stems_query() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "INSERT INTO projects(id, title, language) VALUES ('p_en', 'En', 'en');
+             INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+               VALUES ('s1', 'p_en', 'scene', 'Ch1', 'she was studying hard');",
+        )
+        .expect("seed");
+    }
+    // "studies" (a different surface form) must find the "studying" scene.
+    let results = db
+        .search_fts("p_en", "studies", "scenes", 10)
+        .expect("search");
+    assert_eq!(results.len(), 1, "porter-stemmed query hits the inflected body");
+    assert_eq!(results[0]["id"], serde_json::json!("s1"));
+}
+
+#[test]
 fn test_fts5_snippets_search() {
     let db = test_db();
 
