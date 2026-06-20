@@ -199,7 +199,7 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_chat_message",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
-    note: "本番 buildSystemPrompt/buildUserPrompt + 本番パーサ parseCards。doc 形・枚数を assert。",
+    note: "本番 buildSystemPrompt/buildUserPrompt + 本番パーサ parseCards。doc 形・枚数を assert。VS(意外性ノブ)有効時は VS-on/off の語彙多様性を比較計測。",
   },
   {
     id: "tree_scaffold",

@@ -44,6 +44,7 @@ import {
 } from "@/features/tree/aiScaffold/generate";
 import type { ChatMessage } from "@/features/chat/chatTypes";
 import type { RoleInferenceInput } from "@/features/editor/beat/inferMentionRoles";
+import { meanPairwiseDistinctness } from "@/lib/textDiversity";
 
 const KEY = liveApiKey();
 const LIVE_TIMEOUT = 120_000;
@@ -217,6 +218,123 @@ describe.skipIf(!KEY)(
         }
         // 少なくとも 1 枚はモデルが実際に生成した（pad タイトルではない）。
         expect(cards.some((c) => !/^アイデア \d+$/.test(c.title))).toBe(true);
+      },
+      LIVE_TIMEOUT,
+    );
+
+    it(
+      "map_branch VS: VS-on は VS-off より案が多様(構造=LLM盲検判定・語彙=補助)",
+      async () => {
+        // mode collapse が出やすい手垢のついたテーマで VS の効果を測る。
+        const THEMES = [
+          "無人駅をめぐる物語",
+          "幼馴染と再会する物語",
+          "勇者が魔王を討つ物語",
+          "学園で起きる青春の物語",
+        ];
+        // 本番 cloud 相当: CoT 有効 + 確率添付(parseCards で除去)。
+        const vsOpts = { threshold: 0.05, cot: true, emitProbability: true };
+
+        const gen = async (theme: string, on: boolean) => {
+          const system = buildMapSystemPrompt(
+            { title: "アイデア出し", language: "ja" },
+            [],
+            on ? vsOpts : null,
+          );
+          const user = buildMapUserPrompt(theme, 5, [], "ja", on);
+          const { text } = await runLiveSingleShot(user, { system });
+          return parseCards(text, 5, "ja", on);
+        };
+
+        const toTexts = (cards: { title: string; body: string }[]): string[] =>
+          cards.map((c) => {
+            const doc = JSON.parse(c.body) as {
+              content?: Array<{ content?: Array<{ text?: string }> }>;
+            };
+            const body = (doc.content ?? [])
+              .flatMap((n) => (n.content ?? []).map((t) => t.text ?? ""))
+              .join(" ");
+            return `${c.title} ${body}`;
+          });
+
+        // 構造多様性は語彙では捉えにくい(日本語は共通語彙が多い=Artificial
+        // Hivemind)。盲検 A/B で「設定・構造・発想の多様さ」を LLM に判定させる。
+        const judge = async (
+          theme: string,
+          set1: string[],
+          set2: string[],
+        ): Promise<"1" | "2" | "tie"> => {
+          const system =
+            "あなたは創作の評価者です。2 つのアイデア集合を比べ、設定・物語構造・発想の多様さ(互いに似通っていないか)を判定してください。語彙や言い回しの差ではなく、前提・構造の多様性だけを見ること。";
+          const user = `テーマ: ${theme}\n\n# 集合1\n${set1.join("\n")}\n\n# 集合2\n${set2.join("\n")}\n\nより多様なのはどちらですか。1 行目に "1" "2" "TIE" のいずれかだけ、2 行目に理由を 1 文。`;
+          const { text } = await runLiveSingleShot(user, { system });
+          const head = text
+            .trim()
+            .replace(/^[^0-9A-Za-z]*/, "")
+            .toUpperCase();
+          if (head.startsWith("1")) return "1";
+          if (head.startsWith("2")) return "2";
+          return "tie";
+        };
+
+        let offLexSum = 0;
+        let onLexSum = 0;
+        let onWins = 0;
+        let offWins = 0;
+        let ties = 0;
+        const rows: string[] = [];
+
+        await Promise.all(
+          THEMES.map(async (theme, i) => {
+            const [off, on] = await Promise.all([
+              gen(theme, false),
+              gen(theme, true),
+            ]);
+            const dOff = meanPairwiseDistinctness(toTexts(off));
+            const dOn = meanPairwiseDistinctness(toTexts(on));
+            offLexSum += dOff;
+            onLexSum += dOn;
+
+            // 位置バイアス打ち消し: 奇数テーマは on を「集合1」に置く。
+            const onIsFirst = i % 2 === 1;
+            const verdict = await judge(
+              theme,
+              onIsFirst ? toTexts(on) : toTexts(off),
+              onIsFirst ? toTexts(off) : toTexts(on),
+            );
+            let winner: "on" | "off" | "tie";
+            if (verdict === "tie") winner = "tie";
+            else winner = (verdict === "1") === onIsFirst ? "on" : "off";
+            if (winner === "on") onWins++;
+            else if (winner === "off") offWins++;
+            else ties++;
+
+            rows.push(
+              `theme="${theme}" lexOff=${dOff.toFixed(3)} lexOn=${dOn.toFixed(3)} judge=${winner}`,
+            );
+          }),
+        );
+
+        const offLex = offLexSum / THEMES.length;
+        const onLex = onLexSum / THEMES.length;
+        const summary = `[VS] lexical off=${offLex.toFixed(3)} on=${onLex.toFixed(3)} | judge on:${onWins} off:${offWins} tie:${ties}`;
+        rows.push(summary);
+
+        console.log(summary);
+        // vitest は console.log を抑制するため、解析用に env でファイルダンプ可能に
+        // する(既定 no-op)。VS_METRICS_OUT=/path pnpm test ... で有効。
+        if (process.env.VS_METRICS_OUT) {
+          (await import("node:fs")).writeFileSync(
+            process.env.VS_METRICS_OUT,
+            rows.join("\n") + "\n",
+          );
+        }
+
+        // 語彙は構造を捉えないため壊滅的回帰のみ gate(緩い下限)。
+        expect(onLex).toBeGreaterThanOrEqual(offLex * 0.85);
+        // 主シグナル: 構造的多様性で VS-on が VS-off に勝ち越す or 互角
+        // (モデルのゆらぎがあるため鍵を渡したときのみ実行する確率的 gate)。
+        expect(onWins).toBeGreaterThanOrEqual(offWins);
       },
       LIVE_TIMEOUT,
     );

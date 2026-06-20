@@ -4417,7 +4417,11 @@
       "prompt": "プロンプト",
       "promptPlaceholder": "アイデアを展開してください…",
       "generateCount": "生成数",
-      "generate": "生成"
+      "generate": "生成",
+      "novelty": "意外性",
+      "noveltyStandard": "標準",
+      "noveltyNovel": "意外",
+      "noveltyBold": "大胆"
     },
     "nodeType": {
       "scene": "シーン",

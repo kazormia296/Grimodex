@@ -91,6 +91,7 @@ import {
 } from "./mapApi";
 import { AINodeDialog } from "./AINodeDialog";
 import { generateAiBranchCards, type AiBranchSeed } from "./mapAiApi";
+import { useAiSettingsStore } from "@/features/chat/store";
 import {
   collectAiBranchSeeds,
   fetchAiBranchProjectContext,
@@ -1542,7 +1543,7 @@ export function MapCanvas() {
   );
 
   const handleAiBranchConfirm = useCallback(
-    async (prompt: string, count: 3 | 5 | 8) => {
+    async (prompt: string, count: 3 | 5 | 8, vsThreshold: number | null) => {
       if (!boardId || !aiBranchDialog) return;
       if (blockIfPolicyOff("chat")) return;
       const dialogState = aiBranchDialog;
@@ -1558,12 +1559,20 @@ export function MapCanvas() {
           fetchAiBranchProjectContext(getCurrentProjectId()),
           fetchActiveSessionSpotlight(),
         ]);
+        // Verbalized Sampling: 意外性ノブが標準 (null) のときは VS オフで従来挙動。
+        // CoT 前置きは小型/ローカル (cli) では認知負荷で品質が落ちうるため切る。
+        const provider = useAiSettingsStore.getState().settings?.provider;
+        const vs =
+          vsThreshold != null
+            ? { threshold: vsThreshold, cot: provider !== "cli" }
+            : null;
         const cards = await generateAiBranchCards(
           prompt,
           count,
           dialogState.seeds,
           projectCtx,
           spotlight,
+          vs,
         );
 
         const pos = dialogState.spawnPosition;

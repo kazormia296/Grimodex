@@ -40,7 +40,11 @@ import { PromptTemplatePicker } from "@/features/prompt-library/PromptTemplatePi
 import { usePromptLibraryStore } from "@/features/prompt-library/promptLibraryStore";
 import type { PromptTemplate } from "@/features/prompt-library/api";
 import { AbChatDialog } from "@/features/ab-test/AbChatDialog";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  getCurrentProjectId,
+  getCurrentProjectLanguage,
+} from "@/features/project/projectStore";
+import { buildChatCommandInstruction } from "../extensions/chatCommandInstruction";
 
 interface ChatInputProps {
   onSend: (
@@ -49,6 +53,8 @@ interface ChatInputProps {
       overrideAgentMode?: boolean;
       /** @ で指定された scene ID 一覧（送信時に context へ一時 pin される） */
       mentionedSceneIds?: string[];
+      /** スラッシュコマンド由来の一回限りの指示 (L6 へ注入)。例: /brainstorm の VS。 */
+      commandInstruction?: string;
     },
   ) => void;
   disabled?: boolean;
@@ -212,12 +218,29 @@ export function ChatInput({
             ? t("chat.placeholderFolder", { kind: t("chat.scope.chapter") })
             : t("chat.placeholderScene");
 
+  // /コマンド選択後の「次の送信」に対して一回限りの指示 (L6) を作る。
+  // 読み取り時にクリアするので、送信ごとに高々1回適用される。
+  const pendingCommandRef = useRef<string | null>(null);
+  const consumePendingCommandInstruction = useCallback(():
+    | string
+    | undefined => {
+    const cmdId = pendingCommandRef.current;
+    pendingCommandRef.current = null;
+    const lang = getCurrentProjectLanguage().startsWith("en") ? "en" : "ja";
+    // CoT 前置きは小型/ローカル (cli) では認知負荷で品質が落ちうるため切る。
+    return buildChatCommandInstruction(cmdId, lang, {
+      cot: aiSettings?.provider !== "cli",
+    });
+  }, [aiSettings]);
+
   const handleSubmit = useCallback(
     (markdown: string) => {
       if (isStreaming) return;
-      onSend(markdown);
+      onSend(markdown, {
+        commandInstruction: consumePendingCommandInstruction(),
+      });
     },
-    [isStreaming, onSend],
+    [isStreaming, onSend, consumePendingCommandInstruction],
   );
 
   const handleStop = () => {
@@ -436,6 +459,9 @@ export function ChatInput({
   const handleCommandSelect = useCallback(
     (cmd: import("../extensions/chatCommands").ChatCommand) => {
       commandPopup?.command?.(cmd);
+      // コマンド本文 (/brainstorm) はエディタから削除されるため、次の送信に
+      // 適用する指示として id を保持する (consume 時に解決)。
+      pendingCommandRef.current = cmd.id;
       setCommandPopup(null);
     },
     [commandPopup],
@@ -497,7 +523,11 @@ export function ChatInput({
     >;
     const markdown: string = markdownStorage.markdown?.getMarkdown?.() ?? text;
     const mentionedSceneIds = collectMentionedSceneIds();
-    onSend(markdown, { ...options, mentionedSceneIds });
+    onSend(markdown, {
+      ...options,
+      mentionedSceneIds,
+      commandInstruction: consumePendingCommandInstruction(),
+    });
     editor.commands.clearContent();
   };
 

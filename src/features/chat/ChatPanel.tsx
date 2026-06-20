@@ -878,16 +878,20 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       options?: {
         overrideAgentMode?: boolean;
         mentionedSceneIds?: string[];
+        commandInstruction?: string;
       },
     ) => {
       const trimmed = markdown.trim();
       if (!trimmed || isStreaming) return;
       // 送信時に却下セットをリセット（次のメッセージでは再検出可能にする）
       setInputDismissedIds(new Set());
+      // スラッシュコマンド由来の一回限りの指示 (/brainstorm の VS 等) は
+      // sendMessage の commandInstruction (L6) へ。残りは送信オプションとして渡す。
+      const { commandInstruction, ...rest } = options ?? {};
       // Flush any pending editor save so sendMessage reads latest scene content from DB.
       const flushAndSend = async () => {
         if (chatSceneId) await saveScene(chatSceneId);
-        sendMessage(trimmed, undefined, options);
+        sendMessage(trimmed, commandInstruction, rest);
       };
       void flushAndSend();
     },

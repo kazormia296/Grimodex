@@ -1,6 +1,7 @@
 import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
+import { buildVsInstruction, type VsOptions } from "@/lib/verbalizedSampling";
 import type { AiBranchCard } from "./mapApi";
 
 interface LLMResponsePayload {
@@ -85,6 +86,10 @@ interface MapAiStrings {
   outputTitle: string;
   outputBody: string;
   outputTail: string;
+  /** VS 有効時のみ: タイトル直下に挟む確率行の例。 */
+  outputProb: string;
+  /** VS 有効時のみ: 確率の意味を説明する補足行。 */
+  outputProbNote: string;
   padTitle: (n: number) => string;
 }
 
@@ -118,6 +123,9 @@ const STRINGS: Record<"ja" | "en", MapAiStrings> = {
     outputTitle: "## タイトル",
     outputBody: "本文テキスト",
     outputTail: '最後の区切り "---" は不要です。余分な説明は不要です。',
+    outputProb: "確率: 0.07",
+    outputProbNote:
+      "「確率」はタイトルの直後の行に置き、0〜1 の数値でその案の典型度を表してください（低いほど珍しい）。",
     padTitle: (n) => `アイデア ${n}`,
   },
   en: {
@@ -150,6 +158,9 @@ const STRINGS: Record<"ja" | "en", MapAiStrings> = {
     outputBody: "Body text",
     outputTail:
       'No trailing "---" is needed. Do not add any extra explanation.',
+    outputProb: "probability: 0.07",
+    outputProbNote:
+      'Put "probability" on the line right after the title, as a 0–1 number indicating how typical the idea is (lower = rarer).',
     padTitle: (n) => `Idea ${n}`,
   },
 };
@@ -161,6 +172,7 @@ function langKey(project: AiBranchProjectContext | null): "ja" | "en" {
 export function buildSystemPrompt(
   project: AiBranchProjectContext | null,
   spotlight: AiBranchSeed[],
+  vs: VsOptions | null = null,
 ): string {
   const lang = langKey(project);
   const S = STRINGS[lang];
@@ -219,6 +231,13 @@ export function buildSystemPrompt(
     while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   }
 
+  // Verbalized Sampling: 多様性指示は末尾に置き、直前の世界観/指示を踏まえた上で
+  // 「裾からサンプリングせよ」を最後に効かせる。
+  if (vs) {
+    lines.push("");
+    lines.push(buildVsInstruction(lang, vs));
+  }
+
   return lines.join("\n");
 }
 
@@ -227,6 +246,7 @@ export function buildUserPrompt(
   count: number,
   seeds: AiBranchSeed[],
   lang: "ja" | "en",
+  emitProbability = false,
 ): string {
   const S = STRINGS[lang];
   const labels = TYPE_LABELS[lang];
@@ -254,34 +274,55 @@ export function buildUserPrompt(
   parts.push(S.outputDesc(count));
   parts.push("");
   parts.push(S.outputTitle);
+  if (emitProbability) parts.push(S.outputProb);
   parts.push(S.outputBody);
   parts.push("");
   parts.push("---");
   parts.push("");
   parts.push(S.outputTail);
+  if (emitProbability) parts.push(S.outputProbNote);
 
   return parts.join("\n");
 }
+
+// VS 有効時にカードのタイトル直下へ来る確率行 ("確率: 0.07" / "probability: 0.07")。
+// 行頭一致のみ・"prob" を最短キーワードにして本文の偶発一致を避ける。
+const PROBABILITY_LINE_RE =
+  /^(?:確率|probability|prob)\s*[:：]\s*([0-9]*\.?[0-9]+)/i;
 
 export function parseCards(
   text: string,
   count: number,
   lang: "ja" | "en",
+  emitProbability = false,
 ): AiBranchCard[] {
   const segments = text
     .split(/\n---\n|\n---$/)
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const cards: AiBranchCard[] = segments.slice(0, count).map((seg) => {
+  const parsed: AiBranchCard[] = segments.slice(0, count).map((seg) => {
     const lines = seg.split("\n");
     const isHeader = lines[0].startsWith("## ") || lines[0].startsWith("# ");
     const title = isHeader
       ? lines[0].replace(/^#{1,3}\s*/, "").trim()
       : lines[0].trim();
-    const bodyLines = lines.slice(1);
 
-    const bodyText = bodyLines
+    // VS 有効時 (emitProbability) のみ、タイトル直下に来る確率行
+    // "確率: 0.07" / "probability: 0.07" を抽出して本文から除去する。
+    // VS 無効時は LLM に確率行を出させていないため抽出しない (本文が偶然
+    // "確率: …" で始まっても剥がさない = データロス防止)。
+    let probability: number | undefined;
+    let rest = lines.slice(1);
+    if (emitProbability && rest.length > 0) {
+      const m = rest[0].match(PROBABILITY_LINE_RE);
+      if (m) {
+        probability = parseFloat(m[1]);
+        rest = rest.slice(1);
+      }
+    }
+
+    const bodyText = rest
       .join("\n")
       .trim()
       .replace(/^[\s\n]+/, "");
@@ -301,8 +342,19 @@ export function parseCards(
 
     const body = JSON.stringify({ type: "doc", content });
 
-    return { title, body };
+    return { title, body, probability };
   });
+
+  // VS: 全カードに確率が揃っている場合のみ「珍しい(低確率)順」に並べ替える。
+  // 一部だけ確率がある (LLM 出力が不完全) ときは並べ替えず入力順を保つ
+  // ── 未確定カードを末尾へ飛ばさないため。確率が無い従来フォーマットも順序保持。
+  const allHaveProbability =
+    parsed.length > 0 && parsed.every((c) => c.probability !== undefined);
+  const cards: AiBranchCard[] = allHaveProbability
+    ? [...parsed].sort(
+        (a, b) => (a.probability ?? Infinity) - (b.probability ?? Infinity),
+      )
+    : parsed;
 
   // Pad with empty cards if LLM returned fewer than requested
   while (cards.length < count) {
@@ -321,14 +373,25 @@ export async function generateAiBranchCards(
   seeds: AiBranchSeed[] = [],
   project: AiBranchProjectContext | null = null,
   spotlight: AiBranchSeed[] = [],
+  vs: VsOptions | null = null,
 ): Promise<AiBranchCard[]> {
   if (blockIfPolicyOff("chat")) {
     throw new Error("chat policy is off");
   }
 
   const lang = langKey(project);
-  const systemPrompt = buildSystemPrompt(project, spotlight);
-  const userPrompt = buildUserPrompt(prompt, count, seeds, lang);
+  // VS 有効時はカードに確率を添えさせ (パース→珍しい順に並べ替え)。
+  const vsForBranch: VsOptions | null = vs
+    ? { ...vs, emitProbability: true }
+    : null;
+  const systemPrompt = buildSystemPrompt(project, spotlight, vsForBranch);
+  const userPrompt = buildUserPrompt(
+    prompt,
+    count,
+    seeds,
+    lang,
+    vsForBranch != null,
+  );
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -355,5 +418,5 @@ export async function generateAiBranchCards(
     .map((b) => (b as { type: "text"; content: string }).content)
     .join("\n");
 
-  return parseCards(text, count, lang);
+  return parseCards(text, count, lang, vsForBranch != null);
 }

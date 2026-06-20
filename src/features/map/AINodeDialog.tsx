@@ -6,11 +6,25 @@ interface AIBranchDialogProps {
   boardId: string;
   spawnPosition: { x: number; y: number };
   seedNodeTitles: string[];
-  onConfirm: (prompt: string, count: 3 | 5 | 8) => void;
+  onConfirm: (
+    prompt: string,
+    count: 3 | 5 | 8,
+    vsThreshold: number | null,
+  ) => void;
   onCancel: () => void;
 }
 
 const COUNT_OPTIONS = [3, 5, 8] as const;
+
+/**
+ * 意外性 (Verbalized Sampling) ノブ。値=裾サンプリングのしきい値。
+ * 標準=null は VS オフ (従来挙動、既定)。意外/大胆で分布の裾へ寄せる。
+ */
+const NOVELTY_OPTIONS: { key: string; value: number | null }[] = [
+  { key: "noveltyStandard", value: null },
+  { key: "noveltyNovel", value: 0.1 },
+  { key: "noveltyBold", value: 0.05 },
+];
 
 export function AINodeDialog({
   seedNodeTitles,
@@ -20,6 +34,8 @@ export function AINodeDialog({
   const { t } = useTranslation();
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState<3 | 5 | 8>(5);
+  // 既定は標準 (null) = VS オフ。既存挙動を変えずに opt-in させる。
+  const [vsThreshold, setVsThreshold] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -105,7 +121,7 @@ export function AINodeDialog({
             onKeyDown={(e) => {
               if (e.key === "Escape") onCancel();
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && canSubmit) {
-                onConfirm(prompt.trim(), count);
+                onConfirm(prompt.trim(), count, vsThreshold);
               }
             }}
             style={{
@@ -130,7 +146,7 @@ export function AINodeDialog({
             display: "flex",
             alignItems: "center",
             gap: 8,
-            marginBottom: 20,
+            marginBottom: 12,
           }}
         >
           <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>
@@ -158,6 +174,42 @@ export function AINodeDialog({
           ))}
         </div>
 
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 20,
+          }}
+        >
+          <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>
+            {t("map.aiNodeDialog.novelty")}
+          </span>
+          {NOVELTY_OPTIONS.map((opt) => {
+            const active = vsThreshold === opt.value;
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => setVsThreshold(opt.value)}
+                style={{
+                  padding: "3px 12px",
+                  fontSize: 12,
+                  borderRadius: 4,
+                  border: "1px solid",
+                  borderColor: active ? "#534AB7" : "var(--border)",
+                  background: active ? "#534AB7" : "var(--secondary)",
+                  color: active ? "#fff" : "var(--secondary-foreground)",
+                  cursor: "pointer",
+                  fontWeight: active ? 600 : 400,
+                }}
+              >
+                {t(`map.aiNodeDialog.${opt.key}`)}
+              </button>
+            );
+          })}
+        </div>
+
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button
             type="button"
@@ -177,7 +229,9 @@ export function AINodeDialog({
           <button
             type="button"
             disabled={!canSubmit}
-            onClick={() => canSubmit && onConfirm(prompt.trim(), count)}
+            onClick={() =>
+              canSubmit && onConfirm(prompt.trim(), count, vsThreshold)
+            }
             style={{
               padding: "5px 16px",
               fontSize: 13,
