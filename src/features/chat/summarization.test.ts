@@ -42,6 +42,26 @@ describe("summarization helpers", () => {
     });
   });
 
+  it("parseHandoffMetaComment returns an empty object when no meta comment matches", () => {
+    expect(parseHandoffMetaComment("## Goals\nプレーンな要約本文")).toEqual({});
+    // Malformed (missing required fields) also yields {}.
+    expect(parseHandoffMetaComment("<!-- gen=3 -->")).toEqual({});
+  });
+
+  it("buildHandoffMetaComment → parseHandoffMetaComment round-trips, hyphenated ids included", () => {
+    const comment = buildHandoffMetaComment({
+      generation: 7,
+      sourceMsgCount: 12,
+      lastMsgId: "msg-42-x",
+      generatedAt: "2026-01-01T00:00:00Z",
+    });
+    expect(parseHandoffMetaComment(`${comment}\n\n## Goals`)).toEqual({
+      generation: 7,
+      sourceMsgCount: 12,
+      lastMsgId: "msg-42-x",
+    });
+  });
+
   it("getMaxSummaryGeneration returns highest generation", () => {
     const summaries: ChatSummary[] = [
       {
