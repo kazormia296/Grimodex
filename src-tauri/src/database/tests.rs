@@ -3342,3 +3342,55 @@ fn test_migrate_impact_review_categories_widens_legacy_timeline_check() {
         .expect("integrity_check after re-run");
     assert_eq!(integrity_again, "ok");
 }
+
+#[test]
+fn test_language_switch_reroutes_en_index() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "INSERT INTO projects(id, title, language) VALUES ('p', 'P', 'en');
+             INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+               VALUES ('s1', 'p', 'scene', 'Ch1', 'she was studying hard');",
+        )
+        .expect("seed en");
+    }
+    // English now: search routes to _en and stems.
+    assert_eq!(
+        db.search_fts("p", "studies", "scenes", 10).expect("en search").len(),
+        1
+    );
+
+    // Switch to Japanese, then rebuild _en (mirrors the updateProject hook).
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute("UPDATE projects SET language = 'ja' WHERE id = 'p'", [])
+            .expect("switch to ja");
+    }
+    db.rebuild_en_fts().expect("rebuild after switch");
+    {
+        let conn = db.conn.lock().expect("lock");
+        let remaining: i64 = conn
+            .query_row("SELECT count(*) FROM tree_nodes_fts_en", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(remaining, 0, "no en-project rows remain in _en after switch to ja");
+    }
+    // Trigram still has the content, so the literal word is findable as ja.
+    assert_eq!(
+        db.search_fts("p", "studying", "scenes", 10).expect("ja search").len(),
+        1
+    );
+
+    // Switch back to English and rebuild.
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute("UPDATE projects SET language = 'en' WHERE id = 'p'", [])
+            .expect("switch to en");
+    }
+    db.rebuild_en_fts().expect("rebuild back to en");
+    assert_eq!(
+        db.search_fts("p", "studies", "scenes", 10).expect("en search again").len(),
+        1
+    );
+}
