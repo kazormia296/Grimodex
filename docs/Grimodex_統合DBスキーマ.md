@@ -70,6 +70,7 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `codex_relations` | 通常 | Map / Codex | Codex 同士の型付き関係（Map の User edge を昇格した格納先） |
 | `scene_chunks` | 通常 | セマンティック検索 | 本文シーンを分割した埋め込みチャンク（ベクトル総当たり検索用） |
 | `codex_chunks` | 通常（Rust専用） | セマンティック検索 | Codex エントリの埋め込み（1エントリ1ベクトル・hybrid 検索 / impact-review 用） |
+| `chat_message_chunks` | 通常（Rust専用） | セマンティック検索 / Chat History | チャットメッセージのエピソード記憶埋め込み（1メッセージ1ベクトル・過去の対話を recall / hybrid 検索用） |
 | `change_events` | 通常 | 執筆タイムラプス | 変更イベントの append-only ログ（sha256 prev_hash→hash チェーン） |
 | `state_snapshots` | 通常 | 執筆タイムラプス | リプレイ起点アンカー（v1 は未配線で常に空＝latent） |
 | `undo_journal` | 通常（Rust専用） | AI書き込み基盤 | tracked write の before/after ジャーナル（楽観ロック undo 用） |
@@ -247,7 +248,8 @@ chat_sessions (1)                  （新スコープアンカー）
  └──> snippets (?)                 snippet_anchor_id (nullable, ON DELETE SET NULL)
 
 chat_messages (1)
- └──< chat_message_prompts (?)     message_id (PK=FK, ON DELETE CASCADE)
+ ├──< chat_message_prompts (?)     message_id (PK=FK, ON DELETE CASCADE)
+ └──< chat_message_chunks (?)      message_id (PK=FK, 1メッセージ1ベクトル, ON DELETE CASCADE)
 
 project_snapshots (1)
  ├──< project_snapshot_tree_nodes (*)    snapshot_id (ON DELETE CASCADE)
@@ -2166,7 +2168,7 @@ PostEffects パネル・Trash bin・projects テーブル拡張など、実装�
 
 ## セマンティック検索 / RAG ベクトルインデックス（2026-06-18 追記）
 
-本文・Codex のセマンティック検索（RAG）用に、埋め込みベクトルを保持するテーブル群。いずれも ONNX で生成した L2 正規化済み埋め込みを BLOB で保持し、コサイン総当たりで検索する。詳細は [セマンティック検索設計書](./Grimodex_セマンティック検索設計書.md) / [閾値とモデル特性](./Grimodex_セマンティック検索の閾値とモデル特性.md)。Codex 本文の FTS index 化（`codex_fts.content`）は上の [codex_fts](#codex_fts) 節を参照。
+本文・Codex・チャット履歴のセマンティック検索（RAG）用に、埋め込みベクトルを保持するテーブル群。いずれも ONNX で生成した L2 正規化済み埋め込みを BLOB で保持し、コサイン総当たりで検索する。詳細は [セマンティック検索設計書](./Grimodex_セマンティック検索設計書.md) / [閾値とモデル特性](./Grimodex_セマンティック検索の閾値とモデル特性.md)。Codex 本文の FTS index 化（`codex_fts.content`）は上の [codex_fts](#codex_fts) 節を参照。
 
 ### scene_chunks
 
@@ -2215,6 +2217,33 @@ CREATE TABLE IF NOT EXISTS codex_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_codex_chunks_model ON codex_chunks(model_id);
+```
+
+### chat_message_chunks
+
+チャット履歴のエピソード記憶（過去の対話）を scene/codex と同じ意味検索経路で recall するための埋め込み表。チャットメッセージは短いためチャンク分割せず **「1 メッセージ = 1 埋め込み行」**（`PRIMARY KEY = message_id`・`INSERT OR REPLACE`）。`chat_messages` には `project_id` が無いので、検索スコープ（project.db 単位）を効かせるため `project_id` / `session_id` を index 時に**非正規化**して持つ（`chat_sessions` JOIN を読み出し時に省く）。`inserted_to_editor` / `extracted_count` は「実際に効いた発話」を recall で重み付けするための信号（`chat_messages.metadata` から非正規化）で、signal が変わると `content_hash` も変わるよう upsert 側で hash 入力に含め、再 index で列が更新される。**Rust 専用テーブル**（`codex_chunks` 等と同じく Drizzle には定義されない）。hybrid 検索（dense + sparse）は新規 FTS 表を作らず既存の [`chat_messages_fts`](#chat_messages_fts) を再利用する（PR #135 / `c37e6212`, 2026-06-20）。
+
+```sql
+CREATE TABLE IF NOT EXISTS chat_message_chunks (
+  message_id         TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+  session_id         TEXT NOT NULL,           -- index 時に非正規化（読み出しで chat_sessions JOIN を省く）
+  project_id         TEXT NOT NULL,           -- 検索スコープ（project.db 単位）。XPROJ 防止のため非正規化保持
+  role               TEXT NOT NULL,           -- user / assistant 等（recall の順序・表示用）
+  text               TEXT NOT NULL,           -- 埋め込み生成に使ったソース発話
+  inserted_to_editor INTEGER NOT NULL DEFAULT 0, -- 「実際に効いた発話」信号（metadata から非正規化）
+  extracted_count    INTEGER NOT NULL DEFAULT 0, -- 抽出された回数の信号（同上）
+  embedding          BLOB NOT NULL,           -- f32 配列（little-endian）・L2 正規化済み
+  embedding_dim      INTEGER NOT NULL,
+  model_id           TEXT NOT NULL,           -- 再生成判定・索引フィルタ用
+  content_hash       TEXT NOT NULL,           -- 本文 + signal 列から算出。signal 変化で再 index される（stale-weight 回避）
+  chunker_version    TEXT NOT NULL,
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_message_chunks_project ON chat_message_chunks(project_id);
+CREATE INDEX IF NOT EXISTS idx_chat_message_chunks_model   ON chat_message_chunks(model_id);
+CREATE INDEX IF NOT EXISTS idx_chat_message_chunks_session ON chat_message_chunks(session_id);
 ```
 
 ---
@@ -2701,7 +2730,7 @@ CREATE INDEX IF NOT EXISTS idx_ab_comparisons_project_created
 
 ## スキーマ更新履歴（2026-06-20）
 
-「AI 運用ツール群」（PR #124, 2026-06-19）でユーザー保存のプロンプトテンプレートとモデル/プロンプトの A/B 比較履歴が追加された分を設計書へ反映。前回の追従基準日は 2026-06-18。live スキーマ（`migrate.rs`）を正本に Drizzle（`schema.ts`）と突合した。
+「AI 運用ツール群」（PR #124, 2026-06-19）でユーザー保存のプロンプトテンプレートとモデル/プロンプトの A/B 比較履歴が、「チャット履歴 RAG（エピソード記憶）」（PR #135, `c37e6212`, 2026-06-20）で過去の対話を recall するための埋め込み表が追加された分を設計書へ反映。前回の追従基準日は 2026-06-18。live スキーマ（`migrate.rs`）を正本に Drizzle（`schema.ts`）と突合した。
 
 ### 追加テーブル（設計書に未記載だったもの）
 
@@ -2709,5 +2738,6 @@ CREATE INDEX IF NOT EXISTS idx_ab_comparisons_project_created
 |---------|---------|--------|
 | `prompt_templates` | ユーザー保存のプロンプトテンプレート（Prompt Library）。`title` / `content` / `usage_count` を保持し、チャット入力時の再利用を可能にする | 2026-06-19 |
 | `ab_comparisons` | モデル/プロンプトの A/B 比較履歴。`surface` / `prompt` / `model_a` / `model_b` / `prompt_variant_a` / `prompt_variant_b` / `response_a` / `response_b` / `chosen` を保持。`chosen` は採用カラム（`'a'` \| `'b'`）、未採用は NULL | 2026-06-19 |
+| `chat_message_chunks`（Rust専用） | チャット履歴 RAG（エピソード記憶）の埋め込み（1メッセージ1ベクトル）。過去の対話を scene/codex と同じ意味検索経路で recall。`project_id` / `session_id` を非正規化保持し、hybrid 検索は既存 `chat_messages_fts` を再利用（PR #135） | 2026-06-20 |
 
-いずれも `project_id` を持ち、プロジェクト削除時に `ON DELETE CASCADE`。`migrate()` 内の `CREATE TABLE IF NOT EXISTS` で冪等に導入される。Drizzle の `promptTemplates` / `abComparisons`（`src/db/schema.ts`）とミラー。
+`prompt_templates` / `ab_comparisons` は `project_id` を持ち、プロジェクト削除時に `ON DELETE CASCADE`。Drizzle の `promptTemplates` / `abComparisons`（`src/db/schema.ts`）とミラー。`chat_message_chunks` は `codex_chunks` と同じく **Rust 専用**（Drizzle mirror 不要）で、`message_id` を `PRIMARY KEY` とし `chat_messages` 削除時に `ON DELETE CASCADE`。定義の詳細は [セマンティック検索 / RAG ベクトルインデックス](#セマンティック検索--rag-ベクトルインデックス2026-06-18-追記) 節の `chat_message_chunks` を参照。いずれも `migrate()` 内の `CREATE TABLE IF NOT EXISTS` で冪等に導入される。

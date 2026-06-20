@@ -95,6 +95,41 @@ JMTEB（公式モデルカード）。RAG で効くのは Retrieval 列:
 - 将来: 検索目的なら **130m**（310m と retrieval 同値・軽い）。precision 不満時に reranker（v3 は重い）。
   en 不満時は bge-base / multilingual-e5（**閾値は再キャリブレーション必須**）。
 
+## チャット recall（エピソード記憶）の閾値 2026-06-20 較正（PR #138 / #141）
+
+過去の対話を「エピソード記憶」としてシーンと同じ意味検索経路で recall する系統
+（`src/features/chat/chatRecall.ts`）。**scene recall とは別系統の閾値**を持つ。土台は
+scene の `recallParamsForLang` を流用し、較正で判明したチャット固有の差分だけを上書きする
+（`chatRecallParamsForLang`, `chatRecall.ts:127`）。
+
+| 系統 | ja（ruri） gate/floor | en（bge-small） gate/floor |
+|---|---|---|
+| シーン recall | 0.85 / 0.80 | 0.51 |
+| チャット recall | 0.85 / 0.80（**据え置き**） | **0.66 / 0.60**（scene 0.51 を上書き） |
+
+- **en だけ引き上げ（gate 0.66 / floor 0.60, `chatRecall.ts:119`）**。bge-small-en は短い無関連
+  クエリでも raw cosine が 0.5〜0.64 に座るため、scene の 0.51 ゲートでは弾けず、実埋め込み較正で
+  fpRate≈0.8 だった。0.66 へ上げると無関連を弾き **fpRate=0 / R@1 0.71 / recall 0.64**
+  （`chatRecall.ts:111` のコメント参照）。
+- **ja（ruri）は据え置き**。raw-gate 化（下記）だけで scene 既定 0.85/0.80 が fpRate=0 になるため
+  上書きしない（`chatRecall.ts:116`）。
+- **ゲート方式は RAW cosine**（weighted-gate ではない）。gate/floor/選別はすべて素の cosine で行い、
+  scene recall の選別関数（precision 規律）をそのまま再利用する（`chatRecall.ts:148`,
+  `chatRecall.ts:169`）。重み付きスコアを gate にかけると、信号付き発話（cos×weight）が無関連
+  クエリでゲートを突破して precision を壊す — 実埋め込み較正で確認（ja 無関連クエリ raw≈0.78 だが
+  weighted≈0.98 で gate 0.85 を突破, `chatRecall.ts:172`）。
+- **重み係数（順位付け専用）**: `INSERTED_BOOST`(α)=0.15 / `EXTRACTED_BOOST`(β)=0.10 /
+  `EXTRACTED_CAP`=3 / `ASSISTANT_PLAIN_BASE`=0.8（`chatRecall.ts:50`）。チャットは「実際に効いた発話
+  （エディタ挿入・Codex/Snippet 抽出）」を加点し、効果信号を持たない素の assistant 散文（自己参照
+  ハルシネーション増幅源）を減点する。ただし **RAW cosine ゲート下では α/β は precision に対して
+  inert（選別後の並べ替えにのみ効く）**。
+- **較正**: 実埋め込み grid sweep（本番関数 `selectChatRecallMessages` をそのまま叩く）で
+  fpRate=0 / R@1≥0.6 / recall≥0.4 を gate。さらに 3 フロンティアモデル（gpt-4o-mini / gpt-4o /
+  Opus 4.8）クロス検証で本番構成 fpRate=0・変更不要を確定（PR #141）。値は小コーパス由来の暫定。
+  **較正ハーネスの詳細設計は `docs/Grimodex_チャット履歴RAG_較正ハーネス.md` を参照**（重複させない）。
+- **順序**: Codex（always）> シーン recall > チャット recall（contextBuilder 側で担保）。古い対話が
+  正典を上書きできない。チャット recall は recall-only で、canon 化（恒久的事実への固定）はしない。
+
 ## ハイブリッド検索（dense + sparse/BM25, RRF）2026-06-17 実装
 
 Q5 改善策 #4。密ベクトル（256/384 次元）は語彙完全一致を過小評価しがちで、固有名詞
@@ -145,6 +180,9 @@ Q5 改善策 #4。密ベクトル（256/384 次元）は語彙完全一致を過
 ## 関連
 
 - 実装: `src/features/chat/semanticRecall.ts`（閾値・recall パラメータ・`selectHybridRecallChunks` RRF 融合）
+- チャット recall（エピソード記憶）: `src/features/chat/chatRecall.ts`（チャット固有 gate/floor 上書き・
+  RAW cosine ゲート・重み付け順位付け）。較正ハーネス `src/features/chat/calibration/chatRecallCalibration.eval.test.ts`、
+  設計書 `docs/Grimodex_チャット履歴RAG_較正ハーネス.md`
 - 関連シーンパネル: `src/features/related-scenes/selectRelatedScenes.ts`（RRF 融合＋dense 勝者アンカー）、
   `seedTerms.ts`（固有名詞 seed 拡張）、`liveEval/`（実 ONNX 埋め込み eval ハーネス）。
   設計書 `docs/Grimodex_関連する過去シーンパネル設計書.md`

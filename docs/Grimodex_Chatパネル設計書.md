@@ -542,6 +542,35 @@ LLM APIのシステムプロンプトに以下の5レイヤーを階層的に注
     sparse が空／失敗なら dense 単独の選別へグレースフルに退避する（= 従来挙動）
   - **設定**: `ai.semanticRecall`（既定 ON、これが前提）／`ai.hybridRecall`（既定 ON）で個別に切替
 
+- **チャット履歴RAG（エピソード記憶 / chat episodic recall）**: 上記の semantic recall が
+  **過去シーンの抜粋**を引くのに対し、こちらは**過去の対話（チャットメッセージ）**を同じ意味検索経路で
+  recall して注入する**別系統**の層。正本は `src/features/chat/chatRecall.ts`、配線は `chatStore.ts`。
+  詳細設計（インデックス・重み付け・較正）は別文書 [チャット履歴RAG（エピソード記憶）](Grimodex_チャット履歴RAG.md) を参照
+  - **狙い**: Codex（事実 = 硬い層）とシーン recall が「いま何が真実か（状態）」を押さえるのに対し、
+    チャット履歴RAGは「いつ何を話し・決め・捨てたか（過程 = エピソード）」を補う。recall-only で
+    **自動で本文や Codex に書き込むことは一切しない**
+  - **取得経路**: `fetchChatRecall`（`src/features/chat/chatRecall.ts:280`）が dense（チャット用埋め込み）と
+    sparse（既存 `chat_messages_fts` を再利用）を並列取得し、scene recall の選別関数を流用して選別する。
+    **進行中の現セッションは `excludeSessionIds:[activeSessionId]` で除外**し、モデルが「いま話している内容」を
+    記憶として引き戻すのを防ぐ（`chatRecall.ts:19-37`）。feature 無効 / モデル不在 / 未 index は空配列フォールバック
+  - **注入順序（優先度 Codex > sceneRAG > chatRAG）**: scene semantic recall（Layer 4）の**後ろ・Layer 5 の前**に
+    EPISODIC 層として注入する。古い対話が Codex（正典）やシーン本文を上書きできない順序を保証する。
+    semantic recall と同じく毎ターン変わるため `cacheSegments`（prefix cache 安定領域）には**入れない**
+  - **gate は RAW cosine**: 選別は重み付け前の生 cosine で行う（precision 規律を scene recall と同一に保つ）。
+    en は較正で gate 0.51→0.66 に引き上げ（`CHAT_RECALL_GATE_EN`）。重み付け（効いた発話の加点・素 assistant の減点）は
+    **注入確定後の並べ替えにのみ**使い、ゲート突破による無関連混入を防ぐ。較正の詳細は別文書参照
+  - **「チャット言及による自動ピン留め」（`source:'chat_mention'`、コンテキストバー §参照）とは別機能**。
+    そちらは「いま入力欄に書いた Codex 名」をピンに固定する仕組みで、過去対話の意味検索 recall とは無関係
+
+- **「Codex に昇格しますか？」昇格バナー（柔→硬の橋渡し）**: エピソード recall が**同じ過去発言を閾値 3 回**
+  （`CHAT_RECALL_PROMOTE_THRESHOLD`）recall したら、それは恒久的な事実（Codex = 硬い層）へ昇格する価値があるサイン。
+  composer 直上に控えめなバナーを出し、既存の抽出 UI（`CodexExtractionDialog`）を促す。正本は
+  `src/features/chat/chatRecallPromote.ts` / `src/features/chat/components/ChatRecallPromoteBanner.tsx`、配線は `chatStore.ts`
+  - **recall-only**: バナーは抽出 UI を促すトリガーだけを担い、**自動で Codex に書き込むことはしない**。canon 化は従来どおり人が確認する
+  - per-session・in-memory（リロード / セッション切替でリセット）、**実送信ターンのみカウント**（1 ターンで同じ発言を二重カウントしない）、
+    dismiss（「後で」）された発言は二度と提案しない（`trackRecallForPromote` / `dismissRecallPromote`）
+  - 詳細は別文書 [チャット履歴RAG（エピソード記憶）](Grimodex_チャット履歴RAG.md) §「Codex に昇格しますか？」参照
+
 **Layer 5: Conversation history**
 
 - 現在のセッションのメッセージ履歴
