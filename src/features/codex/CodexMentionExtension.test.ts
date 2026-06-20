@@ -47,6 +47,7 @@ describe("createCodexMentionExtension — suggestion provider", () => {
     const items = await ext.options.suggestion.items!({
       query: "",
       editor: null as never,
+      signal: undefined as never,
     });
     expect(items.map((e: { name: string }) => e.name)).toEqual([
       "ドロシー",
@@ -56,6 +57,7 @@ describe("createCodexMentionExtension — suggestion provider", () => {
     const filtered = await ext.options.suggestion.items!({
       query: "ドロ",
       editor: null as never,
+      signal: undefined as never,
     });
     expect(filtered.map((e: { name: string }) => e.name)).toEqual(["ドロシー"]);
   });
@@ -65,6 +67,7 @@ describe("createCodexMentionExtension — suggestion provider", () => {
     const items = await ext.options.suggestion.items!({
       query: "",
       editor: null as never,
+      signal: undefined as never,
     });
     expect(items.every((i: { kind: string }) => i.kind === "codex")).toBe(true);
   });
@@ -88,6 +91,7 @@ describe("createCodexMentionExtension — suggestion provider", () => {
     const items = await ext.options.suggestion.items!({
       query: "",
       editor: null as never,
+      signal: undefined as never,
     });
     // codex (2) + scene (2) で 4 件、scene は末尾
     expect(items.map((i: { name: string }) => i.name)).toEqual([
@@ -107,6 +111,7 @@ describe("createCodexMentionExtension — suggestion provider", () => {
     const filtered = await ext.options.suggestion.items!({
       query: "ドロ",
       editor: null as never,
+      signal: undefined as never,
     });
     expect(filtered.map((i: { name: string }) => i.name)).toEqual([
       "ドロシー",
