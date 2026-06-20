@@ -1725,8 +1725,10 @@
       "allDismissed": "{{count}} proper-noun candidate(s) dismissed",
       "show": "Show",
       "judge": "Evaluate with AI",
+      "judging": "Evaluating…",
       "judgeFailed": "AI evaluation failed",
-      "acceptAlias": "Add as an alias of \"{{name}}\"",
+      "acceptAlias": "Register as an alias of \"{{name}}\"",
+      "acceptNew": "Create as a new entry instead",
       "aliasHint": "alias of \"{{name}}\"?",
       "type": {
         "character": "Character",

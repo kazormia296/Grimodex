@@ -1725,8 +1725,10 @@
       "allDismissed": "固有名詞候補 {{count}} 件を却下中",
       "show": "再表示",
       "judge": "AI で評価",
+      "judging": "評価中…",
       "judgeFailed": "AI 評価に失敗しました",
-      "acceptAlias": "「{{name}}」の別名として追加",
+      "acceptAlias": "「{{name}}」の別名として登録",
+      "acceptNew": "別名にせず新規エントリとして作成",
       "aliasHint": "「{{name}}」の別名?",
       "type": {
         "character": "人物",
