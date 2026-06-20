@@ -1292,6 +1292,38 @@ fn test_en_fts_triggers_route_and_stem() {
 }
 
 #[test]
+fn test_rebuild_en_fts_repopulates_after_wipe() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "INSERT INTO projects(id, title, language) VALUES ('p_en', 'En', 'en');
+             INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+               VALUES ('s1', 'p_en', 'scene', 'Ch1', 'they kept running home');
+             DELETE FROM tree_nodes_fts_en;",
+        )
+        .expect("seed + wipe _en");
+        let after_wipe: i64 = conn
+            .query_row("SELECT count(*) FROM tree_nodes_fts_en", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(after_wipe, 0, "wipe emptied _en");
+    }
+
+    db.rebuild_en_fts().expect("rebuild");
+
+    let conn = db.conn.lock().expect("lock");
+    let hits: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM tree_nodes_fts_en WHERE tree_nodes_fts_en MATCH ?1",
+            ["\"runs\""],
+            |r| r.get(0),
+        )
+        .expect("match");
+    assert_eq!(hits, 1, "rebuild re-indexed the en scene; porter stems runs==running");
+}
+
+#[test]
 fn test_nullify_codex_source_on_message_delete() {
     let db = test_db();
 

@@ -250,6 +250,14 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// Rebuild all `_en` FTS tables from English-project content. Used on a
+    /// project language change and as a manual repair.
+    pub fn rebuild_en_fts(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        rebuild_en_fts_sql(&conn)?;
+        Ok(())
+    }
 }
 
 /// Convert a raw user search string into a safe FTS5 MATCH expression.
