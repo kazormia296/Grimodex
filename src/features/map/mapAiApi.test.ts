@@ -89,6 +89,89 @@ describe("generateAiBranchCards — LLM レスポンスのパース", () => {
   });
 });
 
+describe("generateAiBranchCards — 空応答ガード (silent-pad 廃止)", () => {
+  it("text ブロックが 0 件なら AiBranchEmptyResponseError を投げる(pad で隠さない)", async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      blocks: [],
+      stopReason: "max_tokens",
+    });
+
+    const { generateAiBranchCards, AiBranchEmptyResponseError } =
+      await import("./mapAiApi");
+    await expect(generateAiBranchCards("テスト", 3)).rejects.toBeInstanceOf(
+      AiBranchEmptyResponseError,
+    );
+  });
+
+  it("thinking ブロックだけ(回答 text 無し)でも空応答として投げる", async () => {
+    // 推論モデルは content 空 + reasoning(thinking)のみを返しうる。reasoning は
+    // ユーザー向けの回答ではないため、text 0 件は失敗として扱う。
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      blocks: [{ type: "thinking", content: "考え中…" }],
+      stopReason: "max_tokens",
+    });
+
+    const { generateAiBranchCards, AiBranchEmptyResponseError } =
+      await import("./mapAiApi");
+    await expect(generateAiBranchCards("テスト", 3)).rejects.toBeInstanceOf(
+      AiBranchEmptyResponseError,
+    );
+  });
+
+  it("実カードが 1 枚でもあれば従来どおり partial pad する(throw しない)", async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "## アイデア1\n本文1" }],
+      stopReason: "end_turn",
+    });
+
+    const { generateAiBranchCards } = await import("./mapAiApi");
+    const cards = await generateAiBranchCards("テスト", 3);
+    expect(cards).toHaveLength(3);
+    expect(cards[0].title).toBe("アイデア1");
+    expect(cards[1].title).toBe("アイデア 2");
+  });
+
+  it("不完全セグメント(タイトルのみ・本文無し)が混じっても throw せず pad で補完する", async () => {
+    // 境界: 1 枚でも実セグメントがあれば throw 経路には入らず、従来どおり pad する。
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "## T1\n本文1\n\n---\n\n## T2" }],
+      stopReason: "end_turn",
+    });
+
+    const { generateAiBranchCards } = await import("./mapAiApi");
+    const cards = await generateAiBranchCards("テスト", 3);
+    expect(cards).toHaveLength(3);
+    expect(cards[0].title).toBe("T1");
+    expect(cards[1].title).toBe("T2"); // 本文無しでも実カード
+    expect(cards[2].title).toBe("アイデア 3"); // pad
+  });
+});
+
+describe("parseCards — 空応答 pad が 0.400 アーティファクトを生む(根本原因の固定)", () => {
+  it('空テキストの pad("アイデア N")の meanPairwiseDistinctness は ≈0.400', async () => {
+    const { parseCards } = await import("./mapAiApi");
+    const { meanPairwiseDistinctness } = await import("@/lib/textDiversity");
+
+    const cards = parseCards("", 5, "ja", true);
+    expect(cards).toHaveLength(5);
+    expect(cards.every((c) => /^アイデア \d+$/.test(c.title))).toBe(true);
+
+    // VS ライブ検証が観測した lexOff=lexOn=0.400/全 tie は、推論モデルの空応答を
+    // parseCards が "アイデア 1..5" で pad した結果の文字 bigram 相違度そのもの
+    // (モデル出力でも VS の効果でもない)。両 arm が同一 pad 集合になるため tie。
+    const texts = cards.map((c) => {
+      const doc = JSON.parse(c.body) as {
+        content?: Array<{ content?: Array<{ text?: string }> }>;
+      };
+      const body = (doc.content ?? [])
+        .flatMap((n) => (n.content ?? []).map((t) => t.text ?? ""))
+        .join(" ");
+      return `${c.title} ${body}`;
+    });
+    expect(meanPairwiseDistinctness(texts)).toBeCloseTo(0.4, 6);
+  });
+});
+
 describe("generateAiBranchCards — AiPolicy gate (chat)", () => {
   it("chat policy が off なら throw し、send_chat_message を呼ばない", async () => {
     mockBlockIfPolicyOff.mockReturnValueOnce(true);

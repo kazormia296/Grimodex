@@ -43,6 +43,15 @@ export function liveApiKey(): string | undefined {
 /** 既定モデル（安価で tool calling 対応）。`OPENROUTER_MODEL` で上書き可。 */
 export const DEFAULT_LIVE_MODEL = "openai/gpt-4o-mini";
 
+/**
+ * 既定の出力トークン上限。推論モデル(gpt-5 / o-series 等)は hidden reasoning も
+ * この上限に課金されるため、小さすぎると reasoning だけで使い切って `content` が
+ * 空(finish_reason:length)になる。旧既定 1024 では gpt-5 が空応答に退化し、
+ * 下流の parseCards が "アイデア N" プレースホルダで埋めて偽の計測値を出していた。
+ * reasoning + 回答に十分な余裕を持たせる(本番 Rust の OpenRouter reasoning 予算と整合)。
+ */
+export const DEFAULT_LIVE_MAX_TOKENS = 8192;
+
 /** 使用モデルを解決（env `OPENROUTER_MODEL` 優先）。 */
 export function liveModel(): string {
   return process.env.OPENROUTER_MODEL ?? DEFAULT_LIVE_MODEL;
@@ -190,7 +199,7 @@ export function createOpenRouterSendToLLM(
           ? { tools: toOpenAITools(tools), tool_choice: toolChoice }
           : {}),
         temperature: opts.temperature ?? 0,
-        max_tokens: opts.maxTokens ?? 1024,
+        max_tokens: opts.maxTokens ?? DEFAULT_LIVE_MAX_TOKENS,
       }),
     });
     if (!res.ok) {
@@ -714,6 +723,16 @@ export async function runLiveSingleShot(
     .filter((b) => b.type === "text")
     .map((b) => (b as { type: "text"; content: string }).content)
     .join("\n");
+  // 空応答を黙って "" で返すと、下流(parseCards 等)が偽の結果を作ってしまう
+  // (VS 検証が lexOff=lexOn=0.400/tie に退化した実例)。ライブ検証では明示的に
+  // 失敗させる。推論モデルが max_tokens を使い切った場合はヒントを添える。
+  if (!text.trim()) {
+    const hint =
+      res.stopReason === "max_tokens"
+        ? " — likely a reasoning model exhausting max_tokens on hidden reasoning; raise send.maxTokens"
+        : "";
+    throw new Error(`runLiveSingleShot: model returned empty text${hint}.`);
+  }
   return {
     text,
     tokensIn: res.inputTokens ?? null,

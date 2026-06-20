@@ -4518,6 +4518,8 @@
     "toast": {
       "removeFromBoardFailed": "ボードからの削除に失敗しました",
       "aiBranchBulkDeleteFailed": "AI Branch の一括削除に失敗しました",
+      "aiBranchGenerateFailed": "アイデアの生成に失敗しました",
+      "aiBranchEmptyResponse": "AI が空の応答を返しました。推論モデルの場合、出力トークン上限に達した可能性があります。別のモデルでお試しください。",
       "stickiesAdopted": "{{count}} 枚の Sticky を採用しました",
       "edgeDeleteFailed": "エッジ削除に失敗しました",
       "frameDeleteFailed": "Frame 削除に失敗しました",

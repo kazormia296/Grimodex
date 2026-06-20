@@ -4525,6 +4525,8 @@
     "toast": {
       "removeFromBoardFailed": "Failed to remove from board",
       "aiBranchBulkDeleteFailed": "Failed to delete AI Branch and derived Stickies",
+      "aiBranchGenerateFailed": "Failed to generate ideas",
+      "aiBranchEmptyResponse": "The AI returned an empty response. If you are using a reasoning model, it may have hit its output token limit. Try a different model.",
       "stickiesAdopted": "Adopted {{count}} Stickies",
       "edgeDeleteFailed": "Failed to delete edge",
       "frameDeleteFailed": "Failed to delete frame",
