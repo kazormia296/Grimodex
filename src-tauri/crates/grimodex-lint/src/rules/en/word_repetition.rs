@@ -89,7 +89,8 @@ impl LintRule for WordRepetitionRule {
                 let lower = m.as_str().to_ascii_lowercase();
                 let is_content = lower.chars().count() >= min_len && !stop.contains(lower.as_str());
                 if is_content {
-                    if let Some(&prev) = last_seen.get(&lower) {
+                    let key = crate::stem::stem_en(&lower);
+                    if let Some(&prev) = last_seen.get(&key) {
                         if word_index - prev <= distance {
                             let start =
                                 block.str_offset_start + utf8_to_utf16(&block.text, m.start());
@@ -107,7 +108,7 @@ impl LintRule for WordRepetitionRule {
                             });
                         }
                     }
-                    last_seen.insert(lower, word_index);
+                    last_seen.insert(key, word_index);
                 }
             }
         }
@@ -153,6 +154,21 @@ mod tests {
     fn flags_nearby_repeat() {
         let ds = run("The shadow moved across the shadow of the wall.");
         assert_eq!(ds.len(), 1);
+    }
+
+    #[test]
+    fn flags_inflected_repeat_via_stem() {
+        // "studies" and "study" share a stem; surface-form matching would miss it.
+        let ds = run("She studies the map; a careful study of the realm.");
+        assert_eq!(ds.len(), 1);
+    }
+
+    #[test]
+    fn distinct_lemmas_do_not_collapse() {
+        // Guards the stemmed key against over-folding: "shadow" and "shatter"
+        // are different lemmas (distinct stems), so neither is a repeat.
+        let ds = run("The shadow fell as the glass began to shatter.");
+        assert!(ds.is_empty());
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub mod offset;
 pub mod rule;
 pub mod rules;
 pub mod textscan;
+pub mod stem;
 
 pub use dialogue::{analyze_dialogue, DialogueAnalysis, DialogueScope};
 pub use engine::{lint, LintResponse, MAX_INPUT_BYTES};

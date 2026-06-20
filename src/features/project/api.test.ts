@@ -1,8 +1,24 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { eq, getTableName } from "drizzle-orm";
 import { projects } from "@/db/schema";
 import * as schema from "@/db/schema";
+
+const invokeMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/tauri", () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+const returningMock = vi.fn().mockResolvedValue([{ id: "p1", language: "en" }]);
+vi.mock("@/db/client", () => ({
+  db: {
+    update: () => ({
+      set: () => ({ where: () => ({ returning: returningMock }) }),
+    }),
+  },
+}));
+
+import { updateProject } from "./api";
 
 // In-memory store simulating SQLite via the proxy interface
 function createTestDb() {
@@ -114,5 +130,19 @@ describe("projects schema", () => {
     expect(executedQueries.length).toBe(1);
     expect(executedQueries[0].sql).toContain("delete");
     expect(executedQueries[0].sql).toContain("projects");
+  });
+});
+
+describe("updateProject", () => {
+  beforeEach(() => invokeMock.mockClear());
+
+  it("rebuilds _en FTS when language is in the patch", async () => {
+    await updateProject("p1", { language: "en" });
+    expect(invokeMock).toHaveBeenCalledWith("fts_rebuild_en");
+  });
+
+  it("does not rebuild _en FTS when language is absent", async () => {
+    await updateProject("p1", { title: "New Title" });
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 });

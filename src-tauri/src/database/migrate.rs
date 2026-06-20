@@ -1549,6 +1549,8 @@ impl Database {
         // CREATE above; idempotent once the `content` column is present.
         Self::migrate_codex_fts_add_content(&conn)?;
 
+        Self::ensure_en_fts(&conn)?;
+
         // Codex-scoped chat sessions: anchor to a codex entry (node_id stays NULL).
         Self::add_column_if_missing(
             &conn,
@@ -1670,6 +1672,154 @@ impl Database {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
 
+        Ok(())
+    }
+
+    /// Create the non-external `_en` FTS tables (porter unicode61) and their
+    /// language-guarded sync triggers, then backfill English content exactly
+    /// once. Existing trigram tables/triggers are left untouched (English rows
+    /// are also indexed there but never queried for English projects).
+    pub(super) fn ensure_en_fts(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS fts_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+             CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts_en USING fts5(
+                 name, aliases, summary, tags_cache, content,
+                 tokenize='porter unicode61'
+             );
+             CREATE VIRTUAL TABLE IF NOT EXISTS snippets_fts_en USING fts5(
+                 title, content, tags_cache,
+                 tokenize='porter unicode61'
+             );
+             CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts_en USING fts5(
+                 content,
+                 tokenize='porter unicode61'
+             );
+             CREATE VIRTUAL TABLE IF NOT EXISTS tree_nodes_fts_en USING fts5(
+                 title, content,
+                 tokenize='porter unicode61'
+             );
+             CREATE VIRTUAL TABLE IF NOT EXISTS post_effect_annotations_fts_en USING fts5(
+                 content,
+                 tokenize='porter unicode61'
+             );
+
+             -- codex_entries (direct project_id)
+             CREATE TRIGGER IF NOT EXISTS codex_fts_en_ai AFTER INSERT ON codex_entries
+               WHEN (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
+             BEGIN
+                 INSERT INTO codex_fts_en(rowid, name, aliases, summary, tags_cache, content)
+                 VALUES (new.rowid, COALESCE(new.name,''), COALESCE(new.aliases,''), COALESCE(new.summary,''), COALESCE(new.tags_cache,''), COALESCE(new.content,''));
+             END;
+             CREATE TRIGGER IF NOT EXISTS codex_fts_en_ad AFTER DELETE ON codex_entries
+               WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
+             BEGIN
+                 DELETE FROM codex_fts_en WHERE rowid = old.rowid;
+             END;
+             CREATE TRIGGER IF NOT EXISTS codex_fts_en_au AFTER UPDATE ON codex_entries
+               WHEN (old.name IS NOT new.name OR old.aliases IS NOT new.aliases OR old.summary IS NOT new.summary OR old.tags_cache IS NOT new.tags_cache OR old.content IS NOT new.content)
+                AND (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
+             BEGIN
+                 DELETE FROM codex_fts_en WHERE rowid = old.rowid;
+                 INSERT INTO codex_fts_en(rowid, name, aliases, summary, tags_cache, content)
+                 VALUES (new.rowid, COALESCE(new.name,''), COALESCE(new.aliases,''), COALESCE(new.summary,''), COALESCE(new.tags_cache,''), COALESCE(new.content,''));
+             END;
+
+             -- snippets (direct project_id)
+             CREATE TRIGGER IF NOT EXISTS snippets_fts_en_ai AFTER INSERT ON snippets
+               WHEN (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
+             BEGIN
+                 INSERT INTO snippets_fts_en(rowid, title, content, tags_cache)
+                 VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,''));
+             END;
+             CREATE TRIGGER IF NOT EXISTS snippets_fts_en_ad AFTER DELETE ON snippets
+               WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
+             BEGIN
+                 DELETE FROM snippets_fts_en WHERE rowid = old.rowid;
+             END;
+             CREATE TRIGGER IF NOT EXISTS snippets_fts_en_au AFTER UPDATE ON snippets
+               WHEN (old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags_cache IS NOT new.tags_cache)
+                AND (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
+             BEGIN
+                 DELETE FROM snippets_fts_en WHERE rowid = old.rowid;
+                 INSERT INTO snippets_fts_en(rowid, title, content, tags_cache)
+                 VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,''));
+             END;
+
+             -- chat_messages (project_id via chat_sessions)
+             CREATE TRIGGER IF NOT EXISTS chat_messages_fts_en_ai AFTER INSERT ON chat_messages
+               WHEN (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = new.session_id)) LIKE 'en%'
+             BEGIN
+                 INSERT INTO chat_messages_fts_en(rowid, content) VALUES (new.rowid, new.content);
+             END;
+             CREATE TRIGGER IF NOT EXISTS chat_messages_fts_en_ad AFTER DELETE ON chat_messages
+               WHEN (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = old.session_id)) LIKE 'en%'
+             BEGIN
+                 DELETE FROM chat_messages_fts_en WHERE rowid = old.rowid;
+             END;
+             CREATE TRIGGER IF NOT EXISTS chat_messages_fts_en_au AFTER UPDATE ON chat_messages
+               WHEN (old.content IS NOT new.content)
+                AND (SELECT language FROM projects WHERE id = (SELECT project_id FROM chat_sessions WHERE id = new.session_id)) LIKE 'en%'
+             BEGIN
+                 DELETE FROM chat_messages_fts_en WHERE rowid = old.rowid;
+                 INSERT INTO chat_messages_fts_en(rowid, content) VALUES (new.rowid, new.content);
+             END;
+
+             -- tree_nodes (direct project_id)
+             CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_en_ai AFTER INSERT ON tree_nodes
+               WHEN (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
+             BEGIN
+                 INSERT INTO tree_nodes_fts_en(rowid, title, content)
+                 VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.content,''));
+             END;
+             CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_en_ad AFTER DELETE ON tree_nodes
+               WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
+             BEGIN
+                 DELETE FROM tree_nodes_fts_en WHERE rowid = old.rowid;
+             END;
+             CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_en_au AFTER UPDATE ON tree_nodes
+               WHEN (old.title IS NOT new.title OR old.content IS NOT new.content)
+                AND (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
+             BEGIN
+                 DELETE FROM tree_nodes_fts_en WHERE rowid = old.rowid;
+                 INSERT INTO tree_nodes_fts_en(rowid, title, content)
+                 VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.content,''));
+             END;
+
+             -- post_effect_annotations (direct project_id)
+             CREATE TRIGGER IF NOT EXISTS post_effect_annotations_fts_en_ai AFTER INSERT ON post_effect_annotations
+               WHEN (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
+             BEGIN
+                 INSERT INTO post_effect_annotations_fts_en(rowid, content) VALUES (new.rowid, new.content);
+             END;
+             CREATE TRIGGER IF NOT EXISTS post_effect_annotations_fts_en_ad AFTER DELETE ON post_effect_annotations
+               WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
+             BEGIN
+                 DELETE FROM post_effect_annotations_fts_en WHERE rowid = old.rowid;
+             END;
+             CREATE TRIGGER IF NOT EXISTS post_effect_annotations_fts_en_au AFTER UPDATE ON post_effect_annotations
+               WHEN (old.content IS NOT new.content)
+                AND (SELECT language FROM projects WHERE id = new.project_id) LIKE 'en%'
+             BEGIN
+                 DELETE FROM post_effect_annotations_fts_en WHERE rowid = old.rowid;
+                 INSERT INTO post_effect_annotations_fts_en(rowid, content) VALUES (new.rowid, new.content);
+             END;",
+        )?;
+
+        // One-time backfill of pre-existing English content (flagged so it runs
+        // exactly once, independent of content shape).
+        let done: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM fts_meta WHERE key = 'en_backfilled')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !done {
+            super::fts::rebuild_en_fts_sql(conn)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO fts_meta(key, value) VALUES ('en_backfilled', '1')",
+                [],
+            )?;
+        }
         Ok(())
     }
 

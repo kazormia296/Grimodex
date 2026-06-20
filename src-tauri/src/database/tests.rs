@@ -1096,6 +1096,93 @@ fn test_search_fts_codex_like_matches_content() {
 }
 
 #[test]
+fn test_search_fts_en_project_stems_query() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "INSERT INTO projects(id, title, language) VALUES ('p_en', 'En', 'en');
+             INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+               VALUES ('s1', 'p_en', 'scene', 'Ch1', 'she was studying hard');",
+        )
+        .expect("seed");
+    }
+    // "studies" (a different surface form) must find the "studying" scene.
+    let results = db
+        .search_fts("p_en", "studies", "scenes", 10)
+        .expect("search");
+    assert_eq!(
+        results.len(),
+        1,
+        "porter-stemmed query hits the inflected body"
+    );
+    assert_eq!(results[0]["id"], serde_json::json!("s1"));
+}
+
+#[test]
+#[ignore = "measurement: run with --ignored to print trigram vs _en recall"]
+fn measure_en_fts_recall_trigram_vs_porter() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    // A handful of scenes with inflected vocabulary, plus an en and a ja project.
+    let scenes: &[(&str, &str)] = &[
+        ("s1", "the soldiers were studying old maps by candlelight"),
+        ("s2", "she studies the ledger and decides to leave"),
+        ("s3", "horses galloped while the riders shouted"),
+        ("s4", "he noticed the broken lock and the cold draft"),
+        ("s5", "they kept running through the burning streets"),
+    ];
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute(
+            "INSERT INTO projects(id, title, language) VALUES ('p_en', 'En', 'en')",
+            [],
+        )
+        .expect("en project");
+        for (id, body) in scenes {
+            conn.execute(
+                "INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+                 VALUES (?1, 'p_en', 'scene', 'S', ?2)",
+                rusqlite::params![id, body],
+            )
+            .expect("scene");
+        }
+    }
+    // Query (stemmed/base form) -> the scene id it should retrieve.
+    let queries: &[(&str, &str)] = &[
+        ("study", "s1"),  // study -> studying
+        ("decide", "s2"), // decide -> decides
+        ("gallop", "s3"), // gallop -> galloped
+        ("notice", "s4"), // notice -> noticed
+        ("run", "s5"),    // run -> running (len 3: see note below)
+    ];
+    let mut en_hits = 0;
+    for (q, want) in queries {
+        let found = db
+            .search_fts("p_en", q, "scenes", 10)
+            .expect("search")
+            .iter()
+            .any(|r| r["id"] == serde_json::json!(*want));
+        if found {
+            en_hits += 1;
+        }
+    }
+    // Note: "run" is 3 codepoints and survives the sanitizer; 1-2 char queries
+    // are dropped by to_fts_match for both tokenizers (documented limitation).
+    println!(
+        "[eval] _en (porter unicode61) recall: {}/{} inflected queries",
+        en_hits,
+        queries.len()
+    );
+    // Sanity floor: stemming should retrieve clearly inflected matches.
+    assert!(
+        en_hits >= 4,
+        "expected porter stemming to recall >=4/5 inflected queries"
+    );
+}
+
+#[test]
 fn test_fts5_snippets_search() {
     let db = test_db();
 
@@ -1260,6 +1347,73 @@ fn test_fts5_sync_on_delete() {
         )
         .expect("fts after delete");
     assert_eq!(rows.len(), 0);
+}
+
+#[test]
+fn test_en_fts_triggers_route_and_stem() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    db.migrate().expect("re-migrate is idempotent");
+
+    let conn = db.conn.lock().expect("lock");
+    conn.execute_batch(
+        "INSERT INTO projects(id, title, language) VALUES
+           ('p_en', 'En Project', 'en'),
+           ('p_ja', 'Ja Project', 'ja');
+         INSERT INTO tree_nodes(id, project_id, node_type, title, content) VALUES
+           ('s_en', 'p_en', 'scene', 'Ch1', 'she was studying hard'),
+           ('s_ja', 'p_ja', 'scene', 'Sho1', 'plain japanese body');",
+    )
+    .expect("seed rows");
+
+    // Incremental trigger indexed ONLY the English scene into _en, and porter
+    // stems the query "studies" to match the indexed "studying".
+    let hits: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM tree_nodes_fts_en WHERE tree_nodes_fts_en MATCH ?1",
+            ["\"studies\""],
+            |r| r.get(0),
+        )
+        .expect("match query");
+    assert_eq!(
+        hits, 1,
+        "only the en scene is in _en and porter stems studies==studying"
+    );
+}
+
+#[test]
+fn test_rebuild_en_fts_repopulates_after_wipe() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "INSERT INTO projects(id, title, language) VALUES ('p_en', 'En', 'en');
+             INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+               VALUES ('s1', 'p_en', 'scene', 'Ch1', 'they kept running home');
+             DELETE FROM tree_nodes_fts_en;",
+        )
+        .expect("seed + wipe _en");
+        let after_wipe: i64 = conn
+            .query_row("SELECT count(*) FROM tree_nodes_fts_en", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(after_wipe, 0, "wipe emptied _en");
+    }
+
+    db.rebuild_en_fts().expect("rebuild");
+
+    let conn = db.conn.lock().expect("lock");
+    let hits: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM tree_nodes_fts_en WHERE tree_nodes_fts_en MATCH ?1",
+            ["\"runs\""],
+            |r| r.get(0),
+        )
+        .expect("match");
+    assert_eq!(
+        hits, 1,
+        "rebuild re-indexed the en scene; porter stems runs==running"
+    );
 }
 
 #[test]
@@ -1864,6 +2018,33 @@ fn test_fts_optimize_succeeds() {
     ).expect("insert snippet");
 
     db.fts_optimize().expect("fts_optimize should succeed");
+}
+
+#[test]
+fn test_fts_rebuild_includes_en_tables() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "INSERT INTO projects(id, title, language) VALUES ('p_en', 'En', 'en');
+             INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+               VALUES ('s1', 'p_en', 'scene', 'Ch1', 'horses galloped');
+             DELETE FROM tree_nodes_fts_en;",
+        )
+        .expect("seed + wipe");
+    }
+    db.fts_rebuild().expect("rebuild");
+    db.fts_optimize().expect("optimize");
+    let conn = db.conn.lock().expect("lock");
+    let hits: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM tree_nodes_fts_en WHERE tree_nodes_fts_en MATCH ?1",
+            ["\"horse\""],
+            |r| r.get(0),
+        )
+        .expect("match");
+    assert_eq!(hits, 1, "fts_rebuild repopulated _en; fts_optimize did not error");
 }
 
 #[test]
@@ -3222,4 +3403,56 @@ fn test_migrate_impact_review_categories_widens_legacy_timeline_check() {
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .expect("integrity_check after re-run");
     assert_eq!(integrity_again, "ok");
+}
+
+#[test]
+fn test_language_switch_reroutes_en_index() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute_batch(
+            "INSERT INTO projects(id, title, language) VALUES ('p', 'P', 'en');
+             INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+               VALUES ('s1', 'p', 'scene', 'Ch1', 'she was studying hard');",
+        )
+        .expect("seed en");
+    }
+    // English now: search routes to _en and stems.
+    assert_eq!(
+        db.search_fts("p", "studies", "scenes", 10).expect("en search").len(),
+        1
+    );
+
+    // Switch to Japanese, then rebuild _en (mirrors the updateProject hook).
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute("UPDATE projects SET language = 'ja' WHERE id = 'p'", [])
+            .expect("switch to ja");
+    }
+    db.rebuild_en_fts().expect("rebuild after switch");
+    {
+        let conn = db.conn.lock().expect("lock");
+        let remaining: i64 = conn
+            .query_row("SELECT count(*) FROM tree_nodes_fts_en", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(remaining, 0, "no en-project rows remain in _en after switch to ja");
+    }
+    // Trigram still has the content, so the literal word is findable as ja.
+    assert_eq!(
+        db.search_fts("p", "studying", "scenes", 10).expect("ja search").len(),
+        1
+    );
+
+    // Switch back to English and rebuild.
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute("UPDATE projects SET language = 'en' WHERE id = 'p'", [])
+            .expect("switch to en");
+    }
+    db.rebuild_en_fts().expect("rebuild back to en");
+    assert_eq!(
+        db.search_fts("p", "studies", "scenes", 10).expect("en search again").len(),
+        1
+    );
 }

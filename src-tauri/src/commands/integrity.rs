@@ -13,6 +13,11 @@ pub(crate) fn fts_rebuild(ws_state: tauri::State<'_, WorkspaceState>) -> Result<
 }
 
 #[tauri::command]
+pub(crate) fn fts_rebuild_en(ws_state: tauri::State<'_, WorkspaceState>) -> Result<(), AppError> {
+    with_db(&ws_state, |db| db.rebuild_en_fts())
+}
+
+#[tauri::command]
 pub(crate) fn fts_search(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,

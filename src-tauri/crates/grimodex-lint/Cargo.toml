@@ -19,6 +19,9 @@ tracing = "0.1"
 # include_bytes! 埋め込み → 実行時の外部リソース参照なし。
 # 配布サイズへの影響 ≈ +200〜250MB。
 lindera = { version = "3.0.7", features = ["embed-unidic"] }
+# English (Snowball/Porter2) stemmer for the English lint rules. Pure Rust,
+# tiny, no dictionary. NOT a morphological analyzer (lindera handles Japanese).
+rust-stemmers = "1"
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }

@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
 import { projects, lintTermDictionary } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
 
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -61,6 +62,11 @@ export async function updateProject(
     .set({ ...data, updatedAt: new Date().toISOString() })
     .where(eq(projects.id, id))
     .returning();
+  // A language switch re-routes which FTS tables a project's content lives in;
+  // rebuild the English (_en) index so search stays consistent. Best-effort.
+  if (data.language !== undefined) {
+    await invoke("fts_rebuild_en").catch(() => {});
+  }
   return rows[0];
 }
 
