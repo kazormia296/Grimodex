@@ -38,6 +38,7 @@ import {
 import type { CodexEntry } from "@/features/codex/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { sanitizeSceneContent, type LayerBreakdown } from "./contextBuilder";
+import { resolveModelForPath } from "./modelRouting";
 import { getPromptCatalog } from "@/prompts/index";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
@@ -137,6 +138,7 @@ export async function generateSynopsisFromContent(
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
+    model: resolveModelForPath("synopsis") ?? null,
   });
   // N4: あらすじ生成の usage を台帳に記録する。
   void recordAiUsage({
@@ -195,13 +197,18 @@ export interface ChatMessageResult {
   outputTokens?: number;
 }
 
-/** Send a simple (non-tool) chat message with optional thinking params. */
+/**
+ * Send a simple (non-tool) chat message with optional thinking params.
+ * `model` は機能別モデル override（None/空なら Rust が settings.model に解決）。
+ * 省略時は従来どおり既定モデルを使う＝後方互換。
+ */
 export async function sendChatMessageWithThinking(
   messages: { role: string; content: string }[],
   thinkingParams?: ThinkingParams,
   systemCacheSegments?: string[],
   apiVariant?: string | null,
   systemVolatileTail?: string,
+  model?: string | null,
 ): Promise<ChatMessageResult> {
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
@@ -212,6 +219,7 @@ export async function sendChatMessageWithThinking(
     systemCacheSegments: systemCacheSegments ?? null,
     apiVariant: apiVariant ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
+    model: model ?? null,
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
@@ -290,6 +298,7 @@ export async function sendChatMessageStream(
   systemCacheSegments?: string[],
   apiVariant?: string | null,
   systemVolatileTail?: string,
+  model?: string | null,
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
@@ -328,6 +337,7 @@ export async function sendChatMessageStream(
     systemCacheSegments: systemCacheSegments ?? null,
     apiVariant: apiVariant ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
+    model: model ?? null,
   }).catch((e: unknown) => {
     // Error is also emitted as chat:stream-error from Rust, but handle here too
     const msg = e instanceof Error ? e.message : String(e);
@@ -353,8 +363,14 @@ export async function generateSessionTitle(
   lang = "ja",
 ): Promise<string | null> {
   try {
+    // 機能別モデル: session_title ロールが設定されていればそれを使い、未設定なら
+    // 呼び出し側が渡した既定モデル(model)へフォールバック（thinking/usage 表示用）。
+    // 実生成は invoke の model 引数（roleModel ?? null）で決まり、null は Rust 側で
+    // settings.model に解決される＝未設定時 byte-identical。
+    const roleModel = resolveModelForPath("session_title");
+    const effectiveModel = roleModel ?? model;
     const thinkingParams = buildThinkingParams(
-      model,
+      effectiveModel,
       getEffortForTask("session_title"),
       "omitted",
     );
@@ -373,11 +389,12 @@ export async function generateSessionTitle(
       effort: thinkingParams.effort ?? null,
       reasoningEnabled: thinkingParams.reasoningEnabled ?? null,
       reasoningEffort: thinkingParams.reasoningEffort ?? null,
+      model: roleModel ?? null,
     });
     // N4: セッションタイトル自動生成の usage を台帳に記録する。
     void recordAiUsage({
       surface: "session_title",
-      model,
+      model: effectiveModel,
       tokensIn: response.inputTokens,
       tokensOut: response.outputTokens,
     });

@@ -1,5 +1,6 @@
 import { db } from "@/db/client";
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
+import { resolveModelForPath } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -1370,9 +1371,14 @@ export async function proposePastSetups(
     customInstruction: getForeshadowCustomInstruction(),
   });
 
-  const response = await sendChatMessageWithThinking([
-    { role: "user", content: prompt },
-  ]);
+  const response = await sendChatMessageWithThinking(
+    [{ role: "user", content: prompt }],
+    undefined, // thinkingParams
+    undefined, // systemCacheSegments
+    undefined, // apiVariant
+    undefined, // systemVolatileTail
+    resolveModelForPath("foreshadow_propose_past_setups") ?? null,
+  );
   // N4: 伏線 setup 提案生成の usage を台帳に記録する。
   void recordAiUsage({
     surface: "foreshadow",
@@ -1417,9 +1423,14 @@ export async function evaluateSetupStrength(
     customInstruction: getForeshadowCustomInstruction(),
   });
 
-  const response = await sendChatMessageWithThinking([
-    { role: "user", content: prompt },
-  ]);
+  const response = await sendChatMessageWithThinking(
+    [{ role: "user", content: prompt }],
+    undefined, // thinkingParams
+    undefined, // systemCacheSegments
+    undefined, // apiVariant
+    undefined, // systemVolatileTail
+    resolveModelForPath("foreshadow_evaluate_setup_strength") ?? null,
+  );
   // N4: 伏線 setup 評価生成の usage を台帳に記録する。
   void recordAiUsage({
     surface: "foreshadow",
@@ -1506,9 +1517,14 @@ export async function auditChapter(
     customInstruction: getForeshadowCustomInstruction(),
   });
 
-  const response = await sendChatMessageWithThinking([
-    { role: "user", content: prompt },
-  ]);
+  const response = await sendChatMessageWithThinking(
+    [{ role: "user", content: prompt }],
+    undefined, // thinkingParams
+    undefined, // systemCacheSegments
+    undefined, // apiVariant
+    undefined, // systemVolatileTail
+    resolveModelForPath("foreshadow_audit_chapter") ?? null,
+  );
   // N4: 章監査生成の usage を台帳に記録する。
   void recordAiUsage({
     surface: "foreshadow",

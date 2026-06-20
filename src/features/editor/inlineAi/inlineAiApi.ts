@@ -3,6 +3,7 @@ import { sendInlineAiStream, abortInlineAiStream } from "./inlineAiStreaming";
 import { getPromptCatalog } from "@/prompts/index";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { serializePromptMessages } from "@/features/attribution/generationLogApi";
+import { resolveModelForPath } from "@/features/chat/modelRouting";
 
 export function buildSystemPrompt(
   command: InlineAiCommand,
@@ -44,6 +45,10 @@ export async function generateInlineAi(
     { role: "user", content: buildUserPrompt(command, context, lang) },
   ];
 
+  // 機能別モデル: inline ロールが設定されていればそれを使い、未設定なら
+  // 既定モデル（Rust が settings.model に解決）。未設定時 byte-identical。
+  const roleModel = resolveModelForPath("inline_ai_stream");
+
   let accumulated = "";
   const cleanupRef: { fn: (() => void) | null } = { fn: null };
 
@@ -64,25 +69,29 @@ export async function generateInlineAi(
       }
     }
 
-    sendInlineAiStream(messages, {
-      onTextDelta: (delta) => {
-        accumulated += delta;
-        onChunk(delta);
+    sendInlineAiStream(
+      messages,
+      {
+        onTextDelta: (delta) => {
+          accumulated += delta;
+          onChunk(delta);
+        },
+        onDone: (info) => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve({
+            stopReason: info.stopReason,
+            inputTokens: info.inputTokens,
+            outputTokens: info.outputTokens,
+            cost: info.cost ?? null,
+          });
+        },
+        onError: (message) => {
+          signal?.removeEventListener("abort", onAbort);
+          reject(new Error(message));
+        },
       },
-      onDone: (info) => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve({
-          stopReason: info.stopReason,
-          inputTokens: info.inputTokens,
-          outputTokens: info.outputTokens,
-          cost: info.cost ?? null,
-        });
-      },
-      onError: (message) => {
-        signal?.removeEventListener("abort", onAbort);
-        reject(new Error(message));
-      },
-    })
+      { model: roleModel },
+    )
       .then((c) => {
         cleanupRef.fn = c;
       })
@@ -103,7 +112,9 @@ export async function generateInlineAi(
 
   return {
     text: accumulated,
-    model: "claude-sonnet-4-6",
+    // ロール設定時はその値を返す。未設定時は従来どおりの既定ラベル
+    // （settings.model を FE が知らないための暫定値。真値化は Phase 2）。
+    model: roleModel ?? "claude-sonnet-4-6",
     stopReason: result.stopReason,
     promptText: serializePromptMessages(messages),
   };

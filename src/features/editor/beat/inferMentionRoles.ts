@@ -1,4 +1,5 @@
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
+import { resolveModelForPath } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import type { MentionRole } from "@/features/codex/CodexMentionExtension";
 import { getPromptCatalog } from "@/prompts/index";
@@ -62,9 +63,14 @@ export async function inferMentionRoles(
 
   let responseText: string;
   try {
-    const result = await sendChatMessageWithThinking([
-      { role: "user", content: prompt },
-    ]);
+    const result = await sendChatMessageWithThinking(
+      [{ role: "user", content: prompt }],
+      undefined, // thinkingParams
+      undefined, // systemCacheSegments
+      undefined, // apiVariant
+      undefined, // systemVolatileTail
+      resolveModelForPath("beat_role") ?? null,
+    );
     responseText = result.text;
     // N4: 役割推論呼び出しの usage を台帳に記録する。
     void recordAiUsage({

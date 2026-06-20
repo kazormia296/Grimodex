@@ -9,6 +9,7 @@
  */
 import { invoke } from "@/lib/tauri";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
+import { resolveModelForPath } from "@/features/chat/modelRouting";
 import { cmpKeys } from "../fractionalIndex";
 import type { TreeNodeData, NodeType } from "../treeStore";
 import type { AiTreePlan, AiTreeOp } from "./types";
@@ -392,6 +393,7 @@ export async function generateAiTreePlan(
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
+    model: resolveModelForPath("tree_scaffold") ?? null,
   });
 
   // N4: tree scaffold 生成の usage を台帳に記録する。

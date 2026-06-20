@@ -72,6 +72,8 @@ const AGENT_LOOP_TEST = "src/features/chat/agent/agentToolCall.live.test.ts";
 const SINGLE_SHOT_TEST = "src/features/ai-verification/singleShot.live.test.ts";
 const RELATION_EVAL_TEST =
   "src/features/codex/relationInjectionEval.live.test.ts";
+const CANDIDATE_JUDGMENT_TEST =
+  "src/features/codex/candidateJudgment.live.test.ts";
 const POST_EFFECT_RUST = "src-tauri/src/commands/post_effect.rs";
 
 /** 生成経路（LLM を実際に叩く層）。n/a が許されない層。 */
@@ -206,6 +208,17 @@ export const AI_PATHS: AiPathEntry[] = [
     testRef: SINGLE_SHOT_TEST,
     testName: "beat_role:",
     note: "本番ビルダー inferMentionRoles.buildPrompt + extractJsonObject。results[].role を assert。",
+  },
+  {
+    id: "codex_judgment",
+    label: "Codex 候補の LLM 判定（種別/要約/別名）",
+    surface: "codex/candidateJudgment.ts judgeCandidates",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    verifier: "js-live",
+    testRef: CANDIDATE_JUDGMENT_TEST,
+    testName: "codex candidate judgment live E2E",
+    note: "本番ビルダー codexJudgment.buildCandidateJudgmentPrompt + 本番パーサ parseJudgmentResponse + runLiveSingleShot。形態素×LLM の LLM 半分（種別分類/別名検出）を実モデルで検証。",
   },
   {
     id: "map_branch",

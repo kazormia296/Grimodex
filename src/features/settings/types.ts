@@ -120,6 +120,14 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "ai.inlineModel": "global",
   "ai.sessionTitleModel": "global",
   "ai.modelWhitelist": "global",
+  // AI — 機能別モデル（ロール単位）。空 = 既定チャットモデルにフォールバック (global)。
+  // 解決は src/features/chat/modelRouting.ts の resolveModelForPath が正本。
+  "aiModel.role.conversation": "global",
+  "aiModel.role.agent": "global",
+  "aiModel.role.inline": "global",
+  "aiModel.role.cheap": "global",
+  "aiModel.role.structured": "global",
+  "aiModel.role.review": "global",
   // AI — Web 検索 (RAG) ドメイン制御ポリシー (global)
   "ai.webSearch.domainMode": "global",
   "ai.webSearch.domains": "global",
@@ -266,6 +274,13 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.inlineModel": "",
   "ai.sessionTitleModel": "",
   "ai.modelWhitelist": "[]",
+  // 機能別モデル（ロール単位）。空 = 既定チャットモデルにフォールバック。
+  "aiModel.role.conversation": "",
+  "aiModel.role.agent": "",
+  "aiModel.role.inline": "",
+  "aiModel.role.cheap": "",
+  "aiModel.role.structured": "",
+  "aiModel.role.review": "",
   "ai.webSearch.domainMode": "off",
   "ai.webSearch.domains": "[]",
   "ai.webSearch.maxContentTokens": "",
