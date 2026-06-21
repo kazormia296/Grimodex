@@ -1766,6 +1766,7 @@
     "filterAll": "すべて",
     "sortOrderTitle": "ソート順",
     "newEntry": "新規エントリ",
+    "editLockedOtherWindow": "この項目は別のウィンドウで編集中です（読み取り専用）",
     "selectPrompt": "エントリを選択してください",
     "deleteConfirmDesc": "「{{name}}」を削除しますか？この操作は元に戻せません。",
     "editEntry": "エントリ編集",

@@ -1766,6 +1766,7 @@
     "filterAll": "All",
     "sortOrderTitle": "Sort order",
     "newEntry": "New entry",
+    "editLockedOtherWindow": "This entry is being edited in another window (read-only)",
     "selectPrompt": "Select an entry",
     "deleteConfirmDesc": "Delete \"{{name}}\"? This cannot be undone.",
     "editEntry": "Edit Entry",

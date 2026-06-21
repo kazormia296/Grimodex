@@ -82,6 +82,7 @@ import {
   getPanelWindowTarget,
 } from "@/features/layout/multiwindow/panelWindow";
 import { useCodexSelectionSync } from "@/features/codex/multiwindow/codexSelectionRouting";
+import { startCodexLockListener } from "@/features/codex/multiwindow/codexEditLockStore";
 import { cn } from "@/lib/utils";
 
 /* ── App root ── */
@@ -282,6 +283,11 @@ function EditorScreen() {
 
   // 窓間の Codex 選択連動（別窓 Codex 編集。codex:select-entry を購読）。
   useCodexSelectionSync();
+
+  // 窓間の Codex 編集 advisory lock 購読を起動（パネル未表示でも取りこぼさない）。
+  useEffect(() => {
+    startCodexLockListener();
+  }, []);
 
   useEffect(() => {
     void initializeExternalMounts().catch(() => {});

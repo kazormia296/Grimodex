@@ -35,6 +35,7 @@ import type { CodexContextMode } from "@/db/schema";
 import { CodexEntryHeader } from "./CodexEntryHeader";
 import { DetailTabs } from "./DetailTabs";
 import { DetailsTab } from "./DetailsTab";
+import { CodexEditLockBanner } from "../multiwindow/CodexEditLockBanner";
 import { RelationsTab } from "./RelationsTab";
 import { TrackingTab } from "./TrackingTab";
 import { MentionsTab } from "./MentionsTab";
@@ -101,6 +102,8 @@ interface CodexDetailContentProps {
   onDelete: (id: string) => void;
   onBack?: () => void;
   initialTab?: string;
+  /** 別窓が同一 entry を編集中 → 本文を read-only にしバナーを出す（advisory lock）。 */
+  readOnly?: boolean;
 }
 
 export function CodexDetailContent({
@@ -108,6 +111,7 @@ export function CodexDetailContent({
   onDelete,
   onBack,
   initialTab = "details",
+  readOnly = false,
 }: CodexDetailContentProps) {
   const update = useCodexStore((s) => s.update);
   const updateText = useCodexStore((s) => s.updateText);
@@ -400,6 +404,7 @@ export function CodexDetailContent({
 
   return (
     <div data-testid="codex-detail-content" className="flex h-full flex-col">
+      {readOnly && <CodexEditLockBanner />}
       <CodexEntryHeader
         entry={entry}
         name={name}
@@ -451,6 +456,7 @@ export function CodexDetailContent({
             onExternalSync={(content) => {
               contentRef.current = content;
             }}
+            readOnly={readOnly}
           />
         )}
         {activeTab === "relations" && (

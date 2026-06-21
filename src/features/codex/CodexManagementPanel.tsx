@@ -25,6 +25,8 @@ import { listCodexTypes, ensureBuiltinTypes } from "./typeApi";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { CodexDetailContent } from "./components/CodexDetailContent";
+import { useCodexEditLock } from "./multiwindow/codexEditLockStore";
+import { CodexEditLockBanner } from "./multiwindow/CodexEditLockBanner";
 import { EntryCard, parseTags } from "./components/EntryCard";
 import { EntryContextMenu } from "./components/EntryContextMenu";
 import { CategoryGroupHeader } from "./components/CategoryGroupHeader";
@@ -515,6 +517,8 @@ export function CodexManagementPanel({
   // （local state だと失われる）。
   const selectedEntry = useCodexStore((s) => s.selectedEntry);
   const setSelectedEntry = useCodexStore((s) => s.setSelectedEntry);
+  // 別窓と同一 entry を編集中なら read-only にする advisory lock（先勝ち）。
+  const canEditSelected = useCodexEditLock(selectedEntry?.id ?? null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isStackMode, setIsStackMode] = useState(initialStackMode);
@@ -1086,6 +1090,7 @@ export function CodexManagementPanel({
       onDelete={handleDelete}
       onBack={isStackMode ? handleBack : undefined}
       initialTab={detailInitialTab}
+      readOnly={!canEditSelected}
     />
   ) : (
     <div
@@ -1150,13 +1155,20 @@ export function CodexManagementPanel({
             className="flex flex-col"
           >
             {selectedEntry ? (
-              <EditorPane
-                nodeId={selectedEntry.id}
-                contentType="codex"
-                groupIndex={0}
-                onFocus={() => {}}
-                phaseIdOverride={previewPhaseByEntry[selectedEntry.id] ?? null}
-              />
+              <div className="flex h-full flex-col">
+                {!canEditSelected && <CodexEditLockBanner />}
+                <div className="min-h-0 flex-1">
+                  <EditorPane
+                    nodeId={selectedEntry.id}
+                    contentType="codex"
+                    groupIndex={0}
+                    onFocus={() => {}}
+                    phaseIdOverride={
+                      previewPhaseByEntry[selectedEntry.id] ?? null
+                    }
+                  />
+                </div>
+              </div>
             ) : (
               <div className="flex h-full items-center justify-center">
                 <p className="text-xs text-muted-foreground">

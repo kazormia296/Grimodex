@@ -23,6 +23,8 @@ interface DetailsTabProps {
   onSummaryChange: (value: string) => void;
   onContentChange: (content: string) => void;
   onExternalSync?: (content: string) => void;
+  /** 別窓が同一 entry を編集中なら本文エディタを read-only にする。 */
+  readOnly?: boolean;
 }
 
 export function DetailsTab({
@@ -31,6 +33,7 @@ export function DetailsTab({
   onSummaryChange,
   onContentChange,
   onExternalSync,
+  readOnly = false,
 }: DetailsTabProps) {
   const { t } = useTranslation();
   const emptyContent = !entry.content || entry.content === "{}";
@@ -360,6 +363,7 @@ export function DetailsTab({
             entryId={contentEntryId}
             onExternalSync={contentExternalSync}
             externalContent={contentExternalContent}
+            readOnly={readOnly}
           />
         </div>
 
