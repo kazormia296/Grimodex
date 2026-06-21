@@ -3878,6 +3878,11 @@
       "noScenesSelected": "(No scenes selected)",
       "narouEmphasisBatch": "Narou emphasis (|word《・・》)",
       "narouEmphasisPerChar": "Narou emphasis (per char)",
+      "tateChuYoko": "Tate-chu-yoko",
+      "tateChuYokoNone": "No notation (keep half-width digits)",
+      "tateChuYokoAozoraForward": "Aozora forward-ref (［＃「29」は縦中横］)",
+      "tateChuYokoAozoraRange": "Aozora range (［＃縦中横］…［＃縦中横終わり］)",
+      "tateChuYokoCaita": "caita ([tatechuyoko])",
       "preset": {
         "label": "Preset",
         "section": "Publishing site preset",

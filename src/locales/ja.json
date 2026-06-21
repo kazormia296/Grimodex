@@ -3871,6 +3871,11 @@
       "noScenesSelected": "(シーンが選択されていません)",
       "narouEmphasisBatch": "なろう傍点（|語《・・》）",
       "narouEmphasisPerChar": "なろう傍点（1文字ずつ）",
+      "tateChuYoko": "縦中横",
+      "tateChuYokoNone": "記法なし（半角数字のまま）",
+      "tateChuYokoAozoraForward": "青空文庫・前方参照（［＃「29」は縦中横］）",
+      "tateChuYokoAozoraRange": "青空文庫・範囲指定（［＃縦中横］…［＃縦中横終わり］）",
+      "tateChuYokoCaita": "caita（[tatechuyoko]）",
       "preset": {
         "label": "プリセット",
         "section": "投稿サイトプリセット",

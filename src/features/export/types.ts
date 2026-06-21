@@ -49,6 +49,28 @@ export type EmphasisDotsStyle =
   | "narou-emphasis-batch"
   | "narou-emphasis-per-char";
 
+/**
+ * 縦中横（tate-chu-yoko）の記法出力スタイル。
+ *
+ * 本文中の「縦中横とみなす数字 run」（length ポリシーは editor.tateChuYoko 由来）を、
+ * 投稿先サイトの記法で書き出すかを決める。
+ *
+ *  - `none`           : 記法を出さず半角数字をそのまま残す。多くの縦書きビューアは
+ *                       半角2桁を自動で縦中横に組むので、書き手は数字を打つだけで足りる
+ *                       （= jp-double-angle 系など大半のサイトの既定）。
+ *  - `aozora-forward` : 青空文庫・前方参照型。`29［＃「29」は縦中横］` のように、
+ *                       run の直後に「直前の同一文字列を縦中横」と注記する。
+ *                       対象が短く明確なとき向き＝青空文庫プロファイルの既定。
+ *  - `aozora-range`   : 青空文庫・範囲指定型。`［＃縦中横］29［＃縦中横終わり］` で挟む。
+ *                       対象が長い・外字を含むなど前方参照で曖昧なとき向き。
+ *  - `caita`          : caita の `[tatechuyoko]29[/tatechuyoko]` 記法。
+ */
+export type TateChuYokoExportStyle =
+  | "none"
+  | "aozora-forward"
+  | "aozora-range"
+  | "caita";
+
 /** なろう傍点モード（UI トグル用、emphasisDotsStyle と連動） */
 export type NarouEmphasisMode = "batch" | "per-char";
 
@@ -113,6 +135,8 @@ export interface ExportSettings {
   pixivChapterNewpage: boolean;
   /** なろう傍点モード（UI トグル用、emphasisDotsStyle の narou 系と連動） */
   narouEmphasisMode: NarouEmphasisMode;
+  /** 縦中横の記法出力スタイル（"none" = 記法を出さず半角数字のまま） */
+  tateChuYoko: TateChuYokoExportStyle;
   /** 現在選択中のプリセット ID（手動変更で "custom" にフォールバック） */
   exportPresetId: ExportPresetId;
 }
@@ -132,6 +156,7 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   includeTrashBin: false,
   pixivChapterNewpage: false,
   narouEmphasisMode: "batch",
+  tateChuYoko: "none",
   exportPresetId: "custom",
 };
 
@@ -151,6 +176,7 @@ export const EXPORT_SETTING_KEYS = {
   includeTrashBin: "export.includeTrashBin",
   pixivChapterNewpage: "export.pixivChapterNewpage",
   narouEmphasisMode: "export.narouEmphasisMode",
+  tateChuYoko: "export.tateChuYoko",
   exportPresetId: "export.exportPresetId",
   /** ユーザー定義プリセット配列を JSON 文字列で保存するキー */
   userPresets: "export.userPresets",

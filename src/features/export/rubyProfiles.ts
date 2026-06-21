@@ -58,6 +58,9 @@ const PROFILE_BASE: ExportSettings = {
   includeTrashBin: false,
   pixivChapterNewpage: false,
   narouEmphasisMode: "batch",
+  // 大半のサイトは縦中横の記法を持たず、縦書きビューアが半角2桁を自動で組む。
+  // → 既定は記法なし（半角数字をそのまま残す）。青空文庫/caita だけが上書きする。
+  tateChuYoko: "none",
   exportPresetId: "custom",
 };
 
@@ -103,9 +106,12 @@ export const RUBY_PROFILES: Record<RubyProfileId, RubyProfile> = {
     labelKey: "export.settings.section.aozoraBunko",
     exampleKey: "export.settings.profileExample.aozoraBunko",
     // 青空文庫テキスト ｜漢字《かんじ》 + ［＃傍点］（= 旧 aozora）
+    // 縦中横は注記一覧・工作員マニュアルの正式仕様。既定は前方参照型
+    // （`29［＃「29」は縦中横］`）— 対象が短く明確な数字 run 向きで無難。
     settings: profileSettings({
       emphasisDotsStyle: "aozora",
       sceneDivider: "blank2",
+      tateChuYoko: "aozora-forward",
     }),
   },
   "plain-only": {
@@ -277,6 +283,8 @@ const SITE_ENTRIES: SiteEntry[] = [
     labelKey: "export.settings.preset.caita",
     profileId: "jp-double-angle",
     section: "jp-double-angle",
+    // caita は縦中横を独自タグ [tatechuyoko]…[/tatechuyoko] で表す。
+    overrides: { tateChuYoko: "caita" },
     noteKey: "export.settings.presetNote.caita",
   },
   {

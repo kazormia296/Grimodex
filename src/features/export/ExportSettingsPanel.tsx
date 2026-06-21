@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ExportSettings } from "./types";
 import { generateExport } from "./exportEngine";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import type { TateChuYokoPolicy } from "@/features/editor/tateChuYokoPolicy";
 import { currentCodexMentionResolver } from "@/features/codex/mentionNameResolver";
 import { ExportPresetPicker } from "./ExportPresetPicker";
 import { detectExportPreset } from "./exportPresets";
@@ -108,6 +110,9 @@ function ExportPreview({
   const { t } = useTranslation();
   const [preview, setPreview] = useState("");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tateChuYokoPolicy = useSettingsStore((s) =>
+    s.get("editor.tateChuYoko", "2"),
+  ) as TateChuYokoPolicy;
 
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -118,6 +123,7 @@ function ExportPreview({
           contentMap,
           checkedIds,
           settings,
+          tateChuYokoPolicy,
           resolveMentionName: currentCodexMentionResolver(),
         });
         setPreview(full.slice(0, 400));
@@ -128,7 +134,7 @@ function ExportPreview({
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [nodes, contentMap, checkedIds, settings, t]);
+  }, [nodes, contentMap, checkedIds, settings, tateChuYokoPolicy, t]);
 
   return (
     <div className="mt-1 max-h-[160px] overflow-y-auto rounded border border-border bg-muted/30 p-2">
@@ -371,6 +377,29 @@ export function ExportSettingsPanel({
                 {
                   value: "narou-emphasis-per-char",
                   label: t("export.settings.narouEmphasisPerChar"),
+                },
+              ]}
+            />
+          </Row>
+          <Row label={t("export.settings.tateChuYoko")}>
+            <Select
+              value={settings.tateChuYoko}
+              onChange={(v) =>
+                update("tateChuYoko", v as ExportSettings["tateChuYoko"])
+              }
+              options={[
+                { value: "none", label: t("export.settings.tateChuYokoNone") },
+                {
+                  value: "aozora-forward",
+                  label: t("export.settings.tateChuYokoAozoraForward"),
+                },
+                {
+                  value: "aozora-range",
+                  label: t("export.settings.tateChuYokoAozoraRange"),
+                },
+                {
+                  value: "caita",
+                  label: t("export.settings.tateChuYokoCaita"),
                 },
               ]}
             />
