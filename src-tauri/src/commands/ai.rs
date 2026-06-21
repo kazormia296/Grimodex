@@ -363,15 +363,24 @@ pub(crate) async fn send_agent_message(
     api_variant: Option<String>,
     web_search: Option<ai::WebSearchConfig>,
     system_volatile_tail: Option<String>,
+    // 機能別モデル: agent ロールの override。None / 空文字なら設定の既定モデルを
+    // 使う（send_chat_message と同一の解決規則）。後方互換: 既存呼び出しは省略可。
+    model: Option<String>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let api_key = resolve_api_key(&settings.provider)?;
+    let resolved_model = model
+        .as_deref()
+        .filter(|m| !m.is_empty())
+        .unwrap_or(&settings.model);
+    let mut settings_for_call = settings.clone();
+    settings_for_call.model = resolved_model.to_string();
     let variant = api_variant.as_deref();
-    let extra_body = build_ai_novelist_extra_body(&settings, variant);
-    let retry_429 = should_retry_429(&settings);
-    let resolved_variant = ai::resolve_api_variant(variant, &settings, &settings.model);
+    let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
+    let retry_429 = should_retry_429(&settings_for_call);
+    let resolved_variant = ai::resolve_api_variant(variant, &settings_for_call, resolved_model);
     let params = build_chat_params(
-        &settings,
+        &settings_for_call,
         &api_key,
         extra_body,
         retry_429,

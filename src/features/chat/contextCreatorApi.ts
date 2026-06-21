@@ -9,6 +9,7 @@ import { executeTool } from "./agent/toolExecutors";
 import { AGENT_TOOLS } from "./agent/toolDefinitions";
 import { buildThinkingParams, getEffortForTask } from "./agent/modelLimits";
 import { sendAgentMessage } from "./chatApi";
+import { resolveModelForPath } from "./modelRouting";
 import type { AgentMessagePayload } from "./agent/agentTypes";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
@@ -54,8 +55,11 @@ export async function runContextCreator(
   if (blockIfPolicyOff("chat")) return [];
   if (blockIfUnlicensed()) return [];
 
+  // agent ロールの override を実モデルとして解決。thinking と usage 記録を実モデルから
+  // 導出し、sendAgentMessage に渡す override と一致させる（未設定なら引数の既定モデル）。
+  const effectiveModel = resolveModelForPath("context_creator") ?? model;
   const thinkingParams = buildThinkingParams(
-    model,
+    effectiveModel,
     getEffortForTask("chat"),
     "omitted",
   );
@@ -69,7 +73,17 @@ export async function runContextCreator(
     messages,
     tools: CREATOR_TOOLS,
     tokenBudget: TOOL_TOKEN_BUDGET,
-    sendToLLM: (msgs, tools) => sendAgentMessage(msgs, tools, thinkingParams),
+    sendToLLM: (msgs, tools) =>
+      sendAgentMessage(
+        msgs,
+        tools,
+        thinkingParams,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        resolveModelForPath("context_creator"),
+      ),
     executeTool: async (name, toolCallId, params) => {
       const result = await executeTool(name, toolCallId, params);
       return result;
@@ -83,7 +97,7 @@ export async function runContextCreator(
   // N4: Context Creator のエージェント実行 usage を台帳に記録。
   void recordAiUsage({
     surface: "context_creator",
-    model,
+    model: effectiveModel,
     tokensIn: loopResult.tokensIn,
     tokensOut: loopResult.tokensOut,
     costUsd: loopResult.cost,

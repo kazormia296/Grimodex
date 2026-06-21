@@ -659,6 +659,35 @@
       "titleModel": "セッションタイトルモデル",
       "titleModelDesc": "セッション名の自動生成に使用するモデル",
       "sameChatModel": "チャットモデルと同じ",
+      "roleModel": {
+        "title": "機能別モデル（ロール単位）",
+        "intro": "AI 経路を 6 つの意味ロールに束ね、ロールごとにモデルを指定します。未設定のロールは既定のチャットモデルにフォールバックします。",
+        "cacheNote": "注意: あるロールに既定と別プロバイダのモデルを選ぶと、その経路のプロンプトキャッシュが分断され、課金・レイテンシが悪化することがあります。",
+        "conversation": {
+          "label": "会話（本文チャット）",
+          "description": "本文チャット。最高品質。プロンプトキャッシュを最も使う。"
+        },
+        "agent": {
+          "label": "エージェント（ツールループ）",
+          "description": "エージェントモードと Codex 提案。ツール対応モデルが必須。"
+        },
+        "inline": {
+          "label": "インライン生成",
+          "description": "エディタ内の補完・ビート展開（/ コマンド）。"
+        },
+        "cheap": {
+          "label": "軽量",
+          "description": "短く高頻度・低負荷の呼び出し（セッションタイトル・要約・ビート役割推論）。"
+        },
+        "structured": {
+          "label": "構造化 JSON",
+          "description": "あらすじ・伏線・Map/Tree・Codex 判定。信頼できる JSON 出力が必要。"
+        },
+        "review": {
+          "label": "校閲レビュー",
+          "description": "校閲 post-effect（連続性・意図ずれ・時系列など）。信頼できる JSON 出力が必要。"
+        }
+      },
       "thinkingMode": "Thinking モード",
       "thinkingModeDesc": "推論ステップを有効にします（レスポンスが遅くなる場合があります）",
       "reasoningEffort": "Reasoning Effort",

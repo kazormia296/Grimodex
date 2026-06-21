@@ -659,6 +659,35 @@
       "titleModel": "Session Title Model",
       "titleModelDesc": "Model used for auto-generating session names",
       "sameChatModel": "Same as chat model",
+      "roleModel": {
+        "title": "Per-Feature Models (by role)",
+        "intro": "Assign a model to each of six semantic roles. AI paths are grouped into these roles; leave a role empty to fall back to the default chat model.",
+        "cacheNote": "Note: picking a model from a different provider than your default for a role splits that path's prompt cache, which can raise cost and latency.",
+        "conversation": {
+          "label": "Conversation (chat)",
+          "description": "Main editor chat. Highest quality; uses prompt caching the most."
+        },
+        "agent": {
+          "label": "Agent (tool loop)",
+          "description": "Agent mode and Codex suggestions. Requires a tool-capable model."
+        },
+        "inline": {
+          "label": "Inline generation",
+          "description": "In-editor completions and beat expansion (/ commands)."
+        },
+        "cheap": {
+          "label": "Lightweight",
+          "description": "Short, high-frequency, low-stakes calls (session titles, summaries, beat roles)."
+        },
+        "structured": {
+          "label": "Structured JSON",
+          "description": "Synopsis, foreshadowing, Map/Tree, Codex judgment. Requires reliable JSON output."
+        },
+        "review": {
+          "label": "Editorial review",
+          "description": "Kouetsu post-effects (consistency, intent drift, timeline, etc.). Requires reliable JSON output."
+        }
+      },
       "thinkingMode": "Thinking Mode",
       "thinkingModeDesc": "Enable reasoning steps (may slow responses)",
       "reasoningEffort": "Reasoning Effort",

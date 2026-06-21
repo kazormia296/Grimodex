@@ -82,6 +82,48 @@ export async function migrateCardLayoutKey(): Promise<void> {
   });
 }
 
+// 旧「死に設定」モデルキー → 機能別ロールキーの吸収マッピング。
+//   ai.inlineModel       → aiModel.role.inline (inline_ai_stream)
+//   ai.sessionTitleModel → aiModel.role.cheap  (session_title は cheap ロール)
+const LEGACY_ROLE_MODEL_KEYS: ReadonlyArray<readonly [string, string]> = [
+  ["ai.inlineModel", "aiModel.role.inline"],
+  ["ai.sessionTitleModel", "aiModel.role.cheap"],
+];
+
+/**
+ * 旧 `ai.inlineModel` / `ai.sessionTitleModel` を機能別ロールキーへ吸収する。
+ *
+ * これらは Phase 1 以前、設定 UI に ModelPicker があっても値がどのコードからも
+ * 読まれない死に設定だった。Phase 2 でロール UI を露出するにあたり、既存ユーザーが
+ * 設定していた値を失わせずロールキーへ移送して初めて実効化する。
+ *
+ * `migrateCardLayoutKey` と同型の冪等な一回限りリネーム:
+ * 旧キーが存在するとき、対応ロールキーが未設定（空/欠如）なら非空の旧値を移送し、
+ * いずれの場合も旧キーを除去する。旧 UI ピッカーは Phase 2 で撤去するため旧キーが
+ * 再生産されることはなく、二度目以降の呼び出しは旧キー不在で no-op になる。
+ */
+export async function migrateModelRoleKeys(): Promise<void> {
+  const { useWorkspaceStore } = await import("@/features/workspace/store");
+  const ws = useWorkspaceStore.getState();
+  const prefs = ws.globalSettings?.userPreferences;
+  if (!prefs) return;
+
+  const next: Record<string, string> = { ...prefs };
+  let changed = false;
+  for (const [legacyKey, roleKey] of LEGACY_ROLE_MODEL_KEYS) {
+    if (!(legacyKey in next)) continue;
+    // 非空の旧値があり、ロールキーが未設定のときだけ移送する（既存ロール値優先）。
+    if (next[legacyKey] && !next[roleKey]) {
+      next[roleKey] = next[legacyKey];
+    }
+    // 旧キーは Phase 2 で UI から撤去されるため常にクリーンアップする。
+    delete next[legacyKey];
+    changed = true;
+  }
+  if (!changed) return;
+  await ws.updateGlobalSettings({ userPreferences: next });
+}
+
 /**
  * Card layout and the glass effect are mutually exclusive. Legacy installs may
  * have both persisted ON — resolve in favour of the card layout by turning the

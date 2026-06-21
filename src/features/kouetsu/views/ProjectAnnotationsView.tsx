@@ -4,6 +4,7 @@ import { AlertTriangle, Info, Loader2, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { resolveModelForPath } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
@@ -143,11 +144,16 @@ export function ProjectAnnotationsView() {
               effect === "consistency"
                 ? CONSISTENCY_PROMPT_VERSION
                 : INTRA_CONSISTENCY_PROMPT_VERSION;
+            // consistency のみ review ロール対象。intra は baseModel(=model)のまま。
+            const effectiveModel =
+              effect === "consistency"
+                ? (resolveModelForPath("post_effect_consistency") ?? model)
+                : model;
             buildMultiPayload(
               projectId,
               "project",
               null,
-              model,
+              effectiveModel,
               effectType,
               customKouetsu,
             )
@@ -166,7 +172,11 @@ export function ProjectAnnotationsView() {
                     effect_type: effectType,
                     scope_type: "project",
                     scope_target_id: null,
-                    model,
+                    model: effectiveModel,
+                    model_override:
+                      effectType === "consistency"
+                        ? resolveModelForPath("post_effect_consistency")
+                        : undefined,
                     prompt_version: promptVersion,
                     input_hash: payload.inputHash,
                     scenes: payload.scenes,

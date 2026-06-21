@@ -72,15 +72,49 @@ describe("能力ガード — agent ロールは tool 対応必須", () => {
     );
   });
 
-  it("非 agent ロールは tool 非対応モデルでも通る（構造化ゲートは Phase 2）", () => {
-    const getter = getterFor({ [roleSettingKey("structured")]: "deepseek-r1" });
-    expect(resolveModelForPath("synopsis", getter)).toBe("deepseek-r1");
+  it("cheap/inline/conversation は tool 非対応モデルでも通る（構造化ゲート対象外）", () => {
+    const getter = getterFor({ [roleSettingKey("cheap")]: "deepseek-r1" });
+    expect(resolveModelForPath("session_title", getter)).toBe("deepseek-r1");
   });
 
   it("isModelCapableForRole の単体契約", () => {
     expect(isModelCapableForRole("deepseek-r1", "agent")).toBe(false);
     expect(isModelCapableForRole("claude-opus-4-8", "agent")).toBe(true);
     expect(isModelCapableForRole("deepseek-r1", "cheap")).toBe(true);
+  });
+});
+
+describe("能力ガード — structured/review ロールは構造化JSON対応必須 (Phase 2)", () => {
+  it("supportsStructuredJson=false のモデル(deepseek-r1)を structured ロールに指定しても override を無視し undefined", () => {
+    const getter = getterFor({ [roleSettingKey("structured")]: "deepseek-r1" });
+    expect(resolveModelForPath("synopsis", getter)).toBeUndefined();
+    expect(resolveModelForPath("tree_scaffold", getter)).toBeUndefined();
+  });
+
+  it("review ロールも構造化JSON非対応モデルを無視する", () => {
+    const getter = getterFor({ [roleSettingKey("review")]: "deepseek-r1" });
+    expect(resolveModelForPath("post_effect_review", getter)).toBeUndefined();
+    expect(
+      resolveModelForPath("post_effect_consistency", getter),
+    ).toBeUndefined();
+  });
+
+  it("構造化JSON対応モデルは structured/review で通る（absent⇒true 既定）", () => {
+    const sGetter = getterFor({ [roleSettingKey("structured")]: "gpt-4o" });
+    expect(resolveModelForPath("synopsis", sGetter)).toBe("gpt-4o");
+    const rGetter = getterFor({
+      [roleSettingKey("review")]: "claude-opus-4-8",
+    });
+    expect(resolveModelForPath("post_effect_review", rGetter)).toBe(
+      "claude-opus-4-8",
+    );
+  });
+
+  it("isModelCapableForRole の structured/review 契約", () => {
+    expect(isModelCapableForRole("deepseek-r1", "structured")).toBe(false);
+    expect(isModelCapableForRole("deepseek-r1", "review")).toBe(false);
+    expect(isModelCapableForRole("gpt-4o", "structured")).toBe(true);
+    expect(isModelCapableForRole("claude-opus-4-8", "review")).toBe(true);
   });
 });
 
