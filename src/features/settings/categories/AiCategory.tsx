@@ -24,6 +24,11 @@ import type {
 import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
 import {
+  MODEL_ROLES,
+  roleSettingKey,
+  isModelCapableForRole,
+} from "@/features/chat/modelRouting";
+import {
   AINOVERIST_BASE_URL,
   AINOVERIST_V1_BASE_URL,
   AINOVERIST_EXTRA_SAMPLING_KEYS,
@@ -866,31 +871,9 @@ export function AiCategory() {
                 </SettingRow>
               )}
 
-              <SettingRow
-                label={t("settings.ai.inlineModel")}
-                description={t("settings.ai.inlineModelDesc")}
-              >
-                <ModelPicker
-                  models={models}
-                  value={settingsStore.get("ai.inlineModel")}
-                  onChange={(v) => settingsStore.set("ai.inlineModel", v)}
-                  isLoading={isLoadingModels}
-                  placeholder={t("settings.ai.sameChatModel")}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label={t("settings.ai.titleModel")}
-                description={t("settings.ai.titleModelDesc")}
-              >
-                <ModelPicker
-                  models={models}
-                  value={settingsStore.get("ai.sessionTitleModel")}
-                  onChange={(v) => settingsStore.set("ai.sessionTitleModel", v)}
-                  isLoading={isLoadingModels}
-                  placeholder={t("settings.ai.sameChatModel")}
-                />
-              </SettingRow>
+              {/* 旧 ai.inlineModel / ai.sessionTitleModel ピッカーは「機能別モデル
+                  (ロール)」セクションの role.inline / role.cheap に吸収・撤去した
+                  (値は migrateModelRoleKeys が移送)。 */}
 
               {/* Model whitelist */}
               {models.length > 0 && (
@@ -1158,6 +1141,57 @@ export function AiCategory() {
             )}
           </div>
         )}
+      </SettingSection>
+
+      {/* 機能別モデル（ロール単位）— 各 AI 経路を 6 意味ロールに束ねてモデル指定。
+          空 = 既定チャットモデルにフォールバック。解決は modelRouting.ts が正本。 */}
+      <SettingSection title={t("settings.ai.roleModel.title")}>
+        <p className="mb-3 text-xs text-muted-foreground">
+          {t("settings.ai.roleModel.intro")}
+        </p>
+        <div className="space-y-4">
+          {(() => {
+            const whitelist: string[] = (() => {
+              try {
+                return JSON.parse(
+                  settingsStore.get("ai.modelWhitelist") || "[]",
+                );
+              } catch {
+                return [];
+              }
+            })();
+            const inWhitelist =
+              whitelist.length > 0
+                ? models.filter((m) => whitelist.includes(m.id))
+                : models;
+            return MODEL_ROLES.map((role) => {
+              const key = roleSettingKey(role);
+              const roleModels = inWhitelist.filter((m) =>
+                isModelCapableForRole(m.id, role),
+              );
+              return (
+                <div key={role}>
+                  <div className="mb-1 text-sm">
+                    {t(`settings.ai.roleModel.${role}.label`)}
+                  </div>
+                  <div className="mb-1 text-xs text-muted-foreground">
+                    {t(`settings.ai.roleModel.${role}.description`)}
+                  </div>
+                  <ModelPicker
+                    models={roleModels}
+                    value={settingsStore.get(key, "")}
+                    onChange={(v) => settingsStore.set(key, v)}
+                    isLoading={isLoadingModels}
+                    placeholder={t("settings.ai.sameChatModel")}
+                  />
+                </div>
+              );
+            });
+          })()}
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          {t("settings.ai.roleModel.cacheNote")}
+        </p>
       </SettingSection>
 
       {/* Web 検索 (RAG) ドメイン制御 (global) — RAG 対応プロバイダのみ表示 */}

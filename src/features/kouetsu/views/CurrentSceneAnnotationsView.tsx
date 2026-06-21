@@ -4,6 +4,7 @@ import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { resolveModelForPath } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
@@ -62,14 +63,18 @@ function getDetectedByModel(ann: PostEffectAnnotation): string | undefined {
 
 function countOpenByOtherModel(
   annotations: PostEffectAnnotation[],
-  currentModel: string,
+  currentModels: readonly string[],
 ): { total: number; byModel: Map<string, number> } {
+  // この run で実際に使ったモデル集合。機能別モデルにより consistency(review ロール)と
+  // intra(既定)は別モデルになり得るため、いずれかに一致する注釈は「今回のモデル」と
+  // みなして除外する（さもないと別モデル警告が誤発火する）。
+  const current = new Set(currentModels.filter(Boolean));
   const byModel = new Map<string, number>();
   let total = 0;
   for (const ann of annotations) {
     if (ann.status !== "open") continue;
     const m = getDetectedByModel(ann);
-    if (!m || m === currentModel) continue;
+    if (!m || current.has(m)) continue;
     byModel.set(m, (byModel.get(m) ?? 0) + 1);
     total += 1;
   }
@@ -97,6 +102,10 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
       const lang = getCurrentProjectLanguage();
       const model =
         useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+      // consistency のみ review ロール対象。intra_scene_consistency は対象外なので
+      // baseModel(=model)のまま（input_hash・実呼び出しを汚さない）。
+      const consistencyModel =
+        resolveModelForPath("post_effect_consistency") ?? model;
       const customKouetsu = useSettingsStore
         .getState()
         .get("aiPrompt.custom.kouetsu", "");
@@ -108,7 +117,7 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
             const payload = await buildConsistencyPayload(
               projectId,
               sceneId,
-              model,
+              consistencyModel,
               customKouetsu,
             );
             return await new Promise<RunOutcome>((resolve) => {
@@ -118,7 +127,10 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
                   effect_type: "consistency",
                   scope_type: "scene",
                   scope_target_id: sceneId,
-                  model,
+                  model: consistencyModel,
+                  model_override: resolveModelForPath(
+                    "post_effect_consistency",
+                  ),
                   prompt_version: CONSISTENCY_PROMPT_VERSION,
                   input_hash: payload.inputHash,
                   codex_payload_json: payload.codexPayloadJson,
@@ -238,7 +250,10 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
           }
         }
 
-        const otherModelCount = countOpenByOtherModel(resp.annotations, model);
+        const otherModelCount = countOpenByOtherModel(resp.annotations, [
+          consistencyModel,
+          model,
+        ]);
         if (otherModelCount.total > 0) {
           const sample = [...otherModelCount.byModel.entries()]
             .map(([m, n]) =>

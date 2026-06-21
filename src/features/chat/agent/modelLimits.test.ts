@@ -165,6 +165,29 @@ describe("getModelCapabilities", () => {
   });
 });
 
+describe("supportsStructuredJson (structured/review ロールの能力ゲート)", () => {
+  it("deepseek-r1 は構造化JSON非対応として curated (false)", () => {
+    expect(getModelCapabilities("deepseek-r1").supportsStructuredJson).toBe(
+      false,
+    );
+  });
+
+  it("OpenRouter プレフィックス経由でも curated 値を継承する", () => {
+    expect(
+      getModelCapabilities("deepseek/deepseek-r1").supportsStructuredJson,
+    ).toBe(false);
+  });
+
+  it("通常モデルは absent (= 既定 true 扱い)", () => {
+    expect(
+      getModelCapabilities("gpt-4o").supportsStructuredJson,
+    ).toBeUndefined();
+    expect(
+      getModelCapabilities("claude-opus-4-8").supportsStructuredJson,
+    ).toBeUndefined();
+  });
+});
+
 describe("modelSupportsTools", () => {
   it("Claude は対応", () =>
     expect(modelSupportsTools("claude-opus-4-6")).toBe(true));

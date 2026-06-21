@@ -223,6 +223,12 @@ export interface StartPostEffectRunRequest {
   scope_type: PostEffectScopeType;
   scope_target_id?: string | null;
   model: string;
+  /**
+   * 機能別モデル: review ロールの override（省略/空 = 既定モデル）。実 API 呼び出しの
+   * モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
+   * 解決は modelRouting.resolveModelForPath が正本。
+   */
+  model_override?: string | null;
   prompt_version: string;
   input_hash: string;
   /** JSON array of CodexPayloadEntry (consistency only; empty for intra_scene) */
@@ -246,6 +252,11 @@ export interface StartPostEffectRunMultiRequest {
   scope_type: PostEffectScopeType;
   scope_target_id?: string | null;
   model: string;
+  /**
+   * 機能別モデル: review ロールの override（省略/空 = 既定モデル）。実 API 呼び出しの
+   * モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
+   */
+  model_override?: string | null;
   prompt_version: string;
   input_hash: string;
   scenes: Array<{

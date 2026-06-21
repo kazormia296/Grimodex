@@ -84,16 +84,37 @@ Grimodex には LLM を実際に叩く経路が約 25 ある（正本は
 - ロールキーが空のため挙動は現状と完全同一（byte-identical）。これにより「UI は設定
   できるのに効かない」死に設定の再生産を、UI 露出前に解決層メタテストで封じる。
 
-### Phase 2 — ロール UI と能力フィルタ、旧キー吸収、Rust 配線
+### Phase 2 — ロール UI と能力フィルタ、旧キー吸収、Rust 配線（出荷済）
 
-- `AiCategory.tsx` に 6 ロールの ModelPicker（`PROMPT_CUSTOM_SLOTS` と同型の `.map`）。
-- `ModelPicker` の options を `modelWhitelist ∩ ロールの能力適合モデル`で絞る。
-- 旧 `ai.inlineModel` / `ai.sessionTitleModel` を `role.inline` / `role.cheap` の
-  別名シムとして吸収（既存ユーザー値を失わせない・死に設定を初めて実効化）。
-- Rust: `send_agent_message` に `model:Option<String>` 追加、`call_post_effect_api` の
-  `settings.model` べた書きを `model_override` で解決化。
-- `modelLimits.ts` に `supportsStructuredJson?:boolean`（absent ⇒ true）を curated 追加し、
-  `structured` / `review` ロールの JSON 構造化ゲートを有効化。
+- `AiCategory.tsx` に 6 ロールの ModelPicker（`MODEL_ROLES.map`）。旧 2 死にピッカー
+  （ai.inlineModel / ai.sessionTitleModel）は撤去し、`settings.ai.roleModel.*`（ja/en）を新設。
+- ロール ModelPicker の options を `modelWhitelist ∩ ロールの能力適合モデル`（`isModelCapableForRole`）
+  で絞る（whitelist 空なら全モデル）。
+- 旧 `ai.inlineModel` → `role.inline` / `ai.sessionTitleModel` → `role.cheap` を
+  `migrateModelRoleKeys`（migration.ts・`migrateCardLayoutKey` と同型の冪等シム）で吸収。
+  ブート列は `migrateAppSettingsToScopedStores` の後・`loadAll` の前。
+- Rust:
+  - `send_agent_message` に `model:Option<String>` 追加（`send_chat_message` と同一の
+    `filter(非空).unwrap_or(settings.model)` 解決）。agent ロールを配線。
+  - review post-effect は **独立した `model_override` フィールド**を `StartPostEffectRun(Multi)Args`
+    に追加し、登録済 6 effect の各 `process_*_scene` で `apply_model_override(read_ai_settings, override)`
+    で実呼び出しモデルだけ差し替え（既存 `model` は input_hash / runs.model 記録用に温存）。
+    非登録の typo / meta_structure / intra は不変（byte-identical）。
+- `modelLimits.ts` に `supportsStructuredJson?:boolean`（absent ⇒ true）を deepseek-r1=false で
+  curated 追加し（`mergeDynamicCaps` が継承）、`structured` / `review` ロールの JSON 構造化ゲートを有効化。
+
+#### Phase 2 で判明・対処した不変条件の穴（敵対レビュー）
+
+- **cache-key 一貫性**: post-effect の input_hash は `model` を含むため、FE の `model` 変数は
+  `resolveModelForPath(pathId) ?? baseModel`（実効モデル）にし、ロールモデル変更で正しく
+  キャッシュが無効化されるようにした。consistency と intra で `model` を共有する 2 view
+  （CurrentSceneAnnotationsView / ProjectAnnotationsView）は consistency 専用の実効モデルを
+  別途算出し、intra を汚さない。`countOpenByOtherModel` は単一モデルでなく「今回使った
+  モデル集合」で判定（別モデル警告の誤発火を防止）。
+- **thinking パラメータ整合**: agent / conversation / context_creator は
+  buildThinkingParams を**実効モデルから**算出するよう修正（変数 currentModel / chatModel /
+  effectiveModel を実効モデルに）。これで override モデルと thinking/variant/予算/記録が一致する
+  （未設定なら既定モデル = byte-identical）。単発経路（session_title 等）は Phase 1 で既に実効モデル算出済。
 
 ### Phase 3（任意・需要があれば）
 

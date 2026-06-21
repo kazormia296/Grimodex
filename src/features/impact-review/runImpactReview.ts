@@ -12,6 +12,7 @@ import {
   runPostEffectMulti,
   type PostEffectRunCallbacks,
 } from "@/features/post-effect/api";
+import { resolveModelForPath } from "@/features/chat/modelRouting";
 import {
   computeInputHash,
   normalizeText,
@@ -158,7 +159,10 @@ export async function runImpactReview(
   }
 
   const lang = getCurrentProjectLanguage();
-  const model = useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
+  const model =
+    resolveModelForPath("post_effect_impact_review") ??
+    useAiSettingsStore.getState().settings?.model ??
+    "gpt-4o-mini";
   const systemPrompt = getPromptCatalog(lang).postEffect.impactReviewSystem;
 
   const inputHash = await computeInputHash({
@@ -177,6 +181,7 @@ export async function runImpactReview(
       scope_type: "project",
       scope_target_id: null,
       model,
+      model_override: resolveModelForPath("post_effect_impact_review"),
       prompt_version: IMPACT_REVIEW_PROMPT_VERSION,
       input_hash: inputHash,
       scenes,

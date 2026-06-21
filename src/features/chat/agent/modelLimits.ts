@@ -35,6 +35,13 @@ export interface ModelCapabilities {
    * gpt-5-pro のような high 固定モデルは ["high"] にし、低 effort を 400 回避のため clamp する。
    */
   reasoningEffortValues?: Array<"low" | "medium" | "high">;
+  /**
+   * プロンプトベースの構造化 JSON 出力（extract_json で解析する単発 JSON）を
+   * 信頼して使えるか。absent ⇒ 対応扱い（既定 true）。modelRouting の
+   * structured / review ロールの能力ゲートが参照する。明確に不向きなモデル
+   * （冗長な CoT で厳密 JSON を崩しやすい等）にのみ false を curated 設定する。
+   */
+  supportsStructuredJson?: boolean;
 }
 
 const DEFAULT_CAPABILITIES: ModelCapabilities = {
@@ -189,6 +196,9 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
     supportsEffort: false,
     supportsMaxEffort: false,
     supportsReasoning: true,
+    // tool 非対応かつ冗長な推論出力で厳密 JSON を崩しやすいため、structured /
+    // review ロールの構造化 JSON 経路には不向きとして明示的に除外する。
+    supportsStructuredJson: false,
   },
   // OpenAI reasoning モデル（OpenRouter / OpenAI 直叩き両対応）。
   // 注: バージョンのドットはダッシュで保持（normalizeModelVersion が "5.1"→"5-1" に正規化）。
@@ -426,6 +436,9 @@ function mergeDynamicCaps(
     reasoningEffortValues: inheritNuance
       ? hardcoded.reasoningEffortValues
       : undefined,
+    // 構造化 JSON 適性はモデル固有プロパティ（プロバイダ非依存）。動的メタは
+    // これを報告しないため、curated 値をそのまま継承する。
+    supportsStructuredJson: hardcoded.supportsStructuredJson,
   };
 }
 

@@ -171,6 +171,8 @@ export async function sendAgentMessage(
   apiVariant?: string | null,
   webSearch?: WebSearchConfig | null,
   systemVolatileTail?: string,
+  /** agent ロールのモデル override（undefined/null = 既定モデルへフォールバック）。 */
+  model?: string | null,
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -183,6 +185,7 @@ export async function sendAgentMessage(
     apiVariant: apiVariant ?? null,
     webSearch: webSearch ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
+    model: model ?? null,
   });
 }
 

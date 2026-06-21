@@ -312,3 +312,93 @@ describe("seedProjectSettingsFromDefaults", () => {
     );
   });
 });
+
+describe("migrateModelRoleKeys", () => {
+  const mockUpdateGlobalSettings = vi.fn().mockResolvedValue(undefined);
+  const mockGetState = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.doMock("@/features/workspace/store", () => ({
+      useWorkspaceStore: { getState: mockGetState },
+    }));
+  });
+
+  it("旧 ai.inlineModel / ai.sessionTitleModel を role.inline / role.cheap へ移送し旧キーを除去する", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: {
+        userPreferences: {
+          "ai.inlineModel": "gpt-4o",
+          "ai.sessionTitleModel": "gpt-4o-mini",
+          "editor.fontSize": "16",
+        },
+      },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { migrateModelRoleKeys } = await import("./migration");
+    await migrateModelRoleKeys();
+
+    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+      userPreferences: {
+        "editor.fontSize": "16",
+        "aiModel.role.inline": "gpt-4o",
+        "aiModel.role.cheap": "gpt-4o-mini",
+      },
+    });
+  });
+
+  it("旧キーが無ければ no-op", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: { userPreferences: { "aiModel.role.inline": "gpt-4o" } },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { migrateModelRoleKeys } = await import("./migration");
+    await migrateModelRoleKeys();
+
+    expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();
+  });
+
+  it("ロール値が既にあれば上書きしない（旧キーはクリーンアップする）", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: {
+        userPreferences: {
+          "ai.inlineModel": "gpt-4o",
+          "aiModel.role.inline": "claude-opus-4-8",
+        },
+      },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { migrateModelRoleKeys } = await import("./migration");
+    await migrateModelRoleKeys();
+
+    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+      userPreferences: {
+        "aiModel.role.inline": "claude-opus-4-8",
+      },
+    });
+  });
+
+  it("空文字の旧値は移送せずクリーンアップのみ（ロールは未設定のまま）", async () => {
+    mockGetState.mockReturnValue({
+      globalSettings: {
+        userPreferences: {
+          "ai.sessionTitleModel": "",
+          "editor.fontSize": "16",
+        },
+      },
+      updateGlobalSettings: mockUpdateGlobalSettings,
+    });
+
+    const { migrateModelRoleKeys } = await import("./migration");
+    await migrateModelRoleKeys();
+
+    expect(mockUpdateGlobalSettings).toHaveBeenCalledWith({
+      userPreferences: {
+        "editor.fontSize": "16",
+      },
+    });
+  });
+});

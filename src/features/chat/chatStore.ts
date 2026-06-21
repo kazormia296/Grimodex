@@ -776,7 +776,16 @@ async function maybeRunSummarization(
 
     const summaryText = await runSummarization(
       candidates,
-      chatApi.sendChatMessageWithThinking,
+      // cheap ロール: 要約は injected callback 経由で model override を渡す。
+      (messages, thinkingParams) =>
+        chatApi.sendChatMessageWithThinking(
+          messages,
+          thinkingParams,
+          undefined,
+          undefined,
+          undefined,
+          resolveModelForPath("summarization"),
+        ),
       {
         lang,
         previousSummary,
@@ -3349,7 +3358,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         // Token budget + thinking params
         const aiSettings = useAiSettingsStore.getState().settings;
-        const currentModel = aiSettings?.model ?? "";
+        // agent ロールの override を実モデルとして解決し、API variant / トークン予算 /
+        // thinking パラメータ / usage 記録を全て実モデルから導出する。これにより
+        // send_agent_message に渡す override（resolveModelForPath）と thinking 等が
+        // 一致する（未設定なら既定モデル = byte-identical）。
+        const currentModel =
+          resolveModelForPath("chat_agent_main") ?? aiSettings?.model ?? "";
         const agentApiVariant = getChatApiVariant(currentModel);
         const tokenBudget = getToolTokenBudget(currentModel);
         // model-aware なツール呼び出し上限。大窓モデルほど多段探索を許す。
@@ -3481,6 +3495,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     agentApiVariant,
                     null,
                     undefined,
+                    resolveModelForPath("agent_research_subagent"),
                   ),
                 executeTool: executeReadOnlyTool,
                 onProgress: (p) => set({ subAgentProgress: p }),
@@ -3598,6 +3613,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               agentApiVariant,
               webSearchConfig,
               systemVolatileTailForAgent,
+              resolveModelForPath("chat_agent_main"),
             ),
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
@@ -3808,7 +3824,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }
 
       const aiSettings = useAiSettingsStore.getState().settings;
-      const chatModel = aiSettings?.model ?? "";
+      // conversation ロールの override を実モデルとして解決し、API variant / コンテキスト
+      // 予算 / thinking パラメータ / 記録を実モデルから導出する（transport に渡す
+      // override と一致。未設定なら既定モデル = byte-identical）。
+      const chatModel =
+        resolveModelForPath("chat_stream_non_agent") ?? aiSettings?.model ?? "";
       const chatApiVariant = getChatApiVariant(chatModel);
       const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
         chatModel,

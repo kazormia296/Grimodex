@@ -11,25 +11,21 @@
  *   - 能力ガード: ロールに必要な能力（agent=tool 対応必須）を満たさないモデルが
  *     指定された場合は override を無視して既定へフォールバックする（安全側）。
  *
- * Phase 1 ではロールキーは UI 未露出（常に空）。本層は「送信点を 1 つの解決規則へ
- * 通す」配線と、その byte-identical 性をテストで固める土台。ロール UI の露出と
- * 旧キー(ai.inlineModel / ai.sessionTitleModel)の吸収は Phase 2。
+ * Phase 2 で全ロール経路を配線し、ロール UI（AiCategory）と旧キー
+ * (ai.inlineModel / ai.sessionTitleModel) の吸収シム(migrateModelRoleKeys)、
+ * structured/review の構造化 JSON ゲートを追加した。空ロール時は wire 差分ゼロ。
  *
- * Phase 1 配線状況（呼び出し側で resolveModelForPath を model 引数へ渡す）:
- *   - 配線済（Rust が model:Option を受理済 = FE のみ）:
- *       conversation(chat_stream_non_agent), inline(inline_ai_stream),
- *       cheap(session_title, beat_role), structured(synopsis,
- *       foreshadow_audit_chapter, foreshadow_propose_past_setups,
- *       foreshadow_evaluate_setup_strength, map_branch, tree_scaffold,
- *       codex_judgment)
- *   - Phase 2 で配線（Rust 変更が必要）:
- *       agent(chat_agent_main, agent_research_subagent, context_creator)
- *         … send_agent_message に model:Option<String> 追加が必要
- *       review(post_effect_*) … call_post_effect_api の settings.model べた書きを
- *         model_override で解決化する必要
- *       cheap(summarization) … chatStore 経由の injected callback 配線（非破壊で後追い）
- * いずれも PATH_TO_ROLE には登録済（ロール割当は確定）。未配線でも空ロール時は
- * 既定動作のままで、Phase 2 の配線追加が後方互換で乗る。
+ * 全配線状況（呼び出し側で resolveModelForPath を model 引数へ渡す）:
+ *   - conversation: chat_stream_non_agent
+ *   - agent: chat_agent_main, agent_research_subagent, context_creator
+ *       … send_agent_message が model:Option<String> を受理（filter(非空).unwrap_or）
+ *   - inline: inline_ai_stream
+ *   - cheap: session_title, beat_role, summarization
+ *       … summarization は chatStore の injected callback 経由で model を注入
+ *   - structured: synopsis, foreshadow_*(3), map_branch, tree_scaffold, codex_judgment
+ *   - review: post_effect_*(6)
+ *       … start_post_effect_run(_multi) に model_override を渡し、各 process_*_scene が
+ *         read_ai_settings 後に override（既存 model=input_hash/記録用とは独立軸）
  */
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getModelCapabilities } from "./agent/modelLimits";
@@ -117,17 +113,25 @@ export function resolveRoleModel(
   role: ModelRole,
   getSetting: SettingGetter = defaultGetter,
 ): string | undefined {
-  const raw = getSetting(roleSettingKey(role)).trim();
+  // getter は未設定キーに対し空文字を返す契約だが、undefined を返す実装
+  // （ストア未初期化のテスト等）でも壊れないよう防御的に空文字へ丸める。
+  const raw = (getSetting(roleSettingKey(role)) ?? "").trim();
   return raw === "" ? undefined : raw;
 }
 
 /**
  * ロールが要求する能力をモデルが満たすか。満たさなければ override は無視される。
- * Phase 1 では agent の tool 対応のみをゲートする（structured / review の JSON
- * 構造化ゲートは modelLimits に supportsStructuredJson を足してから = Phase 2）。
+ *   - agent: tool 対応必須。
+ *   - structured / review: 構造化 JSON 出力の信頼性（supportsStructuredJson）。
+ *     absent ⇒ 対応扱い（既定 true）なので、明示的に false の curated モデル
+ *     （deepseek-r1 等）だけがゲートで弾かれる。
+ *   - conversation / inline / cheap: 制約なし。
  */
 export function isModelCapableForRole(model: string, role: ModelRole): boolean {
-  if (role === "agent") return getModelCapabilities(model).supportsTools;
+  const caps = getModelCapabilities(model);
+  if (role === "agent") return caps.supportsTools;
+  if (role === "structured" || role === "review")
+    return caps.supportsStructuredJson !== false;
   return true;
 }
 
