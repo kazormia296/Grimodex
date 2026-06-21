@@ -8,6 +8,26 @@
 
 **Tech Stack:** Tauri v2（capability/ACL・WebviewWindow・app.emit）、React 19 + TypeScript、Zustand（グローバル）、Drizzle ORM（sqlite-proxy、生 SQL 禁止）、Vitest。
 
+## 進捗ステータス（2026-06-21）
+
+ブランチ `feat/multiwindow-codex-write`（master 41dfd128 ベース）。
+
+**完了・検証済み（コミット済み）:**
+- ✅ **Phase 1 全部（安全基盤）**: Task 1 (version 列) / Task 2 (updateCodexEntry OCC) / Task 3 (updateText 非破壊衝突) / Task 4 (advisory lock 純レデューサ)。全 TDD・`pnpm test` codex 全 suite 緑(661)・`tsc` 0・`eslint` 0。
+- ✅ **Phase 2 のうち検証可能な基盤**: Task 5 (capability, `cargo check` 通過) / Task 6 (窓オプション) / Task 7 (窓モード判定) / `lib/tauri.emit` ラッパ / codexWindowSync (チャネル+emit/listen) / openCodexWindow。全 happy-dom ユニット緑。
+- ✅ 敵対レビュー実施（ブロッカー0）。指摘対応済み（チャネル名を慣習 `codex:subname` へ統一・openCodexWindow の失敗無通知を明記）。
+
+**残り（実機 Tauri ランタイム/GUI でしか検証できない統合配線。盲目実装で「動く」と主張しないため未着手）:**
+- ⬜ Task 8: `bootstrapCodexWindow`（initCurrentProject→loadEntries→theme）。
+- ⬜ Task 7 統合: `App.tsx` の codex モード分岐 + `LayoutShell` の solo-panel 描画一般化（**レイアウト変更=CI `pnpm test:browser` ゲート**）。
+- ⬜ Task 9 統合: codexStore の create/update/remove 後に `emitCodexChanged`、窓側で `onCodexChanged`→`loadEntries`（**自窓エコー reload と編集中 editor↔store 乖離の相互作用は実機検証必須**）。
+- ⬜ Task 10: `useCodexEditLock`（acquire/heartbeat/release emit + reduceLock 購読）+ `CodexDetailContent` の read-only バナー + `setCodexEditConflictHandler` でリロード導線。
+- ⬜ Task 6 統合: CodexManagementPanel に「別窓で開く」ボタン + `tauri://error` listen。
+- ⬜ Task 11: per-window 選択状態（別窓が別 entry を独立編集）。
+- ⬜ Phase 3: 実機 GUI QA チェックリスト一式。
+
+> 着手の勘所: 統合は `pnpm tauri dev` を回しながら反復検証するのが前提（多窓・capability ACL・vibrancy・レイアウトは sandbox 単体テスト不可）。emit 自窓エコーの reload-during-edit は最初に潰すべき罠。
+
 ## Global Constraints
 
 - ES modules のみ（CommonJS 禁止）。2 スペース、TypeScript strict。
