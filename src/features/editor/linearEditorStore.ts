@@ -17,10 +17,21 @@ interface LinearEditorState {
    */
   editorsById: Record<string, Editor>;
 
+  /**
+   * 進行中の Inline AI セッションを所有するシーン ID。
+   * useInlineAiStore はグローバル単一だがリニアは 1 シーン 1 エディタで複数
+   * ブロックが同時マウントされるため、「どのシーンが今の AI 提案の主か」を
+   * これで一意に決める。Inline AI ツールバーはこの owner ブロックでのみ
+   * マウントされ (=画面に 1 個だけ)、Accept/Reject/Retry が生成を開始した
+   * エディタへ正しくルーティングされる。null = セッションなし。
+   */
+  inlineAiOwnerSceneId: string | null;
+
   setFocusedEditor: (editor: Editor | null, sceneId: string | null) => void;
   setPendingScrollToId: (id: string | null) => void;
   registerEditor: (sceneId: string, editor: Editor) => void;
   unregisterEditor: (sceneId: string, editor: Editor) => void;
+  setInlineAiOwner: (sceneId: string | null) => void;
 }
 
 export const useLinearEditorStore = create<LinearEditorState>()((set) => ({
@@ -28,6 +39,7 @@ export const useLinearEditorStore = create<LinearEditorState>()((set) => ({
   focusedSceneId: null,
   pendingScrollToId: null,
   editorsById: {},
+  inlineAiOwnerSceneId: null,
 
   setFocusedEditor(editor, sceneId) {
     set({ focusedEditor: editor, focusedSceneId: sceneId });
@@ -52,5 +64,9 @@ export const useLinearEditorStore = create<LinearEditorState>()((set) => ({
       delete next[sceneId];
       return { editorsById: next };
     });
+  },
+
+  setInlineAiOwner(sceneId) {
+    set({ inlineAiOwnerSceneId: sceneId });
   },
 }));

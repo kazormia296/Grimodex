@@ -78,6 +78,75 @@ vi.mock("sonner", () => ({
   toast: { error: mockToastError, info: mockToastInfo },
 }));
 
+// Inline AI の配線テスト。実 generate は network を叩くため useInlineAiDiff を
+// スパイ化し、「スラッシュ → generate / palette / オーナーゲート」の配線だけを
+// 検証する。Toolbar / Palette は状態ゲートを持つ重いコンポーネントなので
+// 振る舞いを露出する最小スタブに差し替える。
+const inlineAiSpies = vi.hoisted(() => ({
+  generate: vi.fn(),
+  accept: vi.fn(),
+  reject: vi.fn(),
+  rejectOrAbort: vi.fn(),
+  retry: vi.fn(),
+}));
+vi.mock("@/features/editor/inlineAi/useInlineAiDiff", () => ({
+  useInlineAiDiff: () => ({
+    generate: inlineAiSpies.generate,
+    accept: inlineAiSpies.accept,
+    reject: inlineAiSpies.reject,
+    rejectOrAbort: inlineAiSpies.rejectOrAbort,
+    retry: inlineAiSpies.retry,
+    showProvidedText: vi.fn(),
+    getActiveStagingId: () => null,
+  }),
+}));
+const mockBuildContext = vi.hoisted(() => vi.fn(() => ({ sentinel: "ctx" })));
+vi.mock("@/features/editor/inlineAi/inlineAiContext", () => ({
+  buildInlineAiContext: mockBuildContext,
+}));
+vi.mock("@/features/editor/inlineAi/InlineAIToolbar", () => ({
+  InlineAIToolbar: ({
+    onAccept,
+    onReject,
+    onRetry,
+  }: {
+    onAccept: () => void;
+    onReject: () => void;
+    onRetry: () => void;
+  }) => (
+    <div data-testid="inline-ai-toolbar">
+      <button data-testid="ai-accept" onClick={onAccept} />
+      <button data-testid="ai-reject" onClick={onReject} />
+      <button data-testid="ai-retry" onClick={onRetry} />
+    </div>
+  ),
+}));
+vi.mock("@/features/editor/inlineAi/InlineAIPalette", () => ({
+  InlineAIPalette: ({
+    open,
+    preselectedCommand,
+    onSubmit,
+    onClose,
+  }: {
+    open: boolean;
+    preselectedCommand: { id: string } | null;
+    onSubmit: (c: unknown, p: string) => void;
+    onClose: () => void;
+  }) =>
+    open ? (
+      <div
+        data-testid="inline-ai-palette"
+        data-command={preselectedCommand?.id ?? ""}
+      >
+        <button
+          data-testid="palette-submit"
+          onClick={() => onSubmit(preselectedCommand, "テーマ")}
+        />
+        <button data-testid="palette-close" onClick={onClose} />
+      </div>
+    ) : null,
+}));
+
 // 実装は本物の useAutoSave を使いつつ、テストから pending を arm できるよう
 // 最後に生成されたインスタンスを捕捉する (render〜effect 間の arm 窓は
 // テストから直接は再現できないため)。
@@ -188,17 +257,18 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 
 function lastEditor(): Editor {
   return createdEditors[createdEditors.length - 1] as Editor;
 }
 
-function renderBlock() {
+function renderBlock({ isActive = false }: { isActive?: boolean } = {}) {
   return render(
     <LinearSceneBlock
       sceneId="scene-0001"
       isMounted={true}
-      isActive={false}
+      isActive={isActive}
       placeholderHeight={300}
       onHeightChange={() => {}}
       onFocus={() => {}}
@@ -215,6 +285,15 @@ beforeEach(() => {
   isFileBackedNodeMock.mockReturnValue(false);
   createdEditors.length = 0;
   useExternalWriteStore.getState().clear();
+  inlineAiSpies.generate.mockClear();
+  inlineAiSpies.accept.mockClear();
+  inlineAiSpies.reject.mockClear();
+  inlineAiSpies.rejectOrAbort.mockClear();
+  inlineAiSpies.retry.mockClear();
+  mockBuildContext.mockClear();
+  // グローバル単一 store / オーナーはテスト間で漏らさない。
+  useInlineAiStore.getState().reset();
+  useLinearEditorStore.getState().setInlineAiOwner(null);
 });
 
 describe("LinearSceneBlock: 本文消失ガード", () => {
@@ -514,12 +593,12 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
 // SlashCommandExtension は extensions 共有でリニアでも発火していたが、
 // CustomEvent を受けて実行するリスナーが EditorPane 専用だった。
 describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
-  async function renderLoaded() {
+  async function renderLoaded(opts: { isActive?: boolean } = {}) {
     mockLoadSceneFull.mockResolvedValue({
       content: MENTION_CONTENT,
       unplacedBeatsDoc: "[]",
     });
-    const utils = renderBlock();
+    const utils = renderBlock({ isActive: opts.isActive ?? false });
     await waitFor(() => {
       expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
     });
@@ -528,12 +607,27 @@ describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
 
   function dispatchSlashCommand(command: Record<string, unknown>) {
     const ed = lastEditor();
-    ed.view.dom.dispatchEvent(
-      new CustomEvent("inlineai:slash-command", {
-        detail: { command },
-        bubbles: true,
-      }),
-    );
+    act(() => {
+      ed.view.dom.dispatchEvent(
+        new CustomEvent("inlineai:slash-command", {
+          detail: { command },
+          bubbles: true,
+        }),
+      );
+    });
+  }
+
+  function startSession(commandId = "continue") {
+    act(() => {
+      useInlineAiStore.getState().startGeneration({
+        commandId,
+        mode: "insert",
+        originalRange: null,
+        originalText: "",
+        insertPos: 0,
+        abortController: new AbortController(),
+      });
+    });
   }
 
   it("insert-node (sceneBeat) は editor に Beat ノードを挿入する", async () => {
@@ -546,17 +640,128 @@ describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
       if (node.type.name === "sceneBeat") beats.push(node.attrs.id);
     });
     expect(beats).toHaveLength(1);
+    expect(inlineAiSpies.generate).not.toHaveBeenCalled();
     expect(mockToastInfo).not.toHaveBeenCalled();
   });
 
-  it("AI 生成系コマンドは未対応 toast を出し本文に書き込まない", async () => {
-    await renderLoaded();
-    const before = getDocText(lastEditor().state.doc);
+  it("引数不要の AI コマンドは generate を呼び、自シーンをオーナーに設定する", async () => {
+    await renderLoaded({ isActive: true });
 
     dispatchSlashCommand({ id: "continue", mode: "insert" });
 
+    expect(inlineAiSpies.generate).toHaveBeenCalledTimes(1);
+    expect(inlineAiSpies.generate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "continue" }),
+      { sentinel: "ctx" },
+    );
+    expect(mockToastInfo).not.toHaveBeenCalled();
+    expect(useLinearEditorStore.getState().inlineAiOwnerSceneId).toBe(
+      "scene-0001",
+    );
+  });
+
+  it("引数必須の AI コマンドはパレットを開き、submit で arg 付き generate を呼ぶ", async () => {
+    const { getByTestId, queryByTestId } = await renderLoaded({
+      isActive: true,
+    });
+
+    dispatchSlashCommand({ id: "describe", mode: "insert", needsArg: true });
+
+    // まだ generate は呼ばれず、パレットが該当コマンドで開く
+    expect(inlineAiSpies.generate).not.toHaveBeenCalled();
+    const palette = getByTestId("inline-ai-palette");
+    expect(palette.getAttribute("data-command")).toBe("describe");
+
+    act(() => {
+      getByTestId("palette-submit").click();
+    });
+
+    expect(mockBuildContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({ arg: "テーマ" }),
+    );
+    expect(inlineAiSpies.generate).toHaveBeenCalledTimes(1);
+    expect(inlineAiSpies.generate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "describe" }),
+      { sentinel: "ctx" },
+    );
+    // submit でパレットは閉じる
+    expect(queryByTestId("inline-ai-palette")).toBeNull();
+  });
+
+  it("マウント済みオーナーのセッション進行中は新コマンドを弾く", async () => {
+    await renderLoaded({ isActive: true });
+    startSession(); // status = generating
+    act(() => {
+      // owner がマウント済み (editorsById に居る) = 解決可能なツールバーが
+      // 画面に出ている状態。scene-0001 は mount 時に自己登録済み。
+      useLinearEditorStore.getState().setInlineAiOwner("scene-0001");
+    });
+
+    dispatchSlashCommand({ id: "continue", mode: "insert" });
+
+    expect(inlineAiSpies.generate).not.toHaveBeenCalled();
     expect(mockToastInfo).toHaveBeenCalled();
-    expect(getDocText(lastEditor().state.doc)).toBe(before);
+  });
+
+  it("オーナー不在の残存セッション (別モードの残骸) は畳んで続行する", async () => {
+    await renderLoaded({ isActive: true });
+    startSession(); // status = generating だが owner は null のまま
+
+    dispatchSlashCommand({ id: "continue", mode: "insert" });
+
+    // 解決手段が画面に無いので弾かず、stale を畳んで新規生成へ進む
+    expect(mockToastInfo).not.toHaveBeenCalled();
+    expect(inlineAiSpies.generate).toHaveBeenCalledTimes(1);
+    expect(useLinearEditorStore.getState().inlineAiOwnerSceneId).toBe(
+      "scene-0001",
+    );
+  });
+
+  it("オーナーのときだけ Inline AI ツールバーを描画する", async () => {
+    const { queryByTestId } = await renderLoaded({ isActive: true });
+
+    // 初期 (オーナー未設定) は出さない
+    expect(queryByTestId("inline-ai-toolbar")).toBeNull();
+
+    // 自シーンがオーナーになると出す
+    dispatchSlashCommand({ id: "continue", mode: "insert" });
+    expect(queryByTestId("inline-ai-toolbar")).not.toBeNull();
+
+    // 別シーンがオーナーなら消える
+    act(() => {
+      useLinearEditorStore.getState().setInlineAiOwner("other-scene");
+    });
+    expect(queryByTestId("inline-ai-toolbar")).toBeNull();
+  });
+
+  it("ツールバーの Accept/Reject/Retry は自シーンのハンドラへ配線される", async () => {
+    const { getByTestId } = await renderLoaded({ isActive: true });
+    dispatchSlashCommand({ id: "continue", mode: "insert" });
+
+    act(() => getByTestId("ai-accept").click());
+    expect(inlineAiSpies.accept).toHaveBeenCalledTimes(1);
+
+    act(() => getByTestId("ai-reject").click());
+    expect(inlineAiSpies.rejectOrAbort).toHaveBeenCalledTimes(1);
+
+    act(() => getByTestId("ai-retry").click());
+    expect(inlineAiSpies.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it("オーナー進行中にアンマウントされたらセッションを中止する (本文消失ガード)", async () => {
+    // unmount cleanup は reset() でセッションを畳む (in-flight stream の abort)。
+    // 未 accept テキストの焼き込みは onUpdate の autosave ゲートが防ぐ — その
+    // end-to-end は LinearSceneBlock.inlineAiBake.test.tsx で実エディタ検証する。
+    const { unmount } = await renderLoaded({ isActive: true });
+    act(() => {
+      useLinearEditorStore.getState().setInlineAiOwner("scene-0001");
+    });
+    startSession();
+    expect(useInlineAiStore.getState().status).toBe("generating");
+
+    unmount();
+
+    expect(useInlineAiStore.getState().status).toBe("idle");
   });
 });
 

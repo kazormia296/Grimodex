@@ -41,7 +41,7 @@ export function useInlineAiDiff(editor: Editor | null) {
       (p) => p.spec.key === inlineAiDiffKey,
     );
     if (!existing) {
-      editor.registerPlugin(createInlineAIDiffPlugin());
+      editor.registerPlugin(createInlineAIDiffPlugin(editor));
     }
     return () => {
       editor.unregisterPlugin(inlineAiDiffKey);
@@ -99,6 +99,7 @@ export function useInlineAiDiff(editor: Editor | null) {
         originalText,
         insertPos,
         abortController,
+        activeEditor: editor,
       });
 
       try {
@@ -327,6 +328,7 @@ export function useInlineAiDiff(editor: Editor | null) {
         originalText,
         insertPos,
         abortController: new AbortController(),
+        activeEditor: editor,
       });
       if (opts.stagingId) {
         useInlineAiStore.setState({ stagingId: opts.stagingId });

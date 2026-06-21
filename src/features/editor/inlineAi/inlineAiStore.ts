@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { Editor } from "@tiptap/core";
 import type { InlineAiState, InlineAiMode } from "./inlineAiTypes";
 
 interface InlineAiStoreState extends InlineAiState {
@@ -7,6 +8,14 @@ interface InlineAiStoreState extends InlineAiState {
    * 永続化対象外（store は persist していない）。
    */
   abortController: AbortController | null;
+  /**
+   * このセッションを所有するエディタ。グローバル単一 store を複数エディタが
+   * 共有するリニアモード (1シーン1エディタ) / 分割ビュー (2ペイン) で、diff
+   * 装飾とストリーミング中の入力ガード (InlineAIDiffPlugin) を「生成中のエディタ
+   * だけ」に効かせるための識別子。null のときはゲートしない (= 旧挙動)。
+   * 永続化対象外。
+   */
+  activeEditor: Editor | null;
   startGeneration: (params: {
     commandId: string;
     mode: InlineAiMode;
@@ -14,6 +23,8 @@ interface InlineAiStoreState extends InlineAiState {
     originalText: string;
     insertPos: number | null;
     abortController: AbortController;
+    /** 生成を所有するエディタ。省略時は null = ゲート無効 (旧挙動)。 */
+    activeEditor?: Editor | null;
   }) => void;
   appendChunk: (chunk: string) => void;
   finishGeneration: (model: string) => void;
@@ -44,6 +55,7 @@ const INITIAL_STATE: InlineAiState = {
 export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
   ...INITIAL_STATE,
   abortController: null,
+  activeEditor: null,
 
   startGeneration({
     commandId,
@@ -52,6 +64,7 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
     originalText,
     insertPos,
     abortController,
+    activeEditor = null,
   }) {
     set({
       status: "generating",
@@ -66,6 +79,7 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
       model: null,
       stagingId: null,
       abortController,
+      activeEditor,
     });
   },
 
@@ -96,6 +110,6 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
   reset() {
     const ac = get().abortController;
     ac?.abort();
-    set({ ...INITIAL_STATE, abortController: null });
+    set({ ...INITIAL_STATE, abortController: null, activeEditor: null });
   },
 }));
