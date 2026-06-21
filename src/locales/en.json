@@ -604,6 +604,7 @@
       "inlineAi": "Inline AI",
       "slashCommand": "Enable / commands",
       "paletteShortcut": "Enable Ctrl+Shift+Space palette",
+      "bubbleMenu": "Show selection toolbar",
       "animation": "Animations",
       "disableAll": "Disable all animations",
       "disableAllDesc": "Turn off all settings below at once",
@@ -3156,6 +3157,11 @@
       "generatingFromSynopsis": "Generating beats…",
       "dragHandle": "Drag to reorder"
     },
+    "bubbleMenu": {
+      "label": "Selection toolbar",
+      "comment": "Add comment",
+      "foreshadow": "Mark as foreshadowing"
+    },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",
       "italic": "Italic (Ctrl+I)",
@@ -3381,7 +3387,9 @@
         "target": "Target"
       }
     },
-    "linearUnsupported": "AI commands are not yet supported in linear mode. Run them in the normal editor."
+    "linearUnsupported": "AI commands are not yet supported in linear mode. Run them in the normal editor.",
+    "noResults": "No matching commands",
+    "slashMenuLabel": "Inline AI commands"
   },
   "relatedScenes": {
     "noActiveScene": "Select a scene to see related earlier scenes.",

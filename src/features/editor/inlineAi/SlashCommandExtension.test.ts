@@ -84,6 +84,21 @@ describe("editor.inlineAiCommand setting gates the slash suggestion", () => {
     editor.destroy();
   });
 
+  it("blocks mid-line '/' on purpose (line-start / empty-line only)", () => {
+    // 意図的な制約: 日本語でも半角スラッシュは本文中で普通に打つため、行頭/
+    // 空行以外では候補を出さない。行内トリガーは「未対応」ではなく仕様。
+    const editor = new Editor({
+      extensions: getEditorExtensions(),
+      content: "<p>hello /</p>",
+    });
+    const allow = getAllow(editor);
+    // "hello " (1..7) の直後にある "/" (pos 7) を範囲に取る。
+    expect(allow({ state: editor.state, range: { from: 7, to: 8 } })).toBe(
+      false,
+    );
+    editor.destroy();
+  });
+
   it("blocks when the setting is off, and re-enables at runtime", () => {
     const editor = new Editor({
       extensions: getEditorExtensions(),

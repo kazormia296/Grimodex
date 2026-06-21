@@ -25,6 +25,9 @@ vi.mock("@/features/editor/beat/SceneBeatEditorContext", () => ({
 vi.mock("@/features/editor/CodexPopover", () => ({
   CodexPopover: () => null,
 }));
+vi.mock("@/features/editor/EditorBubbleMenu", () => ({
+  EditorBubbleMenu: () => null,
+}));
 vi.mock("@/features/editor/EditorContextMenu", () => ({
   EditorContextMenu: () => null,
 }));
