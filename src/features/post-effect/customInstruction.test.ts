@@ -6,9 +6,13 @@ import {
   intentScopeSuffix,
   kouetsuScopeSuffix,
   storyContextScopeSuffix,
-  KOUETSU_JSON_DELIMITER,
+  findKouetsuDelimiter,
 } from "./customInstruction";
 import { JA_POST_EFFECT } from "@/prompts/ja/postEffect";
+
+// 校閲プロンプトはロケール別に翻訳される。これらの JA プロンプトが共有する
+// 区切り行プレフィックスを検出して使う (本番 append* と同じ検出経路)。
+const DELIM = findKouetsuDelimiter(JA_POST_EFFECT.consistencySystem)!;
 
 const ALL_KOUETSU_SYSTEMS: Array<[string, string]> = [
   ["consistency", JA_POST_EFFECT.consistencySystem],
@@ -33,13 +37,13 @@ describe("appendKouetsuGuidance", () => {
     const result = appendKouetsuGuidance(base, custom);
 
     const customIdx = result.indexOf(custom);
-    const delimIdx = result.indexOf(KOUETSU_JSON_DELIMITER);
+    const delimIdx = result.indexOf(DELIM);
     expect(customIdx).toBeGreaterThanOrEqual(0);
     expect(delimIdx).toBeGreaterThanOrEqual(0);
     // custom は区切り行より前
     expect(customIdx).toBeLessThan(delimIdx);
     // 区切り行以降 (= JSON スキーマ) は base と完全一致 (改変されない)
-    const baseDelimIdx = base.indexOf(KOUETSU_JSON_DELIMITER);
+    const baseDelimIdx = base.indexOf(DELIM);
     expect(result.slice(delimIdx)).toBe(base.slice(baseDelimIdx));
   });
 
@@ -50,7 +54,7 @@ describe("appendKouetsuGuidance", () => {
 
   it("7 校閲プロンプトすべてが区切り行をちょうど1個持つ (回帰防止)", () => {
     for (const [name, prompt] of ALL_KOUETSU_SYSTEMS) {
-      const occurrences = prompt.split(KOUETSU_JSON_DELIMITER).length - 1;
+      const occurrences = prompt.split(DELIM).length - 1;
       expect(occurrences, `${name} の区切り行出現回数`).toBe(1);
     }
   });
@@ -61,12 +65,10 @@ describe("appendKouetsuGuidance", () => {
       const result = appendKouetsuGuidance(prompt, custom);
       expect(result, name).toContain(custom);
       // 区切り行は依然 1 個 (二重挿入や破壊が起きていない)
-      const occurrences = result.split(KOUETSU_JSON_DELIMITER).length - 1;
+      const occurrences = result.split(DELIM).length - 1;
       expect(occurrences, `${name} 挿入後の区切り行`).toBe(1);
       // custom は区切り行の前
-      expect(result.indexOf(custom)).toBeLessThan(
-        result.indexOf(KOUETSU_JSON_DELIMITER),
-      );
+      expect(result.indexOf(custom)).toBeLessThan(result.indexOf(DELIM));
     }
   });
 });
@@ -89,14 +91,13 @@ describe("appendIntentGuidance", () => {
     expect(built).toContain(intent);
     expect(built).toContain("## 作者の狙い（このシーンで達成したいこと）");
     expect(built).toContain(custom);
-    expect(built).toContain("NOT a grader");
-    expect(built).toContain(KOUETSU_JSON_DELIMITER);
-    const delimIdx = built.indexOf(KOUETSU_JSON_DELIMITER);
+    // 反採点フレーミング (grader↔intent の肝) が翻訳後も残ることを担保する。
+    expect(built).toContain("採点者ではありません");
+    expect(built).toContain(DELIM);
+    const delimIdx = built.indexOf(DELIM);
     expect(built.indexOf(intent)).toBeLessThan(delimIdx);
     expect(built.indexOf(custom)).toBeLessThan(delimIdx);
-    expect(built.slice(delimIdx)).toBe(
-      base.slice(base.indexOf(KOUETSU_JSON_DELIMITER)),
-    );
+    expect(built.slice(delimIdx)).toBe(base.slice(base.indexOf(DELIM)));
   });
 });
 
@@ -143,14 +144,12 @@ describe("appendStoryContextGuidance", () => {
     const synopsis = "主人公が決意を固める転換点";
     const result = appendStoryContextGuidance(base, { synopsis });
     const synIdx = result.indexOf(synopsis);
-    const delimIdx = result.indexOf(KOUETSU_JSON_DELIMITER);
+    const delimIdx = result.indexOf(DELIM);
     expect(synIdx).toBeGreaterThanOrEqual(0);
     expect(delimIdx).toBeGreaterThanOrEqual(0);
     expect(synIdx).toBeLessThan(delimIdx);
     // 区切り行以降 (= JSON スキーマ) は base と完全一致 (改変されない)
-    expect(result.slice(delimIdx)).toBe(
-      base.slice(base.indexOf(KOUETSU_JSON_DELIMITER)),
-    );
+    expect(result.slice(delimIdx)).toBe(base.slice(base.indexOf(DELIM)));
   });
 
   it("枠見出しが『評価指示でない』ことを明示する (rubric 化防止 = 機能の本体)", () => {
@@ -167,9 +166,7 @@ describe("appendStoryContextGuidance", () => {
     const outline = "第3章: 対立の激化";
     const result = appendStoryContextGuidance(base, { outline });
     expect(result).toContain(outline);
-    expect(result.indexOf(outline)).toBeLessThan(
-      result.indexOf(KOUETSU_JSON_DELIMITER),
-    );
+    expect(result.indexOf(outline)).toBeLessThan(result.indexOf(DELIM));
   });
 
   it("synopsis と outline 両方を含める", () => {
@@ -198,15 +195,13 @@ describe("appendStoryContextGuidance", () => {
     );
     expect(built).toContain(custom);
     expect(built).toContain(synopsis);
-    const delimIdx = built.indexOf(KOUETSU_JSON_DELIMITER);
+    const delimIdx = built.indexOf(DELIM);
     expect(built.indexOf(custom)).toBeLessThan(delimIdx);
     expect(built.indexOf(synopsis)).toBeLessThan(delimIdx);
     // 区切り行は依然ちょうど1個 (二重挿入や破壊が起きていない)
-    expect(built.split(KOUETSU_JSON_DELIMITER).length - 1).toBe(1);
+    expect(built.split(DELIM).length - 1).toBe(1);
     // JSON スキーマ部は base と不変
-    expect(built.slice(delimIdx)).toBe(
-      base.slice(base.indexOf(KOUETSU_JSON_DELIMITER)),
-    );
+    expect(built.slice(delimIdx)).toBe(base.slice(base.indexOf(DELIM)));
   });
 
   it("review / meta_structure 両プロンプトで安全に挿入される", () => {
@@ -220,7 +215,7 @@ describe("appendStoryContextGuidance", () => {
       });
       expect(result).toContain("S");
       expect(result).toContain("O");
-      expect(result.split(KOUETSU_JSON_DELIMITER).length - 1).toBe(1);
+      expect(result.split(DELIM).length - 1).toBe(1);
     }
   });
 });

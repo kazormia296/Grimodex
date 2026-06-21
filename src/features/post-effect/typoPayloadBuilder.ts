@@ -14,7 +14,7 @@ import { prosemirrorToText } from "@/lib/prosemirror";
 import { computeInputHash, normalizeText } from "./canonicalize";
 import { kouetsuScopeSuffix } from "./customInstruction";
 
-export const TYPO_PROMPT_VERSION = "typo_detection_v1.0";
+export const TYPO_PROMPT_VERSION = "typo_detection_v1.1";
 
 export interface TypoPayloadResult {
   sceneText: string;

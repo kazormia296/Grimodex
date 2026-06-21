@@ -71,7 +71,7 @@ describe("buildIntentDriftPayload", () => {
       "gpt-4o-mini",
       "狙い",
     );
-    expect(INTENT_DRIFT_PROMPT_VERSION).toBe("intent_drift_v1.0");
+    expect(INTENT_DRIFT_PROMPT_VERSION).toBe("intent_drift_v1.1");
     expect(inputHash.length).toBeGreaterThan(0);
   });
 });

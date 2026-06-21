@@ -19,7 +19,7 @@ import { prosemirrorToText } from "@/lib/prosemirror";
 import { computeInputHash, normalizeText } from "./canonicalize";
 import { kouetsuScopeSuffix } from "./customInstruction";
 
-export const PSEUDO_COMMENT_PROMPT_VERSION = "pseudo_comment_v2.0";
+export const PSEUDO_COMMENT_PROMPT_VERSION = "pseudo_comment_v2.1";
 
 /** brief 解決に必要なプロジェクト文脈。 */
 export interface PersonaBriefContext {

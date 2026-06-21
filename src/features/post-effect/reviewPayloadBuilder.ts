@@ -17,7 +17,7 @@ import {
   type StoryContext,
 } from "./customInstruction";
 
-export const REVIEW_PROMPT_VERSION = "review_v1.0";
+export const REVIEW_PROMPT_VERSION = "review_v1.1";
 
 export interface ReviewPayloadResult {
   sceneText: string;

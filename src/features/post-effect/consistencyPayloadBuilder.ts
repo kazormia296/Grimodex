@@ -36,11 +36,11 @@ import { META_STRUCTURE_PROMPT_VERSION } from "./metaStructurePayloadBuilder";
 // Prompt versions (semver 定数)
 // プロンプトの本質的変更時に minor/major を上げる。
 // ---------------------------------------------------------------------------
-export const CONSISTENCY_PROMPT_VERSION = "consistency_v1.1";
-export const INTRA_CONSISTENCY_PROMPT_VERSION = "intra_scene_consistency_v1.0";
+export const CONSISTENCY_PROMPT_VERSION = "consistency_v1.2";
+export const INTRA_CONSISTENCY_PROMPT_VERSION = "intra_scene_consistency_v1.1";
 // impact_review (影響度レビュー): 変更された Codex 設定 (old→new) と本文の矛盾を
 // 指摘する。Rust 側 IMPACT_REVIEW_PROMPT_VERSION と必ず同値であること。
-export const IMPACT_REVIEW_PROMPT_VERSION = "impact_review_v1.0";
+export const IMPACT_REVIEW_PROMPT_VERSION = "impact_review_v1.1";
 
 // ---------------------------------------------------------------------------
 // Codex payload builder (consistency のみ使用)

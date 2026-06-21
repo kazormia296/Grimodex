@@ -15,13 +15,37 @@
 import { normalizeText } from "./canonicalize";
 
 /**
- * postEffect.ts の7プロンプト (consistency/typo/intra/review/pseudoComment/metaStructure/intentDrift)
- * すべてが共有する、出力スキーマ直前の区切り行。これより前に追記する。
- * 将来 postEffect をロケール別にする場合は、この検出も更新すること
- * (一致しなければ appendKouetsuGuidance は no-op になる = fail-safe)。
+ * postEffect プロンプトが出力スキーマ直前に持つ「区切り行」の検出プレフィックス。
+ * すべての校閲プロンプト (consistency/typo/intra/review/pseudoComment/
+ * metaStructure/intentDrift/timeline/impactReview) が、JSON 出力スキーマの直前に
+ * ロケール内で一字一句同じこの行を持つ。custom/intent/story-context/timeline の
+ * 各ガイダンスはこの行の *前* に挟むことで、JSON 形式指示が常に末尾に残る。
+ *
+ * postEffect はロケール別に翻訳されるため、language ごとに既知のプレフィックスを
+ * 列挙し `findKouetsuDelimiter` で順に検出する。末尾の句読点差に強いよう、行頭の
+ * 安定部分のみを持つ。新ロケール追加時はここへプレフィックスを足すこと
+ * (どれにも一致しなければ各 append* は no-op = fail-safe)。
  */
-export const KOUETSU_JSON_DELIMITER =
-  "Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):";
+export const KOUETSU_JSON_DELIMITERS = [
+  // en
+  "Respond with a JSON object in this exact format",
+  // ja
+  "以下の形式の JSON オブジェクトだけを返してください",
+] as const;
+
+/** 後方互換: 既定 (en) の区切り行プレフィックス。 */
+export const KOUETSU_JSON_DELIMITER = KOUETSU_JSON_DELIMITERS[0];
+
+/**
+ * prompt 内で最初に見つかった既知の区切り行プレフィックスを返す (無ければ null)。
+ * append* 系はこの戻り値で挿入位置 (indexOf) を決める。
+ */
+export function findKouetsuDelimiter(prompt: string): string | null {
+  for (const d of KOUETSU_JSON_DELIMITERS) {
+    if (prompt.includes(d)) return d;
+  }
+  return null;
+}
 
 /**
  * 校閲 system prompt にユーザー定義の追記指示を挿入する。
@@ -36,7 +60,8 @@ export function appendKouetsuGuidance(
   const trimmed = custom.trim();
   if (!trimmed) return basePrompt;
 
-  const idx = basePrompt.indexOf(KOUETSU_JSON_DELIMITER);
+  const delim = findKouetsuDelimiter(basePrompt);
+  const idx = delim === null ? -1 : basePrompt.indexOf(delim);
   // 区切り行が特定できないまま挿入すると JSON 末尾性を保証できないため追記しない。
   if (idx === -1) return basePrompt;
 
@@ -71,7 +96,8 @@ export function appendIntentGuidance(
   const trimmed = intent.trim();
   if (!trimmed) return basePrompt;
 
-  const idx = basePrompt.indexOf(KOUETSU_JSON_DELIMITER);
+  const delim = findKouetsuDelimiter(basePrompt);
+  const idx = delim === null ? -1 : basePrompt.indexOf(delim);
   if (idx === -1) return basePrompt;
 
   const before = basePrompt.slice(0, idx);
@@ -124,7 +150,8 @@ export function appendStoryContextGuidance(
   const outline = (ctx.outline ?? "").trim();
   if (!synopsis && !outline) return basePrompt;
 
-  const idx = basePrompt.indexOf(KOUETSU_JSON_DELIMITER);
+  const delim = findKouetsuDelimiter(basePrompt);
+  const idx = delim === null ? -1 : basePrompt.indexOf(delim);
   if (idx === -1) return basePrompt;
 
   const lines: string[] = [];
@@ -168,7 +195,8 @@ export function appendTimelineGuidance(
   const trimmed = timeline.trim();
   if (!trimmed) return basePrompt;
 
-  const idx = basePrompt.indexOf(KOUETSU_JSON_DELIMITER);
+  const delim = findKouetsuDelimiter(basePrompt);
+  const idx = delim === null ? -1 : basePrompt.indexOf(delim);
   if (idx === -1) return basePrompt;
 
   const before = basePrompt.slice(0, idx);

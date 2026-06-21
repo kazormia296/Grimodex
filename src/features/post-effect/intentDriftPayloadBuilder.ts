@@ -10,7 +10,7 @@ import { prosemirrorToText } from "@/lib/prosemirror";
 import { computeInputHash, normalizeText } from "./canonicalize";
 import { intentScopeSuffix, kouetsuScopeSuffix } from "./customInstruction";
 
-export const INTENT_DRIFT_PROMPT_VERSION = "intent_drift_v1.0";
+export const INTENT_DRIFT_PROMPT_VERSION = "intent_drift_v1.1";
 
 export interface IntentDriftPayloadResult {
   sceneText: string;

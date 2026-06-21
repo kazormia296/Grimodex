@@ -21,7 +21,7 @@ import { kouetsuScopeSuffix, timelineScopeSuffix } from "./customInstruction";
 // v1.1: timelineContext に scene_id を埋め込み、causality finding で LLM に
 // cause_scene_id を返させる (因果地図用)。scene_id 注入で timelineScopeSuffix 経由の
 // input_hash も自動的に変わるため既存 completed run は再診断される。
-export const TIMELINE_CONSISTENCY_PROMPT_VERSION = "timeline_consistency_v1.1";
+export const TIMELINE_CONSISTENCY_PROMPT_VERSION = "timeline_consistency_v1.2";
 
 /** タイムライン要約 1 エントリの本文抜粋の最大文字数 (system_prompt 肥大化を防ぐ)。 */
 export const TIMELINE_ENTRY_EXCERPT_MAX = 100;

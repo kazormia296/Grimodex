@@ -119,6 +119,142 @@ describe("computeCodexDiff", () => {
     };
     expect(computeCodexDiff(null, empty)).toEqual([]);
   });
+
+  it("base diff is unaffected by absent phases (back-compat)", () => {
+    // phases undefined on both sides → identical → no changes.
+    expect(computeCodexDiff(base, { ...base })).toEqual([]);
+  });
+
+  it("detects a phase-specific content override edit", () => {
+    const b: CodexSnapshot = {
+      ...base,
+      phases: [
+        {
+          phaseId: "p1",
+          label: "第2部",
+          summary: null,
+          contentPlain: "都に出る。",
+          details: [],
+        },
+      ],
+    };
+    const cur: CodexSnapshot = {
+      ...base,
+      phases: [
+        {
+          phaseId: "p1",
+          label: "第2部",
+          summary: null,
+          contentPlain: "王都の騎士団に所属する。",
+          details: [],
+        },
+      ],
+    };
+    const changes = computeCodexDiff(b, cur);
+    expect(changes).toContainEqual({
+      field: "phase_content",
+      name: null,
+      phase: "第2部",
+      old: "都に出る。",
+      new: "王都の騎士団に所属する。",
+    });
+    // base fields untouched → only the phase change is emitted.
+    expect(changes).toHaveLength(1);
+  });
+
+  it("detects a phase summary override and phase detail override edit", () => {
+    const b: CodexSnapshot = {
+      ...base,
+      phases: [
+        {
+          phaseId: "p1",
+          label: "第2部",
+          summary: "17歳。",
+          contentPlain: null,
+          details: [{ name: "所属", value: "なし" }],
+        },
+      ],
+    };
+    const cur: CodexSnapshot = {
+      ...base,
+      phases: [
+        {
+          phaseId: "p1",
+          label: "第2部",
+          summary: "18歳。隊長。",
+          contentPlain: null,
+          details: [{ name: "所属", value: "騎士団" }],
+        },
+      ],
+    };
+    const changes = computeCodexDiff(b, cur);
+    expect(changes).toContainEqual({
+      field: "phase_summary",
+      name: null,
+      phase: "第2部",
+      old: "17歳。",
+      new: "18歳。隊長。",
+    });
+    expect(changes).toContainEqual({
+      field: "phase_detail",
+      name: "所属",
+      phase: "第2部",
+      old: "なし",
+      new: "騎士団",
+    });
+  });
+
+  it("treats a newly added phase override (null baseline phase) as old=''", () => {
+    const b: CodexSnapshot = { ...base, phases: [] };
+    const cur: CodexSnapshot = {
+      ...base,
+      phases: [
+        {
+          phaseId: "p1",
+          label: "第2部",
+          summary: null,
+          contentPlain: "騎士団に入る。",
+          details: [],
+        },
+      ],
+    };
+    const changes = computeCodexDiff(b, cur);
+    expect(changes).toContainEqual({
+      field: "phase_content",
+      name: null,
+      phase: "第2部",
+      old: "",
+      new: "騎士団に入る。",
+    });
+  });
+
+  it("emits nothing for a phase that has no overrides", () => {
+    const b: CodexSnapshot = {
+      ...base,
+      phases: [
+        {
+          phaseId: "p1",
+          label: "第2部",
+          summary: null,
+          contentPlain: null,
+          details: [],
+        },
+      ],
+    };
+    const cur: CodexSnapshot = {
+      ...base,
+      phases: [
+        {
+          phaseId: "p1",
+          label: "第2部",
+          summary: null,
+          contentPlain: null,
+          details: [],
+        },
+      ],
+    };
+    expect(computeCodexDiff(b, cur)).toEqual([]);
+  });
 });
 
 describe("summarizeChanges", () => {
@@ -141,6 +277,28 @@ describe("summarizeChanges", () => {
 
   it("renders empty change list as empty string", () => {
     expect(summarizeChanges([])).toBe("");
+  });
+
+  it("renders phase changes with the phase label", () => {
+    const s = summarizeChanges([
+      {
+        field: "phase_content",
+        name: null,
+        phase: "第2部",
+        old: "a",
+        new: "b",
+      },
+      {
+        field: "phase_detail",
+        name: "所属",
+        phase: "第2部",
+        old: "なし",
+        new: "騎士団",
+      },
+    ]);
+    expect(s).toContain("第2部");
+    expect(s).toContain("所属");
+    expect(s).toContain("騎士団");
   });
 });
 

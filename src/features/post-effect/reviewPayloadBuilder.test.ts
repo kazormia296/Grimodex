@@ -91,7 +91,7 @@ describe("buildReviewPayload", () => {
       "",
     );
     expect(sceneText).toContain("本文テスト");
-    expect(REVIEW_PROMPT_VERSION).toBe("review_v1.0");
+    expect(REVIEW_PROMPT_VERSION).toBe("review_v1.1");
     expect(inputHash.length).toBeGreaterThan(0);
   });
 });

@@ -11,19 +11,39 @@ export type ImpactChangeField =
   | "aliases"
   | "summary"
   | "content"
-  | "detail";
+  | "detail"
+  // フェーズ別オーバーライド（フェーズ切替後の上書き）の変更。
+  | "phase_summary"
+  | "phase_content"
+  | "phase_detail";
 
 export interface ImpactChange {
   field: ImpactChangeField;
-  /** field='detail' のとき detail 名。それ以外は null */
+  /** field='detail'/'phase_detail' のとき detail 名。それ以外は null */
   name: string | null;
+  /** field='phase_*' のときフェーズ label。それ以外は省略。 */
+  phase?: string;
   old: string;
   new: string;
 }
 
 /**
+ * フェーズ別オーバーライドのスナップショット。
+ * 値は「上書き値」（null=ベース継承）。base content と同様 contentPlain は
+ * plain text、details は includeInContext な上書きのみ。
+ */
+export interface PhaseSnapshot {
+  phaseId: string;
+  label: string;
+  summary: string | null;
+  contentPlain: string | null;
+  details: Array<{ name: string; value: string }>;
+}
+
+/**
  * 差分の対象となる Codex の正規化済みスナップショット。
  * summary/contentPlain は plain text、details は includeInContext な値のみ。
+ * phases はフェーズ別オーバーライド（任意・旧 baseline には存在しない）。
  */
 export interface CodexSnapshot {
   name: string;
@@ -31,6 +51,7 @@ export interface CodexSnapshot {
   summary: string;
   contentPlain: string;
   details: Array<{ name: string; value: string }>;
+  phases?: PhaseSnapshot[];
 }
 
 const EMPTY_SNAPSHOT: CodexSnapshot = {
@@ -39,6 +60,7 @@ const EMPTY_SNAPSHOT: CodexSnapshot = {
   summary: "",
   contentPlain: "",
   details: [],
+  phases: [],
 };
 
 /** content/summary の old/new がペイロードを肥大させないための上限。 */
@@ -128,15 +150,94 @@ export function computeCodexDiff(
     }
   }
 
+  // phases: phaseId をキーに union 比較。フェーズ別の summary/content/detail
+  // オーバーライド（null=ベース継承）を base と同じ規則で diff する。base 説明を
+  // フェーズ上書きしていた場合の編集はここで拾う（base のみ見ると取りこぼす）。
+  diffPhases(b.phases ?? [], current.phases ?? [], changes);
+
   return changes;
 }
 
-const FIELD_LABEL: Record<Exclude<ImpactChangeField, "detail">, string> = {
-  name: "名前",
-  aliases: "別名",
-  summary: "要約",
-  content: "本文",
-};
+/** フェーズ別オーバーライドの差分を changes に push する。 */
+function diffPhases(
+  bPhases: PhaseSnapshot[],
+  curPhases: PhaseSnapshot[],
+  changes: ImpactChange[],
+): void {
+  const bById = new Map(bPhases.map((p) => [p.phaseId, p]));
+  const curById = new Map(curPhases.map((p) => [p.phaseId, p]));
+  const phaseIds: string[] = [];
+  const seenPhase = new Set<string>();
+  for (const p of [...bPhases, ...curPhases]) {
+    if (!seenPhase.has(p.phaseId)) {
+      seenPhase.add(p.phaseId);
+      phaseIds.push(p.phaseId);
+    }
+  }
+
+  for (const phaseId of phaseIds) {
+    const bp = bById.get(phaseId);
+    const cp = curById.get(phaseId);
+    // label は現在側を優先（削除フェーズは baseline 側）。
+    const label = cp?.label ?? bp?.label ?? "";
+
+    const oldSummary = bp?.summary ?? "";
+    const newSummary = cp?.summary ?? "";
+    if (cmp(oldSummary) !== cmp(newSummary)) {
+      changes.push({
+        field: "phase_summary",
+        name: null,
+        phase: label,
+        old: cap(oldSummary),
+        new: cap(newSummary),
+      });
+    }
+
+    const oldContent = bp?.contentPlain ?? "";
+    const newContent = cp?.contentPlain ?? "";
+    if (cmp(oldContent) !== cmp(newContent)) {
+      changes.push({
+        field: "phase_content",
+        name: null,
+        phase: label,
+        old: cap(oldContent),
+        new: cap(newContent),
+      });
+    }
+
+    const bDetail = new Map((bp?.details ?? []).map((d) => [d.name, d.value]));
+    const cDetail = new Map((cp?.details ?? []).map((d) => [d.name, d.value]));
+    const detailNames: string[] = [];
+    const seenDetail = new Set<string>();
+    for (const d of [...(bp?.details ?? []), ...(cp?.details ?? [])]) {
+      if (!seenDetail.has(d.name)) {
+        seenDetail.add(d.name);
+        detailNames.push(d.name);
+      }
+    }
+    for (const name of detailNames) {
+      const ov = bDetail.get(name) ?? "";
+      const nv = cDetail.get(name) ?? "";
+      if (cmp(ov) !== cmp(nv)) {
+        changes.push({
+          field: "phase_detail",
+          name,
+          phase: label,
+          old: ov,
+          new: nv,
+        });
+      }
+    }
+  }
+}
+
+const FIELD_LABEL: Record<"name" | "aliases" | "summary" | "content", string> =
+  {
+    name: "名前",
+    aliases: "別名",
+    summary: "要約",
+    content: "本文",
+  };
 
 function truncForSummary(s: string): string {
   const t = s.trim();
@@ -147,12 +248,15 @@ function truncForSummary(s: string): string {
 /** 変更点を「年齢: 15 → 17 / 要約を変更」風の人間可読サマリにする。 */
 export function summarizeChanges(changes: ImpactChange[]): string {
   const parts = changes.map((c) => {
-    if (c.field === "detail") {
-      return `${c.name}: ${truncForSummary(c.old)} → ${truncForSummary(c.new)}`;
+    const prefix = c.phase ? `[${c.phase}] ` : "";
+    if (c.field === "detail" || c.field === "phase_detail") {
+      return `${prefix}${c.name}: ${truncForSummary(c.old)} → ${truncForSummary(c.new)}`;
     }
     if (c.field === "name" || c.field === "aliases") {
       return `${FIELD_LABEL[c.field]}: ${truncForSummary(c.old)} → ${truncForSummary(c.new)}`;
     }
+    if (c.field === "phase_summary") return `${prefix}要約を変更`;
+    if (c.field === "phase_content") return `${prefix}説明を変更`;
     return `${FIELD_LABEL[c.field]}を変更`;
   });
   return parts.join(" / ");
