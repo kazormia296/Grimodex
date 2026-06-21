@@ -49,9 +49,10 @@ describe("codexWindowSync transport", () => {
     expect(listenMock).toHaveBeenCalledWith(CODEX_LOCK_CHANNEL, h2);
   });
 
-  it("チャネル名は data:// と codex-lock:// 名前空間で衝突しない", () => {
+  it("チャネル名は慣習 codex:subname で衝突しない", () => {
     expect(CODEX_CHANGED_CHANNEL).not.toBe(CODEX_LOCK_CHANNEL);
-    expect(CODEX_CHANGED_CHANNEL).toContain("codex");
+    expect(CODEX_CHANGED_CHANNEL).toMatch(/^codex:/);
+    expect(CODEX_LOCK_CHANNEL).toMatch(/^codex:/);
     expect(CODEX_LOCK_CHANNEL).toContain("lock");
   });
 });

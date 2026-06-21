@@ -13,10 +13,13 @@
 import { emit, listen } from "@/lib/tauri";
 import type { LockEvent } from "./codexEditLock";
 
+// チャネル名はコードベース慣習 `name:subname`（chat:stream-chunk /
+// license:state_changed 等）に合わせる。将来 Rust 側が同名で emit/listen する
+// 際の grep・契約照合の一貫性のため。
 /** あるプロジェクトの Codex データが変わった通知（受け手は loadEntries で再 hydrate）。 */
-export const CODEX_CHANGED_CHANNEL = "data://codex-changed";
+export const CODEX_CHANGED_CHANNEL = "codex:data-changed";
 /** Codex 本文編集の advisory lock イベント。 */
-export const CODEX_LOCK_CHANNEL = "codex-lock://event";
+export const CODEX_LOCK_CHANNEL = "codex:lock-event";
 
 export interface CodexChangedPayload {
   projectId: string;

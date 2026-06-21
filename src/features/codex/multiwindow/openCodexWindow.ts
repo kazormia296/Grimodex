@@ -16,6 +16,9 @@ export async function openCodexWindow(): Promise<void> {
     return;
   }
   const { label, ...options } = buildCodexWindowOptions();
-  // 生成自体が登録（戻り値は使わない。失敗イベントは呼び出し側 UI で扱う）。
+  // 生成自体が窓を登録する。WebviewWindow は内部で失敗時 `tauri://error` を
+  // 自イベントへ流すので unhandled rejection でクラッシュはしない。ただし
+  // 現状その失敗は無通知。Phase 2 で開くボタンを配線する際、呼び出し側で
+  // `win.once("tauri://error", …)` を listen してユーザー通知すること（TODO）。
   new WebviewWindow(label, options);
 }
