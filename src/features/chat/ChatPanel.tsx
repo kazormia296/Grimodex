@@ -14,6 +14,7 @@ import { getMapBoard } from "@/features/map/mapApi";
 import { useSceneStore } from "@/features/tree/store";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatMessageContextMenu } from "./components/ChatMessageContextMenu";
@@ -630,8 +631,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         await chatApi.updateMessageMetadata(messageId, {
           extractedCodex: [entry.id],
         });
-        useLayoutStore.getState().showPanel("codex");
-        useCodexStore.getState().requestSelectEntry(entry.id);
+        void requestOpenInCodex(entry.id);
       }
     },
     [createCodexEntry],
@@ -1245,8 +1245,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
             messageRole: "assistant",
           });
           if (entry) {
-            useLayoutStore.getState().showPanel("codex");
-            useCodexStore.getState().requestSelectEntry(entry.id);
+            void requestOpenInCodex(entry.id);
           }
         }}
         onClose={() =>

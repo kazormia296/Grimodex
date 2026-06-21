@@ -1,6 +1,7 @@
 import i18next from "i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import type {
@@ -73,8 +74,7 @@ function gatherMatches(query: string, limit: number): CommandCenterItem[] {
         title,
         badge: { label: "Codex", tone: "codex" },
         onSelect: () => {
-          useCodexStore.getState().requestSelectEntry(entry.id);
-          useLayoutStore.getState().showPanel("codex");
+          void requestOpenInCodex(entry.id);
         },
       },
     });

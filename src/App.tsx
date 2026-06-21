@@ -81,6 +81,7 @@ import {
   isPanelWindow,
   getPanelWindowTarget,
 } from "@/features/layout/multiwindow/panelWindow";
+import { useCodexSelectionSync } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { cn } from "@/lib/utils";
 
 /* ── App root ── */
@@ -278,6 +279,9 @@ function EditorScreen() {
 
   // AI 応答ストリームの開始/完了を SR へ読み上げる (a11y)。単一マウント。
   useAiStreamingAnnouncer();
+
+  // 窓間の Codex 選択連動（別窓 Codex 編集。codex:select-entry を購読）。
+  useCodexSelectionSync();
 
   useEffect(() => {
     void initializeExternalMounts().catch(() => {});

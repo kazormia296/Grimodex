@@ -1,8 +1,7 @@
 import { ArrowRight, ExternalLink, MapPinOff } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { clipValue, type ParsedAnnotationMeta } from "./annotationMeta";
 import type {
   IntentDriftRelation,
@@ -11,8 +10,7 @@ import type {
 } from "./types";
 
 function openCodexEntry(id: string) {
-  useLayoutStore.getState().showPanel("codex");
-  useCodexStore.getState().requestSelectEntry(id);
+  void requestOpenInCodex(id);
 }
 
 interface CodexChipProps {

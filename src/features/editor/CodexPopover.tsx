@@ -3,8 +3,8 @@ import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
 import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import { useResolvedCodexStates } from "@/features/codex/useResolvedCodexStates";
@@ -113,8 +113,7 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
     "#888888";
   function handleOpenInCodex() {
     setPopover((s) => ({ ...s, visible: false }));
-    useLayoutStore.getState().showPanel("codex");
-    useCodexStore.getState().requestSelectEntry(entry!.id);
+    void requestOpenInCodex(entry!.id);
   }
 
   return createPortal(

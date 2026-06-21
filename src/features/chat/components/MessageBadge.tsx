@@ -8,6 +8,7 @@ import { listCodexEntriesByMessageId } from "@/features/codex/api";
 import type { Snippet } from "@/features/snippets/api";
 import { listSnippetsByMessageId } from "@/features/snippets/api";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
@@ -51,8 +52,7 @@ export function _clearMessageBadgeCache(): void {
 }
 
 function openCodexEntry(id: string) {
-  useLayoutStore.getState().showPanel("codex");
-  useCodexStore.getState().requestSelectEntry(id);
+  void requestOpenInCodex(id);
 }
 
 function openSnippetEntry(id: string) {

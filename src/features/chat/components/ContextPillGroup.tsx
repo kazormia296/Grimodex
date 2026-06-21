@@ -12,8 +12,7 @@ import type { CodexEntry } from "@/features/codex/api";
 import type { PinnedCodexEntryWithData } from "../chatApi";
 import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
 import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
-import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 
 interface ContextPillGroupProps {
@@ -105,8 +104,7 @@ export function ContextPillGroup({
 
   function handleOpenInCodex(entryId: string) {
     setHoveredEntry(null);
-    useLayoutStore.getState().showPanel("codex");
-    useCodexStore.getState().requestSelectEntry(entryId);
+    void requestOpenInCodex(entryId);
   }
 
   function handleToggle() {

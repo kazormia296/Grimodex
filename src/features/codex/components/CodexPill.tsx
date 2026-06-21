@@ -10,8 +10,7 @@ import { createPortal } from "react-dom";
 import type { CodexEntry } from "@/features/codex/api";
 import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import { CodexEntryPopoverContent } from "./CodexEntryPopoverContent";
 import { cn } from "@/lib/utils";
@@ -88,8 +87,7 @@ export function CodexPill({
       onOpenInCodex();
       return;
     }
-    useLayoutStore.getState().showPanel("codex");
-    useCodexStore.getState().requestSelectEntry(entry.id);
+    void requestOpenInCodex(entry.id);
   }
 
   function handleDefaultClick(e: MouseEvent<HTMLElement>) {

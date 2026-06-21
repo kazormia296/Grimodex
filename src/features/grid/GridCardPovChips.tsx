@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useSceneBeatPovStore } from "@/features/editor/beat/sceneBeatPovStore";
 
 const MAX_CHIPS = 3;
@@ -61,8 +61,7 @@ export function GridCardPovChips({ sceneId, scenePovCharacterId }: Props) {
 
   function handleChipClick(e: React.MouseEvent, entryId: string) {
     e.stopPropagation();
-    useCodexStore.getState().requestSelectEntry(entryId);
-    useLayoutStore.getState().showPanel("codex");
+    void requestOpenInCodex(entryId);
   }
 
   return (

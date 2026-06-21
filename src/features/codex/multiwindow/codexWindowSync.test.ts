@@ -9,10 +9,13 @@ vi.mock("@/lib/tauri", () => ({ emit: emitMock, listen: listenMock }));
 import {
   CODEX_CHANGED_CHANNEL,
   CODEX_LOCK_CHANNEL,
+  CODEX_SELECT_ENTRY_CHANNEL,
   emitCodexChanged,
   emitLockEvent,
+  emitSelectEntry,
   onCodexChanged,
   onLockEvent,
+  onSelectEntry,
 } from "./codexWindowSync";
 import type { LockEvent } from "./codexEditLock";
 
@@ -49,10 +52,37 @@ describe("codexWindowSync transport", () => {
     expect(listenMock).toHaveBeenCalledWith(CODEX_LOCK_CHANNEL, h2);
   });
 
+  it("emitSelectEntry は select チャネルへ entryId を撃つ", async () => {
+    await emitSelectEntry("e1");
+    expect(emitMock).toHaveBeenCalledWith(CODEX_SELECT_ENTRY_CHANNEL, {
+      entryId: "e1",
+    });
+  });
+
+  it("onSelectEntry は payload から entryId を取り出して handler に渡す", async () => {
+    let captured: ((p: { entryId: string }) => void) | undefined;
+    listenMock.mockImplementation(
+      (_ch: string, h: (p: { entryId: string }) => void) => {
+        captured = h;
+        return Promise.resolve(() => {});
+      },
+    );
+    const handler = vi.fn();
+    await onSelectEntry(handler);
+    expect(listenMock).toHaveBeenCalledWith(
+      CODEX_SELECT_ENTRY_CHANNEL,
+      expect.any(Function),
+    );
+    captured?.({ entryId: "e9" });
+    expect(handler).toHaveBeenCalledWith("e9");
+  });
+
   it("チャネル名は慣習 codex:subname で衝突しない", () => {
     expect(CODEX_CHANGED_CHANNEL).not.toBe(CODEX_LOCK_CHANNEL);
+    expect(CODEX_CHANGED_CHANNEL).not.toBe(CODEX_SELECT_ENTRY_CHANNEL);
     expect(CODEX_CHANGED_CHANNEL).toMatch(/^codex:/);
     expect(CODEX_LOCK_CHANNEL).toMatch(/^codex:/);
+    expect(CODEX_SELECT_ENTRY_CHANNEL).toMatch(/^codex:/);
     expect(CODEX_LOCK_CHANNEL).toContain("lock");
   });
 });

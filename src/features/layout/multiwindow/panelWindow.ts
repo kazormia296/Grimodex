@@ -80,3 +80,14 @@ export async function openPanelWindow(panelId: PanelId): Promise<void> {
   const { label: l, ...options } = buildPanelWindowOptions(panelId);
   new WebviewWindow(l, options);
 }
+
+/**
+ * そのパネルの別窓が存在すれば WebviewWindow ハンドルを返す（無ければ null）。
+ * ルーティング判定（別窓があるか）や focus に使う。非 Tauri は null。
+ */
+export async function getPanelWindowHandle(
+  panelId: PanelId,
+): Promise<WebviewWindow | null> {
+  if (!isTauri()) return null;
+  return WebviewWindow.getByLabel(panelWindowLabel(panelId));
+}

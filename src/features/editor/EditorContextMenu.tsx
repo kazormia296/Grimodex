@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import type { Editor } from "@tiptap/react";
 import { BUILTIN_CODEX_TYPES } from "@/features/codex/api";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import {
   findMentionedEntries,
   type CodexMatchTarget,
@@ -192,8 +193,7 @@ export function EditorContextMenu({
       summary: "",
     });
     if (entry) {
-      useLayoutStore.getState().showPanel("codex");
-      useCodexStore.getState().requestSelectEntry(entry.id);
+      void requestOpenInCodex(entry.id);
     }
   };
 

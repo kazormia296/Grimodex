@@ -20,9 +20,15 @@ import type { LockEvent } from "./codexEditLock";
 export const CODEX_CHANGED_CHANNEL = "codex:data-changed";
 /** Codex 本文編集の advisory lock イベント。 */
 export const CODEX_LOCK_CHANNEL = "codex:lock-event";
+/** 「この Codex エントリを開く/選択」を窓間で連動させる通知。 */
+export const CODEX_SELECT_ENTRY_CHANNEL = "codex:select-entry";
 
 export interface CodexChangedPayload {
   projectId: string;
+}
+
+export interface CodexSelectEntryPayload {
+  entryId: string;
 }
 
 export function emitCodexChanged(projectId: string): Promise<void> {
@@ -43,4 +49,16 @@ export function onLockEvent(
   handler: (ev: LockEvent) => void,
 ): Promise<() => void> {
   return listen<LockEvent>(CODEX_LOCK_CHANNEL, handler);
+}
+
+export function emitSelectEntry(entryId: string): Promise<void> {
+  return emit<CodexSelectEntryPayload>(CODEX_SELECT_ENTRY_CHANNEL, { entryId });
+}
+
+export function onSelectEntry(
+  handler: (entryId: string) => void,
+): Promise<() => void> {
+  return listen<CodexSelectEntryPayload>(CODEX_SELECT_ENTRY_CHANNEL, (p) =>
+    handler(p.entryId),
+  );
 }
