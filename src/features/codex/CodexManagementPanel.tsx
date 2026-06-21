@@ -1166,6 +1166,7 @@ export function CodexManagementPanel({
                     phaseIdOverride={
                       previewPhaseByEntry[selectedEntry.id] ?? null
                     }
+                    readOnly={!canEditSelected}
                   />
                 </div>
               </div>

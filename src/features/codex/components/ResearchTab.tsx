@@ -4,9 +4,15 @@ import { CodexContentEditor } from "./CodexContentEditor";
 interface ResearchTabProps {
   notes: string;
   onNotesChange: (notes: string) => void;
+  /** 別窓が同一 entry を編集中 → notes も read-only（advisory lock）。 */
+  readOnly?: boolean;
 }
 
-export function ResearchTab({ notes, onNotesChange }: ResearchTabProps) {
+export function ResearchTab({
+  notes,
+  onNotesChange,
+  readOnly = false,
+}: ResearchTabProps) {
   const { t } = useTranslation();
   return (
     <div className="space-y-3">
@@ -17,7 +23,11 @@ export function ResearchTab({ notes, onNotesChange }: ResearchTabProps) {
             ({t("codex.research.notInContext")})
           </span>
         </label>
-        <CodexContentEditor content={notes} onContentChange={onNotesChange} />
+        <CodexContentEditor
+          content={notes}
+          onContentChange={onNotesChange}
+          readOnly={readOnly}
+        />
       </div>
     </div>
   );

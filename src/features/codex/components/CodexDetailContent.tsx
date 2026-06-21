@@ -481,6 +481,7 @@ export function CodexDetailContent({
           <ResearchTab
             notes={emptyNotes ? "" : (entry.notes ?? "")}
             onNotesChange={handleNotesChange}
+            readOnly={readOnly}
           />
         )}
         {activeTab === "timeline" && <TimelineTab entry={entry} />}

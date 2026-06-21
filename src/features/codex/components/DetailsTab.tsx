@@ -273,8 +273,9 @@ export function DetailsTab({
             data-testid="codex-detail-summary"
             value={summary}
             onChange={(e) => handleSummaryChange(e.target.value)}
+            readOnly={readOnly}
             rows={3}
-            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm read-only:opacity-60"
             placeholder="Short description..."
           />
         )}
