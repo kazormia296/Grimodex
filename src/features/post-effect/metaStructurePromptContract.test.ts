@@ -4,7 +4,7 @@ import { getPromptCatalog } from "@/prompts/index";
 
 describe("meta_structure prompt contract", () => {
   it("version は v1.1 以降", () => {
-    expect(META_STRUCTURE_PROMPT_VERSION).toBe("meta_structure_v1.1");
+    expect(META_STRUCTURE_PROMPT_VERSION).toBe("meta_structure_v1.2");
   });
   for (const lang of ["ja", "en"] as const) {
     it(`${lang}: plot_structure に tension 0-1 必須を明記`, () => {

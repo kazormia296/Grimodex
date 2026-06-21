@@ -16,7 +16,7 @@ import {
   type StoryContext,
 } from "./customInstruction";
 
-export const META_STRUCTURE_PROMPT_VERSION = "meta_structure_v1.1";
+export const META_STRUCTURE_PROMPT_VERSION = "meta_structure_v1.2";
 
 export interface MetaStructurePayloadResult {
   sceneText: string;

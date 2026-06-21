@@ -25,21 +25,21 @@ use crate::ai::{call_post_effect_api, read_ai_settings};
 // 両側を同期して bump し、cache key が新しい input_hash と再計算される。
 // ---------------------------------------------------------------------------
 
-const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.1";
-const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.0";
+const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.2";
+const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.1";
 // impact_review (影響度レビュー): 変更された Codex 設定 (old→new) に対し本文中の
 // 矛盾箇所を指摘する。FE 側 (consistencyPayloadBuilder.ts) と必ず同値であること。
-const IMPACT_REVIEW_PROMPT_VERSION: &str = "impact_review_v1.0";
-const TYPO_PROMPT_VERSION: &str = "typo_detection_v1.0";
-const REVIEW_PROMPT_VERSION: &str = "review_v1.0";
-const INTENT_DRIFT_PROMPT_VERSION: &str = "intent_drift_v1.0";
+const IMPACT_REVIEW_PROMPT_VERSION: &str = "impact_review_v1.1";
+const TYPO_PROMPT_VERSION: &str = "typo_detection_v1.1";
+const REVIEW_PROMPT_VERSION: &str = "review_v1.1";
+const INTENT_DRIFT_PROMPT_VERSION: &str = "intent_drift_v1.1";
 // timeline_consistency は multi (folder/project) スコープ専用。multi コマンドは
 // prompt_version を検証しない (TS が timelinePayloadBuilder で権威を持つ) ため、
 // Rust 側に prompt_version const は持たない。
 // v2.0: ペルソナを bare label から genre/想定読者プロフィールを織り込んだ
 // brief 注入へ刷新 (TS pseudoCommentPayloadBuilder と同期)。
-const PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_v2.0";
-const META_STRUCTURE_PROMPT_VERSION: &str = "meta_structure_v1.1";
+const PSEUDO_COMMENT_PROMPT_VERSION: &str = "pseudo_comment_v2.1";
+const META_STRUCTURE_PROMPT_VERSION: &str = "meta_structure_v1.2";
 
 // システムプロンプト本文は FE catalog (src/prompts/ja/postEffect.ts) で管理し、
 // `StartPostEffectRunArgs.system_prompt` として IPC 経由で渡される。

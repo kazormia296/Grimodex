@@ -7,7 +7,7 @@ vi.mock("./baseline", () => ({ getBaseline: vi.fn(), saveBaseline: vi.fn() }));
 vi.mock("./narrowing", () => ({ narrowCandidateScenes: vi.fn() }));
 vi.mock("@/features/post-effect/api", () => ({ runPostEffectMulti: vi.fn() }));
 vi.mock("@/features/post-effect/consistencyPayloadBuilder", () => ({
-  IMPACT_REVIEW_PROMPT_VERSION: "impact_review_v1.0",
+  IMPACT_REVIEW_PROMPT_VERSION: "impact_review_v1.1",
 }));
 vi.mock("@/prompts/index", () => ({
   getPromptCatalog: () => ({ postEffect: { impactReviewSystem: "SYS" } }),
@@ -97,7 +97,7 @@ describe("runImpactReview", () => {
 
     const [req] = vi.mocked(runPostEffectMulti).mock.calls[0];
     expect(req.effect_type).toBe("impact_review");
-    expect(req.prompt_version).toBe("impact_review_v1.0");
+    expect(req.prompt_version).toBe("impact_review_v1.1");
     expect(req.scenes).toHaveLength(2);
     const payload = JSON.parse(req.scenes[0].codex_payload_json);
     expect(payload.entry_id).toBe("e1");
