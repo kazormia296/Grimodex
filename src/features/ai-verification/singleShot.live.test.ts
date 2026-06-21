@@ -42,6 +42,12 @@ import {
   parseTreePlan,
   type GenerateTreePlanInput,
 } from "@/features/tree/aiScaffold/generate";
+import {
+  buildSystemPrompt as buildInlineSystemPrompt,
+  buildUserPrompt as buildInlineUserPrompt,
+} from "@/features/editor/inlineAi/inlineAiApi";
+import { getInlineAiCommands } from "@/features/editor/inlineAi/inlineAiCommands";
+import type { InlineAiContext } from "@/features/editor/inlineAi/inlineAiTypes";
 import type { ChatMessage } from "@/features/chat/chatTypes";
 import type { RoleInferenceInput } from "@/features/editor/beat/inferMentionRoles";
 import { meanPairwiseDistinctness } from "@/lib/textDiversity";
@@ -362,6 +368,66 @@ describe.skipIf(!KEY)(
         for (const op of plan.ops) {
           expect(op.op).toBe("create");
         }
+      },
+      LIVE_TIMEOUT,
+    );
+
+    // ── inline AI 補完の出力プロンプト QA ────────────────────────────────────
+    // EditorPane と リニア (LinearSceneBlock/useLinearInlineAi) が共有する本番
+    // ビルダー inlineAiApi.buildSystemPrompt/buildUserPrompt (= getPromptCatalog().
+    // inlineAi) を実 InlineAiContext で組み、実モデル出力を QA する。リクエスト
+    // 挙動は別 it ("streaming surfaces:") が、ここでは出力プロンプトの品質を見る。
+    it(
+      "inline_ai_output: continue は文脈の続きを生成する",
+      async () => {
+        const continueCmd = getInlineAiCommands().find(
+          (c) => c.id === "continue",
+        )!;
+        const ctx: InlineAiContext = {
+          projectTitle: "鋼の戴冠",
+          sceneTitle: "古書店の密談",
+          sceneText:
+            "朱音は埃をかぶった棚から革表紙の本を抜き取った。頁を開くと、見覚えのある筆跡が並んでいた。",
+          codexSummaries:
+            "- 朱音: 古書に触れると書き手の記憶を読む力を持つ少女。",
+          cursorContext:
+            "頁を開くと、見覚えのある筆跡が並んでいた。【カーソル】",
+          customInstruction: "",
+        };
+        const { text } = await runLiveSingleShot(
+          buildInlineUserPrompt(continueCmd, ctx, "ja"),
+          { system: buildInlineSystemPrompt(continueCmd, ctx, "ja") },
+        );
+        console.log("inline_ai_output continue:", text.slice(0, 160));
+        expect(text.trim().length).toBeGreaterThan(0);
+      },
+      LIVE_TIMEOUT,
+    );
+
+    it(
+      "inline_ai_output: rewrite は選択文を別表現へ書き換える",
+      async () => {
+        const rewriteCmd = getInlineAiCommands().find(
+          (c) => c.id === "rewrite",
+        )!;
+        const selected = "彼は走った。";
+        const ctx: InlineAiContext = {
+          projectTitle: "鋼の戴冠",
+          sceneTitle: "追跡",
+          sceneText: `路地裏に銃声が響いた。${selected}息が上がり、視界が滲む。`,
+          codexSummaries: "",
+          selectedText: selected,
+          customInstruction: "",
+        };
+        const { text } = await runLiveSingleShot(
+          buildInlineUserPrompt(rewriteCmd, ctx, "ja"),
+          { system: buildInlineSystemPrompt(rewriteCmd, ctx, "ja") },
+        );
+        console.log("inline_ai_output rewrite:", text.slice(0, 160));
+        const out = text.trim();
+        expect(out.length).toBeGreaterThan(0);
+        // 書き換えなので入力選択文そのままではない。
+        expect(out).not.toBe(selected);
       },
       LIVE_TIMEOUT,
     );

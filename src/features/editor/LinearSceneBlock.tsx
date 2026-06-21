@@ -50,9 +50,12 @@ import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransitio
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { EditorContentSkeleton } from "@/features/editor/EditorContentSkeleton";
 import i18next from "@/lib/i18n";
-import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
+import { useLinearInlineAi } from "./useLinearInlineAi";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
+import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 
 // sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
@@ -223,6 +226,15 @@ function MountedSceneBlock({
         // setEditable 等の doc 未変更 'update' を保存に流さない
         // (EditorPane.onUpdate と同じガード — 詳細はそちらのコメント参照)。
         if (!transaction.docChanged) return;
+        // インライン AI の生成中・diff 表示中は "このエディタ" の編集をオート
+        // セーブしない (EditorPane.onUpdate と同じ契約)。未 accept の生成テキスト
+        // が autosave で焼き込まれる (= 未帰属保存・本文消失) のを防ぐ。Accept/
+        // Reject が idle に戻した時点の reset+dispatch の onUpdate が改めて
+        // schedule する。owner 判定 (activeEditor === e) なので、別シーンで AI
+        // 実行中でも当シーンの通常編集は通常どおり保存される (リニアは複数
+        // エディタがグローバル単一 store を共有するため status だけでは不可)。
+        const aiState = useInlineAiStore.getState();
+        if (aiState.status !== "idle" && aiState.activeEditor === e) return;
         if (loadFailedRef.current) {
           // 調査ログ: 未ロード窓で doc を変更している犯人の特定用。
           // 保存自体は coreSave 側 guard で skip される。
@@ -299,41 +311,15 @@ function MountedSceneBlock({
     };
   }, [sceneId, editor]);
 
-  // SlashCommandExtension が dispatch する inlineai:slash-command の実行配線。
-  // CustomEvent は各エディタの view.dom に対して dispatch されるため、各
-  // ブロックは自分のエディタのイベントだけを受ける (EditorPane と同じ経路)。
-  // 構造挿入 (insert-node) は AI パイプライン不要なのでそのまま実行する。
-  // AI 生成系は inline-AI 差分スタック (palette / diff / staging) がリニアに
-  // 未配線のため、通常モードへの誘導 toast を出す — 本文サーフェスへの
-  // 書き込み経路を検証なしで持ち込まない (content-loss 系の前科があるため
-  // 別タスクで QA 込みで移植する)。
-  useEffect(() => {
-    if (!editor) return;
-    const ed = editor;
-    let dom: HTMLElement;
-    try {
-      dom = ed.view.dom;
-    } catch {
-      return;
-    }
-    function onSlashCommand(e: Event) {
-      const cmd = (e as CustomEvent).detail?.command as
-        | InlineAiCommand
-        | undefined;
-      if (!cmd) return;
-      if (cmd.kind === "insert-node") {
-        if (cmd.id === "sceneBeat") {
-          ed.chain().focus().insertSceneBeat().run();
-        }
-        return;
-      }
-      toast.info(i18next.t("inlineAi.linearUnsupported"));
-    }
-    dom.addEventListener("inlineai:slash-command", onSlashCommand);
-    return () => {
-      dom.removeEventListener("inlineai:slash-command", onSlashCommand);
-    };
-  }, [editor]);
+  // SlashCommandExtension が dispatch する inlineai:slash-command の実行配線
+  // (構造挿入 sceneBeat + AI 生成系の generate/palette/toolbar)。グローバル単一
+  // store と複数ブロックの両立 (owner ルーティング / 1 セッション / 中止) は
+  // useLinearInlineAi に集約する。file-backed は Inline AI 非対象なので null を渡す。
+  const inlineAi = useLinearInlineAi({
+    sceneId,
+    editor,
+    inlineAiEditor: isFileBacked ? null : editor,
+  });
 
   // saveScene(sceneId) で外部から flush 可能にする (EditorPane と同じ契約)。
   // これが無いと agent 書き込み (autoApplyProse) / Codex 改名波及 /
@@ -627,6 +613,28 @@ function MountedSceneBlock({
           </div>
         </div>
       </div>
+      {/* 引数入力パレットは fixed overlay。開いている owner ブロックだけが
+          マウントする (画面内で 1 個)。isActive ではなく paletteOpen でゲート
+          するのは、モーダル表示中のスクロールで active が切り替わっても
+          入力中のパレットが消えないようにするため。 */}
+      {editor && inlineAi.paletteOpen && (
+        <InlineAIPalette
+          editor={editor}
+          open={inlineAi.paletteOpen}
+          preselectedCommand={inlineAi.paletteCommand}
+          onClose={inlineAi.closePalette}
+          onSubmit={inlineAi.submitPalette}
+        />
+      )}
+      {/* diff の Accept/Reject/Retry ツールバー。owner ブロックだけがマウント
+          する (画面に 1 個・keydown も 1 本)。可視性は status で自前にゲートする。 */}
+      {inlineAi.isOwner && (
+        <InlineAIToolbar
+          onAccept={inlineAi.onAccept}
+          onReject={inlineAi.onReject}
+          onRetry={inlineAi.onRetry}
+        />
+      )}
     </div>
   );
 }

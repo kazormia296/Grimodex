@@ -274,8 +274,8 @@ export const AI_PATHS: AiPathEntry[] = [
     transport: "send_inline_ai_stream",
     verifier: "js-live",
     testRef: SINGLE_SHOT_TEST,
-    testName: "streaming surfaces:",
-    note: "リクエスト挙動は runLiveSingleShot で検証。inline-ai:stream-* イベント配信は Rust/Tauri 層（非再現）。",
+    testName: "inline_ai_output:",
+    note: "本番ビルダー inlineAiApi.buildSystemPrompt/buildUserPrompt（= getPromptCatalog().inlineAi）を実 InlineAiContext で組み、runLiveSingleShot で実モデル出力を QA（continue=文脈の続き生成／rewrite=選択文の別表現化）。リクエストが実モデルに到達し非空応答を返すリクエスト挙動も同時に検証。inline-ai:stream-* イベント配信は Rust/Tauri 層（非再現）。リニア（LinearSceneBlock/useLinearInlineAi）は EditorPane と同一ビルダー・transport を再利用するため、本テストが両サーフェスの出力を網羅する。",
   },
 
   // ── ④ Rust 校閲 post-effect graders ──────────────────────────────────────

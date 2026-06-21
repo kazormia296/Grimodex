@@ -1,8 +1,20 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import type { Editor } from "@tiptap/core";
 import { useInlineAiStore } from "./inlineAiStore";
 
 export const inlineAiDiffKey = new PluginKey<DecorationSet>("inlineAiDiff");
+
+/**
+ * グローバル単一 store を複数エディタが共有するとき、このプラグインの装飾と
+ * 入力ガードを「生成を所有するエディタ」以外で黙らせる。owner 未指定、または
+ * store.activeEditor 未設定 (旧経路) のときはゲートしない。
+ */
+function isForeignEditor(ownerEditor: Editor | undefined): boolean {
+  if (!ownerEditor) return false;
+  const active = useInlineAiStore.getState().activeEditor;
+  return active != null && active !== ownerEditor;
+}
 
 /**
  * ProseMirror decoration plugin that visualises inline AI generated text.
@@ -10,8 +22,12 @@ export const inlineAiDiffKey = new PluginKey<DecorationSet>("inlineAiDiff");
  * - Replace mode: strikethrough (`.diff-remove`) on original + green on new
  *
  * Reuses existing `.diff-add` / `.diff-remove` CSS classes from index.css.
+ *
+ * @param ownerEditor このプラグインを載せるエディタ。複数エディタが同じ
+ *   グローバル store を共有する場合 (linear / split view)、生成中でない側で
+ *   他人のセッションの装飾を描いたり入力を握りつぶしたりしないために渡す。
  */
-export function createInlineAIDiffPlugin(): Plugin {
+export function createInlineAIDiffPlugin(ownerEditor?: Editor): Plugin {
   return new Plugin({
     key: inlineAiDiffKey,
     state: {
@@ -22,6 +38,11 @@ export function createInlineAIDiffPlugin(): Plugin {
         const aiState = useInlineAiStore.getState();
 
         if (aiState.status !== "generating" && aiState.status !== "diffShown") {
+          return DecorationSet.empty;
+        }
+        // 他エディタのセッション中は装飾しない (別 doc の同一オフセットに
+        // 幽霊 diff-add/diff-remove が出るのを防ぐ)。
+        if (isForeignEditor(ownerEditor)) {
           return DecorationSet.empty;
         }
 
@@ -70,6 +91,9 @@ export function createInlineAIDiffPlugin(): Plugin {
     filterTransaction(tr) {
       const aiState = useInlineAiStore.getState();
       if (aiState.status !== "generating") return true;
+      // 生成中なのが「別エディタ」なら、このエディタの入力は握りつぶさない
+      // (リニアで隣のシーンへのタイプがサイレントに落ちるのを防ぐ)。
+      if (isForeignEditor(ownerEditor)) return true;
       if (!tr.docChanged) return true;
       if (tr.getMeta("inlineAiInsert") === true) return true;
       if (tr.getMeta("addToHistory") === false) return true;
