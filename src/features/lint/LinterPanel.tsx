@@ -34,6 +34,7 @@ import { DisablesView } from "./LintDisablesView";
 import type { ScannedScene } from "./projectScan";
 import { extensionFor, renderReport, type ReportFormat } from "./lintReport";
 import { runLintNow } from "./useLinter";
+import { subscribeProjectSnapshotToLiveLint } from "./projectFixSync";
 import {
   applyAutoResolvedTypos,
   collectTypoAnnotationsResolvedByFix,
@@ -1053,6 +1054,11 @@ function ProjectLinterView() {
   } | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
+  // Project スナップショットをライブ Lint に追従させる。Fix/編集後に再 Lint
+  // が settle するたび、該当（スキャン済み）シーンの診断を最新へ差し替える。
+  // これがないと Fix した診断が scan 時のスナップショットに残り続ける。
+  useEffect(() => subscribeProjectSnapshotToLiveLint(), []);
+
   const counts = useMemo(() => {
     const c = { error: 0, warning: 0, info: 0 };
     for (const scene of scenes) {
@@ -1217,6 +1223,10 @@ function ProjectLinterView() {
       if (autoResolveIds.length > 0) {
         void applyAutoResolvedTypos(autoResolveIds, editor, scene.sceneId);
       }
+      // Project パネルは lintProjectStore のスキャン結果を描画しており、
+      // runLintNow が更新するのは現在シーンの lintStore だけ。再 Lint 結果の
+      // Project スナップショットへの反映は subscribeProjectSnapshotToLiveLint
+      // が settle 購読で行う（一発同期だと debounce 再 Lint との競合に弱い）。
       void runLintNow(editor, scene.sceneId);
     },
     [editor, currentSceneId, projectPushNotification, t],

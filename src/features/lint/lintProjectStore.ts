@@ -45,7 +45,17 @@ interface LintProjectState {
   start: (projectId: string) => Promise<void>;
   cancel: () => void;
   clear: () => void;
-  replaceSceneDiagnostics: (sceneId: string, diagnostics: Diagnostic[]) => void;
+  /**
+   * Replace a scanned scene's diagnostics in place. `sceneText` may be
+   * passed when the scene body changed (e.g. after a Fix re-lint) so the
+   * stored text stays consistent with the new diagnostic offsets — later
+   * ignore-matching slices the snippet at each range out of `sceneText`.
+   */
+  replaceSceneDiagnostics: (
+    sceneId: string,
+    diagnostics: Diagnostic[],
+    sceneText?: string,
+  ) => void;
   /** Request a scene open + jump. Consumed once by useLinter. */
   pendingJump: PendingJump | null;
   requestJump: (jump: PendingJump) => void;
@@ -192,10 +202,16 @@ export const useLintProjectStore = create<LintProjectState>()((set, get) => ({
     });
   },
 
-  replaceSceneDiagnostics: (sceneId, diagnostics) => {
+  replaceSceneDiagnostics: (sceneId, diagnostics, sceneText) => {
     set((s) => ({
       scenes: s.scenes.map((scn) =>
-        scn.sceneId === sceneId ? { ...scn, diagnostics } : scn,
+        scn.sceneId === sceneId
+          ? {
+              ...scn,
+              diagnostics,
+              ...(sceneText !== undefined ? { sceneText } : {}),
+            }
+          : scn,
       ),
     }));
   },
