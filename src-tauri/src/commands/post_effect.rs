@@ -3275,6 +3275,7 @@ async fn process_intent_drift_scene(
     Ok(count)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_intent_drift_task(
     app: AppHandle,
     run_id: String,
@@ -3775,6 +3776,7 @@ async fn run_impact_review_task(
     .await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_review_task(
     app: AppHandle,
     run_id: String,
@@ -4140,6 +4142,7 @@ async fn run_meta_structure_task(
 // Multi-scene run task
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn run_multi_task(
     app: AppHandle,
     run_id: String,
