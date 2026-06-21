@@ -20,7 +20,10 @@ vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(async () => ({})),
   // ブラウザモードはネイティブ ESM リンクのため、import graph 内で使われる
   // named export が factory に無いと SyntaxError になる。
+  // (PanelChromeMenu→panelWindow が isTauri、codex multiwindow が emit を使う)
   listen: vi.fn(async () => () => {}),
+  emit: vi.fn(async () => {}),
+  isTauri: () => false,
 }));
 
 vi.mock("./panelComponents", () => ({
