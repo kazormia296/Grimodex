@@ -8,6 +8,8 @@ import {
 } from "@/components/ui/context-menu";
 import { useLayoutStore } from "./layoutStore";
 import type { PanelId } from "./panelIds";
+import { isTauri } from "@/lib/tauri";
+import { openPanelWindow, isPanelWindow } from "./multiwindow/panelWindow";
 
 /**
  * パネル chrome 操作（折りたたみ / 最大化）のジェスチャ対象かを判定する。
@@ -101,6 +103,14 @@ export function PanelChromeMenu({ panelId, children }: PanelChromeMenuProps) {
         >
           {t("layout.panelMenu.collapse")}
         </ContextMenuItem>
+        {isTauri() && !isPanelWindow() && (
+          <ContextMenuItem
+            data-testid={`panel-ctx-open-window-${panelId}`}
+            onSelect={() => void openPanelWindow(panelId)}
+          >
+            {t("layout.panelMenu.openInWindow")}
+          </ContextMenuItem>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );

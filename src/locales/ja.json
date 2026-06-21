@@ -1190,7 +1190,8 @@
     "panelMenu": {
       "collapse": "折りたたむ",
       "maximize": "最大化",
-      "restore": "元のサイズに戻す"
+      "restore": "元のサイズに戻す",
+      "openInWindow": "別ウィンドウで開く"
     }
   },
   "kouetsu": {
@@ -1765,7 +1766,6 @@
     "filterAll": "すべて",
     "sortOrderTitle": "ソート順",
     "newEntry": "新規エントリ",
-    "openInNewWindow": "別ウィンドウで開く",
     "selectPrompt": "エントリを選択してください",
     "deleteConfirmDesc": "「{{name}}」を削除しますか？この操作は元に戻せません。",
     "editEntry": "エントリ編集",

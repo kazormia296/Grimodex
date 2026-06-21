@@ -1190,7 +1190,8 @@
     "panelMenu": {
       "collapse": "Collapse",
       "maximize": "Maximize",
-      "restore": "Restore size"
+      "restore": "Restore size",
+      "openInWindow": "Open in separate window"
     }
   },
   "kouetsu": {
@@ -1765,7 +1766,6 @@
     "filterAll": "All",
     "sortOrderTitle": "Sort order",
     "newEntry": "New entry",
-    "openInNewWindow": "Open in a separate window",
     "selectPrompt": "Select an entry",
     "deleteConfirmDesc": "Delete \"{{name}}\"? This cannot be undone.",
     "editEntry": "Edit Entry",

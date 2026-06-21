@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "codex-window",
-  "description": "Capability for the floating Codex editor window",
-  "windows": ["codex-window"],
+  "identifier": "panel-window",
+  "description": "Capability for floating panel windows (panel-<id>)",
+  "windows": ["panel-*"],
   "permissions": [
     "core:default",
     "core:event:allow-listen",
