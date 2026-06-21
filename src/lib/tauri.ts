@@ -76,6 +76,23 @@ export async function listen<T>(
   return () => window.removeEventListener(event, listener);
 }
 
+/**
+ * Emit a Tauri event to all windows (or a browser CustomEvent in non-Tauri env).
+ * Tauri v2 の emit は全ウィンドウへ配信される（external_mount/watch.rs と同契約）。
+ * ブラウザ fallback は同一窓内のみ（ブラウザにマルチウインドウ配信は無い）。
+ */
+export async function emit<T = unknown>(
+  event: string,
+  payload?: T,
+): Promise<void> {
+  if (isTauri()) {
+    const { emit: tauriEmit } = await import("@tauri-apps/api/event");
+    await tauriEmit(event, payload);
+    return;
+  }
+  window.dispatchEvent(new CustomEvent(event, { detail: payload }));
+}
+
 export async function invoke<T = unknown>(
   cmd: string,
   args?: Record<string, unknown>,
