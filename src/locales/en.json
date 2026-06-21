@@ -1985,6 +1985,7 @@
       "searchFailed": "Search failed",
       "createFailed": "Failed to create Codex entry",
       "updateFailed": "Failed to update Codex entry",
+      "editConflict": "Couldn't save: this entry was updated in another window. Reload the latest version and edit again.",
       "deleteFailed": "Failed to delete Codex entry",
       "filterFailed": "Failed to apply filter",
       "agentHistoryCreate": "Agent: Create Codex",

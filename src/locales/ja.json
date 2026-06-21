@@ -1980,6 +1980,7 @@
       "searchFailed": "検索に失敗しました",
       "createFailed": "Codexエントリの作成に失敗しました",
       "updateFailed": "Codexエントリの更新に失敗しました",
+      "editConflict": "この項目は別のウィンドウで更新されたため保存できませんでした。最新を読み込んでから編集し直してください。",
       "deleteFailed": "Codexエントリの削除に失敗しました",
       "filterFailed": "フィルタの適用に失敗しました",
       "agentHistoryCreate": "Agent: Codex作成",
