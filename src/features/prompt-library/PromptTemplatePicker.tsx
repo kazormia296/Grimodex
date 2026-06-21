@@ -50,7 +50,7 @@ export function PromptTemplatePicker({
         aria-haspopup="menu"
         aria-expanded={open}
         title={t("promptLibrary.picker.title")}
-        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+        className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
       >
         <BookMarked className="h-3 w-3 shrink-0" aria-hidden />
         <span>{t("promptLibrary.picker.label")}</span>

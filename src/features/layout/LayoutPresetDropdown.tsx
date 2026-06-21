@@ -110,14 +110,16 @@ export function LayoutPresetDropdown() {
           }
         }}
         className={cn(
-          "flex h-8 items-center gap-1.5 rounded px-2 text-sm transition-colors",
+          "flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-sm transition-colors",
           isOpen
             ? "bg-accent text-foreground"
             : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
         )}
       >
-        <ActiveIcon className="h-4 w-4" />
-        <span>{activeName ?? t("layout.preset.layout")}</span>
+        <ActiveIcon className="h-4 w-4 shrink-0" />
+        <span className="hidden whitespace-nowrap xl:inline">
+          {activeName ?? t("layout.preset.layout")}
+        </span>
         <ChevronDown
           className={cn("h-3 w-3 transition-transform", isOpen && "rotate-180")}
         />

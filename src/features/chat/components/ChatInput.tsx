@@ -687,8 +687,8 @@ export function ChatInput({
           <EditorContent editor={editor} />
         </div>
 
-        {/* 下段ツール列（カード内） */}
-        <div className="flex items-center gap-1 px-2 pb-1.5 pt-0.5">
+        {/* 下段ツール列（カード内）。狭い幅では chip を縦に割らず次の行へ折り返す。 */}
+        <div className="flex flex-wrap items-center gap-1 px-2 pb-1.5 pt-0.5">
           {/* Agent mode chip: ツール非対応モデルでは disabled + 理由ツールチップ */}
           <button
             type="button"
@@ -699,7 +699,7 @@ export function ChatInput({
               !canUseTools ? t("chat.agentUnavailable") : t("chat.agentMode")
             }
             className={[
-              "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
+              "flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs transition-colors",
               !canUseTools
                 ? "cursor-not-allowed text-muted-foreground/40"
                 : agentMode
@@ -729,7 +729,7 @@ export function ChatInput({
                   : t("chat.thinkingMode")
             }
             className={[
-              "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
+              "flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs transition-colors",
               !canThink
                 ? "cursor-not-allowed text-muted-foreground/40"
                 : reasoningLockedOn
@@ -767,7 +767,7 @@ export function ChatInput({
           />
 
           {/* モデル選択 chip */}
-          <div className="relative">
+          <div className="relative shrink-0">
             <button
               ref={modelTriggerRef}
               type="button"
@@ -819,14 +819,14 @@ export function ChatInput({
             onClick={() => void handleOpenAbCompare()}
             disabled={!editor || !hasText || isStreaming}
             title={t("abTest.chatMenuLabel")}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:text-muted-foreground/40"
+            className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:text-muted-foreground/40"
           >
             <Columns2 className="h-3 w-3 shrink-0" />
             <span>A/B</span>
           </button>
 
           {/* 右端: Send / Stop 円形ボタン */}
-          <div className="ml-auto">
+          <div className="ml-auto shrink-0">
             {isStreaming ? (
               <Button
                 type="button"
