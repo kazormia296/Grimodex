@@ -7,7 +7,11 @@
  *  - validateUserPresetName: ユーザー定義プリセット名のバリデーション
  * の薄いラッパだけを提供する。
  */
-import type { ExportPresetId, ExportSettings } from "./types";
+import type {
+  ExportPresetId,
+  ExportSettings,
+  TateChuYokoExportStyle,
+} from "./types";
 import { resolveSitePreset, SITE_IDS, SITE_REGISTRY } from "./rubyProfiles";
 
 /** プリセット ID の網羅（"custom" + 全登録サイト）。後方互換のため公開。 */
@@ -67,6 +71,7 @@ const COMPARED_FIELDS = [
   "sceneBreakCustom",
   "pixivChapterNewpage",
   "narouEmphasisMode",
+  "tateChuYoko",
 ] as const satisfies readonly (keyof ExportSettings)[];
 
 export function settingsMatch(a: ExportSettings, b: ExportSettings): boolean {
@@ -99,6 +104,23 @@ export function detectExportPreset(
     }
   }
   return "custom";
+}
+
+/**
+ * 旧ストアからの移行: `export.tateChuYoko` キーは本機能で新設したため、それ以前から
+ * 青空文庫/caita を選んでいたユーザーのストアには存在しない。空文字/未保存のときは
+ * 既定の `"none"` ではなく**選択中プリセット**から導出する。
+ *
+ * これをしないと、`tateChuYoko` は `COMPARED_FIELDS` の一員なので
+ * `detectExportPreset` が「保存済み caita（tateChuYoko 欠落→none）」を caita と一致
+ * させられず、唯一差分が tateChuYoko の alphapolis に取り違える（青空文庫は custom 化）。
+ */
+export function resolveStoredTateChuYoko(
+  stored: string | null | undefined,
+  exportPresetId: ExportPresetId,
+): TateChuYokoExportStyle {
+  if (stored) return stored as TateChuYokoExportStyle;
+  return resolveSitePreset(exportPresetId).tateChuYoko;
 }
 
 // ────────────────────────────────────────────────────────────────────

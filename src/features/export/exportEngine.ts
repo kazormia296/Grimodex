@@ -7,9 +7,19 @@
 
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
-import type { ExportSettings, RubyStyle, EmphasisDotsStyle } from "./types";
+import type {
+  ExportSettings,
+  RubyStyle,
+  EmphasisDotsStyle,
+  TateChuYokoExportStyle,
+} from "./types";
 import { defaultRubyStyle, defaultEmphasisDotsStyle } from "./types";
 import { renderRubyText } from "./rubyFormats";
+import {
+  runLengthAllowed,
+  TATE_CHU_YOKO_DIGIT_RUN,
+  type TateChuYokoPolicy,
+} from "@/features/editor/tateChuYokoPolicy";
 
 // ────────────────────────────────────────────────────────────────────
 // ProseMirror JSON 型
@@ -176,6 +186,13 @@ interface RenderCtx {
    * a bare `\n` would re-parse as a soft break and silently lose the node.
    */
   strictLineBreaks: boolean;
+  /**
+   * Which half-width digit runs count as 縦中横 (tate-chu-yoko) — mirrors the
+   * editor's `editor.tateChuYoko` setting so export notation marks exactly the
+   * runs the vertical editor preview would combine. Only consulted when
+   * `settings.tateChuYoko !== "none"`. `"off"` suppresses all notation.
+   */
+  tateChuYokoPolicy: TateChuYokoPolicy;
 }
 
 /**
@@ -241,7 +258,14 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
 
     case "text": {
       const raw = node.text ?? "";
-      return applyMarks(raw, node.marks ?? [], ctx);
+      const marks = node.marks ?? [];
+      // 傍点(emphasisDots)が乗った run には縦中横記法を付けない。傍点も縦中横も
+      // ［＃…］系の注記/囲みを出すため、両方適用すると注記がネストして青空文庫
+      // として不正になる（例: 29［＃「29」は縦中横］［＃「29［＃…］」に傍点］）。
+      // 傍点を優先し数字は素のまま残す（縦書きビューアが2桁を自動結合する）。
+      const hasEmphasis = marks.some((m) => m.type === "emphasisDots");
+      const body = hasEmphasis ? raw : applyTateChuYoko(raw, ctx);
+      return applyMarks(body, marks, ctx);
     }
 
     case "hardBreak":
@@ -514,6 +538,52 @@ function renderEmphasisDots(text: string, style: EmphasisDotsStyle): string {
   }
 }
 
+/**
+ * 本文テキスト中の半角数字 run に、投稿先サイトの縦中横記法を付与する。
+ *
+ * 対象 run は `ctx.tateChuYokoPolicy`（= editor.tateChuYoko 由来 off/2/all）で決まり、
+ * エディタの縦書きプレビューが結合する run と一致する。`settings.tateChuYoko === "none"`
+ * か policy が `"off"` のときは何もしない（半角数字をそのまま残す）。
+ *
+ * 注意（per-text-node の限界）: text node 単位で適用するため、`20<b>26</b>` のように
+ * mark 境界で割れた数字 run は個別の run として扱う。実データではほぼ起きず、対象出力は
+ * すべて plaintext なので実害は無い。エディタ装飾（TateChuYokoPlugin）は PM 位置整合の
+ * ため flatten 経由で結合するが、エクスポートは位置制約が無いので単純化している。
+ */
+function applyTateChuYoko(text: string, ctx: RenderCtx): string {
+  const style = ctx.settings.tateChuYoko ?? "none";
+  if (style === "none") return text;
+  const policy = ctx.tateChuYokoPolicy;
+  if (policy === "off") return text;
+  return text.replace(TATE_CHU_YOKO_DIGIT_RUN, (run) =>
+    runLengthAllowed(run.length, policy) ? wrapTateChuYoko(run, style) : run,
+  );
+}
+
+/** 1 つの数字 run を縦中横記法で包む（style ごとの書式）。 */
+function wrapTateChuYoko(run: string, style: TateChuYokoExportStyle): string {
+  switch (style) {
+    case "aozora-forward":
+      // 前方参照型: run の直後に「直前の同一文字列を縦中横」と注記する。
+      return `${run}［＃「${run}」は縦中横］`;
+    case "aozora-range":
+      // 範囲指定型: ［＃縦中横］…［＃縦中横終わり］ で挟む。
+      return `［＃縦中横］${run}［＃縦中横終わり］`;
+    case "caita":
+      return `[tatechuyoko]${run}[/tatechuyoko]`;
+    case "none":
+      return run;
+    default: {
+      // 既知 style を網羅。新 style 追加時はここで型エラーになる（exhaustive）。
+      // 同時に、破損した永続ストアなど union 外の実行時値が来ても run を素通しし、
+      // `undefined` 置換による本文の数字消失（fail-open データ破壊）を防ぐ。
+      const _exhaustive: never = style;
+      void _exhaustive;
+      return run;
+    }
+  }
+}
+
 function renderSceneBreak(settings: ExportSettings): string {
   switch (settings.sceneBreakStyle) {
     case "asterisks":
@@ -598,11 +668,14 @@ export function renderPmDocToArchiveMarkdown(
       includeTrashBin: false,
       pixivChapterNewpage: false,
       narouEmphasisMode: "batch",
+      // archive markdown は生の数字を保持する（サイト記法は焼き込まない）。
+      tateChuYoko: "none",
       exportPresetId: "custom",
     },
     resolvedRuby: rubyStyle,
     resolvedEmphasis: emphasisDotsStyle,
     strictLineBreaks: options.strictLineBreaks ?? false,
+    tateChuYokoPolicy: "2",
     resolveMentionName: options.resolveMentionName,
   };
   return renderSceneContent(contentJson, ctx).trimEnd() + "\n";
@@ -708,6 +781,12 @@ export interface GenerateExportInput {
   settings: ExportSettings;
   projectTitle?: string;
   projectLanguage?: string;
+  /**
+   * Which half-width digit runs count as 縦中横, from `editor.tateChuYoko`
+   * (off/2/all). Defaults to `"2"` (editor default) when omitted. Only matters
+   * when `settings.tateChuYoko !== "none"`.
+   */
+  tateChuYokoPolicy?: TateChuYokoPolicy;
   /** Optional `@mention` → display-name resolver. See {@link MentionNameResolver}. */
   resolveMentionName?: MentionNameResolver;
 }
@@ -724,6 +803,7 @@ export function generateExport(input: GenerateExportInput): string {
     settings,
     projectTitle = "Untitled",
     projectLanguage = "ja",
+    tateChuYokoPolicy = "2",
     resolveMentionName,
   } = input;
 
@@ -742,6 +822,7 @@ export function generateExport(input: GenerateExportInput): string {
     resolvedRuby,
     resolvedEmphasis,
     strictLineBreaks: false,
+    tateChuYokoPolicy,
     resolveMentionName,
   };
 

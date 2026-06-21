@@ -2,30 +2,27 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { flattenDocForCodex } from "./codexDocFlatten";
+import {
+  runLengthAllowed,
+  TATE_CHU_YOKO_DIGIT_RUN,
+  type TateChuYokoPolicy,
+} from "./tateChuYokoPolicy";
 
 /**
  * 縦中横（tate-chu-yoko）— 縦書きモードで半角数字の連続を `text-combine-upright`
  * で正立・横並びに結合する inline decoration プラグイン。
  *
- * - `off`  : 縦中横なし。
- * - `2`    : 2桁の数字 run のみ結合（出版物の慣習に最も近い既定）。
- * - `all`  : 2桁以上の数字 run をすべて結合（3〜4桁は流儀に幅があるため任意）。
- *
- * 縦/横の出し分けは CSS（`.editor-vertical .tiptap .tcy`）が担う。本プラグインは
- * doc から純粋に decoration を作るだけで、縦書き時のみ登録される（useTateChuYoko）。
+ * 対象 run の length ポリシー（off/2/all）は tateChuYokoPolicy.ts に集約し、
+ * エクスポート記法（exportEngine）と共有する。縦/横の出し分けは CSS
+ * （`.editor-vertical .tiptap .tcy`）が担う。本プラグインは doc から純粋に
+ * decoration を作るだけで、縦書き時のみ登録される（useTateChuYoko）。
  */
-export type TateChuYokoPolicy = "off" | "2" | "all";
+// 既存の import 互換のため型を再公開する。
+export type { TateChuYokoPolicy };
 
 export const tateChuYokoKey = new PluginKey<DecorationSet>("tateChuYoko");
 
-const DIGIT_RUN = /[0-9]+/g;
-
-/** 1桁は縦中横の対象外（2文字以上）。policy により上限を変える。 */
-function runLengthAllowed(len: number, policy: TateChuYokoPolicy): boolean {
-  if (len < 2) return false;
-  if (policy === "2") return len === 2;
-  return true; // "all"
-}
+const DIGIT_RUN = TATE_CHU_YOKO_DIGIT_RUN;
 
 export function buildTateChuYokoDecorations(
   doc: ProseMirrorNode,

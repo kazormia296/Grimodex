@@ -19,9 +19,11 @@ import {
 import type { ExportTreeState } from "./ExportTree";
 import { ExportSettingsPanel } from "./ExportSettingsPanel";
 import { generateExport } from "./exportEngine";
+import type { TateChuYokoPolicy } from "@/features/editor/tateChuYokoPolicy";
 import { currentCodexMentionResolver } from "@/features/codex/mentionNameResolver";
 import type { ExportSettings, ExportPresetId } from "./types";
 import { DEFAULT_EXPORT_SETTINGS, EXPORT_SETTING_KEYS } from "./types";
+import { resolveStoredTateChuYoko } from "./exportPresets";
 import {
   parseUserPresets,
   serializeUserPresets,
@@ -51,6 +53,8 @@ function loadSettingsFromStore(
   store: ReturnType<typeof useSettingsStore.getState>,
 ): ExportSettings {
   const s = store;
+  const exportPresetId = (s.get(EXPORT_SETTING_KEYS.exportPresetId) ||
+    DEFAULT_EXPORT_SETTINGS.exportPresetId) as ExportPresetId;
   return {
     format: (s.get(EXPORT_SETTING_KEYS.format) ||
       DEFAULT_EXPORT_SETTINGS.format) as ExportSettings["format"],
@@ -88,8 +92,13 @@ function loadSettingsFromStore(
     ),
     narouEmphasisMode: (s.get(EXPORT_SETTING_KEYS.narouEmphasisMode) ||
       DEFAULT_EXPORT_SETTINGS.narouEmphasisMode) as ExportSettings["narouEmphasisMode"],
-    exportPresetId: (s.get(EXPORT_SETTING_KEYS.exportPresetId) ||
-      DEFAULT_EXPORT_SETTINGS.exportPresetId) as ExportPresetId,
+    // 旧ストア互換: tateChuYoko キー未保存なら選択中プリセットから導出する
+    // （単純な "none" 既定だと保存済み caita/青空文庫の preset 検出が壊れる）。
+    tateChuYoko: resolveStoredTateChuYoko(
+      s.get(EXPORT_SETTING_KEYS.tateChuYoko),
+      exportPresetId,
+    ),
+    exportPresetId,
   };
 }
 
@@ -283,6 +292,7 @@ export function ExportDialog({ open, onClose }: Props) {
         EXPORT_SETTING_KEYS.narouEmphasisMode,
         next.narouEmphasisMode,
       );
+      settingsStore.set(EXPORT_SETTING_KEYS.tateChuYoko, next.tateChuYoko);
       settingsStore.set(
         EXPORT_SETTING_KEYS.exportPresetId,
         next.exportPresetId,
@@ -387,6 +397,11 @@ export function ExportDialog({ open, onClose }: Props) {
       settings: exportSettings,
       projectTitle,
       projectLanguage,
+      // 縦中横の対象 run は執筆側の editor.tateChuYoko 設定に合わせる。
+      tateChuYokoPolicy: settingsStore.get(
+        "editor.tateChuYoko",
+        "2",
+      ) as TateChuYokoPolicy,
       resolveMentionName: currentCodexMentionResolver(),
     });
   }
