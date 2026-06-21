@@ -641,10 +641,12 @@ function EditorScreen() {
                 type="button"
                 title={t("app.exportTitle")}
                 onClick={() => setShowExport((v) => !v)}
-                className="flex h-8 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
-                <FileOutput className="h-4 w-4" />
-                <span className="text-sm">{t("app.exportLabel")}</span>
+                <FileOutput className="h-4 w-4 shrink-0" />
+                <span className="hidden whitespace-nowrap text-sm xl:inline">
+                  {t("app.exportLabel")}
+                </span>
               </button>
             </>
           }
@@ -660,10 +662,12 @@ function EditorScreen() {
                   setSettingsInitialCategory("project");
                   setShowSettings(true);
                 }}
-                className="flex h-8 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
-                <Settings className="h-4 w-4" />
-                <span className="text-sm">{t("app.settingsLabel")}</span>
+                <Settings className="h-4 w-4 shrink-0" />
+                <span className="hidden whitespace-nowrap text-sm xl:inline">
+                  {t("app.settingsLabel")}
+                </span>
               </button>
               {!mac && (
                 <>

@@ -57,7 +57,7 @@ export function ReasoningEffortChip({
   const items: Array<ReasoningEffortValue | null> = [null, ...options];
 
   return (
-    <div className="relative">
+    <div className="relative shrink-0">
       <button
         ref={triggerRef}
         type="button"
@@ -67,7 +67,7 @@ export function ReasoningEffortChip({
         aria-expanded={open}
         title={title}
         className={[
-          "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
+          "flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs transition-colors",
           disabled
             ? "cursor-not-allowed text-muted-foreground/40"
             : value !== null
