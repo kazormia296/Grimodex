@@ -1765,6 +1765,7 @@
     "filterAll": "All",
     "sortOrderTitle": "Sort order",
     "newEntry": "New entry",
+    "openInNewWindow": "Open in a separate window",
     "selectPrompt": "Select an entry",
     "deleteConfirmDesc": "Delete \"{{name}}\"? This cannot be undone.",
     "editEntry": "Edit Entry",

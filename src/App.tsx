@@ -77,6 +77,7 @@ import {
   markScreenshotStageReady,
   clearScreenshotStageReady,
 } from "@/screenshot-scenes/screenshotBootstrap";
+import { isCodexWindow } from "@/features/codex/multiwindow/codexWindowMode";
 import { cn } from "@/lib/utils";
 
 /* ── App root ── */
@@ -672,8 +673,10 @@ function EditorScreen() {
         className="flex min-h-0 flex-1 overflow-hidden outline-none"
       >
         <LayoutShell
-          hidden={!!getScreenshotPanelId()}
-          screenshotPanelId={getScreenshotPanelId()}
+          hidden={!!getScreenshotPanelId() || isCodexWindow()}
+          soloPanelId={
+            getScreenshotPanelId() ?? (isCodexWindow() ? "codex" : null)
+          }
         />
       </main>
     </div>

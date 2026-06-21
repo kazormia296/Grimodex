@@ -47,9 +47,9 @@ const LayoutDnDHighlightOverlay = lazy(() =>
 );
 
 interface LayoutShellProps {
-  /** Screenshot mode: hide stripes and show a single panel full-screen */
+  /** Solo mode (screenshot capture / Codex window): hide stripes and show a single panel full-screen */
   hidden?: boolean;
-  screenshotPanelId?: PanelId | null;
+  soloPanelId?: PanelId | null;
 }
 
 function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
@@ -66,7 +66,7 @@ function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
  */
 export const LayoutShell = memo(function LayoutShell({
   hidden = false,
-  screenshotPanelId = null,
+  soloPanelId = null,
 }: LayoutShellProps) {
   const segments = useRegionSegments();
   const layout = useLayoutStore((s) => s.layout);
@@ -174,8 +174,8 @@ export const LayoutShell = memo(function LayoutShell({
     [metrics, hasBottom, zoomRegion],
   );
 
-  if (hidden && screenshotPanelId) {
-    if (screenshotPanelId === "editor") {
+  if (hidden && soloPanelId) {
+    if (soloPanelId === "editor") {
       return (
         <div className="h-full w-full overflow-hidden">
           <EditorArea />
@@ -184,7 +184,7 @@ export const LayoutShell = memo(function LayoutShell({
     }
     return (
       <div className="h-full w-full overflow-hidden">
-        <SlotView panelId={screenshotPanelId} />
+        <SlotView panelId={soloPanelId} />
       </div>
     );
   }

@@ -8,6 +8,7 @@ import type { TimelineSettings } from "@/features/timeline/timelineStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { useGridStore } from "@/features/grid/gridStore";
 import { useProjectStore } from "@/features/project/projectStore";
+import { isCodexWindow } from "@/features/codex/multiwindow/codexWindowMode";
 
 export interface RecentWorkspace {
   path: string;
@@ -135,6 +136,20 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         await invoke("save_global_settings", { settings: migrated });
         settings = migrated;
         set({ globalSettings: migrated });
+      }
+
+      // フローティング Codex ウィンドウは main 窓と同じワークスペースに
+      // 追従する。welcome/launcher の好みは無視し、最後に開いていた
+      // ワークスペース（= main 窓が開いているもの）を直接開いて editor へ。
+      if (isCodexWindow() && settings.lastActiveWorkspace) {
+        const valid = await invoke<boolean>("validate_workspace_path", {
+          path: settings.lastActiveWorkspace,
+        });
+        if (valid) {
+          await get().requestOpenWorkspace(settings.lastActiveWorkspace);
+          if (get().view === "loading") set({ view: "launcher" });
+          return;
+        }
       }
 
       // No workspaces at all → welcome screen

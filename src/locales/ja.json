@@ -1765,6 +1765,7 @@
     "filterAll": "すべて",
     "sortOrderTitle": "ソート順",
     "newEntry": "新規エントリ",
+    "openInNewWindow": "別ウィンドウで開く",
     "selectPrompt": "エントリを選択してください",
     "deleteConfirmDesc": "「{{name}}」を削除しますか？この操作は元に戻せません。",
     "editEntry": "エントリ編集",

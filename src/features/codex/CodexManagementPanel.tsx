@@ -6,8 +6,11 @@ import {
   useMemo,
   type KeyboardEvent,
 } from "react";
-import { Search, Plus } from "lucide-react";
+import { Search, Plus, ExternalLink } from "lucide-react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
+import { isTauri } from "@/lib/tauri";
+import { openCodexWindow } from "./multiwindow/openCodexWindow";
+import { isCodexWindow } from "./multiwindow/codexWindowMode";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -936,6 +939,18 @@ export function CodexManagementPanel({
             </option>
           ))}
         </select>
+        {isTauri() && !isCodexWindow() && (
+          <button
+            type="button"
+            data-testid="codex-open-window-button"
+            onClick={() => void openCodexWindow()}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            title={t("codex.openInNewWindow")}
+            aria-label={t("codex.openInNewWindow")}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+        )}
         <button
           type="button"
           data-testid="codex-new-entry-button"
