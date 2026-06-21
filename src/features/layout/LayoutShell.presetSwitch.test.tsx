@@ -14,6 +14,7 @@ import type { PanelId } from "./panelIds";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
+  isTauri: () => false,
 }));
 
 vi.mock("./panelComponents", () => ({

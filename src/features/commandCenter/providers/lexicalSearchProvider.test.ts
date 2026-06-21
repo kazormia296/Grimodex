@@ -4,6 +4,9 @@ import type { ProviderSearchContext } from "./types";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
+  // requestOpenInCodex → getPanelWindowHandle → isTauri()。テスト(非Tauri)では
+  // false にして別窓無し＝従来の showPanel+requestSelectEntry 経路を通す。
+  isTauri: vi.fn(() => false),
 }));
 
 vi.mock("@/features/tree/treeStore", () => ({
@@ -130,6 +133,8 @@ describe("lexicalSearchProvider", () => {
     ]);
     const section = await lexicalSearchProvider.search(makeContext());
     section.items[0].onSelect();
+    // requestOpenInCodex は async(getPanelWindowHandle を await)なので microtask を流す。
+    await new Promise((r) => setTimeout(r, 0));
     expect(requestSelectEntry).toHaveBeenCalledWith("codex-1");
     expect(showPanel).toHaveBeenCalledWith("codex");
   });
