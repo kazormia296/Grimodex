@@ -66,6 +66,7 @@ function makeCodex(id: string): CodexEntry {
     childrenBudget: "compact",
     sourceChatMessageId: null,
     notes: null,
+    version: 0,
     createdAt: "",
     updatedAt: "",
   };

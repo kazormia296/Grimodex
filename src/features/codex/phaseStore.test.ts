@@ -315,6 +315,7 @@ describe("phaseStore", () => {
         childrenBudget: "compact",
         sourceChatMessageId: null,
         notes: null,
+        version: 0,
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
       };
@@ -349,6 +350,7 @@ describe("phaseStore", () => {
         childrenBudget: "compact",
         sourceChatMessageId: null,
         notes: null,
+        version: 0,
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
       };

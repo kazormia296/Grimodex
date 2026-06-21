@@ -66,6 +66,7 @@ function makeEntry(
     excludedAliases: null,
     sourceChatMessageId: null,
     notes: null,
+    version: 0,
     icon: null,
   };
 }

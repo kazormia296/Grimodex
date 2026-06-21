@@ -177,6 +177,12 @@ export const codexEntries = sqliteTable(
     updatedAt: text("updated_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
+    // OCC version. The column is created by src-tauri/src/database/migrate.rs
+    // (add_column_if_missing on codex_entries); Drizzle was unaware of it.
+    // The AI/agent write path already uses it for optimistic locking; declaring
+    // it here lets the human save path do a conditional version check instead
+    // of a blind overwrite (multi-window write safety).
+    version: integer("version").notNull().default(0),
   },
   (table) => [
     index("idx_codex_project").on(table.projectId, table.type),

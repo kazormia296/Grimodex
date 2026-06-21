@@ -74,6 +74,7 @@ describe("buildArchive (fixture assembly)", () => {
         childrenBudget: "compact",
         sourceChatMessageId: null,
         notes: null,
+        version: 0,
         createdAt: "2024-01-01T00:00:00Z",
         updatedAt: "2024-01-01T00:00:00Z",
       },
