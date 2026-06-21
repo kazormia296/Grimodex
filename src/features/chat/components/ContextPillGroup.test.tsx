@@ -29,6 +29,7 @@ function makeEntry(id: string, name: string, type = "character"): CodexEntry {
     excludedAliases: null,
     sourceChatMessageId: null,
     notes: null,
+    version: 0,
     icon: null,
   };
 }
@@ -259,6 +260,7 @@ describe("ContextPillGroup 子エントリ表示 (グループモード内)", ()
       excludedAliases: null,
       sourceChatMessageId: null,
       notes: null,
+      version: 0,
       icon: null,
     };
   }

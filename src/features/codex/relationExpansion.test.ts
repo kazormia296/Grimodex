@@ -20,6 +20,7 @@ function makeEntry(id: string, name: string): CodexEntry {
     childrenBudget: "compact",
     sourceChatMessageId: null,
     notes: null,
+    version: 0,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };

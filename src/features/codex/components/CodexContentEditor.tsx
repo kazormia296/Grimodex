@@ -27,6 +27,8 @@ interface CodexContentEditorProps {
   externalContent?: string | null;
   /** カスタムデティール等の短文向け: 1行分の最小高さから内容に応じて成長 */
   compact?: boolean;
+  /** 別窓が同一 entry を編集中 → read-only（advisory lock）。 */
+  readOnly?: boolean;
 }
 
 function parseContent(raw: string): object | "" {
@@ -45,6 +47,7 @@ export function CodexContentEditor({
   onExternalSync,
   externalContent,
   compact = false,
+  readOnly = false,
 }: CodexContentEditorProps) {
   const isApplyingExternalUpdate = useRef(false);
   const onExternalSyncRef = useRef(onExternalSync);
@@ -80,7 +83,7 @@ export function CodexContentEditor({
   });
 
   useAttribution(editor);
-  useLicenseEditableSync(editor);
+  useLicenseEditableSync(editor, readOnly);
   useCodexHighlight(editor, {
     excludeEntryIds: entryId ? [entryId] : [],
     skipMatchedIds: true,

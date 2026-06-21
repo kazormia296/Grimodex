@@ -4,8 +4,8 @@ import { Pin, PinOff, Plus, EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { sortEntries, sortEntriesByCategory } from "@/features/codex/codexSort";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "./treeStore";
 import { CodexQuickPopover } from "./CodexQuickPopover";
 import { CodexCommandPalette } from "@/features/codex/components/CodexCommandPalette";
@@ -71,8 +71,7 @@ export function CodexQuickSection() {
   }
 
   function handleEntryClick(entry: CodexEntry) {
-    useLayoutStore.getState().showPanel("codex");
-    useCodexStore.getState().requestSelectEntry(entry.id);
+    void requestOpenInCodex(entry.id);
   }
 
   return (

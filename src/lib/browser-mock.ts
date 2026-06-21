@@ -90,7 +90,8 @@ const SCHEMA_DDL = `
     source_chat_message_id TEXT,
     notes TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS codex_dismissed_relations (
     entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,

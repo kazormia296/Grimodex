@@ -77,6 +77,12 @@ import {
   markScreenshotStageReady,
   clearScreenshotStageReady,
 } from "@/screenshot-scenes/screenshotBootstrap";
+import {
+  isPanelWindow,
+  getPanelWindowTarget,
+} from "@/features/layout/multiwindow/panelWindow";
+import { useCodexSelectionSync } from "@/features/codex/multiwindow/codexSelectionRouting";
+import { startCodexLockListener } from "@/features/codex/multiwindow/codexEditLockStore";
 import { cn } from "@/lib/utils";
 
 /* ── App root ── */
@@ -274,6 +280,14 @@ function EditorScreen() {
 
   // AI 応答ストリームの開始/完了を SR へ読み上げる (a11y)。単一マウント。
   useAiStreamingAnnouncer();
+
+  // 窓間の Codex 選択連動（別窓 Codex 編集。codex:select-entry を購読）。
+  useCodexSelectionSync();
+
+  // 窓間の Codex 編集 advisory lock 購読を起動（パネル未表示でも取りこぼさない）。
+  useEffect(() => {
+    startCodexLockListener();
+  }, []);
 
   useEffect(() => {
     void initializeExternalMounts().catch(() => {});
@@ -591,62 +605,76 @@ function EditorScreen() {
       >
         {t("a11y.skipToContent")}
       </a>
-      <HeaderBarLayout
-        mac={mac}
-        className={cn(getScreenshotPanelId() && "no-screenshot")}
-        left={
-          <>
-            <GrimodexLogo height={24} className="text-foreground" />
-            <WorkspaceMenu />
-            <ProjectMenu
-              onOpenImport={() => {
-                setTransferTab("import");
-                setShowTransferDialog(true);
-              }}
-              onOpenExport={() => {
-                setTransferTab("zip");
-                setShowTransferDialog(true);
-              }}
-              onOpenSnapshot={() => setShowSnapshotModal(true)}
-            />
-            <HistoryButtons />
-            <button
-              type="button"
-              title={t("app.exportTitle")}
-              onClick={() => setShowExport((v) => !v)}
-              className="flex h-8 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <FileOutput className="h-4 w-4" />
-              <span className="text-sm">{t("app.exportLabel")}</span>
-            </button>
-          </>
-        }
-        center={<CommandCenterBar />}
-        right={
-          <>
-            <LayoutPresetDropdown />
-            <PanelToggleDropdown />
-            <button
-              type="button"
-              title={t("app.settingsTitle")}
-              onClick={() => {
-                setSettingsInitialCategory("project");
-                setShowSettings(true);
-              }}
-              className="flex h-8 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <Settings className="h-4 w-4" />
-              <span className="text-sm">{t("app.settingsLabel")}</span>
-            </button>
-            {!mac && (
-              <>
-                <div className="h-4 w-px bg-border" />
-                <WindowControls />
-              </>
-            )}
-          </>
-        }
-      />
+      {isPanelWindow() ? (
+        // 別フローティング窓: ヘッダはドラッグ領域 + ウィンドウ操作のみに簡素化
+        // (ロゴ/エクスポート/設定/プロジェクト切替はメイン窓の領分で、別窓に
+        // 出すとややこしいため)。WindowControls は getCurrentWindow() で自窓を
+        // 操作する。mac は decorations 側の扱いが別途必要(現状 Windows 前提)。
+        <header
+          data-header-bar
+          className="flex h-9 shrink-0 items-center border-b border-border"
+        >
+          <div data-tauri-drag-region className="h-full flex-1" />
+          {!mac && <WindowControls />}
+        </header>
+      ) : (
+        <HeaderBarLayout
+          mac={mac}
+          className={cn(getScreenshotPanelId() && "no-screenshot")}
+          left={
+            <>
+              <GrimodexLogo height={24} className="text-foreground" />
+              <WorkspaceMenu />
+              <ProjectMenu
+                onOpenImport={() => {
+                  setTransferTab("import");
+                  setShowTransferDialog(true);
+                }}
+                onOpenExport={() => {
+                  setTransferTab("zip");
+                  setShowTransferDialog(true);
+                }}
+                onOpenSnapshot={() => setShowSnapshotModal(true)}
+              />
+              <HistoryButtons />
+              <button
+                type="button"
+                title={t("app.exportTitle")}
+                onClick={() => setShowExport((v) => !v)}
+                className="flex h-8 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <FileOutput className="h-4 w-4" />
+                <span className="text-sm">{t("app.exportLabel")}</span>
+              </button>
+            </>
+          }
+          center={<CommandCenterBar />}
+          right={
+            <>
+              <LayoutPresetDropdown />
+              <PanelToggleDropdown />
+              <button
+                type="button"
+                title={t("app.settingsTitle")}
+                onClick={() => {
+                  setSettingsInitialCategory("project");
+                  setShowSettings(true);
+                }}
+                className="flex h-8 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <Settings className="h-4 w-4" />
+                <span className="text-sm">{t("app.settingsLabel")}</span>
+              </button>
+              {!mac && (
+                <>
+                  <div className="h-4 w-px bg-border" />
+                  <WindowControls />
+                </>
+              )}
+            </>
+          }
+        />
+      )}
       <SettingsDialog
         open={showSettings}
         onClose={() => setShowSettings(false)}
@@ -672,8 +700,8 @@ function EditorScreen() {
         className="flex min-h-0 flex-1 overflow-hidden outline-none"
       >
         <LayoutShell
-          hidden={!!getScreenshotPanelId()}
-          screenshotPanelId={getScreenshotPanelId()}
+          hidden={!!getScreenshotPanelId() || isPanelWindow()}
+          soloPanelId={getScreenshotPanelId() ?? getPanelWindowTarget()}
         />
       </main>
     </div>

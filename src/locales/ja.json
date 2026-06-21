@@ -1219,7 +1219,8 @@
     "panelMenu": {
       "collapse": "折りたたむ",
       "maximize": "最大化",
-      "restore": "元のサイズに戻す"
+      "restore": "元のサイズに戻す",
+      "openInWindow": "別ウィンドウで開く"
     }
   },
   "kouetsu": {
@@ -1794,6 +1795,7 @@
     "filterAll": "すべて",
     "sortOrderTitle": "ソート順",
     "newEntry": "新規エントリ",
+    "editLockedOtherWindow": "この項目は別のウィンドウで編集中です（読み取り専用）",
     "selectPrompt": "エントリを選択してください",
     "deleteConfirmDesc": "「{{name}}」を削除しますか？この操作は元に戻せません。",
     "editEntry": "エントリ編集",
@@ -2009,6 +2011,7 @@
       "searchFailed": "検索に失敗しました",
       "createFailed": "Codexエントリの作成に失敗しました",
       "updateFailed": "Codexエントリの更新に失敗しました",
+      "editConflict": "この項目は別のウィンドウで更新されたため保存できませんでした。最新を読み込んでから編集し直してください。",
       "deleteFailed": "Codexエントリの削除に失敗しました",
       "filterFailed": "フィルタの適用に失敗しました",
       "agentHistoryCreate": "Agent: Codex作成",

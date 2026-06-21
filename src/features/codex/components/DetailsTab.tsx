@@ -23,6 +23,8 @@ interface DetailsTabProps {
   onSummaryChange: (value: string) => void;
   onContentChange: (content: string) => void;
   onExternalSync?: (content: string) => void;
+  /** 別窓が同一 entry を編集中なら本文エディタを read-only にする。 */
+  readOnly?: boolean;
 }
 
 export function DetailsTab({
@@ -31,6 +33,7 @@ export function DetailsTab({
   onSummaryChange,
   onContentChange,
   onExternalSync,
+  readOnly = false,
 }: DetailsTabProps) {
   const { t } = useTranslation();
   const emptyContent = !entry.content || entry.content === "{}";
@@ -270,8 +273,9 @@ export function DetailsTab({
             data-testid="codex-detail-summary"
             value={summary}
             onChange={(e) => handleSummaryChange(e.target.value)}
+            readOnly={readOnly}
             rows={3}
-            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm read-only:opacity-60"
             placeholder="Short description..."
           />
         )}
@@ -360,6 +364,7 @@ export function DetailsTab({
             entryId={contentEntryId}
             onExternalSync={contentExternalSync}
             externalContent={contentExternalContent}
+            readOnly={readOnly}
           />
         </div>
 

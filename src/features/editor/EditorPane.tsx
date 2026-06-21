@@ -185,6 +185,12 @@ interface EditorPaneProps {
    * undefined のときは従来通り tabStore から取得する。
    */
   phaseIdOverride?: string | null;
+  /**
+   * 外部要因による read-only（マルチウインドウの advisory lock で別窓が同一 entry を
+   * 編集中など）。ライセンス read-only と OR して editable を一元制御する。
+   * 既定 false（通常のシーン編集経路は不変）。
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -200,6 +206,7 @@ export function EditorPane({
   groupIndex,
   onFocus,
   phaseIdOverride,
+  readOnly = false,
 }: EditorPaneProps) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
@@ -861,7 +868,7 @@ export function EditorPane({
   );
 
   const editorViewReady = useEditorViewReady(editor);
-  useLicenseEditableSync(editor);
+  useLicenseEditableSync(editor, readOnly);
   /** Editor handle safe for PM view access (plugins, dom listeners, dispatch). */
   const mountedEditor =
     editorViewReady && isEditorViewReady(editor) ? editor : null;

@@ -3,7 +3,7 @@ import type { Node } from "@xyflow/react";
 import { useChatStore } from "@/features/chat/chatStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import {
   updateFrame,
   deleteFrame,
@@ -393,8 +393,7 @@ export function useMapNodes({
                 icon: e.icon ?? null,
                 colorBy,
                 onOpen: () => {
-                  useLayoutStore.getState().showPanel("codex");
-                  useCodexStore.getState().requestSelectEntry(e.id);
+                  void requestOpenInCodex(e.id);
                 },
                 onBranchFrom: (dir: "left" | "right") =>
                   onBranchFrom?.(key, dir),

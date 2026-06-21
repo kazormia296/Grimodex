@@ -16,8 +16,11 @@ import { LayoutStoryPanelStub } from "./stories/LayoutStoryPanelStub";
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(async () => ({})),
   // ブラウザモードはネイティブ ESM リンクのため、import graph 内で使われる
-  // named export が factory に無いと SyntaxError になる（chatApi 経由で listen が必要）
+  // named export が factory に無いと SyntaxError になる（chatApi 経由で listen、
+  // PanelChromeMenu→panelWindow で isTauri、codex multiwindow で emit が必要）
   listen: vi.fn(async () => () => {}),
+  emit: vi.fn(async () => {}),
+  isTauri: () => false,
 }));
 
 vi.mock("./panelComponents", () => ({

@@ -9,6 +9,7 @@ import {
   deleteCodexEntry,
 } from "./api";
 import type { CodexEntry, CodexEntryType, NewCodexEntry } from "./api";
+import { CodexVersionConflictError } from "./occ";
 import { listCodexTypes, type CodexType } from "./typeApi";
 import { searchCodexEntries } from "./search";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
@@ -35,6 +36,23 @@ export type CodexSortOrder =
   | "updated"
   | "created"
   | "most-referenced";
+
+/**
+ * 別窓 / 別プロセスが同じ entry を先に更新していて OCC 衝突した時のハンドラ。
+ * 既定はトースト通知のみ。マルチウインドウ層 (Codex 編集面) が
+ * setCodexEditConflictHandler で「最新を読み込む」導線に差し替える。
+ * 本文を黙って上書きしないための非破壊フックなので、ここでは store も
+ * timelapse も触らない。
+ */
+let codexEditConflictHandler: (entryId: string) => void = () => {
+  toast.error(i18next.t("codex.store.editConflict"));
+};
+
+export function setCodexEditConflictHandler(
+  handler: (entryId: string) => void,
+): void {
+  codexEditConflictHandler = handler;
+}
 
 type StructuralPatch = Partial<
   Pick<
@@ -378,13 +396,22 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
   updateText: async (id, data) => {
     const before = get().entries.find((e) => e.id === id);
     try {
-      const updated = await updateCodexEntry(getCurrentProjectId(), id, data);
+      // OCC: 読み込み時点の version を base_version として渡す。別窓 / 別プロセスが
+      // 先に書いていれば衝突として弾かれ、本文を黙って上書きしない。
+      const updated = await updateCodexEntry(getCurrentProjectId(), id, data, {
+        baseVersion: before?.version ?? 0,
+      });
       if (updated) {
         set((state) => ({
           entries: state.entries.map((e) => (e.id === id ? updated : e)),
         }));
       }
     } catch (e) {
+      if (e instanceof CodexVersionConflictError) {
+        // 非破壊: store も timelapse も触らず、呼び出し側に再読み込みを促す。
+        codexEditConflictHandler(id);
+        return;
+      }
       toast.error(i18next.t("codex.store.updateFailed"));
       debugLog.error(
         "CodexStore",

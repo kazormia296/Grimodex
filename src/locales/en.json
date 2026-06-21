@@ -1219,7 +1219,8 @@
     "panelMenu": {
       "collapse": "Collapse",
       "maximize": "Maximize",
-      "restore": "Restore size"
+      "restore": "Restore size",
+      "openInWindow": "Open in separate window"
     }
   },
   "kouetsu": {
@@ -1794,6 +1795,7 @@
     "filterAll": "All",
     "sortOrderTitle": "Sort order",
     "newEntry": "New entry",
+    "editLockedOtherWindow": "This entry is being edited in another window (read-only)",
     "selectPrompt": "Select an entry",
     "deleteConfirmDesc": "Delete \"{{name}}\"? This cannot be undone.",
     "editEntry": "Edit Entry",
@@ -2014,6 +2016,7 @@
       "searchFailed": "Search failed",
       "createFailed": "Failed to create Codex entry",
       "updateFailed": "Failed to update Codex entry",
+      "editConflict": "Couldn't save: this entry was updated in another window. Reload the latest version and edit again.",
       "deleteFailed": "Failed to delete Codex entry",
       "filterFailed": "Failed to apply filter",
       "agentHistoryCreate": "Agent: Create Codex",

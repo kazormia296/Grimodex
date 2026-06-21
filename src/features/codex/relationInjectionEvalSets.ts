@@ -34,6 +34,7 @@ function mkEntry(partial: Partial<CodexEntry> & { id: string }): CodexEntry {
     childrenBudget: "compact",
     sourceChatMessageId: null,
     notes: null,
+    version: 0,
     createdAt: T,
     updatedAt: T,
     ...partial,

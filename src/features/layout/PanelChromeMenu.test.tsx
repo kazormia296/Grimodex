@@ -6,6 +6,7 @@ import { useLayoutStore } from "./layoutStore";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
+  isTauri: () => false,
 }));
 
 function setup() {

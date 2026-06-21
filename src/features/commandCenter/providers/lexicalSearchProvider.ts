@@ -1,7 +1,7 @@
 import i18next from "i18next";
 import { invoke } from "@/lib/tauri";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useCodexStore } from "@/features/codex/codexStore";
+import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import type {
@@ -53,8 +53,7 @@ function navigateTo(result: LexicalSearchResult): void {
     useTreeStore.getState().setActiveScene(result.id);
     useLayoutStore.getState().showPanel("editor");
   } else if (result.sourceType === "codex") {
-    useCodexStore.getState().requestSelectEntry(result.id);
-    useLayoutStore.getState().showPanel("codex");
+    void requestOpenInCodex(result.id);
   } else {
     useLayoutStore.getState().showPanel("snippets");
   }

@@ -3,6 +3,7 @@ import { codexEntries, foreshadows, foreshadowCodexLinks } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { enqueueRescan } from "./mentionRescanQueue";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
+import { CodexVersionConflictError } from "./occ";
 
 /**
  * impact-review: この Codex に紐づく伏線を「Codex 変更で再評価が必要」とマークする。
@@ -109,18 +110,54 @@ export async function updateCodexEntry(
       | "notes"
     >
   >,
+  opts?: { baseVersion?: number },
 ): Promise<CodexEntry | undefined> {
+  // OCC: baseVersion 指定時のみ条件付き UPDATE (version 照合 + インクリメント)。
+  // 省略時は従来通りの blind UPDATE で完全後方互換 (version 列は触らない)。
+  const useOcc = opts?.baseVersion !== undefined;
+  const baseVersion = opts?.baseVersion ?? 0;
   const rows = await db
     .update(codexEntries)
-    .set({ ...data, updatedAt: new Date().toISOString() })
-    .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)))
+    .set(
+      useOcc
+        ? {
+            ...data,
+            version: baseVersion + 1,
+            updatedAt: new Date().toISOString(),
+          }
+        : { ...data, updatedAt: new Date().toISOString() },
+    )
+    .where(
+      useOcc
+        ? and(
+            eq(codexEntries.id, id),
+            eq(codexEntries.projectId, projectId),
+            eq(codexEntries.version, baseVersion),
+          )
+        : and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
+    )
     .returning();
 
-  // 0 件マッチ (id が別プロジェクト等で project スコープに弾かれた場合) は
-  // 後続の副作用 (rescan/index/伏線 dirty) を一切走らせない。
+  // 0 件マッチ。OCC 有効時は「行が存在するのに 0 件」= version 衝突として
+  // CodexVersionConflictError を投げ、呼び出し側に非破壊リロードを委ねる。
+  // 行が存在しないなら従来通り undefined (別プロジェクト等のスコープ miss)。
+  // OCC 無効時は従来通り undefined。
+  // どちらの 0 件でも後続の副作用 (rescan/index/伏線 dirty) は走らせない。
   // 特に markLinkedForeshadowsDirty は projectId 非依存なので、ここで
   // 早期 return しないと別プロジェクトの伏線を汚染しうる。
-  if (!rows[0]) return undefined;
+  if (!rows[0]) {
+    if (useOcc) {
+      const exists = await db
+        .select({ id: codexEntries.id })
+        .from(codexEntries)
+        .where(
+          and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
+        )
+        .limit(1);
+      if (exists[0]) throw new CodexVersionConflictError(id);
+    }
+    return undefined;
+  }
 
   // If name/aliases/excludedAliases changed, body-mention cache may be stale
   if (

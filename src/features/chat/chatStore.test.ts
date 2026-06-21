@@ -1394,6 +1394,7 @@ describe("useChatStore", () => {
         childrenBudget: "compact",
         sourceChatMessageId: null,
         notes: null,
+        version: 0,
         createdAt: now,
         updatedAt: now,
       };
@@ -1512,6 +1513,7 @@ describe("useChatStore", () => {
         notes: null,
         childrenBudget: "compact",
         sourceChatMessageId: null,
+        version: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };

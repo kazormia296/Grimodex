@@ -11,9 +11,17 @@ import { useLicenseWriteRestricted } from "./gate";
  * 導入時点で対象 6 エディタ（EditorPane / LinearSceneBlock /
  * CodexContentEditor / SnippetDetailContent / StickyNode /
  * UnplacedBeatItem）に他の editable 制御が無いことを確認済み。
+ *
+ * `forceReadOnly`: ライセンス以外の read-only 要因（マルチウインドウの advisory
+ * lock で別窓が同一 entry を編集中など）。editable 制御を 1 箇所に集約するため、
+ * ここで OR して反映する（呼び出し側で別途 setEditable しないこと）。
  */
-export function useLicenseEditableSync(editor: Editor | null): boolean {
+export function useLicenseEditableSync(
+  editor: Editor | null,
+  forceReadOnly = false,
+): boolean {
   const restricted = useLicenseWriteRestricted();
+  const readOnly = restricted || forceReadOnly;
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
     // emitUpdate: false — TipTap の setEditable は既定で 'update' を emit し、
@@ -21,7 +29,7 @@ export function useLicenseEditableSync(editor: Editor | null): boolean {
     // 発火させる。mount 時の同期がこれを毎回踏み、未ロードの空 doc に
     // pending を arm して本文消失の引き金になっていた (実機ログで特定)。
     // editable の反映自体は setOptions 経由なので emit 無しでも効く。
-    editor.setEditable(!restricted, false);
-  }, [editor, restricted]);
+    editor.setEditable(!readOnly, false);
+  }, [editor, readOnly]);
   return restricted;
 }

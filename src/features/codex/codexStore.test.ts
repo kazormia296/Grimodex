@@ -18,6 +18,7 @@ const mockEntry: CodexEntry = {
   childrenBudget: "compact",
   sourceChatMessageId: "msg-1",
   notes: null,
+  version: 0,
   createdAt: "2024-01-01T00:00:00Z",
   updatedAt: "2024-01-01T00:00:00Z",
 };
@@ -38,6 +39,7 @@ const mockEntry2: CodexEntry = {
   childrenBudget: "compact",
   sourceChatMessageId: null,
   notes: null,
+  version: 0,
   createdAt: "2024-01-02T00:00:00Z",
   updatedAt: "2024-01-02T00:00:00Z",
 };
