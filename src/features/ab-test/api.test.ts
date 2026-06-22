@@ -22,79 +22,74 @@ vi.mock("@/db/client", async () => {
   return { db };
 });
 
-import {
-  createAbComparison,
-  listAbComparisons,
-  getAbComparison,
-  setAbChosen,
-} from "./api";
+import { createAbRun, listAbRuns, setAbRunChosen } from "./api";
 
 beforeEach(() => {
   h.queries.length = 0;
   h.rowsRef.current = { rows: [] };
 });
 
-describe("ab-test api", () => {
-  it("createAbComparison inserts all fields", async () => {
-    h.rowsRef.current = {
-      rows: [
-        [
-          "id-1",
-          "p1",
-          "chat",
-          "prompt text",
-          "model-a",
-          "model-b",
-          null,
-          null,
-          "resp a",
-          "resp b",
-          null,
-          "2025-01-01T00:00:00Z",
-        ],
-      ],
-    };
-    await createAbComparison({
+describe("ab-test api (N-slot runs)", () => {
+  it("createAbRun inserts surface/prompt/chosen and serializes slots as JSON", async () => {
+    await createAbRun({
       projectId: "p1",
       surface: "chat",
       prompt: "prompt text",
-      modelA: "model-a",
-      modelB: "model-b",
-      responseA: "resp a",
-      responseB: "resp b",
+      slots: [
+        {
+          slotId: "baseline",
+          provider: null,
+          model: null,
+          promptVariant: null,
+          ok: true,
+          response: "resp base",
+        },
+        {
+          slotId: "s2",
+          provider: "sakana",
+          model: "fugu",
+          promptVariant: "terse",
+          ok: true,
+          response: "resp s2",
+        },
+      ],
     });
     expect(h.queries).toHaveLength(1);
     expect(h.queries[0].sql).toContain("insert");
-    expect(h.queries[0].sql).toContain("ab_comparisons");
+    expect(h.queries[0].sql).toContain("ab_comparison_runs");
     expect(h.queries[0].params).toContain("p1");
-    expect(h.queries[0].params).toContain("resp a");
-    expect(h.queries[0].params).toContain("model-b");
+    expect(h.queries[0].params).toContain("chat");
+    // slots is a JSON string holding both slot records.
+    const slotsParam = h.queries[0].params.find(
+      (p): p is string => typeof p === "string" && p.startsWith("["),
+    );
+    expect(slotsParam).toBeDefined();
+    const parsed = JSON.parse(slotsParam!);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[1]).toMatchObject({
+      slotId: "s2",
+      provider: "sakana",
+      model: "fugu",
+      response: "resp s2",
+    });
   });
 
-  it("listAbComparisons filters by project and orders by created_at desc", async () => {
-    await listAbComparisons("p1");
+  it("listAbRuns filters by project and orders by created_at desc", async () => {
+    await listAbRuns("p1");
     expect(h.queries).toHaveLength(1);
-    expect(h.queries[0].sql).toContain("ab_comparisons");
+    expect(h.queries[0].sql).toContain("ab_comparison_runs");
     expect(h.queries[0].sql).toContain("project_id");
     expect(h.queries[0].sql.toLowerCase()).toContain("order by");
     expect(h.queries[0].params).toContain("p1");
   });
 
-  it("getAbComparison scopes by both id AND project_id (fail-closed)", async () => {
-    await getAbComparison("p1", "id-1");
-    expect(h.queries).toHaveLength(1);
-    expect(h.queries[0].sql).toContain("project_id");
-    expect(h.queries[0].params).toContain("p1");
-    expect(h.queries[0].params).toContain("id-1");
-  });
-
-  it("setAbChosen updates with id AND project_id scope", async () => {
-    await setAbChosen("p1", "id-1", "b");
+  it("setAbRunChosen updates with id AND project_id scope (fail-closed)", async () => {
+    await setAbRunChosen("p1", "id-1", "s2");
     expect(h.queries).toHaveLength(1);
     expect(h.queries[0].sql).toContain("update");
-    expect(h.queries[0].sql).toContain("ab_comparisons");
+    expect(h.queries[0].sql).toContain("ab_comparison_runs");
     expect(h.queries[0].sql).toContain("project_id");
-    expect(h.queries[0].params).toContain("b");
+    expect(h.queries[0].params).toContain("s2");
     expect(h.queries[0].params).toContain("p1");
     expect(h.queries[0].params).toContain("id-1");
   });

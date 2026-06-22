@@ -47,7 +47,13 @@ describe("createChatAbDispatcher", () => {
     const res = await dispatch(MESSAGES, CONFIG);
 
     expect(res).toEqual({ ok: true, text: "hello" });
-    expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(MESSAGES, "model-b");
+    // provider 未指定 (基準枠相当) → provider/apiVariant は undefined。
+    expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
+      MESSAGES,
+      "model-b",
+      undefined,
+      undefined,
+    );
     expect(h.recordAiUsage).toHaveBeenCalledTimes(1);
     expect(h.recordAiUsage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -56,8 +62,43 @@ describe("createChatAbDispatcher", () => {
         tokensIn: 10,
         tokensOut: 5,
         projectId: "p1",
-        metadata: { abTest: true },
+        metadata: { abTest: true, provider: null },
       }),
+    );
+  });
+
+  it("forwards a provider override and resolves sakana → responses variant", async () => {
+    h.sendChatMessageOnceAb.mockResolvedValue({
+      text: "hi",
+      inputTokens: 1,
+      outputTokens: 1,
+    });
+    const dispatch = createChatAbDispatcher("p1");
+    await dispatch(MESSAGES, { provider: "sakana", model: "fugu" });
+
+    expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
+      MESSAGES,
+      "fugu",
+      "sakana",
+      "responses",
+    );
+    expect(h.recordAiUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { abTest: true, provider: "sakana" },
+      }),
+    );
+  });
+
+  it("non-sakana provider override leaves variant to backend (undefined)", async () => {
+    h.sendChatMessageOnceAb.mockResolvedValue({ text: "hi" });
+    const dispatch = createChatAbDispatcher("p1");
+    await dispatch(MESSAGES, { provider: "openrouter", model: "x/y" });
+
+    expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
+      MESSAGES,
+      "x/y",
+      "openrouter",
+      undefined,
     );
   });
 

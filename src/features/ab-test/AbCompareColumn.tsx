@@ -3,20 +3,22 @@ import { Check, Loader2, AlertTriangle } from "lucide-react";
 import type { AbRunResult } from "./abHarness";
 
 interface AbCompareColumnProps {
-  /** "A" | "B" の見出しラベル。 */
-  side: "a" | "b";
+  /** 見出しラベル ("基準" / "枠 2" 等)。 */
+  label: string;
+  /** この列のプロバイダ名 (override がある枠のみ。基準は空)。 */
+  providerLabel?: string | null;
   /** この列に表示するモデル名 (空なら「既定」)。 */
   modelLabel?: string | null;
   /** プロンプト追記指示 (あれば小さく表示)。 */
   promptVariant?: string | null;
-  /** 実行結果。null = まだ結果なし (実行中 or mode 切替で破棄)。 */
+  /** 実行結果。null = まだ結果なし (実行中 or 編集で破棄)。 */
   result: AbRunResult | null;
   /**
    * 比較を実行中か。result===null の意味を分けるために使う:
    * running 中の null = スピナー / 非 running の null = 未生成プレースホルダ。
    */
   running?: boolean;
-  /** 採用済みか (両列のうち選ばれた方)。 */
+  /** 採用済みか (選ばれた列)。 */
   chosen: boolean;
   /** 採用ボタン押下。実行中 / 失敗時は無効。 */
   onAdopt: () => void;
@@ -25,10 +27,11 @@ interface AbCompareColumnProps {
 }
 
 /**
- * A/B 比較の片側 1 列。モデル名・追記指示・レスポンス本文・採用ボタンを縦に並べる。
+ * A/B 比較の 1 列。ラベル・プロバイダ/モデル・追記指示・レスポンス本文・採用ボタンを縦に並べる。
  */
 export function AbCompareColumn({
-  side,
+  label,
+  providerLabel,
   modelLabel,
   promptVariant,
   result,
@@ -38,20 +41,29 @@ export function AbCompareColumn({
   adoptable,
 }: AbCompareColumnProps) {
   const { t } = useTranslation();
+  const modelText = modelLabel?.trim() || t("abTest.defaultModel");
 
   return (
     <div
-      className={`flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border ${
+      className={`flex min-h-0 w-64 shrink-0 flex-col rounded-lg border ${
         chosen ? "border-primary" : "border-border"
       } bg-background`}
     >
       <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div className="min-w-0">
           <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {side === "a" ? t("abTest.sideA") : t("abTest.sideB")}
+            {label}
           </div>
-          <div className="truncate text-sm" title={modelLabel ?? undefined}>
-            {modelLabel?.trim() || t("abTest.defaultModel")}
+          <div
+            className="truncate text-sm"
+            title={
+              providerLabel ? `${providerLabel} / ${modelText}` : modelText
+            }
+          >
+            {providerLabel?.trim() && (
+              <span className="text-muted-foreground">{providerLabel} / </span>
+            )}
+            {modelText}
           </div>
         </div>
         {chosen && (
@@ -70,7 +82,7 @@ export function AbCompareColumn({
 
       <div className="min-h-[8rem] flex-1 overflow-y-auto px-3 py-2 text-sm">
         {result === null ? (
-          // null は「実行中」と「未生成 (mode 切替で破棄)」の 2 通り。
+          // null は「実行中」と「未生成 (編集で破棄)」の 2 通り。
           running ? (
             <div className="flex h-full items-center justify-center text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
@@ -102,7 +114,7 @@ export function AbCompareColumn({
           disabled={!adoptable || !result || !result.ok}
           className="w-full rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
         >
-          {side === "a" ? t("abTest.adoptA") : t("abTest.adoptB")}
+          {t("abTest.adopt")}
         </button>
       </div>
     </div>

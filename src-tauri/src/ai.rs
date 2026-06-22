@@ -5684,3 +5684,172 @@ mod tests {
         assert!(json.get("pricingPrompt").is_none());
     }
 }
+
+// ---------------------------------------------------------------------------
+// A/B 比較 (③) — 枠ごとの別プロバイダ override のライブ検証。既定 SKIP。
+//
+// A/B chat の 1 枠は send_chat_message(provider 引数) 経由で `send_chat` を
+// effective provider の ChatParams で叩く。ここではその `send_chat` 経路を
+// プロバイダごとに実 API へ流して「別プロバイダが本当に応答するか」を確認する。
+// Sakana は A/B dispatcher が apiVariant="responses" を渡すのと同じく responses 経路。
+//
+//   OPENROUTER_API_KEY=sk-or-... \
+//   OPENAI_API_KEY=sk-proj-...   \
+//   ANTHROPIC_API_KEY=sk-ant-... \
+//   SAKANA_API_KEY=fish_...      \
+//     cargo test --no-default-features ab_live -- --nocapture
+//
+// モデル上書き: OPENROUTER_AB_MODEL / OPENAI_AB_MODEL / ANTHROPIC_AB_MODEL /
+// SAKANA_AB_MODEL。キー未設定の枠は個別に [skip] する (CI / sandbox 安全)。
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod ab_provider_live_tests {
+    use super::*;
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
+    }
+
+    fn key_of(names: &[&str]) -> Option<String> {
+        names
+            .iter()
+            .find_map(|n| std::env::var(n).ok().filter(|k| !k.is_empty()))
+    }
+
+    /// A/B 1 枠相当の ChatParams を組む (build_chat_params と同じ形・effective provider)。
+    fn ab_params<'a>(
+        provider: &'a AiProvider,
+        settings: &'a AiSettings,
+        key: &'a str,
+        model: &'a str,
+        api_variant: Option<String>,
+    ) -> ChatParams<'a> {
+        ChatParams {
+            provider,
+            model,
+            api_key: key,
+            endpoints: settings.endpoints(),
+            thinking: None,
+            effort: None,
+            reasoning_enabled: None,
+            reasoning_effort: None,
+            extra_body: None,
+            retry_429: true,
+            ai_novelist_mode: AiNovelistMode::Chat,
+            openrouter_provider_pin: None,
+            system_cache_segments: None,
+            system_volatile_tail: None,
+            api_variant,
+            web_search: None,
+            resolved_tool_protocol: ResolvedToolProtocol::Native,
+        }
+    }
+
+    /// 1 枠を実行し本文テキストを返す (空なら panic)。
+    fn run(label: &str, params: &ChatParams<'_>) -> String {
+        let messages = [(
+            "user",
+            "Reply with exactly the single word: pong. No punctuation.",
+        )];
+        let resp = rt()
+            .block_on(send_chat(params, &messages))
+            .unwrap_or_else(|e| panic!("{label}: send_chat 失敗: {e:#}"));
+        let text: String = resp
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                ResponseBlock::Text { content } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!text.trim().is_empty(), "{label}: 本文テキストが空");
+        eprintln!("[ok] {label}: {} chars => {text:?}", text.chars().count());
+        text
+    }
+
+    #[test]
+    fn ab_live_openrouter() {
+        let Some(key) = key_of(&["OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY"]) else {
+            eprintln!("[skip] ab_live_openrouter: OPENROUTER_API_KEY 未設定");
+            return;
+        };
+        let model =
+            std::env::var("OPENROUTER_AB_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".into());
+        let settings = AiSettings {
+            provider: AiProvider::OpenRouter,
+            model: model.clone(),
+            ..Default::default()
+        };
+        run(
+            "ab_live_openrouter",
+            &ab_params(&AiProvider::OpenRouter, &settings, &key, &model, None),
+        );
+    }
+
+    #[test]
+    fn ab_live_openai() {
+        let Some(key) = key_of(&["OPENAI_API_KEY"]) else {
+            eprintln!("[skip] ab_live_openai: OPENAI_API_KEY 未設定");
+            return;
+        };
+        // gpt-5 系: OpenAI 直は max_completion_tokens 32k 前提なので completion 上限の
+        // 大きい現行モデルを既定にする (gpt-4o-mini は 16384 上限で 400 になる)。
+        let model = std::env::var("OPENAI_AB_MODEL").unwrap_or_else(|_| "gpt-5-mini".into());
+        let settings = AiSettings {
+            provider: AiProvider::OpenAI,
+            model: model.clone(),
+            ..Default::default()
+        };
+        run(
+            "ab_live_openai",
+            &ab_params(&AiProvider::OpenAI, &settings, &key, &model, None),
+        );
+    }
+
+    #[test]
+    fn ab_live_anthropic() {
+        let Some(key) = key_of(&["ANTHROPIC_API_KEY"]) else {
+            eprintln!("[skip] ab_live_anthropic: ANTHROPIC_API_KEY 未設定");
+            return;
+        };
+        let model = std::env::var("ANTHROPIC_AB_MODEL")
+            .unwrap_or_else(|_| "claude-haiku-4-5-20251001".into());
+        let settings = AiSettings {
+            provider: AiProvider::Anthropic,
+            model: model.clone(),
+            ..Default::default()
+        };
+        run(
+            "ab_live_anthropic",
+            &ab_params(&AiProvider::Anthropic, &settings, &key, &model, None),
+        );
+    }
+
+    #[test]
+    fn ab_live_sakana() {
+        let Some(key) = key_of(&["SAKANA_API_KEY"]) else {
+            eprintln!("[skip] ab_live_sakana: SAKANA_API_KEY 未設定");
+            return;
+        };
+        // A/B dispatcher が Sakana 枠に渡すのと同じ responses 経路。
+        let model = std::env::var("SAKANA_AB_MODEL").unwrap_or_else(|_| "fugu".into());
+        let settings = AiSettings {
+            provider: AiProvider::Sakana,
+            model: model.clone(),
+            ..Default::default()
+        };
+        run(
+            "ab_live_sakana",
+            &ab_params(
+                &AiProvider::Sakana,
+                &settings,
+                &key,
+                &model,
+                Some("responses".to_string()),
+            ),
+        );
+    }
+}

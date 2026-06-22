@@ -37,25 +37,41 @@ describe("applyPromptVariant", () => {
 });
 
 describe("runAbComparison", () => {
-  it("dispatches both configs in parallel and returns both results", async () => {
+  it("dispatches every config and returns results in order", async () => {
     const dispatch: AbDispatcher = vi.fn(async (_messages, config) => ({
       ok: true as const,
       text: `model=${config.model ?? "default"}`,
     }));
 
-    const result = await runAbComparison(
+    const out = await runAbComparison(
       { messages: BASE },
-      { model: "gpt-a" },
-      { model: "gpt-b" },
+      [{}, { model: "gpt-b" }, { model: "gpt-c" }],
       dispatch,
     );
 
-    expect(result.a).toEqual({ ok: true, text: "model=gpt-a" });
-    expect(result.b).toEqual({ ok: true, text: "model=gpt-b" });
-    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(out.map((s) => s.result)).toEqual([
+      { ok: true, text: "model=default" },
+      { ok: true, text: "model=gpt-b" },
+      { ok: true, text: "model=gpt-c" },
+    ]);
+    expect(dispatch).toHaveBeenCalledTimes(3);
   });
 
-  it("runs both sides concurrently (not sequentially)", async () => {
+  it("passes the provider override through to the dispatcher", async () => {
+    const seen: (string | null | undefined)[] = [];
+    const dispatch: AbDispatcher = async (_m, config) => {
+      seen.push(config.provider);
+      return { ok: true as const, text: "ok" };
+    };
+    await runAbComparison(
+      { messages: BASE },
+      [{}, { provider: "sakana", model: "fugu" }],
+      dispatch,
+    );
+    expect(seen).toEqual([undefined, "sakana"]);
+  });
+
+  it("runs slots concurrently by default (not sequentially)", async () => {
     const order: string[] = [];
     let releaseA!: () => void;
     const aGate = new Promise<void>((r) => (releaseA = r));
@@ -68,21 +84,19 @@ describe("runAbComparison", () => {
         return { ok: true as const, text: "A" };
       }
       order.push("b-start");
-      // b can finish while a is still blocked → proves parallelism
       order.push("b-end");
       releaseA();
       return { ok: true as const, text: "B" };
     };
 
-    const result = await runAbComparison(
+    const out = await runAbComparison(
       { messages: BASE },
-      { model: "a" },
-      { model: "b" },
+      [{ model: "a" }, { model: "b" }],
       dispatch,
     );
 
-    expect(result.a).toEqual({ ok: true, text: "A" });
-    expect(result.b).toEqual({ ok: true, text: "B" });
+    expect(out[0].result).toEqual({ ok: true, text: "A" });
+    expect(out[1].result).toEqual({ ok: true, text: "B" });
     // a started before b finished → both were in flight at once
     expect(order.indexOf("a-start")).toBeLessThan(order.indexOf("b-end"));
   });
@@ -98,106 +112,92 @@ describe("runAbComparison", () => {
 
     await runAbComparison(
       { messages: BASE },
-      { model: "a" },
-      { model: "b" },
+      [{ model: "a" }, { model: "b" }, { model: "c" }],
       dispatch,
       { parallel: false },
     );
 
-    // A fully completes before B starts.
-    expect(order).toEqual(["a-start", "a-end", "b-start", "b-end"]);
+    expect(order).toEqual([
+      "a-start",
+      "a-end",
+      "b-start",
+      "b-end",
+      "c-start",
+      "c-end",
+    ]);
   });
 
-  it("isolates a thrown error on one side without failing the other", async () => {
+  it("isolates a thrown error on one slot without failing the others", async () => {
     const dispatch: AbDispatcher = async (_messages, config) => {
       if (config.model === "boom") throw new Error("kaboom");
       return { ok: true as const, text: "ok" };
     };
 
-    const result = await runAbComparison(
+    const out = await runAbComparison(
       { messages: BASE },
-      { model: "boom" },
-      { model: "fine" },
+      [{ model: "boom" }, { model: "fine" }],
       dispatch,
     );
 
-    expect(result.a).toEqual({ ok: false, error: "kaboom" });
-    expect(result.b).toEqual({ ok: true, text: "ok" });
+    expect(out[0].result).toEqual({ ok: false, error: "kaboom" });
+    expect(out[1].result).toEqual({ ok: true, text: "ok" });
   });
 
-  it("applies promptVariant per side and passes composed messages to dispatch", async () => {
-    const seen: { messages: AbMessage[]; model?: string | null }[] = [];
-    const dispatch: AbDispatcher = async (messages, config) => {
-      seen.push({ messages, model: config.model });
-      return { ok: true as const, text: "ok" };
-    };
-
-    const result = await runAbComparison(
+  it("applies promptVariant per slot and exposes composed messages", async () => {
+    const out = await runAbComparison(
       { messages: BASE },
-      { model: "m", promptVariant: "variant A" },
-      { model: "m", promptVariant: "" },
-      dispatch,
+      [{ model: "m", promptVariant: "variant A" }, { model: "m" }],
+      async () => ({ ok: true as const, text: "ok" }),
     );
 
-    // side A got the appended variant, side B did not
-    expect(result.messagesA).toHaveLength(3);
-    expect(result.messagesA[2]).toEqual({ role: "user", content: "variant A" });
-    expect(result.messagesB).toHaveLength(2);
-
-    const aRun = seen.find((s) => s.messages.length === 3);
-    const bRun = seen.find((s) => s.messages.length === 2);
-    expect(aRun).toBeDefined();
-    expect(bRun).toBeDefined();
+    expect(out[0].messages).toHaveLength(3);
+    expect(out[0].messages[2]).toEqual({ role: "user", content: "variant A" });
+    expect(out[1].messages).toHaveLength(2);
   });
 
-  it("propagates dispatcher { ok:false } results verbatim", async () => {
-    const dispatch: AbDispatcher = async () => ({
-      ok: false as const,
-      error: "rate limited",
-    });
-    const result = await runAbComparison({ messages: BASE }, {}, {}, dispatch);
-    expect(result.a).toEqual({ ok: false, error: "rate limited" });
-    expect(result.b).toEqual({ ok: false, error: "rate limited" });
-  });
-
-  it("reuses an ok A result and only dispatches B", async () => {
+  it("reuses ok results by index and only dispatches the rest", async () => {
     const seen: (string | null | undefined)[] = [];
     const dispatch: AbDispatcher = async (_messages, config) => {
       seen.push(config.model);
       return { ok: true as const, text: `model=${config.model ?? "default"}` };
     };
 
-    const result = await runAbComparison(
+    const out = await runAbComparison(
       { messages: BASE },
-      {},
-      { model: "gpt-b" },
+      [{}, { model: "gpt-b" }, { model: "gpt-c" }],
       dispatch,
-      { reuseA: { ok: true, text: "REUSED_A" } },
+      {
+        reuse: [
+          { ok: true, text: "REUSED_0" },
+          null,
+          { ok: true, text: "REUSED_2" },
+        ],
+      },
     );
 
-    expect(result.a).toEqual({ ok: true, text: "REUSED_A" });
-    expect(result.b).toEqual({ ok: true, text: "model=gpt-b" });
-    // A は dispatch されず B だけが走る。
+    expect(out[0].result).toEqual({ ok: true, text: "REUSED_0" });
+    expect(out[1].result).toEqual({ ok: true, text: "model=gpt-b" });
+    expect(out[2].result).toEqual({ ok: true, text: "REUSED_2" });
+    // only the non-reused slot (index 1) was dispatched.
     expect(seen).toEqual(["gpt-b"]);
   });
 
-  it("ignores a failed reuseA and dispatches both sides", async () => {
+  it("ignores a failed reuse entry and dispatches that slot", async () => {
     const dispatch: AbDispatcher = vi.fn(async (_messages, config) => ({
       ok: true as const,
       text: `${config.model}`,
     }));
 
-    const result = await runAbComparison(
+    const out = await runAbComparison(
       { messages: BASE },
-      { model: "a" },
-      { model: "b" },
+      [{ model: "a" }, { model: "b" }],
       dispatch,
-      { reuseA: { ok: false, error: "boom" } },
+      { reuse: [{ ok: false, error: "boom" }, null] },
     );
 
-    // 失敗結果は流用しない → A も含め両側を実行。
+    // failed reuse is not honored → both slots run.
     expect(dispatch).toHaveBeenCalledTimes(2);
-    expect(result.a).toEqual({ ok: true, text: "a" });
-    expect(result.b).toEqual({ ok: true, text: "b" });
+    expect(out[0].result).toEqual({ ok: true, text: "a" });
+    expect(out[1].result).toEqual({ ok: true, text: "b" });
   });
 });
