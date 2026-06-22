@@ -11,6 +11,7 @@ function reset() {
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
+    viewMode: "scenes",
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -110,6 +111,12 @@ describe("timelineStore", () => {
     useTimelineStore.getState().setPendingEditNodeId(null);
     expect(useTimelineStore.getState().pendingEditNodeId).toBeNull();
   });
+
+  it("viewMode は scenes が既定で、setViewMode で threads に切り替わる", () => {
+    expect(useTimelineStore.getState().viewMode).toBe("scenes");
+    useTimelineStore.getState().setViewMode("threads");
+    expect(useTimelineStore.getState().viewMode).toBe("threads");
+  });
 });
 
 describe("timelineStore.loadFromSettings", () => {
@@ -119,6 +126,7 @@ describe("timelineStore.loadFromSettings", () => {
     const s: TimelineSettings = {
       axisMode: "story",
       spacingMode: "proportional",
+      viewMode: "threads",
       zoom: 2,
       scrollOffset: 120,
       display: {
@@ -131,6 +139,7 @@ describe("timelineStore.loadFromSettings", () => {
     const state = useTimelineStore.getState();
     expect(state.axisMode).toBe("story");
     expect(state.spacingMode).toBe("proportional");
+    expect(state.viewMode).toBe("threads");
     expect(state.zoom).toBe(2);
     expect(state.scrollOffset).toBe(120);
     expect(state.display.showPhasePins).toBe(true);
