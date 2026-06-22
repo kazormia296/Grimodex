@@ -82,8 +82,13 @@ export interface AiSettings {
    * 設定すると Anthropic prompt cache が安定して効くようになる。
    */
   openrouterProviderPin?: string | null;
-  /** 選択中モデルの API 経路 (legacy | v1)。バックエンド fallback 用 */
-  modelApiVariant?: "legacy" | "v1" | null;
+  /**
+   * 選択中モデルの API 経路。バックエンド fallback 用 (Rust `resolve_api_variant`)。
+   * - "legacy" | "v1": AI のべりすとのレガシー / OpenAI 互換 API 切替。
+   * - "responses": OpenAI 直 / OpenAI 互換 gateway で `/v1/responses`
+   *   (Responses API) を使う。未設定なら `/chat/completions`。
+   */
+  modelApiVariant?: "legacy" | "v1" | "responses" | null;
   /**
    * reasoning モデルの effort 上書き（low/medium/high）。
    * undefined / null ⇒ タスク既定（getEffortForTask）に従う。chat/agent でのみ適用。

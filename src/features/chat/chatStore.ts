@@ -88,11 +88,16 @@ import {
   parseWebSearchControls,
 } from "./webSearchConfig";
 import * as cliApi from "./cliApi";
-import { resolveAinoveristApiVariant } from "./aiNovelist";
+import { resolveModelApiVariant } from "./aiNovelist";
 
 function getChatApiVariant(model: string): string | undefined {
   const { settings, models } = useAiSettingsStore.getState();
-  return resolveAinoveristApiVariant(model, models, settings?.modelApiVariant);
+  return resolveModelApiVariant(
+    settings?.provider,
+    model,
+    models,
+    settings?.modelApiVariant,
+  );
 }
 
 /**

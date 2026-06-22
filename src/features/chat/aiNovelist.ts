@@ -86,3 +86,29 @@ export function resolveAinoveristApiVariant(
   if (model) return "legacy";
   return undefined;
 }
+
+/**
+ * 送信/永続化に使う API 経路 (variant) をプロバイダ込みで解決する。
+ *
+ * OpenAI 直 / OpenAI 互換 gateway で Responses トグル (modelApiVariant ==
+ * "responses") が有効なら最優先で "responses" を返す。それ以外は AI のべりすと用の
+ * `resolveAinoveristApiVariant`（legacy/v1 のみ・任意モデルに "legacy" を返す）へ委譲する。
+ *
+ * `resolveAinoveristApiVariant` は "responses" を一切扱わず legacy に潰すため、送信時
+ * (getChatApiVariant) やモデル切替時の永続化 (handleSelectModel / handleModelChange) で
+ * 直接呼ぶと Responses 設定が消える。経路解決はすべてこの関数に通すこと。
+ */
+export function resolveModelApiVariant(
+  provider: string | undefined,
+  model: string,
+  models: Array<{ id: string; apiVariant?: string }>,
+  persisted?: string | null,
+): "legacy" | "v1" | "responses" | undefined {
+  if (
+    (provider === "openai" || provider === "openai-compatible") &&
+    persisted === "responses"
+  ) {
+    return "responses";
+  }
+  return resolveAinoveristApiVariant(model, models, persisted);
+}

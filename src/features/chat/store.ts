@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import * as api from "./api";
 import * as cliApi from "./cliApi";
-import { resolveAinoveristApiVariant } from "./aiNovelist";
+import { resolveModelApiVariant } from "./aiNovelist";
 import type {
   AiProvider,
   AiSettings,
@@ -127,7 +127,8 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
 
     set({ isTestingConnection: true, connectionTestResult: null });
     try {
-      const apiVariant = resolveAinoveristApiVariant(
+      const apiVariant = resolveModelApiVariant(
+        settings.provider,
         settings.model,
         models,
         settings.modelApiVariant,

@@ -91,7 +91,7 @@ pub fn resolve_tool_protocol(
 /// TS `isRagCapableProvider`（openrouter/anthropic のみ信頼）の補集合のうち local/未検証
 /// な OpenAI 互換系に限定し、frontier（OpenRouter/OpenAI native）は除外して正規の
 /// agent 書き込みを維持する。
-fn is_low_trust_native_provider(p: &AiProvider) -> bool {
+pub(crate) fn is_low_trust_native_provider(p: &AiProvider) -> bool {
     matches!(
         p,
         AiProvider::Ollama | AiProvider::OpenaiCompatible | AiProvider::AiNovelist
@@ -553,7 +553,7 @@ fn insert_chat_completion_token_limit(
 
 /// gpt-5.1 以降は `reasoning_effort:"none"` 対応。それ以前 (o3 / o4-mini / gpt-5 / gpt-5-mini) は非対応。
 /// gpt-5-pro (high 固定) と gpt-5-chat (非 reasoning) は対象外。ドット/ダッシュ両表記を許容。
-fn openai_model_supports_reasoning_none(model: &str) -> bool {
+pub(crate) fn openai_model_supports_reasoning_none(model: &str) -> bool {
     let m = model.strip_prefix("openai/").unwrap_or(model);
     if m.starts_with("gpt-5-pro") || m.starts_with("gpt-5-chat") {
         return false;
@@ -572,7 +572,7 @@ fn openai_model_supports_reasoning_none(model: &str) -> bool {
 }
 
 /// gpt-5-pro は effort=high 固定。low/medium を送ると 400 になるため high に丸める。
-fn openai_model_requires_high_effort(model: &str) -> bool {
+pub(crate) fn openai_model_requires_high_effort(model: &str) -> bool {
     let m = model.strip_prefix("openai/").unwrap_or(model);
     m.starts_with("gpt-5-pro")
 }
@@ -1503,7 +1503,7 @@ fn parse_retry_after_ms(resp: &reqwest::Response) -> Option<u64> {
 
 /// 429 を受けたときに指数バックオフでリトライするヘルパ。
 /// `retry_enabled = false` のときはリトライせず初回応答を返す。
-async fn send_with_429_retry(
+pub(crate) async fn send_with_429_retry(
     initial: reqwest::RequestBuilder,
     retry_enabled: bool,
     max_retries: u32,
@@ -1565,7 +1565,7 @@ fn apply_openrouter_provider_pin(
 
 /// `params.extra_body` をリクエストボディにマージする。
 /// `body` がオブジェクトでない場合は何もしない。
-fn merge_extra_body(body: &mut serde_json::Value, extra: &Option<serde_json::Value>) {
+pub(crate) fn merge_extra_body(body: &mut serde_json::Value, extra: &Option<serde_json::Value>) {
     let Some(serde_json::Value::Object(map)) = extra.clone() else {
         return;
     };
@@ -1589,6 +1589,12 @@ pub async fn send_chat(
     // AI のべりすと legacy は独自フォーマット。v1 は OpenAI 互換分岐へ合流。
     if matches!(params.provider, AiProvider::AiNovelist) && !is_ainoverist_v1(params) {
         return send_chat_ainoverist(&client, params, messages).await;
+    }
+
+    // OpenAI Responses API (/v1/responses) 経路。OpenAI 直 / 互換 gateway で
+    // api_variant=="responses" のとき chat/completions ではなく Responses 形式で送る。
+    if crate::ai_responses::uses_responses_api(params.provider, params.api_variant.as_deref()) {
+        return crate::ai_responses::send(params, messages).await;
     }
 
     match params.provider {
@@ -1819,7 +1825,7 @@ fn extract_cache_tokens(
 }
 
 /// 同一 URL の重複を避けて引用を追加する (1 ソース = 1 エントリ)。
-fn push_unique_citation(citations: &mut Vec<Citation>, cit: Citation) {
+pub(crate) fn push_unique_citation(citations: &mut Vec<Citation>, cit: Citation) {
     if !cit.url.is_empty() && !citations.iter().any(|c| c.url == cit.url) {
         citations.push(cit);
     }
@@ -1918,7 +1924,7 @@ fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatRe
 ///
 /// Must stay in sync with `MUTATING_TOOL_NAMES` in
 /// src/features/chat/toolProtocolParse.ts.
-const HERMES_BLOCKED_TOOL_NAMES: &[&str] = &[
+pub(crate) const HERMES_BLOCKED_TOOL_NAMES: &[&str] = &[
     "create_codex_entry",
     "update_codex_entry",
     "create_foreshadow",
@@ -2202,14 +2208,14 @@ fn build_hermes_openai_messages(
 
 /// AI リクエスト/レスポンス本文のデバッグログを有効化するか。
 /// 本文には小説本文 (私的テキスト) が含まれるため、env var で明示有効時のみ出力。
-fn ai_wire_log_enabled() -> bool {
+pub(crate) fn ai_wire_log_enabled() -> bool {
     std::env::var("GRIMODEX_AI_WIRE_LOG")
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(false)
 }
 
 /// ログ用に文字列を char 境界で切り詰める。
-fn truncate_for_log(s: &str, max: usize) -> String {
+pub(crate) fn truncate_for_log(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
@@ -2623,6 +2629,11 @@ pub async fn send_chat_with_tools(
         return Err(anyhow::anyhow!(
             "CLI プロバイダは Agent（ツール使用）に非対応です。チャットで Agent をオフにするか HTTP プロバイダを使ってください"
         ));
+    }
+
+    // OpenAI Responses API 経路(ツール対応)。function_call / function_call_output で授受。
+    if crate::ai_responses::uses_responses_api(params.provider, params.api_variant.as_deref()) {
+        return crate::ai_responses::send_with_tools(params, messages, tools).await;
     }
 
     match params.provider {
@@ -3053,6 +3064,17 @@ pub async fn call_post_effect_api(
             // OpenRouter / OpenAI compat: use /chat/completions.
             // OpenRouter passes cache_control to Anthropic when using a Claude model.
             let api_variant = resolve_api_variant(None, settings, &settings.model);
+            // OpenAI Responses API 経路: /responses で単発 grader 呼び出し。
+            if crate::ai_responses::uses_responses_api(&settings.provider, api_variant.as_deref()) {
+                return crate::ai_responses::post_effect(
+                    settings,
+                    api_key,
+                    system_prompt,
+                    codex_content,
+                    scene_content,
+                )
+                .await;
+            }
             let url = format!(
                 "{}/chat/completions",
                 settings
@@ -3169,12 +3191,12 @@ fn openai_stream_delta_content(delta: &serde_json::Value) -> Option<String> {
 /// ストリーム (バグ持ち / 悪意ある custom endpoint) で buf が無制限に増大し自プロセスの
 /// メモリを枯渇させるのを防ぐ defense-in-depth。正当な SSE フレーム最大を十分上回る値で、
 /// endpoint はユーザ設定 (semi-trusted) のため安全側に倒す。
-const MAX_SSE_BUFFER_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+pub(crate) const MAX_SSE_BUFFER_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
 
 /// SSE イベント境界。仕様は「空行」だが、`\r\n\r\n` と `\n\n` の両方を扱う。
 /// Windows 経由や一部プロキシでは CRLF のみになり `"\n\n"` 検出で永遠にバッファが進まないことがある。
 #[inline]
-fn find_sse_frame_separator(buf: &str) -> Option<(usize, usize)> {
+pub(crate) fn find_sse_frame_separator(buf: &str) -> Option<(usize, usize)> {
     if let Some(pos) = buf.find("\r\n\r\n") {
         return Some((pos, 4));
     }
@@ -3259,6 +3281,18 @@ pub async fn send_chat_stream(
             }),
         );
         return Ok(());
+    }
+
+    // OpenAI Responses API ストリーミング経路。型付き SSE を共通 chunk/done に正規化。
+    if crate::ai_responses::uses_responses_api(params.provider, params.api_variant.as_deref()) {
+        return crate::ai_responses::send_stream(
+            params,
+            messages,
+            abort_flag.clone(),
+            app_handle.clone(),
+            event_prefix,
+        )
+        .await;
     }
 
     match params.provider {
