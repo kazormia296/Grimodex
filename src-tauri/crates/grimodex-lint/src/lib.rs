@@ -18,8 +18,8 @@ pub mod morph;
 pub mod offset;
 pub mod rule;
 pub mod rules;
-pub mod textscan;
 pub mod stem;
+pub mod textscan;
 
 pub use dialogue::{analyze_dialogue, DialogueAnalysis, DialogueScope};
 pub use engine::{lint, LintResponse, MAX_INPUT_BYTES};

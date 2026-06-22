@@ -150,6 +150,7 @@ for domain in \
     "platform.openai.com" \
     "api.anthropic.com" \
     "openrouter.ai" \
+    "console.sakana.ai" \
     "sentry.io" \
     "statsig.anthropic.com" \
     "statsig.com" \
