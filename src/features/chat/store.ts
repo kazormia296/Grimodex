@@ -33,6 +33,16 @@ export interface AiSettingsState {
   isLoadingModels: boolean;
   /** OpenRouter 動的 capability レジストリの更新カウンタ。購読するとキャップ変更で再レンダリングされる。 */
   modelCapsRevision: number;
+  /**
+   * チャットパネルで一時的に選んだチャットモデル(その場限り)。
+   * - 永続化しない(アプリ再起動で null に戻る)。保存される既定チャットモデル
+   *   (settings.model)は書き換えない。
+   * - チャット送信経路だけがこれを優先して使う。インライン AI / Beat / 校閲などは
+   *   従来どおり settings.model(既定)を読むので、チャットでの一時選択が他経路へ
+   *   漏れない。
+   * - プロバイダ切替時にクリアする(モデル名前空間が変わるため)。
+   */
+  chatModelOverride: string | null;
 
   loadSettings: () => Promise<void>;
   saveSettings: (settings: AiSettings) => Promise<void>;
@@ -40,6 +50,8 @@ export interface AiSettingsState {
   deleteApiKey: () => Promise<void>;
   testConnection: () => Promise<void>;
   loadModels: () => Promise<void>;
+  /** チャット用一時モデルを設定する(null で既定に戻す)。 */
+  setChatModelOverride: (model: string | null) => void;
 }
 
 // in-flight ガード（多重発火防止）
@@ -74,6 +86,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   models: [],
   isLoadingModels: false,
   modelCapsRevision: 0,
+  chatModelOverride: null,
 
   loadSettings: async () => {
     const settings = await api.getAiSettings();
@@ -103,7 +116,27 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     } else {
       cliBinaryAvailable = null;
     }
-    set({ settings, cliBinaryAvailable });
+    // 接続テスト結果は provider / model / API 経路(modelApiVariant)に紐づく。これらが
+    // 変わった後も前の結果を表示し続けると「別プロバイダなのに成功と出ている」誤解を生む
+    // ので破棄する(例: OpenAI で成功 → Anthropic タブに切替えても OpenAI の成功表示が
+    // 残る/Responses トグルを切替えても /chat/completions の成功表示が残る)。
+    const providerSwitched = prev?.provider !== settings.provider;
+    const testInvalidated =
+      providerSwitched ||
+      prev?.model !== settings.model ||
+      prev?.modelApiVariant !== settings.modelApiVariant;
+    set({
+      settings,
+      cliBinaryAvailable,
+      ...(testInvalidated ? { connectionTestResult: null } : {}),
+      // チャット用一時モデルはプロバイダ依存(モデル名前空間が違う)なので、
+      // プロバイダが変わったら破棄して新プロバイダの既定に戻す。
+      ...(providerSwitched ? { chatModelOverride: null } : {}),
+    });
+  },
+
+  setChatModelOverride: (model: string | null) => {
+    set({ chatModelOverride: model });
   },
 
   saveApiKey: async (key: string) => {

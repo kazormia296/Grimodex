@@ -1675,9 +1675,19 @@ async function buildOutgoingScenePrompt(
   // send (sendMessage) は agentMode トグル OFF でも web 検索 RAG が有効な対応
   // プロバイダ時は agent パスに入り agentMode:true で L0 に agentInstruction を足す。
   // 逆に cli は RAG 非対応かつ agent パス対象外。preview/copy を同じ判定に揃える。
-  const aiProvider = useAiSettingsStore.getState().settings?.provider;
-  const ragActive = ragEnabled && isRagCapableProvider(aiProvider);
-  const effectiveAgentMode = (agentMode || ragActive) && aiProvider !== "cli";
+  const aiState = useAiSettingsStore.getState();
+  const aiProvider = aiState.settings?.provider;
+  // openrouter/fusion (マルチモデル合議) はツール呼び出しと両立できない。OpenRouter は
+  // tools[] 同梱時にカスタムパネル(analysis_models)を無視して既定パネルに落とすため、
+  // fusion 選択時は常にプレーン経路(非エージェント・Web検索なし)に通し、fusion plugin が
+  // tools 無しで効くようにする(現在の実モデル = 一時オーバーライド優先で判定)。
+  const isFusionModel =
+    (aiState.chatModelOverride ?? aiState.settings?.model) ===
+    "openrouter/fusion";
+  const ragActive =
+    ragEnabled && isRagCapableProvider(aiProvider) && !isFusionModel;
+  const effectiveAgentMode =
+    (agentMode || ragActive) && aiProvider !== "cli" && !isFusionModel;
 
   const [sceneCtx, projectCtx] = await Promise.all([
     fetchSceneContext(effectiveSceneId),
@@ -1779,7 +1789,10 @@ async function buildSceneContextPrompt(opts: {
     opts.prefetchedEntries ?? (await listCodexEntries(getCurrentProjectId()));
 
   const aiSettings = useAiSettingsStore.getState().settings;
-  const chatModel = aiSettings?.model ?? "";
+  // チャット用の一時モデル(あれば)を既定より優先。コンテキスト予算を実際に送る
+  // モデルのウィンドウから算出して送信時とずれないようにする。
+  const chatModel =
+    useAiSettingsStore.getState().chatModelOverride ?? aiSettings?.model ?? "";
   const chatApiVariant = getChatApiVariant(chatModel);
   const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
     chatModel,
@@ -3072,7 +3085,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     if (blockIfUnlicensed()) return;
 
     const aiSettingsEarly = useAiSettingsStore.getState().settings;
-    const chatModelEarly = aiSettingsEarly?.model ?? "";
+    // チャット用一時モデル(あれば)を含めた実効モデル。これでチャットパネルでの
+    // モデル切替も prefix cache 無効化バッジ・予算計算に正しく反映される。
+    const chatModelEarly =
+      useAiSettingsStore.getState().chatModelOverride ??
+      aiSettingsEarly?.model ??
+      "";
     // モデルが前回送信から変わっていれば prefix cache が無効化されるため
     // バッジを立て、変わっていなければ消灯する。消灯をここで一元化するのが要点:
     // agent / RAG / グローバルスコープ経路には後段のコンテキスト再構築 (=従来の
@@ -3097,15 +3115,25 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // 一回限りの Agent mode override (サジェストチップ / 再試行ボタンから)
     // ユーザーの永続トグルは変更しない。
     const agentModeForThisSend = options?.overrideAgentMode ?? get().agentMode;
-    const aiProvider = useAiSettingsStore.getState().settings?.provider;
+    const aiSendState = useAiSettingsStore.getState();
+    const aiProvider = aiSendState.settings?.provider;
+    // openrouter/fusion はツール経路に入ると OpenRouter がカスタムパネルを無視して
+    // 既定パネルに落とす(合議モデルは tool-calling 不可)。常にプレーン経路へ通し、
+    // tools 無し・Web検索なしで fusion plugin(custom analysis_models)を効かせる。
+    const isFusionModel =
+      (aiSendState.chatModelOverride ?? aiSendState.settings?.model) ===
+      "openrouter/fusion";
     // RAG (Web 検索) が ON かつ対応プロバイダ (OpenRouter / Anthropic) のときは、
     // agentMode の有無に関わらず構造化 (非ストリーミング) パスに通す。引用パースを
-    // send_agent_message の1経路に集約するため (設計判断)。
-    const ragActive = get().ragEnabled && isRagCapableProvider(aiProvider);
+    // send_agent_message の1経路に集約するため (設計判断)。fusion は除外。
+    const ragActive =
+      get().ragEnabled && isRagCapableProvider(aiProvider) && !isFusionModel;
     // CLI は subprocess 専用。Agent モードでも HTTP の send_agent_message に落とすと
     // 空応答・無応答になるため、常に通常モードの sendCliChatStream へ回す。
     const useAgentPath =
-      (agentModeForThisSend || ragActive) && aiProvider !== "cli";
+      (agentModeForThisSend || ragActive) &&
+      aiProvider !== "cli" &&
+      !isFusionModel;
 
     const sessionId = activeSessionId ?? "";
 
@@ -3363,12 +3391,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         // Token budget + thinking params
         const aiSettings = useAiSettingsStore.getState().settings;
+        // チャットパネルで一時選択したモデル(あれば)。role 未設定時に既定より優先する。
+        const chatModelOverride =
+          useAiSettingsStore.getState().chatModelOverride;
         // agent ロールの override を実モデルとして解決し、API variant / トークン予算 /
         // thinking パラメータ / usage 記録を全て実モデルから導出する。これにより
-        // send_agent_message に渡す override（resolveModelForPath）と thinking 等が
-        // 一致する（未設定なら既定モデル = byte-identical）。
+        // send_agent_message に渡す override（resolveModelForPath / 一時モデル）と
+        // thinking 等が一致する（未設定なら既定モデル = byte-identical）。
         const currentModel =
-          resolveModelForPath("chat_agent_main") ?? aiSettings?.model ?? "";
+          resolveModelForPath("chat_agent_main") ??
+          chatModelOverride ??
+          aiSettings?.model ??
+          "";
         const agentApiVariant = getChatApiVariant(currentModel);
         const tokenBudget = getToolTokenBudget(currentModel);
         // model-aware なツール呼び出し上限。大窓モデルほど多段探索を許す。
@@ -3618,7 +3652,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               agentApiVariant,
               webSearchConfig,
               systemVolatileTailForAgent,
-              resolveModelForPath("chat_agent_main"),
+              // role 未設定なら一時モデル(あれば)を送る。両方無ければ null=既定で
+              // byte-identical(キャッシュ温存)。
+              resolveModelForPath("chat_agent_main") ??
+                chatModelOverride ??
+                null,
             ),
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
@@ -3829,11 +3867,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }
 
       const aiSettings = useAiSettingsStore.getState().settings;
+      // チャットパネルで一時選択したモデル(あれば)。role 未設定時に既定より優先する。
+      const chatModelOverride = useAiSettingsStore.getState().chatModelOverride;
       // conversation ロールの override を実モデルとして解決し、API variant / コンテキスト
       // 予算 / thinking パラメータ / 記録を実モデルから導出する（transport に渡す
       // override と一致。未設定なら既定モデル = byte-identical）。
       const chatModel =
-        resolveModelForPath("chat_stream_non_agent") ?? aiSettings?.model ?? "";
+        resolveModelForPath("chat_stream_non_agent") ??
+        chatModelOverride ??
+        aiSettings?.model ??
+        "";
       const chatApiVariant = getChatApiVariant(chatModel);
       const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
         chatModel,
@@ -4267,7 +4310,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               systemCacheSegments,
               chatApiVariant,
               systemVolatileTail,
-              resolveModelForPath("chat_stream_non_agent") ?? null,
+              // role 未設定なら一時モデル(あれば)を送る。両方無ければ null=既定で
+              // byte-identical(キャッシュ温存)。agent 経路と同契約。
+              resolveModelForPath("chat_stream_non_agent") ??
+                chatModelOverride ??
+                null,
             );
 
         streamPromise

@@ -45,6 +45,7 @@ function resetStore() {
     connectionTestResult: null,
     models: [],
     isLoadingModels: false,
+    chatModelOverride: null,
   });
 }
 
@@ -99,6 +100,66 @@ describe("useAiSettingsStore", () => {
       expect(mockSaveAiSettings).toHaveBeenCalledWith(updated);
       expect(useAiSettingsStore.getState().settings?.toolProtocolMode).toBe(
         "hermes",
+      );
+    });
+  });
+
+  describe("chatModelOverride (temporary chat model)", () => {
+    it("setChatModelOverride sets and clears the override", () => {
+      useAiSettingsStore.getState().setChatModelOverride("openai/gpt-4o");
+      expect(useAiSettingsStore.getState().chatModelOverride).toBe(
+        "openai/gpt-4o",
+      );
+      useAiSettingsStore.getState().setChatModelOverride(null);
+      expect(useAiSettingsStore.getState().chatModelOverride).toBeNull();
+    });
+
+    it("does NOT change the persisted default model", async () => {
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, model: "default-model" },
+      });
+      useAiSettingsStore.getState().setChatModelOverride("temp-model");
+      // 一時モデルは settings.model を書き換えない(既定は維持)。
+      expect(useAiSettingsStore.getState().settings?.model).toBe(
+        "default-model",
+      );
+      expect(useAiSettingsStore.getState().chatModelOverride).toBe(
+        "temp-model",
+      );
+    });
+
+    it("is cleared when the provider changes (model namespace differs)", async () => {
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, provider: "openai", model: "gpt-4o" },
+        chatModelOverride: "gpt-4o-mini",
+      });
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore.getState().saveSettings({
+        ...defaultSettings,
+        provider: "anthropic",
+        model: "",
+      });
+
+      expect(useAiSettingsStore.getState().chatModelOverride).toBeNull();
+    });
+
+    it("is preserved when provider is unchanged (e.g. toggling thinking)", async () => {
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, provider: "openai", model: "gpt-4o" },
+        chatModelOverride: "gpt-4o-mini",
+      });
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore.getState().saveSettings({
+        ...defaultSettings,
+        provider: "openai",
+        model: "gpt-4o",
+        thinkingEnabled: false,
+      });
+
+      expect(useAiSettingsStore.getState().chatModelOverride).toBe(
+        "gpt-4o-mini",
       );
     });
   });
@@ -376,6 +437,86 @@ describe("useAiSettingsStore", () => {
 
       expect(mockDetectCliBinary).not.toHaveBeenCalled();
       expect(useAiSettingsStore.getState().cliBinaryAvailable).toBeNull();
+    });
+  });
+
+  // 回帰: 接続テスト結果は provider/model/API経路(modelApiVariant)に紐づく。
+  // いずれかを切替えても前の結果が残ると「別プロバイダ/別経路なのに成功と出ている」
+  // 誤解を生む。
+  describe("saveSettings — connectionTestResult invalidation", () => {
+    it("clears connectionTestResult when provider changes", async () => {
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, provider: "openai", model: "gpt-4o" },
+        connectionTestResult: { success: true, message: "OpenAI OK" },
+      });
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore.getState().saveSettings({
+        ...defaultSettings,
+        provider: "anthropic",
+        model: "gpt-4o",
+      });
+
+      expect(useAiSettingsStore.getState().connectionTestResult).toBeNull();
+    });
+
+    it("clears connectionTestResult when model changes", async () => {
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, provider: "openai", model: "gpt-4o" },
+        connectionTestResult: { success: true, message: "gpt-4o OK" },
+      });
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore.getState().saveSettings({
+        ...defaultSettings,
+        provider: "openai",
+        model: "gpt-4o-mini",
+      });
+
+      expect(useAiSettingsStore.getState().connectionTestResult).toBeNull();
+    });
+
+    it("clears connectionTestResult when modelApiVariant (Responses toggle) changes", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...defaultSettings,
+          provider: "openai",
+          model: "gpt-5",
+          modelApiVariant: null,
+        },
+        connectionTestResult: { success: true, message: "chat/completions OK" },
+      });
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore.getState().saveSettings({
+        ...defaultSettings,
+        provider: "openai",
+        model: "gpt-5",
+        modelApiVariant: "responses",
+      });
+
+      expect(useAiSettingsStore.getState().connectionTestResult).toBeNull();
+    });
+
+    it("keeps connectionTestResult when neither provider nor model change", async () => {
+      const result = { success: true as const, message: "still valid" };
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, provider: "openai", model: "gpt-4o" },
+        connectionTestResult: result,
+      });
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      // thinking トグルだけ変える(provider/model は不変)。
+      await useAiSettingsStore.getState().saveSettings({
+        ...defaultSettings,
+        provider: "openai",
+        model: "gpt-4o",
+        thinkingEnabled: false,
+      });
+
+      expect(useAiSettingsStore.getState().connectionTestResult).toEqual(
+        result,
+      );
     });
   });
 });

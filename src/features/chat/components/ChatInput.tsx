@@ -22,10 +22,7 @@ import { useAiSettingsStore } from "../store";
 import { useChatStore } from "../chatStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { resolveModelCapabilities } from "../agent/modelLimits";
-import {
-  resolveAinoveristApiVariant,
-  resolveModelApiVariant,
-} from "../aiNovelist";
+import { resolveAinoveristApiVariant } from "../aiNovelist";
 import { getChatInputExtensions } from "../extensions/chatInputExtensions";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
@@ -150,6 +147,10 @@ export function ChatInput({
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const saveSettings = useAiSettingsStore((s) => s.saveSettings);
+  const chatModelOverride = useAiSettingsStore((s) => s.chatModelOverride);
+  const setChatModelOverride = useAiSettingsStore(
+    (s) => s.setChatModelOverride,
+  );
   const allModels = useAiSettingsStore((s) => s.models);
   const loadModels = useAiSettingsStore((s) => s.loadModels);
   // 動的 capability レジストリ更新時に caps を再計算する
@@ -165,10 +166,13 @@ export function ChatInput({
     }
   })();
 
+  // 非 CLI のチャットモデルは「一時オーバーライド(その場限り) → 既定チャットモデル」
+  // の順で解決する。チャットパネルでの選択は一時オーバーライドにのみ反映し、保存される
+  // 既定(settings.model)は書き換えない。
   const currentModel =
     aiSettings?.provider === "cli"
       ? (aiSettings.cli?.model ?? "")
-      : (aiSettings?.model ?? "");
+      : (chatModelOverride ?? aiSettings?.model ?? "");
   const selectedApiVariant = resolveAinoveristApiVariant(
     currentModel,
     models,
@@ -413,25 +417,12 @@ export function ChatInput({
       setModelOpen(false);
       return;
     }
-    // model 切替時に apiVariant を再解決して同時に永続化する。
-    // chat 経路は毎送信で動的に再計算するので影響ないが、Inline AI / Beat /
-    // foreshadow 等 FE が apiVariant を渡さない経路は settings.modelApiVariant
-    // を fallback として読むため、ここで stale 値を残すと legacy モデルが v1
-    // エンドポイントへ送られる等のミスルーティングが起きる。
-    // provider 込みの resolveModelApiVariant を使い、OpenAI/互換で Responses
-    // 選択中なら "responses" を保持する(resolveAinoveristApiVariant 直呼びだと
-    // 任意モデルに "legacy" を返し Responses 設定を潰す)。
-    const apiVariant = resolveModelApiVariant(
-      aiSettings.provider,
-      modelId,
-      models,
-      aiSettings.modelApiVariant,
-    );
-    await saveSettings({
-      ...aiSettings,
-      model: modelId,
-      modelApiVariant: apiVariant ?? null,
-    });
+    // チャットパネルでのモデル選択は「その場限りの一時オーバーライド」にする。
+    // 保存される既定チャットモデル(settings.model)は書き換えない(切替が
+    // インライン AI / Beat / 校閲など他経路の既定へ漏れない)。送信時の apiVariant は
+    // チャット送信経路が getChatApiVariant(model) で都度解決するのでここでの永続化は不要。
+    // 既定モデルそのものを選んだ場合はオーバーライドを解除して既定追従に戻す。
+    setChatModelOverride(modelId === aiSettings.model ? null : modelId);
     setModelOpen(false);
   };
 

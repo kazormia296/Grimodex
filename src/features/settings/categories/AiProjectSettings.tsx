@@ -278,17 +278,23 @@ export function AiProjectSettings() {
             className="h-4 w-4 cursor-pointer rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
           />
         </SettingRow>
-        <SettingRow
-          label={t(
-            "settings.project.semanticReindex",
-            "意味検索インデックスの再構築",
-          )}
-          description={t(
-            "settings.project.semanticReindexDesc",
-            "プロジェクト内の全シーンを再インデックスする。インデックスはシーン保存時にしか更新されないため、既存プロジェクトで初めて関連シーン注入を使うときはここから構築する。進行状況は画面右下に表示される。",
-          )}
-        >
-          <div className="flex items-center gap-3">
+        {/* 状態表示+再構築ボタン(DEV ではデバッグ用ボタンも並ぶ)は横幅のあるクラスタ。
+            SettingRow(値は flex-shrink-0 列)に入れると説明列が 0 幅まで潰され、説明文が
+            縦書きのように折り返される。ラベル+説明を上に積んだ全幅ブロックにする。 */}
+        <div className="rounded px-1 py-1.5">
+          <div className="text-sm text-foreground">
+            {t(
+              "settings.project.semanticReindex",
+              "意味検索インデックスの再構築",
+            )}
+          </div>
+          <div className="mb-2 mt-0.5 text-xs text-muted-foreground">
+            {t(
+              "settings.project.semanticReindexDesc",
+              "プロジェクト内の全シーンを再インデックスする。インデックスはシーン保存時にしか更新されないため、既存プロジェクトで初めて関連シーン注入を使うときはここから構築する。進行状況は画面右下に表示される。",
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
             {indexStatus && (
               <span className="text-xs text-muted-foreground">
                 {t("settings.project.semanticIndexStatus", {
@@ -375,7 +381,7 @@ export function AiProjectSettings() {
               </button>
             )}
           </div>
-        </SettingRow>
+        </div>
       </SettingSection>
 
       <SettingSection title={t("settings.project.aiSettings")}>
