@@ -45,6 +45,12 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingTextarea } from "../components/SettingTextarea";
 import { AiProjectSettings } from "./AiProjectSettings";
+import {
+  MODEL_BY_PROVIDER_KEY,
+  readModelByProvider,
+  applyProviderSwitch,
+  rememberModel,
+} from "./providerModelMemory";
 import { PromptLibrarySection } from "@/features/prompt-library/PromptLibrarySection";
 import { AbTestSection } from "@/features/ab-test/AbTestSection";
 import { useSettingsStore } from "../settingsStore";
@@ -234,10 +240,37 @@ export function AiCategory() {
   }, [hasApiKey, settings?.provider, handleLoadModels]);
 
   async function handleProviderChange(provider: AiProvider) {
+    // 切替元の(モデル+variant)を per-provider マップへ焼き込み、切替先は前回の
+    // 記憶を復元する。これにより別プロバイダへ移って戻っても選び直す必要がない。
+    const { map: modelMap, restored } = applyProviderSwitch(
+      readModelByProvider(settingsStore.get(MODEL_BY_PROVIDER_KEY, "{}")),
+      localSettings!.provider,
+      {
+        model: localSettings!.model,
+        variant: localSettings!.modelApiVariant ?? null,
+      },
+      provider,
+    );
+    settingsStore.set(MODEL_BY_PROVIDER_KEY, JSON.stringify(modelMap));
+    const restoredModel = restored?.model ?? "";
+
+    // 履歴の無いプロバイダへ初めて切替えるときの既定 variant。
+    // Sakana は Responses API が推奨/既定経路なので "responses" を既定 ON にする
+    // (トグルで /chat/completions にも切替可)。それ以外の Responses 対応 provider は
+    // 現在値を保持し、非対応へ切替えたら "responses" を残さずクリアする(他 provider の
+    // トグル UI からは消せず、対応 provider へ戻したとき意図せず再有効化されるのを防ぐ)。
+    const baseVariant =
+      provider === "sakana"
+        ? ("responses" as const)
+        : isResponsesApiCapableProvider(provider)
+          ? (localSettings!.modelApiVariant ?? null)
+          : localSettings!.modelApiVariant === "responses"
+            ? null
+            : (localSettings!.modelApiVariant ?? null);
     const updated = {
       ...localSettings!,
       provider,
-      model: "",
+      model: restoredModel,
       cli:
         provider === "cli"
           ? (localSettings!.cli ?? {
@@ -249,18 +282,10 @@ export function AiCategory() {
       // OpenAI 互換に切替時は openaiCompatible 設定を初期化（既存値は保持）
       openaiCompatible:
         localSettings!.openaiCompatible ?? DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
-      // Sakana は Responses API が推奨/既定経路なので切替時に "responses" を既定 ON に
-      // する(トグルで /chat/completions にも切替可)。それ以外の Responses 対応 provider
-      // は現在値を保持し、非対応へ切替えたら "responses" を残さずクリアする(他 provider の
-      // トグル UI からは消せず、対応 provider へ戻したとき意図せず再有効化されるのを防ぐ)。
-      modelApiVariant:
-        provider === "sakana"
-          ? "responses"
-          : isResponsesApiCapableProvider(provider)
-            ? localSettings!.modelApiVariant
-            : localSettings!.modelApiVariant === "responses"
-              ? null
-              : localSettings!.modelApiVariant,
+      // 記憶のあるプロバイダは前回確定した variant をそのまま戻す(まだ読み込まれて
+      // いない新プロバイダの models 一覧に依存して再解決すると ai のべりすと v1 等で
+      // 誤判定するため)。履歴が無ければ provider レベルの既定(baseVariant)。
+      modelApiVariant: restored?.model ? restored.variant : baseVariant,
     };
     setLocalSettings(updated);
     await saveSettings(updated);
@@ -314,6 +339,17 @@ export function AiCategory() {
     };
     setLocalSettings(updated);
     await saveSettings(updated);
+    // 現在のプロバイダの選択(モデル+variant)を per-provider マップにも反映し、
+    // 切替→復元で最新を戻せるようにする(切替を挟まず閉じても覚えておくため)。
+    if (localSettings?.provider) {
+      const modelMap = rememberModel(
+        readModelByProvider(settingsStore.get(MODEL_BY_PROVIDER_KEY, "{}")),
+        localSettings.provider,
+        model,
+        apiVariant,
+      );
+      settingsStore.set(MODEL_BY_PROVIDER_KEY, JSON.stringify(modelMap));
+    }
   }
 
   async function handleThinkingToggle() {
@@ -498,14 +534,31 @@ export function AiCategory() {
               type="checkbox"
               checked={localSettings.modelApiVariant === "responses"}
               onChange={async (e) => {
+                const variant = e.target.checked
+                  ? ("responses" as const)
+                  : null;
                 const updated = {
                   ...localSettings,
-                  modelApiVariant: e.target.checked
-                    ? ("responses" as const)
-                    : null,
+                  modelApiVariant: variant,
                 };
                 setLocalSettings(updated);
                 await saveSettings(updated);
+                // モデル選択時(handleModelChange)と対称に per-provider 記憶も更新し、
+                // トグル状態が次回の切替→復元でそのまま戻るようにする。
+                if (localSettings.model) {
+                  const modelMap = rememberModel(
+                    readModelByProvider(
+                      settingsStore.get(MODEL_BY_PROVIDER_KEY, "{}"),
+                    ),
+                    localSettings.provider,
+                    localSettings.model,
+                    variant,
+                  );
+                  settingsStore.set(
+                    MODEL_BY_PROVIDER_KEY,
+                    JSON.stringify(modelMap),
+                  );
+                }
               }}
               className="h-4 w-4"
             />
@@ -680,8 +733,12 @@ export function AiCategory() {
                     onChange={(e) => {
                       void updateCli({
                         kind: e.target.value as CliKind,
-                        // バイナリパスは CLI 種別に紐づくのでクリア
+                        // バイナリパス・モデルは CLI 種別に紐づくのでクリアする。
+                        // model を残すと、別種別で選んだモデル(例: Codex の
+                        // "gpt-5.5")が withCustomCliModel 経由で Claude の
+                        // モデル一覧に "(custom)" として漏れ込む。
                         binaryPath: "",
+                        model: "",
                       }).then(() => handleLoadModels());
                     }}
                     className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
@@ -1117,12 +1174,19 @@ export function AiCategory() {
           </SettingRow>
         )}
 
-        {/* OpenRouter Fusion (マルチモデル合議) — model="openrouter/fusion" 選択時に適用 */}
+        {/* OpenRouter Fusion (マルチモデル合議) — model="openrouter/fusion" 選択時に適用。
+            FusionSettingsSection は横幅いっぱいのパネルなので、SettingRow(値は右側の
+            flex-shrink-0 列)に入れると説明列(flex-1 min-w-0)が 0 幅まで潰され、説明文が
+            1 文字ずつ折り返されて縦書きのようになる。ラベル+説明を上に積み、パネルを全幅で
+            描画するブロックレイアウトにする。 */}
         {localSettings.provider === "openrouter" && (
-          <SettingRow
-            label={t("settings.ai.fusionLabel")}
-            description={t("settings.ai.fusionDesc")}
-          >
+          <div className="rounded px-1 py-1.5">
+            <div className="text-sm text-foreground">
+              {t("settings.ai.fusionLabel")}
+            </div>
+            <div className="mb-2 mt-0.5 text-xs text-muted-foreground">
+              {t("settings.ai.fusionDesc")}
+            </div>
             <FusionSettingsSection
               value={localSettings.fusion}
               activeModel={localSettings.model}
@@ -1134,7 +1198,7 @@ export function AiCategory() {
                 await saveSettings(updated);
               }}
             />
-          </SettingRow>
+          </div>
         )}
 
         {/* Tool call protocol (HTTP OpenAI 互換プロバイダのみ。Anthropic / CLI は native 固定) */}

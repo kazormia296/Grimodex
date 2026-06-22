@@ -77,6 +77,13 @@ pub(crate) async fn send_cli_chat_stream(
     abort_flag.flag.store(false, Ordering::Relaxed);
     let flag_clone = Arc::clone(&abort_flag.flag);
 
+    // 送信経路パンくず(本文なし・常時オン)。HTTP 経路の log_ai_route と統一フォーマット。
+    tracing::info!(
+        "AI route: surface=cli route=cli_subprocess cli={:?} model={}",
+        payload.cli,
+        payload.model.as_deref().unwrap_or("-")
+    );
+
     let opts = CliRunOpts {
         binary_path: payload.binary_path,
         model: payload.model,

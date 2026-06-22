@@ -259,6 +259,8 @@ describe("useChatStore", () => {
   beforeEach(() => {
     resetStore();
     vi.clearAllMocks();
+    // チャット用一時モデルはテスト間で漏れると後続の送信モデル判定を汚すので初期化。
+    useAiSettingsStore.setState({ chatModelOverride: null });
     // policy 既定はクリア（projects 空 → fail-open=full）。chat ガードを
     // 素通りさせ、既存の sendMessage テストを従来どおり走らせる。
     useProjectStore.setState({ currentProjectId: null, projects: [] });
@@ -640,6 +642,33 @@ describe("useChatStore", () => {
       expect(messages[1].role).toBe("assistant");
       expect(messages[1].content).toBe("こんにちは！");
       expect(isStreaming).toBe(false);
+    });
+
+    it("非エージェント送信は chatModelOverride(一時モデル)を transport へ渡し、既定モデルは書き換えない", async () => {
+      // 回帰: 一時モデルが送信に効かず既定へフォールバックしていた(非エージェント
+      // 経路で override を transport に渡し忘れていた)バグの gate。
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openai",
+          model: "default-model",
+        },
+        models: [],
+        chatModelOverride: "temp-model",
+      });
+      mockStreamResponse("ok");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      // sendChatMessageStream の第 7 引数(0-indexed 6)が送信モデル。
+      const call = mockSendChatMessageStream.mock.calls.at(-1);
+      expect(call?.[6]).toBe("temp-model");
+      // 既定チャットモデルは一時選択で書き換わらない。
+      expect(useAiSettingsStore.getState().settings?.model).toBe(
+        "default-model",
+      );
+
+      useAiSettingsStore.setState({ settings: null, chatModelOverride: null });
     });
 
     it("coalesces multiple text deltas into the final assistant content without dropping the tail", async () => {
@@ -2476,6 +2505,72 @@ describe("useChatStore", () => {
 
       // プロバイダ設定を元に戻す(他テストへの漏れ防止)
       useAiSettingsStore.setState({ settings: prevSettings });
+    });
+
+    it("openrouter/fusion は agentMode/RAG が ON でも非エージェントで組む(tools を載せない)", async () => {
+      // 回帰: fusion は tool-calling と両立できず、OpenRouter は tools[] 同梱時に
+      // カスタムパネル(analysis_models)を無視して既定パネルに落とす。fusion 選択時は
+      // 常に非エージェント経路へ通すこと(エージェントトグルが OFF にできない状態でも)。
+      const { getNode } = await import("@/features/tree/api");
+      const { semanticSearch } = await import("@/features/semantic-search/api");
+      const { useAiSettingsStore, DEFAULT_AI_SETTINGS } =
+        await import("./store");
+      vi.mocked(getNode).mockResolvedValue({
+        id: "scene-1",
+        title: "テストシーン",
+      } as never);
+      vi.mocked(semanticSearch).mockResolvedValue([] as never);
+      mockBuildSystemPrompt.mockReturnValue({
+        prompt: "P",
+        totalTokens: 0,
+        layers: [],
+      });
+
+      const prevSettings = useAiSettingsStore.getState().settings;
+      // resetStore() は agentMode/ragEnabled を戻さない(既存の分離ギャップ)ため、
+      // 本テストで立てたフラグが後続 describe へ漏れないよう自前で退避・復元する。
+      const prevAgentMode = useChatStore.getState().agentMode;
+      const prevRagEnabled = useChatStore.getState().ragEnabled;
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/fusion",
+        },
+        chatModelOverride: null,
+      });
+      useChatStore.setState({
+        activeSceneId: "scene-1",
+        activeProjectId: "proj-1",
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        inputPinnedEntryIds: [],
+        includeBodies: true,
+        agentMode: true, // トグル ON でも…
+        ragEnabled: true, // RAG ON でも…
+        messages: [],
+      });
+      useChatStore.getState().registerInputDraftProvider(() => ({
+        markdown: "質問",
+        mentionedSceneIds: [],
+      }));
+
+      await useChatStore.getState().buildPreviewPrompt();
+
+      // …fusion なので非エージェント(agentMode:false)で組まれること。
+      expect(mockBuildSystemPrompt.mock.calls.at(-1)?.[0]?.agentMode).toBe(
+        false,
+      );
+
+      useAiSettingsStore.setState({
+        settings: prevSettings,
+        chatModelOverride: null,
+      });
+      useChatStore.setState({
+        agentMode: prevAgentMode,
+        ragEnabled: prevRagEnabled,
+      });
     });
   });
 

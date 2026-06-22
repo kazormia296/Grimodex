@@ -512,6 +512,13 @@ pub fn resolve_api_variant(
     settings: &AiSettings,
     model: &str,
 ) -> Option<String> {
+    // openrouter/fusion (マルチモデル合議) は /chat/completions 専用機能。fusion plugin
+    // (plugins[{id:"fusion", analysis_models}]) は ai_responses (/responses 経路) では
+    // 注入されないため、Responses トグルが ON でも必ず chat/completions に通す
+    // (= responses variant を握り潰す)。これをしないと fusion が無言で既定パネルに落ちる。
+    if model == "openrouter/fusion" {
+        return None;
+    }
     if let Some(v) = explicit.filter(|s| !s.is_empty()) {
         return Some(v.to_string());
     }
@@ -1712,11 +1719,35 @@ pub(crate) fn merge_extra_body(body: &mut serde_json::Value, extra: &Option<serd
 
 /// Send a chat completion request with the given messages.
 /// Messages are tuples of (role, content). Supports "system", "user", "assistant" roles.
+/// 送信経路のパンくずを INFO で1行出す(本文を含まないので常時オンでも安全)。
+/// 「fusion が responses 経路に逃げていた」等の経路起因バグを、本文ダンプ
+/// (`GRIMODEX_AI_WIRE_LOG`)を有効化せずともログ1行で切り分けられるようにする。
+/// 既定フィルタ `grimodex_lib=info` で出る(module-path target)。route は実際に通る
+/// API 経路、fusion は plugin が注入される条件を満たすか。
+fn log_ai_route(surface: &str, params: &ChatParams<'_>, tool_count: usize) {
+    let route =
+        if crate::ai_responses::uses_responses_api(params.provider, params.api_variant.as_deref()) {
+            "responses"
+        } else {
+            "chat_completions"
+        };
+    let fusion_active = matches!(params.provider, AiProvider::OpenRouter)
+        && params.model == "openrouter/fusion"
+        && params.fusion.map(|f| f.enabled).unwrap_or(false);
+    tracing::info!(
+        "AI route: surface={surface} route={route} provider={:?} model={} variant={} tools={tool_count} fusion={fusion_active}",
+        params.provider,
+        params.model,
+        params.api_variant.as_deref().unwrap_or("-")
+    );
+}
+
 pub async fn send_chat(
     params: &ChatParams<'_>,
     messages: &[(&str, &str)],
 ) -> anyhow::Result<ChatResponse> {
     let client = reqwest::Client::new();
+    log_ai_route("send_chat", params, 0);
 
     // AI のべりすと legacy は独自フォーマット。v1 は OpenAI 互換分岐へ合流。
     if matches!(params.provider, AiProvider::AiNovelist) && !is_ainoverist_v1(params) {
@@ -2755,6 +2786,7 @@ pub async fn send_chat_with_tools(
     tools: &[AgentToolDef],
 ) -> anyhow::Result<ChatResponse> {
     let client = reqwest::Client::new();
+    log_ai_route("send_chat_with_tools", params, tools.len());
 
     // AI のべりすと legacy は tool use 非対応。v1 は OpenAI 互換分岐へ合流。
     if matches!(params.provider, AiProvider::AiNovelist) && !is_ainoverist_v1(params) {
@@ -3045,6 +3077,17 @@ pub async fn send_chat_with_tools(
                 params.provider,
                 params.openrouter_provider_pin,
             );
+            // Fusion (マルチモデル合議) は tools 経路でも model=="openrouter/fusion" の
+            // とき plugins を注入する。OpenRouter は RAG 対応なので Web 検索 / 関連シーン
+            // 注入 / エージェントが ON だと effectiveAgentMode 経由でこの送信に入り、
+            // ここで注入しないと fusion が無視されて既定モデルに落ちる(send_chat /
+            // send_chat_stream と対称に揃える)。
+            apply_openrouter_fusion_to_body(
+                &mut body,
+                params.provider,
+                params.model,
+                params.fusion,
+            );
 
             // RAG: OpenRouter のみ Web 検索を注入。Agent モードは server tool
             // (モデルが検索要否を判断)、非 Agent は web plugin (一発検索)。引用は
@@ -3182,6 +3225,20 @@ pub async fn call_post_effect_api(
             // OpenRouter / OpenAI compat: use /chat/completions.
             // OpenRouter passes cache_control to Anthropic when using a Claude model.
             let api_variant = resolve_api_variant(None, settings, &settings.model);
+            tracing::info!(
+                "AI route: surface=post_effect route={} provider={:?} model={} variant={}",
+                if crate::ai_responses::uses_responses_api(
+                    &settings.provider,
+                    api_variant.as_deref()
+                ) {
+                    "responses"
+                } else {
+                    "chat_completions"
+                },
+                settings.provider,
+                settings.model,
+                api_variant.as_deref().unwrap_or("-")
+            );
             // OpenAI Responses API 経路: /responses で単発 grader 呼び出し。
             if crate::ai_responses::uses_responses_api(&settings.provider, api_variant.as_deref()) {
                 return crate::ai_responses::post_effect(
@@ -3363,6 +3420,7 @@ pub async fn send_chat_stream(
     let done_event = format!("{}:stream-done", event_prefix);
 
     let client = reqwest::Client::new();
+    log_ai_route("send_chat_stream", params, 0);
 
     // AI のべりすと legacy: ストリーミング非対応なので非ストリーム版を呼んで結果を一括 emit
     if matches!(params.provider, AiProvider::AiNovelist) && !is_ainoverist_v1(params) {
@@ -3597,6 +3655,19 @@ pub async fn send_chat_stream(
 
             // N4: ストリーミングでも usage/cost を最終チャンクで受け取る。
             apply_stream_usage_optin(&mut body, params.provider);
+
+            // 観測性: GRIMODEX_AI_WIRE_LOG=1 のとき送信本文を出す。非エージェントの
+            // ライブチャット(fusion 含む)はこの経路を通るため、plugins[fusion] が実際に
+            // 載っているかをここで確認できる(既定では小説本文を含むので出さない)。
+            if ai_wire_log_enabled() {
+                tracing::warn!(
+                    target: "ai_wire",
+                    "→ stream request (provider={:?} model={}): {}",
+                    params.provider,
+                    params.model,
+                    truncate_for_log(&body.to_string(), 12000)
+                );
+            }
 
             let req = openai_compat_request(&client, params, &body);
             let resp = send_with_429_retry(req, params.retry_429, 3).await?;
@@ -3963,6 +4034,33 @@ mod tests {
         apply_openrouter_provider_pin(&mut body, &AiProvider::OpenRouter, Some("anthropic"));
         assert_eq!(body["provider"]["order"][0], "anthropic");
         assert_eq!(body["provider"]["allow_fallbacks"], true);
+    }
+
+    #[test]
+    fn resolve_api_variant_forces_chat_completions_for_fusion() {
+        // openrouter/fusion は Responses トグル ON でも /chat/completions に通すこと
+        // (/responses 経路 = ai_responses は fusion plugin を注入しないため、ここで
+        // responses を握り潰さないと fusion が無言で既定パネルに落ちる)。
+        let settings = AiSettings {
+            provider: AiProvider::OpenRouter,
+            model_api_variant: Some("responses".to_string()),
+            ..AiSettings::default()
+        };
+        // 明示 responses でも settings responses でも None(=chat/completions)。
+        assert_eq!(
+            resolve_api_variant(Some("responses"), &settings, "openrouter/fusion"),
+            None
+        );
+        assert_eq!(resolve_api_variant(None, &settings, "openrouter/fusion"), None);
+        // 通常モデルは responses を維持する(回帰防止)。
+        assert_eq!(
+            resolve_api_variant(
+                Some("responses"),
+                &settings,
+                "anthropic/claude-4.6-sonnet"
+            ),
+            Some("responses".to_string())
+        );
     }
 
     // --- OpenRouter Fusion plugin injection ---
