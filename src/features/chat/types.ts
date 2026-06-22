@@ -100,6 +100,22 @@ export interface AiSettings {
    * Hermes/ChatML 系モデルが本文に出す `<tool_call>` を実ツール呼び出しとして扱うため。
    */
   toolProtocolMode?: ToolProtocolMode;
+  /**
+   * OpenRouter Fusion (マルチモデル合議) のカスタム構成。
+   * model が `"openrouter/fusion"` のときだけ `plugins:[{id:"fusion",...}]` として注入。
+   * undefined / enabled=false なら OpenRouter 既定パネル (= 素の openrouter/fusion)。
+   */
+  fusion?: FusionSettings;
+}
+
+/** OpenRouter Fusion のカスタム構成 (パネル + judge)。 */
+export interface FusionSettings {
+  /** カスタム構成を適用するか。false なら OpenRouter 既定パネルに委ねる。 */
+  enabled: boolean;
+  /** パネル (analysis_models)。1〜8 件。空なら既定 (Quality preset)。 */
+  analysisModels: string[];
+  /** judge (集約) モデル。空 / null なら既定 (outer)。 */
+  judgeModel?: string | null;
 }
 
 /**
