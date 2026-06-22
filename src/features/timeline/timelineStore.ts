@@ -4,10 +4,13 @@ import type { GlobalSettings } from "@/features/workspace/store";
 
 export type AxisMode = "reading" | "story" | "write";
 export type SpacingMode = "uniform" | "proportional";
+/** シーン年表(scenes) か、プロットスレッドのレーン表示(threads) か。 */
+export type TimelineViewMode = "scenes" | "threads";
 
 export interface TimelineSettings {
   axisMode: AxisMode;
   spacingMode: SpacingMode;
+  viewMode: TimelineViewMode;
   zoom: number;
   scrollOffset: number;
   display: {
@@ -29,6 +32,7 @@ const DEFAULT_DISPLAY: TimelineSettings["display"] = {
 interface TimelineState {
   axisMode: AxisMode;
   spacingMode: SpacingMode;
+  viewMode: TimelineViewMode;
   zoom: number;
   scrollOffset: number;
   selectedNodeIds: string[];
@@ -36,7 +40,14 @@ interface TimelineState {
   display: TimelineSettings["display"];
   /** F2 ラベル編集ターゲット。インスペクターが読んで input にフォーカスする */
   pendingEditNodeId: string | null;
+  /** threads モードで選択中のプロットマーカー(plot_thread_scene_links.id)。 */
+  selectedPlotLinkId: string | null;
+  /** threads モードで選択中のスレッド(plot_threads.id)。レーン見出しクリックで設定。 */
+  selectedPlotThreadId: string | null;
   setAxisMode: (mode: AxisMode) => void;
+  setViewMode: (mode: TimelineViewMode) => void;
+  setSelectedPlotLinkId: (id: string | null) => void;
+  setSelectedPlotThreadId: (id: string | null) => void;
   setSpacingMode: (mode: SpacingMode) => void;
   setZoom: (zoom: number) => void;
   setScrollOffset: (offset: number) => void;
@@ -53,17 +64,24 @@ interface TimelineState {
 export const useTimelineStore = create<TimelineState>((set, get) => ({
   axisMode: "reading",
   spacingMode: "uniform",
+  viewMode: "scenes",
   zoom: 1,
   scrollOffset: 0,
   selectedNodeIds: [],
   inspectorOpen: false,
   display: { ...DEFAULT_DISPLAY },
   pendingEditNodeId: null,
+  selectedPlotLinkId: null,
+  selectedPlotThreadId: null,
   setAxisMode: (mode) =>
     set({
       axisMode: mode,
       spacingMode: mode === "reading" ? "uniform" : "proportional",
     }),
+  setViewMode: (viewMode) => set({ viewMode }),
+  setSelectedPlotLinkId: (selectedPlotLinkId) => set({ selectedPlotLinkId }),
+  setSelectedPlotThreadId: (selectedPlotThreadId) =>
+    set({ selectedPlotThreadId }),
   setSpacingMode: (spacingMode) => set({ spacingMode }),
   setZoom: (zoom) => set({ zoom: Math.max(0.25, Math.min(4, zoom)) }),
   setScrollOffset: (scrollOffset) => set({ scrollOffset }),
@@ -94,7 +112,11 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   },
   clearSelection: () => {
     lastSingleSelectId = null;
-    set({ selectedNodeIds: [] });
+    set({
+      selectedNodeIds: [],
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: null,
+    });
   },
   toggleInspector: () => set((s) => ({ inspectorOpen: !s.inspectorOpen })),
   toggleDisplay: (key) =>
@@ -104,6 +126,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set({
       axisMode: settings.axisMode ?? "reading",
       spacingMode: settings.spacingMode ?? "uniform",
+      viewMode: settings.viewMode ?? "scenes",
       zoom: Math.max(0.25, Math.min(4, settings.zoom ?? 1)),
       scrollOffset: settings.scrollOffset ?? 0,
       display: settings.display ?? { ...DEFAULT_DISPLAY },
@@ -116,6 +139,7 @@ function snapshotPersistent(
   return {
     axisMode: state.axisMode,
     spacingMode: state.spacingMode,
+    viewMode: state.viewMode,
     zoom: state.zoom,
     scrollOffset: state.scrollOffset,
     display: state.display,

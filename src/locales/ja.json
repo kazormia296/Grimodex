@@ -4739,7 +4739,31 @@
       "theme": "テーマ"
     }
   },
+  "plotThread": {
+    "viewScenes": "シーン",
+    "viewThreads": "スレッド",
+    "addThread": "スレッドを追加",
+    "newThreadName": "新しいスレッド",
+    "unnamed": "（無名）",
+    "marker": "マーカー",
+    "thread": "スレッド",
+    "name": "名前",
+    "phase": "段階",
+    "note": "メモ",
+    "notePlaceholder": "このマーカーのメモ",
+    "noSelection": "スレッドかマーカーを選択してください",
+    "deleteMarker": "マーカーを削除",
+    "deleteThread": "スレッドを削除",
+    "phaseType": {
+      "introduce": "導入",
+      "develop": "展開",
+      "turn": "転",
+      "climax": "クライマックス",
+      "resolve": "回収"
+    }
+  },
   "timeline": {
+    "viewMode": "表示モード",
     "ctx": {
       "openInEditor": "Editor で開く",
       "openInSide": "サイドで開く",

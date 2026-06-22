@@ -24,6 +24,7 @@ pub(crate) mod integrity;
 pub(crate) mod license;
 pub(crate) mod lint;
 pub(crate) mod onboarding;
+pub(crate) mod plot_threads;
 pub(crate) mod post_effect;
 #[cfg(feature = "semantic-embedding")]
 pub(crate) mod semantic;

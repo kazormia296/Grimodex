@@ -1160,6 +1160,72 @@ export const codexRelations = sqliteTable(
   ],
 );
 
+/** Plottr 型プロットスレッド = タイムライン上の名前付き横レーン。 */
+export const plotThreads = sqliteTable(
+  "plot_threads",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull().default(""),
+    color: text("color"),
+    description: text("description"),
+    // レーン縦順の fractional-index（base62、辞書順比較）
+    sortOrder: text("sort_order").notNull().default("a0"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [index("idx_plot_threads_project").on(table.projectId)],
+);
+
+/** スレッドが特定シーンで踏む段階マーカー。phase_type の CHECK は SQL 側。 */
+export const plotThreadSceneLinks = sqliteTable(
+  "plot_thread_scene_links",
+  {
+    id: text("id").primaryKey(),
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => plotThreads.id, { onDelete: "cascade" }),
+    nodeId: text("node_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    // 'introduce' | 'develop' | 'turn' | 'climax' | 'resolve'
+    phaseType: text("phase_type").notNull(),
+    note: text("note"),
+    sortOrder: text("sort_order"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_plot_thread_links_thread").on(table.threadId),
+    index("idx_plot_thread_links_node").on(table.nodeId),
+  ],
+);
+
+export type PlotThread = typeof plotThreads.$inferSelect;
+export type NewPlotThread = typeof plotThreads.$inferInsert;
+export type PlotThreadSceneLink = typeof plotThreadSceneLinks.$inferSelect;
+export type NewPlotThreadSceneLink = typeof plotThreadSceneLinks.$inferInsert;
+
+/** マーカー段階の正準 enum と表示順序。 */
+export const PLOT_PHASE_TYPES = [
+  "introduce",
+  "develop",
+  "turn",
+  "climax",
+  "resolve",
+] as const;
+export type PlotPhaseType = (typeof PLOT_PHASE_TYPES)[number];
+
 export const mapFrames = sqliteTable(
   "map_frames",
   {

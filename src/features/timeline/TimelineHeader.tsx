@@ -1,7 +1,9 @@
-import { Clock, MapPin } from "lucide-react";
+import { Clock, MapPin, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTimelineStore } from "./timelineStore";
 import type { AxisMode, SpacingMode } from "./timelineStore";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 
 const SPACING_LABELS: Record<SpacingMode, string> = {
   proportional: "Proportional",
@@ -34,6 +36,8 @@ export function TimelineHeader({
   const setSpacingMode = useTimelineStore((s) => s.setSpacingMode);
   const display = useTimelineStore((s) => s.display);
   const toggleDisplay = useTimelineStore((s) => s.toggleDisplay);
+  const viewMode = useTimelineStore((s) => s.viewMode);
+  const setViewMode = useTimelineStore((s) => s.setViewMode);
 
   return (
     <div
@@ -43,6 +47,26 @@ export function TimelineHeader({
       <span className="font-semibold text-foreground">
         {t("layout.panel.timeline", "Timeline")}
       </span>
+
+      {/* View mode toggle: シーン年表 / プロットスレッド */}
+      <div
+        className="flex items-center overflow-hidden rounded border border-border"
+        role="group"
+        aria-label={t("timeline.viewMode", "表示モード")}
+      >
+        <button
+          onClick={() => setViewMode("scenes")}
+          className={`px-1.5 py-0.5 text-xs ${viewMode === "scenes" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}
+        >
+          {t("plotThread.viewScenes", "シーン")}
+        </button>
+        <button
+          onClick={() => setViewMode("threads")}
+          className={`px-1.5 py-0.5 text-xs ${viewMode === "threads" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}
+        >
+          {t("plotThread.viewThreads", "スレッド")}
+        </button>
+      </div>
 
       {/* Axis mode selector */}
       <select
@@ -94,6 +118,24 @@ export function TimelineHeader({
       )}
 
       <div className="ml-auto flex items-center gap-1">
+        {/* Add plot thread (threads モードのみ) */}
+        {viewMode === "threads" && (
+          <button
+            onClick={() =>
+              void usePlotThreadStore
+                .getState()
+                .addThread(
+                  getCurrentProjectId(),
+                  t("plotThread.newThreadName", "新しいスレッド"),
+                )
+            }
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent/50"
+            title={t("plotThread.addThread", "スレッドを追加")}
+          >
+            <Plus className="h-3 w-3" aria-hidden />
+            {t("plotThread.addThread", "スレッドを追加")}
+          </button>
+        )}
         {/* Display toggles */}
         <button
           onClick={() => toggleDisplay("showTitles")}

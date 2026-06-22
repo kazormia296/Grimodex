@@ -22,6 +22,7 @@ function resetStore() {
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
+    viewMode: "scenes",
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -101,5 +102,37 @@ describe("TimelineHeader – Spacing mode UI", () => {
     ) as HTMLSelectElement;
     fireEvent.change(axisSelect, { target: { value: "reading" } });
     expect(useTimelineStore.getState().spacingMode).toBe("uniform");
+  });
+});
+
+describe("TimelineHeader – view mode toggle", () => {
+  beforeEach(resetStore);
+
+  it("「スレッド」クリックで viewMode が threads になる", () => {
+    renderHeader();
+    fireEvent.click(screen.getByText("スレッド"));
+    expect(useTimelineStore.getState().viewMode).toBe("threads");
+  });
+
+  it("「シーン」クリックで viewMode が scenes に戻る", () => {
+    useTimelineStore.setState({ viewMode: "threads" });
+    renderHeader();
+    fireEvent.click(screen.getByText("シーン"));
+    expect(useTimelineStore.getState().viewMode).toBe("scenes");
+  });
+
+  it("threads モードのときだけスレッド追加ボタンが出る", () => {
+    const { rerender } = renderHeader();
+    expect(screen.queryByTitle("スレッドを追加")).toBeNull();
+    useTimelineStore.setState({ viewMode: "threads" });
+    rerender(
+      <TimelineHeader
+        sceneCount={10}
+        scheduledCount={null}
+        inspectorOpen={false}
+        onToggleInspector={() => {}}
+      />,
+    );
+    expect(screen.getByTitle("スレッドを追加")).toBeTruthy();
   });
 });
