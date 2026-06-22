@@ -1,22 +1,29 @@
 /**
  * A/B 比較ハーネス (③)。
  *
- * 同一の基底プロンプトに対し 2 構成 (A / B) を**並列**に走らせ、結果を横並びで
+ * 同一の基底プロンプトに対し **N 構成 (スロット)** を走らせ、結果を横並びで
  * 比較できるようにする純粋なディスパッチ層。surface ごとの実 LLM 呼び出しは
  * `dispatch` コールバックで注入する (chat=非ストリーミング / inline=streaming)。
  * これにより:
  *  - ライブ ChatPanel の単一ストリーム描画を一切いじらずに chat A/B を実現できる
  *  - 分岐ロジック (promptVariant 合成・並列実行・結果整形) を単体テストできる
  *
- * A/B 軸は 2 種類を 1 構造で表現する:
- *  - モデル A/B  : config.model だけを A/B で変える (promptVariant は両方同値/空)
- *  - プロンプト A/B: config.promptVariant だけを A/B で変える (model は両方同値/空)
+ * 各スロットは独立した自由構成 (AbConfig) を持つ:
+ *  - 1 枠目 (基準) は `{}` = 設定の既定 (provider / model 未指定)
+ *  - 2 枠目以降は provider / model / promptVariant を各々自由に上書きできる
  */
 
 export type AbSurface = "chat" | "inline";
 
-/** A/B の片側 1 構成。両方 undefined なら「設定の既定どおり」を意味する。 */
+/**
+ * A/B の 1 スロット構成。すべて undefined なら「設定の既定どおり」を意味する。
+ */
 export interface AbConfig {
+  /**
+   * プロバイダ override (chat のみ)。空 / undefined なら設定の既定プロバイダ。
+   * 値は FE の `AiProvider` 文字列 ("openrouter" / "sakana" 等) と一致させる。
+   */
+  provider?: string | null;
   /** モデル override。空 / undefined なら設定の既定モデル。 */
   model?: string | null;
   /**
@@ -32,9 +39,9 @@ export interface AbMessage {
   content: string;
 }
 
-/** A/B にかける基底リクエスト。messages は両構成で共有される。 */
+/** A/B にかける基底リクエスト。messages は全構成で共有される。 */
 export interface AbRequest {
-  /** 基底プロンプト (system / user)。両構成で共通。 */
+  /** 基底プロンプト (system / user)。全構成で共通。 */
   messages: AbMessage[];
   /** 表示・記録用にプロンプト要旨を保持する (任意)。 */
   promptSummary?: string;
@@ -46,27 +53,27 @@ export type AbRunResult =
 
 /**
  * surface 別の実行アダプタ。messages と config を受け取り 1 構成を走らせる。
- * - chat  : 非ストリーミング send_chat_message を 1 回 (model override 付き)
+ * - chat  : 非ストリーミング send_chat_message を 1 回 (provider / model override 付き)
  * - inline : streamInlineAiText を 1 回 (model override 付き)
- * 例外は内部で握り潰さず { ok:false } で返すこと (片側失敗が全体を倒さない)。
+ * 例外は内部で握り潰さず { ok:false } で返すこと (1 枠の失敗が全体を倒さない)。
  */
 export type AbDispatcher = (
   messages: AbMessage[],
   config: AbConfig,
 ) => Promise<AbRunResult>;
 
-export interface AbComparisonResult {
-  a: AbRunResult;
-  b: AbRunResult;
-  /** 各構成に実際に渡した最終 messages (promptVariant 合成後)。表示/記録用。 */
-  messagesA: AbMessage[];
-  messagesB: AbMessage[];
+/** 1 スロットの実行結果 (構成・最終 messages・結果)。 */
+export interface AbSlotResult {
+  config: AbConfig;
+  result: AbRunResult;
+  /** この構成に実際に渡した最終 messages (promptVariant 合成後)。表示/記録用。 */
+  messages: AbMessage[];
 }
 
 /**
  * promptVariant を基底 messages に合成する。
  * 追記指示があれば user ロールのメッセージとして末尾に足す。空なら無変更。
- * 元配列は破壊しない (A/B で同じ基底を共有するため)。
+ * 元配列は破壊しない (各構成で同じ基底を共有するため)。
  */
 export function applyPromptVariant(
   messages: AbMessage[],
@@ -82,53 +89,59 @@ export interface RunAbOptions {
    * 並列実行するか。既定 true (chat の非ストリーミングは独立した応答なので
    * 安全に並走できる)。**false にすると逐次実行**: inline-ai のように
    * グローバルな `inline-ai:stream-*` イベント / 共有 abort flag を使う surface
-   * では 2 本同時に走らせると chunk が混線するため必ず逐次にする。
+   * では複数同時に走らせると chunk が混線するため必ず逐次にする。
    */
   parallel?: boolean;
   /**
-   * A 側を再生成せず既存結果を流用する。A は常に「既定構成」(configA={}) で
-   * mode 切替や B 構成変更の影響を受けないため、一度生成したら使い回せる。
-   * **ok な結果が渡されたときだけ**流用し B のみ実行する。null / 失敗結果 /
-   * 未指定のときは従来どおり A も実行する。
+   * スロットごとに再生成せず既存結果を流用する (configs と同じ index で対応)。
+   * **ok な結果が渡された index だけ**流用し、それ以外のスロットのみ実行する。
+   * null / 失敗結果 / 未指定の index は従来どおり実行する。
+   * 構成が変わっていないスロット (基準枠や未編集枠) の無駄な生成/課金を避ける。
    */
-  reuseA?: AbRunResult | null;
+  reuse?: (AbRunResult | null | undefined)[];
 }
 
 /**
- * A/B 2 構成を実行する。`dispatch` は両側で同一の関数を使う
+ * N 構成を実行する。`dispatch` は全スロットで同一の関数を使う
  * (surface の差は dispatch の中身で吸収済み)。既定は Promise.all で並走、
- * `parallel:false` で逐次。いずれも片側失敗は他方を倒さない ({ ok:false })。
+ * `parallel:false` で逐次。いずれも 1 枠の失敗は他を倒さない ({ ok:false })。
+ * 戻り値は configs と同じ並び順の `AbSlotResult[]`。
  */
 export async function runAbComparison(
   request: AbRequest,
-  configA: AbConfig,
-  configB: AbConfig,
+  configs: AbConfig[],
   dispatch: AbDispatcher,
   options?: RunAbOptions,
-): Promise<AbComparisonResult> {
-  const messagesA = applyPromptVariant(request.messages, configA.promptVariant);
-  const messagesB = applyPromptVariant(request.messages, configB.promptVariant);
-
-  // ok な既存 A があれば流用し、B だけ実行する (mode 切替後の A 使い回し)。
-  const reuseA = options?.reuseA?.ok ? options.reuseA : null;
+): Promise<AbSlotResult[]> {
   const parallel = options?.parallel ?? true;
-  let a: AbRunResult;
-  let b: AbRunResult;
-  if (reuseA) {
-    a = reuseA;
-    b = await safeDispatch(dispatch, messagesB, configB);
-  } else if (parallel) {
-    [a, b] = await Promise.all([
-      safeDispatch(dispatch, messagesA, configA),
-      safeDispatch(dispatch, messagesB, configB),
-    ]);
+  const reuse = options?.reuse ?? [];
+  const slots = configs.map((config) => ({
+    config,
+    messages: applyPromptVariant(request.messages, config.promptVariant),
+  }));
+
+  const runOne = async (i: number): Promise<AbRunResult> => {
+    const reused = reuse[i]?.ok ? reuse[i]! : null;
+    if (reused) return reused;
+    return safeDispatch(dispatch, slots[i].messages, slots[i].config);
+  };
+
+  let results: AbRunResult[];
+  if (parallel) {
+    results = await Promise.all(slots.map((_, i) => runOne(i)));
   } else {
-    // 逐次: 共有ストリームイベントの混線を避ける (A を完了してから B)。
-    a = await safeDispatch(dispatch, messagesA, configA);
-    b = await safeDispatch(dispatch, messagesB, configB);
+    // 逐次: 共有ストリームイベントの混線を避ける (1 枠ずつ完了させる)。
+    results = [];
+    for (let i = 0; i < slots.length; i++) {
+      results.push(await runOne(i));
+    }
   }
 
-  return { a, b, messagesA, messagesB };
+  return slots.map((slot, i) => ({
+    config: slot.config,
+    messages: slot.messages,
+    result: results[i],
+  }));
 }
 
 /** dispatch が throw しても { ok:false } に正規化する (Promise.all を倒さない)。 */

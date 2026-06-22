@@ -1,92 +1,85 @@
 /**
  * A/B 比較履歴 (③) の永続化 CRUD。Drizzle ORM のみ (生 SQL 禁止)。
- * テーブルは src/db/schema.ts abComparisons / migrate.rs ab_comparisons。
+ * テーブルは src/db/schema.ts abComparisonRuns / migrate.rs ab_comparison_runs。
+ *
+ * N 枠 (スロット) 対応の正規化されていない監査ログ: 1 比較 = 1 行で、各枠の構成と
+ * 応答を `slots` 列に JSON TEXT で持つ。採用した枠は `chosen` (slotId) で記録する。
+ * 現状この履歴を読む UI は無く、best-effort 記録に徹する (失敗は比較体験を止めない)。
  */
 
 import { db } from "@/db/client";
-import { abComparisons } from "@/db/schema";
+import { abComparisonRuns } from "@/db/schema";
 import { eq, and, desc } from "drizzle-orm";
-import type { AbComparison } from "@/db/schema";
+import type { AbComparisonRun } from "@/db/schema";
 import type { AbSurface } from "./abHarness";
 
-export type AbComparisonRow = AbComparison;
-export type AbChoice = "a" | "b";
+/** 1 枠の記録 (構成 + 応答/エラー)。 */
+export interface AbRunSlotRecord {
+  /** 採用判定に使う安定 id (基準枠は "baseline")。 */
+  slotId: string;
+  /** プロバイダ override (基準枠 / 未指定なら null)。 */
+  provider: string | null;
+  /** モデル override (未指定なら null = 既定)。 */
+  model: string | null;
+  /** プロンプト追記指示 (なければ null)。 */
+  promptVariant: string | null;
+  /** 成功したか。 */
+  ok: boolean;
+  /** 応答本文 (ok=true) またはエラーメッセージ (ok=false)。 */
+  response: string;
+}
 
-export interface CreateAbComparisonInput {
+export interface CreateAbRunInput {
   projectId: string;
   surface: AbSurface;
   /** 基底プロンプト要旨 (表示・あとで何を比べたか分かる程度)。 */
   prompt: string;
-  modelA?: string | null;
-  modelB?: string | null;
-  promptVariantA?: string | null;
-  promptVariantB?: string | null;
-  responseA: string;
-  responseB: string;
-  /** 作成時点で採用が確定していれば。通常は後から setChosen。 */
-  chosen?: AbChoice | null;
+  slots: AbRunSlotRecord[];
+  /** 作成時点で採用が確定していれば slotId。通常は後から setAbRunChosen。 */
+  chosen?: string | null;
 }
 
-export async function createAbComparison(
-  input: CreateAbComparisonInput,
-): Promise<AbComparison> {
+export async function createAbRun(
+  input: CreateAbRunInput,
+): Promise<{ id: string }> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  const rows = await db
-    .insert(abComparisons)
-    .values({
-      id,
-      projectId: input.projectId,
-      surface: input.surface,
-      prompt: input.prompt,
-      modelA: input.modelA ?? null,
-      modelB: input.modelB ?? null,
-      promptVariantA: input.promptVariantA ?? null,
-      promptVariantB: input.promptVariantB ?? null,
-      responseA: input.responseA,
-      responseB: input.responseB,
-      chosen: input.chosen ?? null,
-      createdAt: now,
-    })
-    .returning();
-  return rows[0];
+  await db.insert(abComparisonRuns).values({
+    id,
+    projectId: input.projectId,
+    surface: input.surface,
+    prompt: input.prompt,
+    slots: JSON.stringify(input.slots),
+    chosen: input.chosen ?? null,
+    createdAt: now,
+  });
+  return { id };
 }
 
 /** プロジェクトの A/B 履歴を新しい順に取得する。 */
-export async function listAbComparisons(
+export async function listAbRuns(
   projectId: string,
-): Promise<AbComparison[]> {
+): Promise<AbComparisonRun[]> {
   return db
     .select()
-    .from(abComparisons)
-    .where(eq(abComparisons.projectId, projectId))
-    .orderBy(desc(abComparisons.createdAt));
+    .from(abComparisonRuns)
+    .where(eq(abComparisonRuns.projectId, projectId))
+    .orderBy(desc(abComparisonRuns.createdAt));
 }
 
-/** 単一 A/B 履歴を取得 (project スコープで fail-closed)。 */
-export async function getAbComparison(
+/** 採用した枠 (slotId) を記録する。project スコープで限定 (fail-closed)。 */
+export async function setAbRunChosen(
   projectId: string,
   id: string,
-): Promise<AbComparison | undefined> {
-  const rows = await db
-    .select()
-    .from(abComparisons)
-    .where(
-      and(eq(abComparisons.id, id), eq(abComparisons.projectId, projectId)),
-    );
-  return rows[0];
-}
-
-/** 採用したカラム ("a" | "b") を記録する。project スコープで限定。 */
-export async function setAbChosen(
-  projectId: string,
-  id: string,
-  chosen: AbChoice,
+  chosenSlotId: string,
 ): Promise<void> {
   await db
-    .update(abComparisons)
-    .set({ chosen })
+    .update(abComparisonRuns)
+    .set({ chosen: chosenSlotId })
     .where(
-      and(eq(abComparisons.id, id), eq(abComparisons.projectId, projectId)),
+      and(
+        eq(abComparisonRuns.id, id),
+        eq(abComparisonRuns.projectId, projectId),
+      ),
     );
 }

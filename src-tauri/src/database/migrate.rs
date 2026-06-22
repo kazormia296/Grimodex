@@ -1616,6 +1616,26 @@ impl Database {
                 ON ab_comparisons(project_id, created_at);",
         )?;
 
+        // A/B 比較 (③) — N 枠 (スロット) 版。同一プロンプトに対し任意数の構成
+        // (provider / model / プロンプト追記) を走らせた結果と採用判断を記録する履歴。
+        // slots は各枠の構成 + 応答を持つ JSON TEXT 配列、chosen は採用した枠の slotId
+        // ("baseline" 等)、未採用なら NULL。旧 2 枠版 ab_comparisons を置き換える
+        // (旧テーブルは互換のため残置)。Drizzle 側 src/db/schema.ts abComparisonRuns と
+        // ミラー。project 削除で CASCADE。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ab_comparison_runs (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface     TEXT NOT NULL,
+                prompt      TEXT NOT NULL,
+                slots       TEXT NOT NULL,
+                chosen      TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_ab_comparison_runs_project_created
+                ON ab_comparison_runs(project_id, created_at);",
+        )?;
+
         // プロットスレッド (Plottr 型): タイムライン上の名前付き横レーン。
         // src/db/schema.ts の plotThreads とミラー。project 削除で CASCADE。
         // sort_order はレーン縦順の base62 fractional-index (treeNodes.sort_order と同 idiom)。

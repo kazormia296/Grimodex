@@ -143,15 +143,29 @@ pub(crate) async fn send_chat_message(
     // A/B 比較 (③): モデル override。None / 空文字なら設定の既定モデルを使う
     // （inline-ai と同一の解決規則）。後方互換: 既存呼び出しは省略可。
     model: Option<String>,
+    // A/B 比較 (③): プロバイダ override。None なら設定の既定プロバイダを使う。
+    // 別プロバイダの API キーは keyring に保存済み (get_api_key は任意 provider で
+    // 解決可能) なので、グローバル設定を変えずに 1 ショットだけ別プロバイダへ投げられる。
+    // 後方互換: 既存呼び出しは省略可。
+    provider: Option<ai::AiProvider>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
-    let api_key = resolve_api_key(&settings.provider)?;
+    let provider_overridden = provider.is_some();
+    let effective_provider = provider.unwrap_or_else(|| settings.provider.clone());
+    let api_key = resolve_api_key(&effective_provider)?;
     let resolved_model = model
         .as_deref()
         .filter(|m| !m.is_empty())
         .unwrap_or(&settings.model);
     let mut settings_for_call = settings.clone();
+    settings_for_call.provider = effective_provider;
     settings_for_call.model = resolved_model.to_string();
+    // provider override 時は、グローバルの model_api_variant (Responses トグル等は
+    // 既定プロバイダ向けの設定) を別プロバイダへ持ち込まない。経路は明示の api_variant
+    // か effective provider 既定の解決 (resolve_api_variant) に委ねる。
+    if provider_overridden {
+        settings_for_call.model_api_variant = None;
+    }
     let variant = api_variant.as_deref();
     let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
     let retry_429 = should_retry_429(&settings_for_call);

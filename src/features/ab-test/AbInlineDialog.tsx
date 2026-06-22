@@ -11,11 +11,17 @@ import {
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { AbConfigForm } from "./AbConfigForm";
-import { AbComparePanel } from "./AbComparePanel";
+import { AbComparePanel, type AbCompareColumnView } from "./AbComparePanel";
 import { useAbComparison } from "./useAbComparison";
 import { createInlineAbDispatcher } from "./abDispatchers";
-import { deriveAbConfigs, isAbConfigMeaningful, type AbMode } from "./abConfig";
-import type { AbConfig, AbMessage } from "./abHarness";
+import {
+  createBaselineSlot,
+  createVariantSlot,
+  canRunComparison,
+  normalizeAbConfig,
+  type AbSlot,
+} from "./abConfig";
+import type { AbMessage } from "./abHarness";
 
 interface AbInlineDialogProps {
   open: boolean;
@@ -28,8 +34,9 @@ interface AbInlineDialogProps {
 }
 
 /**
- * インライン / ビート A/B 比較モーダル (③)。inline-ai streaming を 2 構成
- * (モデル / プロンプト) で並列に走らせ、採用本文を onAdopt 経由で挿入させる。
+ * インライン / ビート A/B 比較モーダル (③)。inline-ai streaming を N 枠で**逐次**に
+ * 走らせ、採用本文を onAdopt 経由で挿入させる。inline はモデル / プロンプト追記の
+ * 上書きのみ (プロバイダ上書きは chat 専用)。
  */
 export function AbInlineDialog({
   open,
@@ -42,53 +49,63 @@ export function AbInlineDialog({
   const defaultModel = useAiSettingsStore((s) => s.settings?.model ?? "");
   const settingsStore = useSettingsStore();
 
-  const [mode, setMode] = useState<AbMode>("model");
-  const [configB, setConfigB] = useState<AbConfig>(() => ({
-    model: settingsStore.get("abTest.defaultModelB", "") || undefined,
-    promptVariant:
-      settingsStore.get("abTest.defaultPromptVariantB", "") || undefined,
-  }));
+  const [slots, setSlots] = useState<AbSlot[]>(() => [
+    createBaselineSlot(),
+    createVariantSlot({
+      model: settingsStore.get("abTest.defaultModelB", "") || undefined,
+      promptVariant:
+        settingsStore.get("abTest.defaultPromptVariantB", "") || undefined,
+    }),
+  ]);
 
   const dispatch = useMemo(
     () => createInlineAbDispatcher(projectId),
     [projectId],
   );
-  const { state, run, adopt, reset, clearSideB } = useAbComparison({
+  const { state, run, adopt, reset, invalidate } = useAbComparison({
     surface: "inline",
     projectId,
     dispatch,
   });
 
-  const { configA, configB: resolvedB } = useMemo(
-    () => deriveAbConfigs(mode, configB),
-    [mode, configB],
-  );
-  const meaningful = isAbConfigMeaningful(mode, configB);
-  const hasResult = state.resultA !== null || state.resultB !== null;
+  const runnable = canRunComparison(slots);
+  const hasResult = Object.values(state.results).some((r) => r !== null);
 
   // ダイアログを開くたびに前回結果をクリアする。
   useEffect(() => {
     if (open) reset();
   }, [open, reset]);
 
-  // mode 切替で B の構成が変わると表示中の B 応答が stale になる → 破棄。
-  // A は構成不変なので残し、次の実行で使い回す。
-  const handleModeChange = useCallback(
-    (next: AbMode) => {
-      if (next === mode) return;
-      setMode(next);
-      clearSideB();
-    },
-    [mode, clearSideB],
+  const columns = useMemo<AbCompareColumnView[]>(
+    () =>
+      slots.map((slot, i) => ({
+        id: slot.id,
+        label: slot.baseline
+          ? t("abTest.baseline")
+          : t("abTest.slotLabel", { n: i + 1 }),
+        providerLabel: null,
+        modelLabel: slot.baseline ? defaultModel : (slot.config.model ?? null),
+        promptVariant: slot.baseline
+          ? null
+          : (slot.config.promptVariant ?? null),
+        result: state.results[slot.id] ?? null,
+      })),
+    [slots, state.results, t, defaultModel],
   );
 
   const handleRun = useCallback(() => {
-    void run({ messages }, configA, resolvedB);
-  }, [run, messages, configA, resolvedB]);
+    void run(
+      { messages },
+      slots.map((s) => ({
+        id: s.id,
+        config: normalizeAbConfig(s.config, false),
+      })),
+    );
+  }, [run, messages, slots]);
 
   const handleAdopt = useCallback(
-    async (side: "a" | "b") => {
-      const text = await adopt(side);
+    async (slotId: string) => {
+      const text = await adopt(slotId);
       if (text !== null) {
         onAdopt(text);
         onOpenChange(false);
@@ -99,40 +116,39 @@ export function AbInlineDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] w-full max-w-3xl flex-col">
+      <DialogContent className="flex max-h-[85vh] w-full max-w-4xl flex-col">
         <DialogHeader>
           <DialogTitle>{t("abTest.inlineTitle")}</DialogTitle>
           <DialogDescription>{t("abTest.inlineDescription")}</DialogDescription>
         </DialogHeader>
 
-        <AbConfigForm
-          mode={mode}
-          onModeChange={handleModeChange}
-          defaultModel={defaultModel}
-          configB={configB}
-          onConfigBChange={setConfigB}
-          disabled={state.running}
-        />
+        <div className="flex-1 overflow-y-auto">
+          <AbConfigForm
+            slots={slots}
+            onChange={setSlots}
+            defaultModel={defaultModel}
+            allowProviderOverride={false}
+            disabled={state.running}
+            onInvalidateSlot={invalidate}
+          />
 
-        {hasResult && (
-          <div className="flex min-h-[10rem] flex-1 overflow-hidden">
-            <AbComparePanel
-              configA={configA}
-              configB={resolvedB}
-              resultA={state.resultA}
-              resultB={state.resultB}
-              running={state.running}
-              chosen={state.chosen}
-              onAdopt={handleAdopt}
-            />
-          </div>
-        )}
+          {hasResult && (
+            <div className="mt-3 flex min-h-[10rem]">
+              <AbComparePanel
+                columns={columns}
+                running={state.running}
+                chosenId={state.chosenId}
+                onAdopt={handleAdopt}
+              />
+            </div>
+          )}
+        </div>
 
         <DialogFooter>
           <button
             type="button"
             onClick={handleRun}
-            disabled={state.running || !meaningful}
+            disabled={state.running || !runnable}
             className="rounded-md bg-primary px-4 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
           >
             {state.running ? t("abTest.running") : t("abTest.run")}

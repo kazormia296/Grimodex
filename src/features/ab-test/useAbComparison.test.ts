@@ -3,11 +3,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 
 // api をモックして DB I/O を切り離す。
-const createAbComparison = vi.fn();
-const setAbChosen = vi.fn();
+const createAbRun = vi.fn();
+const setAbRunChosen = vi.fn();
 vi.mock("./api", () => ({
-  createAbComparison: (...args: unknown[]) => createAbComparison(...args),
-  setAbChosen: (...args: unknown[]) => setAbChosen(...args),
+  createAbRun: (...args: unknown[]) => createAbRun(...args),
+  setAbRunChosen: (...args: unknown[]) => setAbRunChosen(...args),
 }));
 
 import { useAbComparison } from "./useAbComparison";
@@ -18,15 +18,17 @@ const okDispatch: AbDispatcher = async (_messages, config) => ({
   text: `out:${config.model ?? "default"}`,
 });
 
+const BASE = { messages: [{ role: "user", content: "hi" }] };
+
 describe("useAbComparison", () => {
   beforeEach(() => {
-    createAbComparison.mockReset();
-    setAbChosen.mockReset();
-    createAbComparison.mockResolvedValue({ id: "rec-1" });
-    setAbChosen.mockResolvedValue(undefined);
+    createAbRun.mockReset();
+    setAbRunChosen.mockReset();
+    createAbRun.mockResolvedValue({ id: "rec-1" });
+    setAbRunChosen.mockResolvedValue(undefined);
   });
 
-  it("runs both sides and stores results + record id", async () => {
+  it("runs all slots and stores results by id + record id", async () => {
     const { result } = renderHook(() =>
       useAbComparison({
         surface: "chat",
@@ -36,29 +38,58 @@ describe("useAbComparison", () => {
     );
 
     await act(async () => {
-      await result.current.run(
-        { messages: [{ role: "user", content: "hi" }] },
-        { model: "a" },
-        { model: "b" },
-      );
+      await result.current.run(BASE, [
+        { id: "baseline", config: {} },
+        { id: "s2", config: { model: "b" } },
+        { id: "s3", config: { provider: "sakana", model: "fugu" } },
+      ]);
     });
 
-    expect(result.current.state.resultA).toEqual({ ok: true, text: "out:a" });
-    expect(result.current.state.resultB).toEqual({ ok: true, text: "out:b" });
-    expect(result.current.state.recordId).toBe("rec-1");
-    expect(createAbComparison).toHaveBeenCalledTimes(1);
-    const arg = createAbComparison.mock.calls[0][0];
-    expect(arg).toMatchObject({
-      projectId: "p1",
-      surface: "chat",
-      modelA: "a",
-      modelB: "b",
-      responseA: "out:a",
-      responseB: "out:b",
+    expect(result.current.state.results.baseline).toEqual({
+      ok: true,
+      text: "out:default",
     });
+    expect(result.current.state.results.s2).toEqual({
+      ok: true,
+      text: "out:b",
+    });
+    expect(result.current.state.results.s3).toEqual({
+      ok: true,
+      text: "out:fugu",
+    });
+    expect(result.current.state.recordId).toBe("rec-1");
+    expect(createAbRun).toHaveBeenCalledTimes(1);
+    const arg = createAbRun.mock.calls[0][0];
+    expect(arg).toMatchObject({ projectId: "p1", surface: "chat" });
+    expect(arg.slots).toEqual([
+      {
+        slotId: "baseline",
+        provider: null,
+        model: null,
+        promptVariant: null,
+        ok: true,
+        response: "out:default",
+      },
+      {
+        slotId: "s2",
+        provider: null,
+        model: "b",
+        promptVariant: null,
+        ok: true,
+        response: "out:b",
+      },
+      {
+        slotId: "s3",
+        provider: "sakana",
+        model: "fugu",
+        promptVariant: null,
+        ok: true,
+        response: "out:fugu",
+      },
+    ]);
   });
 
-  it("does not persist when one side fails", async () => {
+  it("does not persist when fewer than two slots succeed", async () => {
     const halfFail: AbDispatcher = async (_messages, config) =>
       config.model === "bad"
         ? { ok: false, error: "boom" }
@@ -69,16 +100,19 @@ describe("useAbComparison", () => {
     );
 
     await act(async () => {
-      await result.current.run(
-        { messages: [{ role: "user", content: "hi" }] },
-        { model: "bad" },
-        { model: "good" },
-      );
+      await result.current.run(BASE, [
+        { id: "baseline", config: {} },
+        { id: "s2", config: { model: "bad" } },
+      ]);
     });
 
-    expect(result.current.state.resultA).toEqual({ ok: false, error: "boom" });
+    // baseline ok, s2 fails → only 1 ok → no record.
+    expect(result.current.state.results.s2).toEqual({
+      ok: false,
+      error: "boom",
+    });
     expect(result.current.state.recordId).toBeNull();
-    expect(createAbComparison).not.toHaveBeenCalled();
+    expect(createAbRun).not.toHaveBeenCalled();
   });
 
   it("does not persist when projectId is absent", async () => {
@@ -86,17 +120,16 @@ describe("useAbComparison", () => {
       useAbComparison({ surface: "inline", dispatch: okDispatch }),
     );
     await act(async () => {
-      await result.current.run(
-        { messages: [{ role: "user", content: "hi" }] },
-        {},
-        { model: "b" },
-      );
+      await result.current.run(BASE, [
+        { id: "baseline", config: {} },
+        { id: "s2", config: { model: "b" } },
+      ]);
     });
-    expect(createAbComparison).not.toHaveBeenCalled();
+    expect(createAbRun).not.toHaveBeenCalled();
     expect(result.current.state.recordId).toBeNull();
   });
 
-  it("adopt records the choice and returns the chosen text", async () => {
+  it("adopt records the choice by slot id and returns the chosen text", async () => {
     const { result } = renderHook(() =>
       useAbComparison({
         surface: "chat",
@@ -105,24 +138,23 @@ describe("useAbComparison", () => {
       }),
     );
     await act(async () => {
-      await result.current.run(
-        { messages: [{ role: "user", content: "hi" }] },
-        { model: "a" },
-        { model: "b" },
-      );
+      await result.current.run(BASE, [
+        { id: "baseline", config: {} },
+        { id: "s2", config: { model: "b" } },
+      ]);
     });
 
     let adopted: string | null = null;
     await act(async () => {
-      adopted = await result.current.adopt("b");
+      adopted = await result.current.adopt("s2");
     });
 
     expect(adopted).toBe("out:b");
-    expect(result.current.state.chosen).toBe("b");
-    expect(setAbChosen).toHaveBeenCalledWith("p1", "rec-1", "b");
+    expect(result.current.state.chosenId).toBe("s2");
+    expect(setAbRunChosen).toHaveBeenCalledWith("p1", "rec-1", "s2");
   });
 
-  it("adopt returns null for a failed side and does not record", async () => {
+  it("adopt returns null for a failed slot and does not record", async () => {
     const halfFail: AbDispatcher = async (_messages, config) =>
       config.model === "bad"
         ? { ok: false, error: "boom" }
@@ -131,19 +163,18 @@ describe("useAbComparison", () => {
       useAbComparison({ surface: "chat", projectId: "p1", dispatch: halfFail }),
     );
     await act(async () => {
-      await result.current.run(
-        { messages: [{ role: "user", content: "hi" }] },
-        { model: "bad" },
-        { model: "good" },
-      );
+      await result.current.run(BASE, [
+        { id: "baseline", config: {} },
+        { id: "s2", config: { model: "bad" } },
+      ]);
     });
 
     let adopted: string | null = "x";
     await act(async () => {
-      adopted = await result.current.adopt("a");
+      adopted = await result.current.adopt("s2");
     });
     expect(adopted).toBeNull();
-    expect(setAbChosen).not.toHaveBeenCalled();
+    expect(setAbRunChosen).not.toHaveBeenCalled();
   });
 
   it("running flag flips true during the run", async () => {
@@ -159,11 +190,10 @@ describe("useAbComparison", () => {
 
     let runPromise!: Promise<void>;
     act(() => {
-      runPromise = result.current.run(
-        { messages: [{ role: "user", content: "hi" }] },
-        {},
-        {},
-      );
+      runPromise = result.current.run(BASE, [
+        { id: "baseline", config: {} },
+        { id: "s2", config: { model: "b" } },
+      ]);
     });
     await waitFor(() => expect(result.current.state.running).toBe(true));
     await act(async () => {
@@ -173,7 +203,7 @@ describe("useAbComparison", () => {
     expect(result.current.state.running).toBe(false);
   });
 
-  it("reuses the A result on a later run and only regenerates B", async () => {
+  it("reuses unchanged ok slots and only regenerates edited ones", async () => {
     const calls: string[] = [];
     const dispatch: AbDispatcher = async (_messages, config) => {
       calls.push(config.model ?? "default");
@@ -183,53 +213,38 @@ describe("useAbComparison", () => {
       useAbComparison({ surface: "chat", projectId: "p1", dispatch }),
     );
 
-    // 1 回目: A(既定) + B(b1) を両方生成。
+    // 1st: baseline(default) + s2(b1) both generated.
     await act(async () => {
-      await result.current.run(
-        { messages: [{ role: "user", content: "hi" }] },
-        {},
-        { model: "b1" },
-      );
+      await result.current.run(BASE, [
+        { id: "baseline", config: {} },
+        { id: "s2", config: { model: "b1" } },
+      ]);
     });
-    expect(result.current.state.resultA).toEqual({
+
+    // 2nd: baseline unchanged → reused; s2 edited to b2 → regenerated.
+    await act(async () => {
+      await result.current.run(BASE, [
+        { id: "baseline", config: {} },
+        { id: "s2", config: { model: "b2" } },
+      ]);
+    });
+
+    expect(result.current.state.results.baseline).toEqual({
       ok: true,
       text: "out:default",
     });
-
-    // 2 回目: A は流用し B(b2) のみ生成。
-    await act(async () => {
-      await result.current.run(
-        { messages: [{ role: "user", content: "hi" }] },
-        {},
-        { model: "b2" },
-      );
-    });
-    expect(result.current.state.resultA).toEqual({
+    expect(result.current.state.results.s2).toEqual({
       ok: true,
-      text: "out:default",
+      text: "out:b2",
     });
-    expect(result.current.state.resultB).toEqual({ ok: true, text: "out:b2" });
 
-    // A(既定) の dispatch は通算 1 回だけ = 再生成されていない。
+    // baseline dispatched once total = not regenerated.
     expect(calls.filter((c) => c === "default")).toHaveLength(1);
-    expect(calls).toContain("b1");
-    expect(calls).toContain("b2");
-    expect(calls).toHaveLength(3);
-
-    // 履歴は run ごとに記録される。A 流用時も configA は常に既定 ({}) なので
-    // 2 回目の record は「modelA=null の既定 A」と「新しい B(b2)」を正しく対にする
-    // (流用しても A メタデータが mode で汚染されない契約の固定)。
-    expect(createAbComparison).toHaveBeenCalledTimes(2);
-    expect(createAbComparison.mock.calls[1][0]).toMatchObject({
-      modelA: null,
-      promptVariantA: null,
-      responseA: "out:default",
-      modelB: "b2",
-      responseB: "out:b2",
-    });
+    expect(calls).toEqual(["default", "b1", "b2"]);
+    expect(createAbRun).toHaveBeenCalledTimes(2);
   });
 
-  it("clearSideB drops B, keeps A, and makes B unadoptable", async () => {
+  it("invalidate drops a slot result, keeps others, and makes it unadoptable", async () => {
     const { result } = renderHook(() =>
       useAbComparison({
         surface: "chat",
@@ -238,35 +253,42 @@ describe("useAbComparison", () => {
       }),
     );
     await act(async () => {
-      await result.current.run(
-        { messages: [{ role: "user", content: "hi" }] },
-        { model: "a" },
-        { model: "b" },
-      );
+      await result.current.run(BASE, [
+        { id: "baseline", config: {} },
+        { id: "s2", config: { model: "b" } },
+      ]);
     });
-    expect(result.current.state.resultB).toEqual({ ok: true, text: "out:b" });
+    expect(result.current.state.results.s2).toEqual({
+      ok: true,
+      text: "out:b",
+    });
 
-    act(() => result.current.clearSideB());
+    act(() => result.current.invalidate("s2"));
 
-    // A は残り B は消える。
-    expect(result.current.state.resultA).toEqual({ ok: true, text: "out:a" });
-    expect(result.current.state.resultB).toBeNull();
+    expect(result.current.state.results.baseline).toEqual({
+      ok: true,
+      text: "out:default",
+    });
+    expect(result.current.state.results.s2).toBeNull();
 
-    // B は採用不可 (null) だが A は依然採用できる。
-    let adoptedB: string | null = "x";
+    let adoptedS2: string | null = "x";
     await act(async () => {
-      adoptedB = await result.current.adopt("b");
+      adoptedS2 = await result.current.adopt("s2");
     });
-    expect(adoptedB).toBeNull();
+    expect(adoptedS2).toBeNull();
 
-    let adoptedA: string | null = null;
+    let adoptedBase: string | null = null;
     await act(async () => {
-      adoptedA = await result.current.adopt("a");
+      adoptedBase = await result.current.adopt("baseline");
     });
-    expect(adoptedA).toBe("out:a");
+    expect(adoptedBase).toBe("out:default");
+    // invalidate diverged the displayed state from the persisted record →
+    // recordId was cleared, so adopting now returns text but skips the DB write
+    // (no chosen written against a stale/mismatched record).
+    expect(setAbRunChosen).not.toHaveBeenCalled();
   });
 
-  it("clearSideB unsets the chosen flag when B was the chosen side", async () => {
+  it("invalidate unsets chosen when the chosen slot is invalidated", async () => {
     const { result } = renderHook(() =>
       useAbComparison({
         surface: "chat",
@@ -275,18 +297,17 @@ describe("useAbComparison", () => {
       }),
     );
     await act(async () => {
-      await result.current.run(
-        { messages: [{ role: "user", content: "hi" }] },
-        { model: "a" },
-        { model: "b" },
-      );
+      await result.current.run(BASE, [
+        { id: "baseline", config: {} },
+        { id: "s2", config: { model: "b" } },
+      ]);
     });
     await act(async () => {
-      await result.current.adopt("b");
+      await result.current.adopt("s2");
     });
-    expect(result.current.state.chosen).toBe("b");
+    expect(result.current.state.chosenId).toBe("s2");
 
-    act(() => result.current.clearSideB());
-    expect(result.current.state.chosen).toBeNull();
+    act(() => result.current.invalidate("s2"));
+    expect(result.current.state.chosenId).toBeNull();
   });
 });

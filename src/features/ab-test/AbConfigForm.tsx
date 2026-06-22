@@ -1,106 +1,107 @@
 import { useTranslation } from "react-i18next";
-import { ModelPicker } from "@/features/chat/ModelPicker";
-import { useAiSettingsStore } from "@/features/chat/store";
+import { Plus } from "lucide-react";
+import { AbSlotCard } from "./AbSlotCard";
+import { createVariantSlot, type AbSlot } from "./abConfig";
 import type { AbConfig } from "./abHarness";
 
-export type AbMode = "model" | "prompt";
-
 interface AbConfigFormProps {
-  mode: AbMode;
-  onModeChange: (mode: AbMode) => void;
-  /** 既定 (A 側) のモデル名。表示専用。 */
+  slots: AbSlot[];
+  onChange: (slots: AbSlot[]) => void;
+  /** 基準 (A 側) のモデル名。表示専用。 */
   defaultModel: string;
-  configB: AbConfig;
-  onConfigBChange: (next: AbConfig) => void;
+  /** 基準のプロバイダ表示ラベル (chat のみ)。空なら非表示。 */
+  defaultProviderLabel?: string;
+  /** provider 上書きを許可するか (chat=true / inline=false)。 */
+  allowProviderOverride: boolean;
+  /** 枠の上限 (基準含む)。既定 5。 */
+  maxSlots?: number;
   /**
-   * 実行中などで構成変更を止めたいとき true。mode 切替は clearSideB を伴うため、
-   * 実行中に切り替えると完了した run が結果を上書きしてしまう。それを防ぐ。
+   * 実行中などで構成変更を止めたいとき true。実行中に枠を編集/追加/削除すると
+   * 完了した run が結果を上書きしてしまうのを防ぐ。
    */
   disabled?: boolean;
+  /** 枠の構成が変わったとき、その枠の表示結果を破棄させる (stale 化対策)。 */
+  onInvalidateSlot?: (id: string) => void;
 }
 
 /**
- * A/B の軸 (モデル / プロンプト) と B 構成を入力するフォーム。
- * A 側は常に「現在の既定」(model=設定既定, promptVariant=なし)。
- * - model モード: B のモデルだけを選ぶ
- * - prompt モード: B の追記指示だけを入力 (モデルは A と同じ既定)
+ * A/B の枠 (スロット) 一覧エディタ。
+ * - 1 枠目 (基準): 現在の既定 (provider / model) を固定表示。編集不可・再生成は使い回し。
+ * - 2 枠目以降 (変種): provider / model / プロンプト追記を各々自由に上書き。追加・削除可。
  */
 export function AbConfigForm({
-  mode,
-  onModeChange,
+  slots,
+  onChange,
   defaultModel,
-  configB,
-  onConfigBChange,
+  defaultProviderLabel,
+  allowProviderOverride,
+  maxSlots = 5,
   disabled = false,
+  onInvalidateSlot,
 }: AbConfigFormProps) {
   const { t } = useTranslation();
-  const { models, isLoadingModels } = useAiSettingsStore();
+  const canAdd = slots.length < maxSlots;
+
+  const updateSlot = (id: string, config: AbConfig) => {
+    onChange(slots.map((s) => (s.id === id ? { ...s, config } : s)));
+    // 構成が変わった枠の表示結果は stale → 破棄させる。
+    onInvalidateSlot?.(id);
+  };
+
+  const removeSlot = (id: string) => {
+    onChange(slots.filter((s) => s.id !== id));
+    // 削除した枠の表示結果・採用記録 (recordId) も破棄する (stale な列/記録を残さない)。
+    onInvalidateSlot?.(id);
+  };
+
+  const addSlot = () => {
+    if (!canAdd) return;
+    onChange([...slots, createVariantSlot({})]);
+  };
 
   return (
-    <div className="space-y-3">
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => onModeChange("model")}
-          disabled={disabled}
-          className={`rounded-md border px-3 py-1.5 text-sm disabled:opacity-40 ${
-            mode === "model"
-              ? "border-primary bg-primary text-primary-foreground"
-              : "border-border hover:bg-accent"
-          }`}
-        >
-          {t("abTest.modeModel")}
-        </button>
-        <button
-          type="button"
-          onClick={() => onModeChange("prompt")}
-          disabled={disabled}
-          className={`rounded-md border px-3 py-1.5 text-sm disabled:opacity-40 ${
-            mode === "prompt"
-              ? "border-primary bg-primary text-primary-foreground"
-              : "border-border hover:bg-accent"
-          }`}
-        >
-          {t("abTest.modePrompt")}
-        </button>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t("abTest.sideA")}
-          </div>
-          <div className="rounded-md border border-border bg-muted/30 px-2 py-1.5 text-sm text-muted-foreground">
-            {defaultModel.trim() || t("abTest.defaultModel")}
-          </div>
+    <div className="space-y-2">
+      {/* 基準枠 (固定) */}
+      <div className="rounded-lg border border-border bg-muted/30 p-2.5">
+        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {t("abTest.baseline")}
         </div>
-
-        <div>
-          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t("abTest.sideB")}
-          </div>
-          {mode === "model" ? (
-            <ModelPicker
-              models={models}
-              value={configB.model ?? ""}
-              onChange={(model) => onConfigBChange({ ...configB, model })}
-              isLoading={isLoadingModels}
-              placeholder={t("abTest.defaultModel")}
-              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none"
-            />
-          ) : (
-            <textarea
-              value={configB.promptVariant ?? ""}
-              onChange={(e) =>
-                onConfigBChange({ ...configB, promptVariant: e.target.value })
-              }
-              rows={3}
-              placeholder={t("abTest.promptVariantPlaceholder")}
-              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none"
-            />
-          )}
+        <div className="text-sm text-foreground">
+          {defaultProviderLabel ? (
+            <span className="text-muted-foreground">
+              {defaultProviderLabel} /{" "}
+            </span>
+          ) : null}
+          {defaultModel.trim() || t("abTest.defaultModel")}
         </div>
       </div>
+
+      {/* 変種枠 (2 枠目以降) */}
+      {slots.map((slot, i) =>
+        slot.baseline ? null : (
+          <AbSlotCard
+            key={slot.id}
+            index={i + 1}
+            config={slot.config}
+            onChange={(config) => updateSlot(slot.id, config)}
+            onRemove={() => removeSlot(slot.id)}
+            allowProviderOverride={allowProviderOverride}
+            disabled={disabled}
+          />
+        ),
+      )}
+
+      <button
+        type="button"
+        onClick={addSlot}
+        disabled={disabled || !canAdd}
+        className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+      >
+        <Plus className="h-3.5 w-3.5" aria-hidden />
+        {canAdd
+          ? t("abTest.addSlot")
+          : t("abTest.maxSlotsReached", { max: maxSlots })}
+      </button>
     </div>
   );
 }

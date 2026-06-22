@@ -92,6 +92,16 @@ export async function sendChatMessage(
 export async function sendChatMessageOnceAb(
   messages: { role: string; content: string }[],
   model?: string | null,
+  /**
+   * A/B 比較 (③): プロバイダ override。None/空なら設定の既定プロバイダ。
+   * 値は `AiProvider` 文字列 ("openrouter" / "sakana" 等)。
+   */
+  provider?: string | null,
+  /**
+   * provider を上書きする枠の API 経路 (variant)。Sakana など `/responses` 必須の
+   * プロバイダで "responses" を明示するために使う。他は未指定 (= backend 既定解決)。
+   */
+  apiVariant?: string | null,
 ): Promise<{ text: string; inputTokens?: number; outputTokens?: number }> {
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
@@ -99,7 +109,9 @@ export async function sendChatMessageOnceAb(
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
+    apiVariant: apiVariant ?? null,
     model: model ?? null,
+    provider: provider ?? null,
   });
   const text = response.blocks
     .filter((b) => b.type === "text")

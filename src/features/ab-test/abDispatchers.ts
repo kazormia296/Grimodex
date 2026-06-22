@@ -14,9 +14,12 @@ import { sendChatMessageOnceAb } from "@/features/chat/chatApi";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { streamInlineAiText } from "@/features/editor/beat/streamInlineAiText";
 import type { AbDispatcher, AbRunResult } from "./abHarness";
+import { resolveSlotApiVariant } from "./abConfig";
 
 /**
  * chat surface の dispatcher。1 構成 = 非ストリーミング 1 ショット。
+ * provider override (枠ごとの別プロバイダ) を per-call で渡す。provider を上書きする
+ * 枠は API 経路 (variant) も枠の provider に合わせて解決する (Sakana=responses)。
  * usage は project スコープを明示するため projectId を渡せる。
  */
 export function createChatAbDispatcher(
@@ -24,14 +27,21 @@ export function createChatAbDispatcher(
 ): AbDispatcher {
   return async (messages, config): Promise<AbRunResult> => {
     try {
-      const res = await sendChatMessageOnceAb(messages, config.model);
+      const provider = config.provider?.trim() || undefined;
+      const apiVariant = resolveSlotApiVariant(config);
+      const res = await sendChatMessageOnceAb(
+        messages,
+        config.model,
+        provider,
+        apiVariant,
+      );
       void recordAiUsage({
         surface: "chat",
         model: config.model ?? undefined,
         tokensIn: res.inputTokens,
         tokensOut: res.outputTokens,
         projectId: projectId ?? undefined,
-        metadata: { abTest: true },
+        metadata: { abTest: true, provider: provider ?? null },
       });
       return { ok: true, text: res.text };
     } catch (err) {

@@ -569,6 +569,38 @@ export const abComparisons = sqliteTable(
   ],
 );
 
+/**
+ * A/B 比較 (③) — N 枠 (スロット) 版。同一プロンプトに対し任意数の構成
+ * (provider / model / プロンプト追記) を走らせた結果と採用判断を記録する履歴。
+ * `slots` は各枠の構成 + 応答を持つ JSON TEXT 配列 (AbRunSlotRecord[])、
+ * `chosen` は採用した枠の slotId (基準枠は "baseline")、未採用なら null。
+ * 旧 2 枠版 abComparisons を置き換える (旧テーブルは互換のため残置・新規書き込み無し)。
+ * src-tauri/src/database/migrate.rs の ab_comparison_runs とミラー (2 箇所手動同期)。
+ */
+export const abComparisonRuns = sqliteTable(
+  "ab_comparison_runs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    surface: text("surface").notNull(),
+    prompt: text("prompt").notNull(),
+    /** JSON TEXT: AbRunSlotRecord[] (slotId / provider / model / promptVariant / ok / response)。 */
+    slots: text("slots").notNull(),
+    chosen: text("chosen"), // 採用した slotId、未採用なら null
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_ab_comparison_runs_project_created").on(
+      table.projectId,
+      table.createdAt,
+    ),
+  ],
+);
+
 export const chatSummaries = sqliteTable(
   "chat_summaries",
   {
@@ -2039,6 +2071,9 @@ export type NewStateSnapshot = typeof stateSnapshots.$inferInsert;
 
 export type AbComparison = typeof abComparisons.$inferSelect;
 export type NewAbComparison = typeof abComparisons.$inferInsert;
+
+export type AbComparisonRun = typeof abComparisonRuns.$inferSelect;
+export type NewAbComparisonRun = typeof abComparisonRuns.$inferInsert;
 
 export type PostEffectType =
   | "review"
