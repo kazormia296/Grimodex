@@ -1563,6 +1563,49 @@ pub(crate) fn apply_openrouter_provider_pin(
     }
 }
 
+/// OpenRouter の Web 検索 (RAG) を body に注入する。/chat/completions の
+/// `send_chat_with_tools` (Agent 経路) と同一ロジックで、Responses 経路からも
+/// 呼べるよう切り出した共通実装。`ws.agentic` が true なら server tool
+/// (`openrouter:web_search`) を `tools[]` へ、false なら web plugin を `plugins` へ。
+/// ドメイン制御 / content cap が指定されたターンのみ engine=exa を強制する。
+/// provider が OpenRouter 以外、または web_search が無効なら何もしない。
+/// 注: Responses 経路は tool 定義が空のとき `tools` キーを省くため、agentic では
+/// 配列が無ければ新規作成する(chat/completions は常に tools[] がある前提だった)。
+pub(crate) fn apply_openrouter_web_search_to_body(
+    body: &mut serde_json::Value,
+    provider: &AiProvider,
+    web_search: Option<&WebSearchConfig>,
+) {
+    if !matches!(provider, AiProvider::OpenRouter) {
+        return;
+    }
+    let Some(ws) = web_search else { return };
+    if !ws.enabled {
+        return;
+    }
+    let force_exa = ws.needs_exa_engine();
+    if ws.agentic {
+        let mut tool = serde_json::json!({ "type": "openrouter:web_search" });
+        if force_exa {
+            apply_openrouter_web_controls(&mut tool, ws);
+        }
+        if let Some(arr) = body["tools"].as_array_mut() {
+            arr.push(tool);
+        } else {
+            body["tools"] = serde_json::json!([tool]);
+        }
+    } else {
+        let mut plugin = serde_json::json!({
+            "id": "web",
+            "max_results": ws.results_cap()
+        });
+        if force_exa {
+            apply_openrouter_web_controls(&mut plugin, ws);
+        }
+        body["plugins"] = serde_json::json!([plugin]);
+    }
+}
+
 /// `params.extra_body` をリクエストボディにマージする。
 /// `body` がオブジェクトでない場合は何もしない。
 pub(crate) fn merge_extra_body(body: &mut serde_json::Value, extra: &Option<serde_json::Value>) {
@@ -2912,32 +2955,12 @@ pub async fn send_chat_with_tools(
             // (モデルが検索要否を判断)、非 Agent は web plugin (一発検索)。引用は
             // url_citation で統一。Phase 2: ドメイン制御 / content cap が指定された
             // ターンのみ engine=exa を強制し制御を載せる (それ以外は auto のまま)。
-            if matches!(params.provider, AiProvider::OpenRouter) {
-                if let Some(ws) = params.web_search.as_ref() {
-                    if ws.enabled {
-                        let force_exa = ws.needs_exa_engine();
-                        if ws.agentic {
-                            if let Some(arr) = body["tools"].as_array_mut() {
-                                let mut tool =
-                                    serde_json::json!({ "type": "openrouter:web_search" });
-                                if force_exa {
-                                    apply_openrouter_web_controls(&mut tool, ws);
-                                }
-                                arr.push(tool);
-                            }
-                        } else {
-                            let mut plugin = serde_json::json!({
-                                "id": "web",
-                                "max_results": ws.results_cap()
-                            });
-                            if force_exa {
-                                apply_openrouter_web_controls(&mut plugin, ws);
-                            }
-                            body["plugins"] = serde_json::json!([plugin]);
-                        }
-                    }
-                }
-            }
+            // Responses 経路 (ai_responses::send_with_tools) と同一実装を共有する。
+            apply_openrouter_web_search_to_body(
+                &mut body,
+                params.provider,
+                params.web_search.as_ref(),
+            );
 
             // 観測性: GRIMODEX_AI_WIRE_LOG=1 のとき request/response 本文を tracing で出す
             // (本文に小説テキストを含むため既定では出さない)。エラー時は body をエラーへ
@@ -3858,6 +3881,93 @@ mod tests {
         assert!(body.get("provider").is_none());
         apply_openrouter_provider_pin(&mut body, &AiProvider::Anthropic, Some("anthropic"));
         assert!(body.get("provider").is_none());
+    }
+
+    #[test]
+    fn apply_openrouter_web_search_agentic_pushes_server_tool() {
+        // agentic: 既存 tools[] へ server tool を追加する。
+        let mut body = serde_json::json!({ "tools": [{ "type": "function", "name": "f" }] });
+        let ws = WebSearchConfig {
+            enabled: true,
+            agentic: true,
+            ..Default::default()
+        };
+        apply_openrouter_web_search_to_body(&mut body, &AiProvider::OpenRouter, Some(&ws));
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[1]["type"], "openrouter:web_search");
+        assert!(body.get("plugins").is_none());
+    }
+
+    #[test]
+    fn apply_openrouter_web_search_agentic_creates_tools_when_absent() {
+        // Responses 経路は tools キーを省きうる。agentic で配列が無ければ新規作成する。
+        let mut body = serde_json::json!({ "model": "x" });
+        let ws = WebSearchConfig {
+            enabled: true,
+            agentic: true,
+            ..Default::default()
+        };
+        apply_openrouter_web_search_to_body(&mut body, &AiProvider::OpenRouter, Some(&ws));
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "openrouter:web_search");
+    }
+
+    #[test]
+    fn apply_openrouter_web_search_plugin_sets_plugins() {
+        // 非 agentic: web plugin を plugins[] に載せる(max_results 既定 5)。
+        let mut body = serde_json::json!({ "model": "x" });
+        let ws = WebSearchConfig {
+            enabled: true,
+            agentic: false,
+            ..Default::default()
+        };
+        apply_openrouter_web_search_to_body(&mut body, &AiProvider::OpenRouter, Some(&ws));
+        assert_eq!(body["plugins"][0]["id"], "web");
+        assert_eq!(body["plugins"][0]["max_results"], 5);
+        // exa 制御はドメイン/ content cap 未指定なので付かない。
+        assert!(body["plugins"][0].get("engine").is_none());
+    }
+
+    #[test]
+    fn apply_openrouter_web_search_exa_when_domain_filter() {
+        // ドメイン制御指定時のみ engine=exa を強制する。
+        let mut body = serde_json::json!({ "model": "x" });
+        let ws = WebSearchConfig {
+            enabled: true,
+            agentic: false,
+            allowed_domains: vec!["example.com".to_string()],
+            ..Default::default()
+        };
+        apply_openrouter_web_search_to_body(&mut body, &AiProvider::OpenRouter, Some(&ws));
+        assert_eq!(body["plugins"][0]["engine"], "exa");
+        assert_eq!(body["plugins"][0]["allowed_domains"][0], "example.com");
+    }
+
+    #[test]
+    fn apply_openrouter_web_search_noop_when_disabled_or_not_openrouter() {
+        // enabled=false / provider 違い / web_search 無し は何もしない。
+        let ws_off = WebSearchConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let mut body = serde_json::json!({ "model": "x" });
+        apply_openrouter_web_search_to_body(&mut body, &AiProvider::OpenRouter, Some(&ws_off));
+        assert!(body.get("plugins").is_none() && body.get("tools").is_none());
+
+        let ws_on = WebSearchConfig {
+            enabled: true,
+            agentic: false,
+            ..Default::default()
+        };
+        let mut body2 = serde_json::json!({ "model": "x" });
+        apply_openrouter_web_search_to_body(&mut body2, &AiProvider::OpenAI, Some(&ws_on));
+        assert!(body2.get("plugins").is_none());
+
+        let mut body3 = serde_json::json!({ "model": "x" });
+        apply_openrouter_web_search_to_body(&mut body3, &AiProvider::OpenRouter, None);
+        assert!(body3.get("plugins").is_none());
     }
 
     #[test]

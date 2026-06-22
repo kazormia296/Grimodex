@@ -641,6 +641,14 @@ pub async fn send_with_tools(
         params.provider,
         params.openrouter_provider_pin,
     );
+    // RAG: OpenRouter の Web 検索を注入(/chat/completions の Agent 経路と対称)。
+    // 検索は agentic=server tool / 非 agentic=web plugin。引用は parse_output が
+    // message.annotations の url_citation から収集する。
+    crate::ai::apply_openrouter_web_search_to_body(
+        &mut body,
+        params.provider,
+        params.web_search.as_ref(),
+    );
 
     let result = send_and_parse_json(&client, params, &body).await?;
     parse_output(
@@ -1918,6 +1926,54 @@ mod responses_live_tests {
         eprintln!(
             "[ok] post_effect_live_openrouter: {} chars",
             raw.chars().count()
+        );
+    }
+
+    #[test]
+    fn web_search_live_openrouter() {
+        // OpenRouter + Responses + RAG の回帰ゲート。Responses body へ web plugin
+        // (非 agentic) を注入し、(1) 400 にならず受理されること、(2) url_citation が
+        // parse_output で収集されること、を確認する。web plugin は毎ターン強制検索する
+        // ため引用が返るはず(agentic はモデル裁量で flaky なので非 agentic を採用)。
+        let Some(key) = or_live_key() else {
+            eprintln!("[skip] web_search_live_openrouter: OPENROUTER_API_KEY 未設定");
+            return;
+        };
+        let settings = or_live_settings();
+        let model = or_live_model();
+        let mut params = live_params(&AiProvider::OpenRouter, &settings, &key, &model);
+        params.web_search = Some(crate::ai::WebSearchConfig {
+            enabled: true,
+            agentic: false,
+            ..Default::default()
+        });
+        let tools = weather_tool();
+        let messages = vec![
+            AgentMessage::System {
+                content: "提供された検索結果を使って簡潔に答えてください。".to_string(),
+            },
+            AgentMessage::User {
+                content: "OpenRouter の最新の発表を1つ、出典付きで教えてください。".to_string(),
+            },
+        ];
+        let resp = rt()
+            .block_on(send_with_tools(&params, &messages, &tools))
+            .unwrap_or_else(|e| {
+                panic!("web_search_live_openrouter: API 失敗(web plugin の wire shape 拒否の疑い): {e:#}")
+            });
+        let text: String = resp
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                ResponseBlock::Text { content } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!text.trim().is_empty(), "本文が空: {:?}", resp.blocks);
+        eprintln!(
+            "[ok] web_search_live_openrouter: {} chars, citations={}",
+            text.chars().count(),
+            resp.citations.len()
         );
     }
 }
