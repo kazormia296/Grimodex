@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isResponsesApiCapableProvider,
   resolveAinoveristApiVariant,
   resolveModelApiVariant,
 } from "./aiNovelist";
@@ -28,15 +29,24 @@ describe("resolveModelApiVariant", () => {
     ).toBe("responses");
   });
 
-  it("responses 選択でも provider が OpenAI 系でなければ委譲する", () => {
-    // 例: provider 切替で stale な responses が残っても OpenRouter には載せない。
+  it("OpenRouter でも responses を保持する (beta /api/v1/responses 対応)", () => {
     expect(
       resolveModelApiVariant(
         "openrouter",
-        "anthropic/claude",
+        "openai/gpt-4o-mini",
         models,
         "responses",
       ),
+    ).toBe("responses");
+  });
+
+  it("responses 選択でも provider が Responses 非対応なら委譲する", () => {
+    // 例: provider 切替で stale な responses が残っても Anthropic 等には載せない。
+    expect(
+      resolveModelApiVariant("anthropic", "claude-3.7", models, "responses"),
+    ).toBe("legacy");
+    expect(
+      resolveModelApiVariant("ai-novelist", "anything", models, "responses"),
     ).toBe("legacy");
   });
 
@@ -53,5 +63,21 @@ describe("resolveModelApiVariant", () => {
     expect(
       resolveModelApiVariant("ai-novelist", "anything", models, "v1"),
     ).toBe("v1");
+  });
+});
+
+describe("isResponsesApiCapableProvider", () => {
+  it("OpenAI 直 / 互換 gateway / OpenRouter が対応", () => {
+    expect(isResponsesApiCapableProvider("openai")).toBe(true);
+    expect(isResponsesApiCapableProvider("openai-compatible")).toBe(true);
+    expect(isResponsesApiCapableProvider("openrouter")).toBe(true);
+  });
+
+  it("それ以外のプロバイダ / 未指定は非対応", () => {
+    expect(isResponsesApiCapableProvider("anthropic")).toBe(false);
+    expect(isResponsesApiCapableProvider("ai-novelist")).toBe(false);
+    expect(isResponsesApiCapableProvider("ollama")).toBe(false);
+    expect(isResponsesApiCapableProvider("cli")).toBe(false);
+    expect(isResponsesApiCapableProvider(undefined)).toBe(false);
   });
 });

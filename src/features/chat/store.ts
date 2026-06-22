@@ -206,6 +206,7 @@ export function selectProviderReadiness(s: AiSettingsState): ProviderReadiness {
     case "openrouter":
     case "openai":
     case "anthropic":
+    case "sakana":
     case "ai-novelist":
       return hasApiKey ? "ready" : "no-provider";
     case "openai-compatible":
@@ -215,8 +216,13 @@ export function selectProviderReadiness(s: AiSettingsState): ProviderReadiness {
     case "cli":
       if (cliBinaryAvailable === null) return "pending";
       return cliBinaryAvailable ? "ready" : "no-provider";
-    default:
+    default: {
+      // 新 provider を AI_PROVIDERS に足してこの switch を更新し忘れると、黙って
+      // "no-provider"(=AI 全無効)に落ちる回帰が起きる。exhaustiveness で型エラーにして防ぐ。
+      const _exhaustive: never = settings.provider;
+      void _exhaustive;
       return "no-provider";
+    }
   }
 }
 

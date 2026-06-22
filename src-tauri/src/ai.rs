@@ -27,6 +27,10 @@ pub enum AiProvider {
     Ollama,
     #[serde(rename = "openai-compatible")]
     OpenaiCompatible,
+    /// Sakana AI (fugu / fugu-ultra)。固定 base URL の OpenAI 互換 frontier プロバイダで、
+    /// `/responses` (Responses API) を推奨経路として公開する。
+    #[serde(rename = "sakana")]
+    Sakana,
     #[serde(rename = "ai-novelist")]
     AiNovelist,
     #[serde(rename = "cli")]
@@ -67,6 +71,7 @@ pub fn resolve_tool_protocol(
             | AiProvider::OpenAI
             | AiProvider::Ollama
             | AiProvider::OpenaiCompatible
+            | AiProvider::Sakana
             | AiProvider::AiNovelist
     );
     if !http_openai_compat {
@@ -127,6 +132,7 @@ impl AiProvider {
             AiProvider::Anthropic => "grimodex-anthropic",
             AiProvider::Ollama => "grimodex-ollama",
             AiProvider::OpenaiCompatible => "grimodex-openai-compatible",
+            AiProvider::Sakana => "grimodex-sakana",
             AiProvider::AiNovelist => "grimodex-ai-novelist",
             AiProvider::Cli => "grimodex-cli", // 実質未使用 (CLI 側で認証管理)
         }
@@ -144,6 +150,7 @@ impl AiProvider {
             AiProvider::OpenaiCompatible => {
                 ep.openai_compat_custom.trim_end_matches('/').to_string()
             }
+            AiProvider::Sakana => "https://api.sakana.ai/v1".to_string(),
             AiProvider::AiNovelist => ai_novelist::BASE_URL.to_string(),
             AiProvider::Cli => String::new(),
         }
@@ -178,6 +185,7 @@ impl AiProvider {
             AiProvider::OpenaiCompatible => {
                 format!("{}/models", ep.openai_compat_custom.trim_end_matches('/'))
             }
+            AiProvider::Sakana => "https://api.sakana.ai/v1/models".to_string(),
             AiProvider::AiNovelist if api_variant == Some("v1") => {
                 ai_novelist::V1_MODELS_URL.to_string()
             }
@@ -195,6 +203,7 @@ impl std::fmt::Display for AiProvider {
             AiProvider::Anthropic => write!(f, "anthropic"),
             AiProvider::Ollama => write!(f, "ollama"),
             AiProvider::OpenaiCompatible => write!(f, "openai-compatible"),
+            AiProvider::Sakana => write!(f, "sakana"),
             AiProvider::AiNovelist => write!(f, "ai-novelist"),
             AiProvider::Cli => write!(f, "cli"),
         }
@@ -507,7 +516,7 @@ fn is_ainoverist_v1(params: &ChatParams<'_>) -> bool {
 /// reasoning トークンが `max_tokens` に課金されるため、4096 では content が空
 /// (finish_reason:length)になりうる。該当モデルを検出して予算に余裕を持たせる
 /// (OpenAI 直叩きの 32k 余裕と同根)。`gpt-5-chat` は非 reasoning なので除外する。
-fn is_openrouter_reasoning_model(model: &str) -> bool {
+pub(crate) fn is_openrouter_reasoning_model(model: &str) -> bool {
     // provider プレフィックス(`openai/` `deepseek/` 等)を剥がして素のモデル名で判定。
     let m = model.rsplit('/').next().unwrap_or(model);
     if m.starts_with("gpt-5-chat") {
@@ -523,12 +532,13 @@ fn is_openrouter_reasoning_model(model: &str) -> bool {
 fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
     if is_ainoverist_v1(params) {
         ai_novelist::length_for(params.model)
-    } else if matches!(params.provider, AiProvider::OpenAI)
+    } else if matches!(params.provider, AiProvider::OpenAI | AiProvider::Sakana)
         || is_openrouter_reasoning_model(params.model)
     {
         // reasoning モデルは hidden reasoning も max_tokens / max_completion_tokens に
         // 課金されるため、4096 では content が空 (finish_reason:length) になりうる。
-        // OpenAI 直叩き全般 + OpenRouter 経由の reasoning モデルに余裕を持たせる。
+        // OpenAI 直叩き全般 + Sakana(fugu は reasoning) + OpenRouter 経由の reasoning
+        // モデルに余裕を持たせる。
         32_000
     } else {
         4096
@@ -537,13 +547,14 @@ fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
 
 /// OpenAI-compatible body にトークン上限を挿入する。
 /// OpenAI 直叩きは reasoning モデルが `max_tokens` を 400 拒否するため `max_completion_tokens` を使う。
+/// Sakana も OpenAI 互換の直 API で fugu は reasoning なので同様に `max_completion_tokens`。
 /// OpenRouter は OpenAI モデルでも OpenRouter wire format なので `max_tokens` のままでよい。
 fn insert_chat_completion_token_limit(
     body: &mut serde_json::Value,
     provider: &AiProvider,
     value: u32,
 ) {
-    let key = if matches!(provider, AiProvider::OpenAI) {
+    let key = if matches!(provider, AiProvider::OpenAI | AiProvider::Sakana) {
         "max_completion_tokens"
     } else {
         "max_tokens"
@@ -916,9 +927,9 @@ pub async fn test_connection(
                     { "role": "user", "content": "Reply with exactly: Connection OK" }
                 ]
             });
-            // OpenAI 直叩きは reasoning モデルだと 32 トークンでは hidden reasoning だけで
-            // 枯れる + `max_tokens` を 400 拒否するため、key/予算を分岐する。
-            let probe_limit = if matches!(provider, AiProvider::OpenAI) {
+            // OpenAI 直叩き / Sakana(fugu) は reasoning モデルだと 32 トークンでは hidden
+            // reasoning だけで枯れる + `max_tokens` を 400 拒否するため、key/予算を分岐する。
+            let probe_limit = if matches!(provider, AiProvider::OpenAI | AiProvider::Sakana) {
                 1024
             } else {
                 32
@@ -1539,7 +1550,7 @@ pub(crate) async fn send_with_429_retry(
 /// OpenRouter の `provider.order` を固定するため、body に `provider` フィールドを注入する。
 /// `pin` が None / 空文字 / provider が OpenRouter 以外の場合は何もしない。
 /// 同一 provider に毎回ルーティングさせることで Anthropic prompt cache が効きやすくなる。
-fn apply_openrouter_provider_pin(
+pub(crate) fn apply_openrouter_provider_pin(
     body: &mut serde_json::Value,
     provider: &AiProvider,
     pin: Option<&str>,
@@ -1560,6 +1571,49 @@ fn apply_openrouter_provider_pin(
                 "allow_fallbacks": true,
             }),
         );
+    }
+}
+
+/// OpenRouter の Web 検索 (RAG) を body に注入する。/chat/completions の
+/// `send_chat_with_tools` (Agent 経路) と同一ロジックで、Responses 経路からも
+/// 呼べるよう切り出した共通実装。`ws.agentic` が true なら server tool
+/// (`openrouter:web_search`) を `tools[]` へ、false なら web plugin を `plugins` へ。
+/// ドメイン制御 / content cap が指定されたターンのみ engine=exa を強制する。
+/// provider が OpenRouter 以外、または web_search が無効なら何もしない。
+/// 注: Responses 経路は tool 定義が空のとき `tools` キーを省くため、agentic では
+/// 配列が無ければ新規作成する(chat/completions は常に tools[] がある前提だった)。
+pub(crate) fn apply_openrouter_web_search_to_body(
+    body: &mut serde_json::Value,
+    provider: &AiProvider,
+    web_search: Option<&WebSearchConfig>,
+) {
+    if !matches!(provider, AiProvider::OpenRouter) {
+        return;
+    }
+    let Some(ws) = web_search else { return };
+    if !ws.enabled {
+        return;
+    }
+    let force_exa = ws.needs_exa_engine();
+    if ws.agentic {
+        let mut tool = serde_json::json!({ "type": "openrouter:web_search" });
+        if force_exa {
+            apply_openrouter_web_controls(&mut tool, ws);
+        }
+        if let Some(arr) = body["tools"].as_array_mut() {
+            arr.push(tool);
+        } else {
+            body["tools"] = serde_json::json!([tool]);
+        }
+    } else {
+        let mut plugin = serde_json::json!({
+            "id": "web",
+            "max_results": ws.results_cap()
+        });
+        if force_exa {
+            apply_openrouter_web_controls(&mut plugin, ws);
+        }
+        body["plugins"] = serde_json::json!([plugin]);
     }
 }
 
@@ -2912,32 +2966,12 @@ pub async fn send_chat_with_tools(
             // (モデルが検索要否を判断)、非 Agent は web plugin (一発検索)。引用は
             // url_citation で統一。Phase 2: ドメイン制御 / content cap が指定された
             // ターンのみ engine=exa を強制し制御を載せる (それ以外は auto のまま)。
-            if matches!(params.provider, AiProvider::OpenRouter) {
-                if let Some(ws) = params.web_search.as_ref() {
-                    if ws.enabled {
-                        let force_exa = ws.needs_exa_engine();
-                        if ws.agentic {
-                            if let Some(arr) = body["tools"].as_array_mut() {
-                                let mut tool =
-                                    serde_json::json!({ "type": "openrouter:web_search" });
-                                if force_exa {
-                                    apply_openrouter_web_controls(&mut tool, ws);
-                                }
-                                arr.push(tool);
-                            }
-                        } else {
-                            let mut plugin = serde_json::json!({
-                                "id": "web",
-                                "max_results": ws.results_cap()
-                            });
-                            if force_exa {
-                                apply_openrouter_web_controls(&mut plugin, ws);
-                            }
-                            body["plugins"] = serde_json::json!([plugin]);
-                        }
-                    }
-                }
-            }
+            // Responses 経路 (ai_responses::send_with_tools) と同一実装を共有する。
+            apply_openrouter_web_search_to_body(
+                &mut body,
+                params.provider,
+                params.web_search.as_ref(),
+            );
 
             // 観測性: GRIMODEX_AI_WIRE_LOG=1 のとき request/response 本文を tracing で出す
             // (本文に小説テキストを含むため既定では出さない)。エラー時は body をエラーへ
@@ -3088,13 +3122,14 @@ pub async fn call_post_effect_api(
                     { "role": "user",   "content": user_blocks }
                 ]
             });
-            // OpenAI 直叩きは reasoning モデルが max_tokens を 400 拒否するため
-            // max_completion_tokens に切替 + 予算を確保する。
-            let post_effect_limit = if matches!(settings.provider, AiProvider::OpenAI) {
-                32_000
-            } else {
-                4096
-            };
+            // OpenAI 直叩き / Sakana(fugu) は reasoning モデルが max_tokens を 400 拒否する
+            // ため max_completion_tokens に切替 + 予算を確保する(他の reasoning 予算サイトと整合)。
+            let post_effect_limit =
+                if matches!(settings.provider, AiProvider::OpenAI | AiProvider::Sakana) {
+                    32_000
+                } else {
+                    4096
+                };
             insert_chat_completion_token_limit(&mut body, &settings.provider, post_effect_limit);
             apply_openrouter_provider_pin(
                 &mut body,
@@ -3224,7 +3259,7 @@ fn apply_stream_usage_optin(body: &mut serde_json::Value, provider: &AiProvider)
         AiProvider::OpenRouter => {
             body["usage"] = serde_json::json!({ "include": true });
         }
-        AiProvider::OpenAI | AiProvider::OpenaiCompatible => {
+        AiProvider::OpenAI | AiProvider::OpenaiCompatible | AiProvider::Sakana => {
             body["stream_options"] = serde_json::json!({ "include_usage": true });
         }
         _ => {}
@@ -3858,6 +3893,93 @@ mod tests {
         assert!(body.get("provider").is_none());
         apply_openrouter_provider_pin(&mut body, &AiProvider::Anthropic, Some("anthropic"));
         assert!(body.get("provider").is_none());
+    }
+
+    #[test]
+    fn apply_openrouter_web_search_agentic_pushes_server_tool() {
+        // agentic: 既存 tools[] へ server tool を追加する。
+        let mut body = serde_json::json!({ "tools": [{ "type": "function", "name": "f" }] });
+        let ws = WebSearchConfig {
+            enabled: true,
+            agentic: true,
+            ..Default::default()
+        };
+        apply_openrouter_web_search_to_body(&mut body, &AiProvider::OpenRouter, Some(&ws));
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[1]["type"], "openrouter:web_search");
+        assert!(body.get("plugins").is_none());
+    }
+
+    #[test]
+    fn apply_openrouter_web_search_agentic_creates_tools_when_absent() {
+        // Responses 経路は tools キーを省きうる。agentic で配列が無ければ新規作成する。
+        let mut body = serde_json::json!({ "model": "x" });
+        let ws = WebSearchConfig {
+            enabled: true,
+            agentic: true,
+            ..Default::default()
+        };
+        apply_openrouter_web_search_to_body(&mut body, &AiProvider::OpenRouter, Some(&ws));
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "openrouter:web_search");
+    }
+
+    #[test]
+    fn apply_openrouter_web_search_plugin_sets_plugins() {
+        // 非 agentic: web plugin を plugins[] に載せる(max_results 既定 5)。
+        let mut body = serde_json::json!({ "model": "x" });
+        let ws = WebSearchConfig {
+            enabled: true,
+            agentic: false,
+            ..Default::default()
+        };
+        apply_openrouter_web_search_to_body(&mut body, &AiProvider::OpenRouter, Some(&ws));
+        assert_eq!(body["plugins"][0]["id"], "web");
+        assert_eq!(body["plugins"][0]["max_results"], 5);
+        // exa 制御はドメイン/ content cap 未指定なので付かない。
+        assert!(body["plugins"][0].get("engine").is_none());
+    }
+
+    #[test]
+    fn apply_openrouter_web_search_exa_when_domain_filter() {
+        // ドメイン制御指定時のみ engine=exa を強制する。
+        let mut body = serde_json::json!({ "model": "x" });
+        let ws = WebSearchConfig {
+            enabled: true,
+            agentic: false,
+            allowed_domains: vec!["example.com".to_string()],
+            ..Default::default()
+        };
+        apply_openrouter_web_search_to_body(&mut body, &AiProvider::OpenRouter, Some(&ws));
+        assert_eq!(body["plugins"][0]["engine"], "exa");
+        assert_eq!(body["plugins"][0]["allowed_domains"][0], "example.com");
+    }
+
+    #[test]
+    fn apply_openrouter_web_search_noop_when_disabled_or_not_openrouter() {
+        // enabled=false / provider 違い / web_search 無し は何もしない。
+        let ws_off = WebSearchConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let mut body = serde_json::json!({ "model": "x" });
+        apply_openrouter_web_search_to_body(&mut body, &AiProvider::OpenRouter, Some(&ws_off));
+        assert!(body.get("plugins").is_none() && body.get("tools").is_none());
+
+        let ws_on = WebSearchConfig {
+            enabled: true,
+            agentic: false,
+            ..Default::default()
+        };
+        let mut body2 = serde_json::json!({ "model": "x" });
+        apply_openrouter_web_search_to_body(&mut body2, &AiProvider::OpenAI, Some(&ws_on));
+        assert!(body2.get("plugins").is_none());
+
+        let mut body3 = serde_json::json!({ "model": "x" });
+        apply_openrouter_web_search_to_body(&mut body3, &AiProvider::OpenRouter, None);
+        assert!(body3.get("plugins").is_none());
     }
 
     #[test]

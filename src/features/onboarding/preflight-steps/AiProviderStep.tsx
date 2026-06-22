@@ -4,13 +4,17 @@ import { Check, CheckCircle } from "lucide-react";
 import { useAiSettingsStore } from "@/features/chat/store";
 import type { AiProvider } from "@/features/chat/types";
 import { DEFAULT_AI_SETTINGS } from "@/features/chat/types";
-import { resolveModelApiVariant } from "@/features/chat/aiNovelist";
+import {
+  isResponsesApiCapableProvider,
+  resolveModelApiVariant,
+} from "@/features/chat/aiNovelist";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 
 const PREFLIGHT_PROVIDERS: AiProvider[] = [
   "openrouter",
   "openai",
   "anthropic",
+  "sakana",
   "ollama",
   "cli",
 ];
@@ -19,6 +23,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   openrouter: "OpenRouter",
   openai: "OpenAI",
   anthropic: "Anthropic",
+  sakana: "Sakana (fugu)",
   ollama: "Ollama (local)",
   cli: "CLI Agent",
 };
@@ -90,13 +95,16 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
       ...localSettings,
       provider,
       model: "",
-      // Responses トグルは OpenAI/互換専用。他へ切替えたら "responses" を残さない。
+      // Sakana は Responses API が推奨/既定経路なので切替時に "responses" を既定 ON にする。
+      // 他の Responses 対応 provider は現在値を保持、非対応へ切替えたら "responses" を残さない。
       modelApiVariant:
-        provider === "openai" || provider === "openai-compatible"
-          ? localSettings.modelApiVariant
-          : localSettings.modelApiVariant === "responses"
-            ? null
-            : localSettings.modelApiVariant,
+        provider === "sakana"
+          ? "responses"
+          : isResponsesApiCapableProvider(provider)
+            ? localSettings.modelApiVariant
+            : localSettings.modelApiVariant === "responses"
+              ? null
+              : localSettings.modelApiVariant,
     };
     setLocalSettings(updated);
     await saveSettings(updated);

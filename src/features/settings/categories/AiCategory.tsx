@@ -33,6 +33,7 @@ import {
   AINOVERIST_V1_BASE_URL,
   AINOVERIST_EXTRA_SAMPLING_KEYS,
   isAinoveristV1Model,
+  isResponsesApiCapableProvider,
   resolveAinoveristApiVariant,
   resolveModelApiVariant,
 } from "@/features/chat/aiNovelist";
@@ -63,6 +64,7 @@ const PROVIDER_LABELS: Record<AiProvider, string> = {
   anthropic: "Anthropic",
   ollama: "ollama-local",
   "openai-compatible": "OpenAI-compatible",
+  sakana: "Sakana (fugu)",
   "ai-novelist": "AI のべりすと",
   cli: "CLI agent",
 };
@@ -246,15 +248,18 @@ export function AiCategory() {
       // OpenAI 互換に切替時は openaiCompatible 設定を初期化（既存値は保持）
       openaiCompatible:
         localSettings!.openaiCompatible ?? DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
-      // Responses トグルは OpenAI / 互換 gateway 専用。それ以外へ切替えたら
-      // "responses" を残さずクリアする(他プロバイダのトグル UI からは消せず、
-      // OpenAI へ戻したとき意図せず再有効化されるのを防ぐ)。
+      // Sakana は Responses API が推奨/既定経路なので切替時に "responses" を既定 ON に
+      // する(トグルで /chat/completions にも切替可)。それ以外の Responses 対応 provider
+      // は現在値を保持し、非対応へ切替えたら "responses" を残さずクリアする(他 provider の
+      // トグル UI からは消せず、対応 provider へ戻したとき意図せず再有効化されるのを防ぐ)。
       modelApiVariant:
-        provider === "openai" || provider === "openai-compatible"
-          ? localSettings!.modelApiVariant
-          : localSettings!.modelApiVariant === "responses"
-            ? null
-            : localSettings!.modelApiVariant,
+        provider === "sakana"
+          ? "responses"
+          : isResponsesApiCapableProvider(provider)
+            ? localSettings!.modelApiVariant
+            : localSettings!.modelApiVariant === "responses"
+              ? null
+              : localSettings!.modelApiVariant,
     };
     setLocalSettings(updated);
     await saveSettings(updated);
@@ -482,9 +487,8 @@ export function AiCategory() {
           </>
         )}
 
-        {/* OpenAI Responses API トグル (OpenAI 直 / 互換 gateway 両方) */}
-        {(localSettings.provider === "openai" ||
-          localSettings.provider === "openai-compatible") && (
+        {/* Responses API トグル (OpenAI 直 / 互換 gateway / OpenRouter beta) */}
+        {isResponsesApiCapableProvider(localSettings.provider) && (
           <SettingRow
             label={t("settings.ai.responsesApiLabel")}
             description={t("settings.ai.responsesApiDesc")}

@@ -539,6 +539,26 @@ export function resolveModelCapabilities(
     return base;
   }
 
+  // Sakana (fugu / fugu-ultra): 1M コンテキストの multi-agent orchestration 系プロバイダ。
+  // モデル id が bare（"fugu" 等・スラッシュ無し）なので動的レジストリ・ハードコード表の
+  // どちらにも載らず DEFAULT(8k)に落ちてプロンプトが過小充填になるため、ここで明示する。
+  // native reasoning モデルではない(orchestration はサーバ側)ので supportsReasoning は
+  // false にして余計な reasoning/effort パラメータを送らない（ライブ検証も無 reasoning 構成で
+  // green）。orchestration トークンが出力予算を食う点は Rust 側が OpenAI 同列の 32k で吸収する。
+  if (settings.provider === "sakana") {
+    return {
+      ...base,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 32_000,
+      supportsTools: true,
+      supportsThinking: false,
+      supportsAdaptiveThinking: false,
+      supportsEffort: false,
+      supportsMaxEffort: false,
+      supportsReasoning: false,
+    };
+  }
+
   if (settings.provider !== "openai-compatible") return base;
 
   // カスタム OpenAI 互換: ユーザー入力の customMax* を反映

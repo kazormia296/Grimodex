@@ -402,6 +402,7 @@ describe("selectProviderReadiness", () => {
     ["openrouter" as const],
     ["openai" as const],
     ["anthropic" as const],
+    ["sakana" as const],
     ["ai-novelist" as const],
   ])("%s with key → ready", (provider) => {
     useAiSettingsStore.setState({
@@ -417,6 +418,7 @@ describe("selectProviderReadiness", () => {
     ["openrouter" as const],
     ["openai" as const],
     ["anthropic" as const],
+    ["sakana" as const],
     ["ai-novelist" as const],
   ])("%s without key → no-provider", (provider) => {
     useAiSettingsStore.setState({

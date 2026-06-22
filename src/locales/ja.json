@@ -789,7 +789,7 @@
       "allowStructuredTasks": "Codex 自動抽出 / Synopsis 自動生成を許可",
       "structuredTasksLowAccuracyNote": "構造化出力 (JSON) の精度が低い場合はオフのままにしてください",
       "responsesApiLabel": "Responses API を使う (/v1/responses)",
-      "responsesApiDesc": "OpenAI 系を /chat/completions ではなく Responses API で叩く。推論モデル (o系 / gpt-5系) の推論サマリやツール呼び出しに対応。オフなら従来どおり /chat/completions。",
+      "responsesApiDesc": "OpenAI 系 / OpenRouter を /chat/completions ではなく Responses API で叩く。推論モデル (o系 / gpt-5系) の推論サマリやツール呼び出しに対応。オフなら従来どおり /chat/completions。",
       "aiNovelistDescBefore": "日本語小説特化のプロバイダ。API キーは ",
       "aiNovelistDescAfter": " で発行できます。",
       "multilingualMode": "多言語モード",

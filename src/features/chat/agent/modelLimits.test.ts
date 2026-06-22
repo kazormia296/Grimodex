@@ -578,6 +578,18 @@ describe("動的 capability レジストリ統合", () => {
     expect(caps.supportsTools).toBe(true);
   });
 
+  it("sakana provider: bare な fugu id でも 1M 窓に解決する (DEFAULT 8k に落ちない)", () => {
+    // fugu / fugu-ultra はスラッシュ無し id なので動的/ハードコード表に載らず、
+    // provider 分岐が無いと DEFAULT_CAPABILITIES(8k) に落ちてプロンプトが過小充填になる。
+    for (const model of ["fugu", "fugu-ultra", "fugu-ultra-20260615"]) {
+      const caps = resolveModelCapabilities(model, { provider: "sakana" });
+      expect(caps.contextWindow).toBe(1_000_000);
+      expect(caps.supportsTools).toBe(true);
+      // orchestration 系で native reasoning ではないので余計な reasoning は送らない。
+      expect(caps.supportsReasoning).toBe(false);
+    }
+  });
+
   it("buildThinkingParams: Claude via OpenRouter → reasoning wire format", () => {
     // 動的データあり（supportsReasoning=true）
     registerDynamicModelCaps([
