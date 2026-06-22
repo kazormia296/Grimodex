@@ -1616,6 +1616,45 @@ impl Database {
                 ON ab_comparisons(project_id, created_at);",
         )?;
 
+        // プロットスレッド (Plottr 型): タイムライン上の名前付き横レーン。
+        // src/db/schema.ts の plotThreads とミラー。project 削除で CASCADE。
+        // sort_order はレーン縦順の base62 fractional-index (treeNodes.sort_order と同 idiom)。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plot_threads (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                name        TEXT NOT NULL DEFAULT '',
+                color       TEXT,
+                description TEXT,
+                sort_order  TEXT NOT NULL DEFAULT 'a0',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_plot_threads_project
+                ON plot_threads(project_id);",
+        )?;
+
+        // プロットスレッドが特定シーンで踏む段階マーカー。phase_type は CHECK enum
+        // (後から広げると table rebuild になるため初版で確定)。src/db/schema.ts の
+        // plotThreadSceneLinks とミラー。thread / scene 削除でいずれも CASCADE。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plot_thread_scene_links (
+                id          TEXT PRIMARY KEY,
+                thread_id   TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
+                node_id     TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                phase_type  TEXT NOT NULL
+                              CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')),
+                note        TEXT,
+                sort_order  TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_plot_thread_links_thread
+                ON plot_thread_scene_links(thread_id);
+            CREATE INDEX IF NOT EXISTS idx_plot_thread_links_node
+                ON plot_thread_scene_links(node_id);",
+        )?;
+
         Ok(())
     }
 
@@ -2762,6 +2801,63 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn migrate_fresh_db_creates_plot_thread_tables() {
+        // プロットスレッド機能の 2 テーブルが fresh DB で作られていること。
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            for t in ["plot_threads", "plot_thread_scene_links"] {
+                let exists: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [t],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(exists, 1, "{t} table should exist on a fresh DB");
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn plot_thread_scene_links_enforces_phase_type_check() {
+        // phase_type の CHECK enum が不正値を弾くこと。
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id) VALUES ('p1');
+                 INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s1','p1','scene','S1');
+                 INSERT INTO plot_threads (id, project_id, name, sort_order) VALUES ('t1','p1','Thread','a0');",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        // 正常な phase_type は挿入できる。
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO plot_thread_scene_links (id, thread_id, node_id, phase_type) \
+                 VALUES ('l1','t1','s1','introduce')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        // 不正な phase_type は CHECK 制約で弾かれる。
+        let bad = db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO plot_thread_scene_links (id, thread_id, node_id, phase_type) \
+                 VALUES ('l2','t1','s1','BOGUS')",
+                [],
+            )?;
+            Ok(())
+        });
+        assert!(bad.is_err(), "invalid phase_type must be rejected by CHECK");
     }
 
     #[test]
