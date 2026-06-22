@@ -70,6 +70,8 @@ interface Props {
   onSelectScene: (id: string) => void;
   /** threads モードでマーカーをクリックしたとき（インスペクタ選択用）。 */
   onSelectMarker?: (linkId: string) => void;
+  /** threads モードでレーン見出しをクリックしたとき（スレッド編集用）。 */
+  onSelectThread?: (threadId: string) => void;
 }
 
 export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
@@ -82,6 +84,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       onDropStoryTime,
       onSelectScene,
       onSelectMarker,
+      onSelectThread,
     }: Props,
     forwardedRef,
   ) {
@@ -152,6 +155,34 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
 
     function yOf(i: number): number {
       return i >= scheduledCount ? UNSCHEDULED_Y : LANE_Y;
+    }
+
+    /** svgX に最も近いシーンの index（threads モードのマーカー追加位置決め）。 */
+    function nearestSceneIndex(svgX: number): number {
+      let best = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < scenes.length; i++) {
+        const d = Math.abs(xOf(i) - svgX);
+        if (d < bestDist) {
+          bestDist = d;
+          best = i;
+        }
+      }
+      return best;
+    }
+
+    function handleLaneClick(
+      e: React.MouseEvent<SVGRectElement>,
+      threadId: string,
+    ) {
+      const rect = svgRef.current?.getBoundingClientRect();
+      const svgX = e.clientX - (rect?.left ?? 0);
+      const scene = scenes[nearestSceneIndex(svgX)];
+      if (scene) {
+        void usePlotThreadStore
+          .getState()
+          .addMarker(threadId, scene.id, "develop");
+      }
     }
 
     const pinsByNode = new Map<string, PhasePinData[]>();
@@ -605,6 +636,17 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
             {viewMode === "threads" &&
               laneModel.lanes.map((lane) => (
                 <g key={lane.thread.id} data-plot-lane={lane.thread.id}>
+                  {/* レーン行のクリック領域（クリックで最寄りシーンにマーカー追加） */}
+                  <rect
+                    data-testid={`plot-lane-hit-${lane.thread.id}`}
+                    x={0}
+                    y={lane.y - LANE_HEIGHT / 2}
+                    width={totalWidth}
+                    height={LANE_HEIGHT}
+                    fill="transparent"
+                    className="cursor-copy"
+                    onClick={(e) => handleLaneClick(e, lane.thread.id)}
+                  />
                   {/* レーン背景線 */}
                   <line
                     x1={xOf(0)}
@@ -618,15 +660,21 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                     stroke="currentColor"
                     strokeOpacity={0.15}
                     strokeWidth={1}
+                    pointerEvents="none"
                   />
-                  {/* レーン見出し（左固定） */}
+                  {/* レーン見出し（左固定・クリックでスレッド編集） */}
                   <text
                     x={4}
                     y={lane.y - 10}
                     fontSize={11}
                     fill="currentColor"
                     fillOpacity={0.8}
-                    className="pointer-events-none select-none"
+                    className="cursor-pointer select-none"
+                    data-testid={`plot-lane-label-${lane.thread.id}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectThread?.(lane.thread.id);
+                    }}
                   >
                     {lane.thread.name || t("plotThread.unnamed", "（無名）")}
                   </text>
@@ -642,7 +690,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                       strokeWidth={1.5}
                       data-phase={mk.phaseType}
                       className="cursor-pointer"
-                      onClick={() => onSelectMarker?.(mk.linkId)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectMarker?.(mk.linkId);
+                      }}
                     >
                       <title>{`${lane.thread.name}: ${mk.phaseType}`}</title>
                     </circle>

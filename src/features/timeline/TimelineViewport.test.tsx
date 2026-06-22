@@ -239,4 +239,31 @@ describe("TimelineViewport – threads モード", () => {
     );
     expect(container.querySelector('[data-node-id="scene-1"]')).toBeNull();
   });
+
+  it("レーンをクリックすると最寄りシーンに develop マーカーを追加する", () => {
+    const addMarker = vi.fn();
+    useTimelineStore.setState({ viewMode: "threads" });
+    usePlotThreadStore.setState({
+      threads: [
+        {
+          id: "t1",
+          projectId: "proj-1",
+          name: "復讐の糸",
+          color: null,
+          description: null,
+          sortOrder: "a0",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      links: [],
+      loading: false,
+      addMarker,
+    });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={[mockScene]} onSelectScene={vi.fn()} />,
+    );
+    fireEvent.click(getByTestId("plot-lane-hit-t1"));
+    expect(addMarker).toHaveBeenCalledWith("t1", "scene-1", "develop");
+  });
 });

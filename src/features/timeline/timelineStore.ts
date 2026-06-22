@@ -40,8 +40,14 @@ interface TimelineState {
   display: TimelineSettings["display"];
   /** F2 ラベル編集ターゲット。インスペクターが読んで input にフォーカスする */
   pendingEditNodeId: string | null;
+  /** threads モードで選択中のプロットマーカー(plot_thread_scene_links.id)。 */
+  selectedPlotLinkId: string | null;
+  /** threads モードで選択中のスレッド(plot_threads.id)。レーン見出しクリックで設定。 */
+  selectedPlotThreadId: string | null;
   setAxisMode: (mode: AxisMode) => void;
   setViewMode: (mode: TimelineViewMode) => void;
+  setSelectedPlotLinkId: (id: string | null) => void;
+  setSelectedPlotThreadId: (id: string | null) => void;
   setSpacingMode: (mode: SpacingMode) => void;
   setZoom: (zoom: number) => void;
   setScrollOffset: (offset: number) => void;
@@ -65,12 +71,17 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   inspectorOpen: false,
   display: { ...DEFAULT_DISPLAY },
   pendingEditNodeId: null,
+  selectedPlotLinkId: null,
+  selectedPlotThreadId: null,
   setAxisMode: (mode) =>
     set({
       axisMode: mode,
       spacingMode: mode === "reading" ? "uniform" : "proportional",
     }),
   setViewMode: (viewMode) => set({ viewMode }),
+  setSelectedPlotLinkId: (selectedPlotLinkId) => set({ selectedPlotLinkId }),
+  setSelectedPlotThreadId: (selectedPlotThreadId) =>
+    set({ selectedPlotThreadId }),
   setSpacingMode: (spacingMode) => set({ spacingMode }),
   setZoom: (zoom) => set({ zoom: Math.max(0.25, Math.min(4, zoom)) }),
   setScrollOffset: (scrollOffset) => set({ scrollOffset }),
@@ -101,7 +112,11 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   },
   clearSelection: () => {
     lastSingleSelectId = null;
-    set({ selectedNodeIds: [] });
+    set({
+      selectedNodeIds: [],
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: null,
+    });
   },
   toggleInspector: () => set((s) => ({ inspectorOpen: !s.inspectorOpen })),
   toggleDisplay: (key) =>

@@ -13,6 +13,7 @@ import { computeFitZoom, ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 import { TimelineHeader } from "./TimelineHeader";
 import { TimelineViewport, PAD_LEFT, PAD_RIGHT } from "./TimelineViewport";
 import { TimelineInspector } from "./TimelineInspector";
+import { PlotMarkerInspector } from "@/features/plot-threads/PlotMarkerInspector";
 import type { PhasePinData } from "./TimelineViewport";
 import { recordMark } from "@/lib/perfLog";
 
@@ -27,6 +28,10 @@ export function TimelinePanel() {
   const selectedNodeIds = useTimelineStore((s) => s.selectedNodeIds);
   const inspectorOpen = useTimelineStore((s) => s.inspectorOpen);
   const toggleInspector = useTimelineStore((s) => s.toggleInspector);
+  const viewMode = useTimelineStore((s) => s.viewMode);
+  const setSelectedPlotLinkId = useTimelineStore(
+    (s) => s.setSelectedPlotLinkId,
+  );
   const zoom = useTimelineStore((s) => s.zoom);
   const setZoom = useTimelineStore((s) => s.setZoom);
   const clearSelection = useTimelineStore((s) => s.clearSelection);
@@ -155,6 +160,23 @@ export function TimelinePanel() {
       setActiveScene(id);
     },
     [selectNode, setActiveScene],
+  );
+
+  const handleSelectMarker = useCallback(
+    (linkId: string) => {
+      setSelectedPlotLinkId(linkId);
+      if (!useTimelineStore.getState().inspectorOpen) toggleInspector();
+    },
+    [setSelectedPlotLinkId, toggleInspector],
+  );
+
+  const handleSelectThread = useCallback(
+    (threadId: string) => {
+      useTimelineStore.getState().setSelectedPlotThreadId(threadId);
+      setSelectedPlotLinkId(null);
+      if (!useTimelineStore.getState().inspectorOpen) toggleInspector();
+    },
+    [setSelectedPlotLinkId, toggleInspector],
   );
 
   // For story-time: how many scenes have story_time_order set
@@ -377,14 +399,21 @@ export function TimelinePanel() {
             axisMode === "story" ? handleDropStoryTime : undefined
           }
           onSelectScene={handleSelectScene}
+          onSelectMarker={handleSelectMarker}
+          onSelectThread={handleSelectThread}
         />
-        {inspectorOpen && selectedNode && (
-          <TimelineInspector
-            node={selectedNode}
-            onClose={toggleInspector}
-            onUpdateStoryTimeLabel={handleUpdateStoryTimeLabel}
-          />
-        )}
+        {inspectorOpen &&
+          (viewMode === "threads" ? (
+            <PlotMarkerInspector onClose={toggleInspector} />
+          ) : (
+            selectedNode && (
+              <TimelineInspector
+                node={selectedNode}
+                onClose={toggleInspector}
+                onUpdateStoryTimeLabel={handleUpdateStoryTimeLabel}
+              />
+            )
+          ))}
       </div>
     </div>
   );
