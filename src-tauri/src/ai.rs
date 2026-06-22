@@ -266,6 +266,24 @@ pub struct CliSettings {
     pub model: Option<String>,
 }
 
+/// OpenRouter Fusion (マルチモデル合議) のカスタム構成。
+/// model が `"openrouter/fusion"` のときだけ `plugins:[{id:"fusion",...}]` として
+/// リクエストへ注入する。`enabled=false` または panel/judge いずれも空なら注入せず、
+/// OpenRouter 既定パネル (Quality preset) に委ねる (= 素の openrouter/fusion と同じ)。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FusionConfig {
+    /// カスタム構成を適用するか。false なら OpenRouter 既定パネルに委ねる。
+    #[serde(default)]
+    pub enabled: bool,
+    /// パネル (analysis_models)。OpenRouter は 1〜8 件を受け付ける。空なら既定。
+    #[serde(default)]
+    pub analysis_models: Vec<String>,
+    /// judge (集約) モデル。None / 空なら既定 (outer)。
+    #[serde(default)]
+    pub judge_model: Option<String>,
+}
+
 /// AI settings persisted in AppData.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -297,6 +315,9 @@ pub struct AiSettings {
     /// Agent ツール呼び出しプロトコル（auto | native | hermes）。
     #[serde(default)]
     pub tool_protocol_mode: ToolProtocolMode,
+    /// OpenRouter Fusion のカスタム構成 (model="openrouter/fusion" 時のみ適用)。
+    #[serde(default)]
+    pub fusion: FusionConfig,
 }
 
 impl AiSettings {
@@ -322,6 +343,7 @@ impl Default for AiSettings {
             model_api_variant: None,
             reasoning_effort_override: None,
             tool_protocol_mode: ToolProtocolMode::default(),
+            fusion: FusionConfig::default(),
         }
     }
 }
@@ -1136,6 +1158,9 @@ pub struct ChatParams<'a> {
     pub api_variant: Option<String>,
     /// Web 検索 (RAG) 設定。None または `enabled=false` なら検索を注入しない。
     pub web_search: Option<WebSearchConfig>,
+    /// OpenRouter Fusion 構成。model=="openrouter/fusion" のとき `plugins` へ注入する。
+    /// None または enabled=false / 空構成なら注入しない (OpenRouter 既定パネル)。
+    pub fusion: Option<&'a FusionConfig>,
     /// 解決済みツールプロトコル（native | hermes）。
     /// Hermes のとき本文 `<tool_call>` を受信パースし、stop_reason を上書きする。
     pub resolved_tool_protocol: ResolvedToolProtocol,
@@ -1617,6 +1642,59 @@ pub(crate) fn apply_openrouter_web_search_to_body(
     }
 }
 
+/// OpenRouter Fusion (マルチモデル合議) のカスタム構成を body に注入する。
+/// provider が OpenRouter かつ model が `"openrouter/fusion"`、かつ `fusion.enabled` で
+/// panel / judge のいずれかが指定されているときだけ
+/// `plugins:[{id:"fusion", analysis_models?, model?}]` を**追加**する
+/// (既存の web plugin 等は壊さない)。それ以外は何もしない —
+/// 素の `openrouter/fusion` は OpenRouter 既定パネルでそのまま動く。
+pub(crate) fn apply_openrouter_fusion_to_body(
+    body: &mut serde_json::Value,
+    provider: &AiProvider,
+    model: &str,
+    fusion: Option<&FusionConfig>,
+) {
+    if !matches!(provider, AiProvider::OpenRouter) {
+        return;
+    }
+    if model != "openrouter/fusion" {
+        return;
+    }
+    let Some(f) = fusion else { return };
+    if !f.enabled {
+        return;
+    }
+    let analysis: Vec<String> = f
+        .analysis_models
+        .iter()
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .collect();
+    let judge = f
+        .judge_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    // 構成が実質空 → 既定パネルに委ねる (plugin 不要)。
+    if analysis.is_empty() && judge.is_none() {
+        return;
+    }
+    let mut plugin = serde_json::Map::new();
+    plugin.insert("id".to_string(), serde_json::json!("fusion"));
+    if !analysis.is_empty() {
+        plugin.insert("analysis_models".to_string(), serde_json::json!(analysis));
+    }
+    if let Some(j) = judge {
+        plugin.insert("model".to_string(), serde_json::json!(j));
+    }
+    let plugin = serde_json::Value::Object(plugin);
+    if let Some(arr) = body["plugins"].as_array_mut() {
+        arr.push(plugin);
+    } else {
+        body["plugins"] = serde_json::json!([plugin]);
+    }
+}
+
 /// `params.extra_body` をリクエストボディにマージする。
 /// `body` がオブジェクトでない場合は何もしない。
 pub(crate) fn merge_extra_body(body: &mut serde_json::Value, extra: &Option<serde_json::Value>) {
@@ -1708,6 +1786,12 @@ pub async fn send_chat(
                 &mut body,
                 params.provider,
                 params.openrouter_provider_pin,
+            );
+            apply_openrouter_fusion_to_body(
+                &mut body,
+                params.provider,
+                params.model,
+                params.fusion,
             );
 
             let req = openai_compat_request(&client, params, &body);
@@ -3504,6 +3588,12 @@ pub async fn send_chat_stream(
                 params.provider,
                 params.openrouter_provider_pin,
             );
+            apply_openrouter_fusion_to_body(
+                &mut body,
+                params.provider,
+                params.model,
+                params.fusion,
+            );
 
             // N4: ストリーミングでも usage/cost を最終チャンクで受け取る。
             apply_stream_usage_optin(&mut body, params.provider);
@@ -3875,6 +3965,116 @@ mod tests {
         assert_eq!(body["provider"]["allow_fallbacks"], true);
     }
 
+    // --- OpenRouter Fusion plugin injection ---
+
+    fn fusion_cfg(enabled: bool, panel: &[&str], judge: Option<&str>) -> FusionConfig {
+        FusionConfig {
+            enabled,
+            analysis_models: panel.iter().map(|s| s.to_string()).collect(),
+            judge_model: judge.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn fusion_injects_plugin_when_enabled_with_panel_and_judge() {
+        let cfg = fusion_cfg(
+            true,
+            &["anthropic/claude-opus-4-8", "openai/gpt-5"],
+            Some("openai/gpt-5"),
+        );
+        let mut body = serde_json::json!({ "model": "openrouter/fusion" });
+        apply_openrouter_fusion_to_body(
+            &mut body,
+            &AiProvider::OpenRouter,
+            "openrouter/fusion",
+            Some(&cfg),
+        );
+        assert_eq!(body["plugins"][0]["id"], "fusion");
+        assert_eq!(
+            body["plugins"][0]["analysis_models"][0],
+            "anthropic/claude-opus-4-8"
+        );
+        assert_eq!(body["plugins"][0]["analysis_models"][1], "openai/gpt-5");
+        assert_eq!(body["plugins"][0]["model"], "openai/gpt-5");
+    }
+
+    #[test]
+    fn fusion_appends_to_existing_plugins_without_clobbering() {
+        // web plugin が既にあっても fusion を追加するだけ (上書きしない)。
+        let cfg = fusion_cfg(true, &["openai/gpt-5"], None);
+        let mut body = serde_json::json!({
+            "model": "openrouter/fusion",
+            "plugins": [{ "id": "web", "max_results": 5 }]
+        });
+        apply_openrouter_fusion_to_body(
+            &mut body,
+            &AiProvider::OpenRouter,
+            "openrouter/fusion",
+            Some(&cfg),
+        );
+        let plugins = body["plugins"].as_array().unwrap();
+        assert_eq!(plugins.len(), 2);
+        assert_eq!(plugins[0]["id"], "web");
+        assert_eq!(plugins[1]["id"], "fusion");
+        // judge 未指定なら model キーは省く。
+        assert!(plugins[1].get("model").is_none());
+    }
+
+    #[test]
+    fn fusion_noop_when_disabled_or_empty_or_wrong_model_or_provider() {
+        let enabled_panel = fusion_cfg(true, &["openai/gpt-5"], None);
+
+        // disabled → 注入しない (素の openrouter/fusion = 既定パネル)。
+        let mut body = serde_json::json!({ "model": "openrouter/fusion" });
+        apply_openrouter_fusion_to_body(
+            &mut body,
+            &AiProvider::OpenRouter,
+            "openrouter/fusion",
+            Some(&fusion_cfg(false, &["openai/gpt-5"], Some("openai/gpt-5"))),
+        );
+        assert!(body.get("plugins").is_none());
+
+        // enabled だが panel/judge 空 (空白のみ) → 注入しない。
+        let mut body = serde_json::json!({ "model": "openrouter/fusion" });
+        apply_openrouter_fusion_to_body(
+            &mut body,
+            &AiProvider::OpenRouter,
+            "openrouter/fusion",
+            Some(&fusion_cfg(true, &["  ", ""], Some("  "))),
+        );
+        assert!(body.get("plugins").is_none());
+
+        // model が openrouter/fusion 以外 → 注入しない。
+        let mut body = serde_json::json!({ "model": "openai/gpt-5" });
+        apply_openrouter_fusion_to_body(
+            &mut body,
+            &AiProvider::OpenRouter,
+            "openai/gpt-5",
+            Some(&enabled_panel),
+        );
+        assert!(body.get("plugins").is_none());
+
+        // provider が OpenRouter 以外 → 注入しない。
+        let mut body = serde_json::json!({ "model": "openrouter/fusion" });
+        apply_openrouter_fusion_to_body(
+            &mut body,
+            &AiProvider::OpenAI,
+            "openrouter/fusion",
+            Some(&enabled_panel),
+        );
+        assert!(body.get("plugins").is_none());
+
+        // fusion config 自体が None → 注入しない。
+        let mut body = serde_json::json!({ "model": "openrouter/fusion" });
+        apply_openrouter_fusion_to_body(
+            &mut body,
+            &AiProvider::OpenRouter,
+            "openrouter/fusion",
+            None,
+        );
+        assert!(body.get("plugins").is_none());
+    }
+
     #[test]
     fn apply_openrouter_provider_pin_noop_when_pin_empty() {
         let mut body = serde_json::json!({ "model": "x" });
@@ -4044,6 +4244,7 @@ mod tests {
             model_api_variant: None,
             reasoning_effort_override: Some("high".to_string()),
             tool_protocol_mode: ToolProtocolMode::default(),
+            fusion: FusionConfig::default(),
         };
 
         write_ai_settings(&path, &settings).expect("write");
@@ -4449,6 +4650,7 @@ mod tests {
                 system_volatile_tail: None,
                 api_variant: None,
                 web_search: None,
+                fusion: None,
                 resolved_tool_protocol: ResolvedToolProtocol::Native,
             };
             openai_max_tokens(&params)
@@ -5542,6 +5744,7 @@ mod tests {
             system_volatile_tail: None,
             api_variant: None,
             web_search: None,
+            fusion: None,
             resolved_tool_protocol: ResolvedToolProtocol::Native,
         };
         let betas = super::anthropic_beta_headers(&params).unwrap();
@@ -5572,6 +5775,7 @@ mod tests {
             system_volatile_tail: None,
             api_variant: None,
             web_search: None,
+            fusion: None,
             resolved_tool_protocol: ResolvedToolProtocol::Native,
         };
         assert!(super::anthropic_beta_headers(&params).is_none());
@@ -5744,6 +5948,7 @@ mod ab_provider_live_tests {
             system_volatile_tail: None,
             api_variant,
             web_search: None,
+            fusion: None,
             resolved_tool_protocol: ResolvedToolProtocol::Native,
         }
     }
@@ -5851,5 +6056,55 @@ mod ab_provider_live_tests {
                 Some("responses".to_string()),
             ),
         );
+    }
+
+    /// OpenRouter Fusion (マルチモデル合議) のカスタム構成を実 API で検証する。
+    /// パネル/judge は FUSION_PANEL (カンマ区切り) / FUSION_JUDGE で上書き可。
+    /// 注意: Fusion はパネル数 + judge ぶん課金される (既定 2 + 1 = 約 3 completion)。
+    ///   OPENROUTER_API_KEY=sk-or-... cargo test --no-default-features fusion_live -- --nocapture
+    #[test]
+    fn fusion_live_openrouter() {
+        let Some(key) = key_of(&["OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY"]) else {
+            eprintln!("[skip] fusion_live_openrouter: OPENROUTER_API_KEY 未設定");
+            return;
+        };
+        let panel: Vec<String> = std::env::var("FUSION_PANEL")
+            .unwrap_or_else(|_| "openai/gpt-4o-mini,anthropic/claude-3.5-haiku".into())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let judge = std::env::var("FUSION_JUDGE").unwrap_or_else(|_| "openai/gpt-4o-mini".into());
+        let cfg = FusionConfig {
+            enabled: true,
+            analysis_models: panel,
+            judge_model: Some(judge),
+        };
+        let settings = AiSettings {
+            provider: AiProvider::OpenRouter,
+            model: "openrouter/fusion".into(),
+            ..Default::default()
+        };
+        let params = ChatParams {
+            provider: &AiProvider::OpenRouter,
+            model: "openrouter/fusion",
+            api_key: &key,
+            endpoints: settings.endpoints(),
+            thinking: None,
+            effort: None,
+            reasoning_enabled: None,
+            reasoning_effort: None,
+            extra_body: None,
+            retry_429: true,
+            ai_novelist_mode: AiNovelistMode::Chat,
+            openrouter_provider_pin: None,
+            system_cache_segments: None,
+            system_volatile_tail: None,
+            api_variant: None,
+            web_search: None,
+            fusion: Some(&cfg),
+            resolved_tool_protocol: ResolvedToolProtocol::Native,
+        };
+        run("fusion_live_openrouter", &params);
     }
 }

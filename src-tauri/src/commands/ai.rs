@@ -114,6 +114,7 @@ fn build_chat_params<'a>(
         system_volatile_tail,
         api_variant,
         web_search,
+        fusion: Some(&settings.fusion),
         resolved_tool_protocol: ai::resolve_tool_protocol(
             &settings.provider,
             &settings.model,

@@ -9,6 +9,7 @@ import {
 } from "@/features/chat/store";
 import { normalizeDomainList } from "@/features/chat/webSearchConfig";
 import { ModelPicker } from "@/features/chat/ModelPicker";
+import { FusionSettingsSection } from "./FusionSettingsSection";
 import {
   AI_PROVIDERS,
   DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
@@ -1113,6 +1114,26 @@ export function AiCategory() {
                 </option>
               ))}
             </select>
+          </SettingRow>
+        )}
+
+        {/* OpenRouter Fusion (マルチモデル合議) — model="openrouter/fusion" 選択時に適用 */}
+        {localSettings.provider === "openrouter" && (
+          <SettingRow
+            label={t("settings.ai.fusionLabel")}
+            description={t("settings.ai.fusionDesc")}
+          >
+            <FusionSettingsSection
+              value={localSettings.fusion}
+              activeModel={localSettings.model}
+              models={models}
+              isLoadingModels={isLoadingModels}
+              onChange={async (next) => {
+                const updated = { ...localSettings!, fusion: next };
+                setLocalSettings(updated);
+                await saveSettings(updated);
+              }}
+            />
           </SettingRow>
         )}
 

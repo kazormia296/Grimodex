@@ -1707,6 +1707,7 @@ mod responses_live_tests {
             system_volatile_tail: None,
             api_variant: Some("responses".to_string()),
             web_search: None,
+            fusion: None,
             resolved_tool_protocol: ResolvedToolProtocol::Native,
         }
     }
