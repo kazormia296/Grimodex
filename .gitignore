@@ -48,3 +48,6 @@ samples/
 
 # chat episodic-recall calibration (生成物・gitignore)
 src/features/chat/calibration/embeddings.generated.json
+
+# SDD scratch ledger
+.superpowers/
