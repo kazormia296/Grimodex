@@ -7,6 +7,8 @@ import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTimelineStore } from "./timelineStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useProjectStore } from "@/features/project/projectStore";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { computeFitZoom, ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 import { TimelineHeader } from "./TimelineHeader";
 import { TimelineViewport, PAD_LEFT, PAD_RIGHT } from "./TimelineViewport";
@@ -36,6 +38,14 @@ export function TimelinePanel() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
   const entries = useCodexStore((s) => s.entries);
+  const currentProjectId = useProjectStore((s) => s.currentProjectId);
+
+  // プロットスレッド/マーカーを project スコープでロード（切替で再取得）。
+  useEffect(() => {
+    if (currentProjectId) {
+      void usePlotThreadStore.getState().load(currentProjectId);
+    }
+  }, [currentProjectId]);
 
   const sceneNodes = useMemo(
     () => nodes.filter((n) => n.nodeType === "scene"),
