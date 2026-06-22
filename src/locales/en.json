@@ -4756,7 +4756,6 @@
     "phase": "Phase",
     "note": "Note",
     "notePlaceholder": "Note for this marker",
-    "noMarkerSelected": "Select a marker",
     "noSelection": "Select a thread or marker",
     "deleteMarker": "Delete marker",
     "deleteThread": "Delete thread",

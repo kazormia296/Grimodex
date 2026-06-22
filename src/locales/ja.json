@@ -4749,7 +4749,6 @@
     "phase": "段階",
     "note": "メモ",
     "notePlaceholder": "このマーカーのメモ",
-    "noMarkerSelected": "マーカーを選択してください",
     "noSelection": "スレッドかマーカーを選択してください",
     "deleteMarker": "マーカーを削除",
     "deleteThread": "スレッドを削除",

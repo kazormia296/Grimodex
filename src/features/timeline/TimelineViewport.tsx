@@ -1,4 +1,11 @@
-import { useRef, useState, useEffect, useCallback, forwardRef } from "react";
+import {
+  useRef,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  forwardRef,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
@@ -117,10 +124,16 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const STEP = STEP_BASE * zoom;
 
     // プロットスレッドのレーン描画モデル（threads モードでのみ使用）。
-    // x はシーンの index（後段で xOf() により px 化）。
-    const sceneX = new Map<string, number>();
-    scenes.forEach((sc, i) => sceneX.set(sc.id, i));
-    const laneModel = buildPlotLaneModel({ threads, links, sceneX });
+    // x はシーンの index（後段で xOf() により px 化）。毎 render の再計算を避ける。
+    const sceneX = useMemo(() => {
+      const m = new Map<string, number>();
+      scenes.forEach((sc, i) => m.set(sc.id, i));
+      return m;
+    }, [scenes]);
+    const laneModel = useMemo(
+      () => buildPlotLaneModel({ threads, links, sceneX }),
+      [threads, links, sceneX],
+    );
 
     // showUnscheduledZone: ドロップゾーンを表示するか
     // story-time モード中は常に表示（全シーンが軸上でも Unscheduled に戻せるよう）

@@ -222,6 +222,19 @@ describe("timelineStore persistent subscriber", () => {
     );
   });
 
+  it("viewMode 変更で save IPC に viewMode が乗る", async () => {
+    useTimelineStore.getState().setViewMode("threads");
+    await vi.runAllTimersAsync();
+    expect(invoke).toHaveBeenCalledWith(
+      "save_global_settings",
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          timeline: expect.objectContaining({ viewMode: "threads" }),
+        }),
+      }),
+    );
+  });
+
   it("loadAndSyncTimelineSettings 直後は save IPC が発火しない", () => {
     loadAndSyncTimelineSettings({
       axisMode: "story",

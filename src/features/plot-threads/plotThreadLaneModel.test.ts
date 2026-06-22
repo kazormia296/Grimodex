@@ -80,4 +80,28 @@ describe("plotThreadLaneModel", () => {
     expect(m.contentWidth).toBe(0);
     expect(m.contentHeight).toBe(laneY(0));
   });
+
+  it("同一 sortOrder のレーンは thread.id で決定化する", () => {
+    const m = buildPlotLaneModel({
+      threads: [thread("b", "a0"), thread("a", "a0")],
+      links: [],
+      sceneX,
+    });
+    expect(m.lanes.map((l) => l.thread.id)).toEqual(["a", "b"]);
+  });
+
+  it("未知の phaseType でもクラッシュせず決定的にソートする", () => {
+    const m = buildPlotLaneModel({
+      threads: [thread("t1", "a0")],
+      links: [
+        // @ts-expect-error 不正値を意図的に注入（本来は CHECK で弾かれる）
+        link("l1", "t1", "s1", "BOGUS"),
+        link("l2", "t1", "s1", "introduce"),
+      ],
+      sceneX,
+    });
+    expect(m.lanes[0].markers).toHaveLength(2);
+    // BOGUS(??0) と introduce(0) は同値 → linkId 昇順で決定化
+    expect(m.lanes[0].markers.map((mk) => mk.linkId)).toEqual(["l1", "l2"]);
+  });
 });

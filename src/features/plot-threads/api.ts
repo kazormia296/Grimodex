@@ -2,7 +2,7 @@ import { db } from "@/db/client";
 import { invoke, isTauri } from "@/lib/tauri";
 import { plotThreads, plotThreadSceneLinks } from "@/db/schema";
 import type { PlotPhaseType } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 export interface PlotThreadRow {
   id: string;
@@ -141,7 +141,8 @@ export async function listPlotThreads(
   const rows = await db
     .select()
     .from(plotThreads)
-    .where(eq(plotThreads.projectId, projectId));
+    .where(eq(plotThreads.projectId, projectId))
+    .orderBy(plotThreads.sortOrder);
   return rows.map(normalizeThread);
 }
 
@@ -223,12 +224,16 @@ export async function listPlotThreadLinks(
     })) as unknown[];
     return rows.map(normalizeLink);
   }
-  // 非 Tauri（テスト/ブラウザ）: thread の project で絞ってから link を集約。
+  // 非 Tauri（テスト/ブラウザ）: thread の project で絞り、その thread の link のみ取得。
   const threads = await db
     .select()
     .from(plotThreads)
     .where(eq(plotThreads.projectId, projectId));
-  const threadIds = new Set(threads.map((t) => t.id));
-  const all = await db.select().from(plotThreadSceneLinks);
-  return all.filter((l) => threadIds.has(l.threadId)).map(normalizeLink);
+  const threadIds = threads.map((t) => t.id);
+  if (threadIds.length === 0) return [];
+  const rows = await db
+    .select()
+    .from(plotThreadSceneLinks)
+    .where(inArray(plotThreadSceneLinks.threadId, threadIds));
+  return rows.map(normalizeLink);
 }

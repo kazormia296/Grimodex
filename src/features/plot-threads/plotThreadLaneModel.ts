@@ -79,7 +79,9 @@ export function buildPlotLaneModel(args: {
       })
       .sort((a, b) => {
         if (a.x !== b.x) return a.x - b.x;
-        const p = PHASE_ORDER[a.phaseType] - PHASE_ORDER[b.phaseType];
+        // 未知 phaseType でも NaN にならないよう ?? 0 で防御（CHECK で本来は不正値無し）。
+        const p =
+          (PHASE_ORDER[a.phaseType] ?? 0) - (PHASE_ORDER[b.phaseType] ?? 0);
         if (p !== 0) return p;
         return a.linkId < b.linkId ? -1 : a.linkId > b.linkId ? 1 : 0;
       });

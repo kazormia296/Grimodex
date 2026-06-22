@@ -27,6 +27,17 @@ fn one(rows: Vec<serde_json::Map<String, Value>>) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// 行 id の所属 project_id を引く。table は静的リテラルのみ（インジェクション無し）。
+fn project_of(db: &database::Database, table: &str, id: &str) -> anyhow::Result<Option<String>> {
+    let sql = format!("SELECT project_id FROM {table} WHERE id = ?");
+    let rows = db.execute(&sql, &[Value::String(id.to_string())], "get")?;
+    Ok(rows
+        .first()
+        .and_then(|r| r.get("project_id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string))
+}
+
 // ─────────────────────── DTO ───────────────────────
 
 #[derive(serde::Deserialize)]
@@ -193,6 +204,18 @@ fn plot_thread_link_create_impl(
     p: PlotThreadLinkCreatePayload,
 ) -> anyhow::Result<Value> {
     validate_phase(&p.phase_type)?;
+    // XPROJ ガード: thread と node が同一 project に属することを強制する。
+    // FK は行の存在のみ検証し project 所有権は見ないため、ここで明示照合する。
+    let thread_project = project_of(db, "plot_threads", &p.thread_id)?;
+    let node_project = project_of(db, "tree_nodes", &p.node_id)?;
+    match (thread_project, node_project) {
+        (Some(a), Some(b)) if a == b => {}
+        _ => {
+            return Err(anyhow::anyhow!(
+                "plot thread link must reference a thread and scene in the same project"
+            ))
+        }
+    }
     let id = uuid::Uuid::new_v4().to_string();
     db.execute(
         "INSERT INTO plot_thread_scene_links (id, thread_id, node_id, phase_type, note, sort_order)\n         VALUES (?, ?, ?, ?, ?, ?)",
@@ -323,12 +346,8 @@ mod tests {
     fn db() -> Database {
         let db = Database::new(std::path::Path::new(":memory:")).unwrap();
         db.migrate().unwrap();
-        db.execute(
-            "INSERT INTO projects (id) VALUES ('p1')",
-            &[],
-            "run",
-        )
-        .unwrap();
+        db.execute("INSERT INTO projects (id) VALUES ('p1')", &[], "run")
+            .unwrap();
         db
     }
 
@@ -403,5 +422,49 @@ mod tests {
             },
         );
         assert!(ok.is_ok(), "valid phase_type must insert");
+    }
+
+    #[test]
+    fn link_create_rejects_cross_project() {
+        let d = db();
+        // p1 にスレッド、p2 にシーン。
+        d.execute("INSERT INTO projects (id) VALUES ('p2')", &[], "run")
+            .unwrap();
+        plot_thread_create_impl(
+            &d,
+            PlotThreadCreatePayload {
+                project_id: "p1".into(),
+                name: "t".into(),
+                color: None,
+                description: None,
+                sort_order: "a0".into(),
+            },
+        )
+        .unwrap();
+        d.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s2','p2','scene','S2')",
+            &[],
+            "run",
+        )
+        .unwrap();
+        let tid = plot_thread_list_impl(&d, "p1".into()).unwrap()[0]
+            .as_object()
+            .and_then(|o| o.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+
+        // p1 のスレッド × p2 のシーンは拒否される。
+        let cross = plot_thread_link_create_impl(
+            &d,
+            PlotThreadLinkCreatePayload {
+                thread_id: tid,
+                node_id: "s2".into(),
+                phase_type: "introduce".into(),
+                note: None,
+                sort_order: None,
+            },
+        );
+        assert!(cross.is_err(), "cross-project link must be rejected");
     }
 }

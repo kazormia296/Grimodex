@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { generateKeyBetween } from "@/features/tree/fractionalIndex";
+import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
 import type { PlotPhaseType } from "@/db/schema";
 import {
   listPlotThreads,
@@ -42,21 +42,26 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
   loading: false,
 
   load: async (projectId) => {
-    set({ loading: true });
+    // 前プロジェクトのレーンを即座にクリア（切替時に一瞬残骸を見せない）。
+    set({ threads: [], links: [], loading: true });
     const [threads, links] = await Promise.all([
       listPlotThreads(projectId),
       listPlotThreadLinks(projectId),
     ]);
     // stale ガード: async 中にプロジェクトが切り替わっていたら破棄
-    // （Grimodex 頻出のストア汚染対策）。
+    // （Grimodex 頻出のストア汚染対策）。より新しい load が状態を所有する。
     if (getCurrentProjectId() !== projectId) return;
     set({ threads, links, loading: false });
   },
 
   addThread: async (projectId, name) => {
-    const { threads } = get();
-    const last = threads[threads.length - 1];
-    const sortOrder = generateKeyBetween(last ? last.sortOrder : null, null);
+    // sortOrder は「末尾」ではなく実際の最大キーの後に置く
+    // （listPlotThreads の返却順に依存しないため）。
+    const maxKey = get().threads.reduce<string | null>(
+      (m, t) => (m === null || cmpKeys(t.sortOrder, m) > 0 ? t.sortOrder : m),
+      null,
+    );
+    const sortOrder = generateKeyBetween(maxKey, null);
     const created = await createPlotThread({ projectId, name, sortOrder });
     if (getCurrentProjectId() !== projectId) return;
     set({ threads: [...get().threads, created] });

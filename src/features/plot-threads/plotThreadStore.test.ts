@@ -15,7 +15,13 @@ vi.mock("./api", () => ({
   deletePlotThreadLink: vi.fn(async () => {}),
 }));
 
-import { listPlotThreads, createPlotThread, type PlotThreadRow } from "./api";
+import {
+  listPlotThreads,
+  createPlotThread,
+  createPlotThreadLink,
+  type PlotThreadRow,
+  type PlotThreadLinkRow,
+} from "./api";
 import { usePlotThreadStore } from "./plotThreadStore";
 
 const row = (id: string, sortOrder: string): PlotThreadRow => ({
@@ -25,6 +31,17 @@ const row = (id: string, sortOrder: string): PlotThreadRow => ({
   color: null,
   description: null,
   sortOrder,
+  createdAt: "",
+  updatedAt: "",
+});
+
+const linkRow = (id: string): PlotThreadLinkRow => ({
+  id,
+  threadId: "t1",
+  nodeId: "s1",
+  phaseType: "develop",
+  note: null,
+  sortOrder: null,
   createdAt: "",
   updatedAt: "",
 });
@@ -91,5 +108,36 @@ describe("plotThreadStore", () => {
       "t2",
     ]);
     expect(usePlotThreadStore.getState().links).toHaveLength(0);
+  });
+
+  it("addMarker が作成結果を links に追加する", async () => {
+    (createPlotThreadLink as ReturnType<typeof vi.fn>).mockResolvedValue(
+      linkRow("l1"),
+    );
+    await usePlotThreadStore.getState().addMarker("t1", "s1", "develop");
+    expect(createPlotThreadLink).toHaveBeenCalledWith({
+      threadId: "t1",
+      nodeId: "s1",
+      phaseType: "develop",
+    });
+    expect(usePlotThreadStore.getState().links.map((l) => l.id)).toEqual([
+      "l1",
+    ]);
+  });
+
+  it("updateMarker が links を楽観更新する", async () => {
+    usePlotThreadStore.setState({ links: [linkRow("l1")] });
+    await usePlotThreadStore.getState().updateMarker("l1", {
+      phaseType: "climax",
+    });
+    expect(usePlotThreadStore.getState().links[0].phaseType).toBe("climax");
+  });
+
+  it("deleteMarker が links から除外する", async () => {
+    usePlotThreadStore.setState({ links: [linkRow("l1"), linkRow("l2")] });
+    await usePlotThreadStore.getState().deleteMarker("l1");
+    expect(usePlotThreadStore.getState().links.map((l) => l.id)).toEqual([
+      "l2",
+    ]);
   });
 });

@@ -111,7 +111,10 @@ export function PlotMarkerInspector({ onClose }: { onClose: () => void }) {
               key={thread.id}
               value={thread.name}
               placeholder={t("plotThread.newThreadName", "新しいスレッド")}
-              onCommit={(next) => void renameThread(thread.id, next)}
+              onCommit={(next) => {
+                const v = next.trim();
+                if (v && v !== thread.name) void renameThread(thread.id, v);
+              }}
             />
           </label>
           <button
